@@ -50,27 +50,15 @@ SwarmCracker brings you the best of both worlds:
 ## 🏗️ Architecture
 
 ```mermaid
-graph TB
-    SWARMKIT[SwarmKit<br/>Orchestration Layer]
-    EXECUTOR[SwarmCracker<br/>Executor]
-    TRANSLATOR[Task Translator<br/>& Components]
-    FIRECRACKER[Firecracker<br/>VMM]
-    MICROVM[MicroVM<br/>KVM Isolation]
-    OCI[OCI Images<br/>& Rootfs]
+graph LR
+    SWARMKIT[SwarmKit]
+    EXECUTOR[SwarmCracker]
+    FIRECRACKER[Firecracker]
+    MICROVM[MicroVM]
 
-    SWARMKIT -->|gRPC| EXECUTOR
-    EXECUTOR --> TRANSLATOR
-    EXECUTOR --> OCI
-    TRANSLATOR --> FIRECRACKER
-    OCI --> FIRECRACKER
+    SWARMKIT --> EXECUTOR
+    EXECUTOR --> FIRECRACKER
     FIRECRACKER --> MICROVM
-
-    style SWARMKIT fill:#2496ED,stroke:#0D4771,color:#fff
-    style EXECUTOR fill:#E8652D,stroke:#B8400A,color:#fff
-    style TRANSLATOR fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style FIRECRACKER fill:#FF6B35,stroke:#C44D1D,color:#fff
-    style MICROVM fill:#FFD23F,stroke:#CCAA00,color:#000
-    style OCI fill:#95A5A6,stroke:#7F8C8D,color:#fff
 ```
 
 **📖 See detailed architecture in [ARCHITECTURE.md](docs/ARCHITECTURE.md)**
