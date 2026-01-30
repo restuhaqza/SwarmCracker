@@ -65,7 +65,8 @@ graph LR
 
 ```mermaid
 graph TB
-    subgraph "Manager Nodes (HA Cluster)"
+    subgraph MGR ["Manager Nodes (HA Cluster)"]
+        direction LR
         MGR1[Manager 1]
         MGR2[Manager 2]
         MGR3[Manager 3]
