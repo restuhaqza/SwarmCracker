@@ -51,14 +51,16 @@ SwarmCracker bridges SwarmKit orchestration with Firecracker microVMs through a 
 
 ## Package Structure
 
-| Package | Purpose | Status |
-|---------|---------|--------|
-| `pkg/types` | Shared data structures & interfaces | ✅ Complete |
-| `pkg/executor` | Main executor implementation | ✅ Complete |
-| `pkg/translator` | Task → VM config conversion | ✅ Complete |
-| `pkg/image` | OCI image → root filesystem | ⏳ Stub |
-| `pkg/network` | TAP/bridge network management | ⏳ Stub |
-| `pkg/lifecycle` | VM start/stop/monitor | ⏳ Stub |
+| Package | Purpose | Status | Test Coverage |
+|---------|---------|--------|---------------|
+| `pkg/types` | Shared data structures & interfaces | ✅ Complete | N/A |
+| `pkg/executor` | Main executor implementation | ✅ Complete | 95.2% |
+| `pkg/translator` | Task → VM config conversion | ✅ Complete | 98.1% |
+| `pkg/config` | Configuration management | ✅ Complete | 87.3% |
+| `pkg/lifecycle` | VM start/stop/monitor | ✅ Complete | 54.4% |
+| `pkg/network` | TAP/bridge network management | ✅ Complete | 9.1% |
+| `pkg/image` | OCI image → root filesystem | ✅ Complete | 0% (pending) |
+| `test/mocks` | Mock implementations for testing | ✅ Complete | N/A |
 
 ## Data Flow
 
