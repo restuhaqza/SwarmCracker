@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -150,9 +151,13 @@ func TestTaskTranslator_Translate(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, got)
 
-				// Verify the result is a VMMConfig
-				config, ok := got.(*VMMConfig)
-				require.True(t, ok, "Result should be *VMMConfig")
+				// Verify the result is a JSON string
+				configJSON, ok := got.(string)
+				require.True(t, ok, "Result should be JSON string")
+
+				// Verify it's valid JSON
+				var config VMMConfig
+				require.NoError(t, json.Unmarshal([]byte(configJSON), &config), "Should be valid JSON")
 
 				// Verify boot source
 				assert.Equal(t, "/usr/share/firecracker/vmlinux", config.BootSource.KernelImagePath)

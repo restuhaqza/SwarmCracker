@@ -73,9 +73,26 @@ func main() {
 	}
 
 	// Create component instances (dependency injection)
-	vmmManager := lifecycle.NewVMMManager(execConfig)
-	taskTranslator := translator.NewTaskTranslator(execConfig)
-	imagePreparer := image.NewImagePreparer(execConfig)
+	vmmConfig := &lifecycle.ManagerConfig{
+		KernelPath:     execConfig.KernelPath,
+		RootfsDir:      execConfig.RootfsDir,
+		SocketDir:      execConfig.SocketDir,
+		DefaultVCPUs:   execConfig.DefaultVCPUs,
+		DefaultMemoryMB: execConfig.DefaultMemoryMB,
+		EnableJailer:   execConfig.EnableJailer,
+	}
+
+	imageConfig := &image.PreparerConfig{
+		KernelPath:     execConfig.KernelPath,
+		RootfsDir:      execConfig.RootfsDir,
+		SocketDir:      execConfig.SocketDir,
+		DefaultVCPUs:   execConfig.DefaultVCPUs,
+		DefaultMemoryMB: execConfig.DefaultMemoryMB,
+	}
+
+	vmmManager := lifecycle.NewVMMManager(vmmConfig)
+	taskTranslator := translator.NewTaskTranslator(vmmConfig)
+	imagePreparer := image.NewImagePreparer(imageConfig)
 	networkMgr := network.NewNetworkManager(execConfig.Network)
 
 	exec, err := executor.NewFirecrackerExecutor(

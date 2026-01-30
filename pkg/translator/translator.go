@@ -1,6 +1,7 @@
 package translator
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -90,7 +91,7 @@ type VsockConfig struct {
 	GuestCID int
 }
 
-// Translate converts a SwarmKit task to a Firecracker VMM configuration.
+// Translate converts a SwarmKit task to a Firecracker VMM configuration JSON string.
 func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 	if task == nil {
 		return nil, fmt.Errorf("task cannot be nil")
@@ -141,7 +142,17 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 		config.Drives = append(config.Drives, drive)
 	}
 
-	return config, nil
+	// Return as JSON string for easier consumption
+	return tt.configToJSON(config)
+}
+
+// configToJSON converts VMMConfig to JSON string.
+func (tt *TaskTranslator) configToJSON(config *VMMConfig) (string, error) {
+	bytes, err := json.Marshal(config)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal config: %w", err)
+	}
+	return string(bytes), nil
 }
 
 // buildBootArgs constructs kernel boot arguments.
