@@ -1,0 +1,37 @@
+# SwarmCracker Configuration Example
+# Copy this to /etc/swarmcracker/config.yaml and customize
+
+executor:
+  name: firecracker
+  kernel_path: "/usr/share/firecracker/vmlinux"
+  initrd_path: ""
+  rootfs_dir: "/var/lib/firecracker/rootfs"
+  socket_dir: "/var/run/firecracker"
+  default_vcpus: 1
+  default_memory_mb: 512
+  enable_jailer: false
+  jailer:
+    uid: 1000
+    gid: 1000
+    chroot_base_dir: "/srv/jailer"
+    netns: ""
+
+network:
+  bridge_name: "swarm-br0"
+  enable_rate_limit: false
+  max_packets_per_sec: 10000
+
+logging:
+  level: "info"
+  format: "text"
+  output: "stdout"
+
+images:
+  cache_dir: "/var/cache/swarmcracker"
+  max_cache_size_mb: 1024
+  enable_layer_cache: true
+
+metrics:
+  enabled: false
+  address: "localhost:9090"
+  format: "prometheus"

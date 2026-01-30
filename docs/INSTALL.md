@@ -230,13 +230,72 @@ ip link show swarm-br0
 
 ## Running SwarmCracker
 
+### CLI Tool Usage
+
+The `swarmcracker-kit` CLI provides a simple interface for running and testing:
+
+#### Validate Configuration
+
+```bash
+# Validate configuration file
+swarmcracker-kit validate --config /etc/swarmcracker/config.yaml
+
+# Expected output:
+# ✓ Configuration is valid
+#   Kernel: /usr/share/firecracker/vmlinux
+#   Rootfs: /var/lib/firecracker/rootfs
+#   Bridge: swarm-br0
+#   VCPUs: 2
+#   Memory: 1024 MB
+#   Jailer: true
+```
+
+#### Run Containers as MicroVMs
+
+```bash
+# Run a container as a microVM (test mode - validation only)
+swarmcracker-kit run --config /etc/swarmcracker/config.yaml --test nginx:latest
+
+# Run with custom resources
+swarmcracker-kit run --vcpus 2 --memory 1024 nginx:latest
+
+# Run in detached mode
+swarmcracker-kit run --detach nginx:latest
+
+# Run with environment variables
+swarmcracker-kit run -e APP_ENV=production -e DEBUG=false nginx:latest
+
+# Override kernel or rootfs from command line
+swarmcracker-kit run --kernel /custom/path/vmlinux nginx:latest
+```
+
+#### Show Version
+
+```bash
+swarmcracker-kit version
+
+# Expected output:
+# SwarmCracker Kit v0.1.0-alpha
+#   Build Time: 2024-01-30T12:00:00Z
+#   Git Commit: abc123def
+#   Go Version: 1.21 (linux/amd64)
+```
+
 ### Standalone Mode
 
 ```bash
-# Start executor standalone
-swarmcracker-kit \
+# The CLI can be used standalone for testing and development
+# No SwarmKit required for basic functionality
+
+# Example: Test your setup
+swarmcracker-kit run --test nginx:latest
+
+# Example: Run with custom configuration
+swarmcracker-kit run \
   --config /etc/swarmcracker/config.yaml \
-  --socket /var/run/swarmcracker.sock
+  --vcpus 4 \
+  --memory 2048 \
+  nginx:latest
 ```
 
 ### With SwarmKit
@@ -255,22 +314,26 @@ swarmd \
 ### Test Setup
 
 ```bash
-# Run smoke test
-swarmcracker-kit --test
+# Validate configuration
+swarmcracker-kit validate
+
+# Run in test mode (no actual VM execution)
+swarmcracker-kit run --test nginx:latest
 
 # Expected output:
-# ✓ Firecracker accessible
-# ✓ KVM available
-# ✓ Kernel present
-# ✓ Network bridge ready
-# ✓ Configuration valid
+# [INF] Test mode: validating image reference image=nginx:latest
+# [INF] Task created successfully image=nginx:latest task_id=task-1234567890
 ```
 
 ### Run Example
 
 ```bash
-# Run nginx microVM
-swarmcracker-kit run nginx:latest
+# Run nginx microVM (test mode)
+swarmcracker-kit run --test nginx:latest
+
+# Run with full execution (requires Firecracker and proper setup)
+# Note: This will actually start a microVM
+swarmcracker-kit run --detach nginx:latest
 
 # Expected: VM starts, nginx accessible via assigned IP
 ```
