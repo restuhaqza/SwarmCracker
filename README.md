@@ -61,6 +61,71 @@ graph LR
     FIRECRACKER --> MICROVM
 ```
 
+### Deployment at Scale
+
+```mermaid
+graph TB
+    subgraph "Manager Nodes (HA Cluster)"
+        MGR1[Manager 1]
+        MGR2[Manager 2]
+        MGR3[Manager 3]
+    end
+
+    subgraph "Worker Node 1"
+        AGENT1[SwarmKit Agent]
+        EXEC1[SwarmCracker Executor]
+        VM1a[MicroVM nginx-1]
+        VM1b[MicroVM redis-1]
+        VM1c[MicroVM app-1]
+        EXEC1 --> VM1a
+        EXEC1 --> VM1b
+        EXEC1 --> VM1c
+    end
+
+    subgraph "Worker Node 2"
+        AGENT2[SwarmKit Agent]
+        EXEC2[SwarmCracker Executor]
+        VM2a[MicroVM nginx-2]
+        VM2b[MicroVM postgres-1]
+        VM2c[MicroVM app-2]
+        EXEC2 --> VM2a
+        EXEC2 --> VM2b
+        EXEC2 --> VM2c
+    end
+
+    subgraph "Worker Node N"
+        AGENTN[SwarmKit Agent]
+        EXECN[SwarmCracker Executor]
+        VMNa[MicroVM...]
+        EXECN --> VMNa
+    end
+
+    MGR1 -.->|RAFT| MGR2
+    MGR2 -.->|RAFT| MGR3
+    MGR3 -.->|RAFT| MGR1
+
+    MGR1 -->|gRPC| AGENT1
+    MGR1 -->|gRPC| AGENT2
+    MGR1 -->|gRPC| AGENTN
+    MGR2 -->|gRPC| AGENT1
+    MGR2 -->|gRPC| AGENT2
+    MGR2 -->|gRPC| AGENTN
+    MGR3 -->|gRPC| AGENT1
+    MGR3 -->|gRPC| AGENT2
+    MGR3 -->|gRPC| AGENTN
+
+    AGENT1 --> EXEC1
+    AGENT2 --> EXEC2
+    AGENTN --> EXECN
+```
+
+**Key Features at Scale:**
+- 🔄 **High Availability** - Manager nodes use RAFT for consensus
+- 📊 **Load Distribution** - Tasks distributed across workers automatically
+- 🔒 **Isolation** - Each microVM has its own kernel via KVM
+- ⚡ **Elastic Scaling** - Add/remove workers on demand
+- 🛡️ **Fault Tolerance** - MicroVM failures don't affect other workloads
+
 **📖 See detailed architecture in [ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 
 ### How It Works
