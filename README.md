@@ -2,6 +2,10 @@
 
 # 🔥 SwarmCracker
 
+<p align="center">
+  <img src="docs/architecture.png" alt="SwarmCracker Logo" width="200">
+</p>
+
 ### Firecracker MicroVMs meet Docker Swarm Orchestration
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/restuhaqza/swarmcracker)](https://goreportcard.com/report/github.com/restuhaqza/swarmcracker)
@@ -45,23 +49,40 @@ SwarmCracker brings you the best of both worlds:
 
 ## 🏗️ Architecture
 
-<p align="center">
-  <img src="docs/architecture.png" alt="SwarmCracker Architecture" width="80%">
-</p>
+```mermaid
+graph TB
+    SWARMKIT[SwarmKit<br/>Orchestration Layer]
+    EXECUTOR[SwarmCracker<br/>Executor]
+    TRANSLATOR[Task Translator<br/>& Components]
+    FIRECRACKER[Firecracker<br/>VMM]
+    MICROVM[MicroVM<br/>KVM Isolation]
+    OCI[OCI Images<br/>& Rootfs]
 
+    SWARMKIT -->|gRPC| EXECUTOR
+    EXECUTOR --> TRANSLATOR
+    EXECUTOR --> OCI
+    TRANSLATOR --> FIRECRACKER
+    OCI --> FIRECRACKER
+    FIRECRACKER --> MICROVM
+
+    style SWARMKIT fill:#2496ED,stroke:#0D4771,color:#fff
+    style EXECUTOR fill:#E8652D,stroke:#B8400A,color:#fff
+    style TRANSLATOR fill:#6DB33F,stroke:#3A6A1F,color:#fff
+    style FIRECRACKER fill:#FF6B35,stroke:#C44D1D,color:#fff
+    style MICROVM fill:#FFD23F,stroke:#CCAA00,color:#000
+    style OCI fill:#95A5A6,stroke:#7F8C8D,color:#fff
 ```
-SwarmKit (Orchestration)
-         │
-         ▼
-SwarmCracker Executor
-    │           │
-    ▼           ▼
-Firecracker  OCI Images
-   VMM         ↓
-    │      Root Filesystem
-    ▼
-   MicroVM (Isolated)
-```
+
+**📖 See detailed architecture in [ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+
+### How It Works
+
+1. **SwarmKit** assigns tasks to the agent (same as Docker Swarm)
+2. **SwarmCracker Executor** translates tasks into MicroVM configurations
+3. **Image Preparer** converts OCI images to root filesystems
+4. **Network Manager** creates isolated TAP devices for each VM
+5. **Firecracker VMM** launches hardware-isolated MicroVMs via KVM
+6. **Workload** runs with full kernel separation
 
 ## 🚀 Quick Start
 
@@ -92,6 +113,32 @@ make install
 ```
 
 ### Basic Usage
+
+#### CLI Tool Usage
+
+The `swarmcracker-kit` CLI provides a simple interface to run containers as microVMs:
+
+```bash
+# Validate configuration
+swarmcracker-kit validate --config /etc/swarmcracker/config.yaml
+
+# Run a container as a microVM (test mode - validate only)
+swarmcracker-kit run --config /etc/swarmcracker/config.yaml --test nginx:latest
+
+# Run with custom resources
+swarmcracker-kit run --vcpus 2 --memory 1024 nginx:latest
+
+# Run in detached mode
+swarmcracker-kit run --detach nginx:latest
+
+# Run with environment variables
+swarmcracker-kit run -e APP_ENV=production -e DEBUG=false nginx:latest
+
+# Show version
+swarmcracker-kit version
+```
+
+#### SwarmKit Integration
 
 ```bash
 # 1. Create a configuration file
@@ -232,7 +279,7 @@ Overall           ███████████████░░░░░ 6
 | Image Prep | ✅ Complete | ⏳ Pending | OCI → rootfs conversion |
 | Network | ✅ Complete | 9.1% | TAP/bridge management |
 | Jailer | ⏳ Ready | ⏳ Pending | Security hardening |
-| CLI Tool | ⏳ Stub | ⏳ Pending | `swarmcracker-kit` |
+| CLI Tool | ✅ Complete | ✅ Done | Full CLI with Cobra |
 
 </details>
 
