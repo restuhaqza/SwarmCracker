@@ -34,15 +34,6 @@ graph TB
     VMM -->|Lifecycle| FC
     FC --> MICROVM
 
-    style MGR fill:#2496ED,stroke:#0D4771,color:#fff
-    style AGENT fill:#2496ED,stroke:#0D4771,color:#fff
-    style EXEC fill:#E8652D,stroke:#B8400A,color:#fff
-    style TRANS fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style IMG fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style NET fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style VMM fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style FC fill:#FF6B35,stroke:#C44D1D,color:#fff
-    style MICROVM fill:#FFD23F,stroke:#CCAA00,color:#000
 ```
 
 ## Component Overview
@@ -88,19 +79,41 @@ graph LR
     H --> I
     I --> J
 
-    style A fill:#2496ED,stroke:#0D4771,color:#fff
-    style B fill:#E8652D,stroke:#B8400A,color:#fff
-    style C fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style D fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style E fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style F fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style G fill:#95A5A6,stroke:#7F8C8D,color:#fff
-    style H fill:#95A5A6,stroke:#7F8C8D,color:#fff
-    style I fill:#FF6B35,stroke:#C44D1D,color:#fff
-    style J fill:#FFD23F,stroke:#CCAA00,color:#000
 ```
 
 ## Package Structure
+
+```mermaid
+graph TD
+    TYPES[pkg/types<br/>Shared interfaces]
+    CONFIG[pkg/config<br/>Configuration]
+    EXEC[pkg/executor<br/>Main Executor]
+    TRANS[pkg/translator<br/>Task Translator]
+    LIFECYCLE[pkg/lifecycle<br/>VM Lifecycle]
+    IMAGE[pkg/image<br/>Image Preparer]
+    NETWORK[pkg/network<br/>Network Manager]
+    MOCKS[test/mocks<br/>Testing Doubles]
+
+    TYPES --> EXEC
+    TYPES --> TRANS
+    TYPES --> LIFECYCLE
+    TYPES --> IMAGE
+    TYPES --> NETWORK
+
+    CONFIG --> EXEC
+    CONFIG --> TRANS
+    CONFIG --> NETWORK
+
+    EXEC --> TRANS
+    EXEC --> LIFECYCLE
+    EXEC --> IMAGE
+    EXEC --> NETWORK
+
+    MOCKS -.-> EXEC
+    MOCKS -.-> TRANS
+    MOCKS -.-> LIFECYCLE
+
+```
 
 | Package | Purpose | Status | Test Coverage |
 |---------|---------|--------|---------------|
@@ -221,11 +234,6 @@ graph TB
     VMM_PROC --> MICROVM
     MICROVM --> WORKLOAD
 
-    style EXECUTOR fill:#E8652D,stroke:#B8400A,color:#fff,stroke-width:3px
-    style VMM_PROC fill:#FF6B35,stroke:#C44D1D,color:#fff,stroke-width:2px
-    style MICROVM fill:#FFD23F,stroke:#CCAA00,color:#000,stroke-width:2px
-    style WORKLOAD fill:#6DB33F,stroke:#3A6A1F,color:#fff
-    style HOST fill:#2C3E50,stroke:#1A252F,color:#fff,stroke-width:4px
 ```
 
 ### Security Boundaries
