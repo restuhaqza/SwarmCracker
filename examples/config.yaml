@@ -1,0 +1,76 @@
+# SwarmCracker Configuration File
+# Location: /etc/swarmcracker/config.yaml or ~/.config/swarmcracker/config.yaml
+
+# Executor configuration
+executor:
+  name: firecracker
+  
+  # Firecracker kernel path
+  kernel_path: "/usr/share/firecracker/vmlinux"
+  
+  # Optional initrd path
+  initrd_path: ""
+  
+  # Directory for storing root filesystems
+  rootfs_dir: "/var/lib/firecracker/rootfs"
+  
+  # Directory for Firecracker API sockets
+  socket_dir: "/var/run/firecracker"
+  
+  # Default VM resources
+  default_vcpus: 2
+  default_memory_mb: 1024
+  
+  # Enable jailer for additional security (recommended for production)
+  enable_jailer: false
+  
+  # Jailer configuration (only used if enable_jailer is true)
+  jailer:
+    uid: 1000
+    gid: 1000
+    chroot_base_dir: "/srv/jailer"
+    netns: ""
+
+# Network configuration
+network:
+  # Bridge name for VM networking
+  bridge_name: "swarm-br0"
+  
+  # Enable rate limiting
+  enable_rate_limit: true
+  
+  # Maximum packets per second per VM
+  max_packets_per_sec: 10000
+
+# Logging configuration
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+  
+  # Log format: json, text
+  format: "json"
+  
+  # Log output: stdout, stderr, or file path
+  output: "stdout"
+
+# Image preparation settings
+images:
+  # Image cache directory
+  cache_dir: "/var/cache/swarmcracker"
+  
+  # Maximum cache size in MB
+  max_cache_size_mb: 10240
+  
+  # Enable image layer caching
+  enable_layer_cache: true
+
+# Metrics configuration
+metrics:
+  # Enable metrics collection
+  enabled: true
+  
+  # Metrics server address
+  address: ":9090"
+  
+  # Metrics format: prometheus
+  format: "prometheus"
