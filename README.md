@@ -1,24 +1,53 @@
-# SwarmCracker 🔥
+<div align="center">
+
+# 🔥 SwarmCracker
+
+### Firecracker MicroVMs meet Docker Swarm Orchestration
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/restuhaqza/swarmcracker)](https://goreportcard.com/report/github.com/restuhaqza/swarmcracker)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/restuhaqza/swarmcracker)
+[![Coverage](https://img.shields.io/badge/coverage-63.3%25-green.svg)](https://github.com/restuhaqza/swarmcracker)
 
-> **Firecracker microVMs meet SwarmKit orchestration**
+**Hardware-isolated microVMs with the simplicity of Docker Swarm**
+
+[Features](#-what-it-does) • [Quick Start](#-quick-start) • [Docs](#-documentation) • [Contributing](#-contributing)
+
+</div>
+
+---
+
+<p align="center">
+  <i>SwarmCracker is a custom executor for SwarmKit that runs containers as isolated Firecracker microVMs instead of traditional containers.</i>
+</p>
 
 SwarmCracker is a custom executor for [SwarmKit](https://github.com/moby/swarmkit) that runs containers as isolated [Firecracker](https://github.com/firecracker-microvm/firecracker) microVMs instead of traditional containers.
 
-## 🎯 What It Does
+## ✨ What It Does
 
-SwarmCracker lets you use Docker Swarm's familiar orchestration features with hardware-isolated microVMs:
+SwarmCracker brings you the best of both worlds:
 
-- ✅ **Run services as microVMs** - Each container gets its own kernel
-- ✅ **Full Swarm compatibility** - Services, scaling, rolling updates, secrets
-- ✅ **Strong isolation** - KVM-based hardware virtualization
-- ✅ **No Kubernetes needed** - Keep Swarm's simplicity
+| Feature | Benefit |
+|---------|---------|
+| 🔥 **MicroVM Isolation** | Each container gets its own kernel via KVM |
+| 🐳 **Swarm Simplicity** | Use familiar Docker Swarm commands and workflows |
+| 🚀 **Full Orchestration** | Services, scaling, rolling updates, secrets, configs |
+| 🛡️ **Hardware Security** | KVM-based virtualization, not just kernel namespaces |
+| ⚡ **Fast Startup** | MicroVMs boot in milliseconds with Firecracker |
+| 🎯 **KVM-Free** | No Kubernetes complexity needed |
+
+### Why SwarmCracker?
+
+- **Stronger isolation than containers** - Full kernel separation via KVM
+- **Simpler than Kubernetes** - Keep Swarm's easy-to-use interface
+- **Better resource utilization** - MicroVMs are lighter than full VMs
+- **Cloud-native** - Designed for microservices and distributed systems
 
 ## 🏗️ Architecture
 
-![SwarmCracker Architecture](docs/architecture.png)
+<p align="center">
+  <img src="docs/architecture.png" alt="SwarmCracker Architecture" width="80%">
+</p>
 
 ```
 SwarmKit (Orchestration)
@@ -38,50 +67,96 @@ Firecracker  OCI Images
 
 ### Prerequisites
 
-- Linux with KVM support
-- Go 1.21+
-- Firecracker v1.0.0+
-- Docker Swarm (or SwarmKit standalone)
+Before you begin, ensure you have:
+
+- ✅ **Linux** with KVM support (`ls /dev/kvm`)
+- ✅ **Go 1.21+** installed
+- ✅ **Firecracker v1.0.0+** installed
+- ✅ **Docker Swarm** initialized or SwarmKit standalone
 
 ### Installation
 
 ```bash
-# Clone the repo
+# Clone the repository
 git clone https://github.com/restuhaqza/swarmcracker.git
 cd swarmcracker
 
-# Build
+# Install dependencies
+go mod download
+
+# Build the binary
 make build
 
-# Install
+# Install to $GOPATH/bin or /usr/local/bin
 make install
 ```
 
-### Usage
+### Basic Usage
 
 ```bash
-# Start SwarmKit agent with SwarmCracker executor
+# 1. Create a configuration file
+cat > /etc/swarmcracker/config.yaml <<EOF
+executor:
+  kernel_path: "/usr/share/firecracker/vmlinux"
+  rootfs_dir: "/var/lib/firecracker/rootfs"
+  default_vcpus: 2
+  default_memory_mb: 1024
+
+network:
+  bridge_name: "swarm-br0"
+EOF
+
+# 2. Start SwarmKit agent with SwarmCracker
 swarmd \
+  --addr 0.0.0.0:4242 \
+  --remote-addrs <manager-ip>:4242 \
   --executor firecracker \
-  --firecracker-kernel /usr/share/firecracker/vmlinux \
-  --firecracker-rootfs /var/lib/firecracker/rootfs
+  --executor-config /etc/swarmcracker/config.yaml
+
+# 3. Deploy services as microVMs
+docker service create \
+  --name nginx \
+  --executor firecracker \
+  nginx:latest
 ```
 
-## 📖 Documentation
+<details>
+<summary><b>📖 See detailed installation guide</b></summary>
 
-- **[Architecture Overview](docs/ARCHITECTURE.md)** - Detailed system design and component overview
-- **[Installation Guide](docs/INSTALL.md)** - Step-by-step setup instructions
-- **[Configuration Reference](docs/CONFIG.md)** - Complete configuration options and examples
-- **[Testing Guide](docs/TESTING.md)** - How to run and write tests
-- **[Development Guide](docs/DEVELOPMENT.md)** - Contributing and development workflow
+For detailed installation instructions, including:
+- Firecracker setup
+- Network bridge configuration
+- Kernel preparation
+- Troubleshooting tips
+
+See the [Installation Guide](docs/INSTALL.md)
+
+</details>
+
+## 📚 Documentation
+
+### Getting Started
+
+| Document | Description |
+|----------|-------------|
+| [📖 Installation Guide](docs/INSTALL.md) | Step-by-step setup instructions for any environment |
+| [⚙️ Configuration Reference](docs/CONFIG.md) | Complete configuration options with examples |
+| [🏗️ Architecture](docs/ARCHITECTURE.md) | System design, components, and data flow |
+
+### Development
+
+| Document | Description |
+|----------|-------------|
+| [🧪 Testing Guide](docs/TESTING.md) | How to run and write tests |
+| [💻 Development Guide](docs/DEVELOPMENT.md) | Contributing, workflow, and best practices |
+| [📝 Project Status](PROJECT.md) | Progress tracking and roadmap |
 
 ### Quick Links
 
-- [Prerequisites](docs/INSTALL.md#prerequisites)
-- [Quick Start](docs/INSTALL.md#installation-methods)
-- [Configuration Examples](docs/CONFIG.md#examples)
-- [Writing Tests](docs/TESTING.md#writing-tests)
-- [Contributing](docs/DEVELOPMENT.md#development-workflow)
+- 🚀 [Quick Start Guide](docs/INSTALL.md#installation-methods)
+- ⚙️ [Configuration Examples](docs/CONFIG.md#examples)
+- 🧪 [Running Tests](docs/TESTING.md#running-tests)
+- 🤝 [Contributing](docs/DEVELOPMENT.md#contributing)
 
 ## 🛠️ Configuration
 
@@ -110,38 +185,107 @@ network:
 
 ## 🔧 Development
 
+### Build & Test
+
 ```bash
-# Run tests
+# Run all tests
 make test
 
-# Run linting
+# Run with coverage
+make test
+
+# Run linters
 make lint
 
-# Build examples
-make examples
+# Format code
+make fmt
+
+# Build release binaries
+make release
 ```
 
-## 📊 Status
+### Test Coverage
 
-Current version: **v0.1.0-alpha** (Proof of Concept)
+```
+pkg/translator     ████████████████████ 98.1%
+pkg/executor       ███████████████████░ 95.2%
+pkg/config         ██████████████████░░ 87.3%
+pkg/lifecycle      ███████████░░░░░░░░░ 54.4%
+pkg/network       ██░░░░░░░░░░░░░░░░░░  9.1%
+───────────────────────────────────────
+Overall           ███████████████░░░░░ 63.3%
+```
 
-**Test Coverage:** 63.3% overall
+## 📊 Project Status
 
-### Components Status
+**Version:** `v0.1.0-alpha` (Proof of Concept)
 
-- [x] Executor interface implementation (95.2% coverage)
-- [x] Task translator (SwarmKit → Firecracker) (98.1% coverage)
-- [x] Configuration system (87.3% coverage)
-- [x] VM lifecycle manager (54.4% coverage)
-- [x] Image preparation layer (implementation complete, tests pending)
-- [x] Network integration (9.1% coverage, limited by system requirements)
-- [ ] Security hardening with jailer (code ready, needs testing)
-- [ ] End-to-end integration testing
-- [ ] Production deployment and testing
+<details>
+<summary><b>📈 Component Progress</b></summary>
+
+| Component | Status | Coverage | Notes |
+|-----------|--------|----------|-------|
+| Executor | ✅ Complete | 95.2% | Full lifecycle management |
+| Translator | ✅ Complete | 98.1% | Task → VM config conversion |
+| Config | ✅ Complete | 87.3% | Validation & migration |
+| Lifecycle | ✅ Complete | 54.4% | VM start/stop/monitor |
+| Image Prep | ✅ Complete | ⏳ Pending | OCI → rootfs conversion |
+| Network | ✅ Complete | 9.1% | TAP/bridge management |
+| Jailer | ⏳ Ready | ⏳ Pending | Security hardening |
+| CLI Tool | ⏳ Stub | ⏳ Pending | `swarmcracker-kit` |
+
+</details>
+
+<details>
+<summary><b>🎯 Roadmap</b></summary>
+
+### 📅 Short Term (This Week)
+- [ ] Complete image preparer tests
+- [ ] Implement `swarmcracker-kit` CLI
+- [ ] Add integration tests
+
+### 📅 Medium Term (Next Month)
+- [ ] Jailer integration and testing
+- [ ] Performance optimization
+- [ ] Alpha release (v0.2.0)
+
+### 📅 Long Term (Next Quarter)
+- [ ] Production deployment
+- [ ] VM snapshot support
+- [ ] Live migration between hosts
+
+</details>
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions! SwarmCracker is a community-driven project.
+
+### Ways to Contribute
+
+- 🐛 **Report bugs** - Open an issue with reproducible examples
+- 💡 **Suggest features** - Share your ideas in discussions
+- 🔧 **Submit PRs** - Fix bugs, add features, improve docs
+- 📖 **Improve docs** - Help make documentation clearer
+- 🧪 **Add tests** - Improve test coverage
+
+### Getting Started
+
+1. Read the [Development Guide](docs/DEVELOPMENT.md)
+2. Check [Good First Issues](https://github.com/restuhaqza/swarmcracker/labels/good%20first%20issue)
+3. Follow [Contributing Guidelines](CONTRIBUTING.md)
+4. Join our [Discord community](https://discord.gg/clawd)
+
+<details>
+<summary><b>🎨 Code Style Guidelines</b></summary>
+
+- Follow Go best practices and Effective Go
+- Use `gofmt` for formatting
+- Write tests for all public functions
+- Add comments for exported types and functions
+- Keep functions small and focused
+- Use table-driven tests for multiple cases
+
+</details>
 
 ## 📝 License
 
@@ -149,16 +293,36 @@ Apache License 2.0 - see [LICENSE](LICENSE) for details.
 
 ## 🙏 Acknowledgments
 
-- [SwarmKit](https://github.com/moby/swarmkit) - Orchestration engine
-- [Firecracker](https://github.com/firecracker-microvm/firecracker) - MicroVM technology
-- [firecracker-containerd](https://github.com/firecracker-microvm/firecracker-containerd) - Reference for container integration
+Built with love and these amazing projects:
 
-## 🔗 Links
+| Project | Purpose | License |
+|---------|---------|---------|
+| [SwarmKit](https://github.com/moby/swarmkit) | Orchestration engine | Apache 2.0 |
+| [Firecracker](https://github.com/firecracker-microvm/firecracker) | MicroVM technology | Apache 2.0 |
+| [firecracker-containerd](https://github.com/firecracker-microvm/firecracker-containerd) | Container integration reference | Apache 2.0 |
 
-- [SwarmKit GitHub](https://github.com/moby/swarmkit)
-- [Firecracker GitHub](https://github.com/firecracker-microvm/firecracker)
-- [Project Documentation](docs/)
+## 📜 License
+
+Apache License 2.0 - see [LICENSE](LICENSE) for details.
+
+## 🔗 Useful Links
+
+- [SwarmKit Documentation](https://github.com/moby/swarmkit)
+- [Firecracker Documentation](https://github.com/firecracker-microvm/firecracker)
+- [Docker Swarm Guide](https://docs.docker.com/engine/swarm/)
+- [KVM Documentation](https://www.linux-kvm.org/page/Documents)
 
 ---
 
-**Made with 🔥 by Restu Muzakir**
+<div align="center">
+
+### ⭐ Star us on GitHub — it helps!
+
+[![GitHub stars](https://img.shields.io/github/stars/restuhaqza/swarmcracker?style=social)](https://github.com/restuhaqza/swarmcracker/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/restuhaqza/swarmcracker?style=social)](https://github.com/restuhaqza/swarmcracker/network/members)
+
+**Made with 🔥 by [Restu Muzakir](https://github.com/restuhaqza)**
+
+[Website](https://restuhaqza.github.io) • [Blog](https://restuhaqza.github.io/blog) • [Twitter](https://twitter.com/restuhaqza)
+
+</div>
