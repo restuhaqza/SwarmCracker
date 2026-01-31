@@ -41,7 +41,7 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "swarmcracker-kit",
+		Use:   "swarmcracker",
 		Short: "SwarmCracker CLI - Run containers as Firecracker microVMs",
 		Long: `SwarmCracker is a CLI tool for running containers as isolated Firecracker microVMs.
 
@@ -88,9 +88,9 @@ func newRunCommand() *cobra.Command {
 		Long: `Run a container image as an isolated Firecracker microVM.
 
 Example:
-  swarmcracker-kit run nginx:latest
-  swarmcracker-kit run --detach nginx:latest
-  swarmcracker-kit run --vcpus 2 --memory 1024 nginx:latest`,
+  swarmcracker run nginx:latest
+  swarmcracker run --detach nginx:latest
+  swarmcracker run --vcpus 2 --memory 1024 nginx:latest`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			// Setup logging
@@ -216,9 +216,9 @@ SSH Key Detection:
   - Falls back to ~/.ssh/id_ed25519 or ~/.ssh/id_rsa
 
 Example:
-  swarmcracker-kit deploy nginx:latest --hosts host1.example.com,host2.example.com
-  swarmcracker-kit deploy --user ubuntu --ssh-key ~/.ssh/my_key nginx:latest
-  swarmcracker-kit deploy --dry-run nginx:latest`,
+  swarmcracker deploy nginx:latest --hosts host1.example.com,host2.example.com
+  swarmcracker deploy --user ubuntu --ssh-key ~/.ssh/my_key nginx:latest
+  swarmcracker deploy --dry-run nginx:latest`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
@@ -281,7 +281,7 @@ This command checks that the configuration file is valid and prints
 any errors or warnings.
 
 Example:
-  swarmcracker-kit validate --config /etc/swarmcracker/config.yaml`,
+  swarmcracker validate --config /etc/swarmcracker/config.yaml`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},

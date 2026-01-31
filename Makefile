@@ -1,7 +1,7 @@
 # SwarmCracker Makefile
 
 # Build variables
-BINARY_NAME=swarmcracker-kit
+BINARY_NAME=swarmcracker
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.1.0-alpha")
 LDFLAGS=-ldflags "-X main.Version=$(VERSION)"
 GOFLAGS=-v
@@ -14,13 +14,13 @@ BUILD_DIR=./build
 DIST_DIR=./dist
 
 # binaries
-swarmcracker-kit:
+swarmcracker:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)/swarmcracker-kit/main.go
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)/swarmcracker/main.go
 
 # Build all binaries
-all: swarmcracker-kit
+all: swarmcracker
 
 # Install binaries to $GOPATH/bin
 install: all
@@ -69,7 +69,7 @@ release:
 			echo "Building $$os/$$arch..."; \
 			GOOS=$$os GOARCH=$$arch $(GO) build $(LDFLAGS) \
 				-o $(DIST_DIR)/$(BINARY_NAME)-$$os-$$arch \
-				$(CMD_DIR)/swarmcracker-kit/main.go; \
+				$(CMD_DIR)/swarmcracker/main.go; \
 		done; \
 	done
 
@@ -127,7 +127,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  all              Build all binaries"
-	@echo "  swarmcracker-kit Build main binary"
+	@echo "  swarmcracker     Build main binary"
 	@echo "  install          Install binaries to \$GOPATH/bin"
 	@echo "  test             Run tests"
 	@echo "  lint             Run linters"
@@ -145,4 +145,4 @@ help:
 	@echo "  mocks            Generate mocks"
 	@echo "  help             Show this help message"
 
-.PHONY: all swarmcracker-kit install test lint fmt clean examples release docs race deps integration-test docker-image dev install-tools mocks help
+.PHONY: all swarmcracker install test lint fmt clean examples release docs race deps integration-test docker-image dev install-tools mocks help

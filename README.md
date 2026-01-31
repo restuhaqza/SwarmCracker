@@ -170,26 +170,26 @@ make install
 
 #### CLI Tool Usage
 
-The `swarmcracker-kit` CLI provides a simple interface to run containers as microVMs:
+The `swarmcracker` CLI provides a simple interface to run containers as microVMs:
 
 ```bash
 # Validate configuration
-swarmcracker-kit validate --config /etc/swarmcracker/config.yaml
+swarmcracker validate --config /etc/swarmcracker/config.yaml
 
 # Run a container as a microVM (test mode - validate only)
-swarmcracker-kit run --config /etc/swarmcracker/config.yaml --test nginx:latest
+swarmcracker run --config /etc/swarmcracker/config.yaml --test nginx:latest
 
 # Run with custom resources
-swarmcracker-kit run --vcpus 2 --memory 1024 nginx:latest
+swarmcracker run --vcpus 2 --memory 1024 nginx:latest
 
 # Run in detached mode
-swarmcracker-kit run --detach nginx:latest
+swarmcracker run --detach nginx:latest
 
 # Run with environment variables
-swarmcracker-kit run -e APP_ENV=production -e DEBUG=false nginx:latest
+swarmcracker run -e APP_ENV=production -e DEBUG=false nginx:latest
 
 # Show version
-swarmcracker-kit version
+swarmcracker version
 ```
 
 #### SwarmKit Integration
@@ -262,17 +262,17 @@ See the [Installation Guide](docs/INSTALL.md)
 
 ## 💻 CLI Reference
 
-The `swarmcracker-kit` CLI provides a comprehensive interface for running containers as Firecracker microVMs.
+The `swarmcracker` CLI provides a comprehensive interface for running containers as Firecracker microVMs.
 
 ### Installation
 
 ```bash
 # Build from source
-go build -o swarmcracker-kit ./cmd/swarmcracker-kit/
+go build -o swarmcracker ./cmd/swarmcracker/
 
 # Install to /usr/local/bin
-sudo cp swarmcracker-kit /usr/local/bin/
-sudo chmod +x /usr/local/bin/swarmcracker-kit
+sudo cp swarmcracker /usr/local/bin/
+sudo chmod +x /usr/local/bin/swarmcracker
 ```
 
 ### Available Commands
@@ -283,19 +283,19 @@ Run a container image as an isolated Firecracker microVM.
 
 ```bash
 # Basic usage
-swarmcracker-kit run nginx:latest
+swarmcracker run nginx:latest
 
 # With custom resources
-swarmcracker-kit run --vcpus 2 --memory 1024 nginx:latest
+swarmcracker run --vcpus 2 --memory 1024 nginx:latest
 
 # Run in detached mode (don't wait for completion)
-swarmcracker-kit run --detach nginx:latest
+swarmcracker run --detach nginx:latest
 
 # With environment variables
-swarmcracker-kit run -e APP_ENV=production -e DEBUG=false nginx:latest
+swarmcracker run -e APP_ENV=production -e DEBUG=false nginx:latest
 
 # Test mode (validate without running)
-swarmcracker-kit run --test nginx:latest
+swarmcracker run --test nginx:latest
 ```
 
 **Flags:**
@@ -311,16 +311,16 @@ Deploy microVMs to remote hosts using SSH authentication.
 
 ```bash
 # Deploy to multiple hosts
-swarmcracker-kit deploy nginx:latest --hosts host1.example.com,host2.example.com
+swarmcracker deploy nginx:latest --hosts host1.example.com,host2.example.com
 
 # With custom SSH user
-swarmcracker-kit deploy --user ubuntu nginx:latest --hosts host1.example.com
+swarmcracker deploy --user ubuntu nginx:latest --hosts host1.example.com
 
 # Using specific SSH key
-swarmcracker-kit deploy --ssh-key ~/.ssh/my_key nginx:latest --hosts host1.example.com
+swarmcracker deploy --ssh-key ~/.ssh/my_key nginx:latest --hosts host1.example.com
 
 # Dry run (show what would be done)
-swarmcracker-kit deploy --dry-run nginx:latest --hosts host1,host2
+swarmcracker deploy --dry-run nginx:latest --hosts host1,host2
 ```
 
 **SSH Key Detection:**
@@ -344,10 +344,10 @@ Validate the SwarmCracker configuration file.
 
 ```bash
 # Validate default config
-swarmcracker-kit validate
+swarmcracker validate
 
 # Validate specific config file
-swarmcracker-kit validate --config /etc/swarmcracker/config.yaml
+swarmcracker validate --config /etc/swarmcracker/config.yaml
 ```
 
 #### `version` - Show version information
@@ -355,7 +355,7 @@ swarmcracker-kit validate --config /etc/swarmcracker/config.yaml
 Display detailed version information about the SwarmCracker CLI.
 
 ```bash
-swarmcracker-kit version
+swarmcracker version
 ```
 
 ### Global Flags
@@ -374,40 +374,40 @@ These flags can be used with any command:
 
 ```bash
 # Quick test with validation
-swarmcracker-kit run --test nginx:latest
+swarmcracker run --test nginx:latest
 
 # Run with debug logging
-swarmcracker-kit --log-level debug run nginx:latest
+swarmcracker --log-level debug run nginx:latest
 
 # Run with custom kernel
-swarmcracker-kit --kernel /path/to/vmlinux run nginx:latest
+swarmcracker --kernel /path/to/vmlinux run nginx:latest
 ```
 
 #### Remote Deployment
 
 ```bash
 # Deploy to production hosts
-swarmcracker-kit deploy \
+swarmcracker deploy \
   --hosts web1.example.com,web2.example.com,web3.example.com \
   --user ubuntu \
   --ssh-key ~/.ssh/prod_key \
   nginx:latest
 
 # Preview deployment changes
-swarmcracker-kit deploy --dry-run --hosts host1,host2 nginx:latest
+swarmcracker deploy --dry-run --hosts host1,host2 nginx:latest
 
 # Deploy to custom SSH port
-swarmcracker-kit deploy --port 2222 --hosts host1.example.com nginx:latest
+swarmcracker deploy --port 2222 --hosts host1.example.com nginx:latest
 ```
 
 #### Configuration Override
 
 ```bash
 # Use custom config file
-swarmcracker-kit --config ./test-config.yaml run nginx:latest
+swarmcracker --config ./test-config.yaml run nginx:latest
 
 # Override specific settings
-swarmcracker-kit \
+swarmcracker \
   --kernel /custom/path/vmlinux \
   --rootfs-dir /custom/path/rootfs \
   run nginx:latest
@@ -428,7 +428,7 @@ ssh-copy-id -i ~/.ssh/swarmcracker_deploy.pub user@host.example.com
 ssh -i ~/.ssh/swarmcracker_deploy user@host.example.com
 
 # Now deploy without specifying --ssh-key
-swarmcracker-kit deploy --hosts host1,host2 nginx:latest
+swarmcracker deploy --hosts host1,host2 nginx:latest
 ```
 
 **Security Best Practices:**
