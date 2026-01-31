@@ -23,7 +23,8 @@ SwarmCracker has a comprehensive testing suite to ensure code quality, integrati
 |-----------|---------|----------|---------|
 | **Unit** | `make test` | ~10s | Test functions/methods |
 | **Integration** | `make integration-test` | ~5min | Test with Firecracker |
-| **E2E** | `make e2e-test` | ~1min | Test with Docker Swarm |
+| **E2E (Docker)** | `make e2e-test` | ~1min | Validate Docker Swarm |
+| **E2E (SwarmKit)** | `go test -v ./test/e2e/ -run TestE2E_SwarmKit` | ~10-30min | Test SwarmKit integration |
 | **Testinfra** | `make testinfra` | ~2s | Validate environment |
 
 ## Running Tests
@@ -97,11 +98,15 @@ go test -v -tags=integration ./test/integration/...
 ---
 
 ### 3. E2E Tests
-**Location**: `test/e2e/`
 
-**Purpose**: Test complete workflows with Docker Swarm
+We have **two types** of E2E tests:
 
-**Dependencies**: Docker Swarm, SwarmKit
+#### Docker Swarm E2E Tests
+**Location**: `test/e2e/docker_swarm_test.go`
+
+**Purpose**: Validate Docker Swarm environment
+
+**Dependencies**: Docker Swarm only
 
 **Speed**: Medium (1-2 minutes)
 
@@ -110,7 +115,23 @@ go test -v -tags=integration ./test/integration/...
 go test -v ./test/e2e/ -run TestE2E_DockerSwarmBasic
 ```
 
-**Documentation**: [E2E Testing Guide](e2e.md)
+**Documentation**: [E2E Testing with Docker Swarm](e2e.md)
+
+#### SwarmKit E2E Tests
+**Location**: `test/e2e/swarmkit_test.go`, `test/e2e/scenarios/`
+
+**Purpose**: Test SwarmCracker as SwarmKit executor
+
+**Dependencies**: SwarmKit (swarmd), Firecracker, KVM
+
+**Speed**: Slow (5-30 minutes)
+
+**Example**:
+```bash
+go test -v ./test/e2e/ -run TestE2E_SwarmKit
+```
+
+**Documentation**: [E2E Testing with SwarmKit](e2e_swarmkit.md) ← **Use this for SwarmCracker**
 
 ---
 
