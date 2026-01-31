@@ -97,6 +97,25 @@ integration-test:
 	@echo "Running integration tests..."
 	$(GO) test -v -tags=integration ./test/integration/...
 
+# Run E2E tests
+e2e-test:
+	@echo "Running E2E tests..."
+	$(GO) test -v -timeout=30m ./test/e2e/...
+
+# Run testinfra tests
+testinfra:
+	@echo "Running testinfra checks..."
+	$(GO) test -v ./test/testinfra/...
+
+# Run all tests (unit, integration, e2e)
+test-all: test integration-test testinfra
+	@echo "All test suites completed"
+
+# Quick tests (unit only, skip E2E)
+test-quick:
+	@echo "Running quick tests (unit only)..."
+	$(GO) test -short -v ./pkg/...
+
 # Create docker image
 docker-image:
 	@echo "Building Docker image..."
@@ -131,7 +150,12 @@ help:
 	@echo "  all              Build all binaries"
 	@echo "  swarmcracker     Build main binary"
 	@echo "  install          Install binaries to \$GOPATH/bin"
-	@echo "  test             Run tests"
+	@echo "  test             Run unit tests"
+	@echo "  test-quick       Run quick tests (unit only, skip E2E)"
+	@echo "  test-all         Run all tests (unit, integration, E2E, testinfra)"
+	@echo "  integration-test Run integration tests"
+	@echo "  e2e-test         Run end-to-end tests"
+	@echo "  testinfra        Run infrastructure tests"
 	@echo "  lint             Run linters"
 	@echo "  fmt              Format code"
 	@echo "  clean            Clean build artifacts"
@@ -140,11 +164,10 @@ help:
 	@echo "  docs             Generate documentation"
 	@echo "  race             Run with race detector"
 	@echo "  deps             Download dependencies"
-	@echo "  integration-test Run integration tests"
 	@echo "  docker-image     Build Docker image"
 	@echo "  dev              Start development server with hot reload"
 	@echo "  install-tools    Install development tools"
 	@echo "  mocks            Generate mocks"
 	@echo "  help             Show this help message"
 
-.PHONY: all swarmcracker install test lint fmt clean examples release docs race deps integration-test docker-image dev install-tools mocks help
+.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release docs race deps docker-image dev install-tools mocks help
