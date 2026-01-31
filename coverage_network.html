@@ -1,0 +1,336 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>network: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/restuhaqza/swarmcracker/pkg/network/manager.go (59.7%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">// Package network manages networking for Firecracker VMs.
+package network
+
+import (
+        "context"
+        "fmt"
+        "os/exec"
+        "strings"
+        "sync"
+
+        "github.com/restuhaqza/swarmcracker/pkg/types"
+        "github.com/rs/zerolog/log"
+)
+
+// NetworkManager manages VM networking.
+type NetworkManager struct {
+        config   types.NetworkConfig
+        bridges  map[string]bool
+        mu       sync.RWMutex
+        tapDevices map[string]*TapDevice
+}
+
+// TapDevice represents a TAP device.
+type TapDevice struct {
+        Name    string
+        Bridge  string
+        IP      string
+        Netmask string
+}
+
+// NewNetworkManager creates a new NetworkManager.
+func NewNetworkManager(config types.NetworkConfig) types.NetworkManager <span class="cov8" title="1">{
+        return &amp;NetworkManager{
+                config:      config,
+                bridges:     make(map[string]bool),
+                tapDevices: make(map[string]*TapDevice),
+        }
+}</span>
+
+// PrepareNetwork prepares network interfaces for a task.
+func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) error <span class="cov8" title="1">{
+        log.Info().
+                Str("task_id", task.ID).
+                Int("networks", len(task.Networks)).
+                Msg("Preparing network interfaces")
+
+        // Ensure bridge exists
+        if err := nm.ensureBridge(ctx); err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("failed to ensure bridge: %w", err)
+        }</span>
+
+        // Create TAP device for each network attachment
+        <span class="cov0" title="0">for i, network := range task.Networks </span><span class="cov0" title="0">{
+                tap, err := nm.createTapDevice(ctx, network, i)
+                if err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("failed to create TAP device: %w", err)
+                }</span>
+
+                <span class="cov0" title="0">nm.mu.Lock()
+                nm.tapDevices[task.ID+"-"+tap.Name] = tap
+                nm.mu.Unlock()
+
+                log.Info().
+                        Str("task_id", task.ID).
+                        Str("tap", tap.Name).
+                        Str("bridge", tap.Bridge).
+                        Msg("TAP device created")</span>
+        }
+
+        <span class="cov0" title="0">log.Info().
+                Str("task_id", task.ID).
+                Msg("Network preparation completed")
+
+        return nil</span>
+}
+
+// CleanupNetwork cleans up network interfaces for a task.
+func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) error <span class="cov8" title="1">{
+        log.Info().
+                Str("task_id", task.ID).
+                Msg("Cleaning up network interfaces")
+
+        nm.mu.Lock()
+        defer nm.mu.Unlock()
+
+        // Find and remove all TAP devices for this task
+        for key, tap := range nm.tapDevices </span><span class="cov8" title="1">{
+                if strings.HasPrefix(key, task.ID+"-") </span><span class="cov8" title="1">{
+                        if err := nm.removeTapDevice(tap); err != nil </span><span class="cov8" title="1">{
+                                log.Error().Err(err).
+                                        Str("tap", tap.Name).
+                                        Msg("Failed to remove TAP device")
+                        }</span>
+                        <span class="cov8" title="1">delete(nm.tapDevices, key)</span>
+                }
+        }
+
+        <span class="cov8" title="1">log.Info().
+                Str("task_id", task.ID).
+                Msg("Network cleanup completed")
+
+        return nil</span>
+}
+
+// ensureBridge ensures the bridge exists.
+func (nm *NetworkManager) ensureBridge(ctx context.Context) error <span class="cov8" title="1">{
+        bridgeName := nm.config.BridgeName
+
+        nm.mu.RLock()
+        exists := nm.bridges[bridgeName]
+        nm.mu.RUnlock()
+
+        if exists </span><span class="cov8" title="1">{
+                return nil
+        }</span>
+
+        <span class="cov8" title="1">nm.mu.Lock()
+        defer nm.mu.Unlock()
+
+        // Double-check after acquiring write lock
+        if nm.bridges[bridgeName] </span><span class="cov0" title="0">{
+                return nil
+        }</span>
+
+        // Check if bridge exists
+        <span class="cov8" title="1">if err := exec.Command("ip", "link", "show", bridgeName).Run(); err != nil </span><span class="cov8" title="1">{
+                // Create bridge
+                log.Info().Str("bridge", bridgeName).Msg("Creating bridge")
+
+                cmd := exec.Command("ip", "link", "add", bridgeName, "type", "bridge")
+                if err := cmd.Run(); err != nil </span><span class="cov8" title="1">{
+                        return fmt.Errorf("failed to create bridge: %w", err)
+                }</span>
+
+                // Bring bridge up
+                <span class="cov0" title="0">if err := exec.Command("ip", "link", "set", bridgeName, "up").Run(); err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("failed to bring bridge up: %w", err)
+                }</span>
+        }
+
+        <span class="cov0" title="0">nm.bridges[bridgeName] = true
+        return nil</span>
+}
+
+// createTapDevice creates a TAP device for a network attachment.
+func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.NetworkAttachment, index int) (*TapDevice, error) <span class="cov8" title="1">{
+        // Generate interface ID
+        ifaceID := fmt.Sprintf("eth%d", index)
+        tapName := fmt.Sprintf("tap-%s", ifaceID)
+
+        // Create TAP device
+        if err := exec.Command("ip", "tuntap", "add", tapName, "mode", "tap").Run(); err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("failed to create TAP device: %w", err)
+        }</span>
+
+        // Bring TAP up
+        <span class="cov0" title="0">if err := exec.Command("ip", "link", "set", tapName, "up").Run(); err != nil </span><span class="cov0" title="0">{
+                // Cleanup on failure
+                exec.Command("ip", "link", "delete", tapName).Run()
+                return nil, fmt.Errorf("failed to bring TAP up: %w", err)
+        }</span>
+
+        // Add to bridge
+        <span class="cov0" title="0">bridgeName := nm.config.BridgeName
+        if network.Network.Spec.DriverConfig != nil &amp;&amp;
+           network.Network.Spec.DriverConfig.Bridge != nil &amp;&amp;
+           network.Network.Spec.DriverConfig.Bridge.Name != "" </span><span class="cov0" title="0">{
+                bridgeName = network.Network.Spec.DriverConfig.Bridge.Name
+        }</span>
+
+        <span class="cov0" title="0">if err := exec.Command("ip", "link", "set", tapName, "master", bridgeName).Run(); err != nil </span><span class="cov0" title="0">{
+                // Cleanup on failure
+                exec.Command("ip", "link", "delete", tapName).Run()
+                return nil, fmt.Errorf("failed to add TAP to bridge: %w", err)
+        }</span>
+
+        // Parse IP from network addresses (if provided)
+        <span class="cov0" title="0">var ip string
+        if len(network.Addresses) &gt; 0 </span><span class="cov0" title="0">{
+                ip = strings.Split(network.Addresses[0], "/")[0]
+        }</span>
+
+        <span class="cov0" title="0">tap := &amp;TapDevice{
+                Name:    tapName,
+                Bridge:  bridgeName,
+                IP:      ip,
+                Netmask: "255.255.255.0",
+        }
+
+        return tap, nil</span>
+}
+
+// removeTapDevice removes a TAP device.
+func (nm *NetworkManager) removeTapDevice(tap *TapDevice) error <span class="cov8" title="1">{
+        log.Debug().
+                Str("tap", tap.Name).
+                Msg("Removing TAP device")
+
+        // Bring interface down first
+        exec.Command("ip", "link", "set", tap.Name, "down").Run()
+
+        // Delete TAP device
+        if err := exec.Command("ip", "link", "delete", tap.Name).Run(); err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("failed to delete TAP device: %w", err)
+        }</span>
+
+        <span class="cov0" title="0">return nil</span>
+}
+
+// SetupBridgeIP configures IP address on the bridge (optional).
+func (nm *NetworkManager) SetupBridgeIP(ctx context.Context, ip, netmask string) error <span class="cov8" title="1">{
+        bridgeName := nm.config.BridgeName
+
+        cmd := exec.Command("ip", "addr", "add", ip+netmask, "dev", bridgeName)
+        if err := cmd.Run(); err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("failed to set bridge IP: %w", err)
+        }</span>
+
+        <span class="cov0" title="0">return nil</span>
+}
+
+// ListTapDevices returns a list of active TAP devices.
+func (nm *NetworkManager) ListTapDevices() []*TapDevice <span class="cov8" title="1">{
+        nm.mu.RLock()
+        defer nm.mu.RUnlock()
+
+        devices := make([]*TapDevice, 0, len(nm.tapDevices))
+        for _, tap := range nm.tapDevices </span><span class="cov8" title="1">{
+                devices = append(devices, tap)
+        }</span>
+
+        <span class="cov8" title="1">return devices</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>
