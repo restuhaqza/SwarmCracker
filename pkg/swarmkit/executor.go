@@ -8,29 +8,24 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sync"
-	"syscall"
-	"time"
 
 	"github.com/moby/swarmkit/v2/api"
-	"github.com/moby/swarmkit/v2/agent/exec"
+	swarmkit_exec "github.com/moby/swarmkit/v2/agent/exec"
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
-	"github.com/restuhaqza/swarmcracker/pkg/lifecycle"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
-	"github.com/restuhaqza/swarmcracker/pkg/translator"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	zerolog_log "github.com/rs/zerolog/log"
 )
 
 // Executor implements SwarmKit's executor interface backed by SwarmCracker.
 type Executor struct {
 	config      *Config
-	imagePrep   *image.Preparer
-	networkMgr  *network.NetworkManager
+	imagePrep   types.ImagePreparer
+	networkMgr  types.NetworkManager
 	vmmMgr      *VMMManager
 	controllers map[string]*Controller
 	executorMu  sync.RWMutex
@@ -94,9 +89,9 @@ func NewExecutor(config *Config) (*Executor, error) {
 
 	return &Executor{
 		config:      config,
-		imagePrep:   imagePrep,
-		networkMgr:  networkMgr,
-		vmmMgr:      vmmMgr,
+		imagePrep:  imagePrep,
+		networkMgr: networkMgr,
+		vmmMgr:     vmmMgr,
 		controllers: make(map[string]*Controller),
 	}, nil
 }
@@ -107,13 +102,17 @@ func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
 
 	return &api.NodeDescription{
 		Hostname: hostname(),
-		Resources: &api.ResourceDescription{
+		Resources: &api.Resources{
 			NanoCPUs:    getCPUs(),
 			MemoryBytes: getMemory(),
 			Generic: []*api.GenericResource{
 				{
-					Kind:  "Firecracker",
-					Value: 1,
+					Resource: &api.GenericResource_NamedResourceSpec{
+						NamedResourceSpec: &api.NamedGenericResource{
+							Kind:  "Firecracker",
+							Value: "available",
+						},
+					},
 				},
 			},
 		},
@@ -128,7 +127,7 @@ func (e *Executor) Configure(ctx context.Context, node *api.Node) error {
 }
 
 // Controller returns a controller for the given task.
-func (e *Executor) Controller(t *api.Task) (exec.Controller, error) {
+func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 	e.executorMu.Lock()
 	defer e.executorMu.Unlock()
 
@@ -149,26 +148,26 @@ func (e *Executor) Controller(t *api.Task) (exec.Controller, error) {
 
 // SetNetworkBootstrapKeys sets network encryption keys.
 func (e *Executor) SetNetworkBootstrapKeys(keys []*api.EncryptionKey) error {
-	log.L.Debugf("Setting network bootstrap keys: %d keys", len(keys))
+	zerolog_log.Debug().Msgf("Setting network bootstrap keys: %d keys", len(keys))
 	// TODO: Implement network key management
 	return nil
 }
 
 // Controller implements SwarmKit's controller interface for a single task.
 type Controller struct {
-	task        *api.Task
-	config      *Config
-	imagePrep   types.ImagePreparer
-	networkMgr  types.NetworkManager
-	vmmMgr      types.VMMManager
-	trans       types.TaskTranslator
-	mu          sync.Mutex
-	prepared    bool
-	started     bool
-	process     *os.Process
-	socketPath  string
-	cancel      context.CancelFunc
-	logger      zerolog.Logger
+	task       *api.Task
+	config     *Config
+	imagePrep  types.ImagePreparer
+	networkMgr types.NetworkManager
+	vmmMgr     *VMMManager
+	trans      types.TaskTranslator
+	mu         sync.Mutex
+	prepared   bool
+	started    bool
+	process    *os.Process
+	socketPath string
+	cancel     context.CancelFunc
+	logger     zerolog.Logger
 }
 
 // NewController creates a new task controller.
@@ -177,9 +176,12 @@ func NewController(
 	config *Config,
 	imagePrep types.ImagePreparer,
 	networkMgr types.NetworkManager,
-	vmmMgr types.VMMManager,
+	vmmMgr *VMMManager,
 ) (*Controller, error) {
-	trans := translator.NewTranslator()
+	trans, err := NewTaskTranslator(config.KernelPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create translator: %w", err)
+	}
 
 	return &Controller{
 		task:       task,
@@ -189,7 +191,7 @@ func NewController(
 		vmmMgr:     vmmMgr,
 		trans:      trans,
 		socketPath: filepath.Join(config.SocketDir, task.ID+".sock"),
-		logger:     log.With().Str("task_id", task.ID).Logger(),
+		logger:     zerolog_log.With().Str("task_id", task.ID).Logger(),
 	}, nil
 }
 
@@ -308,7 +310,7 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	return c.vmmMgr.Stop(ctx, task)
 }
 
-// Terminates forcefully terminates the task.
+// Terminate forcefully terminates the task.
 func (c *Controller) Terminate(ctx context.Context) error {
 	c.logger.Info().Msg("Terminating task")
 
@@ -361,16 +363,29 @@ func (c *Controller) Close() error {
 
 // convertTask converts SwarmKit task to internal task type.
 func (c *Controller) convertTask() *types.Task {
+	containerSpec, ok := c.task.Spec.Runtime.(*api.TaskSpec_Container)
+	if !ok || containerSpec.Container == nil {
+		// Return minimal task spec
+		return &types.Task{
+			ID:        c.task.ID,
+			ServiceID: c.task.ServiceID,
+			NodeID:    c.task.NodeID,
+			Spec: types.TaskSpec{
+				Runtime: &types.Container{},
+			},
+		}
+	}
+
 	container := &types.Container{
-		Image:   c.task.Spec.Runtime.(*api.TaskSpec_Container).Container.Image,
-		Command: c.task.Spec.Runtime.(*api.TaskSpec_Container).Container.Command,
-		Args:    c.task.Spec.Runtime.(*api.TaskSpec_Container).Container.Args,
-		Env:     c.task.Spec.Runtime.(*api.TaskSpec_Container).Container.Env,
+		Image:   containerSpec.Container.Image,
+		Command: containerSpec.Container.Command,
+		Args:    containerSpec.Container.Args,
+		Env:     containerSpec.Container.Env,
 	}
 
 	// Convert mounts
 	var mounts []types.Mount
-	for _, m := range c.task.Spec.Runtime.(*api.TaskSpec_Container).Container.Mounts {
+	for _, m := range containerSpec.Container.Mounts {
 		mounts = append(mounts, types.Mount{
 			Target:   m.Target,
 			Source:   m.Source,
