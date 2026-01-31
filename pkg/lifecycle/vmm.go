@@ -87,12 +87,21 @@ func NewVMMManager(config interface{}) types.VMMManager {
 
 // Start starts a VM for the given task.
 func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interface{}) error {
+	if task == nil {
+		return fmt.Errorf("task cannot be nil")
+	}
+
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 
 	log.Info().
 		Str("task_id", task.ID).
 		Msg("Starting VM")
+
+	// Check if VM already exists
+	if _, exists := vm.vms[task.ID]; exists {
+		return fmt.Errorf("VM already exists for task %s", task.ID)
+	}
 
 	socketPath := filepath.Join(vm.socketDir, task.ID+".sock")
 
@@ -105,6 +114,11 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 			return fmt.Errorf("failed to marshal config: %w", err)
 		}
 		configStr = string(configBytes)
+	}
+
+	// Validate config is not empty
+	if strings.TrimSpace(configStr) == "" {
+		return fmt.Errorf("invalid config: empty configuration")
 	}
 
 	// Start Firecracker process
@@ -173,6 +187,10 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 
 // Stop stops a running VM.
 func (vm *VMMManager) Stop(ctx context.Context, task *types.Task) error {
+	if task == nil {
+		return fmt.Errorf("task cannot be nil")
+	}
+
 	vm.mu.RLock()
 	vmInstance, exists := vm.vms[task.ID]
 	vm.mu.RUnlock()
@@ -269,6 +287,10 @@ func (vm *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSt
 
 // Describe describes the current state of a VM.
 func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
+	if task == nil {
+		return nil, fmt.Errorf("task cannot be nil")
+	}
+
 	vm.mu.RLock()
 	vmInstance, exists := vm.vms[task.ID]
 	vm.mu.RUnlock()
@@ -330,6 +352,10 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 
 // Remove removes a VM and cleans up resources.
 func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error {
+	if task == nil {
+		return fmt.Errorf("task cannot be nil")
+	}
+
 	vm.mu.Lock()
 	defer vm.mu.Unlock()
 

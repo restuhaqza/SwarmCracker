@@ -76,6 +76,10 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 
 // CleanupNetwork cleans up network interfaces for a task.
 func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) error {
+	if task == nil {
+		return nil
+	}
+
 	log.Info().
 		Str("task_id", task.ID).
 		Msg("Cleaning up network interfaces")
