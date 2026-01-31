@@ -376,7 +376,7 @@ images:
 
 **Notes:**
 - Stores extracted OCI filesystems
-- Can be cleaned with `swarmcracker-kit cache cleanup`
+- Can be cleaned with `swarmcracker cache cleanup`
 
 ### images.max_cache_size_mb
 
@@ -563,7 +563,7 @@ Configuration is validated on startup:
 
 ```bash
 # Test configuration
-swarmcracker-kit --config /etc/swarmcracker/config.yaml --validate
+swarmcracker --config /etc/swarmcracker/config.yaml --validate
 
 # Expected output if valid:
 # ✓ Configuration is valid

@@ -95,7 +95,7 @@ make install
 #### Verify Installation
 
 ```bash
-swarmcracker-kit --help
+swarmcracker --help
 ```
 
 ### Method 2: Using Docker
@@ -232,13 +232,13 @@ ip link show swarm-br0
 
 ### CLI Tool Usage
 
-The `swarmcracker-kit` CLI provides a simple interface for running and testing:
+The `swarmcracker` CLI provides a simple interface for running and testing:
 
 #### Validate Configuration
 
 ```bash
 # Validate configuration file
-swarmcracker-kit validate --config /etc/swarmcracker/config.yaml
+swarmcracker validate --config /etc/swarmcracker/config.yaml
 
 # Expected output:
 # ✓ Configuration is valid
@@ -254,25 +254,25 @@ swarmcracker-kit validate --config /etc/swarmcracker/config.yaml
 
 ```bash
 # Run a container as a microVM (test mode - validation only)
-swarmcracker-kit run --config /etc/swarmcracker/config.yaml --test nginx:latest
+swarmcracker run --config /etc/swarmcracker/config.yaml --test nginx:latest
 
 # Run with custom resources
-swarmcracker-kit run --vcpus 2 --memory 1024 nginx:latest
+swarmcracker run --vcpus 2 --memory 1024 nginx:latest
 
 # Run in detached mode
-swarmcracker-kit run --detach nginx:latest
+swarmcracker run --detach nginx:latest
 
 # Run with environment variables
-swarmcracker-kit run -e APP_ENV=production -e DEBUG=false nginx:latest
+swarmcracker run -e APP_ENV=production -e DEBUG=false nginx:latest
 
 # Override kernel or rootfs from command line
-swarmcracker-kit run --kernel /custom/path/vmlinux nginx:latest
+swarmcracker run --kernel /custom/path/vmlinux nginx:latest
 ```
 
 #### Show Version
 
 ```bash
-swarmcracker-kit version
+swarmcracker version
 
 # Expected output:
 # SwarmCracker Kit v0.1.0-alpha
@@ -288,10 +288,10 @@ swarmcracker-kit version
 # No SwarmKit required for basic functionality
 
 # Example: Test your setup
-swarmcracker-kit run --test nginx:latest
+swarmcracker run --test nginx:latest
 
 # Example: Run with custom configuration
-swarmcracker-kit run \
+swarmcracker run \
   --config /etc/swarmcracker/config.yaml \
   --vcpus 4 \
   --memory 2048 \
@@ -315,10 +315,10 @@ swarmd \
 
 ```bash
 # Validate configuration
-swarmcracker-kit validate
+swarmcracker validate
 
 # Run in test mode (no actual VM execution)
-swarmcracker-kit run --test nginx:latest
+swarmcracker run --test nginx:latest
 
 # Expected output:
 # [INF] Test mode: validating image reference image=nginx:latest
@@ -329,11 +329,11 @@ swarmcracker-kit run --test nginx:latest
 
 ```bash
 # Run nginx microVM (test mode)
-swarmcracker-kit run --test nginx:latest
+swarmcracker run --test nginx:latest
 
 # Run with full execution (requires Firecracker and proper setup)
 # Note: This will actually start a microVM
-swarmcracker-kit run --detach nginx:latest
+swarmcracker run --detach nginx:latest
 
 # Expected: VM starts, nginx accessible via assigned IP
 ```
@@ -383,7 +383,7 @@ sudo chown -R $(whoami):$(whoami) /var/run/firecracker
 sudo systemctl stop swarmcracker
 
 # Remove binaries
-sudo rm /usr/local/bin/swarmcracker-kit
+sudo rm /usr/local/bin/swarmcracker
 sudo rm /usr/local/bin/firecracker
 
 # Remove directories

@@ -248,6 +248,7 @@ See the [Installation Guide](docs/INSTALL.md)
 
 | Document | Description |
 |----------|-------------|
+| [🤖 Agent Guide](AGENTS.md) | Project setup, architecture, and workflows for AI agents and contributors |
 | [🧪 Testing Guide](docs/TESTING.md) | How to run and write tests |
 | [💻 Development Guide](docs/DEVELOPMENT.md) | Contributing, workflow, and best practices |
 | [📝 Project Status](PROJECT.md) | Progress tracking and roadmap |

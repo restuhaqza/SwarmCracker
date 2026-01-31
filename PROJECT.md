@@ -65,7 +65,7 @@ SwarmCracker Executor ← WE ARE HERE
 | `pkg/image` | ✅ Complete | 0% (pending) | OCI → rootfs conversion with caching |
 | `pkg/network` | ✅ Complete | 9.1% | TAP/bridge network management |
 | `test/mocks` | ✅ Complete | N/A | Mock implementations for testing |
-| `cmd/swarmcracker-kit` | ⏳ Stub | N/A | CLI tool (needs implementation) |
+| `cmd/swarmcracker` | ⏳ Stub | N/A | CLI tool (needs implementation) |
 
 ---
 
@@ -79,7 +79,7 @@ SwarmCracker Executor ← WE ARE HERE
 5. **[IN PROGRESS]** Complete image preparer tests
 
 ### Short-term (Next 2 Weeks)
-1. **[PENDING]** Implement `swarmcracker-kit` CLI tool
+1. **[PENDING]** Implement `swarmcracker` CLI tool
 2. **[PENDING]** End-to-end integration tests with real Firecracker
 3. **[PENDING]** Integration with SwarmKit agent
 4. **[PENDING]** Improve test coverage for network and lifecycle packages

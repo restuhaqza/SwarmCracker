@@ -34,7 +34,7 @@ make test
 ```
 swarmcracker/
 ├── cmd/                    # CLI applications
-│   └── swarmcracker-kit/   # Main CLI tool
+│   └── swarmcracker/   # Main CLI tool
 ├── pkg/                    # Public packages
 │   ├── executor/          # Executor implementation
 │   ├── translator/        # Task → VM config
@@ -100,7 +100,7 @@ make fmt
 make build
 
 # Test build
-./build/swarmcracker-kit --help
+./build/swarmcracker --help
 ```
 
 ### 6. Commit Changes
@@ -392,7 +392,7 @@ export SWARMCRACKER_LOG_LEVEL=debug
 
 ```bash
 # Delve debugger
-dlv debug ./cmd/swarmcracker-kit/main.go -- --config config.yaml
+dlv debug ./cmd/swarmcracker/main.go -- --config config.yaml
 
 # Set breakpoints
 (dlv) break main.main
