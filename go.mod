@@ -1,6 +1,8 @@
 module github.com/restuhaqza/swarmcracker
 
-go 1.21
+go 1.24.0
+
+toolchain go1.24.9
 
 require (
 	github.com/rs/zerolog v1.33.0
@@ -16,5 +18,6 @@ require (
 	github.com/spf13/cobra v1.10.2 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	golang.org/x/sys v0.12.0 // indirect
+	golang.org/x/crypto v0.47.0 // indirect
+	golang.org/x/sys v0.40.0 // indirect
 )

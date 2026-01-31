@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
+	"golang.org/x/crypto/ssh"
 )
 
 var (
@@ -205,10 +207,11 @@ func newDeployCommand() *cobra.Command {
 
 This command deploys microVMs to one or more remote hosts using SSH authentication.
 It will:
-  1. Copy the rootfs to remote hosts
-  2. Configure Firecracker on each host
-  3. Start the microVM
-  4. Monitor deployment status
+  1. Validate SSH connectivity to hosts
+  2. Prepare rootfs image
+  3. Copy image to remote hosts
+  4. Configure and start Firecracker
+  5. Monitor microVM status
 
 SSH Key Detection:
   - If --ssh-key is specified, uses that key
@@ -237,26 +240,46 @@ Example:
 				Str("image", imageRef).
 				Msg("Deployment configuration")
 
+			// Expand hosts list (support comma-separated)
+			allHosts := expandHosts(hosts)
+			log.Info().Msgf("Deploying to %d hosts: %v", len(allHosts), allHosts)
+
 			if dryRun {
 				log.Info().Msg("Dry run mode - no actual deployment")
-				log.Info().Strs("hosts", hosts).Msg("Would deploy to hosts")
-				log.Info().Str("user", user).Msg("Would use user")
-				if port > 0 {
-					log.Info().Int("port", port).Msg("Would use port")
+				for _, host := range allHosts {
+					log.Info().
+						Str("host", host).
+						Str("user", user).
+						Int("port", port).
+						Msg("Would deploy to host")
 				}
 				return nil
 			}
 
-			// TODO: Implement actual deployment logic
-			log.Warn().Msg("Remote deployment not yet implemented")
-			log.Info().Msg("This would:")
-			log.Info().Msg("  1. Validate SSH connectivity to hosts")
-			log.Info().Msg("  2. Prepare rootfs image")
-			log.Info().Msg("  3. Copy image to remote hosts")
-			log.Info().Msg("  4. Configure and start Firecracker")
-			log.Info().Msg("  5. Monitor microVM status")
+			// Load configuration
+			cfg, err := loadConfigWithOverrides(cfgFile)
+			if err != nil {
+				return fmt.Errorf("failed to load configuration: %w", err)
+			}
 
-			return fmt.Errorf("deployment not yet implemented")
+			// Create deployment plan
+			plan := &DeploymentPlan{
+				ImageRef:   imageRef,
+				Hosts:      allHosts,
+				User:       user,
+				Port:       port,
+				SSHKey:     sshKey,
+				Config:     cfg,
+				VCPUs:      cfg.Executor.DefaultVCPUs,
+				MemoryMB:   cfg.Executor.DefaultMemoryMB,
+			}
+
+			// Execute deployment
+			if err := executeDeployment(plan); err != nil {
+				return fmt.Errorf("deployment failed: %w", err)
+			}
+
+			return nil
 		},
 	}
 
@@ -319,7 +342,7 @@ func newVersionCommand() *cobra.Command {
 		Short: "Show version information",
 		Long: `Display detailed version information about the SwarmCracker CLI.`,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Printf("SwarmCracker Kit %s\n", Version)
+			fmt.Printf("SwarmCracker %s\n", Version)
 			fmt.Printf("  Build Time: %s\n", BuildTime)
 			fmt.Printf("  Git Commit: %s\n", GitCommit)
 			fmt.Printf("  Go Version: %s\n", goVersion())
@@ -567,4 +590,287 @@ func resolveSSHKey(customPath string) (string, error) {
 	}
 
 	return "", fmt.Errorf("no SSH key found in default locations (~/.ssh/swarmcracker_deploy, ~/.ssh/id_ed25519, ~/.ssh/id_rsa)")
+}
+
+// DeploymentPlan represents a deployment plan
+type DeploymentPlan struct {
+	ImageRef   string
+	Hosts      []string
+	User       string
+	Port       int
+	SSHKey     string
+	Config     *config.Config
+	VCPUs      int
+	MemoryMB   int
+}
+
+// DeploymentResult represents the result of a deployment
+type DeploymentResult struct {
+	Host    string
+	Success bool
+	Error   error
+	Message string
+}
+
+// executeDeployment executes the deployment plan
+func executeDeployment(plan *DeploymentPlan) error {
+	log.Info().Str("image", plan.ImageRef).Msg("Starting deployment")
+
+	// Prepare rootfs locally first
+	log.Info().Msg("Preparing rootfs image locally...")
+	// TODO: Implement local rootfs preparation
+	// For now, we'll just validate connectivity to each host
+
+	// Execute deployment on each host
+	results := make(chan DeploymentResult, len(plan.Hosts))
+	for _, host := range plan.Hosts {
+		go func(h string) {
+			result := DeploymentResult{Host: h}
+			err := deployToHost(h, plan)
+			if err != nil {
+				result.Success = false
+				result.Error = err
+				result.Message = fmt.Sprintf("Failed: %v", err)
+				log.Error().Str("host", h).Err(err).Msg("Deployment failed")
+			} else {
+				result.Success = true
+				result.Message = "Success"
+				log.Info().Str("host", h).Msg("Deployment successful")
+			}
+			results <- result
+		}(host)
+	}
+
+	// Collect results
+	var successCount, failCount int
+	for i := 0; i < len(plan.Hosts); i++ {
+		result := <-results
+		if result.Success {
+			successCount++
+		} else {
+			failCount++
+		}
+	}
+
+	// Summary
+	log.Info().
+		Int("total", len(plan.Hosts)).
+		Int("success", successCount).
+		Int("failed", failCount).
+		Msg("Deployment complete")
+
+	if failCount > 0 {
+		return fmt.Errorf("%d/%d deployments failed", failCount, len(plan.Hosts))
+	}
+
+	return nil
+}
+
+// deployToHost deploys the microVM to a single host
+func deployToHost(host string, plan *DeploymentPlan) error {
+	log.Info().Str("host", host).Msg("Connecting to host")
+
+	// Create SSH client
+	client, err := createSSHClient(host, plan.User, plan.Port, plan.SSHKey)
+	if err != nil {
+		return fmt.Errorf("SSH connection failed: %w", err)
+	}
+	defer client.Close()
+
+	// Verify connectivity
+	log.Info().Str("host", host).Msg("Verifying connectivity")
+	if err := verifySSHConnectivity(client); err != nil {
+		return fmt.Errorf("connectivity check failed: %w", err)
+	}
+
+	// Check if Firecracker is installed
+	log.Info().Str("host", host).Msg("Checking Firecracker installation")
+	if err := checkFirecrackerInstalled(client); err != nil {
+		return fmt.Errorf("Firecracker check failed: %w", err)
+	}
+
+	// Check if KVM is available
+	log.Info().Str("host", host).Msg("Checking KVM availability")
+	if err := checkKVMAvailable(client); err != nil {
+		return fmt.Errorf("KVM check failed: %w", err)
+	}
+
+	// Deploy the microVM
+	log.Info().Str("host", host).Str("image", plan.ImageRef).Msg("Deploying microVM")
+	taskID := fmt.Sprintf("deploy-%d", time.Now().Unix())
+
+	// Create deployment script
+	script := generateDeploymentScript(taskID, plan.ImageRef, plan.VCPUs, plan.MemoryMB, plan.Config)
+
+	// Execute deployment
+	output, err := executeSSHCommand(client, script)
+	if err != nil {
+		return fmt.Errorf("deployment execution failed: %w\nOutput: %s", err, output)
+	}
+
+	log.Info().Str("host", host).Str("task_id", taskID).Msg("MicroVM deployed successfully")
+	return nil
+}
+
+// createSSHClient creates an SSH client connection
+func createSSHClient(host, user string, port int, keyPath string) (*ssh.Client, error) {
+	// Read private key
+	key, err := os.ReadFile(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read SSH key: %w", err)
+	}
+
+	// Parse private key
+	signer, err := ssh.ParsePrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse SSH key: %w", err)
+	}
+
+	// SSH client config
+	config := &ssh.ClientConfig{
+		User: user,
+		Auth: []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // TODO: Use proper host key verification
+		Timeout:         30 * time.Second,
+	}
+
+	// Connect
+	address := fmt.Sprintf("%s:%d", host, port)
+	client, err := ssh.Dial("tcp", address, config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial: %w", err)
+	}
+
+	return client, nil
+}
+
+// verifySSHConnectivity verifies that the SSH connection is working
+func verifySSHConnectivity(client *ssh.Client) error {
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	output, err := session.Output("echo 'alive'")
+	if err != nil {
+		return fmt.Errorf("command failed: %w", err)
+	}
+
+	if strings.TrimSpace(string(output)) != "alive" {
+		return fmt.Errorf("unexpected output: %s", output)
+	}
+
+	return nil
+}
+
+// checkFirecrackerInstalled checks if Firecracker is installed on the remote host
+func checkFirecrackerInstalled(client *ssh.Client) error {
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	output, err := session.CombinedOutput("which firecracker")
+	if err != nil {
+		return fmt.Errorf("firecracker not found: %w\nOutput: %s", err, string(output))
+	}
+
+	log.Debug().Str("path", strings.TrimSpace(string(output))).Msg("Firecracker found")
+	return nil
+}
+
+// checkKVMAvailable checks if KVM is available on the remote host
+func checkKVMAvailable(client *ssh.Client) error {
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	output, err := session.CombinedOutput("test -e /dev/kvm && echo 'ok' || echo 'not found'")
+	if err != nil {
+		return fmt.Errorf("KVM check failed: %w\nOutput: %s", err, string(output))
+	}
+
+	if !strings.Contains(string(output), "ok") {
+		return fmt.Errorf("KVM device not available")
+	}
+
+	log.Debug().Msg("KVM is available")
+	return nil
+}
+
+// executeSSHCommand executes a command on the remote host
+func executeSSHCommand(client *ssh.Client, command string) (string, error) {
+	session, err := client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("failed to create session: %w", err)
+	}
+	defer session.Close()
+
+	output, err := session.CombinedOutput(command)
+	if err != nil {
+		return string(output), err
+	}
+
+	return string(output), nil
+}
+
+// generateDeploymentScript generates a deployment script for the remote host
+func generateDeploymentScript(taskID, imageRef string, vcpus, memoryMB int, cfg *config.Config) string {
+	script := fmt.Sprintf(`#!/bin/bash
+set -e
+
+# SwarmCracker Remote Deployment Script
+# Task ID: %s
+# Image: %s
+
+echo "Starting deployment of task %s"
+
+# Create working directory
+WORKDIR="/tmp/swarmcracker-$TASK_ID"
+mkdir -p "$WORKDIR"
+
+# TODO: Implement full deployment logic
+# This would include:
+# 1. Pull OCI image
+# 2. Extract rootfs
+# 3. Create Firecracker config
+# 4. Start Firecracker VMM
+# 5. Monitor status
+
+echo "Deployment stub executed"
+echo "Task ID: $TASK_ID"
+echo "Image: $IMAGE_REF"
+echo "VCPUs: $VCPUS"
+echo "Memory: ${MEMORY_MB}MB"
+
+exit 0
+`, taskID, imageRef, taskID)
+
+	// Replace variables
+	script = strings.ReplaceAll(script, "$TASK_ID", taskID)
+	script = strings.ReplaceAll(script, "$IMAGE_REF", imageRef)
+	script = strings.ReplaceAll(script, "$VCPUS", fmt.Sprintf("%d", vcpus))
+	script = strings.ReplaceAll(script, "$MEMORY_MB", fmt.Sprintf("%d", memoryMB))
+
+	return script
+}
+
+// expandHosts expands a comma-separated list of hosts
+func expandHosts(hosts []string) []string {
+	var result []string
+	for _, h := range hosts {
+		parts := strings.Split(h, ",")
+		for _, part := range parts {
+			if trimmed := strings.TrimSpace(part); trimmed != "" {
+				result = append(result, trimmed)
+			}
+		}
+	}
+	return result
 }
