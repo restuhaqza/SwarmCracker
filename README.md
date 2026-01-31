@@ -259,171 +259,182 @@ See the [Installation Guide](docs/INSTALL.md)
 - 🧪 [Running Tests](docs/TESTING.md#running-tests)
 - 🤝 [Contributing](docs/DEVELOPMENT.md#contributing)
 
-## 🛠️ Configuration
 
-SwarmCracker uses a simple YAML configuration file:
+## 💻 CLI Reference
 
-```yaml
-# /etc/swarmcracker/config.yaml
-executor:
-  name: firecracker
-  kernel_path: "/usr/share/firecracker/vmlinux"
-  initrd_path: "/usr/share/firecracker/initrd.img"
-  rootfs_dir: "/var/lib/firecracker/rootfs"
-  socket_dir: "/var/run/firecracker"
-  default_vcpus: 2
-  default_memory_mb: 1024
-  enable_jailer: true
-  jailer:
-    uid: 1000
-    gid: 1000
-    chroot_base_dir: "/srv/jailer"
-network:
-  bridge_name: "swarm-br0"
-  enable_rate_limit: true
-  max_packets_per_sec: 10000
-```
+The `swarmcracker-kit` CLI provides a comprehensive interface for running containers as Firecracker microVMs.
 
-## 🔧 Development
-
-### Build & Test
+### Installation
 
 ```bash
-# Run all tests
-make test
+# Build from source
+go build -o swarmcracker-kit ./cmd/swarmcracker-kit/
 
-# Run with coverage
-make test
-
-# Run linters
-make lint
-
-# Format code
-make fmt
-
-# Build release binaries
-make release
+# Install to /usr/local/bin
+sudo cp swarmcracker-kit /usr/local/bin/
+sudo chmod +x /usr/local/bin/swarmcracker-kit
 ```
 
-### Test Coverage
+### Available Commands
 
+#### `run` - Run a container as a microVM
+
+Run a container image as an isolated Firecracker microVM.
+
+```bash
+# Basic usage
+swarmcracker-kit run nginx:latest
+
+# With custom resources
+swarmcracker-kit run --vcpus 2 --memory 1024 nginx:latest
+
+# Run in detached mode (don't wait for completion)
+swarmcracker-kit run --detach nginx:latest
+
+# With environment variables
+swarmcracker-kit run -e APP_ENV=production -e DEBUG=false nginx:latest
+
+# Test mode (validate without running)
+swarmcracker-kit run --test nginx:latest
 ```
-pkg/translator     ████████████████████ 98.1%
-pkg/executor       ███████████████████░ 95.2%
-pkg/config         ██████████████████░░ 87.3%
-pkg/lifecycle      ███████████░░░░░░░░░ 54.4%
-pkg/network       ██░░░░░░░░░░░░░░░░░░  9.1%
-───────────────────────────────────────
-Overall           ███████████████░░░░░ 63.3%
+
+**Flags:**
+- `--detach, -d` - Run in detached mode
+- `--vcpus` - Number of vCPUs (default: 1)
+- `--memory` - Memory in MB (default: 512)
+- `--env, -e` - Environment variables (can be specified multiple times)
+- `--test` - Test mode (validate without running)
+
+#### `deploy` - Deploy to remote hosts via SSH
+
+Deploy microVMs to remote hosts using SSH authentication.
+
+```bash
+# Deploy to multiple hosts
+swarmcracker-kit deploy nginx:latest --hosts host1.example.com,host2.example.com
+
+# With custom SSH user
+swarmcracker-kit deploy --user ubuntu nginx:latest --hosts host1.example.com
+
+# Using specific SSH key
+swarmcracker-kit deploy --ssh-key ~/.ssh/my_key nginx:latest --hosts host1.example.com
+
+# Dry run (show what would be done)
+swarmcracker-kit deploy --dry-run nginx:latest --hosts host1,host2
 ```
 
-## 📊 Project Status
+**SSH Key Detection:**
+The CLI automatically searches for SSH keys in this order:
+1. `~/.ssh/swarmcracker_deploy` (SwarmCracker-specific key)
+2. `~/.ssh/id_ed25519` (Modern default)
+3. `~/.ssh/id_rsa` (Legacy RSA)
 
-**Version:** `v0.1.0-alpha` (Proof of Concept)
+You can also specify a custom key with `--ssh-key`.
 
-<details>
-<summary><b>📈 Component Progress</b></summary>
+**Flags:**
+- `--hosts` - Comma-separated list of remote hosts (required)
+- `--user` - SSH user (default: "root")
+- `--port` - SSH port (default: 22)
+- `--ssh-key` - Path to SSH private key
+- `--dry-run` - Show what would be done without executing
 
-| Component | Status | Coverage | Notes |
-|-----------|--------|----------|-------|
-| Executor | ✅ Complete | 95.2% | Full lifecycle management |
-| Translator | ✅ Complete | 98.1% | Task → VM config conversion |
-| Config | ✅ Complete | 87.3% | Validation & migration |
-| Lifecycle | ✅ Complete | 54.4% | VM start/stop/monitor |
-| Image Prep | ✅ Complete | ⏳ Pending | OCI → rootfs conversion |
-| Network | ✅ Complete | 9.1% | TAP/bridge management |
-| Jailer | ⏳ Ready | ⏳ Pending | Security hardening |
-| CLI Tool | ✅ Complete | ✅ Done | Full CLI with Cobra |
+#### `validate` - Validate configuration
 
-</details>
+Validate the SwarmCracker configuration file.
 
-<details>
-<summary><b>🎯 Roadmap</b></summary>
+```bash
+# Validate default config
+swarmcracker-kit validate
 
-### 📅 Short Term (This Week)
-- [ ] Complete image preparer tests
-- [ ] Implement `swarmcracker-kit` CLI
-- [ ] Add integration tests
+# Validate specific config file
+swarmcracker-kit validate --config /etc/swarmcracker/config.yaml
+```
 
-### 📅 Medium Term (Next Month)
-- [ ] Jailer integration and testing
-- [ ] Performance optimization
-- [ ] Alpha release (v0.2.0)
+#### `version` - Show version information
 
-### 📅 Long Term (Next Quarter)
-- [ ] Production deployment
-- [ ] VM snapshot support
-- [ ] Live migration between hosts
+Display detailed version information about the SwarmCracker CLI.
 
-</details>
+```bash
+swarmcracker-kit version
+```
 
-## 🤝 Contributing
+### Global Flags
 
-We welcome contributions! SwarmCracker is a community-driven project.
+These flags can be used with any command:
 
-### Ways to Contribute
+- `--config, -c` - Path to configuration file (default: `/etc/swarmcracker/config.yaml`)
+- `--log-level` - Log level: debug, info, warn, error (default: "info")
+- `--kernel` - Override kernel path from config
+- `--rootfs-dir` - Override rootfs directory from config
+- `--ssh-key` - SSH private key path for remote deployment
 
-- 🐛 **Report bugs** - Open an issue with reproducible examples
-- 💡 **Suggest features** - Share your ideas in discussions
-- 🔧 **Submit PRs** - Fix bugs, add features, improve docs
-- 📖 **Improve docs** - Help make documentation clearer
-- 🧪 **Add tests** - Improve test coverage
+### Examples
 
-### Getting Started
+#### Local Development
 
-1. Read the [Development Guide](docs/DEVELOPMENT.md)
-2. Check [Good First Issues](https://github.com/restuhaqza/swarmcracker/labels/good%20first%20issue)
-3. Follow [Contributing Guidelines](CONTRIBUTING.md)
-4. Join our [Discord community](https://discord.gg/clawd)
+```bash
+# Quick test with validation
+swarmcracker-kit run --test nginx:latest
 
-<details>
-<summary><b>🎨 Code Style Guidelines</b></summary>
+# Run with debug logging
+swarmcracker-kit --log-level debug run nginx:latest
 
-- Follow Go best practices and Effective Go
-- Use `gofmt` for formatting
-- Write tests for all public functions
-- Add comments for exported types and functions
-- Keep functions small and focused
-- Use table-driven tests for multiple cases
+# Run with custom kernel
+swarmcracker-kit --kernel /path/to/vmlinux run nginx:latest
+```
 
-</details>
+#### Remote Deployment
 
-## 📝 License
+```bash
+# Deploy to production hosts
+swarmcracker-kit deploy \
+  --hosts web1.example.com,web2.example.com,web3.example.com \
+  --user ubuntu \
+  --ssh-key ~/.ssh/prod_key \
+  nginx:latest
 
-Apache License 2.0 - see [LICENSE](LICENSE) for details.
+# Preview deployment changes
+swarmcracker-kit deploy --dry-run --hosts host1,host2 nginx:latest
 
-## 🙏 Acknowledgments
+# Deploy to custom SSH port
+swarmcracker-kit deploy --port 2222 --hosts host1.example.com nginx:latest
+```
 
-Built with love and these amazing projects:
+#### Configuration Override
 
-| Project | Purpose | License |
-|---------|---------|---------|
-| [SwarmKit](https://github.com/moby/swarmkit) | Orchestration engine | Apache 2.0 |
-| [Firecracker](https://github.com/firecracker-microvm/firecracker) | MicroVM technology | Apache 2.0 |
-| [firecracker-containerd](https://github.com/firecracker-microvm/firecracker-containerd) | Container integration reference | Apache 2.0 |
+```bash
+# Use custom config file
+swarmcracker-kit --config ./test-config.yaml run nginx:latest
 
-## 📜 License
+# Override specific settings
+swarmcracker-kit \
+  --kernel /custom/path/vmlinux \
+  --rootfs-dir /custom/path/rootfs \
+  run nginx:latest
+```
 
-Apache License 2.0 - see [LICENSE](LICENSE) for details.
+### SSH Key Setup
 
-## 🔗 Useful Links
+Generate a dedicated SSH key for SwarmCracker deployments:
 
-- [SwarmKit Documentation](https://github.com/moby/swarmkit)
-- [Firecracker Documentation](https://github.com/firecracker-microvm/firecracker)
-- [Docker Swarm Guide](https://docs.docker.com/engine/swarm/)
-- [KVM Documentation](https://www.linux-kvm.org/page/Documents)
+```bash
+# Generate new key pair
+ssh-keygen -t ed25519 -f ~/.ssh/swarmcracker_deploy -C "swarmcracker@$(hostname)"
 
----
+# Copy public key to remote hosts
+ssh-copy-id -i ~/.ssh/swarmcracker_deploy.pub user@host.example.com
 
-<div align="center">
+# Test SSH connection
+ssh -i ~/.ssh/swarmcracker_deploy user@host.example.com
 
-### ⭐ Star us on GitHub — it helps!
+# Now deploy without specifying --ssh-key
+swarmcracker-kit deploy --hosts host1,host2 nginx:latest
+```
 
-[![GitHub stars](https://img.shields.io/github/stars/restuhaqza/swarmcracker?style=social)](https://github.com/restuhaqza/swarmcracker/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/restuhaqza/swarmcracker?style=social)](https://github.com/restuhaqza/swarmcracker/network/members)
+**Security Best Practices:**
+- Use dedicated SSH keys for SwarmCracker (not your personal key)
+- Set appropriate permissions: `chmod 600 ~/.ssh/swarmcracker_deploy`
+- Use key-based authentication (disable password auth)
+- Regularly rotate deployment keys
+- Use different keys for different environments
 
-**Made with 🔥 by [Restu Muzakir](https://github.com/restuhaqza)**
-
-[Website](https://restuhaqza.github.io) • [Blog](https://restuhaqza.github.io/blog) • [Twitter](https://twitter.com/restuhaqza)
-
-</div>

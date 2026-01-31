@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -35,6 +36,7 @@ var (
 	logLevel    string
 	kernelPath  string
 	rootfsDir   string
+	sshKeyPath  string
 )
 
 func main() {
@@ -55,9 +57,11 @@ It provides a simple interface to the SwarmCracker executor, allowing you to:
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
 	rootCmd.PersistentFlags().StringVar(&kernelPath, "kernel", "", "Override kernel path")
 	rootCmd.PersistentFlags().StringVar(&rootfsDir, "rootfs-dir", "", "Override rootfs directory")
+	rootCmd.PersistentFlags().StringVar(&sshKeyPath, "ssh-key", "", "SSH private key path for remote deployment (default: ~/.ssh/swarmcracker_deploy)")
 
 	// Add subcommands
 	rootCmd.AddCommand(newRunCommand())
+	rootCmd.AddCommand(newDeployCommand())
 	rootCmd.AddCommand(newValidateCommand())
 	rootCmd.AddCommand(newVersionCommand())
 
@@ -181,6 +185,87 @@ Example:
 	cmd.Flags().IntVar(&memory, "memory", 512, "Memory in MB to allocate")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", []string{}, "Environment variables (e.g., -e KEY=value)")
 	cmd.Flags().BoolVar(&testMode, "test", false, "Test mode (validate without running)")
+
+	return cmd
+}
+
+// newDeployCommand creates the deploy command
+func newDeployCommand() *cobra.Command {
+	var (
+		hosts    []string
+		user     string
+		port     int
+		dryRun   bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "deploy <image>",
+		Short: "Deploy container as microVM to remote hosts",
+		Long: `Deploy a container image as an isolated Firecracker microVM to remote hosts via SSH.
+
+This command deploys microVMs to one or more remote hosts using SSH authentication.
+It will:
+  1. Copy the rootfs to remote hosts
+  2. Configure Firecracker on each host
+  3. Start the microVM
+  4. Monitor deployment status
+
+SSH Key Detection:
+  - If --ssh-key is specified, uses that key
+  - Otherwise checks ~/.ssh/swarmcracker_deploy
+  - Falls back to ~/.ssh/id_ed25519 or ~/.ssh/id_rsa
+
+Example:
+  swarmcracker-kit deploy nginx:latest --hosts host1.example.com,host2.example.com
+  swarmcracker-kit deploy --user ubuntu --ssh-key ~/.ssh/my_key nginx:latest
+  swarmcracker-kit deploy --dry-run nginx:latest`,
+		Args: cobra.ExactArgs(1),
+		PreRun: func(cmd *cobra.Command, args []string) {
+			setupLogging(logLevel)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			imageRef := args[0]
+
+			// Resolve SSH key path
+			sshKey, err := resolveSSHKey(sshKeyPath)
+			if err != nil {
+				return fmt.Errorf("failed to resolve SSH key: %w", err)
+			}
+
+			log.Info().
+				Str("ssh_key", sshKey).
+				Str("image", imageRef).
+				Msg("Deployment configuration")
+
+			if dryRun {
+				log.Info().Msg("Dry run mode - no actual deployment")
+				log.Info().Strs("hosts", hosts).Msg("Would deploy to hosts")
+				log.Info().Str("user", user).Msg("Would use user")
+				if port > 0 {
+					log.Info().Int("port", port).Msg("Would use port")
+				}
+				return nil
+			}
+
+			// TODO: Implement actual deployment logic
+			log.Warn().Msg("Remote deployment not yet implemented")
+			log.Info().Msg("This would:")
+			log.Info().Msg("  1. Validate SSH connectivity to hosts")
+			log.Info().Msg("  2. Prepare rootfs image")
+			log.Info().Msg("  3. Copy image to remote hosts")
+			log.Info().Msg("  4. Configure and start Firecracker")
+			log.Info().Msg("  5. Monitor microVM status")
+
+			return fmt.Errorf("deployment not yet implemented")
+		},
+	}
+
+	cmd.Flags().StringSliceVar(&hosts, "hosts", []string{}, "Comma-separated list of remote hosts")
+	cmd.Flags().StringVar(&user, "user", "root", "SSH user for remote connections")
+	cmd.Flags().IntVar(&port, "port", 22, "SSH port")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be done without executing")
+
+	cmd.MarkFlagRequired("hosts")
 
 	return cmd
 }
@@ -446,4 +531,40 @@ func taskStateString(state types.TaskState) string {
 	default:
 		return "UNKNOWN"
 	}
+}
+
+// resolveSSHKey resolves the SSH key path using default locations
+func resolveSSHKey(customPath string) (string, error) {
+	// If custom path provided, use it
+	if customPath != "" {
+		if _, err := os.Stat(customPath); err != nil {
+			return "", fmt.Errorf("SSH key not found: %s", customPath)
+		}
+		return customPath, nil
+	}
+
+	// Try default keys in order
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to determine home directory: %w", err)
+	}
+
+	defaultKeys := []string{
+		"swarmcracker_deploy",  // SwarmCracker-specific key
+		"id_ed25519",           // Modern default
+		"id_rsa",               // Legacy RSA
+	}
+
+	for _, keyName := range defaultKeys {
+		keyPath := filepath.Join(homeDir, ".ssh", keyName)
+		if info, err := os.Stat(keyPath); err == nil {
+			// Check it's actually a file and not empty
+			if !info.IsDir() && info.Size() > 0 {
+				log.Info().Str("key", keyPath).Msg("Using SSH key")
+				return keyPath, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no SSH key found in default locations (~/.ssh/swarmcracker_deploy, ~/.ssh/id_ed25519, ~/.ssh/id_rsa)")
 }
