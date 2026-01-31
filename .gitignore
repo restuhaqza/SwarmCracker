@@ -55,3 +55,4 @@ coverage.html
 # Air live reload
 .air.toml
 /swarmcracker-agent
+pkg/image/fs.tar
