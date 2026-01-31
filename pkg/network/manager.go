@@ -127,7 +127,7 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 		// Create bridge
 		log.Info().Str("bridge", bridgeName).Msg("Creating bridge")
 
-		cmd := exec.Command("ip", "link", "add", "bridgeName", "type", "bridge")
+		cmd := exec.Command("ip", "link", "add", bridgeName, "type", "bridge")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to create bridge: %w", err)
 		}

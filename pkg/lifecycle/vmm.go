@@ -298,8 +298,27 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 		}, nil
 	}
 
+	// Map VM state to Task state
+	var taskState types.TaskState
+	switch vmInstance.State {
+	case VMStateNew:
+		taskState = types.TaskState_NEW
+	case VMStateStarting:
+		taskState = types.TaskState_STARTING
+	case VMStateRunning:
+		taskState = types.TaskState_RUNNING
+	case VMStateStopping:
+		taskState = types.TaskState_STARTING // Still in transition
+	case VMStateStopped:
+		taskState = types.TaskState_COMPLETE
+	case VMStateCrashed:
+		taskState = types.TaskState_FAILED
+	default:
+		taskState = types.TaskState_RUNNING // Default to running for safety
+	}
+
 	return &types.TaskStatus{
-		State: types.TaskState_RUNNING,
+		State: taskState,
 		RuntimeStatus: map[string]interface{}{
 			"vm_id":   vmInstance.ID,
 			"pid":     vmInstance.PID,

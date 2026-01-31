@@ -417,12 +417,19 @@ func TestNetworkManager_ensureBridge_Concurrent(t *testing.T) {
 		_ = err // Expected errors without root
 	}
 
-	// Verify bridge is marked
+	// If all goroutines failed (no root), bridge won't be marked
+	// If at least one succeeded, bridge should be marked
 	nm.mu.RLock()
 	exists := nm.bridges["br0"]
 	nm.mu.RUnlock()
 
-	assert.True(t, exists, "Bridge should be marked as existing")
+	if errorCount == numGoroutines {
+		// All failed - bridge not created or marked (expected without root)
+		assert.False(t, exists, "Bridge should not be marked when all attempts fail")
+	} else {
+		// At least one succeeded - bridge should be marked
+		assert.True(t, exists, "Bridge should be marked when at least one attempt succeeds")
+	}
 }
 
 // TestNetworkManager_createTapDevice_IPParsing tests IP address parsing
