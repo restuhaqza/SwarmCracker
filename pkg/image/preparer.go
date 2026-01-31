@@ -52,6 +52,14 @@ func NewImagePreparer(config interface{}) types.ImagePreparer {
 
 // Prepare prepares an OCI image for the given task.
 func (ip *ImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
+	if task == nil {
+		return fmt.Errorf("task cannot be nil")
+	}
+
+	if task.Spec.Runtime == nil {
+		return fmt.Errorf("task runtime cannot be nil")
+	}
+
 	container, ok := task.Spec.Runtime.(*types.Container)
 	if !ok {
 		return fmt.Errorf("task runtime is not a container")
