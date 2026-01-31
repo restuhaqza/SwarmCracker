@@ -61,11 +61,12 @@ SwarmCracker Executor ← WE ARE HERE
 | `pkg/executor` | ✅ Complete | 95.2% | Main executor with full lifecycle support |
 | `pkg/translator` | ✅ Complete | 98.1% | Task → VMM config conversion |
 | `pkg/config` | ✅ Complete | 87.3% | Configuration system with validation |
-| `pkg/lifecycle` | ✅ Complete | 54.4% | VM lifecycle management with Firecracker API |
-| `pkg/image` | ✅ Complete | 0% (pending) | OCI → rootfs conversion with caching |
-| `pkg/network` | ✅ Complete | 9.1% | TAP/bridge network management |
+| `pkg/lifecycle` | ✅ Complete | 74.7% | VM lifecycle management with Firecracker API |
+| `pkg/image` | ✅ Complete | 60.7% | OCI → rootfs conversion with caching |
+| `pkg/network` | ✅ Complete | 59.5% | TAP/bridge network management |
 | `test/mocks` | ✅ Complete | N/A | Mock implementations for testing |
-| `cmd/swarmcracker` | ⏳ Stub | N/A | CLI tool (needs implementation) |
+| `cmd/swarmcracker` | ✅ Complete | N/A | CLI tool (run, deploy, validate, version) |
+| `test/integration` | ✅ Complete | N/A | Integration test suite |
 
 ---
 
@@ -76,13 +77,14 @@ SwarmCracker Executor ← WE ARE HERE
 2. ✅ ~~Create image preparation~~ (COMPLETE)
 3. ✅ ~~Build VM lifecycle manager~~ (COMPLETE)
 4. ✅ ~~Add comprehensive test suite~~ (COMPLETE)
-5. **[IN PROGRESS]** Complete image preparer tests
+5. ✅ ~~Complete image preparer tests~~ (COMPLETE)
+6. ✅ ~~Add integration tests~~ (COMPLETE)
 
 ### Short-term (Next 2 Weeks)
-1. **[PENDING]** Implement `swarmcracker` CLI tool
-2. **[PENDING]** End-to-end integration tests with real Firecracker
-3. **[PENDING]** Integration with SwarmKit agent
-4. **[PENDING]** Improve test coverage for network and lifecycle packages
+1. **[PENDING]** Integration with SwarmKit agent
+2. **[PENDING]** End-to-end testing with real Firecracker
+3. **[PENDING]** Improve test coverage (network & image)
+4. **[PENDING]** CLI enhancements (list, logs, stop commands)
 
 ### Medium-term (Next Month)
 1. **[PENDING]** Security hardening (jailer integration)
