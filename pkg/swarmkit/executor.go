@@ -85,7 +85,10 @@ func NewExecutor(config *Config) (*Executor, error) {
 	networkMgr := network.NewNetworkManager(netCfg)
 
 	// Create VMM manager
-	vmmMgr := NewVMMManager(config.FirecrackerPath, config.SocketDir)
+	vmmMgr, err := NewVMMManager(config.FirecrackerPath, config.SocketDir)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create VMM manager: %w", err)
+	}
 
 	return &Executor{
 		config:      config,

@@ -65,6 +65,11 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("task runtime is not a container")
 	}
 
+	// Initialize annotations map if nil
+	if task.Annotations == nil {
+		task.Annotations = make(map[string]string)
+	}
+
 	log.Info().
 		Str("task_id", task.ID).
 		Str("image", container.Image).

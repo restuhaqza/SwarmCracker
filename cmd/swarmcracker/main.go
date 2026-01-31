@@ -15,6 +15,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/lifecycle"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/translator"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
@@ -66,6 +67,10 @@ It provides a simple interface to the SwarmCracker executor, allowing you to:
 	rootCmd.AddCommand(newDeployCommand())
 	rootCmd.AddCommand(newValidateCommand())
 	rootCmd.AddCommand(newVersionCommand())
+	rootCmd.AddCommand(newListCommand())
+	rootCmd.AddCommand(newStatusCommand())
+	rootCmd.AddCommand(newLogsCommand())
+	rootCmd.AddCommand(newStopCommand())
 
 	// Execute
 	if err := rootCmd.Execute(); err != nil {
@@ -114,6 +119,12 @@ Example:
 			}
 			defer exec.Close()
 
+			// Create state manager for tracking VMs
+			stateMgr, err := runtime.NewStateManager("")
+			if err != nil {
+				log.Warn().Err(err).Msg("Failed to create state manager, VM tracking disabled")
+			}
+
 			// Create a mock task
 			task := createMockTask(imageRef, vcpus, memory, env)
 
@@ -156,6 +167,37 @@ Example:
 
 			if detach {
 				log.Info().Str("task_id", task.ID).Msg("Task started in detached mode")
+
+				// Save VM state for tracking
+				if stateMgr != nil {
+					// Get task details for state
+					container := task.Spec.Runtime.(*types.Container)
+
+					vmState := &runtime.VMState{
+						ID:        task.ID,
+						Image:     container.Image,
+						Command:   append(container.Command, container.Args...),
+						Status:    "running",
+						VCPUs:     vcpus,
+						MemoryMB:  memory,
+						KernelPath: cfg.Executor.KernelPath,
+						LogPath:   filepath.Join(stateMgr.GetLogDir(), task.ID+".log"),
+					}
+
+					// Get network info if available
+					if len(task.Networks) > 0 {
+						vmState.NetworkID = task.Networks[0].Network.ID
+						vmState.IPAddresses = task.Networks[0].Addresses
+					}
+
+					// Add to state manager
+					if err := stateMgr.Add(vmState); err != nil {
+						log.Warn().Err(err).Msg("Failed to save VM state")
+					} else {
+						log.Info().Str("vm_id", task.ID).Msg("VM state saved")
+					}
+				}
+
 				return nil
 			}
 

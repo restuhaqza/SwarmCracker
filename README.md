@@ -351,6 +351,96 @@ swarmcracker validate
 swarmcracker validate --config /etc/swarmcracker/config.yaml
 ```
 
+#### `list` - List running microVMs
+
+List all running SwarmCracker microVMs.
+
+```bash
+# List running VMs
+swarmcracker list
+
+# List all VMs including stopped ones
+swarmcracker list --all
+
+# Output in JSON format
+swarmcracker list --format json
+```
+
+**Output:**
+```
+ID          STATUS    IMAGE           PID     STARTED
+task-1234   Running ✓ nginx:alpine   12345   2m ago
+```
+
+**Flags:**
+- `--all` - Show all VMs including stopped ones
+- `--format` - Output format: table, json (default: "table")
+
+#### `status` - Show detailed VM status
+
+Display detailed information about a specific microVM.
+
+```bash
+# Show VM status
+swarmcracker status nginx-1
+
+# The status command shows:
+# - Current state (running, stopped, error)
+# - PID and uptime
+# - Configuration (vCPUs, memory, kernel)
+# - Container image and command
+# - Network information
+# - File locations (socket, log)
+```
+
+**Flags:**
+None (takes VM ID as argument)
+
+#### `logs` - View VM logs
+
+Display logs from a Firecracker microVM.
+
+```bash
+# View all logs
+swarmcracker logs nginx-1
+
+# Follow log output (like tail -f)
+swarmcracker logs --follow nginx-1
+
+# Show last 100 lines
+swarmcracker logs --tail 100 nginx-1
+
+# Show logs from the last hour
+swarmcracker logs --since 1h nginx-1
+
+# Show logs from the last 30 minutes
+swarmcracker logs --since 30m nginx-1
+```
+
+**Flags:**
+- `--follow, -f` - Follow log output (stream new logs)
+- `--tail` - Show last N lines (default: all)
+- `--since` - Show logs since timestamp (e.g., 1h, 30m)
+
+#### `stop` - Stop a running microVM
+
+Stop a running SwarmCracker microVM gracefully or forcibly.
+
+```bash
+# Gracefully stop a VM (default 10s timeout)
+swarmcracker stop nginx-1
+
+# Force kill immediately
+swarmcracker stop --force nginx-1
+
+# Custom timeout (30 seconds)
+swarmcracker stop --timeout 30 nginx-1
+```
+
+**Flags:**
+- `--force, -f` - Force kill the VM (SIGKILL)
+- `--timeout` - Graceful shutdown timeout in seconds (default: 10)
+
 #### `version` - Show version information
 
 Display detailed version information about the SwarmCracker CLI.
