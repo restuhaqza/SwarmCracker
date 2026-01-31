@@ -54,5 +54,24 @@ coverage.html
 
 # Air live reload
 .air.toml
+
+# Compiled binaries
 /swarmcracker-agent
-pkg/image/fs.tar
+/swarmcracker
+*.bin
+
+# Test and coverage artifacts
+coverage*.out
+coverage*.html
+*.coverprofile
+
+# Image preparation artifacts
+pkg/image/*.tar
+pkg/image/*.img
+*.rootfs
+*.ext4
+
+# Temporary test data
+test/tmp/
+test/temp/
+/tmp/
