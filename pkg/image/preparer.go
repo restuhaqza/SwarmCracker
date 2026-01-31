@@ -125,61 +125,91 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 
 // extractOCIImage extracts an OCI image using containerd/podman/docker.
 func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath string) error {
-	// Try docker first, then podman
-	cmds := []struct {
+	// Try different methods in order
+	methods := []struct {
 		name string
-		args []string
+		fn   func(context.Context, string, string, string) (string, error)
 	}{
 		{
 			name: "docker",
-			args: []string{"create", "--root", destPath, imageRef, "/bin/true"},
+			fn:   ip.extractWithDocker,
 		},
 		{
 			name: "podman",
-			args: []string{"create", "--root", destPath, imageRef, "/bin/true"},
+			fn:   ip.extractWithPodman,
 		},
 	}
 
-	for _, cmd := range cmds {
-		if _, err := exec.LookPath(cmd.name); err != nil {
+	for _, method := range methods {
+		if _, err := exec.LookPath(method.name); err != nil {
 			continue
 		}
 
-		log.Debug().Str("using", cmd.name).Msg("Extracting image")
+		log.Debug().Str("using", method.name).Msg("Extracting image")
 
-		// Create container
-		output, err := exec.CommandContext(ctx, cmd.name, cmd.args...).CombinedOutput()
+		containerID, err := method.fn(ctx, method.name, imageRef, destPath)
 		if err != nil {
-			log.Debug().Str("output", string(output)).Err(err).Msg("Command failed, trying next method")
+			log.Debug().Str("method", method.name).Err(err).Msg("Extraction failed, trying next method")
 			continue
-		}
-
-		containerID := strings.TrimSpace(string(output))
-
-		// Export container filesystem
-		exportCmd := exec.CommandContext(ctx, cmd.name, "export", containerID, "-o", filepath.Join(destPath, "fs.tar"))
-		if err := exportCmd.Run(); err != nil {
-			// Cleanup container
-			exec.Command(cmd.name, "rm", "-f", containerID).Run()
-			return fmt.Errorf("failed to export container: %w", err)
 		}
 
 		// Cleanup container
-		exec.Command(cmd.name, "rm", "-f", containerID).Run()
+		exec.Command(method.name, "rm", "-f", containerID).Run()
 
 		// Extract tar
-		tarCmd := exec.CommandContext(ctx, "tar", "xf", filepath.Join(destPath, "fs.tar"), "-C", destPath)
+		tarPath := filepath.Join(destPath, "fs.tar")
+		tarCmd := exec.CommandContext(ctx, "tar", "xf", tarPath, "-C", destPath)
 		if err := tarCmd.Run(); err != nil {
 			return fmt.Errorf("failed to extract tar: %w", err)
 		}
 
 		// Remove tar file
-		os.Remove(filepath.Join(destPath, "fs.tar"))
+		os.Remove(tarPath)
 
 		return nil
 	}
 
 	return fmt.Errorf("no container runtime found (docker or podman required)")
+}
+
+// extractWithDocker extracts an image using Docker (without --root flag)
+func (ip *ImagePreparer) extractWithDocker(ctx context.Context, runtime, imageRef, destPath string) (string, error) {
+	// Create container (Docker doesn't support --root)
+	output, err := exec.CommandContext(ctx, runtime, "create", imageRef, "/bin/true").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("docker create failed: %s: %w", string(output), err)
+	}
+
+	containerID := strings.TrimSpace(string(output))
+
+	// Export container filesystem to tar
+	tarPath := filepath.Join(destPath, "fs.tar")
+	exportCmd := exec.CommandContext(ctx, runtime, "export", containerID, "-o", tarPath)
+	if output, err := exportCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("docker export failed: %s: %w", string(output), err)
+	}
+
+	return containerID, nil
+}
+
+// extractWithPodman extracts an image using Podman (with --root flag)
+func (ip *ImagePreparer) extractWithPodman(ctx context.Context, runtime, imageRef, destPath string) (string, error) {
+	// Create container with --root flag
+	output, err := exec.CommandContext(ctx, runtime, "create", "--root", destPath, imageRef, "/bin/true").CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("podman create failed: %s: %w", string(output), err)
+	}
+
+	containerID := strings.TrimSpace(string(output))
+
+	// Export container filesystem to tar
+	tarPath := filepath.Join(destPath, "fs.tar")
+	exportCmd := exec.CommandContext(ctx, runtime, "export", containerID, "-o", tarPath)
+	if output, err := exportCmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("podman export failed: %s: %w", string(output), err)
+	}
+
+	return containerID, nil
 }
 
 // createExt4Image creates an ext4 filesystem from a directory.

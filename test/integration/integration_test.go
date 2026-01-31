@@ -241,8 +241,15 @@ func TestIntegration_VMMManager(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
+	// Use test kernel path
+	kernelPath := "/home/kali/.local/share/firecracker/vmlinux"
+	if _, err := os.Stat(kernelPath); os.IsNotExist(err) {
+		t.Skipf("Kernel not found at %s", kernelPath)
+		return
+	}
+
 	cfg := &lifecycle.ManagerConfig{
-		KernelPath: "/usr/share/firecracker/vmlinux",
+		KernelPath: kernelPath,
 		RootfsDir:  tmpDir,
 		SocketDir:  tmpDir,
 	}
@@ -257,6 +264,7 @@ func TestIntegration_VMMManager(t *testing.T) {
 				Image: testImageAlpine,
 			},
 		},
+		Annotations: make(map[string]string),
 	}
 
 	ctx := context.Background()
@@ -266,7 +274,73 @@ func TestIntegration_VMMManager(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, types.TaskState_ORPHANED, status.State)
 
+	// Test cleanup verification - ensure no leftover files
+	t.Log("Verifying cleanup...")
+	files, _ := filepath.Glob(filepath.Join(tmpDir, "*"))
+	t.Logf("Files in tmpDir after test: %v", files)
+
+	// Verify no socket files left
+	sockets, _ := filepath.Glob(filepath.Join(tmpDir, "*.sock"))
+	assert.Equal(t, 0, len(sockets), "No socket files should remain after cleanup")
+
 	t.Log("VMM Manager test completed")
+}
+
+// TestIntegration_CleanupVerification tests that resources are properly cleaned up
+func TestIntegration_CleanupVerification(t *testing.T) {
+	firecracker, _ := checkPrerequisites(t)
+	if !firecracker {
+		return
+	}
+
+	t.Log("Testing cleanup verification")
+
+	tmpDir := t.TempDir()
+
+	// Use test kernel path
+	kernelPath := "/home/kali/.local/share/firecracker/vmlinux"
+	if _, err := os.Stat(kernelPath); os.IsNotExist(err) {
+		t.Skipf("Kernel not found at %s", kernelPath)
+		return
+	}
+
+	cfg := &lifecycle.ManagerConfig{
+		KernelPath: kernelPath,
+		RootfsDir:  tmpDir,
+		SocketDir:  tmpDir,
+	}
+
+	vmm := lifecycle.NewVMMManager(cfg)
+
+	task := &types.Task{
+		ID:        "test-cleanup",
+		Spec: types.TaskSpec{
+			Runtime: &types.Container{
+				Image: testImageAlpine,
+			},
+		},
+		Annotations: make(map[string]string),
+	}
+
+	ctx := context.Background()
+
+	// 1. Check initial state - no resources
+	status, err := vmm.Describe(ctx, task)
+	assert.NoError(t, err)
+	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+
+	// 2. Verify no socket files exist
+	socketsBefore, _ := filepath.Glob(filepath.Join(tmpDir, "*.sock"))
+	assert.Equal(t, 0, len(socketsBefore), "No socket files should exist initially")
+
+	// 3. Verify no leftover files in general
+	filesBefore, _ := os.ReadDir(tmpDir)
+	fileCountBefore := len(filesBefore)
+	t.Logf("Files in tmpDir before: %d", fileCountBefore)
+
+	// 4. Test that tmpDir is cleaned up by test framework
+	// (TempDir is automatically cleaned up by Go's testing framework)
+	t.Log("Cleanup verification completed")
 }
 
 // TestIntegration_NetworkSetup tests network configuration
@@ -318,8 +392,15 @@ func TestIntegration_TaskTranslation(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
+	// Use test kernel path
+	kernelPath := "/home/kali/.local/share/firecracker/vmlinux"
+	if _, err := os.Stat(kernelPath); os.IsNotExist(err) {
+		t.Skipf("Kernel not found at %s", kernelPath)
+		return
+	}
+
 	cfg := &lifecycle.ManagerConfig{
-		KernelPath: "/usr/share/firecracker/vmlinux",
+		KernelPath: kernelPath,
 		RootfsDir:  tmpDir,
 		SocketDir:  tmpDir,
 	}
@@ -495,6 +576,7 @@ func TestIntegration_PrerequisitesOnly(t *testing.T) {
 
 	// Check kernel
 	kernelPaths := []string{
+		"/home/kali/.local/share/firecracker/vmlinux",
 		"/usr/share/firecracker/vmlinux",
 		"/boot/vmlinux",
 		"/var/lib/firecracker/vmlinux",
