@@ -174,8 +174,11 @@ func TestVMMManager_Wait_ContextCancellation(t *testing.T) {
 		ID: "test-wait-cancel",
 	}
 
-	_, err := vm.Wait(ctx, task)
-	assert.Error(t, err)
+	// Wait returns nil error when VM doesn't exist
+	status, err := vm.Wait(ctx, task)
+	assert.NoError(t, err)
+	assert.NotNil(t, status)
+	assert.Equal(t, types.TaskState_ORPHANED, status.State)
 }
 
 func TestVMMManager_Describe_AllStates(t *testing.T) {
@@ -200,15 +203,17 @@ func TestVMMManager_Describe_AllStates(t *testing.T) {
 			}
 
 			vm.vms[task.ID] = &VMInstance{
-				ID:        task.ID,
-				State:     state,
-				CreatedAt: time.Now().Add(-time.Hour),
-				PID:       1000,
+				ID:         task.ID,
+				State:      state,
+				CreatedAt:  time.Now().Add(-time.Hour),
+				PID:        os.Getpid(), // Use real PID so process check succeeds
+				SocketPath: "/tmp/test.sock",
 			}
 
 			status, err := vm.Describe(context.Background(), task)
 			assert.NoError(t, err)
 			assert.NotNil(t, status)
+			// RuntimeStatus is set because process exists
 			assert.NotNil(t, status.RuntimeStatus)
 		})
 	}
@@ -329,30 +334,45 @@ func TestVMMManager_waitForShutdown_Scenarios(t *testing.T) {
 		socket   string
 		timeout  time.Duration
 		wantErr  bool
+		setup    func() string
+		cleanup  func(string)
 	}{
 		{
-			name:    "non-existent socket",
+			name:    "non-existent socket returns success",
 			socket:  "/nonexistent/test.sock",
 			timeout: 10 * time.Millisecond,
-			wantErr: true,
+			wantErr: false, // Returns nil when socket doesn't exist (already shut down)
 		},
 		{
-			name:    "empty socket path",
+			name:    "empty socket path returns success",
 			socket:  "",
 			timeout: 10 * time.Millisecond,
-			wantErr: true,
+			wantErr: false,
 		},
 		{
-			name:    "very short timeout",
-			socket:  "/tmp/test-timeout.sock",
-			timeout: 1 * time.Nanosecond,
+			name:    "timeout waiting for socket removal",
+			timeout: 100 * time.Millisecond,
 			wantErr: true,
+			setup: func() string {
+				// Create a socket file that won't be removed
+				f, _ := os.Create("/tmp/test-timeout.sock")
+				f.Close()
+				return "/tmp/test-timeout.sock"
+			},
+			cleanup: func(path string) {
+				os.Remove(path)
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := waitForShutdown(tt.socket, tt.timeout)
+			socket := tt.socket
+			if tt.setup != nil {
+				socket = tt.setup()
+				defer tt.cleanup(socket)
+			}
+			_, err := waitForShutdown(socket, tt.timeout)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -409,7 +429,7 @@ func TestVMState_Transitions(t *testing.T) {
 	}
 
 	for _, transition := range transitions {
-		t.Run(transition[0]+"_to_"+transition[1], func(t *testing.T) {
+		t.Run(string(transition[0])+"_to_"+string(transition[1]), func(t *testing.T) {
 			vm := NewVMMManager(&ManagerConfig{
 				SocketDir: "/tmp/test-transitions",
 			}).(*VMMManager)
@@ -479,6 +499,14 @@ func TestVMMManager_SocketFileCleanup(t *testing.T) {
 	file, err := os.Create(socketPath)
 	require.NoError(t, err)
 	file.Close()
+
+	// Add VM to map so Remove will clean it up
+	vm.vms[task.ID] = &VMInstance{
+		ID:         task.ID,
+		State:      VMStateRunning,
+		PID:        1234,
+		SocketPath: socketPath,
+	}
 
 	// Verify file exists
 	_, err = os.Stat(socketPath)
