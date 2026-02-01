@@ -42,7 +42,7 @@ type Drive struct {
 type MachineConfig struct {
 	VCPUCount  int64  `json:"vcpu_count"`
 	MemSizeMib int64  `json:"mem_size_mib"`
-	HTEnabled  bool   `json:"ht_enabled"`
+	SMT        bool   `json:"smt"` // Changed from ht_enabled to smt for Firecracker v1.14+
 }
 
 type NetworkInterface struct {
@@ -96,7 +96,7 @@ func TestE2ESimpleVMLaunch(t *testing.T) {
 		MachineConfig: MachineConfig{
 			VCPUCount:  1,
 			MemSizeMib: 512,
-			HTEnabled:  false,
+			SMT:        false,
 		},
 	}
 
@@ -227,7 +227,7 @@ func TestE2EVMLifecycle(t *testing.T) {
 		MachineConfig: MachineConfig{
 			VCPUCount:  1,
 			MemSizeMib: 512,
-			HTEnabled:  false,
+			SMT:        false,
 		},
 	}
 
@@ -361,7 +361,7 @@ func TestE2EVMMultipleVMs(t *testing.T) {
 			MachineConfig: MachineConfig{
 				VCPUCount:  1,
 				MemSizeMib: 256,
-				HTEnabled:  false,
+				SMT:        false,
 			},
 		}
 

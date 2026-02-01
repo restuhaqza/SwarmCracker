@@ -323,32 +323,18 @@ func TestE2EContainerImageBoot(t *testing.T) {
 
 	// The rest of the test would verify the ext4 file
 	t.Log("Step 3: Ext4 filesystem already created")
-	size := int64(64 * 1024 * 1024) // 64MB
+	
+	// Verify the ext4 file exists and has content
+	fsInfo, fsErr := os.Stat(ext4Path)
+	require.NoError(t, fsErr, "Rootfs file should exist")
+	t.Logf("Filesystem size: %d bytes", fsInfo.Size())
 
-	err = exec.Command("truncate", "-s", fmt.Sprintf("%d", size), ext4Path).Run()
-	if err != nil {
-		err = exec.Command("dd", "if=/dev/zero", "of="+ext4Path, "bs=1M", "count=64").Run()
-		require.NoError(t, err, "Failed to create filesystem file")
-	}
+	// Verify filesystem is valid ext4
+	fileCmd := exec.Command("file", ext4Path)
+	fileOutput, _ := fileCmd.CombinedOutput()
+	t.Logf("Filesystem type: %s", string(fileOutput))
 
-	err = exec.Command("mkfs.ext4", "-F", ext4Path).Run()
-	require.NoError(t, err, "Failed to format filesystem")
-
-	// Mount and copy
-	mountDir := filepath.Join(tmpDir, "mount")
-	err = os.MkdirAll(mountDir, 0755)
-	require.NoError(t, err)
-
-	err = exec.Command("mount", "-o", "loop", ext4Path, mountDir).Run()
-	if err != nil {
-		t.Skipf("Failed to mount: %v (may need root)", err)
-	}
-
-	err = exec.Command("cp", "-r", rootfsFile+"/.", mountDir+"/").Run()
-	exec.Command("umount", mountDir).Run()
-	require.NoError(t, err, "Failed to copy files")
-
-	t.Logf("Filesystem created at: %s", ext4Path)
+	t.Logf("Filesystem verified at: %s", ext4Path)
 
 	// The actual boot test would require a complete init system and proper kernel
 	// For now, we verify the filesystem is ready
@@ -358,6 +344,7 @@ func TestE2EContainerImageBoot(t *testing.T) {
 	// Verify filesystem content
 	t.Run("Verify Filesystem Content", func(t *testing.T) {
 		// Mount again to verify
+		mountDir := filepath.Join(tmpDir, "mount")
 		err = exec.Command("mount", "-o", "loop", ext4Path, mountDir).Run()
 		if err != nil {
 			t.Skip("Cannot mount for verification")

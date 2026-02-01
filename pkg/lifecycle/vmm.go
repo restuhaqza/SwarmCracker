@@ -121,8 +121,20 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 		return fmt.Errorf("invalid config: empty configuration")
 	}
 
+	// Find Firecracker binary
+	fcBinary, err := exec.LookPath("firecracker")
+	if err != nil {
+		// Try legacy versioned name
+		fcBinary, err = exec.LookPath("firecracker-v1.0.0")
+		if err != nil {
+			return fmt.Errorf("firecracker binary not found in PATH: %w", err)
+		}
+	}
+
+	log.Debug().Str("binary", fcBinary).Msg("Using Firecracker binary")
+
 	// Start Firecracker process
-	cmd := exec.Command("firecracker-v1.0.0",
+	cmd := exec.Command(fcBinary,
 		"--api-sock", socketPath,
 		"--config-file", "/dev/stdin",
 	)
