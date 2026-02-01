@@ -11,7 +11,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/restuhaqza/swarmcracker)](https://goreportcard.com/report/github.com/restuhaqza/swarmcracker)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/restuhaqza/swarmcracker)
-[![Coverage](https://img.shields.io/badge/coverage-63.3%25-green.svg)](https://github.com/restuhaqza/swarmcracker)
+[![Coverage](https://img.shields.io/badge/coverage-81.2%25-green.svg)](https://github.com/restuhaqza/swarmcracker)
 
 **Hardware-isolated microVMs with the simplicity of Docker Swarm**
 
