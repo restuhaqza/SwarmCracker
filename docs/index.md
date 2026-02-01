@@ -4,82 +4,105 @@ Welcome to the SwarmCracker documentation. This guide helps you navigate the pro
 
 ## Quick Links
 
-- [Getting Started](README.md) - Quick start guide
-- [Installation](docs/INSTALL.md) - Installation instructions
-- [Development Guide](docs/DEVELOPMENT.md) - Contributor guide
-- [Testing Guide](docs/testing/) - Complete testing documentation
+- [Getting Started](../README.md) - Quick start guide
+- [Installation](guides/installation.md) - Installation instructions
+- [Configuration](guides/configuration.md) - Configuration reference
+- [Development](development/getting-started.md) - Contributor guide
+- [Testing](testing/) - Complete testing documentation
 
 ## Documentation Structure
 
-### User Documentation
-- [README.md](README.md) - Project overview and quick start
-- [INSTALL.md](docs/INSTALL.md) - Installation instructions
-- [CONFIG.md](docs/CONFIG.md) - Configuration reference
+### [User Guides](guides/)
+User-facing documentation for SwarmCracker.
 
-### Developer Documentation
-- [DEVELOPMENT.md](docs/DEVELOPMENT.md) - Development setup and workflow
-- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture
-- [ORGANIZATION.md](docs/ORGANIZATION.md) - Code organization
-- [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines
+- [Installation Guide](guides/installation.md) - How to install SwarmCracker
+- [Configuration Guide](guides/configuration.md) - Configure SwarmCracker
+- [File Management](guides/file-management.md) - Managing files
+- [SwarmKit Guides](guides/swarmkit/) - SwarmKit-specific documentation
+  - [Overview](guides/swarmkit/overview.md) - SwarmKit research
+  - [User Guide](guides/swarmkit/user-guide.md) - Using SwarmKit
+  - [Deployment](guides/swarmkit/deployment.md) - Deploying SwarmKit
+  - [Audit](guides/swarmkit/audit.md) - Security audit
 
-### Testing Documentation
-See [docs/testing/](docs/testing/) for complete testing documentation:
-- [Testing Overview](docs/testing/README.md) - Testing framework overview
-- [Unit Tests](docs/testing/unit.md) - Unit testing guide
-- [Integration Tests](docs/testing/integration.md) - Integration testing with Firecracker
-- [E2E Tests](docs/testing/e2e.md) - End-to-end testing with SwarmKit
-- [Test Infrastructure](docs/testing/testinfra.md) - Infrastructure validation
+### [Architecture](architecture/)
+Technical architecture documentation.
 
-### Project Documentation
-- [PROJECT.md](PROJECT.md) - Project status and roadmap
-- [AGENTS.md](AGENTS.md) - Agent-specific configuration
+- [System Architecture](architecture/system.md) - Overall system design
+- [SwarmKit Integration](architecture/swarmkit-integration.md) - Integration details
 
-### Test Reports
-- [docs/reports/](docs/reports/) - Detailed test reports
+### [Development](development/)
+Developer documentation.
+
+- [Getting Started](development/getting-started.md) - Development setup
+- [Testing](development/testing.md) - Testing guide
+
+### [Testing](testing/)
+Complete testing documentation.
+
+- [Testing Overview](testing/README.md) - Testing framework overview
+- [Unit Tests](testing/unit.md) - Unit testing guide
+- [Integration Tests](testing/integration.md) - Integration testing with Firecracker
+- [E2E Tests](testing/e2e.md) - End-to-end testing
+- [SwarmKit E2E](testing/e2e_swarmkit.md) - SwarmKit-specific E2E tests
+- [Test Infrastructure](testing/testinfra.md) - Infrastructure validation
+- [Test Strategy](testing/strategy.md) - Testing strategy and approach
+
+### [Test Reports](reports/)
+Test execution reports and results.
+
+- [E2E Reports](reports/e2e/) - End-to-end test results
+  - [Phase 1 Results](reports/e2e/phase1-results.md)
+  - [Phase 2 Results](reports/e2e/phase2-results.md)
+  - [Real VM Report](reports/e2e/real-vm-report.md)
+  - [Summary](reports/e2e/summary.md)
+- [Unit Reports](reports/unit/) - Component test results
+  - [Image Tests](reports/unit/image.md)
+  - [Network Tests](reports/unit/network.md)
 
 ## Getting Started
 
 ### New Users
-1. Read the [README.md](README.md) for an overview
-2. Follow [INSTALL.md](docs/INSTALL.md) to install SwarmCracker
-3. Check [CONFIG.md](docs/CONFIG.md) for configuration options
+1. Read the [main README](../README.md) for an overview
+2. Follow the [Installation Guide](guides/installation.md)
+3. Check the [Configuration Guide](guides/configuration.md)
 
 ### Contributors
-1. Read [DEVELOPMENT.md](docs/DEVELOPMENT.md) for setup
-2. Review [ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design
-3. Follow [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines
-4. See [docs/testing/](docs/testing/) for testing practices
+1. Read [Development Guide](development/getting-started.md) for setup
+2. Review [System Architecture](architecture/system.md) for design
+3. Follow the [Testing Guide](development/testing.md)
+4. See [Testing Documentation](testing/) for practices
 
 ### Testers
-1. Start with [docs/testing/README.md](docs/testing/README.md)
-2. Check [test infrastructure](docs/testing/testinfra.md) first
-3. Run [integration tests](docs/testing/integration.md)
-4. Validate with [E2E tests](docs/testing/e2e.md)
+1. Start with [Testing Overview](testing/README.md)
+2. Check [test infrastructure](testing/testinfra.md) first
+3. Run [integration tests](testing/integration.md)
+4. Validate with [E2E tests](testing/e2e.md)
 
 ## Documentation Index
 
 ### By Topic
 
 **Installation & Setup**
-- [Installation](docs/INSTALL.md)
-- [Configuration](docs/CONFIG.md)
-- [Development Setup](docs/DEVELOPMENT.md)
+- [Installation](guides/installation.md)
+- [Configuration](guides/configuration.md)
+- [Development Setup](development/getting-started.md)
 
 **Architecture & Design**
-- [Architecture](docs/ARCHITECTURE.md)
-- [Code Organization](docs/ORGANIZATION.md)
-- [Project Status](PROJECT.md)
+- [System Architecture](architecture/system.md)
+- [SwarmKit Integration](architecture/swarmkit-integration.md)
+- [Code Organization](ORGANIZATION.md)
 
 **Development**
-- [Development Guide](docs/DEVELOPMENT.md)
-- [Contributing](CONTRIBUTING.md)
-- [Testing](docs/testing/)
+- [Development Guide](development/getting-started.md)
+- [Testing Guide](development/testing.md)
+- [Testing Documentation](testing/)
 
 **Testing**
-- [Testing Overview](docs/testing/README.md)
-- [Integration Tests](docs/testing/integration.md)
-- [E2E Tests](docs/testing/e2e.md)
-- [Test Infrastructure](docs/testing/testinfra.md)
+- [Testing Overview](testing/README.md)
+- [Unit Tests](testing/unit.md)
+- [Integration Tests](testing/integration.md)
+- [E2E Tests](testing/e2e.md)
+- [Test Infrastructure](testing/testinfra.md)
 
 ### By Format
 

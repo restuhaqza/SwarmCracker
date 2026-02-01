@@ -388,9 +388,9 @@ Container Environment
 - `cmd/swarmcracker-agent/main.go` (VERIFIED - working)
 
 ### Documentation
-- `docs/reports/E2E_PHASE1_RESULTS.md` (NEW)
-- `docs/reports/E2E_PHASE2_RESULTS.md` (NEW)
-- `docs/reports/REAL_E2E_TEST_REPORT.md` (NEW - this file)
+- `phase1-results.md` (NEW)
+- `phase2-results.md` (NEW)
+- `real-vm-report.md` (NEW - this file)
 
 ### Binaries
 - `swarmcracker-agent` (BUILT - 24MB executable)

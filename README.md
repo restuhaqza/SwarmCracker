@@ -128,7 +128,7 @@ graph TB
 - ⚡ **Elastic Scaling** - Add/remove workers on demand
 - 🛡️ **Fault Tolerance** - MicroVM failures don't affect other workloads
 
-**📖 See detailed architecture in [ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+**📖 See detailed architecture in [System Architecture](docs/architecture/system.md)**
 
 ### How It Works
 
@@ -148,7 +148,7 @@ Before you begin, ensure you have:
 - ✅ **Linux** with KVM support (`ls /dev/kvm`)
 - ✅ **Go 1.21+** installed
 - ✅ **Firecracker v1.0.0+** installed
-- ✅ **SwarmKit** standalone (swarmd/swarmctl) - see [SwarmKit Guide](docs/SWARMKIT_GUIDE.md)
+- ✅ **SwarmKit** standalone (swarmd/swarmctl) - see [SwarmKit User Guide](docs/guides/swarmkit/user-guide.md)
 
 ### Installation
 
@@ -240,7 +240,7 @@ For detailed installation instructions, including:
 - Kernel preparation
 - Troubleshooting tips
 
-See the [Installation Guide](docs/INSTALL.md)
+See the [Installation Guide](docs/guides/installation.md)
 
 </details>
 
@@ -250,25 +250,25 @@ See the [Installation Guide](docs/INSTALL.md)
 
 | Document | Description |
 |----------|-------------|
-| [📖 Installation Guide](docs/INSTALL.md) | Step-by-step setup instructions for any environment |
-| [⚙️ Configuration Reference](docs/CONFIG.md) | Complete configuration options with examples |
-| [🏗️ Architecture](docs/ARCHITECTURE.md) | System design, components, and data flow |
+| [📖 Installation Guide](docs/guides/installation.md) | Step-by-step setup instructions for any environment |
+| [⚙️ Configuration Reference](docs/guides/configuration.md) | Complete configuration options with examples |
+| [🏗️ Architecture](docs/architecture/system.md) | System design, components, and data flow |
 
 ### Development
 
 | Document | Description |
 |----------|-------------|
 | [🤖 Agent Guide](AGENTS.md) | Project setup, architecture, and workflows for AI agents and contributors |
-| [🧪 Testing Guide](docs/TESTING.md) | How to run and write tests |
-| [💻 Development Guide](docs/DEVELOPMENT.md) | Contributing, workflow, and best practices |
+| [🧪 Testing Guide](docs/development/testing.md) | How to run and write tests |
+| [💻 Development Guide](docs/development/getting-started.md) | Contributing, workflow, and best practices |
 | [📝 Project Status](PROJECT.md) | Progress tracking and roadmap |
 
 ### Quick Links
 
-- 🚀 [Quick Start Guide](docs/INSTALL.md#installation-methods)
-- ⚙️ [Configuration Examples](docs/CONFIG.md#examples)
-- 🧪 [Running Tests](docs/TESTING.md#running-tests)
-- 🤝 [Contributing](docs/DEVELOPMENT.md#contributing)
+- 🚀 [Quick Start Guide](docs/guides/installation.md#installation-methods)
+- ⚙️ [Configuration Examples](docs/guides/configuration.md#examples)
+- 🧪 [Running Tests](docs/development/testing.md#running-tests)
+- 🤝 [Contributing](docs/development/getting-started.md#contributing)
 
 
 ## 💻 CLI Reference

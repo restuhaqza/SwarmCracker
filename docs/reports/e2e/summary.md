@@ -123,7 +123,7 @@ Requires:
    - Docker image operations
    - Partially passing
 
-4. `docs/reports/E2E_TEST_REPORT.md` (7.9KB)
+4. `test-report.md` (7.9KB)
    - Full detailed report
 
 ## Quick Test Commands

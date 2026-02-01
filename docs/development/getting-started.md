@@ -327,7 +327,7 @@ go test -tags=integration ./test/integration/...
 
 ### 1. Design First
 
-- Update ARCHITECTURE.md if needed
+- Update [architecture/system.md](../architecture/system.md) if needed
 - Document the approach
 - Get feedback if it's a major change
 

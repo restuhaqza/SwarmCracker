@@ -398,6 +398,6 @@ sudo ip link delete swarm-br0
 
 ## Next Steps
 
-- Read [Configuration Guide](CONFIG.md) for advanced config
-- See [Development Guide](DEVELOPMENT.md) for contributing
-- Check [Architecture docs](ARCHITECTURE.md) for internals
+- Read [Configuration Guide](configuration.md) for advanced config
+- See [Development Guide](../development/getting-started.md) for contributing
+- Check [Architecture docs](../architecture/system.md) for internals

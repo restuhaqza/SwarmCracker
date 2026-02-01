@@ -278,7 +278,7 @@ network:
 
 **Notes:**
 - Bridge must exist before starting VMs
-- See INSTALL.md for bridge setup
+- See [installation.md](installation.md) for bridge setup
 
 ### network.enable_rate_limit
 

@@ -460,9 +460,9 @@ firecracker --api-sock /tmp/fc.sock
 
 ## References
 
-- [SwarmKit Guide](../docs/SWARMKIT_GUIDE.md) - Comprehensive SwarmKit documentation
-- [Configuration Reference](../docs/CONFIG.md) - SwarmCracker configuration
-- [Architecture](../docs/ARCHITECTURE.md) - System design
+- [SwarmKit User Guide](user-guide.md) - Comprehensive SwarmKit documentation
+- [Configuration Reference](../../configuration.md) - SwarmCracker configuration
+- [Architecture](../../architecture/system.md) - System design
 
 ---
 

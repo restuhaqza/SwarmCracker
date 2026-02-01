@@ -567,7 +567,7 @@ journalctl -u swarmd | grep executor
 - **SwarmKit GitHub**: https://github.com/moby/swarmkit
 - **SwarmKit Design Docs**: https://github.com/moby/swarmkit/tree/master/design
 - **Go Documentation**: https://pkg.go.dev/github.com/moby/swarmkit
-- **SwarmCracker Research**: See [SWARMKIT_RESEARCH.md](SWARMKIT_RESEARCH.md)
+- **SwarmCracker Research**: See [overview.md](overview.md)
 
 ## Summary
 
@@ -581,5 +581,5 @@ journalctl -u swarmd | grep executor
 
 ---
 
-**Last Updated**: 2026-02-01  
-**See Also**: [SWARMKIT_RESEARCH.md](SWARMKIT_RESEARCH.md) | [ARCHITECTURE.md](ARCHITECTURE.md)
+**Last Updated**: 2026-02-01
+**See Also**: [overview.md](overview.md) | [System Architecture](../../architecture/system.md)
