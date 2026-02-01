@@ -221,18 +221,70 @@ swarmd -d /tmp/node-1 \
 export SWARM_SOCKET=/tmp/node-1/swarm.sock
 swarmctl cluster inspect default
 
-# 4. Start SwarmKit worker nodes with SwarmCracker executor
-swarmd -d /tmp/node-2 \
-  --hostname node-2 \
+# 4. Build the swarmd-firecracker agent
+make swarmd-firecracker
+
+# 5. Deploy the agent to your worker node
+./scripts/deploy-firecracker-agent.sh <worker-ip> <join-token>
+
+# 6. Or manually start worker nodes with the Firecracker-enabled agent
+swarmd-firecracker \
+  --hostname worker-firecracker \
   --join-addr <manager-ip>:4242 \
   --join-token <WORKER_TOKEN> \
   --listen-remote-api 0.0.0.0:4243 \
-  --executor firecracker \
-  --executor-config /etc/swarmcracker/config.yaml
+  --kernel-path /usr/share/firecracker/vmlinux \
+  --rootfs-dir /var/lib/firecracker/rootfs \
+  --socket-dir /var/run/firecracker
 
-# 5. Deploy services as microVMs using swarmctl
+# 7. Deploy services as microVMs using swarmctl
 swarmctl service create --name nginx --image nginx:latest
 ```
+
+### 🔥 Production Deployment with swarmd-firecracker
+
+For production use, we provide a custom SwarmKit agent (`swarmd-firecracker`) that includes the Firecracker executor. This is the recommended approach for running SwarmCracker in SwarmKit clusters.
+
+**Why use swarmd-firecracker?**
+- ✅ No need to patch or fork upstream SwarmKit
+- ✅ Direct executor integration (no plugin system needed)
+- ✅ Works with any SwarmKit cluster
+- ✅ Supports both worker and manager modes
+- ✅ Full SwarmKit feature support
+
+**Quick deploy:**
+```bash
+# Build the agent
+make swarmd-firecracker
+
+# Deploy to worker node (automated)
+./scripts/deploy-firecracker-agent.sh 192.168.56.11 SWMTKN-1-xxx
+
+# Verify deployment
+./scripts/verify-deployment.sh
+```
+
+**Manual setup:**
+```bash
+# Copy binary to worker
+scp build/swarmd-firecracker root@worker:/usr/local/bin/
+ssh root@worker "chmod +x /usr/local/bin/swarmd-firecracker"
+
+# Start as worker
+ssh root@worker << 'EOF'
+systemctl stop swarmd 2>/dev/null || true
+swarmd-firecracker \
+  --hostname worker-firecracker \
+  --join-addr 192.168.56.10:4242 \
+  --join-token SWMTKN-1-xxx... \
+  --listen-remote-api 0.0.0.0:4242 \
+  --kernel-path /usr/share/firecracker/vmlinux \
+  --rootfs-dir /var/lib/firecracker/rootfs \
+  --socket-dir /var/run/firecracker
+EOF
+```
+
+📖 **See [Firecracker Agent Deployment Guide](docs/FIRECRACKER_AGENT_DEPLOYMENT.md)** for complete production deployment instructions.
 
 <details>
 <summary><b>📖 See detailed installation guide</b></summary>

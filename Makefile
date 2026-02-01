@@ -21,8 +21,18 @@ swarmcracker:
 	@mkdir -p $(BUILD_DIR)
 	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)/swarmcracker/main.go
 
+swarmd-firecracker:
+	@echo "Building swarmd-firecracker..."
+	@mkdir -p $(BUILD_DIR)
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/swarmd-firecracker $(CMD_DIR)/swarmd-firecracker/main.go
+
+swarmcracker-agent:
+	@echo "Building swarmcracker-agent..."
+	@mkdir -p $(BUILD_DIR)
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/swarmcracker-agent $(CMD_DIR)/swarmcracker-agent/main.go
+
 # Build all binaries
-all: swarmcracker
+all: swarmcracker swarmd-firecracker swarmcracker-agent
 
 # Install binaries to $GOPATH/bin
 install: all

@@ -1,0 +1,100 @@
+# Vagrantfile for SwarmCracker Testing
+# 1 Manager + 2 Workers
+
+Vagrant.configure("2") do |config|
+  # Base box
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.box_version = ">= 0"
+
+  # Common setup for all VMs
+  config.vm.provision "file", source: "scripts/prepare-socket.sh", destination: "/tmp/scripts/prepare-socket.sh"
+  
+  config.vm.provision "shell", inline: <<-SHELL
+    # Update system
+    apt-get update
+    
+    # Install basic tools
+    apt-get install -y curl wget git vim
+    
+    # Create scripts directory
+    mkdir -p /tmp/scripts
+    
+    # Make scripts executable
+    chmod +x /tmp/scripts/prepare-socket.sh
+    
+    # Enable KVM nested virtualization for VirtualBox
+    echo "✅ Base packages installed"
+  SHELL
+
+  # Manager Node
+  config.vm.define "manager" do |mgr|
+    mgr.vm.hostname = "swarm-manager"
+    mgr.vm.network "private_network", ip: "192.168.56.10"
+    
+    mgr.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-manager"
+      vb.memory = 2048
+      vb.cpus = 2
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+    end
+    
+    # Copy installation script
+    mgr.vm.provision "file", source: "scripts/install-deps.sh", destination: "/tmp/install-deps.sh"
+    mgr.vm.provision "file", source: "scripts/setup-manager.sh", destination: "/tmp/setup-manager.sh"
+    
+    # Execute installation
+    mgr.vm.provision "shell", inline: <<-SHELL
+      bash /tmp/install-deps.sh
+      bash /tmp/setup-manager.sh
+    SHELL
+  end
+
+  # Worker 1
+  config.vm.define "worker1" do |w1|
+    w1.vm.hostname = "swarm-worker-1"
+    w1.vm.network "private_network", ip: "192.168.56.11"
+    
+    w1.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-worker-1"
+      vb.memory = 4096
+      vb.cpus = 4
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+    end
+    
+    # Copy installation script
+    w1.vm.provision "file", source: "scripts/install-deps.sh", destination: "/tmp/install-deps.sh"
+    w1.vm.provision "file", source: "scripts/setup-worker.sh", destination: "/tmp/setup-worker.sh"
+    
+    # Execute installation
+    w1.vm.provision "shell", inline: <<-SHELL
+      bash /tmp/install-deps.sh
+      bash /tmp/setup-worker.sh
+    SHELL
+  end
+
+  # Worker 2
+  config.vm.define "worker2" do |w2|
+    w2.vm.hostname = "swarm-worker-2"
+    w2.vm.network "private_network", ip: "192.168.56.12"
+    
+    w2.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-worker-2"
+      vb.memory = 4096
+      vb.cpus = 4
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+    end
+    
+    # Copy installation script
+    w2.vm.provision "file", source: "scripts/install-deps.sh", destination: "/tmp/install-deps.sh"
+    w2.vm.provision "file", source: "scripts/setup-worker.sh", destination: "/tmp/setup-worker.sh"
+    
+    # Execute installation
+    w2.vm.provision "shell", inline: <<-SHELL
+      bash /tmp/install-deps.sh
+      bash /tmp/setup-worker.sh
+    SHELL
+  end
+end

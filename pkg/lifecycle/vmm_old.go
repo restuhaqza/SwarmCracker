@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -65,28 +66,6 @@ type ActionsType struct {
 	ActionType string `json:"action_type"`
 }
 
-// BootSource represents the boot source configuration.
-type BootSource struct {
-	KernelImagePath string   `json:"kernel_image_path"`
-	BootArgs        string   `json:"boot_args,omitempty"`
-	Drives          []Drive  `json:"drives,omitempty"`
-}
-
-// Drive represents a drive attached to the VM.
-type Drive struct {
-	DriveID      string `json:"drive_id"`
-	IsRootDevice bool   `json:"is_root_device"`
-	IsReadOnly   bool   `json:"is_read_only"`
-	PathOnHost   string `json:"path_on_host"`
-}
-
-// MachineConfig represents the machine configuration.
-type MachineConfig struct {
-	VCPUs  int    `json:"vcpu_count"`
-	MemSizeMib int `json:"mem_size_mib"`
-	HtEnabled  bool `json:"ht_enabled"`
-}
-
 // NewVMMManager creates a new VMMManager.
 func NewVMMManager(config interface{}) types.VMMManager {
 	var cfg *ManagerConfig
@@ -128,50 +107,52 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 
 	socketPath := filepath.Join(vm.socketDir, task.ID+".sock")
 
-	// Clean up socket if it exists from previous run
-	os.Remove(socketPath)
+	// Create config JSON string
+	configStr, ok := config.(string)
+	if !ok {
+		// If config is not already a string, try to marshal it
+		configBytes, err := json.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal config: %w", err)
+		}
+		configStr = string(configBytes)
+	}
 
-	// Validate config
-	if config == nil {
-		return fmt.Errorf("invalid config: nil configuration")
+	// Validate config is not empty
+	if strings.TrimSpace(configStr) == "" {
+		return fmt.Errorf("invalid config: empty configuration")
 	}
 
 	// Find Firecracker binary
 	fcBinary, err := exec.LookPath("firecracker")
 	if err != nil {
-		return fmt.Errorf("firecracker binary not found in PATH: %w", err)
+		// Try legacy versioned name
+		fcBinary, err = exec.LookPath("firecracker-v1.0.0")
+		if err != nil {
+			return fmt.Errorf("firecracker binary not found in PATH: %w", err)
+		}
 	}
 
 	log.Debug().Str("binary", fcBinary).Msg("Using Firecracker binary")
 
-	// Start Firecracker process (without config file)
-	cmd := exec.Command(fcBinary, "--api-sock", socketPath)
+	// Start Firecracker process
+	cmd := exec.Command(fcBinary,
+		"--api-sock", socketPath,
+		"--config-file", "/dev/stdin",
+	)
+
+	cmd.Stdin = strings.NewReader(configStr)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	var startErr error
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start firecracker: %w", err)
 	}
 
-	// Ensure cleanup on failure
-	defer func() {
-		if startErr != nil {
-			cmd.Process.Kill()
-			os.Remove(socketPath)
-		}
-	}()
-
 	// Wait for API server to be ready
 	if err := waitForAPIServer(socketPath, 10*time.Second); err != nil {
-		startErr = fmt.Errorf("firecracker API server not ready: %w", err)
-		return startErr
-	}
-
-	// Configure VM via API
-	if err := vm.configureVM(ctx, socketPath, config); err != nil {
-		startErr = fmt.Errorf("failed to configure VM: %w", err)
-		return startErr
+		cmd.Process.Kill()
+		return fmt.Errorf("firecracker API server not ready: %w", err)
 	}
 
 	// Start the VM instance
@@ -187,19 +168,17 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 
 	resp, err := client.Do(req)
 	if err != nil {
-		startErr = fmt.Errorf("failed to start instance: %w", err)
-		return startErr
+		cmd.Process.Kill()
+		return fmt.Errorf("failed to start instance: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusNoContent {
-		startErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-		return startErr
+		cmd.Process.Kill()
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
 
-	// Clear the error since we succeeded
-	startErr = nil
-
+	// Store VM instance
 	// Extract init system info from task annotations if available
 	initSystem := "none"
 	gracePeriod := 10
@@ -226,59 +205,6 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 		Int("pid", cmd.Process.Pid).
 		Str("init_system", initSystem).
 		Msg("VM started successfully")
-
-	return nil
-}
-
-// configureVM configures the VM via Firecracker API.
-func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config interface{}) error {
-	client := &http.Client{Timeout: 5 * time.Second}
-
-	// Parse config - could be a map or struct
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid config type: expected map[string]interface{}")
-	}
-
-	// Configure boot source if provided
-	if bootSource, ok := configMap["boot_source"].(map[string]interface{}); ok {
-		bootSourceJSON, _ := json.Marshal(bootSource)
-		req, _ := http.NewRequestWithContext(ctx, "PUT",
-			"http://unix"+socketPath+"/boot-source",
-			bytes.NewReader(bootSourceJSON),
-		)
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to set boot source: %w", err)
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("boot source returned status: %d", resp.StatusCode)
-		}
-	}
-
-	// Configure machine if provided
-	if machineConfig, ok := configMap["machine_config"].(map[string]interface{}); ok {
-		machineConfigJSON, _ := json.Marshal(machineConfig)
-		req, _ := http.NewRequestWithContext(ctx, "PUT",
-			"http://unix"+socketPath+"/machine-config",
-			bytes.NewReader(machineConfigJSON),
-		)
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			return fmt.Errorf("failed to set machine config: %w", err)
-		}
-		resp.Body.Close()
-
-		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("machine config returned status: %d", resp.StatusCode)
-		}
-	}
 
 	return nil
 }
