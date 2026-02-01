@@ -10,6 +10,11 @@ executor:
   default_vcpus: 1
   default_memory_mb: 512
   enable_jailer: false
+  # Init system for proper process lifecycle management
+  # Options: "none", "tini" (default, recommended), "dumb-init"
+  init_system: "tini"
+  # Grace period in seconds before SIGKILL during shutdown
+  init_grace_period: 10
   jailer:
     uid: 1000
     gid: 1000
@@ -17,7 +22,22 @@ executor:
     netns: ""
 
 network:
+  # Bridge device name on host
   bridge_name: "swarm-br0"
+
+  # Subnet for VM network (CIDR notation)
+  subnet: "192.168.127.0/24"
+
+  # Bridge IP address (CIDR notation) - gateway for VMs
+  bridge_ip: "192.168.127.1/24"
+
+  # IP allocation mode: "static" (deterministic) or "dhcp" (requires external DHCP)
+  ip_mode: "static"
+
+  # Enable NAT/masquerading for internet access
+  nat_enabled: true
+
+  # Rate limiting (optional)
   enable_rate_limit: false
   max_packets_per_sec: 10000
 

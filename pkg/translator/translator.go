@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/restuhaqza/swarmcracker/pkg/lifecycle"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
@@ -14,6 +15,8 @@ type TaskTranslator struct {
 	initrdPath     string
 	defaultVCPUs   int
 	defaultMemMB   int
+	initSystem     string // "none", "tini", "dumb-init"
+	initPath       string // Path to init binary
 }
 
 // Config holds translator configuration.
@@ -22,26 +25,50 @@ type Config struct {
 	InitrdPath     string
 	DefaultVCPUs   int
 	DefaultMemMB   int
+	InitSystem     string
 }
 
 // NewTaskTranslator creates a new TaskTranslator.
 func NewTaskTranslator(config interface{}) *TaskTranslator {
 	// For now, we accept a generic config and extract what we need
-	var kernelPath, initrdPath string
+	var kernelPath, initrdPath, initSystem string
 	var vcpus, memMB int
 
-	// Accept *executor.Config or similar
-	// For simplicity, we'll use defaults if config doesn't match
+	// Accept *lifecycle.ManagerConfig or similar
 	kernelPath = "/usr/share/firecracker/vmlinux"
 	initrdPath = ""
 	vcpus = 1
 	memMB = 512
+	initSystem = "tini" // Default init system
 
-	return &TaskTranslator{
+	// Try to extract from config
+	if cfg, ok := config.(*lifecycle.ManagerConfig); ok {
+		kernelPath = cfg.KernelPath
+		vcpus = cfg.DefaultVCPUs
+		memMB = cfg.DefaultMemoryMB
+	}
+
+	tt := &TaskTranslator{
 		kernelPath:   kernelPath,
 		initrdPath:   initrdPath,
 		defaultVCPUs: vcpus,
 		defaultMemMB: memMB,
+		initSystem:   initSystem,
+		initPath:     getInitPath(initSystem),
+	}
+
+	return tt
+}
+
+// getInitPath returns the init binary path for the given init system.
+func getInitPath(initSystem string) string {
+	switch initSystem {
+	case "tini":
+		return "/sbin/tini"
+	case "dumb-init":
+		return "/sbin/dumb-init"
+	default:
+		return ""
 	}
 }
 
@@ -166,18 +193,50 @@ func (tt *TaskTranslator) buildBootArgs(container *types.Container) string {
 		"ip=dhcp",
 	}
 
-	// Add container command
+	// Build container command line
+	var containerCmd []string
 	if len(container.Command) > 0 {
-		args = append(args, "--")
-		args = append(args, container.Command...)
+		containerCmd = append(containerCmd, container.Command...)
+	}
+	if len(container.Args) > 0 {
+		containerCmd = append(containerCmd, container.Args...)
 	}
 
-	// Add container args
-	if len(container.Args) > 0 {
-		args = append(args, container.Args...)
+	// If no command specified, use shell as fallback
+	if len(containerCmd) == 0 {
+		containerCmd = []string{"/bin/sh"}
+	}
+
+	// Wrap with init system if configured
+	if tt.initSystem != "none" && tt.initPath != "" {
+		args = append(args, "--")
+		args = append(args, tt.buildInitArgs(containerCmd)...)
+	} else {
+		// No init system, run container command directly
+		args = append(args, "--")
+		args = append(args, containerCmd...)
 	}
 
 	return strings.Join(args, " ")
+}
+
+// buildInitArgs builds init arguments wrapping the container command.
+func (tt *TaskTranslator) buildInitArgs(containerCmd []string) []string {
+	switch tt.initSystem {
+	case "tini":
+		// tini -- <command> <args...>
+		args := []string{tt.initPath, "--"}
+		args = append(args, containerCmd...)
+		return args
+	case "dumb-init":
+		// dumb-init <command> <args...>
+		args := []string{tt.initPath}
+		args = append(args, containerCmd...)
+		return args
+	default:
+		// No init system
+		return containerCmd
+	}
 }
 
 // applyResources applies resource limits to the VM configuration.

@@ -487,7 +487,7 @@ func TestNetworkManager_createTapDevice_IPParsing(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			tap, err := nm.createTapDevice(ctx, network, 0)
+			tap, err := nm.createTapDevice(ctx, network, 0, "test-task")
 
 			if err != nil {
 				t.Logf("createTapDevice failed (expected without root): %v", err)
@@ -525,7 +525,7 @@ func TestNetworkManager_createTapDevice_CustomBridge(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	tap, err := nm.createTapDevice(ctx, network, 0)
+	tap, err := nm.createTapDevice(ctx, network, 0, "test-task")
 
 	if err != nil {
 		t.Skipf("createTapDevice failed (expected without root): %v", err)
@@ -561,7 +561,7 @@ func TestNetworkManager_createTapDevice_DefaultBridge(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	tap, err := nm.createTapDevice(ctx, network, 0)
+	tap, err := nm.createTapDevice(ctx, network, 0, "test-task")
 
 	if err != nil {
 		t.Skipf("createTapDevice failed (expected without root): %v", err)
@@ -591,7 +591,7 @@ func TestNetworkManager_createTapDevice_NilDriverConfig(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	tap, err := nm.createTapDevice(ctx, network, 0)
+	tap, err := nm.createTapDevice(ctx, network, 0, "test-task")
 
 	if err != nil {
 		t.Skipf("createTapDevice failed (expected without root): %v", err)
@@ -651,7 +651,7 @@ func TestNetworkManager_createTapDevice_InterfaceName(t *testing.T) {
 			}
 
 			ctx := context.Background()
-			tap, err := nm.createTapDevice(ctx, network, tt.index)
+			tap, err := nm.createTapDevice(ctx, network, tt.index, "test-task")
 
 			if err != nil {
 				t.Skipf("createTapDevice failed (expected without root): %v", err)
@@ -686,6 +686,8 @@ func TestNetworkManager_removeTapDevice_Logging(t *testing.T) {
 }
 
 // TestNetworkManager_SetupBridgeIP tests bridge IP configuration
+// DEPRECATED: Bridge IP setup is now handled automatically via ensureBridge
+/*
 func TestNetworkManager_SetupBridgeIP(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -724,6 +726,7 @@ func TestNetworkManager_SetupBridgeIP(t *testing.T) {
 		})
 	}
 }
+*/
 
 // TestNetworkManager_ListTapDevices_Empty tests listing with no devices
 func TestNetworkManager_ListTapDevices_Empty(t *testing.T) {

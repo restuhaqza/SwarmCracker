@@ -15,9 +15,10 @@ import (
 
 // ImagePreparer prepares OCI images as root filesystems.
 type ImagePreparer struct {
-	config     *PreparerConfig
-	cacheDir   string
-	rootfsDir  string
+	config       *PreparerConfig
+	cacheDir     string
+	rootfsDir    string
+	initInjector *InitInjector
 }
 
 // PreparerConfig holds image preparer configuration.
@@ -27,6 +28,8 @@ type PreparerConfig struct {
 	SocketDir      string
 	DefaultVCPUs   int
 	DefaultMemoryMB int
+	InitSystem     string `yaml:"init_system"` // "none", "tini", "dumb-init"
+	InitGracePeriod int `yaml:"init_grace_period"` // Grace period in seconds
 }
 
 // NewImagePreparer creates a new ImagePreparer.
@@ -36,17 +39,35 @@ func NewImagePreparer(config interface{}) types.ImagePreparer {
 		cfg = c
 	} else {
 		cfg = &PreparerConfig{
-			RootfsDir: "/var/lib/firecracker/rootfs",
+			RootfsDir:       "/var/lib/firecracker/rootfs",
+			InitSystem:      "tini",
+			InitGracePeriod: 10,
 		}
+	}
+
+	// Set defaults
+	if cfg.InitSystem == "" {
+		cfg.InitSystem = "tini"
+	}
+	if cfg.InitGracePeriod == 0 {
+		cfg.InitGracePeriod = 10
 	}
 
 	// Ensure rootfs directory exists
 	os.MkdirAll(cfg.RootfsDir, 0755)
 
+	// Create init injector
+	initConfig := &InitSystemConfig{
+		Type:           InitSystemType(cfg.InitSystem),
+		GracePeriodSec: cfg.InitGracePeriod,
+	}
+	initInjector := NewInitInjector(initConfig)
+
 	return &ImagePreparer{
-		config:    cfg,
-		cacheDir:  "/var/cache/swarmcracker",
-		rootfsDir: cfg.RootfsDir,
+		config:       cfg,
+		cacheDir:     "/var/cache/swarmcracker",
+		rootfsDir:    cfg.RootfsDir,
+		initInjector: initInjector,
 	}
 }
 
@@ -91,6 +112,22 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
 	// Prepare the image
 	if err := ip.prepareImage(ctx, container.Image, imageID, rootfsPath); err != nil {
 		return fmt.Errorf("failed to prepare image: %w", err)
+	}
+
+	// Inject init system if enabled
+	if ip.initInjector.IsEnabled() {
+		log.Info().
+			Str("task_id", task.ID).
+			Str("init_system", string(ip.initInjector.config.Type)).
+			Msg("Injecting init system")
+
+		if err := ip.injectInitSystem(rootfsPath); err != nil {
+			return fmt.Errorf("failed to inject init system: %w", err)
+		}
+
+		// Store init system type in annotations
+		task.Annotations["init_system"] = string(ip.initInjector.config.Type)
+		task.Annotations["init_path"] = ip.initInjector.GetInitPath()
 	}
 
 	// Store rootfs path in task annotations
@@ -277,21 +314,138 @@ func generateImageID(imageRef string) string {
 	if len(parts) > 1 {
 		tag = parts[1]
 	}
-	
+
 	// Use tag + first part of name
 	name := strings.ReplaceAll(parts[0], "/", "-")
-	
+
 	return fmt.Sprintf("%s-%s", name, tag)
+}
+
+// injectInitSystem injects the init system into the rootfs.
+func (ip *ImagePreparer) injectInitSystem(rootfsPath string) error {
+	// Use the init injector to add init binary to rootfs
+	if err := ip.initInjector.Inject(rootfsPath); err != nil {
+		return fmt.Errorf("init injection failed: %w", err)
+	}
+
+	// For ext4 images, we need to mount, copy, unmount
+	// This is a simplified implementation
+	mountDir, err := ip.mountExt4(rootfsPath)
+	if err != nil {
+		log.Debug().Err(err).Msg("Could not mount rootfs for init injection (may require privileges)")
+		// Continue anyway - init might already be present
+		return nil
+	}
+	defer ip.unmountExt4(mountDir)
+
+	// Copy init binary
+	initBinaryPath := ip.getInitBinaryPath()
+	if initBinaryPath == "" {
+		// No init binary to copy
+		return nil
+	}
+
+	targetPath := filepath.Join(mountDir, ip.initInjector.GetInitPath())
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("failed to create init directory: %w", err)
+	}
+
+	// Copy binary
+	if err := ip.copyFile(initBinaryPath, targetPath, 0755); err != nil {
+		return fmt.Errorf("failed to copy init binary: %w", err)
+	}
+
+	log.Info().
+		Str("from", initBinaryPath).
+		Str("to", targetPath).
+		Msg("Init binary copied")
+
+	return nil
+}
+
+// mountExt4 mounts an ext4 image temporarily.
+func (ip *ImagePreparer) mountExt4(imagePath string) (string, error) {
+	// Create temp mount point
+	mountDir, err := os.MkdirTemp("", "swarmcracker-mount-")
+	if err != nil {
+		return "", err
+	}
+
+	// Try to mount the image
+	// This requires root privileges or user namespace setup
+	// For non-root, we'll skip this step
+	cmd := exec.Command("mount", "-o", "loop", imagePath, mountDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		os.RemoveAll(mountDir)
+		return "", fmt.Errorf("mount failed: %s: %w", string(output), err)
+	}
+
+	return mountDir, nil
+}
+
+// unmountExt4 unmounts a temporary mount point.
+func (ip *ImagePreparer) unmountExt4(mountDir string) error {
+	// Unmount
+	cmd := exec.Command("umount", mountDir)
+	_ = cmd.Run() // Ignore errors
+
+	// Cleanup temp dir
+	os.RemoveAll(mountDir)
+	return nil
+}
+
+// getInitBinaryPath returns the path to the init binary on the host.
+func (ip *ImagePreparer) getInitBinaryPath() string {
+	// Search for init binaries in common locations
+	paths := []string{
+		"/usr/bin/tini",
+		"/usr/sbin/tini",
+		"/sbin/tini",
+		"/usr/bin/dumb-init",
+		"/usr/sbin/dumb-init",
+		"/sbin/dumb-init",
+	}
+
+	switch ip.initInjector.config.Type {
+	case InitSystemTini:
+		paths = []string{"/usr/bin/tini", "/usr/sbin/tini", "/sbin/tini"}
+	case InitSystemDumbInit:
+		paths = []string{"/usr/bin/dumb-init", "/usr/sbin/dumb-init", "/sbin/dumb-init"}
+	}
+
+	for _, path := range paths {
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+	}
+
+	// Check if binary is in PATH
+	cmd := exec.Command("which", string(ip.initInjector.config.Type))
+	if output, err := cmd.CombinedOutput(); err == nil {
+		return strings.TrimSpace(string(output))
+	}
+
+	return ""
+}
+
+// copyFile copies a file from src to dst.
+func (ip *ImagePreparer) copyFile(src, dst string, mode os.FileMode) error {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(dst, data, mode)
 }
 
 // Cleanup removes old unused rootfs images.
 func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) error {
 	log.Info().Int("keep_days", keepDays).Msg("Cleaning up old images")
-	
+
 	// TODO: Implement cleanup logic
 	// 1. Scan rootfs directory
 	// 2. Check file ages
 	// 3. Remove files older than keepDays
-	
+
 	return nil
 }

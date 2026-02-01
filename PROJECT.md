@@ -85,15 +85,16 @@ SwarmCracker Executor ← WE ARE HERE
 ### Short-term (Next 2 Weeks)
 1. ✅ Integration with SwarmKit agent (COMPLETE - agent functional)
 2. ✅ End-to-end testing with real Firecracker (COMPLETE)
-3. ⏳ **[IN PROGRESS]** Add proper init systems to container images
-4. ⏳ **[IN PROGRESS]** Implement VM networking (bridge, TAP)
-5. ⏳ **[TODO]** Full SwarmKit manager+agent deployment
+3. ✅ Add proper init systems to container images (COMPLETE - tini/dumb-init support)
+4. ✅ Implement VM networking (COMPLETE - bridge, TAP, NAT, IP allocation)
+5. ✅ **[COMPLETE]** Full SwarmKit manager+agent deployment guide (5KB+ comprehensive guide with examples)
 
 ### Medium-term (Next Month)
-1. **[PENDING]** Security hardening (jailer integration)
-2. **[PENDING]** Production testing and performance optimization
-3. **[PENDING]** Alpha release (v0.2.0)
-4. **[PENDING]** CI/CD pipeline setup
+1. ⏳ **[NEW]** Test deployment guide on real hardware
+2. **[PENDING]** Security hardening (jailer integration)
+3. **[PENDING]** Production testing and performance optimization
+4. **[PENDING]** Alpha release (v0.2.0)
+5. **[PENDING]** CI/CD pipeline setup
 
 ---
 

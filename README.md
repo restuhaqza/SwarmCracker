@@ -38,6 +38,8 @@ SwarmCracker brings you the best of both worlds:
 | 🚀 **Full Orchestration** | Services, scaling, rolling updates, secrets, configs |
 | 🛡️ **Hardware Security** | KVM-based virtualization, not just kernel namespaces |
 | ⚡ **Fast Startup** | MicroVMs boot in milliseconds with Firecracker |
+| 🔧 **Init System Support** | Tini/dumb-init for proper signal handling & zombie reaping |
+| 🌐 **VM Networking** | Bridge networking with IP allocation and NAT for internet access |
 | 🎯 **KVM-Free** | No Kubernetes complexity needed |
 
 ### Why SwarmCracker?
@@ -47,6 +49,7 @@ SwarmCracker brings you the best of both worlds:
 - **No Docker required** - Uses SwarmKit standalone (swarmd/swarmctl)
 - **Better resource utilization** - MicroVMs are lighter than full VMs
 - **Cloud-native** - Designed for microservices and distributed systems
+- **Production-ready init systems** - Tini/dumb-init ensure reliable process management
 
 ## 🏗️ Architecture
 
@@ -252,7 +255,21 @@ See the [Installation Guide](docs/guides/installation.md)
 |----------|-------------|
 | [📖 Installation Guide](docs/guides/installation.md) | Step-by-step setup instructions for any environment |
 | [⚙️ Configuration Reference](docs/guides/configuration.md) | Complete configuration options with examples |
+| [🔧 Init System Guide](docs/guides/init-systems.md) | Tini/dumb-init for signal handling and zombie reaping |
 | [🏗️ Architecture](docs/architecture/system.md) | System design, components, and data flow |
+| [🌐 Networking Guide](docs/guides/networking.md) | VM networking with bridges, TAP devices, and NAT |
+| [📦 File Management](docs/guides/file-management.md) | Managing files and directories in microVMs |
+
+### SwarmKit Deployment
+
+| Document | Description |
+|----------|-------------|
+| [🚀 Quick Deployment Example](docs/guides/swarmkit/deployment.md) | Basic SwarmKit deployment with SwarmCracker |
+| [🏭 Comprehensive Deployment Guide](docs/guides/swarmkit/deployment-comprehensive.md) | Production-ready multi-node deployment (5KB+ guide) |
+| [🏠 Local Development Example](examples/local-dev/README.md) | Single-node cluster for testing and development |
+| [🏢 Production Cluster Example](examples/production-cluster/README.md) | Multi-node HA cluster with automation scripts |
+| [📖 SwarmKit User Guide](docs/guides/swarmkit/user-guide.md) | Complete SwarmKit features and usage |
+| [🔍 SwarmKit Overview](docs/guides/swarmkit/overview.md) | SwarmKit architecture and integration details |
 
 ### Development
 

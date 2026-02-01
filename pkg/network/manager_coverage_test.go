@@ -469,7 +469,7 @@ func TestNetworkManager_createTapDevice_Variations(t *testing.T) {
 
 			// We can't actually create devices without root, but we can test the logic
 			// by calling createTapDevice and expecting it to fail at execution
-			_, err := nm.createTapDevice(context.Background(), tt.network, tt.index)
+			_, err := nm.createTapDevice(context.Background(), tt.network, tt.index, "test-task")
 
 			// Without root, this will fail
 			// But we can verify the error contains expected elements
@@ -478,6 +478,8 @@ func TestNetworkManager_createTapDevice_Variations(t *testing.T) {
 	}
 }
 
+// DEPRECATED: Bridge IP setup is now handled automatically via ensureBridge
+/*
 func TestNetworkManager_SetupBridgeIP_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -539,6 +541,7 @@ func TestNetworkManager_SetupBridgeIP_EdgeCases(t *testing.T) {
 		})
 	}
 }
+*/
 
 func TestTapDevice_CreationVariations(t *testing.T) {
 	tests := []struct {

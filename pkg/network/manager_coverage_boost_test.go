@@ -127,7 +127,7 @@ func TestNetworkManager_CreateTapDevice_FailureScenarios(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ctx := context.Background()
-			tap, err := nm.createTapDevice(ctx, tt.network, tt.index)
+			tap, err := nm.createTapDevice(ctx, tt.network, tt.index, "test-task")
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -271,6 +271,8 @@ func TestNetworkManager_CleanupNetwork_PartialFailure(t *testing.T) {
 }
 
 // TestNetworkManager_SetupBridgeIP_InvalidInputs tests SetupBridgeIP with invalid inputs
+// DEPRECATED: Bridge IP setup is now handled automatically via ensureBridge
+/*
 func TestNetworkManager_SetupBridgeIP_InvalidInputs(t *testing.T) {
 	nm := &NetworkManager{
 		config: types.NetworkConfig{
@@ -324,6 +326,7 @@ func TestNetworkManager_SetupBridgeIP_InvalidInputs(t *testing.T) {
 		})
 	}
 }
+*/
 
 // TestNetworkManager_EnsureBridge_DoubleCheck tests double-checked locking pattern
 func TestNetworkManager_EnsureBridge_DoubleCheck(t *testing.T) {
@@ -745,7 +748,7 @@ func TestParseMacAddress_EdgeCases(t *testing.T) {
 			}
 
 			// createTapDevice should handle invalid MACs gracefully
-			_, err := nm.createTapDevice(ctx, network, 0)
+			_, err := nm.createTapDevice(ctx, network, 0, "test-task")
 			// We're not passing MAC directly, but the function should be robust
 			_ = err
 		})

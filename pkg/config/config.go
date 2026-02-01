@@ -38,6 +38,8 @@ type ExecutorConfig struct {
 	DefaultMemoryMB int          `yaml:"default_memory_mb"`
 	EnableJailer    bool         `yaml:"enable_jailer"`
 	Jailer          JailerConfig `yaml:"jailer"`
+	InitSystem      string       `yaml:"init_system"` // "none", "tini", "dumb-init"
+	InitGracePeriod int          `yaml:"init_grace_period"` // Grace period in seconds
 }
 
 // NetworkConfig holds network configuration.
@@ -45,6 +47,12 @@ type NetworkConfig struct {
 	BridgeName       string `yaml:"bridge_name"`
 	EnableRateLimit  bool   `yaml:"enable_rate_limit"`
 	MaxPacketsPerSec int    `yaml:"max_packets_per_sec"`
+
+	// IP allocation settings
+	Subnet     string `yaml:"subnet"`      // e.g., "192.168.127.0/24"
+	BridgeIP   string `yaml:"bridge_ip"`   // e.g., "192.168.127.1/24"
+	IPMode     string `yaml:"ip_mode"`     // "static" or "dhcp"
+	NATEnabled bool   `yaml:"nat_enabled"` // Enable masquerading for internet access
 }
 
 // LoggingConfig holds logging configuration.
@@ -197,6 +205,18 @@ func (c *Config) SetDefaults() {
 	if c.Network.BridgeName == "" {
 		c.Network.BridgeName = "swarm-br0"
 	}
+	if c.Network.Subnet == "" {
+		c.Network.Subnet = "192.168.127.0/24"
+	}
+	if c.Network.BridgeIP == "" {
+		c.Network.BridgeIP = "192.168.127.1/24"
+	}
+	if c.Network.IPMode == "" {
+		c.Network.IPMode = "static" // Static IP allocation is simpler
+	}
+	if !c.Network.NATEnabled {
+		c.Network.NATEnabled = true // Enable NAT by default for internet access
+	}
 
 	// Set logging defaults
 	if c.Logging.Level == "" {
@@ -306,6 +326,9 @@ func (n *NetworkConfig) Validate() error {
 	}
 	if n.EnableRateLimit && n.MaxPacketsPerSec <= 0 {
 		return fmt.Errorf("max_packets_per_sec must be > 0 when rate limiting is enabled")
+	}
+	if n.IPMode != "" && n.IPMode != "static" && n.IPMode != "dhcp" {
+		return fmt.Errorf("ip_mode must be either 'static' or 'dhcp'")
 	}
 	return nil
 }

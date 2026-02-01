@@ -129,6 +129,12 @@ type NetworkConfig struct {
 	BridgeName       string `yaml:"bridge_name"`
 	EnableRateLimit  bool   `yaml:"enable_rate_limit"`
 	MaxPacketsPerSec int    `yaml:"max_packets_per_sec"`
+
+	// IP allocation settings
+	Subnet     string `yaml:"subnet"`      // e.g., "192.168.127.0/24"
+	BridgeIP   string `yaml:"bridge_ip"`   // e.g., "192.168.127.1/24"
+	IPMode     string `yaml:"ip_mode"`     // "static" or "dhcp"
+	NATEnabled bool   `yaml:"nat_enabled"` // Enable masquerading for internet access
 }
 
 // Interfaces for the executor components
@@ -156,4 +162,5 @@ type ImagePreparer interface {
 type NetworkManager interface {
 	PrepareNetwork(ctx context.Context, task *Task) error
 	CleanupNetwork(ctx context.Context, task *Task) error
+	GetTapIP(taskID string) (string, error) // Get allocated IP for task
 }

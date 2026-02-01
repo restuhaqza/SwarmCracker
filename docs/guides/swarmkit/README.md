@@ -11,7 +11,8 @@ SwarmCracker's integration with Docker SwarmKit.
 ## User Guides
 
 - [User Guide](user-guide.md) - Complete user guide for SwarmKit features
-- [Deployment Guide](deployment.md) - Deploying SwarmKit with SwarmCracker
+- [Deployment Guide](deployment.md) - Basic deployment example
+- [Comprehensive Deployment Guide](deployment-comprehensive.md) - Production-ready multi-node deployment with security, operations, and troubleshooting
 
 ## Quick Links
 

@@ -1,0 +1,46 @@
+[Unit]
+Description=SwarmKit Worker Daemon with SwarmCracker
+Documentation=https://github.com/restuhaqza/swarmcracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+
+# Main command
+ExecStart=/usr/local/bin/swarmd \
+  -d /var/lib/swarmkit/worker \
+  --hostname %H \
+  --join-addr ${MANAGER_IP}:4242 \
+  --join-token ${WORKER_TOKEN} \
+  --listen-remote-api 0.0.0.0:4242 \
+  --executor firecracker \
+  --executor-config /etc/swarmcracker/worker.yaml \
+  --debug
+
+# Environment file for tokens
+EnvironmentFile=/etc/swarmcracker/tokens.env
+
+# Restart configuration
+Restart=always
+RestartSec=5
+StartLimitInterval=0
+
+# Security
+NoNewPrivileges=false
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=8192
+
+# Capability for KVM access
+AmbientCapabilities=CAP_SYS_RESOURCE
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=swarmd-worker
+
+[Install]
+WantedBy=multi-user.target

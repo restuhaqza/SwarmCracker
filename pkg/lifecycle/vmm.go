@@ -39,12 +39,14 @@ type ManagerConfig struct {
 
 // VMInstance represents a running Firecracker VM.
 type VMInstance struct {
-	ID        string
-	PID       int
-	Config    interface{}
-	State     VMState
-	CreatedAt time.Time
-	SocketPath string
+	ID              string
+	PID             int
+	Config          interface{}
+	State           VMState
+	CreatedAt       time.Time
+	SocketPath      string
+	InitSystem      string
+	GracePeriodSec  int
 }
 
 // VMState represents the state of a VM.
@@ -177,13 +179,22 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 	}
 
 	// Store VM instance
+	// Extract init system info from task annotations if available
+	initSystem := "none"
+	gracePeriod := 10
+	if initSys, ok := task.Annotations["init_system"]; ok {
+		initSystem = initSys
+	}
+
 	vmInstance := &VMInstance{
-		ID:         task.ID,
-		PID:        cmd.Process.Pid,
-		Config:     config,
-		State:      VMStateRunning,
-		CreatedAt:  time.Now(),
-		SocketPath: socketPath,
+		ID:             task.ID,
+		PID:            cmd.Process.Pid,
+		Config:         config,
+		State:          VMStateRunning,
+		CreatedAt:      time.Now(),
+		SocketPath:     socketPath,
+		InitSystem:     initSystem,
+		GracePeriodSec: gracePeriod,
 	}
 
 	vm.vms[task.ID] = vmInstance
@@ -192,12 +203,13 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 		Str("task_id", task.ID).
 		Str("vm_id", task.ID).
 		Int("pid", cmd.Process.Pid).
+		Str("init_system", initSystem).
 		Msg("VM started successfully")
 
 	return nil
 }
 
-// Stop stops a running VM.
+// Stop stops a running VM with graceful shutdown.
 func (vm *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	if task == nil {
 		return fmt.Errorf("task cannot be nil")
@@ -213,8 +225,78 @@ func (vm *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 
 	log.Info().
 		Str("task_id", task.ID).
+		Str("init_system", vmInstance.InitSystem).
 		Msg("Stopping VM")
 
+	// If init system is enabled, try graceful shutdown first
+	if vmInstance.InitSystem != "none" {
+		return vm.gracefulShutdown(ctx, vmInstance)
+	}
+
+	// Otherwise, use the old method (SendCtrlAltDel)
+	return vm.hardShutdown(ctx, vmInstance)
+}
+
+// gracefulShutdown attempts to gracefully shutdown the VM using init system.
+func (vm *VMMManager) gracefulShutdown(ctx context.Context, vmInstance *VMInstance) error {
+	log.Debug().
+		Str("task_id", vmInstance.ID).
+		Int("grace_period_sec", vmInstance.GracePeriodSec).
+		Msg("Attempting graceful shutdown via init")
+
+	// Send SIGTERM to the Firecracker process
+	// Firecracker will forward this to the VM, and init will handle it
+	process, err := os.FindProcess(vmInstance.PID)
+	if err != nil {
+		return vm.forceKillVM(vmInstance)
+	}
+
+	// Send SIGTERM
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		log.Debug().Err(err).Msg("SIGTERM failed, forcing kill")
+		return vm.forceKillVM(vmInstance)
+	}
+
+	// Wait for graceful shutdown or timeout
+	gracePeriod := time.Duration(vmInstance.GracePeriodSec) * time.Second
+	shutdownChan := make(chan error, 1)
+
+	go func() {
+		// Poll for process exit
+		for {
+			if err := process.Signal(syscall.Signal(0)); err != nil {
+				// Process has exited
+				shutdownChan <- nil
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}()
+
+	select {
+	case <-shutdownChan:
+		vmInstance.State = VMStateStopped
+		log.Info().
+			Str("task_id", vmInstance.ID).
+			Msg("VM shutdown gracefully")
+		return nil
+	case <-time.After(gracePeriod):
+		// Grace period expired, force kill
+		log.Warn().
+			Str("task_id", vmInstance.ID).
+			Msg("Grace period expired, forcing kill")
+		return vm.forceKillVM(vmInstance)
+	case <-ctx.Done():
+		// Context cancelled
+		log.Warn().
+			Str("task_id", vmInstance.ID).
+			Msg("Context cancelled during shutdown")
+		return vm.forceKillVM(vmInstance)
+	}
+}
+
+// hardShutdown sends SendCtrlAltDel to the VM (legacy method).
+func (vm *VMMManager) hardShutdown(ctx context.Context, vmInstance *VMInstance) error {
 	socketPath := vmInstance.SocketPath
 
 	// Send shutdown signal
@@ -251,7 +333,7 @@ func (vm *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	}
 
 	log.Info().
-		Str("task_id", task.ID).
+		Str("task_id", vmInstance.ID).
 		Msg("VM stopped")
 
 	return nil

@@ -1,0 +1,79 @@
+# SwarmCracker Worker Configuration
+# For production multi-node cluster
+
+executor:
+  # Firecracker kernel path
+  kernel_path: "/usr/share/firecracker/vmlinux"
+
+  # Directory for storing extracted root filesystems
+  rootfs_dir: "/var/lib/firecracker/rootfs"
+
+  # Directory for Firecracker API sockets
+  socket_dir: "/var/run/firecracker"
+
+  # Default VM resources
+  default_vcpus: 2
+  default_memory_mb: 1024
+
+  # Init system for proper process management
+  init_system: "tini"  # Options: none, tini, dumb-init
+
+  # Grace period in seconds before SIGKILL
+  init_grace_period: 10
+
+  # Enable jailer for additional security (recommended for production)
+  enable_jailer: true
+
+  # Jailer configuration
+  jailer:
+    uid: 1000
+    gid: 1000
+    chroot_base_dir: "/srv/jailer"
+    netns: ""
+
+network:
+  # Bridge device name for VM networking
+  bridge_name: "swarm-br0"
+
+  # Bridge IP address (gateway for VMs)
+  bridge_ip: "192.168.127.1/24"
+
+  # IP allocation mode
+  ip_mode: "static"  # Options: static, dhcp
+
+  # Enable NAT for internet access from VMs
+  nat_enabled: true
+
+  # Rate limiting (prevent VM abuse)
+  enable_rate_limit: true
+  max_packets_per_sec: 10000
+
+logging:
+  # Log level: debug, info, warn, error
+  level: "info"
+
+  # Log format: json, text
+  format: "json"
+
+  # Log output: stdout, stderr, or file path
+  output: "stdout"
+
+images:
+  # Image cache directory
+  cache_dir: "/var/cache/swarmcracker"
+
+  # Maximum cache size in MB
+  max_cache_size_mb: 10240
+
+  # Enable image layer caching
+  enable_layer_cache: true
+
+metrics:
+  # Enable Prometheus metrics endpoint
+  enabled: true
+
+  # Metrics server address
+  address: ":9090"
+
+  # Metrics format
+  format: "prometheus"

@@ -190,6 +190,7 @@ type MockNetworkManager struct {
 	PreparedTasks   map[string]bool
 	CleanedTasks    map[string]bool
 	ShouldFail      bool
+	IPMap           map[string]string // Task ID -> IP mapping
 }
 
 // NewMockNetworkManager creates a new mock network manager.
@@ -198,6 +199,7 @@ func NewMockNetworkManager() *MockNetworkManager {
 		PreparedTasks: make(map[string]bool),
 		CleanedTasks:  make(map[string]bool),
 		ShouldFail:    false,
+		IPMap:         make(map[string]string),
 	}
 }
 
@@ -208,6 +210,8 @@ func (m *MockNetworkManager) PrepareNetwork(ctx context.Context, task *types.Tas
 		return fmt.Errorf("mock: prepare network failed")
 	}
 	m.PreparedTasks[task.ID] = true
+	// Assign a mock IP
+	m.IPMap[task.ID] = "192.168.127." + fmt.Sprintf("%d", len(m.PreparedTasks)+1)
 	return nil
 }
 
@@ -218,7 +222,16 @@ func (m *MockNetworkManager) CleanupNetwork(ctx context.Context, task *types.Tas
 		return fmt.Errorf("mock: cleanup network failed")
 	}
 	m.CleanedTasks[task.ID] = true
+	delete(m.IPMap, task.ID)
 	return nil
+}
+
+// GetTapIP returns the mock IP for a task.
+func (m *MockNetworkManager) GetTapIP(taskID string) (string, error) {
+	if ip, ok := m.IPMap[taskID]; ok {
+		return ip, nil
+	}
+	return "", fmt.Errorf("no IP found for task %s", taskID)
 }
 
 // IsTaskPrepared checks if network was prepared for a task.

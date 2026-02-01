@@ -110,7 +110,7 @@ func TestNetworkManager_createTapDevice_WithIPv4CIDRVariations(t *testing.T) {
 			Addresses: []string{cidr},
 		}
 
-		_, err := nm.createTapDevice(context.Background(), network, i)
+		_, err := nm.createTapDevice(context.Background(), network, i, "test-task")
 		_ = err
 	}
 }
@@ -134,7 +134,7 @@ func TestNetworkManager_createTapDevice_LargeInterfaceIndex(t *testing.T) {
 	}
 
 	// Test with large interface index
-	_, err := nm.createTapDevice(context.Background(), network, 999)
+	_, err := nm.createTapDevice(context.Background(), network, 999, "test-task")
 	_ = err
 }
 
@@ -164,6 +164,8 @@ func TestNetworkManager_removeTapDevice_Concurrent(t *testing.T) {
 	wg.Wait()
 }
 
+// DEPRECATED: Bridge IP setup is now handled automatically via ensureBridge
+/*
 func TestNetworkManager_SetupBridgeIP_MultipleIPs(t *testing.T) {
 	nm := NewNetworkManager(types.NetworkConfig{
 		BridgeName: "test-br-multi-ip",
@@ -183,6 +185,7 @@ func TestNetworkManager_SetupBridgeIP_MultipleIPs(t *testing.T) {
 		_ = err
 	}
 }
+*/
 
 func TestNetworkManager_ListTapDevices_ConcurrentAccess(t *testing.T) {
 	nm := NewNetworkManager(types.NetworkConfig{

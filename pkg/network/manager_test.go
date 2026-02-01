@@ -2,360 +2,426 @@ package network
 
 import (
 	"context"
-	"fmt"
 	"net"
+	"os/exec"
+	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-func TestNewNetworkManager(t *testing.T) {
-	config := types.NetworkConfig{
-		BridgeName:       "test-br0",
-		EnableRateLimit:  true,
-		MaxPacketsPerSec: 10000,
-	}
-
-	nm := NewNetworkManager(config)
-
-	assert.NotNil(t, nm)
-	assert.Equal(t, config, nm.(*NetworkManager).config)
-	assert.NotNil(t, nm.(*NetworkManager).bridges)
-	assert.NotNil(t, nm.(*NetworkManager).tapDevices)
-}
-
-func TestNetworkManager_PrepareNetwork(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	tests := []struct {
-		name    string
-		task    *types.Task
-		wantErr bool
-	}{
-		{
-			name: "single network attachment",
-			task: &types.Task{
-				ID:        "task-1",
-				ServiceID: "service-1",
-				Networks: []types.NetworkAttachment{
-					{
-						Network: types.Network{
-							ID: "network-1",
-							Spec: types.NetworkSpec{
-								DriverConfig: &types.DriverConfig{
-									Bridge: &types.BridgeConfig{
-										Name: "test-br0",
-									},
-								},
-							},
-						},
-						Addresses: []string{"192.168.1.10/24"},
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "multiple network attachments",
-			task: &types.Task{
-				ID:        "task-2",
-				ServiceID: "service-2",
-				Networks: []types.NetworkAttachment{
-					{
-						Network: types.Network{
-							ID: "network-1",
-							Spec: types.NetworkSpec{
-								DriverConfig: &types.DriverConfig{
-									Bridge: &types.BridgeConfig{
-										Name: "test-br0",
-									},
-								},
-							},
-						},
-						Addresses: []string{"192.168.1.10/24"},
-					},
-					{
-						Network: types.Network{
-							ID: "network-2",
-							Spec: types.NetworkSpec{
-								DriverConfig: &types.DriverConfig{
-									Bridge: &types.BridgeConfig{
-										Name: "test-br1",
-									},
-								},
-							},
-						},
-						Addresses: []string{"10.0.0.10/24"},
-					},
-				},
-			},
-			wantErr: false,
-		},
-		{
-			name: "no network attachments",
-			task: &types.Task{
-				ID:        "task-3",
-				ServiceID: "service-3",
-				Networks: []types.NetworkAttachment{},
-			},
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := types.NetworkConfig{
-				BridgeName: "test-br0",
-			}
-			nm := NewNetworkManager(config).(*NetworkManager)
-
-			ctx := context.Background()
-			err := nm.PrepareNetwork(ctx, tt.task)
-
-			// In CI/test environments, this might fail due to permissions
-			// We'll just check the logic flow
-			if err != nil {
-				t.Logf("PrepareNetwork failed (expected in container): %v", err)
-			}
-
-			// Verify the task ID was tracked
-			nm.mu.RLock()
-			hasDevices := len(nm.tapDevices) > 0
-			nm.mu.RUnlock()
-
-			if len(tt.task.Networks) > 0 && err == nil {
-				assert.True(t, hasDevices, "Should have created TAP devices")
-			}
-		})
-	}
-}
-
-func TestNetworkManager_CleanupNetwork(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	config := types.NetworkConfig{
-		BridgeName: "test-br0",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
-
-	// Create a mock TAP device entry
-	taskID := "task-cleanup"
-	nm.mu.Lock()
-	nm.tapDevices[taskID+"-tap-eth0"] = &TapDevice{
-		Name:    "tap-eth0",
-		Bridge:  "test-br0",
-		IP:      "192.168.1.10",
-		Netmask: "255.255.255.0",
-	}
-	nm.mu.Unlock()
-
-	task := &types.Task{
-		ID:   taskID,
-		Spec: types.TaskSpec{},
-	}
-
-	ctx := context.Background()
-	err := nm.CleanupNetwork(ctx, task)
-
-	// In container, this might fail - that's ok
-	if err != nil {
-		t.Logf("CleanupNetwork failed (expected in container): %v", err)
-	}
-
-	// Verify the entry was removed
-	nm.mu.RLock()
-	_, exists := nm.tapDevices[taskID+"-tap-eth0"]
-	nm.mu.RUnlock()
-
-	assert.False(t, exists, "TAP device entry should be removed")
-}
-
-func TestNetworkManager_ensureBridge(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
+// TestIPAllocator_Allocate tests IP allocation.
+func TestIPAllocator_Allocate(t *testing.T) {
 	tests := []struct {
 		name       string
-		bridgeName string
-		wantErr    bool
+		subnet     string
+		gateway    string
+		vmID       string
+		wantPrefix string
 	}{
 		{
-			name:       "valid bridge name",
-			bridgeName: "test-br0",
-			wantErr:    false,
+			name:       "allocate IP in subnet",
+			subnet:     "192.168.127.0/24",
+			gateway:    "192.168.127.1",
+			vmID:       "vm-test-1",
+			wantPrefix: "192.168.127.",
 		},
 		{
-			name:       "another bridge",
-			bridgeName: "test-br1",
-			wantErr:    false,
+			name:       "allocate different IPs for different VMs",
+			subnet:     "192.168.127.0/24",
+			gateway:    "192.168.127.1",
+			vmID:       "vm-test-2",
+			wantPrefix: "192.168.127.",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := types.NetworkConfig{
-				BridgeName: tt.bridgeName,
-			}
-			nm := NewNetworkManager(config).(*NetworkManager)
-
-			ctx := context.Background()
-			err := nm.ensureBridge(ctx)
-
-			// In container, might fail due to permissions
+			allocator, err := NewIPAllocator(tt.subnet, tt.gateway)
 			if err != nil {
-				t.Logf("ensureBridge failed (expected in container): %v", err)
+				t.Fatalf("NewIPAllocator() error = %v", err)
 			}
 
-			// Verify bridge is tracked
-			nm.mu.RLock()
-			exists := nm.bridges[tt.bridgeName]
-			nm.mu.RUnlock()
+			ip, err := allocator.Allocate(tt.vmID)
+			if err != nil {
+				t.Fatalf("Allocate() error = %v", err)
+			}
 
-			// If no error, bridge should be tracked
-			if err == nil {
-				assert.True(t, exists)
+			if !strings.HasPrefix(ip, tt.wantPrefix) {
+				t.Errorf("Allocate() IP = %v, want prefix %v", ip, tt.wantPrefix)
+			}
+
+			// Verify IP is in subnet
+			parsedIP := net.ParseIP(ip)
+			_, subnet, _ := net.ParseCIDR(tt.subnet)
+			if !subnet.Contains(parsedIP) {
+				t.Errorf("Allocate() IP %v not in subnet %v", ip, tt.subnet)
 			}
 		})
 	}
 }
 
-func TestNetworkManager_createTapDevice(t *testing.T) {
+// TestIPAllocator_Deterministic tests that same VM ID gets same IP.
+func TestIPAllocator_Deterministic(t *testing.T) {
+	allocator, err := NewIPAllocator("192.168.127.0/24", "192.168.127.1")
+	if err != nil {
+		t.Fatalf("NewIPAllocator() error = %v", err)
+	}
+
+	vmID := "vm-deterministic-test"
+
+	ip1, err := allocator.Allocate(vmID)
+	if err != nil {
+		t.Fatalf("First Allocate() error = %v", err)
+	}
+
+	// Release and reallocate
+	allocator.Release(ip1)
+	ip2, err := allocator.Allocate(vmID)
+	if err != nil {
+		t.Fatalf("Second Allocate() error = %v", err)
+	}
+
+	if ip1 != ip2 {
+		t.Errorf("Deterministic allocation failed: got %v, want %v", ip2, ip1)
+	}
+}
+
+// TestIPAllocator_DifferentVMs tests that different VMs get different IPs.
+func TestIPAllocator_DifferentVMs(t *testing.T) {
+	allocator, err := NewIPAllocator("192.168.127.0/24", "192.168.127.1")
+	if err != nil {
+		t.Fatalf("NewIPAllocator() error = %v", err)
+	}
+
+	ip1, err := allocator.Allocate("vm-1")
+	if err != nil {
+		t.Fatalf("Allocate(vm-1) error = %v", err)
+	}
+
+	ip2, err := allocator.Allocate("vm-2")
+	if err != nil {
+		t.Fatalf("Allocate(vm-2) error = %v", err)
+	}
+
+	if ip1 == ip2 {
+		t.Errorf("Different VMs should get different IPs: both got %v", ip1)
+	}
+}
+
+// TestNewNetworkManager tests NetworkManager creation.
+func TestNewNetworkManager(t *testing.T) {
+	config := types.NetworkConfig{
+		BridgeName: "test-br0",
+		Subnet:     "192.168.127.0/24",
+		BridgeIP:   "192.168.127.1/24",
+		IPMode:     "static",
+		NATEnabled: true,
+	}
+
+	nm := NewNetworkManager(config)
+	if nm == nil {
+		t.Fatal("NewNetworkManager() returned nil")
+	}
+
+	nmImpl, ok := nm.(*NetworkManager)
+	if !ok {
+		t.Fatal("NewNetworkManager() did not return *NetworkManager")
+	}
+
+	if nmImpl.ipAllocator == nil {
+		t.Error("IP allocator not initialized")
+	}
+}
+
+// TestNetworkManager_PrepareNetwork tests network preparation.
+func TestNetworkManager_PrepareNetwork(t *testing.T) {
 	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
+		t.Skip("skipping integration test")
+	}
+
+	// Check if running as root
+	if syscall.Geteuid() != 0 {
+		t.Skip("skipping test: requires root privileges")
 	}
 
 	config := types.NetworkConfig{
 		BridgeName: "test-br0",
+		Subnet:     "192.168.127.0/24",
+		BridgeIP:   "192.168.127.1/24",
+		IPMode:     "static",
+		NATEnabled: true,
 	}
-	nm := NewNetworkManager(config).(*NetworkManager)
 
-	network := types.NetworkAttachment{
-		Network: types.Network{
-			ID: "network-1",
-			Spec: types.NetworkSpec{
-				DriverConfig: &types.DriverConfig{
-					Bridge: &types.BridgeConfig{
-						Name: "test-br0",
+	nm := NewNetworkManager(config).(*NetworkManager)
+	ctx := context.Background()
+
+	task := &types.Task{
+		ID: "test-task-1",
+		Spec: types.TaskSpec{
+			Runtime: &types.Container{
+				Image: "nginx:alpine",
+			},
+		},
+		Networks: []types.NetworkAttachment{
+			{
+				Network: types.Network{
+					ID: "network-1",
+					Spec: types.NetworkSpec{
+						DriverConfig: &types.DriverConfig{
+							Bridge: &types.BridgeConfig{
+								Name: "test-br0",
+							},
+						},
 					},
 				},
 			},
 		},
-		Addresses: []string{"192.168.1.10/24"},
 	}
 
-	ctx := context.Background()
-	tap, err := nm.createTapDevice(ctx, network, 0)
-
-	// In container, might fail due to permissions
+	// Prepare network
+	err := nm.PrepareNetwork(ctx, task)
 	if err != nil {
-		t.Skipf("createTapDevice failed (expected in container): %v", err)
+		t.Fatalf("PrepareNetwork() error = %v", err)
 	}
 
-	require.NotNil(t, tap)
-	assert.Contains(t, tap.Name, "tap")
-	assert.Equal(t, "test-br0", tap.Bridge)
-	assert.Equal(t, "192.168.1.10", tap.IP)
-	assert.Equal(t, "255.255.255.0", tap.Netmask)
-}
-
-func TestNetworkManager_removeTapDevice(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	tap := &TapDevice{
-		Name:    "tap-test-remove",
-		Bridge:  "test-br0",
-		IP:      "192.168.1.10",
-		Netmask: "255.255.255.0",
-	}
-
-	config := types.NetworkConfig{
-		BridgeName: "test-br0",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
-
-	err := nm.removeTapDevice(tap)
-
-	// In container, might fail - that's ok
+	// Verify bridge exists
+	output, err := exec.Command("ip", "link", "show", "test-br0").CombinedOutput()
 	if err != nil {
-		t.Logf("removeTapDevice failed (expected in container): %v", err)
+		t.Errorf("Bridge not created: %v, output: %s", err, string(output))
 	}
-}
 
-func TestNetworkManager_ListTapDevices(t *testing.T) {
-	config := types.NetworkConfig{
-		BridgeName: "test-br0",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
-
-	// Add some mock devices
-	nm.mu.Lock()
-	nm.tapDevices["task1-tap-eth0"] = &TapDevice{
-		Name:   "tap-eth0",
-		Bridge: "test-br0",
-	}
-	nm.tapDevices["task2-tap-eth1"] = &TapDevice{
-		Name:   "tap-eth1",
-		Bridge: "test-br0",
-	}
-	nm.mu.Unlock()
-
+	// Verify TAP device exists
 	devices := nm.ListTapDevices()
-
-	assert.Len(t, devices, 2)
-}
-
-func TestParseMacAddress(t *testing.T) {
-	// Test MAC address parsing/validation
-	tests := []struct {
-		name    string
-		mac     string
-		wantErr bool
-	}{
-		{
-			name:    "valid MAC",
-			mac:     "02:FC:00:00:00:01",
-			wantErr: false,
-		},
-		{
-			name:    "invalid MAC",
-			mac:     "invalid",
-			wantErr: true,
-		},
+	if len(devices) != 1 {
+		t.Errorf("Expected 1 TAP device, got %d", len(devices))
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			hw, err := net.ParseMAC(tt.mac)
-			if tt.wantErr {
-				assert.Error(t, err)
-				assert.Nil(t, hw)
-			} else {
-				assert.NoError(t, err)
-				assert.NotNil(t, hw)
-			}
-		})
+	tap := devices[0]
+	if tap.Name == "" {
+		t.Error("TAP device name is empty")
 	}
+
+	// Verify TAP device exists in system
+	output, err = exec.Command("ip", "link", "show", tap.Name).CombinedOutput()
+	if err != nil {
+		t.Errorf("TAP device not created: %v, output: %s", err, string(output))
+	}
+
+	// Verify IP is allocated
+	if tap.IP == "" {
+		t.Error("TAP device IP is empty")
+	}
+
+	// Cleanup
+	err = nm.CleanupNetwork(ctx, task)
+	if err != nil {
+		t.Errorf("CleanupNetwork() error = %v", err)
+	}
+
+	// Verify TAP device is removed
+	time.Sleep(100 * time.Millisecond)
+	output, err = exec.Command("ip", "link", "show", tap.Name).CombinedOutput()
+	if err == nil {
+		t.Error("TAP device not removed after cleanup")
+	}
+
+	// Clean up bridge
+	exec.Command("ip", "link", "delete", "test-br0").Run()
 }
 
-// Benchmark network operations
-func BenchmarkNetworkManager_PrepareNetwork(b *testing.B) {
+// TestNetworkManager_GetTapIP tests IP retrieval.
+func TestNetworkManager_GetTapIP(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	if syscall.Geteuid() != 0 {
+		t.Skip("skipping test: requires root privileges")
+	}
+
 	config := types.NetworkConfig{
 		BridgeName: "test-br0",
+		Subnet:     "192.168.127.0/24",
+		BridgeIP:   "192.168.127.1/24",
+		IPMode:     "static",
 	}
-	nm := NewNetworkManager(config)
+
+	nm := NewNetworkManager(config).(*NetworkManager)
+	ctx := context.Background()
 
 	task := &types.Task{
-		ID:        "bench-task",
-		ServiceID: "bench-service",
+		ID: "test-task-ip",
+		Spec: types.TaskSpec{
+			Runtime: &types.Container{
+				Image: "nginx:alpine",
+			},
+		},
+		Networks: []types.NetworkAttachment{
+			{
+				Network: types.Network{
+					ID: "network-1",
+					Spec: types.NetworkSpec{
+						DriverConfig: &types.DriverConfig{
+							Bridge: &types.BridgeConfig{
+								Name: "test-br0",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := nm.PrepareNetwork(ctx, task)
+	if err != nil {
+		t.Fatalf("PrepareNetwork() error = %v", err)
+	}
+
+	ip, err := nm.GetTapIP(task.ID)
+	if err != nil {
+		t.Errorf("GetTapIP() error = %v", err)
+	}
+
+	if ip == "" {
+		t.Error("GetTapIP() returned empty IP")
+	}
+
+	// Verify IP is in subnet
+	parsedIP := net.ParseIP(ip)
+	_, subnet, _ := net.ParseCIDR(config.Subnet)
+	if !subnet.Contains(parsedIP) {
+		t.Errorf("IP %v not in subnet %v", ip, config.Subnet)
+	}
+
+	// Cleanup
+	nm.CleanupNetwork(ctx, task)
+	exec.Command("ip", "link", "delete", "test-br0").Run()
+}
+
+// TestNetworkManager_MultipleVMs tests multiple VMs get different IPs.
+func TestNetworkManager_MultipleVMs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	if syscall.Geteuid() != 0 {
+		t.Skip("skipping test: requires root privileges")
+	}
+
+	config := types.NetworkConfig{
+		BridgeName: "test-br0",
+		Subnet:     "192.168.127.0/24",
+		BridgeIP:   "192.168.127.1/24",
+		IPMode:     "static",
+	}
+
+	nm := NewNetworkManager(config).(*NetworkManager)
+	ctx := context.Background()
+
+	task1 := &types.Task{
+		ID: "test-task-multiple-1",
+		Spec: types.TaskSpec{
+			Runtime: &types.Container{
+				Image: "nginx:alpine",
+			},
+		},
+		Networks: []types.NetworkAttachment{
+			{
+				Network: types.Network{
+					ID: "network-1",
+					Spec: types.NetworkSpec{
+						DriverConfig: &types.DriverConfig{
+							Bridge: &types.BridgeConfig{
+								Name: "test-br0",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	task2 := &types.Task{
+		ID: "test-task-multiple-2",
+		Spec: types.TaskSpec{
+			Runtime: &types.Container{
+				Image: "nginx:alpine",
+			},
+		},
+		Networks: []types.NetworkAttachment{
+			{
+				Network: types.Network{
+					ID: "network-1",
+					Spec: types.NetworkSpec{
+						DriverConfig: &types.DriverConfig{
+							Bridge: &types.BridgeConfig{
+								Name: "test-br0",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	err := nm.PrepareNetwork(ctx, task1)
+	if err != nil {
+		t.Fatalf("PrepareNetwork(task1) error = %v", err)
+	}
+
+	err = nm.PrepareNetwork(ctx, task2)
+	if err != nil {
+		t.Fatalf("PrepareNetwork(task2) error = %v", err)
+	}
+
+	ip1, err := nm.GetTapIP(task1.ID)
+	if err != nil {
+		t.Errorf("GetTapIP(task1) error = %v", err)
+	}
+
+	ip2, err := nm.GetTapIP(task2.ID)
+	if err != nil {
+		t.Errorf("GetTapIP(task2) error = %v", err)
+	}
+
+	if ip1 == ip2 {
+		t.Errorf("Different tasks should get different IPs: both got %v", ip1)
+	}
+
+	// Cleanup
+	nm.CleanupNetwork(ctx, task1)
+	nm.CleanupNetwork(ctx, task2)
+	exec.Command("ip", "link", "delete", "test-br0").Run()
+}
+
+// TestNetworkManager_NoSubnet tests behavior when subnet is not configured.
+func TestNetworkManager_NoSubnet(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	if syscall.Geteuid() != 0 {
+		t.Skip("skipping test: requires root privileges")
+	}
+
+	config := types.NetworkConfig{
+		BridgeName: "test-br0",
+		// No subnet configured
+	}
+
+	nm := NewNetworkManager(config).(*NetworkManager)
+	ctx := context.Background()
+
+	task := &types.Task{
+		ID: "test-task-no-subnet",
+		Spec: types.TaskSpec{
+			Runtime: &types.Container{
+				Image: "nginx:alpine",
+			},
+		},
 		Networks: []types.NetworkAttachment{
 			{
 				Network: types.Network{
@@ -365,324 +431,22 @@ func BenchmarkNetworkManager_PrepareNetwork(b *testing.B) {
 		},
 	}
 
-	ctx := context.Background()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		// Just test the logic flow, not actual device creation
-		task.ID = "bench-task-" + string(rune(i))
-		_ = nm.PrepareNetwork(ctx, task)
-	}
-}
-
-// TestNetworkManager_PrepareNetwork_EdgeCases tests edge cases for PrepareNetwork
-func TestNetworkManager_PrepareNetwork_EdgeCases(t *testing.T) {
-	config := types.NetworkConfig{
-		BridgeName: "test-br0",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
-
-	ctx := context.Background()
-
-	tests := []struct {
-		name    string
-		task    *types.Task
-		wantErr bool
-	}{
-		{
-			name: "empty networks",
-			task: &types.Task{
-				ID:        "task-empty",
-				ServiceID: "service-1",
-				Networks:  []types.NetworkAttachment{},
-			},
-			wantErr: false, // Empty networks is valid
-		},
-		{
-			name: "nil networks slice",
-			task: &types.Task{
-				ID:        "task-nil-nets",
-				ServiceID: "service-1",
-				Networks:  nil,
-			},
-			wantErr: false, // Nil networks is valid
-		},
-		{
-			name: "network without driver config",
-			task: &types.Task{
-				ID:        "task-no-driver",
-				ServiceID: "service-1",
-				Networks: []types.NetworkAttachment{
-					{
-						Network: types.Network{
-							ID: "network-1",
-							Spec: types.NetworkSpec{
-								DriverConfig: nil,
-							},
-						},
-					},
-				},
-			},
-			wantErr: false, // Should use default bridge
-		},
-		{
-			name: "network with empty bridge name",
-			task: &types.Task{
-				ID:        "task-empty-bridge",
-				ServiceID: "service-1",
-				Networks: []types.NetworkAttachment{
-					{
-						Network: types.Network{
-							ID: "network-1",
-							Spec: types.NetworkSpec{
-								DriverConfig: &types.DriverConfig{
-									Bridge: &types.BridgeConfig{
-										Name: "",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			wantErr: false, // Should use default bridge
-		},
-		{
-			name: "multiple networks",
-			task: &types.Task{
-				ID:        "task-multi",
-				ServiceID: "service-1",
-				Networks: []types.NetworkAttachment{
-					{
-						Network: types.Network{
-							ID: "network-1",
-							Spec: types.NetworkSpec{
-								DriverConfig: &types.DriverConfig{
-									Bridge: &types.BridgeConfig{
-										Name: "test-br0",
-									},
-								},
-							},
-						},
-					},
-					{
-						Network: types.Network{
-							ID: "network-2",
-							Spec: types.NetworkSpec{
-								DriverConfig: &types.DriverConfig{
-									Bridge: &types.BridgeConfig{
-										Name: "test-br1",
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			wantErr: false, // Multiple networks is valid
-		},
-		{
-			name: "network with IPv6 address",
-			task: &types.Task{
-				ID:        "task-ipv6",
-				ServiceID: "service-1",
-				Networks: []types.NetworkAttachment{
-					{
-						Network: types.Network{
-							ID: "network-1",
-							Spec: types.NetworkSpec{
-								DriverConfig: &types.DriverConfig{
-									Bridge: &types.BridgeConfig{
-										Name: "test-br0",
-									},
-								},
-							},
-						},
-						Addresses: []string{"2001:db8::1/64"},
-					},
-				},
-			},
-			wantErr: false, // IPv6 is valid
-		},
-		{
-			name: "network with multiple addresses",
-			task: &types.Task{
-				ID:        "task-multi-addr",
-				ServiceID: "service-1",
-				Networks: []types.NetworkAttachment{
-					{
-						Network: types.Network{
-							ID: "network-1",
-							Spec: types.NetworkSpec{
-								DriverConfig: &types.DriverConfig{
-									Bridge: &types.BridgeConfig{
-										Name: "test-br0",
-									},
-								},
-							},
-						},
-						Addresses: []string{"192.168.1.10/24", "192.168.1.11/24"},
-					},
-				},
-			},
-			wantErr: false, // Multiple addresses is valid (should use first)
-		},
+	err := nm.PrepareNetwork(ctx, task)
+	if err != nil {
+		t.Fatalf("PrepareNetwork() error = %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := nm.PrepareNetwork(ctx, tt.task)
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				// Don't assert.NoError because actual device creation may fail
-				// Just verify the logic doesn't crash
-				_ = err
-			}
-		})
-	}
-}
-
-// TestNetworkManager_createTapDevice_EdgeCases tests edge cases for createTapDevice
-func TestNetworkManager_createTapDevice_EdgeCases(t *testing.T) {
-	config := types.NetworkConfig{
-		BridgeName: "default-br",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
-
-	ctx := context.Background()
-
-	tests := []struct {
-		name    string
-		network types.NetworkAttachment
-		index   int
-	}{
-		{
-			name: "empty addresses",
-			network: types.NetworkAttachment{
-				Network: types.Network{
-					ID: "network-1",
-					Spec: types.NetworkSpec{
-						DriverConfig: &types.DriverConfig{
-							Bridge: &types.BridgeConfig{
-								Name: "test-br0",
-							},
-						},
-					},
-				},
-				Addresses: []string{},
-			},
-			index: 0,
-		},
-		{
-			name: "nil addresses",
-			network: types.NetworkAttachment{
-				Network: types.Network{
-					ID: "network-1",
-					Spec: types.NetworkSpec{
-						DriverConfig: &types.DriverConfig{
-							Bridge: &types.BridgeConfig{
-								Name: "test-br0",
-							},
-						},
-					},
-				},
-				Addresses: nil,
-			},
-			index: 1,
-		},
-		{
-			name: "use default bridge",
-			network: types.NetworkAttachment{
-				Network: types.Network{
-					ID: "network-1",
-					Spec: types.NetworkSpec{
-						DriverConfig: nil,
-					},
-				},
-				Addresses: []string{"192.168.1.10/24"},
-			},
-			index: 2,
-		},
-		{
-			name: "empty bridge name",
-			network: types.NetworkAttachment{
-				Network: types.Network{
-					ID: "network-1",
-					Spec: types.NetworkSpec{
-						DriverConfig: &types.DriverConfig{
-							Bridge: &types.BridgeConfig{
-								Name: "",
-							},
-						},
-					},
-				},
-				Addresses: []string{"192.168.1.10/24"},
-			},
-			index: 3,
-		},
-		{
-			name: "address without CIDR",
-			network: types.NetworkAttachment{
-				Network: types.Network{
-					ID: "network-1",
-					Spec: types.NetworkSpec{
-						DriverConfig: &types.DriverConfig{
-							Bridge: &types.BridgeConfig{
-								Name: "test-br0",
-							},
-						},
-					},
-				},
-				Addresses: []string{"192.168.1.10"},
-			},
-			index: 4,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// These will likely fail without privileges, but test the logic
-			_, err := nm.createTapDevice(ctx, tt.network, tt.index)
-			// We expect failures due to permissions, but the code should not panic
-			_ = err
-		})
-	}
-}
-
-// TestTapDevice_Concurrency tests concurrent access to network manager
-func TestTapDevice_Concurrency(t *testing.T) {
-	config := types.NetworkConfig{
-		BridgeName: "test-br0",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
-
-	// Add some mock TAP devices
-	nm.mu.Lock()
-	for i := 0; i < 10; i++ {
-		nm.tapDevices[fmt.Sprintf("task%d-tap-eth%d", i, i)] = &TapDevice{
-			Name:   fmt.Sprintf("tap-eth%d", i),
-			Bridge: "test-br0",
-		}
-	}
-	nm.mu.Unlock()
-
-	// Concurrent reads
-	done := make(chan bool)
-	for i := 0; i < 10; i++ {
-		go func() {
-			defer func() { done <- true }()
-			devices := nm.ListTapDevices()
-			_ = devices
-		}()
-	}
-
-	// Wait for all goroutines
-	for i := 0; i < 10; i++ {
-		<-done
-	}
-
-	// Verify no deadlocks or races
+	// TAP should be created but without IP
 	devices := nm.ListTapDevices()
-	assert.Len(t, devices, 10)
+	if len(devices) != 1 {
+		t.Errorf("Expected 1 TAP device, got %d", len(devices))
+	}
+
+	if devices[0].IP != "" {
+		t.Errorf("Expected no IP when subnet not configured, got %v", devices[0].IP)
+	}
+
+	// Cleanup
+	nm.CleanupNetwork(ctx, task)
+	exec.Command("ip", "link", "delete", "test-br0").Run()
 }

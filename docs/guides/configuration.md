@@ -261,6 +261,48 @@ executor:
 - Optional, for advanced networking
 - See `man ip-netns` for details
 
+### executor.init_system
+
+Init system type for proper process lifecycle management in microVMs.
+
+```yaml
+executor:
+  init_system: "tini"  # Options: "none", "tini", "dumb-init"
+```
+
+**Type:** string
+**Default:** `tini`
+**Required:** No
+
+**Options:**
+- `none` - No init system (not recommended for production)
+- `tini` - Tini init system (default, recommended)
+- `dumb-init` - Dumb-init init system (lighter alternative)
+
+**Notes:**
+- Init systems ensure proper signal handling and zombie process reaping
+- See [Init System Guide](init-systems.md) for detailed information
+- Tini is the default and recommended for production use
+
+### executor.init_grace_period
+
+Grace period in seconds for graceful shutdown before SIGKILL.
+
+```yaml
+executor:
+  init_grace_period: 10  # seconds
+```
+
+**Type:** integer
+**Default:** `10`
+**Required:** No
+
+**Notes:**
+- Only used when `init_system` is not `none`
+- Controls how long to wait for graceful shutdown before forcing kill
+- Higher values (30-60s) recommended for databases
+- Lower values (5-10s) sufficient for web servers
+
 ## Network Configuration
 
 ### network.bridge_name
@@ -277,8 +319,80 @@ network:
 **Required:** Yes
 
 **Notes:**
-- Bridge must exist before starting VMs
-- See [installation.md](installation.md) for bridge setup
+- Bridge will be created automatically by SwarmCracker
+- See [networking.md](networking.md) for complete networking guide
+
+### network.subnet
+
+Subnet for VM network (CIDR notation).
+
+```yaml
+network:
+  subnet: "192.168.127.0/24"
+```
+
+**Type:** string
+**Default:** `192.168.127.0/24`
+**Required:** No
+
+**Notes:**
+- Used for static IP allocation
+- VMs will get IPs from this range
+- Change if conflicting with existing networks
+
+### network.bridge_ip
+
+IP address for the bridge (CIDR notation).
+
+```yaml
+network:
+  bridge_ip: "192.168.127.1/24"
+```
+
+**Type:** string
+**Default:** `192.168.127.1/24`
+**Required:** No
+
+**Notes:**
+- Acts as gateway for VMs
+- Must be in the configured subnet
+- VMs can reach host via this IP
+
+### network.ip_mode
+
+IP allocation mode.
+
+```yaml
+network:
+  ip_mode: "static"
+```
+
+**Type:** string
+**Default:** `static`
+**Required:** No
+**Valid values:** `static`, `dhcp`
+
+**Notes:**
+- `static` - Deterministic IP allocation based on VM ID hash (default)
+- `dhcp` - Requires external DHCP server (not yet implemented)
+
+### network.nat_enabled
+
+Enable NAT/masquerading for internet access.
+
+```yaml
+network:
+  nat_enabled: true
+```
+
+**Type:** boolean
+**Default:** `true`
+**Required:** No
+
+**Notes:**
+- Allows VMs to access internet via host
+- Uses iptables masquerading
+- Requires IP forwarding enabled on host
 
 ### network.enable_rate_limit
 

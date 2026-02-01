@@ -1,0 +1,37 @@
+[Unit]
+Description=SwarmKit Manager Daemon
+Documentation=https://github.com/moby/swarmkit
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+
+# Main command
+ExecStart=/usr/local/bin/swarmd \
+  -d /var/lib/swarmkit/manager \
+  --listen-control-api /var/run/swarmkit/swarm.sock \
+  --hostname %H \
+  --listen-remote-api 0.0.0.0:4242 \
+  --debug
+
+# Restart configuration
+Restart=always
+RestartSec=5
+StartLimitInterval=0
+
+# Security
+NoNewPrivileges=false
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=8192
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=swarmd-manager
+
+[Install]
+WantedBy=multi-user.target
