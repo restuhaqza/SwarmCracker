@@ -75,3 +75,9 @@ pkg/image/*.img
 test/tmp/
 test/temp/
 /tmp/
+
+# Vagrant artifacts
+.vagrant/
+
+# Compiled binaries (test-specific)
+test-automation/swarmcracker-agent
