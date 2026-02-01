@@ -140,31 +140,31 @@ sudo swarmcracker-agent \
 
 ### Deploying Services
 
-Once the agent is running and joined to the Swarm:
+Once the agent is running and joined to the SwarmKit cluster:
 
 ```bash
-# Deploy a service as microVMs
-docker service create \
+# Deploy a service as microVMs using swarmctl
+export SWARM_SOCKET=/var/run/swarmkit/swarm.sock
+swarmctl service create \
   --name nginx \
   --replicas 3 \
-  --executor firecracker \
   nginx:alpine
 
 # Scale services
-docker service scale nginx=5
+swarmctl service update nginx --replicas 5
 
 # Update service
-docker service update --image nginx:1.25 nginx
+swarmctl service update nginx --image nginx:1.25
 
 # Remove service
-docker service rm nginx
+swarmctl service remove nginx
 ```
 
 ## Benefits
 
 1. **Strong Isolation** - Each task runs in its own microVM with KVM-based isolation
-2. **Simple Orchestration** - Uses familiar Docker Swarm commands
-3. **No Kubernetes Complexity** - Keep Swarm's simplicity while getting VM isolation
+2. **SwarmKit Orchestration** - Production-grade orchestration without Docker dependency
+3. **No Kubernetes Complexity** - Keep SwarmKit's simplicity while getting VM isolation
 4. **Fast Startup** - MicroVMs boot in milliseconds
 5. **Resource Efficiency** - Lighter than full VMs, more isolated than containers
 
@@ -184,7 +184,9 @@ go test -cover ./pkg/swarmkit/...
 
 ```bash
 # Start SwarmKit manager
-swarmd --listen-remote-api 0.0.0.0:4242 --debug
+swarmd -d /tmp/manager \
+  --listen-control-api /tmp/manager/swarm.sock \
+  --listen-remote-api 0.0.0.0:4242
 
 # Start SwarmCracker agent
 swarmcracker-agent \
@@ -192,8 +194,9 @@ swarmcracker-agent \
   --join-token <token> \
   --foreign-id worker-1
 
-# Deploy test service
-docker service create --name test --replicas 1 nginx:alpine
+# Deploy test service using swarmctl
+export SWARM_SOCKET=/tmp/manager/swarm.sock
+swarmctl service create --name test --replicas 1 nginx:alpine
 ```
 
 ## Current Status

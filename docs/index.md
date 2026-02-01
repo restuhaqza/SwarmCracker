@@ -27,7 +27,7 @@ See [docs/testing/](docs/testing/) for complete testing documentation:
 - [Testing Overview](docs/testing/README.md) - Testing framework overview
 - [Unit Tests](docs/testing/unit.md) - Unit testing guide
 - [Integration Tests](docs/testing/integration.md) - Integration testing with Firecracker
-- [E2E Tests](docs/testing/e2e.md) - End-to-end testing with Docker Swarm
+- [E2E Tests](docs/testing/e2e.md) - End-to-end testing with SwarmKit
 - [Test Infrastructure](docs/testing/testinfra.md) - Infrastructure validation
 
 ### Project Documentation

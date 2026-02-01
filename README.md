@@ -6,14 +6,14 @@
   <img src="docs/architecture.png" alt="SwarmCracker Logo" width="200">
 </p>
 
-### Firecracker MicroVMs meet Docker Swarm Orchestration
+### Firecracker MicroVMs with SwarmKit Orchestration
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/restuhaqza/swarmcracker)](https://goreportcard.com/report/github.com/restuhaqza/swarmcracker)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/restuhaqza/swarmcracker)
 [![Coverage](https://img.shields.io/badge/coverage-81.2%25-green.svg)](https://github.com/restuhaqza/swarmcracker)
 
-**Hardware-isolated microVMs with the simplicity of Docker Swarm**
+**Hardware-isolated microVMs with SwarmKit orchestration**
 
 [Features](#-what-it-does) • [Quick Start](#-quick-start) • [Docs](#-documentation) • [Contributing](#-contributing)
 
@@ -34,7 +34,7 @@ SwarmCracker brings you the best of both worlds:
 | Feature | Benefit |
 |---------|---------|
 | 🔥 **MicroVM Isolation** | Each container gets its own kernel via KVM |
-| 🐳 **Swarm Simplicity** | Use familiar Docker Swarm commands and workflows |
+| 🐳 **SwarmKit Orchestration** | Production-grade orchestration without Docker dependency |
 | 🚀 **Full Orchestration** | Services, scaling, rolling updates, secrets, configs |
 | 🛡️ **Hardware Security** | KVM-based virtualization, not just kernel namespaces |
 | ⚡ **Fast Startup** | MicroVMs boot in milliseconds with Firecracker |
@@ -43,7 +43,8 @@ SwarmCracker brings you the best of both worlds:
 ### Why SwarmCracker?
 
 - **Stronger isolation than containers** - Full kernel separation via KVM
-- **Simpler than Kubernetes** - Keep Swarm's easy-to-use interface
+- **Simpler than Kubernetes** - SwarmKit orchestration without K8s complexity
+- **No Docker required** - Uses SwarmKit standalone (swarmd/swarmctl)
 - **Better resource utilization** - MicroVMs are lighter than full VMs
 - **Cloud-native** - Designed for microservices and distributed systems
 
@@ -131,7 +132,7 @@ graph TB
 
 ### How It Works
 
-1. **SwarmKit** assigns tasks to the agent (same as Docker Swarm)
+1. **SwarmKit** assigns tasks to the agent via gRPC
 2. **SwarmCracker Executor** translates tasks into MicroVM configurations
 3. **Image Preparer** converts OCI images to root filesystems
 4. **Network Manager** creates isolated TAP devices for each VM
@@ -147,7 +148,7 @@ Before you begin, ensure you have:
 - ✅ **Linux** with KVM support (`ls /dev/kvm`)
 - ✅ **Go 1.21+** installed
 - ✅ **Firecracker v1.0.0+** installed
-- ✅ **Docker Swarm** initialized or SwarmKit standalone
+- ✅ **SwarmKit** standalone (swarmd/swarmctl) - see [SwarmKit Guide](docs/SWARMKIT_GUIDE.md)
 
 ### Installation
 
@@ -207,18 +208,27 @@ network:
   bridge_name: "swarm-br0"
 EOF
 
-# 2. Start SwarmKit agent with SwarmCracker
-swarmd \
-  --addr 0.0.0.0:4242 \
-  --remote-addrs <manager-ip>:4242 \
+# 2. Start SwarmKit manager (first node only)
+swarmd -d /tmp/node-1 \
+  --listen-control-api /tmp/node-1/swarm.sock \
+  --hostname node-1 \
+  --listen-remote-api 0.0.0.0:4242
+
+# 3. Get join tokens
+export SWARM_SOCKET=/tmp/node-1/swarm.sock
+swarmctl cluster inspect default
+
+# 4. Start SwarmKit worker nodes with SwarmCracker executor
+swarmd -d /tmp/node-2 \
+  --hostname node-2 \
+  --join-addr <manager-ip>:4242 \
+  --join-token <WORKER_TOKEN> \
+  --listen-remote-api 0.0.0.0:4243 \
   --executor firecracker \
   --executor-config /etc/swarmcracker/config.yaml
 
-# 3. Deploy services as microVMs
-docker service create \
-  --name nginx \
-  --executor firecracker \
-  nginx:latest
+# 5. Deploy services as microVMs using swarmctl
+swarmctl service create --name nginx --image nginx:latest
 ```
 
 <details>
