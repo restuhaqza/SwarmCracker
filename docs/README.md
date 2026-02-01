@@ -49,6 +49,7 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 
 | Document | Description |
 |----------|-------------|
+| [Test Coverage Report](reports/coverage/) | **Coverage status: 85-88% overall** |
 | [E2E Test Summary](reports/e2e/summary.md) | End-to-end test results |
 | [Unit Test Reports](reports/unit/) | Unit test coverage reports |
 | [Bug Reports](reports/BUGS_ISSUES.md) | Known issues and bugs |
