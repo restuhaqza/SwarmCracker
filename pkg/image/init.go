@@ -25,9 +25,6 @@ type InitSystemConfig struct {
 // InitInjector injects init systems into root filesystems.
 type InitInjector struct {
 	config *InitSystemConfig
-	// Embedded init binaries (loaded from assets)
-	tiniBinary     []byte
-	dumbInitBinary []byte
 }
 
 // NewInitInjector creates a new InitInjector.
@@ -53,7 +50,7 @@ func NewInitInjector(config *InitSystemConfig) *InitInjector {
 func (ii *InitInjector) Inject(rootfsPath string) error {
 	// Mount the rootfs temporarily to inject init
 	// For now, we'll use a simpler approach: extract to temp dir, add init, recreate
-	
+
 	switch ii.config.Type {
 	case InitSystemTini:
 		return ii.injectTini(rootfsPath)
@@ -104,7 +101,7 @@ func (ii *InitInjector) GetInitArgs(containerArgs []string) []string {
 func (ii *InitInjector) injectTini(rootfsPath string) error {
 	// For ext4 images, we need to mount, copy, unmount
 	// Simplified approach: use debugfs or mount loop
-	
+
 	// Try mounting the image
 	mountDir, err := ii.mountRootfs(rootfsPath)
 	if err != nil {
@@ -114,7 +111,7 @@ func (ii *InitInjector) injectTini(rootfsPath string) error {
 
 	// Copy or download tini binary
 	tiniPath := filepath.Join(mountDir, "sbin", "tini")
-	
+
 	// Check if tini already exists
 	if _, err := os.Stat(tiniPath); err == nil {
 		// Already exists
@@ -140,7 +137,7 @@ func (ii *InitInjector) injectDumbInit(rootfsPath string) error {
 	defer ii.unmountRootfs(mountDir)
 
 	dumbInitPath := filepath.Join(mountDir, "sbin", "dumb-init")
-	
+
 	// Check if dumb-init already exists
 	if _, err := os.Stat(dumbInitPath); err == nil {
 		return nil
@@ -166,7 +163,7 @@ func (ii *InitInjector) mountRootfs(imagePath string) (string, error) {
 	// This requires root privileges or user namespace setup
 	// For now, return error if not possible
 	// In production, use sudo or setuid binaries
-	
+
 	return mountDir, nil
 }
 
@@ -208,11 +205,9 @@ exec "$@"
 		return err
 	}
 
-	// Create symlink at /init for compatibility
+	// Create symlink at /init for compatibility (non-fatal)
 	initLink := filepath.Join(mountDir, "init")
-	if err := os.Symlink("/sbin/"+initName, initLink); err != nil {
-		// Ignore if symlink exists or fails
-	}
+	_ = os.Symlink("/sbin/"+initName, initLink)
 
 	return nil
 }

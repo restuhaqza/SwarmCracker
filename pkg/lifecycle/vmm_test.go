@@ -20,8 +20,8 @@ func TestNewVMMManager(t *testing.T) {
 		wantDir string
 	}{
 		{
-			name: "default config",
-			config: nil,
+			name:    "default config",
+			config:  nil,
 			wantDir: "/var/run/firecracker",
 		},
 		{
@@ -56,7 +56,7 @@ func TestVMMManager_Start(t *testing.T) {
 	require.NoError(t, err)
 
 	config := &ManagerConfig{
-		SocketDir: socketDir,
+		SocketDir:  socketDir,
 		KernelPath: "/usr/share/firecracker/vmlinux",
 	}
 	vmm := NewVMMManager(config).(*VMMManager)
@@ -79,7 +79,7 @@ func TestVMMManager_Start(t *testing.T) {
 			"boot_args":         "console=ttyS0 reboot=k panic=1",
 		},
 		"machine_config": map[string]interface{}{
-			"vcpu_count":  1,
+			"vcpu_count":   1,
 			"mem_size_mib": 512,
 			"ht_enabled":   false,
 		},
@@ -140,7 +140,7 @@ func TestVMMManager_Stop(t *testing.T) {
 	socketDir := filepath.Join(tmpDir, "firecracker")
 
 	config := &ManagerConfig{
-		SocketDir: socketDir,
+		SocketDir:  socketDir,
 		KernelPath: "/usr/share/firecracker/vmlinux",
 	}
 	vmm := NewVMMManager(config).(*VMMManager)
@@ -425,9 +425,9 @@ func BenchmarkVMMManager_Describe(b *testing.B) {
 	for i := 0; i < 100; i++ {
 		taskID := "task-" + string(rune(i))
 		vmm.vms[taskID] = &VMInstance{
-			ID:   taskID,
-			PID:  os.Getpid(),
-			State: VMStateRunning,
+			ID:        taskID,
+			PID:       os.Getpid(),
+			State:     VMStateRunning,
 			CreatedAt: time.Now(),
 		}
 	}
@@ -451,7 +451,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 	require.NoError(t, err)
 
 	config := &ManagerConfig{
-		SocketDir: socketDir,
+		SocketDir:  socketDir,
 		KernelPath: "/usr/share/firecracker/vmlinux",
 	}
 	vmm := NewVMMManager(config).(*VMMManager)
@@ -465,9 +465,9 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name: "nil task",
-			task: nil,
-			configJSON: "{}",
+			name:        "nil task",
+			task:        nil,
+			configJSON:  "{}",
 			expectError: false, // Will be handled by nil check
 		},
 		{
@@ -475,7 +475,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: "",
 			},
-			configJSON: "{}",
+			configJSON:  "{}",
 			expectError: false,
 		},
 		{
@@ -483,7 +483,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: "task_with-special.chars/123",
 			},
-			configJSON: "{}",
+			configJSON:  "{}",
 			expectError: false,
 		},
 		{
@@ -491,7 +491,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: string(make([]byte, 500)),
 			},
-			configJSON: "{}",
+			configJSON:  "{}",
 			expectError: false,
 		},
 		{
@@ -499,7 +499,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: "test-minimal",
 			},
-			configJSON: `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}}`,
+			configJSON:  `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}}`,
 			expectError: false,
 		},
 		{
@@ -507,7 +507,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: "test-drives",
 			},
-			configJSON: `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}, "drives": [{"drive_id": "rootfs", "path_on_host": "/tmp/rootfs.ext4", "is_root_device": true, "is_read_only": false}]}`,
+			configJSON:  `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}, "drives": [{"drive_id": "rootfs", "path_on_host": "/tmp/rootfs.ext4", "is_root_device": true, "is_read_only": false}]}`,
 			expectError: false,
 		},
 		{
@@ -515,7 +515,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: "test-net",
 			},
-			configJSON: `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}, "network_interfaces": [{"iface_id": "eth0", "guest_mac": "02:FC:00:00:00:01"}]}`,
+			configJSON:  `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}, "network_interfaces": [{"iface_id": "eth0", "guest_mac": "02:FC:00:00:00:01"}]}`,
 			expectError: false,
 		},
 		{
@@ -523,7 +523,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: "test-machine",
 			},
-			configJSON: `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}, "machine_config": {"vcpu_count": 2, "mem_size_mib": 1024, "ht_enabled": false}}`,
+			configJSON:  `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}, "machine_config": {"vcpu_count": 2, "mem_size_mib": 1024, "ht_enabled": false}}`,
 			expectError: false,
 		},
 		{
@@ -531,7 +531,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: "test-empty",
 			},
-			configJSON: "{}",
+			configJSON:  "{}",
 			expectError: false,
 		},
 		{
@@ -539,7 +539,7 @@ func TestVMMManager_Start_EdgeCases(t *testing.T) {
 			task: &types.Task{
 				ID: "test-full",
 			},
-			configJSON: `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}, "drives": [{"drive_id": "rootfs", "path_on_host": "/tmp/rootfs.ext4", "is_root_device": true, "is_read_only": false}], "machine_config": {"vcpu_count": 2, "mem_size_mib": 1024}, "network_interfaces": [{"iface_id": "eth0", "guest_mac": "02:FC:00:00:00:01"}]}`,
+			configJSON:  `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}, "drives": [{"drive_id": "rootfs", "path_on_host": "/tmp/rootfs.ext4", "is_root_device": true, "is_read_only": false}], "machine_config": {"vcpu_count": 2, "mem_size_mib": 1024}, "network_interfaces": [{"iface_id": "eth0", "guest_mac": "02:FC:00:00:00:01"}]}`,
 			expectError: false,
 		},
 	}

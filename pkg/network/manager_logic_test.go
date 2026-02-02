@@ -12,10 +12,10 @@ import (
 // TestNetworkManager_PrepareNetwork_InternalLogic tests internal logic paths without system calls
 func TestNetworkManager_PrepareNetwork_InternalLogic(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupFunc   func(*NetworkManager)
-		task        *types.Task
-		validate    func(*testing.T, *NetworkManager, error)
+		name      string
+		setupFunc func(*NetworkManager)
+		task      *types.Task
+		validate  func(*testing.T, *NetworkManager, error)
 	}{
 		{
 			name: "prepare with existing bridge in cache",
@@ -177,10 +177,10 @@ func TestNetworkManager_PrepareNetwork_InternalLogic(t *testing.T) {
 // TestNetworkManager_CleanupNetwork_InternalLogic tests cleanup logic paths
 func TestNetworkManager_CleanupNetwork_InternalLogic(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupFunc   func(*NetworkManager, *types.Task)
-		task        *types.Task
-		validate    func(*testing.T, *NetworkManager, *types.Task, error)
+		name      string
+		setupFunc func(*NetworkManager, *types.Task)
+		task      *types.Task
+		validate  func(*testing.T, *NetworkManager, *types.Task, error)
 	}{
 		{
 			name: "cleanup releases IPs from allocator",
@@ -472,9 +472,9 @@ func TestNetworkManager_GetTapIP_EdgeCases(t *testing.T) {
 // TestNetworkManager_ListTapDevices_Variations tests ListTapDevices variations
 func TestNetworkManager_ListTapDevices_Variations(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupFunc   func(*NetworkManager)
-		validate    func(*testing.T, *NetworkManager, []*TapDevice)
+		name      string
+		setupFunc func(*NetworkManager)
+		validate  func(*testing.T, *NetworkManager, []*TapDevice)
 	}{
 		{
 			name: "list with no devices",
@@ -490,9 +490,9 @@ func TestNetworkManager_ListTapDevices_Variations(t *testing.T) {
 			setupFunc: func(nm *NetworkManager) {
 				nm.mu.Lock()
 				nm.tapDevices["task1-tap-eth0"] = &TapDevice{
-					Name:  "tap-eth0",
+					Name:   "tap-eth0",
 					Bridge: "br0",
-					IP:    "192.168.1.10",
+					IP:     "192.168.1.10",
 				}
 				nm.mu.Unlock()
 			},
@@ -506,15 +506,15 @@ func TestNetworkManager_ListTapDevices_Variations(t *testing.T) {
 			setupFunc: func(nm *NetworkManager) {
 				nm.mu.Lock()
 				nm.tapDevices["task1-tap-eth0"] = &TapDevice{
-					Name: "tap-eth0",
+					Name:   "tap-eth0",
 					Bridge: "br0",
 				}
 				nm.tapDevices["task2-tap-eth0"] = &TapDevice{
-					Name: "tap-eth0",
+					Name:   "tap-eth0",
 					Bridge: "br1",
 				}
 				nm.tapDevices["task2-tap-eth1"] = &TapDevice{
-					Name: "tap-eth1",
+					Name:   "tap-eth1",
 					Bridge: "br1",
 				}
 				nm.mu.Unlock()
@@ -568,10 +568,10 @@ func TestNetworkManager_ListTapDevices_Variations(t *testing.T) {
 // TestIPAllocator_ThreadSafety tests IP allocator thread safety
 func TestIPAllocator_ThreadSafety(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupFunc   func() *IPAllocator
-		taskIDs     []string
-		validate    func(*testing.T, map[string]string)
+		name      string
+		setupFunc func() *IPAllocator
+		taskIDs   []string
+		validate  func(*testing.T, map[string]string)
 	}{
 		{
 			name: "concurrent allocations are deterministic",
@@ -662,7 +662,7 @@ func TestTapDevice_Structure2(t *testing.T) {
 		{
 			name: "minimal TAP device",
 			device: TapDevice{
-				Name: "tap-eth0",
+				Name:   "tap-eth0",
 				Bridge: "br0",
 			},
 		},

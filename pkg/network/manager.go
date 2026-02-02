@@ -27,20 +27,20 @@ type NetworkManager struct {
 
 // TapDevice represents a TAP device.
 type TapDevice struct {
-	Name      string
-	Bridge    string
-	IP        string
-	Netmask   string
-	Gateway   string
-	Subnet    string
+	Name    string
+	Bridge  string
+	IP      string
+	Netmask string
+	Gateway string
+	Subnet  string
 }
 
 // IPAllocator handles static IP allocation.
 type IPAllocator struct {
-	subnet     *net.IPNet
-	gateway    net.IP
-	allocated  map[string]bool // Track allocated IPs
-	mu         sync.Mutex
+	subnet    *net.IPNet
+	gateway   net.IP
+	allocated map[string]bool // Track allocated IPs
+	mu        sync.Mutex
 }
 
 // NewIPAllocator creates a new IP allocator.

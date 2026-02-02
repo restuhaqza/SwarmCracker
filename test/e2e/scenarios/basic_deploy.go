@@ -22,13 +22,13 @@ import (
 
 // BasicDeployScenario tests basic service deployment through SwarmKit
 type BasicDeployScenario struct {
-	manager       *cluster.SwarmKitManager
-	agents        []*cluster.SwarmKitAgent
-	cleanup       *cluster.CleanupManager
-	testDir       string
-	serviceName   string
-	imageName     string
-	replicas      int
+	manager     *cluster.SwarmKitManager
+	agents      []*cluster.SwarmKitAgent
+	cleanup     *cluster.CleanupManager
+	testDir     string
+	serviceName string
+	imageName   string
+	replicas    int
 }
 
 // NewBasicDeployScenario creates a new basic deploy scenario

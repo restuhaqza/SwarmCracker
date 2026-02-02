@@ -148,10 +148,10 @@ func TestVMMManager_StateTransitions(t *testing.T) {
 	// Create initial VM in NEW state
 	vmm.mu.Lock()
 	vmm.vms[taskID] = &VMInstance{
-		ID:        taskID,
-		PID:       os.Getpid(), // Use real process so Signal(0) succeeds
-		State:     VMStateNew,
-		CreatedAt: time.Now(),
+		ID:         taskID,
+		PID:        os.Getpid(), // Use real process so Signal(0) succeeds
+		State:      VMStateNew,
+		CreatedAt:  time.Now(),
 		SocketPath: socketPath,
 	}
 	vmm.mu.Unlock()

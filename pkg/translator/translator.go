@@ -11,21 +11,21 @@ import (
 
 // TaskTranslator converts SwarmKit tasks to Firecracker VM configurations.
 type TaskTranslator struct {
-	kernelPath     string
-	initrdPath     string
-	defaultVCPUs   int
-	defaultMemMB   int
-	initSystem     string // "none", "tini", "dumb-init"
-	initPath       string // Path to init binary
+	kernelPath   string
+	initrdPath   string
+	defaultVCPUs int
+	defaultMemMB int
+	initSystem   string // "none", "tini", "dumb-init"
+	initPath     string // Path to init binary
 }
 
 // Config holds translator configuration.
 type Config struct {
-	KernelPath     string
-	InitrdPath     string
-	DefaultVCPUs   int
-	DefaultMemMB   int
-	InitSystem     string
+	KernelPath   string
+	InitrdPath   string
+	DefaultVCPUs int
+	DefaultMemMB int
+	InitSystem   string
 }
 
 // NewTaskTranslator creates a new TaskTranslator.
@@ -97,11 +97,11 @@ type MachineConfig struct {
 
 // NetworkInterface specifies network configuration.
 type NetworkInterface struct {
-	IfaceID         string
-	HostDevName     string
-	MacAddress      string
-	RxQueueSize     int
-	TxQueueSize     int
+	IfaceID     string
+	HostDevName string
+	MacAddress  string
+	RxQueueSize int
+	TxQueueSize int
 }
 
 // Drive specifies block device configuration.
@@ -288,9 +288,7 @@ func (tt *TaskTranslator) buildRootDrive(container *types.Container, task *types
 // buildVolumeDrive creates a volume drive configuration.
 func (tt *TaskTranslator) buildVolumeDrive(mount types.Mount) Drive {
 	driveID := strings.ReplaceAll(mount.Target, "/", "-")
-	if strings.HasPrefix(driveID, "-") {
-		driveID = driveID[1:]
-	}
+	driveID = strings.TrimPrefix(driveID, "-")
 
 	return Drive{
 		DriveID:      driveID,

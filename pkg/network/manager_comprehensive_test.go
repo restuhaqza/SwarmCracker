@@ -276,7 +276,7 @@ func TestNetworkManager_PrepareNetwork_ErrorPaths(t *testing.T) {
 				nm.config.BridgeName = "br-empty"
 			},
 			task: &types.Task{
-				ID: "task-empty-1",
+				ID:       "task-empty-1",
 				Networks: []types.NetworkAttachment{},
 			},
 			expectError: false, // Should succeed - just no networks to prepare
@@ -426,14 +426,14 @@ func TestNetworkManager_CleanupNetwork_Comprehensive(t *testing.T) {
 			setupFunc: func(nm *NetworkManager, task *types.Task) {
 				nm.mu.Lock()
 				nm.tapDevices[task.ID+"-tap-eth0"] = &TapDevice{
-					Name:  "tap-eth0",
+					Name:   "tap-eth0",
 					Bridge: "br-test",
-					IP:    "192.168.1.10",
+					IP:     "192.168.1.10",
 				}
 				nm.tapDevices[task.ID+"-tap-eth1"] = &TapDevice{
-					Name:  "tap-eth1",
+					Name:   "tap-eth1",
 					Bridge: "br-test",
-					IP:    "192.168.1.11",
+					IP:     "192.168.1.11",
 				}
 				nm.mu.Unlock()
 			},
@@ -498,7 +498,7 @@ func TestNetworkManager_CleanupNetwork_Comprehensive(t *testing.T) {
 					Name: "tap-eth0",
 				}
 			},
-			task:      nil,
+			task:        nil,
 			expectError: false,
 			validate: func(t *testing.T, nm *NetworkManager, task *types.Task, err error) {
 				assert.NoError(t, err, "Cleanup with nil task should return nil")

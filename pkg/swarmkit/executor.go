@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/moby/swarmkit/v2/api"
 	swarmkit_exec "github.com/moby/swarmkit/v2/agent/exec"
+	"github.com/moby/swarmkit/v2/api"
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
@@ -92,9 +92,9 @@ func NewExecutor(config *Config) (*Executor, error) {
 
 	return &Executor{
 		config:      config,
-		imagePrep:  imagePrep,
-		networkMgr: networkMgr,
-		vmmMgr:     vmmMgr,
+		imagePrep:   imagePrep,
+		networkMgr:  networkMgr,
+		vmmMgr:      vmmMgr,
 		controllers: make(map[string]*Controller),
 	}, nil
 }

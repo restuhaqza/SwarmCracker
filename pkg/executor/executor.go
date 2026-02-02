@@ -11,12 +11,12 @@ import (
 // FirecrackerExecutor implements the SwarmKit executor interface
 // to run tasks as Firecracker microVMs.
 type FirecrackerExecutor struct {
-	config      *Config
-	vmmManager  types.VMMManager
-	translator  types.TaskTranslator
-	imagePrep   types.ImagePreparer
-	networkMgr  types.NetworkManager
-	events      chan Event
+	config     *Config
+	vmmManager types.VMMManager
+	translator types.TaskTranslator
+	imagePrep  types.ImagePreparer
+	networkMgr types.NetworkManager
+	events     chan Event
 }
 
 // Config holds the executor configuration.

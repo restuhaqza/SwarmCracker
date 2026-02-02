@@ -858,9 +858,9 @@ func TestParseMacAddress_Valid(t *testing.T) {
 func TestParseMacAddress_Invalid(t *testing.T) {
 	invalidMACs := []string{
 		"invalid",
-		"00:11:22:33:44",           // Too short
-		"00:11:22:33:44:55:66",     // Too long
-		"gg:hh:jj:kk:ll:mm",        // Invalid hex
+		"00:11:22:33:44",       // Too short
+		"00:11:22:33:44:55:66", // Too long
+		"gg:hh:jj:kk:ll:mm",    // Invalid hex
 		"",
 	}
 

@@ -14,15 +14,15 @@ import (
 
 // SwarmKitAgent manages a SwarmKit agent instance for testing
 type SwarmKitAgent struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	binaryPath    string
-	stateDir      string
-	managerAddr   string
-	managerToken  string
-	foreignID     string
-	cmd           *exec.Cmd
-	logger        zerolog.Logger
+	ctx          context.Context
+	cancel       context.CancelFunc
+	binaryPath   string
+	stateDir     string
+	managerAddr  string
+	managerToken string
+	foreignID    string
+	cmd          *exec.Cmd
+	logger       zerolog.Logger
 }
 
 // NewSwarmKitAgent creates a new SwarmKit agent

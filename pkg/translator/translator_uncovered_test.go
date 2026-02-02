@@ -11,9 +11,9 @@ import (
 // TestGetInitPath tests the getInitPath function
 func TestGetInitPath(t *testing.T) {
 	tests := []struct {
-		name        string
-		initSystem  string
-		expected    string
+		name       string
+		initSystem string
+		expected   string
 	}{
 		{
 			name:       "tini init system",
@@ -63,74 +63,74 @@ func TestGetInitPath(t *testing.T) {
 // TestBuildInitArgs tests the buildInitArgs method
 func TestTaskTranslator_BuildInitArgs(t *testing.T) {
 	tests := []struct {
-		name        string
-		initSystem  string
-		initPath    string
+		name         string
+		initSystem   string
+		initPath     string
 		containerCmd []string
-		expected    []string
+		expected     []string
 	}{
 		{
-			name:        "tini with command",
-			initSystem:  "tini",
-			initPath:    "/sbin/tini",
+			name:         "tini with command",
+			initSystem:   "tini",
+			initPath:     "/sbin/tini",
 			containerCmd: []string{"/bin/sh", "-c", "echo hello"},
-			expected:    []string{"/sbin/tini", "--", "/bin/sh", "-c", "echo hello"},
+			expected:     []string{"/sbin/tini", "--", "/bin/sh", "-c", "echo hello"},
 		},
 		{
-			name:        "dumb-init with command",
-			initSystem:  "dumb-init",
-			initPath:    "/sbin/dumb-init",
+			name:         "dumb-init with command",
+			initSystem:   "dumb-init",
+			initPath:     "/sbin/dumb-init",
 			containerCmd: []string{"/app/server"},
-			expected:    []string{"/sbin/dumb-init", "/app/server"},
+			expected:     []string{"/sbin/dumb-init", "/app/server"},
 		},
 		{
-			name:        "no init system",
-			initSystem:  "",
-			initPath:    "",
+			name:         "no init system",
+			initSystem:   "",
+			initPath:     "",
 			containerCmd: []string{"/bin/bash"},
-			expected:    []string{"/bin/bash"},
+			expected:     []string{"/bin/bash"},
 		},
 		{
-			name:        "tini with empty command",
-			initSystem:  "tini",
-			initPath:    "/sbin/tini",
+			name:         "tini with empty command",
+			initSystem:   "tini",
+			initPath:     "/sbin/tini",
 			containerCmd: []string{},
-			expected:    []string{"/sbin/tini", "--"},
+			expected:     []string{"/sbin/tini", "--"},
 		},
 		{
-			name:        "dumb-init with empty command",
-			initSystem:  "dumb-init",
-			initPath:    "/sbin/dumb-init",
+			name:         "dumb-init with empty command",
+			initSystem:   "dumb-init",
+			initPath:     "/sbin/dumb-init",
 			containerCmd: []string{},
-			expected:    []string{"/sbin/dumb-init"},
+			expected:     []string{"/sbin/dumb-init"},
 		},
 		{
-			name:        "tini with single argument",
-			initSystem:  "tini",
-			initPath:    "/sbin/tini",
+			name:         "tini with single argument",
+			initSystem:   "tini",
+			initPath:     "/sbin/tini",
 			containerCmd: []string{"/bin/sleep"},
-			expected:    []string{"/sbin/tini", "--", "/bin/sleep"},
+			expected:     []string{"/sbin/tini", "--", "/bin/sleep"},
 		},
 		{
-			name:        "dumb-init with multiple arguments",
-			initSystem:  "dumb-init",
-			initPath:    "/sbin/dumb-init",
+			name:         "dumb-init with multiple arguments",
+			initSystem:   "dumb-init",
+			initPath:     "/sbin/dumb-init",
 			containerCmd: []string{"python", "-m", "http.server"},
-			expected:    []string{"/sbin/dumb-init", "python", "-m", "http.server"},
+			expected:     []string{"/sbin/dumb-init", "python", "-m", "http.server"},
 		},
 		{
-			name:        "no init system with complex command",
-			initSystem:  "none",
-			initPath:    "",
+			name:         "no init system with complex command",
+			initSystem:   "none",
+			initPath:     "",
 			containerCmd: []string{"/bin/sh", "-c", "ls -la && echo done"},
-			expected:    []string{"/bin/sh", "-c", "ls -la && echo done"},
+			expected:     []string{"/bin/sh", "-c", "ls -la && echo done"},
 		},
 		{
-			name:        "tini with special characters in command",
-			initSystem:  "tini",
-			initPath:    "/sbin/tini",
+			name:         "tini with special characters in command",
+			initSystem:   "tini",
+			initPath:     "/sbin/tini",
 			containerCmd: []string{"/bin/sh", "-c", "echo 'test > file'"},
-			expected:    []string{"/sbin/tini", "--", "/bin/sh", "-c", "echo 'test > file'"},
+			expected:     []string{"/sbin/tini", "--", "/bin/sh", "-c", "echo 'test > file'"},
 		},
 	}
 
@@ -169,7 +169,7 @@ func TestTaskTranslator_ConfigToJSON(t *testing.T) {
 				},
 				NetworkInterfaces: []NetworkInterface{
 					{
-						IfaceID:    "eth0",
+						IfaceID:     "eth0",
 						HostDevName: "tapeth0",
 					},
 				},
@@ -183,8 +183,8 @@ func TestTaskTranslator_ConfigToJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "empty VMMConfig",
-			config: &VMMConfig{},
+			name:        "empty VMMConfig",
+			config:      &VMMConfig{},
 			expectError: false,
 			validate: func(jsonStr string, err error) {
 				assert.NoError(t, err)
@@ -311,8 +311,8 @@ func TestNewTaskTranslator_AdditionalCoverage(t *testing.T) {
 		validate    func(*TaskTranslator, error)
 	}{
 		{
-			name:   "nil config",
-			config: nil,
+			name:        "nil config",
+			config:      nil,
 			expectError: false,
 			validate: func(tt *TaskTranslator, err error) {
 				assert.NoError(t, err)
@@ -355,9 +355,9 @@ func TestNewTaskTranslator_AdditionalCoverage(t *testing.T) {
 // TestBuildBootArgs_EdgeCases tests additional buildBootArgs scenarios
 func TestTaskTranslator_BuildBootArgs_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name        string
-		container   *types.Container
-		expected    string
+		name      string
+		container *types.Container
+		expected  string
 	}{
 		{
 			name: "container with only command",

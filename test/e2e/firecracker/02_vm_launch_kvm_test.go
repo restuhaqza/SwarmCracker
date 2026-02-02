@@ -1,3 +1,4 @@
+//go:build e2e
 // +build e2e
 
 package firecracker
@@ -85,7 +86,7 @@ func TestVMLaunchWithKVM(t *testing.T) {
 				},
 				Resources: types.ResourceRequirements{
 					Limits: &types.Resources{
-						NanoCPUs:    1000000000, // 1 CPU
+						NanoCPUs:    1000000000,        // 1 CPU
 						MemoryBytes: 512 * 1024 * 1024, // 512 MB
 					},
 				},
@@ -100,12 +101,12 @@ func TestVMLaunchWithKVM(t *testing.T) {
 	t.Run("Launch Firecracker VM", func(t *testing.T) {
 		// Create VMM manager
 		vmmConfig := &lifecycle.ManagerConfig{
-			KernelPath:     kernelPath,
-			RootfsDir:      tmpDir,
-			SocketDir:      tmpDir,
-			DefaultVCPUs:   1,
+			KernelPath:      kernelPath,
+			RootfsDir:       tmpDir,
+			SocketDir:       tmpDir,
+			DefaultVCPUs:    1,
 			DefaultMemoryMB: 512,
-			EnableJailer:   false,
+			EnableJailer:    false,
 		}
 
 		vmm := lifecycle.NewVMMManager(vmmConfig)

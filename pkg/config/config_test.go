@@ -68,7 +68,7 @@ invalid yaml content {{{
 			wantErr: true,
 		},
 		{
-			name: "empty config",
+			name:    "empty config",
 			content: ``,
 			wantErr: false, // Empty YAML is valid, just produces empty struct
 		},
@@ -120,9 +120,9 @@ func TestConfig_Validate(t *testing.T) {
 			name: "valid config",
 			config: &Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/usr/share/firecracker/vmlinux",
-					RootfsDir:  "/var/lib/firecracker/rootfs",
-					DefaultVCPUs: 1,
+					KernelPath:      "/usr/share/firecracker/vmlinux",
+					RootfsDir:       "/var/lib/firecracker/rootfs",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -135,8 +135,8 @@ func TestConfig_Validate(t *testing.T) {
 			name: "missing kernel path",
 			config: &Config{
 				Executor: ExecutorConfig{
-					RootfsDir: "/var/lib/firecracker/rootfs",
-					DefaultVCPUs: 1,
+					RootfsDir:       "/var/lib/firecracker/rootfs",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -149,8 +149,8 @@ func TestConfig_Validate(t *testing.T) {
 			name: "missing rootfs dir",
 			config: &Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/usr/share/firecracker/vmlinux",
-					DefaultVCPUs: 1,
+					KernelPath:      "/usr/share/firecracker/vmlinux",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -163,9 +163,9 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid VCPUs",
 			config: &Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/usr/share/firecracker/vmlinux",
-					RootfsDir:  "/var/lib/firecracker/rootfs",
-					DefaultVCPUs: 0,
+					KernelPath:      "/usr/share/firecracker/vmlinux",
+					RootfsDir:       "/var/lib/firecracker/rootfs",
+					DefaultVCPUs:    0,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -178,9 +178,9 @@ func TestConfig_Validate(t *testing.T) {
 			name: "invalid memory",
 			config: &Config{
 				Executor: ExecutorConfig{
-					KernelPath:     "/usr/share/firecracker/vmlinux",
-					RootfsDir:      "/var/lib/firecracker/rootfs",
-					DefaultVCPUs: 1,
+					KernelPath:      "/usr/share/firecracker/vmlinux",
+					RootfsDir:       "/var/lib/firecracker/rootfs",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 0,
 				},
 				Network: NetworkConfig{
@@ -290,11 +290,11 @@ func TestLoadConfigFromEnv_NotSet(t *testing.T) {
 func TestConfig_Merge(t *testing.T) {
 	base := &Config{
 		Executor: ExecutorConfig{
-			KernelPath:     "/kernel",
-			RootfsDir:      "/rootfs",
-			DefaultVCPUs:   1,
+			KernelPath:      "/kernel",
+			RootfsDir:       "/rootfs",
+			DefaultVCPUs:    1,
 			DefaultMemoryMB: 512,
-			EnableJailer:   false,
+			EnableJailer:    false,
 		},
 		Network: NetworkConfig{
 			BridgeName: "br0",
@@ -303,9 +303,9 @@ func TestConfig_Merge(t *testing.T) {
 
 	override := &Config{
 		Executor: ExecutorConfig{
-			DefaultVCPUs:   2,
+			DefaultVCPUs:    2,
 			DefaultMemoryMB: 1024,
-			EnableJailer:   true,
+			EnableJailer:    true,
 		},
 		Network: NetworkConfig{
 			BridgeName: "br1",
@@ -315,11 +315,11 @@ func TestConfig_Merge(t *testing.T) {
 	result := base.Merge(override)
 
 	assert.Equal(t, "/kernel", result.Executor.KernelPath) // from base
-	assert.Equal(t, "/rootfs", result.Executor.RootfsDir)   // from base
-	assert.Equal(t, 2, result.Executor.DefaultVCPUs)        // from override
-	assert.Equal(t, 1024, result.Executor.DefaultMemoryMB)  // from override
-	assert.True(t, result.Executor.EnableJailer)            // from override
-	assert.Equal(t, "br1", result.Network.BridgeName)       // from override
+	assert.Equal(t, "/rootfs", result.Executor.RootfsDir)  // from base
+	assert.Equal(t, 2, result.Executor.DefaultVCPUs)       // from override
+	assert.Equal(t, 1024, result.Executor.DefaultMemoryMB) // from override
+	assert.True(t, result.Executor.EnableJailer)           // from override
+	assert.Equal(t, "br1", result.Network.BridgeName)      // from override
 }
 
 func TestNetworkConfig_Validate(t *testing.T) {
@@ -336,8 +336,8 @@ func TestNetworkConfig_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "missing bridge name",
-			config: NetworkConfig{},
+			name:    "missing bridge name",
+			config:  NetworkConfig{},
 			wantErr: true,
 		},
 		{
@@ -421,9 +421,9 @@ func TestJailerConfig_Validate(t *testing.T) {
 func TestConfig_Save(t *testing.T) {
 	config := &Config{
 		Executor: ExecutorConfig{
-			KernelPath:     "/usr/share/firecracker/vmlinux",
-			RootfsDir:      "/var/lib/firecracker/rootfs",
-			DefaultVCPUs:   2,
+			KernelPath:      "/usr/share/firecracker/vmlinux",
+			RootfsDir:       "/var/lib/firecracker/rootfs",
+			DefaultVCPUs:    2,
 			DefaultMemoryMB: 1024,
 		},
 	}
@@ -452,9 +452,9 @@ func TestConfig_Save(t *testing.T) {
 func TestConfig_String(t *testing.T) {
 	config := &Config{
 		Executor: ExecutorConfig{
-			KernelPath:     "/kernel",
-			RootfsDir:      "/rootfs",
-			DefaultVCPUs:   2,
+			KernelPath:      "/kernel",
+			RootfsDir:       "/rootfs",
+			DefaultVCPUs:    2,
 			DefaultMemoryMB: 1024,
 		},
 	}

@@ -142,10 +142,10 @@ func TestVMMManager_AdditionalDescribeScenarios(t *testing.T) {
 	vm := NewVMMManager(cfg).(*VMMManager)
 
 	tests := []struct {
-		name   string
-		setup  func(*VMMManager, *types.Task)
-		task   *types.Task
-		check  func(*testing.T, *types.TaskStatus)
+		name  string
+		setup func(*VMMManager, *types.Task)
+		task  *types.Task
+		check func(*testing.T, *types.TaskStatus)
 	}{
 		{
 			name:  "non_existent_vm",
@@ -183,10 +183,10 @@ func TestVMMManager_AdditionalRemoveScenarios(t *testing.T) {
 	vm := NewVMMManager(cfg).(*VMMManager)
 
 	tests := []struct {
-		name   string
-		setup  func(*VMMManager, *types.Task)
-		task   *types.Task
-		check  func(*testing.T, *VMMManager, string)
+		name  string
+		setup func(*VMMManager, *types.Task)
+		task  *types.Task
+		check func(*testing.T, *VMMManager, string)
 	}{
 		{
 			name:  "non_existent_vm",

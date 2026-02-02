@@ -82,25 +82,25 @@ func TestImagePreparer_prepareImage_ErrorScenarios(t *testing.T) {
 	ip := NewImagePreparer(config).(*ImagePreparer)
 
 	tests := []struct {
-		name      string
-		imageRef  string
-		imageID   string
+		name       string
+		imageRef   string
+		imageID    string
 		outputPath string
-		wantErr   bool
+		wantErr    bool
 	}{
 		{
-			name:      "empty image ref",
-			imageRef:  "",
-			imageID:   "",
+			name:       "empty image ref",
+			imageRef:   "",
+			imageID:    "",
 			outputPath: filepath.Join(tmpDir, "empty.ext4"),
-			wantErr:   true,
+			wantErr:    true,
 		},
 		{
-			name:      "invalid output path",
-			imageRef:  "nginx:latest",
-			imageID:   "nginx-latest",
+			name:       "invalid output path",
+			imageRef:   "nginx:latest",
+			imageID:    "nginx-latest",
 			outputPath: "/invalid/path/output.ext4",
-			wantErr:   true,
+			wantErr:    true,
 		},
 	}
 
@@ -238,7 +238,7 @@ func TestImagePreparer_createExt4Image_SmallDirectory(t *testing.T) {
 	if err != nil {
 		assert.True(t,
 			strings.Contains(err.Error(), "truncate") ||
-			strings.Contains(err.Error(), "mkfs.ext4"))
+				strings.Contains(err.Error(), "mkfs.ext4"))
 	}
 }
 
@@ -316,38 +316,38 @@ func TestGetDirSize_SpecialCases(t *testing.T) {
 
 func TestGenerateImageID_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name        string
-		imageRef    string
+		name             string
+		imageRef         string
 		shouldCheckSlash bool
 	}{
 		{
-			name:     "image without tag",
-			imageRef: "nginx",
+			name:             "image without tag",
+			imageRef:         "nginx",
 			shouldCheckSlash: true,
 		},
 		{
-			name:     "image with multiple slashes",
-			imageRef: "registry.example.com/org/suborg/image:tag",
+			name:             "image with multiple slashes",
+			imageRef:         "registry.example.com/org/suborg/image:tag",
 			shouldCheckSlash: true,
 		},
 		{
-			name:     "image with port (known limitation)",
-			imageRef: "localhost:5000/myimage:v1.0",
+			name:             "image with port (known limitation)",
+			imageRef:         "localhost:5000/myimage:v1.0",
 			shouldCheckSlash: false, // Has known bug with port numbers
 		},
 		{
-			name:     "image with digest",
-			imageRef: "nginx@sha256:abcdef123456",
+			name:             "image with digest",
+			imageRef:         "nginx@sha256:abcdef123456",
 			shouldCheckSlash: true,
 		},
 		{
-			name:     "official image",
-			imageRef: "nginx:latest",
+			name:             "official image",
+			imageRef:         "nginx:latest",
 			shouldCheckSlash: true,
 		},
 		{
-			name:     "library image",
-			imageRef: "library/nginx:stable",
+			name:             "library image",
+			imageRef:         "library/nginx:stable",
 			shouldCheckSlash: true,
 		},
 	}

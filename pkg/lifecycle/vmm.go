@@ -20,32 +20,32 @@ import (
 
 // VMMManager manages Firecracker VM lifecycle.
 type VMMManager struct {
-	config     *ManagerConfig
-	vms        map[string]*VMInstance
-	mu         sync.RWMutex
-	socketDir  string
+	config    *ManagerConfig
+	vms       map[string]*VMInstance
+	mu        sync.RWMutex
+	socketDir string
 }
 
 // ManagerConfig holds VMM manager configuration.
 type ManagerConfig struct {
-	KernelPath     string
-	RootfsDir      string
-	SocketDir      string
-	DefaultVCPUs   int
+	KernelPath      string
+	RootfsDir       string
+	SocketDir       string
+	DefaultVCPUs    int
 	DefaultMemoryMB int
 	EnableJailer    bool
 }
 
 // VMInstance represents a running Firecracker VM.
 type VMInstance struct {
-	ID              string
-	PID             int
-	Config          interface{}
-	State           VMState
-	CreatedAt       time.Time
-	SocketPath      string
-	InitSystem      string
-	GracePeriodSec  int
+	ID             string
+	PID            int
+	Config         interface{}
+	State          VMState
+	CreatedAt      time.Time
+	SocketPath     string
+	InitSystem     string
+	GracePeriodSec int
 }
 
 // VMState represents the state of a VM.
@@ -67,9 +67,9 @@ type ActionsType struct {
 
 // BootSource represents the boot source configuration.
 type BootSource struct {
-	KernelImagePath string   `json:"kernel_image_path"`
-	BootArgs        string   `json:"boot_args,omitempty"`
-	Drives          []Drive  `json:"drives,omitempty"`
+	KernelImagePath string  `json:"kernel_image_path"`
+	BootArgs        string  `json:"boot_args,omitempty"`
+	Drives          []Drive `json:"drives,omitempty"`
 }
 
 // Drive represents a drive attached to the VM.
@@ -82,8 +82,8 @@ type Drive struct {
 
 // MachineConfig represents the machine configuration.
 type MachineConfig struct {
-	VCPUs  int    `json:"vcpu_count"`
-	MemSizeMib int `json:"mem_size_mib"`
+	VCPUs      int  `json:"vcpu_count"`
+	MemSizeMib int  `json:"mem_size_mib"`
 	HtEnabled  bool `json:"ht_enabled"`
 }
 
@@ -415,6 +415,10 @@ func (vm *VMMManager) hardShutdown(ctx context.Context, vmInstance *VMInstance) 
 
 // Wait waits for a VM to exit.
 func (vm *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
+	if task == nil {
+		return nil, fmt.Errorf("task cannot be nil")
+	}
+
 	vm.mu.RLock()
 	vmInstance, exists := vm.vms[task.ID]
 	vm.mu.RUnlock()
@@ -510,10 +514,10 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 	return &types.TaskStatus{
 		State: taskState,
 		RuntimeStatus: map[string]interface{}{
-			"vm_id":   vmInstance.ID,
-			"pid":     vmInstance.PID,
-			"state":   string(vmInstance.State),
-			"uptime":  time.Since(vmInstance.CreatedAt).String(),
+			"vm_id":  vmInstance.ID,
+			"pid":    vmInstance.PID,
+			"state":  string(vmInstance.State),
+			"uptime": time.Since(vmInstance.CreatedAt).String(),
 		},
 	}, nil
 }

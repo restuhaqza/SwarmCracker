@@ -13,9 +13,9 @@ import (
 	"syscall"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 )
 
 var (
@@ -131,7 +131,7 @@ func testExecutor(executor *swarmkit.Executor) {
 			},
 			Resources: &api.ResourceRequirements{
 				Reservations: &api.Resources{
-					NanoCPUs:    1e9,  // 1 CPU
+					NanoCPUs:    1e9,               // 1 CPU
 					MemoryBytes: 512 * 1024 * 1024, // 512 MB
 				},
 			},

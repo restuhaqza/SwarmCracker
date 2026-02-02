@@ -21,25 +21,25 @@ type VMState struct {
 	Command    []string  `json:"command,omitempty"`
 
 	// Additional metadata
-	VCPUs      int       `json:"vcpus,omitempty"`
-	MemoryMB   int       `json:"memory_mb,omitempty"`
-	KernelPath string    `json:"kernel_path,omitempty"`
-	RootfsPath string    `json:"rootfs_path,omitempty"`
-	LogPath    string    `json:"log_path,omitempty"`
+	VCPUs      int    `json:"vcpus,omitempty"`
+	MemoryMB   int    `json:"memory_mb,omitempty"`
+	KernelPath string `json:"kernel_path,omitempty"`
+	RootfsPath string `json:"rootfs_path,omitempty"`
+	LogPath    string `json:"log_path,omitempty"`
 
 	// Network info
-	NetworkID  string   `json:"network_id,omitempty"`
+	NetworkID   string   `json:"network_id,omitempty"`
 	IPAddresses []string `json:"ip_addresses,omitempty"`
 
 	// Error tracking
-	LastError  string    `json:"last_error,omitempty"`
-	ErrorTime  time.Time `json:"error_time,omitempty"`
+	LastError string    `json:"last_error,omitempty"`
+	ErrorTime time.Time `json:"error_time,omitempty"`
 }
 
 // StateManager manages VM state persistence.
 type StateManager struct {
-	mu       sync.RWMutex
- states   map[string]*VMState
+	mu        sync.RWMutex
+	states    map[string]*VMState
 	stateFile string
 }
 

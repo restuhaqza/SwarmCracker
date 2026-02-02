@@ -113,8 +113,8 @@ func TestConfig_Validate_MissingFields(t *testing.T) {
 			name: "invalid_vcpus",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
+					KernelPath:   "/boot/vmlinuz",
+					RootfsDir:    "/var/lib/firecracker",
 					DefaultVCPUs: 0,
 				},
 				Network: NetworkConfig{
@@ -128,9 +128,9 @@ func TestConfig_Validate_MissingFields(t *testing.T) {
 			name: "invalid_memory",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 0,
 				},
 				Network: NetworkConfig{
@@ -159,9 +159,9 @@ func TestConfig_Validate_MissingFields(t *testing.T) {
 			name: "negative_memory",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath:     "/boot/vmlinuz",
-					RootfsDir:      "/var/lib/firecracker",
-					DefaultVCPUs:   1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: -512,
 				},
 				Network: NetworkConfig{
@@ -175,9 +175,9 @@ func TestConfig_Validate_MissingFields(t *testing.T) {
 			name: "missing_bridge_name",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath:     "/boot/vmlinuz",
-					RootfsDir:      "/var/lib/firecracker",
-					DefaultVCPUs:   1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -191,9 +191,9 @@ func TestConfig_Validate_MissingFields(t *testing.T) {
 			name: "rate_limit_enabled_but_zero_pps",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -209,9 +209,9 @@ func TestConfig_Validate_MissingFields(t *testing.T) {
 			name: "rate_limit_enabled_but_negative_pps",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -253,14 +253,14 @@ func TestConfig_Validate_JailerErrors(t *testing.T) {
 			name: "jailer_enabled_but_missing_uid",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
-					EnableJailer: true,
+					EnableJailer:    true,
 					Jailer: JailerConfig{
-						UID: 0,
-						GID: 1000,
+						UID:           0,
+						GID:           1000,
 						ChrootBaseDir: "/var/lib/jailer",
 					},
 				},
@@ -275,14 +275,14 @@ func TestConfig_Validate_JailerErrors(t *testing.T) {
 			name: "jailer_enabled_but_missing_gid",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
-					EnableJailer: true,
+					EnableJailer:    true,
 					Jailer: JailerConfig{
-						UID: 1000,
-						GID: 0,
+						UID:           1000,
+						GID:           0,
 						ChrootBaseDir: "/var/lib/jailer",
 					},
 				},
@@ -297,14 +297,14 @@ func TestConfig_Validate_JailerErrors(t *testing.T) {
 			name: "jailer_enabled_but_missing_chroot",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
-					EnableJailer: true,
+					EnableJailer:    true,
 					Jailer: JailerConfig{
-						UID: 1000,
-						GID: 1000,
+						UID:           1000,
+						GID:           1000,
 						ChrootBaseDir: "",
 					},
 				},
@@ -343,9 +343,9 @@ func TestConfig_Merge_Scenarios(t *testing.T) {
 			name: "merge_executor_fields",
 			base: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -361,7 +361,7 @@ func TestConfig_Merge_Scenarios(t *testing.T) {
 			check: func(t *testing.T, cfg *Config) {
 				assert.Equal(t, "/boot/custom-vmlinuz", cfg.Executor.KernelPath)
 				assert.Equal(t, "/var/lib/custom", cfg.Executor.RootfsDir)
-				assert.Equal(t, 1, cfg.Executor.DefaultVCPUs) // Unchanged
+				assert.Equal(t, 1, cfg.Executor.DefaultVCPUs)      // Unchanged
 				assert.Equal(t, 512, cfg.Executor.DefaultMemoryMB) // Unchanged
 			},
 		},
@@ -369,9 +369,9 @@ func TestConfig_Merge_Scenarios(t *testing.T) {
 			name: "merge_network_config",
 			base: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -397,9 +397,9 @@ func TestConfig_Merge_Scenarios(t *testing.T) {
 			name: "merge_with_empty_override",
 			base: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -417,14 +417,14 @@ func TestConfig_Merge_Scenarios(t *testing.T) {
 			name: "merge_jailer_config",
 			base: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 512,
-					EnableJailer: false,
+					EnableJailer:    false,
 					Jailer: JailerConfig{
-						UID: 1000,
-						GID: 1000,
+						UID:           1000,
+						GID:           1000,
 						ChrootBaseDir: "/var/lib/jailer",
 					},
 				},
@@ -584,24 +584,24 @@ func TestGetDefaultConfigPath_EnvironmentTests(t *testing.T) {
 	}()
 
 	tests := []struct {
-		name              string
-		envValue          string
-		expectedContains  string
+		name             string
+		envValue         string
+		expectedContains string
 	}{
 		{
-			name:              "env_var_set",
-			envValue:          "/custom/path/config.yaml",
-			expectedContains:  "/custom/path/config.yaml",
+			name:             "env_var_set",
+			envValue:         "/custom/path/config.yaml",
+			expectedContains: "/custom/path/config.yaml",
 		},
 		{
-			name:              "env_var_empty",
-			envValue:          "",
-			expectedContains:  "/etc/swarmcracker/config.yaml",
+			name:             "env_var_empty",
+			envValue:         "",
+			expectedContains: "/etc/swarmcracker/config.yaml",
 		},
 		{
-			name:              "env_var_with_spaces",
-			envValue:          "  /path/with/spaces/config.yaml  ",
-			expectedContains:  "/path/with/spaces/config.yaml",
+			name:             "env_var_with_spaces",
+			envValue:         "  /path/with/spaces/config.yaml  ",
+			expectedContains: "/path/with/spaces/config.yaml",
 		},
 	}
 
@@ -627,7 +627,7 @@ func TestConfig_SetDefaults_Scenarios(t *testing.T) {
 		check func(*testing.T, *Config)
 	}{
 		{
-			name: "all_fields_empty",
+			name:  "all_fields_empty",
 			input: Config{},
 			check: func(t *testing.T, cfg *Config) {
 				assert.Equal(t, "swarm-br0", cfg.Network.BridgeName)
@@ -660,13 +660,13 @@ func TestConfig_SetDefaults_Scenarios(t *testing.T) {
 		{
 			name: "legacy_fields_migration",
 			input: Config{
-				KernelPath:     "/legacy/kernel",
-				RootfsDir:      "/legacy/rootfs",
-				SocketDir:      "/legacy/socket",
-				DefaultVCPUs:   2,
+				KernelPath:      "/legacy/kernel",
+				RootfsDir:       "/legacy/rootfs",
+				SocketDir:       "/legacy/socket",
+				DefaultVCPUs:    2,
 				DefaultMemoryMB: 1024,
-				EnableJailer:   true,
-				Executor: ExecutorConfig{
+				EnableJailer:    true,
+				Executor:        ExecutorConfig{
 					// Leave empty to force migration
 				},
 			},
@@ -735,11 +735,11 @@ func TestConfig_String_Representation(t *testing.T) {
 			name: "full_config",
 			cfg: Config{
 				Executor: ExecutorConfig{
-					KernelPath:     "/boot/vmlinuz",
-					RootfsDir:      "/var/lib/firecracker",
-					DefaultVCPUs:   2,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    2,
 					DefaultMemoryMB: 1024,
-					EnableJailer:   true,
+					EnableJailer:    true,
 				},
 				Network: NetworkConfig{
 					BridgeName: "br0",
@@ -856,8 +856,8 @@ func TestJailerConfig_Validate_Scenarios(t *testing.T) {
 		{
 			name: "uid_zero",
 			config: JailerConfig{
-				UID: 0,
-				GID: 1000,
+				UID:           0,
+				GID:           1000,
 				ChrootBaseDir: "/var/lib/jailer",
 			},
 			expectError: true,
@@ -866,8 +866,8 @@ func TestJailerConfig_Validate_Scenarios(t *testing.T) {
 		{
 			name: "gid_zero",
 			config: JailerConfig{
-				UID: 1000,
-				GID: 0,
+				UID:           1000,
+				GID:           0,
 				ChrootBaseDir: "/var/lib/jailer",
 			},
 			expectError: true,
@@ -876,8 +876,8 @@ func TestJailerConfig_Validate_Scenarios(t *testing.T) {
 		{
 			name: "empty_chroot_dir",
 			config: JailerConfig{
-				UID: 1000,
-				GID: 1000,
+				UID:           1000,
+				GID:           1000,
 				ChrootBaseDir: "",
 			},
 			expectError: true,
@@ -886,8 +886,8 @@ func TestJailerConfig_Validate_Scenarios(t *testing.T) {
 		{
 			name: "valid_config",
 			config: JailerConfig{
-				UID: 1000,
-				GID: 1000,
+				UID:           1000,
+				GID:           1000,
 				ChrootBaseDir: "/var/lib/jailer",
 			},
 			expectError: false,
@@ -914,9 +914,9 @@ func TestJailerConfig_Validate_Scenarios(t *testing.T) {
 func TestConfig_Merge_NilPointer(t *testing.T) {
 	base := Config{
 		Executor: ExecutorConfig{
-			KernelPath: "/boot/vmlinuz",
-			RootfsDir:  "/var/lib/firecracker",
-			DefaultVCPUs: 1,
+			KernelPath:      "/boot/vmlinuz",
+			RootfsDir:       "/var/lib/firecracker",
+			DefaultVCPUs:    1,
 			DefaultMemoryMB: 512,
 		},
 		Network: NetworkConfig{
@@ -947,9 +947,9 @@ func TestConfig_NumericBoundaries(t *testing.T) {
 			name: "very_large_vcpus",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 999999,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    999999,
 					DefaultMemoryMB: 512,
 				},
 				Network: NetworkConfig{
@@ -962,9 +962,9 @@ func TestConfig_NumericBoundaries(t *testing.T) {
 			name: "very_large_memory",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 999999999,
 				},
 				Network: NetworkConfig{
@@ -977,9 +977,9 @@ func TestConfig_NumericBoundaries(t *testing.T) {
 			name: "minimal_valid_values",
 			config: Config{
 				Executor: ExecutorConfig{
-					KernelPath: "/boot/vmlinuz",
-					RootfsDir:  "/var/lib/firecracker",
-					DefaultVCPUs: 1,
+					KernelPath:      "/boot/vmlinuz",
+					RootfsDir:       "/var/lib/firecracker",
+					DefaultVCPUs:    1,
 					DefaultMemoryMB: 1,
 				},
 				Network: NetworkConfig{

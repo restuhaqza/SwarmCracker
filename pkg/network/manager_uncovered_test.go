@@ -322,11 +322,11 @@ func TestNetworkManager_PrepareNetwork_FullFlow(t *testing.T) {
 		{
 			name: "prepare network with NAT enabled",
 			config: types.NetworkConfig{
-				BridgeName:  "test-br-full",
-				BridgeIP:    "192.168.200.1/24",
-				Subnet:      "192.168.200.0/24",
-				NATEnabled:  true,
-				IPMode:      "static",
+				BridgeName: "test-br-full",
+				BridgeIP:   "192.168.200.1/24",
+				Subnet:     "192.168.200.0/24",
+				NATEnabled: true,
+				IPMode:     "static",
 			},
 			task: &types.Task{
 				ID: "test-task-1",
@@ -349,11 +349,11 @@ func TestNetworkManager_PrepareNetwork_FullFlow(t *testing.T) {
 		{
 			name: "prepare network without NAT",
 			config: types.NetworkConfig{
-				BridgeName:  "test-br-nonnat",
-				BridgeIP:    "10.30.30.1/24",
-				Subnet:      "10.30.30.0/24",
-				NATEnabled:  false,
-				IPMode:      "dhcp",
+				BridgeName: "test-br-nonnat",
+				BridgeIP:   "10.30.30.1/24",
+				Subnet:     "10.30.30.0/24",
+				NATEnabled: false,
+				IPMode:     "dhcp",
 			},
 			task: &types.Task{
 				ID: "test-task-2",
@@ -416,11 +416,11 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		network     types.NetworkAttachment
-		index       int
-		taskID      string
-		validate    func(*TapDevice, error)
+		name     string
+		network  types.NetworkAttachment
+		index    int
+		taskID   string
+		validate func(*TapDevice, error)
 	}{
 		{
 			name: "create TAP with custom bridge",

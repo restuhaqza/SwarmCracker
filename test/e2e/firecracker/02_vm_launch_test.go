@@ -1,3 +1,4 @@
+//go:build e2e
 // +build e2e
 
 package firecracker
@@ -21,9 +22,9 @@ import (
 
 // FirecrackerConfig represents the Firecracker VM configuration
 type FirecrackerConfig struct {
-	BootSource    BootSource    `json:"boot-source"`
-	Drives        []Drive       `json:"drives"`
-	MachineConfig MachineConfig `json:"machine-config"`
+	BootSource        BootSource         `json:"boot-source"`
+	Drives            []Drive            `json:"drives"`
+	MachineConfig     MachineConfig      `json:"machine-config"`
 	NetworkInterfaces []NetworkInterface `json:"network-interfaces,omitempty"`
 }
 
@@ -40,9 +41,9 @@ type Drive struct {
 }
 
 type MachineConfig struct {
-	VCPUCount  int64  `json:"vcpu_count"`
-	MemSizeMib int64  `json:"mem_size_mib"`
-	SMT        bool   `json:"smt"` // Changed from ht_enabled to smt for Firecracker v1.14+
+	VCPUCount  int64 `json:"vcpu_count"`
+	MemSizeMib int64 `json:"mem_size_mib"`
+	SMT        bool  `json:"smt"` // Changed from ht_enabled to smt for Firecracker v1.14+
 }
 
 type NetworkInterface struct {
@@ -115,7 +116,7 @@ func TestE2ESimpleVMLaunch(t *testing.T) {
 				},
 				Resources: types.ResourceRequirements{
 					Limits: &types.Resources{
-						NanoCPUs:    1000000000, // 1 CPU
+						NanoCPUs:    1000000000,        // 1 CPU
 						MemoryBytes: 512 * 1024 * 1024, // 512 MB
 					},
 				},
@@ -130,12 +131,12 @@ func TestE2ESimpleVMLaunch(t *testing.T) {
 	t.Run("Launch Firecracker VM", func(t *testing.T) {
 		// Create VMM manager
 		vmmConfig := &lifecycle.ManagerConfig{
-			KernelPath:     kernelPath,
-			RootfsDir:      tmpDir,
-			SocketDir:      tmpDir,
-			DefaultVCPUs:   1,
+			KernelPath:      kernelPath,
+			RootfsDir:       tmpDir,
+			SocketDir:       tmpDir,
+			DefaultVCPUs:    1,
 			DefaultMemoryMB: 512,
-			EnableJailer:   false,
+			EnableJailer:    false,
 		}
 
 		vmm := lifecycle.NewVMMManager(vmmConfig)
@@ -235,10 +236,10 @@ func TestE2EVMLifecycle(t *testing.T) {
 
 	// Create VMM manager
 	vmmConfig := &lifecycle.ManagerConfig{
-		KernelPath: kernelPath,
-		RootfsDir:  tmpDir,
-		SocketDir:  tmpDir,
-		DefaultVCPUs:   1,
+		KernelPath:      kernelPath,
+		RootfsDir:       tmpDir,
+		SocketDir:       tmpDir,
+		DefaultVCPUs:    1,
 		DefaultMemoryMB: 512,
 	}
 
@@ -322,10 +323,10 @@ func TestE2EVMMultipleVMs(t *testing.T) {
 
 	// Create VMM manager
 	vmmConfig := &lifecycle.ManagerConfig{
-		KernelPath: kernelPath,
-		RootfsDir:  tmpDir,
-		SocketDir:  tmpDir,
-		DefaultVCPUs:   1,
+		KernelPath:      kernelPath,
+		RootfsDir:       tmpDir,
+		SocketDir:       tmpDir,
+		DefaultVCPUs:    1,
 		DefaultMemoryMB: 256,
 	}
 

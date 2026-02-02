@@ -21,7 +21,7 @@ func TestInfra_Prerequisites(t *testing.T) {
 	t.Log("Checking infrastructure prerequisites...")
 
 	checks := []struct {
-		name string
+		name  string
 		check func(*testing.T)
 	}{
 		{"GoVersion", checkGoVersion},

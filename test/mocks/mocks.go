@@ -139,10 +139,10 @@ func (m *MockTaskTranslator) SetResultConfig(config interface{}) {
 
 // MockImagePreparer is a mock image preparer.
 type MockImagePreparer struct {
-	PrepareCalled   bool
-	PreparedTasks   map[string]bool
-	ShouldFail      bool
-	RootfsMap       map[string]string
+	PrepareCalled bool
+	PreparedTasks map[string]bool
+	ShouldFail    bool
+	RootfsMap     map[string]string
 }
 
 // NewMockImagePreparer creates a new mock image preparer.
@@ -185,12 +185,12 @@ func (m *MockImagePreparer) GetRootfsPath(taskID string) string {
 
 // MockNetworkManager is a mock network manager.
 type MockNetworkManager struct {
-	PrepareCalled   bool
-	CleanupCalled   bool
-	PreparedTasks   map[string]bool
-	CleanedTasks    map[string]bool
-	ShouldFail      bool
-	IPMap           map[string]string // Task ID -> IP mapping
+	PrepareCalled bool
+	CleanupCalled bool
+	PreparedTasks map[string]bool
+	CleanedTasks  map[string]bool
+	ShouldFail    bool
+	IPMap         map[string]string // Task ID -> IP mapping
 }
 
 // NewMockNetworkManager creates a new mock network manager.

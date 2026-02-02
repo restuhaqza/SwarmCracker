@@ -16,9 +16,9 @@ import (
 
 // TestHelper provides utility functions for infrastructure testing
 type TestHelper struct {
-	t             *testing.T
-	projectRoot   string
-	cleanupFuncs  []func() error
+	t            *testing.T
+	projectRoot  string
+	cleanupFuncs []func() error
 }
 
 // NewTestHelper creates a new test helper

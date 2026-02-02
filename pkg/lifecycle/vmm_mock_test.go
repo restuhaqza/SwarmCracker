@@ -71,7 +71,7 @@ func TestVMMManagerWithExecutors_Start(t *testing.T) {
 			},
 		},
 		{
-			name: "start_vm_nil_task",
+			name:      "start_vm_nil_task",
 			setupMock: func(proc *MockProcessExecutor, httpClient *MockHTTPClient, socketDir string) {},
 			config: &ManagerConfig{
 				SocketDir: tmpDir,
@@ -186,7 +186,7 @@ func TestVMMManagerWithExecutors_Stop(t *testing.T) {
 			},
 		},
 		{
-			name: "stop_nonexistent_vm",
+			name:      "stop_nonexistent_vm",
 			setupMock: func(proc *MockProcessExecutor, httpClient *MockHTTPClient) {},
 			config: &ManagerConfig{
 				SocketDir: "/var/run/firecracker",
@@ -225,7 +225,7 @@ func TestVMMManagerWithExecutors_Stop(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			procExec := NewMockProcessExecutor()
 			httpClient := NewMockHTTPClient()
-			
+
 			if tt.setupMock != nil {
 				tt.setupMock(procExec, httpClient)
 			}
@@ -284,9 +284,9 @@ func TestVMMManagerWithExecutors_Wait(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "wait_for_nonexistent_vm",
+			name:      "wait_for_nonexistent_vm",
 			setupMock: func(proc *MockProcessExecutor) {},
-			config: &ManagerConfig{},
+			config:    &ManagerConfig{},
 			task: &types.Task{
 				ID: "nonexistent-vm",
 			},
@@ -299,7 +299,7 @@ func TestVMMManagerWithExecutors_Wait(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			procExec := NewMockProcessExecutor()
 			httpClient := NewMockHTTPClient()
-			
+
 			if tt.setupMock != nil {
 				tt.setupMock(procExec)
 			}
@@ -381,7 +381,7 @@ func TestVMMManagerWithExecutors_Describe(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			procExec := NewMockProcessExecutor()
 			httpClient := NewMockHTTPClient()
-			
+
 			if tt.setupMock != nil {
 				tt.setupMock(procExec)
 			}
@@ -390,9 +390,9 @@ func TestVMMManagerWithExecutors_Describe(t *testing.T) {
 			ctx := context.Background()
 
 			vm.vms[tt.task.ID] = &VMInstance{
-				ID:    tt.task.ID,
-				PID:   12345,
-				State: tt.vmState,
+				ID:        tt.task.ID,
+				PID:       12345,
+				State:     tt.vmState,
 				CreatedAt: time.Now(),
 			}
 
@@ -435,18 +435,18 @@ func TestVMMManagerWithExecutors_Remove(t *testing.T) {
 			},
 		},
 		{
-			name:        "remove_nonexistent_vm",
-			setupMock:   func(proc *MockProcessExecutor) {},
-			config:      &ManagerConfig{},
+			name:      "remove_nonexistent_vm",
+			setupMock: func(proc *MockProcessExecutor) {},
+			config:    &ManagerConfig{},
 			task: &types.Task{
 				ID: "nonexistent-vm",
 			},
 			expectError: false,
 		},
 		{
-			name: "remove_nil_task",
-			setupMock: func(proc *MockProcessExecutor) {},
-			config: &ManagerConfig{},
+			name:        "remove_nil_task",
+			setupMock:   func(proc *MockProcessExecutor) {},
+			config:      &ManagerConfig{},
 			task:        nil,
 			expectError: true,
 		},
@@ -456,7 +456,7 @@ func TestVMMManagerWithExecutors_Remove(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			procExec := NewMockProcessExecutor()
 			httpClient := NewMockHTTPClient()
-			
+
 			if tt.setupMock != nil {
 				tt.setupMock(procExec)
 			}
@@ -508,7 +508,10 @@ func TestMockProcessExecutor(t *testing.T) {
 
 	t.Run("Command", func(t *testing.T) {
 		procExec := NewMockProcessExecutor()
-		procExec.Commands["ls"] = struct{ Output []byte; Err error }{
+		procExec.Commands["ls"] = struct {
+			Output []byte
+			Err    error
+		}{
 			Output: []byte("file1\nfile2\n"),
 			Err:    nil,
 		}
@@ -561,10 +564,10 @@ func TestMockHTTPClient(t *testing.T) {
 // TestVMMManagerWithExecutors_GracefulShutdown tests graceful shutdown scenarios
 func TestVMMManagerWithExecutors_GracefulShutdown(t *testing.T) {
 	tests := []struct {
-		name        string
+		name         string
 		setupProcess func() *mockProcess
-		gracePeriod int
-		expectKill  bool
+		gracePeriod  int
+		expectKill   bool
 	}{
 		{
 			name: "graceful_shutdown_succeeds",

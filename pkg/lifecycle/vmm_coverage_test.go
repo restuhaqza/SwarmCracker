@@ -43,8 +43,8 @@ func TestVMMManager_Start_ErrorScenarios(t *testing.T) {
 				ID:        "",
 				ServiceID: "service-1",
 			},
-			vmConfig:    "{}",
-			wantErr:     false, // Will fail when trying to start Firecracker
+			vmConfig: "{}",
+			wantErr:  false, // Will fail when trying to start Firecracker
 		},
 		{
 			name: "nil config",
@@ -57,7 +57,7 @@ func TestVMMManager_Start_ErrorScenarios(t *testing.T) {
 			},
 			vmConfig:    nil,
 			wantErr:     true, // Will fail with "failed to start firecracker" or config error
-			errContains: "", // Don't check specific message
+			errContains: "",   // Don't check specific message
 		},
 		{
 			name: "invalid JSON config",
@@ -70,7 +70,7 @@ func TestVMMManager_Start_ErrorScenarios(t *testing.T) {
 			},
 			vmConfig:    "{invalid json}",
 			wantErr:     true, // Will fail when trying to start
-			errContains: "", // Don't check specific message
+			errContains: "",   // Don't check specific message
 		},
 		{
 			name: "empty string config",
@@ -108,10 +108,10 @@ func TestVMMManager_Start_ErrorScenarios(t *testing.T) {
 		{
 			name: "valid config but no Firecracker",
 			config: &ManagerConfig{
-				SocketDir:      "/tmp/test-socket-valid",
-				KernelPath:     "/tmp/vmlinux",
-				RootfsDir:      "/tmp/rootfs",
-				DefaultVCPUs:   1,
+				SocketDir:       "/tmp/test-socket-valid",
+				KernelPath:      "/tmp/vmlinux",
+				RootfsDir:       "/tmp/rootfs",
+				DefaultVCPUs:    1,
 				DefaultMemoryMB: 512,
 			},
 			task: &types.Task{
@@ -177,9 +177,9 @@ func TestVMMManager_Stop_EdgeCases(t *testing.T) {
 			name: "stop VM in new state",
 			setup: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
-					ID:        task.ID,
-					State:     VMStateNew,
-					CreatedAt: time.Now(),
+					ID:         task.ID,
+					State:      VMStateNew,
+					CreatedAt:  time.Now(),
 					SocketPath: filepath.Join(os.TempDir(), task.ID+".sock"),
 				}
 			},
@@ -192,9 +192,9 @@ func TestVMMManager_Stop_EdgeCases(t *testing.T) {
 			name: "stop VM in crashed state",
 			setup: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
-					ID:        task.ID,
-					State:     VMStateCrashed,
-					CreatedAt: time.Now(),
+					ID:         task.ID,
+					State:      VMStateCrashed,
+					CreatedAt:  time.Now(),
 					SocketPath: filepath.Join(os.TempDir(), task.ID+".sock"),
 				}
 			},
@@ -207,9 +207,9 @@ func TestVMMManager_Stop_EdgeCases(t *testing.T) {
 			name: "stop VM already stopped",
 			setup: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
-					ID:        task.ID,
-					State:     VMStateStopped,
-					CreatedAt: time.Now(),
+					ID:         task.ID,
+					State:      VMStateStopped,
+					CreatedAt:  time.Now(),
 					SocketPath: filepath.Join(os.TempDir(), task.ID+".sock"),
 				}
 			},
@@ -220,8 +220,8 @@ func TestVMMManager_Stop_EdgeCases(t *testing.T) {
 			errContains: "",
 		},
 		{
-			name: "stop VM with nil task",
-			setup: func(vm *VMMManager, task *types.Task) {},
+			name:        "stop VM with nil task",
+			setup:       func(vm *VMMManager, task *types.Task) {},
 			task:        nil,
 			wantErr:     true,
 			errContains: "task",
@@ -230,9 +230,9 @@ func TestVMMManager_Stop_EdgeCases(t *testing.T) {
 			name: "stop VM with invalid socket path",
 			setup: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
-					ID:        task.ID,
-					State:     VMStateRunning,
-					CreatedAt: time.Now(),
+					ID:         task.ID,
+					State:      VMStateRunning,
+					CreatedAt:  time.Now(),
 					SocketPath: "/nonexistent/path/socket.sock",
 					PID:        12345,
 				}
@@ -383,10 +383,10 @@ func TestVMMManager_Describe_Details(t *testing.T) {
 				for i, state := range states {
 					taskID := "describe-state-" + string(state)
 					vm.vms[taskID] = &VMInstance{
-						ID:        taskID,
-						State:     state,
-						CreatedAt: time.Now().Add(-time.Duration(i) * time.Minute),
-						PID:       1000 + i,
+						ID:         taskID,
+						State:      state,
+						CreatedAt:  time.Now().Add(-time.Duration(i) * time.Minute),
+						PID:        1000 + i,
 						SocketPath: filepath.Join(os.TempDir(), taskID+".sock"),
 					}
 				}
@@ -397,10 +397,10 @@ func TestVMMManager_Describe_Details(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "describe with nil task",
-			setup: func(vm *VMMManager, task *types.Task) {},
-			task:        nil,
-			wantErr:     true,
+			name:    "describe with nil task",
+			setup:   func(vm *VMMManager, task *types.Task) {},
+			task:    nil,
+			wantErr: true,
 		},
 	}
 
@@ -445,10 +445,10 @@ func TestVMMManager_Remove_EdgeCases(t *testing.T) {
 			name: "remove VM in running state",
 			setup: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
-					ID:        task.ID,
-					State:     VMStateRunning,
-					CreatedAt: time.Now(),
-					PID:       9999,
+					ID:         task.ID,
+					State:      VMStateRunning,
+					CreatedAt:  time.Now(),
+					PID:        9999,
 					SocketPath: filepath.Join(os.TempDir(), task.ID+".sock"),
 				}
 			},
@@ -458,10 +458,10 @@ func TestVMMManager_Remove_EdgeCases(t *testing.T) {
 			wantErr: false, // Should force kill and remove
 		},
 		{
-			name: "remove with nil task",
-			setup: func(vm *VMMManager, task *types.Task) {},
-			task:        nil,
-			wantErr:     true,
+			name:    "remove with nil task",
+			setup:   func(vm *VMMManager, task *types.Task) {},
+			task:    nil,
+			wantErr: true,
 		},
 		{
 			name: "remove VM with socket file",
@@ -473,9 +473,9 @@ func TestVMMManager_Remove_EdgeCases(t *testing.T) {
 				file.Close()
 
 				vm.vms[task.ID] = &VMInstance{
-					ID:        task.ID,
-					State:     VMStateStopped,
-					CreatedAt: time.Now(),
+					ID:         task.ID,
+					State:      VMStateStopped,
+					CreatedAt:  time.Now(),
 					SocketPath: socketPath,
 				}
 			},
@@ -511,8 +511,8 @@ func TestVMMManager_Remove_EdgeCases(t *testing.T) {
 
 func TestNewVMMManager_ConfigVariations(t *testing.T) {
 	tests := []struct {
-		name          string
-		config        interface{}
+		name              string
+		config            interface{}
 		expectedSocketDir string
 	}{
 		{
@@ -530,13 +530,13 @@ func TestNewVMMManager_ConfigVariations(t *testing.T) {
 			expectedSocketDir: "/tmp/custom-sockets",
 		},
 		{
-			name:          "nil config",
-			config:        nil,
+			name:              "nil config",
+			config:            nil,
 			expectedSocketDir: "/var/run/firecracker",
 		},
 		{
-			name: "empty config struct",
-			config: &ManagerConfig{},
+			name:              "empty config struct",
+			config:            &ManagerConfig{},
 			expectedSocketDir: "",
 		},
 	}

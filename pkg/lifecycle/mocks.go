@@ -175,9 +175,12 @@ type MockProcessExecutor struct {
 func NewMockProcessExecutor() *MockProcessExecutor {
 	return &MockProcessExecutor{
 		Processes: make(map[int]Process),
-		Commands:  make(map[string]struct{ Output []byte; Err error }),
-		Binaries:  make(map[string]string),
-		Calls:     make([]string, 0),
+		Commands: make(map[string]struct {
+			Output []byte
+			Err    error
+		}),
+		Binaries: make(map[string]string),
+		Calls:    make([]string, 0),
 	}
 }
 
@@ -251,7 +254,7 @@ func (m *mockCmd) CombinedOutput() ([]byte, error) {
 	return m.output, m.err
 }
 
-func (m *mockCmd) SetStdin(rd io.Reader) {}
+func (m *mockCmd) SetStdin(rd io.Reader)  {}
 func (m *mockCmd) SetStdout(wr io.Writer) {}
 func (m *mockCmd) SetStderr(wr io.Writer) {}
 

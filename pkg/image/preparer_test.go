@@ -263,11 +263,11 @@ func TestCreateExt4Image(t *testing.T) {
 	// Create some test files
 	testFiles := []string{"test1.txt", "test2.txt", "subdir/test3.txt"}
 	for _, file := range testFiles {
-	 fullPath := filepath.Join(sourceDir, file)
-	 dir := filepath.Dir(fullPath)
-	 os.MkdirAll(dir, 0755)
-	 err = os.WriteFile(fullPath, []byte("test content"), 0644)
-	 require.NoError(t, err)
+		fullPath := filepath.Join(sourceDir, file)
+		dir := filepath.Dir(fullPath)
+		os.MkdirAll(dir, 0755)
+		err = os.WriteFile(fullPath, []byte("test content"), 0644)
+		require.NoError(t, err)
 	}
 
 	preparer := &ImagePreparer{}

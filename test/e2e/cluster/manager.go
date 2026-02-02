@@ -14,14 +14,14 @@ import (
 
 // SwarmKitManager manages a SwarmKit manager instance for testing
 type SwarmKitManager struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
+	ctx        context.Context
+	cancel     context.CancelFunc
 	binaryPath string
 	stateDir   string
-	addr      string
-	joinToken string
-	cmd       *exec.Cmd
-	logger    zerolog.Logger
+	addr       string
+	joinToken  string
+	cmd        *exec.Cmd
+	logger     zerolog.Logger
 }
 
 // NewSwarmKitManager creates a new SwarmKit manager

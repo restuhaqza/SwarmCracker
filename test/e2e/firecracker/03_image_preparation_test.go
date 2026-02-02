@@ -1,3 +1,4 @@
+//go:build e2e
 // +build e2e
 
 package firecracker
@@ -323,7 +324,7 @@ func TestE2EContainerImageBoot(t *testing.T) {
 
 	// The rest of the test would verify the ext4 file
 	t.Log("Step 3: Ext4 filesystem already created")
-	
+
 	// Verify the ext4 file exists and has content
 	fsInfo, fsErr := os.Stat(ext4Path)
 	require.NoError(t, fsErr, "Rootfs file should exist")

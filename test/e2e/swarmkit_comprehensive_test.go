@@ -86,10 +86,10 @@ func TestE2E_SwarmKit_Comprehensive(t *testing.T) {
 
 			// Parse JSON
 			var services []struct {
-				ID              string           `json:"ID"`
-				Spec            api.ServiceSpec  `json:"Spec"`
-				Endpoint        api.Endpoint     `json:"Endpoint"`
-				UpdatedAt       time.Time        `json:"UpdatedAt"`
+				ID        string          `json:"ID"`
+				Spec      api.ServiceSpec `json:"Spec"`
+				Endpoint  api.Endpoint    `json:"Endpoint"`
+				UpdatedAt time.Time       `json:"UpdatedAt"`
 			}
 			err = json.Unmarshal([]byte(output), &services)
 			require.NoError(t, err, "Failed to parse service JSON")
@@ -295,7 +295,7 @@ func createSwarmKitService(name, image string, replicas uint64) *api.Service {
 			Task: api.TaskSpec{
 				Runtime: &api.TaskSpec_Container{
 					Container: &api.ContainerSpec{
-						Image: image,
+						Image:   image,
 						Command: []string{},
 						Args:    []string{},
 						Env:     []string{"TEST=1"},

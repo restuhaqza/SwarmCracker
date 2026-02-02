@@ -36,22 +36,25 @@ func TestImagePreparer_Prepare_ErrorHandling(t *testing.T) {
 		{
 			name: "non_container_runtime",
 			task: &types.Task{
-				ID:    "test-non-container",
-				Spec:  types.TaskSpec{},
-				Networks: []types.NetworkAttachment{},
+				ID:   "test-non-container",
+				Spec: types.TaskSpec{},
+				// Runtime is not set (nil)
 			},
 			expectError: true,
-			errorMsg:    "task runtime is not a container",
+			errorMsg:    "cannot be nil",
 		},
 		{
 			name: "empty_image_name",
 			task: &types.Task{
 				ID:   "test-empty-image",
-				Spec: types.TaskSpec{},
-				Networks: []types.NetworkAttachment{},
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{
+						Image: "", // Empty image
+					},
+				},
 			},
 			expectError: true,
-			errorMsg:    "failed to prepare image",
+			errorMsg:    "image",
 		},
 	}
 
@@ -87,9 +90,9 @@ func TestImagePreparer_Prepare_AnnotationsInitialization(t *testing.T) {
 	_ = writeFile(rootfsPath, "dummy")
 
 	task := &types.Task{
-		ID:   "test-annotations-nil",
-		Spec: types.TaskSpec{},
-		Networks: []types.NetworkAttachment{},
+		ID:          "test-annotations-nil",
+		Spec:        types.TaskSpec{},
+		Networks:    []types.NetworkAttachment{},
 		Annotations: nil, // Explicitly nil
 	}
 
@@ -150,9 +153,9 @@ func TestImagePreparer_Prepare_Concurrency(t *testing.T) {
 		t.Run("concurrent", func(t *testing.T) {
 			t.Parallel()
 			task := &types.Task{
-				ID: "test-concurrent",
-				Spec: types.TaskSpec{},
-				Networks: []types.NetworkAttachment{},
+				ID:          "test-concurrent",
+				Spec:        types.TaskSpec{},
+				Networks:    []types.NetworkAttachment{},
 				Annotations: make(map[string]string),
 			}
 

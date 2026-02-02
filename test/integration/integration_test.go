@@ -26,9 +26,9 @@ import (
 
 const (
 	// Test images (small, simple images)
-	testImageNginx    = "nginx:alpine"
-	testImageRedis   = "redis:alpine"
-	testImageAlpine  = "alpine:latest"
+	testImageNginx  = "nginx:alpine"
+	testImageRedis  = "redis:alpine"
+	testImageAlpine = "alpine:latest"
 )
 
 func init() {
@@ -258,7 +258,7 @@ func TestIntegration_VMMManager(t *testing.T) {
 
 	// Create a simple task
 	task := &types.Task{
-		ID:        "test-vmm",
+		ID: "test-vmm",
 		Spec: types.TaskSpec{
 			Runtime: &types.Container{
 				Image: testImageAlpine,
@@ -313,7 +313,7 @@ func TestIntegration_CleanupVerification(t *testing.T) {
 	vmm := lifecycle.NewVMMManager(cfg)
 
 	task := &types.Task{
-		ID:        "test-cleanup",
+		ID: "test-cleanup",
 		Spec: types.TaskSpec{
 			Runtime: &types.Container{
 				Image: testImageAlpine,

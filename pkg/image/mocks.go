@@ -230,13 +230,13 @@ func (m *MockContainerRuntime) ImageExists(ctx context.Context, imageRef string)
 
 // MockFilesystemOperator is a mock implementation for testing
 type MockFilesystemOperator struct {
-	Files     map[string][]byte
-	Mounts    map[string]string
-	MkfsErr   error
-	MountErr  error
+	Files      map[string][]byte
+	Mounts     map[string]string
+	MkfsErr    error
+	MountErr   error
 	UnmountErr error
-	CopyErr   error
-	Calls     []string
+	CopyErr    error
+	Calls      []string
 }
 
 func NewMockFilesystemOperator() *MockFilesystemOperator {
@@ -352,9 +352,9 @@ func (m *MockBinaryLocator) FileExists(path string) bool {
 // ImagePreparerInternal wraps ImagePreparer with testable interfaces
 type ImagePreparerInternal struct {
 	*ImagePreparer
-	runtime  ContainerRuntime
-	fsOps    FilesystemOperator
-	binLoc   BinaryLocator
+	runtime ContainerRuntime
+	fsOps   FilesystemOperator
+	binLoc  BinaryLocator
 }
 
 // NewImagePreparerWithMocks creates an ImagePreparer with custom interfaces
@@ -399,7 +399,7 @@ func NewImagePreparerWithMocks(config interface{}, runtime ContainerRuntime, fsO
 // prepareImageWithMocks prepares an image using mocked interfaces
 func (ip *ImagePreparerInternal) prepareImageWithMocks(ctx context.Context, imageRef, imageID, outputPath string) error {
 	tmpDir := filepath.Join(ip.rootfsDir, "tmp-"+imageID)
-	
+
 	// Extract OCI image
 	if err := ip.extractOCIImageWithRuntime(ctx, imageRef, tmpDir); err != nil {
 		return err

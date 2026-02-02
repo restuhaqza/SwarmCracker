@@ -16,8 +16,8 @@ func TestNewTaskTranslator(t *testing.T) {
 		wantNil bool
 	}{
 		{
-			name:   "nil config",
-			config: nil,
+			name:    "nil config",
+			config:  nil,
 			wantNil: false, // Should still return translator with defaults
 		},
 	}
@@ -53,7 +53,7 @@ func TestTaskTranslator_Translate(t *testing.T) {
 					},
 					Resources: types.ResourceRequirements{
 						Limits: &types.Resources{
-							NanoCPUs:    2e9, // 2 CPUs
+							NanoCPUs:    2e9,                // 2 CPUs
 							MemoryBytes: 1024 * 1024 * 1024, // 1GB
 						},
 					},
@@ -115,7 +115,7 @@ func TestTaskTranslator_Translate(t *testing.T) {
 		{
 			name: "task without container runtime",
 			task: &types.Task{
-				ID:   "task-3",
+				ID: "task-3",
 				Spec: types.TaskSpec{
 					Runtime: "not-a-container",
 				},
@@ -242,7 +242,7 @@ func TestTaskTranslator_buildBootArgs(t *testing.T) {
 			},
 		},
 		{
-			name: "container with no command or args",
+			name:      "container with no command or args",
 			container: &types.Container{},
 			wantArgs: []string{
 				"console=ttyS0",
@@ -259,7 +259,7 @@ func TestTaskTranslator_buildBootArgs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			translator := NewTaskTranslator(nil)
 			got := translator.buildBootArgs(tt.container)
-			
+
 			// Check that all expected args are present
 			for _, arg := range tt.wantArgs {
 				assert.Contains(t, got, arg)
@@ -325,10 +325,10 @@ func TestTaskTranslator_applyResources(t *testing.T) {
 
 func TestTaskTranslator_buildNetworkInterface(t *testing.T) {
 	tests := []struct {
-		name   string
+		name    string
 		network types.NetworkAttachment
-		index  int
-		wantID string
+		index   int
+		wantID  string
 	}{
 		{
 			name: "first interface",
@@ -439,7 +439,7 @@ func BenchmarkTaskTranslator_Translate(b *testing.B) {
 		},
 		Networks: []types.NetworkAttachment{
 			{
-				Network: types.Network{ID: "net-1"},
+				Network:   types.Network{ID: "net-1"},
 				Addresses: []string{"10.0.0.2"},
 			},
 		},

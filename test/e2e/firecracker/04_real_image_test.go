@@ -1,3 +1,4 @@
+//go:build e2e
 // +build e2e
 
 package firecracker
@@ -39,7 +40,7 @@ func TestRealImageLaunch(t *testing.T) {
 	// Pull and prepare Alpine image
 	t.Log("Step 1: Pulling Alpine image...")
 	imageName := "alpine:latest"
-	
+
 	// Pull image
 	cmd := exec.Command("docker", "pull", imageName)
 	output, err := cmd.CombinedOutput()
@@ -109,15 +110,15 @@ func TestRealImageLaunch(t *testing.T) {
 	require.NoError(t, err, "Failed to marshal config")
 
 	t.Log("Step 4: Launching VM with real rootfs...")
-	
+
 	// Create VMM manager
 	vmmConfig := &lifecycle.ManagerConfig{
-		KernelPath:     kernelPath,
-		RootfsDir:      tmpDir,
-		SocketDir:      tmpDir,
-		DefaultVCPUs:   1,
+		KernelPath:      kernelPath,
+		RootfsDir:       tmpDir,
+		SocketDir:       tmpDir,
+		DefaultVCPUs:    1,
 		DefaultMemoryMB: 512,
-		EnableJailer:   false,
+		EnableJailer:    false,
 	}
 
 	vmm := lifecycle.NewVMMManager(vmmConfig)
@@ -182,7 +183,7 @@ func TestRealImageWithNetwork(t *testing.T) {
 
 	t.Log("Network tests require additional setup (bridge, TAP devices)")
 	t.Log("This test is a placeholder for future network testing")
-	
+
 	// TODO: Implement network setup
 	// 1. Create bridge
 	// 2. Create TAP device

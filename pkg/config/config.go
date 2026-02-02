@@ -17,14 +17,14 @@ type Config struct {
 	Metrics  MetricsConfig  `yaml:"metrics"`
 
 	// Legacy fields for backward compatibility
-	KernelPath     string       `yaml:"kernel_path"`
-	InitrdPath     string       `yaml:"initrd_path"`
-	RootfsDir      string       `yaml:"rootfs_dir"`
-	SocketDir      string       `yaml:"socket_dir"`
-	DefaultVCPUs   int          `yaml:"default_vcpus"`
-	DefaultMemoryMB int         `yaml:"default_memory_mb"`
-	EnableJailer   bool         `yaml:"enable_jailer"`
-	Jailer         JailerConfig `yaml:"jailer"`
+	KernelPath      string       `yaml:"kernel_path"`
+	InitrdPath      string       `yaml:"initrd_path"`
+	RootfsDir       string       `yaml:"rootfs_dir"`
+	SocketDir       string       `yaml:"socket_dir"`
+	DefaultVCPUs    int          `yaml:"default_vcpus"`
+	DefaultMemoryMB int          `yaml:"default_memory_mb"`
+	EnableJailer    bool         `yaml:"enable_jailer"`
+	Jailer          JailerConfig `yaml:"jailer"`
 }
 
 // ExecutorConfig holds executor-specific configuration.
@@ -38,7 +38,7 @@ type ExecutorConfig struct {
 	DefaultMemoryMB int          `yaml:"default_memory_mb"`
 	EnableJailer    bool         `yaml:"enable_jailer"`
 	Jailer          JailerConfig `yaml:"jailer"`
-	InitSystem      string       `yaml:"init_system"` // "none", "tini", "dumb-init"
+	InitSystem      string       `yaml:"init_system"`       // "none", "tini", "dumb-init"
 	InitGracePeriod int          `yaml:"init_grace_period"` // Grace period in seconds
 }
 
@@ -64,9 +64,9 @@ type LoggingConfig struct {
 
 // ImagesConfig holds image preparation configuration.
 type ImagesConfig struct {
-	CacheDir        string `yaml:"cache_dir"`
-	MaxCacheSizeMB  int    `yaml:"max_cache_size_mb"`
-	EnableLayerCache bool `yaml:"enable_layer_cache"`
+	CacheDir         string `yaml:"cache_dir"`
+	MaxCacheSizeMB   int    `yaml:"max_cache_size_mb"`
+	EnableLayerCache bool   `yaml:"enable_layer_cache"`
 }
 
 // MetricsConfig holds metrics configuration.

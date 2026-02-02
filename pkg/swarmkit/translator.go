@@ -69,9 +69,9 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 			},
 		},
 		"machine-config": map[string]interface{}{
-			"vcpu_count":  vcpus,
+			"vcpu_count":   vcpus,
 			"mem_size_mib": memoryMB,
-			"ht_enabled":  false,
+			"ht_enabled":   false,
 		},
 		"network-interfaces": []map[string]interface{}{},
 	}

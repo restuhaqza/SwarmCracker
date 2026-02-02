@@ -35,11 +35,11 @@ var (
 
 // Global flags
 var (
-	cfgFile     string
-	logLevel    string
-	kernelPath  string
-	rootfsDir   string
-	sshKeyPath  string
+	cfgFile    string
+	logLevel   string
+	kernelPath string
+	rootfsDir  string
+	sshKeyPath string
 )
 
 func main() {
@@ -82,11 +82,11 @@ It provides a simple interface to the SwarmCracker executor, allowing you to:
 // newRunCommand creates the run command
 func newRunCommand() *cobra.Command {
 	var (
-		detach    bool
-		vcpus     int
-		memory    int
-		env       []string
-		testMode  bool
+		detach   bool
+		vcpus    int
+		memory   int
+		env      []string
+		testMode bool
 	)
 
 	cmd := &cobra.Command{
@@ -174,14 +174,14 @@ Example:
 					container := task.Spec.Runtime.(*types.Container)
 
 					vmState := &runtime.VMState{
-						ID:        task.ID,
-						Image:     container.Image,
-						Command:   append(container.Command, container.Args...),
-						Status:    "running",
-						VCPUs:     vcpus,
-						MemoryMB:  memory,
+						ID:         task.ID,
+						Image:      container.Image,
+						Command:    append(container.Command, container.Args...),
+						Status:     "running",
+						VCPUs:      vcpus,
+						MemoryMB:   memory,
 						KernelPath: cfg.Executor.KernelPath,
-						LogPath:   filepath.Join(stateMgr.GetLogDir(), task.ID+".log"),
+						LogPath:    filepath.Join(stateMgr.GetLogDir(), task.ID+".log"),
 					}
 
 					// Get network info if available
@@ -236,10 +236,10 @@ Example:
 // newDeployCommand creates the deploy command
 func newDeployCommand() *cobra.Command {
 	var (
-		hosts    []string
-		user     string
-		port     int
-		dryRun   bool
+		hosts  []string
+		user   string
+		port   int
+		dryRun bool
 	)
 
 	cmd := &cobra.Command{
@@ -306,14 +306,14 @@ Example:
 
 			// Create deployment plan
 			plan := &DeploymentPlan{
-				ImageRef:   imageRef,
-				Hosts:      allHosts,
-				User:       user,
-				Port:       port,
-				SSHKey:     sshKey,
-				Config:     cfg,
-				VCPUs:      cfg.Executor.DefaultVCPUs,
-				MemoryMB:   cfg.Executor.DefaultMemoryMB,
+				ImageRef: imageRef,
+				Hosts:    allHosts,
+				User:     user,
+				Port:     port,
+				SSHKey:   sshKey,
+				Config:   cfg,
+				VCPUs:    cfg.Executor.DefaultVCPUs,
+				MemoryMB: cfg.Executor.DefaultMemoryMB,
 			}
 
 			// Execute deployment
@@ -382,7 +382,7 @@ func newVersionCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Show version information",
-		Long: `Display detailed version information about the SwarmCracker CLI.`,
+		Long:  `Display detailed version information about the SwarmCracker CLI.`,
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Printf("SwarmCracker %s\n", Version)
 			fmt.Printf("  Build Time: %s\n", BuildTime)
@@ -615,9 +615,9 @@ func resolveSSHKey(customPath string) (string, error) {
 	}
 
 	defaultKeys := []string{
-		"swarmcracker_deploy",  // SwarmCracker-specific key
-		"id_ed25519",           // Modern default
-		"id_rsa",               // Legacy RSA
+		"swarmcracker_deploy", // SwarmCracker-specific key
+		"id_ed25519",          // Modern default
+		"id_rsa",              // Legacy RSA
 	}
 
 	for _, keyName := range defaultKeys {
@@ -636,14 +636,14 @@ func resolveSSHKey(customPath string) (string, error) {
 
 // DeploymentPlan represents a deployment plan
 type DeploymentPlan struct {
-	ImageRef   string
-	Hosts      []string
-	User       string
-	Port       int
-	SSHKey     string
-	Config     *config.Config
-	VCPUs      int
-	MemoryMB   int
+	ImageRef string
+	Hosts    []string
+	User     string
+	Port     int
+	SSHKey   string
+	Config   *config.Config
+	VCPUs    int
+	MemoryMB int
 }
 
 // DeploymentResult represents the result of a deployment
@@ -728,7 +728,7 @@ func deployToHost(host string, plan *DeploymentPlan) error {
 	// Check if Firecracker is installed
 	log.Info().Str("host", host).Msg("Checking Firecracker installation")
 	if err := checkFirecrackerInstalled(client); err != nil {
-		return fmt.Errorf("Firecracker check failed: %w", err)
+		return fmt.Errorf("firecracker check failed: %w", err)
 	}
 
 	// Check if KVM is available

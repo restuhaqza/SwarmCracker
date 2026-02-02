@@ -52,7 +52,7 @@ type Resources struct {
 
 // RestartPolicy specifies restart behavior.
 type RestartPolicy struct {
-	Condition RestartPolicy_Condition
+	Condition   RestartPolicy_Condition
 	MaxAttempts uint64
 }
 
@@ -60,8 +60,8 @@ type RestartPolicy struct {
 type RestartPolicy_Condition int
 
 const (
-	RestartPolicy_ANY       RestartPolicy_Condition = 0
-	RestartPolicy_NONE      RestartPolicy_Condition = 1
+	RestartPolicy_ANY        RestartPolicy_Condition = 0
+	RestartPolicy_NONE       RestartPolicy_Condition = 1
 	RestartPolicy_ON_FAILURE RestartPolicy_Condition = 2
 )
 
@@ -72,11 +72,11 @@ type Placement struct {
 
 // TaskStatus represents task status.
 type TaskStatus struct {
-	State        TaskState
+	State         TaskState
 	RuntimeStatus interface{}
-	Timestamp    int64
-	Message      string
-	Err          error
+	Timestamp     int64
+	Message       string
+	Err           error
 }
 
 // TaskState represents the current state of a task.

@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
 // VMMManager manages Firecracker VM processes.
@@ -303,9 +303,9 @@ func (w *logWriter) Write(p []byte) (n int, err error) {
 // Firecracker API configuration structures
 
 type MachineConfig struct {
-	VcpuCount  int    `json:"vcpu_count"`
-	MemSizeMib int    `json:"mem_size_mib"`
-	HtEnabled  bool   `json:"ht_enabled"`
+	VcpuCount       int  `json:"vcpu_count"`
+	MemSizeMib      int  `json:"mem_size_mib"`
+	HtEnabled       bool `json:"ht_enabled"`
 	TrackDirtyPages bool `json:"track_dirty_pages,omitempty"`
 }
 
@@ -322,8 +322,8 @@ type Drive struct {
 }
 
 type NetworkInterface struct {
-	IfaceID    string `json:"iface_id"`
-	GuestMac   string `json:"guest_mac,omitempty"`
+	IfaceID     string `json:"iface_id"`
+	GuestMac    string `json:"guest_mac,omitempty"`
 	HostDevName string `json:"host_dev_name,omitempty"`
 }
 

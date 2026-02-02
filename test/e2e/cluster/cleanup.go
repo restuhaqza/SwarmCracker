@@ -15,22 +15,22 @@ import (
 
 // CleanupManager handles cleanup of SwarmKit resources
 type CleanupManager struct {
-	logger      zerolog.Logger
-	stateDirs   []string
-	processes   []*os.Process
-	networkIfs  []string
-	bridges     []string
+	logger       zerolog.Logger
+	stateDirs    []string
+	processes    []*os.Process
+	networkIfs   []string
+	bridges      []string
 	cleanupFuncs []func() error
 }
 
 // NewCleanupManager creates a new cleanup manager
 func NewCleanupManager() *CleanupManager {
 	return &CleanupManager{
-		logger:      log.With().Str("component", "cleanup").Logger(),
-		stateDirs:   make([]string, 0),
-		processes:   make([]*os.Process, 0),
-		networkIfs:  make([]string, 0),
-		bridges:     make([]string, 0),
+		logger:       log.With().Str("component", "cleanup").Logger(),
+		stateDirs:    make([]string, 0),
+		processes:    make([]*os.Process, 0),
+		networkIfs:   make([]string, 0),
+		bridges:      make([]string, 0),
 		cleanupFuncs: make([]func() error, 0),
 	}
 }

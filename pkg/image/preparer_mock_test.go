@@ -72,7 +72,7 @@ func TestImagePreparerWithMocks_Prepare(t *testing.T) {
 			},
 		},
 		{
-			name: "prepare_image_nil_task",
+			name:      "prepare_image_nil_task",
 			setupMock: func(runtime *MockContainerRuntime, fsOps *MockFilesystemOperator, binLoc *MockBinaryLocator) {},
 			config: &PreparerConfig{
 				RootfsDir: "/var/lib/firecracker/rootfs",
@@ -81,7 +81,7 @@ func TestImagePreparerWithMocks_Prepare(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "prepare_image_nil_runtime",
+			name:      "prepare_image_nil_runtime",
 			setupMock: func(runtime *MockContainerRuntime, fsOps *MockFilesystemOperator, binLoc *MockBinaryLocator) {},
 			config: &PreparerConfig{
 				RootfsDir: "/var/lib/firecracker/rootfs",
@@ -153,7 +153,7 @@ func TestImagePreparerWithMocks_Prepare(t *testing.T) {
 				container := tt.task.Spec.Runtime.(*types.Container)
 				imageID := generateImageID(container.Image)
 				rootfsPath := filepath.Join(tt.config.RootfsDir, imageID+".ext4")
-				
+
 				// Check if we're testing the "skip if exists" path
 				if _, exists := fsOps.Files[rootfsPath]; exists {
 					// Rootfs exists - test should skip
@@ -292,8 +292,8 @@ func TestImagePreparerWithMocks_InitSystem(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "inject_init_none",
-			setupMock: func(fsOps *MockFilesystemOperator, binLoc *MockBinaryLocator) {},
+			name:        "inject_init_none",
+			setupMock:   func(fsOps *MockFilesystemOperator, binLoc *MockBinaryLocator) {},
 			initSystem:  "none",
 			rootfsPath:  "/tmp/test-none.ext4",
 			expectError: false,
@@ -379,7 +379,7 @@ func TestImagePreparerWithMocks_FilesystemOperations(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name: "mount_success",
+			name:      "mount_success",
 			setupMock: func(fsOps *MockFilesystemOperator) {},
 			operation: func(t *testing.T, ip *ImagePreparerInternal) error {
 				mountDir, err := ip.mountWithMocks("/tmp/test.img")
@@ -469,7 +469,7 @@ func TestMockContainerRuntime(t *testing.T) {
 	t.Run("RemoveContainer", func(t *testing.T) {
 		runtime := NewMockContainerRuntime()
 		ctx := context.Background()
-		
+
 		runtime.Containers["container-1"] = "nginx:latest"
 		err := runtime.RemoveContainer(ctx, "container-1")
 		assert.NoError(t, err)
@@ -482,7 +482,7 @@ func TestMockContainerRuntime(t *testing.T) {
 		ctx := context.Background()
 
 		assert.False(t, runtime.ImageExists(ctx, "nginx:latest"))
-		
+
 		runtime.Images["nginx:latest"] = true
 		assert.True(t, runtime.ImageExists(ctx, "nginx:latest"))
 	})
@@ -492,7 +492,7 @@ func TestMockContainerRuntime(t *testing.T) {
 func TestMockFilesystemOperator(t *testing.T) {
 	t.Run("CreateFile", func(t *testing.T) {
 		fsOps := NewMockFilesystemOperator()
-		
+
 		err := fsOps.CreateFile("/tmp/test.txt")
 		assert.NoError(t, err)
 		assert.True(t, fsOps.FileExists("/tmp/test.txt"))
@@ -501,7 +501,7 @@ func TestMockFilesystemOperator(t *testing.T) {
 	t.Run("RemoveFile", func(t *testing.T) {
 		fsOps := NewMockFilesystemOperator()
 		fsOps.Files["/tmp/test.txt"] = []byte("content")
-		
+
 		err := fsOps.RemoveFile("/tmp/test.txt")
 		assert.NoError(t, err)
 		assert.False(t, fsOps.FileExists("/tmp/test.txt"))
@@ -510,7 +510,7 @@ func TestMockFilesystemOperator(t *testing.T) {
 	t.Run("CopyFile", func(t *testing.T) {
 		fsOps := NewMockFilesystemOperator()
 		fsOps.Files["/src.txt"] = []byte("test content")
-		
+
 		err := fsOps.CopyFile("/src.txt", "/dst.txt", 0644)
 		assert.NoError(t, err)
 		assert.True(t, fsOps.FileExists("/dst.txt"))
@@ -519,14 +519,14 @@ func TestMockFilesystemOperator(t *testing.T) {
 
 	t.Run("CopyFile_SourceNotExist", func(t *testing.T) {
 		fsOps := NewMockFilesystemOperator()
-		
+
 		err := fsOps.CopyFile("/nonexistent.txt", "/dst.txt", 0644)
 		assert.Error(t, err)
 	})
 
 	t.Run("Mount", func(t *testing.T) {
 		fsOps := NewMockFilesystemOperator()
-		
+
 		err := fsOps.Mount("/tmp/test.img", "/mnt")
 		assert.NoError(t, err)
 		assert.Equal(t, "/mnt", fsOps.Mounts["/tmp/test.img"])
@@ -535,7 +535,7 @@ func TestMockFilesystemOperator(t *testing.T) {
 	t.Run("Unmount", func(t *testing.T) {
 		fsOps := NewMockFilesystemOperator()
 		fsOps.Mounts["/tmp/test.img"] = "/mnt"
-		
+
 		err := fsOps.Unmount("/mnt")
 		assert.NoError(t, err)
 		_, exists := fsOps.Mounts["/tmp/test.img"]

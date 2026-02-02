@@ -4,16 +4,13 @@ import (
 	"context"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/lifecycle"
 	"github.com/restuhaqza/swarmcracker/pkg/translator"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
-	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -255,7 +252,7 @@ func TestIntegration_InitSystemGracefulShutdown(t *testing.T) {
 
 	// Create task with init system annotations
 	task := &types.Task{
-		ID:        "test-graceful-shutdown",
+		ID: "test-graceful-shutdown",
 		Spec: types.TaskSpec{
 			Runtime: &types.Container{
 				Image: testImageAlpine,

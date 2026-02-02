@@ -54,7 +54,7 @@ func TestImagePreparer_Prepare_InvalidImageRefs(t *testing.T) {
 	ip := NewImagePreparer(config).(*ImagePreparer)
 
 	invalidImages := []struct {
-		name    string
+		name     string
 		imageRef string
 	}{
 		{"empty", ""},

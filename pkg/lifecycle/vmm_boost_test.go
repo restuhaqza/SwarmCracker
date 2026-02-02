@@ -119,10 +119,10 @@ func TestVMMManager_Stop_VMInStates(t *testing.T) {
 			}
 
 			vm.vms[task.ID] = &VMInstance{
-				ID:        task.ID,
-				State:     state,
-				CreatedAt: time.Now(),
-				PID:       1234,
+				ID:         task.ID,
+				State:      state,
+				CreatedAt:  time.Now(),
+				PID:        1234,
 				SocketPath: filepath.Join("/tmp", task.ID+".sock"),
 			}
 
@@ -291,10 +291,10 @@ func TestVMMManager_forceKillVM_Scenarios(t *testing.T) {
 
 func TestVMMManager_waitForAPIServer_Scenarios(t *testing.T) {
 	tests := []struct {
-		name     string
-		socket   string
-		timeout  time.Duration
-		wantErr  bool
+		name    string
+		socket  string
+		timeout time.Duration
+		wantErr bool
 	}{
 		{
 			name:    "non-existent socket",
@@ -330,12 +330,12 @@ func TestVMMManager_waitForAPIServer_Scenarios(t *testing.T) {
 
 func TestVMMManager_waitForShutdown_Scenarios(t *testing.T) {
 	tests := []struct {
-		name     string
-		socket   string
-		timeout  time.Duration
-		wantErr  bool
-		setup    func() string
-		cleanup  func(string)
+		name    string
+		socket  string
+		timeout time.Duration
+		wantErr bool
+		setup   func() string
+		cleanup func(string)
 	}{
 		{
 			name:    "non-existent socket returns success",

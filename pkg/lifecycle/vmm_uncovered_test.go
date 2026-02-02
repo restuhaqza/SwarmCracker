@@ -187,8 +187,8 @@ func TestVMMManager_ForceKillVM_Uncovered(t *testing.T) {
 				// Create a subprocess that we can kill
 				cmd := createSleepProcess(t)
 				return &VMInstance{
-					ID:  "test-vm",
-					PID: cmd.Process.Pid,
+					ID:    "test-vm",
+					PID:   cmd.Process.Pid,
 					State: VMStateRunning,
 				}
 			},
@@ -198,8 +198,8 @@ func TestVMMManager_ForceKillVM_Uncovered(t *testing.T) {
 			name: "kill VM with invalid PID",
 			setupFunc: func() *VMInstance {
 				return &VMInstance{
-					ID:  "test-vm",
-					PID: 99999, // Non-existent PID
+					ID:    "test-vm",
+					PID:   99999, // Non-existent PID
 					State: VMStateRunning,
 				}
 			},
@@ -209,8 +209,8 @@ func TestVMMManager_ForceKillVM_Uncovered(t *testing.T) {
 			name: "kill VM with negative PID",
 			setupFunc: func() *VMInstance {
 				return &VMInstance{
-					ID:  "test-vm",
-					PID: -1,
+					ID:    "test-vm",
+					PID:   -1,
 					State: VMStateRunning,
 				}
 			},
@@ -220,8 +220,8 @@ func TestVMMManager_ForceKillVM_Uncovered(t *testing.T) {
 			name: "kill VM with zero PID",
 			setupFunc: func() *VMInstance {
 				return &VMInstance{
-					ID:  "test-vm",
-					PID: 0,
+					ID:    "test-vm",
+					PID:   0,
 					State: VMStateRunning,
 				}
 			},
@@ -462,8 +462,8 @@ func TestVMMManager_Stop_AdditionalCoverage(t *testing.T) {
 			name: "stop already stopped VM",
 			setupFunc: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
-					ID:          task.ID,
-					State:       VMStateStopped,
+					ID:             task.ID,
+					State:          VMStateStopped,
 					GracePeriodSec: 5,
 				}
 			},
@@ -476,8 +476,8 @@ func TestVMMManager_Stop_AdditionalCoverage(t *testing.T) {
 			name: "stop crashing VM",
 			setupFunc: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
-					ID:          task.ID,
-					State:       VMStateCrashed,
+					ID:             task.ID,
+					State:          VMStateCrashed,
 					GracePeriodSec: 5,
 				}
 			},
@@ -523,10 +523,10 @@ func TestVMMManager_Start_ErrorPaths(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name: "start with nil task",
-			setupFunc: func(vm *VMMManager) {},
-			task:      nil,
-			config:    nil,
+			name:        "start with nil task",
+			setupFunc:   func(vm *VMMManager) {},
+			task:        nil,
+			config:      nil,
 			expectError: true,
 		},
 		{

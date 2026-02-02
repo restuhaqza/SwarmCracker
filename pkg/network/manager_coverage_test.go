@@ -24,7 +24,7 @@ func TestNetworkManager_PrepareNetwork_ErrorScenarios(t *testing.T) {
 			task: &types.Task{
 				ID:        "task-nil-networks",
 				ServiceID: "service-1",
-				Networks: nil,
+				Networks:  nil,
 			},
 			wantErr: false, // Should handle gracefully
 		},
@@ -313,17 +313,17 @@ func TestNetworkManager_ensureBridge_VariousStates(t *testing.T) {
 			expectCreate: false,
 		},
 		{
-			name:       "empty bridge name",
-			bridgeName: "",
-			preSetup:   func(nm *NetworkManager) {},
-			wantErr:    false, // Will try to create, may fail without root
+			name:         "empty bridge name",
+			bridgeName:   "",
+			preSetup:     func(nm *NetworkManager) {},
+			wantErr:      false, // Will try to create, may fail without root
 			expectCreate: true,
 		},
 		{
-			name:       "bridge with special characters",
-			bridgeName: "test-br-0.1",
-			preSetup:   func(nm *NetworkManager) {},
-			wantErr:    false, // Will try to create, may fail without root
+			name:         "bridge with special characters",
+			bridgeName:   "test-br-0.1",
+			preSetup:     func(nm *NetworkManager) {},
+			wantErr:      false, // Will try to create, may fail without root
 			expectCreate: true,
 		},
 	}
@@ -352,11 +352,11 @@ func TestNetworkManager_ensureBridge_VariousStates(t *testing.T) {
 
 func TestNetworkManager_createTapDevice_Variations(t *testing.T) {
 	tests := []struct {
-		name         string
-		network      types.NetworkAttachment
-		index        int
-		expectedTap  string
-		expectedIP   string
+		name           string
+		network        types.NetworkAttachment
+		index          int
+		expectedTap    string
+		expectedIP     string
 		expectedBridge string
 	}{
 		{
@@ -374,9 +374,9 @@ func TestNetworkManager_createTapDevice_Variations(t *testing.T) {
 				},
 				Addresses: []string{"10.0.0.5/24"},
 			},
-			index:        0,
-			expectedTap:  "tap-eth0",
-			expectedIP:   "10.0.0.5",
+			index:          0,
+			expectedTap:    "tap-eth0",
+			expectedIP:     "10.0.0.5",
 			expectedBridge: "custom-br0",
 		},
 		{
@@ -394,9 +394,9 @@ func TestNetworkManager_createTapDevice_Variations(t *testing.T) {
 				},
 				Addresses: []string{"172.16.0.10/16"},
 			},
-			index:        1,
-			expectedTap:  "tap-eth1",
-			expectedIP:   "172.16.0.10",
+			index:          1,
+			expectedTap:    "tap-eth1",
+			expectedIP:     "172.16.0.10",
 			expectedBridge: "", // Will use default
 		},
 		{
@@ -414,9 +414,9 @@ func TestNetworkManager_createTapDevice_Variations(t *testing.T) {
 				},
 				Addresses: []string{},
 			},
-			index:        2,
-			expectedTap:  "tap-eth2",
-			expectedIP:   "",
+			index:          2,
+			expectedTap:    "tap-eth2",
+			expectedIP:     "",
 			expectedBridge: "test-br0",
 		},
 		{
@@ -434,9 +434,9 @@ func TestNetworkManager_createTapDevice_Variations(t *testing.T) {
 				},
 				Addresses: []string{"192.168.100.50/32"},
 			},
-			index:        5,
-			expectedTap:  "tap-eth5",
-			expectedIP:   "192.168.100.50",
+			index:          5,
+			expectedTap:    "tap-eth5",
+			expectedIP:     "192.168.100.50",
 			expectedBridge: "test-br0",
 		},
 		{
@@ -454,9 +454,9 @@ func TestNetworkManager_createTapDevice_Variations(t *testing.T) {
 				},
 				Addresses: []string{"10.1.1.1/24"},
 			},
-			index:        99,
-			expectedTap:  "tap-eth99",
-			expectedIP:   "10.1.1.1",
+			index:          99,
+			expectedTap:    "tap-eth99",
+			expectedIP:     "10.1.1.1",
 			expectedBridge: "test-br0",
 		},
 	}

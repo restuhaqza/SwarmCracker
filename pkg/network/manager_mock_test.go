@@ -378,7 +378,7 @@ func TestNetworkManagerWithExecutor_Mocked(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "cleanup_network_with_nil_task",
+			name:      "cleanup_network_with_nil_task",
 			setupMock: func(m *MockCommandExecutor) {},
 			config: types.NetworkConfig{
 				BridgeName: "test-br-nil",
@@ -421,12 +421,12 @@ func TestNetworkManagerWithExecutor_Mocked(t *testing.T) {
 // TestNetworkManagerWithExecutor_ErrorHandling tests error handling paths
 func TestNetworkManagerWithExecutor_ErrorHandling(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupMock   func(*MockCommandExecutor)
-		config      types.NetworkConfig
-		task        *types.Task
-		operation   string
-		expectError bool
+		name          string
+		setupMock     func(*MockCommandExecutor)
+		config        types.NetworkConfig
+		task          *types.Task
+		operation     string
+		expectError   bool
 		errorContains string
 	}{
 		{
@@ -446,9 +446,9 @@ func TestNetworkManagerWithExecutor_ErrorHandling(t *testing.T) {
 			config: types.NetworkConfig{
 				BridgeName: "test-br-fail",
 			},
-			task: &types.Task{ID: "test"},
-			operation: "ensure",
-			expectError: true,
+			task:          &types.Task{ID: "test"},
+			operation:     "ensure",
+			expectError:   true,
 			errorContains: "failed to create bridge",
 		},
 		{
@@ -474,9 +474,9 @@ func TestNetworkManagerWithExecutor_ErrorHandling(t *testing.T) {
 			config: types.NetworkConfig{
 				BridgeName: "test-br-up-fail",
 			},
-			task: &types.Task{ID: "test"},
-			operation: "ensure",
-			expectError: true,
+			task:          &types.Task{ID: "test"},
+			operation:     "ensure",
+			expectError:   true,
 			errorContains: "failed to bring bridge up",
 		},
 		{
@@ -501,9 +501,9 @@ func TestNetworkManagerWithExecutor_ErrorHandling(t *testing.T) {
 			config: types.NetworkConfig{
 				BridgeName: "test-br-tap-fail",
 			},
-			task: &types.Task{ID: "test"},
-			operation: "create_tap",
-			expectError: true,
+			task:          &types.Task{ID: "test"},
+			operation:     "create_tap",
+			expectError:   true,
 			errorContains: "failed to add TAP to bridge",
 		},
 		{
@@ -524,9 +524,9 @@ func TestNetworkManagerWithExecutor_ErrorHandling(t *testing.T) {
 			config: types.NetworkConfig{
 				BridgeName: "test-br-up",
 			},
-			task: &types.Task{ID: "test"},
-			operation: "create_tap",
-			expectError: true,
+			task:          &types.Task{ID: "test"},
+			operation:     "create_tap",
+			expectError:   true,
 			errorContains: "failed to bring TAP up",
 		},
 	}
@@ -650,11 +650,11 @@ func TestNetworkManagerWithExecutor_MultipleTAPDevices(t *testing.T) {
 // TestNetworkManagerWithExecutor_IPAllocation tests IP allocation scenarios
 func TestNetworkManagerWithExecutor_IPAllocation(t *testing.T) {
 	tests := []struct {
-		name        string
-		subnet      string
-		gateway     string
-		taskID      string
-		validateIP  func(*testing.T, string)
+		name       string
+		subnet     string
+		gateway    string
+		taskID     string
+		validateIP func(*testing.T, string)
 	}{
 		{
 			name:    "allocate_different_ips_for_different_tasks",
@@ -751,9 +751,9 @@ func TestNetworkManagerWithExecutor_NATSetupTwice(t *testing.T) {
 // TestNewNetworkManagerWithExecutor tests constructor variations
 func TestNewNetworkManagerWithExecutor(t *testing.T) {
 	tests := []struct {
-		name        string
-		config      types.NetworkConfig
-		validate    func(*testing.T, *NetworkManagerInternal)
+		name     string
+		config   types.NetworkConfig
+		validate func(*testing.T, *NetworkManagerInternal)
 	}{
 		{
 			name: "with_ip_allocator",

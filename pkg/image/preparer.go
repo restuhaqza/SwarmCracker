@@ -23,13 +23,13 @@ type ImagePreparer struct {
 
 // PreparerConfig holds image preparer configuration.
 type PreparerConfig struct {
-	KernelPath     string
-	RootfsDir      string
-	SocketDir      string
-	DefaultVCPUs   int
+	KernelPath      string
+	RootfsDir       string
+	SocketDir       string
+	DefaultVCPUs    int
 	DefaultMemoryMB int
-	InitSystem     string `yaml:"init_system"` // "none", "tini", "dumb-init"
-	InitGracePeriod int `yaml:"init_grace_period"` // Grace period in seconds
+	InitSystem      string `yaml:"init_system"`       // "none", "tini", "dumb-init"
+	InitGracePeriod int    `yaml:"init_grace_period"` // Grace period in seconds
 }
 
 // NewImagePreparer creates a new ImagePreparer.

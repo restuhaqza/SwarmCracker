@@ -223,7 +223,7 @@ func TestNetworkManager_PrepareNetwork(t *testing.T) {
 
 	// Verify TAP device is removed
 	time.Sleep(100 * time.Millisecond)
-	output, err = exec.Command("ip", "link", "show", tap.Name).CombinedOutput()
+	_, err = exec.Command("ip", "link", "show", tap.Name).CombinedOutput()
 	if err == nil {
 		t.Error("TAP device not removed after cleanup")
 	}

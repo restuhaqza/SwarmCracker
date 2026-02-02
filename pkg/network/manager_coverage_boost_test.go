@@ -43,7 +43,7 @@ func TestNetworkManager_PrepareNetwork_BridgeCreationFailure(t *testing.T) {
 				config: types.NetworkConfig{
 					BridgeName: tt.bridgeName,
 				},
-				bridges:     make(map[string]bool),
+				bridges:    make(map[string]bool),
 				tapDevices: make(map[string]*TapDevice),
 			}
 
@@ -83,7 +83,7 @@ func TestNetworkManager_CreateTapDevice_FailureScenarios(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br0",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -143,13 +143,13 @@ func TestNetworkManager_RemoveTapDevice_Failure(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br0",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
 	tests := []struct {
-		name    string
-		tap     *TapDevice
+		name string
+		tap  *TapDevice
 	}{
 		{
 			name: "non_existent_tap",
@@ -189,7 +189,7 @@ func TestNetworkManager_PrepareNetwork_ConcurrentTasks(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-concurrent",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -239,7 +239,7 @@ func TestNetworkManager_CleanupNetwork_PartialFailure(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-partial",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -334,7 +334,7 @@ func TestNetworkManager_EnsureBridge_DoubleCheck(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-double",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -367,7 +367,7 @@ func TestNetworkManager_ContextCancellation(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-ctx",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -398,7 +398,7 @@ func TestNetworkManager_PermissionDeniedTests(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-perm",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -423,7 +423,7 @@ func TestNetworkManager_ResourceExhaustion(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-exhaust",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -456,7 +456,7 @@ func TestNetworkManager_RaceConditions(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-race",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -512,7 +512,7 @@ func TestNetworkManager_NilPointerHandling(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-nil",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -534,7 +534,7 @@ func TestNetworkManager_EmptyStringHandling(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -557,9 +557,9 @@ func TestNetworkManager_EmptyStringHandling(t *testing.T) {
 // TestNetworkManager_InvalidNetworkConfig tests invalid network configurations
 func TestNetworkManager_InvalidNetworkConfig(t *testing.T) {
 	tests := []struct {
-		name    string
-		config  types.NetworkConfig
-		task    *types.Task
+		name   string
+		config types.NetworkConfig
+		task   *types.Task
 	}{
 		{
 			name: "empty_bridge_name",
@@ -600,8 +600,8 @@ func TestNetworkManager_InvalidNetworkConfig(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			nm := &NetworkManager{
-				config:      tt.config,
-				bridges:     make(map[string]bool),
+				config:     tt.config,
+				bridges:    make(map[string]bool),
 				tapDevices: make(map[string]*TapDevice),
 			}
 
@@ -619,7 +619,7 @@ func TestNetworkManager_TimeoutHandling(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-timeout",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -650,7 +650,7 @@ func TestNetworkManager_ListTapDevices_ConcurrentModification(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-list",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -738,7 +738,7 @@ func TestParseMacAddress_EdgeCases(t *testing.T) {
 				config: types.NetworkConfig{
 					BridgeName: "test-br-mac",
 				},
-				bridges:     make(map[string]bool),
+				bridges:    make(map[string]bool),
 				tapDevices: make(map[string]*TapDevice),
 			}
 
@@ -762,7 +762,7 @@ func TestNetworkManager_IPCommandErrorHandling(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-ip-cmd",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -803,7 +803,7 @@ func TestNetworkManager_ExecCommandNotAvailable(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-no-ip",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -831,7 +831,7 @@ func TestNetworkManager_BridgeAlreadyExists(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "lo", // Loopback always exists
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -874,7 +874,7 @@ func TestNewNetworkManager_Variations(t *testing.T) {
 		config types.NetworkConfig
 	}{
 		{
-			name: "empty_config",
+			name:   "empty_config",
 			config: types.NetworkConfig{},
 		},
 		{
@@ -912,7 +912,7 @@ func TestNetworkManager_CleanupRaceConditions(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-cleanup-race",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -959,7 +959,7 @@ func TestNetworkManager_CommandContextCancellation(t *testing.T) {
 		config: types.NetworkConfig{
 			BridgeName: "test-br-ctx-cancel",
 		},
-		bridges:     make(map[string]bool),
+		bridges:    make(map[string]bool),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
