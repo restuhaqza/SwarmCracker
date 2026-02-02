@@ -1,0 +1,154 @@
+#!/bin/bash
+# Pre-commit hook to prevent secrets from being committed
+# Install: cp .git/hooks/pre-commit.sample .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+
+set -e
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+echo -e "${GREEN}🔍 Running pre-commit checks...${NC}"
+
+# Get list of staged files
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM)
+
+if [ -z "$STAGED_FILES" ]; then
+    echo "No staged files to check"
+    exit 0
+fi
+
+# Track if any checks failed
+FAILED=0
+
+# Check for common secret patterns
+echo "Checking for secrets..."
+
+# Patterns that should never be committed
+SECRET_PATTERNS=(
+    "password.*=.*[\"'].*[\"']"
+    "api[_-]?key.*=.*[\"'].*[\"']"
+    "secret[_-]?key.*=.*[\"'].*[\"']"
+    "token.*=.*[\"'].*[\"']"
+    "private[_-]?key.*=.*[\"'].*[\"']"
+    "aws[_-]?secret[_-]?access[_-]?key"
+    "aws_access_key_id"
+    "BEGIN.*PRIVATE KEY"
+    "BEGIN.*RSA PRIVATE KEY"
+    "ssh-rsa.* AAAA"
+    "ssh-ed25519.* AAAA"
+    "ghp_[a-zA-Z0-9]{36}"
+    "gho_[a-zA-Z0-9]{36}"
+    "ghu_[a-zA-Z0-9]{36}"
+    "ghs_[a-zA-Z0-9]{36}"
+    "ghr_[a-zA-Z0-9]{36}"
+    "github.*token.*=.*[\"'].*[\"']"
+    "AKIA[0-9A-Z]{16}"
+    "[0-9A-Za-z/+]{40}"  # Possible base64 encoded secret
+)
+
+# Check each staged file
+for FILE in $STAGED_FILES; do
+    # Skip binary files
+    if file "$FILE" | grep -q "binary"; then
+        continue
+    fi
+
+    # Check if file is staged
+    if ! git diff --cached --quiet "$FILE" 2>/dev/null; then
+        # Check for secret patterns
+        for PATTERN in "${SECRET_PATTERNS[@]}"; do
+            if git show :"$FILE" 2>/dev/null | grep -iE "$PATTERN" > /dev/null; then
+                echo -e "${RED}❌ SECRET DETECTED in $FILE${NC}"
+                echo -e "${YELLOW}Pattern: $PATTERN${NC}"
+                FAILED=1
+            fi
+        done
+    fi
+done
+
+# Check for sensitive file extensions
+SENSITIVE_FILES=(
+    "\.pem$"
+    "\.key$"
+    "\.csr$"
+    "\.p12$"
+    "\.pfx$"
+    "\.der$"
+    "id_rsa"
+    "id_ed25519"
+    "\.env$"
+    "\.env\."
+    "credentials"
+    "secrets"
+    "\.vagrant/"
+    "\.history"
+    ".*_history"
+)
+
+for FILE in $STAGED_FILES; do
+    for PATTERN in "${SENSITIVE_FILES[@]}"; do
+        if echo "$FILE" | grep -qE "$PATTERN"; then
+            echo -e "${RED}❌ SENSITIVE FILE DETECTED: $FILE${NC}"
+            echo -e "${YELLOW}This file type should not be committed${NC}"
+            FAILED=1
+        fi
+    done
+done
+
+# Check for specific forbidden paths
+FORBIDDEN_PATHS=(
+    ".vagrant/"
+    "node_modules/"
+    ".venv/"
+    "venv/"
+    "__pycache__/"
+    "*.pyc"
+    ".DS_Store"
+    "Thumbs.db"
+    "*.swp"
+    "*.swo"
+    "*~"
+    "*.log"
+)
+
+for FILE in $STAGED_FILES; do
+    for PATTERN in "${FORBIDDEN_PATHS[@]}"; do
+        if echo "$FILE" | grep -qE "$PATTERN"; then
+            echo -e "${YELLOW}⚠️  FORBIDDEN PATH: $FILE${NC}"
+            echo -e "${YELLOW}This should probably be in .gitignore${NC}"
+            # Don't fail for these, just warn
+        fi
+    done
+done
+
+# Run gofumpt if available (Go code formatter)
+if command -v gofumpt &> /dev/null; then
+    echo "Checking Go code formatting..."
+    UNFORMATTED=$(for FILE in $STAGED_FILES; do
+        if [[ "$FILE" == *.go ]]; then
+            echo "$FILE"
+        fi
+    done | xargs -r gofumpt -l -w 2>/dev/null || true)
+
+    if [ -n "$UNFORMATTED" ]; then
+        echo -e "${YELLOW}⚠️  Some Go files are not formatted${NC}"
+        echo "Run: gofumpt -w ."
+        # Don't fail, just warn
+    fi
+fi
+
+# Final check
+if [ $FAILED -eq 1 ]; then
+    echo ""
+    echo -e "${RED}❌ PRE-COMMIT CHECKS FAILED${NC}"
+    echo -e "${RED}Secrets or sensitive files detected. Commit aborted.${NC}"
+    echo ""
+    echo "To bypass (not recommended): git commit --no-verify"
+    exit 1
+fi
+
+echo -e "${GREEN}✅ Pre-commit checks passed${NC}"
+exit 0

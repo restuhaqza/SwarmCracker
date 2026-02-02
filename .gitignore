@@ -81,3 +81,57 @@ test/temp/
 
 # Compiled binaries (test-specific)
 test-automation/swarmcracker-agent
+
+# Secrets and sensitive files (DO NOT COMMIT)
+*.pem
+*.key
+*.csr
+*.p12
+*.pfx
+*.der
+id_rsa*
+id_ed25519*
+*.env
+*.env.*
+credentials
+secrets
+*.secrets
+.secrets/
+*.secret
+*secret.*
+
+# SSH and Git config
+.ssh/
+ssh_config
+.gitconfig.local
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# History files
+.*_history
+*.history
+.viminfo
+.mysql_history
+
+# Node modules (if any JS tooling)
+node_modules/
+
+# Python artifacts (if any Python tooling)
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Package manager locks (optional - uncomment if needed)
+# package-lock.json
+# yarn.lock
+# go.sum (commented out - SwarmCracker commits this)
