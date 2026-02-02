@@ -10,7 +10,25 @@ SwarmCracker uses a multi-layered testing approach:
 - **Integration Tests**: Test component interactions
 - **End-to-End Tests**: Test full workflows
 - **Benchmarks**: Measure performance
-- **Property Tests**: Test with randomized inputs (future)
+- **Context Tests**: Test cancellation and timeouts
+- **Concurrent Tests**: Test thread safety and race conditions
+
+## Coverage Status
+
+Current test coverage (as of February 2026):
+
+| Package   | Coverage | Status    | Notes                          |
+|-----------|----------|-----------|--------------------------------|
+| config    | 95.8%    | ✅        | Excellent coverage             |
+| executor  | 95.2%    | ✅        | Comprehensive tests            |
+| translator| 94.9%    | ✅        | Well-tested                    |
+| lifecycle | 85%      | ⚠️        | Improved +10%                  |
+| image     | 80%      | ⚠️        | Improved +19%                  |
+| network   | 82%      | ⚠️        | Improved +14%                  |
+
+**Overall average: ~87%**
+
+See [COVERAGE_REPORT.md](../../COVERAGE_REPORT.md) for detailed coverage analysis.
 
 ## Running Tests
 
@@ -593,6 +611,101 @@ func TestExecutor_Prepare_ImageError(t *testing.T) {
     assert.Contains(t, err.Error(), "image preparation failed")
 }
 ```
+
+## Recent Testing Improvements (February 2026)
+
+### New Test Files Added
+
+Three comprehensive test files were added to improve coverage:
+
+#### 1. `pkg/lifecycle/vmm_unit_test.go`
+- Tests for VMM lifecycle management
+- State transition testing (New → Starting → Running → Stopping → Stopped → Crashed)
+- Concurrent access testing (10 goroutines × 100 operations)
+- Input validation (nil checks, empty IDs)
+- Grace period handling
+
+#### 2. `pkg/image/preparer_unit_test.go`
+- Image preparer constructor tests
+- Input validation (nil tasks, invalid configs)
+- Image ID generation (various formats)
+- Directory operations and file copying
+- Cache behavior testing
+- Init system configuration
+
+#### 3. `pkg/network/allocator_unit_test.go`
+- IP allocator validation
+- Deterministic IP generation
+- IP distribution and collision handling
+- Concurrent allocation (thread safety)
+- TAP device management
+
+### Coverage Improvements
+
+| Package | Before | After | Change |
+|---------|--------|-------|--------|
+| lifecycle | 75% | 85% | +10% |
+| image     | 61% | 80% | +19% |
+| network   | 68% | 82% | +14% |
+
+### Testing Strategies
+
+#### Context Cancellation Tests
+```go
+func TestVMMManager_ContextTimeout(t *testing.T) {
+    ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+    defer cancel()
+
+    task := &types.Task{ID: "timeout-test"}
+    err := vmm.Start(ctx, task)
+    assert.Error(t, err)
+}
+```
+
+#### Concurrent Access Tests
+```go
+func TestVMMManager_ConcurrentAccess(t *testing.T) {
+    const goroutines = 10
+    const opsPerGoroutine = 100
+
+    var wg sync.WaitGroup
+    for i := 0; i < goroutines; i++ {
+        wg.Add(1)
+        go func(id int) {
+            defer wg.Done()
+            for j := 0; j < opsPerGoroutine; j++ {
+                task := &types.Task{ID: fmt.Sprintf("task-%d-%d", id, j)}
+                vmm.Describe(context.Background(), task)
+            }
+        }(i)
+    }
+    wg.Wait()
+}
+```
+
+#### Input Validation Tests
+```go
+func TestVMMManager_Start_Validation(t *testing.T) {
+    tests := []struct {
+        name      string
+        task      *types.Task
+        wantError bool
+    }{
+        {"nil_task", nil, true},
+        {"empty_task_id", &types.Task{ID: ""}, true},
+        {"valid_task", &types.Task{ID: "test-1"}, false},
+    }
+    // ... test implementation
+}
+```
+
+### Recommendations for Future Tests
+
+1. **Add more integration tests** for Firecracker API interactions
+2. **Test error recovery paths** more comprehensively
+3. **Add property-based tests** using `testing/quick` or `gofor`
+4. **Benchmark critical paths** for performance regression detection
+5. **Test with real Firecracker instances** in CI/CD pipeline
 
 ## Troubleshooting
 
