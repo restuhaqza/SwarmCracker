@@ -144,14 +144,25 @@ graph TB
 
 ## 🚀 Quick Start
 
+Choose your deployment scenario:
+
+| Deployment | Best For | Time |
+|------------|----------|------|
+| **[Local Development](docs/getting-started/local-dev.md)** | Development & testing | 10-15 min |
+| **[Vagrant Cluster](docs/getting-started/vagrant.md)** | Multi-node testing | 20-30 min |
+| **[Firecracker VMs](docs/getting-started/firecracker-vm.md)** | Production-like setup | 30-45 min |
+| **[DigitalOcean](docs/getting-started/digitalocean.md)** | Cloud deployment | 40-60 min |
+
+[See all getting started options →](docs/getting-started/)
+
 ### Prerequisites
 
-Before you begin, ensure you have:
+All deployments require:
 
 - ✅ **Linux** with KVM support (`ls /dev/kvm`)
 - ✅ **Go 1.21+** installed
-- ✅ **Firecracker v1.0.0+** installed
-- ✅ **SwarmKit** standalone (swarmd/swarmctl) - see [SwarmKit User Guide](docs/guides/swarmkit/user-guide.md)
+- ✅ **Firecracker v1.14+** installed
+- ✅ **SwarmKit** standalone (swarmd/swarmctl)
 
 ### Installation
 

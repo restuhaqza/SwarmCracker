@@ -1,6 +1,8 @@
-# SwarmCracker Test Cluster - Automated Setup
+# SwarmCracker Test Infrastructure
 
-Fully automated Vagrant setup for testing SwarmCracker with 1 manager + 1 worker.
+**Automated Vagrant-based testing cluster for SwarmCracker development.**
+
+This directory contains the test infrastructure for local development and testing of SwarmCracker. It creates isolated VMs for testing SwarmKit + Firecracker integration.
 
 ## 🏗️ Architecture
 
@@ -36,15 +38,17 @@ VBoxManage --version
 vagrant --version
 ```
 
-## 🚀 Quick Start
+## 📖 Documentation
 
-### 1. Start the Cluster
+**For deployment guides, see:**
+- [Getting Started - Vagrant](../docs/getting-started/vagrant.md)
+- [Getting Started - Firecracker VMs](../docs/getting-started/firecracker-vm.md)
+- [SwarmKit Deployment Guide](../docs/guides/swarmkit/deployment.md)
+
+## 🚀 Quick Start
 
 ```bash
 cd /home/kali/.openclaw/workspace/projects/swarmcracker/test-automation
-
-# Make scripts executable
-chmod +x *.sh scripts/*.sh
 
 # Start all VMs (takes 5-10 minutes)
 ./start-cluster.sh
@@ -55,20 +59,6 @@ This will:
 - Install all dependencies (Go, Firecracker, SwarmKit, SwarmCracker)
 - Configure the SwarmKit cluster
 - Join worker to the manager
-
-### 2. Test Deployments
-
-```bash
-# Run automated tests
-./test-deployment.sh
-```
-
-This will test:
-- Service deployment (nginx, 3 replicas)
-- Scaling (3 → 5 replicas)
-- Rolling updates
-- Multi-service stack (frontend, backend, database)
-- MicroVM verification on workers
 
 ## 🎮 Common Commands
 
