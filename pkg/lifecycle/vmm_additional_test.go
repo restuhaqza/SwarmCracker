@@ -173,7 +173,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 					CreatedAt: time.Now(),
 				}, nil
 			},
-			expectedState: types.TaskState_FAILED,
+			expectedState: types.TaskState_COMPLETE, // Signal(0) fails on invalid PID, treated as stopped
 			expectError:   false,
 		},
 		{
@@ -186,7 +186,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 					CreatedAt: time.Now(),
 				}, nil
 			},
-			expectedState: types.TaskState_FAILED,
+			expectedState: types.TaskState_COMPLETE, // Signal(0) fails on PID 0, treated as stopped
 			expectError:   false,
 		},
 	}

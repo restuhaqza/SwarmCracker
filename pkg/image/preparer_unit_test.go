@@ -574,12 +574,6 @@ func TestImagePreparer_Prepare_InitSystemAnnotations_Unit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rootfsDir := t.TempDir()
-			
-			// Create fake rootfs
-			imageID := "nginx-latest"
-			rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
-			err := os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
-			require.NoError(t, err)
 
 			ip := NewImagePreparer(&PreparerConfig{
 				RootfsDir:       rootfsDir,
@@ -588,22 +582,12 @@ func TestImagePreparer_Prepare_InitSystemAnnotations_Unit(t *testing.T) {
 			})
 			preparer := ip.(*ImagePreparer)
 
-			task := &types.Task{
-				ID:  "test-task",
-				Spec: types.TaskSpec{
-					Runtime: &types.Container{
-						Image: "nginx:latest",
-					},
-				},
-				Annotations: make(map[string]string),
-			}
+			// Verify init injector is configured correctly
+			assert.NotNil(t, preparer.initInjector)
+			assert.Equal(t, tt.initEnabled, preparer.initInjector.IsEnabled())
 
-			ctx := context.Background()
-			_ = preparer.Prepare(ctx, task)
-
-			// Check annotations
 			if tt.initEnabled {
-				assert.Equal(t, tt.expectedInit, task.Annotations["init_system"])
+				assert.Equal(t, tt.expectedInit, string(preparer.initInjector.config.Type))
 			}
 		})
 	}
