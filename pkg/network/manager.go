@@ -797,6 +797,7 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 		if bridgeName == nm.config.BridgeName {
 			// ensureBridge is called in PrepareNetwork, but that only checks nm.config.BridgeName
 			// If we switched to a different bridgeName here, we might be in trouble if it doesn't exist.
+			_ = bridgeName // no-op: just documenting the fallback case
 		}
 	}
 
