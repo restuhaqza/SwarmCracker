@@ -105,14 +105,24 @@ echo "🔍 Verifying swarmctl binary..."
 
 # Build SwarmCracker
 echo "📦 Building SwarmCracker..."
-cd /tmp
-if [ ! -d "swarmcracker" ]; then
-  git clone https://github.com/restuhaqza/swarmcracker.git
+if [ -d "/tmp/swarmcracker" ]; then
+  echo "📂 Found local SwarmCracker source at /tmp/swarmcracker"
+  cd /tmp/swarmcracker
+elif [ -d "/swarmcracker" ]; then
+  echo "📂 Found local SwarmCracker source at /swarmcracker"
+  cd /swarmcracker
+else
+  echo "☁️ Cloning SwarmCracker from GitHub..."
+  cd /tmp
+  if [ ! -d "swarmcracker" ]; then
+    git clone https://github.com/restuhaqza/swarmcracker.git
+  fi
+  cd swarmcracker
+  git pull
 fi
-cd swarmcracker
-git pull
-go build -o swarmcracker ./cmd/swarmcracker/
-cp swarmcracker /usr/local/bin/
+
+go build -o /tmp/swarmcracker-binary ./cmd/swarmcracker/
+cp /tmp/swarmcracker-binary /usr/local/bin/swarmcracker
 chmod +x /usr/local/bin/swarmcracker
 
 # Create SwarmCracker config directory
@@ -231,14 +241,34 @@ echo "---"
 swarmctl cluster inspect default | grep -A 2 "JoinTokens" || true
 
 # Save tokens to file for workers to fetch
-swarmctl cluster inspect default > /tmp/cluster-info.json
-WORKER_TOKEN=$(jq -r '.JoinTokens.Worker' /tmp/cluster-info.json)
-MANAGER_TOKEN=$(jq -r '.JoinTokens.Manager' /tmp/cluster-info.json)
+swarmctl cluster inspect default > /tmp/cluster-info.txt
+WORKER_TOKEN=$(grep "Worker:" /tmp/cluster-info.txt | awk '{print $2}' | tr -d '[:space:]')
+MANAGER_TOKEN=$(grep "Manager:" /tmp/cluster-info.txt | awk '{print $2}' | tr -d '[:space:]')
 
 echo ""
 echo "WORKER_TOKEN=$WORKER_TOKEN" > /etc/swarmcracker/tokens.env
 echo "MANAGER_TOKEN=$MANAGER_TOKEN" >> /etc/swarmcracker/tokens.env
 chmod 644 /etc/swarmcracker/tokens.env
+
+# Serve tokens via HTTP for workers
+echo "🌐 Starting HTTP server for token distribution..."
+mkdir -p /tmp/swarm-tokens
+# Create a JSON file that workers can easily parse
+cat > /tmp/swarm-tokens/tokens.json <<EOF
+{
+  "worker": "$WORKER_TOKEN",
+  "manager": "$MANAGER_TOKEN"
+}
+EOF
+chmod 644 /tmp/swarm-tokens/tokens.json
+
+# Kill any existing python http server on port 8000
+pkill -f "http.server 8000" || true
+
+# Start python http server in background
+cd /tmp/swarm-tokens
+nohup python3 -m http.server 8000 > /tmp/token-server.log 2>&1 &
+echo "✅ Token server running on port 8000"
 
 echo "✅ Tokens saved to /etc/swarmcracker/tokens.env"
 echo ""

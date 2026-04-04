@@ -40,12 +40,12 @@ vagrant ssh manager -c "
   export SWARM_SOCKET=/var/run/swarmkit/swarm.sock
   echo 'Waiting for nodes to join...'
   for i in {1..30}; do
-    NODE_COUNT=\$(swarmctl node ls 2>/dev/null | grep -c 'ACCEPTED\|READY' || echo 0)
-    if [ \$NODE_COUNT -ge 3 ]; then
+    NODE_COUNT=$(swarmctl node ls 2>/dev/null | grep -c 'ACCEPTED\|READY' || echo 0)
+    if [ $NODE_COUNT -ge 2 ]; then
       echo '✅ All nodes joined!'
       break
     fi
-    echo 'Waiting for nodes... (\$NODE_COUNT/3)'
+    echo 'Waiting for nodes... ($NODE_COUNT/2)'
     sleep 5
   done
   echo ''
@@ -61,7 +61,7 @@ echo ""
 echo "Quick commands:"
 echo "  vagrant ssh manager              - SSH into manager"
 echo "  vagrant ssh worker1              - SSH into worker 1"
-echo "  vagrant ssh worker2              - SSH into worker 2"
+# echo "  vagrant ssh worker2              - SSH into worker 2"
 echo "  vagrant halt                     - Stop all VMs"
 echo "  vagrant destroy -f               - Delete all VMs"
 echo ""

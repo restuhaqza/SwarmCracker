@@ -10,87 +10,67 @@ export PATH=$PATH:/usr/local/go/bin
 echo "🚀 Setting up SwarmKit Worker..."
 
 # Get worker number from hostname
-WORKER_NUM=$(hostname | grep -oP 'worker-\K\d+')
+WORKER_NUM=$(hostname | grep -oP 'swarm-worker-\K\d+')
 WORKER_INDEX=${WORKER_NUM:-1}
 
 echo "Worker index: $WORKER_INDEX"
 
-# Build SwarmKit from source
-echo "📦 Building SwarmKit..."
-cd /tmp
-if [ ! -d "swarmkit" ]; then
-  git clone https://github.com/moby/swarmkit.git
+# Get manager private IP dynamically
+MANAGER_PRIVATE_IP=$(getent hosts swarmcracker-manager | awk '{ print $1 }' | head -1)
+if [ -z "$MANAGER_PRIVATE_IP" ]; then
+  # Fallback: try to fetch from DNS or use hardcoded value
+  echo "⚠️  Could not resolve swarmcracker-manager, trying common private IPs..."
+  # Try to fetch manager IP from the token server
+  for ip in 10.104.0.6 10.15.0.8 192.168.56.10; do
+    if curl -s --connect-timeout 2 "http://$ip:8000/tokens.json" > /dev/null 2>&1; then
+      MANAGER_PRIVATE_IP="$ip"
+      echo "✅ Found manager at $MANAGER_PRIVATE_IP"
+      break
+    fi
+  done
 fi
-cd swarmkit
-git pull
 
-echo "Go version: $(go version)"
-echo "Exploring SwarmKit structure..."
-ls -la
-
-# Find the actual main.go locations
-echo "Looking for swarmd main package..."
-# Be explicit - we want swarmd/cmd/swarmd/main.go, NOT external-ca-example
-SWARMMD_MAIN="./swarmd/cmd/swarmd/main.go"
-
-if [ ! -f "$SWARMMD_MAIN" ]; then
-  echo "❌ Could not find swarmd main.go at $SWARMMD_MAIN"
-  find . -name "main.go" | head -10
+if [ -z "$MANAGER_PRIVATE_IP" ]; then
+  echo "❌ Could not determine manager IP address"
   exit 1
 fi
 
-echo "Found: $SWARMMD_MAIN"
-SWARMMD_DIR=$(dirname "$SWARMMD_MAIN")
-echo "Building from: $SWARMMD_DIR"
+echo "Manager Private IP: $MANAGER_PRIVATE_IP"
 
-# Build swarmd
-echo "🔨 Building swarmd..."
-mkdir -p swarmd/bin
-cd "$SWARMMD_DIR"
-go build -o /tmp/swarmkit/swarmd/bin/swarmd .
-
-if [ $? -ne 0 ]; then
-  echo "❌ Failed to build swarmd"
-  exit 1
+# Build SwarmCracker and Custom Agent
+echo "📦 Building SwarmCracker & Agent..."
+if [ -d "/tmp/swarmcracker" ]; then
+  echo "📂 Found local SwarmCracker source at /tmp/swarmcracker"
+  cd /tmp/swarmcracker
+elif [ -d "/swarmcracker" ]; then
+  echo "📂 Found local SwarmCracker source at /swarmcracker"
+  cd /swarmcracker
+else
+  echo "☁️ Cloning SwarmCracker from GitHub..."
+  cd /tmp
+  if [ ! -d "swarmcracker" ]; then
+    git clone https://github.com/restuhaqza/swarmcracker.git
+  fi
+  cd swarmcracker
+  git pull
 fi
 
-cd /tmp/swarmkit
-
-# Verify binary
-if [ ! -f "swarmd/bin/swarmd" ]; then
-  echo "❌ swarmd binary not found"
-  exit 1
-fi
-
-# Stop swarmd service if running (to avoid "Text file busy" error)
-if systemctl is-active --quiet swarmd 2>/dev/null; then
-  echo "🛑 Stopping swarmd service to update binary..."
-  systemctl stop swarmd
-  sleep 2
-fi
-
-# Install binary
-cp swarmd/bin/swarmd /usr/local/bin/
-chmod +x /usr/local/bin/swarmd
-
-echo "✅ SwarmKit binary installed"
-
-# Build SwarmCracker
-echo "📦 Building SwarmCracker..."
-cd /tmp
-if [ ! -d "swarmcracker" ]; then
-  git clone https://github.com/restuhaqza/swarmcracker.git
-fi
-cd swarmcracker
-git pull
-go build -o swarmcracker ./cmd/swarmcracker/
-cp swarmcracker /usr/local/bin/
+# Build CLI
+go build -o /tmp/swarmcracker-binary ./cmd/swarmcracker/
+cp /tmp/swarmcracker-binary /usr/local/bin/swarmcracker
 chmod +x /usr/local/bin/swarmcracker
+
+# Build Custom Agent (swarmd-firecracker)
+go build -o /tmp/swarmd-firecracker-binary ./cmd/swarmd-firecracker/
+cp /tmp/swarmd-firecracker-binary /usr/local/bin/swarmd-firecracker
+chmod +x /usr/local/bin/swarmd-firecracker
+
+echo "✅ SwarmCracker binaries installed"
 
 # Create SwarmCracker config directory
 mkdir -p /etc/swarmcracker
 
-# Create SwarmCracker config
+# Create SwarmCracker config (reference only, agent uses flags)
 cat > /etc/swarmcracker/config.yaml <<EOF
 executor:
   kernel_path: "/usr/share/firecracker/vmlinux"
@@ -108,23 +88,28 @@ logging:
   format: "text"
 EOF
 
-# Validate config
+# Validate config (skip if kernel is missing or too small)
 echo "🔍 Validating SwarmCracker config..."
-swarmcracker validate --config /etc/swarmcracker/config.yaml
+KERNEL_SIZE=$(stat -f%z "/usr/share/firecracker/vmlinux" 2>/dev/null || stat -c%s "/usr/share/firecracker/vmlinux" 2>/dev/null || echo "0")
+if [ -s "/usr/share/firecracker/vmlinux" ] && [ "$KERNEL_SIZE" -gt 1000000 ]; then
+  swarmcracker validate --config /etc/swarmcracker/config.yaml
+else
+  echo "⚠️  Skipping validation - kernel not installed or too small (size: $KERNEL_SIZE bytes)"
+fi
 
-# Prepare socket directory (for consistency, though workers don't expose control API)
+# Prepare socket directory (for consistency)
 echo "🔧 Preparing socket directory..."
 bash /tmp/scripts/prepare-socket.sh
 
 # Fetch tokens from manager
 echo "📥 Fetching join tokens from manager..."
-MAX_RETRIES=10
+MAX_RETRIES=30  # Increased retries
 RETRY_COUNT=0
 
 while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-  if curl -s http://192.168.56.10:4242 > /dev/null 2>&1; then
-    # Fetch tokens via HTTP API
-    TOKENS=$(curl -s http://192.168.56.10:4242/cluster/default 2>/dev/null | jq -r '.JoinTokens.Worker // empty')
+  if curl -s "http://${MANAGER_PRIVATE_IP}:8000/tokens.json" > /dev/null 2>&1; then
+    # Fetch tokens via temporary HTTP server
+    TOKENS=$(curl -s "http://${MANAGER_PRIVATE_IP}:8000/tokens.json" 2>/dev/null | jq -r '.worker // empty')
     
     if [ -n "$TOKENS" ] && [ "$TOKENS" != "null" ]; then
       WORKER_TOKEN="$TOKENS"
@@ -140,33 +125,27 @@ done
 
 if [ -z "$WORKER_TOKEN" ] || [ "$WORKER_TOKEN" = "null" ]; then
   echo "❌ Failed to retrieve worker token from manager"
-  echo "Please manually join the worker:"
-  echo "  swarmd -d /var/lib/swarmkit/worker --hostname $(hostname) \\"
-  echo "    --join-addr 192.168.56.10:4242 \\"
-  echo "    --join-token <WORKER_TOKEN> \\"
-  echo "    --listen-remote-api 0.0.0.0:4242 \\"
-  echo "    --executor firecracker \\"
-  echo "    --executor-config /etc/swarmcracker/config.yaml \\"
-  echo "    --debug"
   exit 1
 fi
 
-# Create systemd service for swarmd worker
-# NOTE: Upstream SwarmKit doesn't support --executor flag (Docker-specific)
-# Firecracker integration requires custom agent/executor layer
+# Create systemd service for swarmd-firecracker
 cat > /etc/systemd/system/swarmd.service <<EOF
 [Unit]
-Description=SwarmKit Worker
+Description=SwarmKit Worker (Firecracker)
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/swarmd \\
-  -d /var/lib/swarmkit/worker \\
+ExecStart=/usr/local/bin/swarmd-firecracker \\
+  --state-dir /var/lib/swarmkit/worker \\
   --hostname $(hostname) \\
-  --join-addr 192.168.56.10:4242 \\
+  --join-addr ${MANAGER_PRIVATE_IP}:4242 \\
   --join-token $WORKER_TOKEN \\
-  --listen-remote-api 0.0.0.0:4243
+  --listen-remote-api 0.0.0.0:4243 \\
+  --kernel-path /usr/share/firecracker/vmlinux \\
+  --rootfs-dir /var/lib/firecracker/rootfs \\
+  --bridge-name swarm-br0 \\
+  --debug
 Restart=always
 RestartSec=10
 
@@ -198,6 +177,5 @@ echo "🎉 Worker setup complete!"
 echo "=========================================="
 echo ""
 echo "Worker hostname: $(hostname)"
-echo "Worker IP: 192.168.56.1${WORKER_INDEX}"
-echo "Joined cluster: 192.168.56.10:4242"
+echo "Manager IP: ${MANAGER_PRIVATE_IP}:4242"
 echo ""
