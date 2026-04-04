@@ -63,8 +63,8 @@ jobs:
             echo "  ✅ dist/swarmcracker-${VERSION}-${os}-${arch}.tar.gz"
           done
 
-      - name: Clean intermediate binaries
-        run: rm -f dist/swarmcracker-* dist/swarmd-firecracker-* dist/swarmcracker-agent-*
+      - name: Clean intermediate directories
+        run: rm -rf dist/swarmcracker-${{ github.ref_name }}
 
       - name: Generate checksums
         working-directory: dist
