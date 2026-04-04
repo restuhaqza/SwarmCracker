@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Run tests
+        run: go test -short -race ./pkg/...
+
+      - name: Build release binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+          BUILD_TIME: ${{ github.event.head_commit.timestamp }}
+          GIT_COMMIT: ${{ github.sha }}
+        run: |
+          mkdir -p dist
+
+          VERSION=${VERSION} BUILD_TIME=${BUILD_TIME} GIT_COMMIT=${GIT_COMMIT} \
+            make all
+
+          # Package each binary for each platform
+          platforms="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+          binaries="swarmcracker swarmd-firecracker swarmcracker-agent"
+
+          for platform in $platforms; do
+            os=$(echo $platform | cut -d/ -f1)
+            arch=$(echo $platform | cut -d/ -f2)
+            echo "=== Building $os/$arch ==="
+
+            pkg_dir="dist/swarmcracker-${VERSION}-${os}-${arch}"
+            mkdir -p "$pkg_dir"
+
+            for bin in $binaries; do
+              echo "  Building $bin..."
+              CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build \
+                -ldflags "-X main.Version=${VERSION} -X main.BuildTime=${BUILD_TIME} -X main.GitCommit=${GIT_COMMIT}" \
+                -o "${pkg_dir}/${bin}" \
+                ./cmd/${bin}
+            done
+
+            # Copy LICENSE and README
+            cp LICENSE README.md "$pkg_dir/"
+
+            # Create tarball
+            tar -czf "dist/swarmcracker-${VERSION}-${os}-${arch}.tar.gz" \
+              -C dist "swarmcracker-${VERSION}-${os}-${arch}"
+
+            echo "  ✅ dist/swarmcracker-${VERSION}-${os}-${arch}.tar.gz"
+          done
+
+      - name: Clean intermediate binaries
+        run: rm -f dist/swarmcracker-* dist/swarmd-firecracker-* dist/swarmcracker-agent-*
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz > checksums.txt
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get previous tag (if any)
+          PREV_TAG=$(git tag --sort=-version:refname | head -2 | tail -1)
+
+          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "${{ github.ref_name }}" ]; then
+            echo "## What's Changed" > changelog.txt
+            echo "" >> changelog.txt
+            git log ${PREV_TAG}..${{ github.ref_name }} --pretty=format:"- %s (%h)" --no-merges >> changelog.txt
+            echo "" >> changelog.txt
+            echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${{ github.ref_name }}" >> changelog.txt
+          else
+            echo "## Initial Release" > changelog.txt
+            echo "" >> changelog.txt
+            git log --pretty=format:"- %s (%h)" --no-merges >> changelog.txt
+          fi
+
+          cat changelog.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          body_path: changelog.txt
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true

@@ -96,16 +96,35 @@ examples: all
 
 # Build release binaries for multiple platforms
 release:
-	@echo "Building release binaries..."
+	@echo "Building release binaries for $(VERSION)..."
 	@mkdir -p $(DIST_DIR)
 	@for os in linux darwin; do \
 		for arch in amd64 arm64; do \
 			echo "Building $$os/$$arch..."; \
-			GOOS=$$os GOARCH=$$arch $(GO) build $(LDFLAGS) \
-				-o $(DIST_DIR)/$(BINARY_NAME)-$$os-$$arch \
-				$(CMD_DIR)/swarmcracker; \
+			for bin in swarmcracker swarmd-firecracker swarmcracker-agent; do \
+				CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(GO) build $(LDFLAGS) \
+					-o $(DIST_DIR)/$$bin-$$os-$$arch ./cmd/$$bin; \
+			done; \
+			pkg_dir=$(DIST_DIR)/swarmcracker-$(VERSION)-$$os-$$arch; \
+			mkdir -p $$pkg_dir; \
+			cp $(DIST_DIR)/swarmcracker-$$os-$$arch $$pkg_dir/swarmcracker; \
+			cp $(DIST_DIR)/swarmd-firecracker-$$os-$$arch $$pkg_dir/swarmd-firecracker; \
+			cp $(DIST_DIR)/swarmcracker-agent-$$os-$$arch $$pkg_dir/swarmcracker-agent; \
+			cp LICENSE README.md $$pkg_dir/; \
+			tar -czf $(DIST_DIR)/swarmcracker-$(VERSION)-$$os-$$arch.tar.gz \
+				-C $(DIST_DIR) swarmcracker-$(VERSION)-$$os-$$arch; \
+			rm -rf $$pkg_dir; \
 		done; \
 	done
+	@echo "Cleaning intermediate binaries..."
+	@rm -f $(DIST_DIR)/swarmcracker-linux-* $(DIST_DIR)/swarmcracker-darwin-*
+	@rm -f $(DIST_DIR)/swarmd-firecracker-linux-* $(DIST_DIR)/swarmd-firecracker-darwin-*
+	@rm -f $(DIST_DIR)/swarmcracker-agent-linux-* $(DIST_DIR)/swarmcracker-agent-darwin-*
+	@echo "Generating checksums..."
+	@cd $(DIST_DIR) && sha256sum *.tar.gz > checksums.txt
+	@echo ""
+	@echo "Release artifacts:"
+	@ls -lh $(DIST_DIR)/*.tar.gz $(DIST_DIR)/checksums.txt
 
 # Generate documentation
 docs:
@@ -205,7 +224,15 @@ help:
 	@echo "  vagrant-destroy  Destroy Vagrant environment"
 	@echo "  help             Show this help message"
 
-.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release docs race deps docker-image dev install-tools mocks help vagrant-up vagrant-halt vagrant-destroy
+# Create and push a release tag
+tag:
+	@if [ -z "$(TAG)" ]; then echo "Usage: make tag TAG=v0.1.0"; exit 1; fi
+	@echo "Creating tag $(TAG)..."
+	@git tag -a $(TAG) -m "Release $(TAG)"
+	@echo "Tag $(TAG) created. Push with:"
+	@echo "  git push origin $(TAG)"
+
+.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks help vagrant-up vagrant-halt vagrant-destroy
 
 # Vagrant helpers
 vagrant-up:
