@@ -72,7 +72,10 @@ func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interfa
 	}()
 
 	// Start Firecracker process
-	cmd := exec.CommandContext(ctx, v.firecrackerPath,
+	// Note: We use a background context instead of ctx to avoid cancelling Firecracker
+	// when the request context completes. Firecracker should run until explicitly stopped.
+	bgCtx := context.Background()
+	cmd := exec.CommandContext(bgCtx, v.firecrackerPath,
 		"--api-sock", socketPath,
 		"--id", task.ID,
 	)
@@ -98,7 +101,7 @@ func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interfa
 	}
 
 	// Configure VM via Firecracker HTTP API
-	if err := v.configureVM(ctx, task, socketPath); err != nil {
+	if err := v.configureVM(ctx, task, socketPath, config); err != nil {
 		cmd.Process.Kill()
 		socketCleanupNeeded = true
 		return fmt.Errorf("failed to configure VM: %w", err)
@@ -113,38 +116,53 @@ func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interfa
 }
 
 // configureVM configures the VM via Firecracker HTTP API
-func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPath string) error {
+func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPath string, config interface{}) error {
+	// Parse config from translator
+	cfg, ok := config.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("invalid config type: %T", config)
+	}
+
 	// 1. Set machine configuration
-	machineConfig := MachineConfig{
-		VcpuCount:  1,
-		MemSizeMib: 512,
-		HtEnabled:  false,
+	machineConfig, ok := cfg["machine-config"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("missing machine-config in config")
 	}
 	if err := v.putAPI(socketPath, "/machine-config", machineConfig); err != nil {
 		return fmt.Errorf("failed to set machine config: %w", err)
 	}
 
 	// 2. Set boot source
-	bootSource := BootSource{
-		KernelImagePath: "/vmlinux.bin",
-		BootArgs:        "console=ttyS0 reboot=k panic=1 pci=off",
+	bootSource, ok := cfg["boot-source"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("missing boot-source in config")
 	}
 	if err := v.putAPI(socketPath, "/boot-source", bootSource); err != nil {
 		return fmt.Errorf("failed to set boot source: %w", err)
 	}
 
 	// 3. Set root drive
-	drive := Drive{
-		DriveID:      "rootfs",
-		IsRootDevice: true,
-		IsReadOnly:   false,
-		PathOnHost:   filepath.Join(v.socketDir, task.ID+".img"),
+	drives, ok := cfg["drives"].([]map[string]interface{})
+	if !ok || len(drives) == 0 {
+		return fmt.Errorf("missing drives in config")
 	}
-	if err := v.putAPI(socketPath, "/drives/rootfs", drive); err != nil {
-		return fmt.Errorf("failed to set drive: %w", err)
+	for _, drive := range drives {
+		if err := v.putAPI(socketPath, "/drives/"+drive["drive_id"].(string), drive); err != nil {
+			return fmt.Errorf("failed to set drive %s: %w", drive["drive_id"], err)
+		}
 	}
 
-	// 4. Start the VM
+	// 4. Set network interfaces (if any)
+	networkInterfaces, ok := cfg["network-interfaces"].([]map[string]interface{})
+	if ok && len(networkInterfaces) > 0 {
+		for _, iface := range networkInterfaces {
+			if err := v.putAPI(socketPath, "/network-interfaces/"+iface["iface_id"].(string), iface); err != nil {
+				return fmt.Errorf("failed to set network interface %s: %w", iface["iface_id"], err)
+			}
+		}
+	}
+
+	// 5. Start the VM
 	action := Action{
 		ActionType: "InstanceStart",
 	}

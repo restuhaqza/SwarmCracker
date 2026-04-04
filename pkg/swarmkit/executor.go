@@ -167,6 +167,10 @@ type Controller struct {
 	mu         sync.Mutex
 	prepared   bool
 	started    bool
+
+	// internalTask holds the prepared internal task with annotations
+	internalTask *types.Task
+
 	process    *os.Process
 	socketPath string
 	cancel     context.CancelFunc
@@ -233,6 +237,9 @@ func (c *Controller) Prepare(ctx context.Context) error {
 		return fmt.Errorf("image preparation failed: %w", err)
 	}
 
+	// Store the prepared task with annotations
+	c.internalTask = task
+
 	// Prepare network
 	if err := c.networkMgr.PrepareNetwork(ctx, task); err != nil {
 		return fmt.Errorf("network preparation failed: %w", err)
@@ -258,8 +265,11 @@ func (c *Controller) Start(ctx context.Context) error {
 		return nil // Already started
 	}
 
-	// Convert SwarmKit task to internal type
-	task := c.convertTask()
+	// Use the prepared internal task (has annotations like rootfs path)
+	task := c.internalTask
+	if task == nil {
+		return fmt.Errorf("internal task not prepared")
+	}
 
 	// Translate to VM config
 	vmConfig, err := c.trans.Translate(task)
@@ -406,6 +416,34 @@ func (c *Controller) convertTask() *types.Task {
 		}
 	}
 
+	// Convert networks
+	var networks []types.NetworkAttachment
+	for _, n := range c.task.Networks {
+		if n == nil || n.Network == nil {
+			continue
+		}
+
+		driver := "bridge" // default
+		if n.Network.DriverState != nil {
+			driver = n.Network.DriverState.Name
+		} else if n.Network.Spec.DriverConfig != nil {
+			driver = n.Network.Spec.DriverConfig.Name
+		}
+
+		netSpec := types.NetworkSpec{
+			Name:   n.Network.Spec.Annotations.Name,
+			Driver: driver,
+		}
+
+		networks = append(networks, types.NetworkAttachment{
+			Network: types.Network{
+				ID:   n.Network.ID,
+				Spec: netSpec,
+			},
+			Addresses: n.Addresses,
+		})
+	}
+
 	return &types.Task{
 		ID:        c.task.ID,
 		ServiceID: c.task.ServiceID,
@@ -414,6 +452,7 @@ func (c *Controller) convertTask() *types.Task {
 			Runtime:   container,
 			Resources: *resources,
 		},
+		Networks:    networks,
 	}
 }
 
