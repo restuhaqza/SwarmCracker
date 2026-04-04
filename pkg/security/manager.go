@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/rs/zerolog/log"
