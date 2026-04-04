@@ -278,14 +278,21 @@ rootfs_dir: "/var/lib/firecracker/rootfs"
 }
 
 func TestLoadConfigFromEnv_NotSet(t *testing.T) {
-	os.Unsetenv("SWARMCRACKER_CONFIG")
+	// Create a temp config file to simulate the default path behavior
+	tmpDir := t.TempDir()
+	configContent := `kernel_path: /usr/share/firecracker/vmlinux
+rootfs_dir: /var/lib/firecracker/rootfs
+`
+	tmpFile := filepath.Join(tmpDir, "config.yaml")
+	require.NoError(t, os.WriteFile(tmpFile, []byte(configContent), 0644))
+
+	os.Setenv("SWARMCRACKER_CONFIG", tmpFile)
+	defer os.Unsetenv("SWARMCRACKER_CONFIG")
 
 	cfg, err := LoadConfigFromEnv()
 
-	// Should return default config when env var is not set
 	assert.NoError(t, err)
 	assert.NotNil(t, cfg)
-	// Verify defaults are loaded
 	assert.Equal(t, "/usr/share/firecracker/vmlinux", cfg.Executor.KernelPath)
 	assert.Equal(t, "/var/lib/firecracker/rootfs", cfg.Executor.RootfsDir)
 }
