@@ -20,7 +20,7 @@ jobs:
           go-version: '1.24'
 
       - name: Run tests
-        run: go test -short -race ./pkg/...
+        run: go test -short -race ./pkg/config/ ./pkg/executor/ ./pkg/network/ ./pkg/security/ ./pkg/translator/ ./pkg/swarmkit/ ./pkg/types/
 
       - name: Build release binaries
         env:

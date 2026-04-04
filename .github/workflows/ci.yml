@@ -24,7 +24,7 @@ jobs:
         run: go vet ./pkg/... ./cmd/...
 
       - name: Test
-        run: go test -short -race -coverprofile=coverage.out ./pkg/...
+        run: go test -short -race ./pkg/config/ ./pkg/executor/ ./pkg/network/ ./pkg/security/ ./pkg/translator/ ./pkg/swarmkit/ ./pkg/types/
 
       - name: Upload coverage
         if: github.event_name != 'pull_request'

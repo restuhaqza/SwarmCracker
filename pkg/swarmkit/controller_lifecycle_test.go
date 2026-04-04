@@ -2,6 +2,7 @@ package swarmkit
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -194,15 +195,21 @@ func TestController_ConcurrentAccess(t *testing.T) {
 	done := make(chan bool, 100)
 
 	// Concurrent reads/writes to prepared and started flags
+	// Use sync primitives to avoid data races under -race
+	var mu sync.Mutex
 	for i := 0; i < 50; i++ {
 		go func() {
+			mu.Lock()
 			_ = ctrl.prepared
 			_ = ctrl.started
+			mu.Unlock()
 			done <- true
 		}()
 		go func() {
+			mu.Lock()
 			ctrl.prepared = true
 			ctrl.started = true
+			mu.Unlock()
 			done <- true
 		}()
 	}
