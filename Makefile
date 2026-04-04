@@ -46,6 +46,28 @@ test:
 	$(GO) test -v -race -coverprofile=coverage.out ./pkg/...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
+# Run unit tests only
+test-unit:
+	@echo "Running unit tests..."
+	$(GO) test -short -v ./pkg/...
+
+# Run integration tests
+test-integration:
+	@echo "Running integration tests..."
+	$(GO) test -v -tags=integration ./pkg/...
+
+# Run E2E tests
+test-e2e:
+	@echo "Running E2E tests..."
+	@chmod +x test/e2e/run.sh
+	@./test/e2e/run.sh
+
+# Run E2E tests with benchmarks
+test-e2e-bench:
+	@echo "Running E2E tests with benchmarks..."
+	@chmod +x test/e2e/run.sh
+	@./test/e2e/run.sh --benchmarks
+
 # Run linting
 lint:
 	@echo "Running linters..."
