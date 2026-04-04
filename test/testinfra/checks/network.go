@@ -7,6 +7,21 @@ import (
 	"strings"
 )
 
+// ipCmdArgs returns an exec.Cmd for ip commands, with sudo if not root.
+func ipCmdArgs(args ...string) *exec.Cmd {
+	if os.Geteuid() == 0 {
+		all := append([]string{"ip"}, args...)
+		return exec.Command(all[0], all[1:]...)
+	}
+	all := append([]string{"sudo", "ip"}, args...)
+	return exec.Command(all[0], all[1:]...)
+}
+
+// ipCmd returns the appropriate prefix for network commands.
+// If not root, it tries sudo.
+func ipCmd() string {
+	return "" // unused, kept for compat
+}
 // NetworkChecker validates network configuration
 type NetworkChecker struct{}
 
@@ -98,16 +113,17 @@ func (nc *NetworkChecker) CheckBridgeExists(bridgeName string) error {
 	return nil
 }
 
-// CreateTestBridge creates a test bridge for validation
+// CreateTestBridge creates a test bridge for validation.
+// It auto-detects whether to use sudo.
 func (nc *NetworkChecker) CreateTestBridge(bridgeName string) (func(), error) {
 	// Create bridge
-	cmd := exec.Command("ip", "link", "add", bridgeName, "type", "bridge")
+	cmd := ipCmdArgs("link", "add", bridgeName, "type", "bridge")
 	if err := cmd.Run(); err != nil {
 		return nil, fmt.Errorf("failed to create bridge %s: %w", bridgeName, err)
 	}
 
 	// Bring it up
-	cmd = exec.Command("ip", "link", "set", bridgeName, "up")
+	cmd = ipCmdArgs("link", "set", bridgeName, "up")
 	if err := cmd.Run(); err != nil {
 		// Cleanup on failure
 		nc.DeleteTestBridge(bridgeName)
@@ -124,11 +140,11 @@ func (nc *NetworkChecker) CreateTestBridge(bridgeName string) (func(), error) {
 // DeleteTestBridge deletes a test bridge
 func (nc *NetworkChecker) DeleteTestBridge(bridgeName string) error {
 	// Bring it down
-	cmd := exec.Command("ip", "link", "set", bridgeName, "down")
+	cmd := ipCmdArgs("link", "set", bridgeName, "down")
 	_ = cmd.Run() // Ignore errors
 
 	// Delete it
-	cmd = exec.Command("ip", "link", "delete", bridgeName)
+	cmd = ipCmdArgs("link", "delete", bridgeName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to delete bridge %s: %w", bridgeName, err)
 	}

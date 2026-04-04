@@ -106,6 +106,26 @@ func main() {
 			Usage: "Bridge name for VM networking",
 			Value: "swarm-br0",
 		},
+		&cli.StringFlag{
+			Name:  "subnet",
+			Usage: "Subnet for VM IP allocation",
+			Value: "192.168.127.0/24",
+		},
+		&cli.StringFlag{
+			Name:  "bridge-ip",
+			Usage: "Bridge IP address",
+			Value: "192.168.127.1/24",
+		},
+		&cli.StringFlag{
+			Name:  "ip-mode",
+			Usage: "IP allocation mode",
+			Value: "static",
+		},
+		&cli.BoolFlag{
+			Name:  "nat-enabled",
+			Usage: "Enable NAT for internet access",
+			Value: true,
+		},
 		&cli.BoolFlag{
 			Name:  "debug",
 			Usage: "Enable debug logging",
@@ -158,6 +178,10 @@ func runAgent(ctx *cli.Context) error {
 		DefaultVCPUs:    ctx.Int("default-vcpus"),
 		DefaultMemoryMB: ctx.Int("default-memory"),
 		BridgeName:      ctx.String("bridge-name"),
+		Subnet:          ctx.String("subnet"),
+		BridgeIP:        ctx.String("bridge-ip"),
+		IPMode:          ctx.String("ip-mode"),
+		NATEnabled:      ctx.Bool("nat-enabled"),
 		Debug:           ctx.Bool("debug"),
 	}
 

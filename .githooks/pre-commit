@@ -27,12 +27,13 @@ FAILED=0
 echo "Checking for secrets..."
 
 # Patterns that should never be committed
+# NOTE: Patterns must be specific enough to avoid false positives.
+# go.sum hashes, SHA256 in test fixtures, and CLI defaults look like secrets.
 SECRET_PATTERNS=(
-    "password.*=.*[\"'].*[\"']"
-    "api[_-]?key.*=.*[\"'].*[\"']"
-    "secret[_-]?key.*=.*[\"'].*[\"']"
-    "token.*=.*[\"'].*[\"']"
-    "private[_-]?key.*=.*[\"'].*[\"']"
+    "password\s*[=:].[\"'][^\"']{8,}[\"']"
+    "api[_-]?key\s*[=:].[\"'][^\"']{8,}[\"']"
+    "secret[_-]?key\s*[=:].[\"'][^\"']{8,}[\"']"
+    "private[_-]?key\s*[=:].[\"'][^\"']{8,}[\"']"
     "aws[_-]?secret[_-]?access[_-]?key"
     "aws_access_key_id"
     "BEGIN.*PRIVATE KEY"
@@ -44,15 +45,39 @@ SECRET_PATTERNS=(
     "ghu_[a-zA-Z0-9]{36}"
     "ghs_[a-zA-Z0-9]{36}"
     "ghr_[a-zA-Z0-9]{36}"
-    "github.*token.*=.*[\"'].*[\"']"
+    "github_pat_[a-zA-Z0-9_]{36}"
+    "xox[bpas]-[a-zA-Z0-9-]{10,}"
     "AKIA[0-9A-Z]{16}"
-    "[0-9A-Za-z/+]{40}"  # Possible base64 encoded secret
+    "eyJ[a-zA-Z0-9_-]{20,}\.eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]{20,}"
 )
+
+# Files that are safe to skip for secret scanning (known false positive sources)
+SAFE_PATTERNS=(
+    "go\.sum$"
+    "go\.mod$"
+    "\.test$"
+    "^\.githooks/"
+)
+
+is_safe_file() {
+    local file="$1"
+    for pat in "${SAFE_PATTERNS[@]}"; do
+        if echo "$file" | grep -qE "$pat"; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 # Check each staged file
 for FILE in $STAGED_FILES; do
     # Skip binary files
     if file "$FILE" | grep -q "binary"; then
+        continue
+    fi
+
+    # Skip safe files (go.sum, go.mod, etc.)
+    if is_safe_file "$FILE"; then
         continue
     fi
 
@@ -100,18 +125,18 @@ done
 
 # Check for specific forbidden paths
 FORBIDDEN_PATHS=(
-    ".vagrant/"
+    "^\.vagrant/"
     "node_modules/"
-    ".venv/"
-    "venv/"
+    "^\.venv/"
+    "^venv/"
     "__pycache__/"
-    "*.pyc"
-    ".DS_Store"
-    "Thumbs.db"
-    "*.swp"
-    "*.swo"
-    "*~"
-    "*.log"
+    "\.pyc$"
+    "^\.DS_Store$"
+    "^Thumbs\.db$"
+    "\.swp$"
+    "\.swo$"
+    "~$"
+    "\.log$"
 )
 
 for FILE in $STAGED_FILES; do

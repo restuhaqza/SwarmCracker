@@ -249,7 +249,57 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 			log.Warn().Err(err).Msg("Failed to setup NAT, VMs may not have internet access")
 		} else {
 			nm.natSetup = true
+			}
 		}
+
+		// Setup DHCP server for VM network boot
+		if err := nm.setupDHCP(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to setup DHCP, VMs may need static config")
+			}
+
+	// If no networks attached, create a default TAP device using configured bridge
+	if len(task.Networks) == 0 {
+		log.Info().Str("task_id", task.ID).Msg("No network attachments, creating default TAP device")
+
+		// Create a synthetic network attachment for default bridge
+		defaultNetwork := types.NetworkAttachment{
+			Network: types.Network{
+				ID:   "default",
+				Spec: types.NetworkSpec{
+					Name:         "default",
+					Driver:       "bridge",
+					DriverConfig: &types.DriverConfig{
+						Bridge: &types.BridgeConfig{
+							Name: nm.config.BridgeName,
+						},
+					},
+				},
+			},
+			Addresses: []string{},
+		}
+
+		tap, err := nm.createTapDevice(ctx, defaultNetwork, 0, task.ID)
+		if err != nil {
+			return fmt.Errorf("failed to create default TAP device: %w", err)
+		}
+
+		nm.mu.Lock()
+		nm.tapDevices[task.ID+"-"+tap.Name] = tap
+		nm.mu.Unlock()
+
+		// Add network attachment to task
+		if tap.IP != "" {
+			ipWithMask := fmt.Sprintf("%s/%s", tap.IP, ipMaskToCIDR(tap.Netmask))
+			defaultNetwork.Addresses = []string{ipWithMask}
+		}
+		task.Networks = []types.NetworkAttachment{defaultNetwork}
+
+		log.Info().
+			Str("task_id", task.ID).
+			Str("tap", tap.Name).
+			Str("bridge", tap.Bridge).
+			Str("ip", tap.IP).
+			Msg("Default TAP device created")
 	}
 
 	// Create TAP device for each network attachment
@@ -375,23 +425,35 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 			return fmt.Errorf("failed to create bridge: %w", err)
 		}
 
-		// Assign IP to bridge if configured
-		if nm.config.BridgeIP != "" {
-			if err := nm.setupBridgeIP(ctx); err != nil {
-				log.Warn().Err(err).Msg("Failed to set bridge IP")
-			}
-		}
-
 		// Bring bridge up
 		if err := exec.Command("ip", "link", "set", bridgeName, "up").Run(); err != nil {
 			return fmt.Errorf("failed to bring bridge up: %w", err)
 		}
-
-		log.Info().
-			Str("bridge", bridgeName).
-			Str("ip", nm.config.BridgeIP).
-			Msg("Bridge created and configured")
 	}
+
+	// Always ensure bridge IP is configured (even if bridge already existed)
+	if nm.config.BridgeIP != "" {
+		if err := nm.setupBridgeIP(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to set bridge IP")
+		}
+	}
+
+	// Ensure bridge is up
+	if err := exec.Command("ip", "link", "set", bridgeName, "up").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to ensure bridge is up")
+	}
+
+	// Setup VXLAN overlay if configured
+	if nm.config.VXLANEnabled {
+		if err := nm.setupVXLANOverlay(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to setup VXLAN overlay")
+		}
+	}
+
+	log.Info().
+		Str("bridge", bridgeName).
+		Str("ip", nm.config.BridgeIP).
+		Msg("Bridge ready")
 
 	nm.bridges[bridgeName] = true
 	return nil
@@ -463,6 +525,209 @@ func (nm *NetworkManager) setupNAT(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// setupDHCP configures a minimal DHCP server using dnsmasq.
+func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
+	if nm.config.Subnet == "" || nm.config.BridgeIP == "" {
+		return fmt.Errorf("subnet and bridge IP must be configured for DHCP")
+	}
+
+	// Check if dnsmasq is available
+	if _, err := exec.LookPath("dnsmasq"); err != nil {
+		log.Warn().Msg("dnsmasq not found, DHCP will not be available")
+		return nil // Not fatal - VMs can use static IPs
+	}
+
+	// Parse subnet to get DHCP range
+	_, subnet, err := net.ParseCIDR(nm.config.Subnet)
+	if err != nil {
+		return fmt.Errorf("invalid subnet: %w", err)
+	}
+
+	// Parse gateway IP
+	gatewayIP, _, err := net.ParseCIDR(nm.config.BridgeIP)
+	if err != nil {
+		gatewayIP = net.ParseIP(nm.config.BridgeIP)
+		if gatewayIP == nil {
+			return fmt.Errorf("invalid bridge IP")
+		}
+	}
+
+	// Calculate DHCP range (exclude gateway)
+	// Use IPs from .50 to .200 in the subnet
+	subnetIP := binary.BigEndian.Uint32(subnet.IP.To4())
+	dhcpStart := subnetIP + 50
+	dhcpEnd := subnetIP + 200
+
+	startIP := make(net.IP, 4)
+	endIP := make(net.IP, 4)
+	binary.BigEndian.PutUint32(startIP, dhcpStart)
+	binary.BigEndian.PutUint32(endIP, dhcpEnd)
+
+	log.Info().
+		Str("bridge", nm.config.BridgeName).
+		Str("start", startIP.String()).
+		Str("end", endIP.String()).
+		Str("gateway", gatewayIP.String()).
+		Msg("Setting up DHCP server")
+
+	// Kill any existing dnsmasq for this bridge
+	exec.Command("pkill", "-f", fmt.Sprintf("dnsmasq.*%s", nm.config.BridgeName)).Run()
+
+	// Start dnsmasq for this bridge
+	// Arguments:
+	// --interface: bind to bridge
+	// --bind-interfaces: only bind to specified interface
+	// --dhcp-range: define DHCP pool
+	// --dhcp-option=3: set gateway
+	// --dhcp-option=6: set DNS (use gateway as DNS proxy)
+	cmd := exec.Command("dnsmasq",
+		"--interface", nm.config.BridgeName,
+		"--bind-interfaces",
+		"--dhcp-range", fmt.Sprintf("%s,%s,12h", startIP.String(), endIP.String()),
+		"--dhcp-option", fmt.Sprintf("3,%s", gatewayIP.String()),
+		"--dhcp-option", fmt.Sprintf("6,%s", gatewayIP.String()),
+		"--log-queries",
+		"--log-dhcp",
+		"--log-facility=/tmp/dnsmasq.log",
+		"--pid-file=/tmp/dnsmasq.pid",
+		"--keep-caps",
+	)
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to start dnsmasq: %w", err)
+	}
+
+	log.Info().Msg("DHCP server (dnsmasq) started")
+	return nil
+}
+
+// setupVXLANOverlay sets up VXLAN overlay networking for cross-node VM communication.
+func (nm *NetworkManager) setupVXLANOverlay(ctx context.Context) error {
+	bridgeName := nm.config.BridgeName
+	vxlanID := 100 // Default VXLAN ID
+
+	// Discover physical interface and local IP
+	physInterface, localIP, err := nm.getPhysicalInterface()
+	if err != nil {
+		return fmt.Errorf("failed to discover physical interface: %w", err)
+	}
+
+	// Discover peer workers (TODO: integrate with SwarmKit node discovery)
+	peers := nm.discoverPeerWorkers()
+	if len(peers) == 0 {
+		log.Warn().Msg("No peer workers discovered - VXLAN configured but may not work until peers are available")
+	}
+
+	log.Info().
+		Str("bridge", bridgeName).
+		Str("phys", physInterface).
+		Str("local_ip", localIP).
+		Strs("peers", peers).
+		Msg("Setting up VXLAN overlay")
+
+	// Create VXLAN interface
+	vxlanName := bridgeName + "-vxlan"
+
+	// Check if VXLAN interface already exists
+	if err := exec.Command("ip", "link", "show", vxlanName).Run(); err == nil {
+		log.Info().Str("vxlan", vxlanName).Msg("VXLAN interface already exists")
+		return nil
+	}
+
+	// Create VXLAN interface
+	cmd := exec.Command("ip", "link", "add", vxlanName,
+		"type", "vxlan",
+		"id", fmt.Sprintf("%d", vxlanID),
+		"dstport", "4789",
+		"dev", physInterface,
+		"local", localIP,
+	)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to create VXLAN interface: %w", err)
+	}
+
+	// Attach VXLAN to bridge
+	cmd = exec.Command("ip", "link", "set", vxlanName, "master", bridgeName)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to attach VXLAN to bridge: %w", err)
+	}
+
+	// Bring VXLAN up
+	cmd = exec.Command("ip", "link", "set", vxlanName, "up")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("failed to bring VXLAN up: %w", err)
+	}
+
+	// Add peer forwarding entries
+	for _, peer := range peers {
+		cmd = exec.Command("bridge", "fdb", "append",
+			"to", "00:00:00:00:00:00",
+			"dst", peer,
+			"dev", vxlanName,
+		)
+		if err := cmd.Run(); err != nil {
+			log.Warn().Err(err).Str("peer", peer).Msg("Failed to add peer forwarding entry")
+		}
+	}
+
+	// Enable proxy ARP and IP forwarding
+	sysctl := func(key string, val int) error {
+		return exec.Command("sysctl", "-w", fmt.Sprintf("%s=%d", key, val)).Run()
+	}
+
+	sysctl(fmt.Sprintf("net/ipv4/conf/%s/proxy_arp", bridgeName), 1)
+	sysctl(fmt.Sprintf("net/ipv4/conf/%s/forwarding", bridgeName), 1)
+	sysctl("net/ipv4/ip_forward", 1)
+
+	log.Info().Str("vxlan", vxlanName).Msg("VXLAN overlay configured")
+	return nil
+}
+
+// getPhysicalInterface discovers the physical interface used for VXLAN transport.
+func (nm *NetworkManager) getPhysicalInterface() (string, string, error) {
+	// Get default route interface
+	out, err := exec.Command("ip", "route", "show", "default").Output()
+	if err != nil {
+		return "", "", err
+	}
+
+	fields := strings.Fields(string(out))
+	if len(fields) < 5 {
+		return "", "", fmt.Errorf("unexpected route output")
+	}
+
+	physInterface := fields[4]
+
+	// Get IP address of physical interface
+	out, err = exec.Command("ip", "addr", "show", physInterface).Output()
+	if err != nil {
+		return "", "", err
+	}
+
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.Contains(line, "inet ") {
+			parts := strings.Fields(line)
+			if len(parts) >= 2 {
+				ip := strings.TrimSuffix(parts[1], "/24")
+				ip = strings.TrimSuffix(ip, "/32")
+				return physInterface, ip, nil
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("no IP found on interface %s", physInterface)
+}
+
+// discoverPeerWorkers discovers other worker nodes in the cluster.
+// TODO: Integrate with SwarmKit node discovery API.
+func (nm *NetworkManager) discoverPeerWorkers() []string {
+	// For now, return empty slice - peers should be configured via:
+	// 1. CLI flags (--vxlan-peer)
+	// 2. Config file
+	// 3. SwarmKit node discovery (future)
+	return []string{}
 }
 
 // createTapDevice creates a TAP device for a network attachment.

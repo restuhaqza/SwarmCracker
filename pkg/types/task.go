@@ -137,6 +137,12 @@ type NetworkConfig struct {
 	BridgeIP   string `yaml:"bridge_ip"`   // e.g., "192.168.127.1/24"
 	IPMode     string `yaml:"ip_mode"`     // "static" or "dhcp"
 	NATEnabled bool   `yaml:"nat_enabled"` // Enable masquerading for internet access
+
+	// VXLAN overlay settings
+	VXLANEnabled bool     `yaml:"vxlan_enabled"` // Enable VXLAN overlay for cross-node networking
+	VXLANID      int      `yaml:"vxlan_id"`      // VXLAN VNI (default: 100)
+	VXLANTunnelIP string  `yaml:"vxlan_tunnel_ip"` // Overlay IP for this node (e.g., "10.30.0.1/24")
+	VXLANPeers   []string `yaml:"vxlan_peers"`   // List of peer worker IPs (e.g., ["192.168.56.12"])
 }
 
 // Interfaces for the executor components

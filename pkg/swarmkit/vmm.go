@@ -155,11 +155,20 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 	// 4. Set network interfaces (if any)
 	networkInterfaces, ok := cfg["network-interfaces"].([]map[string]interface{})
 	if ok && len(networkInterfaces) > 0 {
+		v.logger.Info().
+			Int("count", len(networkInterfaces)).
+			Msg("Configuring network interfaces")
 		for _, iface := range networkInterfaces {
+			v.logger.Debug().
+				Str("iface_id", iface["iface_id"].(string)).
+				Str("host_dev", iface["host_dev_name"].(string)).
+				Msg("Adding network interface")
 			if err := v.putAPI(socketPath, "/network-interfaces/"+iface["iface_id"].(string), iface); err != nil {
 				return fmt.Errorf("failed to set network interface %s: %w", iface["iface_id"], err)
 			}
 		}
+	} else {
+		v.logger.Warn().Msg("No network interfaces in config")
 	}
 
 	// 5. Start the VM

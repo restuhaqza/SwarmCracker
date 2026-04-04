@@ -171,6 +171,51 @@ else
   exit 1
 fi
 
+# Setup VXLAN overlay for cross-node communication
+echo ""
+echo "🌐 Setting up VXLAN overlay network..."
+
+# Get physical interface and local IP
+PHYS_INTERFACE=$(ip route | grep "${MANAGER_PRIVATE_IP%.*}" | head -1 | awk '{print $3}')
+LOCAL_IP=$(ip addr show "$PHYS_INTERFACE" | grep "inet " | awk '{print $2}' | cut -d'/' -f1)
+
+# Calculate overlay IP based on worker index
+OVERLAY_BASE="10.30"
+OVERLAY_HOST=$((100 + WORKER_INDEX))
+OVERLAY_IP="${OVERLAY_BASE}.${OVERLAY_HOST}.1/24"
+
+# Get peer IPs (other workers)
+PEER_IPS=()
+if [ "$WORKER_INDEX" -eq 1 ]; then
+  # Worker 1 peers with worker 2
+  PEER_IPS+=("192.168.56.12")
+elif [ "$WORKER_INDEX" -eq 2 ]; then
+  # Worker 2 peers with worker 1
+  PEER_IPS+=("192.168.56.11")
+fi
+
+# Run VXLAN setup script if it exists
+if [ -f "/vagrant/scripts/setup-vxlan-overlay.sh" ]; then
+  bash /vagrant/scripts/setup-vxlan-overlay.sh \
+    "swarm-br0" \
+    "$OVERLAY_IP" \
+    100 \
+    "$PHYS_INTERFACE" \
+    "$LOCAL_IP" \
+    "${PEER_IPS[@]}"
+  
+  # Add routes to remote worker VM subnets
+  if [ "$WORKER_INDEX" -eq 1 ]; then
+    echo "Adding route to worker2 VM subnet..."
+    ip route add 192.168.128.0/24 via ${OVERLAY_BASE}.102 dev swarm-br0 2>/dev/null || true
+  elif [ "$WORKER_INDEX" -eq 2 ]; then
+    echo "Adding route to worker1 VM subnet..."
+    ip route add 192.168.127.0/24 via ${OVERLAY_BASE}.101 dev swarm-br0 2>/dev/null || true
+  fi
+else
+  echo "⚠️  VXLAN setup script not found - skipping overlay configuration"
+fi
+
 echo ""
 echo "=========================================="
 echo "🎉 Worker setup complete!"
@@ -178,4 +223,5 @@ echo "=========================================="
 echo ""
 echo "Worker hostname: $(hostname)"
 echo "Manager IP: ${MANAGER_PRIVATE_IP}:4242"
+echo "Overlay IP: $OVERLAY_IP"
 echo ""

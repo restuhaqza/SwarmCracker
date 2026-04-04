@@ -156,6 +156,11 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 		return fmt.Errorf("failed to extract OCI image: %w", err)
 	}
 
+	// Step 1.5: Inject network configuration for Alpine/OpenRC systems
+	if err := ip.injectNetworkConfig(tmpDir); err != nil {
+		log.Warn().Err(err).Msg("Failed to inject network config (may still work if image has it)")
+	}
+
 	// Step 2: Create ext4 filesystem image
 	log.Debug().Str("output", outputPath).Msg("Creating ext4 filesystem")
 	if err := ip.createExt4Image(tmpDir, outputPath); err != nil {
@@ -447,6 +452,132 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) error {
 	// 1. Scan rootfs directory
 	// 2. Check file ages
 	// 3. Remove files older than keepDays
+
+	return nil
+}
+
+// injectNetworkConfig adds network initialization scripts to the rootfs.
+// This is needed for Alpine/OpenRC systems that don't have network init by default.
+func (ip *ImagePreparer) injectNetworkConfig(rootfsDir string) error {
+	// Check if this is an OpenRC-based system (Alpine)
+	initTabPath := filepath.Join(rootfsDir, "etc/inittab")
+	if _, err := os.Stat(initTabPath); err != nil {
+		// No inittab, probably not OpenRC
+		return nil
+	}
+
+	initTab, err := os.ReadFile(initTabPath)
+	if err != nil {
+		return nil
+	}
+
+	// Check if it uses OpenRC
+	if !strings.Contains(string(initTab), "openrc") {
+		return nil
+	}
+
+	log.Info().Msg("Detected OpenRC-based system, injecting network config")
+
+	// Create /etc/network/interfaces for DHCP
+	networkDir := filepath.Join(rootfsDir, "etc/network")
+	if err := os.MkdirAll(networkDir, 0755); err != nil {
+		return fmt.Errorf("failed to create network dir: %w", err)
+	}
+
+	interfacesContent := `# Network interfaces for Firecracker VM
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp
+`
+	interfacesPath := filepath.Join(networkDir, "interfaces")
+	if err := os.WriteFile(interfacesPath, []byte(interfacesContent), 0644); err != nil {
+		return fmt.Errorf("failed to write interfaces file: %w", err)
+	}
+
+	log.Info().Str("path", interfacesPath).Msg("Created /etc/network/interfaces")
+
+	// Modify inittab to run networking directly (OpenRC not installed in Docker images)
+	initTabContent := `# /etc/inittab - Modified for Firecracker VM
+
+::sysinit:/bin/busybox mount -t proc proc /proc
+::sysinit:/bin/busybox mount -t sysfs sysfs /sys
+::sysinit:/bin/busybox mount -t devtmpfs devtmpfs /dev
+::sysinit:/bin/busybox hostname firecracker-vm
+::sysinit:/sbin/ifconfig eth0 up
+::sysinit:/usr/sbin/udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n
+
+# Serial console
+ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+
+# Shutdown
+::ctrlaltdel:/sbin/reboot
+::shutdown:/bin/busybox umount -a -r
+`
+	if err := os.WriteFile(initTabPath, []byte(initTabContent), 0644); err != nil {
+		return fmt.Errorf("failed to write inittab: %w", err)
+	}
+	log.Info().Str("path", initTabPath).Msg("Modified inittab for network setup")
+
+	// Ensure init.d directory exists for our script
+	initDir := filepath.Join(rootfsDir, "etc/init.d")
+	if err := os.MkdirAll(initDir, 0755); err != nil {
+		return fmt.Errorf("failed to create init.d dir: %w", err)
+	}
+
+	networkingScript := filepath.Join(initDir, "networking")
+
+	if _, err := os.Stat(networkingScript); err != nil {
+		// Create minimal networking init script
+		scriptContent := `#!/sbin/openrc-run
+
+name="networking"
+description="Configure network interfaces"
+
+depend() {
+    need localmount
+    after bootmisc
+}
+
+start() {
+    ebegin "Configuring network interfaces"
+    if [ -f /etc/network/interfaces ]; then
+        ifconfig eth0 up
+        udhcpc -i eth0 -s /usr/share/udhcpc/default.script -q -n
+    fi
+    eend $?
+}
+
+stop() {
+    ebegin "Stopping network interfaces"
+    ifconfig eth0 down
+    eend $?
+}
+`
+		if err := os.WriteFile(networkingScript, []byte(scriptContent), 0755); err != nil {
+			return fmt.Errorf("failed to write networking script: %w", err)
+		}
+		log.Info().Str("path", networkingScript).Msg("Created networking init script")
+	}
+
+	// Add networking to the default runlevel
+	// OpenRC stores runlevels in /etc/runlevels/
+	defaultRunlevelDir := filepath.Join(rootfsDir, "etc/runlevels/default")
+	if err := os.MkdirAll(defaultRunlevelDir, 0755); err != nil {
+		return fmt.Errorf("failed to create runlevel dir: %w", err)
+	}
+
+	// Create symlink to networking script
+	networkingSymlink := filepath.Join(defaultRunlevelDir, "networking")
+	if _, err := os.Lstat(networkingSymlink); err != nil {
+		// Relative path for symlink (OpenRC convention)
+		relativePath := "../../init.d/networking"
+		if err := os.Symlink(relativePath, networkingSymlink); err != nil {
+			return fmt.Errorf("failed to create runlevel symlink: %w", err)
+		}
+		log.Info().Str("path", networkingSymlink).Msg("Added networking to default runlevel")
+	}
 
 	return nil
 }

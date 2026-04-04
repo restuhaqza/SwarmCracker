@@ -2,7 +2,10 @@
 package swarmkit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
@@ -55,10 +58,13 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 		_ = container // Use container config in future
 	}
 
+	// Build boot args with network config if available
+	bootArgs := t.buildBootArgs(task)
+
 	config := map[string]interface{}{
 		"boot-source": map[string]interface{}{
 			"kernel_image_path": t.kernelPath,
-			"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off nomodules",
+			"boot_args":         bootArgs,
 		},
 		"drives": []map[string]interface{}{
 			{
@@ -73,10 +79,70 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 			"mem_size_mib": memoryMB,
 			"smt":          false,
 		},
-		"network-interfaces": []map[string]interface{}{},
+		"network-interfaces": t.buildNetworkInterfaces(task),
 	}
 
 	return config, nil
+}
+
+// buildBootArgs builds kernel boot arguments with network config.
+func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
+	baseArgs := "console=ttyS0 reboot=k panic=1 pci=off nomodules init=/sbin/init"
+
+	// Add network config if task has IP addresses
+	if len(task.Networks) > 0 && len(task.Networks[0].Addresses) > 0 {
+		// Parse IP from Addresses (format: "192.168.127.2/24")
+		addr := task.Networks[0].Addresses[0]
+		ipPart := addr
+		if idx := strings.Index(addr, "/"); idx > 0 {
+			ipPart = addr[:idx]
+		}
+
+		// Kernel IP config format: ip=<ip>::<gw>:<netmask>::<iface>:off
+		// Gateway is bridge IP (192.168.127.1)
+		gw := "192.168.127.1"
+		mask := "255.255.255.0"
+
+		ipArg := fmt.Sprintf("ip=%s::%s:%s::eth0:off", ipPart, gw, mask)
+		baseArgs = baseArgs + " " + ipArg
+	}
+
+	return baseArgs
+}
+
+// buildNetworkInterfaces creates network interface configs from task attachments.
+func (t *taskTranslatorImpl) buildNetworkInterfaces(task *types.Task) []map[string]interface{} {
+	interfaces := []map[string]interface{}{}
+
+	// Generate TAP name hash (must match network manager logic)
+	hash := sha256.Sum256([]byte(task.ID))
+	hashStr := hex.EncodeToString(hash[:])
+
+	for i := range task.Networks {
+		ifaceID := fmt.Sprintf("eth%d", i)
+		tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], i)
+
+		iface := map[string]interface{}{
+			"iface_id":      ifaceID,
+			"host_dev_name": tapName,
+			"guest_mac":     generateMAC(i),
+		}
+
+		interfaces = append(interfaces, iface)
+	}
+
+	return interfaces
+}
+
+// generateMAC creates a MAC address for a network interface.
+func generateMAC(index int) string {
+	// Generate a unique MAC address based on index
+	// Format: AA:FC:XX:XX:XX:XX where XX is derived from index
+	return fmt.Sprintf("AA:FC:%02X:%02X:%02X:%02X",
+		(byte(index)>>4)&0xFF,
+		byte(index)&0xFF,
+		(byte(index)>>2)&0xFF,
+		(byte(index)*3)&0xFF)
 }
 
 // getRootfsPath returns the rootfs path for a task.

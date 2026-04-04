@@ -81,6 +81,7 @@ test/temp/
 
 # Compiled binaries (test-specific)
 test-automation/swarmcracker-agent
+bin/
 
 # Secrets and sensitive files (DO NOT COMMIT)
 *.pem

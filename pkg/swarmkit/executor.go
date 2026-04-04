@@ -40,6 +40,10 @@ type Config struct {
 	DefaultVCPUs    int    `yaml:"default_vcpus"`
 	DefaultMemoryMB int    `yaml:"default_memory_mb"`
 	BridgeName      string `yaml:"bridge_name"`
+	Subnet          string `yaml:"subnet"`
+	BridgeIP        string `yaml:"bridge_ip"`
+	IPMode          string `yaml:"ip_mode"`
+	NATEnabled      bool   `yaml:"nat_enabled"`
 	Debug           bool   `yaml:"debug"`
 }
 
@@ -71,6 +75,15 @@ func NewExecutor(config *Config) (*Executor, error) {
 	if config.BridgeName == "" {
 		config.BridgeName = "swarm-br0"
 	}
+	if config.Subnet == "" {
+		config.Subnet = "192.168.127.0/24"
+	}
+	if config.BridgeIP == "" {
+		config.BridgeIP = "192.168.127.1/24"
+	}
+	if config.IPMode == "" {
+		config.IPMode = "static"
+	}
 
 	// Create image preparer
 	imageCfg := &image.PreparerConfig{
@@ -80,7 +93,11 @@ func NewExecutor(config *Config) (*Executor, error) {
 
 	// Create network manager
 	netCfg := types.NetworkConfig{
-		BridgeName: config.BridgeName,
+		BridgeName:       config.BridgeName,
+		Subnet:           config.Subnet,
+		BridgeIP:         config.BridgeIP,
+		IPMode:           config.IPMode,
+		NATEnabled:       config.NATEnabled,
 	}
 	networkMgr := network.NewNetworkManager(netCfg)
 
@@ -430,9 +447,22 @@ func (c *Controller) convertTask() *types.Task {
 			driver = n.Network.Spec.DriverConfig.Name
 		}
 
+		// Convert DriverConfig - bridge name comes from Options map in SwarmKit API
+		var driverConfig *types.DriverConfig
+		if n.Network.Spec.DriverConfig != nil && n.Network.Spec.DriverConfig.Options != nil {
+			driverConfig = &types.DriverConfig{}
+			// Check for bridge name in options (key may vary)
+			if bridgeName, ok := n.Network.Spec.DriverConfig.Options["bridge"]; ok {
+				driverConfig.Bridge = &types.BridgeConfig{
+					Name: bridgeName,
+				}
+			}
+		}
+
 		netSpec := types.NetworkSpec{
-			Name:   n.Network.Spec.Annotations.Name,
-			Driver: driver,
+			Name:         n.Network.Spec.Annotations.Name,
+			Driver:       driver,
+			DriverConfig: driverConfig,
 		}
 
 		networks = append(networks, types.NetworkAttachment{
