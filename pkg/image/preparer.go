@@ -234,10 +234,11 @@ func (ip *ImagePreparer) extractWithDocker(ctx context.Context, runtime, imageRe
 	return containerID, nil
 }
 
-// extractWithPodman extracts an image using Podman (with --root flag)
+// extractWithPodman extracts an image using Podman
+// Note: We use podman's default storage for pulling images, only extracting the container filesystem to destPath
 func (ip *ImagePreparer) extractWithPodman(ctx context.Context, runtime, imageRef, destPath string) (string, error) {
-	// Create container with --root flag
-	output, err := exec.CommandContext(ctx, runtime, "create", "--root", destPath, imageRef, "/bin/true").CombinedOutput()
+	// Create container (using podman's default storage)
+	output, err := exec.CommandContext(ctx, runtime, "create", imageRef, "/bin/true").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("podman create failed: %s: %w", string(output), err)
 	}
@@ -267,8 +268,8 @@ func (ip *ImagePreparer) createExt4Image(sourceDir, outputPath string) error {
 		size = 512 * 1024 * 1024 // Default 512MB
 	}
 
-	// Add 20% buffer
-	size = size + (size / 5)
+	// Add 50% buffer to account for filesystem overhead
+	size = size + (size / 2)
 
 	// Create sparse file
 	sizeMB := size / (1024 * 1024)
