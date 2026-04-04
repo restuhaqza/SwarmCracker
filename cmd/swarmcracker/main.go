@@ -452,6 +452,10 @@ func createExecutor(cfg *config.Config) (*executor.FirecrackerExecutor, error) {
 			BridgeName:       cfg.Network.BridgeName,
 			EnableRateLimit:  cfg.Network.EnableRateLimit,
 			MaxPacketsPerSec: cfg.Network.MaxPacketsPerSec,
+			Subnet:           cfg.Network.Subnet,
+			BridgeIP:         cfg.Network.BridgeIP,
+			IPMode:           cfg.Network.IPMode,
+			NATEnabled:       cfg.Network.NATEnabled,
 		},
 	}
 
@@ -473,8 +477,17 @@ func createExecutor(cfg *config.Config) (*executor.FirecrackerExecutor, error) {
 		DefaultMemoryMB: execConfig.DefaultMemoryMB,
 	}
 
+	translatorConfig := &translator.Config{
+		KernelPath:    execConfig.KernelPath,
+		InitrdPath:    execConfig.InitrdPath,
+		DefaultVCPUs:  execConfig.DefaultVCPUs,
+		DefaultMemMB:  execConfig.DefaultMemoryMB,
+		InitSystem:    "tini",
+		NetworkConfig: execConfig.Network,
+	}
+
 	vmmManager := lifecycle.NewVMMManager(vmmConfig)
-	taskTranslator := translator.NewTaskTranslator(vmmConfig)
+	taskTranslator := translator.NewTaskTranslator(translatorConfig)
 	imagePreparer := image.NewImagePreparer(imageConfig)
 	networkMgr := network.NewNetworkManager(execConfig.Network)
 

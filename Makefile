@@ -19,7 +19,7 @@ DIST_DIR=./dist
 swarmcracker:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
-	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)/swarmcracker/main.go
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_DIR)/swarmcracker
 
 swarmd-firecracker:
 	@echo "Building swarmd-firecracker..."
@@ -81,7 +81,7 @@ release:
 			echo "Building $$os/$$arch..."; \
 			GOOS=$$os GOARCH=$$arch $(GO) build $(LDFLAGS) \
 				-o $(DIST_DIR)/$(BINARY_NAME)-$$os-$$arch \
-				$(CMD_DIR)/swarmcracker/main.go; \
+				$(CMD_DIR)/swarmcracker; \
 		done; \
 	done
 
@@ -178,6 +178,22 @@ help:
 	@echo "  dev              Start development server with hot reload"
 	@echo "  install-tools    Install development tools"
 	@echo "  mocks            Generate mocks"
+	@echo "  vagrant-up       Start Vagrant environment"
+	@echo "  vagrant-halt     Stop Vagrant environment"
+	@echo "  vagrant-destroy  Destroy Vagrant environment"
 	@echo "  help             Show this help message"
 
-.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release docs race deps docker-image dev install-tools mocks help
+.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release docs race deps docker-image dev install-tools mocks help vagrant-up vagrant-halt vagrant-destroy
+
+# Vagrant helpers
+vagrant-up:
+	@echo "Starting Vagrant environment..."
+	cd test-automation && vagrant up
+
+vagrant-halt:
+	@echo "Stopping Vagrant environment..."
+	cd test-automation && vagrant halt
+
+vagrant-destroy:
+	@echo "Destroying Vagrant environment..."
+	cd test-automation && vagrant destroy -f

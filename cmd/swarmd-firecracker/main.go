@@ -211,36 +211,41 @@ func startNode(config *node.Config) error {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Start node in goroutine
-	errChan := make(chan error, 1)
-	go func() {
-		if err := n.Start(ctx); err != nil {
-			errChan <- fmt.Errorf("node failed: %w", err)
-		} else {
-			errChan <- nil
-		}
-	}()
+	// Start the node - this is NON-BLOCKING in SwarmKit
+	// It returns immediately after starting internal goroutines
+	if err := n.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start node: %w", err)
+	}
 
 	log.G(ctx).Infof("Node started successfully (hostname=%s, state-dir=%s)", config.Hostname, config.StateDir)
 
-	// Wait for signal or error
+	// Wait for node to be ready (optional but good for debugging)
 	select {
-	case <-sigChan:
-		log.G(ctx).Info("Received shutdown signal")
-	case err := <-errChan:
-		if err != nil {
-			return err
-		}
+	case <-n.Ready():
+		log.G(ctx).Info("Node is ready")
+	case <-time.After(30 * time.Second):
+		log.G(ctx).Warn("Node readiness check timeout (continuing anyway)")
+	case <-ctx.Done():
+		return fmt.Errorf("context canceled before node was ready")
 	}
 
-	// Graceful shutdown
-	log.G(ctx).Info("Shutting down node...")
+	// Wait for shutdown signal
+	sig := <-sigChan
+	log.G(ctx).WithField("signal", sig).Info("Received shutdown signal")
+
+	// Stop the node gracefully
+	log.G(ctx).Info("Stopping node...")
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
 
 	if err := n.Stop(shutdownCtx); err != nil {
 		log.G(ctx).WithError(err).Error("Failed to stop node gracefully")
 		return err
+	}
+
+	// Check if node stopped with any error
+	if err := n.Err(ctx); err != nil {
+		return fmt.Errorf("node stopped with error: %w", err)
 	}
 
 	log.G(ctx).Info("Node stopped successfully")

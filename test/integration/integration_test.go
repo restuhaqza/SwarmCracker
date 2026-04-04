@@ -444,10 +444,10 @@ func TestIntegration_TaskTranslation(t *testing.T) {
 	// Verify config structure
 	configStr, ok := config.(string)
 	assert.True(t, ok, "Config should be a string")
-	assert.Contains(t, configStr, "BootSource")
-	assert.Contains(t, configStr, "Drives")
-	assert.Contains(t, configStr, "NetworkInterfaces")
-	assert.Contains(t, configStr, "MachineConfig")
+	assert.Contains(t, configStr, "boot_source")
+	assert.Contains(t, configStr, "drives")
+	assert.Contains(t, configStr, "network_interfaces")
+	assert.Contains(t, configStr, "machine_config")
 
 	t.Logf("Translated config length: %d bytes", len(configStr))
 }
