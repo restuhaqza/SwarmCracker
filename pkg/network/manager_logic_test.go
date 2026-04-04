@@ -188,14 +188,14 @@ func TestNetworkManager_CleanupNetwork_InternalLogic(t *testing.T) {
 				nm.ipAllocator = &IPAllocator{
 					subnet:    nil,
 					gateway:   nil,
-					allocated: make(map[string]bool),
+					allocated: make(map[string]string),
 					mu:        sync.Mutex{},
 				}
 
 				// Mark some IPs as allocated
 				nm.ipAllocator.mu.Lock()
-				nm.ipAllocator.allocated["192.168.1.10"] = true
-				nm.ipAllocator.allocated["192.168.1.11"] = true
+				nm.ipAllocator.allocated["192.168.1.10"] = "vm-dummy-1"
+				nm.ipAllocator.allocated["192.168.1.11"] = "vm-dummy-2"
 				nm.ipAllocator.mu.Unlock()
 
 				nm.mu.Lock()
@@ -238,7 +238,7 @@ func TestNetworkManager_CleanupNetwork_InternalLogic(t *testing.T) {
 			name: "cleanup with multiple tasks doesn't interfere",
 			setupFunc: func(nm *NetworkManager, task *types.Task) {
 				nm.ipAllocator = &IPAllocator{
-					allocated: make(map[string]bool),
+					allocated: make(map[string]string),
 					mu:        sync.Mutex{},
 				}
 
@@ -247,8 +247,8 @@ func TestNetworkManager_CleanupNetwork_InternalLogic(t *testing.T) {
 				task2 := "task-multi-2"
 
 				nm.ipAllocator.mu.Lock()
-				nm.ipAllocator.allocated["10.0.0.10"] = true
-				nm.ipAllocator.allocated["10.0.0.11"] = true
+				nm.ipAllocator.allocated["10.0.0.10"] = "vm-task-1"
+				nm.ipAllocator.allocated["10.0.0.11"] = "vm-task-2"
 				nm.ipAllocator.mu.Unlock()
 
 				nm.mu.Lock()

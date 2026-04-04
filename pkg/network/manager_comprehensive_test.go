@@ -462,7 +462,7 @@ func TestNetworkManager_CleanupNetwork_Comprehensive(t *testing.T) {
 
 				// Mark IP as allocated
 				if nm.ipAllocator != nil {
-					nm.ipAllocator.allocated["10.0.0.10"] = true
+					nm.ipAllocator.allocated["10.0.0.10"] = "vm-dummy"
 				}
 			},
 			task: &types.Task{

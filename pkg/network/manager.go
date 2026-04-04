@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os/exec"
@@ -39,7 +40,7 @@ type TapDevice struct {
 type IPAllocator struct {
 	subnet    *net.IPNet
 	gateway   net.IP
-	allocated map[string]bool // Track allocated IPs
+	allocated map[string]string // Track allocated IPs (IP -> VM ID)
 	mu        sync.Mutex
 }
 
@@ -58,7 +59,7 @@ func NewIPAllocator(subnetStr, gatewayStr string) (*IPAllocator, error) {
 	return &IPAllocator{
 		subnet:    subnet,
 		gateway:   gateway,
-		allocated: make(map[string]bool),
+		allocated: make(map[string]string),
 	}, nil
 }
 
@@ -67,25 +68,57 @@ func (a *IPAllocator) Allocate(vmID string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Generate IP from hash of VM ID (deterministic but distributed)
-	ip := a.hashToIP(vmID)
-
-	// Check if IP is in subnet
-	if !a.subnet.Contains(ip) {
-		return "", fmt.Errorf("generated IP %s not in subnet %s", ip, a.subnet)
-	}
-
-	// Don't allocate gateway address
-	if ip.Equal(a.gateway) {
-		// Try next IP
-		ip = incIP(ip)
-		if !a.subnet.Contains(ip) {
-			return "", fmt.Errorf("cannot allocate IP: subnet exhausted")
+	// Check if this VM ID already has an IP allocated
+	for ip, id := range a.allocated {
+		if id == vmID {
+			return ip, nil
 		}
 	}
 
-	a.allocated[ip.String()] = true
-	return ip.String(), nil
+	// Generate IP from hash of VM ID (deterministic but distributed)
+	ip := a.hashToIP(vmID)
+
+	// Ensure IP is in subnet
+	if !a.subnet.Contains(ip) {
+		// Should not happen if hashToIP works correctly, but safe fallback
+		return "", fmt.Errorf("generated IP %s not in subnet %s", ip, a.subnet)
+	}
+
+	// Collision resolution (Linear Probing)
+	// Try up to 256 times (arbitrary limit to prevent infinite loops)
+	for i := 0; i < 256; i++ {
+		ipStr := ip.String()
+
+		// Check constraints:
+		// 1. Not the gateway
+		// 2. Not network address (usually start of subnet)
+		// 3. Not broadcast address (usually end of subnet) - simplified check
+		// 4. Not already allocated
+
+		isGateway := ip.Equal(a.gateway)
+		_, isAllocated := a.allocated[ipStr]
+
+		if !isGateway && !isAllocated {
+			// Found free IP
+			a.allocated[ipStr] = vmID
+			return ipStr, nil
+		}
+
+		// Try next IP
+		ip = incIP(ip)
+
+		// Wrap around or check if still in subnet
+		if !a.subnet.Contains(ip) {
+			// Reset to start of subnet + 2 (skip network & gateway assumption)
+			// Simple reset:
+			ip = make(net.IP, len(a.subnet.IP))
+			copy(ip, a.subnet.IP)
+			ip = incIP(ip) // .1
+			ip = incIP(ip) // .2
+		}
+	}
+
+	return "", fmt.Errorf("failed to allocate IP: subnet exhausted or too many collisions")
 }
 
 // hashToIP converts a VM ID to an IP address using SHA-256.
@@ -94,23 +127,71 @@ func (a *IPAllocator) hashToIP(vmID string) net.IP {
 	h.Write([]byte(vmID))
 	hash := h.Sum(nil)
 
-	// Use first 4 bytes of hash to generate IP in subnet
-	// Ensure IP is in the usable range (not network or broadcast)
-	n := binary.BigEndian.Uint32(hash[:4]) % 250
+	// Determine if IPv4 or IPv6
+	isIPv6 := len(a.subnet.IP) == net.IPv6len
 
-	// Add offset to skip network address (x.x.x.0) and gateway (x.x.x.1)
-	// Start from x.x.x.2
+	if isIPv6 {
+		// IPv6 logic
+		// Use hash to generate suffix
+		ip := make(net.IP, net.IPv6len)
+		copy(ip, a.subnet.IP)
+
+		// XOR hash into the last 8 bytes (interface ID)
+		for i := 0; i < 8; i++ {
+			ip[8+i] = a.subnet.IP[8+i] ^ hash[i]
+		}
+		return ip
+	}
+
+	// IPv4 Logic
+	// Calculate available range size
+	ones, bits := a.subnet.Mask.Size()
+	size := uint32(1) << (bits - ones)
+
+	if size < 4 {
+		// Very small subnet (e.g. /30, /31, /32). Just return start + 1?
+		// For /30: .0 net, .1 gw, .2 host, .3 broad. size=4.
+		// For /31: .0, .1. size=2.
+		// Let's just pick based on hash
+		n := binary.BigEndian.Uint32(hash[:4]) % size
+
+		ip := make(net.IP, 4)
+		ipInt := binary.BigEndian.Uint32(a.subnet.IP.To4()) + n
+		binary.BigEndian.PutUint32(ip, ipInt)
+		return ip
+	}
+
+	// Use hash to pick an offset
+	// Avoid .0 (network) and .255 (broadcast) generally, but mainly fit in size
+	n := binary.BigEndian.Uint32(hash[:4]) % (size - 2) // -2 to avoid network/broadcast roughly
+
 	ip := make(net.IP, 4)
-	copy(ip, a.gateway.To4())
-	ip[3] = byte(2 + uint8(n))
+	ipInt := binary.BigEndian.Uint32(a.subnet.IP.To4()) + n + 1 // +1 to skip network address
+	binary.BigEndian.PutUint32(ip, ipInt)
 
 	return ip
 }
 
 // incIP increments an IP address.
 func incIP(ip net.IP) net.IP {
+	// Handle IPv4 mapped as IPv6 or pure IPv4
+	isIPv4 := ip.To4() != nil
+
 	next := make(net.IP, len(ip))
 	copy(next, ip)
+
+	if isIPv4 && len(ip) == net.IPv6len {
+		// It's a mapped address (::ffff:1.2.3.4), only increment last 4 bytes
+		for j := len(next) - 1; j >= len(next)-4; j-- {
+			next[j]++
+			if next[j] > 0 {
+				return next
+			}
+		}
+		// Overflowed 32-bit (should wrap to 0.0.0.0 in last 4 bytes)
+		return next
+	}
+
 	for j := len(next) - 1; j >= 0; j-- {
 		next[j]++
 		if next[j] > 0 {
@@ -181,6 +262,17 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		nm.mu.Lock()
 		nm.tapDevices[task.ID+"-"+tap.Name] = tap
 		nm.mu.Unlock()
+
+		// Update task network addresses with allocated IP
+		if tap.IP != "" {
+			// Ensure Addresses slice exists
+			if network.Addresses == nil {
+				network.Addresses = []string{}
+			}
+			// Add IP/mask to task (e.g. "192.168.1.2/24")
+			ipWithMask := fmt.Sprintf("%s/%s", tap.IP, ipMaskToCIDR(tap.Netmask))
+			task.Networks[i].Addresses = append(network.Addresses, ipWithMask)
+		}
 
 		log.Info().
 			Str("task_id", task.ID).
@@ -375,9 +467,11 @@ func (nm *NetworkManager) setupNAT(ctx context.Context) error {
 
 // createTapDevice creates a TAP device for a network attachment.
 func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.NetworkAttachment, index int, taskID string) (*TapDevice, error) {
-	// Generate interface ID
-	ifaceID := fmt.Sprintf("eth%d", index)
-	tapName := fmt.Sprintf("tap-%s", ifaceID)
+	// Generate TAP name: tap-<hash[:8]>-<index>
+	// Must match logic in translator
+	hash := sha256.Sum256([]byte(taskID))
+	hashStr := hex.EncodeToString(hash[:])
+	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
 
 	// Allocate IP address for this TAP
 	var ipAddr string
@@ -388,6 +482,9 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 			log.Warn().Err(err).Msg("Failed to allocate static IP, TAP will have no IP")
 		}
 	}
+
+	// Ensure clean state by removing existing device if any
+	exec.Command("ip", "link", "delete", tapName).Run()
 
 	// Create TAP device
 	if err := exec.Command("ip", "tuntap", "add", tapName, "mode", "tap").Run(); err != nil {
@@ -403,10 +500,39 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 
 	// Add to bridge
 	bridgeName := nm.config.BridgeName
+
+	// Override with specific bridge if configured
 	if network.Network.Spec.DriverConfig != nil &&
 		network.Network.Spec.DriverConfig.Bridge != nil &&
 		network.Network.Spec.DriverConfig.Bridge.Name != "" {
 		bridgeName = network.Network.Spec.DriverConfig.Bridge.Name
+	} else if network.Network.Spec.Driver == "overlay" {
+		// For overlay networks, Docker Swarm typically creates a bridge named "br-<network-id-prefix>"
+		// We attempt to attach to that bridge.
+		if len(network.Network.ID) >= 12 {
+			bridgeName = "br-" + network.Network.ID[:12]
+		}
+
+		log.Info().
+			Str("network_id", network.Network.ID).
+			Str("derived_bridge", bridgeName).
+			Msg("Detected overlay network, using derived bridge name")
+	}
+
+	// Ensure bridge exists (especially for overlay, it should already be there)
+	if err := exec.Command("ip", "link", "show", bridgeName).Run(); err != nil {
+		// If it's our default bridge, we might be able to create it (logic in ensureBridge)
+		// But for overlay, we expect it to exist.
+		if network.Network.Spec.Driver == "overlay" {
+			// Try to cleanup
+			exec.Command("ip", "link", "delete", tapName).Run()
+			return nil, fmt.Errorf("overlay bridge %s not found: %w", bridgeName, err)
+		}
+		// Fallback to default behavior (ensureBridge) if it's the default bridge
+		if bridgeName == nm.config.BridgeName {
+			// ensureBridge is called in PrepareNetwork, but that only checks nm.config.BridgeName
+			// If we switched to a different bridgeName here, we might be in trouble if it doesn't exist.
+		}
 	}
 
 	if err := exec.Command("ip", "link", "set", tapName, "master", bridgeName).Run(); err != nil {
@@ -457,6 +583,16 @@ func (nm *NetworkManager) removeTapDevice(tap *TapDevice) error {
 	}
 
 	return nil
+}
+
+// ipMaskToCIDR converts a netmask string (e.g., "255.255.255.0") to CIDR prefix length (e.g., "24").
+func ipMaskToCIDR(netmask string) string {
+	if netmask == "" {
+		return "24" // Default
+	}
+	mask := net.IPMask(net.ParseIP(netmask).To4())
+	ones, _ := mask.Size()
+	return fmt.Sprintf("%d", ones)
 }
 
 // ListTapDevices returns a list of active TAP devices.

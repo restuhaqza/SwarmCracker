@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -175,12 +176,12 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 	}
 
 	// Start the VM instance
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newUnixClient(socketPath, 5*time.Second)
 	actions := ActionsType{ActionType: "InstanceStart"}
 
 	body, _ := json.Marshal(actions)
 	req, _ := http.NewRequestWithContext(ctx, "PUT",
-		"http://unix"+socketPath+"/actions",
+		"http://localhost/actions",
 		bytes.NewReader(body),
 	)
 	req.Header.Set("Content-Type", "application/json")
@@ -232,19 +233,27 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 
 // configureVM configures the VM via Firecracker API.
 func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config interface{}) error {
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newUnixClient(socketPath, 5*time.Second)
 
 	// Parse config - could be a map or struct
-	configMap, ok := config.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("invalid config type: expected map[string]interface{}")
+	var configMap map[string]interface{}
+
+	switch c := config.(type) {
+	case map[string]interface{}:
+		configMap = c
+	case string:
+		if err := json.Unmarshal([]byte(c), &configMap); err != nil {
+			return fmt.Errorf("failed to unmarshal config json: %w", err)
+		}
+	default:
+		return fmt.Errorf("invalid config type: expected map[string]interface{} or json string")
 	}
 
 	// Configure boot source if provided
 	if bootSource, ok := configMap["boot_source"].(map[string]interface{}); ok {
 		bootSourceJSON, _ := json.Marshal(bootSource)
 		req, _ := http.NewRequestWithContext(ctx, "PUT",
-			"http://unix"+socketPath+"/boot-source",
+			"http://localhost/boot-source",
 			bytes.NewReader(bootSourceJSON),
 		)
 		req.Header.Set("Content-Type", "application/json")
@@ -264,7 +273,7 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 	if machineConfig, ok := configMap["machine_config"].(map[string]interface{}); ok {
 		machineConfigJSON, _ := json.Marshal(machineConfig)
 		req, _ := http.NewRequestWithContext(ctx, "PUT",
-			"http://unix"+socketPath+"/machine-config",
+			"http://localhost/machine-config",
 			bytes.NewReader(machineConfigJSON),
 		)
 		req.Header.Set("Content-Type", "application/json")
@@ -374,12 +383,12 @@ func (vm *VMMManager) hardShutdown(ctx context.Context, vmInstance *VMInstance) 
 	socketPath := vmInstance.SocketPath
 
 	// Send shutdown signal
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := newUnixClient(socketPath, 5*time.Second)
 	actions := ActionsType{ActionType: "SendCtrlAltDel"}
 
 	body, _ := json.Marshal(actions)
 	req, _ := http.NewRequestWithContext(ctx, "PUT",
-		"http://unix"+socketPath+"/actions",
+		"http://localhost/actions",
 		bytes.NewReader(body),
 	)
 	req.Header.Set("Content-Type", "application/json")
@@ -576,12 +585,12 @@ func (vm *VMMManager) forceKillVM(vmInstance *VMInstance) error {
 // waitForAPIServer waits for the Firecracker API server to be ready.
 func waitForAPIServer(socketPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	client := newUnixClient(socketPath, 100*time.Millisecond)
 
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(socketPath); err == nil {
 			// Socket exists, try to connect
-			client := &http.Client{Timeout: 100 * time.Millisecond}
-			resp, err := client.Get("http://unix" + socketPath + "/")
+			resp, err := client.Get("http://localhost/")
 			if err == nil {
 				resp.Body.Close()
 				return nil
@@ -605,4 +614,15 @@ func waitForShutdown(socketPath string, timeout time.Duration) (bool, error) {
 	}
 
 	return false, fmt.Errorf("shutdown timeout")
+}
+
+func newUnixClient(socketPath string, timeout time.Duration) *http.Client {
+	return &http.Client{
+		Timeout: timeout,
+		Transport: &http.Transport{
+			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
+				return net.Dial("unix", socketPath)
+			},
+		},
+	}
 }

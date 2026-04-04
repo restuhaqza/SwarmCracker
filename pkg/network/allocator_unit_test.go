@@ -3,10 +3,10 @@ package network
 
 import (
 	"context"
-	"net"
-	"testing"
 	"fmt"
+	"net"
 	"sync"
+	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -137,12 +137,12 @@ func TestIPAllocator_Allocate_Unit(t *testing.T) {
 			checkIP: true,
 		},
 		{
-			name:        "empty VM ID",
-			subnet:      "192.168.1.0/24",
-			gateway:     "192.168.1.1",
-			vmID:        "",
-			wantErr:     false,
-			checkIP:     true,
+			name:    "empty VM ID",
+			subnet:  "192.168.1.0/24",
+			gateway: "192.168.1.1",
+			vmID:    "",
+			wantErr: false,
+			checkIP: true,
 		},
 	}
 
@@ -209,8 +209,7 @@ func TestIPAllocator_Allocate_Distribution_Unit(t *testing.T) {
 	// Allocate IPs for multiple VMs
 	ips := make(map[string]bool)
 	for i := 0; i < 100; i++ {
-		}
-		vmID := "vm-" + string(rune('a'+i%26))
+		vmID := fmt.Sprintf("vm-%d", i)
 
 		ip, err := allocator.Allocate(vmID)
 		assert.NoError(t, err)
@@ -236,16 +235,18 @@ func TestIPAllocator_Release_Unit(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify IP is allocated
-	assert.True(t, allocator.allocated[ip])
+	_, exists := allocator.allocated[ip]
+	assert.True(t, exists)
 
 	// Release IP
 	allocator.Release(ip)
 
 	// Verify IP is no longer allocated
-	assert.False(t, allocator.allocated[ip])
+	_, exists = allocator.allocated[ip]
+	assert.False(t, exists)
 
 	// Should be able to allocate again
-	ip2, err := allocator.Allocate(vmID)
+	_, err = allocator.Allocate(vmID)
 	assert.NoError(t, err)
 	// May or may not be the same IP
 }
@@ -395,11 +396,11 @@ func TestNewNetworkManager_Unit(t *testing.T) {
 		{
 			name: "with subnet and bridge IP",
 			config: types.NetworkConfig{
-				Subnet:      "192.168.1.0/24",
-				BridgeIP:    "192.168.1.1/24",
-				BridgeName:  "br0",
-				NATEnabled:  true,
-				IPMode:      "static",
+				Subnet:     "192.168.1.0/24",
+				BridgeIP:   "192.168.1.1/24",
+				BridgeName: "br0",
+				NATEnabled: true,
+				IPMode:     "static",
 			},
 			expectAllocator: true,
 		},
@@ -617,7 +618,7 @@ func TestTapDevice_Unit(t *testing.T) {
 		{
 			name: "minimal TAP device",
 			tap: &TapDevice{
-				Name: "tap-1",
+				Name:   "tap-1",
 				Bridge: "br0",
 			},
 		},

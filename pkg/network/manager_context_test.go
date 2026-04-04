@@ -796,7 +796,7 @@ func TestNetworkManager_GetTapIP_ContextEdgeCases(t *testing.T) {
 			},
 			taskID:      "non-existent",
 			expectError: true,
-			errorMsg:    "not found",
+			errorMsg:    "no tap device found",
 		},
 		{
 			name: "get IP for task with no IP",
@@ -835,7 +835,7 @@ func TestNetworkManager_GetTapIP_ContextEdgeCases(t *testing.T) {
 			},
 			taskID:      "",
 			expectError: true,
-			errorMsg:    "not found",
+			errorMsg:    "no tap device found",
 		},
 	}
 
