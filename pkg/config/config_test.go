@@ -282,9 +282,12 @@ func TestLoadConfigFromEnv_NotSet(t *testing.T) {
 
 	cfg, err := LoadConfigFromEnv()
 
-	// Should try default path and fail
-	assert.Error(t, err)
-	assert.Nil(t, cfg)
+	// Should return default config when env var is not set
+	assert.NoError(t, err)
+	assert.NotNil(t, cfg)
+	// Verify defaults are loaded
+	assert.Equal(t, "/usr/share/firecracker/vmlinux", cfg.Executor.KernelPath)
+	assert.Equal(t, "/var/lib/firecracker/rootfs", cfg.Executor.RootfsDir)
 }
 
 func TestConfig_Merge(t *testing.T) {

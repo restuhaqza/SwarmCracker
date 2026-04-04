@@ -116,7 +116,7 @@ func TestController_convertTask(t *testing.T) {
 	tests := []struct {
 		name           string
 		task           *api.Task
-		expectedCmd    string
+		expectedCmd    []string
 		expectedArgs    []string
 		expectedEnv    []string
 		expectedMounts int
@@ -137,7 +137,7 @@ func TestController_convertTask(t *testing.T) {
 					},
 				},
 			},
-			expectedCmd: "nginx",
+			expectedCmd: []string{"nginx"},
 			expectedArgs: []string{"-g", "daemon off"},
 		},
 		{
@@ -153,7 +153,7 @@ func TestController_convertTask(t *testing.T) {
 					},
 				},
 			},
-			expectedCmd: "",
+			expectedCmd: []string{},
 			expectedArgs: []string{"sh", "-c", "echo hello"},
 		},
 		{
@@ -244,7 +244,7 @@ func TestController_convertTask(t *testing.T) {
 				container := internalTask.Spec.Runtime.(*types.Container)
 				assert.NotNil(t, container)
 
-				if tt.expectedCmd != "" {
+				if len(tt.expectedCmd) > 0 {
 					assert.Equal(t, tt.expectedCmd, container.Command)
 				}
 				if len(tt.expectedArgs) > 0 {
@@ -315,7 +315,9 @@ func TestVMMManager_NewVMMManager(t *testing.T) {
 				if tt.path != "" {
 					assert.Equal(t, tt.path, mgr.firecrackerPath)
 				} else {
-					assert.Equal(t, "firecracker", mgr.firecrackerPath)
+					// LookPath resolves to absolute path
+					assert.NotEmpty(t, mgr.firecrackerPath)
+					assert.Contains(t, mgr.firecrackerPath, "firecracker")
 				}
 
 				if tt.socket != "" {

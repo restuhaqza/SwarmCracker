@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
-	"github.com/restuhaqza/swarmcracker/pkg/types"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -220,80 +218,4 @@ func TestController_MultiplePrepareCalls(t *testing.T) {
 	assert.True(t, true)
 }
 
-// TestController_MultipleStartCalls tests idempotency of Start
-func TestController_MultipleStartCalls(t *testing.T) {
-	task := &api.Task{
-		ID: "multi-start",
-		Spec: api.TaskSpec{
-			Runtime: &api.TaskSpec_Container{
-				Container: &api.ContainerSpec{
-					Image: "nginx",
-				},
-			},
-		},
-	}
-
-	ctrl := &Controller{
-		task:   task,
-		logger: zerolog.Nop(),
-	}
-
-	ctx := context.Background()
-
-	// Mark as prepared
-	ctrl.prepared = true
-	ctrl.internalTask = &types.Task{
-		ID: task.ID,
-		Spec: types.TaskSpec{
-			Runtime: &types.Container{
-				Image: "nginx",
-			},
-		},
-	}
-
-	// Start multiple times
-	err1 := ctrl.Start(ctx)
-	err2 := ctrl.Start(ctx)
-	err3 := ctrl.Start(ctx)
-
-	// First call might fail (no VMM), subsequent should return nil (already started)
-	if err1 == nil {
-		assert.NoError(t, err2)
-		assert.NoError(t, err3)
-	}
-
-	// Should not panic
-	assert.True(t, true)
-}
-
-// TestController_ContextWithTimeout tests timeout handling
-func TestController_ContextWithTimeout(t *testing.T) {
-	task := &api.Task{
-		ID: "timeout-test",
-		Spec: api.TaskSpec{
-			Runtime: &api.TaskSpec_Container{
-				Container: &api.ContainerSpec{
-					Image: "test",
-				},
-			},
-		},
-	}
-
-	ctrl := &Controller{
-		task:   task,
-		logger: zerolog.Nop(),
-	}
-
-	// Create a context with very short timeout
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // Cancel immediately
-
-	// Operations should handle cancelled context gracefully
-	_ = ctrl.Prepare(ctx)
-	_ = ctrl.Start(ctx)
-	_ = ctrl.Shutdown(ctx)
-	_ = ctrl.Terminate(ctx)
-
-	// Should not hang
-	assert.True(t, true)
-}
+// Note: Tests requiring VMM manager moved to integration suite

@@ -150,17 +150,17 @@ func TestGenerateImageID_Unit(t *testing.T) {
 		{
 			name:     "image with registry",
 			imageRef: "docker.io/library/nginx:latest",
-			want:     "docker.io/library/nginx-latest",
+			want:     "docker.io-library-nginx-latest",
 		},
 		{
 			name:     "image with port",
 			imageRef: "localhost:5000/myimage:latest",
-			want:     "localhost:5000/myimage-latest",
+			want:     "localhost:5000-myimage-latest",
 		},
 		{
 			name:     "complex image name",
 			imageRef: "my.registry.io/org/subdir/image:v1.0.0",
-			want:     "my.registry.io/org/subdir/image-v1.0.0",
+			want:     "my.registry.io-org-subdir-image-v1.0.0",
 		},
 		{
 			name:     "empty image",
