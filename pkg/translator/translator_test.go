@@ -202,15 +202,20 @@ func TestTaskTranslator_Translate(t *testing.T) {
 
 func TestTaskTranslator_buildBootArgs(t *testing.T) {
 	tests := []struct {
-		name      string
-		container *types.Container
-		wantArgs  []string
+		name     string
+		task     *types.Task
+		wantArgs []string
 	}{
 		{
 			name: "container with command and args",
-			container: &types.Container{
-				Command: []string{"/bin/sh"},
-				Args:    []string{"-c", "echo hello"},
+			task: &types.Task{
+				ID: "test-task",
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{
+						Command: []string{"/bin/sh"},
+						Args:    []string{"-c", "echo hello"},
+					},
+				},
 			},
 			wantArgs: []string{
 				"console=ttyS0",
@@ -227,8 +232,13 @@ func TestTaskTranslator_buildBootArgs(t *testing.T) {
 		},
 		{
 			name: "container with command only",
-			container: &types.Container{
-				Command: []string{"nginx"},
+			task: &types.Task{
+				ID: "test-task",
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{
+						Command: []string{"nginx"},
+					},
+				},
 			},
 			wantArgs: []string{
 				"console=ttyS0",
@@ -242,8 +252,13 @@ func TestTaskTranslator_buildBootArgs(t *testing.T) {
 			},
 		},
 		{
-			name:      "container with no command or args",
-			container: &types.Container{},
+			name: "container with no command or args",
+			task: &types.Task{
+				ID: "test-task",
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{},
+				},
+			},
 			wantArgs: []string{
 				"console=ttyS0",
 				"reboot=k",
@@ -253,12 +268,40 @@ func TestTaskTranslator_buildBootArgs(t *testing.T) {
 				"ip=dhcp",
 			},
 		},
+		{
+			name: "overlay network (MTU 1450)",
+			task: &types.Task{
+				ID: "test-task",
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{
+						Command: []string{"/bin/sh"},
+					},
+				},
+				Networks: []types.NetworkAttachment{
+					{
+						Network: types.Network{
+							ID: "net-overlay",
+							Spec: types.NetworkSpec{
+								Driver: "overlay",
+							},
+						},
+						Addresses: []string{"10.0.1.2/24"},
+					},
+				},
+			},
+			wantArgs: []string{
+				"console=ttyS0",
+				"reboot=k",
+				"ip=10.0.1.2::10.0.1.1:255.255.255.0::eth0:off",
+				"mtu=1450", // Expect custom MTU
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			translator := NewTaskTranslator(nil)
-			got := translator.buildBootArgs(tt.container)
+			got := translator.buildBootArgs(tt.task)
 
 			// Check that all expected args are present
 			for _, arg := range tt.wantArgs {
@@ -355,7 +398,7 @@ func TestTaskTranslator_buildNetworkInterface(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			translator := NewTaskTranslator(nil)
-			got := translator.buildNetworkInterface(tt.network, tt.index)
+			got := translator.buildNetworkInterface(tt.network, tt.index, "test-task")
 
 			assert.Equal(t, tt.wantID, got.IfaceID)
 			assert.Contains(t, got.HostDevName, "tap")

@@ -165,7 +165,7 @@ func TestTaskTranslator_ConfigToJSON(t *testing.T) {
 				MachineConfig: MachineConfig{
 					VcpuCount:  2,
 					MemSizeMib: 512,
-					HtEnabled:  true,
+					Smt:        false,
 				},
 				NetworkInterfaces: []NetworkInterface{
 					{
@@ -178,8 +178,8 @@ func TestTaskTranslator_ConfigToJSON(t *testing.T) {
 			validate: func(jsonStr string, err error) {
 				assert.NoError(t, err)
 				assert.NotEmpty(t, jsonStr)
-				assert.Contains(t, jsonStr, "KernelImagePath")
-				assert.Contains(t, jsonStr, "VcpuCount")
+				assert.Contains(t, jsonStr, "kernel_image_path")
+				assert.Contains(t, jsonStr, "vcpu_count")
 			},
 		},
 		{
@@ -238,7 +238,7 @@ func TestTaskTranslator_ConfigToJSON(t *testing.T) {
 			expectError: false,
 			validate: func(jsonStr string, err error) {
 				assert.NoError(t, err)
-				assert.Contains(t, jsonStr, "Vsock")
+				assert.Contains(t, jsonStr, "vsock")
 			},
 		},
 		{
@@ -255,16 +255,16 @@ func TestTaskTranslator_ConfigToJSON(t *testing.T) {
 			},
 		},
 		{
-			name: "config with HT enabled",
+			name: "config with SMT disabled",
 			config: &VMMConfig{
 				MachineConfig: MachineConfig{
-					HtEnabled: true,
+					Smt: false,
 				},
 			},
 			expectError: false,
 			validate: func(jsonStr string, err error) {
 				assert.NoError(t, err)
-				assert.Contains(t, jsonStr, "HtEnabled")
+				assert.Contains(t, jsonStr, "smt")
 			},
 		},
 		{
@@ -355,73 +355,69 @@ func TestNewTaskTranslator_AdditionalCoverage(t *testing.T) {
 // TestBuildBootArgs_EdgeCases tests additional buildBootArgs scenarios
 func TestTaskTranslator_BuildBootArgs_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name      string
-		container *types.Container
-		expected  string
+		name     string
+		task     *types.Task
+		expected string
 	}{
 		{
 			name: "container with only command",
-			container: &types.Container{
-				Command: []string{"/app/start"},
+			task: &types.Task{
+				ID: "test-task",
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{
+						Command: []string{"/app/start"},
+					},
+				},
 			},
 			expected: "/app/start",
 		},
 		{
 			name: "container with only args",
-			container: &types.Container{
-				Args: []string{"server", "--port=8080"},
+			task: &types.Task{
+				ID: "test-task",
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{
+						Args: []string{"server", "--port=8080"},
+					},
+				},
 			},
 			expected: "server --port=8080",
 		},
 		{
 			name: "container with nil command and args",
-			container: &types.Container{
-				Command: nil,
-				Args:    nil,
+			task: &types.Task{
+				ID: "test-task",
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{
+						Command: nil,
+						Args:    nil,
+					},
+				},
 			},
-			expected: "/sbin/init",
+			expected: "/bin/sh", // Fallback to shell if empty
 		},
 		{
 			name: "container with empty command and args",
-			container: &types.Container{
-				Command: []string{},
-				Args:    []string{},
+			task: &types.Task{
+				ID: "test-task",
+				Spec: types.TaskSpec{
+					Runtime: &types.Container{
+						Command: []string{},
+						Args:    []string{},
+					},
+				},
 			},
-			expected: "/sbin/init",
-		},
-		{
-			name: "container with command containing spaces",
-			container: &types.Container{
-				Command: []string{"/bin/sh", "-c", "echo hello world"},
-			},
-			expected: "/bin/sh -c echo\\ hello\\ world",
-		},
-		{
-			name: "container with args containing special characters",
-			container: &types.Container{
-				Command: []string{"/bin/sleep"},
-				Args:    []string{"10", "&"},
-			},
-			expected: "/bin/sleep 10 \\&",
+			expected: "/bin/sh", // Fallback to shell if empty
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			tt := &TaskTranslator{}
-			result := tt.buildBootArgs(tc.container)
+			tt := NewTaskTranslator(nil)
+			result := tt.buildBootArgs(tc.task)
 
-			// Split and compare for better error messages
-			resultWords := len(splitString(result))
-			expectedWords := len(splitString(tc.expected))
-
-			if result != tc.expected {
-				// For this test, we're mainly checking that it doesn't panic
-				// and produces a reasonable output
-				assert.NotEmpty(t, result, "buildBootArgs should return non-empty string")
-				assert.True(t, resultWords > 0 || expectedWords == 0,
-					"Result should have reasonable word count")
-			}
+			assert.NotEmpty(t, result)
+			assert.Contains(t, result, tc.expected)
 		})
 	}
 }

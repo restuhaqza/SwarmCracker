@@ -111,6 +111,8 @@ type Network struct {
 
 // NetworkSpec specifies network configuration.
 type NetworkSpec struct {
+	Name         string // Network name (e.g. "my-overlay")
+	Driver       string // Network driver (e.g. "overlay", "bridge")
 	DriverConfig *DriverConfig
 }
 

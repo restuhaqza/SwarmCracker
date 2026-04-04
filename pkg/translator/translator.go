@@ -1,8 +1,11 @@
 package translator
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net"
 	"strings"
 
 	"github.com/restuhaqza/swarmcracker/pkg/lifecycle"
@@ -11,50 +14,51 @@ import (
 
 // TaskTranslator converts SwarmKit tasks to Firecracker VM configurations.
 type TaskTranslator struct {
-	kernelPath   string
-	initrdPath   string
-	defaultVCPUs int
-	defaultMemMB int
-	initSystem   string // "none", "tini", "dumb-init"
-	initPath     string // Path to init binary
+	kernelPath    string
+	initrdPath    string
+	defaultVCPUs  int
+	defaultMemMB  int
+	initSystem    string // "none", "tini", "dumb-init"
+	initPath      string // Path to init binary
+	networkConfig types.NetworkConfig
 }
 
 // Config holds translator configuration.
 type Config struct {
-	KernelPath   string
-	InitrdPath   string
-	DefaultVCPUs int
-	DefaultMemMB int
-	InitSystem   string
+	KernelPath    string
+	InitrdPath    string
+	DefaultVCPUs  int
+	DefaultMemMB  int
+	InitSystem    string
+	NetworkConfig types.NetworkConfig
 }
 
 // NewTaskTranslator creates a new TaskTranslator.
 func NewTaskTranslator(config interface{}) *TaskTranslator {
-	// For now, we accept a generic config and extract what we need
-	var kernelPath, initrdPath, initSystem string
-	var vcpus, memMB int
-
-	// Accept *lifecycle.ManagerConfig or similar
-	kernelPath = "/usr/share/firecracker/vmlinux"
-	initrdPath = ""
-	vcpus = 1
-	memMB = 512
-	initSystem = "tini" // Default init system
-
-	// Try to extract from config
-	if cfg, ok := config.(*lifecycle.ManagerConfig); ok {
-		kernelPath = cfg.KernelPath
-		vcpus = cfg.DefaultVCPUs
-		memMB = cfg.DefaultMemoryMB
+	// Defaults
+	tt := &TaskTranslator{
+		kernelPath:   "/usr/share/firecracker/vmlinux",
+		initrdPath:   "",
+		defaultVCPUs: 1,
+		defaultMemMB: 512,
+		initSystem:   "tini",
+		initPath:     getInitPath("tini"),
 	}
 
-	tt := &TaskTranslator{
-		kernelPath:   kernelPath,
-		initrdPath:   initrdPath,
-		defaultVCPUs: vcpus,
-		defaultMemMB: memMB,
-		initSystem:   initSystem,
-		initPath:     getInitPath(initSystem),
+	// Try to extract from translator.Config (preferred)
+	if cfg, ok := config.(*Config); ok {
+		tt.kernelPath = cfg.KernelPath
+		tt.initrdPath = cfg.InitrdPath
+		tt.defaultVCPUs = cfg.DefaultVCPUs
+		tt.defaultMemMB = cfg.DefaultMemMB
+		tt.initSystem = cfg.InitSystem
+		tt.initPath = getInitPath(cfg.InitSystem)
+		tt.networkConfig = cfg.NetworkConfig
+	} else if cfg, ok := config.(*lifecycle.ManagerConfig); ok {
+		// Fallback for legacy calls (though we should migrate)
+		tt.kernelPath = cfg.KernelPath
+		tt.defaultVCPUs = cfg.DefaultVCPUs
+		tt.defaultMemMB = cfg.DefaultMemoryMB
 	}
 
 	return tt
@@ -74,48 +78,48 @@ func getInitPath(initSystem string) string {
 
 // VMMConfig represents the Firecracker VMM configuration.
 type VMMConfig struct {
-	BootSource        BootSourceConfig
-	MachineConfig     MachineConfig
-	NetworkInterfaces []NetworkInterface
-	Drives            []Drive
-	Vsock             *VsockConfig
+	BootSource        BootSourceConfig   `json:"boot_source"`
+	MachineConfig     MachineConfig      `json:"machine_config"`
+	NetworkInterfaces []NetworkInterface `json:"network_interfaces"`
+	Drives            []Drive            `json:"drives"`
+	Vsock             *VsockConfig       `json:"vsock,omitempty"`
 }
 
 // BootSourceConfig specifies boot configuration.
 type BootSourceConfig struct {
-	KernelImagePath string
-	BootArgs        string
-	InitrdPath      string
+	KernelImagePath string `json:"kernel_image_path"`
+	BootArgs        string `json:"boot_args"`
+	InitrdPath      string `json:"initrd_path,omitempty"`
 }
 
 // MachineConfig specifies VM resources.
 type MachineConfig struct {
-	VcpuCount  int
-	MemSizeMib int
-	HtEnabled  bool
+	VcpuCount  int  `json:"vcpu_count"`
+	MemSizeMib int  `json:"mem_size_mib"`
+	Smt        bool `json:"smt"`
 }
 
 // NetworkInterface specifies network configuration.
 type NetworkInterface struct {
-	IfaceID     string
-	HostDevName string
-	MacAddress  string
-	RxQueueSize int
-	TxQueueSize int
+	IfaceID     string `json:"iface_id"`
+	HostDevName string `json:"host_dev_name"`
+	MacAddress  string `json:"mac_address,omitempty"`
+	RxQueueSize int    `json:"rx_queue_size"`
+	TxQueueSize int    `json:"tx_queue_size"`
 }
 
 // Drive specifies block device configuration.
 type Drive struct {
-	DriveID      string
-	IsRootDevice bool
-	PathOnHost   string
-	IsReadOnly   bool
+	DriveID      string `json:"drive_id"`
+	IsRootDevice bool   `json:"is_root_device"`
+	PathOnHost   string `json:"path_on_host"`
+	IsReadOnly   bool   `json:"is_read_only"`
 }
 
 // VsockConfig specifies vsock configuration.
 type VsockConfig struct {
-	VsockID  string
-	GuestCID int
+	VsockID  string `json:"vsock_id"`
+	GuestCID int    `json:"guest_cid"`
 }
 
 // Translate converts a SwarmKit task to a Firecracker VMM configuration JSON string.
@@ -134,11 +138,11 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 		MachineConfig: MachineConfig{
 			VcpuCount:  tt.defaultVCPUs,
 			MemSizeMib: tt.defaultMemMB,
-			HtEnabled:  false,
+			Smt:        false,
 		},
 		BootSource: BootSourceConfig{
 			KernelImagePath: tt.kernelPath,
-			BootArgs:        tt.buildBootArgs(container),
+			BootArgs:        tt.buildBootArgs(task),
 			InitrdPath:      tt.initrdPath,
 		},
 		NetworkInterfaces: []NetworkInterface{},
@@ -152,7 +156,7 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 
 	// Add network interfaces
 	for i, network := range task.Networks {
-		iface := tt.buildNetworkInterface(network, i)
+		iface := tt.buildNetworkInterface(network, i, task.ID)
 		config.NetworkInterfaces = append(config.NetworkInterfaces, iface)
 	}
 
@@ -183,15 +187,70 @@ func (tt *TaskTranslator) configToJSON(config *VMMConfig) (string, error) {
 }
 
 // buildBootArgs constructs kernel boot arguments.
-func (tt *TaskTranslator) buildBootArgs(container *types.Container) string {
+func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
+	container := task.Spec.Runtime.(*types.Container)
+
 	args := []string{
 		"console=ttyS0",
 		"reboot=k",
 		"panic=1",
 		"pci=off",
 		"random.trust_cpu=on",
-		"ip=dhcp",
 	}
+
+	// Check if we have an allocated IP address
+	ipArg := "ip=dhcp"
+	mtu := 1500
+
+	// Check for overlay network to adjust MTU
+	if len(task.Networks) > 0 && task.Networks[0].Network.Spec.Driver == "overlay" {
+		mtu = 1450
+	}
+
+	if len(task.Networks) > 0 && len(task.Networks[0].Addresses) > 0 {
+		// Parse IP/Mask from "192.168.1.2/24"
+		// Format: ip=<client-ip>:<server-ip>:<gw-ip>:<netmask>:<hostname>:<device>:<autoconf>
+
+		cidr := task.Networks[0].Addresses[0]
+		ip, ipNet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			clientIP := ip.String()
+
+			// Calculate netmask
+			mask := net.IP(ipNet.Mask)
+			netmask := fmt.Sprintf("%d.%d.%d.%d", mask[0], mask[1], mask[2], mask[3])
+
+			// Determine gateway
+			gateway := ""
+			if tt.networkConfig.BridgeIP != "" {
+				// Use configured bridge IP as gateway
+				gwIP, _, err := net.ParseCIDR(tt.networkConfig.BridgeIP)
+				if err == nil {
+					gateway = gwIP.String()
+				}
+			}
+
+			// Fallback gateway logic if config missing
+			if gateway == "" {
+				// Assume .1
+				ipParts := strings.Split(clientIP, ".")
+				if len(ipParts) == 4 {
+					gateway = fmt.Sprintf("%s.%s.%s.1", ipParts[0], ipParts[1], ipParts[2])
+				}
+			}
+
+			// ip=<client-ip>:<server-ip>:<gw-ip>:<netmask>:<hostname>:<device>:<autoconf>
+			// server-ip is empty (no NFS root)
+			// hostname is empty (allow kernel to set or use task ID?)
+			// device is eth0
+			// autoconf is off
+			ipArg = fmt.Sprintf("ip=%s::%s:%s::eth0:off", clientIP, gateway, netmask)
+		}
+	}
+	args = append(args, ipArg)
+
+	// Pass MTU as a kernel argument (can be used by init scripts)
+	args = append(args, fmt.Sprintf("mtu=%d", mtu))
 
 	// Build container command line
 	var containerCmd []string
@@ -257,12 +316,17 @@ func (tt *TaskTranslator) applyResources(config *VMMConfig, limits *types.Resour
 }
 
 // buildNetworkInterface creates a network interface configuration.
-func (tt *TaskTranslator) buildNetworkInterface(network types.NetworkAttachment, index int) NetworkInterface {
+func (tt *TaskTranslator) buildNetworkInterface(network types.NetworkAttachment, index int, taskID string) NetworkInterface {
 	ifaceID := fmt.Sprintf("eth%d", index)
+
+	// Generate TAP name: tap-<hash[:8]>-<index>
+	hash := sha256.Sum256([]byte(taskID))
+	hashStr := hex.EncodeToString(hash[:])
+	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
 
 	return NetworkInterface{
 		IfaceID:     ifaceID,
-		HostDevName: fmt.Sprintf("tap%s", ifaceID),
+		HostDevName: tapName,
 		MacAddress:  "", // Will be generated by Firecracker
 		RxQueueSize: 256,
 		TxQueueSize: 256,
