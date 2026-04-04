@@ -1,0 +1,51 @@
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - ineffassign
+    - typecheck
+
+issues:
+  exclude-dirs:
+    - pkg/image
+    - pkg/lifecycle
+    - test/e2e
+    - test/integration
+  exclude-rules:
+    # Exclude test files from errcheck
+    - path: _test\.go
+      linters:
+        - errcheck
+        - unused
+    # Allow unchecked return values for cleanup/best-effort operations
+    - path: pkg/network/manager\.go
+      linters:
+        - errcheck
+    - path: pkg/network/manager_testable\.go
+      linters:
+        - errcheck
+        - unused
+    - path: pkg/network/vxlan\.go
+      linters:
+        - errcheck
+    - path: pkg/swarmkit/vmm\.go
+      linters:
+        - errcheck
+    - path: pkg/swarmkit/executor\.go
+      linters:
+        - errcheck
+        - unused
+    - path: pkg/executor/executor\.go
+      linters:
+        - errcheck
+    - path: pkg/translator/translator_uncovered_test\.go
+      linters:
+        - unused
+    # Allow empty branches for TODO/Future implementations
+    - text: "SA9003"
+      linters:
+        - staticcheck
