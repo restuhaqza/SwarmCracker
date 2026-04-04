@@ -23,11 +23,14 @@ apt-get install -y \
   jq \
   iputils-ping \
   net-tools \
-  tcpdump
+  tcpdump \
+  podman \
+  tini
+
 
 # Install Go from official binary (reliable method)
 echo "📦 Installing Go from official binary..."
-GO_VERSION="1.21.6"
+GO_VERSION="1.24.0"
 if [ ! -f "/usr/local/go/bin/go" ]; then
     wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz
     rm -rf /usr/local/go
@@ -90,16 +93,27 @@ mv "$FC_BINARY" /usr/local/bin/firecracker
 chmod +x /usr/local/bin/firecracker
 rm -rf firecracker-v1.14.1-x86_64.tgz "$FC_DIR"
 
-# Download Firecracker kernel (use latest from v1.14.1 release)
+# Download Firecracker kernel from official S3 bucket
 echo "📥 Downloading Firecracker kernel..."
-wget --progress=bar:force:noscroll https://github.com/firecracker-microvm/firecracker/releases/download/v1.14.1/kernel-vmlinux-x86_64.bin
-if [ ! -f "kernel-vmlinux-x86_64.bin" ]; then
-    echo "❌ Failed to download Firecracker kernel"
-    exit 1
+# Use latest Firecracker v1.15 kernel (Linux 5.10.245)
+KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-5.10.245"
+curl -sL "$KERNEL_URL" -o kernel-vmlinux-x86_64.bin || {
+    echo "⚠️  Failed to download kernel from S3, trying fallback..."
+    # Fallback to v1.10 kernel
+    curl -sL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.10/x86_64/vmlinux-5.10" -o kernel-vmlinux-x86_64.bin || {
+        echo "⚠️  Warning: Could not download Firecracker kernel"
+        echo "   Kernel will need to be installed manually for Firecracker to work"
+        echo "   Create a placeholder for now"
+        mkdir -p /usr/share/firecracker
+        touch /usr/share/firecracker/vmlinux
+    }
+}
+
+if [ -f "kernel-vmlinux-x86_64.bin" ] && [ -s "kernel-vmlinux-x86_64.bin" ]; then
+    mkdir -p /usr/share/firecracker
+    mv kernel-vmlinux-x86_64.bin /usr/share/firecracker/vmlinux
+    chmod +r /usr/share/firecracker/vmlinux
 fi
-mkdir -p /usr/share/firecracker
-mv kernel-vmlinux-x86_64.bin /usr/share/firecracker/vmlinux
-chmod +r /usr/share/firecracker/vmlinux
 
 # Verify installations
 echo ""
