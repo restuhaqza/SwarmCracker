@@ -12,13 +12,19 @@ This section contains user-facing documentation for SwarmCracker.
 
 SwarmKit-specific documentation has its own section:
 
-- [SwarmKit Guides](swarmkit/) - Complete SwarmKit documentation
+- [Deployment Index](swarmkit/DEPLOYMENT_INDEX.md) - 📚 **All deployment resources**
+- [Quick Start Guide](swarmkit/quick-start.md) - 🚀 **Get running in 15 minutes**
+- [Comprehensive Deployment](swarmkit/deployment-comprehensive.md) - 📖 **Production-ready setup**
+- [User Guide](swarmkit/user-guide.md) - Service operations guide
+- [Overview](swarmkit/overview.md) - SwarmKit architecture
 
 ## Quick Start
 
+**New to SwarmCracker?**
+
 1. Read the [Installation Guide](installation.md)
-2. Follow the [Configuration Guide](configuration.md)
-3. Check out [SwarmKit Overview](swarmkit/overview.md) if using SwarmKit
+2. Follow the [Quick Start Guide](swarmkit/quick-start.md)
+3. Check out [Configuration Guide](configuration.md) for customization
 
 ## Need Help?
 

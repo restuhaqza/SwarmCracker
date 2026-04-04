@@ -1,184 +1,360 @@
-# Deployment Guide Index
+# SwarmKit Deployment Guide Index
 
-Quick navigation for all SwarmKit deployment resources.
+Complete guide to deploying SwarmCracker with SwarmKit.
 
 ## 🚀 Quick Start
 
-**New to SwarmCracker?** Start here:
+**New to SwarmCracker?** Choose your path:
 
-1. [Installation Guide](../guides/installation.md) - Install dependencies
-2. [Local Development Example](../examples/local-dev/README.md) - Single-node test cluster
-3. [Comprehensive Deployment Guide](../guides/swarmkit/deployment-comprehensive.md) - Full documentation
+### For Testing & Development
+1. [Quick Start Guide](./quick-start.md) ⭐ **Start Here**
+   - Get running in 15 minutes
+   - Single-node or multi-node
+   - Basic service management
 
-## 📚 Documentation
+### For Production Deployment
+2. [Comprehensive Deployment Guide](./deployment-comprehensive.md) 📖 **Production Ready**
+   - Full production setup
+   - High availability
+   - Security hardening
+   - Performance tuning
 
-### Core Guides
+## 📚 Documentation Structure
 
-| Guide | Description | Length |
-|-------|-------------|--------|
-| [Comprehensive Deployment Guide](../guides/swarmkit/deployment-comprehensive.md) | Complete production deployment guide | 31KB |
-| [Basic Deployment Example](../guides/swarmkit/deployment.md) | Simple deployment walkthrough | 5KB |
-| [Configuration Reference](../guides/configuration.md) | All configuration options | - |
-| [Networking Guide](../guides/networking.md) | VM networking setup | - |
-| [Init Systems Guide](../guides/init-systems.md) | Tini/dumb-init integration | - |
+### Getting Started
 
-### SwarmKit Guides
+| Guide | Audience | Time |
+|-------|----------|------|
+| [Quick Start](./quick-start.md) | Beginners | 15 min |
+| [Comprehensive Deployment](./deployment-comprehensive.md) | DevOps Engineers | 1-2 hours |
+| [User Guide](./user-guide.md) | Service Operators | 30 min |
+
+### Configuration & Operations
 
 | Guide | Description |
 |-------|-------------|
-| [SwarmKit Overview](../guides/swarmkit/overview.md) | SwarmKit architecture |
-| [SwarmKit User Guide](../guides/swarmkit/user-guide.md) | Using SwarmKit features |
-| [SwarmKit Audit](../guides/swarmkit/audit.md) | Security audit |
+| [Configuration Reference](../configuration.md) | All config options |
+| [Networking Guide](../networking.md) | VM networking setup |
+| [Init Systems Guide](../init-systems.md) | Tini/dumb-init integration |
+| [Overview](./overview.md) | SwarmKit architecture |
 
-## 🏗️ Examples
+### Advanced Topics
 
-### Local Development
+| Guide | Description |
+|-------|-------------|
+| [Audit Report](./audit.md) | Security audit |
+| [Clarification Summary](./clarification-summary.md) | Design decisions |
 
-**Purpose:** Single-node cluster for testing and development
+## 🎯 Deployment Scenarios
 
-- [README](../examples/local-dev/README.md) - Setup guide
-- [start.sh](../examples/local-dev/start.sh) - Startup script
-- [config/worker.yaml](../examples/local-dev/config/worker.yaml) - Configuration
+### Scenario 1: Local Development
 
-**Use Cases:**
-- Local development
-- Testing features
-- Learning SwarmKit
-- CI/CD pipelines
+**Purpose:** Test on your laptop
 
-### Production Cluster
+**Prerequisites:**
+- Linux/Mac with KVM
+- Go 1.21+
+- Firecracker
 
-**Purpose:** Multi-node HA cluster for production
+**Steps:**
+1. Follow [Quick Start Guide](./quick-start.md)
+2. Run single-node setup
+3. Deploy test services
+4. Experiment and learn
 
-- [README](../examples/production-cluster/README.md) - Deployment guide
-- [deploy.sh](../examples/production-cluster/deploy.sh) - Deployment script
-- [verify-cluster.sh](../examples/production-cluster/verify-cluster.sh) - Health check
-- [config/worker.yaml](../examples/production-cluster/config/worker.yaml) - Configuration
+**Time:** 15 minutes
 
-**Use Cases:**
-- Production deployments
-- High availability
-- Horizontal scaling
-- Disaster recovery
+**Resources Needed:**
+- 2GB RAM
+- 2 CPU cores
+- 10GB disk
 
-## 🔧 Scripts & Automation
+### Scenario 2: Multi-Node Test Cluster
 
-### Deployment Scripts
+**Purpose:** Test before production
 
-| Script | Purpose | Location |
-|--------|---------|----------|
-| `start.sh` | Local dev cluster startup | `examples/local-dev/` |
-| `deploy.sh` | Production cluster deployment | `examples/production-cluster/` |
-| `verify-cluster.sh` | Cluster health check | `examples/production-cluster/` |
+**Prerequisites:**
+- 3 Linux machines (VMs or bare metal)
+- Network connectivity
+- Root access
 
-### Systemd Services
+**Steps:**
+1. Follow [Quick Start Guide - Multi-Node](./quick-start.md#-multi-node-deployment)
+2. Deploy 1 manager, 2 workers
+3. Test service orchestration
+4. Verify failover
 
-| Service | Purpose | Location |
-|---------|---------|----------|
-| `swarmd-manager.service` | Manager daemon | `scripts/systemd/` |
-| `swarmd-worker.service` | Worker daemon | `scripts/systemd/` |
+**Time:** 30 minutes
 
-## 📖 Deployment Scenarios
+**Resources Needed:**
+- 3 machines × 2GB RAM
+- Network bandwidth
 
-### Scenario 1: Single-Node Testing
+### Scenario 3: Production Cluster
 
-**When:** Local development, learning, testing
+**Purpose:** Run production workloads
 
-1. Follow [Local Development README](../examples/local-dev/README.md)
-2. Run `./start.sh manager`
-3. Run `./start.sh worker`
-4. Run `./start.sh deploy`
+**Prerequisites:**
+- 5+ Linux machines (3 managers, 2+ workers)
+- Load balancer
+- Monitoring stack
+- Backup strategy
 
-**Time:** 5 minutes
+**Steps:**
+1. Follow [Comprehensive Deployment Guide](./deployment-comprehensive.md)
+2. Set up HA managers (3 or 5 nodes)
+3. Configure worker nodes
+4. Set up monitoring & logging
+5. Configure backups
+6. Test disaster recovery
 
-### Scenario 2: Multi-Node Production
+**Time:** 2-4 hours
 
-**When:** Production deployment, HA requirements
+**Resources Needed:**
+- 5+ machines × 4GB RAM
+- Load balancer
+- Monitoring infrastructure
+- Storage for backups
 
-1. Follow [Production Cluster README](../examples/production-cluster/README.md)
-2. Use `deploy.sh` on each node
-3. Verify with `verify-cluster.sh`
+### Scenario 4: Hybrid Cloud
 
-**Time:** 30-60 minutes (depending on node count)
+**Purpose:** Multi-cloud deployment
 
-### Scenario 3: Custom Deployment
+**Prerequisites:**
+- VPN/Tunnel between clouds
+- Consistent networking
+- Central management
 
-**When:** Custom infrastructure, specific requirements
+**Steps:**
+1. Deploy managers in primary region
+2. Connect workers across regions
+3. Configure networking overlays
+4. Test cross-region latency
+5. Set up regional failover
 
-1. Read [Comprehensive Deployment Guide](../guides/swarmkit/deployment-comprehensive.md)
-2. Follow manual deployment steps
-3. Customize configuration as needed
+**Time:** 4-6 hours
 
-**Time:** Variable
-
-## 🎯 Common Tasks
+## 🔧 Common Operations
 
 ### Deploy a Service
 
 ```bash
 export SWARM_SOCKET=/var/run/swarmkit/swarm.sock
-swarmctl service create --name nginx --image nginx:alpine --replicas 3
+
+# Simple service
+swarmctl service create --name web --image nginx:alpine --replicas 3
+
+# With environment variables
+swarmctl service create \
+  --name db \
+  --image postgres:15 \
+  --env POSTGRES_PASSWORD=secret \
+  --replicas 1
+
+# Global service (one per node)
+swarmctl service create \
+  --name monitor \
+  --image prometheus:latest \
+  --mode global
 ```
 
-### Check Cluster Health
+### Monitor Services
 
 ```bash
-# Nodes
-swarmctl node ls
-
-# Services
+# List all services
 swarmctl service ls
 
-# Tasks
-swarmctl service ps nginx
+# Check service tasks
+swarmctl service ps web
+
+# Inspect specific task
+swarmctl task inspect <task-id> --pretty
+
+# View service logs
+swarmctl service logs web
 ```
 
-### Scale a Service
+### Scale Services
 
 ```bash
-swarmctl service update nginx --replicas 10
+# Scale up
+swarmctl service update web --replicas 10
+
+# Scale down
+swarmctl service update web --replicas 2
+
+# Auto-scaling (requires external tool)
+watch -n 60 'swarmctl service update web --replicas $(calculate_desired)'
 ```
 
-### Update a Service
+### Update Services
 
 ```bash
-swarmctl service update nginx --image nginx:1.25-alpine
+# Rolling update (default)
+swarmctl service update web --image nginx:1.25-alpine
+
+# With rollback parameters
+swarmctl service update web \
+  --image nginx:1.25-alpine \
+  --rollback-param parallelism:1 \
+  --rollback-param delay:10s
+
+# Force update
+swarmctl service update web \
+  --force \
+  --image nginx:latest
+```
+
+### Remove Services
+
+```bash
+# Remove single service
+swarmctl service rm web
+
+# Remove all services
+swarmctl service ls -q | xargs swarmctl service rm
+
+# Remove with cleanup
+swarmctl service rm web && \
+  sudo rm -rf /var/lib/firecracker/rootfs/web-*
 ```
 
 ## 🔍 Troubleshooting
 
-**Issues?** Check these resources:
+### Quick Diagnosis
 
-1. [Comprehensive Troubleshooting](../guides/swarmkit/deployment-comprehensive.md#troubleshooting) - Common issues and solutions
-2. [Verification Script](../examples/production-cluster/verify-cluster.sh) - Automated health checks
-3. [Debug Commands](../guides/swarmkit/deployment-comprehensive.md#debug-commands) - Manual diagnostics
+```bash
+# Check cluster health
+swarmctl node ls
+swarmctl service ls
+swarmctl task ls
 
-## 📚 Additional Resources
+# Check SwarmCracker
+sudo systemctl status swarmcracker
+sudo journalctl -u swarmcracker -n 50
 
-### Architecture
+# Check Firecracker VMs
+sudo ps aux | grep firecracker
+sudo ls -la /var/run/firecracker/
+```
 
-- [System Architecture](../architecture/system.md) - System design
-- [SwarmKit Integration](../architecture/swarmkit-integration.md) - Integration details
+### Common Issues
 
-### Development
+| Issue | Solution |
+|-------|----------|
+| Worker can't join | Check firewall, verify token |
+| Service not starting | Check SwarmCracker logs, verify image |
+| VM not running | Check kernel path, verify resources |
+| Network not working | Check bridge, verify NAT rules |
+| High memory usage | Reduce replicas, add workers |
 
-- [Testing Guide](../development/testing.md) - Running tests
-- [Development Guide](../development/getting-started.md) - Contributing
+**For detailed troubleshooting:** See [Comprehensive Guide - Troubleshooting](./deployment-comprehensive.md#troubleshooting)
 
-### Project
+## 📊 Monitoring & Observability
 
-- [Main README](../README.md) - Project overview
-- [PROJECT.md](../PROJECT.md) - Roadmap and status
-- [CONTRIBUTING.md](../CONTRIBUTING.md) - Contribution guidelines
+### Health Checks
+
+```bash
+# Manager health
+curl http://localhost:4242/health
+
+# Worker connectivity
+swarmctl node ls
+
+# Service health
+swarmctl service ps --no-trunc
+```
+
+### Metrics
+
+```bash
+# SwarmCracker metrics
+curl http://localhost:9090/metrics
+
+# VM resource usage
+sudo virsh domstats
+```
+
+### Logging
+
+```bash
+# Follow logs
+sudo journalctl -u swarmcracker -f
+
+# Export logs
+sudo journalctl -u swarmcracker --since "1 hour ago" > swarmcracker.log
+```
+
+## 🏗️ Architecture
+
+### Single-Node
+
+```
+┌─────────────────────────────┐
+│     Manager + Worker         │
+│     swarmd (both roles)      │
+│     + SwarmCracker          │
+└─────────────────────────────┘
+```
+
+### Multi-Node (HA)
+
+```
+        ┌──────────────┐
+        │  Manager 1   │
+        │  (Leader)    │
+        └──────┬───────┘
+               │ (Raft)
+        ┌──────┴──────┐
+        │             │
+   ┌────▼─────┐ ┌────▼─────┐
+   │Manager 2 │ │Manager 3 │
+   └────┬─────┘ └────┬─────┘
+        │            │
+        └────┬───────┘
+             │
+      ┌──────┴──────┐
+      │             │
+ ┌────▼─────┐ ┌────▼─────┐
+ │Worker 1  │ │Worker N  │
+ │+SwarmCracker│ │+SwarmCracker│
+ └──────────┘ └──────────┘
+```
+
+## 📖 Additional Resources
+
+### Project Documentation
+
+- [Main README](../../README.md) - Project overview
+- [Architecture](../../architecture/system.md) - System design
+- [Development Guide](../../development/getting-started.md) - Contributing
+
+### External References
+
+- [SwarmKit GitHub](https://github.com/moby/swarmkit)
+- [Firecracker GitHub](https://github.com/firecracker-microvm/firecracker)
+- [Docker Swarm Docs](https://docs.docker.com/engine/swarm/)
 
 ## 🆘 Getting Help
 
-- **Documentation:** Start with guides above
-- **Examples:** See `examples/` directory
-- **Issues:** Report bugs on GitHub
-- **Community:** Join discussions on GitHub
+### Documentation
+
+1. Start with [Quick Start](./quick-start.md)
+2. Review [Comprehensive Guide](./deployment-comprehensive.md)
+3. Check [Troubleshooting](./deployment-comprehensive.md#troubleshooting)
+
+### Community
+
+- **GitHub Issues:** Report bugs
+- **Discussions:** Ask questions
+- **PRs:** Contribute improvements
+
+### Professional Support
+
+For enterprise support, contact: [Support Email]
 
 ---
 
-**Last Updated:** 2026-02-01
-**SwarmCracker Version:** v1.0.0+
+**Documentation Version:** v2.0
+**Last Updated:** 2026-04-04
+**Maintained By:** SwarmCracker Team
