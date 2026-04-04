@@ -1,0 +1,103 @@
+# Vagrantfile for SwarmCracker Testing on DigitalOcean
+# 1 Manager + 1 Worker (or more)
+
+Vagrant.configure("2") do |config|
+  # Use DigitalOcean box
+  config.vm.box = "digital_ocean"
+  config.vm.box_url = "https://github.com/devops-art/digitalocean-vagrant/raw/master/digital_ocean.box"
+
+  # Common setup for all VMs
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  # Provision scripts
+  config.vm.provision "file", source: "../", destination: "/tmp/swarmcracker"
+  config.vm.provision "file", source: "scripts/prepare-socket.sh", destination: "/tmp/scripts/prepare-socket.sh"
+
+  config.vm.provision "shell", inline: <<-SHELL
+    # Update system
+    apt-get update
+
+    # Install basic tools
+    apt-get install -y curl wget git vim
+
+    # Create scripts directory
+    mkdir -p /tmp/scripts
+
+    # Make scripts executable
+    chmod +x /tmp/scripts/prepare-socket.sh
+
+    echo "✅ Base packages installed"
+  SHELL
+
+  # Manager Node
+  config.vm.define "manager" do |mgr|
+    mgr.vm.provider :digital_ocean do |provider|
+      provider.token = ENV['DIGITAL_OCEAN_TOKEN']
+      provider.image = 'ubuntu-22-04-x64'
+      provider.region = 'sgp1'  # Singapore (closest to Indonesia)
+      provider.size = 's-4vcpu-8gb'  # 4 vCPUs, 8GB RAM (~$48/month)
+      provider.name = 'swarmcracker-manager'
+      provider.ssh_key_name = ENV['DIGITAL_OCEAN_SSH_KEY'] || 'vagrant'
+      provider.private_networking = true
+      provider.monitoring = true
+    end
+
+    # Copy installation script
+    mgr.vm.provision "file", source: "scripts/install-deps.sh", destination: "/tmp/install-deps.sh"
+    mgr.vm.provision "file", source: "scripts/setup-manager.sh", destination: "/tmp/setup-manager.sh"
+
+    # Execute installation
+    mgr.vm.provision "shell", inline: <<-SHELL
+      bash /tmp/install-deps.sh
+      bash /tmp/setup-manager.sh
+    SHELL
+  end
+
+  # Worker 1
+  config.vm.define "worker1" do |w1|
+    w1.vm.provider :digital_ocean do |provider|
+      provider.token = ENV['DIGITAL_OCEAN_TOKEN']
+      provider.image = 'ubuntu-22-04-x64'
+      provider.region = 'sgp1'
+      provider.size = 's-2vcpu-4gb'  # 2 vCPUs, 4GB RAM (~$24/month)
+      provider.name = 'swarmcracker-worker-1'
+      provider.ssh_key_name = ENV['DIGITAL_OCEAN_SSH_KEY'] || 'vagrant'
+      provider.private_networking = true
+      provider.monitoring = true
+    end
+
+    # Copy installation script
+    w1.vm.provision "file", source: "scripts/install-deps.sh", destination: "/tmp/install-deps.sh"
+    w1.vm.provision "file", source: "scripts/setup-worker.sh", destination: "/tmp/setup-worker.sh"
+    w1.vm.provision "file", source: "../build/swarmd-firecracker", destination: "/tmp/swarmd-firecracker"
+
+    # Execute installation
+    w1.vm.provision "shell", inline: <<-SHELL
+      bash /tmp/install-deps.sh
+      bash /tmp/setup-worker.sh
+    SHELL
+  end
+
+  # Worker 2 (optional - uncomment to enable)
+  # config.vm.define "worker2" do |w2|
+  #   w2.vm.provider :digital_ocean do |provider|
+  #     provider.token = ENV['DIGITAL_OCEAN_TOKEN']
+  #     provider.image = 'ubuntu-22-04-x64'
+  #     provider.region = 'sgp1'
+  #     provider.size = 's-2vcpu-4gb'
+  #     provider.name = 'swarmcracker-worker-2'
+  #     provider.ssh_key_name = ENV['DIGITAL_OCEAN_SSH_KEY'] || 'vagrant'
+  #     provider.private_networking = true
+  #     provider.monitoring = true
+  #   end
+  #
+  #   w2.vm.provision "file", source: "scripts/install-deps.sh", destination: "/tmp/install-deps.sh"
+  #   w2.vm.provision "file", source: "scripts/setup-worker.sh", destination: "/tmp/setup-worker.sh"
+  #   w2.vm.provision "file", source: "../build/swarmd-firecracker", destination: "/tmp/swarmd-firecracker"
+  #
+  #   w2.vm.provision "shell", inline: <<-SHELL
+  #     bash /tmp/install-deps.sh
+  #     bash /tmp/setup-worker.sh
+  #   SHELL
+  # end
+end

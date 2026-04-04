@@ -1,6 +1,6 @@
 # SwarmCracker Test Cluster - Automated Setup
 
-Fully automated Vagrant setup for testing SwarmCracker with 1 manager + 2 workers.
+Fully automated Vagrant setup for testing SwarmCracker with 1 manager + 1 worker.
 
 ## 🏗️ Architecture
 
@@ -16,14 +16,6 @@ Fully automated Vagrant setup for testing SwarmCracker with 1 manager + 2 worker
 │  │  - swarmd       │  │  - swarmd       │              │
 │  │  - swarmctl     │  │  - SwarmCracker │              │
 │  └─────────────────┘  └─────────────────┘              │
-│                       ┌─────────────────┐              │
-│                       │  Worker 2 VM    │              │
-│                       │  192.168.56.12  │              │
-│                       │  - 4GB RAM      │              │
-│                       │  - 4 vCPUs      │              │
-│                       │  - swarmd       │              │
-│                       │  - SwarmCracker │              │
-│                       └─────────────────┘              │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -59,10 +51,10 @@ chmod +x *.sh scripts/*.sh
 ```
 
 This will:
-- Create 3 VMs (1 manager + 2 workers)
+- Create 2 VMs (1 manager + 1 worker)
 - Install all dependencies (Go, Firecracker, SwarmKit, SwarmCracker)
 - Configure the SwarmKit cluster
-- Join workers to the manager
+- Join worker to the manager
 
 ### 2. Test Deployments
 
@@ -108,9 +100,6 @@ vagrant ssh manager
 
 # SSH into worker 1
 vagrant ssh worker1
-
-# SSH into worker 2
-vagrant ssh worker2
 
 # Exit from VM
 exit
@@ -180,7 +169,6 @@ Expected output:
 ID            NAME              STATUS  AVAILABILITY  MANAGER STATUS
 xxxxxx        swarm-manager     READY   ACTIVE        LEADER *
 xxxxxx        swarm-worker-1    READY   ACTIVE
-xxxxxx        swarm-worker-2    READY   ACTIVE
 ```
 
 ### Check Services
@@ -197,7 +185,6 @@ vagrant ssh manager -c "
 
 ```bash
 vagrant ssh worker1 -c "sudo swarmcracker list"
-vagrant ssh worker2 -c "sudo swarmcracker list"
 ```
 
 ## 🐛 Troubleshooting
@@ -308,7 +295,6 @@ swarmctl service ps nginx
 # List microVMs on workers
 # (from another terminal)
 vagrant ssh worker1 -c "sudo swarmcracker list"
-vagrant ssh worker2 -c "sudo swarmcracker list"
 ```
 
 ### Deploy a Stack with Multiple Services
@@ -388,7 +374,6 @@ watch -n 1 'swarmctl service ps stress-test | grep RUNNING | wc -l'
 
 # Check resource usage on workers
 vagrant ssh worker1 -c "top -bn1 | head -20"
-vagrant ssh worker2 -c "top -bn1 | head -20"
 ```
 
 ## 🧹 Cleanup
@@ -442,5 +427,5 @@ Once the cluster is running:
 ---
 
 **Created:** 2026-02-01  
-**Cluster Size:** 1 Manager + 2 Workers  
+**Cluster Size:** 1 Manager + 1 Worker  
 **Setup Time:** ~10 minutes
