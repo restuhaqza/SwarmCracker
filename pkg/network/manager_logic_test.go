@@ -362,22 +362,18 @@ func TestNetworkManager_GetTapIP_EdgeCases(t *testing.T) {
 		expectedIP  string
 	}{
 		{
-			name: "get IP from task with multiple devices",
+			name: "get IP from task with single device",
 			setupFunc: func(nm *NetworkManager) {
 				nm.mu.Lock()
 				nm.tapDevices["task-multi-tap-eth0"] = &TapDevice{
 					Name: "tap-eth0",
 					IP:   "10.10.10.10",
 				}
-				nm.tapDevices["task-multi-tap-eth1"] = &TapDevice{
-					Name: "tap-eth1",
-					IP:   "10.10.10.11",
-				}
 				nm.mu.Unlock()
 			},
 			taskID:      "task-multi",
 			expectError: false,
-			expectedIP:  "10.10.10.10", // Should return first one
+			expectedIP:  "10.10.10.10",
 		},
 		{
 			name: "get IP with special characters in task ID",

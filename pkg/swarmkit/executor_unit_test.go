@@ -1,6 +1,7 @@
 package swarmkit
 
 import (
+	"os/exec"
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -302,6 +303,13 @@ func TestVMMManager_NewVMMManager(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Skip if firecracker not in PATH (CI doesn't have it installed)
+			if tt.path == "" {
+				if _, err := exec.LookPath("firecracker"); err != nil {
+					t.Skip("firecracker not in PATH")
+				}
+			}
+
 			mgr, err := NewVMMManager(tt.path, tt.socket)
 
 			if tt.wantErr {
