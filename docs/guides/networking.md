@@ -51,7 +51,7 @@ network:
 
   # IP allocation mode: "static" or "dhcp"
   # "static" - deterministic IP allocation based on VM ID hash
-  # "dhcp" - requires external DHCP server (not yet implemented)
+  # "dhcp" - uses dnsmasq for dynamic IP allocation
   ip_mode: "static"
 
   # Enable NAT for internet access
@@ -95,9 +95,17 @@ When `ip_mode: static`, SwarmCracker allocates IPs deterministically based on th
 - Bridge (gateway): `192.168.127.1`
 - Network address: `192.168.127.0` (not used)
 
-### DHCP Mode (Future)
+### DHCP Mode
 
-DHCP mode will allow integration with `dnsmasq` or similar for dynamic IP allocation. This is planned for a future release.
+When `ip_mode: dhcp`, SwarmCracker starts a `dnsmasq` instance to serve DHCP leases on the bridge. VMs use `udhcpc` (injected into the rootfs) to obtain an IP at boot.
+
+**Requirements:**
+- `dnsmasq` installed on the host
+- Rootfs must include `udhcpc` (automatically injected by the image preparer)
+
+**Lease range:** `.50` to `.200` in the configured subnet
+
+See [VXLAN Overlay Networking](../VXLAN-OVERLAY.md) for cross-node VM communication.
 
 ## Host Setup
 
@@ -371,7 +379,6 @@ For issues or questions:
 - Comprehensive testing
 
 ### Planned Features
-- DHCP server integration (dnsmasq)
 - IPv6 support
 - Network metrics/monitoring
 - Per-VM firewall rules

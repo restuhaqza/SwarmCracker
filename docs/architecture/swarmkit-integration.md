@@ -209,23 +209,24 @@ swarmctl service create --name test --replicas 1 nginx:alpine
 - Configuration system
 - **ALL COMPILATION ERRORS FIXED** ✅
 - Agent binary builds and runs successfully ✅
+- Image preparer with rootfs networking injection ✅
+- Bridge, DHCP, and NAT networking ✅
+- VXLAN overlay for cross-node VM communication ✅
+- E2E test suite with Firecracker VMs ✅
 
-🚧 **TODO:**
-- Complete image preparer integration testing
-- Complete network manager integration testing
-- Add comprehensive unit tests
-- Integration testing with real SwarmKit
-- Create installation guide
-- Add E2E tests with real Firecracker
+🚧 **In Progress:**
+- Cross-node task distribution in SwarmKit
+- DHCP server integration (dnsmasq) for dynamic IP allocation
+- IPv6 support
 
 ## Next Steps
 
-1. Fix remaining compilation issues
-2. Add unit tests for all components
-3. Integration testing with SwarmKit
-4. Create installation guide
-5. Performance testing and optimization
-6. Production hardening
+1. Dynamic IP allocation via DHCP (dnsmasq)
+2. IPv6 networking support
+3. Per-VM firewall rules
+4. Performance testing and optimization
+5. Production hardening and security audit
+6. Automated CI/CD pipeline
 
 ## Files Changed
 
@@ -246,5 +247,5 @@ cmd/swarmcracker-agent/main.go - Agent binary
 ---
 
 **Author:** Restu Muzakir
-**Date:** 2026-02-01
-**Status:** Alpha - Work in Progress
+**Date:** 2026-04-04
+**Status:** Alpha — VMs running with networking

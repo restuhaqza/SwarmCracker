@@ -11,7 +11,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/restuhaqza/swarmcracker)](https://goreportcard.com/report/github.com/restuhaqza/swarmcracker)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/restuhaqza/swarmcracker)
-[![Coverage](https://img.shields.io/badge/coverage-87%25-green.svg)](https://github.com/restuhaqza/swarmcracker/blob/main/COVERAGE_REPORT.md)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen.svg)](https://github.com/restuhaqza/swarmcracker)
 
 **Hardware-isolated microVMs with SwarmKit orchestration**
 
@@ -40,6 +40,7 @@ SwarmCracker brings you the best of both worlds:
 | ⚡ **Fast Startup** | MicroVMs boot in milliseconds with Firecracker |
 | 🔧 **Init System Support** | Tini/dumb-init for proper signal handling & zombie reaping |
 | 🌐 **VM Networking** | Bridge networking with IP allocation and NAT for internet access |
+| 🔗 **VXLAN Overlay** | Cross-node VM communication via kernel VXLAN tunnels |
 | 🎯 **KVM-Free** | No Kubernetes complexity needed |
 
 ### Why SwarmCracker?
@@ -295,7 +296,7 @@ swarmd-firecracker \
 EOF
 ```
 
-📖 **See [Firecracker Agent Deployment Guide](docs/FIRECRACKER_AGENT_DEPLOYMENT.md)** for complete production deployment instructions.
+📖 **See the [Deployment Guide](docs/guides/swarmkit/deployment-comprehensive.md)** for complete production deployment instructions.
 
 <details>
 <summary><b>📖 See detailed installation guide</b></summary>
@@ -321,16 +322,17 @@ See the [Installation Guide](docs/guides/installation.md)
 | [🔧 Init System Guide](docs/guides/init-systems.md) | Tini/dumb-init for signal handling and zombie reaping |
 | [🏗️ Architecture](docs/architecture/system.md) | System design, components, and data flow |
 | [🌐 Networking Guide](docs/guides/networking.md) | VM networking with bridges, TAP devices, and NAT |
+| [🔗 VXLAN Overlay](docs/VXLAN-OVERLAY.md) | Cross-node VM communication via VXLAN |
 | [📦 File Management](docs/guides/file-management.md) | Managing files and directories in microVMs |
 
 ### SwarmKit Deployment
 
 | Document | Description |
 |----------|-------------|
-| [🚀 Quick Deployment Example](docs/guides/swarmkit/deployment.md) | Basic SwarmKit deployment with SwarmCracker |
+| [🚀 Quick Start](docs/guides/swarmkit/quick-start.md) | Quick SwarmKit deployment with SwarmCracker |
 | [🏭 Comprehensive Deployment Guide](docs/guides/swarmkit/deployment-comprehensive.md) | Production-ready multi-node deployment (5KB+ guide) |
-| [🏠 Local Development Example](examples/local-dev/README.md) | Single-node cluster for testing and development |
-| [🏢 Production Cluster Example](examples/production-cluster/README.md) | Multi-node HA cluster with automation scripts |
+| [🏠 Local Development](docs/getting-started/local-dev.md) | Single-node cluster for testing and development |
+| [🏢 Production Cluster](docs/guides/swarmkit/deployment-comprehensive.md) | Multi-node HA cluster with automation scripts |
 | [📖 SwarmKit User Guide](docs/guides/swarmkit/user-guide.md) | Complete SwarmKit features and usage |
 | [🔍 SwarmKit Overview](docs/guides/swarmkit/overview.md) | SwarmKit architecture and integration details |
 
@@ -341,7 +343,7 @@ See the [Installation Guide](docs/guides/installation.md)
 | [🤖 Agent Guide](AGENTS.md) | Project setup, architecture, and workflows for AI agents and contributors |
 | [🧪 Testing Guide](docs/development/testing.md) | How to run and write tests |
 | [💻 Development Guide](docs/development/getting-started.md) | Contributing, workflow, and best practices |
-| [📝 Project Status](PROJECT.md) | Progress tracking and roadmap |
+| [📝 Contributing](CONTRIBUTING.md) | Contribution guidelines |
 
 ### Quick Links
 

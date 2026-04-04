@@ -26,16 +26,19 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 | [Installation](guides/installation.md) | Prerequisites and setup |
 | [Configuration](guides/configuration.md) | Config options reference |
 | [Networking](guides/networking.md) | VM networking setup |
+| [VXLAN Overlay](VXLAN-OVERLAY.md) | Cross-node VM communication |
 | [Init Systems](guides/init-systems.md) | Tini/dumb-init integration |
 | [File Management](guides/file-management.md) | Rootfs and image handling |
+| [Security Hardening](guides/security-hardening.md) | Security best practices |
 
 ### SwarmKit Integration
 
 | Topic | Description |
 |-------|-------------|
-| [Deployment Guide](guides/swarmkit/deployment.md) | Production deployment |
+| [Quick Start](guides/swarmkit/quick-start.md) | Quick SwarmKit deployment |
 | [User Guide](guides/swarmkit/user-guide.md) | Using SwarmKit features |
 | [Overview](guides/swarmkit/overview.md) | SwarmKit architecture |
+| [Comprehensive Deployment](guides/swarmkit/deployment-comprehensive.md) | Production multi-node setup |
 
 ### Architecture
 
@@ -52,16 +55,14 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 | [Testing](development/testing.md) | Running and writing tests |
 | [Secrets Prevention](development/secrets-prevention.md) | Security practices |
 
----
+### Testing
 
-## 🧪 Testing & Reports
-
-| Report | Status |
-|--------|--------|
-| [Coverage Summary](reports/coverage/) | 87% overall coverage |
-| [E2E Tests](reports/e2e/) | Real VM testing complete |
-| [Unit Tests](reports/unit/) | Per-package coverage |
-| [Bug Reports](reports/BUGS_ISSUES.md) | Known issues |
+| Topic | Description |
+|-------|-------------|
+| [Testing Strategy](testing/strategy.md) | Overall test approach |
+| [Unit Tests](testing/unit.md) | Unit testing guide |
+| [Integration Tests](testing/integration.md) | Integration testing |
+| [E2E Tests](testing/e2e.md) | End-to-end testing with Firecracker |
 
 ---
 
@@ -69,53 +70,53 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 
 **Common Tasks:**
 - [Install SwarmCracker](guides/installation.md)
-- [Deploy a cluster](guides/swarmkit/deployment.md)
+- [Deploy a cluster](guides/swarmkit/deployment-comprehensive.md)
 - [Configure networking](guides/networking.md)
+- [Set up VXLAN overlay](VXLAN-OVERLAY.md)
 - [Run tests](development/testing.md)
 
 **Development:**
 - [Contribute](development/getting-started.md)
 - [Architecture overview](architecture/system.md)
-- [Test coverage](reports/coverage/)
-
-**Infrastructure:**
-- [Test automation](../test-automation/README.md)
-- [Deployment scripts](../test-automation/scripts/)
 
 ---
 
-## 📖 Full Documentation Index
+## 📖 Directory Structure
 
 ```
 docs/
-├── getting-started/           # Quick start guides
-│   ├── README.md
+├── README.md                 # This file
+├── VXLAN-OVERLAY.md          # VXLAN overlay networking guide
+├── architecture/             # Technical design docs
+│   ├── system.md
+│   └── swarmkit-integration.md
+├── development/              # Developer docs
+│   ├── getting-started.md
+│   ├── secrets-prevention.md
+│   └── testing.md
+├── getting-started/          # Quick start guides
 │   ├── local-dev.md
 │   ├── vagrant.md
 │   ├── firecracker-vm.md
 │   └── digitalocean.md
-├── guides/                    # How-to guides
+├── guides/                   # How-to guides
 │   ├── installation.md
 │   ├── configuration.md
 │   ├── networking.md
+│   ├── security-hardening.md
 │   ├── init-systems.md
 │   ├── file-management.md
 │   └── swarmkit/
-│       ├── deployment.md
+│       ├── README.md
+│       ├── quick-start.md
 │       ├── user-guide.md
-│       └── overview.md
-├── architecture/              # Technical docs
-│   ├── system.md
-│   └── swarmkit-integration.md
-├── development/               # Developer docs
-│   ├── getting-started.md
-│   ├── testing.md
-│   └── secrets-prevention.md
-└── reports/                   # Test reports
-    ├── coverage/
-    ├── e2e/
-    ├── unit/
-    └── archive/               # Historical reports
+│       ├── overview.md
+│       └── deployment-comprehensive.md
+└── testing/                  # Test documentation
+    ├── strategy.md
+    ├── unit.md
+    ├── integration.md
+    └── e2e.md
 ```
 
 ---
@@ -128,5 +129,4 @@ Found an issue? Want to improve docs? See:
 
 ---
 
-**Last Updated:** 2026-04-04  
-**Version:** v0.1.0-alpha
+**Last Updated:** 2026-04-04

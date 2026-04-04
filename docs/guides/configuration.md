@@ -374,7 +374,7 @@ network:
 
 **Notes:**
 - `static` - Deterministic IP allocation based on VM ID hash (default)
-- `dhcp` - Requires external DHCP server (not yet implemented)
+- `dhcp` - Uses dnsmasq for dynamic IP allocation (requires dnsmasq installed)
 
 ### network.nat_enabled
 
