@@ -34,6 +34,12 @@
     state: present
     reload: yes
 
+- name: Load bridge module (for bridge netfilter)
+  modprobe:
+    name: bridge
+    state: present
+  failed_when: false
+
 - name: Enable bridge netfilter
   sysctl:
     name: "{{ item }}"
@@ -43,6 +49,8 @@
   loop:
     - net.bridge.bridge-nf-call-iptables
     - net.bridge.bridge-nf-call-ip6tables
+  failed_when: false
+  ignore_errors: yes
 
 - name: Setup firewall rules (UFW)
   ufw:
