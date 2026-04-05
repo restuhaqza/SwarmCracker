@@ -1,0 +1,89 @@
+# Vagrantfile for Ansible Testing - FRESH Ubuntu VMs
+# 
+# This Vagrantfile creates CLEAN Ubuntu 22.04 VMs with NO provisioning.
+# All setup will be done via Ansible scripts in infrastructure/ansible/
+#
+# Usage:
+#   vagrant up                    # Create all VMs
+#   vagrant up manager            # Create manager only
+#   vagrant up worker1            # Create worker1 only
+#   vagrant status                # Check VM status
+#   vagrant destroy -f            # Remove all VMs
+#
+# After VMs are ready:
+#   cd infrastructure/ansible
+#   ansible-playbook -i inventory/virtualbox site.yml
+#
+
+Vagrant.configure("2") do |config|
+  # Fresh Ubuntu 22.04 LTS
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.box_version = ">= 0"
+  
+  # Boot timeout (fresh VMs may take longer on first boot)
+  config.vm.boot_timeout = 300
+
+  # Disable shared folders (we'll use Ansible for everything)
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  # =====================
+  # Manager Node
+  # =====================
+  config.vm.define "manager" do |mgr|
+    mgr.vm.hostname = "swarm-manager"
+    mgr.vm.network "private_network", ip: "192.168.56.10"
+    
+    mgr.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-manager"
+      vb.memory = 2048
+      vb.cpus = 2
+      # Enable nested virtualization for KVM/Firecracker
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+      vb.customize ["modifyvm", :id, "--ioapic", "on"]
+      vb.customize ["modifyvm", :id, "--pae", "on"]
+    end
+    
+    # NO provisioning - Ansible will handle everything!
+  end
+
+  # =====================
+  # Worker 1 Node
+  # =====================
+  config.vm.define "worker1" do |w1|
+    w1.vm.hostname = "swarm-worker-1"
+    w1.vm.network "private_network", ip: "192.168.56.11"
+    
+    w1.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-worker-1"
+      vb.memory = 4096
+      vb.cpus = 2
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+      vb.customize ["modifyvm", :id, "--ioapic", "on"]
+      vb.customize ["modifyvm", :id, "--pae", "on"]
+    end
+    
+    # NO provisioning - Ansible will handle everything!
+  end
+
+  # =====================
+  # Worker 2 Node
+  # =====================
+  config.vm.define "worker2" do |w2|
+    w2.vm.hostname = "swarm-worker-2"
+    w2.vm.network "private_network", ip: "192.168.56.12"
+    
+    w2.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-worker-2"
+      vb.memory = 4096
+      vb.cpus = 2
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+      vb.customize ["modifyvm", :id, "--ioapic", "on"]
+      vb.customize ["modifyvm", :id, "--pae", "on"]
+    end
+    
+    # NO provisioning - Ansible will handle everything!
+  end
+end
