@@ -23,6 +23,7 @@ SwarmCracker is a custom executor for [SwarmKit](https://github.com/moby/swarmki
 | 🛡️ **Hardware Security** | KVM virtualization, not just namespaces |
 | ⚡ **Fast Startup** | MicroVMs boot in milliseconds |
 | 🌐 **VM Networking** | Bridge + VXLAN for cross-node communication |
+| 🔄 **Zero-Downtime Updates** | Rolling updates with health monitoring |
 
 ## Architecture
 

@@ -346,18 +346,24 @@ func NewController(
 }
 
 // Update updates the task definition.
+// For rolling updates, SwarmKit creates new tasks rather than updating running ones.
+// This method updates the task spec if not yet started, or returns nil for running tasks.
 func (c *Controller) Update(ctx context.Context, t *api.Task) error {
 	c.logger.Info().Msg("Updating task")
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Can't update if already started
-	if c.started {
-		return fmt.Errorf("cannot update started task")
+	// If task hasn't started yet, update the spec
+	if !c.started {
+		c.task = t
+		c.logger.Debug().Msg("Task spec updated")
+		return nil
 	}
 
-	c.task = t
+	// Task already started - SwarmKit will create a new task for rolling updates
+	// Return nil to indicate we've seen the update (no-op for running tasks)
+	c.logger.Debug().Msg("Task already started, skipping update (SwarmKit will create new task)")
 	return nil
 }
 
@@ -687,9 +693,11 @@ func (c *Controller) Close() error {
 }
 
 // ContainerStatus implements ContainerStatuser interface for SwarmKit.
-// Returns the health status of the Firecracker VM.
+// Returns the status of the Firecracker VM (used as container equivalent).
 func (c *Controller) ContainerStatus(ctx context.Context) (*api.ContainerStatus, error) {
-	status := &api.ContainerStatus{}
+	status := &api.ContainerStatus{
+		ContainerID: c.task.ID, // Use task ID as container ID for Firecracker VMs
+	}
 
 	if !c.started {
 		return status, nil
