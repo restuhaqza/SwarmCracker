@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
@@ -30,6 +31,7 @@ type PreparerConfig struct {
 	DefaultMemoryMB int
 	InitSystem      string `yaml:"init_system"`       // "none", "tini", "dumb-init"
 	InitGracePeriod int    `yaml:"init_grace_period"` // Grace period in seconds
+	MaxImageAgeDays int    `yaml:"max_image_age_days"` // Maximum age of rootfs images before cleanup (default 7)
 }
 
 // NewImagePreparer creates a new ImagePreparer.
@@ -51,6 +53,9 @@ func NewImagePreparer(config interface{}) types.ImagePreparer {
 	}
 	if cfg.InitGracePeriod == 0 {
 		cfg.InitGracePeriod = 10
+	}
+	if cfg.MaxImageAgeDays == 0 {
+		cfg.MaxImageAgeDays = 7
 	}
 
 	// Ensure rootfs directory exists
@@ -445,15 +450,103 @@ func (ip *ImagePreparer) copyFile(src, dst string, mode os.FileMode) error {
 }
 
 // Cleanup removes old unused rootfs images.
-func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) error {
+// Returns the number of files removed and bytes freed.
+func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemoved int, bytesFreed int64, err error) {
 	log.Info().Int("keep_days", keepDays).Msg("Cleaning up old images")
 
-	// TODO: Implement cleanup logic
-	// 1. Scan rootfs directory
-	// 2. Check file ages
-	// 3. Remove files older than keepDays
+	if keepDays <= 0 {
+		return 0, 0, fmt.Errorf("keepDays must be positive")
+	}
 
-	return nil
+	// Check if rootfs directory exists
+	if _, statErr := os.Stat(ip.rootfsDir); os.IsNotExist(statErr) {
+		log.Debug().Str("dir", ip.rootfsDir).Msg("Rootfs directory does not exist, nothing to clean")
+		return 0, 0, nil
+	}
+
+	// Calculate cutoff time
+	cutoffTime := time.Now().AddDate(0, 0, -keepDays)
+	// Safe heuristic: skip files accessed in last 24h (likely in use)
+	recentAccessThreshold := time.Now().Add(-24 * time.Hour)
+
+	// Scan directory
+	entries, readErr := os.ReadDir(ip.rootfsDir)
+	if readErr != nil {
+		return 0, 0, fmt.Errorf("failed to read rootfs directory: %w", readErr)
+	}
+
+	log.Debug().Int("total_files", len(entries)).Msg("Scanning rootfs directory")
+
+	for _, entry := range entries {
+		// Skip directories
+		if entry.IsDir() {
+			continue
+		}
+
+		// Only process .ext4 files
+		if !strings.HasSuffix(entry.Name(), ".ext4") {
+			continue
+		}
+
+		filePath := filepath.Join(ip.rootfsDir, entry.Name())
+
+		// Get file info
+		fileInfo, statErr := os.Stat(filePath)
+		if statErr != nil {
+			log.Warn().Str("file", filePath).Err(statErr).Msg("Failed to stat file, skipping")
+			continue
+		}
+
+		// Check if file was recently accessed (safe heuristic for in-use files)
+		if fileInfo.ModTime().After(recentAccessThreshold) {
+			log.Debug().Str("file", filePath).Time("mod_time", fileInfo.ModTime()).Msg("Skipping recently accessed file")
+			continue
+		}
+
+		// Check if file is old enough to delete
+		if fileInfo.ModTime().Before(cutoffTime) {
+			log.Info().Str("file", filePath).
+				Time("mod_time", fileInfo.ModTime()).
+				Int64("size_bytes", fileInfo.Size()).
+				Msg("Removing old rootfs image")
+
+			// Remove the file
+			if removeErr := os.Remove(filePath); removeErr != nil {
+				log.Error().Str("file", filePath).Err(removeErr).Msg("Failed to remove file")
+				// Continue with other files instead of failing completely
+				continue
+			}
+
+			filesRemoved++
+			bytesFreed += fileInfo.Size()
+		}
+	}
+
+	if filesRemoved > 0 {
+		log.Info().
+			Int("files_removed", filesRemoved).
+			Int64("bytes_freed", bytesFreed).
+			Str("space_freed", formatBytes(bytesFreed)).
+			Msg("Cleanup completed")
+	} else {
+		log.Info().Msg("No old images to remove")
+	}
+
+	return filesRemoved, bytesFreed, nil
+}
+
+// formatBytes formats a byte count into a human-readable string.
+func formatBytes(bytes int64) string {
+	const unit = 1024
+	if bytes < unit {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(unit), 0
+	for n := bytes / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }
 
 // injectNetworkConfig adds network initialization scripts to the rootfs.

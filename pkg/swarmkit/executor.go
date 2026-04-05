@@ -5,11 +5,15 @@
 package swarmkit
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"sync"
+	"time"
 
 	swarmkit_exec "github.com/moby/swarmkit/v2/agent/exec"
 	"github.com/moby/swarmkit/v2/api"
@@ -23,28 +27,35 @@ import (
 
 // Executor implements SwarmKit's executor interface backed by SwarmCracker.
 type Executor struct {
-	config      *Config
-	imagePrep   types.ImagePreparer
-	networkMgr  types.NetworkManager
-	vmmMgr      *VMMManager
-	controllers map[string]*Controller
-	executorMu  sync.RWMutex
+	config        *Config
+	imagePrep     types.ImagePreparer
+	networkMgr    types.NetworkManager
+	vmmMgr        *VMMManager
+	controllers   map[string]*Controller
+	executorMu    sync.RWMutex
+	cleanupCancel context.CancelFunc
+	cleanupDone   chan struct{}
 }
 
 // Config holds the SwarmKit integration configuration.
 type Config struct {
-	FirecrackerPath string `yaml:"firecracker_path"`
-	KernelPath      string `yaml:"kernel_path"`
-	RootfsDir       string `yaml:"rootfs_dir"`
-	SocketDir       string `yaml:"socket_dir"`
-	DefaultVCPUs    int    `yaml:"default_vcpus"`
-	DefaultMemoryMB int    `yaml:"default_memory_mb"`
-	BridgeName      string `yaml:"bridge_name"`
-	Subnet          string `yaml:"subnet"`
-	BridgeIP        string `yaml:"bridge_ip"`
-	IPMode          string `yaml:"ip_mode"`
-	NATEnabled      bool   `yaml:"nat_enabled"`
-	Debug           bool   `yaml:"debug"`
+	FirecrackerPath  string `yaml:"firecracker_path"`
+	KernelPath       string `yaml:"kernel_path"`
+	RootfsDir        string `yaml:"rootfs_dir"`
+	SocketDir        string `yaml:"socket_dir"`
+	DefaultVCPUs     int    `yaml:"default_vcpus"`
+	DefaultMemoryMB  int    `yaml:"default_memory_mb"`
+	BridgeName       string `yaml:"bridge_name"`
+	Subnet           string `yaml:"subnet"`
+	BridgeIP         string `yaml:"bridge_ip"`
+	IPMode           string `yaml:"ip_mode"`
+	NATEnabled       bool   `yaml:"nat_enabled"`
+	VXLANEnabled     bool   `yaml:"vxlan_enabled"`
+	VXLANPeers       []string `yaml:"vxlan_peers"`
+	Debug            bool   `yaml:"debug"`
+	ReservedCPUs     int    `yaml:"reserved_cpus"`
+	ReservedMemoryMB int    `yaml:"reserved_memory_mb"`
+	MaxImageAgeDays  int    `yaml:"max_image_age_days"` // Maximum age of rootfs images before cleanup (default 7)
 }
 
 // NewExecutor creates a new SwarmKit executor backed by SwarmCracker.
@@ -93,11 +104,13 @@ func NewExecutor(config *Config) (*Executor, error) {
 
 	// Create network manager
 	netCfg := types.NetworkConfig{
-		BridgeName:       config.BridgeName,
-		Subnet:           config.Subnet,
-		BridgeIP:         config.BridgeIP,
-		IPMode:           config.IPMode,
-		NATEnabled:       config.NATEnabled,
+		BridgeName:    config.BridgeName,
+		Subnet:        config.Subnet,
+		BridgeIP:      config.BridgeIP,
+		IPMode:        config.IPMode,
+		NATEnabled:    config.NATEnabled,
+		VXLANEnabled:  config.VXLANEnabled,
+		VXLANPeers:    config.VXLANPeers,
 	}
 	networkMgr := network.NewNetworkManager(netCfg)
 
@@ -107,34 +120,110 @@ func NewExecutor(config *Config) (*Executor, error) {
 		return nil, fmt.Errorf("failed to create VMM manager: %w", err)
 	}
 
-	return &Executor{
-		config:      config,
-		imagePrep:   imagePrep,
-		networkMgr:  networkMgr,
-		vmmMgr:      vmmMgr,
-		controllers: make(map[string]*Controller),
-	}, nil
+	// Create context for cleanup goroutine
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+
+	exec := &Executor{
+		config:        config,
+		imagePrep:     imagePrep,
+		networkMgr:    networkMgr,
+		vmmMgr:        vmmMgr,
+		controllers:   make(map[string]*Controller),
+		cleanupCancel: cleanupCancel,
+		cleanupDone:   make(chan struct{}),
+	}
+
+	// Start periodic cleanup goroutine
+	go exec.periodicCleanup(cleanupCtx)
+
+	return exec, nil
+}
+
+// periodicCleanup runs image cleanup every 24 hours.
+func (e *Executor) periodicCleanup(ctx context.Context) {
+	defer close(e.cleanupDone)
+
+	ticker := time.NewTicker(24 * time.Hour)
+	defer ticker.Stop()
+
+	// Run initial cleanup after a short delay (to avoid startup churn)
+	select {
+	case <-time.After(5 * time.Minute):
+		e.runCleanup(ctx)
+	case <-ctx.Done():
+		return
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			e.runCleanup(ctx)
+		case <-ctx.Done():
+			zerolog_log.Debug().Msg("Periodic cleanup goroutine stopping")
+			return
+		}
+	}
+}
+
+// runCleanup executes the image cleanup.
+func (e *Executor) runCleanup(ctx context.Context) {
+	zerolog_log.Info().Msg("Running periodic image cleanup")
+
+	// Get MaxImageAgeDays from config, default to 7
+	maxAgeDays := 7
+	if e.config.MaxImageAgeDays > 0 {
+		maxAgeDays = e.config.MaxImageAgeDays
+	}
+
+	// Cleanup now returns filesRemoved and bytesFreed
+	filesRemoved, bytesFreed, err := e.imagePrep.Cleanup(ctx, maxAgeDays)
+	if err != nil {
+		zerolog_log.Error().Err(err).Msg("Periodic cleanup failed")
+		return
+	}
+
+	if filesRemoved > 0 {
+		zerolog_log.Info().
+			Int("files_removed", filesRemoved).
+			Int64("bytes_freed", bytesFreed).
+			Msg("Periodic cleanup completed")
+	} else {
+		zerolog_log.Debug().Msg("Periodic cleanup: no old images to remove")
+	}
 }
 
 // Describe returns the node description for this executor.
 func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
 	log.G(ctx).Debug("Describing executor")
 
+	// Get system resources
+	nanoCPUs := e.getCPUs()
+	memoryBytes := e.getMemory()
+
+	// Build generic resources
+	genericResources := []*api.GenericResource{}
+
+	// Only report Firecracker if KVM is available
+	if e.kvmAvailable() {
+		genericResources = append(genericResources, &api.GenericResource{
+			Resource: &api.GenericResource_NamedResourceSpec{
+				NamedResourceSpec: &api.NamedGenericResource{
+					Kind:  "Firecracker",
+					Value: "available",
+				},
+			},
+		})
+		log.G(ctx).Info("KVM available: reporting Firecracker resource")
+	} else {
+		log.G(ctx).Warning("KVM not available: not reporting Firecracker resource")
+	}
+
 	return &api.NodeDescription{
 		Hostname: hostname(),
 		Resources: &api.Resources{
-			NanoCPUs:    getCPUs(),
-			MemoryBytes: getMemory(),
-			Generic: []*api.GenericResource{
-				{
-					Resource: &api.GenericResource_NamedResourceSpec{
-						NamedResourceSpec: &api.NamedGenericResource{
-							Kind:  "Firecracker",
-							Value: "available",
-						},
-					},
-				},
-			},
+			NanoCPUs:    nanoCPUs,
+			MemoryBytes: memoryBytes,
+			Generic:     genericResources,
 		},
 	}, nil
 }
@@ -160,6 +249,14 @@ func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 	ctrl, err := NewController(t, e.config, e.imagePrep, e.networkMgr, e.vmmMgr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create controller: %w", err)
+	}
+
+	// Set up deregistration callback to remove controller from map when removed
+	ctrl.OnRemove = func() {
+		e.executorMu.Lock()
+		defer e.executorMu.Unlock()
+		delete(e.controllers, t.ID)
+		zerolog_log.Debug().Str("task_id", t.ID).Msg("Controller deregistered from executor")
 	}
 
 	e.controllers[t.ID] = ctrl
@@ -192,6 +289,9 @@ type Controller struct {
 	socketPath string
 	cancel     context.CancelFunc
 	logger     zerolog.Logger
+
+	// OnRemove is called when the controller is removed from the executor
+	OnRemove func()
 }
 
 // NewController creates a new task controller.
@@ -324,60 +424,111 @@ func (c *Controller) Wait(ctx context.Context) error {
 
 // Shutdown gracefully shuts down the task.
 func (c *Controller) Shutdown(ctx context.Context) error {
-	c.logger.Info().Msg("Shutting down task")
+	c.logger.Info().Msg("Shutting down task gracefully")
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if !c.started {
+		c.logger.Debug().Msg("Task not started, nothing to shut down")
 		return nil
 	}
 
 	task := c.convertTask()
 
-	// TODO: Implement graceful shutdown
-	// For now, just terminate
-	return c.vmmMgr.Stop(ctx, task)
+	// Create a shutdown context with 30 second timeout
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Attempt graceful shutdown via VMM manager
+	if err := c.vmmMgr.Stop(shutdownCtx, task); err != nil {
+		c.logger.Error().Err(err).Msg("Graceful shutdown failed")
+		return fmt.Errorf("failed to shutdown VM: %w", err)
+	}
+
+	// Cleanup network after VM stops
+	if err := c.networkMgr.CleanupNetwork(shutdownCtx, task); err != nil {
+		c.logger.Warn().Err(err).Msg("Failed to cleanup network after shutdown")
+	}
+
+	// Mark as not started
+	c.started = false
+
+	c.logger.Info().Msg("Task shut down successfully")
+	return nil
 }
 
 // Terminate forcefully terminates the task.
 func (c *Controller) Terminate(ctx context.Context) error {
-	c.logger.Info().Msg("Terminating task")
+	c.logger.Info().Msg("Forcefully terminating task")
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if !c.started {
+		c.logger.Debug().Msg("Task not started, nothing to terminate")
 		return nil
 	}
 
 	task := c.convertTask()
 
-	return c.vmmMgr.Stop(ctx, task)
+	// Force kill immediately without grace period
+	if err := c.vmmMgr.Stop(ctx, task); err != nil {
+		c.logger.Error().Err(err).Msg("Force terminate failed")
+		return fmt.Errorf("failed to force terminate VM: %w", err)
+	}
+
+	// Mark as not started
+	c.started = false
+
+	c.logger.Info().Msg("Task terminated forcefully")
+	return nil
 }
 
 // Remove removes all task resources.
 func (c *Controller) Remove(ctx context.Context) error {
-	c.logger.Info().Msg("Removing task")
+	c.logger.Info().Msg("Removing task resources")
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	task := c.convertTask()
 
-	// Cleanup network
+	// Cleanup network (includes dnsmasq entries)
 	if err := c.networkMgr.CleanupNetwork(ctx, task); err != nil {
 		c.logger.Error().Err(err).Msg("Failed to cleanup network")
 	}
 
-	// Remove VM
+	// Remove VM (stops if running and removes socket)
 	if err := c.vmmMgr.Remove(ctx, task); err != nil {
-		return fmt.Errorf("failed to remove VM: %w", err)
+		c.logger.Error().Err(err).Msg("Failed to remove VM")
+	}
+
+	// Clean up rootfs image
+	rootfsPath := filepath.Join(c.config.RootfsDir, task.ID+".ext4")
+	if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
+		c.logger.Warn().Err(err).Str("path", rootfsPath).Msg("Failed to remove rootfs image")
+	} else if err == nil {
+		c.logger.Debug().Str("path", rootfsPath).Msg("Removed rootfs image")
+	}
+
+	// Clean up socket file (should be removed by vmmMgr.Remove, but ensure it)
+	socketPath := filepath.Join(c.config.SocketDir, task.ID+".sock")
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		c.logger.Warn().Err(err).Str("path", socketPath).Msg("Failed to remove socket file")
 	}
 
 	c.started = false
 	c.prepared = false
-	c.logger.Info().Msg("Task removed")
+
+	c.logger.Info().Msg("Task resources removed")
+
+	// Call deregistration callback if set
+	if c.OnRemove != nil {
+		c.logger.Debug().Msg("Calling OnRemove callback")
+		c.OnRemove()
+	}
+
 	return nil
 }
 
@@ -495,12 +646,145 @@ func hostname() string {
 	return "localhost"
 }
 
-func getCPUs() int64 {
-	// TODO: Get actual CPU count
-	return 4e9 // 4 CPUs
+// kvmAvailable checks if /dev/kvm exists and is accessible
+func (e *Executor) kvmAvailable() bool {
+	_, err := os.Stat("/dev/kvm")
+	return err == nil
 }
 
-func getMemory() int64 {
-	// TODO: Get actual memory
-	return 8 * 1024 * 1024 * 1024 // 8 GB
+// getCPUs returns the available CPU count in nanocpus (SwarmKit format)
+func (e *Executor) getCPUs() int64 {
+	totalCPUs := runtime.NumCPU()
+	zerolog_log.Debug().Msgf("Detected %d total CPUs", totalCPUs)
+
+	// Determine reserved CPUs
+	reservedCPUs := e.config.ReservedCPUs
+	if reservedCPUs == 0 {
+		// Default: reserve 1 CPU or 10%, whichever is greater
+		reservedByPercent := totalCPUs / 10
+		if reservedByPercent < 1 {
+			reservedByPercent = 1
+		}
+		reservedCPUs = reservedByPercent
+	}
+
+	// Ensure we don't reserve all CPUs
+	if reservedCPUs >= totalCPUs {
+		reservedCPUs = totalCPUs - 1
+		if reservedCPUs < 1 {
+			reservedCPUs = 1
+		}
+	}
+
+	availableCPUs := totalCPUs - reservedCPUs
+	zerolog_log.Info().Msgf("CPU resources: %d total, %d reserved, %d available for tasks",
+		totalCPUs, reservedCPUs, availableCPUs)
+
+	// Convert to nanocpus (SwarmKit format: 1 CPU = 1e9 nanocpus)
+	return int64(availableCPUs) * 1e9
+}
+
+// getMemory returns available memory in bytes
+func (e *Executor) getMemory() int64 {
+	totalMemory := e.readMeminfo()
+	if totalMemory == 0 {
+		// Fallback to safe default if meminfo unavailable
+		zerolog_log.Warn().Msg("Could not read /proc/meminfo, using default 8GB")
+		totalMemory = 8 * 1024 * 1024 * 1024
+	}
+
+	// Determine reserved memory
+	reservedMemoryMB := e.config.ReservedMemoryMB
+	if reservedMemoryMB == 0 {
+		// Default: reserve 512MB or 10%, whichever is greater
+		reservedByPercent := (totalMemory / 1024 / 1024) / 10
+		if reservedByPercent < 512 {
+			reservedByPercent = 512
+		}
+		reservedMemoryMB = int(reservedByPercent)
+	}
+
+	reservedMemory := int64(reservedMemoryMB) * 1024 * 1024
+
+	// Ensure we don't reserve all memory
+	if reservedMemory >= totalMemory {
+		reservedMemory = totalMemory / 10
+		if reservedMemory < (512 * 1024 * 1024) {
+			reservedMemory = 512 * 1024 * 1024
+		}
+	}
+
+	availableMemory := totalMemory - reservedMemory
+	zerolog_log.Info().Msgf("Memory resources: %d MB total, %d MB reserved, %d MB available for tasks",
+		totalMemory/1024/1024, reservedMemory/1024/1024, availableMemory/1024/1024)
+
+	return availableMemory
+}
+
+// readMeminfo reads memory information from /proc/meminfo
+// Returns available memory in bytes, or 0 if unavailable
+func (e *Executor) readMeminfo() int64 {
+	file, err := os.Open("/proc/meminfo")
+	if err != nil {
+		zerolog_log.Error().Err(err).Msg("Failed to open /proc/meminfo")
+		return 0
+	}
+	defer file.Close()
+
+	var memTotal, memAvailable int64
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Simple parsing
+		if len(line) > 10 {
+			switch line[:9] {
+			case "MemTotal:":
+				memTotal = parseMeminfoLine(line)
+			case "MemAvaila": // "MemAvailable:"
+				memAvailable = parseMeminfoLine(line)
+			}
+		}
+		if memTotal > 0 && memAvailable > 0 {
+			break
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		zerolog_log.Error().Err(err).Msg("Error reading /proc/meminfo")
+		return 0
+	}
+
+	// If MemAvailable is not available, fall back to MemTotal * 0.9
+	if memAvailable == 0 && memTotal > 0 {
+		zerolog_log.Debug().Msg("MemAvailable not found, using 90% of MemTotal")
+		memAvailable = int64(float64(memTotal) * 0.9)
+	}
+
+	// Convert kB to bytes
+	return memAvailable * 1024
+}
+
+// parseMeminfoLine parses a /proc/meminfo line and returns the value in kB
+// Input: "MemTotal:       16384000 kB"
+// Output: 16384000
+func parseMeminfoLine(line string) int64 {
+	// Format: "Key:       value kB"
+	// Find the first digit
+	for i := 0; i < len(line); i++ {
+		if line[i] >= '0' && line[i] <= '9' {
+			// Extract the number
+			j := i
+			for j < len(line) && line[j] >= '0' && line[j] <= '9' {
+				j++
+			}
+			val, err := strconv.ParseInt(line[i:j], 10, 64)
+			if err != nil {
+				return 0
+			}
+			return val
+		}
+	}
+	return 0
 }

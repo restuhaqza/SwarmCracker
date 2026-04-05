@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -127,6 +128,16 @@ func main() {
 			Value: true,
 		},
 		&cli.BoolFlag{
+			Name:  "vxlan-enabled",
+			Usage: "Enable VXLAN overlay for cross-node VM networking",
+			Value: false,
+		},
+		&cli.StringFlag{
+			Name:  "vxlan-peers",
+			Usage: "Comma-separated list of VXLAN peer worker IPs (e.g., 192.168.56.12,192.168.56.13)",
+			Value: "",
+		},
+		&cli.BoolFlag{
 			Name:  "debug",
 			Usage: "Enable debug logging",
 			Value: false,
@@ -182,6 +193,8 @@ func runAgent(ctx *cli.Context) error {
 		BridgeIP:        ctx.String("bridge-ip"),
 		IPMode:          ctx.String("ip-mode"),
 		NATEnabled:      ctx.Bool("nat-enabled"),
+		VXLANEnabled:    ctx.Bool("vxlan-enabled"),
+		VXLANPeers:      parseCommaSeparated(ctx.String("vxlan-peers")),
 		Debug:           ctx.Bool("debug"),
 	}
 
@@ -191,11 +204,16 @@ func runAgent(ctx *cli.Context) error {
 	}
 
 	log.G(context.Background()).Infof(
-		"SwarmCracker executor initialized (kernel=%s, rootfs=%s, bridge=%s)",
+		"SwarmCracker executor initialized (kernel=%s, rootfs=%s, bridge=%s, vxlan=%v)",
 		executorConfig.KernelPath,
 		executorConfig.RootfsDir,
 		executorConfig.BridgeName,
+		executorConfig.VXLANEnabled,
 	)
+
+	if len(executorConfig.VXLANPeers) > 0 {
+		log.G(context.Background()).Infof("VXLAN peers configured: %v", executorConfig.VXLANPeers)
+	}
 
 	// Create node config
 	nodeConfig := &node.Config{
@@ -219,6 +237,21 @@ func runAgent(ctx *cli.Context) error {
 	}
 
 	return nil
+}
+
+// parseCommaSeparated parses a comma-separated string into a slice.
+func parseCommaSeparated(s string) []string {
+	if s == "" {
+		return []string{}
+	}
+	result := []string{}
+	for _, part := range strings.Split(s, ",") {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func startNode(config *node.Config) error {

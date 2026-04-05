@@ -136,3 +136,4 @@ venv/
 # package-lock.json
 # yarn.lock
 # go.sum (commented out - SwarmCracker commits this)
+swarmd-firecracker

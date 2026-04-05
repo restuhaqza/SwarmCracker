@@ -19,12 +19,15 @@ import (
 
 // NetworkManager manages VM networking.
 type NetworkManager struct {
-	config      types.NetworkConfig
-	bridges     map[string]bool
-	mu          sync.RWMutex
-	tapDevices  map[string]*TapDevice
-	ipAllocator *IPAllocator
-	natSetup    bool
+	config         types.NetworkConfig
+	bridges        map[string]bool
+	mu             sync.RWMutex
+	tapDevices     map[string]*TapDevice
+	ipAllocator    *IPAllocator
+	natSetup       bool
+	vxlanMgr       *VXLANManager
+	peerDiscovery  bool
+	peerCancel     context.CancelFunc
 }
 
 // TapDevice represents a TAP device.
@@ -451,6 +454,13 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 		}
 	}
 
+	// Start peer discovery if VXLAN peers are configured
+	if nm.config.VXLANEnabled && len(nm.config.VXLANPeers) > 0 {
+		if err := nm.StartPeerDiscovery(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to start peer discovery")
+		}
+	}
+
 	log.Info().
 		Str("bridge", bridgeName).
 		Str("ip", nm.config.BridgeIP).
@@ -622,74 +632,29 @@ func (nm *NetworkManager) setupVXLANOverlay(ctx context.Context) error {
 		return fmt.Errorf("failed to discover physical interface: %w", err)
 	}
 
-	// Discover peer workers (TODO: integrate with SwarmKit node discovery)
-	peers := nm.discoverPeerWorkers()
-	if len(peers) == 0 {
-		log.Warn().Msg("No peer workers discovered - VXLAN configured but may not work until peers are available")
-	}
+	// Combine static peers from config with discovered peers
+	allPeers := nm.discoverPeerWorkers()
+	allPeers = append(allPeers, nm.config.VXLANPeers...)
+
+	// Create peer store with combined peers
+	peerStore := NewStaticPeerStore(allPeers)
+
+	// Create VXLAN manager
+	nm.vxlanMgr = NewVXLANManager(bridgeName, vxlanID, nm.config.BridgeIP, peerStore)
 
 	log.Info().
 		Str("bridge", bridgeName).
 		Str("phys", physInterface).
 		Str("local_ip", localIP).
-		Strs("peers", peers).
+		Strs("peers", allPeers).
 		Msg("Setting up VXLAN overlay")
 
-	// Create VXLAN interface
-	vxlanName := bridgeName + "-vxlan"
-
-	// Check if VXLAN interface already exists
-	if err := exec.Command("ip", "link", "show", vxlanName).Run(); err == nil {
-		log.Info().Str("vxlan", vxlanName).Msg("VXLAN interface already exists")
-		return nil
+	// Setup VXLAN using the VXLAN manager
+	if err := nm.vxlanMgr.SetupVXLAN(physInterface, localIP); err != nil {
+		return fmt.Errorf("failed to setup VXLAN: %w", err)
 	}
 
-	// Create VXLAN interface
-	cmd := exec.Command("ip", "link", "add", vxlanName,
-		"type", "vxlan",
-		"id", fmt.Sprintf("%d", vxlanID),
-		"dstport", "4789",
-		"dev", physInterface,
-		"local", localIP,
-	)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to create VXLAN interface: %w", err)
-	}
-
-	// Attach VXLAN to bridge
-	cmd = exec.Command("ip", "link", "set", vxlanName, "master", bridgeName)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to attach VXLAN to bridge: %w", err)
-	}
-
-	// Bring VXLAN up
-	cmd = exec.Command("ip", "link", "set", vxlanName, "up")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to bring VXLAN up: %w", err)
-	}
-
-	// Add peer forwarding entries
-	for _, peer := range peers {
-		cmd = exec.Command("bridge", "fdb", "append",
-			"to", "00:00:00:00:00:00",
-			"dst", peer,
-			"dev", vxlanName,
-		)
-		if err := cmd.Run(); err != nil {
-			log.Warn().Err(err).Str("peer", peer).Msg("Failed to add peer forwarding entry")
-		}
-	}
-
-	// Enable proxy ARP and IP forwarding
-	sysctl := func(key string, val int) error {
-		return exec.Command("sysctl", "-w", fmt.Sprintf("%s=%d", key, val)).Run()
-	}
-
-	sysctl(fmt.Sprintf("net/ipv4/conf/%s/proxy_arp", bridgeName), 1)
-	sysctl(fmt.Sprintf("net/ipv4/conf/%s/forwarding", bridgeName), 1)
-	sysctl("net/ipv4/ip_forward", 1)
-
-	log.Info().Str("vxlan", vxlanName).Msg("VXLAN overlay configured")
+	log.Info().Msg("VXLAN overlay configured")
 	return nil
 }
 
@@ -729,13 +694,47 @@ func (nm *NetworkManager) getPhysicalInterface() (string, string, error) {
 }
 
 // discoverPeerWorkers discovers other worker nodes in the cluster.
-// TODO: Integrate with SwarmKit node discovery API.
+// This can be extended with SwarmKit node discovery in the future.
 func (nm *NetworkManager) discoverPeerWorkers() []string {
-	// For now, return empty slice - peers should be configured via:
-	// 1. CLI flags (--vxlan-peer)
-	// 2. Config file
-	// 3. SwarmKit node discovery (future)
+	// TODO: Integrate with SwarmKit node discovery API.
+	// For now, peers are configured via --vxlan-peers flag
 	return []string{}
+}
+
+// UpdatePeers updates the VXLAN peer list.
+func (nm *NetworkManager) UpdatePeers(peers []string) error {
+	if nm.vxlanMgr == nil {
+		return fmt.Errorf("VXLAN manager not initialized")
+	}
+	return nm.vxlanMgr.UpdatePeers(peers)
+}
+
+// StartPeerDiscovery starts UDP-based peer discovery for VXLAN.
+func (nm *NetworkManager) StartPeerDiscovery(ctx context.Context) error {
+	if nm.vxlanMgr == nil {
+		return fmt.Errorf("VXLAN manager not initialized")
+	}
+
+	_, localIP, err := nm.getPhysicalInterface()
+	if err != nil {
+		return fmt.Errorf("failed to get local IP: %w", err)
+	}
+
+	const discoveryPort = 4789 // Default VXLAN port
+	if err := nm.vxlanMgr.StartPeerDiscovery(ctx, localIP, discoveryPort); err != nil {
+		return err
+	}
+
+	nm.peerDiscovery = true
+	return nil
+}
+
+// StopPeerDiscovery stops the peer discovery process.
+func (nm *NetworkManager) StopPeerDiscovery() {
+	if nm.vxlanMgr != nil {
+		nm.vxlanMgr.StopPeerDiscovery()
+	}
+	nm.peerDiscovery = false
 }
 
 // createTapDevice creates a TAP device for a network attachment.

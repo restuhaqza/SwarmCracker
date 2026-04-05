@@ -164,6 +164,7 @@ type TaskTranslator interface {
 // ImagePreparer prepares OCI images as root filesystems.
 type ImagePreparer interface {
 	Prepare(ctx context.Context, task *Task) error
+	Cleanup(ctx context.Context, keepDays int) (filesRemoved int, bytesFreed int64, err error)
 }
 
 // NetworkManager manages VM networking.

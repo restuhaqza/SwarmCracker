@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -206,11 +207,11 @@ func (v *VMMManager) waitForSocket(socketPath string, timeout time.Duration) err
 	}
 }
 
-// Stop stops the Firecracker VM for the given task.
+// Stop stops the Firecracker VM for the given task with graceful shutdown.
 func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	v.logger.Info().
 		Str("task_id", task.ID).
-		Msg("Stopping Firecracker VM")
+		Msg("Stopping Firecracker VM gracefully")
 
 	v.processMutex.Lock()
 	defer v.processMutex.Unlock()
@@ -220,7 +221,7 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("task not found")
 	}
 
-	// Send SIGTERM
+	// Send SIGTERM for graceful shutdown
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		v.logger.Error().Err(err).Msg("Failed to send SIGTERM")
 	}
@@ -243,6 +244,35 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 
 	delete(v.processes, task.ID)
 	v.logger.Info().Str("task_id", task.ID).Msg("Firecracker VM stopped")
+
+	return nil
+}
+
+// ForceStop forcefully terminates the Firecracker VM without grace period.
+func (v *VMMManager) ForceStop(ctx context.Context, task *types.Task) error {
+	v.logger.Warn().
+		Str("task_id", task.ID).
+		Msg("Force stopping Firecracker VM")
+
+	v.processMutex.Lock()
+	defer v.processMutex.Unlock()
+
+	cmd, ok := v.processes[task.ID]
+	if !ok {
+		return fmt.Errorf("task not found")
+	}
+
+	// Force kill immediately without waiting
+	if err := cmd.Process.Kill(); err != nil {
+		v.logger.Error().Err(err).Msg("Failed to kill process")
+		return fmt.Errorf("failed to kill process: %w", err)
+	}
+
+	// Wait for process to actually exit (should be immediate)
+	_ = cmd.Wait()
+
+	delete(v.processes, task.ID)
+	v.logger.Info().Str("task_id", task.ID).Msg("Firecracker VM force stopped")
 
 	return nil
 }
@@ -285,10 +315,28 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 		Str("task_id", task.ID).
 		Msg("Removing VM resources")
 
+	v.processMutex.Lock()
+	cmd, ok := v.processes[task.ID]
+	v.processMutex.Unlock()
+
+	// Stop VM if still running (force kill to ensure cleanup)
+	if ok {
+		v.logger.Debug().Str("task_id", task.ID).Msg("VM still running, stopping before removal")
+		if cmd.Process != nil {
+			if err := cmd.Process.Kill(); err != nil && !strings.Contains(err.Error(), "process already finished") {
+				v.logger.Warn().Err(err).Msg("Failed to kill process during removal")
+			}
+			// Wait a bit for process to exit
+			cmd.Wait()
+		}
+	}
+
 	// Remove socket if exists
 	socketPath := filepath.Join(v.socketDir, task.ID+".sock")
 	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 		v.logger.Warn().Err(err).Msg("Failed to remove socket")
+	} else if err == nil {
+		v.logger.Debug().Str("socket", socketPath).Msg("Removed socket file")
 	}
 
 	v.processMutex.Lock()
