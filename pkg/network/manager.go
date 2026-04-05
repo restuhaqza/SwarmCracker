@@ -447,6 +447,8 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 		log.Warn().Err(err).Msg("Failed to ensure bridge is up")
 	}
 
+	nm.bridges[bridgeName] = true
+
 	// Setup VXLAN overlay if configured
 	if nm.config.VXLANEnabled {
 		if err := nm.setupVXLANOverlay(ctx); err != nil {

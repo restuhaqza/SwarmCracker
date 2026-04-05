@@ -281,7 +281,7 @@ func TestCreateExt4Image(t *testing.T) {
 	assert.Greater(t, info.Size(), int64(0))
 
 	// Verify it's at least 100MB (minimum size)
-	assert.Greater(t, info.Size(), int64(100*1024*1024))
+	assert.GreaterOrEqual(t, info.Size(), int64(100*1024*1024))
 }
 
 // TestCreateExt4Image_NoMkfs tests error handling when mkfs.ext4 is not available
@@ -400,16 +400,20 @@ func TestImagePreparer_Cleanup(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	_, _, err = preparer.Cleanup(ctx, 7) // Keep 7 days
+	filesRemoved, bytesFreed, err := preparer.Cleanup(ctx, 7) // Keep 7 days
 
-	// Cleanup returns filesRemoved, bytesFreed, err
+	// Cleanup should succeed and remove old files
 	assert.NoError(t, err)
+	assert.Equal(t, 1, filesRemoved, "Should remove 1 old file")
+	assert.Greater(t, bytesFreed, int64(0), "Should free some bytes")
 
-	// Files should still exist (cleanup TODO)
-	_, err = os.Stat(recentFile)
-	assert.NoError(t, err)
+	// Old file should be deleted
 	_, err = os.Stat(oldFile)
-	assert.NoError(t, err)
+	assert.Error(t, err, "Old file should be deleted")
+
+	// Recent file should still exist (accessed within 24h)
+	_, err = os.Stat(recentFile)
+	assert.NoError(t, err, "Recent file should still exist")
 }
 
 // TestImagePreparer_Prepare_ContextCancellation tests context cancellation

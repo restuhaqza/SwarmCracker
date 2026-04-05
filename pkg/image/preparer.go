@@ -341,15 +341,20 @@ func getDirSize(path string) (int64, error) {
 
 // generateImageID generates a unique ID for an image.
 func generateImageID(imageRef string) string {
-	// Simple hash-based ID generation
-	parts := strings.Split(imageRef, ":")
-	tag := "latest"
-	if len(parts) > 1 {
-		tag = parts[1]
+	// Split on last colon to separate tag from image name
+	// This handles registry:port/image:tag correctly
+	lastColon := strings.LastIndex(imageRef, ":")
+	var name, tag string
+	if lastColon > 0 {
+		name = imageRef[:lastColon]
+		tag = imageRef[lastColon+1:]
+	} else {
+		name = imageRef
+		tag = "latest"
 	}
 
-	// Use tag + first part of name
-	name := strings.ReplaceAll(parts[0], "/", "-")
+	// Replace slashes with dashes for filesystem-safe names
+	name = strings.ReplaceAll(name, "/", "-")
 
 	return fmt.Sprintf("%s-%s", name, tag)
 }

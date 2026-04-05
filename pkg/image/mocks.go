@@ -194,6 +194,7 @@ func (m *MockContainerRuntime) CreateContainer(ctx context.Context, imageRef, de
 	}
 	containerID := "container-" + imageRef
 	m.Containers[containerID] = imageRef
+	m.Images[imageRef] = true
 	return containerID, nil
 }
 
@@ -439,6 +440,11 @@ func (ip *ImagePreparerInternal) extractOCIImageWithRuntime(ctx context.Context,
 
 // injectInitSystemWithMocks injects init using mocked filesystem
 func (ip *ImagePreparerInternal) injectInitSystemWithMocks(rootfsPath string) error {
+	// Skip if no init system configured
+	if ip.initInjector.GetInitPath() == "" {
+		return nil
+	}
+
 	mountDir, err := ip.mountWithMocks(rootfsPath)
 	if err != nil {
 		return err
