@@ -34,7 +34,8 @@ jobs:
             make all
 
           # Package each binary for each platform
-          platforms="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+          # Note: SwarmCracker is Linux-only (requires KVM, Firecracker, TAP devices)
+          platforms="linux/amd64 linux/arm64"
           binaries="swarmcracker swarmd-firecracker swarmcracker-agent"
 
           for platform in $platforms; do
@@ -87,6 +88,21 @@ jobs:
             echo "" >> changelog.txt
             git log --pretty=format:"- %s (%h)" --no-merges >> changelog.txt
           fi
+
+          # Add platform support note
+          echo "" >> changelog.txt
+          echo "## 🐧 Platform Support" >> changelog.txt
+          echo "" >> changelog.txt
+          echo "**Supported Platforms:**" >> changelog.txt
+          echo "- ✅ Linux amd64 (x86_64)" >> changelog.txt
+          echo "- ✅ Linux arm64 (AArch64)" >> changelog.txt
+          echo "" >> changelog.txt
+          echo "**Requirements:**" >> changelog.txt
+          echo "- KVM support (/dev/kvm)" >> changelog.txt
+          echo "- Linux kernel 4.14+" >> changelog.txt
+          echo "- Firecracker v1.14+" >> changelog.txt
+          echo "" >> changelog.txt
+          echo "*Note: macOS and Windows are not supported. SwarmCracker requires KVM virtualization which is Linux-only.*" >> changelog.txt
 
           cat changelog.txt
 
