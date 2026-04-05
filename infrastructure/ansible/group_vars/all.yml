@@ -54,6 +54,9 @@ firecracker_version: "1.14.0"
 firecracker_download_url: "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}"
 firecracker_tarball: "firecracker-{{ firecracker_version }}-{{ swarmcracker_arch }}.tgz"
 
+# Firecracker kernel (use S3 bucket with proper path)
+swarmcracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/img/kernels/vmlinux-x86_64.bin"
+
 # Security settings
 swarmcracker_enable_seccomp: true
 swarmcracker_enable_selinux: false
