@@ -34,12 +34,18 @@
     - swarmd-firecracker
     - swarmcracker-agent
 
-- name: Download Firecracker kernel
+- name: Download Firecracker kernel (optional)
   get_url:
     url: "{{ swarmcracker_kernel_url }}"
     dest: "{{ swarmcracker_kernel_path }}"
     mode: '0644'
   when: swarmcracker_kernel_path is defined
+  failed_when: false
+  ignore_errors: yes
+
+- name: Show kernel download status
+  debug:
+    msg: "Firecracker kernel not downloaded automatically. Please download manually from https://s3.amazonaws.com/spec.ccfc.min/img/kernels/ to {{ swarmcracker_kernel_path }}"
 
 - name: Create SwarmCracker manager config
   template:

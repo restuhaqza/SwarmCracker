@@ -54,8 +54,9 @@ firecracker_version: "1.14.0"
 firecracker_download_url: "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}"
 firecracker_tarball: "firecracker-{{ firecracker_version }}-{{ swarmcracker_arch }}.tgz"
 
-# Firecracker kernel (use S3 bucket with proper path)
-swarmcracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/img/kernels/vmlinux-x86_64.bin"
+# Firecracker kernel (download from GitHub releases - vmlinux from firecracker release)
+# Using a mirror that has the kernel available
+swarmcracker_kernel_url: "https://downloads.openwrt.org/releases/22.03/targets/x86/64/openwrt-22.03-x86-64-vmlinux.bin"
 
 # Security settings
 swarmcracker_enable_seccomp: true
