@@ -1,0 +1,16 @@
+# SwarmCracker Cluster Inventory - Staging
+
+[managers]
+staging-manager ansible_host=192.168.1.100
+
+[workers]
+staging-worker1 ansible_host=192.168.1.101
+
+[swarmcracker:children]
+managers
+workers
+
+[swarmcracker:vars]
+ansible_user=ubuntu
+ansible_become=yes
+ansible_become_method=sudo

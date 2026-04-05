@@ -1,0 +1,7 @@
+---
+# Worker Role - Default Variables
+
+worker_manager_host: "{{ hostvars[groups['managers'][0]]['ansible_host'] }}"
+worker_manager_port: "{{ swarmcracker_manager_port }}"
+worker_api_port: "{{ swarmcracker_worker_api_port }}"
+worker_state_dir: "{{ swarmcracker_state_dir }}/worker"

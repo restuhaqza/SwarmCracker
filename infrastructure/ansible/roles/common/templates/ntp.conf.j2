@@ -1,0 +1,30 @@
+# NTP Configuration - Managed by Ansible
+# Do not edit manually
+
+driftfile /var/lib/ntp/ntp.drift
+
+# Leap seconds definition
+leapfile /usr/share/zoneinfo/leap-seconds.list
+
+# Statistics
+statsdir /var/log/ntpstats/
+statistics loopstats peerstats clockstats
+filegen loopstats file loopstats type day enable
+filegen peerstats file peerstats type day enable
+filegen clockstats file clockstats type day enable
+
+# NTP Servers
+{% for server in common_ntp_servers %}
+server {{ server }} iburst
+{% endfor %}
+
+# Access control
+restrict -4 default kod notrap nomodify nopeer noquery limited
+restrict -6 default kod notrap nomodify nopeer noquery limited
+
+# Local users
+restrict 127.0.0.1
+restrict ::1
+
+# Clients from local network
+restrict 192.168.0.0 mask 255.255.0.0 nomodify notrap

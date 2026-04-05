@@ -1,0 +1,6 @@
+---
+# Manager Role - Default Variables
+
+manager_bind_address: "0.0.0.0"
+manager_port: "{{ swarmcracker_manager_port }}"
+manager_state_dir: "{{ swarmcracker_state_dir }}/manager"

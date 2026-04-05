@@ -1,0 +1,35 @@
+# SwarmCracker Worker Configuration
+# Managed by Ansible - Do not edit manually
+
+executor:
+  kernel_path: {{ swarmcracker_kernel_path }}
+  rootfs_dir: {{ swarmcracker_rootfs_dir }}
+  default_vcpus: 2
+  default_memory_mb: 1024
+  reserved_cpus: {{ swarmcracker_reserved_cpus }}
+  reserved_memory_mb: {{ swarmcracker_reserved_memory_mb }}
+
+network:
+  bridge_name: {{ swarmcracker_bridge_name }}
+  subnet: {{ swarmcracker_subnet }}
+  bridge_ip: {{ swarmcracker_bridge_ip }}
+  ip_mode: {{ swarmcracker_ip_mode }}
+  nat_enabled: {{ swarmcracker_nat_enabled }}
+  vxlan_enabled: {{ swarmcracker_vxlan_enabled }}
+  vxlan_vni: {{ swarmcracker_vxlan_vni }}
+  vxlan_port: {{ swarmcracker_vxlan_port }}
+
+worker:
+  manager_host: {{ worker_manager_host }}
+  manager_port: {{ worker_manager_port }}
+  api_port: {{ worker_api_port }}
+  state_dir: {{ worker_state_dir }}
+  join_token: "{{ join_token }}"
+
+logging:
+  level: {{ swarmcracker_log_level }}
+  directory: {{ swarmcracker_log_dir }}
+
+cleanup:
+  enabled: {{ swarmcracker_auto_cleanup }}
+  max_image_age_days: {{ swarmcracker_max_image_age_days }}

@@ -1,0 +1,80 @@
+---
+# SwarmCracker Test Playbook
+# Deploy test services to verify cluster functionality
+
+- name: Test SwarmCracker Cluster
+  hosts: managers[0]
+  become: yes
+  gather_facts: no
+
+  vars:
+    test_services:
+      - name: test-nginx
+        image: nginx:alpine
+        replicas: 2
+        ports:
+          - "8080:80"
+
+      - name: test-alpine
+        image: alpine:latest
+        replicas: 1
+        command: ["sleep", "3600"]
+
+  tasks:
+    - name: Deploy test services
+      command: >
+        swarmctl service create
+        --name {{ item.name }}
+        --image {{ item.image }}
+        --replicas {{ item.replicas }}
+        {% if item.ports is defined %}
+        {% for port in item.ports %}
+        --publish {{ port }}
+        {% endfor %}
+        {% endif %}
+        {% if item.command is defined %}
+        --command {{ item.command | join(' ') }}
+        {% endif %}
+      loop: "{{ test_services }}"
+      register: service_deploy
+      changed_when: "'created' in service_deploy.stdout"
+
+    - name: Wait for services to be ready
+      wait_for:
+        timeout: 30
+      when: service_deploy is changed
+
+    - name: List services
+      command: swarmctl service ls
+      register: service_list
+      changed_when: false
+
+    - name: Display services
+      debug:
+        var: service_list.stdout
+
+    - name: List service tasks
+      command: swarmctl service tasks {{ item.name }}
+      loop: "{{ test_services }}"
+      register: task_list
+      changed_when: false
+
+    - name: Display tasks
+      debug:
+        var: task_list.stdout
+
+    - name: Test service connectivity
+      uri:
+        url: "http://localhost:8080"
+        method: GET
+        status_code: 200
+      register: http_test
+      when: "'test-nginx' in (test_services | map(attribute='name') | list)"
+      retries: 5
+      delay: 5
+      until: http_test.status == 200
+
+    - name: Display test results
+      debug:
+        msg: "All tests passed! Services are running correctly."
+      when: http_test is succeeded or http_test is skipped

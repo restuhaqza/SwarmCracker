@@ -1,0 +1,24 @@
+---
+# Common Role - Handlers
+
+- name: restart ntp
+  systemd:
+    name: ntp
+    state: restarted
+
+- name: restart networking
+  systemd:
+    name: networking
+    state: restarted
+  failed_when: false
+
+- name: restart firewalld
+  systemd:
+    name: firewalld
+    state: restarted
+  when: ansible_os_family == "RedHat"
+
+- name: restart ufw
+  ufw:
+    state: reloaded
+  when: ansible_os_family == "Debian"

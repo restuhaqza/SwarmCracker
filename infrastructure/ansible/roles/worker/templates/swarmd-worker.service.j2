@@ -1,0 +1,34 @@
+[Unit]
+Description=SwarmCracker SwarmKit Worker
+Documentation=https://github.com/restuhaqza/SwarmCracker
+After=network.target swarmd-manager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={{ swarmcracker_install_dir }}/swarmd-firecracker worker \
+  --config {{ swarmcracker_config_dir }}/worker-config.yaml \
+  --state-dir {{ worker_state_dir }} \
+  --manager {{ worker_manager_host }}:{{ worker_manager_port }} \
+  --listen-remote-api 0.0.0.0:{{ worker_api_port }} \
+  {% if swarmcracker_debug %}--debug{% endif %}
+
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths={{ swarmcracker_state_dir }} {{ swarmcracker_rootfs_dir }} {{ swarmcracker_log_dir }}
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

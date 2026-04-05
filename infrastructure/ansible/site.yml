@@ -1,0 +1,60 @@
+---
+# SwarmCracker Cluster Setup - Main Playbook
+# Deploys complete SwarmCracker cluster (managers + workers)
+
+- name: Setup SwarmCracker Cluster
+  hosts: swarmcracker
+  become: yes
+  gather_facts: yes
+
+  pre_tasks:
+    - name: Verify Ansible version
+      assert:
+        that:
+          - ansible_version.full is version('2.9', '>=')
+        msg: "Ansible 2.9 or higher is required"
+
+    - name: Gather OS facts
+      setup:
+        gather_subset:
+          - hardware
+          - network
+
+  roles:
+    - role: common
+      tags: ['common', 'prerequisites']
+
+    - role: manager
+      when: inventory_hostname in groups['managers']
+      tags: ['manager']
+
+    - role: worker
+      when: inventory_hostname in groups['workers']
+      tags: ['worker']
+
+  post_tasks:
+    - name: Verify SwarmCracker installation
+      command: swarmcracker version
+      register: swarmcracker_version_check
+      changed_when: false
+      failed_when: swarmcracker_version_check.rc != 0
+
+    - name: Display SwarmCracker version
+      debug:
+        var: swarmcracker_version_check.stdout
+      when: swarmcracker_version_check is defined
+
+    - name: Display cluster status
+      debug:
+        msg: |
+          SwarmCracker cluster deployment completed!
+
+          Manager: {{ hostvars[groups['managers'][0]]['inventory_hostname'] }}
+          Workers: {{ groups['workers'] | length }}
+
+          To check cluster status:
+            ssh {{ hostvars[groups['managers'][0]]['inventory_hostname'] }}
+            swarmctl node ls
+
+          To deploy a service:
+            swarmctl service create --name test --image nginx:alpine --replicas 3

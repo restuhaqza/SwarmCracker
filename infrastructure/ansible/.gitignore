@@ -1,0 +1,38 @@
+# Ansible artifacts
+*.retry
+*.pyc
+__pycache__/
+
+# Temporary files
+tmp/
+temp/
+
+# Logs
+*.log
+
+# Encrypted files (keep .enc files, ignore decrypted)
+!*.enc
+*.dec
+
+# Vault password
+.vault_password
+vault_password
+vault_pass.txt
+
+# SSH keys
+*.pem
+*.key
+!*.pub
+
+# Inventory backups
+*.bak
+*.backup
+
+# Facter output
+facter.txt
+
+# Local overrides (keep example files)
+group_vars/local.yml
+host_vars/*.local.yml
+!group_vars/local.yml.example
+!host_vars/*.example.yml

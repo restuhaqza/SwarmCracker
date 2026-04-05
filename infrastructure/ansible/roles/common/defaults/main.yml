@@ -1,0 +1,62 @@
+---
+# Common Role - Default Variables
+
+# System packages to install
+common_packages:
+  - curl
+  - wget
+  - iptables
+  - bridge-utils
+  - iproute2
+  - dnsmasq
+  - qemu-utils
+  - ca-certificates
+  - gnupg
+  - lsb-release
+
+# Kernel modules to load
+common_kernel_modules:
+  - kvm
+  - kvm_intel  # For Intel CPUs
+  - kvm_amd    # For AMD CPUs
+  - vxlan
+  - bridge
+  - iptable_nat
+
+# Firewall configuration
+common_firewall_enabled: true
+common_firewall_rules:
+  - name: "Allow SSH"
+    port: "22"
+    protocol: "tcp"
+    state: "accept"
+
+  - name: "Allow SwarmKit Manager"
+    port: "4242"
+    protocol: "tcp"
+    state: "accept"
+
+  - name: "Allow SwarmKit Worker API"
+    port: "4243"
+    protocol: "tcp"
+    state: "accept"
+
+  - name: "Allow VXLAN"
+    port: "4789"
+    protocol: "udp"
+    state: "accept"
+
+  - name: "Allow Firecracker VM Network"
+    port: "80,443"
+    protocol: "tcp"
+    state: "accept"
+
+# Timezone
+common_timezone: "UTC"
+
+# NTP servers
+common_ntp_servers:
+  - 0.pool.ntp.org
+  - 1.pool.ntp.org
+  - 2.pool.ntp.org
+  - 3.pool.ntp.org

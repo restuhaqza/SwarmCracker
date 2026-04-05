@@ -1,0 +1,113 @@
+---
+# Common Role - Tasks
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  when: ansible_os_family == "Debian"
+
+- name: Install required packages
+  package:
+    name: "{{ common_packages }}"
+    state: present
+
+- name: Load kernel modules
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ common_kernel_modules }}"
+  failed_when: false
+
+- name: Ensure kernel modules load on boot
+  lineinfile:
+    path: /etc/modules-load.d/swarmcracker.conf
+    line: "{{ item }}"
+    create: yes
+    mode: '0644'
+  loop: "{{ common_kernel_modules }}"
+
+- name: Enable IP forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: '1'
+    state: present
+    reload: yes
+
+- name: Enable bridge netfilter
+  sysctl:
+    name: "{{ item }}"
+    value: '0'
+    state: present
+    reload: yes
+  loop:
+    - net.bridge.bridge-nf-call-iptables
+    - net.bridge.bridge-nf-call-ip6tables
+
+- name: Setup firewall rules (UFW)
+  ufw:
+    rule: "{{ item.state }}"
+    port: "{{ item.port }}"
+    proto: "{{ item.protocol }}"
+    comment: "{{ item.name }}"
+  loop: "{{ common_firewall_rules }}"
+  when: common_firewall_enabled and ansible_os_family == "Debian"
+
+- name: Setup firewall rules (firewalld)
+  firewalld:
+    service: "{{ item.name }}"
+    port: "{{ item.port }}/{{ item.protocol }}"
+    permanent: yes
+    state: "{{ item.state }}"
+    immediate: yes
+  loop: "{{ common_firewall_rules }}"
+  when: common_firewall_enabled and ansible_os_family == "RedHat"
+
+- name: Set timezone
+  timezone:
+    name: "{{ common_timezone }}"
+
+- name: Install NTP
+  package:
+    name:
+      - ntp
+      - ntpdate
+    state: present
+
+- name: Configure NTP servers
+  template:
+    src: ntp.conf.j2
+    dest: /etc/ntp.conf
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart ntp
+
+- name: Enable and start NTP service
+  systemd:
+    name: ntp
+    state: started
+    enabled: yes
+  failed_when: false
+
+- name: Check KVM availability
+  stat:
+    path: /dev/kvm
+  register: kvm_device
+
+- name: Fail if KVM not available
+  fail:
+    msg: "KVM not available. Ensure virtualization is enabled in BIOS and kvm module is loaded."
+  when: not kvm_device.stat.exists
+
+- name: Create SwarmCracker directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - "{{ swarmcracker_state_dir }}"
+    - "{{ swarmcracker_rootfs_dir }}"
+    - "{{ swarmcracker_socket_dir }}"
+    - "{{ swarmcracker_config_dir }}"
+    - "{{ swarmcracker_log_dir }}"

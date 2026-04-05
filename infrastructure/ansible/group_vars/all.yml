@@ -1,0 +1,75 @@
+---
+# SwarmCracker Global Variables
+
+# Version and download
+swarmcracker_version: "v0.2.0"
+swarmcracker_arch: "amd64"  # amd64 or arm64
+swarmcracker_download_url: "https://github.com/restuhaqza/SwarmCracker/releases/download/{{ swarmcracker_version }}"
+swarmcracker_tarball: "swarmcracker-{{ swarmcracker_version }}-linux-{{ swarmcracker_arch }}.tar.gz"
+
+# Installation paths
+swarmcracker_install_dir: "/usr/local/bin"
+swarmcracker_state_dir: "/var/lib/swarmcracker"
+swarmcracker_config_dir: "/etc/swarmcracker"
+
+# Firecracker configuration
+swarmcracker_kernel_path: "/usr/share/firecracker/vmlinux"
+swarmcracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/{{ swarmcracker_arch }}/kernels/vmlinux.bin"
+swarmcracker_rootfs_dir: "/var/lib/firecracker/rootfs"
+swarmcracker_socket_dir: "/var/run/firecracker"
+
+# Network configuration
+swarmcracker_bridge_name: "swarm-br0"
+swarmcracker_subnet: "192.168.127.0/24"
+swarmcracker_bridge_ip: "192.168.127.1/24"
+swarmcracker_ip_mode: "static"
+swarmcracker_nat_enabled: true
+
+# VXLAN configuration
+swarmcracker_vxlan_enabled: true
+swarmcracker_vxlan_vni: 100
+swarmcracker_vxlan_port: 4789
+
+# Service configuration
+swarmcracker_manager_port: "4242"
+swarmcracker_worker_api_port: "4243"
+swarmcracker_debug: false
+
+# System requirements
+swarmcracker_required_packages:
+  - curl
+  - wget
+  - iptables
+  - bridge-utils
+  - iproute2
+  - dnsmasq
+  - qemu-utils
+
+# Go installation (for building SwarmKit tools)
+go_version: "1.24"
+go_install_dir: "/usr/local"
+
+# Firecracker installation
+firecracker_version: "1.14.0"
+firecracker_download_url: "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}"
+firecracker_tarball: "firecracker-{{ firecracker_version }}-{{ swarmcracker_arch }}.tgz"
+
+# Security settings
+swarmcracker_enable_seccomp: true
+swarmcracker_enable_selinux: false
+
+# Logging
+swarmcracker_log_level: "info"
+swarmcracker_log_dir: "/var/log/swarmcracker"
+
+# Timeouts
+swarmcracker_shutdown_timeout: "30s"
+swarmcracker_startup_timeout: "120s"
+
+# Resource reservations
+swarmcracker_reserved_cpus: 1
+swarmcracker_reserved_memory_mb: 512
+
+# Cleanup settings
+swarmcracker_max_image_age_days: 7
+swarmcracker_auto_cleanup: true

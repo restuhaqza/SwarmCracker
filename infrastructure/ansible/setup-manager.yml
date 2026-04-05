@@ -1,0 +1,41 @@
+---
+# SwarmCracker Manager Setup
+# Deploys SwarmKit manager node
+
+- name: Setup SwarmCracker Manager
+  hosts: managers
+  become: yes
+  gather_facts: yes
+
+  pre_tasks:
+    - name: Verify this host is in managers group
+      assert:
+        that:
+          - inventory_hostname in groups['managers']
+        msg: "This playbook can only run on manager nodes"
+
+  roles:
+    - role: common
+      tags: ['common', 'prerequisites']
+
+    - role: manager
+      tags: ['manager']
+
+  post_tasks:
+    - name: Get manager join token
+      command: swarmctl cluster inspect --show-join-token
+      register: join_token_result
+      changed_when: false
+      delegate_to: "{{ groups['managers'][0] }}"
+      run_once: true
+
+    - name: Display join token
+      debug:
+        msg: |
+          Manager setup completed!
+
+          Join Token: {{ join_token_result.stdout }}
+
+          To add workers, run:
+            ansible-playbook -i inventory/production setup-worker.yml \
+              --extra-vars "manager_host={{ hostvars[inventory_hostname]['ansible_host'] }} join_token={{ join_token_result.stdout }}"

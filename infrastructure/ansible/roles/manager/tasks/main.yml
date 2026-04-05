@@ -1,0 +1,85 @@
+---
+# Manager Role - Tasks
+
+- name: Download SwarmCracker release
+  get_url:
+    url: "{{ swarmcracker_download_url }}/{{ swarmcracker_tarball }}"
+    dest: "/tmp/{{ swarmcracker_tarball }}"
+    mode: '0644'
+  register: download_result
+  retries: 3
+  delay: 5
+  until: download_result is success
+
+- name: Extract SwarmCracker binaries
+  unarchive:
+    src: "/tmp/{{ swarmcracker_tarball }}"
+    dest: /tmp/swarmcracker-extract
+    remote_src: yes
+    creates: /tmp/swarmcracker-extract/swarmcracker
+
+- name: Install SwarmCracker binaries
+  copy:
+    src: "/tmp/swarmcracker-extract/{{ item }}"
+    dest: "{{ swarmcracker_install_dir }}/{{ item }}"
+    mode: '0755'
+    remote_src: yes
+  loop:
+    - swarmcracker
+    - swarmd-firecracker
+    - swarmcracker-agent
+
+- name: Download Firecracker kernel
+  get_url:
+    url: "{{ swarmcracker_kernel_url }}"
+    dest: "{{ swarmcracker_kernel_path }}"
+    mode: '0644'
+  when: swarmcracker_kernel_path is defined
+
+- name: Create SwarmCracker manager config
+  template:
+    src: manager-config.yaml.j2
+    dest: "{{ swarmcracker_config_dir }}/manager-config.yaml"
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart swarmd-manager
+
+- name: Create systemd service for SwarmKit manager
+  template:
+    src: swarmd-manager.service.j2
+    dest: /etc/systemd/system/swarmd-manager.service
+    owner: root
+    group: root
+    mode: '0644'
+  notify:
+    - reload systemd
+    - restart swarmd-manager
+
+- name: Enable and start SwarmKit manager
+  systemd:
+    name: swarmd-manager
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+- name: Wait for manager to be ready
+  wait_for:
+    port: "{{ manager_port }}"
+    host: "{{ manager_bind_address }}"
+    timeout: 60
+  register: manager_ready
+  retries: 5
+  delay: 10
+  until: manager_ready is success
+
+- name: Get cluster join token
+  command: swarmctl cluster inspect --show-join-token
+  register: join_token
+  changed_when: false
+  when: manager_ready is success
+
+- name: Display join token
+  debug:
+    var: join_token.stdout
+  when: join_token is defined
