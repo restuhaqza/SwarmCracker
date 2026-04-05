@@ -2,7 +2,7 @@
 # SwarmCracker Global Variables
 
 # Version and download
-swarmcracker_version: "v0.2.0"
+swarmcracker_version: "v0.2.1"
 swarmcracker_arch: "amd64"  # amd64 or arm64
 swarmcracker_download_url: "https://github.com/restuhaqza/SwarmCracker/releases/download/{{ swarmcracker_version }}"
 swarmcracker_tarball: "swarmcracker-{{ swarmcracker_version }}-linux-{{ swarmcracker_arch }}.tar.gz"
