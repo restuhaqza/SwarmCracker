@@ -46,7 +46,7 @@
 
 - name: Setup firewall rules (UFW)
   ufw:
-    rule: "{{ item.state }}"
+    rule: "{{ item.rule }}"
     port: "{{ item.port }}"
     proto: "{{ item.protocol }}"
     comment: "{{ item.name }}"

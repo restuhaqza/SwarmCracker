@@ -29,27 +29,27 @@ common_firewall_rules:
   - name: "Allow SSH"
     port: "22"
     protocol: "tcp"
-    state: "accept"
+    rule: "allow"
 
   - name: "Allow SwarmKit Manager"
     port: "4242"
     protocol: "tcp"
-    state: "accept"
+    rule: "allow"
 
   - name: "Allow SwarmKit Worker API"
     port: "4243"
     protocol: "tcp"
-    state: "accept"
+    rule: "allow"
 
   - name: "Allow VXLAN"
     port: "4789"
     protocol: "udp"
-    state: "accept"
+    rule: "allow"
 
   - name: "Allow Firecracker VM Network"
     port: "80,443"
     protocol: "tcp"
-    state: "accept"
+    rule: "allow"
 
 # Timezone
 common_timezone: "UTC"
