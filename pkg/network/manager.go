@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -575,6 +576,13 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	// Kill any existing dnsmasq for this bridge
 	exec.Command("pkill", "-f", fmt.Sprintf("dnsmasq.*%s", nm.config.BridgeName)).Run()
 
+	// Create log file with proper permissions for dnsmasq (runs as nobody)
+	logFile := "/tmp/dnsmasq.log"
+	os.Remove(logFile) // Remove old file first
+	if err := os.WriteFile(logFile, []byte{}, 0666); err != nil {
+		log.Warn().Err(err).Msg("Could not create dnsmasq log file")
+	}
+
 	// Start dnsmasq for this bridge
 	// Arguments:
 	// --interface: bind to bridge
@@ -592,11 +600,11 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		"--log-dhcp",
 		"--log-facility=/tmp/dnsmasq.log",
 		"--pid-file=/tmp/dnsmasq.pid",
-		"--keep-caps",
 	)
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("failed to start dnsmasq: %w", err)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		log.Error().Str("output", string(output)).Msg("dnsmasq failed to start")
+		return fmt.Errorf("failed to start dnsmasq: %w (output: %s)", err, string(output))
 	}
 
 	log.Info().Msg("DHCP server (dnsmasq) started")

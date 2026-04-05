@@ -4,6 +4,12 @@ Choose your deployment scenario:
 
 ## 🚀 Quick Start Options
 
+### [⭐ Full Installation Guide](installation-guide.md)
+**Best for:** First-time setup, production deployment
+- **Covers:** One-line install, manual install, Vagrant, networking, troubleshooting
+- **From scratch to running cluster**
+- **Start here if you're new to SwarmCracker**
+
 ### [Local Development](local-dev.md)
 **Best for:** Development, testing, learning
 - **Requirements:** Local machine with KVM
@@ -65,6 +71,8 @@ lscpu | grep Virtualization
 ---
 
 ## 🎯 Recommendation
+
+**First time?** → Read the **[Full Installation Guide](installation-guide.md)** ⭐
 
 **Just starting?** → Begin with **Local Development**
 

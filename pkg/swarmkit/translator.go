@@ -13,16 +13,18 @@ import (
 // taskTranslatorImpl translates SwarmKit tasks to Firecracker VM configs.
 type taskTranslatorImpl struct {
 	kernelPath string
+	bridgeIP   string
 }
 
 // NewTaskTranslator creates a new task translator.
-func NewTaskTranslator(kernelPath string) (types.TaskTranslator, error) {
+func NewTaskTranslator(kernelPath, bridgeIP string) (types.TaskTranslator, error) {
 	if kernelPath == "" {
 		return nil, fmt.Errorf("kernel path cannot be empty")
 	}
 
 	return &taskTranslatorImpl{
 		kernelPath: kernelPath,
+		bridgeIP:   bridgeIP,
 	}, nil
 }
 
@@ -99,8 +101,11 @@ func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
 		}
 
 		// Kernel IP config format: ip=<ip>::<gw>:<netmask>::<iface>:off
-		// Gateway is bridge IP (192.168.127.1)
-		gw := "192.168.127.1"
+		// Gateway is bridge IP from config
+		gw := t.bridgeIP
+		if idx := strings.Index(gw, "/"); idx > 0 {
+			gw = gw[:idx] // Remove CIDR if present
+		}
 		mask := "255.255.255.0"
 
 		ipArg := fmt.Sprintf("ip=%s::%s:%s::eth0:off", ipPart, gw, mask)

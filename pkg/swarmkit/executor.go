@@ -202,7 +202,7 @@ func NewController(
 	networkMgr types.NetworkManager,
 	vmmMgr *VMMManager,
 ) (*Controller, error) {
-	trans, err := NewTaskTranslator(config.KernelPath)
+	trans, err := NewTaskTranslator(config.KernelPath, config.BridgeIP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create translator: %w", err)
 	}
