@@ -223,8 +223,8 @@ func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
 	// Build generic resources
 	genericResources := []*api.GenericResource{}
 
-	// Only report Firecracker if KVM is available
-	if e.kvmAvailable() {
+	// Only report Firecracker if KVM and architecture are supported
+	if e.kvmAvailable() && e.archSupported() {
 		genericResources = append(genericResources, &api.GenericResource{
 			Resource: &api.GenericResource_NamedResourceSpec{
 				NamedResourceSpec: &api.NamedGenericResource{
@@ -233,13 +233,24 @@ func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
 				},
 			},
 		})
-		log.G(ctx).Info("KVM available: reporting Firecracker resource")
+		zerolog_log.Info().
+			Str("arch", runtime.GOARCH).
+			Str("os", runtime.GOOS).
+			Msg("KVM available: reporting Firecracker resource")
 	} else {
-		log.G(ctx).Warning("KVM not available: not reporting Firecracker resource")
+		zerolog_log.Warn().
+			Str("arch", runtime.GOARCH).
+			Bool("kvm_available", e.kvmAvailable()).
+			Bool("arch_supported", e.archSupported()).
+			Msg("Firecracker not available: KVM or architecture not supported")
 	}
 
 	return &api.NodeDescription{
 		Hostname: hostname(),
+		Platform: &api.Platform{
+			Architecture: runtime.GOARCH,
+			OS:           runtime.GOOS,
+		},
 		Resources: &api.Resources{
 			NanoCPUs:    nanoCPUs,
 			MemoryBytes: memoryBytes,
@@ -887,6 +898,17 @@ func hostname() string {
 func (e *Executor) kvmAvailable() bool {
 	_, err := os.Stat("/dev/kvm")
 	return err == nil
+}
+
+// archSupported checks if the architecture is supported by Firecracker
+func (e *Executor) archSupported() bool {
+	// Firecracker supports x86_64 and aarch64
+	switch runtime.GOARCH {
+	case "amd64", "arm64":
+		return true
+	default:
+		return false
+	}
 }
 
 // getCPUs returns the available CPU count in nanocpus (SwarmKit format)

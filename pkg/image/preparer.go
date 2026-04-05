@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -110,6 +111,11 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
 		Str("task_id", task.ID).
 		Str("image", container.Image).
 		Msg("Preparing container image")
+
+	// Validate architecture support
+	if err := ip.validateArchitecture(); err != nil {
+		return fmt.Errorf("architecture validation failed: %w", err)
+	}
 
 	// Generate image ID
 	imageID := generateImageID(container.Image)
@@ -876,4 +882,15 @@ stop() {
 	}
 
 	return nil
+}
+
+// validateArchitecture checks if the host architecture is supported
+func (ip *ImagePreparer) validateArchitecture() error {
+	// Firecracker supports x86_64 and aarch64
+	switch runtime.GOARCH {
+	case "amd64", "arm64":
+		return nil
+	default:
+		return fmt.Errorf("unsupported architecture: %s (Firecracker requires amd64 or arm64)", runtime.GOARCH)
+	}
 }
