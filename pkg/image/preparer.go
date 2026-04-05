@@ -10,16 +10,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
 
 // ImagePreparer prepares OCI images as root filesystems.
 type ImagePreparer struct {
-	config       *PreparerConfig
-	cacheDir     string
-	rootfsDir    string
-	initInjector *InitInjector
+	config        *PreparerConfig
+	cacheDir      string
+	rootfsDir     string
+	initInjector  *InitInjector
+	volumeManager *storage.VolumeManager
+	secretManager *storage.SecretManager
 }
 
 // PreparerConfig holds image preparer configuration.
@@ -68,11 +71,18 @@ func NewImagePreparer(config interface{}) types.ImagePreparer {
 	}
 	initInjector := NewInitInjector(initConfig)
 
+	// Create volume manager
+	volumeMgr, err := storage.NewVolumeManager("")
+	if err != nil {
+		log.Warn().Err(err).Msg("Failed to create volume manager, volume support disabled")
+	}
+
 	return &ImagePreparer{
-		config:       cfg,
-		cacheDir:     "/var/cache/swarmcracker",
-		rootfsDir:    cfg.RootfsDir,
-		initInjector: initInjector,
+		config:        cfg,
+		cacheDir:      "/var/cache/swarmcracker",
+		rootfsDir:     cfg.RootfsDir,
+		initInjector:  initInjector,
+		volumeManager: volumeMgr,
 	}
 }
 
@@ -133,6 +143,18 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
 		// Store init system type in annotations
 		task.Annotations["init_system"] = string(ip.initInjector.config.Type)
 		task.Annotations["init_path"] = ip.initInjector.GetInitPath()
+	}
+
+	// Handle mounts if volume manager is available
+	if ip.volumeManager != nil && len(container.Mounts) > 0 {
+		log.Info().
+			Str("task_id", task.ID).
+			Int("mount_count", len(container.Mounts)).
+			Msg("Processing mounts")
+
+		if err := ip.handleMounts(ctx, task, rootfsPath, container.Mounts); err != nil {
+			return fmt.Errorf("failed to handle mounts: %w", err)
+		}
 	}
 
 	// Store rootfs path in task annotations
@@ -447,6 +469,182 @@ func (ip *ImagePreparer) copyFile(src, dst string, mode os.FileMode) error {
 	}
 
 	return os.WriteFile(dst, data, mode)
+}
+
+// handleMounts processes mount specifications and applies them to the rootfs.
+func (ip *ImagePreparer) handleMounts(ctx context.Context, task *types.Task, rootfsPath string, mounts []types.Mount) error {
+	// Temporarily mount the rootfs to apply mounts
+	mountDir, err := ip.mountExt4(rootfsPath)
+	if err != nil {
+		log.Warn().Err(err).Msg("Could not mount rootfs for mount handling (may require privileges)")
+		// Continue without mounts - non-critical
+		return nil
+	}
+	defer ip.unmountExt4(mountDir)
+
+	for _, mount := range mounts {
+		if mount.Target == "" {
+			log.Warn().Msg("Skipping mount with empty target")
+			continue
+		}
+
+		log.Debug().
+			Str("source", mount.Source).
+			Str("target", mount.Target).
+			Bool("readonly", mount.ReadOnly).
+			Msg("Processing mount")
+
+		// Check if this is a volume reference
+		if storage.IsVolumeReference(mount.Source) {
+			// Handle volume mount
+			if err := ip.handleVolumeMount(ctx, task, mountDir, &mount); err != nil {
+				log.Error().Err(err).
+					Str("source", mount.Source).
+					Str("target", mount.Target).
+					Msg("Failed to handle volume mount")
+				// Continue with other mounts
+				continue
+			}
+		} else {
+			// Handle host path bind mount
+			if err := ip.handleBindMount(mountDir, &mount); err != nil {
+				log.Error().Err(err).
+					Str("source", mount.Source).
+					Str("target", mount.Target).
+					Msg("Failed to handle bind mount")
+				// Continue with other mounts
+				continue
+			}
+		}
+	}
+
+	return nil
+}
+
+// handleVolumeMount handles a volume mount.
+func (ip *ImagePreparer) handleVolumeMount(ctx context.Context, task *types.Task, rootfsPath string, mount *types.Mount) error {
+	// Extract volume name
+	volumeName := storage.ExtractVolumeName(mount.Source)
+
+	log.Info().
+		Str("volume", volumeName).
+		Str("target", mount.Target).
+		Msg("Handling volume mount")
+
+	// Get or create volume
+	vol, err := ip.volumeManager.GetVolume(volumeName)
+	if err != nil {
+		// Volume doesn't exist, create it
+		log.Info().
+			Str("volume", volumeName).
+			Msg("Volume does not exist, creating new volume")
+
+		vol, err = ip.volumeManager.CreateVolume(ctx, volumeName, task.ID, 0)
+		if err != nil {
+			return fmt.Errorf("failed to create volume: %w", err)
+		}
+	}
+
+	// Mount volume into rootfs
+	if err := ip.volumeManager.MountVolume(ctx, vol, rootfsPath, mount.Target); err != nil {
+		return fmt.Errorf("failed to mount volume: %w", err)
+	}
+
+	log.Info().
+		Str("volume", volumeName).
+		Str("target", mount.Target).
+		Msg("Volume mounted successfully")
+
+	return nil
+}
+
+// handleBindMount handles a host path bind mount.
+func (ip *ImagePreparer) handleBindMount(rootfsPath string, mount *types.Mount) error {
+	// Validate source path exists
+	if _, err := os.Stat(mount.Source); err != nil {
+		if os.IsNotExist(err) {
+			log.Warn().
+				Str("source", mount.Source).
+				Msg("Bind mount source does not exist, skipping")
+			return nil
+		}
+		return fmt.Errorf("failed to access source: %w", err)
+	}
+
+	// Create target directory in rootfs
+	targetPath := filepath.Join(rootfsPath, mount.Target)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return fmt.Errorf("failed to create target directory: %w", err)
+	}
+
+	// For directories, copy contents; for files, copy the file
+	sourceInfo, err := os.Stat(mount.Source)
+	if err != nil {
+		return fmt.Errorf("failed to stat source: %w", err)
+	}
+
+	if sourceInfo.IsDir() {
+		// Copy directory contents
+		if err := copyDirectory(mount.Source, targetPath); err != nil {
+			return fmt.Errorf("failed to copy directory: %w", err)
+		}
+	} else {
+		// Copy file
+		if err := ip.copyFile(mount.Source, targetPath, sourceInfo.Mode()); err != nil {
+			return fmt.Errorf("failed to copy file: %w", err)
+		}
+	}
+
+	log.Debug().
+		Str("source", mount.Source).
+		Str("target", mount.Target).
+		Msg("Bind mount applied")
+
+	return nil
+}
+
+// copyDirectory copies a directory recursively from src to dst.
+func copyDirectory(src, dst string) error {
+	// Ensure source exists
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return err
+	}
+
+	// Create destination directory
+	if err := os.MkdirAll(dst, srcInfo.Mode()); err != nil {
+		return err
+	}
+
+	// Read source directory
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+
+	// Copy each entry
+	for _, entry := range entries {
+		srcPath := filepath.Join(src, entry.Name())
+		dstPath := filepath.Join(dst, entry.Name())
+
+		if entry.IsDir() {
+			// Recursively copy subdirectory
+			if err := copyDirectory(srcPath, dstPath); err != nil {
+				return err
+			}
+		} else {
+			// Copy file
+			data, err := os.ReadFile(srcPath)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(dstPath, data, 0644); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // Cleanup removes old unused rootfs images.

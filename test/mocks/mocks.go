@@ -183,6 +183,10 @@ func (m *MockImagePreparer) GetRootfsPath(taskID string) string {
 	return m.RootfsMap[taskID]
 }
 
+func (m *MockImagePreparer) Cleanup(ctx context.Context, keepDays int) (int, int64, error) {
+	return 0, 0, nil
+}
+
 // MockNetworkManager is a mock network manager.
 type MockNetworkManager struct {
 	PrepareCalled bool

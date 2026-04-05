@@ -1,7 +1,25 @@
 // Package types contains shared data structures used across SwarmCracker.
 package types
 
-import "context"
+import (
+	"context"
+)
+
+// SecretRef represents a SwarmKit secret reference with data.
+type SecretRef struct {
+	ID     string // Secret ID from SwarmKit
+	Name   string // Secret name
+	Target string // File path inside VM (e.g., "/run/secrets/my_secret")
+	Data   []byte // Secret data content
+}
+
+// ConfigRef represents a SwarmKit config reference with data.
+type ConfigRef struct {
+	ID     string // Config ID from SwarmKit
+	Name   string // Config name
+	Target string // File path inside VM (e.g., "/config/app.yaml")
+	Data   []byte // Config data content
+}
 
 // Task represents a SwarmKit task (simplified).
 type Task struct {
@@ -11,6 +29,8 @@ type Task struct {
 	Spec        TaskSpec
 	Status      TaskStatus
 	Networks    []NetworkAttachment
+	Secrets     []SecretRef // Secrets to inject into the container
+	Configs     []ConfigRef // Configs to inject into the container
 	Annotations map[string]string
 }
 

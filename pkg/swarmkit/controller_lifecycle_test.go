@@ -34,11 +34,11 @@ func TestController_Start_VerifyLogic(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name:        "fail when internal task is nil",
-			prepared:    true,
-			started:     false,
+			name:         "fail when internal task is nil",
+			prepared:     true,
+			started:      false,
 			internalTask: nil,
-			expectError: true,
+			expectError:  true,
 		},
 	}
 

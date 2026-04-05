@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
+	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
 	zerolog_log "github.com/rs/zerolog/log"
@@ -30,6 +32,8 @@ type Executor struct {
 	config        *Config
 	imagePrep     types.ImagePreparer
 	networkMgr    types.NetworkManager
+	volumeMgr     *storage.VolumeManager
+	secretMgr     *storage.SecretManager
 	vmmMgr        *VMMManager
 	controllers   map[string]*Controller
 	executorMu    sync.RWMutex
@@ -55,7 +59,8 @@ type Config struct {
 	Debug            bool   `yaml:"debug"`
 	ReservedCPUs     int    `yaml:"reserved_cpus"`
 	ReservedMemoryMB int    `yaml:"reserved_memory_mb"`
-	MaxImageAgeDays  int    `yaml:"max_image_age_days"` // Maximum age of rootfs images before cleanup (default 7)
+	MaxImageAgeDays  int    `yaml:"max_image_age_days"`
+	StateDir        string `yaml:"state_dir"`
 }
 
 // NewExecutor creates a new SwarmKit executor backed by SwarmCracker.
@@ -114,6 +119,19 @@ func NewExecutor(config *Config) (*Executor, error) {
 	}
 	networkMgr := network.NewNetworkManager(netCfg)
 
+	// Create volume manager
+	volumeMgr, err := storage.NewVolumeManager("")
+	if err != nil {
+		zerolog_log.Warn().Err(err).Msg("Failed to create volume manager, volume support disabled")
+		volumeMgr = nil
+	}
+
+	// Create secret manager
+	secretMgr := storage.NewSecretManager(
+		filepath.Join(config.StateDir, "secrets"),
+		filepath.Join(config.StateDir, "configs"),
+	)
+
 	// Create VMM manager
 	vmmMgr, err := NewVMMManager(config.FirecrackerPath, config.SocketDir)
 	if err != nil {
@@ -127,6 +145,8 @@ func NewExecutor(config *Config) (*Executor, error) {
 		config:        config,
 		imagePrep:     imagePrep,
 		networkMgr:    networkMgr,
+		volumeMgr:     volumeMgr,
+		secretMgr:     secretMgr,
 		vmmMgr:        vmmMgr,
 		controllers:   make(map[string]*Controller),
 		cleanupCancel: cleanupCancel,
@@ -246,7 +266,7 @@ func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 	}
 
 	// Create new controller
-	ctrl, err := NewController(t, e.config, e.imagePrep, e.networkMgr, e.vmmMgr)
+	ctrl, err := NewController(t, e.config, e.imagePrep, e.networkMgr, e.vmmMgr, e.volumeMgr, e.secretMgr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create controller: %w", err)
 	}
@@ -276,6 +296,8 @@ type Controller struct {
 	config     *Config
 	imagePrep  types.ImagePreparer
 	networkMgr types.NetworkManager
+	volumeMgr  *storage.VolumeManager
+	secretMgr  *storage.SecretManager
 	vmmMgr     *VMMManager
 	trans      types.TaskTranslator
 	mu         sync.Mutex
@@ -301,6 +323,8 @@ func NewController(
 	imagePrep types.ImagePreparer,
 	networkMgr types.NetworkManager,
 	vmmMgr *VMMManager,
+	volumeMgr *storage.VolumeManager,
+	secretMgr *storage.SecretManager,
 ) (*Controller, error) {
 	trans, err := NewTaskTranslator(config.KernelPath, config.BridgeIP)
 	if err != nil {
@@ -312,6 +336,8 @@ func NewController(
 		config:     config,
 		imagePrep:  imagePrep,
 		networkMgr: networkMgr,
+		volumeMgr:  volumeMgr,
+		secretMgr:  secretMgr,
 		vmmMgr:     vmmMgr,
 		trans:      trans,
 		socketPath: filepath.Join(config.SocketDir, task.ID+".sock"),
@@ -360,6 +386,21 @@ func (c *Controller) Prepare(ctx context.Context) error {
 	// Prepare network
 	if err := c.networkMgr.PrepareNetwork(ctx, task); err != nil {
 		return fmt.Errorf("network preparation failed: %w", err)
+	}
+
+	// Inject secrets and configs into rootfs
+	rootfsPath := task.Annotations["rootfs"]
+	if rootfsPath != "" && c.secretMgr != nil {
+		if len(task.Secrets) > 0 {
+			if err := c.secretMgr.InjectSecrets(ctx, c.task.ID, task.Secrets, rootfsPath); err != nil {
+				c.logger.Warn().Err(err).Msg("Failed to inject secrets")
+			}
+		}
+		if len(task.Configs) > 0 {
+			if err := c.secretMgr.InjectConfigs(ctx, c.task.ID, task.Configs, rootfsPath); err != nil {
+				c.logger.Warn().Err(err).Msg("Failed to inject configs")
+			}
+		}
 	}
 
 	c.prepared = true
@@ -494,6 +535,16 @@ func (c *Controller) Remove(ctx context.Context) error {
 
 	task := c.convertTask()
 
+	// Sync volume data back before cleaning up
+	if c.volumeMgr != nil && c.internalTask != nil {
+		if container, ok := c.internalTask.Spec.Runtime.(*types.Container); ok && len(container.Mounts) > 0 {
+			c.logger.Info().Int("mount_count", len(container.Mounts)).Msg("Syncing volume data back")
+			if err := c.syncVolumeData(ctx, task, container.Mounts); err != nil {
+				c.logger.Error().Err(err).Msg("Failed to sync volume data")
+			}
+		}
+	}
+
 	// Cleanup network (includes dnsmasq entries)
 	if err := c.networkMgr.CleanupNetwork(ctx, task); err != nil {
 		c.logger.Error().Err(err).Msg("Failed to cleanup network")
@@ -532,14 +583,131 @@ func (c *Controller) Remove(ctx context.Context) error {
 	return nil
 }
 
+// syncVolumeData syncs volume data back from rootfs to the host.
+func (c *Controller) syncVolumeData(ctx context.Context, task *types.Task, mounts []types.Mount) error {
+	// Get rootfs path from annotations
+	rootfsPath, ok := task.Annotations["rootfs"]
+	if !ok {
+		c.logger.Debug().Msg("No rootfs path in annotations, skipping volume sync")
+		return nil
+	}
+
+	// Temporarily mount the rootfs to access files
+	mountDir, err := c.mountRootfs(rootfsPath)
+	if err != nil {
+		c.logger.Warn().Err(err).Msg("Could not mount rootfs for volume sync (may require privileges)")
+		// Continue without sync - non-critical
+		return nil
+	}
+	defer c.unmountRootfs(mountDir)
+
+	// Process each mount
+	for _, mount := range mounts {
+		// Skip non-volume mounts and read-only mounts
+		if !storage.IsVolumeReference(mount.Source) {
+			continue
+		}
+
+		if mount.ReadOnly {
+			c.logger.Debug().
+				Str("source", mount.Source).
+				Str("target", mount.Target).
+				Msg("Skipping read-only volume mount")
+			continue
+		}
+
+		// Extract volume name
+		volumeName := storage.ExtractVolumeName(mount.Source)
+
+		c.logger.Debug().
+			Str("volume", volumeName).
+			Str("target", mount.Target).
+			Msg("Syncing volume data")
+
+		// Get volume
+		vol, err := c.volumeMgr.GetVolume(volumeName)
+		if err != nil {
+			c.logger.Error().Err(err).
+				Str("volume", volumeName).
+				Msg("Failed to get volume for sync")
+			continue
+		}
+
+		// Unmount volume (sync data back)
+		if err := c.volumeMgr.UnmountVolume(ctx, vol, mountDir, mount.Target, mount.ReadOnly); err != nil {
+			c.logger.Error().Err(err).
+				Str("volume", volumeName).
+				Str("target", mount.Target).
+				Msg("Failed to sync volume data back")
+			// Continue with other volumes
+			continue
+		}
+	}
+
+	return nil
+}
+
+// mountRootfs temporarily mounts an ext4 rootfs image.
+func (c *Controller) mountRootfs(imagePath string) (string, error) {
+	// Create temp mount point
+	mountDir, err := os.MkdirTemp("", "swarmcracker-sync-")
+	if err != nil {
+		return "", err
+	}
+
+	// Try to mount the image
+	// This requires root privileges or user namespace setup
+	cmd := exec.Command("mount", "-o", "loop", imagePath, mountDir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		os.RemoveAll(mountDir)
+		return "", fmt.Errorf("mount failed: %s: %w", string(output), err)
+	}
+
+	c.logger.Debug().Str("path", mountDir).Msg("Rootfs mounted for sync")
+	return mountDir, nil
+}
+
+// unmountRootfs unmounts a temporary rootfs mount point.
+func (c *Controller) unmountRootfs(mountDir string) error {
+	// Unmount
+	cmd := exec.Command("umount", mountDir)
+	_ = cmd.Run() // Ignore errors
+
+	// Cleanup temp dir
+	os.RemoveAll(mountDir)
+
+	c.logger.Debug().Str("path", mountDir).Msg("Rootfs unmounted")
+	return nil
+}
+
 // Close closes ephemeral resources.
 func (c *Controller) Close() error {
 	c.logger.Debug().Msg("Closing controller")
-
-	// Remove from executor's controller map
-	// (This is handled by the executor)
-
 	return nil
+}
+
+// ContainerStatus implements ContainerStatuser interface for SwarmKit.
+// Returns the health status of the Firecracker VM.
+func (c *Controller) ContainerStatus(ctx context.Context) (*api.ContainerStatus, error) {
+	status := &api.ContainerStatus{}
+
+	if !c.started {
+		return status, nil
+	}
+
+	if c.vmmMgr.IsRunning(c.task.ID) {
+		status.PID = int32(c.vmmMgr.GetPID(c.task.ID))
+		status.ExitCode = 0
+	} else {
+		status.ExitCode = 1
+	}
+
+	return status, nil
+}
+
+// PortStatus implements PortStatuser interface for SwarmKit.
+func (c *Controller) PortStatus(ctx context.Context) (*api.PortStatus, error) {
+	return &api.PortStatus{}, nil
 }
 
 // convertTask converts SwarmKit task to internal task type.
@@ -633,11 +801,72 @@ func (c *Controller) convertTask() *types.Task {
 			Runtime:   container,
 			Resources: *resources,
 		},
-		Networks:    networks,
+			Networks:    networks,
+		Secrets:     convertSecrets(c.task),
+		Configs:     convertConfigs(c.task),
 	}
 }
 
 // Helper functions
+
+// convertSecrets converts SwarmKit secret references to internal SecretRef types.
+// Note: Secret data is not available at the executor level in SwarmKit —
+// the agent must fetch it from the manager's secret store. For now, we
+// just convert the references so they can be injected during Prepare.
+func convertSecrets(task *api.Task) []types.SecretRef {
+	var secrets []types.SecretRef
+
+	containerSpec, ok := task.Spec.Runtime.(*api.TaskSpec_Container)
+	if !ok || containerSpec.Container == nil {
+		return secrets
+	}
+
+	for _, sr := range containerSpec.Container.Secrets {
+		target := "/run/secrets/" + sr.SecretName
+		if fileTarget, ok := sr.Target.(*api.SecretReference_File); ok && fileTarget.File != nil {
+			if fileTarget.File.Name != "" {
+				target = fileTarget.File.Name
+			}
+		}
+		secrets = append(secrets, types.SecretRef{
+			ID:     sr.SecretID,
+			Name:   sr.SecretName,
+			Target: target,
+			// Data will be fetched by the agent from the manager's secret store
+		})
+	}
+
+	return secrets
+}
+
+// convertConfigs converts SwarmKit config references to internal ConfigRef types.
+// Note: Config data is not available at the executor level in SwarmKit —
+// the agent must fetch it from the manager's config store.
+func convertConfigs(task *api.Task) []types.ConfigRef {
+	var configs []types.ConfigRef
+
+	containerSpec, ok := task.Spec.Runtime.(*api.TaskSpec_Container)
+	if !ok || containerSpec.Container == nil {
+		return configs
+	}
+
+	for _, cr := range containerSpec.Container.Configs {
+		target := "/config/" + cr.ConfigName
+		if fileTarget, ok := cr.Target.(*api.ConfigReference_File); ok && fileTarget.File != nil {
+			if fileTarget.File.Name != "" {
+				target = fileTarget.File.Name
+			}
+		}
+		configs = append(configs, types.ConfigRef{
+			ID:     cr.ConfigID,
+			Name:   cr.ConfigName,
+			Target: target,
+			// Data will be fetched by the agent from the manager's config store
+		})
+	}
+
+	return configs
+}
 
 func hostname() string {
 	if h, err := os.Hostname(); err == nil {

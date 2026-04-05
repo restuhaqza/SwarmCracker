@@ -374,8 +374,8 @@ func TestImagePreparer_Cleanup_ContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := ip.Cleanup(ctx, 7)
-	// Cleanup is a no-op currently, should handle cancellation gracefully
+	_, _, err := ip.Cleanup(ctx, 7)
+	// Cleanup returns filesRemoved, bytesFreed, err
 	assert.NoError(t, err)
 }
 

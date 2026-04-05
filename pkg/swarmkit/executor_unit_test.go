@@ -118,7 +118,7 @@ func TestController_convertTask(t *testing.T) {
 		name           string
 		task           *api.Task
 		expectedCmd    []string
-		expectedArgs    []string
+		expectedArgs   []string
 		expectedEnv    []string
 		expectedMounts int
 	}{
@@ -138,7 +138,7 @@ func TestController_convertTask(t *testing.T) {
 					},
 				},
 			},
-			expectedCmd: []string{"nginx"},
+			expectedCmd:  []string{"nginx"},
 			expectedArgs: []string{"-g", "daemon off"},
 		},
 		{
@@ -154,7 +154,7 @@ func TestController_convertTask(t *testing.T) {
 					},
 				},
 			},
-			expectedCmd: []string{},
+			expectedCmd:  []string{},
 			expectedArgs: []string{"sh", "-c", "echo hello"},
 		},
 		{
@@ -164,7 +164,7 @@ func TestController_convertTask(t *testing.T) {
 				Spec: api.TaskSpec{
 					Resources: &api.ResourceRequirements{
 						Reservations: &api.Resources{
-							NanoCPUs:    1e9, // 1 CPU
+							NanoCPUs:    1e9,               // 1 CPU
 							MemoryBytes: 512 * 1024 * 1024, // 512 MB
 						},
 					},
@@ -184,7 +184,7 @@ func TestController_convertTask(t *testing.T) {
 					Runtime: &api.TaskSpec_Container{
 						Container: &api.ContainerSpec{
 							Image: "redis",
-							Env:  []string{"REDIS_PORT=6379", "DEBUG=false"},
+							Env:   []string{"REDIS_PORT=6379", "DEBUG=false"},
 						},
 					},
 				},

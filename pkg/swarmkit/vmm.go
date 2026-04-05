@@ -309,6 +309,77 @@ func (v *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSta
 	return status, nil
 }
 
+// GetPID returns the PID of the Firecracker process for the given task.
+// Returns 0 if the task is not found or the process is not running.
+func (v *VMMManager) GetPID(taskID string) int {
+	v.processMutex.Lock()
+	defer v.processMutex.Unlock()
+
+	cmd, ok := v.processes[taskID]
+	if !ok || cmd.Process == nil {
+		return 0
+	}
+
+	return cmd.Process.Pid
+}
+
+// CheckVMAPIHealth checks if the VM's API socket is responsive.
+// This is a lightweight liveness check that verifies the Firecracker
+// API server is responding to requests.
+func (v *VMMManager) CheckVMAPIHealth(taskID string) bool {
+	socketPath := filepath.Join(v.socketDir, taskID+".sock")
+
+	// Check if socket file exists
+	if _, err := os.Stat(socketPath); err != nil {
+		v.logger.Debug().Str("task_id", taskID).Err(err).Msg("API socket not found")
+		return false
+	}
+
+	// Try to query the machine configuration via API
+	client := createFirecrackerHTTPClient(socketPath)
+	url := fmt.Sprintf("http://localhost/machine-config")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		v.logger.Debug().Str("task_id", taskID).Err(err).Msg("Failed to create API request")
+		return false
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		v.logger.Debug().Str("task_id", taskID).Err(err).Msg("API request failed")
+		return false
+	}
+	defer resp.Body.Close()
+
+	// Consider 200 OK as healthy
+	if resp.StatusCode == http.StatusOK {
+		v.logger.Debug().Str("task_id", taskID).Msg("VM API is healthy")
+		return true
+	}
+
+	v.logger.Debug().Str("task_id", taskID).Int("status", resp.StatusCode).Msg("VM API returned unexpected status")
+	return false
+}
+
+// IsRunning checks if the Firecracker process for the given task is still running.
+func (v *VMMManager) IsRunning(taskID string) bool {
+	v.processMutex.Lock()
+	cmd, ok := v.processes[taskID]
+	v.processMutex.Unlock()
+
+	if !ok || cmd.Process == nil {
+		return false
+	}
+
+	// Check if process is still alive by sending signal 0
+	err := cmd.Process.Signal(syscall.Signal(0))
+	return err == nil
+}
+
 // Remove removes the VM resources.
 func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 	v.logger.Info().

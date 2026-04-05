@@ -400,9 +400,9 @@ func TestImagePreparer_Cleanup(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	err = preparer.Cleanup(ctx, 7) // Keep 7 days
+	_, _, err = preparer.Cleanup(ctx, 7) // Keep 7 days
 
-	// Cleanup is not yet implemented, so should just return nil
+	// Cleanup returns filesRemoved, bytesFreed, err
 	assert.NoError(t, err)
 
 	// Files should still exist (cleanup TODO)
