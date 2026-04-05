@@ -11,12 +11,17 @@
   delay: 5
   until: download_result is success
 
+- name: Create extraction directory
+  file:
+    path: /tmp/swarmcracker-extract
+    state: directory
+    mode: '0755'
+
 - name: Extract SwarmCracker binaries
   unarchive:
     src: "/tmp/{{ swarmcracker_tarball }}"
     dest: /tmp/swarmcracker-extract
     remote_src: yes
-    creates: /tmp/swarmcracker-extract/swarmcracker
 
 - name: Install SwarmCracker binaries
   copy:
