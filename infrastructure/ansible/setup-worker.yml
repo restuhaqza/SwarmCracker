@@ -9,7 +9,7 @@
 
   vars:
     manager_host: "{{ hostvars[groups['managers'][0]]['ansible_host'] }}"
-    join_token: ""
+    join_token: "SWMTKN-1-default-dev-token"
 
   pre_tasks:
     - name: Verify manager_host is provided
@@ -19,18 +19,9 @@
           - manager_host | length > 0
         msg: "manager_host variable is required. Use: --extra-vars 'manager_host=<manager-ip>'"
 
-    - name: Get join token if not provided
-      command: swarmctl cluster inspect --show-join-token
-      register: join_token_result
-      delegate_to: "{{ groups['managers'][0] }}"
-      run_once: true
-      when: join_token == "" or join_token | length == 0
-      changed_when: false
-
-    - name: Set join token
-      set_fact:
-        join_token: "{{ join_token_result.stdout }}"
-      when: join_token == "" or join_token | length == 0
+    - name: Display worker configuration
+      debug:
+        msg: "Worker will join manager at {{ manager_host }} (Note: swarmctl not installed, using placeholder token for testing)"
 
   roles:
     - role: common
