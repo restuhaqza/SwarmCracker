@@ -1,0 +1,60 @@
+# Vagrantfile for Ansible Testing - FRESH Ubuntu VMs
+# 1 Manager + 2 Workers - NO provisioning scripts
+# All setup will be done via Ansible
+
+Vagrant.configure("2") do |config|
+  # Base box - Fresh Ubuntu 22.04
+  config.vm.box = "ubuntu/jammy64"
+  config.vm.box_version = ">= 0"
+
+  # Increase boot timeout
+  config.vm.boot_timeout = 1200
+
+  # Manager Node - FRESH Ubuntu
+  config.vm.define "manager" do |mgr|
+    mgr.vm.hostname = "swarm-manager"
+    mgr.vm.network "private_network", ip: "192.168.56.10"
+    
+    mgr.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-manager"
+      vb.memory = 2048
+      vb.cpus = 2
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+    end
+    
+    # NO provisioning - Ansible will handle everything
+  end
+
+  # Worker 1 - FRESH Ubuntu
+  config.vm.define "worker1" do |w1|
+    w1.vm.hostname = "swarm-worker-1"
+    w1.vm.network "private_network", ip: "192.168.56.11"
+    
+    w1.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-worker-1"
+      vb.memory = 4096
+      vb.cpus = 2
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+    end
+    
+    # NO provisioning - Ansible will handle everything
+  end
+
+  # Worker 2 - FRESH Ubuntu
+  config.vm.define "worker2" do |w2|
+    w2.vm.hostname = "swarm-worker-2"
+    w2.vm.network "private_network", ip: "192.168.56.12"
+    
+    w2.vm.provider "virtualbox" do |vb|
+      vb.name = "swarm-worker-2"
+      vb.memory = 4096
+      vb.cpus = 2
+      vb.customize ["modifyvm", :id, "--nested-hw-virt", "on"]
+      vb.customize ["modifyvm", :id, "--vram", "16"]
+    end
+    
+    # NO provisioning - Ansible will handle everything
+  end
+end

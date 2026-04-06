@@ -36,7 +36,7 @@ test/
 ├── integration/              # Integration tests
 │   ├── integration_test.go   # Main integration tests
 │   ├── README.md             # Integration test guide
-│   └── FIRECRACKER_SETUP.md  # Firecracker setup
+│   └── firecracker-setup.md  # Firecracker setup
 ├── testinfra/                # Infrastructure validation
 │   ├── testinfra_test.go     # Main infrastructure tests
 │   ├── checks/               # Individual checkers

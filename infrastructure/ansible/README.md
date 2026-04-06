@@ -197,6 +197,6 @@ ansible-playbook -i inventory/production teardown.yml
 
 ## See Also
 
-- [SwarmCracker Installation Guide](../../docs/getting-started/installation-guide.md)
+- [SwarmCracker Installation Guide](../../docs/getting-started/installation.md)
 - [SwarmCracker Documentation](../../docs/)
 - [Ansible Documentation](https://docs.ansible.com/)

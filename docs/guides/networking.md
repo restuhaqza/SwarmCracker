@@ -105,7 +105,7 @@ When `ip_mode: dhcp`, SwarmCracker starts a `dnsmasq` instance to serve DHCP lea
 
 **Lease range:** `.50` to `.200` in the configured subnet
 
-See [VXLAN Overlay Networking](../VXLAN-OVERLAY.md) for cross-node VM communication.
+See [VXLAN Overlay Networking](../vxlan-overlay.md) for cross-node VM communication.
 
 ## Host Setup
 

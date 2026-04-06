@@ -205,7 +205,7 @@ test/
 │   └── fixtures/             # Test fixtures
 ├── integration/              # Integration tests
 │   ├── integration_test.go   # Main tests
-│   └── FIRECRACKER_SETUP.md  # Setup guide
+│   └── firecracker-setup.md  # Setup guide
 ├── testinfra/                # Infrastructure validation
 │   ├── testinfra_test.go     # Main checks
 │   └── checks/               # Individual checkers

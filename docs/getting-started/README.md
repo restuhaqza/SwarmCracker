@@ -4,7 +4,7 @@ Choose your deployment scenario:
 
 ## 🚀 Quick Start Options
 
-### [⭐ Full Installation Guide](installation-guide.md)
+### [⭐ Full Installation Guide](installation.md)
 **Best for:** First-time setup, production deployment
 - **Covers:** One-line install, manual install, Vagrant, networking, troubleshooting
 - **From scratch to running cluster**
@@ -72,7 +72,7 @@ lscpu | grep Virtualization
 
 ## 🎯 Recommendation
 
-**First time?** → Read the **[Full Installation Guide](installation-guide.md)** ⭐
+**First time?** → Read the **[Full Installation Guide](installation.md)** ⭐
 
 **Just starting?** → Begin with **Local Development**
 

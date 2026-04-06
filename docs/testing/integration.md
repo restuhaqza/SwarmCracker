@@ -186,7 +186,7 @@ go test -v -tags=integration -timeout 30m ./test/integration/...
 test/integration/
 ├── integration_test.go      # Main integration tests
 ├── README.md                # Integration test guide
-├── FIRECRACKER_SETUP.md     # Firecracker setup instructions
+├── firecracker-setup.md     # Firecracker setup instructions
 └── check-prereqs.sh         # Prerequisites checker
 ```
 
@@ -365,7 +365,7 @@ find . -name "*.go" | entr -r go test -v -tags=integration ./test/integration/..
 ## Resources
 
 - [Firecracker Documentation](https://github.com/firecracker-microvm/firecracker)
-- [Firecracker Setup](FIRECRACKER_SETUP.md)
+- [Firecracker Setup](firecracker-setup.md)
 - [Integration Test README](README.md)
 - [Unit Tests](unit.md) | [E2E Tests](e2e.md)
 

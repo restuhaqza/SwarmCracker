@@ -8,7 +8,7 @@ Complete documentation for SwarmCracker - Firecracker MicroVMs with SwarmKit Orc
 
 **New to SwarmCracker?** Start here:
 
-1. **[Installation Guide](docs/getting-started/installation-guide.md)** - Complete setup instructions
+1. **[Installation Guide](docs/getting-started/installation.md)** - Complete setup instructions
 2. **[Quick Start](docs/guides/swarmkit/quick-start.md)** - Deploy your first microVM in 5 minutes
 3. **[Local Development](docs/getting-started/local-dev.md)** - Single-node testing setup
 
@@ -18,7 +18,7 @@ Complete documentation for SwarmCracker - Firecracker MicroVMs with SwarmKit Orc
 
 ### Getting Started
 - **[Overview](docs/getting-started/README.md)** - Introduction and prerequisites
-- **[Installation Guide](docs/getting-started/installation-guide.md)** - Comprehensive installation (953 lines)
+- **[Installation Guide](docs/getting-started/installation.md)** - Comprehensive installation (953 lines)
 - **[Local Development](docs/getting-started/local-dev.md)** - Single-node setup
 - **[Vagrant Setup](docs/getting-started/vagrant.md)** - VM-based testing
 - **[DigitalOcean](docs/getting-started/digitalocean.md)** - Cloud deployment
@@ -42,7 +42,7 @@ Complete documentation for SwarmCracker - Firecracker MicroVMs with SwarmKit Orc
 ### Architecture
 - **[System Design](docs/architecture/system.md)** - System architecture overview
 - **[SwarmKit Integration](docs/architecture/swarmkit-integration.md)** - SwarmKit integration details
-- **[VXLAN Overlay](docs/VXLAN-OVERLAY.md)** - VXLAN networking implementation
+- **[VXLAN Overlay](docs/vxlan-overlay.md)** - VXLAN networking implementation
 
 ### Development
 - **[Getting Started](docs/development/getting-started.md)** - Development environment setup
@@ -57,8 +57,8 @@ Complete documentation for SwarmCracker - Firecracker MicroVMs with SwarmKit Orc
 
 ### Infrastructure & Automation
 - **[Ansible Automation](infrastructure/ansible/README.md)** - Ansible deployment automation
-- **[Test Report](infrastructure/ansible/TEST_REPORT.md)** - VirtualBox test results
-- **[Verification Report](infrastructure/ansible/VERIFICATION_REPORT.md)** - Ansible verification
+- **[Test Report](infrastructure/ansible/test-report.md)** - VirtualBox test results
+- **[Verification Report](infrastructure/ansible/verification-report.md)** - Ansible verification
 - **[Ansible Testing](test-automation/README.ansible-testing.md)** - Fresh Ubuntu VM testing
 
 ### Examples

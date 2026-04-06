@@ -10,7 +10,7 @@ Welcome to the SwarmCracker documentation! This is your central hub for all proj
 
 | Goal | Documentation |
 |------|---------------|
-| **Install SwarmCracker** | [Installation Guide](getting-started/installation-guide.md) |
+| **Install SwarmCracker** | [Installation Guide](getting-started/installation.md) |
 | **Deploy my first microVM** | [Quick Start](guides/swarmkit/quick-start.md) |
 | **Set up development environment** | [Development Guide](development/getting-started.md) |
 | **Configure networking** | [Networking Guide](guides/networking.md) |
@@ -27,7 +27,7 @@ Welcome to the SwarmCracker documentation! This is your central hub for all proj
 New to SwarmCracker? Start here!
 
 - [Overview](getting-started/README.md)
-- [Installation Guide](getting-started/installation-guide.md) ⭐ **Recommended**
+- [Installation Guide](getting-started/installation.md) ⭐ **Recommended**
 - [Local Development](getting-started/local-dev.md)
 - [Vagrant Setup](getting-started/vagrant.md)
 - [DigitalOcean Deployment](getting-started/digitalocean.md)
@@ -57,7 +57,7 @@ Technical design and implementation details.
 
 - [System Design](architecture/system.md)
 - [SwarmKit Integration](architecture/swarmkit-integration.md)
-- [VXLAN Overlay](VXLAN-OVERLAY.md)
+- [VXLAN Overlay](vxlan-overlay.md)
 
 ### 💻 Development
 For contributors and developers.
@@ -78,8 +78,8 @@ Testing strategies and guides.
 Ansible automation for cluster deployment.
 
 - [Ansible README](../infrastructure/ansible/README.md)
-- [Test Report](../infrastructure/ansible/TEST_REPORT.md)
-- [Verification Report](../infrastructure/ansible/VERIFICATION_REPORT.md)
+- [Test Report](../infrastructure/ansible/test-report.md)
+- [Verification Report](../infrastructure/ansible/verification-report.md)
 - [Ansible Testing](../test-automation/README.ansible-testing.md)
 
 ### 📝 Examples

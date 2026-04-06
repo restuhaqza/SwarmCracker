@@ -122,7 +122,7 @@ swarmctl --socket /tmp/manager/swarm.sock service create --name nginx --image ng
 |-------|-------------|
 | [Installation](docs/guides/installation.md) | Full setup instructions |
 | [Networking](docs/guides/networking.md) | Bridge, TAP, VXLAN configuration |
-| [VXLAN Overlay](docs/VXLAN-OVERLAY.md) | Cross-node VM communication |
+| [VXLAN Overlay](docs/vxlan-overlay.md) | Cross-node VM communication |
 | [SwarmKit Deployment](docs/guides/swarmkit/deployment-comprehensive.md) | Production setup |
 | [CLI Reference](docs/cli-reference.md) | Full CLI documentation |
 | [Architecture](docs/architecture/system.md) | System design details |

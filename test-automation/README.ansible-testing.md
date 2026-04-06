@@ -152,5 +152,5 @@ VAGRANT_VAGRANTFILE=Vagrantfile.ansible vagrant destroy -f
 ## See Also
 
 - [Ansible Documentation](../README.md)
-- [SwarmCracker Installation Guide](../../docs/getting-started/installation-guide.md)
+- [SwarmCracker Installation Guide](../../docs/getting-started/installation.md)
 - [Original Vagrantfile](../Vagrantfile)

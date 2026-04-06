@@ -28,7 +28,7 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 | [Installation](guides/installation.md) | Prerequisites and setup |
 | [Configuration](guides/configuration.md) | Config options reference |
 | [Networking](guides/networking.md) | VM networking setup |
-| [VXLAN Overlay](VXLAN-OVERLAY.md) | Cross-node VM communication |
+| [VXLAN Overlay](vxlan-overlay.md) | Cross-node VM communication |
 | [Init Systems](guides/init-systems.md) | Tini/dumb-init integration |
 | [File Management](guides/file-management.md) | Rootfs and image handling |
 | [Security Hardening](guides/security-hardening.md) | Security best practices |
@@ -73,8 +73,8 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 | Topic | Description |
 |-------|-------------||
 | [Ansible README](../infrastructure/ansible/README.md) | Ansible deployment automation |
-| [Test Report](../infrastructure/ansible/TEST_REPORT.md) | VirtualBox test results |
-| [Verification Report](../infrastructure/ansible/VERIFICATION_REPORT.md) | Ansible verification |
+| [Test Report](../infrastructure/ansible/test-report.md) | VirtualBox test results |
+| [Verification Report](../infrastructure/ansible/verification-report.md) | Ansible verification |
 | [Ansible Testing](../test-automation/README.ansible-testing.md) | Fresh Ubuntu VM testing |
 
 ---
@@ -85,7 +85,7 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 - [Install SwarmCracker](guides/installation.md)
 - [Deploy a cluster](guides/swarmkit/deployment-comprehensive.md)
 - [Configure networking](guides/networking.md)
-- [Set up VXLAN overlay](VXLAN-OVERLAY.md)
+- [Set up VXLAN overlay](vxlan-overlay.md)
 - [Run tests](development/testing.md)
 
 **Development:**
@@ -99,7 +99,7 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 ```
 docs/
 ├── README.md                 # This file
-├── VXLAN-OVERLAY.md          # VXLAN overlay networking guide
+├── vxlan-overlay.md          # VXLAN overlay networking guide
 ├── architecture/             # Technical design docs
 │   ├── system.md
 │   └── swarmkit-integration.md
