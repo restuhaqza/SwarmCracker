@@ -1,6 +1,34 @@
 ---
 # Manager Role - Tasks
 
+- name: Install Go (required for swarmctl)
+  package:
+    name: golang-go
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Clone SwarmKit repository (for swarmctl)
+  git:
+    repo: 'https://github.com/moby/swarmkit.git'
+    dest: /tmp/swarmkit
+    version: master
+    depth: 1
+  register: swarmkit_clone
+
+- name: Build swarmctl
+  command: go build -o /usr/local/bin/swarmctl ./cmd/swarmctl
+  args:
+    chdir: /tmp/swarmkit
+  environment:
+    CGO_ENABLED: "0"
+  when: swarmkit_clone.changed or swarmkit_clone is failed
+
+- name: Verify swarmctl installation
+  command: swarmctl version
+  register: swarmctl_version
+  changed_when: false
+  failed_when: false
+
 - name: Download SwarmCracker release
   get_url:
     url: "{{ swarmcracker_download_url }}/{{ swarmcracker_tarball }}"
