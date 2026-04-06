@@ -14,7 +14,6 @@ swarmcracker_config_dir: "/etc/swarmcracker"
 
 # Firecracker configuration
 swarmcracker_kernel_path: "/usr/share/firecracker/vmlinux"
-swarmcracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/{{ swarmcracker_arch }}/kernels/vmlinux.bin"
 swarmcracker_rootfs_dir: "/var/lib/firecracker/rootfs"
 swarmcracker_socket_dir: "/var/run/firecracker"
 
