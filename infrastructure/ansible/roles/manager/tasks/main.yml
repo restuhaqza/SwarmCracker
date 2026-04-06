@@ -15,13 +15,16 @@
     depth: 1
   register: swarmkit_clone
 
-- name: Build swarmctl
+- name: Build swarmctl (optional - may fail on older Go versions)
   command: go build -o /usr/local/bin/swarmctl ./cmd/swarmctl
   args:
     chdir: /tmp/swarmkit
   environment:
     CGO_ENABLED: "0"
-  when: swarmkit_clone.changed or swarmkit_clone is failed
+  register: swarmctl_build
+  failed_when: false
+  changed_when: swarmctl_build.rc == 0
+  when: swarmkit_clone.changed
 
 - name: Verify swarmctl installation
   command: swarmctl version
