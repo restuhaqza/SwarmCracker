@@ -2,6 +2,8 @@
 
 Welcome to the SwarmCracker documentation. This is your starting point for learning about, deploying, and using SwarmCracker.
 
+> **📚 Complete Documentation Index:** See [INDEX.md](INDEX.md) for a comprehensive list of all documentation.
+
 ## 🚀 Getting Started
 
 **New to SwarmCracker? Start here:**
@@ -30,6 +32,8 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 | [Init Systems](guides/init-systems.md) | Tini/dumb-init integration |
 | [File Management](guides/file-management.md) | Rootfs and image handling |
 | [Security Hardening](guides/security-hardening.md) | Security best practices |
+| [Rolling Updates](guides/rolling-updates.md) ⭐ | Zero-downtime deployments |
+| [Multi-Arch Support](guides/multi-arch-support.md) ⭐ | AMD64 + ARM64 support |
 
 ### SwarmKit Integration
 
@@ -63,6 +67,15 @@ Welcome to the SwarmCracker documentation. This is your starting point for learn
 | [Unit Tests](testing/unit.md) | Unit testing guide |
 | [Integration Tests](testing/integration.md) | Integration testing |
 | [E2E Tests](testing/e2e.md) | End-to-end testing with Firecracker |
+
+### Infrastructure Automation ⭐
+
+| Topic | Description |
+|-------|-------------||
+| [Ansible README](../infrastructure/ansible/README.md) | Ansible deployment automation |
+| [Test Report](../infrastructure/ansible/TEST_REPORT.md) | VirtualBox test results |
+| [Verification Report](../infrastructure/ansible/VERIFICATION_REPORT.md) | Ansible verification |
+| [Ansible Testing](../test-automation/README.ansible-testing.md) | Fresh Ubuntu VM testing |
 
 ---
 
