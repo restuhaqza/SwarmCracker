@@ -85,6 +85,16 @@ func (m *MockVMMManager) Remove(ctx context.Context, task *types.Task) error {
 	return nil
 }
 
+// Snapshot is a mock implementation of VMMManager.Snapshot.
+func (m *MockVMMManager) Snapshot(ctx context.Context, task *types.Task, opts interface{}) (interface{}, error) {
+	return nil, fmt.Errorf("mock: snapshot not implemented")
+}
+
+// Restore is a mock implementation of VMMManager.Restore.
+func (m *MockVMMManager) Restore(ctx context.Context, task *types.Task, snap interface{}) error {
+	return fmt.Errorf("mock: restore not implemented")
+}
+
 // IsTaskStarted checks if a task was started.
 func (m *MockVMMManager) IsTaskStarted(taskID string) bool {
 	return m.StartedTasks[taskID]

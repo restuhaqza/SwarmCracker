@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -15,6 +16,7 @@ type Config struct {
 	Logging  LoggingConfig  `yaml:"logging"`
 	Images   ImagesConfig   `yaml:"images"`
 	Metrics  MetricsConfig  `yaml:"metrics"`
+	Snapshot SnapshotConfig `yaml:"snapshot"`
 
 	// Legacy fields for backward compatibility
 	KernelPath      string       `yaml:"kernel_path"`
@@ -82,6 +84,16 @@ type JailerConfig struct {
 	GID           int    `yaml:"gid"`
 	ChrootBaseDir string `yaml:"chroot_base_dir"`
 	NetNS         string `yaml:"netns"`
+}
+
+// SnapshotConfig holds snapshot configuration.
+type SnapshotConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	SnapshotDir  string        `yaml:"snapshot_dir"`
+	MaxSnapshots int           `yaml:"max_snapshots"`
+	MaxAge       time.Duration `yaml:"max_age"`
+	AutoSnapshot bool          `yaml:"auto_snapshot"`
+	Compress     bool          `yaml:"compress"`
 }
 
 // LoadConfig loads configuration from a YAML file.
@@ -232,6 +244,17 @@ func (c *Config) SetDefaults() {
 	// Set images defaults
 	if c.Images.CacheDir == "" {
 		c.Images.CacheDir = "/var/cache/swarmcracker"
+	}
+
+	// Set snapshot defaults
+	if c.Snapshot.SnapshotDir == "" {
+		c.Snapshot.SnapshotDir = "/var/lib/firecracker/snapshots"
+	}
+	if c.Snapshot.MaxSnapshots == 0 {
+		c.Snapshot.MaxSnapshots = 3
+	}
+	if c.Snapshot.MaxAge == 0 {
+		c.Snapshot.MaxAge = 168 * time.Hour
 	}
 }
 

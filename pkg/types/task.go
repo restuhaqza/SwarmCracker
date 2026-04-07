@@ -159,10 +159,10 @@ type NetworkConfig struct {
 	NATEnabled bool   `yaml:"nat_enabled"` // Enable masquerading for internet access
 
 	// VXLAN overlay settings
-	VXLANEnabled bool     `yaml:"vxlan_enabled"` // Enable VXLAN overlay for cross-node networking
-	VXLANID      int      `yaml:"vxlan_id"`      // VXLAN VNI (default: 100)
-	VXLANTunnelIP string  `yaml:"vxlan_tunnel_ip"` // Overlay IP for this node (e.g., "10.30.0.1/24")
-	VXLANPeers   []string `yaml:"vxlan_peers"`   // List of peer worker IPs (e.g., ["192.168.56.12"])
+	VXLANEnabled  bool     `yaml:"vxlan_enabled"`   // Enable VXLAN overlay for cross-node networking
+	VXLANID       int      `yaml:"vxlan_id"`        // VXLAN VNI (default: 100)
+	VXLANTunnelIP string   `yaml:"vxlan_tunnel_ip"` // Overlay IP for this node (e.g., "10.30.0.1/24")
+	VXLANPeers    []string `yaml:"vxlan_peers"`     // List of peer worker IPs (e.g., ["192.168.56.12"])
 }
 
 // Interfaces for the executor components
@@ -174,6 +174,8 @@ type VMMManager interface {
 	Wait(ctx context.Context, task *Task) (*TaskStatus, error)
 	Describe(ctx context.Context, task *Task) (*TaskStatus, error)
 	Remove(ctx context.Context, task *Task) error
+	Snapshot(ctx context.Context, task *Task, opts interface{}) (interface{}, error)
+	Restore(ctx context.Context, task *Task, snapshot interface{}) error
 }
 
 // TaskTranslator converts SwarmKit tasks to Firecracker configs.

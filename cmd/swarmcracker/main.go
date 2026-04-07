@@ -73,6 +73,7 @@ It provides a simple interface to the SwarmCracker executor, allowing you to:
 	rootCmd.AddCommand(newStopCommand())
 	rootCmd.AddCommand(newMetricsCommand())
 	rootCmd.AddCommand(newVolumeCommand())
+	rootCmd.AddCommand(newSnapshotCommand())
 
 	// Execute
 	if err := rootCmd.Execute(); err != nil {

@@ -626,3 +626,17 @@ func newUnixClient(socketPath string, timeout time.Duration) *http.Client {
 		},
 	}
 }
+
+// Snapshot creates a snapshot of a running VM.
+// This is a placeholder — full implementation is in the snapshot package.
+func (vm *VMMManager) Snapshot(ctx context.Context, task *types.Task, opts interface{}) (interface{}, error) {
+	log.Warn().Str("task_id", task.ID).Msg("Snapshot not implemented in VMMManager; use pkg/snapshot.Manager directly")
+	return nil, fmt.Errorf("snapshot not implemented: use pkg/snapshot.Manager")
+}
+
+// Restore restores a VM from a snapshot.
+// This is a placeholder — full implementation is in the snapshot package.
+func (vm *VMMManager) Restore(ctx context.Context, task *types.Task, snap interface{}) error {
+	log.Warn().Str("task_id", task.ID).Msg("Restore not implemented in VMMManager; use pkg/snapshot.Manager directly")
+	return fmt.Errorf("restore not implemented: use pkg/snapshot.Manager")
+}
