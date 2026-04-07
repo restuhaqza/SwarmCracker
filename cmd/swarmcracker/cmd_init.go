@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"text/template"
 	"time"
@@ -107,7 +106,7 @@ func runInit(cfg *initConfig) error {
 	if cfg.AdvertiseAddr == "" {
 		addr, err := detectAdvertiseAddress()
 		if err != nil {
-			return fmt.Errorf("failed to auto-detect advertise address: %w\nPlease specify --advertise-addr")
+			return fmt.Errorf("failed to auto-detect advertise address: %w. Please specify --advertise-addr", err)
 		}
 		cfg.AdvertiseAddr = addr
 		log.Info().Str("address", cfg.AdvertiseAddr).Msg("Auto-detected advertise address")
@@ -443,7 +442,5 @@ func displayJoinTokens(cfg *initConfig) error {
 
 func init() {
 	// Register architecture-specific defaults
-	if runtime.GOARCH == "arm64" {
-		// ARM64 may need different kernel path
-	}
+	// ARM64 may need different kernel path - handled in defaultConfig()
 }

@@ -382,9 +382,10 @@ func TestJailerBuildJailerCommandWithSeccomp(t *testing.T) {
 	}
 
 	// Verify command was built
-	if cmd == nil {
+	if cmd == nil { //nolint:staticcheck // checked for nil before dereference
 		t.Fatal("Expected non-nil command")
 	}
+	cmdArgs := cmd.Args //nolint:staticcheck // t.Fatal terminates test
 
 	// Verify socket path is in chroot directory
 	expectedSocketPattern := filepath.Join(chrootDir, "test-vm-seccomp", "run", "firecracker")
@@ -395,16 +396,16 @@ func TestJailerBuildJailerCommandWithSeccomp(t *testing.T) {
 	// Verify seccomp flag is present
 	foundSeccomp := false
 	var policyPath string
-	for i, arg := range cmd.Args {
-		if arg == "--seccomp" && i+1 < len(cmd.Args) {
+	for i, arg := range cmdArgs {
+		if arg == "--seccomp" && i+1 < len(cmdArgs) {
 			foundSeccomp = true
-			policyPath = cmd.Args[i+1]
+			policyPath = cmdArgs[i+1]
 			break
 		}
 	}
 
 	if !foundSeccomp {
-		t.Logf("Command args: %v", cmd.Args)
+		t.Logf("Command args: %v", cmdArgs)
 		t.Error("Expected --seccomp flag in jailer command")
 	} else if policyPath != "" {
 		// Verify policy file exists and is valid JSON
