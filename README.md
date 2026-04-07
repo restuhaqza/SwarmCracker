@@ -127,6 +127,14 @@ swarmctl --socket /tmp/manager/swarm.sock service create --name nginx --image ng
 | [CLI Reference](docs/cli-reference.md) | Full CLI documentation |
 | [Architecture](docs/architecture/system.md) | System design details |
 
+## Contributing
+
+Contributions are welcome — code, docs, bug reports, ideas. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+- [Code of Conduct](CODE_OF_CONDUCT.md)
+- [Security Policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+
 ## Download
 
 Pre-built binaries available for Linux and macOS:
