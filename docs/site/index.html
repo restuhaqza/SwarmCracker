@@ -684,65 +684,87 @@
                 <button class="tab-btn" onclick="showTab('worker')">Worker Node</button>
                 <button class="tab-btn" onclick="showTab('manual')">Manual Install</button>
             </div>
+                <p>Get started in minutes with our automated installer</p>
+            </div>
+            
+            <div class="install-tabs">
+                <button class="tab-btn active" onclick="showTab('manager')">Manager Node</button>
+                <button class="tab-btn" onclick="showTab('worker')">Worker Node</button>
+                <button class="tab-btn" onclick="showTab('manual')">Manual Install</button>
+            </div>
             
             <div id="manager-tab" class="install-code">
-                <button class="copy-btn" onclick="copyCode('manager-code')">Copy</button>
-                <div id="manager-code">
-<span class="comment"># Initialize a new SwarmCracker cluster</span>
-curl -fsSL https://swarmcracker.restuhaqza.dev/install.sh | sudo bash -s -- init
+                <div class="code-header">
+                    <div class="code-dots">
+                        <span class="code-dot red"></span>
+                        <span class="code-dot yellow"></span>
+                        <span class="code-dot green"></span>
+                    </div>
+                    <span>Initialize Manager</span>
+                    <button class="copy-btn" onclick="copyCode('manager-code')">Copy</button>
+                </div>
+                <pre class="code-content" id="manager-code"><code><span class="comment"># Initialize a new SwarmCracker cluster</span>
+<span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">init</span>
 
 <span class="comment"># With VXLAN overlay (multi-node)</span>
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- init \
-  --vxlan-enabled \
-  --vxlan-peers 192.168.1.11,192.168.1.12
+<span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">init</span> \
+  <span class="flag">--vxlan-enabled</span> \
+  <span class="flag">--vxlan-peers</span> <span class="string">192.168.1.11,192.168.1.12</span>
 
 <span class="comment"># Get join token for workers</span>
-sudo cat /var/lib/swarmkit/join-tokens.txt
-                </div>
+<span class="command">sudo</span> <span class="command">cat</span> <span class="string">/var/lib/swarmkit/join-tokens.txt</span></code></pre>
             </div>
             
             <div id="worker-tab" class="install-code" style="display: none;">
-                <button class="copy-btn" onclick="copyCode('worker-code')">Copy</button>
-                <div id="worker-code">
-<span class="comment"># Join an existing cluster</span>
-curl -fsSL https://swarmcracker.restuhaqza.dev/install.sh | sudo bash -s -- join \
-  --manager &lt;MANAGER_IP&gt;:4242 \
-  --token SWMTKN-1-...
-
-<span class="comment"># With VXLAN overlay (must match manager config)</span>
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- join \
-  --manager &lt;MANAGER_IP&gt;:4242 \
-  --token SWMTKN-1-... \
-  --vxlan-enabled \
-  --vxlan-peers &lt;PEER_IPS&gt;
+                <div class="code-header">
+                    <div class="code-dots">
+                        <span class="code-dot red"></span>
+                        <span class="code-dot yellow"></span>
+                        <span class="code-dot green"></span>
+                    </div>
+                    <span>Join Worker</span>
+                    <button class="copy-btn" onclick="copyCode('worker-code')">Copy</button>
                 </div>
+                <pre class="code-content" id="worker-code"><code><span class="comment"># Join an existing cluster</span>
+<span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">join</span> \
+  <span class="flag">--manager</span> <span class="string">&lt;MANAGER_IP&gt;:4242</span> \
+  <span class="flag">--token</span> <span class="string">SWMTKN-1-...</span>
+
+<span class="comment"># With VXLAN overlay</span>
+<span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">join</span> \
+  <span class="flag">--manager</span> <span class="string">&lt;MANAGER_IP&gt;:4242</span> \
+  <span class="flag">--token</span> <span class="string">SWMTKN-1-...</span> \
+  <span class="flag">--vxlan-enabled</span> \
+  <span class="flag">--vxlan-peers</span> <span class="string">&lt;PEER_IPS&gt;</span></code></pre>
             </div>
             
             <div id="manual-tab" class="install-code" style="display: none;">
-                <button class="copy-btn" onclick="copyCode('manual-code')">Copy</button>
-                <div id="manual-code">
-<span class="comment"># Download latest release</span>
-wget https://swarmcracker.restuhaqza.dev/install.sh
-chmod +x install.sh
+                <div class="code-header">
+                    <div class="code-dots">
+                        <span class="code-dot red"></span>
+                        <span class="code-dot yellow"></span>
+                        <span class="code-dot green"></span>
+                    </div>
+                    <span>Manual Install</span>
+                    <button class="copy-btn" onclick="copyCode('manual-code')">Copy</button>
+                </div>
+                <pre class="code-content" id="manual-code"><code><span class="comment"># Download installer</span>
+<span class="command">wget</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span>
+<span class="command">chmod</span> <span class="flag">+x</span> <span class="string">install.sh</span>
 
-<span class="comment"># Extract and install</span>
-tar -xzf swarmcracker-linux-amd64.tar.gz
-sudo cp swarmcracker-*-linux-amd64/* /usr/local/bin/
+<span class="comment"># Or download from releases</span>
+<span class="command">wget</span> <span class="string">https://github.com/restuhaqza/SwarmCracker/releases/latest/download/swarmcracker-linux-amd64.tar.gz</span>
+<span class="command">tar</span> <span class="flag">-xzf</span> <span class="string">swarmcracker-linux-amd64.tar.gz</span>
+<span class="command">sudo</span> <span class="command">cp</span> <span class="string">swarmcracker-*-linux-amd64/*</span> <span class="string">/usr/local/bin/</span>
 
 <span class="comment"># Verify installation</span>
-swarmcracker version
+<span class="command">swarmcracker</span> <span class="command">version</span>
 
 <span class="comment"># Initialize cluster</span>
-sudo swarmcracker init
-                </div>
+<span class="command">sudo</span> <span class="command">swarmcracker</span> <span class="command">init</span></code></pre>
             </div>
         </div>
     </section>
-
-    <!-- CTA Section -->
-    <section class="cta">
-        <div class="container">
-            <div class="cta-box">
                 <h2>Ready to Get Started?</h2>
                 <p>Join the growing community of developers using SwarmCracker for secure, isolated container orchestration.</p>
                 <a href="https://github.com/restuhaqza/SwarmCracker" target="_blank" class="btn">View on GitHub</a>
