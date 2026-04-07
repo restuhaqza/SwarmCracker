@@ -1,0 +1,20 @@
+---
+# Firecracker Role - Default Variables
+
+firecracker_version: "v1.14.0"
+firecracker_arch: "x86_64"
+firecracker_install_dir: "/usr/local/bin"
+firecracker_socket_dir: "/var/run/firecracker"
+firecracker_log_dir: "/var/log/firecracker"
+
+# Kernel
+firecracker_kernel_path: "/usr/share/firecracker/vmlinux"
+firecracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin"
+
+# Rootfs
+firecracker_rootfs_dir: "/var/lib/firecracker/rootfs"
+firecracker_rootfs_name: "bionic.rootfs.ext4"
+firecracker_rootfs_url: "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/rootfs/bionic.rootfs.ext4"
+
+# Distribution: copy Firecracker + kernel + rootfs from primary worker to others
+firecracker_primary_host: "{{ groups['workers'][0] if groups['workers'] is defined else inventory_hostname }}"

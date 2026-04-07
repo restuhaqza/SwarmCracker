@@ -1,0 +1,111 @@
+---
+# Firecracker Role - Tasks
+# Installs Firecracker binary, kernel, and base rootfs on all worker nodes.
+
+- name: Ensure required packages
+  package:
+    name:
+      - curl
+      - jq
+      - qemu-utils
+    state: present
+  when: ansible_os_family == "Debian"
+
+- name: Create directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ firecracker_socket_dir }}"
+    - "{{ firecracker_log_dir }}"
+    - "{{ firecracker_rootfs_dir }}"
+    - /usr/share/firecracker
+
+# --- Install Firecracker binary ---
+- name: Check if firecracker is already installed
+  stat:
+    path: "{{ firecracker_install_dir }}/firecracker"
+  register: fc_binary
+
+- name: Remove broken firecracker binary if it exists
+  file:
+    path: "{{ firecracker_install_dir }}/firecracker"
+    state: absent
+  when:
+    - fc_binary.stat.exists
+    - fc_binary.stat.size is defined and fc_binary.stat.size < 1000
+
+- name: Verify existing firecracker binary works
+  command: "{{ firecracker_install_dir }}/firecracker --version"
+ register: fc_check
+  changed_when: false
+  failed_when: false
+  when: fc_binary.stat.exists and (fc_binary.stat.size is not defined or fc_binary.stat.size >= 1000)
+
+- name: Install Firecracker binary
+  shell: |
+    arch=$(uname -m)
+    case "$arch" in
+      x86_64) fc_arch="x86_64" ;;
+      aarch64) fc_arch="aarch64" ;;
+      *) echo "Unsupported arch: $arch"; exit 1 ;;
+    esac
+
+    tmpdir=$(mktemp -d)
+    cd "$tmpdir"
+
+    curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}/firecracker-{{ firecracker_version }}-${fc_arch}.tgz" \
+      -o firecracker.tgz
+    tar xzf firecracker.tgz
+    cp release-v{{ firecracker_version }}-${fc_arch}/firecracker-v{{ firecracker_version }}-${fc_arch} {{ firecracker_install_dir }}/firecracker
+    chmod +x {{ firecracker_install_dir }}/firecracker
+
+    rm -rf "$tmpdir"
+    echo "Firecracker {{ firecracker_version }} installed"
+  args:
+    creates: "{{ firecracker_install_dir }}/firecracker"
+  when: not fc_binary.stat.exists or (fc_binary.stat.exists and fc_check is failed)
+
+- name: Verify Firecracker installation
+  command: "{{ firecracker_install_dir }}/firecracker --version"
+  register: fc_version
+  changed_when: false
+  failed_when: false
+
+- name: Display Firecracker version
+  debug:
+    msg: "Firecracker {{ fc_version.stderr | default('installed') }}"
+
+# --- Download kernel ---
+- name: Check if kernel exists
+  stat:
+    path: "{{ firecracker_kernel_path }}"
+  register: fc_kernel
+
+- name: Download Firecracker kernel
+  get_url:
+    url: "{{ firecracker_kernel_url }}"
+    dest: "{{ firecracker_kernel_path }}"
+    mode: "0644"
+  when: not fc_kernel.stat.exists
+
+# --- Download rootfs ---
+- name: Check if rootfs exists
+  stat:
+    path: "{{ firecracker_rootfs_dir }}/{{ firecracker_rootfs_name }}"
+  register: fc_rootfs
+
+- name: Download Ubuntu rootfs image
+  get_url:
+    url: "{{ firecracker_rootfs_url }}"
+    dest: "{{ firecracker_rootfs_dir }}/{{ firecracker_rootfs_name }}"
+    mode: "0644"
+  when: not fc_rootfs.stat.exists
+
+- name: Display Firecracker status
+  debug:
+    msg: |
+      ✅ Firecracker {{ firecracker_version }} — {{ firecracker_install_dir }}/firecracker
+      ✅ Kernel: {{ firecracker_kernel_path }}
+      ✅ Rootfs: {{ firecracker_rootfs_dir }}/{{ firecracker_rootfs_name }}

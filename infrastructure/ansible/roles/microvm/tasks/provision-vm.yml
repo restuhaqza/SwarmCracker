@@ -1,0 +1,128 @@
+---
+# Provision a single MicroVM via Firecracker REST API
+
+- name: Calculate VM parameters for {{ vm.name }}
+  set_fact:
+    current_vm_name: "{{ vm.name }}"
+    current_vm_vcpus: "{{ vm.vcpus | default(microvm_default_vcpus) }}"
+    current_vm_memory: "{{ vm.memory_mb | default(microvm_default_memory_mb) }}"
+    current_vm_ip: "{{ microvm_ip_base }}.{{ microvm_ip_start | int + (worker_index | int) * 10 + (vm.ip_offset | int) }}"
+    current_vm_tap: "tap-vm{{ worker_index }}{{ vm.ip_offset }}"
+    current_vm_mac: "AA:FC:00:00:{{ '%02x' % (worker_index | int) }}:{{ '%02x' % (vm.ip_offset | int) }}"
+    current_vm_socket: "{{ microvm_socket_dir }}/{{ vm.name }}.sock"
+    current_vm_log: "{{ microvm_log_dir }}/{{ vm.name }}.log"
+    current_vm_rootfs: "{{ microvm_rootfs_dir }}/{{ vm.name }}.ext4"
+
+- name: Create per-VM rootfs copy for {{ vm.name }}
+  shell: |
+    src="{{ microvm_rootfs_dir }}/{{ microvm_rootfs_base_name }}"
+    dst="{{ current_vm_rootfs }}"
+    if [ ! -f "$dst" ]; then
+      cp "$src" "$dst"
+      echo "Created $dst"
+    else
+      echo "$dst exists"
+    fi
+  changed_when: false
+
+- name: Create TAP device for {{ vm.name }}
+  shell: |
+    tap="{{ current_vm_tap }}"
+    if ip link show "$tap" 2>/dev/null | grep -q "$tap"; then
+      echo "TAP $tap exists"
+    else
+      ip tuntap add dev "$tap" mode tap user root
+      ip link set "$tap" master {{ microvm_bridge_name }}
+      ip link set "$tap" up
+      echo "TAP $tap created -> {{ microvm_bridge_name }}"
+    fi
+  changed_when: false
+
+- name: Kill existing Firecracker for {{ vm.name }}
+  shell: |
+    pidfile="/var/run/firecracker/{{ vm.name }}.pid"
+    if [ -f "$pidfile" ]; then
+      kill -9 $(cat "$pidfile") 2>/dev/null || true
+      rm -f "$pidfile"
+    fi
+  changed_when: false
+
+- name: Remove stale socket for {{ vm.name }}
+  file:
+    path: "{{ current_vm_socket }}"
+    state: absent
+
+- name: Start Firecracker API daemon for {{ vm.name }}
+  shell: |
+    nohup {{ microvm_fc_binary }} \
+      --api-sock {{ current_vm_socket }} \
+      --id {{ vm.name }} \
+      --level Info \
+      --log-path {{ current_vm_log }} \
+      > /dev/null 2>&1 &
+    echo $! > {{ microvm_socket_dir }}/{{ vm.name }}.pid
+    echo $!
+  register: fc_pid
+  changed_when: true
+
+- name: Wait for API socket — {{ vm.name }}
+  wait_for:
+    path: "{{ current_vm_socket }}"
+    timeout: 10
+
+# --- Configure via REST API ---
+- name: "Set machine config — {{ vm.name }}"
+  command: >
+    curl --silent --unix-socket {{ current_vm_socket }}
+    -X PUT http://localhost/machine-config
+    -H "Content-Type: application/json"
+    -d '{"vcpu_count": {{ current_vm_vcpus }}, "mem_size_mib": {{ current_vm_memory }}, "smt": false}'
+
+- name: "Set boot source — {{ vm.name }}"
+  command: >
+    curl --silent --unix-socket {{ current_vm_socket }}
+    -X PUT http://localhost/boot-source
+    -H "Content-Type: application/json"
+    -d '{
+      "kernel_image_path": "{{ microvm_kernel_path }}",
+      "boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodeset vga=off ip={{ current_vm_ip }}::{{ microvm_bridge_ip }}:255.255.255.0:{{ vm.name }}:eth0:off"
+    }'
+
+- name: "Set root drive — {{ vm.name }}"
+  command: >
+    curl --silent --unix-socket {{ current_vm_socket }}
+    -X PUT http://localhost/drives/rootfs
+    -H "Content-Type: application/json"
+    -d '{
+      "drive_id": "rootfs",
+      "path_on_host": "{{ current_vm_rootfs }}",
+      "is_root_device": true,
+      "is_read_only": false
+    }'
+
+- name: "Attach network — {{ vm.name }}"
+  command: >
+    curl --silent --unix-socket {{ current_vm_socket }}
+    -X PUT http://localhost/network-interfaces/eth0
+    -H "Content-Type: application/json"
+    -d '{
+      "iface_id": "eth0",
+      "host_dev_name": "{{ current_vm_tap }}",
+      "guest_mac": "{{ current_vm_mac }}"
+    }'
+
+- name: "Start instance — {{ vm.name }}"
+  command: >
+    curl --silent --unix-socket {{ current_vm_socket }}
+    -X PUT http://localhost/actions
+    -H "Content-Type: application/json"
+    -d '{"action_type": "InstanceStart"}'
+
+- name: Display {{ vm.name }} status
+  debug:
+    msg: |
+      ✅ {{ vm.name }}
+         PID: {{ fc_pid.stdout }}
+         IP: {{ current_vm_ip }}
+         MAC: {{ current_vm_mac }}
+         TAP: {{ current_vm_tap }}

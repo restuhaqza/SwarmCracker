@@ -1,0 +1,25 @@
+---
+# MicroVM Role - Tasks
+# Provisions Firecracker MicroVMs on worker nodes.
+# Each VM gets a TAP device on the bridge and boots via REST API.
+
+- name: Validate microvm_vms list
+  assert:
+    that:
+      - microvm_vms is defined
+      - microvm_vms | length > 0
+    fail_msg: "No VMs defined. Set microvm_vms in host_vars or --extra-vars."
+    quiet: yes
+  run_once: true
+  delegate_to: localhost
+
+- name: Get worker index for IP assignment
+  set_fact:
+    worker_index: "{{ groups['workers'].index(inventory_hostname) }}"
+
+- name: Provision each MicroVM
+  include_tasks: provision-vm.yml
+  loop: "{{ microvm_vms }}"
+  loop_control:
+    loop_var: vm
+    label: "{{ vm.name }}"

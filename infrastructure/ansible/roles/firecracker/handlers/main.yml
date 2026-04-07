@@ -1,0 +1,6 @@
+---
+# Firecracker Role - Handlers
+
+- name: restart firecracker services
+  debug:
+    msg: "Firecracker VMs managed individually — no single service to restart"

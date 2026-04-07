@@ -1,0 +1,10 @@
+---
+# Internal: Deploy SwarmCracker manager
+
+- name: Deploy manager
+  hosts: managers
+  become: yes
+  gather_facts: no
+  roles:
+    - role: manager
+      tags: [manager]

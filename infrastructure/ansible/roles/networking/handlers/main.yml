@@ -1,0 +1,14 @@
+---
+# Networking Role - Handlers
+
+- name: reload iptables
+  shell: iptables-restore < /etc/iptables/rules.v4 2>/dev/null || true
+  listen: reload firewall
+  changed_when: false
+
+- name: save iptables
+  shell: |
+    mkdir -p /etc/iptables
+    iptables-save > /etc/iptables/rules.v4
+  listen: save firewall
+  changed_when: false

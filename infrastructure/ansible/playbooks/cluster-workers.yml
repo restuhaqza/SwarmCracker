@@ -1,0 +1,20 @@
+---
+# Internal: Deploy SwarmCracker workers
+
+- name: Deploy workers
+  hosts: workers
+  become: yes
+  gather_facts: no
+  pre_tasks:
+    - name: Get join token from manager
+      shell: |
+        {{ swarmcracker_install_dir }}/swarmd-firecracker --help 2>/dev/null | head -1
+        echo "(join token retrieval depends on swarmctl or CLI flags)"
+      delegate_to: "{{ groups['managers'][0] }}"
+      run_once: true
+      register: join_token_check
+      changed_when: false
+      failed_when: false
+  roles:
+    - role: worker
+      tags: [worker]

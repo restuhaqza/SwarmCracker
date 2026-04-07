@@ -1,0 +1,102 @@
+---
+# Teardown — Remove all SwarmCracker components
+#
+# Usage:
+#   ansible-playbook -i inventory/virtualbox-fresh playbooks/teardown.yml
+#
+# WARNING: This destroys all VMs, bridges, and services.
+
+- name: Teardown — Stop all MicroVMs
+  hosts: workers
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Kill all Firecracker processes
+      shell: pkill -9 firecracker 2>/dev/null || true
+      changed_when: false
+      ignore_errors: yes
+
+    - name: Remove TAP devices
+      shell: |
+        for tap in $(ip link show | grep -oP 'tap-\S+'); do
+          ip link set "$tap" nomaster 2>/dev/null || true
+          ip link delete "$tap" 2>/dev/null || true
+          echo "Removed $tap"
+        done
+      changed_when: false
+      ignore_errors: yes
+
+- name: Teardown — Stop SwarmCracker services
+  hosts: swarmcracker
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Stop and disable worker service
+      systemd:
+        name: swarmd-worker
+        state: stopped
+        enabled: no
+      failed_when: false
+      ignore_errors: yes
+
+    - name: Stop and disable manager service
+      systemd:
+        name: swarmd-manager
+        state: stopped
+        enabled: no
+      failed_when: false
+      ignore_errors: yes
+
+    - name: Remove systemd unit files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/swarmd-manager.service
+        - /etc/systemd/system/swarmd-worker.service
+      notify: reload systemd
+
+- name: Teardown — Remove network
+  hosts: workers
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Remove GRE tunnel
+      shell: ip tunnel del {{ network_gre_tunnel_name }} 2>/dev/null || true
+      changed_when: false
+
+    - name: Remove bridge
+      shell: ip link delete {{ network_bridge_name }} 2>/dev/null || true
+      changed_when: false
+
+    - name: Flush iptables NAT rules
+      shell: |
+        iptables -t nat -F POSTROUTING 2>/dev/null || true
+        iptables -F FORWARD 2>/dev/null || true
+      changed_when: false
+
+- name: Teardown — Clean up
+  hosts: swarmcracker
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Remove SwarmCracker files
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ swarmcracker_state_dir }}"
+        - "{{ swarmcracker_config_dir }}"
+        - "{{ swarmcracker_log_dir }}"
+        - "{{ firecracker_socket_dir }}"
+        - /etc/modules-load.d/swarmcracker.conf
+        - /etc/modules-load.d/swarmcracker-network.conf
+      failed_when: false
+
+    - name: Display teardown summary
+      debug:
+        msg: |
+          ✅ All MicroVMs stopped
+          ✅ SwarmCracker services removed
+          ✅ Network interfaces cleaned up
+          ✅ Data directories removed

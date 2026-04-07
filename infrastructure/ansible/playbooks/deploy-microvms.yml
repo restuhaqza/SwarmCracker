@@ -1,0 +1,32 @@
+---
+# Deploy MicroVMs across the SwarmCracker cluster
+#
+# Usage:
+#   ansible-playbook -i inventory/virtualbox-fresh playbooks/deploy-microvms.yml
+#
+# Override VMs via --extra-vars:
+#   --extra-vars '{"microvm_vms": [{"name":"nginx","ip_offset":1}]}'
+#
+# Default: 1 VM per worker node
+
+- name: Deploy MicroVMs — Provision on workers
+  hosts: workers
+  become: yes
+  gather_facts: no
+  roles:
+    - role: microvm
+      tags: [microvm]
+  vars:
+    microvm_vms: "{{ host_microvm_vms | default([{'name': inventory_hostname + '-vm', 'ip_offset': 1}]) }}"
+
+- name: Deploy MicroVMs — Wait for boot
+  hosts: workers
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Wait for VMs to boot
+      pause:
+        seconds: 45
+
+- name: Deploy MicroVMs — Verify connectivity
+  import_playbook: test-connectivity.yml

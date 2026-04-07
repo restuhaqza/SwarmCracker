@@ -1,0 +1,10 @@
+---
+# Internal: Common prerequisites for all nodes
+
+- name: Common prerequisites
+  hosts: swarmcracker
+  become: yes
+  gather_facts: yes
+  roles:
+    - role: common
+      tags: [common]

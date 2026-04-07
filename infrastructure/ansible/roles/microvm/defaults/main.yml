@@ -1,0 +1,24 @@
+---
+# MicroVM Role - Default Variables (fully self-contained)
+
+# VM sizing
+microvm_default_vcpus: 1
+microvm_default_memory_mb: 128
+
+# Paths (self-contained, no cross-role deps)
+microvm_kernel_path: "/usr/share/firecracker/vmlinux"
+microvm_rootfs_dir: "/var/lib/firecracker/rootfs"
+microvm_rootfs_base_name: "bionic.rootfs.ext4"
+microvm_socket_dir: "/var/run/firecracker"
+microvm_log_dir: "/var/log/firecracker"
+microvm_fc_binary: "/usr/local/bin/firecracker"
+
+# Network
+microvm_bridge_name: "swarm-br0"
+microvm_bridge_ip: "172.20.0.1"
+microvm_ip_base: "172.20.0"
+microvm_ip_start: 10
+
+# VMs to deploy (override in host_vars or group_vars)
+# Each entry: { name, ip_offset, vcpus, memory_mb }
+microvm_vms: []

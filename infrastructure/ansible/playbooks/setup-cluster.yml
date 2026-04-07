@@ -1,38 +1,30 @@
 ---
-# SwarmCracker — Full Cluster Setup
+# SwarmCracker Full Cluster Setup
 #
 # Usage:
-#   ansible-playbook -i inventory/virtualbox-fresh site.yml
+#   ansible-playbook -i inventory/virtualbox-fresh playbooks/setup-cluster.yml
+#
+# Deploys: common prerequisites → manager → workers → firecracker → networking
 
-# Phase 1: Common prerequisites on all nodes
-- name: SwarmCracker — Common Prerequisites
+- name: SwarmCracker — Prerequisites
   hosts: swarmcracker
   become: yes
   gather_facts: yes
-  roles:
-    - role: common
-      tags: [common]
+  tasks:
+    - name: "✅ Cluster prerequisites"
+      debug:
+        msg: "Setting up prerequisites on all nodes..."
 
-# Phase 2: Manager
+- name: SwarmCracker — Common
+  import_playbook: cluster-common.yml
+
 - name: SwarmCracker — Manager
-  hosts: managers
-  become: yes
-  gather_facts: no
-  roles:
-    - role: manager
-      tags: [manager]
+  import_playbook: cluster-manager.yml
 
-# Phase 3: Workers
 - name: SwarmCracker — Workers
-  hosts: workers
-  become: yes
-  gather_facts: no
-  roles:
-    - role: worker
-      tags: [worker]
+  import_playbook: cluster-workers.yml
 
-# Phase 4: Firecracker on workers
-- name: SwarmCracker — Firecracker
+- name: SwarmCracker — Firecracker (workers only)
   hosts: workers
   become: yes
   gather_facts: no
@@ -40,8 +32,7 @@
     - role: firecracker
       tags: [firecracker]
 
-# Phase 5: Networking on workers
-- name: SwarmCracker — Networking
+- name: SwarmCracker — Networking (workers only)
   hosts: workers
   become: yes
   gather_facts: no
@@ -49,19 +40,24 @@
     - role: networking
       tags: [networking]
 
-# Phase 6: Summary
-- name: SwarmCracker — Summary
+- name: SwarmCracker — Cluster Summary
   hosts: managers
   become: yes
   gather_facts: no
   tasks:
+    - name: Wait for manager API
+      wait_for:
+        port: "{{ swarmcracker_manager_port }}"
+        host: "0.0.0.0"
+        timeout: 30
+      ignore_errors: yes
+
     - name: Check manager service
       systemd:
         name: swarmd-manager
       register: mgr_status
-      failed_when: false
 
-    - name: Display summary
+    - name: Display cluster summary
       debug:
         msg: |
           ╔══════════════════════════════════════════════════╗
@@ -71,8 +67,8 @@
           ║  Manager: {{ groups['managers'] | join(', ') }}     ║
           ║  Workers: {{ groups['workers'] | join(', ') }}   ║
           ║                                                  ║
-          ║  Manager: {{ mgr_status.status.ActiveState | default('unknown') }}  ║
+          ║  Manager service: {{ 'running ✅' if mgr_status.status.ActiveState == 'active' else mgr_status.status.ActiveState }}  ║
           ║                                                  ║
-          ║  Next:                                            ║
+          ║  Next: deploy MicroVMs                            ║
           ║  → ansible-playbook playbooks/deploy-microvms.yml ║
           ╚══════════════════════════════════════════════════╝

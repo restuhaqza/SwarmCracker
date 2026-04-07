@@ -1,0 +1,161 @@
+---
+# Networking Role - Tasks
+# Sets up bridge, VXLAN overlay, and NAT for cross-node MicroVM communication.
+
+- name: Load required kernel modules
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - bridge
+    - vxlan
+    - iptable_nat
+    - ip_tables
+  failed_when: false
+
+- name: Ensure modules persist on boot
+  lineinfile:
+    path: /etc/modules-load.d/swarmcracker-network.conf
+    line: "{{ item }}"
+    create: yes
+    mode: "0644"
+  loop:
+    - bridge
+    - vxlan
+    - iptable_nat
+    - ip_tables
+
+- name: Enable IP forwarding
+  sysctl:
+    name: net.ipv4.ip_forward
+    value: "1"
+    sysctl_set: yes
+    reload: yes
+
+- name: Disable bridge netfilter (avoids L2 interference)
+  shell: |
+    modprobe br_netfilter 2>/dev/null || true
+    sysctl -w net.bridge.bridge-nf-call-iptables=0 2>/dev/null || true
+    sysctl -w net.bridge.bridge-nf-call-ip6tables=0 2>/dev/null || true
+  changed_when: false
+  ignore_errors: yes
+
+# === Network Bridge ===
+- name: Create network bridge
+  shell: |
+    br="{{ network_bridge_name }}"
+    if ip link show "$br" 2>/dev/null | grep -q "$br"; then
+      echo "Bridge $br already exists"
+    else
+      ip link add "$br" type bridge
+      ip link set "$br" up
+      ip addr add {{ network_bridge_ip }}/24 dev "$br"
+      echo "Bridge $br created ({{ network_bridge_ip }}/24)"
+    fi
+  changed_when: false
+
+# === GRE Tunnel (optional, legacy) ===
+- name: Set GRE tunnel remote peer
+  set_fact:
+    network_gre_remote: >-
+      {% if groups['workers'] | length >= 2 -%}
+        {%- for w in groups['workers'] -%}
+          {%- if w != inventory_hostname -%}
+            {{ hostvars[w]['ansible_host'] }}
+          {%- endif -%}
+        {%- endfor -%}
+      {%- else -%}
+        ""
+      {%- endif %}
+  when: network_gre_enabled
+
+- name: Create GRE tunnel to peer worker
+  shell: |
+    tun="{{ network_gre_tunnel_name }}"
+    remote="{{ network_gre_remote }}"
+    local="{{ ansible_host | default(ansible_default_ipv4.address) }}"
+    if [ -z "$remote" ]; then echo "No peer — skip"; exit 0; fi
+    if ip link show "$tun" 2>/dev/null | grep -q "$tun"; then
+      echo "GRE tunnel $tun exists"
+    else
+      ip tunnel add "$tun" mode gre remote "$remote" local "$local" ttl 64
+      ip link set "$tun" up
+      ip link set "$tun" master {{ network_bridge_name }}
+      echo "GRE tunnel $tun created"
+    fi
+  changed_when: false
+  when: network_gre_enabled
+
+# === VXLAN Overlay (recommended for L2) ===
+- name: Get remote VXLAN peer addresses
+  set_fact:
+    vxlan_peers: >-
+      {% set peers = [] -%}
+      {%- for w in groups['workers'] -%}
+        {%- if w != inventory_hostname -%}
+          {{ peers.append(hostvars[w]['ansible_host'] | default(hostvars[w]['ansible_default_ipv4']['address'])) -}}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ peers }}
+  when: network_vxlan_enabled
+
+- name: Create VXLAN overlay
+  shell: |
+    vxlan="vxlan{{ network_vxlan_vni }}"
+    local="{{ ansible_host | default(ansible_default_ipv4.address) }}"
+    if ip link show "$vxlan" 2>/dev/null | grep -q "$vxlan"; then
+      echo "VXLAN $vxlan exists"
+    else
+      ip link add "$vxlan" type vxlan \
+        id {{ network_vxlan_vni }} \
+        dstport {{ network_vxlan_port }} \
+        local "$local" \
+        nolearning
+      ip link set "$vxlan" master {{ network_bridge_name }}
+      ip link set "$vxlan" up
+      echo "VXLAN $vxlan created (VNI {{ network_vxlan_vni }})"
+    fi
+  changed_when: false
+  when: network_vxlan_enabled
+
+- name: Add VXLAN FDB entries for peers
+  shell: |
+    vxlan="vxlan{{ network_vxlan_vni }}"
+    {% for peer in vxlan_peers %}
+    bridge fdb append 00:00:00:00:00:00 dev "$vxlan" dst {{ peer }} self permanent
+    echo "FDB: $vxlan -> {{ peer }}"
+    {% endfor %}
+  changed_when: false
+  when: network_vxlan_enabled and vxlan_peers | length > 0
+
+# === NAT (outbound access for VMs) ===
+- name: Enable NAT masquerade for VM subnet
+  shell: |
+    subnet="{{ network_bridge_subnet }}"
+    iface="{{ network_nat_interface }}"
+    if iptables -t nat -C POSTROUTING -s "$subnet" -o "$iface" -j MASQUERADE 2>/dev/null; then
+      echo "NAT rule already exists"
+    else
+      iptables -t nat -A POSTROUTING -s "$subnet" -o "$iface" -j MASQUERADE
+      echo "NAT masquerade added: $subnet -> $iface"
+    fi
+  changed_when: false
+  when: network_nat_enabled
+  notify: save firewall
+
+- name: Allow forwarding for VM traffic
+  shell: |
+    subnet="{{ network_bridge_subnet }}"
+    iptables -C FORWARD -s "$subnet" -j ACCEPT 2>/dev/null || iptables -A FORWARD -s "$subnet" -j ACCEPT
+    iptables -C FORWARD -d "$subnet" -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || iptables -A FORWARD -d "$subnet" -m state --state ESTABLISHED,RELATED -j ACCEPT
+  changed_when: false
+  when: network_nat_enabled
+  notify: save firewall
+
+- name: Display networking status
+  debug:
+    msg: |
+      ✅ Bridge: {{ network_bridge_name }} ({{ network_bridge_ip }}/24)
+      ✅ VXLAN: vxlan{{ network_vxlan_vni }} (VNI {{ network_vxlan_vni }}, peers: {{ vxlan_peers | default([]) | join(', ') }})
+      ✅ NAT: {{ 'enabled' if network_nat_enabled else 'disabled' }}
+      ✅ IP forwarding: enabled
