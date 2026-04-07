@@ -239,14 +239,19 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 		return fmt.Errorf("missing boot-source in config")
 	}
 
-	drives, ok := cfg["drives"].([]map[string]interface{})
-	if !ok || len(drives) == 0 {
+	// JSON unmarshaling produces []interface{} not []map[string]interface{}
+	drivesRaw, ok := cfg["drives"].([]interface{})
+	if !ok || len(drivesRaw) == 0 {
 		return fmt.Errorf("missing drives in config")
 	}
 
 	// Find rootfs path from drives
 	var rootfsPath string
-	for _, drive := range drives {
+	for _, driveRaw := range drivesRaw {
+		drive, ok := driveRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
 		if isRootDevice, ok := drive["is_root_device"].(bool); ok && isRootDevice {
 			rootfsPath, _ = drive["path_on_host"].(string)
 			break
@@ -338,29 +343,45 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 	}
 
 	// 3. Set root drive
-	drives, ok := cfg["drives"].([]map[string]interface{})
-	if !ok || len(drives) == 0 {
+	// JSON unmarshaling produces []interface{} not []map[string]interface{}
+	drivesRaw, ok := cfg["drives"].([]interface{})
+	if !ok || len(drivesRaw) == 0 {
 		return fmt.Errorf("missing drives in config")
 	}
-	for _, drive := range drives {
-		if err := v.putAPI(socketPath, "/drives/"+drive["drive_id"].(string), drive); err != nil {
-			return fmt.Errorf("failed to set drive %s: %w", drive["drive_id"], err)
+	for _, driveRaw := range drivesRaw {
+		drive, ok := driveRaw.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("invalid drive type in config")
 		}
+		driveID, ok := drive["drive_id"].(string)
+		if !ok {
+			return fmt.Errorf("missing drive_id in drive config")
+		}
+		if err := v.putAPI(socketPath, "/drives/"+driveID, drive); err != nil {
+			return fmt.Errorf("failed to set drive %s: %w", driveID, err)
+		}
+		v.logger.Info().Str("drive_id", driveID).Msg("Drive configured")
 	}
 
 	// 4. Set network interfaces (if any)
-	networkInterfaces, ok := cfg["network-interfaces"].([]map[string]interface{})
-	if ok && len(networkInterfaces) > 0 {
+	networkInterfacesRaw, ok := cfg["network-interfaces"].([]interface{})
+	if ok && len(networkInterfacesRaw) > 0 {
 		v.logger.Info().
-			Int("count", len(networkInterfaces)).
+			Int("count", len(networkInterfacesRaw)).
 			Msg("Configuring network interfaces")
-		for _, iface := range networkInterfaces {
+		for _, ifaceRaw := range networkInterfacesRaw {
+			iface, ok := ifaceRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			ifaceID, _ := iface["iface_id"].(string)
+			hostDev, _ := iface["host_dev_name"].(string)
 			v.logger.Debug().
-				Str("iface_id", iface["iface_id"].(string)).
-				Str("host_dev", iface["host_dev_name"].(string)).
+				Str("iface_id", ifaceID).
+				Str("host_dev", hostDev).
 				Msg("Adding network interface")
-			if err := v.putAPI(socketPath, "/network-interfaces/"+iface["iface_id"].(string), iface); err != nil {
-				return fmt.Errorf("failed to set network interface %s: %w", iface["iface_id"], err)
+			if err := v.putAPI(socketPath, "/network-interfaces/"+ifaceID, iface); err != nil {
+				return fmt.Errorf("failed to set network interface %s: %w", ifaceID, err)
 			}
 		}
 	} else {
