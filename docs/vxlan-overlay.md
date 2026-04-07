@@ -7,13 +7,13 @@ SwarmCracker now supports automated VXLAN overlay networking for cross-node VM c
 ## Architecture
 
 ```
-worker1 (192.168.56.11)              worker2 (192.168.56.12)
-swarm-br0: 192.168.127.1/24          swarm-br0: 192.168.128.1/24
+worker1 (192.168.121.24)              worker2 (192.168.121.143)
+swarm-br0: 172.20.0.1/24              swarm-br0: 172.20.0.1/24
     TAP devices (VMs)                     TAP devices (VMs)
             │                                      │
             └────── VXLAN (VNI 100) ───────────────┘
-                   10.30.0.0/24 overlay
                    UDP port 4789
+                   L2 overlay (shared 172.20.0.0/24)
 ```
 
 ## Components
@@ -96,14 +96,12 @@ ip route add 192.168.128.0/24 via 10.30.102 dev swarm-br0
 # /etc/swarmcracker/config.yaml
 network:
   bridge_name: "swarm-br0"
-  subnet: "192.168.127.0/24"
-  bridge_ip: "192.168.127.1/24"
+  bridge_ip: "172.20.0.1/24"
   vxlan_enabled: true
-  vxlan_id: 100
-  vxlan_tunnel_ip: "10.30.0.1/24"
+  vxlan_vni: 100
   vxlan_peers:
-    - "192.168.56.12"
-    - "192.168.56.13"
+    - "192.168.121.143"
+    - "192.168.121.25"
 ```
 
 ### Via CLI Flags

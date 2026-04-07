@@ -78,8 +78,8 @@ Testing strategies and guides.
 Ansible automation for cluster deployment.
 
 - [Ansible README](../infrastructure/ansible/README.md)
-- [Test Report](../infrastructure/ansible/test-report.md)
-- [Verification Report](../infrastructure/ansible/verification-report.md)
+- [Test Report](ansible-reports/test-report.md)
+- [Verification Report](ansible-reports/verification-report.md)
 - [Ansible Testing](../test-automation/README.ansible-testing.md)
 
 ### 📝 Examples
@@ -143,6 +143,6 @@ See [CONTRIBUTING.md](../CONTRIBUTING.md) for more details.
 
 ---
 
-**Last Updated:** 2026-04-06  
-**Documentation Version:** 1.0  
+**Last Updated:** 2026-04-07  
+**Documentation Version:** 1.1  
 **SwarmCracker Version:** v0.2.1
