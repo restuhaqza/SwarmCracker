@@ -151,13 +151,17 @@ func TestTaskTranslator_Translate(t *testing.T) {
 				require.NoError(t, err)
 				require.NotNil(t, got)
 
-				// Verify the result is a JSON string
-				configJSON, ok := got.(string)
-				require.True(t, ok, "Result should be JSON string")
+				// Verify the result is a map
+				configMap, ok := got.(map[string]interface{})
+				require.True(t, ok, "Result should be a map")
 
-				// Verify it's valid JSON
+				// Convert to JSON for verification
+				configJSON, err := json.Marshal(configMap)
+				require.NoError(t, err, "Should be valid JSON")
+
+				// Parse into VMMConfig struct
 				var config VMMConfig
-				require.NoError(t, json.Unmarshal([]byte(configJSON), &config), "Should be valid JSON")
+				require.NoError(t, json.Unmarshal(configJSON, &config), "Should be valid JSON")
 
 				// Verify boot source
 				assert.Equal(t, "/usr/share/firecracker/vmlinux", config.BootSource.KernelImagePath)

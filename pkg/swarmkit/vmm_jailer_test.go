@@ -43,15 +43,17 @@ func TestVMMManagerWithJailerConfig(t *testing.T) {
 		t.Fatalf("NewVMMManagerWithConfig() error = %v", err)
 	}
 
-	if vmm == nil {
+	if vmm == nil { //nolint:staticcheck // checked for nil before dereference
 		t.Fatal("Expected non-nil VMM manager")
 	}
+	useJailer := vmm.useJailer //nolint:staticcheck // t.Fatal terminates test
+	jailer := vmm.jailer //nolint:staticcheck
 
-	if !vmm.useJailer {
+	if !useJailer {
 		t.Error("Expected useJailer to be true")
 	}
 
-	if vmm.jailer == nil {
+	if jailer == nil {
 		t.Error("Expected jailer instance to be created")
 	}
 }
@@ -71,15 +73,17 @@ func TestVMMManagerLegacyMode(t *testing.T) {
 		t.Fatalf("NewVMMManager() error = %v", err)
 	}
 
-	if vmm == nil {
+	if vmm == nil { //nolint:staticcheck // checked for nil before dereference
 		t.Fatal("Expected non-nil VMM manager")
 	}
+	useJailerLegacy := vmm.useJailer //nolint:staticcheck // t.Fatal terminates test
+	jailerLegacy := vmm.jailer //nolint:staticcheck
 
-	if vmm.useJailer {
+	if useJailerLegacy {
 		t.Error("Expected useJailer to be false in legacy mode")
 	}
 
-	if vmm.jailer != nil {
+	if jailerLegacy != nil {
 		t.Error("Expected jailer to be nil in legacy mode")
 	}
 }

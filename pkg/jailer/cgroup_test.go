@@ -32,12 +32,12 @@ func TestCgroupManagerNew(t *testing.T) {
 		t.Fatalf("NewCgroupManager() error = %v", err)
 	}
 
-	if mgr == nil {
+	if mgr == nil { //nolint:staticcheck // checked for nil before dereference
 		t.Fatal("Expected non-nil cgroup manager")
 	}
-
-	if mgr.basePath != testPath {
-		t.Errorf("Expected base path %q, got %q", testPath, mgr.basePath)
+	basePath := mgr.basePath //nolint:staticcheck // t.Fatal terminates test
+	if basePath != testPath {
+		t.Errorf("Expected base path %q, got %q", testPath, basePath)
 	}
 
 	// Verify base directory was created
@@ -185,16 +185,21 @@ func TestCgroupGetStats(t *testing.T) {
 		t.Errorf("GetStats() error = %v", err)
 	}
 
-	if stats == nil {
+	if stats == nil { //nolint:staticcheck // checked for nil before dereference
 		t.Fatal("Expected non-nil stats")
 	}
+	cpuUsage := stats.CPUUsageUs //nolint:staticcheck // t.Fatal terminates test
+	cpuPeriods := stats.CPUPeriods //nolint:staticcheck
+	cpuThrottled := stats.CPUThrottled //nolint:staticcheck
+	memCurrent := stats.MemoryCurrent //nolint:staticcheck
+	memMax := stats.MemoryMax //nolint:staticcheck
 
 	// Verify stats structure
-	t.Logf("CPU Usage: %d µs", stats.CPUUsageUs)
-	t.Logf("CPU Periods: %d", stats.CPUPeriods)
-	t.Logf("CPU Throttled: %d", stats.CPUThrottled)
-	t.Logf("Memory Current: %d bytes", stats.MemoryCurrent)
-	t.Logf("Memory Max: %d bytes", stats.MemoryMax)
+	t.Logf("CPU Usage: %d µs", cpuUsage)
+	t.Logf("CPU Periods: %d", cpuPeriods)
+	t.Logf("CPU Throttled: %d", cpuThrottled)
+	t.Logf("Memory Current: %d bytes", memCurrent)
+	t.Logf("Memory Max: %d bytes", memMax)
 }
 
 // TestResourceLimitsValidation tests resource limits edge cases.
