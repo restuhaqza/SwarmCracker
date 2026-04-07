@@ -1,0 +1,89 @@
+# Vagrantfile for Ansible Testing - KVM/libvirt Provider
+#
+# Creates 3 Ubuntu 22.04 VMs with NATIVE KVM acceleration.
+# Firecracker MicroVMs will work because KVM passes through properly.
+#
+# Prerequisites:
+#   - qemu-kvm, libvirt-daemon-system, libvirt-dev
+#   - vagrant plugin install vagrant-libvirt
+#   - sudo usermod -aG libvirt $(whoami)
+#
+# Usage:
+#   vagrant up --provider=libvirt
+#   vagrant status
+#   vagrant destroy -f
+#
+# After VMs are ready:
+#   cd infrastructure/ansible
+#   ansible-playbook -i inventory/libvirt site.yml
+
+Vagrant.configure("2") do |config|
+  # Ubuntu 22.04 LTS (generic/cloud-init for libvirt)
+  config.vm.box = "generic/ubuntu2204"
+  config.vm.box_version = ">= 0"
+
+  # Boot timeout
+  config.vm.boot_timeout = 300
+
+  # Disable shared folders
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  # Global libvirt provider defaults
+  config.vm.provider "libvirt" do |lv|
+    lv.memory = 2048
+    lv.cpus = 2
+    # Nested virtualization is native on KVM — no special flags needed
+    lv.cpu_mode = "host-passthrough"
+    lv.nested = true
+    lv.volume_cache = "writeback"
+  end
+
+  # =====================
+  # Manager Node
+  # =====================
+  config.vm.define "manager" do |mgr|
+    mgr.vm.hostname = "swarm-manager"
+    # libvirt uses private network via DHCP; set static via cloud-init
+    mgr.vm.network "private_network",
+      ip: "192.168.122.10",
+      libvirt__network_name: "swarmcracker",
+      libvirt__dhcp_enabled: true
+
+    mgr.vm.provider "libvirt" do |lv|
+      lv.memory = 2048
+      lv.cpus = 2
+    end
+  end
+
+  # =====================
+  # Worker 1 Node
+  # =====================
+  config.vm.define "worker1" do |w1|
+    w1.vm.hostname = "swarm-worker-1"
+    w1.vm.network "private_network",
+      ip: "192.168.122.11",
+      libvirt__network_name: "swarmcracker",
+      libvirt__dhcp_enabled: true
+
+    w1.vm.provider "libvirt" do |lv|
+      lv.memory = 4096
+      lv.cpus = 2
+    end
+  end
+
+  # =====================
+  # Worker 2 Node
+  # =====================
+  config.vm.define "worker2" do |w2|
+    w2.vm.hostname = "swarm-worker-2"
+    w2.vm.network "private_network",
+      ip: "192.168.122.12",
+      libvirt__network_name: "swarmcracker",
+      libvirt__dhcp_enabled: true
+
+    w2.vm.provider "libvirt" do |lv|
+      lv.memory = 4096
+      lv.cpus = 2
+    end
+  end
+end

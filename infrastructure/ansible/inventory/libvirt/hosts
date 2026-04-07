@@ -1,0 +1,15 @@
+# SwarmCracker Cluster — libvirt (KVM) Inventory
+#
+# Used with: ansible-playbook -i inventory/libvirt site.yml
+# IPs are assigned by libvirt DHCP — update after `vagrant up`
+
+[managers]
+swarm-manager ansible_host=192.168.121.17 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/manager/libvirt/private_key
+
+[workers]
+swarm-worker-1 ansible_host=192.168.121.24 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/worker1/libvirt/private_key
+swarm-worker-2 ansible_host=192.168.121.143 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/worker2/libvirt/private_key
+
+[swarmcracker:children]
+managers
+workers
