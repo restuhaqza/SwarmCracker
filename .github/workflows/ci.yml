@@ -18,6 +18,11 @@ on:
       - 'go.sum'
       - 'Makefile'
 
+# Use different concurrency group than Pages
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
