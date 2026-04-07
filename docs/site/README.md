@@ -1,121 +1,148 @@
-# SwarmCracker Landing Page
+# SwarmCracker Landing Page - React + Vite
 
-This directory contains the SwarmCracker landing page deployed to GitHub Pages.
+Modern landing page built with React, Vite, and Tailwind CSS.
 
-## Structure
+## Tech Stack
+
+- **React 18** - UI framework
+- **Vite** - Build tool and dev server
+- **Tailwind CSS** - Utility-first CSS framework
+- **GitHub Pages** - Hosting and deployment
+
+## Development
+
+### Prerequisites
+
+- Node.js 20+
+- npm or yarn
+
+### Install Dependencies
+
+```bash
+cd docs/site
+npm install
+```
+
+### Development Server
+
+```bash
+npm run dev
+```
+
+Open http://localhost:5173 in your browser.
+
+### Build for Production
+
+```bash
+npm run build
+```
+
+Output will be in `dist/` directory.
+
+### Preview Production Build
+
+```bash
+npm run preview
+```
+
+## Project Structure
 
 ```
 docs/site/
-├── index.html          # Main landing page
-└── .nojekyll          # Disable Jekyll processing
+├── src/
+│   ├── main.jsx          # React entry point
+│   ├── App.jsx           # Main app component
+│   └── index.css         # Global styles + Tailwind
+├── index.html            # HTML entry point
+├── package.json          # Dependencies
+├── vite.config.js        # Vite configuration
+├── tailwind.config.js    # Tailwind configuration
+├── postcss.config.js     # PostCSS configuration
+└── README.md             # This file
 ```
 
-## Deployment
+## Components
 
-The site is automatically deployed to GitHub Pages when changes are pushed to `main` branch.
+The landing page consists of these sections (all in `App.jsx`):
 
-**Workflow**: `.github/workflows/pages.yml`
-
-**URL**: https://restuhaqza.github.io/SwarmCracker/
-
-## Local Testing
-
-Test the page locally before pushing:
-
-```bash
-# Using Python's built-in server
-cd docs/site
-python3 -m http.server 8000
-
-# Open in browser
-# http://localhost:8000
-```
+1. **Navigation** - Fixed header with logo and links
+2. **Hero** - Tagline, description, and quick start code
+3. **Features** - 6 feature cards with icons
+4. **Stats** - Performance metrics
+5. **How It Works** - 4-step process
+6. **Installation** - Tabbed code blocks (Manager/Worker/Manual)
+7. **CTA** - Call-to-action
+8. **Footer** - Links and resources
 
 ## Customization
 
 ### Colors
 
-Edit CSS variables in `index.html`:
+Edit `tailwind.config.js`:
 
-```css
-:root {
-    --primary: #FF6B35;        /* Orange accent */
-    --secondary: #1E3A5F;      /* Dark blue */
-    --accent: #00D4AA;         /* Teal */
-    --bg-dark: #0A0E1A;        /* Background */
+```js
+colors: {
+  primary: {
+    DEFAULT: '#FF6B35',
+    dark: '#E55A2B',
+    light: '#FF8E53',
+  },
+  // ...
 }
 ```
 
 ### Content
 
-- **Hero section**: Update tagline and description
-- **Features**: Edit feature cards in the features grid
-- **Installation**: Update commands in install tabs
-- **Footer**: Modify links and copyright
+Edit `src/App.jsx`:
+- `features` array - Feature cards
+- `stats` array - Statistics
+- `steps` array - How it works steps
+- `installCommands` object - Installation code snippets
 
-### Adding Pages
+### Fonts
 
-1. Create new HTML file in `docs/site/`
-2. Add navigation link in header
-3. Update workflow if needed
+Edit `index.html` to change Google Fonts imports.
 
-## Assets
+## Deployment
 
-### Images
+### Automatic (GitHub Actions)
 
-Place images in `docs/site/images/` and reference with relative paths:
+The site auto-deploys to GitHub Pages when you push to `main`:
 
-```html
-<img src="images/feature.png" alt="Feature">
+```bash
+git add .
+git commit -m "docs: update landing page"
+git push origin main
 ```
 
-### Icons
+Workflow: `.github/workflows/pages.yml`
 
-Using emoji icons for simplicity. Can replace with:
-- Font Awesome
-- Heroicons
-- Custom SVG
+### Manual
 
-## SEO
-
-Update meta tags in `<head>`:
-
-```html
-<meta name="description" content="Your description">
-<meta property="og:title" content="Your title">
-<meta property="og:description" content="Your description">
+```bash
+npm run build
+# Upload dist/ to hosting
 ```
 
-## Analytics
+## Custom Domain
 
-Add analytics tracking code before `</head>`:
+The site is configured for: **https://swarmcracker.restuhaqza.dev**
 
-```html
-<!-- Google Analytics -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=GA_MEASUREMENT_ID"></script>
-```
+The CNAME file is in the root of `docs/site/`.
 
-## Troubleshooting
+## Features
 
-### Site not updating
-
-1. Check workflow status: https://github.com/restuhaqza/SwarmCracker/actions
-2. Verify `docs/site/` path in workflow
-3. Check GitHub Pages settings in repository
-
-### 404 errors
-
-- Ensure `.nojekyll` file exists
-- Check file paths are relative
-- Verify GitHub Pages is enabled in repository settings
-
-## GitHub Pages Settings
-
-Enable in repository:
-1. Settings → Pages
-2. Source: GitHub Actions
-3. Custom domain (optional)
+- ✅ Responsive design (mobile/tablet/desktop)
+- ✅ Dark theme with orange accents
+- ✅ Syntax-highlighted code blocks
+- ✅ Copy-to-clipboard functionality
+- ✅ Smooth scroll navigation
+- ✅ Tabbed installation sections
+- ✅ Interactive hover effects
+- ✅ SEO optimized meta tags
+- ✅ Fast build times with Vite
+- ✅ Production-optimized build
 
 ## License
 
-Same as SwarmCracker (Apache 2.0)
+Apache 2.0 (same as SwarmCracker)
