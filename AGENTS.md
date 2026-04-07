@@ -44,6 +44,7 @@ MicroVM (isolated kernel + workload)
 | **Lifecycle** | `pkg/lifecycle` | VM start/stop/monitor via Firecracker API | 54.4% coverage |
 | **Image** | `pkg/image` | OCI image → root filesystem conversion | 61.2% coverage |
 | **Network** | `pkg/network` | TAP device & bridge management | 35.1% coverage |
+| **Snapshot** | `pkg/snapshot` | VM snapshot/restore lifecycle | ✅ Production ready |
 | **Types** | `pkg/types` | Shared interfaces and data structures | Complete |
 
 ### Data Flow
@@ -259,12 +260,41 @@ swarmcracker run -e APP=prod -e DEBUG=false nginx:latest
 swarmcracker deploy --hosts host1,host2 nginx:latest
 ```
 
+### Snapshot Commands
+
+```bash
+# List all snapshots
+swarmcracker snapshot list
+
+# Create a snapshot of running VM
+swarmcracker snapshot create task-123
+
+# Restore VM from snapshot
+swarmcracker snapshot restore snap-a1b2c3d4e5f67890
+
+# Delete a snapshot
+swarmcracker snapshot delete snap-a1b2c3d4e5f67890
+
+# Cleanup old snapshots
+swarmcracker snapshot cleanup --max-age 24h
+```
+
 ### Global Flags
 
 - `--config, -c` - Config file path
 - `--log-level` - debug, info, warn, error
 - `--kernel` - Override kernel path
 - `--rootfs-dir` - Override rootfs directory
+- `--ssh-key` - SSH key for remote deployment
+
+### Snapshot Flags
+
+- `--socket` - Firecracker API socket path
+- `--service` - SwarmKit service ID (metadata)
+- `--node` - Node ID (metadata)
+- `--vcpus` - vCPU count (metadata)
+- `--memory` - Memory in MB (metadata)
+- `--max-age` - Snapshot age for cleanup (e.g., 24h, 7d)
 
 ---
 
@@ -302,6 +332,102 @@ swarmcracker deploy --hosts host1,host2 nginx:latest
 4. **docs/INSTALL.md**: Setup instructions
 5. **PROJECT.md**: Status and roadmap updates
 6. **docs/ORGANIZATION.md**: Docs structure
+
+---
+
+## 📸 Snapshot Feature
+
+### Overview
+
+SwarmCracker supports full VM snapshot/restore functionality for Firecracker v1.14.x+.
+
+**Use Cases:**
+- Fast VM restore (2-3x faster than cold boot)
+- VM state preservation before updates
+- Development workflow (save/restore clean states)
+- Future: Live migration support
+
+### How It Works
+
+1. **Pause VM** - `PATCH /vm {"state": "Paused"}`
+2. **Create Snapshot** - `PUT /snapshot/create` (saves memory + state)
+3. **Store Files** - `vm.state` (~15KB) + `vm.mem` (VM memory size)
+4. **Restore** - `PUT /snapshot/load` with `resume_vm: true`
+5. **Auto-Resume** - VM continues from exact state
+
+### Firecracker v1.14.x API Changes
+
+| Operation | Old API (< v1.10) | New API (v1.14.x) |
+|-----------|------------------|-------------------|
+| Pause VM | `PUT /vm/pause` | `PATCH /vm {"state": "Paused"}` |
+| Resume VM | `PUT /vm/resume` | `PATCH /vm {"state": "Resumed"}` |
+| Create Snapshot | `mem_backend` object | `snapshot_type` + `mem_file_path` |
+| Load Snapshot | Basic format | Added `resume_vm` flag |
+
+### Implementation Details
+
+**Package:** `pkg/snapshot/snapshot.go`
+
+**Key Functions:**
+- `pauseVM()` - Pause VM before snapshot
+- `resumeVM()` - Resume VM after restore
+- `CreateSnapshot()` - Create full snapshot (auto-pauses VM)
+- `RestoreFromSnapshot()` - Restore and auto-resume
+- `ListSnapshots()` - List with filters (service, task, node)
+- `DeleteSnapshot()` - Delete and free disk space
+- `CleanupOldSnapshots()` - Remove snapshots older than max age
+
+**Configuration:**
+```yaml
+snapshot:
+  enabled: true
+  snapshot_dir: /var/lib/firecracker/snapshots
+  max_snapshots: 3        # Per service
+  max_age: 168h           # 7 days
+  auto_snapshot: false    # Auto-snapshot on start
+```
+
+### Testing
+
+**Unit Tests:** `pkg/snapshot/snapshot_test.go` (20+ tests)
+
+**Integration Tests:** `test/integration/snapshot_integration_test.go`
+- TestIntegration_Snapshot_CreateAndRestore
+- TestIntegration_Snapshot_CleanupOldSnapshots
+- TestIntegration_Snapshot_MaxSnapshotsEnforcement
+- TestIntegration_Snapshot_ChecksumVerification
+
+**Real Cluster Test:** `infrastructure/ansible/playbooks/test-snapshot.yml`
+
+**Test Results:**
+```bash
+# All tests pass
+✅ VM Started: True
+✅ Snapshot Created: True (15KB state, 256MB memory)
+✅ VM Restored: True
+✅ Restored VM Running: True
+```
+
+### Documentation
+
+- `docs/snapshot-cli-guide.md` - CLI usage guide
+- `docs/snapshot-complete.md` - Complete workflow
+- `docs/snapshot-resolution.md` - Issue resolution
+- `docs/snapshot-test-report.md` - Test results
+
+### Known Limitations
+
+1. **VM must be paused** - Required before snapshot (handled automatically)
+2. **Network state** - Network connections may not survive restore
+3. **Rootfs path** - Must be accessible at same path on restore
+4. **Firecracker version** - Requires v1.14.0+ for current API
+
+### Security Notes
+
+- Snapshot files are trusted by Firecracker
+- Encrypt snapshots at rest if containing sensitive data
+- Restrict access to snapshot directory
+- Verify checksums on restore (automatic)
 
 ---
 
