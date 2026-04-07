@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -25,38 +26,143 @@ import (
 // VMMManager manages Firecracker VM processes.
 type VMMManager struct {
 	firecrackerPath string
+	jailerPath      string
 	socketDir       string
+	useJailer       bool
+	jailerConfig    *jailer.Config
+	jailer          *jailer.Jailer
+	cgroupMgr       *jailer.CgroupManager
 	processes       map[string]*exec.Cmd
 	processMutex    sync.Mutex
 	logger          zerolog.Logger
 }
 
+// VMMManagerConfig holds VMM manager configuration.
+type VMMManagerConfig struct {
+	FirecrackerPath string
+	JailerPath      string
+	SocketDir       string
+	UseJailer       bool
+	JailerUID       int
+	JailerGID       int
+	JailerChrootDir string
+	CgroupVersion   string
+	EnableCgroups   bool
+	ResourceLimits  jailer.ResourceLimits
+}
+
 // NewVMMManager creates a new VMM manager.
 func NewVMMManager(firecrackerPath, socketDir string) (*VMMManager, error) {
+	return NewVMMManagerWithConfig(&VMMManagerConfig{
+		FirecrackerPath: firecrackerPath,
+		SocketDir:       socketDir,
+		UseJailer:       false,
+	})
+}
+
+// NewVMMManagerWithConfig creates a VMM manager with advanced configuration.
+func NewVMMManagerWithConfig(cfg *VMMManagerConfig) (*VMMManager, error) {
 	// Resolve firecracker binary path
-	path := firecrackerPath
-	if path == "" {
+	firecrackerPath := cfg.FirecrackerPath
+	if firecrackerPath == "" {
 		var err error
-		path, err = exec.LookPath("firecracker")
+		firecrackerPath, err = exec.LookPath("firecracker")
 		if err != nil {
 			return nil, fmt.Errorf("firecracker binary not found: %w", err)
 		}
 	}
 
-	return &VMMManager{
-		firecrackerPath: path,
-		socketDir:       socketDir,
+	v := &VMMManager{
+		firecrackerPath: firecrackerPath,
+		socketDir:       cfg.SocketDir,
+		useJailer:       cfg.UseJailer,
 		processes:       make(map[string]*exec.Cmd),
 		logger:          log.With().Str("component", "vmm-manager").Logger(),
-	}, nil
+	}
+
+	// Initialize jailer if enabled
+	if cfg.UseJailer {
+		v.logger.Info().Msg("Jailer mode enabled")
+
+		// Resolve jailer path
+		jailerPath := cfg.JailerPath
+		if jailerPath == "" {
+			var err error
+			jailerPath, err = exec.LookPath("jailer")
+			if err != nil {
+				return nil, fmt.Errorf("jailer binary not found: %w", err)
+			}
+		}
+		v.jailerPath = jailerPath
+
+		// Set defaults for jailer config
+		jailerUID := cfg.JailerUID
+		if jailerUID == 0 {
+			jailerUID = 1000
+		}
+		jailerGID := cfg.JailerGID
+		if jailerGID == 0 {
+			jailerGID = 1000
+		}
+		jailerChrootDir := cfg.JailerChrootDir
+		if jailerChrootDir == "" {
+			jailerChrootDir = "/var/lib/swarmcracker/jailer"
+		}
+		cgroupVersion := cfg.CgroupVersion
+		if cgroupVersion == "" {
+			cgroupVersion = jailer.DetectCgroupVersion()
+		}
+
+		v.jailerConfig = &jailer.Config{
+			FirecrackerPath: firecrackerPath,
+			JailerPath:      jailerPath,
+			ChrootBaseDir:   jailerChrootDir,
+			UID:             jailerUID,
+			GID:             jailerGID,
+			CgroupVersion:   cgroupVersion,
+			EnableSeccomp:   true,
+		}
+
+		// Create jailer instance
+		var err error
+		v.jailer, err = jailer.New(v.jailerConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create jailer: %w", err)
+		}
+
+		// Create cgroup manager if enabled
+		if cfg.EnableCgroups {
+			v.cgroupMgr, err = jailer.NewCgroupManager("")
+			if err != nil {
+				v.logger.Warn().Err(err).Msg("Failed to create cgroup manager, continuing without cgroups")
+			}
+		}
+
+		v.logger.Info().
+			Str("jailer_path", jailerPath).
+			Str("chroot_dir", jailerChrootDir).
+			Str("cgroup_version", cgroupVersion).
+			Msg("Jailer initialized")
+	}
+
+	return v, nil
 }
 
 // Start starts a Firecracker VM for the given task.
 func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interface{}) error {
 	v.logger.Info().
 		Str("task_id", task.ID).
+		Bool("jailer", v.useJailer).
 		Msg("Starting Firecracker VM")
 
+	if v.useJailer {
+		return v.startWithJailer(ctx, task, config)
+	}
+	return v.startDirect(ctx, task, config)
+}
+
+// startDirect starts Firecracker without jailer (legacy mode).
+func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config interface{}) error {
 	// Create socket directory
 	if err := os.MkdirAll(v.socketDir, 0755); err != nil {
 		return fmt.Errorf("failed to create socket dir: %w", err)
@@ -73,8 +179,6 @@ func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interfa
 	}()
 
 	// Start Firecracker process
-	// Note: We use a background context instead of ctx to avoid cancelling Firecracker
-	// when the request context completes. Firecracker should run until explicitly stopped.
 	bgCtx := context.Background()
 	cmd := exec.CommandContext(bgCtx, v.firecrackerPath,
 		"--api-sock", socketPath,
@@ -112,6 +216,97 @@ func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interfa
 		Str("task_id", task.ID).
 		Str("socket", socketPath).
 		Msg("Firecracker VM started")
+
+	return nil
+}
+
+// startWithJailer starts Firecracker inside jailer with isolation.
+func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, config interface{}) error {
+	// Parse config to extract VM settings
+	cfg, ok := config.(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("invalid config type: %T", config)
+	}
+
+	// Extract VM configuration
+	machineConfig, ok := cfg["machine-config"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("missing machine-config in config")
+	}
+
+	bootSource, ok := cfg["boot-source"].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("missing boot-source in config")
+	}
+
+	drives, ok := cfg["drives"].([]map[string]interface{})
+	if !ok || len(drives) == 0 {
+		return fmt.Errorf("missing drives in config")
+	}
+
+	// Find rootfs path from drives
+	var rootfsPath string
+	for _, drive := range drives {
+		if isRootDevice, ok := drive["is_root_device"].(bool); ok && isRootDevice {
+			rootfsPath, _ = drive["path_on_host"].(string)
+			break
+		}
+	}
+	if rootfsPath == "" {
+		return fmt.Errorf("rootfs path not found in drives")
+	}
+
+	// Build jailer VM config
+	jailerCfg := jailer.VMConfig{
+		TaskID:     task.ID,
+		VcpuCount:  int(machineConfig["vcpu_count"].(float64)),
+		MemoryMB:   int(machineConfig["mem_size_mib"].(float64)),
+		KernelPath: bootSource["kernel_image_path"].(string),
+		RootfsPath: rootfsPath,
+		BootArgs:   bootSource["boot_args"].(string),
+		HtEnabled:  false, // TODO: Extract from machine config
+	}
+
+	// Start jailed VM
+	process, err := v.jailer.Start(ctx, jailerCfg)
+	if err != nil {
+		return fmt.Errorf("failed to start jailed VM: %w", err)
+	}
+
+	// Apply cgroup limits if enabled
+	if v.cgroupMgr != nil && v.jailerConfig != nil {
+		// Create cgroup with resource limits
+		limits := jailer.ResourceLimits{
+			CPUQuotaUs:  int64(jailerCfg.VcpuCount * 1000000), // 1 CPU per vcpu
+			MemoryMax:   int64(jailerCfg.MemoryMB) * 1024 * 1024,
+			MemoryHigh:  int64(jailerCfg.MemoryMB) * 1024 * 1024 * 90 / 100, // 90% of max
+			IOWeight:    100,
+		}
+
+		if err := v.cgroupMgr.CreateCgroup(task.ID, limits); err != nil {
+			v.logger.Warn().Err(err).Msg("Failed to create cgroup")
+		} else {
+			// Add jailer process to cgroup
+			if err := v.cgroupMgr.AddProcess(task.ID, process.Pid); err != nil {
+				v.logger.Warn().Err(err).Msg("Failed to add process to cgroup")
+			}
+		}
+	}
+
+	// Store process reference (use jailer PID as proxy)
+	v.processMutex.Lock()
+	// Create a wrapper exec.Cmd for compatibility
+	wrapperCmd := &exec.Cmd{
+		Process: &os.Process{Pid: process.Pid},
+	}
+	v.processes[task.ID] = wrapperCmd
+	v.processMutex.Unlock()
+
+	v.logger.Info().
+		Str("task_id", task.ID).
+		Str("socket", process.SocketPath).
+		Int("pid", process.Pid).
+		Msg("Jailed Firecracker VM started")
 
 	return nil
 }
@@ -211,7 +406,21 @@ func (v *VMMManager) waitForSocket(socketPath string, timeout time.Duration) err
 func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	v.logger.Info().
 		Str("task_id", task.ID).
+		Bool("jailer", v.useJailer).
 		Msg("Stopping Firecracker VM gracefully")
+
+	if v.useJailer && v.jailer != nil {
+		// Use jailer's stop method
+		if err := v.jailer.Stop(ctx, task.ID); err != nil {
+			v.logger.Error().Err(err).Msg("Jailer stop failed")
+		}
+		// Clean up cgroup if enabled
+		if v.cgroupMgr != nil {
+			if err := v.cgroupMgr.RemoveCgroup(task.ID); err != nil {
+				v.logger.Warn().Err(err).Msg("Failed to remove cgroup")
+			}
+		}
+	}
 
 	v.processMutex.Lock()
 	defer v.processMutex.Unlock()
@@ -384,7 +593,22 @@ func (v *VMMManager) IsRunning(taskID string) bool {
 func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 	v.logger.Info().
 		Str("task_id", task.ID).
+		Bool("jailer", v.useJailer).
 		Msg("Removing VM resources")
+
+	// Clean up jailer resources if enabled
+	if v.useJailer && v.jailer != nil {
+		// Force stop via jailer
+		if err := v.jailer.ForceStop(ctx, task.ID); err != nil {
+			v.logger.Warn().Err(err).Msg("Jailer force stop failed")
+		}
+		// Clean up cgroup
+		if v.cgroupMgr != nil {
+			if err := v.cgroupMgr.RemoveCgroup(task.ID); err != nil {
+				v.logger.Warn().Err(err).Msg("Failed to remove cgroup")
+			}
+		}
+	}
 
 	v.processMutex.Lock()
 	cmd, ok := v.processes[task.ID]

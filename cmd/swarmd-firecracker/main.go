@@ -148,6 +148,41 @@ func main() {
 			Usage: "Enable debug logging",
 			Value: false,
 		},
+		&cli.BoolFlag{
+			Name:  "enable-jailer",
+			Usage: "Enable Firecracker jailer for enhanced security isolation",
+			Value: false,
+		},
+		&cli.StringFlag{
+			Name:  "jailer-path",
+			Usage: "Path to jailer binary",
+			Value: "/usr/local/bin/jailer",
+		},
+		&cli.IntFlag{
+			Name:  "jailer-uid",
+			Usage: "UID to run jailed Firecracker processes (default: 1000)",
+			Value: 1000,
+		},
+		&cli.IntFlag{
+			Name:  "jailer-gid",
+			Usage: "GID to run jailed Firecracker processes (default: 1000)",
+			Value: 1000,
+		},
+		&cli.StringFlag{
+			Name:  "jailer-chroot-dir",
+			Usage: "Base directory for jailer chroots",
+			Value: "/var/lib/swarmcracker/jailer",
+		},
+		&cli.StringFlag{
+			Name:  "cgroup-version",
+			Usage: "Cgroup version: v1 or v2 (default: auto-detect)",
+			Value: "",
+		},
+		&cli.BoolFlag{
+			Name:  "enable-cgroups",
+			Usage: "Enable cgroup resource limits (requires jailer)",
+			Value: true,
+		},
 		&cli.IntFlag{
 			Name:  "heartbeat-tick",
 			Usage: "Heartbeat tick in seconds",
@@ -188,20 +223,29 @@ func runAgent(ctx *cli.Context) error {
 
 	// Create SwarmCracker executor
 	executorConfig := &swarmkit.Config{
-		FirecrackerPath: "firecracker",
-		KernelPath:      ctx.String("kernel-path"),
-		RootfsDir:       ctx.String("rootfs-dir"),
-		SocketDir:       ctx.String("socket-dir"),
-		DefaultVCPUs:    ctx.Int("default-vcpus"),
-		DefaultMemoryMB: ctx.Int("default-memory"),
-		BridgeName:      ctx.String("bridge-name"),
-		Subnet:          ctx.String("subnet"),
-		BridgeIP:        ctx.String("bridge-ip"),
-		IPMode:          ctx.String("ip-mode"),
-		NATEnabled:      ctx.Bool("nat-enabled"),
-		VXLANEnabled:    ctx.Bool("vxlan-enabled"),
-		VXLANPeers:      parseCommaSeparated(ctx.String("vxlan-peers")),
-		Debug:           ctx.Bool("debug"),
+		FirecrackerPath:  "firecracker",
+		KernelPath:       ctx.String("kernel-path"),
+		RootfsDir:        ctx.String("rootfs-dir"),
+		SocketDir:        ctx.String("socket-dir"),
+		DefaultVCPUs:     ctx.Int("default-vcpus"),
+		DefaultMemoryMB:  ctx.Int("default-memory"),
+		BridgeName:       ctx.String("bridge-name"),
+		Subnet:           ctx.String("subnet"),
+		BridgeIP:         ctx.String("bridge-ip"),
+		IPMode:           ctx.String("ip-mode"),
+		NATEnabled:       ctx.Bool("nat-enabled"),
+		VXLANEnabled:     ctx.Bool("vxlan-enabled"),
+		VXLANPeers:       parseCommaSeparated(ctx.String("vxlan-peers")),
+		Debug:            ctx.Bool("debug"),
+		StateDir:         stateDir,
+		// Jailer configuration
+		EnableJailer:     ctx.Bool("enable-jailer"),
+		JailerPath:       ctx.String("jailer-path"),
+		JailerUID:        ctx.Int("jailer-uid"),
+		JailerGID:        ctx.Int("jailer-gid"),
+		JailerChrootDir:  ctx.String("jailer-chroot-dir"),
+		CgroupVersion:    ctx.String("cgroup-version"),
+		EnableCgroups:    ctx.Bool("enable-cgroups"),
 	}
 
 	fcExecutor, err := swarmkit.NewExecutor(executorConfig)
@@ -210,11 +254,12 @@ func runAgent(ctx *cli.Context) error {
 	}
 
 	log.G(context.Background()).Infof(
-		"SwarmCracker executor initialized (kernel=%s, rootfs=%s, bridge=%s, vxlan=%v)",
+		"SwarmCracker executor initialized (kernel=%s, rootfs=%s, bridge=%s, vxlan=%v, jailer=%v)",
 		executorConfig.KernelPath,
 		executorConfig.RootfsDir,
 		executorConfig.BridgeName,
 		executorConfig.VXLANEnabled,
+		executorConfig.EnableJailer,
 	)
 
 	if len(executorConfig.VXLANPeers) > 0 {
