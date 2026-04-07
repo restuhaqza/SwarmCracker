@@ -63,6 +63,8 @@ It provides a simple interface to the SwarmCracker executor, allowing you to:
 	rootCmd.PersistentFlags().StringVar(&sshKeyPath, "ssh-key", "", "SSH private key path for remote deployment (default: ~/.ssh/swarmcracker_deploy)")
 
 	// Add subcommands
+	rootCmd.AddCommand(newInitCommand())
+	rootCmd.AddCommand(newJoinCommand())
 	rootCmd.AddCommand(newRunCommand())
 	rootCmd.AddCommand(newDeployCommand())
 	rootCmd.AddCommand(newValidateCommand())

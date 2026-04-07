@@ -35,7 +35,32 @@ Each worker runs `swarmd-firecracker` which translates SwarmKit tasks into Firec
 
 ## Quick Start
 
-### One-Line Install
+### Cluster Initialization (kubeadm-style)
+
+**1. Initialize Manager Node:**
+```bash
+# Auto-detects IP address
+sudo swarmcracker init
+
+# Or specify explicitly
+sudo swarmcracker init --advertise-addr 192.168.1.10:4242
+```
+
+**2. Get Join Token:**
+```bash
+sudo cat /var/lib/swarmkit/join-tokens.txt
+```
+
+**3. Join Worker Nodes:**
+```bash
+sudo swarmcracker join 192.168.1.10:4242 --token SWMTKN-1-...
+```
+
+That's it! Your cluster is ready. See [Cluster Init Guide](docs/getting-started/cluster-init.md) for advanced options.
+
+---
+
+### One-Line Install (Legacy)
 
 The installer downloads the latest release, installs binaries, and guides you through manager or worker setup:
 
@@ -72,6 +97,8 @@ curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/instal
 --install-dir    Binary install dir (default: /usr/local/bin)
 ```
 
+---
+
 ### Prerequisites
 
 - Linux with KVM support (`ls /dev/kvm`)
@@ -86,7 +113,26 @@ cd swarmcracker
 make all
 ```
 
-### Deploy
+### Deploy a Service
+
+Once your cluster is initialized:
+
+```bash
+# Deploy nginx to the cluster
+swarmcracker deploy nginx:alpine --hosts worker-1,worker-2
+
+# Or run a single microVM locally
+swarmcracker run nginx:alpine
+
+# Check status
+swarmcracker status
+```
+
+---
+
+### Manual Setup (Advanced)
+
+For manual control over SwarmKit components:
 
 **1. Start SwarmKit manager:**
 ```bash

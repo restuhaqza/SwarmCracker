@@ -37,6 +37,12 @@ SUBNET="${SUBNET:-192.168.127.0/24}"
 BRIDGE_IP="${BRIDGE_IP:-192.168.127.1/24}"
 KERNEL_PATH="${KERNEL_PATH:-/usr/share/firecracker/vmlinux}"
 ROOTFS_DIR="${ROOTFS_DIR:-/var/lib/firecracker/rootfs}"
+ADVERTISE_ADDR="${ADVERTISE_ADDR:-}"
+VXLAN_ENABLED="${VXLAN_ENABLED:-false}"
+VXLAN_PEERS="${VXLAN_PEERS:-}"
+VCPUS="${VCPUS:-}"
+MEMORY="${MEMORY:-}"
+DEBUG_MODE="${DEBUG_MODE:-false}"
 
 # ─── Helper functions ────────────────────────────────────────────────
 detect_arch() {
@@ -458,12 +464,16 @@ SwarmCracker Installer
 
 Usage:
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash
-  install.sh [OPTIONS]
+  install.sh [COMMAND] [OPTIONS]
+
+Commands:
+  init               Initialize a new SwarmCracker cluster (manager node)
+  join               Join an existing cluster (worker node)
 
 Options:
-  --worker           Set up as worker node (non-interactive)
-  --manager ADDR     Manager address for worker (required with --worker)
-  --token TOKEN      Join token for worker (required with --worker)
+  --worker           Set up as worker node (legacy mode)
+  --manager ADDR     Manager address for worker (required with --worker or join)
+  --token TOKEN      Join token for worker (required with --worker or join)
   --hostname NAME    Node hostname
   --bridge NAME      Bridge name (default: swarm-br0)
   --subnet CIDR      Subnet (default: 192.168.127.0/24)
@@ -472,6 +482,12 @@ Options:
   --kernel-path      Kernel path
   --rootfs-dir DIR   Rootfs directory
   --install-dir      Binary install dir (default: /usr/local/bin)
+  --advertise-addr   Address to advertise (auto-detected if not set)
+  --vxlan-enabled    Enable VXLAN overlay networking
+  --vxlan-peers      Comma-separated VXLAN peer IPs
+  --vcpus            Default vCPUs per microVM (default: 1)
+  --memory           Default memory MB per microVM (default: 512)
+  --debug            Enable debug logging
   --version          Print latest version and exit
   -h, --help         Show this help
 
@@ -479,16 +495,35 @@ Examples:
   # Interactive install
   curl -fsSL ... | bash
 
-  # Non-interactive worker
+  # Initialize manager (new way)
+  curl -fsSL ... | bash -s -- init
+
+  # Initialize with VXLAN
+  curl -fsSL ... | bash -s -- init --vxlan-enabled --vxlan-peers 192.168.1.11,192.168.1.12
+
+  # Join worker (new way)
+  curl -fsSL ... | bash -s -- join --manager 192.168.1.10:4242 --token SWMTKN-1-...
+
+  # Legacy worker setup
   curl -fsSL ... | bash -s -- --worker --manager 192.168.1.10:4242 --token SWMTKN-1-...
 EOF
 }
 
 # ─── CLI flag parsing ────────────────────────────────────────────────
 SKIP_MENU=false
+INIT_MODE=false
+JOIN_MODE=false
 
 while [ $# -gt 0 ]; do
     case "${1}" in
+        init)
+            INIT_MODE=true
+            SKIP_MENU=true
+            ;;
+        join)
+            JOIN_MODE=true
+            SKIP_MENU=true
+            ;;
         --worker)
             SKIP_MENU=true
             ;;
@@ -521,6 +556,24 @@ while [ $# -gt 0 ]; do
             ;;
         --install-dir)
             shift; INSTALL_DIR="${1:-}"
+            ;;
+        --advertise-addr)
+            shift; ADVERTISE_ADDR="${1:-}"
+            ;;
+        --vxlan-enabled)
+            VXLAN_ENABLED=true
+            ;;
+        --vxlan-peers)
+            shift; VXLAN_PEERS="${1:-}"
+            ;;
+        --vcpus)
+            shift; VCPUS="${1:-}"
+            ;;
+        --memory)
+            shift; MEMORY="${1:-}"
+            ;;
+        --debug)
+            DEBUG_MODE=true
             ;;
         --version)
             # We need to fetch version, so run minimal version of that
@@ -619,7 +672,90 @@ else
     warn "swarmcracker binary not found in PATH after install"
 fi
 
-# ─── Node setup (skip if --worker was passed with required flags) ────
+# ─── Node setup ──────────────────────────────────────────────────────
+
+# INIT MODE: Initialize new cluster
+if $INIT_MODE; then
+    header "🚀 Initializing SwarmCracker Cluster"
+    
+    # Build init command
+    INIT_CMD="${INSTALL_DIR}/swarmcracker init"
+    
+    [ -n "$ADVERTISE_ADDR" ] && INIT_CMD="$INIT_CMD --advertise-addr $ADVERTISE_ADDR"
+    [ -n "$HOSTNAME_OVERRIDE" ] && INIT_CMD="$INIT_CMD --hostname $HOSTNAME_OVERRIDE"
+    [ -n "$STATE_DIR" ] && INIT_CMD="$INIT_CMD --state-dir $STATE_DIR"
+    [ -n "$BRIDGE_NAME" ] && INIT_CMD="$INIT_CMD --bridge-name $BRIDGE_NAME"
+    [ -n "$SUBNET" ] && INIT_CMD="$INIT_CMD --subnet $SUBNET"
+    [ -n "$BRIDGE_IP" ] && INIT_CMD="$INIT_CMD --bridge-ip $BRIDGE_IP"
+    [ -n "$VCPUS" ] && INIT_CMD="$INIT_CMD --vcpus $VCPUS"
+    [ -n "$MEMORY" ] && INIT_CMD="$INIT_CMD --memory $MEMORY"
+    [ -n "$KERNEL_PATH" ] && INIT_CMD="$INIT_CMD --kernel $KERNEL_PATH"
+    [ -n "$ROOTFS_DIR" ] && INIT_CMD="$INIT_CMD --rootfs-dir $ROOTFS_DIR"
+    [ "$VXLAN_ENABLED" = "true" ] && INIT_CMD="$INIT_CMD --vxlan-enabled"
+    [ -n "$VXLAN_PEERS" ] && INIT_CMD="$INIT_CMD --vxlan-peers $VXLAN_PEERS"
+    [ "$DEBUG_MODE" = "true" ] && INIT_CMD="$INIT_CMD --debug"
+    
+    info "Running: $INIT_CMD"
+    if eval "$INIT_CMD"; then
+        header "✅ Installation & Initialization Complete"
+        printf "\n${GREEN}SwarmCracker cluster is ready!${NC}\n\n"
+        printf "Next steps:\n"
+        printf "  1. Get join token: ${CYAN}sudo cat /var/lib/swarmkit/join-tokens.txt${NC}\n"
+        printf "  2. On workers, run:\n"
+        printf "     ${YELLOW}curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sudo bash -s -- join \\${NC}\n"
+        printf "       ${YELLOW}--manager <MANAGER_IP>:4242 --token <TOKEN>${NC}\n"
+        printf "\n"
+        exit 0
+    else
+        error "Cluster initialization failed"
+        exit 1
+    fi
+fi
+
+# JOIN MODE: Join existing cluster
+if $JOIN_MODE; then
+    header "🔗 Joining SwarmCracker Cluster"
+    
+    if [ -z "$MANAGER_ADDR" ]; then
+        error "--manager <ADDR> is required for join"
+        exit 1
+    fi
+    
+    if [ -z "$JOIN_TOKEN" ]; then
+        error "--token <TOKEN> is required for join"
+        exit 1
+    fi
+    
+    # Build join command
+    JOIN_CMD="${INSTALL_DIR}/swarmcracker join $MANAGER_ADDR --token $JOIN_TOKEN"
+    
+    [ -n "$HOSTNAME_OVERRIDE" ] && JOIN_CMD="$JOIN_CMD --hostname $HOSTNAME_OVERRIDE"
+    [ -n "$STATE_DIR" ] && JOIN_CMD="$JOIN_CMD --state-dir $STATE_DIR"
+    [ -n "$BRIDGE_NAME" ] && JOIN_CMD="$JOIN_CMD --bridge-name $BRIDGE_NAME"
+    [ -n "$SUBNET" ] && JOIN_CMD="$JOIN_CMD --subnet $SUBNET"
+    [ -n "$BRIDGE_IP" ] && JOIN_CMD="$JOIN_CMD --bridge-ip $BRIDGE_IP"
+    [ -n "$VCPUS" ] && JOIN_CMD="$JOIN_CMD --vcpus $VCPUS"
+    [ -n "$MEMORY" ] && JOIN_CMD="$JOIN_CMD --memory $MEMORY"
+    [ -n "$KERNEL_PATH" ] && JOIN_CMD="$JOIN_CMD --kernel $KERNEL_PATH"
+    [ -n "$ROOTFS_DIR" ] && JOIN_CMD="$JOIN_CMD --rootfs-dir $ROOTFS_DIR"
+    [ "$VXLAN_ENABLED" = "true" ] && JOIN_CMD="$JOIN_CMD --vxlan-enabled"
+    [ -n "$VXLAN_PEERS" ] && JOIN_CMD="$JOIN_CMD --vxlan-peers $VXLAN_PEERS"
+    [ "$DEBUG_MODE" = "true" ] && JOIN_CMD="$JOIN_CMD --debug"
+    
+    info "Running: $JOIN_CMD"
+    if eval "$JOIN_CMD"; then
+        header "✅ Installation & Join Complete"
+        printf "\n${GREEN}Node joined the cluster successfully!${NC}\n\n"
+        printf "Check status: ${CYAN}swarmcracker status${NC}\n"
+        printf "View logs: ${CYAN}sudo journalctl -u swarmcracker-worker -f${NC}\n\n"
+        exit 0
+    else
+        error "Failed to join cluster"
+        exit 1
+    fi
+fi
+
+# LEGACY WORKER MODE (for backward compatibility)
 if $SKIP_MENU; then
     if [ -z "$MANAGER_ADDR" ] || [ -z "$JOIN_TOKEN" ]; then
         error "--worker requires --manager <ADDR> and --token <TOKEN>"
