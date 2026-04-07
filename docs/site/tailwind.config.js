@@ -19,6 +19,10 @@ export default {
           card: '#111625',
         },
         border: '#2D3748',
+        text: {
+          primary: '#FFFFFF',
+          secondary: '#A0AEC0',
+        }
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
@@ -26,7 +30,6 @@ export default {
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'hero-gradient': 'linear-gradient(135deg, #FF6B35 0%, #FF8E53 100%)',
       }
     },
   },
