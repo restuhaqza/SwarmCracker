@@ -38,7 +38,7 @@
 
 - name: Verify existing firecracker binary works
   command: "{{ firecracker_install_dir }}/firecracker --version"
- register: fc_check
+  register: fc_check
   changed_when: false
   failed_when: false
   when: fc_binary.stat.exists and (fc_binary.stat.size is not defined or fc_binary.stat.size >= 1000)
