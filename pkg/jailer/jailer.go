@@ -152,13 +152,35 @@ func New(cfg *Config) (*Jailer, error) {
 		cfg.CgroupVersion = "v2"
 	}
 
-	// Verify binaries exist
-	if _, err := os.Stat(cfg.FirecrackerPath); err != nil {
-		return nil, fmt.Errorf("Firecracker binary not found at %s: %w", cfg.FirecrackerPath, err)
+	// Resolve Firecracker binary path
+	firecrackerPath := cfg.FirecrackerPath
+	if !filepath.IsAbs(firecrackerPath) {
+		resolved, err := exec.LookPath(firecrackerPath)
+		if err != nil {
+			return nil, fmt.Errorf("Firecracker binary not found: %w", err)
+		}
+		firecrackerPath = resolved
 	}
-	if _, err := os.Stat(cfg.JailerPath); err != nil {
-		return nil, fmt.Errorf("Jailer binary not found at %s: %w", cfg.JailerPath, err)
+	if _, err := os.Stat(firecrackerPath); err != nil {
+		return nil, fmt.Errorf("Firecracker binary not found at %s: %w", firecrackerPath, err)
 	}
+
+	// Resolve Jailer binary path
+	jailerPath := cfg.JailerPath
+	if !filepath.IsAbs(jailerPath) {
+		resolved, err := exec.LookPath(jailerPath)
+		if err != nil {
+			return nil, fmt.Errorf("Jailer binary not found: %w", err)
+		}
+		jailerPath = resolved
+	}
+	if _, err := os.Stat(jailerPath); err != nil {
+		return nil, fmt.Errorf("Jailer binary not found at %s: %w", jailerPath, err)
+	}
+
+	// Update config with resolved paths
+	cfg.FirecrackerPath = firecrackerPath
+	cfg.JailerPath = jailerPath
 
 	// Create chroot base directory
 	if err := os.MkdirAll(cfg.ChrootBaseDir, 0755); err != nil {
