@@ -490,27 +490,48 @@ func (m *Manager) enforceMaxSnapshots(serviceID string) {
 
 // --- Firecracker API calls ---
 
-// callSnapshotCreate calls PUT /snapshot/create on the Firecracker API.
-func callSnapshotCreate(ctx context.Context, socketPath, statePath, memoryPath string) error {
+// pauseVM pauses the VM via PATCH /vm endpoint (Firecracker v1.14.0+).
+func pauseVM(ctx context.Context, socketPath string) error {
 	payload := map[string]interface{}{
+		"state": "Paused",
+	}
+	return patchFirecrackerAPI(ctx, socketPath, "/vm", payload)
+}
+
+// resumeVM resumes the VM via PATCH /vm endpoint (Firecracker v1.14.0+).
+func resumeVM(ctx context.Context, socketPath string) error {
+	payload := map[string]interface{}{
+		"state": "Resumed",
+	}
+	return patchFirecrackerAPI(ctx, socketPath, "/vm", payload)
+}
+
+// callSnapshotCreate calls PUT /snapshot/create on the Firecracker API.
+// For Firecracker v1.14.0+, the API expects snapshot_type, snapshot_path, and mem_file_path.
+// The VM must be paused before calling this.
+func callSnapshotCreate(ctx context.Context, socketPath, statePath, memoryPath string) error {
+	// Pause VM first (required in v1.14.0+)
+	if err := pauseVM(ctx, socketPath); err != nil {
+		return fmt.Errorf("failed to pause VM: %w", err)
+	}
+
+	payload := map[string]interface{}{
+		"snapshot_type": "Full",
 		"snapshot_path": statePath,
-		"mem_backend": map[string]interface{}{
-			"backend_type": "File",
-			"backend_path": memoryPath,
-		},
+		"mem_file_path": memoryPath,
 	}
 
 	return putFirecrackerAPI(ctx, socketPath, "/snapshot/create", payload)
 }
 
 // callSnapshotLoad calls PUT /snapshot/load on the Firecracker API.
+// For Firecracker v1.14.0+, the API expects snapshot_path and mem_file_path.
+// The resume_vm flag automatically resumes the VM after loading.
 func callSnapshotLoad(ctx context.Context, socketPath, statePath, memoryPath string) error {
 	payload := map[string]interface{}{
 		"snapshot_path": statePath,
-		"mem_backend": map[string]interface{}{
-			"backend_type": "File",
-			"backend_path": memoryPath,
-		},
+		"mem_file_path": memoryPath,
+		"resume_vm":     true,
 	}
 
 	return putFirecrackerAPI(ctx, socketPath, "/snapshot/load", payload)
@@ -535,6 +556,38 @@ func putFirecrackerAPI(ctx context.Context, socketPath, apiPath string, payload 
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut,
+		"http://localhost"+apiPath,
+		strings.NewReader(string(body)),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("API request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status %d for %s: %s", resp.StatusCode, apiPath, string(respBody))
+	}
+
+	return nil
+}
+
+// patchFirecrackerAPI sends a PATCH request to the Firecracker API over a Unix socket.
+func patchFirecrackerAPI(ctx context.Context, socketPath, apiPath string, payload interface{}) error {
+	client := newUnixHTTPClient(socketPath, 30*time.Second)
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
 		"http://localhost"+apiPath,
 		strings.NewReader(string(body)),
 	)

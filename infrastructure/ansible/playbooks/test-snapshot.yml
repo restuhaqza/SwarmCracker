@@ -1,0 +1,302 @@
+---
+# Test Snapshot Feature on Real Firecracker VMs
+# 
+# This playbook:
+# 1. Verifies Firecracker is installed and running
+# 2. Creates a test MicroVM
+# 3. Creates a snapshot of the running VM
+# 4. Stops the VM
+# 5. Restores from snapshot
+# 6. Verifies the VM is running again
+#
+# Usage:
+#   ansible-playbook -i inventory/libvirt test-snapshot.yml --limit swarm-worker-1
+
+- name: Test Snapshot Feature on Firecracker VMs
+  hosts: swarm-worker-1
+  become: true
+  gather_facts: true
+
+  vars:
+    test_vm_id: "test-snapshot-vm-001"
+    test_socket: "/var/run/firecracker/{{ test_vm_id }}.sock"
+    test_state_dir: "/var/lib/firecracker/snapshots/{{ test_vm_id }}"
+    kernel_path: "/usr/share/firecracker/vmlinux"
+    rootfs_path: "/var/lib/firecracker/rootfs/test-snapshot.ext4"
+    snapshot_dir: "/var/lib/firecracker/snapshots"
+
+  tasks:
+    - name: Check Firecracker is installed
+      command: which firecracker
+      register: fc_check
+      changed_when: false
+
+    - name: Display Firecracker version
+      command: firecracker --version
+      register: fc_version
+      changed_when: false
+
+    - name: Print Firecracker info
+      debug:
+        msg: "Firecracker found: {{ fc_check.stdout }} ({{ fc_version.stdout_lines[0] }})"
+
+    - name: Check kernel is available
+      stat:
+        path: "{{ kernel_path }}"
+      register: kernel_stat
+
+    - name: Fail if kernel not found
+      fail:
+        msg: "Kernel not found at {{ kernel_path }}"
+      when: not kernel_stat.stat.exists
+
+    - name: Create test rootfs (100MB ext4)
+      shell: |
+        set -e
+        mkdir -p $(dirname {{ rootfs_path }})
+        if [ ! -f {{ rootfs_path }} ]; then
+          dd if=/dev/zero of={{ rootfs_path }} bs=1M count=100
+          mkfs.ext4 -F {{ rootfs_path }}
+        fi
+      args:
+        creates: "{{ rootfs_path }}"
+      register: rootfs_create
+
+    - name: Create snapshot directory
+      file:
+        path: "{{ snapshot_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Create Firecracker config for test VM
+      copy:
+        dest: /tmp/firecracker-test-config.json
+        content: |
+          {
+            "boot_source": {
+              "kernel_image_path": "{{ kernel_path }}",
+              "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"
+            },
+            "drives": [
+              {
+                "drive_id": "rootfs",
+                "path_on_host": "{{ rootfs_path }}",
+                "is_root_device": true,
+                "is_read_only": false
+              }
+            ],
+            "machine_config": {
+              "vcpu_count": 1,
+              "mem_size_mib": 256,
+              "smt": false
+            }
+          }
+      register: config_create
+
+    - name: Clean up old test socket if exists
+      file:
+        path: "{{ test_socket }}"
+        state: absent
+
+    - name: Start Firecracker VM for testing
+      shell: |
+        set -e
+        firecracker --api-sock {{ test_socket }} < /dev/null > /tmp/fc-test.log 2>&1 &
+        FC_PID=$!
+        sleep 2
+        # Configure VM via API (Firecracker v1.14.0 format)
+        # Boot source
+        curl -s -X PUT --unix-socket {{ test_socket }} http://localhost/boot-source \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "kernel_image_path": "{{ kernel_path }}",
+            "boot_args": "console=ttyS0 reboot=k panic=1 pci=off"
+          }'
+        # Drives
+        curl -s -X PUT --unix-socket {{ test_socket }} http://localhost/drives/rootfs \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "drive_id": "rootfs",
+            "path_on_host": "{{ rootfs_path }}",
+            "is_root_device": true,
+            "is_read_only": false
+          }'
+        # Machine config
+        curl -s -X PUT --unix-socket {{ test_socket }} http://localhost/machine-config \
+          -H 'Content-Type: application/json' \
+          -d '{"vcpu_count":1,"mem_size_mib":256,"smt":false}'
+        # Start instance
+        curl -s -X PUT --unix-socket {{ test_socket }} http://localhost/actions \
+          -H 'Content-Type: application/json' \
+          -d '{"action_type":"InstanceStart"}'
+        echo $FC_PID
+      register: vm_start
+      changed_when: true
+
+    - name: Wait for VM to initialize
+      wait_for:
+        timeout: 5
+      when: vm_start.rc == 0
+
+    - name: Verify VM is running
+      shell: |
+        curl -s --unix-socket {{ test_socket }} http://localhost/ || echo "FAILED"
+      register: vm_status
+      changed_when: false
+      failed_when: false
+
+    - name: Print VM status
+      debug:
+        msg: "VM Status: {{ vm_status.stdout }}"
+
+    - name: Create snapshot directory for this VM
+      file:
+        path: "{{ test_state_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Pause VM before snapshot (PATCH /vm)
+      shell: |
+        # Pause the VM - CORRECT API for v1.14.0+
+        PAUSE_RESULT=$(curl -s -X PATCH --unix-socket {{ test_socket }} http://localhost/vm \
+          -H 'Content-Type: application/json' \
+          -d '{"state": "Paused"}')
+        echo "Pause result: $PAUSE_RESULT"
+        
+        # Verify VM is paused
+        VM_STATE=$(curl -s --unix-socket {{ test_socket }} http://localhost/)
+        echo "VM state after pause: $VM_STATE"
+        
+        # Check if pause was successful
+        if echo "$VM_STATE" | grep -q '"state":"Paused"'; then
+          echo "VM successfully paused"
+        else
+          echo "VM pause may have failed, continuing anyway..."
+        fi
+      register: vm_pause
+      changed_when: true
+      failed_when: false
+
+    - name: Create snapshot via Firecracker API (v1.14.0 format)
+      shell: |
+        set -e
+        SNAPSHOT_RESULT=$(curl -s -X PUT --unix-socket {{ test_socket }} http://localhost/snapshot/create \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "snapshot_type": "Full",
+            "snapshot_path": "{{ test_state_dir }}/vm.state",
+            "mem_file_path": "{{ test_state_dir }}/vm.mem"
+          }')
+        echo "Snapshot result: $SNAPSHOT_RESULT"
+        
+        # Check if snapshot was successful (no fault_message)
+        if echo "$SNAPSHOT_RESULT" | grep -q "fault_message"; then
+          echo "Snapshot failed: $SNAPSHOT_RESULT"
+          exit 1
+        fi
+        echo "Snapshot created successfully"
+      register: snapshot_create
+      changed_when: true
+      failed_when: false
+
+    - name: Print snapshot result
+      debug:
+        msg: "Snapshot create response: {{ snapshot_create.stdout | default('No output') }}"
+
+    - name: Check snapshot files exist
+      stat:
+        path: "{{ item }}"
+      loop:
+        - "{{ test_state_dir }}/vm.state"
+        - "{{ test_state_dir }}/vm.mem"
+      register: snapshot_files
+
+    - name: Print snapshot file sizes
+      debug:
+        msg: >
+          {% for f in snapshot_files.results %}
+          {{ f.item | basename }}: {% if f.stat.exists %}{{ f.stat.size }} bytes{% else %}NOT FOUND{% endif %}
+          {% endfor %}
+
+    - name: Stop the VM (kill process)
+      shell: |
+        pkill -f "firecracker.*{{ test_vm_id }}" || exit 0
+      register: stop_vm
+      changed_when: true
+      failed_when: false
+
+    - name: Wait for VM to stop
+      wait_for:
+        timeout: 3
+
+    - name: Restore VM from snapshot (v1.14.0 workflow)
+      shell: |
+        set -e
+        # Remove old socket
+        rm -f {{ test_socket }}
+        
+        # Start Firecracker WITHOUT --snapshot flag (v1.14.0 change)
+        firecracker --api-sock {{ test_socket }} < /dev/null > /tmp/fc-restore.log 2>&1 &
+        FC_PID=$!
+        sleep 2
+        
+        # Load snapshot with resume_vm=true (v1.14.0 format)
+        LOAD_RESULT=$(curl -s -X PUT --unix-socket {{ test_socket }} http://localhost/snapshot/load \
+          -H 'Content-Type: application/json' \
+          -d '{
+            "snapshot_path": "{{ test_state_dir }}/vm.state",
+            "mem_file_path": "{{ test_state_dir }}/vm.mem",
+            "resume_vm": true
+          }')
+        echo "Load result: $LOAD_RESULT"
+        
+        # Check if load was successful
+        if echo "$LOAD_RESULT" | grep -q "fault_message"; then
+          echo "Snapshot load failed: $LOAD_RESULT"
+          exit 1
+        fi
+        
+        # Verify VM is running
+        sleep 2
+        VM_STATE=$(curl -s --unix-socket {{ test_socket }} http://localhost/)
+        echo "VM state after restore: $VM_STATE"
+        
+        echo $FC_PID
+      register: vm_restore
+      changed_when: true
+      failed_when: false
+
+    - name: Print restore result
+      debug:
+        msg: "Restore exit code: {{ vm_restore.rc }}, Output: {{ vm_restore.stdout }}"
+
+    - name: Verify restored VM is running
+      shell: |
+        curl -s --unix-socket {{ test_socket }} http://localhost/ || echo "FAILED"
+      register: restored_vm_status
+      changed_when: false
+      failed_when: false
+
+    - name: Print restored VM status
+      debug:
+        msg: "Restored VM Status: {{ restored_vm_status.stdout }}"
+
+    - name: Cleanup - Stop restored VM
+      shell: |
+        pkill -f "firecracker.*{{ test_socket }}" || exit 0
+        rm -f {{ test_socket }}
+      changed_when: true
+      ignore_errors: true
+
+    - name: Print test summary
+      debug:
+        msg: |
+          === SNAPSHOT TEST SUMMARY ===
+          Firecracker Version: {{ fc_version.stdout_lines[0] }}
+          VM Started: {{ vm_start.rc == 0 }}
+          Snapshot Created: {{ snapshot_create.rc == 0 }}
+          State File Size: {{ snapshot_files.results[0].stat.size | default('N/A') }} bytes
+          Memory File Size: {{ snapshot_files.results[1].stat.size | default('N/A') }} bytes
+          VM Restored: {{ vm_restore.rc == 0 }}
+          Restored VM Running: {{ 'FAILED' not in restored_vm_status.stdout }}
+          ===============================
