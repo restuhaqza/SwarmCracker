@@ -289,6 +289,37 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 		}
 	}
 
+	// Configure drives if provided
+	if drivesRaw, ok := configMap["drives"].([]interface{}); ok {
+		for _, driveRaw := range drivesRaw {
+			drive, ok := driveRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			driveID, _ := drive["drive_id"].(string)
+			if driveID == "" {
+				continue
+			}
+			driveJSON, _ := json.Marshal(drive)
+			req, _ := http.NewRequestWithContext(ctx, "PUT",
+				"http://localhost/drives/"+driveID,
+				bytes.NewReader(driveJSON),
+			)
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return fmt.Errorf("failed to set drive %s: %w", driveID, err)
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("drive %s returned status: %d", driveID, resp.StatusCode)
+			}
+			log.Info().Str("drive_id", driveID).Msg("Drive configured")
+		}
+	}
+
 	return nil
 }
 

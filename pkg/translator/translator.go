@@ -173,11 +173,27 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 		config.Drives = append(config.Drives, drive)
 	}
 
-	// Return as JSON string for easier consumption
-	return tt.configToJSON(config)
+	// Return as map for direct consumption by vmm.go
+	return tt.configToMap(config)
 }
 
-// configToJSON converts VMMConfig to JSON string.
+// configToMap converts VMMConfig to map[string]interface{}.
+func (tt *TaskTranslator) configToMap(config *VMMConfig) (map[string]interface{}, error) {
+	// Use JSON marshal/unmarshal to convert struct to map
+	bytes, err := json.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
+	}
+	
+	var result map[string]interface{}
+	if err := json.Unmarshal(bytes, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
+	}
+	
+	return result, nil
+}
+
+// configToJSON converts VMMConfig to JSON string (kept for compatibility).
 func (tt *TaskTranslator) configToJSON(config *VMMConfig) (string, error) {
 	bytes, err := json.Marshal(config)
 	if err != nil {
