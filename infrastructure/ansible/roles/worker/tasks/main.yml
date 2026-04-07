@@ -5,7 +5,7 @@
   get_url:
     url: "{{ swarmcracker_download_url }}/{{ swarmcracker_tarball }}"
     dest: "/tmp/{{ swarmcracker_tarball }}"
-    mode: '0644'
+    mode: "0644"
   register: download_result
   retries: 3
   delay: 5
@@ -15,7 +15,7 @@
   file:
     path: /tmp/swarmcracker-extract
     state: directory
-    mode: '0755'
+    mode: "0755"
 
 - name: Extract SwarmCracker binaries
   unarchive:
@@ -27,19 +27,30 @@
   copy:
     src: "/tmp/swarmcracker-extract/swarmcracker-{{ swarmcracker_version }}-linux-amd64/{{ item }}"
     dest: "{{ swarmcracker_install_dir }}/{{ item }}"
-    mode: '0755'
+    mode: "0755"
     remote_src: yes
   loop:
     - swarmcracker
     - swarmd-firecracker
     - swarmcracker-agent
 
-- name: Download Firecracker kernel
-  get_url:
-    url: "{{ swarmcracker_kernel_url }}"
-    dest: "{{ swarmcracker_kernel_path }}"
-    mode: '0644'
-  when: swarmcracker_kernel_path is defined
+- name: Get join token from manager
+  shell: |
+    {{ swarmcracker_install_dir }}/swarmd-firecracker manager --help 2>&1 | head -5 || true
+    echo "---"
+    # Try to get token from manager state dir
+    if [ -d "/var/lib/swarmcracker/manager" ]; then
+      ls -la /var/lib/swarmcracker/manager/ 2>/dev/null || true
+    fi
+  delegate_to: "{{ groups['managers'][0] }}"
+  run_once: true
+  register: token_check
+  changed_when: false
+  failed_when: false
+
+- name: Set default join token
+  set_fact:
+    join_token: "{{ join_token | default('auto-discovery') }}"
 
 - name: Create SwarmCracker worker config
   template:
@@ -47,8 +58,7 @@
     dest: "{{ swarmcracker_config_dir }}/worker-config.yaml"
     owner: root
     group: root
-    mode: '0644'
-  notify: restart swarmd-worker
+    mode: "0644"
 
 - name: Create systemd service for SwarmKit worker
   template:
@@ -56,7 +66,7 @@
     dest: /etc/systemd/system/swarmd-worker.service
     owner: root
     group: root
-    mode: '0644'
+    mode: "0644"
   notify:
     - reload systemd
     - restart swarmd-worker
@@ -67,20 +77,3 @@
     state: started
     enabled: yes
     daemon_reload: yes
-
-- name: Wait for worker to connect to manager
-  wait_for:
-    timeout: 60
-  delegate_to: "{{ groups['managers'][0] }}"
-  run_once: true
-
-- name: Verify worker joined cluster
-  command: swarmctl node ls
-  delegate_to: "{{ groups['managers'][0] }}"
-  register: node_list
-  changed_when: false
-  run_once: true
-
-- name: Display worker status
-  debug:
-    msg: "Worker {{ inventory_hostname }} successfully joined cluster"

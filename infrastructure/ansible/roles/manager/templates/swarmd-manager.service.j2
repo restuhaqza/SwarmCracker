@@ -20,10 +20,7 @@ RestartSec=10s
 TimeoutStopSec=30s
 
 # Security hardening
-NoNewPrivileges=yes
-ProtectSystem=strict
-ProtectHome=yes
-ReadWritePaths={{ swarmcracker_state_dir }} {{ swarmcracker_rootfs_dir }} {{ swarmcracker_log_dir }}
+ReadWritePaths={{ swarmcracker_state_dir }} /var/lib/swarmkit /var/run/swarmkit {{ swarmcracker_rootfs_dir }} {{ swarmcracker_log_dir }}
 
 # Resource limits
 LimitNOFILE=65536

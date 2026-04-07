@@ -24,7 +24,9 @@ worker:
   manager_port: {{ worker_manager_port }}
   api_port: {{ worker_api_port }}
   state_dir: {{ worker_state_dir }}
+{% if join_token is defined and join_token != 'auto-discovery' %}
   join_token: "{{ join_token }}"
+{% endif %}
 
 logging:
   level: {{ swarmcracker_log_level }}
