@@ -60,7 +60,16 @@ type Config struct {
 	ReservedCPUs     int    `yaml:"reserved_cpus"`
 	ReservedMemoryMB int    `yaml:"reserved_memory_mb"`
 	MaxImageAgeDays  int    `yaml:"max_image_age_days"`
-	StateDir        string `yaml:"state_dir"`
+	StateDir         string `yaml:"state_dir"`
+
+	// Jailer configuration
+	EnableJailer    bool   `yaml:"enable_jailer"`
+	JailerPath      string `yaml:"jailer_path"`
+	JailerUID       int    `yaml:"jailer_uid"`
+	JailerGID       int    `yaml:"jailer_gid"`
+	JailerChrootDir string `yaml:"jailer_chroot_dir"`
+	CgroupVersion   string `yaml:"cgroup_version"`
+	EnableCgroups   bool   `yaml:"enable_cgroups"`
 }
 
 // NewExecutor creates a new SwarmKit executor backed by SwarmCracker.
@@ -133,9 +142,30 @@ func NewExecutor(config *Config) (*Executor, error) {
 	)
 
 	// Create VMM manager
-	vmmMgr, err := NewVMMManager(config.FirecrackerPath, config.SocketDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create VMM manager: %w", err)
+	var vmmMgr *VMMManager
+	if config.EnableJailer {
+		// Use jailer mode with advanced configuration
+		vmmCfg := &VMMManagerConfig{
+			FirecrackerPath: config.FirecrackerPath,
+			JailerPath:      config.JailerPath,
+			SocketDir:       config.SocketDir,
+			UseJailer:       true,
+			JailerUID:       config.JailerUID,
+			JailerGID:       config.JailerGID,
+			JailerChrootDir: config.JailerChrootDir,
+			CgroupVersion:   config.CgroupVersion,
+			EnableCgroups:   config.EnableCgroups,
+		}
+		vmmMgr, err = NewVMMManagerWithConfig(vmmCfg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create VMM manager with jailer: %w", err)
+		}
+	} else {
+		// Use legacy direct mode
+		vmmMgr, err = NewVMMManager(config.FirecrackerPath, config.SocketDir)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create VMM manager: %w", err)
+		}
 	}
 
 	// Create context for cleanup goroutine
