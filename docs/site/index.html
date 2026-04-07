@@ -521,7 +521,7 @@
             
             <div class="hero-code">
                 <span class="comment"># Initialize a cluster in one command</span><br>
-                <code>curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- init</code><br><br>
+                <code>curl -fsSL https://swarmcracker.restuhaqza.dev/install.sh | sudo bash -s -- init</code><br><br>
                 <span class="comment"># Join workers to the cluster</span><br>
                 <code>swarmcracker join &lt;manager-ip&gt;:4242 --token SWMTKN-1-...</code>
             </div>
@@ -652,7 +652,7 @@
                 <button class="copy-btn" onclick="copyCode('manager-code')">Copy</button>
                 <div id="manager-code">
 <span class="comment"># Initialize a new SwarmCracker cluster</span>
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- init
+curl -fsSL https://swarmcracker.restuhaqza.dev/install.sh | sudo bash -s -- init
 
 <span class="comment"># With VXLAN overlay (multi-node)</span>
 curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- init \
@@ -668,7 +668,7 @@ sudo cat /var/lib/swarmkit/join-tokens.txt
                 <button class="copy-btn" onclick="copyCode('worker-code')">Copy</button>
                 <div id="worker-code">
 <span class="comment"># Join an existing cluster</span>
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- join \
+curl -fsSL https://swarmcracker.restuhaqza.dev/install.sh | sudo bash -s -- join \
   --manager &lt;MANAGER_IP&gt;:4242 \
   --token SWMTKN-1-...
 
@@ -685,7 +685,8 @@ curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/instal
                 <button class="copy-btn" onclick="copyCode('manual-code')">Copy</button>
                 <div id="manual-code">
 <span class="comment"># Download latest release</span>
-wget https://github.com/restuhaqza/SwarmCracker/releases/latest/download/swarmcracker-linux-amd64.tar.gz
+wget https://swarmcracker.restuhaqza.dev/install.sh
+chmod +x install.sh
 
 <span class="comment"># Extract and install</span>
 tar -xzf swarmcracker-linux-amd64.tar.gz
