@@ -99,8 +99,10 @@ Examples:
 }
 
 func runInit(cfg *initConfig) error {
-	log.Info().Msg("Initializing SwarmCracker cluster...")
-
+	fmt.Println()
+	fmt.Println("🔥 Initializing SwarmCracker Cluster")
+	fmt.Println(strings.Repeat("─", 50))
+	
 	// Auto-detect advertise address if not provided
 	if cfg.AdvertiseAddr == "" {
 		addr, err := detectAdvertiseAddress()
@@ -121,32 +123,68 @@ func runInit(cfg *initConfig) error {
 		}
 	}
 
+	// Run pre-flight checks
+	fmt.Println("\nRunning pre-flight checks...")
+	preflightResult, err := RunPreflightChecks("init")
+	if err != nil {
+		return fmt.Errorf("pre-flight checks failed: %w", err)
+	}
+	
+	PrintPreflightResults(preflightResult)
+	
+	if preflightResult.Failed > 0 {
+		fmt.Println("\n[0;31m✗ Pre-flight checks failed. Please fix the issues above and try again.[0m")
+		fmt.Println("\nHint: Run 'swarmcracker init --help' for configuration options.")
+		os.Exit(1)
+	}
+
 	// Step 1: Create directories
-	log.Info().Msg("Creating required directories...")
+	PrintProgress(1, 5, "Creating required directories...")
 	if err := createDirectories(cfg); err != nil {
+		PrintProgressFailed(1, 5, "Creating directories", err)
 		return fmt.Errorf("failed to create directories: %w", err)
 	}
+	PrintProgressComplete(1, 5, "Directories created")
 
 	// Step 2: Generate configuration files
-	log.Info().Msg("Generating configuration files...")
+	PrintProgress(2, 5, "Generating configuration files...")
 	if err := generateConfigFiles(cfg); err != nil {
+		PrintProgressFailed(2, 5, "Generating configuration", err)
 		return fmt.Errorf("failed to generate configuration: %w", err)
 	}
+	PrintProgressComplete(2, 5, "Configuration generated")
 
 	// Step 3: Start the manager service
-	log.Info().Msg("Starting manager service...")
+	PrintProgress(3, 5, "Starting manager service...")
+	
+	// Show spinner while starting
+	spinnerDone := make(chan bool)
+	go Spinner("Starting manager service...", spinnerDone)
+	
 	if err := startManagerService(cfg); err != nil {
+		spinnerDone <- true
+		PrintProgressFailed(3, 5, "Starting manager service", err)
 		return fmt.Errorf("failed to start manager service: %w", err)
 	}
+	spinnerDone <- true
+	PrintProgressComplete(3, 5, "Manager service started")
 
 	// Step 4: Wait for service to be ready and get join tokens
-	log.Info().Msg("Waiting for manager to be ready...")
+	PrintProgress(4, 5, "Waiting for manager to be ready...")
+	spinnerDone = make(chan bool)
+	go Spinner("Waiting for manager...", spinnerDone)
 	time.Sleep(5 * time.Second) // Give it time to start
+	spinnerDone <- true
+	PrintProgressComplete(4, 5, "Manager ready")
 
 	// Step 5: Display join tokens
+	PrintProgress(5, 5, "Generating join tokens...")
 	if err := displayJoinTokens(cfg); err != nil {
+		PrintProgressFailed(5, 5, "Generating join tokens", err)
 		log.Warn().Err(err).Msg("Failed to retrieve join tokens automatically")
 		log.Info().Msg("Join tokens will be available in: " + filepath.Join(cfg.StateDir, "join-tokens.txt"))
+	} else {
+		PrintProgressComplete(5, 5, "Join tokens generated")
 	}
 
 	// Success message

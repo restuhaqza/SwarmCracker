@@ -110,7 +110,9 @@ Examples:
 }
 
 func runJoin(cfg *joinConfig) error {
-	log.Info().Msg("Joining SwarmCracker cluster...")
+	fmt.Println()
+	fmt.Println("🔗 Joining SwarmCracker Cluster")
+	fmt.Println(strings.Repeat("─", 50))
 
 	// Auto-detect advertise address if not provided
 	if cfg.AdvertiseAddr == "" {
@@ -145,33 +147,66 @@ func runJoin(cfg *joinConfig) error {
 		Str("hostname", cfg.Hostname).
 		Msg("Joining cluster")
 
+	// Run pre-flight checks
+	fmt.Println("\nRunning pre-flight checks...")
+	preflightResult, err := RunPreflightChecks("join")
+	if err != nil {
+		return fmt.Errorf("pre-flight checks failed: %w", err)
+	}
+	
+	PrintPreflightResults(preflightResult)
+	
+	if preflightResult.Failed > 0 {
+		fmt.Println("\n[0;31m✗ Pre-flight checks failed. Please fix the issues above and try again.[0m")
+		os.Exit(1)
+	}
+
 	// Step 1: Validate connectivity to manager
-	log.Info().Msg("Validating connectivity to manager...")
+	PrintProgress(1, 5, "Validating connectivity to manager...")
 	if err := validateManagerConnectivity(cfg.ManagerAddr); err != nil {
+		PrintProgressFailed(1, 5, "Validating connectivity", err)
 		return fmt.Errorf("cannot reach manager: %w\nPlease check:\n  - Manager is running\n  - Network connectivity\n  - Firewall rules (port 4242)", err)
 	}
+	PrintProgressComplete(1, 5, "Manager connectivity validated")
 
 	// Step 2: Create directories
-	log.Info().Msg("Creating required directories...")
+	PrintProgress(2, 5, "Creating required directories...")
 	if err := createWorkerDirectories(cfg); err != nil {
+		PrintProgressFailed(2, 5, "Creating directories", err)
 		return fmt.Errorf("failed to create directories: %w", err)
 	}
+	PrintProgressComplete(2, 5, "Directories created")
 
 	// Step 3: Generate configuration files
-	log.Info().Msg("Generating configuration files...")
+	PrintProgress(3, 5, "Generating configuration files...")
 	if err := generateWorkerConfigFiles(cfg); err != nil {
+		PrintProgressFailed(3, 5, "Generating configuration", err)
 		return fmt.Errorf("failed to generate configuration: %w", err)
 	}
+	PrintProgressComplete(3, 5, "Configuration generated")
 
 	// Step 4: Start the worker service
-	log.Info().Msg("Starting worker service...")
+	PrintProgress(4, 5, "Starting worker service...")
+	
+	// Show spinner while starting
+	spinnerDone := make(chan bool)
+	go Spinner("Starting worker service...", spinnerDone)
+	
 	if err := startWorkerService(cfg); err != nil {
+		spinnerDone <- true
+		PrintProgressFailed(4, 5, "Starting worker service", err)
 		return fmt.Errorf("failed to start worker service: %w", err)
 	}
+	spinnerDone <- true
+	PrintProgressComplete(4, 5, "Worker service started")
 
 	// Step 5: Verify node joined successfully
-	log.Info().Msg("Verifying cluster join...")
+	PrintProgress(5, 5, "Verifying cluster join...")
+	spinnerDone = make(chan bool)
+	go Spinner("Verifying cluster join...", spinnerDone)
 	time.Sleep(5 * time.Second) // Give it time to join
+	spinnerDone <- true
+	PrintProgressComplete(5, 5, "Cluster join verified")
 
 	// Success message
 	fmt.Println()
