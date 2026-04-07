@@ -1,27 +1,23 @@
-/* Global Styles - No Tailwind for simplicity */
-:root {
-  --primary: #FF6B35;
-  --primary-dark: #E55A2B;
-  --secondary: #1E3A5F;
-  --accent: #00D4AA;
-  --bg-dark: #0A0E1A;
-  --bg-card: #111625;
-  --text-primary: #FFFFFF;
-  --text-secondary: #A0AEC0;
-  --border: #2D3748;
-}
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+:root {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color-scheme: dark;
+  color: rgba(255, 255, 255, 0.87);
+  background-color: #0A0E1A;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: var(--bg-dark);
-  color: var(--text-primary);
-  line-height: 1.6;
+  margin: 0;
+  min-width: 320px;
   min-height: 100vh;
 }
 
@@ -29,36 +25,44 @@ body {
   width: 100%;
 }
 
-a {
-  color: var(--primary);
-  text-decoration: none;
+@layer utilities {
+  .text-gradient {
+    background: linear-gradient(135deg, #FF6B35 0%, #FF8E53 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  
+  .bg-gradient {
+    background: linear-gradient(135deg, #FF6B35 0%, #FF8E53 100%);
+  }
+  
+  .bg-gradient-radial {
+    background: radial-gradient(var(--tw-gradient-stops));
+  }
 }
 
-a:hover {
-  opacity: 0.9;
-}
-
-/* Code syntax highlighting */
-.code-syntax .comment { color: #6B7280; font-style: italic; }
-.code-syntax .command { color: var(--accent); font-weight: 600; }
-.code-syntax .flag { color: #F472B6; }
-.code-syntax .string { color: #A5F3FC; }
-
-/* Scrollbar */
+/* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--bg-card);
+  background: #111625;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: #2D3748;
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--primary);
+  background: #FF6B35;
 }
+
+/* Code block styling */
+.code-syntax .comment { color: #6B7280; font-style: italic; }
+.code-syntax .command { color: #00D4AA; font-weight: 600; }
+.code-syntax .flag { color: #F472B6; }
+.code-syntax .string { color: #A5F3FC; }
