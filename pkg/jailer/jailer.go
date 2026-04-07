@@ -539,6 +539,11 @@ func (j *Jailer) createDefaultSeccompPolicy(taskID string) (string, error) {
 		]
 	}`
 
+	// Ensure chroot base directory exists
+	if err := os.MkdirAll(j.config.ChrootBaseDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create chroot base dir: %w", err)
+	}
+
 	policyPath := filepath.Join(j.config.ChrootBaseDir, taskID+".seccomp.json")
 	if err := os.WriteFile(policyPath, []byte(policy), 0644); err != nil {
 		return "", fmt.Errorf("failed to write seccomp policy: %w", err)
