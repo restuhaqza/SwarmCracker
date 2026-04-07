@@ -93,9 +93,15 @@ func TestVMMManagerConfigDefaults(t *testing.T) {
 		t.Skip("Firecracker not found, skipping test")
 	}
 
+	jailerPath, err := exec.LookPath("jailer")
+	if err != nil {
+		t.Skip("Jailer not found, skipping test")
+	}
+
 	// Test with minimal config (should use defaults)
 	cfg := &VMMManagerConfig{
 		FirecrackerPath: firecrackerPath,
+		JailerPath:      jailerPath,
 		SocketDir:       filepath.Join(tmpDir, "sockets"),
 		UseJailer:       true,
 		// Other fields intentionally omitted to test defaults
@@ -190,8 +196,7 @@ func TestVMMManagerJailerSocketPath(t *testing.T) {
 		JailerChrootDir: chrootDir,
 	}
 
-	vmm, err := NewVMMManagerWithConfig(cfg)
-	if err != nil {
+	if _, err := NewVMMManagerWithConfig(cfg); err != nil {
 		t.Fatalf("NewVMMManagerWithConfig() error = %v", err)
 	}
 

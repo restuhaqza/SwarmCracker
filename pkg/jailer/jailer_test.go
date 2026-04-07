@@ -3,6 +3,7 @@ package jailer
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -341,9 +342,11 @@ func TestJailerBuildJailerCommand(t *testing.T) {
 func TestJailerBuildJailerCommandWithSeccomp(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create dummy binaries
-	firecrackerPath := filepath.Join(tmpDir, "firecracker")
-	jailerPath := filepath.Join(tmpDir, "jailer")
+	// Create dummy binaries in separate directory
+	binDir := filepath.Join(tmpDir, "bin")
+	os.MkdirAll(binDir, 0755)
+	firecrackerPath := filepath.Join(binDir, "firecracker")
+	jailerPath := filepath.Join(binDir, "jailer")
 	os.WriteFile(firecrackerPath, []byte("fake"), 0755)
 	os.WriteFile(jailerPath, []byte("fake"), 0755)
 
@@ -352,11 +355,12 @@ func TestJailerBuildJailerCommandWithSeccomp(t *testing.T) {
 	os.WriteFile(kernelPath, []byte("kernel"), 0644)
 	os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
 
+	chrootDir := filepath.Join(tmpDir, "chroot")
 	j := &Jailer{
 		config: &Config{
 			FirecrackerPath: firecrackerPath,
 			JailerPath:      jailerPath,
-			ChrootBaseDir:   filepath.Join(tmpDir, "jailer"),
+			ChrootBaseDir:   chrootDir,
 			UID:             1000,
 			GID:             1000,
 			CgroupVersion:   "v2",
@@ -372,27 +376,51 @@ func TestJailerBuildJailerCommandWithSeccomp(t *testing.T) {
 		RootfsPath: rootfsPath,
 	}
 
-	cmd, _, err := j.buildJailerCommand(cfg)
+	cmd, socketPath, err := j.buildJailerCommand(cfg)
 	if err != nil {
 		t.Fatalf("buildJailerCommand() error = %v", err)
 	}
 
+	// Verify command was built
+	if cmd == nil {
+		t.Fatal("Expected non-nil command")
+	}
+
+	// Verify socket path is in chroot directory
+	expectedSocketPattern := filepath.Join(chrootDir, "test-vm-seccomp", "run", "firecracker")
+	if !strings.Contains(socketPath, expectedSocketPattern) {
+		t.Errorf("Socket path %q should contain %q", socketPath, expectedSocketPattern)
+	}
+
 	// Verify seccomp flag is present
 	foundSeccomp := false
+	var policyPath string
 	for i, arg := range cmd.Args {
 		if arg == "--seccomp" && i+1 < len(cmd.Args) {
 			foundSeccomp = true
-			// Verify policy file exists
-			policyPath := cmd.Args[i+1]
-			if _, err := os.Stat(policyPath); err != nil {
-				t.Errorf("Seccomp policy file not found: %v", err)
-			}
+			policyPath = cmd.Args[i+1]
 			break
 		}
 	}
 
 	if !foundSeccomp {
+		t.Logf("Command args: %v", cmd.Args)
 		t.Error("Expected --seccomp flag in jailer command")
+	} else if policyPath != "" {
+		// Verify policy file exists and is valid JSON
+		if _, err := os.Stat(policyPath); err != nil {
+			t.Errorf("Seccomp policy file not found at %q: %v", policyPath, err)
+		} else {
+			// Try to read and parse the policy
+			data, err := os.ReadFile(policyPath)
+			if err != nil {
+				t.Errorf("Failed to read seccomp policy: %v", err)
+			} else if len(data) == 0 {
+				t.Error("Seccomp policy file is empty")
+			} else {
+				t.Logf("Seccomp policy created at %q (%d bytes)", policyPath, len(data))
+			}
+		}
 	}
 }
 
@@ -526,16 +554,21 @@ func TestWaitForSocket(t *testing.T) {
 func TestJailerConfigDefaults(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create dummy binaries
-	firecrackerPath := filepath.Join(tmpDir, "firecracker")
-	jailerPath := filepath.Join(tmpDir, "jailer")
+	// Create dummy binaries in separate directory
+	binDir := filepath.Join(tmpDir, "bin")
+	os.MkdirAll(binDir, 0755)
+	firecrackerPath := filepath.Join(binDir, "firecracker")
+	jailerPath := filepath.Join(binDir, "jailer")
 	os.WriteFile(firecrackerPath, []byte("fake"), 0755)
 	os.WriteFile(jailerPath, []byte("fake"), 0755)
+
+	// Use separate directory for chroot (not conflicting with binary paths)
+	chrootDir := filepath.Join(tmpDir, "chroot")
 
 	config := &Config{
 		FirecrackerPath: firecrackerPath,
 		JailerPath:      jailerPath,
-		ChrootBaseDir:   filepath.Join(tmpDir, "jailer"),
+		ChrootBaseDir:   chrootDir,
 		UID:             1000,
 		GID:             1000,
 		// CgroupVersion intentionally empty to test default
@@ -547,10 +580,22 @@ func TestJailerConfigDefaults(t *testing.T) {
 	}
 	defer j.Close()
 
-	// Verify default cgroup version is set
+	// Verify default cgroup version is set (should auto-detect)
 	if j.config.CgroupVersion == "" {
 		t.Error("Expected default CgroupVersion to be set")
 	}
+
+	// Verify it's either v1 or v2
+	if j.config.CgroupVersion != "v1" && j.config.CgroupVersion != "v2" {
+		t.Errorf("Expected CgroupVersion to be v1 or v2, got %q", j.config.CgroupVersion)
+	}
+
+	// Verify chroot directory was created
+	if _, err := os.Stat(chrootDir); err != nil {
+		t.Errorf("Chroot directory not created: %v", err)
+	}
+
+	t.Logf("Default cgroup version: %s", j.config.CgroupVersion)
 }
 
 // contains checks if a string contains a substring.
