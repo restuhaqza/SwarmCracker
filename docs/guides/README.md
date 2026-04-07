@@ -1,33 +1,65 @@
 # SwarmCracker User Guides
 
-This section contains user-facing documentation for SwarmCracker.
+How-to guides for common tasks and features.
 
-## General Guides
+---
 
-- [Installation Guide](installation.md) - How to install SwarmCracker on your system
-- [Configuration Guide](configuration.md) - Configuring SwarmCracker for your environment
-- [File Management](file-management.md) - Managing files and directories in SwarmCracker
+## 📂 Guide Categories
 
-## SwarmKit Guides
+### Core Guides
 
-SwarmKit-specific documentation has its own section:
+| Guide | Description |
+|-------|-------------|
+| [Build from Source](build-from-source.md) | Compile SwarmCracker from source |
+| [Configuration](configuration.md) | Configure SwarmCracker for your environment |
+| [Rolling Updates](rolling-updates.md) | Deploy updates without downtime |
+| [Multi-Arch Support](multi-arch-support.md) | Deploy on x86_64 and ARM64 |
+| [Init Systems](init-systems.md) | systemd, openrc, and other init systems |
+| [File Management](file-management.md) | Manage files and directories |
 
-- [Deployment Index](swarmkit/DEPLOYMENT_INDEX.md) - 📚 **All deployment resources**
-- [Quick Start Guide](swarmkit/quick-start.md) - 🚀 **Get running in 15 minutes**
-- [Comprehensive Deployment](swarmkit/deployment-comprehensive.md) - 📖 **Production-ready setup**
-- [User Guide](swarmkit/user-guide.md) - Service operations guide
-- [Overview](swarmkit/overview.md) - SwarmKit architecture
+### Feature Guides → [features/](features/)
 
-## Quick Start
+| Guide | Description |
+|-------|-------------|
+| [Snapshot CLI](features/snapshot-cli.md) | VM snapshot commands |
+| [Snapshot Complete](features/snapshot-complete.md) | Full snapshot/restore workflow |
+
+### Networking Guides → [networking/](networking/)
+
+| Guide | Description |
+|-------|-------------|
+| [Swarm Networking](networking/swarm-networking.md) | VXLAN overlays, bridges, cross-node |
+
+### Security Guides → [security/](security/)
+
+| Guide | Description |
+|-------|-------------|
+| [Security Hardening](security/security-hardening.md) | Production security best practices |
+
+### SwarmKit Guides → [swarmkit/](swarmkit/)
+
+| Guide | Description |
+|-------|-------------|
+| [Quick Start](swarmkit/quick-start.md) | 🚀 Get running in 15 minutes |
+| [Overview](swarmkit/overview.md) | SwarmKit architecture |
+| [User Guide](swarmkit/user-guide.md) | Service operations |
+| [Comprehensive Deployment](swarmkit/deployment-comprehensive.md) | Production-ready setup |
+
+---
+
+## 🚀 Quick Start Path
 
 **New to SwarmCracker?**
 
-1. Read the [Installation Guide](installation.md)
-2. Follow the [Quick Start Guide](swarmkit/quick-start.md)
-3. Check out [Configuration Guide](configuration.md) for customization
+1. 📥 [Installation Guide](../getting-started/installation.md)
+2. 🔧 [Configuration](configuration.md)
+3. 🚀 [SwarmKit Quick Start](swarmkit/quick-start.md)
+4. 🔒 [Security Hardening](security/security-hardening.md)
 
-## Need Help?
+---
 
-- Check the [Architecture](../architecture/) section for technical details
-- See [Development](../development/) guides for contributing
-- Review [Test Reports](../reports/) for known issues
+## 🔗 Related Sections
+
+- [Architecture](../architecture/) - Technical design
+- [Testing](../testing/) - Test strategies and results
+- [Development](../development/) - Contributor guides
