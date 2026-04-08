@@ -7,16 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- `CODE_OF_CONDUCT.md` — Contributor Covenant v2.1
-- `SECURITY.md` — Vulnerability reporting and security model
-- `.github/ISSUE_TEMPLATE/bug_report.md` — Bug report template
-- `.github/ISSUE_TEMPLATE/feature_request.md` — Feature request template
-- `.github/PULL_REQUEST_TEMPLATE.md` — PR template
-- `CHANGELOG.md` — This file
+---
 
-### Changed
-- Rewrote `CONTRIBUTING.md` with project-specific development guide
+## [0.6.0] - 2026-04-08
+
+### Added
+- **Jailer cgroup resource limits** — CPU and memory limits via cgroups for jailed VMs
+- **Parent cgroup configuration** — Configurable parent cgroup for jailer VM hierarchy
+- **swarmctl CLI tool** — SwarmKit cluster management (ls-nodes, ls-services, ls-tasks, create-service, rm-service)
+- **SwarmKit control API integration** — mTLS authentication to SwarmKit control socket
+
+### Fixed
+- **Image extraction** — Resolve podman/docker `--quiet` flag container ID parsing
+- **Jailer cgroup version** — Normalize "v2" → "2" for jailer compatibility
+- **Jailer chroot resources** — Copy kernel/rootfs into jailer chroot directory
+- **Jailer socket directory** — Create `/run/firecracker/` inside chroot
+- **Go lint issues** — Fix naming conventions for Go Report Card A rating
 
 ---
 
@@ -66,7 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.5.0...v0.6.0
 [0.2.1]: https://github.com/restuhaqza/SwarmCracker/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/restuhaqza/SwarmCracker/releases/tag/v0.1.0
