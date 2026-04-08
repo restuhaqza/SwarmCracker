@@ -81,6 +81,16 @@ type Config struct {
 	// Seccomp policy file path (optional, uses default if empty)
 	SeccompPolicyPath string `yaml:"seccomp_policy_path"`
 
+	// Parent cgroup for jailer VMs
+	ParentCgroup string `yaml:"parent_cgroup"`
+
+	// CPU quota in microseconds per period (0 = unlimited)
+	// Example: 50000 with period 100000 = 0.5 CPU cores
+	CPUQuotaUs int64 `yaml:"cpu_quota_us"`
+
+	// Memory limit in bytes (0 = unlimited)
+	MemoryMax int64 `yaml:"memory_max"`
+
 	// Extra jailer arguments (advanced)
 	ExtraArgs []string `yaml:"extra_args"`
 }
@@ -284,6 +294,24 @@ func (j *Jailer) buildJailerCommand(cfg VMConfig) (*exec.Cmd, string, error) {
 	// Optional network namespace
 	if j.config.NetNS != "" {
 		args = append(args, "--netns", j.config.NetNS)
+	}
+
+	// Parent cgroup
+	if j.config.ParentCgroup != "" {
+		args = append(args, "--parent-cgroup", j.config.ParentCgroup)
+	}
+
+	// CPU cgroup limit (cgroup v2 format: "quota period")
+	if j.config.CPUQuotaUs > 0 {
+		cpuMax := fmt.Sprintf("%d 100000", j.config.CPUQuotaUs)
+		args = append(args, "--cgroup", fmt.Sprintf("cpu.max=%s", cpuMax))
+		j.logger.Debug().Str("cpu_max", cpuMax).Msg("Setting CPU cgroup limit")
+	}
+
+	// Memory cgroup limit (bytes)
+	if j.config.MemoryMax > 0 {
+		args = append(args, "--cgroup", fmt.Sprintf("memory.max=%d", j.config.MemoryMax))
+		j.logger.Debug().Int64("memory_max", j.config.MemoryMax).Msg("Setting memory cgroup limit")
 	}
 
 	// Optional seccomp
