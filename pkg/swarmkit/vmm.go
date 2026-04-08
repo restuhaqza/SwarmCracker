@@ -52,6 +52,20 @@ type VMMManagerConfig struct {
 	ResourceLimits  jailer.ResourceLimits
 }
 
+// toInt converts an interface{} value to int, handling both int and float64.
+func toInt(v interface{}) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	case int64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
 // NewVMMManager creates a new VMM manager.
 func NewVMMManager(firecrackerPath, socketDir string) (*VMMManager, error) {
 	return NewVMMManagerWithConfig(&VMMManagerConfig{
@@ -241,9 +255,17 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 		return fmt.Errorf("missing boot-source in config")
 	}
 
-	// JSON unmarshaling produces []interface{} not []map[string]interface{}
-	drivesRaw, ok := cfg["drives"].([]interface{})
-	if !ok || len(drivesRaw) == 0 {
+	// Drives can be []interface{} (from JSON) or []map[string]interface{} (from translator)
+	var drivesRaw []interface{}
+	switch d := cfg["drives"].(type) {
+	case []interface{}:
+		drivesRaw = d
+	case []map[string]interface{}:
+		for _, m := range d {
+			drivesRaw = append(drivesRaw, m)
+		}
+	}
+	if len(drivesRaw) == 0 {
 		return fmt.Errorf("missing drives in config")
 	}
 
@@ -266,8 +288,8 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 	// Build jailer VM config
 	jailerCfg := jailer.VMConfig{
 		TaskID:     task.ID,
-		VcpuCount:  int(machineConfig["vcpu_count"].(float64)),
-		MemoryMB:   int(machineConfig["mem_size_mib"].(float64)),
+		VcpuCount:  toInt(machineConfig["vcpu_count"]),
+		MemoryMB:   toInt(machineConfig["mem_size_mib"]),
 		KernelPath: bootSource["kernel_image_path"].(string),
 		RootfsPath: rootfsPath,
 		BootArgs:   bootSource["boot_args"].(string),
@@ -368,9 +390,17 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 	}
 
 	// 3. Set root drive
-	// JSON unmarshaling produces []interface{} not []map[string]interface{}
-	drivesRaw, ok := cfg["drives"].([]interface{})
-	if !ok || len(drivesRaw) == 0 {
+	// Drives can be []interface{} (from JSON) or []map[string]interface{} (from translator)
+	var drivesRaw []interface{}
+	switch d := cfg["drives"].(type) {
+	case []interface{}:
+		drivesRaw = d
+	case []map[string]interface{}:
+		for _, m := range d {
+			drivesRaw = append(drivesRaw, m)
+		}
+	}
+	if len(drivesRaw) == 0 {
 		return fmt.Errorf("missing drives in config")
 	}
 	for _, driveRaw := range drivesRaw {
