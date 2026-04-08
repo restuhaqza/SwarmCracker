@@ -287,19 +287,9 @@ func (j *Jailer) buildJailerCommand(cfg VMConfig) (*exec.Cmd, string, error) {
 	}
 
 	// Optional seccomp
-	if j.config.EnableSeccomp {
-		if j.config.SeccompPolicyPath != "" {
-			args = append(args, "--seccomp", j.config.SeccompPolicyPath)
-		} else {
-			// Use default seccomp policy
-			defaultPolicyPath, err := j.createDefaultSeccompPolicy(cfg.TaskID)
-			if err != nil {
-				j.logger.Warn().Err(err).Msg("Failed to create default seccomp policy, continuing without")
-			} else {
-				args = append(args, "--seccomp", defaultPolicyPath)
-			}
-		}
-	}
+	// Note: Jailer v1.15.0 doesn't support --seccomp flag
+	// Seccomp filtering is handled internally by Firecracker when run via jailer
+	// The EnableSeccomp config option is reserved for future use
 
 	// Add extra arguments
 	if len(j.config.ExtraArgs) > 0 {
@@ -594,15 +584,19 @@ func (j *Jailer) prepareChrootResources(chrootDir string, cfg VMConfig) error {
 		Str("chroot", chrootDir).
 		Msg("Preparing chroot resources")
 
-	// Create directories for kernel and drives
+	// Create directories for kernel, drives, and socket
 	kernelDir := filepath.Join(chrootDir, "kernel")
 	drivesDir := filepath.Join(chrootDir, "drives")
+	runDir := filepath.Join(chrootDir, "run", "firecracker")
 
 	if err := os.MkdirAll(kernelDir, 0755); err != nil {
 		return fmt.Errorf("failed to create kernel dir: %w", err)
 	}
 	if err := os.MkdirAll(drivesDir, 0755); err != nil {
 		return fmt.Errorf("failed to create drives dir: %w", err)
+	}
+	if err := os.MkdirAll(runDir, 0755); err != nil {
+		return fmt.Errorf("failed to create run dir: %w", err)
 	}
 
 	// Copy kernel into chroot
