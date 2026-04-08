@@ -175,6 +175,11 @@ func main() {
 			Value: "/var/lib/swarmcracker/jailer",
 		},
 		&cli.StringFlag{
+			Name:  "parent-cgroup",
+			Usage: "Parent cgroup for jailer VMs (e.g., firecracker)",
+			Value: "firecracker",
+		},
+		&cli.StringFlag{
 			Name:  "cgroup-version",
 			Usage: "Cgroup version: v1 or v2 (default: auto-detect)",
 			Value: "",
@@ -245,6 +250,7 @@ func runAgent(ctx *cli.Context) error {
 		JailerUID:       ctx.Int("jailer-uid"),
 		JailerGID:       ctx.Int("jailer-gid"),
 		JailerChrootDir: ctx.String("jailer-chroot-dir"),
+		ParentCgroup:    ctx.String("parent-cgroup"),
 		CgroupVersion:   ctx.String("cgroup-version"),
 		EnableCgroups:   ctx.Bool("enable-cgroups"),
 	}

@@ -46,6 +46,7 @@ type VMMManagerConfig struct {
 	JailerUID       int
 	JailerGID       int
 	JailerChrootDir string
+	ParentCgroup    string
 	CgroupVersion   string
 	EnableCgroups   bool
 	ResourceLimits  jailer.ResourceLimits
@@ -119,6 +120,7 @@ func NewVMMManagerWithConfig(cfg *VMMManagerConfig) (*VMMManager, error) {
 			ChrootBaseDir:   jailerChrootDir,
 			UID:             jailerUID,
 			GID:             jailerGID,
+			ParentCgroup:    cfg.ParentCgroup,
 			CgroupVersion:   cgroupVersion,
 			EnableSeccomp:   true,
 		}
