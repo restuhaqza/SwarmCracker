@@ -170,7 +170,7 @@ func listServices(ctx context.Context, client api.ControlClient) {
 		if replicated := svc.Spec.GetReplicated(); replicated != nil {
 			replicas = fmt.Sprintf("%d", replicated.Replicas)
 		}
-		fmt.Printf("%-20s %-30s %-8s %s\n", svc.ID[:12], name, mode, replicas)
+		fmt.Printf("%-24s %-30s %-8s %s\n", svc.ID, name, mode, replicas)
 	}
 	fmt.Printf("\nTotal: %d service(s)\n", len(resp.Services))
 }
