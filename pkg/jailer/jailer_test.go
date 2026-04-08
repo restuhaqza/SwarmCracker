@@ -328,7 +328,7 @@ func TestJailerBuildJailerCommand(t *testing.T) {
 	checkArg("--chroot-base-dir")
 	checkArg(filepath.Join(tmpDir, "jailer"))
 	checkArg("--cgroup-version")
-	checkArg("v2")
+	checkArg("2")
 	checkArg("--") // Separator
 
 	// Verify socket path

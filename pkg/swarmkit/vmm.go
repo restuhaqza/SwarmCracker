@@ -307,11 +307,34 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 	v.processes[task.ID] = wrapperCmd
 	v.processMutex.Unlock()
 
+	// Configure VM via API with chroot-relative paths
+	jailerConfig := map[string]interface{}{
+		"machine-config": machineConfig,
+		"boot-source": map[string]interface{}{
+			"kernel_image_path": "/kernel/vmlinux",
+			"boot_args":         bootSource["boot_args"],
+		},
+		"drives": []interface{}{
+			map[string]interface{}{
+				"drive_id":       "rootfs",
+				"path_on_host":   "/drives/rootfs.ext4",
+				"is_root_device": true,
+				"is_read_only":   false,
+			},
+		},
+	}
+
+	if err := v.configureVM(ctx, task, process.SocketPath, jailerConfig); err != nil {
+		v.logger.Error().Err(err).Msg("Failed to configure jailed VM")
+		v.jailer.Stop(ctx, task.ID)
+		return fmt.Errorf("failed to configure VM: %w", err)
+	}
+
 	v.logger.Info().
 		Str("task_id", task.ID).
 		Str("socket", process.SocketPath).
 		Int("pid", process.Pid).
-		Msg("Jailed Firecracker VM started")
+		Msg("Jailed Firecracker VM started and configured")
 
 	return nil
 }
