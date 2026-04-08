@@ -387,42 +387,25 @@ func TestJailerBuildJailerCommandWithSeccomp(t *testing.T) {
 	}
 	cmdArgs := cmd.Args //nolint:staticcheck // t.Fatal terminates test
 
+	// Note: Jailer v1.15.0 does not support --seccomp flag
+	// Seccomp filtering is built-in to Firecracker when run via jailer
+	// The test verifies the command was built correctly without --seccomp
+
 	// Verify socket path is in chroot directory
 	expectedSocketPattern := filepath.Join(chrootDir, "test-vm-seccomp", "run", "firecracker")
 	if !strings.Contains(socketPath, expectedSocketPattern) {
 		t.Errorf("Socket path %q should contain %q", socketPath, expectedSocketPattern)
 	}
 
-	// Verify seccomp flag is present
-	foundSeccomp := false
-	var policyPath string
-	for i, arg := range cmdArgs {
-		if arg == "--seccomp" && i+1 < len(cmdArgs) {
-			foundSeccomp = true
-			policyPath = cmdArgs[i+1]
-			break
+	// Verify --seccomp is NOT in the command (not supported in v1.15.0)
+	for _, arg := range cmdArgs {
+		if arg == "--seccomp" {
+			t.Error("--seccomp flag should not be present (not supported in jailer v1.15.0)")
 		}
 	}
 
-	if !foundSeccomp {
-		t.Logf("Command args: %v", cmdArgs)
-		t.Error("Expected --seccomp flag in jailer command")
-	} else if policyPath != "" {
-		// Verify policy file exists and is valid JSON
-		if _, err := os.Stat(policyPath); err != nil {
-			t.Errorf("Seccomp policy file not found at %q: %v", policyPath, err)
-		} else {
-			// Try to read and parse the policy
-			data, err := os.ReadFile(policyPath)
-			if err != nil {
-				t.Errorf("Failed to read seccomp policy: %v", err)
-			} else if len(data) == 0 {
-				t.Error("Seccomp policy file is empty")
-			} else {
-				t.Logf("Seccomp policy created at %q (%d bytes)", policyPath, len(data))
-			}
-		}
-	}
+	t.Logf("Command args: %v", cmdArgs)
+	t.Log("Jailer command built correctly without unsupported --seccomp flag")
 }
 
 // TestJailerListProcesses tests process listing.
