@@ -13,6 +13,8 @@ import (
 )
 
 // NetworkManagerInternal wraps NetworkManager with testable interfaces
+//
+//nolint:revive // Stuttering name is acceptable here for package clarity
 type NetworkManagerInternal struct {
 	*NetworkManager
 	executor CommandExecutor
@@ -92,7 +94,7 @@ func (nm *NetworkManagerInternal) ensureBridgeWithExecutor(ctx context.Context) 
 }
 
 // setupBridgeIPWithExecutor configures bridge IP using the configured executor
-func (nm *NetworkManagerInternal) setupBridgeIPWithExecutor(ctx context.Context) error {
+func (nm *NetworkManagerInternal) setupBridgeIPWithExecutor(_ context.Context) error {
 	bridgeName := nm.config.BridgeName
 
 	// Check if IP is already assigned

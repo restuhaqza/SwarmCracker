@@ -282,10 +282,10 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 	if v.cgroupMgr != nil && v.jailerConfig != nil {
 		// Create cgroup with resource limits
 		limits := jailer.ResourceLimits{
-			CPUQuotaUs:  int64(jailerCfg.VcpuCount * 1000000), // 1 CPU per vcpu
-			MemoryMax:   int64(jailerCfg.MemoryMB) * 1024 * 1024,
-			MemoryHigh:  int64(jailerCfg.MemoryMB) * 1024 * 1024 * 90 / 100, // 90% of max
-			IOWeight:    100,
+			CPUQuotaUs: int64(jailerCfg.VcpuCount * 1000000), // 1 CPU per vcpu
+			MemoryMax:  int64(jailerCfg.MemoryMB) * 1024 * 1024,
+			MemoryHigh: int64(jailerCfg.MemoryMB) * 1024 * 1024 * 90 / 100, // 90% of max
+			IOWeight:   100,
 		}
 
 		if err := v.cgroupMgr.CreateCgroup(task.ID, limits); err != nil {
@@ -515,7 +515,7 @@ func (v *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSta
 
 	if !ok {
 		return &types.TaskStatus{
-			State:   types.TaskState_COMPLETE,
+			State:   types.TaskStateComplete,
 			Message: "Task completed",
 		}, nil
 	}
@@ -528,11 +528,11 @@ func (v *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSta
 	}
 
 	if err != nil {
-		status.State = types.TaskState_FAILED
+		status.State = types.TaskStateFailed
 		status.Err = err
 		status.Message = err.Error()
 	} else {
-		status.State = types.TaskState_COMPLETE
+		status.State = types.TaskStateComplete
 		status.Message = "Task completed successfully"
 	}
 
@@ -670,13 +670,13 @@ func (v *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Tas
 
 	if !ok {
 		return &types.TaskStatus{
-			State:   types.TaskState_COMPLETE,
+			State:   types.TaskStateComplete,
 			Message: "Task not running",
 		}, nil
 	}
 
 	return &types.TaskStatus{
-		State:   types.TaskState_RUNNING,
+		State:   types.TaskStateRunning,
 		Message: "Task is running",
 	}, nil
 }

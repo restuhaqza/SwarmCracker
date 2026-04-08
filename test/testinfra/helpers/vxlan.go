@@ -26,14 +26,14 @@ func NewVXLANHelper() *VXLANHelper {
 
 // VXLANSetup holds configuration for a VXLAN overlay
 type VXLANSetup struct {
-	BridgeName     string
-	VXLANName      string
-	VXLANID        int
-	OverlayIP      string
-	PhysInterface  string
-	LocalIP        string
-	PeerIPs        []string
-	RemoteSubnets  []RemoteSubnet
+	BridgeName    string
+	VXLANName     string
+	VXLANID       int
+	OverlayIP     string
+	PhysInterface string
+	LocalIP       string
+	PeerIPs       []string
+	RemoteSubnets []RemoteSubnet
 }
 
 // RemoteSubnet defines a route to a remote worker's VM subnet

@@ -16,9 +16,9 @@ const metadataFileName = "meta.json"
 
 // volumeMeta is the on-disk JSON representation of volume metadata.
 type volumeMeta struct {
-	Name       string    `json:"name"`
+	Name       string     `json:"name"`
 	Type       VolumeType `json:"type"`
-	SizeMB     int       `json:"size_mb"`
+	SizeMB     int        `json:"size_mb"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt time.Time  `json:"last_used_at"`
 	TaskID     string     `json:"task_id"`

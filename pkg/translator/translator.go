@@ -184,12 +184,12 @@ func (tt *TaskTranslator) configToMap(config *VMMConfig) (map[string]interface{}
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal config: %w", err)
 	}
-	
+
 	var result map[string]interface{}
 	if err := json.Unmarshal(bytes, &result); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
-	
+
 	return result, nil
 }
 
@@ -332,7 +332,7 @@ func (tt *TaskTranslator) applyResources(config *VMMConfig, limits *types.Resour
 }
 
 // buildNetworkInterface creates a network interface configuration.
-func (tt *TaskTranslator) buildNetworkInterface(network types.NetworkAttachment, index int, taskID string) NetworkInterface {
+func (tt *TaskTranslator) buildNetworkInterface(_ types.NetworkAttachment, index int, taskID string) NetworkInterface {
 	ifaceID := fmt.Sprintf("eth%d", index)
 
 	// Generate TAP name: tap-<hash[:8]>-<index>
@@ -350,7 +350,7 @@ func (tt *TaskTranslator) buildNetworkInterface(network types.NetworkAttachment,
 }
 
 // buildRootDrive creates the root filesystem drive configuration.
-func (tt *TaskTranslator) buildRootDrive(container *types.Container, task *types.Task) (Drive, error) {
+func (tt *TaskTranslator) buildRootDrive(_ *types.Container, task *types.Task) (Drive, error) {
 	// Get rootfs path from task annotations (set by image preparer)
 	rootfsPath, ok := task.Annotations["rootfs"]
 	if !ok {

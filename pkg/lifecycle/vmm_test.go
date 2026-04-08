@@ -186,7 +186,7 @@ func TestVMMManager_Wait(t *testing.T) {
 	status, err := vmm.Wait(context.Background(), task)
 
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+	assert.Equal(t, types.TaskStateOrphaned, status.State)
 	assert.Contains(t, status.Message, "not found")
 
 	// Test with a mock running VM
@@ -202,7 +202,7 @@ func TestVMMManager_Wait(t *testing.T) {
 	status, err = vmm.Wait(context.Background(), task)
 
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_RUNNING, status.State)
+	assert.Equal(t, types.TaskStateRunning, status.State)
 }
 
 func TestVMMManager_Describe(t *testing.T) {
@@ -220,7 +220,7 @@ func TestVMMManager_Describe(t *testing.T) {
 	status, err := vmm.Describe(context.Background(), task)
 
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+	assert.Equal(t, types.TaskStateOrphaned, status.State)
 
 	// Test with a mock running VM
 	vmm.mu.Lock()
@@ -235,7 +235,7 @@ func TestVMMManager_Describe(t *testing.T) {
 	status, err = vmm.Describe(context.Background(), task)
 
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_RUNNING, status.State)
+	assert.Equal(t, types.TaskStateRunning, status.State)
 
 	// Check runtime status
 	runtimeStatus, ok := status.RuntimeStatus.(map[string]interface{})
@@ -610,7 +610,7 @@ func TestVMMManager_Wait_EdgeCases(t *testing.T) {
 				// For non-existent tasks, should return ORPHANED
 				if tt.task.ID != "" {
 					assert.NoError(t, err)
-					assert.Equal(t, types.TaskState_ORPHANED, status.State)
+					assert.Equal(t, types.TaskStateOrphaned, status.State)
 				}
 			}
 		})

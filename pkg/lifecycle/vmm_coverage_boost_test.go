@@ -134,7 +134,7 @@ func TestVMMManager_AdditionalWaitScenarios(t *testing.T) {
 	ctx := context.Background()
 	status, err := vm.Wait(ctx, task)
 	assert.NoError(t, err)
-	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+	assert.Equal(t, types.TaskStateOrphaned, status.State)
 }
 
 // TestVMMManager_AdditionalDescribeScenarios tests additional describe scenarios
@@ -157,7 +157,7 @@ func TestVMMManager_AdditionalDescribeScenarios(t *testing.T) {
 				ID: "non-existent",
 			},
 			check: func(t *testing.T, status *types.TaskStatus) {
-				assert.Equal(t, types.TaskState_ORPHANED, status.State)
+				assert.Equal(t, types.TaskStateOrphaned, status.State)
 			},
 		},
 	}

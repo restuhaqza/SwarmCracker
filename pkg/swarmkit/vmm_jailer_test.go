@@ -47,7 +47,7 @@ func TestVMMManagerWithJailerConfig(t *testing.T) {
 		t.Fatal("Expected non-nil VMM manager")
 	}
 	useJailer := vmm.useJailer //nolint:staticcheck // t.Fatal terminates test
-	jailer := vmm.jailer //nolint:staticcheck
+	jailer := vmm.jailer       //nolint:staticcheck
 
 	if !useJailer {
 		t.Error("Expected useJailer to be true")
@@ -77,7 +77,7 @@ func TestVMMManagerLegacyMode(t *testing.T) {
 		t.Fatal("Expected non-nil VMM manager")
 	}
 	useJailerLegacy := vmm.useJailer //nolint:staticcheck // t.Fatal terminates test
-	jailerLegacy := vmm.jailer //nolint:staticcheck
+	jailerLegacy := vmm.jailer       //nolint:staticcheck
 
 	if useJailerLegacy {
 		t.Error("Expected useJailer to be false in legacy mode")
@@ -243,9 +243,9 @@ func TestVMMManagerCgroupIntegration(t *testing.T) {
 		JailerChrootDir: filepath.Join(tmpDir, "jailer"),
 		EnableCgroups:   true,
 		ResourceLimits: jailer.ResourceLimits{
-			CPUQuotaUs:  500000,
-			MemoryMax:   268435456,
-			MemoryHigh:  241591910,
+			CPUQuotaUs: 500000,
+			MemoryMax:  268435456,
+			MemoryHigh: 241591910,
 		},
 	}
 

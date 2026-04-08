@@ -105,7 +105,7 @@ func TestNetworkManager_ContextCancellationTests(t *testing.T) {
 			name: "get tap IP with cancelled context",
 			setupFunc: func(nm *NetworkManager, task *types.Task) {
 				nm.tapDevices[task.ID+"-tap-0"] = &TapDevice{
-					Name: "tap-0",
+					Name:   "tap-0",
 					Bridge: "test-br0",
 					IP:     "192.168.127.10",
 				}
@@ -330,10 +330,10 @@ func TestIPAllocator_ContextEdgeCases(t *testing.T) {
 		validate    func(*testing.T, *IPAllocator, []string)
 	}{
 		{
-			name:    "allocate same VM ID twice",
-			subnet:  "192.168.127.0/24",
-			gateway: "192.168.127.1",
-			vmIDs:   []string{"vm-1", "vm-1"},
+			name:        "allocate same VM ID twice",
+			subnet:      "192.168.127.0/24",
+			gateway:     "192.168.127.1",
+			vmIDs:       []string{"vm-1", "vm-1"},
 			expectError: false,
 			validate: func(t *testing.T, alloc *IPAllocator, ips []string) {
 				// Same VM ID should get same IP
@@ -362,10 +362,10 @@ func TestIPAllocator_ContextEdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name:    "allocate with gateway collision",
-			subnet:  "192.168.127.0/24",
-			gateway: "192.168.127.1",
-			vmIDs:   []string{"gateway-vm"},
+			name:        "allocate with gateway collision",
+			subnet:      "192.168.127.0/24",
+			gateway:     "192.168.127.1",
+			vmIDs:       []string{"gateway-vm"},
 			expectError: false,
 			validate: func(t *testing.T, alloc *IPAllocator, ips []string) {
 				// Should not allocate gateway address
@@ -387,10 +387,10 @@ func TestIPAllocator_ContextEdgeCases(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name:    "allocate with different subnet sizes",
-			subnet:  "10.0.0.0/8",
-			gateway: "10.0.0.1",
-			vmIDs:   []string{"vm-1", "vm-2", "vm-3"},
+			name:        "allocate with different subnet sizes",
+			subnet:      "10.0.0.0/8",
+			gateway:     "10.0.0.1",
+			vmIDs:       []string{"vm-1", "vm-2", "vm-3"},
 			expectError: false,
 			validate: func(t *testing.T, alloc *IPAllocator, ips []string) {
 				for _, ip := range ips {
@@ -401,10 +401,10 @@ func TestIPAllocator_ContextEdgeCases(t *testing.T) {
 			},
 		},
 		{
-			name:    "allocate with /30 subnet",
-			subnet:  "192.168.1.0/30",
-			gateway: "192.168.1.1",
-			vmIDs:   []string{"vm-1", "vm-2"},
+			name:        "allocate with /30 subnet",
+			subnet:      "192.168.1.0/30",
+			gateway:     "192.168.1.1",
+			vmIDs:       []string{"vm-1", "vm-2"},
 			expectError: false,
 			validate: func(t *testing.T, alloc *IPAllocator, ips []string) {
 				// Very small subnet, but should still allocate
@@ -717,7 +717,7 @@ func TestNetworkManager_CleanupNetwork_ContextEdgeCases(t *testing.T) {
 			name: "cleanup nil task",
 			setupFunc: func(nm *NetworkManager, task *types.Task) {
 				nm.tapDevices["existing-task-tap-0"] = &TapDevice{
-					Name: "tap-0",
+					Name:   "tap-0",
 					Bridge: "test-br0",
 				}
 			},

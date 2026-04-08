@@ -33,8 +33,8 @@ type PreparerConfig struct {
 	SocketDir       string
 	DefaultVCPUs    int
 	DefaultMemoryMB int
-	InitSystem      string `yaml:"init_system"`       // "none", "tini", "dumb-init"
-	InitGracePeriod int    `yaml:"init_grace_period"` // Grace period in seconds
+	InitSystem      string `yaml:"init_system"`        // "none", "tini", "dumb-init"
+	InitGracePeriod int    `yaml:"init_grace_period"`  // Grace period in seconds
 	MaxImageAgeDays int    `yaml:"max_image_age_days"` // Maximum age of rootfs images before cleanup (default 7)
 }
 

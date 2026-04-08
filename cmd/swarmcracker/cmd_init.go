@@ -101,7 +101,7 @@ func runInit(cfg *initConfig) error {
 	fmt.Println()
 	fmt.Println("🔥 Initializing SwarmCracker Cluster")
 	fmt.Println(strings.Repeat("─", 50))
-	
+
 	// Auto-detect advertise address if not provided
 	if cfg.AdvertiseAddr == "" {
 		addr, err := detectAdvertiseAddress()
@@ -128,9 +128,9 @@ func runInit(cfg *initConfig) error {
 	if err != nil {
 		return fmt.Errorf("pre-flight checks failed: %w", err)
 	}
-	
+
 	PrintPreflightResults(preflightResult)
-	
+
 	if preflightResult.Failed > 0 {
 		fmt.Println("\n[0;31m✗ Pre-flight checks failed. Please fix the issues above and try again.[0m")
 		fmt.Println("\nHint: Run 'swarmcracker init --help' for configuration options.")
@@ -155,11 +155,11 @@ func runInit(cfg *initConfig) error {
 
 	// Step 3: Start the manager service
 	PrintProgress(3, 5, "Starting manager service...")
-	
+
 	// Show spinner while starting
 	spinnerDone := make(chan bool)
 	go Spinner("Starting manager service...", spinnerDone)
-	
+
 	if err := startManagerService(cfg); err != nil {
 		spinnerDone <- true
 		PrintProgressFailed(3, 5, "Starting manager service", err)

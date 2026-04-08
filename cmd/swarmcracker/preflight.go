@@ -38,20 +38,20 @@ type CheckResult struct {
 // RunPreflightChecks runs all pre-flight checks and returns results
 func RunPreflightChecks(mode string) (*PreflightResult, error) {
 	result := &PreflightResult{}
-	
+
 	// Define checks based on mode
 	checks := getChecksForMode(mode)
-	
+
 	for _, check := range checks {
 		start := time.Now()
 		checkResult := CheckResult{
 			Name:   check.Name,
 			Passed: true,
 		}
-		
+
 		err := check.Check()
 		checkResult.Duration = time.Since(start)
-		
+
 		if err != nil {
 			checkResult.Error = err
 			if check.Required {
@@ -64,10 +64,10 @@ func RunPreflightChecks(mode string) (*PreflightResult, error) {
 		} else {
 			result.Passed++
 		}
-		
+
 		result.Checks = append(result.Checks, checkResult)
 	}
-	
+
 	return result, nil
 }
 
@@ -105,7 +105,7 @@ func getChecksForMode(mode string) []PreflightCheck {
 			Required: false,
 		},
 	}
-	
+
 	if mode == "join" {
 		baseChecks = append(baseChecks, PreflightCheck{
 			Name:     "Manager connectivity",
@@ -113,7 +113,7 @@ func getChecksForMode(mode string) []PreflightCheck {
 			Required: true,
 		})
 	}
-	
+
 	return baseChecks
 }
 
@@ -122,18 +122,18 @@ func checkKVMAvailableLocal() error {
 	if _, err := os.Stat("/dev/kvm"); os.IsNotExist(err) {
 		return fmt.Errorf("/dev/kvm not found - KVM not available")
 	}
-	
+
 	// Check if KVM modules are loaded
 	cmd := exec.Command("lsmod")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to check loaded modules: %w", err)
 	}
-	
+
 	if !strings.Contains(string(output), "kvm") {
 		return fmt.Errorf("KVM modules not loaded - run: sudo modprobe kvm")
 	}
-	
+
 	return nil
 }
 
@@ -143,17 +143,17 @@ func checkFirecrackerInstalledLocal() error {
 	if err != nil {
 		return fmt.Errorf("firecracker not found in PATH - install Firecracker v1.14+")
 	}
-	
+
 	// Check version
 	cmd := exec.Command("firecracker", "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to get Firecracker version: %w", err)
 	}
-	
+
 	version := strings.TrimSpace(string(output))
 	log.Debug().Str("version", version).Msg("Firecracker version")
-	
+
 	return nil
 }
 
@@ -173,12 +173,12 @@ func checkBridgeCapability() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("bridge networking not supported - br_netfilter module unavailable")
 	}
-	
+
 	// Check if ip command is available
 	if _, err := exec.LookPath("ip"); err != nil {
 		return fmt.Errorf("ip command not found - install iproute2")
 	}
-	
+
 	return nil
 }
 
@@ -189,7 +189,7 @@ func checkSufficientMemory() error {
 	if err != nil {
 		return fmt.Errorf("failed to read memory info: %w", err)
 	}
-	
+
 	var memTotal, memAvailable uint64
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
@@ -199,12 +199,12 @@ func checkSufficientMemory() error {
 			fmt.Sscanf(line, "MemAvailable: %d kB", &memAvailable)
 		}
 	}
-	
+
 	// Warn if less than 1GB available
 	if memAvailable < 1024*1024 {
 		return fmt.Errorf("low memory: only %d MB available (recommend 1GB+)", memAvailable/1024)
 	}
-	
+
 	log.Debug().Uint64("available_mb", memAvailable/1024).Msg("Memory check passed")
 	return nil
 }
@@ -217,11 +217,11 @@ func checkPortAvailable() error {
 		// ss returns error if no listening socket found - that's good!
 		return nil
 	}
-	
+
 	if strings.Contains(string(output), "4242") {
 		return fmt.Errorf("port 4242 already in use - stop existing service or use --listen-addr")
 	}
-	
+
 	return nil
 }
 
@@ -241,11 +241,11 @@ func PrintPreflightResults(result *PreflightResult) {
 	fmt.Println()
 	fmt.Println("📋 Pre-flight Checks")
 	fmt.Println(strings.Repeat("─", 50))
-	
+
 	for _, check := range result.Checks {
 		icon := "✓"
 		color := "\033[0;32m" // Green
-		
+
 		if check.Warning {
 			icon = "⚠"
 			color = "\033[1;33m" // Yellow
@@ -253,22 +253,22 @@ func PrintPreflightResults(result *PreflightResult) {
 			icon = "✗"
 			color = "\033[0;31m" // Red
 		}
-		
+
 		fmt.Printf("  %s%s %s\033[0m", color, icon, check.Name)
-		
+
 		if check.Error != nil {
 			fmt.Printf(" - %s", check.Error.Error())
 		}
-		
+
 		if check.Duration > 0 && check.Duration < time.Millisecond*100 {
 			fmt.Printf(" (%dms)", check.Duration.Milliseconds())
 		}
-		
+
 		fmt.Println()
 	}
-	
+
 	fmt.Println(strings.Repeat("─", 50))
-	
+
 	// Summary
 	if result.Failed == 0 {
 		fmt.Printf("\033[0;32m✓ All checks passed (%d passed, %d warnings)\033[0m\n", result.Passed, result.Warning)
@@ -285,10 +285,10 @@ func PrintPreflightResults(result *PreflightResult) {
 func PrintProgress(step int, total int, message string) {
 	// Clear line
 	fmt.Print("\r\033[K")
-	
+
 	// Print progress
 	fmt.Printf("[%d/%d] %s", step, total, message)
-	
+
 	// Don't print newline - allows updating the same line
 }
 
@@ -306,7 +306,7 @@ func PrintProgressFailed(step int, total int, message string, err error) {
 func Spinner(message string, done chan bool) {
 	spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	i := 0
-	
+
 	for {
 		select {
 		case <-done:

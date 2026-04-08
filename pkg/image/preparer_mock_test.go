@@ -40,7 +40,7 @@ func TestImagePreparerWithMocks_Prepare(t *testing.T) {
 				Annotations: make(map[string]string),
 			},
 			expectError: false,
-			validate: nil, // No validation needed - just check no error
+			validate:    nil, // No validation needed - just check no error
 		},
 		{
 			name: "prepare_image_create_new",
@@ -65,7 +65,7 @@ func TestImagePreparerWithMocks_Prepare(t *testing.T) {
 				Annotations: make(map[string]string),
 			},
 			expectError: false,
-			validate: nil, // No validation needed - just check no error
+			validate:    nil, // No validation needed - just check no error
 		},
 		{
 			name:      "prepare_image_nil_task",

@@ -13,14 +13,14 @@ import (
 
 // VMMetrics represents metrics collected for a VM.
 type VMMetrics struct {
-	TaskID      string    `json:"task_id"`
-	PID         int       `json:"pid"`
-	Timestamp   time.Time `json:"timestamp"`
-	CPUMs       float64   `json:"cpu_ms"`       // CPU time in milliseconds
-	MemoryKB    uint64    `json:"memory_kb"`    // RSS memory in KB
-	NetRxBytes  uint64    `json:"net_rx_bytes"` // Bytes received
-	NetTxBytes  uint64    `json:"net_tx_bytes"` // Bytes transmitted
-	UptimeSec   int64     `json:"uptime_sec"`   // Seconds since VM started
+	TaskID     string    `json:"task_id"`
+	PID        int       `json:"pid"`
+	Timestamp  time.Time `json:"timestamp"`
+	CPUMs      float64   `json:"cpu_ms"`       // CPU time in milliseconds
+	MemoryKB   uint64    `json:"memory_kb"`    // RSS memory in KB
+	NetRxBytes uint64    `json:"net_rx_bytes"` // Bytes received
+	NetTxBytes uint64    `json:"net_tx_bytes"` // Bytes transmitted
+	UptimeSec  int64     `json:"uptime_sec"`   // Seconds since VM started
 }
 
 // Collector collects and stores VM metrics.

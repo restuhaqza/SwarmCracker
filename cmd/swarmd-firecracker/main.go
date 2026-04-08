@@ -224,29 +224,29 @@ func runAgent(ctx *cli.Context) error {
 
 	// Create SwarmCracker executor
 	executorConfig := &swarmkit.Config{
-		FirecrackerPath:  "firecracker",
-		KernelPath:       ctx.String("kernel-path"),
-		RootfsDir:        ctx.String("rootfs-dir"),
-		SocketDir:        ctx.String("socket-dir"),
-		DefaultVCPUs:     ctx.Int("default-vcpus"),
-		DefaultMemoryMB:  ctx.Int("default-memory"),
-		BridgeName:       ctx.String("bridge-name"),
-		Subnet:           ctx.String("subnet"),
-		BridgeIP:         ctx.String("bridge-ip"),
-		IPMode:           ctx.String("ip-mode"),
-		NATEnabled:       ctx.Bool("nat-enabled"),
-		VXLANEnabled:     ctx.Bool("vxlan-enabled"),
-		VXLANPeers:       parseCommaSeparated(ctx.String("vxlan-peers")),
-		Debug:            ctx.Bool("debug"),
-		StateDir:         stateDir,
+		FirecrackerPath: "firecracker",
+		KernelPath:      ctx.String("kernel-path"),
+		RootfsDir:       ctx.String("rootfs-dir"),
+		SocketDir:       ctx.String("socket-dir"),
+		DefaultVCPUs:    ctx.Int("default-vcpus"),
+		DefaultMemoryMB: ctx.Int("default-memory"),
+		BridgeName:      ctx.String("bridge-name"),
+		Subnet:          ctx.String("subnet"),
+		BridgeIP:        ctx.String("bridge-ip"),
+		IPMode:          ctx.String("ip-mode"),
+		NATEnabled:      ctx.Bool("nat-enabled"),
+		VXLANEnabled:    ctx.Bool("vxlan-enabled"),
+		VXLANPeers:      parseCommaSeparated(ctx.String("vxlan-peers")),
+		Debug:           ctx.Bool("debug"),
+		StateDir:        stateDir,
 		// Jailer configuration
-		EnableJailer:     ctx.Bool("enable-jailer"),
-		JailerPath:       ctx.String("jailer-path"),
-		JailerUID:        ctx.Int("jailer-uid"),
-		JailerGID:        ctx.Int("jailer-gid"),
-		JailerChrootDir:  ctx.String("jailer-chroot-dir"),
-		CgroupVersion:    ctx.String("cgroup-version"),
-		EnableCgroups:    ctx.Bool("enable-cgroups"),
+		EnableJailer:    ctx.Bool("enable-jailer"),
+		JailerPath:      ctx.String("jailer-path"),
+		JailerUID:       ctx.Int("jailer-uid"),
+		JailerGID:       ctx.Int("jailer-gid"),
+		JailerChrootDir: ctx.String("jailer-chroot-dir"),
+		CgroupVersion:   ctx.String("cgroup-version"),
+		EnableCgroups:   ctx.Bool("enable-cgroups"),
 	}
 
 	fcExecutor, err := swarmkit.NewExecutor(executorConfig)
@@ -348,30 +348,30 @@ func checkAndMigrateClusterAddress(stateDir, advertiseAddr string) error {
 		// This is necessary because the raft snapshot contains the old address
 		// and the CA signer is stored in the raft encrypted state
 		fmt.Printf("Clearing cluster state to allow address migration\n")
-		
+
 		// Remove raft state
 		raftDir := filepath.Join(stateDir, "raft")
 		if err := os.RemoveAll(raftDir); err != nil {
 			fmt.Printf("Warning: failed to remove raft state: %v\n", err)
 		}
-		
+
 		// Remove certificates to force fresh CA generation
 		certDir := filepath.Join(stateDir, "certificates")
 		if err := os.RemoveAll(certDir); err != nil {
 			fmt.Printf("Warning: failed to remove certificates: %v\n", err)
 		}
-		
+
 		// Remove state.json
 		if err := os.Remove(stateFile); err != nil && !os.IsNotExist(err) {
 			fmt.Printf("Warning: failed to remove state file: %v\n", err)
 		}
-		
+
 		// Remove worker state
 		workerDir := filepath.Join(stateDir, "worker")
 		if err := os.RemoveAll(workerDir); err != nil {
 			fmt.Printf("Warning: failed to remove worker state: %v\n", err)
 		}
-		
+
 		fmt.Printf("Cluster state cleared. A new cluster will be created.\n")
 	}
 
@@ -486,7 +486,7 @@ func printJoinTokens(ctx context.Context, stateDir string) {
 	caCertPool.AppendCertsFromPEM(caCert)
 
 	tlsConfig := &tls.Config{
-		Certificates: []tls.Certificate{cert},
+		Certificates:       []tls.Certificate{cert},
 		RootCAs:            caCertPool,
 		InsecureSkipVerify: true, // Unix socket, no hostname to verify
 	}

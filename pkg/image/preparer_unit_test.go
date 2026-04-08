@@ -34,8 +34,8 @@ func TestNewImagePreparer_Unit(t *testing.T) {
 			wantDir: "/var/lib/firecracker/rootfs",
 		},
 		{
-			name: "with empty config",
-			config: &PreparerConfig{},
+			name:    "with empty config",
+			config:  &PreparerConfig{},
 			wantDir: "",
 		},
 		{
@@ -78,7 +78,7 @@ func TestImagePreparer_Prepare_Validation_Unit(t *testing.T) {
 		{
 			name: "nil runtime",
 			task: &types.Task{
-				ID:  "test-task",
+				ID: "test-task",
 				Spec: types.TaskSpec{
 					Runtime: nil,
 				},
@@ -89,7 +89,7 @@ func TestImagePreparer_Prepare_Validation_Unit(t *testing.T) {
 		{
 			name: "non-container runtime",
 			task: &types.Task{
-				ID:  "test-task",
+				ID: "test-task",
 				Spec: types.TaskSpec{
 					Runtime: "string",
 				},
@@ -100,7 +100,7 @@ func TestImagePreparer_Prepare_Validation_Unit(t *testing.T) {
 		{
 			name: "valid container runtime",
 			task: &types.Task{
-				ID:  "test-task",
+				ID: "test-task",
 				Spec: types.TaskSpec{
 					Runtime: &types.Container{
 						Image: "nginx:latest",
@@ -198,12 +198,12 @@ func TestGetDirSize_Unit(t *testing.T) {
 				// Create test files
 				file1 := filepath.Join(dir, "file1.txt")
 				file2 := filepath.Join(dir, "file2.txt")
-				
+
 				err := os.WriteFile(file1, []byte("hello"), 0644)
 				require.NoError(t, err)
 				err = os.WriteFile(file2, []byte("world"), 0644)
 				require.NoError(t, err)
-				
+
 				return dir
 			},
 			wantErr: false,
@@ -215,11 +215,11 @@ func TestGetDirSize_Unit(t *testing.T) {
 				subdir := filepath.Join(dir, "subdir")
 				err := os.Mkdir(subdir, 0755)
 				require.NoError(t, err)
-				
+
 				file := filepath.Join(subdir, "file.txt")
 				err = os.WriteFile(file, []byte("nested content"), 0644)
 				require.NoError(t, err)
-				
+
 				return dir
 			},
 			wantErr: false,
@@ -236,7 +236,7 @@ func TestGetDirSize_Unit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			path := tt.setup(t)
-			
+
 			size, err := getDirSize(path)
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -251,11 +251,11 @@ func TestGetDirSize_Unit(t *testing.T) {
 // TestInitSystemConfig tests init system configuration
 func TestInitSystemConfig_Unit(t *testing.T) {
 	tests := []struct {
-		name           string
-		config         InitSystemConfig
-		expectedType   InitSystemType
-		expectedPath   string
-		expectedGrace  int
+		name          string
+		config        InitSystemConfig
+		expectedType  InitSystemType
+		expectedPath  string
+		expectedGrace int
 	}{
 		{
 			name: "tini configuration",
@@ -330,13 +330,13 @@ func TestImagePreparer_CopyFile_Unit(t *testing.T) {
 			setup: func(t *testing.T) (string, string) {
 				srcDir := t.TempDir()
 				dstDir := t.TempDir()
-				
+
 				srcFile := filepath.Join(srcDir, "source.txt")
 				dstFile := filepath.Join(dstDir, "dest.txt")
-				
+
 				err := os.WriteFile(srcFile, []byte("test content"), 0644)
 				require.NoError(t, err)
-				
+
 				return srcFile, dstFile
 			},
 			wantErr:    false,
@@ -346,13 +346,13 @@ func TestImagePreparer_CopyFile_Unit(t *testing.T) {
 			name: "copy to non-existent directory",
 			setup: func(t *testing.T) (string, string) {
 				srcDir := t.TempDir()
-				
+
 				srcFile := filepath.Join(srcDir, "source.txt")
 				dstFile := "/non/existent/path/dest.txt"
-				
+
 				err := os.WriteFile(srcFile, []byte("test content"), 0644)
 				require.NoError(t, err)
-				
+
 				return srcFile, dstFile
 			},
 			wantErr:    true,
@@ -362,10 +362,10 @@ func TestImagePreparer_CopyFile_Unit(t *testing.T) {
 			name: "copy non-existent source",
 			setup: func(t *testing.T) (string, string) {
 				dstDir := t.TempDir()
-				
+
 				srcFile := "/non/existent/source.txt"
 				dstFile := filepath.Join(dstDir, "dest.txt")
-				
+
 				return srcFile, dstFile
 			},
 			wantErr:    true,
@@ -376,15 +376,15 @@ func TestImagePreparer_CopyFile_Unit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			src, dst := tt.setup(t)
-			
+
 			ip := &ImagePreparer{}
 			err := ip.copyFile(src, dst, 0644)
-			
+
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
-				
+
 				if tt.verifySize {
 					// Verify file exists and has content
 					info, err := os.Stat(dst)
@@ -428,7 +428,7 @@ func TestImagePreparer_Prepare_AnnotationInitialization_Unit(t *testing.T) {
 			preparer := ip.(*ImagePreparer)
 
 			task := &types.Task{
-				ID:  "test-task",
+				ID: "test-task",
 				Spec: types.TaskSpec{
 					Runtime: &types.Container{
 						Image: "nginx:latest",
@@ -449,7 +449,7 @@ func TestImagePreparer_Prepare_AnnotationInitialization_Unit(t *testing.T) {
 // TestImagePreparer_CacheBehavior tests cache behavior
 func TestImagePreparer_CacheBehavior_Unit(t *testing.T) {
 	rootfsDir := t.TempDir()
-	
+
 	ip := NewImagePreparer(&PreparerConfig{
 		RootfsDir: rootfsDir,
 	})
@@ -462,7 +462,7 @@ func TestImagePreparer_CacheBehavior_Unit(t *testing.T) {
 	require.NoError(t, err)
 
 	task := &types.Task{
-		ID:  "test-task",
+		ID: "test-task",
 		Spec: types.TaskSpec{
 			Runtime: &types.Container{
 				Image: "nginx:latest",
@@ -535,7 +535,7 @@ func TestImagePreparer_GetInitBinaryPath_Unit(t *testing.T) {
 			}
 
 			_ = tt.setup(t)
-			
+
 			// Just verify the function doesn't crash
 			path := ip.getInitBinaryPath()
 			assert.NotNil(t, path)
@@ -546,10 +546,10 @@ func TestImagePreparer_GetInitBinaryPath_Unit(t *testing.T) {
 // TestImagePreparer_Prepare_InitSystemAnnotations tests init system annotation handling
 func TestImagePreparer_Prepare_InitSystemAnnotations_Unit(t *testing.T) {
 	tests := []struct {
-		name              string
-		initSystem        string
-		expectedInit      string
-		initEnabled       bool
+		name         string
+		initSystem   string
+		expectedInit string
+		initEnabled  bool
 	}{
 		{
 			name:         "tini enabled",

@@ -100,7 +100,7 @@ func (m *MockCommandExecutor) Command(name string, args ...string) CmdExecutor {
 }
 
 // CommandContext creates a mock command with context
-func (m *MockCommandExecutor) CommandContext(ctx context.Context, name string, args ...string) CmdExecutor {
+func (m *MockCommandExecutor) CommandContext(_ context.Context, name string, args ...string) CmdExecutor {
 	m.Calls = append(m.Calls, CommandCall{Name: name, Args: args})
 
 	// Check for custom handler first

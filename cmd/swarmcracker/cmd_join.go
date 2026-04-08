@@ -153,9 +153,9 @@ func runJoin(cfg *joinConfig) error {
 	if err != nil {
 		return fmt.Errorf("pre-flight checks failed: %w", err)
 	}
-	
+
 	PrintPreflightResults(preflightResult)
-	
+
 	if preflightResult.Failed > 0 {
 		fmt.Println("\n[0;31m✗ Pre-flight checks failed. Please fix the issues above and try again.[0m")
 		os.Exit(1)
@@ -187,11 +187,11 @@ func runJoin(cfg *joinConfig) error {
 
 	// Step 4: Start the worker service
 	PrintProgress(4, 5, "Starting worker service...")
-	
+
 	// Show spinner while starting
 	spinnerDone := make(chan bool)
 	go Spinner("Starting worker service...", spinnerDone)
-	
+
 	if err := startWorkerService(cfg); err != nil {
 		spinnerDone <- true
 		PrintProgressFailed(4, 5, "Starting worker service", err)

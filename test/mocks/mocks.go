@@ -28,14 +28,14 @@ func NewMockVMMManager() *MockVMMManager {
 		StoppedTasks: make(map[string]bool),
 		ShouldFail:   false,
 		WaitStatus: &types.TaskStatus{
-			State:   types.TaskState_RUNNING,
+			State:   types.TaskStateRunning,
 			Message: "Mock VM running",
 		},
 	}
 }
 
 // Start starts a mock VM.
-func (m *MockVMMManager) Start(ctx context.Context, task *types.Task, config interface{}) error {
+func (m *MockVMMManager) Start(_ context.Context, task *types.Task, _ interface{}) error {
 	m.StartCalled = true
 	if m.ShouldFail {
 		return fmt.Errorf("mock: start failed")
@@ -70,7 +70,7 @@ func (m *MockVMMManager) Describe(ctx context.Context, task *types.Task) (*types
 		return nil, fmt.Errorf("mock: describe failed")
 	}
 	return &types.TaskStatus{
-		State:   types.TaskState_RUNNING,
+		State:   types.TaskStateRunning,
 		Message: "Mock VM described",
 	}, nil
 }

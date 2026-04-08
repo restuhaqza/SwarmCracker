@@ -166,7 +166,7 @@ func TestVMMManager_StateTransitions(t *testing.T) {
 
 	status, err := vmm.Describe(context.Background(), task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_STARTING, status.State)
+	assert.Equal(t, types.TaskStateStarting, status.State)
 
 	// Transition: STARTING -> RUNNING
 	vmm.mu.Lock()
@@ -175,7 +175,7 @@ func TestVMMManager_StateTransitions(t *testing.T) {
 
 	status, err = vmm.Describe(context.Background(), task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_RUNNING, status.State)
+	assert.Equal(t, types.TaskStateRunning, status.State)
 
 	// Transition: RUNNING -> COMPLETE (simulate completion by removing)
 	vmm.mu.Lock()
@@ -184,7 +184,7 @@ func TestVMMManager_StateTransitions(t *testing.T) {
 
 	status, err = vmm.Describe(context.Background(), task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+	assert.Equal(t, types.TaskStateOrphaned, status.State)
 }
 
 // TestVMMManager_ResourceCleanup tests proper resource cleanup
@@ -282,7 +282,7 @@ func TestVMMManager_DescribeAllStates(t *testing.T) {
 
 			if tc.shouldReport {
 				assert.NotNil(t, status)
-				assert.NotEqual(t, types.TaskState_ORPHANED, status.State)
+				assert.NotEqual(t, types.TaskStateOrphaned, status.State)
 			}
 
 			// Cleanup

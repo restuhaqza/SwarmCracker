@@ -44,7 +44,7 @@ type StateManager struct {
 }
 
 // NewStateManager creates a new state manager.
-func NewStateManager(stateDir string) (*StateManager, error) {
+func NewStateManager(_ string) (*StateManager, error) {
 	// Determine state file location
 	var stateFile string
 	if os.Geteuid() == 0 {

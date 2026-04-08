@@ -419,6 +419,8 @@ func TestNetworkManagerWithExecutor_Mocked(t *testing.T) {
 }
 
 // TestNetworkManagerWithExecutor_ErrorHandling tests error handling paths
+//
+//nolint:gocyclo // Table-driven test with many cases is acceptable
 func TestNetworkManagerWithExecutor_ErrorHandling(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -93,11 +93,16 @@ func TestIntegration_InitSystemTini(t *testing.T) {
 	config, err := translator.Translate(task)
 	require.NoError(t, err)
 
-	// Verify boot args contain init
-	configStr, ok := config.(string)
+	// Verify boot args contain init (config is now a map)
+	configMap, ok := config.(map[string]interface{})
 	require.True(t, ok)
-	assert.Contains(t, configStr, "/sbin/tini")
-	assert.Contains(t, configStr, "--")
+	bootSource := configMap["boot_source"]
+	bootSourceMap, ok := bootSource.(map[string]interface{})
+	require.True(t, ok)
+	bootArgs, ok := bootSourceMap["boot_args"].(string)
+	require.True(t, ok)
+	assert.Contains(t, bootArgs, "/sbin/tini")
+	assert.Contains(t, bootArgs, "--")
 
 	t.Logf("Config generated with init boot args")
 
@@ -269,7 +274,7 @@ func TestIntegration_InitSystemGracefulShutdown(t *testing.T) {
 	// Verify VM doesn't exist
 	status, err := vmm.Describe(ctx, task)
 	assert.NoError(t, err)
-	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+	assert.Equal(t, types.TaskStateOrphaned, status.State)
 
 	// Test that graceful shutdown logic exists
 	// (We don't actually start the VM in this test)

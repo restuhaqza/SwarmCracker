@@ -34,8 +34,8 @@ func TestVMMManager_NewVMMManager(t *testing.T) {
 			wantDir: "/var/run/firecracker",
 		},
 		{
-			name: "with empty config",
-			config: &ManagerConfig{},
+			name:    "with empty config",
+			config:  &ManagerConfig{},
 			wantDir: "",
 		},
 	}
@@ -70,16 +70,16 @@ func TestVMMManager_Start_Validation(t *testing.T) {
 			errContains: "task cannot be nil",
 		},
 		{
-			name: "nil config",
-			task: &types.Task{ID: "test-task"},
-			config: nil,
-			wantErr: true,
+			name:        "nil config",
+			task:        &types.Task{ID: "test-task"},
+			config:      nil,
+			wantErr:     true,
 			errContains: "invalid config",
 		},
 		{
-			name: "empty task ID",
-			task: &types.Task{ID: ""},
-			config: map[string]interface{}{},
+			name:    "empty task ID",
+			task:    &types.Task{ID: ""},
+			config:  map[string]interface{}{},
 			wantErr: false, // Firecracker binary check will fail first
 		},
 	}
@@ -117,10 +117,10 @@ func TestVMMManager_Stop_Validation(t *testing.T) {
 			errContains: "task cannot be nil",
 		},
 		{
-			name:    "VM not found",
-			task:    &types.Task{ID: "non-existent"},
-			setupVM: false,
-			wantErr: true,
+			name:        "VM not found",
+			task:        &types.Task{ID: "non-existent"},
+			setupVM:     false,
+			wantErr:     true,
 			errContains: "VM not found",
 		},
 		{
@@ -513,32 +513,32 @@ func TestVMMManager_StateMapping(t *testing.T) {
 		{
 			name:     "VMStateNew",
 			vmState:  VMStateNew,
-			wantTask: types.TaskState_NEW,
+			wantTask: types.TaskStateNew,
 		},
 		{
 			name:     "VMStateStarting",
 			vmState:  VMStateStarting,
-			wantTask: types.TaskState_STARTING,
+			wantTask: types.TaskStateStarting,
 		},
 		{
 			name:     "VMStateRunning",
 			vmState:  VMStateRunning,
-			wantTask: types.TaskState_RUNNING,
+			wantTask: types.TaskStateRunning,
 		},
 		{
 			name:     "VMStateStopping",
 			vmState:  VMStateStopping,
-			wantTask: types.TaskState_STARTING,
+			wantTask: types.TaskStateStarting,
 		},
 		{
 			name:     "VMStateStopped",
 			vmState:  VMStateStopped,
-			wantTask: types.TaskState_COMPLETE,
+			wantTask: types.TaskStateComplete,
 		},
 		{
 			name:     "VMStateCrashed",
 			vmState:  VMStateCrashed,
-			wantTask: types.TaskState_FAILED,
+			wantTask: types.TaskStateFailed,
 		},
 	}
 

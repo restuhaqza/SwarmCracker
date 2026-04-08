@@ -527,23 +527,23 @@ func TestConfigureVM_ErrorPaths(t *testing.T) {
 		errorMsg    string
 	}{
 		{
-			name:       "configure with nil config",
-			socketPath: "/tmp/test.sock",
-			config:     nil,
+			name:        "configure with nil config",
+			socketPath:  "/tmp/test.sock",
+			config:      nil,
 			expectError: true,
 			errorMsg:    "invalid config type",
 		},
 		{
-			name:       "configure with non-map config",
-			socketPath: "/tmp/test.sock",
-			config:     "not a map",
+			name:        "configure with non-map config",
+			socketPath:  "/tmp/test.sock",
+			config:      "not a map",
 			expectError: true,
 			errorMsg:    "invalid config type",
 		},
 		{
-			name:       "configure with empty map",
-			socketPath: "/tmp/test.sock",
-			config:     map[string]interface{}{},
+			name:        "configure with empty map",
+			socketPath:  "/tmp/test.sock",
+			config:      map[string]interface{}{},
 			expectError: false, // No config sections is valid
 		},
 		{
@@ -750,19 +750,19 @@ func TestVMMManager_ContextStateTransitions(t *testing.T) {
 	// Check initial state (new)
 	status, err := vm.Describe(ctx, task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_NEW, status.State)
+	assert.Equal(t, types.TaskStateNew, status.State)
 
 	// Transition to running
 	vm.vms[task.ID].State = VMStateRunning
 	status, err = vm.Describe(ctx, task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_RUNNING, status.State)
+	assert.Equal(t, types.TaskStateRunning, status.State)
 
 	// Transition to stopping
 	vm.vms[task.ID].State = VMStateStopping
 	status, err = vm.Describe(ctx, task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_STARTING, status.State) // Still in transition
+	assert.Equal(t, types.TaskStateStarting, status.State) // Still in transition
 
 	// Transition to stopped
 	vm.vms[task.ID].State = VMStateStopped

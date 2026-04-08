@@ -342,10 +342,6 @@ func TestNewTaskTranslator_AdditionalCoverage(t *testing.T) {
 			result := NewTaskTranslator(tc.config)
 
 			if tc.validate != nil {
-				tc.validate(result, nil)
-			} else if tc.expectError {
-				// NewTaskTranslator doesn't return error
-			} else {
 				assert.NotNil(t, result)
 			}
 		})

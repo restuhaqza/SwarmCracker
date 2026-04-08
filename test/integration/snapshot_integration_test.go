@@ -125,16 +125,16 @@ func TestIntegration_Snapshot_CreateAndRestore(t *testing.T) {
 		},
 		"drives": []map[string]interface{}{
 			{
-				"drive_id":        "rootfs",
-				"path_on_host":    rootfsPath,
-				"is_root_device":  true,
-				"is_read_only":    false,
+				"drive_id":       "rootfs",
+				"path_on_host":   rootfsPath,
+				"is_root_device": true,
+				"is_read_only":   false,
 			},
 		},
 		"machine_config": map[string]interface{}{
-			"vcpu_count":  1,
+			"vcpu_count":   1,
 			"mem_size_mib": 256,
-			"smt":         false,
+			"smt":          false,
 		},
 	}
 
@@ -290,37 +290,37 @@ func TestIntegration_Snapshot_CleanupOldSnapshots(t *testing.T) {
 	now := time.Now().UTC()
 	testSnapshots := []*snapshot.SnapshotInfo{
 		{
-			ID:         "snap-old-1",
-			TaskID:     "task-1",
-			ServiceID:  "test-service",
-			NodeID:     "node-1",
-			CreatedAt:  now.Add(-3 * time.Hour),
-			SizeBytes:  1024 * 1024 * 50, // 50MB
-			VCPUCount:  1,
-			MemoryMB:   256,
-			Checksum:   "abc123",
+			ID:        "snap-old-1",
+			TaskID:    "task-1",
+			ServiceID: "test-service",
+			NodeID:    "node-1",
+			CreatedAt: now.Add(-3 * time.Hour),
+			SizeBytes: 1024 * 1024 * 50, // 50MB
+			VCPUCount: 1,
+			MemoryMB:  256,
+			Checksum:  "abc123",
 		},
 		{
-			ID:         "snap-old-2",
-			TaskID:     "task-2",
-			ServiceID:  "test-service",
-			NodeID:     "node-1",
-			CreatedAt:  now.Add(-2 * time.Hour),
-			SizeBytes:  1024 * 1024 * 60, // 60MB
-			VCPUCount:  1,
-			MemoryMB:   256,
-			Checksum:   "def456",
+			ID:        "snap-old-2",
+			TaskID:    "task-2",
+			ServiceID: "test-service",
+			NodeID:    "node-1",
+			CreatedAt: now.Add(-2 * time.Hour),
+			SizeBytes: 1024 * 1024 * 60, // 60MB
+			VCPUCount: 1,
+			MemoryMB:  256,
+			Checksum:  "def456",
 		},
 		{
-			ID:         "snap-recent",
-			TaskID:     "task-3",
-			ServiceID:  "test-service",
-			NodeID:     "node-1",
-			CreatedAt:  now.Add(-30 * time.Minute),
-			SizeBytes:  1024 * 1024 * 70, // 70MB
-			VCPUCount:  1,
-			MemoryMB:   256,
-			Checksum:   "ghi789",
+			ID:        "snap-recent",
+			TaskID:    "task-3",
+			ServiceID: "test-service",
+			NodeID:    "node-1",
+			CreatedAt: now.Add(-30 * time.Minute),
+			SizeBytes: 1024 * 1024 * 70, // 70MB
+			VCPUCount: 1,
+			MemoryMB:  256,
+			Checksum:  "ghi789",
 		},
 	}
 
@@ -380,15 +380,15 @@ func TestIntegration_Snapshot_MaxSnapshotsEnforcement(t *testing.T) {
 		require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 		info := &snapshot.SnapshotInfo{
-			ID:         "snap-00" + string(rune('0'+i)),
-			TaskID:     "task-" + string(rune('0'+i)),
-			ServiceID:  serviceID,
-			NodeID:     "node-1",
-			CreatedAt:  time.Now().UTC().Add(-time.Duration(5-i) * time.Hour),
-			SizeBytes:  1024 * 1024 * 50,
-			VCPUCount:  1,
-			MemoryMB:   256,
-			Checksum:   "checksum-" + string(rune('0'+i)),
+			ID:        "snap-00" + string(rune('0'+i)),
+			TaskID:    "task-" + string(rune('0'+i)),
+			ServiceID: serviceID,
+			NodeID:    "node-1",
+			CreatedAt: time.Now().UTC().Add(-time.Duration(5-i) * time.Hour),
+			SizeBytes: 1024 * 1024 * 50,
+			VCPUCount: 1,
+			MemoryMB:  256,
+			Checksum:  "checksum-" + string(rune('0'+i)),
 		}
 
 		// Create dummy files
@@ -532,15 +532,15 @@ func testSnapshotManagerMethods(t *testing.T, tmpDir string) {
 			require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 			info := &snapshot.SnapshotInfo{
-				ID:         snapID,
-				TaskID:     fmt.Sprintf("task-%d", i),
-				ServiceID:  "test-service",
-				NodeID:     "test-node",
-				CreatedAt:  time.Now().UTC().Add(-time.Duration(i) * time.Hour),
-				SizeBytes:  1024 * 1024 * 50,
-				VCPUCount:  1,
-				MemoryMB:   256,
-				Checksum:   fmt.Sprintf("checksum-%03d", i),
+				ID:        snapID,
+				TaskID:    fmt.Sprintf("task-%d", i),
+				ServiceID: "test-service",
+				NodeID:    "test-node",
+				CreatedAt: time.Now().UTC().Add(-time.Duration(i) * time.Hour),
+				SizeBytes: 1024 * 1024 * 50,
+				VCPUCount: 1,
+				MemoryMB:  256,
+				Checksum:  fmt.Sprintf("checksum-%03d", i),
 			}
 
 			// Create dummy state and memory files
@@ -591,15 +591,15 @@ func testSnapshotManagerMethods(t *testing.T, tmpDir string) {
 		require.NoError(t, os.MkdirAll(oldSnapDir, 0755))
 
 		oldInfo := &snapshot.SnapshotInfo{
-			ID:         "snap-old",
-			TaskID:     "task-old",
-			ServiceID:  "test-service",
-			NodeID:     "test-node",
-			CreatedAt:  time.Now().UTC().Add(-48 * time.Hour),
-			SizeBytes:  1024 * 1024 * 50,
-			VCPUCount:  1,
-			MemoryMB:   256,
-			Checksum:   "checksum-old",
+			ID:        "snap-old",
+			TaskID:    "task-old",
+			ServiceID: "test-service",
+			NodeID:    "test-node",
+			CreatedAt: time.Now().UTC().Add(-48 * time.Hour),
+			SizeBytes: 1024 * 1024 * 50,
+			VCPUCount: 1,
+			MemoryMB:  256,
+			Checksum:  "checksum-old",
 		}
 
 		statePath := filepath.Join(oldSnapDir, "vm.state")
