@@ -207,6 +207,12 @@ func (j *Jailer) Start(_ context.Context, cfg VMConfig) (*Process, error) {
 		return nil, fmt.Errorf("invalid VM config: %w", err)
 	}
 
+	// Prepare resources (kernel, rootfs) in chroot
+	chrootDir := filepath.Join(j.config.ChrootBaseDir, "firecracker", cfg.TaskID, "root")
+	if err := j.prepareChrootResources(chrootDir, cfg); err != nil {
+		return nil, fmt.Errorf("failed to prepare chroot resources: %w", err)
+	}
+
 	// Build jailer command
 	cmd, socketPath, err := j.buildJailerCommand(cfg)
 	if err != nil {
@@ -259,6 +265,12 @@ func (j *Jailer) buildJailerCommand(cfg VMConfig) (*exec.Cmd, string, error) {
 	socketRelPath := filepath.Join("run", "firecracker", cfg.TaskID+".sock")
 	socketPath := filepath.Join(j.config.ChrootBaseDir, cfg.TaskID, socketRelPath)
 
+	// Normalize cgroup version (jailer expects "1" or "2", not "v1" or "v2")
+	cgroupVersion := j.config.CgroupVersion
+	if strings.HasPrefix(cgroupVersion, "v") {
+		cgroupVersion = strings.TrimPrefix(cgroupVersion, "v")
+	}
+
 	// Build jailer arguments
 	args := []string{
 		"--id", cfg.TaskID,
@@ -266,7 +278,7 @@ func (j *Jailer) buildJailerCommand(cfg VMConfig) (*exec.Cmd, string, error) {
 		"--uid", strconv.Itoa(j.config.UID),
 		"--gid", strconv.Itoa(j.config.GID),
 		"--chroot-base-dir", j.config.ChrootBaseDir,
-		"--cgroup-version", j.config.CgroupVersion,
+		"--cgroup-version", cgroupVersion,
 	}
 
 	// Optional network namespace
@@ -572,6 +584,51 @@ func (j *Jailer) createDefaultSeccompPolicy(taskID string) (string, error) {
 	}
 
 	return policyPath, nil
+}
+
+// prepareChrootResources copies kernel and rootfs into the chroot directory.
+// This must be done BEFORE jailer starts, as jailer will set up the chroot.
+func (j *Jailer) prepareChrootResources(chrootDir string, cfg VMConfig) error {
+	j.logger.Debug().
+		Str("task_id", cfg.TaskID).
+		Str("chroot", chrootDir).
+		Msg("Preparing chroot resources")
+
+	// Create directories for kernel and drives
+	kernelDir := filepath.Join(chrootDir, "kernel")
+	drivesDir := filepath.Join(chrootDir, "drives")
+
+	if err := os.MkdirAll(kernelDir, 0755); err != nil {
+		return fmt.Errorf("failed to create kernel dir: %w", err)
+	}
+	if err := os.MkdirAll(drivesDir, 0755); err != nil {
+		return fmt.Errorf("failed to create drives dir: %w", err)
+	}
+
+	// Copy kernel into chroot
+	kernelDest := filepath.Join(kernelDir, "vmlinux")
+	if err := copyFile(cfg.KernelPath, kernelDest); err != nil {
+		return fmt.Errorf("failed to copy kernel: %w", err)
+	}
+	j.logger.Debug().Str("dest", kernelDest).Msg("Kernel copied")
+
+	// Copy rootfs into chroot
+	rootfsDest := filepath.Join(drivesDir, "rootfs.ext4")
+	if err := copyFile(cfg.RootfsPath, rootfsDest); err != nil {
+		return fmt.Errorf("failed to copy rootfs: %w", err)
+	}
+	j.logger.Debug().Str("dest", rootfsDest).Msg("Rootfs copied")
+
+	return nil
+}
+
+// copyFile copies a file from src to dst.
+func copyFile(src, dst string) error {
+	input, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(dst, input, 0644)
 }
 
 // logWriter writes log lines to zerolog.
