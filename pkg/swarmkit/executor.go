@@ -68,6 +68,7 @@ type Config struct {
 	JailerUID       int    `yaml:"jailer_uid"`
 	JailerGID       int    `yaml:"jailer_gid"`
 	JailerChrootDir string `yaml:"jailer_chroot_dir"`
+	ParentCgroup    string `yaml:"parent_cgroup"`
 	CgroupVersion   string `yaml:"cgroup_version"`
 	EnableCgroups   bool   `yaml:"enable_cgroups"`
 }
@@ -153,6 +154,7 @@ func NewExecutor(config *Config) (*Executor, error) {
 			JailerUID:       config.JailerUID,
 			JailerGID:       config.JailerGID,
 			JailerChrootDir: config.JailerChrootDir,
+			ParentCgroup:    config.ParentCgroup,
 			CgroupVersion:   config.CgroupVersion,
 			EnableCgroups:   config.EnableCgroups,
 		}
