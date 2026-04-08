@@ -161,7 +161,7 @@ func TestIntegration_EndToEnd(t *testing.T) {
 	// Check task status
 	status, err := exec.Wait(ctx, task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_RUNNING, status.State)
+	assert.Equal(t, types.TaskStateRunning, status.State)
 
 	t.Log("Task is running!")
 
@@ -272,7 +272,7 @@ func TestIntegration_VMMManager(t *testing.T) {
 	// Try to describe a non-existent VM
 	status, err := vmm.Describe(ctx, task)
 	assert.NoError(t, err)
-	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+	assert.Equal(t, types.TaskStateOrphaned, status.State)
 
 	// Test cleanup verification - ensure no leftover files
 	t.Log("Verifying cleanup...")
@@ -327,7 +327,7 @@ func TestIntegration_CleanupVerification(t *testing.T) {
 	// 1. Check initial state - no resources
 	status, err := vmm.Describe(ctx, task)
 	assert.NoError(t, err)
-	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+	assert.Equal(t, types.TaskStateOrphaned, status.State)
 
 	// 2. Verify no socket files exist
 	socketsBefore, _ := filepath.Glob(filepath.Join(tmpDir, "*.sock"))
@@ -441,15 +441,16 @@ func TestIntegration_TaskTranslation(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, config)
 
-	// Verify config structure
-	configStr, ok := config.(string)
-	assert.True(t, ok, "Config should be a string")
-	assert.Contains(t, configStr, "boot_source")
-	assert.Contains(t, configStr, "drives")
-	assert.Contains(t, configStr, "network_interfaces")
-	assert.Contains(t, configStr, "machine_config")
+	// Verify config structure (now returns map, not JSON string)
+	// Note: keys use snake_case (boot_source, not boot-source)
+	configMap, ok := config.(map[string]interface{})
+	assert.True(t, ok, "Config should be a map")
+	assert.Contains(t, configMap, "boot_source")
+	assert.Contains(t, configMap, "drives")
+	assert.Contains(t, configMap, "network_interfaces")
+	assert.Contains(t, configMap, "machine_config")
 
-	t.Logf("Translated config length: %d bytes", len(configStr))
+	t.Logf("Translated config has %d keys", len(configMap))
 }
 
 // createTestExecutor creates a configured executor for testing
@@ -521,7 +522,7 @@ func createTestTask(id, imageRef string) *types.Task {
 			},
 		},
 		Status: types.TaskStatus{
-			State: types.TaskState_PENDING,
+			State: types.TaskStatePending,
 		},
 		Networks: []types.NetworkAttachment{
 			{

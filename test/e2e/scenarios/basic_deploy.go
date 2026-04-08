@@ -190,7 +190,7 @@ func (s *BasicDeployScenario) Run(ctx context.Context, t *testing.T) error {
 	// Check task status
 	status, err := exec.Wait(ctx, task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_RUNNING, status.State)
+	assert.Equal(t, types.TaskStateRunning, status.State)
 
 	t.Log("Task is running!")
 
@@ -243,7 +243,7 @@ func (s *BasicDeployScenario) createTestTask() *types.Task {
 			},
 		},
 		Status: types.TaskStatus{
-			State: types.TaskState_PENDING,
+			State: types.TaskStatePending,
 		},
 		Networks: []types.NetworkAttachment{
 			{

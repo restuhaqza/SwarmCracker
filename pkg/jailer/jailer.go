@@ -195,7 +195,7 @@ func New(cfg *Config) (*Jailer, error) {
 }
 
 // Start launches a Firecracker VM inside jailer.
-func (j *Jailer) Start(ctx context.Context, cfg VMConfig) (*Process, error) {
+func (j *Jailer) Start(_ context.Context, cfg VMConfig) (*Process, error) {
 	j.logger.Info().
 		Str("task_id", cfg.TaskID).
 		Int("vcpus", cfg.VcpuCount).
@@ -374,7 +374,7 @@ func (j *Jailer) waitForSocket(socketPath string, timeout time.Duration) error {
 }
 
 // Stop terminates a jailed VM gracefully.
-func (j *Jailer) Stop(ctx context.Context, taskID string) error {
+func (j *Jailer) Stop(_ context.Context, taskID string) error {
 	j.logger.Info().
 		Str("task_id", taskID).
 		Msg("Stopping jailed Firecracker VM")

@@ -176,7 +176,7 @@ func TestE2ESimpleVMLaunch(t *testing.T) {
 			status, err := vmm.Describe(ctx, task)
 			require.NoError(t, err, "Should be able to describe VM")
 			assert.NotNil(t, status, "Status must not be nil")
-			assert.Equal(t, types.TaskState_RUNNING, status.State, "VM should be running")
+			assert.Equal(t, types.TaskStateRunning, status.State, "VM should be running")
 
 			t.Logf("VM State: %d", status.State)
 			if status.RuntimeStatus != nil {

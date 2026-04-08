@@ -30,6 +30,8 @@ import (
 )
 
 // SnapshotInfo holds metadata about a VM snapshot.
+//
+//nolint:revive // Stuttering name is acceptable here for package clarity
 type SnapshotInfo struct {
 	// ID is the unique identifier for this snapshot.
 	ID string `json:"id"`
@@ -72,6 +74,8 @@ type SnapshotInfo struct {
 }
 
 // SnapshotFilter filters snapshot listings.
+//
+//nolint:revive // Stuttering name is acceptable here for package clarity
 type SnapshotFilter struct {
 	TaskID    string
 	ServiceID string
@@ -81,6 +85,8 @@ type SnapshotFilter struct {
 }
 
 // SnapshotConfig holds snapshot configuration.
+//
+//nolint:revive // Stuttering name is acceptable here for package clarity
 type SnapshotConfig struct {
 	Enabled      bool          `yaml:"enabled"`
 	SnapshotDir  string        `yaml:"snapshot_dir"`
@@ -394,7 +400,7 @@ func (m *Manager) listSnapshotsUnlocked(filter SnapshotFilter) ([]*SnapshotInfo,
 }
 
 // DeleteSnapshot removes a snapshot by ID.
-func (m *Manager) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+func (m *Manager) DeleteSnapshot(_ context.Context, snapshotID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -463,13 +469,13 @@ func (m *Manager) enforceMaxSnapshots(serviceID string) {
 		return
 	}
 
-	max := m.config.MaxSnapshots
-	if max <= 0 || len(snapshots) <= max {
+	maxSnapshots := m.config.MaxSnapshots
+	if maxSnapshots <= 0 || len(snapshots) <= maxSnapshots {
 		return
 	}
 
 	// Remove oldest snapshots (list is sorted newest first)
-	toRemove := len(snapshots) - max
+	toRemove := len(snapshots) - maxSnapshots
 	var freed int64
 	for i := len(snapshots) - 1; i >= len(snapshots)-toRemove; i-- {
 		snap := snapshots[i]

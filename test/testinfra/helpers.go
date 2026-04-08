@@ -213,12 +213,12 @@ func (th *TestHelper) WaitForFile(path string, timeout time.Duration) {
 func (th *TestHelper) Retry(fn func() error, maxAttempts int, delay time.Duration) error {
 	var lastErr error
 	for i := 0; i < maxAttempts; i++ {
-		if err := fn(); err == nil {
+		err := fn()
+		if err == nil {
 			return nil
-		} else {
-			lastErr = err
-			time.Sleep(delay)
 		}
+		lastErr = err
+		time.Sleep(delay)
 	}
 	return fmt.Errorf("retry failed after %d attempts: %w", maxAttempts, lastErr)
 }

@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
+	google_protobuf "github.com/gogo/protobuf/types"
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	google_protobuf "github.com/gogo/protobuf/types"
 )
 
 // TestE2E_SwarmKit_Comprehensive tests comprehensive SwarmKit E2E scenarios

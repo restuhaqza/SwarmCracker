@@ -155,7 +155,7 @@ func (j *Jailer) SetupNetworkNamespace(ctx *JailContext) error {
 }
 
 // setResourceLimits sets resource limits for the VM process
-func (j *Jailer) setResourceLimits(ctx *JailContext) error {
+func (j *Jailer) setResourceLimits(_ *JailContext) error {
 	// Set file descriptor limit
 	const maxFD = 4096
 	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &syscall.Rlimit{

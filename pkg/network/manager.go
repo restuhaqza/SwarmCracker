@@ -18,16 +18,18 @@ import (
 )
 
 // NetworkManager manages VM networking.
+//
+//nolint:revive // Stuttering name is acceptable here for package clarity
 type NetworkManager struct {
-	config         types.NetworkConfig
-	bridges        map[string]bool
-	mu             sync.RWMutex
-	tapDevices     map[string]*TapDevice
-	ipAllocator    *IPAllocator
-	natSetup       bool
-	vxlanMgr       *VXLANManager
-	peerDiscovery  bool
-	peerCancel     context.CancelFunc
+	config        types.NetworkConfig
+	bridges       map[string]bool
+	mu            sync.RWMutex
+	tapDevices    map[string]*TapDevice
+	ipAllocator   *IPAllocator
+	natSetup      bool
+	vxlanMgr      *VXLANManager
+	peerDiscovery bool
+	peerCancel    context.CancelFunc
 }
 
 // TapDevice represents a TAP device.
@@ -253,13 +255,13 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 			log.Warn().Err(err).Msg("Failed to setup NAT, VMs may not have internet access")
 		} else {
 			nm.natSetup = true
-			}
 		}
+	}
 
-		// Setup DHCP server for VM network boot
-		if err := nm.setupDHCP(ctx); err != nil {
-			log.Warn().Err(err).Msg("Failed to setup DHCP, VMs may need static config")
-			}
+	// Setup DHCP server for VM network boot
+	if err := nm.setupDHCP(ctx); err != nil {
+		log.Warn().Err(err).Msg("Failed to setup DHCP, VMs may need static config")
+	}
 
 	// If no networks attached, create a default TAP device using configured bridge
 	if len(task.Networks) == 0 {
@@ -268,10 +270,10 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		// Create a synthetic network attachment for default bridge
 		defaultNetwork := types.NetworkAttachment{
 			Network: types.Network{
-				ID:   "default",
+				ID: "default",
 				Spec: types.NetworkSpec{
-					Name:         "default",
-					Driver:       "bridge",
+					Name:   "default",
+					Driver: "bridge",
 					DriverConfig: &types.DriverConfig{
 						Bridge: &types.BridgeConfig{
 							Name: nm.config.BridgeName,
@@ -344,7 +346,7 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 }
 
 // CleanupNetwork cleans up network interfaces for a task.
-func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) error {
+func (nm *NetworkManager) CleanupNetwork(_ context.Context, task *types.Task) error {
 	if task == nil {
 		return nil
 	}

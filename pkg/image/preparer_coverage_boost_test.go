@@ -46,7 +46,7 @@ func TestImagePreparer_Prepare_ErrorHandling(t *testing.T) {
 		{
 			name: "empty_image_name",
 			task: &types.Task{
-				ID:   "test-empty-image",
+				ID: "test-empty-image",
 				Spec: types.TaskSpec{
 					Runtime: &types.Container{
 						Image: "", // Empty image

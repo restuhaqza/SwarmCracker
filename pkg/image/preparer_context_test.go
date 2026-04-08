@@ -394,8 +394,8 @@ func TestInitInjector_EdgeCases(t *testing.T) {
 		validate    func(*testing.T, *InitInjector)
 	}{
 		{
-			name: "nil config defaults to tini",
-			config: nil,
+			name:        "nil config defaults to tini",
+			config:      nil,
 			expectError: false,
 			validate: func(t *testing.T, ii *InitInjector) {
 				assert.Equal(t, InitSystemTini, ii.config.Type)
@@ -464,8 +464,8 @@ func TestInitInjector_EdgeCases(t *testing.T) {
 // TestInitInjector_GetInitPath tests init path retrieval
 func TestInitInjector_GetInitPath(t *testing.T) {
 	tests := []struct {
-		config     *InitSystemConfig
-		wantPath   string
+		config   *InitSystemConfig
+		wantPath string
 	}{
 		{
 			config: &InitSystemConfig{
@@ -576,14 +576,14 @@ func TestImagePreparer_Prepare_InvalidInputs(t *testing.T) {
 		errorMsg    string
 	}{
 		{
-			name:      "nil task",
-			setupFunc: func(ip *ImagePreparer) {},
-			task:      nil,
+			name:        "nil task",
+			setupFunc:   func(ip *ImagePreparer) {},
+			task:        nil,
 			expectError: true,
 			errorMsg:    "cannot be nil",
 		},
 		{
-			name: "nil runtime",
+			name:      "nil runtime",
 			setupFunc: func(ip *ImagePreparer) {},
 			task: &types.Task{
 				ID: "test-nil-runtime",
@@ -595,7 +595,7 @@ func TestImagePreparer_Prepare_InvalidInputs(t *testing.T) {
 			errorMsg:    "not a container",
 		},
 		{
-			name: "non-container runtime",
+			name:      "non-container runtime",
 			setupFunc: func(ip *ImagePreparer) {},
 			task: &types.Task{
 				ID: "test-bad-runtime",
@@ -607,7 +607,7 @@ func TestImagePreparer_Prepare_InvalidInputs(t *testing.T) {
 			errorMsg:    "not a container",
 		},
 		{
-			name: "empty image name",
+			name:      "empty image name",
 			setupFunc: func(ip *ImagePreparer) {},
 			task: &types.Task{
 				ID: "test-empty-image",
@@ -621,7 +621,7 @@ func TestImagePreparer_Prepare_InvalidInputs(t *testing.T) {
 			expectError: true,
 		},
 		{
-			name: "nil annotations",
+			name:      "nil annotations",
 			setupFunc: func(ip *ImagePreparer) {},
 			task: &types.Task{
 				ID: "test-nil-annotations",

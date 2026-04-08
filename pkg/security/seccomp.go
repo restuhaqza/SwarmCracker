@@ -140,17 +140,17 @@ func ValidateSeccompProfile(profilePath string) error {
 
 	// Validate default action
 	if filter.DefaultAction != "SCMP_ACT_ALLOW" &&
-	   filter.DefaultAction != "SCMP_ACT_DENY" &&
-	   filter.DefaultAction != "SCMP_ACT_ERRNO" &&
-	   filter.DefaultAction != "SCMP_ACT_KILL" {
+		filter.DefaultAction != "SCMP_ACT_DENY" &&
+		filter.DefaultAction != "SCMP_ACT_ERRNO" &&
+		filter.DefaultAction != "SCMP_ACT_KILL" {
 		return fmt.Errorf("invalid default action: %s", filter.DefaultAction)
 	}
 
 	// Validate architectures
 	validArchs := map[string]bool{
-		"SCMP_ARCH_X86_64": true,
-		"SCMP_ARCH_X86":    true,
-		"SCMP_ARCH_ARM":    true,
+		"SCMP_ARCH_X86_64":  true,
+		"SCMP_ARCH_X86":     true,
+		"SCMP_ARCH_ARM":     true,
 		"SCMP_ARCH_AARCH64": true,
 	}
 	for _, arch := range filter.Architectures {

@@ -27,7 +27,7 @@ func main() {
 
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+		grpc.WithContextDialer(func(_ context.Context, addr string) (net.Conn, error) {
 			return net.Dial("unix", socketPath)
 		}),
 	}

@@ -357,10 +357,10 @@ func TestNetworkManager_NATSetup(t *testing.T) {
 		{
 			name: "setup NAT with valid subnet",
 			config: types.NetworkConfig{
-				BridgeName:  "test-br0",
-				Subnet:      "192.168.127.0/24",
-				BridgeIP:    "192.168.127.1/24",
-				NATEnabled:  true,
+				BridgeName: "test-br0",
+				Subnet:     "192.168.127.0/24",
+				BridgeIP:   "192.168.127.1/24",
+				NATEnabled: true,
 			},
 			expectError: false,
 		},

@@ -22,6 +22,7 @@ func ipCmdArgs(args ...string) *exec.Cmd {
 func ipCmd() string {
 	return "" // unused, kept for compat
 }
+
 // NetworkChecker validates network configuration
 type NetworkChecker struct{}
 

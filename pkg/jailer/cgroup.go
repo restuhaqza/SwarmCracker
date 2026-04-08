@@ -222,15 +222,15 @@ func (m *CgroupManager) GetStats(taskID string) (*CgroupStats, error) {
 
 // CgroupStats holds cgroup statistics.
 type CgroupStats struct {
-	CPUUsageUs     int64 `json:"cpu_usage_us"`
-	CPUPeriods     int64 `json:"cpu_periods"`
-	CPUThrottled   int64 `json:"cpu_throttled"`
-	MemoryAnon     int64 `json:"memory_anon"`
-	MemoryFile     int64 `json:"memory_file"`
-	MemoryCurrent  int64 `json:"memory_current"`
-	MemoryMax      int64 `json:"memory_max"`
-	IOReadBytes    int64 `json:"io_read_bytes"`
-	IOWriteBytes   int64 `json:"io_write_bytes"`
+	CPUUsageUs    int64 `json:"cpu_usage_us"`
+	CPUPeriods    int64 `json:"cpu_periods"`
+	CPUThrottled  int64 `json:"cpu_throttled"`
+	MemoryAnon    int64 `json:"memory_anon"`
+	MemoryFile    int64 `json:"memory_file"`
+	MemoryCurrent int64 `json:"memory_current"`
+	MemoryMax     int64 `json:"memory_max"`
+	IOReadBytes   int64 `json:"io_read_bytes"`
+	IOWriteBytes  int64 `json:"io_write_bytes"`
 }
 
 // setCPULimits configures CPU resource limits.

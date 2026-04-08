@@ -22,8 +22,8 @@ const blockImageFile = "image.ext4"
 //
 // Requires root for mkfs, mount/umount.
 type BlockDriver struct {
-	meta    *MetaStore
-	quota   *QuotaEnforcer
+	meta     *MetaStore
+	quota    *QuotaEnforcer
 	mountDir string // base dir for temporary mount points
 }
 

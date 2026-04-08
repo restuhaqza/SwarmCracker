@@ -1,13 +1,13 @@
 package storage
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"archive/tar"
-	"compress/gzip"
 
 	"github.com/rs/zerolog/log"
 )

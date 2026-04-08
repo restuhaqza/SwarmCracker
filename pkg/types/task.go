@@ -72,17 +72,17 @@ type Resources struct {
 
 // RestartPolicy specifies restart behavior.
 type RestartPolicy struct {
-	Condition   RestartPolicy_Condition
+	Condition   RestartPolicyCondition
 	MaxAttempts uint64
 }
 
-// RestartPolicy_Condition specifies when to restart.
-type RestartPolicy_Condition int
+// RestartPolicyCondition specifies when to restart.
+type RestartPolicyCondition int
 
 const (
-	RestartPolicy_ANY        RestartPolicy_Condition = 0
-	RestartPolicy_NONE       RestartPolicy_Condition = 1
-	RestartPolicy_ON_FAILURE RestartPolicy_Condition = 2
+	RestartPolicyAny       RestartPolicyCondition = 0
+	RestartPolicyNone      RestartPolicyCondition = 1
+	RestartPolicyOnFailure RestartPolicyCondition = 2
 )
 
 // Placement specifies placement constraints.
@@ -103,18 +103,18 @@ type TaskStatus struct {
 type TaskState int
 
 const (
-	TaskState_NEW       TaskState = 0
-	TaskState_PENDING   TaskState = 1
-	TaskState_ASSIGNED  TaskState = 2
-	TaskState_ACCEPTED  TaskState = 3
-	TaskState_PREPARING TaskState = 4
-	TaskState_STARTING  TaskState = 5
-	TaskState_RUNNING   TaskState = 6
-	TaskState_COMPLETE  TaskState = 7
-	TaskState_FAILED    TaskState = 8
-	TaskState_REJECTED  TaskState = 9
-	TaskState_REMOVE    TaskState = 10
-	TaskState_ORPHANED  TaskState = 11
+	TaskStateNew       TaskState = 0
+	TaskStatePending   TaskState = 1
+	TaskStateAssigned  TaskState = 2
+	TaskStateAccepted  TaskState = 3
+	TaskStatePreparing TaskState = 4
+	TaskStateStarting  TaskState = 5
+	TaskStateRunning   TaskState = 6
+	TaskStateComplete  TaskState = 7
+	TaskStateFailed    TaskState = 8
+	TaskStateRejected  TaskState = 9
+	TaskStateRemove    TaskState = 10
+	TaskStateOrphaned  TaskState = 11
 )
 
 // NetworkAttachment represents network attachment.

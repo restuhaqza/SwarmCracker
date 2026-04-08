@@ -51,7 +51,7 @@ func TestNetworkManager_PrepareNetwork_Comprehensive(t *testing.T) {
 			validate: func(t *testing.T, nm *NetworkManager, task *types.Task, err error) {
 				// If PrepareNetwork returned error (e.g., no root), skip TAP validation
 				if err != nil {
-						return
+					return
 				}
 				// Check that NAT was setup
 				assert.True(t, nm.natSetup, "NAT should be setup")

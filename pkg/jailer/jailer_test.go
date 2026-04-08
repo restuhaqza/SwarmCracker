@@ -169,9 +169,9 @@ func TestJailerValidateVMConfig(t *testing.T) {
 		{
 			name: "missing KernelPath",
 			config: VMConfig{
-				TaskID:    "test-vm",
-				VcpuCount: 1,
-				MemoryMB:  512,
+				TaskID:     "test-vm",
+				VcpuCount:  1,
+				MemoryMB:   512,
 				RootfsPath: rootfsPath,
 			},
 			wantErr: true,

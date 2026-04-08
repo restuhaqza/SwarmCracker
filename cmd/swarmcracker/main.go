@@ -532,7 +532,7 @@ func createMockTask(imageRef string, vcpus, memoryMB int, env []string) *types.T
 			},
 		},
 		Status: types.TaskStatus{
-			State: types.TaskState_PENDING,
+			State: types.TaskStatePending,
 		},
 		Networks: []types.NetworkAttachment{
 			{
@@ -587,29 +587,29 @@ func getGOARCH() string {
 // taskStateString converts TaskState to string
 func taskStateString(state types.TaskState) string {
 	switch state {
-	case types.TaskState_NEW:
+	case types.TaskStateNew:
 		return "NEW"
-	case types.TaskState_PENDING:
+	case types.TaskStatePending:
 		return "PENDING"
-	case types.TaskState_ASSIGNED:
+	case types.TaskStateAssigned:
 		return "ASSIGNED"
-	case types.TaskState_ACCEPTED:
+	case types.TaskStateAccepted:
 		return "ACCEPTED"
-	case types.TaskState_PREPARING:
+	case types.TaskStatePreparing:
 		return "PREPARING"
-	case types.TaskState_STARTING:
+	case types.TaskStateStarting:
 		return "STARTING"
-	case types.TaskState_RUNNING:
+	case types.TaskStateRunning:
 		return "RUNNING"
-	case types.TaskState_COMPLETE:
+	case types.TaskStateComplete:
 		return "COMPLETE"
-	case types.TaskState_FAILED:
+	case types.TaskStateFailed:
 		return "FAILED"
-	case types.TaskState_REJECTED:
+	case types.TaskStateRejected:
 		return "REJECTED"
-	case types.TaskState_REMOVE:
+	case types.TaskStateRemove:
 		return "REMOVE"
-	case types.TaskState_ORPHANED:
+	case types.TaskStateOrphaned:
 		return "ORPHANED"
 	default:
 		return "UNKNOWN"

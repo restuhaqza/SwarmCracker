@@ -26,11 +26,11 @@ func TestTask(id, image string) *types.Task {
 				},
 			},
 			Restart: types.RestartPolicy{
-				Condition: types.RestartPolicy_ON_FAILURE,
+				Condition: types.RestartPolicyOnFailure,
 			},
 		},
 		Status: types.TaskStatus{
-			State:   types.TaskState_PENDING,
+			State:   types.TaskStatePending,
 			Message: "Created for testing",
 		},
 		Networks: []types.NetworkAttachment{

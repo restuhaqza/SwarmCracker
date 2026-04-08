@@ -465,7 +465,7 @@ func (vm *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSt
 
 	if !exists {
 		return &types.TaskStatus{
-			State:   types.TaskState_ORPHANED,
+			State:   types.TaskStateOrphaned,
 			Message: "VM not found",
 		}, nil
 	}
@@ -474,7 +474,7 @@ func (vm *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSt
 	process, err := os.FindProcess(vmInstance.PID)
 	if err != nil {
 		return &types.TaskStatus{
-			State:   types.TaskState_COMPLETE,
+			State:   types.TaskStateComplete,
 			Message: "Process not found",
 		}, nil
 	}
@@ -482,13 +482,13 @@ func (vm *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSt
 	// Send signal 0 to check if process is alive
 	if err := process.Signal(syscall.Signal(0)); err != nil {
 		return &types.TaskStatus{
-			State:   types.TaskState_COMPLETE,
+			State:   types.TaskStateComplete,
 			Message: "Process exited",
 		}, nil
 	}
 
 	return &types.TaskStatus{
-		State: types.TaskState_RUNNING,
+		State: types.TaskStateRunning,
 		RuntimeStatus: map[string]interface{}{
 			"vm_id": vmInstance.ID,
 			"pid":   vmInstance.PID,
@@ -509,7 +509,7 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 
 	if !exists {
 		return &types.TaskStatus{
-			State:   types.TaskState_ORPHANED,
+			State:   types.TaskStateOrphaned,
 			Message: "VM not found",
 		}, nil
 	}
@@ -518,7 +518,7 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 	process, err := os.FindProcess(vmInstance.PID)
 	if err != nil {
 		return &types.TaskStatus{
-			State:   types.TaskState_FAILED,
+			State:   types.TaskStateFailed,
 			Message: fmt.Sprintf("VM process error: %v", err),
 		}, nil
 	}
@@ -527,7 +527,7 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 	if err := process.Signal(syscall.Signal(0)); err != nil {
 		vmInstance.State = VMStateStopped
 		return &types.TaskStatus{
-			State:   types.TaskState_COMPLETE,
+			State:   types.TaskStateComplete,
 			Message: "VM has stopped",
 		}, nil
 	}
@@ -536,19 +536,19 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 	var taskState types.TaskState
 	switch vmInstance.State {
 	case VMStateNew:
-		taskState = types.TaskState_NEW
+		taskState = types.TaskStateNew
 	case VMStateStarting:
-		taskState = types.TaskState_STARTING
+		taskState = types.TaskStateStarting
 	case VMStateRunning:
-		taskState = types.TaskState_RUNNING
+		taskState = types.TaskStateRunning
 	case VMStateStopping:
-		taskState = types.TaskState_STARTING // Still in transition
+		taskState = types.TaskStateStarting // Still in transition
 	case VMStateStopped:
-		taskState = types.TaskState_COMPLETE
+		taskState = types.TaskStateComplete
 	case VMStateCrashed:
-		taskState = types.TaskState_FAILED
+		taskState = types.TaskStateFailed
 	default:
-		taskState = types.TaskState_RUNNING // Default to running for safety
+		taskState = types.TaskStateRunning // Default to running for safety
 	}
 
 	return &types.TaskStatus{

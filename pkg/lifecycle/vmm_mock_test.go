@@ -271,7 +271,7 @@ func TestVMMManagerWithExecutors_Wait(t *testing.T) {
 			task: &types.Task{
 				ID: "test-vm-running",
 			},
-			expectState: types.TaskState_RUNNING,
+			expectState: types.TaskStateRunning,
 			expectError: false,
 		},
 		{
@@ -283,7 +283,7 @@ func TestVMMManagerWithExecutors_Wait(t *testing.T) {
 			task: &types.Task{
 				ID: "test-vm-stopped",
 			},
-			expectState: types.TaskState_COMPLETE,
+			expectState: types.TaskStateComplete,
 			expectError: false,
 		},
 		{
@@ -293,7 +293,7 @@ func TestVMMManagerWithExecutors_Wait(t *testing.T) {
 			task: &types.Task{
 				ID: "nonexistent-vm",
 			},
-			expectState: types.TaskState_ORPHANED,
+			expectState: types.TaskStateOrphaned,
 			expectError: false,
 		},
 	}
@@ -352,7 +352,7 @@ func TestVMMManagerWithExecutors_Describe(t *testing.T) {
 				ID: "test-vm",
 			},
 			vmState:     VMStateRunning,
-			expectState: types.TaskState_RUNNING,
+			expectState: types.TaskStateRunning,
 		},
 		{
 			name: "describe_stopped_vm",
@@ -364,7 +364,7 @@ func TestVMMManagerWithExecutors_Describe(t *testing.T) {
 				ID: "test-vm",
 			},
 			vmState:     VMStateStopped,
-			expectState: types.TaskState_COMPLETE,
+			expectState: types.TaskStateComplete,
 		},
 		{
 			name: "describe_crashed_vm",
@@ -376,7 +376,7 @@ func TestVMMManagerWithExecutors_Describe(t *testing.T) {
 				ID: "test-vm",
 			},
 			vmState:     VMStateCrashed,
-			expectState: types.TaskState_FAILED,
+			expectState: types.TaskStateFailed,
 		},
 	}
 

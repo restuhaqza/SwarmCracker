@@ -371,12 +371,12 @@ func TestInitInjector_Inject(t *testing.T) {
 // TestImagePreparer_Prepare_InitSystemInjection tests init system injection during prepare
 func TestImagePreparer_Prepare_InitSystemInjection(t *testing.T) {
 	tests := []struct {
-		name          string
-		initType      InitSystemType
-		gracePeriod   int
-		setupFunc     func(*ImagePreparer, *types.Task)
-		expectError   bool
-		validate      func(*testing.T, *types.Task)
+		name        string
+		initType    InitSystemType
+		gracePeriod int
+		setupFunc   func(*ImagePreparer, *types.Task)
+		expectError bool
+		validate    func(*testing.T, *types.Task)
 	}{
 		{
 			name:        "prepare with tini",
@@ -643,10 +643,10 @@ func TestImagePreparer_Prepare_ConcurrentSameImageDuplicate(t *testing.T) {
 // TestImagePreparer_Cleanup_OldFiles tests cleanup of old files
 func TestImagePreparer_Cleanup_OldFiles(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupFunc  func(*ImagePreparer)
-		retention  int
-		validate   func(*testing.T, *ImagePreparer)
+		name      string
+		setupFunc func(*ImagePreparer)
+		retention int
+		validate  func(*testing.T, *ImagePreparer)
 	}{
 		{
 			name: "cleanup removes old files",

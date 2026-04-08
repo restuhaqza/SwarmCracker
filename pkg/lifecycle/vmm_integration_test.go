@@ -22,12 +22,12 @@ import (
 // TestVMMManager_Start_MockedAPI tests Start with mocked Firecracker API
 func TestVMMManager_Start_MockedAPI(t *testing.T) {
 	tests := []struct {
-		name           string
-		apiHandler     http.HandlerFunc
-		configJSON     string
-		expectError    bool
-		errorContains  string
-		validateState  VMState
+		name          string
+		apiHandler    http.HandlerFunc
+		configJSON    string
+		expectError   bool
+		errorContains string
+		validateState VMState
 	}{
 		{
 			name: "successful start with mocked API",
@@ -135,10 +135,10 @@ func TestVMMManager_Start_MockedAPI(t *testing.T) {
 // TestVMMManager_Describe_ProcessStates tests Describe with different process states
 func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 	tests := []struct {
-		name           string
-		setupFunc      func() (*VMInstance, error)
-		expectedState  types.TaskState
-		expectError    bool
+		name          string
+		setupFunc     func() (*VMInstance, error)
+		expectedState types.TaskState
+		expectError   bool
 	}{
 		{
 			name: "running process",
@@ -150,7 +150,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 					CreatedAt: time.Now(),
 				}, nil
 			},
-			expectedState: types.TaskState_RUNNING,
+			expectedState: types.TaskStateRunning,
 			expectError:   false,
 		},
 		{
@@ -163,7 +163,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 					CreatedAt: time.Now(),
 				}, nil
 			},
-			expectedState: types.TaskState_COMPLETE,
+			expectedState: types.TaskStateComplete,
 			expectError:   false,
 		},
 		{
@@ -176,7 +176,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 					CreatedAt: time.Now(),
 				}, nil
 			},
-			expectedState: types.TaskState_COMPLETE, // Signal(0) fails on invalid PID, treated as stopped
+			expectedState: types.TaskStateComplete, // Signal(0) fails on invalid PID, treated as stopped
 			expectError:   false,
 		},
 		{
@@ -189,7 +189,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 					CreatedAt: time.Now(),
 				}, nil
 			},
-			expectedState: types.TaskState_COMPLETE, // Signal(0) fails on PID 0, treated as stopped
+			expectedState: types.TaskStateComplete, // Signal(0) fails on PID 0, treated as stopped
 			expectError:   false,
 		},
 	}
@@ -244,7 +244,7 @@ func TestVMMManager_Wait_ProcessStates(t *testing.T) {
 					State: VMStateRunning,
 				}, nil
 			},
-			expectedState: types.TaskState_RUNNING,
+			expectedState: types.TaskStateRunning,
 			expectError:   false,
 		},
 		{
@@ -256,7 +256,7 @@ func TestVMMManager_Wait_ProcessStates(t *testing.T) {
 					State: VMStateRunning,
 				}, nil
 			},
-			expectedState: types.TaskState_COMPLETE,
+			expectedState: types.TaskStateComplete,
 			expectError:   false,
 		},
 		{
@@ -268,7 +268,7 @@ func TestVMMManager_Wait_ProcessStates(t *testing.T) {
 					State: VMStateNew,
 				}, nil
 			},
-			expectedState: types.TaskState_RUNNING,
+			expectedState: types.TaskStateRunning,
 			expectError:   false,
 		},
 		{
@@ -280,7 +280,7 @@ func TestVMMManager_Wait_ProcessStates(t *testing.T) {
 					State: VMStateCrashed,
 				}, nil
 			},
-			expectedState: types.TaskState_COMPLETE,
+			expectedState: types.TaskStateComplete,
 			expectError:   false,
 		},
 	}
@@ -612,35 +612,35 @@ func TestVMMManager_Wait_NilTask(t *testing.T) {
 
 	// May error or return ORPHANED
 	if err == nil {
-		assert.Equal(t, types.TaskState_ORPHANED, status.State)
+		assert.Equal(t, types.TaskStateOrphaned, status.State)
 	}
 }
 
 // TestVMInstance_Uptime tests VM instance uptime calculation
 func TestVMInstance_Uptime(t *testing.T) {
 	tests := []struct {
-		name         string
-		createdAt    time.Time
-		minUptime    time.Duration
-		maxUptime    time.Duration
+		name      string
+		createdAt time.Time
+		minUptime time.Duration
+		maxUptime time.Duration
 	}{
 		{
-			name:         "recent VM",
-			createdAt:    time.Now().Add(-10 * time.Second),
-			minUptime:    9 * time.Second,
-			maxUptime:    11 * time.Second,
+			name:      "recent VM",
+			createdAt: time.Now().Add(-10 * time.Second),
+			minUptime: 9 * time.Second,
+			maxUptime: 11 * time.Second,
 		},
 		{
-			name:         "old VM",
-			createdAt:    time.Now().Add(-1 * time.Hour),
-			minUptime:    59 * time.Minute,
-			maxUptime:    61 * time.Minute,
+			name:      "old VM",
+			createdAt: time.Now().Add(-1 * time.Hour),
+			minUptime: 59 * time.Minute,
+			maxUptime: 61 * time.Minute,
 		},
 		{
-			name:         "very new VM",
-			createdAt:    time.Now(),
-			minUptime:    0,
-			maxUptime:    1 * time.Second,
+			name:      "very new VM",
+			createdAt: time.Now(),
+			minUptime: 0,
+			maxUptime: 1 * time.Second,
 		},
 	}
 

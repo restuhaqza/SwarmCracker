@@ -76,12 +76,12 @@ func TestCgroupCreateCgroup(t *testing.T) {
 
 	taskID := "test-task-123"
 	limits := ResourceLimits{
-		CPUQuotaUs:   500000, // 0.5 CPU
-		MemoryMax:    268435456, // 256MB
-		MemoryHigh:   241591910, // 230MB (90% of max)
-		IOWeight:     100,
-		IOReadBPS:    0,
-		IOWriteBPS:   0,
+		CPUQuotaUs: 500000,    // 0.5 CPU
+		MemoryMax:  268435456, // 256MB
+		MemoryHigh: 241591910, // 230MB (90% of max)
+		IOWeight:   100,
+		IOReadBPS:  0,
+		IOWriteBPS: 0,
 	}
 
 	err = mgr.CreateCgroup(taskID, limits)
@@ -188,11 +188,11 @@ func TestCgroupGetStats(t *testing.T) {
 	if stats == nil { //nolint:staticcheck // checked for nil before dereference
 		t.Fatal("Expected non-nil stats")
 	}
-	cpuUsage := stats.CPUUsageUs //nolint:staticcheck // t.Fatal terminates test
-	cpuPeriods := stats.CPUPeriods //nolint:staticcheck
+	cpuUsage := stats.CPUUsageUs       //nolint:staticcheck // t.Fatal terminates test
+	cpuPeriods := stats.CPUPeriods     //nolint:staticcheck
 	cpuThrottled := stats.CPUThrottled //nolint:staticcheck
-	memCurrent := stats.MemoryCurrent //nolint:staticcheck
-	memMax := stats.MemoryMax //nolint:staticcheck
+	memCurrent := stats.MemoryCurrent  //nolint:staticcheck
+	memMax := stats.MemoryMax          //nolint:staticcheck
 
 	// Verify stats structure
 	t.Logf("CPU Usage: %d µs", cpuUsage)
@@ -224,30 +224,30 @@ func TestResourceLimitsValidation(t *testing.T) {
 		{
 			name: "zero limits (unlimited)",
 			limits: ResourceLimits{
-				CPUQuotaUs:  0,
-				MemoryMax:   0,
-				MemoryHigh:  0,
-				IOWeight:    0,
+				CPUQuotaUs: 0,
+				MemoryMax:  0,
+				MemoryHigh: 0,
+				IOWeight:   0,
 			},
 			wantErr: false, // Should be allowed (unlimited)
 		},
 		{
 			name: "minimal limits",
 			limits: ResourceLimits{
-				CPUQuotaUs:  10000, // 0.01 CPU
-				MemoryMax:   1048576, // 1MB
-				MemoryHigh:  524288, // 512KB
-				IOWeight:    1,
+				CPUQuotaUs: 10000,   // 0.01 CPU
+				MemoryMax:  1048576, // 1MB
+				MemoryHigh: 524288,  // 512KB
+				IOWeight:   1,
 			},
 			wantErr: false,
 		},
 		{
 			name: "high limits",
 			limits: ResourceLimits{
-				CPUQuotaUs:  8000000, // 8 CPUs
-				MemoryMax:   8589934592, // 8GB
-				MemoryHigh:  7730941133, // ~7.2GB
-				IOWeight:    10000,
+				CPUQuotaUs: 8000000,    // 8 CPUs
+				MemoryMax:  8589934592, // 8GB
+				MemoryHigh: 7730941133, // ~7.2GB
+				IOWeight:   10000,
 			},
 			wantErr: false,
 		},
@@ -318,9 +318,9 @@ func TestCgroupCPULimits(t *testing.T) {
 	}
 
 	tests := []struct {
-		name         string
-		quotaUs      int64
-		expectedMax  string
+		name        string
+		quotaUs     int64
+		expectedMax string
 	}{
 		{
 			name:        "half CPU",
@@ -471,9 +471,9 @@ func TestCgroupIOLimits(t *testing.T) {
 
 	taskID := "test-io-limits"
 	limits := ResourceLimits{
-		IOWeight:   500, // Higher than default (100)
-		IOReadBPS:  10485760,  // 10 MB/s read limit
-		IOWriteBPS: 10485760,  // 10 MB/s write limit
+		IOWeight:   500,      // Higher than default (100)
+		IOReadBPS:  10485760, // 10 MB/s read limit
+		IOWriteBPS: 10485760, // 10 MB/s write limit
 	}
 
 	err = mgr.CreateCgroup(taskID, limits)
@@ -500,15 +500,15 @@ func TestCgroupIOLimits(t *testing.T) {
 // TestCgroupStatsStructure tests stats data structure.
 func TestCgroupStatsStructure(t *testing.T) {
 	stats := &CgroupStats{
-		CPUUsageUs:     123456,
-		CPUPeriods:     100,
-		CPUThrottled:   5,
-		MemoryAnon:     104857600,
-		MemoryFile:     52428800,
-		MemoryCurrent:  157286400,
-		MemoryMax:      268435456,
-		IOReadBytes:    1048576,
-		IOWriteBytes:   524288,
+		CPUUsageUs:    123456,
+		CPUPeriods:    100,
+		CPUThrottled:  5,
+		MemoryAnon:    104857600,
+		MemoryFile:    52428800,
+		MemoryCurrent: 157286400,
+		MemoryMax:     268435456,
+		IOReadBytes:   1048576,
+		IOWriteBytes:  524288,
 	}
 
 	if stats.CPUUsageUs <= 0 {

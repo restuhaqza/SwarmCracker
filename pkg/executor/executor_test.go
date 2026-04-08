@@ -242,22 +242,22 @@ func TestFirecrackerExecutor_Wait(t *testing.T) {
 			task: mocks.NewTestTask("task-1", "nginx:latest"),
 			setupWait: func(vmm *mocks.MockVMMManager) {
 				vmm.SetWaitStatus(&types.TaskStatus{
-					State:   types.TaskState_RUNNING,
+					State:   types.TaskStateRunning,
 					Message: "VM is running",
 				})
 			},
-			wantState: types.TaskState_RUNNING,
+			wantState: types.TaskStateRunning,
 		},
 		{
 			name: "completed task",
 			task: mocks.NewTestTask("task-2", "redis:alpine"),
 			setupWait: func(vmm *mocks.MockVMMManager) {
 				vmm.SetWaitStatus(&types.TaskStatus{
-					State:   types.TaskState_COMPLETE,
+					State:   types.TaskStateComplete,
 					Message: "VM exited cleanly",
 				})
 			},
-			wantState: types.TaskState_COMPLETE,
+			wantState: types.TaskStateComplete,
 		},
 	}
 
@@ -322,7 +322,7 @@ func TestFirecrackerExecutor_Describe(t *testing.T) {
 	status, err := exec.Describe(ctx, task)
 
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_RUNNING, status.State)
+	assert.Equal(t, types.TaskStateRunning, status.State)
 	assert.True(t, vmmManager.DescribeCalled)
 }
 
@@ -430,7 +430,7 @@ func TestFirecrackerExecutor_FullLifecycle(t *testing.T) {
 	// Describe
 	status, err := exec.Describe(ctx, task)
 	require.NoError(t, err)
-	assert.Equal(t, types.TaskState_RUNNING, status.State)
+	assert.Equal(t, types.TaskStateRunning, status.State)
 
 	// Wait
 	waitStatus, err := exec.Wait(ctx, task)

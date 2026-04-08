@@ -43,24 +43,24 @@ type Executor struct {
 
 // Config holds the SwarmKit integration configuration.
 type Config struct {
-	FirecrackerPath  string `yaml:"firecracker_path"`
-	KernelPath       string `yaml:"kernel_path"`
-	RootfsDir        string `yaml:"rootfs_dir"`
-	SocketDir        string `yaml:"socket_dir"`
-	DefaultVCPUs     int    `yaml:"default_vcpus"`
-	DefaultMemoryMB  int    `yaml:"default_memory_mb"`
-	BridgeName       string `yaml:"bridge_name"`
-	Subnet           string `yaml:"subnet"`
-	BridgeIP         string `yaml:"bridge_ip"`
-	IPMode           string `yaml:"ip_mode"`
-	NATEnabled       bool   `yaml:"nat_enabled"`
-	VXLANEnabled     bool   `yaml:"vxlan_enabled"`
+	FirecrackerPath  string   `yaml:"firecracker_path"`
+	KernelPath       string   `yaml:"kernel_path"`
+	RootfsDir        string   `yaml:"rootfs_dir"`
+	SocketDir        string   `yaml:"socket_dir"`
+	DefaultVCPUs     int      `yaml:"default_vcpus"`
+	DefaultMemoryMB  int      `yaml:"default_memory_mb"`
+	BridgeName       string   `yaml:"bridge_name"`
+	Subnet           string   `yaml:"subnet"`
+	BridgeIP         string   `yaml:"bridge_ip"`
+	IPMode           string   `yaml:"ip_mode"`
+	NATEnabled       bool     `yaml:"nat_enabled"`
+	VXLANEnabled     bool     `yaml:"vxlan_enabled"`
 	VXLANPeers       []string `yaml:"vxlan_peers"`
-	Debug            bool   `yaml:"debug"`
-	ReservedCPUs     int    `yaml:"reserved_cpus"`
-	ReservedMemoryMB int    `yaml:"reserved_memory_mb"`
-	MaxImageAgeDays  int    `yaml:"max_image_age_days"`
-	StateDir         string `yaml:"state_dir"`
+	Debug            bool     `yaml:"debug"`
+	ReservedCPUs     int      `yaml:"reserved_cpus"`
+	ReservedMemoryMB int      `yaml:"reserved_memory_mb"`
+	MaxImageAgeDays  int      `yaml:"max_image_age_days"`
+	StateDir         string   `yaml:"state_dir"`
 
 	// Jailer configuration
 	EnableJailer    bool   `yaml:"enable_jailer"`
@@ -118,13 +118,13 @@ func NewExecutor(config *Config) (*Executor, error) {
 
 	// Create network manager
 	netCfg := types.NetworkConfig{
-		BridgeName:    config.BridgeName,
-		Subnet:        config.Subnet,
-		BridgeIP:      config.BridgeIP,
-		IPMode:        config.IPMode,
-		NATEnabled:    config.NATEnabled,
-		VXLANEnabled:  config.VXLANEnabled,
-		VXLANPeers:    config.VXLANPeers,
+		BridgeName:   config.BridgeName,
+		Subnet:       config.Subnet,
+		BridgeIP:     config.BridgeIP,
+		IPMode:       config.IPMode,
+		NATEnabled:   config.NATEnabled,
+		VXLANEnabled: config.VXLANEnabled,
+		VXLANPeers:   config.VXLANPeers,
 	}
 	networkMgr := network.NewNetworkManager(netCfg)
 
@@ -850,9 +850,9 @@ func (c *Controller) convertTask() *types.Task {
 			Runtime:   container,
 			Resources: *resources,
 		},
-			Networks:    networks,
-		Secrets:     convertSecrets(c.task),
-		Configs:     convertConfigs(c.task),
+		Networks: networks,
+		Secrets:  convertSecrets(c.task),
+		Configs:  convertConfigs(c.task),
 	}
 }
 

@@ -12,9 +12,9 @@ import (
 
 // Manager manages security features for VMs
 type Manager struct {
-	jailer   *Jailer
+	jailer  *Jailer
 	seccomp bool
-	enabled  bool
+	enabled bool
 }
 
 // NewManager creates a new security manager
@@ -38,14 +38,14 @@ func NewManager(cfg *config.Config) (*Manager, error) {
 	}
 
 	return &Manager{
-		jailer:   jailer,
+		jailer:  jailer,
 		seccomp: true, // Always enable seccomp
-		enabled:  true,
+		enabled: true,
 	}, nil
 }
 
 // PrepareVM prepares security context for a VM before launch
-func (m *Manager) PrepareVM(ctx context.Context, vmID string) (*VMContext, error) {
+func (m *Manager) PrepareVM(_ context.Context, vmID string) (*VMContext, error) {
 	if !m.enabled {
 		return &VMContext{Enabled: false}, nil
 	}
@@ -233,13 +233,13 @@ func CheckCapabilities() error {
 	}
 
 	// Check for CAP_SYS_CHROOT (required for chroot)
-	hasChroot := checkCapability(0x1000) // CAP_SYS_CHROOT = 25
+	hasChroot := hasCapability(0x1000) // CAP_SYS_CHROOT = 25
 	if !hasChroot {
 		log.Warn().Msg("CAP_SYS_CHROOT not available, jailer may not work")
 	}
 
 	// Check for CAP_SYS_ADMIN (required for namespaces)
-	hasAdmin := checkCapability(0x1000 + 21) // CAP_SYS_ADMIN = 21
+	hasAdmin := hasCapability(0x1000 + 21) // CAP_SYS_ADMIN = 21
 	if !hasAdmin {
 		log.Warn().Msg("CAP_SYS_ADMIN not available, namespace isolation may not work")
 	}
@@ -248,8 +248,8 @@ func CheckCapabilities() error {
 	return nil
 }
 
-// checkCapability checks if a specific capability is available
-func checkCapability(cap int) bool {
+// hasCapability checks if a specific capability is available
+func hasCapability(_ int) bool {
 	// This is a simplified check
 	// In production, use linux capabilities API
 	return true // Assume available if running as root
@@ -276,7 +276,7 @@ func (m *Manager) GetJailer() *Jailer {
 }
 
 // SetResourceLimits sets resource limits for a VM
-func (m *Manager) SetResourceLimits(vmCtx *VMContext, limits ResourceLimits) error {
+func (m *Manager) SetResourceLimits(vmCtx *VMContext, _ ResourceLimits) error {
 	if !vmCtx.Enabled {
 		return nil
 	}

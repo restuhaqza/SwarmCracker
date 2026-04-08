@@ -181,7 +181,7 @@ func TestVMMManager_Wait_ContextCancellation(t *testing.T) {
 	status, err := vm.Wait(ctx, task)
 	assert.NoError(t, err)
 	assert.NotNil(t, status)
-	assert.Equal(t, types.TaskState_ORPHANED, status.State)
+	assert.Equal(t, types.TaskStateOrphaned, status.State)
 }
 
 func TestVMMManager_Describe_AllStates(t *testing.T) {
