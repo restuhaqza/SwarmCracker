@@ -254,13 +254,23 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 
 // extractWithDocker extracts an image using Docker (without --root flag)
 func (ip *ImagePreparer) extractWithDocker(ctx context.Context, runtime, imageRef, destPath string) (string, error) {
-	// Create container (Docker doesn't support --root)
-	output, err := exec.CommandContext(ctx, runtime, "create", imageRef, "/bin/true").CombinedOutput()
+	// Create container with --quiet flag to suppress pull messages
+	output, err := exec.CommandContext(ctx, runtime, "create", "--quiet", imageRef, "/bin/true").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("docker create failed: %s: %w", string(output), err)
 	}
 
-	containerID := strings.TrimSpace(string(output))
+	// Container ID is the last line of output (pull messages may appear before it if image not local)
+	outputStr := string(output)
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	containerID := strings.TrimSpace(lines[len(lines)-1])
+
+	// Validate containerID is not empty and looks like a hash
+	if containerID == "" || len(containerID) < 12 {
+		return "", fmt.Errorf("docker create returned invalid container ID: %q", outputStr)
+	}
+
+	log.Debug().Str("container_id", containerID).Msg("Created container for export")
 
 	// Export container filesystem to tar
 	tarPath := filepath.Join(destPath, "fs.tar")
@@ -275,13 +285,24 @@ func (ip *ImagePreparer) extractWithDocker(ctx context.Context, runtime, imageRe
 // extractWithPodman extracts an image using Podman
 // Note: We use podman's default storage for pulling images, only extracting the container filesystem to destPath
 func (ip *ImagePreparer) extractWithPodman(ctx context.Context, runtime, imageRef, destPath string) (string, error) {
-	// Create container (using podman's default storage)
-	output, err := exec.CommandContext(ctx, runtime, "create", imageRef, "/bin/true").CombinedOutput()
+	// Create container with --quiet flag to suppress pull messages
+	// This ensures output is only the container ID
+	output, err := exec.CommandContext(ctx, runtime, "create", "--quiet", imageRef, "/bin/true").CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("podman create failed: %s: %w", string(output), err)
 	}
 
-	containerID := strings.TrimSpace(string(output))
+	// Container ID is the last line of output (pull messages may appear before it if image not local)
+	outputStr := string(output)
+	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
+	containerID := strings.TrimSpace(lines[len(lines)-1])
+
+	// Validate containerID is not empty and looks like a hash
+	if containerID == "" || len(containerID) < 12 {
+		return "", fmt.Errorf("podman create returned invalid container ID: %q", outputStr)
+	}
+
+	log.Debug().Str("container_id", containerID).Msg("Created container for export")
 
 	// Export container filesystem to tar
 	tarPath := filepath.Join(destPath, "fs.tar")
