@@ -100,70 +100,162 @@ setup_bridge() {
 setup_firecracker() {
     local kernel_path="$1"
     local rootfs_dir="$2"
+    local fc_ver="${FIRECRACKER_VERSION:-v1.15.1}"  # Configurable version
+    local install_jailer="${INSTALL_JAILER:-true}"  # Install jailer by default
 
     # Check if firecracker is installed
     if command -v firecracker &>/dev/null; then
         success "Firecracker already installed"
-        return
-    fi
-
-    warn "Firecracker not found. Attempting to install..."
-
-    # Try snap (Ubuntu/Debian)
-    if command -v snap &>/dev/null; then
-        info "Installing Firecracker via snap..."
-        snap install firecracker --classic 2>/dev/null && {
-            success "Firecracker installed via snap"
+        # Still check for jailer if needed
+        if $install_jailer && ! command -v jailer &>/dev/null; then
+            warn "Jailer not found — will install"
+        else
             return
-        }
+        fi
     fi
 
-    # Try direct download (latest release)
+    warn "Firecracker/Jailer not found. Attempting to install..."
+
+    # Skip snap — always use official release tarball (contains both firecracker + jailer)
     local fc_arch
     fc_arch=$(detect_arch)
     # Firecracker uses x86_64/aarch64, not amd64/arm64
     [ "$fc_arch" = "amd64" ] && fc_arch="x86_64"
     [ "$fc_arch" = "arm64" ] && fc_arch="aarch64"
-    local fc_ver="v1.15.0"
-    info "Downloading Firecracker ${fc_ver}..."
+
+    info "Downloading Firecracker ${fc_ver} (${fc_arch})..."
     local fc_tmp
     fc_tmp=$(mktemp -d)
     local fc_url="https://github.com/firecracker-microvm/firecracker/releases/download/${fc_ver}/firecracker-${fc_ver}-${fc_arch}.tgz"
+
     if curl -fsSL "$fc_url" -o "${fc_tmp}/firecracker.tgz" 2>/dev/null; then
         tar xzf "${fc_tmp}/firecracker.tgz" -C "${fc_tmp}"
-        # Binary is named firecracker-<ver>-<arch> inside release-<ver>-<arch>/
-        local fc_bin
-        fc_bin=$(find "${fc_tmp}" -name 'firecracker-*' -type f ! -name '*.debug' ! -name '*.json' ! -name '*.yaml' ! -name 'SHA256SUMS' | head -1)
-        if [ -n "$fc_bin" ]; then
+
+        # Install Firecracker binary
+        local fc_bin="${fc_tmp}/release-${fc_ver}-${fc_arch}/firecracker-${fc_ver}-${fc_arch}"
+        if [ -f "$fc_bin" ]; then
             cp "$fc_bin" "${INSTALL_DIR}/firecracker"
             chmod +x "${INSTALL_DIR}/firecracker"
             success "Firecracker installed to ${INSTALL_DIR}/firecracker"
         else
-            warn "Could not find firecracker binary in archive"
+            # Fallback: find any firecracker binary
+            fc_bin=$(find "${fc_tmp}" -name 'firecracker-*' -type f ! -name '*.debug' | head -1)
+            if [ -n "$fc_bin" ]; then
+                cp "$fc_bin" "${INSTALL_DIR}/firecracker"
+                chmod +x "${INSTALL_DIR}/firecracker"
+                success "Firecracker installed to ${INSTALL_DIR}/firecracker"
+            fi
         fi
+
+        # Install Jailer binary (for secure production mode)
+        if $install_jailer; then
+            local jailer_bin="${fc_tmp}/release-${fc_ver}-${fc_arch}/jailer-${fc_ver}-${fc_arch}"
+            if [ -f "$jailer_bin" ]; then
+                cp "$jailer_bin" "${INSTALL_DIR}/jailer"
+                chmod +x "${INSTALL_DIR}/jailer"
+                success "Jailer installed to ${INSTALL_DIR}/jailer"
+            else
+                warn "Jailer binary not found in release tarball"
+            fi
+        fi
+
         rm -rf "${fc_tmp}"
     else
-        warn "Failed to download Firecracker ${fc_ver}"
-        warn "Install manually: https://github.com/firecracker-microvm/firecracker/releases"
+        error "Failed to download Firecracker ${fc_ver}"
+        error "Install manually: https://github.com/firecracker-microvm/firecracker/releases"
+        exit 1
     fi
 
-    # Download kernel
+    # ─── Create firecracker user for Jailer (UID 998) ────────────────────
+    if $install_jailer; then
+        if ! id firecracker &>/dev/null; then
+            info "Creating firecracker user (UID 998) for jailer..."
+            groupadd --gid 998 firecracker 2>/dev/null || true
+            useradd --system --uid 998 --gid 998 --home-dir /var/lib/firecracker --shell /usr/sbin/nologin firecracker 2>/dev/null || true
+            success "firecracker user created"
+        else
+            info "firecracker user already exists"
+        fi
+
+        # Create parent cgroup for jailer resource limits
+        if [ -d /sys/fs/cgroup ]; then
+            mkdir -p /sys/fs/cgroup/firecracker 2>/dev/null || true
+            chown root:root /sys/fs/cgroup/firecracker 2>/dev/null || true
+            success "Parent cgroup created: /sys/fs/cgroup/firecracker"
+        fi
+
+        # Set ownership for swarmcracker directory (jailer needs write access)
+        mkdir -p /var/lib/swarmcracker 2>/dev/null || true
+        chown -R firecracker:firecracker /var/lib/swarmcracker 2>/dev/null || true
+        success "Ownership set: /var/lib/swarmcracker → firecracker:998"
+    fi
+
+    # ─── Download kernel (dynamic URL discovery) ────────────────────────
     if [ ! -f "$kernel_path" ]; then
         warn "Kernel not found at ${kernel_path}"
         mkdir -p "$(dirname "$kernel_path")"
-        info "Downloading Firecracker kernel..."
-        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/ci-artifacts/kernels/x86_64/vmlinux-5.10.217" \
-            -o "$kernel_path" 2>/dev/null && {
-            success "Kernel installed to ${kernel_path}"
-        } || {
-            warn "Kernel download failed — set --kernel-path manually"
-        }
+
+        local kernel_arch="$fc_arch"
+        local ci_version="${fc_ver%.*}"  # v1.15 from v1.15.1
+
+        info "Discovering latest kernel for Firecracker ${ci_version}..."
+        local latest_kernel_key
+        latest_kernel_key=$(curl -fsSL "http://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/${ci_version}/${kernel_arch}/vmlinux-&list-type=2" 2>/dev/null \
+            | grep -oP "(?<=<Key>)(firecracker-ci/${ci_version}/${kernel_arch}/vmlinux-[0-9]+\\.[0-9]+\\.[0-9]+)(?=</Key>)" \
+            | sort -V | tail -1)
+
+        if [ -n "$latest_kernel_key" ]; then
+            info "Downloading kernel: ${latest_kernel_key}..."
+            curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/${latest_kernel_key}" -o "$kernel_path" && {
+                success "Kernel installed to ${kernel_path}"
+            } || {
+                warn "Kernel download failed"
+            }
+        else
+            # Fallback: use known working URL
+            warn "Dynamic discovery failed, using fallback URL..."
+            curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/${kernel_arch}/vmlinux-6.1.155" \
+                -o "$kernel_path" && success "Kernel installed (fallback)" || warn "Kernel download failed"
+        fi
     else
         info "Kernel found at ${kernel_path}"
     fi
 
-    # Create rootfs dir
+    # ─── Download rootfs (Ubuntu bionic ext4) ───────────────────────────
     mkdir -p "$rootfs_dir"
+    local rootfs_file="${rootfs_dir}/bionic.rootfs.ext4"
+
+    if [ ! -f "$rootfs_file" ]; then
+        info "Downloading Ubuntu rootfs..."
+        curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/${fc_arch}/rootfs/bionic.rootfs.ext4" \
+            -o "$rootfs_file" && success "Rootfs installed to ${rootfs_file}" || {
+            warn "Rootfs download failed — you may need to create one manually"
+        }
+    else
+        info "Rootfs found at ${rootfs_file}"
+    fi
+
+    # ─── Final verification ─────────────────────────────────────────────
+    if ! command -v firecracker &>/dev/null; then
+        error "Firecracker installation failed — cannot continue"
+        exit 1
+    fi
+    if [ ! -f "$kernel_path" ]; then
+        error "Kernel image not found at ${kernel_path} — cannot continue"
+        error "Set --kernel-path to an existing kernel or download one manually"
+        exit 1
+    fi
+    if [ ! -f "$rootfs_file" ]; then
+        warn "Rootfs not found at ${rootfs_file}"
+        warn "MicroVMs may fail to boot without a rootfs image"
+    fi
+
+    # Display summary
+    info "Firecracker setup complete:"
+    info "  Binary:    ${INSTALL_DIR}/firecracker"
+    $install_jailer && info "  Jailer:    ${INSTALL_DIR}/jailer"
+    info "  Kernel:    ${kernel_path}"
+    info "  Rootfs:    ${rootfs_file}"
 }
 
 # ─── SwarmKit (swarmd/swarmctl) setup ────────────────────────────────
@@ -343,6 +435,38 @@ do_setup_manager() {
     printf "\n"
 }
 
+# ─── Clear worker state (for clean join) ─────────────────────────────
+clear_worker_state() {
+    local state_dir="${1:-/var/lib/swarmkit}"
+    
+    info "Clearing worker state for clean join..."
+    
+    # Stop existing services
+    systemctl stop swarmcracker-worker 2>/dev/null || true
+    systemctl stop swarmd-firecracker 2>/dev/null || true
+    
+    # Remove systemd service files
+    rm -f /etc/systemd/system/swarmcracker-worker.service 2>/dev/null || true
+    rm -f /etc/systemd/system/swarmd-firecracker.service 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    
+    # Clear SwarmKit state (cached CA certificates cause join failures)
+    if [ -d "$state_dir" ]; then
+        info "Removing old cluster state from ${state_dir}..."
+        rm -rf "${state_dir}"/* 2>/dev/null || true
+        rm -rf "${state_dir}/certificates" 2>/dev/null || true
+        success "Cluster state cleared"
+    fi
+    
+    # Clear swarmkit socket dir
+    rm -rf /var/run/swarmkit/* 2>/dev/null || true
+    
+    # Clear firecracker sockets
+    rm -rf /var/run/firecracker/* 2>/dev/null || true
+    
+    success "Worker state cleared — ready for clean join"
+}
+
 # ─── Worker setup ────────────────────────────────────────────────────
 do_setup_worker() {
     header "⛏️  Worker Setup"
@@ -412,6 +536,9 @@ do_setup_worker() {
     # Setup networking
     info "Setting up network bridge..."
     setup_bridge "$bridge_name" "$bridge_ip" "$subnet"
+
+    # Clear old state for clean join (prevents CA cache issues)
+    clear_worker_state "${state_dir}"
 
     # Setup Firecracker
     setup_firecracker "$kernel_path" "$rootfs_dir"
@@ -678,6 +805,9 @@ fi
 if $INIT_MODE; then
     header "🚀 Initializing SwarmCracker Cluster"
     
+    # Ensure Firecracker and kernel are installed before init
+    setup_firecracker "$KERNEL_PATH" "$ROOTFS_DIR"
+    
     # Build init command
     INIT_CMD="${INSTALL_DIR}/swarmcracker init"
     
@@ -725,6 +855,12 @@ if $JOIN_MODE; then
         error "--token <TOKEN> is required for join"
         exit 1
     fi
+    
+    # Clear old state for clean join (prevents CA cache issues)
+    clear_worker_state "${STATE_DIR:-/var/lib/swarmkit}"
+    
+    # Ensure Firecracker and kernel are installed before join
+    setup_firecracker "$KERNEL_PATH" "$ROOTFS_DIR"
     
     # Build join command
     JOIN_CMD="${INSTALL_DIR}/swarmcracker join $MANAGER_ADDR --token $JOIN_TOKEN"
