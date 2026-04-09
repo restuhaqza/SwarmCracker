@@ -8,9 +8,9 @@ Documentation for SwarmCracker - Firecracker MicroVMs with SwarmKit orchestratio
 
 | Step | Guide |
 |------|-------|
-| Install | [Installation Guide](docs/getting-started/installation.md) |
-| First microVM | [Quick Start](docs/guides/swarmkit/quick-start.md) |
-| Dev setup | [Local Development](docs/getting-started/local-dev.md) |
+| Install | [Getting Started](docs/getting-started/) |
+| First microVM | [SwarmKit Guide](docs/guides/swarmkit.md) |
+| Dev setup | [Development](docs/development/) |
 
 ---
 
@@ -18,37 +18,32 @@ Documentation for SwarmCracker - Firecracker MicroVMs with SwarmKit orchestratio
 
 ### Getting Started
 
-- [Overview](docs/getting-started/README.md)
-- [Installation](docs/getting-started/installation.md)
-- [Local Dev](docs/getting-started/local-dev.md)
-- [Vagrant](docs/getting-started/vagrant.md)
-- [Cluster Init](docs/getting-started/cluster-init.md)
-- [DigitalOcean](docs/getting-started/digitalocean.md)
+- [Installation & Quick Start](docs/getting-started/README.md)
 
 ### User Guides
 
 - [Configuration](docs/guides/configuration.md)
 - [Networking](docs/guides/networking.md)
-- [Security](docs/guides/security-hardening.md)
-- [Rolling Updates](docs/guides/rolling-updates.md)
-- [Multi-Arch](docs/guides/multi-arch-support.md)
+- [Security](docs/guides/security.md)
+- [Snapshots](docs/guides/snapshots.md)
+- [Advanced Topics](docs/guides/advanced.md)
 
 ### SwarmKit
 
-- [Overview](docs/guides/swarmkit/overview.md)
-- [User Guide](docs/guides/swarmkit/user-guide.md)
-- [Quick Start](docs/guides/swarmkit/quick-start.md)
+- [SwarmKit Integration](docs/guides/swarmkit.md)
 
 ### Architecture
 
-- [System Design](docs/architecture/system.md)
-- [SwarmKit Integration](docs/architecture/swarmkit-integration.md)
-- [VXLAN](docs/vxlan-overlay.md)
+- [System Design](docs/architecture/README.md)
+- [SwarmKit Architecture](docs/architecture/swarmkit.md)
 
 ### Development
 
-- [Getting Started](docs/development/getting-started.md)
-- [Testing](docs/development/testing.md)
+- [Contributing](docs/development/README.md)
+
+### Reference
+
+- [CLI Reference](docs/reference/cli.md)
 
 ---
 
@@ -58,10 +53,10 @@ Documentation for SwarmCracker - Firecracker MicroVMs with SwarmKit orchestratio
 cd infrastructure/ansible
 
 # Deploy cluster
-ansible-playbook -i inventory/virtualbox-fresh site.yml -v
+ansible-playbook -i inventory/libvirt/hosts site.yml -v
 
 # Test
-ansible-playbook -i inventory/virtualbox-fresh test-cluster.yml
+ansible-playbook -i inventory/libvirt/hosts test-cluster.yml
 ```
 
 ---

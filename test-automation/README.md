@@ -41,9 +41,9 @@ vagrant --version
 ## 📖 Documentation
 
 **For deployment guides, see:**
-- [Getting Started - Vagrant](../docs/getting-started/vagrant.md)
-- [Getting Started - Firecracker VMs](../docs/getting-started/firecracker-vm.md)
-- [SwarmKit Deployment Guide](../docs/guides/swarmkit/deployment.md)
+- [Getting Started](../docs/getting-started/)
+- [SwarmKit Guide](../docs/guides/swarmkit.md)
+- [Advanced Guide](../docs/guides/advanced.md)
 
 ## 🚀 Quick Start
 
