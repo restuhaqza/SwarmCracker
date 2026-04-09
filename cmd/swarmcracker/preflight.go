@@ -90,9 +90,19 @@ func getChecksForMode(mode string) []PreflightCheck {
 			Required: true,
 		},
 		{
+			Name:     "TUN/TAP device available",
+			Check:    checkTunTapAvailable,
+			Required: true,
+		},
+		{
 			Name:     "Bridge can be created",
 			Check:    checkBridgeCapability,
 			Required: true,
+		},
+		{
+			Name:     "Cgroup v2 available",
+			Check:    checkCgroupV2Available,
+			Required: false, // Warning only, jailer may not be used
 		},
 		{
 			Name:     "Sufficient memory",
@@ -111,6 +121,11 @@ func getChecksForMode(mode string) []PreflightCheck {
 			Name:     "Manager connectivity",
 			Check:    checkManagerConnectivity,
 			Required: true,
+		})
+		baseChecks = append(baseChecks, PreflightCheck{
+			Name:     "No existing cluster state",
+			Check:    checkNoExistingClusterState,
+			Required: false, // Warning only, will be cleared
 		})
 	}
 
@@ -233,6 +248,73 @@ func checkManagerConnectivity() error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("network not configured - no default route")
 	}
+	return nil
+}
+
+// checkTunTapAvailable verifies /dev/net/tun exists for TAP device creation
+func checkTunTapAvailable() error {
+	if _, err := os.Stat("/dev/net/tun"); os.IsNotExist(err) {
+		return fmt.Errorf("/dev/net/tun not found - TAP devices unavailable")
+	}
+
+	// Check if tun module is loaded (or compiled into kernel)
+	// Note: on some systems, tun is built into kernel and won't appear in lsmod
+	cmd := exec.Command("cat", "/proc/modules")
+	output, err := cmd.Output()
+	if err != nil {
+		// If we can't check, but device exists, assume it's fine
+		return nil
+	}
+
+	// Check for tun module in /proc/modules
+	if !strings.Contains(string(output), "tun") {
+		// Module not in lsmod, but device exists - likely built into kernel
+		// Try loading it anyway
+		exec.Command("modprobe", "tun").Run()
+		// Don't fail if module load fails - device exists
+	}
+
+	return nil
+}
+
+// checkCgroupV2Available verifies cgroup v2 is mounted (required for jailer)
+func checkCgroupV2Available() error {
+	// Check if cgroup v2 is mounted
+	data, err := os.ReadFile("/proc/mounts")
+	if err != nil {
+		return fmt.Errorf("failed to read /proc/mounts: %w", err)
+	}
+
+	mounts := string(data)
+	if !strings.Contains(mounts, "cgroup2") {
+		return fmt.Errorf("cgroup v2 not mounted - jailer requires cgroup v2")
+	}
+
+	// Check if we can create cgroups
+	if _, err := os.Stat("/sys/fs/cgroup"); os.IsNotExist(err) {
+		return fmt.Errorf("/sys/fs/cgroup not found")
+	}
+
+	return nil
+}
+
+// checkNoExistingClusterState checks if there's existing cluster state (for clean join)
+func checkNoExistingClusterState() error {
+	stateDir := "/var/lib/swarmkit"
+
+	// Check for existing state
+	if _, err := os.Stat(stateDir); !os.IsNotExist(err) {
+		// Check if directory is non-empty
+		entries, err := os.ReadDir(stateDir)
+		if err != nil {
+			return nil // Can't read, assume empty
+		}
+
+		if len(entries) > 0 {
+			return fmt.Errorf("existing cluster state found at %s - will be cleared for clean join", stateDir)
+		}
+	}
+
 	return nil
 }
 
