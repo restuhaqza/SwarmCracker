@@ -64,8 +64,8 @@ SwarmCracker provides multiple security layers to isolate Firecracker VMs and pr
 executor:
   enable_jailer: true
   jailer:
-    uid: 1000
-    gid: 1000
+    uid: 998  # firecracker user
+    gid: 998  # firecracker group
     chroot_base_dir: /srv/jailer
     netns: ""  # Optional: network namespace name
 ```
@@ -174,8 +174,8 @@ executor:
 executor:
   enable_jailer: true
   jailer:
-    uid: 1000
-    gid: 1000
+    uid: 998  # firecracker user
+    gid: 998  # firecracker group
     chroot_base_dir: /srv/jailer
     netns: ""  # No network namespace
 ```
@@ -188,8 +188,8 @@ executor:
 executor:
   enable_jailer: true
   jailer:
-    uid: 1000
-    gid: 1000
+    uid: 998  # firecracker user
+    gid: 998  # firecracker group
     chroot_base_dir: /srv/jailer
     netns: vmnet0  # Network isolation
 
@@ -219,8 +219,8 @@ swarmctl node inspect self --pretty | grep jailer
 
 ```yaml
 jailer:
-  uid: 1000  # Never use 0
-  gid: 1000  # Never use 0
+  uid: 998  # firecracker user (never use 0)
+  gid: 998  # firecracker group (never use 0)
 ```
 
 ### 3. Isolate Network
@@ -446,6 +446,6 @@ swarmcracker security audit
 
 ---
 
-**Last Updated:** 2026-04-04
-**Version:** 1.0
+**Last Updated:** 2026-04-09
+**Version:** 1.1
 **Maintained By:** SwarmCracker Security Team

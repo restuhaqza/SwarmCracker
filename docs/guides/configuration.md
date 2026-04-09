@@ -281,7 +281,7 @@ executor:
 
 **Notes:**
 - Init systems ensure proper signal handling and zombie process reaping
-- See [Init System Guide](init-systems.md) for detailed information
+- See [Advanced Guide](advanced.md#init-systems) for detailed information
 - Tini is the default and recommended for production use
 
 ### executor.init_grace_period
