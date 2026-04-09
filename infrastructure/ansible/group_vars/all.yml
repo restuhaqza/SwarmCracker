@@ -2,7 +2,7 @@
 # SwarmCracker Global Variables
 
 # Version and download
-swarmcracker_version: "v0.2.1"
+swarmcracker_version: "v0.6.0"
 swarmcracker_arch: "amd64"  # amd64 or arm64
 swarmcracker_download_url: "https://github.com/restuhaqza/SwarmCracker/releases/download/{{ swarmcracker_version }}"
 swarmcracker_tarball: "swarmcracker-{{ swarmcracker_version }}-linux-{{ swarmcracker_arch }}.tar.gz"
@@ -49,13 +49,13 @@ go_version: "1.24"
 go_install_dir: "/usr/local"
 
 # Firecracker installation
-firecracker_version: "1.14.0"
+firecracker_version: "v1.15.1"
 firecracker_download_url: "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}"
 firecracker_tarball: "firecracker-{{ firecracker_version }}-{{ swarmcracker_arch }}.tgz"
 
-# Firecracker kernel (download from GitHub releases - vmlinux from firecracker release)
-# Using a mirror that has the kernel available
-swarmcracker_kernel_url: "https://downloads.openwrt.org/releases/22.03/targets/x86/64/openwrt-22.03-x86-64-vmlinux.bin"
+# Firecracker kernel (official CI URL)
+# For latest: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155
+swarmcracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155"
 
 # Security settings
 swarmcracker_enable_seccomp: true

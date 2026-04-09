@@ -4,11 +4,11 @@
 # IPs are assigned by libvirt DHCP — update after `vagrant up`
 
 [managers]
-swarm-manager ansible_host=192.168.121.65 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/manager/libvirt/private_key
+swarm-manager ansible_host=192.168.121.100 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/manager/libvirt/private_key
 
 [workers]
-swarm-worker-1 ansible_host=192.168.121.193 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/worker1/libvirt/private_key
-swarm-worker-2 ansible_host=192.168.121.218 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/worker2/libvirt/private_key
+swarm-worker-1 ansible_host=192.168.121.227 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/worker1/libvirt/private_key
+swarm-worker-2 ansible_host=192.168.121.122 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace/projects/swarmcracker/test-automation/.vagrant/machines/worker2/libvirt/private_key
 
 [swarmcracker:children]
 managers
