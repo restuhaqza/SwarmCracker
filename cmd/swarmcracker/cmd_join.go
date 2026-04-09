@@ -79,7 +79,7 @@ Examples:
 
 	// Node role
 	cmd.Flags().BoolVar(&cfg.Worker, "worker", true, "Join as a worker node")
-	cmd.Flags().BoolVar(&cfg.Worker, "manager", false, "Join as a manager node (requires manager token)")
+	cmd.Flags().BoolVarP(&cfg.IsManager, "manager", "m", false, "Join as a manager node (requires manager token)")
 
 	// Network flags
 	cmd.Flags().StringVar(&cfg.AdvertiseAddr, "advertise-addr", "", "Address to advertise to the cluster (default: auto-detect)")
@@ -136,9 +136,8 @@ func runJoin(cfg *joinConfig) error {
 
 	// Determine node role
 	nodeRole := "worker"
-	if !cfg.Worker {
+	if cfg.IsManager {
 		nodeRole = "manager"
-		cfg.IsManager = true
 	}
 
 	log.Info().
@@ -169,24 +168,31 @@ func runJoin(cfg *joinConfig) error {
 	}
 	PrintProgressComplete(1, 5, "Manager connectivity validated")
 
+	// Step 1.5: Clear old state for clean join (prevents CA cache issues)
+	PrintProgress(2, 5, "Clearing old cluster state...")
+	if err := clearOldWorkerState(cfg); err != nil {
+		log.Warn().Err(err).Msg("Failed to clear old state (may not exist)")
+	}
+	PrintProgressComplete(2, 5, "Old state cleared")
+
 	// Step 2: Create directories
-	PrintProgress(2, 5, "Creating required directories...")
+	PrintProgress(3, 5, "Creating required directories...")
 	if err := createWorkerDirectories(cfg); err != nil {
-		PrintProgressFailed(2, 5, "Creating directories", err)
+		PrintProgressFailed(3, 5, "Creating directories", err)
 		return fmt.Errorf("failed to create directories: %w", err)
 	}
-	PrintProgressComplete(2, 5, "Directories created")
+	PrintProgressComplete(3, 5, "Directories created")
 
 	// Step 3: Generate configuration files
-	PrintProgress(3, 5, "Generating configuration files...")
+	PrintProgress(4, 5, "Generating configuration files...")
 	if err := generateWorkerConfigFiles(cfg); err != nil {
-		PrintProgressFailed(3, 5, "Generating configuration", err)
+		PrintProgressFailed(4, 5, "Generating configuration", err)
 		return fmt.Errorf("failed to generate configuration: %w", err)
 	}
-	PrintProgressComplete(3, 5, "Configuration generated")
+	PrintProgressComplete(4, 5, "Configuration generated")
 
 	// Step 4: Start the worker service
-	PrintProgress(4, 5, "Starting worker service...")
+	PrintProgress(5, 5, "Starting worker service...")
 
 	// Show spinner while starting
 	spinnerDone := make(chan bool)
@@ -253,12 +259,50 @@ func validateManagerConnectivity(managerAddr string) error {
 	return nil
 }
 
+// clearOldWorkerState removes old cluster state to prevent CA cache issues on join
+func clearOldWorkerState(cfg *joinConfig) error {
+	log.Info().Msg("Clearing old cluster state for clean join...")
+
+	// Stop existing services
+	exec.Command("systemctl", "stop", "swarmcracker-worker").Run()
+	exec.Command("systemctl", "stop", "swarmd-firecracker").Run()
+
+	// Remove systemd service files
+	os.Remove("/etc/systemd/system/swarmcracker-worker.service")
+	os.Remove("/etc/systemd/system/swarmd-firecracker.service")
+
+	// Reload systemd
+	exec.Command("systemctl", "daemon-reload").Run()
+
+	// Clear SwarmKit state (cached CA certificates cause join failures)
+	statePaths := []string{
+		cfg.StateDir,
+		"/var/lib/swarmkit",
+		"/var/run/swarmkit",
+		"/var/run/firecracker",
+	}
+
+	for _, path := range statePaths {
+		if _, err := os.Stat(path); err == nil {
+			if err := os.RemoveAll(path); err != nil {
+				log.Warn().Err(err).Str("path", path).Msg("Failed to remove state dir")
+			} else {
+				log.Debug().Str("path", path).Msg("State directory cleared")
+			}
+		}
+	}
+
+	log.Info().Msg("Old cluster state cleared")
+	return nil
+}
+
 func createWorkerDirectories(cfg *joinConfig) error {
 	dirs := []string{
 		cfg.StateDir,
 		cfg.ConfigDir,
 		cfg.RootfsDir,
 		cfg.SocketDir,
+		"/var/run/swarmkit",  // Required for systemd ProtectSystem=strict
 	}
 
 	for _, dir := range dirs {
