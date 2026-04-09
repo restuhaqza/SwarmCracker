@@ -1,6 +1,6 @@
 ---
 # Firecracker Role - Tasks
-# Installs Firecracker binary, kernel, and base rootfs on all worker nodes.
+# Installs Firecracker binary, jailer, kernel, and base rootfs on all worker nodes.
 
 - name: Ensure required packages
   package:
@@ -22,7 +22,7 @@
     - "{{ firecracker_rootfs_dir }}"
     - /usr/share/firecracker
 
-# --- Install Firecracker binary ---
+# --- Install Firecracker + Jailer binaries ---
 - name: Check if firecracker is already installed
   stat:
     path: "{{ firecracker_install_dir }}/firecracker"
@@ -43,7 +43,7 @@
   failed_when: false
   when: fc_binary.stat.exists and (fc_binary.stat.size is not defined or fc_binary.stat.size >= 1000)
 
-- name: Install Firecracker binary
+- name: Install Firecracker and Jailer binaries
   shell: |
     arch=$(uname -m)
     case "$arch" in
@@ -58,8 +58,17 @@
     curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}/firecracker-{{ firecracker_version }}-${fc_arch}.tgz" \
       -o firecracker.tgz
     tar xzf firecracker.tgz
-    cp release-v{{ firecracker_version }}-${fc_arch}/firecracker-v{{ firecracker_version }}-${fc_arch} {{ firecracker_install_dir }}/firecracker
+
+    # Install Firecracker
+    cp release-{{ firecracker_version }}-${fc_arch}/firecracker-{{ firecracker_version }}-${fc_arch} {{ firecracker_install_dir }}/firecracker
     chmod +x {{ firecracker_install_dir }}/firecracker
+
+    # Install Jailer (for secure production mode)
+    if [ -f release-{{ firecracker_version }}-${fc_arch}/jailer-{{ firecracker_version }}-${fc_arch} ]; then
+      cp release-{{ firecracker_version }}-${fc_arch}/jailer-{{ firecracker_version }}-${fc_arch} {{ firecracker_install_dir }}/jailer
+      chmod +x {{ firecracker_install_dir }}/jailer
+      echo "Jailer {{ firecracker_version }} installed"
+    fi
 
     rm -rf "$tmpdir"
     echo "Firecracker {{ firecracker_version }} installed"
@@ -76,6 +85,44 @@
 - name: Display Firecracker version
   debug:
     msg: "Firecracker {{ fc_version.stderr | default('installed') }}"
+
+# --- Jailer user/group setup (for secure production mode) ---
+- name: Create firecracker group
+  group:
+    name: "{{ firecracker_group }}"
+    gid: "{{ firecracker_gid }}"
+    system: yes
+    state: present
+  when: firecracker_install_jailer | bool
+
+- name: Create firecracker user
+  user:
+    name: "{{ firecracker_user }}"
+    uid: "{{ firecracker_uid }}"
+    group: "{{ firecracker_group }}"
+    system: yes
+    home: /var/lib/firecracker
+    shell: /usr/sbin/nologin
+    create_home: no
+    state: present
+  when: firecracker_install_jailer | bool
+
+- name: Create parent cgroup for jailer
+  file:
+    path: "/sys/fs/cgroup/{{ firecracker_parent_cgroup }}"
+    state: directory
+    mode: "0755"
+  when: firecracker_install_jailer | bool
+  ignore_errors: yes  # May fail if cgroup v2 not available
+
+- name: Create swarmcracker directory with proper ownership
+  file:
+    path: /var/lib/swarmcracker
+    state: directory
+    mode: "0755"
+    owner: "{{ firecracker_user }}"
+    group: "{{ firecracker_group }}"
+  when: firecracker_install_jailer | bool
 
 # --- Download kernel ---
 - name: Check if kernel exists
@@ -107,5 +154,9 @@
   debug:
     msg: |
       ✅ Firecracker {{ firecracker_version }} — {{ firecracker_install_dir }}/firecracker
+      {% if firecracker_install_jailer %}
+      ✅ Jailer — {{ firecracker_install_dir }}/jailer
+      ✅ User: {{ firecracker_user }} (UID {{ firecracker_uid }})
+      {% endif %}
       ✅ Kernel: {{ firecracker_kernel_path }}
       ✅ Rootfs: {{ firecracker_rootfs_dir }}/{{ firecracker_rootfs_name }}

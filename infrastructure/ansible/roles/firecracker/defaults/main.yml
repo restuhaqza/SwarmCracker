@@ -1,15 +1,25 @@
 ---
 # Firecracker Role - Default Variables
 
-firecracker_version: "v1.14.0"
+firecracker_version: "v1.15.1"  # Latest stable
 firecracker_arch: "x86_64"
 firecracker_install_dir: "/usr/local/bin"
 firecracker_socket_dir: "/var/run/firecracker"
 firecracker_log_dir: "/var/log/firecracker"
 
-# Kernel
+# Jailer configuration (for secure production mode)
+firecracker_install_jailer: true
+firecracker_user: "firecracker"
+firecracker_uid: 998
+firecracker_group: "firecracker"
+firecracker_gid: 998
+firecracker_parent_cgroup: "firecracker"
+
+# Kernel - uses dynamic discovery or fixed URL
 firecracker_kernel_path: "/usr/share/firecracker/vmlinux"
-firecracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin"
+firecracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155"
+# Alternative: legacy quickstart kernel
+# firecracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/kernels/vmlinux.bin"
 
 # Rootfs
 firecracker_rootfs_dir: "/var/lib/firecracker/rootfs"

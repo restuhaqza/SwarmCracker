@@ -99,7 +99,7 @@ Key variables in `group_vars/all.yml`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `swarmcracker_version` | `v0.2.1` | Release version to deploy |
+| `swarmcracker_version` | `v0.6.0` | Release version to deploy |
 | `swarmcracker_bridge_name` | `swarm-br0` | SwarmCracker control bridge |
 | `swarmcracker_subnet` | `192.168.127.0/24` | SwarmCracker control subnet |
 | `network_bridge_ip` | `172.20.0.1` | VM bridge gateway IP |
