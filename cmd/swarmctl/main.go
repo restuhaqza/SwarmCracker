@@ -103,6 +103,53 @@ func main() {
 			os.Exit(1)
 		}
 		inspectService(ctx, client, os.Args[2])
+	case "scale":
+		if len(os.Args) < 4 {
+			fmt.Println("Usage: swarmctl scale <service-id> <replicas>")
+			os.Exit(1)
+		}
+		replicas, err := parseInt(os.Args[3])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Invalid replicas: %v\n", err)
+			os.Exit(1)
+		}
+		scaleService(ctx, client, os.Args[2], replicas)
+	case "update":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl update <service-id> [flags]")
+			os.Exit(1)
+		}
+		updateService(ctx, client, os.Args[2:], os.Args[2])
+	case "drain":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl drain <node-id>")
+			os.Exit(1)
+		}
+		setNodeAvailability(ctx, client, os.Args[2], api.NodeAvailabilityDrain)
+	case "activate":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl activate <node-id>")
+			os.Exit(1)
+		}
+		setNodeAvailability(ctx, client, os.Args[2], api.NodeAvailabilityActive)
+	case "pause-node":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl pause-node <node-id>")
+			os.Exit(1)
+		}
+		setNodeAvailability(ctx, client, os.Args[2], api.NodeAvailabilityPause)
+	case "promote":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl promote <node-id>")
+			os.Exit(1)
+		}
+		promoteNode(ctx, client, os.Args[2])
+	case "demote":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl demote <node-id>")
+			os.Exit(1)
+		}
+		demoteNode(ctx, client, os.Args[2])
 	default:
 		printUsage()
 	}
@@ -111,16 +158,28 @@ func main() {
 func printUsage() {
 	fmt.Println("SwarmKit Control Client")
 	fmt.Println()
-	fmt.Println("Commands:")
-	fmt.Println("  ls-nodes          List nodes in the cluster")
+	fmt.Println("Services:")
 	fmt.Println("  ls-services, ls   List services")
-	fmt.Println("  ls-tasks          List tasks")
 	fmt.Println("  create-service    Create a service from an image")
 	fmt.Println("  rm-service        Remove a service")
 	fmt.Println("  inspect           Inspect a service or task")
+	fmt.Println("  scale             Scale a service to N replicas")
+	fmt.Println("  update            Update service (image, replicas, env)")
+	fmt.Println()
+	fmt.Println("Nodes:")
+	fmt.Println("  ls-nodes          List nodes in the cluster")
+	fmt.Println("  drain             Drain a node (reschedule tasks)")
+	fmt.Println("  activate          Activate a drained/paused node")
+	fmt.Println("  pause-node        Pause a node (no new tasks)")
+	fmt.Println("  promote           Promote worker to manager")
+	fmt.Println("  demote            Demote manager to worker")
+	fmt.Println()
+	fmt.Println("Tasks:")
+	fmt.Println("  ls-tasks          List tasks")
 	fmt.Println()
 	fmt.Println("Environment:")
 	fmt.Println("  SWARM_SOCKET      Path to swarm socket (default: /var/run/swarmkit/swarm.sock)")
+	fmt.Println("  SWARM_STATE_DIR   State directory (default: /var/lib/swarmkit)")
 }
 
 func listNodes(ctx context.Context, client api.ControlClient) {
@@ -287,4 +346,185 @@ func printJSON(v interface{}) {
 		os.Exit(1)
 	}
 	fmt.Println(string(data))
+}
+
+func parseInt(s string) (uint64, error) {
+	var result uint64
+	_, err := fmt.Sscanf(s, "%d", &result)
+	return result, err
+}
+
+func scaleService(ctx context.Context, client api.ControlClient, serviceID string, replicas uint64) {
+	// Get current service
+	resp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: serviceID})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get service: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Update replicas
+	svc := resp.Service
+	if replicated := svc.Spec.GetReplicated(); replicated != nil {
+		replicated.Replicas = replicas
+	} else {
+		fmt.Fprintf(os.Stderr, "Service is not replicated\n")
+		os.Exit(1)
+	}
+
+	_, err = client.UpdateService(ctx, &api.UpdateServiceRequest{
+		ServiceID:      serviceID,
+		ServiceVersion: &svc.Meta.Version,
+		Spec:           &svc.Spec,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to scale service: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Service %s scaled to %d replicas\n", serviceID, replicas)
+}
+
+func updateService(ctx context.Context, client api.ControlClient, args []string, serviceID string) {
+	// Get current service
+	resp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: serviceID})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get service: %v\n", err)
+		os.Exit(1)
+	}
+
+	svc := resp.Service
+
+	// Parse flags
+	for i := 2; i < len(args); i++ {
+		switch args[i] {
+		case "--image":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "--image requires a value\n")
+				os.Exit(1)
+			}
+			if container := svc.Spec.Task.GetContainer(); container != nil {
+				container.Image = args[i+1]
+			}
+			i++
+		case "--replicas":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "--replicas requires a value\n")
+				os.Exit(1)
+			}
+			replicas, err := parseInt(args[i+1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Invalid replicas: %v\n", err)
+				os.Exit(1)
+			}
+			if replicated := svc.Spec.GetReplicated(); replicated != nil {
+				replicated.Replicas = replicas
+			}
+			i++
+		case "--env":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "--env requires a value\n")
+				os.Exit(1)
+			}
+			if container := svc.Spec.Task.GetContainer(); container != nil {
+				parts := strings.SplitN(args[i+1], "=", 2)
+				if len(parts) == 2 {
+					// Remove existing env with same key
+					for j, env := range container.Env {
+						if strings.HasPrefix(env, parts[0]+"=") {
+							container.Env = append(container.Env[:j], container.Env[j+1:]...)
+							break
+						}
+					}
+					container.Env = append(container.Env, args[i+1])
+				}
+			}
+			i++
+		default:
+			// Unknown flag, skip
+			}
+		}
+
+	_, err = client.UpdateService(ctx, &api.UpdateServiceRequest{
+		ServiceID:      serviceID,
+		ServiceVersion: &svc.Meta.Version,
+		Spec:           &svc.Spec,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to update service: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Service %s updated\n", serviceID)
+}
+
+func setNodeAvailability(ctx context.Context, client api.ControlClient, nodeID string, availability api.NodeSpec_Availability) {
+	// Get current node
+	resp, err := client.GetNode(ctx, &api.GetNodeRequest{NodeID: nodeID})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get node: %v\n", err)
+		os.Exit(1)
+	}
+
+	node := resp.Node
+	node.Spec.Availability = availability
+
+	_, err = client.UpdateNode(ctx, &api.UpdateNodeRequest{
+		NodeID:      nodeID,
+		NodeVersion: &node.Meta.Version,
+		Spec:        &node.Spec,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to update node: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Node %s availability set to %s\n", nodeID, availability.String())
+}
+
+func promoteNode(ctx context.Context, client api.ControlClient, nodeID string) {
+	// Get current node
+	resp, err := client.GetNode(ctx, &api.GetNodeRequest{NodeID: nodeID})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get node: %v\n", err)
+		os.Exit(1)
+	}
+
+	node := resp.Node
+	node.Spec.DesiredRole = api.NodeRoleManager
+
+	_, err = client.UpdateNode(ctx, &api.UpdateNodeRequest{
+		NodeID:      nodeID,
+		NodeVersion: &node.Meta.Version,
+		Spec:        &node.Spec,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to promote node: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Node %s promoted to manager\n", nodeID)
+}
+
+func demoteNode(ctx context.Context, client api.ControlClient, nodeID string) {
+	// Get current node
+	resp, err := client.GetNode(ctx, &api.GetNodeRequest{NodeID: nodeID})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get node: %v\n", err)
+		os.Exit(1)
+	}
+
+	node := resp.Node
+	node.Spec.DesiredRole = api.NodeRoleWorker
+
+	_, err = client.UpdateNode(ctx, &api.UpdateNodeRequest{
+		NodeID:      nodeID,
+		NodeVersion: &node.Meta.Version,
+		Spec:        &node.Spec,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to demote node: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Node %s demoted to worker\n", nodeID)
 }
