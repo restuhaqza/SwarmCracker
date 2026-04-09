@@ -124,10 +124,10 @@ swarmctl --socket /tmp/manager/swarm.sock service create --name nginx --image ng
 
 | | |
 |--|--|
-| [Installation](docs/getting-started/installation.md) | Setup |
+| [Getting Started](docs/getting-started/) | Setup |
 | [Networking](docs/guides/networking.md) | Bridge, VXLAN |
-| [SwarmKit](docs/guides/swarmkit/user-guide.md) | Orchestration |
-| [Architecture](docs/architecture/system.md) | Design |
+| [SwarmKit](docs/guides/swarmkit.md) | Orchestration |
+| [Architecture](docs/architecture/) | Design |
 
 ## Download
 

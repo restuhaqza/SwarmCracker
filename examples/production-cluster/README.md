@@ -544,7 +544,7 @@ curl http://worker-1:9090/metrics
 
 ## Troubleshooting
 
-See the [Comprehensive Deployment Guide](../../docs/guides/swarmkit/deployment-comprehensive.md#troubleshooting) for detailed troubleshooting steps.
+See the [SwarmKit Guide](../../docs/guides/swarmkit.md) for detailed troubleshooting steps.
 
 ### Quick Diagnostics
 
@@ -593,6 +593,6 @@ bridge link
 ## See Also
 
 - [Local Development Guide](../local-dev/README.md)
-- [Comprehensive Deployment Guide](../../docs/guides/swarmkit/deployment-comprehensive.md)
+- [SwarmKit Guide](../../docs/guides/swarmkit.md)
 - [Networking Guide](../../docs/guides/networking.md)
-- [Init Systems Guide](../../docs/guides/init-systems.md)
+- [Advanced Guide](../../docs/guides/advanced.md) — Init systems, multi-arch

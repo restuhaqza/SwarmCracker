@@ -76,7 +76,7 @@ SwarmCracker runs each workload as a Firecracker microVM with:
 
 ### What's Not Covered
 
-- **Host OS hardening** — SwarmCracker assumes a properly secured Linux host. See [Security Hardening Guide](docs/guides/security-hardening.md).
+- **Host OS hardening** — SwarmCracker assumes a properly secured Linux host. See [Security Guide](docs/guides/security.md).
 - **Network-level attacks** — VXLAN overlay is not encrypted by default. Use WireGuard or similar if needed.
 - **Image supply chain** — SwarmCracker trusts container registries. Verify image signatures separately.
 
@@ -95,7 +95,7 @@ SwarmCracker runs each workload as a Firecracker microVM with:
 
 ## Security-Related Configuration
 
-See [docs/guides/security-hardening.md](docs/guides/security-hardening.md) for detailed hardening instructions including:
+See [docs/guides/security.md](docs/guides/security.md) for detailed hardening instructions including:
 - Jailer configuration
 - Resource limits
 - Seccomp profiles

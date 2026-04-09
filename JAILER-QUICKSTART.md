@@ -314,8 +314,7 @@ Based on Firecracker benchmarks:
 - [Firecracker Jailer Documentation](https://github.com/firecracker-microvm/firecracker/blob/main/docs/jailer.md)
 - [Cgroup v2 Documentation](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)
 - [Seccomp Documentation](https://www.kernel.org/doc/html/latest/userspace-api/seccomp.html)
-- [SwarmCracker Jailer Plan](docs/jailer-integration-plan.md)
-- [Implementation Status](docs/jailer-implementation-status.md)
+- [Security Guide](docs/guides/security.md) — Jailer configuration and hardening
 
 ---
 

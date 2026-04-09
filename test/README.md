@@ -6,11 +6,7 @@ This directory contains the test suite for SwarmCracker.
 
 ## Quick Links
 
-- [Testing Overview](../docs/testing/README.md) - Complete testing guide
-- [Unit Tests](../docs/testing/unit.md) - Unit testing documentation
-- [Integration Tests](../docs/testing/integration.md) - Integration testing with Firecracker
-- [E2E Tests](../docs/testing/e2e.md) - End-to-end testing with Docker Swarm
-- [Test Infrastructure](../docs/testing/testinfra.md) - Environment validation
+- [Testing Overview](../docs/testing/) - Complete testing guide
 
 ## Running Tests
 
@@ -73,9 +69,7 @@ test/
 ## Documentation
 
 For detailed testing documentation, see:
-- **`docs/testing/`** - Complete testing documentation
-- **`docs/testing/README.md`** - Testing overview
-- **`docs/index.md`** - Main documentation index
+- **[Testing Overview](../docs/testing/)** - Testing guide and strategy
 
 ## Quick Start
 
@@ -111,4 +105,4 @@ See [Contributing Guide](../CONTRIBUTING.md) for details.
 
 ---
 
-**Documentation**: See `docs/testing/` for complete testing documentation
+**Documentation**: See [docs/testing/](../docs/testing/) for complete testing documentation
