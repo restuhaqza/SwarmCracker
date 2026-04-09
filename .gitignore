@@ -18,6 +18,10 @@ vendor/
 go.work
 
 # Build artifacts
+swarmctl
+swarmcracker
+build/
+
 /build/
 /dist/
 
