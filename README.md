@@ -56,7 +56,7 @@ sudo cat /var/lib/swarmkit/join-tokens.txt
 sudo swarmcracker join 192.168.1.10:4242 --token SWMTKN-1-...
 ```
 
-See [Cluster Init](docs/getting-started/cluster-init.md) for options.
+See [Getting Started](docs/getting-started/) for cluster setup options.
 
 ---
 
