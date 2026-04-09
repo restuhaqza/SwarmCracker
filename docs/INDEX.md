@@ -1,156 +1,112 @@
 # SwarmCracker Documentation Index
 
-Welcome to the SwarmCracker documentation! This is your central hub for all project documentation.
+> Firecracker microVM orchestration with SwarmKit — v0.6.0
 
 ---
 
-## 🎯 Find What You Need
+## Start Here
 
-### I want to...
-
-| Goal | Documentation |
-|------|---------------|
-| **Install SwarmCracker** | [Installation Guide](getting-started/installation.md) |
-| **Build from source** | [Build Guide](guides/build-from-source.md) |
-| **Deploy my first microVM** | [Quick Start](guides/swarmkit/quick-start.md) |
-| **Set up development environment** | [Development Guide](development/getting-started.md) |
-| **Configure networking** | [Networking Guide](guides/networking/swarm-networking.md) |
-| **Use VM snapshots** | [Snapshot CLI](guides/features/snapshot-cli.md) |
-| **Secure with Jailer** | [Security Hardening](guides/security/security-hardening.md) |
-| **Enable rolling updates** | [Rolling Updates](guides/rolling-updates.md) |
-| **Deploy on multiple architectures** | [Multi-Arch Support](guides/multi-arch-support.md) |
-| **Run tests** | [Testing Guide](testing/strategy.md) |
+| Task | Guide |
+|------|-------|
+| **Install SwarmCracker** | [Getting Started](getting-started/) |
+| **Configure cluster** | [Configuration Guide](guides/configuration.md) |
+| **Deploy services** | [SwarmKit Guide](guides/swarmkit.md) |
+| **CLI commands** | [CLI Reference](reference/cli.md) |
 
 ---
 
-## 📁 Documentation Categories
+## Documentation
 
-### 🚀 Getting Started
-New to SwarmCracker? Start here!
+### Getting Started
 
-- [Overview](getting-started/README.md)
-- [Installation Guide](getting-started/installation.md) ⭐ **Recommended**
-- [Local Development](getting-started/local-dev.md)
-- [Vagrant Setup](getting-started/vagrant.md)
-- [Cluster Init](getting-started/cluster-init.md)
-- [DigitalOcean Deployment](getting-started/digitalocean.md)
-- [Firecracker VM Setup](getting-started/firecracker-vm.md)
+| Document | Description |
+|----------|-------------|
+| [Installation](getting-started/) | Setup, prerequisites, quick start |
 
-### 📖 User Guides
-How-to guides for common tasks.
+### Guides
 
-#### Core
-- [Configuration](guides/configuration.md)
-- [Rolling Updates](guides/rolling-updates.md)
-- [Multi-Arch Support](guides/multi-arch-support.md)
-- [Init Systems](guides/init-systems.md)
-- [File Management](guides/file-management.md)
-- [Build from Source](guides/build-from-source.md)
+| Guide | Description |
+|-------|-------------|
+| [Configuration](guides/configuration.md) | Config options, defaults |
+| [SwarmKit](guides/swarmkit.md) | Services, nodes, tasks |
+| [Networking](guides/networking.md) | TAP, bridge, VXLAN |
+| [Security](guides/security.md) | Jailer, cgroups, seccomp |
+| [Snapshots](guides/snapshots.md) | VM state persistence |
+| [Advanced](guides/advanced.md) | Rolling updates, multi-arch, init |
 
-#### Features
-- [Snapshot CLI](guides/features/snapshot-cli.md) - VM snapshot commands
-- [Snapshot Complete](guides/features/snapshot-complete.md) - Full workflow (v1.14.x+)
+### Reference
 
-#### Networking
-- [Swarm Networking](guides/networking/swarm-networking.md) - VXLAN, bridges, cross-node
+| Reference | Description |
+|-----------|-------------|
+| [CLI Reference](reference/cli.md) | `swarmcracker` + `swarmctl` commands |
 
-#### Security
-- [Security Hardening](guides/security/security-hardening.md) - Production best practices
+### Architecture
 
-### 🔷 SwarmKit Integration
-Using SwarmKit with SwarmCracker.
+| Document | Description |
+|----------|-------------|
+| [System Overview](architecture/) | Components, data flow |
+| [SwarmKit Integration](architecture/swarmkit.md) | Executor interface |
 
-- [Overview](guides/swarmkit/overview.md)
-- [User Guide](guides/swarmkit/user-guide.md)
-- [Quick Start](guides/swarmkit/quick-start.md)
-- [Comprehensive Deployment](guides/swarmkit/deployment-comprehensive.md)
+### Development
 
-### 🏗️ Architecture
-Technical design and implementation details.
-
-- [System Design](architecture/system.md)
-- [SwarmKit Integration](architecture/swarmkit-integration.md)
-- [Jailer Design](architecture/jailer-design.md) - Firecracker isolation
-- [Jailer Status](architecture/jailer-status.md) - Implementation progress
-- [VXLAN Design](architecture/vxlan-design.md) - Overlay networking
-
-### 💻 Development
-For contributors and developers.
-
-- [Getting Started](development/getting-started.md)
-- [Testing Guide](development/testing.md)
-- [Secrets Prevention](development/secrets-prevention.md)
-- [Conventions](CONVENTIONS.md)
-
-### 🧪 Testing
-Testing strategies and results.
-
-- [Strategy](testing/strategy.md)
-- [Test Summary](testing/test-summary.md) ⭐ **All tests passing**
-- [Manual Test Results](testing/manual-test-results.md)
-- [Jailer Tests](testing/jailer-tests.md)
-- [Unit Tests](testing/unit.md)
-- [Integration Tests](testing/integration.md)
-- [E2E Tests](testing/e2e.md)
-
-### 🤖 Infrastructure Automation
-Ansible automation for cluster deployment.
-
-- [Ansible README](../infrastructure/ansible/README.md)
-- [Install Automation](getting-started/install-automation.md)
+| Document | Description |
+|----------|-------------|
+| [Contributing](development/) | Code style, PR process |
+| [Testing](testing/) | Test strategy, coverage |
 
 ---
 
-## 🔍 Search Documentation
+## Quick Reference
 
-Looking for something specific? Try searching for:
+### Key Commands
 
-- `install` - Installation guides
-- `snapshot` - VM snapshot features
-- `jailer` - Security isolation
-- `network` - Networking configuration
-- `vxlan` - Overlay networks
-- `security` - Security hardening
-- `test` - Testing guides
-- `rolling` - Rolling updates
+```bash
+# Initialize cluster
+swarmcracker init --hostname manager-1
 
----
+# Join worker
+swarmcracker join --manager <ip>:4242 --token <token>
 
-## 📊 Documentation Statistics
+# Create service
+swarmctl create-service nginx:latest
 
-| Category | Files | Description |
-|----------|-------|-------------|
-| Getting Started | 7 | Installation and first steps |
-| User Guides | 14 | How-to guides (core + features + networking + security) |
-| SwarmKit | 4 | SwarmKit integration guides |
-| Architecture | 5 | Technical design documents |
-| Development | 4 | Developer guides |
-| Testing | 7 | Test strategies and results |
+# Scale service
+swarmctl scale <svc-id> 3
 
----
+# List nodes
+swarmctl ls-nodes
+```
 
-## 🔗 Quick Links
+### Config Locations
 
-- **[GitHub Repository](https://github.com/restuhaqza/SwarmCracker)**
-- **[Releases](https://github.com/restuhaqza/SwarmCracker/releases)**
-- **[Issues](https://github.com/restuhaqza/SwarmCracker/issues)**
+| Path | Description |
+|------|-------------|
+| `/etc/swarmcracker/config.yaml` | Main config |
+| `/var/run/swarmkit/swarm.sock` | Control socket |
+| `/var/lib/swarmkit` | State directory |
+| `/var/lib/jailer` | Jailer sandboxes |
 
 ---
 
-## 📝 Contributing to Documentation
+## Versions
 
-We welcome documentation contributions! Please:
-
-1. Follow the existing structure
-2. Use clear, concise language
-3. Include code examples
-4. Add troubleshooting sections
-5. Update this index when adding new files
-
-See [CONTRIBUTING.md](../CONTRIBUTING.md) for more details.
+| Component | Version |
+|-----------|---------|
+| SwarmCracker | v0.6.0 |
+| Firecracker | v1.15.1 |
+| SwarmKit | v2.1.1 |
+| Go | 1.21+ |
 
 ---
 
-**Last Updated:** 2026-04-08  
-**Documentation Version:** 1.2  
-**SwarmCracker Version:** v0.2.1
+## External Links
+
+- [GitHub Repository](https://github.com/restuhaqza/SwarmCracker)
+- [Releases](https://github.com/restuhaqza/SwarmCracker/releases)
+- [Issues](https://github.com/restuhaqza/SwarmCracker/issues)
+- [Firecracker](https://github.com/firecracker-microvm/firecracker)
+- [SwarmKit](https://github.com/moby/swarmkit)
+
+---
+
+**Last Updated**: 2026-04-09 | **Doc Version**: 2.0

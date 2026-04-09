@@ -302,22 +302,32 @@ cd / && rm -rf /tmp/swarmkit
 ARCH=$(uname -m)
 [ "$ARCH" = "x86_64" ] && FC_ARCH="x86_64"
 [ "$ARCH" = "aarch64" ] && FC_ARCH="aarch64"
-FC_VER="v1.15.0"
+FC_VER="v1.15.1"
 
-# Download Firecracker
+# Download Firecracker AND Jailer
 sudo mkdir -p /usr/local/bin /usr/share/firecracker
 curl -fsSL "https://github.com/firecracker-microvm/firecracker/releases/download/${FC_VER}/firecracker-${FC_VER}-${FC_ARCH}.tgz" \
   | sudo tar xz -C /tmp
 sudo cp /tmp/release-${FC_VER}-${FC_ARCH}/firecracker-${FC_VER}-${FC_ARCH} /usr/local/bin/firecracker
-sudo chmod +x /usr/local/bin/firecracker
+sudo cp /tmp/release-${FC_VER}-${FC_ARCH}/jailer-${FC_VER}-${FC_ARCH} /usr/local/bin/jailer
+sudo chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer
 
-# Download kernel
-curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/ci-artifacts/kernels/x86_64/vmlinux-5.10.217" \
-  -o /tmp/vmlinux
+# Create firecracker user for jailer (UID 998)
+sudo groupadd --gid 998 firecracker 2>/dev/null || true
+sudo useradd --system --uid 998 --gid 998 firecracker 2>/dev/null || true
+
+# Create parent cgroup for jailer
+sudo mkdir -p /sys/fs/cgroup/firecracker 2>/dev/null || true
+
+# Download kernel (dynamic discovery or fallback)
+KERNEL_URL="https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/${FC_ARCH}/vmlinux-6.1.155"
+curl -fsSL "$KERNEL_URL" -o /tmp/vmlinux
 sudo cp /tmp/vmlinux /usr/share/firecracker/vmlinux
 
-# Create rootfs directory
+# Download rootfs
 sudo mkdir -p /var/lib/firecracker/rootfs
+curl -fsSL "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/${FC_ARCH}/rootfs/bionic.rootfs.ext4" \
+  -o /var/lib/firecracker/rootfs/bionic.rootfs.ext4
 
 # Verify
 firecracker --version
@@ -655,7 +665,8 @@ ping -c 2 <worker2-vm-ip>
 |-------|---------|----------|
 | Manager running | `pgrep swarmd` | PID shown |
 | Workers connected | `swarmctl node ls` | All READY |
-| Firecracker installed | `firecracker --version` | v1.14+ |
+| Firecracker installed | `firecracker --version` | v1.15+ |
+| Jailer installed | `jailer --version` | v1.15+ |
 | Bridge exists | `ip link show swarm-br0` | state UP |
 | VMs running | `pgrep firecracker` | PIDs shown |
 | VMs reachable | `ping <vm-ip>` | 0% loss |

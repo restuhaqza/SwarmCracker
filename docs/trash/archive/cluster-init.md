@@ -151,7 +151,7 @@ Join an existing SwarmCracker cluster.
 |------|---------|-------------|
 | `--token` | **(required)** | Join token from manager |
 | `--worker` | `true` | Join as a worker node |
-| `--manager` | `false` | Join as a manager node (requires manager token) |
+| `--manager`, `-m` | `false` | Join as a manager node (requires manager token) |
 | `--advertise-addr` | auto-detect | Address to advertise to the cluster |
 | `--hostname` | auto-detect | Hostname for this node |
 | `--state-dir` | `/var/lib/swarmkit` | State directory for cluster data |
