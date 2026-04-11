@@ -414,7 +414,10 @@ LimitNPROC=65536
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} /var/run/swarmkit
+ReadWritePath={{.StateDir}}
+ReadWritePath={{.RootfsDir}}
+ReadWritePath={{.SocketDir}}
+ReadWritePath=/var/run/swarmkit
 
 [Install]
 WantedBy=multi-user.target

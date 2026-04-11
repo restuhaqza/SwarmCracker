@@ -252,6 +252,7 @@ func createDirectories(cfg *initConfig) error {
 		cfg.ConfigDir,
 		cfg.RootfsDir,
 		cfg.SocketDir,
+		"/var/run/swarmkit", // Required for systemd ProtectSystem=strict
 	}
 
 	for _, dir := range dirs {
@@ -355,7 +356,10 @@ LimitNPROC=65536
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} /var/run/swarmkit
+ReadWritePath={{.StateDir}}
+ReadWritePath={{.RootfsDir}}
+ReadWritePath={{.SocketDir}}
+ReadWritePath=/var/run/swarmkit
 
 [Install]
 WantedBy=multi-user.target
