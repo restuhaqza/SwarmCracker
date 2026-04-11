@@ -233,6 +233,11 @@ func TestVMMManagerCgroupIntegration(t *testing.T) {
 		t.Skip("Cgroup v2 not available, skipping cgroup integration test")
 	}
 
+	// Skip if we don't have permissions to create cgroups (requires root or cgroup delegation)
+	if !hasCgroupWritePermissions() {
+		t.Skip("No cgroup write permissions, skipping cgroup integration test")
+	}
+
 	cfg := &VMMManagerConfig{
 		FirecrackerPath: firecrackerPath,
 		JailerPath:      jailerPath,
@@ -453,4 +458,15 @@ func isCgroupV2Available() bool {
 		return true
 	}
 	return false
+}
+
+// hasCgroupWritePermissions checks if we can create cgroup directories.
+func hasCgroupWritePermissions() bool {
+	// Try to create a test directory in /sys/fs/cgroup
+	testDir := "/sys/fs/cgroup/swarmcracker-test"
+	if err := os.Mkdir(testDir, 0755); err != nil {
+		return false
+	}
+	os.Remove(testDir)
+	return true
 }

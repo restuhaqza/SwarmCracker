@@ -419,8 +419,17 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 	}
 
 	// 4. Set network interfaces (if any)
-	networkInterfacesRaw, ok := cfg["network-interfaces"].([]interface{})
-	if ok && len(networkInterfacesRaw) > 0 {
+	// Handle both []interface{} (from JSON) and []map[string]interface{} (from translator)
+	var networkInterfacesRaw []interface{}
+	switch ifaces := cfg["network-interfaces"].(type) {
+	case []interface{}:
+		networkInterfacesRaw = ifaces
+	case []map[string]interface{}:
+		for _, m := range ifaces {
+			networkInterfacesRaw = append(networkInterfacesRaw, m)
+		}
+	}
+	if len(networkInterfacesRaw) > 0 {
 		v.logger.Info().
 			Int("count", len(networkInterfacesRaw)).
 			Msg("Configuring network interfaces")
