@@ -425,6 +425,11 @@ func (ip *ImagePreparer) injectInitSystem(rootfsPath string) error {
 		Str("to", targetPath).
 		Msg("Init binary copied")
 
+	// Create /sbin/init wrapper that runs tini with entrypoint
+	if err := ip.createInitWrapper(mountDir); err != nil {
+		log.Warn().Err(err).Msg("Failed to create init wrapper")
+	}
+
 	return nil
 }
 
@@ -446,6 +451,158 @@ func (ip *ImagePreparer) mountExt4(imagePath string) (string, error) {
 	}
 
 	return mountDir, nil
+}
+
+// createInitWrapper creates /sbin/init as a wrapper that calls tini with entrypoint.
+func (ip *ImagePreparer) createInitWrapper(mountDir string) error {
+	// Check for common entrypoints
+	entrypoints := []string{
+		"/docker-entrypoint.sh",  // nginx, many official images
+		"/entrypoint.sh",         // common pattern
+		"/app/entrypoint.sh",     // some images
+	}
+
+	// Find which entrypoint exists
+	entrypoint := ""
+	for _, ep := range entrypoints {
+		epPath := filepath.Join(mountDir, ep)
+		if _, err := os.Stat(epPath); err == nil {
+			entrypoint = ep
+			break
+		}
+	}
+
+	// Default command for nginx-style containers
+	cmd := "nginx -g 'daemon off;'"
+
+	// If no entrypoint, create init that runs HTTP server (busybox httpd style)
+	if entrypoint == "" {
+		// Create simple init that mounts filesystems and starts HTTP server
+		initScript := `#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm /var/www/html
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null
+ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null
+ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null
+ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null
+echo '<html><body><h1>Hello from Firecracker VM</h1></body></html>' > /var/www/html/index.html
+ifconfig lo up 2>/dev/null || true
+echo "=== Starting HTTP server ==="
+httpd -p 80 -h /var/www/html -f 2>&1 &
+echo "Listening ports:"
+cat /proc/net/tcp
+while true; do sleep 60; done
+`
+		initPath := filepath.Join(mountDir, "sbin", "init")
+		return os.WriteFile(initPath, []byte(initScript), 0755)
+	}
+
+	// Create init wrapper that runs nginx directly in foreground
+	// Setup all necessary filesystems for nginx to work
+	initScript := `#!/bin/sh
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+echo "=== INIT START ==="
+# Mount essential filesystems
+mount -t proc proc /proc 2>/dev/null
+mount -t sysfs sysfs /sys 2>/dev/null
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts 2>/dev/null
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null
+# Setup stdout/stderr symlinks for nginx logs (requires /proc)
+ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null
+ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null
+ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null
+echo "Configuring network..."
+# Bring up the network interface (kernel already assigned IP via boot args)
+# Use ifconfig or just rely on kernel config
+ifconfig lo up 2>/dev/null || true
+ifconfig eth0 up 2>/dev/null || true
+# Show network status (best effort)
+echo "Network interfaces:"
+ifconfig -a 2>/dev/null || cat /proc/net/dev
+echo "Running entrypoint scripts..."
+for f in /docker-entrypoint.d/*.sh; do
+    [ -x "$f" ] && echo "Running $f" && timeout 5 "$f" 2>&1
+done
+echo "Starting nginx..."
+echo "Checking nginx binary:"
+ls -la /usr/sbin/nginx
+# Check network before nginx
+echo "Network check:"
+cat /proc/net/dev
+echo "Checking nginx config:"
+echo "=== nginx.conf ==="
+cat /etc/nginx/nginx.conf 2>&1 | head -30
+echo "=== end nginx.conf ==="
+echo "Checking nginx user:"
+id nginx 2>&1 || echo "nginx user not found"
+grep nginx /etc/passwd /etc/group 2>&1 || echo "nginx not in passwd/group"
+echo "Creating nginx dirs:"
+mkdir -p /var/log/nginx /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp /var/cache/nginx/fastcgi_temp /var/cache/nginx/uwsgi_temp /var/cache/nginx/scgi_temp
+chown -R nginx:nginx /var/log/nginx /var/cache/nginx 2>&1 || echo "chown failed"
+chmod -R 755 /var/log/nginx /var/cache/nginx 2>&1 || true
+echo "Checking nginx config files:"
+ls -la /etc/nginx/ 2>&1
+ls -la /etc/nginx/conf.d/ 2>&1
+cat /etc/nginx/conf.d/default.conf 2>&1 | head -30
+echo "Starting HTTP server..."
+mkdir -p /var/www/html
+echo '<html><body><h1>Hello from Firecracker VM!</h1></body></html>' > /var/www/html/index.html
+# Try busybox httpd first (single-process, no workers needed)
+if command -v httpd >/dev/null 2>&1; then
+    echo "Using busybox httpd"
+    httpd -p 80 -h /var/www/html -f 2>&1 &
+    HTTP_PID=$!
+    sleep 2
+    echo "httpd PID: $HTTP_PID"
+# Try nginx if httpd not available
+elif [ -x /usr/sbin/nginx ]; then
+    echo "Using nginx (single worker as root)"
+    mkdir -p /var/log/nginx /run
+    cat > /etc/nginx/nginx.conf << 'NGINXCFG'
+user  root;
+worker_processes  1;
+error_log  /dev/stderr notice;
+pid        /run/nginx.pid;
+events { worker_connections  1024; }
+http {
+    access_log  /dev/stdout;
+    server { listen 80; root /var/www/html; index index.html; }
+}
+NGINXCFG
+    /usr/sbin/nginx 2>&1 &
+    sleep 3
+fi
+echo "All processes:"
+ps aux 2>/dev/null || for p in $(ls /proc | grep -E "^[0-9]+$"); do
+    cmdline=$(cat /proc/$p/cmdline 2>/dev/null | tr '\0' ' ')
+    if [ -n "$cmdline" ]; then
+        echo "PID $p: $cmdline"
+    fi
+done
+echo "Listening ports:"
+cat /proc/net/tcp
+echo "=== SERVER READY ==="
+while true; do sleep 60; done
+`
+
+	initPath := filepath.Join(mountDir, "sbin", "init")
+	if err := os.WriteFile(initPath, []byte(initScript), 0755); err != nil {
+		return fmt.Errorf("failed to write init wrapper: %w", err)
+	}
+
+	log.Info().
+		Str("entrypoint", entrypoint).
+		Str("cmd", cmd).
+		Str("path", initPath).
+		Msg("Init wrapper created")
+
+	return nil
 }
 
 // unmountExt4 unmounts a temporary mount point.

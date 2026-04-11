@@ -429,13 +429,19 @@ func (c *Controller) Prepare(ctx context.Context) error {
 		return fmt.Errorf("image preparation failed: %w", err)
 	}
 
-	// Store the prepared task with annotations
-	c.internalTask = task
-
-	// Prepare network
+	// Prepare network (modifies task.Networks - must be done before storing internalTask)
 	if err := c.networkMgr.PrepareNetwork(ctx, task); err != nil {
 		return fmt.Errorf("network preparation failed: %w", err)
 	}
+
+	// Debug: Log network count before storing
+	c.logger.Info().
+		Str("task_id", task.ID).
+		Int("networks_count", len(task.Networks)).
+		Msg("Storing internalTask after network prep")
+
+	// Store the prepared task with annotations and network attachments
+	c.internalTask = task
 
 	// Inject secrets and configs into rootfs
 	rootfsPath := task.Annotations["rootfs"]
@@ -477,6 +483,12 @@ func (c *Controller) Start(ctx context.Context) error {
 	if task == nil {
 		return fmt.Errorf("internal task not prepared")
 	}
+
+	// Debug: Log networks before translation
+	c.logger.Info().
+		Str("task_id", task.ID).
+		Int("networks_in_internal_task", len(task.Networks)).
+		Msg("Start: task.Networks count")
 
 	// Translate to VM config
 	vmConfig, err := c.trans.Translate(task)
