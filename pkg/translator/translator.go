@@ -8,6 +8,8 @@ import (
 	"net"
 	"strings"
 
+	"github.com/rs/zerolog/log"
+
 	"github.com/restuhaqza/swarmcracker/pkg/lifecycle"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
@@ -77,10 +79,11 @@ func getInitPath(initSystem string) string {
 }
 
 // VMMConfig represents the Firecracker VMM configuration.
+// JSON keys use kebab-case to match Firecracker API expectations.
 type VMMConfig struct {
-	BootSource        BootSourceConfig   `json:"boot_source"`
-	MachineConfig     MachineConfig      `json:"machine_config"`
-	NetworkInterfaces []NetworkInterface `json:"network_interfaces"`
+	BootSource        BootSourceConfig   `json:"boot-source"`
+	MachineConfig     MachineConfig      `json:"machine-config"`
+	NetworkInterfaces []NetworkInterface `json:"network-interfaces"`
 	Drives            []Drive            `json:"drives"`
 	Vsock             *VsockConfig       `json:"vsock,omitempty"`
 }
@@ -128,6 +131,11 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 		return nil, fmt.Errorf("task cannot be nil")
 	}
 
+	log.Info().
+		Str("task_id", task.ID).
+		Int("networks", len(task.Networks)).
+		Msg("Translator received task")
+
 	// Extract container from task runtime
 	container, ok := task.Spec.Runtime.(*types.Container)
 	if !ok {
@@ -156,6 +164,12 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 
 	// Add network interfaces
 	for i, network := range task.Networks {
+		log.Info().
+			Str("task_id", task.ID).
+			Int("index", i).
+			Str("network_id", network.Network.ID).
+			Int("addresses", len(network.Addresses)).
+			Msg("Building network interface from task.Networks")
 		iface := tt.buildNetworkInterface(network, i, task.ID)
 		config.NetworkInterfaces = append(config.NetworkInterfaces, iface)
 	}
