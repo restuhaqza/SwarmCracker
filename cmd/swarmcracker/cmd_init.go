@@ -31,6 +31,7 @@ type initConfig struct {
 	VXLANEnabled  bool
 	VXLANPeers    string
 	Debug         bool
+	Force         bool
 }
 
 func newInitCommand() *cobra.Command {
@@ -94,6 +95,9 @@ Examples:
 	// Debug
 	cmd.Flags().BoolVar(&cfg.Debug, "debug", false, "Enable debug logging")
 
+	// Force
+	cmd.Flags().BoolVar(&cfg.Force, "force", false, "Force init even if manager already exists")
+
 	return cmd
 }
 
@@ -122,8 +126,36 @@ func runInit(cfg *initConfig) error {
 		}
 	}
 
+	// Idempotency check: detect existing manager
+	if !cfg.Force {
+		if err := checkExistingManager(); err != nil {
+			fmt.Println()
+			fmt.Println("⚠ WARNING: Existing manager detected!")
+			fmt.Println()
+			fmt.Println("This node appears to already be initialized as a SwarmCracker manager.")
+			fmt.Println()
+			fmt.Println("Options:")
+			fmt.Println("  1. Run 'swarmcracker deinit' to remove the existing manager")
+			fmt.Println("  2. Run 'swarmcracker init --force' to overwrite")
+			fmt.Println()
+			return fmt.Errorf("manager already initialized: %w", err)
+		}
+	} else {
+		log.Warn().Msg("Skipping idempotency check (--force)")
+	}
+
 	// Run pre-flight checks
 	fmt.Println("\nRunning pre-flight checks...")
+
+	// Setup rollback mechanism
+	var rollbackNeeded bool
+	defer func() {
+		if rollbackNeeded {
+			fmt.Println("\n⚠ Init failed, rolling back...")
+			rollbackInit(cfg)
+		}
+	}()
+
 	preflightResult, err := RunPreflightChecks("init")
 	if err != nil {
 		return fmt.Errorf("pre-flight checks failed: %w", err)
@@ -139,6 +171,7 @@ func runInit(cfg *initConfig) error {
 
 	// Step 1: Create directories
 	PrintProgress(1, 5, "Creating required directories...")
+	rollbackNeeded = true // Enable rollback on failure
 	if err := createDirectories(cfg); err != nil {
 		PrintProgressFailed(1, 5, "Creating directories", err)
 		return fmt.Errorf("failed to create directories: %w", err)
@@ -185,6 +218,9 @@ func runInit(cfg *initConfig) error {
 	} else {
 		PrintProgressComplete(5, 5, "Join tokens generated")
 	}
+
+	// Mark as successful - no rollback needed
+	rollbackNeeded = false
 
 	// Success message
 	fmt.Println()
@@ -442,6 +478,54 @@ func displayJoinTokens(cfg *initConfig) error {
 	fmt.Println(string(data))
 
 	return nil
+}
+
+// checkExistingManager checks if a manager is already initialized
+func checkExistingManager() error {
+	// Check if systemd service exists and is active
+	cmd := exec.Command("systemctl", "is-active", "swarmcracker-manager.service")
+	output, err := cmd.Output()
+	if err == nil && strings.TrimSpace(string(output)) == "active" {
+		return fmt.Errorf("swarmcracker-manager.service is active")
+	}
+
+	// Check if service file exists
+	if _, err := os.Stat("/etc/systemd/system/swarmcracker-manager.service"); err == nil {
+		return fmt.Errorf("service file exists")
+	}
+
+	// Check if state directory has existing state
+	stateDir := "/var/lib/swarmkit"
+	if entries, err := os.ReadDir(stateDir); err == nil && len(entries) > 0 {
+		return fmt.Errorf("existing state found in %s", stateDir)
+	}
+
+	return nil
+}
+
+// rollbackInit cleans up partial init state on failure
+func rollbackInit(cfg *initConfig) {
+	log.Info().Msg("Rolling back partial init state...")
+
+	// Stop service if started
+	exec.Command("systemctl", "stop", "swarmcracker-manager.service").Run()
+
+	// Remove service file
+	os.Remove("/etc/systemd/system/swarmcracker-manager.service")
+
+	// Clear state directories
+	os.RemoveAll(cfg.StateDir)
+	os.RemoveAll("/var/lib/swarmkit")
+	os.RemoveAll("/var/run/swarmkit")
+	os.RemoveAll("/var/run/firecracker")
+
+	// Remove config files
+	os.RemoveAll(cfg.ConfigDir)
+
+	// Reload systemd
+	exec.Command("systemctl", "daemon-reload").Run()
+
+	log.Info().Msg("Rollback complete")
 }
 
 func init() {
