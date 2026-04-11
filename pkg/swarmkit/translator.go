@@ -89,7 +89,10 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 
 // buildBootArgs builds kernel boot arguments with network config.
 func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
-	baseArgs := "console=ttyS0 reboot=k panic=1 pci=off nomodules init=/sbin/init"
+	// Use /sbin/init (wrapper that calls tini with entrypoint)
+	// The preparer creates /sbin/init as a wrapper script
+	initPath := "/sbin/init"
+	baseArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off nomodules init=%s", initPath)
 
 	// Add network config if task has IP addresses
 	if len(task.Networks) > 0 && len(task.Networks[0].Addresses) > 0 {
