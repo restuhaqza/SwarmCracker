@@ -134,6 +134,11 @@ func runJoin(cfg *joinConfig) error {
 		}
 	}
 
+	// Validate token format
+	if err := validateJoinToken(cfg.Token, cfg.IsManager); err != nil {
+		return fmt.Errorf("invalid join token: %w", err)
+	}
+
 	// Determine node role
 	nodeRole := "worker"
 	if cfg.IsManager {
@@ -475,5 +480,50 @@ func startWorkerService(cfg *joinConfig) error {
 	}
 
 	log.Info().Str("status", strings.TrimSpace(string(output))).Msg("Worker service started")
+	return nil
+}
+
+// validateJoinToken validates the format of a SwarmKit join token
+func validateJoinToken(token string, isManager bool) error {
+	// Token format: SWMTKN-1-{role}-{hash}-{secret}
+	// Role: worker, manager
+	// Example: SWMTKN-1-worker-abc123-def456
+
+	if token == "" {
+		return fmt.Errorf("token is required")
+	}
+
+	// Check prefix
+	if !strings.HasPrefix(token, "SWMTKN-1-") {
+		return fmt.Errorf("invalid token format: must start with 'SWMTKN-1-'")
+	}
+
+	// Parse token components
+	parts := strings.Split(token, "-")
+	if len(parts) < 4 {
+		return fmt.Errorf("invalid token format: expected SWMTKN-1-{role}-{hash}-{secret}")
+	}
+
+	// Validate role
+	tokenRole := parts[2]
+	if tokenRole != "worker" && tokenRole != "manager" {
+		return fmt.Errorf("invalid token role: expected 'worker' or 'manager', got '%s'", tokenRole)
+	}
+
+	// Check role matches flag
+	if isManager && tokenRole != "manager" {
+		log.Warn().Str("token_role", tokenRole).Msg("Token appears to be worker token but --manager flag specified")
+		fmt.Println("\n⚠ Warning: Token appears to be a worker token, but --manager flag was specified.")
+		fmt.Println("If you want to join as a manager, you need a manager join token.")
+		fmt.Println("Proceeding anyway - join may fail.")
+	}
+
+	if !isManager && tokenRole == "manager" {
+		log.Warn().Str("token_role", tokenRole).Msg("Token appears to be manager token but joining as worker")
+		fmt.Println("\n⚠ Warning: Token appears to be a manager token.")
+		fmt.Println("To join as a manager, use: swarmcracker join <addr> --token <token> --manager")
+	}
+
+	log.Info().Str("role", tokenRole).Msg("Token validated")
 	return nil
 }
