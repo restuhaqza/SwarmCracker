@@ -65,6 +65,10 @@ It provides a simple interface to the SwarmCracker executor, allowing you to:
 	// Add subcommands
 	rootCmd.AddCommand(newInitCommand())
 	rootCmd.AddCommand(newJoinCommand())
+	rootCmd.AddCommand(newLeaveCommand())
+	rootCmd.AddCommand(newDeinitCommand())
+	rootCmd.AddCommand(newResetCommand())
+	rootCmd.AddCommand(newDoctorCommand())
 	rootCmd.AddCommand(newRunCommand())
 	rootCmd.AddCommand(newDeployCommand())
 	rootCmd.AddCommand(newValidateCommand())
