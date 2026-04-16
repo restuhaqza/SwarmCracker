@@ -250,7 +250,7 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 	}
 
 	// Configure boot source if provided
-	if bootSource, ok := configMap["boot_source"].(map[string]interface{}); ok {
+	if bootSource, ok := configMap["boot-source"].(map[string]interface{}); ok {
 		bootSourceJSON, _ := json.Marshal(bootSource)
 		req, _ := http.NewRequestWithContext(ctx, "PUT",
 			"http://localhost/boot-source",
@@ -270,7 +270,7 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 	}
 
 	// Configure machine if provided
-	if machineConfig, ok := configMap["machine_config"].(map[string]interface{}); ok {
+	if machineConfig, ok := configMap["machine-config"].(map[string]interface{}); ok {
 		machineConfigJSON, _ := json.Marshal(machineConfig)
 		req, _ := http.NewRequestWithContext(ctx, "PUT",
 			"http://localhost/machine-config",

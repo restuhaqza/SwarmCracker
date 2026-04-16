@@ -60,15 +60,15 @@ func TestConfigureVM_ErrorPaths(t *testing.T) {
 		{
 			name: "empty map",
 			config: map[string]interface{}{
-				"boot_source":   map[string]interface{}{},
-				"machine_config": map[string]interface{}{},
+				"boot-source":   map[string]interface{}{},
+				"machine-config": map[string]interface{}{},
 			},
 			expectError: false, // Empty config is valid
 		},
 		{
 			name: "boot source only",
 			config: map[string]interface{}{
-				"boot_source": map[string]interface{}{
+				"boot-source": map[string]interface{}{
 					"kernel_image_path": "/path/to/kernel",
 					"boot_args":         "console=ttyS0",
 				},
@@ -78,7 +78,7 @@ func TestConfigureVM_ErrorPaths(t *testing.T) {
 		{
 			name: "machine config only",
 			config: map[string]interface{}{
-				"machine_config": map[string]interface{}{
+				"machine-config": map[string]interface{}{
 					"vcpu_count":   2,
 					"mem_size_mib": 512,
 					"ht_enabled":   false,
@@ -108,16 +108,16 @@ func TestConfigureVM_ErrorPaths(t *testing.T) {
 		},
 		{
 			name: "valid JSON string config",
-			config: `{"boot_source": {"kernel_image_path": "/kernel"}}`,
+			config: `{"boot-source": {"kernel_image_path": "/kernel"}}`,
 			expectError: false,
 		},
 		{
 			name: "config with all sections",
 			config: map[string]interface{}{
-				"boot_source": map[string]interface{}{
+				"boot-source": map[string]interface{}{
 					"kernel_image_path": "/kernel",
 				},
-				"machine_config": map[string]interface{}{
+				"machine-config": map[string]interface{}{
 					"vcpu_count":   2,
 					"mem_size_mib": 512,
 				},
@@ -576,7 +576,7 @@ func TestStart_AlreadyExists(t *testing.T) {
 
 	ctx := context.Background()
 	vmConfig := map[string]interface{}{
-		"boot_source": map[string]interface{}{
+		"boot-source": map[string]interface{}{
 			"kernel_image_path": "/path/to/kernel",
 		},
 	}
@@ -759,11 +759,11 @@ func TestConfigureVM_WithMockServer(t *testing.T) {
 	ctx := context.Background()
 
 	config := map[string]interface{}{
-		"boot_source": map[string]interface{}{
+		"boot-source": map[string]interface{}{
 			"kernel_image_path": "/path/to/kernel",
 			"boot_args":         "console=ttyS0",
 		},
-		"machine_config": map[string]interface{}{
+		"machine-config": map[string]interface{}{
 			"vcpu_count":   2,
 			"mem_size_mib": 512,
 			"ht_enabled":   false,
@@ -1023,7 +1023,7 @@ func TestStart_ContextCancellation(t *testing.T) {
 	cancel() // Cancel immediately
 
 	vmConfig := map[string]interface{}{
-		"boot_source": map[string]interface{}{
+		"boot-source": map[string]interface{}{
 			"kernel_image_path": "/path/to/kernel",
 		},
 	}
