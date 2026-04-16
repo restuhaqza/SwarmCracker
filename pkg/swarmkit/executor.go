@@ -39,6 +39,7 @@ type Executor struct {
 	executorMu    sync.RWMutex
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
+	networkKeys   []*api.EncryptionKey // Network encryption keys for VXLAN
 }
 
 // Config holds the SwarmKit integration configuration.
@@ -327,10 +328,35 @@ func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 }
 
 // SetNetworkBootstrapKeys sets network encryption keys.
+// These keys are used for VXLAN encryption in the overlay network.
 func (e *Executor) SetNetworkBootstrapKeys(keys []*api.EncryptionKey) error {
 	zerolog_log.Debug().Msgf("Setting network bootstrap keys: %d keys", len(keys))
-	// TODO: Implement network key management
+
+	// Store the keys securely
+	e.executorMu.Lock()
+	e.networkKeys = keys
+	e.executorMu.Unlock()
+
+	// Pass keys to network manager if available
+	if e.networkMgr != nil {
+		// Check if network manager supports key setting
+		if keySetter, ok := e.networkMgr.(NetworkKeySetter); ok {
+			if err := keySetter.SetEncryptionKeys(keys); err != nil {
+				zerolog_log.Warn().Err(err).Msg("Failed to set encryption keys on network manager")
+				return fmt.Errorf("failed to set network encryption keys: %w", err)
+			}
+			zerolog_log.Debug().Msg("Network encryption keys applied to network manager")
+		}
+	}
+
+	zerolog_log.Info().Int("key_count", len(keys)).Msg("Network bootstrap keys stored")
 	return nil
+}
+
+// NetworkKeySetter is an optional interface that network managers can implement
+// to receive encryption keys from SwarmKit.
+type NetworkKeySetter interface {
+	SetEncryptionKeys(keys []*api.EncryptionKey) error
 }
 
 // Controller implements SwarmKit's controller interface for a single task.
