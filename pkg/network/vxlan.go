@@ -78,6 +78,8 @@ type VXLANManager struct {
 	mu         sync.RWMutex
 	ctx        context.Context
 	cancel     context.CancelFunc
+	// netlinkExecutor is the interface for netlink operations
+	netlinkExecutor NetlinkExecutor
 }
 
 // NewVXLANManager creates a new VXLAN manager.
@@ -86,11 +88,31 @@ func NewVXLANManager(bridgeName string, vxlanID int, overlayIP string, peerStore
 		peerStore = NewStaticPeerStore(nil)
 	}
 	return &VXLANManager{
-		BridgeName: bridgeName,
-		VXLANID:    vxlanID,
-		OverlayIP:  overlayIP,
-		vxlanPort:  4789,
-		peerStore:  peerStore,
+		BridgeName:      bridgeName,
+		VXLANID:         vxlanID,
+		OverlayIP:       overlayIP,
+		vxlanPort:       4789,
+		peerStore:       peerStore,
+		netlinkExecutor: NewDefaultNetlinkExecutor(),
+	}
+}
+
+// NewVXLANManagerWithExecutor creates a new VXLAN manager with a custom executor.
+// This is primarily used for testing to inject mock implementations.
+func NewVXLANManagerWithExecutor(bridgeName string, vxlanID int, overlayIP string, peerStore PeerStore, executor NetlinkExecutor) *VXLANManager {
+	if peerStore == nil {
+		peerStore = NewStaticPeerStore(nil)
+	}
+	if executor == nil {
+		executor = NewDefaultNetlinkExecutor()
+	}
+	return &VXLANManager{
+		BridgeName:      bridgeName,
+		VXLANID:         vxlanID,
+		OverlayIP:       overlayIP,
+		vxlanPort:       4789,
+		peerStore:       peerStore,
+		netlinkExecutor: executor,
 	}
 }
 
@@ -130,8 +152,8 @@ func (v *VXLANManager) SetupVXLAN(physInterface, localIP string) error {
 // createVXLANInterface creates the VXLAN network interface.
 func (v *VXLANManager) createVXLANInterface(name, physInterface, localIP string) error {
 	// Delete existing VXLAN if present
-	if link, err := netlink.LinkByName(name); err == nil {
-		netlink.LinkDel(link)
+	if link, err := v.netlinkExecutor.LinkByName(name); err == nil {
+		v.netlinkExecutor.LinkDel(link)
 	}
 
 	ip := net.ParseIP(localIP)
@@ -139,7 +161,7 @@ func (v *VXLANManager) createVXLANInterface(name, physInterface, localIP string)
 		return fmt.Errorf("invalid local IP: %s", localIP)
 	}
 
-	physLink, err := netlink.LinkByName(physInterface)
+	physLink, err := v.netlinkExecutor.LinkByName(physInterface)
 	if err != nil {
 		return fmt.Errorf("physical interface %s not found: %w", physInterface, err)
 	}
@@ -155,11 +177,11 @@ func (v *VXLANManager) createVXLANInterface(name, physInterface, localIP string)
 		Port:         v.vxlanPort,
 	}
 
-	if err := netlink.LinkAdd(vxlan); err != nil {
+	if err := v.netlinkExecutor.LinkAdd(vxlan); err != nil {
 		return fmt.Errorf("failed to add VXLAN link: %w", err)
 	}
 
-	if err := netlink.LinkSetUp(vxlan); err != nil {
+	if err := v.netlinkExecutor.LinkSetUp(vxlan); err != nil {
 		return fmt.Errorf("failed to bring VXLAN link up: %w", err)
 	}
 
@@ -168,17 +190,17 @@ func (v *VXLANManager) createVXLANInterface(name, physInterface, localIP string)
 
 // attachVXLANToBridge attaches the VXLAN interface to the bridge.
 func (v *VXLANManager) attachVXLANToBridge(vxlanName string) error {
-	vxlanLink, err := netlink.LinkByName(vxlanName)
+	vxlanLink, err := v.netlinkExecutor.LinkByName(vxlanName)
 	if err != nil {
 		return fmt.Errorf("VXLAN interface not found: %w", err)
 	}
 
-	bridgeLink, err := netlink.LinkByName(v.BridgeName)
+	bridgeLink, err := v.netlinkExecutor.LinkByName(v.BridgeName)
 	if err != nil {
 		return fmt.Errorf("bridge %s not found: %w", v.BridgeName, err)
 	}
 
-	if err := netlink.LinkSetMaster(vxlanLink, bridgeLink); err != nil {
+	if err := v.netlinkExecutor.LinkSetMaster(vxlanLink, bridgeLink); err != nil {
 		return fmt.Errorf("failed to attach VXLAN to bridge: %w", err)
 	}
 
@@ -187,7 +209,7 @@ func (v *VXLANManager) attachVXLANToBridge(vxlanName string) error {
 
 // addOverlayIP adds the overlay network IP to the bridge.
 func (v *VXLANManager) addOverlayIP() error {
-	bridgeLink, err := netlink.LinkByName(v.BridgeName)
+	bridgeLink, err := v.netlinkExecutor.LinkByName(v.BridgeName)
 	if err != nil {
 		return fmt.Errorf("bridge not found: %w", err)
 	}
@@ -204,7 +226,7 @@ func (v *VXLANManager) addOverlayIP() error {
 		},
 	}
 
-	if err := netlink.AddrAdd(bridgeLink, addr); err != nil {
+	if err := v.netlinkExecutor.AddrAdd(bridgeLink, addr); err != nil {
 		// Ignore "file exists" error (address already assigned)
 		if !strings.Contains(err.Error(), "file exists") {
 			return fmt.Errorf("failed to add overlay IP: %w", err)
@@ -221,7 +243,7 @@ func (v *VXLANManager) addPeerForwarding(vxlanName, peerIP string) error {
 		return fmt.Errorf("invalid peer IP: %s", peerIP)
 	}
 
-	vxlanLink, err := netlink.LinkByName(vxlanName)
+	vxlanLink, err := v.netlinkExecutor.LinkByName(vxlanName)
 	if err != nil {
 		return fmt.Errorf("VXLAN interface not found: %w", err)
 	}
@@ -235,7 +257,7 @@ func (v *VXLANManager) addPeerForwarding(vxlanName, peerIP string) error {
 		IP:           ip,
 	}
 
-	if err := netlink.NeighAdd(neigh); err != nil {
+	if err := v.netlinkExecutor.NeighAdd(neigh); err != nil {
 		if !strings.Contains(err.Error(), "file exists") {
 			return fmt.Errorf("failed to add FDB entry: %w", err)
 		}
@@ -256,7 +278,7 @@ func (v *VXLANManager) AddRouteToSubnet(remoteSubnet, remoteOverlayIP string) er
 		return fmt.Errorf("invalid gateway IP: %s", remoteOverlayIP)
 	}
 
-	bridgeLink, err := netlink.LinkByName(v.BridgeName)
+	bridgeLink, err := v.netlinkExecutor.LinkByName(v.BridgeName)
 	if err != nil {
 		return fmt.Errorf("bridge not found: %w", err)
 	}
@@ -268,7 +290,7 @@ func (v *VXLANManager) AddRouteToSubnet(remoteSubnet, remoteOverlayIP string) er
 		Scope:     netlink.SCOPE_UNIVERSE,
 	}
 
-	if err := netlink.RouteAdd(route); err != nil {
+	if err := v.netlinkExecutor.RouteAdd(route); err != nil {
 		if !strings.Contains(err.Error(), "file exists") {
 			return fmt.Errorf("failed to add route: %w", err)
 		}
@@ -314,7 +336,7 @@ func (v *VXLANManager) UpdatePeers(newPeers []string) error {
 	vxlanName := v.BridgeName + "-vxlan"
 
 	// Check if VXLAN interface exists
-	if _, err := netlink.LinkByName(vxlanName); err != nil {
+	if _, err := v.netlinkExecutor.LinkByName(vxlanName); err != nil {
 		return fmt.Errorf("VXLAN interface not found: %w", err)
 	}
 
@@ -350,7 +372,7 @@ func (v *VXLANManager) UpdatePeers(newPeers []string) error {
 // Workers multicast their presence on startup and listen for other workers.
 func (v *VXLANManager) StartPeerDiscovery(ctx context.Context, localIP string, port int) error {
 	v.mu.Lock()
-	if v.ctx != nil {
+	if v.cancel != nil {
 		v.mu.Unlock()
 		return fmt.Errorf("peer discovery already running")
 	}
@@ -371,13 +393,15 @@ func (v *VXLANManager) StartPeerDiscovery(ctx context.Context, localIP string, p
 // StopPeerDiscovery stops the peer discovery process.
 func (v *VXLANManager) StopPeerDiscovery() {
 	v.mu.Lock()
-	defer v.mu.Unlock()
-
 	if v.cancel != nil {
 		v.cancel()
-		v.ctx = nil
 		v.cancel = nil
 	}
+	v.mu.Unlock()
+
+	// Wait briefly for goroutines to observe cancellation.
+	// We don't nil v.ctx here because goroutines may still be
+	// reading from v.ctx.Done() after the cancel signal.
 }
 
 // listenForPeers listens for UDP peer announcements.
