@@ -66,6 +66,17 @@ func toInt(v interface{}) int {
 	}
 }
 
+// toBool converts an interface{} value to bool.
+func toBool(v interface{}) bool {
+	if v == nil {
+		return false
+	}
+	if b, ok := v.(bool); ok {
+		return b
+	}
+	return false
+}
+
 // NewVMMManager creates a new VMM manager.
 func NewVMMManager(firecrackerPath, socketDir string) (*VMMManager, error) {
 	return NewVMMManagerWithConfig(&VMMManagerConfig{
@@ -293,7 +304,7 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 		KernelPath: bootSource["kernel_image_path"].(string),
 		RootfsPath: rootfsPath,
 		BootArgs:   bootSource["boot_args"].(string),
-		HtEnabled:  false, // TODO: Extract from machine config
+		HtEnabled:  toBool(machineConfig["smt"]), // Extract SMT from machine config
 	}
 
 	// Start jailed VM

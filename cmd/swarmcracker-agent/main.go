@@ -16,6 +16,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -70,19 +71,85 @@ func main() {
 }
 
 // loadConfig loads the configuration from a YAML file.
+// If the file doesn't exist, returns default configuration.
 func loadConfig(path string) (*swarmkit.Config, error) {
-	// For now, return default config
-	// TODO: Implement YAML config loading
+	// Start with default configuration
+	config := defaultConfig()
+
+	// Check if config file exists
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		log.Info().Str("path", path).Msg("Config file not found, using defaults")
+		return config, nil
+	}
+
+	// Read config file
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	// Parse YAML into config struct
+	if err := yaml.Unmarshal(data, config); err != nil {
+		return nil, fmt.Errorf("failed to parse config YAML: %w", err)
+	}
+
+	// Apply overrides from flags
+	if *debug {
+		config.Debug = true
+	}
+
+	// Validate required fields
+	if err := validateConfig(config); err != nil {
+		return nil, fmt.Errorf("config validation failed: %w", err)
+	}
+
+	log.Info().Str("path", path).Msg("Configuration loaded successfully")
+	return config, nil
+}
+
+// defaultConfig returns the default configuration.
+func defaultConfig() *swarmkit.Config {
 	return &swarmkit.Config{
-		FirecrackerPath: "firecracker",
-		KernelPath:      "/usr/share/firecracker/vmlinux",
-		RootfsDir:       "/var/lib/firecracker/rootfs",
-		SocketDir:       "/var/run/firecracker",
-		DefaultVCPUs:    1,
-		DefaultMemoryMB: 512,
-		BridgeName:      "swarm-br0",
-		Debug:           *debug,
-	}, nil
+		FirecrackerPath:  "firecracker",
+		KernelPath:       "/usr/share/firecracker/vmlinux",
+		RootfsDir:        "/var/lib/firecracker/rootfs",
+		SocketDir:        "/var/run/firecracker",
+		DefaultVCPUs:     1,
+		DefaultMemoryMB:  512,
+		BridgeName:       "swarm-br0",
+		NATEnabled:       true,
+		IPMode:           "dhcp",
+		EnableJailer:     false,
+		EnableCgroups:    false,
+		ReservedCPUs:     0,
+		ReservedMemoryMB: 0,
+		MaxImageAgeDays:  30,
+		StateDir:         "/var/lib/swarmcracker",
+	}
+}
+
+// validateConfig validates the configuration.
+func validateConfig(config *swarmkit.Config) error {
+	// Check required paths (can be empty if using defaults)
+	if config.FirecrackerPath == "" {
+		return fmt.Errorf("firecracker_path is required")
+	}
+	if config.KernelPath == "" {
+		return fmt.Errorf("kernel_path is required")
+	}
+	if config.RootfsDir == "" {
+		return fmt.Errorf("rootfs_dir is required")
+	}
+
+	// Validate resource limits
+	if config.DefaultVCPUs < 1 {
+		return fmt.Errorf("default_vcpus must be at least 1")
+	}
+	if config.DefaultMemoryMB < 64 {
+		return fmt.Errorf("default_memory_mb must be at least 64")
+	}
+
+	return nil
 }
 
 // testExecutor tests the executor functionality.

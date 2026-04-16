@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -296,16 +297,119 @@ func (m *CgroupManager) setIOLimits(cgroupPath string, limits ResourceLimits) er
 	}
 
 	// Set IO bandwidth limits (requires device major:minor)
-	// This is more complex and may need device discovery
 	if limits.IOReadBPS > 0 || limits.IOWriteBPS > 0 {
-		m.logger.Debug().
-			Int64("read_bps", limits.IOReadBPS).
-			Int64("write_bps", limits.IOWriteBPS).
-			Msg("IO bandwidth limits configured (device discovery needed)")
-		// TODO: Implement device discovery and io.max configuration
+		// Discover block devices backing the rootfs or data drives
+		devices, err := m.discoverBlockDevices()
+		if err != nil {
+			m.logger.Warn().Err(err).Msg("Failed to discover block devices, skipping IO bandwidth limits")
+			return nil // Non-fatal: weight is still applied
+		}
+
+		if len(devices) == 0 {
+			m.logger.Debug().Msg("No block devices found for IO limits")
+			return nil
+		}
+
+		// Apply IO bandwidth limits to each device
+		ioMaxPath := filepath.Join(cgroupPath, "io.max")
+		for _, dev := range devices {
+			line := fmt.Sprintf("%d:%d rbps=%d wbps=%d",
+				dev.Major, dev.Minor, limits.IOReadBPS, limits.IOWriteBPS)
+			m.logger.Debug().
+				Int("major", dev.Major).
+				Int("minor", dev.Minor).
+				Int64("rbps", limits.IOReadBPS).
+				Int64("wbps", limits.IOWriteBPS).
+				Msg("Setting io.max for device")
+			if err := os.WriteFile(ioMaxPath, []byte(line), 0644); err != nil {
+				return fmt.Errorf("failed to write io.max for device %d:%d: %w", dev.Major, dev.Minor, err)
+			}
+		}
 	}
 
 	return nil
+}
+
+// BlockDevice represents a block device with its major:minor numbers.
+type BlockDevice struct {
+	Major int
+	Minor int
+	Path  string
+}
+
+// discoverBlockDevices discovers the block devices backing the VM storage.
+// Returns a list of devices with their major:minor numbers.
+func (m *CgroupManager) discoverBlockDevices() ([]BlockDevice, error) {
+	// Strategy: find devices from common VM storage locations
+	// 1. Check /var/lib/firecracker (typical rootfs location)
+	// 2. Check /var/lib/swarmcracker (state dir)
+	// 3. Fallback to root filesystem if specific paths not found
+
+	devices := []BlockDevice{}
+
+	// Check common VM storage paths
+	storagePaths := []string{
+		"/var/lib/firecracker",
+		"/var/lib/swarmcracker",
+		"/var/lib/docker", // Docker volumes
+		"/",               // Root filesystem as fallback
+	}
+
+	for _, path := range storagePaths {
+		dev, err := m.getDeviceForPath(path)
+		if err != nil {
+			m.logger.Debug().Str("path", path).Err(err).Msg("Could not get device for path")
+			continue
+		}
+
+		// Avoid duplicates
+		found := false
+		for _, existing := range devices {
+			if existing.Major == dev.Major && existing.Minor == dev.Minor {
+				found = true
+				break
+			}
+		}
+		if !found {
+			devices = append(devices, dev)
+		}
+	}
+
+	return devices, nil
+}
+
+// getDeviceForPath returns the block device backing a given path.
+func (m *CgroupManager) getDeviceForPath(path string) (BlockDevice, error) {
+	// Use stat to get device ID
+	stat, err := os.Stat(path)
+	if err != nil {
+		return BlockDevice{}, fmt.Errorf("failed to stat path: %w", err)
+	}
+
+	// Get device number from stat
+	dev := stat.Sys().(*syscall.Stat_t).Dev
+
+	// Extract major and minor numbers
+	major := int(dev >> 8)
+	minor := int(dev & 0xff)
+
+	// Verify by reading from /sys/dev/block/
+	devPath := fmt.Sprintf("/sys/dev/block/%d:%d/dev", major, minor)
+	if _, err := os.Stat(devPath); err != nil {
+		// Try alternate calculation for some systems
+		major = int((dev >> 20) & 0xfff)
+		minor = int(dev & 0xfffff)
+		devPath = fmt.Sprintf("/sys/dev/block/%d:%d/dev", major, minor)
+		if _, err := os.Stat(devPath); err != nil {
+			return BlockDevice{}, fmt.Errorf("device %d:%d not found in /sys", major, minor)
+		}
+	}
+
+	return BlockDevice{
+		Major: major,
+		Minor: minor,
+		Path:  path,
+	}, nil
 }
 
 // IsCgroupV2Available checks if cgroup v2 is available.
