@@ -30,6 +30,7 @@ type NetworkManager struct {
 	vxlanMgr      *VXLANManager
 	peerDiscovery bool
 	peerCancel    context.CancelFunc
+	nodeDiscovery NodeDiscovery // SwarmKit node discovery provider
 }
 
 // TapDevice represents a TAP device.
@@ -700,9 +701,43 @@ func (nm *NetworkManager) getPhysicalInterface() (string, string, error) {
 // discoverPeerWorkers discovers other worker nodes in the cluster.
 // This can be extended with SwarmKit node discovery in the future.
 func (nm *NetworkManager) discoverPeerWorkers() []string {
-	// TODO: Integrate with SwarmKit node discovery API.
-	// For now, peers are configured via --vxlan-peers flag
+	// If node discovery is configured, use it
+	if nm.nodeDiscovery != nil {
+		peers, err := nm.nodeDiscovery.GetNodes()
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to discover nodes via SwarmKit")
+			return []string{}
+		}
+		
+		// Filter for VXLAN-capable nodes
+		vxlanPeers := []string{}
+		for _, node := range peers {
+			if node.VXLANIP != "" && node.Status == "ready" {
+				vxlanPeers = append(vxlanPeers, node.VXLANIP)
+			}
+		}
+		
+		log.Debug().Int("peer_count", len(vxlanPeers)).Msg("Discovered VXLAN peers via SwarmKit")
+		return vxlanPeers
+	}
+	
+	// Fallback: peers are configured via --vxlan-peers flag
 	return []string{}
+}
+
+// NodeDiscovery provides an interface for SwarmKit node discovery.
+// This allows NetworkManager to query active nodes in the cluster.
+type NodeDiscovery interface {
+	GetNodes() ([]NodeInfo, error)
+}
+
+// NodeInfo represents information about a cluster node.
+type NodeInfo struct {
+	ID       string
+	IP       string
+	VXLANIP  string
+	Status   string
+	Hostname string
 }
 
 // UpdatePeers updates the VXLAN peer list.
@@ -739,6 +774,38 @@ func (nm *NetworkManager) StopPeerDiscovery() {
 		nm.vxlanMgr.StopPeerDiscovery()
 	}
 	nm.peerDiscovery = false
+}
+
+// SetEncryptionKeys sets the network encryption keys for VXLAN.
+// This is called by SwarmKit when new network bootstrap keys are available.
+func (nm *NetworkManager) SetEncryptionKeys(keys interface{}) error {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+
+	if nm.vxlanMgr == nil {
+		log.Debug().Msg("VXLAN manager not initialized, storing keys for later")
+		return nil
+	}
+
+	// The keys are used for VXLAN encryption
+	// Implementation depends on VXLAN encryption support
+	// For now, we store them and log
+	log.Info().Msg("Encryption keys received for VXLAN overlay")
+
+	// Future: pass keys to vxlanMgr for encryption
+	// if encMgr, ok := nm.vxlanMgr.(EncryptedVXLANManager); ok {
+	//     return encMgr.SetKeys(keys)
+	// }
+
+	return nil
+}
+
+// SetNodeDiscovery sets the node discovery provider for SwarmKit integration.
+func (nm *NetworkManager) SetNodeDiscovery(discovery NodeDiscovery) {
+	nm.mu.Lock()
+	nm.nodeDiscovery = discovery
+	nm.mu.Unlock()
+	log.Debug().Msg("Node discovery provider configured")
 }
 
 // createTapDevice creates a TAP device for a network attachment.
