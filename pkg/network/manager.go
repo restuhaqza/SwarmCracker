@@ -320,8 +320,9 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		nm.tapDevices[task.ID+"-"+tap.Name] = tap
 		nm.mu.Unlock()
 
-		// Update task network addresses with allocated IP
-		if tap.IP != "" {
+		// Update task network addresses with allocated IP (only if not from SwarmKit)
+		// SwarmKit-provided IPs are already in Addresses, don't add again
+		if tap.IP != "" && len(network.Addresses) == 0 {
 			// Ensure Addresses slice exists
 			if network.Addresses == nil {
 				network.Addresses = []string{}
@@ -817,8 +818,32 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
 
 	// Allocate IP address for this TAP
-	var ipAddr string
-	if nm.ipAllocator != nil && nm.config.IPMode == "static" {
+	// Priority: SwarmKit-provided IP > Local allocation
+	var ipAddr, netmaskFromAddr string
+	
+	// Check if SwarmKit provided an IP (overlay/bridge network attachment)
+	if len(network.Addresses) > 0 {
+		// Use SwarmKit-provided IP from IPAM
+		addr := network.Addresses[0]
+		// Parse CIDR format: "10.0.0.2/24" -> IP + netmask
+		if idx := strings.Index(addr, "/"); idx > 0 {
+			ipAddr = addr[:idx]
+			// Use standard library to parse CIDR and get proper netmask
+			_, ipNet, err := net.ParseCIDR(addr)
+			if err == nil && ipNet != nil {
+				netmaskFromAddr = net.IP(ipNet.Mask).String()
+			}
+		} else {
+			ipAddr = addr
+		}
+		
+		log.Info().
+			Str("task_id", taskID).
+			Str("ip", ipAddr).
+			Str("network", network.Network.Spec.Name).
+			Msg("Using SwarmKit-provided IP from network attachment")
+	} else if nm.ipAllocator != nil && nm.config.IPMode == "static" {
+		// Local allocation only when no SwarmKit network attachment
 		var err error
 		ipAddr, err = nm.ipAllocator.Allocate(taskID)
 		if err != nil {
@@ -887,13 +912,21 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 
 	// Parse subnet and gateway
 	var subnet, gateway, netmask string
+	
+	// Use SwarmKit-provided netmask if available
+	if netmaskFromAddr != "" {
+		netmask = netmaskFromAddr
+	}
+	
 	if nm.config.Subnet != "" {
 		subnet = nm.config.Subnet
-		// Extract netmask from CIDR
-		_, ipNet, err := net.ParseCIDR(subnet)
-		if err == nil {
-			mask := net.IP(ipNet.Mask).String()
-			netmask = mask
+		// Extract netmask from CIDR if not already set
+		if netmask == "" {
+			_, ipNet, err := net.ParseCIDR(subnet)
+			if err == nil {
+				mask := net.IP(ipNet.Mask).String()
+				netmask = mask
+			}
 		}
 	}
 	if nm.config.BridgeIP != "" {
