@@ -2,8 +2,10 @@
 package image
 
 import (
+	"archive/tar"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,8 +13,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
-	"github.com/restuhaqza/swarmcracker/pkg/types"
+	localtypes "github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
 
@@ -39,7 +44,7 @@ type PreparerConfig struct {
 }
 
 // NewImagePreparer creates a new ImagePreparer.
-func NewImagePreparer(config interface{}) types.ImagePreparer {
+func NewImagePreparer(config interface{}) localtypes.ImagePreparer {
 	var cfg *PreparerConfig
 	if c, ok := config.(*PreparerConfig); ok {
 		cfg = c
@@ -88,7 +93,7 @@ func NewImagePreparer(config interface{}) types.ImagePreparer {
 }
 
 // Prepare prepares an OCI image for the given task.
-func (ip *ImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
+func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) error {
 	if task == nil {
 		return fmt.Errorf("task cannot be nil")
 	}
@@ -97,7 +102,7 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("task runtime cannot be nil")
 	}
 
-	container, ok := task.Spec.Runtime.(*types.Container)
+	container, ok := task.Spec.Runtime.(*localtypes.Container)
 	if !ok {
 		return fmt.Errorf("task runtime is not a container")
 	}
@@ -203,115 +208,206 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 	return nil
 }
 
-// extractOCIImage extracts an OCI image using containerd/podman/docker.
+// extractOCIImage extracts an OCI image using go-containerregistry (primary) or docker/podman (fallback).
 func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath string) error {
-	// Try different methods in order
+	// Try different methods in order of preference (daemon-free first)
 	methods := []struct {
 		name string
-		fn   func(context.Context, string, string, string) (string, error)
+		fn   func(context.Context, string, string) error
 	}{
 		{
+			name: "go-containerregistry",
+			fn:   ip.extractWithGGCR,
+		},
+		{
 			name: "docker",
-			fn:   ip.extractWithDocker,
+			fn:   ip.extractWithDockerCLI,
 		},
 		{
 			name: "podman",
-			fn:   ip.extractWithPodman,
+			fn:   ip.extractWithDockerCLI,
 		},
 	}
 
 	for _, method := range methods {
-		if _, err := exec.LookPath(method.name); err != nil {
-			continue
+		// Skip CLI methods if tool not available
+		if method.name != "go-containerregistry" {
+			if _, err := exec.LookPath(method.name); err != nil {
+				continue
+			}
 		}
 
 		log.Debug().Str("using", method.name).Msg("Extracting image")
 
-		containerID, err := method.fn(ctx, method.name, imageRef, destPath)
+		err := method.fn(ctx, imageRef, destPath)
 		if err != nil {
 			log.Debug().Str("method", method.name).Err(err).Msg("Extraction failed, trying next method")
 			continue
 		}
 
-		// Cleanup container
-		exec.Command(method.name, "rm", "-f", containerID).Run()
-
-		// Extract tar
-		tarPath := filepath.Join(destPath, "fs.tar")
-		tarCmd := exec.CommandContext(ctx, "tar", "xf", tarPath, "-C", destPath)
-		if err := tarCmd.Run(); err != nil {
-			return fmt.Errorf("failed to extract tar: %w", err)
-		}
-
-		// Remove tar file
-		os.Remove(tarPath)
-
 		return nil
 	}
 
-	return fmt.Errorf("no container runtime found (docker or podman required)")
+	return fmt.Errorf("no image extraction method available (go-containerregistry, docker, or podman)")
 }
 
-// extractWithDocker extracts an image using Docker (without --root flag)
-func (ip *ImagePreparer) extractWithDocker(ctx context.Context, runtime, imageRef, destPath string) (string, error) {
-	// Create container with --quiet flag to suppress pull messages
-	output, err := exec.CommandContext(ctx, runtime, "create", "--quiet", imageRef, "/bin/true").CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("docker create failed: %s: %w", string(output), err)
+// extractWithGGCR extracts an OCI image using go-containerregistry (pure Go, no daemon).
+// This pulls directly from the registry and flattens all layers into a filesystem.
+func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath string) error {
+	// Validate inputs
+	if imageRef == "" {
+		return fmt.Errorf("image reference must not be empty")
+	}
+	if destPath == "" {
+		return fmt.Errorf("destination path must not be empty")
 	}
 
-	// Container ID is the last line of output (pull messages may appear before it if image not local)
+	// Ensure image ref has docker.io prefix for standard images
+	fullRef := imageRef
+	if !strings.Contains(fullRef, "/") {
+		fullRef = "docker.io/library/" + fullRef
+	} else if !strings.Contains(fullRef, ".") {
+		fullRef = "docker.io/" + fullRef
+	}
+
+	// Parse the image reference
+	ref, err := name.ParseReference(fullRef)
+	if err != nil {
+		return fmt.Errorf("failed to parse image reference %q: %w", fullRef, err)
+	}
+
+	log.Info().Str("image", fullRef).Msg("Pulling image from registry")
+
+	// Pull image from registry (no daemon required)
+	img, err := remote.Image(ref, remote.WithContext(ctx))
+	if err != nil {
+		return fmt.Errorf("failed to pull image %q: %w", fullRef, err)
+	}
+
+	// Get image info
+	layers, err := img.Layers()
+	if err != nil {
+		return fmt.Errorf("failed to get layers: %w", err)
+	}
+	log.Info().Str("image", fullRef).Int("layers", len(layers)).Msg("Image pulled successfully")
+
+	// Extract flattened filesystem (handles whiteouts automatically)
+	fs := mutate.Extract(img)
+	defer fs.Close()
+
+	// Extract tar stream to destination directory
+	return extractTarStream(fs, destPath)
+}
+
+// extractTarStream extracts a tar stream to a directory.
+// Handles regular files, directories, symlinks, and hard links.
+func extractTarStream(r io.Reader, dest string) error {
+	tr := tar.NewReader(r)
+
+	for {
+		header, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("failed to read tar entry: %w", err)
+		}
+
+		// Security: prevent path traversal
+		target := filepath.Join(dest, header.Name)
+		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(dest)+string(os.PathSeparator)) {
+			log.Warn().Str("path", header.Name).Msg("Skipping path traversal attempt")
+			continue
+		}
+
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, os.FileMode(header.Mode)&0777); err != nil {
+				return fmt.Errorf("failed to create directory %s: %w", target, err)
+			}
+
+		case tar.TypeReg, tar.TypeRegA:
+			// Ensure parent directory exists
+			if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+				return fmt.Errorf("failed to create parent directory: %w", err)
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(header.Mode)&0777)
+			if err != nil {
+				return fmt.Errorf("failed to create file %s: %w", target, err)
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return fmt.Errorf("failed to write file %s: %w", target, err)
+			}
+			f.Close()
+
+		case tar.TypeSymlink:
+			if err := os.Symlink(header.Linkname, target); err != nil {
+				// Symlink may already exist, skip
+				log.Debug().Str("path", target).Err(err).Msg("Failed to create symlink")
+			}
+
+		case tar.TypeLink:
+			// Hard link
+			linkTarget := filepath.Join(dest, header.Linkname)
+			if err := os.Link(linkTarget, target); err != nil {
+				log.Debug().Str("path", target).Str("link", linkTarget).Err(err).Msg("Failed to create hard link")
+			}
+
+		case tar.TypeXGlobalHeader:
+			// Extended header, skip
+			continue
+
+		default:
+			log.Debug().Str("type", string(header.Typeflag)).Str("path", header.Name).Msg("Skipping unsupported tar entry type")
+		}
+	}
+
+	return nil
+}
+
+// extractWithDockerCLI extracts an image using docker or podman CLI as a fallback.
+// Creates a container, exports the filesystem, and extracts the tar.
+func (ip *ImagePreparer) extractWithDockerCLI(ctx context.Context, imageRef, destPath string) error {
+	runtimeName := "docker"
+	if _, err := exec.LookPath("docker"); err != nil {
+		runtimeName = "podman"
+	}
+
+	// Create container
+	output, err := exec.CommandContext(ctx, runtimeName, "create", "--quiet", imageRef, "/bin/true").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s create failed: %s: %w", runtimeName, string(output), err)
+	}
+
 	outputStr := string(output)
 	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
 	containerID := strings.TrimSpace(lines[len(lines)-1])
 
-	// Validate containerID is not empty and looks like a hash
 	if containerID == "" || len(containerID) < 12 {
-		return "", fmt.Errorf("docker create returned invalid container ID: %q", outputStr)
+		return fmt.Errorf("%s create returned invalid container ID: %q", runtimeName, outputStr)
 	}
 
-	log.Debug().Str("container_id", containerID).Msg("Created container for export")
+	// Cleanup on failure
+	defer exec.Command(runtimeName, "rm", "-f", containerID).Run()
 
-	// Export container filesystem to tar
+	// Export filesystem to tar
 	tarPath := filepath.Join(destPath, "fs.tar")
-	exportCmd := exec.CommandContext(ctx, runtime, "export", containerID, "-o", tarPath)
+	exportCmd := exec.CommandContext(ctx, runtimeName, "export", containerID, "-o", tarPath)
 	if output, err := exportCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("docker export failed: %s: %w", string(output), err)
+		return fmt.Errorf("%s export failed: %s: %w", runtimeName, string(output), err)
 	}
 
-	return containerID, nil
-}
-
-// extractWithPodman extracts an image using Podman
-// Note: We use podman's default storage for pulling images, only extracting the container filesystem to destPath
-func (ip *ImagePreparer) extractWithPodman(ctx context.Context, runtime, imageRef, destPath string) (string, error) {
-	// Create container with --quiet flag to suppress pull messages
-	// This ensures output is only the container ID
-	output, err := exec.CommandContext(ctx, runtime, "create", "--quiet", imageRef, "/bin/true").CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("podman create failed: %s: %w", string(output), err)
+	// Extract tar to directory
+	tarCmd := exec.CommandContext(ctx, "tar", "xf", tarPath, "-C", destPath)
+	if err := tarCmd.Run(); err != nil {
+		return fmt.Errorf("failed to extract tar: %w", err)
 	}
 
-	// Container ID is the last line of output (pull messages may appear before it if image not local)
-	outputStr := string(output)
-	lines := strings.Split(strings.TrimSpace(outputStr), "\n")
-	containerID := strings.TrimSpace(lines[len(lines)-1])
+	// Remove tar file
+	os.Remove(tarPath)
 
-	// Validate containerID is not empty and looks like a hash
-	if containerID == "" || len(containerID) < 12 {
-		return "", fmt.Errorf("podman create returned invalid container ID: %q", outputStr)
-	}
-
-	log.Debug().Str("container_id", containerID).Msg("Created container for export")
-
-	// Export container filesystem to tar
-	tarPath := filepath.Join(destPath, "fs.tar")
-	exportCmd := exec.CommandContext(ctx, runtime, "export", containerID, "-o", tarPath)
-	if output, err := exportCmd.CombinedOutput(); err != nil {
-		return "", fmt.Errorf("podman export failed: %s: %w", string(output), err)
-	}
-
-	return containerID, nil
+	return nil
 }
 
 // createExt4Image creates an ext4 filesystem from a directory.
@@ -661,7 +757,7 @@ func (ip *ImagePreparer) copyFile(src, dst string, mode os.FileMode) error {
 }
 
 // handleMounts processes mount specifications and applies them to the rootfs.
-func (ip *ImagePreparer) handleMounts(ctx context.Context, task *types.Task, rootfsPath string, mounts []types.Mount) error {
+func (ip *ImagePreparer) handleMounts(ctx context.Context, task *localtypes.Task, rootfsPath string, mounts []localtypes.Mount) error {
 	// Temporarily mount the rootfs to apply mounts
 	mountDir, err := ip.mountExt4(rootfsPath)
 	if err != nil {
@@ -711,7 +807,7 @@ func (ip *ImagePreparer) handleMounts(ctx context.Context, task *types.Task, roo
 }
 
 // handleVolumeMount handles a volume mount.
-func (ip *ImagePreparer) handleVolumeMount(ctx context.Context, task *types.Task, rootfsPath string, mount *types.Mount) error {
+func (ip *ImagePreparer) handleVolumeMount(ctx context.Context, task *localtypes.Task, rootfsPath string, mount *localtypes.Mount) error {
 	// Extract volume name
 	volumeName := storage.ExtractVolumeName(mount.Source)
 
@@ -748,7 +844,7 @@ func (ip *ImagePreparer) handleVolumeMount(ctx context.Context, task *types.Task
 }
 
 // handleBindMount handles a host path bind mount.
-func (ip *ImagePreparer) handleBindMount(rootfsPath string, mount *types.Mount) error {
+func (ip *ImagePreparer) handleBindMount(rootfsPath string, mount *localtypes.Mount) error {
 	// Validate source path exists
 	if _, err := os.Stat(mount.Source); err != nil {
 		if os.IsNotExist(err) {
