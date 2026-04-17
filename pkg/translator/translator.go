@@ -226,6 +226,7 @@ func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
 		"panic=1",
 		"pci=off",
 		"random.trust_cpu=on",
+		"init=/init", // Use custom init script at root
 	}
 
 	// Check if we have an allocated IP address
