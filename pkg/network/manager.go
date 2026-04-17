@@ -31,6 +31,7 @@ type NetworkManager struct {
 	peerDiscovery bool
 	peerCancel    context.CancelFunc
 	nodeDiscovery NodeDiscovery // SwarmKit node discovery provider
+	cniClient     *CNIClient    // CNI client for SwarmKit network attachments
 }
 
 // TapDevice represents a TAP device.
@@ -235,6 +236,14 @@ func NewNetworkManager(config types.NetworkConfig) types.NetworkManager {
 		}
 	}
 
+	// Initialize CNI client for SwarmKit network attachments
+	// CNI is used when tasks have network attachments from SwarmKit
+	nm.cniClient = NewCNIClient(CNIConfig{
+		BinDir:      "/opt/cni/bin",
+		ConfDir:     "/etc/cni/net.d",
+		NetworkName: "swarmcracker",
+	})
+
 	return nm
 }
 
@@ -264,7 +273,14 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		log.Warn().Err(err).Msg("Failed to setup DHCP, VMs may need static config")
 	}
 
-	// If no networks attached, create a default TAP device using configured bridge
+	// Check if we should use CNI for network attachments
+	// Use CNI when: task has network attachments AND CNI is configured
+	if len(task.Networks) > 0 && nm.cniClient != nil {
+		// Use CNI plugin for SwarmKit network attachments
+		return nm.prepareNetworkWithCNI(ctx, task)
+	}
+
+	// If no networks attached (and CNI not used), create default TAP
 	if len(task.Networks) == 0 {
 		log.Info().Str("task_id", task.ID).Msg("No network attachments, creating default TAP device")
 
@@ -309,7 +325,7 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 			Msg("Default TAP device created")
 	}
 
-	// Create TAP device for each network attachment
+	// Create TAP device for each network attachment (legacy method, used when CNI not available)
 	for i, network := range task.Networks {
 		tap, err := nm.createTapDevice(ctx, network, i, task.ID)
 		if err != nil {
@@ -321,13 +337,10 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		nm.mu.Unlock()
 
 		// Update task network addresses with allocated IP (only if not from SwarmKit)
-		// SwarmKit-provided IPs are already in Addresses, don't add again
 		if tap.IP != "" && len(network.Addresses) == 0 {
-			// Ensure Addresses slice exists
 			if network.Addresses == nil {
 				network.Addresses = []string{}
 			}
-			// Add IP/mask to task (e.g. "192.168.1.2/24")
 			ipWithMask := fmt.Sprintf("%s/%s", tap.IP, ipMaskToCIDR(tap.Netmask))
 			task.Networks[i].Addresses = append(network.Addresses, ipWithMask)
 		}
@@ -343,6 +356,67 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 	log.Info().
 		Str("task_id", task.ID).
 		Msg("Network preparation completed")
+
+	return nil
+}
+
+// prepareNetworkWithCNI uses CNI plugin for SwarmKit network attachments.
+func (nm *NetworkManager) prepareNetworkWithCNI(ctx context.Context, task *types.Task) error {
+	log.Info().
+		Str("task_id", task.ID).
+		Int("networks", len(task.Networks)).
+		Msg("Using CNI for network preparation")
+
+	for _, attachment := range task.Networks {
+		// Get network name and IP from SwarmKit attachment
+		networkName := attachment.Network.Spec.Name
+		if networkName == "" {
+			networkName = attachment.Network.ID[:8]
+		}
+
+		// Get IP from SwarmKit IPAM (Addresses[0] in CIDR format)
+		var ipCIDR string
+		if len(attachment.Addresses) > 0 {
+			ipCIDR = attachment.Addresses[0]
+		} else {
+			return fmt.Errorf("CNI requires SwarmKit-provided IP in Addresses")
+		}
+
+		// Call CNI ADD
+		result, err := nm.cniClient.AddNetwork(ctx, task.ID, "/tmp/firecracker-ns", ipCIDR, networkName)
+		if err != nil {
+			return fmt.Errorf("CNI ADD failed for network %s: %w", networkName, err)
+		}
+
+		// Store TAP device info
+		if len(result.Interfaces) > 0 && len(result.IPs) > 0 {
+			iface := result.Interfaces[0]
+			ip := result.IPs[0]
+
+			tap := &TapDevice{
+				Name:    iface.Name,
+				Bridge:  nm.config.BridgeName, // CNI handles bridge internally
+				IP:      ip.Address.IP.String(),
+				Netmask: net.IP(ip.Address.Mask).String(),
+			}
+
+			nm.mu.Lock()
+			nm.tapDevices[task.ID+"-"+iface.Name] = tap
+			nm.mu.Unlock()
+
+			log.Info().
+				Str("task_id", task.ID).
+				Str("tap", iface.Name).
+				Str("mac", iface.Mac).
+				Str("ip", ip.Address.IP.String()).
+				Str("network", networkName).
+				Msg("CNI network interface created")
+		}
+	}
+
+	log.Info().
+		Str("task_id", task.ID).
+		Msg("CNI network preparation completed")
 
 	return nil
 }
