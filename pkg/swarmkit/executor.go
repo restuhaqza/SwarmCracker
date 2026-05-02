@@ -8,11 +8,13 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
+	"github.com/restuhaqza/swarmcracker/pkg/discovery"
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
@@ -72,6 +75,14 @@ type Config struct {
 	ParentCgroup    string `yaml:"parent_cgroup"`
 	CgroupVersion   string `yaml:"cgroup_version"`
 	EnableCgroups   bool   `yaml:"enable_cgroups"`
+
+	Hostname         string   `yaml:"hostname"`
+	JoinAddr         string   `yaml:"join_addr"`
+	AdvertiseAddr    string   `yaml:"advertise_addr"`  // Local IP for Consul registration
+
+	// Consul service discovery
+	ConsulEnabled    bool     `yaml:"consul_enabled"`
+	ConsulAddress    string   `yaml:"consul_address"`
 }
 
 // NewExecutor creates a new SwarmKit executor backed by SwarmCracker.
@@ -129,6 +140,49 @@ func NewExecutor(config *Config) (*Executor, error) {
 		VXLANPeers:   config.VXLANPeers,
 	}
 	networkMgr := network.NewNetworkManager(netCfg)
+
+	// Setup Consul service discovery if enabled
+	if config.ConsulEnabled {
+		// Determine local IP for Consul registration
+		localIP := config.AdvertiseAddr
+		if localIP == "" && config.JoinAddr != "" {
+			// For workers: try to get our own IP from network interface
+			localIP = getLocalIPFromInterface()
+		}
+		// Strip port from localIP if present
+		if strings.Contains(localIP, ":") {
+			localIP = strings.Split(localIP, ":")[0]
+		}
+
+		consulClient, err := discovery.NewConsulClient(discovery.ConsulConfig{
+			Address:       config.ConsulAddress,
+			ServiceID:     config.Hostname,
+			LocalIP:       localIP,
+			LocalHostname: config.Hostname,
+			VXLANPort:     4789,
+		})
+		if err != nil {
+			zerolog_log.Warn().Err(err).Msg("Failed to create Consul client")
+		} else {
+			// Register service in Consul
+			vxlanID := 100 // Default VXLAN ID
+			if err := consulClient.RegisterService(vxlanID, config.BridgeIP); err != nil {
+				zerolog_log.Warn().Err(err).Msg("Failed to register Consul service")
+			} else {
+				zerolog_log.Info().Str("address", config.ConsulAddress).Msg("Registered in Consul for VXLAN discovery")
+				// Set Consul as node discovery provider
+				networkMgr.SetNodeDiscovery(consulClient)
+				// Watch for peer changes
+				go consulClient.WatchPeers(context.Background(), func(peers []string) {
+					if err := networkMgr.UpdateVXLANPeers(peers); err != nil {
+						zerolog_log.Warn().Err(err).Strs("peers", peers).Msg("Failed to update VXLAN peers from Consul")
+					} else {
+						zerolog_log.Info().Strs("peers", peers).Msg("VXLAN peers updated from Consul")
+					}
+				})
+			}
+		}
+	}
 
 	// Create volume manager
 	volumeMgr, err := storage.NewVolumeManager("")
@@ -1116,4 +1170,45 @@ func parseMeminfoLine(line string) int64 {
 		}
 	}
 	return 0
+}
+
+// getLocalIPFromInterface gets the local IP address from network interfaces.
+// Returns the first non-loopback IPv4 address found.
+func getLocalIPFromInterface() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		zerolog_log.Warn().Err(err).Msg("Failed to get network interfaces")
+		return ""
+	}
+
+	for _, iface := range interfaces {
+		// Skip loopback and interfaces that are down
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Skip loopback and IPv6
+			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+				continue
+			}
+
+			return ip.String()
+		}
+	}
+
+	return ""
 }

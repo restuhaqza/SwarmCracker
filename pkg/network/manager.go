@@ -30,7 +30,7 @@ type NetworkManager struct {
 	vxlanMgr      *VXLANManager
 	peerDiscovery bool
 	peerCancel    context.CancelFunc
-	nodeDiscovery NodeDiscovery // SwarmKit node discovery provider
+	nodeDiscovery types.NodeDiscovery // SwarmKit node discovery provider
 	cniClient     *CNIClient    // CNI client for SwarmKit network attachments
 }
 
@@ -245,6 +245,38 @@ func NewNetworkManager(config types.NetworkConfig) types.NetworkManager {
 	})
 
 	return nm
+}
+
+// Init initializes the network infrastructure (bridge, VXLAN).
+func (nm *NetworkManager) Init(ctx context.Context) error {
+	// Ensure bridge exists
+	if err := nm.ensureBridge(ctx); err != nil {
+		return fmt.Errorf("failed to setup bridge: %w", err)
+	}
+
+	// Setup bridge IP if configured
+	if nm.config.BridgeIP != "" {
+		if err := nm.setupBridgeIP(ctx); err != nil {
+			log.Warn().Err(err).Msg("Failed to setup bridge IP")
+		}
+	}
+
+	// Setup VXLAN overlay if enabled and configured
+	if nm.config.VXLANEnabled && nm.vxlanMgr != nil {
+		phys, localIP, err := nm.getPhysicalInterface()
+		if err != nil {
+			log.Warn().Err(err).Msg("Failed to get physical interface for VXLAN")
+			return nil // Not fatal - VXLAN can be set up later
+		}
+
+		if err := nm.vxlanMgr.SetupVXLAN(phys, localIP); err != nil {
+			log.Warn().Err(err).Str("phys", phys).Str("localIP", localIP).Msg("Failed to setup VXLAN overlay")
+		} else {
+			log.Info().Str("bridge", nm.config.BridgeName).Str("phys", phys).Str("localIP", localIP).Msg("VXLAN overlay initialized")
+		}
+	}
+
+	return nil
 }
 
 // PrepareNetwork prepares network interfaces for a task.
@@ -800,20 +832,6 @@ func (nm *NetworkManager) discoverPeerWorkers() []string {
 	return []string{}
 }
 
-// NodeDiscovery provides an interface for SwarmKit node discovery.
-// This allows NetworkManager to query active nodes in the cluster.
-type NodeDiscovery interface {
-	GetNodes() ([]NodeInfo, error)
-}
-
-// NodeInfo represents information about a cluster node.
-type NodeInfo struct {
-	ID       string
-	IP       string
-	VXLANIP  string
-	Status   string
-	Hostname string
-}
 
 // UpdatePeers updates the VXLAN peer list.
 func (nm *NetworkManager) UpdatePeers(peers []string) error {
@@ -821,6 +839,11 @@ func (nm *NetworkManager) UpdatePeers(peers []string) error {
 		return fmt.Errorf("VXLAN manager not initialized")
 	}
 	return nm.vxlanMgr.UpdatePeers(peers)
+}
+
+// UpdateVXLANPeers implements NetworkManager interface for VXLAN peer updates.
+func (nm *NetworkManager) UpdateVXLANPeers(peers []string) error {
+	return nm.UpdatePeers(peers)
 }
 
 // StartPeerDiscovery starts UDP-based peer discovery for VXLAN.
@@ -876,7 +899,7 @@ func (nm *NetworkManager) SetEncryptionKeys(keys interface{}) error {
 }
 
 // SetNodeDiscovery sets the node discovery provider for SwarmKit integration.
-func (nm *NetworkManager) SetNodeDiscovery(discovery NodeDiscovery) {
+func (nm *NetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
 	nm.mu.Lock()
 	nm.nodeDiscovery = discovery
 	nm.mu.Unlock()

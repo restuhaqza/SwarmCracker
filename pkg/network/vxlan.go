@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
+	"os/exec"
 	"github.com/vishvananda/netlink"
 )
 
@@ -150,10 +151,27 @@ func (v *VXLANManager) SetupVXLAN(physInterface, localIP string) error {
 }
 
 // createVXLANInterface creates the VXLAN network interface.
+// If VXLAN already exists and is configured correctly, it reuses it.
 func (v *VXLANManager) createVXLANInterface(name, physInterface, localIP string) error {
-	// Delete existing VXLAN if present
-	if link, err := v.netlinkExecutor.LinkByName(name); err == nil {
-		v.netlinkExecutor.LinkDel(link)
+	// Check if VXLAN interface already exists with correct config
+	existingLink, err := v.netlinkExecutor.LinkByName(name)
+	if err == nil {
+		// VXLAN exists, check if it's configured correctly
+		if vxlan, ok := existingLink.(*netlink.Vxlan); ok {
+			if vxlan.VxlanId == v.VXLANID && vxlan.Port == v.vxlanPort {
+				log.Info().Str("name", name).Msg("VXLAN interface already exists with correct config, reusing")
+				// Ensure it's up
+				if err := v.netlinkExecutor.LinkSetUp(existingLink); err != nil {
+					return fmt.Errorf("failed to bring existing VXLAN up: %w", err)
+				}
+				return nil
+			}
+		}
+		// VXLAN exists but with wrong config, delete and recreate
+		log.Info().Str("name", name).Msg("VXLAN interface exists with wrong config, recreating")
+		if err := v.netlinkExecutor.LinkDel(existingLink); err != nil {
+			return fmt.Errorf("failed to delete existing VXLAN: %w", err)
+		}
 	}
 
 	ip := net.ParseIP(localIP)
@@ -189,11 +207,21 @@ func (v *VXLANManager) createVXLANInterface(name, physInterface, localIP string)
 }
 
 // attachVXLANToBridge attaches the VXLAN interface to the bridge.
+// If VXLAN is already attached, it's reused.
 func (v *VXLANManager) attachVXLANToBridge(vxlanName string) error {
 	vxlanLink, err := v.netlinkExecutor.LinkByName(vxlanName)
 	if err != nil {
 		return fmt.Errorf("VXLAN interface not found: %w", err)
 	}
+
+	// Check if already attached to correct bridge
+	if vxlanLink.Attrs().MasterIndex > 0 {
+		bridgeLink, err := v.netlinkExecutor.LinkByName(v.BridgeName)
+		if err == nil && bridgeLink.Attrs().Index == vxlanLink.Attrs().MasterIndex {
+			log.Info().Str("vxlan", vxlanName).Str("bridge", v.BridgeName).Msg("VXLAN already attached to bridge")
+			return nil
+			}
+		}
 
 	bridgeLink, err := v.netlinkExecutor.LinkByName(v.BridgeName)
 	if err != nil {
@@ -237,35 +265,32 @@ func (v *VXLANManager) addOverlayIP() error {
 }
 
 // addPeerForwarding adds forwarding database entries for peer nodes.
+// Uses 'bridge fdb add' command because netlink NeighAdd doesn't properly handle VXLAN FDB.
 func (v *VXLANManager) addPeerForwarding(vxlanName, peerIP string) error {
 	ip := net.ParseIP(peerIP)
 	if ip == nil {
 		return fmt.Errorf("invalid peer IP: %s", peerIP)
 	}
 
-	vxlanLink, err := v.netlinkExecutor.LinkByName(vxlanName)
+	// Check VXLAN interface exists
+	_, err := v.netlinkExecutor.LinkByName(vxlanName)
 	if err != nil {
 		return fmt.Errorf("VXLAN interface not found: %w", err)
 	}
 
-	// Add an FDB entry: any MAC → dst peerIP
-	neigh := &netlink.Neigh{
-		LinkIndex:    vxlanLink.Attrs().Index,
-		State:        netlink.NUD_PERMANENT,
-		HardwareAddr: []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
-		Family:       netlink.FAMILY_V4,
-		IP:           ip,
-	}
-
-	if err := v.netlinkExecutor.NeighAdd(neigh); err != nil {
-		if !strings.Contains(err.Error(), "file exists") {
-			return fmt.Errorf("failed to add FDB entry: %w", err)
+	// Use bridge fdb append command for VXLAN FDB entries
+	// 'append' allows multiple destinations for the same MAC (required for broadcast flooding)
+	cmd := exec.Command("bridge", "fdb", "append", "00:00:00:00:00:00", "dev", vxlanName, "dst", peerIP, "self", "permanent")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		// Ignore "file exists" error (entry already present)
+		if !strings.Contains(string(output), "exists") {
+			return fmt.Errorf("failed to add FDB entry: %w (output: %s)", err, string(output))
 		}
 	}
 
+	log.Info().Str("vxlan", vxlanName).Str("peer", peerIP).Msg("Added VXLAN FDB entry for peer")
 	return nil
 }
-
 // AddRouteToSubnet adds a route to reach a remote worker's VM subnet.
 func (v *VXLANManager) AddRouteToSubnet(remoteSubnet, remoteOverlayIP string) error {
 	_, dstNet, err := net.ParseCIDR(remoteSubnet)
