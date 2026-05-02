@@ -1,0 +1,34 @@
+---
+# Consul Role - Defaults
+consul_version: "1.20.0"
+consul_install_dir: "/usr/local/bin"
+consul_config_dir: "/etc/consul"
+consul_data_dir: "/var/lib/consul"
+
+# Server mode (manager nodes)
+consul_server: false
+consul_bootstrap_expect: 1
+
+# Client mode (worker nodes)
+consul_client: true
+
+# Network
+consul_bind_addr: "0.0.0.0"
+consul_client_addr: "0.0.0.0"
+consul_advertise_addr: "{{ ansible_host }}"
+consul_ports:
+  dns: 8600
+  http: 8500
+  https: -1
+  serf_lan: 8301
+  serf_wan: 8302
+  server: 8300
+
+# Service registration
+consul_service_name: "swarmcracker-vxlan"
+consul_vxlan_port: 4789
+consul_vxlan_id: 100
+
+# ACL (optional)
+consul_acl_enable: false
+consul_acl_token: ""

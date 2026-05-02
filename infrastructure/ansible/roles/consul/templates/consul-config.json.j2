@@ -1,0 +1,62 @@
+{
+  "node_name": "{{ ansible_hostname }}",
+  "datacenter": "swarmcracker",
+  "data_dir": "{{ consul_data_dir }}",
+  "bind_addr": "{{ consul_bind_addr }}",
+  "client_addr": "{{ consul_client_addr }}",
+  "advertise_addr": "{{ consul_advertise_addr }}",
+
+  {% if consul_server %}
+  "server": true,
+  "bootstrap_expect": {{ consul_bootstrap_expect }}
+  {% else %}
+  "server": false
+  {% endif %},
+
+  "ports": {
+    "dns": {{ consul_ports.dns }},
+    "http": {{ consul_ports.http }},
+    "https": {{ consul_ports.https }},
+    "serf_lan": {{ consul_ports.serf_lan }},
+    "serf_wan": {{ consul_ports.serf_wan }},
+    "server": {{ consul_ports.server }}
+  },
+
+  "ui": true,
+  "log_level": "INFO",
+  "enable_syslog": true,
+
+  "retry_join": [
+    {% for host in groups['managers'] %}
+    "{{ hostvars[host]['ansible_host'] }}"{{ ',' if not loop.last else '' }}
+    {% endfor %}
+  ],
+
+  "acl": {
+    "enabled": {{ consul_acl_enable | lower }}{% if consul_acl_token %},
+    "tokens": {
+      "master": "{{ consul_acl_token }}"
+    }{% endif %}
+  },
+
+  "services": [
+    {
+      "name": "{{ consul_service_name }}",
+      "id": "{{ ansible_hostname }}",
+      "tags": ["vxlan", "swarmcracker"],
+      "address": "{{ consul_advertise_addr }}",
+      "port": {{ consul_vxlan_port }},
+      "meta": {
+        "vxlan_id": "{{ consul_vxlan_id }}",
+        "hostname": "{{ ansible_hostname }}"
+      },
+      "check": {
+        "id": "vxlan-health",
+        "name": "VXLAN UDP Port",
+        "interval": "10s",
+        "timeout": "1s",
+        "tcp": "{{ consul_advertise_addr }}:{{ consul_vxlan_port }}"
+      }
+    }
+  ]
+}

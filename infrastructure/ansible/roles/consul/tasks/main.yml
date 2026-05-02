@@ -1,0 +1,67 @@
+---
+# Consul Role - Tasks
+
+- name: Download Consul
+  get_url:
+    url: "https://releases.hashicorp.com/consul/{{ consul_version }}/consul_{{ consul_version }}_linux_amd64.zip"
+    dest: "/tmp/consul_{{ consul_version }}_linux_amd64.zip"
+    mode: "0644"
+  retries: 3
+  delay: 5
+
+- name: Install unzip
+  package:
+    name: unzip
+    state: present
+
+- name: Extract Consul binary
+  unarchive:
+    src: "/tmp/consul_{{ consul_version }}_linux_amd64.zip"
+    dest: "{{ consul_install_dir }}"
+    remote_src: yes
+    mode: "0755"
+
+- name: Create Consul directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+    owner: root
+    group: root
+  loop:
+    - "{{ consul_config_dir }}"
+    - "{{ consul_data_dir }}"
+
+- name: Create Consul configuration
+  template:
+    src: consul-config.json.j2
+    dest: "{{ consul_config_dir }}/config.json"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart consul
+
+- name: Create systemd service for Consul
+  template:
+    src: consul.service.j2
+    dest: /etc/systemd/system/consul.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify:
+    - reload systemd
+    - restart consul
+
+- name: Enable and start Consul
+  systemd:
+    name: consul
+    state: started
+    enabled: yes
+    daemon_reload: yes
+
+- name: Wait for Consul to be ready
+  wait_for:
+    port: "{{ consul_ports.http }}"
+    host: "{{ consul_client_addr }}"
+    delay: 5
+    timeout: 30

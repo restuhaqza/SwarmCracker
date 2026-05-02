@@ -1,0 +1,101 @@
+# CNI Plugin Installation Tasks
+
+- name: Create CNI plugin directory
+  ansible.builtin.file:
+    path: "{{ cni_plugin_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Create CNI config directory
+  ansible.builtin.file:
+    path: "{{ cni_config_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Download CNI plugins
+  ansible.builtin.get_url:
+    url: "{{ cni_download_url }}"
+    dest: "{{ cni_download_path }}"
+    mode: '0644'
+  register: cni_download
+
+- name: Extract CNI plugins
+  ansible.builtin.unarchive:
+    src: "{{ cni_download_path }}"
+    dest: "{{ cni_plugin_dir }}"
+    remote_src: true
+    mode: '0755'
+  when: cni_download.changed
+
+- name: Verify required CNI plugins exist
+  ansible.builtin.stat:
+    path: "{{ cni_plugin_dir }}/{{ item }}"
+  loop: "{{ cni_required_plugins }}"
+  register: cni_plugin_check
+  failed_when: not cni_plugin_check.stat.exists
+
+- name: List installed CNI plugins
+  ansible.builtin.command:
+    cmd: ls -la {{ cni_plugin_dir }}
+  changed_when: false
+  register: cni_plugins_list
+
+- name: Display installed plugins
+  ansible.builtin.debug:
+    msg: "{{ cni_plugins_list.stdout_lines }}"
+
+- name: Create loopback network config
+  ansible.builtin.copy:
+    dest: "{{ cni_config_dir }}/99-loopback.conf"
+    content: |
+      {
+        "cniVersion": "1.0.0",
+        "name": "lo",
+        "type": "loopback"
+      }
+    mode: '0644'
+  when: cni_create_loopback_config
+
+- name: Create swarmcracker network config directory
+  ansible.builtin.file:
+    path: "{{ cni_config_dir }}/swarmcracker"
+    state: directory
+    mode: '0755'
+
+- name: Create CNI cleanup script
+  ansible.builtin.copy:
+    dest: "/usr/local/bin/cni-cleanup.sh"
+    content: |
+      #!/bin/bash
+      # CNI cleanup script for SwarmCracker
+      
+      # Remove all CNI network configs except loopback
+      find {{ cni_config_dir }} -name "*.conf" -o -name "*.conflist" | grep -v loopback | xargs rm -f
+      
+      # Clean up any leftover network interfaces
+      for iface in $(ip link show | grep -o 'br-[a-f0-9]*' | sort -u); do
+          ip link delete "$iface" 2>/dev/null || true
+      done
+      
+      echo "CNI cleanup complete"
+    mode: '0755'
+
+- name: Verify CNI installation
+  ansible.builtin.shell:
+    cmd: |
+      echo "=== CNI Installation Summary ==="
+      echo "Plugin directory: {{ cni_plugin_dir }}"
+      echo "Config directory: {{ cni_config_dir }}"
+      echo "Installed plugins:"
+      ls {{ cni_plugin_dir }}
+      echo ""
+      echo "Network configs:"
+      ls {{ cni_config_dir }}/*.conf 2>/dev/null || echo "  (none)"
+      echo ""
+      echo "CNI is ready for SwarmKit network allocation"
+  changed_when: false
+  register: cni_summary
+
+- name: Display CNI summary
+  ansible.builtin.debug:
+    msg: "{{ cni_summary.stdout_lines }}"

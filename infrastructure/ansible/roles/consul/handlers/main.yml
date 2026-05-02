@@ -1,0 +1,11 @@
+---
+# Consul Role - Handlers
+
+- name: reload systemd
+  systemd:
+    daemon_reload: yes
+
+- name: restart consul
+  systemd:
+    name: consul
+    state: restarted

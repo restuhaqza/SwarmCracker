@@ -1,0 +1,23 @@
+[Unit]
+Description=Consul Service Discovery Agent
+Documentation=https://consul.io
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStart={{ consul_install_dir }}/consul agent -config-dir {{ consul_config_dir }}
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill -SIGTERM $MAINPID
+
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+
+# Limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

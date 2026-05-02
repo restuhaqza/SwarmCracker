@@ -4,3 +4,8 @@
 manager_bind_address: "0.0.0.0"
 manager_port: "{{ swarmcracker_manager_port }}"
 manager_state_dir: "{{ swarmcracker_state_dir }}/manager"
+
+# Advertise address - must be set to actual IP for workers to connect
+# If not set, will auto-detect from ansible_default_ipv4.address
+manager_advertise_address: "{{ ansible_default_ipv4.address | default('0.0.0.0') }}"
+manager_advertise_port: "{{ manager_port }}"

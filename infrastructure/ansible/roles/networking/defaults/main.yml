@@ -1,10 +1,10 @@
 ---
 # Networking Role - Default Variables
 
-# Bridge
+# Bridge - aligned with group_vars/all.yml swarmcracker_subnet
 network_bridge_name: "swarm-br0"
-network_bridge_ip: "172.20.0.1"
-network_bridge_subnet: "172.20.0.0/24"
+network_bridge_ip: "192.168.127.1"
+network_bridge_subnet: "192.168.127.0/24"
 
 # GRE tunnel for cross-node L2 connectivity
 network_gre_enabled: false
@@ -19,6 +19,6 @@ network_vxlan_port: 4789
 network_nat_enabled: true
 network_nat_interface: "{{ ansible_default_ipv4.interface | default('eth0') }}"
 
-# VM IP assignment base
-network_vm_ip_base: "172.20.0"
+# VM IP assignment base - aligned with swarmcracker_subnet
+network_vm_ip_base: "192.168.127"
 network_vm_ip_start: 10

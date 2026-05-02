@@ -13,16 +13,30 @@
     - role: common
       tags: [common]
 
-# Phase 2: Manager
+# Phase 2: Consul Service Discovery
+- name: SwarmCracker — Consul Service Discovery
+  hosts: swarmcracker
+  become: yes
+  gather_facts: yes
+  vars:
+    consul_server: "{{ inventory_hostname in groups['managers'] }}"
+    consul_client: "{{ inventory_hostname in groups['workers'] }}"
+  roles:
+    - role: consul
+      tags: [consul]
+
+# Phase 3: Manager
 - name: SwarmCracker — Manager
   hosts: managers
   become: yes
   gather_facts: no
   roles:
+    - role: cni
+      tags: [cni]
     - role: manager
       tags: [manager]
 
-# Phase 3: Workers
+# Phase 4: Workers
 - name: SwarmCracker — Workers
   hosts: workers
   become: yes
@@ -31,7 +45,7 @@
     - role: worker
       tags: [worker]
 
-# Phase 4: Firecracker on workers
+# Phase 5: Firecracker on workers
 - name: SwarmCracker — Firecracker
   hosts: workers
   become: yes
@@ -40,7 +54,7 @@
     - role: firecracker
       tags: [firecracker]
 
-# Phase 5: Networking on workers
+# Phase 6: Networking on workers
 - name: SwarmCracker — Networking
   hosts: workers
   become: yes
@@ -49,7 +63,7 @@
     - role: networking
       tags: [networking]
 
-# Phase 6: Summary
+# Phase 7: Summary
 - name: SwarmCracker — Summary
   hosts: managers
   become: yes
@@ -61,6 +75,12 @@
       register: mgr_status
       failed_when: false
 
+    - name: Check Consul service
+      systemd:
+        name: consul
+      register: consul_status
+      failed_when: false
+
     - name: Display summary
       debug:
         msg: |
@@ -69,9 +89,12 @@
           ╠══════════════════════════════════════════════════╣
           ║                                                  ║
           ║  Manager: {{ groups['managers'] | join(', ') }}     ║
-          ║  Workers: {{ groups['workers'] | join(', ') }}   ║
+          ║  Workers: {{ groups['workers'] | join(', ') }}    ║
           ║                                                  ║
-          ║  Manager: {{ mgr_status.status.ActiveState | default('unknown') }}  ║
+          ║  Manager Status: {{ mgr_status.status.ActiveState | default('unknown') }}  ║
+          ║  Consul Status: {{ consul_status.status.ActiveState | default('unknown') }}  ║
+          ║                                                  ║
+          ║  Consul UI: http://{{ hostvars[groups['managers'][0]]['ansible_host'] }}:8500  ║
           ║                                                  ║
           ║  Next:                                            ║
           ║  → ansible-playbook playbooks/deploy-microvms.yml ║

@@ -1,16 +1,27 @@
 [Unit]
 Description=SwarmCracker SwarmKit Worker
 Documentation=https://github.com/restuhaqza/SwarmCracker
-After=network.target swarmd-manager.service
+After=network.target network-online.target docker.service consul.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={{ swarmcracker_install_dir }}/swarmd-firecracker worker \
-  --config {{ swarmcracker_config_dir }}/worker-config.yaml \
+User=root
+ExecStart={{ swarmcracker_install_dir }}/swarmd-firecracker \
   --state-dir {{ worker_state_dir }} \
-  --manager {{ worker_manager_host }}:{{ worker_manager_port }} \
+  --listen-control-api /var/run/swarmkit/swarm.sock \
+  --hostname {{ ansible_hostname }} \
+  --join-addr {{ worker_manager_host }}:{{ worker_manager_port }} \
+  --join-token {{ worker_join_token }} \
   --listen-remote-api 0.0.0.0:{{ worker_api_port }} \
+  --kernel-path {{ swarmcracker_kernel_path }} \
+  --rootfs-dir {{ swarmcracker_rootfs_dir }} \
+  --bridge-name {{ swarmcracker_bridge_name }} \
+  --subnet {{ swarmcracker_subnet }} \
+  --bridge-ip {{ swarmcracker_bridge_ip }} \
+  --nat-enabled \
+  {% if swarmcracker_vxlan_enabled %}--vxlan-enabled{% endif %} \
+  {% if consul_enabled | default(true) %}--consul-enabled --consul-address {{ consul_client_addr | default('127.0.0.1') }}:8500{% endif %} \
   {% if swarmcracker_debug %}--debug{% endif %}
 
 ExecReload=/bin/kill -HUP $MAINPID
@@ -20,8 +31,12 @@ Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=30s
 
+# Environment
+Environment=SWARM_SOCKET=/var/run/swarmkit/swarm.sock
+Environment=SWARM_STATE_DIR={{ worker_state_dir }}
+
 # Security hardening
-ReadWritePaths={{ swarmcracker_state_dir }} /var/lib/swarmkit /var/run/swarmkit {{ swarmcracker_rootfs_dir }} {{ swarmcracker_log_dir }}
+# ReadWritePaths removed to avoid mount namespace issues
 
 # Resource limits
 LimitNOFILE=65536

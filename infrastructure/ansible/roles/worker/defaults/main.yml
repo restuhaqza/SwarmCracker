@@ -1,7 +1,11 @@
 ---
 # Worker Role - Default Variables
 
-worker_manager_host: "{{ hostvars[groups['managers'][0]]['ansible_host'] }}"
+worker_manager_host: "{{ hostvars[groups['managers'][0]]['ansible_default_ipv4']['address'] | default(hostvars[groups['managers'][0]]['ansible_host']) }}"
 worker_manager_port: "{{ swarmcracker_manager_port }}"
 worker_api_port: "{{ swarmcracker_worker_api_port }}"
 worker_state_dir: "{{ swarmcracker_state_dir }}/worker"
+
+# Join token - should be set via ansible-playbook extra vars or from manager facts
+# Example: ansible-playbook -e "worker_join_token=SWMTKN-1-xxx-xxx"
+worker_join_token: ""

@@ -29,6 +29,10 @@ swarmcracker_vxlan_enabled: true
 swarmcracker_vxlan_vni: 100
 swarmcracker_vxlan_port: 4789
 
+# Consul configuration for VXLAN peer discovery
+consul_enabled: true
+consul_address: "127.0.0.1:8500"
+
 # Service configuration
 swarmcracker_manager_port: "4242"
 swarmcracker_worker_api_port: "4243"
@@ -53,9 +57,18 @@ firecracker_version: "v1.15.1"
 firecracker_download_url: "https://github.com/firecracker-microvm/firecracker/releases/download/{{ firecracker_version }}"
 firecracker_tarball: "firecracker-{{ firecracker_version }}-{{ swarmcracker_arch }}.tgz"
 
-# Firecracker kernel (official CI URL)
-# For latest: https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155
-swarmcracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155"
+# Firecracker kernel
+# IMPORTANT: The S3 URLs often return XML redirects. Use one of these methods:
+# 1. Extract from host kernel: ./scripts/extract-vmlinux.sh /boot/vmlinuz-* /usr/share/firecracker/vmlinux
+# 2. Bundle in repo: test-automation/resources/vmlinux
+# 3. Use a working direct URL (test first with curl -I)
+#
+# Known working URLs (verify before use):
+#   - https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/vmlinux-5.10.204 (may redirect)
+#
+# If swarmcracker_kernel_url is empty, Ansible will skip kernel download and expect manual setup.
+swarmcracker_kernel_url: ""
+swarmcracker_kernel_extract_from_host: true  # Extract from /boot/vmlinuz-* if URL fails
 
 # Security settings
 swarmcracker_enable_seccomp: true
