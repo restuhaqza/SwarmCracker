@@ -26,24 +26,34 @@ This directory contains the test infrastructure for local development and testin
 On your Kali host:
 
 ```bash
-# Install VirtualBox
+# Install KVM/libvirt
 sudo apt-get update
-sudo apt-get install -y virtualbox
+sudo apt-get install -y qemu-kvm libvirt-daemon-system libvirt-dev virt-manager
 
-# Install Vagrant
+# Install Vagrant with libvirt plugin
 sudo apt-get install -y vagrant
+vagrant plugin install vagrant-libvirt
+
+# Add user to libvirt group
+sudo usermod -aG libvirt $(whoami)
+
+# Load KVM module with nested virtualization
+sudo modprobe kvm_intel
+# Verify nested virt is enabled
+cat /sys/module/kvm_intel/parameters/nested  # Should show 'Y'
 
 # Verify installations
-VBoxManage --version
+virsh --version
 vagrant --version
+ls -la /dev/kvm
 ```
 
 ## 📖 Documentation
 
 **For deployment guides, see:**
-- [Getting Started](../docs/getting-started/)
-- [SwarmKit Guide](../docs/guides/swarmkit.md)
-- [Advanced Guide](../docs/guides/advanced.md)
+- [Getting Started](../docs/user/getting-started/)
+- [SwarmKit Guide](../docs/user/guides/swarmkit.md)
+- [Advanced Guide](../docs/user/guides/advanced.md)
 
 ## 🚀 Quick Start
 
@@ -216,12 +226,15 @@ sudo systemd-tmpfiles --create
 ### VMs Won't Start
 
 ```bash
-# Check VirtualBox logs
-VBoxManage list vms
-VBoxManage showvminfo swarm-manager
+# Check libvirt logs
+virsh list --all
+virsh dominfo swarm-manager
 
-# Restart VirtualBox service
-sudo systemctl restart vboxdrv
+# Check if KVM module is loaded
+lsmod | grep kvm
+
+# Reload KVM
+sudo modprobe kvm_intel
 ```
 
 ### Workers Can't Join Manager

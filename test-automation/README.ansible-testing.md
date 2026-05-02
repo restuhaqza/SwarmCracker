@@ -152,5 +152,5 @@ VAGRANT_VAGRANTFILE=Vagrantfile.ansible vagrant destroy -f
 ## See Also
 
 - [Ansible Documentation](../README.md)
-- [Getting Started](../../docs/getting-started/)
+- [Getting Started](../../docs/user/getting-started/)
 - [Original Vagrantfile](../Vagrantfile)
