@@ -277,4 +277,4 @@ make lint
 
 ---
 
-**See Also:** [Configuration](configuration.md) | [Development Guide](../development/)
+**See Also:** [Configuration](configuration.md) | [Contributing Guide](../../dev/contributing.md)

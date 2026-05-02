@@ -28,11 +28,69 @@ Custom executor for [SwarmKit](https://github.com/moby/swarmkit) that runs conta
 
 ## Architecture
 
+![SwarmCracker Architecture](docs/architecture/swarmcracker-architecture.svg)
+
+### Components
+
+| Component | Role |
+|-----------|------|
+| **Manager Node** | SwarmKit Raft consensus, IPAM, task scheduling |
+| **Worker Nodes** | swarmd-firecracker executor, Firecracker VMM |
+| **Consul** | Service discovery for VXLAN peer registration |
+| **swarm-br0** | Local bridge connecting TAP devices |
+| **swarm-br0-vxlan** | VXLAN overlay for cross-node communication |
+| **MicroVMs** | Isolated Firecracker VMs with overlay IPs |
+
+### Network Flow
+
 ```
 SwarmKit Manager → swarmd-firecracker → Firecracker VMM → MicroVM
+                         ↓
+                    swarm-br0 (bridge)
+                         ↓
+                 swarm-br0-vxlan (VXLAN ID 100)
+                         ↓
+                 Consul → FDB Entries → Remote Worker
 ```
 
 Workers run `swarmd-firecracker`, translating SwarmKit tasks into Firecracker configs.
+
+### VXLAN Cross-Node Communication
+
+SwarmCracker uses VXLAN overlay networking for communication between MicroVMs on different worker nodes:
+
+- **Overlay Network**: `192.168.127.0/24`
+- **Underlay Network**: Physical host IPs (`192.168.121.x`)
+- **VXLAN ID**: 100
+- **UDP Port**: 4789
+- **Service Discovery**: Consul `WatchPeers()` for dynamic FDB updates
+
+#### How It Works
+
+1. **Task Scheduled** → Manager assigns task to worker
+2. **IPAM Allocation** → Overlay IP assigned (e.g., `192.168.127.105`)
+3. **MicroVM Start** → Firecracker VM boots with IP in kernel args
+4. **TAP Attachment** → TAP device connected to `swarm-br0`
+5. **Consul Registration** → Worker registers VXLAN service
+6. **Peer Discovery** → `WatchPeers()` populates VXLAN FDB entries
+7. **Cross-Node Traffic** → Packets flow via VXLAN UDP tunnel
+
+#### Verified Test Results (2026-05-02)
+
+| Test | Result |
+|------|--------|
+| Worker1 → Worker2 VM | ✅ 10/10 packets, 0% loss, 4-8ms |
+| Worker2 → Worker1 VM | ✅ 5/5 packets, 0% loss, 3-11ms |
+| Consul Registration | ✅ All 3 nodes registered |
+| VXLAN FDB Entries | ✅ 6 flood destinations (2 per node) |
+
+#### Key Implementation Details
+
+| File | Purpose |
+|------|--------|
+| `pkg/swarmkit/executor.go` | Local IP detection for Consul registration |
+| `pkg/network/vxlan.go` | `fdb append` for multiple flood destinations |
+| `pkg/discovery/consul.go` | Catalog query (bypass TCP health checks) |
 
 ## Quick Start
 
@@ -57,7 +115,7 @@ sudo cat /var/lib/swarmkit/join-tokens.txt
 sudo swarmcracker join 192.168.1.10:4242 --token SWMTKN-1-...
 ```
 
-See [Getting Started](docs/getting-started/) for cluster setup options.
+See [Getting Started](docs/user/getting-started/) for cluster setup options.
 
 ---
 
@@ -125,10 +183,11 @@ swarmctl --socket /tmp/manager/swarm.sock service create --name nginx --image ng
 
 | | |
 |--|--|
-| [Getting Started](docs/getting-started/) | Setup |
-| [Networking](docs/guides/networking.md) | Bridge, VXLAN |
-| [SwarmKit](docs/guides/swarmkit.md) | Orchestration |
-| [Architecture](docs/architecture/) | Design |
+| [Getting Started](docs/user/getting-started/) | Setup |
+| [Networking](docs/user/guides/networking.md) | Bridge, VXLAN |
+| [SwarmKit](docs/user/guides/swarmkit.md) | Orchestration |
+| [Architecture](docs/user/architecture/) | Design |
+| [CLI Reference](docs/user/reference/cli.md) | Commands |
 
 ## Download
 

@@ -196,4 +196,4 @@ User → swarmctl → Manager → Scheduler → Worker → Executor → Firecrac
 
 ---
 
-**See Also:** [Getting Started](../getting-started/) | [Guides](../guides/)
+**See Also:** [Getting Started](../getting-started/) | [Guides](../guides/) | [User Docs Home](../README.md)

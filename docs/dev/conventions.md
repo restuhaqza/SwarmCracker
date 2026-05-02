@@ -116,7 +116,7 @@ test/
 | Old Name | New Name | Location |
 |----------|----------|----------|
 | `vxlan-overlay.md` | `vxlan-overlay.md` | `docs/` |
-| `installation.md` | `installation.md` | `docs/getting-started/` |
+| `installation.md` | `installation.md` | `docs/user/getting-started/` |
 | `test-report.md` | `test-report.md` | `infrastructure/ansible/` |
 | `verification-report.md` | `verification-report.md` | `infrastructure/ansible/` |
 | `vagrant-fixes.md` | `vagrant-fixes.md` | `test-automation/` |

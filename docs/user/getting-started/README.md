@@ -26,6 +26,18 @@ ls -la /dev/kvm                    # Must exist
 lscpu | grep Virtualization        # VT-x (Intel) or AMD-V (AMD)
 ```
 
+### Verify Nested Virtualization (for Vagrant/libvirt testing)
+
+If running SwarmCracker inside a VM (e.g., Vagrant), nested virtualization must be enabled:
+
+```bash
+# Check if nested virt is enabled
+cat /sys/module/kvm_intel/parameters/nested  # Should show 'Y'
+
+# Enable if needed
+sudo modprobe kvm_intel nested=1
+```
+
 ---
 
 ## Installation
@@ -53,6 +65,22 @@ sudo make install
 
 See [Build Guide](../guides/advanced.md#build-from-source) for details.
 
+### Setup Firecracker Kernel
+
+**Critical:** Firecracker requires an uncompressed ELF kernel. The kernel must be at `/usr/share/firecracker/vmlinux`.
+
+```bash
+# Option A: Extract from host kernel (recommended)
+sudo mkdir -p /usr/share/firecracker
+./test-automation/scripts/extract-vmlinux.sh /boot/vmlinuz-* /usr/share/firecracker/vmlinux
+
+# Verify
+file /usr/share/firecracker/vmlinux
+# Should show: ELF 64-bit LSB executable, x86-64
+```
+
+⚠️ **Do not download from GitHub raw URLs** — they return HTML pages, not binaries!
+
 ### Option 3: Vagrant Test Cluster
 
 For local development with a 3-node cluster:
@@ -63,7 +91,7 @@ cd SwarmCracker
 vagrant up
 ```
 
-See [Development Setup](../development/) for details.
+See [Developer Docs](../../dev/) for details.
 
 ---
 
@@ -73,13 +101,25 @@ See [Development Setup](../development/) for details.
 
 ```bash
 # On manager node
-swarmcracker init --hostname manager-1
+# IMPORTANT: Set --advertise-remote-api to your actual IP!
+MANAGER_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
+
+swarmd-firecracker --manager \
+  --hostname manager-1 \
+  --listen-remote-api 0.0.0.0:4242 \
+  --advertise-remote-api $MANAGER_IP:4242 \
+  --kernel-path /usr/share/firecracker/vmlinux \
+  --rootfs-dir /var/lib/firecracker/rootfs \
+  --bridge-name swarm-br0
 ```
 
 This creates:
 - SwarmKit manager with Raft consensus
 - Control socket at `/var/run/swarmkit/swarm.sock`
 - TLS certificates for secure communication
+- Join tokens at `/var/lib/swarmkit/manager/join-tokens.txt`
+
+⚠️ **Without `--advertise-remote-api`, workers cannot connect!**
 
 ### 2. Get Join Token
 
@@ -196,11 +236,39 @@ swarmctl ls-tasks
 
 ## Troubleshooting
 
+### Kernel: Invalid ELF Magic Number
+
+This means the kernel file is not a valid ELF binary (likely HTML or corrupted).
+
+```bash
+# Check kernel file type
+file /usr/share/firecracker/vmlinux
+
+# If it shows "HTML document", re-extract from host:
+./test-automation/scripts/extract-vmlinux.sh /boot/vmlinuz-* /usr/share/firecracker/vmlinux
+```
+
 ### KVM Not Found
 
 ```bash
 sudo modprobe kvm_intel   # Intel
 sudo modprobe kvm_amd     # AMD
+```
+
+### Missing KVM Capabilities (Nested Virtualization)
+
+If running inside a VM:
+
+```bash
+# Check nested virt
+cat /sys/module/kvm_intel/parameters/nested
+
+# Enable if 'N'
+sudo modprobe -r kvm_intel
+sudo modprobe kvm_intel nested=1
+
+# Or add to /etc/modprobe.d/kvm-nested.conf:
+# options kvm_intel nested=1
 ```
 
 ### Node Won't Join
@@ -210,7 +278,20 @@ sudo modprobe kvm_amd     # AMD
 curl http://<manager-ip>:4242
 
 # Verify token
-swarmctl cluster inspect default
+sudo cat /var/lib/swarmkit/manager/join-tokens.txt
+
+# Check manager advertise address is set
+ps aux | grep swarmd | grep advertise
+```
+
+### Image Extraction Fails
+
+```bash
+# Ensure Docker is installed and running
+sudo systemctl status docker
+
+# Pull image manually to verify
+sudo docker pull nginx:alpine
 ```
 
 ### Services Not Starting
@@ -220,7 +301,10 @@ swarmctl cluster inspect default
 swarmctl ls-nodes
 
 # Check executor logs
-journalctl -u swarmcracker -f
+journalctl -u swarmd -f
+
+# Verify kernel is ELF
+file /usr/share/firecracker/vmlinux
 ```
 
 ---

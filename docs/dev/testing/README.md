@@ -96,9 +96,9 @@ Located in `test-automation/fixtures/`:
 
 | Topic | Document |
 |-------|----------|
-| Development guide | [Development Guide](../development/) |
-| Architecture | [Architecture Overview](../architecture/) |
+| Contributing | [Contributing Guide](../contributing.md) |
+| Architecture | [Architecture Overview](../../user/architecture/) |
 
 ---
 
-**See Also:** [Development Guide](../development/) | [Architecture](../architecture/)
+**See Also:** [Contributing](../contributing.md) | [User Architecture](../../user/architecture/)

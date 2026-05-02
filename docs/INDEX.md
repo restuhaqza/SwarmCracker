@@ -4,55 +4,40 @@
 
 ---
 
-## Start Here
+## Documentation Structure
 
-| Task | Guide |
-|------|-------|
-| **Install SwarmCracker** | [Getting Started](getting-started/) |
-| **Configure cluster** | [Configuration Guide](guides/configuration.md) |
-| **Deploy services** | [SwarmKit Guide](guides/swarmkit.md) |
-| **CLI commands** | [CLI Reference](reference/cli.md) |
+### 👤 User Documentation
 
----
+| Section | Description |
+|---------|-------------|
+| [Getting Started](user/getting-started/) | Installation, quick start, prerequisites |
+| [Guides](user/guides/) | Configuration, networking, security, snapshots |
+| [Architecture](user/architecture/) | System design, SwarmKit integration |
+| [Reference](user/reference/) | CLI commands |
 
-## Documentation
+### 🔧 Developer Documentation
 
-### Getting Started
+| Section | Description |
+|---------|-------------|
+| [Contributing](dev/contributing.md) | Code style, PR process |
+| [Conventions](dev/conventions.md) | File naming standards |
+| [Testing](dev/testing/) | Test strategy, coverage |
+| [Architecture](dev/architecture/) | Internal integration details |
 
-| Document | Description |
-|----------|-------------|
-| [Installation](getting-started/) | Setup, prerequisites, quick start |
-
-### Guides
-
-| Guide | Description |
-|-------|-------------|
-| [Configuration](guides/configuration.md) | Config options, defaults |
-| [SwarmKit](guides/swarmkit.md) | Services, nodes, tasks |
-| [Networking](guides/networking.md) | TAP, bridge, VXLAN |
-| [Security](guides/security.md) | Jailer, cgroups, seccomp |
-| [Snapshots](guides/snapshots.md) | VM state persistence |
-| [Advanced](guides/advanced.md) | Rolling updates, multi-arch, init |
-
-### Reference
-
-| Reference | Description |
-|-----------|-------------|
-| [CLI Reference](reference/cli.md) | `swarmcracker` + `swarmctl` commands |
-
-### Architecture
+### 📋 Planning
 
 | Document | Description |
 |----------|-------------|
-| [System Overview](architecture/) | Components, data flow |
-| [SwarmKit Integration](architecture/swarmkit.md) | Executor interface |
+| [TODO Implementation](planning/todo-implementation.md) | Remaining TODO items |
+| [Init/Deinit Plan](planning/init-deinit.md) | Lifecycle strategy |
 
-### Development
+### 🔬 Research
 
 | Document | Description |
 |----------|-------------|
-| [Contributing](development/) | Code style, PR process |
-| [Testing](testing/) | Test strategy, coverage |
+| [Image Preparation](research/image-preparation.md) | Rootfs preparation |
+| [Image SDK](research/image-sdk.md) | SDK investigation |
+| [Archived](research/archived/) | Historical docs |
 
 ---
 
@@ -95,7 +80,7 @@ swarmctl ls-nodes
 | SwarmCracker | v0.6.0 |
 | Firecracker | v1.15.1 |
 | SwarmKit | v2.1.1 |
-| Go | 1.25+ |
+| Go | 1.21+ |
 
 ---
 
@@ -109,4 +94,4 @@ swarmctl ls-nodes
 
 ---
 
-**Last Updated**: 2026-05-06 | **Doc Version**: 2.1
+**Last Updated:** 2026-04-19 | **Doc Version:** 3.0

@@ -156,7 +156,7 @@ git secrets --register-aws
 
 When adding features:
 
-1. Update relevant guide in `docs/guides/`
+1. Update relevant guide in `../user/guides/`
 2. Add CLI docs to `docs/reference/cli.md`
 3. Update architecture if needed
 
