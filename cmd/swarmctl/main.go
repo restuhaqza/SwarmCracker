@@ -87,10 +87,18 @@ func main() {
 		listTasks(ctx, client)
 	case "create-service":
 		if len(os.Args) < 3 {
-			fmt.Println("Usage: swarmctl create-service <image>")
+			fmt.Println("Usage: swarmctl create-service <image> [--network <network-id>] [--name <name>] [--replicas <n>]")
 			os.Exit(1)
 		}
-		createService(ctx, client, os.Args[2])
+		createService(ctx, client, os.Args[2:])
+	case "create-network":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl create-network <name> [--subnet <subnet>] [--driver <driver>]")
+			os.Exit(1)
+		}
+		createNetwork(ctx, client, os.Args[2:])
+	case "list-networks", "ls-networks":
+		listNetworks(ctx, client)
 	case "remove-service", "rm-service":
 		if len(os.Args) < 3 {
 			fmt.Println("Usage: swarmctl rm-service <service-id>")
@@ -262,48 +270,186 @@ func listTasks(ctx context.Context, client api.ControlClient) {
 		if task.Spec.GetContainer() != nil {
 			image = task.Spec.GetContainer().Image
 		}
-		fmt.Printf("%-20s %-20s %-12s %-12s %s\n", task.ID[:12], svcID, status, nodeID, image)
+		// Show full ID for easier use with inspect
+		fmt.Printf("%-20s %-20s %-12s %-12s %s\n", task.ID, svcID, status, nodeID, image)
 	}
 	fmt.Printf("\nTotal: %d task(s)\n", len(resp.Tasks))
 }
 
-func createService(ctx context.Context, client api.ControlClient, image string) {
-	// Create a simple replicated service
-	svcName := fmt.Sprintf("svc-%s", image[strings.LastIndex(image, "/")+1:])
-	if strings.Contains(svcName, ":") {
-		svcName = svcName[:strings.Index(svcName, ":")]
+func createService(ctx context.Context, client api.ControlClient, args []string) {
+	// Parse image (first arg)
+	image := args[0]
+	
+	// Parse flags
+	var networkID string
+	var svcName string
+	var replicas uint64 = 1
+	
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--network":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "--network requires a value\n")
+				os.Exit(1)
+			}
+				networkID = args[i+1]
+				i++
+		case "--name":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "--name requires a value\n")
+				os.Exit(1)
+			}
+				svcName = args[i+1]
+				i++
+		case "--replicas":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "--replicas requires a value\n")
+				os.Exit(1)
+			}
+				replicas, _ = parseInt(args[i+1])
+				i++
+		}
 	}
-	svcName = svcName + "-" + time.Now().Format("150405")
-
+	
+	// Generate service name if not provided
+	if svcName == "" {
+		svcName = fmt.Sprintf("svc-%s", image[strings.LastIndex(image, "/")+1:])
+		if strings.Contains(svcName, ":") {
+			svcName = svcName[:strings.Index(svcName, ":")]
+		}
+		svcName = svcName + "-" + time.Now().Format("150405")
+	}
+	
+	// Build task spec with optional network
+	taskSpec := api.TaskSpec{
+		Runtime: &api.TaskSpec_Container{
+			Container: &api.ContainerSpec{
+				Image: image,
+			},
+		},
+	}
+	
+	if networkID != "" {
+		taskSpec.Networks = []*api.NetworkAttachmentConfig{
+			{
+				Target: networkID,
+			},
+		}
+	}
+	
 	req := &api.CreateServiceRequest{
 		Spec: &api.ServiceSpec{
 			Annotations: api.Annotations{
 				Name: svcName,
 			},
-			Task: api.TaskSpec{
-				Runtime: &api.TaskSpec_Container{
-					Container: &api.ContainerSpec{
-						Image: image,
-					},
-				},
-			},
+			Task: taskSpec,
 			Mode: &api.ServiceSpec_Replicated{
 				Replicated: &api.ReplicatedService{
-					Replicas: 1,
+					Replicas: replicas,
 				},
 			},
 		},
 	}
-
+	
 	resp, err := client.CreateService(ctx, req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create service: %v\n", err)
 		os.Exit(1)
 	}
-
+	
 	fmt.Printf("Service created: %s\n", resp.Service.ID)
 	fmt.Printf("Name: %s\n", svcName)
 	fmt.Printf("Image: %s\n", image)
+	if networkID != "" {
+		fmt.Printf("Network: %s\n", networkID)
+	}
+	fmt.Printf("Replicas: %d\n", replicas)
+}
+
+func createNetwork(ctx context.Context, client api.ControlClient, args []string) {
+	// Parse name (first arg)
+	name := args[0]
+	
+	// Parse flags
+	var subnet string = "10.0.9.0/24"
+	var driver string = "overlay"
+	
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "--subnet":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "--subnet requires a value\n")
+				os.Exit(1)
+			}
+				subnet = args[i+1]
+				i++
+		case "--driver":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "--driver requires a value\n")
+				os.Exit(1)
+			}
+				driver = args[i+1]
+				i++
+		}
+	}
+	
+	req := &api.CreateNetworkRequest{
+		Spec: &api.NetworkSpec{
+			Annotations: api.Annotations{
+				Name: name,
+			},
+			DriverConfig: &api.Driver{
+				Name: driver,
+			},
+			IPAM: &api.IPAMOptions{
+				Configs: []*api.IPAMConfig{
+					{
+						Subnet: subnet,
+					},
+				},
+			},
+		},
+	}
+	
+	resp, err := client.CreateNetwork(ctx, req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to create network: %v\n", err)
+		os.Exit(1)
+	}
+	
+	fmt.Printf("Network created: %s\n", resp.Network.ID)
+	fmt.Printf("Name: %s\n", name)
+	fmt.Printf("Driver: %s\n", driver)
+	fmt.Printf("Subnet: %s\n", subnet)
+}
+
+func listNetworks(ctx context.Context, client api.ControlClient) {
+	resp, err := client.ListNetworks(ctx, &api.ListNetworksRequest{})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to list networks: %v\n", err)
+		os.Exit(1)
+	}
+	
+	if len(resp.Networks) == 0 {
+		fmt.Println("No networks found")
+		return
+	}
+	
+	fmt.Printf("%-20s %-20s %-15s %s\n", "ID", "NAME", "DRIVER", "SUBNET")
+	fmt.Println(string(make([]byte, 80)))
+	for _, net := range resp.Networks {
+		name := net.Spec.Annotations.Name
+		driver := ""
+		if net.Spec.DriverConfig != nil {
+			driver = net.Spec.DriverConfig.Name
+		}
+		subnet := ""
+		if net.Spec.IPAM != nil && len(net.Spec.IPAM.Configs) > 0 {
+			subnet = net.Spec.IPAM.Configs[0].Subnet
+		}
+		fmt.Printf("%-20s %-20s %-15s %s\n", net.ID[:12], name, driver, subnet)
+	}
+	fmt.Printf("\nTotal: %d network(s)\n", len(resp.Networks))
 }
 
 func removeService(ctx context.Context, client api.ControlClient, serviceID string) {

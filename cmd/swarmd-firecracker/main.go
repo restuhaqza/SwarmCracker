@@ -22,7 +22,9 @@ import (
 
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/moby/swarmkit/v2/log"
+	"github.com/moby/swarmkit/v2/manager/allocator/networkallocator"
 	"github.com/moby/swarmkit/v2/node"
+	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/restuhaqza/swarmcracker/pkg/health"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 	"github.com/sirupsen/logrus"
@@ -196,6 +198,49 @@ func main() {
 			Usage: "Enable cgroup resource limits (requires jailer)",
 			Value: true,
 		},
+		// CNI Network Provider flags
+		&cli.BoolFlag{
+			Name:  "enable-cni",
+			Usage: "Enable CNI network provider for SwarmKit network allocation",
+			Value: false,
+		},
+		&cli.StringFlag{
+			Name:  "cni-plugin-dir",
+			Usage: "Directory containing CNI plugin binaries",
+			Value: cni.DefaultPluginDir,
+		},
+		&cli.StringFlag{
+			Name:  "cni-config-dir",
+			Usage: "Directory for CNI network configurations",
+			Value: cni.DefaultConfigDir,
+		},
+		&cli.StringFlag{
+			Name:  "cni-subnet-pool",
+			Usage: "IP pool for CNI network allocation",
+			Value: cni.DefaultSubnetPool,
+		},
+		&cli.IntFlag{
+			Name:  "cni-subnet-size",
+			Usage: "Subnet size for CNI networks",
+			Value: cni.DefaultSubnetSize,
+		},
+		&cli.IntFlag{
+			Name:  "cni-vxlan-port",
+			Usage: "VXLAN UDP port for overlay networks",
+			Value: cni.DefaultVXLANPort,
+		},
+		// Consul service discovery
+		// Consul service discovery
+		&cli.BoolFlag{
+			Name:  "consul-enabled",
+			Usage: "Enable Consul service discovery for VXLAN peers",
+			Value: false,
+		},
+		&cli.StringFlag{
+			Name:  "consul-address",
+			Usage: "Consul agent address",
+			Value: "127.0.0.1:8500",
+		},
 		&cli.IntFlag{
 			Name:  "heartbeat-tick",
 			Usage: "Heartbeat tick in seconds",
@@ -239,6 +284,11 @@ func runAgent(ctx *cli.Context) error {
 		FirecrackerPath: "firecracker",
 		KernelPath:      ctx.String("kernel-path"),
 		RootfsDir:       ctx.String("rootfs-dir"),
+		Hostname:       hostname,
+		JoinAddr:       ctx.String("join-addr"),
+		AdvertiseAddr:  ctx.String("advertise-remote-api"), // For managers, use advertise address
+		ConsulEnabled:  ctx.Bool("consul-enabled"),
+		ConsulAddress:  ctx.String("consul-address"),
 		SocketDir:       ctx.String("socket-dir"),
 		DefaultVCPUs:    ctx.Int("default-vcpus"),
 		DefaultMemoryMB: ctx.Int("default-memory"),
@@ -249,6 +299,7 @@ func runAgent(ctx *cli.Context) error {
 		NATEnabled:      ctx.Bool("nat-enabled"),
 		VXLANEnabled:    ctx.Bool("vxlan-enabled"),
 		VXLANPeers:      parseCommaSeparated(ctx.String("vxlan-peers")),
+		// Consul service discovery
 		Debug:           ctx.Bool("debug"),
 		StateDir:        stateDir,
 		// Jailer configuration
@@ -292,6 +343,46 @@ func runAgent(ctx *cli.Context) error {
 		}
 	}()
 
+	// Create CNI network provider if enabled
+	var networkProvider networkallocator.Provider
+	var networkConfig *networkallocator.Config
+
+	if ctx.Bool("enable-cni") {
+		cniConfig := &cni.CNIConfig{
+			BridgeName:   ctx.String("bridge-name"),
+			SubnetPool:   ctx.String("cni-subnet-pool"),
+			SubnetSize:   ctx.Int("cni-subnet-size"),
+			VXLANPort:    uint32(ctx.Int("cni-vxlan-port")),
+			IPAMType:     "host-local",
+			PluginDir:    ctx.String("cni-plugin-dir"),
+			ConfigDir:    ctx.String("cni-config-dir"),
+			EnableIPMasq: true,
+		}
+
+		cniProvider, err := cni.NewCNIProvider(cniConfig)
+		if err != nil {
+			return fmt.Errorf("failed to create CNI provider: %w", err)
+		}
+
+		networkProvider = cniProvider
+		networkConfig = &networkallocator.Config{
+			DefaultAddrPool: []string{cniConfig.SubnetPool},
+			SubnetSize:      uint32(cniConfig.SubnetSize),
+			VXLANUDPPort:    cniConfig.VXLANPort,
+		}
+
+		log.G(context.Background()).Infof(
+			"CNI network provider enabled (plugin-dir=%s, config-dir=%s, pool=%s, vxlan-port=%d)",
+			cniConfig.PluginDir,
+			cniConfig.ConfigDir,
+			cniConfig.SubnetPool,
+			cniConfig.VXLANPort,
+		)
+	} else {
+		log.G(context.Background()).Warn("CNI network provider NOT enabled - worker nodes will fail to join")
+		log.G(context.Background()).Warn("Use --enable-cni flag to enable network allocation")
+	}
+
 	// Create node config
 	nodeConfig := &node.Config{
 		Hostname:           hostname,
@@ -302,6 +393,8 @@ func runAgent(ctx *cli.Context) error {
 		ListenControlAPI:   ctx.String("listen-control-api"),
 		AdvertiseRemoteAPI: ctx.String("advertise-remote-api"),
 		Executor:           fcExecutor,
+		NetworkProvider:    networkProvider,    // ← CNI Provider
+		NetworkConfig:      networkConfig,      // ← Network config
 		ForceNewCluster:    ctx.Bool("force-new-cluster"),
 		HeartbeatTick:      uint32(ctx.Int("heartbeat-tick")),
 		ElectionTick:       uint32(ctx.Int("election-tick")),
