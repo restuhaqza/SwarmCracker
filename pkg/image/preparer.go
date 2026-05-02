@@ -83,12 +83,19 @@ func NewImagePreparer(config interface{}) localtypes.ImagePreparer {
 		log.Warn().Err(err).Msg("Failed to create volume manager, volume support disabled")
 	}
 
+	// Create secret manager
+	secretMgr := storage.NewSecretManager(
+		"/var/lib/swarmcracker/secrets",
+		"/var/lib/swarmcracker/configs",
+	)
+
 	return &ImagePreparer{
 		config:        cfg,
 		cacheDir:      "/var/cache/swarmcracker",
 		rootfsDir:     cfg.RootfsDir,
 		initInjector:  initInjector,
 		volumeManager: volumeMgr,
+		secretManager: secretMgr,
 	}
 }
 
@@ -165,6 +172,30 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 
 		if err := ip.handleMounts(ctx, task, rootfsPath, container.Mounts); err != nil {
 			return fmt.Errorf("failed to handle mounts: %w", err)
+		}
+	}
+
+	// Inject secrets if secret manager is available
+	if ip.secretManager != nil && len(task.Secrets) > 0 {
+		log.Info().
+			Str("task_id", task.ID).
+			Int("secret_count", len(task.Secrets)).
+			Msg("Injecting secrets")
+
+		if err := ip.secretManager.InjectSecrets(ctx, task.ID, task.Secrets, rootfsPath); err != nil {
+			return fmt.Errorf("failed to inject secrets: %w", err)
+		}
+	}
+
+	// Inject configs if secret manager is available
+	if ip.secretManager != nil && len(task.Configs) > 0 {
+		log.Info().
+			Str("task_id", task.ID).
+			Int("config_count", len(task.Configs)).
+			Msg("Injecting configs")
+
+		if err := ip.secretManager.InjectConfigs(ctx, task.ID, task.Configs, rootfsPath); err != nil {
+			return fmt.Errorf("failed to inject configs: %w", err)
 		}
 	}
 

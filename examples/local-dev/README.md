@@ -250,6 +250,6 @@ swarmctl service create --config-file service-spec.yaml
 ## See Also
 
 - [Production Deployment Guide](../production-cluster/README.md)
-- [SwarmKit Guide](../../docs/guides/swarmkit.md)
-- [Networking Guide](../../docs/guides/networking.md)
-- [Advanced Guide](../../docs/guides/advanced.md) — Init systems, multi-arch
+- [SwarmKit Guide](../../docs/user/guides/swarmkit.md)
+- [Networking Guide](../../docs/user/guides/networking.md)
+- [Advanced Guide](../../docs/user/guides/advanced.md) — Init systems, multi-arch
