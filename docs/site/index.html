@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SwarmCracker - Firecracker MicroVMs with SwarmKit Orchestration</title>
-    <meta name="description" content="Run containers as isolated Firecracker microVMs with SwarmKit orchestration.">
-    <meta property="og:title" content="SwarmCracker">
+    <title>SwarmCracker - Multi-Node Firecracker MicroVMs with SwarmKit</title>
+    <meta name="description" content="Orchestrate Firecracker microVMs across multi-node clusters with SwarmKit. VXLAN networking, Jailer security, production-ready orchestration.">
+    <meta property="og:title" content="SwarmCracker - Multi-Node MicroVM Orchestration">
+    <meta property="og:description" content="Run containers as isolated Firecracker microVMs with multi-node clustering and production security.">
     <meta property="og:url" content="https://swarmcracker.restuhaqza.dev/">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>">
-    
+
     <!-- Tailwind CSS via CDN (no build needed!) -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -31,12 +32,12 @@
             }
         }
     </script>
-    
+
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-    
+
     <style>
         body { font-family: 'Inter', sans-serif; }
         .code-syntax .comment { color: #6B7280; font-style: italic; }
@@ -65,6 +66,7 @@
                 <div class="hidden md:flex items-center gap-8">
                     <a href="#features" class="text-text-secondary hover:text-primary transition-colors">Features</a>
                     <a href="#how-it-works" class="text-text-secondary hover:text-primary transition-colors">How It Works</a>
+                    <a href="#networking" class="text-text-secondary hover:text-primary transition-colors">Networking</a>
                     <a href="#installation" class="text-text-secondary hover:text-primary transition-colors">Installation</a>
                     <a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs" target="_blank" class="text-text-secondary hover:text-primary transition-colors">Docs</a>
                     <a href="https://github.com/restuhaqza/SwarmCracker" target="_blank" class="bg-gradient text-white px-4 py-2 rounded-lg font-semibold hover:opacity-90 transition-opacity">GitHub</a>
@@ -77,8 +79,8 @@
     <section class="pt-32 pb-20 px-4 relative overflow-hidden">
         <div class="absolute top-0 left-1/2 -translate-x-1/2 w-[1000px] h-[1000px] bg-gradient-radial from-primary/10 to-transparent pointer-events-none"></div>
         <div class="max-w-7xl mx-auto text-center relative z-10">
-            <h1 class="text-5xl md:text-6xl font-extrabold mb-6 text-gradient">Firecracker MicroVMs with<br>SwarmKit Orchestration</h1>
-            <p class="text-xl text-text-secondary max-w-3xl mx-auto mb-10">Run containers as isolated microVMs with hardware-level security, fast startup, and production-ready orchestration features.</p>
+            <h1 class="text-5xl md:text-6xl font-extrabold mb-6 text-gradient">Multi-Node Firecracker<br>MicroVMs with SwarmKit</h1>
+            <p class="text-xl text-text-secondary max-w-3xl mx-auto mb-10">Orchestrate Firecracker microVMs across multi-node clusters with VXLAN networking, Jailer security, and production-ready orchestration features.</p>
             <div class="flex gap-4 justify-center flex-wrap mb-12">
                 <a href="#installation" class="bg-gradient text-white px-8 py-4 rounded-xl font-semibold shadow-lg shadow-primary/30 hover:shadow-primary/40 hover:-translate-y-0.5 transition-all">Get Started</a>
                 <a href="https://github.com/restuhaqza/SwarmCracker" target="_blank" class="bg-bg-card border border-border px-8 py-4 rounded-xl font-semibold hover:border-primary transition-colors">View on GitHub</a>
@@ -92,11 +94,11 @@
                     </div>
                     <span class="text-sm text-text-secondary font-mono">bash</span>
                 </div>
-                <pre class="p-6 overflow-x-auto text-left font-mono text-sm code-syntax"><code><span class="comment"># Initialize a cluster in one command</span>
-<span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">init</span>
+                <pre class="p-6 overflow-x-auto text-left font-mono text-sm code-syntax"><code><span class="comment"># Initialize a multi-node cluster</span>
+<span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">init</span> <span class="flag">--vxlan-enabled</span>
 
-<span class="comment"># Join workers to the cluster</span>
-<span class="command">swarmcracker</span> <span class="command">join</span> <span class="string">&lt;manager-ip&gt;:4242</span> <span class="flag">--token</span> <span class="string">SWMTKN-1-...</span></code></pre>
+<span class="comment"># Join workers with VXLAN overlay</span>
+<span class="command">swarmcracker</span> <span class="command">join</span> <span class="string">&lt;manager-ip&gt;:4242</span> <span class="flag">--token</span> <span class="string">SWMTKN-1-...</span> <span class="flag">--vxlan-enabled</span></code></pre>
             </div>
         </div>
     </section>
@@ -106,9 +108,10 @@
         <div class="max-w-7xl mx-auto">
             <div class="text-center mb-16">
                 <h2 class="text-4xl font-bold mb-4">Why SwarmCracker?</h2>
-                <p class="text-text-secondary text-lg">Production-grade container orchestration with microVM isolation</p>
+                <p class="text-text-secondary text-lg">Production-grade microVM orchestration with multi-node clustering</p>
             </div>
             <div class="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <!-- Core Features -->
                 <div class="bg-bg-dark p-6 rounded-xl border border-border hover:border-primary hover:-translate-y-1 transition-all">
                     <div class="text-4xl mb-4">🔥</div>
                     <h3 class="text-xl font-semibold mb-2">MicroVM Isolation</h3>
@@ -129,15 +132,43 @@
                     <h3 class="text-xl font-semibold mb-2">Hardware Security</h3>
                     <p class="text-text-secondary">KVM virtualization provides stronger isolation than container namespaces, protecting against kernel exploits.</p>
                 </div>
+
+                <!-- NEW: Multi-Node Features -->
+                <div class="bg-bg-dark p-6 rounded-xl border border-primary hover:border-primary-light hover:-translate-y-1 transition-all">
+                    <div class="flex items-center gap-2 mb-4">
+                        <div class="text-4xl">🌐</div>
+                        <span class="bg-primary/20 text-primary text-xs font-bold px-2 py-1 rounded">NEW</span>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Multi-Node Clustering</h3>
+                    <p class="text-text-secondary">VXLAN overlay networking with automatic peer discovery via Consul. Deploy microVMs across your entire cluster.</p>
+                </div>
+                <div class="bg-bg-dark p-6 rounded-xl border border-primary hover:border-primary-light hover:-translate-y-1 transition-all">
+                    <div class="flex items-center gap-2 mb-4">
+                        <div class="text-4xl">🔒</div>
+                        <span class="bg-primary/20 text-primary text-xs font-bold px-2 py-1 rounded">NEW</span>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Production Security</h3>
+                    <p class="text-text-secondary">Jailer integration with cgroup v2 resource limits. CPU, memory, and disk I/O throttling for production workloads.</p>
+                </div>
+                <div class="bg-bg-dark p-6 rounded-xl border border-primary hover:border-primary-light hover:-translate-y-1 transition-all">
+                    <div class="flex items-center gap-2 mb-4">
+                        <div class="text-4xl">🎛️</div>
+                        <span class="bg-primary/20 text-primary text-xs font-bold px-2 py-1 rounded">NEW</span>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Advanced Control</h3>
+                    <p class="text-text-secondary">swarmctl CLI for complete cluster management. Node operations, service deployment, task inspection with mTLS security.</p>
+                </div>
+
+                <!-- Updated Existing Features -->
                 <div class="bg-bg-dark p-6 rounded-xl border border-border hover:border-primary hover:-translate-y-1 transition-all">
-                    <div class="text-4xl mb-4">🌐</div>
+                    <div class="text-4xl mb-4">🌉</div>
                     <h3 class="text-xl font-semibold mb-2">VXLAN Networking</h3>
-                    <p class="text-text-secondary">Cross-node VM communication with VXLAN overlay networks, supporting multi-node clusters out of the box.</p>
+                    <p class="text-text-secondary">Cross-node VM communication with VXLAN overlay networks (ID 100, UDP 4789) and Consul service discovery.</p>
                 </div>
                 <div class="bg-bg-dark p-6 rounded-xl border border-border hover:border-primary hover:-translate-y-1 transition-all">
                     <div class="text-4xl mb-4">🔄</div>
                     <h3 class="text-xl font-semibold mb-2">Rolling Updates</h3>
-                    <p class="text-text-secondary">Zero-downtime deployments with health monitoring and automatic rollback on failure.</p>
+                    <p class="text-text-secondary">Zero-downtime deployments with health monitoring, automatic rollback, and snapshot support for safe updates.</p>
                 </div>
             </div>
         </div>
@@ -146,22 +177,30 @@
     <!-- Stats -->
     <section class="py-16 px-4">
         <div class="max-w-7xl mx-auto">
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-8">
+            <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-8">
                 <div class="text-center">
                     <div class="text-4xl md:text-5xl font-bold text-gradient mb-2">&lt;100ms</div>
-                    <div class="text-text-secondary">MicroVM Boot Time</div>
+                    <div class="text-text-secondary text-sm">Boot Time</div>
                 </div>
                 <div class="text-center">
                     <div class="text-4xl md:text-5xl font-bold text-gradient mb-2">&lt;5MB</div>
-                    <div class="text-text-secondary">Memory Overhead</div>
+                    <div class="text-text-secondary text-sm">Overhead</div>
                 </div>
                 <div class="text-center">
                     <div class="text-4xl md:text-5xl font-bold text-gradient mb-2">100%</div>
-                    <div class="text-text-secondary">KVM Isolation</div>
+                    <div class="text-text-secondary text-sm">KVM Isolation</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-4xl md:text-5xl font-bold text-gradient mb-2">4-8ms</div>
+                    <div class="text-text-secondary text-sm">Cross-Node Latency</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-4xl md:text-5xl font-bold text-gradient mb-2">0%</div>
+                    <div class="text-text-secondary text-sm">Packet Loss</div>
                 </div>
                 <div class="text-center">
                     <div class="text-4xl md:text-5xl font-bold text-gradient mb-2">Linux</div>
-                    <div class="text-text-secondary">Native Support</div>
+                    <div class="text-text-secondary text-sm">Native</div>
                 </div>
             </div>
         </div>
@@ -178,112 +217,181 @@
                 <div class="text-center">
                     <div class="w-16 h-16 bg-gradient rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-4">1</div>
                     <h3 class="text-xl font-semibold mb-2">Initialize Cluster</h3>
-                    <p class="text-text-secondary">Run <code class="bg-bg-card px-2 py-1 rounded text-sm">swarmcracker init</code> to set up the manager node with automatic token generation.</p>
+                    <p class="text-text-secondary">Run <code class="bg-bg-card px-2 py-1 rounded text-sm">swarmcracker init --vxlan-enabled</code> to set up the manager with VXLAN overlay.</p>
                 </div>
                 <div class="text-center">
                     <div class="w-16 h-16 bg-gradient rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-4">2</div>
                     <h3 class="text-xl font-semibold mb-2">Join Workers</h3>
-                    <p class="text-text-secondary">Worker nodes join the cluster using the provided token, forming a SwarmKit cluster.</p>
+                    <p class="text-text-secondary">Worker nodes join the cluster with VXLAN enabled, forming a SwarmKit cluster with Consul peer discovery.</p>
                 </div>
                 <div class="text-center">
                     <div class="w-16 h-16 bg-gradient rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-4">3</div>
                     <h3 class="text-xl font-semibold mb-2">Deploy Services</h3>
-                    <p class="text-text-secondary">Deploy container images that automatically run as isolated Firecracker microVMs.</p>
+                    <p class="text-text-secondary">Deploy container images that automatically run as isolated Firecracker microVMs across the cluster.</p>
                 </div>
                 <div class="text-center">
                     <div class="w-16 h-16 bg-gradient rounded-full flex items-center justify-center text-2xl font-bold mx-auto mb-4">4</div>
                     <h3 class="text-xl font-semibold mb-2">Scale & Manage</h3>
-                    <p class="text-text-secondary">Scale services, perform rolling updates, and monitor health through SwarmKit.</p>
+                    <p class="text-text-secondary">Use swarmctl to scale services, perform rolling updates, and monitor cluster health.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- VXLAN Networking Section (NEW) -->
+    <section id="networking" class="py-20 px-4 bg-bg-card">
+        <div class="max-w-7xl mx-auto">
+            <div class="text-center mb-16">
+                <h2 class="text-4xl font-bold mb-4">Multi-Node Networking</h2>
+                <p class="text-text-secondary text-lg">VXLAN overlay with automatic peer discovery</p>
+            </div>
+
+            <div class="grid md:grid-cols-2 gap-8 mb-12">
+                <div class="bg-bg-dark border border-border rounded-xl p-8">
+                    <h3 class="text-2xl font-bold mb-4 text-gradient">How VXLAN Works</h3>
+                    <div class="font-mono text-sm text-text-secondary space-y-2">
+                        <p>Manager schedules task → Worker assigns overlay IP</p>
+                        <p>↓</p>
+                        <p>Firecracker boots VM → TAP → swarm-br0</p>
+                        <p>↓</p>
+                        <p>VXLAN (UDP 4789) → Physical network</p>
+                        <p>↓</p>
+                        <p>Consul discovers peer → Updates FDB</p>
+                        <p>↓</p>
+                        <p>VMs talk across nodes ✅</p>
+                    </div>
+                </div>
+                <div class="bg-bg-dark border border-border rounded-xl p-8">
+                    <h3 class="text-2xl font-bold mb-4 text-gradient">Performance</h3>
+                    <div class="space-y-4">
+                        <div class="flex justify-between items-center">
+                            <span class="text-text-secondary">Cross-node latency</span>
+                            <span class="text-2xl font-bold text-gradient">4-8ms</span>
+                        </div>
+                        <div class="w-full bg-bg-card rounded-full h-2">
+                            <div class="bg-gradient h-2 rounded-full" style="width: 85%"></div>
+                        </div>
+                        <div class="flex justify-between items-center">
+                            <span class="text-text-secondary">Packet loss</span>
+                            <span class="text-2xl font-bold text-gradient">0%</span>
+                        </div>
+                        <div class="w-full bg-bg-card rounded-full h-2">
+                            <div class="bg-gradient h-2 rounded-full" style="width: 100%"></div>
+                        </div>
+                        <p class="text-sm text-text-secondary mt-4">Tested on 3-node cluster (Manager + 2 Workers)</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-bg-dark border border-border rounded-xl p-8">
+                <h3 class="text-2xl font-bold mb-4">Architecture</h3>
+                <div class="grid md:grid-cols-3 gap-8 text-center">
+                    <div>
+                        <div class="text-4xl mb-2">🎛️</div>
+                        <h4 class="font-semibold mb-2">Manager</h4>
+                        <p class="text-sm text-text-secondary">SwarmKit control plane, IPAM, task scheduling</p>
+                    </div>
+                    <div>
+                        <div class="text-4xl mb-2">🔍</div>
+                        <h4 class="font-semibold mb-2">Consul</h4>
+                        <p class="text-sm text-text-secondary">Peer discovery, service catalog, health checks</p>
+                    </div>
+                    <div>
+                        <div class="text-4xl mb-2">🌉</div>
+                        <h4 class="font-semibold mb-2">VXLAN Overlay</h4>
+                        <p class="text-sm text-text-secondary">ID 100, UDP 4789, automatic FDB updates</p>
+                    </div>
                 </div>
             </div>
         </div>
     </section>
 
     <!-- Installation -->
-    <section id="installation" class="py-20 px-4 bg-bg-card">
+    <section id="installation" class="py-20 px-4">
         <div class="max-w-7xl mx-auto">
             <div class="text-center mb-16">
                 <h2 class="text-4xl font-bold mb-4">Installation</h2>
                 <p class="text-text-secondary text-lg">Get started in minutes with our automated installer</p>
             </div>
             <div class="flex gap-2 mb-6 flex-wrap" id="install-tabs">
-                <button onclick="showTab('manager')" class="tab-btn px-6 py-3 rounded-lg font-medium transition-all bg-gradient text-white">Manager Node</button>
-                <button onclick="showTab('worker')" class="tab-btn px-6 py-3 rounded-lg font-medium transition-all bg-bg-dark text-text-secondary hover:text-white">Worker Node</button>
-                <button onclick="showTab('manual')" class="tab-btn px-6 py-3 rounded-lg font-medium transition-all bg-bg-dark text-text-secondary hover:text-white">Manual Install</button>
+                <button onclick="showTab('manager')" class="tab-btn px-6 py-3 rounded-lg font-medium transition-all bg-gradient text-white" id="tab-manager">Manager Node</button>
+                <button onclick="showTab('worker')" class="tab-btn px-6 py-3 rounded-lg font-medium transition-all bg-bg-dark text-text-secondary hover:text-white" id="tab-worker">Worker Node</button>
+                <button onclick="showTab('manual')" class="tab-btn px-6 py-3 rounded-lg font-medium transition-all bg-bg-dark text-text-secondary hover:text-white" id="tab-manual">Manual Install</button>
             </div>
-            <div id="manager-tab" class="install-code bg-bg-dark border border-border rounded-2xl overflow-hidden">
-                <div class="bg-bg-card px-4 py-3 border-b border-border flex justify-between items-center">
+
+            <!-- Manager Tab -->
+            <div id="manager-tab" class="install-code bg-bg-card border border-border rounded-2xl overflow-hidden">
+                <div class="bg-bg-dark px-4 py-3 border-b border-border flex justify-between items-center">
                     <div class="flex gap-2">
                         <div class="w-3 h-3 rounded-full bg-[#FF5F56]"></div>
                         <div class="w-3 h-3 rounded-full bg-[#FFBD2E]"></div>
                         <div class="w-3 h-3 rounded-full bg-[#27C93F]"></div>
                     </div>
-                    <span class="text-sm text-text-secondary font-mono">Initialize Manager</span>
+                    <span class="text-sm text-text-secondary font-mono">Initialize Manager with VXLAN</span>
                     <button onclick="copyCode('manager-code')" class="flex items-center gap-2 text-text-secondary hover:text-primary transition-colors text-sm">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         Copy
                     </button>
                 </div>
-                <pre class="p-6 overflow-x-auto font-mono text-sm code-syntax"><code id="manager-code"><span class="comment"># Initialize a new SwarmCracker cluster</span>
-<span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">init</span>
-
-<span class="comment"># With VXLAN overlay (multi-node)</span>
+                <pre class="p-6 overflow-x-auto font-mono text-sm code-syntax"><code id="manager-code"><span class="comment"># Initialize manager with VXLAN multi-node support</span>
 <span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">init</span> \
+  <span class="flag">--advertise-addr</span> <span class="string">192.168.1.10:4242</span> \
   <span class="flag">--vxlan-enabled</span> \
   <span class="flag">--vxlan-peers</span> <span class="string">192.168.1.11,192.168.1.12</span>
 
-<span class="comment"># Get join token for workers</span>
+<span class="comment"># Get join tokens</span>
 <span class="command">sudo</span> <span class="command">cat</span> <span class="string">/var/lib/swarmkit/join-tokens.txt</span></code></pre>
             </div>
-            <div id="worker-tab" class="install-code bg-bg-dark border border-border rounded-2xl overflow-hidden hidden">
-                <div class="bg-bg-card px-4 py-3 border-b border-border flex justify-between items-center">
+
+            <!-- Worker Tab -->
+            <div id="worker-tab" class="install-code bg-bg-card border border-border rounded-2xl overflow-hidden hidden">
+                <div class="bg-bg-dark px-4 py-3 border-b border-border flex justify-between items-center">
                     <div class="flex gap-2">
                         <div class="w-3 h-3 rounded-full bg-[#FF5F56]"></div>
                         <div class="w-3 h-3 rounded-full bg-[#FFBD2E]"></div>
                         <div class="w-3 h-3 rounded-full bg-[#27C93F]"></div>
                     </div>
-                    <span class="text-sm text-text-secondary font-mono">Join Worker</span>
+                    <span class="text-sm text-text-secondary font-mono">Join Worker with VXLAN</span>
                     <button onclick="copyCode('worker-code')" class="flex items-center gap-2 text-text-secondary hover:text-primary transition-colors text-sm">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         Copy
                     </button>
                 </div>
-                <pre class="p-6 overflow-x-auto font-mono text-sm code-syntax"><code id="worker-code"><span class="comment"># Join an existing cluster</span>
+                <pre class="p-6 overflow-x-auto font-mono text-sm code-syntax"><code id="worker-code"><span class="comment"># Join worker to cluster with VXLAN overlay</span>
 <span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">join</span> \
-  <span class="flag">--manager</span> <span class="string">&lt;MANAGER_IP&gt;:4242</span> \
-  <span class="flag">--token</span> <span class="string">SWMTKN-1-...</span>
+  <span class="flag">--manager</span> <span class="string">192.168.1.10:4242</span> \
+  <span class="flag">--token</span> <span class="string">SWMTKN-1-4q4c...</span> \
+  <span class="flag">--vxlan-enabled</span>
 
-<span class="comment"># With VXLAN overlay</span>
-<span class="command">curl</span> <span class="flag">-fsSL</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span> | <span class="command">sudo</span> <span class="command">bash</span> <span class="flag">-s</span> <span class="flag">--</span> <span class="command">join</span> \
-  <span class="flag">--manager</span> <span class="string">&lt;MANAGER_IP&gt;:4242</span> \
-  <span class="flag">--token</span> <span class="string">SWMTKN-1-...</span> \
-  <span class="flag">--vxlan-enabled</span> \
-  <span class="flag">--vxlan-peers</span> <span class="string">&lt;PEER_IPS&gt;</span></code></pre>
+<span class="comment"># Verify worker joined</span>
+<span class="command">swarmctl</span> <span class="command">ls-nodes</span></code></pre>
             </div>
-            <div id="manual-tab" class="install-code bg-bg-dark border border-border rounded-2xl overflow-hidden hidden">
-                <div class="bg-bg-card px-4 py-3 border-b border-border flex justify-between items-center">
+
+            <!-- Manual Tab -->
+            <div id="manual-tab" class="install-code bg-bg-card border border-border rounded-2xl overflow-hidden hidden">
+                <div class="bg-bg-dark px-4 py-3 border-b border-border flex justify-between items-center">
                     <div class="flex gap-2">
                         <div class="w-3 h-3 rounded-full bg-[#FF5F56]"></div>
                         <div class="w-3 h-3 rounded-full bg-[#FFBD2E]"></div>
                         <div class="w-3 h-3 rounded-full bg-[#27C93F]"></div>
                     </div>
-                    <span class="text-sm text-text-secondary font-mono">Manual Install</span>
+                    <span class="text-sm text-text-secondary font-mono">Manual Installation</span>
                     <button onclick="copyCode('manual-code')" class="flex items-center gap-2 text-text-secondary hover:text-primary transition-colors text-sm">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
                         Copy
                     </button>
                 </div>
-                <pre class="p-6 overflow-x-auto font-mono text-sm code-syntax"><code id="manual-code"><span class="comment"># Download installer</span>
-<span class="command">wget</span> <span class="string">https://swarmcracker.restuhaqza.dev/install.sh</span>
-<span class="command">chmod</span> <span class="flag">+x</span> <span class="string">install.sh</span>
+                <pre class="p-6 overflow-x-auto font-mono text-sm code-syntax"><code id="manual-code"><span class="comment"># Install Firecracker</span>
+<span class="command">wget</span> <span class="string">https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz</span>
+<span class="command">tar</span> <span class="flag">-xzf</span> <span class="string">firecracker-v1.15.1-x86_64.tgz</span>
+<span class="command">sudo</span> <span class="command">mv</span> <span class="string">release-v1.15.1-x86_64/firecracker-v1.15.1-x86_64</span> <span class="string">/usr/local/bin/firecracker</span>
+<span class="command">sudo</span> <span class="command">chmod</span> <span class="flag">+x</span> <span class="string">/usr/local/bin/firecracker</span>
 
-<span class="comment"># Or download from releases</span>
-<span class="command">wget</span> <span class="string">https://github.com/restuhaqza/SwarmCracker/releases/latest/download/swarmcracker-linux-amd64.tar.gz</span>
-<span class="command">tar</span> <span class="flag">-xzf</span> <span class="string">swarmcracker-linux-amd64.tar.gz</span>
-<span class="command">sudo</span> <span class="command">cp</span> <span class="string">swarmcracker-*-linux-amd64/*</span> <span class="string">/usr/local/bin/</span>
-
-<span class="comment"># Verify installation</span>
-<span class="command">swarmcracker</span> <span class="command">version</span>
+<span class="comment"># Install SwarmCracker</span>
+<span class="command">git</span> <span class="flag">clone</span> <span class="string">https://github.com/restuhaqza/SwarmCracker.git</span>
+<span class="command">cd</span> <span class="string">SwarmCracker</span>
+<span class="command">make</span> <span class="command">all</span>
+<span class="command">sudo</span> <span class="command">cp</span> <span class="string">build/*</span> <span class="string">/usr/local/bin/</span>
 
 <span class="comment"># Initialize cluster</span>
 <span class="command">sudo</span> <span class="command">swarmcracker</span> <span class="command">init</span></code></pre>
@@ -292,77 +400,111 @@
     </section>
 
     <!-- CTA -->
-    <section class="py-20 px-4">
-        <div class="max-w-4xl mx-auto">
-            <div class="bg-gradient rounded-3xl p-12 text-center">
-                <h2 class="text-4xl font-bold mb-4">Ready to Get Started?</h2>
-                <p class="text-lg mb-8 opacity-95">Join the growing community of developers using SwarmCracker for secure, isolated container orchestration.</p>
-                <a href="https://github.com/restuhaqza/SwarmCracker" target="_blank" class="inline-block bg-white text-primary px-8 py-4 rounded-xl font-semibold hover:bg-bg-dark hover:text-white transition-colors">View on GitHub</a>
+    <section class="py-20 px-4 bg-bg-card">
+        <div class="max-w-4xl mx-auto text-center">
+            <h2 class="text-4xl font-bold mb-6">Ready to Orchestrate MicroVMs?</h2>
+            <p class="text-xl text-text-secondary mb-8">Get started with SwarmCracker today and deploy production-grade microVM clusters in minutes.</p>
+            <div class="flex gap-4 justify-center flex-wrap">
+                <a href="#installation" class="bg-gradient text-white px-8 py-4 rounded-xl font-semibold shadow-lg shadow-primary/30 hover:shadow-primary/40 hover:-translate-y-0.5 transition-all">Get Started</a>
+                <a href="https://github.com/restuhaqza/SwarmCracker" target="_blank" class="bg-bg-dark border border-border px-8 py-4 rounded-xl font-semibold hover:border-primary transition-colors">Documentation</a>
             </div>
         </div>
     </section>
 
     <!-- Footer -->
-    <footer class="py-12 px-4 bg-bg-card border-t border-border">
+    <footer class="py-12 px-4 border-t border-border">
         <div class="max-w-7xl mx-auto">
             <div class="grid md:grid-cols-4 gap-8 mb-8">
                 <div>
-                    <h4 class="font-semibold mb-4 flex items-center gap-2"><span>🔥</span>SwarmCracker</h4>
-                    <p class="text-text-secondary text-sm">Firecracker MicroVMs with SwarmKit Orchestration</p>
+                    <div class="flex items-center gap-2 text-xl font-bold mb-4">
+                        <span class="text-2xl">🔥</span>SwarmCracker
+                    </div>
+                    <p class="text-text-secondary text-sm">Multi-node Firecracker microVMs with SwarmKit orchestration.</p>
                 </div>
                 <div>
                     <h4 class="font-semibold mb-4">Documentation</h4>
-                    <ul class="space-y-2 text-sm">
-                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/getting-started" target="_blank" class="text-text-secondary hover:text-primary transition-colors">Getting Started</a></li>
-                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/architecture" target="_blank" class="text-text-secondary hover:text-primary transition-colors">Architecture</a></li>
-                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/guides" target="_blank" class="text-text-secondary hover:text-primary transition-colors">Guides</a></li>
-                        <li><a href="https://github.com/restuhaqza/SwarmCracker/releases" target="_blank" class="text-text-secondary hover:text-primary transition-colors">Releases</a></li>
+                    <ul class="space-y-2 text-sm text-text-secondary">
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/user/getting-started" target="_blank" class="hover:text-primary transition-colors">Getting Started</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/user/guides/networking.md" target="_blank" class="hover:text-primary transition-colors">VXLAN Networking</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/user/reference/cli.md" target="_blank" class="hover:text-primary transition-colors">CLI Reference</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/dev/testing/e2e-tests.md" target="_blank" class="hover:text-primary transition-colors">E2E Tests</a></li>
                     </ul>
                 </div>
                 <div>
-                    <h4 class="font-semibold mb-4">Community</h4>
-                    <ul class="space-y-2 text-sm">
-                        <li><a href="https://github.com/restuhaqza/SwarmCracker" target="_blank" class="text-text-secondary hover:text-primary transition-colors">GitHub</a></li>
-                        <li><a href="https://github.com/restuhaqza/SwarmCracker/issues" target="_blank" class="text-text-secondary hover:text-primary transition-colors">Issues</a></li>
-                        <li><a href="https://github.com/restuhaqza/SwarmCracker/discussions" target="_blank" class="text-text-secondary hover:text-primary transition-colors">Discussions</a></li>
+                    <h4 class="font-semibold mb-4">Guides</h4>
+                    <ul class="space-y-2 text-sm text-text-secondary">
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/user/guides/networking.md#vxlan-cross-node-networking" target="_blank" class="hover:text-primary transition-colors">VXLAN Setup</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/infrastructure/ansible" target="_blank" class="hover:text-primary transition-colors">Ansible Deployment</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/docs/user/guides/swarmkit.md" target="_blank" class="hover:text-primary transition-colors">Service Management</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/tree/main/examples" target="_blank" class="hover:text-primary transition-colors">Examples</a></li>
                     </ul>
                 </div>
                 <div>
-                    <h4 class="font-semibold mb-4">Resources</h4>
-                    <ul class="space-y-2 text-sm">
-                        <li><a href="https://firecracker-microvm.github.io/" target="_blank" class="text-text-secondary hover:text-primary transition-colors">Firecracker</a></li>
-                        <li><a href="https://github.com/moby/swarmkit" target="_blank" class="text-text-secondary hover:text-primary transition-colors">SwarmKit</a></li>
-                        <li><a href="https://www.linux-kvm.org/" target="_blank" class="text-text-secondary hover:text-primary transition-colors">KVM</a></li>
+                    <h4 class="font-semibold mb-4">Project</h4>
+                    <ul class="space-y-2 text-sm text-text-secondary">
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker" target="_blank" class="hover:text-primary transition-colors">GitHub</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/issues" target="_blank" class="hover:text-primary transition-colors">Issues</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/blob/main/CONTRIBUTING.md" target="_blank" class="hover:text-primary transition-colors">Contributing</a></li>
+                        <li><a href="https://github.com/restuhaqza/SwarmCracker/blob/main/LICENSE" target="_blank" class="hover:text-primary transition-colors">License (Apache 2.0)</a></li>
                     </ul>
                 </div>
             </div>
-            <div class="pt-8 border-t border-border text-center text-text-secondary text-sm">
-                <p>&copy; 2026 SwarmCracker. Apache 2.0 Licensed.</p>
+            <div class="pt-8 border-t border-border text-center text-sm text-text-secondary">
+                <p>&copy; 2026 SwarmCracker. Licensed under Apache 2.0.</p>
             </div>
         </div>
     </footer>
 
     <script>
         function showTab(tabName) {
-            document.querySelectorAll('.install-code').forEach(tab => tab.classList.add('hidden'));
+            // Hide all tabs
+            document.querySelectorAll('.install-code').forEach(tab => {
+                tab.classList.add('hidden');
+            });
+
+            // Show selected tab
+            document.getElementById(tabName + '-tab').classList.remove('hidden');
+
+            // Update button styles
             document.querySelectorAll('.tab-btn').forEach(btn => {
                 btn.classList.remove('bg-gradient', 'text-white');
                 btn.classList.add('bg-bg-dark', 'text-text-secondary');
             });
-            document.getElementById(tabName + '-tab').classList.remove('hidden');
-            event.target.classList.remove('bg-bg-dark', 'text-text-secondary');
-            event.target.classList.add('bg-gradient', 'text-white');
+
+            document.getElementById('tab-' + tabName).classList.remove('bg-bg-dark', 'text-text-secondary');
+            document.getElementById('tab-' + tabName).classList.add('bg-gradient', 'text-white');
         }
-        
+
         function copyCode(elementId) {
-            const code = document.getElementById(elementId).innerText;
-            navigator.clipboard.writeText(code).then(() => {
-                const btn = event.target.closest('button');
-                const originalText = btn.innerHTML;
-                btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg> Copied!';
-                setTimeout(() => { btn.innerHTML = originalText; }, 2000);
+            const codeElement = document.getElementById(elementId);
+            const text = codeElement.textContent;
+
+            navigator.clipboard.writeText(text).then(() => {
+                // Find the button and change text temporarily
+                const button = codeElement.closest('.install-code').querySelector('button');
+                const originalText = button.innerHTML;
+                button.innerHTML = '✓ Copied!';
+                setTimeout(() => {
+                    button.innerHTML = originalText;
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy:', err);
             });
         }
+
+        // Smooth scroll for navigation links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
     </script>
 </body>
 </html>
