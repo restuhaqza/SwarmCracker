@@ -4,12 +4,12 @@
 
 ---
 
-## Documentation Structure
+## How Docs Are Organized
 
 ```
 docs/
-├── user/           # 👤 Public user documentation
-├── dev/            # 🔧 Developer/contributor docs
+├── user/           # 👤 If you're running SwarmCracker, start here
+├── dev/            # 🔧 If you're contributing or hacking on the code
 ├── planning/       # 📋 Implementation plans & roadmap
 ├── research/       # 🔬 Research notes & archived docs
 └── site/           # 🌐 GitHub Pages website
@@ -17,36 +17,36 @@ docs/
 
 ---
 
-## Quick Navigation
+## Find What You Need
 
-### For Users
+### For Users (Running SwarmCracker)
 
-| What you need | Where to go |
-|---------------|-------------|
+| You want to... | Go here |
+|----------------|---------|
 | **Install SwarmCracker** | [User Docs → Getting Started](user/getting-started/) |
-| **Configure cluster** | [User Docs → Configuration](user/guides/configuration.md) |
+| **Set up your cluster** | [User Docs → Configuration](user/guides/configuration.md) |
 | **Deploy services** | [User Docs → SwarmKit](user/guides/swarmkit.md) |
-| **CLI commands** | [User Docs → CLI Reference](user/reference/cli.md) |
-| **Architecture** | [User Docs → Architecture](user/architecture/) |
+| **Look up commands** | [User Docs → CLI Reference](user/reference/cli.md) |
+| **Understand how it works** | [User Docs → Architecture](user/architecture/) |
 
-### For Developers
+### For Developers (Contributing Code)
 
-| What you need | Where to go |
-|---------------|-------------|
+| You want to... | Go here |
+|----------------|---------|
 | **Contribute** | [Dev Docs → Contributing](dev/contributing.md) |
-| **Testing** | [Dev Docs → Testing](dev/testing/) |
-| **Conventions** | [Dev Docs → Conventions](dev/conventions.md) |
+| **Run tests** | [Dev Docs → Testing](dev/testing/) |
+| **Follow code style** | [Dev Docs → Conventions](dev/conventions.md) |
 
 ### Planning & Research
 
-| What you need | Where to go |
-|---------------|-------------|
-| **Roadmap** | [Planning → TODO Implementation](planning/todo-implementation.md) |
-| **Research notes** | [Research → Image Preparation](research/) |
+| You want to... | Go here |
+|----------------|---------|
+| **See what's planned** | [Planning → TODO Implementation](planning/todo-implementation.md) |
+| **Read research notes** | [Research → Image Preparation](research/) |
 
 ---
 
-## Version Information
+## Versions (What's What)
 
 | Component | Version |
 |-----------|---------|
@@ -57,13 +57,13 @@ docs/
 
 ---
 
-## External Resources
+## Useful Links
 
-- **[GitHub Repository](https://github.com/restuhaqza/SwarmCracker)**
-- **[Firecracker Docs](https://github.com/firecracker-microvm/firecracker)**
-- **[SwarmKit Docs](https://github.com/moby/swarmkit)**
-- **[Report Issues](https://github.com/restuhaqza/SwarmCracker/issues)**
+- **[GitHub Repo](https://github.com/restuhaqza/SwarmCracker)** — source code, issues, PRs
+- **[Firecracker Docs](https://github.com/firecracker-microvm/firecracker)** — the VM engine we use
+- **[SwarmKit Docs](https://github.com/moby/swarmkit)** — the orchestration layer
+- **[Report a Bug](https://github.com/restuhaqza/SwarmCracker/issues)** — found something? tell us!
 
 ---
 
-**Last Updated:** 2026-04-19 | **Doc Version:** 3.0
+**Last updated:** 2026-04-19 | **Doc version:** 3.0

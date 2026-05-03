@@ -1,22 +1,22 @@
-# SwarmCracker — End-to-End Scenario Plan
+# End-to-End Testing — The Full Journey
 
-> A complete walkthrough from bare metal to running production workloads.
+> From bare metal to running production workloads, step by step.
 
 ---
 
-## Overview
+## What This Covers
 
-This plan covers the full lifecycle of a SwarmCracker deployment:
+We'll walk through the entire lifecycle of a SwarmCracker deployment:
 
 ```
-Bare Metal → Install → Init Cluster → Deploy Services → Scale → Update → Snapshot → Rollback → Monitor → Teardown
+Bare Metal → Install → Set Up Cluster → Deploy Services → Scale → Update → Snapshot → Rollback → Monitor → Clean Up
 ```
 
-### Target Topology
+### Target Setup
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│                    3-Node Cluster                             │
+│                    A 3-Node Cluster                          │
 │                                                               │
 │  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐        │
 │  │  Manager-1   │  │   Worker-1    │  │   Worker-2    │       │
@@ -32,53 +32,53 @@ Bare Metal → Install → Init Cluster → Deploy Services → Scale → Update
 
 ---
 
-## Phase 0: Environment Preparation
+## Phase 0: Get Your Environment Ready
 
-### 0.1 Hardware Requirements (per node)
+### What You Need (Per Node)
 
 | Role | vCPU | RAM | Disk |
 |------|------|-----|------|
 | Manager | 2+ | 2 GB | 20 GB SSD |
 | Worker | 4+ | 8 GB | 40 GB SSD |
 
-### 0.2 OS & Kernel
+### OS and Kernel
 
 ```bash
 # Ubuntu 22.04 LTS (recommended) or Debian 12+
 cat /etc/os-release
 
-# Kernel 5.15+ required for Firecracker
+# You'll need kernel 5.15+ for Firecracker
 uname -r
 ```
 
-### 0.3 Verify KVM Access
+### Check KVM Access
 
 ```bash
-# Check KVM device exists
+# See if KVM is there
 ls -la /dev/kvm
 
-# Verify CPU virtualization support
+# Verify your CPU supports virtualization
 lscpu | grep Virtualization
-# Expected: Virtualization: VT-x (Intel) or AMD-V (AMD)
+# You should see: VT-x (Intel) or AMD-V (AMD)
 
-# If KVM not loaded
+# If KVM isn't loaded yet
 sudo modprobe kvm_intel   # Intel
 # or
 sudo modprobe kvm_amd     # AMD
 
-# Make persistent
+# Make it persistent across reboots
 echo "kvm_intel" | sudo tee /etc/modules-load.d/kvm.conf
 ```
 
-### 0.4 Network Configuration
+### Network Setup
 
 ```bash
-# Each node needs a static or DHCP-reserved IP
-# Ensure inter-node connectivity
+# Each node needs a static or reserved DHCP IP
+# Make sure nodes can reach each other
 ping -c 3 192.168.1.11   # from manager
 ping -c 3 192.168.1.12   # from manager
 
-# Open required ports
+# Open the ports we need
 sudo ufw allow 4242/tcp   # SwarmKit gRPC
 sudo ufw allow 7946/tcp   # SwarmKit control
 sudo ufw allow 7946/udp   # SwarmKit gossip
@@ -87,15 +87,15 @@ sudo ufw allow 4789/udp   # VXLAN overlay
 
 ---
 
-## Phase 1: Installation
+## Phase 1: Install SwarmCracker
 
-### 1.1 One-Line Install (All Nodes)
+### One-Line Install (On All Nodes)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/docs/site/install.sh | sudo bash
 ```
 
-This installs:
+This sets up:
 - Firecracker v1.15.1 → `/usr/local/bin/firecracker`
 - Jailer → `/usr/local/bin/jailer`
 - swarmcracker binary → `/usr/local/bin/swarmcracker`
@@ -105,7 +105,7 @@ This installs:
 - Default config → `/etc/swarmcracker/config.yaml`
 - Data directory → `/var/lib/swarmkit/`
 
-### 1.2 Build from Source (Alternative)
+### Build From Source (Alternative)
 
 ```bash
 git clone https://github.com/restuhaqza/SwarmCracker.git
@@ -114,7 +114,7 @@ cd SwarmCracker
 # Install build tools
 make install-tools
 
-# Build all binaries
+# Build everything
 make all
 
 # Install to system
@@ -123,7 +123,7 @@ sudo cp build/swarmd-firecracker /usr/local/bin/
 sudo cp build/swarmcracker-agent /usr/local/bin/
 ```
 
-### 1.3 Verify Installation
+### Make Sure It Works
 
 ```bash
 swarmcracker version
@@ -136,9 +136,9 @@ swarmcracker --help
 
 ---
 
-## Phase 2: Cluster Initialization
+## Phase 2: Get Your Cluster Running
 
-### 2.1 Initialize Manager Node
+### Start the Manager
 
 ```bash
 # On manager-1 (192.168.1.10)
@@ -147,7 +147,7 @@ sudo swarmcracker init \
   --listen-addr 0.0.0.0:4242
 ```
 
-Expected output:
+You should see:
 ```
 ✓ SwarmKit manager initialized
 ✓ Control socket: /var/run/swarmkit/swarm.sock
@@ -156,10 +156,10 @@ Expected output:
 ✓ Node ID: abc123def456
 ```
 
-### 2.2 Retrieve Join Tokens
+### Get Your Join Tokens
 
 ```bash
-# Option A: Read saved tokens
+# Option A: Read the saved tokens
 sudo cat /var/lib/swarmkit/join-tokens.txt
 
 # Option B: Use swarmctl
@@ -167,7 +167,7 @@ export SWARM_SOCKET=/var/run/swarmkit/swarm.sock
 swarmctl cluster inspect default
 ```
 
-### 2.3 Join Worker Nodes
+### Add Workers to the Cluster
 
 ```bash
 # On worker-1 (192.168.1.11)
@@ -183,7 +183,7 @@ sudo swarmcracker join \
   --token SWMTKN-1-<worker-token>
 ```
 
-### 2.4 Verify Cluster Health
+### Check That Everything's Healthy
 
 ```bash
 # List all nodes
@@ -197,13 +197,13 @@ swarmctl ls-nodes
 swarmcracker status
 ```
 
-**✅ Phase 2 Complete: 3-node cluster is operational**
+**✅ Phase 2 done: You've got a working 3-node cluster**
 
 ---
 
-## Phase 3: Service Deployment
+## Phase 3: Deploy Some Services
 
-### 3.1 Deploy Nginx Web Service
+### Launch an Nginx Web Service
 
 ```bash
 swarmctl create-service nginx:latest
@@ -211,14 +211,14 @@ swarmctl create-service nginx:latest
 # Image: nginx:latest
 ```
 
-### 3.2 Scale the Service
+### Scale It Up
 
 ```bash
 # Scale to 5 replicas across workers
 swarmctl scale svc-nginx-143022 5
 ```
 
-### 3.3 Verify Tasks (MicroVMs)
+### See Your Tasks (MicroVMs)
 
 ```bash
 swarmctl ls-tasks
@@ -230,16 +230,16 @@ swarmctl ls-tasks
 # task-005    nginx       RUNNING   worker-2    RUNNING
 ```
 
-Each task = 1 Firecracker microVM with its own kernel.
+Each task is its own Firecracker microVM with its own kernel.
 
-### 3.4 Deploy Redis Backend
+### Add a Redis Backend
 
 ```bash
 swarmctl create-service redis:7-alpine
 swarmctl scale svc-redis-<id> 3
 ```
 
-### 3.5 Inspect Running VMs
+### Inspect Your Running VMs
 
 ```bash
 swarmcracker list
@@ -252,35 +252,35 @@ swarmcracker list
 # vm-redis-002  redis       worker-2    RUNNING    256MB     1
 ```
 
-### 3.6 Test Service Connectivity
+### Test Connectivity
 
 ```bash
-# Get VM IP from bridge
-# Each VM gets an IP on swarm-br0 (e.g., 172.17.0.x)
-# Verify networking between VMs
+# Get the VM IP from the bridge
+# Each VM gets an IP on swarm-br0 (like 172.17.0.x)
+# Try pinging between VMs to verify networking
 ```
 
-**✅ Phase 3 Complete: 8 microVMs running (5 nginx + 3 redis)**
+**✅ Phase 3 done: 8 microVMs running (5 nginx + 3 redis)**
 
 ---
 
-## Phase 4: Service Updates & Rollbacks
+## Phase 4: Update Services and Roll Back
 
-### 4.1 Rolling Update
+### Rolling Update
 
 ```bash
-# Update nginx image version
+# Update to a new nginx version
 swarmctl update svc-nginx-143022 --image nginx:1.25
 
-# SwarmKit performs rolling update:
+# SwarmKit does a rolling update:
 # 1. Start new VM with nginx:1.25
-# 2. Health check passes
-# 3. Drain traffic from old VM
+# 2. Run health checks
+# 3. Shift traffic away from old VM
 # 4. Stop old VM
 # 5. Repeat for each replica
 ```
 
-### 4.2 Update with Environment Variables
+### Update With Environment Variables
 
 ```bash
 swarmctl update svc-nginx-143022 \
@@ -288,34 +288,34 @@ swarmctl update svc-nginx-143022 \
   --env WORKER_PROCESSES=auto
 ```
 
-### 4.3 Monitor Update Progress
+### Watch the Update
 
 ```bash
-# Watch tasks during update
+# Watch tasks during the update
 swarmctl ls-tasks
 
 # Check logs
 swarmcracker logs svc-nginx-143022
 ```
 
-### 4.4 Rollback (via Snapshot — see Phase 5)
+### Rollback (Using Snapshots — See Phase 5)
 
-If the update causes issues, restore from a pre-update snapshot.
+If something goes wrong, restore from a snapshot you made before the update.
 
-**✅ Phase 4 Complete: Zero-downtime rolling update verified**
+**✅ Phase 4 done: Zero-downtime rolling update works**
 
 ---
 
-## Phase 5: Snapshots & Recovery
+## Phase 5: Snapshots and Recovery
 
-### 5.1 Create Pre-Update Snapshot
+### Make a Pre-Update Snapshot
 
 ```bash
-# Before making changes, snapshot a VM
+# Before changing things, snapshot a VM
 swarmctl snapshot create svc-nginx-143022 --name pre-update-v1
 ```
 
-### 5.2 List Snapshots
+### List Your Snapshots
 
 ```bash
 swarmctl snapshot list svc-nginx-143022
@@ -323,99 +323,99 @@ swarmctl snapshot list svc-nginx-143022
 # pre-update-v1      2026-04-11T13:00Z    128MB
 ```
 
-### 5.3 Restore Snapshot
+### Restore a Snapshot
 
 ```bash
-# Something broke? Rollback:
+# Something broke? Roll back:
 swarmctl snapshot restore svc-nginx-143022 --name pre-update-v1
 ```
 
-### 5.4 Delete Old Snapshots
+### Delete Old Snapshots
 
 ```bash
 swarmctl snapshot delete svc-nginx-143022 --name old-backup
 ```
 
-**✅ Phase 5 Complete: Snapshot backup/restore verified**
+**✅ Phase 5 done: Snapshots let you undo mistakes**
 
 ---
 
-## Phase 6: Node Operations
+## Phase 6: Manage Nodes
 
-### 6.1 Drain a Worker (Maintenance Mode)
+### Drain a Worker (Maintenance Mode)
 
 ```bash
-# Drain worker-1 for kernel upgrade
+# Drain worker-1 for a kernel upgrade
 swarmctl drain worker-1
 
-# Tasks are rescheduled to worker-2
+# Tasks get rescheduled to worker-2
 swarmctl ls-tasks
 # All tasks now on worker-2
 ```
 
-### 6.2 Reactivate Worker
+### Bring the Worker Back
 
 ```bash
 swarmctl activate worker-1
 # Tasks rebalance back to worker-1
 ```
 
-### 6.3 Promote Worker to Manager
+### Promote a Worker to Manager
 
 ```bash
-# For high availability, add a second manager
+# Add a second manager for high availability
 swarmctl promote worker-2
 
 swarmctl ls-nodes
 # worker-2 now shows ROLE: MANAGER
 ```
 
-### 6.4 Demote Manager
+### Demote a Manager
 
 ```bash
 swarmctl demote worker-2
 ```
 
-**✅ Phase 6 Complete: Node lifecycle operations verified**
+**✅ Phase 6 done: Node lifecycle operations work**
 
 ---
 
-## Phase 7: Monitoring & Debugging
+## Phase 7: Monitor and Debug
 
-### 7.1 Check Cluster Status
+### Check Cluster Status
 
 ```bash
 swarmcracker status
 ```
 
-### 7.2 View Service Logs
+### View Service Logs
 
 ```bash
 swarmcracker logs svc-nginx-143022
 
-# Follow logs (live)
+# Follow logs in real-time
 swarmcracker logs -f svc-nginx-143022
 ```
 
-### 7.3 Inspect a Specific Task/VM
+### Inspect a Specific Task/VM
 
 ```bash
 swarmctl inspect <task-id>
 # Full JSON with VM config, network, resources
 ```
 
-### 7.4 Check Systemd Service
+### Check the Systemd Service
 
 ```bash
-# If running as systemd service
+# If running as a systemd service
 sudo systemctl status swarmcracker
 sudo journalctl -u swarmcracker -f
 ```
 
-### 7.5 Network Debugging
+### Debug Networking
 
 ```bash
-# Check bridge
+# Check the bridge
 ip link show swarm-br0
 
 # Check VXLAN
@@ -425,65 +425,65 @@ bridge fdb show dev vxlan0
 ip link show tap-*
 ```
 
-**✅ Phase 7 Complete: Monitoring and debugging workflows verified**
+**✅ Phase 7 done: You can see what's going on**
 
 ---
 
-## Phase 8: Volume Management
+## Phase 8: Manage Storage
 
-### 8.1 Create a Volume
+### Create a Volume
 
 ```bash
 swarmcracker volume create app-data --size 1G
 ```
 
-### 8.2 Attach Volume to Service
+### Attach Volume to a Service
 
 ```bash
 swarmctl update svc-redis-<id> --volume app-data:/data
 ```
 
-### 8.3 List Volumes
+### List Volumes
 
 ```bash
 swarmcracker volume ls
 ```
 
-**✅ Phase 8 Complete: Persistent storage verified**
+**✅ Phase 8 done: Persistent storage works**
 
 ---
 
-## Phase 9: Cleanup & Teardown
+## Phase 9: Clean Up
 
-### 9.1 Remove Services
+### Remove Services
 
 ```bash
 swarmctl rm-service svc-nginx-143022
 swarmctl rm-service svc-redis-<id>
 ```
 
-### 9.2 Verify All VMs Stopped
+### Verify All VMs Stopped
 
 ```bash
 swarmcracker list
 # (empty)
 ```
 
-### 9.3 Leave Cluster (Workers)
+### Leave the Cluster (Workers)
 
 ```bash
 # On worker-1 and worker-2
 sudo swarmcracker leave
 ```
 
-### 9.4 Teardown Manager
+### Tear Down the Manager
 
 ```bash
 # On manager-1
 sudo swarmcracker leave --force
 ```
 
-### 9.5 Clean Up
+### Clean Up
 
 ```bash
 sudo rm -rf /var/lib/swarmkit/
@@ -491,38 +491,38 @@ sudo rm -rf /var/run/swarmkit/
 sudo rm -rf /etc/swarmcracker/
 ```
 
-**✅ Phase 9 Complete: Clean teardown verified**
+**✅ Phase 9 done: Clean teardown verified**
 
 ---
 
 ## Validation Checklist
 
-Use this checklist to verify the complete E2E scenario:
+Use this to make sure everything works:
 
 ### Infrastructure
 - [ ] KVM available on all nodes
-- [ ] Inter-node network connectivity
+- [ ] Nodes can reach each other
 - [ ] Required ports open (4242, 7946, 4789)
 
 ### Cluster
-- [ ] Manager initialized successfully
-- [ ] Workers joined successfully
-- [ ] All nodes show READY status
+- [ ] Manager initialized
+- [ ] Workers joined
+- [ ] All nodes show READY
 - [ ] TLS certificates generated
-- [ ] gRPC communication working
+- [ ] gRPC communication works
 
 ### Workloads
 - [ ] Service created and running
 - [ ] Service scaled to multiple replicas
-- [ ] Tasks distributed across workers
+- [ ] Tasks spread across workers
 - [ ] Each task = 1 running microVM
-- [ ] Cross-VM networking functional (VXLAN)
+- [ ] Cross-VM networking works (VXLAN)
 
 ### Lifecycle
 - [ ] Rolling update (zero downtime)
-- [ ] Environment variable injection
+- [ ] Environment variables injected
 - [ ] Snapshot created and verified
-- [ ] Snapshot restore working
+- [ ] Snapshot restore works
 - [ ] Service removal and VM cleanup
 
 ### Node Operations
@@ -535,7 +535,7 @@ Use this checklist to verify the complete E2E scenario:
 - [ ] Cluster status command works
 - [ ] Service logs accessible
 - [ ] Task inspection returns valid JSON
-- [ ] Network debug commands functional
+- [ ] Network debug commands work
 
 ### Cleanup
 - [ ] All services removed
@@ -546,43 +546,43 @@ Use this checklist to verify the complete E2E scenario:
 
 ---
 
-## Automation Script
+## Automate It
 
-The production example includes an automated deploy script:
+The production example has a deploy script that automates phases 1-3:
 
 ```bash
 cd examples/production-cluster/
 ./deploy.sh --manager 192.168.1.10 --workers 192.168.1.11,192.168.1.12
 ```
 
-This automates Phases 1-3. See `examples/production-cluster/README.md` for details.
+See `examples/production-cluster/README.md` for details.
 
 ---
 
-## Local Dev Alternative
+## Local Development Alternative
 
-For testing without multi-node hardware:
+If you want to test without multi-node hardware:
 
 ```bash
 cd examples/local-dev/
 ./start.sh
 ```
 
-Single-node cluster (manager + worker on same machine). See `examples/local-dev/README.md`.
+This runs a single-node cluster (manager + worker on the same machine). See `examples/local-dev/README.md`.
 
 ---
 
-## Troubleshooting Quick Reference
+## Quick Troubleshooting
 
-| Problem | Check |
-|---------|-------|
+| Problem | Check This |
+|---------|------------|
 | KVM not found | `ls /dev/kvm` → `modprobe kvm_intel` |
 | Worker won't join | Ping manager, check token, check port 4242 |
 | VMs not starting | `journalctl -u swarmcracker -f`, check kernel images |
 | No cross-node networking | Check VXLAN: `bridge fdb show dev vxlan0` |
 | Service stuck updating | `swarmctl ls-tasks`, check health check config |
-| Snapshot fails | Check disk space, VM state must be RUNNING |
+| Snapshot fails | Check disk space, VM must be RUNNING |
 
 ---
 
-*This plan covers the complete SwarmCracker lifecycle. Each phase is independently testable.*
+*This covers the complete SwarmCracker lifecycle. Each phase can be tested independently.*
