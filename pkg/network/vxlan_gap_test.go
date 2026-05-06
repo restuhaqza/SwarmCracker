@@ -486,7 +486,7 @@ func TestVXLANManager_ListenForPeers_UDPListener(t *testing.T) {
 	defer cancel()
 
 	// This will fail trying to bind, but tests the function
-	vxlanMgr.listenForPeers("127.0.0.1", 45680)
+	vxlanMgr.listenForPeers(ctx, "127.0.0.1", 45680)
 	<-ctx.Done()
 }
 
@@ -503,7 +503,7 @@ func TestVXLANManager_AnnouncePresence_Announcement(t *testing.T) {
 	defer cancel()
 
 	// Start announcement
-	vxlanMgr.announcePresence("127.0.0.1", 45681)
+	vxlanMgr.announcePresence(ctx, "127.0.0.1", 45681)
 	<-ctx.Done()
 }
 

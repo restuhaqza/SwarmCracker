@@ -378,13 +378,15 @@ func (v *VXLANManager) StartPeerDiscovery(ctx context.Context, localIP string, p
 	}
 
 	v.ctx, v.cancel = context.WithCancel(ctx)
+	// Capture ctx while holding the lock to avoid race with StopPeerDiscovery
+	discoveryCtx := v.ctx
 	v.mu.Unlock()
 
 	// Start UDP listener for peer announcements
-	go v.listenForPeers(localIP, port)
+	go v.listenForPeers(discoveryCtx, localIP, port)
 
 	// Announce our presence periodically
-	go v.announcePresence(localIP, port)
+	go v.announcePresence(discoveryCtx, localIP, port)
 
 	log.Info().Str("local_ip", localIP).Int("port", port).Msg("Started VXLAN peer discovery")
 	return nil
@@ -405,7 +407,7 @@ func (v *VXLANManager) StopPeerDiscovery() {
 }
 
 // listenForPeers listens for UDP peer announcements.
-func (v *VXLANManager) listenForPeers(localIP string, port int) {
+func (v *VXLANManager) listenForPeers(ctx context.Context, localIP string, port int) {
 	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf("%s:%d", localIP, port))
 	if err != nil {
 		log.Error().Err(err).Msg("Failed to resolve UDP address for peer discovery")
@@ -423,7 +425,7 @@ func (v *VXLANManager) listenForPeers(localIP string, port int) {
 
 	for {
 		select {
-		case <-v.ctx.Done():
+		case <-ctx.Done():
 			return
 		default:
 			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -468,7 +470,7 @@ func (v *VXLANManager) listenForPeers(localIP string, port int) {
 }
 
 // announcePresence periodically announces this worker's presence.
-func (v *VXLANManager) announcePresence(localIP string, port int) {
+func (v *VXLANManager) announcePresence(ctx context.Context, localIP string, port int) {
 	// Get network interface for multicast
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -515,7 +517,7 @@ func (v *VXLANManager) announcePresence(localIP string, port int) {
 
 	for {
 		select {
-		case <-v.ctx.Done():
+		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			for _, addr := range broadcastIPs {

@@ -1148,7 +1148,7 @@ func TestVXLANManager_ListenForPeers(t *testing.T) {
 
 	go func() {
 
-		vxlan.listenForPeers(host, 0) // Use 0 to make it fail resolve
+		vxlan.listenForPeers(ctx, host, 0) // Use 0 to make it fail resolve
 
 		close(done)
 
@@ -1212,7 +1212,7 @@ func TestVXLANManager_AnnouncePresence(t *testing.T) {
 
 	go func() {
 
-		vxlan.announcePresence("10.0.0.1", 12345)
+		vxlan.announcePresence(ctx, "10.0.0.1", 12345)
 
 		close(done)
 
