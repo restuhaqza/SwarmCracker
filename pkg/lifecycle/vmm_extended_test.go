@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -109,7 +110,13 @@ func (vm *VMMManagerInternal) configureVMWithClient(ctx context.Context, socketP
 
 // gracefulShutdownWithProcess wraps gracefulShutdown to use mocked process executor
 func (vm *VMMManagerInternal) gracefulShutdownWithProcess(ctx context.Context, vmInstance *VMInstance) error {
-	process, err := vm.processExecutor.FindProcess(vmInstance.PID)
+	// Read shared state with lock protection
+	vm.mu.RLock()
+	pid := vmInstance.PID
+	gracePeriodSec := vmInstance.GracePeriodSec
+	vm.mu.RUnlock()
+
+	process, err := vm.processExecutor.FindProcess(pid)
 	if err != nil {
 		return vm.forceKillVMWithProcess(vmInstance)
 	}
@@ -120,14 +127,16 @@ func (vm *VMMManagerInternal) gracefulShutdownWithProcess(ctx context.Context, v
 	}
 
 	// Wait for graceful shutdown or timeout
-	gracePeriod := time.Duration(vmInstance.GracePeriodSec) * time.Second
+	gracePeriod := time.Duration(gracePeriodSec) * time.Second
 	shutdownChan := make(chan error, 1)
 
 	// Use a cancelable context for the polling goroutine
 	pollCtx, cancelPoll := context.WithCancel(ctx)
-	defer cancelPoll() // Stop the polling goroutine when we exit
 
+	var wg sync.WaitGroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		// Poll for process exit
 		for {
 			if pollCtx.Err() != nil {
@@ -135,16 +144,27 @@ func (vm *VMMManagerInternal) gracefulShutdownWithProcess(ctx context.Context, v
 			}
 			if err := process.Signal(syscall.Signal(0)); err != nil {
 				// Process has exited
-				shutdownChan <- nil
+				select {
+				case shutdownChan <- nil:
+				case <-pollCtx.Done():
+				}
 				return
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 
+	// Ensure goroutine is stopped before returning
+	defer func() {
+		cancelPoll()
+		wg.Wait()
+	}()
+
 	select {
 	case <-shutdownChan:
+		vm.mu.Lock()
 		vmInstance.State = VMStateStopped
+		vm.mu.Unlock()
 		return nil
 	case <-time.After(gracePeriod):
 		return vm.forceKillVMWithProcess(vmInstance)
@@ -520,7 +540,7 @@ func TestGracefulShutdown_SignalFailure(t *testing.T) {
 
 	// Verify process was killed
 	if proc, ok := mockProc.Processes[12345].(*extendedMockProcess); ok {
-		if !proc.killed {
+		if !proc.IsKilled() {
 			t.Error("expected process to be killed after signal failure")
 		}
 	}
@@ -564,11 +584,12 @@ func TestGracefulShutdown_Timeout(t *testing.T) {
 	// Since forceKillVM will succeed on mock, error might be nil
 	// Just verify SIGTERM was sent
 	if proc, ok := mockProc.Processes[12345].(*extendedMockProcess); ok {
-		if len(proc.signals) == 0 {
+		signals := proc.GetSignals()
+		if len(signals) == 0 {
 			t.Error("expected SIGTERM to be sent")
 		}
-		if len(proc.signals) > 0 && proc.signals[0] != syscall.SIGTERM {
-			t.Errorf("expected SIGTERM, got %v", proc.signals[0])
+		if len(signals) > 0 && signals[0] != syscall.SIGTERM {
+			t.Errorf("expected SIGTERM, got %v", signals[0])
 		}
 	}
 
@@ -978,6 +999,7 @@ func TestLifecycleExtended(t *testing.T) {
 // extendedMockProcess wraps mockProcess with additional test behavior control
 type extendedMockProcess struct {
 	*mockProcess
+	mu              sync.Mutex
 	signalError     error
 	exitAfterSignal syscall.Signal
 	neverExits      bool
@@ -986,6 +1008,9 @@ type extendedMockProcess struct {
 }
 
 func (m *extendedMockProcess) Signal(sig syscall.Signal) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	// Store the signal
 	m.mockProcess.signals = append(m.mockProcess.signals, sig)
 
@@ -1014,8 +1039,26 @@ func (m *extendedMockProcess) Signal(sig syscall.Signal) error {
 }
 
 func (m *extendedMockProcess) Kill() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.mockProcess.killed = true
 	return m.killError
+}
+
+// GetSignals safely returns a copy of the signals slice
+func (m *extendedMockProcess) GetSignals() []syscall.Signal {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	result := make([]syscall.Signal, len(m.mockProcess.signals))
+	copy(result, m.mockProcess.signals)
+	return result
+}
+
+// IsKilled safely returns the killed state
+func (m *extendedMockProcess) IsKilled() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.mockProcess.killed
 }
 
 // Helper function to check if string contains substring
