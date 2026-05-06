@@ -3,6 +3,7 @@ module github.com/restuhaqza/swarmcracker
 go 1.25.0
 
 require (
+	github.com/containernetworking/cni v1.3.0
 	github.com/gogo/protobuf v1.3.2
 	github.com/google/go-containerregistry v0.21.5
 	github.com/moby/swarmkit/v2 v2.1.1
