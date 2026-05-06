@@ -34,7 +34,7 @@ type Executor struct {
 	networkMgr    types.NetworkManager
 	volumeMgr     *storage.VolumeManager
 	secretMgr     *storage.SecretManager
-	vmmMgr        *VMMManager
+	vmmMgr        VMMManagerInterface
 	controllers   map[string]*Controller
 	executorMu    sync.RWMutex
 	cleanupCancel context.CancelFunc
@@ -367,7 +367,7 @@ type Controller struct {
 	networkMgr types.NetworkManager
 	volumeMgr  *storage.VolumeManager
 	secretMgr  *storage.SecretManager
-	vmmMgr     *VMMManager
+	vmmMgr     VMMManagerInterface
 	trans      types.TaskTranslator
 	mu         sync.Mutex
 	prepared   bool
@@ -391,7 +391,7 @@ func NewController(
 	config *Config,
 	imagePrep types.ImagePreparer,
 	networkMgr types.NetworkManager,
-	vmmMgr *VMMManager,
+	vmmMgr VMMManagerInterface,
 	volumeMgr *storage.VolumeManager,
 	secretMgr *storage.SecretManager,
 ) (*Controller, error) {

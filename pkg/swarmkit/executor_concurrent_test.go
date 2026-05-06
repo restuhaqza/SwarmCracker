@@ -152,7 +152,7 @@ func TestController_Prepare_Errors(t *testing.T) {
 					},
 				},
 			},
-			expectError: false, // Might fail due to missing image, but that's OK
+			expectError: true, // No container runtime in test env, will fail
 		},
 	}
 

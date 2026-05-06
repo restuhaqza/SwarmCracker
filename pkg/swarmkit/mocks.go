@@ -18,6 +18,7 @@ type MockVMMManager struct {
 	GetPIDFunc        func(taskID string) int
 	CheckVMAPIHealthFunc func(taskID string) bool
 	IsRunningFunc     func(taskID string) bool
+	DescribeFunc      func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
 }
 
 func (m *MockVMMManager) Start(ctx context.Context, task *types.Task, config interface{}) error {
@@ -76,6 +77,13 @@ func (m *MockVMMManager) IsRunning(taskID string) bool {
 	return false
 }
 
+func (m *MockVMMManager) Describe(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
+	if m.DescribeFunc != nil {
+		return m.DescribeFunc(ctx, task)
+	}
+	return &types.TaskStatus{State: types.TaskStateRunning}, nil
+}
+
 // MockImagePreparer is a mock implementation for testing.
 type MockImagePreparer struct {
 	PrepareFunc  func(ctx context.Context, task *types.Task) error
@@ -100,6 +108,7 @@ func (m *MockImagePreparer) Cleanup(ctx context.Context, taskID string) error {
 type MockNetworkManager struct {
 	PrepareNetworkFunc  func(ctx context.Context, task *types.Task) error
 	CleanupNetworkFunc  func(ctx context.Context, task *types.Task) error
+	GetTapIPFunc        func(taskID string) (string, error)
 }
 
 func (m *MockNetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) error {
@@ -114,6 +123,13 @@ func (m *MockNetworkManager) CleanupNetwork(ctx context.Context, task *types.Tas
 		return m.CleanupNetworkFunc(ctx, task)
 	}
 	return nil
+}
+
+func (m *MockNetworkManager) GetTapIP(taskID string) (string, error) {
+	if m.GetTapIPFunc != nil {
+		return m.GetTapIPFunc(taskID)
+	}
+	return "192.168.127.2", nil // Default mock IP
 }
 
 // MockVolumeManager is a mock implementation for testing.
