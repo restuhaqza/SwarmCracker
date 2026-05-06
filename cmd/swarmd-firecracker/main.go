@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -22,6 +23,7 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/moby/swarmkit/v2/node"
+	"github.com/restuhaqza/swarmcracker/pkg/health"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
@@ -149,6 +151,11 @@ func main() {
 			Usage: "Enable debug logging",
 			Value: false,
 		},
+		&cli.StringFlag{
+			Name:  "health-addr",
+			Usage: "Address for health check HTTP server",
+			Value: ":8080",
+		},
 		&cli.BoolFlag{
 			Name:  "enable-jailer",
 			Usage: "Enable Firecracker jailer for enhanced security isolation",
@@ -272,6 +279,18 @@ func runAgent(ctx *cli.Context) error {
 	if len(executorConfig.VXLANPeers) > 0 {
 		log.G(context.Background()).Infof("VXLAN peers configured: %v", executorConfig.VXLANPeers)
 	}
+
+	// Start health check server
+	healthChecker := health.NewChecker(ctx.String("bridge-name"), "firecracker")
+	go func() {
+		mux := http.NewServeMux()
+		mux.Handle("/healthz", healthChecker)
+		healthAddr := ctx.String("health-addr")
+		log.G(context.Background()).Infof("Starting health check server on %s", healthAddr)
+		if err := http.ListenAndServe(healthAddr, mux); err != nil {
+			log.G(context.Background()).WithError(err).Warn("Health check server failed")
+		}
+	}()
 
 	// Create node config
 	nodeConfig := &node.Config{
