@@ -1,0 +1,7 @@
+.git
+build/
+dist/
+*.out
+test-automation/
+.github/
+vendor/

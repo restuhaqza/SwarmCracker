@@ -1,0 +1,83 @@
+version: '3.8'
+
+services:
+  manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      swarmd-firecracker
+      --manager
+      --state-dir /var/lib/swarmkit
+      --listen-remote-api 0.0.0.0:4242
+      --advertise-remote-api manager:4242
+      --bridge-name swarm-br0
+      --subnet 192.168.127.0/24
+      --bridge-ip 192.168.127.1/24
+      --health-addr :8080
+    privileged: true
+    volumes:
+      - /dev/kvm:/dev/kvm
+      - manager-state:/var/lib/swarmkit
+      - firecracker-sockets:/var/run/firecracker
+    ports:
+      - "4242:4242"
+      - "8080:8080"
+    networks:
+      - swarm-net
+
+  worker1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      swarmd-firecracker
+      --state-dir /var/lib/swarmkit
+      --join-addr manager:4242
+      --join-token ${WORKER_TOKEN:-SWMTKN-placeholder}
+      --bridge-name swarm-br0
+      --subnet 192.168.128.0/24
+      --bridge-ip 192.168.128.1/24
+      --health-addr :8080
+    privileged: true
+    volumes:
+      - /dev/kvm:/dev/kvm
+      - worker1-state:/var/lib/swarmkit
+      - firecracker-sockets:/var/run/firecracker
+    depends_on:
+      - manager
+    networks:
+      - swarm-net
+
+  worker2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      swarmd-firecracker
+      --state-dir /var/lib/swarmkit
+      --join-addr manager:4242
+      --join-token ${WORKER_TOKEN:-SWMTKN-placeholder}
+      --bridge-name swarm-br0
+      --subnet 192.168.129.0/24
+      --bridge-ip 192.168.129.1/24
+      --health-addr :8080
+    privileged: true
+    volumes:
+      - /dev/kvm:/dev/kvm
+      - worker2-state:/var/lib/swarmkit
+      - firecracker-sockets:/var/run/firecracker
+    depends_on:
+      - manager
+    networks:
+      - swarm-net
+
+volumes:
+  manager-state:
+  worker1-state:
+  worker2-state:
+  firecracker-sockets:
+
+networks:
+  swarm-net:
+    driver: bridge
