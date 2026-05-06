@@ -8,10 +8,22 @@ linters:
     - staticcheck
     - ineffassign
     - typecheck
+    - errcheck
+    - gofmt
+    - revive
+    - gocyclo
+
+linters-settings:
+  gocyclo:
+    min-complexity: 20
+  revive:
+    rules:
+      - name: exported
+        disabled: true
+  errcheck:
+    check-type-assertions: true
+    check-blank: false
 
 issues:
-  exclude-dirs:
-    - pkg/image
-    - pkg/lifecycle
-    - test/e2e
-    - test/integration
+  max-issues-per-linter: 50
+  max-same-issues: 10
