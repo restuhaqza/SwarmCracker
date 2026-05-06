@@ -10,11 +10,11 @@
 # Updated: 2026-05-02
 
 [managers]
-swarm-manager ansible_host=192.168.121.18 ansible_user=vagrant manager_ip=192.168.122.10
+swarm-manager ansible_host=192.168.121.155 ansible_user=vagrant manager_ip=192.168.122.10 ansible_ssh_private_key_file=/home/kali/.openclaw/workspace-hermione/projects/development/swarmcracker/test-automation/.vagrant/machines/manager/libvirt/private_key
 
 [workers]
-swarm-worker-1 ansible_host=192.168.121.153 ansible_user=vagrant
-swarm-worker-2 ansible_host=192.168.121.59 ansible_user=vagrant
+swarm-worker-1 ansible_host=192.168.121.129 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace-hermione/projects/development/swarmcracker/test-automation/.vagrant/machines/worker1/libvirt/private_key
+swarm-worker-2 ansible_host=192.168.121.43 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace-hermione/projects/development/swarmcracker/test-automation/.vagrant/machines/worker2/libvirt/private_key
 
 [swarmcracker:children]
 managers
@@ -26,6 +26,6 @@ ansible_become=yes
 ansible_become_method=sudo
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 # Token must be obtained from manager: swarmctl cluster inspect default
-worker_join_token=PLACEHOLDER_GET_TOKEN_FROM_MANAGER
-worker_manager_host=192.168.121.18
+worker_join_token=REDACTED_TOKEN_PLACEHOLDER
+worker_manager_host=192.168.121.155
 worker_manager_port=4242

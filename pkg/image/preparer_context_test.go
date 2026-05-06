@@ -20,6 +20,9 @@ import (
 
 // TestImagePreparer_ContextCancellation tests context cancellation handling
 func TestImagePreparer_ContextCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	tests := []struct {
 		name        string
 		setupFunc   func(*ImagePreparer, *types.Task)
@@ -130,6 +133,9 @@ func TestImagePreparer_ContextCancellation(t *testing.T) {
 
 // TestImagePreparer_ConcurrentOperations tests concurrent image preparation
 func TestImagePreparer_ConcurrentOperations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	t.Run("concurrent prepare different images", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
@@ -568,6 +574,9 @@ func TestInitInjector_GetInitArgs(t *testing.T) {
 
 // TestImagePreparer_Prepare_InvalidInputs tests invalid input handling
 func TestImagePreparer_Prepare_InvalidInputs(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	tests := []struct {
 		name        string
 		setupFunc   func(*ImagePreparer)

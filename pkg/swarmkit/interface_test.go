@@ -108,11 +108,11 @@ func TestMockImagePreparer_AllMethods(t *testing.T) {
 		PrepareFunc: func(ctx context.Context, task *types.Task) error {
 			return nil
 		},
-		CleanupFunc: func(ctx context.Context, taskID string) error {
-			if taskID == "" {
-				return errors.New("task ID required")
+		CleanupFunc: func(ctx context.Context, keepDays int) (int, int64, error) {
+			if keepDays <= 0 {
+				return 0, 0, errors.New("keep days must be positive")
 			}
-			return nil
+			return 5, 1024, nil
 		},
 	}
 
@@ -123,7 +123,7 @@ func TestMockImagePreparer_AllMethods(t *testing.T) {
 		t.Errorf("Prepare failed: %v", err)
 	}
 
-	if err := mock.Cleanup(ctx, "test-task"); err != nil {
+	if _, _, err := mock.Cleanup(ctx, 7); err != nil {
 		t.Errorf("Cleanup failed: %v", err)
 	}
 }

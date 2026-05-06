@@ -1,11 +1,12 @@
-# Development Guide
+# Contributing
 
-> Contribute to SwarmCracker — code style, testing, PR process.
+Here's how to work on SwarmCracker.
 
 ---
 
-## Quick Start
+## Setup
 
+<<<<<<< HEAD
 ### Prerequisites
 
 - Go 1.25+
@@ -14,6 +15,9 @@
 - golangci-lint (for linting)
 
 ### Setup
+=======
+You need Go 1.21+, Git, Make. golangci-lint helps with linting.
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 
 ```bash
 git clone https://github.com/restuhaqza/SwarmCracker
@@ -24,174 +28,104 @@ make build
 
 ---
 
-## Project Structure
+## Repo Structure
 
 ```
-SwarmCracker/
-├── cmd/
-│   ├── swarmcracker/     # Main CLI
-│   ├── swarmctl/         # SwarmKit control CLI
-│   └── deploy/           # Deployment tool
-├── pkg/
-│   ├── config/           # Configuration parsing
-│   ├── executor/         # SwarmKit executor
-│   ├── translator/       # Task translation
-│   ├── network/          # TAP/bridge/VXLAN
-│   ├── jailer/           # Security sandbox
-│   ├── storage/          # Rootfs/volumes
-│   ├── snapshot/         # VM snapshots
-│   ├── metrics/          # Prometheus metrics
-│   ├── swarmkit/         # SwarmKit integration
-│   └── types/            # Shared types
-├── docs/                 # Documentation
-├── infrastructure/       # Ansible playbooks
-├── test-automation/      # Test scripts
-└── Makefile
+cmd/
+├── swarmcracker/    # Main CLI wrapper
+├── swarmctl/        # Direct SwarmKit commands
+├── swarmd-firecracker/  # Daemon
+
+pkg/
+├── executor/        # SwarmKit task → VM config
+├── network/         # Bridges, TAP, VXLAN
+├── discovery/       # Consul
+├── swarmkit/        # SwarmKit glue
+├── image/           # OCI extraction
+├── lifecycle/       # VM start/stop
+├── jailer/          # Security
+├── storage/         # Volumes, secrets
+├── snapshot/        # State snapshots
+├── metrics/         # Prometheus
+├── types/           # Shared types
+
+docs/                # User + dev docs
+infrastructure/      # Ansible deployment
+test-automation/     # Vagrant cluster
 ```
 
 ---
 
 ## Code Style
 
-### Go Conventions
+### Go
 
-- Follow [Effective Go](https://go.dev/doc/effective_go)
-- Use [golangci-lint](https://golangci-lint.run/) for linting
-- Table-driven tests preferred
+Follow Effective Go. Run golangci-lint before submitting.
 
-### Commit Style
+### Commits
 
-Use [Conventional Commits](https://www.conventionalcommits.org/):
+Conventional commits:
 
 ```
-<type>(<scope>): <description>
+feat(executor): add snapshot restore
+fix(network): VXLAN FDB race condition
+docs(cli): document new flags
+```
 
 Types: feat, fix, docs, refactor, test, chore, perf
-Scopes: executor, translator, network, jailer, storage, config, cli
-
-Examples:
-- feat(executor): add VM snapshot support
-- fix(network): resolve TAP cleanup race
-- docs(cli): document --subnet flag
-```
-
-### PR Process
-
-1. Fork repository
-2. Create feature branch
-3. Make changes + add tests
-4. Run `make lint && make test`
-5. Submit PR with description
+Scopes: executor, network, discovery, jailer, storage, cli
 
 ---
 
 ## Testing
 
-### Run Tests
-
 ```bash
-# All tests
+# Everything
 make test
 
-# Specific package
-go test ./pkg/executor/...
+# One package
+go test ./pkg/network/...
 
-# With coverage
-go test -cover ./pkg/...
-
-# Benchmarks
-go test -bench=. ./pkg/...
+# Coverage
+go test -cover ./pkg/executor/...
 ```
 
-### Test Structure
+### Integration Tests
 
-```go
-func TestExecutor_Prepare(t *testing.T) {
-    tests := []struct {
-        name    string
-        task    *types.Task
-        wantErr bool
-    }{
-        {"valid task", validTask(), false},
-        {"invalid task", invalidTask(), true},
-    }
-    for _, tt := range tests {
-        t.Run(tt.name, func(t *testing.T) {
-            // test logic
-        })
-    }
-}
-```
-
-See [Testing Overview](../testing/) for test strategy and coverage.
-
----
-
-## Secrets Prevention
-
-**Never commit secrets:**
-
-- SSH keys
-- Passwords
-- API tokens
-- `.vagrant/` directories
-- Private key files
-
-### Pre-commit Hook
+Need a cluster. Use Vagrant:
 
 ```bash
-# Install git-secrets
-brew install git-secrets  # macOS
-sudo apt install git-secrets  # Linux
-
-git secrets --install
-git secrets --register-aws
+cd test-automation
+vagrant up
+./e2e-test-suite.sh
 ```
 
 ---
 
-## Documentation
+## Pull Requests
 
-### Update Docs
+1. Fork it
+2. Branch for your change
+3. Write code + tests
+4. `make lint && make test`
+5. Push and open PR
 
-When adding features:
-
-1. Update relevant guide in `../user/guides/`
-2. Add CLI docs to `docs/reference/cli.md`
-3. Update architecture if needed
-
-### Doc Style
-
-- Use active voice
-- Include examples
-- Keep sections focused
-- Link to related docs
+Describe what you changed and why. If it fixes an issue, mention the number.
 
 ---
 
-## Release Process
+## Before Submitting
 
-### Version Scheme
-
-Follow [SemVer](https://semver.org/):
-
-- MAJOR: Breaking changes
-- MINOR: New features
-- PATCH: Bug fixes
-
-### Release Steps
-
-1. Update version in code
-2. Update docs with version
-3. Run full test suite
-4. Create release PR
-5. Tag release: `git tag v0.6.0`
-6. Push tag: `git push origin v0.6.0`
+- Tests pass
+- Lint clean
+- No secrets in code (tokens, keys)
+- Documentation updated if needed
 
 ---
 
-## Make Targets
+## Questions
 
+<<<<<<< HEAD
 ```bash
 make build         # Build binaries
 make test          # Run tests
@@ -270,3 +204,6 @@ go test -race ./pkg/...
 ---
 
 **See Also:** [Testing Overview](../testing/) | [Architecture](../architecture/)
+=======
+Open an issue or ask in discussions.
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)

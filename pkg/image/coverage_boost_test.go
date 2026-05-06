@@ -406,7 +406,11 @@ func TestInjectNetworkConfig_Coverage(t *testing.T) {
 // TestPrepare_ImageScenarios tests Prepare with various image scenarios
 func TestPrepare_ImageScenarios(t *testing.T) {
 	if testing.Short() {
+<<<<<<< HEAD
 		t.Skip("skipping image pull test in short mode")
+=======
+		t.Skip("skipping integration test in short mode")
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 	}
 	tests := []struct {
 		name        string

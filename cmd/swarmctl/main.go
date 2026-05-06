@@ -7,10 +7,15 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -105,6 +110,18 @@ func main() {
 			os.Exit(1)
 		}
 		removeService(ctx, client, os.Args[2])
+	case "stop-task":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl stop-task <task-id>")
+			os.Exit(1)
+		}
+		stopTask(ctx, client, os.Args[2])
+	case "snapshot":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl snapshot <create|list|restore> ...")
+			os.Exit(1)
+		}
+		handleSnapshotCommand(os.Args[2:])
 	case "inspect":
 		if len(os.Args) < 3 {
 			fmt.Println("Usage: swarmctl inspect <service-id|task-id>")
@@ -158,6 +175,32 @@ func main() {
 			os.Exit(1)
 		}
 		demoteNode(ctx, client, os.Args[2])
+	case "logs":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl logs <task-id> [--lines N]")
+			os.Exit(1)
+		}
+		lines := 100
+		for i := 3; i < len(os.Args); i++ {
+			if os.Args[i] == "--lines" && i+1 < len(os.Args) {
+				if n, err := parseInt(os.Args[i+1]); err == nil {
+					lines = int(n)
+				}
+			}
+		}
+		getTaskLogs(ctx, client, os.Args[2], lines)
+	case "metrics":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl metrics <task-id>")
+			os.Exit(1)
+		}
+		getTaskMetrics(ctx, client, os.Args[2])
+	case "volume":
+		if len(os.Args) < 3 {
+			fmt.Println("Usage: swarmctl volume <create|list|inspect|rm> ...")
+			os.Exit(1)
+		}
+		handleVolumeCommand(os.Args[2:])
 	default:
 		printUsage()
 	}
@@ -184,6 +227,20 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Tasks:")
 	fmt.Println("  ls-tasks          List tasks")
+	fmt.Println("  logs              Get VM logs for a task")
+	fmt.Println("  metrics           Get VM resource metrics for a task")
+	fmt.Println("  stop-task         Stop a running task/VM")
+	fmt.Println()
+	fmt.Println("Volumes:")
+	fmt.Println("  volume create     Create a persistent volume")
+	fmt.Println("  volume list       List all volumes")
+	fmt.Println("  volume inspect    Inspect a volume")
+	fmt.Println("  volume rm         Remove a volume")
+	fmt.Println()
+	fmt.Println("Snapshots:")
+	fmt.Println("  snapshot create   Create a VM snapshot")
+	fmt.Println("  snapshot list     List snapshots")
+	fmt.Println("  snapshot restore  Restore from snapshot")
 	fmt.Println()
 	fmt.Println("Environment:")
 	fmt.Println("  SWARM_SOCKET      Path to swarm socket (default: /var/run/swarmkit/swarm.sock)")
@@ -673,4 +730,383 @@ func demoteNode(ctx context.Context, client api.ControlClient, nodeID string) {
 	}
 
 	fmt.Printf("Node %s demoted to worker\n", nodeID)
+}
+
+// getTaskLogs retrieves logs from a running Firecracker VM.
+func getTaskLogs(ctx context.Context, client api.ControlClient, taskID string, lines int) {
+	socketDir := "/var/run/firecracker"
+	socketPath := filepath.Join(socketDir, taskID+".sock")
+
+	// Check if socket exists
+	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "VM socket not found for task %s\n", taskID)
+		os.Exit(1)
+	}
+
+	// Read from Firecracker log file (stored in rootfs dir)
+	logPath := filepath.Join("/var/lib/firecracker/logs", taskID+".log")
+	if _, err := os.Stat(logPath); err == nil {
+		content, err := os.ReadFile(logPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to read log file: %v\n", err)
+			os.Exit(1)
+		}
+		// Print last N lines
+		logLines := strings.Split(string(content), "\n")
+		start := 0
+		if len(logLines) > lines {
+			start = len(logLines) - lines
+		}
+		for i := start; i < len(logLines); i++ {
+			fmt.Println(logLines[i])
+		}
+		return
+	}
+
+	// Fallback: try journalctl for the task
+	fmt.Printf("No log file found, check: journalctl -u swarmd-* | grep %s\n", taskID)
+}
+
+// getTaskMetrics retrieves resource metrics from a running Firecracker VM.
+func getTaskMetrics(ctx context.Context, client api.ControlClient, taskID string) {
+	socketDir := "/var/run/firecracker"
+	socketPath := filepath.Join(socketDir, taskID+".sock")
+
+	// Check if socket exists
+	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "VM socket not found for task %s\n", taskID)
+		os.Exit(1)
+	}
+
+	// Query Firecracker API for machine config
+	clientHTTP := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
+			},
+		},
+		Timeout: 10 * time.Second,
+	}
+
+	// Get machine config
+	resp, err := clientHTTP.Get("http://localhost/machine-config")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to get machine config: %v\n", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to read response: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Println("=== Machine Configuration ===")
+		fmt.Println(string(body))
+
+	// Get instance info
+	resp2, err := clientHTTP.Get("http://localhost/")
+		if err == nil {
+			defer resp2.Body.Close()
+			body2, _ := io.ReadAll(resp2.Body)
+			fmt.Println("=== Instance Info ===")
+			fmt.Println(string(body2))
+		}
+}
+
+// handleVolumeCommand handles volume subcommands.
+func handleVolumeCommand(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: swarmctl volume <create|list|inspect|rm> ...")
+		os.Exit(1)
+	}
+
+	volumesDir := "/var/lib/swarmcracker/volumes"
+	if envState := os.Getenv("SWARM_STATE_DIR"); envState != "" {
+		volumesDir = filepath.Join(envState, "volumes")
+	}
+
+	switch args[0] {
+	case "create":
+		if len(args) < 2 {
+			fmt.Println("Usage: swarmctl volume create <name> [--size MB]")
+			os.Exit(1)
+		}
+		name := args[1]
+		sizeMB := 0
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--size" && i+1 < len(args) {
+				sizeMB, _ = strconv.Atoi(args[i+1])
+			}
+		}
+		volPath := filepath.Join(volumesDir, name)
+		if err := os.MkdirAll(volPath, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to create volume: %v\n", err)
+			os.Exit(1)
+		}
+		// Write metadata
+		meta := map[string]string{"name": name, "path": volPath, "size_mb": fmt.Sprintf("%d", sizeMB)}
+		metaJSON, _ := json.Marshal(meta)
+		os.WriteFile(filepath.Join(volPath, "meta.json"), metaJSON, 0644)
+		fmt.Printf("Volume %s created at %s\n", name, volPath)
+
+	case "list", "ls":
+		if _, err := os.Stat(volumesDir); os.IsNotExist(err) {
+			fmt.Println("No volumes directory")
+			return
+		}
+		entries, err := os.ReadDir(volumesDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to list volumes: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("%-20s %-40s %-10s\n", "NAME", "PATH", "SIZE")
+		for _, entry := range entries {
+			if entry.IsDir() {
+				volPath := filepath.Join(volumesDir, entry.Name())
+				metaPath := filepath.Join(volPath, "meta.json")
+				size := "-"
+				if meta, err := os.ReadFile(metaPath); err == nil {
+					var m map[string]string
+					json.Unmarshal(meta, &m)
+					if s, ok := m["size_mb"]; ok && s != "0" {
+						size = s + "MB"
+					}
+				}
+				fmt.Printf("%-20s %-40s %-10s\n", entry.Name(), volPath, size)
+			}
+		}
+
+	case "inspect":
+		if len(args) < 2 {
+			fmt.Println("Usage: swarmctl volume inspect <name>")
+			os.Exit(1)
+		}
+		name := args[1]
+		volPath := filepath.Join(volumesDir, name)
+		metaPath := filepath.Join(volPath, "meta.json")
+		if _, err := os.Stat(metaPath); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Volume %s not found\n", name)
+			os.Exit(1)
+		}
+		meta, err := os.ReadFile(metaPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to read metadata: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(meta))
+
+	case "rm", "remove":
+		if len(args) < 2 {
+			fmt.Println("Usage: swarmctl volume rm <name>")
+			os.Exit(1)
+		}
+		name := args[1]
+		volPath := filepath.Join(volumesDir, name)
+		if err := os.RemoveAll(volPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to remove volume: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Volume %s removed\n", name)
+
+	default:
+		fmt.Printf("Unknown volume command: %s\n", args[0])
+		fmt.Println("Available: create, list, inspect, rm")
+		os.Exit(1)
+	}
+}
+
+// stopTask stops a running task by sending SIGTERM to its Firecracker process.
+func stopTask(ctx context.Context, client api.ControlClient, taskID string) {
+	socketPath := filepath.Join("/var/run/firecracker", taskID+".sock")
+
+	// Check if socket exists (VM is running)
+	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+		fmt.Printf("Task %s is not running (socket not found)\n", taskID)
+		return
+	}
+
+	// Find the Firecracker process
+	out, err := exec.Command("pgrep", "-f", taskID).Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to find process for task %s: %v\n", taskID, err)
+		os.Exit(1)
+	}
+
+	pids := strings.Fields(string(out))
+	if len(pids) == 0 {
+		fmt.Fprintf(os.Stderr, "No process found for task %s\n", taskID)
+		os.Exit(1)
+	}
+
+	// Send SIGTERM to stop gracefully
+	for _, pid := range pids {
+		pidInt, _ := strconv.Atoi(pid)
+		if err := syscall.Kill(pidInt, syscall.SIGTERM); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to kill process %d: %v\n", pidInt, err)
+			continue
+		}
+		fmt.Printf("Sent SIGTERM to process %d for task %s\n", pidInt, taskID)
+	}
+
+	// Wait for process to exit
+	time.Sleep(2 * time.Second)
+
+	// Verify stopped
+	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+		fmt.Printf("Task %s stopped successfully\n", taskID)
+	} else {
+		fmt.Printf("Socket still exists, process may still be running\n")
+	}
+}
+
+// handleSnapshotCommand handles snapshot subcommands.
+func handleSnapshotCommand(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: swarmctl snapshot <create|list|restore> ...")
+		os.Exit(1)
+	}
+
+	snapshotDir := "/var/lib/swarmcracker/snapshots"
+	if envState := os.Getenv("SWARM_STATE_DIR"); envState != "" {
+		snapshotDir = filepath.Join(envState, "snapshots")
+	}
+
+	switch args[0] {
+	case "create":
+		if len(args) < 3 {
+			fmt.Println("Usage: swarmctl snapshot create <task-id> <snapshot-name>")
+			os.Exit(1)
+		}
+		taskID := args[1]
+		name := args[2]
+
+		// Create snapshot directory
+		os.MkdirAll(snapshotDir, 0755)
+
+		// Find the rootfs for this task
+		rootfsDir := "/var/lib/firecracker/rootfs"
+		taskRootfs := filepath.Join(rootfsDir, taskID)
+
+		// If task-specific rootfs doesn't exist, try to find it by service
+		if _, err := os.Stat(taskRootfs); os.IsNotExist(err) {
+			// Check for image-based rootfs
+			entries, _ := os.ReadDir(rootfsDir)
+			for _, entry := range entries {
+				if strings.HasSuffix(entry.Name(), ".ext4") {
+					taskRootfs = filepath.Join(rootfsDir, entry.Name())
+					break
+				}
+			}
+		}
+
+		// Create snapshot metadata
+		snapPath := filepath.Join(snapshotDir, name)
+		os.MkdirAll(snapPath, 0755)
+
+		meta := map[string]interface{}{
+			"name":      name,
+			"task_id":   taskID,
+			"created":  time.Now().Format(time.RFC3339),
+			"rootfs":    taskRootfs,
+			}
+		metaJSON, _ := json.Marshal(meta)
+		os.WriteFile(filepath.Join(snapPath, "meta.json"), metaJSON, 0644)
+
+		// Copy rootfs if it exists
+		if _, err := os.Stat(taskRootfs); err == nil {
+			srcFile, err := os.Open(taskRootfs)
+			if err == nil {
+				defer srcFile.Close()
+				dstPath := filepath.Join(snapPath, "rootfs.ext4")
+				dstFile, err := os.Create(dstPath)
+				if err == nil {
+					defer dstFile.Close()
+					io.Copy(dstFile, srcFile)
+					fmt.Printf("Snapshot %s created (copied rootfs from %s)\n", name, taskRootfs)
+				} else {
+					fmt.Printf("Snapshot %s created (metadata only - could not copy rootfs)\n", name)
+				}
+			} else {
+				fmt.Printf("Snapshot %s created (metadata only)\n", name)
+			}
+		} else {
+			fmt.Printf("Snapshot %s created (metadata only - no rootfs found)\n", name)
+		}
+
+	case "list", "ls":
+		if _, err := os.Stat(snapshotDir); os.IsNotExist(err) {
+			fmt.Println("No snapshots directory")
+			return
+		}
+		entries, err := os.ReadDir(snapshotDir)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to list snapshots: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("%-20s %-30s %-20s\n", "NAME", "CREATED", "TASK_ID")
+		for _, entry := range entries {
+			if entry.IsDir() {
+				metaPath := filepath.Join(snapshotDir, entry.Name(), "meta.json")
+				if meta, err := os.ReadFile(metaPath); err == nil {
+					var m map[string]interface{}
+					json.Unmarshal(meta, &m)
+					created := ""
+					if c, ok := m["created"]; ok {
+						created = c.(string)
+					}
+					taskID := ""
+					if t, ok := m["task_id"]; ok {
+						taskID = t.(string)
+					}
+					fmt.Printf("%-20s %-30s %-20s\n", entry.Name(), created, taskID)
+				} else {
+					fmt.Printf("%-20s %-30s %-20s\n", entry.Name(), "unknown", "unknown")
+				}
+			}
+		}
+
+	case "restore":
+		if len(args) < 2 {
+			fmt.Println("Usage: swarmctl snapshot restore <snapshot-name>")
+			os.Exit(1)
+		}
+		name := args[1]
+		snapPath := filepath.Join(snapshotDir, name)
+		metaPath := filepath.Join(snapPath, "meta.json")
+
+		if _, err := os.Stat(metaPath); os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Snapshot %s not found\n", name)
+			os.Exit(1)
+		}
+
+		meta, err := os.ReadFile(metaPath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to read snapshot metadata: %v\n", err)
+			os.Exit(1)
+		}
+
+		fmt.Printf("Snapshot %s metadata:\n%s\n", name, string(meta))
+		fmt.Println("\nTo restore, use the rootfs path in meta.json when creating a new service")
+
+	case "rm", "remove":
+		if len(args) < 2 {
+			fmt.Println("Usage: swarmctl snapshot rm <snapshot-name>")
+			os.Exit(1)
+		}
+		name := args[1]
+		snapPath := filepath.Join(snapshotDir, name)
+		if err := os.RemoveAll(snapPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to remove snapshot: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Snapshot %s removed\n", name)
+
+	default:
+		fmt.Printf("Unknown snapshot command: %s\n", args[0])
+		fmt.Println("Available: create, list, restore, rm")
+		os.Exit(1)
+	}
 }

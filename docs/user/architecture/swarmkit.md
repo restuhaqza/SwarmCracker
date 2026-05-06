@@ -1,144 +1,129 @@
-# SwarmKit Notes
+# Architecture
 
-## What SwarmKit Is
-
-SwarmKit is an orchestration toolkit from the Moby project. Not the same as "Docker Swarm" - Docker Swarm is a product built on SwarmKit.
-
-SwarmKit provides:
-- Node discovery
-- Raft consensus
-- Task scheduling
-- Desired state reconciliation
-- Distributed config storage
-
-## SwarmKit vs Docker Swarm
-
-| | SwarmKit | Docker Swarm |
-|--|----------|--------------|
-| What | Engine/library | Docker's orchestration |
-| CLI | `swarmctl` | `docker service` |
-| Agent | `swarmd` | Docker Engine |
-| Extensible | Custom executors | Docker containers only |
-| Needs Docker | No | Yes |
-
-Docker Swarm uses SwarmKit internally. SwarmCracker integrates with SwarmKit directly, not through Docker.
-
-## Architecture
-
-### Components
-
-**Managers**
-- Accept specs, maintain state via Raft
-- Make scheduling decisions
-- 3, 5, or 7 for fault tolerance
-
-**Workers**
-- Execute tasks via executor interface
-- Report status to managers
-- Can be promoted to manager
-
-**Services**
-- Replicated: N copies
-- Global: one per node
-
-**Tasks**
-- Unit of work
-- Lifecycle: NEW → ASSIGNED → RUNNING → COMPLETE/FAILED
-
-### Executor Interface
-
-SwarmKit uses a pluggable executor. Default runs Docker containers. SwarmCracker implements a custom executor for Firecracker microVMs.
-
-```
-SwarmKit Manager → gRPC → swarmd Agent → Executor → MicroVM
-```
-
-## Standalone SwarmKit
-
-### Install
-
-```bash
-git clone https://github.com/moby/swarmkit.git
-cd swarmkit
-make binaries
-
-# Produces swarmd and swarmctl
-sudo cp bin/swarmd bin/swarmctl /usr/local/bin/
-```
-
-### Start Cluster
-
-```bash
-# Manager
-swarmd -d /tmp/node-1 \
-  --listen-control-api /tmp/node-1/swarm.sock \
-  --hostname node-1 \
-  --listen-remote-api 0.0.0.0:4242
-
-# Get join token
-export SWARM_SOCKET=/tmp/node-1/swarm.sock
-swarmctl cluster inspect default
-```
-
-### Join Workers
-
-```bash
-swarmd -d /tmp/node-2 \
-  --hostname node-2 \
-  --join-addr 127.0.0.1:4242 \
-  --join-token <WORKER_TOKEN>
-```
-
-### Deploy Service
-
-```bash
-swarmctl service create --name redis --image redis:3.0.5
-swarmctl service ls
-swarmctl service update redis --replicas 6
-```
-
-## SwarmCracker Integration
-
-SwarmCracker implements the SwarmKit executor interface:
-
-```go
-type Executor interface {
-    Prepare(*PrepareTaskRequest) (*PrepareTaskResponse, error)
-    Start(*StartTaskRequest) (*StartTaskResponse, error)
-    Stop(*StopTaskRequest) (*StopTaskResponse, error)
-    Remove(*RemoveTaskRequest) (*RemoveTaskResponse, error)
-}
-```
-
-### Worker with SwarmCracker
-
-```bash
-swarmd -d /var/lib/swarmkit/worker \
-  --hostname worker-1 \
-  --join-addr <manager>:4242 \
-  --join-token <TOKEN> \
-  --executor firecracker \
-  --executor-config /etc/swarmcracker/config.yaml
-```
-
-Tasks run as Firecracker microVMs with KVM isolation.
-
-## Why SwarmKit Direct
-
-- No Docker dependency
-- Custom executor support
-- Same engine Docker Swarm uses
-- Proven at scale
-
-## Terminology
-
-Say | Not
----|-----
-SwarmKit orchestration | Docker Swarm orchestration
-swarmctl | docker service
-swarmd | Docker daemon
-Custom executor | Container
+SwarmCracker takes SwarmKit tasks and runs them as Firecracker microVMs instead of regular containers.
 
 ---
 
-**Source:** https://github.com/moby/swarmkit
+## How It Works
+
+SwarmKit schedules tasks. SwarmCracker's executor receives those tasks and turns each one into a Firecracker VM.
+
+```
+User
+ │
+ │ swarmctl CLI
+ │
+ ▼
+Manager (swarmd-firecracker)
+ │
+ │ SwarmKit: schedules, Raft consensus
+ │ gRPC
+ │
+┌┴────────────────────────────┐
+│                             │
+Worker-1                    Worker-2
+swarmd-firecracker          swarmd-firecracker
+    │                           │
+    ▼                           ▼
+swarm-br0                   swarm-br0
+┌───┐┌───┐                  ┌───┐┌───┐
+│VM ││VM │  ←── VXLAN ───→  │VM ││VM │
+└───┘└───┘                  └───┘└───┘
+```
+
+---
+
+## The Pieces
+
+### Manager Node
+
+Runs `swarmd-firecracker` in manager mode. It handles:
+
+- **Raft consensus** — Keeps cluster state consistent across managers if you have multiple
+- **Task scheduling** — Decides which worker runs each task
+- **IPAM** — Assigns overlay network IPs to tasks
+- **TLS** — Manages certificates for secure communication
+
+### Worker Node
+
+Runs `swarmd-firecracker` in worker mode. It:
+
+- **Executes tasks** — Receives assignments from manager
+- **Creates VMs** — Starts Firecracker with the right config
+- **Attaches networking** — TAP devices to bridge, VXLAN for cross-node
+- **Reports status** — Tells manager if VMs are healthy
+
+### Firecracker
+
+The actual VMM. Each VM is:
+
+- Isolated with its own kernel
+- Connected via TAP device
+- Has its own IP on the overlay network
+
+### Consul
+
+Used for VXLAN peer discovery. Workers register their overlay IPs, and other workers learn about them through `WatchPeers()`. This populates the VXLAN forwarding database.
+
+### Bridge (swarm-br0)
+
+Linux bridge that connects all local TAP devices. VMs on the same worker talk through this.
+
+### VXLAN (swarm-br0-vxlan)
+
+Overlay network for cross-node communication. Encapsulates traffic in UDP packets to the underlay network.
+
+---
+
+## Network Flow
+
+1. Manager schedules a task to Worker-1
+2. IPAM assigns an overlay IP (like 192.168.127.105)
+3. Worker-1 creates a TAP device, attaches to swarm-br0
+4. Firecracker starts with the IP in kernel boot args
+5. Worker registers in Consul
+6. Other workers see the new peer, update VXLAN FDB
+7. VMs can now talk across nodes via VXLAN tunnel
+
+---
+
+## What Makes This Different from Docker
+
+| Docker | SwarmCracker |
+|--------|--------------|
+| Containers share kernel | Each VM has its own kernel |
+| Namespaces for isolation | KVM virtualization |
+| Process-level security | Hardware-level isolation |
+| Fast startup (ms) | Fast startup (~100ms) |
+| Shared cgroups | Per-VM resources |
+
+The isolation is stronger. A compromised VM can't see other VMs' processes or memory the way a compromised container might.
+
+---
+
+## Code Layout
+
+```
+cmd/
+├── swarmctl/         # CLI tool
+├── swarmd-firecracker/  # Main daemon
+├── swarmcracker/     # High-level CLI wrapper
+
+pkg/
+├── executor/         # Firecracker executor for SwarmKit
+├── network/          # Bridge, TAP, VXLAN management
+├── discovery/        # Consul peer discovery
+├── swarmkit/         # SwarmKit integration
+├── image/            # OCI image extraction
+├── lifecycle/        # VM lifecycle management
+├── jailer/           # Security sandboxing
+├── storage/          # Volumes, secrets
+```
+
+---
+
+## See Also
+
+- [Getting Started](../getting-started/) — Set up a cluster
+- [Networking](../guides/networking.md) — VXLAN details
+- [SwarmKit Integration](swarmkit.md) — How tasks flow

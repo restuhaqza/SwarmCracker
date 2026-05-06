@@ -126,8 +126,8 @@ func TestMockImagePreparer_PrepareReturnsNil(t *testing.T) {
 	}
 
 	// Without CleanupFunc configured, should return nil
-	if err := mock.Cleanup(ctx, "test"); err != nil {
-		t.Errorf("Cleanup should return nil: %v", err)
+	if filesRemoved, bytesFreed, err := mock.Cleanup(ctx, 7); err != nil || filesRemoved != 0 || bytesFreed != 0 {
+		t.Errorf("Cleanup should return nil error: %v", err)
 	}
 }
 

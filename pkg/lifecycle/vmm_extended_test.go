@@ -548,6 +548,9 @@ func TestGracefulShutdown_SignalFailure(t *testing.T) {
 
 // TestGracefulShutdown_Timeout tests graceful shutdown timeout
 func TestGracefulShutdown_Timeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: requires real VM process simulation")
+	}
 	mockProc := NewMockProcessExecutor()
 
 	// Create a process that never exits

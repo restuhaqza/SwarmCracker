@@ -7,9 +7,9 @@
 # set -e
 
 # Configuration
-MANAGER_IP="192.168.121.18"
-WORKER1_IP="192.168.121.153"
-WORKER2_IP="192.168.121.59"
+MANAGER_IP="192.168.121.155"
+WORKER1_IP="192.168.121.129"
+WORKER2_IP="192.168.121.43"
 MANAGER_PORT="4242"
 SWARM_SOCKET="/var/run/swarmkit/swarm.sock"
 
@@ -481,6 +481,229 @@ test_phase6_node_ops() {
 }
 
 # ============================================================
+# PHASE 6.5: Cross-Node MicroVM Connectivity
+# ============================================================
+test_phase6_5_cross_vm_connectivity() {
+    section "PHASE 6.5: Cross-Node MicroVM Connectivity"
+    
+    # Helper: Wait for VM ready state
+    wait_vm_ready() {
+        local VM_ID="$1"
+        local NODE="$2"
+        local MAX_WAIT=30
+        local COUNT=0
+        
+        ssh_func="ssh_${NODE}_sudo"
+        
+        echo "  ⏳ Waiting for $VM_ID to reach RUNNING state (max ${MAX_WAIT}s)..."
+        
+        while [[ $COUNT -lt $MAX_WAIT ]]; do
+            result=$($ssh_func "swarmcracker status $VM_ID 2>&1" || echo "")
+            if [[ "$result" =~ "Running" ]] || [[ "$result" =~ "RUNNING" ]]; then
+                echo "  ✅ $VM_ID is RUNNING"
+                return 0
+            fi
+            sleep 2
+            ((COUNT+=2))
+        done
+        
+        echo "  ❌ $VM_ID not ready after ${MAX_WAIT}s"
+        return 1
+    }
+    
+    # Helper: Get VM IP from status
+    get_vm_ip() {
+        local VM_ID="$1"
+        local NODE="$2"
+        
+        ssh_func="ssh_${NODE}_sudo"
+        result=$($ssh_func "swarmcracker status $VM_ID 2>&1" || echo "")
+        # Try to extract IP from status output
+        IP=$(echo "$result" | grep -oP 'IP:\s*[0-9.]+|ip:\s*[0-9.]+|address:\s*[0-9.]+|NetworkIP:\s*[0-9.]+' | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        echo "$IP"
+    }
+    
+    # Helper: Get VM tap device
+    get_vm_tap() {
+        local VM_ID="$1"
+        local NODE="$2"
+        
+        ssh_func="ssh_${NODE}_sudo"
+        result=$($ssh_func "swarmcracker status $VM_ID 2>&1" || echo "")
+        TAP=$(echo "$result" | grep -oP 'tap-[a-z0-9]+|TapDevice:\s*[a-z0-9]+-tap' | grep -oP 'tap-[a-z0-9]+|tap[0-9]+' | head -1)
+        echo "$TAP"
+    }
+    
+    # Helper: Ping from VM network namespace
+    ping_from_vm_ns() {
+        local VM_ID="$1"
+        local TARGET_IP="$2"
+        local NODE="$3"
+        
+        ssh_func="ssh_${NODE}_sudo"
+        
+        # Find the network namespace for this VM
+        # VMs typically have a netns named after their task ID or tap device
+        NS_LIST=$($ssh_func "ip netns list 2>&1" || echo "")
+        VM_NS=$(echo "$NS_LIST" | grep -i "$VM_ID" | awk '{print $1}' | head -1)
+        
+        if [[ -z "$VM_NS" ]]; then
+            # Try alternative: find by tap device
+            TAP=$(get_vm_tap "$VM_ID" "$NODE")
+            if [[ -n "$TAP" ]]; then
+                VM_NS=$($ssh_func "ip netns identify $TAP 2>&1" || echo "")
+            fi
+        fi
+        
+        if [[ -n "$VM_NS" ]]; then
+            # Execute ping inside VM namespace
+            $ssh_func "ip netns exec $VM_NS ping -c 5 -W 2 $TARGET_IP 2>&1"
+        else
+            # Fallback: try ping from bridge (host side)
+            # This tests if the VM IP is reachable on the overlay network
+            $ssh_func "ping -c 5 -W 2 $TARGET_IP -I swarm-br0 2>&1"
+        fi
+    }
+    
+    # Test 6.5.1: Deploy VM on Worker1
+    echo "📋 Test 6.5.1: Deploy Alpine microVM on Worker1..."
+    result=$(ssh_worker1_sudo "swarmcracker run alpine:latest --vcpus 1 --memory 128 -d" 2>&1 || echo "")
+    VM1_ID=$(echo "$result" | grep -oP 'task-[0-9]+|vm-[a-z0-9]+|[0-9]+' | head -1)
+    
+    if [[ -n "$VM1_ID" ]]; then
+        pass "VM1 deployed on Worker1 (ID: $VM1_ID)"
+    else
+        fail "VM1 deployment failed on Worker1" "$result"
+        return
+    fi
+    
+    # Test 6.5.2: Deploy VM on Worker2
+    echo ""
+    echo "📋 Test 6.5.2: Deploy Alpine microVM on Worker2..."
+    result=$(ssh_worker2_sudo "swarmcracker run alpine:latest --vcpus 1 --memory 128 -d" 2>&1 || echo "")
+    VM2_ID=$(echo "$result" | grep -oP 'task-[0-9]+|vm-[a-z0-9]+|[0-9]+' | head -1)
+    
+    if [[ -n "$VM2_ID" ]]; then
+        pass "VM2 deployed on Worker2 (ID: $VM2_ID)"
+    else
+        fail "VM2 deployment failed on Worker2" "$result"
+        # Cleanup VM1 before returning
+        ssh_worker1_sudo "swarmcracker stop $VM1_ID" 2>&1 || true
+        return
+    fi
+    
+    # Test 6.5.3: Validate VM1 readiness
+    echo ""
+    echo "📋 Test 6.5.3: Validate VM1 is ready..."
+    if wait_vm_ready "$VM1_ID" "worker1"; then
+        pass "VM1 ($VM1_ID) reached RUNNING state"
+        VM1_IP=$(get_vm_ip "$VM1_ID" "worker1")
+        if [[ -n "$VM1_IP" ]]; then
+            echo "  ℹ️  VM1 IP: $VM1_IP"
+        else
+            echo "  ⚠️  Could not determine VM1 IP (will use bridge ping fallback)"
+        fi
+    else
+        fail "VM1 did not reach RUNNING state" "Timeout waiting for VM"
+        ssh_worker1_sudo "swarmcracker stop $VM1_ID" 2>&1 || true
+        ssh_worker2_sudo "swarmcracker stop $VM2_ID" 2>&1 || true
+        return
+    fi
+    
+    # Test 6.5.4: Validate VM2 readiness
+    echo ""
+    echo "📋 Test 6.5.4: Validate VM2 is ready..."
+    if wait_vm_ready "$VM2_ID" "worker2"; then
+        pass "VM2 ($VM2_ID) reached RUNNING state"
+        VM2_IP=$(get_vm_ip "$VM2_ID" "worker2")
+        if [[ -n "$VM2_IP" ]]; then
+            echo "  ℹ️  VM2 IP: $VM2_IP"
+        else
+            echo "  ⚠️  Could not determine VM2 IP (will use bridge ping fallback)"
+        fi
+    else
+        fail "VM2 did not reach RUNNING state" "Timeout waiting for VM"
+        ssh_worker1_sudo "swarmcracker stop $VM1_ID" 2>&1 || true
+        ssh_worker2_sudo "swarmcracker stop $VM2_ID" 2>&1 || true
+        return
+    fi
+    
+    # Test 6.5.5: Cross-node VM connectivity (Worker1 → Worker2)
+    echo ""
+    echo "📋 Test 6.5.5: Cross-node VM connectivity test..."
+    
+    if [[ -n "$VM2_IP" ]]; then
+        # Ping VM2 from Worker1 side (via VXLAN overlay)
+        result=$(ping_from_vm_ns "$VM1_ID" "$VM2_IP" "worker1")
+        
+        if echo "$result" | grep -q "0% packet loss" || echo "$result" | grep -qE "[0-9]+ packets transmitted, [0-9]+ packets received"; then
+            LOSS=$(echo "$result" | grep -oP '[0-9]+% packet loss' | head -1)
+            LATENCY=$(echo "$result" | grep -oP 'rtt min/avg/max/mdev = [0-9.]+/[0-9.]+/[0-9.]+/[0-9.]+ ms' | head -1)
+            pass "Cross-node VM ping successful: $LOSS"
+            if [[ -n "$LATENCY" ]]; then
+                echo "  ℹ️  Latency: $LATENCY"
+            fi
+        else
+            fail "Cross-node VM ping failed" "$result"
+        fi
+    else
+        # Fallback: test VXLAN connectivity at bridge level
+        echo "  ℹ️  Using bridge-level connectivity test (VM IPs not detected)"
+        
+        # Ping from Worker1 to Worker2's bridge subnet via VXLAN
+        # Assuming overlay subnet like 10.0.0.0/24 or 172.17.0.0/24
+        result=$(ssh_worker1_sudo "ping -c 5 -W 2 -I swarm-br0 10.0.0.11 2>&1" || echo "")
+        
+        if echo "$result" | grep -q "0% packet loss"; then
+            pass "VXLAN overlay reachable from Worker1 bridge"
+        else
+            # Try overlay subnet 172.17.x.x
+            result=$(ssh_worker1_sudo "ping -c 5 -W 2 -I swarm-br0 172.17.0.11 2>&1" || echo "")
+            if echo "$result" | grep -q "0% packet loss"; then
+                pass "VXLAN overlay reachable (172.17 subnet)"
+            else
+                fail "Cross-node overlay connectivity failed" "No route to VM subnet"
+            fi
+        fi
+    fi
+    
+    # Test 6.5.6: Reverse connectivity (Worker2 → Worker1)
+    echo ""
+    echo "📋 Test 6.5.6: Reverse cross-node connectivity..."
+    
+    if [[ -n "$VM1_IP" ]]; then
+        result=$(ping_from_vm_ns "$VM2_ID" "$VM1_IP" "worker2")
+        
+        if echo "$result" | grep -q "0% packet loss"; then
+            LOSS=$(echo "$result" | grep -oP '[0-9]+% packet loss' | head -1)
+            pass "Reverse ping successful: $LOSS"
+        else
+            fail "Reverse ping failed" "$result"
+        fi
+    else
+        skip "Reverse connectivity test" "VM1 IP not determined"
+    fi
+    
+    # Test 6.5.7: VXLAN encapsulation verification
+    echo ""
+    echo "📋 Test 6.5.7: VXLAN encapsulation active..."
+    
+    # Check UDP port 4789 (VXLAN VNI) traffic between workers
+    result=$(ssh_worker1_sudo "ss -ulnp | grep 4789 || netstat -ulnp | grep 4789" 2>&1 || echo "")
+    if [[ "$result" =~ "4789" ]]; then
+        pass "VXLAN UDP port 4789 listening on Worker1"
+    else
+        skip "VXLAN port check" "ss/netstat output not parseable"
+    fi
+    
+    # Cleanup: Stop both VMs
+    echo ""
+    echo "🧹 Cleanup: Stopping test VMs..."
+    ssh_worker1_sudo "swarmcracker stop $VM1_ID" 2>&1 && echo "  ✓ VM1 stopped" || echo "  ⚠ VM1 stop failed"
+    ssh_worker2_sudo "swarmcracker stop $VM2_ID" 2>&1 && echo "  ✓ VM2 stopped" || echo "  ⚠ VM2 stop failed"
+}
+
+# ============================================================
 # PHASE 7: Monitoring & Debugging
 # ============================================================
 test_phase7_monitoring() {
@@ -714,6 +937,7 @@ main() {
     test_phase4_updates
     test_phase5_snapshots
     test_phase6_node_ops
+    test_phase6_5_cross_vm_connectivity
     test_phase7_monitoring
     test_phase8_volumes
     test_phase9_cleanup

@@ -449,43 +449,57 @@ func (v *VXLANManager) listenForPeers(ctx context.Context, localIP string, port 
 	buf := make([]byte, 1024)
 
 	for {
+<<<<<<< HEAD
 		select {
 		case <-ctx.Done():
 			return
 		default:
+=======
+		// Handle nil ctx gracefully (before StartPeerDiscovery is called)
+		if v.ctx != nil {
+			select {
+			case <-v.ctx.Done():
+				return
+			default:
+				conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			}
+		} else {
+			// No context, just set deadline and continue
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
-			n, peerAddr, err := conn.ReadFromUDP(buf)
-			if err != nil {
-				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					continue
-				}
-				log.Debug().Err(err).Msg("Error reading from UDP")
+		}
+
+		n, peerAddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
+			log.Debug().Err(err).Msg("Error reading from UDP")
+			continue
+		}
 
-			if n > 0 {
-				message := string(buf[:n])
-				// Expected format: "VXLAN_PEER:<ip>"
-				if strings.HasPrefix(message, "VXLAN_PEER:") {
-					peerIP := strings.TrimPrefix(message, "VXLAN_PEER:")
-					// Don't add ourselves
-					if peerIP != localIP {
-						existingPeers := v.peerStore.GetPeers()
-						found := false
-						for _, p := range existingPeers {
-							if p == peerIP {
-								found = true
-								break
-							}
+		if n > 0 {
+			message := string(buf[:n])
+			// Expected format: "VXLAN_PEER:<ip>"
+			if strings.HasPrefix(message, "VXLAN_PEER:") {
+				peerIP := strings.TrimPrefix(message, "VXLAN_PEER:")
+				// Don't add ourselves
+				if peerIP != localIP {
+					existingPeers := v.peerStore.GetPeers()
+					found := false
+					for _, p := range existingPeers {
+						if p == peerIP {
+							found = true
+							break
 						}
-						if !found {
-							v.peerStore.AddPeer(peerIP)
-							log.Info().Str("peer", peerIP).Str("from", peerAddr.String()).Msg("Discovered VXLAN peer via UDP")
-							// Add FDB entry
-							vxlanName := v.BridgeName + "-vxlan"
-							if err := v.addPeerForwarding(vxlanName, peerIP); err != nil {
-								log.Warn().Err(err).Str("peer", peerIP).Msg("Failed to add discovered peer to FDB")
-							}
+					}
+					if !found {
+						v.peerStore.AddPeer(peerIP)
+						log.Info().Str("peer", peerIP).Str("from", peerAddr.String()).Msg("Discovered VXLAN peer via UDP")
+						// Add FDB entry
+						vxlanName := v.BridgeName + "-vxlan"
+						if err := v.addPeerForwarding(vxlanName, peerIP); err != nil {
+							log.Warn().Err(err).Str("peer", peerIP).Msg("Failed to add discovered peer to FDB")
 						}
 					}
 				}
@@ -541,12 +555,32 @@ func (v *VXLANManager) announcePresence(ctx context.Context, localIP string, por
 	}
 
 	for {
+<<<<<<< HEAD
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 			for _, addr := range broadcastIPs {
 				v.sendAnnouncement(addr, message)
+=======
+		// Handle nil ctx gracefully (before StartPeerDiscovery is called)
+		if v.ctx != nil {
+			select {
+			case <-v.ctx.Done():
+				return
+			case <-ticker.C:
+				for _, addr := range broadcastIPs {
+					v.sendAnnouncement(addr, message)
+				}
+			}
+		} else {
+			// No context, wait on ticker only
+			select {
+			case <-ticker.C:
+				for _, addr := range broadcastIPs {
+					v.sendAnnouncement(addr, message)
+				}
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 			}
 		}
 	}

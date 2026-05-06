@@ -23,35 +23,46 @@ type TAPDevice struct {
 // CreateTAPDevice creates a TAP device and connects it to a bridge.
 // This is a standalone function usable by the CNI plugin.
 func CreateTAPDevice(name, bridge string) (*TAPDevice, error) {
+	return CreateTAPDeviceWithExecutor(name, bridge, NewDefaultTAPExecutor())
+}
+
+// CreateTAPDeviceWithExecutor creates a TAP device using injectable executor.
+func CreateTAPDeviceWithExecutor(name, bridge string, executor TAPExecutor) (*TAPDevice, error) {
 	log.Info().
 		Str("tap", name).
 		Str("bridge", bridge).
 		Msg("Creating TAP device")
 
 	// Ensure clean state by removing existing device if any
-	exec.Command("ip", "link", "delete", name).Run()
+	cleanupCmd := executor.Command("ip", "link", "delete", name)
+	executor.Run(cleanupCmd) // Ignore error, device may not exist
 
 	// Create TAP device
-	if err := exec.Command("ip", "tuntap", "add", name, "mode", "tap").Run(); err != nil {
+	createCmd := executor.Command("ip", "tuntap", "add", name, "mode", "tap")
+	if err := executor.Run(createCmd); err != nil {
 		return nil, fmt.Errorf("failed to create TAP device %s: %w", name, err)
 	}
 
 	// Bring TAP up
-	if err := exec.Command("ip", "link", "set", name, "up").Run(); err != nil {
-		exec.Command("ip", "link", "delete", name).Run()
+	upCmd := executor.Command("ip", "link", "set", name, "up")
+	if err := executor.Run(upCmd); err != nil {
+		cleanupCmd := executor.Command("ip", "link", "delete", name)
+		executor.Run(cleanupCmd)
 		return nil, fmt.Errorf("failed to bring TAP up: %w", err)
 	}
 
 	// Connect to bridge
 	if bridge != "" {
-		if err := exec.Command("ip", "link", "set", name, "master", bridge).Run(); err != nil {
-			exec.Command("ip", "link", "delete", name).Run()
+		masterCmd := executor.Command("ip", "link", "set", name, "master", bridge)
+		if err := executor.Run(masterCmd); err != nil {
+			cleanupCmd := executor.Command("ip", "link", "delete", name)
+			executor.Run(cleanupCmd)
 			return nil, fmt.Errorf("failed to connect TAP to bridge %s: %w", bridge, err)
 		}
 	}
 
 	// Get MAC address
-	mac, err := getTAPMAC(name)
+	mac, err := getTAPMACWithExecutor(name, executor)
 	if err != nil {
 		// Non-critical, use placeholder
 		mac = "00:00:00:00:00:00"
@@ -66,17 +77,22 @@ func CreateTAPDevice(name, bridge string) (*TAPDevice, error) {
 
 // DeleteTAPDevice removes a TAP device.
 func DeleteTAPDevice(name string) error {
+	return DeleteTAPDeviceWithExecutor(name, NewDefaultTAPExecutor())
+}
+
+// DeleteTAPDeviceWithExecutor removes a TAP device using injectable executor.
+func DeleteTAPDeviceWithExecutor(name string, executor TAPExecutor) error {
 	log.Info().Str("tap", name).Msg("Deleting TAP device")
 
 	// Remove from bridge first (if attached)
-	cmd := exec.Command("ip", "link", "set", name, "nomaster")
-	if output, err := cmd.CombinedOutput(); err != nil {
+	nomasterCmd := executor.Command("ip", "link", "set", name, "nomaster")
+	if output, err := executor.CombinedOutput(nomasterCmd); err != nil {
 		log.Debug().Err(err).Str("output", string(output)).Msg("Failed to detach from bridge")
 	}
 
 	// Delete TAP device
-	cmd = exec.Command("ip", "link", "delete", name)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	deleteCmd := executor.Command("ip", "link", "delete", name)
+	if output, err := executor.CombinedOutput(deleteCmd); err != nil {
 		log.Error().Err(err).Str("output", string(output)).Msg("Failed to delete TAP")
 		return fmt.Errorf("failed to delete TAP device %s: %w (output: %s)", name, err, string(output))
 	}
@@ -87,7 +103,13 @@ func DeleteTAPDevice(name string) error {
 
 // TAPDeviceExists checks if a TAP device exists.
 func TAPDeviceExists(name string) (bool, error) {
-	err := exec.Command("ip", "link", "show", name).Run()
+	return TAPDeviceExistsWithExecutor(name, NewDefaultTAPExecutor())
+}
+
+// TAPDeviceExistsWithExecutor checks if a TAP device exists using injectable executor.
+func TAPDeviceExistsWithExecutor(name string, executor TAPExecutor) (bool, error) {
+	showCmd := executor.Command("ip", "link", "show", name)
+	err := executor.Run(showCmd)
 	if err != nil {
 		// Device doesn't exist
 		return false, nil
@@ -134,9 +156,14 @@ func SetupVXLANFDB(tapName string, peers []string) error {
 
 // getTAPMAC retrieves the MAC address of a TAP device.
 func getTAPMAC(name string) (string, error) {
+	return getTAPMACWithExecutor(name, NewDefaultTAPExecutor())
+}
+
+// getTAPMACWithExecutor retrieves the MAC address using injectable executor.
+func getTAPMACWithExecutor(name string, executor TAPExecutor) (string, error) {
 	// Use ip link show to get MAC
-	cmd := exec.Command("ip", "-br", "link", "show", name)
-	output, err := cmd.Output()
+	cmd := executor.Command("ip", "-br", "link", "show", name)
+	output, err := executor.Output(cmd)
 	if err != nil {
 		return "", err
 	}
@@ -153,13 +180,18 @@ func getTAPMAC(name string) (string, error) {
 // ConfigureTAPIP sets the IP address on a TAP device.
 // This is typically used for the bridge side, not the VM side.
 func ConfigureTAPIP(name, cidr string) error {
+	return ConfigureTAPIPWithExecutor(name, cidr, NewDefaultTAPExecutor())
+}
+
+// ConfigureTAPIPWithExecutor sets the IP address using injectable executor.
+func ConfigureTAPIPWithExecutor(name, cidr string, executor TAPExecutor) error {
 	log.Info().
 		Str("tap", name).
 		Str("cidr", cidr).
 		Msg("Configuring TAP IP address")
 
-	cmd := exec.Command("ip", "addr", "add", cidr, "dev", name)
-	if err := cmd.Run(); err != nil {
+	cmd := executor.Command("ip", "addr", "add", cidr, "dev", name)
+	if err := executor.Run(cmd); err != nil {
 		return fmt.Errorf("failed to set IP on TAP %s: %w", name, err)
 	}
 
@@ -168,25 +200,34 @@ func ConfigureTAPIP(name, cidr string) error {
 
 // CreateBridge creates a Linux bridge if it doesn't exist.
 func CreateBridge(name, subnet string) error {
+	return CreateBridgeWithExecutor(name, subnet, NewDefaultTAPExecutor())
+}
+
+// CreateBridgeWithExecutor creates a Linux bridge using injectable executor.
+func CreateBridgeWithExecutor(name, subnet string, executor TAPExecutor) error {
 	log.Info().
 		Str("bridge", name).
 		Str("subnet", subnet).
 		Msg("Creating bridge")
 
 	// Check if bridge exists
-	if err := exec.Command("ip", "link", "show", name).Run(); err == nil {
+	showCmd := executor.Command("ip", "link", "show", name)
+	if err := executor.Run(showCmd); err == nil {
 		log.Info().Str("bridge", name).Msg("Bridge already exists")
 		return nil
 	}
 
 	// Create bridge
-	if err := exec.Command("ip", "link", "add", name, "type", "bridge").Run(); err != nil {
+	addCmd := executor.Command("ip", "link", "add", name, "type", "bridge")
+	if err := executor.Run(addCmd); err != nil {
 		return fmt.Errorf("failed to create bridge %s: %w", name, err)
 	}
 
 	// Bring bridge up
-	if err := exec.Command("ip", "link", "set", name, "up").Run(); err != nil {
-		exec.Command("ip", "link", "delete", name).Run()
+	upCmd := executor.Command("ip", "link", "set", name, "up")
+	if err := executor.Run(upCmd); err != nil {
+		cleanupCmd := executor.Command("ip", "link", "delete", name)
+		executor.Run(cleanupCmd)
 		return fmt.Errorf("failed to bring bridge up: %w", err)
 	}
 
@@ -204,8 +245,9 @@ func CreateBridge(name, subnet string) error {
 		gatewayIP[3] = 1 // Last octet = 1 for gateway
 		gatewayCIDR := fmt.Sprintf("%d.%d.%d.%d/%d", gatewayIP[0], gatewayIP[1], gatewayIP[2], gatewayIP[3], maskToPrefix(ipNet.Mask))
 
-		if err := ConfigureTAPIP(name, gatewayCIDR); err != nil {
-			exec.Command("ip", "link", "delete", name).Run()
+		if err := ConfigureTAPIPWithExecutor(name, gatewayCIDR, executor); err != nil {
+			cleanupCmd := executor.Command("ip", "link", "delete", name)
+			executor.Run(cleanupCmd)
 			return fmt.Errorf("failed to set bridge IP: %w", err)
 		}
 	}

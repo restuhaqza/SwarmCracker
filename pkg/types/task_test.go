@@ -1380,6 +1380,17 @@ func (m *mockNetworkManager) GetTapIP(taskID string) (string, error) {
 	return "", nil
 }
 
+func (m *mockNetworkManager) Init(ctx context.Context) error {
+	return nil
+}
+
+func (m *mockNetworkManager) SetNodeDiscovery(discovery NodeDiscovery) {
+}
+
+func (m *mockNetworkManager) UpdateVXLANPeers(peers []string) error {
+	return nil
+}
+
 // TestInterfaceSignatures verifies that interface signatures exist and are correct
 func TestInterfaceSignatures(t *testing.T) {
 	t.Run("VMMManager interface exists", func(t *testing.T) {

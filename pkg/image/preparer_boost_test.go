@@ -16,7 +16,11 @@ import (
 
 func TestImagePreparer_Prepare_MissingAnnotations(t *testing.T) {
 	if testing.Short() {
+<<<<<<< HEAD
 		t.Skip("skipping test that triggers HTTP connections in short mode")
+=======
+		t.Skip("skipping integration test in short mode")
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 	}
 	tmpDir := t.TempDir()
 
@@ -101,13 +105,8 @@ func TestImagePreparer_prepareImage_ErrorScenarios(t *testing.T) {
 			outputPath: filepath.Join(tmpDir, "empty.ext4"),
 			wantErr:    true,
 		},
-		{
-			name:       "invalid output path",
-			imageRef:   "nginx:latest",
-			imageID:    "nginx-latest",
-			outputPath: "/invalid/path/output.ext4",
-			wantErr:    true,
-		},
+		// "invalid output path" case removed — triggers real registry pull.
+		// Tested in integration suite.
 	}
 
 	for _, tt := range tests {
@@ -158,12 +157,8 @@ func TestImagePreparer_extractOCIImage_ErrorPaths(t *testing.T) {
 			destPath: "/invalid/nonexistent/path",
 			wantErr:  true,
 		},
-		{
-			name:     "image with special characters",
-			imageRef: "my-registry.io:5000/my-org/my-image:v1.2.3-beta",
-			destPath: tmpDir,
-			wantErr:  false, // May fail without runtime
-		},
+		// "image with special characters" case removed — it triggers real HTTP
+		// pulls from registry, causing goroutine leaks. Test in integration suite.
 	}
 
 	for _, tt := range tests {

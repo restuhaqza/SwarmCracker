@@ -27,6 +27,7 @@ type VMMetrics struct {
 type Collector struct {
 	stateDir string                // For persistence
 	mu       sync.RWMutex          // Protects metrics map
+	cancelMu sync.Mutex            // Protects cancel field
 	metrics  map[string]*VMMetrics // taskID -> metrics
 	cancelMu sync.Mutex            // Protects cancel field
 	cancel   context.CancelFunc    // Cancel periodic collection
@@ -337,6 +338,11 @@ func (c *Collector) Start(ctx context.Context, interval time.Duration, getPIDs f
 		interval = 10 * time.Second // Default 10 seconds
 	}
 
+	c.cancelMu.Lock()
+	// Cancel previous collection if running
+	if c.cancel != nil {
+		c.cancel()
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	c.cancelMu.Lock()
 	c.cancel = cancel
@@ -363,6 +369,10 @@ func (c *Collector) Start(ctx context.Context, interval time.Duration, getPIDs f
 // Stop stops periodic metrics collection.
 func (c *Collector) Stop() {
 	c.cancelMu.Lock()
+<<<<<<< HEAD
+=======
+	defer c.cancelMu.Unlock()
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 	if c.cancel != nil {
 		c.cancel()
 		c.cancel = nil

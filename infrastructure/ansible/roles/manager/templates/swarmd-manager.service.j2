@@ -20,14 +20,9 @@ ExecStart={{ swarmcracker_install_dir }}/swarmd-firecracker \
   --subnet {{ swarmcracker_subnet }} \
   --bridge-ip {{ swarmcracker_bridge_ip }} \
   --nat-enabled \
-  --enable-cni \
-  --cni-plugin-dir {{ cni_plugin_dir | default('/opt/cni/bin') }} \
-  --cni-config-dir {{ cni_config_dir | default('/etc/cni/net.d') }} \
-  --cni-subnet-pool {{ cni_subnet_pool | default('10.0.0.0/8') }} \
-  --cni-subnet-size {{ cni_subnet_size | default(24) }} \
-  --cni-vxlan-port {{ cni_vxlan_port | default(4789) }} \
   {% if swarmcracker_vxlan_enabled %}--vxlan-enabled{% endif %} \
-  {% if consul_enabled | default(true) %}--consul-enabled --consul-address {{ consul_client_addr | default('127.0.0.1') }}:8500{% endif %} \
+  {% if swarmcracker_consul_enabled %}--consul-enabled \
+  --consul-address {{ swarmcracker_consul_address | default('127.0.0.1:8500') }}{% endif %} \
   {% if swarmcracker_debug %}--debug{% endif %}
 
 ExecReload=/bin/kill -HUP $MAINPID

@@ -1,78 +1,52 @@
-# Networking Guide
+# Networking
 
-> Configure VM networking — TAP devices, bridges, VXLAN overlay.
-
----
-
-## Overview
-
-Each Firecracker VM connects to a Linux bridge via a TAP device:
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                      Host System                         │
-│                                                          │
-│  ┌──────────────────────────────────────────────────┐  │
-│  │  swarm-br0 (192.168.127.1/24)                    │  │
-│  └──────────────┬─────────────────────────────────┘  │
-│         ┌───────┴───────┐                              │
-│    ┌────▼───┐       ┌───▼────┐                        │
-│    │ tap0   │       │ tap1   │                        │
-│    └────┬───┘       └───┬────┘                        │
-└─────────┼───────────────┼──────────────────────────────┘
-     ┌────▼───┐       ┌───▼────┐
-     │  VM 1  │       │  VM 2  │
-     │.10     │       │.11     │
-     └────────┘       └────────┘
-```
-
-**VMs can communicate:**
-- **With each other** — Same bridge = direct communication
-- **With host** — Via bridge IP
-- **With internet** — Via NAT/masquerading
+VMs need to talk to each other and to the outside world. Here's how SwarmCracker handles that.
 
 ---
 
-## Configuration
+## The Basic Setup
+
+Each VM gets a TAP device connected to a Linux bridge:
+
+```
+Host
+├── swarm-br0 (192.168.127.1)
+│   ├── tap0 ── VM1 (192.168.127.10)
+│   └── tap1 ── VM2 (192.168.127.11)
+```
+
+VMs on the same bridge can talk directly. The host talks via the bridge IP. Internet access goes through NAT.
+
+---
+
+## Config Options
 
 ```yaml
 network:
   bridge_name: "swarm-br0"
   subnet: "192.168.127.0/24"
   bridge_ip: "192.168.127.1/24"
-  ip_mode: "static"      # or "dhcp"
   nat_enabled: true
 ```
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `bridge_name` | `swarm-br0` | Linux bridge name |
-| `subnet` | `192.168.127.0/24` | VM IP range |
-| `bridge_ip` | `192.168.127.1/24` | Host gateway IP |
-| `ip_mode` | `static` | IP allocation mode |
-| `nat_enabled` | `true` | Enable internet access |
+| Setting | Default | What It Does |
+|---------|---------|--------------|
+| `bridge_name` | swarm-br0 | The bridge name |
+| `subnet` | 192.168.127.0/24 | IP range for VMs |
+| `bridge_ip` | 192.168.127.1/24 | Host's IP on the bridge |
+| `nat_enabled` | true | Let VMs reach internet |
 
 ---
 
 ## IP Allocation
 
-### Static Mode (Default)
+### Static (Default)
 
-IPs allocated deterministically from VM ID hash:
+IPs come from hashing the VM ID. Same ID always gets the same IP. No DHCP needed, which makes startup faster.
 
-```bash
-# Same VM ID = same IP
-# Different VM ID = different IP (with high probability)
-```
+### DHCP
 
-**Advantages:**
-- No DHCP server needed
-- Predictable IPs for debugging
-- Faster startup
-
-### DHCP Mode
-
-Uses dnsmasq for dynamic allocation:
+If you want dynamic IPs, use dnsmasq:
 
 ```yaml
 network:
@@ -83,142 +57,134 @@ network:
 
 ---
 
-## Cross-Node Networking (VXLAN)
+## Talking Across Nodes
 
-For multi-node clusters, VXLAN overlay enables VM-to-VM communication across nodes:
+If you have VMs on different workers, they need VXLAN to communicate.
 
 ```
-┌─────────────────┐          ┌─────────────────┐
-│  Node 1         │          │  Node 2         │
-│  swarm-br0      │          │  swarm-br0      │
-│  ┌───┐┌───┐    │          │  ┌───┐┌───┐    │
-│  │VM1││VM2│    │◄──VXLAN──►│  │VM3││VM4│    │
-│  └───┘└───┘    │  UDP4789 │  └───┘└───┘    │
-└─────────────────┘          └─────────────────┘
+Node 1                    Node 2
+swarm-br0                 swarm-br0
+┌───┐┌───┐                ┌───┐┌───┐
+│VM1││VM2│  ← VXLAN UDP → │VM3││VM4│
+└───┘└───┘     4789       └───┘└───┘
 ```
 
-### VXLAN Setup
+### VXLAN Config
+
+When you start swarmd with `--vxlan-enabled`, it creates a VXLAN interface and attaches it to the bridge:
 
 ```bash
-# On each node, create VXLAN interface
-sudo ip link add vxlan0 type vxlan \
-  id 42 \
-  dstport 4789 \
-  remote <other-node-ip> \
-  local <this-node-ip> \
-  dev eth0
+swarmd-firecracker \
+  --vxlan-enabled \
+  --bridge-name swarm-br0 \
+  --subnet 192.168.127.0/24
+```
 
-sudo ip link set vxlan0 up
-sudo ip link set vxlan0 master swarm-br0
+### Consul for Peer Discovery
+
+Each node registers itself in Consul. When a new peer shows up, the VXLAN forwarding database gets updated automatically.
+
+```bash
+swarmd-firecracker \
+  --consul-enabled \
+  --consul-address 127.0.0.1:8500 \
+  --vxlan-enabled
 ```
 
 ### Firewall
 
+VXLAN uses UDP port 4789:
+
 ```bash
-# Allow VXLAN traffic
 sudo iptables -A INPUT -p udp --dport 4789 -j ACCEPT
 ```
 
 ---
 
-## TAP Device Management
+## TAP Devices
 
-SwarmCracker automatically creates TAP devices:
+SwarmCracker creates TAP devices automatically. Names follow the pattern `tap-<vm-id>`:
 
-```bash
-# TAP device naming: tap-<vm-id>
+```
 tap-svc-nginx-abc123
 tap-svc-redis-def456
 ```
 
-### Manual TAP Creation (Debug)
+### Manual Creation (for debugging)
 
 ```bash
-# Create TAP device
+# Create
 sudo ip tuntap add dev tap0 mode tap
 sudo ip link set tap0 up
 sudo ip link set tap0 master swarm-br0
 
-# Delete TAP device
+# Delete
 sudo ip link del tap0
 ```
 
 ---
 
-## NAT and Internet Access
+## NAT and Internet
 
-When `nat_enabled: true`, SwarmCracker configures iptables for outbound traffic:
+When `nat_enabled: true`, iptables masquerades outbound traffic:
 
 ```bash
-# NAT rule (auto-configured)
-iptables -t nat -A POSTROUTING \
-  -s 192.168.127.0/24 \
-  -j MASQUERADE
+iptables -t nat -A POSTROUTING -s 192.168.127.0/24 -j MASQUERADE
 ```
 
-### Disable NAT (Internal Only)
+### Disable Internet Access
 
 ```yaml
 network:
   nat_enabled: false
 ```
 
-VMs can only communicate with each other and host, not internet.
+VMs can only talk to each other and the host.
 
 ---
 
-## Troubleshooting
+## Problems
 
-### VMs Can't Communicate
+### VMs Can't Talk to Each Other
 
 ```bash
-# Check bridge exists
-ip link show swarm-br0
-
-# Check TAP devices
-ip link show | grep tap
-
-# Check VM IPs (inside VM)
-ip addr show eth0
+ip link show swarm-br0    # Bridge exists?
+ip link show | grep tap   # TAP devices attached?
 ```
 
-### No Internet Access
+Inside the VM, check `ip addr show eth0`.
+
+### No Internet
 
 ```bash
-# Check NAT enabled
-iptables -t nat -L POSTROUTING
+iptables -t nat -L POSTROUTING   # NAT rule there?
+sysctl net.ipv4.ip_forward       # Should be 1
+```
 
-# Check forwarding enabled
-sysctl net.ipv4.ip_forward
-# Should be 1
+Enable forwarding if needed:
 
-# Enable forwarding
+```bash
 sudo sysctl -w net.ipv4.ip_forward=1
 ```
 
 ### VXLAN Not Working
 
 ```bash
-# Check VXLAN interface
-ip link show vxlan0
+ip link show vxlan0              # VXLAN interface up?
+iptables -L INPUT | grep 4789    # Port open?
+ping <other-node-ip>             # Underlay reachable?
+```
 
-# Check UDP port open
-sudo iptables -L INPUT | grep 4789
+If FDB entries are missing, check Consul:
 
-# Check remote node reachable
-ping <other-node-ip>
+```bash
+curl http://127.0.0.1:8500/v1/catalog/service/swarmcracker-vxlan
 ```
 
 ---
 
-## Reference
+## More Reading
 
-| Topic | Description |
-|-------|-------------|
-| [Firecracker Network](https://github.com/firecracker-microvm/firecracker/blob/main/docs/network-interface.md) | Official docs |
-| [Linux Bridge](https://wiki.linuxfoundation.org/networking/bridge) | Bridge fundamentals |
-| [VXLAN RFC](https://tools.ietf.org/html/rfc7348) | VXLAN specification |
-
----
-
-**See Also:** [Configuration](configuration.md) | [SwarmKit](swarmkit.md)
+- [Firecracker network docs](https://github.com/firecracker-microvm/firecracker/blob/main/docs/network-interface.md)
+- [Linux bridge fundamentals](https://wiki.linuxfoundation.org/networking/bridge)
+- [VXLAN RFC 7348](https://tools.ietf.org/html/rfc7348)

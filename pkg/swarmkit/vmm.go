@@ -840,3 +840,24 @@ func (v *VMMManager) putAPI(socketPath, path string, data interface{}) error {
 
 	return nil
 }
+
+// GetRunningProcesses returns a map of all running Firecracker processes.
+func (v *VMMManager) GetRunningProcesses() map[string]*exec.Cmd {
+	v.processMutex.Lock()
+	defer v.processMutex.Unlock()
+	
+	// Return a copy to avoid race conditions
+	result := make(map[string]*exec.Cmd)
+	for k, cmd := range v.processes {
+		result[k] = cmd
+	}
+	return result
+}
+
+// RemoveProcess removes a process from the tracked processes map.
+func (v *VMMManager) RemoveProcess(taskID string) {
+	v.processMutex.Lock()
+	defer v.processMutex.Unlock()
+	delete(v.processes, taskID)
+	v.logger.Debug().Str("task_id", taskID).Msg("Process removed from tracking")
+}

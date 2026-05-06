@@ -100,8 +100,13 @@ func runDoctor(cfg *doctorConfig) error {
 		report.SwarmCracker = v
 	}
 
+<<<<<<< HEAD
 	printf("\n🏥 SwarmCracker Doctor\n")
 	printf("%s\n", strings.Repeat("─", 50))
+=======
+	p("\n🏥 SwarmCracker Doctor\n")
+	p("%s\n", strings.Repeat("─", 50))
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 
 	// System Requirements
 	printf("\n📡 System Requirements\n")

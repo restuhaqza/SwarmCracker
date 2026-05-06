@@ -1,15 +1,12 @@
 package cni
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 // PluginManager handles CNI plugin execution
@@ -17,6 +14,7 @@ type PluginManager struct {
 	pluginDir string
 	configDir string
 	env       []string
+	executor  CommandExecutor
 }
 
 // NewPluginManager creates a new CNI plugin manager
@@ -25,6 +23,20 @@ func NewPluginManager(pluginDir, configDir string) *PluginManager {
 		pluginDir: pluginDir,
 		configDir: configDir,
 		env:       []string{},
+		executor:  NewDefaultCommandExecutor(),
+	}
+}
+
+// NewPluginManagerWithExecutor creates a plugin manager with custom executor (for testing)
+func NewPluginManagerWithExecutor(pluginDir, configDir string, executor CommandExecutor) *PluginManager {
+	if executor == nil {
+		executor = NewDefaultCommandExecutor()
+	}
+	return &PluginManager{
+		pluginDir: pluginDir,
+		configDir: configDir,
+		env:       []string{},
+		executor:  executor,
 	}
 }
 
@@ -250,27 +262,13 @@ func (m *PluginManager) executePlugin(ctx context.Context, pluginPath, command s
 		}
 	}
 
-	// Add default environment
-	env := append(os.Environ(), cniArgs...)
-	env = append(env, m.env...)
+	// Add environment variables
+	env := append(cniArgs, m.env...)
 
-	// Create command
-	cmd := exec.CommandContext(ctx, pluginPath)
-	cmd.Env = env
-	cmd.Stdin = bytes.NewReader(configBytes)
-
-	// Set timeout
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Execute
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err = cmd.Run()
+	// Execute using executor interface
+	stdout, stderr, err := m.executor.Execute(ctx, pluginPath, configBytes, env)
 	if err != nil {
-		return nil, fmt.Errorf("plugin execution failed: %w, stderr: %s", err, stderr.String())
+		return nil, fmt.Errorf("plugin execution failed: %w, stderr: %s", err, string(stderr))
 	}
 
 	// DEL command doesn't return results
@@ -278,7 +276,7 @@ func (m *PluginManager) executePlugin(ctx context.Context, pluginPath, command s
 		return nil, nil
 	}
 
-	return stdout.Bytes(), nil
+	return stdout, nil
 }
 
 // ListAvailablePlugins returns a list of available CNI plugins

@@ -33,6 +33,10 @@ swarmcracker_vxlan_port: 4789
 consul_enabled: true
 consul_address: "127.0.0.1:8500"
 
+# SwarmCracker Consul integration (for systemd templates)
+swarmcracker_consul_enabled: true
+swarmcracker_consul_address: "127.0.0.1:8500"
+
 # Service configuration
 swarmcracker_manager_port: "4242"
 swarmcracker_worker_api_port: "4243"

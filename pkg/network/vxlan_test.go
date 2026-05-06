@@ -819,6 +819,9 @@ func TestVXLANManager_Integration(t *testing.T) {
 
 // Test peer discovery context cancellation
 func TestVXLANManager_PeerDiscoveryCancellation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping: requires network multicast")
+	}
 	mgr := NewVXLANManager("br0", 42, "10.0.0.1/24", nil)
 	ctx, cancel := context.WithCancel(context.Background())
 

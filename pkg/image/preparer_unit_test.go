@@ -114,12 +114,24 @@ func TestImagePreparer_Prepare_Validation_Unit(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+<<<<<<< HEAD
 			// Skip tests that trigger HTTP connections in short mode
 			if testing.Short() && tt.name == "valid container runtime" {
 				t.Skip("skipping test that triggers HTTP connections in short mode")
+=======
+			if tt.name == "valid container runtime" && testing.Short() {
+				t.Skip("skipping integration test in short mode")
+			}
+			rootfsDir := t.TempDir()
+			// Create cached rootfs for "valid container runtime" to avoid real pull
+			if tt.name == "valid container runtime" {
+				imageID := generateImageID("nginx:latest")
+				rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
+				os.WriteFile(rootfsPath, []byte("cached rootfs"), 0644)
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 			}
 			ip := NewImagePreparer(&PreparerConfig{
-				RootfsDir: t.TempDir(),
+				RootfsDir: rootfsDir,
 			})
 			ctx := context.Background()
 
@@ -403,7 +415,11 @@ func TestImagePreparer_CopyFile_Unit(t *testing.T) {
 // TestImagePreparer_Prepare_AnnotationInitialization tests annotation map initialization
 func TestImagePreparer_Prepare_AnnotationInitialization_Unit(t *testing.T) {
 	if testing.Short() {
+<<<<<<< HEAD
 		t.Skip("skipping test that triggers HTTP connections in short mode")
+=======
+		t.Skip("skipping integration test in short mode")
+>>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 	}
 	tests := []struct {
 		name        string

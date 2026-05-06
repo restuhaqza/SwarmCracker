@@ -248,6 +248,20 @@ func (m *MockNetworkManager) GetTapIP(taskID string) (string, error) {
 	return "", fmt.Errorf("no IP found for task %s", taskID)
 }
 
+// Init initializes mock network infrastructure.
+func (m *MockNetworkManager) Init(ctx context.Context) error {
+	return nil
+}
+
+// SetNodeDiscovery sets mock node discovery.
+func (m *MockNetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
+}
+
+// UpdateVXLANPeers updates mock VXLAN peers.
+func (m *MockNetworkManager) UpdateVXLANPeers(peers []string) error {
+	return nil
+}
+
 // IsTaskPrepared checks if network was prepared for a task.
 func (m *MockNetworkManager) IsTaskPrepared(taskID string) bool {
 	return m.PreparedTasks[taskID]

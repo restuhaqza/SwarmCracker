@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	swarmkit_exec "github.com/moby/swarmkit/v2/agent/exec"
@@ -141,6 +142,14 @@ func NewExecutor(config *Config) (*Executor, error) {
 	}
 	networkMgr := network.NewNetworkManager(netCfg)
 
+	// Initialize network infrastructure BEFORE starting Consul watcher
+	// This ensures VXLAN is ready when peers are discovered
+	if err := networkMgr.Init(context.Background()); err != nil {
+		zerolog_log.Warn().Err(err).Msg("Failed to initialize network infrastructure")
+	} else {
+		zerolog_log.Info().Msg("Network infrastructure initialized (bridge, VXLAN)")
+	}
+
 	// Setup Consul service discovery if enabled
 	if config.ConsulEnabled {
 		// Determine local IP for Consul registration
@@ -246,25 +255,31 @@ func NewExecutor(config *Config) (*Executor, error) {
 	return exec, nil
 }
 
-// periodicCleanup runs image cleanup every 24 hours.
+// periodicCleanup runs image cleanup every 24 hours and orphaned VM cleanup every 5 minutes.
 func (e *Executor) periodicCleanup(ctx context.Context) {
 	defer close(e.cleanupDone)
 
-	ticker := time.NewTicker(24 * time.Hour)
-	defer ticker.Stop()
+	imageTicker := time.NewTicker(24 * time.Hour)
+	defer imageTicker.Stop()
+
+	vmTicker := time.NewTicker(5 * time.Minute)
+	defer vmTicker.Stop()
 
 	// Run initial cleanup after a short delay (to avoid startup churn)
 	select {
 	case <-time.After(5 * time.Minute):
 		e.runCleanup(ctx)
+		e.cleanupOrphanedVMs(ctx)
 	case <-ctx.Done():
 		return
 	}
 
 	for {
 		select {
-		case <-ticker.C:
+		case <-imageTicker.C:
 			e.runCleanup(ctx)
+		case <-vmTicker.C:
+			e.cleanupOrphanedVMs(ctx)
 		case <-ctx.Done():
 			zerolog_log.Debug().Msg("Periodic cleanup goroutine stopping")
 			return
@@ -296,6 +311,72 @@ func (e *Executor) runCleanup(ctx context.Context) {
 			Msg("Periodic cleanup completed")
 	} else {
 		zerolog_log.Debug().Msg("Periodic cleanup: no old images to remove")
+	}
+}
+
+// cleanupOrphanedVMs stops Firecracker processes that have no corresponding task.
+func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
+	zerolog_log.Debug().Msg("Checking for orphaned VMs")
+
+	if e.vmmMgr == nil {
+		return
+	}
+
+	// Get all running Firecracker processes
+	runningProcesses := e.vmmMgr.GetRunningProcesses()
+	if len(runningProcesses) == 0 {
+		zerolog_log.Debug().Msg("No running VMs found")
+		return
+	}
+
+	// Get all active task IDs from executor
+	e.executorMu.RLock()
+	activeTasks := make(map[string]bool)
+	for taskID := range e.controllers {
+		activeTasks[taskID] = true
+	}
+	e.executorMu.RUnlock()
+
+	// Find and stop orphaned processes
+	for taskID, process := range runningProcesses {
+		if !activeTasks[taskID] {
+			zerolog_log.Warn().Str("task_id", taskID).Msg("Found orphaned VM, stopping")
+			
+			// Send SIGTERM
+			if err := process.Process.Signal(syscall.SIGTERM); err != nil {
+				zerolog_log.Error().Err(err).Str("task_id", taskID).Msg("Failed to SIGTERM orphaned VM")
+				// Force kill
+				process.Process.Kill()
+			}
+			
+			// Wait for process to exit
+			done := make(chan error, 1)
+			go func() {
+				done <- process.Wait()
+			}()
+			
+				select {
+				case <-done:
+					zerolog_log.Info().Str("task_id", taskID).Msg("Orphaned VM stopped")
+				case <-time.After(5 * time.Second):
+					zerolog_log.Warn().Str("task_id", taskID).Msg("Orphaned VM didn't stop, killing")
+					process.Process.Kill()
+				}
+				
+				// Remove from VMM manager's process map
+				e.vmmMgr.RemoveProcess(taskID)
+				
+				// Clean up socket file
+				socketPath := filepath.Join(e.config.SocketDir, taskID+".sock")
+				if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+					zerolog_log.Warn().Err(err).Str("socket", socketPath).Msg("Failed to remove socket")
+				}
+			}
+	}
+
+	orphanCount := len(runningProcesses) - len(activeTasks)
+	if orphanCount > 0 {
+		zerolog_log.Info().Int("orphaned", orphanCount).Msg("Orphaned VM cleanup completed")
 	}
 }
 

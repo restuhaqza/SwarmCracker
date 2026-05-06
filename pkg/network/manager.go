@@ -32,6 +32,7 @@ type NetworkManager struct {
 	peerCancel    context.CancelFunc
 	nodeDiscovery types.NodeDiscovery // SwarmKit node discovery provider
 	cniClient     *CNIClient    // CNI client for SwarmKit network attachments
+	pendingPeers  []string      // Peers queued before VXLAN init
 }
 
 // TapDevice represents a TAP device.
@@ -249,7 +250,7 @@ func NewNetworkManager(config types.NetworkConfig) types.NetworkManager {
 
 // Init initializes the network infrastructure (bridge, VXLAN).
 func (nm *NetworkManager) Init(ctx context.Context) error {
-	// Ensure bridge exists
+	// Ensure bridge exists (this also sets up VXLAN if enabled)
 	if err := nm.ensureBridge(ctx); err != nil {
 		return fmt.Errorf("failed to setup bridge: %w", err)
 	}
@@ -261,19 +262,12 @@ func (nm *NetworkManager) Init(ctx context.Context) error {
 		}
 	}
 
-	// Setup VXLAN overlay if enabled and configured
+	// VXLAN is already set up in ensureBridge() if enabled
+	// Just log status
 	if nm.config.VXLANEnabled && nm.vxlanMgr != nil {
-		phys, localIP, err := nm.getPhysicalInterface()
-		if err != nil {
-			log.Warn().Err(err).Msg("Failed to get physical interface for VXLAN")
-			return nil // Not fatal - VXLAN can be set up later
-		}
-
-		if err := nm.vxlanMgr.SetupVXLAN(phys, localIP); err != nil {
-			log.Warn().Err(err).Str("phys", phys).Str("localIP", localIP).Msg("Failed to setup VXLAN overlay")
-		} else {
-			log.Info().Str("bridge", nm.config.BridgeName).Str("phys", phys).Str("localIP", localIP).Msg("VXLAN overlay initialized")
-		}
+		log.Info().Str("bridge", nm.config.BridgeName).Msg("VXLAN overlay initialized")
+	} else if nm.config.VXLANEnabled {
+		log.Warn().Msg("VXLAN enabled but manager not initialized")
 	}
 
 	return nil
@@ -766,6 +760,18 @@ func (nm *NetworkManager) setupVXLANOverlay(ctx context.Context) error {
 		return fmt.Errorf("failed to setup VXLAN: %w", err)
 	}
 
+	// Apply any pending peers that were queued before VXLAN init
+	// Note: caller (ensureBridge) already holds nm.mu.Lock(), so we don't lock here
+	pending := nm.pendingPeers
+	nm.pendingPeers = nil
+
+	if len(pending) > 0 {
+		log.Info().Strs("peers", pending).Msg("Applying queued VXLAN peers")
+		if err := nm.vxlanMgr.UpdatePeers(pending); err != nil {
+			log.Warn().Err(err).Msg("Failed to apply queued VXLAN peers")
+		}
+	}
+
 	log.Info().Msg("VXLAN overlay configured")
 	return nil
 }
@@ -836,7 +842,12 @@ func (nm *NetworkManager) discoverPeerWorkers() []string {
 // UpdatePeers updates the VXLAN peer list.
 func (nm *NetworkManager) UpdatePeers(peers []string) error {
 	if nm.vxlanMgr == nil {
-		return fmt.Errorf("VXLAN manager not initialized")
+		// Queue peers for later when VXLAN is initialized
+		nm.mu.Lock()
+		nm.pendingPeers = peers
+		nm.mu.Unlock()
+		log.Info().Strs("peers", peers).Msg("VXLAN peers queued (manager not initialized)")
+		return nil
 	}
 	return nm.vxlanMgr.UpdatePeers(peers)
 }

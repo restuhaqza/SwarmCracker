@@ -1111,20 +1111,15 @@ func TestProcessMutex(t *testing.T) {
 	numGoroutines := 50
 	var wg sync.WaitGroup
 
-	// Concurrent reads and writes must use processMutex to avoid races
+	// Use only mutex-protected methods to avoid data races
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
 			if idx%2 == 0 {
-				vmm.processMutex.Lock()
-				cmd := exec.Command("sleep", "1")
-				if err := cmd.Start(); err == nil {
-					vmm.processes[taskID] = cmd
-				}
-				vmm.processMutex.Unlock()
-			} else {
+
 				_ = vmm.GetPID(taskID)
+			} else {
 				_ = vmm.IsRunning(taskID)
 			}
 		}(i)

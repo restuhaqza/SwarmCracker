@@ -2,6 +2,7 @@ package swarmkit
 
 import (
 	"context"
+	"time"
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -121,6 +122,9 @@ func TestExecutor_ErrorHandling(t *testing.T) {
 
 // TestController_Prepare_Errors tests error handling in Prepare
 func TestController_Prepare_Errors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	tests := []struct {
 		name        string
 		task        *api.Task
@@ -168,7 +172,8 @@ func TestController_Prepare_Errors(t *testing.T) {
 			ctrl, err := exec.Controller(tt.task)
 			require.NoError(t, err)
 
-			ctx := context.Background()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
 			err = ctrl.Prepare(ctx)
 
 			if tt.expectError {
@@ -184,6 +189,9 @@ func TestController_Prepare_Errors(t *testing.T) {
 
 // TestController_MultiplePrepareCalls tests idempotency of Prepare
 func TestController_MultiplePrepareCalls(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	exec, err := NewExecutor(&Config{
 		FirecrackerPath: "firecracker",
 		RootfsDir:       t.TempDir(),

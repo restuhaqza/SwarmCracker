@@ -1,60 +1,55 @@
-# Getting Started with SwarmCracker
+# Getting Started
 
-> Set up a SwarmCracker cluster in under 10 minutes.
+You'll need a machine with KVM. If you can run `ls /dev/kvm` and see a file, you're good.
 
 ---
 
-## Prerequisites
+## What You Need
 
 ### Hardware
 
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| Manager node | 1 vCPU, 1 GB RAM | 2 vCPU, 2 GB RAM |
-| Worker node | 2 vCPU, 4 GB RAM | 4 vCPU, 8 GB RAM |
+Manager node can be small — it mostly coordinates things. Workers need more since they actually run VMs.
+
+| Node | Minimum | Works Better |
+|------|---------|--------------|
+| Manager | 1 vCPU, 1 GB | 2 vCPU, 2 GB |
+| Worker | 2 vCPU, 4 GB | 4 vCPU, 8 GB |
 
 ### Software
 
-- **Linux** (Ubuntu 20.04+, Debian 11+, or KVM-compatible distro)
-- **KVM** — Hardware virtualization enabled
-- **Root access** — For bridge and Firecracker setup
+Ubuntu 20.04+ or Debian 11+ work well. Any KVM-compatible distro should do.
 
-### Verify KVM
+You need root access for setting up bridges and Firecracker.
+
+### Check KVM
 
 ```bash
-ls -la /dev/kvm                    # Must exist
+ls -la /dev/kvm                    # Must show a file
 lscpu | grep Virtualization        # VT-x (Intel) or AMD-V (AMD)
 ```
 
-### Verify Nested Virtualization (for Vagrant/libvirt testing)
-
-If running SwarmCracker inside a VM (e.g., Vagrant), nested virtualization must be enabled:
+If you're running inside a VM (like a Vagrant box), nested virtualization has to be on:
 
 ```bash
-# Check if nested virt is enabled
-cat /sys/module/kvm_intel/parameters/nested  # Should show 'Y'
+cat /sys/module/kvm_intel/parameters/nested  # Should be 'Y'
 
-# Enable if needed
+# If it's 'N':
 sudo modprobe kvm_intel nested=1
 ```
 
 ---
 
-## Installation
+## Install
 
-### Option 1: One-Line Install (Recommended)
+### Quick Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/docs/site/install.sh | sudo bash
 ```
 
-This installs:
-- Firecracker v1.15.1
-- Jailer (security sandbox)
-- SwarmCracker binaries
-- Default configuration
+This pulls Firecracker, the jailer, SwarmCracker binaries, and sets up defaults.
 
-### Option 2: Build from Source
+### Build It Yourself
 
 ```bash
 git clone https://github.com/restuhaqza/SwarmCracker
@@ -63,27 +58,26 @@ make build
 sudo make install
 ```
 
-See [Build Guide](../guides/advanced.md#build-from-source) for details.
+### The Kernel Thing
 
-### Setup Firecracker Kernel
+Firecracker needs an uncompressed ELF kernel at `/usr/share/firecracker/vmlinux`. 
 
-**Critical:** Firecracker requires an uncompressed ELF kernel. The kernel must be at `/usr/share/firecracker/vmlinux`.
+Don't try downloading from GitHub raw URLs — you'll get HTML, not a binary.
+
+Extract it from your host kernel instead:
 
 ```bash
-# Option A: Extract from host kernel (recommended)
 sudo mkdir -p /usr/share/firecracker
 ./test-automation/scripts/extract-vmlinux.sh /boot/vmlinuz-* /usr/share/firecracker/vmlinux
 
-# Verify
+# Check it worked
 file /usr/share/firecracker/vmlinux
-# Should show: ELF 64-bit LSB executable, x86-64
+# Should say: ELF 64-bit LSB executable, x86-64
 ```
 
-⚠️ **Do not download from GitHub raw URLs** — they return HTML pages, not binaries!
+### Test Cluster with Vagrant
 
-### Option 3: Vagrant Test Cluster
-
-For local development with a 3-node cluster:
+If you want to experiment locally:
 
 ```bash
 git clone https://github.com/restuhaqza/SwarmCracker
@@ -91,17 +85,15 @@ cd SwarmCracker
 vagrant up
 ```
 
-See [Developer Docs](../../dev/) for details.
-
 ---
 
-## Quick Start
+## Start the Cluster
 
-### 1. Initialize Manager
+### Manager Node
+
+The `--advertise-remote-api` flag is critical. Workers need to reach the manager, and without it they'll try to connect to `0.0.0.0` which won't work.
 
 ```bash
-# On manager node
-# IMPORTANT: Set --advertise-remote-api to your actual IP!
 MANAGER_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
 
 swarmd-firecracker --manager \
@@ -113,138 +105,96 @@ swarmd-firecracker --manager \
   --bridge-name swarm-br0
 ```
 
-This creates:
-- SwarmKit manager with Raft consensus
+This starts:
+- SwarmKit manager (Raft consensus for cluster state)
 - Control socket at `/var/run/swarmkit/swarm.sock`
-- TLS certificates for secure communication
-- Join tokens at `/var/lib/swarmkit/manager/join-tokens.txt`
+- TLS certificates
+- Join tokens saved to `/var/lib/swarmkit/manager/join-tokens.txt`
 
-⚠️ **Without `--advertise-remote-api`, workers cannot connect!**
-
-### 2. Get Join Token
+### Get the Join Token
 
 ```bash
 export SWARM_SOCKET=/var/run/swarmkit/swarm.sock
 swarmctl cluster inspect default
-
-# Output includes:
-# Join Tokens:
-#   Worker: SWMTKN-1-abc123...
-#   Manager: SWMTKN-1-def456...
 ```
 
-### 3. Join Workers
+Look for the Worker token in the output.
+
+### Join Workers
 
 ```bash
-# On each worker node
 swarmcracker join \
   --hostname worker-1 \
   --manager <manager-ip>:4242 \
   --token <WORKER_TOKEN>
 ```
 
-### 4. Verify Cluster
+### Check the Cluster
 
 ```bash
 swarmctl ls-nodes
-
-# Output:
-# ID            STATUS   HOSTNAME     AVAILABILITY
-# abc123        READY    manager-1    ACTIVE
-# def456        READY    worker-1     ACTIVE
-# ghi789        READY    worker-2     ACTIVE
 ```
+
+You should see all your nodes with `READY` status.
 
 ---
 
-## Deploy Services
+## Run Something
 
-### Create a Service
+### Deploy a Service
 
 ```bash
 swarmctl create-service nginx:latest
-
-# Output:
-# Service created: svc-nginx-143022
-# Image: nginx:latest
 ```
 
-### Scale Service
+### Scale It
 
 ```bash
 swarmctl scale svc-nginx-143022 3
 ```
 
-### Verify Tasks
+### See What's Running
 
 ```bash
 swarmctl ls-tasks
-
-# Each task is a Firecracker microVM
-# ID          SERVICE     STATUS    NODE
-# task-abc    nginx       RUNNING   worker-1
-# task-def    nginx       RUNNING   worker-2
-# task-ghi    nginx       RUNNING   worker-1
 ```
+
+Each task is a Firecracker microVM.
 
 ---
 
-## Architecture
+## What's Actually Happening
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    SwarmCracker Cluster                      │
-│                                                              │
-│   ┌──────────────┐                                           │
-│   │ Manager       │  SwarmKit control plane                  │
-│   │ swarmd        │  - Schedules tasks                       │
-│   └───────────────┘  - Maintains cluster state               │
-│          │ gRPC                                             │
-│    ┌─────┴─────────────────┐                               │
-│    │                       │                                │
-│ ┌──▼─────────┐  ┌─────────▼──┐                             │
-│ │ Worker-1    │  │ Worker-2    │                            │
-│ │ swarm-br0   │  │ swarm-br0   │  VXLAN overlay            │
-│ │ ┌───┐┌───┐ │  │ ┌───┐┌───┐ │                            │
-│ │ │VM1││VM2│ │  │ │VM3││VM4│ │                            │
-│ │ └───┘└───┘ │  │ └───┘└───┘ │                            │
-│ └─────────────┘  └─────────────┘                            │
-│                                                              │
-└─────────────────────────────────────────────────────────────┘
+Manager (swarmd)
+    │
+    │ gRPC: schedules tasks, maintains state
+    │
+┌───┴───────────────────┐
+│                       │
+Worker-1              Worker-2
+swarm-br0             swarm-br0
+┌───┐┌───┐            ┌───┐┌───┐
+│VM1││VM2│  ← VXLAN → │VM3││VM4│
+└───┘└───┘            └───┘└───┘
 ```
 
-**Key Components:**
-
-| Component | Purpose |
-|-----------|---------|
-| **SwarmKit Manager** | Scheduling, state management, Raft consensus |
-| **SwarmKit Worker** | Executes tasks via executor interface |
-| **Firecracker Executor** | SwarmCracker's custom executor (microVMs) |
-| **swarm-br0** | Linux bridge for VM networking |
-| **VXLAN Overlay** | Cross-node VM communication |
+- Manager runs SwarmKit control plane
+- Workers run swarmd-firecracker, which turns SwarmKit tasks into microVMs
+- `swarm-br0` is a Linux bridge for local VM networking
+- VXLAN connects VMs across different nodes
 
 ---
 
-## Next Steps
-
-- [Configuration Guide](../guides/configuration.md) — Customize settings
-- [SwarmKit Guide](../guides/swarmkit.md) — Full service management
-- [Networking Guide](../guides/networking.md) — VXLAN, TAP devices
-- [Security Guide](../guides/security.md) — Jailer hardening
-
----
-
-## Troubleshooting
+## Common Problems
 
 ### Kernel: Invalid ELF Magic Number
 
-This means the kernel file is not a valid ELF binary (likely HTML or corrupted).
+The kernel file isn't actually a kernel. Probably HTML from a bad download.
 
 ```bash
-# Check kernel file type
 file /usr/share/firecracker/vmlinux
-
-# If it shows "HTML document", re-extract from host:
+# If it says "HTML document", re-extract from host kernel
 ./test-automation/scripts/extract-vmlinux.sh /boot/vmlinuz-* /usr/share/firecracker/vmlinux
 ```
 
@@ -255,58 +205,42 @@ sudo modprobe kvm_intel   # Intel
 sudo modprobe kvm_amd     # AMD
 ```
 
-### Missing KVM Capabilities (Nested Virtualization)
+### Nested KVM Issues
 
-If running inside a VM:
+Running inside a VM? Check:
 
 ```bash
-# Check nested virt
 cat /sys/module/kvm_intel/parameters/nested
 
-# Enable if 'N'
+# If it's 'N':
 sudo modprobe -r kvm_intel
 sudo modprobe kvm_intel nested=1
-
-# Or add to /etc/modprobe.d/kvm-nested.conf:
-# options kvm_intel nested=1
 ```
 
-### Node Won't Join
+Or add `options kvm_intel nested=1` to `/etc/modprobe.d/kvm-nested.conf`.
+
+### Workers Can't Connect
 
 ```bash
-# Check manager is reachable
-curl http://<manager-ip>:4242
-
-# Verify token
-sudo cat /var/lib/swarmkit/manager/join-tokens.txt
-
-# Check manager advertise address is set
-ps aux | grep swarmd | grep advertise
+curl http://<manager-ip>:4242   # Check manager reachable
+ps aux | grep swarmd | grep advertise   # Verify advertise flag set
 ```
 
-### Image Extraction Fails
-
-```bash
-# Ensure Docker is installed and running
-sudo systemctl status docker
-
-# Pull image manually to verify
-sudo docker pull nginx:alpine
-```
+If the manager shows `advertise-remote-api 0.0.0.0:4242`, that's wrong. It needs the actual IP.
 
 ### Services Not Starting
 
 ```bash
-# Check node status
-swarmctl ls-nodes
-
-# Check executor logs
-journalctl -u swarmd -f
-
-# Verify kernel is ELF
-file /usr/share/firecracker/vmlinux
+swarmctl ls-nodes           # Check nodes are ready
+journalctl -u swarmd -f     # Watch logs
+file /usr/share/firecracker/vmlinux   # Verify kernel is ELF
 ```
 
 ---
 
-**See Also:** [CLI Reference](../reference/cli.md) | [Architecture](../architecture/)
+## Next
+
+- [Configuration](guides/configuration.md) — More options
+- [Networking](guides/networking.md) — VXLAN setup
+- [Security](guides/security.md) — Jailer hardening
+- [CLI Reference](reference/cli.md) — All commands

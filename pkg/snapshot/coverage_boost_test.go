@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 )
@@ -150,5 +151,211 @@ func TestMockProcessHandle_KillAndWait(t *testing.T) {
 	}
 	if !calledWait {
 		t.Error("WaitFunc should have been called")
+	}
+}
+
+// TestDefaultFirecrackerAPIClient_CreateSnapshot tests CreateSnapshot via impl swap
+func TestDefaultFirecrackerAPIClient_CreateSnapshot(t *testing.T) {
+	orig := callSnapshotCreateImpl
+	defer func() { callSnapshotCreateImpl = orig }()
+
+	callSnapshotCreateImpl = func(ctx context.Context, socketPath, statePath, memoryPath string) error {
+		return nil
+	}
+
+	client := NewDefaultFirecrackerAPIClient()
+	err := client.CreateSnapshot(context.Background(), "/tmp/sock", "/tmp/state", "/tmp/mem")
+	if err != nil {
+		t.Errorf("CreateSnapshot should succeed with mock: %v", err)
+	}
+}
+
+// TestDefaultFirecrackerAPIClient_CreateSnapshot_Error tests CreateSnapshot error
+func TestDefaultFirecrackerAPIClient_CreateSnapshot_Error(t *testing.T) {
+	orig := callSnapshotCreateImpl
+	defer func() { callSnapshotCreateImpl = orig }()
+
+	callSnapshotCreateImpl = func(ctx context.Context, socketPath, statePath, memoryPath string) error {
+		return errors.New("snapshot failed")
+	}
+
+	client := NewDefaultFirecrackerAPIClient()
+	err := client.CreateSnapshot(context.Background(), "/tmp/sock", "/tmp/state", "/tmp/mem")
+	if err == nil {
+		t.Error("CreateSnapshot should fail with mock error")
+	}
+}
+
+// TestDefaultFirecrackerAPIClient_LoadSnapshot tests LoadSnapshot via impl swap
+func TestDefaultFirecrackerAPIClient_LoadSnapshot(t *testing.T) {
+	orig := callSnapshotLoadImpl
+	defer func() { callSnapshotLoadImpl = orig }()
+
+	callSnapshotLoadImpl = func(ctx context.Context, socketPath, statePath, memoryPath string) error {
+		return nil
+	}
+
+	client := NewDefaultFirecrackerAPIClient()
+	err := client.LoadSnapshot(context.Background(), "/tmp/sock", "/tmp/state", "/tmp/mem")
+	if err != nil {
+		t.Errorf("LoadSnapshot should succeed with mock: %v", err)
+	}
+}
+
+// TestDefaultFirecrackerAPIClient_StartInstance tests StartInstance via impl swap
+func TestDefaultFirecrackerAPIClient_StartInstance(t *testing.T) {
+	orig := callInstanceStartImpl
+	defer func() { callInstanceStartImpl = orig }()
+
+	callInstanceStartImpl = func(ctx context.Context, socketPath string) error {
+		return nil
+	}
+
+	client := NewDefaultFirecrackerAPIClient()
+	err := client.StartInstance(context.Background(), "/tmp/sock")
+	if err != nil {
+		t.Errorf("StartInstance should succeed with mock: %v", err)
+	}
+}
+
+// TestDefaultFirecrackerAPIClient_WaitForSocket tests WaitForSocket via impl swap
+func TestDefaultFirecrackerAPIClient_WaitForSocket(t *testing.T) {
+	orig := waitForSocketImpl
+	defer func() { waitForSocketImpl = orig }()
+
+	waitForSocketImpl = func(socketPath string, timeout time.Duration) error {
+		return nil
+	}
+
+	client := NewDefaultFirecrackerAPIClient()
+	err := client.WaitForSocket("/tmp/sock", 5*time.Second)
+	if err != nil {
+		t.Errorf("WaitForSocket should succeed with mock: %v", err)
+	}
+}
+
+// TestDefaultHTTPClientFactory_NewUnixClient tests NewUnixClient via impl
+func TestDefaultHTTPClientFactory_NewUnixClient(t *testing.T) {
+	factory := NewDefaultHTTPClientFactory()
+	client := factory.NewUnixClient("/tmp/test.sock", 5*time.Second)
+	if client == nil {
+		t.Error("NewUnixClient should return non-nil client")
+	}
+}
+
+// TestMockProcessExecutor_LookPath_Success tests mock LookPath
+func TestMockProcessExecutor_LookPath_Success(t *testing.T) {
+	exec := &MockProcessExecutor{
+		LookPathFunc: func(file string) (string, error) {
+			return "/usr/bin/" + file, nil
+		},
+	}
+
+	path, err := exec.LookPath("firecracker")
+	if err != nil {
+		t.Errorf("LookPath should succeed: %v", err)
+	}
+	if path != "/usr/bin/firecracker" {
+		t.Errorf("Expected /usr/bin/firecracker, got %s", path)
+	}
+}
+
+// TestMockProcessExecutor_LookPath_Error tests mock LookPath error
+func TestMockProcessExecutor_LookPath_Error(t *testing.T) {
+	exec := &MockProcessExecutor{
+		LookPathFunc: func(file string) (string, error) {
+			return "", errors.New("not found")
+		},
+	}
+
+	_, err := exec.LookPath("nonexistent")
+	if err == nil {
+		t.Error("LookPath should fail for nonexistent binary")
+	}
+}
+
+// TestMockProcessExecutor_StartCommand_Success tests mock StartCommand
+func TestMockProcessExecutor_StartCommand_Success(t *testing.T) {
+	exec := &MockProcessExecutor{
+		StartCommandFunc: func(name string, arg ...string) (ProcessHandle, error) {
+			return &MockProcessHandle{pid: 12345}, nil
+		},
+	}
+
+	handle, err := exec.StartCommand("firecracker", "--api-sock", "/tmp/sock")
+	if err != nil {
+		t.Errorf("StartCommand should succeed: %v", err)
+	}
+	if handle.Pid() != 12345 {
+		t.Errorf("Expected Pid 12345, got %d", handle.Pid())
+	}
+}
+
+// TestMockProcessHandle_Kill_Error tests mock Kill error
+func TestMockProcessHandle_Kill_Error(t *testing.T) {
+	handle := &MockProcessHandle{
+		KillFunc: func() error { return errors.New("kill failed") },
+	}
+
+	if err := handle.Kill(); err == nil {
+		t.Error("Kill should return error")
+	}
+}
+
+// TestMockProcessHandle_Wait_Error tests mock Wait error
+func TestMockProcessHandle_Wait_Error(t *testing.T) {
+	handle := &MockProcessHandle{
+		WaitFunc: func() error { return errors.New("wait failed") },
+	}
+
+	if err := handle.Wait(); err == nil {
+		t.Error("Wait should return error")
+	}
+}
+
+// TestMockHTTPClient_Do_Success tests mock HTTP Do
+func TestMockHTTPClient_Do_Success(t *testing.T) {
+	client := &MockHTTPClient{
+		DoFunc: func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: 200}, nil
+		},
+	}
+
+	req, _ := http.NewRequest("GET", "http://test", nil)
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Errorf("Do should succeed: %v", err)
+	}
+	if resp.StatusCode != 200 {
+		t.Errorf("Expected 200, got %d", resp.StatusCode)
+	}
+}
+
+// TestMockHTTPClient_Do_Error tests mock HTTP Do error
+func TestMockHTTPClient_Do_Error(t *testing.T) {
+	client := &MockHTTPClient{
+		DoFunc: func(req *http.Request) (*http.Response, error) {
+			return nil, errors.New("connection refused")
+		},
+	}
+
+	req, _ := http.NewRequest("GET", "http://test", nil)
+	_, err := client.Do(req)
+	if err == nil {
+		t.Error("Do should return error")
+	}
+}
+
+// TestMockHTTPClientFactory_NewUnixClient_Success tests mock factory
+func TestMockHTTPClientFactory_NewUnixClient_Success(t *testing.T) {
+	factory := &MockHTTPClientFactory{
+		NewUnixClientFunc: func(socketPath string, timeout time.Duration) HTTPClient {
+			return &MockHTTPClient{}
+		},
+	}
+
+	client := factory.NewUnixClient("/tmp/sock", 5*time.Second)
+	if client == nil {
+		t.Error("NewUnixClient should return non-nil client")
 	}
 }

@@ -20,6 +20,9 @@ import (
 
 // TestImagePreparer_Prepare_CacheHitMiss tests cache behavior
 func TestImagePreparer_Prepare_CacheHitMiss(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
 	tests := []struct {
 		name          string
 		setupFunc     func(*ImagePreparer, *types.Task)

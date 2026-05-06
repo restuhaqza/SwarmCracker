@@ -87,7 +87,7 @@ func (m *MockVMMManager) Describe(ctx context.Context, task *types.Task) (*types
 // MockImagePreparer is a mock implementation for testing.
 type MockImagePreparer struct {
 	PrepareFunc  func(ctx context.Context, task *types.Task) error
-	CleanupFunc  func(ctx context.Context, taskID string) error
+	CleanupFunc  func(ctx context.Context, keepDays int) (filesRemoved int, bytesFreed int64, err error)
 }
 
 func (m *MockImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
@@ -97,11 +97,11 @@ func (m *MockImagePreparer) Prepare(ctx context.Context, task *types.Task) error
 	return nil
 }
 
-func (m *MockImagePreparer) Cleanup(ctx context.Context, taskID string) error {
+func (m *MockImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemoved int, bytesFreed int64, err error) {
 	if m.CleanupFunc != nil {
-		return m.CleanupFunc(ctx, taskID)
+		return m.CleanupFunc(ctx, keepDays)
 	}
-	return nil
+	return 0, 0, nil
 }
 
 // MockNetworkManager is a mock implementation for testing.
