@@ -1111,16 +1111,18 @@ func TestProcessMutex(t *testing.T) {
 	numGoroutines := 50
 	var wg sync.WaitGroup
 
-	// Concurrent writes
+	// Concurrent reads and writes must use processMutex to avoid races
 	for i := 0; i < numGoroutines; i++ {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
-			cmd := exec.Command("sleep", "1")
-			if idx % 2 == 0 {
+			if idx%2 == 0 {
+				vmm.processMutex.Lock()
+				cmd := exec.Command("sleep", "1")
 				if err := cmd.Start(); err == nil {
 					vmm.processes[taskID] = cmd
 				}
+				vmm.processMutex.Unlock()
 			} else {
 				_ = vmm.GetPID(taskID)
 				_ = vmm.IsRunning(taskID)
@@ -1129,7 +1131,15 @@ func TestProcessMutex(t *testing.T) {
 	}
 
 	wg.Wait()
-	// Test passes if no race condition detected (go test -race)
+
+	// Cleanup: stop any started processes
+	vmm.processMutex.Lock()
+	for _, cmd := range vmm.processes {
+		if cmd.Process != nil {
+			cmd.Process.Kill()
+		}
+	}
+	vmm.processMutex.Unlock()
 }
 
 // TestVMMManagerConfigDefaultsUnit tests default value handling in VMMManagerConfig
