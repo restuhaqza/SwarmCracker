@@ -5,6 +5,7 @@
 Firecracker MicroVMs with SwarmKit Orchestration
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/restuhaqza/swarmcracker)](https://goreportcard.com/report/github.com/restuhaqza/swarmcracker)
+[![Coverage](https://codecov.io/gh/restuhaqza/swarmcracker/branch/main/graph/badge.svg)](https://codecov.io/gh/restuhaqza/swarmcracker)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/restuhaqza/swarmcracker)](https://github.com/restuhaqza/SwarmCracker/releases)
 
@@ -80,7 +81,7 @@ curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/instal
 
 - Linux with KVM (`ls /dev/kvm`)
 - Firecracker v1.14+ (auto-installed)
-- Go 1.24+ (build only)
+- Go 1.25+ (build only)
 
 ### Build
 

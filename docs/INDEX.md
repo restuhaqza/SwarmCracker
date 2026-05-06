@@ -95,7 +95,7 @@ swarmctl ls-nodes
 | SwarmCracker | v0.6.0 |
 | Firecracker | v1.15.1 |
 | SwarmKit | v2.1.1 |
-| Go | 1.21+ |
+| Go | 1.25+ |
 
 ---
 
@@ -109,4 +109,4 @@ swarmctl ls-nodes
 
 ---
 
-**Last Updated**: 2026-04-09 | **Doc Version**: 2.0
+**Last Updated**: 2026-05-06 | **Doc Version**: 2.1

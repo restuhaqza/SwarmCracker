@@ -190,4 +190,4 @@ vagrant ssh-config worker1
 ---
 
 **Fixed on:** 2026-02-04
-**Tested with:** DigitalOcean Ubuntu 22.04, Firecracker v1.14.1, Go 1.24.0
+**Tested with:** DigitalOcean Ubuntu 22.04, Firecracker v1.15.1, Go 1.25.0

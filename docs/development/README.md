@@ -8,7 +8,7 @@
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.25+
 - Git
 - Make
 - golangci-lint (for linting)
@@ -219,7 +219,7 @@ make uninstall     # Remove binaries
 ### GoLand
 
 - Enable golangci-lint
-- Configure Go 1.21 SDK
+- Configure Go 1.25 SDK
 
 ---
 
@@ -229,7 +229,7 @@ make uninstall     # Remove binaries
 
 ```bash
 # Check Go version
-go version  # Must be 1.21+
+go version  # Must be 1.25+
 
 # Clear module cache
 go clean -modcache

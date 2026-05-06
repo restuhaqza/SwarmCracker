@@ -59,7 +59,7 @@ That's it. You're ready to hack.
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Go | 1.24+ | Check with `go version` |
+| Go | 1.25+ | Check with `go version` |
 | make | any | Build automation |
 | git | any | |
 | Docker / Podman | any | For integration tests |
@@ -290,8 +290,8 @@ log.Info().Msgf("Started VM %s with %d CPUs", vmID, cpus)
 
 | Package | Target |
 |---------|--------|
-| Core (executor, translator, lifecycle) | 80%+ |
-| Network, storage, image | 70%+ |
+| Core (executor, translator, lifecycle) | 85%+ |
+| Network, storage, image | 75%+ |
 | Config, types | 90%+ |
 
 ### Unit Tests

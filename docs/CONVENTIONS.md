@@ -42,8 +42,7 @@ Filenames should be concise but clearly describe the content.
 ### 4. Special Files (Exceptions)
 These files use UPPERCASE by convention:
 - `README.md` - Project/folder documentation
-- `INDEX.md` - Documentation index
-- `DOCS.md` - Master documentation index
+- `INDEX.md` - Documentation index (master index)
 - `AGENTS.md` - Agent configuration
 - `CONTRIBUTING.md` - Contribution guidelines
 
@@ -55,7 +54,7 @@ These files use UPPERCASE by convention:
 ```
 projects/swarmcracker/
 ├── README.md              ✅ Standard
-├── DOCS.md                ✅ Standard
+├── INDEX.md               ✅ Standard (master documentation index)
 ├── AGENTS.md              ✅ Standard
 ├── CONTRIBUTING.md        ✅ Standard
 └── LICENSE                ✅ Standard
@@ -65,7 +64,7 @@ projects/swarmcracker/
 ```
 docs/
 ├── README.md              ✅ Standard
-├── INDEX.md               ✅ Standard
+├── INDEX.md               ✅ Standard (master index for docs)
 ├── vxlan-overlay.md       ✅ Kebab-case
 ├── architecture/
 │   ├── README.md
@@ -199,7 +198,6 @@ Before committing a new `.md` file:
 | Short & clear | `testing.md` | ✅ Required |
 | README uppercase | `README.md` | ✅ Exception |
 | INDEX uppercase | `INDEX.md` | ✅ Exception |
-| DOCS uppercase | `DOCS.md` | ✅ Exception |
 
 ---
 

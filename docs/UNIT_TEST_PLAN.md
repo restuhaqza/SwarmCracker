@@ -8,40 +8,43 @@
 
 ### Coverage Overview
 
-| Package | Source Files | Test Files | Exported Funcs | Tests | Status |
-|---------|-------------|------------|---------------|-------|--------|
-| `pkg/config` | 1 | 2 | 3 | 12 | ✅ Good |
-| `pkg/translator` | 1 | 2 | 1 | 6 | ✅ Good |
-| `pkg/jailer` | 2 | 2 | 4 | 22 | ✅ Good |
-| `pkg/snapshot` | 1 | 1 | 2 | 23 | ✅ Good |
-| `pkg/security` | 3 | 3 | 7 | 28 | ✅ Good |
-| `pkg/metrics` | 1 | 1 | 1 | 7 | ✅ Good |
-| `pkg/storage` | 6 | 4 | 5 | 28 | ⚠️ Gaps |
-| `pkg/network` | 3 | 10 | 3 | 8 | ⚠️ Gaps |
-| `pkg/lifecycle` | 1 | 7 | 1 | 14 | ✅ Good |
-| `pkg/image` | 2 | 7 | 1 | 13 | ✅ Good |
-| `pkg/swarmkit` | 3 | 5 | 5 | 1 | 🔴 Critical |
-| `pkg/executor` | 1 | 1 | 1 | 10 | ✅ Good |
-| `pkg/runtime` | 1 | 0 | 1 | 0 | 🔴 Critical |
+| Package | Coverage | Status |
+|---------|----------|--------|
+| translator | 97.4% | ✅ Excellent |
+| executor | 95.2% | ✅ Excellent |
+| lifecycle | 91.6% | ✅ Excellent |
+| runtime | 88.9% | ✅ Good |
+| config | 88.1% | ✅ Good |
+| discovery | 87.8% | ✅ Good |
+| jailer | 87.4% | ✅ Good |
+| metrics | 88.1% | ✅ Good |
+| network | 62.1% | 🟡 Needs work |
+| swarmkit | 68.4% | 🟡 Needs work |
+| snapshot | 69.7% | 🟡 Needs work |
+| security | 74.7% | 🟡 Needs work |
+| storage | 76.4% | 🟡 Needs work |
+| image | 71.2% | 🟡 Needs work |
+
+**Overall target: 85%**
 
 ### Priority Classification
 
 | Priority | Packages | Reason |
 |----------|----------|--------|
-| **P0 — Critical** | `swarmkit/vmm`, `swarmkit/translator`, `runtime/state` | Core orchestration, zero tests, highest complexity |
-| **P1 — High** | `network/vxlan`, `storage/volume_block`, `storage/credential_store` | Cross-node networking, persistent storage, zero tests |
-| **P2 — Medium** | `storage/driver`, `storage/volume_meta`, `storage/volume_quota` | Infrastructure, partial coverage |
-| **P3 — Low** | Existing well-tested packages | Add edge cases, error paths, fuzz targets |
+| **P0 — Critical** | `network/vxlan`, `swarmkit/vmm` | Cross-node networking, core orchestration — lowest coverage, highest impact |
+| **P1 — High** | `snapshot`, `security`, `storage`, `image` | Infrastructure, security — moderate coverage, needs improvement |
+| **P2 — Medium** | `storage/driver`, `storage/volume_meta`, `storage/volume_quota` | Storage subsystem — partial coverage |
+| **P3 — Low** | `translator`, `executor`, `lifecycle`, `config`, `discovery`, `jailer`, `metrics`, `runtime` | Already well-tested — add edge cases, error paths, fuzz targets |
 
 ---
 
 ## Phase 1: Critical (P0) — Core Orchestration
 
-### 1.1 `pkg/swarmkit/vmm` — VMM Manager (831 LOC, 2 exported funcs, 0 tests)
+### 1.1 `pkg/swarmkit/vmm` — VMM Manager (831 LOC, 2 exported funcs, ~68% coverage)
 
 **Why critical:** Manages Firecracker VM processes. Start/stop/configure are the most impactful operations. If VMMManager fails, nothing runs.
 
-**Test file:** `pkg/swarmkit/vmm_test.go` (already exists but empty/unused)
+**Test file:** `pkg/swarmkit/vmm_test.go` — needs expanded coverage
 
 ```
 Test Cases:
@@ -102,11 +105,11 @@ Test Cases:
 
 ---
 
-### 1.2 `pkg/swarmkit/translator` — Task Translator (163 LOC, 1 exported func, 0 tests)
+### 1.2 `pkg/swarmkit/translator` — Task Translator (163 LOC, 1 exported func, ~97% coverage)
 
 **Why critical:** Converts SwarmKit tasks to Firecracker VM configs. Wrong translation = broken VMs.
 
-**Test file:** `pkg/swarmkit/translator_test.go` (needs creation)
+**Test file:** `pkg/swarmkit/translator_test.go` — maintain excellent coverage
 
 ```
 Test Cases:
@@ -138,11 +141,11 @@ Test Cases:
 
 ---
 
-### 1.3 `pkg/runtime/state` — State Manager (273 LOC, 1 exported func, 0 tests)
+### 1.3 `pkg/runtime/state` — State Manager (273 LOC, 1 exported func, ~89% coverage)
 
 **Why critical:** Tracks VM lifecycle state across the system. State bugs cause ghost VMs or lost tasks.
 
-**Test file:** `pkg/runtime/state_test.go` (needs creation)
+**Test file:** `pkg/runtime/state_test.go` — maintain good coverage
 
 ```
 Test Cases:
@@ -424,11 +427,10 @@ Create fuzz targets in test/fuzz/:
 ### Sprint 1 (P0 — ~3-4 days)
 | Day | Task | Files |
 |-----|------|-------|
-| 1 | `swarmkit/vmm_test.go` — constructor + StartVM/StopVM | New tests |
-| 2 | `swarmkit/vmm_test.go` — GetVMStatus, ListVMs, ConfigureVM, Cleanup | New tests |
-| 3 | `swarmkit/translator_test.go` — full coverage | New file |
-| 3 | `runtime/state_test.go` — constructor + transitions | New file |
-| 4 | `runtime/state_test.go` — persistence + concurrency | New tests |
+| 1 | `network/vxlan_test.go` — StaticPeerStore | New file |
+| 2 | `network/vxlan_test.go` — VXLANManager (mocked) | New tests |
+| 3 | `swarmkit/vmm_test.go` — expand coverage to 85%+ | Extend tests |
+| 4 | `swarmkit/translator_test.go` — maintain 97%+ coverage | Extend tests |
 
 ### Sprint 2 (P1 — ~3-4 days)
 | Day | Task | Files |
@@ -577,7 +579,7 @@ test-unit:
     - uses: actions/checkout@v4
     - uses: actions/setup-go@v5
       with:
-        go-version: '1.24'
+        go-version: '1.25'
     - run: make test-quick
     - run: make lint
     
@@ -586,14 +588,14 @@ test-unit-coverage:
   steps:
     - uses: actions/checkout@v4
     - uses: actions/setup-go@v5
-    - with:
-        go-version: '1.24'
+      with:
+        go-version: '1.25'
     - run: go test -short -coverprofile=coverage.out ./pkg/...
     - name: Check coverage threshold
       run: |
         COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print $3}' | tr -d '%')
-        if (( $(echo "$COVERAGE < 70" | bc -l) )); then
-          echo "Coverage $COVERAGE% is below 70% threshold"
+        if (( $(echo "$COVERAGE < 85" | bc -l) )); then
+          echo "Coverage $COVERAGE% is below 85% threshold"
           exit 1
         fi
 ```

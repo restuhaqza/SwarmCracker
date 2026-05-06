@@ -11,8 +11,8 @@ This file helps AI agents (and humans) understand the SwarmCracker project setup
 **Key Value:** Strong KVM-based isolation without Kubernetes complexity.
 
 **Repo:** github.com/restuhaqza/swarmcracker
-**Language:** Go 1.21+
-**Status:** v0.1.0-alpha (scaffolded, functional)
+**Language:** Go 1.25+
+**Status:** v0.6.0 — actively developed
 
 ---
 
@@ -39,12 +39,19 @@ MicroVM (isolated kernel + workload)
 | Component | Package | Purpose | Status |
 |-----------|---------|---------|--------|
 | **Executor** | `pkg/executor` | Main executor implementing SwarmKit interface | 95.2% coverage |
-| **Translator** | `pkg/translator` | Converts SwarmKit tasks to Firecracker config | 98.1% coverage |
-| **Config** | `pkg/config` | Configuration management with validation | 87.3% coverage |
-| **Lifecycle** | `pkg/lifecycle` | VM start/stop/monitor via Firecracker API | 54.4% coverage |
-| **Image** | `pkg/image` | OCI image → root filesystem conversion | 61.2% coverage |
-| **Network** | `pkg/network` | TAP device & bridge management | 35.1% coverage |
-| **Snapshot** | `pkg/snapshot` | VM snapshot/restore lifecycle | ✅ Production ready |
+| **Translator** | `pkg/translator` | Converts SwarmKit tasks to Firecracker config | 97.4% coverage |
+| **Config** | `pkg/config` | Configuration management with validation | 88.1% coverage |
+| **Lifecycle** | `pkg/lifecycle` | VM start/stop/monitor via Firecracker API | 91.6% coverage |
+| **Runtime** | `pkg/runtime` | Runtime utilities and helpers | 88.9% coverage |
+| **Discovery** | `pkg/discovery` | Service discovery mechanisms | 87.8% coverage |
+| **Metrics** | `pkg/metrics` | Prometheus metrics collection | 88.1% coverage |
+| **Jailer** | `pkg/jailer` | Security sandboxing via jailer | 87.4% coverage |
+| **Image** | `pkg/image` | OCI image → root filesystem conversion | 71.2% coverage |
+| **Network** | `pkg/network` | TAP device & bridge management | 62.1% coverage |
+| **Security** | `pkg/security` | Security policies and seccomp | 74.7% coverage |
+| **Storage** | `pkg/storage` | Volume driver system | 76.4% coverage |
+| **Snapshot** | `pkg/snapshot` | VM snapshot/restore lifecycle | 69.7% coverage |
+| **SwarmKit** | `pkg/swarmkit` | SwarmKit API integration | 68.4% coverage |
 | **Types** | `pkg/types` | Shared interfaces and data structures | Complete |
 
 ### Data Flow
@@ -57,6 +64,9 @@ MicroVM (isolated kernel + workload)
 6. **VMM Manager** creates Firecracker socket, configures VM
 7. **Firecracker** launches microVM via KVM
 8. **Executor** monitors VM status, reports back to SwarmKit
+9. **Discovery** registers service instances for discovery
+10. **Metrics** exposes Prometheus metrics for monitoring
+11. **Snapshot** captures VM state for fast restore (optional)
 
 ---
 
@@ -65,28 +75,37 @@ MicroVM (isolated kernel + workload)
 ```
 swarmcracker/
 ├── cmd/
-│   └── swarmcracker/
-│       └── main.go                 # CLI tool (cobra-based)
+│   ├── swarmcracker/               # Main orchestration CLI
+│   ├── swarmd-firecracker/         # SwarmKit agent with FC executor
+│   └── swarmcracker-agent/         # Agent daemon
 ├── pkg/                            # Core packages
 │   ├── executor/                   # Main executor
 │   ├── translator/                 # Task → VM config
 │   ├── config/                     # Configuration
 │   ├── lifecycle/                  # VM lifecycle
+│   ├── runtime/                    # Runtime utilities
+│   ├── discovery/                  # Service discovery
+│   ├── metrics/                    # Prometheus metrics
 │   ├── image/                      # Image preparation
 │   ├── network/                    # Network management
+│   ├── security/                   # Security policies
+│   ├── jailer/                     # Jailer sandboxing
+│   ├── storage/                    # Volume driver system
+│   ├── snapshot/                   # VM snapshots
+│   ├── swarmkit/                   # SwarmKit API integration
 │   └── types/                      # Shared types
 ├── test/
-│   └── mocks/                      # Mock implementations
+│   ├── mocks/                      # Mock implementations
+│   ├── integration/                # Integration tests
+│   └── e2e/                        # End-to-end tests
+├── infrastructure/                 # Ansible playbooks, Terraform
 ├── docs/                           # Documentation
-│   ├── ARCHITECTURE.md             # Detailed architecture
-│   ├── INSTALL.md                  # Installation guide
-│   ├── CONFIG.md                   # Configuration reference
-│   ├── TESTING.md                  # Testing guide
-│   ├── DEVELOPMENT.md              # Development workflow
-│   └── reports/                    # Test coverage reports
+│   ├── guides/                    # How-to guides
+│   ├── architecture/              # Design docs
+│   ├── development/                # Contributor docs
+│   └── getting-started/            # Setup guides
 ├── build/                          # Build output (gitignored)
 ├── README.md                       # Main overview
-├── PROJECT.md                      # Status & roadmap
 ├── CONTRIBUTING.md                 # Contribution guidelines
 ├── Makefile                        # Build system
 ├── go.mod                          # Go module definition
@@ -98,13 +117,12 @@ swarmcracker/
 | File | Purpose |
 |------|---------|
 | `README.md` | Main overview, features, quick start |
-| `PROJECT.md` | Project status, roadmap, progress |
 | `Makefile` | Build, test, install targets |
-| `go.mod` | Go dependencies (requires 1.21+) |
+| `go.mod` | Go dependencies (requires 1.25+) |
 | `cmd/swarmcracker/main.go` | CLI tool entry point |
 | `pkg/executor/executor.go` | Main executor logic |
 | `pkg/config/config.go` | Configuration structures |
-| `docs/ARCHITECTURE.md` | System design & components |
+| `docs/INDEX.md` | Documentation index |
 
 ---
 
@@ -211,12 +229,20 @@ swarmcracker --config /custom/config.yaml run nginx:latest
 
 | Package | Coverage | Status |
 |---------|----------|--------|
-| translator | 98.1% | ✅ Excellent |
+| translator | 97.4% | ✅ Excellent |
 | executor | 95.2% | ✅ Excellent |
-| config | 87.3% | ✅ Good |
-| lifecycle | 54.4% | ⚠️ Needs work |
-| image | 61.2% | ⚠️ Needs work |
-| network | 35.1% | ⚠️ Needs work |
+| lifecycle | 91.6% | ✅ Excellent |
+| runtime | 88.9% | ✅ Good |
+| config | 88.1% | ✅ Good |
+| discovery | 87.8% | ✅ Good |
+| jailer | 87.4% | ✅ Good |
+| metrics | 88.1% | ✅ Good |
+| storage | 76.4% | ⚠️ Improving |
+| security | 74.7% | ⚠️ Improving |
+| image | 71.2% | ⚠️ Improving |
+| snapshot | 69.7% | ⚠️ Improving |
+| swarmkit | 68.4% | ⚠️ Improving |
+| network | 62.1% | ⚠️ Needs work |
 
 ### Running Specific Tests
 
@@ -410,10 +436,7 @@ snapshot:
 
 ### Documentation
 
-- `docs/snapshot-cli-guide.md` - CLI usage guide
-- `docs/snapshot-complete.md` - Complete workflow
-- `docs/snapshot-resolution.md` - Issue resolution
-- `docs/snapshot-test-report.md` - Test results
+- `docs/guides/snapshots.md` - Snapshot CLI usage and workflows
 
 ### Known Limitations
 
@@ -440,13 +463,14 @@ require (
     github.com/rs/zerolog v1.33.0        // Logging
     gopkg.in/yaml.v3 v3.0.1              // Config parsing
     github.com/spf13/cobra v1.10.2       // CLI framework
+    github.com/google/go-containerregistry v0.20.3 // OCI image handling
 )
 ```
 
 ### System Dependencies
 
-- **Go 1.21+** - Language runtime
-- **Firecracker v1.0.0+** - MicroVM VMM
+- **Go 1.25+** - Language runtime
+- **Firecracker v1.14.0+** - MicroVM VMM
 - **KVM** - Hardware virtualization (`/dev/kvm`)
 - **Linux** - Required OS (KVM is Linux-only)
 
@@ -487,17 +511,9 @@ require (
 
 ### Current Focus
 
-1. **CLI completion** - Full `swarmcracker` CLI implementation
-2. **Test coverage** - Improve lifecycle, image, network packages
-3. **Integration tests** - Real Firecracker testing
-
-### Next Steps
-
-1. End-to-end Firecracker integration
-2. SwarmKit agent integration
-3. Security hardening (jailer integration)
-4. Performance optimization
-5. Alpha release (v0.2.0)
+1. **Test coverage improvement** - Targeting 85% overall coverage
+2. **CI/CD enhancement** - GitHub Actions workflows for testing and releases
+3. **Documentation updates** - Keeping docs in sync with code
 
 ---
 
@@ -531,15 +547,15 @@ require (
 ### Documentation
 
 - **Quick start**: `README.md`
-- **Architecture**: `docs/ARCHITECTURE.md`
-- **Configuration**: `docs/CONFIG.md`
-- **Testing**: `docs/TESTING.md`
-- **Development**: `docs/DEVELOPMENT.md`
+- **Architecture**: `docs/architecture/`
+- **Configuration**: `docs/guides/configuration.md`
+- **Testing**: `docs/testing/`
+- **Development**: `docs/development/`
+- **Index**: `docs/INDEX.md`
 
 ### Test Reports
 
-- Image preparer: `docs/reports/IMAGE_PREPARER_TESTS_REPORT.md`
-- Network manager: `docs/reports/NETWORK_MANAGER_TESTS_REPORT.md`
+- Coverage reports generated via `go test -coverprofile=coverage.out ./pkg/...`
 
 ### External Resources
 
@@ -551,11 +567,11 @@ require (
 
 ## 📝 Notes
 
-- This project is alpha quality - expect breaking changes
-- Test coverage is good but not complete
+- This project is actively developed - v0.6.0
+- Test coverage is improving toward 85% target
 - Documentation is actively maintained
 - Contributions welcome - see CONTRIBUTING.md
 
-**Last Updated:** 2026-01-31
+**Last Updated:** 2026-05-06
 **Project Lead:** Restu Muzakir
 **License:** Apache 2.0
