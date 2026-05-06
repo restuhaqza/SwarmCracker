@@ -15,6 +15,9 @@ import (
 
 // TestExtractWithPodman_ErrorPaths tests error paths in extractWithPodman
 func TestExtractWithPodman_ErrorPaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test that triggers HTTP connections in short mode")
+	}
 	tests := []struct {
 		name         string
 		setupMock    func(*testing.T, string)
@@ -77,6 +80,9 @@ func TestExtractWithPodman_ErrorPaths(t *testing.T) {
 
 // TestExtractWithPodman_InvalidOutput tests parsing of invalid podman output
 func TestExtractWithPodman_InvalidOutput(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test that triggers HTTP connections in short mode")
+	}
 	// Skip if podman not available
 	if _, err := exec.LookPath("podman"); err != nil {
 		t.Skip("podman not available")

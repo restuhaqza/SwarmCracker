@@ -482,6 +482,9 @@ func TestPreparerExtended_InjectDumbInit(t *testing.T) {
 
 // TestPreparerExtended_ExtractWithDocker tests extractWithDocker function
 func TestPreparerExtended_ExtractWithDocker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test that triggers HTTP connections in short mode")
+	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker not available in PATH")
 	}

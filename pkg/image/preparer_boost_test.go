@@ -15,6 +15,9 @@ import (
 // Additional boost tests for image package to reach 80%+ coverage
 
 func TestImagePreparer_Prepare_MissingAnnotations(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test that triggers HTTP connections in short mode")
+	}
 	tmpDir := t.TempDir()
 
 	config := &PreparerConfig{
@@ -74,6 +77,9 @@ func TestImagePreparer_Prepare_WithExistingRootfs(t *testing.T) {
 }
 
 func TestImagePreparer_prepareImage_ErrorScenarios(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test that triggers HTTP connections in short mode")
+	}
 	tmpDir := t.TempDir()
 
 	config := &PreparerConfig{
@@ -118,6 +124,9 @@ func TestImagePreparer_prepareImage_ErrorScenarios(t *testing.T) {
 }
 
 func TestImagePreparer_extractOCIImage_ErrorPaths(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping test that triggers HTTP connections in short mode")
+	}
 	tmpDir := t.TempDir()
 
 	config := &PreparerConfig{
