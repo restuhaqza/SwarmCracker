@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -290,9 +291,9 @@ func TestCollectorStartStop(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		callCount := 0
+		var callCount atomic.Int64
 		getPIDs := func() map[string]int {
-			callCount++
+			callCount.Add(1)
 			return map[string]int{
 				"test-vm": 1234, // Non-existent PID, but that's ok for testing
 			}
@@ -310,7 +311,7 @@ func TestCollectorStartStop(t *testing.T) {
 		// Wait a bit more to ensure it stopped
 		time.Sleep(200 * time.Millisecond)
 
-		finalCount := callCount
+		finalCount := callCount.Load()
 		if finalCount < 2 {
 			t.Errorf("Expected at least 2 collection cycles, got %d", finalCount)
 		}
@@ -390,9 +391,9 @@ func TestCollectorStartStop(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-		callCount := 0
+		var callCount atomic.Int64
 		getPIDs := func() map[string]int {
-			callCount++
+			callCount.Add(1)
 			return nil
 		}
 
@@ -405,7 +406,7 @@ func TestCollectorStartStop(t *testing.T) {
 		// Wait a bit
 		time.Sleep(100 * time.Millisecond)
 
-		finalCount := callCount
+		finalCount := callCount.Load()
 		t.Logf("Collection ran %d times before context cancel", finalCount)
 	})
 }

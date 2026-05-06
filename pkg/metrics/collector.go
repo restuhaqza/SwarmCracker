@@ -28,6 +28,7 @@ type Collector struct {
 	stateDir string                // For persistence
 	mu       sync.RWMutex          // Protects metrics map
 	metrics  map[string]*VMMetrics // taskID -> metrics
+	cancelMu sync.Mutex            // Protects cancel field
 	cancel   context.CancelFunc    // Cancel periodic collection
 }
 
@@ -337,7 +338,9 @@ func (c *Collector) Start(ctx context.Context, interval time.Duration, getPIDs f
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
+	c.cancelMu.Lock()
 	c.cancel = cancel
+	c.cancelMu.Unlock()
 
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -359,10 +362,12 @@ func (c *Collector) Start(ctx context.Context, interval time.Duration, getPIDs f
 
 // Stop stops periodic metrics collection.
 func (c *Collector) Stop() {
+	c.cancelMu.Lock()
 	if c.cancel != nil {
 		c.cancel()
 		c.cancel = nil
 	}
+	c.cancelMu.Unlock()
 }
 
 // collectAll collects metrics for all running VMs.
