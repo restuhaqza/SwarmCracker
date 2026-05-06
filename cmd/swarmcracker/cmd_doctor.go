@@ -90,7 +90,7 @@ func runDoctor(cfg *doctorConfig) error {
 	}
 
 	// p prints only when not in JSON mode
-	p := func(format string, args ...interface{}) {
+	printf := func(format string, args ...interface{}) {
 		if !cfg.JSON {
 			fmt.Printf(format, args...)
 		}
@@ -100,11 +100,11 @@ func runDoctor(cfg *doctorConfig) error {
 		report.SwarmCracker = v
 	}
 
-	p("\n🏥 SwarmCracker Doctor\n")
-	p(strings.Repeat("─", 50) + "\n")
+	printf("\n🏥 SwarmCracker Doctor\n")
+	printf("%s\n", strings.Repeat("─", 50))
 
 	// System Requirements
-	p("\n📡 System Requirements\n")
+	printf("\n📡 System Requirements\n")
 	report.Checks = append(report.Checks,
 		dc("CPU virtualization (KVM)", "system", checkDoctorKVM, cfg),
 		dc("Firecracker binary", "system", checkDoctorFirecracker, cfg),
@@ -115,7 +115,7 @@ func runDoctor(cfg *doctorConfig) error {
 	)
 
 	// Resources
-	p("\n💾 Resources\n")
+	printf("\n💾 Resources\n")
 	report.Checks = append(report.Checks,
 		dc("Available memory", "resources", checkDoctorMemory, cfg),
 		dc("CPU cores", "resources", checkDoctorCPU, cfg),
@@ -123,7 +123,7 @@ func runDoctor(cfg *doctorConfig) error {
 	)
 
 	// Networking
-	p("\n🌐 Networking\n")
+	printf("\n🌐 Networking\n")
 	report.Checks = append(report.Checks,
 		dc("Bridge module (br_netfilter)", "network", checkDoctorBridgeModule, cfg),
 		dc("Bridge interface (swarm-br0)", "network", checkDoctorBridgeIface, cfg),
@@ -133,7 +133,7 @@ func runDoctor(cfg *doctorConfig) error {
 	)
 
 	// Services
-	p("\n⚙️  Services\n")
+	printf("\n⚙️  Services\n")
 	report.Checks = append(report.Checks,
 		dc("Manager service", "services", checkDoctorManagerSvc, cfg),
 		dc("Worker service", "services", checkDoctorWorkerSvc, cfg),
@@ -141,7 +141,7 @@ func runDoctor(cfg *doctorConfig) error {
 	)
 
 	// Cluster State
-	p("\n🗄️  Cluster State\n")
+	printf("\n🗄️  Cluster State\n")
 	report.Checks = append(report.Checks,
 		dc("State directory", "cluster", checkDoctorStateDir, cfg),
 		dc("Config directory", "cluster", checkDoctorConfigDir, cfg),
@@ -152,7 +152,7 @@ func runDoctor(cfg *doctorConfig) error {
 	)
 
 	// Running VMs
-	p("\n🖥️  Running VMs\n")
+	printf("\n🖥️  Running VMs\n")
 	report.Checks = append(report.Checks,
 		dc("Firecracker processes", "vms", checkDoctorFCProcs, cfg),
 		dc("VM state files", "vms", checkDoctorVMStates, cfg),
