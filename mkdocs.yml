@@ -1,0 +1,79 @@
+site_name: SwarmCracker
+site_url: https://swarmcracker.restuhaqza.dev/
+site_author: Restu Muzakir
+site_description: Firecracker MicroVMs with SwarmKit Orchestration
+
+repo_name: SwarmCracker
+repo_url: https://github.com/restuhaqza/SwarmCracker
+edit_uri: blob/main/docs/
+
+theme:
+  name: material
+  palette:
+    primary: custom
+    accent: custom
+  font:
+    text: Inter
+    code: JetBrains Mono
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - content.action.edit
+    - content.action.view
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Overview: user/getting-started/README.md
+  - Guides:
+    - Overview: user/guides/README.md
+    - Networking: user/guides/networking.md
+    - SwarmKit: user/guides/swarmkit.md
+    - Configuration: user/guides/configuration.md
+    - Security: user/guides/security.md
+    - Snapshots: user/guides/snapshots.md
+    - Advanced: user/guides/advanced.md
+  - Architecture:
+    - Overview: user/architecture/README.md
+    - SwarmKit Integration: user/architecture/swarmkit.md
+  - Reference:
+    - CLI: user/reference/cli.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/restuhaqza/SwarmCracker
+      name: GitHub
+
+extra_css:
+  - stylesheets/extra.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - minify:
+      minify_html: true
+      minify_js: true
+      htmlmin_opts:
+        remove_comments: true

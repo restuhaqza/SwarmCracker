@@ -142,3 +142,4 @@ venv/
 # go.sum (commented out - SwarmCracker commits this)
 /swarmd-firecracker
 coverage.out
+site/

@@ -1,97 +1,164 @@
-# SwarmCracker Documentation Index
+---
+title: SwarmCracker - Firecracker MicroVMs with SwarmKit Orchestration
+description: Run containers with hardware-level security, fast boot, and SwarmKit orchestration
+---
 
-> Firecracker microVM orchestration with SwarmKit — v0.6.0
+# Firecracker MicroVMs with SwarmKit Orchestration
+
+Run containers as isolated microVMs with hardware-level security, fast startup, and production-ready orchestration features.
+
+<div class="quick-start" markdown="1">
+
+[Get Started](user/getting-started/README.md){ .md-button .md-button--primary }
+[View on GitHub](https://github.com/restuhaqza/SwarmCracker){ .md-button }
+
+</div>
 
 ---
 
-## Documentation Structure
+## Why SwarmCracker?
 
-### 👤 User Documentation
+<div class="stats-grid" markdown="1">
 
-| Section | Description |
-|---------|-------------|
-| [Getting Started](user/getting-started/) | Installation, quick start, prerequisites |
-| [Guides](user/guides/) | Configuration, networking, security, snapshots |
-| [Architecture](user/architecture/) | System design, SwarmKit integration |
-| [Reference](user/reference/) | CLI commands |
+<div class="stat" markdown="1">
+<span class="stat-icon">⚡</span>
+<div class="stat-value">&lt; 100ms</div>
+<div class="stat-label">MicroVM Boot Time</div>
+</div>
 
-### 🔧 Developer Documentation
+<div class="stat" markdown="1">
+<span class="stat-icon">💾</span>
+<div class="stat-value">&lt; 5MB</div>
+<div class="stat-label">Memory Overhead</div>
+</div>
 
-| Section | Description |
-|---------|-------------|
-| [Contributing](dev/contributing.md) | Code style, PR process |
-| [Conventions](dev/conventions.md) | File naming standards |
-| [Testing](dev/testing/) | Test strategy, coverage |
-| [Architecture](dev/architecture/) | Internal integration details |
+<div class="stat" markdown="1">
+<span class="stat-icon">🛡️</span>
+<div class="stat-value">100%</div>
+<div class="stat-label">KVM Isolation</div>
+</div>
 
-### 📋 Planning
+<div class="stat" markdown="1">
+<span class="stat-icon">🖥️</span>
+<div class="stat-value">Linux</div>
+<div class="stat-label">Native Support</div>
+</div>
 
-| Document | Description |
-|----------|-------------|
-| [TODO Implementation](planning/todo-implementation.md) | Remaining TODO items |
-| [Init/Deinit Plan](planning/init-deinit.md) | Lifecycle strategy |
-
-### 🔬 Research
-
-| Document | Description |
-|----------|-------------|
-| [Image Preparation](research/image-preparation.md) | Rootfs preparation |
-| [Image SDK](research/image-sdk.md) | SDK investigation |
-| [Archived](research/archived/) | Historical docs |
+</div>
 
 ---
 
-## Quick Reference
+## Features
 
-### Key Commands
+<div class="features-grid" markdown="1">
+
+<div class="feature-card" markdown="1">
+<span class="feature-icon">🔥</span>
+<h3>MicroVM Isolation</h3>
+<p>Each container gets its own kernel via KVM, providing hardware-level security and strong workload isolation.</p>
+</div>
+
+<div class="feature-card" markdown="1">
+<span class="feature-icon">🔄</span>
+<h3>SwarmKit Orchestration</h3>
+<p>Services, scaling, rolling updates, secrets management - all the features you expect from modern orchestration.</p>
+</div>
+
+<div class="feature-card" markdown="1">
+<span class="feature-icon">⚡</span>
+<h3>Fast Startup</h3>
+<p>MicroVMs boot in milliseconds with minimal overhead, combining container speed with VM security.</p>
+</div>
+
+<div class="feature-card" markdown="1">
+<span class="feature-icon">🛡️</span>
+<h3>Hardware Security</h3>
+<p>KVM virtualization provides stronger isolation than container namespaces, protecting against kernel exploits.</p>
+</div>
+
+<div class="feature-card" markdown="1">
+<span class="feature-icon">🌐</span>
+<h3>VXLAN Networking</h3>
+<p>Cross-node VM communication with VXLAN overlay networks, supporting multi-node clusters out of the box.</p>
+</div>
+
+<div class="feature-card" markdown="1">
+<span class="feature-icon">📊</span>
+<h3>Rolling Updates</h3>
+<p>Zero-downtime deployments with health monitoring and automatic rollback on failure.</p>
+</div>
+
+</div>
+
+---
+
+## Quick Start
+
+### Initialize Manager
 
 ```bash
-# Initialize cluster
-swarmcracker init --hostname manager-1
+sudo swarmcracker init
 
-# Join worker
-swarmcracker join --manager <ip>:4242 --token <token>
-
-# Create service
-swarmctl create-service nginx:latest
-
-# Scale service
-swarmctl scale <svc-id> 3
-
-# List nodes
-swarmctl ls-nodes
+# Or specify IP
+sudo swarmcracker init --advertise-addr 192.168.1.10:4242
 ```
 
-### Config Locations
+### Get Join Token
 
-| Path | Description |
-|------|-------------|
-| `/etc/swarmcracker/config.yaml` | Main config |
-| `/var/run/swarmkit/swarm.sock` | Control socket |
-| `/var/lib/swarmkit` | State directory |
-| `/var/lib/jailer` | Jailer sandboxes |
+```bash
+sudo cat /var/lib/swarmkit/join-tokens.txt
+```
 
----
+### Join Workers
 
-## Versions
-
-| Component | Version |
-|-----------|---------|
-| SwarmCracker | v0.6.0 |
-| Firecracker | v1.15.1 |
-| SwarmKit | v2.1.1 |
-| Go | 1.21+ |
+```bash
+sudo swarmcracker join 192.168.1.10:4242 --token SWMTKN-1-...
+```
 
 ---
 
-## External Links
+## One-Line Install
 
-- [GitHub Repository](https://github.com/restuhaqza/SwarmCracker)
-- [Releases](https://github.com/restuhaqza/SwarmCracker/releases)
-- [Issues](https://github.com/restuhaqza/SwarmCracker/issues)
-- [Firecracker](https://github.com/firecracker-microvm/firecracker)
-- [SwarmKit](https://github.com/moby/swarmkit)
+```bash
+curl -fsSL https://swarmcracker.restuhaqza.dev/install.sh | bash
+```
+
+Options: Manager (init cluster), Worker (join existing), Skip (binaries only).
+
+Non-interactive:
+
+```bash
+curl -fsSL https://swarmcracker.restuhaqza.dev/install.sh | bash -s -- \
+  --worker --manager 192.168.1.10:4242 --token SWMTKN-1-xxxxx
+```
 
 ---
 
-**Last Updated:** 2026-04-19 | **Doc Version:** 3.0
+## Documentation
+
+| Section | Description |
+|---------|-------------|
+| [Getting Started](user/getting-started/README.md) | Setup and initialization |
+| [Networking](user/guides/networking.md) | Bridge, VXLAN, overlay networks |
+| [SwarmKit](user/guides/swarmkit.md) | Orchestration features |
+| [Configuration](user/guides/configuration.md) | Customize your setup |
+| [Security](user/guides/security.md) | Security policies and best practices |
+| [CLI Reference](user/reference/cli.md) | Command documentation |
+
+---
+
+## Architecture
+
+```
+SwarmKit Manager → swarmd-firecracker → Firecracker VMM → MicroVM
+```
+
+Workers run `swarmd-firecracker`, translating SwarmKit tasks into Firecracker configs.
+
+---
+
+## Resources
+
+- [Firecracker](https://firecracker-microvm.github.io/) - MicroVM technology
+- [SwarmKit](https://github.com/moby/swarmkit) - Orchestration engine
+- [KVM](https://www.linux-kvm.org/) - Hardware virtualization

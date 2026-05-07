@@ -1,0 +1,147 @@
+:root {
+  --md-primary-fg-color: #FF6B35;
+  --md-primary-fg-color--light: #FF8E53;
+  --md-primary-fg-color--dark: #E55A2B;
+  --md-accent-fg-color: #FF6B35;
+  --md-typeset-color: #1A1A1A;
+  --md-default-bg-color: #F5F5F5;
+  
+  --swarmcracker-primary: #FF6B35;
+  --swarmcracker-primary-light: #FF8E53;
+  --swarmcracker-primary-dark: #E55A2B;
+  --swarmcracker-text: #1A1A1A;
+  --swarmcracker-text-secondary: #666;
+  --swarmcracker-bg: #F5F5F5;
+  --swarmcracker-white: #FFFFFF;
+  --swarmcracker-border: #E0E0E0;
+}
+
+.md-header {
+  background: linear-gradient(135deg, #FF6B35, #FF8E53);
+}
+
+.md-header__title {
+  color: white;
+}
+
+.md-tabs {
+  background: #FF6B35;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 2rem;
+  padding: 2rem;
+  background: white;
+  border-radius: 8px;
+  margin: 2rem 0;
+}
+
+.stat {
+  text-align: center;
+}
+
+.stat-icon {
+  font-size: 2rem;
+  margin-bottom: 0.5rem;
+}
+
+.stat-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--swarmcracker-primary);
+  margin-bottom: 0.25rem;
+}
+
+.stat-label {
+  color: var(--swarmcracker-text-secondary);
+  font-size: 0.9rem;
+}
+
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+  margin: 2rem 0;
+}
+
+.feature-card {
+  padding: 1.5rem;
+  background: white;
+  border-radius: 8px;
+  border: 1px solid var(--swarmcracker-border);
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.feature-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+}
+
+.feature-icon {
+  font-size: 2rem;
+  margin-bottom: 1rem;
+}
+
+.feature-card h3 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  color: var(--swarmcracker-text);
+}
+
+.feature-card p {
+  margin: 0;
+  color: var(--swarmcracker-text-secondary);
+}
+
+.quick-start {
+  text-align: center;
+  margin: 2rem 0;
+}
+
+.md-typeset {
+  color: var(--swarmcracker-text);
+}
+
+.md-content {
+  background: var(--swarmcracker-bg);
+}
+
+.external-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--swarmcracker-primary);
+  color: white;
+  border-radius: 4px;
+  text-decoration: none;
+  transition: background 0.2s;
+}
+
+.external-link:hover {
+  background: var(--swarmcracker-primary-dark);
+}
+
+.external-link::after {
+  content: "↗";
+  font-size: 1rem;
+}
+
+@media screen and (max-width: 768px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1rem;
+    padding: 1rem;
+  }
+  
+  .features-grid {
+    grid-template-columns: 1fr;
+    gap: 1rem;
+  }
+  
+  .stat-value {
+    font-size: 1.5rem;
+  }
+}
