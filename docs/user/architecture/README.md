@@ -6,41 +6,55 @@
 
 ## System Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        SwarmCracker Cluster                          │
-│                                                                      │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                    SwarmKit Control Plane                    │  │
-│   │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │  │
-│   │  │ Manager-1    │  │ Manager-2    │  │ Manager-3    │       │  │
-│   │  │ (Raft Leader)│  │ (Raft Follower)│ │ (Raft Follower)│    │  │
-│   │  │ Port 4242    │  │ Port 4242    │  │ Port 4242    │       │  │
-│   │  └──────────────┘  └──────────────┘  └──────────────┘       │  │
-│   └─────────────────────────────┬───────────────────────────────┘  │
-│                                 │ gRPC                              │
-│   ┌─────────────────────────────┴───────────────────────────────┐  │
-│   │                    Worker Nodes                              │  │
-│   │  ┌──────────────────┐  ┌──────────────────┐                │  │
-│   │  │ Worker-1         │  │ Worker-2         │                │  │
-│   │  │ SwarmKit Agent   │  │ SwarmKit Agent   │                │  │
-│   │  │ Firecracker Exec │  │ Firecracker Exec │                │  │
-│   │  │ ┌───┐┌───┐┌───┐ │  │ ┌───┐┌───┐      │                │  │
-│   │  │ │VM1││VM2││VM3│ │  │ │VM4││VM5│      │                │  │
-│   │  │ └───┘└───┘└───┘ │  │ └───┘└───┘      │                │  │
-│   │  └──────────────────┘  └──────────────────┘                │  │
-│   │         swarm-br0              swarm-br0                    │  │
-│   └─────────────────────────────┬───────────────────────────────┘  │
-│                                 │ VXLAN Overlay (UDP 4789)         │
-│   ┌─────────────────────────────────────────────────────────────┐  │
-│   │                    Network Layer                             │  │
-│   │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │  │
-│   │  │ TAP Devices  │  │ Linux Bridge │  │ VXLAN Tunnel │       │  │
-│   │  │ (per VM)     │  │ (per node)   │  │ (cross-node) │       │  │
-│   │  └──────────────┘  └──────────────┘  └──────────────┘       │  │
-│   └─────────────────────────────────────────────────────────────┘  │
-│                                                                      │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph "SwarmCracker Cluster"
+        subgraph "Control Plane"
+            M1[Manager-1<br/>Raft Leader<br/>Port 4242]
+            M2[Manager-2<br/>Raft Follower<br/>Port 4242]
+            M3[Manager-3<br/>Raft Follower<br/>Port 4242]
+        end
+        
+        subgraph "Worker Nodes"
+            W1[Worker-1<br/>SwarmKit Agent<br/>Firecracker Exec]
+            W2[Worker-2<br/>SwarmKit Agent<br/>Firecracker Exec]
+        end
+        
+        subgraph "MicroVMs"
+            VM1[VM1]
+            VM2[VM2]
+            VM3[VM3]
+            VM4[VM4]
+            VM5[VM5]
+        end
+        
+        subgraph "Network Layer"
+            TAP[TAP Devices<br/>per VM]
+            BR[Linux Bridge<br/>per node]
+            VX[VXLAN Tunnel<br/>cross-node]
+        end
+    end
+    
+    M1 -->|gRPC| W1
+    M1 -->|gRPC| W2
+    M2 -->|gRPC| W1
+    M2 -->|gRPC| W2
+    M3 -->|gRPC| W1
+    M3 -->|gRPC| W2
+    
+    W1 --> VM1
+    W1 --> VM2
+    W1 --> VM3
+    W2 --> VM4
+    W2 --> VM5
+    
+    VM1 --> TAP
+    VM2 --> TAP
+    VM3 --> TAP
+    VM4 --> TAP
+    VM5 --> TAP
+    TAP --> BR
+    BR -->|VXLAN Overlay<br/>UDP 4789| VX
 ```
 
 ---
@@ -79,26 +93,28 @@
 
 ### Task Execution Flow
 
-```
-User → swarmctl → Manager → Scheduler → Worker → Executor → Firecracker VM
-         │          │          │          │          │
-         │          │          │          │          ▼
-         │          │          │          │    Prepare (VM setup)
-         │          │          │          │          │
-         │          │          │          │          ▼
-         │          │          │          │    Start (VM boot)
-         │          │          │          │          │
-         │          │          │          │          ▼
-         │          │          │          │    Wait (monitor)
-         │          │          │          │          │
-         │          │          │          ▼          │
-         │          │          │    Report Status    │
-         │          │          │          │          │
-         │          │          ▼          │          │
-         │          │    Update State Store         │
-         │          │          │          │          │
-         ▼          ▼          ▼          ▼          ▼
-      Done      Reconcile   Persist    Complete  Running
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant C as swarmctl
+    participant M as Manager
+    participant S as Scheduler
+    participant W as Worker
+    participant E as Executor
+    participant F as Firecracker VM
+    
+    U->>C: Create service
+    C->>M: gRPC: CreateTask
+    M->>S: Schedule task
+    S->>W: Assign task
+    W->>E: Execute task
+    E->>E: Prepare (VM setup)
+    E->>F: Start (VM boot)
+    F-->>E: VM running
+    E-->>W: Report status
+    W-->>M: Update state
+    M-->>C: Task running
+    C-->>U: Service deployed
 ```
 
 ---
@@ -123,21 +139,19 @@ User → swarmctl → Manager → Scheduler → Worker → Executor → Firecrac
 
 ### Jailer Isolation
 
-```
-┌─────────────────────────────────────────────────┐
-│  Host System                                    │
-│  ┌─────────────────────────────────────────┐   │
-│  │  Jailer Sandbox                          │   │
-│  │  ┌───────────────────────────────────┐  │   │
-│  │  │  Firecracker Process               │  │   │
-│  │  │  - PID namespace (isolated)        │  │   │
-│  │  │  - Network namespace (isolated)    │  │   │
-│  │  │  - Chroot (/var/lib/jailer/<vm>)   │  │   │
-│  │  │  - Cgroups (CPU/memory limits)     │  │   │
-│  │  │  - Seccomp (syscall filter)        │  │   │
-│  │  └───────────────────────────────────┘  │   │
-│  └─────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph "Host System"
+        subgraph "Jailer Sandbox"
+            subgraph "Firecracker Process"
+                PID[PID namespace<br/>isolated]
+                NET[Network namespace<br/>isolated]
+                CHR[Chroot<br/>/var/lib/jailer/&lt;vm&gt;]
+                CG[Cgroups<br/>CPU/memory limits]
+                SEC[Seccomp<br/>syscall filter]
+            end
+        end
+    end
 ```
 
 ---
@@ -146,32 +160,45 @@ User → swarmctl → Manager → Scheduler → Worker → Executor → Firecrac
 
 ### Single Node
 
-```
-┌─────────────────────────────────────────────────┐
-│  Host                                           │
-│  ┌─────────────────────────────────────────┐   │
-│  │  swarm-br0 (192.168.127.1/24)            │   │
-│  └──────────────┬──────────────────────────┘   │
-│         ┌───────┴───────┐                       │
-│    ┌────▼───┐       ┌───▼────┐                  │
-│    │ tap0   │       │ tap1   │                  │
-│    └────┬───┘       └───┬────┘                  │
-└─────────┼───────────────┼────────────────────────┘
-     ┌────▼───┐       ┌───▼────┐
-     │  VM 1  │       │  VM 2  │
-     └────────┘       └────────┘
+```mermaid
+graph TB
+    subgraph "Host"
+        BR[swarm-br0<br/>192.168.127.1/24]
+        TAP1[tap0]
+        TAP2[tap1]
+        
+        BR --> TAP1
+        BR --> TAP2
+    end
+    
+    VM1[VM 1]
+    VM2[VM 2]
+    
+    TAP1 --> VM1
+    TAP2 --> VM2
 ```
 
 ### Multi-Node (VXLAN)
 
-```
-┌─────────────────┐          ┌─────────────────┐
-│  Node 1         │          │  Node 2         │
-│  swarm-br0      │          │  swarm-br0      │
-│  ┌───┐┌───┐    │◄──VXLAN──►│  ┌───┐┌───┐    │
-│  │VM1││VM2│    │  UDP4789 │  │VM3││VM4│    │
-│  └───┘└───┘    │          │  └───┘└───┘    │
-└─────────────────┘          └─────────────────┘
+```mermaid
+graph LR
+    subgraph "Node 1"
+        BR1[swarm-br0]
+        VM1[VM1]
+        VM2[VM2]
+        BR1 --> VM1
+        BR1 --> VM2
+    end
+    
+    subgraph "Node 2"
+        BR2[swarm-br0]
+        VM3[VM3]
+        VM4[VM4]
+        BR2 --> VM3
+        BR2 --> VM4
+    end
+    
+    BR1 <-->|VXLAN<br/>UDP 4789| BR2
 ```
 
 ---
