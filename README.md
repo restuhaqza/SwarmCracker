@@ -159,13 +159,17 @@ swarmctl --socket /tmp/manager/swarm.sock service create --name nginx --image ng
 
 ## Documentation
 
+📖 **Full documentation website:** [swarmcracker.restuhaqza.dev](https://swarmcracker.restuhaqza.dev)
+
 | Guide | What's inside |
 |-------|---------------|
-| [Getting Started](docs/user/getting-started/) | Setup walkthrough, step by step |
-| [Networking](docs/user/guides/networking.md) | VXLAN, bridges, how VMs talk to each other |
-| [SwarmKit](docs/user/guides/swarmkit.md) | Managing services like a pro |
-| [Architecture](docs/user/architecture/) | How everything fits together |
-| [CLI Reference](docs/user/reference/cli.md) | Every command, explained |
+| [Getting Started](https://swarmcracker.restuhaqza.dev/getting-started/) | Setup walkthrough, step by step |
+| [Networking](https://swarmcracker.restuhaqza.dev/guides/networking/) | VXLAN, bridges, how VMs talk to each other |
+| [SwarmKit](https://swarmcracker.restuhaqza.dev/guides/swarmkit/) | Managing services like a pro |
+| [Architecture](https://swarmcracker.restuhaqza.dev/architecture/) | How everything fits together |
+| [CLI Reference](https://swarmcracker.restuhaqza.dev/reference/cli/) | Every command, explained |
+
+Or browse the [docs/](docs/) directory directly.
 
 ## Grab a Release
 
