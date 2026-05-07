@@ -17,6 +17,15 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Executable command functions - overridable for testing
+var (
+	execCommand  = exec.Command
+	execLookPath = exec.LookPath
+	osRemoveAll  = os.RemoveAll
+	osWriteFile  = os.WriteFile
+	osRemove     = os.Remove
+)
+
 // NetworkManager manages VM networking.
 //
 //nolint:revive // Stuttering name is acceptable here for package clarity
@@ -524,17 +533,17 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 	}
 
 	// Check if bridge exists
-	if err := exec.Command("ip", "link", "show", bridgeName).Run(); err != nil {
+	if err := execCommand("ip", "link", "show", bridgeName).Run(); err != nil {
 		// Create bridge
 		log.Info().Str("bridge", bridgeName).Msg("Creating bridge")
 
-		cmd := exec.Command("ip", "link", "add", bridgeName, "type", "bridge")
+		cmd := execCommand("ip", "link", "add", bridgeName, "type", "bridge")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to create bridge: %w", err)
 		}
 
 		// Bring bridge up
-		if err := exec.Command("ip", "link", "set", bridgeName, "up").Run(); err != nil {
+		if err := execCommand("ip", "link", "set", bridgeName, "up").Run(); err != nil {
 			return fmt.Errorf("failed to bring bridge up: %w", err)
 		}
 	}
@@ -547,7 +556,7 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 	}
 
 	// Ensure bridge is up
-	if err := exec.Command("ip", "link", "set", bridgeName, "up").Run(); err != nil {
+	if err := execCommand("ip", "link", "set", bridgeName, "up").Run(); err != nil {
 		log.Warn().Err(err).Msg("Failed to ensure bridge is up")
 	}
 
@@ -581,15 +590,15 @@ func (nm *NetworkManager) setupBridgeIP(ctx context.Context) error {
 	bridgeName := nm.config.BridgeName
 
 	// Check if IP is already assigned
-	if err := exec.Command("ip", "addr", "show", bridgeName).Run(); err == nil {
+	if err := execCommand("ip", "addr", "show", bridgeName).Run(); err == nil {
 		// IP might already be set, try to add it (will fail if exists)
-		cmd := exec.Command("ip", "addr", "add", nm.config.BridgeIP, "dev", bridgeName)
+		cmd := execCommand("ip", "addr", "add", nm.config.BridgeIP, "dev", bridgeName)
 		if err := cmd.Run(); err != nil {
 			// IP might already be assigned, that's ok
 			log.Debug().Str("bridge", bridgeName).Msg("Bridge IP might already be set")
 		}
 	} else {
-		cmd := exec.Command("ip", "addr", "add", nm.config.BridgeIP, "dev", bridgeName)
+		cmd := execCommand("ip", "addr", "add", nm.config.BridgeIP, "dev", bridgeName)
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to set bridge IP: %w", err)
 		}
@@ -607,16 +616,16 @@ func (nm *NetworkManager) setupNAT(ctx context.Context) error {
 	log.Info().Str("subnet", nm.config.Subnet).Msg("Setting up NAT masquerading")
 
 	// Enable IP forwarding
-	if err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run(); err != nil {
+	if err := execCommand("sysctl", "-w", "net.ipv4.ip_forward=1").Run(); err != nil {
 		return fmt.Errorf("failed to enable IP forwarding: %w", err)
 	}
 
 	// Setup iptables masquerade rule
 	subnet := nm.config.Subnet
-	cmd := exec.Command("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE")
+	cmd := execCommand("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE")
 	if err := cmd.Run(); err != nil {
 		// Rule doesn't exist, add it
-		cmd = exec.Command("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE")
+		cmd = execCommand("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to add NAT rule: %w", err)
 		}
@@ -624,18 +633,18 @@ func (nm *NetworkManager) setupNAT(ctx context.Context) error {
 	}
 
 	// Allow forwarding from bridge
-	cmd = exec.Command("iptables", "-C", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT")
+	cmd = execCommand("iptables", "-C", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT")
 	if err := cmd.Run(); err != nil {
-		cmd = exec.Command("iptables", "-A", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT")
+		cmd = execCommand("iptables", "-A", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to add forward rule: %w", err)
 		}
 	}
 
 	// Allow forwarding to bridge
-	cmd = exec.Command("iptables", "-C", "FORWARD", "-o", nm.config.BridgeName, "-j", "ACCEPT")
+	cmd = execCommand("iptables", "-C", "FORWARD", "-o", nm.config.BridgeName, "-j", "ACCEPT")
 	if err := cmd.Run(); err != nil {
-		cmd = exec.Command("iptables", "-A", "FORWARD", "-o", nm.config.BridgeName, "-j", "ACCEPT")
+		cmd = execCommand("iptables", "-A", "FORWARD", "-o", nm.config.BridgeName, "-j", "ACCEPT")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("failed to add forward rule: %w", err)
 		}
@@ -651,7 +660,7 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	}
 
 	// Check if dnsmasq is available
-	if _, err := exec.LookPath("dnsmasq"); err != nil {
+	if _, err := execLookPath("dnsmasq"); err != nil {
 		log.Warn().Msg("dnsmasq not found, DHCP will not be available")
 		return nil // Not fatal - VMs can use static IPs
 	}
@@ -690,12 +699,12 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		Msg("Setting up DHCP server")
 
 	// Kill any existing dnsmasq for this bridge
-	exec.Command("pkill", "-f", fmt.Sprintf("dnsmasq.*%s", nm.config.BridgeName)).Run()
+	execCommand("pkill", "-f", fmt.Sprintf("dnsmasq.*%s", nm.config.BridgeName)).Run()
 
 	// Create log file with proper permissions for dnsmasq (runs as nobody)
 	logFile := "/tmp/dnsmasq.log"
-	os.Remove(logFile) // Remove old file first
-	if err := os.WriteFile(logFile, []byte{}, 0666); err != nil {
+	osRemove(logFile) // Remove old file first
+	if err := osWriteFile(logFile, []byte{}, 0666); err != nil {
 		log.Warn().Err(err).Msg("Could not create dnsmasq log file")
 	}
 
@@ -706,7 +715,7 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	// --dhcp-range: define DHCP pool
 	// --dhcp-option=3: set gateway
 	// --dhcp-option=6: set DNS (use gateway as DNS proxy)
-	cmd := exec.Command("dnsmasq",
+	cmd := execCommand("dnsmasq",
 		"--interface", nm.config.BridgeName,
 		"--bind-interfaces",
 		"--dhcp-range", fmt.Sprintf("%s,%s,12h", startIP.String(), endIP.String()),
@@ -779,7 +788,7 @@ func (nm *NetworkManager) setupVXLANOverlay(ctx context.Context) error {
 // getPhysicalInterface discovers the physical interface used for VXLAN transport.
 func (nm *NetworkManager) getPhysicalInterface() (string, string, error) {
 	// Get default route interface
-	out, err := exec.Command("ip", "route", "show", "default").Output()
+	out, err := execCommand("ip", "route", "show", "default").Output()
 	if err != nil {
 		return "", "", err
 	}
@@ -792,7 +801,7 @@ func (nm *NetworkManager) getPhysicalInterface() (string, string, error) {
 	physInterface := fields[4]
 
 	// Get IP address of physical interface
-	out, err = exec.Command("ip", "addr", "show", physInterface).Output()
+	out, err = execCommand("ip", "addr", "show", physInterface).Output()
 	if err != nil {
 		return "", "", err
 	}
@@ -960,17 +969,17 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 	}
 
 	// Ensure clean state by removing existing device if any
-	exec.Command("ip", "link", "delete", tapName).Run()
+	execCommand("ip", "link", "delete", tapName).Run()
 
 	// Create TAP device
-	if err := exec.Command("ip", "tuntap", "add", tapName, "mode", "tap").Run(); err != nil {
+	if err := execCommand("ip", "tuntap", "add", tapName, "mode", "tap").Run(); err != nil {
 		return nil, fmt.Errorf("failed to create TAP device: %w", err)
 	}
 
 	// Bring TAP up
-	if err := exec.Command("ip", "link", "set", tapName, "up").Run(); err != nil {
+	if err := execCommand("ip", "link", "set", tapName, "up").Run(); err != nil {
 		// Cleanup on failure
-		exec.Command("ip", "link", "delete", tapName).Run()
+		execCommand("ip", "link", "delete", tapName).Run()
 		return nil, fmt.Errorf("failed to bring TAP up: %w", err)
 	}
 
@@ -996,12 +1005,12 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 	}
 
 	// Ensure bridge exists (especially for overlay, it should already be there)
-	if err := exec.Command("ip", "link", "show", bridgeName).Run(); err != nil {
+	if err := execCommand("ip", "link", "show", bridgeName).Run(); err != nil {
 		// If it's our default bridge, we might be able to create it (logic in ensureBridge)
 		// But for overlay, we expect it to exist.
 		if network.Network.Spec.Driver == "overlay" {
 			// Try to cleanup
-			exec.Command("ip", "link", "delete", tapName).Run()
+			execCommand("ip", "link", "delete", tapName).Run()
 			return nil, fmt.Errorf("overlay bridge %s not found: %w", bridgeName, err)
 		}
 		// Fallback to default behavior (ensureBridge) if it's the default bridge
@@ -1012,9 +1021,9 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 		}
 	}
 
-	if err := exec.Command("ip", "link", "set", tapName, "master", bridgeName).Run(); err != nil {
+	if err := execCommand("ip", "link", "set", tapName, "master", bridgeName).Run(); err != nil {
 		// Cleanup on failure
-		exec.Command("ip", "link", "delete", tapName).Run()
+		execCommand("ip", "link", "delete", tapName).Run()
 		return nil, fmt.Errorf("failed to add TAP to bridge: %w", err)
 	}
 
@@ -1060,10 +1069,10 @@ func (nm *NetworkManager) removeTapDevice(tap *TapDevice) error {
 		Msg("Removing TAP device")
 
 	// Bring interface down first
-	exec.Command("ip", "link", "set", tap.Name, "down").Run()
+	execCommand("ip", "link", "set", tap.Name, "down").Run()
 
 	// Delete TAP device
-	if err := exec.Command("ip", "link", "delete", tap.Name).Run(); err != nil {
+	if err := execCommand("ip", "link", "delete", tap.Name).Run(); err != nil {
 		return fmt.Errorf("failed to delete TAP device: %w", err)
 	}
 

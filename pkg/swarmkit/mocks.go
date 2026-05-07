@@ -4,21 +4,25 @@ package swarmkit
 
 import (
 	"context"
+	"os/exec"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
 // MockVMMManager is a mock implementation for testing.
 type MockVMMManager struct {
-	StartFunc         func(ctx context.Context, task *types.Task, config interface{}) error
-	StopFunc          func(ctx context.Context, task *types.Task) error
-	ForceStopFunc     func(ctx context.Context, task *types.Task) error
-	WaitFunc          func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
-	RemoveFunc        func(ctx context.Context, task *types.Task) error
-	GetPIDFunc        func(taskID string) int
+	StartFunc            func(ctx context.Context, task *types.Task, config interface{}) error
+	StopFunc             func(ctx context.Context, task *types.Task) error
+	ForceStopFunc        func(ctx context.Context, task *types.Task) error
+	WaitFunc             func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+	RemoveFunc           func(ctx context.Context, task *types.Task) error
+	GetPIDFunc           func(taskID string) int
 	CheckVMAPIHealthFunc func(taskID string) bool
-	IsRunningFunc     func(taskID string) bool
-	DescribeFunc      func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+	IsRunningFunc        func(taskID string) bool
+	DescribeFunc         func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+	GetRunningProcessesFunc func() map[string]*exec.Cmd
+	RemoveProcessFunc    func(taskID string)
+	processes           map[string]*exec.Cmd
 }
 
 func (m *MockVMMManager) Start(ctx context.Context, task *types.Task, config interface{}) error {
@@ -84,6 +88,26 @@ func (m *MockVMMManager) Describe(ctx context.Context, task *types.Task) (*types
 	return &types.TaskStatus{State: types.TaskStateRunning}, nil
 }
 
+func (m *MockVMMManager) GetRunningProcesses() map[string]*exec.Cmd {
+	if m.GetRunningProcessesFunc != nil {
+		return m.GetRunningProcessesFunc()
+	}
+	if m.processes != nil {
+		return m.processes
+	}
+	return make(map[string]*exec.Cmd)
+}
+
+func (m *MockVMMManager) RemoveProcess(taskID string) {
+	if m.RemoveProcessFunc != nil {
+		m.RemoveProcessFunc(taskID)
+		return
+	}
+	if m.processes != nil {
+		delete(m.processes, taskID)
+	}
+}
+
 // MockImagePreparer is a mock implementation for testing.
 type MockImagePreparer struct {
 	PrepareFunc  func(ctx context.Context, task *types.Task) error
@@ -109,6 +133,9 @@ type MockNetworkManager struct {
 	PrepareNetworkFunc  func(ctx context.Context, task *types.Task) error
 	CleanupNetworkFunc  func(ctx context.Context, task *types.Task) error
 	GetTapIPFunc        func(taskID string) (string, error)
+	InitFunc            func(ctx context.Context) error
+	SetNodeDiscoveryFunc func(discovery types.NodeDiscovery)
+	UpdateVXLANPeersFunc func(peers []string) error
 }
 
 func (m *MockNetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) error {
@@ -130,6 +157,26 @@ func (m *MockNetworkManager) GetTapIP(taskID string) (string, error) {
 		return m.GetTapIPFunc(taskID)
 	}
 	return "192.168.127.2", nil // Default mock IP
+}
+
+func (m *MockNetworkManager) Init(ctx context.Context) error {
+	if m.InitFunc != nil {
+		return m.InitFunc(ctx)
+	}
+	return nil
+}
+
+func (m *MockNetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
+	if m.SetNodeDiscoveryFunc != nil {
+		m.SetNodeDiscoveryFunc(discovery)
+	}
+}
+
+func (m *MockNetworkManager) UpdateVXLANPeers(peers []string) error {
+	if m.UpdateVXLANPeersFunc != nil {
+		return m.UpdateVXLANPeersFunc(peers)
+	}
+	return nil
 }
 
 // MockVolumeManager is a mock implementation for testing.
@@ -170,4 +217,16 @@ func (m *MockSecretManager) InjectConfigs(ctx context.Context, taskID string, co
 		return m.InjectConfigsFunc(ctx, taskID, configs, rootfsPath)
 	}
 	return nil
+}
+
+// MockTaskTranslator is a mock implementation for testing.
+type MockTaskTranslator struct {
+	TranslateFunc func(task *types.Task) (interface{}, error)
+}
+
+func (m *MockTaskTranslator) Translate(task *types.Task) (interface{}, error) {
+	if m.TranslateFunc != nil {
+		return m.TranslateFunc(task)
+	}
+	return map[string]interface{}{}, nil
 }

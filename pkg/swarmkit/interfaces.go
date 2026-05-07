@@ -5,6 +5,7 @@ package swarmkit
 
 import (
 	"context"
+	"os/exec"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
@@ -27,6 +28,10 @@ type VMMManagerInterface interface {
 	CheckVMAPIHealth(taskID string) bool
 	// IsRunning checks if the VM process is still running
 	IsRunning(taskID string) bool
+	// GetRunningProcesses returns all running VM processes
+	GetRunningProcesses() map[string]*exec.Cmd
+	// RemoveProcess removes a process from the manager's tracking
+	RemoveProcess(taskID string)
 }
 
 // ImagePreparerInterface defines the interface for image preparation.

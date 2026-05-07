@@ -10,6 +10,14 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Injectable function variables for testing
+var (
+	osChown    = os.Chown
+	osChmod    = os.Chmod
+	osGeteuid  = os.Geteuid
+	osRemoveVar = os.Remove
+)
+
 // Manager manages security features for VMs
 type Manager struct {
 	jailer  *Jailer
@@ -144,7 +152,7 @@ func (m *Manager) CleanupVM(ctx context.Context, vmCtx *VMContext) error {
 
 	// Cleanup seccomp profile
 	if vmCtx.SeccompProfile != "" {
-		if err := os.Remove(vmCtx.SeccompProfile); err != nil && !os.IsNotExist(err) {
+		if err := osRemoveVar(vmCtx.SeccompProfile); err != nil && !os.IsNotExist(err) {
 			log.Warn().
 				Err(err).
 				Str("profile", vmCtx.SeccompProfile).
@@ -162,12 +170,12 @@ func (m *Manager) CleanupVM(ctx context.Context, vmCtx *VMContext) error {
 // SecureFilePermissions sets secure file permissions
 func SecureFilePermissions(path string) error {
 	// Set file owner to root:root
-	if err := os.Chown(path, 0, 0); err != nil {
+	if err := osChown(path, 0, 0); err != nil {
 		return fmt.Errorf("failed to chown %s: %w", path, err)
 	}
 
 	// Set file permissions to 0600 (read/write for owner only)
-	if err := os.Chmod(path, 0600); err != nil {
+	if err := osChmod(path, 0600); err != nil {
 		return fmt.Errorf("failed to chmod %s: %w", path, err)
 	}
 
@@ -178,12 +186,12 @@ func SecureFilePermissions(path string) error {
 // SecureDirectoryPermissions sets secure directory permissions
 func SecureDirectoryPermissions(path string) error {
 	// Set directory owner to root:root
-	if err := os.Chown(path, 0, 0); err != nil {
+	if err := osChown(path, 0, 0); err != nil {
 		return fmt.Errorf("failed to chown %s: %w", path, err)
 	}
 
 	// Set directory permissions to 0700 (rwx for owner only)
-	if err := os.Chmod(path, 0700); err != nil {
+	if err := osChmod(path, 0700); err != nil {
 		return fmt.Errorf("failed to chmod %s: %w", path, err)
 	}
 
@@ -228,7 +236,7 @@ func ValidatePath(path string) error {
 // CheckCapabilities checks if the process has required capabilities
 func CheckCapabilities() error {
 	// Check if running as root
-	if os.Geteuid() != 0 {
+	if osGeteuid() != 0 {
 		return fmt.Errorf("security features require root privileges")
 	}
 

@@ -10,6 +10,18 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Injectable function variables for testing
+var (
+	syscallChroot   = syscall.Chroot
+	syscallSetgid   = syscall.Setgid
+	syscallSetuid   = syscall.Setuid
+	syscallSetrlimit = syscall.Setrlimit
+	osChdir         = os.Chdir
+	osMkdirAll      = os.MkdirAll
+	osWriteFileVar  = os.WriteFile
+	osRemoveAllVar  = os.RemoveAll
+)
+
 // Jailer provides isolation for Firecracker VMs using:
 // - chroot jail
 // - User namespace isolation
@@ -50,7 +62,7 @@ func (j *Jailer) SetupJail(vmID string) (*JailContext, error) {
 	jailPath := filepath.Join(j.ChrootBaseDir, vmID)
 
 	// Create jail directory structure
-	if err := os.MkdirAll(jailPath, 0755); err != nil {
+	if err := osMkdirAll(jailPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create jail directory: %w", err)
 	}
 
@@ -61,7 +73,7 @@ func (j *Jailer) SetupJail(vmID string) (*JailContext, error) {
 		filepath.Join(jailPath, "proc"),
 	}
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := osMkdirAll(dir, 0755); err != nil {
 			return nil, fmt.Errorf("failed to create jail subdirectory: %w", err)
 		}
 	}
@@ -104,25 +116,25 @@ func (j *Jailer) EnterJail(ctx *JailContext) error {
 		Msg("Entering jail")
 
 	// Change to jail directory
-	if err := os.Chdir(ctx.JailPath); err != nil {
+	if err := osChdir(ctx.JailPath); err != nil {
 		return fmt.Errorf("failed to chdir to jail: %w", err)
 	}
 
 	// Change root (requires CAP_SYS_CHROOT)
-	if err := syscall.Chroot(ctx.JailPath); err != nil {
+	if err := syscallChroot(ctx.JailPath); err != nil {
 		return fmt.Errorf("failed to chroot: %w", err)
 	}
 
 	// Change to root directory
-	if err := os.Chdir("/"); err != nil {
+	if err := osChdir("/"); err != nil {
 		return fmt.Errorf("failed to chdir after chroot: %w", err)
 	}
 
 	// Drop privileges
-	if err := syscall.Setgid(ctx.GID); err != nil {
+	if err := syscallSetgid(ctx.GID); err != nil {
 		return fmt.Errorf("failed to setgid: %w", err)
 	}
-	if err := syscall.Setuid(ctx.UID); err != nil {
+	if err := syscallSetuid(ctx.UID); err != nil {
 		return fmt.Errorf("failed to setuid: %w", err)
 	}
 
@@ -158,7 +170,7 @@ func (j *Jailer) SetupNetworkNamespace(ctx *JailContext) error {
 func (j *Jailer) setResourceLimits(_ *JailContext) error {
 	// Set file descriptor limit
 	const maxFD = 4096
-	if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &syscall.Rlimit{
+	if err := syscallSetrlimit(syscall.RLIMIT_NOFILE, &syscall.Rlimit{
 		Cur: uint64(maxFD),
 		Max: uint64(maxFD),
 	}); err != nil {
@@ -168,7 +180,7 @@ func (j *Jailer) setResourceLimits(_ *JailContext) error {
 	// Set number of processes limit (RLIMIT_NPROC not available on all platforms)
 	// Skip if not available
 	// const maxProc = 1024
-	// if err := syscall.Setrlimit(syscall.RLIMIT_NPROC, &syscall.Rlimit{
+	// if err := syscallSetrlimit(syscall.RLIMIT_NPROC, &syscall.Rlimit{
 	// 	Cur: uint64(maxProc),
 	// 	Max: uint64(maxProc),
 	// }); err != nil {
@@ -176,7 +188,7 @@ func (j *Jailer) setResourceLimits(_ *JailContext) error {
 	// }
 
 	// Set CPU time limit (unlimited)
-	if err := syscall.Setrlimit(syscall.RLIMIT_CPU, &syscall.Rlimit{
+	if err := syscallSetrlimit(syscall.RLIMIT_CPU, &syscall.Rlimit{
 		Cur: ^uint64(0), // Unlimited
 		Max: ^uint64(0),
 	}); err != nil {
@@ -184,7 +196,7 @@ func (j *Jailer) setResourceLimits(_ *JailContext) error {
 	}
 
 	// Set memory limit (unlimited - managed by Firecracker)
-	if err := syscall.Setrlimit(syscall.RLIMIT_AS, &syscall.Rlimit{
+	if err := syscallSetrlimit(syscall.RLIMIT_AS, &syscall.Rlimit{
 		Cur: ^uint64(0), // Unlimited
 		Max: ^uint64(0),
 	}); err != nil {
@@ -208,7 +220,7 @@ func (j *Jailer) CleanupJail(ctx *JailContext) error {
 		Str("jail_path", ctx.JailPath).
 		Msg("Cleaning up jail")
 
-	if err := os.RemoveAll(ctx.JailPath); err != nil {
+	if err := osRemoveAllVar(ctx.JailPath); err != nil {
 		return fmt.Errorf("failed to remove jail directory: %w", err)
 	}
 
@@ -235,7 +247,7 @@ func (j *Jailer) Validate() error {
 	}
 
 	// Check if base directory exists (or can be created)
-	if err := os.MkdirAll(j.ChrootBaseDir, 0755); err != nil {
+	if err := osMkdirAll(j.ChrootBaseDir, 0755); err != nil {
 		return fmt.Errorf("cannot create chroot base directory: %w", err)
 	}
 
@@ -260,14 +272,14 @@ func ApplyResourceLimits(pid int, limits ResourceLimits) error {
 
 	// Create cgroup for the process
 	cgroupPath := fmt.Sprintf("/sys/fs/cgroup/swarmcracker/%d", pid)
-	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+	if err := osMkdirAll(cgroupPath, 0755); err != nil {
 		return fmt.Errorf("failed to create cgroup: %w", err)
 	}
 
 	// Set CPU limit
 	if limits.MaxCPUs > 0 {
 		cpuQuota := limits.MaxCPUs * 100000
-		if err := os.WriteFile(
+		if err := osWriteFileVar(
 			filepath.Join(cgroupPath, "cpu.max"),
 			[]byte(fmt.Sprintf("%d 100000", cpuQuota)),
 			0644,
@@ -279,7 +291,7 @@ func ApplyResourceLimits(pid int, limits ResourceLimits) error {
 	// Set memory limit
 	if limits.MaxMemoryMB > 0 {
 		memoryBytes := limits.MaxMemoryMB * 1024 * 1024
-		if err := os.WriteFile(
+		if err := osWriteFileVar(
 			filepath.Join(cgroupPath, "memory.max"),
 			[]byte(fmt.Sprintf("%d", memoryBytes)),
 			0644,
@@ -289,7 +301,7 @@ func ApplyResourceLimits(pid int, limits ResourceLimits) error {
 	}
 
 	// Add process to cgroup
-	if err := os.WriteFile(
+	if err := osWriteFileVar(
 		filepath.Join(cgroupPath, "cgroup.procs"),
 		[]byte(fmt.Sprintf("%d", pid)),
 		0644,
@@ -304,7 +316,7 @@ func ApplyResourceLimits(pid int, limits ResourceLimits) error {
 // CleanupCgroup removes cgroup for a process
 func CleanupCgroup(pid int) error {
 	cgroupPath := fmt.Sprintf("/sys/fs/cgroup/swarmcracker/%d", pid)
-	if err := os.RemoveAll(cgroupPath); err != nil {
+	if err := osRemoveAllVar(cgroupPath); err != nil {
 		return fmt.Errorf("failed to remove cgroup: %w", err)
 	}
 	return nil

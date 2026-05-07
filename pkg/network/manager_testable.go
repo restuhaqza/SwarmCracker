@@ -337,7 +337,8 @@ var (
 // Default executor for production use
 var defaultExecutor CommandExecutor = &RealCommandExecutor{}
 
-// execCommand is a helper that uses the default executor
-func execCommand(name string, args ...string) *exec.Cmd {
+// execCommandHelper is a helper that uses the default executor
+// Note: execCommand variable is defined in manager.go for testability
+func execCommandHelper(name string, args ...string) *exec.Cmd {
 	return exec.Command(name, args...)
 }

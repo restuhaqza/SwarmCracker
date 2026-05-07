@@ -16,11 +16,7 @@ import (
 
 func TestImagePreparer_Prepare_MissingAnnotations(t *testing.T) {
 	if testing.Short() {
-<<<<<<< HEAD
-		t.Skip("skipping test that triggers HTTP connections in short mode")
-=======
 		t.Skip("skipping integration test in short mode")
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 	}
 	tmpDir := t.TempDir()
 

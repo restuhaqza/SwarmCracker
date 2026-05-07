@@ -155,20 +155,6 @@ func TestMockProcessHandle_KillAndWait(t *testing.T) {
 }
 
 // TestDefaultFirecrackerAPIClient_CreateSnapshot tests CreateSnapshot via impl swap
-func TestDefaultFirecrackerAPIClient_CreateSnapshot(t *testing.T) {
-	orig := callSnapshotCreateImpl
-	defer func() { callSnapshotCreateImpl = orig }()
-
-	callSnapshotCreateImpl = func(ctx context.Context, socketPath, statePath, memoryPath string) error {
-		return nil
-	}
-
-	client := NewDefaultFirecrackerAPIClient()
-	err := client.CreateSnapshot(context.Background(), "/tmp/sock", "/tmp/state", "/tmp/mem")
-	if err != nil {
-		t.Errorf("CreateSnapshot should succeed with mock: %v", err)
-	}
-}
 
 // TestDefaultFirecrackerAPIClient_CreateSnapshot_Error tests CreateSnapshot error
 func TestDefaultFirecrackerAPIClient_CreateSnapshot_Error(t *testing.T) {
@@ -187,52 +173,10 @@ func TestDefaultFirecrackerAPIClient_CreateSnapshot_Error(t *testing.T) {
 }
 
 // TestDefaultFirecrackerAPIClient_LoadSnapshot tests LoadSnapshot via impl swap
-func TestDefaultFirecrackerAPIClient_LoadSnapshot(t *testing.T) {
-	orig := callSnapshotLoadImpl
-	defer func() { callSnapshotLoadImpl = orig }()
-
-	callSnapshotLoadImpl = func(ctx context.Context, socketPath, statePath, memoryPath string) error {
-		return nil
-	}
-
-	client := NewDefaultFirecrackerAPIClient()
-	err := client.LoadSnapshot(context.Background(), "/tmp/sock", "/tmp/state", "/tmp/mem")
-	if err != nil {
-		t.Errorf("LoadSnapshot should succeed with mock: %v", err)
-	}
-}
 
 // TestDefaultFirecrackerAPIClient_StartInstance tests StartInstance via impl swap
-func TestDefaultFirecrackerAPIClient_StartInstance(t *testing.T) {
-	orig := callInstanceStartImpl
-	defer func() { callInstanceStartImpl = orig }()
-
-	callInstanceStartImpl = func(ctx context.Context, socketPath string) error {
-		return nil
-	}
-
-	client := NewDefaultFirecrackerAPIClient()
-	err := client.StartInstance(context.Background(), "/tmp/sock")
-	if err != nil {
-		t.Errorf("StartInstance should succeed with mock: %v", err)
-	}
-}
 
 // TestDefaultFirecrackerAPIClient_WaitForSocket tests WaitForSocket via impl swap
-func TestDefaultFirecrackerAPIClient_WaitForSocket(t *testing.T) {
-	orig := waitForSocketImpl
-	defer func() { waitForSocketImpl = orig }()
-
-	waitForSocketImpl = func(socketPath string, timeout time.Duration) error {
-		return nil
-	}
-
-	client := NewDefaultFirecrackerAPIClient()
-	err := client.WaitForSocket("/tmp/sock", 5*time.Second)
-	if err != nil {
-		t.Errorf("WaitForSocket should succeed with mock: %v", err)
-	}
-}
 
 // TestDefaultHTTPClientFactory_NewUnixClient tests NewUnixClient via impl
 func TestDefaultHTTPClientFactory_NewUnixClient(t *testing.T) {

@@ -291,15 +291,9 @@ func TestCollectorStartStop(t *testing.T) {
 		}
 
 		ctx := context.Background()
-<<<<<<< HEAD
-		var callCount atomic.Int64
-		getPIDs := func() map[string]int {
-			callCount.Add(1)
-=======
 		var callCount int32 // Use int32 for atomic operations
 		getPIDs := func() map[string]int {
 			atomic.AddInt32(&callCount, 1)
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 			return map[string]int{
 				"test-vm": 1234, // Non-existent PID, but that's ok for testing
 			}
@@ -317,11 +311,7 @@ func TestCollectorStartStop(t *testing.T) {
 		// Wait a bit more to ensure it stopped
 		time.Sleep(200 * time.Millisecond)
 
-<<<<<<< HEAD
-		finalCount := callCount.Load()
-=======
 		finalCount := int(atomic.LoadInt32(&callCount))
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 		if finalCount < 2 {
 			t.Errorf("Expected at least 2 collection cycles, got %d", finalCount)
 		}
@@ -401,15 +391,9 @@ func TestCollectorStartStop(t *testing.T) {
 		}
 
 		ctx, cancel := context.WithCancel(context.Background())
-<<<<<<< HEAD
-		var callCount atomic.Int64
-		getPIDs := func() map[string]int {
-			callCount.Add(1)
-=======
 		var callCount int32 // Use int32 for atomic operations
 		getPIDs := func() map[string]int {
 			atomic.AddInt32(&callCount, 1)
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 			return nil
 		}
 
@@ -422,11 +406,7 @@ func TestCollectorStartStop(t *testing.T) {
 		// Wait a bit
 		time.Sleep(100 * time.Millisecond)
 
-<<<<<<< HEAD
-		finalCount := callCount.Load()
-=======
 		finalCount := int(atomic.LoadInt32(&callCount))
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 		t.Logf("Collection ran %d times before context cancel", finalCount)
 	})
 }

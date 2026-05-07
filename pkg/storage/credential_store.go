@@ -13,6 +13,15 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// Injectable function variables for testing
+var (
+	execCommand     = exec.Command
+	osMkdirTemp     = os.MkdirTemp
+	osMkdirAllStore = os.MkdirAll
+	osWriteFileStore = os.WriteFile
+	osRemoveAllStore = os.RemoveAll
+)
+
 // SecretManager manages secrets and configs injection into container rootfs.
 type SecretManager struct {
 	secretsDir string // Directory for persistent secrets storage
@@ -24,10 +33,10 @@ type SecretManager struct {
 func NewSecretManager(secretsDir, configsDir string) *SecretManager {
 	// Create directories if they don't exist
 	if secretsDir != "" {
-		os.MkdirAll(secretsDir, 0700)
+		osMkdirAllStore(secretsDir, 0700)
 	}
 	if configsDir != "" {
-		os.MkdirAll(configsDir, 0755)
+		osMkdirAllStore(configsDir, 0755)
 	}
 
 	return &SecretManager{
@@ -142,12 +151,12 @@ func (sm *SecretManager) injectSecret(mountDir string, secret types.SecretRef) e
 	fullPath := filepath.Join(mountDir, targetPath)
 
 	// Create parent directories
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	if err := osMkdirAllStore(filepath.Dir(fullPath), 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// Write secret data with restrictive permissions (0400)
-	if err := os.WriteFile(fullPath, secret.Data, 0400); err != nil {
+	if err := osWriteFileStore(fullPath, secret.Data, 0400); err != nil {
 		return fmt.Errorf("failed to write secret file: %w", err)
 	}
 
@@ -171,12 +180,12 @@ func (sm *SecretManager) injectConfig(mountDir string, config types.ConfigRef) e
 	fullPath := filepath.Join(mountDir, targetPath)
 
 	// Create parent directories
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+	if err := osMkdirAllStore(filepath.Dir(fullPath), 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	// Write config data with readable permissions (0444)
-	if err := os.WriteFile(fullPath, config.Data, 0444); err != nil {
+	if err := osWriteFileStore(fullPath, config.Data, 0444); err != nil {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
@@ -191,7 +200,7 @@ func (sm *SecretManager) injectConfig(mountDir string, config types.ConfigRef) e
 // mountRootfs mounts an ext4 rootfs image temporarily.
 func (sm *SecretManager) mountRootfs(rootfsPath string) (string, error) {
 	// Create temp mount point
-	mountDir, err := os.MkdirTemp("", "swarmcracker-secrets-mount-")
+	mountDir, err := osMkdirTemp("", "swarmcracker-secrets-mount-")
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp dir: %w", err)
 	}
@@ -199,7 +208,7 @@ func (sm *SecretManager) mountRootfs(rootfsPath string) (string, error) {
 	// Try to mount the image
 	// This requires root privileges or user namespace setup
 	if output, err := runCommand("mount", "-o", "loop", rootfsPath, mountDir); err != nil {
-		os.RemoveAll(mountDir)
+		osRemoveAllStore(mountDir)
 		return "", fmt.Errorf("mount failed: %s: %w", output, err)
 	}
 
@@ -215,13 +224,13 @@ func (sm *SecretManager) unmountRootfs(mountDir string) {
 	}
 
 	// Cleanup temp dir
-	os.RemoveAll(mountDir)
+	osRemoveAllStore(mountDir)
 	log.Debug().Str("path", mountDir).Msg("Rootfs unmounted and cleaned up")
 }
 
 // runCommand is a helper to run shell commands.
 func runCommand(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := execCommand(name, args...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }

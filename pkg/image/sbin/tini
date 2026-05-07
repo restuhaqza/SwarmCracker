@@ -1,0 +1,10 @@
+#!/bin/sh
+# Minimal init for container lifecycle
+# Reaps zombies and forwards signals
+
+# Setup signal handlers
+trap 'kill -TERM -$PID 2>/dev/null; wait $PID; exit $?' TERM INT
+trap 'kill -HUP -$PID 2>/dev/null' HUP
+
+# Run the command
+exec "$@"

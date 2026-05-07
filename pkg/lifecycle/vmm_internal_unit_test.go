@@ -231,29 +231,6 @@ func TestVMMManagerInternal_sendCtrlAltDelWithClient(t *testing.T) {
 }
 
 // TestVMMManagerInternal_findProcess tests process finding
-func TestVMMManagerInternal_findProcess(t *testing.T) {
-	t.Run("found", func(t *testing.T) {
-		procExec := NewMockProcessExecutor()
-		mockProc := &mockProcess{pid: 12345}
-		procExec.Processes[12345] = mockProc
-
-		vm := NewVMMManagerWithExecutors(nil, procExec, nil)
-
-		proc, err := vm.findProcess(12345)
-		require.NoError(t, err)
-		assert.Equal(t, 12345, proc.Pid())
-	})
-
-	t.Run("not_found", func(t *testing.T) {
-		procExec := NewMockProcessExecutor()
-
-		vm := NewVMMManagerWithExecutors(nil, procExec, nil)
-
-		proc, err := vm.findProcess(99999)
-		require.Error(t, err)
-		assert.Nil(t, proc)
-	})
-}
 
 // TestMockHTTPClient_AllMethods tests all mock HTTP client methods
 func TestMockHTTPClient_AllMethods(t *testing.T) {

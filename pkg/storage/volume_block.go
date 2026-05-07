@@ -13,6 +13,14 @@ import (
 
 const blockImageFile = "image.ext4"
 
+// Injectable function variables for testing
+var (
+	execCommandBlock = exec.Command
+	osMkdirAllBlock  = os.MkdirAll
+	osRemoveAllBlock = os.RemoveAll
+	osCreateBlock    = os.Create
+)
+
 // BlockDriver stores volume data in an ext4 loopback image file.
 //
 // Advantages over DirectoryDriver:
@@ -34,7 +42,7 @@ func NewBlockDriver(baseDir string) (*BlockDriver, error) {
 		return nil, err
 	}
 	mountDir := filepath.Join(baseDir, ".mounts")
-	if err := os.MkdirAll(mountDir, 0750); err != nil {
+	if err := osMkdirAllBlock(mountDir, 0750); err != nil {
 		return nil, fmt.Errorf("create mount base dir: %w", err)
 	}
 	return &BlockDriver{
@@ -74,7 +82,7 @@ func (d *BlockDriver) Create(ctx context.Context, name string, opts CreateOption
 	}
 
 	dir := d.meta.volumeDir(name)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := osMkdirAllBlock(dir, 0755); err != nil {
 		return "", fmt.Errorf("create volume dir: %w", err)
 	}
 
@@ -83,13 +91,13 @@ func (d *BlockDriver) Create(ctx context.Context, name string, opts CreateOption
 
 	// Create sparse image file
 	if err := createSparseFile(imgPath, sizeBytes); err != nil {
-		os.RemoveAll(dir)
+		osRemoveAllBlock(dir)
 		return "", fmt.Errorf("create image file: %w", err)
 	}
 
 	// Format as ext4
-	if output, err := exec.Command("mkfs.ext4", "-F", "-q", imgPath).CombinedOutput(); err != nil {
-		os.RemoveAll(dir)
+	if output, err := execCommandBlock("mkfs.ext4", "-F", "-q", imgPath).CombinedOutput(); err != nil {
+		osRemoveAllBlock(dir)
 		return "", fmt.Errorf("mkfs.ext4: %s: %w", string(output), err)
 	}
 
@@ -129,29 +137,29 @@ func (d *BlockDriver) Mount(ctx context.Context, name, rootfsPath, target string
 	}
 
 	mnt := d.mountPoint(name)
-	if err := os.MkdirAll(mnt, 0750); err != nil {
+	if err := osMkdirAllBlock(mnt, 0750); err != nil {
 		return fmt.Errorf("create mount point: %w", err)
 	}
 
 	// Mount the ext4 image
-	if output, err := exec.Command("mount", "-o", "loop", imgPath, mnt).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("mount", "-o", "loop", imgPath, mnt).CombinedOutput(); err != nil {
 		return fmt.Errorf("mount image: %s: %w", string(output), err)
 	}
 
 	targetPath := ensureAbsolutePath(target)
 	dest := filepath.Join(rootfsPath, targetPath)
-	if err := os.MkdirAll(dest, 0755); err != nil {
-		_ = exec.Command("umount", mnt).Run()
+	if err := osMkdirAllBlock(dest, 0755); err != nil {
+		_ = execCommandBlock("umount", mnt).Run()
 		return fmt.Errorf("create target dir: %w", err)
 	}
 
 	if err := copyDirectory(mnt, dest); err != nil {
-		_ = exec.Command("umount", mnt).Run()
+		_ = execCommandBlock("umount", mnt).Run()
 		return fmt.Errorf("copy data from block volume: %w", err)
 	}
 
 	// Unmount after copy
-	if output, err := exec.Command("umount", mnt).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("umount", mnt).CombinedOutput(); err != nil {
 		log.Warn().Str("output", string(output)).Err(err).Msg("Failed to unmount after mount copy")
 	}
 
@@ -187,33 +195,33 @@ func (d *BlockDriver) Unmount(ctx context.Context, name, rootfsPath, target stri
 	}
 
 	mnt := d.mountPoint(name)
-	if err := os.MkdirAll(mnt, 0750); err != nil {
+	if err := osMkdirAllBlock(mnt, 0750); err != nil {
 		return fmt.Errorf("create mount point: %w", err)
 	}
 
 	// Mount the ext4 image for writing
-	if output, err := exec.Command("mount", "-o", "loop", imgPath, mnt).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("mount", "-o", "loop", imgPath, mnt).CombinedOutput(); err != nil {
 		return fmt.Errorf("mount image: %s: %w", string(output), err)
 	}
 
 	// Clear existing content and copy new data
 	if err := clearDirectory(mnt); err != nil {
-		_ = exec.Command("umount", mnt).Run()
+		_ = execCommandBlock("umount", mnt).Run()
 		return fmt.Errorf("clear block volume: %w", err)
 	}
 
 	if err := copyDirectory(src, mnt); err != nil {
-		_ = exec.Command("umount", mnt).Run()
+		_ = execCommandBlock("umount", mnt).Run()
 		return fmt.Errorf("sync data to block volume: %w", err)
 	}
 
 	// Unmount
-	if output, err := exec.Command("umount", mnt).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("umount", mnt).CombinedOutput(); err != nil {
 		return fmt.Errorf("unmount image: %s: %w", string(output), err)
 	}
 
 	// Run fsck to ensure filesystem integrity
-	if output, err := exec.Command("e2fsck", "-p", "-f", imgPath).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("e2fsck", "-p", "-f", imgPath).CombinedOutput(); err != nil {
 		log.Warn().Str("output", string(output)).Err(err).Msg("fsck reported issues")
 	}
 
@@ -272,7 +280,7 @@ func (d *BlockDriver) Snapshot(ctx context.Context, name string) (*Snapshot, err
 	}
 
 	snapDir := filepath.Join(d.meta.baseDir, ".snapshots")
-	if err := os.MkdirAll(snapDir, 0755); err != nil {
+	if err := osMkdirAllBlock(snapDir, 0755); err != nil {
 		return nil, fmt.Errorf("create snapshots dir: %w", err)
 	}
 
@@ -280,7 +288,7 @@ func (d *BlockDriver) Snapshot(ctx context.Context, name string) (*Snapshot, err
 	snapPath := filepath.Join(snapDir, snapID+".ext4")
 
 	// Copy the image file (could use cp --reflink for CoW on supported filesystems)
-	if output, err := exec.Command("cp", imgPath, snapPath).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("cp", imgPath, snapPath).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("copy image: %s: %w", string(output), err)
 	}
 
@@ -311,12 +319,12 @@ func (d *BlockDriver) Restore(ctx context.Context, name string, snap *Snapshot) 
 	_ = d.ensureUnmounted(name)
 
 	imgPath := d.imagePath(name)
-	if output, err := exec.Command("cp", snap.Path, imgPath).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("cp", snap.Path, imgPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("restore image: %s: %w", string(output), err)
 	}
 
 	// Run fsck on restored image
-	if output, err := exec.Command("e2fsck", "-p", "-f", imgPath).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("e2fsck", "-p", "-f", imgPath).CombinedOutput(); err != nil {
 		log.Warn().Str("output", string(output)).Err(err).Msg("fsck on restored image reported issues")
 	}
 
@@ -346,7 +354,7 @@ func (d *BlockDriver) Import(ctx context.Context, name string, r io.Reader, size
 	}
 
 	imgPath := d.imagePath(name)
-	f, err := os.Create(imgPath)
+	f, err := osCreateBlock(imgPath)
 	if err != nil {
 		return fmt.Errorf("create image: %w", err)
 	}
@@ -357,7 +365,7 @@ func (d *BlockDriver) Import(ctx context.Context, name string, r io.Reader, size
 	}
 
 	// Verify filesystem
-	if output, err := exec.Command("e2fsck", "-p", "-f", imgPath).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("e2fsck", "-p", "-f", imgPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("fsck on imported image: %s: %w", string(output), err)
 	}
 
@@ -369,12 +377,12 @@ func (d *BlockDriver) Import(ctx context.Context, name string, r io.Reader, size
 func (d *BlockDriver) ensureUnmounted(name string) error {
 	mnt := d.mountPoint(name)
 	// Check if mount point is active
-	output, err := exec.Command("mountpoint", "-q", mnt).CombinedOutput()
+	output, err := execCommandBlock("mountpoint", "-q", mnt).CombinedOutput()
 	if err != nil {
 		return nil // not mounted
 	}
 	_ = output
-	if output, err := exec.Command("umount", mnt).CombinedOutput(); err != nil {
+	if output, err := execCommandBlock("umount", mnt).CombinedOutput(); err != nil {
 		return fmt.Errorf("umount %s: %s: %w", mnt, string(output), err)
 	}
 	return nil
@@ -382,7 +390,7 @@ func (d *BlockDriver) ensureUnmounted(name string) error {
 
 // createSparseFile creates a sparse file of the given size.
 func createSparseFile(path string, sizeBytes int64) error {
-	f, err := os.Create(path)
+	f, err := osCreateBlock(path)
 	if err != nil {
 		return err
 	}
