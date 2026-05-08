@@ -9,3 +9,12 @@ manager_state_dir: "{{ swarmcracker_state_dir }}/manager"
 # If not set, will auto-detect from ansible_default_ipv4.address
 manager_advertise_address: "{{ ansible_default_ipv4.address | default('0.0.0.0') }}"
 manager_advertise_port: "{{ manager_port }}"
+
+# SwarmCracker download configuration
+swarmcracker_version: "0.1.0-alpha"
+swarmcracker_download_url: "https://github.com/restuhaqza/SwarmCracker/releases/download"
+swarmcracker_tarball: "swarmcracker-{{ swarmcracker_version }}-linux-amd64.tar.gz"
+swarmcracker_install_dir: /usr/local/bin
+swarmcracker_manager_port: 4242
+swarmcracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155"
+swarmcracker_kernel_path: /usr/share/firecracker/vmlinux
