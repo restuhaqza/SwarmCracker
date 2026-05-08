@@ -24,21 +24,29 @@
 - name: SwarmCracker — Workers
   import_playbook: cluster-workers.yml
 
-- name: SwarmCracker — Firecracker (workers only)
-  hosts: workers
+- name: SwarmCracker — Firecracker (all nodes)
+  hosts: swarmcracker
   become: yes
   gather_facts: no
   roles:
     - role: firecracker
       tags: [firecracker]
 
-- name: SwarmCracker — Networking (workers only)
-  hosts: workers
+- name: SwarmCracker — Networking (all nodes)
+  hosts: swarmcracker
   become: yes
   gather_facts: no
   roles:
     - role: networking
       tags: [networking]
+
+- name: SwarmCracker — CNI (all nodes)
+  hosts: swarmcracker
+  become: yes
+  gather_facts: no
+  roles:
+    - role: cni
+      tags: [cni]
 
 - name: SwarmCracker — Cluster Summary
   hosts: managers

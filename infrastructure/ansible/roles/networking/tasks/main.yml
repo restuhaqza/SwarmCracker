@@ -87,43 +87,86 @@
   when: network_gre_enabled
 
 # === VXLAN Overlay (recommended for L2) ===
+
+# Step 0: Clean up stale VXLAN devices with same VNI
+- name: Detect and remove stale VXLAN devices with same VNI
+  shell: |
+    vni="{{ network_vxlan_vni }}"
+    # Find any VXLAN with same VNI (could be stale with different name)
+    stale_vxlans=$(ip -d link show type vxlan 2>/dev/null | grep -E "id $vni" -B1 | grep -oP '^[\d]+: \K[\w-]+' | tr -d ':')
+    if [ -n "$stale_vxlans" ]; then
+      for vx in $stale_vxlans; do
+        ip link del "$vx" 2>/dev/null && echo "Removed stale VXLAN: $vx (VNI $vni)" || true
+      done
+    fi
+  changed_when: false
+  when: network_vxlan_enabled
+
 - name: Get remote VXLAN peer addresses
   set_fact:
     vxlan_peers: >-
       {% set peers = [] -%}
-      {%- for w in groups['workers'] -%}
-        {%- if w != inventory_hostname -%}
-          {{ peers.append(hostvars[w]['ansible_host'] | default(hostvars[w]['ansible_default_ipv4']['address'])) -}}
+      {%- for host in groups['swarmcracker'] -%}
+        {%- if host != inventory_hostname -%}
+          {{ peers.append(hostvars[host]['ansible_host'] | default(hostvars[host]['ansible_default_ipv4']['address'])) -}}
         {%- endif -%}
       {%- endfor -%}
       {{ peers }}
   when: network_vxlan_enabled
 
+# Step 1: Create VXLAN device (must exist before FDB)
 - name: Create VXLAN overlay
   shell: |
     vxlan="vxlan{{ network_vxlan_vni }}"
     local="{{ ansible_host | default(ansible_default_ipv4.address) }}"
+    
     if ip link show "$vxlan" 2>/dev/null | grep -q "$vxlan"; then
-      echo "VXLAN $vxlan exists"
+      echo "VXLAN $vxlan already exists"
     else
-      ip link add "$vxlan" type vxlan \
-        id {{ network_vxlan_vni }} \
-        dstport {{ network_vxlan_port }} \
-        local "$local" \
-        nolearning
-      ip link set "$vxlan" master {{ network_bridge_name }}
-      ip link set "$vxlan" up
+      ip link add "$vxlan" type vxlan id {{ network_vxlan_vni }} dstport {{ network_vxlan_port }} local "$local" nolearning
       echo "VXLAN $vxlan created (VNI {{ network_vxlan_vni }})"
     fi
   changed_when: false
   when: network_vxlan_enabled
 
+# Step 2: Attach VXLAN to bridge (must happen before FDB)
+- name: Attach VXLAN to bridge and bring up
+  shell: |
+    vxlan="vxlan{{ network_vxlan_vni }}"
+    bridge="{{ network_bridge_name }}"
+    
+    # Check if already attached
+    if ip link show "$vxlan" 2>/dev/null | grep -q "master $bridge"; then
+      echo "VXLAN $vxlan already attached to $bridge"
+    else
+      ip link set "$vxlan" master "$bridge"
+      echo "VXLAN $vxlan attached to $bridge"
+    fi
+    
+    # Ensure VXLAN is up
+    ip link set "$vxlan" up
+  changed_when: false
+  when: network_vxlan_enabled
+
+# Step 3: Add FDB entries (VXLAN must be up and attached)
 - name: Add VXLAN FDB entries for peers
   shell: |
     vxlan="vxlan{{ network_vxlan_vni }}"
+    
+    # Verify VXLAN device exists before adding FDB
+    if ! ip link show "$vxlan" 2>/dev/null | grep -q "$vxlan"; then
+      echo "ERROR: VXLAN $vxlan not found - cannot add FDB"
+      exit 1
+    fi
+    
     {% for peer in vxlan_peers %}
-    bridge fdb append 00:00:00:00:00:00 dev "$vxlan" dst {{ peer }} self permanent
-    echo "FDB: $vxlan -> {{ peer }}"
+    # Add FDB entry for {{ peer }}
+    if bridge fdb show dev "$vxlan" | grep -q "{{ peer }}"; then
+      echo "FDB entry for {{ peer }} already exists"
+    else
+      bridge fdb append 00:00:00:00:00:00 dev "$vxlan" dst {{ peer }} self permanent
+      echo "FDB added: $vxlan -> {{ peer }}"
+    fi
     {% endfor %}
   changed_when: false
   when: network_vxlan_enabled and vxlan_peers | length > 0
