@@ -271,3 +271,52 @@ func (sm *StateManager) GetLogDir() string {
 	// Use same directory as state file
 	return filepath.Dir(sm.stateFile)
 }
+
+// Reconcile checks if VMs marked as "running" are actually running.
+// Updates status to "stopped" for stale VMs.
+func (sm *StateManager) Reconcile(isRunningFunc func(id string) bool) int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	reconciledCount := 0
+	for id, state := range sm.states {
+		if state.Status == "running" {
+			// Check if VM is actually running
+			if !isRunningFunc(id) {
+				state.Status = "stopped"
+				state.LastError = "Process not found - VM was killed externally"
+				state.ErrorTime = time.Now()
+				reconciledCount++
+			}
+		}
+	}
+
+	// Save reconciled state
+	if reconciledCount > 0 {
+		if err := sm.save(); err != nil {
+			// Log error but don't fail - state will be reconciled again next time
+			}
+	}
+
+	return reconciledCount
+}
+
+// ClearStale removes all VM states that are marked as stopped.
+func (sm *StateManager) ClearStale() int {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	removedCount := 0
+	for id, state := range sm.states {
+		if state.Status == "stopped" || state.Status == "error" {
+			delete(sm.states, id)
+			removedCount++
+		}
+	}
+
+	if removedCount > 0 {
+		sm.save()
+	}
+
+	return removedCount
+}

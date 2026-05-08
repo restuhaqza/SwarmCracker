@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -49,6 +50,22 @@ func runList() error {
 	stateMgr, err := runtime.NewStateManager("")
 	if err != nil {
 		return fmt.Errorf("failed to create state manager: %w", err)
+	}
+
+	// Reconcile state with actual running processes
+	// This checks if VMs marked as "running" are actually still alive
+	reconciledCount := stateMgr.Reconcile(func(id string) bool {
+		// Check if firecracker process exists
+		// Try to find by socket file or PID
+		socketPath := "/var/run/firecracker/" + id + ".sock"
+		if _, err := os.Stat(socketPath); err == nil {
+			return true // Socket exists, assume running
+		}
+		return false
+	})
+
+	if reconciledCount > 0 {
+		fmt.Printf("Reconciled %d stale VM state(s)\n", reconciledCount)
 	}
 
 	// Get all VMs
