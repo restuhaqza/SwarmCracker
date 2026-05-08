@@ -16,6 +16,8 @@ swarmcracker_download_url: "https://github.com/restuhaqza/SwarmCracker/releases/
 swarmcracker_tarball: "swarmcracker-{{ swarmcracker_version }}-linux-amd64.tar.gz"
 swarmcracker_install_dir: /usr/local/bin
 swarmcracker_manager_port: 4242
+
+# SwarmCracker directories
 swarmcracker_kernel_url: "https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155"
 swarmcracker_kernel_path: /usr/share/firecracker/vmlinux
 swarmcracker_state_dir: /var/lib/swarmcracker
@@ -23,3 +25,24 @@ swarmcracker_rootfs_dir: /var/lib/firecracker/rootfs
 swarmcracker_socket_dir: /var/run/firecracker
 swarmcracker_config_dir: /etc/swarmcracker
 swarmcracker_log_dir: /var/log/swarmcracker
+
+# Executor configuration
+swarmcracker_reserved_cpus: 1
+swarmcracker_reserved_memory_mb: 512
+
+# Network configuration
+swarmcracker_bridge_name: "swarm-br0"
+swarmcracker_subnet: "192.168.127.0/24"
+swarmcracker_bridge_ip: "192.168.127.1/24"
+swarmcracker_ip_mode: "static"
+swarmcracker_nat_enabled: true
+swarmcracker_vxlan_enabled: true
+swarmcracker_vxlan_vni: 100
+swarmcracker_vxlan_port: 4789
+
+# Logging configuration
+swarmcracker_log_level: "info"
+
+# Cleanup configuration
+swarmcracker_auto_cleanup: true
+swarmcracker_max_image_age_days: 7
