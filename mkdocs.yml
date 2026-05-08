@@ -37,6 +37,7 @@ nav:
     - SwarmKit: user/guides/swarmkit.md
     - Configuration: user/guides/configuration.md
     - Security: user/guides/security.md
+    - Jailer Quickstart: user/guides/jailer-quickstart.md
     - Snapshots: user/guides/snapshots.md
     - Advanced: user/guides/advanced.md
   - Architecture:
