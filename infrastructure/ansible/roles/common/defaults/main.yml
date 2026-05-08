@@ -60,3 +60,10 @@ common_ntp_servers:
   - 1.pool.ntp.org
   - 2.pool.ntp.org
   - 3.pool.ntp.org
+
+# SwarmCracker directories
+swarmcracker_state_dir: /var/lib/swarmcracker
+swarmcracker_rootfs_dir: /var/lib/firecracker/rootfs
+swarmcracker_socket_dir: /var/run/firecracker
+swarmcracker_config_dir: /etc/swarmcracker
+swarmcracker_log_dir: /var/log/swarmcracker
