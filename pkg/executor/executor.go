@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/restuhaqza/swarmcracker/pkg/network"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -207,5 +208,13 @@ func (e *FirecrackerExecutor) Events(ctx context.Context) (<-chan Event, error) 
 // Close cleans up executor resources.
 func (e *FirecrackerExecutor) Close() error {
 	close(e.events)
+
+	// Cleanup network resources (dnsmasq, VXLAN)
+	if nm, ok := e.networkMgr.(*network.NetworkManager); ok {
+		if err := nm.Shutdown(); err != nil {
+			log.Error().Err(err).Msg("Failed to shutdown network manager")
+		}
+	}
+
 	return nil
 }

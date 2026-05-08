@@ -1099,6 +1099,30 @@ func hostname() string {
 	return "localhost"
 }
 
+// Close cleans up executor resources (dnsmasq, VXLAN peer discovery).
+func (e *Executor) Close() error {
+	zerolog_log.Info().Msg("Closing SwarmKit executor")
+
+	// Stop periodic cleanup goroutine
+	if e.cleanupCancel != nil {
+		e.cleanupCancel()
+		// Wait for cleanup goroutine to finish
+		if e.cleanupDone != nil {
+			<-e.cleanupDone
+		}
+	}
+
+	// Shutdown network manager (kills dnsmasq, stops VXLAN discovery)
+	if nm, ok := e.networkMgr.(*network.NetworkManager); ok {
+		if err := nm.Shutdown(); err != nil {
+			zerolog_log.Warn().Err(err).Msg("Failed to shutdown network manager")
+		}
+	}
+
+	zerolog_log.Info().Msg("Executor closed")
+	return nil
+}
+
 // kvmAvailable checks if /dev/kvm exists and is accessible
 func (e *Executor) kvmAvailable() bool {
 	_, err := os.Stat("/dev/kvm")

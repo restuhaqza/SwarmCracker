@@ -402,7 +402,7 @@ func runAgent(ctx *cli.Context) error {
 	}
 
 	// Start node
-	if err := startNode(nodeConfig); err != nil {
+	if err := startNode(nodeConfig, fcExecutor); err != nil {
 		return fmt.Errorf("failed to start node: %w", err)
 	}
 
@@ -496,7 +496,7 @@ func checkAndMigrateClusterAddress(stateDir, advertiseAddr string) error {
 	return nil
 }
 
-func startNode(config *node.Config) error {
+func startNode(config *node.Config, executor *swarmkit.Executor) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -553,6 +553,11 @@ func startNode(config *node.Config) error {
 	if err := n.Stop(shutdownCtx); err != nil {
 		log.G(ctx).WithError(err).Error("Failed to stop node gracefully")
 		return err
+	}
+
+	// Close executor (cleanup dnsmasq, VXLAN)
+	if err := executor.Close(); err != nil {
+		log.G(ctx).WithError(err).Warn("Failed to close executor")
 	}
 
 	// Check if node stopped with any error

@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
@@ -698,7 +699,12 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		Str("gateway", gatewayIP.String()).
 		Msg("Setting up DHCP server")
 
-	// Kill any existing dnsmasq for this bridge
+	// Kill ALL dnsmasq instances first (more aggressive cleanup)
+	// This ensures no port conflicts with system dnsmasq
+	execCommand("pkill", "-9", "dnsmasq").Run()
+	time.Sleep(100 * time.Millisecond) // Brief pause to ensure process is killed
+
+	// Kill any existing dnsmasq for this bridge (fallback)
 	execCommand("pkill", "-f", fmt.Sprintf("dnsmasq.*%s", nm.config.BridgeName)).Run()
 
 	// Create log file with proper permissions for dnsmasq (runs as nobody)
@@ -733,6 +739,42 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	}
 
 	log.Info().Msg("DHCP server (dnsmasq) started")
+	return nil
+}
+
+// Shutdown cleans up all network resources including dnsmasq.
+func (nm *NetworkManager) Shutdown() error {
+	log.Info().Msg("Shutting down network manager")
+
+	// Kill all dnsmasq instances started by swarmcracker
+	if err := nm.cleanupDnsmasq(); err != nil {
+		log.Warn().Err(err).Msg("Failed to cleanup dnsmasq")
+	}
+
+	// Stop VXLAN peer discovery if running
+	nm.StopPeerDiscovery()
+
+	log.Info().Msg("Network manager shutdown complete")
+	return nil
+}
+
+// cleanupDnsmasq kills all dnsmasq instances related to swarmcracker.
+func (nm *NetworkManager) cleanupDnsmasq() error {
+	// Kill dnsmasq by bridge name (our specific instance)
+	bridgePattern := fmt.Sprintf("dnsmasq.*%s", nm.config.BridgeName)
+	execCommand("pkill", "-f", bridgePattern).Run()
+
+	// Also kill by pid file if exists
+	pidFile := "/tmp/dnsmasq.pid"
+	if data, err := os.ReadFile(pidFile); err == nil {
+		pid := strings.TrimSpace(string(data))
+		if pid != "" {
+			execCommand("kill", pid).Run()
+			osRemove(pidFile)
+		}
+	}
+
+	log.Info().Msg("dnsmasq cleaned up")
 	return nil
 }
 
