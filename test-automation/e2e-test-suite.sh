@@ -34,6 +34,35 @@ TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_SKIPPED=0
 
+# Timeout configuration (seconds)
+PHASE_TIMEOUT=300  # 5 minutes per phase
+TEST_TIMEOUT=30    # 30 seconds per test
+
+# Timeout wrapper - runs command with timeout, fails if hangs
+run_with_timeout() {
+    local timeout_sec=$1
+    local test_name=$2
+    shift 2
+    local cmd="$*"
+
+    # Run command in background with timeout
+    timeout $timeout_sec bash -c "$cmd" &
+    local pid=$!
+
+    # Wait for completion
+    wait $pid 2>/dev/null
+    local exit_code=$?
+
+    # Check result
+    if [ $exit_code -eq 124 ]; then
+        fail "$test_name" "Timeout after ${timeout_sec}s"
+        return 1
+    elif [ $exit_code -ne 0 ]; then
+        return $exit_code
+    fi
+    return 0
+}
+
 # SSH helpers
 ssh_manager() { ssh $SSH_OPTS -i "$KEY_MANAGER" vagrant@$MANAGER_IP "$@"; }
 ssh_worker1() { ssh $SSH_OPTS -i "$KEY_WORKER1" vagrant@$WORKER1_IP "$@"; }
@@ -74,7 +103,7 @@ section() {
 # ============================================================
 test_phase0_environment() {
     section "PHASE 0: Environment Verification"
-    
+
     # Test 0.1: KVM availability on all nodes
     echo "📋 Test 0.1: KVM device availability..."
     for node in "manager" "worker1" "worker2"; do
@@ -86,7 +115,7 @@ test_phase0_environment() {
             fail "KVM not available on $node" "Device /dev/kvm not found"
         fi
     done
-    
+
     # Test 0.2: CPU virtualization support
     echo ""
     echo "📋 Test 0.2: CPU virtualization support..."
@@ -99,7 +128,7 @@ test_phase0_environment() {
             fail "CPU virtualization not detected on $node" "No VMX/SVM flags found"
         fi
     done
-    
+
     # Test 0.3: Inter-node connectivity
     echo ""
     echo "📋 Test 0.3: Network connectivity..."
@@ -108,19 +137,19 @@ test_phase0_environment() {
     else
         fail "Manager → Worker1 connectivity" "Ping failed"
     fi
-    
+
     if ssh_manager "ping -c 2 $WORKER2_IP" >/dev/null 2>&1; then
         pass "Manager → Worker2 connectivity"
     else
         fail "Manager → Worker2 connectivity" "Ping failed"
     fi
-    
+
     if ssh_worker1 "ping -c 2 $WORKER2_IP" >/dev/null 2>&1; then
         pass "Worker1 → Worker2 connectivity"
     else
         fail "Worker1 → Worker2 connectivity" "Ping failed"
     fi
-    
+
     # Test 0.4: Required ports open
     echo ""
     echo "📋 Test 0.4: SwarmKit port (4242) on manager..."
@@ -136,7 +165,7 @@ test_phase0_environment() {
 # ============================================================
 test_phase1_installation() {
     section "PHASE 1: Installation Verification"
-    
+
     # Test 1.1: Firecracker binary
     echo "📋 Test 1.1: Firecracker binary..."
     for node in "manager" "worker1" "worker2"; do
@@ -148,7 +177,7 @@ test_phase1_installation() {
             fail "Firecracker not installed on $node" "Binary not found or not executable"
         fi
     done
-    
+
     # Test 1.2: swarmcracker binary
     echo ""
     echo "📋 Test 1.2: swarmcracker CLI..."
@@ -158,7 +187,7 @@ test_phase1_installation() {
     else
         fail "swarmcracker CLI not installed" "Binary not found"
     fi
-    
+
     # Test 1.3: swarmd-firecracker binary
     echo ""
     echo "📋 Test 1.3: swarmd-firecracker daemon..."
@@ -171,7 +200,7 @@ test_phase1_installation() {
             fail "swarmd-firecracker not installed on $node" "Binary not found"
         fi
     done
-    
+
     # Test 1.4: Kernel image
     echo ""
     echo "📋 Test 1.4: Firecracker kernel (vmlinux)..."
@@ -184,7 +213,7 @@ test_phase1_installation() {
             fail "Kernel image missing on $node" "vmlinux not found"
         fi
     done
-    
+
     # Test 1.5: Rootfs image
     echo ""
     echo "📋 Test 1.5: Rootfs image..."
@@ -204,7 +233,7 @@ test_phase1_installation() {
 # ============================================================
 test_phase2_cluster() {
     section "PHASE 2: Cluster Status"
-    
+
     # Test 2.1: Manager service running
     echo "📋 Test 2.1: Manager systemd service..."
     result=$(ssh_manager_sudo "systemctl is-active swarmd-manager.service" 2>&1 || echo "")
@@ -213,7 +242,7 @@ test_phase2_cluster() {
     else
         fail "Manager service not active" "Status: $result"
     fi
-    
+
     # Test 2.2: Worker services running
     echo ""
     echo "📋 Test 2.2: Worker systemd services..."
@@ -223,14 +252,14 @@ test_phase2_cluster() {
     else
         fail "Worker1 service not active" "Status: $result"
     fi
-    
+
     result=$(ssh_worker2_sudo "systemctl is-active swarmd-worker.service" 2>&1 || echo "")
     if [[ "$result" == "active" ]]; then
         pass "Worker2 service is active"
     else
         fail "Worker2 service not active" "Status: $result"
     fi
-    
+
     # Test 2.3: Control socket accessible
     echo ""
     echo "📋 Test 2.3: SwarmKit control socket..."
@@ -240,7 +269,7 @@ test_phase2_cluster() {
     else
         fail "Control socket not found" "Path: $SWARM_SOCKET"
     fi
-    
+
     # Test 2.4: Join tokens available
     echo ""
     echo "📋 Test 2.4: Join tokens file..."
@@ -257,7 +286,7 @@ test_phase2_cluster() {
 # ============================================================
 test_phase3_service_deployment() {
     section "PHASE 3: Service Deployment"
-    
+
     # Test 3.1: Deploy nginx service
     echo "📋 Test 3.1: Deploy nginx microVM..."
     result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker run nginx:latest --vcpus 1 --memory 128 -d" 2>&1 || echo "")
@@ -268,9 +297,9 @@ test_phase3_service_deployment() {
         fail "nginx deployment failed" "$result"
         return
     fi
-    
+
     sleep 5
-    
+
     # Test 3.2: List running VMs
     echo ""
     echo "📋 Test 3.2: List running microVMs..."
@@ -281,7 +310,7 @@ test_phase3_service_deployment() {
     else
         fail "No VMs listed" "$result"
     fi
-    
+
     # Test 3.3: Deploy redis service
     echo ""
     echo "📋 Test 3.3: Deploy redis microVM..."
@@ -292,9 +321,9 @@ test_phase3_service_deployment() {
     else
         fail "redis deployment failed" "$result"
     fi
-    
+
     sleep 3
-    
+
     # Test 3.4: Verify both VMs running
     echo ""
     echo "📋 Test 3.4: Multiple VMs running..."
@@ -312,15 +341,15 @@ test_phase3_service_deployment() {
 # ============================================================
 test_phase4_updates() {
     section "PHASE 4: Service Updates & Lifecycle"
-    
+
     # Get a running VM to test
     VM_ID=$(ssh_manager_sudo "/usr/local/bin/swarmcracker list" 2>&1 | grep -oP 'task-[0-9]+' | head -1)
-    
+
     if [[ -z "$VM_ID" ]]; then
         skip "Phase 4 tests" "No running VMs to test updates"
         return
     fi
-    
+
     # Test 4.1: VM status inspection
     echo "📋 Test 4.1: Inspect VM status..."
     result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker status $VM_ID" 2>&1 || echo "")
@@ -329,7 +358,7 @@ test_phase4_updates() {
     else
         fail "VM status failed" "$result"
     fi
-    
+
     # Test 4.2: VM metrics
     echo ""
     echo "📋 Test 4.2: VM resource metrics..."
@@ -340,7 +369,7 @@ test_phase4_updates() {
         # Metrics might not be implemented yet
         skip "VM metrics" "Feature may not be implemented"
     fi
-    
+
     # Test 4.3: Stop a VM
     echo ""
     echo "📋 Test 4.3: Stop running VM..."
@@ -350,9 +379,9 @@ test_phase4_updates() {
     else
         fail "VM stop failed" "$result"
     fi
-    
+
     sleep 2
-    
+
     # Test 4.4: Verify VM stopped
     echo ""
     echo "📋 Test 4.4: Verify VM stopped..."
@@ -369,19 +398,19 @@ test_phase4_updates() {
 # ============================================================
 test_phase5_snapshots() {
     section "PHASE 5: Snapshots & Recovery"
-    
+
     # Deploy a test VM for snapshot testing
     echo "📋 Test 5.0: Deploy test VM for snapshot..."
     result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker run alpine:latest --vcpus 1 --memory 128 -d" 2>&1 || echo "")
     SNAP_VM=$(echo "$result" | grep -oP 'task-[0-9]+' | head -1)
-    
+
     if [[ -z "$SNAP_VM" ]]; then
         skip "Snapshot tests" "Could not deploy test VM"
         return
     fi
-    
+
     sleep 5
-    
+
     # Test 5.1: Create snapshot
     echo ""
     echo "📋 Test 5.1: Create VM snapshot..."
@@ -392,7 +421,7 @@ test_phase5_snapshots() {
         # Snapshot might not be implemented
         skip "Snapshot create" "Feature may not be implemented ($result)"
     fi
-    
+
     # Test 5.2: List snapshots
     echo ""
     echo "📋 Test 5.2: List snapshots..."
@@ -402,7 +431,7 @@ test_phase5_snapshots() {
     else
         skip "Snapshot list" "Feature may not be implemented"
     fi
-    
+
     # Test 5.3: Restore snapshot
     echo ""
     echo "📋 Test 5.3: Restore snapshot..."
@@ -419,7 +448,7 @@ test_phase5_snapshots() {
 # ============================================================
 test_phase6_node_ops() {
     section "PHASE 6: Node Operations"
-    
+
     # Test 6.1: VXLAN overlay network
     echo "📋 Test 6.1: VXLAN overlay on workers..."
     result=$(ssh_worker1_sudo "ip link show vxlan100" 2>&1 || echo "")
@@ -428,14 +457,14 @@ test_phase6_node_ops() {
     else
         fail "VXLAN not configured on worker1" "$result"
     fi
-    
+
     result=$(ssh_worker2_sudo "ip link show vxlan100" 2>&1 || echo "")
     if [[ "$result" =~ "vxlan100" ]]; then
         pass "VXLAN configured on worker2"
     else
         fail "VXLAN not configured on worker2" "$result"
     fi
-    
+
     # Test 6.2: Bridge network
     echo ""
     echo "📋 Test 6.2: Bridge network (swarm-br0)..."
@@ -448,7 +477,7 @@ test_phase6_node_ops() {
             fail "Bridge not configured on $node" "$result"
         fi
     done
-    
+
     # Test 6.3: NAT masquerading
     echo ""
     echo "📋 Test 6.3: NAT masquerading rules..."
@@ -461,7 +490,7 @@ test_phase6_node_ops() {
             fail "NAT not configured on $node" "No MASQUERADE rule"
         fi
     done
-    
+
     # Test 6.4: Cross-node VXLAN FDB
     echo ""
     echo "📋 Test 6.4: VXLAN FDB entries..."
@@ -471,7 +500,7 @@ test_phase6_node_ops() {
     else
         fail "Worker1 missing FDB for Worker2" "$result"
     fi
-    
+
     result=$(ssh_worker2_sudo "bridge fdb show dev vxlan100" 2>&1 || echo "")
     if [[ "$result" =~ "$WORKER1_IP" ]]; then
         pass "Worker2 has FDB entry for Worker1"
@@ -485,18 +514,18 @@ test_phase6_node_ops() {
 # ============================================================
 test_phase6_5_cross_vm_connectivity() {
     section "PHASE 6.5: Cross-Node MicroVM Connectivity"
-    
+
     # Helper: Wait for VM ready state
     wait_vm_ready() {
         local VM_ID="$1"
         local NODE="$2"
         local MAX_WAIT=30
         local COUNT=0
-        
+
         ssh_func="ssh_${NODE}_sudo"
-        
+
         echo "  ⏳ Waiting for $VM_ID to reach RUNNING state (max ${MAX_WAIT}s)..."
-        
+
         while [[ $COUNT -lt $MAX_WAIT ]]; do
             result=$($ssh_func "swarmcracker status $VM_ID 2>&1" || echo "")
             if [[ "$result" =~ "Running" ]] || [[ "$result" =~ "RUNNING" ]]; then
@@ -506,47 +535,47 @@ test_phase6_5_cross_vm_connectivity() {
             sleep 2
             ((COUNT+=2))
         done
-        
+
         echo "  ❌ $VM_ID not ready after ${MAX_WAIT}s"
         return 1
     }
-    
+
     # Helper: Get VM IP from status
     get_vm_ip() {
         local VM_ID="$1"
         local NODE="$2"
-        
+
         ssh_func="ssh_${NODE}_sudo"
         result=$($ssh_func "swarmcracker status $VM_ID 2>&1" || echo "")
         # Try to extract IP from status output
         IP=$(echo "$result" | grep -oP 'IP:\s*[0-9.]+|ip:\s*[0-9.]+|address:\s*[0-9.]+|NetworkIP:\s*[0-9.]+' | grep -oP '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -1)
         echo "$IP"
     }
-    
+
     # Helper: Get VM tap device
     get_vm_tap() {
         local VM_ID="$1"
         local NODE="$2"
-        
+
         ssh_func="ssh_${NODE}_sudo"
         result=$($ssh_func "swarmcracker status $VM_ID 2>&1" || echo "")
         TAP=$(echo "$result" | grep -oP 'tap-[a-z0-9]+|TapDevice:\s*[a-z0-9]+-tap' | grep -oP 'tap-[a-z0-9]+|tap[0-9]+' | head -1)
         echo "$TAP"
     }
-    
+
     # Helper: Ping from VM network namespace
     ping_from_vm_ns() {
         local VM_ID="$1"
         local TARGET_IP="$2"
         local NODE="$3"
-        
+
         ssh_func="ssh_${NODE}_sudo"
-        
+
         # Find the network namespace for this VM
         # VMs typically have a netns named after their task ID or tap device
         NS_LIST=$($ssh_func "ip netns list 2>&1" || echo "")
         VM_NS=$(echo "$NS_LIST" | grep -i "$VM_ID" | awk '{print $1}' | head -1)
-        
+
         if [[ -z "$VM_NS" ]]; then
             # Try alternative: find by tap device
             TAP=$(get_vm_tap "$VM_ID" "$NODE")
@@ -554,7 +583,7 @@ test_phase6_5_cross_vm_connectivity() {
                 VM_NS=$($ssh_func "ip netns identify $TAP 2>&1" || echo "")
             fi
         fi
-        
+
         if [[ -n "$VM_NS" ]]; then
             # Execute ping inside VM namespace
             $ssh_func "ip netns exec $VM_NS ping -c 5 -W 2 $TARGET_IP 2>&1"
@@ -564,25 +593,25 @@ test_phase6_5_cross_vm_connectivity() {
             $ssh_func "ping -c 5 -W 2 $TARGET_IP -I swarm-br0 2>&1"
         fi
     }
-    
+
     # Test 6.5.1: Deploy VM on Worker1
     echo "📋 Test 6.5.1: Deploy Alpine microVM on Worker1..."
     result=$(ssh_worker1_sudo "swarmcracker run alpine:latest --vcpus 1 --memory 128 -d" 2>&1 || echo "")
     VM1_ID=$(echo "$result" | grep -oP 'task-[0-9]+|vm-[a-z0-9]+|[0-9]+' | head -1)
-    
+
     if [[ -n "$VM1_ID" ]]; then
         pass "VM1 deployed on Worker1 (ID: $VM1_ID)"
     else
         fail "VM1 deployment failed on Worker1" "$result"
         return
     fi
-    
+
     # Test 6.5.2: Deploy VM on Worker2
     echo ""
     echo "📋 Test 6.5.2: Deploy Alpine microVM on Worker2..."
     result=$(ssh_worker2_sudo "swarmcracker run alpine:latest --vcpus 1 --memory 128 -d" 2>&1 || echo "")
     VM2_ID=$(echo "$result" | grep -oP 'task-[0-9]+|vm-[a-z0-9]+|[0-9]+' | head -1)
-    
+
     if [[ -n "$VM2_ID" ]]; then
         pass "VM2 deployed on Worker2 (ID: $VM2_ID)"
     else
@@ -591,7 +620,7 @@ test_phase6_5_cross_vm_connectivity() {
         ssh_worker1_sudo "swarmcracker stop $VM1_ID" 2>&1 || true
         return
     fi
-    
+
     # Test 6.5.3: Validate VM1 readiness
     echo ""
     echo "📋 Test 6.5.3: Validate VM1 is ready..."
@@ -599,7 +628,7 @@ test_phase6_5_cross_vm_connectivity() {
         pass "VM1 ($VM1_ID) reached RUNNING state"
         VM1_IP=$(get_vm_ip "$VM1_ID" "worker1")
         if [[ -n "$VM1_IP" ]]; then
-            echo "  ℹ️  VM1 IP: $VM1_IP"
+            echo "  i️  VM1 IP: $VM1_IP"
         else
             echo "  ⚠️  Could not determine VM1 IP (will use bridge ping fallback)"
         fi
@@ -609,7 +638,7 @@ test_phase6_5_cross_vm_connectivity() {
         ssh_worker2_sudo "swarmcracker stop $VM2_ID" 2>&1 || true
         return
     fi
-    
+
     # Test 6.5.4: Validate VM2 readiness
     echo ""
     echo "📋 Test 6.5.4: Validate VM2 is ready..."
@@ -617,7 +646,7 @@ test_phase6_5_cross_vm_connectivity() {
         pass "VM2 ($VM2_ID) reached RUNNING state"
         VM2_IP=$(get_vm_ip "$VM2_ID" "worker2")
         if [[ -n "$VM2_IP" ]]; then
-            echo "  ℹ️  VM2 IP: $VM2_IP"
+            echo "  i️  VM2 IP: $VM2_IP"
         else
             echo "  ⚠️  Could not determine VM2 IP (will use bridge ping fallback)"
         fi
@@ -627,33 +656,33 @@ test_phase6_5_cross_vm_connectivity() {
         ssh_worker2_sudo "swarmcracker stop $VM2_ID" 2>&1 || true
         return
     fi
-    
+
     # Test 6.5.5: Cross-node VM connectivity (Worker1 → Worker2)
     echo ""
     echo "📋 Test 6.5.5: Cross-node VM connectivity test..."
-    
+
     if [[ -n "$VM2_IP" ]]; then
         # Ping VM2 from Worker1 side (via VXLAN overlay)
         result=$(ping_from_vm_ns "$VM1_ID" "$VM2_IP" "worker1")
-        
+
         if echo "$result" | grep -q "0% packet loss" || echo "$result" | grep -qE "[0-9]+ packets transmitted, [0-9]+ packets received"; then
             LOSS=$(echo "$result" | grep -oP '[0-9]+% packet loss' | head -1)
             LATENCY=$(echo "$result" | grep -oP 'rtt min/avg/max/mdev = [0-9.]+/[0-9.]+/[0-9.]+/[0-9.]+ ms' | head -1)
             pass "Cross-node VM ping successful: $LOSS"
             if [[ -n "$LATENCY" ]]; then
-                echo "  ℹ️  Latency: $LATENCY"
+                echo "  i️  Latency: $LATENCY"
             fi
         else
             fail "Cross-node VM ping failed" "$result"
         fi
     else
         # Fallback: test VXLAN connectivity at bridge level
-        echo "  ℹ️  Using bridge-level connectivity test (VM IPs not detected)"
-        
+        echo "  i️  Using bridge-level connectivity test (VM IPs not detected)"
+
         # Ping from Worker1 to Worker2's bridge subnet via VXLAN
         # Assuming overlay subnet like 10.0.0.0/24 or 172.17.0.0/24
         result=$(ssh_worker1_sudo "ping -c 5 -W 2 -I swarm-br0 10.0.0.11 2>&1" || echo "")
-        
+
         if echo "$result" | grep -q "0% packet loss"; then
             pass "VXLAN overlay reachable from Worker1 bridge"
         else
@@ -666,14 +695,14 @@ test_phase6_5_cross_vm_connectivity() {
             fi
         fi
     fi
-    
+
     # Test 6.5.6: Reverse connectivity (Worker2 → Worker1)
     echo ""
     echo "📋 Test 6.5.6: Reverse cross-node connectivity..."
-    
+
     if [[ -n "$VM1_IP" ]]; then
         result=$(ping_from_vm_ns "$VM2_ID" "$VM1_IP" "worker2")
-        
+
         if echo "$result" | grep -q "0% packet loss"; then
             LOSS=$(echo "$result" | grep -oP '[0-9]+% packet loss' | head -1)
             pass "Reverse ping successful: $LOSS"
@@ -683,11 +712,11 @@ test_phase6_5_cross_vm_connectivity() {
     else
         skip "Reverse connectivity test" "VM1 IP not determined"
     fi
-    
+
     # Test 6.5.7: VXLAN encapsulation verification
     echo ""
     echo "📋 Test 6.5.7: VXLAN encapsulation active..."
-    
+
     # Check UDP port 4789 (VXLAN VNI) traffic between workers
     result=$(ssh_worker1_sudo "ss -ulnp | grep 4789 || netstat -ulnp | grep 4789" 2>&1 || echo "")
     if [[ "$result" =~ "4789" ]]; then
@@ -695,7 +724,7 @@ test_phase6_5_cross_vm_connectivity() {
     else
         skip "VXLAN port check" "ss/netstat output not parseable"
     fi
-    
+
     # Cleanup: Stop both VMs
     echo ""
     echo "🧹 Cleanup: Stopping test VMs..."
@@ -708,10 +737,10 @@ test_phase6_5_cross_vm_connectivity() {
 # ============================================================
 test_phase7_monitoring() {
     section "PHASE 7: Monitoring & Debugging"
-    
+
     # Test 7.1: VM logs
     VM_ID=$(ssh_manager_sudo "/usr/local/bin/swarmcracker list" 2>&1 | grep -oP 'task-[0-9]+' | head -1)
-    
+
     echo "📋 Test 7.1: VM logs retrieval..."
     if [[ -n "$VM_ID" ]]; then
         result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker logs $VM_ID 2>&1 | head -20" || echo "")
@@ -723,7 +752,7 @@ test_phase7_monitoring() {
     else
         skip "VM logs" "No running VMs"
     fi
-    
+
     # Test 7.2: Manager service logs
     echo ""
     echo "📋 Test 7.2: Manager systemd logs..."
@@ -733,7 +762,7 @@ test_phase7_monitoring() {
     else
         fail "Manager logs not accessible" "$result"
     fi
-    
+
     # Test 7.3: Worker service logs
     echo ""
     echo "📋 Test 7.3: Worker systemd logs..."
@@ -743,7 +772,7 @@ test_phase7_monitoring() {
     else
         fail "Worker1 logs not accessible" "$result"
     fi
-    
+
     # Test 7.4: gRPC connectivity
     echo ""
     echo "📋 Test 7.4: Manager API connectivity from worker..."
@@ -761,7 +790,7 @@ test_phase7_monitoring() {
 # ============================================================
 test_phase8_volumes() {
     section "PHASE 8: Volume Management"
-    
+
     # Test 8.1: Create volume
     echo "📋 Test 8.1: Create persistent volume..."
     result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker volume create test-vol-$(date +%s) --size 100M" 2>&1 || echo "")
@@ -770,7 +799,7 @@ test_phase8_volumes() {
     else
         skip "Volume create" "Feature may not be implemented ($result)"
     fi
-    
+
     # Test 8.2: List volumes
     echo ""
     echo "📋 Test 8.2: List volumes..."
@@ -780,7 +809,7 @@ test_phase8_volumes() {
     else
         skip "Volume list" "Feature may not be implemented"
     fi
-    
+
     # Test 8.3: Volume inspection
     echo ""
     echo "📋 Test 8.3: Volume details..."
@@ -803,11 +832,11 @@ test_phase8_volumes() {
 # ============================================================
 test_phase9_cleanup() {
     section "PHASE 9: Cleanup Tests"
-    
+
     # Test 9.1: Stop all VMs
     echo "📋 Test 9.1: Stop all running microVMs..."
     VM_LIST=$(ssh_manager_sudo "/usr/local/bin/swarmcracker list" 2>&1 | grep -oP 'task-[0-9]+' || echo "")
-    
+
     if [[ -n "$VM_LIST" ]]; then
         for vm in $VM_LIST; do
             result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker stop $vm" 2>&1 || echo "")
@@ -820,9 +849,9 @@ test_phase9_cleanup() {
     else
         pass "No VMs to stop"
     fi
-    
+
     sleep 3
-    
+
     # Test 9.2: Verify all VMs stopped
     echo ""
     echo "📋 Test 9.2: Verify all VMs stopped..."
@@ -833,7 +862,7 @@ test_phase9_cleanup() {
     else
         fail "Some VMs still running" "Count: $VM_COUNT"
     fi
-    
+
     # Test 9.3: Delete snapshots (if created)
     echo ""
     echo "📋 Test 9.3: Cleanup snapshots..."
@@ -846,7 +875,7 @@ test_phase9_cleanup() {
     else
         pass "No test snapshots to cleanup"
     fi
-    
+
     # Test 9.4: Delete volumes (if created)
     echo ""
     echo "📋 Test 9.4: Cleanup volumes..."
@@ -859,7 +888,7 @@ test_phase9_cleanup() {
     else
         pass "No test volumes to cleanup"
     fi
-    
+
     # Test 9.5: Services still healthy after cleanup
     echo ""
     echo "📋 Test 9.5: Services still healthy after tests..."
@@ -869,14 +898,14 @@ test_phase9_cleanup() {
     else
         fail "Manager service degraded" "Status: $result"
     fi
-    
+
     result=$(ssh_worker1_sudo "systemctl is-active swarmd-worker.service" 2>&1 || echo "")
     if [[ "$result" == "active" ]]; then
         pass "Worker1 service still active"
     else
         fail "Worker1 service degraded" "Status: $result"
     fi
-    
+
     result=$(ssh_worker2_sudo "systemctl is-active swarmd-worker.service" 2>&1 || echo "")
     if [[ "$result" == "active" ]]; then
         pass "Worker2 service still active"
@@ -890,13 +919,13 @@ test_phase9_cleanup() {
 # ============================================================
 print_summary() {
     section "TEST SUMMARY"
-    
+
     echo -e "  ${GREEN}Passed:   $TESTS_PASSED${NC}"
     echo -e "  ${RED}Failed:   $TESTS_FAILED${NC}"
     echo -e "  ${YELLOW}Skipped:  $TESTS_SKIPPED${NC}"
     echo -e "  ${BLUE}Total:    $(($TESTS_PASSED + $TESTS_FAILED + $TESTS_SKIPPED))${NC}"
     echo ""
-    
+
     if [[ $TESTS_FAILED -eq 0 ]]; then
         echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${GREEN}  ✅ ALL CRITICAL TESTS PASSED${NC}"
@@ -906,7 +935,7 @@ print_summary() {
         echo -e "${RED}  ❌ SOME TESTS FAILED - Review logs above${NC}"
         echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     fi
-    
+
     echo ""
     echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
     echo "Cluster: Manager=$MANAGER_IP, Worker1=$WORKER1_IP, Worker2=$WORKER2_IP"
@@ -928,20 +957,20 @@ main() {
     echo "  - Worker1: $WORKER1_IP"
     echo "  - Worker2: $WORKER2_IP"
     echo ""
-    
-    # Run all phases
-    test_phase0_environment
-    test_phase1_installation
-    test_phase2_cluster
-    test_phase3_service_deployment
-    test_phase4_updates
-    test_phase5_snapshots
-    test_phase6_node_ops
-    test_phase6_5_cross_vm_connectivity
-    test_phase7_monitoring
-    test_phase8_volumes
-    test_phase9_cleanup
-    
+
+    # Run all phases with timeout protection
+    timeout $PHASE_TIMEOUT test_phase0_environment || fail "Phase 0" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase1_installation || fail "Phase 1" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase2_cluster || fail "Phase 2" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase3_service_deployment || fail "Phase 3" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase4_updates || fail "Phase 4" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase5_snapshots || fail "Phase 5" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase6_node_ops || fail "Phase 6" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase6_5_cross_vm_connectivity || fail "Phase 6.5" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase7_monitoring || fail "Phase 7" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase8_volumes || fail "Phase 8" "Phase timed out after ${PHASE_TIMEOUT}s"
+    timeout $PHASE_TIMEOUT test_phase9_cleanup || fail "Phase 9" "Phase timed out after ${PHASE_TIMEOUT}s"
+
     # Print summary
     print_summary
 }
