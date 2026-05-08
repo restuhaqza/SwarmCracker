@@ -41,21 +41,14 @@ jobs:
       - name: Vet
         run: go vet ./pkg/... ./cmd/...
 
-<<<<<<< HEAD
       - name: Test (all packages, with race detector)
-        run: go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
-
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
-=======
-      - name: Run tests with coverage
         run: go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
 
       - name: Upload coverage to Codecov
         if: github.event_name != 'pull_request'
         uses: codecov/codecov-action@v4
         with:
-          file: ./coverage.out
+          files: coverage.out
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: false
@@ -64,10 +57,9 @@ jobs:
       - name: Upload coverage artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
         with:
-          files: coverage.out
-          fail_ci_if_error: false
+          name: coverage
+          path: coverage.out
 
   build:
     runs-on: ubuntu-latest
@@ -95,9 +87,6 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-<<<<<<< HEAD
-          version: latest
-=======
           version: latest
 
   benchmark:
@@ -109,7 +98,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Run benchmarks
         run: go test -bench=. -benchmem ./pkg/... | tee benchmark.txt
@@ -119,4 +108,3 @@ jobs:
         with:
           name: benchmark
           path: benchmark.txt
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
