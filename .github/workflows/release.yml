@@ -17,7 +17,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Run tests
         run: go test -short -race ./pkg/config/ ./pkg/executor/ ./pkg/network/ ./pkg/security/ ./pkg/translator/ ./pkg/swarmkit/ ./pkg/types/
@@ -30,11 +30,7 @@ jobs:
         run: |
           mkdir -p dist
 
-          VERSION=${VERSION} BUILD_TIME=${BUILD_TIME} GIT_COMMIT=${GIT_COMMIT} \
-            make all
-
-          # Package each binary for each platform
-          # Note: SwarmCracker is Linux-only (requires KVM, Firecracker, TAP devices)
+          # Build for each platform (SwarmCracker is Linux-only: requires KVM, Firecracker, TAP)
           platforms="linux/amd64 linux/arm64"
           binaries="swarmcracker swarmd-firecracker swarmcracker-agent"
 

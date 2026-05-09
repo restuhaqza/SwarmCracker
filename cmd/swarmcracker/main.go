@@ -76,6 +76,7 @@ It provides a simple interface to the SwarmCracker executor, allowing you to:
 	rootCmd.AddCommand(newTaskCommand())
 	rootCmd.AddCommand(newVMCommand())
 	rootCmd.AddCommand(newNetworkCommand())
+	rootCmd.AddCommand(newVolumeCommand())
 	rootCmd.AddCommand(newAssetCommand())
 	rootCmd.AddCommand(newConfigCommand())
 
