@@ -72,6 +72,11 @@ ssh_manager_sudo() { ssh $SSH_OPTS -i "$KEY_MANAGER" vagrant@$MANAGER_IP "echo v
 ssh_worker1_sudo() { ssh $SSH_OPTS -i "$KEY_WORKER1" vagrant@$WORKER1_IP "echo vagrant | sudo -S $@ 2>/dev/null" 2>/dev/null; }
 ssh_worker2_sudo() { ssh $SSH_OPTS -i "$KEY_WORKER2" vagrant@$WORKER2_IP "echo vagrant | sudo -S $@ 2>/dev/null" 2>/dev/null; }
 
+# Same as ssh_*_sudo but captures stderr from the remote command too
+ssh_manager_sudo_all() { ssh $SSH_OPTS -i "$KEY_MANAGER" vagrant@$MANAGER_IP "echo vagrant | sudo -S $@ 2>&1" 2>/dev/null; }
+ssh_worker1_sudo_all() { ssh $SSH_OPTS -i "$KEY_WORKER1" vagrant@$WORKER1_IP "echo vagrant | sudo -S $@ 2>&1" 2>/dev/null; }
+ssh_worker2_sudo_all() { ssh $SSH_OPTS -i "$KEY_WORKER2" vagrant@$WORKER2_IP "echo vagrant | sudo -S $@ 2>&1" 2>/dev/null; }
+
 # Test result helpers
 pass() {
     echo -e "${GREEN}✅ PASS: $1${NC}"
@@ -414,21 +419,30 @@ test_phase5_snapshots() {
     # Test 5.1: Create snapshot
     echo ""
     echo "📋 Test 5.1: Create VM snapshot..."
-    result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker snapshot create $SNAP_VM" 2>&1 || echo "")
-    if [[ "$result" =~ "created" ]] || [[ "$result" =~ "success" ]] || [[ ! "$result" =~ "Error" ]]; then
+    result=$(ssh_manager_sudo_all "/usr/local/bin/swarmcracker vm snapshot create $SNAP_VM" || echo "")
+    if [[ "$result" =~ "created" ]] || [[ "$result" =~ "Created" ]] || [[ "$result" =~ "success" ]]; then
         # Capture snapshot ID from output (format: "ID:        snap-xxx")
         SNAP_ID=$(echo "$result" | grep -oP 'ID:\s*\Ksnap-[a-z0-9]+' | head -1)
-        pass "Snapshot created successfully (ID: ${SNAP_ID:0:20}...)"
-    else
-        # Snapshot might not be implemented
-        skip "Snapshot create" "Feature may not be implemented ($result)"
+        pass "Snapshot created successfully (ID: ${SNAP_ID:-unknown})"
+    elif [[ "$result" =~ "Error" ]] || [[ "$result" =~ "error" ]] || [[ "$result" =~ "failed" ]]; then
+        # Snapshot requires config with snapshot dir — skip if not configured
+        skip "Snapshot create" "Not configured: ${result:0:120}"
         SNAP_ID=""
+    else
+        # May have succeeded without explicit 'created' keyword
+        SNAP_ID=$(echo "$result" | grep -oP 'snap-[a-z0-9]+' | head -1)
+        if [[ -n "$SNAP_ID" ]]; then
+            pass "Snapshot created (ID: $SNAP_ID)"
+        else
+            skip "Snapshot create" "Output unclear: ${result:0:120}"
+            SNAP_ID=""
+        fi
     fi
 
     # Test 5.2: List snapshots
     echo ""
     echo "📋 Test 5.2: List snapshots..."
-    result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker snapshot list" 2>&1 || echo "")
+    result=$(ssh_manager_sudo_all "/usr/local/bin/swarmcracker vm snapshot list" || echo "")
     if [[ -n "$result" ]] && [[ ! "$result" =~ "Error" ]] && [[ ! "$result" =~ "No snapshots" ]]; then
         pass "Snapshot list retrieved"
         # If we didn't get the ID from create, try to get it from list
@@ -443,11 +457,11 @@ test_phase5_snapshots() {
     echo ""
     echo "📋 Test 5.3: Restore snapshot..."
     if [[ -n "$SNAP_ID" ]]; then
-        result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker snapshot restore $SNAP_ID" 2>&1 || echo "")
-        if [[ "$result" =~ "restored" ]] || [[ "$result" =~ "success" ]] || [[ "$result" =~ "Restored" ]]; then
+        result=$(ssh_manager_sudo_all "/usr/local/bin/swarmcracker vm snapshot restore $SNAP_ID" || echo "")
+        if [[ "$result" =~ "restored" ]] || [[ "$result" =~ "Restored" ]] || [[ "$result" =~ "success" ]]; then
             pass "Snapshot restored successfully ($SNAP_ID)"
         else
-            skip "Snapshot restore" "Restore failed or not fully implemented: $result"
+            skip "Snapshot restore" "Restore failed or not fully implemented: ${result:0:100}"
         fi
     else
         skip "Snapshot restore" "No snapshot ID available (create may have failed)"
@@ -532,7 +546,7 @@ test_phase6_5_cross_vm_connectivity() {
     # Test 6.5.1: Deploy cross-node service via SwarmKit
     # Uses SwarmKit scheduler to spread VMs across nodes (production path)
     echo "📋 Test 6.5.1: Deploy cross-node service (2 replicas) via SwarmKit..."
-    result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker service create --name $CROSS_SERVICE --image alpine:latest --replicas 2" 2>&1 || echo "")
+    result=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service create --name $CROSS_SERVICE --image alpine:latest --replicas 2" || echo "")
     if [[ "$result" =~ "created" ]] || [[ "$result" =~ "Service" ]]; then
         SERVICE_CREATED=true
         SERVICE_ID=$(echo "$result" | grep -oP 'ID: \K[a-z0-9]+' | head -1)
@@ -547,7 +561,7 @@ test_phase6_5_cross_vm_connectivity() {
     local WAIT_COUNT=0
     local RUNNING_COUNT=0
     while [[ $WAIT_COUNT -lt 60 ]]; do
-        result=$(ssh_manager_sudo "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" 2>&1 || echo "")
+        result=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" || echo "")
         RUNNING_COUNT=$(echo "$result" | grep -c "RUNNING" || true)
         if [[ "$RUNNING_COUNT" -ge 2 ]]; then
             break
@@ -566,14 +580,14 @@ test_phase6_5_cross_vm_connectivity() {
     fi
 
     # Get task IDs and their node assignments
-    TASK_IDS=$(ssh_manager_sudo "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" 2>&1 | grep -oP 'task-[a-z0-9]+' | head -2 || true)
+    TASK_IDS=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" | grep -oP 'task-[a-z0-9]+' | head -2 || true)
     TASK1_ID=$(echo "$TASK_IDS" | sed -n '1p')
     TASK2_ID=$(echo "$TASK_IDS" | sed -n '2p')
 
     # Test 6.5.3: Verify service inspect works
     echo ""
     echo "📋 Test 6.5.3: Inspect cross-node service..."
-    result=$(ssh_manager_sudo "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service inspect $CROSS_SERVICE" 2>&1 || echo "")
+    result=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service inspect $CROSS_SERVICE" || echo "")
     if [[ -n "$result" ]] && [[ ! "$result" =~ "Error" ]] && [[ ! "$result" =~ "not found" ]]; then
         pass "Service inspect successful"
     else
@@ -585,7 +599,7 @@ test_phase6_5_cross_vm_connectivity() {
     echo "📋 Test 6.5.4: Verify tasks distributed across nodes..."
     if [[ -n "$TASK1_ID" ]] && [[ -n "$TASK2_ID" ]]; then
         # Get node IDs for each task
-        NODE_LIST=$(ssh_manager_sudo "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" 2>&1 || echo "")
+        NODE_LIST=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" || echo "")
         NODE1=$(echo "$NODE_LIST" | grep "$TASK1_ID" | grep -oP '\s[a-z0-9]{12}\s' | head -1 | xargs || true)
         NODE2=$(echo "$NODE_LIST" | grep "$TASK2_ID" | grep -oP '\s[a-z0-9]{12}\s' | head -1 | xargs || true)
         if [[ -n "$NODE1" ]] && [[ -n "$NODE2" ]] && [[ "$NODE1" != "$NODE2" ]]; then
@@ -639,7 +653,7 @@ test_phase6_5_cross_vm_connectivity() {
     echo ""
     echo "🧹 Cleanup: Removing cross-node service..."
     if [[ "$SERVICE_CREATED" == true ]]; then
-        result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker service rm $CROSS_SERVICE --force" 2>&1 || echo "")
+        result=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service rm $CROSS_SERVICE --force" || echo "")
         if [[ "$result" =~ "removed" ]] || [[ "$result" =~ "Removed" ]] || [[ -z "$(echo $result | grep -i error)" ]]; then
             echo "  ✓ Service $CROSS_SERVICE removed"
         else
@@ -711,11 +725,24 @@ test_phase8_volumes() {
     # Test 8.1: Create volume
     VOL_NAME="test-vol-$(date +%s)"
     echo "📋 Test 8.1: Create persistent volume..."
-    result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker volume create $VOL_NAME --size 100" 2>&1 || echo "")
-    if [[ "$result" =~ "created" ]] || [[ "$result" =~ "success" ]] || [[ ! "$result" =~ "Error" ]]; then
+    # Note: ssh_manager_sudo swallows stderr, so capture both streams
+    result=$(ssh_manager_sudo_all "/usr/local/bin/swarmcracker volume create $VOL_NAME --size 100" || echo "")
+    if [[ "$result" =~ "created" ]] || [[ "$result" =~ "success" ]]; then
         pass "Volume created successfully ($VOL_NAME)"
+    elif [[ "$result" =~ "unknown command" ]] || [[ "$result" =~ "not found" ]] || [[ -z "$result" ]]; then
+        skip "Volume create" "Volume commands not in deployed binary (needs rebuild from source)"
+        VOL_NAME=""
+        # Skip 8.2 and 8.3 since volume isn't available
+        echo ""
+        echo "📋 Test 8.2: List volumes..."
+        skip "Volume list" "Volume commands not in deployed binary"
+        echo ""
+        echo "📋 Test 8.3: Volume details..."
+        skip "Volume inspect" "Volume commands not in deployed binary"
+        return
     else
-        skip "Volume create" "Feature may not be implemented ($result)"
+        fail "Volume create failed" "$result"
+        VOL_NAME=""
     fi
 
     # Test 8.2: List volumes
@@ -782,10 +809,10 @@ test_phase9_cleanup() {
     # Test 9.3: Delete snapshots (if created)
     echo ""
     echo "📋 Test 9.3: Cleanup snapshots..."
-    result=$(ssh_manager_sudo "/usr/local/bin/swarmcracker snapshot list" 2>&1 || echo "")
-    if [[ "$result" =~ "test-snap" ]]; then
-        for snap in $(echo "$result" | grep -oP 'test-snap-[0-9]+'); do
-            ssh_manager_sudo "/usr/local/bin/swarmcracker snapshot delete $snap" 2>&1 || true
+    result=$(ssh_manager_sudo_all "/usr/local/bin/swarmcracker vm snapshot list" || echo "")
+    if [[ "$result" =~ "snap-" ]]; then
+        for snap in $(echo "$result" | grep -oP 'snap-[a-z0-9]+'); do
+            ssh_manager_sudo "/usr/local/bin/swarmcracker vm snapshot delete $snap" 2>&1 || true
         done
         pass "Test snapshots cleaned up"
     else
