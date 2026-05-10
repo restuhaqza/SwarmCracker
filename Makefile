@@ -232,7 +232,23 @@ tag:
 	@echo "Tag $(TAG) created. Push with:"
 	@echo "  git push origin $(TAG)"
 
-.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks help vagrant-up vagrant-halt vagrant-destroy
+.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks help vagrant-up vagrant-halt vagrant-destroy binaries
+
+# Download embedded static binaries for VM rootfs injection
+.PHONY: binaries
+binaries: pkg/image/binaries/tini-amd64 pkg/image/binaries/busybox-amd64
+
+pkg/image/binaries/tini-amd64:
+	@echo "Downloading tini-static-amd64..."
+	@mkdir -p pkg/image/binaries
+	curl -L -o $@ https://github.com/krallin/tini/releases/download/v0.19.0/tini-static-amd64
+	chmod +x $@
+
+pkg/image/binaries/busybox-amd64:
+	@echo "Downloading busybox-x86_64..."
+	@mkdir -p pkg/image/binaries
+	curl -L -o $@ https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
+	chmod +x $@
 
 # Vagrant helpers
 vagrant-up:
