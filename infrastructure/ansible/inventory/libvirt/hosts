@@ -25,7 +25,8 @@ ansible_user=vagrant
 ansible_become=yes
 ansible_become_method=sudo
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
-# Token must be obtained from manager: swarmctl cluster inspect default
-worker_join_token=REDACTED_TOKEN_PLACEHOLDER
+# Token must be obtained from manager: swarmctl cluster inspect --show-join-token
+# DO NOT hardcode tokens here - use Ansible vault or pass via -e flag
+# Example: ansible-playbook -e "worker_join_token=$TOKEN"
 worker_manager_host=192.168.121.155
 worker_manager_port=4242
