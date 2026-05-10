@@ -299,7 +299,7 @@ func listNodes(ctx context.Context, client api.ControlClient) {
 	}
 
 	fmt.Printf("%-20s %-12s %-20s %s\n", "ID", "STATUS", "HOSTNAME", "AVAILABILITY")
-	fmt.Println(string(make([]byte, 70)))
+	fmt.Println(strings.Repeat("-", 70))
 	for _, node := range resp.Nodes {
 		status := node.Status.State.String()
 		avail := node.Spec.Availability.String()
@@ -322,7 +322,7 @@ func listServices(ctx context.Context, client api.ControlClient) {
 	}
 
 	fmt.Printf("%-20s %-30s %-8s %s\n", "ID", "NAME", "MODE", "REPLICAS")
-	fmt.Println(string(make([]byte, 70)))
+	fmt.Println(strings.Repeat("-", 70))
 	for _, svc := range resp.Services {
 		name := svc.Spec.Annotations.Name
 		if name == "" {
@@ -351,7 +351,7 @@ func listTasks(ctx context.Context, client api.ControlClient) {
 	}
 
 	fmt.Printf("%-20s %-20s %-12s %-12s %s\n", "ID", "SERVICE", "STATUS", "NODE", "IMAGE")
-	fmt.Println(string(make([]byte, 80)))
+	fmt.Println(strings.Repeat("-", 80))
 	for _, task := range resp.Tasks {
 		status := task.Status.State.String()
 		nodeID := ""
@@ -532,7 +532,7 @@ func listNetworks(ctx context.Context, client api.ControlClient) {
 	}
 	
 	fmt.Printf("%-20s %-20s %-15s %s\n", "ID", "NAME", "DRIVER", "SUBNET")
-	fmt.Println(string(make([]byte, 80)))
+	fmt.Println(strings.Repeat("-", 80))
 	for _, net := range resp.Networks {
 		name := net.Spec.Annotations.Name
 		driver := ""

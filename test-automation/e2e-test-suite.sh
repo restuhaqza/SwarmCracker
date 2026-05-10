@@ -414,15 +414,30 @@ test_phase5_snapshots() {
         return
     fi
 
-    sleep 5
+    sleep 10
+    # Verify VM is fully booted and responsive before snapshot
+    BOOT_WAIT=0
+    while [[ $BOOT_WAIT -lt 30 ]]; do
+        vm_status=$(ssh_manager_sudo "/usr/local/bin/swarmcracker vm list" 2>&1 | grep "$SNAP_VM" || true)
+        if [[ "$vm_status" =~ "Running" ]]; then
+            break
+        fi
+        sleep 3
+        ((BOOT_WAIT+=3))
+    done
 
     # Test 5.1: Create snapshot
     echo ""
     echo "📋 Test 5.1: Create VM snapshot..."
     result=$(ssh_manager_sudo_all "/usr/local/bin/swarmcracker vm snapshot create $SNAP_VM" || echo "")
-    if [[ "$result" =~ "created" ]] || [[ "$result" =~ "Created" ]] || [[ "$result" =~ "success" ]]; then
+    # Strip ANSI color codes for reliable string matching
+    result_clean=$(echo "$result" | perl -pe 's/\e\[[\d;]*m//g')
+    if [[ "$result_clean" =~ "created" ]] || [[ "$result_clean" =~ "Created" ]] || [[ "$result_clean" =~ "success" ]]; then
         # Capture snapshot ID from output (format: "ID:        snap-xxx")
         SNAP_ID=$(echo "$result" | grep -oP 'ID:\s*\Ksnap-[a-z0-9]+' | head -1)
+        if [[ -z "$SNAP_ID" ]]; then
+            SNAP_ID=$(echo "$result" | grep -oP 'snap-[a-z0-9]+' | head -1)
+        fi
         pass "Snapshot created successfully (ID: ${SNAP_ID:-unknown})"
     elif [[ "$result" =~ "Error" ]] || [[ "$result" =~ "error" ]] || [[ "$result" =~ "failed" ]]; then
         # Snapshot requires config with snapshot dir — skip if not configured
@@ -580,7 +595,9 @@ test_phase6_5_cross_vm_connectivity() {
     fi
 
     # Get task IDs and their node assignments
-    TASK_IDS=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" | grep -oP 'task-[a-z0-9]+' | head -2 || true)
+    # Extract task IDs from service ps output (format: alphanumeric ID in first column)
+    # Strip null bytes that may appear in protobuf/grpc output
+    TASK_IDS=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" | tr -d '\0' | grep -E '^[a-z0-9]{8,}\s+(RUNNING|PREPARING|COMPLETE)' | awk '{print $1}' | head -2 || true)
     TASK1_ID=$(echo "$TASK_IDS" | sed -n '1p')
     TASK2_ID=$(echo "$TASK_IDS" | sed -n '2p')
 
@@ -598,8 +615,8 @@ test_phase6_5_cross_vm_connectivity() {
     echo ""
     echo "📋 Test 6.5.4: Verify tasks distributed across nodes..."
     if [[ -n "$TASK1_ID" ]] && [[ -n "$TASK2_ID" ]]; then
-        # Get node IDs for each task
-        NODE_LIST=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" || echo "")
+        # Get node IDs for each task - strip null bytes from output
+        NODE_LIST=$(ssh_manager_sudo_all "SWARM_STATE_DIR=/var/lib/swarmcracker/manager /usr/local/bin/swarmcracker service ps $CROSS_SERVICE" | tr -d '\0' || echo "")
         NODE1=$(echo "$NODE_LIST" | grep "$TASK1_ID" | grep -oP '\s[a-z0-9]{12}\s' | head -1 | xargs || true)
         NODE2=$(echo "$NODE_LIST" | grep "$TASK2_ID" | grep -oP '\s[a-z0-9]{12}\s' | head -1 | xargs || true)
         if [[ -n "$NODE1" ]] && [[ -n "$NODE2" ]] && [[ "$NODE1" != "$NODE2" ]]; then

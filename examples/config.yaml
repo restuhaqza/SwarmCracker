@@ -74,3 +74,24 @@ metrics:
   
   # Metrics format: prometheus
   format: "prometheus"
+
+# Snapshot configuration
+snapshot:
+  # Enable snapshot functionality
+  enabled: true
+  
+  # Directory for storing VM snapshots
+  snapshot_dir: "/var/lib/swarmcracker/snapshots"
+  
+  # Maximum number of snapshots per VM (0 = unlimited)
+  max_snapshots: 10
+  
+  # Maximum snapshot age before auto-cleanup (Go duration format)
+  # Examples: 24h (1 day), 168h (7 days), 720h (30 days)
+  max_age: 168h
+  
+  # Enable automatic snapshots on service updates
+  auto_snapshot: false
+  
+  # Compress snapshots to save disk space
+  compress: true
