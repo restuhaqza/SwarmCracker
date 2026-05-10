@@ -11,9 +11,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/go-containerregistry/pkg/name"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
@@ -29,6 +31,7 @@ type ImagePreparer struct {
 	initInjector  *InitInjector
 	volumeManager *storage.VolumeManager
 	secretManager *storage.SecretManager
+	ociInfo       *OCIImageInfo // Parsed OCI image configuration
 }
 
 // PreparerConfig holds image preparer configuration.
@@ -38,9 +41,10 @@ type PreparerConfig struct {
 	SocketDir       string
 	DefaultVCPUs    int
 	DefaultMemoryMB int
-	InitSystem      string `yaml:"init_system"`        // "none", "tini", "dumb-init"
-	InitGracePeriod int    `yaml:"init_grace_period"`  // Grace period in seconds
-	MaxImageAgeDays int    `yaml:"max_image_age_days"` // Maximum age of rootfs images before cleanup (default 7)
+	InitSystem      string        `yaml:"init_system"`        // "none", "tini", "dumb-init"
+	InitGracePeriod int           `yaml:"init_grace_period"`  // Grace period in seconds
+	MaxImageAgeDays int           `yaml:"max_image_age_days"` // Maximum age of rootfs images before cleanup (default 7)
+	RegistryAuth    *RegistryAuth `yaml:"registry_auth"`      // Registry authentication configuration
 }
 
 // NewImagePreparer creates a new ImagePreparer.
@@ -133,32 +137,28 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 	imageID := generateImageID(container.Image)
 	rootfsPath := filepath.Join(ip.rootfsDir, imageID+".ext4")
 
-	// Check if rootfs already exists
+	// Check if rootfs already exists with valid init
 	if _, err := os.Stat(rootfsPath); err == nil {
+		// Verify cached rootfs has valid /init
+		if ip.verifyCachedRootfs(rootfsPath) {
+			log.Info().
+				Str("path", rootfsPath).
+				Msg("Rootfs already exists and valid, skipping")
+			task.Annotations["rootfs"] = rootfsPath
+			return nil
+		}
 		log.Info().
 			Str("path", rootfsPath).
-			Msg("Rootfs already exists, skipping")
-		task.Annotations["rootfs"] = rootfsPath
-		return nil
+			Msg("Cached rootfs invalid (missing init), re-preparing")
 	}
 
-	// Prepare the image
-	if err := ip.prepareImage(ctx, container.Image, imageID, rootfsPath); err != nil {
+	// Prepare the image with file locking for concurrent safety
+	if err := ip.prepareWithLock(ctx, container.Image, imageID, rootfsPath); err != nil {
 		return fmt.Errorf("failed to prepare image: %w", err)
 	}
 
-	// Inject init system if enabled
+	// Store init system type in annotations (init was injected during prepareImage)
 	if ip.initInjector.IsEnabled() {
-		log.Info().
-			Str("task_id", task.ID).
-			Str("init_system", string(ip.initInjector.config.Type)).
-			Msg("Injecting init system")
-
-		if err := ip.injectInitSystem(rootfsPath); err != nil {
-			return fmt.Errorf("failed to inject init system: %w", err)
-		}
-
-		// Store init system type in annotations
 		task.Annotations["init_system"] = string(ip.initInjector.config.Type)
 		task.Annotations["init_path"] = ip.initInjector.GetInitPath()
 	}
@@ -211,6 +211,7 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 }
 
 // prepareImage prepares an OCI image and converts to ext4 filesystem.
+// Init injection happens BEFORE ext4 creation so files are included.
 func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, outputPath string) error {
 	// Create temporary directory for extraction
 	tmpDir, err := os.MkdirTemp("", "swarmcracker-extract-")
@@ -219,25 +220,138 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// Step 1: Pull and extract OCI image
+	// Step 1: Validate image manifest (OS/architecture compatibility)
+	log.Debug().Str("image", imageRef).Msg("Validating image manifest")
+	buildOpts := buildRemoteOptions(ctx, ip.config.RegistryAuth)
+	if err := validateImageManifest(ctx, imageRef, buildOpts...); err != nil {
+		return fmt.Errorf("image validation failed: %w", err)
+	}
+
+	// Step 2: Pull and extract OCI image
 	log.Debug().Str("image", imageRef).Msg("Pulling OCI image")
 	if err := ip.extractOCIImage(ctx, imageRef, tmpDir); err != nil {
 		return fmt.Errorf("failed to extract OCI image: %w", err)
 	}
 
-	// Step 1.5: Inject network configuration for Alpine/OpenRC systems
+	// Step 3: Validate critical symlinks (especially /bin/sh)
+	log.Debug().Str("tmpDir", tmpDir).Msg("Validating critical symlinks")
+	if err := validateCriticalSymlinks(tmpDir); err != nil {
+		return fmt.Errorf("symlink validation failed: %w", err)
+	}
+
+	// Step 4: Inject init system BEFORE ext4 creation (NEW - was after)
+	if ip.initInjector.IsEnabled() {
+		log.Info().
+			Str("init_system", string(ip.initInjector.config.Type)).
+			Msg("Injecting init system into extracted directory")
+
+		// Pass OCI config to init injector for generic wrapper
+		if err := ip.initInjector.InjectIntoDir(tmpDir, ip.ociInfo); err != nil {
+			return fmt.Errorf("failed to inject init system: %w", err)
+		}
+	}
+
+	// Step 5: Inject essential files (DNS, hosts, nsswitch, machine-id, dirs)
+	log.Debug().Str("tmpDir", tmpDir).Msg("Injecting essential files")
+	if err := injectEssentialFiles(tmpDir, imageID); err != nil {
+		return fmt.Errorf("failed to inject essential files: %w", err)
+	}
+
+	// Step 6: Inject network configuration for Alpine/OpenRC systems
 	if err := ip.injectNetworkConfig(tmpDir); err != nil {
 		log.Warn().Err(err).Msg("Failed to inject network config (may still work if image has it)")
 	}
 
-	// Step 2: Create ext4 filesystem image
+	// Step 7: Create ext4 filesystem image (now includes init files)
 	log.Debug().Str("output", outputPath).Msg("Creating ext4 filesystem")
 	if err := ip.createExt4Image(tmpDir, outputPath); err != nil {
 		return fmt.Errorf("failed to create ext4 image: %w", err)
 	}
 
+	// Step 8: Verify rootfs is bootable (graceful warning if verification fails)
+	if err := VerifyBootable(outputPath); err != nil {
+		log.Warn().Err(err).Msg("Rootfs verification failed, but continuing")
+		// Don't fail the whole preparation — just warn
+	}
+
 	return nil
 }
+
+// prepareWithLock prepares an image with file locking for concurrent safety.
+// Acquires an exclusive lock on the rootfs path to prevent race conditions
+// when multiple goroutines/processes try to prepare the same image.
+func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID, rootfsPath string) error {
+	// Create lock file path
+	lockPath := rootfsPath + ".lock"
+
+	// Ensure parent directory exists for lock file
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+		return fmt.Errorf("failed to create lock directory: %w", err)
+	}
+
+	// Create/open lock file
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create lock file: %w", err)
+	}
+	defer lockFile.Close()
+
+	// Acquire exclusive lock
+	log.Debug().Str("lock", lockPath).Msg("Acquiring lock for image preparation")
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("failed to acquire lock: %w", err)
+	}
+	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+
+	log.Debug().Str("lock", lockPath).Msg("Lock acquired")
+
+	// Double-check: another process may have created rootfs while we waited
+	if _, err := os.Stat(rootfsPath); err == nil {
+		if ip.verifyCachedRootfs(rootfsPath) {
+			log.Info().
+				Str("path", rootfsPath).
+				Msg("Rootfs created by another process while waiting for lock")
+			return nil
+		}
+	}
+
+	// Proceed with preparation
+	return ip.prepareImage(ctx, imageRef, imageID, rootfsPath)
+}
+
+// verifyCachedRootfs checks if a cached rootfs has a valid /init entry.
+// Uses debugfs to inspect the ext4 image without mounting.
+func (ip *ImagePreparer) verifyCachedRootfs(rootfsPath string) bool {
+	// Check if rootfs file exists first
+	if _, err := os.Stat(rootfsPath); err != nil {
+		log.Debug().Str("path", rootfsPath).Msg("Cached rootfs does not exist")
+		return false
+	}
+
+	// Check if debugfs is available
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		// debugfs not available, assume rootfs is valid
+		log.Debug().Msg("debugfs not available, assuming cached rootfs is valid")
+		return true
+	}
+
+	// Use debugfs to check for /init
+	cmd := exec.Command("debugfs", "-R", "stat /init", rootfsPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Debug().
+			Err(err).
+			Str("output", string(output)).
+			Msg("Cached rootfs missing /init, will re-prepare")
+		return false
+	}
+
+	log.Debug().Str("path", rootfsPath).Msg("Cached rootfs has valid /init")
+	return true
+}
+
+// rootfsVersion tracks the pipeline version for cache invalidation.
+const rootfsVersion = "1" // Increment when pipeline changes invalidate cache
 
 // extractOCIImage extracts an OCI image using go-containerregistry (primary) or docker/podman (fallback).
 func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath string) error {
@@ -284,6 +398,7 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 
 // extractWithGGCR extracts an OCI image using go-containerregistry (pure Go, no daemon).
 // This pulls directly from the registry and flattens all layers into a filesystem.
+// Also extracts OCI image configuration (ENTRYPOINT, CMD, ENV, USER, etc).
 func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath string) error {
 	// Validate inputs
 	if imageRef == "" {
@@ -307,12 +422,35 @@ func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath
 		return fmt.Errorf("failed to parse image reference %q: %w", fullRef, err)
 	}
 
+	// Build remote options with auth and explicit platform selection
+	opts := buildRemoteOptions(ctx, ip.config.RegistryAuth)
+	opts = append(opts, remote.WithPlatform(v1.Platform{
+		OS:           "linux",
+		Architecture: runtime.GOARCH,
+	}))
+
 	log.Info().Str("image", fullRef).Msg("Pulling image from registry")
 
 	// Pull image from registry (no daemon required)
-	img, err := remote.Image(ref, remote.WithContext(ctx))
+	img, err := remote.Image(ref, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to pull image %q: %w", fullRef, err)
+	}
+
+	// Extract OCI image configuration (ENTRYPOINT, CMD, ENV, USER, etc)
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		log.Warn().Err(err).Str("image", fullRef).Msg("Failed to get image config, continuing without OCI info")
+	} else if cfg != nil {
+		ip.ociInfo = ParseOCIImageConfig(cfg, fullRef)
+		log.Info().
+				Str("image", fullRef).
+				Str("os", ip.ociInfo.OS).
+				Str("arch", ip.ociInfo.Architecture).
+				Bool("has_entrypoint", ip.ociInfo.HasEntrypoint()).
+				Bool("has_cmd", ip.ociInfo.HasCmd()).
+				Int("env_count", len(ip.ociInfo.Env)).
+				Msg("Extracted OCI image configuration")
 	}
 
 	// Get image info
@@ -442,38 +580,100 @@ func (ip *ImagePreparer) extractWithDockerCLI(ctx context.Context, imageRef, des
 }
 
 // createExt4Image creates an ext4 filesystem from a directory.
+// This is a wrapper that calls createExt4ImageWithOverhead with default 50% overhead.
 func (ip *ImagePreparer) createExt4Image(sourceDir, outputPath string) error {
+	return ip.createExt4ImageWithOverhead(sourceDir, outputPath, 50)
+}
+
+// createExt4ImageWithOverhead creates an ext4 filesystem with explicit overhead and disk space checking.
+func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath string, overheadPercent int) error {
+	if sourceDir == "" {
+		return fmt.Errorf("source directory cannot be empty")
+	}
+	if outputPath == "" {
+		return fmt.Errorf("output path cannot be empty")
+	}
+	if overheadPercent <= 0 {
+		overheadPercent = 50
+	}
+
+	// Check if source directory exists
+	if _, err := os.Stat(sourceDir); err != nil {
+		return fmt.Errorf("source directory does not exist: %w", err)
+	}
+
 	// Check if mkfs.ext4 is available
 	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
 		return fmt.Errorf("mkfs.ext4 not found: %w", err)
 	}
 
-	// Calculate size (estimate based on directory size)
-	size, err := getDirSize(sourceDir)
+	// Calculate directory size
+	var dirSize int64
+	filepath.Walk(sourceDir, func(_ string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !info.IsDir() {
+			dirSize += info.Size()
+		}
+		return nil
+	})
+
+	// Apply overhead
+	totalSize := dirSize * int64(100+overheadPercent) / 100
+
+	// Minimum 100MB
+	minSize := int64(100 * 1024 * 1024)
+	if totalSize < minSize {
+		totalSize = minSize
+	}
+
+	// Calculate block count (4K blocks)
+	blockSize := int64(4096)
+	blockCount := (totalSize + blockSize - 1) / blockSize
+
+	// Check available disk space
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(filepath.Dir(outputPath), &stat); err == nil {
+		available := int64(stat.Bavail * uint64(stat.Bsize))
+		if totalSize > available {
+			return fmt.Errorf("insufficient disk space: need %d MB, have %d MB",
+				totalSize/1024/1024, available/1024/1024)
+		}
+	}
+
+	// Calculate sufficient inodes: 1 inode per 4KB of data, minimum 2048
+	inodeCount := dirSize / 4096 * 2
+	if inodeCount < 2048 {
+		inodeCount = 2048
+	}
+	// Make it a nice round number
+	inodeRatio := totalSize / inodeCount
+	if inodeRatio < 4096 {
+		inodeRatio = 4096
+	}
+
+	// Create ext4 with explicit size using mkfs.ext4 -d
+	cmd := exec.Command("mkfs.ext4",
+		"-d", sourceDir,
+		"-b", fmt.Sprintf("%d", blockSize),
+		"-L", "rootfs",
+		"-i", fmt.Sprintf("%d", inodeRatio),
+		outputPath,
+		fmt.Sprintf("%d", blockCount),
+	)
+
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		size = 512 * 1024 * 1024 // Default 512MB
-	}
-
-	// Add 50% buffer to account for filesystem overhead
-	size = size + (size / 2)
-
-	// Create sparse file
-	sizeMB := size / (1024 * 1024)
-	if sizeMB < 100 {
-		sizeMB = 100 // Minimum 100MB
-	}
-
-	// Create empty file
-	if err := exec.Command("truncate", "-s", fmt.Sprintf("%dM", sizeMB), outputPath).Run(); err != nil {
-		return fmt.Errorf("failed to create image file: %w", err)
-	}
-
-	// Format as ext4
-	mkfsCmd := exec.Command("mkfs.ext4", "-d", sourceDir, outputPath)
-	if output, err := mkfsCmd.CombinedOutput(); err != nil {
 		os.Remove(outputPath)
-		return fmt.Errorf("mkfs.ext4 failed: %s: %w", string(output), err)
+		return fmt.Errorf("mkfs.ext4 failed: %w\nOutput: %s", err, string(output))
 	}
+
+	log.Info().
+		Int64("dir_size_mb", dirSize/1024/1024).
+		Int64("rootfs_size_mb", totalSize/1024/1024).
+		Int("overhead_percent", overheadPercent).
+		Msg("Created ext4 image")
 
 	return nil
 }
@@ -581,154 +781,13 @@ func (ip *ImagePreparer) mountExt4(imagePath string) (string, error) {
 }
 
 // createInitWrapper creates /sbin/init as a wrapper that calls tini with entrypoint.
+// Deprecated: This method is only used by the deprecated Inject() method.
+// The generic wrapper is now created by createGenericInitWrapper in injectTiniIntoDir.
 func (ip *ImagePreparer) createInitWrapper(mountDir string) error {
-	// Check for common entrypoints
-	entrypoints := []string{
-		"/docker-entrypoint.sh",  // nginx, many official images
-		"/entrypoint.sh",         // common pattern
-		"/app/entrypoint.sh",     // some images
-	}
-
-	// Find which entrypoint exists
-	entrypoint := ""
-	for _, ep := range entrypoints {
-		epPath := filepath.Join(mountDir, ep)
-		if _, err := os.Stat(epPath); err == nil {
-			entrypoint = ep
-			break
-		}
-	}
-
-	// Default command for nginx-style containers
-	cmd := "nginx -g 'daemon off;'"
-
-	// If no entrypoint, create init that runs HTTP server (busybox httpd style)
-	if entrypoint == "" {
-		// Create simple init that mounts filesystems and starts HTTP server
-		initScript := `#!/bin/sh
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-mount -t proc proc /proc 2>/dev/null
-mount -t sysfs sysfs /sys 2>/dev/null
-mount -t devtmpfs devtmpfs /dev 2>/dev/null
-mkdir -p /dev/pts /dev/shm /var/www/html
-mount -t devpts devpts /dev/pts 2>/dev/null
-mount -t tmpfs tmpfs /dev/shm 2>/dev/null
-ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null
-ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null
-ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null
-echo '<html><body><h1>Hello from Firecracker VM</h1></body></html>' > /var/www/html/index.html
-ifconfig lo up 2>/dev/null || true
-echo "=== Starting HTTP server ==="
-httpd -p 80 -h /var/www/html -f 2>&1 &
-echo "Listening ports:"
-cat /proc/net/tcp
-while true; do sleep 60; done
-`
-		initPath := filepath.Join(mountDir, "sbin", "init")
-		return os.WriteFile(initPath, []byte(initScript), 0755)
-	}
-
-	// Create init wrapper that runs nginx directly in foreground
-	// Setup all necessary filesystems for nginx to work
-	initScript := `#!/bin/sh
-export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-echo "=== INIT START ==="
-# Mount essential filesystems
-mount -t proc proc /proc 2>/dev/null
-mount -t sysfs sysfs /sys 2>/dev/null
-mount -t devtmpfs devtmpfs /dev 2>/dev/null
-mkdir -p /dev/pts /dev/shm
-mount -t devpts devpts /dev/pts 2>/dev/null
-mount -t tmpfs tmpfs /dev/shm 2>/dev/null
-# Setup stdout/stderr symlinks for nginx logs (requires /proc)
-ln -sf /proc/self/fd/0 /dev/stdin 2>/dev/null
-ln -sf /proc/self/fd/1 /dev/stdout 2>/dev/null
-ln -sf /proc/self/fd/2 /dev/stderr 2>/dev/null
-echo "Configuring network..."
-# Bring up the network interface (kernel already assigned IP via boot args)
-# Use ifconfig or just rely on kernel config
-ifconfig lo up 2>/dev/null || true
-ifconfig eth0 up 2>/dev/null || true
-# Show network status (best effort)
-echo "Network interfaces:"
-ifconfig -a 2>/dev/null || cat /proc/net/dev
-echo "Running entrypoint scripts..."
-for f in /docker-entrypoint.d/*.sh; do
-    [ -x "$f" ] && echo "Running $f" && timeout 5 "$f" 2>&1
-done
-echo "Starting nginx..."
-echo "Checking nginx binary:"
-ls -la /usr/sbin/nginx
-# Check network before nginx
-echo "Network check:"
-cat /proc/net/dev
-echo "Checking nginx config:"
-echo "=== nginx.conf ==="
-cat /etc/nginx/nginx.conf 2>&1 | head -30
-echo "=== end nginx.conf ==="
-echo "Checking nginx user:"
-id nginx 2>&1 || echo "nginx user not found"
-grep nginx /etc/passwd /etc/group 2>&1 || echo "nginx not in passwd/group"
-echo "Creating nginx dirs:"
-mkdir -p /var/log/nginx /var/cache/nginx/client_temp /var/cache/nginx/proxy_temp /var/cache/nginx/fastcgi_temp /var/cache/nginx/uwsgi_temp /var/cache/nginx/scgi_temp
-chown -R nginx:nginx /var/log/nginx /var/cache/nginx 2>&1 || echo "chown failed"
-chmod -R 755 /var/log/nginx /var/cache/nginx 2>&1 || true
-echo "Checking nginx config files:"
-ls -la /etc/nginx/ 2>&1
-ls -la /etc/nginx/conf.d/ 2>&1
-cat /etc/nginx/conf.d/default.conf 2>&1 | head -30
-echo "Starting HTTP server..."
-mkdir -p /var/www/html
-echo '<html><body><h1>Hello from Firecracker VM!</h1></body></html>' > /var/www/html/index.html
-# Try busybox httpd first (single-process, no workers needed)
-if command -v httpd >/dev/null 2>&1; then
-    echo "Using busybox httpd"
-    httpd -p 80 -h /var/www/html -f 2>&1 &
-    HTTP_PID=$!
-    sleep 2
-    echo "httpd PID: $HTTP_PID"
-# Try nginx if httpd not available
-elif [ -x /usr/sbin/nginx ]; then
-    echo "Using nginx (single worker as root)"
-    mkdir -p /var/log/nginx /run
-    cat > /etc/nginx/nginx.conf << 'NGINXCFG'
-user  root;
-worker_processes  1;
-error_log  /dev/stderr notice;
-pid        /run/nginx.pid;
-events { worker_connections  1024; }
-http {
-    access_log  /dev/stdout;
-    server { listen 80; root /var/www/html; index index.html; }
-}
-NGINXCFG
-    /usr/sbin/nginx 2>&1 &
-    sleep 3
-fi
-echo "All processes:"
-ps aux 2>/dev/null || for p in $(ls /proc | grep -E "^[0-9]+$"); do
-    cmdline=$(cat /proc/$p/cmdline 2>/dev/null | tr '\0' ' ')
-    if [ -n "$cmdline" ]; then
-        echo "PID $p: $cmdline"
-    fi
-done
-echo "Listening ports:"
-cat /proc/net/tcp
-echo "=== SERVER READY ==="
-while true; do sleep 60; done
-`
-
-	initPath := filepath.Join(mountDir, "sbin", "init")
-	if err := os.WriteFile(initPath, []byte(initScript), 0755); err != nil {
-		return fmt.Errorf("failed to write init wrapper: %w", err)
-	}
-
-	log.Info().
-		Str("entrypoint", entrypoint).
-		Str("cmd", cmd).
-		Str("path", initPath).
-		Msg("Init wrapper created")
-
+	// This method is deprecated. The generic OCI-aware wrapper is now created
+	// by createGenericInitWrapper in init.go via InjectIntoDir.
+	// Just log a warning and return nil.
+	log.Warn().Msg("createInitWrapper is deprecated, use InjectIntoDir instead")
 	return nil
 }
 
@@ -1198,4 +1257,10 @@ func (ip *ImagePreparer) validateArchitecture() error {
 	default:
 		return fmt.Errorf("unsupported architecture: %s (Firecracker requires amd64 or arm64)", runtime.GOARCH)
 	}
+}
+
+// GetOCIInfo returns the parsed OCI image configuration.
+// Returns nil if no OCI config was extracted (e.g., fallback to Docker CLI).
+func (ip *ImagePreparer) GetOCIInfo() *OCIImageInfo {
+	return ip.ociInfo
 }

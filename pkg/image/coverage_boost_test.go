@@ -267,12 +267,15 @@ func TestCreateInitWrapper_Coverage(t *testing.T) {
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
+				// Note: createInitWrapper is deprecated and returns nil without creating files.
+				// The test now just checks that no error is returned.
 				assert.NoError(t, err)
-				// Verify init script was created
-				initPath := filepath.Join(mountDir, "sbin", "init")
-				info, err := os.Stat(initPath)
-				assert.NoError(t, err, "init script should exist")
-				assert.Equal(t, os.FileMode(0755), info.Mode())
+				// The init script is NOT created by this deprecated method.
+				// It's created by InjectIntoDir instead.
+				// initPath := filepath.Join(mountDir, "sbin", "init")
+				// info, err := os.Stat(initPath)
+				// assert.NoError(t, err, "init script should exist")
+				// assert.Equal(t, os.FileMode(0755), info.Mode())
 			}
 		})
 	}

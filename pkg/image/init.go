@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/rs/zerolog/log"
 )
 
 // InitSystemType represents the type of init system to use.
@@ -27,6 +29,8 @@ type InitInjector struct {
 	config *InitSystemConfig
 }
 
+// tiniBinary is declared in embedded_binaries.go via go:embed.
+
 // NewInitInjector creates a new InitInjector.
 func NewInitInjector(config *InitSystemConfig) *InitInjector {
 	if config == nil {
@@ -47,10 +51,11 @@ func NewInitInjector(config *InitSystemConfig) *InitInjector {
 }
 
 // Inject injects the init system into the root filesystem.
+// Deprecated: Use InjectIntoDir instead for better integration with the pipeline.
 func (ii *InitInjector) Inject(rootfsPath string) error {
-	// Mount the rootfs temporarily to inject init
-	// For now, we'll use a simpler approach: extract to temp dir, add init, recreate
-
+	// For backward compatibility, this method is kept but the preferred
+	// approach is to use InjectIntoDir before the ext4 image is created.
+	// Since Inject is called after ext4 creation, we need to mount it.
 	switch ii.config.Type {
 	case InitSystemTini:
 		return ii.injectTini(rootfsPath)
@@ -61,6 +66,117 @@ func (ii *InitInjector) Inject(rootfsPath string) error {
 	default:
 		return fmt.Errorf("unsupported init system type: %s", ii.config.Type)
 	}
+}
+
+// InjectIntoDir injects the init system directly into a directory.
+// This should be called BEFORE createExt4Image() so that the init files
+// are included in the final rootfs image.
+// It first detects the existing init system type and decides what action to take:
+// - Incompatible (systemd): returns error
+// - Scratch: injects busybox first, then tini
+// - Existing init (tini, dumb-init, OpenRC, sysvinit): preserves and creates /init symlink
+// - None/Unknown: injects tini
+// OCIImageInfo is used to generate the correct init wrapper with ENTRYPOINT/CMD/ENV/USER/WORKDIR.
+func (ii *InitInjector) InjectIntoDir(tmpDir string, info *OCIImageInfo) error {
+	if !ii.IsEnabled() {
+		return nil
+	}
+
+	// Detect init type
+	result := DetectInitType(tmpDir)
+	log.Info().Str("type", string(result.Type)).Msg("Detected init type")
+
+	switch result.Type {
+	case InitTypeIncompatible:
+		return fmt.Errorf("incompatible image: %s", result.Message)
+	case InitTypeScratch:
+		if err := injectBusybox(tmpDir); err != nil {
+			return fmt.Errorf("failed to inject busybox: %w", err)
+		}
+		// Fall through to inject tini
+		fallthrough
+	case InitTypeNone, InitTypeUnknown:
+		return ii.injectTiniIntoDir(tmpDir, info)
+	case InitTypeTini, InitTypeDumbInit, InitTypeOpenRC, InitTypeSysvinit:
+		// Preserve existing init, just create /init symlink
+		initLink := filepath.Join(tmpDir, "init")
+		_ = os.Remove(initLink)
+		return os.Symlink("/sbin/init", initLink)
+	default:
+		return ii.injectTiniIntoDir(tmpDir, info)
+	}
+}
+
+// injectTiniIntoDir injects tini into the directory with OCI-aware wrapper.
+func (ii *InitInjector) injectTiniIntoDir(tmpDir string, info *OCIImageInfo) error {
+	// Ensure /sbin directory exists
+	sbinDir := filepath.Join(tmpDir, "sbin")
+	if err := os.MkdirAll(sbinDir, 0755); err != nil {
+		return fmt.Errorf("failed to create sbin directory: %w", err)
+	}
+
+	// Write the embedded tini binary to /sbin/tini
+	tiniPath := filepath.Join(sbinDir, "tini")
+	if err := os.WriteFile(tiniPath, tiniBinary, 0755); err != nil {
+		return fmt.Errorf("failed to write tini binary: %w", err)
+	}
+
+	// Create /sbin/init wrapper using OCI config
+	if err := createGenericInitWrapper(tmpDir, info, ii.config.GracePeriodSec); err != nil {
+		return fmt.Errorf("failed to create generic init wrapper: %w", err)
+	}
+
+	// Create /init symlink -> /sbin/init
+	initLink := filepath.Join(tmpDir, "init")
+	// Remove existing symlink if present
+	_ = os.Remove(initLink)
+	if err := os.Symlink("/sbin/init", initLink); err != nil {
+		return fmt.Errorf("failed to create /init symlink: %w", err)
+	}
+
+	return nil
+}
+
+// injectDumbInitIntoDir injects dumb-init into the directory.
+func (ii *InitInjector) injectDumbInitIntoDir(tmpDir string) error {
+	// Ensure /sbin directory exists
+	sbinDir := filepath.Join(tmpDir, "sbin")
+	if err := os.MkdirAll(sbinDir, 0755); err != nil {
+		return fmt.Errorf("failed to create sbin directory: %w", err)
+	}
+
+	// Create dumb-init script (similar to tini)
+	dumbInitScript := `#!/bin/sh
+# Minimal dumb-init compatible init
+# Reaps zombies and forwards signals
+
+trap 'kill -TERM -$PID 2>/dev/null; wait $PID; exit $?' TERM INT
+trap 'kill -HUP -$PID 2>/dev/null' HUP
+
+exec "$@"
+`
+	dumbInitPath := filepath.Join(sbinDir, "dumb-init")
+	if err := os.WriteFile(dumbInitPath, []byte(dumbInitScript), 0755); err != nil {
+		return fmt.Errorf("failed to write dumb-init script: %w", err)
+	}
+
+	// Create /sbin/init wrapper
+	initScript := `#!/bin/sh
+exec /sbin/dumb-init -- /bin/sh
+`
+	initPath := filepath.Join(sbinDir, "init")
+	if err := os.WriteFile(initPath, []byte(initScript), 0755); err != nil {
+		return fmt.Errorf("failed to write init wrapper: %w", err)
+	}
+
+	// Create /init symlink -> /sbin/init
+	initLink := filepath.Join(tmpDir, "init")
+	_ = os.Remove(initLink)
+	if err := os.Symlink("/sbin/init", initLink); err != nil {
+		return fmt.Errorf("failed to create /init symlink: %w", err)
+	}
+
+	return nil
 }
 
 // GetInitPath returns the path to the init binary.
@@ -152,6 +268,8 @@ func (ii *InitInjector) injectDumbInit(rootfsPath string) error {
 }
 
 // mountRootfs mounts an ext4 image temporarily.
+// Deprecated: This method only creates a temp directory but does NOT actually mount.
+// Use InjectIntoDir instead to inject init BEFORE ext4 creation.
 func (ii *InitInjector) mountRootfs(imagePath string) (string, error) {
 	// Create temp mount point
 	mountDir, err := os.MkdirTemp("", "swarmcracker-mount-")
@@ -159,10 +277,10 @@ func (ii *InitInjector) mountRootfs(imagePath string) (string, error) {
 		return "", err
 	}
 
-	// Mount the image
-	// This requires root privileges or user namespace setup
-	// For now, return error if not possible
-	// In production, use sudo or setuid binaries
+	// NOTE: This does NOT actually mount the ext4 image!
+	// The actual mount requires root privileges and was never implemented.
+	// This method is kept for backward compatibility but is deprecated.
+	// Use InjectIntoDir() instead, which injects before ext4 creation.
 
 	return mountDir, nil
 }

@@ -59,7 +59,7 @@ func TestFullWorkflow_DeployVerifyExecuteCleanup(t *testing.T) {
 
 	// Step 6: Update service
 	t.Run("Step6_UpdateService", func(t *testing.T) {
-		updateService(ctx, t, serviceName, "nginx:alpine")
+		updateService(ctx, t, serviceName, "nginx:stable")
 	})
 
 	// Step 7: Cleanup
@@ -107,7 +107,7 @@ func TestServiceLifecycle_DeployScaleUpdateRemove(t *testing.T) {
 
 	// Update
 	t.Run("Update", func(t *testing.T) {
-		updateService(ctx, t, serviceName, "alpine:latest")
+		updateService(ctx, t, serviceName, "nginx:alpine")
 		time.Sleep(5 * time.Second)
 	})
 
