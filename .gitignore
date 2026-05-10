@@ -143,3 +143,4 @@ venv/
 /swarmd-firecracker
 coverage.out
 site/
+*.lock
