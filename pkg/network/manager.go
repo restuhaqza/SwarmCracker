@@ -403,20 +403,43 @@ func (nm *NetworkManager) prepareNetworkWithCNI(ctx context.Context, task *types
 		Int("networks", len(task.Networks)).
 		Msg("Using CNI for network preparation")
 
-	for _, attachment := range task.Networks {
+	for i, attachment := range task.Networks {
 		// Get network name and IP from SwarmKit attachment
 		networkName := attachment.Network.Spec.Name
 		if networkName == "" {
 			networkName = attachment.Network.ID[:8]
 		}
 
-		// Get IP from SwarmKit IPAM (Addresses[0] in CIDR format)
-		var ipCIDR string
-		if len(attachment.Addresses) > 0 {
-			ipCIDR = attachment.Addresses[0]
-		} else {
-			return fmt.Errorf("CNI requires SwarmKit-provided IP in Addresses")
+		// If no SwarmKit-assigned IP, fall back to DHCP/TAP allocation
+		if len(attachment.Addresses) == 0 {
+			log.Info().
+				Str("task_id", task.ID).
+				Str("network", networkName).
+				Msg("No SwarmKit-assigned IP, falling back to TAP/DHCP allocation")
+
+			tap, err := nm.createTapDevice(ctx, attachment, i, task.ID)
+			if err != nil {
+				return fmt.Errorf("failed to create TAP device for network %s: %w", networkName, err)
+			}
+
+			nm.mu.Lock()
+			nm.tapDevices[task.ID+"-"+tap.Name] = tap
+			nm.mu.Unlock()
+
+			if tap.IP != "" {
+				ipWithMask := fmt.Sprintf("%s/%s", tap.IP, ipMaskToCIDR(tap.Netmask))
+				task.Networks[i].Addresses = []string{ipWithMask}
+			}
+
+			log.Info().
+				Str("task_id", task.ID).
+				Str("tap", tap.Name).
+				Str("ip", tap.IP).
+				Msg("TAP device created (CNI fallback)")
+			continue
 		}
+
+		ipCIDR := attachment.Addresses[0]
 
 		// Call CNI ADD
 		result, err := nm.cniClient.AddNetwork(ctx, task.ID, "/tmp/firecracker-ns", ipCIDR, networkName)
