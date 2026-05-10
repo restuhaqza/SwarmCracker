@@ -48,6 +48,14 @@ swarmcracker_required_packages:
   - wget
   - iptables
   - bridge-utils
+
+# Snapshot configuration defaults
+swarmcracker_snapshot_enabled: true
+swarmcracker_snapshot_dir: "/var/lib/swarmcracker/snapshots"
+swarmcracker_max_snapshots: 10
+swarmcracker_snapshot_max_age: "168h"
+swarmcracker_auto_snapshot: false
+swarmcracker_snapshot_compress: true
   - iproute2
   - dnsmasq
   - qemu-utils

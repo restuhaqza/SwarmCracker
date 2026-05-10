@@ -1,0 +1,113 @@
+---
+# SwarmCracker Config Update Playbook
+# Updates config.yaml with snapshot section and creates snapshot directory
+#
+# Usage:
+#   ansible-playbook -i inventory/vagrant-libvirt playbooks/update-config.yml
+
+- name: Create snapshot directory on all nodes
+  hosts: swarmcracker
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Create snapshot directory
+      file:
+        path: /var/lib/swarmcracker/snapshots
+        state: directory
+        mode: '0755'
+        owner: root
+        group: root
+
+- name: Update manager config
+  hosts: managers
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Update manager config with snapshot section
+      template:
+        src: ../roles/manager/templates/manager-config.yaml.j2
+        dest: "{{ swarmcracker_config_dir }}/manager-config.yaml"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart swarmd-manager
+
+    - name: Also create standard config.yaml (for CLI tools)
+      template:
+        src: ../roles/manager/templates/manager-config.yaml.j2
+        dest: "{{ swarmcracker_config_dir }}/config.yaml"
+        owner: root
+        group: root
+        mode: '0644'
+
+  handlers:
+    - name: restart swarmd-manager
+      systemd:
+        name: swarmd-manager
+        state: restarted
+        daemon_reload: yes
+
+- name: Update worker config
+  hosts: workers
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Update worker config with snapshot section
+      template:
+        src: ../roles/worker/templates/worker-config.yaml.j2
+        dest: "{{ swarmcracker_config_dir }}/worker-config.yaml"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: restart swarmd-worker
+
+    - name: Also create standard config.yaml (for CLI tools)
+      template:
+        src: ../roles/worker/templates/worker-config.yaml.j2
+        dest: "{{ swarmcracker_config_dir }}/config.yaml"
+        owner: root
+        group: root
+        mode: '0644'
+
+  handlers:
+    - name: restart swarmd-worker
+      systemd:
+        name: swarmd-worker
+        state: restarted
+        daemon_reload: yes
+
+- name: Verify cluster is healthy after config update
+  hosts: managers
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Wait for manager API
+      wait_for:
+        port: "{{ swarmcracker_manager_port | default(4242) }}"
+        host: "0.0.0.0"
+        timeout: 30
+
+    - name: Check manager service
+      command: systemctl is-active swarmd-manager
+      register: manager_status
+      changed_when: false
+
+    - name: Check snapshot directory exists
+      stat:
+        path: /var/lib/swarmcracker/snapshots
+      register: snapshot_dir
+
+    - name: Display summary
+      debug:
+        msg: |
+          ╔══════════════════════════════════════════════════╗
+          ║     SwarmCracker Config Update Complete          ║
+          ╠══════════════════════════════════════════════════╣
+          ║                                                  ║
+          ║  Manager status: {{ manager_status.stdout }}     ║
+          ║  Snapshot dir: {{ 'created ✅' if snapshot_dir.stat.exists else 'missing ❌' }}  ║
+          ║                                                  ║
+          ║  Next: rebuild swarmctl binary (null bytes fix)   ║
+          ║  → Run locally: make build                       ║
+          ║  → Deploy to nodes: scp binaries                 ║
+          ╚══════════════════════════════════════════════════╝

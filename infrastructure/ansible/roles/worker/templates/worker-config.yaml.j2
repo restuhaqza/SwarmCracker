@@ -35,3 +35,11 @@ logging:
 cleanup:
   enabled: {{ swarmcracker_auto_cleanup }}
   max_image_age_days: {{ swarmcracker_max_image_age_days }}
+
+snapshot:
+  enabled: {{ swarmcracker_snapshot_enabled | default(true) }}
+  snapshot_dir: {{ swarmcracker_snapshot_dir | default('/var/lib/swarmcracker/snapshots') }}
+  max_snapshots: {{ swarmcracker_max_snapshots | default(10) }}
+  max_age: {{ swarmcracker_snapshot_max_age | default('168h') }}
+  auto_snapshot: {{ swarmcracker_auto_snapshot | default(false) }}
+  compress: {{ swarmcracker_snapshot_compress | default(true) }}
