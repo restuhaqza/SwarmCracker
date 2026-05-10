@@ -14,6 +14,7 @@ network_gre_tunnel_name: "gre-cross"
 network_vxlan_enabled: true
 network_vxlan_vni: 100
 network_vxlan_port: 4789
+network_vxlan_name: "swarm-br0-vxlan"
 
 # NAT for VM outbound access
 network_nat_enabled: true

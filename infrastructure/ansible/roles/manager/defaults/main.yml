@@ -46,3 +46,13 @@ swarmcracker_log_level: "info"
 # Cleanup configuration
 swarmcracker_auto_cleanup: true
 swarmcracker_max_image_age_days: 7
+
+# Consul configuration for VXLAN peer discovery
+swarmcracker_consul_enabled: true
+swarmcracker_consul_address: "127.0.0.1:8500"
+
+# CNI network provider
+swarmcracker_enable_cni: true
+
+# Debug mode
+swarmcracker_debug: false

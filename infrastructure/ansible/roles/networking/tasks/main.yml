@@ -88,16 +88,38 @@
 
 # === VXLAN Overlay (recommended for L2) ===
 
-# Step 0: Clean up stale VXLAN devices with same VNI
-- name: Detect and remove stale VXLAN devices with same VNI
+# Step 0: Detect existing VXLAN with same VNI (may have different name from swarmd)
+- name: Detect existing VXLAN device with same VNI
   shell: |
     vni="{{ network_vxlan_vni }}"
-    # Find any VXLAN with same VNI (could be stale with different name)
-    stale_vxlans=$(ip -d link show type vxlan 2>/dev/null | grep -E "id $vni" -B1 | grep -oP '^[\d]+: \K[\w-]+' | tr -d ':')
-    if [ -n "$stale_vxlans" ]; then
-      for vx in $stale_vxlans; do
-        ip link del "$vx" 2>/dev/null && echo "Removed stale VXLAN: $vx (VNI $vni)" || true
-      done
+    target_name="{{ network_vxlan_name }}"
+    # Find any VXLAN with same VNI
+    existing=$(ip -d link show type vxlan 2>/dev/null | grep -E "id $vni" -B1 | grep -oP '^[\d]+: \K[\w-]+' | tr -d ':' | head -1)
+    if [ -n "$existing" ]; then
+      echo "$existing"
+    else
+      echo "NONE"
+    fi
+  register: existing_vxlan
+  changed_when: false
+  when: network_vxlan_enabled
+
+# Step 1: Remove stale VXLAN with same VNI but WRONG name, keep if correct name
+- name: Remove stale VXLAN devices with same VNI but wrong name
+  shell: |
+    vni="{{ network_vxlan_vni }}"
+    target_name="{{ network_vxlan_name }}"
+    existing="{{ existing_vxlan.stdout | default('NONE') }}"
+    
+    # If existing VXLAN has the correct name, keep it
+    if [ "$existing" = "$target_name" ]; then
+      echo "VXLAN $target_name already exists with correct name, keeping it"
+      exit 0
+    fi
+    
+    # If existing VXLAN has wrong name, remove it so we recreate with correct name
+    if [ "$existing" != "NONE" ]; then
+      ip link del "$existing" 2>/dev/null && echo "Removed VXLAN: $existing (VNI $vni)" || true
     fi
   changed_when: false
   when: network_vxlan_enabled
@@ -114,10 +136,10 @@
       {{ peers }}
   when: network_vxlan_enabled
 
-# Step 1: Create VXLAN device (must exist before FDB)
+# Step 2: Create VXLAN device (must exist before FDB)
 - name: Create VXLAN overlay
   shell: |
-    vxlan="vxlan{{ network_vxlan_vni }}"
+    vxlan="{{ network_vxlan_name }}"
     local="{{ ansible_host | default(ansible_default_ipv4.address) }}"
     
     if ip link show "$vxlan" 2>/dev/null | grep -q "$vxlan"; then
@@ -129,10 +151,10 @@
   changed_when: false
   when: network_vxlan_enabled
 
-# Step 2: Attach VXLAN to bridge (must happen before FDB)
+# Step 3: Attach VXLAN to bridge (must happen before FDB)
 - name: Attach VXLAN to bridge and bring up
   shell: |
-    vxlan="vxlan{{ network_vxlan_vni }}"
+    vxlan="{{ network_vxlan_name }}"
     bridge="{{ network_bridge_name }}"
     
     # Check if already attached
@@ -148,10 +170,10 @@
   changed_when: false
   when: network_vxlan_enabled
 
-# Step 3: Add FDB entries (VXLAN must be up and attached)
+# Step 4: Add FDB entries (VXLAN must be up and attached)
 - name: Add VXLAN FDB entries for peers
   shell: |
-    vxlan="vxlan{{ network_vxlan_vni }}"
+    vxlan="{{ network_vxlan_name }}"
     
     # Verify VXLAN device exists before adding FDB
     if ! ip link show "$vxlan" 2>/dev/null | grep -q "$vxlan"; then
@@ -199,6 +221,6 @@
   debug:
     msg: |
       ✅ Bridge: {{ network_bridge_name }} ({{ network_bridge_ip }}/24)
-      ✅ VXLAN: vxlan{{ network_vxlan_vni }} (VNI {{ network_vxlan_vni }}, peers: {{ vxlan_peers | default([]) | join(', ') }})
+      ✅ VXLAN: {{ network_vxlan_name }} (VNI {{ network_vxlan_vni }}, peers: {{ vxlan_peers | default([]) | join(', ') }})
       ✅ NAT: {{ 'enabled' if network_nat_enabled else 'disabled' }}
       ✅ IP forwarding: enabled

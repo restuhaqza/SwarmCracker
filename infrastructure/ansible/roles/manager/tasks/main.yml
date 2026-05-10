@@ -115,13 +115,54 @@
   delay: 10
   until: manager_ready is success
 
-- name: Get cluster join token
-  command: swarmctl cluster inspect --show-join-token
-  register: join_token
+- name: Wait for certificates to be generated
+  wait_for:
+    path: "{{ manager_state_dir }}/certificates/swarm-node.crt"
+    timeout: 60
+  register: cert_ready
+  retries: 5
+  delay: 5
+  until: cert_ready is success
+  ignore_errors: yes
+
+- name: Read join token from manager state
+  shell: cat {{ manager_state_dir }}/join-tokens.txt 2>/dev/null || echo ""
+  register: join_token_file
   changed_when: false
-  when: manager_ready is success
+  failed_when: false
+
+- name: Extract worker join token
+  set_fact:
+    manager_worker_join_token: "{{ join_token_file.stdout | regex_search('WORKER_TOKEN=(.*)', '\\1') | first }}"
+  when: join_token_file.stdout is defined and 'WORKER_TOKEN' in join_token_file.stdout
+
+- name: "Fallback - get join token via swarmctl"
+  block:
+    - name: Get cluster join token via swarmctl
+      command: swarmctl cluster inspect --show-join-token
+      environment:
+        SWARM_STATE_DIR: "{{ manager_state_dir }}"
+      register: join_token_cmd
+      changed_when: false
+    - name: Extract worker join token from swarmctl
+      set_fact:
+        manager_worker_join_token: "{{ join_token_cmd.stdout | regex_search('SWMTKN[^\\s]+') }}"
+      when: "'SWMTKN' in join_token_cmd.stdout"
+  rescue:
+    - name: Try reading token via socket
+      shell: |
+        export SWARM_SOCKET=/var/run/swarmkit/swarm.sock
+        export SWARM_STATE_DIR={{ manager_state_dir }}
+        cat {{ manager_state_dir }}/join-tokens.txt 2>/dev/null | grep WORKER_TOKEN | cut -d= -f2
+      register: token_fallback
+      changed_when: false
+      failed_when: false
+    - name: Set token from fallback
+      set_fact:
+        manager_worker_join_token: "{{ token_fallback.stdout | trim }}"
+      when: token_fallback.stdout is defined and token_fallback.stdout | length > 0
+  when: manager_worker_join_token is not defined
 
 - name: Display join token
   debug:
-    var: join_token.stdout
-  when: join_token is defined
+    msg: "Worker join token: {{ manager_worker_join_token | default('NOT AVAILABLE') }}"

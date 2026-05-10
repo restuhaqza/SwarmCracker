@@ -150,6 +150,27 @@
     mode: "0644"
   when: not fc_rootfs.stat.exists
 
+# --- Additional rootfs images for E2E testing ---
+- name: Download Alpine rootfs for E2E testing
+  get_url:
+    url: "{{ item.url }}"
+    dest: "{{ firecracker_rootfs_dir }}/{{ item.name }}"
+    mode: "0644"
+  failed_when: false
+  loop: "{{ firecracker_extra_rootfs }}"
+  when: firecracker_extra_rootfs is defined
+
+# --- Create symlink for common image names ---
+- name: Create image symlinks for compatibility
+  file:
+    src: "{{ firecracker_rootfs_dir }}/{{ item.src }}"
+    dest: "{{ firecracker_rootfs_dir }}/{{ item.dest }}"
+    state: link
+    force: yes
+  failed_when: false
+  loop: "{{ firecracker_image_symlinks }}"
+  when: firecracker_image_symlinks is defined
+
 - name: Display Firecracker status
   debug:
     msg: |

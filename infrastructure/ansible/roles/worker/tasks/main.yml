@@ -35,22 +35,32 @@
     - swarmcracker-agent
 
 - name: Get join token from manager
-  shell: |
-    {{ swarmcracker_install_dir }}/swarmd-firecracker manager --help 2>&1 | head -5 || true
-    echo "---"
-    # Try to get token from manager state dir
-    if [ -d "/var/lib/swarmcracker/manager" ]; then
-      ls -la /var/lib/swarmcracker/manager/ 2>/dev/null || true
-    fi
-  delegate_to: "{{ groups['managers'][0] }}"
-  run_once: true
-  register: token_check
-  changed_when: false
-  failed_when: false
+  block:
+    - name: Read join token from manager state
+      shell: cat {{ swarmcracker_state_dir }}/manager/join-tokens.txt 2>/dev/null | grep WORKER_TOKEN | cut -d= -f2
+      delegate_to: "{{ groups['managers'][0] }}"
+      run_once: true
+      register: manager_token_result
+      changed_when: false
+      failed_when: false
 
-- name: Set default join token
-  set_fact:
-    join_token: "{{ join_token | default('auto-discovery') }}"
+    - name: Set join token from manager
+      set_fact:
+        worker_join_token: "{{ manager_token_result.stdout | trim }}"
+      when: manager_token_result.stdout is defined and manager_token_result.stdout | length > 0
+  rescue:
+    - name: Use fallback join token from inventory
+      set_fact:
+        worker_join_token: "{{ worker_join_token }}"
+      when: worker_join_token is defined and worker_join_token | length > 0
+
+- name: Fail if no join token available
+  fail:
+    msg: |
+      No worker join token available. Either:
+      1. Ensure manager is running and has generated tokens
+      2. Set worker_join_token in inventory/group_vars
+  when: worker_join_token is not defined or worker_join_token | length == 0
 
 - name: Create SwarmCracker worker config
   template:

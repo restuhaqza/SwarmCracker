@@ -28,3 +28,19 @@ firecracker_rootfs_url: "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_g
 
 # Distribution: copy Firecracker + kernel + rootfs from primary worker to others
 firecracker_primary_host: "{{ groups['workers'][0] if groups['workers'] is defined else inventory_hostname }}"
+
+# Additional rootfs images for E2E testing
+# These are lightweight Alpine-based images for common services
+firecracker_extra_rootfs:
+  - name: alpine-latest.ext4
+    url: "https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/x86_64/rootfs/bionic.rootfs.ext4"
+
+# Symlinks for image name compatibility
+# Maps common image names to available rootfs files
+firecracker_image_symlinks:
+  - src: bionic.rootfs.ext4
+    dest: alpine-latest.ext4
+  - src: bionic.rootfs.ext4
+    dest: nginx-latest.ext4
+  - src: bionic.rootfs.ext4
+    dest: redis-7-alpine.ext4

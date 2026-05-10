@@ -1,7 +1,7 @@
 ---
 # Worker Role - Default Variables
 
-worker_manager_host: "{{ hostvars[groups['managers'][0]]['ansible_default_ipv4']['address'] | default(hostvars[groups['managers'][0]]['ansible_host']) }}"
+worker_manager_host: "{{ hostvars[groups['managers'][0]]['ansible_host'] | default(hostvars[groups['managers'][0]]['ansible_default_ipv4']['address']) }}"
 worker_manager_port: "{{ swarmcracker_manager_port }}"
 worker_api_port: "{{ swarmcracker_worker_api_port }}"
 worker_state_dir: "{{ swarmcracker_state_dir }}/worker"
@@ -9,3 +9,30 @@ worker_state_dir: "{{ swarmcracker_state_dir }}/worker"
 # Join token - should be set via ansible-playbook extra vars or from manager facts
 # Example: ansible-playbook -e "worker_join_token=SWMTKN-1-xxx-xxx"
 worker_join_token: ""
+
+# SwarmCracker directories (defaults from group_vars)
+swarmcracker_install_dir: /usr/local/bin
+swarmcracker_kernel_path: /usr/share/firecracker/vmlinux
+swarmcracker_rootfs_dir: /var/lib/firecracker/rootfs
+swarmcracker_state_dir: /var/lib/swarmcracker
+
+# Network configuration
+swarmcracker_bridge_name: "swarm-br0"
+swarmcracker_subnet: "192.168.127.0/24"
+swarmcracker_bridge_ip: "192.168.127.1/24"
+swarmcracker_nat_enabled: true
+swarmcracker_vxlan_enabled: true
+
+# Consul configuration for VXLAN peer discovery
+swarmcracker_consul_enabled: true
+swarmcracker_consul_address: "127.0.0.1:8500"
+
+# CNI network provider
+swarmcracker_enable_cni: true
+
+# Debug mode
+swarmcracker_debug: false
+
+# Ports
+swarmcracker_manager_port: 4242
+swarmcracker_worker_api_port: 4243
