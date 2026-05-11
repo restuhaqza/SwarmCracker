@@ -40,6 +40,11 @@ func NewSecretManager(secretsDir, configsDir string) *SecretManager {
 		osMkdirAllStore(configsDir, 0755)
 	}
 
+	// Check that debugfs is available for secret/config injection
+	if _, err := exec.LookPath("debugfs"); err != nil {
+		log.Warn().Msg("debugfs not found in PATH — secret/config injection will fail. Install e2fsprogs.")
+	}
+
 	return &SecretManager{
 		secretsDir: secretsDir,
 		configsDir: configsDir,
