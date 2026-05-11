@@ -218,7 +218,12 @@ func (tt *TaskTranslator) configToJSON(config *VMMConfig) (string, error) {
 
 // buildBootArgs constructs kernel boot arguments.
 func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
-	container := task.Spec.Runtime.(*types.Container)
+	container, ok := task.Spec.Runtime.(*types.Container)
+	if !ok {
+		log.Warn().Str("task_id", task.ID).Msg("task runtime is not a Container, using default boot args")
+		return "console=ttyS0 reboot=k panic=1 pci=off init=/init"
+	}
+	_ = container // may be used for future per-container customization
 
 	args := []string{
 		"console=ttyS0",
