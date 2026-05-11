@@ -715,10 +715,9 @@ func generateImageID(imageRef string) string {
 
 // injectInitSystem injects the init system into the rootfs.
 func (ip *ImagePreparer) injectInitSystem(rootfsPath string) error {
-	// Use the init injector to add init binary to rootfs
-	if err := ip.initInjector.Inject(rootfsPath); err != nil {
-		return fmt.Errorf("init injection failed: %w", err)
-	}
+	// Init injection now happens via InjectIntoDir BEFORE ext4 creation.
+	// The old Inject method (which used broken mountRootfs) has been removed.
+	// If init needs to be injected post-creation (unusual), mount and copy manually.
 
 	// For ext4 images, we need to mount, copy, unmount
 	// This is a simplified implementation

@@ -50,22 +50,12 @@ func NewInitInjector(config *InitSystemConfig) *InitInjector {
 	}
 }
 
-// Inject injects the init system into the root filesystem.
-// Deprecated: Use InjectIntoDir instead for better integration with the pipeline.
+// Inject has been removed. Use InjectIntoDir instead.
+// This stub exists only for backward compatibility with test code.
+// It logs a deprecation warning and returns nil (no-op).
 func (ii *InitInjector) Inject(rootfsPath string) error {
-	// For backward compatibility, this method is kept but the preferred
-	// approach is to use InjectIntoDir before the ext4 image is created.
-	// Since Inject is called after ext4 creation, we need to mount it.
-	switch ii.config.Type {
-	case InitSystemTini:
-		return ii.injectTini(rootfsPath)
-	case InitSystemDumbInit:
-		return ii.injectDumbInit(rootfsPath)
-	case InitSystemNone:
-		return nil // No init system
-	default:
-		return fmt.Errorf("unsupported init system type: %s", ii.config.Type)
-	}
+	log.Warn().Str("rootfs", rootfsPath).Msg("InitInjector.Inject is deprecated and is a no-op; use InjectIntoDir before ext4 creation")
+	return nil
 }
 
 // InjectIntoDir injects the init system directly into a directory.
@@ -213,83 +203,29 @@ func (ii *InitInjector) GetInitArgs(containerArgs []string) []string {
 	}
 }
 
-// injectTini injects tini into the rootfs.
+// injectTini and injectDumbInit have been removed.
+// These stubs exist only for backward compatibility with test code.
+
 func (ii *InitInjector) injectTini(rootfsPath string) error {
-	// For ext4 images, we need to mount, copy, unmount
-	// Simplified approach: use debugfs or mount loop
-
-	// Try mounting the image
-	mountDir, err := ii.mountRootfs(rootfsPath)
-	if err != nil {
-		return fmt.Errorf("failed to mount rootfs: %w", err)
-	}
-	defer ii.unmountRootfs(mountDir)
-
-	// Copy or download tini binary
-	tiniPath := filepath.Join(mountDir, "sbin", "tini")
-
-	// Check if tini already exists
-	if _, err := os.Stat(tiniPath); err == nil {
-		// Already exists
-		return nil
-	}
-
-	// For development, create a minimal init script
-	// In production, you'd copy the actual binary
-	if err := ii.createMinimalInit(mountDir, "tini"); err != nil {
-		return err
-	}
-
+	log.Warn().Str("rootfs", rootfsPath).Msg("injectTini is deprecated (no-op); use injectTiniIntoDir via InjectIntoDir")
 	return nil
 }
 
-// injectDumbInit injects dumb-init into the rootfs.
 func (ii *InitInjector) injectDumbInit(rootfsPath string) error {
-	// Similar to tini
-	mountDir, err := ii.mountRootfs(rootfsPath)
-	if err != nil {
-		return fmt.Errorf("failed to mount rootfs: %w", err)
-	}
-	defer ii.unmountRootfs(mountDir)
-
-	dumbInitPath := filepath.Join(mountDir, "sbin", "dumb-init")
-
-	// Check if dumb-init already exists
-	if _, err := os.Stat(dumbInitPath); err == nil {
-		return nil
-	}
-
-	// Create minimal init
-	if err := ii.createMinimalInit(mountDir, "dumb-init"); err != nil {
-		return err
-	}
-
+	log.Warn().Str("rootfs", rootfsPath).Msg("injectDumbInit is deprecated (no-op); use injectDumbInitIntoDir via InjectIntoDir")
 	return nil
 }
 
-// mountRootfs mounts an ext4 image temporarily.
-// Deprecated: This method only creates a temp directory but does NOT actually mount.
-// Use InjectIntoDir instead to inject init BEFORE ext4 creation.
+// mountRootfs is deprecated — it never actually mounted the ext4 image.
+// Stub exists for backward compatibility with test code.
 func (ii *InitInjector) mountRootfs(imagePath string) (string, error) {
-	// Create temp mount point
-	mountDir, err := os.MkdirTemp("", "swarmcracker-mount-")
-	if err != nil {
-		return "", err
-	}
-
-	// NOTE: This does NOT actually mount the ext4 image!
-	// The actual mount requires root privileges and was never implemented.
-	// This method is kept for backward compatibility but is deprecated.
-	// Use InjectIntoDir() instead, which injects before ext4 creation.
-
-	return mountDir, nil
+	log.Warn().Str("image", imagePath).Msg("mountRootfs is deprecated (no-op); use InjectIntoDir before ext4 creation")
+	return os.MkdirTemp("", "swarmcracker-deprecated-mount-")
 }
 
-// unmountRootfs unmounts a temporary rootfs mount.
+// unmountRootfs is deprecated. Stub for backward compatibility.
 func (ii *InitInjector) unmountRootfs(mountDir string) error {
-	// Unmount and cleanup
-	os.RemoveAll(mountDir)
-	return nil
+	return os.RemoveAll(mountDir)
 }
 
 // createMinimalInit creates a minimal init script for development.

@@ -71,7 +71,6 @@ func TestInitInjector_Inject_ErrorPaths(t *testing.T) {
 		{
 			name: "inject_unsupported_type",
 			setupInjector: func(t *testing.T) *InitInjector {
-				// Create injector with custom type
 				return &InitInjector{
 					config: &InitSystemConfig{
 						Type:           InitSystemType("unsupported"),
@@ -82,8 +81,8 @@ func TestInitInjector_Inject_ErrorPaths(t *testing.T) {
 			setupRootfs: func(t *testing.T) string {
 				return filepath.Join(t.TempDir(), "test.ext4")
 			},
-			wantErr:     true,
-			errContains: "unsupported init system type",
+			// Inject is now a no-op stub (deprecated); always returns nil
+			wantErr: false,
 		},
 	}
 
