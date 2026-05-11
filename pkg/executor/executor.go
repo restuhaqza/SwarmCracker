@@ -133,13 +133,23 @@ func (e *FirecrackerExecutor) Prepare(ctx context.Context, t *types.Task) error 
 		Str("service_id", t.ServiceID).
 		Msg("Preparing task")
 
+	// Rollback stack: cleanup functions in reverse order on failure
+	var rollbacks []func()
+
 	// 1. Prepare container image (convert to rootfs)
 	if err := e.imagePrep.Prepare(ctx, t); err != nil {
 		return fmt.Errorf("image preparation failed: %w", err)
 	}
+	rollbacks = append(rollbacks, func() {
+		log.Warn().Str("task_id", t.ID).Msg("Rolling back image preparation")
+	})
 
 	// 2. Prepare network interfaces
 	if err := e.networkMgr.PrepareNetwork(ctx, t); err != nil {
+		// Rollback any completed steps
+		for i := len(rollbacks) - 1; i >= 0; i-- {
+			rollbacks[i]()
+		}
 		return fmt.Errorf("network preparation failed: %w", err)
 	}
 

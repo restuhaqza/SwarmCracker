@@ -358,6 +358,16 @@ func (vm *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 		Str("init_system", vmInstance.InitSystem).
 		Msg("Stopping VM")
 
+	// Guard against concurrent stops
+	currentState := vmInstance.GetState()
+	if currentState == VMStateStopping {
+		return fmt.Errorf("VM %s is already stopping", task.ID)
+	}
+	if currentState == VMStateStarting {
+		return fmt.Errorf("VM %s is still starting, wait before stopping", task.ID)
+	}
+	vmInstance.SetState(VMStateStopping)
+
 	// If init system is enabled, try graceful shutdown first
 	if vmInstance.InitSystem != "none" {
 		return vm.gracefulShutdown(ctx, vmInstance)
@@ -392,14 +402,23 @@ func (vm *VMMManager) gracefulShutdown(ctx context.Context, vmInstance *VMInstan
 	shutdownChan := make(chan error, 1)
 
 	go func() {
-		// Poll for process exit
+		// Poll for process exit with context cancellation
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
 		for {
-			if err := process.Signal(syscall.Signal(0)); err != nil {
-				// Process has exited
-				shutdownChan <- nil
+			select {
+			case <-ctx.Done():
 				return
+			case <-ticker.C:
+				if err := process.Signal(syscall.Signal(0)); err != nil {
+					// Process has exited
+					select {
+					case shutdownChan <- nil:
+					default:
+					}
+					return
+				}
 			}
-			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 
@@ -594,6 +613,12 @@ func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 	vmInstance, exists := vm.vms[task.ID]
 	if !exists {
 		return nil
+	}
+
+	// Guard against removing a VM in a transitional state
+	state := vmInstance.GetState()
+	if state == VMStateStopping || state == VMStateStarting {
+		return fmt.Errorf("cannot remove VM %s in %s state", task.ID, state)
 	}
 
 	// Stop VM if running
