@@ -311,7 +311,7 @@ func createWorkerDirectories(cfg *joinConfig) error {
 	}
 
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0700); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
 		log.Debug().Str("dir", dir).Msg("Directory created")
@@ -367,7 +367,7 @@ logging:
 	)
 
 	configPath := filepath.Join(cfg.ConfigDir, "worker-config.yaml")
-	if err := os.WriteFile(configPath, []byte(workerConfig), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(workerConfig), 0600); err != nil {
 		return fmt.Errorf("failed to write worker config: %w", err)
 	}
 	log.Debug().Str("path", configPath).Msg("Worker config written")
