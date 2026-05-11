@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/rs/zerolog/log"
@@ -256,11 +258,28 @@ func CheckCapabilities() error {
 	return nil
 }
 
-// hasCapability checks if a specific capability is available
-func hasCapability(_ int) bool {
-	// This is a simplified check
-	// In production, use linux capabilities API
-	return true // Assume available if running as root
+// hasCapability checks if a specific capability bit is available by reading
+// /proc/self/status CapEff (capability effective set).
+func hasCapability(cap int) bool {
+	data, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return false
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "CapEff:") {
+			fields := strings.Fields(line)
+			if len(fields) < 2 {
+				return false
+			}
+			capEff, err := strconv.ParseUint(fields[1], 16, 64)
+			if err != nil {
+				return false
+			}
+			return capEff&(1<<uint(cap)) != 0
+		}
+	}
+	return false
 }
 
 // GetDefaultSecurityConfig returns default security configuration
