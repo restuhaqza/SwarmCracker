@@ -299,9 +299,9 @@ func TestValidatePath_Symlink(t *testing.T) {
 
 // TestHasCapability_CoverageExtra tests hasCapability function
 func TestHasCapability_CoverageExtra(t *testing.T) {
-	// hasCapability currently returns true always (simplified implementation)
-	result := hasCapability(0)
-	assert.True(t, result, "hasCapability returns true in simplified implementation")
+	// hasCapability now reads /proc/self/status CapEff for real capability checking.
+	// Just verify it doesn't panic; result depends on actual system state.
+	_ = hasCapability(0)
 }
 
 // TestJailerSetupJail_MkdirError tests SetupJail MkdirAll failure

@@ -855,12 +855,9 @@ func TestSyscallConstants(t *testing.T) {
 
 // TestHasCapability tests hasCapability helper function
 func TestHasCapability(t *testing.T) {
-	// hasCapability always returns true in the current implementation
-	// This test documents that behavior
-	result := hasCapability(0)
-	if !result {
-		t.Error("hasCapability should return true (simplified implementation)")
-	}
+	// hasCapability now reads /proc/self/status CapEff for real capability checking.
+	// The result depends on the actual system state; we just verify it doesn't panic.
+	_ = hasCapability(0)
 }
 
 // TestManager_PrepareVM_Extended tests PrepareVM with edge cases
