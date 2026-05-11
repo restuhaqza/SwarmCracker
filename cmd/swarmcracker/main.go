@@ -485,7 +485,7 @@ func createExecutor(cfg *config.Config) (*executor.FirecrackerExecutor, error) {
 			Subnet:           cfg.Network.Subnet,
 			BridgeIP:         cfg.Network.BridgeIP,
 			IPMode:           cfg.Network.IPMode,
-			NATEnabled:       cfg.Network.NATEnabled,
+			NATEnabled:       *cfg.Network.NATEnabled,
 		},
 	}
 
