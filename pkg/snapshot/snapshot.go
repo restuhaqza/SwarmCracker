@@ -133,8 +133,34 @@ type CreateOptions struct {
 
 // Manager manages VM snapshot lifecycle.
 type Manager struct {
-	config SnapshotConfig
-	mu     sync.Mutex
+	config           SnapshotConfig
+	mu               sync.Mutex
+	restoredProcesses map[string]*os.Process // taskID -> process for restored VMs
+}
+
+// TrackRestoredProcess registers a restored VM process for lifecycle tracking.
+func (m *Manager) TrackRestoredProcess(taskID string, proc *os.Process) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.restoredProcesses == nil {
+		m.restoredProcesses = make(map[string]*os.Process)
+	}
+	m.restoredProcesses[taskID] = proc
+}
+
+// StopRestoredProcess stops a tracked restored VM process.
+func (m *Manager) StopRestoredProcess(taskID string) error {
+	m.mu.Lock()
+	proc, exists := m.restoredProcesses[taskID]
+	if exists {
+		delete(m.restoredProcesses, taskID)
+	}
+	m.mu.Unlock()
+
+	if !exists {
+		return nil
+	}
+	return proc.Kill()
 }
 
 // NewManager creates a new snapshot Manager.
@@ -318,6 +344,9 @@ func (m *Manager) RestoreFromSnapshot(
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start firecracker for restore: %w", err)
 	}
+
+	// Track the restored VM process so it can be stopped later
+	m.TrackRestoredProcess(info.TaskID, cmd.Process)
 
 	// Ensure cleanup on failure
 	startErr := false
@@ -515,11 +544,18 @@ func resumeVM(ctx context.Context, socketPath string) error {
 // callSnapshotCreate calls PUT /snapshot/create on the Firecracker API.
 // For Firecracker v1.14.0+, the API expects snapshot_type, snapshot_path, and mem_file_path.
 // The VM must be paused before calling this.
-func callSnapshotCreate(ctx context.Context, socketPath, statePath, memoryPath string) error {
+func callSnapshotCreate(ctx context.Context, socketPath, statePath, memoryPath string) (err error) {
 	// Pause VM first (required in v1.14.0+)
 	if err := pauseVM(ctx, socketPath); err != nil {
 		return fmt.Errorf("failed to pause VM: %w", err)
 	}
+
+	// Ensure VM is resumed on any exit path (success or failure)
+	defer func() {
+		if resumeErr := resumeVM(ctx, socketPath); resumeErr != nil {
+			log.Warn().Err(resumeErr).Msg("failed to resume VM after snapshot")
+		}
+	}()
 
 	payload := map[string]interface{}{
 		"snapshot_type": "Full",
