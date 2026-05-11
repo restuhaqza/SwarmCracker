@@ -335,9 +335,9 @@ func TestNewRealFilesystemOperator(t *testing.T) {
 // TestRealFilesystemOperator_MkfsExt4 tests MkfsExt4 method
 func TestRealFilesystemOperator_MkfsExt4(t *testing.T) {
 	tests := []struct {
-		name       string
-		setup      func(t *testing.T) (string, string)
-		wantErr    bool
+		name    string
+		setup   func(t *testing.T) (string, string)
+		wantErr bool
 	}{
 		{
 			name: "mkfs_nonexistent_source",
@@ -467,9 +467,9 @@ func TestRealFilesystemOperator_Truncate(t *testing.T) {
 // TestRealFilesystemOperator_Mount tests Mount method
 func TestRealFilesystemOperator_Mount(t *testing.T) {
 	tests := []struct {
-		name      string
-		setup     func(t *testing.T) (string, string)
-		wantErr   bool
+		name    string
+		setup   func(t *testing.T) (string, string)
+		wantErr bool
 	}{
 		{
 			name: "mount_without_permissions",
@@ -529,9 +529,9 @@ func TestRealFilesystemOperator_Mount(t *testing.T) {
 // TestRealFilesystemOperator_Unmount tests Unmount method
 func TestRealFilesystemOperator_Unmount(t *testing.T) {
 	tests := []struct {
-		name     string
-		setup    func(t *testing.T) string
-		wantErr  bool
+		name    string
+		setup   func(t *testing.T) string
+		wantErr bool
 	}{
 		{
 			name: "unmount_nonexistent_dir",
@@ -1082,11 +1082,11 @@ func TestPrepareImageWithMocks(t *testing.T) {
 // TestInjectInitSystemWithMocks tests injectInitSystemWithMocks
 func TestInjectInitSystemWithMocks(t *testing.T) {
 	tests := []struct {
-		name       string
-		setupMocks func(t *testing.T) (ContainerRuntime, FilesystemOperator, BinaryLocator)
+		name        string
+		setupMocks  func(t *testing.T) (ContainerRuntime, FilesystemOperator, BinaryLocator)
 		setupRootfs func(t *testing.T) string
-		initSystem string
-		wantErr    bool
+		initSystem  string
+		wantErr     bool
 	}{
 		{
 			name: "inject_with_mount_error",
@@ -1167,7 +1167,7 @@ func TestInjectInitSystemWithMocks(t *testing.T) {
 // TestGetInitBinaryPathWithLocator tests getInitBinaryPathWithLocator
 func TestGetInitBinaryPathWithLocator(t *testing.T) {
 	tests := []struct {
-		name        string
+		name         string
 		setupLocator func(t *testing.T) BinaryLocator
 		initSystem   string
 	}{

@@ -75,11 +75,11 @@ func TestDefaultExecuteWithOutput_WithArgs(t *testing.T) {
 // SequentialMockTAPExecutor tracks call count for sequential responses
 type SequentialMockTAPExecutor struct {
 	MockTAPExecutor
-	mu           sync.Mutex
-	callCount    int
-	runResults   []error
-	outputResult [][]byte
-	outputError  []error
+	mu             sync.Mutex
+	callCount      int
+	runResults     []error
+	outputResult   [][]byte
+	outputError    []error
 	combinedResult [][]byte
 	combinedError  []error
 }
@@ -223,9 +223,9 @@ func TestCreateBridgeWithExecutor_SuccessWithSubnet(t *testing.T) {
 	// All commands succeed
 	mock.runResults = []error{
 		errors.New("device not found"), // link show fails = doesn't exist
-		nil, // link add succeeds
-		nil, // link set up succeeds
-		nil, // addr add succeeds
+		nil,                            // link add succeeds
+		nil,                            // link set up succeeds
+		nil,                            // addr add succeeds
 	}
 
 	err := CreateBridgeWithExecutor("br-success", "192.168.1.0/24", mock)
@@ -282,7 +282,7 @@ func TestCreateBridgeWithExecutor_DifferentSubnetSizes(t *testing.T) {
 func TestCreateTAPDeviceWithExecutor_TuntapFails(t *testing.T) {
 	mock := NewSequentialMockTAPExecutor()
 	mock.runResults = []error{
-		nil, // link delete (cleanup)
+		nil,                             // link delete (cleanup)
 		errors.New("tuntap add failed"), // tuntap add fails
 	}
 
@@ -296,8 +296,8 @@ func TestCreateTAPDeviceWithExecutor_TuntapFails(t *testing.T) {
 func TestCreateTAPDeviceWithExecutor_LinkUpFails_WithCleanup(t *testing.T) {
 	mock := NewSequentialMockTAPExecutor()
 	mock.runResults = []error{
-		nil, // link delete
-		nil, // tuntap add
+		nil,                              // link delete
+		nil,                              // tuntap add
 		errors.New("link set up failed"), // link set up fails
 	}
 
@@ -311,9 +311,9 @@ func TestCreateTAPDeviceWithExecutor_LinkUpFails_WithCleanup(t *testing.T) {
 func TestCreateTAPDeviceWithExecutor_MasterFails_WithCleanup(t *testing.T) {
 	mock := NewSequentialMockTAPExecutor()
 	mock.runResults = []error{
-		nil, // link delete
-		nil, // tuntap add
-		nil, // link set up
+		nil,                             // link delete
+		nil,                             // tuntap add
+		nil,                             // link set up
 		errors.New("master set failed"), // link set master fails
 	}
 	mock.outputResult = [][]byte{
@@ -450,7 +450,7 @@ func TestPrepareNetworkWithCNI_EmptyNetworkName_UsesIDPrefix(t *testing.T) {
 
 func TestPrepareNetworkWithCNI_NoAddresses_ReturnsError(t *testing.T) {
 	nm := &NetworkManager{
-		cniClient: NewCNIClient(CNIConfig{}),
+		cniClient:  NewCNIClient(CNIConfig{}),
 		tapDevices: make(map[string]*TapDevice),
 	}
 
@@ -632,7 +632,7 @@ func TestIPAllocator_Release(t *testing.T) {
 // CNIClient with empty config - covers execution paths
 func TestCNIClient_AddNetwork_ExecFails(t *testing.T) {
 	client := NewCNIClient(CNIConfig{
-		BinDir: "/nonexistent-path",
+		BinDir:  "/nonexistent-path",
 		ConfDir: "/nonexistent-conf",
 	})
 	_, err := client.AddNetwork(context.Background(), "container-1", "tmp/ns", "10.0.0.2/24", "test-net")

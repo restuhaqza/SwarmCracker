@@ -59,9 +59,9 @@ func TestPreparerExtended_CopyDirectory(t *testing.T) {
 
 	// Create test files
 	testFiles := map[string]string{
-		"file1.txt":              "content1",
-		"subdir1/file2.txt":      "content2",
-		"subdir1/subdir2/file3":  "content3",
+		"file1.txt":             "content1",
+		"subdir1/file2.txt":     "content2",
+		"subdir1/subdir2/file3": "content3",
 	}
 
 	for path, content := range testFiles {

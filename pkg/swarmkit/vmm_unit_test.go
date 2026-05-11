@@ -277,15 +277,15 @@ func TestNewVMMManagerWithJailer(t *testing.T) {
 	tempDir := t.TempDir()
 
 	tests := []struct {
-		name         string
+		name          string
 		enableCgroups bool
 	}{
 		{
-			name:         "jailer without cgroups",
+			name:          "jailer without cgroups",
 			enableCgroups: false,
 		},
 		{
-			name:         "jailer with cgroups",
+			name:          "jailer with cgroups",
 			enableCgroups: true,
 		},
 	}
@@ -711,9 +711,9 @@ func TestWait(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name        string
-		setup       func(*VMMManager) string
-		wantState   types.TaskState
+		name      string
+		setup     func(*VMMManager) string
+		wantState types.TaskState
 	}{
 		{
 			name: "no process returns Complete",
@@ -798,8 +798,8 @@ func TestConfigureVM(t *testing.T) {
 			errContains: "invalid config type",
 		},
 		{
-			name: "invalid config type - array",
-			config: []string{"a", "b"},
+			name:        "invalid config type - array",
+			config:      []string{"a", "b"},
 			expectError: true,
 			errContains: "invalid config type",
 		},
@@ -813,8 +813,8 @@ func TestConfigureVM(t *testing.T) {
 			name: "missing drives - fails at machine-config PUT (no socket)",
 			config: map[string]interface{}{
 				"machine-config": map[string]interface{}{
-					"vcpu_count":     2,
-					"mem_size_mib":   512,
+					"vcpu_count":   2,
+					"mem_size_mib": 512,
 				},
 				"boot-source": map[string]interface{}{
 					"kernel_image_path": "/kernel",
@@ -958,9 +958,9 @@ func TestCheckVMAPIHealth(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		setup       func(*VMMManager) string
-		expected    bool
+		name     string
+		setup    func(*VMMManager) string
+		expected bool
 	}{
 		{
 			name: "no socket file",
@@ -1198,5 +1198,3 @@ func TestNewVMMManagerPaths(t *testing.T) {
 		}
 	})
 }
-
-

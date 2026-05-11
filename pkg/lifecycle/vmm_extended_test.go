@@ -241,7 +241,7 @@ func TestConfigureVM_Success(t *testing.T) {
 					"boot_args":         "console=ttyS0 reboot=k panic=1 pci=off",
 				},
 				"machine_config": map[string]interface{}{
-					"vcpu_count":  2,
+					"vcpu_count":   2,
 					"mem_size_mib": 512,
 					"ht_enabled":   false,
 				},
@@ -261,7 +261,7 @@ func TestConfigureVM_Success(t *testing.T) {
 			config: map[string]interface{}{
 				"drives": []interface{}{
 					map[string]interface{}{
-						"drive_id":      "rootfs",
+						"drive_id":       "rootfs",
 						"is_root_device": true,
 						"is_read_only":   false,
 						"path_on_host":   "/path/to/rootfs.ext4",

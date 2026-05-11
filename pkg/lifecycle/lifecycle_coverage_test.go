@@ -161,9 +161,9 @@ func TestGracefulShutdown_VariousGracePeriods(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name         string
-		gracePeriod  int
-		expectKill   bool
+		name        string
+		gracePeriod int
+		expectKill  bool
 	}{
 		{"immediate", 0, true},
 		{"very-short", 1, true},

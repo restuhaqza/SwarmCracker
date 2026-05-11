@@ -145,13 +145,13 @@ func createEssentialDirs(tmpDir string) error {
 		path string
 		mode os.FileMode
 	}{
-		{"/tmp", 01777},       // sticky bit for temp
+		{"/tmp", 01777}, // sticky bit for temp
 		{"/run", 0755},
 		{"/var/run", 0755},
 		{"/var/log", 0755},
-		{"/var/tmp", 01777},   // sticky bit
+		{"/var/tmp", 01777}, // sticky bit
 		{"/var/cache", 0755},
-		{"/root", 0700},       // root home, private
+		{"/root", 0700}, // root home, private
 	}
 
 	for _, d := range dirs {

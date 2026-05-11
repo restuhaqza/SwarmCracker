@@ -133,8 +133,8 @@ type CreateOptions struct {
 
 // Manager manages VM snapshot lifecycle.
 type Manager struct {
-	config           SnapshotConfig
-	mu               sync.Mutex
+	config            SnapshotConfig
+	mu                sync.Mutex
 	restoredProcesses map[string]*os.Process // taskID -> process for restored VMs
 }
 

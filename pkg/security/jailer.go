@@ -12,14 +12,14 @@ import (
 
 // Injectable function variables for testing
 var (
-	syscallChroot   = syscall.Chroot
-	syscallSetgid   = syscall.Setgid
-	syscallSetuid   = syscall.Setuid
+	syscallChroot    = syscall.Chroot
+	syscallSetgid    = syscall.Setgid
+	syscallSetuid    = syscall.Setuid
 	syscallSetrlimit = syscall.Setrlimit
-	osChdir         = os.Chdir
-	osMkdirAll      = os.MkdirAll
-	osWriteFileVar  = os.WriteFile
-	osRemoveAllVar  = os.RemoveAll
+	osChdir          = os.Chdir
+	osMkdirAll       = os.MkdirAll
+	osWriteFileVar   = os.WriteFile
+	osRemoveAllVar   = os.RemoveAll
 )
 
 // Jailer provides isolation for Firecracker VMs using:

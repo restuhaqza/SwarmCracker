@@ -107,6 +107,7 @@ func stopVM(vm *runtime.VMState) error {
 	if err := process.Signal(syscall.Signal(0)); err != nil {
 		// Process already dead
 		log.Info().Int("pid", vm.PID).Msg("Process already terminated")
+		//nolint:nilerr
 		return nil
 	}
 

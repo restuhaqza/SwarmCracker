@@ -245,6 +245,7 @@ func (cm *CleanupManager) KillProcessesByName(name string) error {
 	output, err := cmd.Output()
 	if err != nil {
 		// pgrep returns exit code 1 if no processes found
+		//nolint:nilerr
 		return nil
 	}
 

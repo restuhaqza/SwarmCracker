@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -10,12 +9,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"github.com/spf13/cobra"
 )
 
 // newNodeCommand creates the node command group
@@ -49,9 +49,9 @@ func newNodeListCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "ls",
-		Short: "List nodes in the cluster",
-		Long: `List all nodes in the SwarmCracker cluster with their status.`,
+		Use:     "ls",
+		Short:   "List nodes in the cluster",
+		Long:    `List all nodes in the SwarmCracker cluster with their status.`,
 		Aliases: []string{"list"},
 		Example: `  swarmcracker node ls
   swarmcracker node ls --format json
@@ -79,11 +79,11 @@ func newNodeInspectCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "inspect <node-id>",
-		Short: "Inspect a node",
-		Long: `Display detailed information about a node.`,
+		Use:     "inspect <node-id>",
+		Short:   "Inspect a node",
+		Long:    `Display detailed information about a node.`,
 		Example: `  swarmcracker node inspect 123abc...`,
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -108,7 +108,7 @@ func newNodeDrainCommand() *cobra.Command {
 A drained node will not receive any new tasks. Existing tasks
 will be rescheduled on other active nodes.`,
 		Example: `  swarmcracker node drain 123abc...`,
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -129,7 +129,7 @@ func newNodeActivateCommand() *cobra.Command {
 
 An activated node can receive new tasks.`,
 		Example: `  swarmcracker node activate 123abc...`,
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -151,7 +151,7 @@ func newNodePromoteCommand() *cobra.Command {
 Manager nodes participate in the SwarmKit Raft consensus and can
 perform management operations.`,
 		Example: `  swarmcracker node promote 123abc...`,
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -176,7 +176,7 @@ For active nodes, use --force to remove without confirmation.`,
 		Aliases: []string{"remove"},
 		Example: `  swarmcracker node rm 123abc...
   swarmcracker node rm --force 123abc...`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},

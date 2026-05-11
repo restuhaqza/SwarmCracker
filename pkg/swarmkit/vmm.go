@@ -844,7 +844,7 @@ func (v *VMMManager) putAPI(ctx context.Context, socketPath, path string, data i
 func (v *VMMManager) GetRunningProcesses() map[string]*exec.Cmd {
 	v.processMutex.Lock()
 	defer v.processMutex.Unlock()
-	
+
 	// Return a copy to avoid race conditions
 	result := make(map[string]*exec.Cmd)
 	for k, cmd := range v.processes {

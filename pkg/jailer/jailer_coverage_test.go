@@ -174,9 +174,9 @@ func TestStart_ValidationErrors(t *testing.T) {
 		{
 			name: "missing KernelPath",
 			cfg: VMConfig{
-				TaskID:    "test",
-				VcpuCount: 1,
-				MemoryMB:  512,
+				TaskID:     "test",
+				VcpuCount:  1,
+				MemoryMB:   512,
 				RootfsPath: "/tmp/rootfs",
 			},
 			wantErr: "KernelPath is required",

@@ -131,8 +131,8 @@ func TestDefaultNetlinkExecutor_BridgeVlanDel_Fail(t *testing.T) {
 func TestDefaultNetlinkExecutor_NeighAdd_Fail(t *testing.T) {
 	e := NewDefaultNetlinkExecutor()
 	neigh := &netlink.Neigh{
-		LinkIndex: 999,
-		IP:        net.ParseIP("10.0.0.2"),
+		LinkIndex:    999,
+		IP:           net.ParseIP("10.0.0.2"),
 		HardwareAddr: net.HardwareAddr{0x00, 0x11, 0x22, 0x33, 0x44, 0x55},
 	}
 	err := e.NeighAdd(neigh)

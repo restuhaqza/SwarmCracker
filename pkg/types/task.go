@@ -49,7 +49,7 @@ type RuntimeType string
 
 const (
 	RuntimeContainer RuntimeType = "container"
-	RuntimeWASM     RuntimeType = "wasm"
+	RuntimeWASM      RuntimeType = "wasm"
 )
 
 // GetContainer safely extracts the Container from the Runtime field.
@@ -221,10 +221,10 @@ type ImagePreparer interface {
 type NetworkManager interface {
 	PrepareNetwork(ctx context.Context, task *Task) error
 	CleanupNetwork(ctx context.Context, task *Task) error
-	GetTapIP(taskID string) (string, error) // Get allocated IP for task
-	Init(ctx context.Context) error        // Initialize network infrastructure (bridge, VXLAN)
+	GetTapIP(taskID string) (string, error)   // Get allocated IP for task
+	Init(ctx context.Context) error           // Initialize network infrastructure (bridge, VXLAN)
 	SetNodeDiscovery(discovery NodeDiscovery) // Set node discovery for VXLAN peers
-	UpdateVXLANPeers(peers []string) error // Update VXLAN FDB entries
+	UpdateVXLANPeers(peers []string) error    // Update VXLAN FDB entries
 }
 
 // NodeDiscovery provides peer node information for VXLAN overlay.

@@ -141,7 +141,7 @@ func TestRealCmd_SetStdio(t *testing.T) {
 
 	// Test SetStdin
 	var stdin bytes.Buffer
-stdin.Write([]byte("test input"))
+	stdin.Write([]byte("test input"))
 	cmd := executor.Command("cat")
 	cmd.SetStdin(&stdin)
 

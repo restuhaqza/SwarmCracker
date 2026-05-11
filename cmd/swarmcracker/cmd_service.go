@@ -83,7 +83,7 @@ func newServiceInspectCommand() *cobra.Command {
 		Long:  `Display detailed information about a service.`,
 		Example: `  swarmcracker service inspect my-service
   swarmcracker service inspect --format json my-service`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -101,9 +101,9 @@ func newServiceInspectCommand() *cobra.Command {
 // newServicePSCommand shows service tasks
 func newServicePSCommand() *cobra.Command {
 	var (
-		format string
-		filter string
-		quiet  bool
+		format  string
+		filter  string
+		quiet   bool
 		noTrunc bool
 	)
 
@@ -113,7 +113,7 @@ func newServicePSCommand() *cobra.Command {
 		Long:  `List all tasks belonging to a service.`,
 		Example: `  swarmcracker service ps my-service
   swarmcracker service ps --format json my-service`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -133,15 +133,15 @@ func newServicePSCommand() *cobra.Command {
 // newServiceCreateCommand creates a service
 func newServiceCreateCommand() *cobra.Command {
 	var (
-		name    string
-		image   string
+		name     string
+		image    string
 		replicas uint64
-		cpu     float64
-		memory  string
-		env     []string
-		command []string
-		args    []string
-		labels  []string
+		cpu      float64
+		memory   string
+		env      []string
+		command  []string
+		args     []string
+		labels   []string
 	)
 
 	cmd := &cobra.Command{
@@ -200,7 +200,7 @@ Supports updating replicas, resource limits, image, and environment variables.`,
   swarmcracker service update my-service --cpu-limit 2 --memory-limit 1G
   swarmcracker service update my-service --image myimage:v2
   swarmcracker service update my-service --env-add KEY=value`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -230,7 +230,7 @@ func newServiceScaleCommand() *cobra.Command {
 This is a convenience command that updates the replica count.`,
 		Example: `  swarmcracker service scale my-service 5
   swarmcracker service scale my-service 0`,
-		Args:  cobra.ExactArgs(2),
+		Args: cobra.ExactArgs(2),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -253,7 +253,7 @@ func newServiceRemoveCommand() *cobra.Command {
 		Aliases: []string{"remove"},
 		Example: `  swarmcracker service rm my-service
   swarmcracker service rm --force my-service`,
-		Args:  cobra.ExactArgs(1),
+		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},

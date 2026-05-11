@@ -328,8 +328,8 @@ func TestHandleMounts_WithMultipleMounts(t *testing.T) {
 		{Source: source1, Target: "/data1", ReadOnly: false},
 		{Source: source2, Target: "/data2", ReadOnly: true},
 		{Source: "/nonexistent/path", Target: "/data3", ReadOnly: false}, // Will be skipped
-		{Source: "", Target: "/data4", ReadOnly: false},                   // Empty source skipped
-		{Source: "volume:myvol", Target: "/data5", ReadOnly: false},       // Volume reference
+		{Source: "", Target: "/data4", ReadOnly: false},                  // Empty source skipped
+		{Source: "volume:myvol", Target: "/data5", ReadOnly: false},      // Volume reference
 	}
 
 	err = ip.handleMounts(ctx, task, rootfsPath, mounts)
@@ -1082,7 +1082,7 @@ func TestPrepare_ActualImagePreparation(t *testing.T) {
 		Annotations: make(map[string]string),
 		Spec: types.TaskSpec{
 			Runtime: &types.Container{
-				Image: "nonexistent-local-image:test",
+				Image:  "nonexistent-local-image:test",
 				Mounts: []types.Mount{},
 			},
 		},
@@ -1219,23 +1219,23 @@ func TestHandleMounts_ExecErrorPathsV2(t *testing.T) {
 		mounts []types.Mount
 	}{
 		{
-			name: "empty_target",
+			name:   "empty_target",
 			mounts: []types.Mount{{Source: "test", Target: "", ReadOnly: false}},
 		},
 		{
-			name: "empty_source",
+			name:   "empty_source",
 			mounts: []types.Mount{{Source: "", Target: "/data", ReadOnly: false}},
 		},
 		{
-			name: "nonexistent_source",
+			name:   "nonexistent_source",
 			mounts: []types.Mount{{Source: "/nonexistent/path", Target: "/data", ReadOnly: false}},
 		},
 		{
-			name: "volume_reference",
+			name:   "volume_reference",
 			mounts: []types.Mount{{Source: "volume:test-volume", Target: "/data", ReadOnly: false}},
 		},
 		{
-			name: "valid_bind_mount",
+			name:   "valid_bind_mount",
 			mounts: []types.Mount{{Source: t.TempDir(), Target: "/data", ReadOnly: false}},
 		},
 		{
@@ -1247,7 +1247,7 @@ func TestHandleMounts_ExecErrorPathsV2(t *testing.T) {
 			},
 		},
 		{
-			name: "empty_mounts",
+			name:   "empty_mounts",
 			mounts: []types.Mount{},
 		},
 	}
@@ -1785,22 +1785,22 @@ func TestExtractTarStream_WithPathTraversalProtection(t *testing.T) {
 func TestNewImagePreparer_Defaults(t *testing.T) {
 	// Test with nil config
 	ip1 := NewImagePreparer(nil).(*ImagePreparer)
-	assert.Equal(t, "tini", ip1.config.InitSystem)     // Default
-	assert.Equal(t, 10, ip1.config.InitGracePeriod)    // Default
-	assert.Equal(t, 7, ip1.config.MaxImageAgeDays)     // Default
+	assert.Equal(t, "tini", ip1.config.InitSystem)  // Default
+	assert.Equal(t, 10, ip1.config.InitGracePeriod) // Default
+	assert.Equal(t, 7, ip1.config.MaxImageAgeDays)  // Default
 	assert.NotNil(t, ip1.initInjector)
 
 	// Test with empty config
 	ip2 := NewImagePreparer(&PreparerConfig{}).(*ImagePreparer)
-	assert.Equal(t, "tini", ip2.config.InitSystem)    // Default
-	assert.Equal(t, 10, ip2.config.InitGracePeriod)   // Default
-	assert.Equal(t, 7, ip2.config.MaxImageAgeDays)    // Default
+	assert.Equal(t, "tini", ip2.config.InitSystem)  // Default
+	assert.Equal(t, 10, ip2.config.InitGracePeriod) // Default
+	assert.Equal(t, 7, ip2.config.MaxImageAgeDays)  // Default
 
 	// Test with partial config
 	ip3 := NewImagePreparer(&PreparerConfig{InitSystem: "dumb-init"}).(*ImagePreparer)
 	assert.Equal(t, "dumb-init", ip3.config.InitSystem) // From config
-	assert.Equal(t, 10, ip3.config.InitGracePeriod)      // Default
-	assert.Equal(t, 7, ip3.config.MaxImageAgeDays)       // Default
+	assert.Equal(t, 10, ip3.config.InitGracePeriod)     // Default
+	assert.Equal(t, 7, ip3.config.MaxImageAgeDays)      // Default
 }
 
 // TestNewImagePreparer_InterfaceConfig tests with interface{} config
@@ -2013,8 +2013,8 @@ func TestHandleMounts_EmptyTargetSkipped(t *testing.T) {
 
 	// Mounts with empty targets should be skipped
 	mounts := []types.Mount{
-		{Source: "valid", Target: "", ReadOnly: false}, // Empty target - skipped
-		{Source: "another", Target: "", ReadOnly: true},  // Empty target - skipped
+		{Source: "valid", Target: "", ReadOnly: false},           // Empty target - skipped
+		{Source: "another", Target: "", ReadOnly: true},          // Empty target - skipped
 		{Source: t.TempDir(), Target: "/valid", ReadOnly: false}, // Valid mount
 	}
 
@@ -2051,7 +2051,7 @@ func TestHandleMounts_MultipleValidMounts(t *testing.T) {
 		{Source: source2, Target: "/data2", ReadOnly: true},
 		{Source: source3, Target: "/config", ReadOnly: false},
 		{Source: "volume:vol1", Target: "/volume", ReadOnly: false}, // Volume ref
-		{Source: "volume:vol2", Target: "/volume2", ReadOnly: true},  // Volume ref
+		{Source: "volume:vol2", Target: "/volume2", ReadOnly: true}, // Volume ref
 	}
 
 	_ = ip.handleMounts(ctx, task, rootfsPath, mounts)
@@ -2210,9 +2210,13 @@ func TestMountExt4_VariousPaths(t *testing.T) {
 			wantErr:   true,
 		},
 		{
-			name:      "regular_file",
-			imagePath: func() string { p := filepath.Join(t.TempDir(), "file.ext4"); os.WriteFile(p, []byte("data"), 0644); return p }(),
-			wantErr:   true, // mount requires proper ext4 and privileges
+			name: "regular_file",
+			imagePath: func() string {
+				p := filepath.Join(t.TempDir(), "file.ext4")
+				os.WriteFile(p, []byte("data"), 0644)
+				return p
+			}(),
+			wantErr: true, // mount requires proper ext4 and privileges
 		},
 	}
 
@@ -2399,17 +2403,17 @@ func TestHandleMounts_ComprehensivePaths(t *testing.T) {
 		{Source: "volume:simple-vol", Target: "/mnt/vol1", ReadOnly: false},
 		{Source: "volume:named_volume_123", Target: "/mnt/vol2", ReadOnly: true},
 		{Source: "volume:vol-with-dashes", Target: "/mnt/vol3", ReadOnly: false},
-		
+
 		// Bind mounts with valid sources
 		{Source: validSource1, Target: "/data/dir1", ReadOnly: false},
 		{Source: validSource2, Target: "/data/dir2", ReadOnly: true},
-		
+
 		// Edge cases
-		{Source: "", Target: "/empty-source", ReadOnly: false}, // Empty source
-		{Source: validSource1, Target: "", ReadOnly: false},       // Empty target
+		{Source: "", Target: "/empty-source", ReadOnly: false},             // Empty source
+		{Source: validSource1, Target: "", ReadOnly: false},                // Empty target
 		{Source: "/nonexistent/path", Target: "/invalid", ReadOnly: false}, // Nonexistent source
-		{Source: "volume:test", Target: "", ReadOnly: true}, // Volume with empty target
-		
+		{Source: "volume:test", Target: "", ReadOnly: true},                // Volume with empty target
+
 		// File mounts
 		{Source: filepath.Join(validSource1, "file1.txt"), Target: "/file.txt", ReadOnly: false},
 	}
@@ -2482,8 +2486,12 @@ func TestHandleMounts_SingleMount(t *testing.T) {
 			wantErr: false, // skipped
 		},
 		{
-			name:    "file_mount",
-			mount:   types.Mount{Source: func() string { f := filepath.Join(t.TempDir(), "file.txt"); os.WriteFile(f, []byte("data"), 0644); return f }(), Target: "/file", ReadOnly: false},
+			name: "file_mount",
+			mount: types.Mount{Source: func() string {
+				f := filepath.Join(t.TempDir(), "file.txt")
+				os.WriteFile(f, []byte("data"), 0644)
+				return f
+			}(), Target: "/file", ReadOnly: false},
 			wantErr: false,
 		},
 	}
@@ -2596,10 +2604,10 @@ func TestInjectInitSystem_WithExistingRootfs(t *testing.T) {
 // TestPrepare_MultipleScenarios tests various Prepare flow scenarios
 func TestPrepare_MultipleScenarios(t *testing.T) {
 	tests := []struct {
-		name     string
-		setup    func(t *testing.T, rootfsDir string) string
-		task     *types.Task
-		wantErr  bool
+		name    string
+		setup   func(t *testing.T, rootfsDir string) string
+		task    *types.Task
+		wantErr bool
 	}{
 		{
 			name: "existing_rootfs",
@@ -2612,7 +2620,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 			task: &types.Task{
 				ID:          "existing-rootfs",
 				Annotations: make(map[string]string),
-				Spec: types.TaskSpec{Runtime: &types.Container{Image: "existing:v1"}},
+				Spec:        types.TaskSpec{Runtime: &types.Container{Image: "existing:v1"}},
 				Secrets:     []types.SecretRef{},
 				Configs:     []types.ConfigRef{},
 			},
@@ -2654,7 +2662,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 			task: &types.Task{
 				ID:          "with-secrets-configs",
 				Annotations: make(map[string]string),
-				Spec: types.TaskSpec{Runtime: &types.Container{Image: "secrets:v1"}},
+				Spec:        types.TaskSpec{Runtime: &types.Container{Image: "secrets:v1"}},
 				Secrets: []types.SecretRef{
 					{ID: "s1", Target: "/secret1"},
 					{ID: "s2", Target: "/secret2"},
@@ -2677,7 +2685,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 			task: &types.Task{
 				ID:          "nil-annotations",
 				Annotations: nil, // nil annotations
-				Spec: types.TaskSpec{Runtime: &types.Container{Image: "nil-ann:v1"}},
+				Spec:        types.TaskSpec{Runtime: &types.Container{Image: "nil-ann:v1"}},
 				Secrets:     []types.SecretRef{},
 				Configs:     []types.ConfigRef{},
 			},
@@ -2694,7 +2702,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 			task: &types.Task{
 				ID:          "with-init",
 				Annotations: make(map[string]string),
-				Spec: types.TaskSpec{Runtime: &types.Container{Image: "init:test"}},
+				Spec:        types.TaskSpec{Runtime: &types.Container{Image: "init:test"}},
 				Secrets:     []types.SecretRef{},
 				Configs:     []types.ConfigRef{},
 			},
@@ -2747,7 +2755,7 @@ func TestPrepare_WithDifferentInitSystems(t *testing.T) {
 			task := &types.Task{
 				ID:          "init-system-test",
 				Annotations: make(map[string]string),
-				Spec: types.TaskSpec{Runtime: &types.Container{Image: "init-test:v1"}},
+				Spec:        types.TaskSpec{Runtime: &types.Container{Image: "init-test:v1"}},
 				Secrets:     []types.SecretRef{},
 				Configs:     []types.ConfigRef{},
 			}
@@ -2854,7 +2862,7 @@ func TestHandleBindMount_EdgeCases(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name: "single_file",
+			name:  "single_file",
 			mount: types.Mount{Source: "", Target: "/single.txt", ReadOnly: false},
 			setup: func(t *testing.T) (string, types.Mount) {
 				mountDir := t.TempDir()
@@ -2865,7 +2873,7 @@ func TestHandleBindMount_EdgeCases(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "directory_with_permissions",
+			name:  "directory_with_permissions",
 			mount: types.Mount{Source: "", Target: "/perm", ReadOnly: false},
 			setup: func(t *testing.T) (string, types.Mount) {
 				mountDir := t.TempDir()
@@ -2877,7 +2885,7 @@ func TestHandleBindMount_EdgeCases(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "symlink_source",
+			name:  "symlink_source",
 			mount: types.Mount{Source: "", Target: "/link", ReadOnly: false},
 			setup: func(t *testing.T) (string, types.Mount) {
 				mountDir := t.TempDir()
@@ -2890,7 +2898,7 @@ func TestHandleBindMount_EdgeCases(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "empty_directory",
+			name:  "empty_directory",
 			mount: types.Mount{Source: "", Target: "/empty", ReadOnly: false},
 			setup: func(t *testing.T) (string, types.Mount) {
 				mountDir := t.TempDir()
@@ -2900,7 +2908,7 @@ func TestHandleBindMount_EdgeCases(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "deep_nested_target",
+			name:  "deep_nested_target",
 			mount: types.Mount{Source: "", Target: "/deep/nested/path/to/target", ReadOnly: false},
 			setup: func(t *testing.T) (string, types.Mount) {
 				mountDir := t.TempDir()
@@ -2996,7 +3004,7 @@ func TestInjectTini_AllBranches(t *testing.T) {
 
 	// Create a minimal init injector
 	ii := NewInitInjector(&InitSystemConfig{
-		Type:          InitSystemTini,
+		Type:           InitSystemTini,
 		GracePeriodSec: 5,
 	})
 
@@ -3015,7 +3023,7 @@ func TestInjectDumbInit_AllBranches(t *testing.T) {
 	require.NoError(t, err)
 
 	ii := NewInitInjector(&InitSystemConfig{
-		Type:          InitSystemDumbInit,
+		Type:           InitSystemDumbInit,
 		GracePeriodSec: 5,
 	})
 
@@ -3027,23 +3035,27 @@ func TestInjectDumbInit_AllBranches(t *testing.T) {
 // TestMountRootfs_AllBranches tests mount paths
 func TestMountRootfs_AllBranches(t *testing.T) {
 	tests := []struct {
-		name      string
-		imagePath string
+		name          string
+		imagePath     string
 		checkMountDir bool
 	}{
 		{
-			name:      "empty_path",
-			imagePath: "",
+			name:          "empty_path",
+			imagePath:     "",
 			checkMountDir: true, // Creates temp mount dir
 		},
 		{
-			name:      "nonexistent",
-			imagePath: filepath.Join(t.TempDir(), "nonexistent.ext4"),
+			name:          "nonexistent",
+			imagePath:     filepath.Join(t.TempDir(), "nonexistent.ext4"),
 			checkMountDir: true, // Creates temp mount dir
 		},
 		{
-			name:      "valid_file_no_mount",
-			imagePath: func() string { p := filepath.Join(t.TempDir(), "valid.ext4"); os.WriteFile(p, []byte("data"), 0644); return p }(),
+			name: "valid_file_no_mount",
+			imagePath: func() string {
+				p := filepath.Join(t.TempDir(), "valid.ext4")
+				os.WriteFile(p, []byte("data"), 0644)
+				return p
+			}(),
 			checkMountDir: true,
 		},
 	}
@@ -3066,9 +3078,9 @@ func TestMountRootfs_AllBranches(t *testing.T) {
 // TestCreateMinimalInit_AllBranches tests init creation paths
 func TestCreateMinimalInit_AllBranches(t *testing.T) {
 	tests := []struct {
-		name       string
-		initSystem string
-		mountDir   string
+		name        string
+		initSystem  string
+		mountDir    string
 		gracePeriod int
 		checkResult bool
 	}{

@@ -95,9 +95,9 @@ func TestConsulClient_WatchPeers_ErrorHandling(t *testing.T) {
 	t.Cleanup(func() { server.Close() })
 
 	cfg := discovery.ConsulConfig{
-		Address:       server.URL,
-		ServiceID:     "watch-error-node",
-		LocalIP:       "192.168.1.10",
+		Address:   server.URL,
+		ServiceID: "watch-error-node",
+		LocalIP:   "192.168.1.10",
 	}
 
 	client, err := discovery.NewConsulClient(cfg)
@@ -146,9 +146,9 @@ func TestConsulClient_WatchPeers_NoPeers(t *testing.T) {
 	t.Cleanup(func() { server.Close() })
 
 	cfg := discovery.ConsulConfig{
-		Address:       server.URL,
-		ServiceID:     "no-peers-node",
-		LocalIP:       "192.168.1.10",
+		Address:   server.URL,
+		ServiceID: "no-peers-node",
+		LocalIP:   "192.168.1.10",
 	}
 
 	client, err := discovery.NewConsulClient(cfg)

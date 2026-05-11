@@ -230,7 +230,7 @@ func TestResourcesConstruction(t *testing.T) {
 		want      Resources
 	}{
 		{
-			name: "zero value",
+			name:      "zero value",
 			resources: Resources{},
 			want: Resources{
 				NanoCPUs:    0,
@@ -240,7 +240,7 @@ func TestResourcesConstruction(t *testing.T) {
 		{
 			name: "with CPU and memory",
 			resources: Resources{
-				NanoCPUs:    1000000000, // 1 CPU
+				NanoCPUs:    1000000000,        // 1 CPU
 				MemoryBytes: 512 * 1024 * 1024, // 512 MB
 			},
 			want: Resources{
@@ -287,9 +287,9 @@ func TestResourcesConstruction(t *testing.T) {
 // TestResourceRequirementsConstruction tests ResourceRequirements with nil pointers
 func TestResourceRequirementsConstruction(t *testing.T) {
 	tests := []struct {
-		name   string
-		req    ResourceRequirements
-		check  func(*testing.T, ResourceRequirements)
+		name  string
+		req   ResourceRequirements
+		check func(*testing.T, ResourceRequirements)
 	}{
 		{
 			name: "zero value - both nil",
@@ -400,7 +400,7 @@ func TestRestartPolicyConstruction(t *testing.T) {
 		want   RestartPolicy
 	}{
 		{
-			name: "zero value",
+			name:   "zero value",
 			policy: RestartPolicy{},
 			want: RestartPolicy{
 				Condition:   0, // RestartPolicyAny
@@ -462,7 +462,7 @@ func TestPlacementConstruction(t *testing.T) {
 		check     func(*testing.T, Placement)
 	}{
 		{
-			name: "zero value - nil slice",
+			name:      "zero value - nil slice",
 			placement: Placement{},
 			check: func(t *testing.T, p Placement) {
 				if p.Constraints != nil {
@@ -629,7 +629,7 @@ func TestTaskStatusConstruction(t *testing.T) {
 		check  func(*testing.T, TaskStatus)
 	}{
 		{
-			name: "zero value",
+			name:   "zero value",
 			status: TaskStatus{},
 			check: func(t *testing.T, s TaskStatus) {
 				if s.State != TaskStateNew {
@@ -706,9 +706,9 @@ func TestTaskSpecConstruction(t *testing.T) {
 	}
 
 	tests := []struct {
-		name   string
-		spec   TaskSpec
-		check  func(*testing.T, TaskSpec)
+		name  string
+		spec  TaskSpec
+		check func(*testing.T, TaskSpec)
 	}{
 		{
 			name: "zero value",
@@ -760,9 +760,9 @@ func TestTaskSpecConstruction(t *testing.T) {
 // TestTaskConstruction tests Task struct with nil slices
 func TestTaskConstruction(t *testing.T) {
 	tests := []struct {
-		name   string
-		task   Task
-		check  func(*testing.T, Task)
+		name  string
+		task  Task
+		check func(*testing.T, Task)
 	}{
 		{
 			name: "zero value",
@@ -878,7 +878,7 @@ func TestNetworkAttachmentConstruction(t *testing.T) {
 		check  func(*testing.T, NetworkAttachment)
 	}{
 		{
-			name: "zero value",
+			name:   "zero value",
 			attach: NetworkAttachment{},
 			check: func(t *testing.T, n NetworkAttachment) {
 				if n.Network.ID != "" {
@@ -936,9 +936,9 @@ func TestNetworkAttachmentConstruction(t *testing.T) {
 // TestNetworkSpecConstruction tests NetworkSpec struct with nil DriverConfig
 func TestNetworkSpecConstruction(t *testing.T) {
 	tests := []struct {
-		name   string
-		spec   NetworkSpec
-		check  func(*testing.T, NetworkSpec)
+		name  string
+		spec  NetworkSpec
+		check func(*testing.T, NetworkSpec)
 	}{
 		{
 			name: "zero value",
@@ -1121,24 +1121,24 @@ func TestNetworkConfigYAMLTags(t *testing.T) {
 	tests := []struct {
 		name      string
 		config    NetworkConfig
-		wantJSON  string // Expected key names from YAML tags (note: json.Marshal uses YAML tags as fallback in some cases, but we'll verify struct can be marshaled)
+		wantJSON  string          // Expected key names from YAML tags (note: json.Marshal uses YAML tags as fallback in some cases, but we'll verify struct can be marshaled)
 		checkKeys map[string]bool // Keys that should exist in JSON
 	}{
 		{
-			name: "zero value",
+			name:   "zero value",
 			config: NetworkConfig{},
 			checkKeys: map[string]bool{
-				"bridge_name":        false,
-				"enable_rate_limit":  false,
+				"bridge_name":         false,
+				"enable_rate_limit":   false,
 				"max_packets_per_sec": false,
-				"subnet":             false,
-				"bridge_ip":          false,
-				"ip_mode":            false,
-				"nat_enabled":        false,
-				"vxlan_enabled":      false,
-				"vxlan_id":           false,
-				"vxlan_tunnel_ip":    false,
-				"vxlan_peers":        false,
+				"subnet":              false,
+				"bridge_ip":           false,
+				"ip_mode":             false,
+				"nat_enabled":         false,
+				"vxlan_enabled":       false,
+				"vxlan_id":            false,
+				"vxlan_tunnel_ip":     false,
+				"vxlan_peers":         false,
 			},
 		},
 		{
@@ -1157,17 +1157,17 @@ func TestNetworkConfigYAMLTags(t *testing.T) {
 				VXLANPeers:       []string{"192.168.56.12", "192.168.56.13"},
 			},
 			checkKeys: map[string]bool{
-				"bridge_name":        false,
-				"enable_rate_limit":  false,
+				"bridge_name":         false,
+				"enable_rate_limit":   false,
 				"max_packets_per_sec": false,
-				"subnet":             false,
-				"bridge_ip":          false,
-				"ip_mode":            false,
-				"nat_enabled":        false,
-				"vxlan_enabled":      false,
-				"vxlan_id":           false,
-				"vxlan_tunnel_ip":    false,
-				"vxlan_peers":        false,
+				"subnet":              false,
+				"bridge_ip":           false,
+				"ip_mode":             false,
+				"nat_enabled":         false,
+				"vxlan_enabled":       false,
+				"vxlan_id":            false,
+				"vxlan_tunnel_ip":     false,
+				"vxlan_peers":         false,
 			},
 		},
 		{
@@ -1299,11 +1299,11 @@ func TestNetworkConfigEdgeCases(t *testing.T) {
 		{
 			name: "empty strings",
 			config: NetworkConfig{
-				BridgeName:     "",
-				Subnet:         "",
-				BridgeIP:       "",
-				IPMode:         "",
-				VXLANTunnelIP:  "",
+				BridgeName:    "",
+				Subnet:        "",
+				BridgeIP:      "",
+				IPMode:        "",
+				VXLANTunnelIP: "",
 			},
 			check: func(t *testing.T, c NetworkConfig) {
 				if c.BridgeName != "" {

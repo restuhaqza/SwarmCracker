@@ -289,11 +289,11 @@ func runAgent(ctx *cli.Context) error {
 		FirecrackerPath: "firecracker",
 		KernelPath:      ctx.String("kernel-path"),
 		RootfsDir:       ctx.String("rootfs-dir"),
-		Hostname:       hostname,
-		JoinAddr:       ctx.String("join-addr"),
-		AdvertiseAddr:  ctx.String("advertise-remote-api"), // For managers, use advertise address
-		ConsulEnabled:  ctx.Bool("consul-enabled"),
-		ConsulAddress:  ctx.String("consul-address"),
+		Hostname:        hostname,
+		JoinAddr:        ctx.String("join-addr"),
+		AdvertiseAddr:   ctx.String("advertise-remote-api"), // For managers, use advertise address
+		ConsulEnabled:   ctx.Bool("consul-enabled"),
+		ConsulAddress:   ctx.String("consul-address"),
 		SocketDir:       ctx.String("socket-dir"),
 		DefaultVCPUs:    ctx.Int("default-vcpus"),
 		DefaultMemoryMB: ctx.Int("default-memory"),
@@ -305,8 +305,8 @@ func runAgent(ctx *cli.Context) error {
 		VXLANEnabled:    ctx.Bool("vxlan-enabled"),
 		VXLANPeers:      parseCommaSeparated(ctx.String("vxlan-peers")),
 		// Consul service discovery
-		Debug:           ctx.Bool("debug"),
-		StateDir:        stateDir,
+		Debug:    ctx.Bool("debug"),
+		StateDir: stateDir,
 		// Jailer configuration
 		EnableJailer:    ctx.Bool("enable-jailer"),
 		JailerPath:      ctx.String("jailer-path"),
@@ -398,8 +398,8 @@ func runAgent(ctx *cli.Context) error {
 		ListenControlAPI:   ctx.String("listen-control-api"),
 		AdvertiseRemoteAPI: ctx.String("advertise-remote-api"),
 		Executor:           fcExecutor,
-		NetworkProvider:    networkProvider,    // ← CNI Provider
-		NetworkConfig:      networkConfig,      // ← Network config
+		NetworkProvider:    networkProvider, // ← CNI Provider
+		NetworkConfig:      networkConfig,   // ← Network config
 		ForceNewCluster:    ctx.Bool("force-new-cluster"),
 		HeartbeatTick:      uint32(ctx.Int("heartbeat-tick")),
 		ElectionTick:       uint32(ctx.Int("election-tick")),
@@ -651,7 +651,7 @@ func printJoinTokens(ctx context.Context, stateDir string) {
 		log.G(ctx).Infof("========================================")
 		log.G(ctx).Infof("CLUSTER JOIN TOKENS")
 		log.G(ctx).Infof("========================================")
-		log.G(ctx).Debugf("Worker token: %s", workerToken)  // DEBUG level to avoid exposing token in logs
+		log.G(ctx).Debugf("Worker token: %s", workerToken)   // DEBUG level to avoid exposing token in logs
 		log.G(ctx).Debugf("Manager token: %s", managerToken) // DEBUG level to avoid exposing token in logs
 		log.G(ctx).Infof("========================================")
 

@@ -135,7 +135,7 @@ func TestExtractTarStream(t *testing.T) {
 		}
 
 		link := filepath.Join(dest, "link.txt")
-	fi, err := os.Lstat(link)
+		fi, err := os.Lstat(link)
 		if err != nil {
 			t.Fatalf("symlink not created: %v", err)
 		}

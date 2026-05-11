@@ -54,8 +54,8 @@ func TestPrepareNetwork_NilNetworks(t *testing.T) {
 	// This is a conceptual test - the actual function needs root
 	// We test that the logic handles nil gracefully
 	task := &types.Task{
-		ID:        "test-nil-networks",
-		Networks:  nil,
+		ID:       "test-nil-networks",
+		Networks: nil,
 	}
 
 	// Verify nil networks is handled
@@ -65,8 +65,8 @@ func TestPrepareNetwork_NilNetworks(t *testing.T) {
 // TestPrepareNetwork_EmptyNetworks tests handling of empty network list
 func TestPrepareNetwork_EmptyNetworks(t *testing.T) {
 	task := &types.Task{
-		ID:        "test-empty-networks",
-		Networks:  []types.NetworkAttachment{},
+		ID:       "test-empty-networks",
+		Networks: []types.NetworkAttachment{},
 	}
 
 	// Verify empty networks slice

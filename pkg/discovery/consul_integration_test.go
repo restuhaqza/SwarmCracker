@@ -194,25 +194,25 @@ func TestConsulClient_GetNodes(t *testing.T) {
 	// Mock catalog response with multiple nodes
 	catalogResponse := []*api.CatalogService{
 		{
-			ID:              "node-1",
-			ServiceID:       "worker-1",
-			ServiceAddress:  "192.168.1.10",
-			Address:         "192.168.1.10",
-			ServiceMeta:     map[string]string{"hostname": "worker1"},
+			ID:             "node-1",
+			ServiceID:      "worker-1",
+			ServiceAddress: "192.168.1.10",
+			Address:        "192.168.1.10",
+			ServiceMeta:    map[string]string{"hostname": "worker1"},
 		},
 		{
-			ID:              "node-2",
-			ServiceID:       "worker-2",
-			ServiceAddress:  "192.168.1.11",
-			Address:         "192.168.1.11",
-			ServiceMeta:     map[string]string{"hostname": "worker2"},
+			ID:             "node-2",
+			ServiceID:      "worker-2",
+			ServiceAddress: "192.168.1.11",
+			Address:        "192.168.1.11",
+			ServiceMeta:    map[string]string{"hostname": "worker2"},
 		},
 		{
-			ID:              "node-3",
-			ServiceID:       "test-node", // Our own node - should be skipped
-			ServiceAddress:  "192.168.1.12",
-			Address:         "192.168.1.12",
-			ServiceMeta:     map[string]string{"hostname": "test-node"},
+			ID:             "node-3",
+			ServiceID:      "test-node", // Our own node - should be skipped
+			ServiceAddress: "192.168.1.12",
+			Address:        "192.168.1.12",
+			ServiceMeta:    map[string]string{"hostname": "test-node"},
 		},
 	}
 
@@ -266,9 +266,9 @@ func TestConsulClient_GetNodes_Empty(t *testing.T) {
 	})
 
 	cfg := discovery.ConsulConfig{
-		Address:       server.URL,
-		ServiceID:     "test-node",
-		LocalIP:       "192.168.1.10",
+		Address:   server.URL,
+		ServiceID: "test-node",
+		LocalIP:   "192.168.1.10",
 	}
 
 	client, err := discovery.NewConsulClient(cfg)
@@ -321,9 +321,9 @@ func TestConsulClient_WatchPeers(t *testing.T) {
 	})
 
 	cfg := discovery.ConsulConfig{
-		Address:       server.URL,
-		ServiceID:     "manager-node",
-		LocalIP:       "192.168.1.1",
+		Address:   server.URL,
+		ServiceID: "manager-node",
+		LocalIP:   "192.168.1.1",
 	}
 
 	client, err := discovery.NewConsulClient(cfg)
@@ -385,9 +385,9 @@ func TestConsulClient_Close(t *testing.T) {
 	})
 
 	cfg := discovery.ConsulConfig{
-		Address:       server.URL,
-		ServiceID:     "test-node",
-		LocalIP:       "192.168.1.10",
+		Address:   server.URL,
+		ServiceID: "test-node",
+		LocalIP:   "192.168.1.10",
 	}
 
 	client, err := discovery.NewConsulClient(cfg)
@@ -426,9 +426,9 @@ func TestConsulClient_ErrorHandling(t *testing.T) {
 		})
 
 		cfg := discovery.ConsulConfig{
-			Address:       server.URL,
-			ServiceID:     "test-node",
-			LocalIP:       "192.168.1.10",
+			Address:   server.URL,
+			ServiceID: "test-node",
+			LocalIP:   "192.168.1.10",
 		}
 
 		client, err := discovery.NewConsulClient(cfg)
@@ -451,9 +451,9 @@ func TestConsulClient_ErrorHandling(t *testing.T) {
 		})
 
 		cfg := discovery.ConsulConfig{
-			Address:       server.URL,
-			ServiceID:     "test-node",
-			LocalIP:       "192.168.1.10",
+			Address:   server.URL,
+			ServiceID: "test-node",
+			LocalIP:   "192.168.1.10",
 		}
 
 		client, err := discovery.NewConsulClient(cfg)

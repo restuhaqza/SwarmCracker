@@ -13,6 +13,7 @@ func VerifyBootable(rootfsPath string) error {
 	// Check debugfs availability
 	if _, err := exec.LookPath("debugfs"); err != nil {
 		log.Debug().Msg("debugfs not available, skipping bootable verification")
+		//nolint:nilerr
 		return nil
 	}
 

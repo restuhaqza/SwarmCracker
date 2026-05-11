@@ -1222,12 +1222,12 @@ func TestQuotaEnforcer_EnforceDirLimit_V2(t *testing.T) {
 // TestVolumeMeta_Getters tests volumeMeta helper methods
 func TestVolumeMeta_Getters_V2(t *testing.T) {
 	m := &volumeMeta{
-		Name:      "test-vol",
-		Type:      VolumeTypeDir,
-		SizeMB:    100,
-		CreatedAt: nowUTC(),
+		Name:       "test-vol",
+		Type:       VolumeTypeDir,
+		SizeMB:     100,
+		CreatedAt:  nowUTC(),
 		LastUsedAt: nowUTC(),
-		TaskID:    "task-123",
+		TaskID:     "task-123",
 	}
 
 	assert.Equal(t, "test-vol", m.Name)

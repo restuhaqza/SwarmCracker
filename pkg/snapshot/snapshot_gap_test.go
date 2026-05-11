@@ -533,7 +533,7 @@ func TestSaveMetadata_JSONError(t *testing.T) {
 
 	// Create info with valid data
 	info := &SnapshotInfo{
-		ID:     "test",
+		ID: "test",
 		Metadata: map[string]string{
 			"key": "value",
 		},
@@ -1103,38 +1103,38 @@ func TestGenerateSnapshotID_Format(t *testing.T) {
 // TestLoadMetadata_PathResolution tests path resolution in various scenarios.
 func TestLoadMetadata_PathResolution(t *testing.T) {
 	tests := []struct {
-		name             string
-		memoryPath       string
-		statePath        string
-		expectedMemPath  string
+		name              string
+		memoryPath        string
+		statePath         string
+		expectedMemPath   string
 		expectedStatePath string
 	}{
 		{
-			name:             "both relative",
-			memoryPath:       "vm.mem",
-			statePath:        "vm.state",
-			expectedMemPath:  "/snap-dir/vm.mem",
+			name:              "both relative",
+			memoryPath:        "vm.mem",
+			statePath:         "vm.state",
+			expectedMemPath:   "/snap-dir/vm.mem",
 			expectedStatePath: "/snap-dir/vm.state",
 		},
 		{
-			name:             "both absolute",
-			memoryPath:       "/absolute/path/vm.mem",
-			statePath:        "/absolute/path/vm.state",
-			expectedMemPath:  "/absolute/path/vm.mem",
+			name:              "both absolute",
+			memoryPath:        "/absolute/path/vm.mem",
+			statePath:         "/absolute/path/vm.state",
+			expectedMemPath:   "/absolute/path/vm.mem",
 			expectedStatePath: "/absolute/path/vm.state",
 		},
 		{
-			name:             "mixed relative memory, absolute state",
-			memoryPath:       "vm.mem",
-			statePath:        "/absolute/path/vm.state",
-			expectedMemPath:  "/snap-dir/vm.mem",
+			name:              "mixed relative memory, absolute state",
+			memoryPath:        "vm.mem",
+			statePath:         "/absolute/path/vm.state",
+			expectedMemPath:   "/snap-dir/vm.mem",
 			expectedStatePath: "/absolute/path/vm.state",
 		},
 		{
-			name:             "mixed absolute memory, relative state",
-			memoryPath:       "/absolute/path/vm.mem",
-			statePath:        "vm.state",
-			expectedMemPath:  "/absolute/path/vm.mem",
+			name:              "mixed absolute memory, relative state",
+			memoryPath:        "/absolute/path/vm.mem",
+			statePath:         "vm.state",
+			expectedMemPath:   "/absolute/path/vm.mem",
 			expectedStatePath: "/snap-dir/vm.state",
 		},
 	}
@@ -1191,10 +1191,10 @@ func TestCreateSnapshot_IDUniqueness(t *testing.T) {
 // TestCreateSnapshot_AllValidationErrors tests various validation error paths.
 func TestCreateSnapshot_AllValidationErrors(t *testing.T) {
 	tests := []struct {
-		name       string
-		taskID     string
-		socketPath string
-		wantErr    bool
+		name        string
+		taskID      string
+		socketPath  string
+		wantErr     bool
 		errContains string
 	}{
 		{
@@ -1204,17 +1204,17 @@ func TestCreateSnapshot_AllValidationErrors(t *testing.T) {
 			wantErr:    false, // No validation on empty taskID
 		},
 		{
-			name:       "empty socket path",
-			taskID:     "task-1",
-			socketPath: "",
-			wantErr:    true,
+			name:        "empty socket path",
+			taskID:      "task-1",
+			socketPath:  "",
+			wantErr:     true,
 			errContains: "socket path is required",
 		},
 		{
-			name:       "non-existent socket",
-			taskID:     "task-1",
-			socketPath: "/nonexistent/test.sock",
-			wantErr:    true,
+			name:        "non-existent socket",
+			taskID:      "task-1",
+			socketPath:  "/nonexistent/test.sock",
+			wantErr:     true,
 			errContains: "socket not found",
 		},
 	}

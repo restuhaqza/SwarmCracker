@@ -47,11 +47,11 @@ func TestController_Prepare(t *testing.T) {
 
 	t.Run("prepare already prepared", func(t *testing.T) {
 		ctrl := &Controller{
-			task:      &api.Task{ID: "task-prepare-2"},
-			config:    &Config{},
-			mu:        sync.Mutex{},
-			prepared:  true,
-			started:   false,
+			task:     &api.Task{ID: "task-prepare-2"},
+			config:   &Config{},
+			mu:       sync.Mutex{},
+			prepared: true,
+			started:  false,
 		}
 
 		ctx := context.Background()
@@ -147,11 +147,11 @@ func TestController_Start(t *testing.T) {
 
 	t.Run("start without internal task fails", func(t *testing.T) {
 		ctrl := &Controller{
-			task:        &api.Task{ID: "task-start-3"},
-			config:      &Config{},
-			mu:          sync.Mutex{},
-			prepared:    true,
-			started:     false,
+			task:         &api.Task{ID: "task-start-3"},
+			config:       &Config{},
+			mu:           sync.Mutex{},
+			prepared:     true,
+			started:      false,
 			internalTask: nil,
 		}
 
@@ -166,10 +166,10 @@ func TestController_Start(t *testing.T) {
 func TestController_Shutdown(t *testing.T) {
 	t.Run("shutdown not started returns nil", func(t *testing.T) {
 		ctrl := &Controller{
-			task:     &api.Task{ID: "task-shutdown-1"},
-			config:   &Config{},
-			mu:       sync.Mutex{},
-			started:  false,
+			task:    &api.Task{ID: "task-shutdown-1"},
+			config:  &Config{},
+			mu:      sync.Mutex{},
+			started: false,
 		}
 
 		ctx := context.Background()
@@ -220,10 +220,10 @@ func TestController_Shutdown(t *testing.T) {
 func TestController_Terminate(t *testing.T) {
 	t.Run("terminate not started returns nil", func(t *testing.T) {
 		ctrl := &Controller{
-			task:     &api.Task{ID: "task-term-1"},
-			config:   &Config{},
-			mu:       sync.Mutex{},
-			started:  false,
+			task:    &api.Task{ID: "task-term-1"},
+			config:  &Config{},
+			mu:      sync.Mutex{},
+			started: false,
 		}
 
 		ctx := context.Background()
@@ -272,10 +272,10 @@ func TestController_Wait(t *testing.T) {
 		mockVMMMgr := &mockVMMManagerSuccess{}
 
 		ctrl := &Controller{
-			task:    &api.Task{ID: "task-wait-1"},
-			config:  &Config{},
-			vmmMgr:  mockVMMMgr,
-			mu:      sync.Mutex{},
+			task:   &api.Task{ID: "task-wait-1"},
+			config: &Config{},
+			vmmMgr: mockVMMMgr,
+			mu:     sync.Mutex{},
 		}
 
 		ctx := context.Background()
@@ -292,10 +292,10 @@ func TestController_Wait(t *testing.T) {
 		}
 
 		ctrl := &Controller{
-			task:    &api.Task{ID: "task-wait-2"},
-			config:  &Config{},
-			vmmMgr:  mockVMMMgr,
-			mu:      sync.Mutex{},
+			task:   &api.Task{ID: "task-wait-2"},
+			config: &Config{},
+			vmmMgr: mockVMMMgr,
+			mu:     sync.Mutex{},
 		}
 
 		ctx := context.Background()
@@ -441,7 +441,7 @@ func TestController_ConvertTask(t *testing.T) {
 	t.Run("convert with nil networks", func(t *testing.T) {
 		ctrl := &Controller{
 			task: &api.Task{
-				ID:        "task-convert-3",
+				ID: "task-convert-3",
 				Spec: api.TaskSpec{
 					Runtime: &api.TaskSpec_Container{
 						Container: &api.ContainerSpec{Image: "nginx"},

@@ -230,7 +230,7 @@ func TestExecutor_CleanupOrphanedVMs(t *testing.T) {
 		}
 
 		e := &Executor{
-			config:      &Config{},
+			config: &Config{},
 			controllers: map[string]*Controller{
 				"task-1": &Controller{task: &api.Task{ID: "task-1"}},
 				"task-2": &Controller{task: &api.Task{ID: "task-2"}},
@@ -320,9 +320,9 @@ func TestExecutor_CleanupOrphanedVMs(t *testing.T) {
 // TestExecutor_CleanupOrphanedVMs_Concurrent tests concurrent safety
 func TestExecutor_CleanupOrphanedVMs_Concurrent(t *testing.T) {
 	mockVMM := &mockVMMProcessTracker{
-		processes: make(map[string]*exec.Cmd),
+		processes:    make(map[string]*exec.Cmd),
 		removedTasks: make([]string, 0),
-		mu: sync.Mutex{},
+		mu:           sync.Mutex{},
 	}
 
 	// Add some processes

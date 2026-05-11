@@ -12,7 +12,7 @@ import (
 
 // resetConfig holds the configuration for full reset
 type resetConfig struct {
-	Hard      bool
+	Hard       bool
 	KeepConfig bool
 	KeepRootfs bool
 	StateDir   string
@@ -185,7 +185,8 @@ func removeAllTapDevices() error {
 	cmd := exec.Command("ip", "link", "show", "type", "tap")
 	output, err := cmd.Output()
 	if err != nil {
-		return nil // No TAP devices
+		return nil //nolint:nilerr
+		// No TAP devices
 	}
 
 	taps := parseTapDevices(string(output))
@@ -204,7 +205,8 @@ func removeBridge(cfg *resetConfig) error {
 	// Check if exists
 	cmd := exec.Command("ip", "link", "show", cfg.BridgeName)
 	if err := cmd.Run(); err != nil {
-		return nil // Doesn't exist
+		return nil //nolint:nilerr
+		// Doesn't exist
 	}
 
 	exec.Command("ip", "link", "delete", cfg.BridgeName).Run()

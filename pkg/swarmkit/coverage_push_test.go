@@ -181,7 +181,7 @@ func TestCleanupOrphanedVMs_Push_OrphanedProcess(t *testing.T) {
 		config:      &Config{SocketDir: tmpDir},
 		controllers: make(map[string]*Controller),
 		vmmMgr: &MockVMMManager{
-			processes: processes,
+			processes:               processes,
 			GetRunningProcessesFunc: func() map[string]*exec.Cmd { return processes },
 		},
 		executorMu: sync.RWMutex{},
@@ -203,7 +203,7 @@ func TestCleanupOrphanedVMs_Push_SigkillFallback(t *testing.T) {
 		config:      &Config{SocketDir: tmpDir},
 		controllers: make(map[string]*Controller),
 		vmmMgr: &MockVMMManager{
-			processes: processes,
+			processes:               processes,
 			GetRunningProcessesFunc: func() map[string]*exec.Cmd { return processes },
 		},
 		executorMu: sync.RWMutex{},
@@ -535,8 +535,8 @@ func TestRemove_Push_PreparedFalse(t *testing.T) {
 // TestRemove_Push_VMMRemoveError tests Remove with VMM error
 func TestRemove_Push_VMMRemoveError(t *testing.T) {
 	ctrl := &Controller{
-		task:       &api.Task{ID: "vmm-remove-error-push"},
-		config:     &Config{},
+		task:   &api.Task{ID: "vmm-remove-error-push"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			RemoveFunc: func(ctx context.Context, task *types.Task) error {
 				return errors.New("vmm remove error")
@@ -555,9 +555,9 @@ func TestRemove_Push_VMMRemoveError(t *testing.T) {
 // TestRemove_Push_NetworkCleanupError tests Remove with network cleanup error
 func TestRemove_Push_NetworkCleanupError(t *testing.T) {
 	ctrl := &Controller{
-		task:       &api.Task{ID: "network-cleanup-error-push"},
-		config:     &Config{},
-		vmmMgr:     &MockVMMManager{},
+		task:   &api.Task{ID: "network-cleanup-error-push"},
+		config: &Config{},
+		vmmMgr: &MockVMMManager{},
 		networkMgr: &MockNetworkManager{
 			CleanupNetworkFunc: func(ctx context.Context, task *types.Task) error {
 				return errors.New("network cleanup error")
@@ -1081,11 +1081,11 @@ func TestConvertTask_Push_WithSpec(t *testing.T) {
 // TestStart_Push_NotPrepared tests Start when not prepared
 func TestStart_Push_NotPrepared(t *testing.T) {
 	ctrl := &Controller{
-		task:      &api.Task{ID: "start-not-prepared-push"},
-		config:    &Config{},
-		mu:        sync.Mutex{},
-		prepared:  false,
-		logger:    zerolog.Nop(),
+		task:     &api.Task{ID: "start-not-prepared-push"},
+		config:   &Config{},
+		mu:       sync.Mutex{},
+		prepared: false,
+		logger:   zerolog.Nop(),
 	}
 
 	err := ctrl.Start(context.Background())

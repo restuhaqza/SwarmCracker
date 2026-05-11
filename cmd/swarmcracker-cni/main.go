@@ -4,10 +4,11 @@
 // to create TAP devices for Firecracker microVMs attached to SwarmKit networks.
 //
 // Commands:
-//   ADD  - Create TAP device and connect to bridge
-//   DEL  - Remove TAP device
-//   CHECK - Verify TAP device exists
-//   VERSION - Return plugin version
+//
+//	ADD  - Create TAP device and connect to bridge
+//	DEL  - Remove TAP device
+//	CHECK - Verify TAP device exists
+//	VERSION - Return plugin version
 package main
 
 import (

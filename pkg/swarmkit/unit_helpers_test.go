@@ -140,7 +140,7 @@ func TestVMMManagerConfig_ResourceLimits_Unit(t *testing.T) {
 	// ResourceLimits has CPUQuotaUs, not MaxCPUs
 	cfg := &VMMManagerConfig{
 		ResourceLimits: jailer.ResourceLimits{
-			CPUQuotaUs: 500000, // 0.5 CPU
+			CPUQuotaUs: 500000,             // 0.5 CPU
 			MemoryMax:  1024 * 1024 * 1024, // 1GB
 		},
 	}

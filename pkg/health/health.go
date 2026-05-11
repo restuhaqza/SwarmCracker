@@ -17,7 +17,7 @@ type HealthStatus struct {
 
 // CheckResult represents the result of a single health check.
 type CheckResult struct {
-	Status  string `json:"status"`  // "ok" or "error"
+	Status  string `json:"status"` // "ok" or "error"
 	Message string `json:"message"`
 }
 

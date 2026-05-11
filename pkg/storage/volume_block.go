@@ -379,7 +379,8 @@ func (d *BlockDriver) ensureUnmounted(name string) error {
 	// Check if mount point is active
 	output, err := execCommandBlock("mountpoint", "-q", mnt).CombinedOutput()
 	if err != nil {
-		return nil // not mounted
+		return nil //nolint:nilerr
+		// not mounted
 	}
 	_ = output
 	if output, err := execCommandBlock("umount", mnt).CombinedOutput(); err != nil {

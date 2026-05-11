@@ -13,11 +13,11 @@ import (
 // TestInitInjector_Inject_ErrorPaths tests error paths in Inject
 func TestInitInjector_Inject_ErrorPaths(t *testing.T) {
 	tests := []struct {
-		name        string
+		name          string
 		setupInjector func(*testing.T) *InitInjector
-		setupRootfs  func(*testing.T) string
-		wantErr      bool
-		errContains  string
+		setupRootfs   func(*testing.T) string
+		wantErr       bool
+		errContains   string
 	}{
 		{
 			name: "inject_tini_invalid_rootfs",
@@ -194,10 +194,10 @@ func TestInitInjector_GetInitPath(t *testing.T) {
 // TestInitInjector_GetInitArgs tests GetInitArgs for different types
 func TestInitInjector_GetInitArgs(t *testing.T) {
 	tests := []struct {
-		name        string
-		config      *InitSystemConfig
+		name          string
+		config        *InitSystemConfig
 		containerArgs []string
-		expected    []string
+		expected      []string
 	}{
 		{
 			name: "tini_args",

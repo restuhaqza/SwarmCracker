@@ -1,3 +1,4 @@
+//go:build integration
 // +build integration
 
 package security
@@ -100,9 +101,9 @@ func TestSecureFilePermissions_RootMultiplePaths(t *testing.T) {
 
 	// Create multiple test files with different initial permissions
 	testCases := []struct {
-		name     string
-		content  string
-		perm     os.FileMode
+		name    string
+		content string
+		perm    os.FileMode
 	}{
 		{"file1.txt", "content1", 0644},
 		{"file2.txt", "content2", 0666},

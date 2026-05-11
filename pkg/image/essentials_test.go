@@ -171,17 +171,17 @@ func TestInjectEssentialFiles_Directories(t *testing.T) {
 
 	// Verify essential directories exist
 	dirs := []struct {
-		path        string
-		wantPerms   os.FileMode // permission bits (without directory type)
-		wantSticky  bool
+		path       string
+		wantPerms  os.FileMode // permission bits (without directory type)
+		wantSticky bool
 	}{
-		{"/tmp", 0777, true},      // sticky + 777
+		{"/tmp", 0777, true}, // sticky + 777
 		{"/run", 0755, false},
 		{"/var/run", 0755, false},
 		{"/var/log", 0755, false},
-		{"/var/tmp", 0777, true},  // sticky + 777
+		{"/var/tmp", 0777, true}, // sticky + 777
 		{"/var/cache", 0755, false},
-		{"/root", 0700, false},     // private
+		{"/root", 0700, false}, // private
 	}
 
 	for _, d := range dirs {

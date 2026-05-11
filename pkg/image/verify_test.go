@@ -85,11 +85,11 @@ func TestVerifyBootable_CreatedRootfs(t *testing.T) {
 
 	// Create required files
 	requiredFiles := map[string]string{
-		"init/init":         "#!/bin/sh\necho init",
-		"sbin/init":         "#!/bin/sh\necho sbin-init",
-		"sbin/tini":         "#!/bin/sh\necho tini",
-		"bin/sh":            "#!/bin/sh\necho sh",
-		"etc/resolv.conf":    "nameserver 8.8.8.8",
+		"init/init":       "#!/bin/sh\necho init",
+		"sbin/init":       "#!/bin/sh\necho sbin-init",
+		"sbin/tini":       "#!/bin/sh\necho tini",
+		"bin/sh":          "#!/bin/sh\necho sh",
+		"etc/resolv.conf": "nameserver 8.8.8.8",
 	}
 
 	for relPath, content := range requiredFiles {

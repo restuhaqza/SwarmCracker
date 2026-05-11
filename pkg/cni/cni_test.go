@@ -248,8 +248,8 @@ func TestCNIProvider_ValidateNetworkDriver(t *testing.T) {
 	provider := &CNIProvider{}
 
 	tests := []struct {
-		driver   string
-		wantErr  bool
+		driver  string
+		wantErr bool
 	}{
 		{driver: "bridge", wantErr: false},
 		{driver: "vxlan", wantErr: false},
@@ -276,8 +276,8 @@ func TestCNIProvider_ValidateIPAMDriver(t *testing.T) {
 	provider := &CNIProvider{}
 
 	tests := []struct {
-		driver   string
-		wantErr  bool
+		driver  string
+		wantErr bool
 	}{
 		{driver: "host-local", wantErr: false},
 		{driver: "", wantErr: false},
@@ -322,7 +322,7 @@ func TestCNINetworkAllocator_AllocateNetwork(t *testing.T) {
 	network := &api.Network{
 		ID: "test-net-1",
 		Spec: api.NetworkSpec{
-			Annotations: api.Annotations{Name: "test-network"},
+			Annotations:  api.Annotations{Name: "test-network"},
 			DriverConfig: &api.Driver{Name: "bridge"},
 		},
 	}

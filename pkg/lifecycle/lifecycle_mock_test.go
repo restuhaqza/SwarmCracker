@@ -36,7 +36,7 @@ func TestVMMManagerInternal_StartSuccess(t *testing.T) {
 	vmMgr := NewVMMManagerWithExecutors(config, mockProc, mockHTTP)
 
 	task := &types.Task{
-		ID:    "test-internal-vm",
+		ID: "test-internal-vm",
 		Annotations: map[string]string{
 			"init_system": "tini",
 		},

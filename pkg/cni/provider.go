@@ -207,15 +207,15 @@ func (p *CNIProvider) AllocateNetwork(name, driver string) (*AllocatedNetwork, e
 	}
 
 	network := &AllocatedNetwork{
-		ID:         fmt.Sprintf("net-%d", p.networkIndex),
-		Name:       name,
-		Driver:     driver,
-		Subnet:     subnetNet,
-		Gateway:    gateway,
-		VXLANID:    vxlanID,
-		BridgeName: bridgeName,
+		ID:          fmt.Sprintf("net-%d", p.networkIndex),
+		Name:        name,
+		Driver:      driver,
+		Subnet:      subnetNet,
+		Gateway:     gateway,
+		VXLANID:     vxlanID,
+		BridgeName:  bridgeName,
 		Attachments: make(map[string]*NodeAttachment),
-		Services:   make(map[string]*ServiceVIP),
+		Services:    make(map[string]*ServiceVIP),
 	}
 
 	p.networks[network.ID] = network

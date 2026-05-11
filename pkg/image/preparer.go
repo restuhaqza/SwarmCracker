@@ -440,13 +440,13 @@ func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath
 	} else if cfg != nil {
 		ip.ociInfo = ParseOCIImageConfig(cfg, fullRef)
 		log.Info().
-				Str("image", fullRef).
-				Str("os", ip.ociInfo.OS).
-				Str("arch", ip.ociInfo.Architecture).
-				Bool("has_entrypoint", ip.ociInfo.HasEntrypoint()).
-				Bool("has_cmd", ip.ociInfo.HasCmd()).
-				Int("env_count", len(ip.ociInfo.Env)).
-				Msg("Extracted OCI image configuration")
+			Str("image", fullRef).
+			Str("os", ip.ociInfo.OS).
+			Str("arch", ip.ociInfo.Architecture).
+			Bool("has_entrypoint", ip.ociInfo.HasEntrypoint()).
+			Bool("has_cmd", ip.ociInfo.HasCmd()).
+			Int("env_count", len(ip.ociInfo.Env)).
+			Msg("Extracted OCI image configuration")
 	}
 
 	// Get image info
@@ -1124,11 +1124,13 @@ func (ip *ImagePreparer) injectNetworkConfig(rootfsDir string) error {
 	initTabPath := filepath.Join(rootfsDir, "etc/inittab")
 	if _, err := os.Stat(initTabPath); err != nil {
 		// No inittab, probably not OpenRC
+		//nolint:nilerr
 		return nil
 	}
 
 	initTab, err := os.ReadFile(initTabPath)
 	if err != nil {
+		//nolint:nilerr
 		return nil
 	}
 

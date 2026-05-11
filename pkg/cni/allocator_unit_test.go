@@ -59,11 +59,11 @@ func TestAllocatedNetwork_DriverState_BridgeNetwork(t *testing.T) {
 func TestAllocatedNetwork_DriverState_VXLANNetwork(t *testing.T) {
 	_, subnet, _ := net.ParseCIDR("10.0.2.0/24")
 	net := &AllocatedNetwork{
-		Name:     "test-vxlan",
-		Driver:   "vxlan",
-		Subnet:   subnet,
-		Gateway:  net.ParseIP("10.0.2.1"),
-		VXLANID:  100,
+		Name:    "test-vxlan",
+		Driver:  "vxlan",
+		Subnet:  subnet,
+		Gateway: net.ParseIP("10.0.2.1"),
+		VXLANID: 100,
 	}
 
 	state := net.DriverState()
@@ -88,9 +88,9 @@ func TestAllocatedNetwork_IPAMState_Basic(t *testing.T) {
 func TestIPPool_Basic(t *testing.T) {
 	_, subnet, _ := net.ParseCIDR("10.0.0.0/24")
 	pool := &IPPool{
-		Subnet:   subnet,
-		Gateway:  net.ParseIP("10.0.0.1"),
-		UsedIPs:  make(map[string]string),
+		Subnet:  subnet,
+		Gateway: net.ParseIP("10.0.0.1"),
+		UsedIPs: make(map[string]string),
 	}
 
 	assert.NotNil(t, pool.Subnet)
@@ -127,7 +127,7 @@ func TestCNIExecResult_Basic(t *testing.T) {
 
 // TestCNIInterface tests interface struct
 func TestCNIInterface_Basic(t *testing.T) {
- iface := CNIInterface{
+	iface := CNIInterface{
 		Name:    "eth0",
 		MAC:     "00:11:22:33:44:55",
 		Sandbox: "/var/run/netns/container",
@@ -203,10 +203,10 @@ func TestCNIConfig_CustomValues(t *testing.T) {
 // TestNodeAttachment tests node attachment struct
 func TestNodeAttachment_Basic(t *testing.T) {
 	attach := &NodeAttachment{
-		NodeID:      "node-1",
-		NetworkID:   "net-1",
-		IPAddress:   net.ParseIP("10.0.0.2"),
-		MACAddress:  "00:11:22:33:44:55",
+		NodeID:     "node-1",
+		NetworkID:  "net-1",
+		IPAddress:  net.ParseIP("10.0.0.2"),
+		MACAddress: "00:11:22:33:44:55",
 	}
 
 	assert.Equal(t, "node-1", attach.NodeID)
@@ -216,10 +216,10 @@ func TestNodeAttachment_Basic(t *testing.T) {
 
 // TestServiceVIP tests service VIP struct
 func TestServiceVIP_Basic(t *testing.T) {
- vip := &ServiceVIP{
-		ServiceID:  "service-1",
-		NetworkID:  "net-1",
-		VIP:        net.ParseIP("10.0.0.100"),
+	vip := &ServiceVIP{
+		ServiceID: "service-1",
+		NetworkID: "net-1",
+		VIP:       net.ParseIP("10.0.0.100"),
 	}
 
 	assert.Equal(t, "service-1", vip.ServiceID)

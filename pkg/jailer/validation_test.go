@@ -15,9 +15,9 @@ func TestValidateVMConfig(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		cfg         VMConfig
-		expectError bool
+		name          string
+		cfg           VMConfig
+		expectError   bool
 		errorContains string
 	}{
 		{
@@ -29,7 +29,7 @@ func TestValidateVMConfig(t *testing.T) {
 				KernelPath: "/path/to/kernel",
 				RootfsPath: "/path/to/rootfs",
 			},
-			expectError: true, // Files don't exist
+			expectError:   true, // Files don't exist
 			errorContains: "kernel",
 		},
 		{
@@ -41,7 +41,7 @@ func TestValidateVMConfig(t *testing.T) {
 				KernelPath: "/path/to/kernel",
 				RootfsPath: "/path/to/rootfs",
 			},
-			expectError: true,
+			expectError:   true,
 			errorContains: "TaskID",
 		},
 		{
@@ -53,7 +53,7 @@ func TestValidateVMConfig(t *testing.T) {
 				KernelPath: "/path/to/kernel",
 				RootfsPath: "/path/to/rootfs",
 			},
-			expectError: true,
+			expectError:   true,
 			errorContains: "VcpuCount",
 		},
 		{
@@ -65,7 +65,7 @@ func TestValidateVMConfig(t *testing.T) {
 				KernelPath: "/path/to/kernel",
 				RootfsPath: "/path/to/rootfs",
 			},
-			expectError: true,
+			expectError:   true,
 			errorContains: "VcpuCount",
 		},
 		{
@@ -77,7 +77,7 @@ func TestValidateVMConfig(t *testing.T) {
 				KernelPath: "/path/to/kernel",
 				RootfsPath: "/path/to/rootfs",
 			},
-			expectError: true,
+			expectError:   true,
 			errorContains: "MemoryMB",
 		},
 		{
@@ -89,7 +89,7 @@ func TestValidateVMConfig(t *testing.T) {
 				KernelPath: "",
 				RootfsPath: "/path/to/rootfs",
 			},
-			expectError: true,
+			expectError:   true,
 			errorContains: "KernelPath",
 		},
 		{
@@ -101,13 +101,13 @@ func TestValidateVMConfig(t *testing.T) {
 				KernelPath: "/path/to/kernel",
 				RootfsPath: "",
 			},
-			expectError: true,
+			expectError:   true,
 			errorContains: "RootfsPath",
 		},
 		{
-			name: "all empty",
-			cfg: VMConfig{},
-			expectError: true,
+			name:          "all empty",
+			cfg:           VMConfig{},
+			expectError:   true,
 			errorContains: "TaskID",
 		},
 	}
@@ -145,7 +145,7 @@ func TestValidateVMConfigSocket(t *testing.T) {
 			setupSocket: func(socketPath string) {
 				// Create socket before waiting
 			},
-			timeout: 100 * time.Millisecond,
+			timeout:     100 * time.Millisecond,
 			expectError: true, // Will timeout if socket not created
 		},
 		{
@@ -153,7 +153,7 @@ func TestValidateVMConfigSocket(t *testing.T) {
 			setupSocket: func(socketPath string) {
 				// Don't create socket
 			},
-			timeout: 100 * time.Millisecond,
+			timeout:     100 * time.Millisecond,
 			expectError: true, // Timeout
 		},
 		{
@@ -161,7 +161,7 @@ func TestValidateVMConfigSocket(t *testing.T) {
 			setupSocket: func(socketPath string) {
 				// Socket created
 			},
-			timeout: 0,
+			timeout:     0,
 			expectError: true, // Immediate timeout
 		},
 	}

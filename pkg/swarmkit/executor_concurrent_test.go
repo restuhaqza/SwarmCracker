@@ -2,8 +2,8 @@ package swarmkit
 
 import (
 	"context"
-	"time"
 	"testing"
+	"time"
 
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"

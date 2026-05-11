@@ -1,7 +1,6 @@
 package main
 
 import (
-	"strings"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -10,12 +9,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
-	"github.com/spf13/cobra"
 )
 
 // newTaskCommand creates the task command group
@@ -86,11 +86,11 @@ func newTaskInspectCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "inspect <task-id>",
-		Short: "Inspect a task",
-		Long: `Display detailed information about a task.`,
+		Use:     "inspect <task-id>",
+		Short:   "Inspect a task",
+		Long:    `Display detailed information about a task.`,
 		Example: `  swarmcracker task inspect 123abc...`,
-		Args:  cobra.ExactArgs(1),
+		Args:    cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},

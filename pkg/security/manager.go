@@ -14,9 +14,9 @@ import (
 
 // Injectable function variables for testing
 var (
-	osChown    = os.Chown
-	osChmod    = os.Chmod
-	osGeteuid  = os.Geteuid
+	osChown     = os.Chown
+	osChmod     = os.Chmod
+	osGeteuid   = os.Geteuid
 	osRemoveVar = os.Remove
 )
 

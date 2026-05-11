@@ -145,8 +145,8 @@ func TestController_Prepare_AlreadyPreparedV2(t *testing.T) {
 // TestController_Prepare_ImageError tests Prepare with image error
 func TestController_Prepare_ImageErrorV2(t *testing.T) {
 	ctrl := &Controller{
-		task:      &api.Task{ID: "task-1"},
-		config:    &Config{},
+		task:   &api.Task{ID: "task-1"},
+		config: &Config{},
 		imagePrep: &MockImagePreparer{
 			PrepareFunc: func(ctx context.Context, task *types.Task) error {
 				return errors.New("image error")
@@ -340,7 +340,7 @@ func TestExecutor_CleanupOrphanedVMs_WithOrphanV2(t *testing.T) {
 	cmd.Start()
 	processes := map[string]*exec.Cmd{"orphan-task": cmd}
 	mockVMM := &MockVMMManager{
-		processes: processes,
+		processes:               processes,
 		GetRunningProcessesFunc: func() map[string]*exec.Cmd { return processes },
 		RemoveProcessFunc:       func(taskID string) { delete(processes, taskID) },
 	}
@@ -462,7 +462,7 @@ func TestController_convertTask_WithNetworksV2(t *testing.T) {
 					Network: &api.Network{
 						ID: "net-1",
 						Spec: api.NetworkSpec{
-							Annotations: api.Annotations{Name: "overlay-net"},
+							Annotations:  api.Annotations{Name: "overlay-net"},
 							DriverConfig: &api.Driver{Name: "overlay"},
 						},
 					},
@@ -521,7 +521,7 @@ func TestExecutor_ConfigureV2(t *testing.T) {
 func TestExecutor_GetRunningProcessesV2(t *testing.T) {
 	processes := map[string]*exec.Cmd{"task-1": exec.Command("echo")}
 	mockVMM := &MockVMMManager{
-		processes: processes,
+		processes:               processes,
 		GetRunningProcessesFunc: func() map[string]*exec.Cmd { return processes },
 	}
 	result := mockVMM.GetRunningProcesses()
@@ -535,7 +535,7 @@ func TestExecutor_RemoveProcessV2(t *testing.T) {
 		"task-2": exec.Command("echo"),
 	}
 	mockVMM := &MockVMMManager{
-		processes: processes,
+		processes:         processes,
 		RemoveProcessFunc: func(taskID string) { delete(processes, taskID) },
 	}
 	mockVMM.RemoveProcess("task-1")
@@ -564,10 +564,10 @@ func TestExecutor_periodicCleanup_ImmediateCancelV2(t *testing.T) {
 // TestExecutor_runCleanup tests runCleanup
 func TestExecutor_runCleanupV2(t *testing.T) {
 	tests := []struct {
-		name        string
-		maxAgeDays  int
+		name         string
+		maxAgeDays   int
 		filesRemoved int
-		err         error
+		err          error
 	}{
 		{"successful cleanup", 7, 5, nil},
 		{"cleanup error", 7, 0, errors.New("cleanup failed")},
@@ -765,8 +765,8 @@ func TestExecutor_SetNetworkBootstrapKeys_NilNetworkV2(t *testing.T) {
 // TestController_ContainerStatus_Running tests ContainerStatus running
 func TestController_ContainerStatus_RunningV2(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "task-1"},
-		config:  &Config{},
+		task:   &api.Task{ID: "task-1"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			IsRunningFunc: func(taskID string) bool { return true },
 			GetPIDFunc:    func(taskID string) int { return 1234 },
@@ -783,8 +783,8 @@ func TestController_ContainerStatus_RunningV2(t *testing.T) {
 // TestController_ContainerStatus_NotRunning tests ContainerStatus not running
 func TestController_ContainerStatus_NotRunningV2(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "task-1"},
-		config:  &Config{},
+		task:   &api.Task{ID: "task-1"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			IsRunningFunc: func(taskID string) bool { return false },
 		},
@@ -1100,8 +1100,8 @@ func TestExecutor_NewExecutor_EnableJailer(t *testing.T) {
 func TestExecutor_NewExecutor_WithVXLAN(t *testing.T) {
 	cfg := &Config{
 		VXLANEnabled: true,
-		VXLANPeers:  []string{"10.0.0.2", "10.0.0.3"},
-		StateDir:    t.TempDir(),
+		VXLANPeers:   []string{"10.0.0.2", "10.0.0.3"},
+		StateDir:     t.TempDir(),
 	}
 	exec, err := NewExecutor(cfg)
 	if err != nil {
@@ -1126,7 +1126,7 @@ func TestExecutor_NewExecutor_WithNAT(t *testing.T) {
 // TestExecutor_NewExecutor_WithHostname tests NewExecutor with hostname
 func TestExecutor_NewExecutor_WithHostname(t *testing.T) {
 	cfg := &Config{
-		Hostname:  "test-node",
+		Hostname: "test-node",
 		StateDir: t.TempDir(),
 	}
 	exec, err := NewExecutor(cfg)
@@ -1139,17 +1139,17 @@ func TestExecutor_NewExecutor_WithHostname(t *testing.T) {
 // TestExecutor_NewExecutor_CustomDefaults tests NewExecutor with custom defaults
 func TestExecutor_NewExecutor_CustomDefaults(t *testing.T) {
 	cfg := &Config{
-		FirecrackerPath:  "/custom/firecracker",
-		KernelPath:       "/custom/vmlinux",
-		RootfsDir:        t.TempDir(),
-		SocketDir:        t.TempDir(),
-		DefaultVCPUs:     4,
-		DefaultMemoryMB:  2048,
-		BridgeName:       "custom-br0",
-		Subnet:           "10.1.0.0/24",
-		BridgeIP:         "10.1.0.1/24",
-		IPMode:           "dhcp",
-		StateDir:         t.TempDir(),
+		FirecrackerPath: "/custom/firecracker",
+		KernelPath:      "/custom/vmlinux",
+		RootfsDir:       t.TempDir(),
+		SocketDir:       t.TempDir(),
+		DefaultVCPUs:    4,
+		DefaultMemoryMB: 2048,
+		BridgeName:      "custom-br0",
+		Subnet:          "10.1.0.0/24",
+		BridgeIP:        "10.1.0.1/24",
+		IPMode:          "dhcp",
+		StateDir:        t.TempDir(),
 	}
 	exec, err := NewExecutor(cfg)
 	if err != nil {
@@ -1163,12 +1163,12 @@ func TestExecutor_NewExecutor_CustomDefaults(t *testing.T) {
 // TestExecutor_NewExecutor_WithConsul tests NewExecutor with Consul enabled
 func TestExecutor_NewExecutor_WithConsul(t *testing.T) {
 	cfg := &Config{
-		ConsulEnabled:   true,
-		ConsulAddress:   "localhost:8500",
-		Hostname:        "test-node",
-		AdvertiseAddr:   "192.168.1.100:7946",
-		JoinAddr:        "192.168.1.1:7946",
-		StateDir:        t.TempDir(),
+		ConsulEnabled: true,
+		ConsulAddress: "localhost:8500",
+		Hostname:      "test-node",
+		AdvertiseAddr: "192.168.1.100:7946",
+		JoinAddr:      "192.168.1.1:7946",
+		StateDir:      t.TempDir(),
 	}
 	exec, err := NewExecutor(cfg)
 	if err != nil {
@@ -1181,12 +1181,12 @@ func TestExecutor_NewExecutor_WithConsul(t *testing.T) {
 // TestExecutor_NewExecutor_WithConsulJoinAddr tests NewExecutor with Consul JoinAddr
 func TestExecutor_NewExecutor_WithConsulJoinAddr(t *testing.T) {
 	cfg := &Config{
-		ConsulEnabled:   true,
-		ConsulAddress:   "localhost:8500",
-		Hostname:        "test-worker",
-		JoinAddr:        "192.168.1.1:7946",
-		AdvertiseAddr:   "",
-		StateDir:        t.TempDir(),
+		ConsulEnabled: true,
+		ConsulAddress: "localhost:8500",
+		Hostname:      "test-worker",
+		JoinAddr:      "192.168.1.1:7946",
+		AdvertiseAddr: "",
+		StateDir:      t.TempDir(),
 	}
 	exec, err := NewExecutor(cfg)
 	if err != nil {
@@ -1248,7 +1248,7 @@ func TestController_Start_Success(t *testing.T) {
 		started:      false,
 		internalTask: &types.Task{ID: "task-1"},
 		trans:        &MockTaskTranslator{},
-		vmmMgr:      &MockVMMManager{},
+		vmmMgr:       &MockVMMManager{},
 	}
 	err := ctrl.Start(context.Background())
 	assert.NoError(t, err)
@@ -1258,9 +1258,9 @@ func TestController_Start_Success(t *testing.T) {
 // TestController_Wait_Error tests Wait with error
 func TestController_Wait_Error(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "task-1"},
-		config:  &Config{},
-		trans:   &MockTaskTranslator{},
+		task:   &api.Task{ID: "task-1"},
+		config: &Config{},
+		trans:  &MockTaskTranslator{},
 		vmmMgr: &MockVMMManager{
 			WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
 				return nil, errors.New("wait error")
@@ -1274,9 +1274,9 @@ func TestController_Wait_Error(t *testing.T) {
 // TestController_Wait_StatusComplete tests Wait with complete status
 func TestController_Wait_StatusComplete(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "task-1"},
-		config:  &Config{},
-		trans:   &MockTaskTranslator{},
+		task:   &api.Task{ID: "task-1"},
+		config: &Config{},
+		trans:  &MockTaskTranslator{},
 		vmmMgr: &MockVMMManager{
 			WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
 				return &types.TaskStatus{State: types.TaskStateComplete}, nil
@@ -1291,9 +1291,9 @@ func TestController_Wait_StatusComplete(t *testing.T) {
 // TestController_Wait_StatusFailed tests Wait with failed status
 func TestController_Wait_StatusFailed(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "task-1"},
-		config:  &Config{},
-		trans:   &MockTaskTranslator{},
+		task:   &api.Task{ID: "task-1"},
+		config: &Config{},
+		trans:  &MockTaskTranslator{},
 		vmmMgr: &MockVMMManager{
 			WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
 				return &types.TaskStatus{State: types.TaskStateFailed}, nil
@@ -1308,16 +1308,16 @@ func TestController_Wait_StatusFailed(t *testing.T) {
 // TestController_Shutdown_WithVMMError tests Shutdown with VMM error
 func TestController_Shutdown_WithVMMError(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "task-1"},
-		config:  &Config{},
-		trans:   &MockTaskTranslator{},
+		task:   &api.Task{ID: "task-1"},
+		config: &Config{},
+		trans:  &MockTaskTranslator{},
 		vmmMgr: &MockVMMManager{
 			StopFunc: func(ctx context.Context, task *types.Task) error {
 				return errors.New("stop error")
 			},
 		},
 		networkMgr: &MockNetworkManager{},
-		started: true,
+		started:    true,
 	}
 	err := ctrl.Shutdown(context.Background())
 	assert.Error(t, err)
@@ -1327,9 +1327,9 @@ func TestController_Shutdown_WithVMMError(t *testing.T) {
 // TestController_Terminate_WithVMMError tests Terminate with VMM error
 func TestController_Terminate_WithVMMError(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "task-1"},
-		config:  &Config{},
-		trans:   &MockTaskTranslator{},
+		task:   &api.Task{ID: "task-1"},
+		config: &Config{},
+		trans:  &MockTaskTranslator{},
 		vmmMgr: &MockVMMManager{
 			ForceStopFunc: func(ctx context.Context, task *types.Task) error {
 				return errors.New("force stop error")
@@ -1345,13 +1345,13 @@ func TestController_Terminate_WithVMMError(t *testing.T) {
 func TestController_Remove_WithVolumeMounts(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctrl := &Controller{
-		task: &api.Task{ID: "task-vol"},
-		config: &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
-		vmmMgr: &MockVMMManager{},
+		task:       &api.Task{ID: "task-vol"},
+		config:     &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
+		vmmMgr:     &MockVMMManager{},
 		networkMgr: &MockNetworkManager{},
-		mu: sync.Mutex{},
+		mu:         sync.Mutex{},
 		internalTask: &types.Task{
-			ID: "task-vol",
+			ID:          "task-vol",
 			Annotations: map[string]string{"rootfs": filepath.Join(tmpDir, "rootfs.ext4")},
 			Spec: types.TaskSpec{
 				Runtime: &types.Container{
@@ -1370,7 +1370,7 @@ func TestController_Remove_WithVolumeMounts(t *testing.T) {
 func TestController_Remove_WithCleanupNetworkError(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctrl := &Controller{
-		task: &api.Task{ID: "task-net-err"},
+		task:   &api.Task{ID: "task-net-err"},
 		config: &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
 		vmmMgr: &MockVMMManager{},
 		networkMgr: &MockNetworkManager{
@@ -1388,7 +1388,7 @@ func TestController_Remove_WithCleanupNetworkError(t *testing.T) {
 func TestController_Remove_WithVMMRemoveError(t *testing.T) {
 	tmpDir := t.TempDir()
 	ctrl := &Controller{
-		task: &api.Task{ID: "task-vmm-err"},
+		task:   &api.Task{ID: "task-vmm-err"},
 		config: &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
 		vmmMgr: &MockVMMManager{
 			RemoveFunc: func(ctx context.Context, task *types.Task) error {
@@ -1396,7 +1396,7 @@ func TestController_Remove_WithVMMRemoveError(t *testing.T) {
 			},
 		},
 		networkMgr: &MockNetworkManager{},
-		mu: sync.Mutex{},
+		mu:         sync.Mutex{},
 	}
 	err := ctrl.Remove(context.Background())
 	assert.NoError(t, err) // VMM remove error is logged but not returned
@@ -1408,11 +1408,11 @@ func TestController_Remove_WithRootfsCleanup(t *testing.T) {
 	rootfsPath := filepath.Join(tmpDir, "task-rootfs.ext4")
 	os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
 	ctrl := &Controller{
-		task: &api.Task{ID: "task-rootfs"},
-		config: &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
-		vmmMgr: &MockVMMManager{},
+		task:       &api.Task{ID: "task-rootfs"},
+		config:     &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
+		vmmMgr:     &MockVMMManager{},
 		networkMgr: &MockNetworkManager{},
-		mu: sync.Mutex{},
+		mu:         sync.Mutex{},
 	}
 	err := ctrl.Remove(context.Background())
 	assert.NoError(t, err)
@@ -1426,11 +1426,11 @@ func TestController_Remove_WithSocketCleanup(t *testing.T) {
 	socketPath := filepath.Join(tmpDir, "task-socket.sock")
 	os.WriteFile(socketPath, []byte("fake socket"), 0644)
 	ctrl := &Controller{
-		task: &api.Task{ID: "task-socket"},
-		config: &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
-		vmmMgr: &MockVMMManager{},
+		task:       &api.Task{ID: "task-socket"},
+		config:     &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
+		vmmMgr:     &MockVMMManager{},
 		networkMgr: &MockNetworkManager{},
-		mu: sync.Mutex{},
+		mu:         sync.Mutex{},
 	}
 	err := ctrl.Remove(context.Background())
 	assert.NoError(t, err)
@@ -1443,12 +1443,12 @@ func TestController_Remove_WithOnRemove(t *testing.T) {
 	tmpDir := t.TempDir()
 	callbackCalled := false
 	ctrl := &Controller{
-		task: &api.Task{ID: "task-callback"},
-		config: &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
-		vmmMgr: &MockVMMManager{},
+		task:       &api.Task{ID: "task-callback"},
+		config:     &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
+		vmmMgr:     &MockVMMManager{},
 		networkMgr: &MockNetworkManager{},
-		mu: sync.Mutex{},
-		OnRemove: func() { callbackCalled = true },
+		mu:         sync.Mutex{},
+		OnRemove:   func() { callbackCalled = true },
 	}
 	err := ctrl.Remove(context.Background())
 	assert.NoError(t, err)
@@ -1471,10 +1471,10 @@ func TestController_Prepare_WithVolumes(t *testing.T) {
 				},
 			},
 		},
-		config: &Config{},
-		imagePrep: &MockImagePreparer{},
+		config:     &Config{},
+		imagePrep:  &MockImagePreparer{},
 		networkMgr: &MockNetworkManager{},
-		mu: sync.Mutex{},
+		mu:         sync.Mutex{},
 	}
 	err := ctrl.Prepare(context.Background())
 	assert.NoError(t, err)
@@ -1491,14 +1491,14 @@ func TestController_Prepare_WithCommand(t *testing.T) {
 						Image:   "nginx",
 						Command: []string{"/bin/sh"},
 						Args:    []string{"-c", "echo hello"},
-						},
+					},
 				},
 			},
 		},
-		config: &Config{},
-		imagePrep: &MockImagePreparer{},
+		config:     &Config{},
+		imagePrep:  &MockImagePreparer{},
 		networkMgr: &MockNetworkManager{},
-		mu: sync.Mutex{},
+		mu:         sync.Mutex{},
 	}
 	err := ctrl.Prepare(context.Background())
 	assert.NoError(t, err)

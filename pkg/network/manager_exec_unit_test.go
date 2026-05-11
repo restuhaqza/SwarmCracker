@@ -254,10 +254,10 @@ func TestSetupNATWithExecutor(t *testing.T) {
 // TestEnsureBridgeWithExecutor tests ensureBridgeWithExecutor
 func TestEnsureBridgeWithExecutor(t *testing.T) {
 	tests := []struct {
-		name        string
-		config      types.NetworkConfig
-		mockSetup   func(*MockCommandExecutor)
-		wantErr     bool
+		name      string
+		config    types.NetworkConfig
+		mockSetup func(*MockCommandExecutor)
+		wantErr   bool
 	}{
 		{
 			name: "bridge already exists in cache",
@@ -348,13 +348,13 @@ func TestEnsureBridgeWithExecutor(t *testing.T) {
 // TestCreateTapDeviceWithExecutor tests createTapDeviceWithExecutor
 func TestCreateTapDeviceWithExecutor(t *testing.T) {
 	tests := []struct {
-		name        string
-		config      types.NetworkConfig
-		network     types.NetworkAttachment
-		index       int
-		taskID      string
-		mockSetup   func(*MockCommandExecutor)
-		wantErr     bool
+		name      string
+		config    types.NetworkConfig
+		network   types.NetworkAttachment
+		index     int
+		taskID    string
+		mockSetup func(*MockCommandExecutor)
+		wantErr   bool
 	}{
 		{
 			name: "create TAP device successfully",
@@ -422,7 +422,7 @@ func TestCreateTapDeviceWithExecutor(t *testing.T) {
 			},
 			network: types.NetworkAttachment{
 				Network: types.Network{
-					ID: "net-3",
+					ID:   "net-3",
 					Spec: types.NetworkSpec{},
 				},
 			},
@@ -638,7 +638,7 @@ func TestPrepareNetworkWithExecutor(t *testing.T) {
 				BridgeIP:   "172.16.0.1/16",
 			},
 			task: &types.Task{
-				ID:      "task-default",
+				ID:       "task-default",
 				Networks: []types.NetworkAttachment{},
 			},
 			mockSetup: func(m *MockCommandExecutor) {
@@ -709,7 +709,7 @@ func TestCleanupNetworkWithExecutor(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "cleanup nil task",
+			name:   "cleanup nil task",
 			config: types.NetworkConfig{},
 			task:   nil,
 			mockSetup: func(m *MockCommandExecutor) {
@@ -718,7 +718,7 @@ func TestCleanupNetworkWithExecutor(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name: "cleanup task with no TAPs",
+			name:   "cleanup task with no TAPs",
 			config: types.NetworkConfig{},
 			task:   &types.Task{ID: "task-no-taps"},
 			mockSetup: func(m *MockCommandExecutor) {

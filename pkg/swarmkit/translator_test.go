@@ -302,7 +302,7 @@ func TestTranslateResourceLimits(t *testing.T) {
 			name:          "zero resources use defaults",
 			nanoCPUs:      0,
 			memoryBytes:   0,
-			expectedVCPUs: 1,  // default
+			expectedVCPUs: 1,   // default
 			expectedMemMB: 512, // default
 		},
 		{
@@ -615,7 +615,7 @@ func TestGenerateMAC(t *testing.T) {
 			}
 
 			// Check colons
-		parts := strings.Split(mac, ":")
+			parts := strings.Split(mac, ":")
 			if len(parts) != 6 {
 				t.Errorf("MAC has %d parts, want 6", len(parts))
 			}
@@ -639,10 +639,10 @@ func TestGenerateMAC(t *testing.T) {
 
 func TestGetRootfsPath(t *testing.T) {
 	tests := []struct {
-		name           string
-		taskID         string
-		annotations    map[string]string
-		expectedPath   string
+		name         string
+		taskID       string
+		annotations  map[string]string
+		expectedPath string
 	}{
 		{
 			name:         "default path without annotation",

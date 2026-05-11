@@ -41,8 +41,8 @@ type NetworkManager struct {
 	peerDiscovery bool
 	peerCancel    context.CancelFunc
 	nodeDiscovery types.NodeDiscovery // SwarmKit node discovery provider
-	cniClient     *CNIClient    // CNI client for SwarmKit network attachments
-	pendingPeers  []string      // Peers queued before VXLAN init
+	cniClient     *CNIClient          // CNI client for SwarmKit network attachments
+	pendingPeers  []string            // Peers queued before VXLAN init
 }
 
 // TapDevice represents a TAP device.
@@ -704,7 +704,8 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	// Check if dnsmasq is available
 	if _, err := execLookPath("dnsmasq"); err != nil {
 		log.Warn().Msg("dnsmasq not found, DHCP will not be available")
-		return nil // Not fatal - VMs can use static IPs
+		return nil //nolint:nilerr
+		// Not fatal - VMs can use static IPs
 	}
 
 	// Parse subnet to get DHCP range
@@ -945,7 +946,7 @@ func (nm *NetworkManager) discoverPeerWorkers() []string {
 			log.Warn().Err(err).Msg("Failed to discover nodes via SwarmKit")
 			return []string{}
 		}
-		
+
 		// Filter for VXLAN-capable nodes
 		vxlanPeers := []string{}
 		for _, node := range peers {
@@ -953,15 +954,14 @@ func (nm *NetworkManager) discoverPeerWorkers() []string {
 				vxlanPeers = append(vxlanPeers, node.VXLANIP)
 			}
 		}
-		
+
 		log.Debug().Int("peer_count", len(vxlanPeers)).Msg("Discovered VXLAN peers via SwarmKit")
 		return vxlanPeers
 	}
-	
+
 	// Fallback: peers are configured via --vxlan-peers flag
 	return []string{}
 }
-
 
 // UpdatePeers updates the VXLAN peer list.
 func (nm *NetworkManager) UpdatePeers(peers []string) error {
@@ -1052,7 +1052,7 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 	// Allocate IP address for this TAP
 	// Priority: SwarmKit-provided IP > Local allocation
 	var ipAddr, netmaskFromAddr string
-	
+
 	// Check if SwarmKit provided an IP (overlay/bridge network attachment)
 	if len(network.Addresses) > 0 {
 		// Use SwarmKit-provided IP from IPAM
@@ -1068,7 +1068,7 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 		} else {
 			ipAddr = addr
 		}
-		
+
 		log.Info().
 			Str("task_id", taskID).
 			Str("ip", ipAddr).
@@ -1144,12 +1144,12 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 
 	// Parse subnet and gateway
 	var subnet, gateway, netmask string
-	
+
 	// Use SwarmKit-provided netmask if available
 	if netmaskFromAddr != "" {
 		netmask = netmaskFromAddr
 	}
-	
+
 	if nm.config.Subnet != "" {
 		subnet = nm.config.Subnet
 		// Extract netmask from CIDR if not already set

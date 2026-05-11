@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/rs/zerolog/log"
-	"os/exec"
 	"github.com/vishvananda/netlink"
+	"os/exec"
 )
 
 // PeerStore defines the interface for storing and retrieving VXLAN peer information.
@@ -220,8 +220,8 @@ func (v *VXLANManager) attachVXLANToBridge(vxlanName string) error {
 		if err == nil && bridgeLink.Attrs().Index == vxlanLink.Attrs().MasterIndex {
 			log.Info().Str("vxlan", vxlanName).Str("bridge", v.BridgeName).Msg("VXLAN already attached to bridge")
 			return nil
-			}
 		}
+	}
 
 	bridgeLink, err := v.netlinkExecutor.LinkByName(v.BridgeName)
 	if err != nil {
@@ -291,6 +291,7 @@ func (v *VXLANManager) addPeerForwarding(vxlanName, peerIP string) error {
 	log.Info().Str("vxlan", vxlanName).Str("peer", peerIP).Msg("Added VXLAN FDB entry for peer")
 	return nil
 }
+
 // AddRouteToSubnet adds a route to reach a remote worker's VM subnet.
 func (v *VXLANManager) AddRouteToSubnet(remoteSubnet, remoteOverlayIP string) error {
 	_, dstNet, err := net.ParseCIDR(remoteSubnet)

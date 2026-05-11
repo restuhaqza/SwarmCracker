@@ -348,8 +348,8 @@ func TestApplyResourceLimits_Extended(t *testing.T) {
 			name: "zero CPU limit",
 			pid:  1,
 			limits: ResourceLimits{
-				MaxCPUs:      0,
-				MaxMemoryMB:  2048,
+				MaxCPUs:     0,
+				MaxMemoryMB: 2048,
 			},
 			wantErr: true,
 		},
@@ -357,8 +357,8 @@ func TestApplyResourceLimits_Extended(t *testing.T) {
 			name: "zero memory limit",
 			pid:  1,
 			limits: ResourceLimits{
-				MaxCPUs:      2,
-				MaxMemoryMB:  0,
+				MaxCPUs:     2,
+				MaxMemoryMB: 0,
 			},
 			wantErr: true,
 		},
@@ -366,8 +366,8 @@ func TestApplyResourceLimits_Extended(t *testing.T) {
 			name: "negative values",
 			pid:  1,
 			limits: ResourceLimits{
-				MaxCPUs:      -1,
-				MaxMemoryMB:  2048,
+				MaxCPUs:     -1,
+				MaxMemoryMB: 2048,
 			},
 			wantErr: true,
 		},
@@ -375,8 +375,8 @@ func TestApplyResourceLimits_Extended(t *testing.T) {
 			name: "invalid PID -1",
 			pid:  -1,
 			limits: ResourceLimits{
-				MaxCPUs:      2,
-				MaxMemoryMB:  2048,
+				MaxCPUs:     2,
+				MaxMemoryMB: 2048,
 			},
 			wantErr: true,
 		},
@@ -384,8 +384,8 @@ func TestApplyResourceLimits_Extended(t *testing.T) {
 			name: "invalid PID 0",
 			pid:  0,
 			limits: ResourceLimits{
-				MaxCPUs:      2,
-				MaxMemoryMB:  2048,
+				MaxCPUs:     2,
+				MaxMemoryMB: 2048,
 			},
 			wantErr: true,
 		},
@@ -393,8 +393,8 @@ func TestApplyResourceLimits_Extended(t *testing.T) {
 			name: "non-existent PID",
 			pid:  999999,
 			limits: ResourceLimits{
-				MaxCPUs:      2,
-				MaxMemoryMB:  2048,
+				MaxCPUs:     2,
+				MaxMemoryMB: 2048,
 			},
 			wantErr: true,
 		},
@@ -793,7 +793,7 @@ func TestSeccompFilterStructures(t *testing.T) {
 
 	t.Run("create SyscallRule with args", func(t *testing.T) {
 		rule := SyscallRule{
-			Names: []string{"ioctl"},
+			Names:  []string{"ioctl"},
 			Action: "SCMP_ACT_ERRNO",
 			Args: []Arg{
 				{

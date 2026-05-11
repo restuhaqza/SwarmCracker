@@ -41,9 +41,9 @@ func TestAdd(t *testing.T) {
 	}
 
 	tests := []struct {
-		name      string
-		state     *VMState
-		wantErr   bool
+		name        string
+		state       *VMState
+		wantErr     bool
 		errContains string
 	}{
 		{
@@ -67,18 +67,18 @@ func TestAdd(t *testing.T) {
 		{
 			name: "state with all fields",
 			state: &VMState{
-				ID:         "vm-2",
-				PID:        12345,
-				SocketPath: "/tmp/vm.sock",
-				Image:      "redis:latest",
-				Status:     "running",
-				Command:    []string{"qemu", "-name", "vm-2"},
-				VCPUs:      4,
-				MemoryMB:   4096,
-				KernelPath: "/boot/vmlinuz",
-				RootfsPath: "/var/lib/vm/rootfs",
-				LogPath:    "/var/log/vm.log",
-				NetworkID:  "net-1",
+				ID:          "vm-2",
+				PID:         12345,
+				SocketPath:  "/tmp/vm.sock",
+				Image:       "redis:latest",
+				Status:      "running",
+				Command:     []string{"qemu", "-name", "vm-2"},
+				VCPUs:       4,
+				MemoryMB:    4096,
+				KernelPath:  "/boot/vmlinuz",
+				RootfsPath:  "/var/lib/vm/rootfs",
+				LogPath:     "/var/log/vm.log",
+				NetworkID:   "net-1",
 				IPAddresses: []string{"10.0.0.2", "10.0.0.3"},
 			},
 			wantErr: false,
@@ -417,12 +417,12 @@ func TestPersistence(t *testing.T) {
 	}
 
 	state1 := &VMState{
-		ID:       "vm-persist",
-		Image:    "persist-test:latest",
-		Status:   "running",
-		VCPUs:    4,
-		MemoryMB: 8192,
-		NetworkID: "net-1",
+		ID:          "vm-persist",
+		Image:       "persist-test:latest",
+		Status:      "running",
+		VCPUs:       4,
+		MemoryMB:    8192,
+		NetworkID:   "net-1",
 		IPAddresses: []string{"10.0.0.10", "10.0.0.11"},
 	}
 
@@ -520,19 +520,19 @@ func TestLoad(t *testing.T) {
 		// Create a valid state file
 		states := []*VMState{
 			{
-				ID:         "vm-load-1",
-				Image:      "load-test:latest",
-				Status:     "running",
-				VCPUs:      2,
-				MemoryMB:   2048,
+				ID:          "vm-load-1",
+				Image:       "load-test:latest",
+				Status:      "running",
+				VCPUs:       2,
+				MemoryMB:    2048,
 				IPAddresses: []string{"10.0.0.1"},
 			},
 			{
-				ID:         "vm-load-2",
-				Image:      "load-test2:latest",
-				Status:     "stopped",
-				VCPUs:      4,
-				MemoryMB:   4096,
+				ID:          "vm-load-2",
+				Image:       "load-test2:latest",
+				Status:      "stopped",
+				VCPUs:       4,
+				MemoryMB:    4096,
 				IPAddresses: []string{"10.0.0.2", "10.0.0.3"},
 			},
 		}

@@ -11,18 +11,18 @@ import (
 
 // MockVMMManager is a mock implementation for testing.
 type MockVMMManager struct {
-	StartFunc            func(ctx context.Context, task *types.Task, config interface{}) error
-	StopFunc             func(ctx context.Context, task *types.Task) error
-	ForceStopFunc        func(ctx context.Context, task *types.Task) error
-	WaitFunc             func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
-	RemoveFunc           func(ctx context.Context, task *types.Task) error
-	GetPIDFunc           func(taskID string) int
-	CheckVMAPIHealthFunc func(ctx context.Context, taskID string) bool
-	IsRunningFunc        func(taskID string) bool
-	DescribeFunc         func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+	StartFunc               func(ctx context.Context, task *types.Task, config interface{}) error
+	StopFunc                func(ctx context.Context, task *types.Task) error
+	ForceStopFunc           func(ctx context.Context, task *types.Task) error
+	WaitFunc                func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+	RemoveFunc              func(ctx context.Context, task *types.Task) error
+	GetPIDFunc              func(taskID string) int
+	CheckVMAPIHealthFunc    func(ctx context.Context, taskID string) bool
+	IsRunningFunc           func(taskID string) bool
+	DescribeFunc            func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
 	GetRunningProcessesFunc func() map[string]*exec.Cmd
-	RemoveProcessFunc    func(taskID string)
-	processes           map[string]*exec.Cmd
+	RemoveProcessFunc       func(taskID string)
+	processes               map[string]*exec.Cmd
 }
 
 func (m *MockVMMManager) Start(ctx context.Context, task *types.Task, config interface{}) error {
@@ -110,8 +110,8 @@ func (m *MockVMMManager) RemoveProcess(taskID string) {
 
 // MockImagePreparer is a mock implementation for testing.
 type MockImagePreparer struct {
-	PrepareFunc  func(ctx context.Context, task *types.Task) error
-	CleanupFunc  func(ctx context.Context, keepDays int) (filesRemoved int, bytesFreed int64, err error)
+	PrepareFunc func(ctx context.Context, task *types.Task) error
+	CleanupFunc func(ctx context.Context, keepDays int) (filesRemoved int, bytesFreed int64, err error)
 }
 
 func (m *MockImagePreparer) Prepare(ctx context.Context, task *types.Task) error {
@@ -130,10 +130,10 @@ func (m *MockImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRem
 
 // MockNetworkManager is a mock implementation for testing.
 type MockNetworkManager struct {
-	PrepareNetworkFunc  func(ctx context.Context, task *types.Task) error
-	CleanupNetworkFunc  func(ctx context.Context, task *types.Task) error
-	GetTapIPFunc        func(taskID string) (string, error)
-	InitFunc            func(ctx context.Context) error
+	PrepareNetworkFunc   func(ctx context.Context, task *types.Task) error
+	CleanupNetworkFunc   func(ctx context.Context, task *types.Task) error
+	GetTapIPFunc         func(taskID string) (string, error)
+	InitFunc             func(ctx context.Context) error
 	SetNodeDiscoveryFunc func(discovery types.NodeDiscovery)
 	UpdateVXLANPeersFunc func(peers []string) error
 }
@@ -181,8 +181,8 @@ func (m *MockNetworkManager) UpdateVXLANPeers(peers []string) error {
 
 // MockVolumeManager is a mock implementation for testing.
 type MockVolumeManager struct {
-	PrepareVolumesFunc  func(ctx context.Context, task *types.Task) error
-	CleanupVolumesFunc  func(ctx context.Context, task *types.Task) error
+	PrepareVolumesFunc func(ctx context.Context, task *types.Task) error
+	CleanupVolumesFunc func(ctx context.Context, task *types.Task) error
 }
 
 func (m *MockVolumeManager) PrepareVolumes(ctx context.Context, task *types.Task) error {

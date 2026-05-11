@@ -26,7 +26,7 @@ func newNetworkVXLANCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "vxlan",
 		Short: "Manage VXLAN overlay",
-		Long: `Manage VXLAN overlay networking for cross-node VM communication.`,
+		Long:  `Manage VXLAN overlay networking for cross-node VM communication.`,
 	}
 
 	cmd.AddCommand(newVXLANListCommand())
@@ -90,7 +90,7 @@ func newNetworkBridgeCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "bridge",
 		Short: "Manage bridge network",
-		Long: `Manage the bridge network for local VM communication.`,
+		Long:  `Manage the bridge network for local VM communication.`,
 	}
 
 	cmd.AddCommand(newBridgeStatusCommand())

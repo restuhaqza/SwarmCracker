@@ -48,8 +48,8 @@ func TestCNIConfig_PartialDefaults(t *testing.T) {
 	client := NewCNIClient(cfg)
 
 	assert.Equal(t, "/custom/bin", client.config.BinDir)
-	assert.Equal(t, "/etc/cni/net.d", client.config.ConfDir) // Default
-	assert.Equal(t, "/var/lib/cni", client.config.CacheDir)  // Default
+	assert.Equal(t, "/etc/cni/net.d", client.config.ConfDir)   // Default
+	assert.Equal(t, "/var/lib/cni", client.config.CacheDir)    // Default
 	assert.Equal(t, "swarmcracker", client.config.NetworkName) // Default
 }
 

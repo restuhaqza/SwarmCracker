@@ -60,7 +60,7 @@ func TestConfigureVM_ErrorPaths(t *testing.T) {
 		{
 			name: "empty map",
 			config: map[string]interface{}{
-				"boot-source":   map[string]interface{}{},
+				"boot-source":    map[string]interface{}{},
 				"machine-config": map[string]interface{}{},
 			},
 			expectError: false, // Empty config is valid
@@ -107,8 +107,8 @@ func TestConfigureVM_ErrorPaths(t *testing.T) {
 			expectError: false, // Invalid drive entries are skipped
 		},
 		{
-			name: "valid JSON string config",
-			config: `{"boot-source": {"kernel_image_path": "/kernel"}}`,
+			name:        "valid JSON string config",
+			config:      `{"boot-source": {"kernel_image_path": "/kernel"}}`,
 			expectError: false,
 		},
 		{
@@ -123,10 +123,10 @@ func TestConfigureVM_ErrorPaths(t *testing.T) {
 				},
 				"drives": []interface{}{
 					map[string]interface{}{
-						"drive_id":      "rootfs",
-						"path_on_host":  "/rootfs.ext4",
+						"drive_id":       "rootfs",
+						"path_on_host":   "/rootfs.ext4",
 						"is_root_device": true,
-						"is_read_only":  false,
+						"is_read_only":   false,
 					},
 				},
 			},
@@ -518,7 +518,7 @@ func TestStart_ErrorPaths(t *testing.T) {
 			task: &types.Task{
 				ID: "test-exists",
 			},
-			config: map[string]interface{}{},
+			config:      map[string]interface{}{},
 			expectError: false, // Will error on Firecracker binary
 		},
 	}
@@ -770,10 +770,10 @@ func TestConfigureVM_WithMockServer(t *testing.T) {
 		},
 		"drives": []interface{}{
 			map[string]interface{}{
-				"drive_id":      "rootfs",
-				"path_on_host":  "/rootfs.ext4",
+				"drive_id":       "rootfs",
+				"path_on_host":   "/rootfs.ext4",
 				"is_root_device": true,
-				"is_read_only":  false,
+				"is_read_only":   false,
 			},
 		},
 	}
@@ -850,10 +850,10 @@ func TestWaitForAPIServer_EdgeCases(t *testing.T) {
 // TestWaitForShutdown_EdgeCases tests edge cases for waitForShutdown
 func TestWaitForShutdown_EdgeCases(t *testing.T) {
 	tests := []struct {
-		name        string
-		setupSocket func(t *testing.T) string
-		timeout     time.Duration
-		expectError bool
+		name          string
+		setupSocket   func(t *testing.T) string
+		timeout       time.Duration
+		expectError   bool
 		expectDeleted bool
 	}{
 		{

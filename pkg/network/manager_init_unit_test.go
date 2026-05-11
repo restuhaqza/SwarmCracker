@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
 // =============================================================================
@@ -25,10 +25,10 @@ func TestNetworkManager_Init_Success(t *testing.T) {
 	}
 
 	config := types.NetworkConfig{
-		BridgeName:    "test-br0",
-		Subnet:        "10.0.0.0/24",
-		BridgeIP:      "10.0.0.1/24",
-		VXLANEnabled:  false,
+		BridgeName:   "test-br0",
+		Subnet:       "10.0.0.0/24",
+		BridgeIP:     "10.0.0.1/24",
+		VXLANEnabled: false,
 	}
 
 	nm := NewNetworkManager(config).(*NetworkManager)
@@ -49,9 +49,9 @@ func TestNetworkManager_Init_EnsureBridgeFail(t *testing.T) {
 	mock.Commands["iptables"] = MockCommandResult{Err: errors.New("permission denied")}
 
 	config := types.NetworkConfig{
-		BridgeName:    "br0",
-		Subnet:        "10.0.0.0/24",
-		BridgeIP:      "10.0.0.1/24",
+		BridgeName: "br0",
+		Subnet:     "10.0.0.0/24",
+		BridgeIP:   "10.0.0.1/24",
 	}
 
 	nmInternal := NewNetworkManagerWithExecutor(config, mock)
@@ -76,9 +76,9 @@ func TestNetworkManager_Init_BridgeIPFail(t *testing.T) {
 	}
 
 	config := types.NetworkConfig{
-		BridgeName:    "br0",
-		BridgeIP:      "10.0.0.1/24",
-		Subnet:        "10.0.0.0/24",
+		BridgeName: "br0",
+		BridgeIP:   "10.0.0.1/24",
+		Subnet:     "10.0.0.0/24",
 	}
 
 	nmInternal := NewNetworkManagerWithExecutor(config, mock)
@@ -98,11 +98,11 @@ func TestNetworkManager_Init_VXLANEnabled(t *testing.T) {
 	}
 
 	config := types.NetworkConfig{
-		BridgeName:    "br0",
-		BridgeIP:      "10.0.0.1/24",
-		Subnet:        "10.0.0.0/24",
-		VXLANEnabled:  true,
-		VXLANPeers:    []string{"10.0.0.2"},
+		BridgeName:   "br0",
+		BridgeIP:     "10.0.0.1/24",
+		Subnet:       "10.0.0.0/24",
+		VXLANEnabled: true,
+		VXLANPeers:   []string{"10.0.0.2"},
 	}
 
 	nmInternal := NewNetworkManagerWithExecutor(config, mock)

@@ -27,8 +27,8 @@ Provides commands for viewing, validating, and managing configuration.`,
 // newConfigListCommand lists configuration
 func newConfigListCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ls",
-		Short: "List configuration files",
+		Use:     "ls",
+		Short:   "List configuration files",
 		Aliases: []string{"list"},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return listConfig()
@@ -56,6 +56,7 @@ func listConfig() error {
 	if _, err := os.Stat(configDir); err != nil {
 		fmt.Printf("No configuration directory found at %s\n", configDir)
 		fmt.Println("Initialize with: swarmcracker cluster init")
+		//nolint:nilerr
 		return nil
 	}
 
@@ -93,6 +94,7 @@ func validateConfig() error {
 	if _, err := os.Stat(configFile); err != nil {
 		fmt.Printf("⚠️  Main config file not found: %s\n", configFile)
 		fmt.Println("This is normal for a new cluster - config will be created on init")
+		//nolint:nilerr
 		return nil
 	}
 
@@ -104,13 +106,13 @@ func validateConfig() error {
 func runDoctorNetwork() error {
 	// Delegate to doctor command
 	fmt.Println("Running network diagnostics...")
-	
+
 	// Run bridge check
 	checkDoctorBridgeModule()
-	
-	// Run VXLAN check  
+
+	// Run VXLAN check
 	checkDoctorBridgeIface()
-	
+
 	fmt.Println("\nUse 'swarmcracker doctor' for full diagnostics")
 	return nil
 }

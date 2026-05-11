@@ -508,6 +508,7 @@ func (vm *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSt
 	// Check if process is still running
 	process, err := os.FindProcess(vmInstance.PID)
 	if err != nil {
+		//nolint:nilerr
 		return &types.TaskStatus{
 			State:   types.TaskStateComplete,
 			Message: "Process not found",

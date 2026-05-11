@@ -25,12 +25,12 @@ func TestPrepare_AllCodePaths(t *testing.T) {
 
 	// Create rootfs for each scenario
 	scenarios := []struct {
-		name        string
-		image       string
-		initSystem  string
-		mounts      []types.Mount
-		secrets     []types.SecretRef
-		configs     []types.ConfigRef
+		name       string
+		image      string
+		initSystem string
+		mounts     []types.Mount
+		secrets    []types.SecretRef
+		configs    []types.ConfigRef
 	}{
 		{
 			name:       "with_tini",
@@ -139,7 +139,7 @@ func TestPrepare_NilAnnotationsInitialization(t *testing.T) {
 	task := &types.Task{
 		ID:          "nil-annotations-test",
 		Annotations: nil,
-		Spec: types.TaskSpec{Runtime: &types.Container{Image: "nil-ann:v1"}},
+		Spec:        types.TaskSpec{Runtime: &types.Container{Image: "nil-ann:v1"}},
 		Secrets:     []types.SecretRef{},
 		Configs:     []types.ConfigRef{},
 	}
@@ -396,9 +396,9 @@ func TestGenerateImageID_Comprehensive(t *testing.T) {
 // TestGetDirSize_Comprehensive tests directory size calculation
 func TestGetDirSize_Comprehensive(t *testing.T) {
 	tests := []struct {
-		name     string
-		setup    func(t *testing.T) string
-		minSize  int64
+		name    string
+		setup   func(t *testing.T) string
+		minSize int64
 	}{
 		{
 			name: "empty_dir",

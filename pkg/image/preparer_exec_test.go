@@ -219,7 +219,7 @@ func TestInjectInitSystem_MountFailures(t *testing.T) {
 		{
 			name:        "mount_fails_permission_denied",
 			rootfsPath:  "/root/test.ext4", // Likely no permission
-			expectError: false, // Should log and continue
+			expectError: false,             // Should log and continue
 			description: "Permission denied - should skip gracefully",
 		},
 	}

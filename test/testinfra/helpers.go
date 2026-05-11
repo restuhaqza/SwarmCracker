@@ -230,6 +230,7 @@ func (th *TestHelper) KillProcessByName(name string) error {
 	output, err := cmd.Output()
 	if err != nil {
 		// No processes found
+		//nolint:nilerr
 		return nil
 	}
 

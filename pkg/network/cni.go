@@ -112,6 +112,7 @@ func TAPDeviceExistsWithExecutor(name string, executor TAPExecutor) (bool, error
 	err := executor.Run(showCmd)
 	if err != nil {
 		// Device doesn't exist
+		//nolint:nilerr
 		return false, nil
 	}
 	return true, nil

@@ -318,40 +318,40 @@ func TestMatchesFilter_EdgeCases(t *testing.T) {
 		match  bool
 	}{
 		{
-			name: "empty filter matches empty info",
-			info: &SnapshotInfo{CreatedAt: now},
+			name:   "empty filter matches empty info",
+			info:   &SnapshotInfo{CreatedAt: now},
 			filter: SnapshotFilter{},
-			match: true,
+			match:  true,
 		},
 		{
-			name: "since equals created - should match",
-			info: &SnapshotInfo{CreatedAt: now},
+			name:   "since equals created - should match",
+			info:   &SnapshotInfo{CreatedAt: now},
 			filter: SnapshotFilter{Since: now},
-			match: true, // Before(filter.Since) is strictly before, so now is not before now
+			match:  true, // Before(filter.Since) is strictly before, so now is not before now
 		},
 		{
-			name: "before equals created - should match",
-			info: &SnapshotInfo{CreatedAt: now},
+			name:   "before equals created - should match",
+			info:   &SnapshotInfo{CreatedAt: now},
 			filter: SnapshotFilter{Before: now},
-			match: true, // After(filter.Before) is strictly after, so now is not after now
+			match:  true, // After(filter.Before) is strictly after, so now is not after now
 		},
 		{
-			name: "zero time filter",
-			info: &SnapshotInfo{CreatedAt: now},
+			name:   "zero time filter",
+			info:   &SnapshotInfo{CreatedAt: now},
 			filter: SnapshotFilter{Since: time.Time{}, Before: time.Time{}},
-			match: true,
+			match:  true,
 		},
 		{
-			name: "created before since",
-			info: &SnapshotInfo{CreatedAt: now.Add(-1 * time.Hour)},
+			name:   "created before since",
+			info:   &SnapshotInfo{CreatedAt: now.Add(-1 * time.Hour)},
 			filter: SnapshotFilter{Since: now},
-			match: false, // Created before since means it doesn't match
+			match:  false, // Created before since means it doesn't match
 		},
 		{
-			name: "created after before",
-			info: &SnapshotInfo{CreatedAt: now.Add(1 * time.Hour)},
+			name:   "created after before",
+			info:   &SnapshotInfo{CreatedAt: now.Add(1 * time.Hour)},
 			filter: SnapshotFilter{Before: now},
-			match: false, // Created after before means it doesn't match
+			match:  false, // Created after before means it doesn't match
 		},
 	}
 

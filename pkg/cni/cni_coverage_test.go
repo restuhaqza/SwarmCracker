@@ -134,10 +134,10 @@ func TestWriteConfigListFile(t *testing.T) {
 
 func TestGenerateSubnet(t *testing.T) {
 	tests := []struct {
-		pool     string
-		size     int
-		index    uint32
-		name     string
+		pool  string
+		size  int
+		index uint32
+		name  string
 	}{
 		{pool: "10.0.0.0/8", size: 24, index: 0, name: "net1"},
 		{pool: "10.0.0.0/8", size: 24, index: 1, name: "net2"},

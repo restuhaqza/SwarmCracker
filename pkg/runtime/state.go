@@ -295,7 +295,7 @@ func (sm *StateManager) Reconcile(isRunningFunc func(id string) bool) int {
 	if reconciledCount > 0 {
 		if err := sm.save(); err != nil {
 			// Log error but don't fail - state will be reconciled again next time
-			}
+		}
 	}
 
 	return reconciledCount

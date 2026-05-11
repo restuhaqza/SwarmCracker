@@ -311,7 +311,7 @@ func TestCreateTapDevice_WithCustomBridge(t *testing.T) {
 	nmi := NewNetworkManagerWithExecutor(testNetConfig(), mock)
 	network := types.NetworkAttachment{
 		Network: types.Network{
-			ID:   "test-net",
+			ID: "test-net",
 			Spec: types.NetworkSpec{
 				Name: "test",
 				DriverConfig: &types.DriverConfig{

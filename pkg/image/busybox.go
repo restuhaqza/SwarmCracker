@@ -24,21 +24,21 @@ func injectBusybox(tmpDir string) error {
 	// Create busybox applet symlinks for common commands
 	// These symlinks allow busybox to act as multiple utilities
 	applets := []string{
-		"sh", "ash",           // Shells
+		"sh", "ash", // Shells
 		"ls", "cat", "mkdir", "rmdir", "rm", "cp", "mv", "ln", // File operations
-		"chmod", "chown",      // Permissions
-		"echo", "printf",      // Output
-		"pwd", "cd", "env",    // Environment
+		"chmod", "chown", // Permissions
+		"echo", "printf", // Output
+		"pwd", "cd", "env", // Environment
 		"sleep", "true", "false", "test", "[", // Utilities
-		"ps", "kill", "top",   // Process management
-		"mount", "umount",     // Mount operations
+		"ps", "kill", "top", // Process management
+		"mount", "umount", // Mount operations
 		"grep", "sed", "awk", "head", "tail", "wc", "tr", // Text processing
 		"tar", "gzip", "gunzip", // Compression
 		"ip", "ifconfig", "netstat", "ping", // Networking (may not all be enabled)
-		"df", "du", "free",    // System info
+		"df", "du", "free", // System info
 		"date", "uname", "hostname", "id", "whoami", // System info
-		"clear", "reset",      // Terminal
-		"vi", "ed",            // Editors
+		"clear", "reset", // Terminal
+		"vi", "ed", // Editors
 	}
 
 	for _, applet := range applets {

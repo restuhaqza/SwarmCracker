@@ -45,17 +45,17 @@ func TestRunCleanup(t *testing.T) {
 
 	// Create executor
 	cfg := &Config{
-		FirecrackerPath:  "firecracker",
-		KernelPath:       "/usr/share/firecracker/vmlinux",
-		RootfsDir:        rootfsDir,
-		SocketDir:        filepath.Join(tempDir, "sockets"),
-		StateDir:         stateDir,
-		MaxImageAgeDays:  7, // Only clean images older than 7 days
-		DefaultVCPUs:     1,
-		DefaultMemoryMB:  512,
-		BridgeName:       "swarm-br0",
-		Subnet:           "192.168.127.0/24",
-		BridgeIP:         "192.168.127.1/24",
+		FirecrackerPath: "firecracker",
+		KernelPath:      "/usr/share/firecracker/vmlinux",
+		RootfsDir:       rootfsDir,
+		SocketDir:       filepath.Join(tempDir, "sockets"),
+		StateDir:        stateDir,
+		MaxImageAgeDays: 7, // Only clean images older than 7 days
+		DefaultVCPUs:    1,
+		DefaultMemoryMB: 512,
+		BridgeName:      "swarm-br0",
+		Subnet:          "192.168.127.0/24",
+		BridgeIP:        "192.168.127.1/24",
 	}
 
 	exec, err := NewExecutor(cfg)

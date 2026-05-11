@@ -518,8 +518,8 @@ func TestPrepare_WithSecretsAndConfigs(t *testing.T) {
 
 	// Manually set the internal task with rootfs annotation for this test
 	ctrl.internalTask = &types.Task{
-		ID:    task.ID,
-		Spec:  types.TaskSpec{Runtime: &types.Container{}},
+		ID:   task.ID,
+		Spec: types.TaskSpec{Runtime: &types.Container{}},
 		Annotations: map[string]string{
 			"rootfs": rootfsPath,
 		},
@@ -537,17 +537,17 @@ func TestPeriodicCleanup_ContextCancellation(t *testing.T) {
 	stateDir := filepath.Join(tempDir, "state")
 
 	cfg := &Config{
-		FirecrackerPath:  "firecracker",
-		KernelPath:       "/usr/share/firecracker/vmlinux",
-		RootfsDir:        filepath.Join(tempDir, "rootfs"),
-		SocketDir:        filepath.Join(tempDir, "sockets"),
-		StateDir:         stateDir,
-		DefaultVCPUs:     1,
-		DefaultMemoryMB:  512,
-		BridgeName:       "swarm-br0",
-		Subnet:           "192.168.127.0/24",
-		BridgeIP:         "192.168.127.1/24",
-		MaxImageAgeDays:  7,
+		FirecrackerPath: "firecracker",
+		KernelPath:      "/usr/share/firecracker/vmlinux",
+		RootfsDir:       filepath.Join(tempDir, "rootfs"),
+		SocketDir:       filepath.Join(tempDir, "sockets"),
+		StateDir:        stateDir,
+		DefaultVCPUs:    1,
+		DefaultMemoryMB: 512,
+		BridgeName:      "swarm-br0",
+		Subnet:          "192.168.127.0/24",
+		BridgeIP:        "192.168.127.1/24",
+		MaxImageAgeDays: 7,
 	}
 
 	exec, err := NewExecutor(cfg)
@@ -575,17 +575,17 @@ func TestPeriodicCleanup_InitialDelay(t *testing.T) {
 	stateDir := filepath.Join(tempDir, "state")
 
 	cfg := &Config{
-		FirecrackerPath:  "firecracker",
-		KernelPath:       "/usr/share/firecracker/vmlinux",
-		RootfsDir:        filepath.Join(tempDir, "rootfs"),
-		SocketDir:        filepath.Join(tempDir, "sockets"),
-		StateDir:         stateDir,
-		DefaultVCPUs:     1,
-		DefaultMemoryMB:  512,
-		BridgeName:       "swarm-br0",
-		Subnet:           "192.168.127.0/24",
-		BridgeIP:         "192.168.127.1/24",
-		MaxImageAgeDays:  7,
+		FirecrackerPath: "firecracker",
+		KernelPath:      "/usr/share/firecracker/vmlinux",
+		RootfsDir:       filepath.Join(tempDir, "rootfs"),
+		SocketDir:       filepath.Join(tempDir, "sockets"),
+		StateDir:        stateDir,
+		DefaultVCPUs:    1,
+		DefaultMemoryMB: 512,
+		BridgeName:      "swarm-br0",
+		Subnet:          "192.168.127.0/24",
+		BridgeIP:        "192.168.127.1/24",
+		MaxImageAgeDays: 7,
 	}
 
 	exec, err := NewExecutor(cfg)
@@ -672,17 +672,17 @@ func TestRunCleanup_CleanupLogic(t *testing.T) {
 			}
 
 			cfg := &Config{
-				FirecrackerPath:  "firecracker",
-				KernelPath:       "/usr/share/firecracker/vmlinux",
-				RootfsDir:        rootfsDir,
-				SocketDir:        filepath.Join(tempDir, "sockets"),
-				StateDir:         stateDir,
-				MaxImageAgeDays:  tt.maxAgeDays,
-				DefaultVCPUs:     1,
-				DefaultMemoryMB:  512,
-				BridgeName:       "swarm-br0",
-				Subnet:           "192.168.127.0/24",
-				BridgeIP:         "192.168.127.1/24",
+				FirecrackerPath: "firecracker",
+				KernelPath:      "/usr/share/firecracker/vmlinux",
+				RootfsDir:       rootfsDir,
+				SocketDir:       filepath.Join(tempDir, "sockets"),
+				StateDir:        stateDir,
+				MaxImageAgeDays: tt.maxAgeDays,
+				DefaultVCPUs:    1,
+				DefaultMemoryMB: 512,
+				BridgeName:      "swarm-br0",
+				Subnet:          "192.168.127.0/24",
+				BridgeIP:        "192.168.127.1/24",
 			}
 
 			exec, err := NewExecutor(cfg)
@@ -726,17 +726,17 @@ func TestRunCleanup_EmptyDirectory(t *testing.T) {
 	require.NoError(t, err)
 
 	cfg := &Config{
-		FirecrackerPath:  "firecracker",
-		KernelPath:       "/usr/share/firecracker/vmlinux",
-		RootfsDir:        rootfsDir,
-		SocketDir:        filepath.Join(tempDir, "sockets"),
-		StateDir:         stateDir,
-		MaxImageAgeDays:  7,
-		DefaultVCPUs:     1,
-		DefaultMemoryMB:  512,
-		BridgeName:       "swarm-br0",
-		Subnet:           "192.168.127.0/24",
-		BridgeIP:         "192.168.127.1/24",
+		FirecrackerPath: "firecracker",
+		KernelPath:      "/usr/share/firecracker/vmlinux",
+		RootfsDir:       rootfsDir,
+		SocketDir:       filepath.Join(tempDir, "sockets"),
+		StateDir:        stateDir,
+		MaxImageAgeDays: 7,
+		DefaultVCPUs:    1,
+		DefaultMemoryMB: 512,
+		BridgeName:      "swarm-br0",
+		Subnet:          "192.168.127.0/24",
+		BridgeIP:        "192.168.127.1/24",
 	}
 
 	exec, err := NewExecutor(cfg)
@@ -878,24 +878,24 @@ func TestNewExecutor_JailerEnabled(t *testing.T) {
 	tempDir := t.TempDir()
 
 	cfg := &Config{
-		FirecrackerPath:  "firecracker",
-		KernelPath:       "/usr/share/firecracker/vmlinux",
-		RootfsDir:        filepath.Join(tempDir, "rootfs"),
-		SocketDir:        filepath.Join(tempDir, "sockets"),
-		StateDir:         filepath.Join(tempDir, "state"),
-		DefaultVCPUs:     1,
-		DefaultMemoryMB:  512,
-		BridgeName:       "swarm-br0",
-		Subnet:           "192.168.127.0/24",
-		BridgeIP:         "192.168.127.1/24",
-		EnableJailer:     true,
-		JailerPath:       "/usr/local/bin/jailer",
-		JailerUID:        12345,
-		JailerGID:        12345,
-		JailerChrootDir:  "/var/lib/swarmcracker/jailer",
-		ParentCgroup:     "/sys/fs/cgroup",
-		CgroupVersion:    "v2",
-		EnableCgroups:    true,
+		FirecrackerPath: "firecracker",
+		KernelPath:      "/usr/share/firecracker/vmlinux",
+		RootfsDir:       filepath.Join(tempDir, "rootfs"),
+		SocketDir:       filepath.Join(tempDir, "sockets"),
+		StateDir:        filepath.Join(tempDir, "state"),
+		DefaultVCPUs:    1,
+		DefaultMemoryMB: 512,
+		BridgeName:      "swarm-br0",
+		Subnet:          "192.168.127.0/24",
+		BridgeIP:        "192.168.127.1/24",
+		EnableJailer:    true,
+		JailerPath:      "/usr/local/bin/jailer",
+		JailerUID:       12345,
+		JailerGID:       12345,
+		JailerChrootDir: "/var/lib/swarmcracker/jailer",
+		ParentCgroup:    "/sys/fs/cgroup",
+		CgroupVersion:   "v2",
+		EnableCgroups:   true,
 	}
 
 	exec, err := NewExecutor(cfg)
@@ -1093,7 +1093,7 @@ func TestController_NilSecretManager(t *testing.T) {
 		Spec: api.TaskSpec{
 			Runtime: &api.TaskSpec_Container{
 				Container: &api.ContainerSpec{
-					Image:   "alpine:latest",
+					Image: "alpine:latest",
 					Secrets: []*api.SecretReference{
 						{SecretID: "s1", SecretName: "secret1"},
 					},
@@ -1112,8 +1112,8 @@ func TestController_NilSecretManager(t *testing.T) {
 	require.NoError(t, err)
 
 	ctrl.internalTask = &types.Task{
-		ID:    task.ID,
-		Spec:  types.TaskSpec{Runtime: &types.Container{}},
+		ID:   task.ID,
+		Spec: types.TaskSpec{Runtime: &types.Container{}},
 		Annotations: map[string]string{
 			"rootfs": rootfsPath,
 		},
@@ -1244,8 +1244,8 @@ func TestPrepare_WithSecretsOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	ctrl.internalTask = &types.Task{
-		ID:    task.ID,
-		Spec:  types.TaskSpec{Runtime: &types.Container{}},
+		ID:   task.ID,
+		Spec: types.TaskSpec{Runtime: &types.Container{}},
 		Annotations: map[string]string{
 			"rootfs": rootfsPath,
 		},
@@ -1340,8 +1340,8 @@ func TestPrepare_WithConfigsOnly(t *testing.T) {
 	require.NoError(t, err)
 
 	ctrl.internalTask = &types.Task{
-		ID:    task.ID,
-		Spec:  types.TaskSpec{Runtime: &types.Container{}},
+		ID:   task.ID,
+		Spec: types.TaskSpec{Runtime: &types.Container{}},
 		Annotations: map[string]string{
 			"rootfs": rootfsPath,
 		},

@@ -307,7 +307,7 @@ func createWorkerDirectories(cfg *joinConfig) error {
 		cfg.ConfigDir,
 		cfg.RootfsDir,
 		cfg.SocketDir,
-		"/var/run/swarmkit",  // Required for systemd ProtectSystem=strict
+		"/var/run/swarmkit", // Required for systemd ProtectSystem=strict
 	}
 
 	for _, dir := range dirs {

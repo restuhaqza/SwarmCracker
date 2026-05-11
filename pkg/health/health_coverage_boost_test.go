@@ -408,8 +408,8 @@ func TestHealthStatus_JSONSerialization(t *testing.T) {
 	status := HealthStatus{
 		Healthy: true,
 		Checks: map[string]CheckResult{
-			"kvm":        {Status: "ok", Message: "KVM is accessible"},
-			"bridge":     {Status: "ok", Message: "bridge exists"},
+			"kvm":         {Status: "ok", Message: "KVM is accessible"},
+			"bridge":      {Status: "ok", Message: "bridge exists"},
 			"firecracker": {Status: "error", Message: "not found"},
 		},
 	}

@@ -68,10 +68,10 @@ func TestGetInitBinaryPath_Coverage(t *testing.T) {
 // TestCopyDirectory_Coverage tests copyDirectory error paths
 func TestCopyDirectory_Coverage(t *testing.T) {
 	tests := []struct {
-		name      string
-		setupSrc  func(*testing.T) string
-		setupDst  func(*testing.T) string
-		wantErr   bool
+		name     string
+		setupSrc func(*testing.T) string
+		setupDst func(*testing.T) string
+		wantErr  bool
 	}{
 		{
 			name: "copy_with_symlinks",
@@ -197,9 +197,9 @@ func TestGetDirSize_Coverage(t *testing.T) {
 // TestCreateInitWrapper_Coverage tests createInitWrapper with different scenarios
 func TestCreateInitWrapper_Coverage(t *testing.T) {
 	tests := []struct {
-		name         string
+		name          string
 		setupMountDir func(*testing.T) string
-		wantErr      bool
+		wantErr       bool
 	}{
 		{
 			name: "with_entrypoint_scripts",
@@ -492,11 +492,11 @@ func TestPrepare_ImageScenarios(t *testing.T) {
 // TestCleanup_Coverage tests Cleanup with various scenarios
 func TestCleanup_Coverage(t *testing.T) {
 	tests := []struct {
-		name         string
-		setupRootfs  func(*testing.T) string
-		keepDays     int
-		wantRemoved  int
-		setupFiles   func(*testing.T, string) []string
+		name        string
+		setupRootfs func(*testing.T) string
+		keepDays    int
+		wantRemoved int
+		setupFiles  func(*testing.T, string) []string
 	}{
 		{
 			name: "cleanup_old_files",
@@ -551,7 +551,7 @@ func TestCleanup_Coverage(t *testing.T) {
 			},
 			keepDays:    7,
 			wantRemoved: 0,
-			setupFiles: nil,
+			setupFiles:  nil,
 		},
 	}
 

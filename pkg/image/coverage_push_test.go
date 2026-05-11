@@ -1257,7 +1257,7 @@ func TestHandleMounts_EmptyTargetV2(t *testing.T) {
 	os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
 
 	mounts := []types.Mount{
-		{Source: "", Target: "", ReadOnly: false}, // Empty target - should skip
+		{Source: "", Target: "", ReadOnly: false},            // Empty target - should skip
 		{Source: "volume:test", Target: "", ReadOnly: false}, // Empty target - should skip
 	}
 
@@ -1492,16 +1492,16 @@ func TestPrepare_WithCachedRootfsAndMounts(t *testing.T) {
 					{Source: bindSource, Target: "/data", ReadOnly: false},
 					{Source: "volume:test", Target: "/vol", ReadOnly: true},
 					{Source: "", Target: "", ReadOnly: false}, // Empty target - skip
-					},
 				},
-				},
-				Secrets: []types.SecretRef{
-					{ID: "s1", Name: "secret1", Target: "/run/secrets/s1", Data: []byte("secret-data")},
-					},
-					Configs: []types.ConfigRef{
-						{ID: "c1", Name: "config1", Target: "/etc/config", Data: []byte("config-data")},
-						},
-					}
+			},
+		},
+		Secrets: []types.SecretRef{
+			{ID: "s1", Name: "secret1", Target: "/run/secrets/s1", Data: []byte("secret-data")},
+		},
+		Configs: []types.ConfigRef{
+			{ID: "c1", Name: "config1", Target: "/etc/config", Data: []byte("config-data")},
+		},
+	}
 
 	ctx := context.Background()
 	err := ip.Prepare(ctx, task)

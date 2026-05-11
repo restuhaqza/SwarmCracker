@@ -12,14 +12,14 @@ import (
 
 // deinitConfig holds the configuration for deinitializing a manager
 type deinitConfig struct {
-	Purge         bool
-	Force         bool
+	Purge          bool
+	Force          bool
 	CleanupNetwork bool
-	KeepTokens    bool
-	StateDir      string
-	ConfigDir     string
-	RootfsDir     string
-	BridgeName    string
+	KeepTokens     bool
+	StateDir       string
+	ConfigDir      string
+	RootfsDir      string
+	BridgeName     string
 }
 
 func newDeinitCommand() *cobra.Command {
@@ -184,6 +184,7 @@ func countRunningVMs() (int, error) {
 	cmd := exec.Command("pgrep", "-c", "-f", "firecracker")
 	output, err := cmd.Output()
 	if err != nil {
+		//nolint:nilerr
 		return 0, nil // No processes
 	}
 

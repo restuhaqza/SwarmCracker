@@ -56,7 +56,7 @@ func (q *QuotaEnforcer) CheckCreate(sizeMB int) error {
 // Returns nil if the data fits or if limit is 0 (unlimited).
 func (q *QuotaEnforcer) CheckSync(volumeName, sourcePath string, limitMB int) error {
 	if limitMB <= 0 {
-		return nil // unlimited
+		return nil //nolint:nilerr // unlimited
 	}
 
 	usedBytes, err := dirSizeBytes(sourcePath)
@@ -91,6 +91,7 @@ func (q *QuotaEnforcer) CheckCapacity(volumeName, dataPath string, limitMB int) 
 
 	usedBytes, err := dirSizeBytes(dataPath)
 	if err != nil {
+		//nolint:nilerr
 		return nil
 	}
 

@@ -9,9 +9,9 @@ import (
 
 // IPAMManager manages IP address allocation across multiple pools
 type IPAMManager struct {
-	pools    map[string]*IPPool // subnet -> pool
-	mu       sync.RWMutex
-	config   *CNIConfig
+	pools  map[string]*IPPool // subnet -> pool
+	mu     sync.RWMutex
+	config *CNIConfig
 }
 
 // NewIPAMManager creates a new IPAM manager
@@ -48,11 +48,11 @@ func (m *IPAMManager) CreatePool(subnetCIDR string, gatewayIP net.IP) (*IPPool, 
 	}
 
 	pool := &IPPool{
-		Subnet:     subnet,
-		Gateway:    gatewayIP,
-		UsedIPs:    make(map[string]string),
+		Subnet:      subnet,
+		Gateway:     gatewayIP,
+		UsedIPs:     make(map[string]string),
 		ReservedIPs: []net.IP{gatewayIP}, // Reserve gateway
-		NextIP:     incrementIP(gatewayIP),
+		NextIP:      incrementIP(gatewayIP),
 	}
 
 	m.pools[subnetCIDR] = pool
@@ -140,7 +140,7 @@ func (m *IPAMManager) GetPoolStats(subnetCIDR string) (used, total int, err erro
 	// Calculate total IPs in subnet
 	ones, bits := pool.Subnet.Mask.Size()
 	total = 1 << (bits - ones)
-	total -= 2 // Subtract network and broadcast addresses
+	total -= 2                     // Subtract network and broadcast addresses
 	total -= len(pool.ReservedIPs) // Subtract reserved IPs
 
 	used = len(pool.UsedIPs)

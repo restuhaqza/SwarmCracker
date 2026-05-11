@@ -46,10 +46,9 @@ func TestNetworkManager_SetEncryptionKeys_WithVXLAN(t *testing.T) {
 
 	nm := &NetworkManager{
 
-		config:   defaultNetworkConfig(),
+		config: defaultNetworkConfig(),
 
 		vxlanMgr: vxlan,
-
 	}
 
 	err := nm.SetEncryptionKeys("some-key")
@@ -73,9 +72,7 @@ func TestNetworkManager_SetNodeDiscovery(t *testing.T) {
 			{ID: "node-1", IP: "10.0.0.2", VXLANIP: "10.0.0.2", Status: "ready"},
 
 			{ID: "node-2", IP: "10.0.0.3", VXLANIP: "10.0.0.3", Status: "ready"},
-
 		},
-
 	}
 
 	nm.(*NetworkManager).SetNodeDiscovery(discovery)
@@ -124,12 +121,11 @@ func TestNetworkManager_StopPeerDiscovery_WithVXLAN(t *testing.T) {
 
 	nm := &NetworkManager{
 
-		config:        defaultNetworkConfig(),
+		config: defaultNetworkConfig(),
 
-		vxlanMgr:      vxlan,
+		vxlanMgr: vxlan,
 
 		peerDiscovery: true,
-
 	}
 
 	nm.StopPeerDiscovery()
@@ -167,7 +163,6 @@ func TestNetworkManager_StartPeerDiscovery_AlreadyRunning(t *testing.T) {
 			return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -180,10 +175,9 @@ func TestNetworkManager_StartPeerDiscovery_AlreadyRunning(t *testing.T) {
 
 	nm := &NetworkManager{
 
-		config:   defaultNetworkConfig(),
+		config: defaultNetworkConfig(),
 
 		vxlanMgr: vxlan,
-
 	}
 
 	// Manually set ctx/cancel to simulate already-running state
@@ -205,7 +199,6 @@ func TestNetworkManager_DiscoverPeerWorkers_NilDiscovery(t *testing.T) {
 	nm := &NetworkManager{
 
 		config: defaultNetworkConfig(),
-
 	}
 
 	peers := nm.discoverPeerWorkers()
@@ -224,24 +217,21 @@ func TestNetworkManager_DiscoverPeerWorkers_WithDiscovery(t *testing.T) {
 
 			{ID: "node-1", IP: "10.0.0.2", VXLANIP: "10.0.0.2", Status: "ready"},
 
-			{ID: "node-2", IP: "10.0.0.3", VXLANIP: "", Status: "ready"},          // no VXLAN IP, should be filtered
+			{ID: "node-2", IP: "10.0.0.3", VXLANIP: "", Status: "ready"}, // no VXLAN IP, should be filtered
 
 			{ID: "node-3", IP: "10.0.0.4", VXLANIP: "10.0.0.4", Status: "notready"}, // not ready, filtered
 
 			{ID: "node-4", IP: "10.0.0.5", VXLANIP: "10.0.0.5", Status: "ready"},
-
 		},
 
 		err: nil,
-
 	}
 
 	nm := &NetworkManager{
 
-		config:         defaultNetworkConfig(),
+		config: defaultNetworkConfig(),
 
-		nodeDiscovery:  discovery,
-
+		nodeDiscovery: discovery,
 	}
 
 	peers := nm.discoverPeerWorkers()
@@ -262,16 +252,14 @@ func TestNetworkManager_DiscoverPeerWorkers_Error(t *testing.T) {
 
 		nodes: nil,
 
-		err:   fmt.Errorf("discovery failed"),
-
+		err: fmt.Errorf("discovery failed"),
 	}
 
 	nm := &NetworkManager{
 
-		config:         defaultNetworkConfig(),
+		config: defaultNetworkConfig(),
 
-		nodeDiscovery:  discovery,
-
+		nodeDiscovery: discovery,
 	}
 
 	peers := nm.discoverPeerWorkers()
@@ -297,7 +285,6 @@ func TestVXLANManager_UpdatePeers_NoVXLANInterface(t *testing.T) {
 			return nil, fmt.Errorf("link not found: %s", name)
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -336,7 +323,6 @@ func TestVXLANManager_UpdatePeers_AddPeerFails(t *testing.T) {
 			return fmt.Errorf("FDB add failed")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -372,7 +358,6 @@ func TestVXLANManager_SetupVXLAN_PhysNotFound(t *testing.T) {
 			return nil, fmt.Errorf("not found: %s", name)
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -422,7 +407,6 @@ func TestVXLANManager_SetupVXLAN_BridgeNotFound(t *testing.T) {
 			return nil
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -466,7 +450,6 @@ func TestVXLANManager_SetupVXLAN_LinkAddFail(t *testing.T) {
 			return fmt.Errorf("permission denied")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -524,7 +507,6 @@ func TestVXLANManager_SetupVXLAN_InvalidPeerIP(t *testing.T) {
 		LinkSetMasterFunc: func(link, master netlink.Link) error { return nil },
 
 		AddrAddFunc: func(link netlink.Link, addr *netlink.Addr) error { return nil },
-
 	}
 
 	peerStore := NewStaticPeerStore([]string{"invalid-peer-ip"})
@@ -566,7 +548,6 @@ func TestVXLANManager_AddOverlayIP_AddrAddError(t *testing.T) {
 			return fmt.Errorf("address add failed")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -598,7 +579,6 @@ func TestVXLANManager_AddOverlayIP_FileExists(t *testing.T) {
 			return fmt.Errorf("file exists")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -642,7 +622,6 @@ func TestVXLANManager_AttachVXLANToBridge_SetMasterFail(t *testing.T) {
 			return fmt.Errorf("set master failed")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -690,7 +669,6 @@ func TestVXLANManager_AddPeerForwarding_NeighAddError(t *testing.T) {
 			return fmt.Errorf("FDB operation failed")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -741,7 +719,6 @@ func TestVXLANManager_AddRouteToSubnet_RouteAddError(t *testing.T) {
 			return fmt.Errorf("route add failed")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -773,7 +750,6 @@ func TestVXLANManager_AddRouteToSubnet_FileExists(t *testing.T) {
 			return fmt.Errorf("file exists")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -803,7 +779,6 @@ func TestVXLANManager_AddRouteToSubnet_Success(t *testing.T) {
 			return nil
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -847,7 +822,6 @@ func TestVXLANManager_CreateVXLANInterface_LinkAddFail(t *testing.T) {
 			return fmt.Errorf("link add failed")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -905,7 +879,6 @@ func TestVXLANManager_CreateVXLANInterface_LinkSetUpFail(t *testing.T) {
 			return fmt.Errorf("set up failed")
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -975,7 +948,6 @@ func TestVXLANManager_CreateVXLANInterface_ExistingVXLAN(t *testing.T) {
 			return nil
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -1078,7 +1050,6 @@ func TestVXLANManager_ListenForPeers(t *testing.T) {
 			return nil
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -1144,7 +1115,6 @@ func TestVXLANManager_AnnouncePresence(t *testing.T) {
 			return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
 
 		},
-
 	}
 
 	peerStore := NewStaticPeerStore(nil)
@@ -1354,7 +1324,6 @@ func TestNetworkManager_SetupNAT_AllRulesExist(t *testing.T) {
 		"sysctl": MockCommandResult{Output: []byte("net.ipv4.ip_forward = 1"), Err: nil},
 
 		"iptables": MockCommandResult{Output: []byte(""), Err: nil},
-
 	}
 
 	config := defaultNetworkConfig()
@@ -1376,7 +1345,6 @@ func TestNetworkManager_SetupNAT_IPForwardFail(t *testing.T) {
 	mock.Commands = map[string]MockCommandResult{
 
 		"sysctl": MockCommandResult{Err: fmt.Errorf("permission denied")},
-
 	}
 
 	config := defaultNetworkConfig()
@@ -1622,11 +1590,9 @@ func TestNetworkManager_PrepareNetwork_NATSetupFail(t *testing.T) {
 		Spec: types.TaskSpec{
 
 			Runtime: &types.Container{},
-
 		},
 
 		Networks: []types.NetworkAttachment{},
-
 	}
 
 	err := nm.PrepareNetworkWithExecutor(context.Background(), task)
@@ -1794,10 +1760,9 @@ func defaultNetworkConfig() types.NetworkConfig {
 
 		BridgeName: "br0",
 
-		Subnet:     "192.168.1.0/24",
+		Subnet: "192.168.1.0/24",
 
-		BridgeIP:   "192.168.1.1/24",
-
+		BridgeIP: "192.168.1.1/24",
 	}
 
 }
@@ -1896,10 +1861,9 @@ func TestNetworkManager_InvalidIPAllocator(t *testing.T) {
 
 		BridgeName: "br0",
 
-		Subnet:     "not-a-cidr",
+		Subnet: "not-a-cidr",
 
-		BridgeIP:   "192.168.1.1/24",
-
+		BridgeIP: "192.168.1.1/24",
 	}
 
 	nm := NewNetworkManager(config)
@@ -1920,10 +1884,9 @@ func TestNetworkManager_InvalidGateway(t *testing.T) {
 
 		BridgeName: "br0",
 
-		Subnet:     "192.168.1.0/24",
+		Subnet: "192.168.1.0/24",
 
-		BridgeIP:   "not-an-ip/24",
-
+		BridgeIP: "not-an-ip/24",
 	}
 
 	nm := NewNetworkManager(config)
@@ -1941,7 +1904,6 @@ func TestNetworkManager_NoIPAllocator(t *testing.T) {
 	config := types.NetworkConfig{
 
 		BridgeName: "br0",
-
 	}
 
 	nm := NewNetworkManager(config)
@@ -1973,11 +1935,9 @@ func TestIpMaskToCIDR_Empty(t *testing.T) {
 func TestIpMaskToCIDR_CustomMask(t *testing.T) {
 
 	tests := []struct {
-
-		mask     string
+		mask string
 
 		expected string
-
 	}{
 
 		{"255.255.255.255", "32"},
@@ -1987,7 +1947,6 @@ func TestIpMaskToCIDR_CustomMask(t *testing.T) {
 		{"255.0.0.0", "8"},
 
 		{"255.255.255.128", "25"},
-
 	}
 
 	for _, tt := range tests {
@@ -2095,8 +2054,7 @@ func TestMockCommandExecutor_CommandContextHandler(t *testing.T) {
 
 			Output: []byte("handled: " + args[0]),
 
-			Err:    nil,
-
+			Err: nil,
 		}
 
 	}

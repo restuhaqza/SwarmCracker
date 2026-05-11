@@ -16,10 +16,10 @@ import (
 
 // CNIConfig holds CNI plugin configuration
 type CNIConfig struct {
-	BinDir       string // Path to CNI binaries (default: /opt/cni/bin)
-	ConfDir      string // Path to CNI configs (default: /etc/cni/net.d)
-	CacheDir     string // Path to CNI cache (default: /var/lib/cni)
-	NetworkName  string // Default network name (default: swarmcracker)
+	BinDir      string // Path to CNI binaries (default: /opt/cni/bin)
+	ConfDir     string // Path to CNI configs (default: /etc/cni/net.d)
+	CacheDir    string // Path to CNI cache (default: /var/lib/cni)
+	NetworkName string // Default network name (default: swarmcracker)
 }
 
 // CNIClient handles CNI plugin calls for network setup

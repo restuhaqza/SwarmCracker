@@ -230,6 +230,7 @@ func checkPortAvailable() error {
 	output, err := cmd.Output()
 	if err != nil {
 		// ss returns error if no listening socket found - that's good!
+		//nolint:nilerr
 		return nil
 	}
 
@@ -263,6 +264,7 @@ func checkTunTapAvailable() error {
 	output, err := cmd.Output()
 	if err != nil {
 		// If we can't check, but device exists, assume it's fine
+		//nolint:nilerr
 		return nil
 	}
 
@@ -307,7 +309,8 @@ func checkNoExistingClusterState() error {
 		// Check if directory is non-empty
 		entries, err := os.ReadDir(stateDir)
 		if err != nil {
-			return nil // Can't read, assume empty
+			return nil //nolint:nilerr
+			// Can't read, assume empty
 		}
 
 		if len(entries) > 0 {

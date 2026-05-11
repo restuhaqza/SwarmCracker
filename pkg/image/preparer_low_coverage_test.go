@@ -19,10 +19,10 @@ func TestExtractWithPodman_ErrorPaths(t *testing.T) {
 		t.Skip("skipping test that triggers HTTP connections in short mode")
 	}
 	tests := []struct {
-		name         string
-		setupMock    func(*testing.T, string)
-		wantErr      bool
-		errContains  string
+		name           string
+		setupMock      func(*testing.T, string)
+		wantErr        bool
+		errContains    string
 		skipIfNoPodman bool
 	}{
 		{
@@ -31,8 +31,8 @@ func TestExtractWithPodman_ErrorPaths(t *testing.T) {
 				// This test requires podman to not be available or mock failure
 				// We'll test by passing invalid image
 			},
-			wantErr:      true,
-			errContains:  "podman create failed",
+			wantErr:        true,
+			errContains:    "podman create failed",
 			skipIfNoPodman: true,
 		},
 		{
@@ -41,8 +41,8 @@ func TestExtractWithPodman_ErrorPaths(t *testing.T) {
 				// Test with invalid container ID response
 				// This is tested via create returning invalid output
 			},
-			wantErr:      true,
-			errContains:  "invalid container ID",
+			wantErr:        true,
+			errContains:    "invalid container ID",
 			skipIfNoPodman: true,
 		},
 	}
@@ -105,11 +105,11 @@ func TestExtractWithPodman_InvalidOutput(t *testing.T) {
 // TestInjectInitSystem_ErrorPaths tests error paths in injectInitSystem
 func TestInjectInitSystem_ErrorPaths(t *testing.T) {
 	tests := []struct {
-		name        string
+		name          string
 		setupPreparer func(*testing.T) *ImagePreparer
-		setupRootfs  func(*testing.T) string
-		wantErr      bool
-		errContains  string
+		setupRootfs   func(*testing.T) string
+		wantErr       bool
+		errContains   string
 	}{
 		{
 			name: "mount_fails_continue",
@@ -207,13 +207,13 @@ func TestInjectInitSystem_DifferentInitSystems(t *testing.T) {
 // TestHandleMounts_ErrorPaths tests error paths in handleMounts
 func TestHandleMounts_ErrorPaths(t *testing.T) {
 	tests := []struct {
-		name        string
+		name          string
 		setupPreparer func(*testing.T) *ImagePreparer
-		setupTask    func(*testing.T) *types.Task
-		setupRootfs  func(*testing.T) string
-		mounts       []types.Mount
-		wantErr      bool
-		errContains  string
+		setupTask     func(*testing.T) *types.Task
+		setupRootfs   func(*testing.T) string
+		mounts        []types.Mount
+		wantErr       bool
+		errContains   string
 	}{
 		{
 			name: "mount_fails_continues",
@@ -240,8 +240,8 @@ func TestHandleMounts_ErrorPaths(t *testing.T) {
 			},
 			mounts: []types.Mount{
 				{
-					Source:  "/tmp/source",
-					Target:  "/mnt/target",
+					Source:   "/tmp/source",
+					Target:   "/mnt/target",
 					ReadOnly: false,
 				},
 			},
@@ -273,8 +273,8 @@ func TestHandleMounts_ErrorPaths(t *testing.T) {
 			},
 			mounts: []types.Mount{
 				{
-					Source:  "/tmp/source",
-					Target:  "", // Empty target - should be skipped
+					Source:   "/tmp/source",
+					Target:   "", // Empty target - should be skipped
 					ReadOnly: false,
 				},
 			},
@@ -296,7 +296,7 @@ func TestHandleMounts_ErrorPaths(t *testing.T) {
 					ID: "test-task",
 					Spec: types.TaskSpec{
 						Runtime: &types.Container{
-							Image: "nginx:latest",
+							Image:  "nginx:latest",
 							Mounts: []types.Mount{},
 						},
 					},
@@ -310,8 +310,8 @@ func TestHandleMounts_ErrorPaths(t *testing.T) {
 			},
 			mounts: []types.Mount{
 				{
-					Source:  "volume://test-volume",
-					Target:  "/mnt/data",
+					Source:   "volume://test-volume",
+					Target:   "/mnt/data",
 					ReadOnly: false,
 				},
 			},

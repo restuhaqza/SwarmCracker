@@ -10,8 +10,8 @@ import (
 // These variables hold the actual implementations.
 // They can be replaced in tests for mocking.
 var (
-	lookPathImpl         = exec.LookPath
-	executeImpl          = defaultExecute
+	lookPathImpl          = exec.LookPath
+	executeImpl           = defaultExecute
 	executeWithOutputImpl = defaultExecuteWithOutput
 )
 

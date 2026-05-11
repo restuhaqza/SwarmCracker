@@ -31,18 +31,18 @@ import (
 // TestSyncVolumeData_SkipNonVolumeRef tests skipping non-volume mount sources
 func TestSyncVolumeData_SkipNonVolumeRef(t *testing.T) {
 	ctrl := &Controller{
-		task:       &api.Task{ID: "task-1"},
-		config:     &Config{},
-		volumeMgr:  nil, // nil volumeMgr is valid
-		mu:         sync.Mutex{},
-		logger:     zerolog.Nop(),
+		task:      &api.Task{ID: "task-1"},
+		config:    &Config{},
+		volumeMgr: nil, // nil volumeMgr is valid
+		mu:        sync.Mutex{},
+		logger:    zerolog.Nop(),
 	}
 
 	task := &types.Task{
 		Annotations: map[string]string{"rootfs": "/tmp/test.ext4"},
 	}
 	mounts := []types.Mount{
-		{Source: "/bind/mount", Target: "/data", ReadOnly: false}, // non-volume
+		{Source: "/bind/mount", Target: "/data", ReadOnly: false},       // non-volume
 		{Source: "volume://myvol", Target: "/voldata", ReadOnly: false}, // volume
 	}
 
@@ -53,11 +53,11 @@ func TestSyncVolumeData_SkipNonVolumeRef(t *testing.T) {
 // TestSyncVolumeData_SkipReadOnly tests skipping read-only mounts
 func TestSyncVolumeData_SkipReadOnly(t *testing.T) {
 	ctrl := &Controller{
-		task:       &api.Task{ID: "task-2"},
-		config:     &Config{},
-		volumeMgr:  nil,
-		mu:         sync.Mutex{},
-		logger:     zerolog.Nop(),
+		task:      &api.Task{ID: "task-2"},
+		config:    &Config{},
+		volumeMgr: nil,
+		mu:        sync.Mutex{},
+		logger:    zerolog.Nop(),
 	}
 
 	task := &types.Task{
@@ -74,11 +74,11 @@ func TestSyncVolumeData_SkipReadOnly(t *testing.T) {
 // TestSyncVolumeData_NoRootfsAnnotation tests missing rootfs annotation
 func TestSyncVolumeData_NoRootfsAnnotation(t *testing.T) {
 	ctrl := &Controller{
-		task:       &api.Task{ID: "task-3"},
-		config:     &Config{},
-		volumeMgr:  nil,
-		mu:         sync.Mutex{},
-		logger:     zerolog.Nop(),
+		task:      &api.Task{ID: "task-3"},
+		config:    &Config{},
+		volumeMgr: nil,
+		mu:        sync.Mutex{},
+		logger:    zerolog.Nop(),
 	}
 
 	task := &types.Task{
@@ -95,11 +95,11 @@ func TestSyncVolumeData_NoRootfsAnnotation(t *testing.T) {
 // TestSyncVolumeData_EmptyMounts tests with empty mount list
 func TestSyncVolumeData_EmptyMounts(t *testing.T) {
 	ctrl := &Controller{
-		task:       &api.Task{ID: "task-4"},
-		config:     &Config{},
-		volumeMgr:  nil,
-		mu:         sync.Mutex{},
-		logger:     zerolog.Nop(),
+		task:      &api.Task{ID: "task-4"},
+		config:    &Config{},
+		volumeMgr: nil,
+		mu:        sync.Mutex{},
+		logger:    zerolog.Nop(),
 	}
 
 	task := &types.Task{
@@ -114,18 +114,18 @@ func TestSyncVolumeData_EmptyMounts(t *testing.T) {
 // TestSyncVolumeData_MultipleMounts tests multiple mounts processing
 func TestSyncVolumeData_MultipleMounts(t *testing.T) {
 	ctrl := &Controller{
-		task:       &api.Task{ID: "task-5"},
-		config:     &Config{},
-		volumeMgr:  nil,
-		mu:         sync.Mutex{},
-		logger:     zerolog.Nop(),
+		task:      &api.Task{ID: "task-5"},
+		config:    &Config{},
+		volumeMgr: nil,
+		mu:        sync.Mutex{},
+		logger:    zerolog.Nop(),
 	}
 
 	task := &types.Task{
 		Annotations: map[string]string{"rootfs": "/tmp/test.ext4"},
 	}
 	mounts := []types.Mount{
-		{Source: "/bind/path", Target: "/bind", ReadOnly: false}, // non-volume
+		{Source: "/bind/path", Target: "/bind", ReadOnly: false},               // non-volume
 		{Source: "volume://readonly-vol", Target: "/readonly", ReadOnly: true}, // read-only
 		{Source: "volume://myvol", Target: "/data", ReadOnly: false},
 	}
@@ -137,11 +137,11 @@ func TestSyncVolumeData_MultipleMounts(t *testing.T) {
 // TestSyncVolumeData_MountRootfsError tests mountRootfs returning error
 func TestSyncVolumeData_MountRootfsError(t *testing.T) {
 	ctrl := &Controller{
-		task:       &api.Task{ID: "task-6"},
-		config:     &Config{},
-		volumeMgr:  nil,
-		mu:         sync.Mutex{},
-		logger:     zerolog.Nop(),
+		task:      &api.Task{ID: "task-6"},
+		config:    &Config{},
+		volumeMgr: nil,
+		mu:        sync.Mutex{},
+		logger:    zerolog.Nop(),
 	}
 
 	task := &types.Task{
@@ -162,17 +162,17 @@ func TestSyncVolumeData_MountRootfsError(t *testing.T) {
 // TestPeriodicCleanup_ImmediateCancel tests immediate context cancellation
 func TestPeriodicCleanup_ImmediateCancel(t *testing.T) {
 	cfg := &Config{
-		StateDir:      t.TempDir(),
-		RootfsDir:     t.TempDir(),
-		SocketDir:     t.TempDir(),
+		StateDir:  t.TempDir(),
+		RootfsDir: t.TempDir(),
+		SocketDir: t.TempDir(),
 	}
 	exec := &Executor{
-		config:         cfg,
-		controllers:    make(map[string]*Controller),
-		cleanupDone:    make(chan struct{}),
-		imagePrep:      &MockImagePreparer{},
-		vmmMgr:         &MockVMMManager{},
-		executorMu:     sync.RWMutex{},
+		config:      cfg,
+		controllers: make(map[string]*Controller),
+		cleanupDone: make(chan struct{}),
+		imagePrep:   &MockImagePreparer{},
+		vmmMgr:      &MockVMMManager{},
+		executorMu:  sync.RWMutex{},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -285,7 +285,7 @@ func TestCleanupOrphanedVMs_WithActiveTask(t *testing.T) {
 			"active-task": &Controller{task: &api.Task{ID: "active-task"}},
 		},
 		vmmMgr: &MockVMMManager{
-			processes: processes,
+			processes:               processes,
 			GetRunningProcessesFunc: func() map[string]*exec.Cmd { return processes },
 		},
 		executorMu: sync.RWMutex{},
@@ -855,8 +855,8 @@ func TestContainerStatus_NotStarted(t *testing.T) {
 // TestContainerStatus_Running tests ContainerStatus when running
 func TestContainerStatus_Running(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "running-task"},
-		config:  &Config{},
+		task:   &api.Task{ID: "running-task"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			IsRunningFunc: func(taskID string) bool { return true },
 			GetPIDFunc:    func(taskID string) int { return 12345 },
@@ -874,8 +874,8 @@ func TestContainerStatus_Running(t *testing.T) {
 // TestContainerStatus_NotRunning tests ContainerStatus when not running
 func TestContainerStatus_NotRunning(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "stopped-task"},
-		config:  &Config{},
+		task:   &api.Task{ID: "stopped-task"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			IsRunningFunc: func(taskID string) bool { return false },
 		},
@@ -969,8 +969,8 @@ func TestStart_VMMStartError(t *testing.T) {
 // TestWait_VMMError tests Wait with VMM error
 func TestWait_VMMError(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "wait-error-task"},
-		config:  &Config{},
+		task:   &api.Task{ID: "wait-error-task"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
 				return nil, errors.New("wait error")
@@ -987,8 +987,8 @@ func TestWait_VMMError(t *testing.T) {
 // TestWait_StatusError tests Wait with status error
 func TestWait_StatusError(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "status-error-task"},
-		config:  &Config{},
+		task:   &api.Task{ID: "status-error-task"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
 				return &types.TaskStatus{Err: errors.New("task crashed")}, nil
@@ -1010,13 +1010,13 @@ func TestWait_StatusError(t *testing.T) {
 // TestShutdown_Success tests successful shutdown
 func TestShutdown_Success(t *testing.T) {
 	ctrl := &Controller{
-		task:        &api.Task{ID: "shutdown-success-task"},
-		config:      &Config{},
-		vmmMgr:      &MockVMMManager{},
-		networkMgr:  &MockNetworkManager{},
-		mu:          sync.Mutex{},
-		started:     true,
-		logger:      zerolog.Nop(),
+		task:       &api.Task{ID: "shutdown-success-task"},
+		config:     &Config{},
+		vmmMgr:     &MockVMMManager{},
+		networkMgr: &MockNetworkManager{},
+		mu:         sync.Mutex{},
+		started:    true,
+		logger:     zerolog.Nop(),
 	}
 
 	err := ctrl.Shutdown(context.Background())
@@ -1027,8 +1027,8 @@ func TestShutdown_Success(t *testing.T) {
 // TestShutdown_VMMError tests Shutdown with VMM error
 func TestShutdown_VMMError(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "shutdown-error-task"},
-		config:  &Config{},
+		task:   &api.Task{ID: "shutdown-error-task"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			StopFunc: func(ctx context.Context, task *types.Task) error {
 				return errors.New("vmm stop error")
@@ -1068,8 +1068,8 @@ func TestTerminate_Success(t *testing.T) {
 // TestTerminate_VMMError tests Terminate with VMM error
 func TestTerminate_VMMError(t *testing.T) {
 	ctrl := &Controller{
-		task:    &api.Task{ID: "terminate-error-task"},
-		config:  &Config{},
+		task:   &api.Task{ID: "terminate-error-task"},
+		config: &Config{},
 		vmmMgr: &MockVMMManager{
 			StopFunc: func(ctx context.Context, task *types.Task) error {
 				return errors.New("vmm terminate error")
@@ -1135,7 +1135,7 @@ func TestCleanupOrphanedVMs_SigtermFail(t *testing.T) {
 		config:      &Config{SocketDir: tmpDir},
 		controllers: map[string]*Controller{},
 		vmmMgr: &MockVMMManager{
-			processes: processes,
+			processes:               processes,
 			GetRunningProcessesFunc: func() map[string]*exec.Cmd { return processes },
 		},
 		executorMu: sync.RWMutex{},

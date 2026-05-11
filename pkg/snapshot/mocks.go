@@ -62,7 +62,7 @@ func (m *MockFirecrackerAPIClient) WaitForSocket(socketPath string, timeout time
 
 // MockProcessExecutor is a mock implementation for testing.
 type MockProcessExecutor struct {
-	LookPathFunc    func(file string) (string, error)
+	LookPathFunc     func(file string) (string, error)
 	StartCommandFunc func(name string, arg ...string) (ProcessHandle, error)
 }
 
@@ -82,7 +82,7 @@ func (m *MockProcessExecutor) StartCommand(name string, arg ...string) (ProcessH
 
 // MockProcessHandle is a mock process handle.
 type MockProcessHandle struct {
-	pid  int
+	pid      int
 	KillFunc func() error
 	WaitFunc func() error
 }

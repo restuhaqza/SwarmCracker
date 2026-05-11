@@ -10,40 +10,40 @@ import (
 // TestGetInitArgs tests init argument generation
 func TestGetInitArgs(t *testing.T) {
 	tests := []struct {
-		name         string
-		initType     InitSystemType
+		name          string
+		initType      InitSystemType
 		containerArgs []string
-		expected     []string
+		expected      []string
 	}{
 		{
-			name:         "tini with args",
-			initType:     InitSystemTini,
+			name:          "tini with args",
+			initType:      InitSystemTini,
 			containerArgs: []string{"nginx", "-g", "daemon off;"},
-			expected:     []string{"/sbin/tini", "--", "nginx", "-g", "daemon off;"},
+			expected:      []string{"/sbin/tini", "--", "nginx", "-g", "daemon off;"},
 		},
 		{
-			name:         "dumb-init with args",
-			initType:     InitSystemDumbInit,
+			name:          "dumb-init with args",
+			initType:      InitSystemDumbInit,
 			containerArgs: []string{"python", "app.py"},
-			expected:     []string{"/sbin/dumb-init", "python", "app.py"},
+			expected:      []string{"/sbin/dumb-init", "python", "app.py"},
 		},
 		{
-			name:         "none returns original",
-			initType:     InitSystemNone,
+			name:          "none returns original",
+			initType:      InitSystemNone,
 			containerArgs: []string{"sh", "-c", "echo test"},
-			expected:     []string{"sh", "-c", "echo test"},
+			expected:      []string{"sh", "-c", "echo test"},
 		},
 		{
-			name:         "empty container args with tini",
-			initType:     InitSystemTini,
+			name:          "empty container args with tini",
+			initType:      InitSystemTini,
 			containerArgs: []string{},
-			expected:     []string{"/sbin/tini", "--"},
+			expected:      []string{"/sbin/tini", "--"},
 		},
 		{
-			name:         "empty container args with dumb-init",
-			initType:     InitSystemDumbInit,
+			name:          "empty container args with dumb-init",
+			initType:      InitSystemDumbInit,
 			containerArgs: []string{},
-			expected:     []string{"/sbin/dumb-init"},
+			expected:      []string{"/sbin/dumb-init"},
 		},
 	}
 
@@ -83,8 +83,8 @@ func TestGetGracePeriod(t *testing.T) {
 			expected: 10, // Default from NewInitInjector
 		},
 		{
-			name: "nil config gets defaults",
-			config: nil,
+			name:     "nil config gets defaults",
+			config:   nil,
 			expected: 10, // Default
 		},
 		{
@@ -109,23 +109,23 @@ func TestGetGracePeriod(t *testing.T) {
 // TestIsEnabled tests init system enabled check
 func TestIsEnabled(t *testing.T) {
 	tests := []struct {
-		name           string
-		initType       InitSystemType
+		name            string
+		initType        InitSystemType
 		expectedEnabled bool
 	}{
 		{
-			name:           "tini enabled",
-			initType:       InitSystemTini,
+			name:            "tini enabled",
+			initType:        InitSystemTini,
 			expectedEnabled: true,
 		},
 		{
-			name:           "dumb-init enabled",
-			initType:       InitSystemDumbInit,
+			name:            "dumb-init enabled",
+			initType:        InitSystemDumbInit,
 			expectedEnabled: true,
 		},
 		{
-			name:           "none disabled",
-			initType:       InitSystemNone,
+			name:            "none disabled",
+			initType:        InitSystemNone,
 			expectedEnabled: false,
 		},
 	}

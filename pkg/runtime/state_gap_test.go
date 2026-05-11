@@ -565,21 +565,21 @@ func TestPersistenceRecoveryEdgeCases(t *testing.T) {
 
 		states := []*VMState{
 			{
-				ID:         "vm-1",
-				Image:      "image1:latest",
-				Status:     "running",
-				VCPUs:      2,
-				MemoryMB:   2048,
-				NetworkID:  "net-1",
+				ID:          "vm-1",
+				Image:       "image1:latest",
+				Status:      "running",
+				VCPUs:       2,
+				MemoryMB:    2048,
+				NetworkID:   "net-1",
 				IPAddresses: []string{"10.0.0.1"},
 			},
 			{
-				ID:         "vm-2",
-				Image:      "image2:latest",
-				Status:     "paused",
-				VCPUs:      4,
-				MemoryMB:   4096,
-				NetworkID:  "net-1",
+				ID:          "vm-2",
+				Image:       "image2:latest",
+				Status:      "paused",
+				VCPUs:       4,
+				MemoryMB:    4096,
+				NetworkID:   "net-1",
 				IPAddresses: []string{"10.0.0.2", "10.0.0.3"},
 			},
 		}
@@ -913,10 +913,10 @@ func TestGetReturnsCopy(t *testing.T) {
 	sm, _ := NewStateManager(t.TempDir())
 
 	original := &VMState{
-		ID:         "vm-copy-test",
-		Image:      "original:latest",
-		VCPUs:      2,
-		MemoryMB:   2048,
+		ID:          "vm-copy-test",
+		Image:       "original:latest",
+		VCPUs:       2,
+		MemoryMB:    2048,
 		IPAddresses: []string{"10.0.0.1"},
 	}
 

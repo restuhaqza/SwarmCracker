@@ -479,9 +479,9 @@ func (m *mockNetworkManagerFull) GetTapIP(taskID string) (string, error) {
 	return m.tapIP, nil
 }
 
-func (m *mockNetworkManagerFull) Init(ctx context.Context) error                          { return nil }
-func (m *mockNetworkManagerFull) SetNodeDiscovery(discovery types.NodeDiscovery)          {}
-func (m *mockNetworkManagerFull) UpdateVXLANPeers(peers []string) error                    { return nil }
+func (m *mockNetworkManagerFull) Init(ctx context.Context) error                 { return nil }
+func (m *mockNetworkManagerFull) SetNodeDiscovery(discovery types.NodeDiscovery) {}
+func (m *mockNetworkManagerFull) UpdateVXLANPeers(peers []string) error          { return nil }
 
 // mockNetworkKeySetterFull implements NetworkManager + NetworkKeySetter
 type mockNetworkKeySetterFull struct {

@@ -163,6 +163,7 @@ func stopAllFirecrackerVMs() error {
 	if err != nil {
 		// No processes found - that's OK
 		log.Debug().Msg("No Firecracker processes found")
+		//nolint:nilerr
 		return nil
 	}
 
@@ -290,6 +291,7 @@ func removeNetworkBridge(bridgeName string) error {
 	cmd = exec.Command("ip", "link", "show", bridgeName)
 	if err := cmd.Run(); err != nil {
 		log.Debug().Msg("Bridge doesn't exist or already removed")
+		//nolint:nilerr
 		return nil
 	}
 

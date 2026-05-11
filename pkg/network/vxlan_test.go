@@ -326,45 +326,45 @@ func TestVXLANManager_addPeerForwarding(t *testing.T) {
 	mgr := NewVXLANManager("br0", 42, "10.0.0.1/24", nil)
 
 	tests := []struct {
-		name      string
-		vxlanName string
-		peerIP    string
-		wantErr   bool
+		name        string
+		vxlanName   string
+		peerIP      string
+		wantErr     bool
 		errContains string
 	}{
 		{
-			name:      "invalid peer IP - empty string",
-			vxlanName: "br0-vxlan",
-			peerIP:    "",
-			wantErr:   true,
+			name:        "invalid peer IP - empty string",
+			vxlanName:   "br0-vxlan",
+			peerIP:      "",
+			wantErr:     true,
 			errContains: "invalid peer IP",
 		},
 		{
-			name:      "invalid peer IP - malformed",
-			vxlanName: "br0-vxlan",
-			peerIP:    "not-an-ip",
-			wantErr:   true,
+			name:        "invalid peer IP - malformed",
+			vxlanName:   "br0-vxlan",
+			peerIP:      "not-an-ip",
+			wantErr:     true,
 			errContains: "invalid peer IP",
 		},
 		{
-			name:      "invalid peer IP - out of range",
-			vxlanName: "br0-vxlan",
-			peerIP:    "192.168.1.256",
-			wantErr:   true,
+			name:        "invalid peer IP - out of range",
+			vxlanName:   "br0-vxlan",
+			peerIP:      "192.168.1.256",
+			wantErr:     true,
 			errContains: "invalid peer IP",
 		},
 		{
-			name:      "invalid peer IP - missing octet",
-			vxlanName: "br0-vxlan",
-			peerIP:    "192.168.1",
-			wantErr:   true,
+			name:        "invalid peer IP - missing octet",
+			vxlanName:   "br0-vxlan",
+			peerIP:      "192.168.1",
+			wantErr:     true,
 			errContains: "invalid peer IP",
 		},
 		{
-			name:      "non-existent VXLAN interface",
-			vxlanName: "non-existent-vxlan",
-			peerIP:    "192.168.1.10",
-			wantErr:   true,
+			name:        "non-existent VXLAN interface",
+			vxlanName:   "non-existent-vxlan",
+			peerIP:      "192.168.1.10",
+			wantErr:     true,
 			errContains: "VXLAN interface not found",
 		},
 	}
@@ -520,10 +520,10 @@ func TestVXLANManager_enableProxySettings(t *testing.T) {
 
 func TestVXLANManager_UpdatePeers(t *testing.T) {
 	tests := []struct {
-		name      string
-		bridge    string
-		newPeers  []string
-		wantErr   bool
+		name        string
+		bridge      string
+		newPeers    []string
+		wantErr     bool
 		errContains string
 	}{
 		{
@@ -633,46 +633,46 @@ func TestVXLANManager_StopPeerDiscovery(t *testing.T) {
 
 func TestVXLANManager_SetupVXLAN(t *testing.T) {
 	tests := []struct {
-		name         string
+		name          string
 		physInterface string
-		localIP      string
-		wantErr      bool
-		errContains  string
+		localIP       string
+		wantErr       bool
+		errContains   string
 	}{
 		{
-			name:         "invalid local IP - empty",
+			name:          "invalid local IP - empty",
 			physInterface: "eth0",
-			localIP:      "",
-			wantErr:      true,
-			errContains:  "invalid local IP",
+			localIP:       "",
+			wantErr:       true,
+			errContains:   "invalid local IP",
 		},
 		{
-			name:         "invalid local IP - malformed",
+			name:          "invalid local IP - malformed",
 			physInterface: "eth0",
-			localIP:      "not-an-ip",
-			wantErr:      true,
-			errContains:  "invalid local IP",
+			localIP:       "not-an-ip",
+			wantErr:       true,
+			errContains:   "invalid local IP",
 		},
 
 		{
-			name:         "empty physical interface",
+			name:          "empty physical interface",
 			physInterface: "",
-			localIP:      "192.168.1.10",
-			wantErr:      true,
-			errContains:  "physical interface",
+			localIP:       "192.168.1.10",
+			wantErr:       true,
+			errContains:   "physical interface",
 		},
 		{
-			name:         "non-existent physical interface",
+			name:          "non-existent physical interface",
 			physInterface: "non-existent-iface",
-			localIP:      "192.168.1.10",
-			wantErr:      true,
-			errContains:  "physical interface",
+			localIP:       "192.168.1.10",
+			wantErr:       true,
+			errContains:   "physical interface",
 		},
 		{
-			name:         "valid IPs but non-existent interfaces",
+			name:          "valid IPs but non-existent interfaces",
 			physInterface: "eth0",
-			localIP:      "192.168.1.10",
-			wantErr:      true,
+			localIP:       "192.168.1.10",
+			wantErr:       true,
 			// Could fail at various stages (interface not found, bridge not found, etc.)
 		},
 	}
@@ -851,7 +851,7 @@ func TestVXLANManager_PeerDiscoveryCancellation(t *testing.T) {
 
 // Helper function to check if string contains substring
 func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || 
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
 		(len(s) > 0 && len(substr) > 0 && findSubstring(s, substr)))
 }
 

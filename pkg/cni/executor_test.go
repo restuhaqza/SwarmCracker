@@ -20,7 +20,7 @@ func TestDefaultCommandExecutor_Execute(t *testing.T) {
 	ctx := context.Background()
 
 	// Execute echo command
- stdout, stderr, err := executor.Execute(ctx, "echo", []byte("test"), nil)
+	stdout, stderr, err := executor.Execute(ctx, "echo", []byte("test"), nil)
 	require.NoError(t, err)
 	assert.Contains(t, string(stdout), "test")
 	assert.Empty(t, stderr)

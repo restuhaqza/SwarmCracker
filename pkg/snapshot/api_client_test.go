@@ -67,7 +67,7 @@ func TestDefaultFirecrackerAPIClient_CreateSnapshot(t *testing.T) {
 			payload := map[string]interface{}{
 				"snapshot_type": "Full",
 				"snapshot_path": statePath,
-				"mem_file_path":  memoryPath,
+				"mem_file_path": memoryPath,
 			}
 			body, _ := json.Marshal(payload)
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPut, "http://localhost/snapshot/create", strings.NewReader(string(body)))
@@ -157,8 +157,8 @@ func TestDefaultFirecrackerAPIClient_LoadSnapshot(t *testing.T) {
 			client := mockFactory.NewUnixClient(socketPath, 30*time.Second)
 			payload := map[string]interface{}{
 				"snapshot_path": statePath,
-				"mem_file_path":  memoryPath,
-				"resume_vm":      true,
+				"mem_file_path": memoryPath,
+				"resume_vm":     true,
 			}
 			body, _ := json.Marshal(payload)
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPut, "http://localhost/snapshot/load", strings.NewReader(string(body)))
@@ -202,8 +202,8 @@ func TestDefaultFirecrackerAPIClient_LoadSnapshot(t *testing.T) {
 			client := mockFactory.NewUnixClient(socketPath, 30*time.Second)
 			payload := map[string]interface{}{
 				"snapshot_path": statePath,
-				"mem_file_path":  memoryPath,
-				"resume_vm":      true,
+				"mem_file_path": memoryPath,
+				"resume_vm":     true,
 			}
 			body, _ := json.Marshal(payload)
 			req, _ := http.NewRequestWithContext(ctx, http.MethodPut, "http://localhost/snapshot/load", strings.NewReader(string(body)))
@@ -500,7 +500,7 @@ func TestCallSnapshotCreate_ErrorPaths(t *testing.T) {
 			payload := map[string]interface{}{
 				"snapshot_type": "Full",
 				"snapshot_path": statePath,
-				"mem_file_path":  memoryPath,
+				"mem_file_path": memoryPath,
 			}
 			body, err := json.Marshal(payload)
 			if err != nil {
@@ -571,7 +571,7 @@ func TestSaveMetadata_ErrorPaths(t *testing.T) {
 
 // testHTTPClient wraps httptest client to override URL
 type testHTTPClient struct {
-	client *http.Client
+	client  *http.Client
 	baseURL string
 }
 

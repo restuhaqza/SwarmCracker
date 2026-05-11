@@ -27,7 +27,7 @@ func TestTaskTranslator_BuildRootDrive_MissingRootfs(t *testing.T) {
 				Image: "nginx:latest",
 			},
 			task: &types.Task{
-				ID:         "task-1",
+				ID:          "task-1",
 				Annotations: map[string]string{},
 			},
 			expectError: true,
@@ -39,7 +39,7 @@ func TestTaskTranslator_BuildRootDrive_MissingRootfs(t *testing.T) {
 				Image: "nginx:latest",
 			},
 			task: &types.Task{
-				ID:         "task-2",
+				ID:          "task-2",
 				Annotations: nil,
 			},
 			expectError: true,
@@ -207,12 +207,12 @@ func TestTaskTranslator_ConfigToMap_ErrorHandling(t *testing.T) {
 // TestBuildBootArgs_StaticIPConfig tests static IP configuration with gateway fallback
 func TestTaskTranslator_BuildBootArgs_StaticIPConfig(t *testing.T) {
 	tests := []struct {
-		name              string
-		task              *types.Task
-		networkConfig     types.NetworkConfig
-		expectedIPArg     string
-		expectedGateway   string
-		expectedNetmask   string
+		name            string
+		task            *types.Task
+		networkConfig   types.NetworkConfig
+		expectedIPArg   string
+		expectedGateway string
+		expectedNetmask string
 	}{
 		{
 			name: "static IP with configured gateway",
@@ -787,7 +787,7 @@ func TestTaskTranslator_BuildRootDrive_DirectCall(t *testing.T) {
 				Image: "redis:alpine",
 			},
 			task: &types.Task{
-				ID:         "task-3",
+				ID:          "task-3",
 				Annotations: map[string]string{},
 			},
 			expectError: true,

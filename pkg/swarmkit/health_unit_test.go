@@ -282,8 +282,8 @@ func TestVMMManager_configureVM_EdgeCases(t *testing.T) {
 			},
 			"network-interfaces": []interface{}{
 				map[string]interface{}{
-					"iface_id":     "eth0",
-					"guest_mac":    "02:00:00:00:00:01",
+					"iface_id":      "eth0",
+					"guest_mac":     "02:00:00:00:00:01",
 					"host_dev_name": "tap0",
 				},
 			},
@@ -464,81 +464,81 @@ func TestVMMManager_configureVM_EdgeCases(t *testing.T) {
 // Mock server helpers
 
 func startMockFirecrackerServer(t *testing.T, socketPath string, statusCode int) *http.Server {
- listener, err := net.Listen("unix", socketPath)
- require.NoError(t, err)
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
 
- server := &http.Server{
-	 Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		 w.WriteHeader(statusCode)
-		 if statusCode == http.StatusOK {
-			 // Return mock machine config for GET requests
-			 if r.Method == http.MethodGet {
-				 config := MachineConfig{VcpuCount: 2, MemSizeMib: 512}
-				 data, _ := json.Marshal(config)
-				 w.Write(data)
-			 }
-		 }
-	 }),
- }
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(statusCode)
+			if statusCode == http.StatusOK {
+				// Return mock machine config for GET requests
+				if r.Method == http.MethodGet {
+					config := MachineConfig{VcpuCount: 2, MemSizeMib: 512}
+					data, _ := json.Marshal(config)
+					w.Write(data)
+				}
+			}
+		}),
+	}
 
- go server.Serve(listener)
+	go server.Serve(listener)
 
- return server
+	return server
 }
 
 func startMockFirecrackerServerDelayed(t *testing.T, socketPath string, delay time.Duration) *http.Server {
- listener, err := net.Listen("unix", socketPath)
- require.NoError(t, err)
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
 
- server := &http.Server{
-	 Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		 time.Sleep(delay) // Delay beyond the 2s timeout
-		 w.WriteHeader(http.StatusOK)
-	 }),
- }
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(delay) // Delay beyond the 2s timeout
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
 
- go server.Serve(listener)
+	go server.Serve(listener)
 
- return server
+	return server
 }
 
 func startMockFirecrackerServerError(t *testing.T, socketPath string) *http.Server {
- listener, err := net.Listen("unix", socketPath)
- require.NoError(t, err)
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
 
- server := &http.Server{
-	 Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		 w.WriteHeader(http.StatusBadRequest)
-		 w.Write([]byte("invalid configuration"))
-	 }),
- }
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("invalid configuration"))
+		}),
+	}
 
- go server.Serve(listener)
+	go server.Serve(listener)
 
- return server
+	return server
 }
 
 func startMockFirecrackerServerConfig(t *testing.T, socketPath string) *http.Server {
- listener, err := net.Listen("unix", socketPath)
- require.NoError(t, err)
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
 
- server := &http.Server{
-	 Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		 // Handle PUT requests for machine-config, boot-source, drives, network-interfaces
-		 if r.Method == http.MethodPut {
-			 w.WriteHeader(http.StatusNoContent)
-			 return
-		 }
-		 // Handle actions endpoint for InstanceStart
-		 if r.URL.Path == "/actions" {
-			 w.WriteHeader(http.StatusNoContent)
-			 return
-		 }
-		 w.WriteHeader(http.StatusOK)
-	 }),
- }
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Handle PUT requests for machine-config, boot-source, drives, network-interfaces
+			if r.Method == http.MethodPut {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			// Handle actions endpoint for InstanceStart
+			if r.URL.Path == "/actions" {
+				w.WriteHeader(http.StatusNoContent)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
 
- go server.Serve(listener)
+	go server.Serve(listener)
 
- return server
+	return server
 }

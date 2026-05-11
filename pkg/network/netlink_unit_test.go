@@ -394,8 +394,8 @@ func TestNetlinkAddr_IPNet(t *testing.T) {
 
 func TestNetlinkAddr_MaskSize(t *testing.T) {
 	tests := []struct {
-		cidr    string
-		prefix  int
+		cidr   string
+		prefix int
 	}{
 		{"192.168.1.1/24", 24},
 		{"10.0.0.1/16", 16},
@@ -466,8 +466,8 @@ func TestNetlinkRoute_DefaultRoute(t *testing.T) {
 
 func TestNetlinkNeigh_FDBEntry(t *testing.T) {
 	neigh := &netlink.Neigh{
-		LinkIndex: 1,
-		IP:        net.ParseIP("10.0.0.2"),
+		LinkIndex:    1,
+		IP:           net.ParseIP("10.0.0.2"),
 		HardwareAddr: net.HardwareAddr{0x00, 0x11, 0x22, 0x33, 0x44, 0x55},
 	}
 
@@ -479,8 +479,8 @@ func TestNetlinkNeigh_FDBEntry(t *testing.T) {
 func TestNetlinkNeigh_VxlanFDB(t *testing.T) {
 	// VXLAN FDB uses all-zeros MAC for broadcast
 	neigh := &netlink.Neigh{
-		LinkIndex: 1,
-		IP:        nil, // VXLAN FDB may not have IP
+		LinkIndex:    1,
+		IP:           nil, // VXLAN FDB may not have IP
 		HardwareAddr: net.HardwareAddr{0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 	}
 

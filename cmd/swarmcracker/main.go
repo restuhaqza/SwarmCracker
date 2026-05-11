@@ -40,13 +40,13 @@ var (
 
 // Global flags
 var (
-	cfgFile       string
-	logLevel      string
-	kernelPath    string
-	rootfsDir     string
-	sshKeyPath    string
+	cfgFile        string
+	logLevel       string
+	kernelPath     string
+	rootfsDir      string
+	sshKeyPath     string
 	knownHostsPath string
-	insecureSSH   bool
+	insecureSSH    bool
 )
 
 func main() {
@@ -204,13 +204,13 @@ Example:
 
 				// Save VM state for tracking
 				if stateMgr != nil {
-				// Get task details for state
-				container, err := task.Spec.GetContainer()
-				if err != nil {
-					return fmt.Errorf("failed to get container spec: %w", err)
-				}
+					// Get task details for state
+					container, err := task.Spec.GetContainer()
+					if err != nil {
+						return fmt.Errorf("failed to get container spec: %w", err)
+					}
 
-				vmState := &runtime.VMState{
+					vmState := &runtime.VMState{
 						ID:         task.ID,
 						Image:      container.Image,
 						Command:    append(container.Command, container.Args...),
@@ -990,7 +990,7 @@ func prepareLocalRootfs(plan *DeploymentPlan) (string, error) {
 
 	// Create a minimal task for preparation
 	task := &types.Task{
-		ID:    fmt.Sprintf("prep-%d", time.Now().Unix()),
+		ID: fmt.Sprintf("prep-%d", time.Now().Unix()),
 		Spec: types.TaskSpec{
 			Runtime: &types.Container{
 				Image: plan.ImageRef,

@@ -30,7 +30,7 @@ func newAssetKernelCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "kernel",
 		Short: "Manage Firecracker kernels",
-		Long: `Manage Firecracker kernel images for VMs.`,
+		Long:  `Manage Firecracker kernel images for VMs.`,
 	}
 
 	cmd.AddCommand(newKernelListCommand())
@@ -67,7 +67,7 @@ func newAssetRootfsCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "rootfs",
 		Short: "Manage rootfs images",
-		Long: `Manage rootfs images for Firecracker VMs.`,
+		Long:  `Manage rootfs images for Firecracker VMs.`,
 	}
 
 	cmd.AddCommand(newRootfsListCommand())
@@ -98,6 +98,7 @@ func listKernels() error {
 	if _, err := os.Stat(kernelPath); err != nil {
 		fmt.Printf("No kernel found at %s\n", kernelPath)
 		fmt.Println("Download with: curl -fsSL https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155 -o /usr/share/firecracker/vmlinux")
+		//nolint:nilerr
 		return nil
 	}
 
@@ -144,6 +145,7 @@ func listRootfs() error {
 	// Check if directory exists
 	if _, err := os.Stat(rootfsDir); err != nil {
 		fmt.Printf("No rootfs directory found at %s\n", rootfsDir)
+		//nolint:nilerr
 		return nil
 	}
 

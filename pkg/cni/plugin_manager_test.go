@@ -290,7 +290,7 @@ func TestPluginManager_LoadNetworkConfig_ConflistFile(t *testing.T) {
 		"name":       "test-network",
 		"plugins": []interface{}{
 			map[string]interface{}{
-				"type": "bridge",
+				"type":   "bridge",
 				"bridge": "br-test",
 			},
 		},
@@ -405,7 +405,7 @@ func TestPluginManager_ParsePluginConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "empty config",
+			name:   "empty config",
 			config: map[string]interface{}{},
 			expected: &CNINetworkConfig{
 				CNIVersion: DefaultCNIVersion,

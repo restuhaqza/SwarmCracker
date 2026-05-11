@@ -26,20 +26,20 @@ type MockTAPExecutor struct {
 	CombinedError  error
 
 	// Per-command errors (by command name)
-	RunErrors      map[string]error
-	OutputErrors   map[string]error
-	OutputResults  map[string][]byte
-	CombinedErrors map[string]error
+	RunErrors       map[string]error
+	OutputErrors    map[string]error
+	OutputResults   map[string][]byte
+	CombinedErrors  map[string]error
 	CombinedResults map[string][]byte
 }
 
 // NewMockTAPExecutor creates a new mock executor
 func NewMockTAPExecutor() *MockTAPExecutor {
 	return &MockTAPExecutor{
-		RunErrors:      make(map[string]error),
-		OutputErrors:   make(map[string]error),
-		OutputResults:  make(map[string][]byte),
-		CombinedErrors: make(map[string]error),
+		RunErrors:       make(map[string]error),
+		OutputErrors:    make(map[string]error),
+		OutputResults:   make(map[string][]byte),
+		CombinedErrors:  make(map[string]error),
 		CombinedResults: make(map[string][]byte),
 	}
 }

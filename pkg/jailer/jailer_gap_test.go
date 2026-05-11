@@ -29,12 +29,12 @@ func TestJailerNew_BinaryResolution(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string
-		config          *Config
-		wantErr         bool
-		errContains     string
-		setupFunc       func() func()
-		skipIfCgroupV2  bool
+		name           string
+		config         *Config
+		wantErr        bool
+		errContains    string
+		setupFunc      func() func()
+		skipIfCgroupV2 bool
 	}{
 		{
 			name: "non_absolute_firecracker_not_found",
@@ -69,7 +69,7 @@ func TestJailerNew_BinaryResolution(t *testing.T) {
 				UID:             1000,
 				GID:             1000,
 			},
-			wantErr:     false, // tmpDir should be creatable
+			wantErr: false, // tmpDir should be creatable
 			setupFunc: func() func() {
 				// Create a subdirectory that can't be created (file with same name)
 				blockDir := filepath.Join(tmpDir, "blocked")
@@ -91,7 +91,7 @@ func TestJailerNew_BinaryResolution(t *testing.T) {
 				UID:             1000,
 				GID:             1000,
 			},
-			wantErr:     false,
+			wantErr: false,
 			setupFunc: func() func() {
 				// Create a temp dir and add to PATH
 				pathDir := filepath.Join(tmpDir, "path-test")
@@ -187,9 +187,9 @@ func TestCreateDefaultSeccompPolicy(t *testing.T) {
 			},
 		},
 		{
-			name:        "policy_file_not_writable",
-			taskID:      "test-vm-789",
-			wantErr:     false, // WriteFile overwrites directories, so this won't fail as expected
+			name:    "policy_file_not_writable",
+			taskID:  "test-vm-789",
+			wantErr: false, // WriteFile overwrites directories, so this won't fail as expected
 			setupFunc: func() func() {
 				// Create the policy file as a directory (WriteFile will overwrite it)
 				policyDir := filepath.Join(tmpDir, "test-vm-789.seccomp.json")
@@ -987,9 +987,9 @@ func TestCgroupManager_RemoveCgroupErrorPaths(t *testing.T) {
 		errContains string
 	}{
 		{
-			name:        "remove_nonexistent_cgroup",
-			taskID:      "nonexistent-cgroup",
-			wantErr:     false, // RemoveAll doesn't error if path doesn't exist
+			name:    "remove_nonexistent_cgroup",
+			taskID:  "nonexistent-cgroup",
+			wantErr: false, // RemoveAll doesn't error if path doesn't exist
 		},
 		{
 			name:   "remove_with_processes_moving_to_invalid_parent",

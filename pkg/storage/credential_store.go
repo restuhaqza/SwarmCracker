@@ -16,9 +16,9 @@ import (
 
 // Injectable function variables for testing
 var (
-	execCommand     = exec.Command
-	osMkdirTemp     = os.MkdirTemp
-	osMkdirAllStore = os.MkdirAll
+	execCommand      = exec.Command
+	osMkdirTemp      = os.MkdirTemp
+	osMkdirAllStore  = os.MkdirAll
 	osWriteFileStore = os.WriteFile
 	osRemoveAllStore = os.RemoveAll
 )

@@ -249,10 +249,10 @@ func TestCreateBridge_Mock(t *testing.T) {
 // TestTAPDeviceExists tests TAP device existence check
 func TestTAPDeviceExists(t *testing.T) {
 	tests := []struct {
-		name     string
-		tapName  string
-		exists   bool
-		mockErr  error
+		name    string
+		tapName string
+		exists  bool
+		mockErr error
 	}{
 		{
 			name:    "exists",

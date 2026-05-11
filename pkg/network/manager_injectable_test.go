@@ -1118,7 +1118,7 @@ func TestAllocate_Collision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create allocator: %v", err)
 	}
-	
+
 	// Allocate multiple IPs to test collision resolution
 	for i := 0; i < 4; i++ {
 		ip, err := allocator.Allocate(fmt.Sprintf("vm-%d", i))
@@ -1138,7 +1138,7 @@ func TestHashToIP_SizeCalculation(t *testing.T) {
 		{"10.0.0.0/8"},
 		{"172.16.0.0/12"},
 	}
-	
+
 	for _, tc := range testCases {
 		allocator, err := NewIPAllocator(tc.subnet, "10.0.0.1")
 		if err != nil {
@@ -1173,13 +1173,13 @@ func TestEnsureBridge_DoubleCheck(t *testing.T) {
 
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
-	
+
 	// First call - creates bridge
 	err := nm.ensureBridge(context.Background())
 	if err != nil {
 		t.Fatalf("First ensureBridge failed: %v", err)
 	}
-	
+
 	// Second call - should skip (double-check pattern)
 	err = nm.ensureBridge(context.Background())
 	if err != nil {
@@ -1196,7 +1196,7 @@ func TestSetupVXLANOverlay_PendingPeers(t *testing.T) {
 
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", VXLANEnabled: true}
 	nm := NewNetworkManager(config).(*NetworkManager)
-	
+
 	// Add pending peers before VXLAN init
 	nm.mu.Lock()
 	nm.pendingPeers = []string{"192.168.1.50", "192.168.1.51"}
