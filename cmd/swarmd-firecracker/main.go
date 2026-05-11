@@ -646,8 +646,8 @@ func printJoinTokens(ctx context.Context, stateDir string) {
 		log.G(ctx).Infof("========================================")
 		log.G(ctx).Infof("CLUSTER JOIN TOKENS")
 		log.G(ctx).Infof("========================================")
-		log.G(ctx).Infof("Worker token: %s", workerToken)
-		log.G(ctx).Infof("Manager token: %s", managerToken)
+		log.G(ctx).Debugf("Worker token: %s", workerToken)  // DEBUG level to avoid exposing token in logs
+		log.G(ctx).Debugf("Manager token: %s", managerToken) // DEBUG level to avoid exposing token in logs
 		log.G(ctx).Infof("========================================")
 
 		// Write tokens to a file
