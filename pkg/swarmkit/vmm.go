@@ -205,9 +205,8 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 		}
 	}()
 
-	// Start Firecracker process
-	bgCtx := context.Background()
-	cmd := exec.CommandContext(bgCtx, v.firecrackerPath,
+	// Start Firecracker process with caller's context for proper cancellation
+	cmd := exec.CommandContext(ctx, v.firecrackerPath,
 		"--api-sock", socketPath,
 		"--id", task.ID,
 	)
