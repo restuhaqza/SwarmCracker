@@ -61,15 +61,8 @@ func (sm *SecretManager) InjectSecrets(ctx context.Context, taskID string, secre
 		Int("count", len(secrets)).
 		Msg("Injecting secrets into rootfs")
 
-	// Mount the rootfs temporarily for injection
-	mountDir, err := sm.mountRootfs(rootfsPath)
-	if err != nil {
-		return fmt.Errorf("failed to mount rootfs: %w", err)
-	}
-	defer sm.unmountRootfs(mountDir)
-
 	for _, secret := range secrets {
-		if err := sm.injectSecret(mountDir, secret); err != nil {
+		if err := sm.injectFileViaDebugfs(rootfsPath, secret.Target, "/run/secrets/"+secret.Name, secret.Data, 0400); err != nil {
 			log.Error().
 				Str("task_id", taskID).
 				Str("secret", secret.Name).
@@ -108,15 +101,8 @@ func (sm *SecretManager) InjectConfigs(ctx context.Context, taskID string, confi
 		Int("count", len(configs)).
 		Msg("Injecting configs into rootfs")
 
-	// Mount the rootfs temporarily for injection
-	mountDir, err := sm.mountRootfs(rootfsPath)
-	if err != nil {
-		return fmt.Errorf("failed to mount rootfs: %w", err)
-	}
-	defer sm.unmountRootfs(mountDir)
-
 	for _, config := range configs {
-		if err := sm.injectConfig(mountDir, config); err != nil {
+		if err := sm.injectFileViaDebugfs(rootfsPath, config.Target, "/config/"+config.Name, config.Data, 0444); err != nil {
 			log.Error().
 				Str("task_id", taskID).
 				Str("config", config.Name).
@@ -222,35 +208,55 @@ func (sm *SecretManager) injectConfig(mountDir string, config types.ConfigRef) e
 	return nil
 }
 
-// mountRootfs mounts an ext4 rootfs image temporarily.
-func (sm *SecretManager) mountRootfs(rootfsPath string) (string, error) {
-	// Create temp mount point
-	mountDir, err := osMkdirTemp("", "swarmcracker-secrets-mount-")
+// injectFileViaDebugfs writes a file into an ext4 image using debugfs.
+// This avoids requiring root privileges for mount -o loop.
+func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName string, data []byte, mode os.FileMode) error {
+	targetPath := target
+	if targetPath == "" {
+		targetPath = defaultName
+	}
+
+	// Validate target path to prevent traversal attacks
+	if err := validateInjectionPath(targetPath); err != nil {
+		return fmt.Errorf("invalid target path: %w", err)
+	}
+
+	// Write to temp file first
+	tmpFile, err := osMkdirTemp("", "swarmcracker-inject-")
 	if err != nil {
-		return "", fmt.Errorf("failed to create temp dir: %w", err)
+		return fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer osRemoveAllStore(tmpFile)
+
+	filePath := filepath.Join(tmpFile, filepath.Base(targetPath))
+	if err := osWriteFileStore(filePath, data, mode); err != nil {
+		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
-	// Try to mount the image
-	// This requires root privileges or user namespace setup
-	if output, err := runCommand("mount", "-o", "loop", rootfsPath, mountDir); err != nil {
-		osRemoveAllStore(mountDir)
-		return "", fmt.Errorf("mount failed: %s: %w", output, err)
+	// Use debugfs to write into ext4 without mounting
+	cmd := execCommand("debugfs", "-w", "-R",
+		fmt.Sprintf("write %s %s", filePath, targetPath),
+		ext4Path)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("debugfs write failed: %s: %w", string(output), err)
 	}
 
-	log.Debug().Str("path", mountDir).Msg("Rootfs mounted for secrets injection")
-	return mountDir, nil
+	log.Debug().
+		Str("target", targetPath).
+		Int("size", len(data)).
+		Msg("File injected via debugfs")
+
+	return nil
 }
 
-// unmountRootfs unmounts a temporary mount point and cleans up.
-func (sm *SecretManager) unmountRootfs(mountDir string) {
-	// Unmount
-	if output, err := runCommand("umount", mountDir); err != nil {
-		log.Warn().Err(err).Str("output", output).Msg("Failed to unmount rootfs")
-	}
+// mountRootfs is deprecated — use injectFileViaDebugfs instead.
+func (sm *SecretManager) mountRootfs(rootfsPath string) (string, error) {
+	return osMkdirTemp("", "swarmcracker-deprecated-mount-")
+}
 
-	// Cleanup temp dir
+// unmountRootfs is deprecated — use injectFileViaDebugfs instead.
+func (sm *SecretManager) unmountRootfs(mountDir string) {
 	osRemoveAllStore(mountDir)
-	log.Debug().Str("path", mountDir).Msg("Rootfs unmounted and cleaned up")
 }
 
 // runCommand is a helper to run shell commands.

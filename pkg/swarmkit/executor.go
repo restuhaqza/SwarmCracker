@@ -869,7 +869,9 @@ func (c *Controller) syncVolumeData(ctx context.Context, task *types.Task, mount
 	return nil
 }
 
-// mountRootfs temporarily mounts an ext4 rootfs image.
+// mountRootfs mounts an ext4 rootfs for volume sync. Requires root.
+// TODO: Replace with debugfs-based read/write to avoid mount dependency.
+// Currently needed by volume sync (UnmountVolume requires a mounted directory).
 func (c *Controller) mountRootfs(imagePath string) (string, error) {
 	// Create temp mount point
 	mountDir, err := os.MkdirTemp("", "swarmcracker-sync-")
