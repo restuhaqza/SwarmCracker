@@ -180,6 +180,17 @@ tar xzf swarmcracker-v0.6.0-linux-amd64.tar.gz
 
 [All releases](https://github.com/restuhaqza/SwarmCracker/releases)
 
+## Security
+
+SwarmCracker takes security seriously. Every workload runs in a hardware-isolated Firecracker microVM with:
+
+- **KVM isolation** — separate kernel per VM
+- **Jailer sandbox** — chroot + non-root execution
+- **Seccomp filtering** — privileged syscalls blocked
+- **Hardened builds** — PIE binaries with stripped symbols
+
+Read our [Security Policy](SECURITY.md) and [Security Guide](docs/dev/security.md) for hardening checklists, secure deployment, and vulnerability reporting.
+
 ## Want to Contribute?
 
 Check out [CONTRIBUTING.md](CONTRIBUTING.md) — we'd love your help!
