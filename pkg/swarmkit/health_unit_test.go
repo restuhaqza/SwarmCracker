@@ -28,7 +28,7 @@ func TestVMMManager_CheckVMAPIHealth_Extended(t *testing.T) {
 			processMutex:    sync.Mutex{},
 		}
 
-		result := vmm.CheckVMAPIHealth("nonexistent-task")
+		result := vmm.CheckVMAPIHealth(context.Background(), "nonexistent-task")
 		assert.False(t, result)
 	})
 
@@ -47,7 +47,7 @@ func TestVMMManager_CheckVMAPIHealth_Extended(t *testing.T) {
 			processMutex:    sync.Mutex{},
 		}
 
-		result := vmm.CheckVMAPIHealth("task-1")
+		result := vmm.CheckVMAPIHealth(context.Background(), "task-1")
 		assert.False(t, result)
 	})
 
@@ -69,7 +69,7 @@ func TestVMMManager_CheckVMAPIHealth_Extended(t *testing.T) {
 		// Give server time to start
 		time.Sleep(100 * time.Millisecond)
 
-		result := vmm.CheckVMAPIHealth("task-healthy")
+		result := vmm.CheckVMAPIHealth(context.Background(), "task-healthy")
 		assert.True(t, result)
 	})
 
@@ -91,7 +91,7 @@ func TestVMMManager_CheckVMAPIHealth_Extended(t *testing.T) {
 		// Give server time to start
 		time.Sleep(100 * time.Millisecond)
 
-		result := vmm.CheckVMAPIHealth("task-unhealthy")
+		result := vmm.CheckVMAPIHealth(context.Background(), "task-unhealthy")
 		assert.False(t, result)
 	})
 
@@ -113,7 +113,7 @@ func TestVMMManager_CheckVMAPIHealth_Extended(t *testing.T) {
 		// Give server time to start
 		time.Sleep(100 * time.Millisecond)
 
-		result := vmm.CheckVMAPIHealth("task-timeout")
+		result := vmm.CheckVMAPIHealth(context.Background(), "task-timeout")
 		assert.False(t, result) // Should timeout and return false
 	})
 
@@ -128,7 +128,7 @@ func TestVMMManager_CheckVMAPIHealth_Extended(t *testing.T) {
 
 		// Create invalid socket path that will cause request creation to fail
 		// (this is handled by the HTTP client, not the request creation)
-		result := vmm.CheckVMAPIHealth("task-invalid")
+		result := vmm.CheckVMAPIHealth(context.Background(), "task-invalid")
 		assert.False(t, result)
 	})
 }
@@ -156,7 +156,7 @@ func TestVMMManager_putAPI_Extended(t *testing.T) {
 			MemSizeMib: 512,
 		}
 
-		err := vmm.putAPI(socketPath, "/machine-config", config)
+		err := vmm.putAPI(context.Background(), socketPath, "/machine-config", config)
 		assert.NoError(t, err)
 	})
 
@@ -181,7 +181,7 @@ func TestVMMManager_putAPI_Extended(t *testing.T) {
 			MemSizeMib: 512,
 		}
 
-		err := vmm.putAPI(socketPath, "/machine-config", config)
+		err := vmm.putAPI(context.Background(), socketPath, "/machine-config", config)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "API returned status")
 	})
@@ -198,7 +198,7 @@ func TestVMMManager_putAPI_Extended(t *testing.T) {
 		}
 
 		// Pass a type that can't be marshaled
-		err := vmm.putAPI(socketPath, "/machine-config", func() {})
+		err := vmm.putAPI(context.Background(), socketPath, "/machine-config", func() {})
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to marshal JSON")
 	})
@@ -216,7 +216,7 @@ func TestVMMManager_putAPI_Extended(t *testing.T) {
 
 		config := MachineConfig{VcpuCount: 2}
 
-		err := vmm.putAPI(socketPath, "/machine-config", config)
+		err := vmm.putAPI(context.Background(), socketPath, "/machine-config", config)
 		assert.Error(t, err)
 	})
 }

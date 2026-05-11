@@ -821,15 +821,15 @@ func TestMockVMMManager_Describe_Default(t *testing.T) {
 // TestMockVMMManager_CheckVMAPIHealth tests MockVMMManager CheckVMAPIHealth
 func TestMockVMMManager_CheckVMAPIHealth(t *testing.T) {
 	mockVMM := &MockVMMManager{
-		CheckVMAPIHealthFunc: func(taskID string) bool { return true },
+		CheckVMAPIHealthFunc: func(ctx context.Context, taskID string) bool { return true },
 	}
-	assert.True(t, mockVMM.CheckVMAPIHealth("task-1"))
+	assert.True(t, mockVMM.CheckVMAPIHealth(context.Background(), "task-1"))
 }
 
 // TestMockVMMManager_CheckVMAPIHealth_Default tests MockVMMManager CheckVMAPIHealth default
 func TestMockVMMManager_CheckVMAPIHealth_Default(t *testing.T) {
 	mockVMM := &MockVMMManager{}
-	assert.True(t, mockVMM.CheckVMAPIHealth("task-1"))
+	assert.True(t, mockVMM.CheckVMAPIHealth(context.Background(), "task-1"))
 }
 
 // TestMockVMMManager_GetPID tests MockVMMManager GetPID

@@ -25,7 +25,7 @@ type VMMManagerInterface interface {
 	// GetPID returns the process ID for a task
 	GetPID(taskID string) int
 	// CheckVMAPIHealth checks if the VM API is responding
-	CheckVMAPIHealth(taskID string) bool
+	CheckVMAPIHealth(ctx context.Context, taskID string) bool
 	// IsRunning checks if the VM process is still running
 	IsRunning(taskID string) bool
 	// GetRunningProcesses returns all running VM processes

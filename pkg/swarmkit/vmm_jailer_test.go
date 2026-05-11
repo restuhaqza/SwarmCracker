@@ -425,7 +425,7 @@ func TestVMMManagerJailerHealthCheck(t *testing.T) {
 	}
 
 	// Test health check on non-existent VM (should return false)
-	healthy := vmm.CheckVMAPIHealth("nonexistent-vm")
+	healthy := vmm.CheckVMAPIHealth(context.Background(), "nonexistent-vm")
 	if healthy {
 		t.Error("Expected health check to fail for non-existent VM")
 	}

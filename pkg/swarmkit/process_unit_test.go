@@ -392,7 +392,7 @@ func (m *mockVMMProcessTracker) GetPID(taskID string) int {
 	return 0
 }
 
-func (m *mockVMMProcessTracker) CheckVMAPIHealth(taskID string) bool {
+func (m *mockVMMProcessTracker) CheckVMAPIHealth(ctx context.Context, taskID string) bool {
 	return false
 }
 

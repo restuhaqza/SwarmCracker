@@ -31,7 +31,7 @@ func TestMockVMMManager_AllMethods(t *testing.T) {
 		GetPIDFunc: func(taskID string) int {
 			return 12345
 		},
-		CheckVMAPIHealthFunc: func(taskID string) bool {
+		CheckVMAPIHealthFunc: func(ctx context.Context, taskID string) bool {
 			return taskID != "unhealthy"
 		},
 		IsRunningFunc: func(taskID string) bool {
@@ -71,11 +71,11 @@ func TestMockVMMManager_AllMethods(t *testing.T) {
 		t.Errorf("Expected pid 12345, got %d", pid)
 	}
 
-	if !mock.CheckVMAPIHealth("test-task") {
+	if !mock.CheckVMAPIHealth(context.Background(), "test-task") {
 		t.Error("Expected healthy API check")
 	}
 
-	if mock.CheckVMAPIHealth("unhealthy") {
+	if mock.CheckVMAPIHealth(context.Background(), "unhealthy") {
 		t.Error("Expected unhealthy API check to return false")
 	}
 

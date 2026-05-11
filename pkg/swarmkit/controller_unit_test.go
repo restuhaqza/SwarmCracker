@@ -509,7 +509,7 @@ func (m *mockVMMManagerSuccess) GetPID(taskID string) int {
 	return 12345
 }
 
-func (m *mockVMMManagerSuccess) CheckVMAPIHealth(taskID string) bool {
+func (m *mockVMMManagerSuccess) CheckVMAPIHealth(ctx context.Context, taskID string) bool {
 	return true
 }
 
@@ -561,7 +561,7 @@ func (m *mockVMMManagerError) GetPID(taskID string) int {
 	return 0
 }
 
-func (m *mockVMMManagerError) CheckVMAPIHealth(taskID string) bool {
+func (m *mockVMMManagerError) CheckVMAPIHealth(ctx context.Context, taskID string) bool {
 	return false
 }
 

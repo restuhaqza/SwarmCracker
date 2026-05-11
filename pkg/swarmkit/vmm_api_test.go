@@ -163,7 +163,7 @@ func TestVMMManager_putAPI(t *testing.T) {
 		}
 
 		socketPath := filepath.Join(tmpDir, "nonexistent.sock")
-		err := vmm.putAPI(socketPath, "/machine-config", MachineConfig{})
+		err := vmm.putAPI(context.Background(), socketPath, "/machine-config", MachineConfig{})
 		assert.Error(t, err)
 	})
 }
@@ -315,7 +315,7 @@ func TestVMMManager_waitForSocket(t *testing.T) {
 			processes:       make(map[string]*exec.Cmd),
 		}
 
-		err := vmm.waitForSocket(socketPath, 2*time.Second)
+		err := vmm.waitForSocket(context.Background(), socketPath, 2*time.Second)
 		assert.NoError(t, err)
 	})
 
@@ -329,7 +329,7 @@ func TestVMMManager_waitForSocket(t *testing.T) {
 			processes:       make(map[string]*exec.Cmd),
 		}
 
-		err := vmm.waitForSocket(socketPath, 200*time.Millisecond)
+		err := vmm.waitForSocket(context.Background(), socketPath, 200*time.Millisecond)
 		assert.Error(t, err)
 		assert.Equal(t, context.DeadlineExceeded, err)
 	})
@@ -346,7 +346,7 @@ func TestVMMManager_waitForSocket(t *testing.T) {
 			processes:       make(map[string]*exec.Cmd),
 		}
 
-		err := vmm.waitForSocket(socketPath, 2*time.Second)
+		err := vmm.waitForSocket(context.Background(), socketPath, 2*time.Second)
 		assert.NoError(t, err)
 	})
 }
@@ -498,7 +498,7 @@ func TestVMMManager_CheckVMAPIHealth_VMM(t *testing.T) {
 			processes:       make(map[string]*exec.Cmd),
 		}
 
-		healthy := vmm.CheckVMAPIHealth("task-nonexistent")
+		healthy := vmm.CheckVMAPIHealth(context.Background(), "task-nonexistent")
 		assert.False(t, healthy)
 	})
 
@@ -513,7 +513,7 @@ func TestVMMManager_CheckVMAPIHealth_VMM(t *testing.T) {
 			processes:       make(map[string]*exec.Cmd),
 		}
 
-		healthy := vmm.CheckVMAPIHealth("task-1")
+		healthy := vmm.CheckVMAPIHealth(context.Background(), "task-1")
 		assert.False(t, healthy)
 	})
 }

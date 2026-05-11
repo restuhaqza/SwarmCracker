@@ -17,7 +17,7 @@ type MockVMMManager struct {
 	WaitFunc             func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
 	RemoveFunc           func(ctx context.Context, task *types.Task) error
 	GetPIDFunc           func(taskID string) int
-	CheckVMAPIHealthFunc func(taskID string) bool
+	CheckVMAPIHealthFunc func(ctx context.Context, taskID string) bool
 	IsRunningFunc        func(taskID string) bool
 	DescribeFunc         func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
 	GetRunningProcessesFunc func() map[string]*exec.Cmd
@@ -67,9 +67,9 @@ func (m *MockVMMManager) GetPID(taskID string) int {
 	return 0
 }
 
-func (m *MockVMMManager) CheckVMAPIHealth(taskID string) bool {
+func (m *MockVMMManager) CheckVMAPIHealth(ctx context.Context, taskID string) bool {
 	if m.CheckVMAPIHealthFunc != nil {
-		return m.CheckVMAPIHealthFunc(taskID)
+		return m.CheckVMAPIHealthFunc(ctx, taskID)
 	}
 	return true
 }

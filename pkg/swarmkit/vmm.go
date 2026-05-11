@@ -225,7 +225,7 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 	v.processMutex.Unlock()
 
 	// Wait for socket to be created
-	if err := v.waitForSocket(socketPath, 10*time.Second); err != nil {
+	if err := v.waitForSocket(ctx, socketPath, 10*time.Second); err != nil {
 		cmd.Process.Kill()
 		socketCleanupNeeded = true
 		return fmt.Errorf("socket not created: %w", err)
@@ -386,7 +386,7 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 	if !ok {
 		return fmt.Errorf("missing machine-config in config")
 	}
-	if err := v.putAPI(socketPath, "/machine-config", machineConfig); err != nil {
+	if err := v.putAPI(ctx, socketPath, "/machine-config", machineConfig); err != nil {
 		return fmt.Errorf("failed to set machine config: %w", err)
 	}
 
@@ -395,7 +395,7 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 	if !ok {
 		return fmt.Errorf("missing boot-source in config")
 	}
-	if err := v.putAPI(socketPath, "/boot-source", bootSource); err != nil {
+	if err := v.putAPI(ctx, socketPath, "/boot-source", bootSource); err != nil {
 		return fmt.Errorf("failed to set boot source: %w", err)
 	}
 
@@ -422,7 +422,7 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 		if !ok {
 			return fmt.Errorf("missing drive_id in drive config")
 		}
-		if err := v.putAPI(socketPath, "/drives/"+driveID, drive); err != nil {
+		if err := v.putAPI(ctx, socketPath, "/drives/"+driveID, drive); err != nil {
 			return fmt.Errorf("failed to set drive %s: %w", driveID, err)
 		}
 		v.logger.Info().Str("drive_id", driveID).Msg("Drive configured")
@@ -454,7 +454,7 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 				Str("iface_id", ifaceID).
 				Str("host_dev", hostDev).
 				Msg("Adding network interface")
-			if err := v.putAPI(socketPath, "/network-interfaces/"+ifaceID, iface); err != nil {
+			if err := v.putAPI(ctx, socketPath, "/network-interfaces/"+ifaceID, iface); err != nil {
 				return fmt.Errorf("failed to set network interface %s: %w", ifaceID, err)
 			}
 		}
@@ -466,7 +466,7 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 	action := Action{
 		ActionType: "InstanceStart",
 	}
-	if err := v.putAPI(socketPath, "/actions", action); err != nil {
+	if err := v.putAPI(ctx, socketPath, "/actions", action); err != nil {
 		return fmt.Errorf("failed to start instance: %w", err)
 	}
 
@@ -478,8 +478,8 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 }
 
 // waitForSocket waits for the Firecracker socket to be created.
-func (v *VMMManager) waitForSocket(socketPath string, timeout time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+func (v *VMMManager) waitForSocket(ctx context.Context, socketPath string, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -630,7 +630,7 @@ func (v *VMMManager) GetPID(taskID string) int {
 // CheckVMAPIHealth checks if the VM's API socket is responsive.
 // This is a lightweight liveness check that verifies the Firecracker
 // API server is responding to requests.
-func (v *VMMManager) CheckVMAPIHealth(taskID string) bool {
+func (v *VMMManager) CheckVMAPIHealth(ctx context.Context, taskID string) bool {
 	socketPath := filepath.Join(v.socketDir, taskID+".sock")
 
 	// Check if socket file exists
@@ -643,7 +643,7 @@ func (v *VMMManager) CheckVMAPIHealth(taskID string) bool {
 	client := createFirecrackerHTTPClient(socketPath)
 	url := fmt.Sprintf("http://localhost/machine-config")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -811,7 +811,7 @@ func createFirecrackerHTTPClient(socketPath string) *http.Client {
 }
 
 // putAPI sends a PUT request to the Firecracker API
-func (v *VMMManager) putAPI(socketPath, path string, data interface{}) error {
+func (v *VMMManager) putAPI(ctx context.Context, socketPath, path string, data interface{}) error {
 	client := createFirecrackerHTTPClient(socketPath)
 
 	jsonData, err := json.Marshal(data)
@@ -820,7 +820,7 @@ func (v *VMMManager) putAPI(socketPath, path string, data interface{}) error {
 	}
 
 	url := fmt.Sprintf("http://localhost%s", path)
-	req, err := http.NewRequestWithContext(context.Background(), "PUT", url, bytes.NewReader(jsonData))
+	req, err := http.NewRequestWithContext(ctx, "PUT", url, bytes.NewReader(jsonData))
 	if err != nil {
 		return fmt.Errorf("failed to create request: %w", err)
 	}

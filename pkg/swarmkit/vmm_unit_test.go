@@ -990,7 +990,7 @@ func TestCheckVMAPIHealth(t *testing.T) {
 				t.Skip("cannot setup test")
 			}
 
-			result := vmm.CheckVMAPIHealth(taskID)
+			result := vmm.CheckVMAPIHealth(context.Background(), taskID)
 			if result != tt.expected {
 				t.Errorf("CheckVMAPIHealth() = %v; want %v", result, tt.expected)
 			}
@@ -1067,7 +1067,7 @@ func TestWaitForSocket(t *testing.T) {
 		defer os.Remove(socketPath)
 		file.Close()
 
-		err = vmm.waitForSocket(socketPath, 5*time.Second)
+		err = vmm.waitForSocket(context.Background(), socketPath, 5*time.Second)
 		if err != nil {
 			t.Errorf("waitForSocket() unexpected error = %v", err)
 		}
@@ -1084,7 +1084,7 @@ func TestWaitForSocket(t *testing.T) {
 		}()
 		defer os.Remove(socketPath)
 
-		err := vmm.waitForSocket(socketPath, 1*time.Second)
+		err := vmm.waitForSocket(context.Background(), socketPath, 1*time.Second)
 		if err != nil {
 			t.Errorf("waitForSocket() unexpected error = %v", err)
 		}
@@ -1093,7 +1093,7 @@ func TestWaitForSocket(t *testing.T) {
 	t.Run("socket timeout", func(t *testing.T) {
 		socketPath := filepath.Join(vmm.socketDir, "timeout-socket.sock")
 
-		err := vmm.waitForSocket(socketPath, 100*time.Millisecond)
+		err := vmm.waitForSocket(context.Background(), socketPath, 100*time.Millisecond)
 		if err == nil {
 			t.Error("waitForSocket() expected timeout error, got nil")
 		}
