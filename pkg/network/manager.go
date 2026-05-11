@@ -260,6 +260,11 @@ func NewNetworkManager(config types.NetworkConfig) types.NetworkManager {
 
 // Init initializes the network infrastructure (bridge, VXLAN).
 func (nm *NetworkManager) Init(ctx context.Context) error {
+	// Validate bridge name to prevent IFNAMSIZ overflow and injection
+	if err := validateBridgeName(nm.config.BridgeName); err != nil {
+		return fmt.Errorf("invalid bridge name: %w", err)
+	}
+
 	// Ensure bridge exists (this also sets up VXLAN if enabled)
 	if err := nm.ensureBridge(ctx); err != nil {
 		return fmt.Errorf("failed to setup bridge: %w", err)
@@ -481,7 +486,7 @@ func (nm *NetworkManager) prepareNetworkWithCNI(ctx context.Context, task *types
 }
 
 // CleanupNetwork cleans up network interfaces for a task.
-func (nm *NetworkManager) CleanupNetwork(_ context.Context, task *types.Task) error {
+func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) error {
 	if task == nil {
 		return nil
 	}
@@ -508,6 +513,19 @@ func (nm *NetworkManager) CleanupNetwork(_ context.Context, task *types.Task) er
 			}
 
 			delete(nm.tapDevices, key)
+		}
+	}
+
+	// Clean up CNI network attachments if any (prevents IPAM leaks)
+	if nm.cniClient != nil && len(task.Networks) > 0 {
+		for _, netAttach := range task.Networks {
+			netnsPath := "/tmp/firecracker-ns"
+			if err := nm.cniClient.DelNetwork(ctx, task.ID, netnsPath, netAttach.Network.ID); err != nil {
+				log.Warn().Err(err).
+					Str("task_id", task.ID).
+					Str("network_id", netAttach.Network.ID).
+					Msg("Failed to clean up CNI network")
+			}
 		}
 	}
 
@@ -814,6 +832,23 @@ func (nm *NetworkManager) killByPID(pid string) {
 	if err := cmd.Run(); err != nil {
 		log.Warn().Str("pid", pid).Err(err).Msg("Failed to kill process by PID")
 	}
+}
+
+// validateBridgeName validates that a bridge name is safe and within IFNAMSIZ limits.
+func validateBridgeName(name string) error {
+	if name == "" {
+		return fmt.Errorf("bridge name cannot be empty")
+	}
+	if len(name) > 15 {
+		return fmt.Errorf("bridge name %q exceeds 15 character limit (IFNAMSIZ)", name)
+	}
+	for _, c := range name {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' {
+			continue
+		}
+		return fmt.Errorf("bridge name %q contains invalid character: %c", name, c)
+	}
+	return nil
 }
 
 // setupVXLANOverlay sets up VXLAN overlay networking for cross-node VM communication.
