@@ -5,7 +5,17 @@
 set -e
 
 WORKER_HOST="${1:-192.168.56.11}"
-JOIN_TOKEN="${2:-SWMTKN-1-0ez8b0cbdw56pp79c1zxmtnbr1dywdlvmp7z23u3ufut5gkezr-d1gvmdj71sdxtzw3u78ym8yi5}"
+JOIN_TOKEN="${2:-}"
+
+# Validate join token is provided and not a placeholder
+if [ -z "$JOIN_TOKEN" ]; then
+    echo "Error: Join token is required. Usage: $0 <worker-host> <join-token>" >&2
+    exit 1
+fi
+if [ "$JOIN_TOKEN" = "REQUIRED" ] || [ "$JOIN_TOKEN" = "<join-token>" ]; then
+    echo "Error: Join token must be a valid token, not a placeholder. Usage: $0 <worker-host> <join-token>" >&2
+    exit 1
+fi
 MANAGER_ADDR="192.168.56.10:4242"
 FIRECRACKER_VERSION="v1.14.1"
 
