@@ -12,6 +12,10 @@ linters:
     - gofmt
     - revive
     - gocyclo
+    - gosec
+    - nilerr
+    - prealloc
+    - noctx
 
 linters-settings:
   gocyclo:

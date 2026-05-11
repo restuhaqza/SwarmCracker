@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // VMMetrics represents metrics collected for a VM.
@@ -394,8 +396,6 @@ func (c *Collector) collectAll(getPIDs func() map[string]int) {
 
 // logDebug is a simple logger that can be replaced with proper logging.
 func logDebug(format string, args ...interface{}) {
-	// For now, just use fmt.Printf
-	// In production, this should use the configured logger
 	msg := fmt.Sprintf("[metrics] "+format, args...)
-	fmt.Println(msg)
+	log.Debug().Msg(msg)
 }
