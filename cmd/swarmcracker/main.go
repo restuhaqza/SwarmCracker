@@ -1076,7 +1076,7 @@ func uploadFile(client *ssh.Client, localPath, remotePath string) error {
 
 	// Set stdin and run cat to write file
 	session.Stdin = bytes.NewReader(data)
-	catCmd := fmt.Sprintf("cat > %s", remotePath)
+	catCmd := fmt.Sprintf("cat > %s", shellescape.Quote(remotePath))
 	if err := session.Run(catCmd); err != nil {
 		return fmt.Errorf("failed to write remote file: %w", err)
 	}
@@ -1124,7 +1124,7 @@ func startMicroVM(client *ssh.Client, taskID, rootfsPath string, plan *Deploymen
 		return fmt.Errorf("failed to create config session: %w", err)
 	}
 	writeSession.Stdin = strings.NewReader(configJSON)
-	if err := writeSession.Run(fmt.Sprintf("cat > %s", configPath)); err != nil {
+	if err := writeSession.Run(fmt.Sprintf("cat > %s", shellescape.Quote(configPath))); err != nil {
 		writeSession.Close()
 		return fmt.Errorf("failed to write config: %w", err)
 	}
@@ -1139,7 +1139,7 @@ func startMicroVM(client *ssh.Client, taskID, rootfsPath string, plan *Deploymen
 	defer startSession.Close()
 
 	// Start Firecracker in background (nohup)
-	startCmd := fmt.Sprintf("nohup firecracker --api-sock %s --config-file %s > /var/log/firecracker/%s.log 2>&1 &", socketPath, configPath, taskID)
+	startCmd := fmt.Sprintf("nohup firecracker --api-sock %s --config-file %s > /var/log/firecracker/%s.log 2>&1 &", shellescape.Quote(socketPath), shellescape.Quote(configPath), shellescape.Quote(taskID))
 	output, err := startSession.CombinedOutput(startCmd)
 	if err != nil {
 		return fmt.Errorf("failed to start Firecracker: %w\nOutput: %s", err, string(output))
@@ -1153,7 +1153,7 @@ func startMicroVM(client *ssh.Client, taskID, rootfsPath string, plan *Deploymen
 	defer verifySession.Close()
 
 	// Check if socket exists
-	checkCmd := fmt.Sprintf("test -S %s && echo 'ok' || echo 'not_found'", socketPath)
+	checkCmd := fmt.Sprintf("test -S %s && echo 'ok' || echo 'not_found'", shellescape.Quote(socketPath))
 	for i := 0; i < 10; i++ {
 		time.Sleep(500 * time.Millisecond)
 		verifyOutput, err := verifySession.Output(checkCmd)
