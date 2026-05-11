@@ -30,6 +30,7 @@ package jailer
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -644,13 +645,22 @@ func (j *Jailer) prepareChrootResources(chrootDir string, cfg VMConfig) error {
 	return nil
 }
 
-// copyFile copies a file from src to dst.
+// copyFile copies a file from src to dst using streaming to avoid OOM with large files.
 func copyFile(src, dst string) error {
-	input, err := os.ReadFile(src)
+	srcFile, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, input, 0644)
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
 }
 
 // logWriter writes log lines to zerolog.
