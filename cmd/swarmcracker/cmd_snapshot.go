@@ -415,7 +415,7 @@ func toSnapshotConfig(c config.SnapshotConfig) snapshot.SnapshotConfig {
 		Enabled:      c.Enabled,
 		SnapshotDir:  c.SnapshotDir,
 		MaxSnapshots: c.MaxSnapshots,
-		MaxAge:       c.MaxAge,
+		MaxAge:       c.MaxAge.ToDuration(),
 		AutoSnapshot: c.AutoSnapshot,
 		Compress:     c.Compress,
 	}

@@ -4,10 +4,64 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
+
+// Duration is a custom type that can parse duration strings from YAML.
+// It supports both string formats (e.g., "24h", "7d") and numeric values.
+type Duration time.Duration
+
+// UnmarshalYAML implements yaml.Unmarshaler for Duration.
+// It accepts both string duration formats (e.g., "24h", "7d") and numeric values.
+func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
+	var s string
+	if err := value.Decode(&s); err == nil {
+		// String format - parse duration
+		// Support "d" suffix for days
+		if strings.HasSuffix(s, "d") {
+			daysStr := strings.TrimSuffix(s, "d")
+			days, err := time.ParseDuration(daysStr + "h")
+			if err != nil {
+				return fmt.Errorf("invalid duration format: %s", s)
+			}
+			*d = Duration(days * 24) // Convert days to hours
+			return nil
+		}
+		
+		parsed, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("invalid duration format: %s", s)
+		}
+		*d = Duration(parsed)
+		return nil
+	}
+
+	// Try numeric format (interpreted as seconds)
+	var num int64
+	if err := value.Decode(&num); err != nil {
+		return fmt.Errorf("duration must be string or number: %v", err)
+	}
+	*d = Duration(time.Duration(num) * time.Second)
+	return nil
+}
+
+// MarshalYAML implements yaml.Marshaler for Duration.
+func (d Duration) MarshalYAML() (interface{}, error) {
+	return time.Duration(d).String(), nil
+}
+
+// ToDuration converts Duration to time.Duration.
+func (d Duration) ToDuration() time.Duration {
+	return time.Duration(d)
+}
+
+// String returns the string representation of Duration.
+func (d Duration) String() string {
+	return time.Duration(d).String()
+}
 
 // Config is the top-level configuration structure.
 type Config struct {
@@ -88,12 +142,12 @@ type JailerConfig struct {
 
 // SnapshotConfig holds snapshot configuration.
 type SnapshotConfig struct {
-	Enabled      bool          `yaml:"enabled"`
-	SnapshotDir  string        `yaml:"snapshot_dir"`
-	MaxSnapshots int           `yaml:"max_snapshots"`
-	MaxAge       time.Duration `yaml:"max_age"`
-	AutoSnapshot bool          `yaml:"auto_snapshot"`
-	Compress     bool          `yaml:"compress"`
+	Enabled      bool     `yaml:"enabled"`
+	SnapshotDir  string   `yaml:"snapshot_dir"`
+	MaxSnapshots int      `yaml:"max_snapshots"`
+	MaxAge       Duration `yaml:"max_age"`
+	AutoSnapshot bool     `yaml:"auto_snapshot"`
+	Compress     bool     `yaml:"compress"`
 }
 
 // LoadConfig loads configuration from a YAML file.
@@ -254,7 +308,7 @@ func (c *Config) SetDefaults() {
 		c.Snapshot.MaxSnapshots = 3
 	}
 	if c.Snapshot.MaxAge == 0 {
-		c.Snapshot.MaxAge = 168 * time.Hour
+		c.Snapshot.MaxAge = Duration(168 * time.Hour)
 	}
 }
 
