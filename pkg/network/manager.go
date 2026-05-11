@@ -722,13 +722,9 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		Str("gateway", gatewayIP.String()).
 		Msg("Setting up DHCP server")
 
-	// Kill ALL dnsmasq instances first (more aggressive cleanup)
-	// This ensures no port conflicts with system dnsmasq
-	execCommand("pkill", "-9", "dnsmasq").Run()
+	// Kill any existing dnsmasq for this bridge via PID file (safe, no shell injection)
+	nm.killDnsmasqByPID()
 	time.Sleep(100 * time.Millisecond) // Brief pause to ensure process is killed
-
-	// Kill any existing dnsmasq for this bridge (fallback)
-	execCommand("pkill", "-f", fmt.Sprintf("dnsmasq.*%s", nm.config.BridgeName)).Run()
 
 	// Create log file with proper permissions for dnsmasq (runs as nobody)
 	logFile := "/tmp/dnsmasq.log"
@@ -781,24 +777,43 @@ func (nm *NetworkManager) Shutdown() error {
 	return nil
 }
 
-// cleanupDnsmasq kills all dnsmasq instances related to swarmcracker.
+// cleanupDnsmasq kills dnsmasq instances related to swarmcracker via PID file.
 func (nm *NetworkManager) cleanupDnsmasq() error {
-	// Kill dnsmasq by bridge name (our specific instance)
-	bridgePattern := fmt.Sprintf("dnsmasq.*%s", nm.config.BridgeName)
-	execCommand("pkill", "-f", bridgePattern).Run()
-
-	// Also kill by pid file if exists
+	// Kill by pid file (safe, no shell injection)
 	pidFile := "/tmp/dnsmasq.pid"
 	if data, err := os.ReadFile(pidFile); err == nil {
 		pid := strings.TrimSpace(string(data))
 		if pid != "" {
-			execCommand("kill", pid).Run()
+			nm.killByPID(pid)
 			osRemove(pidFile)
 		}
 	}
 
 	log.Info().Msg("dnsmasq cleaned up")
 	return nil
+}
+
+// killDnsmasqByPID reads the dnsmasq PID file and sends SIGTERM.
+func (nm *NetworkManager) killDnsmasqByPID() {
+	pidFile := "/tmp/dnsmasq.pid"
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return
+	}
+	pid := strings.TrimSpace(string(data))
+	if pid == "" {
+		return
+	}
+	nm.killByPID(pid)
+	osRemove(pidFile)
+}
+
+// killByPID sends SIGTERM to a process by its PID string.
+func (nm *NetworkManager) killByPID(pid string) {
+	cmd := exec.Command("kill", pid)
+	if err := cmd.Run(); err != nil {
+		log.Warn().Str("pid", pid).Err(err).Msg("Failed to kill process by PID")
+	}
 }
 
 // setupVXLANOverlay sets up VXLAN overlay networking for cross-node VM communication.
