@@ -19,6 +19,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// Version is set by build flags (-X main.Version=...)
+var Version = "0.0.0-dev"
+
 var (
 	configPath = flag.String("config", "/etc/swarmcracker/config.yaml", "Path to configuration file")
 	debug      = flag.Bool("debug", false, "Enable debug logging")
@@ -37,8 +40,7 @@ func main() {
 	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Logger()
 
 	if *version {
-		fmt.Println("SwarmCracker Agent v0.1.0-alpha")
-		fmt.Println("SwarmKit Executor Integration")
+		fmt.Printf("SwarmCracker Agent %s\nSwarmKit Executor Integration\n", Version)
 		os.Exit(0)
 	}
 

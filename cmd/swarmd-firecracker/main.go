@@ -33,6 +33,11 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
+var (
+	// Version is set by build flags (-X main.Version=...)
+	Version = "0.0.0-dev"
+)
+
 const (
 	defaultStateDir  = "/var/lib/swarmkit"
 	defaultJoinRetry = 3
@@ -42,7 +47,7 @@ func main() {
 	app := cli.NewApp()
 	app.Name = "swarmd-firecracker"
 	app.Usage = "SwarmKit agent with Firecracker microVM executor"
-	app.Version = "0.1.0"
+	app.Version = Version
 	app.Flags = []cli.Flag{
 		&cli.StringFlag{
 			Name:    "state-dir",
