@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -147,8 +148,20 @@ func (sm *SecretManager) injectSecret(mountDir string, secret types.SecretRef) e
 		targetPath = filepath.Join("/run/secrets", secret.Name)
 	}
 
+	// Validate target path to prevent traversal attacks
+	if err := validateInjectionPath(targetPath); err != nil {
+		return fmt.Errorf("invalid target path: %w", err)
+	}
+
 	// Full path on the mounted rootfs
 	fullPath := filepath.Join(mountDir, targetPath)
+
+	// Verify the final path stays within mountDir
+	cleanMount := filepath.Clean(mountDir)
+	cleanFull := filepath.Clean(fullPath)
+	if !strings.HasPrefix(cleanFull, cleanMount) {
+		return fmt.Errorf("path escapes mount directory")
+	}
 
 	// Create parent directories
 	if err := osMkdirAllStore(filepath.Dir(fullPath), 0755); err != nil {
@@ -176,8 +189,20 @@ func (sm *SecretManager) injectConfig(mountDir string, config types.ConfigRef) e
 		targetPath = filepath.Join("/config", config.Name)
 	}
 
+	// Validate target path to prevent traversal attacks
+	if err := validateInjectionPath(targetPath); err != nil {
+		return fmt.Errorf("invalid target path: %w", err)
+	}
+
 	// Full path on the mounted rootfs
 	fullPath := filepath.Join(mountDir, targetPath)
+
+	// Verify the final path stays within mountDir
+	cleanMount := filepath.Clean(mountDir)
+	cleanFull := filepath.Clean(fullPath)
+	if !strings.HasPrefix(cleanFull, cleanMount) {
+		return fmt.Errorf("path escapes mount directory")
+	}
 
 	// Create parent directories
 	if err := osMkdirAllStore(filepath.Dir(fullPath), 0755); err != nil {
@@ -233,4 +258,26 @@ func runCommand(name string, args ...string) (string, error) {
 	cmd := execCommand(name, args...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
+}
+
+// validateInjectionPath validates a target path for secret/config injection.
+// It rejects paths that could escape the target directory through traversal.
+func validateInjectionPath(path string) error {
+	// Reject null bytes
+	if strings.Contains(path, "\x00") {
+		return fmt.Errorf("path contains null bytes")
+	}
+
+	// Reject paths containing ".." (path traversal)
+	cleanPath := filepath.Clean(path)
+	if strings.Contains(cleanPath, "..") {
+		return fmt.Errorf("path contains traversal sequence: %s", path)
+	}
+
+	// Ensure path is not empty
+	if path == "" || cleanPath == "" || cleanPath == "." {
+		return fmt.Errorf("path is empty")
+	}
+
+	return nil
 }
