@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 )
@@ -301,6 +302,20 @@ func (d *DirectoryDriver) Restore(ctx context.Context, name string, snap *Snapsh
 			return fmt.Errorf("read tar entry: %w", err)
 		}
 
+		// Validate path to prevent ZIP slip attacks
+		if err := validateTarPath(dataDir, header.Name); err != nil {
+			return fmt.Errorf("invalid path %s: %w", header.Name, err)
+		}
+		// Validate linkname for symlinks
+		if header.Linkname != "" {
+			if err := validateTarPath(dataDir, header.Linkname); err != nil {
+				return fmt.Errorf("invalid linkname %s: %w", header.Linkname, err)
+			}
+		}
+
+		// Strip setuid/setgid bits for security
+		header.Mode = int64(stripSetuidSetgid(header.Mode))
+
 		target := filepath.Join(dataDir, header.Name)
 
 		switch header.Typeflag {
@@ -402,6 +417,20 @@ func (d *DirectoryDriver) Import(ctx context.Context, name string, r io.Reader, 
 			return fmt.Errorf("read tar entry: %w", err)
 		}
 
+		// Validate path to prevent ZIP slip attacks
+		if err := validateTarPath(dataDir, header.Name); err != nil {
+			return fmt.Errorf("invalid path %s: %w", header.Name, err)
+		}
+		// Validate linkname for symlinks
+		if header.Linkname != "" {
+			if err := validateTarPath(dataDir, header.Linkname); err != nil {
+				return fmt.Errorf("invalid linkname %s: %w", header.Linkname, err)
+			}
+		}
+
+		// Strip setuid/setgid bits for security
+		header.Mode = int64(stripSetuidSetgid(header.Mode))
+
 		target := filepath.Join(dataDir, header.Name)
 		switch header.Typeflag {
 		case tar.TypeDir:
@@ -426,6 +455,41 @@ func (d *DirectoryDriver) Import(ctx context.Context, name string, r io.Reader, 
 
 	log.Info().Str("volume", name).Msg("Volume imported from stream")
 	return nil
+}
+
+// validateTarPath checks that a tar entry path is safe and doesn't escape the destination.
+// It prevents path traversal attacks (ZIP slip) by rejecting:
+// - Paths containing ".." components
+// - Absolute paths that don't start with the destination
+// - Paths with null bytes
+func validateTarPath(dest, name string) error {
+	// Reject null bytes
+	if strings.Contains(name, "\x00") {
+		return fmt.Errorf("path contains null bytes")
+	}
+
+	// Clean and check for path traversal
+	cleanName := filepath.Clean(name)
+	if strings.Contains(cleanName, "..") {
+		return fmt.Errorf("path contains traversal sequence: %s", name)
+	}
+
+	// Construct full path and verify it stays within dest
+	fullPath := filepath.Join(dest, cleanName)
+	cleanDest := filepath.Clean(dest)
+	cleanFull := filepath.Clean(fullPath)
+
+	// Ensure the final path is within the destination directory
+	if !strings.HasPrefix(cleanFull, cleanDest+string(filepath.Separator)) && cleanFull != cleanDest {
+		return fmt.Errorf("path escapes destination: %s", name)
+	}
+
+	return nil
+}
+
+// stripSetuidSetgid removes setuid and setgid bits from file mode for security.
+func stripSetuidSetgid(mode int64) int64 {
+	return mode &^ 06000 // Clear setuid (04000) and setgid (02000) bits
 }
 
 // dataPath returns the path to the data subdirectory for a volume.
