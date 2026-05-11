@@ -18,8 +18,7 @@ vendor/
 go.work
 
 # Build artifacts
-swarmctl
-swarmcracker
+/swarmctl
 build/
 
 /build/

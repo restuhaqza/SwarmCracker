@@ -19,7 +19,7 @@ import (
 
 func TestCreateTAPDevice_Success(t *testing.T) {
 	t.Skip("skipped: mock output format mismatch")
-	return
+
 	mock := NewMockTAPExecutor()
 
 	// Setup mock outputs
@@ -212,7 +212,7 @@ func TestCreateBridge_AlreadyExists(t *testing.T) {
 
 func TestCreateBridge_CreateFails(t *testing.T) {
 	t.Skip("skipped: mock output format mismatch")
-	return
+
 	mock := NewMockTAPExecutor()
 
 	mock.RunErrors = map[string]error{
@@ -240,7 +240,7 @@ func TestCreateBridge_BringUpFails(t *testing.T) {
 
 func TestCreateBridge_InvalidSubnet(t *testing.T) {
 	t.Skip("skipped: mock output format mismatch")
-	return
+
 	mock := NewMockTAPExecutor()
 	mock.RunErrors = map[string]error{
 		"ip": errors.New("bridge not found"),
@@ -300,7 +300,7 @@ func TestSetupVXLANFDB_WithPeers(t *testing.T) {
 
 func TestGetTAPMAC_Success(t *testing.T) {
 	t.Skip("skipped: mock output format mismatch")
-	return
+
 	mock := NewMockTAPExecutor()
 	mock.OutputResult = []byte("tap0: <UP> mtu 1500\n    link/ether 00:11:22:33:44:55 brd ff:ff:ff:ff:ff:ff")
 

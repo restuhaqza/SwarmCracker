@@ -138,7 +138,7 @@ func TestNetworkManager_PrepareNetworkWithCNI_Documentation(t *testing.T) {
 
 func TestCNIClient_AddNetwork_WithMockPlugin(t *testing.T) {
 	t.Skip("skipped: needs fix")
-	return
+
 	// Create a temp CNI config and mock binary
 	tmpDir := t.TempDir()
 
@@ -468,7 +468,7 @@ func TestNetworkManager_SetupNAT_RulesAlreadyExist_Unit(t *testing.T) {
 
 func TestNetworkManager_SetupNAT_AddRules_Unit(t *testing.T) {
 	t.Skip("skipped: needs fix")
-	return
+
 	mock := NewMockCommandExecutor()
 
 	callCount := 0
@@ -556,7 +556,7 @@ func TestNewCNIClient_AllDefaults_Unit(t *testing.T) {
 
 func TestCNIResult_JSONUnmarshal_Unit(t *testing.T) {
 	t.Skip("skipped: needs fix")
-	return
+
 	jsonData := `{
 		"cniVersion": "1.0.0",
 		"interfaces": [
