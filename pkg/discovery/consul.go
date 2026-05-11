@@ -27,6 +27,10 @@ type ConsulConfig struct {
 	LocalHostname string
 	VXLANPort     int    // VXLAN UDP port (default: 4789)
 	Token         string // ACL token (optional)
+	UseTLS        bool   // Enable TLS for Consul communication
+	TLSCertFile   string // Path to TLS certificate file
+	TLSKeyFile    string // Path to TLS key file
+	TLSCAFile     string // Path to TLS CA certificate file (optional)
 }
 
 // NewConsulClient creates a new Consul discovery client.
@@ -42,6 +46,17 @@ func NewConsulClient(cfg ConsulConfig) (*ConsulClient, error) {
 	config.Address = cfg.Address
 	if cfg.Token != "" {
 		config.Token = cfg.Token
+	}
+	if cfg.UseTLS {
+		config.Scheme = "https"
+		if cfg.TLSCertFile != "" && cfg.TLSKeyFile != "" {
+			config.TLSConfig.Address = cfg.Address
+			config.TLSConfig.CertFile = cfg.TLSCertFile
+			config.TLSConfig.KeyFile = cfg.TLSKeyFile
+			if cfg.TLSCAFile != "" {
+				config.TLSConfig.CAFile = cfg.TLSCAFile
+			}
+		}
 	}
 
 	client, err := api.NewClient(config)
