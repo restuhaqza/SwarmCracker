@@ -182,7 +182,13 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 	config.Drives = append(config.Drives, rootDrive)
 
 	// Add volume mounts
-	for _, mount := range container.Mounts {
+	for i, mount := range container.Mounts {
+		if err := validateMountPath(mount.Source); err != nil {
+			return nil, fmt.Errorf("volume mount %d source invalid: %w", i, err)
+		}
+		if err := validateMountPath(mount.Target); err != nil {
+			return nil, fmt.Errorf("volume mount %d target invalid: %w", i, err)
+		}
 		drive := tt.buildVolumeDrive(mount)
 		config.Drives = append(config.Drives, drive)
 	}
@@ -396,4 +402,19 @@ func (tt *TaskTranslator) buildVolumeDrive(mount types.Mount) Drive {
 		PathOnHost:   mount.Source,
 		IsReadOnly:   mount.ReadOnly,
 	}
+}
+
+// validateMountPath validates that a mount path is safe for use and does not
+// contain path traversal or null byte injection vectors.
+func validateMountPath(path string) error {
+	if path == "" {
+		return fmt.Errorf("mount path cannot be empty")
+	}
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("mount path contains parent directory reference: %q", path)
+	}
+	if strings.ContainsRune(path, '\x00') {
+		return fmt.Errorf("mount path contains null byte: %q", path)
+	}
+	return nil
 }
