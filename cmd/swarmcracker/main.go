@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -1085,6 +1086,31 @@ func uploadFile(client *ssh.Client, localPath, remotePath string) error {
 	return nil
 }
 
+// Firecracker config structs for safe JSON encoding
+type fcBootSource struct {
+	KernelImagePath string `json:"kernel_image_path"`
+	BootArgs        string `json:"boot_args"`
+}
+
+type fcDrive struct {
+	DriveID      string `json:"drive_id"`
+	PathOnHost   string `json:"path_on_host"`
+	IsRootDevice bool   `json:"is_root_device"`
+	IsReadOnly   bool   `json:"is_read_only"`
+}
+
+type fcMachineConfig struct {
+	VcpuCount  int  `json:"vcpu_count"`
+	MemSizeMib int  `json:"mem_size_mib"`
+	Smt        bool `json:"smt"`
+}
+
+type fcConfig struct {
+	BootSource    fcBootSource    `json:"boot-source"`
+	Drives        []fcDrive       `json:"drives"`
+	MachineConfig fcMachineConfig `json:"machine-config"`
+}
+
 // startMicroVM starts a Firecracker microVM on the remote host.
 func startMicroVM(client *ssh.Client, taskID, rootfsPath string, plan *DeploymentPlan) error {
 	// Get kernel path (default or from config)
@@ -1096,26 +1122,32 @@ func startMicroVM(client *ssh.Client, taskID, rootfsPath string, plan *Deploymen
 	// Socket path for this VM
 	socketPath := fmt.Sprintf("/var/run/firecracker/%s.sock", taskID)
 
-	// Create Firecracker config JSON
-	configJSON := fmt.Sprintf(`{
-	"boot-source": {
-		"kernel_image_path": "%s",
-		"boot_args": "console=ttyS0 reboot=k panic=1 pci=off nomodules ip=dhcp -- /sbin/init"
-	},
-	"drives": [
-		{
-			"drive_id": "rootfs",
-			"path_on_host": "%s",
-			"is_root_device": true,
-			"is_read_only": false
-		}
-	],
-	"machine-config": {
-		"vcpu_count": %d,
-		"mem_size_mib": %d,
-		"smt": false
+	// Create Firecracker config struct and marshal to JSON safely
+	fcCfg := fcConfig{
+		BootSource: fcBootSource{
+			KernelImagePath: kernelPath,
+			BootArgs:        "console=ttyS0 reboot=k panic=1 pci=off nomodules ip=dhcp -- /sbin/init",
+		},
+		Drives: []fcDrive{
+			{
+				DriveID:      "rootfs",
+				PathOnHost:   rootfsPath,
+				IsRootDevice: true,
+				IsReadOnly:   false,
+			},
+		},
+		MachineConfig: fcMachineConfig{
+			VcpuCount:  plan.VCPUs,
+			MemSizeMib: plan.MemoryMB,
+			Smt:        false,
+		},
 	}
-}`, kernelPath, rootfsPath, plan.VCPUs, plan.MemoryMB)
+
+	configJSONBytes, err := json.Marshal(fcCfg)
+	if err != nil {
+		return fmt.Errorf("failed to marshal firecracker config: %w", err)
+	}
+	configJSON := string(configJSONBytes)
 
 	// Write config file
 	configPath := fmt.Sprintf("/tmp/%s-config.json", taskID)
