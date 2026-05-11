@@ -3,6 +3,8 @@ package executor
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/network"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -18,6 +20,10 @@ type FirecrackerExecutor struct {
 	imagePrep  types.ImagePreparer
 	networkMgr types.NetworkManager
 	events     chan Event
+
+	closeOnce    sync.Once
+	eventsMu     sync.Mutex
+	eventsClosed bool
 }
 
 // Config holds the executor configuration.
@@ -63,6 +69,25 @@ type Event struct {
 	Task    *types.Task
 	Message string
 	Err     error
+}
+
+// sendEvent safely sends an event to the events channel with a timeout.
+// It returns true if the event was sent, false if the channel was closed or blocked.
+func (e *FirecrackerExecutor) sendEvent(evt Event) bool {
+	e.eventsMu.Lock()
+	if e.eventsClosed {
+		e.eventsMu.Unlock()
+		return false
+	}
+	e.eventsMu.Unlock()
+
+	select {
+	case e.events <- evt:
+		return true
+	case <-time.After(5 * time.Second):
+		log.Warn().Msg("Timed out sending event to closed channel")
+		return false
+	}
 }
 
 // NewFirecrackerExecutor creates a new Firecracker executor with injected dependencies.
@@ -143,10 +168,10 @@ func (e *FirecrackerExecutor) Start(ctx context.Context, t *types.Task) error {
 	}
 
 	// 3. Send event
-	e.events <- Event{
+	e.sendEvent(Event{
 		Task:    t,
 		Message: "VM started successfully",
-	}
+	})
 
 	log.Info().
 		Str("task_id", t.ID).
@@ -207,7 +232,12 @@ func (e *FirecrackerExecutor) Events(ctx context.Context) (<-chan Event, error) 
 
 // Close cleans up executor resources.
 func (e *FirecrackerExecutor) Close() error {
-	close(e.events)
+	e.closeOnce.Do(func() {
+		e.eventsMu.Lock()
+		e.eventsClosed = true
+		e.eventsMu.Unlock()
+		close(e.events)
+	})
 
 	// Cleanup network resources (dnsmasq, VXLAN)
 	if nm, ok := e.networkMgr.(*network.NetworkManager); ok {

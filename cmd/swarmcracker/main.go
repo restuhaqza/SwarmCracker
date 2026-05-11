@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"al.essio.dev/pkg/shellescape"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/executor"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
@@ -1029,7 +1030,7 @@ func uploadFile(client *ssh.Client, localPath, remotePath string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create mkdir session: %w", err)
 	}
-	mkdirCmd := fmt.Sprintf("mkdir -p %s", remoteDir)
+	mkdirCmd := fmt.Sprintf("mkdir -p %s", shellescape.Quote(remoteDir))
 	if err := mkdirSession.Run(mkdirCmd); err != nil {
 		mkdirSession.Close()
 		return fmt.Errorf("failed to create remote directory: %w", err)
