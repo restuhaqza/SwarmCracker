@@ -662,7 +662,7 @@ func saveMetadata(dir string, info *SnapshotInfo) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 func loadMetadata(dir string) (*SnapshotInfo, error) {

@@ -156,7 +156,7 @@ func main() {
 		&cli.StringFlag{
 			Name:  "health-addr",
 			Usage: "Address for health check HTTP server",
-			Value: ":8080",
+			Value: "127.0.0.1:8080",
 		},
 		&cli.BoolFlag{
 			Name:  "enable-jailer",
@@ -516,7 +516,7 @@ func startNode(config *node.Config, executor *swarmkit.Executor) error {
 
 	// Handle signals
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	// Start the node - this is NON-BLOCKING in SwarmKit
 	// It returns immediately after starting internal goroutines

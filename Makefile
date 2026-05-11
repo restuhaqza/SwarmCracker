@@ -5,8 +5,8 @@ BINARY_NAME=swarmcracker
 VERSION?=$(shell git describe --tags --always --dirty 2>/dev/null || echo "v0.1.0-alpha")
 BUILD_TIME?=$(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 GIT_COMMIT?=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-LDFLAGS=-ldflags "-X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)"
-GOFLAGS=-v
+LDFLAGS=-ldflags "-s -w -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME) -X main.GitCommit=$(GIT_COMMIT)"
+GOFLAGS=-v -trimpath -buildmode=pie
 GO=go
 
 # Directories

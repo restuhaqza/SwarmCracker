@@ -71,7 +71,7 @@ func (ms *MetaStore) Write(ctx context.Context, m *volumeMeta) error {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
-	if err := os.WriteFile(ms.metaPath(m.Name), data, 0644); err != nil {
+	if err := os.WriteFile(ms.metaPath(m.Name), data, 0600); err != nil {
 		return fmt.Errorf("write metadata: %w", err)
 	}
 

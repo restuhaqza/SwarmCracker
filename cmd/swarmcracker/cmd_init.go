@@ -346,7 +346,7 @@ logging:
 	)
 
 	configPath := filepath.Join(cfg.ConfigDir, "manager-config.yaml")
-	if err := os.WriteFile(configPath, []byte(managerConfig), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(managerConfig), 0600); err != nil {
 		return fmt.Errorf("failed to write manager config: %w", err)
 	}
 	log.Debug().Str("path", configPath).Msg("Manager config written")
