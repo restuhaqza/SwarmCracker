@@ -30,6 +30,11 @@ func NewTaskTranslator(kernelPath, bridgeIP string) (types.TaskTranslator, error
 
 // Translate converts a task to Firecracker VM configuration.
 func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
+	// Validate task ID to prevent path traversal and injection
+	if err := validateTaskID(task.ID); err != nil {
+		return nil, fmt.Errorf("invalid task ID: %w", err)
+	}
+
 	// For now, return a simple config structure
 	// This will be expanded to use the full translator package
 
@@ -160,4 +165,28 @@ func getRootfsPath(task *types.Task) string {
 	}
 	// Default path
 	return "/var/lib/firecracker/rootfs/" + task.ID + ".ext4"
+}
+
+// validateTaskID validates that a task ID is safe for use in filesystem paths
+// and does not contain path traversal or injection characters.
+func validateTaskID(id string) error {
+	if id == "" {
+		return fmt.Errorf("task ID cannot be empty")
+	}
+	if len(id) > 255 {
+		return fmt.Errorf("task ID exceeds 255 characters")
+	}
+	if strings.Contains(id, "/") {
+		return fmt.Errorf("task ID contains path separator")
+	}
+	if strings.Contains(id, "..") {
+		return fmt.Errorf("task ID contains parent directory reference")
+	}
+	if strings.ContainsRune(id, '\x00') {
+		return fmt.Errorf("task ID contains null byte")
+	}
+	if strings.Contains(id, "\\") {
+		return fmt.Errorf("task ID contains backslash")
+	}
+	return nil
 }
