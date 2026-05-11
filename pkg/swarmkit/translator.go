@@ -42,7 +42,7 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 	memoryMB := 512
 
 	// Try to get resource specifications from container
-	if container, ok := task.Spec.Runtime.(*types.Container); ok {
+	if container, err := task.Spec.GetContainer(); err == nil {
 		// Resource-based sizing
 		if task.Spec.Resources.Reservations != nil {
 			res := task.Spec.Resources.Reservations

@@ -176,9 +176,13 @@ Example:
 			// In test mode, just validate and exit
 			if testMode {
 				log.Info().Str("image", imageRef).Msg("Test mode: validating image reference")
+				imageName := "unknown"
+				if c, err := task.Spec.GetContainer(); err == nil {
+					imageName = c.Image
+				}
 				log.Info().
 					Str("task_id", task.ID).
-					Str("image", task.Spec.Runtime.(*types.Container).Image).
+					Str("image", imageName).
 					Msg("Task created successfully")
 				return nil
 			}
@@ -200,10 +204,13 @@ Example:
 
 				// Save VM state for tracking
 				if stateMgr != nil {
-					// Get task details for state
-					container := task.Spec.Runtime.(*types.Container)
+				// Get task details for state
+				container, err := task.Spec.GetContainer()
+				if err != nil {
+					return fmt.Errorf("failed to get container spec: %w", err)
+				}
 
-					vmState := &runtime.VMState{
+				vmState := &runtime.VMState{
 						ID:         task.ID,
 						Image:      container.Image,
 						Command:    append(container.Command, container.Args...),

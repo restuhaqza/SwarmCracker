@@ -137,9 +137,9 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 		Msg("Translator received task")
 
 	// Extract container from task runtime
-	container, ok := task.Spec.Runtime.(*types.Container)
-	if !ok {
-		return nil, fmt.Errorf("task runtime is not a container")
+	container, err := task.Spec.GetContainer()
+	if err != nil {
+		return nil, fmt.Errorf("task runtime is not a container: %w", err)
 	}
 
 	config := &VMMConfig{
@@ -224,8 +224,8 @@ func (tt *TaskTranslator) configToJSON(config *VMMConfig) (string, error) {
 
 // buildBootArgs constructs kernel boot arguments.
 func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
-	container, ok := task.Spec.Runtime.(*types.Container)
-	if !ok {
+	container, err := task.Spec.GetContainer()
+	if err != nil {
 		log.Warn().Str("task_id", task.ID).Msg("task runtime is not a Container, using default boot args")
 		return "console=ttyS0 reboot=k panic=1 pci=off init=/init"
 	}

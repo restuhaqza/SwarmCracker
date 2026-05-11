@@ -3,6 +3,7 @@ package types
 
 import (
 	"context"
+	"fmt"
 )
 
 // SecretRef represents a SwarmKit secret reference with data.
@@ -36,10 +37,37 @@ type Task struct {
 
 // TaskSpec defines the task specification.
 type TaskSpec struct {
-	Runtime   interface{} // *Container
-	Resources ResourceRequirements
-	Restart   RestartPolicy
-	Placement Placement
+	Runtime     interface{} // *Container (use GetContainer() for safe access)
+	RuntimeType RuntimeType // type discriminator for Runtime
+	Resources   ResourceRequirements
+	Restart     RestartPolicy
+	Placement   Placement
+}
+
+// RuntimeType identifies the type of task runtime.
+type RuntimeType string
+
+const (
+	RuntimeContainer RuntimeType = "container"
+	RuntimeWASM     RuntimeType = "wasm"
+)
+
+// GetContainer safely extracts the Container from the Runtime field.
+func (s *TaskSpec) GetContainer() (*Container, error) {
+	if s.Runtime == nil {
+		return nil, fmt.Errorf("task runtime is nil")
+	}
+	container, ok := s.Runtime.(*Container)
+	if !ok {
+		return nil, fmt.Errorf("task runtime is not a Container (type: %T)", s.Runtime)
+	}
+	return container, nil
+}
+
+// SetContainer sets the Runtime to a Container and marks RuntimeType.
+func (s *TaskSpec) SetContainer(c *Container) {
+	s.Runtime = c
+	s.RuntimeType = RuntimeContainer
 }
 
 // Container specifies container configuration.

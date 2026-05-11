@@ -109,13 +109,9 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 		return fmt.Errorf("task cannot be nil")
 	}
 
-	if task.Spec.Runtime == nil {
-		return fmt.Errorf("task runtime cannot be nil")
-	}
-
-	container, ok := task.Spec.Runtime.(*localtypes.Container)
-	if !ok {
-		return fmt.Errorf("task runtime is not a container")
+	container, err := task.Spec.GetContainer()
+	if err != nil {
+		return fmt.Errorf("invalid task runtime: %w", err)
 	}
 
 	// Initialize annotations map if nil

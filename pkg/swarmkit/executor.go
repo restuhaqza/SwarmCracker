@@ -759,7 +759,7 @@ func (c *Controller) Remove(ctx context.Context) error {
 
 	// Sync volume data back before cleaning up
 	if c.volumeMgr != nil && c.internalTask != nil {
-		if container, ok := c.internalTask.Spec.Runtime.(*types.Container); ok && len(container.Mounts) > 0 {
+		if container, err := c.internalTask.Spec.GetContainer(); err == nil && len(container.Mounts) > 0 {
 			c.logger.Info().Int("mount_count", len(container.Mounts)).Msg("Syncing volume data back")
 			if err := c.syncVolumeData(ctx, task, container.Mounts); err != nil {
 				c.logger.Error().Err(err).Msg("Failed to sync volume data")
