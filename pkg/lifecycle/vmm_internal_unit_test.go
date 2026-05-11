@@ -83,7 +83,7 @@ func TestVMMManagerInternal_Start_DuplicateVM(t *testing.T) {
 	vm := NewVMMManagerWithExecutors(config, procExec, httpClient)
 
 	// Pre-existing VM
-	vm.vms["existing-vm"] = &VMInstance{ID: "existing-vm", State: VMStateRunning}
+	vm.vms["existing-vm"] = &VMInstance{ID: "existing-vm", state: VMStateRunning}
 
 	task := &types.Task{ID: "existing-vm"}
 	err := vm.Start(context.Background(), task, "{}")

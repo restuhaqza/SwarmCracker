@@ -146,7 +146,7 @@ func TestVMMManager_Stop_Validation(t *testing.T) {
 				vmm.vms[tt.task.ID] = &VMInstance{
 					ID:         tt.task.ID,
 					PID:        os.Getpid(), // Use current PID
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					InitSystem: "none",
 				}
 				vmm.mu.Unlock()
@@ -204,7 +204,7 @@ func TestVMMManager_Wait_Validation(t *testing.T) {
 				vmm.vms[tt.task.ID] = &VMInstance{
 					ID:         tt.task.ID,
 					PID:        os.Getpid(),
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					InitSystem: "none",
 				}
 				vmm.mu.Unlock()
@@ -280,7 +280,7 @@ func TestVMMManager_Describe_Validation(t *testing.T) {
 				vmm.vms[tt.task.ID] = &VMInstance{
 					ID:         tt.task.ID,
 					PID:        os.Getpid(),
-					State:      tt.vmState,
+					state:      tt.vmState,
 					CreatedAt:  time.Now(),
 					InitSystem: "none",
 				}
@@ -350,7 +350,7 @@ func TestVMMManager_Remove_Validation(t *testing.T) {
 				vmm.vms[tt.task.ID] = &VMInstance{
 					ID:         tt.task.ID,
 					PID:        99999, // Non-existent PID
-					State:      tt.vmState,
+					state:      tt.vmState,
 					SocketPath: t.TempDir() + "/sock",
 					InitSystem: "none",
 				}
@@ -389,11 +389,11 @@ func TestVMInstance_StateTransitions(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			vmi := &VMInstance{
 				ID:        "test-vm",
-				State:     state,
+				state:     state,
 				CreatedAt: time.Now(),
 			}
 
-			assert.Equal(t, state, vmi.State)
+			assert.Equal(t, state, vmi.GetState())
 			assert.Equal(t, "test-vm", vmi.ID)
 		})
 	}
@@ -423,7 +423,7 @@ func TestVMMManager_ConcurrentAccess(t *testing.T) {
 				vmm.vms[taskID] = &VMInstance{
 					ID:         taskID,
 					PID:        os.Getpid(),
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					CreatedAt:  time.Now(),
 					InitSystem: "none",
 				}
@@ -552,7 +552,7 @@ func TestVMMManager_StateMapping(t *testing.T) {
 			vmm.vms["test"] = &VMInstance{
 				ID:         "test",
 				PID:        os.Getpid(),
-				State:      tt.vmState,
+				state:      tt.vmState,
 				CreatedAt:  time.Now(),
 				InitSystem: "none",
 			}
@@ -601,7 +601,7 @@ func TestVMMManager_GracePeriod(t *testing.T) {
 			vmi := &VMInstance{
 				ID:             "test-vm",
 				PID:            os.Getpid(),
-				State:          VMStateRunning,
+				state:          VMStateRunning,
 				CreatedAt:      time.Now(),
 				InitSystem:     tt.initSystem,
 				GracePeriodSec: tt.gracePeriod,

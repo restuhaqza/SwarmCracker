@@ -44,7 +44,7 @@ func TestVMMManager_MultipleVMs(t *testing.T) {
 		vmm.vms[taskID] = &VMInstance{
 			ID:         taskID,
 			PID:        1000 + i,
-			State:      VMStateRunning,
+			state:      VMStateRunning,
 			CreatedAt:  time.Now(),
 			SocketPath: socketPath,
 		}
@@ -153,7 +153,7 @@ func TestVMMManager_StateTransitions(t *testing.T) {
 	vmm.vms[taskID] = &VMInstance{
 		ID:         taskID,
 		PID:        os.Getpid(), // Use real process so Signal(0) succeeds
-		State:      VMStateNew,
+		state:      VMStateNew,
 		CreatedAt:  time.Now(),
 		SocketPath: socketPath,
 	}
@@ -213,7 +213,7 @@ func TestVMMManager_ResourceCleanup(t *testing.T) {
 		vmm.vms[taskID] = &VMInstance{
 			ID:         taskID,
 			PID:        1000 + i,
-			State:      VMStateRunning,
+			state:      VMStateRunning,
 			CreatedAt:  time.Now(),
 			SocketPath: socketPath,
 		}
@@ -271,7 +271,7 @@ func TestVMMManager_DescribeAllStates(t *testing.T) {
 			vmm.vms[taskID] = &VMInstance{
 				ID:         taskID,
 				PID:        os.Getpid(),
-				State:      tc.state,
+				state:      tc.state,
 				CreatedAt:  time.Now(),
 				SocketPath: socketPath,
 			}
@@ -317,7 +317,7 @@ func TestVMMManager_RemoveAll(t *testing.T) {
 		vmm.vms[taskID] = &VMInstance{
 			ID:         taskID,
 			PID:        1000 + i,
-			State:      VMStateRunning,
+			state:      VMStateRunning,
 			CreatedAt:  time.Now(),
 			SocketPath: socketPath,
 		}
@@ -491,7 +491,7 @@ func TestVMMManager_UptimeTracking(t *testing.T) {
 	vmm.vms[taskID] = &VMInstance{
 		ID:         taskID,
 		PID:        os.Getpid(),
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		CreatedAt:  pastTime,
 		SocketPath: socketPath,
 	}

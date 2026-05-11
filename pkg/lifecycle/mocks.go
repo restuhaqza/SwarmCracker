@@ -485,7 +485,7 @@ func (vm *VMMManagerInternal) Start(ctx context.Context, task *types.Task, confi
 	vmInstance := &VMInstance{
 		ID:             task.ID,
 		PID:            process.Pid(),
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		SocketPath:     socketPath,
 		InitSystem:     initSystem,
 		GracePeriodSec: gracePeriod,

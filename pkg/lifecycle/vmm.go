@@ -42,11 +42,27 @@ type VMInstance struct {
 	ID             string
 	PID            int
 	Config         interface{}
-	State          VMState
+	state          VMState // private; use SetState/GetState
 	CreatedAt      time.Time
 	SocketPath     string
 	InitSystem     string
 	GracePeriodSec int
+
+	mu sync.RWMutex // protects state
+}
+
+// SetState sets the VM state in a thread-safe manner.
+func (v *VMInstance) SetState(newState VMState) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.state = newState
+}
+
+// GetState returns the VM state in a thread-safe manner.
+func (v *VMInstance) GetState() VMState {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.state
 }
 
 // VMState represents the state of a VM.
@@ -212,7 +228,7 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 		ID:             task.ID,
 		PID:            cmd.Process.Pid,
 		Config:         config,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		CreatedAt:      time.Now(),
 		SocketPath:     socketPath,
 		InitSystem:     initSystem,
@@ -389,7 +405,7 @@ func (vm *VMMManager) gracefulShutdown(ctx context.Context, vmInstance *VMInstan
 
 	select {
 	case <-shutdownChan:
-		vmInstance.State = VMStateStopped
+		vmInstance.SetState(VMStateStopped)
 		log.Info().
 			Str("task_id", vmInstance.ID).
 			Msg("VM shutdown gracefully")
@@ -440,7 +456,7 @@ func (vm *VMMManager) hardShutdown(ctx context.Context, vmInstance *VMInstance) 
 
 	select {
 	case <-done:
-		vmInstance.State = VMStateStopped
+		vmInstance.SetState(VMStateStopped)
 	case <-time.After(30 * time.Second):
 		// Force kill on timeout
 		vm.forceKillVM(vmInstance)
@@ -492,7 +508,7 @@ func (vm *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSt
 		RuntimeStatus: map[string]interface{}{
 			"vm_id": vmInstance.ID,
 			"pid":   vmInstance.PID,
-			"state": string(vmInstance.State),
+			"state": string(vmInstance.GetState()),
 		},
 	}, nil
 }
@@ -525,7 +541,7 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 
 	// Check if still running
 	if err := process.Signal(syscall.Signal(0)); err != nil {
-		vmInstance.State = VMStateStopped
+		vmInstance.SetState(VMStateStopped)
 		return &types.TaskStatus{
 			State:   types.TaskStateComplete,
 			Message: "VM has stopped",
@@ -534,7 +550,7 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 
 	// Map VM state to Task state
 	var taskState types.TaskState
-	switch vmInstance.State {
+	switch vmInstance.GetState() {
 	case VMStateNew:
 		taskState = types.TaskStateNew
 	case VMStateStarting:
@@ -556,7 +572,7 @@ func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.Ta
 		RuntimeStatus: map[string]interface{}{
 			"vm_id":  vmInstance.ID,
 			"pid":    vmInstance.PID,
-			"state":  string(vmInstance.State),
+			"state":  string(vmInstance.GetState()),
 			"uptime": time.Since(vmInstance.CreatedAt).String(),
 		},
 	}, nil
@@ -581,7 +597,7 @@ func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 	}
 
 	// Stop VM if running
-	if vmInstance.State == VMStateRunning {
+	if vmInstance.GetState() == VMStateRunning {
 		process, _ := os.FindProcess(vmInstance.PID)
 		if process != nil {
 			process.Kill()

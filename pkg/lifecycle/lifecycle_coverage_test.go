@@ -98,7 +98,7 @@ func TestForceKillVM_ProcessAlreadyFinished(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm-finished",
 		PID:        99999,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		SocketPath: "/tmp/test-sock-finished.sock",
 	}
 
@@ -124,7 +124,7 @@ func TestForceKillVM_AlreadyStoppedProcess(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm-stopped",
 		PID:        cmd.Process.Pid,
-		State:      VMStateStopped,
+		state:      VMStateStopped,
 		SocketPath: "/tmp/test-sock-stopped.sock",
 	}
 
@@ -145,7 +145,7 @@ func TestForceKillVM_SignalFailure(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm-init",
 		PID:        1,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		SocketPath: "/tmp/test-sock-init.sock",
 	}
 
@@ -182,7 +182,7 @@ func TestGracefulShutdown_VariousGracePeriods(t *testing.T) {
 			vmInstance := &VMInstance{
 				ID:             "test-vm-grace-" + tc.name,
 				PID:            cmd.Process.Pid,
-				State:          VMStateRunning,
+				state:          VMStateRunning,
 				GracePeriodSec: tc.gracePeriod,
 				SocketPath:     "/tmp/test-sock-" + tc.name + ".sock",
 				InitSystem:     "init",
@@ -216,7 +216,7 @@ func TestGracefulShutdown_ConsecutiveShutdowns(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-consecutive",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 2,
 		SocketPath:     "/tmp/test-sock-consecutive.sock",
 		InitSystem:     "init",
@@ -228,7 +228,7 @@ func TestGracefulShutdown_ConsecutiveShutdowns(t *testing.T) {
 	// First shutdown
 	err := vmMgr.gracefulShutdown(ctx, vmInstance)
 	assert.NoError(t, err, "first gracefulShutdown should succeed")
-	assert.Equal(t, VMStateStopped, vmInstance.State, "VM should be stopped")
+	assert.Equal(t, VMStateStopped, vmInstance.GetState(), "VM should be stopped")
 
 	// Second shutdown - process is already gone
 	err = vmMgr.gracefulShutdown(ctx, vmInstance)
@@ -257,7 +257,7 @@ func TestForceKillVM_RealProcess(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm-real-kill",
 		PID:        cmd.Process.Pid,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		SocketPath: "/tmp/test-sock-real-kill.sock",
 	}
 
@@ -289,7 +289,7 @@ func TestGracefulShutdown_ContextTimeout(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-ctx-timeout",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 30,
 		SocketPath:     "/tmp/test-sock-ctx-timeout.sock",
 		InitSystem:     "init",
@@ -345,7 +345,7 @@ func TestGracefulShutdown_NoInitSystem(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-no-init",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 2,
 		SocketPath:     "/tmp/test-sock-no-init.sock",
 		InitSystem:     "none",
@@ -371,7 +371,7 @@ func TestForceKillVM_ZeroPID(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm-zero-pid",
 		PID:        0,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		SocketPath: "/tmp/test-sock-zero-pid.sock",
 	}
 
@@ -397,7 +397,7 @@ func TestGracefulShutdown_VerifyProcessPolling(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-polling",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 5,
 		SocketPath:     "/tmp/test-sock-polling.sock",
 		InitSystem:     "init",
@@ -411,7 +411,7 @@ func TestGracefulShutdown_VerifyProcessPolling(t *testing.T) {
 	elapsed := time.Since(start)
 
 	assert.NoError(t, err, "gracefulShutdown should succeed")
-	assert.Equal(t, VMStateStopped, vmInstance.State, "VM should be stopped")
+	assert.Equal(t, VMStateStopped, vmInstance.GetState(), "VM should be stopped")
 	// Should complete quickly (process exits in 1s)
 	assert.Less(t, elapsed.Seconds(), 2.0, "should complete within 2 seconds")
 

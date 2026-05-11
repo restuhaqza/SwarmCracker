@@ -146,7 +146,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:        "test-vm",
 					PID:       os.Getpid(),
-					State:     VMStateRunning,
+					state:     VMStateRunning,
 					CreatedAt: time.Now(),
 				}, nil
 			},
@@ -159,7 +159,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:        "test-vm",
 					PID:       99999,
-					State:     VMStateRunning,
+					state:     VMStateRunning,
 					CreatedAt: time.Now(),
 				}, nil
 			},
@@ -172,7 +172,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:        "test-vm",
 					PID:       -1,
-					State:     VMStateRunning,
+					state:     VMStateRunning,
 					CreatedAt: time.Now(),
 				}, nil
 			},
@@ -185,7 +185,7 @@ func TestVMMManager_Describe_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:        "test-vm",
 					PID:       0,
-					State:     VMStateRunning,
+					state:     VMStateRunning,
 					CreatedAt: time.Now(),
 				}, nil
 			},
@@ -241,7 +241,7 @@ func TestVMMManager_Wait_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   os.Getpid(),
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}, nil
 			},
 			expectedState: types.TaskStateRunning,
@@ -253,7 +253,7 @@ func TestVMMManager_Wait_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   99999,
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}, nil
 			},
 			expectedState: types.TaskStateComplete,
@@ -265,7 +265,7 @@ func TestVMMManager_Wait_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   os.Getpid(),
-					State: VMStateNew,
+					state: VMStateNew,
 				}, nil
 			},
 			expectedState: types.TaskStateRunning,
@@ -277,7 +277,7 @@ func TestVMMManager_Wait_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   99999,
-					State: VMStateCrashed,
+					state: VMStateCrashed,
 				}, nil
 			},
 			expectedState: types.TaskStateComplete,
@@ -332,7 +332,7 @@ func TestVMMManager_Stop_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "tini",
 					GracePeriodSec: 5,
 				}, nil
@@ -345,7 +345,7 @@ func TestVMMManager_Stop_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "dumb-init",
 					GracePeriodSec: 10,
 				}, nil
@@ -358,7 +358,7 @@ func TestVMMManager_Stop_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "none",
 					GracePeriodSec: 0,
 				}, nil
@@ -371,7 +371,7 @@ func TestVMMManager_Stop_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateStopped,
+					state:          VMStateStopped,
 					InitSystem:     "tini",
 					GracePeriodSec: 5,
 				}, nil
@@ -384,7 +384,7 @@ func TestVMMManager_Stop_ProcessStates(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateNew,
+					state:          VMStateNew,
 					InitSystem:     "tini",
 					GracePeriodSec: 5,
 				}, nil
@@ -437,7 +437,7 @@ func TestVMMManager_SignalHandling(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   os.Getpid(),
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}, &types.Task{ID: "test-vm"}
 			},
 			signalFunc: func(vm *VMMManager, vmi *VMInstance) error {
@@ -455,7 +455,7 @@ func TestVMMManager_SignalHandling(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   99999,
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}, &types.Task{ID: "test-vm"}
 			},
 			signalFunc: func(vm *VMMManager, vmi *VMInstance) error {
@@ -475,7 +475,7 @@ func TestVMMManager_SignalHandling(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   cmd.Process.Pid,
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}, &types.Task{ID: "test-vm"}
 			},
 			signalFunc: func(vm *VMMManager, vmi *VMInstance) error {
@@ -540,7 +540,7 @@ func TestVMMManager_Start_VMAlreadyExists(t *testing.T) {
 	vm.vms[task.ID] = &VMInstance{
 		ID:    task.ID,
 		PID:   12345,
-		State: VMStateRunning,
+		state: VMStateRunning,
 	}
 
 	configJSON := `{"boot_source": {"kernel_image_path": "/usr/share/firecracker/vmlinux"}}`
@@ -660,7 +660,7 @@ func TestVMInstance_Uptime(t *testing.T) {
 			vm.vms[task.ID] = &VMInstance{
 				ID:        task.ID,
 				PID:       os.Getpid(),
-				State:     VMStateRunning,
+				state:     VMStateRunning,
 				CreatedAt: tt.createdAt,
 			}
 
@@ -731,7 +731,7 @@ func TestVMMManager_ConcurrentDescribeSameVM(t *testing.T) {
 	vm.vms[task.ID] = &VMInstance{
 		ID:        task.ID,
 		PID:       os.Getpid(),
-		State:     VMStateRunning,
+		state:     VMStateRunning,
 		CreatedAt: time.Now(),
 	}
 

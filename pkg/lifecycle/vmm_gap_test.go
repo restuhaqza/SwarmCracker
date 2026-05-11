@@ -173,7 +173,7 @@ func TestGracefulShutdown(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999, // Non-existent PID
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					CreatedAt:      time.Now(),
 					InitSystem:     "systemd",
 					GracePeriodSec: 1,
@@ -187,7 +187,7 @@ func TestGracefulShutdown(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm-none",
 					PID:            99999, // Non-existent PID
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					CreatedAt:      time.Now(),
 					InitSystem:     "none",
 					GracePeriodSec: 1,
@@ -201,7 +201,7 @@ func TestGracefulShutdown(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm-short",
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					CreatedAt:      time.Now(),
 					InitSystem:     "systemd",
 					GracePeriodSec: 0,
@@ -215,7 +215,7 @@ func TestGracefulShutdown(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm-long",
 					PID:            99998,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					CreatedAt:      time.Now(),
 					InitSystem:     "systemd",
 					GracePeriodSec: 10,
@@ -236,7 +236,7 @@ func TestGracefulShutdown(t *testing.T) {
 				assert.Error(t, err)
 			}
 			// Check state was potentially updated
-			_ = vmInstance.State
+			_ = vmInstance.GetState()
 		})
 	}
 }
@@ -256,7 +256,7 @@ func TestGracefulShutdown_ContextCancellation(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-cancel",
 		PID:            99999, // Non-existent PID to avoid killing current process
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		CreatedAt:      time.Now(),
 		InitSystem:     "systemd",
 		GracePeriodSec: 10,
@@ -308,7 +308,7 @@ func TestHardShutdown(t *testing.T) {
 				return &VMInstance{
 					ID:         "test-vm",
 					PID:        99999,
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					CreatedAt:  time.Now(),
 					SocketPath: socketPath,
 				}
@@ -321,7 +321,7 @@ func TestHardShutdown(t *testing.T) {
 				return &VMInstance{
 					ID:         "test-vm-invalid",
 					PID:        99999,
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					CreatedAt:  time.Now(),
 					SocketPath: "/non/existent/path/socket.sock",
 				}
@@ -340,7 +340,7 @@ func TestHardShutdown(t *testing.T) {
 			// Most will error due to non-existent socket/PID
 			_ = err
 			// Verify state might be updated
-			_ = vmInstance.State
+			_ = vmInstance.GetState()
 		})
 	}
 }
@@ -394,7 +394,7 @@ func TestHardShutdown_WithMockSocket(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm-mock",
 		PID:        99999,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		CreatedAt:  time.Now(),
 		SocketPath: socketPath,
 	}
@@ -406,7 +406,7 @@ func TestHardShutdown_WithMockSocket(t *testing.T) {
 
 	// Should complete without error (even if forceKillVM fails)
 	_ = err
-	assert.Equal(t, VMStateStopped, vmInstance.State)
+	assert.Equal(t, VMStateStopped, vmInstance.GetState())
 
 	<-serverDone // Wait for server to finish
 }
@@ -455,7 +455,7 @@ func TestForceKillVM_ErrorPaths(t *testing.T) {
 			vmInstance := &VMInstance{
 				ID:        "test-vm",
 				PID:       tt.pid,
-				State:     VMStateRunning,
+				state:     VMStateRunning,
 				CreatedAt: time.Now(),
 			}
 
@@ -530,7 +530,7 @@ func TestStart_ErrorPaths(t *testing.T) {
 				vmm.mu.Lock()
 				vmm.vms[tt.task.ID] = &VMInstance{
 					ID:    tt.task.ID,
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 				vmm.mu.Unlock()
 			}
@@ -569,7 +569,7 @@ func TestStart_AlreadyExists(t *testing.T) {
 	vmm.vms[task.ID] = &VMInstance{
 		ID:        task.ID,
 		PID:       1234,
-		State:     VMStateRunning,
+		state:     VMStateRunning,
 		CreatedAt: time.Now(),
 	}
 	vmm.mu.Unlock()
@@ -633,7 +633,7 @@ func TestStop_ErrorPaths(t *testing.T) {
 				vmm.vms[taskID] = &VMInstance{
 					ID:             taskID,
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					CreatedAt:      time.Now(),
 					InitSystem:     "systemd",
 					GracePeriodSec: 1,
@@ -684,7 +684,7 @@ func TestStop_InitSystemNone(t *testing.T) {
 	vmm.vms[taskID] = &VMInstance{
 		ID:         taskID,
 		PID:        99999,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		CreatedAt:  time.Now(),
 		InitSystem: "none",
 		SocketPath: socketPath,
@@ -963,7 +963,7 @@ func TestDescribe_ProcessError(t *testing.T) {
 	vmm.vms[task.ID] = &VMInstance{
 		ID:        task.ID,
 		PID:       -1, // Invalid PID
-		State:     VMStateRunning,
+		state:     VMStateRunning,
 		CreatedAt: time.Now(),
 	}
 	vmm.mu.Unlock()
@@ -982,25 +982,25 @@ func TestVMInstance_StateTransitions_Gap(t *testing.T) {
 	vm := &VMInstance{
 		ID:        "test-vm",
 		PID:       1234,
-		State:     VMStateNew,
+		state:     VMStateNew,
 		CreatedAt: time.Now(),
 	}
 
 	// Test state transitions
-	vm.State = VMStateStarting
-	assert.Equal(t, VMStateStarting, vm.State)
+	vm.SetState(VMStateStarting)
+	assert.Equal(t, VMStateStarting, vm.GetState())
 
-	vm.State = VMStateRunning
-	assert.Equal(t, VMStateRunning, vm.State)
+	vm.SetState(VMStateRunning)
+	assert.Equal(t, VMStateRunning, vm.GetState())
 
-	vm.State = VMStateStopping
-	assert.Equal(t, VMStateStopping, vm.State)
+	vm.SetState(VMStateStopping)
+	assert.Equal(t, VMStateStopping, vm.GetState())
 
-	vm.State = VMStateStopped
-	assert.Equal(t, VMStateStopped, vm.State)
+	vm.SetState(VMStateStopped)
+	assert.Equal(t, VMStateStopped, vm.GetState())
 
-	vm.State = VMStateCrashed
-	assert.Equal(t, VMStateCrashed, vm.State)
+	vm.SetState(VMStateCrashed)
+	assert.Equal(t, VMStateCrashed, vm.GetState())
 }
 
 // TestStart_ContextCancellation tests Start with context cancellation
@@ -1053,7 +1053,7 @@ func TestStop_ContextCancellation(t *testing.T) {
 	vmm.vms[taskID] = &VMInstance{
 		ID:             taskID,
 		PID:            fakePID,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		CreatedAt:      time.Now(),
 		InitSystem:     "systemd",
 		GracePeriodSec: 1, // Shorter grace period

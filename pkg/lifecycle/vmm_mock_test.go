@@ -159,7 +159,7 @@ func TestVMMManagerWithExecutors_Stop(t *testing.T) {
 				vm.vms["test-vm-stop-init"] = &VMInstance{
 					ID:             "test-vm-stop-init",
 					PID:            12345,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "tini",
 					GracePeriodSec: 1,
 				}
@@ -182,7 +182,7 @@ func TestVMMManagerWithExecutors_Stop(t *testing.T) {
 				vm.vms["test-vm-hard"] = &VMInstance{
 					ID:         "test-vm-hard",
 					PID:        12345,
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					InitSystem: "none",
 					SocketPath: "/var/run/firecracker/test-vm-hard.sock",
 				}
@@ -216,7 +216,7 @@ func TestVMMManagerWithExecutors_Stop(t *testing.T) {
 				vm.vms["test-vm-fail-graceful"] = &VMInstance{
 					ID:             "test-vm-fail-graceful",
 					PID:            12345,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "tini",
 					GracePeriodSec: 1,
 				}
@@ -315,7 +315,7 @@ func TestVMMManagerWithExecutors_Wait(t *testing.T) {
 				vm.vms[tt.task.ID] = &VMInstance{
 					ID:    tt.task.ID,
 					PID:   12345,
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			}
 
@@ -395,7 +395,7 @@ func TestVMMManagerWithExecutors_Describe(t *testing.T) {
 			vm.vms[tt.task.ID] = &VMInstance{
 				ID:        tt.task.ID,
 				PID:       12345,
-				State:     tt.vmState,
+				state:     tt.vmState,
 				CreatedAt: time.Now(),
 			}
 
@@ -432,7 +432,7 @@ func TestVMMManagerWithExecutors_Remove(t *testing.T) {
 				vm.vms["test-vm-remove"] = &VMInstance{
 					ID:         "test-vm-remove",
 					PID:        12345,
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					SocketPath: "/var/run/firecracker/test-vm-remove.sock",
 				}
 			},
@@ -613,7 +613,7 @@ func TestVMMManagerWithExecutors_GracefulShutdown(t *testing.T) {
 			vmInstance := &VMInstance{
 				ID:             "test-vm",
 				PID:            12345,
-				State:          VMStateRunning,
+				state:          VMStateRunning,
 				InitSystem:     "tini",
 				GracePeriodSec: tt.gracePeriod,
 			}
@@ -645,7 +645,7 @@ func TestVMMManagerWithExecutors_HardShutdown(t *testing.T) {
 		vmInstance := &VMInstance{
 			ID:         "test-vm",
 			PID:        12345,
-			State:      VMStateRunning,
+			state:      VMStateRunning,
 			SocketPath: "/var/run/fc/test.sock",
 		}
 
@@ -670,7 +670,7 @@ func TestVMMManagerWithExecutors_HardShutdown(t *testing.T) {
 		vmInstance := &VMInstance{
 			ID:         "test-vm",
 			PID:        12345,
-			State:      VMStateRunning,
+			state:      VMStateRunning,
 			SocketPath: "/var/run/fc/test.sock",
 		}
 

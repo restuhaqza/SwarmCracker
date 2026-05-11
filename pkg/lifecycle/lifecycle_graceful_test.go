@@ -30,7 +30,7 @@ func TestGracefulShutdown_ProcessExitsGracefully(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-1",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 5,
 		SocketPath:     "/tmp/test-sock-1.sock",
 		InitSystem:     "init",
@@ -46,7 +46,7 @@ func TestGracefulShutdown_ProcessExitsGracefully(t *testing.T) {
 
 	// Verify the process was shut down
 	assert.NoError(t, err, "gracefulShutdown should succeed")
-	assert.Equal(t, VMStateStopped, vmInstance.State, "VM should be in stopped state")
+	assert.Equal(t, VMStateStopped, vmInstance.GetState(), "VM should be in stopped state")
 
 	// Wait a bit to ensure process is fully reaped
 	_, err = os.FindProcess(cmd.Process.Pid)
@@ -73,7 +73,7 @@ func TestGracefulShutdown_GracePeriodExpiry(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-2",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 1, // Very short grace period
 		SocketPath:     "/tmp/test-sock-2.sock",
 		InitSystem:     "init",
@@ -111,7 +111,7 @@ func TestGracefulShutdown_ContextCancelImmediate(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-3",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 30,
 		SocketPath:     "/tmp/test-sock-3.sock",
 		InitSystem:     "init",
@@ -146,7 +146,7 @@ func TestGracefulShutdown_InvalidPID(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-4",
 		PID:            99999, // Non-existent PID
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 5,
 		SocketPath:     "/tmp/test-sock-4.sock",
 		InitSystem:     "init",
@@ -181,7 +181,7 @@ func TestGracefulShutdown_SIGTERMFailure(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-5",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 5,
 		SocketPath:     "/tmp/test-sock-5.sock",
 		InitSystem:     "init",
@@ -215,7 +215,7 @@ func TestGracefulShutdown_ZeroGracePeriod(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-6",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 0, // Zero grace period
 		SocketPath:     "/tmp/test-sock-6.sock",
 		InitSystem:     "init",
@@ -249,7 +249,7 @@ func TestGracefulShutdown_StateTransition(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-7",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 3,
 		SocketPath:     "/tmp/test-sock-7.sock",
 		InitSystem:     "init",
@@ -257,14 +257,14 @@ func TestGracefulShutdown_StateTransition(t *testing.T) {
 	vmMgr.vms["test-vm-7"] = vmInstance
 
 	// Verify initial state
-	assert.Equal(t, VMStateRunning, vmInstance.State, "initial state should be running")
+	assert.Equal(t, VMStateRunning, vmInstance.GetState(), "initial state should be running")
 
 	ctx := context.Background()
 
 	err := vmMgr.gracefulShutdown(ctx, vmInstance)
 
 	assert.NoError(t, err, "gracefulShutdown should succeed")
-	assert.Equal(t, VMStateStopped, vmInstance.State, "final state should be stopped")
+	assert.Equal(t, VMStateStopped, vmInstance.GetState(), "final state should be stopped")
 
 	// Clean up
 	cmd.Wait()
@@ -291,7 +291,7 @@ func TestGracefulShutdown_MultipleVMs(t *testing.T) {
 	vm1 := &VMInstance{
 		ID:             "test-vm-8a",
 		PID:            cmd1.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 3,
 		SocketPath:     "/tmp/test-sock-8a.sock",
 		InitSystem:     "init",
@@ -300,7 +300,7 @@ func TestGracefulShutdown_MultipleVMs(t *testing.T) {
 	vm2 := &VMInstance{
 		ID:             "test-vm-8b",
 		PID:            cmd2.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 3,
 		SocketPath:     "/tmp/test-sock-8b.sock",
 		InitSystem:     "init",
@@ -314,10 +314,10 @@ func TestGracefulShutdown_MultipleVMs(t *testing.T) {
 	// Shutdown first VM
 	err := vmMgr.gracefulShutdown(ctx, vm1)
 	assert.NoError(t, err, "first gracefulShutdown should succeed")
-	assert.Equal(t, VMStateStopped, vm1.State, "first VM should be stopped")
+	assert.Equal(t, VMStateStopped, vm1.GetState(), "first VM should be stopped")
 
 	// Second VM should still be running
-	assert.Equal(t, VMStateRunning, vm2.State, "second VM should still be running")
+	assert.Equal(t, VMStateRunning, vm2.GetState(), "second VM should still be running")
 
 	// Verify second process is still alive
 	err = cmd2.Process.Signal(syscall.Signal(0))
@@ -342,7 +342,7 @@ func TestGracefulShutdown_AlreadyStoppedProcess(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-9",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 5,
 		SocketPath:     "/tmp/test-sock-9.sock",
 		InitSystem:     "init",
@@ -371,7 +371,7 @@ func TestGracefulShutdown_NilContext(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-10",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 2,
 		SocketPath:     "/tmp/test-sock-10.sock",
 		InitSystem:     "init",
@@ -404,7 +404,7 @@ func TestGracefulShutdown_NegativeGracePeriod(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-11",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: -1, // Negative grace period
 		SocketPath:     "/tmp/test-sock-11.sock",
 		InitSystem:     "init",
@@ -437,7 +437,7 @@ func TestForceKillVM_StubbornProcess(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm-force",
 		PID:            cmd.Process.Pid,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		GracePeriodSec: 5,
 		SocketPath:     "/tmp/test-sock-force.sock",
 		InitSystem:     "init",
@@ -488,7 +488,7 @@ func BenchmarkGracefulShutdown_FastExit(b *testing.B) {
 			vmInstance := &VMInstance{
 				ID:             "bench-vm",
 				PID:            cmd.Process.Pid,
-				State:          VMStateRunning,
+				state:          VMStateRunning,
 				GracePeriodSec: 5,
 				SocketPath:     "/tmp/bench-sock.sock",
 				InitSystem:     "init",

@@ -46,7 +46,7 @@ func TestVMMManager_Remove_Uncovered(t *testing.T) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:         task.ID,
 					PID:        9999, // Fake PID
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					SocketPath: "/tmp/test-socket-" + task.ID + ".sock",
 				}
 			},
@@ -65,7 +65,7 @@ func TestVMMManager_Remove_Uncovered(t *testing.T) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:         task.ID,
 					PID:        12345,
-					State:      VMStateStopped,
+					state:      VMStateStopped,
 					SocketPath: "/tmp/test-socket-" + task.ID + ".sock",
 				}
 			},
@@ -83,7 +83,7 @@ func TestVMMManager_Remove_Uncovered(t *testing.T) {
 			setupFunc: func(vm *VMMManager, task *types.Task) {
 				vm.vms["some-vm"] = &VMInstance{
 					ID:    "some-vm",
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			},
 			task:        nil,
@@ -106,7 +106,7 @@ func TestVMMManager_Remove_Uncovered(t *testing.T) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:         task.ID,
 					PID:        54321,
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					SocketPath: socketPath,
 				}
 			},
@@ -125,7 +125,7 @@ func TestVMMManager_Remove_Uncovered(t *testing.T) {
 			setupFunc: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:         task.ID,
-					State:      VMStateNew,
+					state:      VMStateNew,
 					SocketPath: "",
 				}
 			},
@@ -192,7 +192,7 @@ func TestVMMManager_ForceKillVM_Uncovered(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   cmd.Process.Pid,
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			},
 			expectError: false, // May or may not error depending on if process exists
@@ -203,7 +203,7 @@ func TestVMMManager_ForceKillVM_Uncovered(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   99999, // Non-existent PID
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			},
 			expectError: true, // Should error on invalid PID
@@ -214,7 +214,7 @@ func TestVMMManager_ForceKillVM_Uncovered(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   -1,
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			},
 			expectError: true,
@@ -225,7 +225,7 @@ func TestVMMManager_ForceKillVM_Uncovered(t *testing.T) {
 				return &VMInstance{
 					ID:    "test-vm",
 					PID:   0,
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			},
 			expectError: true,
@@ -466,7 +466,7 @@ func TestVMMManager_Stop_AdditionalCoverage(t *testing.T) {
 			setupFunc: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:             task.ID,
-					State:          VMStateStopped,
+					state:          VMStateStopped,
 					GracePeriodSec: 5,
 				}
 			},
@@ -480,7 +480,7 @@ func TestVMMManager_Stop_AdditionalCoverage(t *testing.T) {
 			setupFunc: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:             task.ID,
-					State:          VMStateCrashed,
+					state:          VMStateCrashed,
 					GracePeriodSec: 5,
 				}
 			},
@@ -537,7 +537,7 @@ func TestVMMManager_Start_ErrorPaths(t *testing.T) {
 			setupFunc: func(vm *VMMManager) {
 				vm.vms["existing-task"] = &VMInstance{
 					ID:    "existing-task",
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			},
 			task: &types.Task{

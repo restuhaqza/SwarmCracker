@@ -52,7 +52,7 @@ func TestVMMManager_ContextCancellation(t *testing.T) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:             task.ID,
 					PID:            12345,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "tini",
 					GracePeriodSec: 10,
 				}
@@ -73,7 +73,7 @@ func TestVMMManager_ContextCancellation(t *testing.T) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:    task.ID,
 					PID:   os.Getpid(),
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			},
 			task: &types.Task{
@@ -91,7 +91,7 @@ func TestVMMManager_ContextCancellation(t *testing.T) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:    task.ID,
 					PID:   os.Getpid(),
-					State: VMStateRunning,
+					state: VMStateRunning,
 				}
 			},
 			task: &types.Task{
@@ -108,7 +108,7 @@ func TestVMMManager_ContextCancellation(t *testing.T) {
 			setupFunc: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:         task.ID,
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					SocketPath: "/tmp/test.sock",
 				}
 			},
@@ -240,7 +240,7 @@ func TestVMMManager_ConcurrentContextOperations(t *testing.T) {
 			vm.vms[fmt.Sprintf("vm-%d", i)] = &VMInstance{
 				ID:    fmt.Sprintf("vm-%d", i),
 				PID:   os.Getpid(),
-				State: VMStateRunning,
+				state: VMStateRunning,
 			}
 		}
 
@@ -283,7 +283,7 @@ func TestVMMManager_ConcurrentContextOperations(t *testing.T) {
 			vm.vms[fmt.Sprintf("vm-%d", i)] = &VMInstance{
 				ID:    fmt.Sprintf("vm-%d", i),
 				PID:   os.Getpid(),
-				State: VMStateRunning,
+				state: VMStateRunning,
 			}
 		}
 
@@ -328,7 +328,7 @@ func TestVMMManager_ConcurrentContextOperations(t *testing.T) {
 
 			vm.vms[fmt.Sprintf("vm-%d", i)] = &VMInstance{
 				ID:         fmt.Sprintf("vm-%d", i),
-				State:      VMStateRunning,
+				state:      VMStateRunning,
 				SocketPath: socketPath,
 			}
 		}
@@ -371,14 +371,14 @@ func TestGracefulShutdown_EdgeCases(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999, // Non-existent
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "tini",
 					GracePeriodSec: 0,
 				}
 			},
 			expectError: true, // Should force kill
 			validate: func(t *testing.T, vmi *VMInstance) {
-				assert.Equal(t, VMStateStopped, vmi.State)
+				assert.Equal(t, VMStateStopped, vmi.GetState())
 			},
 		},
 		{
@@ -387,7 +387,7 @@ func TestGracefulShutdown_EdgeCases(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "tini",
 					GracePeriodSec: -1,
 				}
@@ -400,7 +400,7 @@ func TestGracefulShutdown_EdgeCases(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "tini",
 					GracePeriodSec: 1,
 				}
@@ -413,7 +413,7 @@ func TestGracefulShutdown_EdgeCases(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "none",
 					GracePeriodSec: 10,
 				}
@@ -426,7 +426,7 @@ func TestGracefulShutdown_EdgeCases(t *testing.T) {
 				return &VMInstance{
 					ID:             "test-vm",
 					PID:            99999,
-					State:          VMStateRunning,
+					state:          VMStateRunning,
 					InitSystem:     "dumb-init",
 					GracePeriodSec: 5,
 				}
@@ -469,7 +469,7 @@ func TestHardShutdown_EdgeCases(t *testing.T) {
 			setupFunc: func() (*VMInstance, string) {
 				return &VMInstance{
 					ID:         "test-vm",
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					SocketPath: "/tmp/non-existent.sock",
 				}, "/tmp/non-existent.sock"
 			},
@@ -480,7 +480,7 @@ func TestHardShutdown_EdgeCases(t *testing.T) {
 			setupFunc: func() (*VMInstance, string) {
 				return &VMInstance{
 					ID:         "test-vm",
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					SocketPath: "",
 				}, ""
 			},
@@ -495,7 +495,7 @@ func TestHardShutdown_EdgeCases(t *testing.T) {
 
 				return &VMInstance{
 					ID:         "test-vm",
-					State:      VMStateRunning,
+					state:      VMStateRunning,
 					SocketPath: socketPath,
 				}, socketPath
 			},
@@ -647,7 +647,7 @@ func TestVMMManager_Describe_AllContextStates(t *testing.T) {
 			vm.vms[task.ID] = &VMInstance{
 				ID:        task.ID,
 				PID:       99999, // Non-existent
-				State:     state,
+				state:     state,
 				CreatedAt: time.Now(),
 			}
 
@@ -742,7 +742,7 @@ func TestVMMManager_ContextStateTransitions(t *testing.T) {
 	vm.vms[task.ID] = &VMInstance{
 		ID:    task.ID,
 		PID:   currentPID, // Use real process PID
-		State: VMStateNew,
+		state: VMStateNew,
 	}
 
 	ctx := context.Background()

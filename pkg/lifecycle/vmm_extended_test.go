@@ -163,7 +163,7 @@ func (vm *VMMManagerInternal) gracefulShutdownWithProcess(ctx context.Context, v
 	select {
 	case <-shutdownChan:
 		vm.mu.Lock()
-		vmInstance.State = VMStateStopped
+		vmInstance.SetState(VMStateStopped)
 		vm.mu.Unlock()
 		return nil
 	case <-time.After(gracePeriod):
@@ -213,13 +213,13 @@ func (vm *VMMManagerInternal) hardShutdownWithClient(ctx context.Context, vmInst
 
 	select {
 	case <-done:
-		vmInstance.State = VMStateStopped
+		vmInstance.SetState(VMStateStopped)
 	case <-time.After(5 * time.Second):
 		vm.forceKillVMWithProcess(vmInstance)
-		vmInstance.State = VMStateStopped
+		vmInstance.SetState(VMStateStopped)
 	case <-ctx.Done():
 		vm.forceKillVMWithProcess(vmInstance)
-		vmInstance.State = VMStateStopped
+		vmInstance.SetState(VMStateStopped)
 	}
 
 	return nil
@@ -444,7 +444,7 @@ func TestGracefulShutdown_Success(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm",
 		PID:            12345,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		InitSystem:     "systemd",
 		GracePeriodSec: 2,
 	}
@@ -465,8 +465,8 @@ func TestGracefulShutdown_Success(t *testing.T) {
 		t.Errorf("gracefulShutdown failed: %v", err)
 	}
 
-	if vmInstance.State != VMStateStopped {
-		t.Errorf("expected VMStateStopped, got %s", vmInstance.State)
+	if vmInstance.GetState() != VMStateStopped {
+		t.Errorf("expected VMStateStopped, got %s", vmInstance.GetState())
 	}
 }
 
@@ -478,7 +478,7 @@ func TestGracefulShutdown_ProcessNotFound(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm",
 		PID:            99999,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		InitSystem:     "systemd",
 		GracePeriodSec: 2,
 	}
@@ -516,7 +516,7 @@ func TestGracefulShutdown_SignalFailure(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm",
 		PID:            12345,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		InitSystem:     "systemd",
 		GracePeriodSec: 2,
 	}
@@ -566,7 +566,7 @@ func TestGracefulShutdown_Timeout(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm",
 		PID:            12345,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		InitSystem:     "systemd",
 		GracePeriodSec: 1, // Short grace period for faster test
 	}
@@ -616,7 +616,7 @@ func TestGracefulShutdown_ContextCancelled(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:             "test-vm",
 		PID:            12345,
-		State:          VMStateRunning,
+		state:          VMStateRunning,
 		InitSystem:     "systemd",
 		GracePeriodSec: 10,
 	}
@@ -654,7 +654,7 @@ func TestHardShutdown_Success(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm",
 		PID:        12345,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		SocketPath: socketPath,
 	}
 
@@ -680,8 +680,8 @@ func TestHardShutdown_Success(t *testing.T) {
 		t.Errorf("hardShutdown failed: %v", err)
 	}
 
-	if vmInstance.State != VMStateStopped {
-		t.Errorf("expected VMStateStopped, got %s", vmInstance.State)
+	if vmInstance.GetState() != VMStateStopped {
+		t.Errorf("expected VMStateStopped, got %s", vmInstance.GetState())
 	}
 
 	// Verify HTTP call was made
@@ -705,7 +705,7 @@ func TestHardShutdown_HTTPError(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm",
 		PID:        12345,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		SocketPath: "/tmp/test.sock",
 	}
 
@@ -751,7 +751,7 @@ func TestHardShutdown_Timeout(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:         "test-vm",
 		PID:        12345,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		SocketPath: socketPath,
 	}
 
@@ -775,8 +775,8 @@ func TestHardShutdown_Timeout(t *testing.T) {
 	}
 
 	// Verify VM was marked as stopped
-	if vmInstance.State != VMStateStopped {
-		t.Errorf("expected VMStateStopped, got %s", vmInstance.State)
+	if vmInstance.GetState() != VMStateStopped {
+		t.Errorf("expected VMStateStopped, got %s", vmInstance.GetState())
 	}
 
 	// Verify process was killed (force kill after timeout)

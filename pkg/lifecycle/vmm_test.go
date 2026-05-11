@@ -107,7 +107,7 @@ func TestVMMManager_Start(t *testing.T) {
 
 	assert.True(t, exists)
 	assert.Equal(t, task.ID, vmInstance.ID)
-	assert.Equal(t, VMStateRunning, vmInstance.State)
+	assert.Equal(t, VMStateRunning, vmInstance.GetState())
 	assert.NotEmpty(t, vmInstance.SocketPath)
 
 	// Cleanup
@@ -158,7 +158,7 @@ func TestVMMManager_Stop(t *testing.T) {
 	vmm.vms[task.ID] = &VMInstance{
 		ID:         task.ID,
 		PID:        12345, // Fake PID
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		CreatedAt:  time.Now(),
 		SocketPath: filepath.Join(socketDir, task.ID+".sock"),
 	}
@@ -194,7 +194,7 @@ func TestVMMManager_Wait(t *testing.T) {
 	vmm.vms[task.ID] = &VMInstance{
 		ID:        task.ID,
 		PID:       os.Getpid(), // Use current process
-		State:     VMStateRunning,
+		state:     VMStateRunning,
 		CreatedAt: time.Now(),
 	}
 	vmm.mu.Unlock()
@@ -227,7 +227,7 @@ func TestVMMManager_Describe(t *testing.T) {
 	vmm.vms[task.ID] = &VMInstance{
 		ID:        task.ID,
 		PID:       os.Getpid(),
-		State:     VMStateRunning,
+		state:     VMStateRunning,
 		CreatedAt: time.Now(),
 	}
 	vmm.mu.Unlock()
@@ -268,7 +268,7 @@ func TestVMMManager_Remove(t *testing.T) {
 	vmm.vms[task.ID] = &VMInstance{
 		ID:         task.ID,
 		PID:        12345, // Fake PID that doesn't exist
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		CreatedAt:  time.Now(),
 		SocketPath: socketPath,
 	}
@@ -338,7 +338,7 @@ func TestForceKillVM(t *testing.T) {
 	vmInstance := &VMInstance{
 		ID:        "test-kill",
 		PID:       99999, // Fake PID that doesn't exist
-		State:     VMStateRunning,
+		state:     VMStateRunning,
 		CreatedAt: time.Now(),
 	}
 
@@ -412,7 +412,7 @@ func BenchmarkVMMManager_Start(b *testing.B) {
 		vmm.vms[task.ID] = &VMInstance{
 			ID:    task.ID,
 			PID:   12345,
-			State: VMStateRunning,
+			state: VMStateRunning,
 		}
 		vmm.mu.Unlock()
 	}
@@ -430,7 +430,7 @@ func BenchmarkVMMManager_Describe(b *testing.B) {
 		vmm.vms[taskID] = &VMInstance{
 			ID:        taskID,
 			PID:       os.Getpid(),
-			State:     VMStateRunning,
+			state:     VMStateRunning,
 			CreatedAt: time.Now(),
 		}
 	}

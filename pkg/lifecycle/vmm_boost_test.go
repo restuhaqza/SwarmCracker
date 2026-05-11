@@ -123,7 +123,7 @@ func TestVMMManager_Stop_VMInStates(t *testing.T) {
 
 			vm.vms[task.ID] = &VMInstance{
 				ID:         task.ID,
-				State:      state,
+				state:      state,
 				CreatedAt:  time.Now(),
 				PID:        1234,
 				SocketPath: filepath.Join("/tmp", task.ID+".sock"),
@@ -148,7 +148,7 @@ func TestVMMManager_Wait_Timeouts(t *testing.T) {
 
 	vm.vms[task.ID] = &VMInstance{
 		ID:        task.ID,
-		State:     VMStateRunning,
+		state:     VMStateRunning,
 		CreatedAt: time.Now(),
 		PID:       9999,
 	}
@@ -207,7 +207,7 @@ func TestVMMManager_Describe_AllStates(t *testing.T) {
 
 			vm.vms[task.ID] = &VMInstance{
 				ID:         task.ID,
-				State:      state,
+				state:      state,
 				CreatedAt:  time.Now().Add(-time.Hour),
 				PID:        os.Getpid(), // Use real PID so process check succeeds
 				SocketPath: "/tmp/test.sock",
@@ -233,7 +233,7 @@ func TestVMMManager_forceKillVM_Scenarios(t *testing.T) {
 			setup: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:    task.ID,
-					State: VMStateRunning,
+					state: VMStateRunning,
 					PID:   0,
 				}
 			},
@@ -244,7 +244,7 @@ func TestVMMManager_forceKillVM_Scenarios(t *testing.T) {
 			setup: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:    task.ID,
-					State: VMStateRunning,
+					state: VMStateRunning,
 					PID:   -1,
 				}
 			},
@@ -255,7 +255,7 @@ func TestVMMManager_forceKillVM_Scenarios(t *testing.T) {
 			setup: func(vm *VMMManager, task *types.Task) {
 				vm.vms[task.ID] = &VMInstance{
 					ID:    task.ID,
-					State: VMStateRunning,
+					state: VMStateRunning,
 					PID:   999999,
 				}
 			},
@@ -444,7 +444,7 @@ func TestVMState_Transitions(t *testing.T) {
 
 			vm.vms[task.ID] = &VMInstance{
 				ID:        task.ID,
-				State:     transition[0],
+				state:     transition[0],
 				CreatedAt: time.Now(),
 				PID:       1000,
 			}
@@ -506,7 +506,7 @@ func TestVMMManager_SocketFileCleanup(t *testing.T) {
 	// Add VM to map so Remove will clean it up
 	vm.vms[task.ID] = &VMInstance{
 		ID:         task.ID,
-		State:      VMStateRunning,
+		state:      VMStateRunning,
 		PID:        1234,
 		SocketPath: socketPath,
 	}
