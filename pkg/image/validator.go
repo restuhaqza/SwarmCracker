@@ -21,9 +21,11 @@ var archAliases = map[string]string{
 	"arm64":   "arm64",
 	"armhf":   "arm",
 	"armv7l":  "arm",
+	"arm":     "arm",
 	"i386":    "386",
 	"i686":    "386",
 	"x86":     "386",
+	"386":     "386",
 }
 
 // normalizeArch normalizes architecture names to Go's runtime.GOARCH format.

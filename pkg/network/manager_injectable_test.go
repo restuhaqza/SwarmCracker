@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/stretchr/testify/assert"
 )
 
 var (
@@ -699,7 +700,7 @@ func TestPrepareNetworkWithCNI_Injectable(t *testing.T) {
 	}
 }
 
-func TestPrepareNetworkWithCNI_NoIP(t *testing.T) {
+func TestPrepareNetworkWithCNI_NoIP_UsesFallback(t *testing.T) {
 	state := newMockState()
 	restore := setupMocksForTest(state)
 	defer restore()
@@ -716,8 +717,11 @@ func TestPrepareNetworkWithCNI_NoIP(t *testing.T) {
 	}
 
 	err := nm.prepareNetworkWithCNI(context.Background(), task)
-	if err == nil {
-		t.Fatal("Expected error when no IP is provided for CNI")
+	// With CVR fix, empty IP now triggers TAP/DHCP fallback instead of error
+	// In test environment, TAP creation may fail (expected) or succeed with mock
+	if err != nil {
+		// Error should be about TAP creation, not CNI IP requirement
+		assert.Contains(t, err.Error(), "failed to create TAP device")
 	}
 }
 

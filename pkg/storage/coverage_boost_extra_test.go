@@ -6,6 +6,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -14,8 +15,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestInjectSecrets_NilMount tests InjectSecrets mount failure path
-func TestInjectSecrets_NilMount(t *testing.T) {
+// TestInjectSecrets_DebugfsFail tests InjectSecrets when debugfs command fails
+// Note: debugfs exits with code 0 even for errors like missing ext4 file,
+// so we mock execCommand to simulate actual failure
+func TestInjectSecrets_DebugfsFail(t *testing.T) {
+	origCommand := execCommand
+	origMkdirTemp := osMkdirTemp
+	origRemoveAll := osRemoveAllStore
+	defer func() {
+		execCommand = origCommand
+		osMkdirTemp = origMkdirTemp
+		osRemoveAllStore = origRemoveAll
+	}()
+
+	// Create temp dir for test
+	tmpDir := t.TempDir()
+	osMkdirTemp = func(dir string, pattern string) (string, error) {
+		return tmpDir, nil
+	}
+	osRemoveAllStore = func(path string) error { return nil }
+
+	// Mock execCommand to fail for debugfs
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "debugfs" {
+			return exec.Command("false") // Will fail with exit code 1
+		}
+		return exec.Command(name, args...)
+	}
+
 	sm := NewSecretManager("", "")
 
 	ctx := context.Background()
@@ -23,10 +50,9 @@ func TestInjectSecrets_NilMount(t *testing.T) {
 		{Name: "secret1", Target: "/run/secrets/s1", Data: []byte("data")},
 	}
 
-	// Non-existent rootfs should cause mount failure
 	err := sm.InjectSecrets(ctx, "task-123", secrets, "/nonexistent/rootfs.ext4")
-	assert.Error(t, err, "InjectSecrets should fail with non-existent rootfs")
-	assert.Contains(t, err.Error(), "mount")
+	assert.Error(t, err, "InjectSecrets should fail when debugfs fails")
+	assert.Contains(t, err.Error(), "debugfs")
 }
 
 // TestInjectSecrets_SingleSecret tests InjectSecrets with single secret
