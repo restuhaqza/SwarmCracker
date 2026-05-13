@@ -124,7 +124,7 @@ func TestInjectSecrets(t *testing.T) {
 				return createFakeRootfs(t)
 			},
 			wantErr:     true,
-			errContains: "failed to mount rootfs",
+			errContains: "debugfs",
 		},
 		{
 			name: "multiple secrets - needs root",
@@ -146,7 +146,7 @@ func TestInjectSecrets(t *testing.T) {
 				return createFakeRootfs(t)
 			},
 			wantErr:     true,
-			errContains: "failed to mount rootfs",
+			errContains: "debugfs",
 		},
 		{
 			name: "secret with default target - needs root",
@@ -161,7 +161,7 @@ func TestInjectSecrets(t *testing.T) {
 				return createFakeRootfs(t)
 			},
 			wantErr:     true,
-			errContains: "failed to mount rootfs",
+			errContains: "debugfs",
 		},
 		{
 			name: "secret with nested path - needs root",
@@ -177,7 +177,7 @@ func TestInjectSecrets(t *testing.T) {
 				return createFakeRootfs(t)
 			},
 			wantErr:     true,
-			errContains: "failed to mount rootfs",
+			errContains: "debugfs",
 		},
 	}
 
@@ -258,7 +258,7 @@ func TestInjectConfigs(t *testing.T) {
 				return createFakeRootfs(t)
 			},
 			wantErr:     true,
-			errContains: "failed to mount rootfs",
+			errContains: "debugfs",
 		},
 		{
 			name: "multiple configs - needs root",
@@ -280,7 +280,7 @@ func TestInjectConfigs(t *testing.T) {
 				return createFakeRootfs(t)
 			},
 			wantErr:     true,
-			errContains: "failed to mount rootfs",
+			errContains: "debugfs",
 		},
 		{
 			name: "config with default target - needs root",
@@ -295,7 +295,7 @@ func TestInjectConfigs(t *testing.T) {
 				return createFakeRootfs(t)
 			},
 			wantErr:     true,
-			errContains: "failed to mount rootfs",
+			errContains: "debugfs",
 		},
 		{
 			name: "config with nested path - needs root",
@@ -311,7 +311,7 @@ func TestInjectConfigs(t *testing.T) {
 				return createFakeRootfs(t)
 			},
 			wantErr:     true,
-			errContains: "failed to mount rootfs",
+			errContains: "debugfs",
 		},
 	}
 
@@ -683,24 +683,32 @@ func TestInjectConfig(t *testing.T) {
 
 // TestMountRootfs tests the mountRootfs method (unexported).
 func TestMountRootfs(t *testing.T) {
-	// Note: This test requires root privileges to actually mount filesystems.
-	// We'll test the error cases and use a marker for mocked rootfs.
+	// mountRootfs is now a deprecated stub (CVR-1.6) — just creates temp dir.
+	// Replaced by injectFileViaDebugfs for actual file injection.
 
-	t.Run("invalid rootfs path", func(t *testing.T) {
+	t.Run("deprecated stub - nonexistent path", func(t *testing.T) {
 		sm := NewSecretManager("", "")
-		_, err := sm.mountRootfs("/nonexistent/path/to/rootfs.img")
+		mountDir, err := sm.mountRootfs("/nonexistent/path/to/rootfs.img")
 
-		if err == nil {
-			t.Error("Expected error for nonexistent rootfs path, got nil")
+		// Deprecated stub always succeeds - just creates temp dir
+		if err != nil {
+			t.Errorf("deprecated stub should not error, got: %v", err)
+		}
+		if mountDir != "" {
+			os.RemoveAll(mountDir)
 		}
 	})
 
-	t.Run("empty rootfs path", func(t *testing.T) {
+	t.Run("deprecated stub - empty path", func(t *testing.T) {
 		sm := NewSecretManager("", "")
-		_, err := sm.mountRootfs("")
+		mountDir, err := sm.mountRootfs("")
 
-		if err == nil {
-			t.Error("Expected error for empty rootfs path, got nil")
+		// Deprecated stub always succeeds
+		if err != nil {
+			t.Errorf("deprecated stub should not error, got: %v", err)
+		}
+		if mountDir != "" {
+			os.RemoveAll(mountDir)
 		}
 	})
 }

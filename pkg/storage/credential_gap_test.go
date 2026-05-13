@@ -216,16 +216,17 @@ func TestInjectConfigs_SuccessPath(t *testing.T) {
 // TestMountRootfs_TempDirError tests mountRootfs temp dir creation error
 // This is hard to test directly, so we test the error propagation
 func TestMountRootfs_TempDirError(t *testing.T) {
-	// This test verifies that if mount fails, the error is properly propagated
+	// With CVR-1.6, mount -o loop replaced by debugfs write
+	// debugfs exits 0 even on errors; code now checks output for error indicators
 	sm := NewSecretManager("", "")
 	ctx := context.Background()
 
-	// Use a non-existent rootfs path - mount should fail
+	// Use a non-existent rootfs path - debugfs should fail
 	err := sm.InjectSecrets(ctx, "test-task", []types.SecretRef{
 		{Name: "test", Data: []byte("data")},
 	}, "/nonexistent/rootfs.ext4")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to mount rootfs")
+	assert.Contains(t, err.Error(), "debugfs")
 }
 
 // TestUnmountRootfs_Error tests unmountRootfs error handling

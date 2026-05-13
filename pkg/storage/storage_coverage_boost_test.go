@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -41,9 +42,14 @@ func TestInjectSecrets_NonexistentRootfs(t *testing.T) {
 		{Name: "secret1", Target: "/run/secrets/secret1", Data: []byte("secret data")},
 	}
 
+	// With CVR-1.6 debugfs write, nonexistent ext4 should fail with debugfs error
 	err := sm.InjectSecrets(ctx, "task-123", secrets, "/nonexistent/rootfs.ext4")
 	if err == nil {
 		t.Error("Expected error for nonexistent rootfs")
+	}
+	// Error should contain "debugfs" (not "mount")
+	if err != nil && !strings.Contains(err.Error(), "debugfs") {
+		t.Errorf("Error should contain 'debugfs', got: %v", err)
 	}
 }
 
@@ -56,6 +62,7 @@ func TestInjectConfigs_NonexistentRootfs(t *testing.T) {
 		{Name: "config1", Target: "/config/config1", Data: []byte("config data")},
 	}
 
+	// With CVR-1.6 debugfs write, nonexistent ext4 should fail
 	err := sm.InjectConfigs(ctx, "task-123", configs, "/nonexistent/rootfs.ext4")
 	if err == nil {
 		t.Error("Expected error for nonexistent rootfs")
@@ -212,13 +219,17 @@ func TestInjectConfig_CustomTarget(t *testing.T) {
 	}
 }
 
-// TestMountRootfs_Nonexistent tests mounting nonexistent rootfs
+// TestMountRootfs_Nonexistent tests depleted stub (post CVR-1.6)
 func TestMountRootfs_Nonexistent(t *testing.T) {
 	sm := NewSecretManager("", "")
 
+	// mountRootfs is now a deprecated stub - just creates temp dir
+	// It always succeeds regardless of rootfs path
 	mountDir, err := sm.mountRootfs("/nonexistent/rootfs.ext4")
-	if err == nil {
-		t.Error("Expected error for nonexistent rootfs")
+	if err != nil {
+		t.Errorf("deprecated stub should not error, got: %v", err)
+	}
+	if mountDir != "" {
 		os.RemoveAll(mountDir)
 	}
 }

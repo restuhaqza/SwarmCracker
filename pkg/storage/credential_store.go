@@ -242,8 +242,18 @@ func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName stri
 	cmd := execCommand("debugfs", "-w", "-R",
 		fmt.Sprintf("write %s %s", filePath, targetPath),
 		ext4Path)
-	if output, err := cmd.CombinedOutput(); err != nil {
+	output, err := cmd.CombinedOutput()
+	if err != nil {
 		return fmt.Errorf("debugfs write failed: %s: %w", string(output), err)
+	}
+
+	// debugfs exits with code 0 even for certain errors (quirk)
+	// Check output for error indicators
+	outputStr := string(output)
+	if strings.Contains(outputStr, "Filesystem not open") ||
+		strings.Contains(outputStr, "No such file or directory") ||
+		strings.Contains(outputStr, "while trying to open") {
+		return fmt.Errorf("debugfs write failed: %s", outputStr)
 	}
 
 	log.Debug().

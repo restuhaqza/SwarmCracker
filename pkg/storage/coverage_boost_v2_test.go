@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -42,9 +43,10 @@ func TestInjectSecrets_MockMount(t *testing.T) {
 		osRemoveAllStore = origRemoveAll
 	}()
 
-	t.Run("mount_fails", func(t *testing.T) {
+	t.Run("debugfs_fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
 		osMkdirTemp = func(_ string, _ string) (string, error) {
-			return "/tmp/test-mount", nil
+			return tmpDir, nil
 		}
 		execCommand = func(_ string, _ ...string) *exec.Cmd {
 			// Return a cmd that will fail when CombinedOutput is called
@@ -57,7 +59,7 @@ func TestInjectSecrets_MockMount(t *testing.T) {
 
 		err := sm.InjectSecrets(context.Background(), "task-1", secrets, "/tmp/rootfs.ext4")
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "mount")
+		assert.Contains(t, err.Error(), "debugfs")
 	})
 
 	t.Run("full_injection_success", func(t *testing.T) {
@@ -66,12 +68,20 @@ func TestInjectSecrets_MockMount(t *testing.T) {
 		osMkdirTemp = func(_ string, _ string) (string, error) {
 			return tmpDir, nil
 		}
-		// Create a mock that simulates successful mount
+		// Mock debugfs to write file to the expected target location
 		execCommand = func(name string, args ...string) *exec.Cmd {
-			if name == "mount" || name == "umount" {
-				// Create a fake command that succeeds
-				cmd := exec.Command("echo")
-				return cmd
+			if name == "debugfs" && len(args) >= 3 {
+				// args: ["-w", "-R", "write <src> <target>", "<ext4>"]
+				parts := strings.Fields(args[2])
+				if len(parts) >= 3 {
+					srcFile := parts[1]
+					dstFile := filepath.Join(tmpDir, parts[2])
+					if data, err := os.ReadFile(srcFile); err == nil {
+						os.MkdirAll(filepath.Dir(dstFile), 0755)
+						os.WriteFile(dstFile, data, 0600)
+					}
+				}
+				return exec.Command("echo", "File created")
 			}
 			return exec.Command(name, args...)
 		}
@@ -91,7 +101,7 @@ func TestInjectSecrets_MockMount(t *testing.T) {
 	})
 }
 
-// TestInjectConfigs_MockMount tests InjectConfigs with mocked mount/unmount
+// TestInjectConfigs_MockMount tests InjectConfigs with mocked debugfs (post-CVR-1.6)
 func TestInjectConfigs_MockMount(t *testing.T) {
 	origMkdirTemp := osMkdirTemp
 	origCommand := execCommand
@@ -102,12 +112,13 @@ func TestInjectConfigs_MockMount(t *testing.T) {
 		osRemoveAllStore = origRemoveAll
 	}()
 
-	t.Run("mount_fails", func(t *testing.T) {
+	t.Run("debugfs_fails", func(t *testing.T) {
+		tmpDir := t.TempDir()
 		osMkdirTemp = func(_ string, _ string) (string, error) {
-			return "/tmp/test-mount", nil
+			return tmpDir, nil
 		}
 		execCommand = func(_ string, _ ...string) *exec.Cmd {
-			return exec.Command("false") // Simulates mount failure
+			return exec.Command("false")
 		}
 		osRemoveAllStore = func(_ string) error { return nil }
 
@@ -116,7 +127,7 @@ func TestInjectConfigs_MockMount(t *testing.T) {
 
 		err := sm.InjectConfigs(context.Background(), "task-1", configs, "/tmp/rootfs.ext4")
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "mount")
+		assert.Contains(t, err.Error(), "debugfs")
 	})
 
 	t.Run("full_injection_success", func(t *testing.T) {
@@ -125,9 +136,19 @@ func TestInjectConfigs_MockMount(t *testing.T) {
 		osMkdirTemp = func(_ string, _ string) (string, error) {
 			return tmpDir, nil
 		}
+		// Mock debugfs to write file to the expected target location
 		execCommand = func(name string, args ...string) *exec.Cmd {
-			if name == "mount" || name == "umount" {
-				return exec.Command("true")
+			if name == "debugfs" && len(args) >= 3 {
+				parts := strings.Fields(args[2])
+				if len(parts) >= 3 {
+					srcFile := parts[1]
+					dstFile := filepath.Join(tmpDir, parts[2])
+					if data, err := os.ReadFile(srcFile); err == nil {
+						os.MkdirAll(filepath.Dir(dstFile), 0755)
+						os.WriteFile(dstFile, data, 0600)
+					}
+				}
+				return exec.Command("echo", "File created")
 			}
 			return exec.Command(name, args...)
 		}
@@ -147,7 +168,7 @@ func TestInjectConfigs_MockMount(t *testing.T) {
 	})
 }
 
-// TestMountRootfs_Mock tests mountRootfs with mocked functions
+// TestMountRootfs_Mock tests mountRootfs deprecated stub (post-CVR-1.6)
 func TestMountRootfs_Mock(t *testing.T) {
 	origMkdirTemp := osMkdirTemp
 	origCommand := execCommand
@@ -166,7 +187,7 @@ func TestMountRootfs_Mock(t *testing.T) {
 		sm := NewSecretManager("", "")
 		_, err := sm.mountRootfs("/tmp/rootfs.ext4")
 		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "temp dir")
+		assert.Contains(t, err.Error(), "mkdirtemp")
 	})
 
 	t.Run("mount_succeeds", func(t *testing.T) {
@@ -175,9 +196,6 @@ func TestMountRootfs_Mock(t *testing.T) {
 		osMkdirTemp = func(_ string, _ string) (string, error) {
 			return tmpDir, nil
 		}
-		execCommand = func(_ string, _ ...string) *exec.Cmd {
-			return exec.Command("true")
-		}
 
 		sm := NewSecretManager("", "")
 		mountDir, err := sm.mountRootfs("/tmp/rootfs.ext4")
@@ -185,24 +203,23 @@ func TestMountRootfs_Mock(t *testing.T) {
 		assert.Equal(t, tmpDir, mountDir)
 	})
 
-	t.Run("mount_fails_cleanup", func(t *testing.T) {
+	t.Run("deprecated_stub_always_succeeds", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		osMkdirTemp = func(_ string, _ string) (string, error) {
 			return tmpDir, nil
 		}
-		execCommand = func(_ string, _ ...string) *exec.Cmd {
-			return exec.Command("false")
-		}
+		// mountRootfs is now a deprecated stub - execCommand is NOT called
+		// The stub just returns a temp dir regardless
 		osRemoveAllStore = func(path string) error {
-			assert.Equal(t, tmpDir, path)
 			return nil
 		}
 
 		sm := NewSecretManager("", "")
-		_, err := sm.mountRootfs("/tmp/rootfs.ext4")
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "mount")
+		// mountRootfs deprecated stub just creates temp dir
+		mountDir, err := sm.mountRootfs("/tmp/rootfs.ext4")
+		assert.NoError(t, err)
+		assert.Equal(t, tmpDir, mountDir)
 	})
 }
 
@@ -384,9 +401,19 @@ func TestInjectSecrets_MultipleWithMock(t *testing.T) {
 	osMkdirTemp = func(_ string, _ string) (string, error) {
 		return tmpDir, nil
 	}
+	// Mock debugfs to copy files to the right location (post CVR-1.6)
 	execCommand = func(name string, args ...string) *exec.Cmd {
-		if name == "mount" || name == "umount" {
-			return exec.Command("true")
+		if name == "debugfs" && len(args) >= 3 {
+			parts := strings.Fields(args[2])
+			if len(parts) >= 3 {
+				srcFile := parts[1]
+				dstFile := filepath.Join(tmpDir, parts[2])
+				if data, err := os.ReadFile(srcFile); err == nil {
+					os.MkdirAll(filepath.Dir(dstFile), 0755)
+					os.WriteFile(dstFile, data, 0600)
+				}
+			}
+			return exec.Command("echo", "File created")
 		}
 		return exec.Command(name, args...)
 	}
@@ -424,9 +451,19 @@ func TestInjectConfigs_MultipleWithMock(t *testing.T) {
 	osMkdirTemp = func(_ string, _ string) (string, error) {
 		return tmpDir, nil
 	}
+	// Mock debugfs to copy files to the right location (post CVR-1.6)
 	execCommand = func(name string, args ...string) *exec.Cmd {
-		if name == "mount" || name == "umount" {
-			return exec.Command("true")
+		if name == "debugfs" && len(args) >= 3 {
+			parts := strings.Fields(args[2])
+			if len(parts) >= 3 {
+				srcFile := parts[1]
+				dstFile := filepath.Join(tmpDir, parts[2])
+				if data, err := os.ReadFile(srcFile); err == nil {
+					os.MkdirAll(filepath.Dir(dstFile), 0755)
+					os.WriteFile(dstFile, data, 0600)
+				}
+			}
+			return exec.Command("echo", "File created")
 		}
 		return exec.Command(name, args...)
 	}
@@ -1021,29 +1058,26 @@ func TestMountRootfs_MkdirTempFails_V2(t *testing.T) {
 	assert.Contains(t, err.Error(), "temp dir")
 }
 
-// TestMountRootfs_MountFails tests mountRootfs when mount fails
-func TestMountRootfs_MountFails_V2(t *testing.T) {
+// TestMountRootfs_StubAlwaysSucceeds_V2 tests mountRootfs deprecated stub
+func TestMountRootfs_StubAlwaysSucceeds_V2(t *testing.T) {
 	origMkdirTemp := osMkdirTemp
-	origCommand := execCommand
 	origRemoveAll := osRemoveAllStore
 	defer func() {
 		osMkdirTemp = origMkdirTemp
-		execCommand = origCommand
 		osRemoveAllStore = origRemoveAll
 	}()
 
 	osMkdirTemp = func(_ string, _ string) (string, error) {
 		return "/tmp/mount", nil
 	}
-	execCommand = func(_ string, _ ...string) *exec.Cmd {
-		return exec.Command("false") // will fail
-	}
 	osRemoveAllStore = func(_ string) error { return nil }
 
+	// mountRootfs is now a deprecated stub (CVR-1.6) - just creates temp dir
+	// execCommand is NOT called by the deprecated stub
 	sm := NewSecretManager("", "")
-	_, err := sm.mountRootfs("/tmp/rootfs.ext4")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "mount")
+	mountDir, err := sm.mountRootfs("/tmp/rootfs.ext4")
+	assert.NoError(t, err)
+	assert.Equal(t, "/tmp/mount", mountDir)
 }
 
 // TestNewSecretManager_WithDirs tests NewSecretManager with actual dirs

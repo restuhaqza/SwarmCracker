@@ -55,72 +55,139 @@ func TestInjectSecrets_DebugfsFail(t *testing.T) {
 	assert.Contains(t, err.Error(), "debugfs")
 }
 
-// TestInjectSecrets_SingleSecret tests InjectSecrets with single secret
-func TestInjectSecrets_SingleSecret(t *testing.T) {
-	sm := NewSecretManager("", "")
+// TestInjectSecrets_DebugfsSuccess tests InjectSecrets with single secret using mock
+func TestInjectSecrets_DebugfsSuccess(t *testing.T) {
+	origCommand := execCommand
+	origMkdirTemp := osMkdirTemp
+	origRemoveAll := osRemoveAllStore
+	defer func() {
+		execCommand = origCommand
+		osMkdirTemp = origMkdirTemp
+		osRemoveAllStore = origRemoveAll
+	}()
 
+	tmpDir := t.TempDir()
+	osMkdirTemp = func(dir string, pattern string) (string, error) {
+		return tmpDir, nil
+	}
+	osRemoveAllStore = func(path string) error { return nil }
+
+	// Mock execCommand to succeed for debugfs
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "debugfs" {
+			return exec.Command("echo", "Allocated inode")
+		}
+		return exec.Command(name, args...)
+	}
+
+	sm := NewSecretManager("", "")
 	ctx := context.Background()
-	// Single secret should trigger mount attempt
 	secrets := []types.SecretRef{
 		{Name: "single-secret", Target: "/secrets/s1", Data: []byte("secret-data")},
 	}
 
-	err := sm.InjectSecrets(ctx, "task-single", secrets, "/nonexistent/rootfs.ext4")
-	assert.Error(t, err, "InjectSecrets should fail with non-existent rootfs")
+	err := sm.InjectSecrets(ctx, "task-success", secrets, "/tmp/rootfs.ext4")
+	assert.NoError(t, err, "InjectSecrets should succeed with mock debugfs")
 }
 
-// TestInjectConfigs_SingleConfig tests InjectConfigs with single config
-func TestInjectConfigs_SingleConfig(t *testing.T) {
-	sm := NewSecretManager("", "")
+// TestInjectConfigs_DebugfsSuccess tests InjectConfigs with single config using mock
+func TestInjectConfigs_DebugfsSuccess(t *testing.T) {
+	origCommand := execCommand
+	origMkdirTemp := osMkdirTemp
+	origRemoveAll := osRemoveAllStore
+	defer func() {
+		execCommand = origCommand
+		osMkdirTemp = origMkdirTemp
+		osRemoveAllStore = origRemoveAll
+	}()
 
+	tmpDir := t.TempDir()
+	osMkdirTemp = func(dir string, pattern string) (string, error) {
+		return tmpDir, nil
+	}
+	osRemoveAllStore = func(path string) error { return nil }
+
+	// Mock execCommand to succeed for debugfs
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "debugfs" {
+			return exec.Command("echo", "Allocated inode")
+		}
+		return exec.Command(name, args...)
+	}
+
+	sm := NewSecretManager("", "")
 	ctx := context.Background()
 	configs := []types.ConfigRef{
 		{Name: "single-config", Target: "/config/c1", Data: []byte("config-data")},
 	}
 
-	err := sm.InjectConfigs(ctx, "task-single", configs, "/nonexistent/rootfs.ext4")
-	assert.Error(t, err, "InjectConfigs should fail with non-existent rootfs")
+	err := sm.InjectConfigs(ctx, "task-success", configs, "/tmp/rootfs.ext4")
+	assert.NoError(t, err, "InjectConfigs should succeed with mock debugfs")
 }
 
-// TestInjectConfigs_NilMount tests InjectConfigs mount failure path
-func TestInjectConfigs_NilMount(t *testing.T) {
-	sm := NewSecretManager("", "")
+// TestInjectConfigs_DebugfsFail tests InjectConfigs when debugfs fails
+func TestInjectConfigs_DebugfsFail(t *testing.T) {
+	origCommand := execCommand
+	origMkdirTemp := osMkdirTemp
+	origRemoveAll := osRemoveAllStore
+	defer func() {
+		execCommand = origCommand
+		osMkdirTemp = origMkdirTemp
+		osRemoveAllStore = origRemoveAll
+	}()
 
+	tmpDir := t.TempDir()
+	osMkdirTemp = func(dir string, pattern string) (string, error) {
+		return tmpDir, nil
+	}
+	osRemoveAllStore = func(path string) error { return nil }
+
+	// Mock execCommand to fail for debugfs
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		if name == "debugfs" {
+			return exec.Command("false")
+		}
+		return exec.Command(name, args...)
+	}
+
+	sm := NewSecretManager("", "")
 	ctx := context.Background()
 	configs := []types.ConfigRef{
 		{Name: "config1", Target: "/config/c1", Data: []byte("data")},
 	}
 
-	// Non-existent rootfs should cause mount failure
 	err := sm.InjectConfigs(ctx, "task-123", configs, "/nonexistent/rootfs.ext4")
-	assert.Error(t, err, "InjectConfigs should fail with non-existent rootfs")
-	assert.Contains(t, err.Error(), "mount")
+	assert.Error(t, err, "InjectConfigs should fail when debugfs fails")
+	assert.Contains(t, err.Error(), "debugfs")
 }
 
-// TestMountRootfs_TempDirError_CoverageExtra tests mountRootfs temp dir creation failure
-func TestMountRootfs_TempDirError_CoverageExtra(t *testing.T) {
-	// This is hard to test directly since MkdirTemp is internal
-	// But we can test the pattern by simulating a mount failure
+// TestMountRootfs_DeprecatedStub tests mountRootfs deprecated stub behavior
+func TestMountRootfs_DeprecatedStub(t *testing.T) {
 	sm := NewSecretManager("", "")
 
-	// Create a file that's not an ext4 image
+	// mountRootfs is now a deprecated stub that just creates a temp dir
+	// (replaced by injectFileViaDebugfs for CVR-1.6 fix)
 	tmpFile := filepath.Join(t.TempDir(), "not-ext4.img")
 	require.NoError(t, os.WriteFile(tmpFile, []byte("not an ext4 image"), 0644))
 
 	mountDir, err := sm.mountRootfs(tmpFile)
-	assert.Error(t, err, "mountRootfs should fail for non-ext4 file")
+	// Deprecated stub just creates temp dir - always succeeds
+	assert.NoError(t, err, "mountRootfs deprecated stub should succeed")
+	assert.NotEmpty(t, mountDir, "should return temp dir path")
 	if mountDir != "" {
 		os.RemoveAll(mountDir)
 	}
 }
 
-// TestMountRootfs_NonExistent tests mountRootfs with non-existent file
-func TestMountRootfs_NonExistent(t *testing.T) {
+// TestMountRootfs_StubSuccess tests mountRootfs deprecated stub with non-existent file
+func TestMountRootfs_StubSuccess(t *testing.T) {
 	sm := NewSecretManager("", "")
 
+	// mountRootfs is now a deprecated stub - just creates temp dir regardless
 	mountDir, err := sm.mountRootfs("/nonexistent/file.ext4")
-	assert.Error(t, err, "mountRootfs should fail for non-existent file")
-	assert.Empty(t, mountDir, "mountDir should be empty on error")
+	assert.NoError(t, err, "mountRootfs deprecated stub should succeed")
+	assert.NotEmpty(t, mountDir, "should return temp dir path")
+	os.RemoveAll(mountDir)
 }
 
 // TestUnmountRootfs_NilDir tests unmountRootfs with empty path
