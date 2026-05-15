@@ -43,7 +43,8 @@ type Executor struct {
 	executorMu    sync.RWMutex
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
-	networkKeys   []*api.EncryptionKey // Network encryption keys for VXLAN
+	networkKeys   []*api.EncryptionKey
+	cleanupMu     sync.Mutex
 }
 
 // Config holds the SwarmKit integration configuration.
@@ -316,13 +317,15 @@ func (e *Executor) runCleanup(ctx context.Context) {
 
 // cleanupOrphanedVMs stops Firecracker processes that have no corresponding task.
 func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
+	e.cleanupMu.Lock()
+	defer e.cleanupMu.Unlock()
+
 	zerolog_log.Debug().Msg("Checking for orphaned VMs")
 
 	if e.vmmMgr == nil {
 		return
 	}
 
-	// Get all running Firecracker processes
 	runningProcesses := e.vmmMgr.GetRunningProcesses()
 	if len(runningProcesses) == 0 {
 		zerolog_log.Debug().Msg("No running VMs found")
