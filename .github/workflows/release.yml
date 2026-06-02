@@ -107,6 +107,7 @@ jobs:
             "network"
             "volume"
             "config"
+            "setup"
           )
 
           for cmd_name in "${REQUIRED_SUBCOMMANDS[@]}"; do

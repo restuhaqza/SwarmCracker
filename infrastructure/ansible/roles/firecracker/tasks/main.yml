@@ -124,6 +124,15 @@
     group: "{{ firecracker_group }}"
   when: firecracker_install_jailer | bool
 
+- name: Create snapshot directory
+  file:
+    path: "{{ snapshot_dir | default('/var/lib/swarmcracker/snapshots') }}"
+    state: directory
+    mode: "0750"
+    owner: "{{ firecracker_user }}"
+    group: "{{ firecracker_group }}"
+  when: snapshot_enabled | default(true) | bool
+
 # --- Download kernel ---
 - name: Check if kernel exists
   stat:

@@ -81,6 +81,7 @@ It provides a simple interface to the SwarmCracker executor, allowing you to:
 	rootCmd.AddCommand(newVolumeCommand())
 	rootCmd.AddCommand(newAssetCommand())
 	rootCmd.AddCommand(newConfigCommand())
+	rootCmd.AddCommand(newSetupCommand())
 
 	// Backward compatibility: add legacy commands with deprecation warnings
 	rootCmd.AddCommand(newDeprecatedInitCommand())
