@@ -65,6 +65,10 @@ func (d Duration) String() string {
 
 // Config is the top-level configuration structure.
 type Config struct {
+	// Version is the config schema version. Incremented when the format changes.
+	// Version 1: Initial schema (field-compatible with all v0.x releases)
+	Version int `yaml:"version"`
+
 	Executor ExecutorConfig `yaml:"executor"`
 	Network  NetworkConfig  `yaml:"network"`
 	Logging  LoggingConfig  `yaml:"logging"`
@@ -164,6 +168,14 @@ func LoadConfig(path string) (*Config, error) {
 	var cfg Config
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
+	}
+
+	// Version check — missing version defaults to 1 (backwards compatible)
+	if cfg.Version == 0 {
+		cfg.Version = 1
+	}
+	if cfg.Version > 1 {
+		return nil, fmt.Errorf("unsupported config version %d (this binary supports version 1). Run 'swarmcracker config migrate' to upgrade", cfg.Version)
 	}
 
 	// Migrate legacy fields to nested structure

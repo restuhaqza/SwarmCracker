@@ -1,5 +1,7 @@
 # SwarmCracker Configuration Example
 # Copy this to /etc/swarmcracker/config.yaml and customize
+# Schema version: 1 (current)
+version: 1
 
 executor:
   name: firecracker

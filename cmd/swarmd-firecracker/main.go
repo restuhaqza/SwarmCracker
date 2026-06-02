@@ -27,7 +27,9 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/health"
+	"github.com/restuhaqza/swarmcracker/pkg/logging"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
+	"github.com/rs/zerolog"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"google.golang.org/grpc"
@@ -599,6 +601,11 @@ func setupLogging(ctx *cli.Context) {
 	logrus.SetFormatter(&logrus.TextFormatter{
 		FullTimestamp: true,
 	})
+
+	// Forward all logrus messages to zerolog for consistent output
+	consoleWriter := zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}
+	zlogger := zerolog.New(consoleWriter).With().Timestamp().Logger()
+	logging.InstallZerologHook(zlogger)
 }
 
 // printJoinTokens reads the actual join tokens from the cluster's Raft store

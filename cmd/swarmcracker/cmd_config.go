@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/spf13/cobra"
 )
 
@@ -20,6 +21,7 @@ Provides commands for viewing, validating, and managing configuration.`,
 	// Add subcommands
 	cmd.AddCommand(newConfigListCommand())
 	cmd.AddCommand(newConfigValidateCommand())
+	cmd.AddCommand(newConfigMigrateCommand())
 
 	return cmd
 }
@@ -43,6 +45,22 @@ func newConfigValidateCommand() *cobra.Command {
 		Short: "Validate configuration files",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return validateConfig()
+		},
+	}
+}
+
+// newConfigMigrateCommand migrates configuration between schema versions
+func newConfigMigrateCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "migrate",
+		Short: "Migrate configuration to latest schema version",
+		Long: `Migrate the SwarmCracker configuration file to the latest schema version.
+
+This is needed when upgrading SwarmCracker to a version that introduces
+new config fields or changes existing ones. The original config is backed
+up before migration.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runConfigMigrate()
 		},
 	}
 }
@@ -83,7 +101,7 @@ func listConfig() error {
 
 func validateConfig() error {
 	configDir := "/etc/swarmcracker"
-	configFile := "/etc/swarmcracker/config.yaml"
+	configFile := config.GetDefaultConfigPath()
 
 	// Check if directory exists
 	if _, err := os.Stat(configDir); err != nil {
@@ -93,12 +111,62 @@ func validateConfig() error {
 	// Check if config file exists
 	if _, err := os.Stat(configFile); err != nil {
 		fmt.Printf("⚠️  Main config file not found: %s\n", configFile)
-		fmt.Println("This is normal for a new cluster - config will be created on init")
-		//nolint:nilerr
+		fmt.Println("This is normal for a new cluster — config will be created on init")
 		return nil
 	}
 
-	fmt.Printf("✅ Configuration validated: %s\n", configDir)
+	// Actually load and validate
+	cfg, err := config.LoadConfig(configFile)
+	if err != nil {
+		return fmt.Errorf("invalid config: %w", err)
+	}
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
+
+	fmt.Printf("✅ Configuration valid (version %d): %s\n", cfg.Version, configFile)
+	return nil
+}
+
+func runConfigMigrate() error {
+	cfgPath := config.GetDefaultConfigPath()
+
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		fmt.Println("No config file to migrate.")
+		fmt.Printf("Run 'swarmcracker setup config' to create one at %s\n", cfgPath)
+		return nil
+	}
+
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	fmt.Printf("Current config version: %d\n", cfg.Version)
+
+	if cfg.Version >= 1 {
+		fmt.Println("✅ Config is already at the latest version — no migration needed")
+		return nil
+	}
+
+	// Future: add actual migration logic when schema changes
+	// For now, just rewrite with version=1
+	cfg.Version = 1
+
+	// Backup original
+	backupPath := cfgPath + ".backup"
+	data, _ := os.ReadFile(cfgPath)
+	if err := os.WriteFile(backupPath, data, 0600); err != nil {
+		return fmt.Errorf("failed to backup config: %w", err)
+	}
+	fmt.Printf("Backup saved to %s\n", backupPath)
+
+	// Save migrated
+	if err := cfg.Save(cfgPath); err != nil {
+		return fmt.Errorf("failed to save migrated config: %w", err)
+	}
+
+	fmt.Printf("✅ Config migrated to version %d\n", cfg.Version)
 	return nil
 }
 
