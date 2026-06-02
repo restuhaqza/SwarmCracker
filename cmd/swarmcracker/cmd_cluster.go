@@ -21,6 +21,7 @@ joining, leaving, and status monitoring.`,
 	cmd.AddCommand(newClusterLeaveCommand())
 	cmd.AddCommand(newClusterTokenCommand())
 	cmd.AddCommand(newClusterStatusCommand())
+	cmd.AddCommand(newClusterHealthCommand())
 	cmd.AddCommand(newClusterResetCommand())
 	cmd.AddCommand(newClusterDeinitCommand())
 

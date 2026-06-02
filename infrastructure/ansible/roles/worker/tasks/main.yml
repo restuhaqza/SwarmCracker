@@ -10,18 +10,22 @@
   retries: 3
   delay: 5
   until: download_result is success
+  when: swarmcracker_binary_source == "release"
+  tags: [binaries]
 
 - name: Create extraction directory
   file:
     path: /tmp/swarmcracker-extract
     state: directory
     mode: "0755"
+  when: swarmcracker_binary_source == "release"
 
 - name: Extract SwarmCracker binaries
   unarchive:
     src: "/tmp/{{ swarmcracker_tarball }}"
     dest: /tmp/swarmcracker-extract
     remote_src: yes
+  when: swarmcracker_binary_source == "release"
 
 - name: Install SwarmCracker binaries
   copy:
@@ -33,6 +37,7 @@
     - swarmcracker
     - swarmd-firecracker
     - swarmcracker-agent
+  when: swarmcracker_binary_source == "release"
 
 - name: Get join token from manager
   block:

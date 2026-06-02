@@ -2,7 +2,8 @@
 # SwarmCracker Global Variables
 
 # Version and download
-swarmcracker_version: "v0.7.0"
+swarmcracker_version: "v0.8.0"
+swarmcracker_binary_source: "release"  # "release" (download from GitHub) or "local" (skip download, use pre-installed)
 swarmcracker_arch: "amd64"  # amd64 or arm64
 swarmcracker_download_url: "https://github.com/restuhaqza/SwarmCracker/releases/download/{{ swarmcracker_version }}"
 swarmcracker_tarball: "swarmcracker-{{ swarmcracker_version }}-linux-{{ swarmcracker_arch }}.tar.gz"
@@ -48,6 +49,9 @@ swarmcracker_required_packages:
   - wget
   - iptables
   - bridge-utils
+  - iproute2
+  - dnsmasq
+  - qemu-utils
 
 # Snapshot configuration defaults
 swarmcracker_snapshot_enabled: true
@@ -56,9 +60,6 @@ swarmcracker_max_snapshots: 10
 swarmcracker_snapshot_max_age: "168h"
 swarmcracker_auto_snapshot: false
 swarmcracker_snapshot_compress: true
-  - iproute2
-  - dnsmasq
-  - qemu-utils
 
 # Go installation (for building SwarmKit tools)
 go_version: "1.24"

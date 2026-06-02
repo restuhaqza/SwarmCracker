@@ -109,6 +109,10 @@ type NetworkConfig struct {
 	BridgeIP   string `yaml:"bridge_ip"`   // e.g., "192.168.127.1/24"
 	IPMode     string `yaml:"ip_mode"`     // "static" or "dhcp"
 	NATEnabled *bool  `yaml:"nat_enabled"` // Enable masquerading for internet access; nil means unset
+
+	// VXLAN overlay configuration
+	VXLANEnabled    bool     `yaml:"vxlan_enabled"`     // Enable VXLAN overlay networking
+	VXLANStaticPeers []string `yaml:"vxlan_static_peers"` // Static VXLAN peer IPs (no Consul needed)
 }
 
 // LoggingConfig holds logging configuration.

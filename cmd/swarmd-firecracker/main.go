@@ -343,6 +343,11 @@ func runAgent(ctx *cli.Context) error {
 
 	if len(executorConfig.VXLANPeers) > 0 {
 		log.G(context.Background()).Infof("VXLAN peers configured: %v", executorConfig.VXLANPeers)
+	} else if executorConfig.VXLANEnabled {
+		log.G(context.Background()).Warn("VXLAN enabled but no peers configured — " +
+			"use --vxlan-peers for static peers or --consul-enabled for dynamic discovery")
+		log.G(context.Background()).Info("For small clusters (≤5 nodes), static peers are sufficient:\n" +
+			"  --vxlan-peers 192.168.1.11,192.168.1.12")
 	}
 
 	// Start health check server
