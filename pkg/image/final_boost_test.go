@@ -230,7 +230,7 @@ func TestPrepare_ErrorHandling(t *testing.T) {
 				Spec: types.TaskSpec{Runtime: nil},
 			},
 			wantErr: true,
-			errMsg:  "runtime cannot be nil",
+			errMsg:  "task runtime is nil",
 		},
 		{
 			name: "invalid_runtime_type",
@@ -239,7 +239,7 @@ func TestPrepare_ErrorHandling(t *testing.T) {
 				Spec: types.TaskSpec{Runtime: "not-container"},
 			},
 			wantErr: true,
-			errMsg:  "not a container",
+			errMsg:  "not a Container",
 		},
 	}
 

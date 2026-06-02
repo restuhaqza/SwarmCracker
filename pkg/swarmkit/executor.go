@@ -43,7 +43,7 @@ type Executor struct {
 	executorMu    sync.RWMutex
 	cleanupCancel context.CancelFunc
 	cleanupDone   chan struct{}
-	networkKeys   []*api.EncryptionKey
+	networkKeys   []*api.EncryptionKey // VXLAN network encryption keys (set via SetNetworkBootstrapKeys; used when VXLAN encryption is enabled)
 	cleanupMu     sync.Mutex
 }
 
@@ -59,7 +59,7 @@ type Config struct {
 	Subnet           string   `yaml:"subnet"`
 	BridgeIP         string   `yaml:"bridge_ip"`
 	IPMode           string   `yaml:"ip_mode"`
-	NATEnabled       bool     `yaml:"nat_enabled"`
+	NATEnabled       *bool    `yaml:"nat_enabled"` // nil means use default (true); use boolPtr for consistency with config package
 	VXLANEnabled     bool     `yaml:"vxlan_enabled"`
 	VXLANPeers       []string `yaml:"vxlan_peers"`
 	Debug            bool     `yaml:"debug"`
@@ -137,7 +137,7 @@ func NewExecutor(config *Config) (*Executor, error) {
 		Subnet:       config.Subnet,
 		BridgeIP:     config.BridgeIP,
 		IPMode:       config.IPMode,
-		NATEnabled:   config.NATEnabled,
+		NATEnabled:   boolPtrVal(config.NATEnabled, true),
 		VXLANEnabled: config.VXLANEnabled,
 		VXLANPeers:   config.VXLANPeers,
 	}
@@ -1321,4 +1321,12 @@ func getLocalIPFromInterface() string {
 	}
 
 	return ""
+}
+
+// boolPtrVal dereferences a *bool with a default value when nil.
+func boolPtrVal(b *bool, defaultVal bool) bool {
+	if b == nil {
+		return defaultVal
+	}
+	return *b
 }

@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -142,16 +143,27 @@ func (e *FirecrackerExecutor) Prepare(ctx context.Context, t *types.Task) error 
 	}
 	rollbacks = append(rollbacks, func() {
 		log.Warn().Str("task_id", t.ID).Msg("Rolling back image preparation")
+		if rootfsPath, ok := t.Annotations["rootfs"]; ok && rootfsPath != "" {
+			if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
+				log.Error().Err(err).Str("path", rootfsPath).Msg("Failed to remove prepared rootfs")
+			}
+		}
 	})
 
 	// 2. Prepare network interfaces
 	if err := e.networkMgr.PrepareNetwork(ctx, t); err != nil {
-		// Rollback any completed steps
+		// Rollback any completed steps in reverse order
 		for i := len(rollbacks) - 1; i >= 0; i-- {
 			rollbacks[i]()
 		}
 		return fmt.Errorf("network preparation failed: %w", err)
 	}
+	rollbacks = append(rollbacks, func() {
+		log.Warn().Str("task_id", t.ID).Msg("Rolling back network preparation")
+		if err := e.networkMgr.CleanupNetwork(ctx, t); err != nil {
+			log.Error().Err(err).Str("task_id", t.ID).Msg("Failed to rollback network")
+		}
+	})
 
 	log.Info().
 		Str("task_id", t.ID).

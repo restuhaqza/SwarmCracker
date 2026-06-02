@@ -1,706 +1,501 @@
-# Configuration Reference
+# Configuration Reference — SwarmCracker
 
-Complete reference for SwarmCracker configuration options.
+> Every configuration key in `swarmcracker` YAML config files, with defaults, types, and descriptions.
 
-## Configuration File Location
+---
 
-SwarmCracker looks for configuration in this order:
-
-1. `--config` flag value
-2. `SWARMCRACKER_CONFIG` environment variable
-3. `/etc/swarmcracker/config.yaml` (default)
-
-## Configuration Structure
+## Top-Level Structure
 
 ```yaml
-# Executor configuration
-executor:
-  name: string              # Executor name (default: "firecracker")
-  kernel_path: string       # Path to Firecracker kernel (required)
-  initrd_path: string       # Path to initrd (optional)
-  rootfs_dir: string        # Directory for root filesystems (required)
-  socket_dir: string        # Directory for API sockets (default: "/var/run/firecracker")
-  default_vcpus: int        # Default vCPUs per VM (default: 1)
-  default_memory_mb: int    # Default memory in MB (default: 512)
-  enable_jailer: bool       # Enable jailer for isolation (default: false)
-  jailer:                   # Jailer configuration (if enabled)
-    uid: int               # UID to run Firecracker as (required if jailer enabled)
-    gid: int               # GID to run Firecracker as (required if jailer enabled)
-    chroot_base_dir: string # Jailer chroot directory (required if jailer enabled)
-    netns: string          # Network namespace path (optional)
-
-# Network configuration
-network:
-  bridge_name: string         # Bridge name for VM networking (default: "swarm-br0")
-  enable_rate_limit: bool     # Enable rate limiting (default: false)
-  max_packets_per_sec: int    # Max packets per second (default: 10000)
-
-# Logging configuration
-logging:
-  level: string    # Log level: debug, info, warn, error (default: "info")
-  format: string   # Log format: json, text (default: "json")
-  output: string   # Log output: stdout, stderr, /path/to/file (default: "stdout")
-
-# Image preparation configuration
-images:
-  cache_dir: string          # Directory for image cache (default: "/var/cache/swarmcracker")
-  max_cache_size_mb: int     # Max cache size in MB (default: 10240)
-  enable_layer_cache: bool   # Enable layer caching (default: true)
-
-# Metrics configuration
-metrics:
-  enabled: bool    # Enable metrics endpoint (default: false)
-  address: string  # Metrics server address (default: "0.0.0.0:9090")
-  format: string   # Metrics format: prometheus, json (default: "prometheus")
+executor:   # VM execution settings
+network:    # Network infrastructure
+logging:    # Log output configuration
+images:     # Image preparation and caching
+metrics:    # Metrics collection
+snapshot:   # Snapshot management
+jailer:     # Security jailer (deprecated — use executor.jailer)
 ```
 
-## Executor Configuration
+---
+
+## executor
 
 ### executor.name
 
-Executor identifier for logging and metrics.
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"firecracker"` |
+| **Required** | No |
 
-```yaml
-executor:
-  name: "firecracker"
-```
-
-**Type:** string
-**Default:** `firecracker`
-**Required:** No
+Executor backend name. Currently only `"firecracker"` is supported.
 
 ### executor.kernel_path
 
-Path to the Firecracker kernel image (vmlinux).
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"/usr/share/firecracker/vmlinux"` |
+| **Required** | Yes |
 
-```yaml
-executor:
-  kernel_path: "/usr/share/firecracker/vmlinux"
-```
-
-**Type:** string
-**Default:** none
-**Required:** Yes
-
-**Notes:**
-- Must be an uncompressed Linux kernel in ELF format
-- Kernel must be configured for Firecracker
-- See [Firecracker kernel guide](https://github.com/firecracker-microvm/firecracker/blob/main/docs/kernel-policy.md) for requirements
+Path to the uncompressed Linux kernel ELF binary used to boot all VMs.
 
 ### executor.initrd_path
 
-Optional initrd image for early boot.
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `""` |
+| **Required** | No |
 
-```yaml
-executor:
-  initrd_path: "/usr/share/firecracker/initrd.img"
-```
-
-**Type:** string
-**Default:** none
-**Required:** No
-
-**Notes:**
-- Optional for most use cases
-- Useful for custom init systems or debugging
+Optional path to an initrd image. Leave empty to boot directly from the rootfs.
 
 ### executor.rootfs_dir
 
-Directory where converted container root filesystems are stored.
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"/var/lib/firecracker/rootfs"` |
+| **Required** | Yes |
 
-```yaml
-executor:
-  rootfs_dir: "/var/lib/firecracker/rootfs"
-```
-
-**Type:** string
-**Default:** none
-**Required:** Yes
-
-**Notes:**
-- Must exist and be writable
-- Contains ext4 images: `<image-name>.ext4`
-- Can be on fast storage (SSD) for better performance
+Directory where OCI images are converted to ext4 root filesystems. Each image gets a subdirectory based on its content hash.
 
 ### executor.socket_dir
 
-Directory for Firecracker API Unix sockets.
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"/var/run/firecracker"` |
+| **Required** | Yes |
 
-```yaml
-executor:
-  socket_dir: "/var/run/firecracker"
-```
-
-**Type:** string
-**Default:** `/var/run/firecracker`
-**Required:** No
-
-**Notes:**
-- One socket per VM: `<task-id>.sock`
-- Cleaned up on VM removal
+Directory for Firecracker Unix domain sockets. One socket per VM, named `<task-id>.sock`.
 
 ### executor.default_vcpus
 
-Default number of vCPUs per VM if not specified in task.
+| Property | Value |
+|----------|-------|
+| **Type** | `int` |
+| **Default** | `1` |
+| **Range** | `1` – `host CPUs` |
+| **Required** | No |
 
-```yaml
-executor:
-  default_vcpus: 2
-```
-
-**Type:** integer
-**Default:** `1`
-**Required:** No
-**Valid range:** 1 - 32
-
-**Notes:**
-- Can be overridden per task via resource limits
-- Firecracker supports up to 32 vCPUs
+Default number of virtual CPUs per VM when not specified in the task spec.
 
 ### executor.default_memory_mb
 
-Default memory per VM in MB if not specified in task.
+| Property | Value |
+|----------|-------|
+| **Type** | `int` |
+| **Default** | `512` |
+| **Range** | `128` – `host memory` |
+| **Required** | No |
 
-```yaml
-executor:
-  default_memory_mb: 1024
-```
-
-**Type:** integer
-**Default:** `512`
-**Required:** No
-**Valid range:** 128 - 8192
-
-**Notes:**
-- Can be overridden per task via resource limits
-- Min 128MB, max depends on host memory
+Default memory in megabytes per VM when not specified in the task spec.
 
 ### executor.enable_jailer
 
-Enable Firecracker jailer for additional security isolation.
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Required** | No |
 
-```yaml
-executor:
-  enable_jailer: true
-```
-
-**Type:** boolean
-**Default:** `false`
-**Required:** No
-
-**Notes:**
-- Runs Firecracker as unprivileged user
-- Adds chroot isolation
-- Recommended for production
-
-### executor.jailer
-
-Jailer-specific configuration when `enable_jailer: true`.
-
-#### executor.jailer.uid
-
-UID to run Firecracker process as.
-
-```yaml
-executor:
-  jailer:
-    uid: 1000
-```
-
-**Type:** integer
-**Default:** none
-**Required:** Yes (if jailer enabled)
-
-#### executor.jailer.gid
-
-GID to run Firecracker process as.
-
-```yaml
-executor:
-  jailer:
-    gid: 1000
-```
-
-**Type:** integer
-**Default:** none
-**Required:** Yes (if jailer enabled)
-
-#### executor.jailer.chroot_base_dir
-
-Base directory for jailer chroot environments.
-
-```yaml
-executor:
-  jailer:
-    chroot_base_dir: "/srv/jailer"
-```
-
-**Type:** string
-**Default:** none
-**Required:** Yes (if jailer enabled)
-
-**Notes:**
-- Creates subdirectory per VM: `/srv/jailer/firecracker/<vm-id>/`
-- Must be writable by the configured UID/GID
-
-#### executor.jailer.netns
-
-Network namespace path to join.
-
-```yaml
-executor:
-  jailer:
-    netns: "/var/run/netns/firecracker"
-```
-
-**Type:** string
-**Default:** none
-**Required:** No
-
-**Notes:**
-- Optional, for advanced networking
-- See `man ip-netns` for details
+Enable Firecracker jailer for additional process isolation (chroot, UID/GID drop, network namespace, cgroups).
 
 ### executor.init_system
 
-Init system type for proper process lifecycle management in microVMs.
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"tini"` |
+| **Options** | `"tini"`, `"dumb-init"`, `"none"` |
+| **Required** | No |
 
-```yaml
-executor:
-  init_system: "tini"  # Options: "none", "tini", "dumb-init"
-```
-
-**Type:** string
-**Default:** `tini`
-**Required:** No
-
-**Options:**
-- `none` - No init system (not recommended for production)
-- `tini` - Tini init system (default, recommended)
-- `dumb-init` - Dumb-init init system (lighter alternative)
-
-**Notes:**
-- Init systems ensure proper signal handling and zombie process reaping
-- See [Advanced Guide](advanced.md#init-systems) for detailed information
-- Tini is the default and recommended for production use
+Init system injected into the VM rootfs. `tini` provides proper signal handling and zombie reaping. Use `none` for images with their own init (e.g., systemd-based).
 
 ### executor.init_grace_period
 
-Grace period in seconds for graceful shutdown before SIGKILL.
+| Property | Value |
+|----------|-------|
+| **Type** | `int` |
+| **Default** | `10` |
+| **Unit** | seconds |
+| **Required** | No |
+
+Seconds to wait for graceful shutdown via init system before force-killing the VM.
+
+### executor.jailer
+
+Jailer sub-configuration (only used when `executor.enable_jailer` is `true`).
 
 ```yaml
 executor:
-  init_grace_period: 10  # seconds
-```
-
-**Type:** integer
-**Default:** `10`
-**Required:** No
-
-**Notes:**
-- Only used when `init_system` is not `none`
-- Controls how long to wait for graceful shutdown before forcing kill
-- Higher values (30-60s) recommended for databases
-- Lower values (5-10s) sufficient for web servers
-
-## Network Configuration
-
-### network.bridge_name
-
-Name of the Linux bridge for VM networking.
-
-```yaml
-network:
-  bridge_name: "swarm-br0"
-```
-
-**Type:** string
-**Default:** `swarm-br0`
-**Required:** Yes
-
-**Notes:**
-- Bridge will be created automatically by SwarmCracker
-- See [networking.md](networking.md) for complete networking guide
-
-### network.subnet
-
-Subnet for VM network (CIDR notation).
-
-```yaml
-network:
-  subnet: "192.168.127.0/24"
-```
-
-**Type:** string
-**Default:** `192.168.127.0/24`
-**Required:** No
-
-**Notes:**
-- Used for static IP allocation
-- VMs will get IPs from this range
-- Change if conflicting with existing networks
-
-### network.bridge_ip
-
-IP address for the bridge (CIDR notation).
-
-```yaml
-network:
-  bridge_ip: "192.168.127.1/24"
-```
-
-**Type:** string
-**Default:** `192.168.127.1/24`
-**Required:** No
-
-**Notes:**
-- Acts as gateway for VMs
-- Must be in the configured subnet
-- VMs can reach host via this IP
-
-### network.ip_mode
-
-IP allocation mode.
-
-```yaml
-network:
-  ip_mode: "static"
-```
-
-**Type:** string
-**Default:** `static`
-**Required:** No
-**Valid values:** `static`, `dhcp`
-
-**Notes:**
-- `static` - Deterministic IP allocation based on VM ID hash (default)
-- `dhcp` - Uses dnsmasq for dynamic IP allocation (requires dnsmasq installed)
-
-### network.nat_enabled
-
-Enable NAT/masquerading for internet access.
-
-```yaml
-network:
-  nat_enabled: true
-```
-
-**Type:** boolean
-**Default:** `true`
-**Required:** No
-
-**Notes:**
-- Allows VMs to access internet via host
-- Uses iptables masquerading
-- Requires IP forwarding enabled on host
-
-### network.enable_rate_limit
-
-Enable packet rate limiting on TAP devices.
-
-```yaml
-network:
-  enable_rate_limit: true
-```
-
-**Type:** boolean
-**Default:** `false`
-**Required:** No
-
-**Notes:**
-- Prevents VM flood attacks
-- Uses Linux traffic control (tc)
-
-### network.max_packets_per_sec
-
-Maximum packets per second per TAP device.
-
-```yaml
-network:
-  max_packets_per_sec: 10000
-```
-
-**Type:** integer
-**Default:** `10000`
-**Required:** No
-
-**Notes:**
-- Only applies if `enable_rate_limit: true`
-- Typical values: 1000 - 10000
-
-## Logging Configuration
-
-### logging.level
-
-Log verbosity level.
-
-```yaml
-logging:
-  level: "info"
-```
-
-**Type:** string
-**Default:** `info`
-**Valid values:** `debug`, `info`, `warn`, `error`
-
-### logging.format
-
-Log output format.
-
-```yaml
-logging:
-  format: "json"
-```
-
-**Type:** string
-**Default:** `json`
-**Valid values:** `json`, `text`
-
-**Notes:**
-- `json` for structured logging
-- `text` for human-readable logs
-
-### logging.output
-
-Log output destination.
-
-```yaml
-logging:
-  output: "stdout"
-```
-
-**Type:** string
-**Default:** `stdout`
-**Valid values:** `stdout`, `stderr`, or file path
-
-## Images Configuration
-
-### images.cache_dir
-
-Directory for caching prepared images.
-
-```yaml
-images:
-  cache_dir: "/var/cache/swarmcracker"
-```
-
-**Type:** string
-**Default:** `/var/cache/swarmcracker`
-**Required:** No
-
-**Notes:**
-- Stores extracted OCI filesystems
-- Can be cleaned with `swarmcracker cache cleanup`
-
-### images.max_cache_size_mb
-
-Maximum cache size in megabytes.
-
-```yaml
-images:
-  max_cache_size_mb: 10240
-```
-
-**Type:** integer
-**Default:** `10240` (10GB)
-**Required:** No
-
-**Notes:**
-- LRU eviction when limit exceeded
-- Set to 0 for unlimited
-
-### images.enable_layer_cache
-
-Enable OCI layer caching.
-
-```yaml
-images:
-  enable_layer_cache: true
-```
-
-**Type:** boolean
-**Default:** `true`
-**Required:** No
-
-**Notes:**
-- Speeds up image preparation
-- Uses more disk space
-
-## Metrics Configuration
-
-### metrics.enabled
-
-Enable Prometheus metrics endpoint.
-
-```yaml
-metrics:
-  enabled: true
-```
-
-**Type:** boolean
-**Default:** `false`
-**Required:** No
-
-### metrics.address
-
-Metrics server listen address.
-
-```yaml
-metrics:
-  address: "0.0.0.0:9090"
-```
-
-**Type:** string
-**Default:** `0.0.0.0:9090`
-**Required:** No
-
-**Notes:**
-- Format: `host:port`
-- Use `127.0.0.1` for local only
-
-### metrics.format
-
-Metrics export format.
-
-```yaml
-metrics:
-  format: "prometheus"
-```
-
-**Type:** string
-**Default:** `prometheus`
-**Valid values:** `prometheus`, `json`
-
-## Environment Variables
-
-Configuration can be overridden via environment variables:
-
-```bash
-# Override config file location
-export SWARMCRACKER_CONFIG=/custom/path/config.yaml
-
-# Override kernel path
-export SWARMCRACKER_KERNEL_PATH=/custom/kernel
-
-# Override log level
-export SWARMCRACKER_LOG_LEVEL=debug
-```
-
-## Task Overrides
-
-Task specifications can override executor defaults:
-
-```yaml
-# In SwarmKit service spec
-resources:
-  limits:
-    nano_cpus: 2000000000    # 2 vCPUs
-    memory_bytes: 1073741824 # 1GB
-```
-
-## Examples
-
-### Minimal Configuration
-
-```yaml
-executor:
-  kernel_path: "/usr/share/firecracker/vmlinux"
-  rootfs_dir: "/var/lib/firecracker/rootfs"
-
-network:
-  bridge_name: "swarm-br0"
-```
-
-### Production Configuration
-
-```yaml
-executor:
-  kernel_path: "/usr/share/firecracker/vmlinux"
-  rootfs_dir: "/var/lib/firecracker/rootfs"
-  socket_dir: "/var/run/firecracker"
-  default_vcpus: 2
-  default_memory_mb: 2048
   enable_jailer: true
   jailer:
     uid: 1000
     gid: 1000
-    chroot_base_dir: "/srv/jailer"
+    chroot_base_dir: /srv/jailer
+    netns: swarmcracker
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `uid` | int | `0` | UID for the Firecracker process inside the jail |
+| `gid` | int | `0` | GID for the Firecracker process inside the jail |
+| `chroot_base_dir` | string | `/srv/jailer` | Base directory for jail chroots (one per VM) |
+| `netns` | string | `""` | Network namespace name (empty = host namespace) |
+
+---
+
+## network
+
+### network.bridge_name
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"swarm-br0"` |
+| **Max Length** | `15` (IFNAMSIZ) |
+| **Pattern** | `[a-zA-Z0-9_-]+` |
+| **Required** | No |
+
+Name of the Linux bridge interface that VMs attach to. Must be 15 characters or fewer and contain only alphanumeric, hyphen, or underscore characters.
+
+### network.subnet
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"192.168.127.0/24"` |
+| **Format** | CIDR notation |
+| **Required** | No |
+
+Subnet for VM IP allocation. Each VM gets a deterministic IP from this subnet based on its task ID hash.
+
+### network.bridge_ip
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"192.168.127.1/24"` |
+| **Format** | CIDR notation |
+| **Required** | No |
+
+IP address assigned to the bridge interface. Acts as the default gateway for VMs.
+
+### network.ip_mode
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"static"` |
+| **Options** | `"static"`, `"dhcp"` |
+| **Required** | No |
+
+IP allocation mode. `static` assigns deterministic IPs via SHA-256 hash. `dhcp` uses dnsmasq for dynamic allocation.
+
+### network.nat_enabled
+
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Required** | No |
+
+Enable NAT masquerading on the bridge for internet access. When `false`, VMs are isolated to the bridge subnet with no external connectivity.
+
+### network.enable_rate_limit
+
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Required** | No |
+
+Enable per-VM network rate limiting.
+
+### network.max_packets_per_sec
+
+| Property | Value |
+|----------|-------|
+| **Type** | `int` |
+| **Default** | `0` (unlimited) |
+| **Required** | No |
+
+Maximum packets per second per VM when rate limiting is enabled.
+
+---
+
+## logging
+
+### logging.level
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"info"` |
+| **Options** | `"debug"`, `"info"`, `"warn"`, `"error"` |
+| **Required** | No |
+
+Log level. `debug` includes token operations and internal state changes. Production should use `info` or higher.
+
+### logging.format
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"json"` |
+| **Options** | `"json"`, `"console"` |
+| **Required** | No |
+
+Log output format. `json` for structured logging (recommended for production). `console` for human-readable output.
+
+### logging.output
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"stderr"` |
+| **Options** | `"stderr"`, `"stdout"`, file path |
+| **Required** | No |
+
+Where logs are written. Use a file path like `/var/log/swarmcracker/daemon.log` for persistent logging.
+
+---
+
+## images
+
+### images.cache_dir
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"/var/cache/swarmcracker"` |
+| **Required** | No |
+
+Directory for OCI image layer caching. Layer caching avoids re-pulling unchanged layers.
+
+### images.max_cache_size_mb
+
+| Property | Value |
+|----------|-------|
+| **Type** | `int` |
+| **Default** | `10240` (10 GB) |
+| **Required** | No |
+
+Maximum total size of cached images. Oldest images are evicted when the limit is reached.
+
+### images.enable_layer_cache
+
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Required** | No |
+
+Enable OCI layer caching. Disable to always pull fresh images.
+
+---
+
+## metrics
+
+### metrics.enabled
+
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `true` |
+| **Required** | No |
+
+Enable metrics collection and exposure.
+
+### metrics.address
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"127.0.0.1:9100"` |
+| **Required** | No |
+
+Address to expose Prometheus metrics on. Bind to `127.0.0.1` for security; use `0.0.0.0` if you need remote scraping.
+
+### metrics.format
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"prometheus"` |
+| **Options** | `"prometheus"` |
+| **Required** | No |
+
+Metrics format. Currently only Prometheus text format is supported.
+
+---
+
+## snapshot
+
+### snapshot.enabled
+
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Required** | No |
+
+Enable VM snapshot support. Requires the snapshot directory to exist and be writable.
+
+### snapshot.snapshot_dir
+
+| Property | Value |
+|----------|-------|
+| **Type** | `string` |
+| **Default** | `"/var/lib/swarmcracker/snapshots"` |
+| **Required** | Yes (when enabled) |
+
+Directory where VM snapshots (memory dumps + state files) are stored.
+
+### snapshot.max_snapshots
+
+| Property | Value |
+|----------|-------|
+| **Type** | `int` |
+| **Default** | `10` |
+| **Required** | No |
+
+Maximum number of snapshots to retain. Oldest snapshots are deleted when the limit is reached.
+
+### snapshot.max_age
+
+| Property | Value |
+|----------|-------|
+| **Type** | `duration string` |
+| **Default** | `"168h"` (7 days) |
+| **Format** | Go duration: `"24h"`, `"7d"`, `"168h"` |
+| **Required** | No |
+
+Maximum age of snapshots before they are eligible for cleanup. Supports `d` suffix for days.
+
+### snapshot.auto_snapshot
+
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Required** | No |
+
+Automatically create snapshots before service updates. Recommended for production.
+
+### snapshot.compress
+
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `false` |
+| **Required** | No |
+
+Compress snapshots to reduce disk usage at the cost of slower create/restore.
+
+---
+
+## Complete Example
+
+### Development (single node)
+
+```yaml
+executor:
+  name: firecracker
+  kernel_path: /usr/share/firecracker/vmlinux
+  rootfs_dir: /var/lib/firecracker/rootfs
+  socket_dir: /var/run/firecracker
+  default_vcpus: 1
+  default_memory_mb: 512
+  init_system: tini
+  init_grace_period: 10
 
 network:
-  bridge_name: "swarm-br0"
-  enable_rate_limit: true
-  max_packets_per_sec: 10000
+  bridge_name: swarm-br0
+  subnet: 192.168.127.0/24
+  bridge_ip: 192.168.127.1/24
+  ip_mode: static
+  nat_enabled: true
 
 logging:
-  level: "info"
-  format: "json"
+  level: debug
+  format: console
+  output: stderr
+```
+
+### Production (multi-node cluster)
+
+```yaml
+executor:
+  name: firecracker
+  kernel_path: /usr/share/firecracker/vmlinux
+  rootfs_dir: /var/lib/firecracker/rootfs
+  socket_dir: /var/run/firecracker
+  default_vcpus: 2
+  default_memory_mb: 512
+  init_system: tini
+  init_grace_period: 10
+  enable_jailer: true
+  jailer:
+    uid: 1000
+    gid: 1000
+    chroot_base_dir: /srv/jailer
+
+network:
+  bridge_name: swarm-br0
+  subnet: 192.168.127.0/24
+  bridge_ip: 192.168.127.1/24
+  ip_mode: static
+  nat_enabled: true
+
+logging:
+  level: info
+  format: json
+  output: /var/log/swarmcracker/daemon.log
 
 images:
-  cache_dir: "/var/cache/swarmcracker"
-  max_cache_size_mb: 10240
+  cache_dir: /var/cache/swarmcracker
+  max_cache_size_mb: 20480
   enable_layer_cache: true
 
 metrics:
   enabled: true
-  address: "0.0.0.0:9090"
+  address: 127.0.0.1:9100
+
+snapshot:
+  enabled: true
+  snapshot_dir: /var/lib/swarmcracker/snapshots
+  max_snapshots: 20
+  max_age: 168h
+  auto_snapshot: true
+  compress: true
 ```
 
-### Development Configuration
+---
 
-```yaml
-executor:
-  kernel_path: "/usr/share/firecracker/vmlinux"
-  rootfs_dir: "/tmp/firecracker/rootfs"
-  socket_dir: "/tmp/firecracker/sockets"
-  default_vcpus: 1
-  default_memory_mb: 512
-  enable_jailer: false
+## Configuration File Location
 
-network:
-  bridge_name: "test-br0"
+The config file is loaded from (in order of priority):
 
-logging:
-  level: "debug"
-  format: "text"
-
-images:
-  cache_dir: "/tmp/firecracker/cache"
-  enable_layer_cache: false
-
-metrics:
-  enabled: false
-```
+1. `--config` / `-c` CLI flag
+2. `SWARMCRACKER_CONFIG` environment variable
+3. `/etc/swarmcracker/config.yaml` (default)
 
 ## Validation
 
-Configuration is validated on startup:
-
 ```bash
-# Test configuration
-swarmcracker --config /etc/swarmcracker/config.yaml --validate
+# Validate config without starting
+swarmcracker config validate
 
-# Expected output if valid:
-# ✓ Configuration is valid
+# Validate a specific config file
+swarmcracker config validate --config /path/to/config.yaml
 
-# Expected output if invalid:
-# ✗ Configuration validation failed:
-#   - executor.kernel_path is required
-#   - network.bridge_name is required
+# Show effective configuration (defaults applied)
+swarmcracker config list
 ```
 
-## Migration from Legacy Config
+---
 
-Old flat config structure is automatically migrated:
-
-```yaml
-# Old format (still supported)
-kernel_path: "/kernel"
-rootfs_dir: "/rootfs"
-
-# Automatically migrated to:
-executor:
-  kernel_path: "/kernel"
-  rootfs_dir: "/rootfs"
-```
-
-**Recommendation:** Update to nested structure for new features.
+**See Also:** [CLI Reference](../reference/cli.md) | [Operations Guide](../guides/operations.md) | [Getting Started](../getting-started/README.md)

@@ -96,7 +96,7 @@ func TestIntegration_InitSystemTini(t *testing.T) {
 	// Verify boot args contain init (config is now a map)
 	configMap, ok := config.(map[string]interface{})
 	require.True(t, ok)
-	bootSource := configMap["boot_source"]
+	bootSource := configMap["boot-source"]
 	bootSourceMap, ok := bootSource.(map[string]interface{})
 	require.True(t, ok)
 	bootArgs, ok := bootSourceMap["boot_args"].(string)

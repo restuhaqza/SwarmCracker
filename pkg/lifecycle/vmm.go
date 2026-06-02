@@ -195,11 +195,19 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 	client := newUnixClient(socketPath, 5*time.Second)
 	actions := ActionsType{ActionType: "InstanceStart"}
 
-	body, _ := json.Marshal(actions)
-	req, _ := http.NewRequestWithContext(ctx, "PUT",
+	body, err := json.Marshal(actions)
+	if err != nil {
+		startErr = fmt.Errorf("failed to marshal instance start action: %w", err)
+		return startErr
+	}
+	req, err := http.NewRequestWithContext(ctx, "PUT",
 		"http://localhost/actions",
 		bytes.NewReader(body),
 	)
+	if err != nil {
+		startErr = fmt.Errorf("failed to create start request: %w", err)
+		return startErr
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
@@ -228,12 +236,13 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 		ID:             task.ID,
 		PID:            cmd.Process.Pid,
 		Config:         config,
-		state:          VMStateRunning,
 		CreatedAt:      time.Now(),
 		SocketPath:     socketPath,
 		InitSystem:     initSystem,
 		GracePeriodSec: gracePeriod,
 	}
+	// Use SetState to properly acquire the mutex
+	vmInstance.SetState(VMStateRunning)
 
 	vm.vms[task.ID] = vmInstance
 
@@ -267,11 +276,17 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 
 	// Configure boot source if provided
 	if bootSource, ok := configMap["boot-source"].(map[string]interface{}); ok {
-		bootSourceJSON, _ := json.Marshal(bootSource)
-		req, _ := http.NewRequestWithContext(ctx, "PUT",
+		bootSourceJSON, err := json.Marshal(bootSource)
+		if err != nil {
+			return fmt.Errorf("failed to marshal boot source: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, "PUT",
 			"http://localhost/boot-source",
 			bytes.NewReader(bootSourceJSON),
 		)
+		if err != nil {
+			return fmt.Errorf("failed to create boot source request: %w", err)
+		}
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := client.Do(req)
@@ -287,11 +302,17 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 
 	// Configure machine if provided
 	if machineConfig, ok := configMap["machine-config"].(map[string]interface{}); ok {
-		machineConfigJSON, _ := json.Marshal(machineConfig)
-		req, _ := http.NewRequestWithContext(ctx, "PUT",
+		machineConfigJSON, err := json.Marshal(machineConfig)
+		if err != nil {
+			return fmt.Errorf("failed to marshal machine config: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, "PUT",
 			"http://localhost/machine-config",
 			bytes.NewReader(machineConfigJSON),
 		)
+		if err != nil {
+			return fmt.Errorf("failed to create machine config request: %w", err)
+		}
 		req.Header.Set("Content-Type", "application/json")
 
 		resp, err := client.Do(req)
@@ -312,15 +333,21 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 			if !ok {
 				continue
 			}
-			driveID, _ := drive["drive_id"].(string)
-			if driveID == "" {
+			driveID, ok := drive["drive_id"].(string)
+			if !ok || driveID == "" {
 				continue
 			}
-			driveJSON, _ := json.Marshal(drive)
-			req, _ := http.NewRequestWithContext(ctx, "PUT",
+			driveJSON, err := json.Marshal(drive)
+			if err != nil {
+				return fmt.Errorf("failed to marshal drive %s: %w", driveID, err)
+			}
+			req, err := http.NewRequestWithContext(ctx, "PUT",
 				"http://localhost/drives/"+driveID,
 				bytes.NewReader(driveJSON),
 			)
+			if err != nil {
+				return fmt.Errorf("failed to create drive request for %s: %w", driveID, err)
+			}
 			req.Header.Set("Content-Type", "application/json")
 
 			resp, err := client.Do(req)
@@ -452,11 +479,19 @@ func (vm *VMMManager) hardShutdown(ctx context.Context, vmInstance *VMInstance) 
 	client := newUnixClient(socketPath, 5*time.Second)
 	actions := ActionsType{ActionType: "SendCtrlAltDel"}
 
-	body, _ := json.Marshal(actions)
-	req, _ := http.NewRequestWithContext(ctx, "PUT",
+	body, err := json.Marshal(actions)
+	if err != nil {
+		log.Error().Err(err).Str("task_id", vmInstance.ID).Msg("Failed to marshal shutdown action")
+		return vm.forceKillVM(vmInstance)
+	}
+	req, err := http.NewRequestWithContext(ctx, "PUT",
 		"http://localhost/actions",
 		bytes.NewReader(body),
 	)
+	if err != nil {
+		log.Error().Err(err).Str("task_id", vmInstance.ID).Msg("Failed to create shutdown request")
+		return vm.forceKillVM(vmInstance)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
@@ -693,8 +728,9 @@ func newUnixClient(socketPath string, timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
 			},
 		},
 	}

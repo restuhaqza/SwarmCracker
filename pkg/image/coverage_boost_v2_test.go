@@ -165,7 +165,7 @@ func TestPrepare_NilRuntime(t *testing.T) {
 	err := ip.Prepare(ctx, task)
 
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "runtime cannot be nil")
+	assert.Contains(t, err.Error(), "task runtime is nil")
 }
 
 // TestPrepare_InvalidRuntimeType tests Prepare with invalid runtime type
@@ -182,7 +182,7 @@ func TestPrepare_InvalidRuntimeType(t *testing.T) {
 	err := ip.Prepare(ctx, task)
 
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not a container")
+	assert.Contains(t, err.Error(), "not a Container")
 }
 
 // TestPrepare_WithInitSystemAnnotation tests init system annotation paths

@@ -204,6 +204,25 @@ func GetDefaultConfigPath() string {
 	return "/etc/swarmcracker/config.yaml"
 }
 
+// EnsureDefaultConfig creates a default configuration file at the default path
+// if one doesn't already exist. Returns true if a new file was created.
+// Uses sensible defaults suitable for both manager and worker nodes.
+func EnsureDefaultConfig() (bool, error) {
+	path := GetDefaultConfigPath()
+	if _, err := os.Stat(path); err == nil {
+		return false, nil // already exists
+	}
+
+	cfg := &Config{}
+	cfg.SetDefaults()
+
+	if err := cfg.Save(path); err != nil {
+		return false, fmt.Errorf("failed to create default config at %s: %w", path, err)
+	}
+
+	return true, nil
+}
+
 // Validate validates the configuration.
 func (c *Config) Validate() error {
 	// Check executor config

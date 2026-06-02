@@ -88,6 +88,9 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -rf $(DIST_DIR)
 	rm -f coverage.out coverage.html
+	rm -f *.out *.test
+	rm -f swarmcracker swarmcracker-agent swarmctl swarmd-firecracker
+	rm -rf site/
 
 # Run examples
 examples: all
@@ -262,3 +265,19 @@ vagrant-halt:
 vagrant-destroy:
 	@echo "Destroying Vagrant environment..."
 	cd test-automation && vagrant destroy -f
+
+# Verify Go version alignment across all config files
+check-go-version:
+	@GO_MOD=$$(grep '^go ' go.mod | awk '{print $$2}'); \
+	CI_GO=$$(grep 'go-version' .github/workflows/ci.yml | head -1 | grep -oP '[0-9]+\.[0-9]+'); \
+	RELEASE_GO=$$(grep 'go-version' .github/workflows/release.yml | head -1 | grep -oP '[0-9]+\.[0-9]+'); \
+	DOCKER_GO=$$(grep 'FROM golang:' Dockerfile | grep -oP '[0-9]+\.[0-9]+'); \
+	if [ "$$GO_MOD" != "$$CI_GO" ] || [ "$$GO_MOD" != "$$RELEASE_GO" ] || [ "$$GO_MOD" != "$$DOCKER_GO" ]; then \
+		echo "❌ Go version mismatch!"; \
+		echo "   go.mod:     $$GO_MOD"; \
+		echo "   CI:         $$CI_GO"; \
+		echo "   Release:    $$RELEASE_GO"; \
+		echo "   Dockerfile: $$DOCKER_GO"; \
+		exit 1; \
+	fi; \
+	echo "✅ All Go versions aligned at $$GO_MOD"

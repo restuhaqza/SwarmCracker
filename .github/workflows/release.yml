@@ -60,6 +60,74 @@ jobs:
             echo "  ✅ dist/swarmcracker-${VERSION}-${os}-${arch}.tar.gz"
           done
 
+      - name: Smoke test binaries
+        run: |
+          echo "=== Verifying required features are present in built binaries ==="
+
+          # Test swarmd-firecracker
+          echo "--- swarmd-firecracker ---"
+          SWARMD_HELP=$(./dist/swarmcracker-*-linux-amd64/swarmd-firecracker --help 2>&1 || true)
+
+          REQUIRED_FLAGS=(
+            "enable-cni"
+            "manager"
+            "join-addr"
+            "join-token"
+            "kernel-path"
+            "rootfs-dir"
+            "bridge-name"
+            "bridge-ip"
+            "subnet"
+            "nat-enabled"
+            "consul-enabled"
+            "health-addr"
+            "enable-vxlan"
+          )
+
+          MISSING=0
+          for flag in "${REQUIRED_FLAGS[@]}"; do
+            if echo "$SWARMD_HELP" | grep -q -- "-$flag"; then
+              echo "  ✅ --$flag"
+            else
+              echo "  ❌ MISSING: --$flag"
+              MISSING=1
+            fi
+          done
+
+          # Test swarmcracker CLI
+          echo "--- swarmcracker ---"
+          CRACKER_HELP=$(./dist/swarmcracker-*-linux-amd64/swarmcracker --help 2>&1 || true)
+
+          REQUIRED_SUBCOMMANDS=(
+            "cluster"
+            "node"
+            "service"
+            "task"
+            "vm"
+            "network"
+            "volume"
+            "config"
+          )
+
+          for cmd_name in "${REQUIRED_SUBCOMMANDS[@]}"; do
+            if echo "$CRACKER_HELP" | grep -q " $cmd_name "; then
+              echo "  ✅ $cmd_name"
+            else
+              echo "  ❌ MISSING: $cmd_name"
+              MISSING=1
+            fi
+          done
+
+          if [ "$MISSING" -eq 1 ]; then
+            echo ""
+            echo "❌ SMOKE TEST FAILED: Release binary is missing required features!"
+            echo "   This means the binary was built from a commit that predates critical flags."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ All required CLI flags and subcommands present"
+
       - name: Clean intermediate directories
         run: rm -rf dist/swarmcracker-${{ github.ref_name }}
 

@@ -203,7 +203,7 @@ func TestImagePreparer_Prepare_InvalidRuntime(t *testing.T) {
 	ctx := context.Background()
 	err := preparer.Prepare(ctx, task)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "not a container")
+	assert.Contains(t, err.Error(), "not a Container")
 }
 
 // TestImagePreparer_Prepare_NoContainerRuntime tests error when no container runtime available

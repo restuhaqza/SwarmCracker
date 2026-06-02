@@ -71,7 +71,12 @@ func TestValidateImageManifest_InvalidRef(t *testing.T) {
 	}
 }
 
+// TestValidateImageManifest_GracefulDegradation tests graceful degradation when manifest cannot be fetched.
+// Skips in short mode to avoid DNS resolution + HTTP retry delays.
 func TestValidateImageManifest_GracefulDegradation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
 	// Test graceful degradation when manifest cannot be fetched
 	// Using a valid reference format but invalid registry (won't resolve)
 	// The function should return nil (graceful degradation) rather than error

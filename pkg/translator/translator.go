@@ -229,8 +229,6 @@ func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
 		log.Warn().Str("task_id", task.ID).Msg("task runtime is not a Container, using default boot args")
 		return "console=ttyS0 reboot=k panic=1 pci=off init=/init"
 	}
-	_ = container // may be used for future per-container customization
-
 	args := []string{
 		"console=ttyS0",
 		"reboot=k",
@@ -361,10 +359,10 @@ func (tt *TaskTranslator) applyResources(config *VMMConfig, limits *types.Resour
 func (tt *TaskTranslator) buildNetworkInterface(_ types.NetworkAttachment, index int, taskID string) NetworkInterface {
 	ifaceID := fmt.Sprintf("eth%d", index)
 
-	// Generate TAP name: tap-<hash[:8]>-<index>
+	// Generate TAP name: tap-<hash[:12]>-<index>
 	hash := sha256.Sum256([]byte(taskID))
 	hashStr := hex.EncodeToString(hash[:])
-	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
+	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:12], index)
 
 	return NetworkInterface{
 		IfaceID:     ifaceID,

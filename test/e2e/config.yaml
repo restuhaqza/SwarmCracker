@@ -1,0 +1,83 @@
+# SwarmCracker E2E Test Configuration
+# =====================================
+# All values can be overridden via environment variables:
+#   SWARMCRACKER_<section>_<key>=value
+# Example:
+#   SWARMCRACKER_SWARMKIT_STATE_DIR=/custom/path
+#   SWARMCRACKER_TIMEOUTS_SWARMD_READY=60s
+
+# ── SwarmKit ──────────────────────────────────────────────
+swarmkit:
+  # state_dir: where swarmd stores raft state
+  # {{run_id}} is replaced with a UUID at runtime for isolation
+  state_dir: /tmp/swarmcracker-e2e-{{run_id}}
+  listen_addr: 127.0.0.1:4242
+  control_socket: /tmp/swarmcracker-e2e-{{run_id}}/swarm.sock
+  election_tick: 5       # seconds per tick
+  heartbeat_tick: 1       # seconds between heartbeats
+  log_level: debug        # swarmd log level (debug|info|warn|error)
+
+# ── Firecracker ───────────────────────────────────────────
+firecracker:
+  # kernel_path: path to the uncompressed Firecracker kernel (vmlinux)
+  # Auto-detected from: $HOME/.local/share/firecracker, /usr/share/firecracker, /var/lib/firecracker
+  kernel_path: ""
+  # binary_path: path to firecracker binary (auto-detected from PATH if empty)
+  binary_path: ""
+  # jailer_path: path to jailer binary (auto-detected from PATH if empty)
+  jailer_path: ""
+  # rootfs_dir: where temporary ext4 rootfs images are stored
+  rootfs_dir: /tmp/swarmcracker-e2e-{{run_id}}/rootfs
+  # machine_pool_size: max concurrent VMs during E2E
+  machine_pool_size: 5
+
+# ── Image Cache ───────────────────────────────────────────
+image_cache:
+  # enabled: when true, cached rootfs images are preferred
+  enabled: true
+  # dir: cache directory
+  dir: ~/.cache/swarmcracker/images
+  # allow_pull: when false, tests skip if image not cached
+  # Set SWARMCRACKER_ALLOW_PULL=true to override
+  allow_pull: false
+  # prewarm_images: images to pre-cache (used by make test-cache-warm)
+  prewarm_images:
+    - alpine:latest
+    - nginx:alpine
+    - redis:alpine
+
+# ── Network ───────────────────────────────────────────────
+network:
+  # bridge_prefix: prefix for bridge names (run-id appended at runtime)
+  bridge_prefix: swarm-br
+  # vxlan_id_start: starting VXLAN ID (allocated per run for isolation)
+  vxlan_id_start: 100
+  # tap_prefix: prefix for TAP device names
+  tap_prefix: tap-
+
+# ── Timeouts ──────────────────────────────────────────────
+timeouts:
+  swarmd_ready: 30s       # max wait for swarmd socket
+  vm_ready: 60s            # max wait for VM boot
+  service_deploy: 120s     # max wait for service deploy
+  per_test: 300s            # per-test timeout
+  suite: 30m               # overall suite timeout
+
+# ── Resources ─────────────────────────────────────────────
+resources:
+  min_disk_gb: 5          # minimum free disk space
+  min_memory_gb: 4        # minimum system memory
+  min_vcpus: 2            # minimum CPU cores
+  default_vm_memory_mb: 512  # default Firecracker VM memory
+  default_vm_vcpus: 2     # default Firecracker VM vCPUs
+
+# ── Reporting ─────────────────────────────────────────────
+reporting:
+  # output_dir: where test reports are written
+  output_dir: test-reports
+  # formats: output formats (json, junit, text)
+  formats:
+    - json
+    - text
+  # keep_reports: how many historical reports to keep
+  keep_reports: 20

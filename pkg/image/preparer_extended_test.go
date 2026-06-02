@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -95,7 +94,8 @@ func TestPreparerExtended_CopyDirectory(t *testing.T) {
 	}
 }
 
-// TestPreparerExtended_CreateInitWrapper tests createInitWrapper function
+// TestPreparerExtended_CreateInitWrapper tests createInitWrapper function.
+// NOTE: createInitWrapper is deprecated (no-op); it always returns nil without creating files.
 func TestPreparerExtended_CreateInitWrapper(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "init-wrapper-test-")
 	if err != nil {
@@ -115,27 +115,15 @@ func TestPreparerExtended_CreateInitWrapper(t *testing.T) {
 		},
 	}
 
-	// Test without entrypoint - creates default init
+	// createInitWrapper is deprecated (no-op), always returns nil
 	if err := prep.createInitWrapper(tempDir); err != nil {
 		t.Fatalf("createInitWrapper failed: %v", err)
 	}
 
-	initPath := filepath.Join(sbinDir, "init")
-	if _, err := os.Stat(initPath); os.IsNotExist(err) {
-		t.Error("init script was not created")
-	}
+	// Function is deprecated - files are no longer created by this path.
+	// Init injection is done via InjectIntoDir before ext4 creation.
 
-	content, err := os.ReadFile(initPath)
-	if err != nil {
-		t.Fatalf("Failed to read init script: %v", err)
-	}
-
-	contentStr := string(content)
-	if !strings.Contains(contentStr, "#!/bin/sh") {
-		t.Error("init script should be a shell script")
-	}
-
-	// Test with entrypoint present
+	// Also test with entrypoint present (same deprecated no-op)
 	os.RemoveAll(tempDir)
 	os.MkdirAll(sbinDir, 0755)
 
@@ -146,14 +134,9 @@ func TestPreparerExtended_CreateInitWrapper(t *testing.T) {
 		t.Fatalf("Failed to create entrypoint: %v", err)
 	}
 
+	// Deprecated no-op, always returns nil
 	if err := prep.createInitWrapper(tempDir); err != nil {
 		t.Fatalf("createInitWrapper with entrypoint failed: %v", err)
-	}
-
-	initContent, _ := os.ReadFile(initPath)
-	initStr := string(initContent)
-	if !strings.Contains(initStr, "nginx") {
-		t.Error("init script with entrypoint should contain nginx references")
 	}
 }
 

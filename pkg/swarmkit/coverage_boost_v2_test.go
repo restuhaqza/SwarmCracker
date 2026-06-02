@@ -1112,8 +1112,9 @@ func TestExecutor_NewExecutor_WithVXLAN(t *testing.T) {
 
 // TestExecutor_NewExecutor_WithNAT tests NewExecutor with NAT enabled
 func TestExecutor_NewExecutor_WithNAT(t *testing.T) {
+	natEnabled := true
 	cfg := &Config{
-		NATEnabled: true,
+		NATEnabled: &natEnabled,
 		StateDir:   t.TempDir(),
 	}
 	exec, err := NewExecutor(cfg)

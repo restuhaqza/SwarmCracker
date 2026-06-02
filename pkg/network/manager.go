@@ -555,6 +555,9 @@ func (nm *NetworkManager) GetTapIP(taskID string) (string, error) {
 }
 
 // ensureBridge ensures the bridge exists and is properly configured.
+// It uses a two-phase lock: first creates the bridge under write lock,
+// then sets up VXLAN (I/O heavy) outside the lock to avoid blocking
+// concurrent network operations.
 func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 	bridgeName := nm.config.BridgeName
 
@@ -567,10 +570,10 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 	}
 
 	nm.mu.Lock()
-	defer nm.mu.Unlock()
 
 	// Double-check after acquiring write lock
 	if nm.bridges[bridgeName] {
+		nm.mu.Unlock()
 		return nil
 	}
 
@@ -581,11 +584,13 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 
 		cmd := execCommand("ip", "link", "add", bridgeName, "type", "bridge")
 		if err := cmd.Run(); err != nil {
+			nm.mu.Unlock()
 			return fmt.Errorf("failed to create bridge: %w", err)
 		}
 
 		// Bring bridge up
 		if err := execCommand("ip", "link", "set", bridgeName, "up").Run(); err != nil {
+			nm.mu.Unlock()
 			return fmt.Errorf("failed to bring bridge up: %w", err)
 		}
 	}
@@ -602,9 +607,12 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 		log.Warn().Err(err).Msg("Failed to ensure bridge is up")
 	}
 
-	nm.bridges[bridgeName] = true
+	// Release lock before slow VXLAN/peer discovery setup to avoid blocking
+	// concurrent network operations (e.g., Consul peer updates, task preparation).
+	// The bridge is fully created at this point; only VXLAN overlay remains.
+	nm.mu.Unlock()
 
-	// Setup VXLAN overlay if configured
+	// Setup VXLAN overlay if configured (I/O heavy — outside critical section)
 	if nm.config.VXLANEnabled {
 		if err := nm.setupVXLANOverlay(ctx); err != nil {
 			log.Warn().Err(err).Msg("Failed to setup VXLAN overlay")
@@ -623,7 +631,11 @@ func (nm *NetworkManager) ensureBridge(ctx context.Context) error {
 		Str("ip", nm.config.BridgeIP).
 		Msg("Bridge ready")
 
+	// Mark bridge as ready after all initialization is complete
+	nm.mu.Lock()
 	nm.bridges[bridgeName] = true
+	nm.mu.Unlock()
+
 	return nil
 }
 
@@ -724,10 +736,18 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	}
 
 	// Calculate DHCP range (exclude gateway)
-	// Use IPs from .50 to .200 in the subnet
+	// Configurable range, defaults to .50-.200 of the subnet
 	subnetIP := binary.BigEndian.Uint32(subnet.IP.To4())
-	dhcpStart := subnetIP + 50
-	dhcpEnd := subnetIP + 200
+	dhcpRangeStart := nm.config.DHCPRangeStart
+	dhcpRangeEnd := nm.config.DHCPRangeEnd
+	if dhcpRangeStart == 0 {
+		dhcpRangeStart = 50
+	}
+	if dhcpRangeEnd == 0 {
+		dhcpRangeEnd = 200
+	}
+	dhcpStart := subnetIP + uint32(dhcpRangeStart)
+	dhcpEnd := subnetIP + uint32(dhcpRangeEnd)
 
 	startIP := make(net.IP, 4)
 	endIP := make(net.IP, 4)
@@ -1043,11 +1063,11 @@ func (nm *NetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
 
 // createTapDevice creates a TAP device for a network attachment.
 func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.NetworkAttachment, index int, taskID string) (*TapDevice, error) {
-	// Generate TAP name: tap-<hash[:8]>-<index>
+	// Generate TAP name: tap-<hash[:12]>-<index>
 	// Must match logic in translator
 	hash := sha256.Sum256([]byte(taskID))
 	hashStr := hex.EncodeToString(hash[:])
-	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
+	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:12], index)
 
 	// Allocate IP address for this TAP
 	// Priority: SwarmKit-provided IP > Local allocation

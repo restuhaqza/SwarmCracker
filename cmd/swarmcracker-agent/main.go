@@ -111,6 +111,7 @@ func loadConfig(path string) (*swarmkit.Config, error) {
 
 // defaultConfig returns the default configuration.
 func defaultConfig() *swarmkit.Config {
+	natEnabled := true
 	return &swarmkit.Config{
 		FirecrackerPath:  "firecracker",
 		KernelPath:       "/usr/share/firecracker/vmlinux",
@@ -119,7 +120,7 @@ func defaultConfig() *swarmkit.Config {
 		DefaultVCPUs:     1,
 		DefaultMemoryMB:  512,
 		BridgeName:       "swarm-br0",
-		NATEnabled:       true,
+		NATEnabled:       &natEnabled,
 		IPMode:           "dhcp",
 		EnableJailer:     false,
 		EnableCgroups:    false,

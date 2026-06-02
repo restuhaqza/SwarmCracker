@@ -11,7 +11,7 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-SWARMCTL_SOCKET="${SWARMCTL_SOCKET:-/var/run/swarmkit/swarm.sock}"
+SWARMCTL_SOCKET="${SWARMCTL_SOCKET:-/tmp/swarmkit-e2e/swarm.sock}"
 LOG_DIR="${LOG_DIR:-/tmp/swarmcracker-e2e-logs}"
 TEST_TIMEOUT="${TEST_TIMEOUT:-10m}"
 
@@ -29,47 +29,16 @@ log_error() {
 }
 
 check_prerequisites() {
-    log_info "Checking prerequisites..."
+    log_info "Checking prerequisites (via testinfra)..."
     
-    # Check swarmd
-    if ! command -v swarmd &> /dev/null; then
-        log_error "swarmd not found. Install from: https://github.com/moby/swarmkit"
-        exit 1
-    fi
-    log_info "✓ swarmd found"
-    
-    # Check swarmctl
-    if ! command -v swarmctl &> /dev/null; then
-        log_error "swarmctl not found. Install from: https://github.com/moby/swarmkit"
-        exit 1
-    fi
-    log_info "✓ swarmctl found"
-    
-    # Check Firecracker
-    if ! command -v firecracker &> /dev/null; then
-        log_error "Firecracker not found. Install from: https://github.com/firecracker-microvm/firecracker"
-        exit 1
-    fi
-    log_info "✓ firecracker found"
-    
-    # Check container runtime
-    if command -v docker &> /dev/null; then
-        log_info "✓ docker found"
-    elif command -v podman &> /dev/null; then
-        log_info "✓ podman found"
+    # Delegate to the unified testinfra checker
+    if go run ./test/testinfra/cmd/... 2>/dev/null; then
+        log_info "✓ All prerequisites met"
     else
-        log_error "No container runtime found (docker or podman required)"
+        log_error "Some required checks failed — see above for details"
+        log_info "Run 'go run ./test/testinfra/cmd/... --json' for machine-readable output"
         exit 1
     fi
-    
-    # Check KVM
-    if [ -e /dev/kvm ]; then
-        log_info "✓ KVM device available"
-    else
-        log_warn "KVM device not available - tests may fail"
-    fi
-    
-    log_info "All prerequisites met"
 }
 
 setup_environment() {
@@ -83,10 +52,10 @@ setup_environment() {
         log_info "Starting swarmd..."
         mkdir -p $(dirname $SWARMCTL_SOCKET)
         swarmd --listen-remote-api 0.0.0.0:4242 \
+               --listen-control-api $SWARMCTL_SOCKET \
                --state-dir /tmp/swarmkit-e2e \
-               --manager \
-               --addr localhost:4242 \
-               --debug \
+               --force-new-cluster \
+               --log-level debug \
                > "$LOG_DIR/swarmd.log" 2>&1 &
         SWARMD_PID=$!
         echo $SWARMD_PID > "$LOG_DIR/swarmd.pid"
@@ -140,7 +109,6 @@ run_tests() {
     
     # Run tests with timeout
     timeout "$TEST_TIMEOUT" go test ./test/e2e/... -v -timeout "$TEST_TIMEOUT" \
-        -logdir="$LOG_DIR" \
         2>&1 | tee "$LOG_DIR/e2e-test.log"
     
     TEST_RESULT=${PIPESTATUS[0]}

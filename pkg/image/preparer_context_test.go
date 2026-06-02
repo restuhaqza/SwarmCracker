@@ -601,7 +601,7 @@ func TestImagePreparer_Prepare_InvalidInputs(t *testing.T) {
 				},
 			},
 			expectError: true,
-			errorMsg:    "not a container",
+			errorMsg:    "not a Container",
 		},
 		{
 			name:      "non-container runtime",
@@ -609,11 +609,11 @@ func TestImagePreparer_Prepare_InvalidInputs(t *testing.T) {
 			task: &types.Task{
 				ID: "test-bad-runtime",
 				Spec: types.TaskSpec{
-					Runtime: "not a container",
+					Runtime: "not a Container",
 				},
 			},
 			expectError: true,
-			errorMsg:    "not a container",
+			errorMsg:    "not a Container",
 		},
 		{
 			name:      "empty image name",

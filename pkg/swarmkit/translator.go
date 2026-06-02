@@ -41,8 +41,8 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 	vcpus := 1
 	memoryMB := 512
 
-	// Try to get resource specifications from container
-	if container, err := task.Spec.GetContainer(); err == nil {
+	// Try to get resource specifications if task has a container runtime
+	if _, err := task.Spec.GetContainer(); err == nil {
 		// Resource-based sizing
 		if task.Spec.Resources.Reservations != nil {
 			res := task.Spec.Resources.Reservations
@@ -61,8 +61,6 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 				}
 			}
 		}
-
-		_ = container // Use container config in future
 	}
 
 	// Build boot args with network config if available
@@ -133,7 +131,7 @@ func (t *taskTranslatorImpl) buildNetworkInterfaces(task *types.Task) []map[stri
 
 	for i := range task.Networks {
 		ifaceID := fmt.Sprintf("eth%d", i)
-		tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], i)
+		tapName := fmt.Sprintf("tap-%s-%d", hashStr[:12], i)
 
 		iface := map[string]interface{}{
 			"iface_id":      ifaceID,

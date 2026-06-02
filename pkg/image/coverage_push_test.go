@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -53,7 +54,7 @@ func TestPrepare_NilRuntimeV2(t *testing.T) {
 	err := ip.Prepare(ctx, task)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "runtime cannot be nil")
+	assert.Contains(t, err.Error(), "task runtime is nil")
 }
 
 // TestPrepare_InvalidRuntimeTypeV2 tests invalid runtime type error
@@ -70,7 +71,7 @@ func TestPrepare_InvalidRuntimeTypeV2(t *testing.T) {
 	err := ip.Prepare(ctx, task)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not a container")
+	assert.Contains(t, err.Error(), "not a Container")
 }
 
 // TestPrepare_ExistingRootfsV2 tests cached rootfs path
@@ -1166,8 +1167,12 @@ func TestExtractOCIImage_AllMethodsSkipV2(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestExtractOCIImage_DockerFallbackV2 tests docker fallback path
+// TestExtractOCIImage_DockerFallbackV2 tests docker fallback path.
+// Skips in short mode to avoid Docker Hub network timeouts.
 func TestExtractOCIImage_DockerFallbackV2(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("docker not available")
 	}
@@ -1220,10 +1225,9 @@ func TestCreateInitWrapper_EntrypointV2(t *testing.T) {
 	os.WriteFile(filepath.Join(mountDir, "docker-entrypoint.sh"), []byte("#!/bin/sh\nexit 0"), 0755)
 	os.MkdirAll(filepath.Join(mountDir, "sbin"), 0755)
 
+	// createInitWrapper is deprecated (no-op), always returns nil
 	err := ip.createInitWrapper(mountDir)
 	require.NoError(t, err)
-
-	assert.FileExists(t, filepath.Join(mountDir, "sbin", "init"))
 }
 
 // TestCreateInitWrapper_NoEntrypointV2 tests no entrypoint case
@@ -1235,10 +1239,9 @@ func TestCreateInitWrapper_NoEntrypointV2(t *testing.T) {
 	os.MkdirAll(filepath.Join(mountDir, "sbin"), 0755)
 	os.MkdirAll(filepath.Join(mountDir, "usr", "sbin"), 0755)
 
+	// createInitWrapper is deprecated (no-op), always returns nil
 	err := ip.createInitWrapper(mountDir)
 	require.NoError(t, err)
-
-	assert.FileExists(t, filepath.Join(mountDir, "sbin", "init"))
 }
 
 // ----------------------------------------------------------------------------
@@ -1379,36 +1382,54 @@ func TestExtractWithGGCR_InvalidImageRef(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to parse image reference")
 }
 
-// TestExtractWithGGCR_SimpleImageName tests simple image name (no slash)
+// TestExtractWithGGCR_SimpleImageName tests simple image name (no slash).
+// Skips in short mode or when network is unavailable to avoid Docker Hub timeouts.
 func TestExtractWithGGCR_SimpleImageName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	// Simple name like "nginx" should get docker.io/library/ prefix
 	err := ip.extractWithGGCR(ctx, "nginx", t.TempDir())
-	// Will fail to pull but the prefix logic is exercised
+	// Will likely fail due to network/auth, but code path exercised
 	_ = err
 }
 
-// TestExtractWithGGCR_OrgImageName tests org/team image name (slash but no dot)
+// TestExtractWithGGCR_OrgImageName tests org/team image name (slash but no dot).
+// Skips in short mode to avoid Docker Hub network timeouts.
 func TestExtractWithGGCR_OrgImageName(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	// Org/team image should get docker.io/ prefix
 	err := ip.extractWithGGCR(ctx, "myorg/myimage", t.TempDir())
 	// Will fail to pull but the prefix logic is exercised
 	_ = err
 }
 
-// TestExtractWithGGCR_FullRegistry tests full registry URL (has dot)
+// TestExtractWithGGCR_FullRegistry tests full registry URL (has dot).
+// Skips in short mode to avoid network timeouts.
 func TestExtractWithGGCR_FullRegistry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	// Full registry URL should NOT get prefix
 	err := ip.extractWithGGCR(ctx, "gcr.io/myproject/myimage:v1", t.TempDir())
 	// Will fail to pull but the prefix logic is exercised
@@ -1430,8 +1451,13 @@ func TestExtractWithDockerCLI_EmptyImageRefV2(t *testing.T) {
 	_ = err
 }
 
-// TestExtractWithDockerCLI_EmptyDestPathV2 tests empty destination path
+// TestExtractWithDockerCLI_EmptyDestPathV2 tests empty destination path.
+// Skips in short mode to avoid Docker Hub network timeouts.
 func TestExtractWithDockerCLI_EmptyDestPathV2(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
@@ -1564,8 +1590,13 @@ func TestPrepare_WithCachedRootfsAndDumbInit(t *testing.T) {
 	// Code paths exercised
 }
 
-// TestPrepare_ValidateArchitectureError tests architecture validation error
+// TestPrepare_ValidateArchitectureError tests architecture validation error.
+// Skips in short mode to avoid Docker Hub network timeouts.
 func TestPrepare_ValidateArchitectureError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping network-dependent test in short mode")
+	}
+
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 

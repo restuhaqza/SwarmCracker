@@ -404,7 +404,7 @@ func TestPrepareValidation(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for task without runtime")
 		}
-		if !strings.Contains(err.Error(), "cannot be nil") {
+		if !strings.Contains(err.Error(), "task runtime is nil") {
 			t.Errorf("expected runtime nil error, got: %v", err)
 		}
 	})
@@ -418,7 +418,7 @@ func TestPrepareValidation(t *testing.T) {
 		if err == nil {
 			t.Error("expected error for wrong runtime type")
 		}
-		if !strings.Contains(err.Error(), "not a container") {
+		if !strings.Contains(err.Error(), "not a Container") {
 			t.Errorf("expected container type error, got: %v", err)
 		}
 	})

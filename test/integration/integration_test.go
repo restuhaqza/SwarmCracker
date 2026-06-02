@@ -442,13 +442,13 @@ func TestIntegration_TaskTranslation(t *testing.T) {
 	assert.NotNil(t, config)
 
 	// Verify config structure (now returns map, not JSON string)
-	// Note: keys use snake_case (boot_source, not boot-source)
+	// Note: keys use kebab-case (boot-source, network-interfaces, machine-config)
 	configMap, ok := config.(map[string]interface{})
 	assert.True(t, ok, "Config should be a map")
-	assert.Contains(t, configMap, "boot_source")
+	assert.Contains(t, configMap, "boot-source")
 	assert.Contains(t, configMap, "drives")
-	assert.Contains(t, configMap, "network_interfaces")
-	assert.Contains(t, configMap, "machine_config")
+	assert.Contains(t, configMap, "network-interfaces")
+	assert.Contains(t, configMap, "machine-config")
 
 	t.Logf("Translated config has %d keys", len(configMap))
 }

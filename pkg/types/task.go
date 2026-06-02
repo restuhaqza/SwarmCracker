@@ -182,9 +182,11 @@ type NetworkConfig struct {
 
 	// IP allocation settings
 	Subnet     string `yaml:"subnet"`      // e.g., "192.168.127.0/24"
-	BridgeIP   string `yaml:"bridge_ip"`   // e.g., "192.168.127.1/24"
-	IPMode     string `yaml:"ip_mode"`     // "static" or "dhcp"
-	NATEnabled bool   `yaml:"nat_enabled"` // Enable masquerading for internet access
+	BridgeIP        string `yaml:"bridge_ip"`         // e.g., "192.168.127.1/24"
+	IPMode          string `yaml:"ip_mode"`           // "static" or "dhcp"
+	NATEnabled      bool   `yaml:"nat_enabled"`       // Enable masquerading for internet access
+	DHCPRangeStart  int    `yaml:"dhcp_range_start"`  // DHCP range start offset in subnet (default: 50)
+	DHCPRangeEnd    int    `yaml:"dhcp_range_end"`    // DHCP range end offset in subnet (default: 200)
 
 	// VXLAN overlay settings
 	VXLANEnabled  bool     `yaml:"vxlan_enabled"`   // Enable VXLAN overlay for cross-node networking

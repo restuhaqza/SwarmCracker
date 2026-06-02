@@ -84,7 +84,7 @@ func TestImagePreparer_Prepare_Validation_Unit(t *testing.T) {
 				},
 			},
 			wantErr:     true,
-			errContains: "task runtime cannot be nil",
+			errContains: "task runtime is nil",
 		},
 		{
 			name: "non-container runtime",
@@ -95,7 +95,7 @@ func TestImagePreparer_Prepare_Validation_Unit(t *testing.T) {
 				},
 			},
 			wantErr:     true,
-			errContains: "task runtime is not a container",
+			errContains: "task runtime is not a Container",
 		},
 		{
 			name: "valid container runtime",

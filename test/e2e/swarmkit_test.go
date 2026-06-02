@@ -8,88 +8,57 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestE2E_BasicDeployment tests basic service deployment
-func TestE2E_BasicDeployment(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	// Check prerequisites
-	if !hasSwarmd() {
-		t.Skip("swarmd binary not found. Install from: https://github.com/moby/swarmkit")
-	}
-
-	t.Log("Starting E2E basic deployment test...")
-
-	// This is a placeholder for the actual E2E test
-	// The real implementation will use the scenarios package
-	t.Run("Alpine", func(t *testing.T) {
-		// RunBasicDeployTest(ctx, t, "test-alpine", "alpine:latest", 1)
-		t.Skip("Skipping actual deployment - framework setup only")
-	})
-
-	t.Run("Nginx", func(t *testing.T) {
-		// RunBasicDeployTest(ctx, t, "test-nginx", "nginx:alpine", 1)
-		t.Skip("Skipping actual deployment - framework setup only")
-	})
-
-	t.Log("E2E basic deployment test completed")
+// TestE2E_Prerequisites delegates to the unified testinfra package.
+// All prerequisite checks live in test/testinfra/ — the single source of truth.
+//
+// Run standalone:
+//
+//	go run ./test/testinfra/cmd/...           # text output
+//	go run ./test/testinfra/cmd/... --json    # JSON for CI/scripts
+func TestE2E_Prerequisites(t *testing.T) {
+	t.Log("Infrastructure prerequisites are validated by test/testinfra/")
+	t.Log("Run: go test -v ./test/testinfra/...")
+	t.Log("Or:   go run ./test/testinfra/cmd/... --json")
+	t.Skip("Delegate to test/testinfra/ for full prerequisite report")
 }
 
-// TestE2E_Prerequisites checks what prerequisites are available
-func TestE2E_Prerequisites(t *testing.T) {
-	t.Log("Checking E2E test prerequisites...")
-
-	// Check swarmd
-	if hasSwarmd() {
-		t.Log("✓ swarmd found")
-	} else {
-		t.Log("✗ swarmd not found")
-		t.Log("  Install: go install github.com/moby/swarmkit/cmd/swarmd@latest")
+// TestE2E_PlannedScenarios documents planned E2E scenarios for future implementation.
+// These tests require a running swarmd-firecracker executor on a multi-node cluster.
+// See full_workflow_test.go for tests that use swarmctl (no Docker required).
+func TestE2E_PlannedScenarios(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping E2E in short mode")
 	}
 
-	// Check Firecracker
-	if hasFirecracker() {
-		t.Log("✓ Firecracker found")
-	} else {
-		t.Log("✗ Firecracker not found")
-		t.Log("  Install: https://github.com/firecracker-microvm/firecracker/releases")
+	scenarios := []struct {
+		name     string
+		status   string
+		requires string
+	}{
+		{"ManagerOnly", "TODO", "swarmd with SwarmCracker executor"},
+		{"ClusterFormation", "TODO", "3-node cluster via Ansible"},
+		{"ServiceDeploy", "partially in full_workflow_test.go", "swarmd-firecracker executor"},
+		{"ServiceScaling", "partially in full_workflow_test.go", "swarmd-firecracker executor"},
+		{"FailureRecovery", "TODO", "multi-node cluster"},
+		{"NetworkIsolation", "TODO", "VXLAN + multi-node"},
+		{"SnapshotRestore", "TODO", "snapshot config deployed"},
 	}
 
-	// Check container runtime
-	if hasDocker() {
-		t.Log("✓ Docker found")
-	} else if hasPodman() {
-		t.Log("✓ Podman found")
-	} else {
-		t.Log("✗ No container runtime found (docker or podman required)")
+	t.Log("Planned E2E scenarios:")
+	for _, s := range scenarios {
+		t.Logf("  [%s] %s — %s", s.status, s.name, s.requires)
 	}
-
-	// Check KVM
-	if hasKVM() {
-		t.Log("✓ KVM device available")
-	} else {
-		t.Log("✗ KVM device not available")
-	}
-
-	// Check kernel
-	if hasKernel() {
-		t.Log("✓ Firecracker kernel found")
-	} else {
-		t.Log("✗ Firecracker kernel not found")
-	}
-
-	t.Log("")
-	t.Log("To run full E2E tests, install:")
-	t.Log("1. swarmd: go install github.com/moby/swarmkit/cmd/swarmd@latest")
-	t.Log("2. Firecracker: https://github.com/firecracker-microvm/firecracker/releases")
-	t.Log("3. Firecracker kernel: See above link")
-	t.Log("4. Container runtime: docker or podman")
 }
 
 // hasSwarmd checks if swarmd binary is available
 func hasSwarmd() bool {
 	_, err := exec.LookPath("swarmd")
+	return err == nil
+}
+
+// hasSwarmCracker checks if swarmcracker binary is available
+func hasSwarmCracker() bool {
+	_, err := exec.LookPath("swarmcracker")
 	return err == nil
 }
 
@@ -133,91 +102,7 @@ func hasKernel() bool {
 	return false
 }
 
-// TestE2E_SwarmKitManagerOnly tests just the SwarmKit manager setup
-func TestE2E_SwarmKitManagerOnly(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	if !hasSwarmd() {
-		t.Skip("swarmd binary not found")
-	}
-
-	t.Log("Testing SwarmKit manager setup only")
-
-	// This test verifies that we can at least start a manager
-	// Full integration tests will use the scenarios package
-	t.Log("SwarmKit manager test completed")
-}
-
-// TestE2E_ClusterFormation tests cluster formation with manager and agents
-func TestE2E_ClusterFormation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	if !hasSwarmd() {
-		t.Skip("swarmd binary not found")
-	}
-
-	t.Log("Testing cluster formation")
-
-	// Placeholder for cluster formation test
-	t.Log("Cluster formation test completed")
-}
-
-// TestE2E_ServiceScaling tests service scaling scenarios
-func TestE2E_ServiceScaling(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	if !hasSwarmd() {
-		t.Skip("swarmd binary not found")
-	}
-
-	t.Log("Testing service scaling")
-
-	// Placeholder for scaling test
-	// Should test: 1 replica -> 3 replicas -> 5 replicas -> 1 replica
-	t.Log("Service scaling test completed")
-}
-
-// TestE2E_FailureRecovery tests failure and recovery scenarios
-func TestE2E_FailureRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	if !hasSwarmd() {
-		t.Skip("swarmd binary not found")
-	}
-
-	t.Log("Testing failure recovery")
-
-	// Placeholder for failure recovery test
-	// Should test: agent failure, manager failure, network issues
-	t.Log("Failure recovery test completed")
-}
-
-// TestE2E_NetworkIsolation tests network isolation between services
-func TestE2E_NetworkIsolation(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping E2E test in short mode")
-	}
-
-	if !hasSwarmd() {
-		t.Skip("swarmd binary not found")
-	}
-
-	t.Log("Testing network isolation")
-
-	// Placeholder for network isolation test
-	// Should verify VMs have proper network isolation
-	t.Log("Network isolation test completed")
-}
-
-// Helper function to check prerequisites
+// checkPrerequisites checks prerequisites and returns which are available
 func checkPrerequisites(t *testing.T) (bool, bool, bool, bool) {
 	swarmd := hasSwarmd()
 	fc := hasFirecracker()

@@ -25,6 +25,7 @@ import (
 	"github.com/moby/swarmkit/v2/manager/allocator/networkallocator"
 	"github.com/moby/swarmkit/v2/node"
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
+	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/health"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 	"github.com/sirupsen/logrus"
@@ -65,7 +66,7 @@ func main() {
 		},
 		&cli.StringFlag{
 			Name:  "listen-remote-api",
-			Usage: "Listen address for remote API (e.g., 0.0.0.0:4242)",
+			Usage: "Listen address for remote API (use 127.0.0.1:4242 for worker-only nodes)",
 			Value: "0.0.0.0:4242",
 		},
 		&cli.StringFlag{
@@ -284,7 +285,15 @@ func runAgent(ctx *cli.Context) error {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 
+	// Ensure default config exists (auto-generate on first run)
+	if created, err := config.EnsureDefaultConfig(); err != nil {
+		log.G(context.Background()).Warnf("Failed to create default config: %v (continuing with CLI flags)", err)
+	} else if created {
+		log.G(context.Background()).Infof("Default config created at %s", config.GetDefaultConfigPath())
+	}
+
 	// Create SwarmCracker executor
+	natEnabled := ctx.Bool("nat-enabled")
 	executorConfig := &swarmkit.Config{
 		FirecrackerPath: "firecracker",
 		KernelPath:      ctx.String("kernel-path"),
@@ -301,7 +310,7 @@ func runAgent(ctx *cli.Context) error {
 		Subnet:          ctx.String("subnet"),
 		BridgeIP:        ctx.String("bridge-ip"),
 		IPMode:          ctx.String("ip-mode"),
-		NATEnabled:      ctx.Bool("nat-enabled"),
+		NATEnabled:      &natEnabled,
 		VXLANEnabled:    ctx.Bool("vxlan-enabled"),
 		VXLANPeers:      parseCommaSeparated(ctx.String("vxlan-peers")),
 		// Consul service discovery

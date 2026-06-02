@@ -348,6 +348,7 @@ func TestNewExecutor_AllDefaults(t *testing.T) {
 
 // TestNewExecutor_WithCustomValues tests with custom config values
 func TestNewExecutor_WithCustomValues(t *testing.T) {
+	natEnabled := true
 	cfg := &Config{
 		StateDir:        t.TempDir(),
 		FirecrackerPath: "/custom/firecracker",
@@ -360,7 +361,7 @@ func TestNewExecutor_WithCustomValues(t *testing.T) {
 		Subnet:          "10.0.0.0/24",
 		BridgeIP:        "10.0.0.1/24",
 		IPMode:          "dhcp",
-		NATEnabled:      true,
+		NATEnabled:      &natEnabled,
 		VXLANEnabled:    true,
 		VXLANPeers:      []string{"10.0.0.2", "10.0.0.3"},
 	}
@@ -378,7 +379,7 @@ func TestNewExecutor_WithCustomValues(t *testing.T) {
 	assert.Equal(t, "10.0.0.0/24", exec.config.Subnet)
 	assert.Equal(t, "10.0.0.1/24", exec.config.BridgeIP)
 	assert.Equal(t, "dhcp", exec.config.IPMode)
-	assert.True(t, exec.config.NATEnabled)
+	assert.True(t, *exec.config.NATEnabled)
 	assert.True(t, exec.config.VXLANEnabled)
 }
 

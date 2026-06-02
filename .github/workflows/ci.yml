@@ -9,7 +9,9 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'Makefile'
+      - 'Dockerfile'
       - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
   pull_request:
     branches: [main]
     paths:
@@ -31,6 +33,9 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26'
+
+      - name: Check Go version alignment
+        run: make check-go-version
 
       - name: Download dependencies
         run: go mod download
