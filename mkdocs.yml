@@ -39,6 +39,10 @@ nav:
     - Security: user/guides/security.md
     - Jailer Quickstart: user/guides/jailer-quickstart.md
     - Snapshots: user/guides/snapshots.md
+    - Disaster Recovery: user/guides/disaster-recovery.md
+    - Ansible Deployment:
+        - Guide: user/guides/ansible/README.md
+        - Reports: user/guides/ansible/reports/README.md
     - Advanced: user/guides/advanced.md
   - Architecture:
     - Overview: user/architecture/README.md

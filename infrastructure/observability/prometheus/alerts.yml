@@ -1,0 +1,122 @@
+# Prometheus Alert Rules for SwarmCracker
+# Drop into your Prometheus config: rule_files: ["swarmcracker-alerts.yml"]
+
+groups:
+  - name: swarmcracker
+    rules:
+      # ── Node Health ──
+      - alert: SwarmCrackerNodeDown
+        expr: up{job="swarmcracker"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SwarmCracker node {{ $labels.instance }} is down"
+          description: "The SwarmCracker health endpoint on {{ $labels.instance }} has been unreachable for 2 minutes."
+          runbook: "https://swarmcracker.dev/guides/disaster-recovery/#scenario-1-worker-node-failure"
+
+      # ── VM Boot Failures ──
+      - alert: SwarmCrackerVMBootFailure
+        expr: rate(swarmcracker_vm_boot_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "VM boot errors detected on {{ $labels.instance }}"
+          description: "{{ $value }} VM boot errors per second in the last 5 minutes. Check Firecracker logs."
+
+      - alert: SwarmCrackerVMBootFailureHigh
+        expr: rate(swarmcracker_vm_boot_errors_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High rate of VM boot errors on {{ $labels.instance }}"
+          description: "{{ $value }} VM boot errors per second — firecracker or kernel may be broken."
+
+      # ── VXLAN Overlay ──
+      - alert: SwarmCrackerVXLANPartition
+        expr: swarmcracker_vxlan_peers < swarmcracker_vxlan_expected_peers
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "VXLAN partition detected"
+          description: "{{ $labels.instance }} sees {{ $value }} peers but expects {{ $labels.expected }}. Check node connectivity and Consul."
+
+      - alert: SwarmCrackerVXLANPeerLost
+        expr: swarmcracker_vxlan_peers - swarmcracker_vxlan_peers offset 5m < 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "VXLAN peer lost on {{ $labels.instance }}"
+          description: "Peer count decreased — a node may have left or lost network connectivity."
+
+      # ── Disk Space ──
+      - alert: SwarmCrackerDiskWarning
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/var/lib/swarmcracker"} / node_filesystem_size_bytes{mountpoint="/var/lib/swarmcracker"})) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "SwarmCracker disk usage >80% on {{ $labels.instance }}"
+          description: "{{ $value | humanize }}% used on /var/lib/swarmcracker. Clean up old snapshots or expand storage."
+
+      - alert: SwarmCrackerDiskCritical
+        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/var/lib/swarmcracker"} / node_filesystem_size_bytes{mountpoint="/var/lib/swarmcracker"})) * 100 > 95
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SwarmCracker disk usage >95% on {{ $labels.instance }} — CRITICAL"
+          description: "{{ $value | humanize }}% used. Snapshots and new VMs will fail. Immediate cleanup required."
+
+      # ── Consul Health ──
+      - alert: SwarmCrackerConsulDown
+        expr: consul_health_node_status{status="critical"} == 1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consul agent unhealthy on {{ $labels.node }}"
+          description: "If VXLAN static peers are not configured, new nodes cannot discover peers."
+
+      # ── SwarmKit Manager ──
+      - alert: SwarmCrackerManagerUnhealthy
+        expr: swarmcracker_manager_health == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SwarmKit manager is unhealthy"
+          description: "The SwarmKit manager on {{ $labels.instance }} reports failing health. Check Raft consensus."
+
+      - alert: SwarmCrackerNoManager
+        expr: count(swarmcracker_manager_health == 1) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No healthy SwarmCracker manager"
+          description: "All manager nodes are unhealthy. The cluster cannot schedule new work."
+
+      # ── Raft Consensus ──
+      - alert: SwarmCrackerRaftUnhealthy
+        expr: swarmcracker_raft_health == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "SwarmKit Raft consensus unhealthy"
+          description: "Raft leader may be lost or log is inconsistent. Run 'swarmcracker cluster health'."
+
+      # ── VM Count Anomaly ──
+      - alert: SwarmCrackerVMCountLow
+        expr: swarmcracker_vms_running < swarmcracker_vms_expected * 0.5
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Expected VM count >> actual — possible mass failure"
+          description: "Only {{ $value }} VMs running but {{ $labels.expected }} expected. Check node status."

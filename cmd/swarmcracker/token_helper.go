@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/apiversion"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -23,6 +24,7 @@ func runGetJoinToken(role string) error {
 	defer cancel()
 
 	dialOpts := []grpc.DialOption{
+		apiversion.WithVersion(),
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithContextDialer(func(_ context.Context, addr string) (net.Conn, error) {
 			return net.Dial("unix", socketPath)

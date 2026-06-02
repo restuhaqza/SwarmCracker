@@ -1,0 +1,100 @@
+{
+  "title": "SwarmCracker — Cluster Overview",
+  "uid": "swarmcracker-overview",
+  "panels": [
+    {
+      "title": "Nodes Online",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 8, "h": 4},
+      "targets": [{"expr": "count(up{job=\"swarmcracker\"} == 1)"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "title": "VMs Running",
+      "type": "stat",
+      "gridPos": {"x": 8, "y": 0, "w": 8, "h": 4},
+      "targets": [{"expr": "sum(swarmcracker_vms_running)"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"steps": [{"color": "yellow", "value": 0}, {"color": "green", "value": 1}]}
+        }
+      }
+    },
+    {
+      "title": "VXLAN Peers",
+      "type": "stat",
+      "gridPos": {"x": 16, "y": 0, "w": 8, "h": 4},
+      "targets": [{"expr": "min(swarmcracker_vxlan_peers)"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"steps": [{"color": "red", "value": 0}, {"color": "yellow", "value": 1}, {"color": "green", "value": 2}]}
+        }
+      }
+    },
+    {
+      "title": "VM Boot Time (p95)",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 4, "w": 8, "h": 4},
+      "targets": [{"expr": "histogram_quantile(0.95, rate(swarmcracker_vm_boot_duration_seconds_bucket[5m]))"}],
+      "format": "s",
+      "unit": "s"
+    },
+    {
+      "title": "Boot Errors / 5m",
+      "type": "stat",
+      "gridPos": {"x": 8, "y": 4, "w": 8, "h": 4},
+      "targets": [{"expr": "rate(swarmcracker_vm_boot_errors_total[5m])"}],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "red", "value": 0.01}]}
+        }
+      }
+    },
+    {
+      "title": "VMs by Node",
+      "type": "bargauge",
+      "gridPos": {"x": 16, "y": 4, "w": 8, "h": 4},
+      "targets": [{"expr": "swarmcracker_vms_running", "legendFormat": "{{ instance }}"}]
+    },
+    {
+      "title": "Boot Duration Distribution",
+      "type": "heatmap",
+      "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+      "targets": [{"expr": "rate(swarmcracker_vm_boot_duration_seconds_bucket[5m])"}]
+    },
+    {
+      "title": "Disk Usage (/var/lib/swarmcracker)",
+      "type": "gauge",
+      "gridPos": {"x": 12, "y": 8, "w": 12, "h": 4},
+      "targets": [
+        {"expr": "(1 - (node_filesystem_avail_bytes{mountpoint=\"/var/lib/swarmcracker\"} / node_filesystem_size_bytes{mountpoint=\"/var/lib/swarmcracker\"})) * 100", "legendFormat": "{{ instance }}"}
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "thresholds": {"steps": [{"color": "green", "value": 0}, {"color": "yellow", "value": 70}, {"color": "red", "value": 85}]}
+        }
+      }
+    },
+    {
+      "title": "Health Endpoint Status",
+      "type": "table",
+      "gridPos": {"x": 12, "y": 12, "w": 12, "h": 4},
+      "targets": [{"expr": "up{job=\"swarmcracker\"}", "legendFormat": "{{ instance }}"}]
+    },
+    {
+      "title": "Events Timeline",
+      "type": "logs",
+      "gridPos": {"x": 0, "y": 16, "w": 24, "h": 6},
+      "targets": [{"expr": "{job=\"swarmcracker\"} |= \"error\""}]
+    }
+  ],
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "30m", "1h"]}
+}
