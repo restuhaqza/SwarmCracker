@@ -18,7 +18,7 @@ func WriteConfigFile(configDir, name string, config []byte) error {
 	}
 
 	filename := filepath.Join(configDir, name+".conf")
-	return os.WriteFile(filename, config, 0644)
+	return os.WriteFile(filename, config, 0600)
 }
 
 // WriteConfigListFile writes a CNI configuration list to disk
@@ -40,7 +40,7 @@ func WriteConfigListFile(configDir, name string, configs []map[string]interface{
 	}
 
 	filename := filepath.Join(configDir, name+".conflist")
-	return os.WriteFile(filename, data, 0644)
+	return os.WriteFile(filename, data, 0600)
 }
 
 // RemoveConfigFile removes a CNI configuration file

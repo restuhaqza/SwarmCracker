@@ -238,6 +238,16 @@ func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName stri
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
+	// Ensure parent directory exists in the ext4 image
+	parentDir := filepath.Dir(targetPath)
+	if parentDir != "/" && parentDir != "." {
+		mkdirCmd := execCommand("debugfs", "-w", "-R",
+			fmt.Sprintf("mkdir %s", parentDir),
+			ext4Path)
+		// Ignore error — directory may already exist
+		mkdirCmd.CombinedOutput()
+	}
+
 	// Use debugfs to write into ext4 without mounting
 	cmd := execCommand("debugfs", "-w", "-R",
 		fmt.Sprintf("write %s %s", filePath, targetPath),

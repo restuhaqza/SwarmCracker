@@ -598,7 +598,7 @@ func (j *Jailer) createDefaultSeccompPolicy(taskID string) (string, error) {
 	}
 
 	policyPath := filepath.Join(j.config.ChrootBaseDir, taskID+".seccomp.json")
-	if err := os.WriteFile(policyPath, []byte(policy), 0644); err != nil {
+	if err := os.WriteFile(policyPath, []byte(policy), 0600); err != nil {
 		return "", fmt.Errorf("failed to write seccomp policy: %w", err)
 	}
 

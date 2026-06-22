@@ -1,6 +1,7 @@
 package swarmkit
 
 import (
+	"context"
 	"os/exec"
 	"testing"
 
@@ -278,6 +279,49 @@ func TestController_convertTask(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExecutor_Close(t *testing.T) {
+	t.Run("close without cleanup goroutine", func(t *testing.T) {
+		exec := &Executor{
+			controllers: make(map[string]*Controller),
+		}
+		err := exec.Close()
+		assert.NoError(t, err)
+	})
+
+	t.Run("close with cleanup goroutine running", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+
+		// Start a dummy cleanup goroutine that exits on cancel
+		go func() {
+			defer close(done)
+			<-ctx.Done()
+		}()
+
+		exec := &Executor{
+			controllers:   make(map[string]*Controller),
+			cleanupCancel: cancel,
+			cleanupDone:   done,
+		}
+
+		err := exec.Close()
+		assert.NoError(t, err)
+	})
+
+	t.Run("close with cancel but no done channel", func(t *testing.T) {
+		_, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		exec := &Executor{
+			controllers:   make(map[string]*Controller),
+			cleanupCancel: cancel,
+		}
+
+		err := exec.Close()
+		assert.NoError(t, err)
+	})
 }
 
 func TestVMMManager_NewVMMManager(t *testing.T) {

@@ -810,6 +810,8 @@ func (ip *ImagePreparer) getInitBinaryPath() string {
 	}
 
 	switch ip.initInjector.config.Type {
+	case InitSystemNone:
+		return ""
 	case InitSystemTini:
 		paths = []string{"/usr/bin/tini", "/usr/sbin/tini", "/sbin/tini"}
 	case InitSystemDumbInit:

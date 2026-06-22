@@ -114,7 +114,7 @@ func WriteSeccompProfile(vmID, profilePath string) error {
 		return fmt.Errorf("failed to create profile directory: %w", err)
 	}
 
-	if err := os.WriteFile(profilePath, data, 0644); err != nil {
+	if err := os.WriteFile(profilePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write seccomp profile: %w", err)
 	}
 

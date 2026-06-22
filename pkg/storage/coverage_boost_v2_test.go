@@ -674,7 +674,7 @@ func TestCopyFile_Error_V2(t *testing.T) {
 
 // TestDirSizeBytes_Error tests dirSizeBytes error handling
 func TestDirSizeBytes_Error_V2(t *testing.T) {
-	_, err := dirSizeBytes("/nonexistent/path")
+	_, err := dirSizeBytes(filepath.Join(t.TempDir(), "nonexistent"))
 	assert.Error(t, err)
 }
 

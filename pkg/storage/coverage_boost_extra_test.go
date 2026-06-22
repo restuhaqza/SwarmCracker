@@ -585,7 +585,7 @@ func TestCopyFile_SrcStatError(t *testing.T) {
 
 // TestDirSizeBytes_NonExistent tests dirSizeBytes with non-existent path
 func TestDirSizeBytes_NonExistent(t *testing.T) {
-	_, err := dirSizeBytes("/nonexistent/path")
+	_, err := dirSizeBytes(filepath.Join(t.TempDir(), "nonexistent"))
 	assert.Error(t, err, "dirSizeBytes should fail for non-existent path")
 }
 
@@ -609,7 +609,7 @@ func TestDirSizeBytes_WithFiles(t *testing.T) {
 
 // TestDirSizeMB_NonExistent tests dirSizeMB with non-existent path
 func TestDirSizeMB_NonExistent(t *testing.T) {
-	_, err := dirSizeMB("/nonexistent/path")
+	_, err := dirSizeMB(filepath.Join(t.TempDir(), "nonexistent"))
 	assert.Error(t, err, "dirSizeMB should fail for non-existent path")
 }
 

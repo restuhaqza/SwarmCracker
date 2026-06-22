@@ -428,7 +428,7 @@ func TestWriteSeccompProfile_Extended(t *testing.T) {
 		}
 
 		// Check file mode
-		expectedMode := os.FileMode(0644)
+		expectedMode := os.FileMode(0600)
 		if info.Mode() != expectedMode {
 			t.Errorf("File mode should be %v, got: %v", expectedMode, info.Mode())
 		}
