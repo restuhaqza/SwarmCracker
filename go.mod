@@ -9,6 +9,7 @@ require (
 	github.com/google/go-containerregistry v0.21.5
 	github.com/hashicorp/consul/api v1.34.2
 	github.com/moby/swarmkit/v2 v2.1.1
+	github.com/prometheus/client_golang v1.14.0
 	github.com/rs/zerolog v1.33.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/spf13/cobra v1.10.2
@@ -67,7 +68,6 @@ require (
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_golang v1.14.0 // indirect
 	github.com/prometheus/client_model v0.3.0 // indirect
 	github.com/prometheus/common v0.42.0 // indirect
 	github.com/prometheus/procfs v0.9.0 // indirect

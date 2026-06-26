@@ -108,11 +108,14 @@ func validateConfig() error {
 		return fmt.Errorf("configuration directory not found: %s", configDir)
 	}
 
-	// Check if config file exists
-	if _, err := os.Stat(configFile); err != nil {
-		fmt.Printf("⚠️  Main config file not found: %s\n", configFile)
-		fmt.Println("This is normal for a new cluster — config will be created on init")
-		return nil
+	// Check if config file exists (missing config is OK for new clusters)
+	if _, statErr := os.Stat(configFile); statErr != nil {
+		if os.IsNotExist(statErr) {
+			fmt.Printf("⚠️  Main config file not found: %s\n", configFile)
+			fmt.Println("This is normal for a new cluster — config will be created on init")
+			return nil
+		}
+		return fmt.Errorf("cannot access config file %s: %w", configFile, statErr)
 	}
 
 	// Actually load and validate

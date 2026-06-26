@@ -20,7 +20,8 @@ import (
 // swarmd-firecracker and swarmcracker CLI / swarmctl.
 //
 // Version history:
-//   1 — Initial schema (v0.8.0+): all v0.x releases share this version
+//
+//	1 — Initial schema (v0.8.0+): all v0.x releases share this version
 const Current = "1"
 
 // WithVersion returns a gRPC DialOption that injects the API version
@@ -28,7 +29,8 @@ const Current = "1"
 // the SwarmCracker manager from CLI or swarmctl.
 //
 // Usage:
-//   conn, err := grpc.Dial(addr, apiversion.WithVersion(), grpc.WithInsecure())
+//
+//	conn, err := grpc.Dial(addr, apiversion.WithVersion(), grpc.WithInsecure())
 func WithVersion() grpc.DialOption {
 	return grpc.WithUnaryInterceptor(VersionClientInterceptor())
 }

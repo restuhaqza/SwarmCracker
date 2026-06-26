@@ -24,6 +24,7 @@ import (
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/discovery"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
+	swarmcrackermetrics "github.com/restuhaqza/swarmcracker/pkg/metrics"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -510,6 +511,7 @@ type Controller struct {
 	mu         sync.Mutex
 	prepared   bool
 	started    bool
+	startTime  time.Time // tracks when Start was called, used for boot duration metric
 
 	// internalTask holds the prepared internal task with annotations
 	internalTask *types.Task
@@ -660,13 +662,30 @@ func (c *Controller) Start(ctx context.Context) error {
 		return fmt.Errorf("translation failed: %w", err)
 	}
 
+	// Track boot time
+	c.startTime = time.Now()
+
 	// Start VM
 	if err := c.vmmMgr.Start(ctx, task, vmConfig); err != nil {
+		// Record boot failure metric
+		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "boot_failure")
 		return fmt.Errorf("failed to start VM: %w", err)
 	}
 
 	c.started = true
-	c.logger.Info().Msg("Task started")
+
+	// Record boot duration and VM started metric
+	bootDuration := time.Since(c.startTime).Seconds()
+	service := c.task.ServiceID
+	if service == "" {
+		service = c.task.ID // fallback: use task ID if no service ID
+	}
+	swarmcrackermetrics.RecordVMBootDuration(c.config.Hostname, service, bootDuration)
+	swarmcrackermetrics.RecordVMStarted(c.config.Hostname, service)
+
+	c.logger.Info().
+		Float64("boot_duration_seconds", bootDuration).
+		Msg("Task started")
 	return nil
 }
 
@@ -678,10 +697,14 @@ func (c *Controller) Wait(ctx context.Context) error {
 
 	status, err := c.vmmMgr.Wait(ctx, task)
 	if err != nil {
+		// Process exited abnormally (crashed)
+		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "unexpected_exit")
 		return err
 	}
 
 	if status.Err != nil {
+		// Task returned with non-zero exit code
+		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "exit_error")
 		return status.Err
 	}
 
@@ -720,6 +743,9 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	// Mark as not started
 	c.started = false
 
+	// Record stopped metric
+	swarmcrackermetrics.RecordVMStopped(c.config.Hostname)
+
 	c.logger.Info().Msg("Task shut down successfully")
 	return nil
 }
@@ -746,6 +772,9 @@ func (c *Controller) Terminate(ctx context.Context) error {
 
 	// Mark as not started
 	c.started = false
+
+	// Record crash metric (force terminate is abnormal shutdown)
+	swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "force_terminate")
 
 	c.logger.Info().Msg("Task terminated forcefully")
 	return nil

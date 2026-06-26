@@ -24,6 +24,7 @@ import (
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/moby/swarmkit/v2/manager/allocator/networkallocator"
 	"github.com/moby/swarmkit/v2/node"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/health"
@@ -352,11 +353,12 @@ func runAgent(ctx *cli.Context) error {
 			"  --vxlan-peers 192.168.1.11,192.168.1.12")
 	}
 
-	// Start health check server
+	// Start health + metrics server
 	healthChecker := health.NewChecker(ctx.String("bridge-name"), "firecracker")
 	go func() {
 		mux := http.NewServeMux()
 		mux.Handle("/healthz", healthChecker)
+		mux.Handle("/metrics", promhttp.Handler())
 		healthAddr := ctx.String("health-addr")
 
 		// Wrap with security middleware: rate limiting + request timeout

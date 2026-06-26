@@ -450,8 +450,8 @@ func runSetupNetwork() error {
 	// IP forwarding
 	fmt.Println("── IP Forwarding ──")
 	sysctls := map[string]string{
-		"net.ipv4.ip_forward":                  "1",
-		"net.bridge.bridge-nf-call-iptables":   "0",
+		"net.ipv4.ip_forward":                "1",
+		"net.bridge.bridge-nf-call-iptables": "0",
 	}
 	for key, val := range sysctls {
 		cmd := exec.Command("sysctl", "-w", key+"="+val)
@@ -529,13 +529,13 @@ func runSetupNetwork() error {
 // ─── setup config ───────────────────────────────────────────────────────
 
 var (
-	setupConfigKernel     string
-	setupConfigRootfs     string
-	setupConfigBridge     string
-	setupConfigSubnet     string
-	setupConfigBridgeIP   string
-	setupConfigVCPUs      int
-	setupConfigMemory     int
+	setupConfigKernel         string
+	setupConfigRootfs         string
+	setupConfigBridge         string
+	setupConfigSubnet         string
+	setupConfigBridgeIP       string
+	setupConfigVCPUs          int
+	setupConfigMemory         int
 	setupConfigNonInteractive bool
 )
 

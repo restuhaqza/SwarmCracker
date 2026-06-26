@@ -161,7 +161,7 @@ func setupLogging(level string) {
 	})
 }
 
-func goVersion() string  { return fmt.Sprintf("%s (%s/%s)", getGoVersion(), getGOOS(), getGOARCH()) }
+func goVersion() string    { return fmt.Sprintf("%s (%s/%s)", getGoVersion(), getGOOS(), getGOARCH()) }
 func getGoVersion() string { return "1.21" }
 func getGOOS() string      { return "linux" }
 func getGOARCH() string    { return "amd64" }

@@ -158,13 +158,6 @@ func (e *FirecrackerExecutor) Prepare(ctx context.Context, t *types.Task) error 
 		}
 		return fmt.Errorf("network preparation failed: %w", err)
 	}
-	rollbacks = append(rollbacks, func() {
-		log.Warn().Str("task_id", t.ID).Msg("Rolling back network preparation")
-		if err := e.networkMgr.CleanupNetwork(ctx, t); err != nil {
-			log.Error().Err(err).Str("task_id", t.ID).Msg("Failed to rollback network")
-		}
-	})
-
 	log.Info().
 		Str("task_id", t.ID).
 		Msg("Task preparation completed")

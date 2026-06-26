@@ -8,13 +8,13 @@ scrape_configs:
     static_configs:
       - targets:
           # Manager nodes
-          - manager1:9090
-          - manager2:9090
-          - manager3:9090
+          - manager1:8080
+          - manager2:8080
+          - manager3:8080
           # Worker nodes
-          - worker1:9090
-          - worker2:9090
-          - worker3:9090
+          - worker1:8080
+          - worker2:8080
+          - worker3:8080
         labels:
           cluster: production
           env: prod
@@ -31,4 +31,4 @@ scrape_configs:
         action: keep
       - source_labels: [__meta_consul_address]
         target_label: __address__
-        replacement: "${1}:9090"
+        replacement: "${1}:8080"

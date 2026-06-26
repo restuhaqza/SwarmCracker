@@ -115,7 +115,7 @@ type NetworkConfig struct {
 	NATEnabled *bool  `yaml:"nat_enabled"` // Enable masquerading for internet access; nil means unset
 
 	// VXLAN overlay configuration
-	VXLANEnabled    bool     `yaml:"vxlan_enabled"`     // Enable VXLAN overlay networking
+	VXLANEnabled     bool     `yaml:"vxlan_enabled"`      // Enable VXLAN overlay networking
 	VXLANStaticPeers []string `yaml:"vxlan_static_peers"` // Static VXLAN peer IPs (no Consul needed)
 }
 
