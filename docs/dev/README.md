@@ -8,24 +8,39 @@ For people working on SwarmCracker itself.
 
 ```
 cmd/
-├── swarmctl/             # CLI (swarmctl service create, etc)
-├── swarmd-firecracker/   # Daemon that talks to SwarmKit
-├── swarmcracker/         # Wrapper CLI with simpler commands
+├── swarmctl/             # Debug CLI (swarmctl service create, etc)
+├── swarmd-firecracker/   # Daemon (SwarmKit agent + executor)
+├── swarmcracker/         # Main CLI (cluster mgmt, service, VM, config)
+├── swarmcracker-agent/   # Remote deployment agent
+├── swarmcracker-cni/     # CNI network plugin
+└── get-join-token/       # Join token helper
 
 pkg/
+├── apiversion/           # gRPC API versioning protocol
 ├── executor/             # Turns SwarmKit tasks into Firecracker configs
-├── network/              # Bridges, TAP, VXLAN, NAT
-├── discovery/            # Consul integration
-├── swarmkit/             # SwarmKit glue code
-├── image/                # OCI image extraction
-├── lifecycle/            # VM start/stop logic
+├── network/              # Bridges, TAP, VXLAN, NAT, CNI, discovery
+├── swarmkit/             # SwarmKit executor/controller integration
+├── image/                # OCI image extraction, rootfs preparation
+├── lifecycle/            # VM start/stop/configure logic
 ├── jailer/               # Security sandbox (cgroups, seccomp)
 ├── storage/              # Volumes, secrets, configs
 ├── snapshot/             # VM state snapshots
+├── config/               # YAML config loading
+├── metrics/              # Prometheus metrics
+├── health/               # Health check server
+├── security/             # Seccomp, capabilities
+├── translator/           # Task → VMM config translation
+├── runtime/              # Runtime state management
+├── discovery/            # Consul/VXLAN peer auto-discovery
+├── types/                # Shared type definitions
+├── cni/                  # CNI network allocator
+└── logging/              # Logging setup
 
-infrastructure/ansible/   # Cluster deployment roles
-test-automation/          # Vagrant + e2e tests
-docs/                     # User and dev documentation
+infrastructure/
+├── ansible/              # Cluster deployment roles
+└── observability/        # Prometheus, Grafana configs
+test-automation/          # Vagrant + e2e test infra
+docs/                     # Documentation (you are here)
 ```
 
 ---
@@ -130,6 +145,9 @@ curl http://127.0.0.1:8500/v1/catalog/service/swarmcracker-vxlan
 
 ## More
 
+- [API Reference](reference/api.md) — gRPC API, versioning, services
+- [Package References](reference/) — Per-package documentation
 - [Testing](testing/) — Unit and e2e test details
 - [Architecture](architecture/) — SwarmKit integration specifics
 - [Contributing](contributing.md) — PR guidelines
+- [Architecture Overview](../architecture/overview.md) — System design
