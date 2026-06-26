@@ -73,22 +73,17 @@ func injectBusybox(tmpDir string) error {
 
 	// Create /etc/passwd with minimal root user
 	etcDir := filepath.Join(tmpDir, "etc")
-	if err := os.MkdirAll(etcDir, 0755); err != nil {
-		// Non-fatal
-	}
+	// Best-effort: errors creating /etc in rootfs are non-fatal
+	_ = os.MkdirAll(etcDir, 0755)
 
 	passwdContent := "root:x:0:0:root:/root:/bin/sh\n"
 	passwdPath := filepath.Join(etcDir, "passwd")
-	if err := os.WriteFile(passwdPath, []byte(passwdContent), 0644); err != nil {
-		// Non-fatal
-	}
+	_ = os.WriteFile(passwdPath, []byte(passwdContent), 0644)
 
 	// Create /etc/group with minimal root group
 	groupContent := "root:x:0:\n"
 	groupPath := filepath.Join(etcDir, "group")
-	if err := os.WriteFile(groupPath, []byte(groupContent), 0644); err != nil {
-		// Non-fatal
-	}
+	_ = os.WriteFile(groupPath, []byte(groupContent), 0644)
 
 	return nil
 }

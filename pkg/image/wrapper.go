@@ -190,7 +190,7 @@ func buildCommandString(cmd []string) string {
 		return "/bin/sh"
 	}
 
-	var parts []string
+	parts := make([]string, 0, len(cmd))
 	for _, part := range cmd {
 		parts = append(parts, shellEscape(part))
 	}

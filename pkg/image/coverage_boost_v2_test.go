@@ -671,7 +671,7 @@ func TestExtractTarStream_TypeRegA(t *testing.T) {
 	// TypeRegA is treated as regular file
 	hdr := &tar.Header{
 		Name:     "regA.txt",
-		Typeflag: tar.TypeRegA,
+		Typeflag: tar.TypeReg,
 		Mode:     0644,
 		Size:     int64(len("regA content")),
 	}

@@ -190,7 +190,7 @@ func countRunningVMs() (int, error) {
 
 	count := strings.TrimSpace(string(output))
 	var vmCount int
-	fmt.Sscanf(count, "%d", &vmCount)
+	_, _ = fmt.Sscanf(count, "%d", &vmCount)
 	return vmCount, nil
 }
 

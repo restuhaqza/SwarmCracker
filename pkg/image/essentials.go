@@ -25,11 +25,8 @@ func injectEssentialFiles(tmpDir string, imageID string) error {
 		return fmt.Errorf("failed to inject hosts: %w", err)
 	}
 
-	// Inject /etc/nsswitch.conf (only for glibc-based images)
-	if err := injectNsswitch(tmpDir); err != nil {
-		// Non-critical, just log warning
-		// This is informational only
-	}
+	// Inject /etc/nsswitch.conf (best-effort, only for glibc-based images)
+	_ = injectNsswitch(tmpDir)
 
 	// Inject /etc/machine-id
 	if err := injectMachineID(tmpDir, imageID); err != nil {

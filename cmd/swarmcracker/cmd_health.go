@@ -294,7 +294,7 @@ func getDiskUsage(path string) (diskInfo, error) {
 	}
 	// Fields: Filesystem, 1B-blocks, Used, Available, Use%, Mounted
 	var total, used uint64
-	fmt.Sscanf(fields[1], "%d", &total)
-	fmt.Sscanf(fields[2], "%d", &used)
+	_, _ = fmt.Sscanf(fields[1], "%d", &total)
+	_, _ = fmt.Sscanf(fields[2], "%d", &used)
 	return diskInfo{Total: total, Used: used}, nil
 }

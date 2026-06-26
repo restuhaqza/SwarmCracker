@@ -209,9 +209,9 @@ func checkSufficientMemory() error {
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "MemTotal:") {
-			fmt.Sscanf(line, "MemTotal: %d kB", &memTotal)
+			_, _ = fmt.Sscanf(line, "MemTotal: %d kB", &memTotal)
 		} else if strings.HasPrefix(line, "MemAvailable:") {
-			fmt.Sscanf(line, "MemAvailable: %d kB", &memAvailable)
+			_, _ = fmt.Sscanf(line, "MemAvailable: %d kB", &memAvailable)
 		}
 	}
 

@@ -139,7 +139,7 @@ func (q *QuotaEnforcer) EnforceDirLimit(dataPath string, limitMB int) (int, erro
 		name string
 		size int64
 	}
-	var files []fileInfo
+	files := make([]fileInfo, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue

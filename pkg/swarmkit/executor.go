@@ -991,7 +991,7 @@ func (c *Controller) convertTask() *types.Task {
 	}
 
 	// Convert mounts
-	var mounts []types.Mount
+	mounts := make([]types.Mount, 0, len(containerSpec.Container.Mounts))
 	for _, m := range containerSpec.Container.Mounts {
 		mounts = append(mounts, types.Mount{
 			Target:   m.Target,
@@ -1011,7 +1011,7 @@ func (c *Controller) convertTask() *types.Task {
 	}
 
 	// Convert networks
-	var networks []types.NetworkAttachment
+	networks := make([]types.NetworkAttachment, 0, len(c.task.Networks))
 	for _, n := range c.task.Networks {
 		if n == nil || n.Network == nil {
 			continue
@@ -1072,12 +1072,12 @@ func (c *Controller) convertTask() *types.Task {
 // the agent must fetch it from the manager's secret store. For now, we
 // just convert the references so they can be injected during Prepare.
 func convertSecrets(task *api.Task) []types.SecretRef {
-	var secrets []types.SecretRef
-
 	containerSpec, ok := task.Spec.Runtime.(*api.TaskSpec_Container)
 	if !ok || containerSpec.Container == nil {
-		return secrets
+		return nil
 	}
+
+	secrets := make([]types.SecretRef, 0, len(containerSpec.Container.Secrets))
 
 	for _, sr := range containerSpec.Container.Secrets {
 		target := "/run/secrets/" + sr.SecretName
@@ -1101,12 +1101,12 @@ func convertSecrets(task *api.Task) []types.SecretRef {
 // Note: Config data is not available at the executor level in SwarmKit —
 // the agent must fetch it from the manager's config store.
 func convertConfigs(task *api.Task) []types.ConfigRef {
-	var configs []types.ConfigRef
-
 	containerSpec, ok := task.Spec.Runtime.(*api.TaskSpec_Container)
 	if !ok || containerSpec.Container == nil {
-		return configs
+		return nil
 	}
+
+	configs := make([]types.ConfigRef, 0, len(containerSpec.Container.Configs))
 
 	for _, cr := range containerSpec.Container.Configs {
 		target := "/config/" + cr.ConfigName

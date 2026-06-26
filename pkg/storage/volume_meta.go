@@ -124,7 +124,7 @@ func (ms *MetaStore) List(ctx context.Context) ([]*volumeMeta, error) {
 		return nil, fmt.Errorf("read volumes dir: %w", err)
 	}
 
-	var metas []*volumeMeta
+	metas := make([]*volumeMeta, 0, len(entries))
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue

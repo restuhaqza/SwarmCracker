@@ -370,9 +370,9 @@ func checkDoctorMemory() DoctorCheck {
 	var memTotal, memAvail uint64
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.HasPrefix(line, "MemTotal:") {
-			fmt.Sscanf(line, "MemTotal: %d kB", &memTotal)
+			_, _ = fmt.Sscanf(line, "MemTotal: %d kB", &memTotal)
 		} else if strings.HasPrefix(line, "MemAvailable:") {
-			fmt.Sscanf(line, "MemAvailable: %d kB", &memAvail)
+			_, _ = fmt.Sscanf(line, "MemAvailable: %d kB", &memAvail)
 		}
 	}
 	c.Message = fmt.Sprintf("%.1f GB total, %.1f GB available",

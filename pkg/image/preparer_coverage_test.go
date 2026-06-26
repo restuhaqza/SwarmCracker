@@ -176,7 +176,7 @@ func TestExtractTarStream(t *testing.T) {
 		tw := tar.NewWriter(buf)
 		content := []byte("regA content")
 		tw.WriteHeader(&tar.Header{
-			Typeflag: tar.TypeRegA,
+			Typeflag: tar.TypeReg,
 			Name:     "regA.txt",
 			Mode:     0644,
 			Size:     int64(len(content)),
