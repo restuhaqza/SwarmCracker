@@ -136,9 +136,6 @@ issues:
     - linters:
         - staticcheck
       text: "SA1019: skel\\.PluginMain is deprecated"
-    - linters:
-        - staticcheck
-      text: "SA1019: tar\\.TypeRegA has been deprecated"
     # Staticcheck SA1012 (nil context in tests), SA9003 (empty branch), SA4006 (unused)
     - linters:
         - staticcheck
