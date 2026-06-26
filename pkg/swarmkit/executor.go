@@ -21,7 +21,7 @@ import (
 
 	swarmkit_exec "github.com/moby/swarmkit/v2/agent/exec"
 	"github.com/moby/swarmkit/v2/api"
-	"github.com/moby/swarmkit/v2/log"
+	swarmkit_log "github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/discovery"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	swarmcrackermetrics "github.com/restuhaqza/swarmcracker/pkg/metrics"
@@ -29,7 +29,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
-	zerolog_log "github.com/rs/zerolog/log"
+	"github.com/rs/zerolog/log"
 )
 
 // Executor implements SwarmKit's executor interface backed by SwarmCracker.
@@ -147,9 +147,9 @@ func NewExecutor(config *Config) (*Executor, error) {
 	// Initialize network infrastructure BEFORE starting Consul watcher
 	// This ensures VXLAN is ready when peers are discovered
 	if err := networkMgr.Init(context.Background()); err != nil {
-		zerolog_log.Warn().Err(err).Msg("Failed to initialize network infrastructure")
+		log.Warn().Err(err).Msg("Failed to initialize network infrastructure")
 	} else {
-		zerolog_log.Info().Msg("Network infrastructure initialized (bridge, VXLAN)")
+		log.Info().Msg("Network infrastructure initialized (bridge, VXLAN)")
 	}
 
 	// Setup Consul service discovery if enabled
@@ -173,22 +173,22 @@ func NewExecutor(config *Config) (*Executor, error) {
 			VXLANPort:     4789,
 		})
 		if err != nil {
-			zerolog_log.Warn().Err(err).Msg("Failed to create Consul client")
+			log.Warn().Err(err).Msg("Failed to create Consul client")
 		} else {
 			// Register service in Consul
 			vxlanID := 100 // Default VXLAN ID
 			if err := consulClient.RegisterService(vxlanID, config.BridgeIP); err != nil {
-				zerolog_log.Warn().Err(err).Msg("Failed to register Consul service")
+				log.Warn().Err(err).Msg("Failed to register Consul service")
 			} else {
-				zerolog_log.Info().Str("address", config.ConsulAddress).Msg("Registered in Consul for VXLAN discovery")
+				log.Info().Str("address", config.ConsulAddress).Msg("Registered in Consul for VXLAN discovery")
 				// Set Consul as node discovery provider
 				networkMgr.SetNodeDiscovery(consulClient)
 				// Watch for peer changes
 				go consulClient.WatchPeers(context.Background(), func(peers []string) {
 					if err := networkMgr.UpdateVXLANPeers(peers); err != nil {
-						zerolog_log.Warn().Err(err).Strs("peers", peers).Msg("Failed to update VXLAN peers from Consul")
+						log.Warn().Err(err).Strs("peers", peers).Msg("Failed to update VXLAN peers from Consul")
 					} else {
-						zerolog_log.Info().Strs("peers", peers).Msg("VXLAN peers updated from Consul")
+						log.Info().Strs("peers", peers).Msg("VXLAN peers updated from Consul")
 					}
 				})
 			}
@@ -198,7 +198,7 @@ func NewExecutor(config *Config) (*Executor, error) {
 	// Create volume manager
 	volumeMgr, err := storage.NewVolumeManager("")
 	if err != nil {
-		zerolog_log.Warn().Err(err).Msg("Failed to create volume manager, volume support disabled")
+		log.Warn().Err(err).Msg("Failed to create volume manager, volume support disabled")
 		volumeMgr = nil
 	}
 
@@ -283,7 +283,7 @@ func (e *Executor) periodicCleanup(ctx context.Context) {
 		case <-vmTicker.C:
 			e.cleanupOrphanedVMs(ctx)
 		case <-ctx.Done():
-			zerolog_log.Debug().Msg("Periodic cleanup goroutine stopping")
+			log.Debug().Msg("Periodic cleanup goroutine stopping")
 			return
 		}
 	}
@@ -291,7 +291,7 @@ func (e *Executor) periodicCleanup(ctx context.Context) {
 
 // runCleanup executes the image cleanup.
 func (e *Executor) runCleanup(ctx context.Context) {
-	zerolog_log.Info().Msg("Running periodic image cleanup")
+	log.Info().Msg("Running periodic image cleanup")
 
 	// Get MaxImageAgeDays from config, default to 7
 	maxAgeDays := 7
@@ -302,17 +302,17 @@ func (e *Executor) runCleanup(ctx context.Context) {
 	// Cleanup now returns filesRemoved and bytesFreed
 	filesRemoved, bytesFreed, err := e.imagePrep.Cleanup(ctx, maxAgeDays)
 	if err != nil {
-		zerolog_log.Error().Err(err).Msg("Periodic cleanup failed")
+		log.Error().Err(err).Msg("Periodic cleanup failed")
 		return
 	}
 
 	if filesRemoved > 0 {
-		zerolog_log.Info().
+		log.Info().
 			Int("files_removed", filesRemoved).
 			Int64("bytes_freed", bytesFreed).
 			Msg("Periodic cleanup completed")
 	} else {
-		zerolog_log.Debug().Msg("Periodic cleanup: no old images to remove")
+		log.Debug().Msg("Periodic cleanup: no old images to remove")
 	}
 }
 
@@ -321,7 +321,7 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 	e.cleanupMu.Lock()
 	defer e.cleanupMu.Unlock()
 
-	zerolog_log.Debug().Msg("Checking for orphaned VMs")
+	log.Debug().Msg("Checking for orphaned VMs")
 
 	if e.vmmMgr == nil {
 		return
@@ -329,7 +329,7 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 
 	runningProcesses := e.vmmMgr.GetRunningProcesses()
 	if len(runningProcesses) == 0 {
-		zerolog_log.Debug().Msg("No running VMs found")
+		log.Debug().Msg("No running VMs found")
 		return
 	}
 
@@ -344,11 +344,11 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 	// Find and stop orphaned processes
 	for taskID, process := range runningProcesses {
 		if !activeTasks[taskID] {
-			zerolog_log.Warn().Str("task_id", taskID).Msg("Found orphaned VM, stopping")
+			log.Warn().Str("task_id", taskID).Msg("Found orphaned VM, stopping")
 
 			// Send SIGTERM
 			if err := process.Process.Signal(syscall.SIGTERM); err != nil {
-				zerolog_log.Error().Err(err).Str("task_id", taskID).Msg("Failed to SIGTERM orphaned VM")
+				log.Error().Err(err).Str("task_id", taskID).Msg("Failed to SIGTERM orphaned VM")
 				// Force kill
 				process.Process.Kill()
 			}
@@ -361,9 +361,9 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 
 			select {
 			case <-done:
-				zerolog_log.Info().Str("task_id", taskID).Msg("Orphaned VM stopped")
+				log.Info().Str("task_id", taskID).Msg("Orphaned VM stopped")
 			case <-time.After(5 * time.Second):
-				zerolog_log.Warn().Str("task_id", taskID).Msg("Orphaned VM didn't stop, killing")
+				log.Warn().Str("task_id", taskID).Msg("Orphaned VM didn't stop, killing")
 				process.Process.Kill()
 			}
 
@@ -373,20 +373,20 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 			// Clean up socket file
 			socketPath := filepath.Join(e.config.SocketDir, taskID+".sock")
 			if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-				zerolog_log.Warn().Err(err).Str("socket", socketPath).Msg("Failed to remove socket")
+				log.Warn().Err(err).Str("socket", socketPath).Msg("Failed to remove socket")
 			}
 		}
 	}
 
 	orphanCount := len(runningProcesses) - len(activeTasks)
 	if orphanCount > 0 {
-		zerolog_log.Info().Int("orphaned", orphanCount).Msg("Orphaned VM cleanup completed")
+		log.Info().Int("orphaned", orphanCount).Msg("Orphaned VM cleanup completed")
 	}
 }
 
 // Describe returns the node description for this executor.
 func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
-	log.G(ctx).Debug("Describing executor")
+	swarmkit_log.G(ctx).Debug("Describing executor")
 
 	// Get system resources
 	nanoCPUs := e.getCPUs()
@@ -405,12 +405,12 @@ func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
 				},
 			},
 		})
-		zerolog_log.Info().
+		log.Info().
 			Str("arch", runtime.GOARCH).
 			Str("os", runtime.GOOS).
 			Msg("KVM available: reporting Firecracker resource")
 	} else {
-		zerolog_log.Warn().
+		log.Warn().
 			Str("arch", runtime.GOARCH).
 			Bool("kvm_available", e.kvmAvailable()).
 			Bool("arch_supported", e.archSupported()).
@@ -433,7 +433,7 @@ func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
 
 // Configure configures the executor with node state.
 func (e *Executor) Configure(ctx context.Context, node *api.Node) error {
-	log.G(ctx).WithField("node.id", node.ID).Debug("Configuring executor")
+	swarmkit_log.G(ctx).WithField("node.id", node.ID).Debug("Configuring executor")
 	// Nothing to configure for now
 	return nil
 }
@@ -459,7 +459,7 @@ func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 		e.executorMu.Lock()
 		defer e.executorMu.Unlock()
 		delete(e.controllers, t.ID)
-		zerolog_log.Debug().Str("task_id", t.ID).Msg("Controller deregistered from executor")
+		log.Debug().Str("task_id", t.ID).Msg("Controller deregistered from executor")
 	}
 
 	e.controllers[t.ID] = ctrl
@@ -469,7 +469,7 @@ func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 // SetNetworkBootstrapKeys sets network encryption keys.
 // These keys are used for VXLAN encryption in the overlay network.
 func (e *Executor) SetNetworkBootstrapKeys(keys []*api.EncryptionKey) error {
-	zerolog_log.Debug().Msgf("Setting network bootstrap keys: %d keys", len(keys))
+	log.Debug().Int("key_count", len(keys)).Msg("Setting network bootstrap keys")
 
 	// Store the keys securely
 	e.executorMu.Lock()
@@ -481,14 +481,14 @@ func (e *Executor) SetNetworkBootstrapKeys(keys []*api.EncryptionKey) error {
 		// Check if network manager supports key setting
 		if keySetter, ok := e.networkMgr.(NetworkKeySetter); ok {
 			if err := keySetter.SetEncryptionKeys(keys); err != nil {
-				zerolog_log.Warn().Err(err).Msg("Failed to set encryption keys on network manager")
+				log.Warn().Err(err).Msg("Failed to set encryption keys on network manager")
 				return fmt.Errorf("failed to set network encryption keys: %w", err)
 			}
-			zerolog_log.Debug().Msg("Network encryption keys applied to network manager")
+			log.Debug().Msg("Network encryption keys applied to network manager")
 		}
 	}
 
-	zerolog_log.Info().Int("key_count", len(keys)).Msg("Network bootstrap keys stored")
+	log.Info().Int("key_count", len(keys)).Msg("Network bootstrap keys stored")
 	return nil
 }
 
@@ -550,7 +550,7 @@ func NewController(
 		vmmMgr:     vmmMgr,
 		trans:      trans,
 		socketPath: filepath.Join(config.SocketDir, task.ID+".sock"),
-		logger:     zerolog_log.With().Str("task_id", task.ID).Logger(),
+		logger:     log.With().Str("task_id", task.ID).Logger(),
 	}, nil
 }
 
@@ -1135,7 +1135,7 @@ func hostname() string {
 
 // Close cleans up executor resources (dnsmasq, VXLAN peer discovery).
 func (e *Executor) Close() error {
-	zerolog_log.Info().Msg("Closing SwarmKit executor")
+	log.Info().Msg("Closing SwarmKit executor")
 
 	// Stop periodic cleanup goroutine
 	if e.cleanupCancel != nil {
@@ -1149,11 +1149,11 @@ func (e *Executor) Close() error {
 	// Shutdown network manager (kills dnsmasq, stops VXLAN discovery)
 	if nm, ok := e.networkMgr.(*network.NetworkManager); ok {
 		if err := nm.Shutdown(); err != nil {
-			zerolog_log.Warn().Err(err).Msg("Failed to shutdown network manager")
+			log.Warn().Err(err).Msg("Failed to shutdown network manager")
 		}
 	}
 
-	zerolog_log.Info().Msg("Executor closed")
+	log.Info().Msg("Executor closed")
 	return nil
 }
 
@@ -1177,7 +1177,7 @@ func (e *Executor) archSupported() bool {
 // getCPUs returns the available CPU count in nanocpus (SwarmKit format)
 func (e *Executor) getCPUs() int64 {
 	totalCPUs := runtime.NumCPU()
-	zerolog_log.Debug().Msgf("Detected %d total CPUs", totalCPUs)
+	log.Debug().Int("total_cpus", totalCPUs).Msg("Detected total CPUs")
 
 	// Determine reserved CPUs
 	reservedCPUs := e.config.ReservedCPUs
@@ -1199,8 +1199,11 @@ func (e *Executor) getCPUs() int64 {
 	}
 
 	availableCPUs := totalCPUs - reservedCPUs
-	zerolog_log.Info().Msgf("CPU resources: %d total, %d reserved, %d available for tasks",
-		totalCPUs, reservedCPUs, availableCPUs)
+	log.Info().
+		Int("total", totalCPUs).
+		Int("reserved", reservedCPUs).
+		Int("available", availableCPUs).
+		Msg("CPU resources")
 
 	// Convert to nanocpus (SwarmKit format: 1 CPU = 1e9 nanocpus)
 	return int64(availableCPUs) * 1e9
@@ -1211,7 +1214,7 @@ func (e *Executor) getMemory() int64 {
 	totalMemory := e.readMeminfo()
 	if totalMemory == 0 {
 		// Fallback to safe default if meminfo unavailable
-		zerolog_log.Warn().Msg("Could not read /proc/meminfo, using default 8GB")
+		log.Warn().Msg("Could not read /proc/meminfo, using default 8GB")
 		totalMemory = 8 * 1024 * 1024 * 1024
 	}
 
@@ -1237,8 +1240,11 @@ func (e *Executor) getMemory() int64 {
 	}
 
 	availableMemory := totalMemory - reservedMemory
-	zerolog_log.Info().Msgf("Memory resources: %d MB total, %d MB reserved, %d MB available for tasks",
-		totalMemory/1024/1024, reservedMemory/1024/1024, availableMemory/1024/1024)
+	log.Info().
+		Int64("total_mb", totalMemory/1024/1024).
+		Int64("reserved_mb", reservedMemory/1024/1024).
+		Int64("available_mb", availableMemory/1024/1024).
+		Msg("Memory resources")
 
 	return availableMemory
 }
@@ -1248,7 +1254,7 @@ func (e *Executor) getMemory() int64 {
 func (e *Executor) readMeminfo() int64 {
 	file, err := os.Open("/proc/meminfo")
 	if err != nil {
-		zerolog_log.Error().Err(err).Msg("Failed to open /proc/meminfo")
+		log.Error().Err(err).Msg("Failed to open /proc/meminfo")
 		return 0
 	}
 	defer file.Close()
@@ -1274,13 +1280,13 @@ func (e *Executor) readMeminfo() int64 {
 	}
 
 	if err := scanner.Err(); err != nil {
-		zerolog_log.Error().Err(err).Msg("Error reading /proc/meminfo")
+		log.Error().Err(err).Msg("Error reading /proc/meminfo")
 		return 0
 	}
 
 	// If MemAvailable is not available, fall back to MemTotal * 0.9
 	if memAvailable == 0 && memTotal > 0 {
-		zerolog_log.Debug().Msg("MemAvailable not found, using 90% of MemTotal")
+		log.Debug().Msg("MemAvailable not found, using 90% of MemTotal")
 		memAvailable = int64(float64(memTotal) * 0.9)
 	}
 
@@ -1316,7 +1322,7 @@ func parseMeminfoLine(line string) int64 {
 func getLocalIPFromInterface() string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
-		zerolog_log.Warn().Err(err).Msg("Failed to get network interfaces")
+		log.Warn().Err(err).Msg("Failed to get network interfaces")
 		return ""
 	}
 
