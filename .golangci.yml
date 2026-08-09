@@ -105,14 +105,11 @@ issues:
         - noctx
     - path: cmd/swarmd-firecracker/
       linters:
-        - errcheck
         - gosec
-        - gocyclo
     - path: cmd/swarmctl/
       linters:
         - errcheck
         - gosec
-        - gocyclo
         - noctx
     - path: cmd/swarmcracker-cni/
       linters:
@@ -156,6 +153,17 @@ issues:
     - linters:
         - gocyclo
       path: pkg/config/config\.go
+    # OPERATE-06: split reduced most files under 20; these retain
+    # switch-dispatch complexity from the monolithic CLI
+    - linters:
+        - gocyclo
+      path: cmd/swarmctl/main\.go
+    - linters:
+        - gocyclo
+      path: cmd/swarmctl/snapshots\.go
+    - linters:
+        - gocyclo
+      path: cmd/swarmctl/volumes\.go
     - linters:
         - gocyclo
       path: pkg/lifecycle/
