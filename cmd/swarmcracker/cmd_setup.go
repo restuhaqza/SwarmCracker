@@ -5,7 +5,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
@@ -262,88 +264,88 @@ func runSetupInstall() error {
 }
 
 func installFirecracker() error {
-	// Check if already installed
-	if path, err := exec.LookPath("firecracker"); err == nil {
-		verOut, _ := exec.Command(path, "--version").CombinedOutput()
-		fmt.Printf("  ✅ firecracker already installed: %s\n", strings.TrimSpace(strings.SplitN(string(verOut), "\n", 2)[0]))
-	} else {
-		fmt.Printf("  📦 Installing Firecracker %s...\n", setupInstallFirecrackerVer)
+	_, fcErr := exec.LookPath("firecracker")
+	_, jailerErr := exec.LookPath("jailer")
+	needFC := fcErr != nil
+	needJailer := jailerErr != nil
 
-		arch := runtime.GOARCH
-		if arch == "amd64" {
-			arch = "x86_64"
+	if !needFC {
+		if path, err := exec.LookPath("firecracker"); err == nil {
+			verOut, _ := exec.Command(path, "--version").CombinedOutput()
+			verLine := strings.TrimSpace(strings.SplitN(string(verOut), "\n", 2)[0])
+			fmt.Printf("  ✅ firecracker already installed: %s\n", verLine)
 		}
-		if arch == "arm64" {
-			arch = "aarch64"
-		}
+	}
+	if !needJailer {
+		fmt.Println("  ✅ jailer already installed")
+	}
+	if !needFC && !needJailer {
+		return nil
+	}
 
-		url := fmt.Sprintf(
-			"https://github.com/firecracker-microvm/firecracker/releases/download/%s/firecracker-%s-%s.tgz",
-			setupInstallFirecrackerVer, setupInstallFirecrackerVer, arch,
-		)
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "x86_64"
+	}
+	if arch == "arm64" {
+		arch = "aarch64"
+	}
 
-		fmt.Printf("     Downloading %s...\n", url)
-		// For now, inform the user how to install manually since Go doesn't
-		// have a built-in tarball downloader without extra deps.
-		fmt.Printf("     Please run:\n")
-		fmt.Printf("       curl -fsSL %s -o /tmp/firecracker.tgz\n", url)
-		fmt.Printf("       tar xzf /tmp/firecracker.tgz -C /tmp\n")
-		fmt.Printf("       sudo cp /tmp/release-%s-%s/firecracker-%s-%s /usr/local/bin/firecracker\n",
-			setupInstallFirecrackerVer, arch, setupInstallFirecrackerVer, arch)
-		fmt.Printf("       sudo cp /tmp/release-%s-%s/jailer-%s-%s /usr/local/bin/jailer\n",
-			setupInstallFirecrackerVer, arch, setupInstallFirecrackerVer, arch)
-		fmt.Printf("       sudo chmod +x /usr/local/bin/firecracker /usr/local/bin/jailer\n")
-		fmt.Printf("       rm -rf /tmp/firecracker.tgz /tmp/release-%s-%s\n",
-			setupInstallFirecrackerVer, arch)
+	url := fmt.Sprintf(
+		"https://github.com/firecracker-microvm/firecracker/releases/download/%s/firecracker-%s-%s.tgz",
+		setupInstallFirecrackerVer, setupInstallFirecrackerVer, arch,
+	)
 
-		// Try curl-based install if curl is available
-		if _, err := exec.LookPath("curl"); err == nil {
-			tmpDir, err := os.MkdirTemp("", "swarmcracker-install-")
-			if err != nil {
-				return fmt.Errorf("failed to create temp dir: %w", err)
-			}
-			defer os.RemoveAll(tmpDir)
+	fmt.Printf("  📦 Installing Firecracker %s (%s)...\n", setupInstallFirecrackerVer, arch)
 
-			tarball := filepath.Join(tmpDir, "firecracker.tgz")
-			curlCmd := exec.Command("curl", "-fsSL", url, "-o", tarball)
-			curlCmd.Stdout = os.Stdout
-			curlCmd.Stderr = os.Stderr
-			if err := curlCmd.Run(); err != nil {
-				return fmt.Errorf("failed to download firecracker: %w", err)
-			}
+	if _, err := exec.LookPath("curl"); err != nil {
+		return fmt.Errorf("curl not found — required to download firecracker")
+	}
+	tmpDir, err := os.MkdirTemp("", "swarmcracker-install-")
+	if err != nil {
+		return fmt.Errorf("failed to create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
 
-			tarCmd := exec.Command("tar", "xzf", tarball, "-C", tmpDir)
-			if err := tarCmd.Run(); err != nil {
-				return fmt.Errorf("failed to extract firecracker: %w", err)
-			}
+	tarball := filepath.Join(tmpDir, "firecracker.tgz")
+	curlCmd := exec.Command("curl", "-fsSL", url, "-o", tarball)
+	curlCmd.Stdout = os.Stdout
+	curlCmd.Stderr = os.Stderr
+	if err := curlCmd.Run(); err != nil {
+		return fmt.Errorf("failed to download firecracker: %w", err)
+	}
 
-			// Find and install binaries
-			releaseDir := filepath.Join(tmpDir, fmt.Sprintf("release-%s-%s", setupInstallFirecrackerVer, arch))
+	tarCmd := exec.Command("tar", "xzf", tarball, "-C", tmpDir)
+	if err := tarCmd.Run(); err != nil {
+		return fmt.Errorf("failed to extract firecracker: %w", err)
+	}
 
-			// Try to find the actual binary names (Firecracker naming varies)
-			fcFiles, _ := filepath.Glob(filepath.Join(releaseDir, "firecracker*"))
-			for _, f := range fcFiles {
-				if !strings.HasSuffix(f, ".debug") && !strings.HasSuffix(f, ".stripped") {
-					installBin(f, "/usr/local/bin/firecracker")
-					fmt.Printf("  ✅ firecracker installed to /usr/local/bin/firecracker\n")
-					break
+	releaseDir := filepath.Join(tmpDir, fmt.Sprintf("release-%s-%s", setupInstallFirecrackerVer, arch))
+
+	if needFC {
+		fcFiles, _ := filepath.Glob(filepath.Join(releaseDir, "firecracker*"))
+		for _, f := range fcFiles {
+			if !strings.HasSuffix(f, ".debug") && !strings.HasSuffix(f, ".stripped") {
+				if err := installBin(f, "/usr/local/bin/firecracker"); err != nil {
+					return err
 				}
-			}
-
-			jailerFiles, _ := filepath.Glob(filepath.Join(releaseDir, "jailer*"))
-			for _, f := range jailerFiles {
-				if !strings.HasSuffix(f, ".debug") {
-					installBin(f, "/usr/local/bin/jailer")
-					fmt.Printf("  ✅ jailer installed to /usr/local/bin/jailer\n")
-					break
-				}
+				fmt.Printf("  ✅ firecracker installed to /usr/local/bin/firecracker\n")
+				break
 			}
 		}
 	}
 
-	// Jailer user setup
-	if _, err := exec.LookPath("jailer"); err == nil {
-		fmt.Println("  ✅ jailer available")
+	if needJailer {
+		jailerFiles, _ := filepath.Glob(filepath.Join(releaseDir, "jailer*"))
+		for _, f := range jailerFiles {
+			if !strings.HasSuffix(f, ".debug") {
+				if err := installBin(f, "/usr/local/bin/jailer"); err != nil {
+					return err
+				}
+				fmt.Printf("  ✅ jailer installed to /usr/local/bin/jailer\n")
+				break
+			}
+		}
 	}
 
 	return nil
@@ -363,32 +365,124 @@ func installBin(src, dst string) error {
 }
 
 func downloadKernel() error {
-	fmt.Println("  📦 Downloading kernel...")
-	fmt.Println("     The install.sh script handles kernel download with version")
-	fmt.Println("     discovery. Run the install script for automatic kernel setup:")
-	fmt.Println("       curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | bash")
-	fmt.Println("     Or download manually:")
-	fmt.Println("       sudo mkdir -p /usr/share/firecracker")
+	kernelPath := kernelPath // global --kernel override (main.go)
+	if kernelPath == "" {
+		kernelPath = "/usr/share/firecracker/vmlinux"
+	}
+	if _, err := os.Stat(kernelPath); err == nil {
+		fmt.Printf("  ✅ Kernel already present: %s\n", kernelPath)
+		return nil
+	}
+
 	arch := runtime.GOARCH
 	if arch == "amd64" {
 		arch = "x86_64"
 	}
-	fmt.Printf("       curl -fsSL https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/%s/vmlinux-6.1.155 -o /usr/share/firecracker/vmlinux\n", arch)
+	if arch == "arm64" {
+		arch = "aarch64"
+	}
+	ciVersion := strings.TrimPrefix(setupInstallFirecrackerVer, "v")
+	ciVersion = strings.Join(strings.SplitN(ciVersion, ".", 3)[:2], ".")
+
+	if err := os.MkdirAll(filepath.Dir(kernelPath), 0755); err != nil {
+		return err
+	}
+
+	fmt.Printf("  📦 Downloading kernel to %s ...\n", kernelPath)
+
+	// Dynamic discovery (mirrors the old install.sh logic): list available
+	// kernels for this Firecracker version and pick the newest.
+	listURL := fmt.Sprintf("https://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/%s/%s/vmlinux-&list-type=2", ciVersion, arch)
+	if out, err := exec.Command("curl", "-fsSL", listURL).Output(); err == nil {
+		keyRe := regexp.MustCompile(`<Key>(firecracker-ci/[^<]+/vmlinux-[0-9]+\.(?:[0-9]+\.)*[0-9]+)</Key>`)
+		keys := keyRe.FindAllStringSubmatch(string(out), -1)
+		if len(keys) > 0 {
+			best := keys[0][1]
+			for _, m := range keys[1:] {
+				if kernelVersionGreater(m[1], best) {
+					best = m[1]
+				}
+			}
+			url := "https://s3.amazonaws.com/spec.ccfc.min/" + best
+			fmt.Printf("     Downloading %s\n", url)
+			if err := runCurl(url, kernelPath); err == nil {
+				fmt.Printf("  ✅ Kernel installed: %s\n", kernelPath)
+				return nil
+			}
+			fmt.Printf("  ⚠️  Dynamic download failed (%v) — falling back\n", err)
+		}
+	}
+
+	// Fallback: known-good pinned kernel
+	fallback := fmt.Sprintf("https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/%s/%s/vmlinux-6.1.155", ciVersion, arch)
+	fmt.Printf("     Fallback: %s\n", fallback)
+	if err := runCurl(fallback, kernelPath); err != nil {
+		return fmt.Errorf("kernel download failed: %w", err)
+	}
+	fmt.Printf("  ✅ Kernel installed: %s\n", kernelPath)
 	return nil
 }
 
 func downloadRootfs() error {
-	fmt.Println("  📦 Downloading rootfs...")
-	fmt.Println("     Run the install script for automatic rootfs setup:")
-	fmt.Println("       curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | bash")
-	fmt.Println("     Or download manually:")
+	rootfsDir := rootfsDir // global --rootfs-dir override (main.go)
+	if rootfsDir == "" {
+		rootfsDir = "/var/lib/firecracker/rootfs"
+	}
+	rootfsFile := filepath.Join(rootfsDir, "bionic.rootfs.ext4")
+	if _, err := os.Stat(rootfsFile); err == nil {
+		fmt.Printf("  ✅ Rootfs already present: %s\n", rootfsFile)
+		return nil
+	}
+
 	arch := runtime.GOARCH
 	if arch == "amd64" {
 		arch = "x86_64"
 	}
-	fmt.Printf("       sudo mkdir -p /var/lib/firecracker/rootfs\n")
-	fmt.Printf("       curl -fsSL https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/%s/rootfs/bionic.rootfs.ext4 -o /var/lib/firecracker/rootfs/bionic.rootfs.ext4\n", arch)
+	if arch == "arm64" {
+		arch = "aarch64"
+	}
+
+	if err := os.MkdirAll(rootfsDir, 0755); err != nil {
+		return err
+	}
+
+	url := fmt.Sprintf("https://s3.amazonaws.com/spec.ccfc.min/img/quickstart_guide/%s/rootfs/bionic.rootfs.ext4", arch)
+	fmt.Printf("  📦 Downloading rootfs to %s ...\n", rootfsFile)
+	if err := runCurl(url, rootfsFile); err != nil {
+		return fmt.Errorf("rootfs download failed: %w", err)
+	}
+	fmt.Printf("  ✅ Rootfs installed: %s\n", rootfsFile)
 	return nil
+}
+
+func runCurl(url, dest string) error {
+	cmd := exec.Command("curl", "-fsSL", url, "-o", dest)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// kernelVersionGreater reports whether kernel key a is a newer vmlinux than b.
+func kernelVersionGreater(a, b string) bool {
+	va, vb := kernelVersion(a), kernelVersion(b)
+	for i := 0; i < 3; i++ {
+		if va[i] != vb[i] {
+			return va[i] > vb[i]
+		}
+	}
+	return false
+}
+
+func kernelVersion(key string) [3]int {
+	var v [3]int
+	m := regexp.MustCompile(`vmlinux-([0-9]+)\.([0-9]+)\.([0-9]+)`).FindStringSubmatch(key)
+	if m == nil {
+		return v
+	}
+	for i := 0; i < 3; i++ {
+		v[i], _ = strconv.Atoi(m[i+1])
+	}
+	return v
 }
 
 // ─── setup network ──────────────────────────────────────────────────────
