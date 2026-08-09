@@ -92,17 +92,21 @@ sudo ufw allow 4789/udp   # VXLAN overlay
 ### One-Line Install (On All Nodes)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/docs/site/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash
+sudo swarmcracker setup install --download-kernel --download-rootfs
+sudo swarmcracker setup network
+sudo swarmcracker setup config --non-interactive
 ```
 
 This sets up:
-- Firecracker v1.15.1 → `/usr/local/bin/firecracker`
-- Jailer → `/usr/local/bin/jailer`
 - swarmcracker binary → `/usr/local/bin/swarmcracker`
 - swarmd-firecracker → `/usr/local/bin/swarmd-firecracker`
 - swarmcracker-agent → `/usr/local/bin/swarmcracker-agent`
-- swarmctl → `/usr/local/bin/swarmctl`
-- Default config → `/etc/swarmcracker/config.yaml`
+- Firecracker v1.15.1 + jailer → `/usr/local/bin/` (via `setup install`)
+- Kernel → `/usr/share/firecracker/vmlinux` (via `setup install --download-kernel`)
+- Rootfs → `/var/lib/firecracker/rootfs/bionic.rootfs.ext4` (via `setup install --download-rootfs`)
+- Bridge + NAT → `swarm-br0` (via `setup network`)
+- Default config → `/etc/swarmcracker/config.yaml` (via `setup config`)
 - Data directory → `/var/lib/swarmkit/`
 
 ### Build From Source (Alternative)

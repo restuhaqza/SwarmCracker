@@ -116,15 +116,20 @@ Add new stats:
 #### 1.4 Update Installation Section
 Add VXLAN flags to install commands:
 ```bash
+# Every node: install binary + setup deps (blessed path, ADR-005)
+curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash
+sudo swarmcracker setup check
+sudo swarmcracker setup install --download-kernel --download-rootfs
+sudo swarmcracker setup network
+sudo swarmcracker setup config --non-interactive
+
 # Manager with VXLAN
-curl -fsSL https://swarmcracker.restuhaqza.dev/install.sh | sudo bash -s -- init \
+sudo swarmcracker cluster init --advertise-addr 192.168.1.10:4242 \
   --vxlan-enabled \
   --vxlan-peers 192.168.1.11,192.168.1.12
 
 # Worker with VXLAN
-curl -fsSL https://swarmcracker.restuhaqzqa.dev/install.sh | sudo bash -s -- join \
-  --manager <MANAGER_IP>:4242 \
-  --token SWMTKN-1-... \
+sudo swarmcracker cluster join --token SWMTKN-1-... <MANAGER_IP>:4242 \
   --vxlan-enabled
 ```
 

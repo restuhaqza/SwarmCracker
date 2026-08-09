@@ -64,7 +64,7 @@ That's it. You're ready to hack.
 | git | any | |
 | Docker / Podman | any | For integration tests |
 | KVM | — | `/dev/kvm` must exist. Not needed for unit tests. |
-| Firecracker | 1.14+ | Auto-installed by `install.sh`. Needed for integration/e2e tests. |
+| Firecracker | 1.14+ | Auto-installed by `swarmcracker setup install`. Needed for integration/e2e tests. |
 
 ### Build
 

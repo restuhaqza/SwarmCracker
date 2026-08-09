@@ -12,12 +12,13 @@ The docker-compose setup uses `privileged: true` and `/dev/kvm` passthrough, whi
 See the [Getting Started guide](https://swarmcracker.dev/getting-started/) for the blessed deployment path:
 
 ```bash
-# One-line install
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | bash
+# One-line install (binary + checksum verify)
+curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash
 
-# Setup Firecracker + network
-sudo swarmcracker setup install
+# Setup Firecracker + network + config
+sudo swarmcracker setup install --download-kernel --download-rootfs
 sudo swarmcracker setup network
+sudo swarmcracker setup config --non-interactive
 
 # Initialize cluster (manager) or join (worker)
 sudo swarmcracker cluster init --advertise-addr <IP>:4242

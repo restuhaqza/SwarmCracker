@@ -44,13 +44,28 @@ Imagine running containers, but with actual VMs instead. That's SwarmCracker —
 ### Prerequisites
 
 - Linux with KVM (`ls /dev/kvm`)
-- Firecracker v1.15+ (install script handles this)
-- Go 1.26+ (build from source only)
+- root access (bridge + Firecracker setup)
 
 ### One-Line Install
 
+The installer downloads the latest release binary and verifies its checksum —
+nothing else. Node setup goes through `swarmcracker setup` (ADR-005 blessed path):
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | bash
+# 1. Install the binary (download + checksum verify)
+curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash
+
+# 2. Verify prerequisites (KVM, kernel modules, tools)
+sudo swarmcracker setup check
+
+# 3. Install Firecracker, jailer, kernel, and rootfs
+sudo swarmcracker setup install --download-kernel --download-rootfs
+
+# 4. Create the VM bridge + enable NAT
+sudo swarmcracker setup network
+
+# 5. Generate the config
+sudo swarmcracker setup config --non-interactive
 ```
 
 ### Initialize a Cluster

@@ -118,13 +118,25 @@ sudo swarmcracker join 192.168.121.17:4242 \
 
 ---
 
-## Testing via Install Script
+## Testing via Blessed Path (ADR-005)
+
+**On every node — install binary + setup deps:**
+
+```bash
+# Test slim install.sh (binary download + checksum verify only)
+curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash
+
+# Setup prerequisites, Firecracker, network, and config
+sudo swarmcracker setup check
+sudo swarmcracker setup install --download-kernel --download-rootfs
+sudo swarmcracker setup network
+sudo swarmcracker setup config --non-interactive
+```
 
 **On Manager:**
 
 ```bash
-# Test new install.sh init mode
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- init \
+sudo swarmcracker cluster init --advertise-addr 192.168.121.17:4242 \
   --vxlan-enabled \
   --vxlan-peers 192.168.121.24,192.168.121.143 \
   --debug
@@ -133,10 +145,7 @@ curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/instal
 **On Workers:**
 
 ```bash
-# Test new install.sh join mode
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- join \
-  --manager 192.168.121.17:4242 \
-  --token SWMTKN-1-... \
+sudo swarmcracker cluster join --token SWMTKN-1-... 192.168.121.17:4242 \
   --vxlan-enabled \
   --vxlan-peers 192.168.121.17,192.168.121.24 \
   --debug
@@ -220,10 +229,9 @@ Running pre-flight checks...
 Manager: swarm-manager (192.168.121.17:4242)
 
 Next steps:
-  1. Get join token: sudo cat /var/lib/swarmkit/join-tokens.txt
+  1. Get join token: sudo swarmcracker cluster token create --role worker
   2. On workers, run:
-     curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash -s -- join \
-       --manager 192.168.121.17:4242 --token <TOKEN>
+     sudo swarmcracker cluster join --token <TOKEN> 192.168.121.17:4242
 ```
 
 ### Join Command

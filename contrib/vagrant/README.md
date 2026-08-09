@@ -23,10 +23,11 @@ ansible-playbook -i inventory/libvirt site.yml
 ### Getting started
 ```bash
 # One-line install + setup
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | bash
-swarmcracker setup install
-swarmcracker setup network
-swarmcracker cluster init --advertise-addr <IP>:4242
+curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash
+sudo swarmcracker setup install --download-kernel --download-rootfs
+sudo swarmcracker setup network
+sudo swarmcracker setup config --non-interactive
+sudo swarmcracker cluster init --advertise-addr <IP>:4242
 ```
 
 ## Vagrantfile variants

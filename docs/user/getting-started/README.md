@@ -41,13 +41,37 @@ sudo modprobe kvm_intel nested=1
 
 ## Install
 
-### Quick Install
+### One-Line Install (blessed path — ADR-005)
+
+`install.sh` only downloads the latest release binary and verifies its checksum.
+Everything else is handled by the `swarmcracker setup` subcommand:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/docs/site/install.sh | sudo bash
+# 1. Install the binary
+curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash
+
+# 2. Verify prerequisites (KVM, kernel modules, tools)
+sudo swarmcracker setup check
+
+# 3. Install Firecracker, jailer, kernel, and rootfs
+sudo swarmcracker setup install --download-kernel --download-rootfs
+
+# 4. Create the VM bridge + enable NAT
+sudo swarmcracker setup network
+
+# 5. Generate the config
+sudo swarmcracker setup config --non-interactive
 ```
 
-This pulls Firecracker, the jailer, SwarmCracker binaries, and sets up defaults.
+Repeat steps 2–5 on every node (manager and workers). Then start the cluster:
+
+```bash
+# On the manager node
+sudo swarmcracker cluster init --advertise-addr <MANAGER_IP>:4242
+
+# On each worker node
+sudo swarmcracker cluster join --token <TOKEN> <MANAGER_IP>:4242
+```
 
 ### Build It Yourself
 
@@ -60,11 +84,12 @@ sudo make install
 
 ### The Kernel Thing
 
-Firecracker needs an uncompressed ELF kernel at `/usr/share/firecracker/vmlinux`. 
+Firecracker needs an uncompressed ELF kernel at `/usr/share/firecracker/vmlinux`.
+`swarmcracker setup install --download-kernel` downloads a known-good kernel for you.
 
 Don't try downloading from GitHub raw URLs — you'll get HTML, not a binary.
 
-Extract it from your host kernel instead:
+To extract one from your host kernel instead:
 
 ```bash
 sudo mkdir -p /usr/share/firecracker
@@ -91,48 +116,38 @@ vagrant up
 
 ### Manager Node
 
-The `--advertise-remote-api` flag is critical. Workers need to reach the manager, and without it they'll try to connect to `0.0.0.0` which won't work.
-
 ```bash
-MANAGER_IP=$(ip addr show eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
-
-swarmd-firecracker --manager \
-  --hostname manager-1 \
-  --listen-remote-api 0.0.0.0:4242 \
-  --advertise-remote-api $MANAGER_IP:4242 \
-  --kernel-path /usr/share/firecracker/vmlinux \
-  --rootfs-dir /var/lib/firecracker/rootfs \
-  --bridge-name swarm-br0
+sudo swarmcracker cluster init --advertise-addr <MANAGER_IP>:4242
 ```
+
+`--advertise-addr` is critical: workers need to reach the manager, and without it
+they'll try to connect to `0.0.0.0`, which won't work.
 
 This starts:
 - SwarmKit manager (Raft consensus for cluster state)
 - Control socket at `/var/run/swarmkit/swarm.sock`
 - TLS certificates
-- Join tokens saved to `/var/lib/swarmkit/manager/join-tokens.txt`
+- Join tokens saved to `/var/lib/swarmkit/join-tokens.txt`
 
 ### Get the Join Token
 
 ```bash
-export SWARM_SOCKET=/var/run/swarmkit/swarm.sock
-swarmctl cluster inspect default
+sudo swarmcracker cluster token create --role worker
 ```
 
-Look for the Worker token in the output.
+Look for the `SWMTKN-...` token in the output.
 
 ### Join Workers
 
 ```bash
-swarmcracker join \
-  --hostname worker-1 \
-  --manager <manager-ip>:4242 \
-  --token <WORKER_TOKEN>
+sudo swarmcracker cluster join --token <TOKEN> <manager-ip>:4242
 ```
 
 ### Check the Cluster
 
 ```bash
-swarmctl ls-nodes
+sudo swarmcracker cluster status
+sudo swarmcracker cluster health
 ```
 
 You should see all your nodes with `READY` status.
@@ -144,19 +159,14 @@ You should see all your nodes with `READY` status.
 ### Deploy a Service
 
 ```bash
-swarmctl create-service nginx:latest
-```
-
-### Scale It
-
-```bash
-swarmctl scale svc-nginx-143022 3
+sudo swarmcracker service create --name web --replicas 3 -p 8080:80 nginx:alpine
 ```
 
 ### See What's Running
 
 ```bash
-swarmctl ls-tasks
+swarmcracker service list
+swarmcracker service ps web
 ```
 
 Each task is a Firecracker microVM.
@@ -194,7 +204,9 @@ The kernel file isn't actually a kernel. Probably HTML from a bad download.
 
 ```bash
 file /usr/share/firecracker/vmlinux
-# If it says "HTML document", re-extract from host kernel
+# If it says "HTML document", re-download:
+sudo swarmcracker setup install --download-kernel
+# Or extract from your host kernel:
 ./test-automation/scripts/extract-vmlinux.sh /boot/vmlinuz-* /usr/share/firecracker/vmlinux
 ```
 
@@ -223,16 +235,18 @@ Or add `options kvm_intel nested=1` to `/etc/modprobe.d/kvm-nested.conf`.
 
 ```bash
 curl http://<manager-ip>:4242   # Check manager reachable
-ps aux | grep swarmd | grep advertise   # Verify advertise flag set
+sudo swarmcracker cluster status
 ```
 
-If the manager shows `advertise-remote-api 0.0.0.0:4242`, that's wrong. It needs the actual IP.
+If the manager advertises `0.0.0.0:4242`, that's wrong. Re-init with
+`--advertise-addr <actual-ip>:4242`.
 
 ### Services Not Starting
 
 ```bash
-swarmctl ls-nodes           # Check nodes are ready
-journalctl -u swarmd -f     # Watch logs
+sudo swarmcracker cluster status      # Check nodes are ready
+sudo swarmcracker doctor              # Diagnose common issues
+journalctl -u swarmcracker -f         # Watch logs
 file /usr/share/firecracker/vmlinux   # Verify kernel is ELF
 ```
 

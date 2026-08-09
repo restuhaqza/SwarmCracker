@@ -48,12 +48,13 @@ swarmctl --socket /var/lib/swarmkit/swarm.sock node ls
 4. **Replace the worker:**
    ```bash
    # Get a new join token on the manager
-   swarmcracker cluster token worker
+   swarmcracker cluster token create --role worker
 
-   # On the replacement node
-   curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | bash
-   sudo swarmcracker setup install
+   # On the replacement node: install binary + setup deps, then join
+   curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash
+   sudo swarmcracker setup install --download-kernel --download-rootfs
    sudo swarmcracker setup network
+   sudo swarmcracker setup config --non-interactive
    sudo swarmcracker cluster join --token <TOKEN> <MANAGER_IP>:4242
    ```
 
