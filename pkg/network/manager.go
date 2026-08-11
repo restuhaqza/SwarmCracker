@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/moby/swarmkit/v2/api"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -1035,7 +1036,12 @@ func (nm *NetworkManager) StopPeerDiscovery() {
 
 // SetEncryptionKeys sets the network encryption keys for VXLAN.
 // This is called by SwarmKit when new network bootstrap keys are available.
-func (nm *NetworkManager) SetEncryptionKeys(keys interface{}) error {
+//
+// The signature matches the NetworkKeySetter interface in pkg/swarmkit so
+// the type assertion in SetNetworkBootstrapKeys succeeds (previously the
+// interface{} parameter silently failed the assertion and keys were never
+// delivered to the network manager).
+func (nm *NetworkManager) SetEncryptionKeys(keys []*api.EncryptionKey) error {
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
@@ -1047,7 +1053,7 @@ func (nm *NetworkManager) SetEncryptionKeys(keys interface{}) error {
 	// The keys are used for VXLAN encryption
 	// Implementation depends on VXLAN encryption support
 	// For now, we store them and log
-	log.Info().Msg("Encryption keys received for VXLAN overlay")
+	log.Info().Int("key_count", len(keys)).Msg("Encryption keys received for VXLAN overlay")
 
 	// Future: pass keys to vxlanMgr for encryption
 	// if encMgr, ok := nm.vxlanMgr.(EncryptedVXLANManager); ok {

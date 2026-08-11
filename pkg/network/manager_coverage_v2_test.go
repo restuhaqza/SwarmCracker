@@ -15,6 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
 
+	"github.com/moby/swarmkit/v2/api"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
@@ -51,7 +52,9 @@ func TestNetworkManager_SetEncryptionKeys_WithVXLAN(t *testing.T) {
 		vxlanMgr: vxlan,
 	}
 
-	err := nm.SetEncryptionKeys("some-key")
+	err := nm.SetEncryptionKeys([]*api.EncryptionKey{
+		{Key: []byte("test-key")},
+	})
 
 	assert.NoError(t, err)
 
