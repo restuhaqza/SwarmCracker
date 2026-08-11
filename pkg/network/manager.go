@@ -1012,7 +1012,11 @@ func (nm *NetworkManager) StartPeerDiscovery(ctx context.Context) error {
 		return fmt.Errorf("failed to get local IP: %w", err)
 	}
 
-	const discoveryPort = 4789 // Default VXLAN port
+	// Use a dedicated discovery port, NOT the VXLAN data port (4789).
+	// The VXLAN device already owns a kernel UDP socket on 4789; binding a
+	// userspace listener on the same port fails with EADDRINUSE, which
+	// silently kills peer discovery.
+	const discoveryPort = 47890
 	if err := nm.vxlanMgr.StartPeerDiscovery(ctx, localIP, discoveryPort); err != nil {
 		return err
 	}
