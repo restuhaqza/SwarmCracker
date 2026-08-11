@@ -809,8 +809,17 @@ func (c *Controller) Remove(ctx context.Context) error {
 		c.logger.Error().Err(err).Msg("Failed to remove VM")
 	}
 
-	// Clean up rootfs image
-	rootfsPath := filepath.Join(c.config.RootfsDir, task.ID+".ext4")
+	// Clean up rootfs image — use the actual path recorded during Prepare.
+	// The rootfs is named by image ID (generateImageID in pkg/image), NOT
+	// task ID; the old task.ID+".ext4" path never existed and leaked disk.
+	rootfsPath := ""
+	if c.internalTask != nil {
+		rootfsPath = c.internalTask.Annotations["rootfs"]
+	}
+	if rootfsPath == "" {
+		// Fallback: legacy naming (may not exist; os.Remove tolerates that)
+		rootfsPath = filepath.Join(c.config.RootfsDir, task.ID+".ext4")
+	}
 	if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
 		c.logger.Warn().Err(err).Str("path", rootfsPath).Msg("Failed to remove rootfs image")
 	} else if err == nil {
