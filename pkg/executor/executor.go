@@ -74,13 +74,16 @@ type Event struct {
 
 // sendEvent safely sends an event to the events channel with a timeout.
 // It returns true if the event was sent, false if the channel was closed or blocked.
+//
+// The mutex is held across the send: Close() also takes the mutex before
+// closing the channel, so a send can never race with close(e.events).
 func (e *FirecrackerExecutor) sendEvent(evt Event) bool {
 	e.eventsMu.Lock()
+	defer e.eventsMu.Unlock()
+
 	if e.eventsClosed {
-		e.eventsMu.Unlock()
 		return false
 	}
-	e.eventsMu.Unlock()
 
 	select {
 	case e.events <- evt:
@@ -248,10 +251,12 @@ func (e *FirecrackerExecutor) Events(ctx context.Context) (<-chan Event, error) 
 // Close cleans up executor resources.
 func (e *FirecrackerExecutor) Close() error {
 	e.closeOnce.Do(func() {
+		// Close the channel under the mutex so no in-flight sendEvent
+		// can be sending when the channel is closed (see sendEvent).
 		e.eventsMu.Lock()
 		e.eventsClosed = true
-		e.eventsMu.Unlock()
 		close(e.events)
+		e.eventsMu.Unlock()
 	})
 
 	// Cleanup network resources (dnsmasq, VXLAN)
