@@ -63,7 +63,6 @@ func (m *SwarmKitManager) Start() error {
 	m.logger.Info().Msg("Starting SwarmKit manager")
 
 	socketPath := filepath.Join(m.stateDir, "swarmd.sock")
-	controlSocket := filepath.Join(m.stateDir, "control.sock")
 
 	args := []string{
 		"--listen-remote-api", m.addr,
@@ -89,9 +88,9 @@ func (m *SwarmKitManager) Start() error {
 		return fmt.Errorf("failed to start manager: %w", err)
 	}
 
-	// Wait for manager to be ready
+	// Wait for manager to be ready (control socket is created at swarmd.sock)
 	m.logger.Info().Msg("Waiting for manager to be ready...")
-	if err := m.waitForReady(controlSocket); err != nil {
+	if err := m.waitForReady(socketPath); err != nil {
 		m.Stop()
 		return fmt.Errorf("manager failed to become ready: %w", err)
 	}
