@@ -2,6 +2,7 @@
 package helpers
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"os"
@@ -113,38 +114,38 @@ func (c *ImageCache) Warm(imageRef string) error {
 	containerName = containerName[:min(len(containerName), 64)]
 
 	// Create container
-	create := exec.Command(docker, "create", "--name", containerName, imageRef)
+	create := exec.CommandContext(context.Background(), docker, "create", "--name", containerName, imageRef)
 	if out, err := create.CombinedOutput(); err != nil {
 		return fmt.Errorf("create container: %s: %w", string(out), err)
 	}
 
 	// Export filesystem
 	tarPath := filepath.Join(tmpDir, "rootfs.tar")
-	export := exec.Command(docker, "export", "-o", tarPath, containerName)
+	export := exec.CommandContext(context.Background(), docker, "export", "-o", tarPath, containerName)
 	if out, err := export.CombinedOutput(); err != nil {
-		exec.Command(docker, "rm", containerName).Run()
+		exec.CommandContext(context.Background(), docker, "rm", containerName).Run()
 		return fmt.Errorf("export container: %s: %w", string(out), err)
 	}
 
 	// Extract to directory
 	extractDir := filepath.Join(tmpDir, "extract")
 	os.MkdirAll(extractDir, 0755)
-	extract := exec.Command("tar", "-xf", tarPath, "-C", extractDir)
+	extract := exec.CommandContext(context.Background(), "tar", "-xf", tarPath, "-C", extractDir)
 	if out, err := extract.CombinedOutput(); err != nil {
-		exec.Command(docker, "rm", containerName).Run()
+		exec.CommandContext(context.Background(), docker, "rm", containerName).Run()
 		return fmt.Errorf("extract tar: %s: %w", string(out), err)
 	}
 
 	// Create ext4
 	cachePath := c.Path(imageRef)
-	makeExt4 := exec.Command("mkfs.ext4", "-d", extractDir, cachePath, "100M")
+	makeExt4 := exec.CommandContext(context.Background(), "mkfs.ext4", "-d", extractDir, cachePath, "100M")
 	if out, err := makeExt4.CombinedOutput(); err != nil {
-		exec.Command(docker, "rm", containerName).Run()
+		exec.CommandContext(context.Background(), docker, "rm", containerName).Run()
 		return fmt.Errorf("mkfs.ext4: %s: %w", string(out), err)
 	}
 
 	// Cleanup
-	exec.Command(docker, "rm", containerName).Run()
+	exec.CommandContext(context.Background(), docker, "rm", containerName).Run()
 	return nil
 }
 

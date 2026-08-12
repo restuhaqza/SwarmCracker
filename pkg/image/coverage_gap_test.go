@@ -280,7 +280,7 @@ func TestInjectTiniIntoDir_WithImageInfo(t *testing.T) {
 }
 
 // ============================================================================
-// handleMounts — exercise mount-failure path 
+// handleMounts — exercise mount-failure path
 // ============================================================================
 
 // ============================================================================

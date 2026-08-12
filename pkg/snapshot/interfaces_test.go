@@ -6,17 +6,17 @@ import (
 )
 
 func TestDefaultFirecrackerAPIClient_InterfaceType(t *testing.T) {
-	var _ FirecrackerAPIClient = NewDefaultFirecrackerAPIClient()
+	var _ = NewDefaultFirecrackerAPIClient()
 	var _ FirecrackerAPIClient = &MockFirecrackerAPIClient{}
 }
 
 func TestDefaultProcessExecutor_InterfaceType(t *testing.T) {
-	var _ ProcessExecutor = NewDefaultProcessExecutor()
+	var _ = NewDefaultProcessExecutor()
 	var _ ProcessExecutor = &MockProcessExecutor{}
 }
 
 func TestDefaultHTTPClientFactory_InterfaceType(t *testing.T) {
-	var _ HTTPClientFactory = NewDefaultHTTPClientFactory()
+	var _ = NewDefaultHTTPClientFactory()
 	var _ HTTPClientFactory = &MockHTTPClientFactory{}
 }
 

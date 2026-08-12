@@ -24,7 +24,7 @@ func DialUnix(socketPath string, tlsConfig *tls.Config) (*grpc.ClientConn, error
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 	opts = append(opts, grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
-		return net.Dial("unix", socketPath)
+		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	}))
 
 	conn, err := grpc.Dial("unix://"+socketPath, opts...)

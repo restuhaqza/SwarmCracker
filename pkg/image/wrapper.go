@@ -117,10 +117,7 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	stopSignal := ""
 	if info != nil && info.StopSignal != "" && info.StopSignal != DefaultStopSignal {
 		// Convert signal name to number if needed (tini expects signal number or name)
-		signal := info.StopSignal
-		if strings.HasPrefix(signal, "SIG") {
-			signal = strings.TrimPrefix(signal, "SIG")
-		}
+		signal := strings.TrimPrefix(info.StopSignal, "SIG")
 		stopSignal = fmt.Sprintf("-e %s", signal)
 	}
 

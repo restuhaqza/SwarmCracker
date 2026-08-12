@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -158,7 +159,7 @@ func (j *Jailer) SetupNetworkNamespace(ctx *JailContext) error {
 		Msg("Setting up network namespace")
 
 	// Use ip netns to enter network namespace
-	cmd := exec.Command("ip", "netns", "exec", ctx.NetNS, "true")
+	cmd := exec.CommandContext(context.Background(), "ip", "netns", "exec", ctx.NetNS, "true")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to enter network namespace %s: %w", ctx.NetNS, err)
 	}

@@ -859,7 +859,7 @@ func removeService(serviceID string, force bool) error {
 	defer conn.Close()
 
 	// Resolve service ID
-	var actualID string = serviceID
+	var actualID = serviceID
 	getResp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: serviceID})
 	if err != nil {
 		// Try to find by name

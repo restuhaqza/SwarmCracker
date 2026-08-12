@@ -35,7 +35,7 @@ func NewDefaultTAPExecutor() TAPExecutor {
 
 // Command creates a new exec.Cmd
 func (e *DefaultTAPExecutor) Command(name string, arg ...string) *exec.Cmd {
-	return exec.Command(name, arg...)
+	return exec.CommandContext(context.Background(), name, arg...)
 }
 
 // CommandContext creates a new exec.Cmd with context

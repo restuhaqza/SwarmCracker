@@ -168,12 +168,12 @@ func New(cfg *Config) (*Jailer, error) {
 	if !filepath.IsAbs(firecrackerPath) {
 		resolved, err := exec.LookPath(firecrackerPath)
 		if err != nil {
-			return nil, fmt.Errorf("Firecracker binary not found: %w", err)
+			return nil, fmt.Errorf("firecracker binary not found: %w", err)
 		}
 		firecrackerPath = resolved
 	}
 	if _, err := os.Stat(firecrackerPath); err != nil {
-		return nil, fmt.Errorf("Firecracker binary not found at %s: %w", firecrackerPath, err)
+		return nil, fmt.Errorf("firecracker binary not found at %s: %w", firecrackerPath, err)
 	}
 
 	// Resolve Jailer binary path
@@ -277,10 +277,7 @@ func (j *Jailer) buildJailerCommand(cfg VMConfig) (*exec.Cmd, string, error) {
 	socketPath := filepath.Join(j.config.ChrootBaseDir, cfg.TaskID, socketRelPath)
 
 	// Normalize cgroup version (jailer expects "1" or "2", not "v1" or "v2")
-	cgroupVersion := j.config.CgroupVersion
-	if strings.HasPrefix(cgroupVersion, "v") {
-		cgroupVersion = strings.TrimPrefix(cgroupVersion, "v")
-	}
+	cgroupVersion := strings.TrimPrefix(j.config.CgroupVersion, "v")
 
 	// Build jailer arguments
 	args := []string{
@@ -340,7 +337,7 @@ func (j *Jailer) buildJailerCommand(cfg VMConfig) (*exec.Cmd, string, error) {
 		Strs("args", args).
 		Msg("Building jailer command")
 
-	cmd := exec.Command(j.config.JailerPath, args...)
+	cmd := exec.CommandContext(context.Background(), j.config.JailerPath, args...)
 	cmd.Stdout = &logWriter{logger: j.logger.Level(zerolog.DebugLevel)}
 	cmd.Stderr = &logWriter{logger: j.logger.Level(zerolog.DebugLevel)}
 

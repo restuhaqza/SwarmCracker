@@ -357,7 +357,7 @@ func TestMockNetlinkExecutor_NeighList_Default(t *testing.T) {
 
 func TestNetlinkExecutor_Interface(t *testing.T) {
 	// Verify both implementations satisfy the interface
-	var _ NetlinkExecutor = NewDefaultNetlinkExecutor()
+	var _ = NewDefaultNetlinkExecutor()
 	var _ NetlinkExecutor = &MockNetlinkExecutor{}
 }
 
@@ -387,8 +387,8 @@ func TestNetlinkAddr_IPNet(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, "10.0.0.1", addr.IPNet.IP.String())
-	ones, _ := addr.IPNet.Mask.Size()
+	assert.Equal(t, "10.0.0.1", addr.IP.String())
+	ones, _ := addr.Mask.Size()
 	assert.Equal(t, 24, ones)
 }
 
@@ -408,7 +408,7 @@ func TestNetlinkAddr_MaskSize(t *testing.T) {
 		require.NoError(t, err)
 
 		addr := &netlink.Addr{IPNet: ipNet}
-		ones, _ := addr.IPNet.Mask.Size()
+		ones, _ := addr.Mask.Size()
 		assert.Equal(t, tt.prefix, ones)
 	}
 }

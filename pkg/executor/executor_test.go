@@ -68,12 +68,13 @@ func TestNewFirecrackerExecutor(t *testing.T) {
 
 				// For configs with all fields, verify those values are used
 				// For configs with defaults, verify defaults are set
-				if tt.name == "valid config with defaults" {
+				switch tt.name {
+				case "valid config with defaults":
 					assert.Equal(t, 1, exec.config.DefaultVCPUs)
 					assert.Equal(t, 512, exec.config.DefaultMemoryMB)
 					assert.Equal(t, "/var/run/firecracker", exec.config.SocketDir)
 					assert.Equal(t, "/var/lib/firecracker/rootfs", exec.config.RootfsDir)
-				} else if tt.name == "config with all fields" {
+				case "config with all fields":
 					assert.Equal(t, 2, exec.config.DefaultVCPUs)
 					assert.Equal(t, 2048, exec.config.DefaultMemoryMB)
 					assert.Equal(t, "/var/run/firecracker", exec.config.SocketDir)

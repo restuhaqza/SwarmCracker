@@ -27,8 +27,9 @@ func main() {
 
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(_ context.Context, addr string) (net.Conn, error) {
-			return net.Dial("unix", socketPath)
+		grpc.WithContextDialer(func(dialCtx context.Context, addr string) (net.Conn, error) {
+			// #nosec G704 -- socket path comes from local CLI args/env, not network input
+			return (&net.Dialer{}).DialContext(dialCtx, "unix", socketPath)
 		}),
 	}
 

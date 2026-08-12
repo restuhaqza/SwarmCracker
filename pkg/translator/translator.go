@@ -324,12 +324,14 @@ func (tt *TaskTranslator) buildInitArgs(containerCmd []string) []string {
 	switch tt.initSystem {
 	case "tini":
 		// tini -- <command> <args...>
-		args := []string{tt.initPath, "--"}
+		args := make([]string, 0, 2+len(containerCmd))
+		args = append(args, tt.initPath, "--")
 		args = append(args, containerCmd...)
 		return args
 	case "dumb-init":
 		// dumb-init <command> <args...>
-		args := []string{tt.initPath}
+		args := make([]string, 0, 1+len(containerCmd))
+		args = append(args, tt.initPath)
 		args = append(args, containerCmd...)
 		return args
 	default:

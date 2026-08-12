@@ -1,6 +1,7 @@
 package helpers
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,10 +47,10 @@ type RemoteSubnet struct {
 // cmd wraps exec.Command with sudo if needed
 func (vh *VXLANHelper) cmd(args ...string) *exec.Cmd {
 	if os.Geteuid() == 0 {
-		return exec.Command(args[0], args[1:]...)
+		return exec.CommandContext(context.Background(), args[0], args[1:]...)
 	}
 	sudoArgs := append([]string{"sudo"}, args...)
-	return exec.Command(sudoArgs[0], sudoArgs[1:]...)
+	return exec.CommandContext(context.Background(), sudoArgs[0], sudoArgs[1:]...)
 }
 
 // SetupVXLAN creates and configures a VXLAN overlay network
@@ -127,7 +128,7 @@ func (vh *VXLANHelper) TeardownVXLAN(setup *VXLANSetup) error {
 
 // PingVXLANPeer tests connectivity to a VXLAN peer
 func (vh *VXLANHelper) PingVXLANPeer(targetIP string, count int, timeout time.Duration) (bool, string, error) {
-	cmd := exec.Command("ping", "-c", fmt.Sprintf("%d", count), "-W", fmt.Sprintf("%.0f", timeout.Seconds()), targetIP)
+	cmd := exec.CommandContext(context.Background(), "ping", "-c", fmt.Sprintf("%d", count), "-W", fmt.Sprintf("%.0f", timeout.Seconds()), targetIP)
 	output, err := cmd.CombinedOutput()
 	result := string(output)
 

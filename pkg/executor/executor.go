@@ -138,7 +138,7 @@ func (e *FirecrackerExecutor) Prepare(ctx context.Context, t *types.Task) error 
 		Msg("Preparing task")
 
 	// Rollback stack: cleanup functions in reverse order on failure
-	var rollbacks []func()
+	rollbacks := make([]func(), 0, 1)
 
 	// 1. Prepare container image (convert to rootfs)
 	if err := e.imagePrep.Prepare(ctx, t); err != nil {

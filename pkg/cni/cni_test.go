@@ -163,7 +163,7 @@ func TestIPAMManager_ReleaseIP(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify it's released
-	pool, _ := mgr.pools["10.0.1.0/24"]
+	pool := mgr.pools["10.0.1.0/24"]
 	pool.mu.RLock()
 	_, exists := pool.UsedIPs[ip.String()]
 	pool.mu.RUnlock()

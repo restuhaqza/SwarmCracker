@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,10 +12,10 @@ import (
 func ipCmdArgs(args ...string) *exec.Cmd {
 	if os.Geteuid() == 0 {
 		all := append([]string{"ip"}, args...)
-		return exec.Command(all[0], all[1:]...)
+		return exec.CommandContext(context.Background(), all[0], all[1:]...)
 	}
 	all := append([]string{"sudo", "ip"}, args...)
-	return exec.Command(all[0], all[1:]...)
+	return exec.CommandContext(context.Background(), all[0], all[1:]...)
 }
 
 // ipCmd returns the appropriate prefix for network commands.
@@ -50,7 +51,7 @@ func (nc *NetworkChecker) CheckBridgeSupport() error {
 
 	if !strings.Contains(string(data), "bridge ") {
 		// Try to load it
-		cmd := exec.Command("modprobe", "bridge")
+		cmd := exec.CommandContext(context.Background(), "modprobe", "bridge")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("bridge module not available and failed to load: %w", err)
 		}
@@ -69,7 +70,7 @@ func (nc *NetworkChecker) CheckTAPSupport() error {
 
 	if !strings.Contains(string(data), "tun ") {
 		// Try to load it
-		cmd := exec.Command("modprobe", "tun")
+		cmd := exec.CommandContext(context.Background(), "modprobe", "tun")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("tun module not available and failed to load: %w", err)
 		}
@@ -101,7 +102,7 @@ func (nc *NetworkChecker) CheckIPForwarding() error {
 // CheckBridgeExists checks if a bridge exists
 func (nc *NetworkChecker) CheckBridgeExists(bridgeName string) error {
 	// Use ip command to check
-	cmd := exec.Command("ip", "link", "show", bridgeName)
+	cmd := exec.CommandContext(context.Background(), "ip", "link", "show", bridgeName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("bridge %s does not exist: %w", bridgeName, err)

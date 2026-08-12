@@ -1312,9 +1312,10 @@ func TestSnapshotConfig_Combinations(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			if tt.config.SnapshotDir == "" {
+			switch tt.config.SnapshotDir {
+			case "":
 				tt.config.SnapshotDir = tmpDir
-			} else if tt.config.SnapshotDir == "/custom/dir" || tt.config.SnapshotDir == "/custom/snapshots" {
+			case "/custom/dir", "/custom/snapshots":
 				tt.config.SnapshotDir = filepath.Join(tmpDir, tt.config.SnapshotDir)
 			}
 

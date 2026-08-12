@@ -1015,7 +1015,7 @@ func (m *extendedMockProcess) Signal(sig syscall.Signal) error {
 	defer m.mu.Unlock()
 
 	// Store the signal
-	m.mockProcess.signals = append(m.mockProcess.signals, sig)
+	m.signals = append(m.signals, sig)
 
 	if m.signalError != nil {
 		return m.signalError
@@ -1044,7 +1044,7 @@ func (m *extendedMockProcess) Signal(sig syscall.Signal) error {
 func (m *extendedMockProcess) Kill() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.mockProcess.killed = true
+	m.killed = true
 	return m.killError
 }
 
@@ -1052,8 +1052,8 @@ func (m *extendedMockProcess) Kill() error {
 func (m *extendedMockProcess) GetSignals() []syscall.Signal {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	result := make([]syscall.Signal, len(m.mockProcess.signals))
-	copy(result, m.mockProcess.signals)
+	result := make([]syscall.Signal, len(m.signals))
+	copy(result, m.signals)
 	return result
 }
 
@@ -1061,7 +1061,7 @@ func (m *extendedMockProcess) GetSignals() []syscall.Signal {
 func (m *extendedMockProcess) IsKilled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.mockProcess.killed
+	return m.killed
 }
 
 // Helper function to check if string contains substring

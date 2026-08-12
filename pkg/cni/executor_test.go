@@ -136,7 +136,7 @@ func TestNewDefaultCommandExecutor_ReturnsNotNil(t *testing.T) {
 
 // TestDefaultCommandExecutor_InterfaceCompliance tests interface compliance
 func TestDefaultCommandExecutor_InterfaceCompliance(t *testing.T) {
-	var _ CommandExecutor = NewDefaultCommandExecutor()
+	var _ = NewDefaultCommandExecutor()
 	var _ CommandExecutor = CommandExecutorFunc(nil)
 }
 

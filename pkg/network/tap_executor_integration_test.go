@@ -274,7 +274,7 @@ func TestCreateBridgeWithExecutor_EmptySubnet(t *testing.T) {
 // ===== DefaultTAPExecutor Tests =====
 
 func TestDefaultTAPExecutor_Interface(t *testing.T) {
-	var _ TAPExecutor = NewDefaultTAPExecutor()
+	var _ = NewDefaultTAPExecutor()
 }
 
 func TestNewDefaultTAPExecutor(t *testing.T) {

@@ -45,11 +45,12 @@ func runGetJoinToken(role string) error {
 
 	for _, cluster := range resp.Clusters {
 		fmt.Printf("Cluster: %s\n", cluster.ID)
-		if role == "worker" {
+		switch role {
+		case "worker":
 			fmt.Printf("Worker Join Token: %s\n", cluster.RootCA.JoinTokens.Worker)
-		} else if role == "manager" {
+		case "manager":
 			fmt.Printf("Manager Join Token: %s\n", cluster.RootCA.JoinTokens.Manager)
-		} else {
+		default:
 			fmt.Printf("Worker Join Token: %s\n", cluster.RootCA.JoinTokens.Worker)
 			fmt.Printf("Manager Join Token: %s\n", cluster.RootCA.JoinTokens.Manager)
 		}

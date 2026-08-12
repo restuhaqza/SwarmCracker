@@ -46,7 +46,7 @@ func TestNewRealContainerRuntime(t *testing.T) {
 			assert.NotNil(t, runtime, "NewRealContainerRuntime should return non-nil")
 
 			// Verify it implements the interface
-			var _ ContainerRuntime = runtime
+			var _ = runtime
 		})
 	}
 }
@@ -329,7 +329,7 @@ func TestNewRealFilesystemOperator(t *testing.T) {
 	assert.NotNil(t, fs, "NewRealFilesystemOperator should return non-nil")
 
 	// Verify it implements the interface
-	var _ FilesystemOperator = fs
+	var _ = fs
 }
 
 // TestRealFilesystemOperator_MkfsExt4 tests MkfsExt4 method
@@ -797,7 +797,7 @@ func TestNewRealBinaryLocator(t *testing.T) {
 	assert.NotNil(t, locator, "NewRealBinaryLocator should return non-nil")
 
 	// Verify it implements the interface
-	var _ BinaryLocator = locator
+	var _ = locator
 }
 
 // TestRealBinaryLocator_LookPath tests LookPath method

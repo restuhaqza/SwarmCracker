@@ -161,7 +161,7 @@ func runJoin(cfg *joinConfig) error {
 	PrintPreflightResults(preflightResult)
 
 	if preflightResult.Failed > 0 {
-		fmt.Println("\n[0;31m✗ Pre-flight checks failed. Please fix the issues above and try again.[0m")
+		fmt.Println("\n\x1b[0;31m✗ Pre-flight checks failed. Please fix the issues above and try again.\x1b[0m")
 		os.Exit(1)
 	}
 

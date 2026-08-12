@@ -280,7 +280,7 @@ func (v *VXLANManager) addPeerForwarding(vxlanName, peerIP string) error {
 
 	// Use bridge fdb append command for VXLAN FDB entries
 	// 'append' allows multiple destinations for the same MAC (required for broadcast flooding)
-	cmd := exec.Command("bridge", "fdb", "append", "00:00:00:00:00:00", "dev", vxlanName, "dst", peerIP, "self", "permanent")
+	cmd := exec.CommandContext(context.Background(), "bridge", "fdb", "append", "00:00:00:00:00:00", "dev", vxlanName, "dst", peerIP, "self", "permanent")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		// Ignore "file exists" error (entry already present)
 		if !strings.Contains(string(output), "exists") {
@@ -563,11 +563,9 @@ func (v *VXLANManager) announcePresence(ctx context.Context, localIP string, por
 			}
 		} else {
 			// No context, wait on ticker only
-			select {
-			case <-ticker.C:
-				for _, addr := range broadcastIPs {
-					v.sendAnnouncement(addr, message)
-				}
+			<-ticker.C
+			for _, addr := range broadcastIPs {
+				v.sendAnnouncement(addr, message)
 			}
 		}
 	}
@@ -575,7 +573,7 @@ func (v *VXLANManager) announcePresence(ctx context.Context, localIP string, por
 
 // sendAnnouncement sends a peer announcement to the given address.
 func (v *VXLANManager) sendAnnouncement(addr string, message []byte) {
-	conn, err := net.Dial("udp", addr)
+	conn, err := (&net.Dialer{}).DialContext(context.Background(), "udp", addr)
 	if err != nil {
 		log.Debug().Err(err).Str("addr", addr).Msg("Failed to dial broadcast address")
 		return

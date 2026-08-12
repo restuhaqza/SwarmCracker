@@ -222,8 +222,8 @@ func defaultChecks() []checkDef {
 // Required checks
 // ---------------------------------------------------------------------------
 
-func checkGoVersion(_ context.Context) (string, string, string) {
-	cmd := exec.Command("go", "version")
+func checkGoVersion(ctx context.Context) (string, string, string) {
+	cmd := exec.CommandContext(ctx, "go", "version")
 	out, err := cmd.Output()
 	if err != nil {
 		return failStatus, "Go not found", err.Error()
@@ -305,8 +305,8 @@ func checkKVM(_ context.Context) (string, string, string) {
 	return passStatus, "/dev/kvm accessible", ""
 }
 
-func checkFirecrackerBinary(_ context.Context) (string, string, string) {
-	out, err := exec.Command("firecracker", "--version").CombinedOutput()
+func checkFirecrackerBinary(ctx context.Context) (string, string, string) {
+	out, err := exec.CommandContext(ctx, "firecracker", "--version").CombinedOutput()
 	if err != nil {
 		return skipStatus, "not found", "install: https://github.com/firecracker-microvm/firecracker/releases"
 	}
@@ -353,13 +353,13 @@ func checkSwarmCracker(_ context.Context) (string, string, string) {
 	return passStatus, p, ""
 }
 
-func checkContainerRuntime(_ context.Context) (string, string, string) {
+func checkContainerRuntime(ctx context.Context) (string, string, string) {
 	if p, err := exec.LookPath("docker"); err == nil {
-		out, _ := exec.Command("docker", "--version").Output()
+		out, _ := exec.CommandContext(ctx, "docker", "--version").Output()
 		return passStatus, "docker: " + strings.TrimSpace(string(out)), p
 	}
 	if p, err := exec.LookPath("podman"); err == nil {
-		out, _ := exec.Command("podman", "--version").Output()
+		out, _ := exec.CommandContext(ctx, "podman", "--version").Output()
 		return passStatus, "podman: " + strings.TrimSpace(string(out)), p
 	}
 	return skipStatus, "no container runtime", "docker or podman required for image operations"
@@ -372,7 +372,7 @@ func checkNetworkPermissions(ctx context.Context) (string, string, string) {
 		return skipStatus, "cannot create bridge (may need root)", err.Error()
 	}
 	// Cleanup
-	_ = exec.Command("ip", "link", "delete", br).Run()
+	_ = exec.CommandContext(ctx, "ip", "link", "delete", br).Run()
 	return passStatus, "bridge creation OK", ""
 }
 

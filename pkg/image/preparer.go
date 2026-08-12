@@ -332,7 +332,7 @@ func (ip *ImagePreparer) verifyCachedRootfs(rootfsPath string) bool {
 	}
 
 	// Use debugfs to check for /init
-	cmd := exec.Command("debugfs", "-R", "stat /init", rootfsPath)
+	cmd := exec.CommandContext(context.Background(), "debugfs", "-R", "stat /init", rootfsPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		log.Debug().
@@ -554,7 +554,7 @@ func (ip *ImagePreparer) extractWithDockerCLI(ctx context.Context, imageRef, des
 	}
 
 	// Cleanup on failure
-	defer exec.Command(runtimeName, "rm", "-f", containerID).Run()
+	defer exec.CommandContext(context.Background(), runtimeName, "rm", "-f", containerID).Run()
 
 	// Export filesystem to tar
 	tarPath := filepath.Join(destPath, "fs.tar")
@@ -650,7 +650,7 @@ func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath strin
 	}
 
 	// Create ext4 with explicit size using mkfs.ext4 -d
-	cmd := exec.Command("mkfs.ext4",
+	cmd := exec.CommandContext(context.Background(), "mkfs.ext4",
 		"-d", sourceDir,
 		"-b", fmt.Sprintf("%d", blockSize),
 		"-L", "rootfs",
@@ -766,7 +766,7 @@ func (ip *ImagePreparer) mountExt4(imagePath string) (string, error) {
 	// Try to mount the image
 	// This requires root privileges or user namespace setup
 	// For non-root, we'll skip this step
-	cmd := exec.Command("mount", "-o", "loop", imagePath, mountDir)
+	cmd := exec.CommandContext(context.Background(), "mount", "-o", "loop", imagePath, mountDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		os.RemoveAll(mountDir)
 		return "", fmt.Errorf("mount failed: %s: %w", string(output), err)
@@ -789,7 +789,7 @@ func (ip *ImagePreparer) createInitWrapper(mountDir string) error {
 // unmountExt4 unmounts a temporary mount point.
 func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 	// Unmount
-	cmd := exec.Command("umount", mountDir)
+	cmd := exec.CommandContext(context.Background(), "umount", mountDir)
 	_ = cmd.Run() // Ignore errors
 
 	// Cleanup temp dir
@@ -825,7 +825,7 @@ func (ip *ImagePreparer) getInitBinaryPath() string {
 	}
 
 	// Check if binary is in PATH
-	cmd := exec.Command("which", string(ip.initInjector.config.Type))
+	cmd := exec.CommandContext(context.Background(), "which", string(ip.initInjector.config.Type))
 	if output, err := cmd.CombinedOutput(); err == nil {
 		return strings.TrimSpace(string(output))
 	}

@@ -81,7 +81,7 @@ func (th *TestHelper) Cleanup() {
 
 // RunCommand runs a command and returns its output
 func (th *TestHelper) RunCommand(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(context.Background(), name, args...)
 	output, err := cmd.CombinedOutput()
 	return string(output), err
 }
@@ -226,7 +226,7 @@ func (th *TestHelper) Retry(fn func() error, maxAttempts int, delay time.Duratio
 // KillProcessByName kills all processes with the given name
 func (th *TestHelper) KillProcessByName(name string) error {
 	// Find processes
-	cmd := exec.Command("pgrep", "-x", name)
+	cmd := exec.CommandContext(context.Background(), "pgrep", "-x", name)
 	output, err := cmd.Output()
 	if err != nil {
 		// No processes found
@@ -237,7 +237,7 @@ func (th *TestHelper) KillProcessByName(name string) error {
 	// Kill them
 	pids := strings.Fields(string(output))
 	for _, pid := range pids {
-		cmd := exec.Command("kill", pid)
+		cmd := exec.CommandContext(context.Background(), "kill", pid)
 		_ = cmd.Run()
 	}
 

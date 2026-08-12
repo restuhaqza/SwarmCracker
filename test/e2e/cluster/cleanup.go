@@ -162,13 +162,13 @@ func (cm *CleanupManager) removeNetworkInterface(ifName string) error {
 	}
 
 	// Bring interface down
-	cmd := exec.Command("ip", "link", "set", ifName, "down")
+	cmd := exec.CommandContext(context.Background(), "ip", "link", "set", ifName, "down")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to bring down interface %s: %w", ifName, err)
 	}
 
 	// Delete interface
-	cmd = exec.Command("ip", "link", "delete", ifName)
+	cmd = exec.CommandContext(context.Background(), "ip", "link", "delete", ifName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to delete interface %s: %w", ifName, err)
 	}
@@ -187,13 +187,13 @@ func (cm *CleanupManager) removeBridge(bridgeName string) error {
 	}
 
 	// Bring bridge down
-	cmd := exec.Command("ip", "link", "set", bridgeName, "down")
+	cmd := exec.CommandContext(context.Background(), "ip", "link", "set", bridgeName, "down")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to bring down bridge %s: %w", bridgeName, err)
 	}
 
 	// Delete bridge
-	cmd = exec.Command("ip", "link", "delete", bridgeName)
+	cmd = exec.CommandContext(context.Background(), "ip", "link", "delete", bridgeName)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to delete bridge %s: %w", bridgeName, err)
 	}
@@ -241,7 +241,7 @@ func (cm *CleanupManager) KillProcessesByName(name string) error {
 	cm.logger.Debug().Str("name", name).Msg("Killing processes by name")
 
 	// Find all processes matching the name
-	cmd := exec.Command("pgrep", "-x", name)
+	cmd := exec.CommandContext(context.Background(), "pgrep", "-x", name)
 	output, err := cmd.Output()
 	if err != nil {
 		// pgrep returns exit code 1 if no processes found

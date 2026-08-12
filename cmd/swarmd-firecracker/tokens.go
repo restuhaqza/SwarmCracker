@@ -51,7 +51,7 @@ func printJoinTokens(ctx context.Context, stateDir string) {
 	dialOpts := []grpc.DialOption{
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithContextDialer(func(dialCtx context.Context, addr string) (net.Conn, error) {
-			return net.Dial("unix", socketPath)
+			return (&net.Dialer{}).DialContext(dialCtx, "unix", socketPath)
 		}),
 		grpc.WithBlock(),
 	}

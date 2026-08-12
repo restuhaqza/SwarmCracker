@@ -164,7 +164,7 @@ func runInit(cfg *initConfig) error {
 	PrintPreflightResults(preflightResult)
 
 	if preflightResult.Failed > 0 {
-		fmt.Println("\n[0;31m✗ Pre-flight checks failed. Please fix the issues above and try again.[0m")
+		fmt.Println("\n\x1b[0;31m✗ Pre-flight checks failed. Please fix the issues above and try again.\x1b[0m")
 		fmt.Println("\nHint: Run 'swarmcracker init --help' for configuration options.")
 		os.Exit(1)
 	}

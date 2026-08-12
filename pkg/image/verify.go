@@ -1,6 +1,7 @@
 package image
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 
@@ -27,7 +28,7 @@ func VerifyBootable(rootfsPath string) error {
 
 	var missing []string
 	for _, path := range requiredPaths {
-		cmd := exec.Command("debugfs", "-R", "stat "+path, rootfsPath)
+		cmd := exec.CommandContext(context.Background(), "debugfs", "-R", "stat "+path, rootfsPath)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			missing = append(missing, path)
 			log.Debug().Str("path", path).Err(err).Str("output", string(output)).Msg("Missing required file")

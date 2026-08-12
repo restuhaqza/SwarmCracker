@@ -220,7 +220,7 @@ func TestImagePreparer_NewImagePreparer_FullConfig(t *testing.T) {
 
 // TestImagePreparer_InterfaceCompliance verifies interface
 func TestImagePreparer_InterfaceCompliance(t *testing.T) {
-	var _ types.ImagePreparer = NewImagePreparer(&PreparerConfig{})
+	var _ = NewImagePreparer(&PreparerConfig{})
 }
 
 // TestImagePreparer_Prepare_WithAnnotations tests Prepare with annotations

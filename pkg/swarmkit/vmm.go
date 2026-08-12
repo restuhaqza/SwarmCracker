@@ -679,7 +679,7 @@ func (v *VMMManager) CheckVMAPIHealth(ctx context.Context, taskID string) bool {
 
 	// Try to query the machine configuration via API
 	client := createFirecrackerHTTPClient(socketPath)
-	url := fmt.Sprintf("http://localhost/machine-config")
+	url := "http://localhost/machine-config"
 
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()

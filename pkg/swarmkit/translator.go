@@ -123,7 +123,7 @@ func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
 
 // buildNetworkInterfaces creates network interface configs from task attachments.
 func (t *taskTranslatorImpl) buildNetworkInterfaces(task *types.Task) []map[string]interface{} {
-	interfaces := []map[string]interface{}{}
+	interfaces := make([]map[string]interface{}, 0, len(task.Networks))
 
 	// Generate TAP name hash (must match network manager logic)
 	hash := sha256.Sum256([]byte(task.ID))

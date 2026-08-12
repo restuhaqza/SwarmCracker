@@ -188,12 +188,14 @@ func (ii *InitInjector) GetInitArgs(containerArgs []string) []string {
 	switch ii.config.Type {
 	case InitSystemTini:
 		// tini runs as: tini -- <command> <args...>
-		args := []string{"/sbin/tini", "--"}
+		args := make([]string, 0, 2+len(containerArgs))
+		args = append(args, "/sbin/tini", "--")
 		args = append(args, containerArgs...)
 		return args
 	case InitSystemDumbInit:
 		// dumb-init runs as: dumb-init <command> <args...>
-		args := []string{"/sbin/dumb-init"}
+		args := make([]string, 0, 1+len(containerArgs))
+		args = append(args, "/sbin/dumb-init")
 		args = append(args, containerArgs...)
 		return args
 	case InitSystemNone:

@@ -49,7 +49,7 @@ func TestE2E_SwarmKit_Comprehensive(t *testing.T) {
 				},
 				Resources: &api.ResourceRequirements{
 					Reservations: &api.Resources{
-						NanoCPUs:    2e9,           // 2 vCPUs
+						NanoCPUs:    2e9,                // 2 vCPUs
 						MemoryBytes: 1024 * 1024 * 1024, // 1GB
 					},
 				},

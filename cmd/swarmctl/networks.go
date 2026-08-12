@@ -14,8 +14,8 @@ func createNetwork(ctx context.Context, client api.ControlClient, args []string)
 	name := args[0]
 
 	// Parse flags
-	var subnet string = "10.0.9.0/24"
-	var driver string = "overlay"
+	var subnet = "10.0.9.0/24"
+	var driver = "overlay"
 
 	for i := 1; i < len(args); i++ {
 		switch args[i] {

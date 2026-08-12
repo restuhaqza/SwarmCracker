@@ -27,7 +27,7 @@ type RealCommandExecutor struct{}
 
 // Command creates a new command
 func (r *RealCommandExecutor) Command(name string, args ...string) CmdExecutor {
-	return &realCmd{cmd: exec.Command(name, args...)}
+	return &realCmd{cmd: exec.CommandContext(context.Background(), name, args...)}
 }
 
 // CommandContext creates a new command with context

@@ -3,6 +3,7 @@
 package network
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os/exec"
@@ -142,7 +143,7 @@ func SetupVXLANFDB(tapName string, peers []string) error {
 		}
 
 		// Add all-zeros MAC forwarding to peer (for broadcast/unknown destinations)
-		cmd := exec.Command("bridge", "fdb", "add", "00:00:00:00:00:00", "dev", vxlanInterface, "dst", peer)
+		cmd := exec.CommandContext(context.Background(), "bridge", "fdb", "add", "00:00:00:00:00:00", "dev", vxlanInterface, "dst", peer)
 		if err := cmd.Run(); err != nil {
 			log.Warn().
 				Err(err).

@@ -4,6 +4,7 @@
 package network
 
 import (
+	"context"
 	"os/exec"
 )
 
@@ -17,13 +18,13 @@ var (
 
 // defaultExecute runs a command and returns any error.
 func defaultExecute(name string, arg ...string) error {
-	cmd := exec.Command(name, arg...)
+	cmd := exec.CommandContext(context.Background(), name, arg...)
 	return cmd.Run()
 }
 
 // defaultExecuteWithOutput runs a command and returns its output.
 func defaultExecuteWithOutput(name string, arg ...string) (string, error) {
-	cmd := exec.Command(name, arg...)
+	cmd := exec.CommandContext(context.Background(), name, arg...)
 	output, err := cmd.Output()
 	return string(output), err
 }

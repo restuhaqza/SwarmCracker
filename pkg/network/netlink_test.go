@@ -118,7 +118,7 @@ func TestMockNetlinkExecutor_DefaultReturns(t *testing.T) {
 
 func TestNetlinkExecutor_InterfaceType(t *testing.T) {
 	// Verify that both implementations satisfy the interface
-	var _ NetlinkExecutor = NewDefaultNetlinkExecutor()
+	var _ = NewDefaultNetlinkExecutor()
 	var _ NetlinkExecutor = &MockNetlinkExecutor{}
 }
 

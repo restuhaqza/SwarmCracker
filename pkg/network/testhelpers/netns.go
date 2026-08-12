@@ -7,6 +7,7 @@
 package testhelpers
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -27,13 +28,13 @@ func RequireRoot(t *testing.T) {
 // RunCombined executes a command and returns combined output.
 func RunCombined(t *testing.T, name string, args ...string) ([]byte, error) {
 	t.Helper()
-	return exec.Command(name, args...).CombinedOutput()
+	return exec.CommandContext(context.Background(), name, args...).CombinedOutput()
 }
 
 // RunOutput executes a command and returns stdout.
 func RunOutput(t *testing.T, name string, args ...string) ([]byte, error) {
 	t.Helper()
-	return exec.Command(name, args...).Output()
+	return exec.CommandContext(context.Background(), name, args...).Output()
 }
 
 // CreateNetworkNamespace creates an isolated network namespace using ip netns.
@@ -128,7 +129,8 @@ func BridgeExists(t *testing.T, bridgeName string) bool {
 // IptablesRuleExists checks if an iptables rule exists.
 func IptablesRuleExists(t *testing.T, table, chain string, args ...string) bool {
 	t.Helper()
-	checkArgs := []string{"-t", table, "-C", chain}
+	checkArgs := make([]string, 0, 4+len(args))
+	checkArgs = append(checkArgs, "-t", table, "-C", chain)
 	checkArgs = append(checkArgs, args...)
 	_, err := RunCombined(t, "iptables", checkArgs...)
 	return err == nil
@@ -137,7 +139,8 @@ func IptablesRuleExists(t *testing.T, table, chain string, args ...string) bool 
 // CleanupIptablesRule removes an iptables rule.
 func CleanupIptablesRule(t *testing.T, table, chain string, args ...string) {
 	t.Helper()
-	delArgs := []string{"-t", table, "-D", chain}
+	delArgs := make([]string, 0, 4+len(args))
+	delArgs = append(delArgs, "-t", table, "-D", chain)
 	delArgs = append(delArgs, args...)
 	RunCombined(t, "iptables", delArgs...)
 }

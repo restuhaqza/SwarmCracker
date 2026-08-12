@@ -73,9 +73,10 @@ func runClusterHealth(cmd *cobra.Command, args []string) error {
 
 	add := func(name, status, detail string) {
 		result.Checks = append(result.Checks, healthCheck{Name: name, Status: status, Detail: detail})
-		if status == "fail" {
+		switch status {
+		case "fail":
 			fails++
-		} else if status == "warn" {
+		case "warn":
 			warns++
 		}
 	}

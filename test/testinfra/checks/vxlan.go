@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -17,7 +18,7 @@ func NewVXLANChecker() *VXLANChecker {
 // CheckVXLANModule verifies the VXLAN kernel module is available
 func (vc *VXLANChecker) CheckVXLANModule() error {
 	// Check if module is loaded
-	cmd := exec.Command("lsmod")
+	cmd := exec.CommandContext(context.Background(), "lsmod")
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to list kernel modules: %w", err)
@@ -25,7 +26,7 @@ func (vc *VXLANChecker) CheckVXLANModule() error {
 
 	if !strings.Contains(string(output), "vxlan ") {
 		// Try to load it
-		cmd = exec.Command("modprobe", "vxlan")
+		cmd = exec.CommandContext(context.Background(), "modprobe", "vxlan")
 		if err := cmd.Run(); err != nil {
 			return fmt.Errorf("vxlan module not available: %w", err)
 		}
@@ -36,7 +37,7 @@ func (vc *VXLANChecker) CheckVXLANModule() error {
 
 // CheckVXLANDevice checks if a VXLAN device exists
 func (vc *VXLANChecker) CheckVXLANDevice(deviceName string) error {
-	cmd := exec.Command("ip", "link", "show", deviceName)
+	cmd := exec.CommandContext(context.Background(), "ip", "link", "show", deviceName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("vxlan device %s does not exist: %s", deviceName, string(output))
@@ -46,7 +47,7 @@ func (vc *VXLANChecker) CheckVXLANDevice(deviceName string) error {
 
 // CheckBridgeAttachment verifies a VXLAN device is attached to a bridge
 func (vc *VXLANChecker) CheckBridgeAttachment(vxlanName, bridgeName string) error {
-	cmd := exec.Command("ip", "link", "show", vxlanName)
+	cmd := exec.CommandContext(context.Background(), "ip", "link", "show", vxlanName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("vxlan device %s not found: %w", vxlanName, err)
@@ -61,7 +62,7 @@ func (vc *VXLANChecker) CheckBridgeAttachment(vxlanName, bridgeName string) erro
 
 // CheckVXLANFDB checks if forwarding database entries exist for a peer
 func (vc *VXLANChecker) CheckVXLANFDB(vxlanName, peerIP string) error {
-	cmd := exec.Command("bridge", "fdb", "show", "dev", vxlanName)
+	cmd := exec.CommandContext(context.Background(), "bridge", "fdb", "show", "dev", vxlanName)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("failed to show FDB for %s: %w", vxlanName, err)
@@ -76,7 +77,7 @@ func (vc *VXLANChecker) CheckVXLANFDB(vxlanName, peerIP string) error {
 
 // CheckProxyARP verifies proxy ARP is enabled on an interface
 func (vc *VXLANChecker) CheckProxyARP(interfaceName string) error {
-	cmd := exec.Command("sysctl", "-n", fmt.Sprintf("net.ipv4.conf.%s.proxy_arp", interfaceName))
+	cmd := exec.CommandContext(context.Background(), "sysctl", "-n", fmt.Sprintf("net.ipv4.conf.%s.proxy_arp", interfaceName))
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to read proxy_arp for %s: %w", interfaceName, err)
@@ -91,7 +92,7 @@ func (vc *VXLANChecker) CheckProxyARP(interfaceName string) error {
 
 // CheckIPForwardingInterface verifies IP forwarding is enabled on an interface
 func (vc *VXLANChecker) CheckIPForwardingInterface(interfaceName string) error {
-	cmd := exec.Command("sysctl", "-n", fmt.Sprintf("net.ipv4.conf.%s.forwarding", interfaceName))
+	cmd := exec.CommandContext(context.Background(), "sysctl", "-n", fmt.Sprintf("net.ipv4.conf.%s.forwarding", interfaceName))
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to read forwarding for %s: %w", interfaceName, err)
@@ -106,7 +107,7 @@ func (vc *VXLANChecker) CheckIPForwardingInterface(interfaceName string) error {
 
 // CheckRouteExists verifies a route exists
 func (vc *VXLANChecker) CheckRouteExists(subnet, via, device string) error {
-	cmd := exec.Command("ip", "route", "show", subnet)
+	cmd := exec.CommandContext(context.Background(), "ip", "route", "show", subnet)
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("failed to show routes: %w", err)
@@ -126,7 +127,7 @@ func (vc *VXLANChecker) CheckRouteExists(subnet, via, device string) error {
 
 // GetVXLANInterfaces returns a list of VXLAN interfaces on the system
 func (vc *VXLANChecker) GetVXLANInterfaces() ([]string, error) {
-	cmd := exec.Command("ip", "-d", "link", "show", "type", "vxlan")
+	cmd := exec.CommandContext(context.Background(), "ip", "-d", "link", "show", "type", "vxlan")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list VXLAN interfaces: %w", err)

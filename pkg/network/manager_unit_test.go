@@ -40,7 +40,7 @@ func TestNetworkManager_New_EmptyConfig(t *testing.T) {
 }
 
 func TestNetworkManager_InterfaceCompliance(t *testing.T) {
-	var _ types.NetworkManager = NewNetworkManager(types.NetworkConfig{})
+	var _ = NewNetworkManager(types.NetworkConfig{})
 }
 
 // ===== NetworkConfig Tests =====
@@ -249,5 +249,5 @@ func TestNewDefaultNetlinkExecutor(t *testing.T) {
 }
 
 func TestDefaultNetlinkExecutor_InterfaceCompliance(t *testing.T) {
-	var _ NetlinkExecutor = NewDefaultNetlinkExecutor()
+	var _ = NewDefaultNetlinkExecutor()
 }

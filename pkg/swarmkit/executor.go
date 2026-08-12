@@ -922,7 +922,7 @@ func (c *Controller) mountRootfs(imagePath string) (string, error) {
 
 	// Try to mount the image
 	// This requires root privileges or user namespace setup
-	cmd := exec.Command("mount", "-o", "loop", imagePath, mountDir)
+	cmd := exec.CommandContext(context.Background(), "mount", "-o", "loop", imagePath, mountDir)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		os.RemoveAll(mountDir)
 		return "", fmt.Errorf("mount failed: %s: %w", string(output), err)
@@ -935,7 +935,7 @@ func (c *Controller) mountRootfs(imagePath string) (string, error) {
 // unmountRootfs unmounts a temporary rootfs mount point.
 func (c *Controller) unmountRootfs(mountDir string) error {
 	// Unmount
-	cmd := exec.Command("umount", mountDir)
+	cmd := exec.CommandContext(context.Background(), "umount", mountDir)
 	_ = cmd.Run() // Ignore errors
 
 	// Cleanup temp dir

@@ -850,7 +850,7 @@ func (nm *NetworkManager) killDnsmasqByPID() {
 
 // killByPID sends SIGTERM to a process by its PID string.
 func (nm *NetworkManager) killByPID(pid string) {
-	cmd := exec.Command("kill", pid)
+	cmd := exec.CommandContext(context.Background(), "kill", pid)
 	if err := cmd.Run(); err != nil {
 		log.Warn().Str("pid", pid).Err(err).Msg("Failed to kill process by PID")
 	}

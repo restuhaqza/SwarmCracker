@@ -81,7 +81,7 @@ func (r *RealContainerRuntime) PullImage(ctx context.Context, imageRef string) e
 }
 
 func (r *RealContainerRuntime) ImageExists(ctx context.Context, imageRef string) bool {
-	cmd := exec.Command(r.runtime, "image", "inspect", imageRef)
+	cmd := exec.CommandContext(ctx, r.runtime, "image", "inspect", imageRef)
 	return cmd.Run() == nil
 }
 
@@ -93,26 +93,26 @@ func NewRealFilesystemOperator() FilesystemOperator {
 }
 
 func (r *RealFilesystemOperator) MkfsExt4(sourceDir, outputPath string) error {
-	cmd := exec.Command("mkfs.ext4", "-d", sourceDir, outputPath)
+	cmd := exec.CommandContext(context.Background(), "mkfs.ext4", "-d", sourceDir, outputPath)
 	output, err := cmd.CombinedOutput()
 	_ = output
 	return err
 }
 
 func (r *RealFilesystemOperator) Truncate(path string, sizeMB int) error {
-	cmd := exec.Command("truncate", "-s", fmt.Sprintf("%dM", sizeMB), path)
+	cmd := exec.CommandContext(context.Background(), "truncate", "-s", fmt.Sprintf("%dM", sizeMB), path)
 	return cmd.Run()
 }
 
 func (r *RealFilesystemOperator) Mount(imagePath, mountDir string) error {
-	cmd := exec.Command("mount", "-o", "loop", imagePath, mountDir)
+	cmd := exec.CommandContext(context.Background(), "mount", "-o", "loop", imagePath, mountDir)
 	output, err := cmd.CombinedOutput()
 	_ = output
 	return err
 }
 
 func (r *RealFilesystemOperator) Unmount(mountDir string) error {
-	cmd := exec.Command("umount", mountDir)
+	cmd := exec.CommandContext(context.Background(), "umount", mountDir)
 	return cmd.Run()
 }
 
@@ -153,7 +153,7 @@ func (r *RealBinaryLocator) LookPath(file string) (string, error) {
 }
 
 func (r *RealBinaryLocator) Which(file string) (string, error) {
-	cmd := exec.Command("which", file)
+	cmd := exec.CommandContext(context.Background(), "which", file)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err

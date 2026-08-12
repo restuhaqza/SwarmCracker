@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -28,7 +29,7 @@ func (fc *FirecrackerChecker) CheckBinary() error {
 	fc.binaryPath = path
 
 	// Check version
-	cmd := exec.Command(path, "--version")
+	cmd := exec.CommandContext(context.Background(), path, "--version")
 	if _, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("failed to run firecracker --version: %w", err)
 	}
@@ -120,9 +121,9 @@ func (fc *FirecrackerChecker) DownloadKernel(destDir string) error {
 	// Use wget or curl to download
 	var cmd *exec.Cmd
 	if _, err := exec.LookPath("wget"); err == nil {
-		cmd = exec.Command("wget", "-O", destPath, url)
+		cmd = exec.CommandContext(context.Background(), "wget", "-O", destPath, url)
 	} else if _, err := exec.LookPath("curl"); err == nil {
-		cmd = exec.Command("curl", "-L", "-o", destPath, url)
+		cmd = exec.CommandContext(context.Background(), "curl", "-L", "-o", destPath, url)
 	} else {
 		return fmt.Errorf("neither wget nor curl found for download")
 	}

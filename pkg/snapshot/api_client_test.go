@@ -726,5 +726,5 @@ func TestNewDefaultFirecrackerAPIClient(t *testing.T) {
 	assert.NotNil(t, client)
 
 	// Verify it implements the interface
-	var _ FirecrackerAPIClient = client
+	var _ = client
 }

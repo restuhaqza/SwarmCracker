@@ -34,7 +34,7 @@ func (d *HostnameNodeDiscovery) GetNodes() ([]types.NodeInfo, error) {
 		if hostname == d.localHostname {
 			continue
 		}
-		ips, err := net.LookupHost(hostname)
+		ips, err := net.DefaultResolver.LookupHost(context.Background(), hostname)
 		if err != nil {
 			continue
 		}
@@ -80,7 +80,7 @@ func (d *SwarmKitNodeDiscovery) Connect(ctx context.Context) error {
 
 	if d.controlSocket != "" {
 		dialer := func(addr string, t time.Duration) (net.Conn, error) {
-			return net.DialTimeout("unix", addr, t)
+			return (&net.Dialer{Timeout: t}).DialContext(ctx, "unix", addr)
 		}
 		conn, err = grpc.Dial(d.controlSocket,
 			grpc.WithInsecure(),
@@ -145,7 +145,7 @@ func (d *SwarmKitNodeDiscovery) GetNodes() ([]types.NodeInfo, error) {
 		}
 		// Worker: resolve hostname
 		if nodeIP == "" && node.Description != nil {
-			ips, _ := net.LookupHost(node.Description.Hostname)
+			ips, _ := net.DefaultResolver.LookupHost(context.Background(), node.Description.Hostname)
 			if len(ips) > 0 {
 				nodeIP = ips[0]
 			}
@@ -215,7 +215,7 @@ func (d *AutoNodeDiscovery) GetNodes() ([]types.NodeInfo, error) {
 
 // socketExists checks if Unix socket exists.
 func (d *AutoNodeDiscovery) socketExists(socket string) bool {
-	conn, err := net.DialTimeout("unix", socket, 1*time.Second)
+	conn, err := (&net.Dialer{Timeout: 1 * time.Second}).DialContext(context.Background(), "unix", socket)
 	if err != nil {
 		return false
 	}
@@ -236,7 +236,7 @@ func (d *AutoNodeDiscovery) scanForPeers() ([]types.NodeInfo, error) {
 			if peerHostname == hostname {
 				continue
 			}
-			ips, err := net.LookupHost(peerHostname)
+			ips, err := net.DefaultResolver.LookupHost(context.Background(), peerHostname)
 			if err == nil && len(ips) > 0 {
 				nodes = append(nodes, types.NodeInfo{
 					ID:       peerHostname,
@@ -253,7 +253,7 @@ func (d *AutoNodeDiscovery) scanForPeers() ([]types.NodeInfo, error) {
 	if strings.Contains(hostname, "manager") {
 		for i := 1; i <= 10; i++ {
 			peerHostname := fmt.Sprintf("swarm-worker-%d", i)
-			ips, err := net.LookupHost(peerHostname)
+			ips, err := net.DefaultResolver.LookupHost(context.Background(), peerHostname)
 			if err == nil && len(ips) > 0 {
 				nodes = append(nodes, types.NodeInfo{
 					ID:       peerHostname,
