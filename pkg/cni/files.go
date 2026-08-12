@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/moby/swarmkit/v2/api"
 )
@@ -83,6 +84,45 @@ func RemoveConfigFile(configDir, name string) error {
 	}
 
 	return nil
+}
+
+// validateCNINetworkName rejects network names that could escape the config
+// directory or produce ambiguous config file names.
+func validateCNINetworkName(name string) error {
+	if name == "" {
+		return fmt.Errorf("network name cannot be empty")
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("invalid network name %q", name)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("invalid network name %q: must not contain path separators", name)
+	}
+	return nil
+}
+
+// isCNIConfigFile reports whether filename is a CNI config (.conf or .conflist).
+func isCNIConfigFile(filename string) bool {
+	return strings.HasSuffix(filename, ".conf") || strings.HasSuffix(filename, ".conflist")
+}
+
+// networkNameFromFile extracts the network name from a CNI config filename.
+// Returns "" if the file is not a CNI config file.
+func networkNameFromFile(filename string) string {
+	if !isCNIConfigFile(filename) {
+		return ""
+	}
+	base := filename
+	if strings.HasSuffix(base, ".conflist") {
+		base = strings.TrimSuffix(base, ".conflist")
+	} else {
+		base = strings.TrimSuffix(base, ".conf")
+	}
+	// Strip numeric prefix (e.g., "01-")
+	if idx := findPrefixEnd(base); idx > 0 && idx < 4 {
+		base = base[idx+1:]
+	}
+	return base
 }
 
 // containsNetworkName checks if a filename contains a network name

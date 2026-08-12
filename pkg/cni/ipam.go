@@ -223,6 +223,18 @@ func (m *IPAMManager) GetAllocationOwner(ip net.IP, subnetCIDR string) (string, 
 	return owner, nil
 }
 
+// PrunePools removes IP pools whose subnet is not in the active set.
+func (m *IPAMManager) PrunePools(activeSubnets map[string]struct{}) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for subnet := range m.pools {
+		if _, ok := activeSubnets[subnet]; !ok {
+			delete(m.pools, subnet)
+		}
+	}
+}
+
 // CleanupStaleAllocations removes allocations older than a threshold
 func (m *IPAMManager) CleanupStaleAllocations(subnetCIDR string, olderThan time.Duration) int {
 	m.mu.Lock()

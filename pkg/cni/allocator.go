@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -487,10 +489,75 @@ func (a *CNINetworkAllocator) ListAllocatedNetworks() []*AllocatedNetwork {
 	return networks
 }
 
-// RunGC runs garbage collection for stale allocations
+// RunGC runs garbage collection for stale allocations.
+// It removes CNI config files for networks that are no longer allocated
+// and prunes IPAM pools that are not referenced by any allocated network.
 func (a *CNINetworkAllocator) RunGC(ctx context.Context) error {
-	// Implementation for cleaning up stale allocations
-	// This would be called periodically to clean up orphaned IPs
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Build the set of currently allocated network names and subnets.
+	allocated := make(map[string]struct{})
+	activeSubnets := make(map[string]struct{})
+	for _, net := range a.allocatedNets {
+		allocated[net.Name] = struct{}{}
+		if net.Subnet != nil {
+			activeSubnets[net.Subnet.String()] = struct{}{}
+		}
+	}
+
+	// Always keep the loopback config.
+	allocated["lo"] = struct{}{}
+
+	// Remove stale CNI config files for networks that are no longer allocated.
+	if a.provider != nil && a.provider.config != nil && a.provider.config.ConfigDir != "" {
+		if err := removeOrphanedConfigFiles(ctx, a.provider.config.ConfigDir, allocated); err != nil {
+			return err
+		}
+	}
+
+	// Prune IPAM pools not referenced by any allocated network.
+	if a.provider != nil && a.provider.ipamMgr != nil {
+		a.provider.ipamMgr.PrunePools(activeSubnets)
+	}
+
+	return nil
+}
+
+// removeOrphanedConfigFiles removes CNI config files whose network name is
+// not in the allocated set. The loopback network ("lo") is always kept.
+func removeOrphanedConfigFiles(ctx context.Context, configDir string, allocated map[string]struct{}) error {
+	files, err := os.ReadDir(configDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to read CNI config dir: %w", err)
+	}
+
+	for _, file := range files {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		name := file.Name()
+		if !isCNIConfigFile(name) {
+			continue
+		}
+		netName := networkNameFromFile(name)
+		if netName == "" {
+			continue
+		}
+		if _, ok := allocated[netName]; ok {
+			continue
+		}
+
+		if err := os.Remove(filepath.Join(configDir, name)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove orphaned CNI config %s: %w", name, err)
+		}
+	}
 	return nil
 }
 
@@ -546,9 +613,10 @@ func parsePublishedPorts(s *api.Service) []PublishedPort {
 	return ports
 }
 
-// RemoveCNIConfig removes a CNI configuration file
+// RemoveCNIConfig removes a CNI configuration file for the given network.
 func RemoveCNIConfig(configDir, networkName string) error {
-	// Implementation would remove the .conf or .conflist file
-	// Placeholder for now
-	return nil
+	if err := validateCNINetworkName(networkName); err != nil {
+		return err
+	}
+	return RemoveConfigFile(configDir, networkName)
 }
