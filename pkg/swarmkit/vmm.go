@@ -33,8 +33,16 @@ type VMMManager struct {
 	jailer          *jailer.Jailer
 	cgroupMgr       *jailer.CgroupManager
 	processes       map[string]*exec.Cmd
+	processWaits    map[string]*processWait
 	processMutex    sync.Mutex
 	logger          zerolog.Logger
+}
+
+// processWait tracks a single Wait call per task so that concurrent
+// Stop/ForceStop/Wait/Remove calls never double-Wait on the same process.
+type processWait struct {
+	once sync.Once
+	err  error
 }
 
 // VMMManagerConfig holds VMM manager configuration.
@@ -103,6 +111,7 @@ func NewVMMManagerWithConfig(cfg *VMMManagerConfig) (*VMMManager, error) {
 		socketDir:       cfg.SocketDir,
 		useJailer:       cfg.UseJailer,
 		processes:       make(map[string]*exec.Cmd),
+		processWaits:    make(map[string]*processWait),
 		logger:          log.With().Str("component", "vmm-manager").Logger(),
 	}
 
@@ -497,6 +506,34 @@ func (v *VMMManager) waitForSocket(ctx context.Context, socketPath string, timeo
 	}
 }
 
+// waitForProcess waits for a Firecracker process exactly once, even when
+// Stop, ForceStop, Wait, and Remove are called concurrently. The first
+// caller runs cmd.Wait(); subsequent callers block on the same sync.Once
+// and observe the same result.
+func (v *VMMManager) waitForProcess(taskID string, cmd *exec.Cmd) error {
+	v.processMutex.Lock()
+	if v.processWaits == nil {
+		v.processWaits = make(map[string]*processWait)
+	}
+	pw, ok := v.processWaits[taskID]
+	if !ok {
+		pw = &processWait{}
+		v.processWaits[taskID] = pw
+	}
+	v.processMutex.Unlock()
+
+	pw.once.Do(func() { pw.err = cmd.Wait() })
+	return pw.err
+}
+
+// forgetProcess removes process bookkeeping for a finished task.
+func (v *VMMManager) forgetProcess(taskID string) {
+	v.processMutex.Lock()
+	delete(v.processes, taskID)
+	delete(v.processWaits, taskID)
+	v.processMutex.Unlock()
+}
+
 // Stop stops the Firecracker VM for the given task with graceful shutdown.
 func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	v.logger.Info().
@@ -518,9 +555,8 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	}
 
 	v.processMutex.Lock()
-	defer v.processMutex.Unlock()
-
 	cmd, ok := v.processes[task.ID]
+	v.processMutex.Unlock()
 	if !ok {
 		return fmt.Errorf("task not found")
 	}
@@ -530,10 +566,11 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 		v.logger.Error().Err(err).Msg("Failed to send SIGTERM")
 	}
 
-	// Wait for process to exit or kill it after timeout
+	// Wait for process to exit or kill it after timeout. waitForProcess
+	// guarantees cmd.Wait() is called exactly once per task.
 	done := make(chan error, 1)
 	go func() {
-		done <- cmd.Wait()
+		done <- v.waitForProcess(task.ID, cmd)
 	}()
 
 	select {
@@ -544,9 +581,10 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	case <-time.After(10 * time.Second):
 		v.logger.Warn().Msg("Process did not exit gracefully, killing")
 		cmd.Process.Kill()
+		<-done // reap the waiter goroutine
 	}
 
-	delete(v.processes, task.ID)
+	v.forgetProcess(task.ID)
 	v.logger.Info().Str("task_id", task.ID).Msg("Firecracker VM stopped")
 
 	return nil
@@ -559,9 +597,8 @@ func (v *VMMManager) ForceStop(ctx context.Context, task *types.Task) error {
 		Msg("Force stopping Firecracker VM")
 
 	v.processMutex.Lock()
-	defer v.processMutex.Unlock()
-
 	cmd, ok := v.processes[task.ID]
+	v.processMutex.Unlock()
 	if !ok {
 		return fmt.Errorf("task not found")
 	}
@@ -572,10 +609,11 @@ func (v *VMMManager) ForceStop(ctx context.Context, task *types.Task) error {
 		return fmt.Errorf("failed to kill process: %w", err)
 	}
 
-	// Wait for process to actually exit (should be immediate)
-	_ = cmd.Wait()
+	// Wait for process to actually exit (should be immediate).
+	// waitForProcess ensures Wait is called exactly once per task.
+	_ = v.waitForProcess(task.ID, cmd)
 
-	delete(v.processes, task.ID)
+	v.forgetProcess(task.ID)
 	v.logger.Info().Str("task_id", task.ID).Msg("Firecracker VM force stopped")
 
 	return nil
@@ -594,8 +632,8 @@ func (v *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSta
 		}, nil
 	}
 
-	// Wait for process
-	err := cmd.Wait()
+	// Wait for process (exactly once per task)
+	err := v.waitForProcess(task.ID, cmd)
 
 	status := &types.TaskStatus{
 		Timestamp: time.Now().Unix(),
@@ -716,8 +754,8 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 			if err := cmd.Process.Kill(); err != nil && !strings.Contains(err.Error(), "process already finished") {
 				v.logger.Warn().Err(err).Msg("Failed to kill process during removal")
 			}
-			// Wait a bit for process to exit
-			cmd.Wait()
+			// Wait for the process to exit (exactly once per task)
+			v.waitForProcess(task.ID, cmd)
 		}
 	}
 
@@ -729,9 +767,7 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 		v.logger.Debug().Str("socket", socketPath).Msg("Removed socket file")
 	}
 
-	v.processMutex.Lock()
-	delete(v.processes, task.ID)
-	v.processMutex.Unlock()
+	v.forgetProcess(task.ID)
 
 	return nil
 }
