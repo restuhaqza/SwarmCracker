@@ -947,9 +947,14 @@ func (nm *NetworkManager) getPhysicalInterface() (string, string, error) {
 		if strings.Contains(line, "inet ") {
 			parts := strings.Fields(line)
 			if len(parts) >= 2 {
-				ip := strings.TrimSuffix(parts[1], "/24")
-				ip = strings.TrimSuffix(ip, "/32")
-				return physInterface, ip, nil
+				// Parse CIDR properly instead of assuming /24 or /32.
+				if ip, _, err := net.ParseCIDR(parts[1]); err == nil {
+					return physInterface, ip.String(), nil
+				}
+				// Fallback: bare IP without prefix.
+				if ip := net.ParseIP(parts[1]); ip != nil {
+					return physInterface, ip.String(), nil
+				}
 			}
 		}
 	}
