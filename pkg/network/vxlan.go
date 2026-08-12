@@ -428,8 +428,8 @@ func (v *VXLANManager) StopPeerDiscovery() {
 	v.mu.Unlock()
 
 	// Wait briefly for goroutines to observe cancellation.
-	// We don't nil v.ctx here because goroutines may still be
-	// reading from v.ctx.Done() after the cancel signal.
+	// We don't nil v.ctx here because goroutines hold their own
+	// captured discoveryCtx (captured under lock in StartPeerDiscovery).
 }
 
 // listenForPeers listens for UDP peer announcements.
@@ -450,10 +450,11 @@ func (v *VXLANManager) listenForPeers(ctx context.Context, localIP string, port 
 	buf := make([]byte, 1024)
 
 	for {
-		// Handle nil ctx gracefully (before StartPeerDiscovery is called)
-		if v.ctx != nil {
+		// Use the ctx captured under lock at StartPeerDiscovery; never read
+		// v.ctx directly from goroutines (data race with StopPeerDiscovery).
+		if ctx != nil {
 			select {
-			case <-v.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
 				conn.SetReadDeadline(time.Now().Add(1 * time.Second))
@@ -549,10 +550,11 @@ func (v *VXLANManager) announcePresence(ctx context.Context, localIP string, por
 	}
 
 	for {
-		// Handle nil ctx gracefully (before StartPeerDiscovery is called)
-		if v.ctx != nil {
+		// Use the ctx captured under lock at StartPeerDiscovery; never read
+		// v.ctx directly from goroutines (data race with StopPeerDiscovery).
+		if ctx != nil {
 			select {
-			case <-v.ctx.Done():
+			case <-ctx.Done():
 				return
 			case <-ticker.C:
 				for _, addr := range broadcastIPs {
