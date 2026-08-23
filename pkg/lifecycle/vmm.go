@@ -116,7 +116,9 @@ func NewVMMManager(config interface{}) types.VMMManager {
 	}
 
 	// Ensure socket directory exists
-	os.MkdirAll(cfg.SocketDir, 0755)
+	// Best-effort: a non-root process may not be able to create the default
+	// path; the manager will surface a clearer error when it actually needs it.
+	_ = os.MkdirAll(cfg.SocketDir, 0755)
 
 	return &VMMManager{
 		config:    cfg,
@@ -174,8 +176,12 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 	// Ensure cleanup on failure
 	defer func() {
 		if startErr != nil {
-			cmd.Process.Kill()
-			os.Remove(socketPath)
+			if killErr := cmd.Process.Kill(); killErr != nil {
+				log.Warn().Err(killErr).Msg("Failed to kill firecracker process on cleanup")
+			}
+			if err := os.Remove(socketPath); err != nil {
+				log.Warn().Err(err).Msg("Failed to remove socket on cleanup")
+			}
 		}
 	}()
 
@@ -513,7 +519,9 @@ func (vm *VMMManager) hardShutdown(ctx context.Context, vmInstance *VMInstance) 
 		vmInstance.SetState(VMStateStopped)
 	case <-time.After(30 * time.Second):
 		// Force kill on timeout
-		vm.forceKillVM(vmInstance)
+		if err := vm.forceKillVM(vmInstance); err != nil {
+			log.Warn().Err(err).Str("task_id", vmInstance.ID).Msg("Failed to force kill VM on timeout")
+		}
 	}
 
 	log.Info().
@@ -661,13 +669,17 @@ func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 	if vmInstance.GetState() == VMStateRunning {
 		process, _ := os.FindProcess(vmInstance.PID)
 		if process != nil {
-			process.Kill()
+			if err := process.Kill(); err != nil {
+				log.Warn().Err(err).Int("pid", vmInstance.PID).Msg("Failed to kill VM process")
+			}
 		}
 	}
 
 	// Remove socket file
 	if vmInstance.SocketPath != "" {
-		os.Remove(vmInstance.SocketPath)
+		if err := os.Remove(vmInstance.SocketPath); err != nil {
+			log.Warn().Err(err).Msg("Failed to remove VM socket file")
+		}
 	}
 
 	// Remove from map

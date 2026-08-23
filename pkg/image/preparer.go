@@ -73,7 +73,9 @@ func NewImagePreparer(config interface{}) localtypes.ImagePreparer {
 	}
 
 	// Ensure rootfs directory exists
-	os.MkdirAll(cfg.RootfsDir, 0755)
+	// Best-effort: a non-root process may not be able to create the default
+	// path; the preparer will surface a clearer error when it actually needs it.
+	_ = os.MkdirAll(cfg.RootfsDir, 0755)
 
 	// Create init injector
 	initConfig := &InitSystemConfig{
@@ -298,7 +300,7 @@ func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID,
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		return fmt.Errorf("failed to acquire lock: %w", err)
 	}
-	defer syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
 
 	log.Debug().Str("lock", lockPath).Msg("Lock acquired")
 
@@ -555,7 +557,11 @@ func (ip *ImagePreparer) extractWithDockerCLI(ctx context.Context, imageRef, des
 	}
 
 	// Cleanup on failure
-	defer exec.CommandContext(context.Background(), runtimeName, "rm", "-f", containerID).Run()
+	defer func() {
+		if err := exec.CommandContext(context.Background(), runtimeName, "rm", "-f", containerID).Run(); err != nil {
+			log.Debug().Err(err).Msg("Failed to remove temporary container during cleanup")
+		}
+	}()
 
 	// Export filesystem to tar
 	tarPath := filepath.Join(destPath, "fs.tar")
@@ -606,7 +612,7 @@ func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath strin
 
 	// Calculate directory size
 	var dirSize int64
-	filepath.Walk(sourceDir, func(_ string, info os.FileInfo, walkErr error) error {
+	if err := filepath.Walk(sourceDir, func(_ string, info os.FileInfo, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -614,7 +620,9 @@ func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath strin
 			dirSize += info.Size()
 		}
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
 
 	// Apply overhead
 	totalSize := dirSize * int64(100+overheadPercent) / 100
@@ -733,9 +741,7 @@ func (ip *ImagePreparer) injectInitSystem(rootfsPath string) error {
 		// Continue anyway - init might already be present
 		return nil
 	}
-	defer ip.unmountExt4(mountDir)
-
-	// Copy init binary
+	defer func() { _ = ip.unmountExt4(mountDir) }()
 	initBinaryPath := ip.getInitBinaryPath()
 	if initBinaryPath == "" {
 		// No init binary to copy
@@ -862,7 +868,7 @@ func (ip *ImagePreparer) handleMounts(ctx context.Context, task *localtypes.Task
 		// Continue without mounts - non-critical
 		return nil
 	}
-	defer ip.unmountExt4(mountDir)
+	defer func() { _ = ip.unmountExt4(mountDir) }()
 
 	for _, mount := range mounts {
 		if mount.Target == "" {

@@ -85,6 +85,17 @@ func toBool(v interface{}) bool {
 	return false
 }
 
+// toStr converts an interface{} value to string.
+func toStr(v interface{}) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
 // NewVMMManager creates a new VMM manager.
 func NewVMMManager(firecrackerPath, socketDir string) (*VMMManager, error) {
 	return NewVMMManagerWithConfig(&VMMManagerConfig{
@@ -235,14 +246,18 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 
 	// Wait for socket to be created
 	if err := v.waitForSocket(ctx, socketPath, 10*time.Second); err != nil {
-		cmd.Process.Kill()
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			log.Warn().Err(killErr).Msg("Failed to kill process after socket timeout")
+		}
 		socketCleanupNeeded = true
 		return fmt.Errorf("socket not created: %w", err)
 	}
 
 	// Configure VM via Firecracker HTTP API
 	if err := v.configureVM(ctx, task, socketPath, config); err != nil {
-		cmd.Process.Kill()
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			log.Warn().Err(killErr).Msg("Failed to kill process after configure error")
+		}
 		socketCleanupNeeded = true
 		return fmt.Errorf("failed to configure VM: %w", err)
 	}
@@ -309,9 +324,9 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 		TaskID:     task.ID,
 		VcpuCount:  toInt(machineConfig["vcpu_count"]),
 		MemoryMB:   toInt(machineConfig["mem_size_mib"]),
-		KernelPath: bootSource["kernel_image_path"].(string),
+		KernelPath: toStr(bootSource["kernel_image_path"]),
 		RootfsPath: rootfsPath,
-		BootArgs:   bootSource["boot_args"].(string),
+		BootArgs:   toStr(bootSource["boot_args"]),
 		HtEnabled:  toBool(machineConfig["smt"]), // Extract SMT from machine config
 	}
 
@@ -369,7 +384,9 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 
 	if err := v.configureVM(ctx, task, process.SocketPath, jailerConfig); err != nil {
 		v.logger.Error().Err(err).Msg("Failed to configure jailed VM")
-		v.jailer.Stop(ctx, task.ID)
+		if stopErr := v.jailer.Stop(ctx, task.ID); stopErr != nil {
+			v.logger.Warn().Err(stopErr).Msg("Failed to stop jailer after configure error")
+		}
 		return fmt.Errorf("failed to configure VM: %w", err)
 	}
 
@@ -580,7 +597,9 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 		}
 	case <-time.After(10 * time.Second):
 		v.logger.Warn().Msg("Process did not exit gracefully, killing")
-		cmd.Process.Kill()
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			v.logger.Warn().Err(killErr).Msg("Failed to kill process after timeout")
+		}
 		<-done // reap the waiter goroutine
 	}
 
@@ -755,7 +774,9 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 				v.logger.Warn().Err(err).Msg("Failed to kill process during removal")
 			}
 			// Wait for the process to exit (exactly once per task)
-			v.waitForProcess(task.ID, cmd)
+			if err := v.waitForProcess(task.ID, cmd); err != nil {
+				v.logger.Warn().Err(err).Msg("Error waiting for process during removal")
+			}
 		}
 	}
 

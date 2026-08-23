@@ -81,7 +81,9 @@ func runStop(vmID string) error {
 	// Stop the VM
 	if err := stopVM(vmState); err != nil {
 		// Update state with error
-		stateMgr.UpdateError(vmID, err.Error())
+		if stateErr := stateMgr.UpdateError(vmID, err.Error()); stateErr != nil {
+			log.Warn().Err(stateErr).Msg("Failed to record stop error in VM state")
+		}
 		return fmt.Errorf("failed to stop VM: %w", err)
 	}
 

@@ -34,10 +34,14 @@ type SecretManager struct {
 func NewSecretManager(secretsDir, configsDir string) *SecretManager {
 	// Create directories if they don't exist
 	if secretsDir != "" {
-		osMkdirAllStore(secretsDir, 0700)
+		if err := osMkdirAllStore(secretsDir, 0700); err != nil {
+			log.Warn().Err(err).Msg("Failed to create secrets dir")
+		}
 	}
 	if configsDir != "" {
-		osMkdirAllStore(configsDir, 0755)
+		if err := osMkdirAllStore(configsDir, 0755); err != nil {
+			log.Warn().Err(err).Msg("Failed to create configs dir")
+		}
 	}
 
 	// Check that debugfs is available for secret/config injection
@@ -231,7 +235,7 @@ func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName stri
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer osRemoveAllStore(tmpFile)
+	defer func() { _ = osRemoveAllStore(tmpFile) }()
 
 	filePath := filepath.Join(tmpFile, filepath.Base(targetPath))
 	if err := osWriteFileStore(filePath, data, mode); err != nil {
@@ -287,7 +291,9 @@ func (sm *SecretManager) mountRootfs(rootfsPath string) (string, error) {
 
 // unmountRootfs is deprecated — use injectFileViaDebugfs instead.
 func (sm *SecretManager) unmountRootfs(mountDir string) {
-	osRemoveAllStore(mountDir)
+	if err := osRemoveAllStore(mountDir); err != nil {
+		log.Warn().Err(err).Msg("Failed to remove deprecated mount dir")
+	}
 }
 
 // runCommand is a helper to run shell commands.

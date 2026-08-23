@@ -150,7 +150,10 @@ func (m *PluginManager) loadNetworkConfig(netName string) (*CNINetworkConfig, er
 		}
 
 		// Return first plugin config
-		pluginConfig := plugins[0].(map[string]interface{})
+		pluginConfig, ok := plugins[0].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("first plugin entry is not a config object")
+		}
 		return m.parsePluginConfig(pluginConfig), nil
 	}
 

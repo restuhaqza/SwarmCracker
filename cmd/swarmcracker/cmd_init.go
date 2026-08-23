@@ -508,10 +508,14 @@ func rollbackInit(cfg *initConfig) {
 	log.Info().Msg("Rolling back partial init state...")
 
 	// Stop service if started
-	exec.Command("systemctl", "stop", "swarmcracker-manager.service").Run()
+	if err := exec.Command("systemctl", "stop", "swarmcracker-manager.service").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to stop swarmcracker-manager.service during rollback")
+	}
 
 	// Remove service file
-	os.Remove("/etc/systemd/system/swarmcracker-manager.service")
+	if err := os.Remove("/etc/systemd/system/swarmcracker-manager.service"); err != nil {
+		log.Warn().Err(err).Msg("Failed to remove manager service file during rollback")
+	}
 
 	// Clear state directories
 	os.RemoveAll(cfg.StateDir)
@@ -523,7 +527,9 @@ func rollbackInit(cfg *initConfig) {
 	os.RemoveAll(cfg.ConfigDir)
 
 	// Reload systemd
-	exec.Command("systemctl", "daemon-reload").Run()
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to reload systemd daemon during rollback")
+	}
 
 	log.Info().Msg("Rollback complete")
 }

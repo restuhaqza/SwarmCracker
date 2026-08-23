@@ -141,7 +141,9 @@ func runReset(cfg *resetConfig) error {
 	PrintProgressComplete(7, 7, "Cleanup complete")
 
 	// Reload systemd
-	exec.Command("systemctl", "daemon-reload").Run()
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to reload systemd daemon")
+	}
 
 	// Success message
 	fmt.Println()
@@ -165,16 +167,24 @@ func killAllFirecracker() error {
 	log.Info().Msg("Killing all Firecracker processes...")
 
 	// SIGTERM first
-	exec.Command("pkill", "-TERM", "-f", "firecracker").Run()
+	if err := exec.Command("pkill", "-TERM", "-f", "firecracker").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to send SIGTERM to firecracker")
+	}
 
 	// Wait a moment
-	exec.Command("sleep", "2").Run()
+	if err := exec.Command("sleep", "2").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to sleep during firecracker kill")
+	}
 
 	// SIGKILL for remaining
-	exec.Command("pkill", "-9", "-f", "firecracker").Run()
+	if err := exec.Command("pkill", "-9", "-f", "firecracker").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to SIGKILL firecracker")
+	}
 
 	// Also kill swarmd-firecracker
-	exec.Command("pkill", "-9", "-f", "swarmd-firecracker").Run()
+	if err := exec.Command("pkill", "-9", "-f", "swarmd-firecracker").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to kill swarmd-firecracker")
+	}
 
 	return nil
 }
@@ -192,7 +202,9 @@ func removeAllTapDevices() error {
 	taps := parseTapDevices(string(output))
 	for _, tap := range taps {
 		log.Debug().Str("tap", tap).Msg("Removing TAP device")
-		exec.Command("ip", "link", "delete", tap).Run()
+		if err := exec.Command("ip", "link", "delete", tap).Run(); err != nil {
+			log.Warn().Err(err).Str("tap", tap).Msg("Failed to delete TAP device")
+		}
 	}
 
 	log.Info().Int("count", len(taps)).Msg("TAP devices removed")
@@ -209,7 +221,9 @@ func removeBridge(cfg *resetConfig) error {
 		// Doesn't exist
 	}
 
-	exec.Command("ip", "link", "delete", cfg.BridgeName).Run()
+	if err := exec.Command("ip", "link", "delete", cfg.BridgeName).Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to delete bridge")
+	}
 	return nil
 }
 
@@ -223,8 +237,12 @@ func stopAllServices() {
 	}
 
 	for _, svc := range services {
-		exec.Command("systemctl", "stop", svc).Run()
-		exec.Command("systemctl", "disable", svc).Run()
+		if err := exec.Command("systemctl", "stop", svc).Run(); err != nil {
+			log.Warn().Err(err).Str("service", svc).Msg("Failed to stop service")
+		}
+		if err := exec.Command("systemctl", "disable", svc).Run(); err != nil {
+			log.Warn().Err(err).Str("service", svc).Msg("Failed to disable service")
+		}
 	}
 }
 

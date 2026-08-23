@@ -32,7 +32,10 @@ func handleSnapshotCommand(args []string) {
 		name := args[2]
 
 		// Create snapshot directory
-		os.MkdirAll(snapshotDir, 0755)
+		if err := os.MkdirAll(snapshotDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to create snapshot dir: %v\n", err)
+			os.Exit(1)
+		}
 
 		// Find the rootfs for this task
 		rootfsDir := "/var/lib/firecracker/rootfs"
@@ -52,7 +55,10 @@ func handleSnapshotCommand(args []string) {
 
 		// Create snapshot metadata
 		snapPath := filepath.Join(snapshotDir, name)
-		os.MkdirAll(snapPath, 0755)
+		if err := os.MkdirAll(snapPath, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to create snapshot path: %v\n", err)
+			os.Exit(1)
+		}
 
 		meta := map[string]interface{}{
 			"name":    name,
@@ -61,7 +67,10 @@ func handleSnapshotCommand(args []string) {
 			"rootfs":  taskRootfs,
 		}
 		metaJSON, _ := json.Marshal(meta)
-		os.WriteFile(filepath.Join(snapPath, "meta.json"), metaJSON, 0644)
+		if err := os.WriteFile(filepath.Join(snapPath, "meta.json"), metaJSON, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to write snapshot metadata: %v\n", err)
+			os.Exit(1)
+		}
 
 		// Copy rootfs if it exists
 		if _, err := os.Stat(taskRootfs); err == nil {
@@ -72,8 +81,11 @@ func handleSnapshotCommand(args []string) {
 				dstFile, err := os.Create(dstPath)
 				if err == nil {
 					defer dstFile.Close()
-					io.Copy(dstFile, srcFile)
-					fmt.Printf("Snapshot %s created (copied rootfs from %s)\n", name, taskRootfs)
+					if _, err := io.Copy(dstFile, srcFile); err != nil {
+						fmt.Printf("Snapshot %s created (metadata only - failed to copy rootfs: %v)\n", name, err)
+					} else {
+						fmt.Printf("Snapshot %s created (copied rootfs from %s)\n", name, taskRootfs)
+					}
 				} else {
 					fmt.Printf("Snapshot %s created (metadata only - could not copy rootfs)\n", name)
 				}
@@ -100,14 +112,16 @@ func handleSnapshotCommand(args []string) {
 				metaPath := filepath.Join(snapshotDir, entry.Name(), "meta.json")
 				if meta, err := os.ReadFile(metaPath); err == nil {
 					var m map[string]interface{}
-					json.Unmarshal(meta, &m)
+					if err := json.Unmarshal(meta, &m); err != nil {
+						fmt.Printf("(could not parse metadata: %v)\n", err)
+					}
 					created := ""
 					if c, ok := m["created"]; ok {
-						created = c.(string)
+						created, _ = c.(string)
 					}
 					taskID := ""
 					if t, ok := m["task_id"]; ok {
-						taskID = t.(string)
+						taskID, _ = t.(string)
 					}
 					fmt.Printf("%-20s %-30s %-20s\n", entry.Name(), created, taskID)
 				} else {

@@ -178,7 +178,9 @@ func (nm *NetworkManagerInternal) createTapDeviceWithExecutor(ctx context.Contex
 
 	// Bring TAP up
 	if err := nm.executor.Command("ip", "link", "set", tapName, "up").Run(); err != nil {
-		nm.executor.Command("ip", "link", "delete", tapName).Run()
+		if cerr := nm.executor.Command("ip", "link", "delete", tapName).Run(); cerr != nil {
+			log.Debug().Err(cerr).Msg("Cleanup TAP delete failed after bring-up error")
+		}
 		return nil, fmt.Errorf("failed to bring TAP up: %w", err)
 	}
 
@@ -190,7 +192,9 @@ func (nm *NetworkManagerInternal) createTapDeviceWithExecutor(ctx context.Contex
 	}
 
 	if err := nm.executor.Command("ip", "link", "set", tapName, "master", bridgeName).Run(); err != nil {
-		nm.executor.Command("ip", "link", "delete", tapName).Run()
+		if cerr := nm.executor.Command("ip", "link", "delete", tapName).Run(); cerr != nil {
+			log.Debug().Err(cerr).Msg("Cleanup TAP delete failed after bridge attach error")
+		}
 		return nil, fmt.Errorf("failed to add TAP to bridge: %w", err)
 	}
 
@@ -225,7 +229,9 @@ func (nm *NetworkManagerInternal) removeTapDeviceWithExecutor(tap *TapDevice) er
 		Str("tap", tap.Name).
 		Msg("Removing TAP device")
 
-	nm.executor.Command("ip", "link", "set", tap.Name, "down").Run()
+	if err := nm.executor.Command("ip", "link", "set", tap.Name, "down").Run(); err != nil {
+		log.Debug().Err(err).Msg("Failed to set TAP down during removal")
+	}
 
 	if err := nm.executor.Command("ip", "link", "delete", tap.Name).Run(); err != nil {
 		return fmt.Errorf("failed to delete TAP device: %w", err)

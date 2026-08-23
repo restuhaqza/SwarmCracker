@@ -425,7 +425,7 @@ func (ip *ImagePreparerInternal) extractOCIImageWithRuntime(ctx context.Context,
 	// Export to tar
 	tarPath := filepath.Join(destPath, "fs.tar")
 	if err := ip.runtime.ExportContainer(ctx, containerID, tarPath); err != nil {
-		ip.runtime.RemoveContainer(ctx, containerID)
+		_ = ip.runtime.RemoveContainer(ctx, containerID)
 		return err
 	}
 
@@ -449,7 +449,7 @@ func (ip *ImagePreparerInternal) injectInitSystemWithMocks(rootfsPath string) er
 	if err != nil {
 		return err
 	}
-	defer ip.unmountWithMocks(mountDir)
+	defer func() { _ = ip.unmountWithMocks(mountDir) }()
 
 	initBinaryPath := ip.getInitBinaryPathWithLocator()
 	if initBinaryPath == "" {

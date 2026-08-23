@@ -314,7 +314,8 @@ func (sm *StateManager) ClearStale() int {
 	}
 
 	if removedCount > 0 {
-		sm.save()
+		// Best-effort save: state will be reconciled again next time on failure
+		_ = sm.save()
 	}
 
 	return removedCount

@@ -350,7 +350,9 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 			if err := process.Process.Signal(syscall.SIGTERM); err != nil {
 				log.Error().Err(err).Str("task_id", taskID).Msg("Failed to SIGTERM orphaned VM")
 				// Force kill
-				process.Process.Kill()
+				if killErr := process.Process.Kill(); killErr != nil {
+					log.Error().Err(killErr).Str("task_id", taskID).Msg("Failed to force kill orphaned VM")
+				}
 			}
 
 			// Wait for process to exit
@@ -364,7 +366,9 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 				log.Info().Str("task_id", taskID).Msg("Orphaned VM stopped")
 			case <-time.After(5 * time.Second):
 				log.Warn().Str("task_id", taskID).Msg("Orphaned VM didn't stop, killing")
-				process.Process.Kill()
+				if killErr := process.Process.Kill(); killErr != nil {
+					log.Error().Err(killErr).Str("task_id", taskID).Msg("Failed to kill orphaned VM after timeout")
+				}
 				<-done // reap the waiter goroutine to avoid a leak
 			}
 
@@ -873,7 +877,7 @@ func (c *Controller) syncVolumeData(ctx context.Context, task *types.Task, mount
 		// Continue without sync - non-critical
 		return nil
 	}
-	defer c.unmountRootfs(mountDir)
+	defer func() { _ = c.unmountRootfs(mountDir) }()
 
 	// Process each mount
 	for _, mount := range mounts {

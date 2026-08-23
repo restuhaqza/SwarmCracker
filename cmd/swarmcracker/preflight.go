@@ -272,7 +272,9 @@ func checkTunTapAvailable() error {
 	if !strings.Contains(string(output), "tun") {
 		// Module not in lsmod, but device exists - likely built into kernel
 		// Try loading it anyway
-		exec.Command("modprobe", "tun").Run()
+		if err := exec.Command("modprobe", "tun").Run(); err != nil {
+			log.Debug().Err(err).Msg("modprobe tun failed (device may already exist)")
+		}
 		// Don't fail if module load fails - device exists
 	}
 

@@ -391,7 +391,9 @@ func NewVMMManagerWithExecutors(config *ManagerConfig, procExec ProcessExecutor,
 		config = &ManagerConfig{}
 	}
 
-	os.MkdirAll(config.SocketDir, 0755)
+	if err := os.MkdirAll(config.SocketDir, 0755); err != nil {
+		log.Warn().Err(err).Msg("Failed to create socket dir in mock manager")
+	}
 
 	return &VMMManagerInternal{
 		VMMManager: &VMMManager{
@@ -465,13 +467,17 @@ func (vm *VMMManagerInternal) Start(ctx context.Context, task *types.Task, confi
 
 	// Wait for API server to be ready
 	if err := vm.waitForAPIServerWithClient(socketPath, 10*time.Second); err != nil {
-		process.Kill()
+		if killErr := process.Kill(); killErr != nil {
+			log.Warn().Err(killErr).Msg("Failed to kill firecracker after API server timeout")
+		}
 		return fmt.Errorf("firecracker API server not ready: %w", err)
 	}
 
 	// Start the VM instance
 	if err := vm.startInstanceWithClient(ctx, socketPath); err != nil {
-		process.Kill()
+		if killErr := process.Kill(); killErr != nil {
+			log.Warn().Err(killErr).Msg("Failed to kill firecracker after start failure")
+		}
 		return fmt.Errorf("failed to start instance: %w", err)
 	}
 

@@ -36,7 +36,9 @@ func CreateTAPDeviceWithExecutor(name, bridge string, executor TAPExecutor) (*TA
 
 	// Ensure clean state by removing existing device if any
 	cleanupCmd := executor.Command("ip", "link", "delete", name)
-	executor.Run(cleanupCmd) // Ignore error, device may not exist
+	if err := executor.Run(cleanupCmd); err != nil {
+		log.Debug().Err(err).Msg("Pre-cleanup TAP delete (device may not exist)")
+	}
 
 	// Create TAP device
 	createCmd := executor.Command("ip", "tuntap", "add", name, "mode", "tap")
@@ -48,7 +50,9 @@ func CreateTAPDeviceWithExecutor(name, bridge string, executor TAPExecutor) (*TA
 	upCmd := executor.Command("ip", "link", "set", name, "up")
 	if err := executor.Run(upCmd); err != nil {
 		cleanupCmd := executor.Command("ip", "link", "delete", name)
-		executor.Run(cleanupCmd)
+		if cerr := executor.Run(cleanupCmd); cerr != nil {
+			log.Debug().Err(cerr).Msg("Cleanup TAP delete failed after bring-up error")
+		}
 		return nil, fmt.Errorf("failed to bring TAP up: %w", err)
 	}
 
@@ -57,7 +61,9 @@ func CreateTAPDeviceWithExecutor(name, bridge string, executor TAPExecutor) (*TA
 		masterCmd := executor.Command("ip", "link", "set", name, "master", bridge)
 		if err := executor.Run(masterCmd); err != nil {
 			cleanupCmd := executor.Command("ip", "link", "delete", name)
-			executor.Run(cleanupCmd)
+			if cerr := executor.Run(cleanupCmd); cerr != nil {
+				log.Debug().Err(cerr).Msg("Cleanup TAP delete failed after bridge attach error")
+			}
 			return nil, fmt.Errorf("failed to connect TAP to bridge %s: %w", bridge, err)
 		}
 	}
@@ -229,7 +235,9 @@ func CreateBridgeWithExecutor(name, subnet string, executor TAPExecutor) error {
 	upCmd := executor.Command("ip", "link", "set", name, "up")
 	if err := executor.Run(upCmd); err != nil {
 		cleanupCmd := executor.Command("ip", "link", "delete", name)
-		executor.Run(cleanupCmd)
+		if cerr := executor.Run(cleanupCmd); cerr != nil {
+			log.Debug().Err(cerr).Msg("Cleanup bridge delete failed after bring-up error")
+		}
 		return fmt.Errorf("failed to bring bridge up: %w", err)
 	}
 
@@ -249,7 +257,9 @@ func CreateBridgeWithExecutor(name, subnet string, executor TAPExecutor) error {
 
 		if err := ConfigureTAPIPWithExecutor(name, gatewayCIDR, executor); err != nil {
 			cleanupCmd := executor.Command("ip", "link", "delete", name)
-			executor.Run(cleanupCmd)
+			if cerr := executor.Run(cleanupCmd); cerr != nil {
+				log.Debug().Err(cerr).Msg("Cleanup bridge delete failed after IP config error")
+			}
 			return fmt.Errorf("failed to set bridge IP: %w", err)
 		}
 	}

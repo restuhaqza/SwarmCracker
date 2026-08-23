@@ -243,7 +243,9 @@ func (j *Jailer) Start(_ context.Context, cfg VMConfig) (*Process, error) {
 	// Wait for socket to be created
 	if err := j.waitForSocket(socketPath, 10*time.Second); err != nil {
 		j.logger.Error().Err(err).Msg("Socket not created, killing jailer")
-		cmd.Process.Kill()
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			j.logger.Warn().Err(killErr).Msg("Failed to kill jailer process")
+		}
 		return nil, fmt.Errorf("socket not created: %w", err)
 	}
 
@@ -433,7 +435,9 @@ func (j *Jailer) Stop(_ context.Context, taskID string) error {
 		}
 	case <-time.After(10 * time.Second):
 		j.logger.Warn().Msg("Process did not exit gracefully, killing")
-		process.Cmd.Process.Kill()
+		if killErr := process.Cmd.Process.Kill(); killErr != nil {
+			j.logger.Warn().Err(killErr).Msg("Failed to kill process after timeout")
+		}
 	}
 
 	// Remove from process map

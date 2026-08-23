@@ -457,11 +457,15 @@ func (v *VXLANManager) listenForPeers(ctx context.Context, localIP string, port 
 			case <-ctx.Done():
 				return
 			default:
-				conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+				if err := conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+					log.Debug().Err(err).Msg("Failed to set read deadline")
+				}
 			}
 		} else {
 			// No context, just set deadline and continue
-			conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+			if err := conn.SetReadDeadline(time.Now().Add(1 * time.Second)); err != nil {
+				log.Debug().Err(err).Msg("Failed to set read deadline")
+			}
 		}
 
 		n, peerAddr, err := conn.ReadFromUDP(buf)

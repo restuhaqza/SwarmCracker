@@ -41,7 +41,10 @@ func handleVolumeCommand(args []string) {
 		// Write metadata
 		meta := map[string]string{"name": name, "path": volPath, "size_mb": fmt.Sprintf("%d", sizeMB)}
 		metaJSON, _ := json.Marshal(meta)
-		os.WriteFile(filepath.Join(volPath, "meta.json"), metaJSON, 0644)
+		if err := os.WriteFile(filepath.Join(volPath, "meta.json"), metaJSON, 0644); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to write volume metadata: %v\n", err)
+			os.Exit(1)
+		}
 		fmt.Printf("Volume %s created at %s\n", name, volPath)
 
 	case "list", "ls":
@@ -62,7 +65,7 @@ func handleVolumeCommand(args []string) {
 				size := "-"
 				if meta, err := os.ReadFile(metaPath); err == nil {
 					var m map[string]string
-					json.Unmarshal(meta, &m)
+					_ = json.Unmarshal(meta, &m)
 					if s, ok := m["size_mb"]; ok && s != "0" {
 						size = s + "MB"
 					}

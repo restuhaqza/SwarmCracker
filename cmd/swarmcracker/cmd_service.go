@@ -172,8 +172,8 @@ and updated as needed.`,
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
 	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "Service labels (e.g., key=value)")
 
-	cmd.MarkFlagRequired("name")
-	cmd.MarkFlagRequired("image")
+	cobra.CheckErr(cmd.MarkFlagRequired("name"))
+	cobra.CheckErr(cmd.MarkFlagRequired("image"))
 
 	return cmd
 }

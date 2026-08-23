@@ -129,7 +129,9 @@ func runLeave(cfg *leaveConfig) error {
 	}
 
 	// Reload systemd
-	exec.Command("systemctl", "daemon-reload").Run()
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to reload systemd daemon")
+	}
 
 	// Success message
 	fmt.Println()
@@ -179,7 +181,9 @@ func stopAllFirecrackerVMs() error {
 		log.Debug().Str("pid", pid).Msg("Stopping Firecracker process")
 
 		// Try SIGTERM first
-		exec.Command("kill", "-TERM", pid).Run()
+		if err := exec.Command("kill", "-TERM", pid).Run(); err != nil {
+			log.Warn().Err(err).Str("pid", pid).Msg("Failed to send SIGTERM to firecracker process")
+		}
 	}
 
 	// Wait for graceful shutdown
@@ -190,7 +194,9 @@ func stopAllFirecrackerVMs() error {
 	output, err = cmd.Output()
 	if err == nil && len(strings.TrimSpace(string(output))) > 0 {
 		log.Warn().Msg("Some VMs didn't stop gracefully, forcing kill")
-		exec.Command("pkill", "-9", "-f", "firecracker").Run()
+		if err := exec.Command("pkill", "-9", "-f", "firecracker").Run(); err != nil {
+			log.Warn().Err(err).Msg("Failed to force kill firecracker processes")
+		}
 	}
 
 	return nil
@@ -213,7 +219,9 @@ func removeWorkerService(cfg *leaveConfig) error {
 	log.Info().Msg("Disabling and removing systemd service...")
 
 	// Disable the service
-	exec.Command("systemctl", "disable", "swarmcracker-worker.service").Run()
+	if err := exec.Command("systemctl", "disable", "swarmcracker-worker.service").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to disable swarmcracker-worker.service")
+	}
 
 	// Remove service file
 	servicePath := "/etc/systemd/system/swarmcracker-worker.service"
@@ -283,7 +291,9 @@ func removeNetworkBridge(bridgeName string) error {
 		taps := parseTapDevices(string(output))
 		for _, tap := range taps {
 			log.Debug().Str("tap", tap).Msg("Removing TAP device")
-			exec.Command("ip", "link", "delete", tap).Run()
+			if err := exec.Command("ip", "link", "delete", tap).Run(); err != nil {
+				log.Warn().Err(err).Str("tap", tap).Msg("Failed to delete TAP device")
+			}
 		}
 	}
 

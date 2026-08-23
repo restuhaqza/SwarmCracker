@@ -219,7 +219,9 @@ func (e *FirecrackerExecutor) Remove(ctx context.Context, t *types.Task) error {
 		Msg("Removing task")
 
 	// 1. Stop VM if running
-	e.vmmManager.Stop(ctx, t)
+	if err := e.vmmManager.Stop(ctx, t); err != nil {
+		log.Warn().Err(err).Str("task_id", t.ID).Msg("Failed to stop VM during task removal")
+	}
 
 	// 2. Clean up network
 	if err := e.networkMgr.CleanupNetwork(ctx, t); err != nil {

@@ -103,7 +103,9 @@ Example:
 				sig := <-sigCh
 				log.Info().Str("signal", sig.String()).Msg("Received interrupt signal, cleaning up...")
 				cancel()
-				exec.Remove(context.Background(), task)
+				if err := exec.Remove(context.Background(), task); err != nil {
+					log.Warn().Err(err).Msg("Failed to remove task during interrupt cleanup")
+				}
 				os.Exit(1)
 			}()
 
@@ -125,7 +127,11 @@ Example:
 				// Save VM state for tracking
 				if stateMgr != nil {
 					// Get task details for state
-					container := task.Spec.Runtime.(*types.Container)
+					container, ok := task.Spec.Runtime.(*types.Container)
+					if !ok {
+						log.Warn().Str("task_id", task.ID).Msg("Task runtime is not a container, skipping state save")
+						return nil
+					}
 
 					vmState := &runtime.VMState{
 						ID:         task.ID,

@@ -794,7 +794,7 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	// Per-bridge log file to avoid collisions; 0640 keeps it readable by the
 	// daemon but not world-writable.
 	logFile := "/tmp/dnsmasq-" + nm.config.BridgeName + ".log"
-	osRemove(logFile) // Remove old file first
+	_ = osRemove(logFile) // Remove old file first
 	if err := osWriteFile(logFile, []byte{}, 0640); err != nil {
 		log.Warn().Err(err).Msg("Could not create dnsmasq log file")
 	}
@@ -856,7 +856,7 @@ func (nm *NetworkManager) cleanupDnsmasq() error {
 					nm.killByPID(pid)
 				}
 			}
-			osRemove(pidFile)
+			_ = osRemove(pidFile)
 		}
 	}
 
@@ -876,7 +876,7 @@ func (nm *NetworkManager) killDnsmasqByPID(bridgeName string) {
 		return
 	}
 	nm.killByPID(pid)
-	osRemove(pidFile)
+	_ = osRemove(pidFile)
 }
 
 // killByPID sends SIGTERM to a process by its PID string.
@@ -1150,7 +1150,9 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 	}
 
 	// Ensure clean state by removing existing device if any
-	execCommand("ip", "link", "delete", tapName).Run()
+	if err := execCommand("ip", "link", "delete", tapName).Run(); err != nil {
+		log.Debug().Err(err).Msg("Pre-cleanup TAP delete (device may not exist)")
+	}
 
 	// Create TAP device
 	if err := execCommand("ip", "tuntap", "add", tapName, "mode", "tap").Run(); err != nil {
@@ -1160,7 +1162,9 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 	// Bring TAP up
 	if err := execCommand("ip", "link", "set", tapName, "up").Run(); err != nil {
 		// Cleanup on failure
-		execCommand("ip", "link", "delete", tapName).Run()
+		if cerr := execCommand("ip", "link", "delete", tapName).Run(); cerr != nil {
+			log.Debug().Err(cerr).Msg("Cleanup TAP delete failed after bring-up error")
+		}
 		return nil, fmt.Errorf("failed to bring TAP up: %w", err)
 	}
 
@@ -1191,7 +1195,9 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 		// But for overlay, we expect it to exist.
 		if network.Network.Spec.Driver == "overlay" {
 			// Try to cleanup
-			execCommand("ip", "link", "delete", tapName).Run()
+			if cerr := execCommand("ip", "link", "delete", tapName).Run(); cerr != nil {
+				log.Debug().Err(cerr).Msg("Cleanup TAP delete failed for overlay bridge")
+			}
 			return nil, fmt.Errorf("overlay bridge %s not found: %w", bridgeName, err)
 		}
 		// Fallback to default behavior (ensureBridge) if it's the default bridge
@@ -1204,7 +1210,9 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 
 	if err := execCommand("ip", "link", "set", tapName, "master", bridgeName).Run(); err != nil {
 		// Cleanup on failure
-		execCommand("ip", "link", "delete", tapName).Run()
+		if cerr := execCommand("ip", "link", "delete", tapName).Run(); cerr != nil {
+			log.Debug().Err(cerr).Msg("Cleanup TAP delete failed after bridge attach error")
+		}
 		return nil, fmt.Errorf("failed to add TAP to bridge: %w", err)
 	}
 
@@ -1250,7 +1258,9 @@ func (nm *NetworkManager) removeTapDevice(tap *TapDevice) error {
 		Msg("Removing TAP device")
 
 	// Bring interface down first
-	execCommand("ip", "link", "set", tap.Name, "down").Run()
+	if err := execCommand("ip", "link", "set", tap.Name, "down").Run(); err != nil {
+		log.Debug().Err(err).Msg("Failed to set TAP down during removal")
+	}
 
 	// Delete TAP device
 	if err := execCommand("ip", "link", "delete", tap.Name).Run(); err != nil {

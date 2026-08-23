@@ -43,56 +43,38 @@ linters:
           - gosec
         path: test/
       - linters:
-          - errcheck
           - gosec
         path: pkg/jailer/
       - linters:
-          - errcheck
           - gocyclo
           - gosec
         path: pkg/swarmkit/
       - linters:
-          - errcheck
           - gosec
         path: pkg/cni/
       - linters:
-          - errcheck
           - gocyclo
           - gosec
         path: pkg/image/
       - linters:
-          - errcheck
           - gosec
           - noctx
         path: pkg/snapshot/
       - linters:
-          - errcheck
           - gocyclo
           - gosec
           - nilerr
         path: pkg/lifecycle/
       - linters:
-          - errcheck
           - gosec
         path: pkg/storage/
       - linters:
-          - errcheck
           - gosec
         path: pkg/network/
-      - linters:
-          - errcheck
-        path: pkg/executor/
-      - linters:
-          - errcheck
-        path: pkg/health/
-      - linters:
-          - errcheck
-        path: pkg/runtime/
       - linters:
           - gosec
         path: pkg/security/
       - linters:
-          - errcheck
           - gocyclo
           - gosec
           - noctx
@@ -101,7 +83,6 @@ linters:
           - gosec
         path: cmd/swarmd-firecracker/
       - linters:
-          - errcheck
           - gosec
           - noctx
         path: cmd/swarmctl/
@@ -111,9 +92,6 @@ linters:
       - linters:
           - staticcheck
         path: cmd/get-join-token/
-      - linters:
-          - errcheck
-        path: pkg/network/testhelpers/
       - linters:
           - ineffassign
         path: test/e2e/

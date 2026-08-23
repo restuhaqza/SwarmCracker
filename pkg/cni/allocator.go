@@ -11,6 +11,7 @@ import (
 
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/moby/swarmkit/v2/manager/allocator/networkallocator"
+	"github.com/rs/zerolog/log"
 )
 
 // CNINetworkAllocator implements networkallocator.NetworkAllocator using CNI
@@ -36,7 +37,9 @@ func NewCNINetworkAllocator(provider *CNIProvider, cfg *networkallocator.Config)
 	// Initialize with config defaults if provided
 	if cfg != nil {
 		if cfg.VXLANUDPPort > 0 {
-			provider.SetDefaultVXLANUDPPort(cfg.VXLANUDPPort)
+			if err := provider.SetDefaultVXLANUDPPort(cfg.VXLANUDPPort); err != nil {
+				log.Warn().Err(err).Msg("Failed to set default VXLAN UDP port")
+			}
 		}
 	}
 
@@ -258,7 +261,9 @@ func (a *CNINetworkAllocator) DeallocateService(s *api.Service) error {
 		allocatedNet.mu.Lock()
 		if vipAlloc, vipExists := allocatedNet.Services[s.ID]; vipExists {
 			// Release VIP
-			a.provider.ipamMgr.ReleaseVIP(vipAlloc.VIP, allocatedNet.Subnet.String(), s.ID)
+			if err := a.provider.ipamMgr.ReleaseVIP(vipAlloc.VIP, allocatedNet.Subnet.String(), s.ID); err != nil {
+				log.Warn().Err(err).Str("service", s.ID).Msg("Failed to release VIP")
+			}
 			delete(allocatedNet.Services, s.ID)
 		}
 		allocatedNet.mu.Unlock()
@@ -348,7 +353,9 @@ func (a *CNINetworkAllocator) DeallocateTask(t *api.Task) error {
 		}
 
 		// Release IP
-		a.provider.ipamMgr.ReleaseIP(ip, allocatedNet.Subnet.String())
+		if err := a.provider.ipamMgr.ReleaseIP(ip, allocatedNet.Subnet.String()); err != nil {
+			log.Warn().Err(err).Msg("Failed to release task IP")
+		}
 		attachment.Addresses = nil
 	}
 
@@ -428,7 +435,9 @@ func (a *CNINetworkAllocator) DeallocateAttachment(node *api.Node, na *api.Netwo
 	}
 
 	// Release IP
-	a.provider.ipamMgr.ReleaseIP(attachment.IPAddress, allocatedNet.Subnet.String())
+	if err := a.provider.ipamMgr.ReleaseIP(attachment.IPAddress, allocatedNet.Subnet.String()); err != nil {
+		log.Warn().Err(err).Msg("Failed to release attachment IP")
+	}
 
 	// Remove attachment
 	delete(allocatedNet.Attachments, node.ID)

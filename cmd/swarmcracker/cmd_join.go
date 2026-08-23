@@ -75,7 +75,7 @@ Examples:
 
 	// Required flags
 	cmd.Flags().StringVar(&cfg.Token, "token", "", "Join token from manager (required)")
-	cmd.MarkFlagRequired("token")
+	cobra.CheckErr(cmd.MarkFlagRequired("token"))
 
 	// Node role
 	cmd.Flags().BoolVar(&cfg.Worker, "worker", true, "Join as a worker node")
@@ -269,15 +269,25 @@ func clearOldWorkerState(cfg *joinConfig) error {
 	log.Info().Msg("Clearing old cluster state for clean join...")
 
 	// Stop existing services
-	exec.Command("systemctl", "stop", "swarmcracker-worker").Run()
-	exec.Command("systemctl", "stop", "swarmd-firecracker").Run()
+	if err := exec.Command("systemctl", "stop", "swarmcracker-worker").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to stop swarmcracker-worker during clean join")
+	}
+	if err := exec.Command("systemctl", "stop", "swarmd-firecracker").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to stop swarmd-firecracker during clean join")
+	}
 
 	// Remove systemd service files
-	os.Remove("/etc/systemd/system/swarmcracker-worker.service")
-	os.Remove("/etc/systemd/system/swarmd-firecracker.service")
+	if err := os.Remove("/etc/systemd/system/swarmcracker-worker.service"); err != nil {
+		log.Warn().Err(err).Msg("Failed to remove swarmcracker-worker.service during clean join")
+	}
+	if err := os.Remove("/etc/systemd/system/swarmd-firecracker.service"); err != nil {
+		log.Warn().Err(err).Msg("Failed to remove swarmd-firecracker.service during clean join")
+	}
 
 	// Reload systemd
-	exec.Command("systemctl", "daemon-reload").Run()
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to reload systemd daemon during clean join")
+	}
 
 	// Clear SwarmKit state (cached CA certificates cause join failures)
 	statePaths := []string{

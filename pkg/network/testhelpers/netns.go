@@ -55,7 +55,9 @@ func CreateNetworkNamespace(t *testing.T, prefix string) string {
 // RemoveNetworkNamespace removes a network namespace.
 func RemoveNetworkNamespace(t *testing.T, nsName string) {
 	t.Helper()
-	RunCombined(t, "ip", "netns", "delete", nsName)
+	if output, err := RunCombined(t, "ip", "netns", "delete", nsName); err != nil {
+		t.Fatalf("Failed to remove netns %s: %s: %v", nsName, string(output), err)
+	}
 }
 
 // RunInNetNS executes a command inside a network namespace.
@@ -72,7 +74,9 @@ func CreateVethPair(t *testing.T, hostEnd, nsEnd, nsName string) (string, string
 	t.Logf("Creating veth pair: %s <-> %s (in %s)", hostEnd, nsEnd, nsName)
 
 	// Delete existing if present
-	RunCombined(t, "ip", "link", "delete", hostEnd)
+	if output, err := RunCombined(t, "ip", "link", "delete", hostEnd); err != nil {
+		t.Logf("veth delete pre-cleanup: %s: %v", string(output), err)
+	}
 
 	output, err := RunCombined(t, "ip", "link", "add", hostEnd, "type", "veth", "peer", "name", nsEnd)
 	if err != nil {
@@ -81,11 +85,15 @@ func CreateVethPair(t *testing.T, hostEnd, nsEnd, nsName string) (string, string
 
 	output, err = RunCombined(t, "ip", "link", "set", nsEnd, "netns", nsName)
 	if err != nil {
-		RunCombined(t, "ip", "link", "delete", hostEnd)
+		if o, cerr := RunCombined(t, "ip", "link", "delete", hostEnd); cerr != nil {
+			t.Logf("veth delete cleanup: %s: %v", string(o), cerr)
+		}
 		t.Fatalf("Failed to move %s to netns %s: %s: %v", nsEnd, nsName, string(output), err)
 	}
 
-	RunCombined(t, "ip", "link", "set", hostEnd, "up")
+	if output, err := RunCombined(t, "ip", "link", "set", hostEnd, "up"); err != nil {
+		t.Fatalf("Failed to bring up %s: %s: %v", hostEnd, string(output), err)
+	}
 
 	return hostEnd, nsEnd
 }
@@ -93,14 +101,14 @@ func CreateVethPair(t *testing.T, hostEnd, nsEnd, nsName string) (string, string
 // SetupVethInNS configures the veth end inside the namespace with IP.
 func SetupVethInNS(t *testing.T, nsName, vethName, ipAddr string) {
 	t.Helper()
-	RunInNetNS(t, nsName, "ip", "link", "set", vethName, "up")
-	RunInNetNS(t, nsName, "ip", "addr", "add", ipAddr, "dev", vethName)
+	_, _ = RunInNetNS(t, nsName, "ip", "link", "set", vethName, "up")
+	_, _ = RunInNetNS(t, nsName, "ip", "addr", "add", ipAddr, "dev", vethName)
 }
 
 // CleanupLink deletes a network link.
 func CleanupLink(t *testing.T, linkName string) {
 	t.Helper()
-	RunCombined(t, "ip", "link", "delete", linkName)
+	_, _ = RunCombined(t, "ip", "link", "delete", linkName)
 }
 
 // LinkExists checks if a network link exists.
@@ -142,7 +150,7 @@ func CleanupIptablesRule(t *testing.T, table, chain string, args ...string) {
 	delArgs := make([]string, 0, 4+len(args))
 	delArgs = append(delArgs, "-t", table, "-D", chain)
 	delArgs = append(delArgs, args...)
-	RunCombined(t, "iptables", delArgs...)
+	_, _ = RunCombined(t, "iptables", delArgs...)
 }
 
 // RandomName generates a random name with the given prefix.

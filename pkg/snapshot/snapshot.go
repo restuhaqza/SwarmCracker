@@ -352,8 +352,12 @@ func (m *Manager) RestoreFromSnapshot(
 	startErr := false
 	defer func() {
 		if startErr {
-			cmd.Process.Kill()
-			os.Remove(socketPath)
+			if killErr := cmd.Process.Kill(); killErr != nil {
+				log.Warn().Err(killErr).Msg("Failed to kill firecracker in snapshot cleanup")
+			}
+			if remErr := os.Remove(socketPath); remErr != nil {
+				log.Warn().Err(remErr).Msg("Failed to remove socket in snapshot cleanup")
+			}
 		}
 	}()
 

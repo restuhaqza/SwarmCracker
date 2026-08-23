@@ -157,7 +157,9 @@ func runDeinit(cfg *deinitConfig) error {
 	}
 
 	// Reload systemd
-	exec.Command("systemctl", "daemon-reload").Run()
+	if err := exec.Command("systemctl", "daemon-reload").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to reload systemd daemon")
+	}
 
 	// Success message
 	fmt.Println()
@@ -213,7 +215,9 @@ func stopManagerService(cfg *deinitConfig) error {
 func removeManagerService(cfg *deinitConfig) error {
 	log.Info().Msg("Disabling and removing systemd service...")
 
-	exec.Command("systemctl", "disable", "swarmcracker-manager.service").Run()
+	if err := exec.Command("systemctl", "disable", "swarmcracker-manager.service").Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to disable swarmcracker-manager.service")
+	}
 
 	servicePath := "/etc/systemd/system/swarmcracker-manager.service"
 	if _, err := os.Stat(servicePath); err == nil {
@@ -234,7 +238,9 @@ func clearStateDeinit(cfg *deinitConfig) error {
 		tokenFile := cfg.StateDir + "/join-tokens.txt"
 		if _, err := os.Stat(tokenFile); err == nil {
 			// Copy to safe location
-			exec.Command("cp", tokenFile, "/tmp/swarmcracker-join-tokens.txt").Run()
+			if err := exec.Command("cp", tokenFile, "/tmp/swarmcracker-join-tokens.txt").Run(); err != nil {
+				log.Warn().Err(err).Msg("Failed to preserve join tokens to /tmp")
+			}
 			log.Info().Msg("Join tokens preserved in /tmp/swarmcracker-join-tokens.txt")
 		}
 	}

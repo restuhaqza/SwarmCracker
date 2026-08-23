@@ -91,13 +91,17 @@ func (d *BlockDriver) Create(ctx context.Context, name string, opts CreateOption
 
 	// Create sparse image file
 	if err := createSparseFile(imgPath, sizeBytes); err != nil {
-		osRemoveAllBlock(dir)
+		if rerr := osRemoveAllBlock(dir); rerr != nil {
+			log.Warn().Err(rerr).Msg("Failed to remove incomplete volume dir")
+		}
 		return "", fmt.Errorf("create image file: %w", err)
 	}
 
 	// Format as ext4
 	if output, err := execCommandBlock("mkfs.ext4", "-F", "-q", imgPath).CombinedOutput(); err != nil {
-		osRemoveAllBlock(dir)
+		if rerr := osRemoveAllBlock(dir); rerr != nil {
+			log.Warn().Err(rerr).Msg("Failed to remove incomplete volume dir")
+		}
 		return "", fmt.Errorf("mkfs.ext4: %s: %w", string(output), err)
 	}
 

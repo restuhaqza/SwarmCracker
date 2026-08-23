@@ -387,7 +387,11 @@ func (m *CgroupManager) getDeviceForPath(path string) (BlockDevice, error) {
 	}
 
 	// Get device number from stat
-	dev := stat.Sys().(*syscall.Stat_t).Dev
+	st, ok := stat.Sys().(*syscall.Stat_t)
+	if !ok {
+		return BlockDevice{}, fmt.Errorf("unexpected stat type for path %s", path)
+	}
+	dev := st.Dev
 
 	// Extract major and minor numbers
 	major := int(dev >> 8)
