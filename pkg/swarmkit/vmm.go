@@ -829,8 +829,9 @@ type NetworkInterface struct {
 }
 
 type Action struct {
-	ActionType     string `json:"action_type"`
-	TimeoutSeconds int    `json:"timeout_ms,omitempty"`
+	ActionType string `json:"action_type"`
+	// TimeoutMS is the Firecracker action timeout in milliseconds.
+	TimeoutMS int `json:"timeout_ms,omitempty"`
 }
 
 // createFirecrackerHTTPClient creates an HTTP client that communicates via Unix socket

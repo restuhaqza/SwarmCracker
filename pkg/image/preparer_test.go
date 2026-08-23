@@ -337,7 +337,10 @@ func TestImagePreparer_Prepare_Concurrent(t *testing.T) {
 					ID: taskID,
 					Spec: types.TaskSpec{
 						Runtime: &types.Container{
-							Image: fmt.Sprintf("nginx:%d", j),
+							// Use a guaranteed-nonexistent image so the test is
+							// deterministic whether or not a container runtime
+							// (docker/podman) is available on the host.
+							Image: fmt.Sprintf("swarmcracker-test-nonexistent-%d:latest", j),
 						},
 					},
 					Annotations: make(map[string]string),

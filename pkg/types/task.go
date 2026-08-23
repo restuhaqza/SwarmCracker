@@ -188,6 +188,9 @@ type NetworkConfig struct {
 	DHCPRangeStart int    `yaml:"dhcp_range_start"` // DHCP range start offset in subnet (default: 50)
 	DHCPRangeEnd   int    `yaml:"dhcp_range_end"`   // DHCP range end offset in subnet (default: 200)
 
+	// CNI netns path (default: /tmp/firecracker-ns)
+	NetnsPath string `yaml:"netns_path"`
+
 	// VXLAN overlay settings
 	VXLANEnabled  bool     `yaml:"vxlan_enabled"`   // Enable VXLAN overlay for cross-node networking
 	VXLANID       int      `yaml:"vxlan_id"`        // VXLAN VNI (default: 100)

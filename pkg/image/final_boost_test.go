@@ -380,7 +380,9 @@ func TestGenerateImageID_Comprehensive(t *testing.T) {
 		{"gcr.io/project/image:v1", "gcr.io-project-image-v1"},
 		{"localhost:5000/myimage:test", "localhost:5000-myimage-test"},
 		{"", "-latest"},
-		{"image-with-dashes:tag-with-dashes", "image-with-dashes-tag-with-dashes"},
+		// Names with literal dashes get a short hash suffix so they can never
+		// collide with slash-flattened refs (foo/bar vs foo-bar).
+		{"image-with-dashes:tag-with-dashes", "image-with-dashes-012e0ecd-tag-with-dashes"},
 		{"UPPERCASE:TAG", "UPPERCASE-TAG"},
 		{"image.with.dots:tag", "image.with.dots-tag"},
 	}

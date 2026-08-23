@@ -67,10 +67,57 @@ type CNIIP struct {
 	Interface int
 }
 
+// UnmarshalJSON implements json.Unmarshaler for CNIIP.
+// CNI plugins emit "address" as a CIDR string (e.g. "10.0.0.2/24"),
+// which net.IPNet cannot unmarshal directly.
+func (ip *CNIIP) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Address   string `json:"address"`
+		Interface int    `json:"interface"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.Address != "" {
+		parsedIP, ipNet, err := net.ParseCIDR(raw.Address)
+		if err != nil {
+			return fmt.Errorf("parse CNI address %q: %w", raw.Address, err)
+		}
+		ip.Address = *ipNet
+		// Preserve the host IP (ParseCIDR returns the network IP in ipNet).
+		ip.Address.IP = parsedIP
+	}
+	ip.Interface = raw.Interface
+	return nil
+}
+
 // CNIRoute represents a route
 type CNIRoute struct {
 	Dest net.IPNet
 	GW   net.IP
+}
+
+// UnmarshalJSON implements json.Unmarshaler for CNIRoute.
+// CNI plugins emit "dst" as a CIDR string and "gw" as an IP string.
+func (r *CNIRoute) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Dest string `json:"dst"`
+		GW   string `json:"gw"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if raw.Dest != "" {
+		_, ipNet, err := net.ParseCIDR(raw.Dest)
+		if err != nil {
+			return fmt.Errorf("parse CNI route dst %q: %w", raw.Dest, err)
+		}
+		r.Dest = *ipNet
+	}
+	if raw.GW != "" {
+		r.GW = net.ParseIP(raw.GW)
+	}
+	return nil
 }
 
 // AddNetwork calls CNI ADD to create network interface

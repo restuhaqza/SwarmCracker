@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -448,7 +449,7 @@ func (nm *NetworkManager) prepareNetworkWithCNI(ctx context.Context, task *types
 		ipCIDR := attachment.Addresses[0]
 
 		// Call CNI ADD
-		result, err := nm.cniClient.AddNetwork(ctx, task.ID, "/tmp/firecracker-ns", ipCIDR, networkName)
+		result, err := nm.cniClient.AddNetwork(ctx, task.ID, nm.netnsPath(), ipCIDR, networkName)
 		if err != nil {
 			return fmt.Errorf("CNI ADD failed for network %s: %w", networkName, err)
 		}
@@ -486,6 +487,16 @@ func (nm *NetworkManager) prepareNetworkWithCNI(ctx context.Context, task *types
 	return nil
 }
 
+// netnsPath returns the network namespace path used for CNI ADD/DEL.
+// The path is configurable via config.NetnsPath and defaults to
+// /tmp/firecracker-ns for backward compatibility.
+func (nm *NetworkManager) netnsPath() string {
+	if nm.config.NetnsPath != "" {
+		return nm.config.NetnsPath
+	}
+	return "/tmp/firecracker-ns"
+}
+
 // CleanupNetwork cleans up network interfaces for a task.
 func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) error {
 	if task == nil {
@@ -496,31 +507,44 @@ func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) 
 		Str("task_id", task.ID).
 		Msg("Cleaning up network interfaces")
 
+	// Collect TAP devices to remove for this task
+	var tapsToRemove []struct {
+		key string
+		tap *TapDevice
+	}
 	nm.mu.Lock()
-	defer nm.mu.Unlock()
-
-	// Find and remove all TAP devices for this task
 	for key, tap := range nm.tapDevices {
 		if strings.HasPrefix(key, task.ID+"-") {
-			if err := nm.removeTapDevice(tap); err != nil {
-				log.Error().Err(err).
-					Str("tap", tap.Name).
-					Msg("Failed to remove TAP device")
-			}
-
-			// Release allocated IP
-			if nm.ipAllocator != nil && tap.IP != "" {
-				nm.ipAllocator.Release(tap.IP)
-			}
-
-			delete(nm.tapDevices, key)
+			tapsToRemove = append(tapsToRemove, struct {
+				key string
+				tap *TapDevice
+			}{key: key, tap: tap})
 		}
+	}
+	nm.mu.Unlock()
+
+	// Remove devices outside the global lock (exec may block)
+	for _, entry := range tapsToRemove {
+		if err := nm.removeTapDevice(entry.tap); err != nil {
+			log.Error().Err(err).
+				Str("tap", entry.tap.Name).
+				Msg("Failed to remove TAP device")
+		}
+
+		// Release allocated IP
+		if nm.ipAllocator != nil && entry.tap.IP != "" {
+			nm.ipAllocator.Release(entry.tap.IP)
+		}
+
+		nm.mu.Lock()
+		delete(nm.tapDevices, entry.key)
+		nm.mu.Unlock()
 	}
 
 	// Clean up CNI network attachments if any (prevents IPAM leaks)
 	if nm.cniClient != nil && len(task.Networks) > 0 {
+		netnsPath := nm.netnsPath()
 		for _, netAttach := range task.Networks {
-			netnsPath := "/tmp/firecracker-ns"
 			if err := nm.cniClient.DelNetwork(ctx, task.ID, netnsPath, netAttach.Network.ID); err != nil {
 				log.Warn().Err(err).
 					Str("task_id", task.ID).
@@ -763,13 +787,15 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		Msg("Setting up DHCP server")
 
 	// Kill any existing dnsmasq for this bridge via PID file (safe, no shell injection)
-	nm.killDnsmasqByPID()
+	nm.killDnsmasqByPID(nm.config.BridgeName)
 	time.Sleep(100 * time.Millisecond) // Brief pause to ensure process is killed
 
-	// Create log file with proper permissions for dnsmasq (runs as nobody)
-	logFile := "/tmp/dnsmasq.log"
+	// Create log file with proper permissions for dnsmasq (runs as nobody).
+	// Per-bridge log file to avoid collisions; 0640 keeps it readable by the
+	// daemon but not world-writable.
+	logFile := "/tmp/dnsmasq-" + nm.config.BridgeName + ".log"
 	osRemove(logFile) // Remove old file first
-	if err := osWriteFile(logFile, []byte{}, 0666); err != nil {
+	if err := osWriteFile(logFile, []byte{}, 0640); err != nil {
 		log.Warn().Err(err).Msg("Could not create dnsmasq log file")
 	}
 
@@ -788,8 +814,8 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		"--dhcp-option", fmt.Sprintf("6,%s", gatewayIP.String()),
 		"--log-queries",
 		"--log-dhcp",
-		"--log-facility=/tmp/dnsmasq.log",
-		"--pid-file=/tmp/dnsmasq.pid",
+		"--log-facility=/tmp/dnsmasq-"+nm.config.BridgeName+".log",
+		"--pid-file=/tmp/dnsmasq-"+nm.config.BridgeName+".pid",
 	)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -817,14 +843,19 @@ func (nm *NetworkManager) Shutdown() error {
 	return nil
 }
 
-// cleanupDnsmasq kills dnsmasq instances related to swarmcracker via PID file.
+// cleanupDnsmasq kills dnsmasq instances related to swarmcracker via PID files.
 func (nm *NetworkManager) cleanupDnsmasq() error {
-	// Kill by pid file (safe, no shell injection)
-	pidFile := "/tmp/dnsmasq.pid"
-	if data, err := os.ReadFile(pidFile); err == nil {
-		pid := strings.TrimSpace(string(data))
-		if pid != "" {
-			nm.killByPID(pid)
+	// Kill by per-bridge pid files (safe, no shell injection).
+	// Matches dnsmasq-<bridge>.pid files created by setupDHCP.
+	matches, err := filepath.Glob("/tmp/dnsmasq-*.pid")
+	if err == nil {
+		for _, pidFile := range matches {
+			if data, readErr := os.ReadFile(pidFile); readErr == nil {
+				pid := strings.TrimSpace(string(data))
+				if pid != "" {
+					nm.killByPID(pid)
+				}
+			}
 			osRemove(pidFile)
 		}
 	}
@@ -833,9 +864,9 @@ func (nm *NetworkManager) cleanupDnsmasq() error {
 	return nil
 }
 
-// killDnsmasqByPID reads the dnsmasq PID file and sends SIGTERM.
-func (nm *NetworkManager) killDnsmasqByPID() {
-	pidFile := "/tmp/dnsmasq.pid"
+// killDnsmasqByPID reads the per-bridge dnsmasq PID file and sends SIGTERM.
+func (nm *NetworkManager) killDnsmasqByPID(bridgeName string) {
+	pidFile := "/tmp/dnsmasq-" + bridgeName + ".pid"
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		return
@@ -1078,11 +1109,11 @@ func (nm *NetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
 
 // createTapDevice creates a TAP device for a network attachment.
 func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.NetworkAttachment, index int, taskID string) (*TapDevice, error) {
-	// Generate TAP name: tap-<hash[:12]>-<index>
+	// Generate TAP name: tap-<hash[:8]>-<index>
 	// Must match logic in translator
 	hash := sha256.Sum256([]byte(taskID))
 	hashStr := hex.EncodeToString(hash[:])
-	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:12], index)
+	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
 
 	// Allocate IP address for this TAP
 	// Priority: SwarmKit-provided IP > Local allocation
@@ -1235,8 +1266,13 @@ func ipMaskToCIDR(netmask string) string {
 		return "24" // Default
 	}
 	mask := net.IPMask(net.ParseIP(netmask).To4())
-	ones, _ := mask.Size()
-	return fmt.Sprintf("%d", ones)
+	if mask == nil {
+		return "24" // Invalid mask, fall back to default
+	}
+	if ones, bits := mask.Size(); ones > 0 && bits > 0 {
+		return fmt.Sprintf("%d", ones)
+	}
+	return "24" // nil/zero mask, fall back to default
 }
 
 // ListTapDevices returns a list of active TAP devices.

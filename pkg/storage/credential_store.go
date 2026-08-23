@@ -244,8 +244,14 @@ func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName stri
 		mkdirCmd := execCommand("debugfs", "-w", "-R",
 			fmt.Sprintf("mkdir %s", parentDir),
 			ext4Path)
-		// Ignore error — directory may already exist
-		mkdirCmd.CombinedOutput()
+		mkdirOutput, mkdirErr := mkdirCmd.CombinedOutput()
+		if mkdirErr != nil {
+			mkdirStr := string(mkdirOutput)
+			// mkdir fails with "File exists" if the directory already exists — ignore that
+			if !strings.Contains(mkdirStr, "File exists") {
+				return fmt.Errorf("debugfs mkdir %s failed: %s: %w", parentDir, mkdirStr, mkdirErr)
+			}
+		}
 	}
 
 	// Use debugfs to write into ext4 without mounting

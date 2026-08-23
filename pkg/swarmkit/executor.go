@@ -365,6 +365,7 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 			case <-time.After(5 * time.Second):
 				log.Warn().Str("task_id", taskID).Msg("Orphaned VM didn't stop, killing")
 				process.Process.Kill()
+				<-done // reap the waiter goroutine to avoid a leak
 			}
 
 			// Remove from VMM manager's process map
@@ -858,7 +859,17 @@ func (c *Controller) syncVolumeData(ctx context.Context, task *types.Task, mount
 	// Temporarily mount the rootfs to access files
 	mountDir, err := c.mountRootfs(rootfsPath)
 	if err != nil {
-		c.logger.Warn().Err(err).Msg("Could not mount rootfs for volume sync (may require privileges)")
+		// Volume sync requires root to mount the loop device. Surface this
+		// clearly instead of silently skipping, so operators know data was
+		// not synced back.
+		if os.Geteuid() != 0 {
+			c.logger.Error().
+				Err(err).
+				Str("rootfs", rootfsPath).
+				Msg("Volume sync skipped: mounting rootfs requires root privileges (sudo). Volume data was NOT synced back.")
+		} else {
+			c.logger.Warn().Err(err).Msg("Could not mount rootfs for volume sync")
+		}
 		// Continue without sync - non-critical
 		return nil
 	}

@@ -131,7 +131,7 @@ func (t *taskTranslatorImpl) buildNetworkInterfaces(task *types.Task) []map[stri
 
 	for i := range task.Networks {
 		ifaceID := fmt.Sprintf("eth%d", i)
-		tapName := fmt.Sprintf("tap-%s-%d", hashStr[:12], i)
+		tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], i)
 
 		iface := map[string]interface{}{
 			"iface_id":      ifaceID,

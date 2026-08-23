@@ -4,6 +4,7 @@ package image
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -703,8 +704,17 @@ func generateImageID(imageRef string) string {
 		tag = "latest"
 	}
 
-	// Replace slashes with dashes for filesystem-safe names
+	// Disambiguate refs that flatten to the same name (foo/bar:1 vs foo-bar:1).
+	// A literal dash in the ORIGINAL name (checked before slash flattening)
+	// means slash-flattening could collide with it, so append a short hash of
+	// the full ref only in that case. Registry paths without dashes keep
+	// their stable, readable IDs.
+	hasLiteralDash := strings.Contains(name, "-")
 	name = strings.ReplaceAll(name, "/", "-")
+	if hasLiteralDash {
+		sum := sha256.Sum256([]byte(imageRef))
+		name = fmt.Sprintf("%s-%x", name, sum[:4])
+	}
 
 	return fmt.Sprintf("%s-%s", name, tag)
 }
@@ -1068,8 +1078,10 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemove
 		}
 
 		// Check if file was recently accessed (safe heuristic for in-use files)
-		if fileInfo.ModTime().After(recentAccessThreshold) {
-			log.Debug().Str("file", filePath).Time("mod_time", fileInfo.ModTime()).Msg("Skipping recently accessed file")
+		// Use access time (Atime) when available — a running VM reads its rootfs
+		// continuously, so ModTime stays old while the image is in use.
+		if fileAccessTime(fileInfo).After(recentAccessThreshold) {
+			log.Debug().Str("file", filePath).Time("atime", fileAccessTime(fileInfo)).Msg("Skipping recently accessed file")
 			continue
 		}
 
@@ -1103,6 +1115,15 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemove
 	}
 
 	return filesRemoved, bytesFreed, nil
+}
+
+// fileAccessTime returns the access time of a file, preferring atime when
+// available and falling back to ModTime on platforms without atime access.
+func fileAccessTime(fi os.FileInfo) time.Time {
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+		return time.Unix(st.Atim.Sec, st.Atim.Nsec)
+	}
+	return fi.ModTime()
 }
 
 // formatBytes formats a byte count into a human-readable string.

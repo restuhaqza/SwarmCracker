@@ -361,10 +361,10 @@ func (tt *TaskTranslator) applyResources(config *VMMConfig, limits *types.Resour
 func (tt *TaskTranslator) buildNetworkInterface(_ types.NetworkAttachment, index int, taskID string) NetworkInterface {
 	ifaceID := fmt.Sprintf("eth%d", index)
 
-	// Generate TAP name: tap-<hash[:12]>-<index>
+	// Generate TAP name: tap-<hash[:8]>-<index>
 	hash := sha256.Sum256([]byte(taskID))
 	hashStr := hex.EncodeToString(hash[:])
-	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:12], index)
+	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
 
 	return NetworkInterface{
 		IfaceID:     ifaceID,

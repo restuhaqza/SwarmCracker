@@ -574,8 +574,8 @@ func TestVMMManager_Wait_VMM(t *testing.T) {
 func TestActionStruct(t *testing.T) {
 	t.Run("InstanceStart action", func(t *testing.T) {
 		action := Action{
-			ActionType:     "InstanceStart",
-			TimeoutSeconds: 0,
+			ActionType: "InstanceStart",
+			TimeoutMS:  0,
 		}
 
 		data, err := json.Marshal(action)

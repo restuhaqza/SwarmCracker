@@ -555,8 +555,6 @@ func TestNewCNIClient_AllDefaults_Unit(t *testing.T) {
 // =============================================================================
 
 func TestCNIResult_JSONUnmarshal_Unit(t *testing.T) {
-	t.Skip("skipped: needs fix")
-
 	jsonData := `{
 		"cniVersion": "1.0.0",
 		"interfaces": [
