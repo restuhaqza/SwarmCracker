@@ -292,6 +292,26 @@ func (v *VXLANManager) addPeerForwarding(vxlanName, peerIP string) error {
 	return nil
 }
 
+// addPeerForwardingWithRetry attempts addPeerForwarding with a small backoff.
+// A freshly discovered peer's VXLAN interface or bridge FDB may not be fully
+// programmed yet, so a transient retry closes that race before giving up.
+func (v *VXLANManager) addPeerForwardingWithRetry(vxlanName, peerIP string) error {
+	var lastErr error
+	const maxAttempts = 3
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 200 * time.Millisecond)
+		}
+		if err := v.addPeerForwarding(vxlanName, peerIP); err != nil {
+			lastErr = err
+			log.Debug().Err(err).Str("peer", peerIP).Int("attempt", attempt+1).Msg("Failed to add peer forwarding, retrying")
+			continue
+		}
+		return nil
+	}
+	return lastErr
+}
+
 // AddRouteToSubnet adds a route to reach a remote worker's VM subnet.
 func (v *VXLANManager) AddRouteToSubnet(remoteSubnet, remoteOverlayIP string) error {
 	_, dstNet, err := net.ParseCIDR(remoteSubnet)
@@ -375,8 +395,8 @@ func (v *VXLANManager) UpdatePeers(newPeers []string) error {
 	// Add new peers
 	for _, peer := range newPeers {
 		if !currentPeers[peer] {
-			if err := v.addPeerForwarding(vxlanName, peer); err != nil {
-				log.Warn().Err(err).Str("peer", peer).Msg("Failed to add peer forwarding")
+			if err := v.addPeerForwardingWithRetry(vxlanName, peer); err != nil {
+				log.Warn().Err(err).Str("peer", peer).Msg("Failed to add peer forwarding after retries")
 				continue
 			}
 			v.peerStore.AddPeer(peer)
