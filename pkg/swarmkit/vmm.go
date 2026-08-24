@@ -738,7 +738,33 @@ func (v *VMMManager) IsRunning(taskID string) bool {
 
 	// Check if process is still alive by sending signal 0
 	err := cmd.Process.Signal(syscall.Signal(0))
-	return err == nil
+	if err != nil {
+		return false
+	}
+
+	// A zombie still answers Signal(0), so /proc/<pid>/stat exposes the real
+	// state. If it's 'Z' the process has exited but not been reaped yet.
+	return v.processStateRunning(cmd.Process.Pid)
+}
+
+// processStateRunning reports whether the given PID is alive and not a zombie
+// by reading /proc/<pid>/stat. State 'Z' (zombie) or a missing entry means the
+// process is not meaningfully running.
+func (v *VMMManager) processStateRunning(pid int) bool {
+	statPath := fmt.Sprintf("/proc/%d/stat", pid)
+	data, err := os.ReadFile(statPath)
+	if err != nil {
+		return false // Process gone or unreadable
+	}
+	// Format: pid (comm) state ... — the state is the char after the parenthesized
+	// comm field. Find the final ')' and read the next non-space token.
+	idx := strings.LastIndex(string(data), ")")
+	if idx < 0 || idx+2 >= len(data) {
+		return false
+	}
+	state := data[idx+2]
+	// 'Z' = zombie, 'X'/'x' = dead
+	return state != 'Z' && state != 'X' && state != 'x'
 }
 
 // Remove removes the VM resources.

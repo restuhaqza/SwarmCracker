@@ -839,7 +839,36 @@ func (nm *NetworkManager) Shutdown() error {
 	// Stop VXLAN peer discovery if running
 	nm.StopPeerDiscovery()
 
+	// Remove iptables NAT and forwarding rules added by setupNAT
+	if err := nm.teardownNAT(); err != nil {
+		log.Warn().Err(err).Msg("Failed to teardown NAT rules")
+	}
+
 	log.Info().Msg("Network manager shutdown complete")
+	return nil
+}
+
+// teardownNAT removes the iptables rules added by setupNAT (MASQUERADE and
+// FORWARD rules) so they don't accumulate across restarts.
+func (nm *NetworkManager) teardownNAT() error {
+	if nm.config.Subnet == "" {
+		return nil
+	}
+
+	rules := [][]string{
+		{"-t", "nat", "-D", "POSTROUTING", "-s", nm.config.Subnet, "-j", "MASQUERADE"},
+		{"-D", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT"},
+		{"-D", "FORWARD", "-o", nm.config.BridgeName, "-j", "ACCEPT"},
+	}
+
+	for _, args := range rules {
+		cmd := execCommand("iptables", args...)
+		if err := cmd.Run(); err != nil {
+			// Rule may not exist — not an error worth surfacing.
+			log.Debug().Err(err).Strs("rule", args).Msg("iptables rule not present during teardown")
+		}
+	}
+
 	return nil
 }
 

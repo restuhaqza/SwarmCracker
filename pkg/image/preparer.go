@@ -841,9 +841,8 @@ func (ip *ImagePreparer) getInitBinaryPath() string {
 	}
 
 	// Check if binary is in PATH
-	cmd := exec.CommandContext(context.Background(), "which", string(ip.initInjector.config.Type))
-	if output, err := cmd.CombinedOutput(); err == nil {
-		return strings.TrimSpace(string(output))
+	if binPath, err := exec.LookPath(string(ip.initInjector.config.Type)); err == nil {
+		return binPath
 	}
 
 	return ""

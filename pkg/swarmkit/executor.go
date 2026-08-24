@@ -400,8 +400,11 @@ func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
 	// Build generic resources
 	genericResources := []*api.GenericResource{}
 
-	// Only report Firecracker if KVM and architecture are supported
-	if e.kvmAvailable() && e.archSupported() {
+	// Only report Firecracker if KVM and architecture are supported.
+	// Cache the results so we don't stat /dev/kvm twice.
+	kvmOK := e.kvmAvailable()
+	archOK := e.archSupported()
+	if kvmOK && archOK {
 		genericResources = append(genericResources, &api.GenericResource{
 			Resource: &api.GenericResource_NamedResourceSpec{
 				NamedResourceSpec: &api.NamedGenericResource{
@@ -417,8 +420,8 @@ func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error) {
 	} else {
 		log.Warn().
 			Str("arch", runtime.GOARCH).
-			Bool("kvm_available", e.kvmAvailable()).
-			Bool("arch_supported", e.archSupported()).
+			Bool("kvm_available", kvmOK).
+			Bool("arch_supported", archOK).
 			Msg("Firecracker not available: KVM or architecture not supported")
 	}
 
