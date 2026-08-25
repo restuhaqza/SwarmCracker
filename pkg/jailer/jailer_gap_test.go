@@ -46,7 +46,7 @@ func TestJailerNew_BinaryResolution(t *testing.T) {
 				GID:             1000,
 			},
 			wantErr:     true,
-			errContains: "Firecracker binary not found",
+			errContains: "firecracker binary not found",
 		},
 		{
 			name: "non_absolute_jailer_not_found",

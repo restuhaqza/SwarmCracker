@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
@@ -309,6 +310,17 @@ func validateInjectionPath(path string) error {
 	// Reject null bytes
 	if strings.Contains(path, "\x00") {
 		return fmt.Errorf("path contains null bytes")
+	}
+
+	// Reject whitespace and control characters (newline, tab, CR, etc.).
+	// debugfs -R parses commands separated by newlines, so a newline in a
+	// target path would let an attacker inject a second debugfs command
+	// (e.g. "write /run/secrets/x\nrm /"). Spaces/tabs also break debugfs
+	// argument tokenization, so reject all whitespace.
+	for _, r := range path {
+		if unicode.IsSpace(r) || r == 0x7f {
+			return fmt.Errorf("path contains whitespace or control character: %q", path)
+		}
 	}
 
 	// Reject paths containing ".." (path traversal)

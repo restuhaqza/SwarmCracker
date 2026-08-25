@@ -87,7 +87,7 @@ func TestJailerNew(t *testing.T) {
 				GID:             1000,
 			},
 			wantErr: true,
-			errMsg:  "Firecracker binary not found",
+			errMsg:  "firecracker binary not found",
 		},
 	}
 

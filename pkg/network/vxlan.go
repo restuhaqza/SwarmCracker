@@ -312,6 +312,34 @@ func (v *VXLANManager) addPeerForwardingWithRetry(vxlanName, peerIP string) erro
 	return lastErr
 }
 
+// removePeerForwarding deletes the forwarding database entry for a peer node.
+// A peer's VXLAN FDB entry is symmetrical with addPeerForwarding (all-zero MAC
+// with dst <peerIP>), so we delete the same key. Errors indicating the entry is
+// already gone ("not found"/"no such") are treated as success.
+func (v *VXLANManager) removePeerForwarding(vxlanName, peerIP string) error {
+	if net.ParseIP(peerIP) == nil {
+		return fmt.Errorf("invalid peer IP: %s", peerIP)
+	}
+
+	if _, err := v.netlinkExecutor.LinkByName(vxlanName); err != nil {
+		// Interface already gone — nothing to remove.
+		return nil
+	}
+
+	cmd := exec.CommandContext(context.Background(), "bridge", "fdb", "del", "00:00:00:00:00:00", "dev", vxlanName, "dst", peerIP, "self")
+	if output, err := cmd.CombinedOutput(); err != nil {
+		out := strings.ToLower(string(output))
+		if strings.Contains(out, "not found") || strings.Contains(out, "no such") || strings.Contains(out, "invalid") {
+			log.Debug().Str("vxlan", vxlanName).Str("peer", peerIP).Msg("FDB entry already removed")
+			return nil
+		}
+		return fmt.Errorf("failed to remove FDB entry: %w (output: %s)", err, string(output))
+	}
+
+	log.Info().Str("vxlan", vxlanName).Str("peer", peerIP).Msg("Removed VXLAN FDB entry for peer")
+	return nil
+}
+
 // AddRouteToSubnet adds a route to reach a remote worker's VM subnet.
 func (v *VXLANManager) AddRouteToSubnet(remoteSubnet, remoteOverlayIP string) error {
 	_, dstNet, err := net.ParseCIDR(remoteSubnet)
@@ -405,9 +433,13 @@ func (v *VXLANManager) UpdatePeers(newPeers []string) error {
 		delete(currentPeers, peer)
 	}
 
-	// Remove old peers
+	// Remove old peers: drop the store entry AND the kernel FDB entry,
+	// otherwise traffic keeps being sent to dead peers' destinations.
 	for peer := range currentPeers {
 		v.peerStore.RemovePeer(peer)
+		if err := v.removePeerForwarding(vxlanName, peer); err != nil {
+			log.Warn().Err(err).Str("peer", peer).Msg("Failed to remove peer forwarding")
+		}
 		log.Info().Str("peer", peer).Msg("Removed VXLAN peer")
 	}
 
