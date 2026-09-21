@@ -1,4 +1,4 @@
-# Cluster Initialization Test - v0.6.0
+# Cluster Initialization Test - v0.9.0
 
 ## Test Status: ✅ Pre-flight Checks Verified
 
@@ -46,15 +46,15 @@ cd test-automation
 vagrant up
 
 # Copy new binary to VMs
-vagrant scp ../bin/swarmcracker manager:/tmp/swarmcracker
-vagrant scp ../bin/swarmd-firecracker manager:/tmp/swarmd-firecracker
+vagrant scp ../build/swarmcracker manager:/tmp/swarmcracker
+vagrant scp ../build/swarmd-firecracker manager:/tmp/swarmd-firecracker
 
 # SSH to manager and test
 vagrant ssh manager
 sudo mv /tmp/swarmcracker /tmp/swarmd-firecracker /usr/local/bin/
 
 # Test init command
-sudo swarmcracker init --debug
+sudo swarmcracker cluster init --debug
 ```
 
 ### Option 2: Manual Test on Running VMs
@@ -68,15 +68,15 @@ If you have running VMs from previous setup:
 sudo systemctl stop swarmcracker-manager swarmd-firecracker 2>/dev/null || true
 
 # Copy new binary
-scp bin/swarmcracker kali@192.168.121.17:/tmp/
-scp bin/swarmd-firecracker kali@192.168.121.17:/tmp/
+scp build/swarmcracker kali@192.168.121.17:/tmp/
+scp build/swarmd-firecracker kali@192.168.121.17:/tmp/
 
 # SSH and install
 ssh kali@192.168.121.17
 sudo mv /tmp/swarmcracker /tmp/swarmd-firecracker /usr/local/bin/
 
 # Test new init command
-sudo swarmcracker init --vxlan-enabled --vxlan-peers 192.168.121.24,192.168.121.143
+sudo swarmcracker cluster init --vxlan-enabled --vxlan-peers 192.168.121.24,192.168.121.143
 ```
 
 **On Worker-1 (192.168.121.24):**
@@ -86,15 +86,15 @@ sudo swarmcracker init --vxlan-enabled --vxlan-peers 192.168.121.24,192.168.121.
 ssh kali@192.168.121.17 "sudo cat /var/lib/swarmkit/join-tokens.txt"
 
 # Copy binary
-scp bin/swarmcracker kali@192.168.121.24:/tmp/
-scp bin/swarmd-firecracker kali@192.168.121.24:/tmp/
+scp build/swarmcracker kali@192.168.121.24:/tmp/
+scp build/swarmd-firecracker kali@192.168.121.24:/tmp/
 
 # SSH and install
 ssh kali@192.168.121.24
 sudo mv /tmp/swarmcracker /tmp/swarmd-firecracker /usr/local/bin/
 
 # Join cluster
-sudo swarmcracker join 192.168.121.17:4242 \
+sudo swarmcracker cluster join 192.168.121.17:4242 \
   --token SWMTKN-1-... \
   --vxlan-enabled \
   --vxlan-peers 192.168.121.17,192.168.121.143
@@ -104,13 +104,13 @@ sudo swarmcracker join 192.168.121.17:4242 \
 
 ```bash
 # Same as worker-1
-scp bin/swarmcracker kali@192.168.121.143:/tmp/
-scp bin/swarmd-firecracker kali@192.168.121.143:/tmp/
+scp build/swarmcracker kali@192.168.121.143:/tmp/
+scp build/swarmd-firecracker kali@192.168.121.143:/tmp/
 
 ssh kali@192.168.121.143
 sudo mv /tmp/swarmcracker /tmp/swarmd-firecracker /usr/local/bin/
 
-sudo swarmcracker join 192.168.121.17:4242 \
+sudo swarmcracker cluster join 192.168.121.17:4242 \
   --token SWMTKN-1-... \
   --vxlan-enabled \
   --vxlan-peers 192.168.121.17,192.168.121.24
@@ -159,12 +159,12 @@ After cluster initialization:
 
 **1. Check cluster status:**
 ```bash
-swarmcracker status
+swarmcracker cluster health
 ```
 
 **2. List nodes:**
 ```bash
-swarmcracker list nodes
+swarmcracker node ls
 ```
 
 **3. Check systemd services:**
@@ -187,7 +187,7 @@ sudo journalctl -u swarmcracker-worker -f
 
 **5. Deploy test service:**
 ```bash
-swarmcracker run nginx:alpine --detach
+swarmcracker vm create --detach nginx:alpine
 ```
 
 **6. Test VXLAN networking:**
@@ -274,13 +274,13 @@ If something goes wrong:
 sudo systemctl stop swarmcracker-manager swarmcracker-worker
 
 # Restore old binaries (if backed up)
-sudo mv /usr/local/bin/swarmcracker.backup /usr/local/bin/swarmcracker
-sudo mv /usr/local/bin/swarmd-firecracker.backup /usr/local/bin/swarmd-firecracker
+sudo mv /usr/local/build/swarmcracker.backup /usr/local/build/swarmcracker
+sudo mv /usr/local/build/swarmd-firecracker.backup /usr/local/build/swarmd-firecracker
 
 # Or reinstall from previous release
-wget https://github.com/restuhaqza/SwarmCracker/releases/download/v0.6.0/swarmcracker-v0.6.0-linux-amd64.tar.gz
-tar -xzf swarmcracker-v0.6.0-linux-amd64.tar.gz
-sudo cp swarmcracker-v0.6.0-linux-amd64/* /usr/local/bin/
+wget https://github.com/restuhaqza/SwarmCracker/releases/download/v0.9.0/swarmcracker-v0.9.0-linux-amd64.tar.gz
+tar -xzf swarmcracker-v0.9.0-linux-amd64.tar.gz
+sudo cp swarmcracker-v0.9.0-linux-amd64/* /usr/local/bin/
 ```
 
 ---
@@ -302,7 +302,7 @@ sudo cp swarmcracker-v0.6.0-linux-amd64/* /usr/local/bin/
 ## Test Report Template
 
 ```markdown
-## Test Report - v0.6.0 Cluster Init
+## Test Report - v0.9.0 Cluster Init
 
 **Date:** 2026-04-07
 **Tester:** [Name]

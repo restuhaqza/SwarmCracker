@@ -256,15 +256,15 @@ pkg/image/binaries/busybox-amd64:
 # Vagrant helpers
 vagrant-up:
 	@echo "Starting Vagrant environment..."
-	cd test-automation && vagrant up
+	cd contrib/vagrant && vagrant up
 
 vagrant-halt:
 	@echo "Stopping Vagrant environment..."
-	cd test-automation && vagrant halt
+	cd contrib/vagrant && vagrant halt
 
 vagrant-destroy:
 	@echo "Destroying Vagrant environment..."
-	cd test-automation && vagrant destroy -f
+	cd contrib/vagrant && vagrant destroy -f
 
 # Verify Go version alignment across all config files
 check-go-version:

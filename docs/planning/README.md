@@ -1,90 +1,28 @@
-# Documentation Website Planning
+# Planning Documents
 
-> Planning documents for the SwarmCracker documentation website update (2026-05-03)
-
-## Overview
-
-This directory contains planning documents created during the website update to bring the landing page in sync with SwarmCracker v0.6.0+ features.
+> ⚠️ **Historical.** These are point-in-time design and planning documents, not
+> current documentation. For how SwarmCracker works today, start at
+> [`docs/README.md`](../README.md); for the CLI, see
+> [`docs/user/reference/cli.md`](../user/reference/cli.md).
 
 ## Documents
 
-### UPDATE_PLAN.md
-Comprehensive technical implementation plan covering:
-- Current state analysis
-- Missing features (VXLAN, Jailer, swarmctl, etc.)
-- Detailed implementation phases
-- File structure proposals
-- Content strategy (website vs. GitHub docs)
-
-**Use when**: Need detailed technical guidance for implementation
-
-### PLAN_SUMMARY.md
-Executive summary with:
-- Visual comparison (current vs. future)
-- Week-by-week timeline
-- Success metrics
-- Priority ordering
-
-**Use when**: Need quick overview of the plan
-
-### FEATURE_CHECKLIST.md
-Page-by-page update checklist with:
-- Feature coverage matrix
-- Priority tracking (P0/P1/P2)
-- Content sources reference
-- Launch checklist
-
-**Use when**: Tracking progress and ensuring completeness
-
-### BEFORE_AFTER.md
-Visual comparison showing:
-- Website state before and after
-- User journey improvements
-- Metrics and ROI analysis
-- Time investment estimate
-
-**Use when**: Justifying the work or showing impact
-
-## Implementation Status
-
-### ✅ Completed (2026-05-03)
-
-- [x] Landing page updated
-- [x] Hero section emphasizes multi-node
-- [x] 3 new feature cards added
-- [x] Networking section created
-- [x] Installation commands updated with VXLAN flags
-- [x] Stats section expanded (latency, packet loss)
-- [x] Footer links expanded
-
-### 📋 In Progress
-
-- [ ] VXLAN networking guide
-- [ ] Jailer security guide
-- [ ] swarmctl CLI reference
-- [ ] Ansible deployment guide
-
-### 📅 Planned
-
-- [ ] Multi-node example
-- [ ] Production deployment example
-- [ ] Architecture diagrams (VXLAN, Jailer)
-- [ ] Interactive elements (optional)
+| Document | Contents |
+|----------|----------|
+| [`cni-networkprovider-spec.md`](cni-networkprovider-spec.md) | CNI network provider design |
+| [`consul-integration.md`](consul-integration.md) | Consul-based VXLAN peer discovery |
+| [`init-deinit.md`](init-deinit.md) | Cluster init/leave/deinit/reset design |
+| [`todo-implementation.md`](todo-implementation.md) | Outstanding implementation notes |
+| [`UPDATE_PLAN.md`](UPDATE_PLAN.md) | Documentation/website update plan |
 
 ## Notes
 
-- These documents are **temporary planning artifacts**
-- Once implementation is complete, this directory can be archived or removed
-- Keep until website is fully updated and all features are documented
-
-## Related
-
-- **Website**: `docs/site/index.html`
-- **GitHub Documentation**: `docs/user/`
-- **Project Board**: [GitHub Issues](https://github.com/restuhaqza/SwarmCracker/issues)
+- These files describe intent at the time they were written; details may since have
+  changed. Verify against the code and the user/dev docs.
+- The documentation reorganisation is complete — the current index is
+  [`docs/README.md`](../README.md).
 
 ---
 
-**Created**: 2026-05-03
-**Status**: Active planning
-**Next Review**: After implementation complete
+**Created:** 2026-05-03
+**Status:** Archived planning artifacts

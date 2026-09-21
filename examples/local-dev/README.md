@@ -1,11 +1,17 @@
 # Local Development Setup
 
+> ⚠️ **Legacy example.** This walks through a manual, single-host SwarmKit setup.
+> For the supported happy path, use [`swarmcracker setup`](../../docs/user/getting-started/README.md)
+> followed by `swarmcracker cluster init` / `swarmcracker cluster join`, and see the
+> [CLI reference](../../docs/user/reference/cli.md). This example is retained for
+> reference only.
+
 Single-node SwarmKit cluster for local development and testing. Manager and worker run on the same machine with isolated networking.
 
 ## Prerequisites
 
 - Linux with KVM support
-- Go 1.21+
+- Go 1.26+
 - Firecracker installed
 - SwarmKit installed (swarmd/swarmctl)
 - SwarmCracker installed
@@ -185,7 +191,7 @@ journalctl -u swarmd -f
 
 # Check SwarmCracker is available
 which swarmcracker
-swarmcracker validate --config config/worker.yaml
+swarmcracker config validate --config config/worker.yaml
 ```
 
 ### MicroVMs not networking

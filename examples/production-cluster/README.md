@@ -1,5 +1,11 @@
 # Production Multi-Node Deployment
 
+> ⚠️ **Legacy example.** This manual, multi-node walkthrough predates the supported
+> deployment path. For current deployments use [`swarmcracker setup`](../../docs/user/getting-started/README.md)
+> plus `swarmcracker cluster init` / `swarmcracker cluster join` (with `--manager` for
+> additional managers), and see the [CLI reference](../../docs/user/reference/cli.md)
+> and [Ansible deployment](../../infrastructure/ansible/). Retained for reference only.
+
 Production-ready SwarmKit cluster with 3 managers (HA) and multiple workers. This setup is designed for high availability, security, and scalability.
 
 ## Architecture
@@ -56,7 +62,7 @@ Production-ready SwarmKit cluster with 3 managers (HA) and multiple workers. Thi
 ### Software
 
 - Linux (Ubuntu 20.04+ or Debian 11+ recommended)
-- Go 1.21+
+- Go 1.26+
 - Firecracker v1.10.0+
 - SwarmKit (latest from GitHub)
 - SwarmCracker (latest from GitHub)
@@ -121,12 +127,12 @@ sudo usermod -aG kvm $USER
 
 ```bash
 # Download Firecracker
-wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.10.0/firecracker-v1.10.0-x86_64.tgz
-tar -xzf firecracker-v1.10.0-x86_64.tgz
+wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz
+tar -xzf firecracker-v1.15.1-x86_64.tgz
 
 # Install binaries
-sudo mv release-v1.10.0-x86_64/firecracker-v1.10.0-x86_64 /usr/bin/firecracker
-sudo mv release-v1.10.0-x86_64/jailer-v1.10.0-x86_64 /usr/bin/jailer
+sudo mv release-v1.15.1-x86_64/firecracker-v1.15.1-x86_64 /usr/bin/firecracker
+sudo mv release-v1.15.1-x86_64/jailer-v1.10.0-x86_64 /usr/bin/jailer
 sudo chmod +x /usr/bin/firecracker /usr/bin/jailer
 
 # Verify
@@ -160,10 +166,10 @@ swarmctl --version
 # Build from source
 git clone https://github.com/restuhaqza/swarmcracker.git /opt/swarmcracker
 cd /opt/swarmcracker
-make build
+make swarmcracker
 
 # Install binary
-sudo cp ./bin/swarmcracker /usr/local/bin/
+sudo cp ./build/swarmcracker /usr/local/bin/
 
 # Verify
 swarmcracker version

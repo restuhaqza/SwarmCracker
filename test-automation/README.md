@@ -1,6 +1,12 @@
 # SwarmCracker Test Infrastructure
 
-**Automated Vagrant-based testing cluster for SwarmCracker development.**
+**Test scripts for SwarmCracker development.**
+
+> ⚠️ **Legacy note:** The Vagrantfiles for local test VMs now live in
+> [`contrib/vagrant/`](../contrib/vagrant/). The scripts in this directory assume a
+> cluster is already reachable. The preferred, supported way to stand up a cluster is
+> the [`swarmcracker setup` + `cluster init/join`](../docs/user/getting-started/README.md)
+> flow (see also the [two-node E2E report](../docs/reports/e2e-two-vm-2026-09-21.md)).
 
 This directory contains the test infrastructure for local development and testing of SwarmCracker. It creates isolated VMs for testing SwarmKit + Firecracker integration.
 
@@ -58,9 +64,12 @@ ls -la /dev/kvm
 ## 🚀 Quick Start
 
 ```bash
-cd /home/kali/.openclaw/workspace/projects/swarmcracker/test-automation
+# 1. Start the test VMs (Vagrantfiles live in contrib/vagrant/)
+cd ../contrib/vagrant
+vagrant up
 
-# Start all VMs (takes 5-10 minutes)
+# 2. Run the cluster/e2e scripts from test-automation/
+cd ../../test-automation
 ./start-cluster.sh
 ```
 
@@ -140,16 +149,16 @@ sudo swarmctl service remove web
 vagrant ssh worker1
 
 # List running microVMs
-sudo swarmcracker list
+sudo swarmcracker vm list
 
 # Check specific microVM status
-sudo swarmcracker status <task-id>
+sudo swarmcracker cluster status <task-id>
 
 # View microVM logs
-sudo swarmcracker logs <task-id>
+sudo swarmcracker vm logs <task-id>
 
 # Stop a microVM
-sudo swarmcracker stop <task-id>
+sudo swarmcracker vm stop <task-id>
 ```
 
 ## 📊 Verification
@@ -184,7 +193,7 @@ vagrant ssh manager -c "
 ### Check MicroVMs on Workers
 
 ```bash
-vagrant ssh worker1 -c "sudo swarmcracker list"
+vagrant ssh worker1 -c "sudo swarmcracker vm list"
 ```
 
 ## 🐛 Troubleshooting
@@ -297,7 +306,7 @@ swarmctl service ps nginx
 
 # List microVMs on workers
 # (from another terminal)
-vagrant ssh worker1 -c "sudo swarmcracker list"
+vagrant ssh worker1 -c "sudo swarmcracker vm list"
 ```
 
 ### Deploy a Stack with Multiple Services

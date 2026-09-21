@@ -28,7 +28,7 @@ theme:
     - content.action.view
 
 nav:
-  - Home: index.md
+  - Home: README.md
   - Getting Started:
     - Overview: user/getting-started/README.md
   - Guides:
@@ -41,8 +41,8 @@ nav:
     - Snapshots: user/guides/snapshots.md
     - Disaster Recovery: user/guides/disaster-recovery.md
     - Ansible Deployment:
-        - Guide: user/guides/ansible/README.md
-        - Reports: user/guides/ansible/reports/README.md
+        - Test Report: user/guides/ansible/reports/test-report.md
+        - Verification Report: user/guides/ansible/reports/verification-report.md
     - Advanced: user/guides/advanced.md
   - Architecture:
     - Overview: user/architecture/README.md

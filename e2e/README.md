@@ -1,43 +1,14 @@
-# E2E Testing with QEMU Worker Nodes
+# E2E Testing
 
-## Progress Summary
+This directory previously held an ad-hoc log of a QEMU-based worker experiment.
+That content was outdated and has been removed.
 
-### Completed:
-- ✅ SwarmCracker manager running (192.168.18.77:4242)
-- ✅ Fixed VM boot issue (JSON key mismatch: boot_source → boot-source)
-- ✅ Committed and pushed fix to GitHub (8 commits)
-- ✅ Alpine nocloud images downloaded (~110MB each)
-- ✅ QEMU worker VMs booting successfully
-- ✅ DHCP working (dnsmasq assigning IPs: 10.10.10.111)
+Current end-to-end testing lives in:
 
-### Pending:
-- ⚠️ SSH access to worker VMs (Alpine Tiny Cloud locks passwords)
-- ⚠️ Workers joining SwarmCracker cluster
-- ⚠️ Deploying test microVMs across workers
+- **[`test/e2e/README.md`](../test/e2e/README.md)** — how to run the automated E2E suite.
+- **[`docs/dev/testing/e2e-tests.md`](../docs/dev/testing/e2e-tests.md)** — E2E test architecture.
+- **[`docs/reports/e2e-two-vm-2026-09-21.md`](../docs/reports/e2e-two-vm-2026-09-21.md)** — latest two-node (manager + worker) E2E report.
 
-## Infrastructure
-
-| Component | Status | Details |
-|-----------|--------|---------|
-| Manager | Running | 192.168.18.77:4242, swarmd-firecracker |
-| QEMU Bridge | Ready | qemu-br0, 10.10.10.1/24 |
-| DHCP Server | Running | dnsmasq, range 10.10.10.100-150 |
-| Worker VMs | Booting | Alpine nocloud, gets DHCP IP |
-| SSH Access | Blocked | Alpine requires SSH key injection |
-
-## Files
-
-- `/var/lib/qemu/alpine-nocloud.qcow2` - Base worker disk image (107MB)
-- `/var/lib/qemu/worker*-disk.qcow2` - Worker-specific disks
-
-## Next Steps
-
-1. Configure SSH key injection for Alpine Tiny Cloud format
-2. Install swarmcracker binaries on workers via HTTP server
-3. Run `swarmcracker join 192.168.18.77:4242 --token <TOKEN>` on workers
-4. Deploy test services across cluster
-
-## Notes
-
-Alpine nocloud images use "Tiny Cloud" bootstrap, not full cloud-init.
-SSH keys must be provided via IMDS (metadata service) or manual setup.
+For a reproducible two-node cluster, use the `swarmcracker setup` + `cluster init/join`
+flow (see [Getting Started](../docs/user/getting-started/README.md)), or the
+Vagrant-based environments in [`contrib/vagrant/`](../contrib/vagrant/).
