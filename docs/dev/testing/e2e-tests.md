@@ -131,7 +131,7 @@ sudo cp build/swarmcracker-agent /usr/local/bin/
 
 ```bash
 swarmcracker version
-# SwarmCracker v0.9.0
+# SwarmCracker v0.9.1
 # Firecracker v1.15.1
 # SwarmKit v2.1.1
 

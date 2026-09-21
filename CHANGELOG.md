@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.1] - 2026-09-22
+
+### Fixed
+- **Metrics** — Correct the `/proc/<pid>/stat` field index used for process uptime; it previously read `rsslim` instead of `starttime`.
+- **Snapshots** — `cluster health` and `swarmctl` looked for snapshots in `/var/lib/swarmcracker/snapshots` while the executor writes to `/var/lib/firecracker/snapshots`; all call sites now use a single `config.DefaultSnapshotDir`.
+
+### Changed
+- **Documentation** — Full review and refresh: CLI reference rewritten from the real command tree, user/dev guides updated to current commands and versions, `mkdocs.yml` nav fixed, Vagrant paths corrected, and legacy examples/units marked deprecated.
+
+---
+
 ## [0.9.0] - 2026-09-22
 
 ### Fixed
@@ -98,7 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.8.0...v0.9.0
 [0.6.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.5.0...v0.6.0
 [0.2.1]: https://github.com/restuhaqza/SwarmCracker/compare/v0.2.0...v0.2.1

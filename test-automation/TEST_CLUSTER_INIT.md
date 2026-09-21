@@ -1,4 +1,4 @@
-# Cluster Initialization Test - v0.9.0
+# Cluster Initialization Test - v0.9.1
 
 ## Test Status: ✅ Pre-flight Checks Verified
 
@@ -278,9 +278,9 @@ sudo mv /usr/local/build/swarmcracker.backup /usr/local/build/swarmcracker
 sudo mv /usr/local/build/swarmd-firecracker.backup /usr/local/build/swarmd-firecracker
 
 # Or reinstall from previous release
-wget https://github.com/restuhaqza/SwarmCracker/releases/download/v0.9.0/swarmcracker-v0.9.0-linux-amd64.tar.gz
-tar -xzf swarmcracker-v0.9.0-linux-amd64.tar.gz
-sudo cp swarmcracker-v0.9.0-linux-amd64/* /usr/local/bin/
+wget https://github.com/restuhaqza/SwarmCracker/releases/download/v0.9.1/swarmcracker-v0.9.1-linux-amd64.tar.gz
+tar -xzf swarmcracker-v0.9.1-linux-amd64.tar.gz
+sudo cp swarmcracker-v0.9.1-linux-amd64/* /usr/local/bin/
 ```
 
 ---
@@ -302,7 +302,7 @@ sudo cp swarmcracker-v0.9.0-linux-amd64/* /usr/local/bin/
 ## Test Report Template
 
 ```markdown
-## Test Report - v0.9.0 Cluster Init
+## Test Report - v0.9.1 Cluster Init
 
 **Date:** 2026-04-07
 **Tester:** [Name]
