@@ -24,12 +24,12 @@ swarmcracker:
 swarmd-firecracker:
 	@echo "Building swarmd-firecracker..."
 	@mkdir -p $(BUILD_DIR)
-	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/swarmd-firecracker $(CMD_DIR)/swarmd-firecracker/main.go
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/swarmd-firecracker $(CMD_DIR)/swarmd-firecracker
 
 swarmcracker-agent:
 	@echo "Building swarmcracker-agent..."
 	@mkdir -p $(BUILD_DIR)
-	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/swarmcracker-agent $(CMD_DIR)/swarmcracker-agent/main.go
+	$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BUILD_DIR)/swarmcracker-agent $(CMD_DIR)/swarmcracker-agent
 
 # Build all binaries
 all: swarmcracker swarmd-firecracker swarmcracker-agent
