@@ -88,6 +88,14 @@ func (ii *InitInjector) InjectIntoDir(tmpDir string, info *OCIImageInfo) error {
 	case InitTypeNone, InitTypeUnknown:
 		return ii.injectTiniIntoDir(tmpDir, info)
 	case InitTypeTini, InitTypeDumbInit, InitTypeOpenRC, InitTypeSysvinit:
+		// Alpine-family images ship a busybox /sbin/init which only reads
+		// /etc/inittab. That inittab does not launch the OCI ENTRYPOINT/CMD,
+		// so preserving it leaves the microVM running with no workload.
+		// Install our OCI-aware tini wrapper instead.
+		if initIsBusybox(tmpDir) {
+			log.Info().Msg("busybox-style init detected; injecting tini wrapper to run OCI command")
+			return ii.injectTiniIntoDir(tmpDir, info)
+		}
 		// Preserve existing init, just create /init symlink
 		initLink := filepath.Join(tmpDir, "init")
 		_ = os.Remove(initLink)
@@ -107,6 +115,8 @@ func (ii *InitInjector) injectTiniIntoDir(tmpDir string, info *OCIImageInfo) err
 
 	// Write the embedded tini binary to /sbin/tini
 	tiniPath := filepath.Join(sbinDir, "tini")
+	// Remove any pre-existing file/symlink so we never write through it.
+	_ = os.Remove(tiniPath)
 	if err := os.WriteFile(tiniPath, tiniBinary, 0755); err != nil {
 		return fmt.Errorf("failed to write tini binary: %w", err)
 	}

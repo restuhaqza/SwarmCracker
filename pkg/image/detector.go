@@ -1,9 +1,11 @@
 package image
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // InitType represents the detected init system type.
@@ -300,6 +302,51 @@ func hasSysvinit(tmpDir string) bool {
 		}
 	}
 
+	return false
+}
+
+// initIsBusybox reports whether /sbin/init resolves to busybox.
+//
+// Alpine-based container images ship /sbin/init as a symlink to busybox, which
+// only reads /etc/inittab. That inittab does not run the OCI ENTRYPOINT/CMD, so
+// preserving it means the container workload never starts. Callers should
+// install the OCI-aware tini wrapper instead.
+func initIsBusybox(tmpDir string) bool {
+	sbinInit := filepath.Join(tmpDir, "sbin", "init")
+
+	// Common case: /sbin/init -> /bin/busybox (or a relative path to busybox).
+	if target, err := os.Readlink(sbinInit); err == nil {
+		if strings.Contains(strings.ToLower(target), "busybox") {
+			return true
+		}
+	}
+
+	// Fallback: /sbin/init is a regular file containing the busybox binary.
+	fi, err := os.Stat(sbinInit)
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	if !hasBusyboxBinary(tmpDir) {
+		return false
+	}
+	data, err := os.ReadFile(sbinInit)
+	if err != nil {
+		return false
+	}
+	return bytes.Contains(data, []byte("busybox"))
+}
+
+// hasBusyboxBinary reports whether a busybox binary exists in the rootfs.
+func hasBusyboxBinary(tmpDir string) bool {
+	for _, p := range []string{
+		filepath.Join(tmpDir, "bin", "busybox"),
+		filepath.Join(tmpDir, "usr", "bin", "busybox"),
+		filepath.Join(tmpDir, "sbin", "busybox"),
+	} {
+		if _, err := os.Stat(p); err == nil {
+			return true
+		}
+	}
 	return false
 }
 

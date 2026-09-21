@@ -910,6 +910,12 @@ func (ip *ImagePreparer) handleMounts(ctx context.Context, task *localtypes.Task
 
 // handleVolumeMount handles a volume mount.
 func (ip *ImagePreparer) handleVolumeMount(ctx context.Context, task *localtypes.Task, rootfsPath string, mount *localtypes.Mount) error {
+	// Volume support is optional; without an initialized manager we cannot
+	// resolve or create the volume. Return an error instead of panicking.
+	if ip.volumeManager == nil {
+		return fmt.Errorf("volume support is not available: volume manager not initialized")
+	}
+
 	// Extract volume name
 	volumeName := storage.ExtractVolumeName(mount.Source)
 

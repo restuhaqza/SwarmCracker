@@ -47,9 +47,14 @@ func TestCreateGenericInitWrapper_Nginx(t *testing.T) {
 		t.Error("script should contain CMD argument")
 	}
 
-	// Should have grace period
-	if !strings.Contains(script, "-g 10") {
-		t.Error("script should contain grace period flag")
+	// tini must be invoked with boolean flags only (-s -g). Passing a numeric
+	// grace period ("-g 10") makes tini treat the number as the program name,
+	// which crashes PID 1 with "exec N failed: No such file or directory".
+	if !strings.Contains(script, "/sbin/tini") {
+		t.Error("script should invoke tini")
+	}
+	if strings.Contains(script, "-g 10") {
+		t.Error("script must not pass a numeric grace period to tini -g")
 	}
 
 	// Should have environment export
@@ -238,53 +243,52 @@ func TestCreateGenericInitWrapper_WithWorkDir(t *testing.T) {
 	}
 }
 
-func TestCreateGenericInitWrapper_GracePeriod(t *testing.T) {
-	tests := []struct {
-		name        string
-		gracePeriod int
-		wantFlag    bool
-	}{
-		{"grace period 10", 10, true},
-		{"grace period 0", 0, false},
-		{"grace period 5", 5, true},
+func TestCreateGenericInitWrapper_TiniFlags(t *testing.T) {
+	// tini's flags are boolean; there is no numeric grace-period argument.
+	// The wrapper must always emit "-s -g" and never "-g <number>".
+	for _, gracePeriod := range []int{0, 5, 10} {
+		tmpDir := t.TempDir()
+
+		info := &OCIImageInfo{
+			ImageRef: "test:latest",
+			Cmd:      []string{"/bin/sh"},
+		}
+
+		if err := createGenericInitWrapper(tmpDir, info, gracePeriod); err != nil {
+			t.Fatalf("createGenericInitWrapper failed: %v", err)
+		}
+
+		content, err := os.ReadFile(filepath.Join(tmpDir, "sbin", "init"))
+		if err != nil {
+			t.Fatalf("failed to read init wrapper: %v", err)
+		}
+		script := string(content)
+
+		if !strings.Contains(script, "-s -g") {
+			t.Errorf("gracePeriod=%d: expected boolean tini flags '-s -g'", gracePeriod)
+		}
+		for _, bad := range []string{"-g 0", "-g 5", "-g 10"} {
+			if strings.Contains(script, bad) {
+				t.Errorf("gracePeriod=%d: script must not contain %q", gracePeriod, bad)
+			}
+		}
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-
-			info := &OCIImageInfo{
-				ImageRef: "test:latest",
-				Cmd:      []string{"/bin/sh"},
-			}
-
-			err := createGenericInitWrapper(tmpDir, info, tt.gracePeriod)
-			if err != nil {
-				t.Fatalf("createGenericInitWrapper failed: %v", err)
-			}
-
-			initPath := filepath.Join(tmpDir, "sbin", "init")
-			content, err := os.ReadFile(initPath)
-			if err != nil {
-				t.Fatalf("failed to read init wrapper: %v", err)
-			}
-
-			script := string(content)
-
-			if tt.wantFlag {
-				if !strings.Contains(script, "-g") {
-					t.Errorf("script should contain -g flag for grace period %d", tt.gracePeriod)
-				}
-				if !strings.Contains(script, "-g "+itoa(tt.gracePeriod)) {
-					t.Errorf("script should contain correct grace period value %d", tt.gracePeriod)
-				}
-			} else {
-				// Check that -g is not present (or not followed by a number)
-				if strings.Contains(script, "-g 0") {
-					t.Error("script should not contain -g 0")
-				}
-			}
-		})
+func TestSignalNumber(t *testing.T) {
+	cases := map[string]int{
+		"SIGQUIT": 3, "QUIT": 3, "sigquit": 3,
+		"SIGTERM": 15, "TERM": 15,
+		"9": 9, "SIGKILL": 9,
+	}
+	for in, want := range cases {
+		got, ok := signalNumber(in)
+		if !ok || got != want {
+			t.Errorf("signalNumber(%q) = (%d,%v), want (%d,true)", in, got, ok, want)
+		}
+	}
+	if _, ok := signalNumber("NOTASIGNAL"); ok {
+		t.Error("signalNumber should reject unknown signal names")
 	}
 }
 
@@ -452,13 +456,3 @@ func TestBuildCommandString(t *testing.T) {
 }
 
 // --- Helper ---
-
-func itoa(n int) string {
-	if n == 10 {
-		return "10"
-	}
-	if n == 5 {
-		return "5"
-	}
-	return ""
-}

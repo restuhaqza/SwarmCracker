@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -21,8 +22,11 @@ func createGenericInitWrapper(tmpDir string, info *OCIImageInfo, gracePeriod int
 	// Generate the wrapper script content
 	script := generateWrapperScript(info, gracePeriod)
 
-	// Write to /sbin/init
+	// Write to /sbin/init. Remove any pre-existing file or symlink first:
+	// Alpine images symlink /sbin/init -> /bin/busybox, and writing through
+	// that symlink would overwrite the busybox binary itself.
 	initPath := filepath.Join(sbinDir, "init")
+	_ = os.Remove(initPath)
 	if err := os.WriteFile(initPath, []byte(script), 0755); err != nil {
 		return fmt.Errorf("failed to write init wrapper: %w", err)
 	}
@@ -48,6 +52,7 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	lines = append(lines, "# Mount essential filesystems")
 	lines = append(lines, "mount -t proc proc /proc 2>/dev/null || true")
 	lines = append(lines, "mount -t sysfs sysfs /sys 2>/dev/null || true")
+	lines = append(lines, "mount -t devtmpfs devtmpfs /dev 2>/dev/null || true")
 	lines = append(lines, "mount -t devpts devpts /dev/pts 2>/dev/null || true")
 	lines = append(lines, "mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true")
 
@@ -61,6 +66,29 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	lines = append(lines, "# Fallback device nodes if devtmpfs failed")
 	lines = append(lines, "if [ ! -e /dev/urandom ]; then")
 	lines = append(lines, "    mknod /dev/urandom c 1 9 2>/dev/null || true")
+	lines = append(lines, "fi")
+	lines = append(lines, "")
+
+	// Network configuration.
+	// The VM is given a static address via the kernel `ip=` boot parameter
+	// (set by the executor's translator). Configure it explicitly here so we
+	// do not depend on CONFIG_IP_PNP or a DHCP server being present.
+	lines = append(lines, "# Configure network from kernel ip= parameter")
+	lines = append(lines, "ip link set lo up 2>/dev/null || true")
+	lines = append(lines, "_IPARG=$(tr ' ' '\\n' < /proc/cmdline 2>/dev/null | grep '^ip=' | head -n1 | cut -d= -f2-)")
+	lines = append(lines, "if [ -n \"$_IPARG\" ]; then")
+	lines = append(lines, "    _IP=$(echo \"$_IPARG\" | cut -d: -f1)")
+	lines = append(lines, "    _GW=$(echo \"$_IPARG\" | cut -d: -f3)")
+	lines = append(lines, "    _MASK=$(echo \"$_IPARG\" | cut -d: -f4)")
+	lines = append(lines, "    _DEV=$(echo \"$_IPARG\" | cut -d: -f6)")
+	lines = append(lines, "    [ -z \"$_DEV\" ] && _DEV=eth0")
+	lines = append(lines, "    [ -z \"$_MASK\" ] && _MASK=255.255.255.0")
+	lines = append(lines, "    if [ -n \"$_IP\" ]; then")
+	lines = append(lines, "        ifconfig \"$_DEV\" \"$_IP\" netmask \"$_MASK\" up 2>/dev/null || \\")
+	lines = append(lines, "            ip addr add \"$_IP/24\" dev \"$_DEV\" 2>/dev/null || true")
+	lines = append(lines, "        ip link set \"$_DEV\" up 2>/dev/null || true")
+	lines = append(lines, "        [ -n \"$_GW\" ] && route add default gw \"$_GW\" 2>/dev/null || true")
+	lines = append(lines, "    fi")
 	lines = append(lines, "fi")
 	lines = append(lines, "")
 
@@ -107,18 +135,21 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	cmd := FullCommand(info)
 	cmdStr := buildCommandString(cmd)
 
-	// Build tini arguments
-	tiniArgs := "-s"
-	if gracePeriod > 0 {
-		tiniArgs = fmt.Sprintf("-s -g %d", gracePeriod)
-	}
+	// Build tini arguments.
+	// tini flags are boolean: -s (become a subreaper) and -g (send signals to
+	// the whole process group). There is NO numeric grace-period option; the
+	// old "-g <seconds>" form made tini treat the number as the program name,
+	// which then failed with "exec N failed: No such file or directory" and
+	// crashed PID 1.
+	tiniArgs := "-s -g"
 
-	// Handle StopSignal if specified
+	// Handle StopSignal if specified. tini's -e flag expects a signal
+	// *number*, so translate the OCI signal name (e.g. SIGQUIT) to one.
 	stopSignal := ""
 	if info != nil && info.StopSignal != "" && info.StopSignal != DefaultStopSignal {
-		// Convert signal name to number if needed (tini expects signal number or name)
-		signal := strings.TrimPrefix(info.StopSignal, "SIG")
-		stopSignal = fmt.Sprintf("-e %s", signal)
+		if n, ok := signalNumber(info.StopSignal); ok {
+			stopSignal = fmt.Sprintf("-e %d", n)
+		}
 	}
 
 	// Build the exec line
@@ -132,6 +163,30 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	lines = append(lines, execLine)
 
 	return strings.Join(lines, "\n")
+}
+
+// signalNumbers maps signal names (without the SIG prefix) to numbers.
+// tini's -e option requires a numeric signal.
+var signalNumbers = map[string]int{
+	"HUP": 1, "INT": 2, "QUIT": 3, "ILL": 4, "TRAP": 5, "ABRT": 6, "IOT": 6,
+	"BUS": 7, "FPE": 8, "KILL": 9, "USR1": 10, "SEGV": 11, "USR2": 12,
+	"PIPE": 13, "ALRM": 14, "TERM": 15, "STKFLT": 16, "CHLD": 17, "CONT": 18,
+	"STOP": 19, "TSTP": 20, "TTIN": 21, "TTOU": 22, "URG": 23, "XCPU": 24,
+	"XFSZ": 25, "VTALRM": 26, "PROF": 27, "WINCH": 28, "IO": 29, "PWR": 30,
+	"SYS": 31,
+}
+
+// signalNumber converts a signal name (with or without "SIG" prefix) or a
+// numeric string to a signal number.
+func signalNumber(name string) (int, bool) {
+	name = strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(name)), "SIG")
+	if n, ok := signalNumbers[name]; ok {
+		return n, true
+	}
+	if n, err := strconv.Atoi(name); err == nil && n > 0 {
+		return n, true
+	}
+	return 0, false
 }
 
 // shellEscape escapes a string for safe shell use (adds quotes if needed).
