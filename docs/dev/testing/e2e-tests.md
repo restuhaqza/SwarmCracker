@@ -131,7 +131,7 @@ sudo cp build/swarmcracker-agent /usr/local/bin/
 
 ```bash
 swarmcracker version
-# SwarmCracker v0.6.0
+# SwarmCracker v0.9.0
 # Firecracker v1.15.1
 # SwarmKit v2.1.1
 
@@ -146,8 +146,8 @@ swarmcracker --help
 
 ```bash
 # On manager-1 (192.168.1.10)
-sudo swarmcracker init \
-  --hostname manager-1 \
+sudo swarmcracker cluster init \
+  --advertise-addr 192.168.1.10:4242 \
   --listen-addr 0.0.0.0:4242
 ```
 
@@ -166,24 +166,21 @@ You should see:
 # Option A: Read the saved tokens
 sudo cat /var/lib/swarmkit/join-tokens.txt
 
-# Option B: Use swarmctl
-export SWARM_SOCKET=/var/run/swarmkit/swarm.sock
-swarmctl cluster inspect default
+# Option B: Ask the CLI
+sudo swarmcracker cluster token worker
 ```
 
 ### Add Workers to the Cluster
 
 ```bash
 # On worker-1 (192.168.1.11)
-sudo swarmcracker join \
+sudo swarmcracker cluster join 192.168.1.10:4242 \
   --hostname worker-1 \
-  --manager 192.168.1.10:4242 \
   --token SWMTKN-1-<worker-token>
 
 # On worker-2 (192.168.1.12)
-sudo swarmcracker join \
+sudo swarmcracker cluster join 192.168.1.10:4242 \
   --hostname worker-2 \
-  --manager 192.168.1.10:4242 \
   --token SWMTKN-1-<worker-token>
 ```
 
@@ -198,7 +195,7 @@ swarmctl ls-nodes
 # ghi789        READY    worker-2     ACTIVE         WORKER
 
 # Check cluster status
-swarmcracker status
+swarmcracker cluster health
 ```
 
 **✅ Phase 2 done: You've got a working 3-node cluster**
@@ -246,7 +243,7 @@ swarmctl scale svc-redis-<id> 3
 ### Inspect Your Running VMs
 
 ```bash
-swarmcracker list
+swarmcracker vm list
 # VM ID         SERVICE     NODE        STATUS     MEMORY    VCPUS
 # vm-nginx-001  nginx       worker-1    RUNNING    128MB     1
 # vm-nginx-002  nginx       worker-1    RUNNING    128MB     1
@@ -299,7 +296,7 @@ swarmctl update svc-nginx-143022 \
 swarmctl ls-tasks
 
 # Check logs
-swarmcracker logs svc-nginx-143022
+swarmcracker vm logs <task-id>
 ```
 
 ### Rollback (Using Snapshots — See Phase 5)
@@ -316,7 +313,7 @@ If something goes wrong, restore from a snapshot you made before the update.
 
 ```bash
 # Before changing things, snapshot a VM
-swarmctl snapshot create svc-nginx-143022 --name pre-update-v1
+swarmctl snapshot create <task-id> pre-update-v1
 ```
 
 ### List Your Snapshots
@@ -389,16 +386,16 @@ swarmctl demote worker-2
 ### Check Cluster Status
 
 ```bash
-swarmcracker status
+swarmcracker cluster health
 ```
 
 ### View Service Logs
 
 ```bash
-swarmcracker logs svc-nginx-143022
+swarmcracker vm logs <task-id>
 
 # Follow logs in real-time
-swarmcracker logs -f svc-nginx-143022
+swarmcracker vm logs --follow <task-id>
 ```
 
 ### Inspect a Specific Task/VM
@@ -469,7 +466,7 @@ swarmctl rm-service svc-redis-<id>
 ### Verify All VMs Stopped
 
 ```bash
-swarmcracker list
+swarmcracker vm list
 # (empty)
 ```
 
@@ -477,14 +474,14 @@ swarmcracker list
 
 ```bash
 # On worker-1 and worker-2
-sudo swarmcracker leave
+sudo swarmcracker cluster leave
 ```
 
 ### Tear Down the Manager
 
 ```bash
 # On manager-1
-sudo swarmcracker leave --force
+sudo swarmcracker cluster leave --force
 ```
 
 ### Clean Up

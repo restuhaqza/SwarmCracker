@@ -64,7 +64,7 @@ Tests that corrupted state files are detected via checksum mismatch.
 ## Prerequisites
 
 For basic tests:
-- Go 1.21+
+- Go 1.26+
 - Standard Go testing framework
 
 For full VM snapshot tests:

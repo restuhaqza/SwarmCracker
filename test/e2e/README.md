@@ -29,8 +29,8 @@ These tests verify the full integration of SwarmCracker with SwarmKit and Firecr
 2. **Firecracker**
    ```bash
    # Download from GitHub releases
-   wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.5.0/firecracker-v1.5.0-x86_64
-   sudo mv firecracker-v1.5.0-x86_64 /usr/local/bin/firecracker
+   wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
+   sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
    chmod +x /usr/local/bin/firecracker
    ```
 
@@ -199,8 +199,8 @@ jobs:
         run: |
           go install github.com/moby/swarmkit/cmd/swarmd@latest
           go install github.com/moby/swarmkit/cmd/swarmctl@latest
-          wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.5.0/firecracker-v1.5.0-x86_64
-          sudo mv firecracker-v1.5.0-x86_64 /usr/local/bin/firecracker
+          wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
+          sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
           chmod +x /usr/local/bin/firecracker
       
       - name: Run E2E tests
@@ -224,7 +224,7 @@ e2e:
     - apt update && apt install -y docker.io wget
     - go install github.com/moby/swarmkit/cmd/swarmd@latest
     - go install github.com/moby/swarmkit/cmd/swarmctl@latest
-    - wget -O /usr/local/bin/firecracker https://github.com/firecracker-microvm/firecracker/releases/download/v1.5.0/firecracker-v1.5.0-x86_64
+    - wget -O /usr/local/bin/firecracker https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
     - chmod +x /usr/local/bin/firecracker
     - ./test/e2e/run.sh
   artifacts:
@@ -249,8 +249,8 @@ export PATH=$PATH:$(go env GOPATH)/bin
 **Solution:**
 ```bash
 # Download and install
-wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.5.0/firecracker-v1.5.0-x86_64
-sudo mv firecracker-v1.5.0-x86_64 /usr/local/bin/firecracker
+wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
+sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
 chmod +x /usr/local/bin/firecracker
 ```
 

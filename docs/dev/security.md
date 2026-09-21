@@ -94,7 +94,7 @@
 |------|-----------|--------|
 | `/etc/swarmcracker/config.yaml` | `0600` | Contains join token, network config |
 | `/var/lib/swarmkit/state/` | `0700` | Cluster state, certificates |
-| `/var/lib/swarmcracker/snapshots/` | `0700` | VM memory snapshots |
+| `/var/lib/firecracker/snapshots/` | `0700` | VM memory snapshots |
 | `/var/lib/swarmcracker/volumes/` | `0700` | Volume metadata |
 | `/var/lib/swarmcracker/rootfs/` | `0755` | Read-only rootfs images |
 | `/var/run/firecracker/` | `0755` | API sockets (runtime only) |
@@ -188,7 +188,7 @@ consul:
 ### 5. Health Endpoint Hardening
 
 ```yaml
-# /etc/systemd/system/swarmd-manager.service
+# /etc/systemd/system/swarmcracker-manager.service
 # Default binds to 127.0.0.1:8080 (localhost only)
 # Do NOT change to 0.0.0.0 unless behind a reverse proxy with auth
 ```

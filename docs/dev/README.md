@@ -39,7 +39,7 @@ pkg/
 infrastructure/
 ├── ansible/              # Cluster deployment roles
 └── observability/        # Prometheus, Grafana configs
-test-automation/          # Vagrant + e2e test infra
+test-automation/          # E2E test scripts (VMs: contrib/vagrant/)
 docs/                     # Documentation (you are here)
 ```
 
@@ -48,14 +48,14 @@ docs/                     # Documentation (you are here)
 ## Build
 
 ```bash
-make build
+make all
 ```
 
 Or just:
 
 ```bash
-go build -o bin/swarmd-firecracker ./cmd/swarmd-firecracker
-go build -o bin/swarmctl ./cmd/swarmctl
+go build -o build/swarmd-firecracker ./cmd/swarmd-firecracker
+go build -o build/swarmctl ./cmd/swarmctl
 ```
 
 ---
@@ -72,10 +72,10 @@ Unit tests are in `pkg/*/*_test.go`. Integration tests need a cluster.
 
 ## Test Cluster
 
-The Vagrant setup in `test-automation/` gives you a 3-node cluster:
+The Vagrant setup in `contrib/vagrant/` gives you a multi-node test cluster:
 
 ```bash
-cd test-automation
+cd contrib/vagrant
 vagrant up
 ```
 
@@ -135,11 +135,11 @@ curl http://127.0.0.1:8500/v1/catalog/service/swarmcracker-vxlan
 
 ## Testing Changes
 
-1. Build: `make build`
-2. Upload to test VM: `vagrant upload bin/swarmd-firecracker /tmp/ worker1`
+1. Build: `make all`
+2. Upload to test VM: `vagrant upload build/swarmd-firecracker /tmp/ worker1`
 3. Install: `vagrant ssh worker1 -c "sudo mv /tmp/swarmd-firecracker /usr/local/bin/"`
-4. Restart: `vagrant ssh worker1 -c "sudo systemctl restart swarmd-worker"`
-5. Check logs: `journalctl -u swarmd-worker -f`
+4. Restart: `vagrant ssh worker1 -c "sudo systemctl restart swarmcracker-worker"`
+5. Check logs: `sudo journalctl -u swarmcracker-worker -f`
 
 ---
 

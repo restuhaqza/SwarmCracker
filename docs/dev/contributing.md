@@ -6,24 +6,20 @@ Here's how to work on SwarmCracker.
 
 ## Setup
 
-<<<<<<< HEAD
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - Git
 - Make
 - golangci-lint (for linting)
 
 ### Setup
-=======
-You need Go 1.21+, Git, Make. golangci-lint helps with linting.
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
 
 ```bash
 git clone https://github.com/restuhaqza/SwarmCracker
 cd SwarmCracker
 go mod download
-make build
+make all
 ```
 
 ---
@@ -51,7 +47,7 @@ pkg/
 
 docs/                # User + dev docs
 infrastructure/      # Ansible deployment
-test-automation/     # Vagrant cluster
+test-automation/     # E2E test scripts (VMs: contrib/vagrant/)
 ```
 
 ---
@@ -92,11 +88,12 @@ go test -cover ./pkg/executor/...
 
 ### Integration Tests
 
-Need a cluster. Use Vagrant:
+Need a cluster. Start the test VMs with Vagrant:
 
 ```bash
-cd test-automation
+cd contrib/vagrant
 vagrant up
+cd ../../test-automation
 ./e2e-test-suite.sh
 ```
 
@@ -125,15 +122,14 @@ Describe what you changed and why. If it fixes an issue, mention the number.
 
 ## Questions
 
-<<<<<<< HEAD
+Open an issue or ask in discussions.
+
 ```bash
-make build         # Build binaries
+make all           # Build all binaries
 make test          # Run tests
 make lint          # Run linter
-make coverage      # Generate coverage report
 make clean         # Clean artifacts
-make install       # Install to /usr/local/bin
-make uninstall     # Remove binaries
+make install       # Install binaries to $GOPATH/bin
 ```
 
 ---
@@ -153,7 +149,7 @@ make uninstall     # Remove binaries
 ### GoLand
 
 - Enable golangci-lint
-- Configure Go 1.25 SDK
+- Configure Go 1.26 SDK
 
 ---
 
@@ -163,7 +159,7 @@ make uninstall     # Remove binaries
 
 ```bash
 # Check Go version
-go version  # Must be 1.25+
+go version  # Must be 1.26+
 
 # Clear module cache
 go clean -modcache
@@ -203,7 +199,4 @@ go test -race ./pkg/...
 
 ---
 
-**See Also:** [Testing Overview](../testing/) | [Architecture](../architecture/)
-=======
-Open an issue or ask in discussions.
->>>>>>> 6b8080a (feat: sync work from dumbledore workspace + coverage boost)
+**See Also:** [Testing Overview](testing/) | [Architecture](../architecture/)

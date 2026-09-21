@@ -11,10 +11,10 @@ Install Firecracker v1.0.0 or later from the [official releases](https://github.
 
 ```bash
 # Download latest release
-wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.8.0/firecracker-v1.8.0-x86_64
+wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
 
 # Install
-sudo mv firecracker-v1.8.0-x86_64 /usr/local/bin/firecracker
+sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
 sudo chmod +x /usr/local/bin/firecracker
 
 # Verify
@@ -30,10 +30,10 @@ sudo mkdir -p /usr/share/firecracker
 cd /usr/share/firecracker
 
 # Download kernel (example for v1.8.0)
-sudo wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.8.0/vmlinux-v1.8.0
+sudo wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/vmlinux-v1.15.1
 
 # Rename to generic name
-sudo mv vmlinux-v1.8.0 vmlinux
+sudo mv vmlinux-v1.15.1 vmlinux
 ```
 
 ### 3. KVM Access
@@ -182,8 +182,8 @@ sudo usermod -aG kvm $USER
 which firecracker
 
 # If not, install from releases
-wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.8.0/firecracker-v1.8.0-x86_64
-sudo mv firecracker-v1.8.0-x86_64 /usr/local/bin/firecracker
+wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
+sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
 sudo chmod +x /usr/local/bin/firecracker
 ```
 
@@ -225,14 +225,14 @@ jobs:
 
       - name: Install Firecracker
         run: |
-          wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.8.0/firecracker-v1.8.0-x86_64
-          sudo mv firecracker-v1.8.0-x86_64 /usr/local/bin/firecracker
+          wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
+          sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
           sudo chmod +x /usr/local/bin/firecracker
 
       - name: Install Kernel
         run: |
           sudo mkdir -p /usr/share/firecracker
-          sudo wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.8.0/vmlinux-v1.8.0 -O /usr/share/firecracker/vmlinux
+          sudo wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/vmlinux-v1.15.1 -O /usr/share/firecracker/vmlinux
 
       - name: Run Integration Tests
         run: go test ./test/integration/... -v -timeout 30m
