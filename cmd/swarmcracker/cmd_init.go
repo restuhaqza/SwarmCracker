@@ -30,6 +30,7 @@ type initConfig struct {
 	BridgeIP      string
 	VXLANEnabled  bool
 	VXLANPeers    string
+	EnableCNI     bool
 	Debug         bool
 	Force         bool
 }
@@ -91,6 +92,9 @@ Examples:
 	// VXLAN overlay
 	cmd.Flags().BoolVar(&cfg.VXLANEnabled, "vxlan-enabled", false, "Enable VXLAN overlay for cross-node VM networking")
 	cmd.Flags().StringVar(&cfg.VXLANPeers, "vxlan-peers", "", "Comma-separated list of VXLAN peer worker IPs")
+
+	// CNI network provider (required for SwarmKit task network allocation)
+	cmd.Flags().BoolVar(&cfg.EnableCNI, "enable-cni", true, "Enable CNI network provider (requires CNI plugins in /opt/cni/bin)")
 
 	// Debug
 	cmd.Flags().BoolVar(&cfg.Debug, "debug", false, "Enable debug logging")
@@ -288,7 +292,12 @@ func createDirectories(cfg *initConfig) error {
 		cfg.ConfigDir,
 		cfg.RootfsDir,
 		cfg.SocketDir,
-		"/var/run/swarmkit", // Required for systemd ProtectSystem=strict
+		"/var/run/swarmkit",       // Required for systemd ProtectSystem=strict
+		"/var/cache/swarmcracker", // Image layer cache
+		"/var/lib/swarmcracker",   // Volumes, secrets, configs
+		"/etc/cni/net.d",          // CNI network configurations
+		"/opt/cni/bin",            // CNI plugin binaries
+		"/var/lib/cni",            // CNI IPAM state
 	}
 
 	for _, dir := range dirs {
@@ -359,7 +368,7 @@ After=network.target docker.service
 Wants=docker.service
 
 [Service]
-Type=notify
+Type=simple
 ExecStart=/usr/local/bin/swarmd-firecracker \
   --manager \
   --hostname {{.Hostname}} \
@@ -378,6 +387,9 @@ ExecStart=/usr/local/bin/swarmd-firecracker \
   --vxlan-enabled \
   --vxlan-peers {{.VXLANPeers}} \
   {{- end}}
+  {{- if .EnableCNI}}
+  --enable-cni \
+  {{- end}}
   {{- if .Debug}}
   --debug \
   {{- end}}
@@ -392,10 +404,8 @@ LimitNPROC=65536
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePath={{.StateDir}}
-ReadWritePath={{.RootfsDir}}
-ReadWritePath={{.SocketDir}}
-ReadWritePath=/var/run/swarmkit
+PrivateTmp=true
+ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
 
 [Install]
 WantedBy=multi-user.target

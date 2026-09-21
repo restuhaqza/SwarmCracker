@@ -147,23 +147,27 @@ func runAgent(ctx *cli.Context) error {
 
 		cniProvider, err := cni.NewCNIProvider(cniConfig)
 		if err != nil {
-			return fmt.Errorf("failed to create CNI provider: %w", err)
-		}
+			// Degrade gracefully: the daemon can still run workloads, but
+			// SwarmKit task network allocation will be unavailable until the
+			// CNI plugins are installed.
+			log.G(context.Background()).WithError(err).Warn(
+				"CNI network provider unavailable; continuing without network allocation (install CNI plugins in " + cniConfig.PluginDir + ")")
+		} else {
+			networkProvider = cniProvider
+			networkConfig = &networkallocator.Config{
+				DefaultAddrPool: []string{cniConfig.SubnetPool},
+				SubnetSize:      uint32(cniConfig.SubnetSize),
+				VXLANUDPPort:    cniConfig.VXLANPort,
+			}
 
-		networkProvider = cniProvider
-		networkConfig = &networkallocator.Config{
-			DefaultAddrPool: []string{cniConfig.SubnetPool},
-			SubnetSize:      uint32(cniConfig.SubnetSize),
-			VXLANUDPPort:    cniConfig.VXLANPort,
+			log.G(context.Background()).Infof(
+				"CNI network provider enabled (plugin-dir=%s, config-dir=%s, pool=%s, vxlan-port=%d)",
+				cniConfig.PluginDir,
+				cniConfig.ConfigDir,
+				cniConfig.SubnetPool,
+				cniConfig.VXLANPort,
+			)
 		}
-
-		log.G(context.Background()).Infof(
-			"CNI network provider enabled (plugin-dir=%s, config-dir=%s, pool=%s, vxlan-port=%d)",
-			cniConfig.PluginDir,
-			cniConfig.ConfigDir,
-			cniConfig.SubnetPool,
-			cniConfig.VXLANPort,
-		)
 	} else {
 		log.G(context.Background()).Warn("CNI network provider NOT enabled - worker nodes will fail to join")
 		log.G(context.Background()).Warn("Use --enable-cni flag to enable network allocation")

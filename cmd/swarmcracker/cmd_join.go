@@ -31,6 +31,7 @@ type joinConfig struct {
 	VXLANEnabled  bool
 	VXLANPeers    string
 	AdvertiseAddr string
+	EnableCNI     bool
 	Debug         bool
 	Worker        bool
 	IsManager     bool
@@ -102,6 +103,9 @@ Examples:
 	// VXLAN overlay
 	cmd.Flags().BoolVar(&cfg.VXLANEnabled, "vxlan-enabled", false, "Enable VXLAN overlay for cross-node VM networking")
 	cmd.Flags().StringVar(&cfg.VXLANPeers, "vxlan-peers", "", "Comma-separated list of VXLAN peer worker IPs")
+
+	// CNI network provider (required for SwarmKit task network allocation)
+	cmd.Flags().BoolVar(&cfg.EnableCNI, "enable-cni", true, "Enable CNI network provider (requires CNI plugins in /opt/cni/bin)")
 
 	// Debug
 	cmd.Flags().BoolVar(&cfg.Debug, "debug", false, "Enable debug logging")
@@ -317,7 +321,12 @@ func createWorkerDirectories(cfg *joinConfig) error {
 		cfg.ConfigDir,
 		cfg.RootfsDir,
 		cfg.SocketDir,
-		"/var/run/swarmkit", // Required for systemd ProtectSystem=strict
+		"/var/run/swarmkit",       // Required for systemd ProtectSystem=strict
+		"/var/cache/swarmcracker", // Image layer cache
+		"/var/lib/swarmcracker",   // Volumes, secrets, configs
+		"/etc/cni/net.d",          // CNI network configurations
+		"/opt/cni/bin",            // CNI plugin binaries
+		"/var/lib/cni",            // CNI IPAM state
 	}
 
 	for _, dir := range dirs {
@@ -390,7 +399,7 @@ After=network.target docker.service
 Wants=docker.service
 
 [Service]
-Type=notify
+Type=simple
 ExecStart=/usr/local/bin/swarmd-firecracker \
   {{- if .IsManager}}
   --manager \
@@ -415,6 +424,9 @@ ExecStart=/usr/local/bin/swarmd-firecracker \
   --vxlan-enabled \
   --vxlan-peers {{.VXLANPeers}} \
   {{- end}}
+  {{- if .EnableCNI}}
+  --enable-cni \
+  {{- end}}
   {{- if .Debug}}
   --debug \
   {{- end}}
@@ -429,10 +441,8 @@ LimitNPROC=65536
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePath={{.StateDir}}
-ReadWritePath={{.RootfsDir}}
-ReadWritePath={{.SocketDir}}
-ReadWritePath=/var/run/swarmkit
+PrivateTmp=true
+ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
 
 [Install]
 WantedBy=multi-user.target
@@ -495,9 +505,9 @@ func startWorkerService(cfg *joinConfig) error {
 
 // validateJoinToken validates the format of a SwarmKit join token
 func validateJoinToken(token string, isManager bool) error {
-	// Token format: SWMTKN-1-{role}-{hash}-{secret}
-	// Role: worker, manager
-	// Example: SWMTKN-1-worker-abc123-def456
+	// SwarmKit join token format: SWMTKN-1-{hash}-{secret}
+	// The role (worker/manager) is NOT encoded in the token text; worker and
+	// manager tokens share the format and are distinguished by the manager.
 
 	if token == "" {
 		return fmt.Errorf("token is required")
@@ -508,32 +518,16 @@ func validateJoinToken(token string, isManager bool) error {
 		return fmt.Errorf("invalid token format: must start with 'SWMTKN-1-'")
 	}
 
-	// Parse token components
+	// Parse token components: SWMTKN-1-{hash}-{secret}
 	parts := strings.Split(token, "-")
 	if len(parts) < 4 {
-		return fmt.Errorf("invalid token format: expected SWMTKN-1-{role}-{hash}-{secret}")
+		return fmt.Errorf("invalid token format: expected SWMTKN-1-{hash}-{secret}")
 	}
 
-	// Validate role
-	tokenRole := parts[2]
-	if tokenRole != "worker" && tokenRole != "manager" {
-		return fmt.Errorf("invalid token role: expected 'worker' or 'manager', got '%s'", tokenRole)
+	if isManager {
+		log.Info().Msg("Validating token for manager join")
+	} else {
+		log.Info().Msg("Validating token for worker join")
 	}
-
-	// Check role matches flag
-	if isManager && tokenRole != "manager" {
-		log.Warn().Str("token_role", tokenRole).Msg("Token appears to be worker token but --manager flag specified")
-		fmt.Println("\n⚠ Warning: Token appears to be a worker token, but --manager flag was specified.")
-		fmt.Println("If you want to join as a manager, you need a manager join token.")
-		fmt.Println("Proceeding anyway - join may fail.")
-	}
-
-	if !isManager && tokenRole == "manager" {
-		log.Warn().Str("token_role", tokenRole).Msg("Token appears to be manager token but joining as worker")
-		fmt.Println("\n⚠ Warning: Token appears to be a manager token.")
-		fmt.Println("To join as a manager, use: swarmcracker join <addr> --token <token> --manager")
-	}
-
-	log.Info().Str("role", tokenRole).Msg("Token validated")
 	return nil
 }
