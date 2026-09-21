@@ -11,8 +11,8 @@ This file helps AI agents (and humans) understand the SwarmCracker project setup
 **Key Value:** Strong KVM-based isolation without Kubernetes complexity.
 
 **Repo:** github.com/restuhaqza/swarmcracker
-**Language:** Go 1.25+
-**Status:** v0.6.0 — actively developed
+**Language:** Go 1.26+
+**Status:** v0.9.0 — actively developed
 
 ---
 
@@ -122,7 +122,7 @@ swarmcracker/
 | `cmd/swarmcracker/main.go` | CLI tool entry point |
 | `pkg/executor/executor.go` | Main executor logic |
 | `pkg/config/config.go` | Configuration structures |
-| `docs/INDEX.md` | Documentation index |
+| `docs/README.md` | Documentation index |
 
 ---
 
@@ -131,12 +131,13 @@ swarmcracker/
 ### Building
 
 ```bash
-# Build main binary
-make build
+# Build the main CLI
+make swarmcracker
 # Output: build/swarmcracker
 
-# Build all
+# Build all binaries
 make all
+# Output: build/swarmcracker, build/swarmd-firecracker, build/swarmcracker-agent
 
 # Install to $GOPATH/bin
 make install
@@ -271,38 +272,38 @@ swarmcracker --help
 swarmcracker version
 
 # Validate config
-swarmcracker validate --config /etc/swarmcracker/config.yaml
+swarmcracker config validate
 
-# Run container as microVM (test mode)
-swarmcracker run --test nginx:latest
+# Initialize a cluster (manager)
+sudo swarmcracker cluster init --advertise-addr 192.168.1.10:4242
 
-# Run with custom resources
-swarmcracker run --vcpus 2 --memory 1024 nginx:latest
+# Join a cluster (worker)
+sudo swarmcracker cluster join 192.168.1.10:4242 --token SWMTKN-1-xxx
 
-# Run with environment variables
-swarmcracker run -e APP=prod -e DEBUG=false nginx:latest
+# Create a microVM directly
+sudo swarmcracker vm create --cpu 2 --memory 1024 -e APP=prod nginx:latest
 
-# Deploy to remote hosts via SSH
-swarmcracker deploy --hosts host1,host2 nginx:latest
+# Deploy a service
+swarmcracker service create --name web --image nginx:alpine --replicas 3
 ```
 
 ### Snapshot Commands
 
 ```bash
 # List all snapshots
-swarmcracker snapshot list
+swarmcracker vm snapshot list
 
-# Create a snapshot of running VM
-swarmcracker snapshot create task-123
+# Create a snapshot of a running VM
+swarmcracker vm snapshot create task-123
 
-# Restore VM from snapshot
-swarmcracker snapshot restore snap-a1b2c3d4e5f67890
+# Restore a VM from a snapshot
+swarmcracker vm snapshot restore snap-a1b2c3d4e5f67890
 
 # Delete a snapshot
-swarmcracker snapshot delete snap-a1b2c3d4e5f67890
+swarmcracker vm snapshot delete snap-a1b2c3d4e5f67890
 
-# Cleanup old snapshots
-swarmcracker snapshot cleanup --max-age 24h
+# Clean up old snapshots
+swarmcracker vm snapshot cleanup --max-age 24h
 ```
 
 ### Global Flags
@@ -313,11 +314,12 @@ swarmcracker snapshot cleanup --max-age 24h
 - `--rootfs-dir` - Override rootfs directory
 - `--ssh-key` - SSH key for remote deployment
 
-### Snapshot Flags
+### `vm snapshot create` Flags
 
 - `--socket` - Firecracker API socket path
 - `--service` - SwarmKit service ID (metadata)
 - `--node` - Node ID (metadata)
+- `--rootfs` - Rootfs path (metadata)
 - `--vcpus` - vCPU count (metadata)
 - `--memory` - Memory in MB (metadata)
 - `--max-age` - Snapshot age for cleanup (e.g., 24h, 7d)
@@ -331,15 +333,15 @@ swarmcracker snapshot cleanup --max-age 24h
 1. **Update relevant package** in `pkg/`
 2. **Add tests** in `*_test.go` files
 3. **Update documentation** in `docs/`
-4. **Update PROJECT.md** if changing roadmap
+4. **Update `docs/planning/`** if changing roadmap
 5. **Run tests**: `make test`
 6. **Format code**: `make fmt`
 
 ### When Debugging Issues
 
 1. **Check logs** with `--log-level debug`
-2. **Verify config** with `swarmcracker validate`
-3. **Test in isolation**: `swarmcracker run --test`
+2. **Verify config** with `swarmcracker config validate`
+3. **Test in isolation**: `swarmcracker vm create --detach alpine:latest`
 4. **Check Firecracker**: Verify `/dev/kvm` exists
 5. **Review test reports** in `docs/reports/`
 
@@ -353,11 +355,11 @@ swarmcracker snapshot cleanup --max-age 24h
 ### When Updating Documentation
 
 1. **README.md**: Main overview, features, CLI reference
-2. **docs/ARCHITECTURE.md**: System design, components
-3. **docs/CONFIG.md**: Configuration options
-4. **docs/INSTALL.md**: Setup instructions
-5. **PROJECT.md**: Status and roadmap updates
-6. **docs/ORGANIZATION.md**: Docs structure
+2. **docs/architecture/overview.md**: System design, components
+3. **docs/user/guides/configuration.md**: Configuration options
+4. **docs/user/getting-started/README.md**: Setup instructions
+5. **docs/planning/**: Status and roadmap updates
+6. **docs/README.md**: Documentation index and navigation
 
 ---
 
@@ -365,7 +367,7 @@ swarmcracker snapshot cleanup --max-age 24h
 
 ### Overview
 
-SwarmCracker supports full VM snapshot/restore functionality for Firecracker v1.14.x+.
+SwarmCracker supports full VM snapshot/restore functionality for Firecracker v1.14.0+ (v1.15.1 is the version installed by `setup install`).
 
 **Use Cases:**
 - Fast VM restore (2-3x faster than cold boot)
@@ -381,9 +383,9 @@ SwarmCracker supports full VM snapshot/restore functionality for Firecracker v1.
 4. **Restore** - `PUT /snapshot/load` with `resume_vm: true`
 5. **Auto-Resume** - VM continues from exact state
 
-### Firecracker v1.14.x API Changes
+### Firecracker v1.14.0+ API Changes
 
-| Operation | Old API (< v1.10) | New API (v1.14.x) |
+| Operation | Old API (< v1.10) | New API (v1.14.0+) |
 |-----------|------------------|-------------------|
 | Pause VM | `PUT /vm/pause` | `PATCH /vm {"state": "Paused"}` |
 | Resume VM | `PUT /vm/resume` | `PATCH /vm {"state": "Resumed"}` |
@@ -436,7 +438,7 @@ snapshot:
 
 ### Documentation
 
-- `docs/guides/snapshots.md` - Snapshot CLI usage and workflows
+- `docs/user/guides/snapshots.md` - Snapshot CLI usage and workflows
 
 ### Known Limitations
 
@@ -469,8 +471,8 @@ require (
 
 ### System Dependencies
 
-- **Go 1.25+** - Language runtime
-- **Firecracker v1.14.0+** - MicroVM VMM
+- **Go 1.26+** - Language runtime
+- **Firecracker v1.14.0+** - MicroVM VMM (v1.15.1 recommended; installed by `setup install`)
 - **KVM** - Hardware virtualization (`/dev/kvm`)
 - **Linux** - Required OS (KVM is Linux-only)
 
@@ -522,7 +524,7 @@ require (
 ### Before Contributing
 
 1. Read `CONTRIBUTING.md`
-2. Check `PROJECT.md` for roadmap alignment
+2. Check `docs/planning/` for roadmap alignment
 3. Discuss significant changes first
 
 ### Code Standards
@@ -548,10 +550,10 @@ require (
 
 - **Quick start**: `README.md`
 - **Architecture**: `docs/architecture/`
-- **Configuration**: `docs/guides/configuration.md`
-- **Testing**: `docs/testing/`
-- **Development**: `docs/development/`
-- **Index**: `docs/INDEX.md`
+- **Configuration**: `docs/user/guides/configuration.md`
+- **Testing**: `docs/dev/testing/`
+- **Development**: `docs/dev/`
+- **Index**: `docs/README.md`
 
 ### Test Reports
 
@@ -567,7 +569,7 @@ require (
 
 ## 📝 Notes
 
-- This project is actively developed - v0.6.0
+- This project is actively developed - v0.9.0
 - Test coverage is improving toward 85% target
 - Documentation is actively maintained
 - Contributions welcome - see CONTRIBUTING.md

@@ -28,7 +28,7 @@ ls -la /dev/kvm                    # Must show a file
 lscpu | grep Virtualization        # VT-x (Intel) or AMD-V (AMD)
 ```
 
-If you're running inside a VM (like a Vagrant box), nested virtualization has to be on:
+If you're running inside a VM, nested virtualization has to be on:
 
 ```bash
 cat /sys/module/kvm_intel/parameters/nested  # Should be 'Y'
@@ -78,7 +78,7 @@ sudo swarmcracker cluster join --token <TOKEN> <MANAGER_IP>:4242
 ```bash
 git clone https://github.com/restuhaqza/SwarmCracker
 cd SwarmCracker
-make build
+make all
 sudo make install
 ```
 
@@ -100,13 +100,13 @@ file /usr/share/firecracker/vmlinux
 # Should say: ELF 64-bit LSB executable, x86-64
 ```
 
-### Test Cluster with Vagrant
+### Local Test Cluster
 
-If you want to experiment locally:
+The `contrib/vagrant/` directory contains Vagrantfiles for a local test cluster:
 
 ```bash
 git clone https://github.com/restuhaqza/SwarmCracker
-cd SwarmCracker
+cd SwarmCracker/contrib/vagrant
 vagrant up
 ```
 
@@ -132,7 +132,7 @@ This starts:
 ### Get the Join Token
 
 ```bash
-sudo swarmcracker cluster token create --role worker
+sudo swarmcracker cluster token worker
 ```
 
 Look for the `SWMTKN-...` token in the output.
@@ -140,13 +140,13 @@ Look for the `SWMTKN-...` token in the output.
 ### Join Workers
 
 ```bash
-sudo swarmcracker cluster join --token <TOKEN> <manager-ip>:4242
+sudo swarmcracker cluster join <manager-ip>:4242 --token <TOKEN>
 ```
 
 ### Check the Cluster
 
 ```bash
-sudo swarmcracker cluster status
+sudo swarmcracker node ls
 sudo swarmcracker cluster health
 ```
 
@@ -159,13 +159,13 @@ You should see all your nodes with `READY` status.
 ### Deploy a Service
 
 ```bash
-sudo swarmcracker service create --name web --replicas 3 -p 8080:80 nginx:alpine
+sudo swarmcracker service create --name web --image nginx:alpine --replicas 3
 ```
 
 ### See What's Running
 
 ```bash
-swarmcracker service list
+swarmcracker service ls
 swarmcracker service ps web
 ```
 
@@ -235,7 +235,7 @@ Or add `options kvm_intel nested=1` to `/etc/modprobe.d/kvm-nested.conf`.
 
 ```bash
 curl http://<manager-ip>:4242   # Check manager reachable
-sudo swarmcracker cluster status
+sudo swarmcracker node ls
 ```
 
 If the manager advertises `0.0.0.0:4242`, that's wrong. Re-init with
@@ -244,9 +244,10 @@ If the manager advertises `0.0.0.0:4242`, that's wrong. Re-init with
 ### Services Not Starting
 
 ```bash
-sudo swarmcracker cluster status      # Check nodes are ready
+sudo swarmcracker node ls             # Check nodes are ready
 sudo swarmcracker doctor              # Diagnose common issues
-journalctl -u swarmcracker -f         # Watch logs
+sudo journalctl -u swarmcracker-manager -f   # Manager logs
+sudo journalctl -u swarmcracker-worker -f    # Worker logs
 file /usr/share/firecracker/vmlinux   # Verify kernel is ELF
 ```
 

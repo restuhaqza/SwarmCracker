@@ -97,8 +97,8 @@ MicroVMs need an init system for proper process management.
 
 ```yaml
 executor:
-  init_process: "/sbin/tini"
-  init_process_args: ["--", "/bin/sh"]
+  init_system: tini        # none | tini | dumb-init
+  init_grace_period: 10    # seconds before SIGKILL during shutdown
 ```
 
 ### Rootfs with Init
@@ -115,7 +115,7 @@ chmod +x rootfs/sbin/tini
 
 ### Prerequisites
 
-- Go 1.21+
+- Go 1.26+
 - Git
 - Make
 
@@ -127,11 +127,12 @@ git clone https://github.com/restuhaqza/SwarmCracker
 cd SwarmCracker
 
 # Build binaries
-make build
+make all
 
 # Output:
-# bin/swarmcracker
-# bin/swarmctl
+# build/swarmcracker
+# build/swarmd-firecracker
+# build/swarmcracker-agent
 
 # Install
 sudo make install
@@ -140,67 +141,47 @@ sudo make install
 ### Build Targets
 
 ```bash
-make build         # Build all binaries
-make test          # Run tests
-make lint          # Run linter
+make all           # Build all binaries
+make swarmcracker  # Build the main CLI
+make test          # Run unit tests
+make lint          # Run linters
+make fmt           # Format code
 make clean         # Clean build artifacts
-make install       # Install to /usr/local/bin
-make uninstall     # Remove binaries
+make install       # Install binaries to $GOPATH/bin
 ```
 
 ### Development Build
 
 ```bash
-# Build with debug symbols
-make build-debug
+# Build a debug/dev binary
+go build -o build/swarmcracker ./cmd/swarmcracker
 
-# Run locally
-./bin/swarmcracker run --config config.yaml
+# Run the CLI
+./build/swarmcracker --help
 ```
 
 ---
 
-## systemd Service
+## systemd Services
 
-Run SwarmCracker as a systemd service.
+`swarmcracker cluster init` (manager) and `swarmcracker cluster join` (worker)
+generate and enable the systemd units for you:
 
-### Service File
+- `swarmcracker-manager.service` — runs `swarmd-firecracker --manager` on the manager
+- `swarmcracker-worker.service` — runs `swarmd-firecracker` on workers
 
-```bash
-sudo tee /etc/systemd/system/swarmcracker.service <<EOF
-[Unit]
-Description=SwarmCracker Firecracker Executor
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/swarmcracker run --config /etc/swarmcracker/config.yaml
-Restart=always
-RestartSec=5
-TimeoutStartSec=180
-
-[Install]
-WantedBy=multi-user.target
-EOF
-```
-
-### Enable Service
+Inspect and control them with systemd:
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable swarmcracker
-sudo systemctl start swarmcracker
+sudo systemctl status swarmcracker-manager
+sudo systemctl restart swarmcracker-worker
 
-# Check status
-sudo systemctl status swarmcracker
+# Logs
+sudo journalctl -u swarmcracker-manager -f
+sudo journalctl -u swarmcracker-worker -f
 ```
 
-### Logs
-
-```bash
-journalctl -u swarmcracker -f
-```
+There is no standalone `swarmcracker` service.
 
 ---
 
@@ -230,7 +211,7 @@ executor:
 │   ├── nginx-rootfs.ext4
 │   ├── redis-rootfs.ext4
 ├── kernels/
-│   ├── vmlinux-6.1.155
+│   ├── vmlinux-6.1.176
 │   ├── vmlinux-5.10
 ├── config.yaml
 ```
@@ -249,7 +230,7 @@ swarmctl ls-tasks
 swarmctl ls-nodes
 
 # Force rollback if needed
-swarmctl update svc-nginx --rollback
+swarmctl update <service-id> --image nginx:1.25-alpine
 ```
 
 ### Init Process Missing
@@ -266,7 +247,7 @@ file rootfs/sbin/tini
 
 ```bash
 # Check Go version
-go version  # Must be 1.21+
+go version  # Must be 1.26+
 
 # Check dependencies
 go mod download

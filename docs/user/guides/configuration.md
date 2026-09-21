@@ -349,7 +349,7 @@ Enable VM snapshot support. Requires the snapshot directory to exist and be writ
 | Property | Value |
 |----------|-------|
 | **Type** | `string` |
-| **Default** | `"/var/lib/swarmcracker/snapshots"` |
+| **Default** | `"/var/lib/firecracker/snapshots"` |
 | **Required** | Yes (when enabled) |
 
 Directory where VM snapshots (memory dumps + state files) are stored.
@@ -466,7 +466,7 @@ metrics:
 
 snapshot:
   enabled: true
-  snapshot_dir: /var/lib/swarmcracker/snapshots
+  snapshot_dir: /var/lib/firecracker/snapshots
   max_snapshots: 20
   max_age: 168h
   auto_snapshot: true

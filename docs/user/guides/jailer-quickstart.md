@@ -1,6 +1,6 @@
 # Jailer Quick Start Guide
 
-**Status:** ✅ Implementation Complete | 🧪 Testing Required
+**Status:** Available — enabled via `swarmd-firecracker` jailer flags
 
 ---
 
@@ -22,16 +22,16 @@ This is **production-grade security** for multi-tenant SwarmCracker deployments.
 
 ```bash
 # Download latest release
-wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.14.0/firecracker-v1.14.0-x86_64.tgz
-tar xzf firecracker-v1.14.0-x86_64.tgz
+wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz
+tar xzf firecracker-v1.15.1-x86_64.tgz
 
 # Install binaries
-sudo cp release-v1.14.0-x86_64/firecracker /usr/local/bin/
-sudo cp release-v1.14.0-x86_64/jailer /usr/local/bin/
+sudo cp release-v1.15.1-x86_64/firecracker /usr/local/bin/
+sudo cp release-v1.15.1-x86_64/jailer /usr/local/bin/
 
 # Verify installation
-firecracker --version  # v1.14.0
-jailer --version       # v1.14.0
+firecracker --version  # v1.15.1
+jailer --version       # v1.15.1
 ```
 
 ### 2. Create Firecracker User
@@ -48,44 +48,36 @@ sudo swarmd-firecracker \
   --join-addr 192.168.1.10:4242 \
   --join-token SWMTKN-1-... \
   --enable-jailer \
+  --jailer-path /usr/local/bin/jailer \
   --jailer-uid 1000 \
   --jailer-gid 1000 \
-  --enable-cgroups
+  --jailer-chroot-dir /var/lib/swarmcracker/jailer \
+  --enable-cgroups \
+  --cgroup-version v2
 ```
 
 That's it! All MicroVMs will now run inside jailer with full isolation.
 
 ---
 
-## Configuration File
+## Enabling Jailer
 
-Create `/etc/swarmcracker/executor-config.yaml`:
+`swarmcracker cluster init` / `cluster join` generate the systemd units
+(`swarmcracker-manager.service` / `swarmcracker-worker.service`) and pass VM settings to
+`swarmd-firecracker` as CLI flags. Jailer is not wired into those generated flags yet,
+so enable it by adding the flags shown in step 3 to the unit's `ExecStart` (or run the
+daemon directly as shown there).
 
-```yaml
-# Basic settings
-firecracker_path: /usr/local/bin/firecracker
-kernel_path: /usr/share/firecracker/vmlinux
-rootfs_dir: /var/lib/firecracker/rootfs
-socket_dir: /var/run/firecracker
+To make it persistent, add the flags to `ExecStart` in the generated unit and reload:
 
-# Jailer settings
-enable_jailer: true
-jailer_path: /usr/local/bin/jailer
-jailer_uid: 1000
-jailer_gid: 1000
-jailer_chroot_dir: /var/lib/swarmcracker/jailer
-cgroup_version: v2
-enable_cgroups: true
-
-# Resource limits per VM
-default_vcpus: 1
-default_memory_mb: 512
-```
-
-Then start normally:
 ```bash
-sudo swarmd-firecracker --config /etc/swarmcracker/executor-config.yaml
+sudo systemctl daemon-reload
+sudo systemctl restart swarmcracker-worker
 ```
+
+> The `swarmcracker` CLI reads `/etc/swarmcracker/config.yaml` (see the
+> [Configuration Guide](configuration.md)). The **daemon** is configured entirely by
+> flags — it does not take a `--config` file.
 
 ---
 
@@ -144,7 +136,7 @@ cat /proc/$PID/seccomp_filters
 
 ```bash
 # Deploy a VM and try to exceed memory limit
-swarmcracker deploy stress-test --memory 1024
+swarmcracker service create --name stress-test --image alpine:latest --memory 1024
 
 # Monitor cgroup stats
 watch -n1 'cat /sys/fs/cgroup/swarmcracker/<task-id>/memory.current'
@@ -182,18 +174,18 @@ If using cgroup v1, set `--cgroup-version v1`.
 
 **Error:** Firecracker exits immediately with SIGSYS
 
-**Fix:** Seccomp policy is too restrictive. Either:
-1. Disable seccomp temporarily: `--seccomp=false`
-2. Add missing syscalls to policy
-3. Check logs for which syscall was blocked
+**Fix:** The seccomp policy is too restrictive. Either:
+1. Add the missing syscalls to the policy
+2. Check the kernel log for the blocked syscall (`dmesg | grep -i seccomp`)
+3. Verify the jailer/seccomp configuration used by Firecracker
 
 ### Socket not created
 
 **Error:** `socket not created: context deadline exceeded`
 
-**Fix:** Check jailer logs:
+**Fix:** Check the worker unit logs:
 ```bash
-journalctl -u swarmd-firecracker -f
+sudo journalctl -u swarmcracker-worker -f
 # Or check syslog
 tail -f /var/log/syslog | grep jailer
 ```
@@ -246,13 +238,13 @@ sudo swarmd-firecracker \
 
 ### Rollback Plan
 
-If jailer causes issues, simply remove `--enable-jailer` flag:
+If jailer causes issues, remove the `--enable-jailer` flag from the worker's unit:
 ```bash
-sudo systemctl stop swarmd-firecracker
-# Edit /etc/systemd/system/swarmd-firecracker.service
+sudo systemctl stop swarmcracker-worker
+# Edit /etc/systemd/system/swarmcracker-worker.service
 # Remove --enable-jailer and related flags
 sudo systemctl daemon-reload
-sudo systemctl start swarmd-firecracker
+sudo systemctl start swarmcracker-worker
 ```
 
 ---

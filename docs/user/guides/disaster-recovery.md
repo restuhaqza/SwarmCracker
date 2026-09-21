@@ -12,7 +12,7 @@ SwarmCracker cluster state is stored in multiple locations:
 |-----------|----------|----------------|
 | Raft log (cluster state) | `/var/lib/swarmkit/` | `swarmctl cluster snapshot` |
 | VM state | `/var/lib/firecracker/` | VM snapshots |
-| VM snapshots | `/var/lib/swarmcracker/snapshots/` | Copy to remote storage |
+| VM snapshots | `/var/lib/firecracker/snapshots/` | Copy to remote storage |
 | Config | `/etc/swarmcracker/config.yaml` | Auto-generated on join |
 | Join tokens | `/var/lib/swarmkit/certificates/` | Backed up with Raft |
 
@@ -167,13 +167,13 @@ If a VM's state is lost but you have snapshots:
 
 ```bash
 # List available snapshots
-swarmcracker vm snapshot list <VM_ID>
+swarmcracker vm snapshot list --task <VM_ID>
 
 # Restore from snapshot
-swarmcracker vm snapshot restore <VM_ID> --snapshot <SNAPSHOT_ID>
+swarmcracker vm snapshot restore <SNAPSHOT_ID>
 
 # Verify
-swarmcracker vm inspect <VM_ID>
+swarmcracker cluster status <VM_ID>
 ```
 
 ### Automated snapshot backup
@@ -182,7 +182,7 @@ Set up a cron job to copy snapshots to remote storage:
 
 ```bash
 # /etc/cron.d/swarmcracker-backup
-0 2 * * * root rsync -avz /var/lib/swarmcracker/snapshots/ backup-server:/backups/swarmcracker/
+0 2 * * * root rsync -avz /var/lib/firecracker/snapshots/ backup-server:/backups/swarmcracker/
 ```
 
 ---

@@ -50,7 +50,7 @@ curl -s http://127.0.0.1:4242/healthz
 
 ```bash
 # Check all nodes
-swarmcracker node list
+swarmcracker node ls
 
 # Expected output:
 # ID              HOSTNAME    STATUS  AVAILABILITY  MANAGER
@@ -63,10 +63,10 @@ swarmcracker node list
 
 ```bash
 # Check specific VM
-swarmcracker status <vm-id>
+swarmcracker cluster status <vm-id>
 
 # Watch mode
-swarmcracker status --watch
+watch -n2 'swarmcracker cluster status <vm-id>'
 ```
 
 ---
@@ -79,11 +79,11 @@ swarmcracker status --watch
 # One-time metrics
 swarmcracker metrics
 
-# Watch mode (refreshes every 2s)
-swarmcracker metrics --watch --interval 5s
+# Refresh every 5 seconds
+swarmcracker metrics --refresh 5
 
 # JSON for scraping
-swarmcracker metrics --json
+swarmcracker metrics --format json
 ```
 
 **Key metrics:**
@@ -110,13 +110,14 @@ swarmcracker metrics --json
 **View logs:**
 ```bash
 # Daemon logs
-journalctl -u swarmd-firecracker -f
+sudo journalctl -u swarmcracker-worker -f
 
 # Specific VM console
-swarmcracker vm logs <vm-id> --follow
+swarmcracker vm logs --follow <vm-id>
 
-# All VMs in a service
-swarmcracker service logs --follow <service-name>
+# Logs for each task in a service (find the task IDs first)
+swarmcracker service ps <service-name>
+swarmcracker vm logs --follow <task-id>
 
 # dnsmasq DHCP logs
 tail -f /tmp/dnsmasq.log
@@ -167,7 +168,7 @@ swarmd-firecracker --log-level debug
 5. **Bridge exists?**
    ```bash
    ip link show swarm-br0
-   # If missing: swarmcracker init (recreates infrastructure)
+   # If missing: swarmcracker cluster init (recreates infrastructure)
    ```
 
 6. **Socket directory writable?**
@@ -344,13 +345,13 @@ If you lose 2 of 3 managers:
 
 ```bash
 # Create snapshot of running VM
-swarmcracker snapshot create --name pre-upgrade <vm-id>
+swarmcracker vm snapshot create <task-id>
 
 # List snapshots
-swarmcracker snapshot list --vm <vm-id>
+swarmcracker vm snapshot list --task <task-id>
 
 # Restore from snapshot
-swarmcracker snapshot restore <snapshot-id>
+swarmcracker vm snapshot restore <snapshot-id>
 ```
 
 ### Configuration Backup
@@ -410,7 +411,7 @@ rm -rf "$BACKUP_DIR"
 
 2. **Wait for all VMs to move:**
    ```bash
-   swarmcracker task list --node worker-1
+   swarmcracker task ls --node worker-1
    # Should show no running tasks
    ```
 
@@ -430,7 +431,7 @@ rm -rf "$BACKUP_DIR"
 
 5. **Verify health:**
    ```bash
-   swarmcracker node list | grep worker-1
+   swarmcracker node ls | grep worker-1
    # Should show Ready, Active
    ```
 
@@ -442,7 +443,7 @@ Managers must be upgraded one at a time:
 
 1. **Verify quorum:**
    ```bash
-   swarmcracker node list | grep manager
+   swarmcracker node ls | grep manager
    # Need 2+ managers healthy for quorum
    ```
 
@@ -487,10 +488,10 @@ Example for a 16GB worker with 512MB VMs:
 swarmcracker cluster token create --role worker
 
 # 3. On new worker
-swarmcracker cluster join --token SWMTKN-1-xxx <manager-ip>:4242
+swarmcracker cluster join <manager-ip>:4242 --token SWMTKN-1-xxx
 
 # 4. Verify
-swarmcracker node list
+swarmcracker node ls
 # Should show new node as Ready, Active
 ```
 
@@ -501,13 +502,13 @@ swarmcracker node list
 swarmcracker node drain worker-3
 
 # Wait for VMs to reschedule
-swarmcracker task list --node worker-3
+swarmcracker task ls --node worker-3
 
 # Leave cluster
 swarmcracker cluster leave
 
 # Clean up
-swarmcracker reset
+swarmcracker cluster reset
 ```
 
 ---
@@ -564,7 +565,7 @@ iptables -A INPUT -p udp --dport 4789 -s 192.168.1.0/24 -j ACCEPT
 - [ ] Run image cleanup: check `/var/log/swarmcracker/daemon.log` for "Periodic cleanup completed"
 - [ ] Check for orphaned VMs: review daemon logs for "Found orphaned VM"
 - [ ] Review metrics trends
-- [ ] Check available disk for snapshots: `du -sh /var/lib/swarmcracker/snapshots/`
+- [ ] Check available disk for snapshots: `du -sh /var/lib/firecracker/snapshots/`
 
 ### Monthly
 - [ ] Test backup restoration
@@ -598,13 +599,13 @@ iptables -A INPUT -p udp --dport 4789 -s 192.168.1.0/24 -j ACCEPT
 2. Restore from backup on the designated manager node
 3. Start with `--force-new-cluster`
 4. Restore workers from backups, rejoin one at a time
-5. Verify: `swarmcracker node list` should show all nodes Ready
+5. Verify: `swarmcracker node ls` should show all nodes Ready
 
 ### Disk Full
 
 1. **Immediate:** Delete old snapshots
    ```bash
-   swarmcracker snapshot delete --all
+   swarmcracker vm snapshot cleanup --max-age 168h
    ```
 
 2. **Short-term:** Manually trigger image cleanup
@@ -637,34 +638,30 @@ swarmcracker doctor                     # Node health check
 curl 127.0.0.1:4242/healthz             # API health check
 
 # Cluster
-swarmcracker node list                  # List nodes
+swarmcracker node ls                    # List nodes
 swarmcracker node inspect <node>        # Node details
-swarmcracker cluster token create       # Create join token
+swarmcracker cluster token worker       # Get a worker join token
 
 # VMs
 swarmcracker vm list                    # List VMs
 swarmcracker vm logs -f <vm-id>         # Follow VM logs
 swarmcracker vm stop <vm-id>            # Stop VM
-swarmcracker status <vm-id>             # VM status
+swarmcracker cluster status <vm-id>     # VM status
 
 # Services
-swarmcracker service list               # List services
+swarmcracker service ls                 # List services
 swarmcracker service ps <service>       # Service tasks
-swarmcracker service logs -f <service>  # Service logs
 
 # Snapshots
-swarmcracker snapshot create <vm-id>    # Snapshot VM
-swarmcracker snapshot list              # List snapshots
-swarmcracker snapshot restore <snap>    # Restore from snapshot
+swarmcracker vm snapshot create <vm-id> # Snapshot VM
+swarmcracker vm snapshot list           # List snapshots
+swarmcracker vm snapshot restore <snap> # Restore from snapshot
 
 # Network
-swarmcracker network vxlan list         # VXLAN peers
-
-# Metrics
-swarmcracker metrics --watch            # Watch metrics
+swarmcracker network vxlan ls           # VXLAN peers
 
 # Recovery
-swarmcracker reset --force              # Reset node
+swarmcracker cluster reset --hard       # Reset node
 swarmcracker cluster leave              # Leave cluster
 ```
 

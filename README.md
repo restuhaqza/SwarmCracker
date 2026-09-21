@@ -75,20 +75,20 @@ sudo swarmcracker setup config --non-interactive
 sudo swarmcracker cluster init --advertise-addr 192.168.1.10:4242
 
 # Get join token
-sudo swarmcracker cluster token create --role worker
+sudo swarmcracker cluster token worker
 
 # On each worker
-sudo swarmcracker cluster join --token SWMTKN-1-xxx 192.168.1.10:4242
+sudo swarmcracker cluster join 192.168.1.10:4242 --token SWMTKN-1-xxx
 ```
 
 ### Deploy Your First Service
 
 ```bash
 # Deploy nginx across the cluster
-swarmcracker service create --name web --replicas 3 -p 8080:80 nginx:alpine
+swarmcracker service create --name web --image nginx:alpine --replicas 3
 
 # Verify
-swarmcracker service list
+swarmcracker service ls
 swarmcracker service ps web
 ```
 
@@ -138,8 +138,8 @@ Read our [Security Policy](SECURITY.md) and [Security Guide](docs/dev/security.m
 ## Releases
 
 ```bash
-curl -LO https://github.com/restuhaqza/SwarmCracker/releases/download/v0.7.0/swarmcracker-v0.7.0-linux-amd64.tar.gz
-tar xzf swarmcracker-v0.7.0-linux-amd64.tar.gz
+curl -LO https://github.com/restuhaqza/SwarmCracker/releases/download/v0.9.0/swarmcracker-v0.9.0-linux-amd64.tar.gz
+tar xzf swarmcracker-v0.9.0-linux-amd64.tar.gz
 ```
 
 [All releases](https://github.com/restuhaqza/SwarmCracker/releases)
