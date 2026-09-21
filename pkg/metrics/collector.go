@@ -264,23 +264,25 @@ func (c *Collector) getProcUptime(pid int) (int64, error) {
 
 	// Split by spaces
 	fields := strings.Fields(afterComm)
-	if len(fields) < 22 {
-		return 0, fmt.Errorf("invalid stat format: expected at least 22 fields after comm")
+	if len(fields) < 20 {
+		return 0, fmt.Errorf("invalid stat format: expected at least 20 fields after comm")
 	}
 
-	// Field 22 (index 21) is starttime - time the process started after system boot
-	// Measured in clock ticks (jiffies)
-	starttimeJiffies, err := strconv.ParseUint(fields[21], 10, 64)
+	// Field 22 in /proc/<pid>/stat is starttime (time the process started
+	// after system boot). After stripping pid (field 1) and comm (field 2),
+	// it is at index 19 of the remaining fields, measured in clock ticks.
+	starttimeJiffies, err := strconv.ParseUint(fields[19], 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("failed to parse starttime: %w", err)
 	}
 
-	// Convert jiffies to milliseconds
+	// Convert jiffies to seconds. USER_HZ is 100 on the architectures we
+	// target (x86_64, arm64).
 	const clkTck = 100.0
-	starttimeMs := (float64(starttimeJiffies) / clkTck) * 1000.0
+	startSec := float64(starttimeJiffies) / clkTck
 
-	// We need the system boot time to calculate actual uptime
-	// For now, we'll use a simplified approach using /proc/uptime
+	// Process uptime = system uptime - process start time (both measured from
+	// boot by the kernel, so they share the same clock).
 	uptimeData, err := os.ReadFile("/proc/uptime")
 	if err != nil {
 		return 0, fmt.Errorf("failed to read system uptime: %w", err)
@@ -297,8 +299,12 @@ func (c *Collector) getProcUptime(pid int) (int64, error) {
 		return 0, fmt.Errorf("failed to parse system uptime: %w", err)
 	}
 
-	// Process uptime = system uptime - process start time (in seconds)
-	processUptimeSec := systemUptimeSec - (starttimeMs / 1000.0)
+	processUptimeSec := systemUptimeSec - startSec
+	// Guard against sub-second clock granularity pushing this slightly below
+	// zero for a freshly started process.
+	if processUptimeSec < 0 {
+		processUptimeSec = 0
+	}
 
 	return int64(processUptimeSec), nil
 }

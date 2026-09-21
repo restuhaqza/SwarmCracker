@@ -111,8 +111,8 @@ func TestGetProcUptimeWithSelf(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to get uptime for self PID: %v", err)
 	}
-	if uptime <= 0 {
-		t.Errorf("Expected positive uptime for self, got %d", uptime)
+	if uptime < 0 {
+		t.Errorf("Expected non-negative uptime for self, got %d", uptime)
 	}
 	t.Logf("Self uptime: %d seconds", uptime)
 }

@@ -51,9 +51,9 @@ func TestCollectorCollect(t *testing.T) {
 		t.Logf("Warning: MemoryKB is 0 (process may not have RSS yet)")
 	}
 
-	// Uptime should be positive
-	if metrics.UptimeSec <= 0 {
-		t.Errorf("Expected positive uptime, got %d", metrics.UptimeSec)
+	// Uptime should be non-negative (a freshly started process may report 0).
+	if metrics.UptimeSec < 0 {
+		t.Errorf("Expected non-negative uptime, got %d", metrics.UptimeSec)
 	}
 
 	t.Logf("Metrics collected successfully: %+v", metrics)
@@ -252,11 +252,11 @@ func TestGetProcUptime(t *testing.T) {
 	}
 
 	t.Logf("Uptime: %d seconds", uptimeSec)
-	if uptimeSec <= 0 {
-		t.Error("Expected positive uptime")
+	if uptimeSec < 0 {
+		t.Error("Expected non-negative uptime")
 	}
-	// Note: uptime is calculated from system boot time, not from when we started the process
-	// So we just check that it's a reasonable value (less than system uptime)
+	// A freshly started process can legitimately report 0 seconds, so we only
+	// require a sane non-negative value below the system uptime bound.
 	if uptimeSec > 86400*365 {
 		t.Errorf("Uptime seems too large: %d seconds", uptimeSec)
 	}
