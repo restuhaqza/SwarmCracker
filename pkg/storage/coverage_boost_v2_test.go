@@ -749,6 +749,10 @@ func TestVolumeManager_GetVolume_NotFound_V2(t *testing.T) {
 
 // TestNewVolumeManager_EmptyDir tests NewVolumeManager with empty directory
 func TestNewVolumeManager_EmptyDir_V2(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("Skipping: the default volume directory (/var/lib/swarmcracker) requires root")
+	}
+
 	vm, err := NewVolumeManager("")
 	require.NoError(t, err)
 	assert.NotNil(t, vm)

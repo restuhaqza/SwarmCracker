@@ -981,6 +981,7 @@ func TestUnmountExt4_NilSafety(t *testing.T) {
 
 // TestRealContainerRuntime_CreateContainer_PodmanPath tests podman create path
 func TestRealContainerRuntime_CreateContainer_PodmanPath(t *testing.T) {
+	skipIfRuntimePresent(t, "podman")
 	runtime := NewRealContainerRuntime("podman")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -1356,6 +1357,9 @@ func TestRealContainerRuntime_CreateContainer_ErrorPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "create_podman_with_root" {
+				skipIfRuntimePresent(t, "podman")
+			}
 			runtime := NewRealContainerRuntime(tt.runtime)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

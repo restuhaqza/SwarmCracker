@@ -16,6 +16,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// skipIfRuntimePresent skips a test case that asserts the behaviour of a
+// missing container-runtime binary when that binary is actually installed
+// (for example, the GitHub Actions runner ships podman).
+func skipIfRuntimePresent(t *testing.T, runtime string) {
+	t.Helper()
+	if _, err := exec.LookPath(runtime); err == nil {
+		t.Skipf("%s is installed; this case only applies when the binary is absent", runtime)
+	}
+}
+
 // TestNewRealContainerRuntime tests the constructor
 func TestNewRealContainerRuntime(t *testing.T) {
 	tests := []struct {
@@ -92,11 +102,8 @@ func TestRealContainerRuntime_CreateContainer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Skip if runtime is available and would create real containers
-			if tt.runtime == "docker" || tt.runtime == "podman" {
-				if _, err := exec.LookPath(tt.runtime); err != nil {
-					// Runtime not available, test should work
-				}
+			if tt.name == "podman_create_without_podman" {
+				skipIfRuntimePresent(t, "podman")
 			}
 
 			runtime := NewRealContainerRuntime(tt.runtime)
@@ -164,6 +171,9 @@ func TestRealContainerRuntime_ExportContainer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "podman_export_without_podman" {
+				skipIfRuntimePresent(t, "podman")
+			}
 			runtime := NewRealContainerRuntime(tt.runtime)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -211,6 +221,9 @@ func TestRealContainerRuntime_RemoveContainer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "podman_remove_without_podman" {
+				skipIfRuntimePresent(t, "podman")
+			}
 			runtime := NewRealContainerRuntime(tt.runtime)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -262,6 +275,9 @@ func TestRealContainerRuntime_PullImage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "podman_pull_without_podman" {
+				skipIfRuntimePresent(t, "podman")
+			}
 			runtime := NewRealContainerRuntime(tt.runtime)
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -313,6 +329,9 @@ func TestRealContainerRuntime_ImageExists(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "podman_image_exists_without_podman" {
+				skipIfRuntimePresent(t, "podman")
+			}
 			runtime := NewRealContainerRuntime(tt.runtime)
 			ctx := context.Background()
 

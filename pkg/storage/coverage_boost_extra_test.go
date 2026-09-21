@@ -455,6 +455,10 @@ func TestRestoreVolume_NilSnapshot(t *testing.T) {
 
 // TestNewVolumeManager_EmptyDir tests NewVolumeManager with empty directory
 func TestNewVolumeManager_EmptyDir(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("Skipping: the default volume directory (/var/lib/swarmcracker) requires root")
+	}
+
 	vm, err := NewVolumeManager("")
 	assert.NoError(t, err, "NewVolumeManager should succeed with empty directory")
 	assert.NotNil(t, vm)
