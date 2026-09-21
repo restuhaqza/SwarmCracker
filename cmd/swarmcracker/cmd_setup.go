@@ -204,6 +204,7 @@ func countFailures() int {
 var (
 	setupInstallDownloadKernel bool
 	setupInstallDownloadRootfs bool
+	setupInstallDownloadCNI    bool
 	setupInstallFirecrackerVer string
 )
 
@@ -222,6 +223,7 @@ Use --download-kernel and --download-rootfs to also fetch VM images.`,
 
 	cmd.Flags().BoolVar(&setupInstallDownloadKernel, "download-kernel", false, "Download Firecracker-compatible kernel")
 	cmd.Flags().BoolVar(&setupInstallDownloadRootfs, "download-rootfs", false, "Download Ubuntu rootfs image")
+	cmd.Flags().BoolVar(&setupInstallDownloadCNI, "download-cni", false, "Download standard CNI plugins (bridge, host-local, loopback)")
 	cmd.Flags().StringVar(&setupInstallFirecrackerVer, "firecracker-version", "v1.15.1", "Firecracker version to install")
 
 	return cmd
@@ -249,6 +251,13 @@ func runSetupInstall() error {
 	if setupInstallDownloadRootfs {
 		if err := downloadRootfs(); err != nil {
 			fmt.Printf("  ⚠️  Rootfs download failed: %v\n", err)
+		}
+	}
+
+	// Optional: download CNI plugins
+	if setupInstallDownloadCNI {
+		if err := installCNIPlugins(); err != nil {
+			fmt.Printf("  ⚠️  CNI plugin install failed: %v\n", err)
 		}
 	}
 
@@ -381,8 +390,6 @@ func downloadKernel() error {
 	if arch == "arm64" {
 		arch = "aarch64"
 	}
-	ciVersion := strings.TrimPrefix(setupInstallFirecrackerVer, "v")
-	ciVersion = strings.Join(strings.SplitN(ciVersion, ".", 3)[:2], ".")
 
 	if err := os.MkdirAll(filepath.Dir(kernelPath), 0755); err != nil {
 		return err
@@ -390,17 +397,25 @@ func downloadKernel() error {
 
 	fmt.Printf("  📦 Downloading kernel to %s ...\n", kernelPath)
 
-	// Dynamic discovery (mirrors the old install.sh logic): list available
-	// kernels for this Firecracker version and pick the newest.
-	listURL := fmt.Sprintf("https://spec.ccfc.min.s3.amazonaws.com/?prefix=firecracker-ci/%s/%s/vmlinux-&list-type=2", ciVersion, arch)
+	// Dynamic discovery. The Firecracker CI bucket now uses dated prefixes
+	// (firecracker-ci/<date>-<hash>/<arch>/vmlinux-<ver>), not the old
+	// firecracker-ci/<major.minor>/<arch>/ layout. List the whole tree and
+	// pick the newest matching kernel for our architecture.
+	listURL := "https://s3.amazonaws.com/spec.ccfc.min/?list-type=2&prefix=firecracker-ci/&max-keys=1000"
 	if out, err := exec.Command("curl", "-fsSL", listURL).Output(); err == nil {
-		keyRe := regexp.MustCompile(`<Key>(firecracker-ci/[^<]+/vmlinux-[0-9]+\.(?:[0-9]+\.)*[0-9]+)</Key>`)
-		keys := keyRe.FindAllStringSubmatch(string(out), -1)
+		keyRe := regexp.MustCompile(`<Key>(firecracker-ci/[^<]*/` + regexp.QuoteMeta(arch) + `/vmlinux-[0-9]+\.(?:[0-9]+\.)*[0-9]+)</Key>`)
+		keys := make([]string, 0)
+		for _, m := range keyRe.FindAllStringSubmatch(string(out), -1) {
+			if strings.Contains(m[1], "/debug/") {
+				continue
+			}
+			keys = append(keys, m[1])
+		}
 		if len(keys) > 0 {
-			best := keys[0][1]
-			for _, m := range keys[1:] {
-				if kernelVersionGreater(m[1], best) {
-					best = m[1]
+			best := keys[0]
+			for _, k := range keys[1:] {
+				if kernelVersionGreater(k, best) {
+					best = k
 				}
 			}
 			url := "https://s3.amazonaws.com/spec.ccfc.min/" + best
@@ -413,8 +428,8 @@ func downloadKernel() error {
 		}
 	}
 
-	// Fallback: known-good pinned kernel
-	fallback := fmt.Sprintf("https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/%s/%s/vmlinux-6.1.155", ciVersion, arch)
+	// Fallback: newest known-good pinned kernel in the dated layout.
+	fallback := fmt.Sprintf("https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/20260717-5ac3f5ffdcd7-0/%s/vmlinux-6.1.176", arch)
 	fmt.Printf("     Fallback: %s\n", fallback)
 	if err := runCurl(fallback, kernelPath); err != nil {
 		return fmt.Errorf("kernel download failed: %w", err)
@@ -452,6 +467,60 @@ func downloadRootfs() error {
 		return fmt.Errorf("rootfs download failed: %w", err)
 	}
 	fmt.Printf("  ✅ Rootfs installed: %s\n", rootfsFile)
+	return nil
+}
+
+// installCNIPlugins downloads the standard CNI plugins required by the
+// SwarmCracker CNI network provider (bridge, host-local, loopback).
+func installCNIPlugins() error {
+	const cniVersion = "v1.6.2"
+	pluginDir := "/opt/cni/bin"
+	configDir := "/etc/cni/net.d"
+
+	required := []string{"bridge", "host-local", "loopback"}
+	allPresent := true
+	for _, p := range required {
+		if _, err := os.Stat(filepath.Join(pluginDir, p)); err != nil {
+			allPresent = false
+			break
+		}
+	}
+
+	if allPresent {
+		fmt.Printf("  ✅ CNI plugins already present in %s\n", pluginDir)
+	} else {
+		arch := runtime.GOARCH
+		url := fmt.Sprintf(
+			"https://github.com/containernetworking/plugins/releases/download/%s/cni-plugins-linux-%s-%s.tgz",
+			cniVersion, arch, cniVersion,
+		)
+		if err := os.MkdirAll(pluginDir, 0755); err != nil {
+			return err
+		}
+		tmpDir, err := os.MkdirTemp("", "swarmcracker-cni-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmpDir)
+
+		tarball := filepath.Join(tmpDir, "cni.tgz")
+		fmt.Printf("  📦 Downloading CNI plugins %s (%s)...\n", cniVersion, arch)
+		if err := runCurl(url, tarball); err != nil {
+			return fmt.Errorf("failed to download CNI plugins: %w", err)
+		}
+		tarCmd := exec.Command("tar", "xzf", tarball, "-C", pluginDir)
+		if out, err := tarCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("failed to extract CNI plugins: %s: %w", strings.TrimSpace(string(out)), err)
+		}
+		fmt.Printf("  ✅ CNI plugins installed to %s\n", pluginDir)
+	}
+
+	for _, d := range []string{configDir, "/var/lib/cni"} {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("  ✅ CNI directories ready (%s, /var/lib/cni)\n", configDir)
 	return nil
 }
 
@@ -675,36 +744,20 @@ func runSetupConfig() error {
 	cfg := &config.Config{}
 	cfg.SetDefaults()
 
-	// Override defaults from flags
-	if setupConfigKernel != "/usr/share/firecracker/vmlinux" {
-		cfg.Executor.KernelPath = setupConfigKernel
-	} else {
-		fmt.Printf("  Kernel path [%s]: \n", cfg.Executor.KernelPath)
-	}
-
-	if setupConfigRootfs != "/var/lib/firecracker/rootfs" {
-		cfg.Executor.RootfsDir = setupConfigRootfs
-	}
-
-	if setupConfigBridge != "swarm-br0" {
-		cfg.Network.BridgeName = setupConfigBridge
-	}
-
-	if setupConfigSubnet != "192.168.127.0/24" {
-		cfg.Network.Subnet = setupConfigSubnet
-	}
-
-	if setupConfigBridgeIP != "192.168.127.1/24" {
-		cfg.Network.BridgeIP = setupConfigBridgeIP
-	}
-
-	if setupConfigVCPUs != 1 {
+	// Apply values from flags. The flags carry the documented defaults, so
+	// these assignments also fill in anything SetDefaults left empty (notably
+	// KernelPath, which has no top-level field to fall back to).
+	cfg.Executor.KernelPath = setupConfigKernel
+	cfg.Executor.RootfsDir = setupConfigRootfs
+	if setupConfigVCPUs > 0 {
 		cfg.Executor.DefaultVCPUs = setupConfigVCPUs
 	}
-
-	if setupConfigMemory != 512 {
+	if setupConfigMemory > 0 {
 		cfg.Executor.DefaultMemoryMB = setupConfigMemory
 	}
+	cfg.Network.BridgeName = setupConfigBridge
+	cfg.Network.Subnet = setupConfigSubnet
+	cfg.Network.BridgeIP = setupConfigBridgeIP
 
 	// Validate
 	if err := cfg.Validate(); err != nil {
