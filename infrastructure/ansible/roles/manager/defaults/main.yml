@@ -11,7 +11,7 @@ manager_advertise_address: "{{ ansible_default_ipv4.address | default('0.0.0.0')
 manager_advertise_port: "{{ manager_port }}"
 
 # SwarmCracker download configuration
-swarmcracker_version: "v0.7.0"
+swarmcracker_version: "v0.9.0"
 swarmcracker_download_url: "https://github.com/restuhaqza/SwarmCracker/releases/download/{{ swarmcracker_version }}"
 swarmcracker_tarball: "swarmcracker-{{ swarmcracker_version }}-linux-amd64.tar.gz"
 swarmcracker_install_dir: /usr/local/bin

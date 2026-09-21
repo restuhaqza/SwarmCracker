@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-09-22
+
+### Fixed
+- **Cluster initialization** — Corrected the generated systemd units (`ReadWritePaths`, `Type=simple`, `PrivateTmp=true`, writable cache/state/CNI dirs) so the manager and worker start reliably under `ProtectSystem=strict`.
+- **Cluster join** — Accept real SwarmKit join tokens (`SWMTKN-1-{hash}-{secret}`); the previous validator required a non-existent role segment and rejected every valid token.
+- **MicroVM lifecycle** — Firecracker is no longer started with the caller's context, which canceled (SIGKILL) every VM as soon as `Start()` returned.
+- **Container workload startup** — Alpine-family images (busybox `/sbin/init`) now run their OCI ENTRYPOINT/CMD through the injected tini wrapper instead of being left without a workload.
+- **tini invocation** — Use the boolean `-s -g` flags and a numeric `-e <signal>`; the previous `-g <seconds>` / `-e QUIT` forms crashed PID 1.
+- **Guest networking** — The init wrapper mounts `devtmpfs` and configures `eth0` from the kernel `ip=` parameter.
+- **`setup config`** — Honor `--non-interactive` instead of prompting and failing with `kernel_path is required`.
+- **`setup install --download-kernel`** — Discover kernels from the current dated Firecracker CI S3 layout.
+- **Volume mounts** — `handleVolumeMount` returns an error (and no longer panics) when no volume manager is configured.
+- Lint: migrate to `grpc.NewClient` and fix a `nilerr` finding (golangci-lint now reports zero issues).
+
+### Added
+- **CNI enabled by default** for `cluster init` / `cluster join` (`--enable-cni`), with graceful degradation when plugins are missing.
+- **`setup install --download-cni`** to install the standard CNI plugins (bridge, host-local, loopback).
+- End-to-end test report: `docs/reports/e2e-two-vm-2026-09-21.md`.
+
+### Changed
+- CI: run golangci-lint v2 via `golangci-lint-action@v9`, refresh action versions, and fix the release smoke-test VXLAN flag.
+- Build: `make all` now builds `swarmd-firecracker` and `swarmcracker-agent` from their packages.
+- Version references bumped to v0.9.0 (binary default, Ansible variables, docs).
+
+---
+
 ## [0.6.0] - 2026-04-08
 
 ### Added
