@@ -323,6 +323,7 @@ func (v *VXLANManager) removePeerForwarding(vxlanName, peerIP string) error {
 
 	if _, err := v.netlinkExecutor.LinkByName(vxlanName); err != nil {
 		// Interface already gone — nothing to remove.
+		log.Debug().Err(err).Str("vxlan", vxlanName).Msg("VXLAN interface already gone; nothing to remove")
 		return nil
 	}
 

@@ -11,6 +11,7 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 )
 
 // HostnameNodeDiscovery implements types.NodeDiscovery using hostname DNS resolution.
@@ -79,17 +80,15 @@ func (d *SwarmKitNodeDiscovery) Connect(ctx context.Context) error {
 	var err error
 
 	if d.controlSocket != "" {
-		dialer := func(addr string, t time.Duration) (net.Conn, error) {
-			return (&net.Dialer{Timeout: t}).DialContext(ctx, "unix", addr)
+		dialer := func(ctx context.Context, addr string) (net.Conn, error) {
+			return (&net.Dialer{Timeout: d.timeout}).DialContext(ctx, "unix", addr)
 		}
-		conn, err = grpc.Dial(d.controlSocket,
-			grpc.WithInsecure(),
-			grpc.WithTimeout(d.timeout),
-			grpc.WithDialer(dialer))
+		conn, err = grpc.NewClient(d.controlSocket,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithContextDialer(dialer))
 	} else if d.remoteAddr != "" {
-		conn, err = grpc.Dial(d.remoteAddr,
-			grpc.WithInsecure(),
-			grpc.WithTimeout(d.timeout))
+		conn, err = grpc.NewClient(d.remoteAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()))
 	} else {
 		return fmt.Errorf("no control socket or remote address")
 	}

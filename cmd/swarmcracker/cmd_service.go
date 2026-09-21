@@ -303,7 +303,7 @@ func getSwarmClientForService() (api.ControlClient, *grpc.ClientConn, error) {
 		InsecureSkipVerify: true,
 	}
 
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		socketPath,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {

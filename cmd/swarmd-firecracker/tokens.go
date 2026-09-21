@@ -53,10 +53,9 @@ func printJoinTokens(ctx context.Context, stateDir string) {
 		grpc.WithContextDialer(func(dialCtx context.Context, addr string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(dialCtx, "unix", socketPath)
 		}),
-		grpc.WithBlock(),
 	}
 
-	conn, err := grpc.Dial("unix://"+socketPath, dialOpts...)
+	conn, err := grpc.NewClient("unix://"+socketPath, dialOpts...)
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Failed to connect to control API for token retrieval")
 		return

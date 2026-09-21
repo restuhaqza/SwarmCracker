@@ -46,9 +46,12 @@ type NetConf struct {
 }
 
 func main() {
-	// PluginMain signature: cmdAdd, cmdCheck, cmdDel, versionInfo, about
-	// Note: cmdCheck comes BEFORE cmdDel in the argument order!
-	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, "swarmcracker-cni")
+	// PluginMainFuncs wires the CNI ADD/CHECK/DEL callbacks.
+	skel.PluginMainFuncs(skel.CNIFuncs{
+		Add:   cmdAdd,
+		Check: cmdCheck,
+		Del:   cmdDel,
+	}, version.All, "swarmcracker-cni")
 }
 
 // cmdAdd creates a TAP device and connects it to the bridge

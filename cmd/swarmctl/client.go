@@ -100,7 +100,7 @@ func connectControlAPI() (*swarmctlClient, context.Context, context.CancelFunc) 
 		InsecureSkipVerify: true, // Unix socket, no hostname to verify
 	}
 
-	conn, err := grpc.Dial(
+	conn, err := grpc.NewClient(
 		socketPath,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {

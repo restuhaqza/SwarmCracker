@@ -27,7 +27,7 @@ func DialUnix(socketPath string, tlsConfig *tls.Config) (*grpc.ClientConn, error
 		return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
 	}))
 
-	conn, err := grpc.Dial("unix://"+socketPath, opts...)
+	conn, err := grpc.NewClient("unix://"+socketPath, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to swarm socket %s: %w", socketPath, err)
 	}

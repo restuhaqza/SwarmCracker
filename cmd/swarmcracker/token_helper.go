@@ -31,7 +31,7 @@ func runGetJoinToken(role string) error {
 		}),
 	}
 
-	conn, err := grpc.Dial("unix://"+socketPath, append(dialOpts, grpc.WithBlock())...)
+	conn, err := grpc.NewClient("unix://"+socketPath, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
