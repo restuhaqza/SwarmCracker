@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/spf13/cobra"
 )
 
@@ -174,7 +175,7 @@ func runClusterHealth(cmd *cobra.Command, args []string) error {
 	}
 
 	// ── Snapshot directory ──
-	snapshotDir := "/var/lib/swarmcracker/snapshots"
+	snapshotDir := config.DefaultSnapshotDir
 	if info, err := os.Stat(snapshotDir); err == nil && info.IsDir() {
 		add("snapshot_dir", "pass", snapshotDir)
 	} else {

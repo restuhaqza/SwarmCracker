@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/restuhaqza/swarmcracker/pkg/config"
 )
 
 // handleSnapshotCommand handles snapshot subcommands.
@@ -17,7 +19,7 @@ func handleSnapshotCommand(args []string) {
 		os.Exit(1)
 	}
 
-	snapshotDir := "/var/lib/swarmcracker/snapshots"
+	snapshotDir := config.DefaultSnapshotDir
 	if envState := os.Getenv("SWARM_STATE_DIR"); envState != "" {
 		snapshotDir = filepath.Join(envState, "snapshots")
 	}

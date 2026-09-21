@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/rs/zerolog/log"
 )
 
@@ -100,7 +101,7 @@ type SnapshotConfig struct {
 func DefaultSnapshotConfig() SnapshotConfig {
 	return SnapshotConfig{
 		Enabled:      false,
-		SnapshotDir:  "/var/lib/firecracker/snapshots",
+		SnapshotDir:  config.DefaultSnapshotDir,
 		MaxSnapshots: 3,
 		MaxAge:       168 * time.Hour, // 7 days
 		AutoSnapshot: false,
@@ -111,7 +112,7 @@ func DefaultSnapshotConfig() SnapshotConfig {
 // SetDefaults fills in zero-value fields with sensible defaults.
 func (c *SnapshotConfig) SetDefaults() {
 	if c.SnapshotDir == "" {
-		c.SnapshotDir = "/var/lib/firecracker/snapshots"
+		c.SnapshotDir = config.DefaultSnapshotDir
 	}
 	if c.MaxSnapshots == 0 {
 		c.MaxSnapshots = 3

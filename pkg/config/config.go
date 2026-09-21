@@ -63,6 +63,9 @@ func (d Duration) String() string {
 	return time.Duration(d).String()
 }
 
+// DefaultSnapshotDir is the default directory used to store VM snapshots.
+const DefaultSnapshotDir = "/var/lib/firecracker/snapshots"
+
 // Config is the top-level configuration structure.
 type Config struct {
 	// Version is the config schema version. Incremented when the format changes.
@@ -337,7 +340,7 @@ func (c *Config) SetDefaults() {
 
 	// Set snapshot defaults
 	if c.Snapshot.SnapshotDir == "" {
-		c.Snapshot.SnapshotDir = "/var/lib/firecracker/snapshots"
+		c.Snapshot.SnapshotDir = DefaultSnapshotDir
 	}
 	if c.Snapshot.MaxSnapshots == 0 {
 		c.Snapshot.MaxSnapshots = 3
