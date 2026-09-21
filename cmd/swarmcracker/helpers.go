@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
@@ -161,10 +162,9 @@ func setupLogging(level string) {
 	})
 }
 
-func goVersion() string    { return fmt.Sprintf("%s (%s/%s)", getGoVersion(), getGOOS(), getGOARCH()) }
-func getGoVersion() string { return "1.21" }
-func getGOOS() string      { return "linux" }
-func getGOARCH() string    { return "amd64" }
+func goVersion() string {
+	return fmt.Sprintf("%s (%s/%s)", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+}
 
 // taskStateString converts TaskState to a human-readable string.
 func taskStateString(state types.TaskState) string {
