@@ -225,8 +225,11 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 		}
 	}()
 
-	// Start Firecracker process with caller's context for proper cancellation
-	cmd := exec.CommandContext(ctx, v.firecrackerPath,
+	// Start Firecracker as a long-lived process. Use an independent context:
+	// the caller's context is typically canceled as soon as Start() returns,
+	// which would immediately SIGKILL the VM. Process lifetime is managed
+	// explicitly via Stop/ForceStop/Remove.
+	cmd := exec.CommandContext(context.Background(), v.firecrackerPath,
 		"--api-sock", socketPath,
 		"--id", task.ID,
 	)
