@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -222,12 +223,18 @@ func (m *PluginManager) buildCNIArgs(containerID, ifName string, args map[string
 
 	// Build additional args as CNI_ARGS
 	if len(args) > 0 {
+		keys := make([]string, 0, len(args))
+		for k := range args {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
 		argsStr := ""
-		for k, v := range args {
+		for _, k := range keys {
 			if argsStr != "" {
 				argsStr += ";"
 			}
-			argsStr += fmt.Sprintf("%s=%s", k, v)
+			argsStr += fmt.Sprintf("%s=%s", k, args[k])
 		}
 		cniArgs = append(cniArgs, fmt.Sprintf("CNI_ARGS=%s", argsStr))
 	}
