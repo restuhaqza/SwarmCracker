@@ -26,21 +26,6 @@ func NewPluginManager(pluginDir, configDir string) *PluginManager {
 		executor:  NewDefaultCommandExecutor(),
 	}
 }
-
-// NewPluginManagerWithExecutor creates a plugin manager with custom executor (for testing)
-func NewPluginManagerWithExecutor(pluginDir, configDir string, executor CommandExecutor) *PluginManager {
-	if executor == nil {
-		executor = NewDefaultCommandExecutor()
-	}
-	return &PluginManager{
-		pluginDir: pluginDir,
-		configDir: configDir,
-		env:       []string{},
-		executor:  executor,
-	}
-}
-
-// WithEnv adds environment variables for CNI execution
 func (m *PluginManager) WithEnv(env []string) *PluginManager {
 	m.env = append(m.env, env...)
 	return m

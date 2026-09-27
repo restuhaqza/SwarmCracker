@@ -107,25 +107,6 @@ func WriteConfig(configDir, name string, config []byte) error {
 	filename := fmt.Sprintf("%s/%s.conf", configDir, name)
 	return writeFile(filename, config)
 }
-
-// WriteConfigList writes a CNI configuration list to the config directory
-func WriteConfigList(configDir, name string, configs []map[string]interface{}) error {
-	list := map[string]interface{}{
-		"cniVersion": DefaultCNIVersion,
-		"name":       name,
-		"plugins":    configs,
-	}
-
-	data, err := json.MarshalIndent(list, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config list: %w", err)
-	}
-
-	filename := fmt.Sprintf("%s/%s.conflist", configDir, name)
-	return writeFile(filename, data)
-}
-
-// ParseCIDR parses a CIDR string and returns the IP network
 func ParseCIDR(cidr string) (*net.IPNet, net.IP, error) {
 	ip, ipNet, err := net.ParseCIDR(cidr)
 	if err != nil {
