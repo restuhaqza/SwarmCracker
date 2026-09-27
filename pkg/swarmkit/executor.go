@@ -22,6 +22,7 @@ import (
 	swarmkit_exec "github.com/moby/swarmkit/v2/agent/exec"
 	"github.com/moby/swarmkit/v2/api"
 	swarmkit_log "github.com/moby/swarmkit/v2/log"
+	"github.com/restuhaqza/swarmcracker/pkg/console"
 	"github.com/restuhaqza/swarmcracker/pkg/discovery"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	swarmcrackermetrics "github.com/restuhaqza/swarmcracker/pkg/metrics"
@@ -375,10 +376,14 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 			// Remove from VMM manager's process map
 			e.vmmMgr.RemoveProcess(taskID)
 
-			// Clean up socket file
+			// Clean up socket files (Firecracker API + VM console).
 			socketPath := filepath.Join(e.config.SocketDir, taskID+".sock")
 			if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
 				log.Warn().Err(err).Str("socket", socketPath).Msg("Failed to remove socket")
+			}
+			consolePath := console.SocketPath(e.config.SocketDir, taskID)
+			if err := os.Remove(consolePath); err != nil && !os.IsNotExist(err) {
+				log.Warn().Err(err).Str("socket", consolePath).Msg("Failed to remove console socket")
 			}
 		}
 	}
