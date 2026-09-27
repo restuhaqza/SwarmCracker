@@ -82,7 +82,7 @@ func TestParseSubnet_24(t *testing.T) {
 	_, ipNet, err := net.ParseCIDR("10.0.0.0/24")
 	require.NoError(t, err)
 
-	assert.Equal(t, 24, maskToPrefix(ipNet.Mask))
+	assert.Equal(t, 24, testMaskToPrefix(ipNet.Mask))
 	assert.Equal(t, "10.0.0.0", ipNet.IP.String())
 }
 
@@ -90,7 +90,7 @@ func TestParseSubnet_16(t *testing.T) {
 	_, ipNet, err := net.ParseCIDR("172.16.0.0/16")
 	require.NoError(t, err)
 
-	assert.Equal(t, 16, maskToPrefix(ipNet.Mask))
+	assert.Equal(t, 16, testMaskToPrefix(ipNet.Mask))
 }
 
 func TestParseSubnet_Invalid(t *testing.T) {
@@ -102,14 +102,14 @@ func TestParseSubnet_8(t *testing.T) {
 	_, ipNet, err := net.ParseCIDR("10.0.0.0/8")
 	require.NoError(t, err)
 
-	assert.Equal(t, 8, maskToPrefix(ipNet.Mask))
+	assert.Equal(t, 8, testMaskToPrefix(ipNet.Mask))
 }
 
 func TestParseSubnet_32(t *testing.T) {
 	_, ipNet, err := net.ParseCIDR("10.0.0.1/32")
 	require.NoError(t, err)
 
-	assert.Equal(t, 32, maskToPrefix(ipNet.Mask))
+	assert.Equal(t, 32, testMaskToPrefix(ipNet.Mask))
 }
 
 // ===== VXLANManager Tests =====

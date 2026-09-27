@@ -254,49 +254,6 @@ func TestGetDefaultConfigPath(t *testing.T) {
 		})
 	}
 }
-
-func TestLoadConfigFromEnv(t *testing.T) {
-	// Test loading from environment variable
-	tmpDir := t.TempDir()
-	configPath := filepath.Join(tmpDir, "config.yaml")
-
-	configContent := `
-kernel_path: "/usr/share/firecracker/vmlinux"
-rootfs_dir: "/var/lib/firecracker/rootfs"
-`
-
-	err := os.WriteFile(configPath, []byte(configContent), 0644)
-	require.NoError(t, err)
-
-	os.Setenv("SWARMCRACKER_CONFIG", configPath)
-	defer os.Unsetenv("SWARMCRACKER_CONFIG")
-
-	cfg, err := LoadConfigFromEnv()
-
-	require.NoError(t, err)
-	assert.Equal(t, "/usr/share/firecracker/vmlinux", cfg.KernelPath)
-}
-
-func TestLoadConfigFromEnv_NotSet(t *testing.T) {
-	// Create a temp config file to simulate the default path behavior
-	tmpDir := t.TempDir()
-	configContent := `kernel_path: /usr/share/firecracker/vmlinux
-rootfs_dir: /var/lib/firecracker/rootfs
-`
-	tmpFile := filepath.Join(tmpDir, "config.yaml")
-	require.NoError(t, os.WriteFile(tmpFile, []byte(configContent), 0644))
-
-	os.Setenv("SWARMCRACKER_CONFIG", tmpFile)
-	defer os.Unsetenv("SWARMCRACKER_CONFIG")
-
-	cfg, err := LoadConfigFromEnv()
-
-	assert.NoError(t, err)
-	assert.NotNil(t, cfg)
-	assert.Equal(t, "/usr/share/firecracker/vmlinux", cfg.Executor.KernelPath)
-	assert.Equal(t, "/var/lib/firecracker/rootfs", cfg.Executor.RootfsDir)
-}
-
 func TestConfig_Merge(t *testing.T) {
 	base := &Config{
 		Executor: ExecutorConfig{

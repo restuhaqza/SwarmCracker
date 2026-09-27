@@ -847,7 +847,6 @@ func TestConcurrentStateOperations(t *testing.T) {
 	}
 
 	const numGoroutines = 100
-	const numOps = 100
 	var wg sync.WaitGroup
 
 	// Concurrent Add operations
@@ -1070,19 +1069,9 @@ func TestGetStateFileAndLogDir(t *testing.T) {
 
 	sm, _ := NewStateManager("/ignored")
 
-	stateFile := sm.GetStateFile()
-	if !strings.Contains(stateFile, "state.json") {
-		t.Errorf("GetStateFile should return state.json path, got %s", stateFile)
-	}
-
 	logDir := sm.GetLogDir()
 	if !strings.Contains(logDir, ".swarmcracker") {
 		t.Errorf("GetLogDir should return swarmcracker directory, got %s", logDir)
-	}
-
-	// Both should be in the same parent directory
-	if filepath.Dir(stateFile) != logDir {
-		t.Errorf("State file and log dir should be in same directory")
 	}
 }
 

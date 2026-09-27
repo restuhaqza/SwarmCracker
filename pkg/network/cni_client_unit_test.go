@@ -124,7 +124,7 @@ func TestCNIIP_AddressParsing(t *testing.T) {
 	// ipNet.IP is the network address (10.0.0.0), original IP is 'ip'
 	assert.Equal(t, "10.0.0.0", cniIP.Address.IP.String())
 	assert.Equal(t, "10.0.0.2", ip.String()) // Original parsed IP
-	prefix := maskToPrefix(cniIP.Address.Mask)
+	prefix := testMaskToPrefix(cniIP.Address.Mask)
 	assert.Equal(t, 24, prefix)
 }
 
@@ -260,7 +260,7 @@ func TestParseCIDR_Valid(t *testing.T) {
 
 	assert.Equal(t, "192.168.1.2", ip.String())
 	assert.Equal(t, "192.168.1.0", ipNet.IP.String())
-	assert.Equal(t, 24, maskToPrefix(ipNet.Mask))
+	assert.Equal(t, 24, testMaskToPrefix(ipNet.Mask))
 }
 
 func TestParseCIDR_Valid32(t *testing.T) {
@@ -268,7 +268,7 @@ func TestParseCIDR_Valid32(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "10.0.0.1", ip.String())
-	assert.Equal(t, 32, maskToPrefix(ipNet.Mask))
+	assert.Equal(t, 32, testMaskToPrefix(ipNet.Mask))
 }
 
 func TestParseCIDR_Invalid(t *testing.T) {

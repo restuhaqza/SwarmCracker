@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/restuhaqza/swarmcracker/test/mocks"
@@ -286,47 +285,6 @@ func TestFirecrackerExecutor_Wait(t *testing.T) {
 		})
 	}
 }
-
-func TestFirecrackerExecutor_Stop(t *testing.T) {
-	vmmManager := mocks.NewMockVMMManager()
-	translator := mocks.NewMockTaskTranslator()
-	imagePrep := mocks.NewMockImagePreparer()
-	networkMgr := mocks.NewMockNetworkManager()
-
-	config := &Config{KernelPath: "/kernel"}
-	exec, err := NewFirecrackerExecutor(config, vmmManager, translator, imagePrep, networkMgr)
-	require.NoError(t, err)
-
-	task := mocks.NewTestTask("task-1", "nginx:latest")
-	ctx := context.Background()
-
-	err = exec.Stop(ctx, task)
-
-	require.NoError(t, err)
-	assert.True(t, vmmManager.IsTaskStopped(task.ID))
-	assert.True(t, vmmManager.StopCalled)
-}
-
-func TestFirecrackerExecutor_Describe(t *testing.T) {
-	vmmManager := mocks.NewMockVMMManager()
-	translator := mocks.NewMockTaskTranslator()
-	imagePrep := mocks.NewMockImagePreparer()
-	networkMgr := mocks.NewMockNetworkManager()
-
-	config := &Config{KernelPath: "/kernel"}
-	exec, err := NewFirecrackerExecutor(config, vmmManager, translator, imagePrep, networkMgr)
-	require.NoError(t, err)
-
-	task := mocks.NewTestTask("task-1", "nginx:latest")
-	ctx := context.Background()
-
-	status, err := exec.Describe(ctx, task)
-
-	require.NoError(t, err)
-	assert.Equal(t, types.TaskStateRunning, status.State)
-	assert.True(t, vmmManager.DescribeCalled)
-}
-
 func TestFirecrackerExecutor_Remove(t *testing.T) {
 	vmmManager := mocks.NewMockVMMManager()
 	translator := mocks.NewMockTaskTranslator()
@@ -346,47 +304,6 @@ func TestFirecrackerExecutor_Remove(t *testing.T) {
 	assert.True(t, vmmManager.RemoveCalled)
 	assert.True(t, networkMgr.IsTaskCleaned(task.ID))
 }
-
-func TestFirecrackerExecutor_Events(t *testing.T) {
-	vmmManager := mocks.NewMockVMMManager()
-	translator := mocks.NewMockTaskTranslator()
-	imagePrep := mocks.NewMockImagePreparer()
-	networkMgr := mocks.NewMockNetworkManager()
-
-	config := &Config{KernelPath: "/kernel"}
-	exec, err := NewFirecrackerExecutor(config, vmmManager, translator, imagePrep, networkMgr)
-	require.NoError(t, err)
-
-	ctx := context.Background()
-	events, err := exec.Events(ctx)
-
-	require.NoError(t, err)
-	assert.NotNil(t, events)
-
-	// Test event channel
-	select {
-	case <-events:
-		t.Fatal("Channel should be empty initially")
-	default:
-		// Expected - channel is empty
-	}
-
-	// Send an event
-	go func() {
-		exec.events <- Event{
-			Task:    mocks.NewTestTask("task-1", "nginx"),
-			Message: "Test event",
-		}
-	}()
-
-	select {
-	case event := <-events:
-		assert.Equal(t, "Test event", event.Message)
-	case <-time.After(100 * time.Millisecond):
-		t.Fatal("Should have received an event")
-	}
-}
-
 func TestFirecrackerExecutor_Close(t *testing.T) {
 	vmmManager := mocks.NewMockVMMManager()
 	translator := mocks.NewMockTaskTranslator()
@@ -428,20 +345,10 @@ func TestFirecrackerExecutor_FullLifecycle(t *testing.T) {
 	assert.True(t, translator.IsTaskTranslated(task.ID))
 	assert.True(t, vmmManager.IsTaskStarted(task.ID))
 
-	// Describe
-	status, err := exec.Describe(ctx, task)
-	require.NoError(t, err)
-	assert.Equal(t, types.TaskStateRunning, status.State)
-
 	// Wait
 	waitStatus, err := exec.Wait(ctx, task)
 	require.NoError(t, err)
 	assert.NotNil(t, waitStatus)
-
-	// Stop
-	err = exec.Stop(ctx, task)
-	require.NoError(t, err)
-	assert.True(t, vmmManager.IsTaskStopped(task.ID))
 
 	// Remove
 	err = exec.Remove(ctx, task)

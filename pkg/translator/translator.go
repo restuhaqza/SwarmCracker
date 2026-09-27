@@ -212,17 +212,6 @@ func (tt *TaskTranslator) configToMap(config *VMMConfig) (map[string]interface{}
 
 	return result, nil
 }
-
-// configToJSON converts VMMConfig to JSON string (kept for compatibility).
-func (tt *TaskTranslator) configToJSON(config *VMMConfig) (string, error) {
-	bytes, err := json.Marshal(config)
-	if err != nil {
-		return "", fmt.Errorf("failed to marshal config: %w", err)
-	}
-	return string(bytes), nil
-}
-
-// buildBootArgs constructs kernel boot arguments.
 func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
 	container, err := task.Spec.GetContainer()
 	if err != nil {

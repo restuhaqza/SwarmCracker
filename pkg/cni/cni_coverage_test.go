@@ -108,30 +108,6 @@ func TestWriteConfig_PackageFunc(t *testing.T) {
 	_, err = os.Stat(path)
 	require.NoError(t, err)
 }
-
-func TestWriteConfigListFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	configDir := filepath.Join(tmpDir, "config")
-
-	configs := []map[string]interface{}{
-		{"name": "lo", "type": "loopback"},
-		{"name": "test", "type": "bridge"},
-	}
-
-	err := WriteConfigListFile(configDir, "multi", configs)
-	require.NoError(t, err)
-
-	data, err := os.ReadFile(filepath.Join(configDir, "multi.conflist"))
-	require.NoError(t, err)
-
-	var parsed map[string]interface{}
-	err = json.Unmarshal(data, &parsed)
-	require.NoError(t, err)
-
-	plugins := parsed["plugins"].([]interface{})
-	assert.Len(t, plugins, 2)
-}
-
 func TestGenerateSubnet(t *testing.T) {
 	tests := []struct {
 		pool  string
@@ -161,29 +137,6 @@ func TestGenerateSubnet_InvalidPool(t *testing.T) {
 }
 
 // ===== Files Tests =====
-
-func TestEnsurePluginDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	pluginDir := filepath.Join(tmpDir, "plugins")
-
-	err := EnsurePluginDir(pluginDir)
-	require.NoError(t, err)
-
-	_, err = os.Stat(pluginDir)
-	require.NoError(t, err)
-}
-
-func TestEnsureConfigDir(t *testing.T) {
-	tmpDir := t.TempDir()
-	configDir := filepath.Join(tmpDir, "config")
-
-	err := EnsureConfigDir(configDir)
-	require.NoError(t, err)
-
-	_, err = os.Stat(configDir)
-	require.NoError(t, err)
-}
-
 func TestWriteConfigFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	configDir := filepath.Join(tmpDir, "config")
@@ -241,29 +194,6 @@ func TestContainsNetworkName(t *testing.T) {
 		})
 	}
 }
-
-func TestInitializeCNI(t *testing.T) {
-	ctx := context.Background()
-	tmpDir := t.TempDir()
-
-	cfg := DefaultCNIConfig()
-	cfg.PluginDir = filepath.Join(tmpDir, "plugins")
-	cfg.ConfigDir = filepath.Join(tmpDir, "config")
-
-	err := InitializeCNI(ctx, cfg)
-	require.NoError(t, err)
-
-	_, err = os.Stat(cfg.PluginDir)
-	require.NoError(t, err)
-	_, err = os.Stat(cfg.ConfigDir)
-	require.NoError(t, err)
-
-	_, err = os.Stat(filepath.Join(cfg.ConfigDir, "lo.conf"))
-	require.NoError(t, err)
-}
-
-// ===== IPAM Manager Tests =====
-
 func TestIPAMManager_GetPoolStats(t *testing.T) {
 	mgr := NewIPAMManager(nil)
 

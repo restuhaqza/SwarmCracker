@@ -241,13 +241,15 @@ func TestManager_SetEncryptionKeys_NoVXLAN(t *testing.T) {
 
 // --- SetNodeDiscovery ---
 
+// stubNodeDiscovery is a minimal types.NodeDiscovery for tests that only
+// need to verify the discovery provider is stored on the manager.
+type stubNodeDiscovery struct{}
+
+func (stubNodeDiscovery) GetNodes() ([]types.NodeInfo, error) { return nil, nil }
+
 func TestManager_SetNodeDiscovery(t *testing.T) {
 	nm := newTestNM()
-	discovery := &HostnameNodeDiscovery{
-		localHostname: "test-host",
-		clusterNodes:  []string{"node1", "node2"},
-	}
-	nm.SetNodeDiscovery(discovery)
+	nm.SetNodeDiscovery(stubNodeDiscovery{})
 	assert.NotNil(t, nm.nodeDiscovery)
 }
 

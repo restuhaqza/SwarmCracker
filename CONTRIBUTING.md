@@ -126,7 +126,6 @@ swarmcracker/
 │   ├── lifecycle/           #   VM start/stop/monitor lifecycle
 │   ├── storage/             #   Pluggable volume driver system
 │   ├── config/              #   Configuration parsing & validation
-│   ├── security/            #   Jailer, capabilities, seccomp
 │   ├── swarmkit/            #   SwarmKit API integration
 │   └── types/               #   Shared interfaces & types
 ├── test/                    # Test helpers & mocks

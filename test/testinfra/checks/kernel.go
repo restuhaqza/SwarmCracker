@@ -8,8 +8,7 @@ import (
 
 // KernelChecker validates kernel configuration
 type KernelChecker struct {
-	kernelPath string
-	kvmPath    string
+	kvmPath string
 }
 
 // NewKernelChecker creates a new kernel checker

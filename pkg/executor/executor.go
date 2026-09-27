@@ -202,17 +202,6 @@ func (e *FirecrackerExecutor) Start(ctx context.Context, t *types.Task) error {
 func (e *FirecrackerExecutor) Wait(ctx context.Context, t *types.Task) (*types.TaskStatus, error) {
 	return e.vmmManager.Wait(ctx, t)
 }
-
-// Stop terminates a running task.
-func (e *FirecrackerExecutor) Stop(ctx context.Context, t *types.Task) error {
-	log.Info().
-		Str("task_id", t.ID).
-		Msg("Stopping task")
-
-	return e.vmmManager.Stop(ctx, t)
-}
-
-// Remove cleans up any resources associated with the task.
 func (e *FirecrackerExecutor) Remove(ctx context.Context, t *types.Task) error {
 	log.Info().
 		Str("task_id", t.ID).
@@ -239,18 +228,6 @@ func (e *FirecrackerExecutor) Remove(ctx context.Context, t *types.Task) error {
 
 	return nil
 }
-
-// Describe returns the current state of a task.
-func (e *FirecrackerExecutor) Describe(ctx context.Context, t *types.Task) (*types.TaskStatus, error) {
-	return e.vmmManager.Describe(ctx, t)
-}
-
-// Events returns a channel of executor events.
-func (e *FirecrackerExecutor) Events(ctx context.Context) (<-chan Event, error) {
-	return e.events, nil
-}
-
-// Close cleans up executor resources.
 func (e *FirecrackerExecutor) Close() error {
 	e.closeOnce.Do(func() {
 		// Close the channel under the mutex so no in-flight sendEvent

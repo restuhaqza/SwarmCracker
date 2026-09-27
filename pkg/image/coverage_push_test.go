@@ -428,39 +428,6 @@ func TestInjectTini_TiniAlreadyExistsV2(t *testing.T) {
 	err = ii.Inject(filepath.Join(rootfsDir, "fake.ext4"))
 	_ = err
 }
-
-// TestInjectTini_CreateMinimalInitV2 tests minimal init creation
-func TestInjectTini_CreateMinimalInitV2(t *testing.T) {
-	mountDir := t.TempDir()
-
-	ii := NewInitInjector(&InitSystemConfig{
-		Type:           InitSystemTini,
-		GracePeriodSec: 10,
-	})
-
-	err := ii.createMinimalInit(mountDir, "tini")
-	require.NoError(t, err)
-
-	assert.FileExists(t, filepath.Join(mountDir, "sbin", "tini"))
-	assert.FileExists(t, filepath.Join(mountDir, "init"))
-}
-
-// TestInjectDumbInit_CreateMinimalInitV2 tests dumb-init creation
-func TestInjectDumbInit_CreateMinimalInitV2(t *testing.T) {
-	mountDir := t.TempDir()
-
-	ii := NewInitInjector(&InitSystemConfig{
-		Type:           InitSystemDumbInit,
-		GracePeriodSec: 10,
-	})
-
-	err := ii.createMinimalInit(mountDir, "dumb-init")
-	require.NoError(t, err)
-
-	assert.FileExists(t, filepath.Join(mountDir, "sbin", "dumb-init"))
-}
-
-// TestInjectDumbInit_AlreadyExistsV2 tests when dumb-init already present
 func TestInjectDumbInit_AlreadyExistsV2(t *testing.T) {
 	rootfsDir := t.TempDir()
 
@@ -483,72 +450,6 @@ func TestInjectDumbInit_AlreadyExistsV2(t *testing.T) {
 // ----------------------------------------------------------------------------
 // mountRootfs (75.0%)
 // ----------------------------------------------------------------------------
-
-// TestMountRootfs_SuccessV2 tests successful mount dir creation
-func TestMountRootfs_SuccessV2(t *testing.T) {
-	ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini})
-
-	mountDir, err := ii.mountRootfs("/nonexistent.ext4")
-	require.NoError(t, err)
-	assert.NotEmpty(t, mountDir)
-	assert.DirExists(t, mountDir)
-
-	os.RemoveAll(mountDir)
-}
-
-// TestUnmountRootfs_V2 tests unmount path
-func TestUnmountRootfs_V2(t *testing.T) {
-	ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini})
-
-	mountDir := t.TempDir()
-	err := ii.unmountRootfs(mountDir)
-	require.NoError(t, err)
-}
-
-// ----------------------------------------------------------------------------
-// createMinimalInit (80.0%)
-// ----------------------------------------------------------------------------
-
-// TestCreateMinimalInit_SbinDirCreationV2 tests sbin directory creation
-func TestCreateMinimalInit_SbinDirCreationV2(t *testing.T) {
-	mountDir := t.TempDir()
-
-	ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini})
-
-	err := ii.createMinimalInit(mountDir, "tini")
-	require.NoError(t, err)
-
-	assert.DirExists(t, filepath.Join(mountDir, "sbin"))
-}
-
-// TestCreateMinimalInit_SymlinkCreationV2 tests init symlink
-func TestCreateMinimalInit_SymlinkCreationV2(t *testing.T) {
-	mountDir := t.TempDir()
-
-	ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini})
-
-	err := ii.createMinimalInit(mountDir, "dumb-init")
-	require.NoError(t, err)
-
-	initLink := filepath.Join(mountDir, "init")
-	linkTarget, err := os.Readlink(initLink)
-	require.NoError(t, err)
-	assert.Equal(t, "/sbin/dumb-init", linkTarget)
-}
-
-// TestCreateMinimalInit_InvalidMountDirV2 tests error path
-func TestCreateMinimalInit_InvalidMountDirV2(t *testing.T) {
-	ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini})
-
-	err := ii.createMinimalInit("/nonexistent/path/mount", "tini")
-	require.Error(t, err)
-}
-
-// ----------------------------------------------------------------------------
-// injectNetworkConfig (80.0%) - OpenRC detection and runlevel
-// ----------------------------------------------------------------------------
-
-// TestInjectNetworkConfig_NoInittabV2 tests when inittab doesn't exist
 func TestInjectNetworkConfig_NoInittabV2(t *testing.T) {
 	rootfsDir := t.TempDir()
 
@@ -991,36 +892,6 @@ func TestHandleBindMount_NestedDirectoryV2(t *testing.T) {
 // ----------------------------------------------------------------------------
 // getInitBinaryPath tests
 // ----------------------------------------------------------------------------
-
-// TestGetInitBinaryPath_FoundViaWhichV2 tests finding via which command
-func TestGetInitBinaryPath_FoundViaWhichV2(t *testing.T) {
-	rootfsDir := t.TempDir()
-	ip := NewImagePreparer(&PreparerConfig{
-		RootfsDir:  rootfsDir,
-		InitSystem: "tini",
-	}).(*ImagePreparer)
-
-	path := ip.getInitBinaryPath()
-	_ = path
-}
-
-// TestGetInitBinaryPath_DumbInitV2 tests dumb-init path search
-func TestGetInitBinaryPath_DumbInitV2(t *testing.T) {
-	rootfsDir := t.TempDir()
-	ip := NewImagePreparer(&PreparerConfig{
-		RootfsDir:  rootfsDir,
-		InitSystem: "dumb-init",
-	}).(*ImagePreparer)
-
-	path := ip.getInitBinaryPath()
-	_ = path
-}
-
-// ----------------------------------------------------------------------------
-// copyFile tests
-// ----------------------------------------------------------------------------
-
-// TestCopyFile_NestedDestinationV2 tests copy to nested path
 func TestCopyFile_NestedDestinationV2(t *testing.T) {
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
@@ -1048,28 +919,6 @@ func TestCopyFile_SourceNotExistV2(t *testing.T) {
 // ----------------------------------------------------------------------------
 // getDirSize edge cases
 // ----------------------------------------------------------------------------
-
-// TestGetDirSize_EmptyDirV2 tests empty directory
-func TestGetDirSize_EmptyDirV2(t *testing.T) {
-	dir := t.TempDir()
-
-	size, err := getDirSize(dir)
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), size)
-}
-
-// TestGetDirSize_NonexistentV2 tests nonexistent directory
-func TestGetDirSize_NonexistentV2(t *testing.T) {
-	size, err := getDirSize("/nonexistent/path")
-	require.Error(t, err)
-	assert.Equal(t, int64(0), size)
-}
-
-// ----------------------------------------------------------------------------
-// createExt4Image tests
-// ----------------------------------------------------------------------------
-
-// TestCreateExt4Image_MkfsNotFoundV2 tests when mkfs.ext4 is missing
 func TestCreateExt4Image_MkfsNotFoundV2(t *testing.T) {
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
@@ -1214,41 +1063,6 @@ func TestHandleMounts_NilVolumeManagerV2(t *testing.T) {
 // ----------------------------------------------------------------------------
 // createInitWrapper tests
 // ----------------------------------------------------------------------------
-
-// TestCreateInitWrapper_EntrypointV2 tests entrypoint detection
-func TestCreateInitWrapper_EntrypointV2(t *testing.T) {
-	rootfsDir := t.TempDir()
-	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
-
-	mountDir := filepath.Join(rootfsDir, "rootfs")
-	os.MkdirAll(filepath.Join(mountDir, "docker-entrypoint.d"), 0755)
-	os.WriteFile(filepath.Join(mountDir, "docker-entrypoint.sh"), []byte("#!/bin/sh\nexit 0"), 0755)
-	os.MkdirAll(filepath.Join(mountDir, "sbin"), 0755)
-
-	// createInitWrapper is deprecated (no-op), always returns nil
-	err := ip.createInitWrapper(mountDir)
-	require.NoError(t, err)
-}
-
-// TestCreateInitWrapper_NoEntrypointV2 tests no entrypoint case
-func TestCreateInitWrapper_NoEntrypointV2(t *testing.T) {
-	rootfsDir := t.TempDir()
-	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
-
-	mountDir := filepath.Join(rootfsDir, "rootfs")
-	os.MkdirAll(filepath.Join(mountDir, "sbin"), 0755)
-	os.MkdirAll(filepath.Join(mountDir, "usr", "sbin"), 0755)
-
-	// createInitWrapper is deprecated (no-op), always returns nil
-	err := ip.createInitWrapper(mountDir)
-	require.NoError(t, err)
-}
-
-// ----------------------------------------------------------------------------
-// Additional tests for handleMounts and injectInitSystem
-// ----------------------------------------------------------------------------
-
-// TestHandleMounts_EmptyTargetV2 tests skipping mount with empty target
 func TestHandleMounts_EmptyTargetV2(t *testing.T) {
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
@@ -1268,50 +1082,6 @@ func TestHandleMounts_EmptyTargetV2(t *testing.T) {
 	// handleMounts returns nil even when mount fails
 	require.NoError(t, err)
 }
-
-// TestInjectInitSystem_InjectError tests init injection error path
-func TestInjectInitSystem_InjectError(t *testing.T) {
-	rootfsDir := t.TempDir()
-
-	// Use ImagePreparer with tini init system
-	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir, InitSystem: "tini"}).(*ImagePreparer)
-
-	rootfsPath := filepath.Join(rootfsDir, "test.ext4")
-	os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
-
-	err := ip.injectInitSystem(rootfsPath)
-	// May error due to mount failure or init binary not found
-	_ = err
-}
-
-// TestInjectInitSystem_MountErrorContinue tests mount error continuing
-func TestInjectInitSystem_MountErrorContinue(t *testing.T) {
-	rootfsDir := t.TempDir()
-
-	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
-
-	// Non-existent ext4 file will fail mount
-	rootfsPath := filepath.Join(rootfsDir, "nonexistent.ext4")
-
-	err := ip.injectInitSystem(rootfsPath)
-	// Mount fails but injectInitSystem continues
-	_ = err
-}
-
-// TestInjectInitSystem_NoneInit tests with InitSystem none
-func TestInjectInitSystem_NoneInit(t *testing.T) {
-	rootfsDir := t.TempDir()
-
-	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir, InitSystem: "none"}).(*ImagePreparer)
-
-	rootfsPath := filepath.Join(rootfsDir, "test.ext4")
-	os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
-
-	err := ip.injectInitSystem(rootfsPath)
-	_ = err
-}
-
-// TestMountExt4_Success tests mount ext4 success
 func TestMountExt4_Success(t *testing.T) {
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)

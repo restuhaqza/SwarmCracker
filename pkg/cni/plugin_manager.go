@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -26,21 +27,6 @@ func NewPluginManager(pluginDir, configDir string) *PluginManager {
 		executor:  NewDefaultCommandExecutor(),
 	}
 }
-
-// NewPluginManagerWithExecutor creates a plugin manager with custom executor (for testing)
-func NewPluginManagerWithExecutor(pluginDir, configDir string, executor CommandExecutor) *PluginManager {
-	if executor == nil {
-		executor = NewDefaultCommandExecutor()
-	}
-	return &PluginManager{
-		pluginDir: pluginDir,
-		configDir: configDir,
-		env:       []string{},
-		executor:  executor,
-	}
-}
-
-// WithEnv adds environment variables for CNI execution
 func (m *PluginManager) WithEnv(env []string) *PluginManager {
 	m.env = append(m.env, env...)
 	return m
@@ -237,12 +223,18 @@ func (m *PluginManager) buildCNIArgs(containerID, ifName string, args map[string
 
 	// Build additional args as CNI_ARGS
 	if len(args) > 0 {
+		keys := make([]string, 0, len(args))
+		for k := range args {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
 		argsStr := ""
-		for k, v := range args {
+		for _, k := range keys {
 			if argsStr != "" {
 				argsStr += ";"
 			}
-			argsStr += fmt.Sprintf("%s=%s", k, v)
+			argsStr += fmt.Sprintf("%s=%s", k, args[k])
 		}
 		cniArgs = append(cniArgs, fmt.Sprintf("CNI_ARGS=%s", argsStr))
 	}

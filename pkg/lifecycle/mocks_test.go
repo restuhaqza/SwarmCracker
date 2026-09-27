@@ -578,7 +578,3 @@ func (vm *VMMManagerInternal) findProcess(pid int) (Process, error) {
 }
 
 // Default implementations
-var (
-	defaultProcessExecutor ProcessExecutor = &RealProcessExecutor{}
-	defaultHTTPClient      HTTPClient      = NewRealHTTPClient(5 * time.Second)
-)

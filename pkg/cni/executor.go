@@ -49,11 +49,3 @@ func (e *DefaultCommandExecutor) Execute(ctx context.Context, name string, stdin
 	err := cmd.Run()
 	return stdout.Bytes(), stderr.Bytes(), err
 }
-
-// CommandExecutorFunc is a function adapter for CommandExecutor.
-type CommandExecutorFunc func(ctx context.Context, name string, stdin []byte, env []string) ([]byte, []byte, error)
-
-// Execute implements CommandExecutor.
-func (f CommandExecutorFunc) Execute(ctx context.Context, name string, stdin []byte, env []string) ([]byte, []byte, error) {
-	return f(ctx, name, stdin, env)
-}

@@ -28,7 +28,6 @@ pkg/
 ├── config/               # YAML config loading
 ├── metrics/              # Prometheus metrics
 ├── health/               # Health check server
-├── security/             # Seccomp, capabilities
 ├── translator/           # Task → VMM config translation
 ├── runtime/              # Runtime state management
 ├── discovery/            # Consul/VXLAN peer auto-discovery

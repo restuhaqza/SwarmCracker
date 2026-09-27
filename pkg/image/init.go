@@ -136,50 +136,6 @@ func (ii *InitInjector) injectTiniIntoDir(tmpDir string, info *OCIImageInfo) err
 
 	return nil
 }
-
-// injectDumbInitIntoDir injects dumb-init into the directory.
-func (ii *InitInjector) injectDumbInitIntoDir(tmpDir string) error {
-	// Ensure /sbin directory exists
-	sbinDir := filepath.Join(tmpDir, "sbin")
-	if err := os.MkdirAll(sbinDir, 0755); err != nil {
-		return fmt.Errorf("failed to create sbin directory: %w", err)
-	}
-
-	// Create dumb-init script (similar to tini)
-	dumbInitScript := `#!/bin/sh
-# Minimal dumb-init compatible init
-# Reaps zombies and forwards signals
-
-trap 'kill -TERM -$PID 2>/dev/null; wait $PID; exit $?' TERM INT
-trap 'kill -HUP -$PID 2>/dev/null' HUP
-
-exec "$@"
-`
-	dumbInitPath := filepath.Join(sbinDir, "dumb-init")
-	if err := os.WriteFile(dumbInitPath, []byte(dumbInitScript), 0755); err != nil {
-		return fmt.Errorf("failed to write dumb-init script: %w", err)
-	}
-
-	// Create /sbin/init wrapper
-	initScript := `#!/bin/sh
-exec /sbin/dumb-init -- /bin/sh
-`
-	initPath := filepath.Join(sbinDir, "init")
-	if err := os.WriteFile(initPath, []byte(initScript), 0755); err != nil {
-		return fmt.Errorf("failed to write init wrapper: %w", err)
-	}
-
-	// Create /init symlink -> /sbin/init
-	initLink := filepath.Join(tmpDir, "init")
-	_ = os.Remove(initLink)
-	if err := os.Symlink("/sbin/init", initLink); err != nil {
-		return fmt.Errorf("failed to create /init symlink: %w", err)
-	}
-
-	return nil
-}
-
-// GetInitPath returns the path to the init binary.
 func (ii *InitInjector) GetInitPath() string {
 	switch ii.config.Type {
 	case InitSystemTini:
@@ -217,68 +173,6 @@ func (ii *InitInjector) GetInitArgs(containerArgs []string) []string {
 
 // injectTini and injectDumbInit have been removed.
 // These stubs exist only for backward compatibility with test code.
-
-func (ii *InitInjector) injectTini(rootfsPath string) error {
-	log.Warn().Str("rootfs", rootfsPath).Msg("injectTini is deprecated (no-op); use injectTiniIntoDir via InjectIntoDir")
-	return nil
-}
-
-func (ii *InitInjector) injectDumbInit(rootfsPath string) error {
-	log.Warn().Str("rootfs", rootfsPath).Msg("injectDumbInit is deprecated (no-op); use injectDumbInitIntoDir via InjectIntoDir")
-	return nil
-}
-
-// mountRootfs is deprecated — it never actually mounted the ext4 image.
-// Stub exists for backward compatibility with test code.
-func (ii *InitInjector) mountRootfs(imagePath string) (string, error) {
-	log.Warn().Str("image", imagePath).Msg("mountRootfs is deprecated (no-op); use InjectIntoDir before ext4 creation")
-	return os.MkdirTemp("", "swarmcracker-deprecated-mount-")
-}
-
-// unmountRootfs is deprecated. Stub for backward compatibility.
-func (ii *InitInjector) unmountRootfs(mountDir string) error {
-	return os.RemoveAll(mountDir)
-}
-
-// createMinimalInit creates a minimal init script for development.
-// In production, you'd download/copy the actual binary.
-func (ii *InitInjector) createMinimalInit(mountDir, initName string) error {
-	// Create sbin directory if it doesn't exist
-	sbinDir := filepath.Join(mountDir, "sbin")
-	if err := os.MkdirAll(sbinDir, 0755); err != nil {
-		return err
-	}
-
-	// Create a simple shell script that acts as init
-	// This is a placeholder - production should use real binaries
-
-	initScript := `#!/bin/sh
-# Minimal init for container lifecycle
-# Reaps zombies and forwards signals
-
-# Setup signal handlers
-trap 'kill -TERM -$PID 2>/dev/null; wait $PID; exit $?' TERM INT
-trap 'kill -HUP -$PID 2>/dev/null' HUP
-
-# Run the command
-exec "$@"
-`
-
-	initPath := filepath.Join(mountDir, "sbin", initName)
-
-	// Write script
-	if err := os.WriteFile(initPath, []byte(initScript), 0755); err != nil {
-		return err
-	}
-
-	// Create symlink at /init for compatibility (non-fatal)
-	initLink := filepath.Join(mountDir, "init")
-	_ = os.Symlink("/sbin/"+initName, initLink)
-
-	return nil
-}
-
-// GetGracePeriod returns the configured grace period in seconds.
 func (ii *InitInjector) GetGracePeriod() int {
 	return ii.config.GracePeriodSec
 }

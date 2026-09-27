@@ -11,18 +11,3 @@ var tiniBinary []byte
 
 //go:embed binaries/busybox-amd64
 var busyboxBinary []byte
-
-// HasEmbeddedBinaries returns true if embedded binaries are available.
-func HasEmbeddedBinaries() bool {
-	return len(tiniBinary) > 0 && len(busyboxBinary) > 0
-}
-
-// GetTiniBinary returns the embedded tini binary.
-func GetTiniBinary() []byte {
-	return tiniBinary
-}
-
-// GetBusyboxBinary returns the embedded busybox binary.
-func GetBusyboxBinary() []byte {
-	return busyboxBinary
-}

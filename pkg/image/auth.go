@@ -70,25 +70,3 @@ func buildRemoteOptions(ctx context.Context, auth *RegistryAuth) []remote.Option
 	opts = append(opts, remote.WithAuthFromKeychain(authn.DefaultKeychain))
 	return opts
 }
-
-// NewRegistryAuth creates a RegistryAuth with basic authentication.
-func NewRegistryAuth(username, password string) *RegistryAuth {
-	return &RegistryAuth{
-		Username: username,
-		Password: password,
-	}
-}
-
-// NewTokenAuth creates a RegistryAuth with bearer token authentication.
-func NewTokenAuth(token string) *RegistryAuth {
-	return &RegistryAuth{
-		Token: token,
-	}
-}
-
-// NewKeychainAuth creates a RegistryAuth with a custom keychain.
-func NewKeychainAuth(keychain authn.Keychain) *RegistryAuth {
-	return &RegistryAuth{
-		Keychain: keychain,
-	}
-}

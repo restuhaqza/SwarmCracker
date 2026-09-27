@@ -260,13 +260,6 @@ func (sm *StateManager) save() error {
 
 	return nil
 }
-
-// GetStateFile returns the state file path.
-func (sm *StateManager) GetStateFile() string {
-	return sm.stateFile
-}
-
-// GetLogDir returns the log directory for VMs.
 func (sm *StateManager) GetLogDir() string {
 	// Use same directory as state file
 	return filepath.Dir(sm.stateFile)
@@ -298,25 +291,4 @@ func (sm *StateManager) Reconcile(isRunningFunc func(id string) bool) int {
 	}
 
 	return reconciledCount
-}
-
-// ClearStale removes all VM states that are marked as stopped.
-func (sm *StateManager) ClearStale() int {
-	sm.mu.Lock()
-	defer sm.mu.Unlock()
-
-	removedCount := 0
-	for id, state := range sm.states {
-		if state.Status == "stopped" || state.Status == "error" {
-			delete(sm.states, id)
-			removedCount++
-		}
-	}
-
-	if removedCount > 0 {
-		// Best-effort save: state will be reconciled again next time on failure
-		_ = sm.save()
-	}
-
-	return removedCount
 }

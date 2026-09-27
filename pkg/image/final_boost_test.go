@@ -300,32 +300,6 @@ func TestHandleMounts_WithVolumeAndBind(t *testing.T) {
 	err := ip.handleMounts(ctx, task, rootfsPath, mounts)
 	assert.NoError(t, err)
 }
-
-// TestInjectInitSystem_AllTypesV2 tests all init system injection paths
-func TestInjectInitSystem_AllTypesV2(t *testing.T) {
-	rootfsDir := t.TempDir()
-
-	for _, initSystem := range []string{"tini", "dumb-init", "none", "unknown"} {
-		t.Run(initSystem, func(t *testing.T) {
-			imageID := generateImageID(fmt.Sprintf("init-%s:v1", initSystem))
-			rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
-			os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
-
-			ip := NewImagePreparer(&PreparerConfig{
-				RootfsDir:       rootfsDir,
-				InitSystem:      initSystem,
-				InitGracePeriod: 10,
-			}).(*ImagePreparer)
-
-			err := ip.injectInitSystem(rootfsPath)
-			// Mount fails but code paths are exercised
-			_ = err
-			assert.True(t, true, "injectInitSystem exercised for "+initSystem)
-		})
-	}
-}
-
-// TestCleanup_WithMultipleFiles tests cleanup with multiple old files
 func TestCleanup_WithMultipleFiles(t *testing.T) {
 	rootfsDir := t.TempDir()
 
@@ -394,64 +368,6 @@ func TestGenerateImageID_Comprehensive(t *testing.T) {
 		})
 	}
 }
-
-// TestGetDirSize_Comprehensive tests directory size calculation
-func TestGetDirSize_Comprehensive(t *testing.T) {
-	tests := []struct {
-		name    string
-		setup   func(t *testing.T) string
-		minSize int64
-	}{
-		{
-			name: "empty_dir",
-			setup: func(t *testing.T) string {
-				return t.TempDir()
-			},
-			minSize: 0,
-		},
-		{
-			name: "single_file",
-			setup: func(t *testing.T) string {
-				dir := t.TempDir()
-				os.WriteFile(filepath.Join(dir, "file.txt"), []byte("content"), 0644)
-				return dir
-			},
-			minSize: 7,
-		},
-		{
-			name: "multiple_files",
-			setup: func(t *testing.T) string {
-				dir := t.TempDir()
-				for i := 0; i < 5; i++ {
-					os.WriteFile(filepath.Join(dir, fmt.Sprintf("file%d.txt", i)), []byte("content"), 0644)
-				}
-				return dir
-			},
-			minSize: 35,
-		},
-		{
-			name: "nested_dirs",
-			setup: func(t *testing.T) string {
-				dir := t.TempDir()
-				os.MkdirAll(filepath.Join(dir, "nested", "deep"), 0755)
-				os.WriteFile(filepath.Join(dir, "nested", "deep", "file.txt"), []byte("nested content"), 0644)
-				return dir
-			},
-			minSize: 14,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := tt.setup(t)
-			size, err := getDirSize(dir)
-			require.NoError(t, err)
-			assert.GreaterOrEqual(t, size, tt.minSize)
-		})
-	}
-}
-
-// TestFormatBytes_AllSizes tests byte formatting for all sizes
 func TestFormatBytes_AllSizes(t *testing.T) {
 	tests := []struct {
 		bytes    int64

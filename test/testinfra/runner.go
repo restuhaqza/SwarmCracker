@@ -81,8 +81,6 @@ type checkDef struct {
 	fn       func(context.Context) (status, message, detail string)
 }
 
-type status string
-
 const (
 	passStatus = "pass"
 	failStatus = "fail"

@@ -605,33 +605,6 @@ func TestInjectBusybox_CreatesPasswdGroup(t *testing.T) {
 		t.Error("/etc/group missing root group")
 	}
 }
-
-func TestInjectBusyboxMinimal(t *testing.T) {
-	// Minimal injection creates only /bin/sh
-	tmpDir := t.TempDir()
-
-	err := injectBusyboxMinimal(tmpDir)
-	if err != nil {
-		t.Fatalf("injectBusyboxMinimal failed: %v", err)
-	}
-
-	// Check /bin/sh exists
-	shPath := filepath.Join(tmpDir, "bin", "sh")
-	if fi, err := os.Stat(shPath); err != nil {
-		t.Fatalf("/bin/sh not found: %v", err)
-	} else if fi.Mode()&0111 == 0 {
-		t.Fatal("/bin/sh is not executable")
-	}
-
-	// Should NOT create busybox (minimal version)
-	busyboxPath := filepath.Join(tmpDir, "bin", "busybox")
-	if _, err := os.Stat(busyboxPath); err == nil {
-		t.Error("injectBusyboxMinimal should not create /bin/busybox")
-	}
-}
-
-// --- Integration tests ---
-
 func TestDetectInitType_Priority(t *testing.T) {
 	// Test that systemd is detected before tini (systemd is incompatible, takes priority)
 	tmpDir := t.TempDir()

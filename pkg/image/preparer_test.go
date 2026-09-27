@@ -111,50 +111,6 @@ func TestGenerateImageID(t *testing.T) {
 		})
 	}
 }
-
-// TestGetDirSize tests directory size calculation
-func TestGetDirSize(t *testing.T) {
-	t.Run("existing directory with files", func(t *testing.T) {
-		tmpDir := t.TempDir()
-
-		// Create test files
-		testFiles := map[string]int64{
-			"file1.txt": 1024,
-			"file2.txt": 2048,
-			"file3.txt": 512,
-		}
-
-		for name, size := range testFiles {
-			path := filepath.Join(tmpDir, name)
-			err := os.WriteFile(path, make([]byte, size), 0644)
-			require.NoError(t, err)
-		}
-
-		// Create subdirectory with files
-		subDir := filepath.Join(tmpDir, "subdir")
-		os.Mkdir(subDir, 0755)
-		err := os.WriteFile(filepath.Join(subDir, "file4.txt"), make([]byte, 1024), 0644)
-		require.NoError(t, err)
-
-		size, err := getDirSize(tmpDir)
-		require.NoError(t, err)
-		assert.Equal(t, int64(4608), size) // 1024 + 2048 + 512 + 1024
-	})
-
-	t.Run("empty directory", func(t *testing.T) {
-		tmpDir := t.TempDir()
-		size, err := getDirSize(tmpDir)
-		require.NoError(t, err)
-		assert.Equal(t, int64(0), size)
-	})
-
-	t.Run("non-existent path", func(t *testing.T) {
-		_, err := getDirSize("/non/existent/path")
-		assert.Error(t, err)
-	})
-}
-
-// TestImagePreparer_Prepare_Cached tests that cached images are reused
 func TestImagePreparer_Prepare_Cached(t *testing.T) {
 	tmpDir := t.TempDir()
 	rootfsDir := filepath.Join(tmpDir, "rootfs")
@@ -499,19 +455,5 @@ func BenchmarkGenerateImageID(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		generateImageID(imageRef)
-	}
-}
-
-func BenchmarkGetDirSize(b *testing.B) {
-	// Create a test directory
-	tmpDir := b.TempDir()
-	for i := 0; i < 100; i++ {
-		path := filepath.Join(tmpDir, fmt.Sprintf("file%d.txt", i))
-		os.WriteFile(path, make([]byte, 1024), 0644)
-	}
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		getDirSize(tmpDir)
 	}
 }

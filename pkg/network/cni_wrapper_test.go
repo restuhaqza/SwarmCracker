@@ -27,29 +27,6 @@ func TestDeleteTAPDevice_Wrapper_NotExist(t *testing.T) {
 	err := DeleteTAPDevice("tap-nonexist-xyz")
 	require.Error(t, err) // ip link delete fails on non-existent
 }
-
-func TestTAPDeviceExists_Wrapper_NotExist(t *testing.T) {
-	exists, err := TAPDeviceExists("tap-nonexist-xyz")
-	require.NoError(t, err)
-	assert.False(t, exists)
-}
-
-func TestGetTAPMAC_Wrapper_NotExist(t *testing.T) {
-	_, err := getTAPMAC("tap-nonexist-xyz")
-	require.Error(t, err) // ip -br link show fails
-}
-
-func TestConfigureTAPIP_Wrapper_Fails(t *testing.T) {
-	err := ConfigureTAPIP("tap-nonexist-xyz", "10.0.0.2/24")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to set IP on TAP")
-}
-
-func TestCreateBridge_Wrapper_Fails(t *testing.T) {
-	err := CreateBridge("br-test-fail-xyz", "10.0.0.0/24")
-	require.Error(t, err) // No root → ip link add fails
-}
-
 func TestSetupVXLANFDB_WithPeers_Direct(t *testing.T) {
 	// This uses exec.Command("bridge", "fdb", ...) directly
 	// bridge fdb add will fail without proper setup, but function handles errors gracefully

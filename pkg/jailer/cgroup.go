@@ -415,13 +415,6 @@ func (m *CgroupManager) getDeviceForPath(path string) (BlockDevice, error) {
 		Path:  path,
 	}, nil
 }
-
-// IsCgroupV2Available checks if cgroup v2 is available.
-func IsCgroupV2Available() bool {
-	return isCgroupV2Available()
-}
-
-// isCgroupV2Available checks if cgroup v2 is available.
 func isCgroupV2Available() bool {
 	// Check if cgroup2 filesystem is mounted
 	if _, err := os.Stat("/sys/fs/cgroup/cgroup.controllers"); err == nil {

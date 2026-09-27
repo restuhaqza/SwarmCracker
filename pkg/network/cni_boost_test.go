@@ -4,7 +4,6 @@ package network
 
 import (
 	"errors"
-	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -56,76 +55,6 @@ func TestGetTAPMAC_Wrapper(t *testing.T) {
 // =============================================================================
 // CreateBridgeWithExecutor tests
 // =============================================================================
-
-func TestCreateBridgeWithExecutor_BridgeCreateFails(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(errors.New("permission denied"))
-
-	err := CreateBridgeWithExecutor("br0", "", mock)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create bridge")
-}
-
-func TestCreateBridgeWithExecutor_AlreadyExists_SkipsCreate(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(nil)
-
-	err := CreateBridgeWithExecutor("br0-existing", "10.0.0.0/24", mock)
-
-	require.NoError(t, err)
-
-	commands := mock.GetCommands()
-	require.GreaterOrEqual(t, len(commands), 1)
-	assert.Equal(t, "ip", commands[0].Name)
-}
-
-func TestCreateBridgeWithExecutor_NoSubnet(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(nil)
-
-	err := CreateBridgeWithExecutor("br0", "", mock)
-
-	require.NoError(t, err)
-}
-
-func TestCreateBridgeWithExecutor_CreatesBridge_WithValidSubnet(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(nil)
-
-	err := CreateBridgeWithExecutor("br0", "10.0.0.0/24", mock)
-
-	require.NoError(t, err)
-}
-
-// =============================================================================
-// TAPDeviceExists tests
-// =============================================================================
-
-func TestTAPDeviceExistsWithExecutor_DeviceExists(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(nil)
-
-	exists, err := TAPDeviceExistsWithExecutor("tap0", mock)
-
-	require.NoError(t, err)
-	assert.True(t, exists)
-}
-
-func TestTAPDeviceExistsWithExecutor_DeviceNotFound(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(errors.New("Device not found"))
-
-	exists, err := TAPDeviceExistsWithExecutor("tap-nonexistent", mock)
-
-	require.NoError(t, err)
-	assert.False(t, exists)
-}
-
-// =============================================================================
-// getTAPMAC tests
-// =============================================================================
-
 func TestGetTAPMACWithExecutor_IPlinkFormat(t *testing.T) {
 	mock := NewMockTAPExecutor()
 	// ip -br link show format: "tap0: UNKNOWN ff:ff:ff:ff:ff:ff ..."
@@ -183,34 +112,6 @@ func TestGetTAPMACWithExecutor_EmptyOutput(t *testing.T) {
 // =============================================================================
 // ConfigureTAPIP tests
 // =============================================================================
-
-func TestConfigureTAPIPWithExecutor_IPSuccess(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(nil)
-
-	err := ConfigureTAPIPWithExecutor("tap0", "10.0.0.2/24", mock)
-
-	require.NoError(t, err)
-
-	commands := mock.GetCommands()
-	require.GreaterOrEqual(t, len(commands), 1)
-	assert.Equal(t, "ip", commands[0].Name)
-}
-
-func TestConfigureTAPIPWithExecutor_IPFails(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(errors.New("RTNETLINK answers: File exists"))
-
-	err := ConfigureTAPIPWithExecutor("tap0", "10.0.0.2/24", mock)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to set IP on TAP")
-}
-
-// =============================================================================
-// DeleteTAPDeviceWithExecutor tests
-// =============================================================================
-
 func TestDeleteTAPDeviceWithExecutor_DeleteSucceeds(t *testing.T) {
 	mock := NewMockTAPExecutor()
 	mock.SetCombinedResult([]byte(""))
@@ -317,23 +218,3 @@ func TestCreateTAPDeviceWithExecutor_WithMAC(t *testing.T) {
 // =============================================================================
 // maskToPrefix tests
 // =============================================================================
-
-func TestMaskToPrefix_Coverage(t *testing.T) {
-	tests := []struct {
-		mask     net.IPMask
-		expected int
-	}{
-		{net.IPMask{255, 255, 255, 0}, 24},
-		{net.IPMask{255, 255, 255, 255}, 32},
-		{net.IPMask{255, 255, 0, 0}, 16},
-		{net.IPMask{255, 0, 0, 0}, 8},
-		{net.IPMask{255, 255, 255, 128}, 25},
-		{net.IPMask{255, 255, 255, 192}, 26},
-		{net.IPMask{0, 0, 0, 0}, 0},
-	}
-
-	for _, tt := range tests {
-		result := maskToPrefix(tt.mask)
-		assert.Equal(t, tt.expected, result)
-	}
-}

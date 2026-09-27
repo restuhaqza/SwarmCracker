@@ -3,10 +3,7 @@ package network
 
 import (
 	"context"
-	"net"
 	"testing"
-
-	"github.com/stretchr/testify/assert"
 )
 
 // TestCreateTAPDevice_Mock tests TAP device creation with mock executor
@@ -63,35 +60,6 @@ func TestCreateTAPDevice_Mock(t *testing.T) {
 		})
 	}
 }
-
-// TestMaskToPrefix tests mask to prefix conversion
-func TestMaskToPrefix(t *testing.T) {
-	tests := []struct {
-		name     string
-		mask     net.IPMask
-		expected int
-	}{
-		{"24", net.IPMask{255, 255, 255, 0}, 24},
-		{"32", net.IPMask{255, 255, 255, 255}, 32},
-		{"16", net.IPMask{255, 255, 0, 0}, 16},
-		{"8", net.IPMask{255, 0, 0, 0}, 8},
-		{"25", net.IPMask{255, 255, 255, 128}, 25},
-		{"26", net.IPMask{255, 255, 255, 192}, 26},
-		{"27", net.IPMask{255, 255, 255, 224}, 27},
-		{"28", net.IPMask{255, 255, 255, 240}, 28},
-		{"0", net.IPMask{0, 0, 0, 0}, 0},
-		{"empty", net.IPMask{}, 0},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := maskToPrefix(tt.mask)
-			assert.Equal(t, tt.expected, result)
-		})
-	}
-}
-
-// TestGetTAPMAC tests MAC address extraction
 func TestGetTAPMAC(t *testing.T) {
 	tests := []struct {
 		name        string

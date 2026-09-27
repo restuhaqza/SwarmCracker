@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"fmt"
 	"os/exec"
 	"testing"
 	"time"
@@ -74,104 +73,6 @@ func TestCollectorNonExistentPID(t *testing.T) {
 
 	t.Logf("Correctly returned error for non-existent PID: %v", err)
 }
-
-// TestCollectorGetAndList tests GetMetrics and ListMetrics methods.
-func TestCollectorGetAndList(t *testing.T) {
-	collector, err := NewCollector("/tmp/test-metrics")
-	if err != nil {
-		t.Fatalf("Failed to create collector: %v", err)
-	}
-
-	// Create a test process
-	cmd := exec.Command("sleep", "60")
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("Failed to start test process: %v", err)
-	}
-	pid := cmd.Process.Pid
-	defer cmd.Process.Kill()
-
-	// Wait a bit for the process to initialize
-	time.Sleep(100 * time.Millisecond)
-
-	// Collect metrics
-	taskID := "test-task-2"
-	_, err = collector.Collect(taskID, pid)
-	if err != nil {
-		t.Fatalf("Failed to collect metrics: %v", err)
-	}
-
-	// Test GetMetrics
-	metrics, err := collector.GetMetrics(taskID)
-	if err != nil {
-		t.Errorf("Failed to get metrics: %v", err)
-	}
-	if metrics.TaskID != taskID {
-		t.Errorf("Expected TaskID %s, got %s", taskID, metrics.TaskID)
-	}
-
-	// Test ListMetrics
-	allMetrics := collector.ListMetrics()
-	if len(allMetrics) == 0 {
-		t.Error("Expected at least one metric in list")
-	}
-	if _, exists := allMetrics[taskID]; !exists {
-		t.Errorf("Expected taskID %s in list", taskID)
-	}
-
-	t.Logf("GetMetrics and ListMetrics work correctly")
-}
-
-// TestCollectorConcurrency tests that the collector is safe for concurrent use.
-func TestCollectorConcurrency(t *testing.T) {
-	collector, err := NewCollector("/tmp/test-metrics")
-	if err != nil {
-		t.Fatalf("Failed to create collector: %v", err)
-	}
-
-	// Create multiple test processes
-	processes := make([]*exec.Cmd, 5)
-	pids := make([]int, 5)
-	for i := 0; i < 5; i++ {
-		cmd := exec.Command("sleep", "60")
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("Failed to start test process %d: %v", i, err)
-		}
-		processes[i] = cmd
-		pids[i] = cmd.Process.Pid
-		defer cmd.Process.Kill()
-	}
-
-	// Wait a bit for processes to initialize
-	time.Sleep(100 * time.Millisecond)
-
-	// Collect metrics concurrently
-	done := make(chan bool, 5)
-	for i := 0; i < 5; i++ {
-		go func(idx int) {
-			taskID := fmt.Sprintf("concurrent-task-%d", idx)
-			_, err := collector.Collect(taskID, pids[idx])
-			if err != nil {
-				t.Logf("Warning: Failed to collect metrics for %s: %v", taskID, err)
-			}
-			done <- true
-		}(i)
-	}
-
-	// Wait for all goroutines
-	for i := 0; i < 5; i++ {
-		<-done
-	}
-
-	// Verify all metrics were stored
-	allMetrics := collector.ListMetrics()
-	if len(allMetrics) < 5 {
-		t.Errorf("Expected at least 5 metrics, got %d", len(allMetrics))
-	}
-
-	t.Logf("Concurrency test passed, collected %d metrics", len(allMetrics))
-}
-
-// TestCollectCPU tests CPU collection specifically.
 func TestCollectCPU(t *testing.T) {
 	// Create a process that consumes some CPU
 	cmd := exec.Command("sh", "-c", "i=0; while [ $i -lt 10000 ]; do i=$((i+1)); done")

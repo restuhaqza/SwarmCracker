@@ -59,7 +59,6 @@ docs/
 | **Image** | [Image Reference](dev/reference/image.md) |
 | **Lifecycle** | [Lifecycle Reference](dev/reference/lifecycle.md) |
 | **Network** | [Network Reference](dev/reference/network.md) |
-| **Security** | [Security Reference](dev/reference/security.md) |
 | **Storage** | [Storage Reference](dev/reference/storage.md) |
 | **SwarmKit** | [SwarmKit Reference](dev/reference/swarmkit.md) |
 
