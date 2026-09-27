@@ -532,9 +532,9 @@ func (a *IPAllocator) hashToIP(vmID string) net.IP {
 | VM lifecycle | [Lifecycle Reference](../dev/reference/lifecycle.md) |
 | Storage drivers | [Storage Reference](../dev/reference/storage.md) |
 | Image preparation | [Image Reference](../dev/reference/image.md) |
-| Security isolation | [Security Reference](../dev/reference/security.md) |
+| Security isolation | [Security Guide](../dev/security.md) |
 | Configuration keys | [Config Reference](../dev/reference/config.md) |
-| CLI commands | [CLI Reference](../dev/reference/cli.md) |
+| CLI commands | [CLI Reference](../user/reference/cli.md) |
 
 ---
 
