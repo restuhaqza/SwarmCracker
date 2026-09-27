@@ -9,8 +9,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 // VMMetrics represents metrics collected for a VM.
@@ -307,101 +305,4 @@ func (c *Collector) getProcUptime(pid int) (int64, error) {
 	}
 
 	return int64(processUptimeSec), nil
-}
-
-// GetMetrics returns the latest metrics for a task.
-func (c *Collector) GetMetrics(taskID string) (*VMMetrics, error) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	m, exists := c.metrics[taskID]
-	if !exists {
-		return nil, fmt.Errorf("metrics not found for task %s", taskID)
-	}
-
-	// Return a copy to prevent concurrent modification
-	mCopy := *m
-	return &mCopy, nil
-}
-
-// ListMetrics returns all metrics.
-func (c *Collector) ListMetrics() map[string]*VMMetrics {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	// Return a copy to prevent concurrent modification
-	result := make(map[string]*VMMetrics, len(c.metrics))
-	for k, v := range c.metrics {
-		mCopy := *v
-		result[k] = &mCopy
-	}
-
-	return result
-}
-
-// Start begins periodic metrics collection.
-func (c *Collector) Start(ctx context.Context, interval time.Duration, getPIDs func() map[string]int) {
-	if interval <= 0 {
-		interval = 10 * time.Second // Default 10 seconds
-	}
-
-	c.cancelMu.Lock()
-	// Cancel previous collection if running
-	if c.cancel != nil {
-		c.cancel()
-	}
-	ctx, cancel := context.WithCancel(ctx)
-	c.cancel = cancel
-	c.cancelMu.Unlock()
-
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				logDebug("Periodic metrics collection stopped")
-				return
-			case <-ticker.C:
-				c.collectAll(getPIDs)
-			}
-		}
-	}()
-
-	logDebug("Started periodic metrics collection (interval: %v)", interval)
-}
-
-// Stop stops periodic metrics collection.
-func (c *Collector) Stop() {
-	c.cancelMu.Lock()
-	defer c.cancelMu.Unlock()
-	if c.cancel != nil {
-		c.cancel()
-		c.cancel = nil
-	}
-}
-
-// collectAll collects metrics for all running VMs.
-func (c *Collector) collectAll(getPIDs func() map[string]int) {
-	if getPIDs == nil {
-		return
-	}
-
-	pids := getPIDs()
-	for taskID, pid := range pids {
-		m, err := c.Collect(taskID, pid)
-		if err != nil {
-			logDebug("Failed to collect metrics for %s (PID %d): %v", taskID, pid, err)
-			continue
-		}
-		logDebug("Collected metrics for %s: CPU=%.2fms, Mem=%dKB, Rx=%d, Tx=%d",
-			taskID, m.CPUMs, m.MemoryKB, m.NetRxBytes, m.NetTxBytes)
-	}
-}
-
-// logDebug is a simple logger that can be replaced with proper logging.
-func logDebug(format string, args ...interface{}) {
-	msg := fmt.Sprintf("[metrics] "+format, args...)
-	log.Debug().Msg(msg)
 }

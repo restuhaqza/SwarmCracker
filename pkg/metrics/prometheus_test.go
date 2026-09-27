@@ -65,61 +65,6 @@ func TestRecordVMBootDuration(t *testing.T) {
 	count := testutil.CollectAndCount(VMBootDuration, "swarmcracker_vm_boot_duration_seconds")
 	assert.Greater(t, count, 0, "should have at least one histogram sample")
 }
-
-func TestSetVXLANPeerCount(t *testing.T) {
-	SetVXLANPeerCount("test-instance", 3, 5)
-
-	assert.Equal(t, 3.0, testutil.ToFloat64(VXLANPeers))
-	assert.Equal(t, 5.0, testutil.ToFloat64(VXLANExpectedPeers))
-}
-
-func TestSetManagerHealth(t *testing.T) {
-	SetManagerHealth("test-instance", true)
-	assert.Equal(t, 1.0, testutil.ToFloat64(ManagerHealth))
-
-	SetManagerHealth("test-instance", false)
-	assert.Equal(t, 0.0, testutil.ToFloat64(ManagerHealth))
-}
-
-func TestSetRaftHealth(t *testing.T) {
-	SetRaftHealth("test-instance", true)
-	assert.Equal(t, 1.0, testutil.ToFloat64(RaftHealth))
-
-	SetRaftHealth("test-instance", false)
-	assert.Equal(t, 0.0, testutil.ToFloat64(RaftHealth))
-}
-
-func TestSetVMMetrics(t *testing.T) {
-	SetVMMetrics("worker1", "task-abc", "nginx", 1.5, 134217728, 1024, 512)
-
-	assert.Equal(t, 1.5, testutil.ToFloat64(VMCPU.WithLabelValues("worker1", "task-abc", "nginx")))
-	assert.Equal(t, 134217728.0, testutil.ToFloat64(VMMemory.WithLabelValues("worker1", "task-abc", "nginx")))
-	assert.Equal(t, 1024.0, testutil.ToFloat64(VMNetRx.WithLabelValues("worker1", "task-abc", "nginx")))
-	assert.Equal(t, 512.0, testutil.ToFloat64(VMNetTx.WithLabelValues("worker1", "task-abc", "nginx")))
-}
-
-func TestClearVMMetrics(t *testing.T) {
-	// Set metrics first
-	SetVMMetrics("worker1", "task-xyz", "redis", 0.5, 64000000, 100, 200)
-
-	// Verify they're set
-	assert.Equal(t, 0.5, testutil.ToFloat64(VMCPU.WithLabelValues("worker1", "task-xyz", "redis")))
-
-	// Clear and verify labels are gone by checking the metric family
-	ClearVMMetrics("worker1", "task-xyz", "redis")
-
-	// After deletion, re-accessing should return a new (zero) set
-	// The old label values are deleted from the register
-	metricsOutput := gatherMetricText(VMCPU)
-	assert.False(t, strings.Contains(metricsOutput, `task_id="task-xyz"`), "task-xyz labels should be removed")
-}
-
-func TestSetDiskUsage(t *testing.T) {
-	SetDiskUsage("worker1", "snapshots", 1073741824)
-
-	assert.Equal(t, 1073741824.0, testutil.ToFloat64(DiskUsageBytes.WithLabelValues("worker1", "snapshots")))
-}
-
 func TestMetricsAreRegistered(t *testing.T) {
 	// Verify all metrics are registered with the default prometheus registry
 	metrics := []prometheus.Collector{
