@@ -145,6 +145,7 @@ Direct Firecracker microVM management.
 |------------|-------------|
 | `create <image>` | Create a microVM from an OCI image |
 | `list` | List microVMs |
+| `attach <vm>` | Attach to a running microVM's serial console |
 | `logs <vm-id>` | View VM logs |
 | `stop <vm-id>` | Stop a microVM |
 | `snapshot` | Manage VM snapshots (`create`, `restore`, `list`, `delete`, `cleanup`) |
@@ -160,7 +161,7 @@ Direct Firecracker microVM management.
 | `--detach` | `-d` | `false` | Detached mode |
 | `--env` | `-e` | — | Environment variables |
 
-`vm list` flags: `--all`, `--format`. `vm logs` flags: `--follow` / `-f`, `--since`, `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`.
+`vm list` flags: `--all`, `--format`. `vm logs` flags: `--follow` / `-f`, `--since`, `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**.
 
 #### `swarmcracker network`
 

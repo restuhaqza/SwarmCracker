@@ -31,6 +31,7 @@ These commands provide VM-level operations like creating, listing, stopping, and
 	cmd.AddCommand(newVMStopCommand())
 	cmd.AddCommand(newVMLogsCommand())
 	cmd.AddCommand(newVMSnapshotCommand())
+	cmd.AddCommand(newVMAttachCommand())
 
 	return cmd
 }

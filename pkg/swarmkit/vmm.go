@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/console"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
@@ -35,6 +36,8 @@ type VMMManager struct {
 	processes       map[string]*exec.Cmd
 	processWaits    map[string]*processWait
 	processMutex    sync.Mutex
+	consoles        map[string]*console.Server
+	consoleMutex    sync.Mutex
 	logger          zerolog.Logger
 }
 
@@ -123,6 +126,7 @@ func NewVMMManagerWithConfig(cfg *VMMManagerConfig) (*VMMManager, error) {
 		useJailer:       cfg.UseJailer,
 		processes:       make(map[string]*exec.Cmd),
 		processWaits:    make(map[string]*processWait),
+		consoles:        make(map[string]*console.Server),
 		logger:          log.With().Str("component", "vmm-manager").Logger(),
 	}
 
@@ -234,13 +238,31 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 		"--id", task.ID,
 	)
 
-	cmd.Stdout = &logWriter{logger: v.logger}
+	// Bridge the guest's serial console to a per-VM Unix socket so a user can
+	// attach with `swarmcracker vm attach`. Firecracker wires guest ttyS0 to
+	// its stdin/stdout, so giving it a pipe pair makes the console interactive.
+	vmConsole, err := console.New(console.Config{
+		SocketDir: v.socketDir,
+		TaskID:    task.ID,
+		Mirror:    &logWriter{logger: v.logger},
+		Logger:    &v.logger,
+	})
+	if err != nil {
+		socketCleanupNeeded = true
+		return fmt.Errorf("failed to create VM console: %w", err)
+	}
+	cmd.Stdin = vmConsole.Stdin()
+	cmd.Stdout = vmConsole.Stdout()
 	cmd.Stderr = &logWriter{logger: v.logger}
 
 	if err := cmd.Start(); err != nil {
+		vmConsole.Close()
 		socketCleanupNeeded = true
 		return fmt.Errorf("failed to start firecracker: %w", err)
 	}
+
+	vmConsole.Start()
+	v.setConsole(task.ID, vmConsole)
 
 	// Store process reference
 	v.processMutex.Lock()
@@ -252,6 +274,7 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 		if killErr := cmd.Process.Kill(); killErr != nil {
 			log.Warn().Err(killErr).Msg("Failed to kill process after socket timeout")
 		}
+		v.closeConsole(task.ID)
 		socketCleanupNeeded = true
 		return fmt.Errorf("socket not created: %w", err)
 	}
@@ -261,6 +284,7 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 		if killErr := cmd.Process.Kill(); killErr != nil {
 			log.Warn().Err(killErr).Msg("Failed to kill process after configure error")
 		}
+		v.closeConsole(task.ID)
 		socketCleanupNeeded = true
 		return fmt.Errorf("failed to configure VM: %w", err)
 	}
@@ -552,6 +576,28 @@ func (v *VMMManager) forgetProcess(taskID string) {
 	delete(v.processes, taskID)
 	delete(v.processWaits, taskID)
 	v.processMutex.Unlock()
+	v.closeConsole(taskID)
+}
+
+// setConsole records the console server for a running task.
+func (v *VMMManager) setConsole(taskID string, srv *console.Server) {
+	v.consoleMutex.Lock()
+	if v.consoles == nil {
+		v.consoles = make(map[string]*console.Server)
+	}
+	v.consoles[taskID] = srv
+	v.consoleMutex.Unlock()
+}
+
+// closeConsole stops and forgets the console server for a task, if any.
+func (v *VMMManager) closeConsole(taskID string) {
+	v.consoleMutex.Lock()
+	srv := v.consoles[taskID]
+	delete(v.consoles, taskID)
+	v.consoleMutex.Unlock()
+	if srv != nil {
+		srv.Close()
+	}
 }
 
 // Stop stops the Firecracker VM for the given task with graceful shutdown.
@@ -957,7 +1003,9 @@ func (v *VMMManager) GetRunningProcesses() map[string]*exec.Cmd {
 // RemoveProcess removes a process from the tracked processes map.
 func (v *VMMManager) RemoveProcess(taskID string) {
 	v.processMutex.Lock()
-	defer v.processMutex.Unlock()
 	delete(v.processes, taskID)
+	delete(v.processWaits, taskID)
+	v.processMutex.Unlock()
+	v.closeConsole(taskID)
 	v.logger.Debug().Str("task_id", taskID).Msg("Process removed from tracking")
 }
