@@ -51,7 +51,12 @@ func runStatus(vmID string) error {
 	// Get VM state
 	vmState, err := stateMgr.Get(vmID)
 	if err != nil {
-		return fmt.Errorf("VM not found: %s", vmID)
+		// Not a CLI-managed VM. Fall back to a VM discovered on the host (for
+		// example a service task started by the daemon).
+		vmState, err = resolveRunningVM(vmID)
+		if err != nil {
+			return fmt.Errorf("VM not found: %s", vmID)
+		}
 	}
 
 	// Print VM information
@@ -98,6 +103,9 @@ func printVMStatus(vm *runtime.VMState) {
 	// Container section
 	fmt.Println("\n[Container]")
 	fmt.Printf("  Image:        %s\n", vm.Image)
+	if vm.Service != "" {
+		fmt.Printf("  Service:      %s\n", vm.Service)
+	}
 	if len(vm.Command) > 0 {
 		fmt.Printf("  Command:      %s\n", fmt.Sprintf("%v", vm.Command))
 	}

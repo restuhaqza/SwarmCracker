@@ -144,7 +144,7 @@ Direct Firecracker microVM management.
 | Subcommand | Description |
 |------------|-------------|
 | `create <image>` | Create a microVM from an OCI image |
-| `list` | List microVMs |
+| `list` | List microVMs (CLI-created and daemon/service-managed) |
 | `attach <vm>` | Attach to a running microVM's serial console |
 | `logs <vm-id>` | View VM logs |
 | `stop <vm-id>` | Stop a microVM |
@@ -161,7 +161,9 @@ Direct Firecracker microVM management.
 | `--detach` | `-d` | `false` | Detached mode |
 | `--env` | `-e` | — | Environment variables |
 
-`vm list` flags: `--all`, `--format`. `vm logs` flags: `--follow` / `-f`, `--since`, `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**.
+`vm list` flags: `--all`, `--format`, `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since`, `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**.
+
+`vm list` and `vm status` also cover microVMs started by the daemon for services (discovered from `<socket-dir>/*.sock`; stale sockets are filtered with a liveness probe). `vm stop` deliberately refuses to kill a service VM — use `swarmcracker service scale <service>=0` or `swarmcracker service rm <service>` so SwarmKit updates the desired state instead of recreating the task.
 
 #### `swarmcracker network`
 

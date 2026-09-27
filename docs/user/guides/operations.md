@@ -669,10 +669,11 @@ swarmcracker node inspect <node>        # Node details
 swarmcracker cluster token worker       # Get a worker join token
 
 # VMs
-swarmcracker vm list                    # List VMs
-swarmcracker vm logs -f <vm-id>         # Follow VM logs
+swarmcracker vm list                    # List VMs (CLI-created + service tasks)
+swarmcracker vm status <vm-id>          # VM details (service task IDs work too)
+swarmcracker vm logs -f <vm-id>         # Follow VM logs (CLI-created VMs)
 swarmcracker vm attach <vm-id>          # Attach to the VM serial console
-swarmcracker vm stop <vm-id>            # Stop VM
+swarmcracker vm stop <vm-id>            # Stop a CLI-created VM
 swarmcracker cluster status <vm-id>     # VM status
 
 # Services

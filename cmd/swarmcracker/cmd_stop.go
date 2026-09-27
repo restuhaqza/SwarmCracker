@@ -56,6 +56,12 @@ func runStop(vmID string) error {
 	// Get VM state
 	vmState, err := stateMgr.Get(vmID)
 	if err != nil {
+		// The VM is not CLI-managed. If it is a running daemon/service VM,
+		// refuse to kill the process: SwarmKit tracks its desired state and
+		// would immediately recreate the task.
+		if _, runningErr := resolveRunningVM(vmID); runningErr == nil {
+			return fmt.Errorf("VM %s is managed by SwarmKit; stop it with 'swarmcracker service scale <service>=0' or 'swarmcracker service rm <service>'", vmID)
+		}
 		return fmt.Errorf("VM not found: %s", vmID)
 	}
 
