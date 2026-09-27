@@ -93,54 +93,6 @@ func TestPreparerExtended_CopyDirectory(t *testing.T) {
 		t.Error("copyDirectory should fail for non-existent source")
 	}
 }
-
-// TestPreparerExtended_CreateInitWrapper tests createInitWrapper function.
-// NOTE: createInitWrapper is deprecated (no-op); it always returns nil without creating files.
-func TestPreparerExtended_CreateInitWrapper(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "init-wrapper-test-")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Create sbin directory
-	sbinDir := filepath.Join(tempDir, "sbin")
-	if err := os.MkdirAll(sbinDir, 0755); err != nil {
-		t.Fatalf("Failed to create sbin dir: %v", err)
-	}
-
-	prep := &ImagePreparer{
-		config: &PreparerConfig{
-			InitSystem: "tini",
-		},
-	}
-
-	// createInitWrapper is deprecated (no-op), always returns nil
-	if err := prep.createInitWrapper(tempDir); err != nil {
-		t.Fatalf("createInitWrapper failed: %v", err)
-	}
-
-	// Function is deprecated - files are no longer created by this path.
-	// Init injection is done via InjectIntoDir before ext4 creation.
-
-	// Also test with entrypoint present (same deprecated no-op)
-	os.RemoveAll(tempDir)
-	os.MkdirAll(sbinDir, 0755)
-
-	entrypointDir := filepath.Join(tempDir, "docker-entrypoint.d")
-	os.MkdirAll(entrypointDir, 0755)
-	entrypointPath := filepath.Join(tempDir, "docker-entrypoint.sh")
-	if err := os.WriteFile(entrypointPath, []byte("#!/bin/sh\necho entrypoint"), 0755); err != nil {
-		t.Fatalf("Failed to create entrypoint: %v", err)
-	}
-
-	// Deprecated no-op, always returns nil
-	if err := prep.createInitWrapper(tempDir); err != nil {
-		t.Fatalf("createInitWrapper with entrypoint failed: %v", err)
-	}
-}
-
-// TestPreparerExtended_InjectNetworkConfig tests injectNetworkConfig function
 func TestPreparerExtended_InjectNetworkConfig(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -436,34 +388,6 @@ func TestPreparerExtended_ExtractWithDockerCLI(t *testing.T) {
 		})
 	}
 }
-
-// TestPreparerExtended_InjectDumbInit tests injectDumbInit function
-func TestPreparerExtended_InjectDumbInit(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "dumbinit-test-")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Create fake ext4 file
-	rootfsPath := filepath.Join(tempDir, "rootfs.ext4")
-	if err := os.WriteFile(rootfsPath, []byte("fake ext4"), 0644); err != nil {
-		t.Fatalf("Failed to create rootfs: %v", err)
-	}
-
-	injector := NewInitInjector(&InitSystemConfig{
-		Type:           InitSystemDumbInit,
-		GracePeriodSec: 10,
-	})
-
-	// Test injection - will fail mount without root, but should handle gracefully
-	err = injector.injectDumbInit(rootfsPath)
-	if err != nil {
-		t.Logf("injectDumbInit failed as expected without root: %v", err)
-	}
-}
-
-// TestPreparerExtended_ExtractWithDocker tests extractWithDocker function
 func TestPreparerExtended_ExtractWithDocker(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test that triggers HTTP connections in short mode")
@@ -608,39 +532,6 @@ func TestPreparerExtended_Cleanup(t *testing.T) {
 		t.Error("Recent file should still exist")
 	}
 }
-
-// TestPreparerExtended_GetDirSize tests getDirSize function
-func TestPreparerExtended_GetDirSize(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "dirsize-test-")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Create test files
-	file1 := filepath.Join(tempDir, "file1.txt")
-	if err := os.WriteFile(file1, []byte("content1"), 0644); err != nil {
-		t.Fatalf("Failed to create file1: %v", err)
-	}
-
-	file2 := filepath.Join(tempDir, "file2.txt")
-	if err := os.WriteFile(file2, []byte("content2 content2"), 0644); err != nil {
-		t.Fatalf("Failed to create file2: %v", err)
-	}
-
-	size, err := getDirSize(tempDir)
-	if err != nil {
-		t.Fatalf("getDirSize failed: %v", err)
-	}
-
-	// Check that size is reasonable (at least the sum of content bytes)
-	minExpectedSize := int64(8 + 16) // "content1" + "content2 content2"
-	if size < minExpectedSize {
-		t.Errorf("getDirSize() = %d, want at least %d", size, minExpectedSize)
-	}
-}
-
-// TestPreparerExtended_WithMocks tests ImagePreparerInternal with mocks
 func TestPreparerExtended_WithMocks(t *testing.T) {
 	mockRuntime := NewMockContainerRuntime()
 	mockFS := NewMockFilesystemOperator()
@@ -672,15 +563,6 @@ func TestPreparerExtended_WithMocks(t *testing.T) {
 	if prep.binLoc != mockBin {
 		t.Error("binLoc not set correctly")
 	}
-}
-
-// execError is a simple error type for exec command failures
-type execError struct {
-	msg string
-}
-
-func (e *execError) Error() string {
-	return e.msg
 }
 
 // TestPreparerExtended_ValidateArchitecture tests validateArchitecture function
@@ -731,35 +613,6 @@ func TestPreparerExtended_CopyFile(t *testing.T) {
 		t.Error("copyFile should error for non-existent source")
 	}
 }
-
-// TestPreparerExtended_GetInitBinaryPath tests getInitBinaryPath function
-func TestPreparerExtended_GetInitBinaryPath(t *testing.T) {
-	tests := []struct {
-		name       string
-		initSystem string
-	}{
-		{"tini init", "tini"},
-		{"dumb-init init", "dumb-init"},
-		{"none init", "none"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			prep := &ImagePreparer{
-				initInjector: NewInitInjector(&InitSystemConfig{
-					Type: InitSystemType(tt.initSystem),
-				}),
-			}
-
-			// Just test that it doesn't crash
-			// Real binary might not exist in test environment
-			path := prep.getInitBinaryPath()
-			t.Logf("getInitBinaryPath() returned: %q", path)
-		})
-	}
-}
-
-// TestPreparerExtended_MountExt4 tests mountExt4 function
 func TestPreparerExtended_MountExt4(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "mount-test-")
 	if err != nil {

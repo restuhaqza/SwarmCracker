@@ -1,9 +1,7 @@
 // Package apiversion provides gRPC metadata-based API versioning.
 //
-// Client side: VersionClientInterceptor injects X-SwarmCracker-Version metadata
-// into every outgoing gRPC call.
-//
-// Server side: VersionFromContext extracts the version from incoming metadata.
+// Client side: WithVersion / VersionClientInterceptor inject
+// X-SwarmCracker-Version metadata into every outgoing gRPC call.
 //
 // Version must be incremented on any breaking change to the gRPC protocol between
 // swarmd-firecracker (manager/worker) and swarmcracker CLI / swarmctl.
@@ -11,7 +9,7 @@ package apiversion
 
 import (
 	"context"
-	"fmt"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
@@ -43,34 +41,4 @@ func VersionClientInterceptor() grpc.UnaryClientInterceptor {
 		ctx = metadata.NewOutgoingContext(ctx, md)
 		return invoker(ctx, method, req, reply, cc, opts...)
 	}
-}
-
-// VersionFromContext extracts the client API version from incoming gRPC metadata.
-// Returns empty string if not present.
-func VersionFromContext(ctx context.Context) string {
-	md, ok := metadata.FromIncomingContext(ctx)
-	if !ok {
-		return ""
-	}
-	vals := md.Get("x-swarmcracker-version")
-	if len(vals) == 0 {
-		return ""
-	}
-	return vals[0]
-}
-
-// ValidateVersion checks if the client version is compatible.
-// Returns nil if compatible, or an error describing the mismatch.
-// Currently accepts "1" and "" (backwards compatible — pre-versioning clients
-// are assumed to be version 1 when accepted).
-func ValidateVersion(ctx context.Context, minVersion string) error {
-	v := VersionFromContext(ctx)
-	if v == "" {
-		// Pre-versioning client — assume compatible for now
-		return nil
-	}
-	if v < minVersion {
-		return fmt.Errorf("API version mismatch: client=v%s, server requires v%s. Please upgrade the client", v, minVersion)
-	}
-	return nil
 }

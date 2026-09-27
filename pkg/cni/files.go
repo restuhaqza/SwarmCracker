@@ -1,14 +1,10 @@
 package cni
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/moby/swarmkit/v2/api"
 )
 
 // WriteConfigFile writes a CNI configuration file to disk
@@ -21,30 +17,6 @@ func WriteConfigFile(configDir, name string, config []byte) error {
 	filename := filepath.Join(configDir, name+".conf")
 	return os.WriteFile(filename, config, 0600)
 }
-
-// WriteConfigListFile writes a CNI configuration list to disk
-func WriteConfigListFile(configDir, name string, configs []map[string]interface{}) error {
-	// Ensure config directory exists
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	list := map[string]interface{}{
-		"cniVersion": DefaultCNIVersion,
-		"name":       name,
-		"plugins":    configs,
-	}
-
-	data, err := json.MarshalIndent(list, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config list: %w", err)
-	}
-
-	filename := filepath.Join(configDir, name+".conflist")
-	return os.WriteFile(filename, data, 0600)
-}
-
-// RemoveConfigFile removes a CNI configuration file
 func RemoveConfigFile(configDir, name string) error {
 	// Try .conf file first
 	confPath := filepath.Join(configDir, name+".conf")
@@ -151,92 +123,4 @@ func findPrefixEnd(s string) int {
 		}
 	}
 	return 0
-}
-
-// EnsurePluginDir ensures the CNI plugin directory exists and has required plugins
-func EnsurePluginDir(pluginDir string) error {
-	if err := os.MkdirAll(pluginDir, 0755); err != nil {
-		return fmt.Errorf("failed to create plugin directory: %w", err)
-	}
-
-	return nil
-}
-
-// EnsureConfigDir ensures the CNI config directory exists
-func EnsureConfigDir(configDir string) error {
-	if err := os.MkdirAll(configDir, 0755); err != nil {
-		return fmt.Errorf("failed to create config directory: %w", err)
-	}
-
-	return nil
-}
-
-// InitializeCNI initializes CNI directories and default configurations
-func InitializeCNI(ctx context.Context, config *CNIConfig) error {
-	// Ensure directories exist
-	if err := EnsurePluginDir(config.PluginDir); err != nil {
-		return err
-	}
-
-	if err := EnsureConfigDir(config.ConfigDir); err != nil {
-		return err
-	}
-
-	// Create loopback config (required by CNI spec)
-	loopbackConfig, err := NewConfigGenerator().GenerateLoopbackConfig()
-	if err != nil {
-		return fmt.Errorf("failed to generate loopback config: %w", err)
-	}
-
-	if err := WriteConfigFile(config.ConfigDir, "lo", loopbackConfig); err != nil {
-		return fmt.Errorf("failed to write loopback config: %w", err)
-	}
-
-	return nil
-}
-
-// CreateNetworkFromSpec creates a CNI network from SwarmKit network spec
-func CreateNetworkFromSpec(ctx context.Context, provider *CNIProvider, spec *api.NetworkSpec) (*CNINetworkConfig, error) {
-	// Get driver
-	driver := "bridge"
-	if spec.DriverConfig != nil && spec.DriverConfig.Name != "" {
-		driver = spec.DriverConfig.Name
-	}
-
-	// Validate driver
-	if err := provider.ValidateNetworkDriver(spec.DriverConfig); err != nil {
-		return nil, err
-	}
-
-	// Get name
-	name := spec.Annotations.Name
-	if name == "" {
-		return nil, fmt.Errorf("network name required")
-	}
-
-	// Generate subnet if not specified
-	_ = "" // subnet placeholder for future use
-	if spec.IPAM != nil && len(spec.IPAM.Configs) > 0 {
-		_ = spec.IPAM.Configs[0].Subnet // subnet extracted for future use
-	}
-
-	// Use provider's allocation logic
-	_, err := provider.AllocateNetwork(name, driver)
-	if err != nil {
-		return nil, err
-	}
-
-	// Load the generated config
-	return provider.pluginMgr.loadNetworkConfig(name)
-}
-
-// GetNetworkAttachmentInfo returns CNI attachment information for a task
-func GetNetworkAttachmentInfo(ctx context.Context, pluginMgr *PluginManager, networkName, containerID string) (*CNIExecResult, error) {
-	// Execute CNI ADD to get attachment details
-	return pluginMgr.Add(ctx, networkName, containerID, "eth0", nil)
-}
-
-// CleanupNetworkAttachment removes a network attachment for a task
-func CleanupNetworkAttachment(ctx context.Context, pluginMgr *PluginManager, networkName, containerID string) error {
-	return pluginMgr.Del(ctx, networkName, containerID, "eth0", nil)
 }

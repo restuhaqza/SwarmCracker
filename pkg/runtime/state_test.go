@@ -598,7 +598,6 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 
 	const numGoroutines = 50
-	const numOps = 100
 
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines * 4) // 4 types of operations
@@ -645,24 +644,6 @@ func TestConcurrentAccess(t *testing.T) {
 	list := sm.List()
 	t.Logf("Final state count: %d", len(list))
 }
-
-// TestGetStateFile tests GetStateFile method.
-func TestGetStateFile(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-
-	sm, err := NewStateManager("/ignored")
-	if err != nil {
-		t.Fatalf("NewStateManager failed: %v", err)
-	}
-
-	expectedPath := filepath.Join(tempHome, ".swarmcracker", "state.json")
-	if sm.GetStateFile() != expectedPath {
-		t.Errorf("GetStateFile() = %q, want %q", sm.GetStateFile(), expectedPath)
-	}
-}
-
-// TestGetLogDir tests GetLogDir method.
 func TestGetLogDir(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)

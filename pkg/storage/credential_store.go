@@ -135,91 +135,6 @@ func (sm *SecretManager) InjectConfigs(ctx context.Context, taskID string, confi
 
 	return nil
 }
-
-// injectSecret injects a single secret into the rootfs.
-func (sm *SecretManager) injectSecret(mountDir string, secret types.SecretRef) error {
-	// Default to /run/secrets if target not specified
-	targetPath := secret.Target
-	if targetPath == "" {
-		targetPath = filepath.Join("/run/secrets", secret.Name)
-	}
-
-	// Validate target path to prevent traversal attacks
-	if err := validateInjectionPath(targetPath); err != nil {
-		return fmt.Errorf("invalid target path: %w", err)
-	}
-
-	// Full path on the mounted rootfs
-	fullPath := filepath.Join(mountDir, targetPath)
-
-	// Verify the final path stays within mountDir
-	cleanMount := filepath.Clean(mountDir)
-	cleanFull := filepath.Clean(fullPath)
-	if !strings.HasPrefix(cleanFull, cleanMount) {
-		return fmt.Errorf("path escapes mount directory")
-	}
-
-	// Create parent directories
-	if err := osMkdirAllStore(filepath.Dir(fullPath), 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// Write secret data with restrictive permissions (0400)
-	if err := osWriteFileStore(fullPath, secret.Data, 0400); err != nil {
-		return fmt.Errorf("failed to write secret file: %w", err)
-	}
-
-	log.Debug().
-		Str("path", fullPath).
-		Int("size", len(secret.Data)).
-		Msg("Secret file written")
-
-	return nil
-}
-
-// injectConfig injects a single config into the rootfs.
-func (sm *SecretManager) injectConfig(mountDir string, config types.ConfigRef) error {
-	// Default to /config if target not specified
-	targetPath := config.Target
-	if targetPath == "" {
-		targetPath = filepath.Join("/config", config.Name)
-	}
-
-	// Validate target path to prevent traversal attacks
-	if err := validateInjectionPath(targetPath); err != nil {
-		return fmt.Errorf("invalid target path: %w", err)
-	}
-
-	// Full path on the mounted rootfs
-	fullPath := filepath.Join(mountDir, targetPath)
-
-	// Verify the final path stays within mountDir
-	cleanMount := filepath.Clean(mountDir)
-	cleanFull := filepath.Clean(fullPath)
-	if !strings.HasPrefix(cleanFull, cleanMount) {
-		return fmt.Errorf("path escapes mount directory")
-	}
-
-	// Create parent directories
-	if err := osMkdirAllStore(filepath.Dir(fullPath), 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
-	// Write config data with readable permissions (0444)
-	if err := osWriteFileStore(fullPath, config.Data, 0444); err != nil {
-		return fmt.Errorf("failed to write config file: %w", err)
-	}
-
-	log.Debug().
-		Str("path", fullPath).
-		Int("size", len(config.Data)).
-		Msg("Config file written")
-
-	return nil
-}
-
-// injectFileViaDebugfs writes a file into an ext4 image using debugfs.
-// This avoids requiring root privileges for mount -o loop.
 func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName string, data []byte, mode os.FileMode) error {
 	targetPath := target
 	if targetPath == "" {
@@ -284,28 +199,6 @@ func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName stri
 
 	return nil
 }
-
-// mountRootfs is deprecated — use injectFileViaDebugfs instead.
-func (sm *SecretManager) mountRootfs(rootfsPath string) (string, error) {
-	return osMkdirTemp("", "swarmcracker-deprecated-mount-")
-}
-
-// unmountRootfs is deprecated — use injectFileViaDebugfs instead.
-func (sm *SecretManager) unmountRootfs(mountDir string) {
-	if err := osRemoveAllStore(mountDir); err != nil {
-		log.Warn().Err(err).Msg("Failed to remove deprecated mount dir")
-	}
-}
-
-// runCommand is a helper to run shell commands.
-func runCommand(name string, args ...string) (string, error) {
-	cmd := execCommand(name, args...)
-	output, err := cmd.CombinedOutput()
-	return string(output), err
-}
-
-// validateInjectionPath validates a target path for secret/config injection.
-// It rejects paths that could escape the target directory through traversal.
 func validateInjectionPath(path string) error {
 	// Reject null bytes
 	if strings.Contains(path, "\x00") {

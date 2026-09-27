@@ -12,6 +12,7 @@ linters:
     - prealloc
     - revive
     - staticcheck
+    - unused
   settings:
     errcheck:
       check-type-assertions: true
@@ -71,9 +72,6 @@ linters:
       - linters:
           - gosec
         path: pkg/network/
-      - linters:
-          - gosec
-        path: pkg/security/
       - linters:
           - gocyclo
           - gosec

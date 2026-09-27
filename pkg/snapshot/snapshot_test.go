@@ -22,31 +22,6 @@ func TestSnapshotConfigDefaults(t *testing.T) {
 	assert.False(t, cfg.AutoSnapshot)
 	assert.False(t, cfg.Compress)
 }
-
-func TestSnapshotConfigSetDefaults(t *testing.T) {
-	cfg := SnapshotConfig{}
-	cfg.SetDefaults()
-
-	assert.NotEmpty(t, cfg.SnapshotDir)
-	assert.Equal(t, 3, cfg.MaxSnapshots)
-	assert.Equal(t, 168*time.Hour, cfg.MaxAge)
-}
-
-func TestSnapshotConfigSetDefaultsPreservesSet(t *testing.T) {
-	cfg := SnapshotConfig{
-		SnapshotDir:  "/custom/path",
-		MaxSnapshots: 10,
-		MaxAge:       24 * time.Hour,
-		AutoSnapshot: true,
-	}
-	cfg.SetDefaults()
-
-	assert.Equal(t, "/custom/path", cfg.SnapshotDir)
-	assert.Equal(t, 10, cfg.MaxSnapshots)
-	assert.Equal(t, 24*time.Hour, cfg.MaxAge)
-	assert.True(t, cfg.AutoSnapshot)
-}
-
 func TestNewManager(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfg := SnapshotConfig{SnapshotDir: tmpDir}

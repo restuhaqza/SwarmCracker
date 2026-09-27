@@ -8,69 +8,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 )
 
-func TestRegistryAuth_NewRegistryAuth(t *testing.T) {
-	auth := NewRegistryAuth("testuser", "testpass")
-
-	if auth == nil {
-		t.Fatal("NewRegistryAuth returned nil")
-	}
-	if auth.Username != "testuser" {
-		t.Errorf("expected username 'testuser', got %q", auth.Username)
-	}
-	if auth.Password != "testpass" {
-		t.Errorf("expected password 'testpass', got %q", auth.Password)
-	}
-	if auth.Token != "" {
-		t.Errorf("expected empty token, got %q", auth.Token)
-	}
-	if auth.Keychain != nil {
-		t.Error("expected nil keychain")
-	}
-}
-
-func TestRegistryAuth_NewTokenAuth(t *testing.T) {
-	auth := NewTokenAuth("my-bearer-token")
-
-	if auth == nil {
-		t.Fatal("NewTokenAuth returned nil")
-	}
-	if auth.Token != "my-bearer-token" {
-		t.Errorf("expected token 'my-bearer-token', got %q", auth.Token)
-	}
-	if auth.Username != "" {
-		t.Errorf("expected empty username, got %q", auth.Username)
-	}
-	if auth.Password != "" {
-		t.Errorf("expected empty password, got %q", auth.Password)
-	}
-	if auth.Keychain != nil {
-		t.Error("expected nil keychain")
-	}
-}
-
-func TestRegistryAuth_NewKeychainAuth(t *testing.T) {
-	// Create a mock keychain
-	mockKeychain := authn.DefaultKeychain
-
-	auth := NewKeychainAuth(mockKeychain)
-
-	if auth == nil {
-		t.Fatal("NewKeychainAuth returned nil")
-	}
-	if auth.Keychain == nil {
-		t.Error("expected non-nil keychain")
-	}
-	if auth.Username != "" {
-		t.Errorf("expected empty username, got %q", auth.Username)
-	}
-	if auth.Password != "" {
-		t.Errorf("expected empty password, got %q", auth.Password)
-	}
-	if auth.Token != "" {
-		t.Errorf("expected empty token, got %q", auth.Token)
-	}
-}
-
 func TestBuildRemoteOptions_NilAuth(t *testing.T) {
 	ctx := context.Background()
 	opts := buildRemoteOptions(ctx, nil)

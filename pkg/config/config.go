@@ -206,16 +206,6 @@ func LoadConfig(path string) (*Config, error) {
 
 	return &cfg, nil
 }
-
-// LoadConfigFromEnv loads configuration from the path specified in SWARMCRACKER_CONFIG env var,
-// or from the default path if not set.
-func LoadConfigFromEnv() (*Config, error) {
-	path := GetDefaultConfigPath()
-	return LoadConfig(path)
-}
-
-// GetDefaultConfigPath returns the default configuration path, or the path from
-// SWARMCRACKER_CONFIG environment variable if set.
 func GetDefaultConfigPath() string {
 	if path := os.Getenv("SWARMCRACKER_CONFIG"); path != "" {
 		return path

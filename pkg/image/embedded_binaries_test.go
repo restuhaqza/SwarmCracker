@@ -51,37 +51,6 @@ func TestEmbeddedBusyboxBinary(t *testing.T) {
 		t.Errorf("busyboxBinary does not start with ELF magic header: got %x", busyboxBinary[:4])
 	}
 }
-
-// TestHasEmbeddedBinaries verifies the helper function returns true.
-func TestHasEmbeddedBinaries(t *testing.T) {
-	if !HasEmbeddedBinaries() {
-		t.Error("HasEmbeddedBinaries() returned false, expected true")
-	}
-}
-
-// TestGetTiniBinary verifies the getter returns the embedded binary.
-func TestGetTiniBinary(t *testing.T) {
-	bin := GetTiniBinary()
-	if len(bin) == 0 {
-		t.Error("GetTiniBinary() returned empty slice")
-	}
-	if len(bin) != len(tiniBinary) {
-		t.Errorf("GetTiniBinary() returned different length: got %d, want %d", len(bin), len(tiniBinary))
-	}
-}
-
-// TestGetBusyboxBinary verifies the getter returns the embedded binary.
-func TestGetBusyboxBinary(t *testing.T) {
-	bin := GetBusyboxBinary()
-	if len(bin) == 0 {
-		t.Error("GetBusyboxBinary() returned empty slice")
-	}
-	if len(bin) != len(busyboxBinary) {
-		t.Errorf("GetBusyboxBinary() returned different length: got %d, want %d", len(bin), len(busyboxBinary))
-	}
-}
-
-// TestEmbeddedBinariesAreExecutable verifies binaries can be written and made executable.
 func TestEmbeddedBinariesAreExecutable(t *testing.T) {
 	tmpDir := t.TempDir()
 

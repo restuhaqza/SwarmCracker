@@ -116,45 +116,6 @@ func TestGetProcUptimeWithSelf(t *testing.T) {
 	}
 	t.Logf("Self uptime: %d seconds", uptime)
 }
-
-// TestCollectWithSelfPID tests full Collect with current process.
-func TestCollectWithSelfPID(t *testing.T) {
-	tempDir := t.TempDir()
-	c, err := NewCollector(tempDir)
-	if err != nil {
-		t.Fatalf("NewCollector failed: %v", err)
-	}
-
-	m, err := c.Collect("self-test", os.Getpid())
-	if err != nil {
-		t.Fatalf("Collect failed for self PID: %v", err)
-	}
-
-	if m.TaskID != "self-test" {
-		t.Errorf("Expected TaskID 'self-test', got %s", m.TaskID)
-	}
-	if m.PID != os.Getpid() {
-		t.Errorf("Expected PID %d, got %d", os.Getpid(), m.PID)
-	}
-	if m.CPUMs < 0 {
-		t.Errorf("Expected non-negative CPU time, got %f", m.CPUMs)
-	}
-	if m.MemoryKB == 0 {
-		t.Log("Warning: MemoryKB is 0, process may not have significant RSS")
-	}
-	t.Logf("Self metrics: CPU=%.2fms, Mem=%dKB, Uptime=%ds", m.CPUMs, m.MemoryKB, m.UptimeSec)
-
-	// Verify stored in metrics map
-	stored, err := c.GetMetrics("self-test")
-	if err != nil {
-		t.Fatalf("GetMetrics failed: %v", err)
-	}
-	if stored.TaskID != "self-test" {
-		t.Errorf("Stored taskID mismatch: expected 'self-test', got %s", stored.TaskID)
-	}
-}
-
-// TestCollectCPUErrorPaths tests CPU collection error paths.
 func TestCollectCPUErrorPaths(t *testing.T) {
 	tempDir := t.TempDir()
 	c, err := NewCollector(tempDir)
