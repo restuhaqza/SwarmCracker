@@ -175,13 +175,12 @@ const (
 6. Cache at /var/lib/firecracker/rootfs/<image-id>.ext4
 ```
 
-### Security (`pkg/security/`)
+### Security (`pkg/jailer/`)
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| **Jailer** | `jailer.go` | chroot, UID/GID drop, network namespace |
-| **Seccomp** | `seccomp.go` | Syscall filtering for guest VMs |
-| **SecurityManager** | `manager.go` | Orchestrates jailer + seccomp |
+| **Jailer** | `jailer.go` | chroot, UID/GID drop, namespaces, Firecracker jailer integration |
+| **CgroupManager** | `cgroup.go` | cgroup v1/v2 CPU, memory and I/O limits |
 
 **Jailer Isolation:**
 
@@ -409,8 +408,8 @@ const (
 │        ├───────────────────────┼──────────────────────┤                   │
 │        │                       │                      │                   │
 │        ▼                       ▼                      ▼                   │
-│   pkg/image              pkg/security            pkg/storage               │
-│   (ImagePreparer)        (Jailer)                (VolumeManager)           │
+│   pkg/image              pkg/jailer             pkg/storage               │
+│   (ImagePreparer)        (Jailer)               (VolumeManager)           │
 │        │                       │                      │                   │
 │        │                       │                      │                   │
 │        ▼                       ▼                      ▼                   │

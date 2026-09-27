@@ -48,7 +48,6 @@ MicroVM (isolated kernel + workload)
 | **Jailer** | `pkg/jailer` | Security sandboxing via jailer | 87.4% coverage |
 | **Image** | `pkg/image` | OCI image → root filesystem conversion | 71.2% coverage |
 | **Network** | `pkg/network` | TAP device & bridge management | 62.1% coverage |
-| **Security** | `pkg/security` | Security policies and seccomp | 74.7% coverage |
 | **Storage** | `pkg/storage` | Volume driver system | 76.4% coverage |
 | **Snapshot** | `pkg/snapshot` | VM snapshot/restore lifecycle | 69.7% coverage |
 | **SwarmKit** | `pkg/swarmkit` | SwarmKit API integration | 68.4% coverage |
@@ -88,7 +87,6 @@ swarmcracker/
 │   ├── metrics/                    # Prometheus metrics
 │   ├── image/                      # Image preparation
 │   ├── network/                    # Network management
-│   ├── security/                   # Security policies
 │   ├── jailer/                     # Jailer sandboxing
 │   ├── storage/                    # Volume driver system
 │   ├── snapshot/                   # VM snapshots

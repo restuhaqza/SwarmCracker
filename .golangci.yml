@@ -72,9 +72,6 @@ linters:
           - gosec
         path: pkg/network/
       - linters:
-          - gosec
-        path: pkg/security/
-      - linters:
           - gocyclo
           - gosec
           - noctx
