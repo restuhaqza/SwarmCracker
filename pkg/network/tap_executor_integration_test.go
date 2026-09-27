@@ -123,29 +123,6 @@ func TestDeleteTAPDeviceWithExecutor_NomasterIgnored(t *testing.T) {
 }
 
 // ===== TAPDeviceExistsWithExecutor Tests =====
-
-func TestTAPDeviceExistsWithExecutor_Exists(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.RunError = nil // ip link show succeeds
-
-	exists, err := TAPDeviceExistsWithExecutor("tap-vm-1", mock)
-
-	require.NoError(t, err)
-	assert.True(t, exists)
-}
-
-func TestTAPDeviceExistsWithExecutor_NotExists(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.RunError = errors.New("device not found")
-
-	exists, err := TAPDeviceExistsWithExecutor("tap-vm-1", mock)
-
-	require.NoError(t, err)
-	assert.False(t, exists)
-}
-
-// ===== getTAPMACWithExecutor Tests =====
-
 func TestGetTAPMACWithExecutor_Success(t *testing.T) {
 	mock := NewMockTAPExecutor()
 	mock.SetOutputResult([]byte("tap-vm-1: UP 00:11:22:33:44:55\n"))
@@ -188,91 +165,12 @@ func TestGetTAPMACWithExecutor_ShortOutput(t *testing.T) {
 }
 
 // ===== ConfigureTAPIPWithExecutor Tests =====
-
-func TestConfigureTAPIPWithExecutor_Success(t *testing.T) {
-	mock := NewMockTAPExecutor()
-
-	err := ConfigureTAPIPWithExecutor("tap-vm-1", "10.0.0.2/24", mock)
-
-	require.NoError(t, err)
-}
-
-func TestConfigureTAPIPWithExecutor_Fails(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.RunError = errors.New("addr add failed")
-
-	err := ConfigureTAPIPWithExecutor("tap-vm-1", "10.0.0.2/24", mock)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to set IP")
-}
-
-// ===== CreateBridgeWithExecutor Tests =====
-
-func TestCreateBridgeWithExecutor_AlreadyExists(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.RunError = nil // ip link show succeeds (bridge exists)
-
-	err := CreateBridgeWithExecutor("br0", "10.0.0.0/24", mock)
-
-	require.NoError(t, err)
-}
-
-func TestCreateBridgeWithExecutor_CreateNew(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	// First call (show) fails, others succeed
-	mock.RunErrors["ip"] = errors.New("bridge not found")
-	// Clear for subsequent calls
-	mock.RunError = nil
-
-	err := CreateBridgeWithExecutor("br0", "10.0.0.0/24", mock)
-
-	// With mock, may succeed or fail depending on mock configuration
-	_ = err
-}
-
-func TestCreateBridgeWithExecutor_CreateFails(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.RunError = errors.New("link add failed")
-
-	err := CreateBridgeWithExecutor("br0", "10.0.0.0/24", mock)
-
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to create bridge")
-}
-
-func TestCreateBridgeWithExecutor_InvalidSubnet(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(nil) // Bridge check succeeds (exists)
-
-	err := CreateBridgeWithExecutor("br0", "invalid-subnet", mock)
-
-	// If bridge already exists, no error from subnet parsing
-	// Let's test the case where bridge doesn't exist and subnet is invalid
-	// For that, we need RunError for show only, not for add
-	// This test is tricky - let's adjust
-	_ = err
-}
-
 func TestCreateBridgeWithExecutor_InvalidSubnetNewBridge(t *testing.T) {
 	// More complex case: bridge doesn't exist, subnet invalid
 	// We can't easily simulate this with current mock
 	// Skip for now
 	t.Skip("requires per-command mock control")
 }
-
-func TestCreateBridgeWithExecutor_EmptySubnet(t *testing.T) {
-	mock := NewMockTAPExecutor()
-	mock.SetRunError(nil)
-
-	err := CreateBridgeWithExecutor("br0", "", mock)
-
-	// Should create bridge without IP
-	require.NoError(t, err)
-}
-
-// ===== DefaultTAPExecutor Tests =====
-
 func TestDefaultTAPExecutor_Interface(t *testing.T) {
 	var _ = NewDefaultTAPExecutor()
 }

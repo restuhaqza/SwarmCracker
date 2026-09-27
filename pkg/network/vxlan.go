@@ -11,9 +11,10 @@ import (
 	"sync"
 	"time"
 
+	"os/exec"
+
 	"github.com/rs/zerolog/log"
 	"github.com/vishvananda/netlink"
-	"os/exec"
 )
 
 // PeerStore defines the interface for storing and retrieving VXLAN peer information.
