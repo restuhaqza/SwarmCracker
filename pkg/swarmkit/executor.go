@@ -1014,10 +1014,11 @@ func (c *Controller) convertTask() *types.Task {
 	}
 
 	container := &types.Container{
-		Image:   containerSpec.Container.Image,
-		Command: containerSpec.Container.Command,
-		Args:    containerSpec.Container.Args,
-		Env:     containerSpec.Container.Env,
+		Image:    containerSpec.Container.Image,
+		Command:  containerSpec.Container.Command,
+		Args:     containerSpec.Container.Args,
+		Env:      containerSpec.Container.Env,
+		DiskSize: c.task.ServiceAnnotations.Labels[types.DiskSizeLabel],
 	}
 
 	// Convert mounts
