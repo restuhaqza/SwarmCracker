@@ -270,8 +270,16 @@ func hasSysvinit(tmpDir string) bool {
 		return false
 	}
 
-	// Check for /sbin/init that's not systemd
+	// sysvinit images always ship /sbin/init. Some base images (e.g.
+	// ubuntu:24.04) include /etc/init.d/* without any init binary; treating
+	// those as sysvinit would "preserve" a non-existent init and leave the
+	// rootfs with nothing to exec at boot. Require a real /sbin/init.
 	sbinInit := filepath.Join(tmpDir, "sbin", "init")
+	if _, err := os.Lstat(sbinInit); err != nil {
+		return false
+	}
+
+	// Check for /sbin/init that's not systemd
 	if fi, err := os.Stat(sbinInit); err == nil {
 		// If it's a regular file or symlink (not pointing to systemd)
 		if fi.Mode().IsRegular() {

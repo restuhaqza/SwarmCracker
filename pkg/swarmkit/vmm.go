@@ -654,8 +654,22 @@ func (v *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSta
 		}, nil
 	}
 
-	// Wait for process (exactly once per task)
-	err := v.waitForProcess(task.ID, cmd)
+	// Wait for process (exactly once per task). Respect context cancellation so
+	// the SwarmKit task manager can re-dispatch (e.g. to process a Shutdown or
+	// Remove desired state) instead of blocking here until the VM exits on its
+	// own. waitForProcess still calls cmd.Wait() exactly once per task; the
+	// goroutine completes later even if this call returns early.
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- v.waitForProcess(task.ID, cmd)
+	}()
+
+	var err error
+	select {
+	case err = <-waitDone:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 
 	status := &types.TaskStatus{
 		Timestamp: time.Now().Unix(),

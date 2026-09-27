@@ -64,10 +64,19 @@ func TestHasSysvinit_SymlinkNonSystemd(t *testing.T) {
 
 func TestHasSysvinit_InitDPath(t *testing.T) {
 	tmpDir := t.TempDir()
-	// Create /etc/init.d directory without OpenRC markers
+	// /etc/init.d alone (no init binary) is NOT sysvinit. Base images such as
+	// ubuntu:24.04 ship /etc/init.d/procps without /sbin/init; treating them as
+	// sysvinit leaves the rootfs with no init to exec.
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "etc", "init.d"), 0755))
 
-	assert.True(t, hasSysvinit(tmpDir), "init.d without OpenRC should indicate sysvinit")
+	assert.False(t, hasSysvinit(tmpDir), "init.d without an init binary must not indicate sysvinit")
+
+	// With a real /sbin/init present, init.d does indicate sysvinit.
+	sbinDir := filepath.Join(tmpDir, "sbin")
+	require.NoError(t, os.MkdirAll(sbinDir, 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(sbinDir, "init"), []byte("#!/bin/sh"), 0755))
+
+	assert.True(t, hasSysvinit(tmpDir), "init.d with a real /sbin/init should indicate sysvinit")
 }
 
 func TestHasSysvinit_InitDWithRunlevels(t *testing.T) {

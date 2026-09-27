@@ -212,6 +212,15 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 // prepareImage prepares an OCI image and converts to ext4 filesystem.
 // Init injection happens BEFORE ext4 creation so files are included.
 func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, outputPath string) error {
+	// Image preparation (registry pull + extraction) is idempotent and cached
+	// by image ID under a file lock. SwarmKit cancels the task operation
+	// context whenever a task update arrives (e.g. a network attachment), which
+	// would abort an in-flight pull mid-stream. Decouple preparation from that
+	// cancellation so a slow image can finish pulling, but keep a bounded
+	// deadline so a stuck pull cannot hang forever.
+	pullCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Minute)
+	defer cancel()
+
 	// Create temporary directory for extraction
 	tmpDir, err := os.MkdirTemp("", "swarmcracker-extract-")
 	if err != nil {
@@ -221,14 +230,14 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 
 	// Step 1: Validate image manifest (OS/architecture compatibility)
 	log.Debug().Str("image", imageRef).Msg("Validating image manifest")
-	buildOpts := buildRemoteOptions(ctx, ip.config.RegistryAuth)
-	if err := validateImageManifest(ctx, imageRef, buildOpts...); err != nil {
+	buildOpts := buildRemoteOptions(pullCtx, ip.config.RegistryAuth)
+	if err := validateImageManifest(pullCtx, imageRef, buildOpts...); err != nil {
 		return fmt.Errorf("image validation failed: %w", err)
 	}
 
 	// Step 2: Pull and extract OCI image
 	log.Debug().Str("image", imageRef).Msg("Pulling OCI image")
-	if err := ip.extractOCIImage(ctx, imageRef, tmpDir); err != nil {
+	if err := ip.extractOCIImage(pullCtx, imageRef, tmpDir); err != nil {
 		return fmt.Errorf("failed to extract OCI image: %w", err)
 	}
 
@@ -370,6 +379,7 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 		},
 	}
 
+	var lastErr error
 	for _, method := range methods {
 		// Skip CLI methods if tool not available
 		if method.name != "go-containerregistry" {
@@ -382,13 +392,24 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 
 		err := method.fn(ctx, imageRef, destPath)
 		if err != nil {
+			// Propagate cancellation/deadline directly. SwarmKit's task manager
+			// classifies context.Canceled/DeadlineExceeded as retryable, but it
+			// inspects errors.Cause; wrapping here would hide the cause and the
+			// task would be marked REJECTED (fatal) instead of retried.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			log.Debug().Str("method", method.name).Err(err).Msg("Extraction failed, trying next method")
+			lastErr = err
 			continue
 		}
 
 		return nil
 	}
 
+	if lastErr != nil {
+		return fmt.Errorf("no image extraction method available (go-containerregistry, docker, or podman): %w", lastErr)
+	}
 	return fmt.Errorf("no image extraction method available (go-containerregistry, docker, or podman)")
 }
 
