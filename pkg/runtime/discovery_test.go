@@ -94,6 +94,7 @@ func TestMergeVMs(t *testing.T) {
 		{ID: "a", Status: "running", Image: "img-a", IPAddresses: []string{"10.0.0.1"}, Command: []string{"sleep"}},
 		nil,
 		{ID: ""},
+		{ID: "   "},
 	}
 	running := []RunningVM{
 		{ID: "c", SocketPath: "/s/c.sock", Started: started},

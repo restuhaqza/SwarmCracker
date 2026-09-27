@@ -113,7 +113,7 @@ func MergeVMs(states []*VMState, running []RunningVM) []*VMState {
 	merged := make(map[string]*VMState, len(states)+len(running))
 
 	for _, state := range states {
-		if state == nil || state.ID == "" {
+		if state == nil || strings.TrimSpace(state.ID) == "" {
 			continue
 		}
 		cp := *state
