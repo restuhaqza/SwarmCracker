@@ -12,6 +12,7 @@ linters:
     - prealloc
     - revive
     - staticcheck
+    - unused
   settings:
     errcheck:
       check-type-assertions: true
