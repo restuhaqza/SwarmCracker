@@ -143,3 +143,6 @@ venv/
 coverage.out
 site/
 *.lock
+
+# Local design drafts (untracked by intent)
+docs/design/

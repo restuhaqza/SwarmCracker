@@ -14,11 +14,6 @@ on:
       - '.github/workflows/release.yml'
   pull_request:
     branches: [main]
-    paths:
-      - '**/*.go'
-      - 'go.mod'
-      - 'go.sum'
-      - 'Makefile'
 
 concurrency:
   group: ci-${{ github.ref }}
