@@ -3,11 +3,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +41,7 @@ Example:
 
 	cmd.Flags().BoolVar(&listAll, "all", false, "Show all VMs including stopped ones")
 	cmd.Flags().StringVar(&listFormat, "format", "table", "Output format (table, json)")
+	cmd.Flags().StringVar(&vmSocketDir, "socket-dir", vmSocketDirDefault, "Directory containing Firecracker VM sockets")
 
 	return cmd
 }
@@ -52,31 +54,31 @@ func runList() error {
 		return fmt.Errorf("failed to create state manager: %w", err)
 	}
 
-	// Reconcile state with actual running processes
-	// This checks if VMs marked as "running" are actually still alive
+	// Reconcile the CLI's own state with live processes: entries marked as
+	// running whose socket is gone are stale.
 	reconciledCount := stateMgr.Reconcile(func(id string) bool {
-		// Check if firecracker process exists
-		// Try to find by socket file or PID
-		socketPath := "/var/run/firecracker/" + id + ".sock"
-		if _, err := os.Stat(socketPath); err == nil {
-			return true // Socket exists, assume running
-		}
-		return false
+		return runtime.IsVMSocketAlive(filepath.Join(vmSocketDir, id+runtime.VMSocketSuffix), 300*time.Millisecond)
 	})
-
 	if reconciledCount > 0 {
 		fmt.Printf("Reconciled %d stale VM state(s)\n", reconciledCount)
 	}
 
-	// Get all VMs
-	vms := stateMgr.List()
+	// Discover VMs started by the daemon for services/tasks. Those live in
+	// SwarmKit, not in the CLI state file, so they would otherwise be invisible.
+	running, err := runtime.DiscoverRunningVMs(vmSocketDir)
+	if err != nil {
+		log.Warn().Err(err).Str("socket_dir", vmSocketDir).Msg("Failed to discover running VMs")
+	}
+
+	// Merge state entries with discovered VMs (state wins on conflict), then
+	// enrich the discovered ones with PID/image/service metadata.
+	vms := runtime.MergeVMs(stateMgr.List(), running)
+	enrichVMs(vms)
 
 	// Filter VMs based on --all flag
 	var filteredVMs []*runtime.VMState
 	for _, vm := range vms {
-		if listAll {
-			filteredVMs = append(filteredVMs, vm)
-		} else if vm.Status == "running" || vm.Status == "starting" {
+		if listAll || vm.Status == "running" || vm.Status == "starting" {
 			filteredVMs = append(filteredVMs, vm)
 		}
 	}
@@ -98,28 +100,27 @@ func outputTable(vms []*runtime.VMState) error {
 	}
 
 	// Print header
-	fmt.Printf("%-20s %-12s %-25s %-8s %-12s\n",
-		"ID", "STATUS", "IMAGE", "PID", "STARTED")
-	fmt.Println(strings.Repeat("-", 90))
+	fmt.Printf("%-20s %-12s %-14s %-25s %-8s %-12s\n",
+		"ID", "STATUS", "SERVICE", "IMAGE", "PID", "STARTED")
+	fmt.Println(strings.Repeat("-", 105))
 
 	// Print each VM
 	for _, vm := range vms {
 		// Calculate uptime
 		uptime := formatUptime(time.Since(vm.StartTime))
 
-		// Truncate image if too long
-		image := vm.Image
-		if len(image) > 23 {
-			image = image[:20] + "..."
+		image := truncateMiddle(vm.Image, 23)
+		service := truncateMiddle(vm.Service, 12)
+		pid := "-"
+		if vm.PID > 0 {
+			pid = fmt.Sprintf("%d", vm.PID)
 		}
 
-		// Format PID
-		pid := fmt.Sprintf("%d", vm.PID)
-
 		// Print row
-		fmt.Printf("%-20s %-12s %-25s %-8s %-12s\n",
+		fmt.Printf("%-20s %-12s %-14s %-25s %-8s %-12s\n",
 			vm.ID,
 			formatStatus(vm.Status),
+			service,
 			image,
 			pid,
 			uptime,
@@ -129,6 +130,17 @@ func outputTable(vms []*runtime.VMState) error {
 	// Print summary
 	fmt.Printf("\nTotal: %d VM(s)\n", len(vms))
 	return nil
+}
+
+// truncateMiddle shortens s to at most max characters, appending an ellipsis.
+func truncateMiddle(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	if max <= 3 {
+		return s[:max]
+	}
+	return s[:max-3] + "..."
 }
 
 // outputJSON displays VMs in JSON format

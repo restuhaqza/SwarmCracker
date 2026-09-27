@@ -20,6 +20,10 @@ type VMState struct {
 	StartTime  time.Time `json:"start_time"`
 	Command    []string  `json:"command,omitempty"`
 
+	// Service is the SwarmKit service name for daemon-managed VMs. It is empty
+	// for VMs created directly with `swarmcracker vm create`.
+	Service string `json:"service,omitempty"`
+
 	// Additional metadata
 	VCPUs      int    `json:"vcpus,omitempty"`
 	MemoryMB   int    `json:"memory_mb,omitempty"`
