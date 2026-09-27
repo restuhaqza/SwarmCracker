@@ -97,27 +97,6 @@ func NewVXLANManager(bridgeName string, vxlanID int, overlayIP string, peerStore
 		netlinkExecutor: NewDefaultNetlinkExecutor(),
 	}
 }
-
-// NewVXLANManagerWithExecutor creates a new VXLAN manager with a custom executor.
-// This is primarily used for testing to inject mock implementations.
-func NewVXLANManagerWithExecutor(bridgeName string, vxlanID int, overlayIP string, peerStore PeerStore, executor NetlinkExecutor) *VXLANManager {
-	if peerStore == nil {
-		peerStore = NewStaticPeerStore(nil)
-	}
-	if executor == nil {
-		executor = NewDefaultNetlinkExecutor()
-	}
-	return &VXLANManager{
-		BridgeName:      bridgeName,
-		VXLANID:         vxlanID,
-		OverlayIP:       overlayIP,
-		vxlanPort:       4789,
-		peerStore:       peerStore,
-		netlinkExecutor: executor,
-	}
-}
-
-// SetupVXLAN creates and configures the VXLAN overlay network.
 func (v *VXLANManager) SetupVXLAN(physInterface, localIP string) error {
 	if err := v.ensureVXLANModule(); err != nil {
 		return fmt.Errorf("failed to load VXLAN module: %w", err)
