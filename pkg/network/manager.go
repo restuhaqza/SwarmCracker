@@ -815,6 +815,10 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		"--log-dhcp",
 		"--log-facility=/tmp/dnsmasq-"+nm.config.BridgeName+".log",
 		"--pid-file=/tmp/dnsmasq-"+nm.config.BridgeName+".pid",
+		// dnsmasq's compiled-in default lease file is /var/lib/misc/dnsmasq.leases,
+		// which is read-only under the hardened systemd unit (ProtectSystem=strict).
+		// Point it at a writable path so the DHCP fallback can start.
+		"--dhcp-leasefile=/tmp/dnsmasq-"+nm.config.BridgeName+".leases",
 	)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
