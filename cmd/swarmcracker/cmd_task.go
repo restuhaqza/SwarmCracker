@@ -250,7 +250,7 @@ func getSwarmClientForTask() (api.ControlClient, *grpc.ClientConn, error) {
 	}
 
 	conn, err := grpc.NewClient(
-		socketPath,
+		"unix://"+socketPath,
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
 		grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 			return net.Dial("unix", socketPath)
