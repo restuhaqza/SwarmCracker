@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -89,18 +88,4 @@ func TestMetricsAreRegistered(t *testing.T) {
 		assert.True(t, unregistered, "metric should be registered")
 		prometheus.DefaultRegisterer.MustRegister(m)
 	}
-}
-
-// gatherMetricText returns the text representation of a metric for assertion.
-func gatherMetricText(c prometheus.Collector) string {
-	ch := make(chan prometheus.Metric, 100)
-	go func() {
-		c.Collect(ch)
-		close(ch)
-	}()
-	var sb strings.Builder
-	for m := range ch {
-		sb.WriteString(m.Desc().String())
-	}
-	return sb.String()
 }

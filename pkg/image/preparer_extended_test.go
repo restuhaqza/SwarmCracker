@@ -674,15 +674,6 @@ func TestPreparerExtended_WithMocks(t *testing.T) {
 	}
 }
 
-// execError is a simple error type for exec command failures
-type execError struct {
-	msg string
-}
-
-func (e *execError) Error() string {
-	return e.msg
-}
-
 // TestPreparerExtended_ValidateArchitecture tests validateArchitecture function
 func TestPreparerExtended_ValidateArchitecture(t *testing.T) {
 	prep := &ImagePreparer{}

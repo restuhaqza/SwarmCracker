@@ -18,20 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// mockCmd creates a mock exec.Cmd that returns specified output/error
-type mockCmd struct {
-	output []byte
-	err    error
-}
-
-func (m *mockCmd) CombinedOutput() ([]byte, error) {
-	return m.output, m.err
-}
-
-func (m *mockCmd) Run() error {
-	return m.err
-}
-
 // TestInjectSecrets_MockMount tests InjectSecrets with mocked mount/unmount
 func TestInjectSecrets_MockMount(t *testing.T) {
 	origMkdirTemp := osMkdirTemp

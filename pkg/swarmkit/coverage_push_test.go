@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1159,7 +1158,3 @@ func TestParseMeminfoLine_Push_AllDigits(t *testing.T) {
 // ============================================================================
 // Helper function (not a test)
 // ============================================================================
-
-func containsPush(s, substr string) bool {
-	return strings.Contains(s, substr)
-}

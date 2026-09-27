@@ -1,11 +1,8 @@
 package e2e
 
 import (
-	"os"
 	"os/exec"
 	"testing"
-
-	"github.com/stretchr/testify/require"
 )
 
 // TestE2E_Prerequisites delegates to the unified testinfra package.
@@ -55,81 +52,7 @@ func hasSwarmd() bool {
 	_, err := exec.LookPath("swarmd")
 	return err == nil
 }
-
-// hasSwarmCracker checks if swarmcracker binary is available
-func hasSwarmCracker() bool {
-	_, err := exec.LookPath("swarmcracker")
-	return err == nil
-}
-
-// hasFirecracker checks if firecracker binary is available
 func hasFirecracker() bool {
 	_, err := exec.LookPath("firecracker")
 	return err == nil
-}
-
-// hasDocker checks if docker is available
-func hasDocker() bool {
-	_, err := exec.LookPath("docker")
-	return err == nil
-}
-
-// hasPodman checks if podman is available
-func hasPodman() bool {
-	_, err := exec.LookPath("podman")
-	return err == nil
-}
-
-// hasKVM checks if KVM device is available
-func hasKVM() bool {
-	_, err := os.Stat("/dev/kvm")
-	return err == nil
-}
-
-// hasKernel checks if Firecracker kernel is available
-func hasKernel() bool {
-	kernelPaths := []string{
-		"/home/kali/.local/share/firecracker/vmlinux",
-		"/usr/share/firecracker/vmlinux",
-		"/boot/vmlinux",
-		"/var/lib/firecracker/vmlinux",
-	}
-	for _, path := range kernelPaths {
-		if _, err := os.Stat(path); err == nil {
-			return true
-		}
-	}
-	return false
-}
-
-// checkPrerequisites checks prerequisites and returns which are available
-func checkPrerequisites(t *testing.T) (bool, bool, bool, bool) {
-	swarmd := hasSwarmd()
-	fc := hasFirecracker()
-	kvm := hasKVM()
-	kernel := hasKernel()
-
-	if !swarmd {
-		t.Log("swarmd not found, skipping test")
-	}
-	if !fc {
-		t.Log("Firecracker not found, skipping test")
-	}
-	if !kvm {
-		t.Log("KVM not available, skipping test")
-	}
-	if !kernel {
-		t.Log("Firecracker kernel not found, skipping test")
-	}
-
-	return swarmd, fc, kvm, kernel
-}
-
-// requirePrerequisites fails the test if prerequisites are not met
-func requirePrerequisites(t *testing.T) {
-	swarmd, fc, kvm, kernel := checkPrerequisites(t)
-	require.True(t, swarmd, "swarmd is required for E2E tests")
-	require.True(t, fc, "Firecracker is required for E2E tests")
-	require.True(t, kvm, "KVM is required for E2E tests")
-	require.True(t, kernel, "Firecracker kernel is required for E2E tests")
 }

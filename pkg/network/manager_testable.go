@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -339,12 +338,3 @@ var (
 	_ CommandExecutor = (*RealCommandExecutor)(nil)
 	_ CommandExecutor = (*MockCommandExecutor)(nil)
 )
-
-// Default executor for production use
-var defaultExecutor CommandExecutor = &RealCommandExecutor{}
-
-// execCommandHelper is a helper that uses the default executor
-// Note: execCommand variable is defined in manager.go for testability
-func execCommandHelper(name string, args ...string) *exec.Cmd {
-	return exec.CommandContext(context.Background(), name, args...)
-}

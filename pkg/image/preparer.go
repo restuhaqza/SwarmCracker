@@ -349,9 +349,6 @@ func (ip *ImagePreparer) verifyCachedRootfs(rootfsPath string) bool {
 	return true
 }
 
-// rootfsVersion tracks the pipeline version for cache invalidation.
-const rootfsVersion = "1" // Increment when pipeline changes invalidate cache
-
 // extractOCIImage extracts an OCI image using go-containerregistry (primary) or docker/podman (fallback).
 func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath string) error {
 	// Try different methods in order of preference (daemon-free first)

@@ -524,9 +524,7 @@ type Controller struct {
 	// internalTask holds the prepared internal task with annotations
 	internalTask *types.Task
 
-	process    *os.Process
 	socketPath string
-	cancel     context.CancelFunc
 	logger     zerolog.Logger
 
 	// OnRemove is called when the controller is removed from the executor

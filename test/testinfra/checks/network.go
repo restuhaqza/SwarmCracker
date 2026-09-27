@@ -18,13 +18,6 @@ func ipCmdArgs(args ...string) *exec.Cmd {
 	return exec.CommandContext(context.Background(), all[0], all[1:]...)
 }
 
-// ipCmd returns the appropriate prefix for network commands.
-// If not root, it tries sudo.
-func ipCmd() string {
-	return "" // unused, kept for compat
-}
-
-// NetworkChecker validates network configuration
 type NetworkChecker struct{}
 
 // NewNetworkChecker creates a new network checker

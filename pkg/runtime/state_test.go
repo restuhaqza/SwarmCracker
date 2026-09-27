@@ -598,7 +598,6 @@ func TestConcurrentAccess(t *testing.T) {
 	}
 
 	const numGoroutines = 50
-	const numOps = 100
 
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines * 4) // 4 types of operations

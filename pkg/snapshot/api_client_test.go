@@ -57,22 +57,6 @@ func TestSaveMetadata_ErrorPaths(t *testing.T) {
 	})
 }
 
-// testHTTPClient wraps httptest client to override URL
-type testHTTPClient struct {
-	client  *http.Client
-	baseURL string
-}
-
-func (c *testHTTPClient) Do(req *http.Request) (*http.Response, error) {
-	// Replace the URL with the test server URL
-	newURL := c.baseURL + req.URL.Path
-	newReq, err := http.NewRequestWithContext(req.Context(), req.Method, newURL, req.Body)
-	if err != nil {
-		return nil, err
-	}
-	newReq.Header = req.Header
-	return c.client.Do(newReq)
-}
 func TestPutFirecrackerAPI(t *testing.T) {
 	t.Run("successful PUT request", func(t *testing.T) {
 		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

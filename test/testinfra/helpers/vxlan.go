@@ -9,15 +9,6 @@ import (
 	"time"
 )
 
-// vxlanIPCmd returns the appropriate prefix for network commands.
-func vxlanIPCmd() []string {
-	if os.Geteuid() == 0 {
-		return nil
-	}
-	return []string{"sudo"}
-}
-
-// VXLANHelper provides helper methods for VXLAN overlay testing
 type VXLANHelper struct{}
 
 // NewVXLANHelper creates a new VXLAN helper

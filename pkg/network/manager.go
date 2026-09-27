@@ -41,7 +41,6 @@ type NetworkManager struct {
 	natSetup      bool
 	vxlanMgr      *VXLANManager
 	peerDiscovery bool
-	peerCancel    context.CancelFunc
 	nodeDiscovery types.NodeDiscovery // SwarmKit node discovery provider
 	cniClient     *CNIClient          // CNI client for SwarmKit network attachments
 	pendingPeers  []string            // Peers queued before VXLAN init

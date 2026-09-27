@@ -847,7 +847,6 @@ func TestConcurrentStateOperations(t *testing.T) {
 	}
 
 	const numGoroutines = 100
-	const numOps = 100
 	var wg sync.WaitGroup
 
 	// Concurrent Add operations

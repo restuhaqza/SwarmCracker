@@ -2,7 +2,6 @@
 package metrics
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strconv"
@@ -27,9 +26,7 @@ type VMMetrics struct {
 type Collector struct {
 	stateDir string                // For persistence
 	mu       sync.RWMutex          // Protects metrics map
-	cancelMu sync.Mutex            // Protects cancel field
 	metrics  map[string]*VMMetrics // taskID -> metrics
-	cancel   context.CancelFunc    // Cancel periodic collection
 }
 
 // NewCollector creates a new metrics collector.

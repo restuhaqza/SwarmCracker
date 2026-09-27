@@ -259,29 +259,3 @@ func TestTaskTranslator_BuildBootArgs_EdgeCases(t *testing.T) {
 		})
 	}
 }
-
-// Helper function to split string into words
-func splitString(s string) []string {
-	words := make([]string, 0)
-	currentWord := ""
-	inSpace := true
-
-	for _, r := range s {
-		if r == ' ' {
-			if !inSpace && currentWord != "" {
-				words = append(words, currentWord)
-				currentWord = ""
-			}
-			inSpace = true
-		} else {
-			currentWord += string(r)
-			inSpace = false
-		}
-	}
-
-	if currentWord != "" {
-		words = append(words, currentWord)
-	}
-
-	return words
-}
