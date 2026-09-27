@@ -304,6 +304,21 @@ swarmcracker vm snapshot delete snap-a1b2c3d4e5f67890
 swarmcracker vm snapshot cleanup --max-age 24h
 ```
 
+### Attach to a VM Console
+
+```bash
+# Find a task ID (service ps shows a 12-char prefix)
+swarmcracker task ls
+
+# Attach to the guest ttyS0 console (task ID or unique prefix). Ctrl-P Ctrl-Q detaches.
+swarmcracker vm attach 5f3a1b2c9d
+```
+
+The console socket is `<socket-dir>/<task-id>.console.sock` (default socket dir
+`/var/run/firecracker`, owned by the daemon, mode `0600`). Attach works for VMs
+managed by the daemon (service tasks); VMs started in the foreground by
+`swarmcracker vm create` are not attachable because the CLI owns their console.
+
 ### Global Flags
 
 - `--config, -c` - Config file path

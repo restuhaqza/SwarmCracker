@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"io"
+	"strings"
 	"testing"
 )
 
@@ -19,6 +23,7 @@ func TestVMCommandStructure(t *testing.T) {
 		"stop",
 		"logs",
 		"snapshot",
+		"attach",
 	}
 
 	for _, cmd := range expectedCommands {
@@ -177,5 +182,92 @@ func TestVMSnapshotCommand(t *testing.T) {
 
 	if cmd.Name() != "snapshot" {
 		t.Errorf("Expected command name 'snapshot', got '%s'", cmd.Name())
+	}
+}
+
+// TestVMAttachCommand verifies the attach command
+func TestVMAttachCommand(t *testing.T) {
+	cmd := newVMAttachCommand()
+
+	if cmd.Name() != "attach" {
+		t.Errorf("Expected command name 'attach', got '%s'", cmd.Name())
+	}
+
+	// Requires exactly one <vm> argument.
+	if err := cmd.Args(cmd, []string{}); err == nil {
+		t.Error("Expected attach to require an argument")
+	}
+	if err := cmd.Args(cmd, []string{"a", "b"}); err == nil {
+		t.Error("Expected attach to reject more than one argument")
+	}
+	if err := cmd.Args(cmd, []string{"abc"}); err != nil {
+		t.Errorf("Expected attach to accept one argument, got %v", err)
+	}
+
+	if cmd.Flags().Lookup("socket-dir") == nil {
+		t.Error("Expected flag 'socket-dir' not found")
+	}
+}
+
+// chunkReader returns data in fixed-size chunks, to exercise reads that split
+// multi-byte sequences across calls.
+type chunkReader struct {
+	data []byte
+	size int
+	off  int
+}
+
+func (r *chunkReader) Read(p []byte) (int, error) {
+	if r.off >= len(r.data) {
+		return 0, io.EOF
+	}
+	n := r.size
+	if n > len(p) {
+		n = len(p)
+	}
+	if r.off+n > len(r.data) {
+		n = len(r.data) - r.off
+	}
+	copy(p, r.data[r.off:r.off+n])
+	r.off += n
+	return n, nil
+}
+
+func TestPumpStdinForwardsInput(t *testing.T) {
+	var out bytes.Buffer
+	if err := pumpStdin(strings.NewReader("hello"), &out); err != nil {
+		t.Fatalf("pumpStdin returned %v", err)
+	}
+	if out.String() != "hello" {
+		t.Errorf("Expected 'hello', got %q", out.String())
+	}
+}
+
+func TestPumpStdinInterceptsDetach(t *testing.T) {
+	var out bytes.Buffer
+	err := pumpStdin(strings.NewReader("a\x10\x11b"), &out)
+	if !errors.Is(err, errDetach) {
+		t.Fatalf("Expected errDetach, got %v", err)
+	}
+	if out.String() != "a" {
+		t.Errorf("Expected only 'a' before detach, got %q", out.String())
+	}
+}
+
+func TestPumpStdinDetachAcrossReads(t *testing.T) {
+	var out bytes.Buffer
+	err := pumpStdin(&chunkReader{data: []byte("\x10\x11"), size: 1}, &out)
+	if !errors.Is(err, errDetach) {
+		t.Fatalf("Expected errDetach, got %v", err)
+	}
+}
+
+func TestPumpStdinPassesLoneCtrlP(t *testing.T) {
+	var out bytes.Buffer
+	if err := pumpStdin(strings.NewReader("a\x10b"), &out); err != nil {
+		t.Fatalf("pumpStdin returned %v", err)
+	}
+	if out.String() != "a\x10b" {
+		t.Errorf("Expected lone Ctrl-P to be forwarded, got %q", out.String())
 	}
 }

@@ -123,6 +123,32 @@ swarmcracker vm logs --follow <task-id>
 tail -f /tmp/dnsmasq.log
 ```
 
+**Attach to a VM console:**
+
+`swarmcracker vm attach` connects your terminal to the microVM's serial console
+(the same channel the guest kernel and `ttyS0` use). For an image whose command
+is an interactive shell (for example `CMD ["/bin/bash"]`), this gives you a shell
+inside the VM.
+
+```bash
+# Find the task ID (service ps shows a 12-character prefix)
+swarmcracker task ls
+
+# Attach using the full ID or any unique prefix
+swarmcracker vm attach 5f3a1b2c9d
+
+# Non-default socket directory (must match the daemon's --socket-dir)
+swarmcracker vm attach --socket-dir /var/run/firecracker 5f3a1b2c9d
+```
+
+Press **Ctrl-P Ctrl-Q** to detach; the VM keeps running. The console socket is
+owned by the daemon (`root`, mode `0600`), so run the command as root or with
+`sudo`.
+
+> **Note:** console attach is available for VMs managed by the daemon (service
+> tasks). VMs started in the foreground by `swarmcracker vm create` are not
+> attachable, because the CLI process that owns their console exits with the VM.
+
 **Log levels:** Set via `--log-level` flag or `logging.level` in config.yaml.
 Available: `debug`, `info`, `warn`, `error`.
 
@@ -645,6 +671,7 @@ swarmcracker cluster token worker       # Get a worker join token
 # VMs
 swarmcracker vm list                    # List VMs
 swarmcracker vm logs -f <vm-id>         # Follow VM logs
+swarmcracker vm attach <vm-id>          # Attach to the VM serial console
 swarmcracker vm stop <vm-id>            # Stop VM
 swarmcracker cluster status <vm-id>     # VM status
 
