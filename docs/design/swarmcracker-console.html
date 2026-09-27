@@ -1,0 +1,2125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SwarmCracker — Control Plane</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Azeret+Mono:wght@300;400;500;600&family=Saira:wght@300;400;500;600;700&family=Saira+Condensed:wght@500;600;700&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   SWARMCRACKER CONTROL PLANE — "IGNITION"
+   Aesthetic: industrial telemetry console.
+   Warm ember signal on cold carbon. Hairlines, mono data,
+   instrument-panel density, one orchestrated load reveal.
+   ============================================================ */
+
+:root{
+  --ink:#08080A;
+  --ink-2:#0C0C0F;
+  --panel:#121215;
+  --panel-2:#16161A;
+  --panel-3:#1C1C21;
+  --line:#242429;
+  --line-2:#33333A;
+
+  --txt:#EFEDE7;
+  --txt-2:#A5A39D;
+  --txt-3:#6A6963;
+
+  --ember:#FF6A2B;
+  --ember-2:#FFA160;
+  --ember-soft:rgba(255,106,43,.13);
+  --ember-line:rgba(255,106,43,.34);
+
+  --amber:#FFC24B;
+  --teal:#4FD6C4;
+  --green:#93E08A;
+  --red:#FF5C5C;
+  --blue:#7FB2FF;
+
+  --f-disp:'Saira Condensed','Archivo Narrow',system-ui,sans-serif;
+  --f-ui:'Saira',system-ui,-apple-system,sans-serif;
+  --f-body:'Archivo',system-ui,-apple-system,sans-serif;
+  --f-mono:'Azeret Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+
+  --r:13px;
+  --shadow:0 18px 40px -24px rgba(0,0,0,.9);
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  background:
+    radial-gradient(900px 520px at 12% -8%, rgba(255,106,43,.09), transparent 62%),
+    radial-gradient(760px 480px at 96% 4%, rgba(79,214,196,.05), transparent 60%),
+    var(--ink);
+  color:var(--txt);
+  font-family:var(--f-body);
+  font-size:14px;
+  line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+}
+::selection{background:var(--ember-soft);color:#fff}
+
+/* atmosphere */
+.grain{
+  position:fixed;inset:-50%;z-index:9998;pointer-events:none;opacity:.05;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  animation:grainShift 8s steps(6) infinite;
+}
+@keyframes grainShift{
+  0%{transform:translate(0,0)}   20%{transform:translate(-3%,2%)}
+  40%{transform:translate(2%,-3%)} 60%{transform:translate(-2%,-2%)}
+  80%{transform:translate(3%,3%)}  100%{transform:translate(0,0)}
+}
+
+/* scrollbars */
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:#2a2a30;border:3px solid transparent;background-clip:padding-box;border-radius:20px}
+::-webkit-scrollbar-thumb:hover{background:#3a3a42;background-clip:padding-box}
+
+button,input,select,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--ember);outline-offset:2px;border-radius:6px}
+
+/* ---------- iconography ---------- */
+.ico{width:16px;height:16px;flex:none;stroke:currentColor;fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.ico.sm{width:13px;height:13px}
+
+/* ============================ TOP BAR ============================ */
+.topbar{
+  height:56px;display:flex;align-items:center;gap:14px;padding:0 16px;
+  border-bottom:1px solid var(--line);
+  background:linear-gradient(180deg,rgba(22,22,26,.92),rgba(12,12,15,.92));
+  backdrop-filter:blur(14px);
+  position:relative;z-index:60;
+}
+.brand{display:flex;align-items:center;gap:10px;padding-right:14px;border-right:1px solid var(--line)}
+.mark{
+  width:26px;height:26px;border-radius:8px;display:grid;place-items:center;
+  background:linear-gradient(150deg,var(--ember),#B93A0C);
+  box-shadow:0 0 0 1px rgba(255,106,43,.35), 0 6px 18px -6px rgba(255,106,43,.6);
+}
+.mark svg{width:15px;height:15px;stroke:#140A04;stroke-width:1.8}
+.wordmark{font-family:var(--f-disp);font-weight:700;font-size:17px;letter-spacing:.11em;text-transform:uppercase}
+.wordmark span{color:var(--ember)}
+
+.envpill{
+  display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 10px;border-radius:8px;
+  border:1px solid var(--line-2);background:var(--panel-2);
+  font-family:var(--f-mono);font-size:10.5px;letter-spacing:.08em;color:var(--txt-2);text-transform:uppercase;
+}
+.envpill b{color:var(--txt);font-weight:500}
+.led{width:6px;height:6px;border-radius:50%;background:var(--teal);box-shadow:0 0 8px var(--teal)}
+.led.pulse{animation:led 2.2s ease-in-out infinite}
+@keyframes led{0%,100%{opacity:1}50%{opacity:.28}}
+
+.crumb{display:flex;align-items:center;gap:9px;font-family:var(--f-disp);text-transform:uppercase;letter-spacing:.14em;font-size:12px;color:var(--txt-3)}
+.crumb b{color:var(--txt);font-weight:600}
+.crumb .sep{color:var(--line-2)}
+
+.grow{flex:1}
+
+.searchbtn{
+  display:flex;align-items:center;gap:9px;height:32px;padding:0 10px 0 11px;min-width:230px;
+  border:1px solid var(--line);border-radius:9px;background:var(--ink-2);color:var(--txt-3);
+  cursor:pointer;transition:.16s;
+}
+.searchbtn:hover{border-color:var(--line-2);color:var(--txt-2);background:var(--panel)}
+.kbd{
+  margin-left:auto;font-family:var(--f-mono);font-size:10px;letter-spacing:.06em;
+  border:1px solid var(--line-2);border-radius:5px;padding:1px 5px;color:var(--txt-3);background:var(--panel-2);
+}
+.iconbtn{
+  width:32px;height:32px;display:grid;place-items:center;border-radius:9px;
+  border:1px solid transparent;background:transparent;color:var(--txt-2);cursor:pointer;transition:.16s;position:relative;
+}
+.iconbtn:hover{background:var(--panel-2);border-color:var(--line);color:var(--txt)}
+.badge-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;background:var(--amber);box-shadow:0 0 0 2px var(--ink)}
+
+.btn{
+  display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 13px;border-radius:9px;
+  border:1px solid var(--line-2);background:var(--panel-2);color:var(--txt);
+  font-family:var(--f-ui);font-size:12.5px;font-weight:500;letter-spacing:.02em;cursor:pointer;transition:.16s;
+}
+.btn:hover{background:var(--panel-3);border-color:#3f3f48}
+.btn.primary{
+  background:linear-gradient(180deg,var(--ember),#E24E12);border-color:#FF7C42;color:#1A0A02;font-weight:600;
+  box-shadow:0 8px 22px -10px rgba(255,106,43,.8);
+}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--txt-2)}
+.btn.ghost:hover{background:var(--panel-2);border-color:var(--line);color:var(--txt)}
+.btn.sm{height:27px;padding:0 10px;font-size:11.5px}
+.btn.danger:hover{border-color:rgba(255,92,92,.5);color:var(--red);background:rgba(255,92,92,.08)}
+.btn[disabled]{opacity:.4;cursor:not-allowed}
+
+.avatar{
+  width:28px;height:28px;border-radius:8px;display:grid;place-items:center;
+  background:linear-gradient(150deg,#2A2A31,#1A1A1F);border:1px solid var(--line-2);
+  font-family:var(--f-disp);font-weight:600;font-size:12px;letter-spacing:.04em;color:var(--txt-2);
+}
+
+/* ============================ SHELL ============================ */
+.shell{display:grid;grid-template-columns:236px 1fr;height:calc(100vh - 56px - 32px);overflow:hidden}
+
+/* ---------- rail ---------- */
+.rail{
+  border-right:1px solid var(--line);background:var(--ink-2);
+  display:flex;flex-direction:column;overflow-y:auto;padding:14px 10px 10px;
+}
+.group{margin-bottom:16px}
+.group > h4{
+  margin:0 0 7px 10px;font-family:var(--f-disp);font-size:10px;font-weight:600;
+  letter-spacing:.2em;text-transform:uppercase;color:var(--txt-3);
+}
+.nav{display:flex;flex-direction:column;gap:2px}
+.nav a{
+  display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;
+  color:var(--txt-2);text-decoration:none;font-family:var(--f-ui);font-size:13px;font-weight:500;
+  position:relative;cursor:pointer;transition:.15s;
+}
+.nav a:hover{background:var(--panel-2);color:var(--txt)}
+.nav a.on{
+  color:var(--txt);
+  background:linear-gradient(90deg,rgba(255,106,43,.16),rgba(255,106,43,.02) 78%);
+  box-shadow:inset 0 0 0 1px rgba(255,106,43,.12);
+}
+.nav a.on::before{content:'';position:absolute;left:-10px;top:8px;bottom:8px;width:2px;background:var(--ember);box-shadow:0 0 12px var(--ember)}
+.nav a .cnt{
+  margin-left:auto;font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);
+  background:var(--panel-2);border:1px solid var(--line);border-radius:6px;padding:0 6px;
+}
+.nav a.on .cnt{color:var(--ember-2);border-color:var(--ember-line);background:rgba(255,106,43,.08)}
+.railfoot{margin-top:auto;padding:12px 10px 4px;border-top:1px solid var(--line);font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);line-height:1.9}
+.railfoot b{color:var(--txt-2);font-weight:400}
+
+/* ---------- stage ---------- */
+.stage{overflow-y:auto;padding:22px 26px 60px;position:relative}
+.view{display:none;animation:rise .5s cubic-bezier(.2,.7,.2,1) both}
+.view.on{display:block}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+
+.vhead{display:flex;align-items:flex-end;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.vhead h1{
+  margin:0;font-family:var(--f-disp);font-weight:700;font-size:29px;letter-spacing:.02em;
+  text-transform:uppercase;line-height:1;
+}
+.vhead p{margin:6px 0 0;color:var(--txt-3);font-size:12.5px;max-width:62ch}
+.vhead .actions{margin-left:auto;display:flex;gap:8px;align-items:center}
+
+/* ---------- panel ---------- */
+.panel{
+  background:linear-gradient(180deg,var(--panel-2),var(--panel));
+  border:1px solid var(--line);border-radius:var(--r);position:relative;overflow:hidden;
+}
+.panel::after{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.07),transparent);pointer-events:none}
+.phead{display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid var(--line)}
+.phead h3{
+  margin:0;font-family:var(--f-disp);font-size:12px;font-weight:600;letter-spacing:.17em;
+  text-transform:uppercase;color:var(--txt-2);
+}
+.phead .meta{margin-left:auto;font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);letter-spacing:.03em}
+.pbody{padding:16px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+.grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
+.span2{grid-column:span 2}
+.stack{display:flex;flex-direction:column;gap:14px}
+
+/* ---------- hero pulse ---------- */
+.pulse{display:grid;grid-template-columns:1.05fr 1.4fr;gap:18px;align-items:stretch}
+.bignum{font-family:var(--f-disp);font-weight:700;font-size:76px;line-height:.86;letter-spacing:-.01em}
+.bignum .unit{font-size:26px;color:var(--txt-3);letter-spacing:.06em;margin-left:8px}
+.blabel{font-family:var(--f-mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--txt-3)}
+.delta{display:inline-flex;align-items:center;gap:6px;font-family:var(--f-mono);font-size:11px;color:var(--green);border:1px solid rgba(147,224,138,.28);background:rgba(147,224,138,.07);border-radius:999px;padding:2px 9px}
+.substats{display:grid;grid-template-columns:repeat(2,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:11px;overflow:hidden;margin-top:16px}
+.sub{background:var(--panel-2);padding:11px 13px}
+.sub .k{font-family:var(--f-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--txt-3)}
+.sub .v{font-family:var(--f-disp);font-weight:600;font-size:19px;margin-top:3px}
+.sub .v small{font-family:var(--f-mono);font-size:11px;color:var(--txt-3);font-weight:400}
+
+/* ---------- ring ---------- */
+.ringwrap{display:flex;align-items:center;gap:18px}
+.ring{position:relative;width:112px;height:112px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring .center{position:absolute;inset:0;display:grid;place-items:center;text-align:center}
+.ring .center b{font-family:var(--f-disp);font-size:26px;font-weight:700;line-height:1;display:block}
+.ring .center span{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.14em;color:var(--txt-3);text-transform:uppercase}
+.kv{display:flex;flex-direction:column;gap:9px;width:100%}
+.kv .row{display:flex;align-items:center;gap:10px;font-size:12.5px}
+.kv .row .lbl{color:var(--txt-3);font-family:var(--f-mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
+.kv .row .val{margin-left:auto;font-family:var(--f-mono);font-size:11.5px;color:var(--txt-2)}
+
+/* ---------- meters / bars ---------- */
+.meter{height:5px;border-radius:99px;background:#202027;overflow:hidden;position:relative}
+.meter i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--ember),var(--ember-2));box-shadow:0 0 10px -2px rgba(255,106,43,.7)}
+.meter i.cool{background:linear-gradient(90deg,#2FA394,var(--teal));box-shadow:none}
+.meter i.warm{background:linear-gradient(90deg,#D89A28,var(--amber));box-shadow:none}
+.meter i.hot{background:linear-gradient(90deg,#C93F3F,var(--red));box-shadow:none}
+.barcap{display:flex;justify-content:space-between;font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);margin-bottom:6px}
+.barcap b{color:var(--txt-2);font-weight:500}
+
+/* ---------- pills ---------- */
+.pill{
+  display:inline-flex;align-items:center;gap:6px;padding:2px 8px;border-radius:999px;
+  font-family:var(--f-mono);font-size:10px;letter-spacing:.09em;text-transform:uppercase;
+  border:1px solid var(--line-2);background:var(--panel-3);color:var(--txt-2);white-space:nowrap;
+}
+.pill .d{width:5px;height:5px;border-radius:50%;background:currentColor}
+.pill.run{color:var(--teal);border-color:rgba(79,214,196,.32);background:rgba(79,214,196,.08)}
+.pill.start{color:var(--amber);border-color:rgba(255,194,75,.32);background:rgba(255,194,75,.08)}
+.pill.start .d{animation:led 1.1s infinite}
+.pill.stop{color:var(--txt-3)}
+.pill.err{color:var(--red);border-color:rgba(255,92,92,.34);background:rgba(255,92,92,.08)}
+.pill.ember{color:var(--ember-2);border-color:var(--ember-line);background:rgba(255,106,43,.1)}
+.pill.blue{color:var(--blue);border-color:rgba(127,178,255,.3);background:rgba(127,178,255,.08)}
+
+/* ---------- tables ---------- */
+.tblwrap{overflow:auto;max-height:calc(100vh - 300px)}
+/* when a detail pane is open, shrink the stage so tables reflow and don't sit under it */
+body.ins-on .stage{padding-right:448px}
+body.ins-on .col-opt{display:none}
+@media (max-width:1320px){ body.ins-on .stage{padding-right:26px} }
+@media (max-width:1500px){ .col-opt{display:none} }
+table.grid{width:100%;border-collapse:collapse;font-size:12.5px}
+.grid th{
+  font-family:var(--f-disp);font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;
+  color:var(--txt-3);text-align:left;padding:10px 14px;border-bottom:1px solid var(--line);
+  position:sticky;top:0;background:var(--panel-2);z-index:2;white-space:nowrap;
+}
+.grid td{padding:11px 14px;border-bottom:1px solid rgba(255,255,255,.045);color:var(--txt-2);vertical-align:middle;white-space:nowrap}
+.grid tbody tr{cursor:pointer;transition:background .12s}
+.grid tbody tr:hover{background:rgba(255,255,255,.022)}
+.grid tbody tr.sel{background:linear-gradient(90deg,rgba(255,106,43,.1),transparent)}
+.grid tbody tr:last-child td{border-bottom:0}
+.mono{font-family:var(--f-mono);font-size:11px;letter-spacing:.01em}
+.mono.dim{color:var(--txt-3)}
+.strong{color:var(--txt);font-weight:500}
+.right{text-align:right}
+
+/* ---------- node cards ---------- */
+.nodegrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}
+.node{padding:15px 16px 16px}
+.node .top{display:flex;align-items:center;gap:10px;margin-bottom:13px}
+.node .host{font-family:var(--f-disp);font-size:15px;font-weight:600;letter-spacing:.03em}
+.node .role{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--txt-3);margin-top:1px}
+.node .metrics{display:flex;flex-direction:column;gap:12px}
+.node .foot{display:flex;align-items:center;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}
+.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:8px;overflow:hidden;background:var(--ink-2)}
+.seg button{
+  border:0;background:transparent;color:var(--txt-3);padding:4px 9px;font-family:var(--f-mono);
+  font-size:10px;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;transition:.14s;
+}
+.seg button:hover{color:var(--txt-2);background:var(--panel-2)}
+.seg button.on{background:var(--panel-3);color:var(--ember-2)}
+.seg button.on.drain{color:var(--amber)}
+.seg button.on.pause{color:var(--txt-2)}
+.seg button.on.active{color:var(--teal)}
+
+/* ---------- event stream ---------- */
+.stream{display:flex;flex-direction:column;max-height:392px;overflow-y:auto}
+.ev{display:flex;gap:11px;padding:9px 16px;border-bottom:1px solid rgba(255,255,255,.04);font-size:12px;animation:slidein .45s ease both}
+@keyframes slidein{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
+.ev .t{font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);padding-top:1px;flex:none}
+.ev .bar{width:2px;border-radius:2px;background:var(--line-2);flex:none}
+.ev .bar.ok{background:var(--teal)}
+.ev .bar.warn{background:var(--amber)}
+.ev .bar.err{background:var(--red)}
+.ev .bar.hot{background:var(--ember)}
+.ev p{margin:0;color:var(--txt-2);line-height:1.45}
+.ev p b{color:var(--txt);font-weight:500}
+.ev p code{font-family:var(--f-mono);font-size:11px;color:var(--ember-2);background:rgba(255,106,43,.08);border-radius:4px;padding:0 4px}
+
+/* ---------- fleet matrix ---------- */
+.matrix{display:flex;flex-wrap:wrap;gap:5px;padding:16px}
+.cell{
+  width:24px;height:24px;border-radius:6px;position:relative;cursor:pointer;
+  background:var(--panel-3);border:1px solid var(--line);transition:.16s;
+}
+.cell:hover{transform:translateY(-2px);box-shadow:0 8px 16px -8px #000;z-index:3}
+.cell.run{background:linear-gradient(160deg,rgba(79,214,196,.35),rgba(79,214,196,.1));border-color:rgba(79,214,196,.45)}
+.cell.start{background:linear-gradient(160deg,rgba(255,194,75,.42),rgba(255,194,75,.1));border-color:rgba(255,194,75,.5);animation:blip 1.4s infinite}
+.cell.stop{background:#191920;border-color:#26262c;opacity:.6}
+.cell.err{background:linear-gradient(160deg,rgba(255,92,92,.4),rgba(255,92,92,.1));border-color:rgba(255,92,92,.5)}
+@keyframes blip{0%,100%{opacity:1}50%{opacity:.45}}
+.legend{display:flex;gap:16px;padding:0 16px 14px;flex-wrap:wrap}
+.legend span{display:inline-flex;align-items:center;gap:7px;font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);letter-spacing:.04em}
+.legend i{width:9px;height:9px;border-radius:3px;display:block}
+
+/* ---------- attention list ---------- */
+.attn{display:flex;flex-direction:column;gap:1px;background:var(--line)}
+.attn .it{display:flex;align-items:center;gap:11px;padding:11px 16px;background:var(--panel-2);font-size:12.5px}
+.attn .it .txt{color:var(--txt-2)}
+.attn .it .txt b{color:var(--txt);font-weight:500}
+.attn .it .go{margin-left:auto;color:var(--txt-3);cursor:pointer}
+.attn .it .go:hover{color:var(--ember)}
+
+/* ---------- toolbar ---------- */
+.toolbar{display:flex;align-items:center;gap:9px;padding:11px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.field{
+  display:flex;align-items:center;gap:8px;height:30px;padding:0 11px;border-radius:8px;
+  border:1px solid var(--line);background:var(--ink-2);color:var(--txt-3);transition:.15s;
+}
+.field:focus-within{border-color:var(--ember-line);color:var(--txt-2)}
+.field input{background:transparent;border:0;outline:0;width:180px;color:var(--txt);font-size:12.5px}
+.field input::placeholder{color:var(--txt-3)}
+select.sel{
+  height:30px;border-radius:8px;border:1px solid var(--line);background:var(--ink-2);
+  color:var(--txt-2);padding:0 8px;font-size:12.5px;cursor:pointer;
+}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{
+  height:24px;padding:0 10px;border-radius:999px;border:1px solid var(--line);background:var(--ink-2);
+  color:var(--txt-3);font-family:var(--f-mono);font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;
+  cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:.15s;
+}
+.chip:hover{color:var(--txt-2);border-color:var(--line-2)}
+.chip.on{color:var(--ember-2);border-color:var(--ember-line);background:rgba(255,106,43,.1)}
+.chip .n{opacity:.7}
+
+/* ---------- snapshots ---------- */
+.snaplist{display:flex;flex-direction:column}
+.snap{display:grid;grid-template-columns:1fr 190px 150px auto;gap:16px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line);transition:.15s;cursor:pointer}
+.snap:hover{background:rgba(255,255,255,.02)}
+.snap:last-child{border-bottom:0}
+.snap .nm{font-family:var(--f-disp);font-size:14.5px;font-weight:600;letter-spacing:.02em;display:flex;align-items:center;gap:9px;white-space:nowrap;overflow:hidden}
+.snap .sub{font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.snap .age{font-family:var(--f-mono);font-size:11px;color:var(--txt-2);text-align:right}
+.snap .size{font-family:var(--f-mono);font-size:11px;color:var(--txt-3)}
+.snap .acts{display:flex;gap:6px;justify-content:flex-end}
+
+/* ---------- doctor ---------- */
+.check{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line);font-size:13px}
+.check:last-child{border-bottom:0}
+.check .mk{width:20px;height:20px;border-radius:6px;display:grid;place-items:center;flex:none}
+.check .mk.ok{background:rgba(79,214,196,.12);color:var(--teal);border:1px solid rgba(79,214,196,.3)}
+.check .mk.warn{background:rgba(255,194,75,.12);color:var(--amber);border:1px solid rgba(255,194,75,.3)}
+.check .mk.err{background:rgba(255,92,92,.12);color:var(--red);border:1px solid rgba(255,92,92,.3)}
+.check .lbl{color:var(--txt-2)}
+.check .lbl b{color:var(--txt);font-weight:500;display:block;font-size:13px}
+.check .detail{margin-left:auto;font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);text-align:right}
+
+/* ---------- code ---------- */
+pre.code{
+  margin:0;padding:16px 18px;font-family:var(--f-mono);font-size:11.5px;line-height:1.85;
+  color:#C9C7C1;overflow:auto;background:linear-gradient(180deg,#0D0D10,#0A0A0C);
+}
+.code .c{color:#5C5B57}
+.code .k{color:var(--ember-2)}
+.code .s{color:var(--teal)}
+.code .n{color:var(--amber)}
+.code .b{color:var(--blue)}
+
+/* ---------- inspector ---------- */
+.inspector{
+  position:fixed;top:56px;right:0;bottom:32px;width:420px;z-index:70;
+  background:linear-gradient(180deg,#15151A,#101014);border-left:1px solid var(--line-2);
+  transform:translateX(102%);transition:transform .38s cubic-bezier(.2,.8,.2,1);
+  display:flex;flex-direction:column;box-shadow:-30px 0 60px -30px #000;
+}
+.inspector.open{transform:none}
+.ihead{padding:16px 18px;border-bottom:1px solid var(--line);display:flex;align-items:flex-start;gap:12px}
+.ihead h2{margin:0;font-family:var(--f-disp);font-size:19px;font-weight:600;letter-spacing:.03em}
+.ihead .sid{font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);margin-top:4px;word-break:break-all}
+.itabs{display:flex;gap:2px;padding:0 12px;border-bottom:1px solid var(--line)}
+.itabs button{
+  border:0;background:transparent;color:var(--txt-3);padding:10px 11px;cursor:pointer;
+  font-family:var(--f-disp);font-size:11px;letter-spacing:.13em;text-transform:uppercase;
+  border-bottom:2px solid transparent;transition:.15s;
+}
+.itabs button:hover{color:var(--txt-2)}
+.itabs button.on{color:var(--ember-2);border-bottom-color:var(--ember)}
+.ibody{overflow-y:auto;padding:16px 18px 40px;flex:1}
+.sect{margin-bottom:20px}
+.sect h5{
+  margin:0 0 10px;font-family:var(--f-disp);font-size:10px;font-weight:600;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--txt-3);
+}
+.dl{display:flex;flex-direction:column;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.dl div{display:flex;gap:12px;padding:8px 12px;background:var(--panel-2);font-size:12px}
+.dl div span{color:var(--txt-3);font-family:var(--f-mono);font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;min-width:88px}
+.dl div b{margin-left:auto;color:var(--txt-2);font-family:var(--f-mono);font-size:11px;font-weight:400;text-align:right;word-break:break-all}
+
+/* lifecycle timeline */
+.life{display:flex;align-items:flex-start;gap:0;margin:4px 0 6px}
+.life .step{flex:1;position:relative;text-align:center}
+.life .step::before{content:'';position:absolute;top:7px;left:0;right:0;height:1px;background:var(--line-2)}
+.life .step:first-child::before{left:50%}
+.life .step:last-child::before{right:50%}
+.life .step .dot{
+  width:15px;height:15px;border-radius:50%;background:var(--ink-2);border:1px solid var(--line-2);
+  margin:0 auto 8px;position:relative;z-index:1;display:grid;place-items:center;
+}
+.life .step.done .dot{border-color:var(--ember);background:var(--ember);box-shadow:0 0 0 4px rgba(255,106,43,.12)}
+.life .step.done .dot::after{content:'';width:5px;height:5px;border-radius:50%;background:#1A0A02}
+.life .step.cur .dot{border-color:var(--amber);background:var(--ink-2);box-shadow:0 0 0 4px rgba(255,194,75,.14)}
+.life .step.cur .dot::after{content:'';width:5px;height:5px;border-radius:50%;background:var(--amber);animation:led 1s infinite}
+.life .step .nm{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--txt-3)}
+.life .step .tm{font-family:var(--f-mono);font-size:9.5px;color:var(--txt-3);opacity:.7;margin-top:2px}
+
+/* console */
+.console{
+  background:#0A0A0C;border:1px solid var(--line);border-radius:10px;overflow:hidden;
+  font-family:var(--f-mono);font-size:11px;line-height:1.75;
+}
+.console .bar{display:flex;align-items:center;gap:7px;padding:7px 11px;border-bottom:1px solid var(--line);background:#0E0E11}
+.console .bar .d{width:7px;height:7px;border-radius:50%;background:#3a3a42}
+.console .bar .t{margin-left:6px;font-size:10px;color:var(--txt-3);letter-spacing:.06em}
+.console .body{padding:11px 13px;max-height:220px;overflow:auto;color:#B9B7B1}
+.console .body .ln{white-space:pre-wrap;word-break:break-word}
+.console .body .ok{color:var(--teal)}
+.console .body .er{color:var(--red)}
+.console .body .wn{color:var(--amber)}
+.console .body .dm{color:#575651}
+.caret{display:inline-block;width:7px;height:12px;background:var(--ember);vertical-align:-2px;animation:led 1s steps(1) infinite}
+
+/* ---------- create drawer ---------- */
+.scrim{
+  position:fixed;inset:0;background:rgba(4,4,6,.66);backdrop-filter:blur(3px);z-index:80;
+  opacity:0;pointer-events:none;transition:.3s;
+}
+.scrim.on{opacity:1;pointer-events:auto}
+.drawer{
+  position:fixed;top:0;right:0;bottom:0;width:540px;max-width:94vw;z-index:81;
+  background:linear-gradient(180deg,#15151A,#0F0F13);border-left:1px solid var(--line-2);
+  transform:translateX(102%);transition:transform .4s cubic-bezier(.2,.85,.2,1);
+  display:flex;flex-direction:column;box-shadow:-40px 0 80px -30px #000;
+}
+.drawer.on{transform:none}
+.dhead{padding:18px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px}
+.dhead h2{margin:0;font-family:var(--f-disp);font-size:20px;font-weight:600;letter-spacing:.03em;text-transform:uppercase}
+.dhead p{margin:3px 0 0;font-size:11.5px;color:var(--txt-3)}
+.dbody{flex:1;overflow-y:auto;padding:20px}
+.dfoot{padding:14px 20px;border-top:1px solid var(--line);display:flex;gap:10px;align-items:center;background:#0E0E11}
+
+.formrow{margin-bottom:18px}
+.formrow > label{
+  display:block;font-family:var(--f-disp);font-size:10.5px;font-weight:600;letter-spacing:.17em;
+  text-transform:uppercase;color:var(--txt-3);margin-bottom:8px;
+}
+.inp{
+  width:100%;height:38px;padding:0 13px;border-radius:10px;border:1px solid var(--line-2);
+  background:var(--ink-2);color:var(--txt);font-size:13px;transition:.15s;
+}
+.inp:focus{outline:0;border-color:var(--ember-line);box-shadow:0 0 0 3px rgba(255,106,43,.1)}
+.inp.mono{font-family:var(--f-mono);font-size:12px}
+.hint{font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);margin-top:7px;line-height:1.6}
+.opts{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.opt{
+  height:44px;border-radius:10px;border:1px solid var(--line-2);background:var(--ink-2);
+  color:var(--txt-2);cursor:pointer;display:grid;place-items:center;transition:.15s;
+  font-family:var(--f-mono);font-size:12px;
+}
+.opt:hover{border-color:#3f3f48;color:var(--txt)}
+.opt.on{border-color:var(--ember);background:rgba(255,106,43,.1);color:var(--ember-2);box-shadow:0 0 0 3px rgba(255,106,43,.08)}
+.opt b{display:block;font-size:13px}
+.opt small{display:block;font-size:9px;letter-spacing:.1em;color:var(--txt-3);text-transform:uppercase}
+.opt.on small{color:var(--ember-2)}
+input[type=range]{
+  -webkit-appearance:none;width:100%;height:4px;border-radius:99px;background:#22222a;outline:0;
+}
+input[type=range]::-webkit-slider-thumb{
+  -webkit-appearance:none;width:16px;height:16px;border-radius:50%;
+  background:var(--ember);border:2px solid #1A0A02;box-shadow:0 0 0 3px rgba(255,106,43,.18);cursor:pointer;
+}
+.switch{display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid var(--line-2);border-radius:10px;background:var(--ink-2);cursor:pointer}
+.switch .track{width:36px;height:20px;border-radius:99px;background:#26262e;position:relative;transition:.2s;flex:none}
+.switch .track::after{content:'';position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:#6b6a66;transition:.2s}
+.switch.on .track{background:rgba(255,106,43,.28)}
+.switch.on .track::after{left:18px;background:var(--ember)}
+.switch .txt{font-size:12.5px;color:var(--txt-2)}
+.switch .txt b{display:block;color:var(--txt);font-weight:500;font-size:12.5px}
+.switch .txt small{color:var(--txt-3);font-family:var(--f-mono);font-size:10.5px}
+
+.clipreview{
+  border:1px solid var(--line-2);border-radius:10px;overflow:hidden;background:#0A0A0C;
+}
+.clipreview .hd{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:#0E0E11;font-family:var(--f-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--txt-3)}
+.clipreview pre{margin:0;padding:13px;font-family:var(--f-mono);font-size:11.5px;line-height:1.7;color:var(--txt-2);white-space:pre-wrap;word-break:break-word}
+.copied{color:var(--teal)!important;border-color:rgba(79,214,196,.4)!important}
+
+/* ---------- command palette ---------- */
+.palette{
+  position:fixed;top:14vh;left:50%;transform:translate(-50%,-14px) scale(.98);width:620px;max-width:94vw;z-index:90;
+  background:linear-gradient(180deg,#17171C,#111115);border:1px solid var(--line-2);border-radius:15px;
+  box-shadow:0 40px 90px -30px #000;overflow:hidden;opacity:0;pointer-events:none;transition:.22s;
+}
+.palette.on{opacity:1;pointer-events:auto;transform:translate(-50%,0) scale(1)}
+.palette .pin{display:flex;align-items:center;gap:11px;padding:15px 18px;border-bottom:1px solid var(--line)}
+.palette .pin input{flex:1;background:transparent;border:0;outline:0;font-size:15px;color:var(--txt)}
+.palette .pin input::placeholder{color:var(--txt-3)}
+.plist{max-height:48vh;overflow-y:auto;padding:8px}
+.pitem{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:9px;cursor:pointer;color:var(--txt-2);font-size:13px}
+.pitem:hover,.pitem.on{background:var(--panel-3);color:var(--txt)}
+.pitem.on{box-shadow:inset 0 0 0 1px var(--ember-line)}
+.pitem .kk{margin-left:auto;font-family:var(--f-mono);font-size:10px;color:var(--txt-3);border:1px solid var(--line-2);border-radius:5px;padding:1px 6px}
+.pitem .tag{font-family:var(--f-mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--txt-3);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+.pitem .tag.cmd{color:var(--ember-2);border-color:var(--ember-line)}
+
+/* ---------- status rail ---------- */
+.statusrail{
+  height:32px;display:flex;align-items:center;gap:14px;padding:0 16px;border-top:1px solid var(--line);
+  background:#0A0A0C;font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3);position:relative;z-index:60;
+}
+.statusrail .item{display:flex;align-items:center;gap:7px;white-space:nowrap}
+.statusrail .item b{color:var(--txt-2);font-weight:400}
+.statusrail .ticker{flex:1;overflow:hidden;position:relative;height:100%;display:flex;align-items:center}
+.statusrail .ticker .msg{
+  position:absolute;left:0;right:0;animation:tick 0.5s ease both;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--txt-2);
+}
+@keyframes tick{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+
+/* ---------- toast ---------- */
+.toasts{position:fixed;bottom:44px;right:18px;z-index:95;display:flex;flex-direction:column;gap:9px;align-items:flex-end}
+.toast{
+  display:flex;align-items:center;gap:11px;padding:11px 14px;border-radius:11px;
+  background:linear-gradient(180deg,#1B1B21,#141418);border:1px solid var(--line-2);
+  box-shadow:0 20px 40px -20px #000;font-size:12.5px;color:var(--txt-2);
+  animation:toastin .35s cubic-bezier(.2,.8,.2,1) both;max-width:400px;
+}
+@keyframes toastin{from{opacity:0;transform:translateX(24px)}to{opacity:1;transform:none}}
+.toast .tk{width:7px;height:7px;border-radius:50%;background:var(--teal);flex:none;box-shadow:0 0 9px var(--teal)}
+.toast b{color:var(--txt);font-weight:500}
+.toast code{font-family:var(--f-mono);font-size:11px;color:var(--ember-2)}
+
+.tip{
+  position:fixed;z-index:99;pointer-events:none;background:#1E1E24;border:1px solid var(--line-2);
+  border-radius:8px;padding:7px 10px;font-family:var(--f-mono);font-size:10.5px;color:var(--txt);
+  box-shadow:0 14px 30px -12px #000;opacity:0;transition:opacity .12s;white-space:nowrap;
+}
+.tip.on{opacity:1}
+.tip span{color:var(--txt-3)}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important}
+}
+@media (max-width:1180px){
+  .pulse{grid-template-columns:1fr}
+  .grid3{grid-template-columns:1fr}
+  .span2{grid-column:span 1}
+}
+</style>
+</head>
+<body>
+
+<!-- ===== icon sprite ===== -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12z"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+    <symbol id="i-server" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="m3 13 9 5 9-5"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v3M14 3v3M10 18v3M14 18v3M3 10h3M3 14h3M18 10h3M18 14h3"/></symbol>
+    <symbol id="i-net" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="19" r="2.5"/><circle cx="19" cy="19" r="2.5"/><path d="M12 7.5 6.5 16.5M12 7.5l5.5 9M7.5 19h9"/></symbol>
+    <symbol id="i-db" viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="8" ry="3"/><path d="M4 6v12c0 1.7 3.6 3 8 3s8-1.3 8-3V6"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></symbol>
+    <symbol id="i-snap" viewBox="0 0 24 24"><path d="M3 8.5A2.5 2.5 0 0 1 5.5 6h2L9 4h6l1.5 2h2A2.5 2.5 0 0 1 21 8.5v8A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-8Z"/><circle cx="12" cy="12" r="3.2"/></symbol>
+    <symbol id="i-pulse" viewBox="0 0 24 24"><path d="M3 12h4l2.5-7 4 14L16 12h5"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6Z"/><path d="M10.5 20a2 2 0 0 0 3 0"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 5.5v13l11-6.5-11-6.5Z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="2"/></symbol>
+    <symbol id="i-term" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7.5 10 2.5 2.5-2.5 2.5M13 15h4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 21 20H3L12 4Z"/><path d="M12 10v4M12 17h.01"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-1.5 6"/><path d="M20 5v6h-6"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 0 1 2-2h9"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11m0 0 4-4m-4 4-4-4M5 20h14"/></symbol>
+  </defs>
+</svg>
+
+<div class="grain" aria-hidden="true"></div>
+
+<!-- ============================ TOP BAR ============================ -->
+<header class="topbar">
+  <div class="brand">
+    <div class="mark"><svg class="ico" viewBox="0 0 24 24"><use href="#i-bolt"/></svg></div>
+    <div class="wordmark">Swarm<span>Cracker</span></div>
+  </div>
+
+  <button class="envpill" id="envPill" title="Switch cluster">
+    <span class="led pulse"></span> <b>prod</b> · sea-01 <svg class="ico sm" viewBox="0 0 24 24" style="transform:rotate(90deg)"><use href="#i-chev"/></svg>
+  </button>
+
+  <nav class="crumb" aria-label="Breadcrumb">
+    <span>Fleet</span><span class="sep">/</span><b id="crumb">Overview</b>
+  </nav>
+
+  <div class="grow"></div>
+
+  <button class="searchbtn" id="searchBtn">
+    <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+    <span>Search resources or run a command</span>
+    <span class="kbd">⌘K</span>
+  </button>
+
+  <button class="iconbtn" id="bellBtn" title="Alerts" aria-label="Alerts">
+    <svg class="ico" viewBox="0 0 24 24"><use href="#i-bell"/></svg>
+    <span class="badge-dot"></span>
+  </button>
+
+  <button class="btn primary" id="newVmBtn">
+    <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-plus"/></svg> New microVM
+  </button>
+
+  <button class="avatar" title="restu@sea-01">RM</button>
+</header>
+
+<!-- ============================ SHELL ============================ -->
+<div class="shell">
+  <aside class="rail">
+    <div class="group">
+      <h4>Fleet</h4>
+      <nav class="nav">
+        <a data-view="overview" class="on"><svg class="ico" viewBox="0 0 24 24"><use href="#i-grid"/></svg> Overview</a>
+        <a data-view="nodes"><svg class="ico" viewBox="0 0 24 24"><use href="#i-server"/></svg> Nodes <span class="cnt">6</span></a>
+      </nav>
+    </div>
+    <div class="group">
+      <h4>Workloads</h4>
+      <nav class="nav">
+        <a data-view="services"><svg class="ico" viewBox="0 0 24 24"><use href="#i-layers"/></svg> Services <span class="cnt">7</span></a>
+        <a data-view="vms"><svg class="ico" viewBox="0 0 24 24"><use href="#i-cpu"/></svg> MicroVMs <span class="cnt" id="vmCountNav">44</span></a>
+      </nav>
+    </div>
+    <div class="group">
+      <h4>Resources</h4>
+      <nav class="nav">
+        <a data-view="networks"><svg class="ico" viewBox="0 0 24 24"><use href="#i-net"/></svg> Networks</a>
+        <a data-view="storage"><svg class="ico" viewBox="0 0 24 24"><use href="#i-db"/></svg> Storage</a>
+        <a data-view="snapshots"><svg class="ico" viewBox="0 0 24 24"><use href="#i-snap"/></svg> Snapshots <span class="cnt">4</span></a>
+      </nav>
+    </div>
+    <div class="group">
+      <h4>Platform</h4>
+      <nav class="nav">
+        <a data-view="doctor"><svg class="ico" viewBox="0 0 24 24"><use href="#i-pulse"/></svg> Doctor</a>
+        <a data-view="config"><svg class="ico" viewBox="0 0 24 24"><use href="#i-sliders"/></svg> Config</a>
+      </nav>
+    </div>
+
+    <div class="railfoot">
+      <div>swarmcracker <b>v0.9.1</b></div>
+      <div>firecracker <b>v1.15.1</b></div>
+      <div>apache-2.0</div>
+    </div>
+  </aside>
+
+  <main class="stage" id="stage">
+
+    <!-- ================= OVERVIEW ================= -->
+    <section class="view on" data-view="overview">
+      <div class="vhead">
+        <div>
+          <h1>Fleet Overview</h1>
+          <p>Live state of every microVM, node and service in <b>swarmcracker-prod</b>. Executor heartbeats every 5s.</p>
+        </div>
+        <div class="actions">
+          <button class="btn sm" onclick="toast('Doctor sweep queued','Running <code>swarmcracker doctor</code> across 6 nodes')">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-refresh"/></svg> Run doctor
+          </button>
+          <button class="btn sm" onclick="go('snapshots')"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-snap"/></svg> Snapshots</button>
+        </div>
+      </div>
+
+      <div class="stack">
+        <!-- row 1 -->
+        <div class="pulse">
+          <div class="panel">
+            <div class="phead"><h3>Running MicroVMs</h3><span class="meta" id="pulseMeta">live · 5s</span></div>
+            <div class="pbody">
+              <div style="display:flex;align-items:flex-end;gap:14px">
+                <div class="bignum" id="bigVms">44</div>
+                <span class="delta" style="margin-bottom:12px">▲ 3 past hour</span>
+              </div>
+              <div class="blabel" style="margin-top:8px">of 46 scheduled · 2 booting</div>
+              <div class="substats">
+                <div class="sub"><div class="k">vCPU committed</div><div class="v">131<small>/384</small></div></div>
+                <div class="sub"><div class="k">Memory committed</div><div class="v">690<small>/1536 GB</small></div></div>
+                <div class="sub"><div class="k">Boot p99</div><div class="v" id="bootP99">182<small>ms</small></div></div>
+                <div class="sub"><div class="k">Boot errors 24h</div><div class="v" style="color:var(--green)">0</div></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="phead"><h3>Cluster Signal</h3><span class="meta">swarmcracker_vms_running</span></div>
+            <div class="pbody" style="padding-top:6px">
+              <div id="fleetSpark" style="height:132px"></div>
+              <div style="display:flex;gap:18px;margin-top:6px;font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3)">
+                <span>1H AGO <b style="color:var(--txt-2)">39</b></span>
+                <span>NOW <b style="color:var(--ember-2)" id="nowVms">44</b></span>
+                <span style="margin-left:auto">PEAK 46 · MIN 37</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- row 2 -->
+        <div class="grid3">
+          <div class="panel span2">
+            <div class="phead">
+              <h3>Node Capacity</h3>
+              <span class="meta">6 ready · 3 managers · raft ok</span>
+            </div>
+            <div class="pbody" style="display:flex;flex-direction:column;gap:16px" id="nodeBars"></div>
+          </div>
+
+          <div class="panel">
+            <div class="phead">
+              <h3>Event Stream</h3>
+              <span class="meta"><span class="led pulse" style="display:inline-block"></span> live</span>
+            </div>
+            <div class="stream" id="stream"></div>
+          </div>
+        </div>
+
+        <!-- row 3 -->
+        <div class="grid3">
+          <div class="panel span2">
+            <div class="phead">
+              <h3>Fleet Matrix</h3>
+              <span class="meta">46 instances · grouped by node</span>
+            </div>
+            <div class="matrix" id="matrix"></div>
+            <div class="legend">
+              <span><i style="background:rgba(79,214,196,.45);border:1px solid rgba(79,214,196,.6)"></i> running</span>
+              <span><i style="background:rgba(255,194,75,.5);border:1px solid rgba(255,194,75,.6)"></i> booting</span>
+              <span><i style="background:#191920;border:1px solid #26262c"></i> stopped</span>
+              <span><i style="background:rgba(255,92,92,.5);border:1px solid rgba(255,92,92,.6)"></i> error</span>
+              <span style="margin-left:auto">hover a cell for instance identity</span>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="phead"><h3>Needs Attention</h3><span class="meta">3</span></div>
+            <div class="attn" id="attn"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= NODES ================= -->
+    <section class="view" data-view="nodes">
+      <div class="vhead">
+        <div>
+          <h1>Nodes</h1>
+          <p>SwarmKit nodes running the Firecracker executor. Availability maps directly to <b>node drain / activate / pause</b>.</p>
+        </div>
+        <div class="actions">
+          <button class="btn sm" onclick="toast('Cluster join token ready','<code>swarmcracker cluster token worker</code>')">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-plus"/></svg> Join token
+          </button>
+        </div>
+      </div>
+      <div class="nodegrid" id="nodeGrid"></div>
+    </section>
+
+    <!-- ================= SERVICES ================= -->
+    <section class="view" data-view="services">
+      <div class="vhead">
+        <div>
+          <h1>Services</h1>
+          <p>Desired state declared to SwarmKit; the translator turns each task into a Firecracker VM spec.</p>
+        </div>
+        <div class="actions">
+          <button class="btn primary sm" onclick="toast('Service spec opened','Creating a replicated service in <code>swarmcracker-prod</code>')">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-plus"/></svg> Create service
+          </button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar">
+          <label class="field"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+            <input id="svcSearch" placeholder="Filter by name or image…"></label>
+          <div class="chips" id="svcChips"></div>
+        </div>
+        <div class="tblwrap"><table class="grid"><thead><tr>
+          <th>Service</th><th>Image</th><th class="col-opt">Mode</th><th>Replicas</th><th>Network</th><th class="col-opt">Ports</th><th>State</th>
+        </tr></thead><tbody id="svcBody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ================= MICROVMS ================= -->
+    <section class="view" data-view="vms">
+      <div class="vhead">
+        <div>
+          <h1>MicroVMs</h1>
+          <p>One hardware-isolated Firecracker instance per task. Select a row to inspect live machine config and console.</p>
+        </div>
+        <div class="actions">
+          <button class="btn sm" onclick="toast('Metrics attached','Streaming <code>swarmcracker_vm_cpu_seconds</code>')">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-pulse"/></svg> Metrics
+          </button>
+          <button class="btn primary sm" onclick="openDrawer()"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-plus"/></svg> New microVM</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="toolbar">
+          <label class="field"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-search"/></svg>
+            <input id="vmSearch" placeholder="Filter by VM, task, service or IP…"></label>
+          <select class="sel" id="vmNode"></select>
+          <div class="chips" id="vmChips"></div>
+          <span class="meta" id="vmCount" style="margin-left:auto;font-family:var(--f-mono);font-size:10.5px;color:var(--txt-3)"></span>
+        </div>
+        <div class="tblwrap"><table class="grid"><thead><tr>
+          <th>VM ID</th><th>Service</th><th>Node</th><th>State</th><th>IP</th><th>vCPU</th><th>Memory</th><th class="col-opt">Uptime</th><th class="col-opt">Boot</th>
+        </tr></thead><tbody id="vmBody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ================= NETWORKS ================= -->
+    <section class="view" data-view="networks">
+      <div class="vhead">
+        <div>
+          <h1>Networks</h1>
+          <p>TAP devices bound to <b>swarm-br0</b>, with optional VXLAN mesh for cross-node overlay traffic.</p>
+        </div>
+      </div>
+      <div class="grid3">
+        <div class="panel span2">
+          <div class="phead"><h3>Overlay Topology</h3><span class="meta">vxlan_peers 6/6</span></div>
+          <div class="pbody" id="topo"></div>
+        </div>
+        <div class="panel">
+          <div class="phead"><h3>Bridge &amp; NAT</h3><span class="meta">swarm-br0</span></div>
+          <div class="pbody">
+            <div class="kv">
+              <div class="row"><span class="lbl">Bridge IP</span><span class="val">192.168.127.1/24</span></div>
+              <div class="row"><span class="lbl">IP mode</span><span class="val">static</span></div>
+              <div class="row"><span class="lbl">NAT</span><span class="val" style="color:var(--teal)">enabled</span></div>
+              <div class="row"><span class="lbl">Rate limit</span><span class="val">10 Gbps</span></div>
+              <div class="row"><span class="lbl">VXLAN</span><span class="val">udp/4789</span></div>
+              <div class="row"><span class="lbl">TAP devices</span><span class="val">44</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:14px">
+        <div class="tblwrap" style="max-height:none"><table class="grid"><thead><tr>
+          <th>Network</th><th>Driver</th><th>Subnet</th><th>Endpoints</th><th>Peers</th><th>NAT</th><th>Created</th>
+        </tr></thead><tbody id="netBody"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- ================= STORAGE ================= -->
+    <section class="view" data-view="storage">
+      <div class="vhead">
+        <div>
+          <h1>Storage</h1>
+          <p>Volume driver mounts plus the OCI layer cache that feeds <b>rootfs_dir</b>.</p>
+        </div>
+        <div class="actions">
+          <button class="btn sm" onclick="toast('Volume created','<code>swarmcracker volume create data-02 --size 50</code>')">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-plus"/></svg> Create volume
+          </button>
+        </div>
+      </div>
+      <div class="grid3">
+        <div class="panel span2">
+          <div class="phead"><h3>Volumes</h3><span class="meta">3 volumes · 160 GB provisioned</span></div>
+          <div class="tblwrap" style="max-height:none"><table class="grid"><thead><tr>
+            <th>Name</th><th>Driver</th><th>Size</th><th>Used</th><th>Attached to</th><th style="text-align:right">Actions</th>
+          </tr></thead><tbody id="volBody"></tbody></table></div>
+        </div>
+        <div class="stack">
+          <div class="panel">
+            <div class="phead"><h3>Layer Cache</h3><span class="meta">images</span></div>
+            <div class="pbody">
+              <div class="barcap"><span>Disk usage</span><b>7.9 / 10 GB</b></div>
+              <div class="meter"><i class="warm" style="width:79%"></i></div>
+              <div class="kv" style="margin-top:16px">
+                <div class="row"><span class="lbl">Cache dir</span><span class="val">/var/cache/swarmcracker</span></div>
+                <div class="row"><span class="lbl">Layer cache</span><span class="val" style="color:var(--teal)">on</span></div>
+                <div class="row"><span class="lbl">Images</span><span class="val">38</span></div>
+                <div class="row"><span class="lbl">Hit rate</span><span class="val">91%</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h3>Rootfs Pool</h3><span class="meta">/var/lib/firecracker/rootfs</span></div>
+            <div class="pbody">
+              <div class="barcap"><span>Allocated</span><b>412 / 900 GB</b></div>
+              <div class="meter"><i style="width:46%"></i></div>
+              <div class="barcap" style="margin-top:14px"><span>Inodes</span><b>12%</b></div>
+              <div class="meter"><i class="cool" style="width:12%"></i></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= SNAPSHOTS ================= -->
+    <section class="view" data-view="snapshots">
+      <div class="vhead">
+        <div>
+          <h1>Snapshots</h1>
+          <p>Paused-VM state plus memory image. Restore resumes in-place with <b>resume_vm: true</b>.</p>
+        </div>
+        <div class="actions">
+          <button class="btn sm danger" onclick="toast('Cleanup scheduled','Removing snapshots older than <code>168h</code>')">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-trash"/></svg> Cleanup &gt; 7d
+          </button>
+          <button class="btn primary sm" onclick="toast('Snapshot created','snap-9c41 · payments-worker · 15 KB state + 1024 MB mem')">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-snap"/></svg> Create snapshot
+          </button>
+        </div>
+      </div>
+      <div class="grid3">
+        <div class="panel span2">
+          <div class="phead"><h3>Snapshot Store</h3><span class="meta">/var/lib/firecracker/snapshots</span></div>
+          <div class="snaplist" id="snapList"></div>
+        </div>
+        <div class="stack">
+          <div class="panel">
+            <div class="phead"><h3>Retention Policy</h3><span class="meta">snapshot</span></div>
+            <div class="pbody">
+              <div class="kv">
+                <div class="row"><span class="lbl">Enabled</span><span class="val" style="color:var(--teal)">true</span></div>
+                <div class="row"><span class="lbl">Max per service</span><span class="val">3</span></div>
+                <div class="row"><span class="lbl">Max age</span><span class="val">168h</span></div>
+                <div class="row"><span class="lbl">Auto snapshot</span><span class="val">false</span></div>
+                <div class="row"><span class="lbl">Compress</span><span class="val">true</span></div>
+                <div class="row"><span class="lbl">Total size</span><span class="val">3.42 GB</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h3>Restore Advantage</h3></div>
+            <div class="pbody">
+              <div class="barcap"><span>Cold boot</span><b>~640 ms</b></div>
+              <div class="meter"><i class="warm" style="width:100%"></i></div>
+              <div class="barcap" style="margin-top:16px"><span>Snapshot restore</span><b>~210 ms</b></div>
+              <div class="meter"><i class="cool" style="width:33%"></i></div>
+              <div class="hint" style="margin-top:14px">3.0× faster to resume than a cold boot on this fleet.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= DOCTOR ================= -->
+    <section class="view" data-view="doctor">
+      <div class="vhead">
+        <div>
+          <h1>Doctor</h1>
+          <p>Preflight for KVM, Firecracker, kernel assets, networking and jailer. Mirrors <b>swarmcracker doctor</b>.</p>
+        </div>
+        <div class="actions">
+          <button class="btn primary sm" id="runDoctor">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-play"/></svg> Run full check
+          </button>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <div class="phead"><h3>Host Readiness</h3><span class="meta">kvm-node-01</span></div>
+          <div id="checks"></div>
+        </div>
+        <div class="panel">
+          <div class="phead"><h3>Raw Output</h3><span class="meta">swarmcracker doctor</span></div>
+          <pre class="code" id="doctorOut" style="max-height:430px"></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= CONFIG ================= -->
+    <section class="view" data-view="config">
+      <div class="vhead">
+        <div>
+          <h1>Config</h1>
+          <p>/etc/swarmcracker/config.yaml — validated on every write. Bad values are rejected before apply.</p>
+        </div>
+        <div class="actions">
+          <button class="btn sm" onclick="toast('Validation passed','No schema errors in <code>config.yaml</code>')">
+            <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-check"/></svg> Validate
+          </button>
+          <button class="btn primary sm" onclick="toast('Config applied','Reloaded executor config on 6 nodes')">Apply</button>
+        </div>
+      </div>
+      <div class="grid2">
+        <div class="panel">
+          <div class="phead"><h3>config.yaml</h3><span class="meta">version: 1</span></div>
+          <pre class="code" style="max-height:520px"># /etc/swarmcracker/config.yaml
+<span class="k">version</span>: <span class="n">1</span>
+
+<span class="k">executor</span>:
+  <span class="k">kernel_path</span>: <span class="s">/usr/share/firecracker/vmlinux</span>
+  <span class="k">rootfs_dir</span>: <span class="s">/var/lib/firecracker/rootfs</span>
+  <span class="k">socket_dir</span>: <span class="s">/var/run/firecracker</span>
+  <span class="k">default_vcpus</span>: <span class="n">2</span>
+  <span class="k">default_memory_mb</span>: <span class="n">1024</span>
+  <span class="k">enable_jailer</span>: <span class="b">true</span>
+  <span class="k">jailer</span>:
+    <span class="k">uid</span>: <span class="n">1000</span>
+    <span class="k">gid</span>: <span class="n">1000</span>
+    <span class="k">chroot_base_dir</span>: <span class="s">/srv/jailer</span>
+    <span class="k">netns</span>: <span class="s">/var/run/netns</span>
+
+<span class="k">network</span>:
+  <span class="k">bridge_name</span>: <span class="s">swarm-br0</span>
+  <span class="k">enable_rate_limit</span>: <span class="b">true</span>
+  <span class="k">max_packets_per_sec</span>: <span class="n">1000000</span>
+  <span class="k">bridge</span>:
+    <span class="k">subnet</span>: <span class="s">192.168.127.0/24</span>
+    <span class="k">bridge_ip</span>: <span class="s">192.168.127.1/24</span>
+    <span class="k">ip_mode</span>: <span class="s">static</span>
+    <span class="k">nat_enabled</span>: <span class="b">true</span>
+  <span class="k">vxlan_enabled</span>: <span class="b">true</span>
+  <span class="k">vxlan_static_peers</span>:
+    - <span class="s">10.20.0.11</span>
+    - <span class="s">10.20.0.12</span>
+
+<span class="k">images</span>:
+  <span class="k">cache_dir</span>: <span class="s">/var/cache/swarmcracker</span>
+  <span class="k">max_cache_size_mb</span>: <span class="n">10240</span>
+  <span class="k">enable_layer_cache</span>: <span class="b">true</span>
+
+<span class="k">snapshot</span>:
+  <span class="k">enabled</span>: <span class="b">true</span>
+  <span class="k">snapshot_dir</span>: <span class="s">/var/lib/firecracker/snapshots</span>
+  <span class="k">max_snapshots</span>: <span class="n">3</span>
+  <span class="k">max_age</span>: <span class="s">168h</span>
+  <span class="k">auto_snapshot</span>: <span class="b">false</span>
+  <span class="k">compress</span>: <span class="b">true</span>
+
+<span class="k">metrics</span>:
+  <span class="k">enabled</span>: <span class="b">true</span>
+  <span class="k">address</span>: <span class="s">:9090</span>
+  <span class="k">format</span>: <span class="s">prometheus</span>
+
+<span class="k">logging</span>:
+  <span class="k">level</span>: <span class="s">info</span>
+  <span class="k">format</span>: <span class="s">json</span></pre>
+        </div>
+
+        <div class="stack">
+          <div class="panel">
+            <div class="phead"><h3>Validation</h3><span class="meta" style="color:var(--teal)">passed</span></div>
+            <div id="cfgChecks"></div>
+          </div>
+          <div class="panel">
+            <div class="phead"><h3>Exposed Metrics</h3><span class="meta">:9090/metrics</span></div>
+            <div class="pbody" id="metricList" style="display:flex;flex-direction:column;gap:9px"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ============================ STATUS RAIL ============================ -->
+<footer class="statusrail">
+  <span class="item"><span class="led"></span> <b>swarmcracker-prod</b></span>
+  <span class="item">raft <b>3/3</b></span>
+  <span class="item">fc <b>v1.15.1</b></span>
+  <span class="item">kvm <b>ready</b></span>
+  <div class="ticker"><span class="msg" id="tickerMsg">swarmcracker_vms_running 44 · vm_boot_duration_seconds p99 182ms · vm_boot_errors_total 0</span></div>
+  <span class="item" id="clock">--:--:--</span>
+</footer>
+
+<!-- ============================ INSPECTOR ============================ -->
+<aside class="inspector" id="inspector" aria-label="Resource detail">
+  <div class="ihead">
+    <div style="flex:1">
+      <h2 id="insTitle">—</h2>
+      <div class="sid" id="insId">—</div>
+    </div>
+    <button class="iconbtn" onclick="closeInspector()" aria-label="Close"><svg class="ico" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+  </div>
+  <div class="itabs" id="insTabs"></div>
+  <div class="ibody" id="insBody"></div>
+</aside>
+
+<!-- ============================ CREATE DRAWER ============================ -->
+<div class="scrim" id="scrim" onclick="closeDrawer()"></div>
+<div class="drawer" id="drawer" role="dialog" aria-label="Create microVM">
+  <div class="dhead">
+    <div class="mark"><svg class="ico" viewBox="0 0 24 24"><use href="#i-bolt"/></svg></div>
+    <div style="flex:1">
+      <h2>New microVM</h2>
+      <p>Firecracker instance on swarmcracker-prod</p>
+    </div>
+    <button class="iconbtn" onclick="closeDrawer()" aria-label="Close"><svg class="ico" viewBox="0 0 24 24"><use href="#i-x"/></svg></button>
+  </div>
+
+  <div class="dbody">
+    <div class="formrow">
+      <label for="fImage">Container image</label>
+      <input id="fImage" class="inp mono" value="nginx:1.27-alpine" spellcheck="false">
+      <div class="hint">Pull → extract rootfs → boot. Layer cache makes repeat boots ~180 ms.</div>
+    </div>
+
+    <div class="formrow">
+      <label>vCPUs</label>
+      <div class="opts" id="fCpu">
+        <button class="opt" data-v="1"><b>1</b><small>lean</small></button>
+        <button class="opt on" data-v="2"><b>2</b><small>default</small></button>
+        <button class="opt" data-v="4"><b>4</b><small>busy</small></button>
+        <button class="opt" data-v="8"><b>8</b><small>heavy</small></button>
+      </div>
+    </div>
+
+    <div class="formrow">
+      <label for="fMem">Memory</label>
+      <input type="range" id="fMem" min="256" max="8192" step="256" value="1024">
+      <div class="hint" style="display:flex;justify-content:space-between">
+        <span>256 MB</span><b style="color:var(--ember-2)" id="fMemOut">1024 MB</b><span>8 GB</span>
+      </div>
+    </div>
+
+    <div class="formrow">
+      <label for="fNet">Network</label>
+      <select class="sel inp" id="fNet" style="height:38px">
+        <option value="overlay-web">overlay-web · 10.0.9.0/24</option>
+        <option value="overlay-api">overlay-api · 10.0.10.0/24</option>
+        <option value="ingress-bridge">ingress-bridge · swarm-br0</option>
+        <option value="">none (isolated)</option>
+      </select>
+    </div>
+
+    <div class="formrow">
+      <label for="fEnv">Environment</label>
+      <input id="fEnv" class="inp mono" value="APP=prod" spellcheck="false">
+      <div class="hint">Comma-separated <code>KEY=VALUE</code> pairs.</div>
+    </div>
+
+    <div class="formrow">
+      <label>Options</label>
+      <div class="stack" style="gap:9px">
+        <div class="switch on" id="fJailer" tabindex="0" role="switch" aria-checked="true">
+          <span class="track"></span>
+          <span class="txt"><b>Jailer sandbox</b><small>chroot + cgroups + uid 1000</small></span>
+        </div>
+        <div class="switch" id="fAuto" tabindex="0" role="switch" aria-checked="false">
+          <span class="track"></span>
+          <span class="txt"><b>Auto-snapshot on start</b><small>warm restore point after boot</small></span>
+        </div>
+      </div>
+    </div>
+
+    <div class="formrow" style="margin-bottom:0">
+      <label>Equivalent command</label>
+      <div class="clipreview">
+        <div class="hd"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-term"/></svg> shell
+          <button class="btn ghost sm" style="margin-left:auto;height:22px" onclick="copyCmd(this)"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-copy"/></svg> Copy</button>
+        </div>
+        <pre id="fPreview"></pre>
+      </div>
+      <div class="hint">Estimated boot <b style="color:var(--ember-2)">~186 ms</b> · 2 vCPU reserved on <b>kvm-node-04</b></div>
+    </div>
+  </div>
+
+  <div class="dfoot">
+    <button class="btn" onclick="closeDrawer()">Cancel</button>
+    <div class="grow"></div>
+    <button class="btn ghost" onclick="toast('Dry run ok','Spec translates to a valid Firecracker JSON config')">Dry run</button>
+    <button class="btn primary" onclick="bootVm()">
+      <svg class="ico sm" viewBox="0 0 24 24"><use href="#i-play"/></svg> Boot microVM
+    </button>
+  </div>
+</div>
+
+<!-- ============================ COMMAND PALETTE ============================ -->
+<div class="scrim" id="pScrim" onclick="closePalette()"></div>
+<div class="palette" id="palette">
+  <div class="pin">
+    <svg class="ico" viewBox="0 0 24 24" style="color:var(--ember)"><use href="#i-bolt"/></svg>
+    <input id="pInput" placeholder="Jump to a view, or run a swarmcracker command…" autocomplete="off">
+    <span class="kbd">ESC</span>
+  </div>
+  <div class="plist" id="pList"></div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<div class="tip" id="tip"></div>
+
+<script>
+/* =====================================================================
+   SwarmCracker Control Plane — interaction layer
+   All data below is illustrative mock state for the design prototype.
+   ===================================================================== */
+const $  = (s,r=document)=>r.querySelector(s);
+const $$ = (s,r=document)=>[...r.querySelectorAll(s)];
+
+/* ------------------------------ state ------------------------------ */
+const NODES = [
+  {id:'nk01a7f3b2c4d5e6f', host:'kvm-node-01', role:'manager', state:'ready',  avail:'active', vcpu:64, vcpuUsed:22, mem:256, memUsed:84,  vms:7,  rack:'rack-a'},
+  {id:'nk02b8e4c3d5f60718', host:'kvm-node-02', role:'worker',  state:'ready',  avail:'active', vcpu:64, vcpuUsed:31, mem:256, memUsed:110, vms:11, rack:'rack-a'},
+  {id:'nk03c9f5d4e6a71829', host:'kvm-node-03', role:'manager', state:'ready',  avail:'drain',  vcpu:64, vcpuUsed:12, mem:256, memUsed:40,  vms:4,  rack:'rack-b'},
+  {id:'nk04d0a6e5f7b8293a', host:'kvm-node-04', role:'worker',  state:'ready',  avail:'active', vcpu:64, vcpuUsed:48, mem:256, memUsed:180, vms:16, rack:'rack-b'},
+  {id:'nk05e1b7f6a8c93a4b', host:'kvm-node-05', role:'manager', state:'unknown',avail:'pause',  vcpu:64, vcpuUsed:0,  mem:256, memUsed:0,   vms:0,  rack:'rack-c'},
+  {id:'nk06f2c8a7b9da4b5c', host:'kvm-node-06', role:'worker',  state:'ready',  avail:'active', vcpu:64, vcpuUsed:18, mem:256, memUsed:72,  vms:6,  rack:'rack-c'},
+];
+
+const SERVICES = [
+  {id:'svc-7f2a91c3e04b', name:'web-frontend',    image:'nginx:1.27-alpine',              mode:'replicated', reps:3, want:3, net:'overlay-web',    ports:'80:8080',  state:'running'},
+  {id:'svc-3c8b40d1f7a2', name:'api-gateway',     image:'traefik:v3.1',                   mode:'replicated', reps:2, want:2, net:'overlay-api',    ports:'443:8443', state:'running'},
+  {id:'svc-9d1e6a52b8c0', name:'payments-worker', image:'ghcr.io/acme/payments:2.4.1',    mode:'replicated', reps:4, want:4, net:'overlay-api',    ports:'—',        state:'running'},
+  {id:'svc-2a5f83c9d1e7', name:'redis-cache',     image:'redis:7.4-alpine',               mode:'replicated', reps:1, want:1, net:'overlay-web',    ports:'6379',     state:'running'},
+  {id:'svc-6b0d24e7f9a1', name:'postgres-primary',image:'postgres:16.4',                  mode:'replicated', reps:1, want:1, net:'ingress-bridge', ports:'5432',     state:'running'},
+  {id:'svc-8e4c17a2b6d3', name:'batch-render',    image:'ghcr.io/acme/render:dev',        mode:'replicated', reps:2, want:6, net:'overlay-web',    ports:'—',        state:'converging'},
+  {id:'svc-1f9b35d8c0e4', name:'legacy-report',   image:'acme/report:0.9',                mode:'replicated', reps:0, want:1, net:'overlay-api',    ports:'—',        state:'failed'},
+];
+
+const IMAGES = ['nginx:1.27-alpine','traefik:v3.1','ghcr.io/acme/payments:2.4.1','redis:7.4-alpine','postgres:16.4','ghcr.io/acme/render:dev','acme/report:0.9'];
+
+const VMS = (()=>{
+  const out=[]; let i=0;
+  const plan=[
+    ['payments-worker',4,'run'],['payments-worker',4,'run'],['payments-worker',2,'run'],['web-frontend',1,'run'],
+    ['web-frontend',1,'run'],['web-frontend',2,'run'],['api-gateway',1,'run'],['api-gateway',6,'run'],
+    ['batch-render',2,'start'],['batch-render',2,'err'],['redis-cache',6,'run'],['postgres-primary',6,'run'],
+  ];
+  for(const [svc,node,st] of plan){
+    const idx=i++;
+    const svcObj=SERVICES.find(s=>s.name===svc);
+    const vcpu = svc==='payments-worker'?4:svc==='postgres-primary'?4:2;
+    const mem = svc==='postgres-primary'?4096:svc==='payments-worker'?2048:1024;
+    out.push({
+      id:'vm-'+(0x9f3a1c0+idx*0x1a3f).toString(16)+(idx%7),
+      task:'task-'+(0x8b4d21+idx*0x193).toString(16),
+      svc, node:node-1, state:st,
+      ip:'10.0.9.'+(14+(idx%40)),
+      vcpu, mem,
+      uptime: st==='run' ? `${(idx*37+4)%24}h ${(idx*13+7)%60}m` : '—',
+      boot: st==='run' ? (120+(idx*7)%90)+'ms' : st==='start' ? '…' : '—',
+      image: svcObj?svcObj.image:'—',
+    });
+  }
+  // pad fleet to 46 cells for the matrix
+  const extra=['web-frontend','api-gateway','payments-worker','redis-cache','batch-render','postgres-primary'];
+  for(let k=0;k<34;k++){
+    const svc=extra[k%extra.length];
+    const st = k===7 ? 'start' : k===19 ? 'stop' : k===29 ? 'err' : (k%17===0?'stop':'run');
+    out.push({
+      id:'vm-'+(0x40c9+ k*0x1b2f).toString(16),
+      task:'task-'+(0x11a3+ k*0x2f1).toString(16),
+      svc, node:k%6, state:st,
+      ip:'10.0.9.'+(54+(k%120)),
+      vcpu:(k%3===0)?4:2, mem:(k%5===0)?2048:1024,
+      uptime: st==='run'?`${(k*3+1)%72}h ${(k*11)%60}m`:'—',
+      boot: st==='run'?(128+(k*5)%110)+'ms':'—',
+      image:(SERVICES.find(s=>s.name===svc)||{}).image||'—',
+    });
+  }
+  return out;
+})();
+
+const NETWORKS=[
+  {name:'overlay-web',driver:'overlay',subnet:'10.0.9.0/24',eps:24,peers:'6/6',nat:true,created:'2026-03-12'},
+  {name:'overlay-api',driver:'overlay',subnet:'10.0.10.0/24',eps:14,peers:'6/6',nat:true,created:'2026-03-12'},
+  {name:'ingress-bridge',driver:'bridge',subnet:'192.168.127.0/24',eps:4,peers:'—',nat:true,created:'2026-02-28'},
+  {name:'vxlan-mesh',driver:'vxlan',subnet:'10.20.0.0/16',eps:6,peers:'6/6',nat:false,created:'2026-02-28'},
+];
+
+const VOLUMES=[
+  {name:'pgdata-01',driver:'local',size:'50 GB',used:38,attach:'postgres-primary.1'},
+  {name:'redis-dump',driver:'local',size:'10 GB',used:12,attach:'redis-cache.1'},
+  {name:'render-scratch',driver:'local',size:'100 GB',used:61,attach:'batch-render.*'},
+];
+
+const SNAPSHOTS=[
+  {id:'snap-a1b2c3d4e5f67890',name:'payments-worker-2.4.1-warm',svc:'payments-worker',task:'task-8b4d21',node:'kvm-node-04',ageH:2,  size:'15 KB + 1024 MB',vcpus:4,mem:1024},
+  {id:'snap-b2c3d4e5f6a78901',name:'web-frontend-clean',        svc:'web-frontend',   task:'task-77ab02',node:'kvm-node-02',ageH:26, size:'15 KB + 512 MB', vcpus:2,mem:512},
+  {id:'snap-c3d4e5f6a7b89012',name:'api-gateway-preupdate',    svc:'api-gateway',    task:'task-19cd44',node:'kvm-node-01',ageH:121,size:'15 KB + 512 MB', vcpus:2,mem:512},
+  {id:'snap-d4e5f6a7b8c90123',name:'redis-cache-baseline',     svc:'redis-cache',    task:'task-5e0f31',node:'kvm-node-06',ageH:214,size:'15 KB + 256 MB', vcpus:1,mem:256},
+];
+
+const EVENTS=[
+  {t:'09:41:22',k:'ok',   h:'<b>vm-9f3a1c</b> booted in <code>148ms</code> on kvm-node-04'},
+  {t:'09:41:19',k:'hot',  h:'<b>task-1c9f21</b> scheduled → kvm-node-02'},
+  {t:'09:41:02',k:'ok',   h:'snapshot <b>snap-a1b2c3d4</b> created for payments-worker'},
+  {t:'09:40:55',k:'warn', h:'node <b>kvm-node-03</b> drained by restu'},
+  {t:'09:40:31',k:'warn', h:'service <b>batch-render</b> converging 2/6 replicas'},
+  {t:'09:39:58',k:'ok',   h:'<b>vm-77ab02</b> stopped cleanly (exit 0)'},
+  {t:'09:39:12',k:'err',  h:'<b>task-4d21c9</b> failed: image pull timeout after 30s'},
+  {t:'09:38:47',k:'hot',  h:'translator built Firecracker spec for <b>postgres-primary.1</b>'},
+  {t:'09:38:20',k:'ok',   h:'vxlan mesh reconverged · peers 6/6'},
+];
+
+const CHECKS=[
+  {s:'ok',  t:'/dev/kvm present',            d:'rw · kvm_intel'},
+  {s:'ok',  t:'Nested virtualization',       d:'enabled'},
+  {s:'ok',  t:'Firecracker binary',          d:'v1.15.1'},
+  {s:'ok',  t:'Kernel asset',                d:'vmlinux-6.1.102 · checksum ok'},
+  {s:'ok',  t:'rootfs_dir writable',         d:'/var/lib/firecracker/rootfs'},
+  {s:'ok',  t:'Bridge swarm-br0 up',         d:'192.168.127.1/24'},
+  {s:'ok',  t:'iptables NAT rules',          d:'masquerade present'},
+  {s:'ok',  t:'cgroup v2 unified',           d:'mounted'},
+  {s:'ok',  t:'VXLAN udp/4789',              d:'listening'},
+  {s:'warn',t:'Disk usage /var/lib/firecracker', d:'78% · consider pruning rootfs'},
+  {s:'ok',  t:'Jailer available',            d:'uid 1000 · gid 1000'},
+];
+
+const CFG_CHECKS=[
+  {s:'ok',t:'Schema',           d:'version 1'},
+  {s:'ok',t:'Paths exist',      d:'4/4'},
+  {s:'ok',t:'vCPU / memory',    d:'within host limits'},
+  {s:'ok',t:'Bridge subnet',    d:'no overlap'},
+  {s:'warn',t:'Disk headroom',  d:'78% used on rootfs pool'},
+];
+
+const METRICS=[
+  'swarmcracker_vms_running','swarmcracker_vms_total','swarmcracker_vm_boot_duration_seconds',
+  'swarmcracker_vm_boot_errors_total','swarmcracker_vm_cpu_seconds','swarmcracker_vm_memory_bytes',
+  'swarmcracker_vm_net_rx_bytes','swarmcracker_vm_net_tx_bytes','swarmcracker_vxlan_peers',
+  'swarmcracker_vxlan_expected_peers','swarmcracker_manager_health','swarmcracker_raft_health',
+  'swarmcracker_disk_usage_bytes',
+];
+
+/* ------------------------------ helpers ------------------------------ */
+const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const statePill = st => ({
+  run:  '<span class="pill run"><span class="d"></span>running</span>',
+  start:'<span class="pill start"><span class="d"></span>booting</span>',
+  stop: '<span class="pill stop"><span class="d"></span>stopped</span>',
+  err:  '<span class="pill err"><span class="d"></span>error</span>',
+}[st] || `<span class="pill">${esc(st)}</span>`);
+
+function toast(title, body){
+  const el=document.createElement('div');
+  el.className='toast';
+  el.innerHTML=`<span class="tk"></span><div><b>${title}</b>${body?`<div style="color:var(--txt-3);margin-top:2px">${body}</div>`:''}</div>`;
+  $('#toasts').appendChild(el);
+  setTimeout(()=>{el.style.transition='.35s';el.style.opacity='0';el.style.transform='translateX(20px)';setTimeout(()=>el.remove(),360)},3600);
+}
+
+function sparkPath(data,w,h,pad=4){
+  const min=Math.min(...data),max=Math.max(...data),rng=(max-min)||1;
+  const step=(w-pad*2)/(data.length-1);
+  const pts=data.map((v,i)=>[pad+i*step, h-pad-((v-min)/rng)*(h-pad*2)]);
+  let d=`M${pts[0][0].toFixed(1)},${pts[0][1].toFixed(1)}`;
+  for(let i=0;i<pts.length-1;i++){
+    const [x0,y0]=pts[i],[x1,y1]=pts[i+1],cx=(x0+x1)/2;
+    d+=` C${cx.toFixed(1)},${y0.toFixed(1)} ${cx.toFixed(1)},${y1.toFixed(1)} ${x1.toFixed(1)},${y1.toFixed(1)}`;
+  }
+  return {d, area:`${d} L${pts.at(-1)[0].toFixed(1)},${h} L${pts[0][0].toFixed(1)},${h} Z`};
+}
+
+function drawFleetSpark(){
+  const el=$('#fleetSpark'); if(!el) return;
+  const w=el.clientWidth||600,h=el.clientHeight||132;
+  const s=sparkPath(fleetSeries,w,h,6);
+  el.innerHTML=`<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <defs>
+      <linearGradient id="gsp" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#FF6A2B" stop-opacity=".34"/>
+        <stop offset="100%" stop-color="#FF6A2B" stop-opacity="0"/>
+      </linearGradient>
+    </defs>
+    <g stroke="#1F1F25" stroke-width="1">
+      <line x1="0" y1="${h*.25}" x2="${w}" y2="${h*.25}"/>
+      <line x1="0" y1="${h*.5}"  x2="${w}" y2="${h*.5}"/>
+      <line x1="0" y1="${h*.75}" x2="${w}" y2="${h*.75}"/>
+    </g>
+    <path d="${s.area}" fill="url(#gsp)"/>
+    <path d="${s.d}" fill="none" stroke="#FF6A2B" stroke-width="2" stroke-linecap="round"/>
+  </svg>`;
+}
+
+/* ------------------------------ views ------------------------------ */
+function go(view){
+  if(!$(`.view[data-view="${view}"]`)) view='overview';
+  $$('.view').forEach(v=>v.classList.toggle('on',v.dataset.view===view));
+  $$('.nav a').forEach(a=>a.classList.toggle('on',a.dataset.view===view));
+  const label=$(`.nav a[data-view="${view}"]`)?.textContent.trim().split(/\s+/)[0]||view;
+  $('#crumb').textContent=label;
+  $('#stage').scrollTop=0;
+  if(location.hash.slice(1)!==view) history.replaceState(null,'','#'+view);
+  if(view==='overview') setTimeout(drawFleetSpark,30);
+}
+$$('.nav a').forEach(a=>a.onclick=()=>{ closeInspector(); go(a.dataset.view); });
+window.addEventListener('hashchange',applyHash);
+
+/* deep links: #view or #view/resource-id */
+function applyHash(){
+  const [view,...rest]=location.hash.slice(1).split('/');
+  go(view||'overview');
+  const id=decodeURIComponent(rest.join('/'));
+  if(!id){ closeInspector(); return; }
+  const v=VMS.find(x=>x.id===id);        if(v){ openVm(v); return; }
+  const n=NODES.find(x=>x.host===id);    if(n){ openNode(n); return; }
+  const s=SERVICES.find(x=>x.name===id); if(s){ openService(s); return; }
+  const sn=SNAPSHOTS.find(x=>x.id===id); if(sn){ openSnapshot(sn); return; }
+}
+function linkHash(view,id){ history.replaceState(null,'','#'+view+'/'+id); }
+
+/* ------------------------------ overview ------------------------------ */
+let fleetSeries=[];
+function seedSeries(){
+  let v=39; fleetSeries=[];
+  for(let i=0;i<64;i++){ v+=(Math.random()-.42)*1.7; v=Math.max(34,Math.min(47,v)); fleetSeries.push(v); }
+}
+
+function renderNodeBars(){
+  $('#nodeBars').innerHTML=NODES.map(n=>{
+    const cpu=Math.round(n.vcpuUsed/n.vcpu*100), mem=Math.round(n.memUsed/n.mem*100);
+    const cls=cpu>85?'hot':cpu>65?'warm':'';
+    return `<div>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:9px">
+        <span class="mono strong">${n.host}</span>
+        <span class="pill ${n.avail==='active'?'run':n.avail==='drain'?'start':''}" style="font-size:9px">${n.avail}</span>
+        <span class="mono dim" style="margin-left:auto">${n.vms} vms</span>
+      </div>
+      <div class="barcap"><span>vCPU ${n.vcpuUsed}/${n.vcpu}</span><b>${cpu}%</b></div>
+      <div class="meter" style="margin-bottom:9px"><i class="${cls}" style="width:${cpu}%"></i></div>
+      <div class="barcap"><span>Memory ${n.memUsed}/${n.mem} GB</span><b>${mem}%</b></div>
+      <div class="meter"><i class="cool" style="width:${mem}%"></i></div>
+    </div>`;
+  }).join('');
+}
+
+function renderMatrix(){
+  $('#matrix').innerHTML=VMS.map((v,i)=>{
+    const cls=v.state==='run'?'run':v.state==='start'?'start':v.state==='stop'?'stop':'err';
+    return `<div class="cell ${cls}" data-i="${i}" aria-label="${v.id}"></div>`;
+  }).join('');
+  $$('#matrix .cell').forEach(c=>{
+    c.addEventListener('mouseenter',e=>{
+      const v=VMS[+c.dataset.i];
+      showTip(e, `<b>${esc(v.id.slice(0,16))}</b> <span>· ${esc(v.svc)}</span><br>${esc(NODES[v.node].host)} <span>· ${esc(v.state)}</span>`);
+    });
+    c.addEventListener('mouseleave',hideTip);
+    c.onclick=()=>openVm(VMS[+c.dataset.i]);
+  });
+}
+
+function renderStream(){
+  $('#stream').innerHTML=EVENTS.map(e=>`
+    <div class="ev">
+      <span class="t">${e.t}</span>
+      <span class="bar ${e.k}"></span>
+      <p>${e.h}</p>
+    </div>`).join('');
+}
+
+function renderAttn(){
+  $('#attn').innerHTML=`
+    <div class="it"><span class="pill err" style="font-size:9px">fail</span><span class="txt"><b>legacy-report</b> · 0/1 replicas</span><span class="go"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-arrow"/></svg></span></div>
+    <div class="it"><span class="pill start" style="font-size:9px">conv</span><span class="txt"><b>batch-render</b> · 2/6 replicas converging</span><span class="go"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-arrow"/></svg></span></div>
+    <div class="it"><span class="pill" style="font-size:9px;color:var(--amber);border-color:rgba(255,194,75,.3)">exp</span><span class="txt"><b>redis-cache-baseline</b> snapshot · 214h / 168h</span><span class="go"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-arrow"/></svg></span></div>
+    <div class="it"><span class="pill" style="font-size:9px;color:var(--amber);border-color:rgba(255,194,75,.3)">disk</span><span class="txt">rootfs pool at <b>78%</b></span><span class="go"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-arrow"/></svg></span></div>`;
+}
+
+/* ------------------------------ nodes ------------------------------ */
+function renderNodes(){
+  $('#nodeGrid').innerHTML=NODES.map(n=>{
+    const cpu=Math.round(n.vcpuUsed/n.vcpu*100), mem=Math.round(n.memUsed/n.mem*100);
+    return `<div class="panel node">
+      <div class="top">
+        <div style="flex:1">
+          <div class="host">${n.host}</div>
+          <div class="role">${n.role} · ${n.rack} · ${n.id.slice(0,12)}</div>
+        </div>
+        ${n.state==='ready'
+          ? '<span class="pill run"><span class="d"></span>ready</span>'
+          : n.state==='unknown'
+          ? '<span class="pill start"><span class="d"></span>unknown</span>'
+          : '<span class="pill err"><span class="d"></span>down</span>'}
+      </div>
+      <div class="metrics">
+        <div>
+          <div class="barcap"><span>vCPU</span><b>${n.vcpuUsed}/${n.vcpu}</b></div>
+          <div class="meter"><i class="${cpu>80?'hot':cpu>60?'warm':''}" style="width:${cpu}%"></i></div>
+        </div>
+        <div>
+          <div class="barcap"><span>Memory</span><b>${n.memUsed}/${n.mem} GB</b></div>
+          <div class="meter"><i class="cool" style="width:${mem}%"></i></div>
+        </div>
+      </div>
+      <div class="foot">
+        <span class="mono dim">${n.vms} vms</span>
+        <div class="seg" style="margin-left:auto" data-node="${n.id}">
+          <button class="${n.avail==='active'?'on active':''}" data-a="active">Active</button>
+          <button class="${n.avail==='drain'?'on drain':''}"  data-a="drain">Drain</button>
+          <button class="${n.avail==='pause'?'on pause':''}"  data-a="pause">Pause</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  $$('#nodeGrid .node').forEach((el,i)=>el.onclick=()=>openNode(NODES[i]));
+  $$('.seg[data-node]').forEach(seg=>{
+    seg.querySelectorAll('button').forEach(b=>b.onclick=(e)=>{
+      e.stopPropagation();
+      const host=NODES.find(n=>n.id===seg.dataset.node).host;
+      seg.querySelectorAll('button').forEach(x=>x.className='');
+      b.className='on '+b.dataset.a;
+      toast(`Node ${host} → ${b.dataset.a}`, `Running <code>swarmcracker node ${b.dataset.a==='active'?'activate':b.dataset.a} ${host}</code>`);
+    });
+  });
+}
+
+/* ------------------------------ services ------------------------------ */
+let svcFilter='all';
+function renderSvcChips(){
+  const counts={all:SERVICES.length,running:0,converging:0,failed:0};
+  SERVICES.forEach(s=>counts[s.state]++);
+  $('#svcChips').innerHTML=['all','running','converging','failed']
+    .map(f=>`<button class="chip ${svcFilter===f?'on':''}" data-f="${f}">${f} <span class="n">${counts[f]}</span></button>`).join('');
+  $$('#svcChips .chip').forEach(c=>c.onclick=()=>{svcFilter=c.dataset.f;renderSvcChips();renderServices();});
+}
+function renderServices(){
+  const q=($('#svcSearch')?.value||'').toLowerCase();
+  const stateMap={running:'run',converging:'start',failed:'err'};
+  const rows=SERVICES.filter(s=>(svcFilter==='all'||s.state===svcFilter)&&(s.name+s.image).toLowerCase().includes(q));
+  $('#svcBody').innerHTML=rows.map(s=>`
+    <tr data-id="${s.id}">
+      <td class="strong">${s.name}</td>
+      <td class="mono dim">${s.image}</td>
+      <td class="col-opt"><span class="pill">${s.mode}</span></td>
+      <td>
+        <div style="display:flex;align-items:center;gap:9px;min-width:120px">
+          <span class="mono strong">${s.reps}/${s.want}</span>
+          <div class="meter" style="width:64px"><i class="${s.state==='failed'?'hot':s.state==='converging'?'warm':'cool'}" style="width:${s.want?Math.round(s.reps/s.want*100):0}%"></i></div>
+        </div>
+      </td>
+      <td class="mono dim">${s.net}</td>
+      <td class="mono dim col-opt">${s.ports}</td>
+      <td>${statePill(stateMap[s.state]||'stop')}</td>
+    </tr>`).join('') || `<tr><td colspan="7" style="text-align:center;padding:34px;color:var(--txt-3)">No services match this filter.</td></tr>`;
+  $$('#svcBody tr[data-id]').forEach(tr=>tr.onclick=()=>openService(SERVICES.find(s=>s.id===tr.dataset.id)));
+}
+
+/* ------------------------------ microvms ------------------------------ */
+let vmFilter='all';
+function renderVmChips(){
+  const counts={all:VMS.length,run:0,start:0,stop:0,err:0};
+  VMS.forEach(v=>counts[v.state]++);
+  $('#vmChips').innerHTML=[['all','all'],['run','running'],['start','booting'],['stop','stopped'],['err','error']]
+    .map(([k,l])=>`<button class="chip ${vmFilter===k?'on':''}" data-f="${k}">${l} <span class="n">${counts[k]}</span></button>`).join('');
+  $$('#vmChips .chip').forEach(c=>c.onclick=()=>{vmFilter=c.dataset.f;renderVmChips();renderVms();});
+}
+function renderVmNodeSelect(){
+  $('#vmNode').innerHTML=`<option value="">All nodes</option>`+NODES.map(n=>`<option value="${n.host}">${n.host}</option>`).join('');
+}
+function renderVms(){
+  const q=($('#vmSearch')?.value||'').toLowerCase();
+  const nd=$('#vmNode')?.value||'';
+  const rows=VMS.filter(v=>(vmFilter==='all'||v.state===vmFilter)
+    &&(!nd||NODES[v.node].host===nd)
+    &&(v.id+v.svc+v.ip+v.task).toLowerCase().includes(q));
+  $('#vmBody').innerHTML=rows.map(v=>`
+    <tr data-id="${v.id}">
+      <td class="mono strong">${v.id}</td>
+      <td>${v.svc}</td>
+      <td class="mono dim">${NODES[v.node].host}</td>
+      <td>${statePill(v.state)}</td>
+      <td class="mono dim">${v.ip}</td>
+      <td class="mono">${v.vcpu}</td>
+      <td class="mono dim">${v.mem} MB</td>
+      <td class="mono dim col-opt">${v.uptime}</td>
+      <td class="mono col-opt" style="color:${v.state==='run'?'var(--ember-2)':'var(--txt-3)'}">${v.boot}</td>
+    </tr>`).join('') || `<tr><td colspan="9" style="text-align:center;padding:34px;color:var(--txt-3)">No microVMs match this filter.</td></tr>`;
+  $('#vmCount').textContent=`${rows.length} of ${VMS.length} instances`;
+  $$('#vmBody tr[data-id]').forEach(tr=>tr.onclick=()=>openVm(VMS.find(v=>v.id===tr.dataset.id)));
+}
+
+/* ------------------------------ networks ------------------------------ */
+function renderNetworks(){
+  $('#netBody').innerHTML=NETWORKS.map(n=>`
+    <tr>
+      <td class="strong">${n.name}</td>
+      <td><span class="pill ${n.driver==='overlay'?'ember':n.driver==='vxlan'?'blue':''}">${n.driver}</span></td>
+      <td class="mono dim">${n.subnet}</td>
+      <td class="mono">${n.eps}</td>
+      <td class="mono ${n.peers==='6/6'?'':''}" style="color:${n.peers==='6/6'?'var(--teal)':'var(--txt-3)'}">${n.peers}</td>
+      <td class="mono dim">${n.nat?'on':'off'}</td>
+      <td class="mono dim">${n.created}</td>
+    </tr>`).join('');
+  renderTopo();
+}
+function renderTopo(){
+  const w=640,h=210, cx=w/2, cy=h/2;
+  const peers=[['kvm-node-01',w*0.12,h*0.24],['kvm-node-02',w*0.88,h*0.24],['kvm-node-03',w*0.1,h*0.8],
+               ['kvm-node-04',w*0.9,h*0.8],['kvm-node-05',w*0.5,h*0.08],['kvm-node-06',w*0.5,h*0.94]];
+  $('#topo').innerHTML=`<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}">
+    <defs><radialGradient id="hg"><stop offset="0%" stop-color="#FF6A2B" stop-opacity=".3"/><stop offset="100%" stop-color="#FF6A2B" stop-opacity="0"/></radialGradient></defs>
+    <circle cx="${cx}" cy="${cy}" r="72" fill="url(#hg)"/>
+    ${peers.map(([,x,y])=>`<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="#2B2B33" stroke-width="1" stroke-dasharray="3 4"/>`).join('')}
+    ${peers.map(([n,x,y])=>`
+      <rect x="${x-56}" y="${y-17}" width="112" height="34" rx="9" fill="#16161A" stroke="#2C2C34"/>
+      <circle cx="${x-40}" cy="${y}" r="3.5" fill="#4FD6C4"/>
+      <text x="${x-30}" y="${y+4}" fill="#A5A39D" font-family="Azeret Mono" font-size="10">${n}</text>`).join('')}
+    <rect x="${cx-78}" y="${cy-26}" width="156" height="52" rx="12" fill="#1C1C21" stroke="#FF6A2B" stroke-opacity=".55"/>
+    <text x="${cx}" y="${cy-3}" text-anchor="middle" fill="#EFEDE7" font-family="Saira Condensed" font-size="14" letter-spacing="1.5">SWARM-BR0</text>
+    <text x="${cx}" y="${cy+13}" text-anchor="middle" fill="#6A6963" font-family="Azeret Mono" font-size="9">192.168.127.1/24</text>
+  </svg>`;
+}
+
+/* ------------------------------ storage / snapshots ------------------------------ */
+function renderVolumes(){
+  $('#volBody').innerHTML=VOLUMES.map(v=>`
+    <tr>
+      <td class="strong">${v.name}</td>
+      <td><span class="pill">${v.driver}</span></td>
+      <td class="mono">${v.size}</td>
+      <td><div style="display:flex;align-items:center;gap:9px"><div class="meter" style="width:80px"><i class="${v.used>70?'warm':''}" style="width:${v.used}%"></i></div><span class="mono dim">${v.used}%</span></div></td>
+      <td class="mono dim">${v.attach}</td>
+      <td style="text-align:right">
+        <button class="btn ghost sm" onclick="event.stopPropagation();toast('Volume snapshot','<code>swarmcracker volume snapshot ${v.name}</code>')">Snapshot</button>
+        <button class="btn ghost sm danger" onclick="event.stopPropagation();toast('Volume removed','<code>swarmcracker volume rm ${v.name}</code>')"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-trash"/></svg></button>
+      </td>
+    </tr>`).join('');
+}
+function renderSnapshots(){
+  $('#snapList').innerHTML=SNAPSHOTS.map(s=>{
+    const pct=Math.min(100,Math.round(s.ageH/168*100)), expired=s.ageH>168;
+    return `<div class="snap" data-id="${s.id}">
+      <div>
+        <div class="nm">${s.name} ${expired?'<span class="pill start" style="font-size:9px">expired</span>':''}</div>
+        <div class="sub">${s.id} · ${s.svc} · ${s.task} · ${s.node}</div>
+      </div>
+      <div>
+        <div class="barcap"><span>age ${s.ageH}h</span><b>${pct}% of 168h</b></div>
+        <div class="meter"><i class="${expired?'hot':pct>70?'warm':'cool'}" style="width:${pct}%"></i></div>
+      </div>
+      <div class="age">${s.vcpus} vCPU · ${s.mem} MB<div class="size">${s.size}</div></div>
+      <div class="acts">
+        <button class="btn ghost sm" onclick="event.stopPropagation();toast('Restoring','<code>swarmcracker vm snapshot restore ${s.id}</code> · resume_vm true')">Restore</button>
+        <button class="btn ghost sm danger" onclick="event.stopPropagation();toast('Snapshot deleted','Freed 1.02 GB')"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-trash"/></svg></button>
+      </div>
+    </div>`;
+  }).join('');
+  $$('#snapList .snap').forEach(el=>el.onclick=()=>openSnapshot(SNAPSHOTS.find(s=>s.id===el.dataset.id)));
+}
+function openSnapshot(s){
+  const body=`
+    <div class="sect"><h5>Snapshot</h5><div class="dl">
+      <div><span>ID</span><b>${s.id}</b></div>
+      <div><span>Name</span><b>${s.name}</b></div>
+      <div><span>Service</span><b>${s.svc}</b></div>
+      <div><span>Task</span><b>${s.task}</b></div>
+      <div><span>Node</span><b>${s.node}</b></div>
+    </div></div>
+    <div class="sect"><h5>Image</h5><div class="dl">
+      <div><span>VM state</span><b>15 KB</b></div>
+      <div><span>Memory</span><b>${s.size.split('+ ')[1]}</b></div>
+      <div><span>vCPU</span><b>${s.vcpus}</b></div>
+      <div><span>Checksum</span><b style="color:var(--teal)">sha256 ok</b></div>
+      <div><span>Path</span><b>/var/lib/firecracker/snapshots/${s.id}</b></div>
+    </div></div>
+    <div class="sect"><h5>Retention</h5>
+      <div class="barcap"><span>age ${s.ageH}h / 168h</span><b>${Math.min(100,Math.round(s.ageH/168*100))}%</b></div>
+      <div class="meter"><i class="${s.ageH>168?'hot':'cool'}" style="width:${Math.min(100,Math.round(s.ageH/168*100))}%"></i></div>
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn primary sm" onclick="toast('Restore started','<code>swarmcracker vm snapshot restore ${s.id}</code>')"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-refresh"/></svg> Restore</button>
+      <button class="btn sm danger" onclick="toast('Snapshot deleted','Freed ${s.size.split(' + ')[0]}')"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-trash"/></svg> Delete</button>
+    </div>`;
+  openInspector({title:s.name,id:s.id,tabs:['Overview'],body:[body]});
+  linkHash('snapshots',s.id);
+}
+
+/* ------------------------------ doctor / config ------------------------------ */
+function renderChecks(){
+  $('#checks').innerHTML=CHECKS.map(c=>`
+    <div class="check">
+      <span class="mk ${c.s}"><svg class="ico sm" viewBox="0 0 24 24"><use href="#${c.s==='ok'?'i-check':'i-warn'}"/></svg></span>
+      <span class="lbl"><b>${c.t}</b></span>
+      <span class="detail">${c.d}</span>
+    </div>`).join('');
+}
+function renderDoctorOut(){
+  $('#doctorOut').innerHTML=
+`<span class="c">$</span> <span class="k">sudo</span> swarmcracker doctor
+<span class="c">──────────────────────────────────────────────</span>
+KVM                <span class="s">ok</span>    /dev/kvm rw, kvm_intel
+Firecracker        <span class="s">ok</span>    v1.15.1
+Kernel asset       <span class="s">ok</span>    vmlinux-6.1.102 (sha256 verified)
+rootfs_dir         <span class="s">ok</span>    writable
+Bridge             <span class="s">ok</span>    swarm-br0 192.168.127.1/24
+NAT                <span class="s">ok</span>    masquerade rule present
+cgroup v2          <span class="s">ok</span>    unified hierarchy
+VXLAN              <span class="s">ok</span>    udp/4789 listening, peers 6/6
+Jailer             <span class="s">ok</span>    uid 1000 gid 1000
+Disk               <span class="wn">warn</span>  /var/lib/firecracker 78% used
+<span class="c">──────────────────────────────────────────────</span>
+10 passed · <span class="wn">1 warning</span> · <span class="s">0 failed</span>
+cluster swarmcracker-prod is <span class="s">ready</span>`;
+}
+function renderCfgChecks(){
+  $('#cfgChecks').innerHTML=CFG_CHECKS.map(c=>`
+    <div class="check">
+      <span class="mk ${c.s}"><svg class="ico sm" viewBox="0 0 24 24"><use href="#${c.s==='ok'?'i-check':'i-warn'}"/></svg></span>
+      <span class="lbl"><b>${c.t}</b> <span style="color:var(--txt-3);font-size:11.5px">${c.d}</span></span>
+    </div>`).join('');
+}
+function renderMetrics(){
+  $('#metricList').innerHTML=METRICS.map(m=>`
+    <div style="display:flex;align-items:center;gap:9px;font-family:var(--f-mono);font-size:11px;color:var(--txt-2)">
+      <span style="width:5px;height:5px;border-radius:50%;background:var(--ember);flex:none"></span>${m}
+    </div>`).join('');
+}
+
+/* ------------------------------ inspector ------------------------------ */
+function openInspector({title,id,tabs,body}){
+  $('#insTitle').textContent=title;
+  $('#insId').innerHTML=id;
+  $('#insTabs').innerHTML=tabs.map((t,i)=>`<button class="${i===0?'on':''}" data-t="${i}">${t}</button>`).join('');
+  $('#insBody').innerHTML=body[0];
+  $$('#insTabs button').forEach(b=>b.onclick=()=>{
+    $$('#insTabs button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    $('#insBody').innerHTML=body[+b.dataset.t];
+  });
+  $('#inspector').classList.add('open');
+  document.body.classList.add('ins-on');
+}
+function closeInspector(){
+  $('#inspector').classList.remove('open');
+  document.body.classList.remove('ins-on');
+  const v=$('.view.on')?.dataset.view;
+  if(v && location.hash.includes('/')) history.replaceState(null,'','#'+v);
+}
+
+function openVm(v){
+  const life=['Created','Rootfs','Socket','Boot','Running'];
+  const doneIdx=v.state==='run'?4:v.state==='start'?3:v.state==='stop'?4:-1;
+  const lifeHtml=life.map((s,i)=>{
+    const cls=i<doneIdx?'done':i===doneIdx?'done':(i===doneIdx+1&&v.state==='start'?'cur':'');
+    const mark=(i===4?(v.state==='run'?v.uptime:'booted'):('+'+(i*41-3)+'ms'));
+    return `<div class="step ${cls}"><div class="dot"></div><div class="nm">${s}</div><div class="tm">${i===0?'t=0':mark}</div></div>`;
+  }).join('');
+
+  const overview=`
+    <div class="sect"><h5>Lifecycle</h5><div class="life">${lifeHtml}</div></div>
+    <div class="sect"><h5>Identity</h5><div class="dl">
+      <div><span>VM ID</span><b>${v.id}</b></div>
+      <div><span>Task</span><b>${v.task}</b></div>
+      <div><span>Service</span><b>${v.svc}</b></div>
+      <div><span>Node</span><b>${NODES[v.node].host}</b></div>
+      <div><span>Image</span><b>${v.image}</b></div>
+      <div><span>Socket</span><b>/var/run/firecracker/${v.id}.sock</b></div>
+    </div></div>
+    <div class="sect"><h5>Resources</h5>
+      <div class="barcap"><span>vCPU ${v.vcpu}</span><b>${Math.round(38+v.vcpu*4)}% busy</b></div>
+      <div class="meter" style="margin-bottom:12px"><i style="width:${Math.min(96,38+v.vcpu*4)}%"></i></div>
+      <div class="barcap"><span>Memory ${v.mem} MB</span><b>${Math.round(v.mem*.62)} MB rss</b></div>
+      <div class="meter"><i class="cool" style="width:62%"></i></div>
+    </div>
+    <div class="sect"><h5>Network</h5><div class="dl">
+      <div><span>IP</span><b>${v.ip}</b></div>
+      <div><span>Network</span><b>overlay-web</b></div>
+      <div><span>RX</span><b>${(2.1+v.vcpu*.4).toFixed(1)} MB/s</b></div>
+      <div><span>TX</span><b>${(1.4+v.vcpu*.3).toFixed(1)} MB/s</b></div>
+    </div></div>`;
+
+  const live=`
+    <div class="sect"><h5>Machine Config · Firecracker API</h5>
+      <pre class="code" style="border-radius:10px;border:1px solid var(--line);font-size:11px">{
+  <span class="k">"vcpu_count"</span>: <span class="n">${v.vcpu}</span>,
+  <span class="k">"mem_size_mib"</span>: <span class="n">${v.mem}</span>,
+  <span class="k">"ht_enabled"</span>: <span class="b">false</span>,
+  <span class="k">"track_dirty_pages"</span>: <span class="b">true</span>
+}</pre></div>
+    <div class="sect"><h5>Runtime</h5><div class="dl">
+      <div><span>PID</span><b>${4021+v.node*37}</b></div>
+      <div><span>State</span><b>${v.state}</b></div>
+      <div><span>Uptime</span><b>${v.uptime}</b></div>
+      <div><span>Boot time</span><b>${v.boot}</b></div>
+      <div><span>API status</span><b style="color:var(--teal)">connected</b></div>
+      <div><span>Kernel</span><b>/usr/share/firecracker/vmlinux</b></div>
+    </div></div>
+    <div class="sect"><h5>Boot Signal</h5><div id="insSpark" style="height:76px"></div></div>`;
+
+  const console=`
+    <div class="console">
+      <div class="bar"><span class="d"></span><span class="d"></span><span class="d"></span><span class="t">${v.id} · serial</span></div>
+      <div class="body">
+        <div class="ln dm">[    0.000000] Linux version 6.1.102 (firecracker)</div>
+        <div class="ln dm">[    0.000000] Command line: console=ttyS0 reboot=k panic=1</div>
+        <div class="ln">[    0.041223] virtio_net: tap0 registered</div>
+        <div class="ln">[    0.078401] EXT4-fs (vda): mounted filesystem</div>
+        <div class="ln ok">[    0.148112] rootfs mounted, init starting</div>
+        <div class="ln">${v.svc} | starting worker</div>
+        <div class="ln ok">${v.svc} | listening on 0.0.0.0:8080</div>
+        <div class="ln dm">${v.svc} | health probe ok</div>
+        <div class="ln"><span class="caret"></span></div>
+      </div>
+    </div>
+    <div style="margin-top:14px;display:flex;gap:8px">
+      <button class="btn sm" onclick="toast('Shell attached','Opening serial console for <code>${v.id}</code>')"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-term"/></svg> Attach</button>
+      <button class="btn sm" onclick="toast('Logs','<code>swarmcracker logs ${v.id} -f</code>')"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-download"/></svg> Download</button>
+    </div>`;
+
+  const snaps=`
+    <div class="sect"><h5>Snapshot History</h5>
+      ${SNAPSHOTS.slice(0,2).map(s=>`<div class="dl" style="margin-bottom:9px">
+        <div><span>Name</span><b>${s.name}</b></div>
+        <div><span>ID</span><b>${s.id}</b></div>
+        <div><span>Age</span><b>${s.ageH}h</b></div>
+        <div><span>Size</span><b>${s.size}</b></div>
+      </div>`).join('')}
+    </div>
+    <div style="display:flex;gap:8px">
+      <button class="btn primary sm" onclick="toast('Snapshot created','Paused VM → PUT /snapshot/create')"><svg class="ico sm" viewBox="0 0 24 24"><use href="#i-snap"/></svg> Create snapshot</button>
+      <button class="btn sm" onclick="toast('Pause + snapshot','PATCH /vm {\\"state\\":\\"Paused\\"}')">Pause VM</button>
+    </div>`;
+
+  openInspector({
+    title:v.id.slice(0,18),
+    id:`${v.task} · ${NODES[v.node].host}`,
+    tabs:['Overview','Live','Console','Snapshots'],
+    body:[overview,live,console,snaps],
+  });
+  linkHash('vms',v.id);
+
+  setTimeout(()=>{
+    const el=$('#insSpark'); if(!el) return;
+    const w=el.clientWidth||360,h=76;
+    const s=sparkPath(Array.from({length:28},()=>40+Math.random()*45),w,h,5);
+    el.innerHTML=`<svg width="100%" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+      <path d="${s.d}" fill="none" stroke="#FF6A2B" stroke-width="1.8" stroke-linecap="round"/></svg>`;
+  },120);
+}
+
+function openService(s){
+  const tasks=VMS.filter(v=>v.svc===s.name).slice(0,8);
+  const body=`
+    <div class="sect"><h5>Spec</h5><div class="dl">
+      <div><span>Service ID</span><b>${s.id}</b></div>
+      <div><span>Image</span><b>${s.image}</b></div>
+      <div><span>Mode</span><b>${s.mode}</b></div>
+      <div><span>Network</span><b>${s.net}</b></div>
+      <div><span>Ports</span><b>${s.ports}</b></div>
+    </div></div>
+    <div class="sect"><h5>Replicas</h5>
+      <div class="barcap"><span>${s.reps} running / ${s.want} desired</span><b>${s.want?Math.round(s.reps/s.want*100):0}%</b></div>
+      <div class="meter"><i class="${s.state==='failed'?'hot':s.state==='converging'?'warm':'cool'}" style="width:${s.want?Math.round(s.reps/s.want*100):0}%"></i></div>
+      <div style="display:flex;gap:8px;margin-top:14px">
+        <button class="btn sm" onclick="toast('Scaled','<code>swarmcracker service scale ${s.name} ${s.want+1}</code>')">+1 replica</button>
+        <button class="btn sm" onclick="toast('Scaled','<code>swarmcracker service scale ${s.name} ${Math.max(0,s.want-1)}</code>')">−1 replica</button>
+      </div>
+    </div>
+    <div class="sect"><h5>Tasks → MicroVMs</h5><div class="dl">
+      ${tasks.map(v=>`<div><span>${esc(v.task)}</span><b>${v.id.slice(0,14)} · ${NODES[v.node].host}</b></div>`).join('') || '<div><span>—</span><b>no tasks</b></div>'}
+    </div></div>`;
+  openInspector({title:s.name,id:s.id,tabs:['Overview'],body:[body]});
+  linkHash('services',s.name);
+}
+
+function openNode(n){
+  const body=`
+    <div class="sect"><h5>Node</h5><div class="dl">
+      <div><span>ID</span><b>${n.id}</b></div>
+      <div><span>Hostname</span><b>${n.host}</b></div>
+      <div><span>Role</span><b>${n.role}</b></div>
+      <div><span>State</span><b>${n.state}</b></div>
+      <div><span>Availability</span><b>${n.avail}</b></div>
+      <div><span>Rack</span><b>${n.rack}</b></div>
+    </div></div>
+    <div class="sect"><h5>Capacity</h5>
+      <div class="barcap"><span>vCPU ${n.vcpuUsed}/${n.vcpu}</span><b>${Math.round(n.vcpuUsed/n.vcpu*100)}%</b></div>
+      <div class="meter" style="margin-bottom:12px"><i style="width:${Math.round(n.vcpuUsed/n.vcpu*100)}%"></i></div>
+      <div class="barcap"><span>Memory ${n.memUsed}/${n.mem} GB</span><b>${Math.round(n.memUsed/n.mem*100)}%</b></div>
+      <div class="meter"><i class="cool" style="width:${Math.round(n.memUsed/n.mem*100)}%"></i></div>
+    </div>
+    <div class="sect"><h5>Actions</h5>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn sm" onclick="toast('Drained','<code>swarmcracker node drain ${n.host}</code>')">Drain</button>
+        <button class="btn sm" onclick="toast('Activated','<code>swarmcracker node activate ${n.host}</code>')">Activate</button>
+        <button class="btn sm" onclick="toast('Promoted','<code>swarmcracker node promote ${n.host}</code>')">Promote</button>
+        <button class="btn sm danger" onclick="toast('Removed','<code>swarmcracker node rm ${n.host}</code>')">Remove</button>
+      </div>
+    </div>`;
+  openInspector({title:n.host,id:n.id,tabs:['Overview'],body:[body]});
+  linkHash('nodes',n.host);
+}
+
+/* ------------------------------ create drawer ------------------------------ */
+const form={cpu:2,mem:1024,image:'nginx:1.27-alpine',net:'overlay-web',env:'APP=prod',jailer:true,auto:false};
+function updatePreview(){
+  const parts=['<span class="k">sudo</span> swarmcracker vm create',
+    `--cpu <span class="n">${form.cpu}</span>`,
+    `--memory <span class="n">${form.mem}</span>`];
+  if(form.net) parts.push(`--network <span class="s">${form.net}</span>`);
+  if(form.env) parts.push(`-e <span class="s">${form.env.split(',')[0].trim()}</span>`);
+  if(!form.jailer) parts.push('--no-jailer');
+  if(form.auto) parts.push('--auto-snapshot');
+  parts.push(`<span class="s">${form.image}</span>`);
+  $('#fPreview').innerHTML=parts.join(' ');
+  $('#fMemOut').textContent=form.mem+' MB';
+}
+$$('#fCpu .opt').forEach(o=>o.onclick=()=>{$$('#fCpu .opt').forEach(x=>x.classList.remove('on'));o.classList.add('on');form.cpu=+o.dataset.v;updatePreview();});
+$('#fImage').oninput=e=>{form.image=e.target.value||'alpine:latest';updatePreview();};
+$('#fEnv').oninput=e=>{form.env=e.target.value;updatePreview();};
+$('#fNet').onchange=e=>{form.net=e.target.value;updatePreview();};
+$('#fMem').oninput=e=>{form.mem=+e.target.value;updatePreview();};
+function bindSwitch(id,key){
+  const el=$(id);
+  const toggle=()=>{form[key]=!form[key];el.classList.toggle('on',form[key]);el.setAttribute('aria-checked',form[key]);updatePreview();};
+  el.onclick=toggle; el.onkeydown=e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();toggle();}};
+}
+bindSwitch('#fJailer','jailer'); bindSwitch('#fAuto','auto');
+
+function openDrawer(){ $('#drawer').classList.add('on'); $('#scrim').classList.add('on'); updatePreview(); }
+function closeDrawer(){ $('#drawer').classList.remove('on'); $('#scrim').classList.remove('on'); }
+function bootVm(){
+  closeDrawer();
+  toast('microVM booting','Reserving '+form.cpu+' vCPU · '+form.mem+' MB on kvm-node-04');
+  setTimeout(()=>toast('microVM running','Booted in <code>186ms</code> · '+form.image),1400);
+}
+function copyCmd(btn){
+  navigator.clipboard?.writeText($('#fPreview').textContent).catch(()=>{});
+  btn.classList.add('copied'); btn.innerHTML='<svg class="ico sm" viewBox="0 0 24 24"><use href="#i-check"/></svg> Copied';
+  setTimeout(()=>{btn.classList.remove('copied');btn.innerHTML='<svg class="ico sm" viewBox="0 0 24 24"><use href="#i-copy"/></svg> Copy';},1400);
+}
+$('#newVmBtn').onclick=openDrawer;
+
+/* ------------------------------ command palette ------------------------------ */
+const COMMANDS=[
+  {t:'Go to Overview',       tag:'jump', v:'overview',  k:''},
+  {t:'Go to Nodes',          tag:'jump', v:'nodes',     k:''},
+  {t:'Go to Services',       tag:'jump', v:'services',  k:''},
+  {t:'Go to MicroVMs',       tag:'jump', v:'vms',       k:''},
+  {t:'Go to Networks',       tag:'jump', v:'networks',  k:''},
+  {t:'Go to Storage',        tag:'jump', v:'storage',   k:''},
+  {t:'Go to Snapshots',      tag:'jump', v:'snapshots', k:''},
+  {t:'Go to Doctor',         tag:'jump', v:'doctor',    k:''},
+  {t:'Go to Config',         tag:'jump', v:'config',    k:''},
+  {t:'Create a microVM',     tag:'cmd',  k:'vm create'},
+  {t:'Scale a service',      tag:'cmd',  k:'service scale'},
+  {t:'Drain a node',         tag:'cmd',  k:'node drain'},
+  {t:'Create a snapshot',    tag:'cmd',  k:'vm snapshot create'},
+  {t:'Restore a snapshot',   tag:'cmd',  k:'vm snapshot restore'},
+  {t:'Cleanup old snapshots',tag:'cmd',  k:'vm snapshot cleanup --max-age 24h'},
+  {t:'Run doctor',           tag:'cmd',  k:'doctor'},
+  {t:'Validate config',      tag:'cmd',  k:'config validate'},
+  {t:'Show cluster health',  tag:'cmd',  k:'health'},
+];
+let pSel=0,pRows=COMMANDS;
+function renderPalette(){
+  $('#pList').innerHTML=pRows.map((c,i)=>`
+    <div class="pitem ${i===pSel?'on':''}" data-i="${i}">
+      <svg class="ico sm" viewBox="0 0 24 24" style="color:${c.tag==='cmd'?'var(--ember)':'var(--txt-3)'}"><use href="#${c.tag==='cmd'?'i-term':'i-chev'}"/></svg>
+      ${c.t} ${c.k?`<span class="mono dim" style="font-size:10.5px">${c.k}</span>`:''}
+      <span class="tag ${c.tag==='cmd'?'cmd':''}">${c.tag}</span>
+    </div>`).join('') || `<div style="padding:22px;text-align:center;color:var(--txt-3);font-size:12.5px">No matches</div>`;
+  $$('#pList .pitem').forEach(el=>el.onclick=()=>runPalette(+el.dataset.i));
+}
+function runPalette(i){
+  const c=pRows[i]; if(!c) return;
+  closePalette();
+  if(c.tag==='jump'){ go(c.v); return; }
+  if(c.k==='vm create'){ openDrawer(); return; }
+  toast('Command',`<code>swarmcracker ${c.k}</code>`);
+}
+function openPalette(){
+  $('#palette').classList.add('on'); $('#pScrim').classList.add('on');
+  $('#pInput').value=''; pRows=COMMANDS; pSel=0; renderPalette(); $('#pInput').focus();
+}
+function closePalette(){ $('#palette').classList.remove('on'); $('#pScrim').classList.remove('on'); }
+$('#searchBtn').onclick=openPalette;
+$('#pInput').oninput=e=>{
+  const q=e.target.value.toLowerCase();
+  pRows=COMMANDS.filter(c=>(c.t+' '+c.k).toLowerCase().includes(q)); pSel=0; renderPalette();
+};
+$('#pInput').onkeydown=e=>{
+  if(e.key==='ArrowDown'){e.preventDefault();pSel=Math.min(pSel+1,pRows.length-1);renderPalette();}
+  if(e.key==='ArrowUp'){e.preventDefault();pSel=Math.max(pSel-1,0);renderPalette();}
+  if(e.key==='Enter'){e.preventDefault();runPalette(pSel);}
+};
+document.addEventListener('keydown',e=>{
+  if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='k'){e.preventDefault();$('#palette').classList.contains('on')?closePalette():openPalette();}
+  if(e.key==='Escape'){closePalette();closeDrawer();closeInspector();}
+});
+
+/* ------------------------------ tooltip ------------------------------ */
+const tip=$('#tip');
+function showTip(e,html){
+  tip.innerHTML=html; tip.classList.add('on');
+  const r=tip.getBoundingClientRect();
+  tip.style.left=Math.min(window.innerWidth-r.width-10, e.clientX+12)+'px';
+  tip.style.top=Math.max(8,e.clientY-r.height-12)+'px';
+}
+function hideTip(){ tip.classList.remove('on'); }
+
+/* ------------------------------ live loops ------------------------------ */
+const TICKER=[
+  'swarmcracker_vms_running 44 · vm_boot_duration_seconds p99 182ms · vm_boot_errors_total 0',
+  'swarmcracker_vxlan_peers 6 / expected 6 · raft_health 1 · manager_health 1',
+  'swarmcracker_vm_net_rx_bytes 1.9 GB/s · tx 1.4 GB/s · cpu_seconds 18422',
+  'swarmcracker_disk_usage_bytes 412 GB / 900 GB on /var/lib/firecracker',
+  'executor heartbeat ok · 6/6 nodes reporting · next reconcile in 3s',
+];
+let tickIdx=0;
+setInterval(()=>{
+  tickIdx=(tickIdx+1)%TICKER.length;
+  const m=$('#tickerMsg');
+  m.style.animation='none'; void m.offsetWidth;
+  m.textContent=TICKER[tickIdx];
+  m.style.animation='tick .5s ease both';
+},4200);
+
+setInterval(()=>{
+  const d=new Date();
+  $('#clock').textContent=d.toTimeString().slice(0,8);
+},1000);
+
+setInterval(()=>{
+  const el=$('#bigVms'); if(!el) return;
+  let n=+el.textContent;
+  n+=Math.random()>.55?1:Math.random()>.5?-1:0;
+  n=Math.max(41,Math.min(46,n));
+  el.textContent=n;
+  $('#vmCountNav').textContent=n;
+  if($('#nowVms')) $('#nowVms').textContent=n;
+  fleetSeries.push(n); fleetSeries.shift();
+  drawFleetSpark();
+  const p99=170+Math.round(Math.random()*24);
+  if($('#bootP99')) $('#bootP99').innerHTML=p99+'<small>ms</small>';
+},3000);
+
+setInterval(()=>{
+  const hosts=['kvm-node-01','kvm-node-02','kvm-node-04','kvm-node-06'];
+  const msgs=[
+    ()=>['ok',`<b>${'vm-'+(0x50c0+Math.floor(Math.random()*900)).toString(16)}</b> booted in <code>${140+Math.round(Math.random()*60)}ms</code>`],
+    ()=>['hot','task scheduled → '+hosts[Math.floor(Math.random()*hosts.length)]],
+    ()=>['ok','health probe ok · payments-worker'],
+    ()=>['warn','vxlan peer latency 3.4ms on kvm-node-03'],
+  ];
+  const [k,h]=msgs[Math.floor(Math.random()*msgs.length)]();
+  const t=new Date().toTimeString().slice(0,8);
+  EVENTS.unshift({t,k,h});
+  const s=$('#stream');
+  if(s){ s.innerHTML=EVENTS.slice(0,14).map(e=>`<div class="ev"><span class="t">${e.t}</span><span class="bar ${e.k}"></span><p>${e.h}</p></div>`).join(''); }
+},5200);
+
+/* ------------------------------ boot ------------------------------ */
+function init(){
+  seedSeries();
+  renderNodeBars(); renderMatrix(); renderStream(); renderAttn();
+  renderNodes(); renderSvcChips(); renderServices();
+  renderVmChips(); renderVmNodeSelect(); renderVms();
+  renderNetworks(); renderVolumes(); renderSnapshots();
+  renderChecks(); renderDoctorOut(); renderCfgChecks(); renderMetrics();
+  updatePreview();
+  drawFleetSpark();
+  applyHash();
+  setTimeout(()=>toast('Connected to swarmcracker-prod','6 nodes · firecracker v1.15.1 · raft 3/3'),700);
+}
+init();
+
+$('#svcSearch').oninput=renderServices;
+$('#vmSearch').oninput=renderVms;
+$('#vmNode').onchange=renderVms;
+$('#runDoctor').onclick=()=>{
+  toast('Doctor running','Probing KVM, Firecracker, networking…');
+  setTimeout(()=>toast('Doctor finished','10 passed · <span style="color:var(--amber)">1 warning</span> · 0 failed'),1200);
+};
+window.addEventListener('resize',()=>{drawFleetSpark();});
+</script>
+</body>
+</html>
