@@ -13,6 +13,7 @@
 package console
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
@@ -111,7 +112,9 @@ func New(cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("console: failed to remove stale socket: %w", err)
 	}
 
-	listener, err := net.Listen("unix", socketPath)
+	// Use ListenConfig so the listen call is context-aware (noctx).
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(context.Background(), "unix", socketPath)
 	if err != nil {
 		_ = stdinR.Close()
 		_ = stdinW.Close()
