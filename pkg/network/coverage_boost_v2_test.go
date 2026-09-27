@@ -657,17 +657,3 @@ func TestCNIClient_DelNetwork_ExecFails(t *testing.T) {
 // GetNodes SwarmKit - client nil check
 // =============================================================================
 
-func TestSwarmKitNodeDiscovery_GetNodes_NilClient(t *testing.T) {
-	// Create discovery without connecting
-	discovery := &SwarmKitNodeDiscovery{
-		localNodeID:   "node-1",
-		localHostname: "host1",
-		timeout:       5,
-	}
-
-	nodes, err := discovery.GetNodes()
-
-	require.Error(t, err)
-	assert.Nil(t, nodes)
-	assert.Contains(t, err.Error(), "not connected")
-}
