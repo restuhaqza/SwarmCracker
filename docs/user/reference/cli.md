@@ -118,10 +118,13 @@ Service (replicated microVM) management.
 | `--replicas` | `1` | Number of replicas |
 | `--cpu` | — | CPU limit (cores, e.g. `1.5`) |
 | `--memory` | — | Memory limit (e.g. `512M`, `1G`) |
+| `--disk` | content-based | Minimum VM rootfs size (e.g. `10G`); adds the `swarmcracker.disk` service label |
 | `--env` / `-e` | — | Environment variables |
 | `--command` | — | Override the container command |
 | `--args` | — | Container arguments |
 | `--label` / `-l` | — | Service labels |
+
+`--disk` sets a **minimum** rootfs size. By default the rootfs is sized from the image content plus 50% overhead (floor 100 MB); with `--disk 10G` it is grown to at least 10 GB, leaving the rest as free space in the guest. The prepared rootfs is keyed by image, so requesting a larger disk rebuilds that image's rootfs (and it is not shrunk again by a later smaller request).
 
 **`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--force` / `-f`.
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc` for `ps`.
