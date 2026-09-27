@@ -311,51 +311,6 @@ func TestExtractTarStream_Low(t *testing.T) {
 		})
 	}
 }
-
-// TestInjectInitSystem_Low tests injectInitSystem method
-func TestInjectInitSystem_Low(t *testing.T) {
-	tests := []struct {
-		name        string
-		setupRootfs func(t *testing.T) string
-		initSystem  string
-		wantErr     bool
-		errContains string
-	}{
-		{
-			name: "inject_none_init_system",
-			setupRootfs: func(t *testing.T) string {
-				return filepath.Join(t.TempDir(), "rootfs.ext4")
-			},
-			initSystem: "none",
-			wantErr:    false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ip := NewImagePreparer(&PreparerConfig{
-				RootfsDir:       t.TempDir(),
-				InitSystem:      tt.initSystem,
-				InitGracePeriod: 10,
-			}).(*ImagePreparer)
-
-			rootfsPath := tt.setupRootfs(t)
-
-			err := ip.injectInitSystem(rootfsPath)
-
-			if tt.wantErr {
-				assert.Error(t, err)
-				if tt.errContains != "" {
-					assert.Contains(t, err.Error(), tt.errContains)
-				}
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-// TestInjectTini_Direct tests injectTini via InitInjector
 func TestInjectTini_Direct(t *testing.T) {
 	ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini, GracePeriodSec: 10})
 
@@ -378,68 +333,6 @@ func TestInjectDumbInit_Direct(t *testing.T) {
 	err := ii.Inject(rootfsPath)
 	_ = err
 }
-
-// TestMountRootfs_Direct tests mountRootfs directly
-func TestMountRootfs_Direct(t *testing.T) {
-	ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini, GracePeriodSec: 10})
-
-	imagePath := filepath.Join(t.TempDir(), "test.ext4")
-	os.WriteFile(imagePath, []byte("fake ext4"), 0644)
-
-	mountDir, err := ii.mountRootfs(imagePath)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, mountDir)
-
-	// Verify mount dir exists
-	info, err := os.Stat(mountDir)
-	assert.NoError(t, err)
-	assert.True(t, info.IsDir())
-
-	ii.unmountRootfs(mountDir)
-}
-
-// TestCreateMinimalInit_Direct tests createMinimalInit with various scenarios
-func TestCreateMinimalInit_Direct(t *testing.T) {
-	tests := []struct {
-		name     string
-		initName string
-	}{
-		{name: "tini", initName: "tini"},
-		{name: "dumb-init", initName: "dumb-init"},
-		{name: "custom", initName: "my-custom-init"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini, GracePeriodSec: 10})
-
-			mountDir := t.TempDir()
-			err := ii.createMinimalInit(mountDir, tt.initName)
-
-			assert.NoError(t, err)
-
-			initPath := filepath.Join(mountDir, "sbin", tt.initName)
-			info, err := os.Stat(initPath)
-			require.NoError(t, err)
-			assert.Equal(t, os.FileMode(0755), info.Mode())
-		})
-	}
-}
-
-// TestUnmountRootfs_Direct tests unmountRootfs behavior
-func TestUnmountRootfs_Direct(t *testing.T) {
-	ii := NewInitInjector(&InitSystemConfig{Type: InitSystemTini, GracePeriodSec: 10})
-
-	mountDir := t.TempDir()
-	err := ii.unmountRootfs(mountDir)
-	assert.NoError(t, err) // unmountRootfs always returns nil
-
-	// Nonexistent path
-	err = ii.unmountRootfs(filepath.Join(t.TempDir(), "nonexistent"))
-	assert.NoError(t, err)
-}
-
-// TestHandleMounts_Low tests handleMounts method
 func TestHandleMounts_Low(t *testing.T) {
 	tests := []struct {
 		name        string

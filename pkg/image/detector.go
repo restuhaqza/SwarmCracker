@@ -440,34 +440,3 @@ func validateCriticalSymlinks(tmpDir string) error {
 
 	return nil
 }
-
-// validateNonCriticalSymlinks checks non-critical symlinks and returns warnings.
-// This is informational only and does not block injection.
-func validateNonCriticalSymlinks(tmpDir string) []string {
-	var warnings []string
-
-	// Check common symlinks that might be broken
-	symlinksToCheck := []string{
-		filepath.Join(tmpDir, "bin", "sh"),
-		filepath.Join(tmpDir, "bin", "bash"),
-		filepath.Join(tmpDir, "usr", "bin", "env"),
-	}
-
-	for _, linkPath := range symlinksToCheck {
-		fi, err := os.Lstat(linkPath)
-		if err != nil {
-			continue // Doesn't exist, that's fine
-		}
-
-		if fi.Mode()&os.ModeSymlink != 0 {
-			// It's a symlink, check if it resolves
-			_, err := filepath.EvalSymlinks(linkPath)
-			if err != nil {
-				relPath, _ := filepath.Rel(tmpDir, linkPath)
-				warnings = append(warnings, fmt.Sprintf("/%s is a dangling symlink", relPath))
-			}
-		}
-	}
-
-	return warnings
-}

@@ -87,37 +87,3 @@ func injectBusybox(tmpDir string) error {
 
 	return nil
 }
-
-// injectBusyboxMinimal creates only /bin/sh for minimal scratch images.
-// This is a lighter-weight alternative to injectBusybox for when we only
-// need shell functionality and don't want to create all the applet symlinks.
-// Note: This still writes the busybox binary because /bin/sh needs it.
-func injectBusyboxMinimal(tmpDir string) error {
-	// Create /bin directory if it doesn't exist
-	binDir := filepath.Join(tmpDir, "bin")
-	if err := os.MkdirAll(binDir, 0755); err != nil {
-		return fmt.Errorf("failed to create /bin directory: %w", err)
-	}
-
-	// Create a minimal /bin/sh that can at least exec commands
-	// This is the absolute minimum needed for the init wrapper
-	// Since we have the embedded busybox, we use it as /bin/sh
-	shellScript := `#!/bin/busybox sh
-# Minimal shell for scratch images
-# If we have any arguments, try to exec them
-if [ $# -gt 0 ]; then
-    exec "$@"
-fi
-
-# Interactive mode - just echo a message
-echo "Minimal shell - no interactive mode available"
-exit 0
-`
-
-	shPath := filepath.Join(binDir, "sh")
-	if err := os.WriteFile(shPath, []byte(shellScript), 0755); err != nil {
-		return fmt.Errorf("failed to create /bin/sh: %w", err)
-	}
-
-	return nil
-}

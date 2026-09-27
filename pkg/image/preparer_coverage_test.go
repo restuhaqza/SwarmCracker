@@ -222,65 +222,6 @@ func TestGenerateImageIDUnit(t *testing.T) {
 		})
 	}
 }
-
-// TestGetDirSize tests directory size calculation.
-func TestGetDirSizeUnit(t *testing.T) {
-	t.Run("empty directory", func(t *testing.T) {
-		dir := t.TempDir()
-		size, err := getDirSize(dir)
-		if err != nil {
-			t.Fatalf("getDirSize failed: %v", err)
-		}
-		if size != 0 {
-			t.Errorf("expected 0 for empty dir, got %d", size)
-		}
-	})
-
-	t.Run("directory with files", func(t *testing.T) {
-		dir := t.TempDir()
-		content := []byte("hello world")
-		if err := os.WriteFile(filepath.Join(dir, "test.txt"), content, 0644); err != nil {
-			t.Fatalf("failed to write test file: %v", err)
-		}
-
-		size, err := getDirSize(dir)
-		if err != nil {
-			t.Fatalf("getDirSize failed: %v", err)
-		}
-		if size != int64(len(content)) {
-			t.Errorf("expected %d, got %d", len(content), size)
-		}
-	})
-
-	t.Run("nested directories", func(t *testing.T) {
-		dir := t.TempDir()
-		subdir := filepath.Join(dir, "sub", "deep")
-		if err := os.MkdirAll(subdir, 0755); err != nil {
-			t.Fatalf("failed to create subdirectory: %v", err)
-		}
-		content := []byte("nested content")
-		if err := os.WriteFile(filepath.Join(subdir, "file.txt"), content, 0644); err != nil {
-			t.Fatalf("failed to write nested file: %v", err)
-		}
-
-		size, err := getDirSize(dir)
-		if err != nil {
-			t.Fatalf("getDirSize failed: %v", err)
-		}
-		if size != int64(len(content)) {
-			t.Errorf("expected %d, got %d", len(content), size)
-		}
-	})
-
-	t.Run("non-existent directory", func(t *testing.T) {
-		_, err := getDirSize("/nonexistent/path")
-		if err == nil {
-			t.Error("expected error for non-existent directory")
-		}
-	})
-}
-
-// TestFormatBytes tests byte formatting.
 func TestFormatBytes(t *testing.T) {
 	tests := []struct {
 		input    int64

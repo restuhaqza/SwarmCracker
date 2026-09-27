@@ -679,23 +679,6 @@ func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath strin
 
 	return nil
 }
-
-// getDirSize calculates the total size of a directory.
-func getDirSize(path string) (int64, error) {
-	var size int64
-	err := filepath.Walk(path, func(_ string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if !info.IsDir() {
-			size += info.Size()
-		}
-		return nil
-	})
-	return size, err
-}
-
-// generateImageID generates a unique ID for an image.
 func generateImageID(imageRef string) string {
 	// Split on last colon to separate tag from image name
 	// This handles registry:port/image:tag correctly
@@ -723,52 +706,6 @@ func generateImageID(imageRef string) string {
 
 	return fmt.Sprintf("%s-%s", name, tag)
 }
-
-// injectInitSystem injects the init system into the rootfs.
-func (ip *ImagePreparer) injectInitSystem(rootfsPath string) error {
-	// Init injection now happens via InjectIntoDir BEFORE ext4 creation.
-	// The old Inject method (which used broken mountRootfs) has been removed.
-	// If init needs to be injected post-creation (unusual), mount and copy manually.
-
-	// For ext4 images, we need to mount, copy, unmount
-	// This is a simplified implementation
-	mountDir, err := ip.mountExt4(rootfsPath)
-	if err != nil {
-		log.Debug().Err(err).Msg("Could not mount rootfs for init injection (may require privileges)")
-		// Continue anyway - init might already be present
-		return nil
-	}
-	defer func() { _ = ip.unmountExt4(mountDir) }()
-	initBinaryPath := ip.getInitBinaryPath()
-	if initBinaryPath == "" {
-		// No init binary to copy
-		return nil
-	}
-
-	targetPath := filepath.Join(mountDir, ip.initInjector.GetInitPath())
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
-		return fmt.Errorf("failed to create init directory: %w", err)
-	}
-
-	// Copy binary
-	if err := ip.copyFile(initBinaryPath, targetPath, 0755); err != nil {
-		return fmt.Errorf("failed to copy init binary: %w", err)
-	}
-
-	log.Info().
-		Str("from", initBinaryPath).
-		Str("to", targetPath).
-		Msg("Init binary copied")
-
-	// Create /sbin/init wrapper that runs tini with entrypoint
-	if err := ip.createInitWrapper(mountDir); err != nil {
-		log.Warn().Err(err).Msg("Failed to create init wrapper")
-	}
-
-	return nil
-}
-
-// mountExt4 mounts an ext4 image temporarily.
 func (ip *ImagePreparer) mountExt4(imagePath string) (string, error) {
 	// Create temp mount point
 	mountDir, err := os.MkdirTemp("", "swarmcracker-mount-")
@@ -787,19 +724,6 @@ func (ip *ImagePreparer) mountExt4(imagePath string) (string, error) {
 
 	return mountDir, nil
 }
-
-// createInitWrapper creates /sbin/init as a wrapper that calls tini with entrypoint.
-// Deprecated: This method is only used by the deprecated Inject() method.
-// The generic wrapper is now created by createGenericInitWrapper in injectTiniIntoDir.
-func (ip *ImagePreparer) createInitWrapper(mountDir string) error {
-	// This method is deprecated. The generic OCI-aware wrapper is now created
-	// by createGenericInitWrapper in init.go via InjectIntoDir.
-	// Just log a warning and return nil.
-	log.Warn().Msg("createInitWrapper is deprecated, use InjectIntoDir instead")
-	return nil
-}
-
-// unmountExt4 unmounts a temporary mount point.
 func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 	// Unmount
 	cmd := exec.CommandContext(context.Background(), "umount", mountDir)
@@ -809,43 +733,6 @@ func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 	os.RemoveAll(mountDir)
 	return nil
 }
-
-// getInitBinaryPath returns the path to the init binary on the host.
-func (ip *ImagePreparer) getInitBinaryPath() string {
-	// Search for init binaries in common locations
-	paths := []string{
-		"/usr/bin/tini",
-		"/usr/sbin/tini",
-		"/sbin/tini",
-		"/usr/bin/dumb-init",
-		"/usr/sbin/dumb-init",
-		"/sbin/dumb-init",
-	}
-
-	switch ip.initInjector.config.Type {
-	case InitSystemNone:
-		return ""
-	case InitSystemTini:
-		paths = []string{"/usr/bin/tini", "/usr/sbin/tini", "/sbin/tini"}
-	case InitSystemDumbInit:
-		paths = []string{"/usr/bin/dumb-init", "/usr/sbin/dumb-init", "/sbin/dumb-init"}
-	}
-
-	for _, path := range paths {
-		if _, err := os.Stat(path); err == nil {
-			return path
-		}
-	}
-
-	// Check if binary is in PATH
-	if binPath, err := exec.LookPath(string(ip.initInjector.config.Type)); err == nil {
-		return binPath
-	}
-
-	return ""
-}
-
-// copyFile copies a file from src to dst.
 func (ip *ImagePreparer) copyFile(src, dst string, mode os.FileMode) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
