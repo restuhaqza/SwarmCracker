@@ -141,112 +141,6 @@ func TestJailerNew_BinaryResolution(t *testing.T) {
 		})
 	}
 }
-
-// TestCreateDefaultSeccompPolicy tests seccomp policy file generation.
-func TestCreateDefaultSeccompPolicy(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	j := &Jailer{
-		config: &Config{
-			FirecrackerPath: "/usr/local/bin/firecracker",
-			JailerPath:      "/usr/local/bin/jailer",
-			ChrootBaseDir:   tmpDir,
-			UID:             1000,
-			GID:             1000,
-		},
-	}
-
-	tests := []struct {
-		name        string
-		taskID      string
-		wantErr     bool
-		errContains string
-		setupFunc   func() func()
-	}{
-		{
-			name:    "valid policy creation",
-			taskID:  "test-vm-123",
-			wantErr: false,
-		},
-		{
-			name:        "chroot_base_not_creatable",
-			taskID:      "test-vm-456",
-			wantErr:     true,
-			errContains: "failed to create chroot base dir",
-			setupFunc: func() func() {
-				// Create a file at chroot base to block directory creation
-				blockingFile := filepath.Join(tmpDir, "blocking-dir")
-				if err := os.WriteFile(blockingFile, []byte("block"), 0644); err != nil {
-					t.Fatalf("Failed to create blocking file: %v", err)
-				}
-				// Change config to point to blocked path
-				j.config.ChrootBaseDir = blockingFile
-				return func() {
-					os.Remove(blockingFile)
-				}
-			},
-		},
-		{
-			name:    "policy_file_not_writable",
-			taskID:  "test-vm-789",
-			wantErr: false, // WriteFile overwrites directories, so this won't fail as expected
-			setupFunc: func() func() {
-				// Create the policy file as a directory (WriteFile will overwrite it)
-				policyDir := filepath.Join(tmpDir, "test-vm-789.seccomp.json")
-				if err := os.MkdirAll(policyDir, 0755); err != nil {
-					t.Fatalf("Failed to create policy directory: %v", err)
-				}
-				return func() {
-					os.RemoveAll(policyDir)
-				}
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var cleanup func()
-			if tt.setupFunc != nil {
-				cleanup = tt.setupFunc()
-			}
-			if cleanup != nil {
-				defer cleanup()
-			}
-
-			policyPath, err := j.createDefaultSeccompPolicy(tt.taskID)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("createDefaultSeccompPolicy() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-			if err != nil && tt.errContains != "" {
-				if !strings.Contains(err.Error(), tt.errContains) {
-					t.Errorf("createDefaultSeccompPolicy() error = %v, want error containing %q", err, tt.errContains)
-				}
-			}
-			if !tt.wantErr {
-				// Verify policy file was created
-				if _, err := os.Stat(policyPath); err != nil {
-					t.Errorf("Policy file not created: %v", err)
-				}
-				// Verify policy contains expected content
-				data, err := os.ReadFile(policyPath)
-				if err != nil {
-					t.Errorf("Failed to read policy file: %v", err)
-				} else {
-					content := string(data)
-					if !strings.Contains(content, "defaultAction") {
-						t.Error("Policy missing defaultAction")
-					}
-					if !strings.Contains(content, "syscalls") {
-						t.Error("Policy missing syscalls")
-					}
-				}
-			}
-		})
-	}
-}
-
-// TestPrepareChrootResources tests chroot resource preparation.
 func TestPrepareChrootResources(t *testing.T) {
 	tmpDir := t.TempDir()
 
@@ -1213,18 +1107,6 @@ func TestCgroupManager_ResourceLimitErrorPaths(t *testing.T) {
 	// Cleanup
 	mgr.RemoveCgroup(taskID)
 }
-
-// TestIsCgroupV2Available tests the cgroup availability checker.
-func TestIsCgroupV2Available(t *testing.T) {
-	// Just call the function and verify it returns a boolean
-	result := IsCgroupV2Available()
-	if result != true && result != false {
-		t.Error("IsCgroupV2Available() should return boolean")
-	}
-	t.Logf("Cgroup v2 available: %v", result)
-}
-
-// TestDetectCgroupVersion tests cgroup version detection.
 func TestDetectCgroupVersion_Alternative(t *testing.T) {
 	// Test the exported function
 	version := DetectCgroupVersion()

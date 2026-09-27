@@ -109,20 +109,6 @@ func DefaultSnapshotConfig() SnapshotConfig {
 	}
 }
 
-// SetDefaults fills in zero-value fields with sensible defaults.
-func (c *SnapshotConfig) SetDefaults() {
-	if c.SnapshotDir == "" {
-		c.SnapshotDir = config.DefaultSnapshotDir
-	}
-	if c.MaxSnapshots == 0 {
-		c.MaxSnapshots = 3
-	}
-	if c.MaxAge == 0 {
-		c.MaxAge = 168 * time.Hour
-	}
-}
-
-// CreateOptions holds optional parameters for snapshot creation.
 type CreateOptions struct {
 	ServiceID  string
 	NodeID     string
@@ -148,23 +134,6 @@ func (m *Manager) TrackRestoredProcess(taskID string, proc *os.Process) {
 	}
 	m.restoredProcesses[taskID] = proc
 }
-
-// StopRestoredProcess stops a tracked restored VM process.
-func (m *Manager) StopRestoredProcess(taskID string) error {
-	m.mu.Lock()
-	proc, exists := m.restoredProcesses[taskID]
-	if exists {
-		delete(m.restoredProcesses, taskID)
-	}
-	m.mu.Unlock()
-
-	if !exists {
-		return nil
-	}
-	return proc.Kill()
-}
-
-// NewManager creates a new snapshot Manager.
 func NewManager(config SnapshotConfig) (*Manager, error) {
 	if config.SnapshotDir == "" {
 		config.SnapshotDir = DefaultSnapshotConfig().SnapshotDir

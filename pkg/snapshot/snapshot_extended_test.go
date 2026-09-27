@@ -707,44 +707,6 @@ func TestSnapshotConfigEdgeCases(t *testing.T) {
 		assert.False(t, cfg.AutoSnapshot)
 		assert.False(t, cfg.Compress)
 	})
-
-	t.Run("SetDefaults on zero config", func(t *testing.T) {
-		cfg := SnapshotConfig{}
-		cfg.SetDefaults()
-
-		assert.NotEmpty(t, cfg.SnapshotDir)
-		assert.Greater(t, cfg.MaxSnapshots, 0)
-		assert.Greater(t, cfg.MaxAge, time.Duration(0))
-	})
-
-	t.Run("SetDefaults preserves existing values", func(t *testing.T) {
-		cfg := SnapshotConfig{
-			SnapshotDir:  "/my/custom/dir",
-			MaxSnapshots: 10,
-			MaxAge:       48 * time.Hour,
-			AutoSnapshot: true,
-			Compress:     true,
-		}
-		cfg.SetDefaults()
-
-		assert.Equal(t, "/my/custom/dir", cfg.SnapshotDir)
-		assert.Equal(t, 10, cfg.MaxSnapshots)
-		assert.Equal(t, 48*time.Hour, cfg.MaxAge)
-		assert.True(t, cfg.AutoSnapshot)
-		assert.True(t, cfg.Compress)
-	})
-
-	t.Run("SetDefaults fills partial config", func(t *testing.T) {
-		cfg := SnapshotConfig{
-			SnapshotDir: "/custom/dir",
-			// Other fields left empty
-		}
-		cfg.SetDefaults()
-
-		assert.Equal(t, "/custom/dir", cfg.SnapshotDir)
-		assert.Equal(t, 3, cfg.MaxSnapshots) // filled by default
-		assert.Equal(t, 168*time.Hour, cfg.MaxAge)
-	})
 }
 
 // TestRestoreFromSnapshotValidation tests validation in RestoreFromSnapshot.
