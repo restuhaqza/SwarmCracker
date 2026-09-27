@@ -160,55 +160,6 @@ func TestInjectConfigs_DebugfsFail(t *testing.T) {
 	assert.Error(t, err, "InjectConfigs should fail when debugfs fails")
 	assert.Contains(t, err.Error(), "debugfs")
 }
-
-// TestMountRootfs_DeprecatedStub tests mountRootfs deprecated stub behavior
-func TestMountRootfs_DeprecatedStub(t *testing.T) {
-	sm := NewSecretManager("", "")
-
-	// mountRootfs is now a deprecated stub that just creates a temp dir
-	// (replaced by injectFileViaDebugfs for CVR-1.6 fix)
-	tmpFile := filepath.Join(t.TempDir(), "not-ext4.img")
-	require.NoError(t, os.WriteFile(tmpFile, []byte("not an ext4 image"), 0644))
-
-	mountDir, err := sm.mountRootfs(tmpFile)
-	// Deprecated stub just creates temp dir - always succeeds
-	assert.NoError(t, err, "mountRootfs deprecated stub should succeed")
-	assert.NotEmpty(t, mountDir, "should return temp dir path")
-	if mountDir != "" {
-		os.RemoveAll(mountDir)
-	}
-}
-
-// TestMountRootfs_StubSuccess tests mountRootfs deprecated stub with non-existent file
-func TestMountRootfs_StubSuccess(t *testing.T) {
-	sm := NewSecretManager("", "")
-
-	// mountRootfs is now a deprecated stub - just creates temp dir regardless
-	mountDir, err := sm.mountRootfs("/nonexistent/file.ext4")
-	assert.NoError(t, err, "mountRootfs deprecated stub should succeed")
-	assert.NotEmpty(t, mountDir, "should return temp dir path")
-	os.RemoveAll(mountDir)
-}
-
-// TestUnmountRootfs_NilDir tests unmountRootfs with empty path
-func TestUnmountRootfs_NilDir(t *testing.T) {
-	sm := NewSecretManager("", "")
-
-	// unmountRootfs should handle empty path gracefully
-	sm.unmountRootfs("")
-	// No error returned, just cleanup
-}
-
-// TestUnmountRootfs_NonExistent tests unmountRootfs with non-existent path
-func TestUnmountRootfs_NonExistent(t *testing.T) {
-	sm := NewSecretManager("", "")
-
-	// unmountRootfs calls umount and RemoveAll
-	sm.unmountRootfs("/nonexistent/mount")
-	// No error returned, just cleanup
-}
-
-// TestGetDriverMeta_InvalidType tests getDriverMeta with invalid type
 func TestGetDriverMeta_InvalidType(t *testing.T) {
 	tmpDir := t.TempDir()
 	vm, err := NewVolumeManager(tmpDir)
