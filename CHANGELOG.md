@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.2] - 2026-09-27
+
+### Removed
+- **Dead code** — Whole-program reachability analysis (`deadcode` + `staticcheck U1000`) removed ~3.7k lines of unreachable production code and ~14.4k lines of tests (23 files deleted). Highlights:
+  - `cmd/swarmcracker/ssh_deploy.go` — never wired to any command, referenced by nothing.
+  - `pkg/security` — orphaned package with zero importers; the real jailer is `pkg/jailer`.
+  - `pkg/network/discovery.go` — superseded by the Consul-based `pkg/discovery`.
+  - `pkg/snapshot` API-client/process/HTTP test seam that was never wired into production.
+  - Deprecated `pkg/image` init stubs and `pkg/storage` mount-based injection path.
+  - Unused exported helpers across `pkg/cni`, `pkg/apiversion`, `pkg/jailer`, `pkg/executor`, `pkg/metrics`, `pkg/runtime`, `pkg/config`, `pkg/translator`.
+
+### Changed
+- **Build/lint** — Enabled the `unused` linter so dead code is caught in CI.
+- **Dependencies** — `go mod tidy`: dropped `al.essio.dev/pkg/shellescape` and demoted `golang.org/x/crypto` to indirect (both were only used by the removed `ssh_deploy.go`).
+- **CNI** — `CNI_ARGS` is now emitted in sorted key order for deterministic output.
+
+### Fixed
+- **Documentation** — Repaired broken links in the architecture overview after removing the stale `pkg/security` reference doc.
+
+---
+
 ## [0.9.1] - 2026-09-22
 
 ### Fixed
@@ -109,7 +130,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.8.0...v0.9.0
 [0.6.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.5.0...v0.6.0
