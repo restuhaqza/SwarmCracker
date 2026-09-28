@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -142,6 +143,7 @@ func newServiceCreateCommand() *cobra.Command {
 		command  []string
 		args     []string
 		labels   []string
+		disk     string
 	)
 
 	cmd := &cobra.Command{
@@ -158,7 +160,7 @@ and updated as needed.`,
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return createService(name, image, replicas, cpu, memory, env, command, args, labels)
+			return createService(name, image, replicas, cpu, memory, disk, env, command, args, labels)
 		},
 	}
 
@@ -167,6 +169,7 @@ and updated as needed.`,
 	cmd.Flags().Uint64Var(&replicas, "replicas", 1, "Number of replicas")
 	cmd.Flags().Float64Var(&cpu, "cpu", 0, "CPU limit (cores, e.g., 1.5)")
 	cmd.Flags().StringVar(&memory, "memory", "", "Memory limit (e.g., 512M, 1G)")
+	cmd.Flags().StringVar(&disk, "disk", "", "Minimum rootfs disk size for the VM (e.g., 10G)")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", nil, "Environment variables (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&command, "command", nil, "Override default container command")
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
@@ -634,7 +637,7 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	return nil
 }
 
-func createService(name, image string, replicas uint64, cpu float64, memory string, env, command, args, labels []string) error {
+func createService(name, image string, replicas uint64, cpu float64, memory, disk string, env, command, args, labels []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -650,11 +653,23 @@ func createService(name, image string, replicas uint64, cpu float64, memory stri
 		return fmt.Errorf("invalid memory value: %w", err)
 	}
 
+	// The requested VM disk size is carried as a service label so the executor
+	// can size the rootfs. A user-supplied label of the same name wins.
+	svcLabels := parseLabels(labels)
+	if disk != "" {
+		if svcLabels == nil {
+			svcLabels = make(map[string]string)
+		}
+		if _, ok := svcLabels[types.DiskSizeLabel]; !ok {
+			svcLabels[types.DiskSizeLabel] = disk
+		}
+	}
+
 	// Build service spec
 	spec := &api.ServiceSpec{
 		Annotations: api.Annotations{
 			Name:   name,
-			Labels: parseLabels(labels),
+			Labels: svcLabels,
 		},
 		Task: api.TaskSpec{
 			Runtime: &api.TaskSpec_Container{
