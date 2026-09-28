@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`pkg/image`** — exported daemon-free building blocks for reuse:
   `PullImage`, `ExtractImage`, `ExtractImageToDir`, `CreateExt4FromDir`,
   `ParseDiskSize`.
+- **Golden VM creation** — `swarmcracker vm create --golden <name[@version]>`
+  resolves a built artifact and boots it with its recipe init (systemd/OpenRC)
+  and boot args, so container runtimes such as Docker run inside the microVM.
+  The executor skips image preparation for a prebuilt rootfs.
 - **Recipe matrix harness** — `test-automation/scripts/golden-matrix-test.sh`
   builds each recipe, checks the runtime inside the image, and boots it under
   Firecracker. Verified on a KVM node: AlmaLinux 9, Ubuntu 24.04, Debian 12,
