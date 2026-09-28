@@ -46,6 +46,13 @@ Issues the matrix exposed and the fixes applied to the builder/recipes:
 systemd recipes still rely on the kernel `ip=` parameter for addressing; wiring
 networkd/NetworkManager for systemd guests is a follow-up.
 
+Booting through the CLI is now wired: `swarmcracker vm create --golden
+<name[@version]>` resolves the artifact, marks the task with a prebuilt rootfs,
+and the executor/translator boot the recipe's own init with its boot args.
+Verified on the node: the Ubuntu 24.04 golden VM reached multi-user with
+`dockerd 29.1.3` listening on `/run/docker.sock`, and `vm list` shows it as
+`golden:ubuntu-24.04-docker@1.0.0`.
+
 ## 1. Problem statement
 
 Today SwarmCracker turns **one OCI image into one microVM that runs exactly one
@@ -390,10 +397,10 @@ eth0 (virtio-net, 192.168.127.2/24) ── docker0 (172.17.0.0/16) ── contai
 |---|---|---|---|
 | 1 | `GoldenImage` recipe type + YAML loader/validator | new `pkg/golden` | ✅ done |
 | 2 | Recipe builder (extract → chroot provision → seal → mkfs.ext4) | `pkg/golden`, `pkg/image` | ✅ done (reuses `ExtractImageToDir`, `CreateExt4FromDir`) |
-| 3 | Allow `systemd`/`openrc` as first-class init for `vm` mode | `pkg/image/detector.go`, `init.go` | today systemd hard-fails |
-| 4 | Make `init=` and boot args recipe-driven | `pkg/translator`, `pkg/swarmkit/translator.go` | stop hardcoding `init=/sbin/init` |
+| 3 | Allow `systemd`/`openrc` as first-class init for `vm` mode | `pkg/image/detector.go`, `init.go` | ✅ prebuilt-rootfs tasks boot the recipe init; preparer detector untouched |
+| 4 | Make `init=` and boot args recipe-driven | `pkg/translator`, `pkg/swarmkit/translator.go` | ✅ via task annotations in `pkg/translator`; swarmkit translator pending |
 | 5 | Multi-drive support (root + data disk) | translators | `drives[]` already a slice |
-| 6 | `executor.runtime_mode: container \| vm` config + task annotation | `pkg/config`, `pkg/executor` | gates init injection and boot path |
+| 6 | `executor.runtime_mode: container \| vm` config + task annotation | `pkg/config`, `pkg/executor` | ✅ annotation-based (`swarmcracker.prebuilt_rootfs`); no config field needed |
 | 7 | Guest agent + vsock protocol | new `pkg/guestagent` | Option B |
 | 8 | `guest-runtime` kernel build + CI boot validation | `scripts/`, CI | kconfig fragment in `recipes/kernel/` |
 | 9 | `swarmcracker image build/list/inspect` CLI | `cmd/swarmcracker` | ✅ done |
