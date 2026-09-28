@@ -129,10 +129,11 @@ func TestVMCreateCommandDefaults(t *testing.T) {
 func TestVMCreateCommandErrorHandling(t *testing.T) {
 	cmd := newVMCreateCommand()
 
-	// Test with no args - should error
+	// No args is valid at the Args level: the image is optional when --golden
+	// is supplied. RunE enforces that one of the two is provided.
 	err := cmd.Args(cmd, []string{})
-	if err == nil {
-		t.Error("Expected error when no args provided")
+	if err != nil {
+		t.Errorf("Unexpected error with no args (--golden makes image optional): %v", err)
 	}
 
 	// Test with too many args - should error
@@ -145,6 +146,16 @@ func TestVMCreateCommandErrorHandling(t *testing.T) {
 	err = cmd.Args(cmd, []string{"alpine:latest"})
 	if err != nil {
 		t.Errorf("Unexpected error with valid args: %v", err)
+	}
+}
+
+// TestVMCreateCommandGoldenFlags verifies the golden image flags exist.
+func TestVMCreateCommandGoldenFlags(t *testing.T) {
+	cmd := newVMCreateCommand()
+	for _, name := range []string{"golden", "golden-dir"} {
+		if cmd.Flags().Lookup(name) == nil {
+			t.Errorf("expected --%s flag", name)
+		}
 	}
 }
 
