@@ -213,6 +213,12 @@ func (tt *TaskTranslator) configToMap(config *VMMConfig) (map[string]interface{}
 	return result, nil
 }
 func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
+	// Golden images boot their own init (systemd/OpenRC) and supply extra
+	// kernel arguments via the recipe; the OCI command is not run directly.
+	if task.UsesPrebuiltRootfs() {
+		return tt.buildPrebuiltBootArgs(task)
+	}
+
 	container, err := task.Spec.GetContainer()
 	if err != nil {
 		log.Warn().Str("task_id", task.ID).Msg("task runtime is not a Container, using default boot args")
@@ -227,7 +233,58 @@ func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
 		"init=/init", // Use custom init script at root
 	}
 
-	// Check if we have an allocated IP address
+	args = append(args, tt.networkBootArgs(task)...)
+
+	// Build container command line
+	var containerCmd []string
+	if len(container.Command) > 0 {
+		containerCmd = append(containerCmd, container.Command...)
+	}
+	if len(container.Args) > 0 {
+		containerCmd = append(containerCmd, container.Args...)
+	}
+
+	// If no command specified, use shell as fallback
+	if len(containerCmd) == 0 {
+		containerCmd = []string{"/bin/sh"}
+	}
+
+	// Wrap with init system if configured
+	if tt.initSystem != "none" && tt.initPath != "" {
+		args = append(args, "--")
+		args = append(args, tt.buildInitArgs(containerCmd)...)
+	} else {
+		// No init system, run container command directly
+		args = append(args, "--")
+		args = append(args, containerCmd...)
+	}
+
+	return strings.Join(args, " ")
+}
+
+// buildPrebuiltBootArgs builds boot arguments for a prebuilt golden image: the
+// guest boots its own init and the recipe's extra arguments are appended.
+func (tt *TaskTranslator) buildPrebuiltBootArgs(task *types.Task) string {
+	args := []string{
+		"console=ttyS0",
+		"reboot=k",
+		"panic=1",
+		"pci=off",
+		"nomodules",
+		"random.trust_cpu=on",
+		"init=/sbin/init",
+	}
+	args = append(args, tt.networkBootArgs(task)...)
+
+	if extra := strings.TrimSpace(task.Annotations[types.AnnotationBootArgs]); extra != "" {
+		args = append(args, strings.Fields(extra)...)
+	}
+
+	return strings.Join(args, " ")
+}
+
+// networkBootArgs returns the kernel ip= parameter and the MTU argument.
+func (tt *TaskTranslator) networkBootArgs(task *types.Task) []string {
 	ipArg := "ip=dhcp"
 	mtu := 1500
 
@@ -276,36 +333,9 @@ func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
 			ipArg = fmt.Sprintf("ip=%s::%s:%s::eth0:off", clientIP, gateway, netmask)
 		}
 	}
-	args = append(args, ipArg)
 
 	// Pass MTU as a kernel argument (can be used by init scripts)
-	args = append(args, fmt.Sprintf("mtu=%d", mtu))
-
-	// Build container command line
-	var containerCmd []string
-	if len(container.Command) > 0 {
-		containerCmd = append(containerCmd, container.Command...)
-	}
-	if len(container.Args) > 0 {
-		containerCmd = append(containerCmd, container.Args...)
-	}
-
-	// If no command specified, use shell as fallback
-	if len(containerCmd) == 0 {
-		containerCmd = []string{"/bin/sh"}
-	}
-
-	// Wrap with init system if configured
-	if tt.initSystem != "none" && tt.initPath != "" {
-		args = append(args, "--")
-		args = append(args, tt.buildInitArgs(containerCmd)...)
-	} else {
-		// No init system, run container command directly
-		args = append(args, "--")
-		args = append(args, containerCmd...)
-	}
-
-	return strings.Join(args, " ")
+	return []string{ipArg, fmt.Sprintf("mtu=%d", mtu)}
 }
 
 // buildInitArgs builds init arguments wrapping the container command.
