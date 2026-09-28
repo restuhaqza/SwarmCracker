@@ -1,0 +1,49 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: busybox-scratch
+  version: 1.0.0
+  description: >
+    Minimal BusyBox single-workload image. Represents the scratch/empty-image
+    path where the preparer injects busybox and tini before mkfs.ext4.
+
+spec:
+  # Assembled by the task-time image preparer (injects busybox + tini), not by
+  # `swarmcracker image build`.
+  build: preparer
+  arch: [amd64, arm64]
+
+  source:
+    type: oci
+    ref: docker.io/library/busybox:1.36
+
+  init:
+    system: tini
+    bootArgs: []
+
+  kernel:
+    profile: firecracker-ci-6.1
+
+  runtime:
+    name: none
+    install: none
+
+  disk:
+    rootMinSize: 256MiB
+
+  provision: |
+    set -eux
+    # Keep the image tiny; the preparer supplies busybox/tini and essentials.
+
+  seal:
+    - truncate -s 0 /etc/machine-id
+
+  health:
+    - command: /bin/sh -c 'echo ok'
+      timeout: 30s
+
+  verify:
+    - name: shell-present
+      guest: test -x /bin/sh
+    - name: init-present
+      guest: test -x /sbin/init

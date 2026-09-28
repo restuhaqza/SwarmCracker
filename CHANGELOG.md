@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Golden images** — declarative recipe format (`recipes/*.yaml`) and a builder
+  (`pkg/golden`) that turns a recipe into a sealed, versioned ext4 artifact, plus
+  `swarmcracker image build|list|inspect`. Runtime recipes boot their own init
+  (systemd/OpenRC) and run Docker inside the microVM.
+- **`pkg/image`** — exported daemon-free building blocks for reuse:
+  `PullImage`, `ExtractImage`, `ExtractImageToDir`, `CreateExt4FromDir`,
+  `ParseDiskSize`.
+- **Recipe matrix harness** — `test-automation/scripts/golden-matrix-test.sh`
+  builds each recipe, checks the runtime inside the image, and boots it under
+  Firecracker. Verified on a KVM node: AlmaLinux 9, Ubuntu 24.04, Debian 12,
+  Alpine 3.20.
+
 ---
 
 ## [0.9.2] - 2026-09-27
