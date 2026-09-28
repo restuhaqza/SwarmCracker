@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// ParseDiskSize parses a human-readable size into bytes. Accepted units use
+// binary multiples: "10G", "10GB", "10GiB", "512m", "1024K", or a plain byte
+// count ("1073741824"). An empty string yields 0 (meaning "no minimum").
+func ParseDiskSize(size string) (int64, error) { return parseDiskSize(size) }
+
 // parseDiskSize parses a human-readable size into bytes. Accepted units use
 // binary multiples: "10G", "10GB", "10GiB", "512m", "1024K", or a plain byte
 // count ("1073741824"). An empty string yields 0 (meaning "no minimum").

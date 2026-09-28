@@ -424,7 +424,7 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 // This pulls directly from the registry and flattens all layers into a filesystem.
 // Also extracts OCI image configuration (ENTRYPOINT, CMD, ENV, USER, etc).
 func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath string) error {
-	// Validate inputs
+	// Validate inputs early so callers get the same errors as before.
 	if imageRef == "" {
 		return fmt.Errorf("image reference must not be empty")
 	}
@@ -432,33 +432,9 @@ func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath
 		return fmt.Errorf("destination path must not be empty")
 	}
 
-	// Ensure image ref has docker.io prefix for standard images
-	fullRef := imageRef
-	if !strings.Contains(fullRef, "/") {
-		fullRef = "docker.io/library/" + fullRef
-	} else if !strings.Contains(fullRef, ".") {
-		fullRef = "docker.io/" + fullRef
-	}
-
-	// Parse the image reference
-	ref, err := name.ParseReference(fullRef)
+	img, fullRef, err := PullImage(ctx, imageRef, ip.config.RegistryAuth)
 	if err != nil {
-		return fmt.Errorf("failed to parse image reference %q: %w", fullRef, err)
-	}
-
-	// Build remote options with auth and explicit platform selection
-	opts := buildRemoteOptions(ctx, ip.config.RegistryAuth)
-	opts = append(opts, remote.WithPlatform(v1.Platform{
-		OS:           "linux",
-		Architecture: runtime.GOARCH,
-	}))
-
-	log.Info().Str("image", fullRef).Msg("Pulling image from registry")
-
-	// Pull image from registry (no daemon required)
-	img, err := remote.Image(ref, opts...)
-	if err != nil {
-		return fmt.Errorf("failed to pull image %q: %w", fullRef, err)
+		return err
 	}
 
 	// Extract OCI image configuration (ENTRYPOINT, CMD, ENV, USER, etc)
@@ -484,12 +460,76 @@ func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath
 	}
 	log.Info().Str("image", fullRef).Int("layers", len(layers)).Msg("Image pulled successfully")
 
-	// Extract flattened filesystem (handles whiteouts automatically)
+	return ExtractImage(img, destPath)
+}
+
+// NormalizeImageRef expands a short image reference into a fully-qualified one
+// (e.g. "nginx" -> "docker.io/library/nginx"), leaving refs that already carry
+// a registry or namespace untouched.
+func NormalizeImageRef(imageRef string) string {
+	if !strings.Contains(imageRef, "/") {
+		return "docker.io/library/" + imageRef
+	}
+	if !strings.Contains(imageRef, ".") {
+		return "docker.io/" + imageRef
+	}
+	return imageRef
+}
+
+// PullImage resolves and pulls an image from its registry, returning the image
+// and the normalized reference used for logs and config parsing. It uses the
+// caller-supplied auth (nil falls back to the default keychain) and the host
+// platform (linux/<GOARCH>).
+func PullImage(ctx context.Context, imageRef string, auth *RegistryAuth) (v1.Image, string, error) {
+	if imageRef == "" {
+		return nil, "", fmt.Errorf("image reference must not be empty")
+	}
+
+	fullRef := NormalizeImageRef(imageRef)
+
+	ref, err := name.ParseReference(fullRef)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to parse image reference %q: %w", fullRef, err)
+	}
+
+	// Build remote options with auth and explicit platform selection
+	opts := buildRemoteOptions(ctx, auth)
+	opts = append(opts, remote.WithPlatform(v1.Platform{
+		OS:           "linux",
+		Architecture: runtime.GOARCH,
+	}))
+
+	log.Info().Str("image", fullRef).Msg("Pulling image from registry")
+
+	img, err := remote.Image(ref, opts...)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to pull image %q: %w", fullRef, err)
+	}
+
+	return img, fullRef, nil
+}
+
+// ExtractImage flattens an image (applying whiteouts) into destPath.
+func ExtractImage(img v1.Image, destPath string) error {
+	if destPath == "" {
+		return fmt.Errorf("destination path must not be empty")
+	}
 	fs := mutate.Extract(img)
 	defer fs.Close()
-
-	// Extract tar stream to destination directory
 	return extractTarStream(fs, destPath)
+}
+
+// ExtractImageToDir pulls imageRef and extracts its flattened filesystem into
+// destPath, without any SwarmCracker init/essential-file injection.
+func ExtractImageToDir(ctx context.Context, imageRef, destPath string, auth *RegistryAuth) error {
+	if imageRef == "" {
+		return fmt.Errorf("image reference must not be empty")
+	}
+	img, _, err := PullImage(ctx, imageRef, auth)
+	if err != nil {
+		return err
+	}
+	return ExtractImage(img, destPath)
 }
 
 // extractTarStream extracts a tar stream to a directory.
@@ -614,10 +654,24 @@ func (ip *ImagePreparer) createExt4Image(sourceDir, outputPath string, minSizeBy
 	return ip.createExt4ImageWithOverhead(sourceDir, outputPath, 50, minSizeBytes...)
 }
 
+// CreateExt4FromDir creates an ext4 filesystem image at outputPath from the
+// contents of sourceDir, with the standard 50% overhead and an optional
+// minimum size floor. It is the daemon-free building block used by the golden
+// image builder.
+func CreateExt4FromDir(sourceDir, outputPath string, minSizeBytes int64) error {
+	return createExt4FromDirWithOverhead(sourceDir, outputPath, 50, minSizeBytes)
+}
+
 // createExt4ImageWithOverhead creates an ext4 filesystem with explicit overhead and disk space checking.
 // An optional minimum size (bytes) is honoured when it is larger than the
 // content-derived size, so a VM can be given a guaranteed amount of free space.
 func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath string, overheadPercent int, minSizeBytes ...int64) error {
+	return createExt4FromDirWithOverhead(sourceDir, outputPath, overheadPercent, minSizeBytes...)
+}
+
+// createExt4FromDirWithOverhead is the receiver-free implementation shared by
+// the ImagePreparer method and the exported CreateExt4FromDir helper.
+func createExt4FromDirWithOverhead(sourceDir, outputPath string, overheadPercent int, minSizeBytes ...int64) error {
 	if sourceDir == "" {
 		return fmt.Errorf("source directory cannot be empty")
 	}
