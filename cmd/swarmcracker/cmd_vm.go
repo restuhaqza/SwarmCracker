@@ -6,9 +6,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/golden"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
@@ -42,37 +44,83 @@ These commands provide VM-level operations like creating, listing, stopping, and
 // newVMCreateCommand creates the VM create command
 func newVMCreateCommand() *cobra.Command {
 	var (
-		name    string
-		vcpus   int
-		memory  int
-		network string
-		detach  bool
-		env     []string
+		name      string
+		vcpus     int
+		memory    int
+		network   string
+		detach    bool
+		env       []string
+		goldenRef string
+		goldenDir string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "create <image>",
-		Short: "Create a Firecracker microVM from an OCI image",
-		Long: `Create a Firecracker microVM from an OCI container image.
+		Use:   "create [image]",
+		Short: "Create a Firecracker microVM from an OCI image or golden image",
+		Long: `Create a Firecracker microVM from an OCI container image or a prebuilt golden image.
 
-This command pulls the specified container image, converts it to a rootfs,
-and launches it as an isolated microVM using Firecracker.
+With an image argument, SwarmCracker pulls the container image, converts it to a
+rootfs, and launches it as an isolated microVM using Firecracker.
+
+With --golden, it boots a prebuilt golden image (see 'swarmcracker image build')
+with its own init (systemd/OpenRC), so container runtimes such as Docker can run
+inside the microVM.
 
 Example:
   swarmcracker vm create alpine:latest
   swarmcracker vm create --name my-vm --cpu 2 --memory 1024 nginx:latest
-  swarmcracker vm create -d --env FOO=bar alpine:latest`,
-		Args: cobra.ExactArgs(1),
+  swarmcracker vm create --golden ubuntu-24.04-docker
+  swarmcracker vm create --golden ubuntu-24.04-docker@1.0.0 --memory 4096 -d`,
+		Args: cobra.MaximumNArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			imageRef := args[0]
+			imageRef := ""
+			if len(args) > 0 {
+				imageRef = args[0]
+			}
+			if goldenRef == "" && imageRef == "" {
+				return fmt.Errorf("provide an image argument or --golden <name[@version]>")
+			}
+			if goldenRef != "" && imageRef != "" {
+				return fmt.Errorf("--golden and an image argument are mutually exclusive")
+			}
 
 			// Load configuration
 			cfg, err := loadConfigWithOverrides(cfgFile)
 			if err != nil {
 				return fmt.Errorf("failed to load configuration: %w", err)
+			}
+
+			// Resolve a golden image, if requested, into task annotations the
+			// executor and translator understand.
+			var goldenAnnotations map[string]string
+			if goldenRef != "" {
+				if goldenDir == "" {
+					goldenDir = defaultGoldenDir()
+				}
+				art, err := golden.Resolve(goldenDir, goldenRef)
+				if err != nil {
+					return err
+				}
+				imageRef = "golden:" + art.Ref
+				goldenAnnotations = map[string]string{
+					types.AnnotationRootfs:         art.Path,
+					types.AnnotationPrebuiltRootfs: "true",
+					types.AnnotationGolden:         art.Ref,
+				}
+				if len(art.Metadata.Init.BootArgs) > 0 {
+					goldenAnnotations[types.AnnotationBootArgs] = strings.Join(art.Metadata.Init.BootArgs, " ")
+				}
+				// A full-OS guest needs more headroom than the single-workload default.
+				if !cmd.Flags().Changed("cpu") && vcpus < 2 {
+					vcpus = 2
+				}
+				if !cmd.Flags().Changed("memory") && memory < 2048 {
+					memory = 2048
+				}
+				fmt.Printf("Using golden image %s (%s)\n", art.Ref, art.Path)
 			}
 
 			// Create executor
@@ -90,6 +138,9 @@ Example:
 
 			// Create a mock task
 			task := createMockTask(imageRef, vcpus, memory, env)
+			if goldenAnnotations != nil {
+				task.Annotations = goldenAnnotations
+			}
 
 			// Override task ID with name if provided
 			if name != "" {
@@ -200,6 +251,8 @@ Example:
 	cmd.Flags().StringVar(&network, "network", "", "Network to attach the VM to")
 	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "Run in detached mode (don't wait for completion)")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", []string{}, "Environment variables (e.g., -e KEY=value)")
+	cmd.Flags().StringVar(&goldenRef, "golden", "", "Boot a prebuilt golden image (name or name@version) instead of an OCI image")
+	cmd.Flags().StringVar(&goldenDir, "golden-dir", "", "Directory containing golden image artifacts (default: <rootfs-dir>/golden)")
 
 	return cmd
 }
