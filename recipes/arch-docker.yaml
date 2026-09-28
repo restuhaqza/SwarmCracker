@@ -1,0 +1,72 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: arch-docker
+  version: 2026.09.28
+  description: Arch Linux + systemd + Docker (rolling; version is the snapshot date)
+
+spec:
+  arch: [amd64]
+
+  source:
+    type: oci
+    # Rolling release: pin the digest and stamp metadata.version with a date.
+    ref: docker.io/library/archlinux:base
+
+  init:
+    system: systemd
+    bootArgs:
+      - systemd.unified_cgroup_hierarchy=1
+      - systemd.journald.forward_to_console=1
+
+  kernel:
+    profile: guest-runtime-6.1
+
+  runtime:
+    name: docker
+    storageDriver: overlay2
+    cgroupVersion: v2
+    install: packages
+
+  disk:
+    rootMinSize: 6GiB
+    dataDisk:
+      size: 20GiB
+      mount: /var/lib/docker
+      fs: ext4
+
+  network:
+    guestCIDR: 172.17.0.0/16
+
+  provision: |
+    set -eux
+
+    # A date-stamped keyring avoids signature failures on old snapshots.
+    pacman-key --init
+    pacman-key --populate archlinux
+    pacman -Sy --noconfirm --needed \
+      systemd docker ca-certificates curl iproute2 \
+      iptables-nft nftables iputils procps-ng dbus
+
+    systemctl enable docker.service
+    systemctl enable serial-getty@ttyS0.service
+    systemctl set-default multi-user.target
+
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-swarmcracker.conf
+
+  seal:
+    - truncate -s 0 /etc/machine-id
+    - rm -rf /var/cache/pacman/pkg/*
+    - rm -f /etc/ssh/ssh_host_*
+
+  health:
+    - command: systemctl is-system-running --wait
+      timeout: 120s
+    - command: docker info
+      timeout: 60s
+
+  verify:
+    - name: cgroup2-mounted
+      guest: mountpoint -q /sys/fs/cgroup && stat -fc %T /sys/fs/cgroup | grep -q cgroup2
+    - name: docker0-exists
+      guest: ip link show docker0

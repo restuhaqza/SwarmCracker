@@ -1,0 +1,78 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: almalinux-9-docker
+  version: 1.0.0
+  description: AlmaLinux 9 + systemd + Docker CE (RHEL-compatible, SELinux)
+
+spec:
+  arch: [amd64, arm64]
+
+  source:
+    type: oci
+    ref: docker.io/library/almalinux:9
+
+  init:
+    system: systemd
+    bootArgs:
+      - systemd.unified_cgroup_hierarchy=1
+      - systemd.journald.forward_to_console=1
+
+  kernel:
+    profile: guest-runtime-6.1
+
+  runtime:
+    name: docker
+    storageDriver: overlay2
+    cgroupVersion: v2
+    install: packages
+
+  disk:
+    rootMinSize: 6GiB
+    dataDisk:
+      size: 20GiB
+      mount: /var/lib/docker
+      fs: ext4
+
+  network:
+    guestCIDR: 172.17.0.0/16
+
+  provision: |
+    set -eux
+
+    # The base image ships curl-minimal, which conflicts with the full curl
+    # package; omit curl here and let --allowerasing resolve it if docker needs it.
+    dnf install -y systemd systemd-udev dnf-plugins-core ca-certificates iproute iputils procps-ng
+    # Docker publishes a CentOS repo consumed by RHEL clones (Alma, Rocky).
+    dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+    dnf install -y --allowerasing \
+      docker-ce docker-ce-cli containerd.io \
+      docker-buildx-plugin docker-compose-plugin \
+      iptables-nft nftables
+
+    systemctl enable docker.service containerd.service
+    systemctl enable serial-getty@ttyS0.service
+    systemctl set-default multi-user.target
+
+    mkdir -p /etc/sysctl.d
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-swarmcracker.conf
+
+  seal:
+    - truncate -s 0 /etc/machine-id
+    - rm -rf /var/cache/dnf/* /var/cache/yum/*
+    - rm -f /etc/ssh/ssh_host_*
+
+  health:
+    - command: systemctl is-system-running --wait
+      timeout: 120s
+    - command: docker info
+      timeout: 60s
+
+  verify:
+    - name: selinux-enforcing
+      guest: getenforce | grep -q Enforcing
+    - name: cgroup2-mounted
+      guest: mountpoint -q /sys/fs/cgroup && stat -fc %T /sys/fs/cgroup | grep -q cgroup2
+    - name: docker0-exists
+      guest: ip link show docker0
