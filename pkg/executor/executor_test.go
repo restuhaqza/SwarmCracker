@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/restuhaqza/swarmcracker/test/mocks"
@@ -374,5 +375,36 @@ func BenchmarkFirecrackerExecutor_Start(b *testing.B) {
 		task := mocks.NewTestTask("bench-task", "nginx:latest")
 		task.Annotations["rootfs"] = "/mock/rootfs/nginx.ext4"
 		_ = exec.Start(ctx, task)
+	}
+}
+
+// TestFirecrackerExecutor_SendEvent_DropsWhenBufferFull verifies that a full
+// event buffer does not block the caller. There is no consumer draining the
+// channel, so a blocking send would stall every caller for the timeout once
+// the buffer fills — which is what made BenchmarkFirecrackerExecutor_Start
+// run for hours on CI.
+func TestFirecrackerExecutor_SendEvent_DropsWhenBufferFull(t *testing.T) {
+	exec, err := NewFirecrackerExecutor(
+		&Config{KernelPath: "/kernel"},
+		mocks.NewMockVMMManager(),
+		mocks.NewMockTaskTranslator(),
+		mocks.NewMockImagePreparer(),
+		mocks.NewMockNetworkManager(),
+	)
+	require.NoError(t, err)
+	defer exec.Close()
+
+	// Fill the bounded channel.
+	for i := 0; i < cap(exec.events); i++ {
+		require.Truef(t, exec.sendEvent(Event{Message: "fill"}), "send %d should succeed", i)
+	}
+
+	// The next send must drop the event immediately, not block.
+	start := time.Now()
+	if exec.sendEvent(Event{Message: "overflow"}) {
+		t.Fatal("sendEvent should drop the event when the buffer is full")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("sendEvent blocked for %v with a full buffer; it must drop immediately", elapsed)
 	}
 }
