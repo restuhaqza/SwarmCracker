@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSecretRefConstruction tests SecretRef struct construction and defaults
@@ -1418,4 +1421,51 @@ func TestInterfaceSignatures(t *testing.T) {
 
 		var _ NetworkManager = (*mockNetworkManager)(nil)
 	})
+}
+
+// TestTaskSpec_GetContainer covers safe extraction of the Container runtime.
+func TestTaskSpec_GetContainer(t *testing.T) {
+	t.Run("nil runtime returns error", func(t *testing.T) {
+		spec := &TaskSpec{}
+
+		container, err := spec.GetContainer()
+
+		require.Error(t, err)
+		assert.Nil(t, container)
+	})
+
+	t.Run("non-container runtime returns error", func(t *testing.T) {
+		spec := &TaskSpec{Runtime: "not-a-container"}
+
+		container, err := spec.GetContainer()
+
+		require.Error(t, err)
+		assert.Nil(t, container)
+	})
+
+	t.Run("container runtime returns same pointer", func(t *testing.T) {
+		want := &Container{Image: "nginx:latest", Command: []string{"nginx"}}
+		spec := &TaskSpec{Runtime: want}
+
+		got, err := spec.GetContainer()
+
+		require.NoError(t, err)
+		assert.Same(t, want, got)
+	})
+}
+
+// TestTaskSpec_SetContainer covers runtime assignment and discriminator.
+func TestTaskSpec_SetContainer(t *testing.T) {
+	spec := &TaskSpec{}
+	container := &Container{Image: "alpine:latest", Env: []string{"FOO=bar"}}
+
+	spec.SetContainer(container)
+
+	assert.Same(t, container, spec.Runtime)
+	assert.Equal(t, RuntimeContainer, spec.RuntimeType)
+
+	// Round-trip through GetContainer returns the same pointer.
+	got, err := spec.GetContainer()
+	require.NoError(t, err)
+	assert.Same(t, container, got)
 }
