@@ -1,0 +1,133 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: alpine-3.20-docker
+  version: 1.0.0
+  description: Alpine 3.20 + OpenRC + Docker Engine (musl, smallest runtime image)
+
+spec:
+  arch: [amd64, arm64]
+
+  source:
+    type: oci
+    # Pin by digest in CI: docker.io/library/alpine@sha256:<digest>
+    ref: docker.io/library/alpine:3.20
+
+  init:
+    system: openrc
+    # OpenRC runs from busybox /sbin/init reading /etc/inittab; the provision
+    # step writes a v2-style inittab that starts OpenRC, then docker.
+
+  kernel:
+    profile: guest-runtime-6.1
+
+  runtime:
+    name: docker
+    storageDriver: overlay2
+    cgroupVersion: v2
+    install: packages
+
+  disk:
+    rootMinSize: 3GiB
+    dataDisk:
+      size: 10GiB
+      mount: /var/lib/docker
+      fs: ext4
+
+  network:
+    guestCIDR: 172.17.0.0/16
+
+  provision: |
+    set -eux
+    apk update
+    apk add --no-cache \
+      openrc util-linux docker docker-cli-compose \
+      iptables ip6tables nftables iproute2 ca-certificates
+
+    # Mount cgroup v2 and essential pseudo-filesystems on boot.
+    cat > /etc/inittab <<'EOF'
+    ::sysinit:/sbin/openrc sysinit
+    ::sysinit:/sbin/openrc boot
+    ::wait:/sbin/openrc default
+    ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+    ::ctrlaltdel:/sbin/reboot
+    ::shutdown:/sbin/openrc shutdown
+    EOF
+
+    # OpenRC's networking service needs a parseable interfaces file; keep eth0
+    # "manual" so it does not block on DHCP, and configure it from the kernel
+    # ip= parameter in swarmcracker-network (below), like the single-workload path.
+    mkdir -p /etc/network
+    cat > /etc/network/interfaces <<'EOF'
+    auto lo
+    iface lo inet loopback
+
+    auto eth0
+    iface eth0 inet manual
+    EOF
+
+    # Mount cgroup v2 before docker starts.
+    cat > /etc/init.d/swarmcracker-mounts <<'EOF'
+    #!/sbin/openrc-run
+    name="swarmcracker-mounts"
+    depend() { need localmount; before docker; }
+    start() {
+      ebegin "Mounting cgroup2"
+      [ -d /sys/fs/cgroup ] || mkdir -p /sys/fs/cgroup
+      mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup
+      sysctl -w net.ipv4.ip_forward=1
+      eend $?
+    }
+    EOF
+    chmod +x /etc/init.d/swarmcracker-mounts
+
+    # Bring eth0 up from the kernel ip=<ip>::<gw>:<mask>::<iface>:off parameter.
+    cat > /etc/init.d/swarmcracker-network <<'EOF'
+    #!/sbin/openrc-run
+    name="swarmcracker-network"
+    depend() { need localmount; before networking docker; }
+    start() {
+      ebegin "Configuring network from kernel ip= parameter"
+      ip link set lo up 2>/dev/null || true
+      _arg=$(tr ' ' '\n' < /proc/cmdline 2>/dev/null | grep '^ip=' | head -n1 | cut -d= -f2-)
+      if [ -n "$_arg" ]; then
+        _ip=$(echo "$_arg" | cut -d: -f1)
+        _gw=$(echo "$_arg" | cut -d: -f3)
+        _mask=$(echo "$_arg" | cut -d: -f4)
+        _dev=$(echo "$_arg" | cut -d: -f6)
+        [ -z "$_dev" ] && _dev=eth0
+        [ -z "$_mask" ] && _mask=255.255.255.0
+        if [ -n "$_ip" ]; then
+          ip addr add "$_ip/24" dev "$_dev" 2>/dev/null || true
+          ip link set "$_dev" up 2>/dev/null || true
+          [ -n "$_gw" ] && ip route add default via "$_gw" 2>/dev/null || true
+        fi
+      fi
+      eend 0
+    }
+    EOF
+    chmod +x /etc/init.d/swarmcracker-network
+
+    rc-update add swarmcracker-mounts boot
+    rc-update add swarmcracker-network boot
+    rc-update add networking boot
+    rc-update add docker default
+
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-swarmcracker.conf
+
+  seal:
+    - rm -rf /var/cache/apk/*
+    - rm -f /etc/ssh/ssh_host_*
+    - truncate -s 0 /etc/machine-id
+
+  health:
+    - command: rc-service docker status
+      timeout: 60s
+
+  verify:
+    - name: cgroup2-mounted
+      guest: grep -qw cgroup2 /proc/filesystems && mountpoint -q /sys/fs/cgroup
+    - name: overlayfs-present
+      guest: grep -qw overlay /proc/filesystems
+    - name: docker0-exists
+      guest: ip link show docker0

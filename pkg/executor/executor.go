@@ -140,18 +140,35 @@ func (e *FirecrackerExecutor) Prepare(ctx context.Context, t *types.Task) error 
 	// Rollback stack: cleanup functions in reverse order on failure
 	rollbacks := make([]func(), 0, 1)
 
-	// 1. Prepare container image (convert to rootfs)
-	if err := e.imagePrep.Prepare(ctx, t); err != nil {
-		return fmt.Errorf("image preparation failed: %w", err)
-	}
-	rollbacks = append(rollbacks, func() {
-		log.Warn().Str("task_id", t.ID).Msg("Rolling back image preparation")
-		if rootfsPath, ok := t.Annotations["rootfs"]; ok && rootfsPath != "" {
-			if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
-				log.Error().Err(err).Str("path", rootfsPath).Msg("Failed to remove prepared rootfs")
-			}
+	// 1. Prepare container image (convert to rootfs). Golden images ship a
+	// prebuilt rootfs that is shared between tasks, so it is neither prepared
+	// nor deleted here.
+	if t.UsesPrebuiltRootfs() {
+		rootfsPath := t.Annotations[types.AnnotationRootfs]
+		if rootfsPath == "" {
+			return fmt.Errorf("prebuilt rootfs requested but %q annotation is missing", types.AnnotationRootfs)
 		}
-	})
+		if _, err := os.Stat(rootfsPath); err != nil {
+			return fmt.Errorf("prebuilt rootfs %s is not accessible: %w", rootfsPath, err)
+		}
+		log.Info().
+			Str("task_id", t.ID).
+			Str("rootfs", rootfsPath).
+			Str("golden", t.Annotations[types.AnnotationGolden]).
+			Msg("Using prebuilt golden rootfs, skipping image preparation")
+	} else {
+		if err := e.imagePrep.Prepare(ctx, t); err != nil {
+			return fmt.Errorf("image preparation failed: %w", err)
+		}
+		rollbacks = append(rollbacks, func() {
+			log.Warn().Str("task_id", t.ID).Msg("Rolling back image preparation")
+			if rootfsPath, ok := t.Annotations[types.AnnotationRootfs]; ok && rootfsPath != "" {
+				if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
+					log.Error().Err(err).Str("path", rootfsPath).Msg("Failed to remove prepared rootfs")
+				}
+			}
+		})
+	}
 
 	// 2. Prepare network interfaces
 	if err := e.networkMgr.PrepareNetwork(ctx, t); err != nil {

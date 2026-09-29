@@ -456,6 +456,28 @@ func TestController_ConvertTask(t *testing.T) {
 		task := ctrl.convertTask()
 		assert.Empty(t, task.Networks) // Should skip nil network
 	})
+
+	t.Run("convert with disk size label", func(t *testing.T) {
+		ctrl := &Controller{
+			task: &api.Task{
+				ID: "task-convert-4",
+				Spec: api.TaskSpec{
+					Runtime: &api.TaskSpec_Container{
+						Container: &api.ContainerSpec{Image: "ubuntu:24.04"},
+					},
+				},
+				ServiceAnnotations: api.Annotations{
+					Labels: map[string]string{types.DiskSizeLabel: "10G"},
+				},
+			},
+			config: &Config{},
+			mu:     sync.Mutex{},
+		}
+
+		container, ok := ctrl.convertTask().Spec.Runtime.(*types.Container)
+		assert.True(t, ok)
+		assert.Equal(t, "10G", container.DiskSize)
+	})
 }
 
 // Mock implementations for controller tests

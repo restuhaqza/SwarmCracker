@@ -70,6 +70,10 @@ func (s *TaskSpec) SetContainer(c *Container) {
 	s.RuntimeType = RuntimeContainer
 }
 
+// DiskSizeLabel is the service label used to request a minimum rootfs size
+// (for example "10G"). It is read from the task's service labels.
+const DiskSizeLabel = "swarmcracker.disk"
+
 // Container specifies container configuration.
 type Container struct {
 	Image   string
@@ -77,6 +81,9 @@ type Container struct {
 	Args    []string
 	Env     []string
 	Mounts  []Mount
+	// DiskSize is the requested minimum rootfs size (e.g. "10G"); empty means
+	// the default content-based sizing is used.
+	DiskSize string
 }
 
 // Mount specifies a volume mount.
