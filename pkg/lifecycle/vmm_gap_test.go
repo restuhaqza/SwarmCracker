@@ -179,7 +179,7 @@ func TestGracefulShutdown(t *testing.T) {
 					GracePeriodSec: 1,
 				}
 			},
-			expectError: true, // forceKillVM will fail
+			expectError: false, // Already-finished process is treated as a successful kill
 		},
 		{
 			name: "init system none (should not use graceful)",
@@ -193,7 +193,7 @@ func TestGracefulShutdown(t *testing.T) {
 					GracePeriodSec: 1,
 				}
 			},
-			expectError: true, // Will fail to find process
+			expectError: false, // Already-finished process is treated as a successful kill
 		},
 		{
 			name: "very short grace period",
@@ -207,7 +207,7 @@ func TestGracefulShutdown(t *testing.T) {
 					GracePeriodSec: 0,
 				}
 			},
-			expectError: true,
+			expectError: false, // Already-finished process is treated as a successful kill
 		},
 		{
 			name: "long grace period with non-existent process",
@@ -221,7 +221,7 @@ func TestGracefulShutdown(t *testing.T) {
 					GracePeriodSec: 10,
 				}
 			},
-			expectError: true, // SIGTERM will fail
+			expectError: false, // Already-finished process is treated as a successful kill
 		},
 	}
 
@@ -234,9 +234,11 @@ func TestGracefulShutdown(t *testing.T) {
 
 			if tt.expectError {
 				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, VMStateStopped, vmInstance.GetState(),
+					"gracefulShutdown should mark an already-finished VM stopped")
 			}
-			// Check state was potentially updated
-			_ = vmInstance.GetState()
 		})
 	}
 }
@@ -277,8 +279,11 @@ func TestGracefulShutdown_ContextCancellation(t *testing.T) {
 	// Should return quickly due to context cancellation
 	select {
 	case err := <-errChan:
-		// Should error because context was cancelled
-		assert.Error(t, err)
+		// A cancelled context with an already-finished process is handled as a
+		// successful (terminal) kill.
+		assert.NoError(t, err)
+		assert.Equal(t, VMStateStopped, vmInstance.GetState(),
+			"gracefulShutdown should mark an already-finished VM stopped")
 	case <-time.After(2 * time.Second):
 		t.Fatal("gracefulShutdown did not return quickly after context cancellation")
 	}
@@ -431,7 +436,7 @@ func TestForceKillVM_ErrorPaths(t *testing.T) {
 		{
 			name:        "non-existent process",
 			pid:         99999,
-			expectError: true, // Process.FindProcess will error
+			expectError: false, // Already-finished process is treated as a successful kill
 		},
 		{
 			name:        "zero PID",
@@ -446,7 +451,7 @@ func TestForceKillVM_ErrorPaths(t *testing.T) {
 		{
 			name:        "valid but non-existent PID",
 			pid:         12345,
-			expectError: true, // Process doesn't exist
+			expectError: false, // Already-finished process is treated as a successful kill
 		},
 	}
 
@@ -463,6 +468,10 @@ func TestForceKillVM_ErrorPaths(t *testing.T) {
 
 			if tt.expectError {
 				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+				assert.Equal(t, VMStateStopped, vmInstance.GetState(),
+					"forceKillVM should mark an already-finished VM stopped")
 			}
 		})
 	}
@@ -645,7 +654,7 @@ func TestStop_ErrorPaths(t *testing.T) {
 					ID: taskID,
 				}
 			},
-			expectError: true, // forceKillVM will fail
+			expectError: false, // Already-finished process is treated as a successful kill
 		},
 	}
 
@@ -660,6 +669,13 @@ func TestStop_ErrorPaths(t *testing.T) {
 				if tt.errorMsg != "" {
 					assert.Contains(t, err.Error(), tt.errorMsg)
 				}
+			} else {
+				assert.NoError(t, err)
+				vmm.mu.RLock()
+				vmi := vmm.vms[task.ID]
+				vmm.mu.RUnlock()
+				assert.Equal(t, VMStateStopped, vmi.GetState(),
+					"Stop should mark an already-finished VM stopped")
 			}
 		})
 	}
@@ -694,8 +710,11 @@ func TestStop_InitSystemNone(t *testing.T) {
 	ctx := context.Background()
 	err := vmm.Stop(ctx, &types.Task{ID: taskID})
 
-	// Should use hardShutdown which will fail on non-existent socket
-	assert.Error(t, err)
+	// hardShutdown falls back to forceKillVM; the already-finished process is
+	// treated as a successful (terminal) kill.
+	assert.NoError(t, err)
+	assert.Equal(t, VMStateStopped, vmm.vms[taskID].GetState(),
+		"Stop should mark an already-finished VM stopped")
 }
 
 // TestConfigureVM_WithMockServer tests configureVM with a mock HTTP server
@@ -1071,6 +1090,9 @@ func TestStop_ContextCancellation(t *testing.T) {
 
 	err := vmm.Stop(ctx, &types.Task{ID: taskID})
 
-	// Should error due to process not found or context cancellation
-	assert.Error(t, err)
+	// The fake PID is already gone, so gracefulShutdown's SIGTERM fallback
+	// treats it as a successful kill rather than an error.
+	assert.NoError(t, err)
+	assert.Equal(t, VMStateStopped, vmm.vms[taskID].GetState(),
+		"Stop should mark an already-finished VM stopped")
 }
