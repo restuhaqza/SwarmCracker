@@ -1,0 +1,54 @@
+# guest-runtime kernel fragment for SwarmCracker golden images
+#
+# Merge on top of the Firecracker CI guest config, e.g.:
+#   ./scripts/kconfig/merge_config.sh -m \
+#       resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config \
+#       guest-runtime-6.1.fragment
+#   make olddefconfig && make -j"$(nproc)" vmlinux
+#
+# Base config already provides (evidence, FC CI x86_64-6.1):
+#   OVERLAY_FS, BRIDGE, VETH, NETFILTER, NF_CONNTRACK, NF_TABLES,
+#   NF_NAT, XT_TARGET_MASQUERADE, IP_NF_IPTABLES, IP_NF_FILTER,
+#   IP_NF_MANGLE, XT_MATCH_ADDRTYPE, XT_MATCH_CONNTRACK, CGROUPS,
+#   MEMCG, CGROUP_SCHED, CFS_BANDWIDTH, CPUSETS, BLK_CGROUP,
+#   CGROUP_PIDS/DEVICE/FREEZER, NAMESPACES, BINFMT_MISC, POSIX_MQUEUE,
+#   KEYS, SECCOMP, BPF_SYSCALL, VXLAN, EXT4_FS, BRIDGE_NETFILTER,
+#   VIRTIO_BLK/NET/MMIO/PCI, SERIAL_8250_CONSOLE, PRINTK, ACPI, PCI.
+#
+# This fragment adds what Docker / common CNIs need and the CI config lacks.
+# Keep everything =y: the boot args we pass include `nomodules`, so no module
+# loading and no initramfs.
+
+# --- iptables / nftables compatibility ---
+# Docker/CNI rules use `-m comment --comment ...`; insertion fails without it.
+CONFIG_NETFILTER_XT_MATCH_COMMENT=y
+# Legacy raw table used by some CNIs and iptables-legacy paths.
+CONFIG_IP_NF_RAW=y
+# arptables (legacy Docker/CNI paths).
+CONFIG_IP_NF_ARPTABLES=y
+# ebtables: bridge filtering for legacy Docker and some CNIs.
+CONFIG_BRIDGE_NF_EBTABLES=y
+# eBPF match: Cilium and other eBPF CNIs; harmless otherwise.
+CONFIG_NETFILTER_XT_MATCH_BPF=y
+
+# --- Docker network drivers ---
+# macvlan networks and several CNI plugins.
+CONFIG_MACVLAN=y
+# IPVS load-balancing mode for Docker Swarm / kube-proxy.
+CONFIG_IP_VS=y
+CONFIG_IP_VS_NFCT=y
+CONFIG_IP_VS_PROTO_TCP=y
+CONFIG_IP_VS_PROTO_UDP=y
+CONFIG_IP_VS_RR=y
+CONFIG_IP_VS_WRR=y
+CONFIG_IP_VS_SH=y
+
+# --- LSM (optional; document the security posture) ---
+# AppArmor workloads (Ubuntu/Debian default). Leave commented if you prefer
+# guests to run unconfined and keep the surface small.
+# CONFIG_SECURITY_APPARMOR=y
+# CONFIG_SECURITY_APPARMOR_BOOTPARAM_UNCONFINED=y
+
+# --- Memory pressure (optional) ---
+# CONFIG_ZRAM=y
+# CONFIG_ZRAM_DEF_COMP_LZORLE=y

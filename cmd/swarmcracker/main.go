@@ -48,6 +48,7 @@ func main() {
 	rootCmd.AddCommand(newVMCommand())
 	rootCmd.AddCommand(newNetworkCommand())
 	rootCmd.AddCommand(newVolumeCommand())
+	rootCmd.AddCommand(newImageCommand())
 	rootCmd.AddCommand(newAssetCommand())
 	rootCmd.AddCommand(newConfigCommand())
 	rootCmd.AddCommand(newSetupCommand())
