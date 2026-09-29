@@ -673,3 +673,75 @@ func TestDetectInitType_TiniOverOpenRC(t *testing.T) {
 		t.Errorf("tini should have priority over openrc: got %s", result.Type)
 	}
 }
+
+// --- hasBusyboxBinary tests ---
+
+func TestHasBusyboxBinary(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+		want  bool
+	}{
+		{
+			name:  "empty directory",
+			setup: func(t *testing.T, root string) {},
+			want:  false,
+		},
+		{
+			name: "non-busybox file present",
+			setup: func(t *testing.T, root string) {
+				if err := os.WriteFile(filepath.Join(root, "busybox.txt"), []byte("x"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: false,
+		},
+		{
+			name: "executable busybox in bin",
+			setup: func(t *testing.T, root string) {
+				if err := os.MkdirAll(filepath.Join(root, "bin"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "bin", "busybox"), []byte("busybox"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: true,
+		},
+		{
+			name: "busybox in usr/bin",
+			setup: func(t *testing.T, root string) {
+				if err := os.MkdirAll(filepath.Join(root, "usr", "bin"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "usr", "bin", "busybox"), []byte("busybox"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: true,
+		},
+		{
+			name: "busybox in sbin",
+			setup: func(t *testing.T, root string) {
+				if err := os.MkdirAll(filepath.Join(root, "sbin"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(root, "sbin", "busybox"), []byte("busybox"), 0755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			tt.setup(t, root)
+
+			if got := hasBusyboxBinary(root); got != tt.want {
+				t.Errorf("hasBusyboxBinary() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
