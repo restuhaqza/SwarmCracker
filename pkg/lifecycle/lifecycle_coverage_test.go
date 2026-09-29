@@ -262,6 +262,7 @@ func TestForceKillVM_RealProcess(t *testing.T) {
 	// Kill the process
 	err := vmMgr.forceKillVM(vmInstance)
 	assert.NoError(t, err, "forceKillVM should succeed")
+	assert.Equal(t, VMStateStopped, vmInstance.GetState(), "forceKillVM should mark the VM stopped")
 
 	// Verify process was killed
 	_, err = os.FindProcess(cmd.Process.Pid)

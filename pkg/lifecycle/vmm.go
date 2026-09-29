@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -700,7 +701,12 @@ func (vm *VMMManager) forceKillVM(vmInstance *VMInstance) error {
 	}
 
 	if err := process.Kill(); err != nil {
-		return err
+		// The process exiting on its own between the grace-period check and the
+		// kill is still a successful (terminal) kill. Any other error is a real
+		// failure and leaves the state untouched.
+		if !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
 	}
 
 	// The forced kill is terminal: the VM is no longer running, so move it out
