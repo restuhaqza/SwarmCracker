@@ -22,6 +22,7 @@ func TestGracefulShutdown_ProcessExitsGracefully(t *testing.T) {
 	// Create a sleep process that will respond to SIGTERM
 	cmd := exec.Command("sleep", "10")
 	require.NoError(t, cmd.Start(), "failed to start sleep process")
+	go func() { _ = cmd.Wait() }() // reap so process exit is observable
 
 	// Create VM instance
 	vmMgr := &VMMManager{
@@ -51,7 +52,6 @@ func TestGracefulShutdown_ProcessExitsGracefully(t *testing.T) {
 	// Wait a bit to ensure process is fully reaped
 	_, err = os.FindProcess(cmd.Process.Pid)
 	// Process should be gone or unretrievable
-	cmd.Wait() // Clean up zombie
 }
 
 // TestGracefulShutdown_GracePeriodExpiry tests that SIGKILL is sent when
@@ -242,6 +242,7 @@ func TestGracefulShutdown_StateTransition(t *testing.T) {
 
 	cmd := exec.Command("sleep", "5")
 	require.NoError(t, cmd.Start(), "failed to start sleep process")
+	go func() { _ = cmd.Wait() }() // reap so process exit is observable
 
 	vmMgr := &VMMManager{
 		vms: make(map[string]*VMInstance),
@@ -265,9 +266,6 @@ func TestGracefulShutdown_StateTransition(t *testing.T) {
 
 	assert.NoError(t, err, "gracefulShutdown should succeed")
 	assert.Equal(t, VMStateStopped, vmInstance.GetState(), "final state should be stopped")
-
-	// Clean up
-	cmd.Wait()
 }
 
 // TestGracefulShutdown_MultipleVMs tests that shutting down one VM
@@ -280,9 +278,11 @@ func TestGracefulShutdown_MultipleVMs(t *testing.T) {
 	// Create two processes
 	cmd1 := exec.Command("sleep", "10")
 	require.NoError(t, cmd1.Start(), "failed to start first sleep process")
+	go func() { _ = cmd1.Wait() }() // reap so process exit is observable
 
 	cmd2 := exec.Command("sleep", "10")
 	require.NoError(t, cmd2.Start(), "failed to start second sleep process")
+	go func() { _ = cmd2.Wait() }() // reap so process exit is observable
 
 	vmMgr := &VMMManager{
 		vms: make(map[string]*VMInstance),
@@ -323,10 +323,8 @@ func TestGracefulShutdown_MultipleVMs(t *testing.T) {
 	err = cmd2.Process.Signal(syscall.Signal(0))
 	assert.NoError(t, err, "second process should still be alive")
 
-	// Cleanup both
-	cmd1.Wait()
+	// Cleanup second VM (first was already reaped by its waiter goroutine)
 	cmd2.Process.Kill()
-	cmd2.Wait()
 }
 
 // TestGracefulShutdown_AlreadyStoppedProcess tests graceful shutdown

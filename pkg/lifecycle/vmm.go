@@ -699,7 +699,15 @@ func (vm *VMMManager) forceKillVM(vmInstance *VMInstance) error {
 		return err
 	}
 
-	return process.Kill()
+	if err := process.Kill(); err != nil {
+		return err
+	}
+
+	// The forced kill is terminal: the VM is no longer running, so move it out
+	// of the transitional "stopping" state instead of leaving it stuck forever.
+	vmInstance.SetState(VMStateStopped)
+
+	return nil
 }
 
 // waitForAPIServer waits for the Firecracker API server to be ready.
