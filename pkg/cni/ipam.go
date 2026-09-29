@@ -192,15 +192,22 @@ func (m *IPAMManager) AllocateVIP(subnetCIDR string, serviceID string) (net.IP, 
 	// VIPs are allocated from the higher end of the subnet
 	// to avoid conflicts with node attachments
 	vipStart := getVIPRangeStart(pool.Subnet)
+	if vipStart == nil {
+		return nil, fmt.Errorf("VIPs are not supported for subnet %s", subnetCIDR)
+	}
 
 	ip := vipStart
 	attempts := 0
 	maxAttempts := 16 // Reserve last 16 IPs for VIPs
 
 	for attempts < maxAttempts {
-		ipStr := ip.String()
+		// Stop at the subnet boundary and never hand out the network or
+		// broadcast address (matters for small subnets).
+		if !pool.Subnet.Contains(ip) || isNetworkOrBroadcast(pool.Subnet, ip) {
+			break
+		}
 
-		// Check if IP is available
+		ipStr := ip.String()
 		if _, used := pool.UsedIPs[ipStr]; !used && !isReserved(pool, ip) {
 			pool.UsedIPs[ipStr] = "vip:" + serviceID
 			return ip, nil

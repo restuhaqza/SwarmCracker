@@ -38,20 +38,23 @@ MicroVM (isolated kernel + workload)
 
 | Component | Package | Purpose | Status |
 |-----------|---------|---------|--------|
-| **Executor** | `pkg/executor` | Main executor implementing SwarmKit interface | 95.2% coverage |
-| **Translator** | `pkg/translator` | Converts SwarmKit tasks to Firecracker config | 97.4% coverage |
-| **Config** | `pkg/config` | Configuration management with validation | 88.1% coverage |
-| **Lifecycle** | `pkg/lifecycle` | VM start/stop/monitor via Firecracker API | 91.6% coverage |
-| **Runtime** | `pkg/runtime` | Runtime utilities and helpers | 88.9% coverage |
-| **Discovery** | `pkg/discovery` | Service discovery mechanisms | 87.8% coverage |
-| **Metrics** | `pkg/metrics` | Prometheus metrics collection | 88.1% coverage |
-| **Jailer** | `pkg/jailer` | Security sandboxing via jailer | 87.4% coverage |
-| **Image** | `pkg/image` | OCI image → root filesystem conversion | 71.2% coverage |
-| **Network** | `pkg/network` | TAP device & bridge management | 62.1% coverage |
-| **Storage** | `pkg/storage` | Volume driver system | 76.4% coverage |
-| **Snapshot** | `pkg/snapshot` | VM snapshot/restore lifecycle | 69.7% coverage |
-| **SwarmKit** | `pkg/swarmkit` | SwarmKit API integration | 68.4% coverage |
-| **Types** | `pkg/types` | Shared interfaces and data structures | Complete |
+| **Executor** | `pkg/executor` | Main executor implementing SwarmKit interface | 90.7% coverage |
+| **Translator** | `pkg/translator` | Converts SwarmKit tasks to Firecracker config | 94.9% coverage |
+| **Config** | `pkg/config` | Configuration management with validation | 97.6% coverage |
+| **Lifecycle** | `pkg/lifecycle` | VM start/stop/monitor via Firecracker API | 82.3% coverage |
+| **Runtime** | `pkg/runtime` | Runtime utilities and helpers | 86.0% coverage |
+| **Discovery** | `pkg/discovery` | Service discovery mechanisms | 80.6% coverage |
+| **Metrics** | `pkg/metrics` | Prometheus metrics collection | 84.4% coverage |
+| **Jailer** | `pkg/jailer` | Security sandboxing via jailer | 92.6% coverage |
+| **Image** | `pkg/image` | OCI image → root filesystem conversion | 85.8% coverage |
+| **Network** | `pkg/network` | TAP device & bridge management | 86.7% coverage |
+| **Storage** | `pkg/storage` | Volume driver system | 87.3% coverage |
+| **Snapshot** | `pkg/snapshot` | VM snapshot/restore lifecycle | 87.9% coverage |
+| **SwarmKit** | `pkg/swarmkit` | SwarmKit API integration | 87.0% coverage |
+| **Types** | `pkg/types` | Shared interfaces and data structures | 100.0% coverage |
+
+> Coverage measured 2026-09-29 (total `./pkg/...` 87.6%); see
+> `docs/dev/testing/unit-tests.md` for the full table and methodology.
 
 ### Data Flow
 
@@ -228,20 +231,28 @@ swarmcracker --config /custom/config.yaml run nginx:latest
 
 | Package | Coverage | Status |
 |---------|----------|--------|
-| translator | 97.4% | ✅ Excellent |
-| executor | 95.2% | ✅ Excellent |
-| lifecycle | 91.6% | ✅ Excellent |
-| runtime | 88.9% | ✅ Good |
-| config | 88.1% | ✅ Good |
-| discovery | 87.8% | ✅ Good |
-| jailer | 87.4% | ✅ Good |
-| metrics | 88.1% | ✅ Good |
-| storage | 76.4% | ⚠️ Improving |
-| security | 74.7% | ⚠️ Improving |
-| image | 71.2% | ⚠️ Improving |
-| snapshot | 69.7% | ⚠️ Improving |
-| swarmkit | 68.4% | ⚠️ Improving |
-| network | 62.1% | ⚠️ Needs work |
+| apiversion | 100.0% | ✅ Excellent |
+| types | 100.0% | ✅ Excellent |
+| config | 97.6% | ✅ Excellent |
+| logging | 94.7% | ✅ Excellent |
+| translator | 94.9% | ✅ Excellent |
+| jailer | 92.6% | ✅ Excellent |
+| executor | 90.7% | ✅ Excellent |
+| cni | 90.2% | ✅ Excellent |
+| health | 89.5% | ✅ Good |
+| snapshot | 87.9% | ✅ Good |
+| storage | 87.3% | ✅ Good |
+| swarmkit | 87.0% | ✅ Good |
+| network | 86.7% | ✅ Good |
+| runtime | 86.0% | ✅ Good |
+| image | 85.8% | ✅ Good |
+| console | 85.0% | ✅ Good |
+| metrics | 84.4% | 🟡 Fair |
+| lifecycle | 82.3% | 🟡 Fair |
+| discovery | 80.6% | 🟡 Fair |
+
+Total `./pkg/...`: **87.6%**, measured 2026-09-29. Full details and
+methodology: `docs/dev/testing/unit-tests.md`.
 
 ### Running Specific Tests
 

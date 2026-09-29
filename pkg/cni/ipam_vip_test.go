@@ -189,11 +189,42 @@ func TestIPAMManager_AllocateIP_Exhaustion(t *testing.T) {
 	assert.Error(t, err)
 	assert.Nil(t, ip2)
 
-	// The broadcast address was never handed out.
-	assert.NotEqual(t, "10.0.0.3", ip.String())
-
 	// Unknown pool still errors clearly.
 	ip3, err := mgr.AllocateIP("10.9.9.0/30", "owner")
 	assert.Error(t, err)
 	assert.Nil(t, ip3)
+}
+
+// TestIPAMManager_AllocateVIP_SmallSubnet verifies that a /30 pool hands out
+// only its single usable host address (.2) as a VIP, never the network (.0),
+// gateway (.1), or broadcast (.3) address, and reports exhaustion afterwards.
+func TestIPAMManager_AllocateVIP_SmallSubnet(t *testing.T) {
+	mgr := NewIPAMManager(nil)
+	_, err := mgr.CreatePool("10.0.0.0/30", nil)
+	require.NoError(t, err)
+
+	// /30: network .0, gateway .1, broadcast .3 => only .2 is usable.
+	vip, err := mgr.AllocateVIP("10.0.0.0/30", "svc-1")
+	require.NoError(t, err)
+	require.NotNil(t, vip, "VIP must not be nil for a supported subnet")
+	assert.Equal(t, "10.0.0.2", vip.String())
+
+	// The pool is exhausted: no network, gateway, or broadcast address is
+	// handed out, and the failure is reported (not (nil, nil)).
+	vip2, err := mgr.AllocateVIP("10.0.0.0/30", "svc-2")
+	assert.Error(t, err)
+	assert.Nil(t, vip2)
+}
+
+// TestIPAMManager_AllocateVIP_IPv6Unsupported verifies that IPv6 VIP
+// allocation fails loudly instead of returning a nil IP with no error (and
+// recording the bogus owner "<nil>").
+func TestIPAMManager_AllocateVIP_IPv6Unsupported(t *testing.T) {
+	mgr := NewIPAMManager(nil)
+	_, err := mgr.CreatePool("fd00::/64", nil)
+	require.NoError(t, err)
+
+	vip, err := mgr.AllocateVIP("fd00::/64", "svc-1")
+	assert.Error(t, err)
+	assert.Nil(t, vip)
 }

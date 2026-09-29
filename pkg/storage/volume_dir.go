@@ -460,8 +460,11 @@ func (d *DirectoryDriver) Import(ctx context.Context, name string, r io.Reader, 
 // validateTarPath checks that a tar entry path is safe and doesn't escape the destination.
 // It prevents path traversal attacks (ZIP slip) by rejecting:
 // - Paths containing ".." components
-// - Absolute paths that don't start with the destination
 // - Paths with null bytes
+//
+// Absolute paths are not rejected. After filepath.Clean they are joined under
+// dest with filepath.Join, which roots them at dest (e.g. "/etc/passwd" becomes
+// <dest>/etc/passwd), and the cleaned result is then verified to stay within dest.
 func validateTarPath(dest, name string) error {
 	// Reject null bytes
 	if strings.Contains(name, "\x00") {
