@@ -419,18 +419,19 @@ func TestMountExt4_ExecErrorPaths(t *testing.T) {
 // TestCreateExt4Image_ExecErrorPaths tests createExt4Image error paths
 func TestCreateExt4Image_ExecErrorPaths(t *testing.T) {
 	tests := []struct {
-		name        string
-		sourceDir   string
-		outputPath  string
-		expectError bool
-		description string
+		name          string
+		sourceDir     string
+		outputPath    string
+		expectError   bool
+		useAbsentPath bool
+		description   string
 	}{
 		{
-			name:        "nonexistent_source",
-			sourceDir:   "/nonexistent/path",
-			outputPath:  "/tmp/test.img",
-			expectError: true,
-			description: "Non-existent source directory should fail",
+			name:          "nonexistent_source",
+			outputPath:    "/tmp/test.img",
+			expectError:   true,
+			useAbsentPath: true,
+			description:   "Non-existent source directory should fail",
 		},
 		{
 			name:        "empty_source_dir",
@@ -458,7 +459,9 @@ func TestCreateExt4Image_ExecErrorPaths(t *testing.T) {
 			ip := NewImagePreparer(config).(*ImagePreparer)
 
 			// Create source directory if needed
-			if tt.sourceDir == "" && !tt.expectError {
+			if tt.useAbsentPath {
+				tt.sourceDir = absentPath(t)
+			} else if tt.sourceDir == "" && !tt.expectError {
 				tt.sourceDir = t.TempDir()
 			}
 

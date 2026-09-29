@@ -108,7 +108,7 @@ func TestDefaultExecuteWithOutput_RealCommand(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, output, "hello")
 
-	output, err = defaultExecuteWithOutput("ls", "/nonexistent")
+	output, err = defaultExecuteWithOutput("ls", absentPath(t))
 	require.Error(t, err)
 	assert.Contains(t, output, "") // May have stderr in output
 }
