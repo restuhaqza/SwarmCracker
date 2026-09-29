@@ -10,29 +10,43 @@
 
 | Package | Coverage | Status |
 |---------|----------|--------|
-| translator | 97.4% | ✅ Excellent |
-| executor | 95.2% | ✅ Excellent |
-| lifecycle | 91.6% | ✅ Excellent |
-| runtime | 88.9% | ✅ Good |
-| config | 88.1% | ✅ Good |
-| discovery | 87.8% | ✅ Good |
-| jailer | 87.4% | ✅ Good |
-| metrics | 88.1% | ✅ Good |
-| network | 62.1% | 🟡 Needs work |
-| swarmkit | 68.4% | 🟡 Needs work |
-| snapshot | 69.7% | 🟡 Needs work |
-| security | 74.7% | 🟡 Needs work |
-| storage | 76.4% | 🟡 Needs work |
-| image | 71.2% | 🟡 Needs work |
+| apiversion | 100.0% | ✅ Excellent |
+| types | 100.0% | ✅ Excellent |
+| config | 97.6% | ✅ Excellent |
+| logging | 94.7% | ✅ Excellent |
+| translator | 94.9% | ✅ Excellent |
+| jailer | 92.6% | ✅ Excellent |
+| executor | 90.7% | ✅ Excellent |
+| cni | 90.2% | ✅ Excellent |
+| health | 89.5% | ✅ Good |
+| snapshot | 87.9% | ✅ Good |
+| storage | 87.3% | ✅ Good |
+| swarmkit | 87.0% | ✅ Good |
+| network | 86.7% | ✅ Good |
+| runtime | 86.0% | ✅ Good |
+| image | 85.8% | ✅ Good |
+| console | 85.0% | ✅ Good |
+| metrics | 84.4% | 🟡 Fair |
+| lifecycle | 82.3% | 🟡 Fair |
+| discovery | 80.6% | 🟡 Fair |
 
-**Overall target: 85%**
+**Overall target: 85% — ✅ met (measured 87.6%); enforced by the CI threshold gate in `.github/workflows/ci.yml`.**
+
+> Measured on 2026-09-29 with
+> `go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...`.
+> Caveat: on a non-root host the `pkg/swarmkit` tests
+> `TestVMMManagerConfigDefaults` and
+> `TestVMMManagerConfigDefaultsUnit/default_jailer_UID/GID` fail with
+> `mkdir /var/lib/swarmcracker: permission denied`. This is a pre-existing
+> environment failure; the package's other tests (including all new ones) still
+> run and its executed-code coverage is `87.0%`.
 
 ### Priority Classification
 
 | Priority | Packages | Reason |
 |----------|----------|--------|
 | **P0 — Critical** | `network/vxlan`, `swarmkit/vmm` | Cross-node networking, core orchestration — lowest coverage, highest impact |
-| **P1 — High** | `snapshot`, `security`, `storage`, `image` | Infrastructure, security — moderate coverage, needs improvement |
+| **P1 — High** | `network`, `snapshot`, `storage`, `image` | Infrastructure — moderate coverage, needs improvement |
 | **P2 — Medium** | `storage/driver`, `storage/volume_meta`, `storage/volume_quota` | Storage subsystem — partial coverage |
 | **P3 — Low** | `translator`, `executor`, `lifecycle`, `config`, `discovery`, `jailer`, `metrics`, `runtime` | Already well-tested — add edge cases, error paths, fuzz targets |
 
@@ -543,13 +557,17 @@ Create test/helpers/helpers.go:
 
 ## Coverage Targets
 
-| Metric | Current | Target |
-|--------|---------|--------|
-| Overall pkg coverage | ~60% (est.) | **80%+** |
-| P0 packages | ~5% | **90%+** |
-| P1 packages | 0% | **80%+** |
-| P2 packages | ~40% | **70%+** |
-| Critical paths (VM start, network, storage) | ~40% | **95%+** |
+| Metric | Current (2026-09-29) | Target |
+|--------|----------------------|--------|
+| Overall `./pkg/...` coverage | 87.6% | **85%+** (CI-enforced) |
+| Newly covered packages (`apiversion`, `logging`, `types`, `cni`, `console`, `health`) | 85.0–100% | **85%+** |
+| Core orchestration (`translator`, `executor`, `config`, `jailer`) | 90.7–97.6% | **85%+** |
+| Infrastructure (`network`, `image`, `storage`, `snapshot`, `swarmkit`) | 85.8–87.9% | **85%+** |
+| Remaining below the line (`metrics`, `lifecycle`, `discovery`) | 80.6–84.4% | **85%+** |
+
+The overall threshold is **85%** and is enforced by the "Check coverage threshold"
+step in `.github/workflows/ci.yml`. Lower it only with an explicit decision
+recorded here.
 
 ### Measuring Coverage
 ```bash
