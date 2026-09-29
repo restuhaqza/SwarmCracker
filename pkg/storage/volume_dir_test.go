@@ -1,7 +1,9 @@
 package storage
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"os"
 	"path/filepath"
@@ -303,5 +305,261 @@ func TestDirectoryDriver_MountNonexistentVolume(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error = %v, should mention not found", err)
+	}
+}
+
+// --- validateTarPath tests ---
+
+func TestValidateTarPath(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "data")
+	if err := os.MkdirAll(dest, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name    string
+		entry   string
+		wantErr bool
+	}{
+		{name: "simple relative path", entry: "a/b", wantErr: false},
+		{name: "nested file", entry: "dir/sub/file.txt", wantErr: false},
+		{name: "dot path", entry: ".", wantErr: false},
+		{name: "empty path", entry: "", wantErr: false},
+		{name: "parent traversal", entry: "../escape", wantErr: true},
+		{name: "embedded traversal", entry: "a/../../b", wantErr: true},
+		{name: "null byte", entry: "a\x00b", wantErr: true},
+		// Absolute paths are not rejected, but filepath.Join keeps the
+		// cleaned result inside dest, so they are safe.
+		{name: "absolute path contained by dest", entry: "/etc/passwd", wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTarPath(dest, tt.entry)
+			if tt.wantErr && err == nil {
+				t.Fatalf("validateTarPath(%q) = nil, want error", tt.entry)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("validateTarPath(%q) = %v, want nil", tt.entry, err)
+			}
+		})
+	}
+}
+
+// tarArchiveEntry describes one entry used to build a tar.gz test stream.
+type tarArchiveEntry struct {
+	name     string
+	body     string
+	mode     int64
+	typeflag byte
+	linkname string
+}
+
+// buildTarGz builds an in-memory gzip-compressed tar stream from entries.
+func buildTarGz(t *testing.T, entries ...tarArchiveEntry) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+
+	for _, e := range entries {
+		hdr := &tar.Header{
+			Name:     e.name,
+			Mode:     e.mode,
+			Linkname: e.linkname,
+			Size:     int64(len(e.body)),
+		}
+		if e.typeflag != 0 {
+			hdr.Typeflag = e.typeflag
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("write tar header %q: %v", e.name, err)
+		}
+		if len(e.body) > 0 {
+			if _, err := tw.Write([]byte(e.body)); err != nil {
+				t.Fatalf("write tar body %q: %v", e.name, err)
+			}
+		}
+	}
+
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatalf("close gzip writer: %v", err)
+	}
+	return &buf
+}
+
+// --- directory driver error-path tests ---
+
+func TestDirectoryDriver_StatAndCapacity_MissingDataDir(t *testing.T) {
+	dir := testTempDir(t)
+	d, err := NewDirectoryDriver(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if _, err := d.Create(ctx, "gone-vol", CreateOptions{SizeMB: 42}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Remove the data directory but keep the metadata.
+	if err := os.RemoveAll(d.dataPath("gone-vol")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stat tolerates a missing data dir (logs a warning) and still reports.
+	info, err := d.Stat(ctx, "gone-vol")
+	if err != nil {
+		t.Fatalf("Stat: %v", err)
+	}
+	if info.Name != "gone-vol" {
+		t.Errorf("Name = %q, want %q", info.Name, "gone-vol")
+	}
+	if info.UsedMB != 0 {
+		t.Errorf("UsedMB = %d, want 0 for missing data dir", info.UsedMB)
+	}
+
+	// Capacity surfaces the measurement error.
+	if _, _, err := d.Capacity(ctx, "gone-vol"); err == nil {
+		t.Fatal("expected Capacity error when data dir is missing")
+	}
+}
+
+func TestDirectoryDriver_SnapshotSnapshotsDirBlocked(t *testing.T) {
+	dir := testTempDir(t)
+	d, err := NewDirectoryDriver(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if _, err := d.Create(ctx, "snap-blk", CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A regular file where the .snapshots directory should be makes MkdirAll fail.
+	if err := os.WriteFile(filepath.Join(dir, ".snapshots"), []byte("not a dir"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := d.Snapshot(ctx, "snap-blk"); err == nil {
+		t.Fatal("expected Snapshot error when .snapshots path is a file")
+	}
+}
+
+func TestDirectoryDriver_RestoreCorruptSnapshot(t *testing.T) {
+	dir := testTempDir(t)
+	d, err := NewDirectoryDriver(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background()
+	if _, err := d.Create(ctx, "corrupt-vol", CreateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	badPath := filepath.Join(t.TempDir(), "bad.tar.gz")
+	if err := os.WriteFile(badPath, []byte("this is not a gzip stream"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = d.Restore(ctx, "corrupt-vol", &Snapshot{ID: "bad", Volume: "corrupt-vol", Path: badPath})
+	if err == nil {
+		t.Fatal("expected error for corrupt snapshot")
+	}
+	if !strings.Contains(err.Error(), "decompress snapshot") {
+		t.Errorf("error = %v, want it to mention decompress snapshot", err)
+	}
+}
+
+func TestDirectoryDriver_RestoreRejectsUnsafeEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		entry   tarArchiveEntry
+		wantSub string
+	}{
+		{
+			name:    "path traversal",
+			entry:   tarArchiveEntry{name: "../escape", body: "x", mode: 0644},
+			wantSub: "invalid path",
+		},
+		{
+			name:    "symlink linkname traversal",
+			entry:   tarArchiveEntry{name: "link", typeflag: tar.TypeSymlink, linkname: "../escape"},
+			wantSub: "invalid linkname",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := testTempDir(t)
+			d, err := NewDirectoryDriver(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ctx := context.Background()
+			if _, err := d.Create(ctx, "vol", CreateOptions{}); err != nil {
+				t.Fatal(err)
+			}
+
+			snapPath := filepath.Join(t.TempDir(), "snap.tar.gz")
+			if err := os.WriteFile(snapPath, buildTarGz(t, tt.entry).Bytes(), 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			err = d.Restore(ctx, "vol", &Snapshot{ID: "s", Volume: "vol", Path: snapPath})
+			if err == nil {
+				t.Fatal("expected Restore to reject unsafe entry")
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error = %v, want substring %q", err, tt.wantSub)
+			}
+		})
+	}
+}
+
+func TestDirectoryDriver_ImportRejectsUnsafeEntries(t *testing.T) {
+	tests := []struct {
+		name    string
+		entry   tarArchiveEntry
+		wantSub string
+	}{
+		{
+			name:    "path traversal",
+			entry:   tarArchiveEntry{name: "../escape", body: "x", mode: 0644},
+			wantSub: "invalid path",
+		},
+		{
+			name:    "symlink linkname traversal",
+			entry:   tarArchiveEntry{name: "link", typeflag: tar.TypeSymlink, linkname: "../escape"},
+			wantSub: "invalid linkname",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := testTempDir(t)
+			d, err := NewDirectoryDriver(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			ctx := context.Background()
+			buf := buildTarGz(t, tt.entry)
+
+			err = d.Import(ctx, "vol", buf, 10)
+			if err == nil {
+				t.Fatal("expected Import to reject unsafe entry")
+			}
+			if !strings.Contains(err.Error(), tt.wantSub) {
+				t.Errorf("error = %v, want substring %q", err, tt.wantSub)
+			}
+		})
 	}
 }

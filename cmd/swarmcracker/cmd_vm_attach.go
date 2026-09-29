@@ -120,6 +120,13 @@ func pumpStdin(r io.Reader, w io.Writer) error {
 				if pendingCtrlP {
 					pendingCtrlP = false
 					if b == detachSuffix {
+						// Flush bytes read before the detach sequence so they
+						// are not lost when we stop forwarding input.
+						if len(out) > 0 {
+							if _, werr := w.Write(out); werr != nil {
+								return werr
+							}
+						}
 						return errDetach
 					}
 					out = append(out, detachPrefix)

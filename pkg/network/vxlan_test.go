@@ -5,9 +5,15 @@ package network
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/vishvananda/netlink"
 )
 
 // ==================== StaticPeerStore Tests ====================
@@ -862,4 +868,75 @@ func findSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestVXLANManager_removePeerForwarding covers peer-FDB removal. It must never
+// panic and must skip gracefully when the VXLAN interface is already gone or
+// when the underlying `bridge fdb del` reports a missing entry. No root and no
+// real network is required.
+func TestVXLANManager_removePeerForwarding(t *testing.T) {
+	t.Run("invalid peer IP returns error", func(t *testing.T) {
+		mgr := NewVXLANManager("br0", 42, "10.0.0.1/24", nil)
+		err := mgr.removePeerForwarding("br0-vxlan", "not-an-ip")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid peer IP")
+	})
+
+	t.Run("missing vxlan interface is a no-op", func(t *testing.T) {
+		mock := &MockNetlinkExecutor{
+			LinkByNameFunc: func(name string) (netlink.Link, error) {
+				return nil, assert.AnError
+			},
+		}
+		mgr := NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, mock)
+
+		assert.NotPanics(t, func() {
+			err := mgr.removePeerForwarding("br0-vxlan", "192.168.1.10")
+			assert.NoError(t, err, "a missing interface means nothing to remove")
+		})
+	})
+
+	t.Run("missing bridge executable does not panic", func(t *testing.T) {
+		// Empty PATH guarantees `bridge` cannot be resolved, exercising the
+		// command-failure path without touching the real network.
+		t.Setenv("PATH", "")
+		mock := &MockNetlinkExecutor{
+			LinkByNameFunc: func(name string) (netlink.Link, error) {
+				return &netlink.GenericLink{
+					LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1},
+				}, nil
+			},
+		}
+		mgr := NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, mock)
+
+		assert.NotPanics(t, func() {
+			// With no `bridge` executable resolvable the FDB delete cannot
+			// succeed, so the call must surface a non-nil error rather than
+			// silently reporting success.
+			err := mgr.removePeerForwarding("br0-vxlan", "192.168.1.10")
+			require.Error(t, err, "missing bridge executable should surface an error")
+			assert.Contains(t, err.Error(), "failed to remove FDB entry")
+		})
+	})
+
+	t.Run("stale FDB entry reported by bridge is tolerated", func(t *testing.T) {
+		// Inject a fake `bridge` that reports a missing entry, mimicking the
+		// stale-FDB case. removePeerForwarding should treat it as success.
+		dir := t.TempDir()
+		script := filepath.Join(dir, "bridge")
+		require.NoError(t, os.WriteFile(script,
+			[]byte("#!/bin/sh\necho 'RTNETLINK answers: No such file or directory'\nexit 1\n"), 0755))
+		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+		mock := &MockNetlinkExecutor{
+			LinkByNameFunc: func(name string) (netlink.Link, error) {
+				return &netlink.GenericLink{
+					LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1},
+				}, nil
+			},
+		}
+		mgr := NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, mock)
+
+		assert.NoError(t, mgr.removePeerForwarding("br0-vxlan", "192.168.1.10"))
+	})
 }

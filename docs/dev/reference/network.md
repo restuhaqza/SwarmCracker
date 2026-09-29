@@ -18,9 +18,11 @@ pkg/network/
 ├── cni_client.go        # CNI client wrapper
 ├── netlink.go           # Netlink operations
 ├── discovery.go         # Consul peer discovery
-├── tap_executor.go      # TAP device creation
-└── testhelpers/         # Test utilities
+└── tap_executor.go      # TAP device creation
 ```
+
+> Test utilities live in `test/testhelpers/` (they were moved out of the
+> `pkg/network` package).
 
 ---
 

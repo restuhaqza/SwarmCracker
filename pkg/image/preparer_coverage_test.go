@@ -285,7 +285,7 @@ func TestCopyDirectory(t *testing.T) {
 	})
 
 	t.Run("copy non-existent source", func(t *testing.T) {
-		err := copyDirectory("/nonexistent/path", t.TempDir())
+		err := copyDirectory(absentPath(t), t.TempDir())
 		if err == nil {
 			t.Error("expected error for non-existent source")
 		}

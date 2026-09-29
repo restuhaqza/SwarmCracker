@@ -1,0 +1,3 @@
+ignore:
+  - "test/**"
+  - "pkg/**/*_test.go"
