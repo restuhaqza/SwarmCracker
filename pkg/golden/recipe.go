@@ -204,24 +204,23 @@ func (r *Recipe) Validate() error {
 		problems = append(problems, fmt.Sprintf(format, args...))
 	}
 
-	if r.APIVersion != APIVersionV1Alpha1 {
-		add("apiVersion must be %q, got %q", APIVersionV1Alpha1, r.APIVersion)
-	}
-	if r.Kind != KindGoldenImage {
-		add("kind must be %q, got %q", KindGoldenImage, r.Kind)
-	}
-	if r.Metadata.Name == "" {
-		add("metadata.name is required")
-	} else if !namePattern.MatchString(r.Metadata.Name) {
-		add("metadata.name %q must be lowercase alphanumeric with . _ - separators", r.Metadata.Name)
-	}
-	if r.Metadata.Version == "" {
-		add("metadata.version is required")
-	} else if !versionPattern.MatchString(r.Metadata.Version) {
-		add("metadata.version %q contains invalid characters", r.Metadata.Version)
-	}
+	r.applyDefaults()
+	r.validateMetadata(add)
+	r.validateSource(add)
+	r.validateBuild(add)
+	r.validateInit(add)
+	r.validateRuntime(add)
+	r.validateDisk(add)
 
-	// Defaults.
+	if len(problems) > 0 {
+		return fmt.Errorf("golden: invalid recipe: %s", strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// applyDefaults fills in zero-value spec fields so later validation sees the
+// effective configuration.
+func (r *Recipe) applyDefaults() {
 	if len(r.Spec.Arch) == 0 {
 		r.Spec.Arch = []string{"amd64", "arm64"}
 	}
@@ -239,7 +238,30 @@ func (r *Recipe) Validate() error {
 			r.Spec.Build = BuildGolden
 		}
 	}
+}
 
+// validateMetadata checks the API version, kind, and artifact identity.
+func (r *Recipe) validateMetadata(add func(string, ...any)) {
+	if r.APIVersion != APIVersionV1Alpha1 {
+		add("apiVersion must be %q, got %q", APIVersionV1Alpha1, r.APIVersion)
+	}
+	if r.Kind != KindGoldenImage {
+		add("kind must be %q, got %q", KindGoldenImage, r.Kind)
+	}
+	if r.Metadata.Name == "" {
+		add("metadata.name is required")
+	} else if !namePattern.MatchString(r.Metadata.Name) {
+		add("metadata.name %q must be lowercase alphanumeric with . _ - separators", r.Metadata.Name)
+	}
+	if r.Metadata.Version == "" {
+		add("metadata.version is required")
+	} else if !versionPattern.MatchString(r.Metadata.Version) {
+		add("metadata.version %q contains invalid characters", r.Metadata.Version)
+	}
+}
+
+// validateSource checks the supported architectures, base source, and kernel.
+func (r *Recipe) validateSource(add func(string, ...any)) {
 	for _, a := range r.Spec.Arch {
 		if a != "amd64" && a != "arm64" {
 			add("arch %q is not supported (want amd64 or arm64)", a)
@@ -259,7 +281,11 @@ func (r *Recipe) Validate() error {
 	if r.Spec.Kernel.Profile == "" {
 		add("kernel.profile is required")
 	}
+}
 
+// validateBuild checks the build strategy is supported and consistent with the
+// chosen init system.
+func (r *Recipe) validateBuild(add func(string, ...any)) {
 	switch r.Spec.Build {
 	case BuildGolden:
 		if r.Spec.Init.System == InitTini || r.Spec.Init.System == InitCustom {
@@ -270,13 +296,20 @@ func (r *Recipe) Validate() error {
 	default:
 		add("build %q is not supported (want %s or %s)", r.Spec.Build, BuildGolden, BuildPreparer)
 	}
+}
 
+// validateInit checks the guest init system is supported.
+func (r *Recipe) validateInit(add func(string, ...any)) {
 	switch r.Spec.Init.System {
 	case InitSystemd, InitOpenRC, InitSysvinit, InitCustom, InitTini:
 	default:
 		add("init.system %q is not supported", r.Spec.Init.System)
 	}
+}
 
+// validateRuntime checks the container runtime is supported and consistent with
+// the chosen init system.
+func (r *Recipe) validateRuntime(add func(string, ...any)) {
 	switch r.Spec.Runtime.Name {
 	case RuntimeDocker, RuntimeContainerd, RuntimePodman:
 		if r.Spec.Init.System == InitTini || r.Spec.Init.System == InitCustom {
@@ -287,7 +320,10 @@ func (r *Recipe) Validate() error {
 	default:
 		add("runtime.name %q is not supported", r.Spec.Runtime.Name)
 	}
+}
 
+// validateDisk checks the optional sizing fields parse as disk sizes.
+func (r *Recipe) validateDisk(add func(string, ...any)) {
 	if r.Spec.Disk.RootMinSize != "" {
 		if _, err := image.ParseDiskSize(r.Spec.Disk.RootMinSize); err != nil {
 			add("disk.rootMinSize: %v", err)
@@ -298,11 +334,6 @@ func (r *Recipe) Validate() error {
 			add("disk.dataDisk.size: %v", err)
 		}
 	}
-
-	if len(problems) > 0 {
-		return fmt.Errorf("golden: invalid recipe: %s", strings.Join(problems, "; "))
-	}
-	return nil
 }
 
 // Digest returns a stable content hash of the artifact identity (name, version,

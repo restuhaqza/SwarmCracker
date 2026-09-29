@@ -249,6 +249,28 @@ spec: {kernel: {profile: p}, source: {type: oci, ref: r}, build: magic}`,
 	}
 }
 
+func TestValidate_ReportsEveryProblem(t *testing.T) {
+	// An empty recipe is wrong in many ways at once. Validate documents that it
+	// reports every problem rather than stopping at the first, so the error must
+	// mention all of them.
+	r := &Recipe{}
+	err := r.Validate()
+	require.Error(t, err)
+
+	msg := err.Error()
+	for _, want := range []string{
+		"apiVersion",
+		"kind",
+		"metadata.name",
+		"metadata.version",
+		"source.type",
+		"source.ref",
+		"kernel.profile",
+	} {
+		assert.Contains(t, msg, want, "Validate should report every problem")
+	}
+}
+
 func TestRecipe_Digest_StableAndSpecSensitive(t *testing.T) {
 	a, err := ParseRecipe([]byte(validRecipeYAML))
 	require.NoError(t, err)

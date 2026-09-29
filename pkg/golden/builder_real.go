@@ -125,7 +125,7 @@ func mountPseudoFilesystems(ctx context.Context, rootfsDir string) ([]string, er
 			return mounted, err
 		}
 		if _, err := os.Stat(resolvDst); err != nil {
-			if err := os.WriteFile(resolvDst, nil, 0644); err != nil {
+			if err := os.WriteFile(resolvDst, nil, 0o600); err != nil {
 				return mounted, err
 			}
 		}
@@ -176,7 +176,9 @@ func ensurePolicyRCD(rootfsDir string) func() {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return func() {}
 	}
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 101\n"), 0755); err != nil {
+	// policy-rc.d is an executable shim that dpkg invokes directly, so the exec
+	// bit (beyond gosec's 0600 default) is intentional.
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 101\n"), 0o755); err != nil { //nolint:gosec // executable dpkg hook
 		return func() {}
 	}
 	return func() { _ = os.Remove(path) }
@@ -184,7 +186,11 @@ func ensurePolicyRCD(rootfsDir string) func() {
 
 func unmountAll(mounted []string) {
 	for i := len(mounted) - 1; i >= 0; i-- {
-		if out, err := exec.Command("umount", "-l", mounted[i]).CombinedOutput(); err != nil {
+		// Cleanup must run even if the caller's context was cancelled, so detach
+		// it with a background context (mirrors the image/swarmkit unmount paths).
+		// mounted holds only paths this package created under the rootfs, so the
+		// argument is not externally controlled.
+		if out, err := exec.CommandContext(context.Background(), "umount", "-l", mounted[i]).CombinedOutput(); err != nil { //nolint:gosec // internally generated mountpoint
 			log.Warn().Err(err).Str("path", mounted[i]).Str("output", string(out)).
 				Msg("Failed to unmount pseudo-filesystem")
 		}
