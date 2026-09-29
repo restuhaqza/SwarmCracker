@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/restuhaqza/swarmcracker/test/testhelpers"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/restuhaqza/swarmcracker/test/testhelpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/vishvananda/netlink"
