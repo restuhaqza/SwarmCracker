@@ -910,9 +910,12 @@ func TestVXLANManager_removePeerForwarding(t *testing.T) {
 		mgr := NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, mock)
 
 		assert.NotPanics(t, func() {
-			// Result depends on the environment; the contract is only that it
-			// never panics.
-			_ = mgr.removePeerForwarding("br0-vxlan", "192.168.1.10")
+			// With no `bridge` executable resolvable the FDB delete cannot
+			// succeed, so the call must surface a non-nil error rather than
+			// silently reporting success.
+			err := mgr.removePeerForwarding("br0-vxlan", "192.168.1.10")
+			require.Error(t, err, "missing bridge executable should surface an error")
+			assert.Contains(t, err.Error(), "failed to remove FDB entry")
 		})
 	})
 

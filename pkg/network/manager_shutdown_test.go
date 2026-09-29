@@ -3,8 +3,10 @@
 package network
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,10 +17,40 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// skipIfHostHasDnsmasqPidFiles refuses to run any test that reaches
+// cleanupDnsmasq when the host already has /tmp/dnsmasq-*.pid files.
+//
+// cleanupDnsmasq globs that hard-coded path and sends a real SIGTERM to every
+// PID it finds; the execCommand seam does not intercept killByPID (manager.go
+// calls exec.CommandContext(ctx, "kill", pid) directly), so exercising it on a
+// host with leftover pid files could kill a live dnsmasq process.
+func skipIfHostHasDnsmasqPidFiles(t *testing.T) {
+	t.Helper()
+
+	matches, err := filepath.Glob("/tmp/dnsmasq-*.pid")
+	require.NoError(t, err)
+	if len(matches) > 0 {
+		t.Skipf("host has existing dnsmasq pid files %v; refusing to risk killing a real process", matches)
+	}
+}
+
+// uniqueDnsmasqPidFile returns a pid-file path under /tmp that still matches the
+// /tmp/dnsmasq-*.pid glob but is unique to this test process, so concurrent test
+// runs cannot collide.
+func uniqueDnsmasqPidFile(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf("/tmp/dnsmasq-covtest-%d-%d.pid", os.Getpid(), time.Now().UnixNano())
+}
+
 // TestNetworkManager_Shutdown_Idempotent verifies that Shutdown can be called
 // repeatedly without error and that each call attempts to tear down the NAT
-// rules. The exec seam is mocked so no real ip/iptables/dnsmasq is invoked.
+// rules. The exec/remove seams are mocked, so no real ip/iptables runs; Shutdown
+// also reaches cleanupDnsmasq, which is guarded by
+// skipIfHostHasDnsmasqPidFiles because killByPID is not seam-intercepted and
+// would otherwise SIGTERM any live dnsmasq PID found in /tmp.
 func TestNetworkManager_Shutdown_Idempotent(t *testing.T) {
+	skipIfHostHasDnsmasqPidFiles(t)
+
 	state := newMockState()
 	restore := setupMocksForTest(state)
 	defer restore()
@@ -152,23 +184,41 @@ func TestNetworkManager_killByPID(t *testing.T) {
 
 // TestNetworkManager_cleanupDnsmasq verifies cleanupDnsmasq tolerates a missing
 // pid file and, when one is present, reads it and removes it.
+//
+// cleanupDnsmasq sends a real SIGTERM to every PID in /tmp/dnsmasq-*.pid (the
+// kill call is not behind a seam), so both subtests first refuse to run if the
+// host has any pre-existing dnsmasq pid files. The "reads and removes" subtest
+// then creates its own uniquely named file containing a definitely-unused PID.
 func TestNetworkManager_cleanupDnsmasq(t *testing.T) {
 	t.Run("no pid file returns nil", func(t *testing.T) {
+		skipIfHostHasDnsmasqPidFiles(t)
+
 		state := newMockState()
 		restore := setupMocksForTest(state)
 		defer restore()
 
 		nm := NewNetworkManager(types.NetworkConfig{}).(*NetworkManager)
 		require.NoError(t, nm.cleanupDnsmasq())
+
+		state.mu.Lock()
+		calls := append([]string(nil), state.calls...)
+		state.mu.Unlock()
+
+		for _, c := range calls {
+			assert.False(t, strings.HasPrefix(c, "remove:"),
+				"cleanupDnsmasq should not remove anything when no pid file exists: %s", c)
+		}
 	})
 
 	t.Run("reads and removes pid file", func(t *testing.T) {
+		skipIfHostHasDnsmasqPidFiles(t)
+
 		state := newMockState()
 		restore := setupMocksForTest(state)
 		defer restore()
 
 		// Use a definitely-unused PID so the real `kill` is harmless.
-		pidFile := "/tmp/dnsmasq-swarmcracker-covtest.pid"
+		pidFile := uniqueDnsmasqPidFile(t)
 		require.NoError(t, os.WriteFile(pidFile, []byte("99999999\n"), 0600))
 		defer func() { _ = os.Remove(pidFile) }()
 
