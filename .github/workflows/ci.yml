@@ -91,6 +91,9 @@ jobs:
 
   benchmark:
     runs-on: ubuntu-latest
+    # Hard cap: Go's -timeout is not enforced while benchmarks run, so a
+    # blocked benchmark would otherwise sit until GitHub's 6h job limit.
+    timeout-minutes: 15
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: test
     steps:
@@ -101,7 +104,9 @@ jobs:
           go-version: '1.26'
 
       - name: Run benchmarks
-        run: go test -bench=. -benchmem ./pkg/... | tee benchmark.txt
+        # -run='^$' runs benchmarks only; without it the non-short unit tests
+        # (e.g. pkg/cni) run too and fail. -timeout bounds each package's build/run.
+        run: go test -run='^$' -bench=. -benchmem -timeout=5m ./pkg/... | tee benchmark.txt
 
       - name: Upload benchmark results
         uses: actions/upload-artifact@v4
