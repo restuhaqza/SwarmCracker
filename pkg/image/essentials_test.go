@@ -372,6 +372,73 @@ func TestCreateEssentialDirs_RootPrivate(t *testing.T) {
 	}
 }
 
+// --- Symlink safety ---
+
+// Real images commonly ship /var/run as a symlink (e.g. to /run). Following it
+// with chmod would touch the host path, so the symlink must be left alone.
+func TestCreateEssentialDirs_SkipsSymlinkedDir(t *testing.T) {
+	tmpDir := t.TempDir()
+	outside := t.TempDir()
+
+	if err := os.MkdirAll(filepath.Join(tmpDir, "var"), 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(tmpDir, "var", "run")); err != nil {
+		t.Fatalf("setup symlink: %v", err)
+	}
+	if err := os.Chmod(outside, 0700); err != nil {
+		t.Fatalf("setup chmod: %v", err)
+	}
+
+	if err := createEssentialDirs(tmpDir); err != nil {
+		t.Fatalf("createEssentialDirs failed: %v", err)
+	}
+
+	// The symlink target must be untouched.
+	fi, err := os.Stat(outside)
+	if err != nil {
+		t.Fatalf("stat target: %v", err)
+	}
+	if fi.Mode().Perm() != 0700 {
+		t.Errorf("symlink target mode = %s, want drwx------ (chmod followed the symlink)", fi.Mode())
+	}
+
+	// And it must still be a symlink.
+	lfi, err := os.Lstat(filepath.Join(tmpDir, "var", "run"))
+	if err != nil {
+		t.Fatalf("lstat symlink: %v", err)
+	}
+	if lfi.Mode()&os.ModeSymlink == 0 {
+		t.Error("var/run is no longer a symlink")
+	}
+}
+
+func TestInjectMachineID_SkipsSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+	hostFile := filepath.Join(t.TempDir(), "host-machine-id")
+	if err := os.WriteFile(hostFile, []byte("HOST-VALUE\n"), 0644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(tmpDir, "etc"), 0755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.Symlink(hostFile, filepath.Join(tmpDir, "etc", "machine-id")); err != nil {
+		t.Fatalf("setup symlink: %v", err)
+	}
+
+	if err := injectMachineID(tmpDir, "test-image"); err != nil {
+		t.Fatalf("injectMachineID failed: %v", err)
+	}
+
+	data, err := os.ReadFile(hostFile)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(data) != "HOST-VALUE\n" {
+		t.Errorf("machine-id written through the symlink: %q", string(data))
+	}
+}
+
 // --- Helper functions ---
 
 func trimNewline(s string) string {
