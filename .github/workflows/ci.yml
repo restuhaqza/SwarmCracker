@@ -44,6 +44,12 @@ jobs:
       - name: Test (all packages, with race detector)
         run: go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
 
+      - name: Check coverage threshold
+        run: |
+          PCT=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "coverage: $PCT%"
+          awk -v p="$PCT" 'BEGIN { exit (p+0 < 85) }' || { echo "coverage $PCT% is below 85%"; exit 1; }
+
       - name: Test CLI packages
         run: go test -short -race ./cmd/...
 
