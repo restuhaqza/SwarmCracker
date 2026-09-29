@@ -90,12 +90,13 @@ func createExecutor(cfg *config.Config) (*executor.FirecrackerExecutor, error) {
 	}
 
 	translatorConfig := &translator.Config{
-		KernelPath:    execConfig.KernelPath,
-		InitrdPath:    execConfig.InitrdPath,
-		DefaultVCPUs:  execConfig.DefaultVCPUs,
-		DefaultMemMB:  execConfig.DefaultMemoryMB,
-		InitSystem:    "tini",
-		NetworkConfig: execConfig.Network,
+		KernelPath:     execConfig.KernelPath,
+		KernelProfiles: cfg.Executor.KernelProfiles,
+		InitrdPath:     execConfig.InitrdPath,
+		DefaultVCPUs:   execConfig.DefaultVCPUs,
+		DefaultMemMB:   execConfig.DefaultMemoryMB,
+		InitSystem:     "tini",
+		NetworkConfig:  execConfig.Network,
 	}
 
 	vmmManager := lifecycle.NewVMMManager(vmmConfig)
