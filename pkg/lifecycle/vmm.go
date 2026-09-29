@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -699,7 +700,20 @@ func (vm *VMMManager) forceKillVM(vmInstance *VMInstance) error {
 		return err
 	}
 
-	return process.Kill()
+	if err := process.Kill(); err != nil {
+		// The process exiting on its own between the grace-period check and the
+		// kill is still a successful (terminal) kill. Any other error is a real
+		// failure and leaves the state untouched.
+		if !errors.Is(err, os.ErrProcessDone) {
+			return err
+		}
+	}
+
+	// The forced kill is terminal: the VM is no longer running, so move it out
+	// of the transitional "stopping" state instead of leaving it stuck forever.
+	vmInstance.SetState(VMStateStopped)
+
+	return nil
 }
 
 // waitForAPIServer waits for the Firecracker API server to be ready.

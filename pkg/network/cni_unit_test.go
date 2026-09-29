@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -276,10 +277,16 @@ func TestDefaultTAPExecutor_CombinedOutput(t *testing.T) {
 	assert.Contains(t, string(output), "hello")
 }
 
+// absentPath returns a path under t.TempDir() that is guaranteed not to exist.
+func absentPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "does-not-exist")
+}
+
 func TestDefaultTAPExecutor_CombinedOutputFails(t *testing.T) {
 	executor := NewDefaultTAPExecutor()
 
-	cmd := executor.Command("ls", "/nonexistent")
+	cmd := executor.Command("ls", absentPath(t))
 	output, err := executor.CombinedOutput(cmd)
 
 	// ls will fail on nonexistent path

@@ -412,8 +412,14 @@ func TestHandleBindMount_StatError(t *testing.T) {
 // copyDirectory — test error path (80.0% → higher)
 // ============================================================================
 
+// absentPath returns a path under t.TempDir() that is guaranteed not to exist.
+func absentPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "does-not-exist")
+}
+
 func TestCopyDirectory_NonExistentSource(t *testing.T) {
-	err := copyDirectory("/nonexistent/path", "/tmp/dst")
+	err := copyDirectory(absentPath(t), "/tmp/dst")
 	assert.Error(t, err)
 }
 

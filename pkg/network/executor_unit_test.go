@@ -4,6 +4,7 @@ package network
 
 import (
 	"errors"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -108,9 +109,14 @@ func TestDefaultExecuteWithOutput_RealCommand(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, output, "hello")
 
-	output, err = defaultExecuteWithOutput("ls", "/nonexistent")
+	output, err = defaultExecuteWithOutput("ls", absentPath(t))
 	require.Error(t, err)
-	assert.Contains(t, output, "") // May have stderr in output
+	// cmd.Output captures stdout only; a failing ls writes its "No such file
+	// or directory" message to stderr, so the returned stdout is empty and the
+	// error is an *exec.ExitError.
+	assert.Empty(t, output)
+	var exitErr *exec.ExitError
+	assert.ErrorAs(t, err, &exitErr)
 }
 
 func TestLookPathImpl_RealCommand(t *testing.T) {

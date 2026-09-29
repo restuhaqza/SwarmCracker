@@ -170,14 +170,6 @@ func TestIPAMManager_ReleaseIP(t *testing.T) {
 	assert.False(t, exists)
 }
 
-func TestIPAMManager_IPExhaustion(t *testing.T) {
-	t.Skip("IP exhaustion test requires IPAM implementation fix for small subnets")
-}
-
-func TestIPAMManager_AllocateVIP(t *testing.T) {
-	t.Skip("VIP range calculation needs implementation fix")
-}
-
 // ===== IP Helpers Tests =====
 
 func TestIncrementIP(t *testing.T) {
