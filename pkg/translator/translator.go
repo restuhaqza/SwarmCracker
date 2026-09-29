@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -16,23 +17,27 @@ import (
 
 // TaskTranslator converts SwarmKit tasks to Firecracker VM configurations.
 type TaskTranslator struct {
-	kernelPath    string
-	initrdPath    string
-	defaultVCPUs  int
-	defaultMemMB  int
-	initSystem    string // "none", "tini", "dumb-init"
-	initPath      string // Path to init binary
-	networkConfig types.NetworkConfig
+	kernelPath     string
+	kernelProfiles map[string]string
+	initrdPath     string
+	defaultVCPUs   int
+	defaultMemMB   int
+	initSystem     string // "none", "tini", "dumb-init"
+	initPath       string // Path to init binary
+	networkConfig  types.NetworkConfig
 }
 
 // Config holds translator configuration.
 type Config struct {
-	KernelPath    string
-	InitrdPath    string
-	DefaultVCPUs  int
-	DefaultMemMB  int
-	InitSystem    string
-	NetworkConfig types.NetworkConfig
+	KernelPath string
+	// KernelProfiles maps a golden-image kernel profile to a kernel path,
+	// overriding KernelPath for prebuilt images that declare one.
+	KernelProfiles map[string]string
+	InitrdPath     string
+	DefaultVCPUs   int
+	DefaultMemMB   int
+	InitSystem     string
+	NetworkConfig  types.NetworkConfig
 }
 
 // NewTaskTranslator creates a new TaskTranslator.
@@ -50,6 +55,7 @@ func NewTaskTranslator(config interface{}) *TaskTranslator {
 	// Try to extract from translator.Config (preferred)
 	if cfg, ok := config.(*Config); ok {
 		tt.kernelPath = cfg.KernelPath
+		tt.kernelProfiles = cfg.KernelProfiles
 		tt.initrdPath = cfg.InitrdPath
 		tt.defaultVCPUs = cfg.DefaultVCPUs
 		tt.defaultMemMB = cfg.DefaultMemMB
@@ -142,6 +148,11 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 		return nil, fmt.Errorf("task runtime is not a container: %w", err)
 	}
 
+	kernelPath, err := tt.resolveKernelPath(task)
+	if err != nil {
+		return nil, err
+	}
+
 	config := &VMMConfig{
 		MachineConfig: MachineConfig{
 			VcpuCount:  tt.defaultVCPUs,
@@ -149,7 +160,7 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 			Smt:        false,
 		},
 		BootSource: BootSourceConfig{
-			KernelImagePath: tt.kernelPath,
+			KernelImagePath: kernelPath,
 			BootArgs:        tt.buildBootArgs(task),
 			InitrdPath:      tt.initrdPath,
 		},
@@ -195,6 +206,37 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 
 	// Return as map for direct consumption by vmm.go
 	return tt.configToMap(config)
+}
+
+// resolveKernelPath picks the kernel image for a task. A prebuilt golden image
+// may declare a kernel profile; it is mapped to a concrete path through the
+// configured registry so a runtime kernel can be used per image. An unknown
+// profile falls back to the default kernel (with a warning); a mapped profile
+// that points at a missing file is a hard error, since silently booting the
+// wrong kernel would break the image's expected features (e.g. macvlan).
+func (tt *TaskTranslator) resolveKernelPath(task *types.Task) (string, error) {
+	profile := ""
+	if task != nil {
+		profile = strings.TrimSpace(task.Annotations[types.AnnotationKernelProfile])
+	}
+	if profile == "" {
+		return tt.kernelPath, nil
+	}
+
+	path, ok := tt.kernelProfiles[profile]
+	if !ok || strings.TrimSpace(path) == "" {
+		log.Warn().
+			Str("task_id", task.ID).
+			Str("kernel_profile", profile).
+			Str("kernel_path", tt.kernelPath).
+			Msg("Unknown kernel profile for prebuilt image; using default kernel")
+		return tt.kernelPath, nil
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("kernel profile %q maps to %s, which is not available: %w", profile, path, err)
+	}
+	return path, nil
 }
 
 // configToMap converts VMMConfig to map[string]interface{}.

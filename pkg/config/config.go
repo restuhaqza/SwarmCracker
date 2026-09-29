@@ -103,6 +103,27 @@ type ExecutorConfig struct {
 	Jailer          JailerConfig `yaml:"jailer"`
 	InitSystem      string       `yaml:"init_system"`       // "none", "tini", "dumb-init"
 	InitGracePeriod int          `yaml:"init_grace_period"` // Grace period in seconds
+
+	// KernelProfiles maps a golden-image kernel profile (e.g.
+	// "guest-runtime-6.1") to a kernel image path on the host. Prebuilt golden
+	// images resolve their kernel through this registry, so a runtime kernel
+	// can be selected per image instead of host-wide via kernel_path.
+	KernelProfiles map[string]string `yaml:"kernel_profiles,omitempty"`
+}
+
+const (
+	// KernelProfileGuestRuntime is the kernel profile declared by the runtime
+	// golden recipes (recipes/*-docker.yaml).
+	KernelProfileGuestRuntime = "guest-runtime-6.1"
+
+	// DefaultGuestRuntimeKernel is where scripts/build-guest-runtime-kernel.sh
+	// installs the guest-runtime kernel.
+	DefaultGuestRuntimeKernel = "/usr/share/firecracker/vmlinux-runtime"
+)
+
+// DefaultKernelProfiles returns the built-in kernel profile registry.
+func DefaultKernelProfiles() map[string]string {
+	return map[string]string{KernelProfileGuestRuntime: DefaultGuestRuntimeKernel}
 }
 
 // NetworkConfig holds network configuration.
@@ -272,6 +293,9 @@ func (c *Config) SetDefaults() {
 	if c.Executor.KernelPath == "" {
 		c.Executor.KernelPath = c.KernelPath
 	}
+	if c.Executor.KernelProfiles == nil {
+		c.Executor.KernelProfiles = DefaultKernelProfiles()
+	}
 	if c.Executor.RootfsDir == "" {
 		c.Executor.RootfsDir = c.RootfsDir
 	}
@@ -350,6 +374,16 @@ func (c *Config) Merge(other *Config) *Config {
 	}
 	if other.Executor.InitrdPath != "" {
 		result.Executor.InitrdPath = other.Executor.InitrdPath
+	}
+	if len(other.Executor.KernelProfiles) > 0 {
+		merged := make(map[string]string, len(result.Executor.KernelProfiles)+len(other.Executor.KernelProfiles))
+		for k, v := range result.Executor.KernelProfiles {
+			merged[k] = v
+		}
+		for k, v := range other.Executor.KernelProfiles {
+			merged[k] = v
+		}
+		result.Executor.KernelProfiles = merged
 	}
 	if other.Executor.RootfsDir != "" {
 		result.Executor.RootfsDir = other.Executor.RootfsDir
