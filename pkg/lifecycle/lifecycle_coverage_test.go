@@ -208,6 +208,7 @@ func TestGracefulShutdown_ConsecutiveShutdowns(t *testing.T) {
 
 	cmd := exec.Command("sleep", "5")
 	require.NoError(t, cmd.Start(), "failed to start sleep process")
+	go func() { _ = cmd.Wait() }() // reap so process exit is observable
 
 	vmMgr := &VMMManager{
 		vms: make(map[string]*VMInstance),
@@ -235,9 +236,6 @@ func TestGracefulShutdown_ConsecutiveShutdowns(t *testing.T) {
 	// May error but shouldn't panic
 	assert.True(t, err == nil || err.Error() == "os: process already finished",
 		"second gracefulShutdown should handle already-stopped process")
-
-	// Cleanup
-	cmd.Wait()
 }
 
 // TestForceKillVM_RealProcess tests forceKillVM on an actual process
@@ -389,6 +387,7 @@ func TestGracefulShutdown_VerifyProcessPolling(t *testing.T) {
 	// Create a process that exits quickly
 	cmd := exec.Command("sleep", "1")
 	require.NoError(t, cmd.Start(), "failed to start sleep process")
+	go func() { _ = cmd.Wait() }() // reap so process exit is observable
 
 	vmMgr := &VMMManager{
 		vms: make(map[string]*VMInstance),
@@ -414,7 +413,4 @@ func TestGracefulShutdown_VerifyProcessPolling(t *testing.T) {
 	assert.Equal(t, VMStateStopped, vmInstance.GetState(), "VM should be stopped")
 	// Should complete quickly (process exits in 1s)
 	assert.Less(t, elapsed.Seconds(), 2.0, "should complete within 2 seconds")
-
-	// Cleanup
-	cmd.Wait()
 }
