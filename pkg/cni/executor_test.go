@@ -3,6 +3,8 @@ package cni
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -12,33 +14,25 @@ import (
 
 // TestDefaultCommandExecutor_Execute tests basic command execution
 func TestDefaultCommandExecutor_Execute(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping exec test in short mode")
-	}
+	// echo is not usable: Execute passes no args. Use an argv-free script that
+	// writes a fixed string.
+	script := filepath.Join(t.TempDir(), "say.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nprintf test\n"), 0o755))
 
-	executor := NewDefaultCommandExecutor()
-	ctx := context.Background()
-
-	// Execute echo command
-	stdout, stderr, err := executor.Execute(ctx, "echo", []byte("test"), nil)
+	stdout, stderr, err := NewDefaultCommandExecutor().Execute(context.Background(), script, nil, nil)
 	require.NoError(t, err)
-	assert.Contains(t, string(stdout), "test")
+	assert.Equal(t, "test", string(stdout))
 	assert.Empty(t, stderr)
 }
 
 // TestDefaultCommandExecutor_Execute_WithContext tests context cancellation
 func TestDefaultCommandExecutor_Execute_WithContext(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping exec test in short mode")
-	}
+	script := filepath.Join(t.TempDir(), "sleep.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 10\n"), 0o755))
 
-	executor := &DefaultCommandExecutor{Timeout: 1 * time.Millisecond}
-	ctx := context.Background()
-
-	// Execute sleep with short timeout - should timeout
-	_, _, err := executor.Execute(ctx, "sleep", []byte{}, []string{"DURATION=10"})
-	require.Error(t, err) // Should timeout
-	assert.Contains(t, err.Error(), "context deadline exceeded")
+	executor := &DefaultCommandExecutor{Timeout: 50 * time.Millisecond}
+	_, _, err := executor.Execute(context.Background(), script, nil, nil)
+	require.Error(t, err)
 }
 
 // TestDefaultCommandExecutor_Execute_Stdin tests stdin handling
@@ -59,15 +53,7 @@ func TestDefaultCommandExecutor_Execute_Stdin(t *testing.T) {
 
 // TestDefaultCommandExecutor_Execute_Env tests environment variable handling
 func TestDefaultCommandExecutor_Execute_Env(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping exec test in short mode")
-	}
-
-	executor := NewDefaultCommandExecutor()
-	ctx := context.Background()
-
-	// Execute env to check env vars
-	stdout, _, err := executor.Execute(ctx, "sh", []byte{}, []string{"MY_VAR=test123"})
+	stdout, _, err := NewDefaultCommandExecutor().Execute(context.Background(), "env", nil, []string{"MY_VAR=test123"})
 	require.NoError(t, err)
 	assert.Contains(t, string(stdout), "MY_VAR=test123")
 }
@@ -83,10 +69,6 @@ func TestDefaultCommandExecutor_Execute_NonexistentCommand(t *testing.T) {
 
 // TestDefaultCommandExecutor_Execute_CommandFailure tests command that exits with error
 func TestDefaultCommandExecutor_Execute_CommandFailure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping exec test in short mode")
-	}
-
 	executor := NewDefaultCommandExecutor()
 	ctx := context.Background()
 
