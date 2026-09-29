@@ -30,7 +30,9 @@
 | lifecycle | 82.3% | 🟡 Fair |
 | discovery | 80.6% | 🟡 Fair |
 
-**Overall target: 85% — ✅ met (measured 87.6%); enforced by the CI threshold gate in `.github/workflows/ci.yml`.**
+**Overall target: 85%** — measured **87.6%** on a development host with Firecracker/jailer installed. On the CI runner (no Firecracker/jailer, Go 1.26) the same tree measures lower, because tests that require those binaries are skipped.
+
+CI enforces a **no-regression gate** (`.github/workflows/ci.yml`): a pull request must not lower `./pkg/...` coverage relative to its base branch, measured on the same runner. An absolute threshold is not stable — the runner lacks Firecracker/jailer and `main` gains code between branches — so the gate protects the invariant that actually matters. The 85% figure remains the target for the full suite.
 
 > Measured on 2026-09-29 with
 > `go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...`.

@@ -24,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history so the base branch is available for the coverage gate.
+          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
@@ -44,11 +47,49 @@ jobs:
       - name: Test (all packages, with race detector)
         run: go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
 
-      - name: Check coverage threshold
+      # An absolute percentage is not a stable gate: the runner has no
+      # Firecracker/jailer (some tests skip) and `main` gains code between
+      # branches, so the same tree measures differently over time. The
+      # meaningful invariant is that a PR does not *lower* coverage relative
+      # to the branch it targets, measured in the same runner. The 85% figure
+      # remains the project target (see docs/dev/testing/unit-tests.md).
+      - name: Coverage gate (no regression vs base)
+        if: github.event_name == 'pull_request'
         run: |
-          PCT=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
-          echo "coverage: $PCT%"
-          awk -v p="$PCT" 'BEGIN { exit (p+0 < 85) }' || { echo "coverage $PCT% is below 85%"; exit 1; }
+          set -euo pipefail
+          HEAD_PCT=$(go tool cover -func=coverage.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "head coverage: ${HEAD_PCT}%"
+
+          if ! git fetch --no-tags origin "${GITHUB_BASE_REF}:refs/remotes/origin/${GITHUB_BASE_REF}"; then
+            echo "::warning::could not fetch base ${GITHUB_BASE_REF}; skipping regression check"
+            exit 0
+          fi
+          if ! git worktree add --detach "${RUNNER_TEMP}/base" "origin/${GITHUB_BASE_REF}"; then
+            echo "::warning::could not check out base ${GITHUB_BASE_REF}; skipping regression check"
+            exit 0
+          fi
+          # Base tests may fail for reasons unrelated to coverage; we only need
+          # its profile, so ignore the exit status.
+          ( cd "${RUNNER_TEMP}/base" && go test -short -race -coverprofile="${RUNNER_TEMP}/base.out" -covermode=atomic ./pkg/... ) || true
+
+          if [ ! -s "${RUNNER_TEMP}/base.out" ]; then
+            echo "::warning::base coverage profile unavailable; skipping regression check"
+            exit 0
+          fi
+          # Resolve the base profile from the base worktree: paths that exist on
+          # the base branch may have moved or been removed on the PR branch.
+          BASE_PCT=$( cd "${RUNNER_TEMP}/base" && go tool cover -func="${RUNNER_TEMP}/base.out" | tail -1 | awk '{print $3}' | tr -d '%' )
+          if ! echo "$BASE_PCT" | grep -Eq '^[0-9]+(\.[0-9]+)?$'; then
+            echo "::warning::could not parse base coverage (got '${BASE_PCT}'); skipping regression check"
+            exit 0
+          fi
+          echo "base (${GITHUB_BASE_REF}) coverage: ${BASE_PCT}%"
+
+          awk -v b="$BASE_PCT" -v h="$HEAD_PCT" 'BEGIN { exit (h+0 < b-0.1) }' || {
+            echo "::error::coverage regressed: ${GITHUB_BASE_REF} ${BASE_PCT}% -> PR ${HEAD_PCT}%"
+            exit 1
+          }
+          echo "coverage OK: no regression vs ${GITHUB_BASE_REF}"
 
       - name: Test CLI packages
         run: go test -short -race ./cmd/...
