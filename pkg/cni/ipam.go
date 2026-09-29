@@ -72,20 +72,37 @@ func (m *IPAMManager) AllocateIP(subnetCIDR string, ownerID string) (net.IP, err
 	pool.mu.Lock()
 	defer pool.mu.Unlock()
 
+	// Bound the search by the number of usable host addresses in the subnet.
+	// The network and broadcast addresses are excluded, and a fixed attempt
+	// count is avoided so that small subnets (e.g. /30) terminate with an
+	// exhaustion error instead of looping or handing out the broadcast.
+	ones, bits := pool.Subnet.Mask.Size()
+	hostBits := bits - ones
+	if hostBits < 2 {
+		// /31 and /32 have no usable host addresses.
+		return nil, fmt.Errorf("IP exhaustion in subnet %s", subnetCIDR)
+	}
+	maxAttempts := 256 // fallback for very large subnets
+	if hostBits < 31 {
+		maxAttempts = (1 << uint(hostBits)) - 2
+	}
+
 	// Find next available IP
 	ip := pool.NextIP
 	attempts := 0
-	maxAttempts := 256 // For a /24 subnet
 
 	for attempts < maxAttempts {
-		ipStr := ip.String()
+		// Never hand out the network or broadcast address.
+		if !isNetworkOrBroadcast(pool.Subnet, ip) {
+			ipStr := ip.String()
 
-		// Check if IP is already used or reserved
-		if _, used := pool.UsedIPs[ipStr]; !used && !isReserved(pool, ip) {
-			// IP is available
-			pool.UsedIPs[ipStr] = ownerID
-			pool.NextIP = incrementIP(ip)
-			return ip, nil
+			// Check if IP is already used or reserved
+			if _, used := pool.UsedIPs[ipStr]; !used && !isReserved(pool, ip) {
+				// IP is available
+				pool.UsedIPs[ipStr] = ownerID
+				pool.NextIP = incrementIP(ip)
+				return ip, nil
+			}
 		}
 
 		// Try next IP
@@ -295,34 +312,44 @@ func isReserved(pool *IPPool, ip net.IP) bool {
 	return false
 }
 
-// getVIPRangeStart returns the start IP for VIP allocation
-// VIPs are allocated from the last 16 IPs of the subnet
+// getVIPRangeStart returns the first VIP candidate for a subnet.
+//
+// For IPv4, VIPs are allocated from the top of the subnet to avoid conflicts
+// with normal node/container attachments, so the start is the highest usable
+// host address: the broadcast address minus one (e.g. 10.0.0.254 for a /24).
+// AllocateVIP decrements from here, skipping used and reserved addresses.
+//
+// Non-IPv4 (or unparseable) subnets return nil; IPv6 VIPs are not supported.
 func getVIPRangeStart(subnet *net.IPNet) net.IP {
-	ones, bits := subnet.Mask.Size()
-	hostBits := bits - ones
-
-	// Calculate the subnet size
-	subnetSize := 1 << hostBits
-
-	// VIP range starts at subnetSize - 17 (last 16 IPs)
-	vipOffset := subnetSize - 17
-
-	// Calculate IP from subnet base
 	baseIP := subnet.IP.To4()
 	if baseIP == nil {
 		return nil
 	}
 
-	// Add offset to base IP
-	vipIP := make([]byte, 4)
-	copy(vipIP, baseIP)
+	// Highest usable host address = broadcast (all host bits set) - 1.
+	return decrementIP(broadcastIP(subnet))
+}
 
-	// Add offset (for /24, this adds to the last octet)
-	for i := 3; i >= 0 && vipOffset > 0; i-- {
-		add := byte(vipOffset % 256)
-		vipIP[i] += add
-		vipOffset /= 256
+// broadcastIP returns the broadcast address of an IPv4/IPv6 subnet.
+func broadcastIP(subnet *net.IPNet) net.IP {
+	base := subnet.IP
+	if v4 := base.To4(); v4 != nil {
+		base = v4
 	}
 
-	return net.IP(vipIP)
+	broadcast := make(net.IP, len(base))
+	copy(broadcast, base)
+	for i := range broadcast {
+		broadcast[i] |= ^subnet.Mask[i]
+	}
+	return broadcast
+}
+
+// isNetworkOrBroadcast reports whether ip is the network or broadcast address
+// of the given subnet. Neither may ever be allocated to a workload.
+func isNetworkOrBroadcast(subnet *net.IPNet, ip net.IP) bool {
+	if ip.Equal(subnet.IP) {
+		return true
+	}
+	return ip.Equal(broadcastIP(subnet))
 }
