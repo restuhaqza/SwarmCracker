@@ -3,6 +3,7 @@ package swarmkit
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -1355,4 +1356,166 @@ func TestPrepare_WithConfigsOnly(t *testing.T) {
 
 	// Should complete without panicking
 	assert.True(t, err == nil || ctrl.internalTask != nil)
+}
+
+// TestSwarmkitErrorPaths covers a bounded set of high-value error branches in
+// vmm.go and executor.go. Subtests that start a process are skipped under
+// testing.Short(), matching this file's existing convention.
+func TestSwarmkitErrorPaths(t *testing.T) {
+	t.Run("VMMManagerMissingFirecracker", func(t *testing.T) {
+		// An empty PATH forces exec.LookPath to fail even when firecracker is
+		// installed on the host, exercising the "binary not found" branch.
+		t.Setenv("PATH", "")
+
+		vmm, err := NewVMMManagerWithConfig(&VMMManagerConfig{
+			FirecrackerPath: "", // resolve via LookPath, which must fail
+			SocketDir:       t.TempDir(),
+			UseJailer:       false,
+		})
+		require.Error(t, err)
+		assert.Nil(t, vmm)
+		assert.Contains(t, err.Error(), "firecracker binary not found")
+	})
+
+	t.Run("VMMManagerMissingJailer", func(t *testing.T) {
+		t.Setenv("PATH", "")
+
+		vmm, err := NewVMMManagerWithConfig(&VMMManagerConfig{
+			FirecrackerPath: "/bin/true", // explicit, so firecracker resolution is skipped
+			JailerPath:      "",          // resolve via LookPath, which must fail
+			SocketDir:       t.TempDir(),
+			UseJailer:       true,
+		})
+		require.Error(t, err)
+		assert.Nil(t, vmm)
+		assert.Contains(t, err.Error(), "jailer binary not found")
+	})
+
+	t.Run("WaitRespectsContextCancellation", func(t *testing.T) {
+		if testing.Short() {
+			t.Skip("Skipping process test in short mode")
+		}
+
+		vmm := &VMMManager{
+			processes:    make(map[string]*exec.Cmd),
+			processWaits: make(map[string]*processWait),
+			logger:       zerolog.Nop(),
+		}
+
+		cmd := exec.Command("sleep", "30")
+		require.NoError(t, cmd.Start())
+		defer func() {
+			_ = cmd.Process.Kill()
+			vmm.forgetProcess("wait-cancel-task")
+		}()
+
+		vmm.processes["wait-cancel-task"] = cmd
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // already canceled: Wait must return promptly
+
+		status, err := vmm.Wait(ctx, &types.Task{ID: "wait-cancel-task"})
+		assert.Nil(t, status)
+		assert.ErrorIs(t, err, context.Canceled)
+	})
+
+	t.Run("ProcessStateRunningInvalidPID", func(t *testing.T) {
+		vmm := &VMMManager{}
+		// A PID that cannot have a /proc entry exercises the read-error branch.
+		assert.False(t, vmm.processStateRunning(1<<30))
+	})
+
+	t.Run("NewControllerTranslatorError", func(t *testing.T) {
+		// An empty kernel path makes NewTaskTranslator fail, which NewController
+		// wraps and returns.
+		ctrl, err := NewController(&api.Task{ID: "translator-error-task"}, &Config{}, nil, nil, nil, nil, nil)
+		require.Error(t, err)
+		assert.Nil(t, ctrl)
+		assert.Contains(t, err.Error(), "failed to create translator")
+	})
+
+	t.Run("ExecutorControllerCreationError", func(t *testing.T) {
+		executor := &Executor{
+			config:      &Config{}, // empty KernelPath -> controller creation fails
+			controllers: make(map[string]*Controller),
+		}
+
+		ctrl, err := executor.Controller(&api.Task{ID: "controller-error-task"})
+		require.Error(t, err)
+		assert.Nil(t, ctrl)
+	})
+
+	t.Run("PrepareSecretAndConfigInjectionErrors", func(t *testing.T) {
+		// Non-existent rootfs makes debugfs-based injection fail; Prepare logs
+		// the failure but still succeeds.
+		badRootfs := filepath.Join(t.TempDir(), "missing-rootfs.ext4")
+
+		task := &api.Task{
+			ID: "inject-error-task",
+			Spec: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{
+					Container: &api.ContainerSpec{
+						Image: "alpine:latest",
+						Secrets: []*api.SecretReference{
+							{
+								SecretID:   "s1",
+								SecretName: "sec1",
+								Target: &api.SecretReference_File{
+									File: &api.FileTarget{Name: "/run/secrets/sec1"},
+								},
+							},
+						},
+						Configs: []*api.ConfigReference{
+							{
+								ConfigID:   "c1",
+								ConfigName: "cfg1",
+								Target: &api.ConfigReference_File{
+									File: &api.FileTarget{Name: "/config/cfg1"},
+								},
+							},
+						},
+					},
+				},
+			},
+		}
+
+		img := &MockImagePreparer{
+			PrepareFunc: func(ctx context.Context, task *types.Task) error {
+				if task.Annotations == nil {
+					task.Annotations = make(map[string]string)
+				}
+				task.Annotations["rootfs"] = badRootfs
+				return nil
+			},
+		}
+
+		ctrl := &Controller{
+			task:       task,
+			config:     &Config{},
+			imagePrep:  img,
+			networkMgr: &MockNetworkManager{},
+			secretMgr:  storage.NewSecretManager(t.TempDir(), t.TempDir()),
+			logger:     zerolog.Nop(),
+		}
+
+		err := ctrl.Prepare(context.Background())
+		assert.NoError(t, err, "injection failures must not fail Prepare")
+		assert.True(t, ctrl.prepared)
+	})
+
+	t.Run("ShutdownCleanupNetworkError", func(t *testing.T) {
+		// A network cleanup failure is logged but does not fail Shutdown.
+		ctrl := &Controller{
+			task:       &api.Task{ID: "shutdown-net-error"},
+			config:     &Config{},
+			vmmMgr:     &MockVMMManager{},
+			networkMgr: &MockNetworkManager{CleanupNetworkFunc: func(ctx context.Context, task *types.Task) error { return os.ErrPermission }},
+			logger:     zerolog.Nop(),
+		}
+		ctrl.started = true
+
+		err := ctrl.Shutdown(context.Background())
+		assert.NoError(t, err)
+		assert.False(t, ctrl.started)
+	})
 }
