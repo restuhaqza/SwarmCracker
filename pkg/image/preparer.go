@@ -136,10 +136,15 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 	imageID := generateImageID(container.Image)
 	rootfsPath := filepath.Join(ip.rootfsDir, imageID+".ext4")
 
-	// Check if rootfs already exists with valid init
-	if _, err := os.Stat(rootfsPath); err == nil {
-		// Verify cached rootfs has valid /init
-		if ip.verifyCachedRootfs(rootfsPath) {
+	// A service may request a minimum rootfs size (label "swarmcracker.disk").
+	minSizeBytes, err := parseDiskSize(container.DiskSize)
+	if err != nil {
+		return fmt.Errorf("invalid disk size %q: %w", container.DiskSize, err)
+	}
+
+	// Check if the rootfs already exists with a valid init and enough space.
+	if info, statErr := os.Stat(rootfsPath); statErr == nil {
+		if ip.verifyCachedRootfs(rootfsPath) && rootfsLargeEnough(info.Size(), minSizeBytes) {
 			log.Info().
 				Str("path", rootfsPath).
 				Msg("Rootfs already exists and valid, skipping")
@@ -148,11 +153,13 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 		}
 		log.Info().
 			Str("path", rootfsPath).
-			Msg("Cached rootfs invalid (missing init), re-preparing")
+			Int64("size_bytes", info.Size()).
+			Int64("requested_bytes", minSizeBytes).
+			Msg("Cached rootfs invalid or too small, re-preparing")
 	}
 
 	// Prepare the image with file locking for concurrent safety
-	if err := ip.prepareWithLock(ctx, container.Image, imageID, rootfsPath); err != nil {
+	if err := ip.prepareWithLock(ctx, container.Image, imageID, rootfsPath, minSizeBytes); err != nil {
 		return fmt.Errorf("failed to prepare image: %w", err)
 	}
 
@@ -211,7 +218,7 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 
 // prepareImage prepares an OCI image and converts to ext4 filesystem.
 // Init injection happens BEFORE ext4 creation so files are included.
-func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, outputPath string) error {
+func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, outputPath string, minSizeBytes ...int64) error {
 	// Image preparation (registry pull + extraction) is idempotent and cached
 	// by image ID under a file lock. SwarmKit cancels the task operation
 	// context whenever a task update arrives (e.g. a network attachment), which
@@ -272,7 +279,7 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 
 	// Step 7: Create ext4 filesystem image (now includes init files)
 	log.Debug().Str("output", outputPath).Msg("Creating ext4 filesystem")
-	if err := ip.createExt4Image(tmpDir, outputPath); err != nil {
+	if err := ip.createExt4Image(tmpDir, outputPath, minSizeBytes...); err != nil {
 		return fmt.Errorf("failed to create ext4 image: %w", err)
 	}
 
@@ -288,7 +295,7 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 // prepareWithLock prepares an image with file locking for concurrent safety.
 // Acquires an exclusive lock on the rootfs path to prevent race conditions
 // when multiple goroutines/processes try to prepare the same image.
-func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID, rootfsPath string) error {
+func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID, rootfsPath string, minSizeBytes ...int64) error {
 	// Create lock file path
 	lockPath := rootfsPath + ".lock"
 
@@ -314,8 +321,8 @@ func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID,
 	log.Debug().Str("lock", lockPath).Msg("Lock acquired")
 
 	// Double-check: another process may have created rootfs while we waited
-	if _, err := os.Stat(rootfsPath); err == nil {
-		if ip.verifyCachedRootfs(rootfsPath) {
+	if info, err := os.Stat(rootfsPath); err == nil {
+		if ip.verifyCachedRootfs(rootfsPath) && rootfsLargeEnough(info.Size(), firstInt64(minSizeBytes)) {
 			log.Info().
 				Str("path", rootfsPath).
 				Msg("Rootfs created by another process while waiting for lock")
@@ -324,7 +331,7 @@ func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID,
 	}
 
 	// Proceed with preparation
-	return ip.prepareImage(ctx, imageRef, imageID, rootfsPath)
+	return ip.prepareImage(ctx, imageRef, imageID, rootfsPath, minSizeBytes...)
 }
 
 // verifyCachedRootfs checks if a cached rootfs has a valid /init entry.
@@ -417,7 +424,7 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 // This pulls directly from the registry and flattens all layers into a filesystem.
 // Also extracts OCI image configuration (ENTRYPOINT, CMD, ENV, USER, etc).
 func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath string) error {
-	// Validate inputs
+	// Validate inputs early so callers get the same errors as before.
 	if imageRef == "" {
 		return fmt.Errorf("image reference must not be empty")
 	}
@@ -425,33 +432,9 @@ func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath
 		return fmt.Errorf("destination path must not be empty")
 	}
 
-	// Ensure image ref has docker.io prefix for standard images
-	fullRef := imageRef
-	if !strings.Contains(fullRef, "/") {
-		fullRef = "docker.io/library/" + fullRef
-	} else if !strings.Contains(fullRef, ".") {
-		fullRef = "docker.io/" + fullRef
-	}
-
-	// Parse the image reference
-	ref, err := name.ParseReference(fullRef)
+	img, fullRef, err := PullImage(ctx, imageRef, ip.config.RegistryAuth)
 	if err != nil {
-		return fmt.Errorf("failed to parse image reference %q: %w", fullRef, err)
-	}
-
-	// Build remote options with auth and explicit platform selection
-	opts := buildRemoteOptions(ctx, ip.config.RegistryAuth)
-	opts = append(opts, remote.WithPlatform(v1.Platform{
-		OS:           "linux",
-		Architecture: runtime.GOARCH,
-	}))
-
-	log.Info().Str("image", fullRef).Msg("Pulling image from registry")
-
-	// Pull image from registry (no daemon required)
-	img, err := remote.Image(ref, opts...)
-	if err != nil {
-		return fmt.Errorf("failed to pull image %q: %w", fullRef, err)
+		return err
 	}
 
 	// Extract OCI image configuration (ENTRYPOINT, CMD, ENV, USER, etc)
@@ -477,12 +460,76 @@ func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath
 	}
 	log.Info().Str("image", fullRef).Int("layers", len(layers)).Msg("Image pulled successfully")
 
-	// Extract flattened filesystem (handles whiteouts automatically)
+	return ExtractImage(img, destPath)
+}
+
+// NormalizeImageRef expands a short image reference into a fully-qualified one
+// (e.g. "nginx" -> "docker.io/library/nginx"), leaving refs that already carry
+// a registry or namespace untouched.
+func NormalizeImageRef(imageRef string) string {
+	if !strings.Contains(imageRef, "/") {
+		return "docker.io/library/" + imageRef
+	}
+	if !strings.Contains(imageRef, ".") {
+		return "docker.io/" + imageRef
+	}
+	return imageRef
+}
+
+// PullImage resolves and pulls an image from its registry, returning the image
+// and the normalized reference used for logs and config parsing. It uses the
+// caller-supplied auth (nil falls back to the default keychain) and the host
+// platform (linux/<GOARCH>).
+func PullImage(ctx context.Context, imageRef string, auth *RegistryAuth) (v1.Image, string, error) {
+	if imageRef == "" {
+		return nil, "", fmt.Errorf("image reference must not be empty")
+	}
+
+	fullRef := NormalizeImageRef(imageRef)
+
+	ref, err := name.ParseReference(fullRef)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to parse image reference %q: %w", fullRef, err)
+	}
+
+	// Build remote options with auth and explicit platform selection
+	opts := buildRemoteOptions(ctx, auth)
+	opts = append(opts, remote.WithPlatform(v1.Platform{
+		OS:           "linux",
+		Architecture: runtime.GOARCH,
+	}))
+
+	log.Info().Str("image", fullRef).Msg("Pulling image from registry")
+
+	img, err := remote.Image(ref, opts...)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to pull image %q: %w", fullRef, err)
+	}
+
+	return img, fullRef, nil
+}
+
+// ExtractImage flattens an image (applying whiteouts) into destPath.
+func ExtractImage(img v1.Image, destPath string) error {
+	if destPath == "" {
+		return fmt.Errorf("destination path must not be empty")
+	}
 	fs := mutate.Extract(img)
 	defer fs.Close()
-
-	// Extract tar stream to destination directory
 	return extractTarStream(fs, destPath)
+}
+
+// ExtractImageToDir pulls imageRef and extracts its flattened filesystem into
+// destPath, without any SwarmCracker init/essential-file injection.
+func ExtractImageToDir(ctx context.Context, imageRef, destPath string, auth *RegistryAuth) error {
+	if imageRef == "" {
+		return fmt.Errorf("image reference must not be empty")
+	}
+	img, _, err := PullImage(ctx, imageRef, auth)
+	if err != nil {
+		return err
+	}
+	return ExtractImage(img, destPath)
 }
 
 // extractTarStream extracts a tar stream to a directory.
@@ -602,12 +649,29 @@ func (ip *ImagePreparer) extractWithDockerCLI(ctx context.Context, imageRef, des
 
 // createExt4Image creates an ext4 filesystem from a directory.
 // This is a wrapper that calls createExt4ImageWithOverhead with default 50% overhead.
-func (ip *ImagePreparer) createExt4Image(sourceDir, outputPath string) error {
-	return ip.createExt4ImageWithOverhead(sourceDir, outputPath, 50)
+// An optional minimum size (bytes) can be supplied to guarantee free space.
+func (ip *ImagePreparer) createExt4Image(sourceDir, outputPath string, minSizeBytes ...int64) error {
+	return ip.createExt4ImageWithOverhead(sourceDir, outputPath, 50, minSizeBytes...)
+}
+
+// CreateExt4FromDir creates an ext4 filesystem image at outputPath from the
+// contents of sourceDir, with the standard 50% overhead and an optional
+// minimum size floor. It is the daemon-free building block used by the golden
+// image builder.
+func CreateExt4FromDir(sourceDir, outputPath string, minSizeBytes int64) error {
+	return createExt4FromDirWithOverhead(sourceDir, outputPath, 50, minSizeBytes)
 }
 
 // createExt4ImageWithOverhead creates an ext4 filesystem with explicit overhead and disk space checking.
-func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath string, overheadPercent int) error {
+// An optional minimum size (bytes) is honoured when it is larger than the
+// content-derived size, so a VM can be given a guaranteed amount of free space.
+func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath string, overheadPercent int, minSizeBytes ...int64) error {
+	return createExt4FromDirWithOverhead(sourceDir, outputPath, overheadPercent, minSizeBytes...)
+}
+
+// createExt4FromDirWithOverhead is the receiver-free implementation shared by
+// the ImagePreparer method and the exported CreateExt4FromDir helper.
+func createExt4FromDirWithOverhead(sourceDir, outputPath string, overheadPercent int, minSizeBytes ...int64) error {
 	if sourceDir == "" {
 		return fmt.Errorf("source directory cannot be empty")
 	}
@@ -645,10 +709,14 @@ func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath strin
 	// Apply overhead
 	totalSize := dirSize * int64(100+overheadPercent) / 100
 
-	// Minimum 100MB
-	minSize := int64(100 * 1024 * 1024)
-	if totalSize < minSize {
-		totalSize = minSize
+	// Enforce the default minimum, then any requested minimum rootfs size.
+	minDefault := int64(100 * 1024 * 1024)
+	if totalSize < minDefault {
+		totalSize = minDefault
+	}
+	requested := firstInt64(minSizeBytes)
+	if requested > 0 && totalSize < requested {
+		totalSize = requested
 	}
 
 	// Calculate block count (4K blocks)
@@ -695,6 +763,7 @@ func (ip *ImagePreparer) createExt4ImageWithOverhead(sourceDir, outputPath strin
 	log.Info().
 		Int64("dir_size_mb", dirSize/1024/1024).
 		Int64("rootfs_size_mb", totalSize/1024/1024).
+		Int64("requested_min_mb", requested/1024/1024).
 		Int("overhead_percent", overheadPercent).
 		Msg("Created ext4 image")
 

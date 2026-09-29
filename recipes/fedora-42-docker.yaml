@@ -1,0 +1,74 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: fedora-42-docker
+  version: 1.0.0
+  description: Fedora 42 + systemd + Moby Engine; cgroup v2, SELinux enforcing
+
+spec:
+  arch: [amd64, arm64]
+
+  source:
+    type: oci
+    ref: docker.io/library/fedora:42
+
+  init:
+    system: systemd
+    bootArgs:
+      - systemd.unified_cgroup_hierarchy=1
+      - systemd.journald.forward_to_console=1
+
+  kernel:
+    profile: guest-runtime-6.1
+
+  runtime:
+    name: docker
+    storageDriver: overlay2
+    cgroupVersion: v2
+    install: packages
+
+  disk:
+    rootMinSize: 6GiB
+    dataDisk:
+      size: 20GiB
+      mount: /var/lib/docker
+      fs: ext4
+
+  network:
+    guestCIDR: 172.17.0.0/16
+
+  provision: |
+    set -eux
+
+    # Fedora ships the engine as moby-engine (Docker-compatible CLI/daemon).
+    dnf install -y --setopt=install_weak_deps=False \
+      systemd systemd-udev moby-engine containerd ca-certificates curl iproute \
+      iptables-nft nftables iputils procps-ng
+
+    systemctl enable docker.service containerd.service
+    systemctl enable serial-getty@ttyS0.service
+    systemctl set-default multi-user.target
+
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-swarmcracker.conf
+
+    # SELinux stays enforcing; load the container policy in the guest.
+    setenforce 1 2>/dev/null || true
+
+  seal:
+    - truncate -s 0 /etc/machine-id
+    - rm -rf /var/cache/dnf/* /var/cache/yum/*
+    - rm -f /etc/ssh/ssh_host_*
+
+  health:
+    - command: systemctl is-system-running --wait
+      timeout: 120s
+    - command: docker info
+      timeout: 60s
+
+  verify:
+    - name: selinux-enforcing
+      guest: getenforce | grep -q Enforcing
+    - name: cgroup2-mounted
+      guest: mountpoint -q /sys/fs/cgroup && stat -fc %T /sys/fs/cgroup | grep -q cgroup2
+    - name: docker0-exists
+      guest: ip link show docker0

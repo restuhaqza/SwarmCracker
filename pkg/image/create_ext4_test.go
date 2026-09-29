@@ -48,6 +48,24 @@ func TestCreateExt4Image_EmptyDirectory(t *testing.T) {
 	assert.FileExists(t, outputPath)
 }
 
+// TestCreateExt4Image_MinSize verifies a requested minimum rootfs size is
+// honoured, so a VM can be given a guaranteed amount of free disk space.
+func TestCreateExt4Image_MinSize(t *testing.T) {
+	sourceDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "file.txt"), []byte("hi"), 0644))
+	outputPath := filepath.Join(t.TempDir(), "sized.ext4")
+
+	ip := NewImagePreparer(&PreparerConfig{RootfsDir: t.TempDir()}).(*ImagePreparer)
+
+	// Larger than the 100 MB default so the requested minimum is what applies.
+	const minSize = int64(120 * 1024 * 1024)
+	require.NoError(t, ip.createExt4Image(sourceDir, outputPath, minSize))
+
+	info, err := os.Stat(outputPath)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, info.Size(), minSize, "rootfs should be at least the requested size")
+}
+
 // TestCreateExt4Image_NestedDirectories tests deeply nested directories
 func TestCreateExt4Image_NestedDirectories(t *testing.T) {
 	sourceDir := t.TempDir()
