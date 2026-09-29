@@ -17,7 +17,7 @@
 | translator | 94.9% | ✅ Excellent |
 | jailer | 92.6% | ✅ Excellent |
 | executor | 90.7% | ✅ Excellent |
-| cni | 90.2% | ✅ Excellent |
+| cni | 90.3% | ✅ Excellent |
 | health | 89.5% | ✅ Good |
 | snapshot | 87.9% | ✅ Good |
 | storage | 87.3% | ✅ Good |
