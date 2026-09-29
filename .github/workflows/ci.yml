@@ -44,6 +44,9 @@ jobs:
       - name: Test (all packages, with race detector)
         run: go test -short -race -coverprofile=coverage.out -covermode=atomic ./pkg/...
 
+      - name: Test CLI packages
+        run: go test -short -race ./cmd/...
+
       - name: Upload coverage to Codecov
         if: github.event_name != 'pull_request'
         uses: codecov/codecov-action@v4
