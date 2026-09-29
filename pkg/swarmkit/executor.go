@@ -828,13 +828,21 @@ func (c *Controller) Remove(ctx context.Context) error {
 		rootfsPath = c.internalTask.Annotations["rootfs"]
 	}
 	if rootfsPath == "" {
-		// Fallback: legacy naming (may not exist; os.Remove tolerates that)
-		rootfsPath = filepath.Join(c.config.RootfsDir, task.ID+".ext4")
+		// Legacy naming: the rootfs is named by image ID (see above), so this
+		// path essentially never exists. Only attempt it when it actually does;
+		// otherwise removing a missing entry under a read-only rootfs dir logs
+		// a misleading EROFS warning.
+		legacy := filepath.Join(c.config.RootfsDir, task.ID+".ext4")
+		if _, statErr := os.Stat(legacy); statErr == nil {
+			rootfsPath = legacy
+		}
 	}
-	if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
-		c.logger.Warn().Err(err).Str("path", rootfsPath).Msg("Failed to remove rootfs image")
-	} else if err == nil {
-		c.logger.Debug().Str("path", rootfsPath).Msg("Removed rootfs image")
+	if rootfsPath != "" {
+		if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
+			c.logger.Warn().Err(err).Str("path", rootfsPath).Msg("Failed to remove rootfs image")
+		} else if err == nil {
+			c.logger.Debug().Str("path", rootfsPath).Msg("Removed rootfs image")
+		}
 	}
 
 	// Clean up socket file (should be removed by vmmMgr.Remove, but ensure it)
