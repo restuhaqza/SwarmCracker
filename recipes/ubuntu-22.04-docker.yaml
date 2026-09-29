@@ -1,0 +1,76 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: ubuntu-22.04-docker
+  version: 1.0.0
+  description: Ubuntu 22.04 LTS + systemd + Docker Engine (matches Firecracker CI rootfs)
+
+spec:
+  arch: [amd64, arm64]
+
+  source:
+    type: oci
+    ref: docker.io/library/ubuntu:22.04
+
+  init:
+    system: systemd
+    bootArgs:
+      - systemd.unified_cgroup_hierarchy=1
+      - systemd.journald.forward_to_console=1
+
+  kernel:
+    profile: guest-runtime-6.1
+
+  runtime:
+    name: docker
+    storageDriver: overlay2
+    cgroupVersion: v2
+    install: packages
+
+  disk:
+    rootMinSize: 5GiB
+    dataDisk:
+      size: 20GiB
+      mount: /var/lib/docker
+      fs: ext4
+
+  network:
+    guestCIDR: 172.17.0.0/16
+
+  provision: |
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+
+    apt-get update
+    apt-get install -y --no-install-recommends \
+      systemd systemd-sysv udev dbus init-system-helpers \
+      docker.io containerd ca-certificates curl iproute2 \
+      iptables nftables iputils-ping less procps
+
+    systemctl enable docker.service containerd.service
+    systemctl set-default multi-user.target
+    systemctl enable serial-getty@ttyS0.service
+
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-swarmcracker.conf
+    systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
+
+  seal:
+    - truncate -s 0 /etc/machine-id
+    - rm -f /var/lib/dbus/machine-id
+    - ln -sf /etc/machine-id /var/lib/dbus/machine-id
+    - rm -rf /var/lib/apt/lists/* /var/cache/apt/*
+    - rm -f /etc/ssh/ssh_host_*
+
+  health:
+    - command: systemctl is-system-running --wait
+      timeout: 120s
+    - command: docker info
+      timeout: 60s
+
+  verify:
+    - name: cgroup2-mounted
+      guest: mountpoint -q /sys/fs/cgroup && stat -fc %T /sys/fs/cgroup | grep -q cgroup2
+    - name: overlayfs-present
+      guest: grep -qw overlay /proc/filesystems
+    - name: docker0-exists
+      guest: ip link show docker0

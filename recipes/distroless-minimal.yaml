@@ -1,0 +1,53 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: distroless-minimal
+  version: 1.0.0
+  description: >
+    Current single-workload model as a recipe: no init system in the image, no
+    container runtime. SwarmCracker injects busybox + tini and execs the OCI
+    entrypoint. Kept for parity, not for running Docker inside.
+
+spec:
+  # Assembled by the task-time image preparer (injects busybox + tini), not by
+  # `swarmcracker image build`.
+  build: preparer
+  arch: [amd64, arm64]
+
+  source:
+    type: oci
+    ref: gcr.io/distroless/base-debian12
+
+  init:
+    # "tini" means: use the existing image-injection path unchanged.
+    system: tini
+    bootArgs: []
+
+  kernel:
+    # The stock Firecracker CI kernel is sufficient for single workloads.
+    profile: firecracker-ci-6.1
+
+  runtime:
+    name: none
+    install: none
+
+  disk:
+    rootMinSize: 512MiB
+
+  # No provision step: the preparer's layer extraction is the whole build.
+  provision: |
+    set -eux
+    # distroless has no shell; the preparer injects busybox + tini. Nothing to do.
+
+  seal:
+    - truncate -s 0 /etc/machine-id
+
+  health:
+    - command: /sbin/tini --version
+      timeout: 30s
+
+  verify:
+    - name: init-present
+      guest: test -x /sbin/init
+    - name: init-is-wrapper
+      guest: head -n1 /sbin/init | grep -q '^#!/bin/sh'
