@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/network"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -72,8 +71,12 @@ type Event struct {
 	Err     error
 }
 
-// sendEvent safely sends an event to the events channel with a timeout.
-// It returns true if the event was sent, false if the channel was closed or blocked.
+// sendEvent sends an event without blocking.
+//
+// The channel has a bounded buffer and no consumer draining it today, so a
+// blocking send would stall the caller for the timeout once the buffer fills.
+// Drop the event and log instead: a stalled executor is worse than a dropped
+// notification.
 //
 // The mutex is held across the send: Close() also takes the mutex before
 // closing the channel, so a send can never race with close(e.events).
@@ -88,8 +91,8 @@ func (e *FirecrackerExecutor) sendEvent(evt Event) bool {
 	select {
 	case e.events <- evt:
 		return true
-	case <-time.After(5 * time.Second):
-		log.Warn().Msg("Timed out sending event to closed channel")
+	default:
+		log.Warn().Msg("Event channel full, dropping event")
 		return false
 	}
 }
