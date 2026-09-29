@@ -442,13 +442,18 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+# Runtime dirs live on tmpfs (/run) and are cleared on boot. Create them before
+# systemd builds the mount namespace; otherwise ReadWritePaths fails to bind and
+# the service exits with status=226/NAMESPACE after every reboot.
+RuntimeDirectory={{base .SocketDir}} swarmkit
+RuntimeDirectoryPreserve=yes
 ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
 
 [Install]
 WantedBy=multi-user.target
 `
 
-	tmpl, err := template.New("service").Parse(serviceTemplate)
+	tmpl, err := template.New("service").Funcs(template.FuncMap{"base": filepath.Base}).Parse(serviceTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse service template: %w", err)
 	}
