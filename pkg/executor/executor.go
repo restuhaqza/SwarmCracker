@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sync"
 
@@ -221,6 +222,20 @@ func (e *FirecrackerExecutor) Start(ctx context.Context, t *types.Task) error {
 // Wait blocks until the task exits and returns the exit status.
 func (e *FirecrackerExecutor) Wait(ctx context.Context, t *types.Task) (*types.TaskStatus, error) {
 	return e.vmmManager.Wait(ctx, t)
+}
+
+// SetConsoleWriter redirects the serial console of VMs started from now on to
+// w. Detached callers point this at a log file so the long-lived VM process
+// does not inherit (and hold open) the caller's stdout/stderr, which otherwise
+// makes pipelines such as `swarmcracker vm create -d | tail` hang until the VM
+// exits. It returns an error if the injected VMM manager cannot redirect.
+func (e *FirecrackerExecutor) SetConsoleWriter(w io.Writer) error {
+	r, ok := e.vmmManager.(types.ConsoleRedirector)
+	if !ok {
+		return fmt.Errorf("VMM manager does not support console redirection")
+	}
+	r.SetConsoleWriter(w)
+	return nil
 }
 func (e *FirecrackerExecutor) Remove(ctx context.Context, t *types.Task) error {
 	log.Info().
