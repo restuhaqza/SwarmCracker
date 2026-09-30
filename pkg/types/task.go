@@ -4,6 +4,7 @@ package types
 import (
 	"context"
 	"fmt"
+	"io"
 )
 
 // SecretRef represents a SwarmKit secret reference with data.
@@ -216,6 +217,14 @@ type VMMManager interface {
 	Remove(ctx context.Context, task *Task) error
 	Snapshot(ctx context.Context, task *Task, opts interface{}) (interface{}, error)
 	Restore(ctx context.Context, task *Task, snapshot interface{}) error
+}
+
+// ConsoleRedirector is an optional capability of a VMM manager: when set, a
+// VM's serial console is written to w instead of the current process's stdio.
+// Detached callers use it so a long-lived VM child does not inherit (and hold
+// open) the caller's stdout/stderr.
+type ConsoleRedirector interface {
+	SetConsoleWriter(w io.Writer)
 }
 
 // TaskTranslator converts SwarmKit tasks to Firecracker configs.

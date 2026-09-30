@@ -173,10 +173,41 @@ Example:
 				return fmt.Errorf("failed to prepare task: %w", err)
 			}
 
+			// In detached mode the VM outlives this process, so its console
+			// must not inherit our stdout/stderr: a long-lived child holding
+			// that descriptor keeps a caller's pipe open forever (e.g.
+			// `... vm create -d | tail` never sees EOF). Send it to the VM log
+			// file — the same path `swarmcracker vm logs` reads.
+			var consoleFile *os.File
+			if detach {
+				logDir := ""
+				if stateMgr != nil {
+					logDir = stateMgr.GetLogDir()
+				}
+				if logDir == "" {
+					logDir = "/var/log/swarmcracker"
+				}
+				if err := os.MkdirAll(logDir, 0o755); err != nil {
+					log.Warn().Err(err).Msg("Could not create VM log directory")
+				} else if f, ferr := os.OpenFile(filepath.Join(logDir, task.ID+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); ferr != nil {
+					log.Warn().Err(ferr).Msg("Could not open VM log file; console stays attached")
+				} else if serr := exec.SetConsoleWriter(f); serr != nil {
+					log.Warn().Err(serr).Msg("Could not redirect VM console to log file")
+					_ = f.Close()
+				} else {
+					consoleFile = f
+				}
+			}
+
 			// Start the task
 			log.Info().Str("task_id", task.ID).Msg("Starting task...")
 			if err := exec.Start(ctx, task); err != nil {
 				return fmt.Errorf("failed to start task: %w", err)
+			}
+
+			// The VM child holds its own copy of the descriptor; close ours.
+			if consoleFile != nil {
+				_ = consoleFile.Close()
 			}
 
 			if detach {

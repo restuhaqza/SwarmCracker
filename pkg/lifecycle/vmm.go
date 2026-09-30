@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -22,10 +23,32 @@ import (
 
 // VMMManager manages Firecracker VM lifecycle.
 type VMMManager struct {
-	config    *ManagerConfig
-	vms       map[string]*VMInstance
-	mu        sync.RWMutex
-	socketDir string
+	config        *ManagerConfig
+	vms           map[string]*VMInstance
+	mu            sync.RWMutex
+	socketDir     string
+	consoleWriter io.Writer
+}
+
+// SetConsoleWriter redirects the serial console of VMs started from now on to
+// w. When unset, the console is wired to the current process's stdio, which is
+// what an attached/foreground caller wants. A detached caller should point this
+// at a log file: otherwise the long-lived Firecracker child inherits the
+// caller's stdout/stderr and keeps the pipe open, so a pipeline such as
+// `swarmcracker vm create -d | tail` never sees EOF.
+func (vm *VMMManager) SetConsoleWriter(w io.Writer) {
+	vm.mu.Lock()
+	defer vm.mu.Unlock()
+	vm.consoleWriter = w
+}
+
+// consoleStdio returns the writers Firecracker's stdout/stderr should use:
+// the redirected console writer when set, otherwise this process's stdio.
+func (vm *VMMManager) consoleStdio() (io.Writer, io.Writer) {
+	if vm.consoleWriter != nil {
+		return vm.consoleWriter, vm.consoleWriter
+	}
+	return os.Stdout, os.Stderr
 }
 
 // ManagerConfig holds VMM manager configuration.
@@ -166,8 +189,7 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 
 	// Start Firecracker process (without config file)
 	cmd := exec.Command(fcBinary, "--api-sock", socketPath)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout, cmd.Stderr = vm.consoleStdio()
 
 	var startErr error
 	if err := cmd.Start(); err != nil {
