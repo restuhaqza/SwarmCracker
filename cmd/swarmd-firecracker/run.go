@@ -52,6 +52,7 @@ func runAgent(ctx *cli.Context) error {
 		FirecrackerPath: "firecracker",
 		KernelPath:      ctx.String("kernel-path"),
 		RootfsDir:       ctx.String("rootfs-dir"),
+		GoldenDir:       ctx.String("golden-dir"),
 		Hostname:        hostname,
 		JoinAddr:        ctx.String("join-addr"),
 		AdvertiseAddr:   ctx.String("advertise-remote-api"), // For managers, use advertise address

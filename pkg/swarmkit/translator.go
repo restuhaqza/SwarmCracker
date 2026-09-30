@@ -5,26 +5,41 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"strings"
+
+	"github.com/rs/zerolog/log"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
 // taskTranslatorImpl translates SwarmKit tasks to Firecracker VM configs.
 type taskTranslatorImpl struct {
-	kernelPath string
-	bridgeIP   string
+	kernelPath     string
+	bridgeIP       string
+	kernelProfiles map[string]string
 }
 
 // NewTaskTranslator creates a new task translator.
 func NewTaskTranslator(kernelPath, bridgeIP string) (types.TaskTranslator, error) {
+	return newTaskTranslator(kernelPath, bridgeIP, nil)
+}
+
+// NewTaskTranslatorWithProfiles creates a task translator that can map a
+// golden image's kernel profile to a concrete kernel path.
+func NewTaskTranslatorWithProfiles(kernelPath, bridgeIP string, kernelProfiles map[string]string) (types.TaskTranslator, error) {
+	return newTaskTranslator(kernelPath, bridgeIP, kernelProfiles)
+}
+
+func newTaskTranslator(kernelPath, bridgeIP string, kernelProfiles map[string]string) (types.TaskTranslator, error) {
 	if kernelPath == "" {
 		return nil, fmt.Errorf("kernel path cannot be empty")
 	}
 
 	return &taskTranslatorImpl{
-		kernelPath: kernelPath,
-		bridgeIP:   bridgeIP,
+		kernelPath:     kernelPath,
+		bridgeIP:       bridgeIP,
+		kernelProfiles: kernelProfiles,
 	}, nil
 }
 
@@ -63,12 +78,18 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 		}
 	}
 
+	// A prebuilt golden image may pin its own kernel through a profile.
+	kernelPath, err := t.resolveKernelPath(task)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build boot args with network config if available
 	bootArgs := t.buildBootArgs(task)
 
 	config := map[string]interface{}{
 		"boot-source": map[string]interface{}{
-			"kernel_image_path": t.kernelPath,
+			"kernel_image_path": kernelPath,
 			"boot_args":         bootArgs,
 		},
 		"drives": []map[string]interface{}{
@@ -92,33 +113,88 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 
 // buildBootArgs builds kernel boot arguments with network config.
 func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
-	// Use /sbin/init (wrapper that calls tini with entrypoint)
-	// The preparer creates /sbin/init as a wrapper script
-	initPath := "/sbin/init"
-	baseArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off nomodules init=%s", initPath)
-
-	// Add network config if task has IP addresses
-	if len(task.Networks) > 0 && len(task.Networks[0].Addresses) > 0 {
-		// Parse IP from Addresses (format: "192.168.127.2/24")
-		addr := task.Networks[0].Addresses[0]
-		ipPart := addr
-		if idx := strings.Index(addr, "/"); idx > 0 {
-			ipPart = addr[:idx]
-		}
-
-		// Kernel IP config format: ip=<ip>::<gw>:<netmask>::<iface>:off
-		// Gateway is bridge IP from config
-		gw := t.bridgeIP
-		if idx := strings.Index(gw, "/"); idx > 0 {
-			gw = gw[:idx] // Remove CIDR if present
-		}
-		mask := "255.255.255.0"
-
-		ipArg := fmt.Sprintf("ip=%s::%s:%s::eth0:off", ipPart, gw, mask)
-		baseArgs = baseArgs + " " + ipArg
+	// A prebuilt golden image boots its own init (systemd/OpenRC) and carries
+	// extra kernel arguments; the container init wrapper does not apply.
+	if task.UsesPrebuiltRootfs() {
+		return t.buildPrebuiltBootArgs(task)
 	}
 
-	return baseArgs
+	// Use /sbin/init (wrapper that calls tini with entrypoint)
+	// The preparer creates /sbin/init as a wrapper script
+	netArgs := t.networkBootArgs(task)
+	args := make([]string, 0, 6+len(netArgs))
+	args = append(args, "console=ttyS0", "reboot=k", "panic=1", "pci=off", "nomodules", "init=/sbin/init")
+	args = append(args, netArgs...)
+	return strings.Join(args, " ")
+}
+
+// buildPrebuiltBootArgs builds boot arguments for a prebuilt golden image: the
+// guest boots its own init and the recipe's extra arguments are appended.
+func (t *taskTranslatorImpl) buildPrebuiltBootArgs(task *types.Task) string {
+	netArgs := t.networkBootArgs(task)
+	args := make([]string, 0, 8+len(netArgs))
+	args = append(args, "console=ttyS0", "reboot=k", "panic=1", "pci=off", "nomodules", "random.trust_cpu=on", "init=/sbin/init")
+	args = append(args, netArgs...)
+	if extra := strings.TrimSpace(task.Annotations[types.AnnotationBootArgs]); extra != "" {
+		args = append(args, strings.Fields(extra)...)
+	}
+	return strings.Join(args, " ")
+}
+
+// networkBootArgs returns the kernel ip= argument for the task's first network
+// attachment, or nil when no static address is assigned.
+func (t *taskTranslatorImpl) networkBootArgs(task *types.Task) []string {
+	if len(task.Networks) == 0 || len(task.Networks[0].Addresses) == 0 {
+		return nil
+	}
+
+	// Parse IP from Addresses (format: "192.168.127.2/24")
+	addr := task.Networks[0].Addresses[0]
+	ipPart := addr
+	if idx := strings.Index(addr, "/"); idx > 0 {
+		ipPart = addr[:idx]
+	}
+
+	// Kernel IP config format: ip=<ip>::<gw>:<netmask>::<iface>:off
+	// Gateway is bridge IP from config
+	gw := t.bridgeIP
+	if idx := strings.Index(gw, "/"); idx > 0 {
+		gw = gw[:idx] // Remove CIDR if present
+	}
+	mask := "255.255.255.0"
+
+	return []string{fmt.Sprintf("ip=%s::%s:%s::eth0:off", ipPart, gw, mask)}
+}
+
+// resolveKernelPath picks the kernel image for a task. A prebuilt golden image
+// may declare a kernel profile; it is mapped to a concrete path through the
+// configured registry so a runtime kernel can be used per image. An unknown
+// profile falls back to the default kernel (with a warning); a mapped profile
+// that points at a missing file is a hard error, since silently booting the
+// wrong kernel would break the image's expected features (e.g. macvlan).
+func (t *taskTranslatorImpl) resolveKernelPath(task *types.Task) (string, error) {
+	profile := ""
+	if task != nil {
+		profile = strings.TrimSpace(task.Annotations[types.AnnotationKernelProfile])
+	}
+	if profile == "" {
+		return t.kernelPath, nil
+	}
+
+	path, ok := t.kernelProfiles[profile]
+	if !ok || strings.TrimSpace(path) == "" {
+		log.Warn().
+			Str("task_id", task.ID).
+			Str("kernel_profile", profile).
+			Str("kernel_path", t.kernelPath).
+			Msg("Unknown kernel profile for prebuilt image; using default kernel")
+		return t.kernelPath, nil
+	}
+
+	if _, err := os.Stat(path); err != nil {
+		return "", fmt.Errorf("kernel profile %q maps to %s, which is not available: %w", profile, path, err)
+	}
+	return path, nil
 }
 
 // buildNetworkInterfaces creates network interface configs from task attachments.
