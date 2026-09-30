@@ -144,6 +144,7 @@ func newServiceCreateCommand() *cobra.Command {
 		args     []string
 		labels   []string
 		disk     string
+		golden   string
 	)
 
 	cmd := &cobra.Command{
@@ -152,20 +153,42 @@ func newServiceCreateCommand() *cobra.Command {
 		Long: `Create a new service in the SwarmCracker cluster.
 
 The service will be scheduled on available nodes and can be scaled
-and updated as needed.`,
+and updated as needed.
+
+With --golden, the service boots a prebuilt golden image (see
+'swarmcracker image build') instead of building a rootfs from an OCI image.`,
 		Example: `  swarmcracker service create --name myapp --image nginx:latest --replicas 3
   swarmcracker service create --name api --image myimage:v1 --cpu 2 --memory 512M
-  swarmcracker service create --name worker --image busybox --command /bin/sh --args "-c,echo hello"`,
+  swarmcracker service create --name worker --image busybox --command /bin/sh --args "-c,echo hello"
+  swarmcracker service create --name web --golden ubuntu-24.04-docker@1.0.0 --replicas 2`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if image != "" && golden != "" {
+				return fmt.Errorf("--image and --golden are mutually exclusive")
+			}
+			if golden != "" {
+				labels = append(labels, types.GoldenLabel+"="+golden)
+			}
+			if image == "" {
+				// A golden service needs no OCI image: the label carries the
+				// golden reference. SwarmKit still validates the container image
+				// reference, so substitute a syntactically valid placeholder
+				// repo:tag (it is never pulled - image preparation is skipped).
+				ref := parseLabels(labels)[types.GoldenLabel]
+				if ref == "" {
+					return fmt.Errorf("provide --image <ref> or --golden <name[@version]>")
+				}
+				image = goldenPlaceholderImage(ref)
+			}
 			return createService(name, image, replicas, cpu, memory, disk, env, command, args, labels)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Service name (required)")
-	cmd.Flags().StringVar(&image, "image", "", "Container image (required)")
+	cmd.Flags().StringVar(&image, "image", "", "Container image (or use --golden)")
+	cmd.Flags().StringVar(&golden, "golden", "", "Boot a prebuilt golden image (e.g., ubuntu-24.04-docker@1.0.0)")
 	cmd.Flags().Uint64Var(&replicas, "replicas", 1, "Number of replicas")
 	cmd.Flags().Float64Var(&cpu, "cpu", 0, "CPU limit (cores, e.g., 1.5)")
 	cmd.Flags().StringVar(&memory, "memory", "", "Memory limit (e.g., 512M, 1G)")
@@ -176,7 +199,6 @@ and updated as needed.`,
 	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "Service labels (e.g., key=value)")
 
 	cobra.CheckErr(cmd.MarkFlagRequired("name"))
-	cobra.CheckErr(cmd.MarkFlagRequired("image"))
 
 	return cmd
 }
@@ -360,6 +382,14 @@ func parseMemory(mem string) (int64, error) {
 }
 
 // parseLabels parses label strings (e.g., "key=value") to map
+// goldenPlaceholderImage returns a syntactically valid container image
+// reference for a golden service. SwarmKit validates the reference in the
+// service spec, but the image is never pulled: image preparation is skipped for
+// golden tasks, and the real reference travels in the swarmcracker.golden label.
+func goldenPlaceholderImage(ref string) string {
+	return "swarmcracker/golden:" + strings.NewReplacer("@", "-", "/", "-").Replace(ref)
+}
+
 func parseLabels(labelStrs []string) map[string]string {
 	labels := make(map[string]string)
 	for _, l := range labelStrs {
