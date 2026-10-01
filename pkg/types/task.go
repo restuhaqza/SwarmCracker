@@ -75,6 +75,11 @@ func (s *TaskSpec) SetContainer(c *Container) {
 // (for example "10G"). It is read from the task's service labels.
 const DiskSizeLabel = "swarmcracker.disk"
 
+// GoldenLabel is the service label used to boot a service from a prebuilt
+// golden image (for example "ubuntu-24.04-docker@1.0.0") instead of building a
+// rootfs from an OCI image. It is read from the task's service labels.
+const GoldenLabel = "swarmcracker.golden"
+
 // Container specifies container configuration.
 type Container struct {
 	Image   string

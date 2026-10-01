@@ -22,8 +22,10 @@ import (
 	swarmkit_exec "github.com/moby/swarmkit/v2/agent/exec"
 	"github.com/moby/swarmkit/v2/api"
 	swarmkit_log "github.com/moby/swarmkit/v2/log"
+	configpkg "github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/console"
 	"github.com/restuhaqza/swarmcracker/pkg/discovery"
+	"github.com/restuhaqza/swarmcracker/pkg/golden"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	swarmcrackermetrics "github.com/restuhaqza/swarmcracker/pkg/metrics"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
@@ -84,6 +86,13 @@ type Config struct {
 	JoinAddr      string `yaml:"join_addr"`
 	AdvertiseAddr string `yaml:"advertise_addr"` // Local IP for Consul registration
 
+	// GoldenDir is where prebuilt golden image artifacts (ext4 rootfs + JSON
+	// sidecar) live. A service selects one with the "swarmcracker.golden" label.
+	GoldenDir string `yaml:"golden_dir"`
+	// KernelProfiles maps a golden image kernel profile to a kernel path on the
+	// host, overriding KernelPath for images that declare one.
+	KernelProfiles map[string]string `yaml:"-"`
+
 	// Consul service discovery
 	ConsulEnabled bool   `yaml:"consul_enabled"`
 	ConsulAddress string `yaml:"consul_address"`
@@ -125,6 +134,12 @@ func NewExecutor(config *Config) (*Executor, error) {
 	}
 	if config.IPMode == "" {
 		config.IPMode = "static"
+	}
+	if config.GoldenDir == "" {
+		config.GoldenDir = "/var/lib/firecracker/golden"
+	}
+	if config.KernelProfiles == nil {
+		config.KernelProfiles = configpkg.DefaultKernelProfiles()
 	}
 
 	// Create image preparer
@@ -546,7 +561,7 @@ func NewController(
 	volumeMgr *storage.VolumeManager,
 	secretMgr *storage.SecretManager,
 ) (*Controller, error) {
-	trans, err := NewTaskTranslator(config.KernelPath, config.BridgeIP)
+	trans, err := NewTaskTranslatorWithProfiles(config.KernelPath, config.BridgeIP, config.KernelProfiles)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create translator: %w", err)
 	}
@@ -601,8 +616,13 @@ func (c *Controller) Prepare(ctx context.Context) error {
 	// Convert SwarmKit task to internal type
 	task := c.convertTask()
 
-	// Prepare image
-	if err := c.imagePrep.Prepare(ctx, task); err != nil {
+	// A service may boot a prebuilt golden image instead of building a rootfs
+	// from an OCI image (label "swarmcracker.golden").
+	if ref := strings.TrimSpace(c.task.ServiceAnnotations.Labels[types.GoldenLabel]); ref != "" {
+		if err := c.applyGoldenImage(ctx, task, ref); err != nil {
+			return fmt.Errorf("golden image: %w", err)
+		}
+	} else if err := c.imagePrep.Prepare(ctx, task); err != nil {
 		return fmt.Errorf("image preparation failed: %w", err)
 	}
 
@@ -637,6 +657,45 @@ func (c *Controller) Prepare(ctx context.Context) error {
 
 	c.prepared = true
 	c.logger.Info().Msg("Task prepared")
+	return nil
+}
+
+// applyGoldenImage resolves a prebuilt golden image reference and records it as
+// task annotations so the translator boots the golden rootfs (and the kernel
+// its recipe pinned) instead of building a container rootfs from an OCI image.
+func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref string) error {
+	art, err := golden.Resolve(c.config.GoldenDir, ref)
+	if err != nil {
+		return err
+	}
+	// Give the task its own writable copy of the template. Replicas must not
+	// share a read/write rootfs, and the daemon may not be able to write to the
+	// golden store at all (ProtectSystem=strict). Removal then deletes the copy,
+	// never the golden artifact.
+	rootfs := filepath.Join(c.config.RootfsDir, task.ID+".ext4")
+	if err := art.Materialize(ctx, rootfs); err != nil {
+		return err
+	}
+
+	if task.Annotations == nil {
+		task.Annotations = make(map[string]string)
+	}
+	task.Annotations[types.AnnotationRootfs] = rootfs
+	task.Annotations[types.AnnotationPrebuiltRootfs] = "true"
+	task.Annotations[types.AnnotationGolden] = art.Ref
+	if md := art.Metadata; md != nil {
+		if md.KernelProfile != "" {
+			task.Annotations[types.AnnotationKernelProfile] = md.KernelProfile
+		}
+		if len(md.Init.BootArgs) > 0 {
+			task.Annotations[types.AnnotationBootArgs] = strings.Join(md.Init.BootArgs, " ")
+		}
+	}
+	c.logger.Info().
+		Str("golden", art.Ref).
+		Str("template", art.Path).
+		Str("rootfs", rootfs).
+		Msg("Using prebuilt golden rootfs, skipping image preparation")
 	return nil
 }
 
