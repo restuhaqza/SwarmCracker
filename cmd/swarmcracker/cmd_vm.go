@@ -110,6 +110,9 @@ Example:
 					types.AnnotationPrebuiltRootfs: "true",
 					types.AnnotationGolden:         art.Ref,
 				}
+				if art.Metadata.KernelProfile != "" {
+					goldenAnnotations[types.AnnotationKernelProfile] = art.Metadata.KernelProfile
+				}
 				if len(art.Metadata.Init.BootArgs) > 0 {
 					goldenAnnotations[types.AnnotationBootArgs] = strings.Join(art.Metadata.Init.BootArgs, " ")
 				}
