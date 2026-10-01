@@ -117,8 +117,9 @@ func injectNsswitch(tmpDir string) error {
 func injectMachineID(tmpDir string, imageID string) error {
 	machineIDPath := filepath.Join(tmpDir, "etc", "machine-id")
 
-	// Don't overwrite existing file
-	if _, err := os.Stat(machineIDPath); err == nil {
+	// Don't overwrite an existing entry. Lstat, not Stat: if the image ships
+	// /etc/machine-id as a symlink, following it would write outside the rootfs.
+	if _, err := os.Lstat(machineIDPath); err == nil {
 		return nil
 	}
 
@@ -154,16 +155,27 @@ func createEssentialDirs(tmpDir string) error {
 	for _, d := range dirs {
 		dirPath := filepath.Join(tmpDir, d.path)
 
-		// Check if exists
-		if fi, err := os.Stat(dirPath); err == nil {
-			// Directory exists, ensure correct permissions
+		// Lstat, not Stat: images commonly symlink e.g. /var/run -> /run.
+		// Following that symlink with chmod would touch the *host* path (or, on
+		// a hardened unit, fail with EROFS on the host's read-only /run). Leave
+		// symlinks alone; the guest's init resolves them at boot.
+		fi, err := os.Lstat(dirPath)
+		if err == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				log.Debug().Str("path", d.path).Msg("Skipping symlinked directory")
+				continue
+			}
 			if fi.IsDir() {
 				// Always chmod to ensure correct permissions (including sticky bit)
 				if err := syscall.Chmod(dirPath, uint32(d.mode)); err != nil {
 					// Non-critical, continue
-					log.Debug().Err(err).Str("path", d.path).Msg("Failed to chmod directory")
+					log.Debug().Err(err).Str("path", dirPath).Msg("Failed to chmod directory")
 				}
 			}
+			continue
+		}
+		if !os.IsNotExist(err) {
+			log.Debug().Err(err).Str("path", dirPath).Msg("Failed to stat directory")
 			continue
 		}
 
