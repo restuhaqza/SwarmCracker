@@ -185,6 +185,25 @@ func TestServiceCreateCommandFlags(t *testing.T) {
 	memoryFlag := cmd.Flags().Lookup("memory")
 	assert.NotNil(t, memoryFlag)
 	assert.Equal(t, "", memoryFlag.DefValue)
+
+	goldenFlag := cmd.Flags().Lookup("golden")
+	assert.NotNil(t, goldenFlag)
+	assert.Equal(t, "", goldenFlag.DefValue)
+}
+
+// TestGoldenPlaceholderImage tests the placeholder image used for golden services
+func TestGoldenPlaceholderImage(t *testing.T) {
+	tests := []struct {
+		ref  string
+		want string
+	}{
+		{"ubuntu-24.04-docker@1.0.0", "swarmcracker/golden:ubuntu-24.04-docker-1.0.0"},
+		{"ubuntu-24.04-docker", "swarmcracker/golden:ubuntu-24.04-docker"},
+		{"org/alpine@2.0.0", "swarmcracker/golden:org-alpine-2.0.0"},
+	}
+	for _, tt := range tests {
+		assert.Equal(t, tt.want, goldenPlaceholderImage(tt.ref))
+	}
 }
 
 // TestServiceUpdateCommandFlags tests the update command flags

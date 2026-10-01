@@ -90,6 +90,35 @@ swarmctl create-service nginx:latest
 
 Service name is auto-generated: `svc-<image>-<timestamp>`
 
+### Service from a Golden Image
+
+A service can boot a prebuilt golden image (a full guest with its own
+systemd/OpenRC init) instead of building a rootfs from an OCI image. Build one
+with `swarmcracker image build`, then reference it by `name[@version]`:
+
+```bash
+swarmcracker service create --name web --golden ubuntu-24.04-docker@1.0.0 --replicas 2
+```
+
+This sets the `swarmcracker.golden` service label. The equivalent explicit form
+is:
+
+```bash
+swarmcracker service create --name web --image swarmcracker/golden:ubuntu-24.04-docker-1.0.0 \
+  --label swarmcracker.golden=ubuntu-24.04-docker@1.0.0
+```
+
+The `--image` value is a placeholder only: SwarmKit validates container image
+references, so a golden service still needs a syntactically valid one. It is
+never pulled because image preparation is skipped.
+
+The executor skips OCI image preparation and boots the golden rootfs with the
+kernel its recipe pinned (`kernel_profile`). Each task gets its own writable
+copy of the template (roughly the template's on-disk size per replica), so
+replicas never share a root filesystem and removing a service never touches the
+golden artifact. A missing artifact fails the task instead of silently falling
+back to an OCI image.
+
 ### Scale Service
 
 ```bash

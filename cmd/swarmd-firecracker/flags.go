@@ -63,6 +63,11 @@ func newAppFlags() []cli.Flag {
 			Value: "/var/lib/firecracker/rootfs",
 		},
 		&cli.StringFlag{
+			Name:  "golden-dir",
+			Usage: "Directory containing prebuilt golden image artifacts",
+			Value: "/var/lib/firecracker/golden",
+		},
+		&cli.StringFlag{
 			Name:  "socket-dir",
 			Usage: "Directory for Firecracker sockets",
 			Value: "/var/run/firecracker",

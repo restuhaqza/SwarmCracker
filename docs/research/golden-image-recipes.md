@@ -46,6 +46,25 @@ Issues the matrix exposed and the fixes applied to the builder/recipes:
 systemd recipes still rely on the kernel `ip=` parameter for addressing; wiring
 networkd/NetworkManager for systemd guests is a follow-up.
 
+Booting through the **service** path is also wired: a service can set the
+`swarmcracker.golden` label (or use `swarmcracker service create --golden
+<name[@version]>`). `Controller.Prepare` resolves the artifact from the golden
+store (`--golden-dir`, default `/var/lib/firecracker/golden`), skips OCI image
+preparation, and records the rootfs and kernel profile as task annotations so
+the SwarmKit translator boots the golden guest with the kernel the recipe
+pinned. Each task first **materializes its own writable copy** of the template
+under the rootfs dir (`Artifact.Materialize`, reflink/sparse-aware), because
+replicas must not share a read/write rootfs and a hardened daemon may not be
+able to write to the golden store at all. Removal deletes that copy and never
+the golden artifact. A missing artifact fails the task; there is no silent OCI
+fallback.
+
+Verified on the KVM node: a `goldsvc` service (label
+`swarmcracker.golden=ubuntu-24.04-docker@1.0.0`) booted to `multi-user.target`
+from `/usr/share/firecracker/vmlinux-runtime` with the recipe boot args, and
+`service rm` removed the per-task copy while the template's md5 stayed
+identical.
+
 Booting through the CLI is now wired: `swarmcracker vm create --golden
 <name[@version]>` resolves the artifact, marks the task with a prebuilt rootfs,
 and the executor/translator boot the recipe's own init with its boot args.
