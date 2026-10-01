@@ -44,6 +44,11 @@ type NetworkManager struct {
 	nodeDiscovery types.NodeDiscovery // SwarmKit node discovery provider
 	cniClient     *CNIClient          // CNI client for SwarmKit network attachments
 	pendingPeers  []string            // Peers queued before VXLAN init
+
+	// dnsmasqMu serializes the dnsmasq lifecycle. Without it, concurrent VM
+	// creations race to kill and restart the DHCP server, leaking orphaned
+	// instances and logging "Address already in use".
+	dnsmasqMu sync.Mutex
 }
 
 // TapDevice represents a TAP device.
@@ -733,6 +738,11 @@ func (nm *NetworkManager) setupNAT(ctx context.Context) error {
 
 // setupDHCP configures a minimal DHCP server using dnsmasq.
 func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
+	// Serialize the dnsmasq lifecycle: concurrent VM creations would otherwise
+	// race to kill and restart the server, leaking orphaned instances.
+	nm.dnsmasqMu.Lock()
+	defer nm.dnsmasqMu.Unlock()
+
 	if nm.config.Subnet == "" || nm.config.BridgeIP == "" {
 		return fmt.Errorf("subnet and bridge IP must be configured for DHCP")
 	}
@@ -785,6 +795,27 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		Str("gateway", gatewayIP.String()).
 		Msg("Setting up DHCP server")
 
+	// Reuse a healthy server instead of bouncing it on every VM creation.
+	if pid := nm.liveDnsmasqPID(nm.config.BridgeName); pid != "" {
+		log.Debug().
+			Str("bridge", nm.config.BridgeName).
+			Str("pid", pid).
+			Msg("DHCP server (dnsmasq) already running; reusing")
+		return nil
+	}
+
+	// The pid file lives in this process's private /tmp, so a server started by
+	// another SwarmCracker process (e.g. the daemon) is invisible to it. Fall
+	// back to a /proc scan, which is global, and reuse that server too instead
+	// of colliding on 192.168.127.1:53.
+	if pids := findDnsmasqPIDs(nm.config.BridgeName); len(pids) > 0 {
+		log.Debug().
+			Str("bridge", nm.config.BridgeName).
+			Strs("pids", pids).
+			Msg("DHCP server (dnsmasq) already running (detected via /proc); reusing")
+		return nil
+	}
+
 	// Kill any existing dnsmasq for this bridge via PID file (safe, no shell injection)
 	nm.killDnsmasqByPID(nm.config.BridgeName)
 	time.Sleep(100 * time.Millisecond) // Brief pause to ensure process is killed
@@ -802,12 +833,19 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	// Arguments:
 	// --interface: bind to bridge
 	// --bind-interfaces: only bind to specified interface
+	// --listen-address: also restrict DNS to the bridge gateway. Without it
+	//   dnsmasq still binds loopback (127.0.0.1:53 / [::1]:53), which collides
+	//   with the host resolver and with a second instance on another bridge
+	//   ("failed to create listening socket ... Address already in use").
+	// --except-interface=lo: never touch loopback.
 	// --dhcp-range: define DHCP pool
 	// --dhcp-option=3: set gateway
 	// --dhcp-option=6: set DNS (use gateway as DNS proxy)
 	cmd := execCommand("dnsmasq",
 		"--interface", nm.config.BridgeName,
 		"--bind-interfaces",
+		"--listen-address", gatewayIP.String(),
+		"--except-interface=lo",
 		"--dhcp-range", fmt.Sprintf("%s,%s,12h", startIP.String(), endIP.String()),
 		"--dhcp-option", fmt.Sprintf("3,%s", gatewayIP.String()),
 		"--dhcp-option", fmt.Sprintf("6,%s", gatewayIP.String()),
@@ -875,7 +913,9 @@ func (nm *NetworkManager) teardownNAT() error {
 	return nil
 }
 
-// cleanupDnsmasq kills dnsmasq instances related to swarmcracker via PID files.
+// cleanupDnsmasq kills dnsmasq instances related to swarmcracker, both via PID
+// files and by scanning running processes, so orphans from earlier runs or a
+// mid-startup replacement are reaped too.
 func (nm *NetworkManager) cleanupDnsmasq() error {
 	// Kill by per-bridge pid files (safe, no shell injection).
 	// Matches dnsmasq-<bridge>.pid files created by setupDHCP.
@@ -892,8 +932,71 @@ func (nm *NetworkManager) cleanupDnsmasq() error {
 		}
 	}
 
+	// Note: do NOT sweep /proc and kill every dnsmasq bound to our bridges.
+	// The daemon and a standalone CLI run with separate private /tmp
+	// namespaces, so a client that reuses the daemon's server would otherwise
+	// tear it down on exit. Only instances this process started (tracked via
+	// its own pid files) are removed here.
+
 	log.Info().Msg("dnsmasq cleaned up")
 	return nil
+}
+
+// liveDnsmasqPID returns the PID of a running dnsmasq bound to bridgeName, or
+// "" when none is tracked and alive.
+func (nm *NetworkManager) liveDnsmasqPID(bridgeName string) string {
+	pidFile := "/tmp/dnsmasq-" + bridgeName + ".pid"
+	data, err := os.ReadFile(pidFile)
+	if err != nil {
+		return ""
+	}
+	pid := strings.TrimSpace(string(data))
+	if pid == "" {
+		return ""
+	}
+	// Signal 0 probes for liveness without affecting the process.
+	if err := execCommand("kill", "-0", pid).Run(); err != nil {
+		return ""
+	}
+	return pid
+}
+
+// findDnsmasqPIDs returns the PIDs of running dnsmasq processes bound to the
+// given bridge, found by scanning /proc.
+func findDnsmasqPIDs(bridgeName string) []string {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var pids []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		argv := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+		if dnsmasqArgvMatches(argv, bridgeName) {
+			pids = append(pids, entry.Name())
+		}
+	}
+	return pids
+}
+
+// dnsmasqArgvMatches reports whether argv is a dnsmasq invocation bound to
+// bridgeName via --interface.
+func dnsmasqArgvMatches(argv []string, bridgeName string) bool {
+	if len(argv) == 0 || !strings.Contains(filepath.Base(argv[0]), "dnsmasq") {
+		return false
+	}
+	for i := 0; i < len(argv)-1; i++ {
+		if argv[i] == "--interface" && argv[i+1] == bridgeName {
+			return true
+		}
+	}
+	return false
 }
 
 // killDnsmasqByPID reads the per-bridge dnsmasq PID file and sends SIGTERM.
