@@ -1,20 +1,21 @@
 # SwarmCracker Cluster — libvirt (KVM) Inventory
 #
 # Used with: ansible-playbook -i inventory/libvirt site.yml
-# IPs are assigned by libvirt DHCP — update after `vagrant up`
+# IPs are assigned by libvirt DHCP — update after the VMs are up.
 #
 # Network layout:
 #   - eth0: vagrant-libvirt network (192.168.121.x) — SSH access
 #   - eth1: swarmcracker network (192.168.122.x) — cluster communication
 #
-# Updated: 2026-05-02
+# SSH: supply your private key via ~/.ssh/config, an SSH agent, or
+#      `ansible-playbook --private-key <path>`.
 
 [managers]
-swarm-manager ansible_host=192.168.121.155 ansible_user=vagrant manager_ip=192.168.122.10 ansible_ssh_private_key_file=/home/kali/.openclaw/workspace-hermione/projects/development/swarmcracker/test-automation/.vagrant/machines/manager/libvirt/private_key
+swarm-manager ansible_host=192.168.121.155 ansible_user=vagrant manager_ip=192.168.122.10
 
 [workers]
-swarm-worker-1 ansible_host=192.168.121.129 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace-hermione/projects/development/swarmcracker/test-automation/.vagrant/machines/worker1/libvirt/private_key
-swarm-worker-2 ansible_host=192.168.121.43 ansible_user=vagrant ansible_ssh_private_key_file=/home/kali/.openclaw/workspace-hermione/projects/development/swarmcracker/test-automation/.vagrant/machines/worker2/libvirt/private_key
+swarm-worker-1 ansible_host=192.168.121.129 ansible_user=vagrant
+swarm-worker-2 ansible_host=192.168.121.43 ansible_user=vagrant
 
 [swarmcracker:children]
 managers
@@ -27,6 +28,5 @@ ansible_become_method=sudo
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
 # Token must be obtained from manager: swarmctl cluster inspect --show-join-token
 # DO NOT hardcode tokens here - use Ansible vault or pass via -e flag
-# Example: ansible-playbook -e "worker_join_token=$TOKEN"
 worker_manager_host=192.168.121.155
 worker_manager_port=4242
