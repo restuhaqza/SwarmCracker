@@ -91,9 +91,8 @@ infrastructure/ansible/
 ### Test Automation (`test-automation/`)
 ```
 test-automation/
-├── README.md              ✅ Standard
-├── README.ansible-testing.md  ✅ Descriptive suffix
-└── vagrant-fixes.md      ✅ Kebab-case (was vagrant-fixes.md)
+├── multinode/             ✅ Multi-node lab (cluster-lab.sh + README.md)
+└── scripts/               ✅ Standalone helpers
 ```
 
 ### Test Directories (`test/`)
@@ -119,7 +118,6 @@ test/
 | `installation.md` | `installation.md` | `docs/user/getting-started/` |
 | `test-report.md` | `test-report.md` | `infrastructure/ansible/` |
 | `verification-report.md` | `verification-report.md` | `infrastructure/ansible/` |
-| `vagrant-fixes.md` | `vagrant-fixes.md` | `test-automation/` |
 | `firecracker-setup.md` | `firecracker-setup.md` | `test/integration/` |
 
 ### Update References

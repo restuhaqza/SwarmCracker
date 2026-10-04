@@ -38,7 +38,7 @@ pkg/
 infrastructure/
 ├── ansible/              # Cluster deployment roles
 └── observability/        # Prometheus, Grafana configs
-test-automation/          # E2E test scripts (VMs: contrib/vagrant/)
+test-automation/          # tests + multi-node lab (test-automation/multinode/)
 docs/                     # Documentation (you are here)
 ```
 
@@ -71,20 +71,18 @@ Unit tests are in `pkg/*/*_test.go`. Integration tests need a cluster.
 
 ## Test Cluster
 
-The Vagrant setup in `contrib/vagrant/` gives you a multi-node test cluster:
+`make test-e2e` runs the Go E2E suite against a local swarmd.
+
+For a real multi-node cluster with microVMs placed on separate nodes, the
+single-host lab creates nested VMs and forms the cluster for you:
 
 ```bash
-cd contrib/vagrant
-vagrant up
+sudo test-automation/multinode/cluster-lab.sh up 2   # create + provision + cluster
+sudo test-automation/multinode/cluster-lab.sh test   # cross-host matrix
+sudo test-automation/multinode/cluster-lab.sh destroy
 ```
 
-Manager at 192.168.121.18, workers at .153 and .59.
-
-Ansible deploys everything:
-
-```bash
-ansible-playbook -i inventory/libvirt site.yml
-```
+Ansible remains the advanced/production option (`infrastructure/ansible/`).
 
 ---
 
@@ -135,9 +133,9 @@ curl http://127.0.0.1:8500/v1/catalog/service/swarmcracker-vxlan
 ## Testing Changes
 
 1. Build: `make all`
-2. Upload to test VM: `vagrant upload build/swarmd-firecracker /tmp/ worker1`
-3. Install: `vagrant ssh worker1 -c "sudo mv /tmp/swarmd-firecracker /usr/local/bin/"`
-4. Restart: `vagrant ssh worker1 -c "sudo systemctl restart swarmcracker-worker"`
+2. Bring up a lab node: `sudo test-automation/multinode/cluster-lab.sh up 2`
+3. Copy the new binary: `scp build/swarmd-firecracker root@<node-ip>:/tmp/`
+4. Install + restart: `ssh root@<node-ip> "mv /tmp/swarmd-firecracker /usr/local/bin/ && systemctl restart swarmcracker-worker"`
 5. Check logs: `sudo journalctl -u swarmcracker-worker -f`
 
 ---
