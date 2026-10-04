@@ -212,7 +212,7 @@ func (t *taskTranslatorImpl) buildNetworkInterfaces(task *types.Task) []map[stri
 		iface := map[string]interface{}{
 			"iface_id":      ifaceID,
 			"host_dev_name": tapName,
-			"guest_mac":     generateMAC(i),
+			"guest_mac":     generateMAC(task.ID, i),
 		}
 
 		interfaces = append(interfaces, iface)
@@ -221,15 +221,19 @@ func (t *taskTranslatorImpl) buildNetworkInterfaces(task *types.Task) []map[stri
 	return interfaces
 }
 
-// generateMAC creates a MAC address for a network interface.
-func generateMAC(index int) string {
-	// Generate a unique MAC address based on index
-	// Format: AA:FC:XX:XX:XX:XX where XX is derived from index
-	return fmt.Sprintf("AA:FC:%02X:%02X:%02X:%02X",
-		(byte(index)>>4)&0xFF,
-		byte(index)&0xFF,
-		(byte(index)>>2)&0xFF,
-		(byte(index)*3)&0xFF)
+// generateMAC creates a deterministic, locally-administered unicast MAC for a
+// task's network interface.
+//
+// The MAC must be unique per task and per interface. Every microVM across every
+// node shares a single L2 segment over the VXLAN overlay, so deriving the MAC
+// only from the interface index (as before) made every VM's first NIC identical
+// (AA:FC:00:00:00:00). Duplicate MACs in a shared bridge domain cause the Linux
+// bridge FDB to flap between the local TAP and the VXLAN peer, which breaks
+// cross-host traffic. Hashing the task ID together with the interface index
+// keeps MACs globally unique, deterministic, and stable across restarts.
+func generateMAC(taskID string, index int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", taskID, index)))
+	return fmt.Sprintf("AA:FC:%02X:%02X:%02X:%02X", sum[0], sum[1], sum[2], sum[3])
 }
 
 // getRootfsPath returns the rootfs path for a task.
