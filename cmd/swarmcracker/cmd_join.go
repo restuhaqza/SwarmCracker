@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -247,24 +248,23 @@ func runJoin(cfg *joinConfig) error {
 }
 
 func validateManagerConnectivity(managerAddr string) error {
-	// Simple TCP connectivity check
-	// Extract host:port
-	host := managerAddr
-	if !strings.Contains(managerAddr, ":") {
-		host = managerAddr + ":4242"
+	// Plain TCP dial. This intentionally does not shell out to `nc` or use a
+	// bash /dev/tcp helper: `nc` is not guaranteed to be installed on minimal
+	// worker images, and the previous fallback built a malformed path
+	// (`/dev/tcp/<host> <port>` instead of `/dev/tcp/<host>/<port>`), so joins
+	// failed even when the manager was reachable.
+	addr := managerAddr
+	if !strings.Contains(addr, ":") {
+		addr += ":4242"
 	}
 
-	// Use nc or timeout to check connectivity
-	cmd := exec.Command("timeout", "5", "nc", "-z", strings.Split(host, ":")[0], strings.Split(host, ":")[1])
-	if err := cmd.Run(); err != nil {
-		// Fallback: try with bash
-		cmd = exec.Command("bash", "-c", fmt.Sprintf("timeout 5 bash -c 'echo > /dev/tcp/%s'", strings.ReplaceAll(host, ":", " ")))
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("TCP connectivity check failed")
-		}
+	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		return fmt.Errorf("TCP connectivity check to %s failed: %w", addr, err)
 	}
+	_ = conn.Close()
 
-	log.Debug().Str("manager", managerAddr).Msg("Manager connectivity validated")
+	log.Debug().Str("manager", addr).Msg("Manager connectivity validated")
 	return nil
 }
 
