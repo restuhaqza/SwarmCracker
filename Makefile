@@ -222,9 +222,8 @@ help:
 	@echo "  dev              Start development server with hot reload"
 	@echo "  install-tools    Install development tools"
 	@echo "  mocks            Generate mocks"
-	@echo "  vagrant-up       Start Vagrant environment"
-	@echo "  vagrant-halt     Stop Vagrant environment"
-	@echo "  vagrant-destroy  Destroy Vagrant environment"
+	@echo "  lab              Create a multi-node dev lab (nested VMs)"
+	@echo "  lab-down         Destroy the multi-node dev lab"
 	@echo "  help             Show this help message"
 
 # Create and push a release tag
@@ -235,7 +234,7 @@ tag:
 	@echo "Tag $(TAG) created. Push with:"
 	@echo "  git push origin $(TAG)"
 
-.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks help vagrant-up vagrant-halt vagrant-destroy binaries
+.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
 
 # Download embedded static binaries for VM rootfs injection
 .PHONY: binaries
@@ -253,18 +252,14 @@ pkg/image/binaries/busybox-amd64:
 	curl -L -o $@ https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
 	chmod +x $@
 
-# Vagrant helpers
-vagrant-up:
-	@echo "Starting Vagrant environment..."
-	cd contrib/vagrant && vagrant up
+# Multi-node development lab (creates nested VMs on this KVM host)
+lab:
+	@echo "Bringing up multi-node SwarmCracker lab..."
+	sudo ./test-automation/multinode/cluster-lab.sh up $(or $(N),2)
 
-vagrant-halt:
-	@echo "Stopping Vagrant environment..."
-	cd contrib/vagrant && vagrant halt
-
-vagrant-destroy:
-	@echo "Destroying Vagrant environment..."
-	cd contrib/vagrant && vagrant destroy -f
+lab-down:
+	@echo "Destroying multi-node SwarmCracker lab..."
+	sudo ./test-automation/multinode/cluster-lab.sh destroy
 
 # Verify Go version alignment across all config files
 check-go-version:

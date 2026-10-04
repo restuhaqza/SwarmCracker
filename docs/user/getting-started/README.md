@@ -102,12 +102,13 @@ file /usr/share/firecracker/vmlinux
 
 ### Local Test Cluster
 
-The `contrib/vagrant/` directory contains Vagrantfiles for a local test cluster:
+For a multi-node cluster with microVMs placed on separate nodes (VXLAN overlay),
+use the single-host lab:
 
 ```bash
-git clone https://github.com/restuhaqza/SwarmCracker
-cd SwarmCracker/contrib/vagrant
-vagrant up
+sudo test-automation/multinode/cluster-lab.sh up 2   # create + provision + cluster
+sudo test-automation/multinode/cluster-lab.sh test   # cross-host matrix
+sudo test-automation/multinode/cluster-lab.sh destroy
 ```
 
 ---

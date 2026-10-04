@@ -10,7 +10,7 @@
 |-------|-------|-------------|
 | **Unit** | Individual functions | `go test ./pkg/...` |
 | **Integration** | Component interactions | `go test -run Integration` |
-| **E2E** | Full cluster | `./test-automation/e2e.sh` |
+| **E2E** | Full cluster | `make test-e2e` |
 
 ---
 
@@ -68,8 +68,8 @@ go test -run Integration ./pkg/network/...
 ### E2E Tests
 
 ```bash
-# Requires running cluster
-./test-automation/e2e-test.sh
+# Runs the Go E2E suite via test/e2e/run.sh
+make test-e2e
 ```
 
 ---
@@ -78,11 +78,10 @@ go test -run Integration ./pkg/network/...
 
 ### Test Fixtures
 
-Located in `test-automation/fixtures/`:
+Located in `test/e2e/fixtures/`:
 
-- Sample rootfs images
+- Task builders used by the E2E suite
 - Test configurations
-- Mock Firecracker binaries
 
 ### Mock Components
 
