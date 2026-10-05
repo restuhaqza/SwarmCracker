@@ -35,20 +35,18 @@ infrastructure/ansible/
 
 ## Quick Start
 
-### 1. Bring up test VMs (KVM/libvirt — recommended)
+### 1. Provide hosts
+
+Ansible targets SSH-reachable Linux hosts with KVM. Point
+`inventory/<env>/hosts` at your machines and supply your SSH key via
+`~/.ssh/config`, an SSH agent, or `ansible-playbook --private-key <path>`.
+
+For a throwaway single-host lab with nested KVM VMs, the multi-node lab can
+create the hosts for you:
 
 ```bash
-# Prerequisites
-sudo apt-get install -y qemu-kvm libvirt-daemon-system vagrant
-vagrant plugin install vagrant-libvirt
-
-# Start cluster
-cd test-automation/
-VAGRANT_VAGRANTFILE=Vagrantfile.libvirt vagrant up
+sudo test-automation/multinode/cluster-lab.sh up 2
 ```
-
-> **Note:** VirtualBox is available but does not support nested virtualization
-> (Firecracker network passthrough fails). Use KVM/libvirt for MicroVM testing.
 
 ### 2. Deploy full cluster
 

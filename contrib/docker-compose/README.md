@@ -25,4 +25,4 @@ sudo swarmcracker cluster init --advertise-addr <IP>:4242
 sudo swarmcracker cluster join --token <TOKEN> <MANAGER_IP>:4242
 ```
 
-For Ansible-based production deployment: [Ansible Guide](../docs/user/guides/ansible.md)
+For Ansible-based production deployment: [Ansible Guide](../../infrastructure/ansible/README.md)

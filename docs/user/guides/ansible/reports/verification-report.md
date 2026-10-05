@@ -217,7 +217,7 @@ Wait for worker-2 to complete package installation (~10-15 minutes remaining).
 
 ### After All VMs Ready
 ```bash
-cd /home/kali/.openclaw/workspace/projects/swarmcracker/infrastructure/ansible
+cd infrastructure/ansible
 
 # Deploy full cluster
 ansible-playbook -i inventory/virtualbox site.yml

@@ -35,60 +35,49 @@ func showDeprecationWarning(newCommand string) {
 	fmt.Fprintln(os.Stderr)
 }
 
-// newDeprecatedInitCommand creates a deprecated init command wrapper
-func newDeprecatedInitCommand() *cobra.Command {
-	// Just reuse the actual init command - don't recreate logic
-	cmd := newInitCommand()
-	cmd.Deprecated = "Use 'swarmcracker cluster init' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("cluster init")
-		setupLogging(logLevel)
+// wrapDeprecated turns an existing command into a deprecated alias for
+// newCommand (reported as "swarmcracker <newCommand>").
+//
+// It preserves the wrapped command's own PreRun hook by chaining it after the
+// deprecation notice. Dropping that hook silently broke commands whose PreRun
+// captures positional state — most notably `join <manager-addr>`, which stores
+// the manager address in cfg.ManagerAddr. Without it, `swarmcracker join` always
+// probed an empty address (":4242") and failed with "cannot reach manager".
+func wrapDeprecated(cmd *cobra.Command, newCommand string) *cobra.Command {
+	original := cmd.PreRun
+	cmd.Deprecated = fmt.Sprintf("Use 'swarmcracker %s' instead", newCommand)
+	cmd.PreRun = func(c *cobra.Command, args []string) {
+		showDeprecationWarning(newCommand)
+		if original != nil {
+			original(c, args)
+		}
 	}
 	return cmd
+}
+
+// newDeprecatedInitCommand creates a deprecated init command wrapper
+func newDeprecatedInitCommand() *cobra.Command {
+	return wrapDeprecated(newInitCommand(), "cluster init")
 }
 
 // newDeprecatedJoinCommand creates a deprecated join command wrapper
 func newDeprecatedJoinCommand() *cobra.Command {
-	cmd := newJoinCommand()
-	cmd.Deprecated = "Use 'swarmcracker cluster join' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("cluster join")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newJoinCommand(), "cluster join")
 }
 
 // newDeprecatedLeaveCommand creates a deprecated leave command wrapper
 func newDeprecatedLeaveCommand() *cobra.Command {
-	cmd := newLeaveCommand()
-	cmd.Deprecated = "Use 'swarmcracker cluster leave' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("cluster leave")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newLeaveCommand(), "cluster leave")
 }
 
 // newDeprecatedDeinitCommand creates a deprecated deinit command wrapper
 func newDeprecatedDeinitCommand() *cobra.Command {
-	cmd := newDeinitCommand()
-	cmd.Deprecated = "Use 'swarmcracker cluster deinit' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("cluster deinit")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newDeinitCommand(), "cluster deinit")
 }
 
 // newDeprecatedResetCommand creates a deprecated reset command wrapper
 func newDeprecatedResetCommand() *cobra.Command {
-	cmd := newResetCommand()
-	cmd.Deprecated = "Use 'swarmcracker cluster reset' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("cluster reset")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newResetCommand(), "cluster reset")
 }
 
 // newDeprecatedRunCommand creates a deprecated run command that redirects to vm create
@@ -96,14 +85,9 @@ func newDeprecatedRunCommand() *cobra.Command {
 	// Reuse vm create command but with deprecation warning
 	cmd := newVMCreateCommand()
 	cmd.Use = "run <image>"
-	cmd.Deprecated = "Use 'swarmcracker vm create' instead"
 	cmd.Short = "Run a container as a microVM (DEPRECATED)"
 	cmd.Long = "Run a container as a microVM.\n\n" + deprecationWarning + "Use: swarmcracker vm create"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("vm create " + args[0])
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(cmd, "vm create")
 }
 
 // newDeprecatedDeployCommand creates a deprecated deploy command wrapper
@@ -149,71 +133,35 @@ func newDeprecatedValidateCommand() *cobra.Command {
 // newDeprecatedListCommand creates a deprecated list command wrapper
 func newDeprecatedListCommand() *cobra.Command {
 	// Reuse existing list command
-	cmd := newListCommand()
-	cmd.Deprecated = "Use 'swarmcracker vm ls' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("vm ls")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newListCommand(), "vm ls")
 }
 
 // newDeprecatedStatusCommand creates a deprecated status command wrapper
 func newDeprecatedStatusCommand() *cobra.Command {
 	// Reuse existing status command
-	cmd := newStatusCommand()
-	cmd.Deprecated = "Use 'swarmcracker cluster status' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("cluster status")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newStatusCommand(), "cluster status")
 }
 
 // newDeprecatedLogsCommand creates a deprecated logs command wrapper
 func newDeprecatedLogsCommand() *cobra.Command {
 	// Reuse existing logs command
-	cmd := newLogsCommand()
-	cmd.Deprecated = "Use 'swarmcracker vm logs' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("vm logs")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newLogsCommand(), "vm logs")
 }
 
 // newDeprecatedStopCommand creates a deprecated stop command wrapper
 func newDeprecatedStopCommand() *cobra.Command {
 	// Reuse existing stop command
-	cmd := newStopCommand()
-	cmd.Deprecated = "Use 'swarmcracker vm stop' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("vm stop")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newStopCommand(), "vm stop")
 }
 
 // newDeprecatedMetricsCommand creates a deprecated metrics command wrapper
 func newDeprecatedMetricsCommand() *cobra.Command {
 	// Reuse existing metrics command
-	cmd := newMetricsCommand()
-	cmd.Deprecated = "Use 'swarmcracker cluster status --metrics' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("cluster status --metrics")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newMetricsCommand(), "cluster status --metrics")
 }
 
 // newDeprecatedSnapshotCommand creates a deprecated snapshot command wrapper
 func newDeprecatedSnapshotCommand() *cobra.Command {
 	// Reuse existing snapshot command
-	cmd := newSnapshotCommand()
-	cmd.Deprecated = "Use 'swarmcracker vm snapshot' instead"
-	cmd.PreRun = func(cmd *cobra.Command, args []string) {
-		showDeprecationWarning("vm snapshot")
-		setupLogging(logLevel)
-	}
-	return cmd
+	return wrapDeprecated(newSnapshotCommand(), "vm snapshot")
 }

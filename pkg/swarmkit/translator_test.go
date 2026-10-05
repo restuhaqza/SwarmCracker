@@ -602,7 +602,7 @@ func TestGenerateMAC(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mac := generateMAC(tt.index)
+			mac := generateMAC("task-abc", tt.index)
 
 			// Check format: AA:FC:XX:XX:XX:XX
 			if len(mac) != 17 {
@@ -620,18 +620,26 @@ func TestGenerateMAC(t *testing.T) {
 				t.Errorf("MAC has %d parts, want 6", len(parts))
 			}
 
-			// Check deterministic: same index produces same MAC
-			mac2 := generateMAC(tt.index)
+			// Check deterministic: same task+index produces same MAC
+			mac2 := generateMAC("task-abc", tt.index)
 			if mac != mac2 {
-				t.Errorf("generateMAC(%d) not deterministic: %s vs %s", tt.index, mac, mac2)
+				t.Errorf("generateMAC not deterministic: %s vs %s", mac, mac2)
 			}
 
 			// Check different indices produce different MACs (for small indices)
 			if tt.index < 10 {
-				macDiff := generateMAC(tt.index + 1)
+				macDiff := generateMAC("task-abc", tt.index+1)
 				if mac == macDiff {
-					t.Errorf("generateMAC(%d) == generateMAC(%d), want different", tt.index, tt.index+1)
+					t.Errorf("generateMAC(index=%d) == generateMAC(index=%d), want different", tt.index, tt.index+1)
 				}
+			}
+
+			// Check different tasks on the same interface index do not collide.
+			// This is what prevents duplicate-MAC FDB flapping across nodes in
+			// the shared VXLAN L2 segment.
+			macOtherTask := generateMAC("task-xyz", tt.index)
+			if mac == macOtherTask {
+				t.Errorf("generateMAC(task-abc,%d) == generateMAC(task-xyz,%d), want different", tt.index, tt.index)
 			}
 		})
 	}
