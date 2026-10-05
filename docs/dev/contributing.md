@@ -47,7 +47,7 @@ pkg/
 
 docs/                # User + dev docs
 infrastructure/      # Ansible deployment
-test-automation/     # E2E test scripts (VMs: contrib/vagrant/)
+test-automation/     # tests + multi-node lab (test-automation/multinode/)
 ```
 
 ---
@@ -86,15 +86,20 @@ go test ./pkg/network/...
 go test -cover ./pkg/executor/...
 ```
 
-### Integration Tests
+### Integration / E2E Tests
 
-Need a cluster. Start the test VMs with Vagrant:
+The blessed development path is the Go E2E suite:
 
 ```bash
-cd contrib/vagrant
-vagrant up
-cd ../../test-automation
-./e2e-test-suite.sh
+make test-e2e
+```
+
+For a real multi-node cluster (microVMs scheduled across nodes over the VXLAN
+overlay), use the single-host lab:
+
+```bash
+sudo test-automation/multinode/cluster-lab.sh up 2
+sudo test-automation/multinode/cluster-lab.sh test
 ```
 
 ---

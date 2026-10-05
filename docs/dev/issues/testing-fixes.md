@@ -4,10 +4,10 @@
 
 During end-to-end testing of SwarmCracker with Firecracker microVMs on QEMU/KVM Vagrant cluster, several issues were discovered that prevent the system from working correctly. This document outlines the fixes needed.
 
-> **Historical note:** This is a point-in-time issue list. The Vagrantfiles have since moved
-> from `test-automation/` to [`contrib/vagrant/`](../../../contrib/vagrant/), and the current
+> **Historical note:** This is a point-in-time issue list from an early Vagrant-based
+> test cluster that has since been removed. It is kept for context only. The current
 > test flow is documented in [docs/dev/testing/](../testing/) and
-> [docs/reports/e2e-two-vm-2026-09-21.md](../../reports/e2e-two-vm-2026-09-21.md).
+> [docs/reports/e2e-multihost-nested-2026-10-04.md](../../reports/e2e-multihost-nested-2026-10-04.md).
 
 ---
 
