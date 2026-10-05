@@ -138,8 +138,8 @@ Read our [Security Policy](SECURITY.md) and [Security Guide](docs/dev/security.m
 ## Releases
 
 ```bash
-curl -LO https://github.com/restuhaqza/SwarmCracker/releases/download/v0.9.2/swarmcracker-v0.9.2-linux-amd64.tar.gz
-tar xzf swarmcracker-v0.9.2-linux-amd64.tar.gz
+curl -LO https://github.com/restuhaqza/SwarmCracker/releases/download/v0.10.0/swarmcracker-v0.10.0-linux-amd64.tar.gz
+tar xzf swarmcracker-v0.10.0-linux-amd64.tar.gz
 ```
 
 [All releases](https://github.com/restuhaqza/SwarmCracker/releases)
