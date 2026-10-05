@@ -89,7 +89,7 @@ User → swarmcracker CLI → gRPC → swarmd-firecracker (manager)
 
 | Component | Version |
 |-----------|---------|
-| SwarmCracker | v0.9.2+ |
+| SwarmCracker | v0.10.0+ |
 | Firecracker | v1.15.1 |
 | SwarmKit | v2.1.1 |
 | Go | 1.26 |

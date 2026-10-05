@@ -12,7 +12,7 @@ This file helps AI agents (and humans) understand the SwarmCracker project setup
 
 **Repo:** github.com/restuhaqza/swarmcracker
 **Language:** Go 1.26+
-**Status:** v0.9.2 — actively developed
+**Status:** v0.10.0 — actively developed
 
 ---
 
@@ -593,7 +593,7 @@ require (
 
 ## 📝 Notes
 
-- This project is actively developed - v0.9.2
+- This project is actively developed - v0.10.0
 - Test coverage is improving toward 85% target
 - Documentation is actively maintained
 - Contributions welcome - see CONTRIBUTING.md
