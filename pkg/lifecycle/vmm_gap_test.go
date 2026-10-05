@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -420,6 +422,17 @@ func TestHardShutdown_WithMockSocket(t *testing.T) {
 func TestForceKillVM_ErrorPaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
+	// A PID that can never be allocated: kernel PIDs are 1..pid_max-1, so
+	// pid_max itself is always non-existent. Hardcoded guesses (e.g. 12345)
+	// can collide with a real process on the host, making the kill fail with
+	// EPERM instead of ESRCH.
+	nonExistentPID := 4194304
+	if data, err := os.ReadFile("/proc/sys/kernel/pid_max"); err == nil {
+		if n, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && n > 0 {
+			nonExistentPID = n
+		}
+	}
+
 	vmm := &VMMManager{
 		config: &ManagerConfig{
 			SocketDir: tmpDir,
@@ -435,7 +448,7 @@ func TestForceKillVM_ErrorPaths(t *testing.T) {
 	}{
 		{
 			name:        "non-existent process",
-			pid:         99999,
+			pid:         nonExistentPID,
 			expectError: false, // Already-finished process is treated as a successful kill
 		},
 		{
@@ -450,7 +463,7 @@ func TestForceKillVM_ErrorPaths(t *testing.T) {
 		},
 		{
 			name:        "valid but non-existent PID",
-			pid:         12345,
+			pid:         nonExistentPID,
 			expectError: false, // Already-finished process is treated as a successful kill
 		},
 	}
