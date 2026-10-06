@@ -226,10 +226,12 @@ git commit -m "feat(website): scaffold Astro landing site with build verificatio
 
 - [ ] **Step 1: Add head assertions to the harness and confirm failure**
 
-Append to `REQUIRED_TEXT` in `website/scripts/verify-build.mjs`: `'<meta name="description" content="Firecracker microVMs'` and `'rel="canonical" href="https://swarmcracker.com/"'`. Append to `REQUIRED_LINKS`: `'https://docs.swarmcracker.com'`.
+Append to `REQUIRED_TEXT` in `website/scripts/verify-build.mjs`: `'Firecracker microVMs with SwarmKit orchestration'` and `'rel="canonical" href="https://swarmcracker.com/"'`.
 
 Run: `cd website && npm run verify`
-Expected: FAIL listing the missing description/canonical/docs link.
+Expected: FAIL listing the missing description and canonical link.
+
+Note: the `https://docs.swarmcracker.com` link assertion is added in Task 3, which is where the link is first rendered.
 
 - [ ] **Step 2: Write `site.ts` with the real values**
 
@@ -265,6 +267,7 @@ git commit -m "feat(website): add single-source content module and document head
 **Files:**
 - Create: `website/src/components/Nav.astro`
 - Create: `website/src/components/Footer.astro`
+- Modify: `website/src/layouts/BaseLayout.astro`
 - Modify: `website/src/pages/index.astro`
 - Modify: `website/scripts/verify-build.mjs`
 
@@ -274,14 +277,14 @@ git commit -m "feat(website): add single-source content module and document head
 
 - [ ] **Step 1: Extend the harness and confirm failure**
 
-Append the nav/footer link hrefs to `REQUIRED_LINKS`: `'https://github.com/restuhaqza/SwarmCracker'`, `'https://github.com/restuhaqza/SwarmCracker/releases'`, `'https://github.com/restuhaqza/SwarmCracker/blob/main/LICENSE'`, and `'#quickstart'`.
+Append the nav/footer link hrefs to `REQUIRED_LINKS`: `'https://github.com/restuhaqza/SwarmCracker'`, `'https://github.com/restuhaqza/SwarmCracker/releases'`, `'https://github.com/restuhaqza/SwarmCracker/blob/main/LICENSE'`, `'https://docs.swarmcracker.com'`, and `'#quickstart'`.
 
 Run: `cd website && npm run verify`
 Expected: FAIL listing the missing links.
 
 - [ ] **Step 2: Implement `Nav.astro` and `Footer.astro`**
 
-Add the skip link `<a href="#main" class="skip-link">Skip to content</a>` in `Nav`, and give `BaseLayout`'s `<main id="main">`. Mark the current-section link with `aria-current="page"` only for the active hash (CSS `:target` is insufficient; keep it static and omit `aria-current`). The GitHub link reserves fixed width for an optional star count.
+`Nav` renders the Docs link (`links.docs`), the GitHub link, and the "Get Started" link. Add the skip link `<a href="#main" class="skip-link">Skip to content</a>` as the first focusable element in `Nav`, and change `BaseLayout`'s `<main>` to `<main id="main">`. Omit `aria-current` (a static page has no active hash link). The GitHub link reserves fixed width for an optional star count.
 
 - [ ] **Step 3: Wire into `index.astro`**
 
