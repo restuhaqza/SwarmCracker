@@ -11,6 +11,9 @@ export const REQUIRED_TEXT = [
   'Read the docs',
   '$ swarmcracker service create --name web --image nginx:alpine --replicas 3',
   'service &quot;web&quot; converged (3/3 replicas)',
+  '87%',
+  '70/70',
+  'Per-VM kernel',
 ];
 export const REQUIRED_LINKS = [
   'https://github.com/restuhaqza/swarmcracker',
