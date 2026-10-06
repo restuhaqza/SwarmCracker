@@ -8,6 +8,9 @@ export const REQUIRED_TEXT = [
   'SwarmCracker',
   'Firecracker microVMs with SwarmKit orchestration',
   'rel="canonical" href="https://swarmcracker.com/"',
+  'Read the docs',
+  '$ swarmcracker service create --name web --image nginx:alpine --replicas 3',
+  'service &quot;web&quot; converged (3/3 replicas)',
 ];
 export const REQUIRED_LINKS = [
   'https://github.com/restuhaqza/swarmcracker',

@@ -1,0 +1,106 @@
+---
+import { site, links } from '../data/site';
+import Terminal from './Terminal.astro';
+---
+
+<section class="hero">
+  <div class="hero-content">
+    <h1 class="hero-title">{site.name}</h1>
+    <p class="hero-subhead">{site.description}</p>
+    <div class="hero-ctas">
+      <a href="#quickstart" class="cta-button cta-primary">Install</a>
+      <a href={links.docs} class="cta-button cta-secondary">Read the docs</a>
+    </div>
+  </div>
+  <div class="hero-terminal">
+    <Terminal />
+  </div>
+</section>
+
+<style>
+  .hero {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 4rem 1.5rem;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 3rem;
+    align-items: center;
+  }
+
+  @media (min-width: 1024px) {
+    .hero {
+      grid-template-columns: 1fr 1fr;
+      gap: 4rem;
+      padding: 6rem 1.5rem;
+    }
+  }
+
+  .hero-title {
+    font-size: clamp(2.5rem, 5vw, 4rem);
+    font-weight: 700;
+    line-height: 1.1;
+    margin: 0 0 1.5rem;
+    text-wrap: balance;
+    color: var(--sc-text);
+  }
+
+  .hero-subhead {
+    font-size: clamp(1.125rem, 2vw, 1.25rem);
+    line-height: 1.6;
+    color: var(--sc-text-muted);
+    margin: 0 0 2rem;
+    max-width: 40rem;
+  }
+
+  .hero-ctas {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+  }
+
+  .cta-button {
+    display: inline-block;
+    padding: 0.875rem 1.75rem;
+    font-size: 1rem;
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: 0.5rem;
+    transition: all 0.15s;
+    text-align: center;
+  }
+
+  .cta-primary {
+    background: var(--sc-orange);
+    color: var(--sc-bg);
+  }
+
+  .cta-primary:hover {
+    background: var(--sc-orange-light);
+  }
+
+  .cta-primary:focus-visible {
+    outline: 2px solid var(--sc-orange-light);
+    outline-offset: 2px;
+  }
+
+  .cta-secondary {
+    background: transparent;
+    color: var(--sc-text);
+    border: 1px solid var(--sc-border);
+  }
+
+  .cta-secondary:hover {
+    background: var(--sc-surface);
+    border-color: var(--sc-text-muted);
+  }
+
+  .cta-secondary:focus-visible {
+    outline: 2px solid var(--sc-orange);
+    outline-offset: 2px;
+  }
+
+  .hero-terminal {
+    width: 100%;
+  }
+</style>

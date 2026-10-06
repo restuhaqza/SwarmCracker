@@ -1,0 +1,52 @@
+---
+import { terminalLines } from '../data/site';
+---
+
+<pre class="terminal"><code>{terminalLines.map((line, i) => (
+  <span class="terminal__line" style={`--i: ${i}`}>{line}</span>
+))}</code></pre>
+
+<style>
+  .terminal {
+    background: var(--sc-surface);
+    border: 1px solid var(--sc-border);
+    border-radius: 0.5rem;
+    padding: 1.5rem;
+    overflow-x: auto;
+    max-width: 100%;
+    margin: 0;
+  }
+
+  .terminal code {
+    font-family: var(--sc-font-code);
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--sc-text);
+    display: block;
+  }
+
+  .terminal__line {
+    display: block;
+    opacity: 0;
+    animation: reveal 0.3s ease forwards;
+    animation-delay: calc(var(--i) * 0.15s);
+  }
+
+  @keyframes reveal {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .terminal__line {
+      opacity: 1;
+      animation: none;
+    }
+  }
+</style>
