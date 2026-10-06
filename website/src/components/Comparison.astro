@@ -1,0 +1,111 @@
+---
+import { comparison } from '../data/site';
+---
+
+<section id="comparison" class="comparison" aria-labelledby="comparison-heading">
+  <h2 id="comparison-heading">How it compares</h2>
+  <div class="table-wrapper" role="region" aria-labelledby="comparison-caption" tabindex="0">
+    <table>
+      <caption id="comparison-caption">SwarmCracker vs. Docker vs. Kubernetes</caption>
+      <thead>
+        <tr>
+          <th scope="col">Aspect</th>
+          <th scope="col">SwarmCracker</th>
+          <th scope="col">Docker</th>
+          <th scope="col">Kubernetes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {comparison.map((row) => (
+          <tr>
+            <th scope="row">{row.aspect}</th>
+            <td>{row.swarmcracker}</td>
+            <td>{row.docker}</td>
+            <td>{row.kubernetes}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<style>
+  .comparison {
+    padding: 4rem 1.5rem;
+    max-width: 72rem;
+    margin: 0 auto;
+  }
+
+  h2 {
+    font-size: clamp(1.75rem, 3vw, 2.5rem);
+    font-weight: 700;
+    color: var(--sc-text);
+    text-align: center;
+    margin: 0 0 2rem;
+  }
+
+  .table-wrapper {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border: 1px solid var(--sc-border);
+    border-radius: 0.75rem;
+  }
+
+  .table-wrapper:focus {
+    outline: 2px solid var(--sc-orange);
+    outline-offset: 2px;
+  }
+
+  table {
+    width: 100%;
+    min-width: 40rem;
+    border-collapse: collapse;
+  }
+
+  caption {
+    padding: 1rem 1.5rem;
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--sc-text);
+    text-align: left;
+    caption-side: top;
+    background: var(--sc-surface);
+    border-bottom: 1px solid var(--sc-border);
+    border-radius: 0.75rem 0.75rem 0 0;
+  }
+
+  th,
+  td {
+    padding: 0.875rem 1rem;
+    text-align: left;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--sc-text-muted);
+    border-bottom: 1px solid var(--sc-border);
+  }
+
+  th[scope='col'] {
+    font-weight: 600;
+    color: var(--sc-text);
+    background: var(--sc-surface);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  th[scope='row'] {
+    font-weight: 600;
+    color: var(--sc-text);
+    white-space: nowrap;
+  }
+
+  tbody tr:last-child th,
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  tbody tr:hover {
+    background: var(--sc-surface);
+    filter: brightness(1.1);
+  }
+</style>
