@@ -1,0 +1,79 @@
+---
+import { features, type IconName } from '../data/site';
+
+const icons: Record<IconName, string> = {
+  kernel: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h16v16H4z"/><path d="M9 9h6v6H9z"/><path d="M12 4v5"/><path d="M12 15v5"/><path d="M4 12h5"/><path d="M15 12h5"/></svg>`,
+  swarm: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="4" r="2"/><circle cx="12" cy="20" r="2"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/><line x1="12" y1="9" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="15"/><line x1="9" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="15" y2="12"/></svg>`,
+  kvm: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>`,
+  boot: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`,
+  network: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`,
+  update: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10"/><path d="M20.49 15a9 9 0 0 1-14.85 3.36L1 14"/></svg>`,
+};
+---
+
+<section id="features" class="feature-grid">
+  <h2 class="feature-grid__heading">Why SwarmCracker?</h2>
+  <div class="feature-grid__cards">
+    {features.map((feature) => (
+      <article class="feature-card">
+        <div class="feature-card__icon" aria-hidden="true" set:html={icons[feature.icon]} />
+        <h3 class="feature-card__title">{feature.title}</h3>
+        <p class="feature-card__body">{feature.body}</p>
+      </article>
+    ))}
+  </div>
+</section>
+
+<style>
+  .feature-grid {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 4rem 1.5rem;
+  }
+
+  .feature-grid__heading {
+    font-size: clamp(1.5rem, 3vw, 2rem);
+    font-weight: 700;
+    color: var(--sc-text);
+    margin: 0 0 2.5rem;
+    text-align: center;
+  }
+
+  .feature-grid__cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: 1.5rem;
+  }
+
+  .feature-card {
+    background: var(--sc-surface);
+    border: 1px solid var(--sc-border);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    transition: border-color 0.15s;
+  }
+
+  .feature-card:hover {
+    border-color: var(--sc-orange);
+  }
+
+  .feature-card__icon {
+    color: var(--sc-orange);
+    margin-bottom: 1rem;
+    line-height: 0;
+  }
+
+  .feature-card__title {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--sc-text);
+    margin: 0 0 0.5rem;
+  }
+
+  .feature-card__body {
+    font-size: 0.9375rem;
+    color: var(--sc-text-muted);
+    line-height: 1.6;
+    margin: 0;
+  }
+</style>
