@@ -39,18 +39,18 @@ import { nav } from '../data/site';
     gap: 1.5rem;
   }
 
-  .desktop-nav a {
+  .desktop-nav a:not(.get-started-btn) {
     color: var(--sc-text-muted);
     text-decoration: none;
     font-size: 0.9375rem;
     transition: color 0.15s;
   }
 
-  .desktop-nav a:hover {
+  .desktop-nav a:not(.get-started-btn):hover {
     color: var(--sc-text);
   }
 
-  .desktop-nav a:focus-visible {
+  .desktop-nav a:not(.get-started-btn):focus-visible {
     outline: 2px solid var(--sc-orange);
     outline-offset: 3px;
     border-radius: 2px;
