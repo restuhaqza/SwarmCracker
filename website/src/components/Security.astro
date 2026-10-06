@@ -1,0 +1,61 @@
+---
+import { security } from '../data/site';
+---
+
+<section id="security" class="security" aria-labelledby="security-heading">
+  <h2 id="security-heading">Security</h2>
+  <ul class="security-list">
+    {security.map((point) => (
+      <li class="security-item">
+        <h3>{point.title}</h3>
+        <p>{point.body}</p>
+      </li>
+    ))}
+  </ul>
+</section>
+
+<style>
+  .security {
+    padding: 4rem 1.5rem;
+    max-width: 72rem;
+    margin: 0 auto;
+  }
+
+  h2 {
+    font-size: clamp(1.75rem, 3vw, 2.5rem);
+    font-weight: 700;
+    color: var(--sc-text);
+    text-align: center;
+    margin: 0 0 2rem;
+  }
+
+  .security-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1.5rem;
+  }
+
+  .security-item {
+    background: var(--sc-surface);
+    border: 1px solid var(--sc-border);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+  }
+
+  h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--sc-orange);
+    margin: 0 0 0.5rem;
+  }
+
+  p {
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--sc-text-muted);
+    margin: 0;
+  }
+</style>
