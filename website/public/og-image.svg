@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <rect width="1200" height="630" fill="#0B0B0F"/>
+  
+  <!-- Orange accent bar -->
+  <rect x="0" y="0" width="1200" height="8" fill="#FF6B35"/>
+  
+  <!-- Diamond icon -->
+  <path d="M100 280 L140 240 L180 280 L140 320 Z" fill="#FF6B35"/>
+  <circle cx="140" cy="280" r="20" fill="#0B0B0F"/>
+  
+  <!-- Title text -->
+  <text x="220" y="260" font-family="Inter, system-ui, sans-serif" font-size="64" font-weight="700" fill="#F2F2F5">
+    SwarmCracker
+  </text>
+  
+  <!-- Subtitle -->
+  <text x="220" y="310" font-family="Inter, system-ui, sans-serif" font-size="32" fill="#A0A0B0">
+    Firecracker microVMs for SwarmKit
+  </text>
+  
+  <!-- Accent line -->
+  <rect x="220" y="340" width="120" height="4" fill="#FF6B35"/>
+  
+  <!-- Tagline -->
+  <text x="220" y="390" font-family="Inter, system-ui, sans-serif" font-size="24" fill="#A0A0B0">
+    Hardware-isolated containers with Docker Swarm UX
+  </text>
+</svg>

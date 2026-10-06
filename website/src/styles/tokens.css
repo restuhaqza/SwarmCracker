@@ -1,3 +1,17 @@
+/*
+ * WCAG AA Contrast Audit (2026-10-06)
+ * Normal text requires 4.5:1, Large text (18pt+ or 14pt+ bold) requires 3:1
+ *
+ * --sc-text (#F2F2F5) on --sc-bg (#0B0B0F): 17.58:1 ✅ AAA
+ * --sc-text-muted (#A0A0B0) on --sc-surface (#14141B): 7.11:1 ✅ AA
+ * --sc-orange (#FF6B35) as text on --sc-bg (#0B0B0F): 6.93:1 ✅ AA
+ * --sc-orange (#FF6B35) as text on --sc-surface (#14141B): 6.46:1 ✅ AA
+ * --sc-orange-light (#FF8E53) as text on --sc-bg (#0B0B0F): 8.65:1 ✅ AA
+ * --sc-orange-light (#FF8E53) as text on --sc-surface (#14141B): 8.07:1 ✅ AA
+ *
+ * All pairs pass WCAG AA. Accent color #FF6B35 can be used as text.
+ */
+
 :root {
   /* Brand */
   --sc-orange: #FF6B35;
@@ -34,6 +48,32 @@ body {
   color: var(--sc-text);
   font-family: var(--sc-font-text);
   line-height: 1.6;
+}
+
+/* Accessibility: Focus ring for keyboard navigation */
+:focus-visible {
+  outline: 2px solid var(--sc-orange);
+  outline-offset: 2px;
+}
+
+/* Accessibility: Skip link (visually hidden until focused) */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  padding: 0.75rem 1.5rem;
+  background: var(--sc-orange);
+  color: var(--sc-bg);
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 0 0 0.5rem 0;
+}
+
+.skip-link:focus {
+  left: 0;
+  outline: 3px solid var(--sc-orange-light);
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: reduce) {
