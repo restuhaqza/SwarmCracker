@@ -1,0 +1,41 @@
+import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+
+const DIST = new URL('../dist/', import.meta.url).pathname;
+
+// Later tasks append to these. Each entry must appear verbatim.
+export const REQUIRED_TEXT = ['SwarmCracker'];
+export const REQUIRED_LINKS = [];
+
+export function runChecks(html, css) {
+  const failures = [];
+  for (const t of REQUIRED_TEXT) if (!html.includes(t)) failures.push(`missing text: ${t}`);
+  for (const l of REQUIRED_LINKS) if (!html.includes(l)) failures.push(`missing link: ${l}`);
+
+  const h1s = [...html.matchAll(/<h1\b/gi)].length;
+  if (h1s !== 1) failures.push(`expected exactly one <h1>, found ${h1s}`);
+
+  const insecure = [...html.matchAll(/href="http:\/\/[^"]+"/gi)].map((m) => m[0]);
+  if (insecure.length) failures.push(`insecure links: ${insecure.join(', ')}`);
+
+  for (const id of [...html.matchAll(/data-copy-target="#([^"]+)"/gi)].map((m) => m[1])) {
+    if (!html.includes(`id="${id}"`)) failures.push(`copy target not found: #${id}`);
+  }
+  if (html.includes('data-copy-target') && !/prefers-reduced-motion/.test(css)) {
+    failures.push('reduced-motion guard missing from built CSS');
+  }
+  return failures;
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const indexPath = join(DIST, 'index.html');
+  if (!existsSync(indexPath)) { console.error('dist/index.html not found — run npm run build'); process.exit(1); }
+  const html = readFileSync(indexPath, 'utf8');
+  const cssDir = join(DIST, '_astro');
+  const css = existsSync(cssDir)
+    ? readdirSync(cssDir).filter((f) => f.endsWith('.css')).map((f) => readFileSync(join(cssDir, f), 'utf8')).join('\n')
+    : '';
+  const failures = runChecks(html, css);
+  if (failures.length) { console.error('verify-build FAILED:\n- ' + failures.join('\n- ')); process.exit(1); }
+  console.log('verify-build OK');
+}
