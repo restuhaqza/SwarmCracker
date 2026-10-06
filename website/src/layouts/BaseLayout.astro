@@ -31,6 +31,10 @@ const { title, description, canonical } = Astro.props;
     <meta name="twitter:description" content={description} />
 
     <script is:inline>document.documentElement.classList.add('js')</script>
+    <script>
+      import { initCopy } from '../scripts/copy';
+      initCopy();
+    </script>
   </head>
   <body>
     <slot name="before-main" />
