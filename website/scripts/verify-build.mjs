@@ -16,6 +16,8 @@ export const REQUIRED_TEXT = [
   'Per-VM kernel',
   'Install SwarmCracker',
   'SwarmCracker vs. Docker vs. Kubernetes',
+  'curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash',
+  'swarmcracker service create --name web --image nginx:alpine --replicas 3',
 ];
 export const REQUIRED_LINKS = [
   'https://github.com/restuhaqza/swarmcracker',
@@ -51,9 +53,12 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   if (!existsSync(indexPath)) { console.error('dist/index.html not found — run npm run build'); process.exit(1); }
   const html = readFileSync(indexPath, 'utf8');
   const cssDir = join(DIST, '_astro');
-  const css = existsSync(cssDir)
+  const fileCss = existsSync(cssDir)
     ? readdirSync(cssDir).filter((f) => f.endsWith('.css')).map((f) => readFileSync(join(cssDir, f), 'utf8')).join('\n')
     : '';
+  // Also collect inline <style> blocks from index.html (Astro may inline small stylesheets).
+  const inlineCss = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/gi)].map((m) => m[1]).join('\n');
+  const css = fileCss + '\n' + inlineCss;
   const failures = runChecks(html, css);
   if (failures.length) { console.error('verify-build FAILED:\n- ' + failures.join('\n- ')); process.exit(1); }
   console.log('verify-build OK');

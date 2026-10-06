@@ -1,0 +1,149 @@
+---
+import { quickstart } from '../data/site';
+---
+
+<section id="quickstart" class="quickstart" aria-labelledby="quickstart-heading">
+  <h2 id="quickstart-heading">Quickstart</h2>
+  <div class="commands">
+    {quickstart.map((cmd, i) => (
+      <figure class="command">
+        <figcaption>{cmd.label}</figcaption>
+        <div class="code-block">
+          <pre><code id={`cmd-${i + 1}`}>{cmd.code}</code></pre>
+          <button
+            type="button"
+            class="copy-btn"
+            data-copy-target={`#cmd-${i + 1}`}
+            aria-label={`Copy: ${cmd.label}`}
+          >
+            Copy
+          </button>
+        </div>
+        <span class="sr-only" aria-live="polite" role="status"></span>
+      </figure>
+    ))}
+  </div>
+</section>
+
+<style>
+  .quickstart {
+    padding: 4rem 1.5rem;
+    max-width: 72rem;
+    margin: 0 auto;
+  }
+
+  h2 {
+    font-size: clamp(1.75rem, 3vw, 2.5rem);
+    font-weight: 700;
+    color: var(--sc-text);
+    text-align: center;
+    margin: 0 0 3rem;
+  }
+
+  .commands {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+
+  .command {
+    margin: 0;
+    background: var(--sc-surface);
+    border: 1px solid var(--sc-border);
+    border-radius: 0.75rem;
+    overflow: hidden;
+  }
+
+  figcaption {
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: var(--sc-orange);
+    border-bottom: 1px solid var(--sc-border);
+    background: rgba(255, 107, 53, 0.05);
+  }
+
+  .code-block {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+  }
+
+  pre {
+    flex: 1;
+    margin: 0;
+    padding: 1rem;
+    overflow-x: auto;
+    max-width: 100%;
+    font-family: var(--sc-font-code);
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--sc-text);
+    background: transparent;
+  }
+
+  code {
+    font-family: inherit;
+    white-space: pre;
+  }
+
+  .copy-btn {
+    display: none;
+    flex-shrink: 0;
+    margin: 0.5rem;
+    padding: 0.5rem 1rem;
+    border: 1px solid var(--sc-orange);
+    border-radius: 0.375rem;
+    background: transparent;
+    color: var(--sc-orange);
+    font-family: var(--sc-font-text);
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  html.js .copy-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .copy-btn:hover {
+    background: var(--sc-orange);
+    color: var(--sc-bg);
+  }
+
+  .copy-btn:focus-visible {
+    outline: 2px solid var(--sc-orange);
+    outline-offset: 2px;
+  }
+
+  .copy-btn[data-copied] {
+    border-color: #10b981;
+    color: #10b981;
+  }
+
+  .copy-btn[data-copied]:hover {
+    background: #10b981;
+    color: var(--sc-bg);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .copy-btn {
+      transition: none;
+    }
+  }
+</style>
