@@ -18,6 +18,8 @@ export const REQUIRED_TEXT = [
   'SwarmCracker vs. Docker vs. Kubernetes',
   'curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash',
   'swarmcracker service create --name web --image nginx:alpine --replicas 3',
+  'Hardware-enforced boundaries',
+  'Getting Started',
 ];
 export const REQUIRED_LINKS = [
   'https://github.com/restuhaqza/swarmcracker',
@@ -26,6 +28,10 @@ export const REQUIRED_LINKS = [
   'https://docs.swarmcracker.com',
   '#quickstart',
   '/swarmcracker-architecture.svg',
+  'https://docs.swarmcracker.com/user/getting-started/',
+  'https://docs.swarmcracker.com/user/reference/cli/',
+  'https://docs.swarmcracker.com/user/guides/networking/',
+  'https://docs.swarmcracker.com/user/guides/security/',
 ];
 
 export function runChecks(html, css) {

@@ -1,0 +1,84 @@
+---
+import { docsCards } from '../data/site';
+---
+
+<section id="docs" class="docs-gateway" aria-labelledby="docs-heading">
+  <h2 id="docs-heading">Documentation</h2>
+  <div class="docs-grid">
+    {docsCards.map((card) => (
+      <a class="docs-card" href={card.href}>
+        <h3>{card.title}</h3>
+        <p>{card.body}</p>
+      </a>
+    ))}
+  </div>
+</section>
+
+<style>
+  .docs-gateway {
+    padding: 4rem 1.5rem;
+    max-width: 72rem;
+    margin: 0 auto;
+  }
+
+  h2 {
+    font-size: clamp(1.75rem, 3vw, 2.5rem);
+    font-weight: 700;
+    color: var(--sc-text);
+    text-align: center;
+    margin: 0 0 2rem;
+  }
+
+  .docs-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1.5rem;
+  }
+
+  .docs-card {
+    display: block;
+    background: var(--sc-surface);
+    border: 1px solid var(--sc-border);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+    text-decoration: none;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .docs-card:hover,
+  .docs-card:focus-visible {
+    border-color: var(--sc-orange);
+    box-shadow: 0 0 0 1px var(--sc-orange);
+  }
+
+  .docs-card:focus-visible {
+    outline: 2px solid var(--sc-orange);
+    outline-offset: 2px;
+  }
+
+  .docs-card h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--sc-orange);
+    margin: 0 0 0.5rem;
+  }
+
+  .docs-card p {
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--sc-text-muted);
+    margin: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .docs-card {
+      transition: none;
+    }
+  }
+
+  @media (max-width: 40rem) {
+    .docs-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
