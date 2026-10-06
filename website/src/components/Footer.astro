@@ -1,0 +1,65 @@
+---
+import { links, site } from '../data/site';
+---
+
+<style>
+  .site-footer {
+    border-top: 1px solid var(--sc-border);
+    background: var(--sc-surface);
+    padding: 2rem 1.5rem;
+  }
+
+  .footer-inner {
+    max-width: 72rem;
+    margin: 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .footer-copy {
+    color: var(--sc-text-muted);
+    font-size: 0.875rem;
+  }
+
+  .footer-links {
+    display: flex;
+    gap: 1.5rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .footer-links a {
+    color: var(--sc-text-muted);
+    text-decoration: none;
+    font-size: 0.875rem;
+    transition: color 0.15s;
+  }
+
+  .footer-links a:hover {
+    color: var(--sc-text);
+  }
+
+  .footer-links a:focus-visible {
+    outline: 2px solid var(--sc-orange);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+</style>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <p class="footer-copy">&copy; {new Date().getFullYear()} {site.name}. {site.version}</p>
+    <nav aria-label="Footer navigation">
+      <ul class="footer-links">
+        <li><a href={links.license}>License</a></li>
+        <li><a href={links.github}>GitHub</a></li>
+        <li><a href={links.releases}>Releases</a></li>
+        <li><a href={links.docs}>Docs</a></li>
+      </ul>
+    </nav>
+  </div>
+</footer>

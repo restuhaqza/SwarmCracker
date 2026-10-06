@@ -1,8 +1,12 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
 import { site } from '../data/site';
 ---
 
 <BaseLayout title={site.title} description={site.description} canonical={site.canonical}>
+  <Nav slot="before-main" />
   <h1>SwarmCracker</h1>
+  <Footer slot="after-main" />
 </BaseLayout>
