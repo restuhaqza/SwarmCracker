@@ -1,0 +1,85 @@
+---
+title: SwarmCracker
+description: Run containers as hardware-isolated Firecracker microVMs with the SwarmKit orchestration you already know.
+template: splash
+hero:
+  tagline: Run containers as hardware-isolated Firecracker microVMs — with the SwarmKit orchestration you already know.
+  image:
+    file: ../../assets/logo.svg
+    alt: SwarmCracker
+  actions:
+    - text: Get started
+      link: /getting-started/
+      icon: right-arrow
+    - text: CLI reference
+      link: /reference/cli/
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+SwarmCracker turns SwarmKit tasks into Firecracker microVMs: each workload gets
+its own kernel and hardware isolation through KVM, without the operational
+weight of Kubernetes.
+
+```
+swarmcracker CLI ──gRPC──▶ swarmd-firecracker (manager)
+                                    │  SwarmKit orchestration
+                                    ▼
+                           swarmd-firecracker (worker)
+                                    │
+                    Executor ─▶ Firecracker microVM ─▶ KVM
+                                    │
+                          VXLAN overlay networking
+```
+
+## Start here
+
+<CardGrid>
+  <LinkCard
+    title="Getting started"
+    href="/getting-started/"
+    description="Install SwarmCracker, initialise a cluster, and run your first microVM."
+  />
+  <LinkCard
+    title="Configuration"
+    href="/guides/configuration/"
+    description="Every config key, its default, and the validation rules."
+  />
+  <LinkCard
+    title="CLI reference"
+    href="/reference/cli/"
+    description="The full swarmcracker and swarmctl command tree."
+  />
+  <LinkCard
+    title="Architecture"
+    href="/architecture/"
+    description="How tasks become microVMs, and how the components fit together."
+  />
+</CardGrid>
+
+## Guides
+
+<CardGrid>
+  <LinkCard title="Networking" href="/guides/networking/" description="TAP devices, the bridge, and the VXLAN overlay." />
+  <LinkCard title="Security & jailer" href="/guides/security/" description="Chroot, privilege dropping, and cgroup limits." />
+  <LinkCard title="Snapshots" href="/guides/snapshots/" description="Pause, snapshot, and fast-restore VM state." />
+  <LinkCard title="Golden images" href="/guides/golden-images/" description="Bake reusable VM images from recipes." />
+  <LinkCard title="Operations" href="/guides/operations/" description="Health, metrics, logs, and day-two tasks." />
+  <LinkCard title="Disaster recovery" href="/guides/disaster-recovery/" description="Back up and restore manager state." />
+</CardGrid>
+
+## Versions
+
+| Component | Version |
+|-----------|---------|
+| SwarmCracker | v0.10.0 |
+| Firecracker | v1.15.1 |
+| SwarmKit | v2.1.1 |
+| Go | 1.26 |
+
+## Elsewhere
+
+- [GitHub repository](https://github.com/restuhaqza/SwarmCracker) — source, issues, pull requests
+- [Firecracker](https://github.com/firecracker-microvm/firecracker) — the VM engine
+- [SwarmKit](https://github.com/moby/swarmkit) — the orchestration layer

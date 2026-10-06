@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Documentation** — Replaced the MkDocs Material site with an Astro Starlight
+  site (`docs-site/`), deployed to Cloudflare Pages. Curated the content:
+  removed obsolete planning/research/historical docs, consolidated duplicate
+  pages, and corrected stale commands, config defaults, and the jailer schema.
+  Old URLs (`/user/…`, `/dev/…`) redirect to the new information architecture
+  via `docs-site/public/_redirects`.
+
 ---
 
 ## [0.10.0] - 2026-10-05

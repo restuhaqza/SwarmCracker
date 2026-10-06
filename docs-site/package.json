@@ -1,0 +1,27 @@
+{
+  "name": "swarmcracker-docs",
+  "type": "module",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check",
+    "verify": "astro check && node scripts/check-links.mjs && astro build",
+    "deploy": "astro build && wrangler pages deploy dist"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.5",
+    "astro": "^7.3.6",
+    "astro-mermaid": "^2.1.0"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.4",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=22.12.0"
+  }
+}
