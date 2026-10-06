@@ -16,16 +16,18 @@ export function initCopy(): void {
         if (typeof navigator !== 'undefined' && navigator.clipboard && navigator.clipboard.writeText) {
           try {
             await navigator.clipboard.writeText(text);
-            showCopied(btn);
+            showStatus(btn, 'Copied', true);
             return;
           } catch {
             // Fall through to fallback
           }
         }
         
-        // Fallback: select the text
+        // Fallback: select the text so the user can copy it manually.
+        // The clipboard write did NOT happen, so announce that honestly
+        // instead of claiming "Copied".
         selectText(el);
-        showCopied(btn);
+        showStatus(btn, 'Press Ctrl+C to copy', false);
       } catch {
         // Silently ignore any errors
       }
@@ -33,25 +35,38 @@ export function initCopy(): void {
   });
 }
 
-function showCopied(btn: Element): void {
-  btn.setAttribute('data-copied', 'true');
+/**
+ * Announce the outcome of a copy attempt.
+ *
+ * When `copied` is true the button gets the transient "copied" state;
+ * otherwise (manual fallback) the button keeps its normal look and the
+ * status message carries the instruction instead.
+ *
+ * The reset timer is registered unconditionally — not only when the status
+ * element exists — so the button state is always cleared and can never
+ * stay "copied" forever.
+ */
+function showStatus(btn: Element, message: string, copied: boolean): void {
+  if (copied) {
+    btn.setAttribute('data-copied', 'true');
+  }
   
   // Update adjacent aria-live status element
   // Traverse up to the enclosing <figure> (btn.parentElement is .code-block,
   // but the [aria-live="polite"] span is a sibling of .code-block inside <figure>)
   const figure = btn.closest('figure');
-  if (figure) {
-    const status = figure.querySelector('[aria-live="polite"]');
-    if (status) {
-      status.textContent = 'Copied';
-      
-      // Reset after 2 seconds
-      setTimeout(() => {
-        btn.removeAttribute('data-copied');
-        status.textContent = '';
-      }, 2000);
-    }
+  const status = figure ? figure.querySelector('[aria-live="polite"]') : null;
+  if (status) {
+    status.textContent = message;
   }
+  
+  // Reset after 2 seconds
+  setTimeout(() => {
+    btn.removeAttribute('data-copied');
+    if (status) {
+      status.textContent = '';
+    }
+  }, 2000);
 }
 
 function selectText(el: Element): void {

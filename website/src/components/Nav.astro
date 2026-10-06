@@ -1,27 +1,8 @@
 ---
-import { nav, links } from '../data/site';
+import { nav } from '../data/site';
 ---
 
 <style>
-  .skip-link {
-    position: absolute;
-    left: -9999px;
-    top: 0;
-    z-index: 100;
-    padding: 0.75rem 1.5rem;
-    background: var(--sc-orange);
-    color: var(--sc-bg);
-    font-weight: 600;
-    text-decoration: none;
-    border-radius: 0 0 0.5rem 0;
-  }
-
-  .skip-link:focus {
-    left: 0;
-    outline: 3px solid var(--sc-orange-light);
-    outline-offset: 2px;
-  }
-
   .site-header {
     position: sticky;
     top: 0;
@@ -73,19 +54,6 @@ import { nav, links } from '../data/site';
     outline: 2px solid var(--sc-orange);
     outline-offset: 3px;
     border-radius: 2px;
-  }
-
-  .github-link {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    min-width: 7rem;
-  }
-
-  .star-count {
-    font-size: 0.8125rem;
-    color: var(--sc-text-muted);
-    font-variant-numeric: tabular-nums;
   }
 
   .get-started-btn {
@@ -197,10 +165,6 @@ import { nav, links } from '../data/site';
       {nav.map((item) => (
         <a href={item.href}>{item.label}</a>
       ))}
-      <a href={links.github} class="github-link">
-        GitHub
-        <span class="star-count" aria-hidden="true"></span>
-      </a>
       <a href="#quickstart" class="get-started-btn">Get Started</a>
     </nav>
 

@@ -50,6 +50,11 @@ body {
   line-height: 1.6;
 }
 
+/* Anchored sections: clear the sticky header when jumped to via #fragment */
+section[id] {
+  scroll-margin-top: 4.5rem;
+}
+
 /* Accessibility: Focus ring for keyboard navigation */
 :focus-visible {
   outline: 2px solid var(--sc-orange);
