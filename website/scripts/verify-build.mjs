@@ -20,6 +20,10 @@ export const REQUIRED_TEXT = [
   'swarmcracker service create --name web --image nginx:alpine --replicas 3',
   'Hardware-enforced boundaries',
   'Getting Started',
+  'rel="icon" href="/favicon.svg"',
+  'property="og:image" content="https://swarmcracker.com/og-image.svg"',
+  'class="skip-link"',
+  'id="main"',
 ];
 export const REQUIRED_LINKS = [
   'https://github.com/restuhaqza/swarmcracker',
