@@ -2,9 +2,8 @@
 import BaseLayout from '../layouts/BaseLayout.astro';
 import Nav from '../components/Nav.astro';
 import Hero from '../components/Hero.astro';
-import StatStrip from '../components/StatStrip.astro';
-import FeatureGrid from '../components/FeatureGrid.astro';
 import HowItWorks from '../components/HowItWorks.astro';
+import FeatureGrid from '../components/FeatureGrid.astro';
 import Quickstart from '../components/Quickstart.astro';
 import Comparison from '../components/Comparison.astro';
 import Security from '../components/Security.astro';
@@ -16,9 +15,8 @@ import { site } from '../data/site';
 <BaseLayout title={site.title} description={site.description} canonical={site.canonical}>
   <Nav slot="before-main" />
   <Hero />
-  <StatStrip />
-  <FeatureGrid />
   <HowItWorks />
+  <FeatureGrid />
   <Quickstart />
   <Comparison />
   <Security />

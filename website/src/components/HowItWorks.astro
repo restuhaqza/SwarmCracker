@@ -1,115 +1,189 @@
 ---
 import { steps } from '../data/site';
+import Terminal from './Terminal.astro';
 ---
 
-<section id="how-it-works" class="how-it-works" aria-labelledby="how-it-works-heading">
-  <h2 id="how-it-works-heading">How it works</h2>
-  <ol class="steps" role="list">
-    {steps.map((step, i) => (
-      <li class="step">
-        <span class="step-number" aria-hidden="true">{i + 1}</span>
-        <div class="step-content">
-          <h3>{step.title}</h3>
-          <p>{step.body}</p>
-        </div>
-      </li>
-    ))}
-  </ol>
-  <div class="diagram">
+<style>
+  .how {
+    padding: clamp(3.5rem, 7vw, 6rem) 1.5rem;
+    max-width: 78rem;
+    margin: 0 auto;
+  }
+
+  .how__head {
+    max-width: 46rem;
+    margin-bottom: clamp(2rem, 4vw, 3rem);
+  }
+
+  .how__head h2 {
+    font-family: var(--yard-font-display);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: -0.01em;
+    font-size: clamp(2.25rem, 5vw, 3.75rem);
+    line-height: 0.95;
+    color: var(--yard-ink);
+    margin: 0 0 0.75rem;
+  }
+
+  .how__head p {
+    margin: 0;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    color: var(--yard-ink-muted);
+    max-width: 60ch;
+  }
+
+  .how__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: clamp(2rem, 4vw, 3rem);
+    align-items: start;
+  }
+
+  @media (min-width: 62rem) {
+    .how__grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    }
+  }
+
+  /* Loading sequence — a travel path with numbered nodes */
+  .seq {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    position: relative;
+  }
+
+  .op {
+    position: relative;
+    display: grid;
+    grid-template-columns: 3.25rem 1fr;
+    gap: 1rem;
+    padding-bottom: 1.75rem;
+  }
+
+  .op:last-child {
+    padding-bottom: 0;
+  }
+
+  /* the rail */
+  .op::before {
+    content: '';
+    position: absolute;
+    left: 1.5625rem;
+    top: 3rem;
+    bottom: 0;
+    width: 2px;
+    background: var(--yard-steel);
+  }
+
+  .op:last-child::before {
+    display: none;
+  }
+
+  .op__num {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 3.25rem;
+    height: 3.25rem;
+    background: var(--yard-safety);
+    color: var(--yard-on-safety);
+    border: 2px solid var(--yard-asphalt);
+    font-family: var(--yard-font-display);
+    font-weight: 800;
+    font-size: 1.75rem;
+    line-height: 1;
+  }
+
+  .op__body h3 {
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    font-size: 1.5rem;
+    line-height: 1.05;
+    color: var(--yard-ink);
+    margin: 0.35rem 0 0.35rem;
+  }
+
+  .op__body p {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--yard-ink-muted);
+    max-width: 46ch;
+  }
+
+  .how__log {
+    min-width: 0;
+  }
+
+  .how__diagram {
+    margin-top: clamp(2.5rem, 5vw, 4rem);
+    border: 2px solid var(--yard-asphalt);
+    background: var(--yard-paper);
+    padding: clamp(1rem, 3vw, 2rem);
+    overflow-x: auto;
+  }
+
+  .how__diagram:focus-visible {
+    outline: 3px solid var(--yard-safety-deep);
+    outline-offset: 2px;
+  }
+
+  .how__diagram img {
+    display: block;
+    width: 100%;
+    max-width: 62rem;
+    margin: 0 auto;
+    height: auto;
+  }
+
+  @media (max-width: 47.99rem) {
+    .how__diagram img {
+      max-width: none;
+      width: 44rem;
+    }
+  }
+</style>
+
+<section id="how-it-works" class="how" aria-labelledby="how-it-works-heading">
+  <div class="how__head">
+    <h2 id="how-it-works-heading">How it works</h2>
+    <p>
+      SwarmCracker slots a Firecracker microVM executor underneath SwarmKit. Tasks
+      arrive as ordinary Swarm services; each replica is placed as its own sealed VM.
+    </p>
+  </div>
+
+  <div class="how__grid">
+    <ol class="seq" role="list">
+      {steps.map((step, i) => (
+        <li class="op">
+          <span class="op__num" aria-hidden="true">{i + 1}</span>
+          <div class="op__body">
+            <h3>{step.title}</h3>
+            <p>{step.body}</p>
+          </div>
+        </li>
+      ))}
+    </ol>
+
+    <div class="how__log">
+      <Terminal />
+    </div>
+  </div>
+
+  <div class="how__diagram" role="region" aria-label="SwarmCracker architecture diagram" tabindex="0">
     <img
       src="/swarmcracker-architecture.svg"
-      alt="SwarmCracker architecture diagram: SwarmKit manager sends tasks to the agent, which delegates to the SwarmCracker executor; the executor translates tasks, prepares images, sets up networking, and launches Firecracker microVMs via KVM."
+      alt="SwarmCracker architecture: the SwarmKit manager sends tasks to the agent, which delegates to the SwarmCracker executor; the executor translates tasks, prepares images, sets up networking, and launches Firecracker microVMs via KVM."
       width="1200"
       height="800"
       loading="lazy"
     />
   </div>
 </section>
-
-<style>
-  .how-it-works {
-    padding: 4rem 1.5rem;
-    max-width: 72rem;
-    margin: 0 auto;
-  }
-
-  h2 {
-    font-size: clamp(1.75rem, 3vw, 2.5rem);
-    font-weight: 700;
-    color: var(--sc-text);
-    text-align: center;
-    margin: 0 0 3rem;
-  }
-
-  .steps {
-    list-style: none;
-    padding: 0;
-    margin: 0 0 3rem;
-    display: grid;
-    gap: 1.5rem;
-    counter-reset: none;
-  }
-
-  .step {
-    display: flex;
-    align-items: flex-start;
-    gap: 1rem;
-    background: var(--sc-surface);
-    border: 1px solid var(--sc-border);
-    border-radius: 0.75rem;
-    padding: 1.5rem;
-  }
-
-  .step-number {
-    flex-shrink: 0;
-    width: 2.5rem;
-    height: 2.5rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    background: var(--sc-orange);
-    color: var(--sc-bg);
-    font-weight: 700;
-    font-size: 1.125rem;
-  }
-
-  .step-content h3 {
-    font-size: 1.125rem;
-    font-weight: 600;
-    color: var(--sc-text);
-    margin: 0 0 0.25rem;
-  }
-
-  .step-content p {
-    font-size: 0.9375rem;
-    line-height: 1.6;
-    color: var(--sc-text-muted);
-    margin: 0;
-  }
-
-  .diagram {
-    text-align: center;
-    overflow-x: auto;
-  }
-
-  .diagram img {
-    max-width: 100%;
-    height: auto;
-    border-radius: 0.75rem;
-    border: 1px solid var(--sc-border);
-  }
-
-  @media (min-width: 48rem) {
-    .steps {
-      grid-template-columns: repeat(2, 1fr);
-    }
-  }
-
-  @media (max-width: 47.99rem) {
-    .diagram img {
-      max-width: none;
-      width: 40rem;
-    }
-  }
-</style>

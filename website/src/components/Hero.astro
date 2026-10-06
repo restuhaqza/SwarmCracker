@@ -1,111 +1,468 @@
 ---
-import { site, links } from '../data/site';
-import Terminal from './Terminal.astro';
----
+import { links } from '../data/site';
 
-<section class="hero">
-  <div class="hero-content">
-    <h1 class="hero-title">{site.name}</h1>
-    <p class="hero-subhead">{site.description}</p>
-    <div class="hero-ctas">
-      <a href="#quickstart" class="cta-button cta-primary">Install</a>
-      <a href={links.docs} class="cta-button cta-secondary">Read the docs</a>
-    </div>
-  </div>
-  <div class="hero-terminal">
-    <Terminal />
-  </div>
-</section>
+const installCmd = 'curl -fsSL https://swarmcracker.com/install.sh | sudo bash';
+---
 
 <style>
   .hero {
-    max-width: 72rem;
+    position: relative;
+    overflow: hidden;
+    background: var(--yard-concrete);
+    border-bottom: 4px solid var(--yard-asphalt);
+  }
+
+  /* Faint yard apron hatch, drawn only where a real yard has slab joints */
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(90deg, rgba(27, 29, 32, 0.05) 1px, transparent 1px);
+    background-size: 96px 100%;
+    pointer-events: none;
+  }
+
+  .hero__grid {
+    position: relative;
+    max-width: 78rem;
     margin: 0 auto;
-    padding: 4rem 1.5rem;
+    padding: clamp(2.5rem, 6vw, 5rem) 1.5rem clamp(2.5rem, 5vw, 4rem);
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 3rem;
+    gap: clamp(2rem, 5vw, 4rem);
     align-items: center;
   }
 
-  @media (min-width: 1024px) {
-    .hero {
-      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      gap: 4rem;
-      padding: 6rem 1.5rem;
+  @media (min-width: 62rem) {
+    .hero__grid {
+      grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
     }
   }
 
-  .hero-content {
+  .hero__offer {
     min-width: 0;
   }
 
-  .hero-title {
-    font-size: clamp(2.5rem, 5vw, 4rem);
-    font-weight: 700;
-    line-height: 1.1;
-    margin: 0 0 1.5rem;
+  .hero__title {
+    font-size: clamp(2.75rem, 6.6vw, 5.25rem);
+    margin: 0 0 1rem;
+    color: var(--yard-ink);
     text-wrap: balance;
-    color: var(--sc-text);
   }
 
-  .hero-subhead {
-    font-size: clamp(1.125rem, 2vw, 1.25rem);
-    line-height: 1.6;
-    color: var(--sc-text-muted);
+  .hero__sub {
+    font-size: clamp(1.125rem, 1.6vw, 1.375rem);
+    line-height: 1.5;
+    color: var(--yard-ink-muted);
     margin: 0 0 2rem;
-    max-width: 40rem;
+    max-width: 34ch;
   }
 
-  .hero-ctas {
+  .hero__ctas {
     display: flex;
     flex-wrap: wrap;
-    gap: 1rem;
+    gap: 0.75rem;
+    margin-bottom: 2.25rem;
   }
 
-  .cta-button {
-    display: inline-block;
-    padding: 0.875rem 1.75rem;
-    font-size: 1rem;
-    font-weight: 600;
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.85rem 1.5rem;
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    font-size: 1.25rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
     text-decoration: none;
-    border-radius: 0.5rem;
-    transition: all 0.15s;
-    text-align: center;
+    border: 2px solid var(--yard-asphalt);
+    transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease;
   }
 
-  .cta-primary {
-    background: var(--sc-orange);
-    color: var(--sc-bg);
+  .btn--primary {
+    background: var(--yard-safety);
+    color: var(--yard-on-safety);
   }
 
-  .cta-primary:hover {
-    background: var(--sc-orange-light);
+  .btn--primary:hover {
+    background: var(--yard-hazard);
   }
 
-  .cta-primary:focus-visible {
-    outline: 2px solid var(--sc-orange-light);
-    outline-offset: 2px;
+  .btn--primary:active,
+  .btn--ghost:active {
+    transform: translateY(1px);
   }
 
-  .cta-secondary {
+  .btn--ghost {
     background: transparent;
-    color: var(--sc-text);
-    border: 1px solid var(--sc-border);
+    color: var(--yard-ink);
+    border-color: var(--yard-steel-dark);
   }
 
-  .cta-secondary:hover {
-    background: var(--sc-surface);
-    border-color: var(--sc-text-muted);
+  .btn--ghost:hover {
+    background: var(--yard-asphalt);
+    color: var(--yard-paper);
+    border-color: var(--yard-asphalt);
   }
 
-  .cta-secondary:focus-visible {
-    outline: 2px solid var(--sc-orange);
+  .btn:focus-visible {
+    outline: 3px solid var(--yard-asphalt);
+    outline-offset: 3px;
+  }
+
+  /* The install command, painted on a container door */
+  .door {
+    margin: 0;
+    max-width: 34rem;
+    border: 2px solid var(--yard-asphalt);
+    background: var(--yard-safety);
+  }
+
+  .door__plate {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.35rem 0.5rem 0.35rem 0.75rem;
+    background: var(--yard-asphalt);
+    color: var(--yard-paper);
+    font-family: var(--yard-font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+
+  .door__cmd {
+    padding: 0.85rem 0.9rem;
+  }
+
+  .door__cmd pre {
+    flex: 1;
+    min-width: 0;
+    margin: 0;
+    overflow-x: auto;
+    font-family: var(--yard-font-mono);
+    font-size: 0.75rem;
+    line-height: 1.55;
+    color: var(--yard-on-safety);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
+  .door__cmd code {
+    font-family: inherit;
+  }
+
+  .copy-btn {
+    flex-shrink: 0;
+    padding: 0.3rem 0.6rem;
+    border: 1.5px solid var(--yard-paper);
+    background: transparent;
+    color: var(--yard-paper);
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    font-size: 0.875rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+
+  .copy-btn:hover {
+    background: var(--yard-hazard);
+    border-color: var(--yard-hazard);
+    color: var(--yard-asphalt);
+  }
+
+  .copy-btn:focus-visible {
+    outline: 3px solid var(--yard-hazard);
     outline-offset: 2px;
   }
 
-  .hero-terminal {
-    width: 100%;
+  .copy-btn[data-copied] {
+    background: var(--yard-hazard);
+    border-color: var(--yard-hazard);
+    color: var(--yard-asphalt);
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* ---------------------------------------------------------------- Yard -- */
+
+  .yard {
+    position: relative;
+    margin: 0;
     min-width: 0;
   }
+
+  .yard__crane {
+    display: block;
+    width: 100%;
+    height: auto;
+    color: var(--yard-steel-dark);
+  }
+
+  .yard__stack {
+    position: relative;
+    display: grid;
+    gap: 0.5rem;
+    margin-top: -0.5rem;
+    padding: 0 6% 0 10%;
+  }
+
+  /* A container: corrugated steel, corner castings, stencilled marking */
+  .box {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+    border: 2px solid var(--yard-asphalt);
+    background-color: var(--yard-steel);
+    background-image: repeating-linear-gradient(
+      90deg,
+      rgba(27, 29, 32, 0.16) 0 2px,
+      transparent 2px 15px
+    );
+    box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.18), inset 0 -3px 0 rgba(27, 29, 32, 0.22);
+  }
+
+  .box--1 {
+    background-color: var(--yard-safety);
+    transform-origin: top center;
+    animation: place 0.7s cubic-bezier(0.22, 1, 0.36, 1) 1.75s both;
+  }
+
+  .box--2 {
+    margin-right: 5%;
+  }
+
+  .box--3 {
+    margin-left: 5%;
+  }
+
+  .box__id {
+    font-family: var(--yard-font-mono);
+    font-weight: 700;
+    font-size: 0.8125rem;
+    letter-spacing: 0.1em;
+    color: var(--yard-asphalt);
+    text-transform: uppercase;
+  }
+
+  .box--2 .box__id,
+  .box--3 .box__id {
+    color: var(--yard-asphalt);
+  }
+
+  .box__state {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    font-size: 0.9375rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--yard-asphalt);
+  }
+
+  .box--2 .box__state,
+  .box--3 .box__state {
+    color: var(--yard-asphalt);
+  }
+
+  .box__seal {
+    width: 0.75rem;
+    height: 0.75rem;
+    border: 2px solid currentColor;
+    border-radius: 50%;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .box__seal::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    background: currentColor;
+    border-radius: 50%;
+  }
+
+  /* Hazard-striped kerb at the yard edge */
+  .yard__kerb {
+    height: 0.6rem;
+    margin-top: 1rem;
+    border: 2px solid var(--yard-asphalt);
+    background-image: repeating-linear-gradient(
+      -45deg,
+      var(--yard-asphalt) 0 10px,
+      var(--yard-hazard) 10px 20px
+    );
+  }
+
+  .yard__cap {
+    margin: 1rem 0 0;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--yard-ink-muted);
+    max-width: 46ch;
+  }
+
+  .yard__cap code {
+    font-family: var(--yard-font-mono);
+    font-size: 0.8125rem;
+    color: var(--yard-ink);
+  }
+
+  @keyframes place {
+    from {
+      transform: translateY(-130%);
+    }
+    70% {
+      transform: translateY(3%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes traverse {
+    from {
+      transform: translateX(-172px);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes lower {
+    from {
+      transform: translateY(-44px);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  .crane-trolley {
+    animation: traverse 1.15s cubic-bezier(0.22, 1, 0.36, 1) 0.15s both;
+  }
+
+  .crane-spreader {
+    animation: lower 0.55s cubic-bezier(0.22, 1, 0.36, 1) 1.25s both;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .box--1,
+    .crane-trolley,
+    .crane-spreader {
+      animation: none;
+    }
+  }
 </style>
+
+<section class="hero" aria-labelledby="hero-heading">
+  <div class="hero__grid">
+    <div class="hero__offer">
+      <h1 id="hero-heading" class="yard-display hero__title">
+        Firecracker microVMs with SwarmKit orchestration
+      </h1>
+      <p class="hero__sub">Docker Swarm UX with hardware-isolated VMs.</p>
+
+      <div class="hero__ctas">
+        <a href="#quickstart" class="btn btn--primary">Install SwarmCracker</a>
+        <a href={links.docs} class="btn btn--ghost">Read the docs</a>
+      </div>
+
+      <figure class="door">
+        <figcaption class="door__plate">
+          <span>Gate 01 · one-line install</span>
+          <button
+            type="button"
+            class="copy-btn"
+            data-copy-target="#hero-install"
+            aria-label="Copy: install command"
+          >
+            Copy
+          </button>
+        </figcaption>
+        <div class="door__cmd">
+          <pre><code id="hero-install">{installCmd}</code></pre>
+        </div>
+        <span class="sr-only" aria-live="polite" role="status"></span>
+      </figure>
+    </div>
+
+    <figure class="yard" aria-hidden="false">
+      <svg
+        class="yard__crane"
+        viewBox="0 0 600 150"
+        role="img"
+        aria-label="A gantry crane spans the yard, lowering a container onto a stack."
+        preserveAspectRatio="xMidYMax meet"
+      >
+        <!-- gantry legs -->
+        <g fill="none" stroke="currentColor" stroke-width="3">
+          <line x1="60" y1="42" x2="60" y2="150" />
+          <line x1="540" y1="42" x2="540" y2="150" />
+          <line x1="52" y1="150" x2="68" y2="150" />
+          <line x1="532" y1="150" x2="548" y2="150" />
+          <line x1="60" y1="60" x2="540" y2="60" />
+          <!-- base feet -->
+          <line x1="60" y1="132" x2="100" y2="150" />
+          <line x1="540" y1="132" x2="500" y2="150" />
+        </g>
+        <!-- top truss -->
+        <g fill="none" stroke="currentColor" stroke-width="3">
+          <line x1="34" y1="20" x2="566" y2="20" />
+          <line x1="34" y1="40" x2="566" y2="40" />
+          <path d="M34 20 L54 40 M54 20 L74 40 M74 20 L94 40 M94 20 L114 40 M114 20 L134 40 M134 20 L154 40 M154 20 L174 40 M174 20 L194 40 M194 20 L214 40 M214 20 L234 40 M234 20 L254 40 M254 20 L274 40 M274 20 L294 40 M294 20 L314 40 M314 20 L334 40 M334 20 L354 40 M354 20 L374 40 M374 20 L394 40 M394 20 L414 40 M414 20 L434 40 M434 20 L454 40 M454 20 L474 40 M474 20 L494 40 M494 20 L514 40 M514 20 L534 40 M534 20 L554 40 M554 20 L566 40" />
+        </g>
+        <!-- trolley + hoist — one authored moment: traverse, lower, place -->
+        <g class="crane-trolley" fill="none" stroke="currentColor" stroke-width="3">
+          <rect x="392" y="34" width="34" height="18" fill="currentColor" stroke="none" />
+          <line x1="409" y1="52" x2="409" y2="72" />
+        </g>
+        <g class="crane-spreader" fill="none" stroke="var(--yard-safety)" stroke-width="3">
+          <line x1="396" y1="72" x2="422" y2="72" />
+          <line x1="396" y1="72" x2="396" y2="79" />
+          <line x1="422" y1="72" x2="422" y2="79" />
+        </g>
+      </svg>
+
+      <div class="yard__stack">
+        <article class="box box--1">
+          <span class="box__id">WEB.1 · swk-8f2a</span>
+          <span class="box__state"><span class="box__seal" aria-hidden="true"></span>sealed</span>
+        </article>
+        <article class="box box--2">
+          <span class="box__id">WEB.2 · swk-3c71</span>
+          <span class="box__state"><span class="box__seal" aria-hidden="true"></span>sealed</span>
+        </article>
+        <article class="box box--3">
+          <span class="box__id">WEB.3 · swk-b094</span>
+          <span class="box__state"><span class="box__seal" aria-hidden="true"></span>sealed</span>
+        </article>
+      </div>
+      <div class="yard__kerb" aria-hidden="true"></div>
+
+      <figcaption class="yard__cap">
+        Illustrative example: three replicas of <code>web</code>, each a sealed
+        Firecracker microVM on its own KVM boundary — placed and tracked by SwarmKit.
+      </figcaption>
+    </figure>
+  </div>
+</section>

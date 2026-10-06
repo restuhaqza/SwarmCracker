@@ -1,35 +1,50 @@
 /*
- * WCAG AA Contrast Audit (2026-10-06)
- * Normal text requires 4.5:1, Large text (18pt+ or 14pt+ bold) requires 3:1
+ * SwarmCracker landing — WORLD: Intermodal Container Terminal (code-led, seed ea5fffa9)
  *
- * --sc-text (#F2F2F5) on --sc-bg (#0B0B0F): 17.58:1 ✅ AAA
- * --sc-text-muted (#A0A0B0) on --sc-surface (#14141B): 7.11:1 ✅ AA
- * --sc-orange (#FF6B35) as text on --sc-bg (#0B0B0F): 6.93:1 ✅ AA
- * --sc-orange (#FF6B35) as text on --sc-surface (#14141B): 6.46:1 ✅ AA
- * --sc-orange-light (#FF8E53) as text on --sc-bg (#0B0B0F): 8.65:1 ✅ AA
- * --sc-orange-light (#FF8E53) as text on --sc-surface (#14141B): 8.07:1 ✅ AA
+ * Scene: a working freight yard in flat daylight — concrete apron, corrugated
+ * steel, stencilled ISO markings, safety-orange plant. Light ground is forced
+ * by the subject (a terminal is a daylight place), not chosen against a trend.
  *
- * All pairs pass WCAG AA. Accent color #FF6B35 can be used as text.
+ * Contrast audit (WCAG 2.1)
+ *   ink #1B1D20 on concrete #E8E6E0 ........ 14.0:1  AAA
+ *   muted #565C63 on concrete #E8E6E0 ....... 5.3:1  AA
+ *   rust #A33D08 on concrete #E8E6E0 ........ 5.2:1  AA  (orange as text)
+ *   ink #1B1D20 on safety #E4570F ........... 4.6:1  AA  (text on orange fills)
+ *   ink #1B1D20 on hazard #F5C518 .......... 10.3:1  AAA (text on yellow)
+ *   ink #1B1D20 on paper #FBFAF7 ........... 16.2:1  AAA
  */
 
 :root {
-  /* Brand */
-  --sc-orange: #FF6B35;
-  --sc-orange-light: #FF8E53;
-  --sc-orange-dark: #E55A2B;
+  /* Ground & structure */
+  --yard-concrete: #e8e6e0;
+  --yard-concrete-deep: #dcd9d1;
+  --yard-paper: #fbfaf7;
+  --yard-asphalt: #1b1d20;
+  --yard-asphalt-soft: #2a2d31;
+  --yard-steel: #868c93;
+  --yard-steel-dark: #4c5259;
+  --yard-rule: #c3c0b8;
 
-  /* Dark palette */
-  --sc-bg: #0B0B0F;
-  --sc-surface: #14141B;
-  --sc-border: #23232E;
-  --sc-text: #F2F2F5;
-  --sc-text-muted: #A0A0B0;
+  /* Ink */
+  --yard-ink: #1b1d20;
+  --yard-ink-muted: #565c63;
 
-  /* Typography */
-  --sc-font-text: 'Inter', system-ui, sans-serif;
-  --sc-font-code: 'JetBrains Mono', ui-monospace, monospace;
+  /* Safety palette */
+  --yard-safety: #e4570f;
+  --yard-safety-deep: #c24a0c;
+  --yard-rust: #a33d08; /* orange safe as body text on light ground */
+  --yard-hazard: #f5c518;
+  --yard-on-safety: #1b1d20; /* black-on-orange, like a real safety sign */
 
-  color-scheme: dark;
+  /* Type */
+  --yard-font-display: 'Big Shoulders Display', 'Archivo Narrow', 'Arial Narrow', sans-serif;
+  --yard-font-text: 'Archivo', system-ui, -apple-system, sans-serif;
+  --yard-font-mono: 'B612 Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  /* Rhythm */
+  --yard-rule-w: 1px;
+
+  color-scheme: light;
 }
 
 *,
@@ -39,46 +54,112 @@
 }
 
 html {
-  background-color: var(--sc-bg);
+  background-color: var(--yard-concrete);
+  scroll-behavior: smooth;
 }
 
 body {
   margin: 0;
-  background-color: var(--sc-bg);
-  color: var(--sc-text);
-  font-family: var(--sc-font-text);
+  background-color: var(--yard-concrete);
+  color: var(--yard-ink);
+  font-family: var(--yard-font-text);
+  font-size: 1rem;
   line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 /* Anchored sections: clear the sticky header when jumped to via #fragment */
 section[id] {
-  scroll-margin-top: 4.5rem;
+  scroll-margin-top: 5rem;
 }
 
-/* Accessibility: Focus ring for keyboard navigation */
+/* ---------------------------------------------------------------------------
+ * Browser surfaces carry the world too (cheapest built-not-assembled signal)
+ * ------------------------------------------------------------------------- */
+
+::selection {
+  background: var(--yard-safety);
+  color: var(--yard-paper);
+}
+
+html {
+  caret-color: var(--yard-safety-deep);
+}
+
+* {
+  scrollbar-color: var(--yard-steel) var(--yard-concrete-deep);
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--yard-concrete-deep);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--yard-steel);
+  border: 3px solid var(--yard-concrete-deep);
+  border-radius: 0;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--yard-steel-dark);
+}
+
+/* Accessibility: keyboard focus ring, drawn as a stencil outline */
 :focus-visible {
-  outline: 2px solid var(--sc-orange);
+  outline: 3px solid var(--yard-safety-deep);
   outline-offset: 2px;
 }
 
-/* Accessibility: Skip link (visually hidden until focused) */
+/* Accessibility: skip link (visually hidden until focused) */
 .skip-link {
   position: absolute;
   left: -9999px;
   top: 0;
   z-index: 100;
   padding: 0.75rem 1.5rem;
-  background: var(--sc-orange);
-  color: var(--sc-bg);
-  font-weight: 600;
+  background: var(--yard-safety);
+  color: var(--yard-on-safety);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
   text-decoration: none;
-  border-radius: 0 0 0.5rem 0;
+  border-radius: 0;
 }
 
 .skip-link:focus {
   left: 0;
-  outline: 3px solid var(--sc-orange-light);
-  outline-offset: 2px;
+  outline: 3px solid var(--yard-asphalt);
+  outline-offset: 0;
+}
+
+/* Shared type helpers ------------------------------------------------------ */
+
+.yard-display {
+  font-family: var(--yard-font-display);
+  font-weight: 800;
+  line-height: 0.92;
+  letter-spacing: -0.02em;
+  text-transform: uppercase;
+}
+
+.yard-stencil {
+  font-family: var(--yard-font-display);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+
+.yard-id {
+  font-family: var(--yard-font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 @media (prefers-reduced-motion: reduce) {

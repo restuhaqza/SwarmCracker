@@ -1,0 +1,152 @@
+{
+  "title": "Choose the visual world",
+  "question": "For a homelabber landing page, the roll assigned the Container Terminal direction. Keep it, take an alternate, or re-roll.",
+  "options": [
+    {
+      "id": "assigned",
+      "label": "Container Terminal",
+      "kicker": "THE ROLL",
+      "lineage": "intermodal freight terminals & ISO container markings",
+      "thesis": "Every workload is a sealed steel box on the yard; SwarmKit is the crane that places it.",
+      "palette": ["#E8590C", "#2E3238", "#D9D3C7", "#F2B705", "#101214"],
+      "materials": ["corrugated steel", "ISO stencil markings", "hazard chevrons", "manifest paper"],
+      "viewport": "A yard stack of corrugated containers under a gantry crane; each box carries a stencilled service ID and a lock state, the install command painted on the nearest door.",
+      "risk": "Container wordplay reads on-the-nose unless the steel, stencils, and manifest are authored at full fidelity.",
+      "raised": [
+        { "from": "challenger-mecha", "raise": "Monumental scale for the load-bearing figures: boot time and replica counts set as giant yard signage." },
+        { "from": "challenger-zine", "raise": "The crane arm and container locks draw on as you scroll, tracing the placement instead of fading in." },
+        { "from": "challenger-secession", "raise": "A calm single-column manifest inside the industrial frame, so dense copy reads like a bill of lading, not a poster." }
+      ],
+      "wireframe": { "cols": 12, "rows": 10, "regions": [
+        { "label": "gantry crane", "x": 2, "y": 0, "w": 8, "h": 2, "accent": true },
+        { "label": "container stack", "x": 0, "y": 2, "w": 12, "h": 5 },
+        { "label": "manifest strip", "x": 1, "y": 7, "w": 10, "h": 3 }
+      ] }
+    },
+    {
+      "id": "model-pick",
+      "label": "Patch Panel & Link LEDs",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "homelab network racks, patch panels, and link LEDs",
+      "thesis": "Each workload is a labelled port on the panel; isolation is a physical jack, not a shared kernel.",
+      "palette": ["#1B1F23", "#0E7C86", "#F0A202", "#E8E6E1"],
+      "materials": ["rack-mount aluminium", "silkscreen port labels", "link LEDs", "patch cables"],
+      "viewport": "A 24-port panel fills the first viewport; ports light as services converge, the install command set in the legend strip.",
+      "risk": "Familiar territory for infra pages — strong audience identification, real risk of blending in.",
+      "wireframe": { "cols": 12, "rows": 10, "regions": [
+        { "label": "patch panel", "x": 0, "y": 1, "w": 12, "h": 4, "accent": true },
+        { "label": "legend + cta", "x": 0, "y": 5, "w": 12, "h": 2 },
+        { "label": "features", "x": 0, "y": 7, "w": 12, "h": 3 }
+      ] }
+    },
+    {
+      "id": "challenger-seven-segment",
+      "label": "Seven-Segment Status Wall",
+      "verdict": "competitive",
+      "lineage": "seven-segment displays: clocks, price totems, scoreboards",
+      "thesis": "Live counts in the display alphabet everyone reads — replicas, boot ms, health — with unlit cells drawn as deliberately as light.",
+      "palette": ["#0B0B0B", "#FF3B30", "#FFB000", "#5A5A5A"],
+      "materials": ["LED segment mask", "ghost cells", "blink state"],
+      "viewport": "A wall of seven-segment readouts: replica count, boot ms, nodes; each service a rigid mask of lit and unlit cells.",
+      "case": "Fuses cleanly — counts map to segments and unlit cells carry state; loses narrowly on narrative.",
+      "risk": "Reads retro-novelty if the mask is not strictly built.",
+      "wireframe": { "cols": 12, "rows": 10, "regions": [
+        { "label": "readout wall", "x": 0, "y": 1, "w": 12, "h": 4, "accent": true },
+        { "label": "service rows", "x": 0, "y": 5, "w": 12, "h": 5 }
+      ] }
+    },
+    {
+      "id": "challenger-industrial-quote",
+      "label": "Stencilled Label Grammar",
+      "verdict": "competitive",
+      "lineage": "industrial streetwear & stencilled crate labelling",
+      "thesis": "Every zone named in literal straight quotes, hazard stripes under what matters, safety-orange tags for live state.",
+      "palette": ["#F4F4F2", "#111111", "#F26B1D", "#FFD400"],
+      "materials": ["hazard stripes", "stencil caps", "zip-tie tags", "quoted labels"],
+      "viewport": "A labelled yard: each section plate reads its literal quoted name, one diagonal hazard stripe crossing the active row.",
+      "case": "Fuses well — quoted literal labels make states self-explanatory; weaker on warmth.",
+      "risk": "Novelty if the quote device is overused.",
+      "wireframe": { "cols": 12, "rows": 10, "regions": [
+        { "label": "quoted plate", "x": 1, "y": 1, "w": 10, "h": 3, "accent": true },
+        { "label": "hazard row", "x": 0, "y": 4, "w": 12, "h": 1 },
+        { "label": "sections", "x": 0, "y": 5, "w": 12, "h": 5 }
+      ] }
+    },
+    {
+      "id": "challenger-tensegrity",
+      "label": "Tensegrity Force Column",
+      "verdict": "competitive",
+      "lineage": "tensegrity sculpture & engineering force diagrams",
+      "thesis": "Show the tension holding host and workloads apart: compression members are VMs, cords are the orchestration.",
+      "palette": ["#111214", "#E6E3DC", "#D22B2B", "#9AA0A6"],
+      "materials": ["carbon rods", "tension cord", "leader-line annotations", "force values"],
+      "viewport": "A force diagram in the first viewport; tracing a member follows its load to the counterforce, the host node pinned at the base.",
+      "case": "Holds product clarity via engineering annotation; audience identification is thinner.",
+      "risk": "Abstract — needs a literal reading to stay legible.",
+      "wireframe": { "cols": 12, "rows": 10, "regions": [
+        { "label": "force diagram", "x": 2, "y": 1, "w": 8, "h": 6, "accent": true },
+        { "label": "annotations", "x": 0, "y": 7, "w": 12, "h": 3 }
+      ] }
+    },
+    {
+      "id": "challenger-mecha",
+      "label": "Command-Center Crisis Wall",
+      "verdict": "declined",
+      "lineage": "90s mecha-anime command centres",
+      "thesis": "A phosphor-orange control wall of counters and condition bars.",
+      "palette": ["#0A0A0A", "#FF7A00", "#B6FF3A", "#FF2D2D"],
+      "materials": ["phosphor glow", "hazard chevrons", "seven-segment countdowns"],
+      "case": "Loses on clarity and tone — a crisis wall implies alarms, and it is the category's own dark+neon default.",
+      "kept": "Monumental scale for load-bearing numbers.",
+      "wireframe": { "cols": 12, "rows": 10, "regions": [
+        { "label": "crisis wall", "x": 0, "y": 1, "w": 12, "h": 6, "accent": true }
+      ] }
+    },
+    {
+      "id": "challenger-zine",
+      "label": "Hand-Drawn Zine Explainer",
+      "verdict": "declined",
+      "lineage": "marker zines & napkin sketches",
+      "thesis": "Explain the hard concept like a friend sketching it out.",
+      "palette": ["#F5EEDC", "#1A1A1A", "#F4D03F", "#E86A8A", "#3DBFB0"],
+      "materials": ["marker ink", "highlighter swipes", "doodle arrows"],
+      "case": "Loses on audience identification — mascots and markers read beginner/consumer to infra operators.",
+      "kept": "Draw-on reveal and the highlighter 'this line matters'.",
+      "wireframe": { "cols": 12, "rows": 10, "regions": [
+        { "label": "comic panels", "x": 0, "y": 1, "w": 12, "h": 6, "accent": true }
+      ] }
+    },
+    {
+      "id": "challenger-secession",
+      "label": "Secession Ornament Page",
+      "verdict": "declined",
+      "lineage": "Kraków Secession decorative page",
+      "thesis": "An organic border grows inward, leaving a calm clearing for the text.",
+      "palette": ["#F3EEDF", "#4B6B3A", "#B98A8A", "#2E3A44"],
+      "materials": ["flat ornament", "fine outline", "single text column"],
+      "case": "Loses on both axes — decorative ornament does not read as infrastructure.",
+      "kept": "The calm single-column clearing inside the frame.",
+      "wireframe": { "cols": 12, "rows": 10, "regions": [
+        { "label": "ornament border", "x": 0, "y": 0, "w": 12, "h": 10 },
+        { "label": "text clearing", "x": 3, "y": 3, "w": 6, "h": 4, "accent": true }
+      ] }
+    }
+  ],
+  "reroll": { "registers": ["safer", "bolder"] },
+  "buildPath": { "value": "code", "toggle": false },
+  "canon": true,
+  "canonCard": {
+    "label": "The category standard",
+    "thesis": "A dark hero with a terminal, a feature grid, and a comparison table, executed impeccably.",
+    "palette": ["#0B0B0F", "#FF6B35", "#F2F2F5"],
+    "materials": ["terminal", "feature grid", "comparison table"],
+    "viewport": "The arrangement a visitor expects, at full craft.",
+    "risk": "Indistinguishable from the competition by design.",
+    "wireframe": { "cols": 12, "rows": 10, "regions": [
+      { "label": "hero + terminal", "x": 0, "y": 0, "w": 12, "h": 4, "accent": true },
+      { "label": "feature grid", "x": 0, "y": 4, "w": 12, "h": 3 },
+      { "label": "comparison", "x": 0, "y": 7, "w": 12, "h": 3 }
+    ] }
+  },
+  "steer": true
+}
