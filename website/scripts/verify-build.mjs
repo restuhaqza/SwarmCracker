@@ -9,7 +9,13 @@ export const REQUIRED_TEXT = [
   'Firecracker microVMs with SwarmKit orchestration',
   'rel="canonical" href="https://swarmcracker.com/"',
 ];
-export const REQUIRED_LINKS = [];
+export const REQUIRED_LINKS = [
+  'https://github.com/restuhaqza/swarmcracker',
+  'https://github.com/restuhaqza/swarmcracker/releases',
+  'https://github.com/restuhaqza/swarmcracker/blob/main/LICENSE',
+  'https://docs.swarmcracker.com',
+  '#quickstart',
+];
 
 export function runChecks(html, css) {
   const failures = [];

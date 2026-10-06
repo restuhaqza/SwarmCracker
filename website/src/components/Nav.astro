@@ -1,0 +1,224 @@
+---
+import { nav, links } from '../data/site';
+---
+
+<style>
+  .skip-link {
+    position: absolute;
+    left: -9999px;
+    top: 0;
+    z-index: 100;
+    padding: 0.75rem 1.5rem;
+    background: var(--sc-orange);
+    color: var(--sc-bg);
+    font-weight: 600;
+    text-decoration: none;
+    border-radius: 0 0 0.5rem 0;
+  }
+
+  .skip-link:focus {
+    left: 0;
+    outline: 3px solid var(--sc-orange-light);
+    outline-offset: 2px;
+  }
+
+  .site-header {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: var(--sc-surface);
+    border-bottom: 1px solid var(--sc-border);
+  }
+
+  .header-inner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: 0.75rem 1.5rem;
+  }
+
+  .brand {
+    font-family: var(--sc-font-text);
+    font-weight: 700;
+    font-size: 1.125rem;
+    color: var(--sc-text);
+    text-decoration: none;
+  }
+
+  .brand:hover {
+    color: var(--sc-orange);
+  }
+
+  /* Desktop nav */
+  .desktop-nav {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+  }
+
+  .desktop-nav a {
+    color: var(--sc-text-muted);
+    text-decoration: none;
+    font-size: 0.9375rem;
+    transition: color 0.15s;
+  }
+
+  .desktop-nav a:hover {
+    color: var(--sc-text);
+  }
+
+  .desktop-nav a:focus-visible {
+    outline: 2px solid var(--sc-orange);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  .github-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 7rem;
+  }
+
+  .star-count {
+    font-size: 0.8125rem;
+    color: var(--sc-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .get-started-btn {
+    display: inline-block;
+    padding: 0.5rem 1.25rem;
+    background: var(--sc-orange);
+    color: var(--sc-bg);
+    font-weight: 600;
+    font-size: 0.875rem;
+    border-radius: 0.375rem;
+    text-decoration: none;
+    transition: background 0.15s;
+  }
+
+  .get-started-btn:hover {
+    background: var(--sc-orange-light);
+  }
+
+  .get-started-btn:focus-visible {
+    outline: 2px solid var(--sc-orange-light);
+    outline-offset: 2px;
+  }
+
+  /* Mobile nav — uses <details>/<summary> for JS-free toggle */
+  .mobile-nav-toggle {
+    display: none;
+  }
+
+  .mobile-nav-toggle summary {
+    list-style: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    color: var(--sc-text-muted);
+    font-size: 0.9375rem;
+    border: 1px solid var(--sc-border);
+    border-radius: 0.375rem;
+    background: transparent;
+  }
+
+  .mobile-nav-toggle summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .mobile-nav-toggle summary::marker {
+    display: none;
+    content: '';
+  }
+
+  .mobile-nav-toggle summary:focus-visible {
+    outline: 2px solid var(--sc-orange);
+    outline-offset: 2px;
+  }
+
+  .mobile-nav-toggle[open] summary {
+    color: var(--sc-text);
+  }
+
+  .mobile-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    background: var(--sc-surface);
+    border-bottom: 1px solid var(--sc-border);
+    padding: 1rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .mobile-menu a {
+    color: var(--sc-text-muted);
+    text-decoration: none;
+    font-size: 1rem;
+    padding: 0.5rem 0;
+    transition: color 0.15s;
+  }
+
+  .mobile-menu a:hover {
+    color: var(--sc-text);
+  }
+
+  .mobile-menu a:focus-visible {
+    outline: 2px solid var(--sc-orange);
+    outline-offset: 3px;
+    border-radius: 2px;
+  }
+
+  @media (max-width: 640px) {
+    .desktop-nav {
+      display: none;
+    }
+    .mobile-nav-toggle {
+      display: block;
+    }
+  }
+</style>
+
+<a href="#main" class="skip-link">Skip to content</a>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a href="/" class="brand">SwarmCracker</a>
+
+    <nav class="desktop-nav" aria-label="Main navigation">
+      {nav.map((item) => (
+        <a href={item.href}>{item.label}</a>
+      ))}
+      <a href={links.github} class="github-link">
+        GitHub
+        <span class="star-count" aria-hidden="true"></span>
+      </a>
+      <a href="#quickstart" class="get-started-btn">Get Started</a>
+    </nav>
+
+    <details class="mobile-nav-toggle">
+      <summary aria-label="Toggle navigation menu">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="3" y1="6" x2="21" y2="6"></line>
+          <line x1="3" y1="12" x2="21" y2="12"></line>
+          <line x1="3" y1="18" x2="21" y2="18"></line>
+        </svg>
+        Menu
+      </summary>
+      <nav class="mobile-menu" aria-label="Mobile navigation">
+        {nav.map((item) => (
+          <a href={item.href}>{item.label}</a>
+        ))}
+        <a href="#quickstart">Get Started</a>
+      </nav>
+    </details>
+  </div>
+</header>
