@@ -23,17 +23,21 @@ import Terminal from './Terminal.astro';
     margin: 0 auto;
     padding: 4rem 1.5rem;
     display: grid;
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 3rem;
     align-items: center;
   }
 
   @media (min-width: 1024px) {
     .hero {
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       gap: 4rem;
       padding: 6rem 1.5rem;
     }
+  }
+
+  .hero-content {
+    min-width: 0;
   }
 
   .hero-title {
@@ -102,5 +106,6 @@ import Terminal from './Terminal.astro';
 
   .hero-terminal {
     width: 100%;
+    min-width: 0;
   }
 </style>
