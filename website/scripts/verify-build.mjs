@@ -4,7 +4,11 @@ import { join } from 'node:path';
 const DIST = new URL('../dist/', import.meta.url).pathname;
 
 // Later tasks append to these. Each entry must appear verbatim.
-export const REQUIRED_TEXT = ['SwarmCracker'];
+export const REQUIRED_TEXT = [
+  'SwarmCracker',
+  'Firecracker microVMs with SwarmKit orchestration',
+  'rel="canonical" href="https://swarmcracker.com/"',
+];
 export const REQUIRED_LINKS = [];
 
 export function runChecks(html, css) {
