@@ -1,0 +1,48 @@
+:root {
+  /* Brand */
+  --sc-orange: #FF6B35;
+  --sc-orange-light: #FF8E53;
+  --sc-orange-dark: #E55A2B;
+
+  /* Dark palette */
+  --sc-bg: #0B0B0F;
+  --sc-surface: #14141B;
+  --sc-border: #23232E;
+  --sc-text: #F2F2F5;
+  --sc-text-muted: #A0A0B0;
+
+  /* Typography */
+  --sc-font-text: 'Inter', system-ui, sans-serif;
+  --sc-font-code: 'JetBrains Mono', ui-monospace, monospace;
+
+  color-scheme: dark;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background-color: var(--sc-bg);
+}
+
+body {
+  margin: 0;
+  background-color: var(--sc-bg);
+  color: var(--sc-text);
+  font-family: var(--sc-font-text);
+  line-height: 1.6;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

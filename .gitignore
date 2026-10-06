@@ -146,3 +146,8 @@ site/
 
 # Local design drafts (untracked by intent)
 docs/design/
+
+# Website
+website/node_modules/
+website/dist/
+website/.astro/
