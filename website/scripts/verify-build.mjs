@@ -14,6 +14,8 @@ export const REQUIRED_TEXT = [
   '87%',
   '70/70',
   'Per-VM kernel',
+  'Install SwarmCracker',
+  'SwarmCracker vs. Docker vs. Kubernetes',
 ];
 export const REQUIRED_LINKS = [
   'https://github.com/restuhaqza/swarmcracker',
@@ -21,6 +23,7 @@ export const REQUIRED_LINKS = [
   'https://github.com/restuhaqza/swarmcracker/blob/main/LICENSE',
   'https://docs.swarmcracker.com',
   '#quickstart',
+  '/swarmcracker-architecture.svg',
 ];
 
 export function runChecks(html, css) {

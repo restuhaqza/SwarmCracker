@@ -1,0 +1,107 @@
+---
+import { steps } from '../data/site';
+---
+
+<section id="how-it-works" class="how-it-works" aria-labelledby="how-it-works-heading">
+  <h2 id="how-it-works-heading">How it works</h2>
+  <ol class="steps" role="list">
+    {steps.map((step, i) => (
+      <li class="step">
+        <span class="step-number" aria-hidden="true">{i + 1}</span>
+        <div class="step-content">
+          <h3>{step.title}</h3>
+          <p>{step.body}</p>
+        </div>
+      </li>
+    ))}
+  </ol>
+  <div class="diagram">
+    <img
+      src="/swarmcracker-architecture.svg"
+      alt="SwarmCracker architecture diagram: SwarmKit manager sends tasks to the agent, which delegates to the SwarmCracker executor; the executor translates tasks, prepares images, sets up networking, and launches Firecracker microVMs via KVM."
+      width="1200"
+      height="800"
+      loading="lazy"
+    />
+  </div>
+</section>
+
+<style>
+  .how-it-works {
+    padding: 4rem 1.5rem;
+    max-width: 72rem;
+    margin: 0 auto;
+  }
+
+  h2 {
+    font-size: clamp(1.75rem, 3vw, 2.5rem);
+    font-weight: 700;
+    color: var(--sc-text);
+    text-align: center;
+    margin: 0 0 3rem;
+  }
+
+  .steps {
+    list-style: none;
+    padding: 0;
+    margin: 0 0 3rem;
+    display: grid;
+    gap: 1.5rem;
+    counter-reset: none;
+  }
+
+  .step {
+    display: flex;
+    align-items: flex-start;
+    gap: 1rem;
+    background: var(--sc-surface);
+    border: 1px solid var(--sc-border);
+    border-radius: 0.75rem;
+    padding: 1.5rem;
+  }
+
+  .step-number {
+    flex-shrink: 0;
+    width: 2.5rem;
+    height: 2.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--sc-orange);
+    color: var(--sc-bg);
+    font-weight: 700;
+    font-size: 1.125rem;
+  }
+
+  .step-content h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    color: var(--sc-text);
+    margin: 0 0 0.25rem;
+  }
+
+  .step-content p {
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: var(--sc-text-muted);
+    margin: 0;
+  }
+
+  .diagram {
+    text-align: center;
+  }
+
+  .diagram img {
+    max-width: 100%;
+    height: auto;
+    border-radius: 0.75rem;
+    border: 1px solid var(--sc-border);
+  }
+
+  @media (min-width: 48rem) {
+    .steps {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+</style>

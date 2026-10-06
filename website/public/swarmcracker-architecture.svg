@@ -1,0 +1,322 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" width="1200" height="800">
+  <defs>
+    <!-- Gradients -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    
+    <linearGradient id="managerGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#22d3ee"/>
+      <stop offset="100%" style="stop-color:#0891b2"/>
+    </linearGradient>
+    
+    <linearGradient id="workerGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4ade80"/>
+      <stop offset="100%" style="stop-color:#16a34a"/>
+    </linearGradient>
+    
+    <linearGradient id="vmGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#a78bfa"/>
+      <stop offset="100%" style="stop-color:#7c3aed"/>
+    </linearGradient>
+    
+    <linearGradient id="consulGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#fbbf24"/>
+      <stop offset="100%" style="stop-color:#d97706"/>
+    </linearGradient>
+    
+    <linearGradient id="vxlanGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#22d3ee"/>
+      <stop offset="50%" style="stop-color:#4ade80"/>
+      <stop offset="100%" style="stop-color:#22d3ee"/>
+    </linearGradient>
+    
+    <!-- Drop shadow -->
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#000" flood-opacity="0.3"/>
+    </filter>
+    
+    <filter id="glowCyan" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1200" height="800" fill="url(#bgGrad)"/>
+  
+  <!-- Grid pattern -->
+  <g opacity="0.1">
+    <line x1="0" y1="100" x2="1200" y2="100" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="0" y1="200" x2="1200" y2="200" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="0" y1="300" x2="1200" y2="300" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="0" y1="400" x2="1200" y2="400" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="0" y1="500" x2="1200" y2="500" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="0" y1="600" x2="1200" y2="600" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="0" y1="700" x2="1200" y2="700" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="100" y1="0" x2="100" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="200" y1="0" x2="200" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="300" y1="0" x2="300" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="400" y1="0" x2="400" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="500" y1="0" x2="500" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="600" y1="0" x2="600" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="700" y1="0" x2="700" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="800" y1="0" x2="800" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="900" y1="0" x2="900" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="1000" y1="0" x2="1000" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+    <line x1="1100" y1="0" x2="1100" y2="800" stroke="#22d3ee" stroke-width="0.5"/>
+  </g>
+  
+  <!-- Title -->
+  <text x="600" y="50" text-anchor="middle" font-family="system-ui, sans-serif" font-size="32" font-weight="700" fill="#e2e8f0">SwarmCracker Architecture</text>
+  <text x="600" y="75" text-anchor="middle" font-family="monospace" font-size="14" fill="#94a3b8">Firecracker MicroVM Orchestration with SwarmKit</text>
+  
+  <!-- ========== USER/API LAYER ========== -->
+  <g transform="translate(100, 120)">
+    <!-- User box -->
+    <rect x="0" y="0" width="140" height="60" rx="8" fill="#334155" stroke="#64748b" stroke-width="1" filter="url(#shadow)"/>
+    <text x="70" y="25" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#e2e8f0">User / CI/CD</text>
+    <text x="70" y="42" text-anchor="middle" font-family="monospace" font-size="10" fill="#94a3b8">swarmctl CLI</text>
+  </g>
+  
+  <!-- Arrow from User to Manager -->
+  <path d="M 240 150 L 340 150" stroke="#22d3ee" stroke-width="2" fill="none" marker-end="url(#arrowCyan)"/>
+  <defs>
+    <marker id="arrowCyan" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#22d3ee"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#4ade80"/>
+    </marker>
+    <marker id="arrowYellow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#fbbf24"/>
+    </marker>
+    <marker id="arrowPurple" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+  <text x="290" y="140" text-anchor="middle" font-family="monospace" font-size="10" fill="#22d3ee">gRPC</text>
+  
+  <!-- ========== SWARMKIT MANAGER ========== -->
+  <g transform="translate(350, 100)">
+    <!-- Manager Node Container -->
+    <rect x="0" y="0" width="200" height="140" rx="12" fill="url(#managerGrad)" opacity="0.2" stroke="#22d3ee" stroke-width="2" filter="url(#shadow)"/>
+    
+    <!-- Manager Header -->
+    <rect x="0" y="0" width="200" height="30" rx="12" fill="url(#managerGrad)"/>
+    <text x="100" y="20" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="#0f172a">MANAGER NODE</text>
+    
+    <!-- swarmd-firecracker -->
+    <rect x="15" y="40" width="170" height="40" rx="6" fill="#1e293b" stroke="#22d3ee" stroke-width="1"/>
+    <text x="100" y="55" text-anchor="middle" font-family="monospace" font-size="11" font-weight="600" fill="#22d3ee">swarmd-firecracker</text>
+    <text x="100" y="70" text-anchor="middle" font-family="monospace" font-size="9" fill="#94a3b8">SwarmKit Agent + Executor</text>
+    
+    <!-- SwarmKit Raft -->
+    <rect x="15" y="90" width="80" height="35" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <text x="55" y="105" text-anchor="middle" font-family="monospace" font-size="9" fill="#e2e8f0">Raft Consensus</text>
+    <text x="55" y="117" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">Leader Election</text>
+    
+    <!-- IPAM -->
+    <rect x="105" y="90" width="80" height="35" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <text x="145" y="105" text-anchor="middle" font-family="monospace" font-size="9" fill="#e2e8f0">IPAM</text>
+    <text x="145" y="117" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">192.168.127.x</text>
+    
+    <!-- IP label -->
+    <text x="100" y="155" text-anchor="middle" font-family="monospace" font-size="10" fill="#22d3ee">192.168.121.18</text>
+  </g>
+  
+  <!-- ========== CONSUL ========== -->
+  <g transform="translate(580, 100)">
+    <rect x="0" y="0" width="140" height="140" rx="12" fill="url(#consulGrad)" opacity="0.2" stroke="#fbbf24" stroke-width="2" filter="url(#shadow)"/>
+    
+    <!-- Consul Header -->
+    <rect x="0" y="0" width="140" height="30" rx="12" fill="url(#consulGrad)"/>
+    <text x="70" y="20" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="#0f172a">CONSUL</text>
+    
+    <!-- Service Registry -->
+    <rect x="15" y="40" width="110" height="35" rx="4" fill="#1e293b" stroke="#fbbf24" stroke-width="1"/>
+    <text x="70" y="55" text-anchor="middle" font-family="monospace" font-size="9" fill="#fbbf24">Service Registry</text>
+    <text x="70" y="68" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">swarmcracker-vxlan</text>
+    
+    <!-- Health Checks -->
+    <rect x="15" y="85" width="110" height="35" rx="4" fill="#1e293b" stroke="#fbbf24" stroke-width="1"/>
+    <text x="70" y="100" text-anchor="middle" font-family="monospace" font-size="9" fill="#fbbf24">Peer Discovery</text>
+    <text x="70" y="112" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">WatchPeers()</text>
+    
+    <!-- Port -->
+    <text x="70" y="155" text-anchor="middle" font-family="monospace" font-size="10" fill="#fbbf24">:8500</text>
+  </g>
+  
+  <!-- Arrow Manager to Consul -->
+  <path d="M 550 170 L 580 170" stroke="#fbbf24" stroke-width="2" fill="none" marker-end="url(#arrowYellow)"/>
+  <text x="565" y="160" text-anchor="middle" font-family="monospace" font-size="9" fill="#fbbf24">register</text>
+  
+  <!-- ========== WORKER NODES ========== -->
+  <!-- Worker 1 -->
+  <g transform="translate(150, 320)">
+    <rect x="0" y="0" width="220" height="200" rx="12" fill="url(#workerGrad)" opacity="0.15" stroke="#4ade80" stroke-width="2" filter="url(#shadow)"/>
+    
+    <!-- Worker Header -->
+    <rect x="0" y="0" width="220" height="30" rx="12" fill="url(#workerGrad)"/>
+    <text x="110" y="20" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="#0f172a">WORKER NODE 1</text>
+    
+    <!-- swarmd-firecracker -->
+    <rect x="15" y="40" width="190" height="35" rx="6" fill="#1e293b" stroke="#4ade80" stroke-width="1"/>
+    <text x="110" y="55" text-anchor="middle" font-family="monospace" font-size="11" font-weight="600" fill="#4ade80">swarmd-firecracker</text>
+    <text x="110" y="68" text-anchor="middle" font-family="monospace" font-size="9" fill="#94a3b8">Executor + Network Manager</text>
+    
+    <!-- Network Components -->
+    <rect x="15" y="85" width="90" height="50" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <text x="60" y="100" text-anchor="middle" font-family="monospace" font-size="9" fill="#e2e8f0">swarm-br0</text>
+    <text x="60" y="112" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">Bridge</text>
+    <text x="60" y="125" text-anchor="middle" font-family="monospace" font-size="8" fill="#4ade80">192.168.127.1</text>
+    
+    <rect x="115" y="85" width="90" height="50" rx="4" fill="#334155" stroke="#22d3ee" stroke-width="1"/>
+    <text x="160" y="100" text-anchor="middle" font-family="monospace" font-size="9" fill="#22d3ee">swarm-br0-vxlan</text>
+    <text x="160" y="112" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">VXLAN ID 100</text>
+    <text x="160" y="125" text-anchor="middle" font-family="monospace" font-size="8" fill="#22d3ee">UDP 4789</text>
+    
+    <!-- Firecracker MicroVMs -->
+    <rect x="15" y="145" width="90" height="45" rx="4" fill="url(#vmGrad)" opacity="0.3" stroke="#a78bfa" stroke-width="1"/>
+    <text x="60" y="160" text-anchor="middle" font-family="monospace" font-size="9" fill="#a78bfa">MicroVM 1</text>
+    <text x="60" y="175" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">192.168.127.105</text>
+    <text x="60" y="185" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">TAP device</text>
+    
+    <rect x="115" y="145" width="90" height="45" rx="4" fill="url(#vmGrad)" opacity="0.3" stroke="#a78bfa" stroke-width="1"/>
+    <text x="160" y="160" text-anchor="middle" font-family="monospace" font-size="9" fill="#a78bfa">MicroVM 2</text>
+    <text x="160" y="175" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">192.168.127.47</text>
+    <text x="160" y="185" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">TAP device</text>
+    
+    <!-- Host IP -->
+    <text x="110" y="215" text-anchor="middle" font-family="monospace" font-size="10" fill="#4ade80">192.168.121.153</text>
+  </g>
+  
+  <!-- Worker 2 -->
+  <g transform="translate(830, 320)">
+    <rect x="0" y="0" width="220" height="200" rx="12" fill="url(#workerGrad)" opacity="0.15" stroke="#4ade80" stroke-width="2" filter="url(#shadow)"/>
+    
+    <!-- Worker Header -->
+    <rect x="0" y="0" width="220" height="30" rx="12" fill="url(#workerGrad)"/>
+    <text x="110" y="20" text-anchor="middle" font-family="system-ui, sans-serif" font-size="14" font-weight="700" fill="#0f172a">WORKER NODE 2</text>
+    
+    <!-- swarmd-firecracker -->
+    <rect x="15" y="40" width="190" height="35" rx="6" fill="#1e293b" stroke="#4ade80" stroke-width="1"/>
+    <text x="110" y="55" text-anchor="middle" font-family="monospace" font-size="11" font-weight="600" fill="#4ade80">swarmd-firecracker</text>
+    <text x="110" y="68" text-anchor="middle" font-family="monospace" font-size="9" fill="#94a3b8">Executor + Network Manager</text>
+    
+    <!-- Network Components -->
+    <rect x="15" y="85" width="90" height="50" rx="4" fill="#334155" stroke="#64748b" stroke-width="1"/>
+    <text x="60" y="100" text-anchor="middle" font-family="monospace" font-size="9" fill="#e2e8f0">swarm-br0</text>
+    <text x="60" y="112" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">Bridge</text>
+    <text x="60" y="125" text-anchor="middle" font-family="monospace" font-size="8" fill="#4ade80">192.168.127.1</text>
+    
+    <rect x="115" y="85" width="90" height="50" rx="4" fill="#334155" stroke="#22d3ee" stroke-width="1"/>
+    <text x="160" y="100" text-anchor="middle" font-family="monospace" font-size="9" fill="#22d3ee">swarm-br0-vxlan</text>
+    <text x="160" y="112" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">VXLAN ID 100</text>
+    <text x="160" y="125" text-anchor="middle" font-family="monospace" font-size="8" fill="#22d3ee">UDP 4789</text>
+    
+    <!-- Firecracker MicroVMs -->
+    <rect x="15" y="145" width="90" height="45" rx="4" fill="url(#vmGrad)" opacity="0.3" stroke="#a78bfa" stroke-width="1"/>
+    <text x="60" y="160" text-anchor="middle" font-family="monospace" font-size="9" fill="#a78bfa">MicroVM 3</text>
+    <text x="60" y="175" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">192.168.127.123</text>
+    <text x="60" y="185" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">TAP device</text>
+    
+    <rect x="115" y="145" width="90" height="45" rx="4" fill="url(#vmGrad)" opacity="0.3" stroke="#a78bfa" stroke-width="1"/>
+    <text x="160" y="160" text-anchor="middle" font-family="monospace" font-size="9" fill="#a78bfa">MicroVM 4</text>
+    <text x="160" y="175" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">192.168.127.12</text>
+    <text x="160" y="185" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">TAP device</text>
+    
+    <!-- Host IP -->
+    <text x="110" y="215" text-anchor="middle" font-family="monospace" font-size="10" fill="#4ade80">192.168.121.59</text>
+  </g>
+  
+  <!-- ========== CONNECTIONS ========== -->
+  <!-- Manager to Worker1 (SwarmKit) -->
+  <path d="M 450 240 C 400 280, 350 300, 260 320" stroke="#22d3ee" stroke-width="2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrowCyan)"/>
+  <text x="350" y="270" text-anchor="middle" font-family="monospace" font-size="9" fill="#22d3ee">SwarmKit gRPC</text>
+  <text x="350" y="285" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">:4242</text>
+  
+  <!-- Manager to Worker2 (SwarmKit) -->
+  <path d="M 450 240 C 500 280, 600 300, 940 320" stroke="#22d3ee" stroke-width="2" fill="none" stroke-dasharray="5,3" marker-end="url(#arrowCyan)"/>
+  
+  <!-- Consul to Workers -->
+  <path d="M 650 240 C 600 280, 400 300, 260 320" stroke="#fbbf24" stroke-width="1.5" fill="none" stroke-dasharray="3,3"/>
+  <path d="M 650 240 C 700 280, 800 300, 940 320" stroke="#fbbf24" stroke-width="1.5" fill="none" stroke-dasharray="3,3"/>
+  
+  <!-- ========== VXLAN OVERLAY ========== -->
+  <!-- VXLAN Tunnel between workers -->
+  <g transform="translate(400, 580)">
+    <rect x="0" y="0" width="400" height="80" rx="8" fill="#334155" stroke="url(#vxlanGrad)" stroke-width="2" opacity="0.5"/>
+    
+    <!-- VXLAN Header -->
+    <rect x="0" y="0" width="400" height="25" rx="8" fill="url(#vxlanGrad)" opacity="0.5"/>
+    <text x="200" y="17" text-anchor="middle" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#e2e8f0">VXLAN OVERLAY NETWORK</text>
+    
+    <!-- Left side -->
+    <rect x="20" y="35" width="100" height="35" rx="4" fill="#1e293b" stroke="#4ade80" stroke-width="1"/>
+    <text x="70" y="50" text-anchor="middle" font-family="monospace" font-size="9" fill="#4ade80">Worker1 FDB</text>
+    <text x="70" y="62" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">→ .18, .59</text>
+    
+    <!-- Center arrow -->
+    <path d="M 130 52 L 270 52" stroke="#22d3ee" stroke-width="3" fill="none" marker-end="url(#arrowCyan)"/>
+    <text x="200" y="45" text-anchor="middle" font-family="monospace" font-size="9" fill="#22d3ee">UDP 4789</text>
+    <text x="200" y="70" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">FDB Broadcast Flood</text>
+    
+    <!-- Right side -->
+    <rect x="280" y="35" width="100" height="35" rx="4" fill="#1e293b" stroke="#4ade80" stroke-width="1"/>
+    <text x="330" y="50" text-anchor="middle" font-family="monospace" font-size="9" fill="#4ade80">Worker2 FDB</text>
+    <text x="330" y="62" text-anchor="middle" font-family="monospace" font-size="8" fill="#94a3b8">→ .18, .153</text>
+  </g>
+  
+  <!-- Connection from workers to VXLAN -->
+  <path d="M 260 520 L 420 580" stroke="#22d3ee" stroke-width="1" fill="none"/>
+  <path d="M 940 520 L 780 580" stroke="#22d3ee" stroke-width="1" fill="none"/>
+  
+  <!-- Cross-VM communication arrows -->
+  <path d="M 175 485 L 875 485" stroke="#a78bfa" stroke-width="1.5" fill="none" stroke-dasharray="4,4" opacity="0.6"/>
+  <text x="525" y="475" text-anchor="middle" font-family="monospace" font-size="9" fill="#a78bfa">VM-to-VM Communication (Overlay IP)</text>
+  
+  <!-- ========== LEGEND ========== -->
+  <g transform="translate(50, 700)">
+    <text x="0" y="0" font-family="system-ui, sans-serif" font-size="12" font-weight="600" fill="#e2e8f0">Legend:</text>
+    
+    <!-- Manager -->
+    <rect x="80" y="-12" width="20" height="20" rx="3" fill="url(#managerGrad)" opacity="0.5"/>
+    <text x="110" y="0" font-family="system-ui, sans-serif" font-size="11" fill="#94a3b8">Manager Node</text>
+    
+    <!-- Worker -->
+    <rect x="200" y="-12" width="20" height="20" rx="3" fill="url(#workerGrad)" opacity="0.5"/>
+    <text x="230" y="0" font-family="system-ui, sans-serif" font-size="11" fill="#94a3b8">Worker Node</text>
+    
+    <!-- MicroVM -->
+    <rect x="320" y="-12" width="20" height="20" rx="3" fill="url(#vmGrad)" opacity="0.5"/>
+    <text x="350" y="0" font-family="system-ui, sans-serif" font-size="11" fill="#94a3b8">MicroVM</text>
+    
+    <!-- Consul -->
+    <rect x="430" y="-12" width="20" height="20" rx="3" fill="url(#consulGrad)" opacity="0.5"/>
+    <text x="460" y="0" font-family="system-ui, sans-serif" font-size="11" fill="#94a3b8">Consul</text>
+    
+    <!-- VXLAN -->
+    <line x1="540" y1="-2" x2="560" y2="-2" stroke="#22d3ee" stroke-width="3"/>
+    <text x="575" y="0" font-family="system-ui, sans-serif" font-size="11" fill="#94a3b8">VXLAN Tunnel</text>
+    
+    <!-- SwarmKit -->
+    <line x1="680" y1="-2" x2="700" y2="-2" stroke="#22d3ee" stroke-width="2" stroke-dasharray="5,3"/>
+    <text x="715" y="0" font-family="system-ui, sans-serif" font-size="11" fill="#94a3b8">SwarmKit</text>
+  </g>
+  
+  <!-- ========== COMPONENT FLOW LABELS ========== -->
+  <g transform="translate(800, 700)">
+    <text x="0" y="0" font-family="monospace" font-size="10" fill="#94a3b8">Network Flow:</text>
+    <text x="0" y="15" font-family="monospace" font-size="9" fill="#4ade80">1. Task scheduled → Worker receives assignment</text>
+    <text x="0" y="30" font-family="monospace" font-size="9" fill="#22d3ee">2. IPAM allocates overlay IP → Kernel boot args</text>
+    <text x="0" y="45" font-family="monospace" font-size="9" fill="#a78bfa">3. MicroVM starts → TAP attached to bridge</text>
+    <text x="0" y="60" font-family="monospace" font-size="9" fill="#fbbf24">4. Consul WatchPeers → VXLAN FDB entries</text>
+    <text x="0" y="75" font-family="monospace" font-size="9" fill="#a78bfa">5. Cross-node traffic via VXLAN UDP tunnel</text>
+  </g>
+</svg>
