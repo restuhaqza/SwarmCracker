@@ -90,6 +90,7 @@ import { steps } from '../data/site';
 
   .diagram {
     text-align: center;
+    overflow-x: auto;
   }
 
   .diagram img {
@@ -102,6 +103,13 @@ import { steps } from '../data/site';
   @media (min-width: 48rem) {
     .steps {
       grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (max-width: 47.99rem) {
+    .diagram img {
+      max-width: none;
+      width: 40rem;
     }
   }
 </style>
