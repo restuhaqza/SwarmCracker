@@ -37,9 +37,11 @@ function showCopied(btn: Element): void {
   btn.setAttribute('data-copied', 'true');
   
   // Update adjacent aria-live status element
-  const parent = btn.parentElement;
-  if (parent) {
-    const status = parent.querySelector('[aria-live="polite"]');
+  // Traverse up to the enclosing <figure> (btn.parentElement is .code-block,
+  // but the [aria-live="polite"] span is a sibling of .code-block inside <figure>)
+  const figure = btn.closest('figure');
+  if (figure) {
+    const status = figure.querySelector('[aria-live="polite"]');
     if (status) {
       status.textContent = 'Copied';
       
