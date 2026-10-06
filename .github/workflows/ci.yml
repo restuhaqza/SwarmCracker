@@ -52,7 +52,7 @@ jobs:
       # branches, so the same tree measures differently over time. The
       # meaningful invariant is that a PR does not *lower* coverage relative
       # to the branch it targets, measured in the same runner. The 85% figure
-      # remains the project target (see docs/dev/testing/unit-tests.md).
+      # remains the project target (see docs-site/src/content/docs/contributing/testing/unit-tests.md).
       - name: Coverage gate (no regression vs base)
         if: github.event_name == 'pull_request'
         run: |

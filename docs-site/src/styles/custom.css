@@ -1,0 +1,201 @@
+/*
+ * SwarmCracker docs theme
+ * ---------------------------------------------------------------------------
+ * Shares the landing page's world ("Intermodal Container Terminal"): concrete
+ * ground, safety-orange plant, stencilled display type. Colours are mapped onto
+ * Starlight's own design tokens so every component inherits the brand.
+ *
+ * Type: Big Shoulders Display (headings), Archivo (body), B612 Mono (code).
+ * Faces are self-hosted from /public/fonts (latin subset, font-display: swap).
+ */
+
+/* --------------------------------------------------------------------------
+ * Fonts
+ * -------------------------------------------------------------------------- */
+@font-face {
+  font-family: 'Big Shoulders Display';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/bigshoulders-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Big Shoulders Display';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/bigshoulders-800.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/archivo-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('/fonts/archivo-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Archivo';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/archivo-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'B612 Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/b612-mono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'B612 Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/b612-mono-700.woff2') format('woff2');
+}
+
+/* --------------------------------------------------------------------------
+ * Shared tokens
+ * -------------------------------------------------------------------------- */
+:root {
+  --yard-safety: #e4570f;
+  --yard-safety-deep: #c24a0c;
+  --yard-rust: #a33d08;
+  --yard-hazard: #f5c518;
+  --sl-font: 'Archivo', system-ui, -apple-system, sans-serif;
+  --sl-font-mono: 'B612 Mono', ui-monospace, 'SFMono-Regular', monospace;
+  --sl-content-width: 50rem;
+}
+
+/* --------------------------------------------------------------------------
+ * Light — concrete apron, paper stock, stencilled black ink
+ * -------------------------------------------------------------------------- */
+:root[data-theme='light'] {
+  --sl-color-accent-low: #f6e1d3;
+  --sl-color-accent: #c24a0c;
+  --sl-color-accent-high: #8f3407;
+
+  --sl-color-white: #1b1d20;
+  --sl-color-gray-1: #2a2d31;
+  --sl-color-gray-2: #3c4046;
+  --sl-color-gray-3: #565c63;
+  --sl-color-gray-4: #868c93;
+  --sl-color-gray-5: #c3c0b8;
+  --sl-color-gray-6: #e8e6e0;
+  --sl-color-gray-7: #efeee9;
+  --sl-color-black: #fbfaf7;
+
+  --sl-color-bg: #fbfaf7;
+  --sl-color-bg-nav: #e8e6e0;
+  --sl-color-bg-sidebar: #e8e6e0;
+  --sl-color-hairline-light: #dcd9d1;
+  --sl-color-hairline: #c3c0b8;
+  --sl-color-hairline-shade: #c3c0b8;
+  --sl-color-bg-inline-code: #eceae4;
+  --sl-color-text: #1b1d20;
+  --sl-color-text-accent: #a33d08;
+}
+
+/* --------------------------------------------------------------------------
+ * Dark — asphalt yard at night, safety signage lit
+ * -------------------------------------------------------------------------- */
+:root[data-theme='dark'] {
+  --sl-color-accent-low: #3a1c0c;
+  --sl-color-accent: #f26a22;
+  --sl-color-accent-high: #ffa876;
+
+  --sl-color-white: #fbfaf7;
+  --sl-color-gray-1: #e8e6e0;
+  --sl-color-gray-2: #c3c0b8;
+  --sl-color-gray-3: #868c93;
+  --sl-color-gray-4: #565c63;
+  --sl-color-gray-5: #3c4046;
+  --sl-color-gray-6: #2a2d31;
+  --sl-color-black: #14161a;
+
+  --sl-color-bg: #1b1d20;
+  --sl-color-bg-nav: #14161a;
+  --sl-color-bg-sidebar: #16181c;
+  --sl-color-hairline-light: #2a2d31;
+  --sl-color-text: #e8e6e0;
+  --sl-color-text-accent: #ffa876;
+  --sl-color-bg-inline-code: #2a2d31;
+}
+
+/* --------------------------------------------------------------------------
+ * Type: display headings carry the stencilled signage voice
+ * -------------------------------------------------------------------------- */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.site-title,
+.sl-markdown-content h1,
+.sl-markdown-content h2 {
+  font-family: 'Big Shoulders Display', 'Archivo Narrow', 'Arial Narrow', sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.site-title {
+  text-transform: uppercase;
+  letter-spacing: 0.01em;
+}
+
+/* Inline code and port/task IDs read as stencilled mono */
+code,
+kbd,
+samp,
+pre {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Accent-as-text must stay legible; nudge the highlighted link colour */
+.sl-markdown-content a:not(:where(.not-content *)) {
+  text-underline-offset: 0.2em;
+}
+
+/* Tables: concrete grid, no soft AI rounding */
+.sl-markdown-content table {
+  border-collapse: collapse;
+}
+.sl-markdown-content th {
+  font-family: 'Big Shoulders Display', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+/* Asides/callouts: straight edges + a thick safety rail, like yard signage */
+.sl-markdown-content .starlight-aside {
+  border-radius: 0;
+  border-inline-start-width: 4px;
+}
+
+/* Cards and links: crisp, not pill-soft */
+.sl-markdown-content .card {
+  border-radius: 0;
+}
+
+/* Focus ring drawn like a stencil outline */
+:focus-visible {
+  outline: 3px solid var(--yard-safety-deep);
+  outline-offset: 2px;
+}
+:root[data-theme='dark'] :focus-visible {
+  outline-color: var(--yard-safety);
+}
+
+::selection {
+  background: var(--yard-safety);
+  color: #fbfaf7;
+}

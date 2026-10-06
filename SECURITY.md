@@ -47,7 +47,7 @@ If you discover a security vulnerability in SwarmCracker, please report it respo
 
 ## Security Model
 
-SwarmCracker runs each workload as a Firecracker microVM with hardware-enforced isolation. See [Security Guide](docs/dev/security.md) for full details.
+SwarmCracker runs each workload as a Firecracker microVM with hardware-enforced isolation. See [Security Guide](docs-site/src/content/docs/contributing/security.md) for full details.
 
 ### Key Security Properties
 
@@ -163,7 +163,7 @@ SwarmCracker applies a restrictive seccomp profile to Firecracker guest VMs. Def
 
 **22 High fixes** covering: resource cleanup rollback, state transition guards, goroutine leak prevention, CNI IPAM cleanup, YAML Duration parsing, NATEnabled pointer, token logging downgrade, file permissions, Consul TLS, io.Copy streaming, capability checking, task ID/bridge name/mount path validation.
 
-Full details: [Security Guide](docs/dev/security.md)
+Full details: [Security Guide](docs-site/src/content/docs/contributing/security.md)
 
 ---
 

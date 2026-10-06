@@ -1,0 +1,264 @@
+---
+title: "Advanced Topics"
+description: "Rolling updates, multi-arch, init systems, build from source."
+---
+
+> Rolling updates, multi-arch, init systems, build from source.
+
+---
+
+## Rolling Updates
+
+SwarmCracker supports zero-downtime rolling updates via SwarmKit orchestration.
+
+### How It Works
+
+1. Manager creates new task with updated spec
+2. SwarmCracker starts new Firecracker VM
+3. VM reports RUNNING status
+4. Manager waits for Monitor period (default: 5s)
+5. Manager stops old task
+6. Executor removes old VM
+
+### Update a Service
+
+```bash
+# Update image (triggers rolling update)
+swarmctl update svc-nginx --image nginx:1.25
+
+# Update with environment
+swarmctl update svc-app --env LOG_LEVEL=debug
+```
+
+### Configuration
+
+SwarmKit controls update behavior (not SwarmCracker):
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| Parallelism | 1 | Tasks updated simultaneously |
+| Delay | 0s | Wait between batches |
+| Monitor | 5s | Verify task stability |
+| Failure Action | pause | On failure: pause/continue/rollback |
+
+---
+
+## Multi-Architecture Support
+
+SwarmCracker supports multiple CPU architectures via placement constraints.
+
+### Supported Architectures
+
+| Arch | Firecracker Support | Notes |
+|------|---------------------|-------|
+| x86_64 | ✅ Full support | Primary target |
+| arm64 | ✅ Experimental | AWS Graviton, Ampere |
+
+### Architecture Constraints
+
+```bash
+# Create service constrained to x86_64 nodes
+swarmctl create-service nginx:latest --constraint arch==x86_64
+
+# Create service constrained to arm64 nodes
+swarmctl create-service arm-app:latest --constraint arch==arm64
+```
+
+### Multi-Arch Images
+
+Use OCI image indexes for cross-arch compatibility:
+
+```bash
+# Build multi-arch image
+docker buildx build --platform linux/amd64,linux/arm64 -t myapp:latest .
+
+# SwarmCracker pulls correct variant based on node arch
+```
+
+---
+
+## Init Systems
+
+MicroVMs need an init system for proper process management.
+
+### Why Init Matters
+
+- **Zombie reaping** — Orphan processes must be reaped
+- **Signal handling** — Forward SIGTERM to children
+- **Process supervision** — Restart failed processes
+
+### Supported Init Systems
+
+| Init | Size | Features |
+|------|------|----------|
+| **tini** | ~20KB | Minimal, Docker default |
+| **dumb-init** | ~30KB | Signal proxy, lightweight |
+| **s6** | ~100KB | Process supervision |
+| **systemd** | Large | Full service management |
+
+### Configure Init
+
+```yaml
+executor:
+  init_system: tini        # none | tini | dumb-init
+  init_grace_period: 10    # seconds before SIGKILL during shutdown
+```
+
+### Rootfs with Init
+
+```bash
+# Install tini in rootfs
+curl -fsSL https://github.com/krallin/tini/releases/download/v0.19.0/tini-static -o rootfs/sbin/tini
+chmod +x rootfs/sbin/tini
+```
+
+---
+
+## Build from Source
+
+### Prerequisites
+
+- Go 1.26+
+- Git
+- Make
+
+### Clone and Build
+
+```bash
+# Clone repository
+git clone https://github.com/restuhaqza/SwarmCracker
+cd SwarmCracker
+
+# Build binaries
+make all
+
+# Output:
+# build/swarmcracker
+# build/swarmd-firecracker
+# build/swarmcracker-agent
+
+# Install
+sudo make install
+```
+
+### Build Targets
+
+```bash
+make all           # Build all binaries
+make swarmcracker  # Build the main CLI
+make test          # Run unit tests
+make lint          # Run linters
+make fmt           # Format code
+make clean         # Clean build artifacts
+make install       # Install binaries to $GOPATH/bin
+```
+
+### Development Build
+
+```bash
+# Build a debug/dev binary
+go build -o build/swarmcracker ./cmd/swarmcracker
+
+# Run the CLI
+./build/swarmcracker --help
+```
+
+---
+
+## systemd Services
+
+`swarmcracker cluster init` (manager) and `swarmcracker cluster join` (worker)
+generate and enable the systemd units for you:
+
+- `swarmcracker-manager.service` — runs `swarmd-firecracker --manager` on the manager
+- `swarmcracker-worker.service` — runs `swarmd-firecracker` on workers
+
+Inspect and control them with systemd:
+
+```bash
+sudo systemctl status swarmcracker-manager
+sudo systemctl restart swarmcracker-worker
+
+# Logs
+sudo journalctl -u swarmcracker-manager -f
+sudo journalctl -u swarmcracker-worker -f
+```
+
+There is no standalone `swarmcracker` service.
+
+---
+
+## File Management
+
+Manage rootfs and kernel images.
+
+### Rootfs Directory
+
+```yaml
+executor:
+  rootfs_dir: "/var/lib/firecracker/rootfs"
+```
+
+### Kernel Management
+
+```yaml
+executor:
+  kernel_path: "/usr/share/firecracker/vmlinux"
+```
+
+### Image Storage
+
+```bash
+/var/lib/firecracker/
+├── rootfs/                 # executor.rootfs_dir
+│   ├── nginx-rootfs.ext4
+│   └── redis-rootfs.ext4
+└── golden/                 # prebuilt golden image artifacts
+
+/usr/share/firecracker/
+└── vmlinux                 # executor.kernel_path (default kernel)
+```
+
+---
+
+## Troubleshooting
+
+### Rolling Update Stuck
+
+```bash
+# Check task status
+swarmctl ls-tasks
+
+# Check node availability
+swarmctl ls-nodes
+
+# Force rollback if needed
+swarmctl update <service-id> --image nginx:1.25-alpine
+```
+
+### Init Process Missing
+
+```bash
+# Check init in rootfs
+ls rootfs/sbin/tini
+
+# Verify init binary
+file rootfs/sbin/tini
+```
+
+### Build Fails
+
+```bash
+# Check Go version
+go version  # Must be 1.26+
+
+# Check dependencies
+go mod download
+
+# Run lint for errors
+make lint
+```
+
+---
+
+**See Also:** [Configuration](/guides/configuration/) | [Contributing Guide](/contributing/guidelines/)

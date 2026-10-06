@@ -1,0 +1,46 @@
+# Cloudflare Pages redirects: MkDocs (old) -> Starlight (new)
+# The old site served everything under /user/... and /dev/...; the new IA
+# promotes those to top level. Order matters: specific rules before splats.
+
+# Getting started
+/user/getting-started/*            /getting-started/            301
+
+# User guides (exact first, then directory catches)
+/user/guides/configuration/*       /guides/configuration/      301
+/user/guides/networking/*          /guides/networking/         301
+/user/guides/security/*            /guides/security/           301
+/user/guides/jailer-quickstart/*   /guides/security/           301
+/user/guides/snapshots/*           /guides/snapshots/          301
+/user/guides/advanced/*            /guides/advanced/           301
+/user/guides/swarmkit/*            /guides/swarmkit/           301
+/user/guides/operations/*          /guides/operations/         301
+/user/guides/disaster-recovery/*   /guides/disaster-recovery/  301
+/user/guides/ansible/*             /guides/                     301
+/user/guides/*                     /guides/                    301
+
+# Architecture
+/user/architecture/swarmkit/*      /architecture/swarmkit/     301
+/user/architecture/*               /architecture/              301
+
+# Reference
+/user/reference/cli/*              /reference/cli/             301
+/user/reference/*                  /reference/                 301
+
+# User root fallback
+/user/*                            /                           301
+
+# Developer docs -> Contributing
+/dev/reference/api/*               /reference/api/             301
+/dev/reference/config/*            /guides/configuration/      301
+/dev/reference/*                   /contributing/reference/    301
+/dev/testing/*                     /contributing/testing/      301
+/dev/contributing/*                /contributing/guidelines/   301
+/dev/security/*                    /contributing/security/     301
+/dev/*                             /contributing/              301
+
+# Retired sections
+/architecture/overview/*           /architecture/              301
+/planning/*                        /                           301
+/research/*                        /                           301
+/reports/*                         /                           301
+/superpowers/*                     /                           301

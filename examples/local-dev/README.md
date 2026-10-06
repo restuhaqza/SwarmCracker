@@ -1,9 +1,9 @@
 # Local Development Setup
 
 > ⚠️ **Legacy example.** This walks through a manual, single-host SwarmKit setup.
-> For the supported happy path, use [`swarmcracker setup`](../../docs/user/getting-started/README.md)
+> For the supported happy path, use [`swarmcracker setup`](../../docs-site/src/content/docs/getting-started/index.md)
 > followed by `swarmcracker cluster init` / `swarmcracker cluster join`, and see the
-> [CLI reference](../../docs/user/reference/cli.md). This example is retained for
+> [CLI reference](../../docs-site/src/content/docs/reference/cli.md). This example is retained for
 > reference only.
 
 Single-node SwarmKit cluster for local development and testing. Manager and worker run on the same machine with isolated networking.
@@ -256,6 +256,6 @@ swarmctl service create --config-file service-spec.yaml
 ## See Also
 
 - [Production Deployment Guide](../production-cluster/README.md)
-- [SwarmKit Guide](../../docs/user/guides/swarmkit.md)
-- [Networking Guide](../../docs/user/guides/networking.md)
-- [Advanced Guide](../../docs/user/guides/advanced.md) — Init systems, multi-arch
+- [SwarmKit Guide](../../docs-site/src/content/docs/guides/swarmkit.md)
+- [Networking Guide](../../docs-site/src/content/docs/guides/networking.md)
+- [Advanced Guide](../../docs-site/src/content/docs/guides/advanced.md) — Init systems, multi-arch

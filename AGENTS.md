@@ -54,7 +54,8 @@ MicroVM (isolated kernel + workload)
 | **Types** | `pkg/types` | Shared interfaces and data structures | 100.0% coverage |
 
 > Coverage measured 2026-09-29 (total `./pkg/...` 87.6%); see
-> `docs/dev/testing/unit-tests.md` for the full table and methodology.
+> `docs-site/src/content/docs/contributing/testing/unit-tests.md` for the full
+> table and methodology.
 
 ### Data Flow
 
@@ -100,11 +101,10 @@ swarmcracker/
 │   ├── integration/                # Integration tests
 │   └── e2e/                        # End-to-end tests
 ├── infrastructure/                 # Ansible playbooks, Terraform
-├── docs/                           # Documentation
-│   ├── guides/                    # How-to guides
-│   ├── architecture/              # Design docs
-│   ├── development/                # Contributor docs
-│   └── getting-started/            # Setup guides
+├── docs-site/                      # Astro Starlight docs site (docs.swarmcracker.com)
+│   ├── src/content/docs/           # Published docs (guides, reference, architecture…)
+│   └── src/styles/custom.css       # Brand theme
+├── docs/                           # Internal material (reports, superpowers, design assets)
 ├── build/                          # Build output (gitignored)
 ├── README.md                       # Main overview
 ├── CONTRIBUTING.md                 # Contribution guidelines
@@ -123,7 +123,7 @@ swarmcracker/
 | `cmd/swarmcracker/main.go` | CLI tool entry point |
 | `pkg/executor/executor.go` | Main executor logic |
 | `pkg/config/config.go` | Configuration structures |
-| `docs/README.md` | Documentation index |
+| `docs-site/src/content/docs/` | Published documentation (Astro Starlight) |
 
 ---
 
@@ -252,7 +252,7 @@ swarmcracker --config /custom/config.yaml run nginx:latest
 | discovery | 80.6% | 🟡 Fair |
 
 Total `./pkg/...`: **87.6%**, measured 2026-09-29. Full details and
-methodology: `docs/dev/testing/unit-tests.md`.
+methodology: `docs-site/src/content/docs/contributing/testing/unit-tests.md`.
 
 ### Running Specific Tests
 
@@ -356,10 +356,10 @@ managed by the daemon (service tasks); VMs started in the foreground by
 
 1. **Update relevant package** in `pkg/`
 2. **Add tests** in `*_test.go` files
-3. **Update documentation** in `docs/`
-4. **Update `docs/planning/`** if changing roadmap
-5. **Run tests**: `make test`
-6. **Format code**: `make fmt`
+3. **Update documentation** under `docs-site/src/content/docs/`
+4. **Run tests**: `make test`
+5. **Format code**: `make fmt`
+6. **Verify docs**: `cd docs-site && npm run verify` (if docs changed)
 
 ### When Debugging Issues
 
@@ -378,12 +378,16 @@ managed by the daemon (service tasks); VMs started in the foreground by
 
 ### When Updating Documentation
 
-1. **README.md**: Main overview, features, CLI reference
-2. **docs/architecture/overview.md**: System design, components
-3. **docs/user/guides/configuration.md**: Configuration options
-4. **docs/user/getting-started/README.md**: Setup instructions
-5. **docs/planning/**: Status and roadmap updates
-6. **docs/README.md**: Documentation index and navigation
+Published docs live in `docs-site/src/content/docs/` (Astro Starlight) and map
+1:1 to URLs at docs.swarmcracker.com. Update the page there, then run
+`cd docs-site && npm run verify`. See `docs-site/README.md`.
+
+1. **`docs-site/src/content/docs/guides/configuration.md`**: Configuration options (authoritative)
+2. **`docs-site/src/content/docs/reference/cli.md`**: CLI reference
+3. **`docs-site/src/content/docs/architecture/`**: System design, components
+4. **`docs-site/src/content/docs/getting-started/`**: Setup instructions
+5. **`docs-site/src/content/docs/contributing/`**: Contributor docs
+6. **`docs/`**: Internal only (reports, agent plans) — not published
 
 ---
 
@@ -462,7 +466,7 @@ snapshot:
 
 ### Documentation
 
-- `docs/user/guides/snapshots.md` - Snapshot CLI usage and workflows
+- `docs-site/src/content/docs/guides/snapshots.md` - Snapshot CLI usage and workflows
 
 ### Known Limitations
 
@@ -548,7 +552,7 @@ require (
 ### Before Contributing
 
 1. Read `CONTRIBUTING.md`
-2. Check `docs/planning/` for roadmap alignment
+2. Check open issues and `CHANGELOG.md` for context
 3. Discuss significant changes first
 
 ### Code Standards
@@ -573,11 +577,12 @@ require (
 ### Documentation
 
 - **Quick start**: `README.md`
-- **Architecture**: `docs/architecture/`
-- **Configuration**: `docs/user/guides/configuration.md`
-- **Testing**: `docs/dev/testing/`
-- **Development**: `docs/dev/`
-- **Index**: `docs/README.md`
+- **Published docs**: `docs-site/src/content/docs/` (live at docs.swarmcracker.com)
+- **Architecture**: `docs-site/src/content/docs/architecture/`
+- **Configuration**: `docs-site/src/content/docs/guides/configuration.md`
+- **Testing**: `docs-site/src/content/docs/contributing/testing/`
+- **Development**: `docs-site/src/content/docs/contributing/`
+- **Internal docs**: `docs/` (reports, agent plans — not published)
 
 ### Test Reports
 
