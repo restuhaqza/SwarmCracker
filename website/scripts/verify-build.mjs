@@ -11,12 +11,10 @@ export const REQUIRED_TEXT = [
   'Read the docs',
   '$ swarmcracker service create --name web --image nginx:alpine --replicas 3',
   'service &quot;web&quot; converged (3/3 replicas)',
-  '87%',
-  '70/70',
   'Per-VM kernel',
   'Install SwarmCracker',
   'SwarmCracker vs. Docker vs. Kubernetes',
-  'curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash',
+  'curl -fsSL https://swarmcracker.com/install.sh | sudo bash',
   'swarmcracker service create --name web --image nginx:alpine --replicas 3',
   'Hardware-enforced boundaries',
   'Getting Started',
@@ -26,7 +24,7 @@ export const REQUIRED_TEXT = [
   'property="og:image:height" content="630"',
   'property="og:image:alt"',
   'property="og:site_name" content="SwarmCracker"',
-  'name="theme-color" content="#0B0B0F"',
+  'name="theme-color" content="#E8E6E0"',
   'class="skip-link"',
   'id="main"',
 ];
@@ -64,7 +62,7 @@ export function runChecks(html, css) {
   // Self-hosted fonts: preloads in the HTML, @font-face in the CSS.
   const fontPreloadHrefs = [...html.matchAll(/<link\b[^>]*rel="preload"[^>]*as="font"[^>]*>/gi)]
     .map((m) => /href="([^"]+)"/.exec(m[0])?.[1] ?? '');
-  for (const font of ['inter-400', 'inter-600', 'inter-700', 'jetbrains-mono-400']) {
+  for (const font of ['bigshoulders-800', 'archivo-400', 'archivo-600', 'b612-mono-400']) {
     if (!fontPreloadHrefs.includes(`/fonts/${font}.woff2`)) {
       failures.push(`missing font preload link: /fonts/${font}.woff2`);
     }

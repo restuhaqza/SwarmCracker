@@ -1,0 +1,297 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-06T00:00:00Z",
+  "title": "Design System: SwarmCracker",
+  "extensions": {
+    "colorMeta": {
+      "concrete": {
+        "role": "neutral",
+        "displayName": "Concrete",
+        "canonical": "oklch(92.48% 0.0083 91.49)",
+        "tonalRamp": ["#0C0B07", "#252420", "#41403B", "#5F5D58", "#7F7D78", "#A09E99", "#C6C4BE", "#F0EEE8"]
+      },
+      "concrete-deep": {
+        "role": "neutral",
+        "displayName": "Concrete Deep",
+        "canonical": "oklch(88.54% 0.0113 89.73)",
+        "tonalRamp": ["#0D0B06", "#26241E", "#424039", "#605D57", "#807D76", "#A19E97", "#C7C4BC", "#F1EEE6"]
+      },
+      "paper": {
+        "role": "neutral",
+        "displayName": "Yard Paper",
+        "canonical": "oklch(98.50% 0.0041 91.45)",
+        "tonalRamp": ["#0C0B09", "#252422", "#40403D", "#5E5D5B", "#7E7D7A", "#9F9E9B", "#C5C4C1", "#EFEEEB"]
+      },
+      "asphalt": {
+        "role": "neutral",
+        "displayName": "Asphalt",
+        "canonical": "oklch(22.99% 0.0065 258.36)",
+        "tonalRamp": ["#090B0E", "#222427", "#3E4043", "#5B5E61", "#7B7D81", "#9C9FA2", "#C1C4C8", "#ECEFF3"]
+      },
+      "asphalt-soft": {
+        "role": "neutral",
+        "displayName": "Asphalt Soft",
+        "canonical": "oklch(29.58% 0.0084 255.57)",
+        "tonalRamp": ["#090B0F", "#212428", "#3D4044", "#5A5E62", "#7A7E82", "#9B9FA4", "#C1C4CA", "#EBEFF4"]
+      },
+      "steel": {
+        "role": "neutral",
+        "displayName": "Steel",
+        "canonical": "oklch(63.74% 0.0126 252.14)",
+        "tonalRamp": ["#080C10", "#20252A", "#3B4046", "#595E65", "#787E85", "#999FA6", "#BEC5CC", "#E9EFF7"]
+      },
+      "steel-dark": {
+        "role": "neutral",
+        "displayName": "Steel Dark",
+        "canonical": "oklch(43.58% 0.0139 252.23)",
+        "tonalRamp": ["#070C11", "#1F252B", "#3B4047", "#585E65", "#777E86", "#989FA7", "#BEC5CD", "#E8EFF8"]
+      },
+      "rule": {
+        "role": "neutral",
+        "displayName": "Steel Rule",
+        "canonical": "oklch(80.79% 0.0116 89.74)",
+        "tonalRamp": ["#0D0B06", "#26241E", "#424039", "#605D56", "#807D76", "#A19E96", "#C7C4BC", "#F1EEE6"]
+      },
+      "ink-muted": {
+        "role": "neutral",
+        "displayName": "Muted Ink",
+        "canonical": "oklch(47.20% 0.0136 252.21)",
+        "tonalRamp": ["#070C11", "#1F252B", "#3B4047", "#585E65", "#787E85", "#999FA7", "#BEC5CD", "#E8EFF8"]
+      },
+      "safety": {
+        "role": "primary",
+        "displayName": "Safety Orange",
+        "canonical": "oklch(63.55% 0.1890 41.31)",
+        "tonalRamp": ["#3C0000", "#620000", "#870000", "#AD1E00", "#D44800", "#FB6C2F", "#FF945A", "#FFBF85"]
+      },
+      "safety-deep": {
+        "role": "primary",
+        "displayName": "Deep Safety",
+        "canonical": "oklch(56.46% 0.1663 41.66)",
+        "tonalRamp": ["#370000", "#5B0000", "#800000", "#A52E00", "#CB521A", "#F17542", "#FF9C69", "#FFC693"]
+      },
+      "safety-wash": {
+        "role": "primary",
+        "displayName": "Safety Wash",
+        "canonical": "rgba(228, 87, 15, 0.09)",
+        "tonalRamp": ["rgba(228,87,15,0.02)", "rgba(228,87,15,0.04)", "rgba(228,87,15,0.07)", "rgba(228,87,15,0.09)", "rgba(228,87,15,0.12)", "rgba(228,87,15,0.16)", "rgba(228,87,15,0.22)", "rgba(228,87,15,0.30)"]
+      },
+      "rust": {
+        "role": "primary",
+        "displayName": "Rust Orange",
+        "canonical": "oklch(49.63% 0.1461 41.74)",
+        "tonalRamp": ["#320000", "#560000", "#791200", "#9E3800", "#C35A2E", "#E87C51", "#FFA276", "#FFCC9F"]
+      },
+      "hazard": {
+        "role": "secondary",
+        "displayName": "Hazard Yellow",
+        "canonical": "oklch(84.19% 0.1684 90.43)",
+        "tonalRamp": ["#230000", "#421500", "#613500", "#825400", "#A37500", "#C69700", "#EEBE00", "#FFE952"]
+      },
+      "on-safety": {
+        "role": "neutral",
+        "displayName": "On-Safety Black",
+        "canonical": "oklch(22.99% 0.0065 258.36)",
+        "tonalRamp": ["#090B0E", "#222427", "#3E4043", "#5B5E61", "#7B7D81", "#9C9FA2", "#C1C4C8", "#ECEFF3"]
+      },
+      "gate-bg": {
+        "role": "neutral",
+        "displayName": "Gate Panel",
+        "canonical": "oklch(27.13% 0.0086 255.58)",
+        "tonalRamp": ["#090B0F", "#212428", "#3D4044", "#5A5E62", "#7A7E82", "#9B9FA4", "#C0C4CA", "#EBEFF4"]
+      },
+      "gate-bg-hover": {
+        "role": "neutral",
+        "displayName": "Gate Panel Hover",
+        "canonical": "oklch(31.02% 0.0093 255.58)",
+        "tonalRamp": ["#090B0F", "#222529", "#3E4145", "#5B5F63", "#7B7F83", "#9CA0A5", "#C1C5CB", "#ECF0F5"]
+      },
+      "gate-border": {
+        "role": "neutral",
+        "displayName": "Gate Border",
+        "canonical": "oklch(36.53% 0.0123 252.96)",
+        "tonalRamp": ["#080C10", "#20242A", "#3B4046", "#595E65", "#787E85", "#999FA6", "#BFC5CC", "#E9EFF7"]
+      },
+      "gate-arrow": {
+        "role": "neutral",
+        "displayName": "Gate Arrow",
+        "canonical": "oklch(64.47% 0.0085 250.0)",
+        "tonalRamp": ["#090C10", "#21252A", "#3D4146", "#5B5F65", "#7A7F85", "#9BA0A6", "#C0C5CC", "#EAEFF7"]
+      },
+      "dark-muted": {
+        "role": "neutral",
+        "displayName": "Dark Muted",
+        "canonical": "oklch(78.61% 0.0100 132.43)",
+        "tonalRamp": ["#0A0C09", "#232521", "#3E413C", "#5C5F5A", "#7B7E7A", "#9D9F9B", "#C2C5C0", "#ECF0EA"]
+      },
+      "dark-body": {
+        "role": "neutral",
+        "displayName": "Dark Body",
+        "canonical": "oklch(82.59% 0.0076 132.43)",
+        "tonalRamp": ["#0A0C09", "#232521", "#3E413C", "#5C5F5A", "#7B7E7A", "#9D9F9B", "#C2C5C0", "#ECF0EA"]
+      },
+      "log-note": {
+        "role": "neutral",
+        "displayName": "Log Note",
+        "canonical": "oklch(69.91% 0.0110 145.46)",
+        "tonalRamp": ["#080C08", "#212521", "#3C413C", "#5A5F5A", "#797F79", "#9AA09A", "#C0C6C0", "#EAF1EA"]
+      },
+      "log-code": {
+        "role": "neutral",
+        "displayName": "Log Code",
+        "canonical": "oklch(84.14% 0.0076 132.43)",
+        "tonalRamp": ["#0A0C09", "#232521", "#3E413D", "#5C5F5A", "#7B7E7A", "#9D9F9B", "#C2C5C0", "#ECF0EA"]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "The single h1 only; condensed industrial signage." },
+      "headline": { "displayName": "Headline", "purpose": "Section h2 headings." },
+      "title": { "displayName": "Title", "purpose": "Card and plate h3 headings." },
+      "body": { "displayName": "Body", "purpose": "Base reading copy." },
+      "label": { "displayName": "Label", "purpose": "Buttons, nav links, rails, captions, table headers." },
+      "mono": { "displayName": "Mono", "purpose": "Service IDs, versions, boot measurements, refs, code." }
+    },
+    "shadows": [
+      {
+        "name": "container-lip",
+        "value": "inset 0 3px 0 rgba(255,255,255,0.18), inset 0 -3px 0 rgba(27,29,32,0.22)",
+        "purpose": "The only shadow in the system; fakes the folded steel edge of a corrugated container box."
+      }
+    ],
+    "motion": [
+      { "name": "ease-standard", "value": "0.15s ease", "purpose": "Default state transition for buttons, links, and nav." },
+      { "name": "ease-placement", "value": "cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "The crane placement easing (traverse, lower, place)." },
+      { "name": "crane-traverse", "value": "traverse 1.15s cubic-bezier(0.22,1,0.36,1) 0.15s both", "purpose": "Trolley travels in from the left." },
+      { "name": "crane-lower", "value": "lower 0.55s cubic-bezier(0.22,1,0.36,1) 1.25s both", "purpose": "Spreader lowers onto the stack." },
+      { "name": "container-place", "value": "place 0.7s cubic-bezier(0.22,1,0.36,1) 1.75s both", "purpose": "Lead container drops into place." },
+      { "name": "log-load", "value": "load 0.35s ease forwards; delay calc(var(--i) * 0.12s)", "purpose": "Placement-log lines fade and slide in on a stagger." },
+      { "name": "gate-lift", "value": "transform translateY(-2px), 0.18s ease", "purpose": "Gate-card hover lift." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "40rem" },
+      { "name": "diagram", "value": "47.99rem" },
+      { "name": "md", "value": "52rem" },
+      { "name": "lg", "value": "58rem" },
+      { "name": "xl", "value": "62rem" },
+      { "name": "nav", "value": "720px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Safety-orange owned-region CTA; asphalt text on the fill, hazard-yellow on hover.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Install SwarmCracker</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.85rem 1.5rem; background: var(--yard-safety); color: var(--yard-on-safety); font-family: var(--yard-font-display); font-weight: 700; font-size: 1.25rem; letter-spacing: 0.05em; text-transform: uppercase; text-decoration: none; border: 2px solid var(--yard-asphalt); border-radius: 0; cursor: pointer; transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease; } .ds-btn-primary:hover { background: var(--yard-hazard); } .ds-btn-primary:active { transform: translateY(1px); } .ds-btn-primary:focus-visible { outline: 3px solid var(--yard-asphalt); outline-offset: 3px; }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Transparent secondary action that inverts to an asphalt fill on hover.",
+      "html": "<button class=\"ds-btn-ghost\" type=\"button\">Read the docs</button>",
+      "css": ".ds-btn-ghost { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.85rem 1.5rem; background: transparent; color: var(--yard-ink); font-family: var(--yard-font-display); font-weight: 700; font-size: 1.25rem; letter-spacing: 0.05em; text-transform: uppercase; text-decoration: none; border: 2px solid var(--yard-steel-dark); border-radius: 0; cursor: pointer; transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease; } .ds-btn-ghost:hover { background: var(--yard-asphalt); color: var(--yard-paper); border-color: var(--yard-asphalt); } .ds-btn-ghost:active { transform: translateY(1px); } .ds-btn-ghost:focus-visible { outline: 3px solid var(--yard-asphalt); outline-offset: 3px; }"
+    },
+    {
+      "name": "Nav CTA (Safety Tag)",
+      "kind": "button",
+      "refersTo": "nav-cta",
+      "description": "The sticky-header action: a black-on-orange safety tag with a hazard-yellow hover.",
+      "html": "<a class=\"ds-nav-cta\" href=\"#quickstart\">Get Started</a>",
+      "css": ".ds-nav-cta { display: inline-flex; align-items: center; padding: 0.6rem 1.25rem; background: var(--yard-safety); color: var(--yard-on-safety); font-family: var(--yard-font-display); font-weight: 700; font-size: 1.0625rem; letter-spacing: 0.06em; text-transform: uppercase; text-decoration: none; border: 2px solid var(--yard-asphalt); border-radius: 0; transition: background 0.15s ease, transform 0.15s ease; } .ds-nav-cta:hover { background: var(--yard-hazard); } .ds-nav-cta:active { transform: translateY(1px); } .ds-nav-cta:focus-visible { outline: 3px solid var(--yard-asphalt); outline-offset: 2px; }"
+    },
+    {
+      "name": "Nav Link",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Uppercase display-caps manifest item with a safety-orange underline on hover.",
+      "html": "<a class=\"ds-nav-link\" href=\"#features\">Features</a>",
+      "css": ".ds-nav-link { display: inline-flex; align-items: center; padding: 0.75rem 0.9rem; font-family: var(--yard-font-display); font-weight: 700; font-size: 1.0625rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--yard-ink-muted); text-decoration: none; border-bottom: 3px solid transparent; transition: color 0.15s ease, border-color 0.15s ease; } .ds-nav-link:hover { color: var(--yard-ink); border-bottom-color: var(--yard-safety); } .ds-nav-link:focus-visible { outline: 3px solid var(--yard-safety-deep); outline-offset: -3px; }"
+    },
+    {
+      "name": "Spec Plate",
+      "kind": "card",
+      "refersTo": "spec-plate",
+      "description": "The feature unit: a dark stencilled rail (mono ref + line icon) over a paper body.",
+      "html": "<article class=\"ds-plate\"><div class=\"ds-plate-rail\"><span class=\"ds-plate-ref\">SPEC 01 · KRNL</span><svg class=\"ds-plate-icon\" viewBox=\"0 0 32 32\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" stroke-linecap=\"square\" stroke-linejoin=\"miter\" aria-hidden=\"true\"><rect x=\"3\" y=\"7\" width=\"26\" height=\"18\"/><rect x=\"12\" y=\"12\" width=\"8\" height=\"8\"/><line x1=\"12\" y1=\"7\" x2=\"12\" y2=\"12\"/><line x1=\"20\" y1=\"7\" x2=\"20\" y2=\"12\"/></svg></div><div class=\"ds-plate-body\"><h3 class=\"ds-plate-title\">Per-VM kernel</h3><p class=\"ds-plate-text\">Each replica boots its own Linux kernel inside the microVM.</p></div></article>",
+      "css": ".ds-plate { display: flex; flex-direction: column; max-width: 22rem; background: var(--yard-paper); border: 2px solid var(--yard-asphalt); border-radius: 0; } .ds-plate-rail { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.45rem 0.7rem; background: var(--yard-asphalt); color: var(--yard-paper); } .ds-plate-ref { font-family: var(--yard-font-mono); font-size: 0.6875rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--yard-hazard); } .ds-plate-icon { width: 1.5rem; height: 1.5rem; display: block; color: var(--yard-paper); } .ds-plate-body { padding: 1.1rem 1.15rem 1.25rem; } .ds-plate-title { margin: 0 0 0.5rem; font-family: var(--yard-font-display); font-weight: 700; font-size: 1.625rem; line-height: 1; letter-spacing: 0.02em; text-transform: uppercase; color: var(--yard-ink); } .ds-plate-text { margin: 0; font-size: 0.9375rem; line-height: 1.6; color: var(--yard-ink-muted); }"
+    },
+    {
+      "name": "Container Box",
+      "kind": "custom",
+      "refersTo": "container-box",
+      "description": "A corrugated service replica with a stencilled mono ID and a seal state; the lead box is safety orange.",
+      "html": "<article class=\"ds-box ds-box--lead\"><span class=\"ds-box-id\">WEB.1 · SWK-8F2A</span><span class=\"ds-box-state\"><span class=\"ds-box-seal\" aria-hidden=\"true\"></span>sealed</span></article>",
+      "css": ".ds-box { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.85rem 1rem; border: 2px solid var(--yard-asphalt); border-radius: 0; background-color: var(--yard-steel); background-image: repeating-linear-gradient(90deg, rgba(27,29,32,0.16) 0 2px, transparent 2px 15px); box-shadow: inset 0 3px 0 rgba(255,255,255,0.18), inset 0 -3px 0 rgba(27,29,32,0.22); } .ds-box--lead { background-color: var(--yard-safety); } .ds-box-id { font-family: var(--yard-font-mono); font-weight: 700; font-size: 0.8125rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--yard-asphalt); } .ds-box-state { display: inline-flex; align-items: center; gap: 0.4rem; font-family: var(--yard-font-display); font-weight: 700; font-size: 0.9375rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--yard-asphalt); } .ds-box-seal { position: relative; flex-shrink: 0; width: 0.75rem; height: 0.75rem; border: 2px solid currentColor; border-radius: 50%; } .ds-box-seal::after { content: ''; position: absolute; inset: 2px; background: currentColor; border-radius: 50%; }"
+    },
+    {
+      "name": "Gate Card",
+      "kind": "card",
+      "refersTo": "gate-card",
+      "description": "Documentation gateway: asphalt panel with a hazard-yellow top border, a big orange gate letter, and a hover lift.",
+      "html": "<a class=\"ds-gate\" href=\"#\"><span class=\"ds-gate-top\"><span class=\"ds-gate-letter\" aria-hidden=\"true\">A</span><svg class=\"ds-gate-arrow\" viewBox=\"0 0 32 32\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2.5\" stroke-linecap=\"square\" stroke-linejoin=\"miter\" aria-hidden=\"true\"><line x1=\"6\" y1=\"16\" x2=\"25\" y2=\"16\"/><polyline points=\"17,8 25,16 17,24\"/></svg></span><span><h3 class=\"ds-gate-title\">Getting Started</h3><p class=\"ds-gate-text\">Install SwarmCracker on a Linux host and place your first service.</p></span></a>",
+      "css": ".ds-gate { display: flex; flex-direction: column; gap: 1.5rem; max-width: 20rem; padding: 1.5rem 1.35rem 1.35rem; background: #24272b; border: 2px solid #3a3f45; border-top: 4px solid var(--yard-hazard); border-radius: 0; text-decoration: none; color: inherit; transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease; } .ds-gate:hover { background: #2e3237; border-color: var(--yard-safety); border-top-color: var(--yard-safety); transform: translateY(-2px); } .ds-gate:focus-visible { outline: 3px solid var(--yard-hazard); outline-offset: 3px; } .ds-gate-top { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; } .ds-gate-letter { font-family: var(--yard-font-display); font-weight: 800; font-size: 3.5rem; line-height: 0.8; color: var(--yard-safety); } .ds-gate-arrow { width: 1.75rem; height: 1.75rem; display: block; color: #8a9096; } .ds-gate:hover .ds-gate-arrow { color: var(--yard-hazard); } .ds-gate-title { margin: 0 0 0.5rem; font-family: var(--yard-font-display); font-weight: 700; font-size: 1.5rem; line-height: 1.02; letter-spacing: 0.02em; text-transform: uppercase; color: var(--yard-paper); } .ds-gate-text { margin: 0; font-size: 0.9375rem; line-height: 1.6; color: #b6bab4; }"
+    },
+    {
+      "name": "Placement Log",
+      "kind": "custom",
+      "refersTo": "terminal-log",
+      "description": "The dark terminal panel: hazard-yellow header over asphalt mono output with a hazard command line and a bold converged line.",
+      "html": "<figure class=\"ds-log\"><figcaption class=\"ds-log-head\"><span>Placement log</span><span>swarmkit / executor</span></figcaption><pre class=\"ds-log-body\"><span class=\"ds-log-cmd\">$ swarmcracker service create --name web --replicas 3</span>\n<span class=\"ds-log-done\">service converged</span></pre></figure>",
+      "css": ".ds-log { max-width: 36rem; border: 2px solid var(--yard-asphalt); background: var(--yard-asphalt); color: var(--yard-paper); border-radius: 0; overflow: hidden; } .ds-log-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.5rem 0.9rem; background: var(--yard-hazard); color: var(--yard-asphalt); border-bottom: 2px solid var(--yard-asphalt); font-family: var(--yard-font-display); font-weight: 700; font-size: 1rem; letter-spacing: 0.08em; text-transform: uppercase; } .ds-log-body { margin: 0; padding: 1rem 1.1rem 1.2rem; font-family: var(--yard-font-mono); font-size: 0.8125rem; line-height: 1.7; color: #c9ccc7; white-space: pre-wrap; } .ds-log-cmd { color: var(--yard-hazard); } .ds-log-done { color: var(--yard-paper); font-weight: 700; }"
+    },
+    {
+      "name": "Manifest Row",
+      "kind": "custom",
+      "refersTo": "manifest-row",
+      "description": "A load-order entry: numbered concrete gutter, paper body, uppercase label, bordered mono command block.",
+      "html": "<div class=\"ds-manifest\"><figure class=\"ds-manifest-row\"><span class=\"ds-manifest-seq\" aria-hidden=\"true\">01</span><div class=\"ds-manifest-cell\"><figcaption class=\"ds-manifest-label\">Install SwarmCracker</figcaption><pre class=\"ds-manifest-code\">curl -fsSL .../install.sh | sudo bash</pre></div></figure></div>",
+      "css": ".ds-manifest { max-width: 36rem; border: 2px solid var(--yard-asphalt); background: var(--yard-paper); border-radius: 0; } .ds-manifest-row { display: grid; grid-template-columns: 3rem minmax(0, 1fr); margin: 0; border-bottom: 1px solid var(--yard-rule); } .ds-manifest-seq { display: grid; place-items: center; border-right: 2px solid var(--yard-asphalt); background: var(--yard-concrete-deep); font-family: var(--yard-font-mono); font-size: 0.9375rem; font-variant-numeric: tabular-nums; color: var(--yard-ink-muted); } .ds-manifest-cell { min-width: 0; padding: 0.75rem 0.9rem; } .ds-manifest-label { display: block; margin-bottom: 0.45rem; font-family: var(--yard-font-display); font-weight: 700; font-size: 1.125rem; line-height: 1; letter-spacing: 0.04em; text-transform: uppercase; color: var(--yard-ink); } .ds-manifest-code { margin: 0; padding: 0.55rem 0.7rem; font-family: var(--yard-font-mono); font-size: 0.8125rem; line-height: 1.6; color: var(--yard-ink); background: var(--yard-concrete); border: 1px solid var(--yard-rule); white-space: pre; overflow-x: auto; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Working Yard",
+    "overview": "SwarmCracker's landing page is an intermodal freight terminal in flat daylight. The page is not decorated to look like a terminal; it is built out of the terminal's own parts. The ground is concrete, the rules are steel, the plates are stencilled, and every workload is drawn as a sealed corrugated container with a stencilled ID and a lock state. The metaphor is the argument: SwarmKit is a gantry crane that places each service replica as its own hardware-isolated box, and the visitor watches the mechanism work rather than being told it works. The world is deliberately light. Where the category defaults to a dark near-black hero with a neon terminal glow, this system forces a concrete #E8E6E0 ground and reserves dark asphalt #1B1D20 for bounded plates and whole bounded sections — the docs gateway, the footer, the placement log, the lead seal. Safety orange #E4570F is not an accent sprinkled on top; it owns entire regions (the crane spreader, a container door, the primary CTA, the lead container, the active comparison column), which is what makes the palette read as plant equipment instead of a brand color. Everything is square and hard-edged. There is no border radius except the circular container seal, and there are no cast shadows; depth is carried by tonal layering between concrete, paper, and asphalt, and by structural borders of 1px, 2px, 4px, and 6px. Type is a three-voice system — condensed industrial display for signage, Archivo for reading, B612 Mono for anything that is an identifier or a measurement.",
+    "keyCharacteristics": [
+      "Daylight concrete ground; dark asphalt only as bounded plates and sections.",
+      "Safety orange applied as owned regions, never as a hairline accent.",
+      "Square corners everywhere; a single circle for the container seal.",
+      "No cast shadows; depth from tone and structural borders.",
+      "Condensed display caps + grotesque body + tabular mono for IDs.",
+      "One authored motion: the crane traverses, lowers, and places a container.",
+      "Deliberately uneven 12-column spec board instead of a uniform card grid."
+    ],
+    "rules": [
+      { "name": "The Owned-Region Rule", "body": "Safety orange fills whole regions — a container door, a CTA, the lead box, an active column. It is never a hairline underline or a 1px accent. Its mass is the point.", "section": "colors" },
+      { "name": "The Black-on-Orange Rule", "body": "Anything sitting on a safety-orange fill is asphalt #1B1D20, never white — the real safety-sign convention, and the only pairing that clears AA on the fill (4.6:1).", "section": "colors" },
+      { "name": "The Two-Oranges Rule", "body": "Orange as a fill is safety #E4570F; orange as text on concrete is rust #A33D08. Safety orange is never set as body text on the light ground.", "section": "colors" },
+      { "name": "The Daylight Rule", "body": "The page ground is concrete, never dark. Asphalt #1B1D20 appears only as a bounded plate or a whole bounded section with its own edges.", "section": "colors" },
+      { "name": "The One Display Face Rule", "body": "Big Shoulders Display sets every heading and every uppercase label; Archivo never sets a heading, and the display face never sets body copy.", "section": "typography" },
+      { "name": "The ID Rule", "body": "Anything that is an identifier or a measurement — service IDs, version numbers, boot times, spec refs, file paths, code — is B612 Mono with tabular figures.", "section": "typography" },
+      { "name": "The Uppercase Rule", "body": "Display, headline, title, and label roles are uppercase by default; body copy is sentence case. Uppercase is the signage register, not a global treatment.", "section": "typography" },
+      { "name": "The Hard-Edge Rule", "body": "Depth is tone and border, not blur. If a surface needs to separate from another, change its fill (concrete → paper → asphalt) or draw a border; do not add a drop shadow.", "section": "elevation" },
+      { "name": "The One Circle Rule", "body": "Corners are square. The only rounded form in the system is the container seal, and it is a perfect circle.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do keep the page ground concrete #E8E6E0. It is the world's daylight premise.",
+      "Do give safety orange #E4570F whole regions — a CTA, a container door, a lead box, a column — rather than hairlines.",
+      "Do set text and icons on orange or yellow fills to asphalt #1B1D20, per the Black-on-Orange Rule.",
+      "Do use rust #A33D08 when orange text must sit on the light concrete ground.",
+      "Do separate surfaces with 2px asphalt borders, 1px rule dividers, and tone shifts, per the Hard-Edge Rule.",
+      "Do set every ID, version, measurement, and code string in B612 Mono with tabular figures.",
+      "Do keep the feature board uneven (7, 5, 5, 7, 6, 6) so it reads as a spec sheet, not a card grid.",
+      "Do keep motion to the single crane placement and the log stagger, and honor prefers-reduced-motion (globally in tokens.css, plus per-component overrides in Hero, Terminal, and DocsGateway)."
+    ],
+    "donts": [
+      "Don't reintroduce a dark near-black page background or the incumbent #FF6B35 accent; the world replaced that direction on purpose (see PRODUCT.md).",
+      "Don't set safety orange #E4570F as body text on concrete — it is a fill color; rust is the light-ground text orange.",
+      "Don't round a corner. 0 radius is the form language; only the container seal is a circle.",
+      "Don't add a drop shadow. Depth is tone and border.",
+      "Don't set white text on an orange or yellow fill.",
+      "Don't let Archivo set a heading or Big Shoulders set body copy.",
+      "Don't flatten the components into a uniform grid of identical cards — uneven spans and distinct plate/box/gate families are the point.",
+      "Don't fabricate logos, testimonials, benchmarks, or live-host output; demonstration data stays labelled illustrative."
+    ]
+  }
+}

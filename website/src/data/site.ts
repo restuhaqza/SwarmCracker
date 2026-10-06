@@ -12,11 +12,6 @@ export interface NavItem {
   href: string;
 }
 
-export interface Stat {
-  value: string;
-  label: string;
-}
-
 export interface Feature {
   icon: IconName;
   title: string;
@@ -90,18 +85,6 @@ export const nav: NavItem[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
-
-export const stats: Stat[] = [
-  { value: '87%', label: 'Test coverage' },
-  { value: '70/70', label: 'E2E tests passing' },
-  { value: '47', label: 'Security & review items addressed' },
-  { value: '~100 ms', label: 'MicroVM boot time' },
-  { value: 'Apache 2.0', label: 'License' },
-];
-
-// ---------------------------------------------------------------------------
 // Features
 // ---------------------------------------------------------------------------
 
@@ -168,7 +151,7 @@ export const steps: Step[] = [
 export const quickstart: QuickstartCmd[] = [
   {
     label: 'Install SwarmCracker',
-    code: 'curl -fsSL https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh | sudo bash',
+    code: 'curl -fsSL https://swarmcracker.com/install.sh | sudo bash',
   },
   {
     label: 'Check prerequisites',

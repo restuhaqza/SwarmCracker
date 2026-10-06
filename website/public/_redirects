@@ -1,0 +1,5 @@
+# Cloudflare Pages redirects
+# Short install command shown on the landing page: keeps one source of truth
+# (the repo-root install.sh) while presenting a tidy URL.
+#   curl -fsSL https://swarmcracker.com/install.sh | sudo bash
+/install.sh  https://raw.githubusercontent.com/restuhaqza/SwarmCracker/main/install.sh  302
