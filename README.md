@@ -102,7 +102,9 @@ make all
 
 ## Documentation
 
-📖 **Full docs:** [swarmcracker.restuhaqza.dev](https://swarmcracker.restuhaqza.dev)
+🌐 **Landing page:** [swarmcracker.com](https://swarmcracker.com)
+
+📖 **Full docs:** [docs.swarmcracker.com](https://docs.swarmcracker.com)
 
 | Guide | What's inside |
 |-------|---------------|
