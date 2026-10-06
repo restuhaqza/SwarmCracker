@@ -36,9 +36,9 @@ The site is deployed via [Cloudflare Pages](https://pages.cloudflare.com/). To s
    - In **Pages → Custom domains**, add `swarmcracker.com`.
    - Cloudflare will prompt you to add the required DNS records if they don't already exist.
 4. **Set up the `www` redirect:**
-   - In **DNS** for `swarmcracker.com`, add a `CNAME` record for `www` pointing to `swarmcracker.com` (or the Pages default domain).
-   - Enable **Proxy** (orange cloud) so Cloudflare handles the redirect.
-   - Alternatively, use a **Redirect Rule** in the Cloudflare dashboard to send `www.swarmcracker.com` → `swarmcracker.com` with a 301 status.
+   - Recommended: create a **Redirect Rule** in the Cloudflare dashboard (**Rules → Redirect Rules**) that 301-redirects `www.swarmcracker.com` to `https://swarmcracker.com` (e.g. `concat("https://swarmcracker.com", http.request.uri.path)` with *Preserve query string* enabled).
+   - Alternatively, add `www.swarmcracker.com` as a second **custom domain** on the Pages project (**Pages → Custom domains → Set up a custom domain**); Cloudflare Pages 301-redirects secondary custom domains to the primary domain automatically.
+   - Note: a proxied `CNAME` for `www` pointing at the apex only mirrors the apex content (HTTP 200) — it does **not** redirect — so it is not sufficient on its own for the `www` → apex redirect.
 
 ## Manual Verification Steps
 

@@ -22,6 +22,11 @@ export const REQUIRED_TEXT = [
   'Getting Started',
   'rel="icon" href="/favicon.svg"',
   'property="og:image" content="https://swarmcracker.com/og-image.png"',
+  'property="og:image:width" content="1200"',
+  'property="og:image:height" content="630"',
+  'property="og:image:alt"',
+  'property="og:site_name" content="SwarmCracker"',
+  'name="theme-color" content="#0B0B0F"',
   'class="skip-link"',
   'id="main"',
 ];
@@ -55,6 +60,26 @@ export function runChecks(html, css) {
   if (html.includes('data-copy-target') && !/prefers-reduced-motion/.test(css)) {
     failures.push('reduced-motion guard missing from built CSS');
   }
+
+  // Self-hosted fonts: preloads in the HTML, @font-face in the CSS.
+  const fontPreloadHrefs = [...html.matchAll(/<link\b[^>]*rel="preload"[^>]*as="font"[^>]*>/gi)]
+    .map((m) => /href="([^"]+)"/.exec(m[0])?.[1] ?? '');
+  for (const font of ['inter-400', 'inter-600', 'inter-700', 'jetbrains-mono-400']) {
+    if (!fontPreloadHrefs.includes(`/fonts/${font}.woff2`)) {
+      failures.push(`missing font preload link: /fonts/${font}.woff2`);
+    }
+    if (!css.includes(`/fonts/${font}.woff2`)) {
+      failures.push(`@font-face src missing from built CSS: /fonts/${font}.woff2`);
+    }
+  }
+  if (!/@font-face/.test(css)) failures.push('@font-face rules missing from built CSS');
+  if (!/font-display:\s*swap/.test(css)) failures.push('font-display: swap missing from built CSS');
+  if (!css.includes('scroll-margin-top')) {
+    failures.push('scroll-margin-top (sticky-header anchor offset) missing from built CSS');
+  }
+
+  // Nav must ship a single GitHub entry — no dead star-count UI.
+  if (html.includes('star-count')) failures.push('dead star-count markup must not ship');
   return failures;
 }
 
