@@ -29,6 +29,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	swarmcrackermetrics "github.com/restuhaqza/swarmcracker/pkg/metrics"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
@@ -71,6 +72,9 @@ type Config struct {
 	ReservedMemoryMB int      `yaml:"reserved_memory_mb"`
 	MaxImageAgeDays  int      `yaml:"max_image_age_days"`
 	StateDir         string   `yaml:"state_dir"`
+	// LogDir holds per-VM console logs (<LogDir>/<task-id>.log). Empty defaults
+	// to runtime.DefaultLogDir(), the same directory the CLI uses.
+	LogDir string `yaml:"log_dir"`
 
 	// Jailer configuration
 	EnableJailer    bool   `yaml:"enable_jailer"`
@@ -137,6 +141,9 @@ func NewExecutor(config *Config) (*Executor, error) {
 	}
 	if config.GoldenDir == "" {
 		config.GoldenDir = "/var/lib/firecracker/golden"
+	}
+	if config.LogDir == "" {
+		config.LogDir = scruntime.DefaultLogDir()
 	}
 	if config.KernelProfiles == nil {
 		config.KernelProfiles = configpkg.DefaultKernelProfiles()
@@ -232,6 +239,7 @@ func NewExecutor(config *Config) (*Executor, error) {
 			FirecrackerPath: config.FirecrackerPath,
 			JailerPath:      config.JailerPath,
 			SocketDir:       config.SocketDir,
+			LogDir:          config.LogDir,
 			UseJailer:       true,
 			JailerUID:       config.JailerUID,
 			JailerGID:       config.JailerGID,
@@ -246,7 +254,11 @@ func NewExecutor(config *Config) (*Executor, error) {
 		}
 	} else {
 		// Use legacy direct mode
-		vmmMgr, err = NewVMMManager(config.FirecrackerPath, config.SocketDir)
+		vmmMgr, err = NewVMMManagerWithConfig(&VMMManagerConfig{
+			FirecrackerPath: config.FirecrackerPath,
+			SocketDir:       config.SocketDir,
+			LogDir:          config.LogDir,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create VMM manager: %w", err)
 		}

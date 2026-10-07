@@ -178,7 +178,7 @@ Direct Firecracker microVM management.
 | `--golden` | — | — | Boot a prebuilt golden image (`name` or `name@version`) instead of an OCI image |
 | `--golden-dir` | — | `<rootfs-dir>/golden` | Directory containing golden image artifacts |
 
-`vm list` flags: `--all`, `--format`, `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since`, `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**.
+`vm list` flags: `--all`, `--format`, `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**.
 
 `vm list` and `vm status` also cover microVMs started by the daemon for services (discovered from `<socket-dir>/*.sock`; stale sockets are filtered with a liveness probe). `vm stop` deliberately refuses to kill a service VM — use `swarmcracker service scale <service> 0` or `swarmcracker service rm <service>` so SwarmKit updates the desired state instead of recreating the task.
 
