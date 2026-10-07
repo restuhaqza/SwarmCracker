@@ -38,7 +38,12 @@ type VMMManager struct {
 	processMutex    sync.Mutex
 	consoles        map[string]*console.Server
 	consoleMutex    sync.Mutex
-	logger          zerolog.Logger
+	logFiles        map[string]*os.File
+	logMutex        sync.Mutex
+	// logDir, when non-empty, is where each VM's console output is mirrored as
+	// <logDir>/<task-id>.log so `swarmcracker vm logs <task-id>` can read it.
+	logDir string
+	logger zerolog.Logger
 }
 
 // processWait tracks a single Wait call per task so that concurrent
@@ -53,6 +58,9 @@ type VMMManagerConfig struct {
 	FirecrackerPath string
 	JailerPath      string
 	SocketDir       string
+	// LogDir mirrors each VM's console output to <LogDir>/<task-id>.log. Empty
+	// disables file logging (console is still mirrored to the daemon logger).
+	LogDir          string
 	UseJailer       bool
 	JailerUID       int
 	JailerGID       int
@@ -127,6 +135,8 @@ func NewVMMManagerWithConfig(cfg *VMMManagerConfig) (*VMMManager, error) {
 		processes:       make(map[string]*exec.Cmd),
 		processWaits:    make(map[string]*processWait),
 		consoles:        make(map[string]*console.Server),
+		logFiles:        make(map[string]*os.File),
+		logDir:          cfg.LogDir,
 		logger:          log.With().Str("component", "vmm-manager").Logger(),
 	}
 
@@ -241,13 +251,28 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 	// Bridge the guest's serial console to a per-VM Unix socket so a user can
 	// attach with `swarmcracker vm attach`. Firecracker wires guest ttyS0 to
 	// its stdin/stdout, so giving it a pipe pair makes the console interactive.
+	//
+	// When a log directory is configured, also mirror that output to
+	// <logDir>/<task-id>.log (the same convention the CLI uses), so guest logs
+	// survive the VM and are readable with `swarmcracker vm logs <task-id>`.
+	mirror := io.Writer(&logWriter{logger: v.logger})
+	logFile, logErr := v.openLogFile(task.ID)
+	if logErr != nil {
+		v.logger.Warn().Err(logErr).Str("task_id", task.ID).
+			Msg("Could not open VM log file; console will only be mirrored to the daemon log")
+	} else if logFile != nil {
+		v.setLogFile(task.ID, logFile)
+		mirror = io.MultiWriter(logFile, &logWriter{logger: v.logger})
+	}
+
 	vmConsole, err := console.New(console.Config{
 		SocketDir: v.socketDir,
 		TaskID:    task.ID,
-		Mirror:    &logWriter{logger: v.logger},
+		Mirror:    mirror,
 		Logger:    &v.logger,
 	})
 	if err != nil {
+		v.closeLogFile(task.ID)
 		socketCleanupNeeded = true
 		return fmt.Errorf("failed to create VM console: %w", err)
 	}
@@ -257,6 +282,7 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 
 	if err := cmd.Start(); err != nil {
 		vmConsole.Close()
+		v.closeLogFile(task.ID)
 		socketCleanupNeeded = true
 		return fmt.Errorf("failed to start firecracker: %w", err)
 	}
@@ -597,6 +623,44 @@ func (v *VMMManager) closeConsole(taskID string) {
 	v.consoleMutex.Unlock()
 	if srv != nil {
 		srv.Close()
+	}
+	v.closeLogFile(taskID)
+}
+
+// openLogFile opens (truncating) the console log file for a task. It returns
+// (nil, nil) when file logging is disabled (no log directory configured).
+func (v *VMMManager) openLogFile(taskID string) (*os.File, error) {
+	if v.logDir == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(v.logDir, 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create log directory %s: %w", v.logDir, err)
+	}
+	f, err := os.OpenFile(filepath.Join(v.logDir, taskID+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+	return f, nil
+}
+
+// setLogFile records the open console log file for a task.
+func (v *VMMManager) setLogFile(taskID string, f *os.File) {
+	v.logMutex.Lock()
+	if v.logFiles == nil {
+		v.logFiles = make(map[string]*os.File)
+	}
+	v.logFiles[taskID] = f
+	v.logMutex.Unlock()
+}
+
+// closeLogFile closes and forgets the console log file for a task, if any.
+func (v *VMMManager) closeLogFile(taskID string) {
+	v.logMutex.Lock()
+	f := v.logFiles[taskID]
+	delete(v.logFiles, taskID)
+	v.logMutex.Unlock()
+	if f != nil {
+		_ = f.Close()
 	}
 }
 

@@ -47,24 +47,41 @@ type StateManager struct {
 	stateFile string
 }
 
+// defaultStateDir returns the directory that holds SwarmCracker's state file
+// and per-VM console logs. Root uses /var/run/swarmcracker; other users use
+// ~/.swarmcracker.
+func defaultStateDir() (string, error) {
+	if os.Geteuid() == 0 {
+		return "/var/run/swarmcracker", nil
+	}
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to determine home directory: %w", err)
+	}
+	return filepath.Join(homeDir, ".swarmcracker"), nil
+}
+
+// DefaultLogDir returns the directory holding per-VM console logs. It matches
+// the CLI state directory so that `swarmcracker vm logs` finds logs written by
+// both the CLI (`vm create -d`) and the daemon (service tasks).
+func DefaultLogDir() string {
+	dir, err := defaultStateDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "swarmcracker")
+	}
+	return dir
+}
+
 // NewStateManager creates a new state manager.
 func NewStateManager(_ string) (*StateManager, error) {
 	// Determine state file location
-	var stateFile string
-	if os.Geteuid() == 0 {
-		// Running as root
-		stateFile = filepath.Join("/var/run/swarmcracker", "state.json")
-	} else {
-		// Running as non-root
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, fmt.Errorf("failed to determine home directory: %w", err)
-		}
-		stateFile = filepath.Join(homeDir, ".swarmcracker", "state.json")
+	stateDirPath, err := defaultStateDir()
+	if err != nil {
+		return nil, err
 	}
+	stateFile := filepath.Join(stateDirPath, "state.json")
 
 	// Ensure directory exists
-	stateDirPath := filepath.Dir(stateFile)
 	if err := os.MkdirAll(stateDirPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create state directory: %w", err)
 	}
