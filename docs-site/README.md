@@ -60,6 +60,7 @@ touches `docs-site/`.
 
 Required repository configuration (Settings → Secrets and variables → Actions):
 
-- Secret `CLOUDFLARE_API_TOKEN` with the "Cloudflare Pages: Edit" permission.
-- Variable `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account ID that owns the
-  `swarmcracker-docs` Pages project.
+- Secret `CLOUDFLARE_API_TOKEN` with the "Cloudflare Pages: Edit" permission,
+  scoped to the Cloudflare account that owns the `swarmcracker-docs` project.
+  The account is inferred from the token, so no account identifier is stored in
+  the workflow.
