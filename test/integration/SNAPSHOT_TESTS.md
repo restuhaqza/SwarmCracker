@@ -104,10 +104,9 @@ The snapshot feature uses Firecracker's snapshot API:
    - Saves memory and state to files
    - VM exits after snapshot
 
-2. **Restore Snapshot**: 
-   - Start Firecracker with `--snapshot <state-file>`
-   - `PUT /snapshot/load` to load memory
-   - `PUT /actions` with `InstanceStart` to resume
+2. **Restore Snapshot**:
+   - Start Firecracker with `firecracker --api-sock <socket-path>`
+   - `PUT /snapshot/load` with `resume_vm: true` to load the state and memory
 
 ## Known Limitations
 

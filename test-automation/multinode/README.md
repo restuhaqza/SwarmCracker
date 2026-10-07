@@ -7,8 +7,8 @@ It creates `N` nested Ubuntu VMs on a single KVM/libvirt host, provisions the
 Firecracker executor on each, forms a SwarmKit cluster, and verifies that a
 microVM scheduled on one node is reachable from the other nodes.
 
-This is the reproducible form of the flow in
-[`docs/reports/e2e-multihost-nested-2026-10-04.md`](../../docs/reports/e2e-multihost-nested-2026-10-04.md).
+This is the reproducible form of that flow, automated by
+[`cluster-lab.sh`](cluster-lab.sh).
 
 ## Why this exists
 
