@@ -187,6 +187,11 @@ func inspectTask(taskID, format string, pretty bool) error {
 	}
 	defer conn.Close()
 
+	taskID, err = resolveTaskRef(ctx, client, taskID)
+	if err != nil {
+		return err
+	}
+
 	resp, err := client.GetTask(ctx, &api.GetTaskRequest{TaskID: taskID})
 	if err != nil {
 		return fmt.Errorf("failed to get task: %w", err)

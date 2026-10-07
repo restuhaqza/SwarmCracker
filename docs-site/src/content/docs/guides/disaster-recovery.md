@@ -186,7 +186,7 @@ swarmcracker vm snapshot list --task <VM_ID>
 swarmcracker vm snapshot restore <SNAPSHOT_ID>
 
 # Verify
-swarmcracker cluster status <VM_ID>
+swarmcracker vm status <VM_ID>
 ```
 
 ### Automated snapshot backup

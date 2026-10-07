@@ -60,12 +60,14 @@ Verifies:
 
 func runSetupCheck() error {
 	allGood := true
+	failures := 0
 	check := func(name string, ok bool, detail string) {
 		if ok {
 			fmt.Printf("  ✅ %-30s %s\n", name, detail)
 		} else {
 			fmt.Printf("  ❌ %-30s %s\n", name, detail)
 			allGood = false
+			failures++
 		}
 	}
 
@@ -154,20 +156,16 @@ func runSetupCheck() error {
 		fmt.Printf("     %-30s /boot/vmlinuz-%s (fallback)\n", "", getKernelRelease())
 	}
 
-	// Rootfs
-	rootfsPaths := []string{
-		"/var/lib/firecracker/rootfs/bionic.rootfs.ext4",
+	// Rootfs: accept any *.ext4 image in the rootfs directory (the daemon and
+	// `swarmcracker image build` name images after the image, not "bionic").
+	rootfsDirPath := rootfsDir // global --rootfs-dir override
+	if rootfsDirPath == "" {
+		rootfsDirPath = "/var/lib/firecracker/rootfs"
 	}
-	rootfsFound := false
-	for _, rp := range rootfsPaths {
-		if _, err := os.Stat(rp); err == nil {
-			check("rootfs", true, rp)
-			rootfsFound = true
-			break
-		}
-	}
-	if !rootfsFound {
-		check("rootfs", false, "not found (run 'setup install --download-rootfs')")
+	if images, _ := filepath.Glob(filepath.Join(rootfsDirPath, "*.ext4")); len(images) > 0 {
+		check("rootfs", true, fmt.Sprintf("%d image(s) in %s", len(images), rootfsDirPath))
+	} else {
+		check("rootfs", false, fmt.Sprintf("no *.ext4 images in %s (run 'setup install --download-rootfs')", rootfsDirPath))
 	}
 
 	// Config file
@@ -185,18 +183,12 @@ func runSetupCheck() error {
 		return nil
 	}
 	fmt.Println("⚠️  Some checks failed. Run 'swarmcracker setup install' to fix missing dependencies.")
-	return fmt.Errorf("%d prerequisite checks failed", countFailures())
+	return fmt.Errorf("%d prerequisite checks failed", failures)
 }
 
 func getKernelRelease() string {
 	out, _ := exec.Command("uname", "-r").Output()
 	return strings.TrimSpace(string(out))
-}
-
-func countFailures() int {
-	// This is a simplification — the actual check function tracks failures internally.
-	// For the CLI exit code, a non-zero exit on any failure is fine.
-	return 1
 }
 
 // ─── setup install ─────────────────────────────────────────────────────

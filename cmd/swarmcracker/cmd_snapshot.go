@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -23,11 +25,11 @@ Snapshots capture the full memory and state of a running microVM,
 enabling fast restore (faster than cold boot) and future live migration.
 
 Example:
-  swarmcracker snapshot create <task-id>
-  swarmcracker snapshot restore <snapshot-id>
-  swarmcracker snapshot list
-  swarmcracker snapshot delete <snapshot-id>
-  swarmcracker snapshot cleanup`,
+  swarmcracker vm snapshot create <task-id>
+  swarmcracker vm snapshot restore <snapshot-id>
+  swarmcracker vm snapshot list
+  swarmcracker vm snapshot delete <snapshot-id>
+  swarmcracker vm snapshot cleanup`,
 	}
 
 	cmd.AddCommand(newSnapshotCreateCommand())
@@ -59,8 +61,8 @@ func newSnapshotCreateCommand() *cobra.Command {
 The VM must be running and accessible via its Firecracker API socket.
 
 Example:
-  swarmcracker snapshot create task-123
-  swarmcracker snapshot create task-123 --socket /var/run/firecracker/task-123.sock`,
+  swarmcracker vm snapshot create task-123
+  swarmcracker vm snapshot create task-123 --socket /var/run/firecracker/task-123.sock`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
@@ -134,8 +136,8 @@ The restored VM will start with the exact memory state and configuration
 it had when the snapshot was taken.
 
 Example:
-  swarmcracker snapshot restore snap-abc123def4567890
-  swarmcracker snapshot restore snap-abc123def4567890 --socket /var/run/firecracker/task-123.sock`,
+  swarmcracker vm snapshot restore snap-abc123def4567890
+  swarmcracker vm snapshot restore snap-abc123def4567890 --socket /var/run/firecracker/task-123.sock`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
@@ -182,9 +184,32 @@ Example:
 				return fmt.Errorf("failed to restore snapshot: %w", err)
 			}
 
+			// Register the restored VM so it can be listed, stopped, and have
+			// its logs viewed like any other CLI-managed VM.
+			restoredID := runtime.TaskIDFromSocketPath(socketPath)
+			if restoredID == "" {
+				restoredID = target.TaskID + "-restored"
+			}
+			if stateMgr, smErr := runtime.NewStateManager(""); smErr == nil {
+				pid := runtime.FindFirecrackerPID(restoredID)
+				if pid == 0 {
+					pid = runtime.FindFirecrackerPIDBySocket(socketPath)
+				}
+				if addErr := stateMgr.Add(&runtime.VMState{
+					ID:         restoredID,
+					PID:        pid,
+					SocketPath: socketPath,
+					Status:     "running",
+					Image:      "snapshot:" + target.ID,
+					LogPath:    filepath.Join(stateMgr.GetLogDir(), restoredID+".log"),
+				}); addErr != nil {
+					log.Warn().Err(addErr).Msg("Failed to register restored VM state")
+				}
+			}
+
 			fmt.Printf("VM restored from snapshot\n")
 			fmt.Printf("  Snapshot: %s\n", target.ID)
-			fmt.Printf("  Task ID:  %s\n", target.TaskID)
+			fmt.Printf("  VM ID:    %s\n", restoredID)
 			fmt.Printf("  Socket:   %s\n", socketPath)
 
 			return nil
@@ -211,9 +236,9 @@ func newSnapshotListCommand() *cobra.Command {
 		Long: `List all VM snapshots, optionally filtered by service, task, or node.
 
 Example:
-  swarmcracker snapshot list
-  swarmcracker snapshot list --service nginx
-  swarmcracker snapshot list --task task-123`,
+  swarmcracker vm snapshot list
+  swarmcracker vm snapshot list --service nginx
+  swarmcracker vm snapshot list --task task-123`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -282,7 +307,7 @@ func newSnapshotDeleteCommand() *cobra.Command {
 		Long: `Delete a VM snapshot and free disk space.
 
 Example:
-  swarmcracker snapshot delete snap-abc123def4567890`,
+  swarmcracker vm snapshot delete snap-abc123def4567890`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
@@ -343,9 +368,9 @@ func newSnapshotCleanupCommand() *cobra.Command {
 		Long: `Remove snapshots older than the specified age (default: from config or 7 days).
 
 Example:
-  swarmcracker snapshot cleanup
-  swarmcracker snapshot cleanup --max-age 24h
-  swarmcracker snapshot cleanup --max-age 3d`,
+  swarmcracker vm snapshot cleanup
+  swarmcracker vm snapshot cleanup --max-age 24h
+  swarmcracker vm snapshot cleanup --max-age 3d`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},

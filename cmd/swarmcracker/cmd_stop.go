@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -103,10 +104,31 @@ func runStop(vmID string) error {
 	return nil
 }
 
-// stopVM stops the VM process
+// stopVM stops the VM process.
 func stopVM(vm *runtime.VMState) error {
+	pid := vm.PID
+	if pid <= 0 {
+		// State predates PID tracking (or the create raced). Re-resolve from
+		// the live process table by task ID, then by socket path.
+		pid = runtime.FindFirecrackerPID(vm.ID)
+		if pid == 0 && vm.SocketPath != "" {
+			pid = runtime.FindFirecrackerPIDBySocket(vm.SocketPath)
+		}
+	}
+
+	if pid <= 0 {
+		// No process found. If the API socket is gone too, the VM is already
+		// stopped; clean up any leftover sockets and report success.
+		if vm.SocketPath == "" || !runtime.IsVMSocketAlive(vm.SocketPath, 500*time.Millisecond) {
+			log.Info().Str("vm_id", vm.ID).Msg("No running process; VM already stopped")
+			removeVMSockets(vm)
+			return nil
+		}
+		return fmt.Errorf("could not determine the PID of running VM %s", vm.ID)
+	}
+
 	// Find the process
-	process, err := os.FindProcess(vm.PID)
+	process, err := os.FindProcess(pid)
 	if err != nil {
 		return fmt.Errorf("process not found: %w", err)
 	}
@@ -114,29 +136,29 @@ func stopVM(vm *runtime.VMState) error {
 	// Check if process is still running
 	if err := process.Signal(syscall.Signal(0)); err != nil {
 		// Process already dead
-		log.Info().Int("pid", vm.PID).Msg("Process already terminated")
+		log.Info().Int("pid", pid).Msg("Process already terminated")
+		removeVMSockets(vm)
 		//nolint:nilerr
 		return nil
 	}
 
 	if stopForce {
 		// Force kill immediately
-		log.Info().Int("pid", vm.PID).Msg("Sending SIGKILL")
+		log.Info().Int("pid", pid).Msg("Sending SIGKILL")
 		if err := process.Kill(); err != nil {
 			return fmt.Errorf("failed to kill process: %w", err)
 		}
 
 		// Wait for process to exit
-		_, err := process.Wait()
-		if err != nil {
+		if _, err := process.Wait(); err != nil {
 			log.Warn().Err(err).Msg("Process wait returned error")
 		}
-
+		removeVMSockets(vm)
 		return nil
 	}
 
 	// Graceful shutdown
-	log.Info().Int("pid", vm.PID).Msg("Sending SIGTERM")
+	log.Info().Int("pid", pid).Msg("Sending SIGTERM")
 
 	// Try SIGTERM first
 	if err := process.Signal(syscall.SIGTERM); err != nil {
@@ -157,16 +179,32 @@ func stopVM(vm *runtime.VMState) error {
 		if err != nil {
 			log.Warn().Err(err).Msg("Process wait returned error")
 		}
-		log.Info().Int("pid", vm.PID).Msg("Process terminated gracefully")
+		log.Info().Int("pid", pid).Msg("Process terminated gracefully")
+		removeVMSockets(vm)
 		return nil
 
 	case <-time.After(timeout):
-		log.Warn().Int("pid", vm.PID).Msg("Graceful shutdown timeout, forcing kill")
+		log.Warn().Int("pid", pid).Msg("Graceful shutdown timeout, forcing kill")
 		if err := process.Kill(); err != nil {
 			return fmt.Errorf("failed to kill process after timeout: %w", err)
 		}
 		_, _ = process.Wait()
+		removeVMSockets(vm)
 		return nil
+	}
+}
+
+// removeVMSockets removes a VM's Firecracker API and console sockets, if any.
+func removeVMSockets(vm *runtime.VMState) {
+	if vm.SocketPath == "" {
+		return
+	}
+	if err := os.Remove(vm.SocketPath); err != nil && !os.IsNotExist(err) {
+		log.Warn().Err(err).Str("socket", vm.SocketPath).Msg("Failed to remove VM socket")
+	}
+	consoleSock := filepath.Join(filepath.Dir(vm.SocketPath), vm.ID+".console.sock")
+	if err := os.Remove(consoleSock); err != nil && !os.IsNotExist(err) {
+		log.Warn().Err(err).Str("socket", consoleSock).Msg("Failed to remove VM console socket")
 	}
 }
 
@@ -174,14 +212,8 @@ func stopVM(vm *runtime.VMState) error {
 func cleanupVM(stateMgr *runtime.StateManager, vm *runtime.VMState) error {
 	log.Info().Str("vm_id", vm.ID).Msg("Cleaning up VM resources")
 
-	// Remove socket file if it exists
-	if vm.SocketPath != "" {
-		if _, err := os.Stat(vm.SocketPath); err == nil {
-			if err := os.Remove(vm.SocketPath); err != nil {
-				log.Warn().Err(err).Str("socket", vm.SocketPath).Msg("Failed to remove socket")
-			}
-		}
-	}
+	// Remove the VM's API and console sockets if present.
+	removeVMSockets(vm)
 
 	// Remove VM from state
 	if err := stateMgr.Remove(vm.ID); err != nil {

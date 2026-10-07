@@ -135,8 +135,21 @@ func TestFirecrackerTaskID(t *testing.T) {
 	_, ok = firecrackerTaskID("/bin/sleep\x0010000\x00")
 	assert.False(t, ok)
 
-	_, ok = firecrackerTaskID("/usr/local/bin/firecracker\x00--api-sock\x00/x.sock\x00")
-	assert.False(t, ok, "firecracker without --id is not matched")
+	// A Firecracker launched without --id is identified by its API socket.
+	id, ok = firecrackerTaskID("/usr/local/bin/firecracker\x00--api-sock\x00/var/run/firecracker/x.sock\x00")
+	assert.True(t, ok, "firecracker without --id falls back to the api-sock basename")
+	assert.Equal(t, "x", id)
+
+	// Console sockets must not be mistaken for API sockets.
+	_, ok = firecrackerTaskID("/usr/local/bin/firecracker\x00--api-sock\x00/var/run/firecracker/x.console.sock\x00")
+	assert.False(t, ok, "console socket is not an API socket")
+}
+
+func TestTaskIDFromSocketPath(t *testing.T) {
+	assert.Equal(t, "abc", TaskIDFromSocketPath("/var/run/firecracker/abc.sock"))
+	assert.Equal(t, "", TaskIDFromSocketPath("/var/run/firecracker/abc.console.sock"))
+	assert.Equal(t, "", TaskIDFromSocketPath("/var/run/firecracker/abc"))
+	assert.Equal(t, "", TaskIDFromSocketPath(""))
 }
 
 func TestFindFirecrackerPIDMissing(t *testing.T) {
