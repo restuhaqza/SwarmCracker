@@ -242,7 +242,7 @@ func runInit(cfg *initConfig) error {
 	fmt.Printf("  swarmcracker join %s --token <WORKER_TOKEN>\n", cfg.AdvertiseAddr)
 	fmt.Println()
 	fmt.Println("View cluster status:")
-	fmt.Println("  swarmcracker status")
+	fmt.Println("  swarmcracker cluster status")
 	fmt.Println()
 	fmt.Println("Join tokens saved to:")
 	fmt.Printf("  %s\n", filepath.Join(cfg.StateDir, "join-tokens.txt"))

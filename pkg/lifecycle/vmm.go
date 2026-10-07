@@ -187,8 +187,10 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 
 	log.Debug().Str("binary", fcBinary).Msg("Using Firecracker binary")
 
-	// Start Firecracker process (without config file)
-	cmd := exec.Command(fcBinary, "--api-sock", socketPath)
+	// Start Firecracker process (without config file). Pass --id so the
+	// process is discoverable via /proc/<pid>/cmdline (runtime.FindFirecrackerPID),
+	// which `vm stop`/`vm status` rely on.
+	cmd := exec.Command(fcBinary, "--api-sock", socketPath, "--id", task.ID)
 	cmd.Stdout, cmd.Stderr = vm.consoleStdio()
 
 	var startErr error

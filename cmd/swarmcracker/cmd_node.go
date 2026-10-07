@@ -290,8 +290,15 @@ func listNodes(format, filter string, quiet bool) error {
 	for _, node := range nodes {
 		status := node.Status.State.String()
 		avail := node.Spec.Availability.String()
-		hostname := node.Description.Hostname
-		fmt.Printf("%-20s %-12s %-20s %s\n", node.ID[:12], status, hostname, avail)
+		hostname := ""
+		if node.Description != nil {
+			hostname = node.Description.Hostname
+		}
+		id := node.ID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		fmt.Printf("%-20s %-12s %-20s %s\n", id, status, hostname, avail)
 	}
 	fmt.Printf("\nTotal: %d node(s)\n", len(nodes))
 
@@ -307,6 +314,11 @@ func inspectNode(nodeID, format string, pretty bool) error {
 		return err
 	}
 	defer conn.Close()
+
+	nodeID, err = resolveNodeRef(ctx, client, nodeID)
+	if err != nil {
+		return err
+	}
 
 	resp, err := client.GetNode(ctx, &api.GetNodeRequest{NodeID: nodeID})
 	if err != nil {
@@ -337,12 +349,20 @@ func setNodeAvailability(nodeID string, availability api.NodeSpec_Availability) 
 	}
 	defer conn.Close()
 
+	nodeID, err = resolveNodeRef(ctx, client, nodeID)
+	if err != nil {
+		return err
+	}
+
 	resp, err := client.GetNode(ctx, &api.GetNodeRequest{NodeID: nodeID})
 	if err != nil {
 		return fmt.Errorf("failed to get node: %w", err)
 	}
 
 	node := resp.Node
+	if availability == api.NodeAvailabilityDrain {
+		fmt.Printf("Warning: draining node %s stops its running tasks; they are not rescheduled until the node is activated again.\n", nodeID)
+	}
 	node.Spec.Availability = availability
 
 	_, err = client.UpdateNode(ctx, &api.UpdateNodeRequest{
@@ -368,12 +388,21 @@ func promoteNode(nodeID string) error {
 	}
 	defer conn.Close()
 
+	nodeID, err = resolveNodeRef(ctx, client, nodeID)
+	if err != nil {
+		return err
+	}
+
 	resp, err := client.GetNode(ctx, &api.GetNodeRequest{NodeID: nodeID})
 	if err != nil {
 		return fmt.Errorf("failed to get node: %w", err)
 	}
 
 	node := resp.Node
+	if node.Spec.DesiredRole == api.NodeRoleManager {
+		fmt.Printf("Node %s is already a manager\n", nodeID)
+		return nil
+	}
 	node.Spec.DesiredRole = api.NodeRoleManager
 
 	_, err = client.UpdateNode(ctx, &api.UpdateNodeRequest{
@@ -417,6 +446,11 @@ func removeNode(nodeID string, force bool) error {
 		return err
 	}
 	defer conn.Close()
+
+	nodeID, err = resolveNodeRef(ctx, client, nodeID)
+	if err != nil {
+		return err
+	}
 
 	// Verify node exists first
 	resp, err := client.GetNode(ctx, &api.GetNodeRequest{NodeID: nodeID})

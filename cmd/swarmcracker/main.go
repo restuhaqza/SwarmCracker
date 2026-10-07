@@ -52,6 +52,7 @@ func main() {
 	rootCmd.AddCommand(newAssetCommand())
 	rootCmd.AddCommand(newConfigCommand())
 	rootCmd.AddCommand(newSetupCommand())
+	rootCmd.AddCommand(newMetricsCommand())
 
 	// Backward compatibility: legacy commands with deprecation warnings
 	rootCmd.AddCommand(newDeprecatedInitCommand())
@@ -66,7 +67,6 @@ func main() {
 	rootCmd.AddCommand(newDeprecatedStatusCommand())
 	rootCmd.AddCommand(newDeprecatedLogsCommand())
 	rootCmd.AddCommand(newDeprecatedStopCommand())
-	rootCmd.AddCommand(newDeprecatedMetricsCommand())
 	rootCmd.AddCommand(newDeprecatedSnapshotCommand())
 
 	// Utility

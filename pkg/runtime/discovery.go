@@ -185,24 +185,57 @@ func FindFirecrackerPID(taskID string) int {
 	return FindFirecrackerPIDs()[taskID]
 }
 
-// firecrackerTaskID extracts the --id value from a Firecracker process's
-// /proc/<pid>/cmdline, reporting false for non-Firecracker processes.
+// FindFirecrackerPIDBySocket returns the host PID of the Firecracker process
+// backing an API socket path, or 0 if it cannot be determined. It is a fallback
+// for processes launched without --id.
+func FindFirecrackerPIDBySocket(socketPath string) int {
+	if socketPath == "" {
+		return 0
+	}
+	return FindFirecrackerPID(TaskIDFromSocketPath(socketPath))
+}
+
+// TaskIDFromSocketPath derives a VM task ID from a Firecracker API socket path
+// (e.g. /var/run/firecracker/abc.sock -> abc). It returns "" for console
+// sockets and paths that are not API sockets.
+func TaskIDFromSocketPath(socketPath string) string {
+	base := filepath.Base(socketPath)
+	if !strings.HasSuffix(base, VMSocketSuffix) || strings.HasSuffix(base, ConsoleSocketSuffix) {
+		return ""
+	}
+	return strings.TrimSuffix(base, VMSocketSuffix)
+}
+
+// firecrackerTaskID extracts the task identifier from a Firecracker process's
+// /proc/<pid>/cmdline, reporting false for non-Firecracker processes. It prefers
+// an explicit --id and otherwise falls back to the --api-sock basename, so VMs
+// launched without --id are still discoverable.
 func firecrackerTaskID(cmdline string) (string, bool) {
 	args := strings.Split(cmdline, "\x00")
 
 	isFirecracker := false
 	id := ""
+	socketID := ""
 	for i, arg := range args {
-		if arg == "--id" && i+1 < len(args) {
-			id = args[i+1]
-		}
 		if strings.Contains(filepath.Base(arg), "firecracker") {
 			isFirecracker = true
 		}
+		if arg == "--id" && i+1 < len(args) {
+			id = args[i+1]
+		}
+		if arg == "--api-sock" && i+1 < len(args) {
+			socketID = TaskIDFromSocketPath(args[i+1])
+		}
 	}
 
-	if isFirecracker && id != "" {
+	if !isFirecracker {
+		return "", false
+	}
+	if id != "" {
 		return id, true
+	}
+	if socketID != "" {
+		return socketID, true
 	}
 	return "", false
 }

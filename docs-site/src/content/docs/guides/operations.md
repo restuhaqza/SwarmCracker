@@ -73,11 +73,14 @@ swarmcracker node ls
 ### VM Health
 
 ```bash
-# Check specific VM
-swarmcracker cluster status <vm-id>
+# Check a specific VM
+swarmcracker vm status <vm-id>
 
 # Watch mode
-watch -n2 'swarmcracker cluster status <vm-id>'
+watch -n2 'swarmcracker vm status <vm-id>'
+
+# Cluster overview (nodes / services / tasks)
+swarmcracker cluster status
 ```
 
 ---
@@ -97,8 +100,8 @@ curl -s http://127.0.0.1:8080/metrics
 swarmctl metrics <task-id>
 ```
 
-> `swarmcracker metrics` still runs but is deprecated. Use the Prometheus
-> endpoint above (or `swarmctl metrics`) instead.
+> `swarmcracker metrics` shows live per-VM resource usage, including VMs started
+> by the daemon for services. Use the Prometheus endpoint above for scraping.
 
 **Key metrics** (all prefixed `swarmcracker_`):
 - `swarmcracker_vms_running` — VMs currently running on this node
@@ -283,7 +286,7 @@ swarmd-firecracker --debug
 
 2. **VXLAN peers correct?**
    ```bash
-   swarmcracker network vxlan list
+   swarmcracker network vxlan ls
    # Should list all worker IPs
    ```
 
@@ -687,7 +690,8 @@ swarmcracker vm status <vm-id>          # VM details (service task IDs work too)
 swarmcracker vm logs -f <vm-id>         # Follow VM logs (CLI-created VMs and service tasks)
 swarmcracker vm attach <vm-id>          # Attach to the VM serial console
 swarmcracker vm stop <vm-id>            # Stop a CLI-created VM
-swarmcracker cluster status <vm-id>     # VM status
+swarmcracker cluster status             # Cluster overview (nodes/services/tasks)
+swarmcracker service scale <service> 0  # Stop a service's tasks (scale to zero)
 
 # Services
 swarmcracker service ls                 # List services

@@ -14,14 +14,15 @@ const deprecationWarning = `WARNING: This command is DEPRECATED and will be remo
 
 Please use the new command structure instead:
 
-  swarmcracker cluster <command>    - Cluster lifecycle (init, join, leave, status, reset, deinit)
+  swarmcracker cluster <command>    - Cluster lifecycle (init, join, leave, token, status, health, reset, deinit)
   swarmcracker node <command>       - Node management (ls, inspect, drain, activate, promote, rm)
   swarmcracker service <command>    - Service management (ls, inspect, ps, create, update, scale, rm)
   swarmcracker task <command>       - Task management (ls, inspect)
-  swarmcracker vm <command>         - VM operations (ls, inspect, create, stop, rm, logs, snapshot)
-  swarmcracker network <command>    - Network configuration (ls, inspect, create, rm)
-  swarmcracker asset <command>      - Asset management (ls, pull, rm)
-  swarmcracker config <command>     - Configuration management (view, validate, init, set, unset)
+  swarmcracker vm <command>         - VM operations (list, status, create, stop, logs, attach, snapshot)
+  swarmcracker network <command>    - Network introspection (vxlan, bridge)
+  swarmcracker asset <command>      - Asset management (kernel, rootfs)
+  swarmcracker config <command>     - Configuration (ls, validate, migrate)
+  swarmcracker metrics              - Display VM resource usage
 
 For more information, run: swarmcracker --help
 `
@@ -133,13 +134,13 @@ func newDeprecatedValidateCommand() *cobra.Command {
 // newDeprecatedListCommand creates a deprecated list command wrapper
 func newDeprecatedListCommand() *cobra.Command {
 	// Reuse existing list command
-	return wrapDeprecated(newListCommand(), "vm ls")
+	return wrapDeprecated(newListCommand(), "vm list")
 }
 
 // newDeprecatedStatusCommand creates a deprecated status command wrapper
 func newDeprecatedStatusCommand() *cobra.Command {
 	// Reuse existing status command
-	return wrapDeprecated(newStatusCommand(), "cluster status")
+	return wrapDeprecated(newStatusCommand(), "vm status")
 }
 
 // newDeprecatedLogsCommand creates a deprecated logs command wrapper
@@ -152,12 +153,6 @@ func newDeprecatedLogsCommand() *cobra.Command {
 func newDeprecatedStopCommand() *cobra.Command {
 	// Reuse existing stop command
 	return wrapDeprecated(newStopCommand(), "vm stop")
-}
-
-// newDeprecatedMetricsCommand creates a deprecated metrics command wrapper
-func newDeprecatedMetricsCommand() *cobra.Command {
-	// Reuse existing metrics command
-	return wrapDeprecated(newMetricsCommand(), "cluster status --metrics")
 }
 
 // newDeprecatedSnapshotCommand creates a deprecated snapshot command wrapper

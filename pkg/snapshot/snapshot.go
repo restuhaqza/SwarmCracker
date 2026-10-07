@@ -265,8 +265,10 @@ func (m *Manager) CreateSnapshot(
 
 // RestoreFromSnapshot restores a VM from a snapshot.
 //
-// This starts a new Firecracker process with --snapshot pointing to the
-// state file, then loads the memory backend via PUT /snapshot/load.
+// It starts a fresh Firecracker process (no devices configured) and asks it to
+// load the snapshot's state and memory via the /snapshot/load API, which also
+// restores device config and resumes the VM. Modern Firecracker has no
+// `--snapshot` CLI flag, so the state is applied purely through the API.
 func (m *Manager) RestoreFromSnapshot(
 	ctx context.Context,
 	info *SnapshotInfo,
@@ -295,6 +297,14 @@ func (m *Manager) RestoreFromSnapshot(
 		}
 	}
 
+	// When the snapshot recorded a rootfs path, ensure it still exists: the
+	// restored VM's block device points at it.
+	if info.RootfsPath != "" {
+		if _, err := os.Stat(info.RootfsPath); err != nil {
+			return fmt.Errorf("snapshot rootfs not found at %s: %w", info.RootfsPath, err)
+		}
+	}
+
 	log.Info().
 		Str("snapshot_id", info.ID).
 		Str("task_id", info.TaskID).
@@ -304,13 +314,15 @@ func (m *Manager) RestoreFromSnapshot(
 	// Clean up existing socket
 	os.Remove(socketPath)
 
-	// Start Firecracker with --snapshot
+	// Start a fresh Firecracker process. The snapshot state (including block
+	// devices and kernel) is applied through the API below; do NOT pass a
+	// config or the removed --snapshot flag.
 	fcBinary, err := exec.LookPath("firecracker")
 	if err != nil {
 		return fmt.Errorf("firecracker binary not found in PATH: %w", err)
 	}
 
-	cmd := exec.Command(fcBinary, "--api-sock", socketPath, "--snapshot", info.StatePath)
+	cmd := exec.Command(fcBinary, "--api-sock", socketPath)
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start firecracker for restore: %w", err)
 	}
@@ -337,16 +349,11 @@ func (m *Manager) RestoreFromSnapshot(
 		return fmt.Errorf("firecracker API not ready after restore: %w", err)
 	}
 
-	// Load memory via snapshot/load API
+	// Load the snapshot state and memory via /snapshot/load. The payload sets
+	// resume_vm=true, so the VM is running once this returns.
 	if err := callSnapshotLoad(ctx, socketPath, info.StatePath, info.MemoryPath); err != nil {
 		startErr = true
 		return fmt.Errorf("failed to load snapshot memory: %w", err)
-	}
-
-	// Resume the instance
-	if err := callInstanceStart(ctx, socketPath); err != nil {
-		startErr = true
-		return fmt.Errorf("failed to resume restored instance: %w", err)
 	}
 
 	log.Info().
