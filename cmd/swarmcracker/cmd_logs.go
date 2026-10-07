@@ -2,7 +2,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -21,6 +23,11 @@ var (
 	logsSince  string
 )
 
+// maxLogLineBytes bounds a single log line. Firecracker logs API request bodies
+// on one line, which can be large; the default 64 KiB scanner limit is too
+// small and would abort reading the file.
+const maxLogLineBytes = 1024 * 1024
+
 // newLogsCommand creates the logs command
 func newLogsCommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -28,14 +35,16 @@ func newLogsCommand() *cobra.Command {
 		Short: "View VM logs",
 		Long: `Display logs from a microVM.
 
-This command shows logs from the Firecracker VMM process for a specific microVM.
-Logs are written to files in the state directory.
+This command shows the serial-console and VMM output for a microVM. It works for
+VMs created with 'swarmcracker vm create -d' and for service tasks managed by the
+daemon (the daemon mirrors each VM's console to <log-dir>/<task-id>.log).
 
 Example:
-  swarmcracker logs nginx-1
-  swarmcracker logs --follow nginx-1
-  swarmcracker logs --tail 100 nginx-1
-  swarmcracker logs --since 1h nginx-1`,
+  swarmcracker vm logs nginx-1
+  swarmcracker vm logs --follow nginx-1
+  swarmcracker vm logs --tail 100 nginx-1
+  swarmcracker vm logs --since 1h nginx-1
+  swarmcracker vm logs --since 2026-01-02T15:04:05 nginx-1`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
@@ -47,232 +56,323 @@ Example:
 
 	cmd.Flags().BoolVarP(&logsFollow, "follow", "f", false, "Follow log output")
 	cmd.Flags().IntVar(&logsTail, "tail", -1, "Show last N lines (default: all)")
-	cmd.Flags().StringVar(&logsSince, "since", "", "Show logs since timestamp (e.g., 1h, 30m)")
+	cmd.Flags().StringVar(&logsSince, "since", "", "Show logs since a duration (1h, 30m) or RFC3339 timestamp")
 
 	return cmd
 }
 
 // runLogs executes the logs command
 func runLogs(vmID string) error {
-	// Create state manager
 	stateMgr, err := runtime.NewStateManager("")
 	if err != nil {
 		return fmt.Errorf("failed to create state manager: %w", err)
 	}
 
-	// Get VM state
-	vmState, err := stateMgr.Get(vmID)
+	logPath, err := resolveLogPath(stateMgr, vmID)
 	if err != nil {
-		return fmt.Errorf("VM not found: %s", vmID)
+		return err
 	}
 
-	// Determine log file path
-	logPath := vmState.LogPath
-	if logPath == "" {
-		// Default to state directory
-		logPath = filepath.Join(stateMgr.GetLogDir(), vmID+".log")
+	sinceTime, err := parseSince(logsSince)
+	if err != nil {
+		return fmt.Errorf("invalid --since value: %w", err)
 	}
 
-	// Check if log file exists
-	if _, err := os.Stat(logPath); os.IsNotExist(err) {
-		// Try alternative paths
-		altPaths := []string{
-			filepath.Join("/var/log/swarmcracker", vmID+".log"),
-			filepath.Join("/tmp", "swarmcracker-"+vmID+".log"),
-		}
+	if logsFollow {
+		return followLogs(logPath, logsTail, sinceTime)
+	}
+	return displayLogs(logPath, logsTail, sinceTime)
+}
 
-		for _, altPath := range altPaths {
-			if _, err := os.Stat(altPath); err == nil {
-				logPath = altPath
-				break
-			}
-		}
+// resolveLogPath finds the log file for a VM. It prefers the path recorded in
+// CLI state (for VMs created with `vm create -d`), then falls back to the
+// conventional <log-dir>/<id>.log locations. The latter makes logs from
+// daemon-managed service tasks — which are not persisted in CLI state —
+// readable by ID.
+func resolveLogPath(stateMgr *runtime.StateManager, vmID string) (string, error) {
+	var candidates []string
+	if st, err := stateMgr.Get(vmID); err == nil && st.LogPath != "" {
+		candidates = append(candidates, st.LogPath)
+	}
+	candidates = append(candidates,
+		filepath.Join(stateMgr.GetLogDir(), vmID+".log"),
+		filepath.Join("/var/log/swarmcracker", vmID+".log"),
+		filepath.Join("/tmp", "swarmcracker-"+vmID+".log"),
+	)
 
-		// If still not found, check if it ever existed
-		if _, err := os.Stat(logPath); os.IsNotExist(err) {
-			return fmt.Errorf("log file not found for VM %s (looked in: %s)", vmID, logPath)
+	for _, p := range candidates {
+		if _, err := os.Stat(p); err == nil {
+			return p, nil
 		}
 	}
 
-	// Open log file
-	file, err := os.Open(logPath)
+	if _, err := stateMgr.Get(vmID); err != nil {
+		return "", fmt.Errorf("VM not found: %s", vmID)
+	}
+	return "", fmt.Errorf("log file not found for VM %s (looked in: %s)", vmID, strings.Join(candidates, ", "))
+}
+
+// displayLogs prints a log file once, honoring --tail and --since.
+func displayLogs(logPath string, tail int, since time.Time) error {
+	f, err := os.Open(logPath)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
-	defer file.Close()
+	defer f.Close()
 
-	// Parse since time
-	var sinceTime time.Time
-	if logsSince != "" {
-		duration, err := parseDuration(logsSince)
-		if err != nil {
-			return fmt.Errorf("invalid --since value: %w", err)
-		}
-		sinceTime = time.Now().Add(-duration)
-	}
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
 
-	// Read and display logs
-	if logsFollow {
-		return followLogs(file, logPath, sinceTime)
-	}
-
-	return displayLogs(file, sinceTime)
+	return writeBacklog(out, f, tail, since)
 }
 
-// displayLogs displays logs with optional filtering
-func displayLogs(file *os.File, sinceTime time.Time) error {
-	scanner := bufio.NewScanner(file)
-
-	// If tail is specified, we need to count lines first
-	var lines []string
-	if logsTail > 0 {
-		for scanner.Scan() {
-			lines = append(lines, scanner.Text())
-		}
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("error reading log file: %w", err)
-		}
-
-		// Keep only last N lines
-		if len(lines) > logsTail {
-			lines = lines[len(lines)-logsTail:]
-		}
-
-		// Display filtered lines
-		for _, line := range lines {
-			if shouldDisplayLine(line, sinceTime) {
-				fmt.Println(line)
-			}
-		}
-	} else {
-		// Stream all lines
-		for scanner.Scan() {
-			line := scanner.Text()
-			if shouldDisplayLine(line, sinceTime) {
-				fmt.Println(line)
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			return fmt.Errorf("error reading log file: %w", err)
-		}
+// writeBacklog writes matching lines from r to out: the last `tail` lines when
+// tail >= 0, every matching line when tail < 0, and nothing when tail == 0.
+func writeBacklog(out io.Writer, r io.Reader, tail int, since time.Time) error {
+	if tail == 0 {
+		return nil
+	}
+	if tail < 0 {
+		return writeFiltered(out, r, since)
 	}
 
+	lines, err := tailLines(r, tail, since)
+	if err != nil {
+		return err
+	}
+	for _, line := range lines {
+		fmt.Fprintln(out, line)
+	}
 	return nil
 }
 
-// followLogs follows the log file and outputs new lines
-func followLogs(file *os.File, logPath string, sinceTime time.Time) error {
-	// Seek to end of file for follow mode
-	initialInfo, err := file.Stat()
+// writeFiltered streams every line that passes the since filter.
+func writeFiltered(out io.Writer, r io.Reader, since time.Time) error {
+	sc := newLogScanner(r)
+	for sc.Scan() {
+		if line := sc.Text(); shouldDisplayLine(line, since) {
+			fmt.Fprintln(out, line)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("error reading log file: %w", err)
+	}
+	return nil
+}
+
+// tailLines returns the last n lines that pass the since filter. n <= 0 yields
+// no lines.
+func tailLines(r io.Reader, n int, since time.Time) ([]string, error) {
+	if n <= 0 {
+		return nil, nil
+	}
+
+	sc := newLogScanner(r)
+	buf := make([]string, 0, n)
+	for sc.Scan() {
+		line := sc.Text()
+		if !shouldDisplayLine(line, since) {
+			continue
+		}
+		if len(buf) == n {
+			copy(buf, buf[1:])
+			buf = buf[:n-1]
+		}
+		buf = append(buf, line)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("error reading log file: %w", err)
+	}
+	return buf, nil
+}
+
+// followLogs prints the existing backlog (honoring --tail/--since) and then
+// streams lines appended to the file until interrupted.
+func followLogs(logPath string, tail int, since time.Time) error {
+	f, err := os.Open(logPath)
+	if err != nil {
+		return fmt.Errorf("failed to open log file: %w", err)
+	}
+	defer f.Close()
+
+	out := bufio.NewWriter(os.Stdout)
+	defer out.Flush()
+
+	// Replay the backlog so `-f` behaves like `logs -f` (history, then follow)
+	// rather than `tail -f`.
+	if err := writeBacklog(out, f, tail, since); err != nil {
+		return err
+	}
+
+	info, err := f.Stat()
 	if err != nil {
 		return fmt.Errorf("failed to stat file: %w", err)
 	}
+	offset := info.Size()
 
-	// If --since is specified, we need to read from that point
-	if !sinceTime.IsZero() {
-		_, err = file.Seek(0, 0)
-	} else {
-		_, err = file.Seek(0, 2) // Seek to end
-	}
-	if err != nil {
-		return fmt.Errorf("failed to seek file: %w", err)
-	}
+	fmt.Fprintf(out, "Following logs for %s (Ctrl+C to exit)\n", logPath)
+	out.Flush()
 
-	// Setup signal handling for interrupt
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
-	// Start polling for new content
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	fmt.Printf("Following logs for %s (Ctrl+C to exit)\n", logPath)
+	return tailStream(f, logPath, out, offset, since, ticker.C, sigCh)
+}
 
-	lastSize := initialInfo.Size()
-
+// tailStream reads bytes appended past offset, printing complete lines, until
+// stop is closed. ticks drives polling; it is a parameter so tests can drive
+// the loop deterministically.
+func tailStream(f *os.File, logPath string, out *bufio.Writer, offset int64, since time.Time, ticks <-chan time.Time, stop <-chan os.Signal) error {
+	var partial []byte
 	for {
 		select {
-		case <-sigCh:
-			fmt.Println("\nStopped following logs")
+		case <-stop:
+			if len(partial) > 0 {
+				fmt.Fprintln(out, strings.TrimRight(string(partial), "\r"))
+			}
+			fmt.Fprintln(out, "\nStopped following logs")
+			out.Flush()
 			return nil
-		case <-ticker.C:
-			// Check for new content
+		case <-ticks:
 			info, err := os.Stat(logPath)
 			if err != nil {
-				// File might have been deleted
+				if os.IsNotExist(err) {
+					continue // transient during rotation
+				}
 				return fmt.Errorf("log file error: %w", err)
 			}
 
-			currentSize := info.Size()
-			if currentSize > lastSize {
-				// File has grown, read new content
-				if _, err := file.Seek(lastSize, 0); err != nil {
+			if info.Size() < offset {
+				// Truncated or rotated: restart from the beginning.
+				if _, err := f.Seek(0, io.SeekStart); err != nil {
 					return fmt.Errorf("failed to seek file: %w", err)
 				}
+				offset = 0
+				partial = nil
+				fmt.Fprintln(out, "[Log file rotated]")
+				out.Flush()
+			}
 
-				scanner := bufio.NewScanner(file)
-				for scanner.Scan() {
-					line := scanner.Text()
-					if shouldDisplayLine(line, sinceTime) {
-						fmt.Println(line)
+			if info.Size() <= offset {
+				continue
+			}
+
+			data := make([]byte, info.Size()-offset)
+			n, err := f.ReadAt(data, offset)
+			if n > 0 {
+				offset += int64(n)
+				partial = append(partial, data[:n]...)
+				for {
+					idx := bytes.IndexByte(partial, '\n')
+					if idx < 0 {
+						break
 					}
+					line := strings.TrimRight(string(partial[:idx]), "\r")
+					if shouldDisplayLine(line, since) {
+						fmt.Fprintln(out, line)
+					}
+					partial = partial[idx+1:]
 				}
-
-				lastSize = currentSize
-			} else if currentSize < lastSize {
-				// File was truncated or rotated
-				if _, err := file.Seek(0, 0); err != nil {
-					return fmt.Errorf("failed to seek file: %w", err)
-				}
-				lastSize = 0
-				fmt.Println("[Log file rotated]")
+				out.Flush()
+			}
+			if err != nil && err != io.EOF {
+				return fmt.Errorf("failed to read log file: %w", err)
 			}
 		}
 	}
 }
 
-// shouldDisplayLine determines if a line should be displayed based on time filter
-func shouldDisplayLine(line string, sinceTime time.Time) bool {
-	if sinceTime.IsZero() {
+// newLogScanner returns a line scanner with a buffer large enough for
+// Firecracker's longest single-line records.
+func newLogScanner(r io.Reader) *bufio.Scanner {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 64*1024), maxLogLineBytes)
+	return sc
+}
+
+// shouldDisplayLine reports whether a log line passes the since filter. Lines
+// without a recognizable timestamp are kept, since they cannot be placed in
+// time (e.g. kernel monotonic-timestamp lines).
+func shouldDisplayLine(line string, since time.Time) bool {
+	if since.IsZero() {
 		return true
 	}
+	ts, ok := extractTimestamp(line)
+	if !ok {
+		return true
+	}
+	return !ts.Before(since)
+}
 
-	// Try to extract timestamp from log line
-	// Common formats: 2024-02-01 12:34:56, [12:34:56], etc.
-	parts := strings.Fields(line)
-	if len(parts) > 0 {
-		// Try ISO format
-		if _, err := time.Parse("2006-01-02T15:04:05", parts[0]); err == nil {
-			t, _ := time.Parse("2006-01-02T15:04:05", parts[0])
-			return t.After(sinceTime)
-		}
-		// Try common log format
-		if _, err := time.Parse("2006-01-02", parts[0]); err == nil && len(parts) > 1 {
-			dateTime := parts[0] + "T" + parts[1]
-			if t, err := time.Parse("2006-01-2T15:04:05", dateTime); err == nil {
-				return t.After(sinceTime)
+// timestampLayouts are the wall-clock formats found in VM logs. Firecracker and
+// the guest do not emit a timezone, so these are parsed in local time.
+var timestampLayouts = []string{
+	"2006-01-02T15:04:05.999999999",
+	"2006-01-02T15:04:05",
+	"2006-01-02 15:04:05.999999999",
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
+// extractTimestamp pulls a wall-clock timestamp from the start of a log line.
+// It returns false for lines without one (for example kernel lines prefixed
+// with a monotonic "[    0.000000]" timestamp).
+func extractTimestamp(line string) (time.Time, bool) {
+	fields := strings.Fields(line)
+	if len(fields) == 0 {
+		return time.Time{}, false
+	}
+
+	// Candidates: a single token, or a date token joined with the next token
+	// when the format separates date and time with a space.
+	candidates := []string{fields[0]}
+	if len(fields) > 1 {
+		candidates = append(candidates, fields[0]+" "+fields[1], fields[0]+"T"+fields[1])
+	}
+
+	for _, c := range candidates {
+		for _, layout := range timestampLayouts {
+			if t, err := time.ParseInLocation(layout, c, time.Local); err == nil {
+				return t, true
 			}
 		}
 	}
-
-	// Can't parse timestamp, include the line
-	return true
+	return time.Time{}, false
 }
 
-// parseDuration parses a duration string (e.g., "1h", "30m", "1h30m")
-func parseDuration(s string) (time.Duration, error) {
-	// Support common formats
+// parseSince converts a --since value into an absolute cutoff time. It accepts
+// a duration relative to now ("1h", "30m", or a bare number of minutes) or an
+// RFC3339/date timestamp. An empty value yields the zero time (no filtering).
+func parseSince(s string) (time.Time, error) {
 	s = strings.TrimSpace(s)
+	if s == "" {
+		return time.Time{}, nil
+	}
 
-	// Try standard Go duration format
+	absoluteLayouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range absoluteLayouts {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return t, nil
+		}
+	}
+
 	if d, err := time.ParseDuration(s); err == nil {
-		return d, nil
+		return time.Now().Add(-d), nil
 	}
-
-	// Try simple number format (assume minutes)
 	if i, err := strconv.Atoi(s); err == nil {
-		return time.Duration(i) * time.Minute, nil
+		return time.Now().Add(-time.Duration(i) * time.Minute), nil
 	}
 
-	return 0, fmt.Errorf("invalid duration format: %s", s)
+	return time.Time{}, fmt.Errorf("invalid duration or timestamp: %s", s)
 }
