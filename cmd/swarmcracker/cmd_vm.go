@@ -224,6 +224,8 @@ Example:
 
 					vmState := &runtime.VMState{
 						ID:         task.ID,
+						PID:        runtime.FindFirecrackerPID(task.ID),
+						SocketPath: filepath.Join(cfg.Executor.SocketDir, task.ID+".sock"),
 						Image:      container.Image,
 						Command:    append(container.Command, container.Args...),
 						Status:     "running",

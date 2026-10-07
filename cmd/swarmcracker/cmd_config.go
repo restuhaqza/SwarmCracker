@@ -41,10 +41,19 @@ func newConfigListCommand() *cobra.Command {
 // newConfigValidateCommand validates configuration
 func newConfigValidateCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "validate",
+		Use:   "validate [path]",
 		Short: "Validate configuration files",
+		Long: `Validate a SwarmCracker configuration file.
+
+With no argument it validates the default config (or the file given with
+--config). Passing a path validates that file instead.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return validateConfig()
+			path := ""
+			if len(args) == 1 {
+				path = args[0]
+			}
+			return validateConfig(path)
 		},
 	}
 }
@@ -99,18 +108,25 @@ func listConfig() error {
 	return nil
 }
 
-func validateConfig() error {
-	configDir := "/etc/swarmcracker"
-	configFile := config.GetDefaultConfigPath()
-
-	// Check if directory exists
-	if _, err := os.Stat(configDir); err != nil {
-		return fmt.Errorf("configuration directory not found: %s", configDir)
+func validateConfig(argPath string) error {
+	explicit := argPath != ""
+	configFile := argPath
+	if configFile == "" {
+		if cfgFile != "" {
+			configFile = cfgFile
+			explicit = true
+		} else {
+			configFile = config.GetDefaultConfigPath()
+		}
 	}
 
-	// Check if config file exists (missing config is OK for new clusters)
+	// Check if config file exists (a missing default config is OK for a new
+	// cluster; an explicitly requested path must exist).
 	if _, statErr := os.Stat(configFile); statErr != nil {
 		if os.IsNotExist(statErr) {
+			if explicit {
+				return fmt.Errorf("config file not found: %s", configFile)
+			}
 			fmt.Printf("⚠️  Main config file not found: %s\n", configFile)
 			fmt.Println("This is normal for a new cluster — config will be created on init")
 			return nil
@@ -170,20 +186,5 @@ func runConfigMigrate() error {
 	}
 
 	fmt.Printf("✅ Config migrated to version %d\n", cfg.Version)
-	return nil
-}
-
-// runDoctorNetwork runs network diagnostics
-func runDoctorNetwork() error {
-	// Delegate to doctor command
-	fmt.Println("Running network diagnostics...")
-
-	// Run bridge check
-	checkDoctorBridgeModule()
-
-	// Run VXLAN check
-	checkDoctorBridgeIface()
-
-	fmt.Println("\nUse 'swarmcracker doctor' for full diagnostics")
 	return nil
 }

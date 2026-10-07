@@ -664,6 +664,21 @@ func (v *VMMManager) closeLogFile(taskID string) {
 	}
 }
 
+// cleanupVMSockets closes the task's console and removes its Firecracker API
+// and console socket files. It is safe to call when they are already gone.
+func (v *VMMManager) cleanupVMSockets(taskID string) {
+	v.closeConsole(taskID)
+
+	for _, path := range []string{
+		filepath.Join(v.socketDir, taskID+".sock"),
+		filepath.Join(v.socketDir, taskID+".console.sock"),
+	} {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			v.logger.Warn().Err(err).Str("socket", path).Msg("Failed to remove VM socket")
+		}
+	}
+}
+
 // Stop stops the Firecracker VM for the given task with graceful shutdown.
 func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	v.logger.Info().
@@ -717,6 +732,7 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	}
 
 	v.forgetProcess(task.ID)
+	v.cleanupVMSockets(task.ID)
 	v.logger.Info().Str("task_id", task.ID).Msg("Firecracker VM stopped")
 
 	return nil
@@ -746,6 +762,7 @@ func (v *VMMManager) ForceStop(ctx context.Context, task *types.Task) error {
 	_ = v.waitForProcess(task.ID, cmd)
 
 	v.forgetProcess(task.ID)
+	v.cleanupVMSockets(task.ID)
 	v.logger.Info().Str("task_id", task.ID).Msg("Firecracker VM force stopped")
 
 	return nil
@@ -942,6 +959,7 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 	}
 
 	v.forgetProcess(task.ID)
+	v.cleanupVMSockets(task.ID)
 
 	return nil
 }

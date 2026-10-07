@@ -116,16 +116,15 @@ func listKernels() error {
 }
 
 func verifyKernel(kernelPath string) error {
-	if _, err := os.Stat(kernelPath); err != nil {
+	info, err := os.Stat(kernelPath)
+	if err != nil {
 		return fmt.Errorf("kernel not found: %s", kernelPath)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("kernel path is a directory: %s", kernelPath)
 	}
 
 	// Check minimum size
-	info, err := os.Stat(kernelPath)
-	if err != nil {
-		return err
-	}
-
 	if info.Size() < 1*1024*1024 {
 		return fmt.Errorf("kernel too small (%d bytes) - may be corrupted", info.Size())
 	}

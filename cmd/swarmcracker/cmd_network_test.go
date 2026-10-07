@@ -110,18 +110,21 @@ func TestBridgeCommandStructure(t *testing.T) {
 	}
 }
 
-// TestVXLANPeersPlaceholder verifies the placeholder function exists
-func TestVXLANPeersPlaceholder(t *testing.T) {
-	// Test that listVXLANPeers function exists and can be called
-	// This is a placeholder implementation, so we just verify it doesn't panic
-	err := listVXLANPeers("table")
-	// The placeholder may return an error from runDoctorNetwork, that's acceptable
-	// We just verify the function exists
-	if err == nil {
-		// Function exists and succeeded
-		t.Log("listVXLANPeers placeholder function exists")
-	} else {
-		// Function exists but may have returned an error (expected for placeholder)
-		t.Logf("listVXLANPeers placeholder returned error (expected): %v", err)
+// TestParseVXLANPeers verifies the VXLAN output parser.
+func TestParseVXLANPeers(t *testing.T) {
+	out := `5: vxlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UNKNOWN mode DEFAULT group default
+    link/ether 1e:2c:3a:4b:5c:6d brd ff:ff:ff:ff:ff:ff promiscuity 0
+    vxlan id 42 local 192.168.18.25 remote 192.168.18.26 dev eth0 port 4789
+`
+	peers := parseVXLANPeers(out)
+	if len(peers) != 1 {
+		t.Fatalf("expected 1 peer, got %d", len(peers))
+	}
+	p := peers[0]
+	if p.Interface != "vxlan0" || p.VNI != "42" || p.Local != "192.168.18.25" || p.Remote != "192.168.18.26" {
+		t.Errorf("unexpected peer: %+v", p)
+	}
+	if got := parseVXLANPeers(""); len(got) != 0 {
+		t.Errorf("expected no peers for empty input, got %d", len(got))
 	}
 }

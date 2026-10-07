@@ -20,8 +20,9 @@ var (
 // newListCommand creates the list command
 func newListCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List running microVMs",
+		Use:     "list",
+		Aliases: []string{"ls"},
+		Short:   "List running microVMs",
 		Long: `List all running SwarmCracker microVMs.
 
 This command displays information about all microVMs managed by SwarmCracker,
@@ -87,8 +88,10 @@ func runList() error {
 	switch strings.ToLower(listFormat) {
 	case "json":
 		return outputJSON(filteredVMs)
-	default:
+	case "", "table":
 		return outputTable(filteredVMs)
+	default:
+		return fmt.Errorf("invalid format %q: use 'table' or 'json'", listFormat)
 	}
 }
 

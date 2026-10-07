@@ -105,15 +105,22 @@ func displayMetricsOnce(collector *metrics.Collector, stateMgr *runtime.StateMan
 
 // collectAndDisplay collects metrics and displays them
 func collectAndDisplay(collector *metrics.Collector, stateMgr *runtime.StateManager) error {
-	// Get all VMs from state manager
-	vms := stateMgr.List()
+	// Merge CLI-managed VMs with VMs discovered on the host. Service/daemon
+	// tasks live in SwarmKit, not the CLI state file, so without discovery they
+	// would be invisible here.
+	running, derr := runtime.DiscoverRunningVMs(vmSocketDir)
+	if derr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to discover running VMs: %v\n", derr)
+	}
+	vms := runtime.MergeVMs(stateMgr.List(), running)
+	enrichVMs(vms)
 
 	// Filter by task ID if specified
 	var targetVMs []*runtime.VMState
 	if metricsTaskID != "" {
-		vm, err := stateMgr.Get(metricsTaskID)
+		vm, err := findVMByRef(vms, metricsTaskID)
 		if err != nil {
-			return fmt.Errorf("VM not found: %s", metricsTaskID)
+			return err
 		}
 		targetVMs = []*runtime.VMState{vm}
 	} else {
@@ -145,6 +152,35 @@ func collectAndDisplay(collector *metrics.Collector, stateMgr *runtime.StateMana
 		return outputMetricsJSON(metricsList, targetVMs)
 	default:
 		return outputMetricsTable(metricsList, targetVMs)
+	}
+}
+
+// findVMByRef returns the VM matching ref by exact ID or unique ID prefix.
+func findVMByRef(vms []*runtime.VMState, ref string) (*runtime.VMState, error) {
+	for _, vm := range vms {
+		if vm.ID == ref {
+			return vm, nil
+		}
+	}
+
+	var matches []*runtime.VMState
+	for _, vm := range vms {
+		if strings.HasPrefix(vm.ID, ref) {
+			matches = append(matches, vm)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("VM not found: %s", ref)
+	case 1:
+		return matches[0], nil
+	default:
+		ids := make([]string, 0, len(matches))
+		for _, m := range matches {
+			ids = append(ids, m.ID)
+		}
+		return nil, fmt.Errorf("VM reference %q is ambiguous: matches %s", ref, strings.Join(ids, ", "))
 	}
 }
 
