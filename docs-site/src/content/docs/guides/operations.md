@@ -121,16 +121,21 @@ swarmctl metrics <task-id>
 | Log | Path | Rotation |
 |-----|------|----------|
 | swarmd-firecracker (daemon) | `/var/log/swarmcracker/daemon.log` | systemd journal |
-| VM console logs | `/var/log/firecracker/<vm-id>.log` | Per-VM |
+| VM console logs | `<state-dir>/<vm-id>.log` (`/var/run/swarmcracker` as root) | Truncated on VM start |
 | dnsmasq (DHCP) | `/tmp/dnsmasq.log` | Manual |
 | Firecracker stderr | captured by daemon | — |
+
+Both CLI-created VMs and daemon-managed service tasks mirror their serial
+console to `<state-dir>/<vm-id>.log`, so `swarmcracker vm logs` works for either.
+The CLI state directory is `/var/run/swarmcracker` when running as root and
+`~/.swarmcracker` otherwise.
 
 **View logs:**
 ```bash
 # Daemon logs
 sudo journalctl -u swarmcracker-worker -f
 
-# Specific VM console
+# Specific VM console (CLI-created VM or service task)
 swarmcracker vm logs --follow <vm-id>
 
 # Logs for each task in a service (find the task IDs first)
@@ -682,7 +687,7 @@ swarmcracker cluster token worker       # Get a worker join token
 # VMs
 swarmcracker vm list                    # List VMs (CLI-created + service tasks)
 swarmcracker vm status <vm-id>          # VM details (service task IDs work too)
-swarmcracker vm logs -f <vm-id>         # Follow VM logs (CLI-created VMs)
+swarmcracker vm logs -f <vm-id>         # Follow VM logs (CLI-created VMs and service tasks)
 swarmcracker vm attach <vm-id>          # Attach to the VM serial console
 swarmcracker vm stop <vm-id>            # Stop a CLI-created VM
 swarmcracker cluster status             # Cluster overview (nodes/services/tasks)
