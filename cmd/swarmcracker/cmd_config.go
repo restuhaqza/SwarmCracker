@@ -188,18 +188,3 @@ func runConfigMigrate() error {
 	fmt.Printf("✅ Config migrated to version %d\n", cfg.Version)
 	return nil
 }
-
-// runDoctorNetwork runs network diagnostics
-func runDoctorNetwork() error {
-	// Delegate to doctor command
-	fmt.Println("Running network diagnostics...")
-
-	// Run bridge check
-	checkDoctorBridgeModule()
-
-	// Run VXLAN check
-	checkDoctorBridgeIface()
-
-	fmt.Println("\nUse 'swarmcracker doctor' for full diagnostics")
-	return nil
-}
