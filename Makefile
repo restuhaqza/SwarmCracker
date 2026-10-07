@@ -90,7 +90,7 @@ clean:
 	rm -f coverage.out coverage.html
 	rm -f *.out *.test
 	rm -f swarmcracker swarmcracker-agent swarmctl swarmd-firecracker
-	rm -rf site/
+	rm -rf docs-site/dist docs-site/.astro
 
 # Run examples
 examples: all

@@ -1,9 +1,9 @@
 # Production Multi-Node Deployment
 
 > ⚠️ **Legacy example.** This manual, multi-node walkthrough predates the supported
-> deployment path. For current deployments use [`swarmcracker setup`](../../docs/user/getting-started/README.md)
+> deployment path. For current deployments use [`swarmcracker setup`](../../docs-site/src/content/docs/getting-started/index.md)
 > plus `swarmcracker cluster init` / `swarmcracker cluster join` (with `--manager` for
-> additional managers), and see the [CLI reference](../../docs/user/reference/cli.md)
+> additional managers), and see the [CLI reference](../../docs-site/src/content/docs/reference/cli.md)
 > and [Ansible deployment](../../infrastructure/ansible/). Retained for reference only.
 
 Production-ready SwarmKit cluster with 3 managers (HA) and multiple workers. This setup is designed for high availability, security, and scalability.
@@ -550,7 +550,7 @@ curl http://worker-1:9090/metrics
 
 ## Troubleshooting
 
-See the [SwarmKit Guide](../../docs/user/guides/swarmkit.md) for detailed troubleshooting steps.
+See the [SwarmKit Guide](../../docs-site/src/content/docs/guides/swarmkit.md) for detailed troubleshooting steps.
 
 ### Quick Diagnostics
 
@@ -599,6 +599,6 @@ bridge link
 ## See Also
 
 - [Local Development Guide](../local-dev/README.md)
-- [SwarmKit Guide](../../docs/user/guides/swarmkit.md)
-- [Networking Guide](../../docs/user/guides/networking.md)
-- [Advanced Guide](../../docs/user/guides/advanced.md) — Init systems, multi-arch
+- [SwarmKit Guide](../../docs-site/src/content/docs/guides/swarmkit.md)
+- [Networking Guide](../../docs-site/src/content/docs/guides/networking.md)
+- [Advanced Guide](../../docs-site/src/content/docs/guides/advanced.md) — Init systems, multi-arch

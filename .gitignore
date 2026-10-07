@@ -141,8 +141,17 @@ venv/
 # go.sum (commented out - SwarmCracker commits this)
 /swarmd-firecracker
 coverage.out
-site/
 *.lock
 
 # Local design drafts (untracked by intent)
 docs/design/
+
+# Website
+website/node_modules/
+website/dist/
+website/.astro/
+website/.wrangler/
+
+# Wrangler / Cloudflare local caches (may contain account metadata)
+.wrangler/
+.cloudflare/

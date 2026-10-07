@@ -1,0 +1,115 @@
+---
+import { terminalLines } from '../data/site';
+---
+
+<style>
+  .log {
+    border: 2px solid var(--yard-asphalt);
+    background: var(--yard-asphalt);
+    color: var(--yard-paper);
+    overflow: hidden;
+  }
+
+  .log__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.5rem 0.9rem;
+    background: var(--yard-hazard);
+    color: var(--yard-asphalt);
+    border-bottom: 2px solid var(--yard-asphalt);
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    font-size: 1rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .log__head span:last-child {
+    font-family: var(--yard-font-mono);
+    font-weight: 400;
+    font-size: 0.6875rem;
+    letter-spacing: 0.1em;
+  }
+
+  .log__body {
+    margin: 0;
+    padding: 1rem 1.1rem 1.2rem;
+    overflow-x: auto;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  .log__note {
+    margin: 0;
+    padding: 0.6rem 1.1rem 0.9rem;
+    border-top: var(--yard-rule-w) solid rgba(232, 230, 224, 0.18);
+    font-family: var(--yard-font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.06em;
+    color: #9aa09a;
+  }
+
+  .log__body code {
+    font-family: var(--yard-font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.7;
+    color: #c9ccc7;
+    display: block;
+  }
+
+  .log__line {
+    display: block;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    opacity: 0;
+    animation: load 0.35s ease forwards;
+    animation-delay: calc(var(--i) * 0.12s);
+  }
+
+  .log__line--cmd {
+    color: var(--yard-hazard);
+  }
+
+  .log__line--done {
+    color: var(--yard-paper);
+    font-weight: 700;
+  }
+
+  @keyframes load {
+    from {
+      opacity: 0;
+      transform: translateX(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .log__line {
+      opacity: 1;
+      animation: none;
+    }
+  }
+</style>
+
+<figure class="log">
+  <figcaption class="log__head">
+    <span>Placement log</span>
+    <span>swarmkit / executor</span>
+  </figcaption>
+  <pre class="log__body"><code>{terminalLines.map((line, i) => (
+    <span
+      class:list={[
+        'log__line',
+        line.startsWith('$') && 'log__line--cmd',
+        line.includes('converged') && 'log__line--done',
+      ]}
+      style={`--i: ${i}`}
+    >{line}</span>
+  ))}</code></pre>
+  <p class="log__note">Illustrative output — a sample service, not a live host.</p>
+</figure>
