@@ -35,10 +35,10 @@ export const REQUIRED_LINKS = [
   'https://docs.swarmcracker.com',
   '#quickstart',
   '/swarmcracker-architecture.svg',
-  'https://docs.swarmcracker.com/user/getting-started/',
-  'https://docs.swarmcracker.com/user/reference/cli/',
-  'https://docs.swarmcracker.com/user/guides/networking/',
-  'https://docs.swarmcracker.com/user/guides/security/',
+  'https://docs.swarmcracker.com/getting-started/',
+  'https://docs.swarmcracker.com/reference/cli/',
+  'https://docs.swarmcracker.com/guides/networking/',
+  'https://docs.swarmcracker.com/guides/security/',
 ];
 
 export function runChecks(html, css) {
