@@ -38,7 +38,7 @@ Cluster lifecycle management.
 | `leave` | Leave the cluster |
 | `deinit` | Deinitialize the local manager |
 | `reset` | Reset the node completely |
-| `status <vm-id>` | Show detailed VM status |
+| `status [vm-id]` | Cluster overview (no argument), or a VM's status when a VM id is given |
 | `health` | Run cluster health checks |
 | `token [worker\|manager]` | Display join tokens (`worker`, `manager`, or both) |
 
@@ -102,6 +102,10 @@ Node management.
 `node ls` flags: `--filter`, `--format` (`table`, `json`), `--quiet` / `-q`.
 `node inspect` flags: `--format`, `--pretty`.
 
+`node`, `service`, and `task` references accept an exact ID, a unique ID prefix
+(for example the 12-character ID shown by the `ls` commands), or a name
+(`service`/`node` only). Ambiguous prefixes are rejected with the candidates listed.
+
 #### `swarmcracker service`
 
 Service (replicated microVM) management.
@@ -113,7 +117,7 @@ Service (replicated microVM) management.
 | `inspect <service-id>` | Inspect a service |
 | `ps <service>` | List the tasks of a service |
 | `update <service>` | Update a service |
-| `scale <service> <replicas>` | Scale a service |
+| `scale <service> <replicas>` | Scale a service (`0` stops all its tasks) |
 | `rm <service>` | Remove a service |
 
 **`service create` flags:**
@@ -138,6 +142,10 @@ Service (replicated microVM) management.
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
 **`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--force` / `-f`.
+
+`--replicas` on `service update` applies only when the flag is present: passing
+`--replicas 0` scales to zero, while omitting it leaves the replica count
+unchanged. `service scale <service> 0` always scales to zero.
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc` for `ps`.
 
 #### `swarmcracker task`
@@ -158,11 +166,11 @@ Direct Firecracker microVM management.
 | Subcommand | Description |
 |------------|-------------|
 | `create [image]` | Create a microVM from an OCI image or a golden image |
-| `list` | List microVMs (CLI-created and daemon/service-managed) |
+| `list` (alias `ls`) | List microVMs (CLI-created and daemon/service-managed) |
 | `attach <vm>` | Attach to a running microVM's serial console |
 | `logs <vm-id>` | View VM logs |
 | `stop <vm-id>` | Stop a microVM |
-| `snapshot` | Manage VM snapshots (`create`, `restore`, `list`, `delete`, `cleanup`) |
+| `snapshot` | Manage VM snapshots (`create`, `restore`, `list`, `delete`, `cleanup`). `restore` boots a VM from a snapshot and registers it (manage it with `vm stop` / `vm list`) |
 | `status <vm-id>` | Show detailed VM status |
 
 **`vm create` flags:**
@@ -178,7 +186,7 @@ Direct Firecracker microVM management.
 | `--golden` | — | — | Boot a prebuilt golden image (`name` or `name@version`) instead of an OCI image |
 | `--golden-dir` | — | `<rootfs-dir>/golden` | Directory containing golden image artifacts |
 
-`vm list` flags: `--all`, `--format`, `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since`, `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**.
+`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since`, `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**.
 
 `vm list` and `vm status` also cover microVMs started by the daemon for services (discovered from `<socket-dir>/*.sock`; stale sockets are filtered with a liveness probe). `vm stop` deliberately refuses to kill a service VM — use `swarmcracker service scale <service> 0` or `swarmcracker service rm <service>` so SwarmKit updates the desired state instead of recreating the task.
 
@@ -201,12 +209,14 @@ Golden images can be booted with `swarmcracker vm create --golden` or `swarmcrac
 
 #### `swarmcracker network`
 
-Network management.
+Read-only network introspection.
 
 | Subcommand | Description |
 |------------|-------------|
-| `bridge` | Bridge network (`status`) |
-| `vxlan` | VXLAN overlay (`ls`, `status`) |
+| `bridge status` | Bridge state, addresses, and attached interfaces |
+| `vxlan ls` / `vxlan status` | VXLAN interfaces and peers |
+
+`network bridge status` flags: `--bridge` (default `swarm-br0`), `--format` (`table`, `json`). `network vxlan ls` flags: `--format` (`table`, `json`).
 
 #### `swarmcracker volume`
 
@@ -243,7 +253,7 @@ Configuration management.
 | Subcommand | Description |
 |------------|-------------|
 | `ls` | List configuration files |
-| `validate` | Validate the configuration file |
+| `validate [path]` | Validate a config file (defaults to `--config` / the default path) |
 | `migrate` | Migrate configuration to the latest schema version |
 
 #### `swarmcracker setup`
@@ -269,6 +279,18 @@ System and cluster diagnostics.
 swarmcracker doctor            # human-readable report
 swarmcracker doctor --json     # machine-readable
 swarmcracker doctor --verbose  # detailed output
+```
+
+#### `swarmcracker metrics`
+
+Show CPU, memory, and network usage for running microVMs. Includes VMs started
+by the daemon for services, not just CLI-created ones.
+
+```bash
+swarmcracker metrics                 # table
+swarmcracker metrics --format json
+swarmcracker metrics --task <vm-id|prefix>
+swarmcracker metrics --refresh 5     # watch mode
 ```
 
 ---
@@ -335,20 +357,18 @@ removed in a future release:
 | `swarmcracker leave` | `swarmcracker cluster leave` |
 | `swarmcracker deinit` | `swarmcracker cluster deinit` |
 | `swarmcracker reset` | `swarmcracker cluster reset` |
-| `swarmcracker status` | `swarmcracker cluster status` |
+| `swarmcracker status` | `swarmcracker vm status` |
 | `swarmcracker run` | `swarmcracker vm create` |
 | `swarmcracker list` | `swarmcracker vm list` |
 | `swarmcracker logs` | `swarmcracker vm logs` |
 | `swarmcracker stop` | `swarmcracker vm stop` |
 | `swarmcracker snapshot` | `swarmcracker vm snapshot` |
-| `swarmcracker metrics` | — (run `swarmcracker metrics`) |
 | `swarmcracker deploy` | `swarmcracker service create` (stub — see below) |
 | `swarmcracker validate` | `swarmcracker config validate` (stub — see below) |
 
 `swarmcracker deploy` and `swarmcracker validate` are stubs: they print a
 deprecation warning and then fail, so use the replacement commands instead.
-`swarmcracker metrics` still collects VM metrics, but there is no
-`cluster status --metrics` command; run `swarmcracker metrics` directly.
+`swarmcracker metrics` is a normal command and is not deprecated.
 
 ---
 

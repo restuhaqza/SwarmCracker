@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/console"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -60,10 +62,15 @@ Press Ctrl-P Ctrl-Q to detach; the VM keeps running.`,
 // attachToVM connects to a VM console and proxies bytes between the local
 // terminal and the guest until the console closes or the user detaches.
 func attachToVM(ctx context.Context, socketDir, ref string, in, out *os.File) error {
+	taskID, err := resolveLiveVMTaskID(socketDir, ref)
+	if err != nil {
+		return err
+	}
+
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	conn, taskID, err := console.Dial(dialCtx, socketDir, ref)
+	conn, _, err := console.Dial(dialCtx, socketDir, taskID)
 	if err != nil {
 		return err
 	}
@@ -102,6 +109,47 @@ func attachToVM(ctx context.Context, socketDir, ref string, in, out *os.File) er
 		return nil
 	}
 	return err
+}
+
+// resolveLiveVMTaskID resolves a VM reference — an exact task ID or a unique
+// prefix — to the task ID of a VM whose Firecracker API socket is currently
+// alive. Stale sockets from stopped VMs are ignored.
+func resolveLiveVMTaskID(socketDir, ref string) (string, error) {
+	if strings.TrimSpace(ref) == "" {
+		return "", fmt.Errorf("empty VM reference")
+	}
+
+	running, err := runtime.DiscoverRunningVMs(socketDir)
+	if err != nil {
+		return "", err
+	}
+	if len(running) == 0 {
+		return "", fmt.Errorf("no running VMs found under %s", socketDir)
+	}
+
+	ids := make([]string, 0, len(running))
+	for _, vm := range running {
+		if vm.ID == ref {
+			return vm.ID, nil
+		}
+		ids = append(ids, vm.ID)
+	}
+
+	var matches []string
+	for _, id := range ids {
+		if strings.HasPrefix(id, ref) {
+			matches = append(matches, id)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("%q does not match any running VM (available: %s)", ref, strings.Join(ids, ", "))
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("%q matches multiple running VMs: %s", ref, strings.Join(matches, ", "))
+	}
 }
 
 // pumpStdin forwards local input to the guest, intercepting the Ctrl-P Ctrl-Q

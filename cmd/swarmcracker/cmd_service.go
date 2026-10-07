@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -230,7 +231,7 @@ Supports updating replicas, resource limits, image, and environment variables.`,
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return updateService(args[0], replicas, cpuLimit, memoryLimit, image, env, envRemove, force)
+			return updateService(args[0], replicas, cmd.Flags().Changed("replicas"), cpuLimit, memoryLimit, image, env, envRemove, force)
 		},
 	}
 
@@ -263,6 +264,10 @@ This is a convenience command that updates the replica count.`,
 			return scaleService(args[0], args[1])
 		},
 	}
+
+	// Treat "-1" as a positional argument rather than an unknown flag so the
+	// user gets an "invalid replica count" error instead of a flag-parse error.
+	cmd.Flags().SetInterspersed(false)
 
 	return cmd
 }
@@ -504,23 +509,15 @@ func inspectService(serviceID, format string, pretty bool) error {
 	}
 	defer conn.Close()
 
-	// Try to get by ID or name
+	// Resolve by full ID, unique ID prefix, or name.
+	serviceID, err = resolveServiceRef(ctx, client, serviceID)
+	if err != nil {
+		return err
+	}
+
 	resp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: serviceID})
 	if err != nil {
-		// Try listing to find by name
-		listResp, listErr := client.ListServices(ctx, &api.ListServicesRequest{})
-		if listErr != nil {
-			return fmt.Errorf("failed to get service: %w", err)
-		}
-		for _, svc := range listResp.Services {
-			if svc.Spec.Annotations.Name == serviceID {
-				resp = &api.GetServiceResponse{Service: svc}
-				break
-			}
-		}
-		if resp == nil {
-			return fmt.Errorf("service %s not found", serviceID)
-		}
+		return fmt.Errorf("failed to get service: %w", err)
 	}
 
 	if format == "json" {
@@ -587,22 +584,10 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	}
 	defer conn.Close()
 
-	// First, resolve service ID (could be name)
-	actualServiceID := serviceID
-	svcResp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: serviceID})
+	// Resolve the reference (full ID, unique ID prefix, or name) to a full ID.
+	actualServiceID, err := resolveServiceRef(ctx, client, serviceID)
 	if err != nil {
-		// Try to find by name
-		listResp, listErr := client.ListServices(ctx, &api.ListServicesRequest{})
-		if listErr == nil {
-			for _, svc := range listResp.Services {
-				if svc.Spec.Annotations.Name == serviceID {
-					actualServiceID = svc.ID
-					break
-				}
-			}
-		}
-	} else {
-		actualServiceID = svcResp.Service.ID
+		return err
 	}
 
 	// List tasks
@@ -746,7 +731,7 @@ func createService(name, image string, replicas uint64, cpu float64, memory, dis
 	return nil
 }
 
-func updateService(serviceID string, replicas uint64, cpuLimit float64, memoryLimit string, image string, env, envRemove []string, force bool) error {
+func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit float64, memoryLimit string, image string, env, envRemove []string, force bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -756,27 +741,16 @@ func updateService(serviceID string, replicas uint64, cpuLimit float64, memoryLi
 	}
 	defer conn.Close()
 
-	// Get existing service
-	var svc *api.Service
+	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
+	serviceID, err = resolveServiceRef(ctx, client, serviceID)
+	if err != nil {
+		return err
+	}
 	getResp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: serviceID})
 	if err != nil {
-		// Try to find by name
-		listResp, listErr := client.ListServices(ctx, &api.ListServicesRequest{})
-		if listErr != nil {
-			return fmt.Errorf("failed to get service: %w", err)
-		}
-		for _, s := range listResp.Services {
-			if s.Spec.Annotations.Name == serviceID {
-				svc = s
-				break
-			}
-		}
-		if svc == nil {
-			return fmt.Errorf("service %s not found", serviceID)
-		}
-	} else {
-		svc = getResp.Service
+		return fmt.Errorf("failed to get service: %w", err)
 	}
+	svc := getResp.Service
 
 	// Parse memory
 	memoryBytes, err := parseMemory(memoryLimit)
@@ -787,8 +761,10 @@ func updateService(serviceID string, replicas uint64, cpuLimit float64, memoryLi
 	// Update spec
 	spec := svc.Spec.Copy()
 
-	// Update replicas if specified
-	if replicas > 0 {
+	// Update replicas when the caller explicitly provided a count. This keeps
+	// `service update` without --replicas a no-op while allowing an explicit
+	// `--replicas 0` (scale to zero).
+	if replicasSet {
 		if r := spec.GetReplicated(); r != nil {
 			r.Replicas = replicas
 		} else {
@@ -885,12 +861,13 @@ func updateService(serviceID string, replicas uint64, cpuLimit float64, memoryLi
 }
 
 func scaleService(serviceID, replicasStr string) error {
-	var replicas uint64
-	if _, err := fmt.Sscanf(replicasStr, "%d", &replicas); err != nil {
-		return fmt.Errorf("invalid replica count: %s", replicasStr)
+	replicas, err := strconv.ParseUint(strings.TrimSpace(replicasStr), 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid replica count %q: must be a non-negative integer", replicasStr)
 	}
 
-	return updateService(serviceID, replicas, 0, "", "", nil, nil, false)
+	// Scale always applies the value, including 0 (scale to zero).
+	return updateService(serviceID, replicas, true, 0, "", "", nil, nil, false)
 }
 
 func removeService(serviceID string, force bool) error {
@@ -903,27 +880,16 @@ func removeService(serviceID string, force bool) error {
 	}
 	defer conn.Close()
 
-	// Resolve service ID
-	var actualID = serviceID
-	getResp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: serviceID})
+	// Resolve the reference (full ID, unique ID prefix, or name).
+	actualID, err := resolveServiceRef(ctx, client, serviceID)
 	if err != nil {
-		// Try to find by name
-		listResp, listErr := client.ListServices(ctx, &api.ListServicesRequest{})
-		if listErr != nil {
-			return fmt.Errorf("failed to get service: %w", err)
-		}
-		for _, svc := range listResp.Services {
-			if svc.Spec.Annotations.Name == serviceID {
-				actualID = svc.ID
-				break
-			}
-		}
-		if actualID == serviceID {
-			return fmt.Errorf("service %s not found", serviceID)
-		}
-	} else {
-		actualID = getResp.Service.ID
-		serviceID = getResp.Service.Spec.Annotations.Name
+		return err
+	}
+
+	// Best-effort friendly name for the success message.
+	displayName := serviceID
+	if getResp, gerr := client.GetService(ctx, &api.GetServiceRequest{ServiceID: actualID}); gerr == nil {
+		displayName = getResp.Service.Spec.Annotations.Name
 	}
 
 	// Remove service
@@ -934,7 +900,7 @@ func removeService(serviceID string, force bool) error {
 		return fmt.Errorf("failed to remove service: %w", err)
 	}
 
-	fmt.Printf("Service %s removed\n", serviceID)
+	fmt.Printf("Service %s removed\n", displayName)
 	return nil
 }
 

@@ -534,7 +534,8 @@ The config file is loaded from (in order of priority):
 # Validate config without starting
 swarmcracker config validate
 
-# Validate a specific config file
+# Validate a specific config file (positional or --config)
+swarmcracker config validate /path/to/config.yaml
 swarmcracker config validate --config /path/to/config.yaml
 
 # Show effective configuration (defaults applied)
