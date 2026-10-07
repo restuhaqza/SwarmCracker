@@ -28,17 +28,33 @@ The site is deployed via [Cloudflare Pages](https://pages.cloudflare.com/). To s
 
 1. **Connect the repository** — In the Cloudflare dashboard, go to **Workers & Pages → Create → Pages → Connect to Git** and select the SwarmCracker repository.
 2. **Configure the build:**
-   - **Root directory:** `website`
+   - **Root directory:** `website` (required — this is a monorepo; without it the build runs at the repo root and finds no `package.json`).
    - **Build command:** `npm run build`
-   - **Output directory:** `dist`
-   - **Node version:** 20+ (set via `NODE_VERSION` environment variable in the Pages project settings)
-3. **Add the custom domain:**
+   - **Output directory:** `dist` (resolves to `website/dist`)
+   - **Node version:** 22 (pinned in `website/.nvmrc`; also set the `NODE_VERSION` environment variable to `22` in the Pages project settings for both Production and Preview).
+3. **Optional — limit rebuilds:** Under **Pages → Settings → Builds & deployments → Build watch paths**, set the include path to `website/*` so Go-only changes to `main` do not trigger a site rebuild.
+4. **Add the custom domain:**
    - In **Pages → Custom domains**, add `swarmcracker.com`.
    - Cloudflare will prompt you to add the required DNS records if they don't already exist.
-4. **Set up the `www` redirect:**
+5. **Set up the `www` redirect:**
    - Recommended: create a **Redirect Rule** in the Cloudflare dashboard (**Rules → Redirect Rules**) that 301-redirects `www.swarmcracker.com` to `https://swarmcracker.com` (e.g. `concat("https://swarmcracker.com", http.request.uri.path)` with *Preserve query string* enabled).
    - Alternatively, add `www.swarmcracker.com` as a second **custom domain** on the Pages project (**Pages → Custom domains → Set up a custom domain**); Cloudflare Pages 301-redirects secondary custom domains to the primary domain automatically.
    - Note: a proxied `CNAME` for `www` pointing at the apex only mirrors the apex content (HTTP 200) — it does **not** redirect — so it is not sufficient on its own for the `www` → apex redirect.
+
+### Deploy from the CLI
+
+The build output is described in `website/wrangler.jsonc`, so the site can be
+built and deployed with [Wrangler](https://developers.cloudflare.com/workers/wrangler/):
+
+```bash
+cd website
+npx wrangler login            # once, if not already authenticated
+npm run deploy                # astro build && wrangler pages deploy dist
+```
+
+> Note: a Pages project created by Direct Upload **cannot** later be switched to
+> Git integration. Prefer creating the project via **Connect to Git** (step 1) and
+> use the CLI only as a fallback or for ad-hoc releases.
 
 ## Manual Verification Steps
 
