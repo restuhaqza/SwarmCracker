@@ -42,7 +42,7 @@ That's it. You're ready to hack.
 | **Bug report** | [Open an issue](.github/ISSUE_TEMPLATE/bug_report.md) with reproduction steps |
 | **Feature request** | [Open an issue](.github/ISSUE_TEMPLATE/feature_request.md) describing the use case |
 | **Code** | Fork → branch → PR (see [Development Workflow](#development-workflow)) |
-| **Documentation** | Fork → fix → PR. See [docs/CONVENTIONS.md](docs/CONVENTIONS.md) for file naming |
+| **Documentation** | Fork → fix → PR. See the [contributing guidelines](docs-site/src/content/docs/contributing/guidelines.md) for conventions |
 | **Question** | Start a [GitHub Discussion](https://github.com/restuhaqza/SwarmCracker/discussions) |
 
 ### Before You Start
@@ -59,7 +59,7 @@ That's it. You're ready to hack.
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| Go | 1.25+ | Check with `go version` |
+| Go | 1.26+ | Check with `go version` |
 | make | any | Build automation |
 | git | any | |
 | Docker / Podman | any | For integration tests |
@@ -132,12 +132,10 @@ swarmcracker/
 │   ├── mocks/               #   Mock implementations
 │   ├── integration/         #   Integration tests (tag: integration)
 │   └── e2e/                 #   End-to-end tests (tag: e2e)
-├── infrastructure/          # Ansible playbooks, Terraform
-├── docs/                    # All documentation
-│   ├── guides/              #   How-to guides
-│   ├── architecture/        #   Design docs
-│   ├── development/         #   Contributor docs
-│   └── getting-started/     #   Setup guides
+├── infrastructure/          # Ansible playbooks, observability configs
+├── docs/                    # Internal material (reports, design, agent plans)
+├── docs-site/               # Published documentation (Astro Starlight)
+│   └── src/content/docs/    #   Guides, architecture, reference, contributing
 └── examples/                # Example configurations
 ```
 
@@ -289,9 +287,10 @@ log.Info().Msgf("Started VM %s with %d CPUs", vmID, cpus)
 
 | Package | Target |
 |---------|--------|
+| Overall `./pkg/...` | 85%+ |
 | Core (executor, translator, lifecycle) | 85%+ |
-| Network, storage, image | 75%+ |
-| Config, types | 90%+ |
+| Network, storage, image | 85%+ |
+| Config, types | 85%+ |
 
 ### Unit Tests
 
