@@ -150,3 +150,8 @@ docs/design/
 website/node_modules/
 website/dist/
 website/.astro/
+website/.wrangler/
+
+# Wrangler / Cloudflare local caches (may contain account metadata)
+.wrangler/
+.cloudflare/
