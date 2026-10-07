@@ -56,5 +56,10 @@ automatically.
 
 `.github/workflows/docs.yml` builds this directory and deploys `dist/` to the
 Cloudflare Pages project `swarmcracker-docs` on every push to `main` that
-touches `docs-site/`. Requires the `CLOUDFLARE_API_TOKEN` repository secret with
-"Cloudflare Pages: Edit".
+touches `docs-site/`.
+
+Required repository configuration (Settings → Secrets and variables → Actions):
+
+- Secret `CLOUDFLARE_API_TOKEN` with the "Cloudflare Pages: Edit" permission.
+- Variable `CLOUDFLARE_ACCOUNT_ID` — the Cloudflare account ID that owns the
+  `swarmcracker-docs` Pages project.
