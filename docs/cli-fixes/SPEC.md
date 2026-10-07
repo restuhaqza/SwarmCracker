@@ -1,7 +1,6 @@
 # Spec: SwarmCracker CLI Fixes (Audit 2026-10-07)
 
-Status: **Draft — awaiting approval**
-Branch: `fix/cli-audit-fixes` (off `origin/main` @ `81ff21c`)
+Status: **Approved — implemented** (PR #32, branch `fix/cli-audit-fixes` off `origin/main` @ `81ff21c`)
 Source findings: Obsidian note *SwarmCracker CLI Audit 2026-10-07* (3 High, 5 Medium, 13 Low)
 
 ---
