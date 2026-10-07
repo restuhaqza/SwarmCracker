@@ -432,38 +432,20 @@ sudo swarmcracker doctor
 
 ## Configuration File
 
-See the [Configuration Guide](/guides/configuration/) for the full
-`config.yaml` reference. Default location: `/etc/swarmcracker/config.yaml`.
+Default location: `/etc/swarmcracker/config.yaml` (override with `--config` /
+`-c` or the `SWARMCRACKER_CONFIG` environment variable).
 
 ```yaml
 version: 1
-
 executor:
-  name: firecracker
   kernel_path: /usr/share/firecracker/vmlinux
   rootfs_dir: /var/lib/firecracker/rootfs
-  socket_dir: /var/run/firecracker
-  default_vcpus: 1
-  default_memory_mb: 512
-  enable_jailer: false
-  init_system: tini      # none | tini | dumb-init
-
 network:
   bridge_name: swarm-br0
-  subnet: 192.168.127.0/24
-  bridge_ip: 192.168.127.1/24
-  ip_mode: static
-  nat_enabled: true
-
-images:
-  cache_dir: /var/cache/swarmcracker
-  max_cache_size_mb: 1024
-
-logging:
-  level: info
-  format: text
-  output: stdout
 ```
+
+The [Configuration Guide](/guides/configuration/) is the canonical reference
+for every key, its default, and whether it is implemented.
 
 ---
 

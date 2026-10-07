@@ -128,4 +128,3 @@ pkg/
 
 - [Getting Started](../getting-started/) — Set up a cluster
 - [Networking](/guides/networking/) — VXLAN details
-- [SwarmKit Integration](swarmkit.md) — How tasks flow

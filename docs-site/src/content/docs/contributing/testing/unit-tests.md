@@ -32,6 +32,7 @@ description: "Comprehensive testing strategy for all packages, prioritized by ri
 | metrics | 84.4% | 🟡 Fair |
 | lifecycle | 82.3% | 🟡 Fair |
 | discovery | 80.6% | 🟡 Fair |
+| golden | — | ⚪ Not in measured set |
 
 **Overall target: 85%** — measured **87.6%** on a development host with Firecracker/jailer installed. On the CI runner (no Firecracker/jailer, Go 1.26) the same tree measures lower, because tests that require those binaries are skipped.
 
@@ -63,7 +64,9 @@ CI enforces a **no-regression gate** (`.github/workflows/ci.yml`): a pull reques
 
 **Why critical:** Manages Firecracker VM processes. Start/stop/configure are the most impactful operations. If VMMManager fails, nothing runs.
 
-**Test file:** `pkg/swarmkit/vmm_test.go` — needs expanded coverage
+**Test files:** `pkg/swarmkit/vmm_*_test.go` (e.g. `vmm_api_test.go`,
+`vmm_jailer_test.go`, `vmm_unit_test.go`) — there is no single `vmm_test.go`.
+Extend the existing files rather than creating one.
 
 ```
 Test Cases:
@@ -117,7 +120,7 @@ Test Cases:
 ```
 
 **Mocking strategy:**
-- Mock `os/exec.Command` via `CommandExecutor` interface (already exists in `pkg/network/mocks.go`)
+- Mock `os/exec.Command` via `CommandExecutor` interface (already exists in `pkg/network/mocks_test.go`)
 - Mock HTTP calls to Firecracker API socket
 - Use `testing/fstest` for filesystem operations
 - Use temp directories for socket paths
@@ -203,11 +206,11 @@ Test Cases:
 
 ## Phase 2: High Priority (P1) — Networking & Storage
 
-### 2.1 `pkg/network/vxlan` — VXLAN Overlay (522 LOC, 2 exported funcs, 0 tests)
+### 2.1 `pkg/network/vxlan` — VXLAN Overlay
 
 **Why critical:** Cross-node VM communication depends on VXLAN. Broken overlay = isolated VMs.
 
-**Test file:** `pkg/network/vxlan_test.go` (needs creation)
+**Test file:** `pkg/network/vxlan_test.go` — exists; expand and refine
 
 ```
 Test Cases:
@@ -252,9 +255,9 @@ Test Cases:
 
 ---
 
-### 2.2 `pkg/storage/volume_block` — Block Storage Driver (410 LOC, 1 exported func, 0 tests)
+### 2.2 `pkg/storage/volume_block` — Block Storage Driver
 
-**Test file:** `pkg/storage/volume_block_test.go` (needs creation)
+**Test file:** `pkg/storage/volume_block_test.go` — exists; expand and refine
 
 ```
 Test Cases:
@@ -303,9 +306,9 @@ Test Cases:
 
 ---
 
-### 2.3 `pkg/storage/credential_store` — Secrets Manager (227 LOC, 1 exported func, 0 tests)
+### 2.3 `pkg/storage/credential_store` — Secrets Manager
 
-**Test file:** `pkg/storage/credential_store_test.go` (needs creation)
+**Test file:** `pkg/storage/credential_store_test.go` — exists; expand and refine
 
 ```
 Test Cases:
@@ -430,13 +433,14 @@ Additional Test Cases:
 
 ### 4.5 Fuzz Targets (new)
 
-```
-Create fuzz targets in test/fuzz/:
+There is no `test/fuzz/` directory. Go fuzz targets live alongside the package
+under test as `func FuzzXxx(f *testing.F)` in `*_test.go` files:
 
-├── config_fuzz.go        — Fuzz YAML config parsing
-├── translator_fuzz.go    — Fuzz task → VM config translation
-├── snapshot_meta_fuzz.go — Fuzz snapshot metadata JSON
-└── vxlan_config_fuzz.go  — Fuzz VXLAN configuration
+```
+├── pkg/config/config_fuzz_test.go        — Fuzz YAML config parsing
+├── pkg/translator/translator_fuzz_test.go — Fuzz task → VM config translation
+├── pkg/snapshot/snapshot_fuzz_test.go    — Fuzz snapshot metadata JSON
+└── pkg/network/vxlan_fuzz_test.go        — Fuzz VXLAN configuration
 ```
 
 ---
@@ -446,26 +450,26 @@ Create fuzz targets in test/fuzz/:
 ### Sprint 1 (P0 — ~3-4 days)
 | Day | Task | Files |
 |-----|------|-------|
-| 1 | `network/vxlan_test.go` — StaticPeerStore | New file |
-| 2 | `network/vxlan_test.go` — VXLANManager (mocked) | New tests |
-| 3 | `swarmkit/vmm_test.go` — expand coverage to 85%+ | Extend tests |
-| 4 | `swarmkit/translator_test.go` — maintain 97%+ coverage | Extend tests |
+| 1 | `network/vxlan_test.go` — StaticPeerStore | Extend existing |
+| 2 | `network/vxlan_test.go` — VXLANManager (mocked) | Extend existing |
+| 3 | `swarmkit/vmm_*_test.go` — expand coverage to 85%+ | Extend existing |
+| 4 | `swarmkit/translator_test.go` — maintain 97%+ coverage | Extend existing |
 
 ### Sprint 2 (P1 — ~3-4 days)
 | Day | Task | Files |
 |-----|------|-------|
-| 1 | `network/vxlan_test.go` — StaticPeerStore | New file |
-| 2 | `network/vxlan_test.go` — VXLANManager (mocked) | New tests |
-| 3 | `storage/volume_block_test.go` — CRUD operations | New file |
-| 3 | `storage/credential_store_test.go` — secrets CRUD | New file |
-| 4 | `storage/volume_block_test.go` — attach/detach/persistence | New tests |
+| 1 | `network/vxlan_test.go` — StaticPeerStore | Extend existing |
+| 2 | `network/vxlan_test.go` — VXLANManager (mocked) | Extend existing |
+| 3 | `storage/volume_block_test.go` — CRUD operations | Extend existing |
+| 3 | `storage/credential_store_test.go` — secrets CRUD | Extend existing |
+| 4 | `storage/volume_block_test.go` — attach/detach/persistence | Extend existing |
 
 ### Sprint 3 (P2 + P3 — ~2-3 days)
 | Day | Task | Files |
 |-----|------|-------|
 | 1 | `storage/driver_test.go` + expand meta/quota tests | New + extend |
 | 2 | Expand config, jailer, network/manager tests | Extend |
-| 3 | Expand snapshot tests + create fuzz targets | Extend + new |
+| 3 | Expand snapshot tests + add fuzz targets | Extend + new |
 
 ---
 

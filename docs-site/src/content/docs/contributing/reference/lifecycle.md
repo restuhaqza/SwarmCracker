@@ -16,7 +16,7 @@ The `pkg/lifecycle` package manages Firecracker VM lifecycle operations: start, 
 ```
 pkg/lifecycle/
 ├── vmm.go              # VMMManager and VMInstance
-├── mocks.go            # Test mocks
+├── mocks_test.go       # Test mocks
 ```
 
 ---
@@ -54,11 +54,11 @@ type ManagerConfig struct {
 ### Constructor
 
 ```go
-func NewVMMManager(config interface{}) VMMManager
+func NewVMMManager(config interface{}) types.VMMManager
 ```
 
 **Parameters:**
-- `config` — `*ManagerConfig` or any interface (defaults applied)
+- `config` — `*ManagerConfig` (a non-`*ManagerConfig` value falls back to a default `ManagerConfig` with `SocketDir: "/var/run/firecracker"`)
 
 **Defaults Applied:**
 
@@ -170,7 +170,11 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
    ```go
    client := newUnixClient(socketPath, 5*time.Second)
    actions := ActionsType{ActionType: "InstanceStart"}
-   client.Put("/actions", actions)
+   body, _ := json.Marshal(actions)
+   req, _ := http.NewRequestWithContext(ctx, "PUT",
+       "http://localhost/actions", bytes.NewReader(body))
+   req.Header.Set("Content-Type", "application/json")
+   resp, err := client.Do(req)
    ```
 
 6. **Track instance**
@@ -194,17 +198,19 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 ### Stop
 
 ```go
-func (vm *VMMManager) Stop(ctx context.Context, taskID string) error
+func (vm *VMMManager) Stop(ctx context.Context, task *types.Task) error
 ```
 
 **Purpose:** Stop a running VM.
 
 **Steps:**
 
-1. Get VM instance
-2. Send `InstanceStop` action with timeout
-3. Wait for process exit
-4. Update state to `VMStateStopped`
+1. Look up the VM instance by `task.ID`
+2. Mark it `VMStateStopping`
+3. If an init system is set, attempt a graceful SIGTERM shutdown; otherwise
+   send `SendCtrlAltDel`
+4. Force-kill after the grace period if the process is still alive
+5. Update state to `VMStateStopped`
 
 ---
 
@@ -238,42 +244,72 @@ A restore resumes automatically via the `resume_vm: true` flag on
 
 ---
 
-### GetInfo
+### Wait
 
 ```go
-func (vm *VMMManager) GetInfo(taskID string) (*VMInstance, error)
+func (vm *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
 ```
 
-**Purpose:** Get VM instance info.
-
-**Returns:**
-- `*VMInstance` — Instance details (ID, PID, state, socket)
-- `error` — Not found error
+**Purpose:** Report the current status of the VM (running / complete / orphaned).
 
 ---
 
-### List
+### Describe
 
 ```go
-func (vm *VMMManager) List() []string
+func (vm *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
 ```
 
-**Purpose:** List all managed VM IDs.
+**Purpose:** Describe the VM's state, including `vm_id`, `pid`, `state` and uptime.
 
 ---
 
-### Cleanup
+### Remove
 
 ```go
-func (vm *VMMManager) Cleanup(ctx context.Context, taskID string) error
+func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error
 ```
 
-**Purpose:** Cleanup VM resources after termination.
+**Purpose:** Remove a VM and clean up resources.
 
 **Cleanup Steps:**
-1. Remove API socket file
-2. Remove VM from tracking map
-3. Release allocated resources
+1. Kill the VM process if still running
+2. Remove the API socket file
+3. Remove the VM from the tracking map
+
+---
+
+### Snapshot
+
+```go
+func (vm *VMMManager) Snapshot(ctx context.Context, task *types.Task, opts interface{}) (interface{}, error)
+```
+
+**Status:** Placeholder — returns an error directing callers to use
+`pkg/snapshot.Manager` directly.
+
+---
+
+### Restore
+
+```go
+func (vm *VMMManager) Restore(ctx context.Context, task *types.Task, snap interface{}) error
+```
+
+**Status:** Placeholder — returns an error directing callers to use
+`pkg/snapshot.Manager` directly.
+
+---
+
+### SetConsoleWriter
+
+```go
+func (vm *VMMManager) SetConsoleWriter(w io.Writer)
+```
+
+**Purpose:** Redirect the serial console of VMs started from now on to `w`
+(a detached caller points this at a log file so the long-lived Firecracker
+child does not keep the caller's stdio open).
 
 ---
 
@@ -282,30 +318,26 @@ func (vm *VMMManager) Cleanup(ctx context.Context, taskID string) error
 ### Client
 
 ```go
-type unixClient struct {
-    socketPath string
-    timeout    time.Duration
-}
-
-func newUnixClient(socketPath string, timeout time.Duration) *unixClient
+func newUnixClient(socketPath string, timeout time.Duration) *http.Client
 ```
 
-### HTTP Methods
-
-```go
-func (c *unixClient) Get(path string) ([]byte, error)
-func (c *unixClient) Put(path string, body interface{}) error
-```
+`newUnixClient` returns a standard `*http.Client` whose transport dials the
+Firecracker API over a Unix socket. Callers build requests directly (for
+example a `PUT` to `http://localhost/actions` with the action body) rather than
+going through helper methods.
 
 **Uses HTTP over Unix socket:**
 
 ```go
-// Dial Unix socket
-conn, err := net.Dial("unix", socketPath)
-
 // HTTP client with Unix transport
 client := &http.Client{
-    Transport: &unixTransport{socketPath: socketPath},
+    Timeout: timeout,
+    Transport: &http.Transport{
+        DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+            var d net.Dialer
+            return d.DialContext(ctx, "unix", socketPath)
+        },
+    },
 }
 ```
 
@@ -362,46 +394,24 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 
 **Purpose:** Apply full VM configuration via API.
 
+The config is a `map[string]interface{}` (or JSON string) whose keys are parsed
+case-by-case. Only the sections present are applied.
+
 **Steps:**
 
-1. **Configure machine**
+1. **Configure boot source** (if `boot-source` present)
    ```go
-   machine := MachineConfig{
-       VCPUs:      vmConfig.VCPUs,
-       MemSizeMib: vmConfig.MemoryMB,
-       HtEnabled:  false,
-   }
-   client.Put("/machine-config", machine)
+   // PUT http://localhost/boot-source
    ```
 
-2. **Configure boot source**
+2. **Configure machine** (if `machine-config` present)
    ```go
-   boot := BootSource{
-       KernelImagePath: vmConfig.KernelPath,
-       BootArgs:        "console=ttyS0 reboot=k panic=1 pci=off",
-   }
-   client.Put("/boot-source", boot)
+   // PUT http://localhost/machine-config
    ```
 
-3. **Configure root drive**
+3. **Configure drives** (if `drives` present)
    ```go
-   drive := Drive{
-       DriveID:      "rootfs",
-       PathOnHost:   vmConfig.RootfsPath,
-       IsRootDevice: true,
-       IsReadOnly:   false,
-   }
-   client.Put("/drives/rootfs", drive)
-   ```
-
-4. **Configure network interface**
-   ```go
-   iface := NetworkInterface{
-       IfaceID:     "eth0",
-       GuestMac:    generateMac(taskID),
-       HostDevName: tapDevice.Name,
-   }
-   client.Put("/network-interfaces/eth0", iface)
+   // PUT http://localhost/drives/<drive_id>
    ```
 
 ---

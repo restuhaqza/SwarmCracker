@@ -30,24 +30,36 @@ make all
 
 ```
 cmd/
-├── swarmcracker/    # Main CLI wrapper
-├── swarmctl/        # Direct SwarmKit commands
+├── swarmcracker/        # Main CLI wrapper
+├── swarmctl/            # Direct SwarmKit commands
 ├── swarmd-firecracker/  # Daemon
+├── swarmcracker-agent/  # Remote deployment agent
+├── swarmcracker-cni/    # CNI network plugin
+└── get-join-token/      # Join token helper
 
 pkg/
 ├── executor/        # SwarmKit task → VM config
-├── network/         # Bridges, TAP, VXLAN
+├── translator/      # Task → VMM config translation
+├── network/         # Bridges, TAP, VXLAN, CNI
 ├── discovery/       # Consul
 ├── swarmkit/        # SwarmKit glue
 ├── image/           # OCI extraction
+├── golden/          # Prebuilt golden images
 ├── lifecycle/       # VM start/stop
 ├── jailer/          # Security
 ├── storage/         # Volumes, secrets
 ├── snapshot/        # State snapshots
+├── runtime/         # Runtime state management
+├── config/          # YAML config loading
 ├── metrics/         # Prometheus
-├── types/           # Shared types
+├── health/          # Health check server
+├── console/         # VM serial console
+├── cni/             # CNI network allocator
+├── logging/         # Logging setup
+└── types/           # Shared types
 
-docs/                # User + dev docs
+docs-site/           # Published documentation (Astro Starlight)
+docs/                # Internal docs (reports, agent plans)
 infrastructure/      # Ansible deployment
 test-automation/     # tests + multi-node lab (test-automation/multinode/)
 ```
@@ -206,4 +218,4 @@ go test -race ./pkg/...
 
 ---
 
-**See Also:** [Testing Overview](testing/) | [Architecture](../architecture/)
+**See Also:** [Testing Overview](/contributing/testing/unit-tests/) | [Architecture](../architecture/)

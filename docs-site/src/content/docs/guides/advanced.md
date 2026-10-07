@@ -45,7 +45,8 @@ SwarmKit controls update behavior (not SwarmCracker):
 
 ## Multi-Architecture Support
 
-SwarmCracker supports multiple CPU architectures via placement constraints.
+SwarmCracker supports multiple CPU architectures. Pick the variant that
+matches your nodes through the image you deploy.
 
 ### Supported Architectures
 
@@ -56,13 +57,11 @@ SwarmCracker supports multiple CPU architectures via placement constraints.
 
 ### Architecture Constraints
 
-```bash
-# Create service constrained to x86_64 nodes
-swarmctl create-service nginx:latest --constraint arch==x86_64
-
-# Create service constrained to arm64 nodes
-swarmctl create-service arm-app:latest --constraint arch==arm64
-```
+`swarmctl create-service` is a minimal debug client and parses only
+`--network`, `--name`, and `--replicas` — it does **not** accept
+`--constraint`. Use `swarmcracker service` for deployment, but note that
+placement constraints are not exposed through the CLI yet; select the
+architecture through the image you deploy.
 
 ### Multi-Arch Images
 
