@@ -393,7 +393,7 @@ Releases are handled by maintainers. See the [release workflow](.github/workflow
 
 - **Issues** — Bug reports and feature requests
 - **Discussions** — Questions, architecture ideas, general chat
-- **Existing docs** — Start with [docs/README.md](docs/README.md)
+- **Existing docs** — Start with the [documentation site](https://docs.swarmcracker.com) (source: [`docs-site/`](docs-site/))
 
 ## Code of Conduct
 

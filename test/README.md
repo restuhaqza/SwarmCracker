@@ -2,11 +2,11 @@
 
 This directory contains the test suite for SwarmCracker.
 
-**Documentation has moved to** `docs/dev/testing/`
+**Documentation has moved to** `docs-site/src/content/docs/contributing/testing/`
 
 ## Quick Links
 
-- [Testing Overview](../docs/dev/testing/) - Complete testing guide
+- [Testing Overview](../docs-site/src/content/docs/contributing/testing/) - Complete testing guide
 
 ## Running Tests
 
@@ -69,7 +69,7 @@ test/
 ## Documentation
 
 For detailed testing documentation, see:
-- **[Testing Overview](../docs/dev/testing/)** - Testing guide and strategy
+- **[Testing Overview](../docs-site/src/content/docs/contributing/testing/)** - Testing guide and strategy
 
 ## Quick Start
 
@@ -105,4 +105,4 @@ See [Contributing Guide](../CONTRIBUTING.md) for details.
 
 ---
 
-**Documentation**: See [docs/dev/testing/](../docs/dev/testing/) for complete testing documentation
+**Documentation**: See [docs-site/src/content/docs/contributing/testing/](../docs-site/src/content/docs/contributing/testing/) for complete testing documentation

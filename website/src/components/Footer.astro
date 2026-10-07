@@ -1,0 +1,113 @@
+---
+import { links, site } from '../data/site';
+---
+
+<style>
+  .site-footer {
+    background: var(--yard-asphalt);
+    color: var(--yard-paper);
+    border-top: 6px solid var(--yard-asphalt);
+  }
+
+  .footer__kerb {
+    height: 0.6rem;
+    background-image: repeating-linear-gradient(
+      -45deg,
+      var(--yard-hazard) 0 10px,
+      var(--yard-asphalt) 10px 20px
+    );
+  }
+
+  .footer-inner {
+    max-width: 78rem;
+    margin: 0 auto;
+    padding: 2.25rem 1.5rem 2.5rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 1.5rem;
+  }
+
+  .footer-brand {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .footer-brand__word {
+    font-family: var(--yard-font-display);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: -0.01em;
+    font-size: 1.75rem;
+    line-height: 1;
+    color: var(--yard-paper);
+  }
+
+  .footer-copy {
+    margin: 0;
+    font-family: var(--yard-font-mono);
+    font-size: 0.75rem;
+    letter-spacing: 0.06em;
+    color: #9aa09a;
+  }
+
+  .footer-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1.5rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .footer-links a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    font-size: 1.0625rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #c4c7c2;
+    text-decoration: none;
+    border-bottom: 2px solid transparent;
+    transition: color 0.15s ease, border-color 0.15s ease;
+  }
+
+  .footer-links a:hover {
+    color: var(--yard-paper);
+    border-bottom-color: var(--yard-safety);
+  }
+
+  .footer-links a:focus-visible {
+    outline: 3px solid var(--yard-hazard);
+    outline-offset: 3px;
+  }
+
+  @media (max-width: 40rem) {
+    .footer-inner {
+      align-items: flex-start;
+    }
+  }
+</style>
+
+<footer class="site-footer">
+  <div class="footer__kerb" aria-hidden="true"></div>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <span class="footer-brand__word">{site.name}</span>
+      <p class="footer-copy">&copy; {new Date().getFullYear()} {site.name} · {site.version}</p>
+    </div>
+    <nav aria-label="Footer navigation">
+      <ul class="footer-links">
+        <li><a href={links.license}>License</a></li>
+        <li><a href={links.github}>GitHub</a></li>
+        <li><a href={links.releases}>Releases</a></li>
+        <li><a href={links.docs}>Docs</a></li>
+      </ul>
+    </nav>
+  </div>
+</footer>

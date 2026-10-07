@@ -4,60 +4,61 @@ on:
   push:
     branches: [main]
     paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
+      - 'docs-site/**'
       - '.github/workflows/docs.yml'
   pull_request:
     branches: [main]
     paths:
-      - 'docs/**'
-      - 'mkdocs.yml'
+      - 'docs-site/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pages
+  group: docs-deploy
   cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: docs-site
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-      
-      - name: Setup Python
-        uses: actions/setup-python@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          python-version: '3.11'
-      
+          node-version-file: docs-site/.nvmrc
+          cache: npm
+          cache-dependency-path: docs-site/package-lock.json
+
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install mkdocs-material
-          pip install mkdocs-minify-plugin
-      
+        run: npm ci
+
+      - name: Check types and internal links
+        run: npx astro check && node scripts/check-links.mjs
+
       - name: Build site
-        run: mkdocs build
-      
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        run: npm run build
+
+      # Deploys the Starlight output to the `swarmcracker-docs` Cloudflare Pages
+      # project, served at https://docs.swarmcracker.com.
+      #
+      # Requires a repository secret named CLOUDFLARE_API_TOKEN with the
+      # "Cloudflare Pages: Edit" permission. The account is inferred from the
+      # token (scoped to a single account), so no account identifier is stored
+      # in this file. Until the secret is set, this step is skipped so the
+      # workflow stays green.
+      - name: Deploy to Cloudflare Pages
+        if: github.event_name != 'pull_request' && env.CLOUDFLARE_API_TOKEN != ''
+        uses: cloudflare/wrangler-action@v3
         with:
-          path: 'site'
-  
-  deploy:
-    if: github.event_name != 'pull_request'
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          command: pages deploy docs-site/dist --project-name swarmcracker-docs --branch main

@@ -1,0 +1,155 @@
+---
+import { comparison } from '../data/site';
+---
+
+<style>
+  .comparison {
+    padding: clamp(3.5rem, 7vw, 6rem) 1.5rem;
+    max-width: 78rem;
+    margin: 0 auto;
+  }
+
+  .comparison__head {
+    max-width: 46rem;
+    margin-bottom: clamp(2rem, 4vw, 3rem);
+  }
+
+  .comparison__head h2 {
+    font-family: var(--yard-font-display);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: -0.01em;
+    font-size: clamp(2.25rem, 5vw, 3.75rem);
+    line-height: 0.95;
+    color: var(--yard-ink);
+    margin: 0 0 0.75rem;
+  }
+
+  .comparison__head p {
+    margin: 0;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    color: var(--yard-ink-muted);
+    max-width: 60ch;
+  }
+
+  .table-wrapper {
+    overflow-x: auto;
+    min-width: 0;
+    border: 2px solid var(--yard-asphalt);
+    background: var(--yard-paper);
+  }
+
+  .table-wrapper:focus {
+    outline: 3px solid var(--yard-safety-deep);
+    outline-offset: 2px;
+  }
+
+  table {
+    width: 100%;
+    min-width: 46rem;
+    border-collapse: collapse;
+  }
+
+  caption {
+    padding: 0.6rem 1rem;
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    font-size: 1.0625rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--yard-paper);
+    text-align: left;
+    caption-side: top;
+    background: var(--yard-asphalt);
+  }
+
+  th,
+  td {
+    padding: 0.85rem 1rem;
+    text-align: left;
+    font-size: 0.875rem;
+    line-height: 1.5;
+    color: var(--yard-ink-muted);
+    border-bottom: var(--yard-rule-w) solid var(--yard-rule);
+  }
+
+  th[scope='col'] {
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    font-size: 1.0625rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--yard-ink);
+    background: var(--yard-concrete-deep);
+    border-bottom: 2px solid var(--yard-asphalt);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  th[scope='col']:nth-child(2) {
+    color: var(--yard-on-safety);
+    background: var(--yard-safety);
+  }
+
+  th[scope='row'] {
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    font-size: 1rem;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    color: var(--yard-ink);
+    white-space: nowrap;
+  }
+
+  /* Highlight the SwarmCracker column */
+  td:nth-child(2) {
+    background: rgba(228, 87, 15, 0.09);
+    color: var(--yard-ink);
+    font-weight: 500;
+  }
+
+  tbody tr:last-child th,
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+
+  tbody tr:hover td:nth-child(2) {
+    background: rgba(228, 87, 15, 0.16);
+  }
+</style>
+
+<section id="comparison" class="comparison" aria-labelledby="comparison-heading">
+  <div class="comparison__head">
+    <h2 id="comparison-heading">How it compares</h2>
+    <p>
+      Same Swarm-style workflow you already know, with a hardware boundary around
+      every workload. Here is where that lands against Docker and Kubernetes.
+    </p>
+  </div>
+
+  <div class="table-wrapper" role="region" aria-labelledby="comparison-caption" tabindex="0">
+    <table>
+      <caption id="comparison-caption">SwarmCracker vs. Docker vs. Kubernetes</caption>
+      <thead>
+        <tr>
+          <th scope="col">Aspect</th>
+          <th scope="col">SwarmCracker</th>
+          <th scope="col">Docker</th>
+          <th scope="col">Kubernetes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {comparison.map((row) => (
+          <tr>
+            <th scope="row">{row.aspect}</th>
+            <td>{row.swarmcracker}</td>
+            <td>{row.docker}</td>
+            <td>{row.kubernetes}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  </div>
+</section>

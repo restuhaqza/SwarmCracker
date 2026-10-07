@@ -1,0 +1,162 @@
+---
+import { docsCards } from '../data/site';
+
+const gates = ['A', 'B', 'C', 'D'];
+---
+
+<style>
+  .docs {
+    background: var(--yard-asphalt);
+    color: var(--yard-paper);
+    border-top: 4px solid var(--yard-safety);
+  }
+
+  .docs__inner {
+    max-width: 78rem;
+    margin: 0 auto;
+    padding: clamp(3.5rem, 7vw, 6rem) 1.5rem;
+  }
+
+  .docs__head {
+    max-width: 46rem;
+    margin-bottom: clamp(2rem, 4vw, 3rem);
+  }
+
+  .docs__head h2 {
+    font-family: var(--yard-font-display);
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: -0.01em;
+    font-size: clamp(2.25rem, 5vw, 3.75rem);
+    line-height: 0.95;
+    margin: 0 0 0.75rem;
+    color: var(--yard-paper);
+  }
+
+  .docs__head p {
+    margin: 0;
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    color: #c4c7c2;
+    max-width: 60ch;
+  }
+
+  .gates {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: 0.75rem;
+  }
+
+  .gate {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    padding: 1.5rem 1.35rem 1.35rem;
+    background: #24272b;
+    border: 2px solid #3a3f45;
+    border-top: 4px solid var(--yard-hazard);
+    text-decoration: none;
+    color: inherit;
+    transition: background 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+  }
+
+  .gate:hover,
+  .gate:focus-visible {
+    background: #2e3237;
+    border-color: var(--yard-safety);
+    border-top-color: var(--yard-safety);
+    transform: translateY(-2px);
+  }
+
+  .gate:focus-visible {
+    outline: 3px solid var(--yard-hazard);
+    outline-offset: 3px;
+  }
+
+  .gate__top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .gate__letter {
+    font-family: var(--yard-font-display);
+    font-weight: 800;
+    font-size: 3.5rem;
+    line-height: 0.8;
+    color: var(--yard-safety);
+  }
+
+  .gate__arrow {
+    color: #8a9096;
+    line-height: 0;
+    transition: color 0.18s ease, transform 0.18s ease;
+  }
+
+  .gate:hover .gate__arrow,
+  .gate:focus-visible .gate__arrow {
+    color: var(--yard-hazard);
+    transform: translateX(4px);
+  }
+
+  .gate__arrow svg {
+    width: 1.75rem;
+    height: 1.75rem;
+    display: block;
+  }
+
+  .gate h3 {
+    font-family: var(--yard-font-display);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+    font-size: 1.5rem;
+    line-height: 1.02;
+    margin: 0 0 0.5rem;
+    color: var(--yard-paper);
+  }
+
+  .gate p {
+    margin: 0;
+    font-size: 0.9375rem;
+    line-height: 1.6;
+    color: #b6bab4;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .gate,
+    .gate__arrow {
+      transition: none;
+    }
+  }
+</style>
+
+<section id="docs" class="docs" aria-labelledby="docs-heading">
+  <div class="docs__inner">
+    <div class="docs__head">
+      <h2 id="docs-heading">Documentation</h2>
+      <p>Four gates into the manual — start at A if this is your first host.</p>
+    </div>
+
+    <div class="gates">
+      {docsCards.map((card, i) => (
+        <a class="gate" href={card.href}>
+          <span class="gate__top">
+            <span class="gate__letter" aria-hidden="true">{gates[i]}</span>
+            <span class="gate__arrow" aria-hidden="true">
+              <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="square" stroke-linejoin="miter">
+                <line x1="6" y1="16" x2="25" y2="16" />
+                <polyline points="17,8 25,16 17,24" />
+              </svg>
+            </span>
+          </span>
+          <span>
+            <h3>{card.title}</h3>
+            <p>{card.body}</p>
+          </span>
+        </a>
+      ))}
+    </div>
+  </div>
+</section>

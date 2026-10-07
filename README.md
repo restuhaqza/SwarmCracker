@@ -102,17 +102,23 @@ make all
 
 ## Documentation
 
-📖 **Full docs:** [swarmcracker.restuhaqza.dev](https://swarmcracker.restuhaqza.dev)
+🌐 **Landing page:** [swarmcracker.com](https://swarmcracker.com)
+
+📖 **Full docs:** [docs.swarmcracker.com](https://docs.swarmcracker.com)
 
 | Guide | What's inside |
 |-------|---------------|
-| [Getting Started](docs/user/getting-started/README.md) | Setup walkthrough, step by step |
-| [Architecture](docs/architecture/overview.md) | Component overview and data flow |
-| [CLI Reference](docs/user/reference/cli.md) | Every command, every flag |
-| [Configuration](docs/user/guides/configuration.md) | All config keys and defaults |
-| [Networking](docs/user/guides/networking.md) | VXLAN, bridges, how VMs communicate |
-| [Operations](docs/user/guides/operations.md) | Monitoring, backup, troubleshooting |
-| [Security](docs/dev/security.md) | Hardening, jailer, seccomp |
+| [Getting Started](https://docs.swarmcracker.com/getting-started/) | Setup walkthrough, step by step |
+| [Architecture](https://docs.swarmcracker.com/architecture/) | Component overview and data flow |
+| [CLI Reference](https://docs.swarmcracker.com/reference/cli/) | Every command, every flag |
+| [Configuration](https://docs.swarmcracker.com/guides/configuration/) | All config keys and defaults |
+| [Networking](https://docs.swarmcracker.com/guides/networking/) | VXLAN, bridges, how VMs communicate |
+| [Operations](https://docs.swarmcracker.com/guides/operations/) | Monitoring, backup, troubleshooting |
+| [Security](https://docs.swarmcracker.com/guides/security/) | Hardening, jailer, seccomp |
+
+The docs site is built with Astro Starlight; its source lives in
+[`docs-site/`](docs-site/) and is deployed to Cloudflare Pages by
+`.github/workflows/docs.yml`.
 
 ## Production Readiness: 10/10
 
@@ -133,7 +139,7 @@ SwarmCracker takes security seriously. Every workload runs in a hardware-isolate
 - **Command injection prevention** — PID-file signaling, no shell interpolation
 - **Hardened builds** — PIE binaries with stripped symbols
 
-Read our [Security Policy](SECURITY.md) and [Security Guide](docs/dev/security.md).
+Read our [Security Policy](SECURITY.md) and [Security Guide](https://docs.swarmcracker.com/guides/security/).
 
 ## Releases
 

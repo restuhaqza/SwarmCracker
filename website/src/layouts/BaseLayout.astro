@@ -1,0 +1,70 @@
+---
+import '../styles/tokens.css';
+import '../styles/fonts.css';
+import { site } from '../data/site';
+
+interface Props {
+  title: string;
+  description: string;
+  canonical: string;
+}
+
+const { title, description, canonical } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="/favicon.svg" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#E8E6E0" />
+    <link rel="canonical" href={canonical} />
+
+    <!-- Preload above-the-fold fonts (nav, hero display, body, IDs) -->
+    <link rel="preload" href="/fonts/bigshoulders-800.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/archivo-400.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/archivo-600.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/b612-mono-400.woff2" as="font" type="font/woff2" crossorigin />
+
+    <!-- Open Graph -->
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:site_name" content={site.name} />
+    <meta property="og:image" content={site.ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content={site.ogImageAlt} />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={title} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={site.ogImage} />
+    <meta name="twitter:image:alt" content={site.ogImageAlt} />
+
+    <script is:inline>document.documentElement.classList.add('js')</script>
+    <script>
+      import { initCopy } from '../scripts/copy';
+      initCopy();
+    </script>
+  </head>
+  <body>
+    <!--
+      DIRECTION CONTRACT — SwarmCracker landing (seed ea5fffa9, code-led)
+      THESIS: The yard is the orchestrator: every workload is a sealed steel box and SwarmKit is the gantry crane that places it. Refuses the category's dark terminal hero and its same-size feature-card grid.
+      OWN-WORLD: Daylight concrete-and-steel terminal. Concrete #E8E6E0 ground, asphalt #1B1D20 ink, safety orange #E4570F owning whole regions (crane, container doors, CTAs), hazard yellow #F5C518 markings, steel rules. Condensed industrial display (Big Shoulders Display), Archivo body, B612 Mono for IDs and measurements. Components are stencilled plates, corrugated containers, hazard-striped barriers, and a gantry crane.
+      STORY: The visitor sees the mechanism as a working terminal — containers stacked and sealed per service, a crane placing them — understands "Docker Swarm UX with hardware-isolated VMs", and runs the installer.
+      FIRST VIEWPORT: A full-width yard. Gantry crane spans the top; a stack of corrugated containers (each a service replica, stencilled ID, lock state) sits right; the offer, CTAs, and the install command painted on the nearest container door sit left.
+      FORM: intermodal freight terminal, position 7 of 7 in the grounded list, seed key ea5fffa9.
+      FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance.
+    -->
+    <slot name="before-main" />
+    <main id="main"><slot /></main>
+    <slot name="after-main" />
+  </body>
+</html>
