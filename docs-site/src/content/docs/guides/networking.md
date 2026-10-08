@@ -157,6 +157,31 @@ VMs can only talk to each other and the host.
 
 ---
 
+## Finding a VM's IP
+
+Every microVM that boots gets an IP on the bridge, but where you read it back
+from depends on how the VM was created:
+
+| VM origin | Source of the IP | How to read it |
+|-----------|------------------|----------------|
+| `swarmcracker vm create -d` | CLI state file (`state.json`) | `swarmcracker vm status <vm>` |
+| `swarmcracker service create` (daemon-managed) | daemon network allocation | `swarmcracker vm status <task>` / `vm list --format json` |
+
+The daemon records each running VM's network details in a
+`<task-id>.net.json` file next to its Firecracker socket (default
+`/var/run/firecracker`). `vm status` and `vm list --format json` read that file,
+so the guest IP — including the fallback TAP/DHCP allocation, which is never
+written back into the SwarmKit task store — is visible for service VMs too.
+
+The `vm list` table has no IP column, so parse `--format json` or use
+`vm status`. On the host you can also confirm an address directly:
+
+```bash
+ip neigh show dev swarm-br0
+```
+
+---
+
 ## Problems
 
 ### VMs Can't Talk to Each Other
