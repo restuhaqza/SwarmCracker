@@ -412,6 +412,9 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 			if err := os.Remove(consolePath); err != nil && !os.IsNotExist(err) {
 				log.Warn().Err(err).Str("socket", consolePath).Msg("Failed to remove console socket")
 			}
+			if err := scruntime.RemoveVMMetadata(e.config.SocketDir, taskID); err != nil {
+				log.Warn().Err(err).Str("task_id", taskID).Msg("Failed to remove VM metadata")
+			}
 		}
 	}
 
@@ -756,6 +759,12 @@ func (c *Controller) Start(ctx context.Context) error {
 
 	c.started = true
 
+	// Persist the VM's network details next to its socket. The daemon is the
+	// only component that knows the guest IP for fallback (TAP/DHCP)
+	// allocation: it is never written back to the SwarmKit task store, so the
+	// CLI reads this file to show the IP in `vm status`/`vm list`.
+	c.writeVMMetadata(task)
+
 	// Record boot duration and VM started metric
 	bootDuration := time.Since(c.startTime).Seconds()
 	service := c.task.ServiceID
@@ -769,6 +778,31 @@ func (c *Controller) Start(ctx context.Context) error {
 		Float64("boot_duration_seconds", bootDuration).
 		Msg("Task started")
 	return nil
+}
+
+// writeVMMetadata persists the prepared task's network details next to its
+// Firecracker socket so `swarmcracker vm status`/`vm list` can display them.
+// It is best-effort: a failure here must never fail the task.
+func (c *Controller) writeVMMetadata(task *types.Task) {
+	if c.config.SocketDir == "" || task == nil {
+		return
+	}
+	if err := os.MkdirAll(c.config.SocketDir, 0o755); err != nil {
+		c.logger.Warn().Err(err).Str("socket_dir", c.config.SocketDir).Msg("Failed to create socket dir for VM metadata")
+		return
+	}
+
+	md := &scruntime.VMMetadata{ID: task.ID}
+	for i := range task.Networks {
+		if i == 0 {
+			md.NetworkID = task.Networks[i].Network.ID
+		}
+		md.IPAddresses = append(md.IPAddresses, task.Networks[i].Addresses...)
+	}
+
+	if err := scruntime.WriteVMMetadata(c.config.SocketDir, md); err != nil {
+		c.logger.Warn().Err(err).Msg("Failed to persist VM network metadata")
+	}
 }
 
 // Wait waits for the task to exit.

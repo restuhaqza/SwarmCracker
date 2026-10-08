@@ -19,6 +19,7 @@ import (
 
 	"github.com/restuhaqza/swarmcracker/pkg/console"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -665,7 +666,8 @@ func (v *VMMManager) closeLogFile(taskID string) {
 }
 
 // cleanupVMSockets closes the task's console and removes its Firecracker API
-// and console socket files. It is safe to call when they are already gone.
+// and console socket files, along with the per-task network metadata the CLI
+// reads. It is safe to call when they are already gone.
 func (v *VMMManager) cleanupVMSockets(taskID string) {
 	v.closeConsole(taskID)
 
@@ -676,6 +678,12 @@ func (v *VMMManager) cleanupVMSockets(taskID string) {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			v.logger.Warn().Err(err).Str("socket", path).Msg("Failed to remove VM socket")
 		}
+	}
+
+	// The metadata file lives next to the socket and is only meaningful while
+	// the VM is running, so drop it with the sockets.
+	if err := scruntime.RemoveVMMetadata(v.socketDir, taskID); err != nil {
+		v.logger.Warn().Err(err).Str("task_id", taskID).Msg("Failed to remove VM metadata")
 	}
 }
 
