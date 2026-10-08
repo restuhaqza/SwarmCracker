@@ -57,22 +57,21 @@ The architectural decision behind #35/#36 is recorded in
 
 ## Tier 2 — runtime & operations depth
 
-- **In-guest service DNS** — resolve service names (`web`, `tasks.web`) inside VMs,
-  independent of Consul. Needed for real multi-service apps.
-- **`vm exec` + file copy** — a guest agent over vsock; also the foundation for
-  healthchecks and in-guest metrics.
-- **Registry auth UX** — `--with-registry-auth` and docker-config integration.
-- **Observability depth** — in-guest resource metrics, cross-node log
-  aggregation, alerting, tracing.
+| # | Feature |
+|---|---------|
+| [#42](https://github.com/restuhaqza/SwarmCracker/issues/42) | In-guest service DNS — resolve `web`, `tasks.web` inside VMs, independent of Consul |
+| [#43](https://github.com/restuhaqza/SwarmCracker/issues/43) | `vm exec` + file copy via a guest agent (vsock) — also the foundation for healthchecks and in-guest metrics |
+| [#44](https://github.com/restuhaqza/SwarmCracker/issues/44) | Registry auth UX — `--with-registry-auth` and docker-config integration |
+| [#45](https://github.com/restuhaqza/SwarmCracker/issues/45) | Observability depth — in-guest metrics, cross-node log aggregation, alerting, tracing |
 
 ## Tier 3 — differentiation & scale
 
-- **Live migration** across nodes (Firecracker snapshot + UFFD) — the standout
-  feature versus firecracker-containerd.
-- **Resource QoS** — memory balloon, CPU pinning/NUMA, hugepages, cgroup v2.
-- **User-defined overlay networks** — `network create/rm` and service → network
-  attachment (today `network` exposes only bridge/vxlan status).
-- **Autoscaling & placement intelligence**.
+| # | Feature |
+|---|---------|
+| [#46](https://github.com/restuhaqza/SwarmCracker/issues/46) | Live migration of running microVMs across nodes (Firecracker snapshot + UFFD) — the standout feature versus firecracker-containerd |
+| [#47](https://github.com/restuhaqza/SwarmCracker/issues/47) | Resource QoS — memory balloon, CPU pinning/NUMA, hugepages, cgroup v2 |
+| [#48](https://github.com/restuhaqza/SwarmCracker/issues/48) | User-defined overlay networks and segmentation (`network create/rm`, service → network attach) |
+| [#49](https://github.com/restuhaqza/SwarmCracker/issues/49) | Autoscaling and placement intelligence |
 
 ## Non-goals
 
@@ -86,5 +85,5 @@ The architectural decision behind #35/#36 is recorded in
 3. **#37 → #38** in parallel with the above.
 4. **#39** once a guest exec path exists.
 
-Re-evaluate Tier 2/3 after Tier 1 lands; split them into issues when they become
-the active work.
+Tier 2/3 issues (#42–#49) exist as a backlog but are not yet sequenced; revisit
+them once Tier 1 lands.
