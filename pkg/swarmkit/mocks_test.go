@@ -136,6 +136,8 @@ type MockNetworkManager struct {
 	InitFunc             func(ctx context.Context) error
 	SetNodeDiscoveryFunc func(discovery types.NodeDiscovery)
 	UpdateVXLANPeersFunc func(peers []string) error
+	PublishPortsFunc     func(taskID, guestIP string, ports []types.PublishedPort) error
+	UnpublishPortsFunc   func(taskID string, ports []types.PublishedPort) error
 }
 
 func (m *MockNetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) error {
@@ -175,6 +177,20 @@ func (m *MockNetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
 func (m *MockNetworkManager) UpdateVXLANPeers(peers []string) error {
 	if m.UpdateVXLANPeersFunc != nil {
 		return m.UpdateVXLANPeersFunc(peers)
+	}
+	return nil
+}
+
+func (m *MockNetworkManager) PublishPorts(taskID, guestIP string, ports []types.PublishedPort) error {
+	if m.PublishPortsFunc != nil {
+		return m.PublishPortsFunc(taskID, guestIP, ports)
+	}
+	return nil
+}
+
+func (m *MockNetworkManager) UnpublishPorts(taskID string, ports []types.PublishedPort) error {
+	if m.UnpublishPortsFunc != nil {
+		return m.UnpublishPortsFunc(taskID, ports)
 	}
 	return nil
 }

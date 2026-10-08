@@ -559,6 +559,10 @@ type Controller struct {
 	// internalTask holds the prepared internal task with annotations
 	internalTask *types.Task
 
+	// publishedPorts holds the host port mappings the agent has programmed for
+	// this task, reported back to SwarmKit via PortStatus.
+	publishedPorts []types.PublishedPort
+
 	socketPath string
 	logger     zerolog.Logger
 
@@ -747,6 +751,12 @@ func (c *Controller) Start(ctx context.Context) error {
 		return fmt.Errorf("translation failed: %w", err)
 	}
 
+	// Program host-side port forwarding before booting the VM: a host-port
+	// collision fails the task cleanly rather than leaving a running orphan.
+	if err := c.publishPorts(task); err != nil {
+		return err
+	}
+
 	// Track boot time
 	c.startTime = time.Now()
 
@@ -778,6 +788,58 @@ func (c *Controller) Start(ctx context.Context) error {
 		Float64("boot_duration_seconds", bootDuration).
 		Msg("Task started")
 	return nil
+}
+
+// publishPorts programs host-side forwarding for the task's published ports
+// (carried on the "swarmcracker.publish" service label). It is a no-op when the
+// service declares no ports.
+func (c *Controller) publishPorts(task *types.Task) error {
+	ports, err := types.ParsePublishLabel(c.task.ServiceAnnotations.Labels[types.PublishLabel])
+	if err != nil {
+		c.logger.Warn().Err(err).Str("label", types.PublishLabel).Msg("Ignoring invalid publish label")
+		return nil
+	}
+	if len(ports) == 0 {
+		return nil
+	}
+	guestIP := c.guestIP(task)
+	if guestIP == "" {
+		return fmt.Errorf("cannot publish ports for task %s: no guest IP", task.ID)
+	}
+	if err := c.networkMgr.PublishPorts(task.ID, guestIP, ports); err != nil {
+		return fmt.Errorf("failed to publish ports: %w", err)
+	}
+	c.publishedPorts = ports
+	c.logger.Info().Str("guest_ip", guestIP).Interface("ports", ports).Msg("Published host ports")
+	return nil
+}
+
+// guestIP resolves the guest IP for a task, preferring the network manager's
+// allocation and falling back to the SwarmKit-assigned address.
+func (c *Controller) guestIP(task *types.Task) string {
+	if ip, err := c.networkMgr.GetTapIP(task.ID); err == nil && ip != "" {
+		return ip
+	}
+	for _, n := range task.Networks {
+		for _, addr := range n.Addresses {
+			if addr != "" {
+				return strings.SplitN(addr, "/", 2)[0]
+			}
+		}
+	}
+	return ""
+}
+
+// unpublishPorts removes host-side forwarding for a task, sweeping any rules
+// tagged with the task ID even if they were left by a previous daemon run.
+func (c *Controller) unpublishPorts(taskID string) {
+	ports, _ := types.ParsePublishLabel(c.task.ServiceAnnotations.Labels[types.PublishLabel])
+	if len(ports) == 0 && len(c.publishedPorts) == 0 {
+		return
+	}
+	if err := c.networkMgr.UnpublishPorts(taskID, c.publishedPorts); err != nil {
+		c.logger.Warn().Err(err).Msg("Failed to unpublish ports")
+	}
 }
 
 // writeVMMetadata persists the prepared task's network details next to its
@@ -904,6 +966,10 @@ func (c *Controller) Remove(ctx context.Context) error {
 	defer c.mu.Unlock()
 
 	task := c.convertTask()
+
+	// Remove host-side port forwarding before the TAP device and IP are
+	// released, so a re-scheduled task can rebind the same host port.
+	c.unpublishPorts(task.ID)
 
 	// Sync volume data back before cleaning up
 	if c.volumeMgr != nil && c.internalTask != nil {
@@ -1108,7 +1174,23 @@ func (c *Controller) ContainerStatus(ctx context.Context) (*api.ContainerStatus,
 
 // PortStatus implements PortStatuser interface for SwarmKit.
 func (c *Controller) PortStatus(ctx context.Context) (*api.PortStatus, error) {
-	return &api.PortStatus{}, nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	status := &api.PortStatus{}
+	for _, p := range c.publishedPorts {
+		proto := api.ProtocolTCP
+		if p.Protocol == "udp" {
+			proto = api.ProtocolUDP
+		}
+		status.Ports = append(status.Ports, &api.PortConfig{
+			Protocol:      proto,
+			TargetPort:    p.TargetPort,
+			PublishedPort: p.PublishedPort,
+			PublishMode:   api.PublishModeHost,
+		})
+	}
+	return status, nil
 }
 
 // convertTask converts SwarmKit task to internal task type.

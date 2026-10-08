@@ -182,6 +182,63 @@ ip neigh show dev swarm-br0
 
 ---
 
+## Publishing a Service Port
+
+`service create --publish` (alias `-p`) forwards a host port to a port inside the
+microVM, so you do not need to look up the guest IP:
+
+```bash
+swarmcracker service create --name web --image nginx:alpine --publish 8080:80
+```
+
+The syntax is `[host:]container[/tcp|udp]`:
+
+```bash
+# TCP (default): host 8080 -> guest 80
+swarmcracker service create --name web --image nginx --publish 8080:80
+
+# UDP
+swarmcracker service create --name dns --image coredns/coredns --publish 53:53/udp
+
+# Several mappings at once
+swarmcracker service create --name app --image myapp --publish 8080:80 --publish 8443:443
+```
+
+`service ls` shows the mapping, and `service inspect` prints the published ports:
+
+```console
+$ swarmcracker service ls
+ID                   NAME                 REPLICAS   PORTS             IMAGE
+web                  web                  1          8080:80/tcp       nginx:alpine
+```
+
+### How it works
+
+Publishing is **host mode**: the daemon programs DNAT rules on the node running
+the task, so `host:8080` (on `127.0.0.1`, the LAN IP, or any interface) is
+forwarded to `<guest-ip>:80`. The rules are tagged with the task ID and are
+removed automatically when the task is removed or the service is scaled down.
+
+Because each replica is published on its own node's host port, two replicas on
+the same node cannot bind the same host port. If a host port is already in use,
+the task fails with an explicit error (for example
+`host port 8080/tcp is already published by task <id>`) instead of silently
+being ignored. Cluster-wide ingress load balancing across replicas is planned
+separately.
+
+### Inspecting the rules
+
+```bash
+# All published-port rules share the "swarmcracker:" comment prefix
+iptables -t nat -S PREROUTING  | grep swarmcracker
+iptables -t nat -S OUTPUT      | grep swarmcracker
+```
+
+`PREROUTING` handles traffic from other hosts; `OUTPUT` handles traffic that
+originates on the node itself (so `curl 127.0.0.1:8080` works, like Docker).
+
+---
+
 ## Problems
 
 ### VMs Can't Talk to Each Other
