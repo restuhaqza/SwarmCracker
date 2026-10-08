@@ -14,8 +14,8 @@ version:    # Config schema version (currently 1; optional, defaults to 1)
 executor:   # VM execution settings
 network:    # Network infrastructure
 logging:    # Log output configuration
-images:     # Image preparation and caching
-metrics:    # Metrics collection
+images:     # Accepted but not implemented (see below)
+metrics:    # Accepted but not implemented (see below)
 snapshot:   # Snapshot management
 ```
 
@@ -133,6 +133,9 @@ Enable Firecracker jailer for additional process isolation (chroot, UID/GID drop
 
 Init system injected into the VM rootfs. `tini` provides proper signal handling and zombie reaping. Use `none` for images with their own init (e.g., systemd-based).
 
+> **Currently ignored.** `executor.init_system` is not read by the CLI, which
+> hard-codes the `tini` init system (`cmd/swarmcracker/helpers.go`).
+
 ### executor.init_grace_period
 
 | Property | Value |
@@ -143,6 +146,8 @@ Init system injected into the VM rootfs. `tini` provides proper signal handling 
 | **Required** | No |
 
 Seconds to wait for graceful shutdown via init system before force-killing the VM.
+
+> **Currently ignored.** `executor.init_grace_period` is not read anywhere.
 
 ### executor.jailer
 
@@ -244,28 +249,26 @@ Enable per-VM network rate limiting.
 
 Maximum packets per second per VM when rate limiting is enabled.
 
-### network.vxlan_enabled
+### VXLAN overlay (CLI flags, not config keys)
 
-| Property | Value |
-|----------|-------|
-| **Type** | `bool` |
-| **Default** | `false` |
-| **Required** | No |
+> **Not read from the config file.** `network.vxlan_enabled` and
+> `network.vxlan_static_peers` are accepted by the loader but not consumed. The
+> executor reads VXLAN settings from `swarmd-firecracker` flags instead.
 
-Enable the VXLAN overlay for cross-node VM networking. When enabled, a VXLAN
-interface named `<bridge_name>-vxlan` (for example `swarm-br0-vxlan`) is created
-and attached to the bridge.
+Enable the VXLAN overlay for cross-node VM networking with the daemon flags:
 
-### network.vxlan_static_peers
+```bash
+swarmd-firecracker --vxlan-enabled --vxlan-peers 192.168.1.11,192.168.1.12
+```
 
-| Property | Value |
-|----------|-------|
-| **Type** | `[]string` |
-| **Default** | `[]` (empty) |
-| **Required** | No |
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--vxlan-enabled` | `false` | Create the VXLAN interface `<bridge_name>-vxlan` (for example `swarm-br0-vxlan`) and attach it to the bridge |
+| `--vxlan-peers` | empty | Comma-separated static VXLAN peer IPs, for small clusters without Consul-based discovery |
 
-Static list of VXLAN peer worker IPs. Use this for small clusters without
-Consul-based dynamic peer discovery.
+`swarmcracker cluster init` / `cluster join` accept the same
+`--vxlan-enabled` and `--vxlan-peers` flags and bake them into the generated
+`swarmd-firecracker` systemd unit.
 
 ---
 
@@ -287,13 +290,13 @@ Log level. `debug` includes token operations and internal state changes. Product
 | Property | Value |
 |----------|-------|
 | **Type** | `string` |
-| **Default** | `"text"` |
+| **Default** | `"json"` |
 | **Options** | `"text"`, `"json"` |
 | **Required** | No |
 
-Log output format. `text` is the human-readable default used in
-`config.example.yaml`. `json` emits structured logs suitable for production
-log aggregation.
+Log output format. The code default is `json`, which emits structured logs
+suitable for production log aggregation. `text` is the human-readable
+alternative; `config.example.yaml` uses `text` for illustration only.
 
 ### logging.output
 
@@ -310,70 +313,20 @@ Where logs are written. Use a file path like `/var/log/swarmcracker/daemon.log` 
 
 ## images
 
-### images.cache_dir
-
-| Property | Value |
-|----------|-------|
-| **Type** | `string` |
-| **Default** | `"/var/cache/swarmcracker"` |
-| **Required** | No |
-
-Directory for OCI image layer caching. Layer caching avoids re-pulling unchanged layers.
-
-### images.max_cache_size_mb
-
-| Property | Value |
-|----------|-------|
-| **Type** | `int` |
-| **Default** | `1024` (1 GB) |
-| **Required** | No |
-
-Maximum total size of cached images in megabytes. Oldest images are evicted when the limit is reached.
-
-### images.enable_layer_cache
-
-| Property | Value |
-|----------|-------|
-| **Type** | `bool` |
-| **Default** | `true` |
-| **Required** | No |
-
-Enable OCI layer caching. Disable to always pull fresh images.
+> **Not implemented.** The `images` section (`cache_dir`, `max_cache_size_mb`,
+> `enable_layer_cache`) is accepted by the config loader, and `cache_dir` is
+> defaulted, but no code consumes these keys. Image preparation uses
+> `executor.rootfs_dir` and its own cache handling. Do not rely on these keys
+> taking effect.
 
 ---
 
 ## metrics
 
-### metrics.enabled
-
-| Property | Value |
-|----------|-------|
-| **Type** | `bool` |
-| **Default** | `false` |
-| **Required** | No |
-
-Enable metrics collection and exposure. Disabled by default in `config.example.yaml`.
-
-### metrics.address
-
-| Property | Value |
-|----------|-------|
-| **Type** | `string` |
-| **Default** | `"localhost:9090"` |
-| **Required** | No |
-
-Address to expose Prometheus metrics on. Bind to `127.0.0.1` for security; use `0.0.0.0` if you need remote scraping.
-
-### metrics.format
-
-| Property | Value |
-|----------|-------|
-| **Type** | `string` |
-| **Default** | `"prometheus"` |
-| **Options** | `"prometheus"` |
-| **Required** | No |
-
-Metrics format. Currently only Prometheus text format is supported.
+> **Not implemented.** The `metrics` section (`enabled`, `address`, `format`)
+> is accepted by the config loader but has no consumers. Prometheus metrics are
+> always served by the daemon's health server at
+> `http://127.0.0.1:8080/metrics` (configurable with `--health-addr`).
 
 ---
 
@@ -499,15 +452,6 @@ logging:
   level: info
   format: json
   output: /var/log/swarmcracker/daemon.log
-
-images:
-  cache_dir: /var/cache/swarmcracker
-  max_cache_size_mb: 20480
-  enable_layer_cache: true
-
-metrics:
-  enabled: true
-  address: localhost:9090
 
 snapshot:
   enabled: true

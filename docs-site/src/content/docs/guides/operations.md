@@ -122,7 +122,7 @@ swarmctl metrics <task-id>
 |-----|------|----------|
 | swarmd-firecracker (daemon) | `/var/log/swarmcracker/daemon.log` | systemd journal |
 | VM console logs | `<state-dir>/<vm-id>.log` (`/var/run/swarmcracker` as root) | Truncated on VM start |
-| dnsmasq (DHCP) | `/tmp/dnsmasq.log` | Manual |
+| dnsmasq (DHCP) | `/tmp/dnsmasq-<bridge>.log` | Manual |
 | Firecracker stderr | captured by daemon | — |
 
 Both CLI-created VMs and daemon-managed service tasks mirror their serial
@@ -143,7 +143,7 @@ swarmcracker service ps <service-name>
 swarmcracker vm logs --follow <task-id>
 
 # dnsmasq DHCP logs
-tail -f /tmp/dnsmasq.log
+tail -f /tmp/dnsmasq-<bridge>.log
 ```
 
 **Attach to a VM console:**
@@ -272,7 +272,7 @@ swarmd-firecracker --debug
 
 3. **DHCP working?**
    ```bash
-   cat /tmp/dnsmasq.log | tail -20
+   cat /tmp/dnsmasq-<bridge>.log | tail -20
    # Should show DHCPOFFER/DHCPACK
    ```
 
@@ -650,15 +650,15 @@ iptables -A INPUT -p udp --dport 4789 -s 192.168.1.0/24 -j ACCEPT
    swarmcracker vm snapshot cleanup --max-age 168h
    ```
 
-2. **Short-term:** Manually trigger image cleanup
+2. **Short-term:** Remove unused rootfs images
    ```bash
-   # Set max_image_age_days to 1 in config, restart daemon
+   # List stale images in the rootfs directory
+   ls -lh /var/lib/firecracker/rootfs/
    ```
 
-3. **Long-term:** Configure auto-cleanup in config:
+3. **Long-term:** Configure snapshot retention. (Image cleanup already runs
+   automatically every 24 hours, removing rootfs images older than 7 days.)
    ```yaml
-   images:
-     max_cache_size_mb: 10240
    snapshot:
      max_snapshots: 10
      max_age: 168h  # 7 days

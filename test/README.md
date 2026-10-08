@@ -23,24 +23,29 @@ make test-all         # All tests
 
 ```
 test/
-├── e2e/                      # End-to-end tests
-│   ├── docker_swarm_test.go  # Docker Swarm E2E tests
-│   ├── swarmkit_test.go      # SwarmKit tests
-│   ├── cluster/              # Cluster management helpers
-│   ├── scenarios/            # Test scenarios
-│   └── fixtures/             # Test fixtures
-├── integration/              # Integration tests
-│   ├── integration_test.go   # Main integration tests
-│   ├── README.md             # Integration test guide
-│   └── firecracker-setup.md  # Firecracker setup
-├── testinfra/                # Infrastructure validation
-│   ├── testinfra_test.go     # Main infrastructure tests
-│   ├── checks/               # Individual checkers
+├── e2e/                          # End-to-end tests
+│   ├── firecracker/              # VM lifecycle tests
+│   ├── cluster/                  # Cluster management helpers
+│   ├── fixtures/                 # Test fixtures
+│   ├── full_workflow_test.go     # Full workflow test
+│   ├── swarmkit_test.go          # SwarmKit tests
+│   ├── swarmkit_api_test.go      # SwarmKit API tests
+│   ├── swarmkit_comprehensive_test.go
+│   ├── config.yaml               # E2E test configuration
+│   └── run.sh                    # E2E test runner
+├── integration/                  # Integration tests
+│   ├── integration_test.go       # Main integration tests
+│   ├── snapshot_integration_test.go
+│   ├── README.md                 # Integration test guide
+│   └── SNAPSHOT_TESTS.md         # Snapshot integration guide
+├── testinfra/                    # Infrastructure validation
+│   ├── testinfra_test.go         # Main infrastructure tests
+│   ├── checks/                   # Individual checkers
 │   │   ├── firecracker.go
 │   │   ├── kernel.go
 │   │   └── network.go
-│   └── helpers.go            # Test helper utilities
-└── mocks/                    # Mock implementations
+│   └── helpers.go                # Test helper utilities
+└── mocks/                        # Mock implementations
     └── mocks.go
 ```
 

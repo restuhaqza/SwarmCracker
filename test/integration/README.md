@@ -7,14 +7,16 @@ This document describes how to run integration tests for SwarmCracker.
 Integration tests require the following components:
 
 ### 1. Firecracker
-Install Firecracker v1.0.0 or later from the [official releases](https://github.com/firecracker-microvm/firecracker/releases).
+Install Firecracker v1.14.0 or later (v1.15.1 is what `swarmcracker setup install` fetches) from the [official releases](https://github.com/firecracker-microvm/firecracker/releases).
 
 ```bash
-# Download latest release
-wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
+# Download the release tarball for your architecture
+ARCH="$(uname -m)"   # x86_64 or aarch64
+wget "https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-${ARCH}.tgz"
 
 # Install
-sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
+tar -xzf "firecracker-v1.15.1-${ARCH}.tgz"
+sudo mv "release-v1.15.1-${ARCH}/firecracker-v1.15.1-${ARCH}" /usr/local/bin/firecracker
 sudo chmod +x /usr/local/bin/firecracker
 
 # Verify
@@ -25,15 +27,9 @@ firecracker --version
 Download a compatible kernel image:
 
 ```bash
-# Create directory
-sudo mkdir -p /usr/share/firecracker
-cd /usr/share/firecracker
-
-# Download kernel (example for v1.8.0)
-sudo wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/vmlinux-v1.15.1
-
-# Rename to generic name
-sudo mv vmlinux-v1.15.1 vmlinux
+# Use the helper script, which downloads a Firecracker-compatible kernel
+# to /usr/share/firecracker/vmlinux:
+sudo ./test/integration/download-kernel.sh
 ```
 
 ### 3. KVM Access
@@ -182,8 +178,10 @@ sudo usermod -aG kvm $USER
 which firecracker
 
 # If not, install from releases
-wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
-sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
+ARCH="$(uname -m)"
+wget "https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-${ARCH}.tgz"
+tar -xzf "firecracker-v1.15.1-${ARCH}.tgz"
+sudo mv "release-v1.15.1-${ARCH}/firecracker-v1.15.1-${ARCH}" /usr/local/bin/firecracker
 sudo chmod +x /usr/local/bin/firecracker
 ```
 
@@ -218,21 +216,21 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
         with:
-          go-version: '1.21'
+          go-version: '1.26'
 
       - name: Install Firecracker
         run: |
-          wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64
-          sudo mv firecracker-v1.15.1-x86_64 /usr/local/bin/firecracker
+          ARCH="$(uname -m)"
+          wget "https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-${ARCH}.tgz"
+          tar -xzf "firecracker-v1.15.1-${ARCH}.tgz"
+          sudo mv "release-v1.15.1-${ARCH}/firecracker-v1.15.1-${ARCH}" /usr/local/bin/firecracker
           sudo chmod +x /usr/local/bin/firecracker
 
       - name: Install Kernel
-        run: |
-          sudo mkdir -p /usr/share/firecracker
-          sudo wget https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/vmlinux-v1.15.1 -O /usr/share/firecracker/vmlinux
+        run: sudo ./test/integration/download-kernel.sh
 
       - name: Run Integration Tests
         run: go test ./test/integration/... -v -timeout 30m

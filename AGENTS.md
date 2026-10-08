@@ -119,7 +119,7 @@ swarmcracker/
 |------|---------|
 | `README.md` | Main overview, features, quick start |
 | `Makefile` | Build, test, install targets |
-| `go.mod` | Go dependencies (requires 1.25+) |
+| `go.mod` | Go dependencies (requires 1.26+) |
 | `cmd/swarmcracker/main.go` | CLI tool entry point |
 | `pkg/executor/executor.go` | Main executor logic |
 | `pkg/config/config.go` | Configuration structures |
@@ -197,16 +197,17 @@ make dev
 executor:
   kernel_path: "/usr/share/firecracker/vmlinux"
   rootfs_dir: "/var/lib/firecracker/rootfs"
-  default_vcpus: 2
-  default_memory_mb: 1024
+  default_vcpus: 1
+  default_memory_mb: 512
 
 network:
   bridge_name: "swarm-br0"
-  default_rate_limit: "10G"
+  enable_rate_limit: false
+  max_packets_per_sec: 10000
 
-image:
+images:
   cache_dir: "/var/cache/swarmcracker"
-  max_cache_size_mb: 10240
+  max_cache_size_mb: 1024
 ```
 
 ### CLI Overrides
@@ -229,30 +230,10 @@ swarmcracker --config /custom/config.yaml run nginx:latest
 
 ### Current Coverage
 
-| Package | Coverage | Status |
-|---------|----------|--------|
-| apiversion | 100.0% | ✅ Excellent |
-| types | 100.0% | ✅ Excellent |
-| config | 97.6% | ✅ Excellent |
-| logging | 94.7% | ✅ Excellent |
-| translator | 94.9% | ✅ Excellent |
-| jailer | 92.6% | ✅ Excellent |
-| executor | 90.7% | ✅ Excellent |
-| cni | 90.3% | ✅ Excellent |
-| health | 89.5% | ✅ Good |
-| snapshot | 87.9% | ✅ Good |
-| storage | 87.3% | ✅ Good |
-| swarmkit | 87.0% | ✅ Good |
-| network | 86.7% | ✅ Good |
-| runtime | 86.0% | ✅ Good |
-| image | 85.8% | ✅ Good |
-| console | 85.0% | ✅ Good |
-| metrics | 84.4% | 🟡 Fair |
-| lifecycle | 82.3% | 🟡 Fair |
-| discovery | 80.6% | 🟡 Fair |
-
-Total `./pkg/...`: **87.6%**, measured 2026-09-29. Full details and
-methodology: `docs-site/src/content/docs/contributing/testing/unit-tests.md`.
+`./pkg/...` coverage was **87.6%** across 19 packages, measured 2026-09-29. The
+full per-package table, the 85% target/threshold rationale, and the measurement
+methodology live in
+[`docs-site/src/content/docs/contributing/testing/unit-tests.md`](docs-site/src/content/docs/contributing/testing/unit-tests.md).
 
 ### Running Specific Tests
 
@@ -367,7 +348,6 @@ managed by the daemon (service tasks); VMs started in the foreground by
 2. **Verify config** with `swarmcracker config validate`
 3. **Test in isolation**: `swarmcracker vm create --detach alpine:latest`
 4. **Check Firecracker**: Verify `/dev/kvm` exists
-5. **Review test reports** in `docs/reports/`
 
 ### When Working with Tests
 
@@ -490,10 +470,10 @@ snapshot:
 
 ```go
 require (
-    github.com/rs/zerolog v1.33.0        // Logging
+    github.com/rs/zerolog v1.35.1        // Logging
     gopkg.in/yaml.v3 v3.0.1              // Config parsing
     github.com/spf13/cobra v1.10.2       // CLI framework
-    github.com/google/go-containerregistry v0.20.3 // OCI image handling
+    github.com/google/go-containerregistry v0.21.5 // OCI image handling
 )
 ```
 
@@ -541,7 +521,7 @@ require (
 
 ### Current Focus
 
-1. **Test coverage improvement** - Targeting 85% overall coverage
+1. **Test coverage maintenance** - keep `./pkg/...` above the 85% target (measured 87.6%)
 2. **CI/CD enhancement** - GitHub Actions workflows for testing and releases
 3. **Documentation updates** - Keeping docs in sync with code
 
@@ -599,10 +579,10 @@ require (
 ## 📝 Notes
 
 - This project is actively developed - v0.10.0
-- Test coverage is improving toward 85% target
+- Test coverage is 87.6% across 19 packages, above the 85% target
 - Documentation is actively maintained
 - Contributions welcome - see CONTRIBUTING.md
 
-**Last Updated:** 2026-05-06
+**Last Updated:** 2026-10-07
 **Project Lead:** Restu Muzakir
 **License:** Apache 2.0

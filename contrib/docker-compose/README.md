@@ -9,7 +9,7 @@ The docker-compose setup uses `privileged: true` and `/dev/kvm` passthrough, whi
 
 ## For real deployments
 
-See the [Getting Started guide](https://swarmcracker.dev/getting-started/) for the blessed deployment path:
+See the [Getting Started guide](https://docs.swarmcracker.com/getting-started/) for the blessed deployment path:
 
 ```bash
 # One-line install (binary + checksum verify)

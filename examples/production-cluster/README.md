@@ -54,7 +54,7 @@ Production-ready SwarmKit cluster with 3 managers (HA) and multiple workers. Thi
 
 ### Network
 
-- All nodes must communicate on ports 2377, 7946 (TCP/UDP)
+- All nodes must communicate on ports 4242 (SwarmKit control/raft) and 7946 (control/gossip, TCP/UDP)
 - Management network: 192.168.1.0/24 (or your own)
 - VM network: 192.168.127.0/24 (isolated bridge)
 - Internet access for image pulls
@@ -63,7 +63,7 @@ Production-ready SwarmKit cluster with 3 managers (HA) and multiple workers. Thi
 
 - Linux (Ubuntu 20.04+ or Debian 11+ recommended)
 - Go 1.26+
-- Firecracker v1.10.0+
+- Firecracker v1.14.0+
 - SwarmKit (latest from GitHub)
 - SwarmCracker (latest from GitHub)
 
@@ -132,7 +132,7 @@ tar -xzf firecracker-v1.15.1-x86_64.tgz
 
 # Install binaries
 sudo mv release-v1.15.1-x86_64/firecracker-v1.15.1-x86_64 /usr/bin/firecracker
-sudo mv release-v1.15.1-x86_64/jailer-v1.10.0-x86_64 /usr/bin/jailer
+sudo mv release-v1.15.1-x86_64/jailer-v1.15.1-x86_64 /usr/bin/jailer
 sudo chmod +x /usr/bin/firecracker /usr/bin/jailer
 
 # Verify
@@ -181,10 +181,9 @@ swarmcracker version
 
 ```bash
 sudo ufw allow 22/tcp    # SSH
-sudo ufw allow from 192.168.1.0/24 to any port 2377 proto tcp
+sudo ufw allow from 192.168.1.0/24 to any port 4242 proto tcp
 sudo ufw allow from 192.168.1.0/24 to any port 7946 proto tcp
 sudo ufw allow from 192.168.1.0/24 to any port 7946 proto udp
-sudo ufw allow from 192.168.1.0/24 to any port 4242 proto tcp
 sudo ufw enable
 ```
 
@@ -395,7 +394,7 @@ sudo swarmctl node ls
 
 ### Manager Configuration
 
-See `config/manager.yaml` for reference. Managers use command-line flags, not YAML config.
+Managers use command-line flags, not YAML config (see `config/worker.yaml` for the worker reference).
 
 ### Worker Configuration
 
@@ -564,7 +563,7 @@ sudo swarmctl service ls
 sudo journalctl -u swarmd* -f
 
 # Check SwarmCracker
-sudo swarmcracker validate --config /etc/swarmcracker/worker.yaml
+sudo swarmcracker cluster health
 
 # Check networking
 ip addr show swarm-br0
@@ -583,10 +582,8 @@ bridge link
 
 - `deploy.sh` - Automated deployment script
 - `verify-cluster.sh` - Cluster health verification
-- `config/worker.yaml` - Worker configuration
-- `config/manager.yaml` - Manager reference
-- `ansible/` - Ansible playbooks for automation
-- `terraform/` - Terraform configs for infrastructure
+- `config/worker.yaml` - Worker configuration reference
+- `infrastructure/ansible/` - Ansible playbooks for automation
 
 ## Next Steps
 

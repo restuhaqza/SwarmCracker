@@ -1,18 +1,16 @@
 ---
-title: "Golden Image Recipes — Analysis & Design"
+title: "Golden Image Recipes"
 ---
 
 Related: [Snapshots](/guides/snapshots/), `pkg/image/`, `pkg/translator/`, `pkg/swarmkit/translator.go`, `recipes/`
 
-## Implementation status (2026-09-28)
+## Status
 
-Landed: the recipe loader/validator (`pkg/golden/recipe.go`), the builder
+The recipe loader/validator (`pkg/golden/recipe.go`), the builder
 (`pkg/golden/builder.go`, `builder_real.go`), the exported `pkg/image` building
 blocks (`PullImage`, `ExtractImageToDir`, `CreateExt4FromDir`, `ParseDiskSize`),
-and the `swarmcracker image build|list|inspect` CLI. Work items 1, 2 and 9 below
-are done; the rest remain.
-
-Verified on a real KVM node (amd64, Firecracker v1.15.1). Each recipe was
+and the `swarmcracker image build|list|inspect` CLI are implemented. Verified on
+a real KVM node (amd64, Firecracker v1.15.1). Each recipe was
 built fresh, the runtime checked inside the ext4 with `debugfs`, then booted
 under Firecracker with a tap NIC and its serial log inspected:
 
@@ -409,43 +407,4 @@ eth0 (virtio-net, 192.168.127.2/24) ── docker0 (172.17.0.0/16) ── contai
   verify a digest before boot. `seal` removes host keys, machine-id, and caches.
 - `nomodules` stays: no module loading in the guest means no `insmod` surface.
 
-## 10. Gaps / work items in the Go codebase
 
-| # | Item | Package | Notes |
-|---|---|---|---|
-| 1 | `GoldenImage` recipe type + YAML loader/validator | new `pkg/golden` | ✅ done |
-| 2 | Recipe builder (extract → chroot provision → seal → mkfs.ext4) | `pkg/golden`, `pkg/image` | ✅ done (reuses `ExtractImageToDir`, `CreateExt4FromDir`) |
-| 3 | Allow `systemd`/`openrc` as first-class init for `vm` mode | `pkg/image/detector.go`, `init.go` | ✅ prebuilt-rootfs tasks boot the recipe init; preparer detector untouched |
-| 4 | Make `init=` and boot args recipe-driven | `pkg/translator`, `pkg/swarmkit/translator.go` | ✅ via task annotations in `pkg/translator`; swarmkit translator pending |
-| 5 | Multi-drive support (root + data disk) | translators | `drives[]` already a slice |
-| 6 | `executor.runtime_mode: container \| vm` config + task annotation | `pkg/config`, `pkg/executor` | ✅ annotation-based (`swarmcracker.prebuilt_rootfs`); no config field needed |
-| 7 | Guest agent + vsock protocol | new `pkg/guestagent` | Option B |
-| 8 | `guest-runtime` kernel build + CI boot validation | `scripts/`, CI | kconfig fragment in `recipes/kernel/` |
-| 9 | `swarmcracker image build/list/inspect` CLI | `cmd/swarmcracker` | ✅ done |
-| 10 | Register golden images and resolve `golden:<name>@<ver>` | `pkg/image`, `pkg/executor` | content-addressed cache |
-| 11 | Snapshot a booted golden VM as fast-path artifact | `pkg/snapshot` | tie snapshot to recipe digest |
-
-## 11. Risks & open questions
-
-- **Kubernetes vs Docker.** Recipes target Docker; if k8s-in-VM is a goal,
-  `CONFIG_MEMCG_SWAP`, `IP_VS`, `MACVLAN`, `BRIDGE_NF_EBTABLES` and kubeadm
-  preflight become mandatory. Scope now, expand later.
-- **Cross-arch builds** need `binfmt_misc` + `qemu-user-static` on the builder;
-  document the dependency.
-- **Image size** is the enemy of fast boot. Option: two artifacts per recipe —
-  a fat build image and a stripped runtime image.
-- **systemd in Firecracker** is proven (firecracker-containerd boots systemd),
-  but their config used `systemd.unified_cgroup_hierarchy=0`. Modern distros
-  default to cgroup v2 (`=1`); verify per distro.
-- **Guest clock** can drift; systemd images want `CONFIG_KVM_GUEST`/KVM clock
-  (present) and possibly chrony/NTP from the host.
-- **Registry credentials** for private base images must flow to the builder and
-  to dockerd inside the guest.
-
-## 12. Next step
-
-The recipe loader/builder and CLI are done (see implementation status above).
-Next: work item 8 (build and validate the `guest-runtime` kernel), then work
-items 3–5 to let a task boot a golden image with its own init and multi-drive
-layout, and finally Option B (`pkg/guestagent`) so a SwarmKit task can drive
-`docker run` inside the golden VM.

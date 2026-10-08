@@ -43,7 +43,7 @@ make all → make test-e2e
 
 - Docker Compose → `contrib/docker-compose/`
 - Vagrant → evaluated for deletion or `contrib/vagrant/`
-- Ansible → remains as the **advanced/production** option, documented separately in `docs/user/guides/ansible.md`
+- Ansible → remains as the **advanced/production** option, documented separately in `docs/user/guides/ansible.md` (superseded: see `docs-site/src/content/docs/guides/advanced.md`)
 - Manual `swarmd-firecracker` → documented as advanced/development only
 
 ## Consequences
@@ -68,3 +68,8 @@ make all → make test-e2e
 4. Rewrite README quick start to match blessed path
 5. Write `docs/user/guides/advanced-deployment.md` for Ansible, manual
 6. Update mkdocs nav
+
+> **Superseded (2026-10-07):** the MkDocs information architecture
+> (`docs/user/...`, a `mkdocs.yml` nav) was retired in favour of the Astro
+> Starlight docs site. The Ansible/manual deployment content now lives in
+> `docs-site/src/content/docs/guides/advanced.md` (published at `/guides/advanced/`).

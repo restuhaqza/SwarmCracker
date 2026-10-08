@@ -16,7 +16,7 @@ SwarmCracker cluster state is stored in multiple locations:
 | Raft log (cluster state) | `/var/lib/swarmkit/` | Stop the manager and copy the directory |
 | VM state | `/var/lib/firecracker/` | VM snapshots |
 | VM snapshots | `/var/lib/firecracker/snapshots/` | Copy to remote storage |
-| Config | `/etc/swarmcracker/config.yaml` | Auto-generated on join |
+| Config | `/etc/swarmcracker/` — `config.yaml` comes from `setup config`; `cluster init` / `cluster join` write `manager-config.yaml` / `worker-config.yaml` | Copy the config directory |
 | Join tokens | `/var/lib/swarmkit/join-tokens.txt` | Backed up with the state directory |
 
 ---
