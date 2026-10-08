@@ -48,6 +48,11 @@ network:
 
 IPs come from hashing the VM ID. Same ID always gets the same IP. No DHCP needed, which makes startup faster.
 
+The first host addresses `.1`–`.16` are reserved for infrastructure: on a
+multi-node cluster every node shares one L2 overlay subnet and each node's
+bridge takes a low address (`.1`, `.2`, …), so guests are only allocated from
+`.17` upward to avoid colliding with a sibling node's bridge.
+
 ### DHCP
 
 If you want dynamic IPs, switch to dnsmasq-backed DHCP:
@@ -225,6 +230,14 @@ the task fails with an explicit error (for example
 `host port 8080/tcp is already published by task <id>`) instead of silently
 being ignored. Cluster-wide ingress load balancing across replicas is planned
 separately.
+
+On a multi-node cluster, host mode publishes on **each node that runs a
+replica**, so `--replicas 2` across two nodes makes both nodes listen on the
+host port. A node that runs no replica does not listen on it, and there is no
+single cluster-wide entry point yet — reach a specific replica through the node
+it runs on, or front the nodes with an external load balancer. Cluster-wide
+ingress (one VIP on every node) is tracked as
+[#36](https://github.com/restuhaqza/SwarmCracker/issues/36).
 
 ### Inspecting the rules
 
