@@ -75,6 +75,14 @@ type IPAllocator struct {
 	mu        sync.Mutex
 }
 
+// reservedInfraHosts is the number of leading host addresses in a subnet that
+// are never handed to VMs. In a multi-node cluster the overlay is a single L2
+// subnet shared by every node, and each node's bridge takes a low address
+// (e.g. 192.168.127.1, .2, ...). Without this reservation a guest on one node
+// can be assigned another node's bridge IP, which collides on the overlay and
+// breaks cross-node traffic (and DNAT targets for published ports).
+const reservedInfraHosts = 16
+
 // NewIPAllocator creates a new IP allocator.
 func NewIPAllocator(subnetStr, gatewayStr string) (*IPAllocator, error) {
 	_, subnet, err := net.ParseCIDR(subnetStr)
@@ -127,9 +135,10 @@ func (a *IPAllocator) Allocate(vmID string) (string, error) {
 		// 4. Not already allocated
 
 		isGateway := ip.Equal(a.gateway)
+		isReserved := a.isReserved(ip)
 		_, isAllocated := a.allocated[ipStr]
 
-		if !isGateway && !isAllocated {
+		if !isGateway && !isReserved && !isAllocated {
 			// Found free IP
 			a.allocated[ipStr] = vmID
 			return ipStr, nil
@@ -140,16 +149,54 @@ func (a *IPAllocator) Allocate(vmID string) (string, error) {
 
 		// Wrap around or check if still in subnet
 		if !a.subnet.Contains(ip) {
-			// Reset to start of subnet + 2 (skip network & gateway assumption)
-			// Simple reset:
-			ip = make(net.IP, len(a.subnet.IP))
-			copy(ip, a.subnet.IP)
-			ip = incIP(ip) // .1
-			ip = incIP(ip) // .2
+			// Reset to the first usable address (skips the network address
+			// and the reserved infrastructure block).
+			ip = a.firstUsable()
 		}
 	}
 
 	return "", fmt.Errorf("failed to allocate IP: subnet exhausted or too many collisions")
+}
+
+// reservedCount returns how many leading host addresses are reserved for
+// infrastructure on this subnet. It is zero for IPv6 or subnets too small to
+// spare the block.
+func (a *IPAllocator) reservedCount() uint32 {
+	ones, bits := a.subnet.Mask.Size()
+	if bits != 32 {
+		return 0
+	}
+	size := uint32(1) << (bits - ones)
+	if size < uint32(reservedInfraHosts)+4 {
+		return 0
+	}
+	return uint32(reservedInfraHosts)
+}
+
+// isReserved reports whether an IP falls in the reserved infrastructure range.
+func (a *IPAllocator) isReserved(ip net.IP) bool {
+	r := a.reservedCount()
+	if r == 0 {
+		return false
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	host := uint32(v4[3])
+	return host >= 1 && host <= r
+}
+
+// firstUsable returns the first assignable address (skipping the network
+// address and the reserved infrastructure block).
+func (a *IPAllocator) firstUsable() net.IP {
+	ip := make(net.IP, len(a.subnet.IP))
+	copy(ip, a.subnet.IP)
+	steps := 1 + int(a.reservedCount())
+	for k := 0; k < steps; k++ {
+		ip = incIP(ip)
+	}
+	return ip
 }
 
 // hashToIP converts a VM ID to an IP address using SHA-256.
@@ -192,12 +239,14 @@ func (a *IPAllocator) hashToIP(vmID string) net.IP {
 		return ip
 	}
 
-	// Use hash to pick an offset
-	// Avoid .0 (network) and .255 (broadcast) generally, but mainly fit in size
-	n := binary.BigEndian.Uint32(hash[:4]) % (size - 2) // -2 to avoid network/broadcast roughly
+	// Use hash to pick an offset within the usable range. Skip the network and
+	// broadcast addresses, and the low addresses reserved for node bridges.
+	reserved := a.reservedCount()
+	count := size - 2 - reserved
+	n := binary.BigEndian.Uint32(hash[:4]) % count
 
 	ip := make(net.IP, 4)
-	ipInt := binary.BigEndian.Uint32(a.subnet.IP.To4()) + n + 1 // +1 to skip network address
+	ipInt := binary.BigEndian.Uint32(a.subnet.IP.To4()) + 1 + reserved + n
 	binary.BigEndian.PutUint32(ip, ipInt)
 
 	return ip
