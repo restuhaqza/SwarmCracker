@@ -10,8 +10,9 @@ Two classes exist:
 - **Workload recipes** (`distroless-minimal`, `busybox-scratch`): the current
   single-container model, kept as recipes for uniformity.
 
-See `../docs/research/golden-image-recipes.md` for the full analysis, kernel
-evidence, execution-model options, and the Go work items.
+See the [Golden Images guide](../docs-site/src/content/docs/guides/golden-images.md)
+for the full analysis, kernel evidence, execution-model options, and the Go work
+items.
 
 ## Schema
 

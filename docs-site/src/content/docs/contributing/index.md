@@ -20,9 +20,10 @@ cmd/
 pkg/
 ├── apiversion/           # gRPC API versioning protocol
 ├── executor/             # Turns SwarmKit tasks into Firecracker configs
-├── network/              # Bridges, TAP, VXLAN, NAT, CNI, discovery
+├── network/              # Bridges, TAP, VXLAN, NAT, CNI
 ├── swarmkit/             # SwarmKit executor/controller integration
 ├── image/                # OCI image extraction, rootfs preparation
+├── golden/               # Prebuilt golden image artifacts (ext4 + JSON sidecar)
 ├── lifecycle/            # VM start/stop/configure logic
 ├── jailer/               # Security sandbox (cgroups, seccomp)
 ├── storage/              # Volumes, secrets, configs
@@ -41,7 +42,8 @@ infrastructure/
 ├── ansible/              # Cluster deployment roles
 └── observability/        # Prometheus, Grafana configs
 test-automation/          # tests + multi-node lab (test-automation/multinode/)
-docs/                     # Documentation (you are here)
+docs-site/                # Published docs (this page lives here; Astro Starlight)
+docs/                     # Internal docs (reports, agent plans — not published)
 ```
 
 ---
@@ -153,8 +155,8 @@ curl http://127.0.0.1:8500/v1/catalog/service/swarmcracker-vxlan
 ## More
 
 - [API Reference](/reference/api/) — gRPC API, versioning, services
-- [Package References](reference/) — Per-package documentation
-- [Testing](testing/) — Unit and e2e test details
+- [Image Package Reference](/contributing/reference/image/) — Per-package documentation
+- [Unit Tests](/contributing/testing/unit-tests/) — Unit and e2e test details
 - [Architecture](/architecture/) — SwarmKit integration specifics
 - [Contributing](/contributing/guidelines/) — PR guidelines
 - [Architecture Overview](/architecture/) — System design

@@ -5,8 +5,7 @@
 # Creates N nested Ubuntu VMs on a single KVM/libvirt host, provisions the
 # SwarmCracker executor (Firecracker + kernel + rootfs + CNI) on each, forms a
 # SwarmKit cluster with the VXLAN overlay enabled, and smoke-tests cross-host
-# microVM networking. This automates the flow from
-# docs/reports/e2e-multihost-nested-2026-10-04.md.
+# microVM networking.
 #
 # Usage:
 #   test-automation/multinode/cluster-lab.sh <command> [args]

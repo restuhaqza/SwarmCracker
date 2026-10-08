@@ -243,7 +243,6 @@ swarmctl service create --config-file service-spec.yaml
 
 - `start.sh` - Startup script
 - `config/worker.yaml` - SwarmCracker worker configuration
-- `config/manager.yaml` - SwarmKit manager configuration (reference)
 - `README.md` - This file
 
 ## Next Steps

@@ -56,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`vm attach`** — interactive serial console access to a running microVM via
   a per-VM Unix socket (`pkg/console`), with raw-mode stdin and Ctrl-P Ctrl-Q
   to detach.
-- **Multi-node lab** — `test-automation/scripts/cluster-lab.sh` builds an N-node
+- **Multi-node lab** — `test-automation/multinode/cluster-lab.sh` builds an N-node
   nested KVM lab, forms a SwarmKit cluster with the VXLAN overlay enabled, and
   smoke-tests cross-host microVM networking.
 
@@ -150,7 +150,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - **CNI enabled by default** for `cluster init` / `cluster join` (`--enable-cni`), with graceful degradation when plugins are missing.
 - **`setup install --download-cni`** to install the standard CNI plugins (bridge, host-local, loopback).
-- End-to-end test report: `docs/reports/e2e-two-vm-2026-09-21.md`.
 
 ### Changed
 - CI: run golangci-lint v2 via `golangci-lint-action@v9`, refresh action versions, and fix the release smoke-test VXLAN flag.

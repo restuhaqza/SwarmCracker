@@ -131,8 +131,8 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *types.Task) error
 │      • Create /tmp/swarmcracker-<id>/                                       │
 │                                                                             │
 │   5. Detect Init System                                                     │
-│      • Detector.Detect(tempDir)                                             │
-│      → tini / dumb-init / systemd / none                                    │
+│      • DetectInitType(tempDir)                                              │
+│      → tini / dumb-init / openrc / sysvinit / none                          │
 │                                                                             │
 │   6. Inject Init System                                                     │
 │      • InjectIntoDir(tempDir, ociInfo)                                      │
@@ -267,41 +267,33 @@ The old `Inject(rootfsPath)` method never actually mounted the ext4 image. Use `
 
 **File:** `detector.go`
 
-### Detector
+### Function
 
 ```go
-type Detector struct {
-    // No fields - stateless detection
-}
+func DetectInitType(tmpDir string) InitTypeResult
 ```
 
-### Methods
-
-#### Detect
-
-```go
-func (d *Detector) Detect(tmpDir string) (*InitInfo, error)
-```
-
-**Purpose:** Detect init system type from extracted rootfs.
+**Purpose:** Detect init system type from an extracted rootfs. Detection is
+stateless (free function, not a method).
 
 ```go
-type InitInfo struct {
-    Type       InitType
-    Path       string
-    HasSh      bool
-    HasBusybox bool
+type InitTypeResult struct {
+    Type    InitType
+    Message string // Human-readable explanation
 }
 
 type InitType string
 
 const (
-    InitTypeTini      InitType = "tini"
-    InitTypeDumbInit  InitType = "dumb-init"
-    InitTypeSystemd   InitType = "systemd"
-    InitTypeBusybox   InitType = "busybox"
-    InitTypeNone      InitType = "none"
-    InitTypeScratch   InitType = "scratch"
+    InitTypeNone         InitType = "none"
+    InitTypeSystemd      InitType = "systemd"
+    InitTypeOpenRC       InitType = "openrc"
+    InitTypeSysvinit     InitType = "sysvinit"
+    InitTypeTini         InitType = "tini"
+    InitTypeDumbInit     InitType = "dumb-init"
+    InitTypeScratch      InitType = "scratch"
+    InitTypeUnknown      InitType = "unknown"
+    InitTypeIncompatible InitType = "incompatible"
 )
 ```
 
@@ -309,12 +301,12 @@ const (
 
 | Check | Condition | Result |
 |-------|-----------|--------|
-| `/sbin/tini` exists | → | `InitTypeTini` |
-| `/usr/bin/tini` exists | → | `InitTypeTini` |
-| `/usr/bin/dumb-init` exists | → | `InitTypeDumbInit` |
-| `/sbin/init` → systemd | → | `InitTypeSystemd` |
-| Empty directory (scratch) | → | `InitTypeScratch` |
-| `/bin/busybox` exists | → | `InitTypeBusybox` |
+| Empty/scratch dir | → | `InitTypeScratch` |
+| systemd | → | `InitTypeIncompatible` |
+| tini present | → | `InitTypeTini` |
+| dumb-init present | → | `InitTypeDumbInit` |
+| OpenRC present | → | `InitTypeOpenRC` |
+| sysvinit present | → | `InitTypeSysvinit` |
 | Otherwise | → | `InitTypeNone` |
 
 ---
@@ -327,32 +319,33 @@ const (
 
 ```go
 type OCIImageInfo struct {
-    Architecture  string            // e.g., "amd64"
-    OS            string            // e.g., "linux"
-    Entrypoint    []string          // Container entrypoint
-    Cmd           []string          // Container command
-    Env           []string          // Environment variables
-    WorkDir       string            // Working directory
-    User          string            // User (uid:gid)
-    Labels        map[string]string // OCI labels
-    HasInit       bool              // Init system present
-    InitType      InitType          // Detected init type
+    Entrypoint   []string // OCI ENTRYPOINT (exec form)
+    Cmd          []string // OCI CMD (exec form)
+    Env          []string // KEY=VALUE pairs
+    User         string   // OCI USER (e.g. "nginx", "1000:1000")
+    WorkDir      string   // OCI WORKDIR
+    StopSignal   string   // OCI STOPSIGNAL (default "SIGTERM")
+    OS           string   // Image OS (e.g. "linux")
+    Architecture string   // Image architecture (e.g. "amd64")
+    ImageRef     string   // Original image reference
 }
 ```
 
 ### Parse
 
 ```go
-func ParseOCIInfo(image v1.Image) (*OCIImageInfo, error)
+func ParseOCIImageConfig(cfg *v1.ConfigFile, imageRef string) *OCIImageInfo
+func FullCommand(info *OCIImageInfo) []string
 ```
 
-**Purpose:** Parse OCI image config.
+**Purpose:** Parse a go-containerregistry config file (and combine
+ENTRYPOINT/CMD) into an `OCIImageInfo`.
 
 **Example:**
 
 ```go
-info, err := ParseOCIInfo(image)
-fmt.Printf("Arch: %s, Entrypoint: %v\n", info.Architecture, info.Entrypoint)
+info := ParseOCIImageConfig(cfg, "nginx:latest")
+fmt.Printf("Arch: %s, Command: %v\n", info.Architecture, FullCommand(info))
 ```
 
 ---
@@ -364,10 +357,10 @@ fmt.Printf("Arch: %s, Entrypoint: %v\n", info.Architecture, info.Entrypoint)
 For scratch images or images without init:
 
 ```go
-func InjectBusybox(tmpDir string) error
+func injectBusybox(tmpDir string) error
 ```
 
-**Purpose:** Inject busybox static binary.
+**Purpose:** Inject the embedded busybox static binary (unexported helper).
 
 **Implementation:**
 - Extract embedded busybox binary
@@ -406,10 +399,14 @@ func NewKeychain(auth *RegistryAuth) authn.Keychain
 **File:** `verify.go`
 
 ```go
-func VerifyImage(image v1.Image, publicKey []byte) error
+func VerifyBootable(rootfsPath string) error
 ```
 
-**Purpose:** Verify signed image (cosign support).
+**Purpose:** Check an ext4 rootfs has the required files for booting (`/init`,
+`/sbin/init`, `/sbin/tini`, `/bin/sh`, `/etc/resolv.conf`) using `debugfs`.
+Returns `nil` (with a debug log) when `debugfs` is not available.
+
+> There is no cosign / signed-image verification in this package.
 
 ---
 
@@ -418,16 +415,13 @@ func VerifyImage(image v1.Image, publicKey []byte) error
 **File:** `validator.go`
 
 ```go
-func ValidateImageRef(ref string) error
+func validateImageManifest(ctx context.Context, imageRef string, opts ...remote.Option) error
 ```
 
-**Purpose:** Validate image reference format.
-
-```go
-func ValidateRootfs(path string) error
-```
-
-**Purpose:** Validate rootfs image.
+**Purpose:** Validate that an image is Firecracker-compatible: the OS must be
+`linux` and the architecture must match the host (with alias normalization).
+Unreadable manifests are accepted with a warning (graceful degradation). This
+function is unexported; it is called during image preparation.
 
 ---
 
@@ -452,10 +446,11 @@ return normalized
 ### Cache Cleanup
 
 ```go
-func CleanupOldImages(rootfsDir string, maxAgeDays int) error
+func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemoved int, bytesFreed int64, err error)
 ```
 
-**Purpose:** Remove rootfs images older than maxAgeDays.
+**Purpose:** Remove rootfs images older than `keepDays` and report the number
+of files removed and bytes freed.
 
 ---
 

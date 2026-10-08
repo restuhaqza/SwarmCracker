@@ -24,4 +24,4 @@ Practical guides for using SwarmCracker.
 - [Getting Started](../getting-started/) — Installation
 - [CLI Reference](/reference/cli/) — Commands
 - [Architecture](../architecture/) — Design docs
-- [User Docs Home](/) — All user documentation
+- [Docs Home](/) — All documentation

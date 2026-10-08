@@ -19,7 +19,7 @@ pkg/swarmkit/
 ├── vmm.go              # VMM Manager (Firecracker process management)
 ├── translator.go       # Task → Firecracker config translation
 ├── interfaces.go       # Interface definitions
-├── mocks.go            # Test mocks
+├── mocks_test.go       # Test mocks
 └── configs/            # SwarmKit configuration helpers
 ```
 
@@ -64,7 +64,7 @@ type Config struct {
     Subnet           string   `yaml:"subnet"`
     BridgeIP         string   `yaml:"bridge_ip"`
     IPMode           string   `yaml:"ip_mode"`
-    NATEnabled       bool     `yaml:"nat_enabled"`
+    NATEnabled       *bool    `yaml:"nat_enabled"`
     VXLANEnabled     bool     `yaml:"vxlan_enabled"`
     VXLANPeers       []string `yaml:"vxlan_peers"`
     Debug            bool     `yaml:"debug"`
@@ -72,6 +72,9 @@ type Config struct {
     ReservedMemoryMB int      `yaml:"reserved_memory_mb"`
     MaxImageAgeDays  int      `yaml:"max_image_age_days"`
     StateDir         string   `yaml:"state_dir"`
+    LogDir           string   `yaml:"log_dir"`
+    GoldenDir        string   `yaml:"golden_dir"`
+    KernelProfiles   map[string]string `yaml:"-"`
 
     // Jailer configuration
     EnableJailer    bool   `yaml:"enable_jailer"`
@@ -144,65 +147,53 @@ The Executor implements these SwarmKit executor interface methods:
 #### Configure
 
 ```go
-func (e *Executor) Configure(ctx context.Context, driver swarmkit_exec.Driver) error
+func (e *Executor) Configure(ctx context.Context, node *api.Node) error
 ```
 
-**Purpose:** Initialize executor with SwarmKit driver for task management.
+**Purpose:** Apply SwarmKit node state to the executor.
 
 **Parameters:**
 - `ctx` — Context for cancellation
-- `driver` — SwarmKit driver for task queue operations
+- `node` — SwarmKit node being configured
 
-**Side Effects:**
-- Creates network infrastructure (bridge, VXLAN)
-- Starts Consul peer discovery watcher (if enabled)
-- Initializes cleanup goroutine
+Currently a no-op (node state is read directly when needed).
 
 ---
 
-#### Create
+#### Controller
 
 ```go
-func (e *Executor) Create(ctx context.Context, task *api.Task) (swarmkit_exec.Controller, error)
+func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error)
 ```
 
-**Purpose:** Create a controller for a new task.
+**Purpose:** Return the controller for a task, creating it on first request.
 
 **Parameters:**
-- `ctx` — Context for cancellation
-- `task` — SwarmKit task specification
+- `t` — SwarmKit task specification
 
 **Returns:**
-- `Controller` — Task controller for lifecycle management
-- `error` — Creation error (e.g., unsupported runtime)
+- `Controller` — Task controller for lifecycle management (a cached controller is returned if one already exists)
+- `error` — Creation error
 
-**Implementation:**
+---
+
+#### Describe
 
 ```go
-func (e *Executor) Create(ctx context.Context, task *api.Task) (swarmkit_exec.Controller, error) {
-    // Check task runtime type
-    container := task.Spec.GetContainer()
-    if container == nil {
-        return nil, fmt.Errorf("unsupported runtime type")
-    }
-
-    // Create controller
-    ctrl := &Controller{
-        task:       task,
-        executor:   e,
-        vmm:        e.vmmMgr,
-        preparer:   e.imagePrep,
-        networkMgr: e.networkMgr,
-    }
-
-    // Store controller
-    e.executorMu.Lock()
-    e.controllers[task.ID] = ctrl
-    e.executorMu.Unlock()
-
-    return ctrl, nil
-}
+func (e *Executor) Describe(ctx context.Context) (*api.NodeDescription, error)
 ```
+
+**Purpose:** Report host resources (CPUs, memory, Firecracker/KVM availability) to SwarmKit.
+
+---
+
+#### SetNetworkBootstrapKeys
+
+```go
+func (e *Executor) SetNetworkBootstrapKeys(keys []*api.EncryptionKey) error
+```
+
+**Purpose:** Store VXLAN overlay encryption keys and apply them to the network manager.
 
 ---
 
@@ -231,14 +222,22 @@ The `Controller` manages the lifecycle of a single task/VM.
 
 ```go
 type Controller struct {
-    task       *api.Task
-    executor   *Executor
-    vmm        VMMManagerInterface
-    preparer   types.ImagePreparer
-    networkMgr types.NetworkManager
-    
-    mu         sync.RWMutex
-    closed     bool
+    task         *api.Task
+    config       *Config
+    imagePrep    types.ImagePreparer
+    networkMgr   types.NetworkManager
+    volumeMgr    *storage.VolumeManager
+    secretMgr    *storage.SecretManager
+    vmmMgr       VMMManagerInterface
+    trans        types.TaskTranslator
+    mu           sync.Mutex
+    prepared     bool
+    started      bool
+    startTime    time.Time
+    internalTask *types.Task
+    socketPath   string
+    logger       zerolog.Logger
+    OnRemove     func()
 }
 ```
 
@@ -254,11 +253,10 @@ func (c *Controller) Prepare(ctx context.Context) error
 
 **Steps:**
 1. Validate task runtime (must be container)
-2. Prepare rootfs image via `ImagePreparer.Prepare()`
-3. Setup TAP device and network via `NetworkManager.CreateTapDevice()`
-4. Allocate IP address
-5. Prepare volumes via `VolumeManager`
-6. Inject secrets/configs
+2. Prepare rootfs image via `ImagePreparer.Prepare()` (or a golden image)
+3. Prepare TAP device and network via `NetworkManager.PrepareNetwork()`
+4. Prepare volumes via `VolumeManager`
+5. Inject secrets/configs
 
 ---
 
@@ -293,18 +291,43 @@ func (c *Controller) Wait(ctx context.Context) error
 
 ---
 
-#### Stop
+#### Shutdown
 
 ```go
-func (c *Controller) Stop(ctx context.Context) error
+func (c *Controller) Shutdown(ctx context.Context) error
 ```
 
 **Purpose:** Gracefully stop the VM.
 
 **Steps:**
-1. Send graceful shutdown signal
-2. Wait for init grace period
-3. Force kill if still running
+1. Send graceful shutdown signal via `VMMManager.Stop()`
+2. Clean up the task network
+3. Mark the task as not started
+
+---
+
+#### Terminate
+
+```go
+func (c *Controller) Terminate(ctx context.Context) error
+```
+
+**Purpose:** Forcefully terminate the VM without a grace period.
+
+**Steps:**
+1. Force kill the VM process via `VMMManager.Stop()` with the caller's context
+2. Mark the task as not started
+
+---
+
+#### Update
+
+```go
+func (c *Controller) Update(ctx context.Context, t *api.Task) error
+```
+
+**Purpose:** Update the task spec before it starts; a no-op for already-started
+tasks (SwarmKit creates a new task for rolling updates).
 
 ---
 
@@ -317,11 +340,22 @@ func (c *Controller) Remove(ctx context.Context) error
 **Purpose:** Remove task and cleanup resources.
 
 **Cleanup Steps:**
-1. Stop VM (if running)
-2. Remove TAP device
-3. Release IP allocation
-4. Cleanup jailer directory (if enabled)
+1. Sync volume data back
+2. Clean up the task network (`NetworkManager.CleanupNetwork()`)
+3. Remove VM (stops if running and removes sockets)
+4. Remove the rootfs image
 5. Remove controller from executor
+
+---
+
+#### ContainerStatus / PortStatus
+
+```go
+func (c *Controller) ContainerStatus(ctx context.Context) (*api.ContainerStatus, error)
+func (c *Controller) PortStatus(ctx context.Context) (*api.PortStatus, error)
+```
+
+**Purpose:** Report the VM's status (task ID, PID, exit code) to SwarmKit.
 
 ---
 
@@ -345,57 +379,74 @@ The `VMMManager` manages Firecracker VM processes and API communication.
 
 ```go
 type VMMManager struct {
-    config    *VMMConfig
-    vms       map[string]*VMInstance
-    mu        sync.RWMutex
-    socketDir string
-}
-
-type VMInstance struct {
-    ID             string
-    PID            int
-    Config         interface{}
-    state          VMState
-    CreatedAt      time.Time
-    SocketPath     string
-    InitSystem     string
-    GracePeriodSec int
-    mu             sync.RWMutex
+    firecrackerPath string
+    jailerPath      string
+    socketDir       string
+    useJailer       bool
+    jailerConfig    *jailer.Config
+    jailer          *jailer.Jailer
+    cgroupMgr       *jailer.CgroupManager
+    processes       map[string]*exec.Cmd
+    processWaits    map[string]*processWait
+    processMutex    sync.Mutex
+    consoles        map[string]*console.Server
+    consoleMutex    sync.Mutex
+    logFiles        map[string]*os.File
+    logMutex        sync.Mutex
+    logDir          string
+    logger          zerolog.Logger
 }
 ```
 
 ### VM States
 
-```go
-type VMState string
-
-const (
-    VMStateNew      VMState = "new"
-    VMStateStarting VMState = "starting"
-    VMStateRunning  VMState = "running"
-    VMStateStopping VMState = "stopping"
-    VMStateStopped  VMState = "stopped"
-    VMStateCrashed  VMState = "crashed"
-)
-```
+>`pkg/swarmkit` does not define a `VMState` type; VM state constants live in
+>`pkg/lifecycle` (see the [Lifecycle Reference](lifecycle.md#vm-states)).
 
 ### Constructor
 
 ```go
-func NewVMMManager(config interface{}) VMMManager
+func NewVMMManager(firecrackerPath, socketDir string) (*VMMManager, error)
 ```
 
 **Parameters:**
-- `config` — VMMConfig or any config interface
+- `firecrackerPath` — path to the Firecracker binary
+- `socketDir` — directory for Firecracker API sockets
+
+**Returns:**
+- `*VMMManager` — the manager
+- `error` — construction error (e.g. binary not found)
+
+`NewVMMManagerWithConfig(cfg *VMMManagerConfig) (*VMMManager, error)` is the
+advanced constructor used when jailer/cgroup options are needed.
 
 ---
 
 ### Methods
 
+The exported method set is:
+
+```go
+Start(ctx context.Context, task *types.Task, config interface{}) error
+Stop(ctx context.Context, task *types.Task) error
+ForceStop(ctx context.Context, task *types.Task) error
+Wait(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+GetPID(taskID string) int
+CheckVMAPIHealth(ctx context.Context, taskID string) bool
+IsRunning(taskID string) bool
+Remove(ctx context.Context, task *types.Task) error
+Describe(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+GetRunningProcesses() map[string]*exec.Cmd
+RemoveProcess(taskID string)
+```
+
+`putAPI(ctx, socketPath, path string, data interface{}) error` is the internal
+helper that performs the `PUT` calls against the Firecracker API socket.
+
 #### Start
 
 ```go
-func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interface{}) error
+func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interface{}) error
 ```
 
 **Purpose:** Start a Firecracker VM for the task.
@@ -406,67 +457,107 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 3. Wait for API server ready (10s timeout)
 4. Configure VM via HTTP API
 5. Send InstanceStart action
-6. Track VM instance
+6. Track VM process
 
 ---
 
 #### Stop
 
 ```go
-func (vm *VMMManager) Stop(ctx context.Context, taskID string) error
+func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error
 ```
 
-**Purpose:** Stop a running VM.
+**Purpose:** Stop a running VM gracefully (SIGTERM, then SIGKILL after 10s).
 
 ---
 
-#### Pause
+#### ForceStop
 
 ```go
-func (vm *VMMManager) Pause(ctx context.Context, taskID string) error
+func (v *VMMManager) ForceStop(ctx context.Context, task *types.Task) error
 ```
 
-**Purpose:** Pause VM (for snapshot).
+**Purpose:** Kill the VM process immediately without a grace period.
 
 ---
 
-#### Resume
+#### Wait
 
 ```go
-func (vm *VMMManager) Resume(ctx context.Context, taskID string) error
+func (v *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
 ```
 
-**Purpose:** Resume paused VM.
+**Purpose:** Wait for the VM process to exit and return its task status.
 
 ---
 
-#### GetInfo
+#### GetPID
 
 ```go
-func (vm *VMMManager) GetInfo(taskID string) (*VMInstance, error)
+func (v *VMMManager) GetPID(taskID string) int
 ```
 
-**Purpose:** Get VM instance info.
+**Purpose:** Return the Firecracker process PID for a task (0 if not running).
 
 ---
 
-#### List
+#### CheckVMAPIHealth
 
 ```go
-func (vm *VMMManager) List() []string
+func (v *VMMManager) CheckVMAPIHealth(ctx context.Context, taskID string) bool
 ```
 
-**Purpose:** List all managed VM IDs.
+**Purpose:** Query the VM's API socket to check liveness.
 
 ---
 
-#### Cleanup
+#### IsRunning
 
 ```go
-func (vm *VMMManager) Cleanup(ctx context.Context, taskID string) error
+func (v *VMMManager) IsRunning(taskID string) bool
 ```
 
-**Purpose:** Cleanup VM resources (socket, state).
+**Purpose:** Report whether the VM process is alive (and not a zombie).
+
+---
+
+#### Remove
+
+```go
+func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error
+```
+
+**Purpose:** Stop the VM if running and remove its socket and tracking state.
+
+---
+
+#### Describe
+
+```go
+func (v *VMMManager) Describe(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+```
+
+**Purpose:** Return the current status of the VM.
+
+---
+
+#### GetRunningProcesses
+
+```go
+func (v *VMMManager) GetRunningProcesses() map[string]*exec.Cmd
+```
+
+**Purpose:** Return a copy of the task-ID → process map.
+
+---
+
+#### RemoveProcess
+
+```go
+func (v *VMMManager) RemoveProcess(taskID string)
+```
+
+**Purpose:** Drop a task from process tracking and close its console.
 
 ---
 
@@ -486,13 +577,21 @@ type Drive struct {
 }
 
 type MachineConfig struct {
-    VCPUs      int  `json:"vcpu_count"`
-    MemSizeMib int  `json:"mem_size_mib"`
-    HtEnabled  bool `json:"ht_enabled"`
+    VcpuCount       int  `json:"vcpu_count"`
+    MemSizeMib      int  `json:"mem_size_mib"`
+    HtEnabled       bool `json:"ht_enabled"`
+    TrackDirtyPages bool `json:"track_dirty_pages,omitempty"`
 }
 
-type ActionsType struct {
+type NetworkInterface struct {
+    IfaceID     string `json:"iface_id"`
+    GuestMac    string `json:"guest_mac,omitempty"`
+    HostDevName string `json:"host_dev_name,omitempty"`
+}
+
+type Action struct {
     ActionType string `json:"action_type"`
+    TimeoutMS  int    `json:"timeout_ms,omitempty"`
 }
 ```
 
@@ -506,25 +605,20 @@ The `Translator` converts SwarmKit task specifications into Firecracker VM confi
 
 ### Type Definition
 
-```go
-type TaskTranslator struct {
-    config *Config
-}
+The implementation type is unexported; callers use the `types.TaskTranslator`
+interface returned by the constructors.
 
-type Config struct {
-    KernelPath    string
-    InitrdPath    string
-    DefaultVCPUs  int
-    DefaultMemMB  int
-    InitSystem    string
-    NetworkConfig types.NetworkConfig
+```go
+type taskTranslatorImpl struct {
+    // kernelPath, bridgeIP, kernelProfiles (private)
 }
 ```
 
 ### Constructor
 
 ```go
-func NewTaskTranslator(config *Config) *TaskTranslator
+func NewTaskTranslator(kernelPath, bridgeIP string) (types.TaskTranslator, error)
+func NewTaskTranslatorWithProfiles(kernelPath, bridgeIP string, kernelProfiles map[string]string) (types.TaskTranslator, error)
 ```
 
 ---
@@ -534,10 +628,11 @@ func NewTaskTranslator(config *Config) *TaskTranslator
 #### Translate
 
 ```go
-func (t *TaskTranslator) Translate(task *api.Task) (*types.VMConfig, error)
+func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error)
 ```
 
-**Purpose:** Convert SwarmKit task to Firecracker VM config.
+**Purpose:** Convert a SwarmKit task to a Firecracker VM config (a
+`map[string]interface{}` consumed by the VMM manager).
 
 **Translation Steps:**
 1. Extract container spec from task
@@ -550,19 +645,25 @@ func (t *TaskTranslator) Translate(task *api.Task) (*types.VMConfig, error)
 **Example Output:**
 
 ```go
-vmConfig := &types.VMConfig{
-    KernelPath: "/usr/share/firecracker/vmlinux",
-    BootArgs:   "console=ttyS0 reboot=k panic=1 pci=off ip=dhcp",
-    RootfsPath: "/var/lib/firecracker/rootfs/nginx-alpine.ext4",
-    VCPUs:      2,
-    MemoryMB:   1024,
-    Network: &types.NetworkConfig{
-        TapDevice:  "tap-abc123",
-        IPAddress:  "192.168.127.42",
-        Gateway:    "192.168.127.1",
+map[string]interface{}{
+    "boot-source": map[string]interface{}{
+        "kernel_image_path": "/usr/share/firecracker/vmlinux",
+        "boot_args":         "console=ttyS0 reboot=k panic=1 pci=off ip=dhcp",
     },
-    InitSystem:     "tini",
-    GracePeriodSec: 10,
+    "drives": []map[string]interface{}{
+        {
+            "drive_id":       "task-abc123",
+            "path_on_host":   "/var/lib/firecracker/rootfs/<id>.ext4",
+            "is_root_device": true,
+            "is_read_only":   false,
+        },
+    },
+    "machine-config": map[string]interface{}{
+        "vcpu_count":   2,
+        "mem_size_mib": 1024,
+        "smt":          false,
+    },
+    "network-interfaces": []map[string]interface{}{ /* … */ },
 }
 ```
 
@@ -577,12 +678,15 @@ vmConfig := &types.VMConfig{
 ```go
 type VMMManagerInterface interface {
     Start(ctx context.Context, task *types.Task, config interface{}) error
-    Stop(ctx context.Context, taskID string) error
-    Pause(ctx context.Context, taskID string) error
-    Resume(ctx context.Context, taskID string) error
-    GetInfo(taskID string) (*VMInstance, error)
-    List() []string
-    Cleanup(ctx context.Context, taskID string) error
+    Stop(ctx context.Context, task *types.Task) error
+    ForceStop(ctx context.Context, task *types.Task) error
+    Wait(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
+    Remove(ctx context.Context, task *types.Task) error
+    GetPID(taskID string) int
+    CheckVMAPIHealth(ctx context.Context, taskID string) bool
+    IsRunning(taskID string) bool
+    GetRunningProcesses() map[string]*exec.Cmd
+    RemoveProcess(taskID string)
 }
 ```
 

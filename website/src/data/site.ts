@@ -1,5 +1,4 @@
-// Single source of truth for all site content.
-// Components import from here and never hardcode copy.
+// Single source of truth for shared site content.
 
 // ---------------------------------------------------------------------------
 // Types
@@ -247,22 +246,22 @@ export const docsCards: DocsCard[] = [
   {
     title: 'Getting Started',
     body: 'Install SwarmCracker, verify prerequisites, and deploy your first microVM-backed service.',
-    href: 'https://docs.swarmcracker.com/user/getting-started/',
+    href: 'https://docs.swarmcracker.com/getting-started/',
   },
   {
     title: 'CLI Reference',
     body: 'Complete reference for every swarmcracker command, flag, and subcommand.',
-    href: 'https://docs.swarmcracker.com/user/reference/cli/',
+    href: 'https://docs.swarmcracker.com/reference/cli/',
   },
   {
     title: 'Networking',
     body: 'Configure bridges, TAP devices, VXLAN overlays, and cross-node networking.',
-    href: 'https://docs.swarmcracker.com/user/guides/networking/',
+    href: 'https://docs.swarmcracker.com/guides/networking/',
   },
   {
     title: 'Security',
     body: 'Understand the isolation model, jailer configuration, and security best practices.',
-    href: 'https://docs.swarmcracker.com/user/guides/security/',
+    href: 'https://docs.swarmcracker.com/guides/security/',
   },
 ];
 

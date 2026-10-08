@@ -23,6 +23,12 @@ executor:
     chroot_base_dir: "/srv/jailer"
     netns: ""
 
+  # Kernel profile registry for prebuilt golden images. Maps a profile name
+  # declared by an image (e.g. "guest-runtime-6.1") to a host kernel path, so a
+  # runtime kernel can be selected per image instead of host-wide.
+  kernel_profiles:
+    guest-runtime-6.1: "/usr/share/firecracker/vmlinux-runtime"
+
 network:
   # Bridge device name on host
   bridge_name: "swarm-br0"
@@ -57,3 +63,11 @@ metrics:
   enabled: false
   address: "localhost:9090"
   format: "prometheus"
+
+snapshot:
+  enabled: false
+  snapshot_dir: "/var/lib/firecracker/snapshots"
+  max_snapshots: 3
+  max_age: "168h"          # 7 days
+  auto_snapshot: false     # Auto-snapshot on VM start
+  compress: false

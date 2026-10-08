@@ -198,7 +198,7 @@ graph TB
             subgraph "Firecracker Process"
                 PID[PID namespace<br/>isolated]
                 NET[Network namespace<br/>isolated]
-                CHR[Chroot<br/>/var/lib/jailer/&lt;vm&gt;]
+                CHR[Chroot<br/>/var/lib/swarmcracker/jailer]
                 CG[Cgroups<br/>CPU/memory limits]
                 SEC[Seccomp<br/>syscall filter]
             end
@@ -274,8 +274,12 @@ database.
 | VM vCPUs | 1 | `executor.default_vcpus` or task spec |
 | VM Memory | 512 MB | `executor.default_memory_mb` or task spec |
 | VM Disk | 1 GB | rootfs size (image-dependent) |
-| CPU Quota | Unlimited | `cgroup.cpu_quota` |
-| Memory Limit | VM RAM | `cgroup.memory_limit` |
+| CPU Quota | Unlimited | jailer `--enable-cgroups` with `--parent-cgroup` |
+| Memory Limit | VM RAM | jailer `--enable-cgroups` with `--parent-cgroup` |
+
+Cgroup limits are applied by the Firecracker jailer. Select the cgroup
+hierarchy version with `--cgroup-version` (for example `v2`); there are no
+`cgroup.*` keys in the YAML config.
 
 Task specs can override the defaults:
 

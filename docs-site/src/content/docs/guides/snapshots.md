@@ -70,7 +70,7 @@ swarmcracker vm snapshot cleanup --max-age 168h
 
 ```yaml
 snapshot:
-  enabled: true
+  enabled: false
   snapshot_dir: "/var/lib/firecracker/snapshots"
   max_snapshots: 3        # per service (0 = unlimited)
   max_age: 168h           # cleanup threshold (0 = unlimited)
@@ -80,7 +80,7 @@ snapshot:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `enabled` | `true` | Enable the snapshot feature |
+| `enabled` | `false` | Enable the snapshot feature |
 | `snapshot_dir` | `/var/lib/firecracker/snapshots` | Snapshot storage directory |
 | `max_snapshots` | `3` | Max snapshots per service |
 | `max_age` | `168h` (7 days) | Age threshold used by `cleanup` |

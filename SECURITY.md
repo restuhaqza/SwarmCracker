@@ -55,7 +55,7 @@ SwarmCracker runs each workload as a Firecracker microVM with hardware-enforced 
 |----------|---------------|
 | Hardware isolation | KVM — separate kernel per VM |
 | Process sandbox | Jailer chroot, non-root UID/GID |
-| Syscall filtering | Seccomp — privileged syscalls blocked |
+| Syscall filtering | Firecracker seccomp-bpf — built-in filter on the VMM process |
 | Network isolation | Per-VM TAP + bridge + VXLAN overlay |
 | Storage isolation | Per-VM ext4 rootfs |
 | Secret protection | Config files at 0600, tokens at DEBUG log level |
@@ -87,9 +87,6 @@ swarmd-firecracker --version  # built with -trimpath -buildmode=pie
 
 # 4. Verify no hardcoded tokens in scripts
 grep -r "SWMTKN" scripts/  # should return nothing
-
-# 5. Verify seccomp is enabled
-grep -r "seccomp" /etc/swarmcracker/  # should show enabled: true
 ```
 
 ### Build from Source (Hardened)
@@ -108,39 +105,46 @@ make all
 - Never hardcode join tokens in scripts or config files
 - Store tokens in Ansible Vault or a secrets manager
 - Rotate tokens after any node leaves the cluster
-- Use `swarmctl token create` to generate fresh tokens
+- Use `swarmcracker cluster token worker` to generate fresh tokens
 
 ### Consul TLS
 
-Enable TLS for Consul communication to prevent eavesdropping on VXLAN peer discovery:
-
-```yaml
-consul:
-  use_tls: true
-  tls_cert_file: /etc/swarmcracker/consul.crt
-  tls_key_file: /etc/swarmcracker/consul.key
-  tls_ca_file: /etc/swarmcracker/consul-ca.crt
-```
+Consul/discovery is configured through daemon flags, not the config file: there
+is no `consul:` section in the configuration schema (`pkg/config/config.go`).
+Enable TLS on the daemon/agent Consul client to prevent eavesdropping on VXLAN
+peer discovery, and point it at the certificate, key, and CA files.
 
 ---
 
 ## Seccomp Profile
 
-SwarmCracker applies a restrictive seccomp profile to Firecracker guest VMs. Default action is `SCMP_ACT_ERRNO` (deny with error).
+Firecracker ships with its own built-in seccomp-bpf policy, applied to the
+**Firecracker VMM process** on the host. SwarmCracker does not define, enable,
+or customise that policy: there is no `security.seccomp` (or equivalent) key in
+the configuration schema (`pkg/config/config.go`) and no daemon flag for it.
 
-### Intentionally Blocked Syscalls
+`pkg/jailer` declares `EnableSeccomp` / `SeccompPolicyPath` fields, but they
+are **reserved for future use**. Jailer v1.15.x does not accept a `--seccomp`
+flag, and Firecracker filters its own syscalls internally.
 
-| Syscall | Risk |
-|---------|------|
-| `mount`, `umount2` | Filesystem manipulation |
-| `pivot_root`, `chroot` | Root directory change |
-| `swapon`, `swapoff`, `reboot` | System control |
-| `init_module`, `delete_module` | Kernel module loading |
-| `iopl`, `ioperm` | Direct hardware I/O |
-| `settimeofday`, `clock_settime` | Time manipulation |
-| `sethostname`, `setdomainname` | Host spoofing |
+To verify the filter is active, find the Firecracker VMM process and read its
+seccomp mode:
 
-> The seccomp filter applies to the **guest VM** only. KVM provides the primary hardware isolation boundary. Seccomp is defense-in-depth.
+```bash
+PID=$(pgrep -f 'firecracker.*--id')
+grep Seccomp /proc/"$PID"/status
+# Seccomp: 2   (filter mode active)
+```
+
+If Firecracker exits with `SIGSYS`, the built-in policy blocked a syscall.
+Inspect the kernel log (`sudo dmesg | grep -i seccomp`) rather than trying to
+disable filtering.
+
+> **Note:** KVM hardware isolation is the primary security boundary; the guest
+> microVM runs its own kernel. Firecracker's seccomp policy protects the VMM
+> process, not the guest workload. See the
+> [Security Guide](docs-site/src/content/docs/contributing/security.md) for
+> full details.
 
 ---
 

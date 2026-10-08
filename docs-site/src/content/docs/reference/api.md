@@ -72,31 +72,23 @@ SwarmCracker extends SwarmKit with a gRPC **unary client interceptor** that inje
 ### Client Side
 
 ```go
-import "github.com/restuhaqza/swarmcracker/pkg/apiversion"
+import (
+    "github.com/restuhaqza/swarmcracker/pkg/apiversion"
+    "google.golang.org/grpc"
+)
 
-// Option 1: Use convenience function
-conn, err := apiversion.DialUnix(socketPath, tlsConfig)
-
-// Option 2: Add interceptor manually
 conn, err := grpc.Dial(addr,
     grpc.WithTransportCredentials(creds),
-    apiversion.WithVersion(),
+    apiversion.WithVersion(), // Injects X-SwarmCracker-Version metadata
 )
 ```
 
 ### Server Side
 
-```go
-import "github.com/restuhaqza/swarmcracker/pkg/apiversion"
-
-func handleRequest(ctx context.Context) {
-    // Extract client version from incoming metadata
-    if err := apiversion.ValidateVersion(ctx, "1"); err != nil {
-        return status.Error(codes.FailedPrecondition, err.Error())
-    }
-    // Proceed...
-}
-```
+The package is client-only. It exports `Current`, `WithVersion()` (a
+`grpc.DialOption`) and `VersionClientInterceptor()`. Servers that need to
+enforce a minimum version read the `x-swarmcracker-version` metadata directly
+from the incoming context.
 
 ### Version History
 
@@ -220,23 +212,25 @@ The daemon exposes a **local HTTP health endpoint** for monitoring:
 |-----------|-------|
 | **Bind address** | `127.0.0.1:8080` |
 | **Endpoint** | `GET /healthz` |
-| **Rate limit** | 10 req/s per client |
-| **Request timeout** | 5s |
+
+The handler returns HTTP `200` when every check passes and HTTP `503`
+otherwise.
 
 ### Response
 
 ```json
 {
-    "status": "healthy",
-    "timestamp": "2026-06-26T23:00:00Z",
+    "healthy": true,
     "checks": {
-        "kvm": true,
-        "firecracker": true,
-        "bridge": true,
-        "consul": true
+        "kvm": { "status": "ok", "message": "KVM is accessible" },
+        "bridge": { "status": "ok", "message": "bridge swarm-br0 exists" },
+        "firecracker": { "status": "ok", "message": "firecracker found at /usr/local/bin/firecracker" }
     }
 }
 ```
+
+Each check's `status` is `"ok"` or `"error"`; `message` carries the
+human-readable detail. There are no `timestamp` or `consul` fields.
 
 ---
 
@@ -246,7 +240,7 @@ Each Firecracker microVM exposes a local HTTP API on its socket:
 
 | Attribute | Value |
 |-----------|-------|
-| **Path** | `/var/run/firecracker/<task-id>/api.sock` |
+| **Path** | `<socket-dir>/<task-id>.sock` (default socket dir `/var/run/firecracker`) |
 | **Endpoint** | `GET /machine-config` |
 | **Endpoint** | `GET /` (info) |
 | **Protocol** | HTTP via Unix socket |

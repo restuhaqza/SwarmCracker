@@ -122,10 +122,10 @@ The docs site is built with Astro Starlight; its source lives in
 
 ## Production Readiness: 10/10
 
-- ✅ 87% test coverage (15 packages)
-- ✅ 70/70 E2E tests passing
+- ✅ 87.6% test coverage (19 packages)
+- ✅ E2E test suite in `test/e2e` (41 top-level Go tests)
 - ✅ All 47 security/code review items addressed
-- ✅ Go 1.26, 8 linters, go vet clean
+- ✅ Go 1.26, 11 linters, go vet clean
 - ✅ Hardened builds (PIE, stripped symbols, trimmed paths)
 
 ## Security
@@ -134,7 +134,7 @@ SwarmCracker takes security seriously. Every workload runs in a hardware-isolate
 
 - **KVM isolation** — separate kernel per VM
 - **Jailer sandbox** — chroot + UID/GID drop + network namespace
-- **Seccomp filtering** — privileged syscalls blocked in guest
+- **Seccomp filtering** — Firecracker's built-in seccomp-bpf policy protects the VMM process (no guest seccomp config)
 - **Path traversal prevention** — validated task IDs, secrets, mounts
 - **Command injection prevention** — PID-file signaling, no shell interpolation
 - **Hardened builds** — PIE binaries with stripped symbols

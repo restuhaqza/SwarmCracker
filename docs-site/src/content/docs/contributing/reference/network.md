@@ -46,10 +46,10 @@ type NetworkManager struct {
     natSetup      bool
     vxlanMgr      *VXLANManager
     peerDiscovery bool
-    peerCancel    context.CancelFunc
     nodeDiscovery types.NodeDiscovery
     cniClient     *CNIClient
     pendingPeers  []string
+    dnsmasqMu     sync.Mutex
 }
 ```
 
@@ -66,13 +66,18 @@ type NetworkConfig struct {
     VXLANPeers       []string // Initial peer IPs
     EnableRateLimit  bool     // Packet rate limiting
     MaxPacketsPerSec int      // Rate limit threshold
+    DHCPRangeStart   int      // DHCP range start offset (default 50)
+    DHCPRangeEnd     int      // DHCP range end offset (default 200)
+    NetnsPath        string   // CNI netns path (default /tmp/firecracker-ns)
+    VXLANID          int      // VXLAN VNI (default 100)
+    VXLANTunnelIP    string   // Overlay IP for this node
 }
 ```
 
 ### Constructor
 
 ```go
-func NewNetworkManager(config types.NetworkConfig) *NetworkManager
+func NewNetworkManager(config types.NetworkConfig) types.NetworkManager
 ```
 
 **Example:**
@@ -119,68 +124,44 @@ if err := nm.Init(ctx); err != nil {
 
 ---
 
-#### CreateTapDevice
+#### PrepareNetwork
 
 ```go
-func (nm *NetworkManager) CreateTapDevice(ctx context.Context, taskID string) (*TapDevice, error)
+func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) error
 ```
 
-**Purpose:** Create TAP device for VM and connect to bridge.
+**Purpose:** Create the TAP device(s), allocate IPs, and attach the VM's
+network(s) to the bridge. TAP creation/removal is handled by the unexported
+helpers `createTapDevice(ctx, network, index, taskID)` and
+`removeTapDevice(tap)`.
 
 **Parameters:**
 - `ctx` — Context for cancellation
-- `taskID` — Unique task identifier
-
-**Returns:**
-- `TapDevice` — TAP device info with allocated IP
-
-**Example:**
-
-```go
-tap, err := nm.CreateTapDevice(ctx, "task-abc123")
-if err != nil {
-    return err
-}
-
-fmt.Printf("TAP: %s, IP: %s\n", tap.Name, tap.IP)
-// Output: TAP: tap-abc123, IP: 192.168.127.42
-```
+- `task` — Task whose `Networks` are configured (annotations are added in place)
 
 ---
 
-#### RemoveTapDevice
+#### CleanupNetwork
 
 ```go
-func (nm *NetworkManager) RemoveTapDevice(ctx context.Context, taskID string) error
+func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) error
 ```
 
-**Purpose:** Remove TAP device and release IP.
+**Purpose:** Tear down the task's TAP devices and release its IP allocations.
 
 ---
 
-#### AllocateIP
+#### GetTapIP
 
 ```go
-func (nm *NetworkManager) AllocateIP(taskID string) (string, error)
+func (nm *NetworkManager) GetTapIP(taskID string) (string, error)
 ```
 
-**Purpose:** Allocate IP address for task.
+**Purpose:** Return the allocated IP for a task's TAP device.
 
-**Algorithm:**
-1. SHA-256 hash of task ID
-2. Convert hash to IP offset in subnet
-3. Linear probing for collision resolution
-4. Skip gateway, network, and broadcast addresses
-
----
-
-#### ReleaseIP
-
-```go
-func (nm *NetworkManager) ReleaseIP(ip string) error
-```
-
-**Purpose:** Release IP back to pool.
+**IP allocation** for a task is deterministic (SHA-256 of the task ID mapped
+into the subnet, linear probing for collisions); releasing an IP is done via
+`(*IPAllocator).Release` (see below).
 
 ---
 
@@ -273,6 +254,14 @@ for i := 0; i < 256; i++ {
 }
 ```
 
+#### Release
+
+```go
+func (a *IPAllocator) Release(ip string)
+```
+
+**Purpose:** Release an IP back to the pool.
+
 ---
 
 ## VXLANManager
@@ -285,33 +274,44 @@ The `VXLANManager` handles VXLAN overlay network setup and peer management.
 
 ```go
 type VXLANManager struct {
-    vxlanDevice string    // e.g., "swarm-br0-vxlan"
-    vni         int       // VXLAN Network Identifier (100)
-    bridge      string    // Bridge to attach (swarm-br0)
-    port        int       // UDP port (4789)
-    localIP     string    // Local underlay IP
-    peers       []string  // Remote peer IPs
-    mu          sync.RWMutex
+    BridgeName string    // Bridge to attach (e.g., "swarm-br0")
+    VXLANID    int       // VXLAN Network Identifier (e.g., 100)
+    OverlayIP  string    // Overlay IP of this node
+    vxlanPort  int       // UDP port (default 4789)
+    peerStore  PeerStore // Source of peer IPs
+    mu         sync.RWMutex
+    // + private context/netlink executor fields
 }
 ```
+
+Peers are supplied by a `PeerStore` (`GetPeers`, `AddPeer`, `RemovePeer`).
+`NewStaticPeerStore(initialPeers []string) *StaticPeerStore` is the map-backed
+implementation used for manually configured peers.
 
 ### Constructor
 
 ```go
-func NewVXLANManager(config VXLANConfig) (*VXLANManager, error)
+func NewVXLANManager(bridgeName string, vxlanID int, overlayIP string, peerStore PeerStore) *VXLANManager
 ```
+
+**Parameters:**
+- `bridgeName` — bridge the VXLAN device is attached to
+- `vxlanID` — VXLAN Network Identifier
+- `overlayIP` — this node's overlay IP
+- `peerStore` — peer source (a nil store is replaced by an empty `StaticPeerStore`)
 
 ---
 
 ### Methods
 
-#### Create
+#### SetupVXLAN
 
 ```go
-func (vx *VXLANManager) Create(ctx context.Context) error
+func (v *VXLANManager) SetupVXLAN(physInterface, localIP string) error
 ```
 
-**Purpose:** Create VXLAN device and attach to bridge.
+**Purpose:** Create the VXLAN device, attach it to the bridge, add the overlay
+IP, and program initial peer forwarding entries.
 
 **Implementation:**
 
@@ -328,41 +328,45 @@ ip link set swarm-br0-vxlan up
 
 ---
 
-#### AddPeer
+#### AddRouteToSubnet
 
 ```go
-func (vx *VXLANManager) AddPeer(peerIP string) error
+func (v *VXLANManager) AddRouteToSubnet(remoteSubnet, remoteOverlayIP string) error
 ```
 
-**Purpose:** Add remote peer to forwarding database.
-
-**Implementation:**
-
-```bash
-bridge fdb append dev swarm-br0-vxlan dst <peer-ip> vni 100 port 4789
-```
-
-**Note:** Uses `fdb append` to allow multiple peers per VNI.
-
----
-
-#### RemovePeer
-
-```go
-func (vx *VXLANManager) RemovePeer(peerIP string) error
-```
-
-**Purpose:** Remove peer from forwarding database.
+**Purpose:** Route a remote subnet through a peer's overlay IP.
 
 ---
 
 #### UpdatePeers
 
 ```go
-func (vx *VXLANManager) UpdatePeers(peers []string) error
+func (v *VXLANManager) UpdatePeers(newPeers []string) error
 ```
 
-**Purpose:** Batch update all peers.
+**Purpose:** Reconcile the VXLAN forwarding database with the given peer set
+(adds and removes FDB entries as needed).
+
+---
+
+#### GetPeers
+
+```go
+func (v *VXLANManager) GetPeers() []string
+```
+
+**Purpose:** Return the current peer list.
+
+---
+
+#### StartPeerDiscovery / StopPeerDiscovery
+
+```go
+func (v *VXLANManager) StartPeerDiscovery(ctx context.Context, localIP string, port int) error
+func (v *VXLANManager) StopPeerDiscovery()
+```
+
+**Purpose:** Start/stop UDP announcement-based peer discovery.
 
 ---
 
@@ -376,43 +380,43 @@ CNI integration for SwarmKit network attachments.
 
 ```go
 type CNIClient struct {
-    pluginDir string
-    configDir string
-    cacheDir  string
+    config CNIConfig
 }
 
 type CNIConfig struct {
-    Name       string
-    Type       string
-    Bridge     string
-    IPAM       IPAMConfig
-    IsDefaultGateway bool
+    BinDir      string // Path to CNI binaries (default: /opt/cni/bin)
+    ConfDir     string // Path to CNI configs (default: /etc/cni/net.d)
+    CacheDir    string // Path to CNI cache (default: /var/lib/cni)
+    NetworkName string // Default network name (default: swarmcracker)
 }
 ```
 
 ### Constructor
 
 ```go
-func NewCNIClient(pluginDir, configDir string) *CNIClient
+func NewCNIClient(config CNIConfig) *CNIClient
 ```
+
+Empty `CNIConfig` fields are filled with the defaults shown above.
 
 ---
 
 ### Methods
 
-#### Add
+#### AddNetwork
 
 ```go
-func (c *CNIClient) Add(ctx context.Context, netName, ifaceName, containerID string, config *CNIConfig) (*CNIResult, error)
+func (c *CNIClient) AddNetwork(ctx context.Context, containerID, netns, ipCIDR, networkName string) (*CNIResult, error)
 ```
 
-**Purpose:** Add network interface for container.
+**Purpose:** Invoke the CNI plugin's ADD operation for a container's netns.
 
 **Returns:**
 
 ```go
 type CNIResult struct {
-    Interfaces []CNIIface
+    CNIVersion string
+    Interfaces []CNIInterface
     IPs        []CNIIP
     Routes     []CNIRoute
 }
@@ -420,13 +424,13 @@ type CNIResult struct {
 
 ---
 
-#### Del
+#### DelNetwork
 
 ```go
-func (c *CNIClient) Del(ctx context.Context, netName, ifaceName, containerID string) error
+func (c *CNIClient) DelNetwork(ctx context.Context, containerID, netns, networkName string) error
 ```
 
-**Purpose:** Remove network interface.
+**Purpose:** Invoke the CNI plugin's DEL operation.
 
 ---
 
@@ -444,82 +448,58 @@ forwarding database.
 
 **File:** `netlink.go`
 
-Low-level network operations using netlink.
+Low-level link/address/route programming goes through a `NetlinkExecutor`
+interface; `NewDefaultNetlinkExecutor()` returns the real
+`vishvananda/netlink`-backed implementation. The interface exposes
+`LinkByName`, `LinkAdd`, `LinkDel`, `LinkSetUp`, `LinkSetDown`,
+`LinkSetMaster`, `LinkSetMTU`, `LinkSetNsFd`, `AddrAdd`, `AddrDel`, `AddrList`,
+`RouteAdd`, `RouteDel`, `RouteList`, `BridgeVlanAdd`, `BridgeVlanDel`,
+`NeighAdd`, `NeighDel`, and `NeighList`. Tests substitute a mock implementation.
 
-### Functions
+### TAP helpers
 
-#### CreateBridge
-
-```go
-func CreateBridge(name string) error
-```
-
-**Implementation:**
-
-```bash
-ip link add <name> type bridge
-ip link set <name> up
-```
-
----
-
-#### SetBridgeIP
+**File:** `cni.go`
 
 ```go
-func SetBridgeIP(name, ipCIDR string) error
+func CreateTAPDevice(name, bridge string) (*TAPDevice, error)
+func DeleteTAPDevice(name string) error
+func SetupVXLANFDB(tapName string, peers []string) error
 ```
 
-**Implementation:**
-
-```bash
-ip addr add <ipCIDR> dev <name>
-```
-
----
-
-#### CreateTap
-
-```go
-func CreateTap(name string) error
-```
-
-**Implementation:**
-
-```bash
-ip tuntap add dev <name> mode tap
-ip link set <name> up
-```
-
----
-
-#### ConnectTapToBridge
-
-```go
-func ConnectTapToBridge(tapName, bridgeName string) error
-```
-
-**Implementation:**
-
-```bash
-ip link set <tapName> master <bridgeName>
-```
+These standalone helpers (usable by the CNI plugin) create/delete a TAP device,
+attach it to a bridge, and program VXLAN FDB entries through a `TAPExecutor`
+(`NewDefaultTAPExecutor()`), which has injectable `*WithExecutor` variants for
+testing.
 
 ---
 
 ## TAP Device
 
-**File:** `tap_executor.go`
+**File:** `manager.go`, `cni.go`
 
-### Type Definition
+`pkg/network` has two TAP representations:
+
+- `TapDevice` (`manager.go`) — the per-VM device tracked by the manager, with
+  full network details.
+- `TAPDevice` (`cni.go`) — the result of the standalone CNI/`CreateTAPDevice`
+  helper.
 
 ```go
 type TapDevice struct {
-    Name    string  // e.g., "tap-abc123"
-    Bridge  string  // e.g., "swarm-br0"
-    IP      string  // e.g., "192.168.127.42"
-    Netmask string  // e.g., "255.255.255.0"
-    Gateway string  // e.g., "192.168.127.1"
-    Subnet  string  // e.g., "192.168.127.0/24"
+    Name    string // e.g., "tap-abc123"
+    Bridge  string // e.g., "swarm-br0"
+    IP      string // e.g., "192.168.127.42"
+    Netmask string // e.g., "255.255.255.0"
+    Gateway string // e.g., "192.168.127.1"
+    Subnet  string // e.g., "192.168.127.0/24"
+}
+
+type TAPDevice struct {
+    Name    string
+    MAC     string
+    Bridge  string
+    IP      string
+    Netmask string
 }
 ```
 
@@ -575,20 +555,26 @@ tc filter add dev <tap> parent 1: protocol ip prio 1 u32 match u32 0 0 flowid 1:
 
 ### Mock NetworkManager
 
+`pkg/network` tests use `mocks_test.go`. A minimal stand-in for the
+`types.NetworkManager` interface looks like:
+
 ```go
 type MockNetworkManager struct {
-    TapDevices map[string]*TapDevice
-    IPs        map[string]string
+    Prepared map[string]bool
 }
 
-func (m *MockNetworkManager) CreateTapDevice(ctx context.Context, taskID string) (*TapDevice, error) {
-    tap := &TapDevice{
-        Name:    "tap-" + taskID,
-        IP:      "192.168.127.42",
-        Gateway: "192.168.127.1",
-    }
-    m.TapDevices[taskID] = tap
-    return tap, nil
+func (m *MockNetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) error {
+    m.Prepared[task.ID] = true
+    return nil
+}
+
+func (m *MockNetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) error {
+    delete(m.Prepared, task.ID)
+    return nil
+}
+
+func (m *MockNetworkManager) GetTapIP(taskID string) (string, error) {
+    return "192.168.127.42", nil
 }
 ```
 
