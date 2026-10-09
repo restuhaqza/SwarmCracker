@@ -137,6 +137,26 @@ Service (replicated microVM) management.
 | `--label` / `-l` | — | Service labels |
 | `--publish` / `-p` | — | Publish a port: `[host:]container[/tcp\|udp]` (repeatable, e.g. `-p 8080:80`) |
 | `--publish-mode` | `ingress` | How published ports are exposed: `ingress` (cluster load-balanced) or `host` (per-replica host port) |
+| `--mode` | `replicated` | Service mode: `replicated` or `global` (one task per node) |
+| `--constraint` | — | Placement constraint `key==value` or `key!=value` (repeatable, e.g. `node.hostname==worker1`) |
+| `--placement-pref` | — | Placement preference `spread=<key>` (repeatable, e.g. `spread=node.labels.zone`) |
+| `--restart-condition` | `any` | Restart condition: `none`, `on-failure` or `any` |
+| `--restart-delay` | — | Delay between restart attempts (e.g. `5s`) |
+| `--restart-max-attempts` | `0` | Max restart attempts before giving up (`0` = unlimited) |
+| `--restart-window` | — | Window for evaluating the restart policy (e.g. `1h`) |
+| `--update-order` | `stop-first` | Rolling-update order: `stop-first` or `start-first` |
+| `--update-parallelism` | `0` | Tasks updated in parallel (`0` = unlimited) |
+| `--update-delay` | — | Delay between updates (e.g. `10s`) |
+| `--update-failure-action` | `pause` | Action on update failure: `pause`, `continue` or `rollback` |
+| `--update-monitor` | — | Window to monitor a new task for failure (e.g. `30s`) |
+| `--update-max-failure-ratio` | `0` | Fraction of tasks that may fail before the failure action (0–1) |
+| `--rollback-*` | — | Same fields as `--update-*`, applied to rollbacks |
+
+`--mode global` runs one task per node (SwarmKit schedules it) and ignores
+`--replicas`. `--constraint` and `--placement-pref` are enforced by the SwarmKit
+scheduler (`node.hostname`, `node.role`, `node.labels.*`, …). `--restart-*` and
+`--update-*` / `--rollback-*` are enforced by SwarmKit's restart and
+rolling-update orchestration.
 
 `--publish 8080:80` exposes port `80` inside the microVM. Multiple mappings are
 allowed (`-p 8080:80 -p 53:53/udp`); `tcp` is the default protocol. The host port
@@ -154,7 +174,7 @@ mapping is released when the service is removed or scaled down. See
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--force` / `-f`.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
