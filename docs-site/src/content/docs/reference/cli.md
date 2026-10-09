@@ -153,6 +153,12 @@ Service (replicated microVM) management.
 | `--rollback-*` | — | Same fields as `--update-*`, applied to rollbacks |
 | `--mount` | — | Mount a volume or host path: `type=volume\|bind,source=<src>,target=<path>[,readonly]` (repeatable) |
 | `--volume` / `-v` | — | Mount a volume or host path: `<src>:<dst>[:ro\|rw]` (repeatable) |
+| `--hostname` | — | Guest VM hostname (RFC 1123) |
+| `--dns` | — | Guest DNS nameserver, an IP address (repeatable) |
+| `--user` | — | **Not supported** — rejected with a clear error |
+| `--cap-add` | — | **Not supported** — rejected with a clear error |
+| `--cap-drop` | — | **Not supported** — rejected with a clear error |
+| `--read-only` | — | **Not supported** — rejected with a clear error |
 
 `--mount` / `--volume` attach data into the guest. A **named volume**
 (`type=volume,source=myvol` or `myvol:/data`) is a volume created with
@@ -170,6 +176,14 @@ scheduler (`node.hostname`, `node.role`, `node.labels.*`, …). `--restart-*` an
 `--update-*` / `--rollback-*` are enforced by SwarmKit's restart and
 rolling-update orchestration.
 
+`--hostname` and `--dns` are honored: the value travels to the executor and the
+guest init applies it at boot (the VM's hostname and `/etc/resolv.conf`).
+Because a SwarmCracker workload is a whole microVM rather than a process sharing
+a kernel, the container-execution flags `--user`, `--cap-add`, `--cap-drop` and
+`--read-only` cannot be enforced — the CLI **rejects them with a clear error** at
+create time instead of accepting and silently ignoring them. `--hostname` and
+`--dns` are also rejected with `--golden`, whose images boot their own init.
+
 `--publish 8080:80` exposes port `80` inside the microVM. Multiple mappings are
 allowed (`-p 8080:80 -p 53:53/udp`); `tcp` is the default protocol. The host port
 is required (ephemeral allocation is not supported yet).
@@ -186,7 +200,7 @@ mapping is released when the service is removed or scaled down. See
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--hostname`, `--dns`, `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count

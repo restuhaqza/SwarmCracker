@@ -92,6 +92,24 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	lines = append(lines, "fi")
 	lines = append(lines, "")
 
+	// Per-task overrides delivered via the kernel command line by the executor.
+	// The wrapper reads them here so a task's --hostname/--dns take effect
+	// without baking per-task state into the shared image rootfs.
+	lines = append(lines, "# Per-task overrides from the kernel command line")
+	lines = append(lines, "_SC_HOST=$(tr ' ' '\\n' < /proc/cmdline 2>/dev/null | grep '^sc.hostname=' | head -n1 | cut -d= -f2-)")
+	lines = append(lines, "if [ -n \"$_SC_HOST\" ]; then")
+	lines = append(lines, "    hostname \"$_SC_HOST\" 2>/dev/null || true")
+	lines = append(lines, "    echo \"$_SC_HOST\" > /etc/hostname 2>/dev/null || true")
+	lines = append(lines, "fi")
+	lines = append(lines, "_SC_DNS=$(tr ' ' '\\n' < /proc/cmdline 2>/dev/null | grep '^sc.dns=' | head -n1 | cut -d= -f2-)")
+	lines = append(lines, "if [ -n \"$_SC_DNS\" ]; then")
+	lines = append(lines, "    : > /etc/resolv.conf 2>/dev/null || true")
+	lines = append(lines, "    for _ns in $(echo \"$_SC_DNS\" | tr ',' ' '); do")
+	lines = append(lines, "        echo \"nameserver $_ns\" >> /etc/resolv.conf 2>/dev/null || true")
+	lines = append(lines, "    done")
+	lines = append(lines, "fi")
+	lines = append(lines, "")
+
 	// Environment variables
 	if info != nil && len(info.Env) > 0 {
 		lines = append(lines, "# Environment")

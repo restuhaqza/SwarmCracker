@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -28,6 +29,18 @@ type serviceCreateOptions struct {
 	publishMode string
 	mounts      []string
 	volumes     []string
+
+	// Guest overrides honored by the executor (applied by the guest init).
+	hostname string
+	dns      []string
+
+	// Container-execution flags. user/capAdd/capDrop/readOnly are rejected with
+	// a clear error (the microVM executor cannot enforce them); hostname/dns
+	// are honored.
+	user     string
+	capAdd   []string
+	capDrop  []string
+	readOnly bool
 
 	// Scheduling / lifecycle (all honored natively by SwarmKit).
 	mode            string
@@ -75,6 +88,20 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		return nil, err
 	}
 
+	// Container-execution flags: reject the ones the microVM executor cannot
+	// enforce, so no flag is ever accepted-but-ignored.
+	if err := validateUnsupportedExecFlags(o.user, o.capAdd, o.capDrop, o.readOnly); err != nil {
+		return nil, err
+	}
+	hostname, err := buildHostname(o.hostname)
+	if err != nil {
+		return nil, err
+	}
+	dns, err := buildDNS(o.dns)
+	if err != nil {
+		return nil, err
+	}
+
 	// The requested VM disk size is carried as a service label so the executor
 	// can size the rootfs. A user-supplied label of the same name wins.
 	svcLabels := parseLabels(o.labels)
@@ -85,6 +112,10 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		if _, ok := svcLabels[types.DiskSizeLabel]; !ok {
 			svcLabels[types.DiskSizeLabel] = o.disk
 		}
+	}
+
+	if svcLabels[types.GoldenLabel] != "" && (hostname != "" || len(dns) > 0) {
+		return nil, fmt.Errorf("--hostname/--dns are not supported with --golden: golden images boot their own init and do not use the OCI init wrapper")
 	}
 
 	// Parse published ports. The mapping travels to the executor as a service
@@ -112,13 +143,18 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		Task: api.TaskSpec{
 			Runtime: &api.TaskSpec_Container{
 				Container: &api.ContainerSpec{
-					Image:   o.image,
-					Env:     o.env,
-					Command: o.command,
-					Args:    o.args,
+					Image:    o.image,
+					Env:      o.env,
+					Command:  o.command,
+					Args:     o.args,
+					Hostname: hostname,
 				},
 			},
 		},
+	}
+
+	if len(dns) > 0 {
+		spec.Task.GetContainer().DNSConfig = &api.ContainerSpec_DNSConfig{Nameservers: dns}
 	}
 
 	if mounts, err := buildMounts(o.mounts, o.volumes); err != nil {
@@ -196,6 +232,15 @@ type serviceUpdateOptions struct {
 	mounts    []string
 	volumes   []string
 	mountsSet bool
+
+	hostname    string
+	dns         []string
+	hostnameSet bool
+	dnsSet      bool
+	user        string
+	capAdd      []string
+	capDrop     []string
+	readOnly    bool
 
 	rollbackAction bool
 
@@ -540,4 +585,61 @@ func isValidVolumeName(name string) bool {
 		}
 	}
 	return true
+}
+
+// validateUnsupportedExecFlags rejects container-execution flags that the
+// microVM executor cannot enforce. Rejecting them here guarantees a flag is
+// never accepted and then silently ignored.
+func validateUnsupportedExecFlags(user string, capAdd, capDrop []string, readOnly bool) error {
+	switch {
+	case strings.TrimSpace(user) != "":
+		return fmt.Errorf("--user is not supported: the microVM guest runs the workload as root (per-task user switching needs a container runtime)")
+	case len(capAdd) > 0:
+		return fmt.Errorf("--cap-add is not supported: the microVM guest has no capability bounding set to grant")
+	case len(capDrop) > 0:
+		return fmt.Errorf("--cap-drop is not supported: the microVM guest has no capability bounding set to drop")
+	case readOnly:
+		return fmt.Errorf("--read-only is not supported: the microVM root filesystem is writable and has no overlay; use a read-only --mount for individual paths")
+	}
+	return nil
+}
+
+// buildHostname validates and normalizes a --hostname value (RFC 1123 labels).
+func buildHostname(h string) (string, error) {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return "", nil
+	}
+	if len(h) > 253 {
+		return "", fmt.Errorf("invalid --hostname %q: longer than 253 characters", h)
+	}
+	for _, label := range strings.Split(h, ".") {
+		if label == "" || len(label) > 63 {
+			return "", fmt.Errorf("invalid --hostname %q: each dot-separated label must be 1-63 characters", h)
+		}
+		for i, r := range label {
+			isAlnum := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
+			isHyphen := r == '-' && i != 0 && i != len(label)-1
+			if !isAlnum && !isHyphen {
+				return "", fmt.Errorf("invalid --hostname %q: %q is not allowed", h, string(r))
+			}
+		}
+	}
+	return h, nil
+}
+
+// buildDNS validates a list of --dns nameservers.
+func buildDNS(dns []string) ([]string, error) {
+	if len(dns) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(dns))
+	for _, d := range dns {
+		d = strings.TrimSpace(d)
+		if net.ParseIP(d) == nil {
+			return nil, fmt.Errorf("invalid --dns %q: not an IP address", d)
+		}
+		out = append(out, d)
+	}
+	return out, nil
 }

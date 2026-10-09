@@ -87,6 +87,12 @@ type Container struct {
 	Args    []string
 	Env     []string
 	Mounts  []Mount
+	// Hostname sets the guest VM's hostname. Empty means the image/default is
+	// used.
+	Hostname string
+	// DNS lists nameservers for the guest's /etc/resolv.conf. Empty means the
+	// image/default resolver is used.
+	DNS []string
 	// DiskSize is the requested minimum rootfs size (e.g. "10G"); empty means
 	// the default content-based sizing is used.
 	DiskSize string
