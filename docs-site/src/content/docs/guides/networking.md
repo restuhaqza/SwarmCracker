@@ -243,19 +243,17 @@ published host port are distributed across the healthy replicas and forwarded to
 the target port inside the chosen replica — including replicas running on worker
 nodes.
 
-- One entry point: reach the published port on any **manager** node.
+- One entry point: reach the published port on **any node** — manager or worker.
+  Each node balances locally from the same routing table.
 - Balancing is L4 and per-connection; sticky sessions are not provided (front the
   service with a proxy if you need them).
 - Replicas that are not `RUNNING` are removed from rotation automatically, and a
   service with no healthy replica stops being forwarded.
 
-:::note[Current scope]
-The routing mesh runs on **manager** nodes. Worker nodes do not yet listen on the
-published port themselves (per-node fan-out is the next step of
-[#36](https://github.com/restuhaqza/SwarmCracker/issues/36)). Reach an ingress
-service through a manager, or use `--publish-mode host` if you need every node
-to listen.
-:::
+A manager computes the authoritative routing table and serves it to the other
+nodes over mutual TLS (port `4243` by default); every node then programs its own
+load balancing. The mesh is enabled by default and can be tuned on the daemon
+with `--ingress-mesh` and `--ingress-port`.
 
 ### Host mode
 
