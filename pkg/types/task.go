@@ -178,8 +178,12 @@ type Network struct {
 
 // NetworkSpec specifies network configuration.
 type NetworkSpec struct {
-	Name         string // Network name (e.g. "my-overlay")
-	Driver       string // Network driver (e.g. "overlay", "bridge")
+	Name    string // Network name (e.g. "my-overlay")
+	Driver  string // Network driver (e.g. "overlay", "bridge")
+	Subnet  string // Allocated subnet CIDR (e.g. "10.10.0.0/24"); empty for the default bridge
+	Gateway string // Allocated gateway IP; empty for the default bridge
+	VXLANID int    // VXLAN VNI for overlay networks; 0 when not an overlay
+
 	DriverConfig *DriverConfig
 }
 

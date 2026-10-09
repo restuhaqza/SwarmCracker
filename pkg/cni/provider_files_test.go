@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -29,7 +30,7 @@ func TestCNIProvider_PredefinedNetworks_Unit(t *testing.T) {
 func TestCNIProvider_AllocateNetwork_Bridge(t *testing.T) {
 	provider := setupCNIProvider(t)
 
-	allocated, err := provider.AllocateNetwork("test-net", "bridge")
+	allocated, err := provider.AllocateNetwork("test-net", "bridge", "", "")
 	require.NoError(t, err, "AllocateNetwork should succeed for the bridge driver")
 	require.NotNil(t, allocated)
 
@@ -54,7 +55,7 @@ func TestCNIProvider_AllocateNetwork_Bridge(t *testing.T) {
 func TestCNIProvider_AllocateNetwork_VXLAN(t *testing.T) {
 	provider := setupCNIProvider(t)
 
-	allocated, err := provider.AllocateNetwork("vxlan-net", "vxlan")
+	allocated, err := provider.AllocateNetwork("vxlan-net", "vxlan", "", "")
 	require.NoError(t, err, "AllocateNetwork should succeed for the vxlan driver")
 	require.NotNil(t, allocated)
 
@@ -68,10 +69,48 @@ func TestCNIProvider_AllocateNetwork_VXLAN(t *testing.T) {
 	require.NoError(t, statErr, "AllocateNetwork should write a CNI config file for vxlan")
 }
 
+func TestCNIProvider_AllocateNetwork_RequestedSubnet(t *testing.T) {
+	provider := setupCNIProvider(t)
+
+	// A user-requested subnet must be honored verbatim.
+	allocated, err := provider.AllocateNetwork("custom", "vxlan", "10.10.0.0/24", "")
+	require.NoError(t, err)
+	require.NotNil(t, allocated.Subnet)
+	assert.Equal(t, "10.10.0.0/24", allocated.Subnet.String())
+	assert.Equal(t, "10.10.0.1", allocated.Gateway.String(), "gateway defaults to the first usable host")
+
+	// An explicit gateway overrides the default.
+	allocated2, err := provider.AllocateNetwork("custom2", "vxlan", "10.20.0.0/24", "10.20.0.254")
+	require.NoError(t, err)
+	assert.Equal(t, "10.20.0.0/24", allocated2.Subnet.String())
+	assert.Equal(t, "10.20.0.254", allocated2.Gateway.String())
+}
+
+func TestCNINetworkAllocator_Allocate_HonorsRequestedSubnet(t *testing.T) {
+	a := newTestAllocator(t)
+	network := &api.Network{
+		ID: "n1",
+		Spec: api.NetworkSpec{
+			Annotations:  api.Annotations{Name: "backend"},
+			DriverConfig: &api.Driver{Name: "vxlan"},
+			IPAM:         &api.IPAMOptions{Configs: []*api.IPAMConfig{{Subnet: "10.99.0.0/24"}}},
+		},
+	}
+
+	require.NoError(t, a.Allocate(network))
+	require.NotNil(t, network.IPAM)
+	require.Len(t, network.IPAM.Configs, 1)
+	assert.Equal(t, "10.99.0.0/24", network.IPAM.Configs[0].Subnet)
+	assert.Equal(t, "10.99.0.1", network.IPAM.Configs[0].Gateway)
+	require.NotNil(t, network.DriverState)
+	assert.Equal(t, "br-backend", network.DriverState.Options["bridge"])
+	assert.NotEmpty(t, network.DriverState.Options["vxlan_vni"], "overlay networks get a VNI")
+}
+
 func TestCNIProvider_GetNetwork(t *testing.T) {
 	provider := setupCNIProvider(t)
 
-	allocated, err := provider.AllocateNetwork("lookup-net", "bridge")
+	allocated, err := provider.AllocateNetwork("lookup-net", "bridge", "", "")
 	require.NoError(t, err)
 
 	// GetNetwork is keyed by the generated "net-N" ID, not the caller's name.

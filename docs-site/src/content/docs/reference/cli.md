@@ -155,6 +155,7 @@ Service (replicated microVM) management.
 | `--volume` / `-v` | — | Mount a volume or host path: `<src>:<dst>[:ro\|rw]` (repeatable) |
 | `--hostname` | — | Guest VM hostname (RFC 1123) |
 | `--dns` | — | Guest DNS nameserver, an IP address (repeatable) |
+| `--network` | — | Attach the service to a user-defined network (repeatable; one network per service for now) |
 | `--user` | — | **Not supported** — rejected with a clear error |
 | `--cap-add` | — | **Not supported** — rejected with a clear error |
 | `--cap-drop` | — | **Not supported** — rejected with a clear error |
@@ -272,14 +273,24 @@ Golden images can be booted with `swarmcracker vm create --golden` or `swarmcrac
 
 #### `swarmcracker network`
 
-Read-only network introspection.
+Manage user-defined networks and inspect host networking.
 
 | Subcommand | Description |
 |------------|-------------|
+| `create --name <n> [--subnet <cidr>] [--driver overlay\|bridge]` | Create an isolated network with its own subnet |
+| `ls` / `list` | List user-defined networks |
+| `inspect <name\|id>` | Show a network's allocated subnet, gateway, bridge, and VNI |
+| `rm <name\|id>` | Remove a network (blocked while services are attached) |
 | `bridge status` | Bridge state, addresses, and attached interfaces |
 | `vxlan ls` / `vxlan status` | VXLAN interfaces and peers |
 
-`network bridge status` flags: `--bridge` (default `swarm-br0`), `--format` (`table`, `json`). `network vxlan ls` flags: `--format` (`table`, `json`).
+Each user-defined network is allocated its own subnet, a per-node bridge
+(`br-<name>`) and an overlay VXLAN ID. Services attached with
+`service create --network <name>` get their VM IP from that network's subnet and
+are **isolated** from services on other networks. `network rm` fails with a clear
+error while any service is still attached. `network bridge status` flags:
+`--bridge` (default `swarm-br0`), `--format` (`table`, `json`). `network ls` and
+`network inspect` flags: `--format` (`table`/`json`, `inspect` defaults to `json`).
 
 #### `swarmcracker volume`
 
