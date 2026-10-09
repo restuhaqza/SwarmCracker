@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,14 +20,29 @@ func (f *fakeSource) Services(context.Context) ([]ServiceSpec, error) { return f
 func (f *fakeSource) Tasks(context.Context) ([]TaskSpec, error)       { return f.tasks, nil }
 
 type fakeLB struct {
+	mu    sync.Mutex
 	last  []network.IngressRoute
 	calls int
 }
 
 func (f *fakeLB) ProgramIngress(routes []network.IngressRoute) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.last = routes
 	f.calls++
 	return nil
+}
+
+func (f *fakeLB) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+func (f *fakeLB) routes() []network.IngressRoute {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.last
 }
 
 func TestReconcile_UsesOnlyRunningReplicas(t *testing.T) {

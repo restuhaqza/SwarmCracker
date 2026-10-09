@@ -59,7 +59,7 @@ func TestController_RunReconcilesThenStops(t *testing.T) {
 		close(done)
 	}()
 
-	require.Eventually(t, func() bool { return lb.calls >= 1 }, 2*time.Second, 10*time.Millisecond,
+	require.Eventually(t, func() bool { return lb.count() >= 1 }, 2*time.Second, 10*time.Millisecond,
 		"Run must reconcile at least once")
 	cancel()
 
