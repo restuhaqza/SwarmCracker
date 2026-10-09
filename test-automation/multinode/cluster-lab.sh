@@ -17,6 +17,7 @@
 #   provision          Push runtime assets and configure every VM
 #   cluster            Init the manager and join the workers (VXLAN enabled)
 #   test               Deploy a replicated service and test cross-host traffic
+#   ingress            E2E the ingress routing mesh (fan-out, failover, UDP, cleanup)
 #   status             Show cluster nodes, services and microVMs
 #   ssh <n>            Open a shell on node <n>
 #   destroy            Destroy the VMs and the seed server
@@ -443,9 +444,99 @@ cmd_destroy() {
 }
 
 ###############################################################################
-# dispatch
+# ingress routing mesh e2e
 ###############################################################################
 
+# cmd_ingress exercises the ingress routing mesh end to end: it publishes a
+# service and checks that EVERY node serves it (fan-out), that scaling to a
+# single replica keeps every node serving (failover), that UDP datagrams are
+# DNAT'd on every node, and that removing the service clears the rules.
+cmd_ingress() {
+  need_root
+  [ -n "$(node_ip 1 || true)" ] || die "no nodes found; run: $0 create"
+  local n="$LAB_NODES"
+  local port="${LAB_INGRESS_PORT:-18090}"
+  local udp_port="${LAB_INGRESS_UDP_PORT:-18096}"
+  local svc="${LAB_INGRESS_SERVICE:-lab-ingress}"
+  local svc_udp="${svc}-udp"
+  local rc=0 i ip code
+
+  wait_running() { # <service> <count>
+    local j r
+    for j in $(seq 1 40); do
+      r="$(node_ssh 1 "swarmcracker service ps $1 2>/dev/null | grep -c RUNNING" || true)"
+      [ "${r:-0}" -ge "$2" ] && return 0
+      sleep 5
+    done
+    return 1
+  }
+
+  serve_all() { # <port> <label>
+    local j code
+    for j in $(seq 1 "$n"); do
+      ip="$(node_ip "$j")"
+      code="$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' "http://$ip:$port/" 2>/dev/null)"
+      printf '  %s node%s (%s):%s -> %s\n' "$2" "$j" "$ip" "$port" "$code"
+      [ "$code" = "200" ] || rc=1
+    done
+  }
+
+  info "TCP ingress: $n replicas of $LAB_IMAGE_OCI published on $port"
+  node_ssh 1 "swarmcracker service rm $svc --force >/dev/null 2>&1 || true"
+  node_ssh 1 "swarmcracker service create --name $svc --image $LAB_IMAGE_OCI --replicas $n --publish $port:80" >/dev/null
+  wait_running "$svc" "$n" || die "replicas did not become RUNNING"
+
+  info "fan-out: every node must serve the published port"
+  serve_all "$port" "fan-out"
+  [ "$rc" = 0 ] || die "ingress fan-out failed: not every node returned 200"
+
+  info "failover: scale to one replica; every node must still serve"
+  node_ssh 1 "swarmcracker service scale $svc 1" >/dev/null
+  wait_running "$svc" 1 || die "scale-down did not settle"
+  sleep 6
+  serve_all "$port" "failover"
+  [ "$rc" = 0 ] || die "failover failed: not every node returned 200"
+
+  info "UDP datapath: datagrams to :$udp_port must be DNAT'd on every node"
+  if command -v nc >/dev/null 2>&1; then
+    node_ssh 1 "swarmcracker service rm $svc_udp --force >/dev/null 2>&1 || true"
+    node_ssh 1 "swarmcracker service create --name $svc_udp --image $LAB_IMAGE_OCI --replicas $n --publish $udp_port:80/udp" >/dev/null
+    wait_running "$svc_udp" "$n" || die "UDP replicas did not become RUNNING"
+    sleep 6
+    local before after sent=10 j
+    for j in $(seq 1 "$n"); do
+      ip="$(node_ip "$j")"
+      before="$(node_ssh "$j" "iptables -t nat -nvL PREROUTING | grep -E 'dpt:$udp_port' | awk '{s+=\$1} END {print s+0}'" || echo 0)"
+      local k
+      for k in $(seq 1 "$sent"); do printf 'u' | timeout 2 nc -u -w1 "$ip" "$udp_port" >/dev/null 2>&1 || true; done
+      sleep 1
+      after="$(node_ssh "$j" "iptables -t nat -nvL PREROUTING | grep -E 'dpt:$udp_port' | awk '{s+=\$1} END {print s+0}'" || echo 0)"
+      printf '  node%s udp rule packets: %s -> %s (sent %s)\n' "$j" "$before" "$after" "$sent"
+      [ "$after" -ge $((before + sent)) ] || rc=1
+    done
+    [ "$rc" = 0 ] || die "UDP datapath check failed"
+  else
+    warn "nc not found; skipping the UDP datapath check"
+  fi
+
+  info "cleanup: removing the services must clear ingress rules on every node"
+  node_ssh 1 "swarmcracker service rm $svc --force >/dev/null 2>&1 || true"
+  node_ssh 1 "swarmcracker service rm $svc_udp --force >/dev/null 2>&1 || true"
+  sleep 8
+  for i in $(seq 1 "$n"); do
+    local left
+    left="$(node_ssh "$i" "iptables -t nat -S PREROUTING | grep -c swarmcracker:ingress || true")"
+    printf '  node%s leftover ingress rules: %s\n' "$i" "${left:-0}"
+    [ "${left:-0}" = "0" ] || rc=1
+  done
+  [ "$rc" = 0 ] || die "ingress cleanup failed"
+
+  info "ingress routing mesh e2e passed"
+}
+
+###############################################################################
+# dispatch
+###############################################################################
 usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
 
 case "${1:-}" in
@@ -455,6 +546,7 @@ case "${1:-}" in
   provision)  cmd_provision ;;
   cluster)    cmd_cluster ;;
   test)       cmd_test ;;
+  ingress)    cmd_ingress ;;
   status)     cmd_status ;;
   ssh)        shift; cmd_ssh "${1:-1}" ;;
   destroy|down) cmd_destroy ;;

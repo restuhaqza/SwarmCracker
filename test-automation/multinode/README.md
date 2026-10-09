@@ -50,6 +50,7 @@ sudo test-automation/multinode/cluster-lab.sh create 3
 sudo test-automation/multinode/cluster-lab.sh provision
 sudo test-automation/multinode/cluster-lab.sh cluster
 sudo test-automation/multinode/cluster-lab.sh test
+sudo test-automation/multinode/cluster-lab.sh ingress
 
 # Inspect / enter / tear down
 sudo test-automation/multinode/cluster-lab.sh status
@@ -60,6 +61,13 @@ sudo test-automation/multinode/cluster-lab.sh destroy
 `test` deploys one replica of `nginx:alpine` per node and prints a
 from-node → to-node matrix of `ping` and `HTTP` results. A healthy cluster shows
 `ping=OK http=200` for **remote** microVMs, not just the local one.
+
+`ingress` exercises the ingress routing mesh end to end: it publishes a service
+and asserts that **every node** serves the published port (fan-out), that scaling
+to a single replica keeps every node serving (failover), that UDP datagrams are
+DNAT'd on every node (rule counters advance), and that removing the services
+clears the rules everywhere. It needs `curl` and, for the UDP check, `nc` on the
+host.
 
 ## Configuration
 
