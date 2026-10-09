@@ -151,6 +151,18 @@ Service (replicated microVM) management.
 | `--update-monitor` | — | Window to monitor a new task for failure (e.g. `30s`) |
 | `--update-max-failure-ratio` | `0` | Fraction of tasks that may fail before the failure action (0–1) |
 | `--rollback-*` | — | Same fields as `--update-*`, applied to rollbacks |
+| `--mount` | — | Mount a volume or host path: `type=volume\|bind,source=<src>,target=<path>[,readonly]` (repeatable) |
+| `--volume` / `-v` | — | Mount a volume or host path: `<src>:<dst>[:ro\|rw]` (repeatable) |
+
+`--mount` / `--volume` attach data into the guest. A **named volume**
+(`type=volume,source=myvol` or `myvol:/data`) is a volume created with
+`swarmcracker volume create`; a **bind** mount (`type=bind,source=/host/path` or
+`/host/path:/data`) copies a host path from the node running the task. Mounts
+are materialized into a **private, per-task copy of the rootfs** at start time
+(so the shared image cache is never modified and mounts never leak between
+tasks), which means the content is a snapshot taken when the task starts — the
+data is not live-shared with the host. Read-only mounts (`:ro` / `readonly`) are
+not written back to the volume when the task stops.
 
 `--mode global` runs one task per node (SwarmKit schedules it) and ignores
 `--replicas`. `--constraint` and `--placement-pref` are enforced by the SwarmKit
@@ -174,7 +186,7 @@ mapping is released when the service is removed or scaled down. See
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count

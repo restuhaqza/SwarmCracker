@@ -191,13 +191,11 @@ func TestTaskTranslator_Translate(t *testing.T) {
 					assert.Equal(t, len(tt.task.Networks), len(config.NetworkInterfaces))
 				}
 
-				// Verify volume mounts (if task has mounts)
-				if container, ok := tt.task.Spec.Runtime.(*types.Container); ok {
-					if len(container.Mounts) > 0 {
-						// Should have rootfs + volumes
-						expectedDrives := 1 + len(container.Mounts)
-						assert.Equal(t, expectedDrives, len(config.Drives))
-					}
+				// Mounts are materialized into the rootfs by the image
+				// preparer, so even a task with mounts has only the rootfs
+				// drive (no per-mount Firecracker drive).
+				if container, ok := tt.task.Spec.Runtime.(*types.Container); ok && len(container.Mounts) > 0 {
+					assert.Equal(t, 1, len(config.Drives), "mounts must not add drives")
 				}
 			}
 		})
@@ -408,58 +406,6 @@ func TestTaskTranslator_buildNetworkInterface(t *testing.T) {
 			assert.Contains(t, got.HostDevName, "tap")
 			assert.Equal(t, 256, got.RxQueueSize)
 			assert.Equal(t, 256, got.TxQueueSize)
-		})
-	}
-}
-
-func TestTaskTranslator_buildVolumeDrive(t *testing.T) {
-	tests := []struct {
-		name         string
-		mount        types.Mount
-		wantDriveID  string
-		wantReadOnly bool
-	}{
-		{
-			name: "read-write mount",
-			mount: types.Mount{
-				Target:   "/data",
-				Source:   "/srv/data",
-				ReadOnly: false,
-			},
-			wantDriveID:  "data",
-			wantReadOnly: false,
-		},
-		{
-			name: "read-only mount",
-			mount: types.Mount{
-				Target:   "/config/redis.conf",
-				Source:   "/etc/redis.conf",
-				ReadOnly: true,
-			},
-			wantDriveID:  "config-redis.conf",
-			wantReadOnly: true,
-		},
-		{
-			name: "mount with leading slash",
-			mount: types.Mount{
-				Target:   "/app/data",
-				Source:   "/host/data",
-				ReadOnly: false,
-			},
-			wantDriveID:  "app-data",
-			wantReadOnly: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			translator := NewTaskTranslator(nil)
-			got := translator.buildVolumeDrive(tt.mount)
-
-			assert.Equal(t, tt.wantDriveID, got.DriveID)
-			assert.Equal(t, tt.mount.Source, got.PathOnHost)
-			assert.Equal(t, tt.wantReadOnly, got.IsReadOnly)
-			assert.False(t, got.IsRootDevice)
 		})
 	}
 }

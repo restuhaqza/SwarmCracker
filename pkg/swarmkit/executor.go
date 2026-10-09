@@ -1014,18 +1014,16 @@ func (c *Controller) Remove(ctx context.Context) error {
 		c.logger.Error().Err(err).Msg("Failed to remove VM")
 	}
 
-	// Clean up rootfs image — use the actual path recorded during Prepare.
-	// The rootfs is named by image ID (generateImageID in pkg/image), NOT
-	// task ID; the old task.ID+".ext4" path never existed and leaked disk.
+	// Remove the per-task rootfs copy, if any. The shared image rootfs (named
+	// by image ID) is the cache and must be kept; only the ephemeral per-task
+	// copy created for mount-bearing tasks is deleted.
 	rootfsPath := ""
-	if c.internalTask != nil {
+	if c.internalTask != nil && c.internalTask.Annotations["rootfs_ephemeral"] == "true" {
 		rootfsPath = c.internalTask.Annotations["rootfs"]
 	}
 	if rootfsPath == "" {
-		// Legacy naming: the rootfs is named by image ID (see above), so this
-		// path essentially never exists. Only attempt it when it actually does;
-		// otherwise removing a missing entry under a read-only rootfs dir logs
-		// a misleading EROFS warning.
+		// Legacy per-task naming: <task-id>.ext4. Only attempt it when it
+		// actually exists, so removing a task never touches the image cache.
 		legacy := filepath.Join(c.config.RootfsDir, task.ID+".ext4")
 		if _, statErr := os.Stat(legacy); statErr == nil {
 			rootfsPath = legacy
