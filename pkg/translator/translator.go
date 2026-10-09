@@ -277,6 +277,7 @@ func (tt *TaskTranslator) buildBootArgs(task *types.Task) string {
 	}
 
 	args = append(args, tt.networkBootArgs(task)...)
+	args = append(args, guestOverrideBootArgs(container)...)
 
 	// Build container command line
 	var containerCmd []string
@@ -379,6 +380,24 @@ func (tt *TaskTranslator) networkBootArgs(task *types.Task) []string {
 
 	// Pass MTU as a kernel argument (can be used by init scripts)
 	return []string{ipArg, fmt.Sprintf("mtu=%d", mtu)}
+}
+
+// guestOverrideBootArgs returns kernel boot arguments that the guest init
+// wrapper reads from /proc/cmdline to apply per-task overrides. The CLI
+// validates these values (hostname syntax, IP addresses) so they never contain
+// spaces.
+func guestOverrideBootArgs(container *types.Container) []string {
+	var args []string
+	if container == nil {
+		return args
+	}
+	if h := strings.TrimSpace(container.Hostname); h != "" {
+		args = append(args, "sc.hostname="+h)
+	}
+	if len(container.DNS) > 0 {
+		args = append(args, "sc.dns="+strings.Join(container.DNS, ","))
+	}
+	return args
 }
 
 // buildInitArgs builds init arguments wrapping the container command.

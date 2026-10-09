@@ -1234,7 +1234,13 @@ func (c *Controller) convertTask() *types.Task {
 		Command:  containerSpec.Container.Command,
 		Args:     containerSpec.Container.Args,
 		Env:      containerSpec.Container.Env,
+		Hostname: containerSpec.Container.Hostname,
 		DiskSize: c.task.ServiceAnnotations.Labels[types.DiskSizeLabel],
+	}
+
+	// Convert DNS nameservers, if any.
+	if dns := containerSpec.Container.DNSConfig; dns != nil {
+		container.DNS = dns.Nameservers
 	}
 
 	// Convert mounts

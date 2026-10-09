@@ -1,11 +1,13 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -155,6 +157,130 @@ func TestBuildMounts_RejectsInvalid(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			_, err := buildMounts(tc.mounts, tc.volumes)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestBuildServiceSpec_HostnameAndDNS(t *testing.T) {
+	spec, err := buildServiceSpec(serviceCreateOptions{
+		name:     "web",
+		image:    "nginx",
+		replicas: 1,
+		hostname: "api-1.internal",
+		dns:      []string{"1.1.1.1", "9.9.9.9"},
+	})
+	require.NoError(t, err)
+
+	container := spec.Task.GetContainer()
+	require.NotNil(t, container)
+	assert.Equal(t, "api-1.internal", container.Hostname)
+	require.NotNil(t, container.DNSConfig)
+	assert.Equal(t, []string{"1.1.1.1", "9.9.9.9"}, container.DNSConfig.Nameservers)
+}
+
+func TestBuildServiceSpec_DefaultsLeaveHostnameDNSUnset(t *testing.T) {
+	spec, err := buildServiceSpec(serviceCreateOptions{name: "d", image: "nginx", replicas: 1})
+	require.NoError(t, err)
+	container := spec.Task.GetContainer()
+	require.NotNil(t, container)
+	assert.Empty(t, container.Hostname)
+	assert.Nil(t, container.DNSConfig)
+}
+
+// TestBuildServiceSpec_RejectsUnsupportedExecFlags enforces the #37 contract:
+// a flag the executor cannot honor must be rejected with a clear error, never
+// silently accepted.
+func TestBuildServiceSpec_RejectsUnsupportedExecFlags(t *testing.T) {
+	cases := map[string]serviceCreateOptions{
+		"user":      {user: "1000:1000"},
+		"cap-add":   {capAdd: []string{"NET_ADMIN"}},
+		"cap-drop":  {capDrop: []string{"ALL"}},
+		"read-only": {readOnly: true},
+	}
+	for name, o := range cases {
+		t.Run(name, func(t *testing.T) {
+			o.name = "x"
+			o.image = "nginx"
+			_, err := buildServiceSpec(o)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "not supported")
+		})
+	}
+}
+
+func TestBuildServiceSpec_RejectsInvalidHostnameDNS(t *testing.T) {
+	cases := map[string]serviceCreateOptions{
+		"hostname-space":    {hostname: "bad host"},
+		"hostname-slash":    {hostname: "bad/host"},
+		"hostname-long":     {hostname: strings.Repeat("a", 254)},
+		"hostname-empty-lb": {hostname: "a..b"},
+		"dns-not-ip":        {dns: []string{"not-an-ip"}},
+		"dns-empty":         {dns: []string{""}},
+	}
+	for name, o := range cases {
+		t.Run(name, func(t *testing.T) {
+			o.name = "x"
+			o.image = "nginx"
+			_, err := buildServiceSpec(o)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestBuildServiceSpec_GoldenRejectsHostnameDNS(t *testing.T) {
+	for name, o := range map[string]serviceCreateOptions{
+		"hostname": {labels: []string{types.GoldenLabel + "=ubuntu@1.0"}, hostname: "g"},
+		"dns":      {labels: []string{types.GoldenLabel + "=ubuntu@1.0"}, dns: []string{"1.1.1.1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			o.name = "x"
+			o.image = "swarmcracker/golden:ubuntu-1.0"
+			_, err := buildServiceSpec(o)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "golden")
+		})
+	}
+}
+
+// TestBuildServiceSpec_ExecFlagsAreHonoredOrRejected asserts that each of the
+// container-execution flags either lands in the spec or is rejected -- i.e. no
+// flag is accepted and then ignored.
+func TestBuildServiceSpec_ExecFlagsAreHonoredOrRejected(t *testing.T) {
+	base := func() serviceCreateOptions {
+		return serviceCreateOptions{name: "x", image: "nginx", replicas: 1}
+	}
+
+	t.Run("hostname honored", func(t *testing.T) {
+		o := base()
+		o.hostname = "node-a"
+		spec, err := buildServiceSpec(o)
+		require.NoError(t, err)
+		assert.Equal(t, "node-a", spec.Task.GetContainer().Hostname)
+	})
+
+	t.Run("dns honored", func(t *testing.T) {
+		o := base()
+		o.dns = []string{"8.8.8.8"}
+		spec, err := buildServiceSpec(o)
+		require.NoError(t, err)
+		require.NotNil(t, spec.Task.GetContainer().DNSConfig)
+		assert.Equal(t, []string{"8.8.8.8"}, spec.Task.GetContainer().DNSConfig.Nameservers)
+	})
+
+	for _, tc := range []struct {
+		name string
+		o    serviceCreateOptions
+	}{
+		{"user", serviceCreateOptions{user: "root"}},
+		{"cap-add", serviceCreateOptions{capAdd: []string{"SYS_ADMIN"}}},
+		{"cap-drop", serviceCreateOptions{capDrop: []string{"ALL"}}},
+		{"read-only", serviceCreateOptions{readOnly: true}},
+	} {
+		t.Run(tc.name+" rejected", func(t *testing.T) {
+			o := base()
+			o.user, o.capAdd, o.capDrop, o.readOnly = tc.o.user, tc.o.capAdd, tc.o.capDrop, tc.o.readOnly
+			_, err := buildServiceSpec(o)
 			assert.Error(t, err)
 		})
 	}

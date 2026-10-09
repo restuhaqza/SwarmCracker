@@ -152,6 +152,13 @@ func newServiceCreateCommand() *cobra.Command {
 		volumes     []string
 		mode        string
 
+		hostname string
+		dns      []string
+		user     string
+		capAdd   []string
+		capDrop  []string
+		readOnly bool
+
 		constraints    []string
 		placementPrefs []string
 
@@ -226,6 +233,12 @@ With --golden, the service boots a prebuilt golden image (see
 				mounts:             mounts,
 				volumes:            volumes,
 				mode:               mode,
+				hostname:           hostname,
+				dns:                dns,
+				user:               user,
+				capAdd:             capAdd,
+				capDrop:            capDrop,
+				readOnly:           readOnly,
 				constraints:        constraints,
 				placementPrefs:     placementPrefs,
 				restartSet:         anyFlagChanged(cmd, "restart-condition", "restart-delay", "restart-max-attempts", "restart-window"),
@@ -267,6 +280,12 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Mount a volume or host path: type=volume|bind,source=<src>,target=<path>[,readonly] (repeatable)")
 	cmd.Flags().StringArrayVarP(&volumes, "volume", "v", nil, "Mount a volume or host path: <src>:<dst>[:ro|rw] (repeatable)")
 	cmd.Flags().StringVar(&mode, "mode", modeReplicated, "Service mode: replicated or global")
+	cmd.Flags().StringVar(&hostname, "hostname", "", "Guest VM hostname")
+	cmd.Flags().StringArrayVar(&dns, "dns", nil, "DNS nameserver for the guest (repeatable)")
+	cmd.Flags().StringVar(&user, "user", "", "Run the workload as user[:group] (not supported)")
+	cmd.Flags().StringArrayVar(&capAdd, "cap-add", nil, "Add a Linux capability (not supported)")
+	cmd.Flags().StringArrayVar(&capDrop, "cap-drop", nil, "Drop a Linux capability (not supported)")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Mount the root filesystem read-only (not supported)")
 	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Placement constraint, key==value or key!=value (repeatable, e.g. node.hostname==worker1)")
 	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Placement preference, spread=<key> (repeatable, e.g. spread=node.labels.zone)")
 	cmd.Flags().StringVar(&restartCondition, "restart-condition", "", "Restart condition: none, on-failure or any (default any)")
@@ -305,6 +324,13 @@ func newServiceUpdateCommand() *cobra.Command {
 		rollback    bool
 		mounts      []string
 		volumes     []string
+
+		hostname string
+		dns      []string
+		user     string
+		capAdd   []string
+		capDrop  []string
+		readOnly bool
 
 		mode           string
 		constraints    []string
@@ -362,6 +388,15 @@ placement, restart policy, update/rollback configuration and mode.`,
 				volumes:        volumes,
 				mountsSet:      anyFlagChanged(cmd, "mount", "volume"),
 
+				hostname:    hostname,
+				dns:         dns,
+				hostnameSet: cmd.Flags().Changed("hostname"),
+				dnsSet:      cmd.Flags().Changed("dns"),
+				user:        user,
+				capAdd:      capAdd,
+				capDrop:     capDrop,
+				readOnly:    readOnly,
+
 				modeSet:        cmd.Flags().Changed("mode"),
 				mode:           mode,
 				constraints:    constraints,
@@ -404,6 +439,12 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringArrayVarP(&volumes, "volume", "v", nil, "Replace mounts: <src>:<dst>[:ro|rw] (repeatable)")
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back to the service's previous spec")
 	cmd.Flags().StringVar(&mode, "mode", "", "Change the service mode: replicated or global")
+	cmd.Flags().StringVar(&hostname, "hostname", "", "Set the guest VM hostname")
+	cmd.Flags().StringArrayVar(&dns, "dns", nil, "Set the guest DNS nameservers (repeatable)")
+	cmd.Flags().StringVar(&user, "user", "", "Run the workload as user[:group] (not supported)")
+	cmd.Flags().StringArrayVar(&capAdd, "cap-add", nil, "Add a Linux capability (not supported)")
+	cmd.Flags().StringArrayVar(&capDrop, "cap-drop", nil, "Drop a Linux capability (not supported)")
+	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Mount the root filesystem read-only (not supported)")
 	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Replace placement constraints (key==value or key!=value; repeatable)")
 	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Replace placement preferences (spread=<key>; repeatable)")
 	cmd.Flags().StringVar(&restartCondition, "restart-condition", "", "Restart condition: none, on-failure or any")
@@ -781,6 +822,21 @@ func inspectService(serviceID, format string, pretty bool) error {
 					fmt.Printf("  %s\n", env)
 				}
 			}
+			if container.Hostname != "" {
+				fmt.Printf("Hostname: %s\n", container.Hostname)
+			}
+			if dns := container.DNSConfig; dns != nil && len(dns.Nameservers) > 0 {
+				fmt.Printf("DNS: %s\n", strings.Join(dns.Nameservers, ", "))
+			}
+			if container.User != "" {
+				fmt.Printf("User: %s\n", container.User)
+			}
+			if container.ReadOnly {
+				fmt.Printf("Read-only rootfs: true\n")
+			}
+			if len(container.CapabilityAdd) > 0 || len(container.CapabilityDrop) > 0 {
+				fmt.Printf("Capabilities: add=%v drop=%v\n", container.CapabilityAdd, container.CapabilityDrop)
+			}
 		}
 		if svc.Spec.Endpoint != nil && len(svc.Spec.Endpoint.Ports) > 0 {
 			fmt.Printf("Published Ports:\n")
@@ -1126,6 +1182,39 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 		}
 		if c := spec.Task.GetContainer(); c != nil {
 			c.Mounts = mounts
+		}
+	}
+
+	// Container-execution flags: reject the ones the microVM executor cannot
+	// enforce, and apply the guest overrides we can honor.
+	if err := validateUnsupportedExecFlags(opts.user, opts.capAdd, opts.capDrop, opts.readOnly); err != nil {
+		return err
+	}
+	if opts.hostnameSet || opts.dnsSet {
+		if spec.Annotations.Labels[types.GoldenLabel] != "" {
+			return fmt.Errorf("--hostname/--dns are not supported with --golden: golden images boot their own init")
+		}
+		c := spec.Task.GetContainer()
+		if c == nil {
+			return fmt.Errorf("service %q has no container spec", svc.Spec.Annotations.Name)
+		}
+		if opts.hostnameSet {
+			h, err := buildHostname(opts.hostname)
+			if err != nil {
+				return err
+			}
+			c.Hostname = h
+		}
+		if opts.dnsSet {
+			d, err := buildDNS(opts.dns)
+			if err != nil {
+				return err
+			}
+			if len(d) == 0 {
+				c.DNSConfig = nil
+			} else {
+				c.DNSConfig = &api.ContainerSpec_DNSConfig{Nameservers: d}
+			}
 		}
 	}
 
