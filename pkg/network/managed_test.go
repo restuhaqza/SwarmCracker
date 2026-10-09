@@ -151,3 +151,91 @@ func TestRebuildIsolationRules_DropsBetweenBridges(t *testing.T) {
 	assert.Len(t, drops, 6)
 	assert.Contains(t, drops, "iptables -A "+isolationChain+" -i br-a -o br-b -j DROP")
 }
+
+func TestEnsureManagedNetwork_DerivesGatewayAndVXLAN(t *testing.T) {
+	state := newMockState()
+	state.setFail("ip link show br-vx", true)
+	// Physical uplink discovery for the VXLAN setup.
+	state.setOutput("ip route show default", "default via 192.168.1.1 dev eth0\n")
+	state.setOutput("ip addr show eth0", "    inet 192.168.1.10/24 brd 192.168.1.255 scope global eth0\n")
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := newManagedTestManager()
+	network := &types.Network{
+		ID: "net-vxlan0001",
+		Spec: types.NetworkSpec{
+			Name:    "vx",
+			Driver:  "vxlan",
+			Subnet:  "10.30.0.0/24", // gateway omitted -> derived from the subnet
+			VXLANID: 4096,
+			DriverConfig: &types.DriverConfig{
+				Bridge: &types.BridgeConfig{Name: "br-vx"},
+			},
+		},
+	}
+
+	mn, err := nm.ensureManagedNetwork(context.Background(), network)
+	require.NoError(t, err)
+	assert.Equal(t, "10.30.0.1", mn.gateway, "gateway should default to the first usable host")
+	assert.Equal(t, 4096, mn.vxlanID)
+}
+
+func TestEnsureManagedNetwork_InvalidSubnet(t *testing.T) {
+	state := newMockState()
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := newManagedTestManager()
+	_, err := nm.ensureManagedNetwork(context.Background(), &types.Network{
+		ID:   "net-bad",
+		Spec: types.NetworkSpec{Subnet: "not-a-cidr", DriverConfig: &types.DriverConfig{Bridge: &types.BridgeConfig{Name: "br-bad"}}},
+	})
+	assert.Error(t, err)
+}
+
+func TestSetupManagedNAT_AddsRuleWhenMissing(t *testing.T) {
+	state := newMockState()
+	state.setFail("iptables -t nat -C POSTROUTING", true) // the rule is absent
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := newManagedTestManager()
+	nm.setupManagedNAT("br-backend", "10.10.0.0/24")
+
+	found := false
+	for _, c := range state.calls {
+		if strings.HasPrefix(c, "iptables -t nat -A POSTROUTING -s 10.10.0.0/24") {
+			found = true
+		}
+	}
+	assert.True(t, found, "a MASQUERADE rule should be added when missing")
+}
+
+func TestPrepareManagedNetworks_MixedAttachment(t *testing.T) {
+	state := newMockState()
+	state.setFail("ip link show br-backend", true)
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := newManagedTestManager()
+	task := &types.Task{
+		ID: "task-mixed",
+		Networks: []types.NetworkAttachment{
+			{Network: *backendNetwork()},
+			// A non-managed attachment (no subnet) falls back to the default bridge.
+			{Network: types.Network{ID: "default", Spec: types.NetworkSpec{Name: "default"}}},
+		},
+	}
+
+	require.NoError(t, nm.prepareManagedNetworks(context.Background(), task))
+	assert.Len(t, nm.tapDevices, 2, "both attachments should get a TAP")
+
+	foundDefault := false
+	for _, c := range state.calls {
+		if strings.Contains(c, "master swarm-br0") {
+			foundDefault = true
+		}
+	}
+	assert.True(t, foundDefault, "the non-managed attachment should use the default bridge")
+}
