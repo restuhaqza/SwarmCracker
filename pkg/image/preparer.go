@@ -147,9 +147,19 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 	baseReady := false
 	if info, statErr := os.Stat(rootfsPath); statErr == nil {
 		if ip.verifyCachedRootfs(rootfsPath) && rootfsLargeEnough(info.Size(), minSizeBytes) {
+			if len(container.Mounts) == 0 {
+				// No per-task mounts: the shared image rootfs is used as-is.
+				log.Info().
+					Str("path", rootfsPath).
+					Msg("Rootfs already exists and valid, skipping")
+				task.Annotations["rootfs"] = rootfsPath
+				return nil
+			}
+			// Mounts need a private rootfs; keep the shared base and fall
+			// through to copy it per task.
 			log.Info().
 				Str("path", rootfsPath).
-				Msg("Rootfs already exists and valid, skipping")
+				Msg("Cached rootfs valid; creating a per-task copy for mounts")
 			baseReady = true
 		} else {
 			log.Info().
@@ -178,7 +188,7 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 	taskRootfs := rootfsPath
 	if ip.volumeManager != nil && len(container.Mounts) > 0 {
 		private := filepath.Join(ip.rootfsDir, task.ID+".ext4")
-		if err := ip.copyRootfs(rootfsPath, private); err != nil {
+		if err := ip.copyRootfs(ctx, rootfsPath, private); err != nil {
 			return fmt.Errorf("failed to create per-task rootfs: %w", err)
 		}
 		log.Info().
@@ -192,6 +202,10 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 		taskRootfs = private
 		task.Annotations["rootfs_ephemeral"] = "true"
 	}
+
+	// Record the rootfs path before injecting secrets/configs so it is always
+	// set even if an injection fails.
+	task.Annotations["rootfs"] = taskRootfs
 
 	// Inject secrets if secret manager is available
 	if ip.secretManager != nil && len(task.Secrets) > 0 {
@@ -218,11 +232,9 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 	}
 
 	// Store rootfs path in task annotations
-	task.Annotations["rootfs"] = taskRootfs
-
 	log.Info().
 		Str("task_id", task.ID).
-		Str("rootfs", rootfsPath).
+		Str("rootfs", taskRootfs).
 		Msg("Image preparation completed")
 
 	return nil
@@ -839,11 +851,11 @@ func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 // copyRootfs makes a private, per-task copy of the shared image rootfs. It uses
 // reflinks where the filesystem supports them (fast, no extra space) and falls
 // back to a sparse copy otherwise.
-func (ip *ImagePreparer) copyRootfs(src, dst string) error {
+func (ip *ImagePreparer) copyRootfs(ctx context.Context, src, dst string) error {
 	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to clear stale rootfs copy: %w", err)
 	}
-	cmd := exec.Command("cp", "--reflink=auto", "--sparse=always", src, dst)
+	cmd := exec.CommandContext(ctx, "cp", "--reflink=auto", "--sparse=always", src, dst)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("cp failed: %s: %w", strings.TrimSpace(string(out)), err)
 	}

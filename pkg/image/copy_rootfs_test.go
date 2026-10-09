@@ -1,6 +1,7 @@
 package image
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,14 +18,14 @@ func TestCopyRootfs(t *testing.T) {
 
 	ip := &ImagePreparer{}
 
-	require.NoError(t, ip.copyRootfs(src, dst))
+	require.NoError(t, ip.copyRootfs(context.Background(), src, dst))
 	got, err := os.ReadFile(dst)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("rootfs-data"), got)
 
 	// A stale destination is replaced.
 	require.NoError(t, os.WriteFile(dst, []byte("stale"), 0o644))
-	require.NoError(t, ip.copyRootfs(src, dst))
+	require.NoError(t, ip.copyRootfs(context.Background(), src, dst))
 	got, err = os.ReadFile(dst)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("rootfs-data"), got)
@@ -33,6 +34,6 @@ func TestCopyRootfs(t *testing.T) {
 func TestCopyRootfs_MissingSource(t *testing.T) {
 	dir := t.TempDir()
 	ip := &ImagePreparer{}
-	err := ip.copyRootfs(filepath.Join(dir, "nope.ext4"), filepath.Join(dir, "dst.ext4"))
+	err := ip.copyRootfs(context.Background(), filepath.Join(dir, "nope.ext4"), filepath.Join(dir, "dst.ext4"))
 	assert.Error(t, err)
 }

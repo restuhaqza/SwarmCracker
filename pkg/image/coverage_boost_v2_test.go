@@ -952,8 +952,10 @@ func TestPrepare_WithInitInjection(t *testing.T) {
 	// Rootfs exists, but init injection will try to mount (which fails without root)
 	// Still exercises the init injection code path
 	_ = err
-	// Annotation should be set with rootfs path
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	// Annotation should be set with the rootfs path. With mounts the task gets
+	// a private rootfs copy; without a volume manager it keeps the shared image
+	// rootfs.
+	assert.Contains(t, []string{rootfsPath, filepath.Join(filepath.Dir(rootfsPath), task.ID+".ext4")}, task.Annotations["rootfs"])
 }
 
 // TestPrepare_WithMultipleMountsAndSecrets tests full flow with all components
@@ -1008,8 +1010,9 @@ func TestPrepare_WithMultipleMountsAndSecrets(t *testing.T) {
 	err = ip.Prepare(ctx, task)
 
 	_ = err
-	// Rootfs annotation should be set
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	// With mounts the task gets a private rootfs copy; without a volume manager
+	// it keeps the shared image rootfs.
+	assert.Contains(t, []string{rootfsPath, filepath.Join(filepath.Dir(rootfsPath), task.ID+".ext4")}, task.Annotations["rootfs"])
 }
 
 // ============================================================================
@@ -2327,7 +2330,9 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
-				assert.Equal(t, rootfsPath, tt.task.Annotations["rootfs"])
+				// With mounts the task gets a private rootfs copy; without a
+				// volume manager it keeps the shared image rootfs.
+				assert.Contains(t, []string{rootfsPath, filepath.Join(filepath.Dir(rootfsPath), tt.task.ID+".ext4")}, tt.task.Annotations["rootfs"])
 			}
 		})
 	}
