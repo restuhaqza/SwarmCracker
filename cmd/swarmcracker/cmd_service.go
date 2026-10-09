@@ -150,6 +150,7 @@ func newServiceCreateCommand() *cobra.Command {
 		publishMode string
 		mounts      []string
 		volumes     []string
+		networks    []string
 		mode        string
 
 		hostname string
@@ -232,6 +233,7 @@ With --golden, the service boots a prebuilt golden image (see
 				publishMode:        publishMode,
 				mounts:             mounts,
 				volumes:            volumes,
+				networks:           networks,
 				mode:               mode,
 				hostname:           hostname,
 				dns:                dns,
@@ -279,6 +281,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringVar(&publishMode, "publish-mode", types.PublishModeIngress, "Port publish mode: ingress (cluster load-balanced) or host (per-replica host port)")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Mount a volume or host path: type=volume|bind,source=<src>,target=<path>[,readonly] (repeatable)")
 	cmd.Flags().StringArrayVarP(&volumes, "volume", "v", nil, "Mount a volume or host path: <src>:<dst>[:ro|rw] (repeatable)")
+	cmd.Flags().StringArrayVar(&networks, "network", nil, "Attach the service to a user-defined network (repeatable)")
 	cmd.Flags().StringVar(&mode, "mode", modeReplicated, "Service mode: replicated or global")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "Guest VM hostname")
 	cmd.Flags().StringArrayVar(&dns, "dns", nil, "DNS nameserver for the guest (repeatable)")
@@ -324,6 +327,7 @@ func newServiceUpdateCommand() *cobra.Command {
 		rollback    bool
 		mounts      []string
 		volumes     []string
+		networks    []string
 
 		hostname string
 		dns      []string
@@ -387,6 +391,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 				mounts:         mounts,
 				volumes:        volumes,
 				mountsSet:      anyFlagChanged(cmd, "mount", "volume"),
+				networks:       networks,
+				networksSet:    anyFlagChanged(cmd, "network"),
 
 				hostname:    hostname,
 				dns:         dns,
@@ -437,6 +443,7 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringVar(&publishMode, "publish-mode", "", "Change the publish mode of existing published ports (ingress|host)")
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Replace mounts: type=volume|bind,source=<src>,target=<path>[,readonly] (repeatable)")
 	cmd.Flags().StringArrayVarP(&volumes, "volume", "v", nil, "Replace mounts: <src>:<dst>[:ro|rw] (repeatable)")
+	cmd.Flags().StringArrayVar(&networks, "network", nil, "Replace the service's networks (repeatable)")
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back to the service's previous spec")
 	cmd.Flags().StringVar(&mode, "mode", "", "Change the service mode: replicated or global")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "Set the guest VM hostname")
@@ -705,6 +712,26 @@ func listServices(format, filter string, quiet bool) error {
 	return nil
 }
 
+// resolveNetworkTargets resolves --network names/IDs to full network IDs.
+// Attaching to more than one network is not supported yet.
+func resolveNetworkTargets(ctx context.Context, client api.ControlClient, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	if len(names) > 1 {
+		return nil, fmt.Errorf("attaching a service to more than one network is not supported yet")
+	}
+	ids := make([]string, 0, len(names))
+	for _, n := range names {
+		id, err := resolveNetworkRef(ctx, client, n)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
 // buildEndpointPorts converts internal published ports into SwarmKit port
 // configs. The publish mode determines how the port is exposed: ingress
 // (cluster load-balanced, the default) or host (per-replica host port).
@@ -850,6 +877,14 @@ func inspectService(serviceID, format string, pretty bool) error {
 				fmt.Printf("  %s (%s)\n", v.Addr, v.NetworkID)
 			}
 		}
+		if nets := svc.Spec.Task.Networks; len(nets) > 0 {
+			fmt.Printf("Networks:\n")
+			for _, n := range nets {
+				if n.Target != "" {
+					fmt.Printf("  %s\n", n.Target)
+				}
+			}
+		}
 		if svc.Spec.Task.Resources != nil && svc.Spec.Task.Resources.Limits != nil {
 			limits := svc.Spec.Task.Resources.Limits
 			if limits.NanoCPUs > 0 {
@@ -987,6 +1022,15 @@ func createService(opts serviceCreateOptions) error {
 	spec, err := buildServiceSpec(opts)
 	if err != nil {
 		return err
+	}
+
+	// Resolve --network names to IDs and attach the service to them.
+	targets, err := resolveNetworkTargets(ctx, client, opts.networks)
+	if err != nil {
+		return err
+	}
+	if len(targets) > 0 {
+		spec.Task.Networks = buildNetworkAttachments(targets)
 	}
 
 	resp, err := client.CreateService(ctx, &api.CreateServiceRequest{
@@ -1183,6 +1227,15 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 		if c := spec.Task.GetContainer(); c != nil {
 			c.Mounts = mounts
 		}
+	}
+
+	// Replace networks.
+	if opts.networksSet {
+		targets, err := resolveNetworkTargets(ctx, client, opts.networks)
+		if err != nil {
+			return err
+		}
+		spec.Task.Networks = buildNetworkAttachments(targets)
 	}
 
 	// Container-execution flags: reject the ones the microVM executor cannot

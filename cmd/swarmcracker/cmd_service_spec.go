@@ -30,6 +30,11 @@ type serviceCreateOptions struct {
 	mounts      []string
 	volumes     []string
 
+	// networks are the user-defined network names/IDs to attach the service to;
+	// networkTargets holds the resolved IDs.
+	networks       []string
+	networkTargets []string
+
 	// Guest overrides honored by the executor (applied by the guest init).
 	hostname string
 	dns      []string
@@ -163,6 +168,10 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		spec.Task.GetContainer().Mounts = mounts
 	}
 
+	if len(o.networkTargets) > 0 {
+		spec.Task.Networks = buildNetworkAttachments(o.networkTargets)
+	}
+
 	if mode == modeGlobal {
 		spec.Mode = &api.ServiceSpec_Global{Global: &api.GlobalService{}}
 	} else {
@@ -232,6 +241,9 @@ type serviceUpdateOptions struct {
 	mounts    []string
 	volumes   []string
 	mountsSet bool
+
+	networks    []string
+	networksSet bool
 
 	hostname    string
 	dns         []string
@@ -455,6 +467,20 @@ func failureActionString(a api.UpdateConfig_FailureAction) string {
 	default:
 		return "pause"
 	}
+}
+
+// buildNetworkAttachments converts resolved network IDs into SwarmKit task
+// network attachments.
+func buildNetworkAttachments(targets []string) []*api.NetworkAttachmentConfig {
+	out := make([]*api.NetworkAttachmentConfig, 0, len(targets))
+	for _, t := range targets {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		out = append(out, &api.NetworkAttachmentConfig{Target: t})
+	}
+	return out
 }
 
 // buildMounts converts --mount and --volume specs into SwarmKit mounts.

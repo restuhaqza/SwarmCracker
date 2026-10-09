@@ -46,6 +46,11 @@ type NetworkManager struct {
 	cniClient     *CNIClient          // CNI client for SwarmKit network attachments
 	pendingPeers  []string            // Peers queued before VXLAN init
 
+	// managedNetworks holds user-defined networks materialized on this node
+	// (each with its own bridge + optional VXLAN), keyed by SwarmKit network ID.
+	// Guarded by mu.
+	managedNetworks map[string]*managedNetwork
+
 	// publishedPorts tracks host ports currently forwarded, keyed by
 	// "<proto>:<hostPort>", to detect collisions between tasks. It is guarded
 	// by mu.
@@ -301,10 +306,11 @@ func (a *IPAllocator) Release(ip string) {
 // NewNetworkManager creates a new NetworkManager.
 func NewNetworkManager(config types.NetworkConfig) types.NetworkManager {
 	nm := &NetworkManager{
-		config:         config,
-		bridges:        make(map[string]bool),
-		tapDevices:     make(map[string]*TapDevice),
-		publishedPorts: make(map[string]string),
+		config:          config,
+		bridges:         make(map[string]bool),
+		tapDevices:      make(map[string]*TapDevice),
+		publishedPorts:  make(map[string]string),
+		managedNetworks: make(map[string]*managedNetwork),
 	}
 
 	// Initialize IP allocator if subnet and bridge IP are configured
@@ -384,6 +390,12 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 	// Setup DHCP server for VM network boot
 	if err := nm.setupDHCP(ctx); err != nil {
 		log.Warn().Err(err).Msg("Failed to setup DHCP, VMs may need static config")
+	}
+
+	// User-defined networks are materialized locally (their own bridge + VXLAN),
+	// so they bypass the CNI path entirely.
+	if hasManagedAttachment(task.Networks) {
+		return nm.prepareManagedNetworks(ctx, task)
 	}
 
 	// Check if we should use CNI for network attachments.

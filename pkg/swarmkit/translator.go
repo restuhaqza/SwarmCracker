@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 
@@ -177,12 +178,23 @@ func (t *taskTranslatorImpl) networkBootArgs(task *types.Task) []string {
 	}
 
 	// Kernel IP config format: ip=<ip>::<gw>:<netmask>::<iface>:off
-	// Gateway is bridge IP from config
+	// Gateway is the network's own gateway for a user-defined network,
+	// otherwise the default bridge IP from config.
 	gw := t.bridgeIP
+	if g := strings.TrimSpace(task.Networks[0].Network.Spec.Gateway); g != "" {
+		gw = g
+	}
 	if idx := strings.Index(gw, "/"); idx > 0 {
 		gw = gw[:idx] // Remove CIDR if present
 	}
 	mask := "255.255.255.0"
+
+	// Use the network's mask when it is not a /24.
+	if subnet := task.Networks[0].Network.Spec.Subnet; subnet != "" {
+		if _, ipNet, err := net.ParseCIDR(subnet); err == nil {
+			mask = net.IP(ipNet.Mask).String()
+		}
+	}
 
 	return []string{fmt.Sprintf("ip=%s::%s:%s::eth0:off", ipPart, gw, mask)}
 }

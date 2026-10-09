@@ -23,6 +23,10 @@ Provides commands for VXLAN overlay and bridge management.`,
 	// Add subcommands
 	cmd.AddCommand(newNetworkVXLANCommand())
 	cmd.AddCommand(newNetworkBridgeCommand())
+	cmd.AddCommand(newNetworkCreateCommand())
+	cmd.AddCommand(newNetworkListCommand())
+	cmd.AddCommand(newNetworkInspectCommand())
+	cmd.AddCommand(newNetworkRemoveCommand())
 
 	return cmd
 }

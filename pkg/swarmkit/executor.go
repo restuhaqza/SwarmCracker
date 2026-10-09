@@ -1277,21 +1277,39 @@ func (c *Controller) convertTask() *types.Task {
 			driver = n.Network.Spec.DriverConfig.Name
 		}
 
-		// Convert DriverConfig - bridge name comes from Options map in SwarmKit API
-		var driverConfig *types.DriverConfig
-		if n.Network.Spec.DriverConfig != nil && n.Network.Spec.DriverConfig.Options != nil {
-			driverConfig = &types.DriverConfig{}
-			// Check for bridge name in options (key may vary)
-			if bridgeName, ok := n.Network.Spec.DriverConfig.Options["bridge"]; ok {
-				driverConfig.Bridge = &types.BridgeConfig{
-					Name: bridgeName,
-				}
+		// The allocator records the bridge name and VXLAN VNI in the network's
+		// DriverState; a user-specified bridge (if any) lives in the spec's
+		// DriverConfig. Prefer the allocated state.
+		bridgeName := ""
+		vxlanID := 0
+		if n.Network.DriverState != nil {
+			opts := n.Network.DriverState.Options
+			bridgeName = opts["bridge"]
+			if v := opts["vxlan_vni"]; v != "" {
+				vxlanID, _ = strconv.Atoi(v)
 			}
+		}
+		if bridgeName == "" && n.Network.Spec.DriverConfig != nil {
+			bridgeName = n.Network.Spec.DriverConfig.Options["bridge"]
+		}
+		var driverConfig *types.DriverConfig
+		if bridgeName != "" {
+			driverConfig = &types.DriverConfig{Bridge: &types.BridgeConfig{Name: bridgeName}}
+		}
+
+		// Subnet/gateway come from the network's allocated IPAM.
+		var subnet, gateway string
+		if n.Network.IPAM != nil && len(n.Network.IPAM.Configs) > 0 {
+			subnet = n.Network.IPAM.Configs[0].Subnet
+			gateway = n.Network.IPAM.Configs[0].Gateway
 		}
 
 		netSpec := types.NetworkSpec{
 			Name:         n.Network.Spec.Annotations.Name,
 			Driver:       driver,
+			Subnet:       subnet,
+			Gateway:      gateway,
+			VXLANID:      vxlanID,
 			DriverConfig: driverConfig,
 		}
 
