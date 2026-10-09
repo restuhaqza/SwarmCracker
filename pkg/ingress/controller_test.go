@@ -20,9 +20,10 @@ func (f *fakeSource) Services(context.Context) ([]ServiceSpec, error) { return f
 func (f *fakeSource) Tasks(context.Context) ([]TaskSpec, error)       { return f.tasks, nil }
 
 type fakeLB struct {
-	mu    sync.Mutex
-	last  []network.IngressRoute
-	calls int
+	mu      sync.Mutex
+	last    []network.IngressRoute
+	calls   int
+	cleared int
 }
 
 func (f *fakeLB) ProgramIngress(routes []network.IngressRoute) error {
@@ -30,6 +31,14 @@ func (f *fakeLB) ProgramIngress(routes []network.IngressRoute) error {
 	defer f.mu.Unlock()
 	f.last = routes
 	f.calls++
+	return nil
+}
+
+func (f *fakeLB) ClearIngress() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.last = nil
+	f.cleared++
 	return nil
 }
 
