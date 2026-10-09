@@ -144,9 +144,23 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 
 	// Ensure the base (per-image) rootfs exists. It is shared by every task of
 	// this image and must never be modified per task.
+	//
+	// A cached rootfs whose init wrapper predates guest-override support would
+	// silently ignore --hostname/--dns, so rebuild it when those are requested.
+	needsGuestOverride := strings.TrimSpace(container.Hostname) != "" || len(container.DNS) > 0
+
 	baseReady := false
+	forceRebuild := false
 	if info, statErr := os.Stat(rootfsPath); statErr == nil {
-		if ip.verifyCachedRootfs(rootfsPath) && rootfsLargeEnough(info.Size(), minSizeBytes) {
+		cachedValid := ip.verifyCachedRootfs(rootfsPath) && rootfsLargeEnough(info.Size(), minSizeBytes)
+		if cachedValid && needsGuestOverride && !ip.guestOverrideReady(rootfsPath) {
+			log.Info().
+				Str("path", rootfsPath).
+				Msg("Cached rootfs predates guest-override support; rebuilding to honor --hostname/--dns")
+			cachedValid = false
+			forceRebuild = true
+		}
+		if cachedValid {
 			if len(container.Mounts) == 0 {
 				// No per-task mounts: the shared image rootfs is used as-is.
 				log.Info().
@@ -161,12 +175,19 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 				Str("path", rootfsPath).
 				Msg("Cached rootfs valid; creating a per-task copy for mounts")
 			baseReady = true
-		} else {
+		} else if !forceRebuild {
 			log.Info().
 				Str("path", rootfsPath).
 				Int64("size_bytes", info.Size()).
 				Int64("requested_bytes", minSizeBytes).
 				Msg("Cached rootfs invalid or too small, re-preparing")
+		}
+	}
+	if forceRebuild {
+		// prepareWithLock reuses an existing (still valid) rootfs, so drop the
+		// stale image first; a fresh one is built below.
+		if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove stale rootfs: %w", err)
 		}
 	}
 	if !baseReady {
@@ -179,6 +200,7 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 			task.Annotations["init_system"] = string(ip.initInjector.config.Type)
 			task.Annotations["init_path"] = ip.initInjector.GetInitPath()
 		}
+		ip.writeGuestOverrideMarker(rootfsPath)
 	}
 
 	// Mounts are applied to a private, per-task copy of the rootfs. Baking them
@@ -846,6 +868,30 @@ func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 	// Cleanup temp dir
 	os.RemoveAll(mountDir)
 	return nil
+}
+
+// guestOverrideVersion is bumped whenever the guest init wrapper changes in a
+// way that affects how per-task overrides (--hostname/--dns) are applied. The
+// version is recorded next to the built rootfs; a cached rootfs built by an
+// older wrapper is rebuilt on demand so an override is never silently ignored.
+const guestOverrideVersion = "2"
+
+// guestOverrideReady reports whether the rootfs was built by a wrapper that
+// understands per-task hostname/DNS overrides.
+func (ip *ImagePreparer) guestOverrideReady(rootfsPath string) bool {
+	data, err := os.ReadFile(rootfsPath + ".guest-version")
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(data)) == guestOverrideVersion
+}
+
+// writeGuestOverrideMarker records the wrapper version for a freshly built
+// rootfs. Best-effort: a failure only means a later override triggers a rebuild.
+func (ip *ImagePreparer) writeGuestOverrideMarker(rootfsPath string) {
+	if err := os.WriteFile(rootfsPath+".guest-version", []byte(guestOverrideVersion+"\n"), 0644); err != nil {
+		log.Warn().Err(err).Str("path", rootfsPath).Msg("Failed to write guest-override marker")
+	}
 }
 
 // copyRootfs makes a private, per-task copy of the shared image rootfs. It uses

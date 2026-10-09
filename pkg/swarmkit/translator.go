@@ -125,7 +125,28 @@ func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
 	args := make([]string, 0, 6+len(netArgs))
 	args = append(args, "console=ttyS0", "reboot=k", "panic=1", "pci=off", "nomodules", "init=/sbin/init")
 	args = append(args, netArgs...)
+	if container, err := task.Spec.GetContainer(); err == nil {
+		args = append(args, guestOverrideBootArgs(container)...)
+	}
 	return strings.Join(args, " ")
+}
+
+// guestOverrideBootArgs returns kernel boot arguments that the guest init
+// wrapper reads from /proc/cmdline to apply per-task overrides (--hostname,
+// --dns). The CLI validates these values (hostname syntax, IP addresses) so they
+// never contain spaces.
+func guestOverrideBootArgs(container *types.Container) []string {
+	if container == nil {
+		return nil
+	}
+	var args []string
+	if h := strings.TrimSpace(container.Hostname); h != "" {
+		args = append(args, "sc.hostname="+h)
+	}
+	if len(container.DNS) > 0 {
+		args = append(args, "sc.dns="+strings.Join(container.DNS, ","))
+	}
+	return args
 }
 
 // buildPrebuiltBootArgs builds boot arguments for a prebuilt golden image: the
