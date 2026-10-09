@@ -205,15 +205,22 @@ type MockNetworkManager struct {
 	CleanedTasks  map[string]bool
 	ShouldFail    bool
 	IPMap         map[string]string // Task ID -> IP mapping
+
+	// Port publishing tracking.
+	PublishedPorts    map[string][]types.PublishedPort // Task ID -> published ports
+	UnpublishedTasks  map[string]bool
+	PublishShouldFail bool
 }
 
 // NewMockNetworkManager creates a new mock network manager.
 func NewMockNetworkManager() *MockNetworkManager {
 	return &MockNetworkManager{
-		PreparedTasks: make(map[string]bool),
-		CleanedTasks:  make(map[string]bool),
-		ShouldFail:    false,
-		IPMap:         make(map[string]string),
+		PreparedTasks:    make(map[string]bool),
+		CleanedTasks:     make(map[string]bool),
+		ShouldFail:       false,
+		IPMap:            make(map[string]string),
+		PublishedPorts:   make(map[string][]types.PublishedPort),
+		UnpublishedTasks: make(map[string]bool),
 	}
 }
 
@@ -270,6 +277,22 @@ func (m *MockNetworkManager) IsTaskPrepared(taskID string) bool {
 // IsTaskCleaned checks if network was cleaned for a task.
 func (m *MockNetworkManager) IsTaskCleaned(taskID string) bool {
 	return m.CleanedTasks[taskID]
+}
+
+// PublishPorts records published port mappings.
+func (m *MockNetworkManager) PublishPorts(taskID, guestIP string, ports []types.PublishedPort) error {
+	if m.PublishShouldFail {
+		return fmt.Errorf("mock: publish ports failed")
+	}
+	m.PublishedPorts[taskID] = append([]types.PublishedPort(nil), ports...)
+	return nil
+}
+
+// UnpublishPorts records that a task's ports were unpublished.
+func (m *MockNetworkManager) UnpublishPorts(taskID string, _ []types.PublishedPort) error {
+	m.UnpublishedTasks[taskID] = true
+	delete(m.PublishedPorts, taskID)
+	return nil
 }
 
 // Helper function to create a test task

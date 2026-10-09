@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,11 @@ type NetworkManager struct {
 	cniClient     *CNIClient          // CNI client for SwarmKit network attachments
 	pendingPeers  []string            // Peers queued before VXLAN init
 
+	// publishedPorts tracks host ports currently forwarded, keyed by
+	// "<proto>:<hostPort>", to detect collisions between tasks. It is guarded
+	// by mu.
+	publishedPorts map[string]string
+
 	// dnsmasqMu serializes the dnsmasq lifecycle. Without it, concurrent VM
 	// creations race to kill and restart the DHCP server, leaking orphaned
 	// instances and logging "Address already in use".
@@ -68,6 +74,14 @@ type IPAllocator struct {
 	allocated map[string]string // Track allocated IPs (IP -> VM ID)
 	mu        sync.Mutex
 }
+
+// reservedInfraHosts is the number of leading host addresses in a subnet that
+// are never handed to VMs. In a multi-node cluster the overlay is a single L2
+// subnet shared by every node, and each node's bridge takes a low address
+// (e.g. 192.168.127.1, .2, ...). Without this reservation a guest on one node
+// can be assigned another node's bridge IP, which collides on the overlay and
+// breaks cross-node traffic (and DNAT targets for published ports).
+const reservedInfraHosts = 16
 
 // NewIPAllocator creates a new IP allocator.
 func NewIPAllocator(subnetStr, gatewayStr string) (*IPAllocator, error) {
@@ -121,9 +135,10 @@ func (a *IPAllocator) Allocate(vmID string) (string, error) {
 		// 4. Not already allocated
 
 		isGateway := ip.Equal(a.gateway)
+		isReserved := a.isReserved(ip)
 		_, isAllocated := a.allocated[ipStr]
 
-		if !isGateway && !isAllocated {
+		if !isGateway && !isReserved && !isAllocated {
 			// Found free IP
 			a.allocated[ipStr] = vmID
 			return ipStr, nil
@@ -134,16 +149,54 @@ func (a *IPAllocator) Allocate(vmID string) (string, error) {
 
 		// Wrap around or check if still in subnet
 		if !a.subnet.Contains(ip) {
-			// Reset to start of subnet + 2 (skip network & gateway assumption)
-			// Simple reset:
-			ip = make(net.IP, len(a.subnet.IP))
-			copy(ip, a.subnet.IP)
-			ip = incIP(ip) // .1
-			ip = incIP(ip) // .2
+			// Reset to the first usable address (skips the network address
+			// and the reserved infrastructure block).
+			ip = a.firstUsable()
 		}
 	}
 
 	return "", fmt.Errorf("failed to allocate IP: subnet exhausted or too many collisions")
+}
+
+// reservedCount returns how many leading host addresses are reserved for
+// infrastructure on this subnet. It is zero for IPv6 or subnets too small to
+// spare the block.
+func (a *IPAllocator) reservedCount() uint32 {
+	ones, bits := a.subnet.Mask.Size()
+	if bits != 32 {
+		return 0
+	}
+	size := uint32(1) << (bits - ones)
+	if size < uint32(reservedInfraHosts)+4 {
+		return 0
+	}
+	return uint32(reservedInfraHosts)
+}
+
+// isReserved reports whether an IP falls in the reserved infrastructure range.
+func (a *IPAllocator) isReserved(ip net.IP) bool {
+	r := a.reservedCount()
+	if r == 0 {
+		return false
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return false
+	}
+	host := uint32(v4[3])
+	return host >= 1 && host <= r
+}
+
+// firstUsable returns the first assignable address (skipping the network
+// address and the reserved infrastructure block).
+func (a *IPAllocator) firstUsable() net.IP {
+	ip := make(net.IP, len(a.subnet.IP))
+	copy(ip, a.subnet.IP)
+	steps := 1 + int(a.reservedCount())
+	for k := 0; k < steps; k++ {
+		ip = incIP(ip)
+	}
+	return ip
 }
 
 // hashToIP converts a VM ID to an IP address using SHA-256.
@@ -186,12 +239,14 @@ func (a *IPAllocator) hashToIP(vmID string) net.IP {
 		return ip
 	}
 
-	// Use hash to pick an offset
-	// Avoid .0 (network) and .255 (broadcast) generally, but mainly fit in size
-	n := binary.BigEndian.Uint32(hash[:4]) % (size - 2) // -2 to avoid network/broadcast roughly
+	// Use hash to pick an offset within the usable range. Skip the network and
+	// broadcast addresses, and the low addresses reserved for node bridges.
+	reserved := a.reservedCount()
+	count := size - 2 - reserved
+	n := binary.BigEndian.Uint32(hash[:4]) % count
 
 	ip := make(net.IP, 4)
-	ipInt := binary.BigEndian.Uint32(a.subnet.IP.To4()) + n + 1 // +1 to skip network address
+	ipInt := binary.BigEndian.Uint32(a.subnet.IP.To4()) + 1 + reserved + n
 	binary.BigEndian.PutUint32(ip, ipInt)
 
 	return ip
@@ -236,9 +291,10 @@ func (a *IPAllocator) Release(ip string) {
 // NewNetworkManager creates a new NetworkManager.
 func NewNetworkManager(config types.NetworkConfig) types.NetworkManager {
 	nm := &NetworkManager{
-		config:     config,
-		bridges:    make(map[string]bool),
-		tapDevices: make(map[string]*TapDevice),
+		config:         config,
+		bridges:        make(map[string]bool),
+		tapDevices:     make(map[string]*TapDevice),
+		publishedPorts: make(map[string]string),
 	}
 
 	// Initialize IP allocator if subnet and bridge IP are configured
@@ -911,6 +967,244 @@ func (nm *NetworkManager) teardownNAT() error {
 	}
 
 	return nil
+}
+
+// dnatChains are the nat-table chains a published port is inserted into.
+// PREROUTING covers traffic arriving from outside the host; OUTPUT covers
+// traffic originating on the host itself (e.g. curl localhost:8080).
+var dnatChains = []string{"PREROUTING", "OUTPUT"}
+
+// sweepChains are all nat-table chains scanned when removing a task's rules,
+// including POSTROUTING (which holds the local-traffic masquerade rule).
+var sweepChains = []string{"PREROUTING", "OUTPUT", "POSTROUTING"}
+
+// portComment is the iptables comment used to associate DNAT rules with a task
+// so they can be swept on removal. The "swarmcracker:" prefix namespaces us.
+func portComment(taskID string) string { return "swarmcracker:" + taskID }
+
+func commentTaskID(comment string) string {
+	return strings.TrimPrefix(comment, "swarmcracker:")
+}
+
+func hostPortKey(p types.PublishedPort) string {
+	return p.Protocol + ":" + strconv.FormatUint(uint64(p.PublishedPort), 10)
+}
+
+// PublishPorts programs host-side DNAT so each host port reaches guestIP at the
+// target port inside the microVM. All mappings are validated against existing
+// rules first so a collision never leaves partial state, and any rule added
+// before a later failure is rolled back.
+func (nm *NetworkManager) PublishPorts(taskID, guestIP string, ports []types.PublishedPort) error {
+	if len(ports) == 0 {
+		return nil
+	}
+	if guestIP == "" {
+		return fmt.Errorf("cannot publish ports for task %s: guest IP is unknown", taskID)
+	}
+
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+
+	// Allow locally-originated loopback traffic to reach the guest, so
+	// `curl 127.0.0.1:<port>` works as it does with Docker.
+	nm.enableRouteLocalnet()
+
+	// Validate collisions before mutating anything.
+	for _, p := range ports {
+		if owner, ok := nm.publishedPorts[hostPortKey(p)]; ok && owner != taskID {
+			return fmt.Errorf("host port %d/%s is already published by task %s", p.PublishedPort, p.Protocol, owner)
+		}
+		if owner := nm.ruleOwner(p); owner != "" && owner != taskID {
+			return fmt.Errorf("host port %d/%s is already forwarded by task %s", p.PublishedPort, p.Protocol, owner)
+		}
+	}
+
+	added := make([]types.PublishedPort, 0, len(ports))
+	for _, p := range ports {
+		if err := nm.addDNATRule(taskID, guestIP, p); err != nil {
+			nm.removeTaskRules(taskID)
+			for _, a := range added {
+				delete(nm.publishedPorts, hostPortKey(a))
+			}
+			return err
+		}
+		nm.publishedPorts[hostPortKey(p)] = taskID
+		added = append(added, p)
+	}
+
+	log.Info().
+		Str("task_id", taskID).
+		Str("guest_ip", guestIP).
+		Int("ports", len(ports)).
+		Msg("Published host ports")
+	return nil
+}
+
+// UnpublishPorts removes host-side forwarding for a task. It sweeps by the
+// per-task iptables comment, so it also cleans up rules left behind by a
+// previous daemon instance. It is safe to call when nothing was published.
+func (nm *NetworkManager) UnpublishPorts(taskID string, ports []types.PublishedPort) error {
+	nm.mu.Lock()
+	defer nm.mu.Unlock()
+
+	nm.removeTaskRules(taskID)
+	for _, p := range ports {
+		delete(nm.publishedPorts, hostPortKey(p))
+	}
+	return nil
+}
+
+// addDNATRule adds the PREROUTING and OUTPUT DNAT rules for one mapping plus a
+// POSTROUTING masquerade for locally-originated traffic, skipping rules that
+// already exist.
+func (nm *NetworkManager) addDNATRule(taskID, guestIP string, p types.PublishedPort) error {
+	for _, chain := range dnatChains {
+		if err := nm.ensureRule(nm.dnatRule(chain, taskID, guestIP, p)); err != nil {
+			return fmt.Errorf("failed to add DNAT rule for %d/%s: %w", p.PublishedPort, p.Protocol, err)
+		}
+	}
+
+	// Masquerade traffic that originates on the host itself (e.g.
+	// `curl 127.0.0.1:<port>`). Without this the guest would try to reply to
+	// 127.0.0.1 on its own loopback and the connection would never return.
+	snatRule := []string{
+		"POSTROUTING",
+		"-s", "127.0.0.0/8",
+		"-d", guestIP + "/32",
+		"-m", "comment", "--comment", portComment(taskID),
+		"-j", "MASQUERADE",
+	}
+	if err := nm.ensureRule(snatRule); err != nil {
+		return fmt.Errorf("failed to add masquerade rule for %d/%s: %w", p.PublishedPort, p.Protocol, err)
+	}
+	return nil
+}
+
+// ensureRule adds a nat-table rule unless an identical one already exists.
+func (nm *NetworkManager) ensureRule(rule []string) error {
+	if err := execCommand("iptables", append([]string{"-t", "nat", "-C"}, rule...)...).Run(); err == nil {
+		return nil
+	}
+	return execCommand("iptables", append([]string{"-t", "nat", "-A"}, rule...)...).Run()
+}
+
+// enableRouteLocalnet lets locally-generated traffic with a loopback source
+// (e.g. `curl 127.0.0.1:<port>`) be routed out of the VM bridge, which the
+// kernel rejects by default. Best-effort: a failure is logged, not fatal.
+func (nm *NetworkManager) enableRouteLocalnet() {
+	if nm.config.BridgeName == "" {
+		return
+	}
+	key := "net.ipv4.conf." + nm.config.BridgeName + ".route_localnet=1"
+	if err := execCommand("sysctl", "-w", key).Run(); err != nil {
+		log.Warn().Err(err).Str("bridge", nm.config.BridgeName).Msg("Failed to enable route_localnet for published ports")
+	}
+}
+
+// dnatRule returns the iptables rule body (chain and everything after it) for
+// one mapping, including the task comment used for cleanup.
+func (nm *NetworkManager) dnatRule(chain, taskID, guestIP string, p types.PublishedPort) []string {
+	return []string{
+		chain,
+		"-p", p.Protocol,
+		"--dport", strconv.FormatUint(uint64(p.PublishedPort), 10),
+		"-m", "comment", "--comment", portComment(taskID),
+		"-j", "DNAT",
+		"--to-destination", guestIP + ":" + strconv.FormatUint(uint64(p.TargetPort), 10),
+	}
+}
+
+// removeTaskRules deletes every nat-table rule tagged with the task's comment.
+func (nm *NetworkManager) removeTaskRules(taskID string) {
+	comment := portComment(taskID)
+	for _, chain := range sweepChains {
+		out, err := execCommand("iptables", "-t", "nat", "-S", chain).Output()
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 3 || fields[0] != "-A" || fields[1] != chain {
+				continue
+			}
+			if !containsComment(fields, comment) {
+				continue
+			}
+			// Rebuild the rule spec for -D, unquoting the comment value: -S
+			// renders comments containing ":" in quotes, but iptables compares
+			// the comment literally, so the quotes must be removed.
+			rest := append([]string(nil), fields[2:]...)
+			for i := 0; i < len(rest)-1; i++ {
+				if rest[i] == "--comment" {
+					rest[i+1] = unquote(rest[i+1])
+				}
+			}
+			delArgs := append([]string{"-t", "nat", "-D", chain}, rest...)
+			if err := execCommand("iptables", delArgs...).Run(); err != nil {
+				log.Debug().Err(err).Str("task_id", taskID).Msg("Failed to delete port forwarding rule")
+			}
+		}
+	}
+}
+
+// ruleOwner returns the task ID of any existing DNAT rule for the given host
+// port, or "" when the port is free. It consults the kernel rather than only
+// in-memory state, so ports leaked by a previous daemon run are detected too.
+func (nm *NetworkManager) ruleOwner(p types.PublishedPort) string {
+	out, err := execCommand("iptables", "-t", "nat", "-S", "PREROUTING").Output()
+	if err != nil {
+		return ""
+	}
+	port := strconv.FormatUint(uint64(p.PublishedPort), 10)
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "-A" {
+			continue
+		}
+		if !containsComment(fields, "") || !hasFlagValue(fields, "--dport", port) || !hasFlagValue(fields, "-p", p.Protocol) || !hasFlagValue(fields, "-j", "DNAT") {
+			continue
+		}
+		if comment := flagValue(fields, "--comment"); comment != "" {
+			return commentTaskID(comment)
+		}
+	}
+	return ""
+}
+
+// containsComment reports whether a rule contains a --comment flag. When want
+// is non-empty, the comment value must match it exactly. iptables -S renders
+// comments that contain special characters (such as ":") in quotes, so values
+// are unquoted before comparison.
+func containsComment(fields []string, want string) bool {
+	for i, f := range fields {
+		if f == "--comment" && i+1 < len(fields) {
+			if want == "" || unquote(fields[i+1]) == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func flagValue(fields []string, flag string) string {
+	for i, f := range fields {
+		if f == flag && i+1 < len(fields) {
+			return unquote(fields[i+1])
+		}
+	}
+	return ""
+}
+
+// unquote removes a single pair of surrounding double quotes, if present.
+func unquote(s string) string {
+	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+func hasFlagValue(fields []string, flag, value string) bool {
+	return flagValue(fields, flag) == value
 }
 
 // cleanupDnsmasq kills dnsmasq instances related to swarmcracker, both via PID

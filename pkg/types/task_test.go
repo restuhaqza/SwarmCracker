@@ -1394,6 +1394,14 @@ func (m *mockNetworkManager) UpdateVXLANPeers(peers []string) error {
 	return nil
 }
 
+func (m *mockNetworkManager) PublishPorts(taskID, guestIP string, ports []PublishedPort) error {
+	return nil
+}
+
+func (m *mockNetworkManager) UnpublishPorts(taskID string, ports []PublishedPort) error {
+	return nil
+}
+
 // TestInterfaceSignatures verifies that interface signatures exist and are correct
 func TestInterfaceSignatures(t *testing.T) {
 	t.Run("VMMManager interface exists", func(t *testing.T) {
