@@ -1,7 +1,9 @@
 package cni
 
 import (
+	"encoding/binary"
 	"fmt"
+	"net"
 	"sync"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -185,19 +187,38 @@ func (p *CNIProvider) AllocateNetwork(name, driver string) (*AllocatedNetwork, e
 		return nil, fmt.Errorf("failed to generate subnet: %w", err)
 	}
 
-	// Parse subnet and get gateway
-	subnetNet, gateway, err := ParseCIDR(subnet)
+	// Parse subnet and derive the gateway: the first usable host address. The
+	// CIDR's own address is the network address, which must never be handed to
+	// a gateway or a task.
+	subnetNet, _, err := ParseCIDR(subnet)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse subnet: %w", err)
 	}
+	gateway := incrementIP(subnetNet.IP.To4())
 
 	// Generate bridge name
 	bridgeName := fmt.Sprintf("br-%s", NetworkNameFromSwarmKit(name))
 
 	// Create IP pool
-	_, err = p.ipamMgr.CreatePool(subnet, gateway)
+	pool, err := p.ipamMgr.CreatePool(subnet, gateway)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create IP pool: %w", err)
+	}
+
+	// Reserve the low infrastructure addresses on the shared L2 overlay. Each
+	// node's bridge takes a low address (.1, .2, ...), so task IPs must not be
+	// handed out there or they would collide with a sibling node's bridge.
+	if pool != nil {
+		if base := subnetNet.IP.To4(); base != nil {
+			baseInt := binary.BigEndian.Uint32(base)
+			for h := uint32(1); h <= infraReservedHosts; h++ {
+				rip := make(net.IP, 4)
+				binary.BigEndian.PutUint32(rip, baseInt+h)
+				if subnetNet.Contains(rip) {
+					pool.ReservedIPs = append(pool.ReservedIPs, rip)
+				}
+			}
+		}
 	}
 
 	// Generate VXLAN ID for overlay networks

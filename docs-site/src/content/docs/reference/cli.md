@@ -135,14 +135,19 @@ Service (replicated microVM) management.
 | `--command` | — | Override the container command |
 | `--args` | — | Container arguments |
 | `--label` / `-l` | — | Service labels |
-| `--publish` / `-p` | — | Publish a host port to the guest: `[host:]container[/tcp\|udp]` (repeatable, e.g. `-p 8080:80`) |
+| `--publish` / `-p` | — | Publish a port: `[host:]container[/tcp\|udp]` (repeatable, e.g. `-p 8080:80`) |
+| `--publish-mode` | `ingress` | How published ports are exposed: `ingress` (cluster load-balanced) or `host` (per-replica host port) |
 
-`--publish 8080:80` forwards host TCP port `8080` to port `80` inside the
-microVM. Multiple mappings are allowed (`-p 8080:80 -p 53:53/udp`); `tcp` is the
-default protocol. The host port is required (ephemeral allocation is not
-supported yet). Publishing uses **host mode**: each replica is reachable on its
-node's host port, and the mapping is released when the service is removed or
-scaled down. See [Publishing a Service Port](/guides/networking/#publishing-a-service-port).
+`--publish 8080:80` exposes port `80` inside the microVM. Multiple mappings are
+allowed (`-p 8080:80 -p 53:53/udp`); `tcp` is the default protocol. The host port
+is required (ephemeral allocation is not supported yet).
+
+`--publish-mode ingress` (default) load-balances the published port across the
+service's healthy replicas through a per-service VIP, reachable on manager nodes
+(`--replicas 3` gets one entry point). `--publish-mode host` forwards the host
+port on the node running each replica, with per-node collision semantics. The
+mapping is released when the service is removed or scaled down. See
+[Publishing a Service Port](/guides/networking/#publishing-a-service-port).
 
 `--disk` sets a **minimum** rootfs size. By default the rootfs is sized from the image content plus 50% overhead (floor 100 MB); with `--disk 10G` it is grown to at least 10 GB, leaving the rest as free space in the guest. The prepared rootfs is keyed by image, so requesting a larger disk rebuilds that image's rootfs (and it is not shrunk again by a later smaller request).
 

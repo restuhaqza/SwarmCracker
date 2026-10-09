@@ -39,6 +39,11 @@ const (
 
 	// DefaultConfigDir is the default CNI configuration directory
 	DefaultConfigDir = "/etc/cni/net.d"
+
+	// infraReservedHosts is the number of leading host addresses reserved for
+	// node bridges on the shared L2 overlay. Task IPs are allocated above it so
+	// they never collide with a sibling node's bridge (e.g. 192.168.127.1/.2).
+	infraReservedHosts = 16
 )
 
 // CNIConfig holds configuration for the CNI provider

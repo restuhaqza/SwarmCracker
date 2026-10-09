@@ -52,6 +52,15 @@ type Executor struct {
 	cleanupMu     sync.Mutex
 }
 
+// NetworkManager returns the executor's network manager. The daemon uses it to
+// run the manager-side ingress routing mesh reconciler.
+func (e *Executor) NetworkManager() types.NetworkManager {
+	if e == nil {
+		return nil
+	}
+	return e.networkMgr
+}
+
 // Config holds the SwarmKit integration configuration.
 type Config struct {
 	FirecrackerPath  string   `yaml:"firecracker_path"`
@@ -794,6 +803,12 @@ func (c *Controller) Start(ctx context.Context) error {
 // (carried on the "swarmcracker.publish" service label). It is a no-op when the
 // service declares no ports.
 func (c *Controller) publishPorts(task *types.Task) error {
+	// Ingress ports are load-balanced by the manager-side routing mesh, not by
+	// the per-replica host forwarding path. Only host mode (or a missing mode
+	// label, for services created before the label existed) is handled here.
+	if types.IsIngressPublishMode(c.task.ServiceAnnotations.Labels[types.PublishModeLabel]) {
+		return nil
+	}
 	ports, err := types.ParsePublishLabel(c.task.ServiceAnnotations.Labels[types.PublishLabel])
 	if err != nil {
 		c.logger.Warn().Err(err).Str("label", types.PublishLabel).Msg("Ignoring invalid publish label")

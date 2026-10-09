@@ -133,6 +133,11 @@ func startNode(config *node.Config, executor *swarmkit.Executor) error {
 		printJoinTokens(ctx, config.StateDir)
 	}
 
+	// On managers, run the manager-side ingress routing mesh reconciler.
+	if config.JoinAddr == "" {
+		startIngressController(ctx, config, executor)
+	}
+
 	// Wait for shutdown signal
 	sig := <-sigChan
 	log.G(ctx).WithField("signal", sig).Info("Received shutdown signal")
