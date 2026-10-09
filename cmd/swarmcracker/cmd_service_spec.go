@@ -26,6 +26,8 @@ type serviceCreateOptions struct {
 	labels      []string
 	publish     []string
 	publishMode string
+	mounts      []string
+	volumes     []string
 
 	// Scheduling / lifecycle (all honored natively by SwarmKit).
 	mode            string
@@ -119,6 +121,12 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		},
 	}
 
+	if mounts, err := buildMounts(o.mounts, o.volumes); err != nil {
+		return nil, err
+	} else if len(mounts) > 0 {
+		spec.Task.GetContainer().Mounts = mounts
+	}
+
 	if mode == modeGlobal {
 		spec.Mode = &api.ServiceSpec_Global{Global: &api.GlobalService{}}
 	} else {
@@ -184,6 +192,10 @@ type serviceUpdateOptions struct {
 	publishMode    string
 	publishModeSet bool
 	force          bool
+
+	mounts    []string
+	volumes   []string
+	mountsSet bool
 
 	rollbackAction bool
 
@@ -398,4 +410,134 @@ func failureActionString(a api.UpdateConfig_FailureAction) string {
 	default:
 		return "pause"
 	}
+}
+
+// buildMounts converts --mount and --volume specs into SwarmKit mounts.
+func buildMounts(mounts, volumes []string) ([]api.Mount, error) {
+	out := make([]api.Mount, 0, len(mounts)+len(volumes))
+	for _, raw := range mounts {
+		m, err := parseMountSpec(raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	for _, raw := range volumes {
+		m, err := parseVolumeSpec(raw)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
+// parseMountSpec parses Docker's long form:
+// type=volume|bind,source=<src>,target=<path>[,readonly[=true|false]].
+func parseMountSpec(raw string) (api.Mount, error) {
+	opts := map[string]string{}
+	for _, f := range strings.Split(raw, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		k, v, _ := strings.Cut(f, "=")
+		opts[strings.ToLower(strings.TrimSpace(k))] = strings.TrimSpace(v)
+	}
+	typ := strings.ToLower(opts["type"])
+	if typ == "" {
+		typ = "volume"
+	}
+	src := opts["source"]
+	if src == "" {
+		src = opts["src"]
+	}
+	target := opts["target"]
+	if target == "" {
+		target = opts["destination"]
+	}
+	if src == "" {
+		return api.Mount{}, fmt.Errorf("invalid --mount %q: source is required", raw)
+	}
+	ro := false
+	if v, ok := opts["readonly"]; ok {
+		ro = v == "" || v == "true" || v == "1"
+	}
+	return buildMount(typ, src, target, ro, raw)
+}
+
+// parseVolumeSpec parses Docker's short form: <src>:<dst>[:ro|rw].
+func parseVolumeSpec(raw string) (api.Mount, error) {
+	parts := strings.Split(raw, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return api.Mount{}, fmt.Errorf("invalid --volume %q (want src:dst[:ro|rw])", raw)
+	}
+	src := strings.TrimSpace(parts[0])
+	target := strings.TrimSpace(parts[1])
+	ro := false
+	if len(parts) == 3 {
+		opt := strings.ToLower(strings.TrimSpace(parts[2]))
+		if opt != "ro" && opt != "rw" {
+			return api.Mount{}, fmt.Errorf("invalid --volume option %q (want ro or rw)", parts[2])
+		}
+		ro = opt == "ro"
+	}
+	if src == "" || target == "" {
+		return api.Mount{}, fmt.Errorf("invalid --volume %q (want src:dst[:ro|rw])", raw)
+	}
+	typ := "volume"
+	if strings.HasPrefix(src, "/") || strings.HasPrefix(src, "./") || strings.HasPrefix(src, "../") {
+		typ = "bind"
+	}
+	return buildMount(typ, src, target, ro, raw)
+}
+
+func buildMount(typ, src, target string, ro bool, raw string) (api.Mount, error) {
+	if err := validateMountTarget(target); err != nil {
+		return api.Mount{}, fmt.Errorf("invalid mount target %q: %w", target, err)
+	}
+	switch typ {
+	case "volume":
+		if !isValidVolumeName(src) {
+			return api.Mount{}, fmt.Errorf("invalid --mount %q: invalid volume name %q", raw, src)
+		}
+		return api.Mount{Type: api.MountTypeVolume, Source: "volume://" + src, Target: target, ReadOnly: ro}, nil
+	case "bind":
+		if !strings.HasPrefix(src, "/") {
+			return api.Mount{}, fmt.Errorf("invalid --mount %q: bind source must be an absolute host path", raw)
+		}
+		return api.Mount{Type: api.MountTypeBind, Source: src, Target: target, ReadOnly: ro}, nil
+	case "tmpfs":
+		return api.Mount{}, fmt.Errorf("invalid --mount %q: tmpfs mounts are not supported", raw)
+	default:
+		return api.Mount{}, fmt.Errorf("invalid --mount %q: unsupported type %q (want volume or bind)", raw, typ)
+	}
+}
+
+func validateMountTarget(target string) error {
+	if target == "" {
+		return fmt.Errorf("target cannot be empty")
+	}
+	if !strings.HasPrefix(target, "/") {
+		return fmt.Errorf("target must be an absolute path")
+	}
+	if strings.Contains(target, "..") {
+		return fmt.Errorf("target must not contain '..'")
+	}
+	return nil
+}
+
+func isValidVolumeName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case (r == '_' || r == '.' || r == '-') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }

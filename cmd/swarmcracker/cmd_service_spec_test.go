@@ -90,8 +90,6 @@ func TestBuildServiceSpec_DefaultsLeaveSectionsUnset(t *testing.T) {
 	assert.Nil(t, spec.Rollback, "no --rollback-* must not set a rollback config")
 }
 
-// TestBuildServiceSpec_RejectsInvalidValues guards the "no silently ignored
-// flag" contract: an invalid value must fail at build time.
 func TestBuildServiceSpec_RejectsInvalidValues(t *testing.T) {
 	cases := map[string]serviceCreateOptions{
 		"mode":            {mode: "bogus"},
@@ -110,6 +108,53 @@ func TestBuildServiceSpec_RejectsInvalidValues(t *testing.T) {
 			o.name = "x"
 			o.image = "nginx"
 			_, err := buildServiceSpec(o)
+			assert.Error(t, err)
+		})
+	}
+}
+
+func TestBuildMounts(t *testing.T) {
+	got, err := buildMounts(
+		[]string{"type=volume,source=myvol,target=/data", "type=bind,source=/host/dir,target=/mnt,readonly"},
+		[]string{"shortvol:/srv", "shortvol2:/srv2:ro", "/host/short:/mnt2"},
+	)
+	require.NoError(t, err)
+	require.Len(t, got, 5)
+
+	assert.Equal(t, api.MountTypeVolume, got[0].Type)
+	assert.Equal(t, "volume://myvol", got[0].Source)
+	assert.Equal(t, "/data", got[0].Target)
+	assert.False(t, got[0].ReadOnly)
+
+	assert.Equal(t, api.MountTypeBind, got[1].Type)
+	assert.Equal(t, "/host/dir", got[1].Source)
+	assert.True(t, got[1].ReadOnly)
+
+	assert.Equal(t, api.MountTypeVolume, got[2].Type)
+	assert.Equal(t, "volume://shortvol", got[2].Source)
+
+	assert.Equal(t, api.MountTypeVolume, got[3].Type)
+	assert.True(t, got[3].ReadOnly)
+
+	assert.Equal(t, api.MountTypeBind, got[4].Type)
+	assert.Equal(t, "/host/short", got[4].Source)
+}
+
+func TestBuildMounts_RejectsInvalid(t *testing.T) {
+	cases := map[string]struct{ mounts, volumes []string }{
+		"mount-no-target":  {mounts: []string{"type=volume,source=v"}},
+		"mount-no-source":  {mounts: []string{"type=volume,target=/data"}},
+		"mount-tmpfs":      {mounts: []string{"type=tmpfs,target=/data"}},
+		"mount-unknown":    {mounts: []string{"type=weird,source=v,target=/data"}},
+		"mount-rel-target": {mounts: []string{"type=volume,source=v,target=data"}},
+		"mount-bad-vol":    {mounts: []string{"type=volume,source=/abs,target=/data"}},
+		"volume-too-few":   {volumes: []string{"onlyone"}},
+		"volume-bad-opt":   {volumes: []string{"v:/data:xyz"}},
+		"volume-empty":     {volumes: []string{":/data"}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := buildMounts(tc.mounts, tc.volumes)
 			assert.Error(t, err)
 		})
 	}
