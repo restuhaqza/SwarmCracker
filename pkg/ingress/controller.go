@@ -1,15 +1,16 @@
-// Package ingress implements the manager-side routing mesh datapath: it reads
-// the cluster's ingress services and their healthy replicas and programs L4
-// load balancing on the local node.
+// Package ingress implements the ingress routing mesh: it reads the cluster's
+// ingress services and their healthy replicas and programs L4 load balancing.
 //
 // The overlay is a single shared L2 segment, so a rule installed on any node
-// can forward to a replica running on any other node. For this first (MVP)
-// phase the reconciler runs on manager nodes, which can see every service and
-// task; per-node mesh fan-out is a later phase.
+// can forward to a replica running on any other node. A manager computes the
+// authoritative routing table from the control API and serves it; every node
+// (including workers) then programs its own load balancing from that table, so
+// the published port is reachable on any node.
 package ingress
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/network"
@@ -52,11 +53,15 @@ type LoadBalancer interface {
 	ProgramIngress(routes []network.IngressRoute) error
 }
 
-// Controller reconciles the local ingress datapath with the cluster state.
+// Controller reconciles the local ingress datapath with the cluster state and
+// exposes the resulting routing table.
 type Controller struct {
 	source   Source
 	lb       LoadBalancer
 	interval time.Duration
+
+	mu     sync.RWMutex
+	routes []network.IngressRoute
 }
 
 // NewController creates a controller. interval is clamped to a sane minimum.
@@ -67,7 +72,8 @@ func NewController(source Source, lb LoadBalancer, interval time.Duration) *Cont
 	return &Controller{source: source, lb: lb, interval: interval}
 }
 
-// Reconcile performs a single reconciliation pass.
+// Reconcile performs a single reconciliation pass: it recomputes the routing
+// table, publishes it, and programs the local load balancer.
 func (c *Controller) Reconcile(ctx context.Context) error {
 	services, err := c.source.Services(ctx)
 	if err != nil {
@@ -78,45 +84,25 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 		return err
 	}
 
-	backends := make(map[string][]string)
-	for _, t := range tasks {
-		if t.State != TaskStateRunning {
-			continue
-		}
-		for _, ip := range t.IPs {
-			if ip != "" {
-				backends[t.ServiceID] = append(backends[t.ServiceID], ip)
-			}
-		}
-	}
+	routes := BuildRoutes(services, tasks)
 
-	routes := make([]network.IngressRoute, 0, len(services))
-	for _, s := range services {
-		if len(s.Ports) == 0 {
-			continue
-		}
-		bs := backends[s.ID]
-		if len(bs) == 0 {
-			// No healthy replica: drop the service's rules so traffic fails
-			// fast instead of black-holing to a dead backend.
-			continue
-		}
-		ports := make([]network.IngressPort, 0, len(s.Ports))
-		for _, p := range s.Ports {
-			ports = append(ports, network.IngressPort{
-				Protocol:      p.Protocol,
-				PublishedPort: p.PublishedPort,
-				TargetPort:    p.TargetPort,
-			})
-		}
-		routes = append(routes, network.IngressRoute{
-			ServiceID: s.ID,
-			Ports:     ports,
-			Backends:  bs,
-		})
-	}
+	c.mu.Lock()
+	c.routes = routes
+	c.mu.Unlock()
 
 	return c.lb.ProgramIngress(routes)
+}
+
+// Routes returns a snapshot of the last computed routing table.
+func (c *Controller) Routes() []network.IngressRoute {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]network.IngressRoute(nil), c.routes...)
+}
+
+// Table returns the last computed routing table in its wire form.
+func (c *Controller) Table() Table {
+	return TableFromRoutes(c.Routes())
 }
 
 // Run reconciles on a timer until the context is cancelled.
@@ -137,4 +123,47 @@ func (c *Controller) Run(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// BuildRoutes turns the ingress-relevant service and task views into the
+// load-balanced routes to program. Services with no running replica are
+// omitted so their rules are dropped rather than black-holing to a dead
+// backend.
+func BuildRoutes(services []ServiceSpec, tasks []TaskSpec) []network.IngressRoute {
+	backends := make(map[string][]string)
+	for _, t := range tasks {
+		if t.State != TaskStateRunning {
+			continue
+		}
+		for _, ip := range t.IPs {
+			if ip != "" {
+				backends[t.ServiceID] = append(backends[t.ServiceID], ip)
+			}
+		}
+	}
+
+	routes := make([]network.IngressRoute, 0, len(services))
+	for _, s := range services {
+		if len(s.Ports) == 0 {
+			continue
+		}
+		bs := backends[s.ID]
+		if len(bs) == 0 {
+			continue
+		}
+		ports := make([]network.IngressPort, 0, len(s.Ports))
+		for _, p := range s.Ports {
+			ports = append(ports, network.IngressPort{
+				Protocol:      p.Protocol,
+				PublishedPort: p.PublishedPort,
+				TargetPort:    p.TargetPort,
+			})
+		}
+		routes = append(routes, network.IngressRoute{
+			ServiceID: s.ID,
+			Ports:     ports,
+			Backends:  bs,
+		})
+	}
+	return routes
 }

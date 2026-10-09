@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -204,8 +206,25 @@ func runAgent(ctx *cli.Context) error {
 		Availability:       api.NodeAvailabilityActive,
 	}
 
+	// Ingress routing mesh: managers serve the routing table and balance
+	// locally; workers fetch the table from the manager they joined through.
+	ingressPort := ctx.Int("ingress-port")
+	ingressManager := ""
+	if joinAddr := ctx.String("join-addr"); joinAddr != "" {
+		host := joinAddr
+		if h, _, err := net.SplitHostPort(joinAddr); err == nil {
+			host = h
+		}
+		ingressManager = net.JoinHostPort(host, strconv.Itoa(ingressPort))
+	}
+	ingressCfg := ingressRuntime{
+		enabled:     ctx.Bool("ingress-mesh"),
+		port:        ingressPort,
+		managerAddr: ingressManager,
+	}
+
 	// Start node
-	if err := startNode(nodeConfig, fcExecutor); err != nil {
+	if err := startNode(nodeConfig, fcExecutor, ingressCfg); err != nil {
 		return fmt.Errorf("failed to start node: %w", err)
 	}
 

@@ -198,6 +198,17 @@ func newAppFlags() []cli.Flag {
 			Usage: "VXLAN UDP port for overlay networks",
 			Value: cni.DefaultVXLANPort,
 		},
+		// Ingress routing mesh flags
+		&cli.BoolFlag{
+			Name:  "ingress-mesh",
+			Usage: "Enable the ingress routing mesh (published ports load-balanced on every node)",
+			Value: true,
+		},
+		&cli.IntFlag{
+			Name:  "ingress-port",
+			Usage: "Port for the ingress routing table endpoint (managers serve, workers connect)",
+			Value: 4243,
+		},
 		// Consul service discovery
 		// Consul service discovery
 		&cli.BoolFlag{
