@@ -148,6 +148,8 @@ func newServiceCreateCommand() *cobra.Command {
 		golden      string
 		publish     []string
 		publishMode string
+		mounts      []string
+		volumes     []string
 		mode        string
 
 		constraints    []string
@@ -221,6 +223,8 @@ With --golden, the service boots a prebuilt golden image (see
 				labels:             labels,
 				publish:            publish,
 				publishMode:        publishMode,
+				mounts:             mounts,
+				volumes:            volumes,
 				mode:               mode,
 				constraints:        constraints,
 				placementPrefs:     placementPrefs,
@@ -260,6 +264,8 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "Service labels (e.g., key=value)")
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "Publish a host port to the guest ([host:]container[/tcp|udp], e.g. 8080:80)")
 	cmd.Flags().StringVar(&publishMode, "publish-mode", types.PublishModeIngress, "Port publish mode: ingress (cluster load-balanced) or host (per-replica host port)")
+	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Mount a volume or host path: type=volume|bind,source=<src>,target=<path>[,readonly] (repeatable)")
+	cmd.Flags().StringArrayVarP(&volumes, "volume", "v", nil, "Mount a volume or host path: <src>:<dst>[:ro|rw] (repeatable)")
 	cmd.Flags().StringVar(&mode, "mode", modeReplicated, "Service mode: replicated or global")
 	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Placement constraint, key==value or key!=value (repeatable, e.g. node.hostname==worker1)")
 	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Placement preference, spread=<key> (repeatable, e.g. spread=node.labels.zone)")
@@ -297,6 +303,8 @@ func newServiceUpdateCommand() *cobra.Command {
 		publishMode string
 		force       bool
 		rollback    bool
+		mounts      []string
+		volumes     []string
 
 		mode           string
 		constraints    []string
@@ -350,6 +358,9 @@ placement, restart policy, update/rollback configuration and mode.`,
 				publishModeSet: cmd.Flags().Changed("publish-mode"),
 				force:          force,
 				rollbackAction: rollback,
+				mounts:         mounts,
+				volumes:        volumes,
+				mountsSet:      anyFlagChanged(cmd, "mount", "volume"),
 
 				modeSet:        cmd.Flags().Changed("mode"),
 				mode:           mode,
@@ -389,6 +400,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringArrayVar(&env, "env-add", nil, "Add environment variable (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&envRemove, "env-rm", nil, "Remove environment variable")
 	cmd.Flags().StringVar(&publishMode, "publish-mode", "", "Change the publish mode of existing published ports (ingress|host)")
+	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Replace mounts: type=volume|bind,source=<src>,target=<path>[,readonly] (repeatable)")
+	cmd.Flags().StringArrayVarP(&volumes, "volume", "v", nil, "Replace mounts: <src>:<dst>[:ro|rw] (repeatable)")
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back to the service's previous spec")
 	cmd.Flags().StringVar(&mode, "mode", "", "Change the service mode: replicated or global")
 	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Replace placement constraints (key==value or key!=value; repeatable)")
@@ -1103,6 +1116,17 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 			return err
 		}
 		spec.Task.Placement = placement
+	}
+
+	// Replace mounts.
+	if opts.mountsSet {
+		mounts, err := buildMounts(opts.mounts, opts.volumes)
+		if err != nil {
+			return err
+		}
+		if c := spec.Task.GetContainer(); c != nil {
+			c.Mounts = mounts
+		}
 	}
 
 	// Replace the restart policy.

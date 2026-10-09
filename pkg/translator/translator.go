@@ -192,16 +192,17 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 	}
 	config.Drives = append(config.Drives, rootDrive)
 
-	// Add volume mounts
+	// Mounts are materialized into the rootfs by the image preparer (volumes
+	// are mounted and bind mounts copied before boot), so no Firecracker drive
+	// is added here. Emitting a drive whose path_on_host is a volume reference
+	// ("volume://name") or a plain host path made Firecracker fail to open it.
 	for i, mount := range container.Mounts {
 		if err := validateMountPath(mount.Source); err != nil {
-			return nil, fmt.Errorf("volume mount %d source invalid: %w", i, err)
+			return nil, fmt.Errorf("mount %d source invalid: %w", i, err)
 		}
 		if err := validateMountPath(mount.Target); err != nil {
-			return nil, fmt.Errorf("volume mount %d target invalid: %w", i, err)
+			return nil, fmt.Errorf("mount %d target invalid: %w", i, err)
 		}
-		drive := tt.buildVolumeDrive(mount)
-		config.Drives = append(config.Drives, drive)
 	}
 
 	// Return as map for direct consumption by vmm.go
@@ -450,19 +451,6 @@ func (tt *TaskTranslator) buildRootDrive(_ *types.Container, task *types.Task) (
 		PathOnHost:   rootfsPath,
 		IsReadOnly:   false,
 	}, nil
-}
-
-// buildVolumeDrive creates a volume drive configuration.
-func (tt *TaskTranslator) buildVolumeDrive(mount types.Mount) Drive {
-	driveID := strings.ReplaceAll(mount.Target, "/", "-")
-	driveID = strings.TrimPrefix(driveID, "-")
-
-	return Drive{
-		DriveID:      driveID,
-		IsRootDevice: false,
-		PathOnHost:   mount.Source,
-		IsReadOnly:   mount.ReadOnly,
-	}
 }
 
 // validateMountPath validates that a mount path is safe for use and does not

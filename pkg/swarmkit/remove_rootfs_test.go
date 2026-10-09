@@ -13,24 +13,44 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestController_Remove_UsesAnnotationRootfs proves C3: Controller.Remove must
-// delete the ACTUAL rootfs path recorded in internalTask.Annotations["rootfs"]
-// (named by image ID), not the legacy task.ID+".ext4" path which never exists.
-//
-// Before the fix: Remove computed rootfsDir/task.ID+".ext4", so the real
-// rootfs file was never deleted (disk leak). After the fix: the annotation
-// path is removed.
-func TestController_Remove_UsesAnnotationRootfs(t *testing.T) {
+// TestController_Remove_KeepsSharedImageRootfs proves Remove must NOT delete the
+// shared, per-image rootfs (the cache). Mounts are applied to an ephemeral
+// per-task copy instead, so the image cache stays intact.
+func TestController_Remove_KeepsSharedImageRootfs(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// The real rootfs as recorded by image preparation (image-ID based).
-	realRootfs := filepath.Join(tmpDir, "nginx-latest.ext4")
-	require.NoError(t, os.WriteFile(realRootfs, []byte("fake-rootfs"), 0644))
+	sharedRootfs := filepath.Join(tmpDir, "nginx-latest.ext4")
+	require.NoError(t, os.WriteFile(sharedRootfs, []byte("shared-cache"), 0644))
 
-	// A decoy at the legacy task-ID path — the old code deleted THIS
-	// (or tried to) and left the real file behind.
-	legacyPath := filepath.Join(tmpDir, "task-123.ext4")
-	require.NoError(t, os.WriteFile(legacyPath, []byte("decoy"), 0644))
+	ctrl := &Controller{
+		task:   &api.Task{ID: "task-123"},
+		config: &Config{RootfsDir: tmpDir, SocketDir: tmpDir},
+		internalTask: &types.Task{
+			ID:          "task-123",
+			Annotations: map[string]string{"rootfs": sharedRootfs},
+		},
+		vmmMgr:     &MockVMMManager{},
+		networkMgr: &MockNetworkManager{},
+		mu:         sync.Mutex{},
+	}
+
+	require.NoError(t, ctrl.Remove(context.Background()))
+
+	_, err := os.Stat(sharedRootfs)
+	assert.NoError(t, err, "the shared image rootfs (cache) must be kept")
+}
+
+// TestController_Remove_DeletesEphemeralRootfs proves the per-task rootfs copy
+// (created for mount-bearing tasks) is removed, while the shared image cache is
+// left alone.
+func TestController_Remove_DeletesEphemeralRootfs(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	sharedRootfs := filepath.Join(tmpDir, "nginx-latest.ext4")
+	require.NoError(t, os.WriteFile(sharedRootfs, []byte("shared-cache"), 0644))
+
+	privateRootfs := filepath.Join(tmpDir, "task-123.ext4")
+	require.NoError(t, os.WriteFile(privateRootfs, []byte("private"), 0644))
 
 	ctrl := &Controller{
 		task:   &api.Task{ID: "task-123"},
@@ -38,7 +58,8 @@ func TestController_Remove_UsesAnnotationRootfs(t *testing.T) {
 		internalTask: &types.Task{
 			ID: "task-123",
 			Annotations: map[string]string{
-				"rootfs": realRootfs,
+				"rootfs":           privateRootfs,
+				"rootfs_ephemeral": "true",
 			},
 		},
 		vmmMgr:     &MockVMMManager{},
@@ -46,17 +67,13 @@ func TestController_Remove_UsesAnnotationRootfs(t *testing.T) {
 		mu:         sync.Mutex{},
 	}
 
-	err := ctrl.Remove(context.Background())
-	require.NoError(t, err)
+	require.NoError(t, ctrl.Remove(context.Background()))
 
-	// The real rootfs (annotation path) must be gone.
-	_, err = os.Stat(realRootfs)
-	assert.True(t, os.IsNotExist(err), "real rootfs should be deleted, got err=%v", err)
+	_, err := os.Stat(privateRootfs)
+	assert.True(t, os.IsNotExist(err), "the ephemeral per-task rootfs should be deleted, got err=%v", err)
 
-	// The legacy decoy path must NOT be deleted by this Remove (it is not
-	// this task's rootfs; removing it would be wrong).
-	_, err = os.Stat(legacyPath)
-	assert.NoError(t, err, "legacy decoy path should still exist")
+	_, err = os.Stat(sharedRootfs)
+	assert.NoError(t, err, "the shared image rootfs (cache) must be kept")
 }
 
 // TestController_Remove_FallsBackToLegacyPath keeps the old behavior when no
