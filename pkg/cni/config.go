@@ -1,6 +1,7 @@
 package cni
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -115,54 +116,51 @@ func ParseCIDR(cidr string) (*net.IPNet, net.IP, error) {
 	return ipNet, ip, nil
 }
 
-// GenerateSubnet creates a new subnet from a pool
-// Uses the format: poolBase.networkIndex.0.0/subnetSize
-// For example, from 10.0.0.0/8 with subnetSize 24:
-//   - Network 0: 10.0.0.0/24
+// GenerateSubnet creates a new subnet from a pool.
+//
+// The subnet is the pool base plus networkIndex whole subnets, so consecutive
+// indices yield consecutive subnets. For example, from 10.0.0.0/8 with subnet
+// size 24:
+//
 //   - Network 1: 10.0.1.0/24
+//   - Network 2: 10.0.2.0/24
 //   - Network 255: 10.0.255.0/24
+//
+// When the pool is exactly the subnet size (e.g. 192.168.127.0/24 with /24),
+// the pool itself is returned. The index wraps within the pool.
 func GenerateSubnet(poolCIDR string, subnetSize int, networkIndex uint32) (string, error) {
 	poolNet, poolIP, err := ParseCIDR(poolCIDR)
 	if err != nil {
 		return "", err
 	}
 
-	// Get the pool base IP
 	poolBase := poolIP.To4()
 	if poolBase == nil {
 		return "", fmt.Errorf("pool must be IPv4")
 	}
 
-	// Calculate subnet mask
-	_ = net.CIDRMask(subnetSize, 32) // subnetMask used for validation
-
-	// Calculate the new subnet based on network index
-	// We increment the second octet (for /8 pool with /24 subnets)
-	// Or third octet (for /16 pool with /24 subnets)
 	poolBits, _ := poolNet.Mask.Size()
-	offsetByte := (32 - poolBits - subnetSize) / 8
-
-	if offsetByte < 0 || offsetByte > 3 {
-		return "", fmt.Errorf("invalid pool/subnet combination")
+	if subnetSize < poolBits || subnetSize > 32 {
+		return "", fmt.Errorf("invalid pool/subnet combination: pool /%d subnet /%d", poolBits, subnetSize)
 	}
 
-	// Copy pool base and modify the offset byte
-	subnetIP := make([]byte, 4)
-	copy(subnetIP, poolBase)
-
-	// Add network index to the appropriate byte position
-	// This is a simplified approach - we add to byte at offset position
-	if offsetByte < 4 {
-		subnetIP[offsetByte] = byte(networkIndex % 256)
-		if offsetByte > 0 {
-			subnetIP[offsetByte-1] = byte((networkIndex / 256) % 256)
-		}
+	base := uint64(binary.BigEndian.Uint32(poolBase))
+	step := uint64(1) << uint(32-subnetSize)
+	poolSize := uint64(1) << uint(32-poolBits)
+	count := poolSize / step // number of subnets that fit in the pool
+	if count == 0 {
+		return "", fmt.Errorf("invalid pool/subnet combination: pool /%d subnet /%d", poolBits, subnetSize)
 	}
 
-	subnetAddr := fmt.Sprintf("%d.%d.%d.%d/%d",
-		subnetIP[0], subnetIP[1], subnetIP[2], subnetIP[3], subnetSize)
+	addr := base + uint64(networkIndex)%count*step
+	if addr > 0xffffffff {
+		return "", fmt.Errorf("subnet index %d exceeds pool %s", networkIndex, poolCIDR)
+	}
 
-	return subnetAddr, nil
+	subnetIP := make(net.IP, 4)
+	binary.BigEndian.PutUint32(subnetIP, uint32(addr))
+
+	return fmt.Sprintf("%s/%d", subnetIP.String(), subnetSize), nil
 }
 
 // GenerateVXLANID generates a unique VXLAN ID for an overlay network

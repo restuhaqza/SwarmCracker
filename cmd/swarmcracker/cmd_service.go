@@ -135,18 +135,19 @@ func newServicePSCommand() *cobra.Command {
 // newServiceCreateCommand creates a service
 func newServiceCreateCommand() *cobra.Command {
 	var (
-		name     string
-		image    string
-		replicas uint64
-		cpu      float64
-		memory   string
-		env      []string
-		command  []string
-		args     []string
-		labels   []string
-		disk     string
-		golden   string
-		publish  []string
+		name        string
+		image       string
+		replicas    uint64
+		cpu         float64
+		memory      string
+		env         []string
+		command     []string
+		args        []string
+		labels      []string
+		disk        string
+		golden      string
+		publish     []string
+		publishMode string
 	)
 
 	cmd := &cobra.Command{
@@ -184,7 +185,7 @@ With --golden, the service boots a prebuilt golden image (see
 				}
 				image = goldenPlaceholderImage(ref)
 			}
-			return createService(name, image, replicas, cpu, memory, disk, env, command, args, labels, publish)
+			return createService(name, image, replicas, cpu, memory, disk, env, command, args, labels, publish, publishMode)
 		},
 	}
 
@@ -200,6 +201,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
 	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "Service labels (e.g., key=value)")
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "Publish a host port to the guest ([host:]container[/tcp|udp], e.g. 8080:80)")
+	cmd.Flags().StringVar(&publishMode, "publish-mode", types.PublishModeIngress, "Port publish mode: ingress (cluster load-balanced) or host (per-replica host port)")
 
 	cobra.CheckErr(cmd.MarkFlagRequired("name"))
 
@@ -475,9 +477,13 @@ func listServices(format, filter string, quiet bool) error {
 }
 
 // buildEndpointPorts converts internal published ports into SwarmKit port
-// configs. Host publish mode is used because ports are forwarded per replica;
-// cluster-wide ingress is a separate (future) mode.
-func buildEndpointPorts(published []types.PublishedPort) []*api.PortConfig {
+// configs. The publish mode determines how the port is exposed: ingress
+// (cluster load-balanced, the default) or host (per-replica host port).
+func buildEndpointPorts(published []types.PublishedPort, mode string) []*api.PortConfig {
+	publishMode := api.PublishModeIngress
+	if mode == types.PublishModeHost {
+		publishMode = api.PublishModeHost
+	}
 	ports := make([]*api.PortConfig, 0, len(published))
 	for _, p := range published {
 		proto := api.ProtocolTCP
@@ -488,7 +494,7 @@ func buildEndpointPorts(published []types.PublishedPort) []*api.PortConfig {
 			Protocol:      proto,
 			TargetPort:    p.TargetPort,
 			PublishedPort: p.PublishedPort,
-			PublishMode:   api.PublishModeHost,
+			PublishMode:   publishMode,
 		})
 	}
 	return ports
@@ -692,7 +698,7 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	return nil
 }
 
-func createService(name, image string, replicas uint64, cpu float64, memory, disk string, env, command, args, labels, publish []string) error {
+func createService(name, image string, replicas uint64, cpu float64, memory, disk string, env, command, args, labels, publish []string, publishMode string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -706,6 +712,11 @@ func createService(name, image string, replicas uint64, cpu float64, memory, dis
 	memoryBytes, err := parseMemory(memory)
 	if err != nil {
 		return fmt.Errorf("invalid memory value: %w", err)
+	}
+
+	mode, err := types.NormalizePublishMode(publishMode)
+	if err != nil {
+		return err
 	}
 
 	// The requested VM disk size is carried as a service label so the executor
@@ -733,7 +744,8 @@ func createService(name, image string, replicas uint64, cpu float64, memory, dis
 			svcLabels = make(map[string]string)
 		}
 		svcLabels[types.PublishLabel] = types.FormatPublishLabel(published)
-		endpointPorts = buildEndpointPorts(published)
+		svcLabels[types.PublishModeLabel] = mode
+		endpointPorts = buildEndpointPorts(published, mode)
 	}
 
 	// Build service spec

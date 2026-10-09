@@ -185,8 +185,8 @@ func newAppFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name:  "cni-subnet-pool",
-			Usage: "IP pool for CNI network allocation",
-			Value: cni.DefaultSubnetPool,
+			Usage: "IP pool for CNI network allocation (defaults to --subnet so overlay IPs stay on the flat L2)",
+			Value: "",
 		},
 		&cli.IntFlag{
 			Name:  "cni-subnet-size",

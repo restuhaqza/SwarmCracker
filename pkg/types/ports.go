@@ -13,6 +13,42 @@ import (
 // read the service object.
 const PublishLabel = "swarmcracker.publish"
 
+// PublishModeLabel is the service label that carries the publish mode for the
+// service's ports. Like PublishLabel it is copied onto every task's
+// ServiceAnnotations. The executor reads it to decide whether it owns the host
+// forwarding (host mode) or leaves it to the manager-side ingress datapath
+// (ingress mode).
+const PublishModeLabel = "swarmcracker.publish-mode"
+
+// Publish modes. Ingress publishes on the cluster (load-balanced across
+// replicas) and is the default, matching Docker Swarm. Host forwards a concrete
+// host port per replica on the node running it.
+const (
+	PublishModeIngress = "ingress"
+	PublishModeHost    = "host"
+)
+
+// NormalizePublishMode validates and canonicalizes a publish mode. An empty
+// value defaults to ingress.
+func NormalizePublishMode(mode string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", PublishModeIngress:
+		return PublishModeIngress, nil
+	case PublishModeHost:
+		return PublishModeHost, nil
+	default:
+		return "", fmt.Errorf("invalid publish mode %q (want ingress or host)", mode)
+	}
+}
+
+// IsIngressPublishMode reports whether the given (possibly empty) label value
+// selects ingress mode. An empty value means host: services created before the
+// publish-mode label existed used per-replica host forwarding, so treating a
+// missing label as ingress would silently break them.
+func IsIngressPublishMode(mode string) bool {
+	return strings.EqualFold(strings.TrimSpace(mode), PublishModeIngress)
+}
+
 // PublishedPort describes a host port forwarded to a guest port.
 //
 // For example, "--publish 8080:80" maps host port 8080 (TCP) to guest port 80.
