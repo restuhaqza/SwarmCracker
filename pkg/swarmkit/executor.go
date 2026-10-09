@@ -933,6 +933,11 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 		c.logger.Warn().Err(err).Msg("Failed to cleanup network after shutdown")
 	}
 
+	// Release host-side port forwarding. A task stopped by an update never
+	// reaches Remove, so without this its host-mode rules would linger and
+	// could shadow a later ingress rule for the same port. Idempotent.
+	c.unpublishPorts(task.ID)
+
 	// Mark as not started
 	c.started = false
 
@@ -962,6 +967,9 @@ func (c *Controller) Terminate(ctx context.Context) error {
 		c.logger.Error().Err(err).Msg("Force terminate failed")
 		return fmt.Errorf("failed to force terminate VM: %w", err)
 	}
+
+	// Release host-side port forwarding (idempotent; also done by Remove).
+	c.unpublishPorts(task.ID)
 
 	// Mark as not started
 	c.started = false

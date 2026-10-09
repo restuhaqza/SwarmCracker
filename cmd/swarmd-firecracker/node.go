@@ -135,7 +135,7 @@ func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRunt
 
 	// Wire the ingress routing mesh: managers serve the routing table and
 	// balance locally; workers fetch the table and balance locally too.
-	startIngress(ctx, config, executor, ing)
+	ingressCleanup := startIngress(ctx, config, executor, ing)
 
 	// Wait for shutdown signal
 	sig := <-sigChan
@@ -149,6 +149,12 @@ func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRunt
 	if err := n.Stop(shutdownCtx); err != nil {
 		log.G(ctx).WithError(err).Error("Failed to stop node gracefully")
 		return err
+	}
+
+	// Clear this node's ingress rules before tearing down the executor so a
+	// node that leaves the cluster leaves no stale forwarding behind.
+	if ingressCleanup != nil {
+		ingressCleanup()
 	}
 
 	// Close executor (cleanup dnsmasq, VXLAN)

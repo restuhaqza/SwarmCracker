@@ -154,11 +154,15 @@ mapping is released when the service is removed or scaled down. See
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--force` / `-f`.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--force` / `-f`.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
 unchanged. `service scale <service> 0` always scales to zero.
+`--publish-mode ingress|host` on `service update` changes the mode of the
+service's existing published ports (it errors if the service has none).
+`service inspect` prints the published ports and, for ingress services, the
+service VIP.
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc` for `ps`.
 
 #### `swarmcracker task`

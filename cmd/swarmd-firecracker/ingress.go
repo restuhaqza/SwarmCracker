@@ -37,30 +37,41 @@ func (ing ingressRuntime) tableURL() string {
 // table from the control API, program their own load balancer, and serve the
 // table over mutual TLS; workers fetch the table and program their own load
 // balancer, so a published port is reachable on every node.
-func startIngress(ctx context.Context, config *node.Config, executor *swarmkit.Executor, ing ingressRuntime) {
+//
+// It returns a cleanup function that clears this node's ingress rules, to be
+// called on shutdown (nil when the mesh is disabled).
+func startIngress(ctx context.Context, config *node.Config, executor *swarmkit.Executor, ing ingressRuntime) func() {
 	if !ing.enabled {
-		return
+		return nil
 	}
 	nm := executor.NetworkManager()
 	if nm == nil {
-		return
+		return nil
 	}
 	lb, ok := nm.(ingress.LoadBalancer)
 	if !ok {
-		return
+		return nil
 	}
 
 	cert, caPool, err := loadIngressTLS(config.StateDir)
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Ingress mesh disabled: TLS material unavailable")
-		return
+		return nil
 	}
 
 	if ing.managerAddr == "" {
 		startIngressManager(ctx, config, lb, ing, cert, caPool)
-		return
+	} else {
+		startIngressWorker(ctx, lb, ing, cert, caPool)
 	}
-	startIngressWorker(ctx, lb, ing, cert, caPool)
+
+	// Clear local ingress rules on shutdown so a node that leaves the cluster
+	// does not leave stale forwarding behind.
+	return func() {
+		if err := lb.ClearIngress(); err != nil {
+			log.G(ctx).WithError(err).Warn("Failed to clear ingress rules on shutdown")
+		}
+	}
 }
 
 // startIngressManager runs the reconciler (control API -> local LB) and serves

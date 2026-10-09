@@ -48,9 +48,10 @@ type Source interface {
 	Tasks(ctx context.Context) ([]TaskSpec, error)
 }
 
-// LoadBalancer programs ingress rules on the local node.
+// LoadBalancer programs and clears ingress rules on the local node.
 type LoadBalancer interface {
 	ProgramIngress(routes []network.IngressRoute) error
+	ClearIngress() error
 }
 
 // Controller reconciles the local ingress datapath with the cluster state and

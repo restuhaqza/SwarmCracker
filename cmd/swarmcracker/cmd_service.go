@@ -217,6 +217,7 @@ func newServiceUpdateCommand() *cobra.Command {
 		image       string
 		env         []string
 		envRemove   []string
+		publishMode string
 		force       bool
 	)
 
@@ -235,7 +236,7 @@ Supports updating replicas, resource limits, image, and environment variables.`,
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return updateService(args[0], replicas, cmd.Flags().Changed("replicas"), cpuLimit, memoryLimit, image, env, envRemove, force)
+			return updateService(args[0], replicas, cmd.Flags().Changed("replicas"), cpuLimit, memoryLimit, image, env, envRemove, publishMode, cmd.Flags().Changed("publish-mode"), force)
 		},
 	}
 
@@ -245,6 +246,7 @@ Supports updating replicas, resource limits, image, and environment variables.`,
 	cmd.Flags().StringVar(&image, "image", "", "New container image")
 	cmd.Flags().StringArrayVar(&env, "env-add", nil, "Add environment variable (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&envRemove, "env-rm", nil, "Remove environment variable")
+	cmd.Flags().StringVar(&publishMode, "publish-mode", "", "Change the publish mode of existing published ports (ingress|host)")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force update even if no changes detected")
 
 	return cmd
@@ -600,6 +602,12 @@ func inspectService(serviceID, format string, pretty bool) error {
 				fmt.Printf("  %d: -> %d/%s (%s)\n", p.PublishedPort, p.TargetPort, strings.ToLower(p.Protocol.String()), strings.ToLower(p.PublishMode.String()))
 			}
 		}
+		if svc.Endpoint != nil && len(svc.Endpoint.VirtualIPs) > 0 {
+			fmt.Printf("Virtual IPs:\n")
+			for _, v := range svc.Endpoint.VirtualIPs {
+				fmt.Printf("  %s (%s)\n", v.Addr, v.NetworkID)
+			}
+		}
 		if svc.Spec.Task.Resources != nil && svc.Spec.Task.Resources.Limits != nil {
 			limits := svc.Spec.Task.Resources.Limits
 			if limits.NanoCPUs > 0 {
@@ -803,7 +811,7 @@ func createService(name, image string, replicas uint64, cpu float64, memory, dis
 	return nil
 }
 
-func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit float64, memoryLimit string, image string, env, envRemove []string, force bool) error {
+func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit float64, memoryLimit string, image string, env, envRemove []string, publishMode string, publishModeSet bool, force bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -913,6 +921,30 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 		}
 	}
 
+	// Change the publish mode of the service's existing published ports. The
+	// tasks are recreated on the spec change, so host-mode rules are released
+	// and ingress rules reconcile accordingly.
+	if publishModeSet {
+		mode, err := types.NormalizePublishMode(publishMode)
+		if err != nil {
+			return err
+		}
+		if spec.Endpoint == nil || len(spec.Endpoint.Ports) == 0 {
+			return fmt.Errorf("service %q has no published ports to change", svc.Spec.Annotations.Name)
+		}
+		apiMode := api.PublishModeIngress
+		if mode == types.PublishModeHost {
+			apiMode = api.PublishModeHost
+		}
+		for _, p := range spec.Endpoint.Ports {
+			p.PublishMode = apiMode
+		}
+		if spec.Annotations.Labels == nil {
+			spec.Annotations.Labels = make(map[string]string)
+		}
+		spec.Annotations.Labels[types.PublishModeLabel] = mode
+	}
+
 	// Force update if requested
 	if force {
 		spec.Task.ForceUpdate++
@@ -939,7 +971,7 @@ func scaleService(serviceID, replicasStr string) error {
 	}
 
 	// Scale always applies the value, including 0 (scale to zero).
-	return updateService(serviceID, replicas, true, 0, "", "", nil, nil, false)
+	return updateService(serviceID, replicas, true, 0, "", "", nil, nil, "", false, false)
 }
 
 func removeService(serviceID string, force bool) error {
