@@ -110,3 +110,39 @@ func TestClearIngress_RemovesRules(t *testing.T) {
 	assert.Contains(t, calls, "iptables -t nat -D OUTPUT -p tcp -m tcp --dport 8080 -m comment --comment swarmcracker:ingress:svc1 -j DNAT --to-destination 192.168.127.5:80")
 	assert.Equal(t, "", nm.ingressRules)
 }
+
+func TestProgramIngress_SkipsRoutesWithoutBackends(t *testing.T) {
+	state := newMockState()
+	state.setFail("iptables -t nat -C", true)
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := ingressTestManager()
+	require.NoError(t, nm.ProgramIngress([]IngressRoute{{
+		ServiceID: "svc1",
+		Ports:     []IngressPort{{Protocol: "tcp", PublishedPort: 8080, TargetPort: 80}},
+		Backends:  nil,
+	}}))
+
+	for _, c := range ingressCalls(state) {
+		assert.NotContains(t, c, "-A PREROUTING -p tcp --dport 8080", "no backend means no rule")
+	}
+}
+
+func TestProgramIngress_UDPAndDedupedBackend(t *testing.T) {
+	state := newMockState()
+	state.setFail("iptables -t nat -C", true)
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := ingressTestManager()
+	require.NoError(t, nm.ProgramIngress([]IngressRoute{{
+		ServiceID: "svc1",
+		Ports:     []IngressPort{{Protocol: "udp", PublishedPort: 53, TargetPort: 53}},
+		Backends:  []string{"192.168.127.5", "192.168.127.5"},
+	}}))
+
+	// Duplicate backends collapse to one, so a plain DNAT is used (no statistic).
+	assert.Contains(t, ingressCalls(state),
+		"iptables -t nat -A PREROUTING -p udp --dport 53 -m comment --comment swarmcracker:ingress:svc1 -j DNAT --to-destination 192.168.127.5:53")
+}
