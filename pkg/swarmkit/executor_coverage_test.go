@@ -482,6 +482,12 @@ func (m *mockNetworkManagerFull) GetTapIP(taskID string) (string, error) {
 func (m *mockNetworkManagerFull) Init(ctx context.Context) error                 { return nil }
 func (m *mockNetworkManagerFull) SetNodeDiscovery(discovery types.NodeDiscovery) {}
 func (m *mockNetworkManagerFull) UpdateVXLANPeers(peers []string) error          { return nil }
+func (m *mockNetworkManagerFull) PublishPorts(taskID, guestIP string, ports []types.PublishedPort) error {
+	return nil
+}
+func (m *mockNetworkManagerFull) UnpublishPorts(taskID string, ports []types.PublishedPort) error {
+	return nil
+}
 
 // mockNetworkKeySetterFull implements NetworkManager + NetworkKeySetter
 type mockNetworkKeySetterFull struct {

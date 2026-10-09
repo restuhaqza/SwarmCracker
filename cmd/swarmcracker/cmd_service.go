@@ -146,6 +146,7 @@ func newServiceCreateCommand() *cobra.Command {
 		labels   []string
 		disk     string
 		golden   string
+		publish  []string
 	)
 
 	cmd := &cobra.Command{
@@ -183,7 +184,7 @@ With --golden, the service boots a prebuilt golden image (see
 				}
 				image = goldenPlaceholderImage(ref)
 			}
-			return createService(name, image, replicas, cpu, memory, disk, env, command, args, labels)
+			return createService(name, image, replicas, cpu, memory, disk, env, command, args, labels, publish)
 		},
 	}
 
@@ -198,6 +199,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringArrayVar(&command, "command", nil, "Override default container command")
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
 	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "Service labels (e.g., key=value)")
+	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "Publish a host port to the guest ([host:]container[/tcp|udp], e.g. 8080:80)")
 
 	cobra.CheckErr(cmd.MarkFlagRequired("name"))
 
@@ -449,8 +451,8 @@ func listServices(format, filter string, quiet bool) error {
 		return nil
 	}
 
-	fmt.Printf("%-20s %-20s %-10s %s\n", "ID", "NAME", "REPLICAS", "IMAGE")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Printf("%-20s %-20s %-10s %-24s %s\n", "ID", "NAME", "REPLICAS", "PORTS", "IMAGE")
+	fmt.Println(strings.Repeat("-", 100))
 	for _, svc := range services {
 		id := svc.ID
 		if len(id) > 12 {
@@ -465,11 +467,43 @@ func listServices(format, filter string, quiet bool) error {
 		if svc.Spec.Task.GetContainer() != nil {
 			image = svc.Spec.Task.GetContainer().Image
 		}
-		fmt.Printf("%-20s %-20s %-10s %s\n", id, name, replicas, image)
+		fmt.Printf("%-20s %-20s %-10s %-24s %s\n", id, name, replicas, formatServicePorts(svc), image)
 	}
 	fmt.Printf("\nTotal: %d service(s)\n", len(services))
 
 	return nil
+}
+
+// buildEndpointPorts converts internal published ports into SwarmKit port
+// configs. Host publish mode is used because ports are forwarded per replica;
+// cluster-wide ingress is a separate (future) mode.
+func buildEndpointPorts(published []types.PublishedPort) []*api.PortConfig {
+	ports := make([]*api.PortConfig, 0, len(published))
+	for _, p := range published {
+		proto := api.ProtocolTCP
+		if p.Protocol == "udp" {
+			proto = api.ProtocolUDP
+		}
+		ports = append(ports, &api.PortConfig{
+			Protocol:      proto,
+			TargetPort:    p.TargetPort,
+			PublishedPort: p.PublishedPort,
+			PublishMode:   api.PublishModeHost,
+		})
+	}
+	return ports
+}
+
+// formatServicePorts renders a service's published ports as "host:target/proto".
+func formatServicePorts(svc *api.Service) string {
+	if svc.Spec.Endpoint == nil || len(svc.Spec.Endpoint.Ports) == 0 {
+		return "-"
+	}
+	parts := make([]string, 0, len(svc.Spec.Endpoint.Ports))
+	for _, p := range svc.Spec.Endpoint.Ports {
+		parts = append(parts, fmt.Sprintf("%d:%d/%s", p.PublishedPort, p.TargetPort, strings.ToLower(p.Protocol.String())))
+	}
+	return strings.Join(parts, ",")
 }
 
 func filterServices(services []*api.Service, filter string) []*api.Service {
@@ -552,6 +586,12 @@ func inspectService(serviceID, format string, pretty bool) error {
 				for _, env := range container.Env {
 					fmt.Printf("  %s\n", env)
 				}
+			}
+		}
+		if svc.Spec.Endpoint != nil && len(svc.Spec.Endpoint.Ports) > 0 {
+			fmt.Printf("Published Ports:\n")
+			for _, p := range svc.Spec.Endpoint.Ports {
+				fmt.Printf("  %d: -> %d/%s (%s)\n", p.PublishedPort, p.TargetPort, strings.ToLower(p.Protocol.String()), strings.ToLower(p.PublishMode.String()))
 			}
 		}
 		if svc.Spec.Task.Resources != nil && svc.Spec.Task.Resources.Limits != nil {
@@ -652,7 +692,7 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	return nil
 }
 
-func createService(name, image string, replicas uint64, cpu float64, memory, disk string, env, command, args, labels []string) error {
+func createService(name, image string, replicas uint64, cpu float64, memory, disk string, env, command, args, labels, publish []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -680,6 +720,22 @@ func createService(name, image string, replicas uint64, cpu float64, memory, dis
 		}
 	}
 
+	// Parse published ports. The mapping travels to the executor as a service
+	// label (SwarmKit copies service labels onto each task) and is also
+	// recorded on the spec's Endpoint so it surfaces in service ls/inspect.
+	var endpointPorts []*api.PortConfig
+	if len(publish) > 0 {
+		published, err := types.ParsePublishSpec(publish)
+		if err != nil {
+			return fmt.Errorf("invalid --publish: %w", err)
+		}
+		if svcLabels == nil {
+			svcLabels = make(map[string]string)
+		}
+		svcLabels[types.PublishLabel] = types.FormatPublishLabel(published)
+		endpointPorts = buildEndpointPorts(published)
+	}
+
 	// Build service spec
 	spec := &api.ServiceSpec{
 		Annotations: api.Annotations{
@@ -701,6 +757,10 @@ func createService(name, image string, replicas uint64, cpu float64, memory, dis
 				Replicas: replicas,
 			},
 		},
+	}
+
+	if len(endpointPorts) > 0 {
+		spec.Endpoint = &api.EndpointSpec{Ports: endpointPorts}
 	}
 
 	// Set resource limits if specified

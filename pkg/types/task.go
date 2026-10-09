@@ -251,6 +251,14 @@ type NetworkManager interface {
 	Init(ctx context.Context) error           // Initialize network infrastructure (bridge, VXLAN)
 	SetNodeDiscovery(discovery NodeDiscovery) // Set node discovery for VXLAN peers
 	UpdateVXLANPeers(peers []string) error    // Update VXLAN FDB entries
+
+	// PublishPorts programs host-side forwarding so the given host ports reach
+	// guestIP inside the microVM. It must be idempotent-safe and reject a host
+	// port already published by another task.
+	PublishPorts(taskID, guestIP string, ports []PublishedPort) error
+	// UnpublishPorts removes host-side forwarding previously set up by
+	// PublishPorts. It is a no-op for ports that were never published.
+	UnpublishPorts(taskID string, ports []PublishedPort) error
 }
 
 // NodeDiscovery provides peer node information for VXLAN overlay.
