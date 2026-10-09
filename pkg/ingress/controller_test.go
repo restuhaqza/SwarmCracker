@@ -62,13 +62,14 @@ func TestReconcile_UsesOnlyRunningReplicas(t *testing.T) {
 
 	require.NoError(t, NewController(src, lb, time.Second).Reconcile(context.Background()))
 
-	require.Len(t, lb.last, 1)
-	assert.Equal(t, "svc1", lb.last[0].ServiceID)
-	assert.ElementsMatch(t, []string{"192.168.127.5", "192.168.127.6"}, lb.last[0].Backends)
-	require.Len(t, lb.last[0].Ports, 1)
-	assert.Equal(t, uint32(8080), lb.last[0].Ports[0].PublishedPort)
-	assert.Equal(t, uint32(80), lb.last[0].Ports[0].TargetPort)
-	assert.Equal(t, "tcp", lb.last[0].Ports[0].Protocol)
+	routes := lb.routes()
+	require.Len(t, routes, 1)
+	assert.Equal(t, "svc1", routes[0].ServiceID)
+	assert.ElementsMatch(t, []string{"192.168.127.5", "192.168.127.6"}, routes[0].Backends)
+	require.Len(t, routes[0].Ports, 1)
+	assert.Equal(t, uint32(8080), routes[0].Ports[0].PublishedPort)
+	assert.Equal(t, uint32(80), routes[0].Ports[0].TargetPort)
+	assert.Equal(t, "tcp", routes[0].Ports[0].Protocol)
 }
 
 func TestReconcile_DropsServiceWithNoHealthyReplica(t *testing.T) {
@@ -84,7 +85,7 @@ func TestReconcile_DropsServiceWithNoHealthyReplica(t *testing.T) {
 	lb := &fakeLB{}
 
 	require.NoError(t, NewController(src, lb, time.Second).Reconcile(context.Background()))
-	assert.Empty(t, lb.last, "a service with no running replica must not be load-balanced")
+	assert.Empty(t, lb.routes(), "a service with no running replica must not be load-balanced")
 }
 
 func TestReconcile_SkipsServicesWithoutIngressPorts(t *testing.T) {
@@ -95,5 +96,5 @@ func TestReconcile_SkipsServicesWithoutIngressPorts(t *testing.T) {
 	lb := &fakeLB{}
 
 	require.NoError(t, NewController(src, lb, time.Second).Reconcile(context.Background()))
-	assert.Empty(t, lb.last)
+	assert.Empty(t, lb.routes())
 }
