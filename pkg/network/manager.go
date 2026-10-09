@@ -51,6 +51,16 @@ type NetworkManager struct {
 	// by mu.
 	publishedPorts map[string]string
 
+	// ingressRules holds the canonical form of the last applied ingress load
+	// balancing rule set, so a reconcile that changes nothing is a no-op. It is
+	// guarded by mu.
+	ingressRules string
+
+	// ingressProgrammed is set once the first ingress reconcile has run, so
+	// stale rules from a previous daemon run are swept even when the desired
+	// set is empty.
+	ingressProgrammed bool
+
 	// dnsmasqMu serializes the dnsmasq lifecycle. Without it, concurrent VM
 	// creations race to kill and restart the DHCP server, leaking orphaned
 	// instances and logging "Address already in use".
@@ -376,9 +386,13 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		log.Warn().Err(err).Msg("Failed to setup DHCP, VMs may need static config")
 	}
 
-	// Check if we should use CNI for network attachments
-	// Use CNI when: task has network attachments AND CNI is configured
-	if len(task.Networks) > 0 && nm.cniClient != nil {
+	// Check if we should use CNI for network attachments.
+	//
+	// Use the CNI plugin only when an attachment sits on a network we do not
+	// already terminate locally. When the SwarmKit-assigned address is inside
+	// the flat L2 bridge subnet, the guest is reachable cluster-wide as-is, so
+	// create a plain TAP on that bridge instead of invoking the CNI plugin.
+	if len(task.Networks) > 0 && nm.cniClient != nil && !nm.attachmentsOnBridgeSubnet(task.Networks) {
 		// Use CNI plugin for SwarmKit network attachments
 		return nm.prepareNetworkWithCNI(ctx, task)
 	}
@@ -461,6 +475,32 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		Msg("Network preparation completed")
 
 	return nil
+}
+
+// attachmentsOnBridgeSubnet reports whether every attachment that carries a
+// SwarmKit-assigned address falls inside the configured bridge subnet. When it
+// does, no overlay setup is needed: the guest boots directly on the shared L2
+// bridge and is reachable cluster-wide.
+func (nm *NetworkManager) attachmentsOnBridgeSubnet(networks []types.NetworkAttachment) bool {
+	if nm.config.Subnet == "" {
+		return false
+	}
+	_, subnet, err := net.ParseCIDR(nm.config.Subnet)
+	if err != nil || subnet == nil {
+		return false
+	}
+	sawAddr := false
+	for _, n := range networks {
+		for _, addr := range n.Addresses {
+			ipStr := strings.SplitN(addr, "/", 2)[0]
+			ip := net.ParseIP(ipStr)
+			if ip == nil || !subnet.Contains(ip) {
+				return false
+			}
+			sawAddr = true
+		}
+	}
+	return sawAddr
 }
 
 // prepareNetworkWithCNI uses CNI plugin for SwarmKit network attachments.

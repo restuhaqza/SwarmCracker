@@ -135,9 +135,21 @@ func runAgent(ctx *cli.Context) error {
 	var networkConfig *networkallocator.Config
 
 	if ctx.Bool("enable-cni") {
+		// Align the CNI/overlay address pool with the flat L2 bridge subnet by
+		// default. The overlay is a single shared L2 segment, so allocating
+		// task IPs from a different subnet than the bridge would make them
+		// unreachable from other nodes.
+		subnetPool := ctx.String("cni-subnet-pool")
+		if subnetPool == "" {
+			subnetPool = ctx.String("subnet")
+		}
+		if subnetPool == "" {
+			subnetPool = cni.DefaultSubnetPool
+		}
+
 		cniConfig := &cni.CNIConfig{
 			BridgeName:   ctx.String("bridge-name"),
-			SubnetPool:   ctx.String("cni-subnet-pool"),
+			SubnetPool:   subnetPool,
 			SubnetSize:   ctx.Int("cni-subnet-size"),
 			VXLANPort:    uint32(ctx.Int("cni-vxlan-port")),
 			IPAMType:     "host-local",

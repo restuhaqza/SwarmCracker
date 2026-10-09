@@ -225,21 +225,55 @@ func (a *CNINetworkAllocator) AllocateService(s *api.Service) error {
 		// Find ingress network
 		for netID, allocatedNet := range a.allocatedNets {
 			if allocatedNet.Ingress {
+				// Allocate the per-service VIP that the routing mesh forwards
+				// host ports to.
+				vip, err := a.provider.ipamMgr.AllocateVIP(allocatedNet.Subnet.String(), s.ID)
+				if err != nil {
+					return fmt.Errorf("failed to allocate ingress VIP: %w", err)
+				}
+
 				// Store service in ingress network
 				allocatedNet.mu.Lock()
 				allocatedNet.Services[s.ID] = &ServiceVIP{
 					ServiceID:      s.ID,
 					NetworkID:      netID,
+					VIP:            vip,
 					PublishedPorts: parsePublishedPorts(s),
 					AllocatedAt:    time.Now(),
 				}
 				allocatedNet.mu.Unlock()
+
+				// Surface the VIP on the service endpoint so `service inspect`
+				// and the routing mesh can read it.
+				setServiceVIP(s, netID, vip)
 				break
 			}
 		}
 	}
 
 	return nil
+}
+
+// setServiceVIP records a VIP address for a network on the service endpoint,
+// updating an existing entry (created by SwarmKit with only the network ID) or
+// appending a new one.
+func setServiceVIP(s *api.Service, networkID string, vip net.IP) {
+	if s == nil || vip == nil {
+		return
+	}
+	if s.Endpoint == nil {
+		s.Endpoint = &api.Endpoint{}
+	}
+	for _, v := range s.Endpoint.VirtualIPs {
+		if v.NetworkID == networkID {
+			v.Addr = vip.String()
+			return
+		}
+	}
+	s.Endpoint.VirtualIPs = append(s.Endpoint.VirtualIPs, &api.Endpoint_VirtualIP{
+		NetworkID: networkID,
+		Addr:      vip.String(),
+	})
 }
 
 // DeallocateService frees VIPs and ports for a service
@@ -273,7 +307,15 @@ func (a *CNINetworkAllocator) DeallocateService(s *api.Service) error {
 	for _, allocatedNet := range a.allocatedNets {
 		if allocatedNet.Ingress {
 			allocatedNet.mu.Lock()
-			delete(allocatedNet.Services, s.ID)
+			if alloc, ok := allocatedNet.Services[s.ID]; ok {
+				// Release the ingress VIP.
+				if alloc.VIP != nil {
+					if err := a.provider.ipamMgr.ReleaseVIP(alloc.VIP, allocatedNet.Subnet.String(), s.ID); err != nil {
+						log.Warn().Err(err).Str("service", s.ID).Msg("Failed to release ingress VIP")
+					}
+				}
+				delete(allocatedNet.Services, s.ID)
+			}
 			allocatedNet.mu.Unlock()
 			break
 		}
