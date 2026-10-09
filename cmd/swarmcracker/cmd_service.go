@@ -148,6 +148,29 @@ func newServiceCreateCommand() *cobra.Command {
 		golden      string
 		publish     []string
 		publishMode string
+		mode        string
+
+		constraints    []string
+		placementPrefs []string
+
+		restartCondition   string
+		restartDelay       string
+		restartMaxAttempts uint64
+		restartWindow      string
+
+		updateOrder           string
+		updateParallelism     uint64
+		updateDelay           string
+		updateFailureAction   string
+		updateMonitor         string
+		updateMaxFailureRatio float64
+
+		rollbackOrder           string
+		rollbackParallelism     uint64
+		rollbackDelay           string
+		rollbackFailureAction   string
+		rollbackMonitor         string
+		rollbackMaxFailureRatio float64
 	)
 
 	cmd := &cobra.Command{
@@ -185,7 +208,42 @@ With --golden, the service boots a prebuilt golden image (see
 				}
 				image = goldenPlaceholderImage(ref)
 			}
-			return createService(name, image, replicas, cpu, memory, disk, env, command, args, labels, publish, publishMode)
+			return createService(serviceCreateOptions{
+				name:               name,
+				image:              image,
+				replicas:           replicas,
+				cpu:                cpu,
+				memory:             memory,
+				disk:               disk,
+				env:                env,
+				command:            command,
+				args:               args,
+				labels:             labels,
+				publish:            publish,
+				publishMode:        publishMode,
+				mode:               mode,
+				constraints:        constraints,
+				placementPrefs:     placementPrefs,
+				restartSet:         anyFlagChanged(cmd, "restart-condition", "restart-delay", "restart-max-attempts", "restart-window"),
+				restartCond:        restartCondition,
+				restartDelay:       restartDelay,
+				restartAttempts:    restartMaxAttempts,
+				restartWindow:      restartWindow,
+				updateSet:          anyFlagChanged(cmd, "update-order", "update-parallelism", "update-delay", "update-failure-action", "update-monitor", "update-max-failure-ratio"),
+				updateOrder:        updateOrder,
+				updateParallel:     updateParallelism,
+				updateDelay:        updateDelay,
+				updateFailAction:   updateFailureAction,
+				updateMonitor:      updateMonitor,
+				updateMaxRatio:     updateMaxFailureRatio,
+				rollbackSet:        anyFlagChanged(cmd, "rollback-order", "rollback-parallelism", "rollback-delay", "rollback-failure-action", "rollback-monitor", "rollback-max-failure-ratio"),
+				rollbackOrder:      rollbackOrder,
+				rollbackParallel:   rollbackParallelism,
+				rollbackDelay:      rollbackDelay,
+				rollbackFailAction: rollbackFailureAction,
+				rollbackMonitor:    rollbackMonitor,
+				rollbackMaxRatio:   rollbackMaxFailureRatio,
+			})
 		},
 	}
 
@@ -202,6 +260,25 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringArrayVarP(&labels, "label", "l", nil, "Service labels (e.g., key=value)")
 	cmd.Flags().StringArrayVarP(&publish, "publish", "p", nil, "Publish a host port to the guest ([host:]container[/tcp|udp], e.g. 8080:80)")
 	cmd.Flags().StringVar(&publishMode, "publish-mode", types.PublishModeIngress, "Port publish mode: ingress (cluster load-balanced) or host (per-replica host port)")
+	cmd.Flags().StringVar(&mode, "mode", modeReplicated, "Service mode: replicated or global")
+	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Placement constraint, key==value or key!=value (repeatable, e.g. node.hostname==worker1)")
+	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Placement preference, spread=<key> (repeatable, e.g. spread=node.labels.zone)")
+	cmd.Flags().StringVar(&restartCondition, "restart-condition", "", "Restart condition: none, on-failure or any (default any)")
+	cmd.Flags().StringVar(&restartDelay, "restart-delay", "", "Delay between restart attempts (e.g. 5s)")
+	cmd.Flags().Uint64Var(&restartMaxAttempts, "restart-max-attempts", 0, "Maximum restart attempts before giving up (0 = unlimited)")
+	cmd.Flags().StringVar(&restartWindow, "restart-window", "", "Time window used to evaluate the restart policy (e.g. 1h)")
+	cmd.Flags().StringVar(&updateOrder, "update-order", "", "Update order: stop-first or start-first")
+	cmd.Flags().Uint64Var(&updateParallelism, "update-parallelism", 0, "Tasks updated in parallel (0 = unlimited)")
+	cmd.Flags().StringVar(&updateDelay, "update-delay", "", "Delay between updates (e.g. 10s)")
+	cmd.Flags().StringVar(&updateFailureAction, "update-failure-action", "", "Action on update failure: pause, continue or rollback")
+	cmd.Flags().StringVar(&updateMonitor, "update-monitor", "", "Duration to monitor a new task for failure (e.g. 30s)")
+	cmd.Flags().Float64Var(&updateMaxFailureRatio, "update-max-failure-ratio", 0, "Fraction of tasks that may fail before the failure action (0-1)")
+	cmd.Flags().StringVar(&rollbackOrder, "rollback-order", "", "Rollback order: stop-first or start-first")
+	cmd.Flags().Uint64Var(&rollbackParallelism, "rollback-parallelism", 0, "Tasks rolled back in parallel (0 = unlimited)")
+	cmd.Flags().StringVar(&rollbackDelay, "rollback-delay", "", "Delay between rollback steps (e.g. 10s)")
+	cmd.Flags().StringVar(&rollbackFailureAction, "rollback-failure-action", "", "Action on rollback failure: pause or continue")
+	cmd.Flags().StringVar(&rollbackMonitor, "rollback-monitor", "", "Duration to monitor a rolled-back task for failure")
+	cmd.Flags().Float64Var(&rollbackMaxFailureRatio, "rollback-max-failure-ratio", 0, "Fraction of tasks that may fail during rollback (0-1)")
 
 	cobra.CheckErr(cmd.MarkFlagRequired("name"))
 
@@ -219,6 +296,30 @@ func newServiceUpdateCommand() *cobra.Command {
 		envRemove   []string
 		publishMode string
 		force       bool
+		rollback    bool
+
+		mode           string
+		constraints    []string
+		placementPrefs []string
+
+		restartCondition   string
+		restartDelay       string
+		restartMaxAttempts uint64
+		restartWindow      string
+
+		updateOrder           string
+		updateParallelism     uint64
+		updateDelay           string
+		updateFailureAction   string
+		updateMonitor         string
+		updateMaxFailureRatio float64
+
+		rollbackOrder           string
+		rollbackParallelism     uint64
+		rollbackDelay           string
+		rollbackFailureAction   string
+		rollbackMonitor         string
+		rollbackMaxFailureRatio float64
 	)
 
 	cmd := &cobra.Command{
@@ -226,17 +327,58 @@ func newServiceUpdateCommand() *cobra.Command {
 		Short: "Update a service",
 		Long: `Update an existing service's configuration.
 
-Supports updating replicas, resource limits, image, and environment variables.`,
+Supports updating replicas, resource limits, image, environment variables,
+placement, restart policy, update/rollback configuration and mode.`,
 		Example: `  swarmcracker service update my-service --replicas 5
-  swarmcracker service update my-service --cpu-limit 2 --memory-limit 1G
-  swarmcracker service update my-service --image myimage:v2
-  swarmcracker service update my-service --env-add KEY=value`,
+  swarmcracker service update my-service --constraint node.hostname==worker1
+  swarmcracker service update my-service --update-order start-first --replicas 4
+  swarmcracker service update my-service --rollback`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return updateService(args[0], replicas, cmd.Flags().Changed("replicas"), cpuLimit, memoryLimit, image, env, envRemove, publishMode, cmd.Flags().Changed("publish-mode"), force)
+			return updateService(args[0], serviceUpdateOptions{
+				replicas:       replicas,
+				replicasSet:    cmd.Flags().Changed("replicas"),
+				cpuLimit:       cpuLimit,
+				memoryLimit:    memoryLimit,
+				image:          image,
+				env:            env,
+				envRemove:      envRemove,
+				publishMode:    publishMode,
+				publishModeSet: cmd.Flags().Changed("publish-mode"),
+				force:          force,
+				rollbackAction: rollback,
+
+				modeSet:        cmd.Flags().Changed("mode"),
+				mode:           mode,
+				constraints:    constraints,
+				placementPrefs: placementPrefs,
+				placementSet:   anyFlagChanged(cmd, "constraint", "placement-pref"),
+
+				restartSet:      anyFlagChanged(cmd, "restart-condition", "restart-delay", "restart-max-attempts", "restart-window"),
+				restartCond:     restartCondition,
+				restartDelay:    restartDelay,
+				restartAttempts: restartMaxAttempts,
+				restartWindow:   restartWindow,
+
+				updateSet:        anyFlagChanged(cmd, "update-order", "update-parallelism", "update-delay", "update-failure-action", "update-monitor", "update-max-failure-ratio"),
+				updateOrder:      updateOrder,
+				updateParallel:   updateParallelism,
+				updateDelay:      updateDelay,
+				updateFailAction: updateFailureAction,
+				updateMonitor:    updateMonitor,
+				updateMaxRatio:   updateMaxFailureRatio,
+
+				rollbackSet:        anyFlagChanged(cmd, "rollback-order", "rollback-parallelism", "rollback-delay", "rollback-failure-action", "rollback-monitor", "rollback-max-failure-ratio"),
+				rollbackOrder:      rollbackOrder,
+				rollbackParallel:   rollbackParallelism,
+				rollbackDelay:      rollbackDelay,
+				rollbackFailAction: rollbackFailureAction,
+				rollbackMonitor:    rollbackMonitor,
+				rollbackMaxRatio:   rollbackMaxFailureRatio,
+			})
 		},
 	}
 
@@ -247,6 +389,26 @@ Supports updating replicas, resource limits, image, and environment variables.`,
 	cmd.Flags().StringArrayVar(&env, "env-add", nil, "Add environment variable (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&envRemove, "env-rm", nil, "Remove environment variable")
 	cmd.Flags().StringVar(&publishMode, "publish-mode", "", "Change the publish mode of existing published ports (ingress|host)")
+	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back to the service's previous spec")
+	cmd.Flags().StringVar(&mode, "mode", "", "Change the service mode: replicated or global")
+	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Replace placement constraints (key==value or key!=value; repeatable)")
+	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Replace placement preferences (spread=<key>; repeatable)")
+	cmd.Flags().StringVar(&restartCondition, "restart-condition", "", "Restart condition: none, on-failure or any")
+	cmd.Flags().StringVar(&restartDelay, "restart-delay", "", "Delay between restart attempts (e.g. 5s)")
+	cmd.Flags().Uint64Var(&restartMaxAttempts, "restart-max-attempts", 0, "Maximum restart attempts before giving up (0 = unlimited)")
+	cmd.Flags().StringVar(&restartWindow, "restart-window", "", "Time window used to evaluate the restart policy (e.g. 1h)")
+	cmd.Flags().StringVar(&updateOrder, "update-order", "", "Update order: stop-first or start-first")
+	cmd.Flags().Uint64Var(&updateParallelism, "update-parallelism", 0, "Tasks updated in parallel (0 = unlimited)")
+	cmd.Flags().StringVar(&updateDelay, "update-delay", "", "Delay between updates (e.g. 10s)")
+	cmd.Flags().StringVar(&updateFailureAction, "update-failure-action", "", "Action on update failure: pause, continue or rollback")
+	cmd.Flags().StringVar(&updateMonitor, "update-monitor", "", "Duration to monitor a new task for failure (e.g. 30s)")
+	cmd.Flags().Float64Var(&updateMaxFailureRatio, "update-max-failure-ratio", 0, "Fraction of tasks that may fail before the failure action (0-1)")
+	cmd.Flags().StringVar(&rollbackOrder, "rollback-order", "", "Rollback order: stop-first or start-first")
+	cmd.Flags().Uint64Var(&rollbackParallelism, "rollback-parallelism", 0, "Tasks rolled back in parallel (0 = unlimited)")
+	cmd.Flags().StringVar(&rollbackDelay, "rollback-delay", "", "Delay between rollback steps (e.g. 10s)")
+	cmd.Flags().StringVar(&rollbackFailureAction, "rollback-failure-action", "", "Action on rollback failure: pause or continue")
+	cmd.Flags().StringVar(&rollbackMonitor, "rollback-monitor", "", "Duration to monitor a rolled-back task for failure")
+	cmd.Flags().Float64Var(&rollbackMaxFailureRatio, "rollback-max-failure-ratio", 0, "Fraction of tasks that may fail during rollback (0-1)")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force update even if no changes detected")
 
 	return cmd
@@ -399,6 +561,17 @@ func parseMemory(mem string) (int64, error) {
 // golden tasks, and the real reference travels in the swarmcracker.golden label.
 func goldenPlaceholderImage(ref string) string {
 	return "swarmcracker/golden:" + strings.NewReplacer("@", "-", "/", "-").Replace(ref)
+}
+
+// anyFlagChanged reports whether the user set any of the named flags, so an
+// update only overrides a spec section that was actually requested.
+func anyFlagChanged(cmd *cobra.Command, names ...string) bool {
+	for _, n := range names {
+		if cmd.Flags().Changed(n) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseLabels(labelStrs []string) map[string]string {
@@ -617,6 +790,32 @@ func inspectService(serviceID, format string, pretty bool) error {
 				fmt.Printf("Memory Limit: %d bytes\n", limits.MemoryBytes)
 			}
 		}
+		if p := svc.Spec.Task.Placement; p != nil && (len(p.Constraints) > 0 || len(p.Preferences) > 0) {
+			fmt.Printf("Placement:\n")
+			for _, c := range p.Constraints {
+				fmt.Printf("  constraint: %s\n", c)
+			}
+			for _, pref := range p.Preferences {
+				if s := pref.GetSpread(); s != nil {
+					fmt.Printf("  preference: spread=%s\n", s.SpreadDescriptor)
+				}
+			}
+		}
+		if rp := svc.Spec.Task.Restart; rp != nil {
+			fmt.Printf("Restart Policy: %s", restartConditionString(rp.Condition))
+			if rp.MaxAttempts > 0 {
+				fmt.Printf(" (max %d attempts)", rp.MaxAttempts)
+			}
+			fmt.Printf("\n")
+		}
+		if uc := svc.Spec.Update; uc != nil {
+			fmt.Printf("Update Config: order=%s parallelism=%d failure-action=%s\n",
+				updateOrderString(uc.Order), uc.Parallelism, failureActionString(uc.FailureAction))
+		}
+		if uc := svc.Spec.Rollback; uc != nil {
+			fmt.Printf("Rollback Config: order=%s parallelism=%d failure-action=%s\n",
+				updateOrderString(uc.Order), uc.Parallelism, failureActionString(uc.FailureAction))
+		}
 		if len(svc.Spec.Annotations.Labels) > 0 {
 			fmt.Printf("Labels:\n")
 			for k, v := range svc.Spec.Annotations.Labels {
@@ -706,7 +905,7 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	return nil
 }
 
-func createService(name, image string, replicas uint64, cpu float64, memory, disk string, env, command, args, labels, publish []string, publishMode string) error {
+func createService(opts serviceCreateOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -716,87 +915,11 @@ func createService(name, image string, replicas uint64, cpu float64, memory, dis
 	}
 	defer conn.Close()
 
-	// Parse memory
-	memoryBytes, err := parseMemory(memory)
-	if err != nil {
-		return fmt.Errorf("invalid memory value: %w", err)
-	}
-
-	mode, err := types.NormalizePublishMode(publishMode)
+	spec, err := buildServiceSpec(opts)
 	if err != nil {
 		return err
 	}
 
-	// The requested VM disk size is carried as a service label so the executor
-	// can size the rootfs. A user-supplied label of the same name wins.
-	svcLabels := parseLabels(labels)
-	if disk != "" {
-		if svcLabels == nil {
-			svcLabels = make(map[string]string)
-		}
-		if _, ok := svcLabels[types.DiskSizeLabel]; !ok {
-			svcLabels[types.DiskSizeLabel] = disk
-		}
-	}
-
-	// Parse published ports. The mapping travels to the executor as a service
-	// label (SwarmKit copies service labels onto each task) and is also
-	// recorded on the spec's Endpoint so it surfaces in service ls/inspect.
-	var endpointPorts []*api.PortConfig
-	if len(publish) > 0 {
-		published, err := types.ParsePublishSpec(publish)
-		if err != nil {
-			return fmt.Errorf("invalid --publish: %w", err)
-		}
-		if svcLabels == nil {
-			svcLabels = make(map[string]string)
-		}
-		svcLabels[types.PublishLabel] = types.FormatPublishLabel(published)
-		svcLabels[types.PublishModeLabel] = mode
-		endpointPorts = buildEndpointPorts(published, mode)
-	}
-
-	// Build service spec
-	spec := &api.ServiceSpec{
-		Annotations: api.Annotations{
-			Name:   name,
-			Labels: svcLabels,
-		},
-		Task: api.TaskSpec{
-			Runtime: &api.TaskSpec_Container{
-				Container: &api.ContainerSpec{
-					Image:   image,
-					Env:     env,
-					Command: command,
-					Args:    args,
-				},
-			},
-		},
-		Mode: &api.ServiceSpec_Replicated{
-			Replicated: &api.ReplicatedService{
-				Replicas: replicas,
-			},
-		},
-	}
-
-	if len(endpointPorts) > 0 {
-		spec.Endpoint = &api.EndpointSpec{Ports: endpointPorts}
-	}
-
-	// Set resource limits if specified
-	if cpu > 0 || memoryBytes > 0 {
-		spec.Task.Resources = &api.ResourceRequirements{
-			Limits: &api.Resources{},
-		}
-		if cpu > 0 {
-			spec.Task.Resources.Limits.NanoCPUs = int64(cpu * 1e9)
-		}
-		if memoryBytes > 0 {
-			spec.Task.Resources.Limits.MemoryBytes = memoryBytes
-		}
-	}
-
-	// Create service
 	resp, err := client.CreateService(ctx, &api.CreateServiceRequest{
 		Spec: spec,
 	})
@@ -804,14 +927,18 @@ func createService(name, image string, replicas uint64, cpu float64, memory, dis
 		return fmt.Errorf("failed to create service: %w", err)
 	}
 
-	fmt.Printf("Service %s created with ID: %s\n", name, resp.Service.ID)
-	fmt.Printf("Replicas: %d\n", replicas)
-	fmt.Printf("Image: %s\n", image)
+	fmt.Printf("Service %s created with ID: %s\n", opts.name, resp.Service.ID)
+	if r := spec.GetReplicated(); r != nil {
+		fmt.Printf("Replicas: %d\n", r.Replicas)
+	} else {
+		fmt.Printf("Mode: global\n")
+	}
+	fmt.Printf("Image: %s\n", opts.image)
 
 	return nil
 }
 
-func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit float64, memoryLimit string, image string, env, envRemove []string, publishMode string, publishModeSet bool, force bool) error {
+func updateService(serviceID string, opts serviceUpdateOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -832,25 +959,32 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 	}
 	svc := getResp.Service
 
+	// A rollback reverts to the previous spec; other flags are ignored.
+	if opts.rollbackAction {
+		if svc.PreviousSpec == nil {
+			return fmt.Errorf("service %q has no previous spec to roll back to", svc.Spec.Annotations.Name)
+		}
+		return applyServiceSpec(ctx, client, svc, svc.PreviousSpec.Copy())
+	}
+
 	// Parse memory
-	memoryBytes, err := parseMemory(memoryLimit)
+	memoryBytes, err := parseMemory(opts.memoryLimit)
 	if err != nil {
 		return fmt.Errorf("invalid memory value: %w", err)
 	}
 
-	// Update spec
 	spec := svc.Spec.Copy()
 
 	// Update replicas when the caller explicitly provided a count. This keeps
 	// `service update` without --replicas a no-op while allowing an explicit
 	// `--replicas 0` (scale to zero).
-	if replicasSet {
+	if opts.replicasSet {
 		if r := spec.GetReplicated(); r != nil {
-			r.Replicas = replicas
+			r.Replicas = opts.replicas
 		} else {
 			spec.Mode = &api.ServiceSpec_Replicated{
 				Replicated: &api.ReplicatedService{
-					Replicas: replicas,
+					Replicas: opts.replicas,
 				},
 			}
 		}
@@ -860,16 +994,16 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 	container := spec.Task.GetContainer()
 	if container != nil {
 		// Update image if specified
-		if image != "" {
-			container.Image = image
+		if opts.image != "" {
+			container.Image = opts.image
 		}
 
 		// Update environment variables
-		if len(env) > 0 || len(envRemove) > 0 {
+		if len(opts.env) > 0 || len(opts.envRemove) > 0 {
 			// Remove specified env vars
-			if len(envRemove) > 0 {
+			if len(opts.envRemove) > 0 {
 				removeSet := make(map[string]bool)
-				for _, key := range envRemove {
+				for _, key := range opts.envRemove {
 					removeSet[key] = true
 				}
 				var newEnv []string
@@ -883,7 +1017,7 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 			}
 
 			// Add/update env vars
-			if len(env) > 0 {
+			if len(opts.env) > 0 {
 				envMap := make(map[string]string)
 				for _, e := range container.Env {
 					parts := strings.SplitN(e, "=", 2)
@@ -891,7 +1025,7 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 						envMap[parts[0]] = parts[1]
 					}
 				}
-				for _, e := range env {
+				for _, e := range opts.env {
 					parts := strings.SplitN(e, "=", 2)
 					if len(parts) == 2 {
 						envMap[parts[0]] = parts[1]
@@ -906,15 +1040,15 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 	}
 
 	// Update resource limits
-	if cpuLimit > 0 || memoryBytes > 0 {
+	if opts.cpuLimit > 0 || memoryBytes > 0 {
 		if spec.Task.Resources == nil {
 			spec.Task.Resources = &api.ResourceRequirements{}
 		}
 		if spec.Task.Resources.Limits == nil {
 			spec.Task.Resources.Limits = &api.Resources{}
 		}
-		if cpuLimit > 0 {
-			spec.Task.Resources.Limits.NanoCPUs = int64(cpuLimit * 1e9)
+		if opts.cpuLimit > 0 {
+			spec.Task.Resources.Limits.NanoCPUs = int64(opts.cpuLimit * 1e9)
 		}
 		if memoryBytes > 0 {
 			spec.Task.Resources.Limits.MemoryBytes = memoryBytes
@@ -924,8 +1058,8 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 	// Change the publish mode of the service's existing published ports. The
 	// tasks are recreated on the spec change, so host-mode rules are released
 	// and ingress rules reconcile accordingly.
-	if publishModeSet {
-		mode, err := types.NormalizePublishMode(publishMode)
+	if opts.publishModeSet {
+		mode, err := types.NormalizePublishMode(opts.publishMode)
 		if err != nil {
 			return err
 		}
@@ -945,13 +1079,74 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 		spec.Annotations.Labels[types.PublishModeLabel] = mode
 	}
 
+	// Change the service mode. SwarmKit does not allow a service's mode to
+	// change on update, so reject a real change with a clear error instead of
+	// forwarding it and surfacing an opaque RPC failure.
+	if opts.modeSet {
+		mode, err := normalizeServiceMode(opts.mode)
+		if err != nil {
+			return err
+		}
+		current := modeReplicated
+		if spec.GetGlobal() != nil {
+			current = modeGlobal
+		}
+		if mode != current {
+			return fmt.Errorf("changing the service mode (%s -> %s) is not supported; recreate the service", current, mode)
+		}
+	}
+
+	// Replace placement.
+	if opts.placementSet {
+		placement, err := buildPlacement(opts.constraints, opts.placementPrefs)
+		if err != nil {
+			return err
+		}
+		spec.Task.Placement = placement
+	}
+
+	// Replace the restart policy.
+	if opts.restartSet {
+		rp, err := buildRestartPolicy(serviceCreateOptions{
+			restartSet:      true,
+			restartCond:     opts.restartCond,
+			restartDelay:    opts.restartDelay,
+			restartAttempts: opts.restartAttempts,
+			restartWindow:   opts.restartWindow,
+		})
+		if err != nil {
+			return err
+		}
+		spec.Task.Restart = rp
+	}
+
+	// Replace the update / rollback configuration.
+	if opts.updateSet {
+		uc, err := buildUpdateConfig("update", true, opts.updateOrder, opts.updateParallel, opts.updateDelay, opts.updateFailAction, opts.updateMonitor, opts.updateMaxRatio)
+		if err != nil {
+			return err
+		}
+		spec.Update = uc
+	}
+	if opts.rollbackSet {
+		uc, err := buildUpdateConfig("rollback", true, opts.rollbackOrder, opts.rollbackParallel, opts.rollbackDelay, opts.rollbackFailAction, opts.rollbackMonitor, opts.rollbackMaxRatio)
+		if err != nil {
+			return err
+		}
+		spec.Rollback = uc
+	}
+
 	// Force update if requested
-	if force {
+	if opts.force {
 		spec.Task.ForceUpdate++
 	}
 
-	// Update service
-	_, err = client.UpdateService(ctx, &api.UpdateServiceRequest{
+	return applyServiceSpec(ctx, client, svc, spec)
+}
+
+// applyServiceSpec submits an updated spec for an existing service.
+func applyServiceSpec(ctx context.Context, client api.ControlClient, svc *api.Service, spec *api.ServiceSpec) error {
+	_, err := client.UpdateService(ctx, &api.UpdateServiceRequest{
 		ServiceID:      svc.ID,
 		ServiceVersion: &svc.Meta.Version,
 		Spec:           spec,
@@ -959,7 +1154,6 @@ func updateService(serviceID string, replicas uint64, replicasSet bool, cpuLimit
 	if err != nil {
 		return fmt.Errorf("failed to update service: %w", err)
 	}
-
 	fmt.Printf("Service %s updated\n", svc.Spec.Annotations.Name)
 	return nil
 }
@@ -971,7 +1165,7 @@ func scaleService(serviceID, replicasStr string) error {
 	}
 
 	// Scale always applies the value, including 0 (scale to zero).
-	return updateService(serviceID, replicas, true, 0, "", "", nil, nil, "", false, false)
+	return updateService(serviceID, serviceUpdateOptions{replicas: replicas, replicasSet: true})
 }
 
 func removeService(serviceID string, force bool) error {
