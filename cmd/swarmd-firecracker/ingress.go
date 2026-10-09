@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"time"
@@ -19,10 +20,27 @@ import (
 	"google.golang.org/grpc/credentials"
 )
 
-// startIngressController runs the manager-side routing mesh reconciler: it
-// reads ingress services and their replicas from the control API and programs
-// L4 load balancing on this node. Only managers have the global view required.
-func startIngressController(ctx context.Context, config *node.Config, executor *swarmkit.Executor) {
+// ingressRuntime holds the daemon's ingress mesh settings.
+type ingressRuntime struct {
+	enabled bool
+	port    int
+	// managerAddr is the host:port of a manager's ingress table endpoint. It is
+	// empty on managers, which serve the table themselves.
+	managerAddr string
+}
+
+func (ing ingressRuntime) tableURL() string {
+	return fmt.Sprintf("https://%s/v1/ingress", ing.managerAddr)
+}
+
+// startIngress wires the ingress routing mesh. Managers compute the routing
+// table from the control API, program their own load balancer, and serve the
+// table over mutual TLS; workers fetch the table and program their own load
+// balancer, so a published port is reachable on every node.
+func startIngress(ctx context.Context, config *node.Config, executor *swarmkit.Executor, ing ingressRuntime) {
+	if !ing.enabled {
+		return
+	}
 	nm := executor.NetworkManager()
 	if nm == nil {
 		return
@@ -32,9 +50,25 @@ func startIngressController(ctx context.Context, config *node.Config, executor *
 		return
 	}
 
+	cert, caPool, err := loadIngressTLS(config.StateDir)
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("Ingress mesh disabled: TLS material unavailable")
+		return
+	}
+
+	if ing.managerAddr == "" {
+		startIngressManager(ctx, config, lb, ing, cert, caPool)
+		return
+	}
+	startIngressWorker(ctx, lb, ing, cert, caPool)
+}
+
+// startIngressManager runs the reconciler (control API -> local LB) and serves
+// the routing table to the other nodes.
+func startIngressManager(ctx context.Context, config *node.Config, lb ingress.LoadBalancer, ing ingressRuntime, cert tls.Certificate, caPool *x509.CertPool) {
 	client, conn, err := newControlClient(config.StateDir, config.ListenControlAPI)
 	if err != nil {
-		log.G(ctx).WithError(err).Warn("Ingress routing mesh disabled: cannot create control client")
+		log.G(ctx).WithError(err).Warn("Ingress mesh disabled: cannot create control client")
 		return
 	}
 	go func() {
@@ -44,7 +78,92 @@ func startIngressController(ctx context.Context, config *node.Config, executor *
 
 	ctrl := ingress.NewController(ingress.NewControlClientSource(client), lb, 3*time.Second)
 	go ctrl.Run(ctx)
-	log.G(ctx).Info("Ingress routing mesh reconciler started")
+
+	srv := ingress.NewTableServer(ctrl, serverTLSConfig(cert, caPool), fmt.Sprintf(":%d", ing.port))
+	go func() {
+		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+			log.G(ctx).WithError(err).Warn("Ingress table server stopped")
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(shutdownCtx)
+	}()
+
+	log.G(ctx).Infof("Ingress mesh: manager balancing locally and serving the table on :%d", ing.port)
+}
+
+// startIngressWorker fetches the routing table from a manager and programs the
+// local load balancer from it.
+func startIngressWorker(ctx context.Context, lb ingress.LoadBalancer, ing ingressRuntime, cert tls.Certificate, caPool *x509.CertPool) {
+	tc := ingress.NewTableClient(ing.tableURL(), clientTLSConfig(cert, caPool), 3*time.Second)
+	go tc.Run(ctx, lb)
+	log.G(ctx).Infof("Ingress mesh: worker fetching the table from %s", ing.managerAddr)
+}
+
+// loadIngressTLS loads the node's cluster certificate and CA for the ingress
+// mesh's mutual TLS.
+func loadIngressTLS(stateDir string) (tls.Certificate, *x509.CertPool, error) {
+	certDir := filepath.Join(stateDir, "certificates")
+	cert, err := tls.LoadX509KeyPair(
+		filepath.Join(certDir, "swarm-node.crt"),
+		filepath.Join(certDir, "swarm-node.key"),
+	)
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("load node certificate: %w", err)
+	}
+	caCert, err := os.ReadFile(filepath.Join(certDir, "swarm-root-ca.crt"))
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("read cluster CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caCert) {
+		return tls.Certificate{}, nil, fmt.Errorf("parse cluster CA")
+	}
+	return cert, pool, nil
+}
+
+func serverTLSConfig(cert tls.Certificate, caPool *x509.CertPool) *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientCAs:    caPool,
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		MinVersion:   tls.VersionTLS12,
+	}
+}
+
+func clientTLSConfig(cert tls.Certificate, caPool *x509.CertPool) *tls.Config {
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+		// Cluster certificates are identified by node ID, not by the address the
+		// client dials, so hostname verification is skipped. The server chain is
+		// still verified against the cluster CA below.
+		InsecureSkipVerify: true, //nolint:gosec // chain verified in VerifyPeerCertificate
+		VerifyPeerCertificate: func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+			if len(rawCerts) == 0 {
+				return fmt.Errorf("server presented no certificate")
+			}
+			leaf, err := x509.ParseCertificate(rawCerts[0])
+			if err != nil {
+				return err
+			}
+			intermediates := x509.NewCertPool()
+			for _, raw := range rawCerts[1:] {
+				if c, err := x509.ParseCertificate(raw); err == nil {
+					intermediates.AddCert(c)
+				}
+			}
+			_, err = leaf.Verify(x509.VerifyOptions{
+				Roots:         caPool,
+				Intermediates: intermediates,
+				KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+			})
+			return err
+		},
+	}
 }
 
 // newControlClient dials the local control API socket using the node's TLS

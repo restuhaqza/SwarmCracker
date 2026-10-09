@@ -88,7 +88,7 @@ func checkAndMigrateClusterAddress(stateDir, advertiseAddr string) error {
 	return nil
 }
 
-func startNode(config *node.Config, executor *swarmkit.Executor) error {
+func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRuntime) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -133,10 +133,9 @@ func startNode(config *node.Config, executor *swarmkit.Executor) error {
 		printJoinTokens(ctx, config.StateDir)
 	}
 
-	// On managers, run the manager-side ingress routing mesh reconciler.
-	if config.JoinAddr == "" {
-		startIngressController(ctx, config, executor)
-	}
+	// Wire the ingress routing mesh: managers serve the routing table and
+	// balance locally; workers fetch the table and balance locally too.
+	startIngress(ctx, config, executor, ing)
 
 	// Wait for shutdown signal
 	sig := <-sigChan
