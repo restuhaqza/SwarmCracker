@@ -92,8 +92,16 @@ func (a *CNINetworkAllocator) Allocate(n *api.Network) error {
 		name = n.ID
 	}
 
+	// Honor a user-requested subnet/gateway when present, so a network created
+	// with an explicit subnet keeps it instead of getting one from the pool.
+	var requestedSubnet, requestedGateway string
+	if n.Spec.IPAM != nil && len(n.Spec.IPAM.Configs) > 0 {
+		requestedSubnet = n.Spec.IPAM.Configs[0].Subnet
+		requestedGateway = n.Spec.IPAM.Configs[0].Gateway
+	}
+
 	// Allocate network from provider
-	allocatedNet, err := a.provider.AllocateNetwork(name, driver)
+	allocatedNet, err := a.provider.AllocateNetwork(name, driver, requestedSubnet, requestedGateway)
 	if err != nil {
 		return fmt.Errorf("failed to allocate network: %w", err)
 	}

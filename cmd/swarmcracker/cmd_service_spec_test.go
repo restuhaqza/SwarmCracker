@@ -162,6 +162,20 @@ func TestBuildMounts_RejectsInvalid(t *testing.T) {
 	}
 }
 
+func TestBuildServiceSpec_Networks(t *testing.T) {
+	spec, err := buildServiceSpec(serviceCreateOptions{name: "x", image: "nginx", replicas: 1, networkTargets: []string{"net-1"}})
+	require.NoError(t, err)
+	require.Len(t, spec.Task.Networks, 1)
+	assert.Equal(t, "net-1", spec.Task.Networks[0].Target)
+}
+
+func TestBuildNetworkAttachments(t *testing.T) {
+	got := buildNetworkAttachments([]string{"a", " b ", ""})
+	require.Len(t, got, 2)
+	assert.Equal(t, "a", got[0].Target)
+	assert.Equal(t, "b", got[1].Target)
+}
+
 func TestBuildServiceSpec_HostnameAndDNS(t *testing.T) {
 	spec, err := buildServiceSpec(serviceCreateOptions{
 		name:     "web",

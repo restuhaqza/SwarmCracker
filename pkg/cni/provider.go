@@ -175,16 +175,23 @@ func (p *CNIProvider) GetNetwork(networkID string) (*AllocatedNetwork, error) {
 	return network, nil
 }
 
-// AllocateNetwork creates a new network allocation
-func (p *CNIProvider) AllocateNetwork(name, driver string) (*AllocatedNetwork, error) {
+// AllocateNetwork creates a new network allocation. When requestedSubnet is
+// non-empty it is used verbatim (so a user-requested subnet is honored); the
+// gateway defaults to the first usable host unless requestedGateway is set.
+func (p *CNIProvider) AllocateNetwork(name, driver, requestedSubnet, requestedGateway string) (*AllocatedNetwork, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// Generate subnet
 	p.networkIndex++
-	subnet, err := GenerateSubnet(p.config.SubnetPool, p.config.SubnetSize, p.networkIndex)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate subnet: %w", err)
+
+	// Use the requested subnet when given, otherwise carve one from the pool.
+	subnet := requestedSubnet
+	if subnet == "" {
+		generated, err := GenerateSubnet(p.config.SubnetPool, p.config.SubnetSize, p.networkIndex)
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate subnet: %w", err)
+		}
+		subnet = generated
 	}
 
 	// Parse subnet and derive the gateway: the first usable host address. The
@@ -195,6 +202,13 @@ func (p *CNIProvider) AllocateNetwork(name, driver string) (*AllocatedNetwork, e
 		return nil, fmt.Errorf("failed to parse subnet: %w", err)
 	}
 	gateway := incrementIP(subnetNet.IP.To4())
+	if requestedGateway != "" {
+		parsed := net.ParseIP(requestedGateway)
+		if parsed == nil {
+			return nil, fmt.Errorf("invalid gateway %s", requestedGateway)
+		}
+		gateway = parsed
+	}
 
 	// Generate bridge name
 	bridgeName := fmt.Sprintf("br-%s", NetworkNameFromSwarmKit(name))

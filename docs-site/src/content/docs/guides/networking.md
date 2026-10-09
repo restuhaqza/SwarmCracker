@@ -187,6 +187,48 @@ ip neigh show dev swarm-br0
 
 ---
 
+## User-defined Networks
+
+By default every service shares the single `swarm-br0` bridge. To segment
+workloads (for example, a frontend tier and a database tier), create a
+user-defined network with its own subnet:
+
+```bash
+swarmcracker network create --name backend --subnet 10.10.0.0/24
+swarmcracker network create --name frontend --subnet 10.20.0.0/24
+```
+
+Attach a service to one with `--network`:
+
+```bash
+swarmcracker service create --name api --image myapp --network backend
+```
+
+Each network is allocated its own subnet, a per-node bridge (`br-<name>`) and an
+overlay VXLAN ID. A service's VM gets an IP from its network's subnet, and
+services on **different** networks cannot reach each other — the node drops
+traffic between distinct network bridges. Services on the **same** network reach
+each other normally.
+
+```bash
+swarmcracker network ls
+swarmcracker network inspect backend   # subnet, gateway, bridge, VNI
+```
+
+A network cannot be removed while a service is still attached:
+
+```bash
+swarmcracker network rm backend
+# network is in use by service(s) api; remove or update them first
+```
+
+> **Limitations (work in progress).** A service can attach to one network for now
+> (multiple `--network` is rejected). Cross-node reachability for user-defined
+> networks is still being completed; on a single node the isolation and
+> same-network reachability described above hold.
+
+---
+
 ## Publishing a Service Port
 
 `service create --publish` (alias `-p`) exposes a port inside the microVM, so you
