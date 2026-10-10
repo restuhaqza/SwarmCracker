@@ -1013,7 +1013,7 @@ func TestConvertSecrets(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			secrets := convertSecrets(tt.task)
+			secrets := (&Controller{task: tt.task}).convertSecrets()
 			assert.Len(t, secrets, tt.expected)
 
 			if len(secrets) > 0 {
@@ -1086,7 +1086,7 @@ func TestConvertConfigs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			configs := convertConfigs(tt.task)
+			configs := (&Controller{task: tt.task}).convertConfigs()
 			assert.Len(t, configs, tt.expected)
 
 			if len(configs) > 0 {

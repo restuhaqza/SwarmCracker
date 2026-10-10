@@ -151,6 +151,8 @@ func newServiceCreateCommand() *cobra.Command {
 		mounts      []string
 		volumes     []string
 		networks    []string
+		secrets     []string
+		configs     []string
 		mode        string
 
 		hostname string
@@ -234,6 +236,8 @@ With --golden, the service boots a prebuilt golden image (see
 				mounts:             mounts,
 				volumes:            volumes,
 				networks:           networks,
+				secrets:            secrets,
+				configs:            configs,
 				mode:               mode,
 				hostname:           hostname,
 				dns:                dns,
@@ -282,6 +286,8 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Mount a volume or host path: type=volume|bind,source=<src>,target=<path>[,readonly] (repeatable)")
 	cmd.Flags().StringArrayVarP(&volumes, "volume", "v", nil, "Mount a volume or host path: <src>:<dst>[:ro|rw] (repeatable)")
 	cmd.Flags().StringArrayVar(&networks, "network", nil, "Attach the service to a user-defined network (repeatable)")
+	cmd.Flags().StringArrayVar(&secrets, "secret", nil, "Grant access to a secret: [src=]NAME[,target=PATH][,mode=0400][,uid=N][,gid=N] (repeatable)")
+	cmd.Flags().StringArrayVar(&configs, "config", nil, "Grant access to a config: [src=]NAME[,target=PATH][,mode=0444][,uid=N][,gid=N] (repeatable)")
 	cmd.Flags().StringVar(&mode, "mode", modeReplicated, "Service mode: replicated or global")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "Guest VM hostname")
 	cmd.Flags().StringArrayVar(&dns, "dns", nil, "DNS nameserver for the guest (repeatable)")
@@ -328,6 +334,8 @@ func newServiceUpdateCommand() *cobra.Command {
 		mounts      []string
 		volumes     []string
 		networks    []string
+		secrets     []string
+		configs     []string
 
 		hostname string
 		dns      []string
@@ -393,6 +401,10 @@ placement, restart policy, update/rollback configuration and mode.`,
 				mountsSet:      anyFlagChanged(cmd, "mount", "volume"),
 				networks:       networks,
 				networksSet:    anyFlagChanged(cmd, "network"),
+				secrets:        secrets,
+				secretsSet:     anyFlagChanged(cmd, "secret"),
+				configs:        configs,
+				configsSet:     anyFlagChanged(cmd, "config"),
 
 				hostname:    hostname,
 				dns:         dns,
@@ -444,6 +456,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringArrayVar(&mounts, "mount", nil, "Replace mounts: type=volume|bind,source=<src>,target=<path>[,readonly] (repeatable)")
 	cmd.Flags().StringArrayVarP(&volumes, "volume", "v", nil, "Replace mounts: <src>:<dst>[:ro|rw] (repeatable)")
 	cmd.Flags().StringArrayVar(&networks, "network", nil, "Replace the service's networks (repeatable)")
+	cmd.Flags().StringArrayVar(&secrets, "secret", nil, "Replace the service's secrets (repeatable)")
+	cmd.Flags().StringArrayVar(&configs, "config", nil, "Replace the service's configs (repeatable)")
 	cmd.Flags().BoolVar(&rollback, "rollback", false, "Roll back to the service's previous spec")
 	cmd.Flags().StringVar(&mode, "mode", "", "Change the service mode: replicated or global")
 	cmd.Flags().StringVar(&hostname, "hostname", "", "Set the guest VM hostname")
@@ -732,6 +746,104 @@ func resolveNetworkTargets(ctx context.Context, client api.ControlClient, names 
 	return ids, nil
 }
 
+// formatGrant renders a secret/config grant as "name -> target" (never the
+// value, which is not present in the service spec).
+func formatGrant(name string, ft *api.FileTarget) string {
+	if ft == nil || ft.Name == "" {
+		return name
+	}
+	return fmt.Sprintf("%s -> %s", name, ft.Name)
+}
+
+// buildSecretReferences resolves --secret values (name/ID + target/mode) to
+// SwarmKit secret references.
+func buildSecretReferences(ctx context.Context, client api.ControlClient, specs []string) ([]*api.SecretReference, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	list, err := client.ListSecrets(ctx, &api.ListSecretsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list secrets: %w", err)
+	}
+	byName := make(map[string]*api.Secret, len(list.Secrets))
+	byID := make(map[string]*api.Secret, len(list.Secrets))
+	for _, s := range list.Secrets {
+		byName[s.Spec.Annotations.Name] = s
+		byID[s.ID] = s
+	}
+
+	refs := make([]*api.SecretReference, 0, len(specs))
+	for _, raw := range specs {
+		ps, err := parseSecretSpec(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --secret %q: %w", raw, err)
+		}
+		sec := byName[ps.Source]
+		if sec == nil {
+			sec = byID[ps.Source]
+		}
+		if sec == nil {
+			return nil, fmt.Errorf("secret %q not found", ps.Source)
+		}
+		target := ps.Target
+		if target == "" {
+			target = "/run/secrets/" + sec.Spec.Annotations.Name
+		}
+		refs = append(refs, &api.SecretReference{
+			SecretID:   sec.ID,
+			SecretName: sec.Spec.Annotations.Name,
+			Target: &api.SecretReference_File{
+				File: &api.FileTarget{Name: target, Mode: ps.Mode, UID: ps.UID, GID: ps.GID},
+			},
+		})
+	}
+	return refs, nil
+}
+
+// buildConfigReferences resolves --config values to SwarmKit config references.
+func buildConfigReferences(ctx context.Context, client api.ControlClient, specs []string) ([]*api.ConfigReference, error) {
+	if len(specs) == 0 {
+		return nil, nil
+	}
+	list, err := client.ListConfigs(ctx, &api.ListConfigsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list configs: %w", err)
+	}
+	byName := make(map[string]*api.Config, len(list.Configs))
+	byID := make(map[string]*api.Config, len(list.Configs))
+	for _, c := range list.Configs {
+		byName[c.Spec.Annotations.Name] = c
+		byID[c.ID] = c
+	}
+
+	refs := make([]*api.ConfigReference, 0, len(specs))
+	for _, raw := range specs {
+		ps, err := parseSecretSpec(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --config %q: %w", raw, err)
+		}
+		cfg := byName[ps.Source]
+		if cfg == nil {
+			cfg = byID[ps.Source]
+		}
+		if cfg == nil {
+			return nil, fmt.Errorf("config %q not found", ps.Source)
+		}
+		target := ps.Target
+		if target == "" {
+			target = "/config/" + cfg.Spec.Annotations.Name
+		}
+		refs = append(refs, &api.ConfigReference{
+			ConfigID:   cfg.ID,
+			ConfigName: cfg.Spec.Annotations.Name,
+			Target: &api.ConfigReference_File{
+				File: &api.FileTarget{Name: target, Mode: ps.Mode, UID: ps.UID, GID: ps.GID},
+			},
+		})
+	}
+	return refs, nil
+}
+
 // buildEndpointPorts converts internal published ports into SwarmKit port
 // configs. The publish mode determines how the port is exposed: ingress
 // (cluster load-balanced, the default) or host (per-replica host port).
@@ -885,6 +997,20 @@ func inspectService(serviceID, format string, pretty bool) error {
 				}
 			}
 		}
+		if container := svc.Spec.Task.GetContainer(); container != nil {
+			if len(container.Secrets) > 0 {
+				fmt.Printf("Secrets:\n")
+				for _, s := range container.Secrets {
+					fmt.Printf("  %s\n", formatGrant(s.SecretName, s.GetFile()))
+				}
+			}
+			if len(container.Configs) > 0 {
+				fmt.Printf("Configs:\n")
+				for _, c := range container.Configs {
+					fmt.Printf("  %s\n", formatGrant(c.ConfigName, c.GetFile()))
+				}
+			}
+		}
 		if svc.Spec.Task.Resources != nil && svc.Spec.Task.Resources.Limits != nil {
 			limits := svc.Spec.Task.Resources.Limits
 			if limits.NanoCPUs > 0 {
@@ -1031,6 +1157,18 @@ func createService(opts serviceCreateOptions) error {
 	}
 	if len(targets) > 0 {
 		spec.Task.Networks = buildNetworkAttachments(targets)
+	}
+
+	// Resolve --secret/--config and attach them to the container.
+	if refs, err := buildSecretReferences(ctx, client, opts.secrets); err != nil {
+		return err
+	} else if len(refs) > 0 {
+		spec.Task.GetContainer().Secrets = refs
+	}
+	if refs, err := buildConfigReferences(ctx, client, opts.configs); err != nil {
+		return err
+	} else if len(refs) > 0 {
+		spec.Task.GetContainer().Configs = refs
 	}
 
 	resp, err := client.CreateService(ctx, &api.CreateServiceRequest{
@@ -1236,6 +1374,24 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 			return err
 		}
 		spec.Task.Networks = buildNetworkAttachments(targets)
+	}
+
+	// Replace secrets.
+	if opts.secretsSet {
+		refs, err := buildSecretReferences(ctx, client, opts.secrets)
+		if err != nil {
+			return err
+		}
+		spec.Task.GetContainer().Secrets = refs
+	}
+
+	// Replace configs.
+	if opts.configsSet {
+		refs, err := buildConfigReferences(ctx, client, opts.configs)
+		if err != nil {
+			return err
+		}
+		spec.Task.GetContainer().Configs = refs
 	}
 
 	// Container-execution flags: reject the ones the microVM executor cannot

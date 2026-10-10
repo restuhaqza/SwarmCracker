@@ -156,6 +156,8 @@ Service (replicated microVM) management.
 | `--hostname` | — | Guest VM hostname (RFC 1123) |
 | `--dns` | — | Guest DNS nameserver, an IP address (repeatable) |
 | `--network` | — | Attach the service to a user-defined network (repeatable; one network per service for now) |
+| `--secret` | — | Grant access to a secret: `[src=]NAME[,target=PATH][,mode=0400][,uid=N][,gid=N]` (repeatable) |
+| `--config` | — | Grant access to a config: `[src=]NAME[,target=PATH][,mode=0444][,uid=N][,gid=N]` (repeatable) |
 | `--user` | — | **Not supported** — rejected with a clear error |
 | `--cap-add` | — | **Not supported** — rejected with a clear error |
 | `--cap-drop` | — | **Not supported** — rejected with a clear error |
@@ -201,7 +203,7 @@ mapping is released when the service is removed or scaled down. See
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--hostname`, `--dns`, `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
@@ -322,13 +324,32 @@ Firecracker asset management.
 
 #### `swarmcracker config`
 
-Configuration management.
+Manage SwarmKit configs.
 
 | Subcommand | Description |
 |------------|-------------|
-| `ls` | List configuration files |
-| `validate [path]` | Validate a config file (defaults to `--config` / the default path) |
-| `migrate` | Migrate configuration to the latest schema version |
+| `create <name> <file>` | Create a config from a file (`-` reads stdin) |
+| `ls` / `list` | List configs |
+| `inspect <name\|id>` | Inspect a config (the value is never shown) |
+| `rm <name\|id>` | Remove a config (blocked while a service uses it) |
+| `file ls` | List daemon configuration files |
+| `file validate [path]` | Validate a daemon config file (defaults to `--config` / the default path) |
+| `file migrate` | Migrate the daemon config to the latest schema version |
+
+#### `swarmcracker secret`
+
+Manage SwarmKit secrets.
+
+| Subcommand | Description |
+|------------|-------------|
+| `create <name> <file>` | Create a secret from a file (`-` reads stdin) |
+| `ls` / `list` | List secrets |
+| `inspect <name\|id>` | Inspect a secret (the value is never shown) |
+| `rm <name\|id>` | Remove a secret (blocked while a service uses it) |
+
+Secret and config values are injected into the microVM's rootfs at the path a
+service requests with `service create --secret` / `--config`. SwarmKit redacts
+secret values from the control API, so they never appear in `inspect`.
 
 #### `swarmcracker setup`
 
@@ -438,7 +459,7 @@ removed in a future release:
 | `swarmcracker stop` | `swarmcracker vm stop` |
 | `swarmcracker snapshot` | `swarmcracker vm snapshot` |
 | `swarmcracker deploy` | `swarmcracker service create` (stub — see below) |
-| `swarmcracker validate` | `swarmcracker config validate` (stub — see below) |
+| `swarmcracker validate` | `swarmcracker config file validate` (stub — see below) |
 
 `swarmcracker deploy` and `swarmcracker validate` are stubs: they print a
 deprecation warning and then fail, so use the replacement commands instead.
