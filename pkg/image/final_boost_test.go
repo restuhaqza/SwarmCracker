@@ -203,9 +203,11 @@ func TestPrepare_WithAllManagersEnabled(t *testing.T) {
 	err := ip.Prepare(ctx, task)
 	// May fail due to mount/init operations, but code paths are exercised
 	_ = err
-	// rootfs annotation may not be set if Prepare fails early
+	// Secrets/configs (and mounts) force a private, per-task rootfs copy, so the
+	// annotation is either the shared cache or the per-task copy.
 	if err == nil {
-		assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+		private := filepath.Join(rootfsDir, task.ID+".ext4")
+		assert.Contains(t, []string{rootfsPath, private}, task.Annotations["rootfs"])
 	}
 }
 

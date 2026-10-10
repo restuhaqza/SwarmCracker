@@ -181,7 +181,7 @@ grep Seccomp /proc/$PID/status
 |------|-------|
 | KVM access limited to the daemon + firecracker user | `ls -la /dev/kvm` |
 | Dedicated unprivileged user exists | `id firecracker` |
-| Jailer enabled and validated | `swarmcracker config validate` |
+| Jailer enabled and validated | `swarmcracker config file validate` |
 | cgroup limits enforced per VM | `cat /sys/fs/cgroup/firecracker/<task-id>/memory.max` |
 | Chroot base directory locked down | `ls -la /srv/jailer` |
 | One network namespace + TAP per VM | `ip netns list` |

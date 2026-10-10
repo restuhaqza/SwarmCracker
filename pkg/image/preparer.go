@@ -31,7 +31,6 @@ type ImagePreparer struct {
 	rootfsDir     string
 	initInjector  *InitInjector
 	volumeManager *storage.VolumeManager
-	secretManager *storage.SecretManager
 	ociInfo       *OCIImageInfo // Parsed OCI image configuration
 }
 
@@ -90,19 +89,12 @@ func NewImagePreparer(config interface{}) localtypes.ImagePreparer {
 		log.Warn().Err(err).Msg("Failed to create volume manager, volume support disabled")
 	}
 
-	// Create secret manager
-	secretMgr := storage.NewSecretManager(
-		"/var/lib/swarmcracker/secrets",
-		"/var/lib/swarmcracker/configs",
-	)
-
 	return &ImagePreparer{
 		config:        cfg,
 		cacheDir:      "/var/cache/swarmcracker",
 		rootfsDir:     cfg.RootfsDir,
 		initInjector:  initInjector,
 		volumeManager: volumeMgr,
-		secretManager: secretMgr,
 	}
 }
 
@@ -161,19 +153,20 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 			forceRebuild = true
 		}
 		if cachedValid {
-			if len(container.Mounts) == 0 {
-				// No per-task mounts: the shared image rootfs is used as-is.
+			if len(container.Mounts) == 0 && len(task.Secrets) == 0 && len(task.Configs) == 0 {
+				// No per-task mounts/secrets/configs: the shared image rootfs is
+				// used as-is.
 				log.Info().
 					Str("path", rootfsPath).
 					Msg("Rootfs already exists and valid, skipping")
 				task.Annotations["rootfs"] = rootfsPath
 				return nil
 			}
-			// Mounts need a private rootfs; keep the shared base and fall
-			// through to copy it per task.
+			// Mounts/secrets/configs need a private rootfs; keep the shared base
+			// and fall through to copy it per task.
 			log.Info().
 				Str("path", rootfsPath).
-				Msg("Cached rootfs valid; creating a per-task copy for mounts")
+				Msg("Cached rootfs valid; creating a per-task copy")
 			baseReady = true
 		} else if !forceRebuild {
 			log.Info().
@@ -203,55 +196,40 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 		ip.writeGuestOverrideMarker(rootfsPath)
 	}
 
-	// Mounts are applied to a private, per-task copy of the rootfs. Baking them
-	// into the shared image rootfs would leak between tasks and would be skipped
-	// once the rootfs is cached. The private rootfs is marked ephemeral so the
-	// executor removes it on teardown without deleting the shared image cache.
+	// Mounts, secrets and configs are applied to a private, per-task copy of the
+	// rootfs. Baking them into the shared image rootfs would leak between tasks
+	// (and the shared cache is used directly as the VM drive, so it must never be
+	// modified). The private rootfs is marked ephemeral so the executor removes
+	// it on teardown without deleting the shared image cache.
 	taskRootfs := rootfsPath
-	if ip.volumeManager != nil && len(container.Mounts) > 0 {
+	needsPrivateRootfs := len(container.Mounts) > 0 || len(task.Secrets) > 0 || len(task.Configs) > 0
+	if needsPrivateRootfs {
 		private := filepath.Join(ip.rootfsDir, task.ID+".ext4")
 		if err := ip.copyRootfs(ctx, rootfsPath, private); err != nil {
 			return fmt.Errorf("failed to create per-task rootfs: %w", err)
 		}
+		taskRootfs = private
+		task.Annotations["rootfs_ephemeral"] = "true"
+	}
+	if ip.volumeManager != nil && len(container.Mounts) > 0 {
 		log.Info().
 			Str("task_id", task.ID).
 			Int("mount_count", len(container.Mounts)).
 			Msg("Applying mounts to per-task rootfs")
 
-		if err := ip.handleMounts(ctx, task, private, container.Mounts); err != nil {
+		if err := ip.handleMounts(ctx, task, taskRootfs, container.Mounts); err != nil {
 			return fmt.Errorf("failed to handle mounts: %w", err)
 		}
-		taskRootfs = private
-		task.Annotations["rootfs_ephemeral"] = "true"
 	}
 
 	// Record the rootfs path before injecting secrets/configs so it is always
 	// set even if an injection fails.
 	task.Annotations["rootfs"] = taskRootfs
 
-	// Inject secrets if secret manager is available
-	if ip.secretManager != nil && len(task.Secrets) > 0 {
-		log.Info().
-			Str("task_id", task.ID).
-			Int("secret_count", len(task.Secrets)).
-			Msg("Injecting secrets")
-
-		if err := ip.secretManager.InjectSecrets(ctx, task.ID, task.Secrets, taskRootfs); err != nil {
-			return fmt.Errorf("failed to inject secrets: %w", err)
-		}
-	}
-
-	// Inject configs if secret manager is available
-	if ip.secretManager != nil && len(task.Configs) > 0 {
-		log.Info().
-			Str("task_id", task.ID).
-			Int("config_count", len(task.Configs)).
-			Msg("Injecting configs")
-
-		if err := ip.secretManager.InjectConfigs(ctx, task.ID, task.Configs, taskRootfs); err != nil {
-			return fmt.Errorf("failed to inject configs: %w", err)
-		}
-	}
+	// Secrets/configs are injected by the executor (pkg/swarmkit), which owns the
+	// secret/config store the agent populates. Here we only ensure the private
+	// per-task rootfs exists (see above) so that injection never touches the
+	// shared image cache.
 
 	// Store rootfs path in task annotations
 	log.Info().

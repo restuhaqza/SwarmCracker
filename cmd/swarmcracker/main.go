@@ -51,6 +51,7 @@ func main() {
 	rootCmd.AddCommand(newImageCommand())
 	rootCmd.AddCommand(newAssetCommand())
 	rootCmd.AddCommand(newConfigCommand())
+	rootCmd.AddCommand(newSecretCommand())
 	rootCmd.AddCommand(newSetupCommand())
 	rootCmd.AddCommand(newMetricsCommand())
 

@@ -476,14 +476,14 @@ The config file is loaded from (in order of priority):
 
 ```bash
 # Validate config without starting
-swarmcracker config validate
+swarmcracker config file validate
 
 # Validate a specific config file (positional or --config)
-swarmcracker config validate /path/to/config.yaml
-swarmcracker config validate --config /path/to/config.yaml
+swarmcracker config file validate /path/to/config.yaml
+swarmcracker config file validate --config /path/to/config.yaml
 
 # Show effective configuration (defaults applied)
-swarmcracker config ls
+swarmcracker config file ls
 ```
 
 ---
