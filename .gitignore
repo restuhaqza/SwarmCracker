@@ -104,6 +104,11 @@ secrets
 *.secret
 *secret.*
 
+# Source files whose names match the secret patterns above.
+!cmd/swarmcracker/cmd_secret.go
+!pkg/swarmkit/secrets/
+!pkg/swarmkit/secrets/**
+
 # SSH and Git config
 .ssh/
 ssh_config

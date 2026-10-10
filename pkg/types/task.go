@@ -5,22 +5,29 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 )
 
 // SecretRef represents a SwarmKit secret reference with data.
 type SecretRef struct {
-	ID     string // Secret ID from SwarmKit
-	Name   string // Secret name
-	Target string // File path inside VM (e.g., "/run/secrets/my_secret")
-	Data   []byte // Secret data content
+	ID     string      // Secret ID from SwarmKit
+	Name   string      // Secret name
+	Target string      // File path inside VM (e.g., "/run/secrets/my_secret")
+	Data   []byte      // Secret data content
+	Mode   os.FileMode // File mode inside the guest (default 0400)
+	UID    string      // File owner UID inside the guest (optional)
+	GID    string      // File owner GID inside the guest (optional)
 }
 
 // ConfigRef represents a SwarmKit config reference with data.
 type ConfigRef struct {
-	ID     string // Config ID from SwarmKit
-	Name   string // Config name
-	Target string // File path inside VM (e.g., "/config/app.yaml")
-	Data   []byte // Config data content
+	ID     string      // Config ID from SwarmKit
+	Name   string      // Config name
+	Target string      // File path inside VM (e.g., "/config/app.yaml")
+	Data   []byte      // Config data content
+	Mode   os.FileMode // File mode inside the guest (default 0444)
+	UID    string      // File owner UID inside the guest (optional)
+	GID    string      // File owner GID inside the guest (optional)
 }
 
 // Task represents a SwarmKit task (simplified).

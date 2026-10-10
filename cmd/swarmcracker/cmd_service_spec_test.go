@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +175,34 @@ func TestBuildNetworkAttachments(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, "a", got[0].Target)
 	assert.Equal(t, "b", got[1].Target)
+}
+
+func TestParseSecretSpec(t *testing.T) {
+	t.Run("bare name", func(t *testing.T) {
+		spec, err := parseSecretSpec("db-pass")
+		require.NoError(t, err)
+		assert.Equal(t, "db-pass", spec.Source)
+		assert.Empty(t, spec.Target)
+		assert.Zero(t, spec.Mode)
+	})
+
+	t.Run("full spec", func(t *testing.T) {
+		spec, err := parseSecretSpec("src=db-pass,target=/run/secrets/db,mode=0400,uid=1000,gid=2000")
+		require.NoError(t, err)
+		assert.Equal(t, "db-pass", spec.Source)
+		assert.Equal(t, "/run/secrets/db", spec.Target)
+		assert.Equal(t, os.FileMode(0o400), spec.Mode)
+		assert.Equal(t, "1000", spec.UID)
+		assert.Equal(t, "2000", spec.GID)
+	})
+
+	t.Run("errors", func(t *testing.T) {
+		for _, bad := range []string{"", "src=db-pass,mode=9z", "src=db-pass,bogus=1", "target=/x"} {
+			if _, err := parseSecretSpec(bad); err == nil {
+				t.Errorf("expected error for %q", bad)
+			}
+		}
+	})
 }
 
 func TestBuildServiceSpec_HostnameAndDNS(t *testing.T) {
