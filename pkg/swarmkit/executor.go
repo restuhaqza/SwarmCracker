@@ -31,6 +31,8 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/network"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
+	configstore "github.com/restuhaqza/swarmcracker/pkg/swarmkit/configs"
+	secretstore "github.com/restuhaqza/swarmcracker/pkg/swarmkit/secrets"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -43,6 +45,8 @@ type Executor struct {
 	networkMgr    types.NetworkManager
 	volumeMgr     *storage.VolumeManager
 	secretMgr     *storage.SecretManager
+	secrets       *secretstore.Store
+	configs       *configstore.Store
 	vmmMgr        VMMManagerInterface
 	controllers   map[string]*Controller
 	executorMu    sync.RWMutex
@@ -60,6 +64,31 @@ func (e *Executor) NetworkManager() types.NetworkManager {
 	}
 	return e.networkMgr
 }
+
+// Secrets returns the executor's secret store. Implementing
+// exec.SecretsProvider lets the SwarmKit agent push secret payloads to the
+// executor as assignments change, so they can be injected into the guest.
+func (e *Executor) Secrets() swarmkit_exec.SecretsManager {
+	if e == nil || e.secrets == nil {
+		return secretstore.NewStore()
+	}
+	return e.secrets
+}
+
+// Configs returns the executor's config store (see Secrets).
+func (e *Executor) Configs() swarmkit_exec.ConfigsManager {
+	if e == nil || e.configs == nil {
+		return configstore.NewStore()
+	}
+	return e.configs
+}
+
+// The executor feeds SwarmKit's dependency reconciliation: the agent pushes
+// secret/config payloads to it via these providers.
+var (
+	_ swarmkit_exec.SecretsProvider = (*Executor)(nil)
+	_ swarmkit_exec.ConfigsProvider = (*Executor)(nil)
+)
 
 // Config holds the SwarmKit integration configuration.
 type Config struct {
@@ -282,6 +311,8 @@ func NewExecutor(config *Config) (*Executor, error) {
 		networkMgr:    networkMgr,
 		volumeMgr:     volumeMgr,
 		secretMgr:     secretMgr,
+		secrets:       secretstore.NewStore(),
+		configs:       configstore.NewStore(),
 		vmmMgr:        vmmMgr,
 		controllers:   make(map[string]*Controller),
 		cleanupCancel: cleanupCancel,
@@ -506,6 +537,11 @@ func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 		return nil, fmt.Errorf("failed to create controller: %w", err)
 	}
 
+	// Give the controller access to the secret/config payloads the agent has
+	// pushed, so they can be injected during Prepare.
+	ctrl.secrets = e.secrets
+	ctrl.configs = e.configs
+
 	// Set up deregistration callback to remove controller from map when removed
 	ctrl.OnRemove = func() {
 		e.executorMu.Lock()
@@ -558,6 +594,8 @@ type Controller struct {
 	networkMgr types.NetworkManager
 	volumeMgr  *storage.VolumeManager
 	secretMgr  *storage.SecretManager
+	secrets    *secretstore.Store
+	configs    *configstore.Store
 	vmmMgr     VMMManagerInterface
 	trans      types.TaskTranslator
 	mu         sync.Mutex
@@ -1331,19 +1369,19 @@ func (c *Controller) convertTask() *types.Task {
 			Resources: *resources,
 		},
 		Networks: networks,
-		Secrets:  convertSecrets(c.task),
-		Configs:  convertConfigs(c.task),
+		Secrets:  c.convertSecrets(),
+		Configs:  c.convertConfigs(),
 	}
 }
 
 // Helper functions
 
-// convertSecrets converts SwarmKit secret references to internal SecretRef types.
-// Note: Secret data is not available at the executor level in SwarmKit —
-// the agent must fetch it from the manager's secret store. For now, we
-// just convert the references so they can be injected during Prepare.
-func convertSecrets(task *api.Task) []types.SecretRef {
-	containerSpec, ok := task.Spec.Runtime.(*api.TaskSpec_Container)
+// convertSecrets converts SwarmKit secret references to internal SecretRef
+// types. The payload is looked up from the secret store, which the agent
+// populates from assignments, so the data is available to inject during
+// Prepare.
+func (c *Controller) convertSecrets() []types.SecretRef {
+	containerSpec, ok := c.task.Spec.Runtime.(*api.TaskSpec_Container)
 	if !ok || containerSpec.Container == nil {
 		return nil
 	}
@@ -1351,28 +1389,34 @@ func convertSecrets(task *api.Task) []types.SecretRef {
 	secrets := make([]types.SecretRef, 0, len(containerSpec.Container.Secrets))
 
 	for _, sr := range containerSpec.Container.Secrets {
-		target := "/run/secrets/" + sr.SecretName
-		if fileTarget, ok := sr.Target.(*api.SecretReference_File); ok && fileTarget.File != nil {
-			if fileTarget.File.Name != "" {
-				target = fileTarget.File.Name
-			}
-		}
-		secrets = append(secrets, types.SecretRef{
+		ref := types.SecretRef{
 			ID:     sr.SecretID,
 			Name:   sr.SecretName,
-			Target: target,
-			// Data will be fetched by the agent from the manager's secret store
-		})
+			Target: "/run/secrets/" + sr.SecretName,
+		}
+		if fileTarget, ok := sr.Target.(*api.SecretReference_File); ok && fileTarget.File != nil {
+			if fileTarget.File.Name != "" {
+				ref.Target = fileTarget.File.Name
+			}
+			ref.Mode = fileTarget.File.Mode
+			ref.UID = fileTarget.File.UID
+			ref.GID = fileTarget.File.GID
+		}
+		if c.secrets != nil {
+			if sec, err := c.secrets.Get(sr.SecretID); err == nil && sec != nil {
+				ref.Data = sec.Spec.Data
+			}
+		}
+		secrets = append(secrets, ref)
 	}
 
 	return secrets
 }
 
-// convertConfigs converts SwarmKit config references to internal ConfigRef types.
-// Note: Config data is not available at the executor level in SwarmKit —
-// the agent must fetch it from the manager's config store.
-func convertConfigs(task *api.Task) []types.ConfigRef {
-	containerSpec, ok := task.Spec.Runtime.(*api.TaskSpec_Container)
+// convertConfigs converts SwarmKit config references to internal ConfigRef
+// types. The payload is looked up from the config store (see convertSecrets).
+func (c *Controller) convertConfigs() []types.ConfigRef {
+	containerSpec, ok := c.task.Spec.Runtime.(*api.TaskSpec_Container)
 	if !ok || containerSpec.Container == nil {
 		return nil
 	}
@@ -1380,18 +1424,25 @@ func convertConfigs(task *api.Task) []types.ConfigRef {
 	configs := make([]types.ConfigRef, 0, len(containerSpec.Container.Configs))
 
 	for _, cr := range containerSpec.Container.Configs {
-		target := "/config/" + cr.ConfigName
-		if fileTarget, ok := cr.Target.(*api.ConfigReference_File); ok && fileTarget.File != nil {
-			if fileTarget.File.Name != "" {
-				target = fileTarget.File.Name
-			}
-		}
-		configs = append(configs, types.ConfigRef{
+		ref := types.ConfigRef{
 			ID:     cr.ConfigID,
 			Name:   cr.ConfigName,
-			Target: target,
-			// Data will be fetched by the agent from the manager's config store
-		})
+			Target: "/config/" + cr.ConfigName,
+		}
+		if fileTarget, ok := cr.Target.(*api.ConfigReference_File); ok && fileTarget.File != nil {
+			if fileTarget.File.Name != "" {
+				ref.Target = fileTarget.File.Name
+			}
+			ref.Mode = fileTarget.File.Mode
+			ref.UID = fileTarget.File.UID
+			ref.GID = fileTarget.File.GID
+		}
+		if c.configs != nil {
+			if cfg, err := c.configs.Get(cr.ConfigID); err == nil && cfg != nil {
+				ref.Data = cfg.Spec.Data
+			}
+		}
+		configs = append(configs, ref)
 	}
 
 	return configs

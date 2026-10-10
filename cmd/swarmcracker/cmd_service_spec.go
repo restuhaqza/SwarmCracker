@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +36,10 @@ type serviceCreateOptions struct {
 	// networkTargets holds the resolved IDs.
 	networks       []string
 	networkTargets []string
+
+	// secrets/configs are --secret/--config values, resolved in createService.
+	secrets []string
+	configs []string
 
 	// Guest overrides honored by the executor (applied by the guest init).
 	hostname string
@@ -244,6 +250,11 @@ type serviceUpdateOptions struct {
 
 	networks    []string
 	networksSet bool
+
+	secrets    []string
+	secretsSet bool
+	configs    []string
+	configsSet bool
 
 	hostname    string
 	dns         []string
@@ -481,6 +492,63 @@ func buildNetworkAttachments(targets []string) []*api.NetworkAttachmentConfig {
 		out = append(out, &api.NetworkAttachmentConfig{Target: t})
 	}
 	return out
+}
+
+// secretSpec is a parsed --secret / --config flag value. Both flags share the
+// same syntax: [src=]NAME[,target=PATH][,mode=0400][,uid=N][,gid=N].
+type secretSpec struct {
+	Source string
+	Target string
+	Mode   os.FileMode
+	UID    string
+	GID    string
+}
+
+// parseSecretSpec parses a --secret / --config value.
+func parseSecretSpec(raw string) (secretSpec, error) {
+	spec := secretSpec{}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return spec, fmt.Errorf("empty secret/config value")
+	}
+
+	// A bare value is the source name/ID.
+	if !strings.Contains(raw, "=") {
+		spec.Source = raw
+		return spec, nil
+	}
+
+	for _, part := range strings.Split(raw, ",") {
+		kv := strings.SplitN(part, "=", 2)
+		if len(kv) != 2 {
+			return spec, fmt.Errorf("invalid component %q (want key=value)", part)
+		}
+		key := strings.TrimSpace(kv[0])
+		val := strings.TrimSpace(kv[1])
+		switch key {
+		case "src", "source":
+			spec.Source = val
+		case "target", "dst", "destination":
+			spec.Target = val
+		case "mode":
+			m, err := strconv.ParseUint(val, 8, 32)
+			if err != nil {
+				return spec, fmt.Errorf("invalid mode %q: %w", val, err)
+			}
+			spec.Mode = os.FileMode(m)
+		case "uid":
+			spec.UID = val
+		case "gid":
+			spec.GID = val
+		default:
+			return spec, fmt.Errorf("unknown key %q (want src, target, mode, uid, gid)", key)
+		}
+	}
+
+	if spec.Source == "" {
+		return spec, fmt.Errorf("requires src=<name>")
+	}
+	return spec, nil
 }
 
 // buildMounts converts --mount and --volume specs into SwarmKit mounts.

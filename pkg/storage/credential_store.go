@@ -3,6 +3,7 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -72,7 +73,11 @@ func (sm *SecretManager) InjectSecrets(ctx context.Context, taskID string, secre
 		Msg("Injecting secrets into rootfs")
 
 	for _, secret := range secrets {
-		if err := sm.injectFileViaDebugfs(rootfsPath, secret.Target, "/run/secrets/"+secret.Name, secret.Data, 0400); err != nil {
+		mode := secret.Mode
+		if mode == 0 {
+			mode = 0400
+		}
+		if err := sm.injectFileViaDebugfs(rootfsPath, secret.Target, "/run/secrets/"+secret.Name, secret.Data, mode, secret.UID, secret.GID); err != nil {
 			log.Error().
 				Str("task_id", taskID).
 				Str("secret", secret.Name).
@@ -93,6 +98,8 @@ func (sm *SecretManager) InjectSecrets(ctx context.Context, taskID string, secre
 		Int("count", len(secrets)).
 		Msg("All secrets injected successfully")
 
+	sm.repairExt4(rootfsPath)
+
 	return nil
 }
 
@@ -112,7 +119,11 @@ func (sm *SecretManager) InjectConfigs(ctx context.Context, taskID string, confi
 		Msg("Injecting configs into rootfs")
 
 	for _, config := range configs {
-		if err := sm.injectFileViaDebugfs(rootfsPath, config.Target, "/config/"+config.Name, config.Data, 0444); err != nil {
+		mode := config.Mode
+		if mode == 0 {
+			mode = 0444
+		}
+		if err := sm.injectFileViaDebugfs(rootfsPath, config.Target, "/config/"+config.Name, config.Data, mode, config.UID, config.GID); err != nil {
 			log.Error().
 				Str("task_id", taskID).
 				Str("config", config.Name).
@@ -133,9 +144,11 @@ func (sm *SecretManager) InjectConfigs(ctx context.Context, taskID string, confi
 		Int("count", len(configs)).
 		Msg("All configs injected successfully")
 
+	sm.repairExt4(rootfsPath)
+
 	return nil
 }
-func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName string, data []byte, mode os.FileMode) error {
+func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName string, data []byte, mode os.FileMode, uid, gid string) error {
 	targetPath := target
 	if targetPath == "" {
 		targetPath = defaultName
@@ -192,12 +205,76 @@ func (sm *SecretManager) injectFileViaDebugfs(ext4Path, target, defaultName stri
 		return fmt.Errorf("debugfs write failed: %s", outputStr)
 	}
 
+	// debugfs write creates the file with default permissions and does not
+	// honor the source file's mode, so set the inode attributes explicitly.
+	sm.applyInodeAttributes(ext4Path, targetPath, mode, uid, gid)
+
 	log.Debug().
 		Str("target", targetPath).
 		Int("size", len(data)).
 		Msg("File injected via debugfs")
 
 	return nil
+}
+
+// applyInodeAttributes sets the mode (and optionally uid/gid) on a file that
+// was just written into an ext4 image. Each field is set with a separate
+// debugfs set_inode_field call. Failures are logged but not fatal: a file with
+// default permissions is still preferable to no file at all.
+func (sm *SecretManager) applyInodeAttributes(ext4Path, target string, mode os.FileMode, uid, gid string) {
+	perm := mode.Perm()
+	if perm == 0 {
+		perm = 0400
+	}
+	// Regular file type (0o100000) | permission bits.
+	fullMode := uint32(0o100000) | uint32(perm)
+	sm.debugfsSetInodeField(ext4Path, target, "mode", fmt.Sprintf("0%o", fullMode))
+	if uid != "" {
+		sm.debugfsSetInodeField(ext4Path, target, "uid", uid)
+	}
+	if gid != "" {
+		sm.debugfsSetInodeField(ext4Path, target, "gid", gid)
+	}
+}
+
+func (sm *SecretManager) debugfsSetInodeField(ext4Path, target, field, value string) {
+	cmd := execCommand("debugfs", "-w", "-R", fmt.Sprintf("sif %s %s %s", target, field, value), ext4Path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Warn().
+			Str("target", target).
+			Str("field", field).
+			Str("value", value).
+			Str("output", string(output)).
+			Err(err).
+			Msg("Failed to set inode attribute via debugfs")
+	}
+}
+
+// repairExt4 replays the ext4 journal and repairs metadata checksums after a
+// debugfs write. debugfs modifies the filesystem directly and does not update
+// the journal; a guest that boots the image then replays a stale journal (or
+// validates a stale bitmap checksum) and reports corruption. Running e2fsck -fy
+// makes the image self-consistent before it is booted.
+func (sm *SecretManager) repairExt4(rootfsPath string) {
+	if rootfsPath == "" {
+		return
+	}
+	cmd := execCommand("e2fsck", "-fy", rootfsPath)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return
+	}
+	// e2fsck exits 1 when it corrected errors; that is success for us.
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return
+	}
+	log.Warn().
+		Err(err).
+		Str("rootfs", rootfsPath).
+		Str("output", string(output)).
+		Msg("e2fsck repair after secret/config injection failed")
 }
 func validateInjectionPath(path string) error {
 	// Reject null bytes
