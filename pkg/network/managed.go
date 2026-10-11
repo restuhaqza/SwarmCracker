@@ -226,7 +226,7 @@ func (nm *NetworkManager) ensureManagedNetwork(ctx context.Context, network *typ
 
 	var alloc *IPAllocator
 	if network.Spec.Subnet != "" && gateway != "" {
-		if a, err := NewIPAllocator(network.Spec.Subnet, gateway); err == nil {
+		if a, err := NewIPAllocatorForNode(network.Spec.Subnet, gateway, nm.nodeIndex, nm.nodeSlots); err == nil {
 			alloc = a
 		}
 	}
