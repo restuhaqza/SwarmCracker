@@ -293,7 +293,8 @@ are **isolated** from services on other networks. `--network` is repeatable: a
 service attached to several networks gets one NIC (and IP) per network, and
 same-network reachability holds **across nodes** (each network has its own
 per-network VXLAN fanned out to the other nodes). `network rm` fails with a clear
-error while any service is still attached. `network bridge status` flags:
+error while any service is still attached; removing the last attached service
+tears down that node's bridge and VXLAN. `network bridge status` flags:
 `--bridge` (default `swarm-br0`), `--format` (`table`, `json`). `network ls` and
 `network inspect` flags: `--format` (`table`/`json`, `inspect` defaults to `json`).
 
