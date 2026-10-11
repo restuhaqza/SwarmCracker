@@ -34,12 +34,18 @@ var (
 //
 //nolint:revive // Stuttering name is acceptable here for package clarity
 type NetworkManager struct {
-	config        types.NetworkConfig
-	bridges       map[string]bool
-	mu            sync.RWMutex
-	tapDevices    map[string]*TapDevice
-	ipAllocator   *IPAllocator
-	natSetup      bool
+	config      types.NetworkConfig
+	bridges     map[string]bool
+	mu          sync.RWMutex
+	tapDevices  map[string]*TapDevice
+	ipAllocator *IPAllocator
+	natSetup    bool
+
+	// nodeIndex/nodeSlots partition the shared overlay into disjoint per-node
+	// IP blocks (see IPAllocator). nodeSlots <= 1 means single-node.
+	nodeIndex uint32
+	nodeSlots uint32
+
 	vxlanMgr      *VXLANManager
 	peerDiscovery bool
 	nodeDiscovery types.NodeDiscovery // SwarmKit node discovery provider
@@ -88,6 +94,13 @@ type IPAllocator struct {
 	gateway   net.IP
 	allocated map[string]string // Track allocated IPs (IP -> VM ID)
 	mu        sync.Mutex
+
+	// nodeIndex and nodeSlots partition the subnet into disjoint per-node
+	// blocks so that two nodes sharing the flat L2 overlay can never hand out
+	// the same address. nodeIndex is 1-based; nodeSlots <= 1 disables
+	// partitioning (single-node behaviour, which uses the whole subnet).
+	nodeIndex uint32
+	nodeSlots uint32
 }
 
 // reservedInfraHosts is the number of leading host addresses in a subnet that
@@ -98,8 +111,25 @@ type IPAllocator struct {
 // breaks cross-node traffic (and DNAT targets for published ports).
 const reservedInfraHosts = 16
 
-// NewIPAllocator creates a new IP allocator.
+// NewIPAllocator creates a new IP allocator that may use the whole subnet.
+// Callers that run on a shared multi-node overlay should use
+// NewIPAllocatorForNode instead.
 func NewIPAllocator(subnetStr, gatewayStr string) (*IPAllocator, error) {
+	return newIPAllocator(subnetStr, gatewayStr, 0, 1)
+}
+
+// NewIPAllocatorForNode creates an IP allocator restricted to block nodeIndex
+// (1-based) of nodeSlots disjoint blocks within the subnet. The overlay is a
+// single L2 segment shared by every node, so each node must only hand out
+// addresses from its own block; otherwise two nodes can assign the same IP.
+//
+// nodeSlots <= 1 or nodeIndex == 0 disables partitioning (the whole subnet is
+// used), which preserves single-node behaviour.
+func NewIPAllocatorForNode(subnetStr, gatewayStr string, nodeIndex, nodeSlots uint32) (*IPAllocator, error) {
+	return newIPAllocator(subnetStr, gatewayStr, nodeIndex, nodeSlots)
+}
+
+func newIPAllocator(subnetStr, gatewayStr string, nodeIndex, nodeSlots uint32) (*IPAllocator, error) {
 	_, subnet, err := net.ParseCIDR(subnetStr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid subnet %s: %w", subnetStr, err)
@@ -114,7 +144,41 @@ func NewIPAllocator(subnetStr, gatewayStr string) (*IPAllocator, error) {
 		subnet:    subnet,
 		gateway:   gateway,
 		allocated: make(map[string]string),
+		nodeIndex: nodeIndex,
+		nodeSlots: nodeSlots,
 	}, nil
+}
+
+// nodeAllocationParams derives this node's 1-based slot from its overlay bridge
+// address and the number of slots (reservedInfraHosts, matching the reserved
+// bridge range). It returns (0, 1) — disabling partitioning — when the node is
+// not part of a multi-node overlay, so a single node keeps the whole subnet.
+//
+// The bridge address on the shared overlay is <subnet>.k for node k (the
+// cluster commands assign .1, .2, ...), so its last octet is the node slot.
+func nodeAllocationParams(bridgeIP string, peerCount int) (uint32, uint32) {
+	if peerCount <= 0 {
+		return 0, 1
+	}
+	ip := net.ParseIP(strings.Split(bridgeIP, "/")[0])
+	if ip == nil {
+		return 0, 1
+	}
+	v4 := ip.To4()
+	if v4 == nil {
+		return 0, 1
+	}
+	idx := uint32(v4[3])
+	if idx < 1 || idx > reservedInfraHosts {
+		// Not a per-node bridge address (see reservedInfraHosts); fall back to
+		// unpartitioned allocation rather than risk an out-of-range slot.
+		log.Warn().
+			Str("bridge_ip", bridgeIP).
+			Uint32("slots", reservedInfraHosts).
+			Msg("Bridge address is not in the per-node range; overlay IPs will not be partitioned")
+		return 0, 1
+	}
+	return idx, reservedInfraHosts
 }
 
 // Allocate allocates an IP address for a VM ID.
@@ -129,6 +193,74 @@ func (a *IPAllocator) Allocate(vmID string) (string, error) {
 		}
 	}
 
+	// Partitioned allocation (shared multi-node overlay): pick deterministically
+	// within this node's block and linear-probe inside it, so two nodes can
+	// never hand out the same address.
+	if start, end, ok := a.nodeBlock(); ok {
+		count := end - start
+		base := binary.BigEndian.Uint32(a.subnet.IP.To4())
+		reserved := a.reservedCount()
+		sum := sha256.Sum256([]byte(vmID))
+		off := binary.BigEndian.Uint32(sum[:4]) % count
+		for i := uint32(0); i < count; i++ {
+			host := start + (off+i)%count
+			ip := make(net.IP, 4)
+			binary.BigEndian.PutUint32(ip, base+1+reserved+host)
+			ipStr := ip.String()
+			if _, taken := a.allocated[ipStr]; !taken {
+				a.allocated[ipStr] = vmID
+				return ipStr, nil
+			}
+		}
+		return "", fmt.Errorf("failed to allocate IP: node block exhausted (%d addresses in slot %d/%d)",
+			count, a.nodeIndex, a.nodeSlots)
+	}
+
+	// Legacy allocation: whole subnet, hash + linear probing.
+	return a.allocateHashed(vmID)
+}
+
+// nodeBlock returns the [start, end) host offsets (relative to the first usable
+// address) this allocator may use, and whether partitioning applies. When it
+// returns ok == false the allocator uses the whole subnet (legacy behaviour).
+func (a *IPAllocator) nodeBlock() (uint32, uint32, bool) {
+	if a.nodeSlots <= 1 || a.nodeIndex == 0 {
+		return 0, 0, false
+	}
+	ones, bits := a.subnet.Mask.Size()
+	if bits != 32 {
+		return 0, 0, false
+	}
+	reserved := a.reservedCount()
+	if reserved == 0 {
+		// Subnet too small to reserve infrastructure; keep legacy behaviour.
+		return 0, 0, false
+	}
+	size := uint32(1) << (bits - ones)
+	if size <= 2+reserved {
+		return 0, 0, false
+	}
+	usable := size - 2 - reserved
+	blockSize := usable / a.nodeSlots
+	if blockSize == 0 {
+		return 0, 0, false
+	}
+	idx := a.nodeIndex
+	if idx > a.nodeSlots {
+		idx = a.nodeSlots
+	}
+	start := (idx - 1) * blockSize
+	end := start + blockSize
+	if idx == a.nodeSlots {
+		// Last slot absorbs any remainder so no addresses are wasted.
+		end = usable
+	}
+	return start, end, true
+}
+
+// allocateHashed is the legacy whole-subnet allocator: hash the VM ID to a
+// starting address and linear-probe until a free address is found.
+func (a *IPAllocator) allocateHashed(vmID string) (string, error) {
 	// Generate IP from hash of VM ID (deterministic but distributed)
 	ip := a.hashToIP(vmID)
 
@@ -305,19 +437,26 @@ func (a *IPAllocator) Release(ip string) {
 
 // NewNetworkManager creates a new NetworkManager.
 func NewNetworkManager(config types.NetworkConfig) types.NetworkManager {
+	// Partition the shared overlay into disjoint per-node blocks when this node
+	// is part of a multi-node cluster (VXLAN peers configured), so two nodes can
+	// never assign the same guest IP. Single-node keeps the whole subnet.
+	nodeIndex, nodeSlots := nodeAllocationParams(config.BridgeIP, len(config.VXLANPeers))
+
 	nm := &NetworkManager{
 		config:          config,
 		bridges:         make(map[string]bool),
 		tapDevices:      make(map[string]*TapDevice),
 		publishedPorts:  make(map[string]string),
 		managedNetworks: make(map[string]*managedNetwork),
+		nodeIndex:       nodeIndex,
+		nodeSlots:       nodeSlots,
 	}
 
 	// Initialize IP allocator if subnet and bridge IP are configured
 	if config.Subnet != "" && config.BridgeIP != "" {
 		// Extract gateway IP from bridge IP (remove CIDR)
 		gatewayStr := strings.Split(config.BridgeIP, "/")[0]
-		allocator, err := NewIPAllocator(config.Subnet, gatewayStr)
+		allocator, err := NewIPAllocatorForNode(config.Subnet, gatewayStr, nodeIndex, nodeSlots)
 		if err != nil {
 			log.Error().Err(err).Msg("Failed to initialize IP allocator")
 		} else {
