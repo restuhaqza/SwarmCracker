@@ -341,3 +341,71 @@ func (nm *NetworkManager) prepareManagedNetworks(ctx context.Context, task *type
 
 	return nil
 }
+
+// reconcileManagedNetworks tears down the node-local resources of every
+// user-defined network that no local task uses anymore (no tracked TAP sits on
+// its bridge). It runs after a task is cleaned up so `network rm` does not leave
+// orphaned bridges and VXLAN interfaces behind; a network that is still needed
+// is re-materialized on demand.
+func (nm *NetworkManager) reconcileManagedNetworks() {
+	nm.mu.RLock()
+	stale := make([]*managedNetwork, 0, len(nm.managedNetworks))
+	for _, m := range nm.managedNetworks {
+		if !nm.bridgeHasLocalTapLocked(m.bridge) {
+			stale = append(stale, m)
+		}
+	}
+	nm.mu.RUnlock()
+
+	for _, m := range stale {
+		nm.teardownManagedNetwork(m)
+	}
+}
+
+// bridgeHasLocalTapLocked reports whether any tracked TAP still sits on the
+// bridge. The caller must hold nm.mu (read or write).
+func (nm *NetworkManager) bridgeHasLocalTapLocked(bridge string) bool {
+	for _, tap := range nm.tapDevices {
+		if tap.Bridge == bridge {
+			return true
+		}
+	}
+	return false
+}
+
+// teardownManagedNetwork deletes a user-defined network's VXLAN and bridge on
+// this node and reconciles the isolation rules. It re-checks that the network is
+// still unused so a concurrent task start is not disrupted.
+func (nm *NetworkManager) teardownManagedNetwork(mn *managedNetwork) {
+	if mn == nil {
+		return
+	}
+
+	nm.mu.Lock()
+	if nm.bridgeHasLocalTapLocked(mn.bridge) {
+		nm.mu.Unlock()
+		return
+	}
+	delete(nm.managedNetworks, mn.id)
+	nm.mu.Unlock()
+
+	if mn.vxlanMgr != nil {
+		name := mn.vxlanMgr.vxlanName()
+		if err := execCommand("ip", "link", "delete", name).Run(); err != nil {
+			log.Debug().Err(err).Str("vxlan", name).Msg("Network VXLAN interface already gone")
+		}
+	}
+	if mn.bridge != "" {
+		if err := execCommand("ip", "link", "delete", mn.bridge).Run(); err != nil {
+			log.Debug().Err(err).Str("bridge", mn.bridge).Msg("Managed bridge already gone")
+		}
+	}
+
+	nm.rebuildIsolationRules()
+
+	log.Info().
+		Str("network_id", mn.id).
+		Str("name", mn.name).
+		Str("bridge", mn.bridge).
+		Msg("Tore down user-defined network")
+}

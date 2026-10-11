@@ -782,15 +782,19 @@ func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) 
 				Msg("Failed to remove TAP device")
 		}
 
-		// Release allocated IP
-		if nm.ipAllocator != nil && entry.tap.IP != "" {
-			nm.ipAllocator.Release(entry.tap.IP)
+		// Release the address to the allocator that handed it out.
+		if entry.tap.IP != "" {
+			nm.releaseIP(entry.tap)
 		}
 
 		nm.mu.Lock()
 		delete(nm.tapDevices, entry.key)
 		nm.mu.Unlock()
 	}
+
+	// Tear down any user-defined network that no local task uses anymore, so
+	// `network rm` does not leave orphaned bridges and VXLAN interfaces behind.
+	nm.reconcileManagedNetworks()
 
 	// Clean up CNI network attachments if any (prevents IPAM leaks)
 	if nm.cniClient != nil && len(task.Networks) > 0 {
@@ -810,6 +814,30 @@ func (nm *NetworkManager) CleanupNetwork(ctx context.Context, task *types.Task) 
 		Msg("Network cleanup completed")
 
 	return nil
+}
+
+// releaseIP returns a task TAP's address to the allocator that handed it out:
+// the user-defined network's allocator for a managed bridge, otherwise the
+// default bridge allocator. Without this, addresses from a network's block are
+// never reused and the block leaks as tasks churn.
+func (nm *NetworkManager) releaseIP(tap *TapDevice) {
+	nm.mu.RLock()
+	var managedAlloc *IPAllocator
+	for _, m := range nm.managedNetworks {
+		if m.bridge == tap.Bridge {
+			managedAlloc = m.allocator
+			break
+		}
+	}
+	nm.mu.RUnlock()
+
+	if managedAlloc != nil {
+		managedAlloc.Release(tap.IP)
+		return
+	}
+	if nm.ipAllocator != nil {
+		nm.ipAllocator.Release(tap.IP)
+	}
 }
 
 // GetTapIP returns the allocated IP for a task.

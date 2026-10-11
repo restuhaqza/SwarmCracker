@@ -251,6 +251,10 @@ swarmcracker network rm backend
 # network is in use by service(s) api; remove or update them first
 ```
 
+Removing the last service that uses a network tears down its per-node bridge
+(`br-<name>`) and VXLAN interface, so `network rm` leaves nothing behind. The
+network is re-materialized on demand the next time a task attaches to it.
+
 ---
 
 ## Publishing a Service Port
