@@ -163,40 +163,56 @@ func (t *taskTranslatorImpl) buildPrebuiltBootArgs(task *types.Task) string {
 	return strings.Join(args, " ")
 }
 
-// networkBootArgs returns the kernel ip= argument for the task's first network
-// attachment, or nil when no static address is assigned.
+// networkBootArgs returns one kernel ip= argument per attached network that has
+// a static address, or nil when none is assigned. The guest configures every
+// NIC from these arguments, so a service attached to several networks gets an
+// address on each interface (eth0, eth1, ...).
+//
+// Only the first configured interface gets a gateway (a default route);
+// additional interfaces carry their address/mask only, so their per-network
+// gateways do not compete for the default route.
 func (t *taskTranslatorImpl) networkBootArgs(task *types.Task) []string {
-	if len(task.Networks) == 0 || len(task.Networks[0].Addresses) == 0 {
-		return nil
-	}
-
-	// Parse IP from Addresses (format: "192.168.127.2/24")
-	addr := task.Networks[0].Addresses[0]
-	ipPart := addr
-	if idx := strings.Index(addr, "/"); idx > 0 {
-		ipPart = addr[:idx]
-	}
-
-	// Kernel IP config format: ip=<ip>::<gw>:<netmask>::<iface>:off
-	// Gateway is the network's own gateway for a user-defined network,
-	// otherwise the default bridge IP from config.
-	gw := t.bridgeIP
-	if g := strings.TrimSpace(task.Networks[0].Network.Spec.Gateway); g != "" {
-		gw = g
-	}
-	if idx := strings.Index(gw, "/"); idx > 0 {
-		gw = gw[:idx] // Remove CIDR if present
-	}
-	mask := "255.255.255.0"
-
-	// Use the network's mask when it is not a /24.
-	if subnet := task.Networks[0].Network.Spec.Subnet; subnet != "" {
-		if _, ipNet, err := net.ParseCIDR(subnet); err == nil {
-			mask = net.IP(ipNet.Mask).String()
+	args := make([]string, 0, len(task.Networks))
+	gatewayAssigned := false
+	for i := range task.Networks {
+		att := task.Networks[i]
+		if len(att.Addresses) == 0 {
+			continue
 		}
-	}
 
-	return []string{fmt.Sprintf("ip=%s::%s:%s::eth0:off", ipPart, gw, mask)}
+		// Parse IP from Addresses (format: "192.168.127.2/24").
+		addr := att.Addresses[0]
+		ipPart := addr
+		if idx := strings.Index(addr, "/"); idx > 0 {
+			ipPart = addr[:idx]
+		}
+
+		mask := "255.255.255.0"
+		// Use the network's mask when it is not a /24.
+		if subnet := att.Network.Spec.Subnet; subnet != "" {
+			if _, ipNet, err := net.ParseCIDR(subnet); err == nil {
+				mask = net.IP(ipNet.Mask).String()
+			}
+		}
+
+		gw := ""
+		if !gatewayAssigned {
+			// Gateway is the network's own gateway for a user-defined network,
+			// otherwise the default bridge IP from config.
+			gw = t.bridgeIP
+			if g := strings.TrimSpace(att.Network.Spec.Gateway); g != "" {
+				gw = g
+			}
+			if idx := strings.Index(gw, "/"); idx > 0 {
+				gw = gw[:idx] // Remove CIDR if present
+			}
+			gatewayAssigned = true
+		}
+
+		// Kernel IP config format: ip=<ip>::<gw>:<netmask>::<iface>:off
+		args = append(args, fmt.Sprintf("ip=%s::%s:%s::eth%d:off", ipPart, gw, mask, i))
+	}
+	return args
 }
 
 // resolveKernelPath picks the kernel image for a task. A prebuilt golden image

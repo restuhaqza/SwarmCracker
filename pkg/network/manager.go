@@ -1536,8 +1536,7 @@ func (nm *NetworkManager) setupVXLANOverlay(ctx context.Context) error {
 	}
 
 	// Combine static peers from config with discovered peers
-	allPeers := nm.discoverPeerWorkers()
-	allPeers = append(allPeers, nm.config.VXLANPeers...)
+	allPeers := nm.allVXLANPeers()
 
 	// Create peer store with combined peers
 	peerStore := NewStaticPeerStore(allPeers)
@@ -1640,7 +1639,30 @@ func (nm *NetworkManager) discoverPeerWorkers() []string {
 	return []string{}
 }
 
-// UpdatePeers updates the VXLAN peer list.
+// allVXLANPeers returns the union of discovered and statically configured VXLAN
+// peer addresses (deduplicated, order-stable). These are the transport
+// addresses of the other nodes and are shared by the default overlay and every
+// user-defined network.
+func (nm *NetworkManager) allVXLANPeers() []string {
+	peers := nm.discoverPeerWorkers()
+	peers = append(peers, nm.config.VXLANPeers...)
+
+	seen := make(map[string]bool, len(peers))
+	out := make([]string, 0, len(peers))
+	for _, p := range peers {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
+// UpdatePeers updates the VXLAN peer list for the default overlay and every
+// user-defined network materialized on this node, so all overlays keep the same
+// set of reachable peers.
 func (nm *NetworkManager) UpdatePeers(peers []string) error {
 	if nm.vxlanMgr == nil {
 		// Queue peers for later when VXLAN is initialized
@@ -1650,7 +1672,29 @@ func (nm *NetworkManager) UpdatePeers(peers []string) error {
 		log.Info().Strs("peers", peers).Msg("VXLAN peers queued (manager not initialized)")
 		return nil
 	}
-	return nm.vxlanMgr.UpdatePeers(peers)
+	err := nm.vxlanMgr.UpdatePeers(peers)
+	// Fan out regardless of the default overlay's result so user-defined
+	// networks still learn about the peers.
+	nm.updateManagedNetworkPeers(peers)
+	return err
+}
+
+// updateManagedNetworkPeers fans the peer list out to every user-defined
+// network overlay so their L2 domains reach the same peers as the default one.
+func (nm *NetworkManager) updateManagedNetworkPeers(peers []string) {
+	nm.mu.RLock()
+	managers := make([]*VXLANManager, 0, len(nm.managedNetworks))
+	for _, m := range nm.managedNetworks {
+		if m.vxlanMgr != nil {
+			managers = append(managers, m.vxlanMgr)
+		}
+	}
+	nm.mu.RUnlock()
+	for _, vxm := range managers {
+		if err := vxm.UpdatePeers(peers); err != nil {
+			log.Warn().Err(err).Str("bridge", vxm.BridgeName).Msg("Failed to update user-defined network VXLAN peers")
+		}
+	}
 }
 
 // UpdateVXLANPeers implements NetworkManager interface for VXLAN peer updates.
