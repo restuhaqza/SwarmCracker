@@ -219,17 +219,25 @@ swarmcracker network create --name backend --subnet 10.10.0.0/24
 swarmcracker network create --name frontend --subnet 10.20.0.0/24
 ```
 
-Attach a service to one with `--network`:
+Attach a service to one with `--network` (repeatable — the service gets one NIC
+per network):
 
 ```bash
+# single network
 swarmcracker service create --name api --image myapp --network backend
+
+# several networks: eth0 -> backend, eth1 -> frontend
+swarmcracker service create --name gateway --image myapp \
+  --network backend --network frontend
 ```
 
 Each network is allocated its own subnet, a per-node bridge (`br-<name>`) and an
-overlay VXLAN ID. A service's VM gets an IP from its network's subnet, and
-services on **different** networks cannot reach each other — the node drops
-traffic between distinct network bridges. Services on the **same** network reach
-each other normally.
+overlay VXLAN ID. A service's VM gets an IP from **each** attached network's
+subnet, and services on **different** networks cannot reach each other — the
+node drops traffic between distinct network bridges. Services on the **same**
+network reach each other normally, **including across nodes**: every network
+gets its own per-network VXLAN fanned out to the other nodes, so the network's
+L2 domain spans the cluster (the same mechanism as the default overlay).
 
 ```bash
 swarmcracker network ls
@@ -242,11 +250,6 @@ A network cannot be removed while a service is still attached:
 swarmcracker network rm backend
 # network is in use by service(s) api; remove or update them first
 ```
-
-> **Limitations (work in progress).** A service can attach to one network for now
-> (multiple `--network` is rejected). Cross-node reachability for user-defined
-> networks is still being completed; on a single node the isolation and
-> same-network reachability described above hold.
 
 ---
 

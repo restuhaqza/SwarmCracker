@@ -28,6 +28,7 @@ type managedNetwork struct {
 	subnet    string
 	gateway   string
 	vxlanID   int
+	vxlanMgr  *VXLANManager
 	allocator *IPAllocator
 }
 
@@ -98,23 +99,35 @@ func (nm *NetworkManager) setBridgeAddr(bridge, cidr string) error {
 	return nil
 }
 
-// ensureNetworkVXLAN creates the per-network overlay VXLAN interface (VNI) and
-// attaches it to the network's bridge. Best-effort on nodes without a physical
-// uplink; same-node traffic does not need it.
-func (nm *NetworkManager) ensureNetworkVXLAN(bridge string, vni int) error {
+// ensureNetworkVXLAN creates the per-network overlay VXLAN interface (VNI),
+// attaches it to the network's bridge, and programs an FDB entry for every peer
+// node so the network's L2 domain spans the cluster. Best-effort on nodes
+// without a physical uplink; same-node traffic does not need it.
+func (nm *NetworkManager) ensureNetworkVXLAN(bridge string, vni int) (*VXLANManager, error) {
 	if vni <= 0 {
-		return nil
+		return nil, nil
 	}
 	phys, localIP, err := nm.getPhysicalInterface()
 	if err != nil {
-		return fmt.Errorf("no physical interface for VXLAN: %w", err)
+		return nil, fmt.Errorf("no physical interface for VXLAN: %w", err)
 	}
-	vxm := NewVXLANManager(bridge, vni, "", nil)
-	vxlanName := bridge + "-vxlan"
+	peers := nm.allVXLANPeers()
+	vxm := NewVXLANManager(bridge, vni, "", NewStaticPeerStore(peers))
+	vxlanName := vxm.vxlanName()
 	if err := vxm.createVXLANInterface(vxlanName, phys, localIP); err != nil {
-		return err
+		return nil, err
 	}
-	return vxm.attachVXLANToBridge(vxlanName)
+	if err := vxm.attachVXLANToBridge(vxlanName); err != nil {
+		return nil, err
+	}
+	// Flood broadcast/unknown-unicast to every peer node so the network's L2
+	// domain spans the cluster, exactly like the default overlay.
+	for _, peer := range peers {
+		if err := vxm.addPeerForwarding(vxlanName, peer); err != nil {
+			log.Warn().Err(err).Str("vxlan", vxlanName).Str("peer", peer).Msg("Failed to add network VXLAN peer")
+		}
+	}
+	return vxm, nil
 }
 
 // setupManagedNAT adds a masquerade rule for the network's subnet so VMs on it
@@ -216,7 +229,8 @@ func (nm *NetworkManager) ensureManagedNetwork(ctx context.Context, network *typ
 		log.Warn().Err(err).Str("bridge", bridge).Msg("Failed to set managed bridge address")
 	}
 
-	if err := nm.ensureNetworkVXLAN(bridge, network.Spec.VXLANID); err != nil {
+	vxm, err := nm.ensureNetworkVXLAN(bridge, network.Spec.VXLANID)
+	if err != nil {
 		log.Warn().Err(err).Str("bridge", bridge).Int("vni", network.Spec.VXLANID).Msg("Failed to set up network VXLAN")
 	}
 
@@ -238,6 +252,7 @@ func (nm *NetworkManager) ensureManagedNetwork(ctx context.Context, network *typ
 		subnet:    network.Spec.Subnet,
 		gateway:   gateway,
 		vxlanID:   network.Spec.VXLANID,
+		vxlanMgr:  vxm,
 		allocator: alloc,
 	}
 

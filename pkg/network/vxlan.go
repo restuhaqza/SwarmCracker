@@ -4,6 +4,8 @@ package network
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -98,12 +100,26 @@ func NewVXLANManager(bridgeName string, vxlanID int, overlayIP string, peerStore
 		netlinkExecutor: NewDefaultNetlinkExecutor(),
 	}
 }
+
+// vxlanName returns the interface name for this overlay. The conventional
+// "<bridge>-vxlan" name is used when it fits in IFNAMSIZ (15 bytes); otherwise a
+// deterministic short name derived from the bridge is used, so a long bridge
+// name (e.g. "br-backend") does not silently fail to create the interface.
+func (v *VXLANManager) vxlanName() string {
+	name := v.BridgeName + "-vxlan"
+	if len(name) <= 15 {
+		return name
+	}
+	sum := sha256.Sum256([]byte(v.BridgeName))
+	return "vx-" + hex.EncodeToString(sum[:])[:12] // "vx-" + 12 = 15 bytes
+}
+
 func (v *VXLANManager) SetupVXLAN(physInterface, localIP string) error {
 	if err := v.ensureVXLANModule(); err != nil {
 		return fmt.Errorf("failed to load VXLAN module: %w", err)
 	}
 
-	vxlanName := v.BridgeName + "-vxlan"
+	vxlanName := v.vxlanName()
 
 	if err := v.createVXLANInterface(vxlanName, physInterface, localIP); err != nil {
 		return fmt.Errorf("failed to create VXLAN interface: %w", err)
@@ -388,7 +404,7 @@ func (v *VXLANManager) UpdatePeers(newPeers []string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 
-	vxlanName := v.BridgeName + "-vxlan"
+	vxlanName := v.vxlanName()
 
 	// Check if VXLAN interface exists
 	if _, err := v.netlinkExecutor.LinkByName(vxlanName); err != nil {
@@ -529,7 +545,7 @@ func (v *VXLANManager) listenForPeers(ctx context.Context, localIP string, port 
 						v.peerStore.AddPeer(peerIP)
 						log.Info().Str("peer", peerIP).Str("from", peerAddr.String()).Msg("Discovered VXLAN peer via UDP")
 						// Add FDB entry
-						vxlanName := v.BridgeName + "-vxlan"
+						vxlanName := v.vxlanName()
 						if err := v.addPeerForwarding(vxlanName, peerIP); err != nil {
 							log.Warn().Err(err).Str("peer", peerIP).Msg("Failed to add discovered peer to FDB")
 						}
