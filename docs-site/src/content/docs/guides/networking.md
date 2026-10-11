@@ -53,6 +53,27 @@ multi-node cluster every node shares one L2 overlay subnet and each node's
 bridge takes a low address (`.1`, `.2`, …), so guests are only allocated from
 `.17` upward to avoid colliding with a sibling node's bridge.
 
+**Per-node blocks (cluster-wide uniqueness).** On a multi-node cluster the
+guest range is additionally split into `16` disjoint per-node blocks — one per
+node slot. A node derives its slot from its own bridge address
+(`bridge_ip: 192.168.127.2/24` → slot 2) and only hands out addresses from that
+block, so two nodes can never assign the same guest IP even though each node
+allocates locally (by hashing the task ID).
+
+For the default `192.168.127.0/24` overlay, each slot holds `14` addresses:
+
+| Node (bridge) | Guest block |
+|---------------|-------------|
+| `…127.1` | `…127.17` – `…127.30` |
+| `…127.2` | `…127.31` – `…127.44` |
+| `…127.k` | block `k` of 16 |
+
+A **single node** (no VXLAN peers) is not partitioned and keeps the whole
+subnet. For dense clusters use a larger overlay subnet (e.g. `192.168.0.0/16`)
+so each node's block is larger. Bridge addresses must be `.1`, `.2`, … for the
+slots to line up; `cluster init` / `cluster join` assign them that way. See
+`decisions/ADR-007-cluster-wide-ip-allocation.md` for the design.
+
 ### DHCP
 
 If you want dynamic IPs, switch to dnsmasq-backed DHCP:
