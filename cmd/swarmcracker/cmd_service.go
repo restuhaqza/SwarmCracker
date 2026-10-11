@@ -727,20 +727,23 @@ func listServices(format, filter string, quiet bool) error {
 }
 
 // resolveNetworkTargets resolves --network names/IDs to full network IDs.
-// Attaching to more than one network is not supported yet.
+// A service may join several networks (one NIC per network, in order); a
+// network listed more than once is attached only once.
 func resolveNetworkTargets(ctx context.Context, client api.ControlClient, names []string) ([]string, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
-	if len(names) > 1 {
-		return nil, fmt.Errorf("attaching a service to more than one network is not supported yet")
-	}
 	ids := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
 	for _, n := range names {
 		id, err := resolveNetworkRef(ctx, client, n)
 		if err != nil {
 			return nil, err
 		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
 		ids = append(ids, id)
 	}
 	return ids, nil

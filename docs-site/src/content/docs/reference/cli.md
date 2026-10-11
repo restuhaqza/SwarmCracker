@@ -155,7 +155,7 @@ Service (replicated microVM) management.
 | `--volume` / `-v` | — | Mount a volume or host path: `<src>:<dst>[:ro\|rw]` (repeatable) |
 | `--hostname` | — | Guest VM hostname (RFC 1123) |
 | `--dns` | — | Guest DNS nameserver, an IP address (repeatable) |
-| `--network` | — | Attach the service to a user-defined network (repeatable; one network per service for now) |
+| `--network` | — | Attach the service to a user-defined network (repeatable; one NIC/IP per network) |
 | `--secret` | — | Grant access to a secret: `[src=]NAME[,target=PATH][,mode=0400][,uid=N][,gid=N]` (repeatable) |
 | `--config` | — | Grant access to a config: `[src=]NAME[,target=PATH][,mode=0444][,uid=N][,gid=N]` (repeatable) |
 | `--user` | — | **Not supported** — rejected with a clear error |
@@ -289,7 +289,10 @@ Manage user-defined networks and inspect host networking.
 Each user-defined network is allocated its own subnet, a per-node bridge
 (`br-<name>`) and an overlay VXLAN ID. Services attached with
 `service create --network <name>` get their VM IP from that network's subnet and
-are **isolated** from services on other networks. `network rm` fails with a clear
+are **isolated** from services on other networks. `--network` is repeatable: a
+service attached to several networks gets one NIC (and IP) per network, and
+same-network reachability holds **across nodes** (each network has its own
+per-network VXLAN fanned out to the other nodes). `network rm` fails with a clear
 error while any service is still attached. `network bridge status` flags:
 `--bridge` (default `swarm-br0`), `--format` (`table`, `json`). `network ls` and
 `network inspect` flags: `--format` (`table`/`json`, `inspect` defaults to `json`).
