@@ -101,6 +101,11 @@ func (s *server) handleHello(req *Request) error {
 }
 
 // handlePut receives a stream of file frames and writes them to req.Path.
+//
+// The bytes are written to a temporary file next to req.Path and renamed onto
+// req.Path only after the terminal empty file frame arrives, so an interrupted
+// or failed transfer cannot truncate an existing destination. The temporary
+// file is removed on every error path.
 func (s *server) handlePut(req *Request) error {
 	if req.Path == "" {
 		return s.writeError("put: empty path")
@@ -115,10 +120,14 @@ func (s *server) handlePut(req *Request) error {
 	if mode == 0 {
 		mode = 0o644
 	}
-	f, err := os.OpenFile(req.Path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+
+	tmpPath := req.Path + ".sc-put-tmp"
+	f, err := os.OpenFile(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
-		return s.writeError("put: open %s: %v", req.Path, err)
+		return s.writeError("put: open temp file for %s: %v", req.Path, err)
 	}
+	// Best effort: a no-op once the rename below succeeds.
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	for {
 		var msg Message
@@ -140,6 +149,13 @@ func (s *server) handlePut(req *Request) error {
 	}
 	if err := f.Close(); err != nil {
 		return s.writeError("put: close %s: %v", req.Path, err)
+	}
+	// Apply the requested mode explicitly: OpenFile only honours it on create.
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return s.writeError("put: chmod %s: %v", req.Path, err)
+	}
+	if err := os.Rename(tmpPath, req.Path); err != nil {
+		return s.writeError("put: rename temp file to %s: %v", req.Path, err)
 	}
 	return s.write(Message{Type: "ok"})
 }

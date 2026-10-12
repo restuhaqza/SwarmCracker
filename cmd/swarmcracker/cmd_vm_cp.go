@@ -145,19 +145,42 @@ func copyToVM(ctx context.Context, client *agent.Client, localPath, guestPath st
 }
 
 // copyFromVM downloads a guest file to a local path.
+//
+// The incoming bytes are written to a temporary file in the destination
+// directory and renamed onto the destination only after the transfer
+// completes, so a failed or partial transfer cannot truncate an existing local
+// file. The temporary file is removed on every error path.
 func copyFromVM(ctx context.Context, client *agent.Client, guestPath, localPath string) error {
-	if info, err := os.Stat(localPath); err == nil && info.IsDir() {
-		return errCopyDirectory
+	mode := os.FileMode(0o644)
+	if info, err := os.Stat(localPath); err == nil {
+		if info.IsDir() {
+			return errCopyDirectory
+		}
+		// Preserve the mode of an existing destination file.
+		mode = info.Mode().Perm()
 	}
 
-	f, err := os.Create(localPath)
+	dir := filepath.Dir(localPath)
+	tmp, err := os.CreateTemp(dir, filepath.Base(localPath)+".sc-cp-*")
 	if err != nil {
-		return fmt.Errorf("create %s: %w", localPath, err)
+		return fmt.Errorf("create temp file in %s: %w", dir, err)
 	}
-	defer func() { _ = f.Close() }()
+	tmpPath := tmp.Name()
+	// Best effort: a no-op once the rename below succeeds.
+	defer func() { _ = os.Remove(tmpPath) }()
 
-	if err := client.CopyFrom(ctx, guestPath, f); err != nil {
+	if err := client.CopyFrom(ctx, guestPath, tmp); err != nil {
+		_ = tmp.Close()
 		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close %s: %w", tmpPath, err)
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", tmpPath, err)
+	}
+	if err := os.Rename(tmpPath, localPath); err != nil {
+		return fmt.Errorf("rename %s to %s: %w", tmpPath, localPath, err)
 	}
 	return nil
 }

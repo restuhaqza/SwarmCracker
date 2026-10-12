@@ -208,6 +208,64 @@ func TestServeConnPutUnexpectedFrameType(t *testing.T) {
 	assert.Contains(t, msg.Error, "unexpected frame type")
 }
 
+// TestServeConnPutBadFrameKeepsDestination verifies that a stream error before
+// the terminal frame leaves a pre-existing destination untouched and returns an
+// error frame instead of truncating it.
+func TestServeConnPutBadFrameKeepsDestination(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "existing.txt")
+	require.NoError(t, os.WriteFile(path, []byte("precious"), 0o644))
+
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: "put", Path: path}))
+	require.NoError(t, WriteFrame(conn, Message{Type: "file", Data: []byte("partial")}))
+	require.NoError(t, WriteFrame(conn, Message{Type: "stdout", Data: []byte("bad")}))
+
+	msg := readMessage(t, conn)
+	require.Equal(t, "error", msg.Type)
+	assert.Contains(t, msg.Error, "unexpected frame type")
+
+	// A follow-up request only gets served after handlePut returned, so its
+	// reply proves the deferred temp-file cleanup has already run.
+	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: Version}))
+	require.Equal(t, "hello", readMessage(t, conn).Type)
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "precious", string(got))
+	_, err = os.Stat(path + ".sc-put-tmp")
+	assert.True(t, os.IsNotExist(err), "temporary put file must be removed")
+}
+
+// TestServeConnPutInterruptedStreamKeepsDestination verifies that dropping the
+// connection mid-stream leaves a pre-existing destination untouched.
+func TestServeConnPutInterruptedStreamKeepsDestination(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "existing.txt")
+	require.NoError(t, os.WriteFile(path, []byte("precious"), 0o644))
+
+	client, server := net.Pipe()
+	done := make(chan error, 1)
+	go func() { done <- ServeConn(server) }()
+
+	require.NoError(t, WriteFrame(client, Request{Op: "put", Path: path}))
+	require.NoError(t, WriteFrame(client, Message{Type: "file", Data: []byte("partial")}))
+	require.NoError(t, client.Close())
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeConn did not return after the stream was interrupted")
+	}
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "precious", string(got))
+	_, err = os.Stat(path + ".sc-put-tmp")
+	assert.True(t, os.IsNotExist(err), "temporary put file must be removed")
+}
+
 func TestServeConnGetMissingFile(t *testing.T) {
 	conn, _ := newPipePair(t)
 	require.NoError(t, WriteFrame(conn, Request{Op: "get", Path: filepath.Join(t.TempDir(), "nope.txt")}))

@@ -121,6 +121,31 @@ func TestVMCpRejectsDirectoryDestination(t *testing.T) {
 	require.ErrorIs(t, err, errCopyDirectory)
 }
 
+// TestVMCpGuestToHostMissingGuestFileKeepsDestination verifies that a failed
+// guest->host transfer does not truncate a pre-existing local destination: the
+// guest file is missing, so the agent replies with an error frame and the local
+// file must be left exactly as it was.
+func TestVMCpGuestToHostMissingGuestFileKeepsDestination(t *testing.T) {
+	vm := startFakeVM(t, "vm-cp-miss", nil)
+
+	missing := filepath.Join(t.TempDir(), "does-not-exist.txt")
+	dir := t.TempDir()
+	local := filepath.Join(dir, "local.txt")
+	require.NoError(t, os.WriteFile(local, []byte("precious"), 0o644))
+
+	err := copyFileToOrFromVM(context.Background(), vm.SocketDir, "vm-cp-miss:"+missing, local, 0o644)
+	require.Error(t, err)
+
+	got, rerr := os.ReadFile(local)
+	require.NoError(t, rerr)
+	assert.Equal(t, "precious", string(got))
+
+	entries, derr := os.ReadDir(dir)
+	require.NoError(t, derr)
+	require.Len(t, entries, 1)
+	assert.Equal(t, "local.txt", entries[0].Name())
+}
+
 func TestVMCpCommandEndToEnd(t *testing.T) {
 	vm := startFakeVM(t, "vm-cp-cli", nil)
 
