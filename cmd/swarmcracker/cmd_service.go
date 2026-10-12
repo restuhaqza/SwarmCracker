@@ -162,6 +162,12 @@ func newServiceCreateCommand() *cobra.Command {
 		capDrop  []string
 		readOnly bool
 
+		healthCmd         string
+		healthInterval    string
+		healthTimeout     string
+		healthRetries     int
+		healthStartPeriod string
+
 		constraints    []string
 		placementPrefs []string
 
@@ -245,6 +251,12 @@ With --golden, the service boots a prebuilt golden image (see
 				capAdd:             capAdd,
 				capDrop:            capDrop,
 				readOnly:           readOnly,
+				healthSet:          anyFlagChanged(cmd, "health-cmd", "health-interval", "health-timeout", "health-retries", "health-start-period"),
+				healthCmd:          healthCmd,
+				healthInterval:     healthInterval,
+				healthTimeout:      healthTimeout,
+				healthRetries:      healthRetries,
+				healthStartPeriod:  healthStartPeriod,
 				constraints:        constraints,
 				placementPrefs:     placementPrefs,
 				restartSet:         anyFlagChanged(cmd, "restart-condition", "restart-delay", "restart-max-attempts", "restart-window"),
@@ -295,6 +307,11 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringArrayVar(&capAdd, "cap-add", nil, "Add a Linux capability (not supported)")
 	cmd.Flags().StringArrayVar(&capDrop, "cap-drop", nil, "Drop a Linux capability (not supported)")
 	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Mount the root filesystem read-only (not supported)")
+	cmd.Flags().StringVar(&healthCmd, "health-cmd", "", "Container healthcheck command, run via the guest shell (enables the healthcheck)")
+	cmd.Flags().StringVar(&healthInterval, "health-interval", "", "Time between healthcheck runs (default 30s)")
+	cmd.Flags().StringVar(&healthTimeout, "health-timeout", "", "Time to wait for a healthcheck to complete (default 30s)")
+	cmd.Flags().IntVar(&healthRetries, "health-retries", 0, "Consecutive failures before a task is unhealthy (default 3)")
+	cmd.Flags().StringVar(&healthStartPeriod, "health-start-period", "", "Grace period before healthcheck failures count (default 0s)")
 	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Placement constraint, key==value or key!=value (repeatable, e.g. node.hostname==worker1)")
 	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Placement preference, spread=<key> (repeatable, e.g. spread=node.labels.zone)")
 	cmd.Flags().StringVar(&restartCondition, "restart-condition", "", "Restart condition: none, on-failure or any (default any)")
@@ -343,6 +360,12 @@ func newServiceUpdateCommand() *cobra.Command {
 		capAdd   []string
 		capDrop  []string
 		readOnly bool
+
+		healthCmd         string
+		healthInterval    string
+		healthTimeout     string
+		healthRetries     int
+		healthStartPeriod string
 
 		mode           string
 		constraints    []string
@@ -415,6 +438,13 @@ placement, restart policy, update/rollback configuration and mode.`,
 				capDrop:     capDrop,
 				readOnly:    readOnly,
 
+				healthSet:         anyFlagChanged(cmd, "health-cmd", "health-interval", "health-timeout", "health-retries", "health-start-period"),
+				healthCmd:         healthCmd,
+				healthInterval:    healthInterval,
+				healthTimeout:     healthTimeout,
+				healthRetries:     healthRetries,
+				healthStartPeriod: healthStartPeriod,
+
 				modeSet:        cmd.Flags().Changed("mode"),
 				mode:           mode,
 				constraints:    constraints,
@@ -466,6 +496,11 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringArrayVar(&capAdd, "cap-add", nil, "Add a Linux capability (not supported)")
 	cmd.Flags().StringArrayVar(&capDrop, "cap-drop", nil, "Drop a Linux capability (not supported)")
 	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Mount the root filesystem read-only (not supported)")
+	cmd.Flags().StringVar(&healthCmd, "health-cmd", "", "Container healthcheck command, run via the guest shell (enables the healthcheck)")
+	cmd.Flags().StringVar(&healthInterval, "health-interval", "", "Time between healthcheck runs (default 30s)")
+	cmd.Flags().StringVar(&healthTimeout, "health-timeout", "", "Time to wait for a healthcheck to complete (default 30s)")
+	cmd.Flags().IntVar(&healthRetries, "health-retries", 0, "Consecutive failures before a task is unhealthy (default 3)")
+	cmd.Flags().StringVar(&healthStartPeriod, "health-start-period", "", "Grace period before healthcheck failures count (default 0s)")
 	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Replace placement constraints (key==value or key!=value; repeatable)")
 	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Replace placement preferences (spread=<key>; repeatable)")
 	cmd.Flags().StringVar(&restartCondition, "restart-condition", "", "Restart condition: none, on-failure or any")
@@ -1291,6 +1326,21 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 				}
 			}
 		}
+	}
+
+	// Replace the container healthcheck. buildHealthcheck rejects any
+	// --health-* flag that arrives without --health-cmd, so an update never
+	// silently drops a flag.
+	if opts.healthSet {
+		c := spec.Task.GetContainer()
+		if c == nil {
+			return fmt.Errorf("service %q has no container spec", svc.Spec.Annotations.Name)
+		}
+		hc, err := buildHealthcheck(opts.healthCmd, true, opts.healthInterval, opts.healthTimeout, opts.healthStartPeriod, opts.healthRetries)
+		if err != nil {
+			return err
+		}
+		c.Healthcheck = hc
 	}
 
 	// Update resource limits

@@ -53,6 +53,17 @@ type serviceCreateOptions struct {
 	capDrop  []string
 	readOnly bool
 
+	// Container healthcheck flags (#39). healthSet records whether the user
+	// passed any --health-* flag, so a health flag without --health-cmd is
+	// rejected instead of silently ignored. The Docker defaults are applied by
+	// buildHealthcheck whenever a value is left unset.
+	healthSet         bool
+	healthCmd         string
+	healthInterval    string
+	healthTimeout     string
+	healthRetries     int
+	healthStartPeriod string
+
 	// Scheduling / lifecycle (all honored natively by SwarmKit).
 	mode            string
 	constraints     []string
@@ -168,6 +179,12 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		spec.Task.GetContainer().DNSConfig = &api.ContainerSpec_DNSConfig{Nameservers: dns}
 	}
 
+	if hc, err := buildHealthcheck(o.healthCmd, o.healthSet, o.healthInterval, o.healthTimeout, o.healthStartPeriod, o.healthRetries); err != nil {
+		return nil, err
+	} else if hc != nil {
+		spec.Task.GetContainer().Healthcheck = hc
+	}
+
 	if mounts, err := buildMounts(o.mounts, o.volumes); err != nil {
 		return nil, err
 	} else if len(mounts) > 0 {
@@ -264,6 +281,15 @@ type serviceUpdateOptions struct {
 	capAdd      []string
 	capDrop     []string
 	readOnly    bool
+
+	// Container healthcheck (#39). healthSet reports whether any --health-*
+	// flag was provided; a health flag without --health-cmd is rejected.
+	healthSet         bool
+	healthCmd         string
+	healthInterval    string
+	healthTimeout     string
+	healthRetries     int
+	healthStartPeriod string
 
 	rollbackAction bool
 
@@ -443,6 +469,82 @@ func parseOptDuration(s string) (time.Duration, error) {
 	}
 	if d < 0 {
 		return 0, fmt.Errorf("duration must not be negative: %q", s)
+	}
+	return d, nil
+}
+
+// Docker-compatible healthcheck defaults, applied only when --health-cmd is
+// declared (see buildHealthcheck).
+const (
+	defaultHealthInterval = 30 * time.Second
+	defaultHealthTimeout  = 30 * time.Second
+	defaultHealthRetries  = 3
+	maxHealthRetries      = 1<<31 - 1
+)
+
+// buildHealthcheck maps the --health-* options onto an api.HealthConfig. It
+// returns (nil, nil) when no healthcheck is requested, so an absent --health-cmd
+// leaves the spec field nil and downstream behaviour is unchanged. Any other
+// --health-* value (or a set flag) without --health-cmd is an error, so a flag
+// is never accepted and ignored.
+func buildHealthcheck(cmd string, set bool, interval, timeout, startPeriod string, retries int) (*api.HealthConfig, error) {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		if set || strings.TrimSpace(interval) != "" || strings.TrimSpace(timeout) != "" || strings.TrimSpace(startPeriod) != "" || retries != 0 {
+			return nil, fmt.Errorf("--health-cmd is required when any other --health-* flag is set")
+		}
+		return nil, nil
+	}
+
+	iv, err := healthDuration("--health-interval", interval, defaultHealthInterval, true)
+	if err != nil {
+		return nil, err
+	}
+	to, err := healthDuration("--health-timeout", timeout, defaultHealthTimeout, true)
+	if err != nil {
+		return nil, err
+	}
+	sp, err := healthDuration("--health-start-period", startPeriod, 0, false)
+	if err != nil {
+		return nil, err
+	}
+	if retries == 0 {
+		retries = defaultHealthRetries
+	}
+	if retries < 1 {
+		return nil, fmt.Errorf("--health-retries must be at least 1 (got %d)", retries)
+	}
+	if retries > maxHealthRetries {
+		return nil, fmt.Errorf("--health-retries must be at most %d (got %d)", maxHealthRetries, retries)
+	}
+
+	return &api.HealthConfig{
+		Test:        []string{"CMD-SHELL", cmd},
+		Interval:    gogotypes.DurationProto(iv),
+		Timeout:     gogotypes.DurationProto(to),
+		Retries:     int32(retries),
+		StartPeriod: gogotypes.DurationProto(sp),
+	}, nil
+}
+
+// healthDuration parses an optional healthcheck duration flag. An empty value
+// falls back to def; a non-positive value is rejected when positive is set
+// (interval/timeout) and a negative value otherwise (start-period), naming the
+// flag so the error is actionable.
+func healthDuration(flag, raw string, def time.Duration, positive bool) (time.Duration, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q", flag, raw)
+	}
+	if positive && d <= 0 {
+		return 0, fmt.Errorf("%s must be greater than 0", flag)
+	}
+	if !positive && d < 0 {
+		return 0, fmt.Errorf("%s must not be negative", flag)
 	}
 	return d, nil
 }

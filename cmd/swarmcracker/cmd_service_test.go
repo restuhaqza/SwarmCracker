@@ -189,6 +189,11 @@ func TestServiceCreateCommandFlags(t *testing.T) {
 	goldenFlag := cmd.Flags().Lookup("golden")
 	assert.NotNil(t, goldenFlag)
 	assert.Equal(t, "", goldenFlag.DefValue)
+
+	// Container healthcheck flags (#39).
+	for _, name := range []string{"health-cmd", "health-interval", "health-timeout", "health-retries", "health-start-period"} {
+		assert.NotNil(t, cmd.Flags().Lookup(name), "service create should register --%s", name)
+	}
 }
 
 // TestGoldenPlaceholderImage tests the placeholder image used for golden services
@@ -236,6 +241,11 @@ func TestServiceUpdateCommandFlags(t *testing.T) {
 	forceFlag := cmd.Flags().Lookup("force")
 	assert.NotNil(t, forceFlag)
 	assert.Equal(t, "false", forceFlag.DefValue)
+
+	// Container healthcheck flags (#39).
+	for _, name := range []string{"health-cmd", "health-interval", "health-timeout", "health-retries", "health-start-period"} {
+		assert.NotNil(t, cmd.Flags().Lookup(name), "service update should register --%s", name)
+	}
 }
 
 // TestServiceListCommandFlags tests the list command flags
