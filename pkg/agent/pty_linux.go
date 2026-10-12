@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"syscall"
@@ -10,11 +11,41 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// devptsSuperMagic is DEVPTS_SUPER_MAGIC from <linux/magic.h>.
+const devptsSuperMagic = 0x1cd1
+
+// ensureDevPTS makes sure a devpts instance is mounted at /dev/pts. The kernel
+// refuses to open /dev/ptmx until one is available, so PTY allocation fails
+// with ENOENT on images whose own init does not mount devpts.
+func ensureDevPTS() error {
+	var st unix.Statfs_t
+	if err := unix.Statfs("/dev/pts", &st); err == nil && st.Type == devptsSuperMagic {
+		return nil
+	}
+
+	if err := os.MkdirAll("/dev/pts", 0o755); err != nil {
+		return fmt.Errorf("create /dev/pts: %w", err)
+	}
+	// EBUSY means something is already mounted there; opening /dev/ptmx below
+	// is the real test of whether it is usable.
+	if err := unix.Mount("devpts", "/dev/pts", "devpts", 0, ""); err != nil && !errors.Is(err, unix.EBUSY) {
+		return fmt.Errorf("mount devpts at /dev/pts: %w", err)
+	}
+	return nil
+}
+
 // openPTY opens a pseudo-terminal master/slave pair. It unlocks the master with
 // TIOCSPTLCK, reads the pts number with TIOCGPTN, and opens the matching slave.
 func openPTY() (*os.File, *os.File, error) {
+	if err := ensureDevPTS(); err != nil {
+		return nil, nil, err
+	}
+
 	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, fmt.Errorf("open /dev/ptmx (no devpts mounted at /dev/pts?): %w", err)
+		}
 		return nil, nil, fmt.Errorf("open /dev/ptmx: %w", err)
 	}
 

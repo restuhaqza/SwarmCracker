@@ -52,6 +52,26 @@ func TestGenerateWrapperScript_StartsGuestAgent(t *testing.T) {
 	assert.Less(t, agentIdx, execIdx, "agent start must appear before the exec line")
 }
 
+// TestGenerateWrapperScript_CreatesMountpoints verifies the wrapper creates the
+// /dev/pts and /dev/shm mountpoints before mounting them. devtmpfs does not
+// provide these directories (and the kernel mounts devtmpfs over /dev at boot,
+// hiding any the image baked in). Without a devpts instance the kernel refuses
+// to open /dev/ptmx, so TTY sessions (`vm exec -t`) fail with ENOENT.
+func TestGenerateWrapperScript_CreatesMountpoints(t *testing.T) {
+	script := generateWrapperScript(&OCIImageInfo{ImageRef: "alpine"}, 10)
+
+	for _, pair := range []struct{ mkdir, mount string }{
+		{"mkdir -p /dev/pts", "mount -t devpts devpts /dev/pts"},
+		{"mkdir -p /dev/shm", "mount -t tmpfs tmpfs /dev/shm"},
+	} {
+		mkdirIdx := strings.Index(script, pair.mkdir)
+		mountIdx := strings.Index(script, pair.mount)
+		require.NotEqual(t, -1, mkdirIdx, "wrapper must contain %q", pair.mkdir)
+		require.NotEqual(t, -1, mountIdx, "wrapper must contain %q", pair.mount)
+		assert.Less(t, mkdirIdx, mountIdx, "%q must appear before %q", pair.mkdir, pair.mount)
+	}
+}
+
 // TestInjectTiniIntoDirWritesAgent verifies the guest agent is written to
 // /sbin/sc-agent with mode 0755 and the exact embedded bytes.
 func TestInjectTiniIntoDirWritesAgent(t *testing.T) {
@@ -128,7 +148,7 @@ func TestInjectIntoDir_PreserveInitWritesAgent(t *testing.T) {
 // TestGuestOverrideVersionPinned pins the guest override version so a wrapper
 // change that needs a rootfs rebuild cannot silently reuse a stale cache.
 func TestGuestOverrideVersionPinned(t *testing.T) {
-	assert.Equal(t, "3", guestOverrideVersion)
+	assert.Equal(t, "4", guestOverrideVersion)
 }
 
 // TestInjectAgentBinary_MkdirError verifies a failure to create /sbin surfaces

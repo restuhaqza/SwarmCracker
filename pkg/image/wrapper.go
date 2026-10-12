@@ -50,12 +50,20 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	lines = append(lines, "# Image: "+imageRef)
 	lines = append(lines, "")
 
-	// Mount essential filesystems
+	// Mount essential filesystems.
+	//
+	// devtmpfs does not create the /dev/pts and /dev/shm mountpoints, and the
+	// kernel already mounts devtmpfs at /dev during boot, which hides whatever
+	// directories the image baked in. Create them first: without /dev/pts the
+	// devpts mount fails, and the kernel then refuses to open /dev/ptmx (PTY
+	// allocation requires a devpts instance), which breaks `vm exec -t`.
 	lines = append(lines, "# Mount essential filesystems")
 	lines = append(lines, "mount -t proc proc /proc 2>/dev/null || true")
 	lines = append(lines, "mount -t sysfs sysfs /sys 2>/dev/null || true")
 	lines = append(lines, "mount -t devtmpfs devtmpfs /dev 2>/dev/null || true")
+	lines = append(lines, "mkdir -p /dev/pts 2>/dev/null || true")
 	lines = append(lines, "mount -t devpts devpts /dev/pts 2>/dev/null || true")
+	lines = append(lines, "mkdir -p /dev/shm 2>/dev/null || true")
 	lines = append(lines, "mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true")
 
 	// Create /tmp if needed (tmpfs)

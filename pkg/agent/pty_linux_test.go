@@ -40,6 +40,17 @@ func TestOpenPTY(t *testing.T) {
 	assert.Contains(t, out.String(), "hi")
 }
 
+// TestEnsureDevPTS verifies the already-mounted fast path. Any normal Linux
+// environment (host or container) has devpts at /dev/pts, so this must be a
+// no-op returning nil — if the DEVPTS_SUPER_MAGIC check were wrong, the code
+// would try to mount and fail without CAP_SYS_ADMIN, catching the regression.
+// The mount path itself needs an unmounted /dev/pts; the init wrapper covers it
+// inside the guest.
+func TestEnsureDevPTS(t *testing.T) {
+	require.NoError(t, ensureDevPTS())
+	assert.NoError(t, ensureDevPTS(), "ensureDevPTS must be idempotent")
+}
+
 func TestServeConnTTYExec(t *testing.T) {
 	conn, _ := newPipePair(t)
 	stdout, _, code := runExec(t, conn, Request{
