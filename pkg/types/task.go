@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
 
 // SecretRef represents a SwarmKit secret reference with data.
@@ -103,6 +104,27 @@ type Container struct {
 	// DiskSize is the requested minimum rootfs size (e.g. "10G"); empty means
 	// the default content-based sizing is used.
 	DiskSize string
+	// Healthcheck is the container healthcheck, or nil when none is declared.
+	Healthcheck *Healthcheck
+}
+
+// Healthcheck describes how a container's health is probed. It is the canonical
+// in-process form of SwarmKit's api.HealthConfig: the executor converts the
+// proto once and every downstream component consumes this type.
+type Healthcheck struct {
+	// Test is the probe in Docker's form: ["CMD-SHELL", cmd], ["CMD", args...],
+	// or ["NONE"] to disable. Empty means inherit.
+	Test []string
+	// Interval is the time to wait between probes.
+	Interval time.Duration
+	// Timeout bounds a single probe (dial + exec).
+	Timeout time.Duration
+	// Retries is the number of consecutive failures outside the start period
+	// before the container is considered unhealthy.
+	Retries int
+	// StartPeriod is the initialisation window during which failures do not
+	// count toward Retries.
+	StartPeriod time.Duration
 }
 
 // Mount specifies a volume mount.

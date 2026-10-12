@@ -603,6 +603,14 @@ type Controller struct {
 	started    bool
 	startTime  time.Time // tracks when Start was called, used for boot duration metric
 
+	// Health monitor state. healthMu is dedicated to this feature: the monitor
+	// must never take c.mu, which Start holds and which Shutdown/Terminate/
+	// Remove take, or teardown would stall behind a health wait.
+	healthCancel  context.CancelFunc
+	healthWG      sync.WaitGroup
+	healthMu      sync.Mutex
+	healthFailure string // last healthcheck failure, for Wait's message
+
 	// internalTask holds the prepared internal task with annotations
 	internalTask *types.Task
 
@@ -765,10 +773,30 @@ func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref
 	return nil
 }
 
-// Start starts the task.
+// Start starts the task and, when the task declares a healthcheck, blocks until
+// the check passes. SwarmKit's agent transitions a task to RUNNING the moment
+// Start returns, so holding Start until healthy is what makes
+// `--update-order start-first` wait for real health.
 func (c *Controller) Start(ctx context.Context) error {
 	c.logger.Info().Msg("Starting task")
 
+	if err := c.startVM(ctx); err != nil {
+		return err
+	}
+	// Health gating runs after startVM releases c.mu, so a concurrent
+	// Shutdown/Terminate/Remove is never stalled for the whole start period.
+	if err := c.awaitHealthy(ctx); err != nil {
+		return err
+	}
+	// The task is now healthy: watch it so a later regression restarts it.
+	// No-op when the task declares no healthcheck.
+	c.startHealthMonitor()
+	return nil
+}
+
+// startVM boots the VM. It is the original Start body: it holds c.mu for the
+// whole boot and returns as soon as the VM is up.
+func (c *Controller) startVM(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -933,7 +961,19 @@ func (c *Controller) Wait(ctx context.Context) error {
 		return err
 	}
 
-	if status.Err != nil {
+	// A recorded health failure is the cause of the exit: report it so
+	// SwarmKit sets task.Status.Err from this error and the CLI (Task 5) can
+	// surface the reason. The monitor records before it force-stops the VM, so
+	// by the time Wait returns the reason is already set.
+	if reason := c.healthcheckFailure(); reason != "" {
+		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "unhealthy")
+		if status != nil && status.Err != nil {
+			return fmt.Errorf("healthcheck failed: %s: %w", reason, status.Err)
+		}
+		return fmt.Errorf("healthcheck failed: %s", reason)
+	}
+
+	if status != nil && status.Err != nil {
 		// Task returned with non-zero exit code
 		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "exit_error")
 		return status.Err
@@ -945,6 +985,10 @@ func (c *Controller) Wait(ctx context.Context) error {
 // Shutdown gracefully shuts down the task.
 func (c *Controller) Shutdown(ctx context.Context) error {
 	c.logger.Info().Msg("Shutting down task gracefully")
+
+	// Stop watching for health regressions before stopping the VM: the monitor
+	// also drives a stop, and this call joins it so nothing races teardown.
+	c.stopHealthMonitor()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -990,6 +1034,9 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 func (c *Controller) Terminate(ctx context.Context) error {
 	c.logger.Info().Msg("Forcefully terminating task")
 
+	// Stop and join the health monitor before stopping the VM (idempotent).
+	c.stopHealthMonitor()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -1022,6 +1069,10 @@ func (c *Controller) Terminate(ctx context.Context) error {
 // Remove removes all task resources.
 func (c *Controller) Remove(ctx context.Context) error {
 	c.logger.Info().Msg("Removing task resources")
+
+	// Stop and join the health monitor before tearing resources down
+	// (idempotent).
+	c.stopHealthMonitor()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1207,6 +1258,11 @@ func (c *Controller) unmountRootfs(mountDir string) error {
 // Close closes ephemeral resources.
 func (c *Controller) Close() error {
 	c.logger.Debug().Msg("Closing controller")
+
+	// Stop and join the health monitor (idempotent; also done by the other
+	// teardown paths).
+	c.stopHealthMonitor()
+
 	return nil
 }
 
@@ -1280,6 +1336,10 @@ func (c *Controller) convertTask() *types.Task {
 	if dns := containerSpec.Container.DNSConfig; dns != nil {
 		container.DNS = dns.Nameservers
 	}
+
+	// Convert the container healthcheck, if any. This is the only path by
+	// which the executor learns about a declared healthcheck.
+	container.Healthcheck = healthcheckFromAPI(containerSpec.Container.Healthcheck)
 
 	// Convert mounts
 	mounts := make([]types.Mount, 0, len(containerSpec.Container.Mounts))

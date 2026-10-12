@@ -83,6 +83,116 @@ watch -n2 'swarmcracker vm status <vm-id>'
 swarmcracker cluster status
 ```
 
+### Container Healthchecks
+
+A service can declare a **container healthcheck**: a command that runs inside the
+microVM on a schedule. A task with a healthcheck is not considered running until
+the check passes, so a rolling update only moves on once the new task is actually
+serving.
+
+```bash
+swarmcracker service create --name api --image myapi:v2 --replicas 3 \
+    --health-cmd 'curl -fsS http://localhost:8080/healthz' \
+    --health-interval 10s \
+    --health-timeout 3s \
+    --health-retries 3 \
+    --health-start-period 20s
+```
+
+The command runs **inside the guest** through the guest agent over vsock — the
+same mechanism as [`vm exec`](/guides/guest-access/) — using the guest shell
+(`/bin/sh -c`), and the check passes when the command exits `0`. It runs **as
+root** in the guest, so treat the check like any other guest command. The check
+therefore needs a reachable guest agent; see
+[Guest Access → Limitations](/guides/guest-access/#limitations) for the images
+and modes where it is unavailable.
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--health-cmd` | — | Check command; enables the healthcheck |
+| `--health-interval` | `30s` | Time between checks |
+| `--health-timeout` | `30s` | Per-check timeout |
+| `--health-retries` | `3` | Consecutive failures before the task is unhealthy |
+| `--health-start-period` | `0` | Grace period during which failures do not count |
+
+The four tuning flags apply **only** when `--health-cmd` is set. Without it there
+is no healthcheck and a task starts exactly as before. An invalid value is
+rejected (`--health-retries 0`, `--health-interval 0s`), and passing any other
+`--health-*` flag without `--health-cmd` is an error — no flag is silently
+ignored.
+
+#### Health-gated rollouts
+
+The healthcheck **gates the task's start**: the executor holds the task in
+`STARTING` until a check passes, and only then reports it `RUNNING`. That is what
+makes `--update-order start-first` wait for real readiness:
+
+```bash
+swarmcracker service update api \
+    --image myapi:v3 \
+    --update-order start-first \
+    --update-failure-action rollback \
+    --health-cmd 'curl -fsS http://localhost:8080/healthz'
+```
+
+With `start-first`, SwarmKit does not stop the old task until the new one is up —
+and because a healthchecked task is not `RUNNING` until its check passes, the
+rollout does not proceed until the new task is healthy. If the check never
+passes, the retries are exhausted, the task fails, and
+`--update-failure-action rollback` rolls the service back.
+
+A task that becomes unhealthy **while running** is stopped, and the service's
+restart policy (`--restart-condition`) decides what happens next. Each probe
+(dial plus exec) is bounded by `--health-timeout`, and the health wait does not
+hold the executor's lock, so `service rm` and stop are never stalled behind it.
+
+#### Seeing health
+
+`service ps` and `task ls` show a `HEALTH` column, derived from the health-gated
+task state:
+
+```bash
+swarmcracker service ps api
+# ID            STATUS    HEALTH    NODE          IMAGE
+# 5f3a1b2c9d0e  RUNNING   RUNNING   abc123def456  myapi:v3
+# 9c8d7e6f1a2b  STARTING  STARTING  def456abc789  myapi:v3
+```
+
+| Value | Meaning |
+|-------|---------|
+| `STARTING` | The task is still being checked (not yet healthy) |
+| `RUNNING` | A check has passed |
+| `FAILED` | The task failed its checks |
+| `-` | No healthcheck (or the task has completed or stopped) |
+
+`task inspect` shows the declared healthcheck and, when a check failed, the
+reason the executor recorded:
+
+```bash
+swarmcracker task inspect --format table 5f3a1b2c
+# Healthcheck:
+#   Test: CMD-SHELL curl -fsS http://localhost:8080/healthz
+#   Interval: 10s
+#   Timeout: 3s
+#   Retries: 3
+#   Start Period: 20s
+# Error: healthcheck failed: /bin/sh -c curl -fsS http://localhost:8080/healthz: ...
+```
+
+The default `--format json` output carries the same information in the task's
+`Spec.Container.Healthcheck` and `Status.Err` fields.
+
+#### The API limitation
+
+SwarmKit's API has no health field: `api.ContainerStatus` carries only
+`ContainerID`, `PID` and `ExitCode`, and `api.TaskStatus` has none — unchanged in
+SwarmKit v2.1.2 and upstream `master`. SwarmCracker therefore **derives** the
+`HEALTH` column from the health-gated task state instead of reporting a live
+health value. One consequence: a `RUNNING` task that is currently failing checks
+keeps showing `RUNNING` until its retries are exhausted and it becomes `FAILED`.
+Reporting health directly would need a `health` field on `ContainerStatus`
+upstream.
+
 ---
 
 ## Monitoring
