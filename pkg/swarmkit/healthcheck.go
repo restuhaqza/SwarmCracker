@@ -40,6 +40,19 @@ func healthcheckProbeTimeout(h *types.Healthcheck) time.Duration {
 	return h.Timeout
 }
 
+// contextErr carries a context error out of the health gate while staying
+// classifiable by SwarmKit. Its agent decides whether an error is retryable with
+// github.com/pkg/errors.Cause, which unwraps only errors implementing
+// `Cause() error` — NOT the `Unwrap() error` that fmt.Errorf("%w") provides.
+// A plainly wrapped context error would therefore mark a shutdown during the
+// health gate as a task FAILURE instead of a retry. This type satisfies both
+// conventions, so errors.Is and pkg/errors.Cause both recover the sentinel.
+type contextErr struct{ err error }
+
+func (e contextErr) Error() string { return "healthcheck: " + e.err.Error() }
+func (e contextErr) Unwrap() error { return e.err } // for errors.Is / errors.As
+func (e contextErr) Cause() error  { return e.err } // for pkg/errors.Cause
+
 // healthcheckProbeInterval returns the delay between probes, falling back to the
 // default when the config leaves it unset or negative.
 func healthcheckProbeInterval(h *types.Healthcheck) time.Duration {
@@ -187,7 +200,7 @@ func (c *Controller) awaitHealthy(ctx context.Context) error {
 	attempts := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("healthcheck: %w", err)
+			return contextErr{err}
 		}
 
 		attempts++
@@ -197,7 +210,7 @@ func (c *Controller) awaitHealthy(ctx context.Context) error {
 		// verdict: SwarmKit retries on context.Canceled/DeadlineExceeded but
 		// fails the task on anything else.
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("healthcheck: %w", err)
+			return contextErr{err}
 		}
 
 		if probeErr != nil {
@@ -223,7 +236,7 @@ func (c *Controller) awaitHealthy(ctx context.Context) error {
 		// VerdictStarting: wait one interval, or until ctx is done.
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("healthcheck: %w", ctx.Err())
+			return contextErr{ctx.Err()}
 		case <-time.After(interval):
 		}
 	}

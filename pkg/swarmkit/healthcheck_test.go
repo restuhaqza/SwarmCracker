@@ -531,6 +531,15 @@ func TestController_Start_ContextCanceled(t *testing.T) {
 	case err := <-done:
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, context.Canceled), "shutdown must surface as a context error: %v", err)
+		// SwarmKit classifies retryability with pkg/errors.Cause, which unwraps
+		// only errors implementing `Cause() error` — NOT the Unwrap() that
+		// fmt.Errorf("%w") provides. A plainly wrapped context error would make
+		// a shutdown during the health gate a task FAILURE instead of a retry,
+		// so assert the contract that library actually relies on.
+		var causer interface{ Cause() error }
+		require.True(t, errors.As(err, &causer),
+			"error must implement Cause() for SwarmKit's retry classification: %v", err)
+		assert.Equal(t, context.Canceled, causer.Cause())
 	case <-time.After(3 * time.Second):
 		t.Fatal("Start hung after cancellation")
 	}
