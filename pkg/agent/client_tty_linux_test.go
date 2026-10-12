@@ -32,6 +32,28 @@ func TestClientExecTTYStdinForwarded(t *testing.T) {
 	assert.Contains(t, stdout.String(), "MARKER:hello")
 }
 
+// TestClientExecTTYConsumesClientWithoutStdin asserts that a TTY exec consumes
+// the client even when no stdin is forwarded: the guest ends the connection
+// after a TTY session, so a later request must fail fast.
+func TestClientExecTTYConsumesClientWithoutStdin(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort)
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	code, err := c.Exec(context.Background(), []string{"echo", "hi"}, ExecOptions{TTY: true})
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+
+	_, err = c.Exec(context.Background(), []string{"echo", "again"}, ExecOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "consumed")
+
+	err = c.CopyTo(context.Background(), "/guest/f", strings.NewReader("x"), 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "consumed")
+}
+
 // TestClientExecTTYStdinConsumesClient asserts the documented contract that a
 // TTY exec which forwarded raw stdin leaves the connection unsafe to reuse: a
 // later request fails fast instead of desyncing the protocol.

@@ -220,6 +220,27 @@ func TestClientExecNilWriters(t *testing.T) {
 	assert.Equal(t, 0, code)
 }
 
+// TestClientNonTTYExecKeepsConnectionUsable asserts that a non-TTY exec does
+// not end the session: the same client can run a second command.
+func TestClientNonTTYExecKeepsConnectionUsable(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort)
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	var first bytes.Buffer
+	code, err := c.Exec(context.Background(), []string{"echo", "one"}, ExecOptions{Stdout: &first})
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, "one\n", first.String())
+
+	var second bytes.Buffer
+	code, err = c.Exec(context.Background(), []string{"echo", "two"}, ExecOptions{Stdout: &second})
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, "two\n", second.String())
+}
+
 func TestClientExecNonTTYStdinRejected(t *testing.T) {
 	_, uds := startProxy(t, DefaultPort)
 	c, err := Dial(context.Background(), uds, DefaultPort)

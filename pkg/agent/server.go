@@ -10,9 +10,18 @@ import (
 	"sync"
 )
 
+// errEndConn is an internal signal that a request ended the framed session and
+// ServeConn must stop serving. It is not reported to the caller as an error.
+var errEndConn = errors.New("agent: request ended the connection")
+
 // ServeConn serves the guest-agent protocol over rw. Requests are handled one
-// at a time, in order, until the peer closes the connection or a protocol error
-// occurs. A clean disconnect returns nil.
+// at a time, in order, until the peer closes the connection, a protocol error
+// occurs, or a request ends the session. A clean disconnect returns nil.
+//
+// A TTY exec ends the session: the guest attaches the client's raw stdin to the
+// PTY, which shares the byte stream with framed requests, so the framed
+// protocol cannot continue afterwards. ServeConn returns after sending the exit
+// frame, leaving the caller to close rw.
 //
 // The caller is responsible for the connection lifetime; ServeConn does not
 // close rw.
@@ -30,6 +39,9 @@ func ServeConn(rw io.ReadWriteCloser) error {
 			return err
 		}
 		if err := s.dispatch(&req); err != nil {
+			if errors.Is(err, errEndConn) {
+				return nil
+			}
 			return err
 		}
 	}
@@ -62,7 +74,16 @@ func (s *server) dispatch(req *Request) error {
 	case "hello":
 		return s.handleHello(req)
 	case "exec":
-		return s.handleExec(req)
+		if err := s.handleExec(req); err != nil {
+			return err
+		}
+		if req.TTY {
+			// A TTY session shares the raw byte stream with framed requests,
+			// so the framed protocol cannot continue. handleExec has already
+			// sent the exit frame; end the connection.
+			return errEndConn
+		}
+		return nil
 	case "put":
 		return s.handlePut(req)
 	case "get":

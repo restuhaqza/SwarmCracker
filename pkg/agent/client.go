@@ -21,15 +21,16 @@ type Client struct {
 	conn net.Conn
 	mu   sync.Mutex // serialises frame writes
 
-	// consumed is set once a TTY exec with stdin has written raw bytes to the
-	// connection. Raw stdin shares the byte stream with framed requests, so
-	// such a session cannot be safely multiplexed with later requests; every
-	// subsequent operation fails fast instead of risking a protocol desync.
+	// consumed is set once a TTY exec is started. A TTY session ends the
+	// connection server-side (raw stdin shares the byte stream with framed
+	// requests, so the framed protocol cannot continue), so every subsequent
+	// operation fails fast instead of reading a closed connection or risking a
+	// protocol desync.
 	consumed bool
 }
 
-// errConsumed is returned when a Client is used after a TTY exec with stdin.
-var errConsumed = errors.New("client consumed by a TTY exec with stdin")
+// errConsumed is returned when a Client is used after a TTY exec.
+var errConsumed = errors.New("client consumed by a TTY exec")
 
 // ExecOptions controls a single Client.Exec call.
 type ExecOptions struct {
@@ -169,8 +170,12 @@ func (c *Client) pumpStdin(r io.Reader, done <-chan struct{}) {
 // opts.TTY false returns an error, because the protocol carries no stdin frame
 // for non-TTY commands. When opts.Stdin is set, the bytes are written raw to the
 // connection under the client's write mutex, and the pump stops when Exec
-// returns. Because raw stdin shares the stream with framed requests, such a
-// session leaves the client consumed: any later call fails with errConsumed.
+// returns.
+//
+// A TTY exec always consumes the client: the guest ends the session after it
+// (raw stdin shares the stream with framed requests), so the connection cannot
+// be reused. Any later Exec/CopyTo/CopyFrom fails with errConsumed. A non-TTY
+// exec leaves the client usable.
 func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int, error) {
 	if c.consumed {
 		return 0, errConsumed
@@ -188,11 +193,14 @@ func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int,
 	if err := c.write(req); err != nil {
 		return 0, fmt.Errorf("exec: send request: %w", err)
 	}
+	if opts.TTY {
+		// The guest ends the connection after a TTY exec, so the client is no
+		// longer safe to reuse regardless of whether stdin was forwarded.
+		c.consumed = true
+	}
 	if opts.Stdin != nil {
 		done := make(chan struct{})
 		defer close(done)
-		// The connection is no longer safe to reuse once raw stdin is in play.
-		c.consumed = true
 		go c.pumpStdin(opts.Stdin, done)
 	}
 

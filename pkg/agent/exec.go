@@ -6,8 +6,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"sync"
-	"time"
 )
 
 // fileChunkSize is the payload size used when streaming files and command
@@ -107,21 +105,16 @@ func (s *server) runTTY(req *Request) error {
 	// Forward the client's raw stdin to the pty while the command runs. Raw
 	// bytes are only consumed for TTY sessions; framed requests never carry
 	// stdin, so this cannot be multiplexed with later requests.
+	//
+	// The pump is deliberately not joined: it may be blocked in conn.Read when
+	// the command exits, and an in-flight read cannot be interrupted by a
+	// socket deadline on this connection. It exits on its own once the caller
+	// closes the connection (a TTY exec ends the session, so ServeConn returns
+	// and the accept loop closes the conn), which makes its Read fail. The
+	// deferred master.Close likewise makes a pending write fail. A pump that
+	// outlives runTTY by that brief window is expected and harmless.
 	if conn, ok := s.rw.(net.Conn); ok {
-		var stdinWG sync.WaitGroup
-		stdinWG.Add(1)
-		go func() {
-			defer stdinWG.Done()
-			copyStream(conn, master)
-		}()
-		// Once the command exits, unblock the reader with an immediate
-		// deadline so the goroutine cannot leak into the next request, then
-		// clear it before ServeConn reads again.
-		defer func() {
-			_ = conn.SetReadDeadline(time.Now())
-			stdinWG.Wait()
-			_ = conn.SetReadDeadline(time.Time{})
-		}()
+		go copyStream(conn, master)
 	}
 
 	streamFrames(s, master, "stdout")

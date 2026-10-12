@@ -117,7 +117,9 @@ func (a *vsockAddr) String() string { return fmt.Sprintf("%d:%d", a.cid, a.port)
 // vsockConn is a minimal net.Conn over a connected AF_VSOCK socket. Deadlines
 // are best-effort: they are applied as SO_RCVTIMEO/SO_SNDTIMEO, so an expired
 // deadline surfaces as a net.Error whose Timeout reports true rather than as a
-// hard context cancellation.
+// hard context cancellation. Linux evaluates those options when a wait begins,
+// so changing a deadline does not interrupt a read already blocked in
+// unix.Read; callers must not rely on SetReadDeadline to wake an in-flight read.
 type vsockConn struct {
 	fd     int
 	closed atomic.Bool
@@ -189,12 +191,15 @@ func (c *vsockConn) SetDeadline(t time.Time) error {
 	return c.SetWriteDeadline(t)
 }
 
-// SetReadDeadline sets the read deadline as a best-effort SO_RCVTIMEO.
+// SetReadDeadline sets the read deadline as a best-effort SO_RCVTIMEO. A change
+// only affects waits that begin after it and never interrupts a read already
+// blocked in the kernel, so it must not be used to wake an in-flight read.
 func (c *vsockConn) SetReadDeadline(t time.Time) error {
 	return setConnTimeout(c.fd, unix.SO_RCVTIMEO, t)
 }
 
-// SetWriteDeadline sets the write deadline as a best-effort SO_SNDTIMEO.
+// SetWriteDeadline sets the write deadline as a best-effort SO_SNDTIMEO. As with
+// SetReadDeadline, it cannot interrupt an in-flight write.
 func (c *vsockConn) SetWriteDeadline(t time.Time) error {
 	return setConnTimeout(c.fd, unix.SO_SNDTIMEO, t)
 }
