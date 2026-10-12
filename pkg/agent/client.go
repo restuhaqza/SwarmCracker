@@ -20,11 +20,23 @@ const maxHandshakeLine = 64
 type Client struct {
 	conn net.Conn
 	mu   sync.Mutex // serialises frame writes
+
+	// consumed is set once a TTY exec with stdin has written raw bytes to the
+	// connection. Raw stdin shares the byte stream with framed requests, so
+	// such a session cannot be safely multiplexed with later requests; every
+	// subsequent operation fails fast instead of risking a protocol desync.
+	consumed bool
 }
+
+// errConsumed is returned when a Client is used after a TTY exec with stdin.
+var errConsumed = errors.New("client consumed by a TTY exec with stdin")
 
 // ExecOptions controls a single Client.Exec call.
 type ExecOptions struct {
-	TTY            bool
+	TTY bool
+	// Stdin is forwarded to the guest as raw bytes and is only supported for
+	// TTY sessions: Exec returns an error when Stdin is non-nil and TTY is
+	// false, because the protocol has no stdin frame for non-TTY commands.
 	Stdin          io.Reader
 	Stdout, Stderr io.Writer
 	Env            []string
@@ -111,16 +123,63 @@ func (c *Client) write(v any) error {
 	return WriteFrame(c.conn, v)
 }
 
+// writeStdin writes raw stdin bytes to the connection. It takes the same mutex
+// as framed writes, so a stdin chunk can never interleave with a frame, and it
+// re-checks done after acquiring the mutex, so it never writes once Exec has
+// returned (even if it was waiting for the mutex when done was closed).
+func (c *Client) writeStdin(p []byte, done <-chan struct{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	select {
+	case <-done:
+		return errStdinDone
+	default:
+	}
+	_, err := c.conn.Write(p)
+	return err
+}
+
+// errStdinDone reports that the stdin pump stopped because Exec returned.
+var errStdinDone = errors.New("stdin pump stopped")
+
+// pumpStdin copies r to the guest's TTY as raw bytes until r is exhausted, a
+// write fails, or done is closed. Reading r may block past Exec's return (an
+// arbitrary reader cannot be interrupted), but after done is closed no further
+// bytes are written.
+func (c *Client) pumpStdin(r io.Reader, done <-chan struct{}) {
+	buf := make([]byte, fileChunkSize)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if werr := c.writeStdin(buf[:n], done); werr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 // Exec runs cmd in the guest and streams its output to the writers in opts. It
 // returns the guest process exit code. A guest-side failure (for example an
 // unknown binary) is reported as an error, not an exit code.
 //
-// When opts.Stdin is non-nil it is copied to the connection as raw bytes; that
-// is only meaningful for an interactive TTY session, and such a session must
-// not reuse the client for further requests.
+// Stdin forwarding is only supported for TTY sessions: opts.Stdin non-nil with
+// opts.TTY false returns an error, because the protocol carries no stdin frame
+// for non-TTY commands. When opts.Stdin is set, the bytes are written raw to the
+// connection under the client's write mutex, and the pump stops when Exec
+// returns. Because raw stdin shares the stream with framed requests, such a
+// session leaves the client consumed: any later call fails with errConsumed.
 func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int, error) {
+	if c.consumed {
+		return 0, errConsumed
+	}
 	if len(cmd) == 0 {
 		return 0, fmt.Errorf("exec: empty command")
+	}
+	if opts.Stdin != nil && !opts.TTY {
+		return 0, fmt.Errorf("stdin forwarding requires a TTY")
 	}
 	stop := c.watchContext(ctx)
 	defer stop()
@@ -130,7 +189,11 @@ func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int,
 		return 0, fmt.Errorf("exec: send request: %w", err)
 	}
 	if opts.Stdin != nil {
-		go func() { _, _ = io.Copy(c.conn, opts.Stdin) }()
+		done := make(chan struct{})
+		defer close(done)
+		// The connection is no longer safe to reuse once raw stdin is in play.
+		c.consumed = true
+		go c.pumpStdin(opts.Stdin, done)
 	}
 
 	for {
@@ -166,6 +229,9 @@ func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int,
 
 // CopyTo streams src to guestPath with the given mode (0644 when mode is 0).
 func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mode uint32) error {
+	if c.consumed {
+		return errConsumed
+	}
 	if guestPath == "" {
 		return fmt.Errorf("copy: empty guest path")
 	}
@@ -211,6 +277,9 @@ func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mo
 
 // CopyFrom streams guestPath from the guest into dst.
 func (c *Client) CopyFrom(ctx context.Context, guestPath string, dst io.Writer) error {
+	if c.consumed {
+		return errConsumed
+	}
 	if guestPath == "" {
 		return fmt.Errorf("copy: empty guest path")
 	}

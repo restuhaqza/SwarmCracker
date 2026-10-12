@@ -220,6 +220,26 @@ func TestClientExecNilWriters(t *testing.T) {
 	assert.Equal(t, 0, code)
 }
 
+func TestClientExecNonTTYStdinRejected(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort)
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	_, err = c.Exec(context.Background(), []string{"cat"},
+		ExecOptions{Stdin: strings.NewReader("data"), TTY: false})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stdin forwarding requires a TTY")
+
+	// Nothing was sent, so the connection is still usable: had Exec written the
+	// request or the stdin bytes, this next exec would read stale frames.
+	var stdout bytes.Buffer
+	code, err := c.Exec(context.Background(), []string{"echo", "ok"}, ExecOptions{Stdout: &stdout})
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, "ok\n", stdout.String())
+}
+
 func TestClientCopyToAndCopyFrom(t *testing.T) {
 	_, uds := startProxy(t, DefaultPort)
 	c, err := Dial(context.Background(), uds, DefaultPort)
