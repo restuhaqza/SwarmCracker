@@ -132,6 +132,9 @@ model.
 4. **Jailer mode is not supported yet.** VMs started with the Firecracker
    jailer do not get a vsock device, so `vm exec` and `vm cp` are unavailable
    for them.
+5. **Prebuilt golden images have no agent.** Golden images are built outside the
+   rootfs preparer, so they contain no `/sbin/sc-agent`; `vm exec` and `vm cp`
+   cannot work on a VM booted from a `--golden` image.
 
 ## Troubleshooting
 
