@@ -82,6 +82,7 @@ func TestPrepare_ExistingRootfsV2(t *testing.T) {
 	imageID := generateImageID("cached:v1")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	err := os.WriteFile(rootfsPath, []byte("cached rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 	require.NoError(t, err)
 
 	ip := NewImagePreparer(&PreparerConfig{
@@ -113,6 +114,7 @@ func TestPrepare_AnnotationsAlreadySetV2(t *testing.T) {
 	imageID := generateImageID("ann:v1")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir, InitSystem: "none"}).(*ImagePreparer)
 
@@ -1268,6 +1270,7 @@ func TestPrepare_WithCachedRootfsAndMounts(t *testing.T) {
 	imageID := generateImageID("cached:v1")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	os.WriteFile(rootfsPath, []byte("cached rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 
 	// Create bind mount source
 	bindSource := t.TempDir()

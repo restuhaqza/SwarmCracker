@@ -137,18 +137,19 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 	// Ensure the base (per-image) rootfs exists. It is shared by every task of
 	// this image and must never be modified per task.
 	//
-	// A cached rootfs whose init wrapper predates guest-override support would
-	// silently ignore --hostname/--dns, so rebuild it when those are requested.
-	needsGuestOverride := strings.TrimSpace(container.Hostname) != "" || len(container.DNS) > 0
-
+	// A cached rootfs is only reusable when it was built by the current guest
+	// image. The guest-version marker is bumped whenever that guest image
+	// changes (init wrapper, guest agent, per-task override handling), so an
+	// unconditional marker check is what invalidates every stale cache — even
+	// for a plain service that sets no --hostname/--dns.
 	baseReady := false
 	forceRebuild := false
 	if info, statErr := os.Stat(rootfsPath); statErr == nil {
 		cachedValid := ip.verifyCachedRootfs(rootfsPath) && rootfsLargeEnough(info.Size(), minSizeBytes)
-		if cachedValid && needsGuestOverride && !ip.guestOverrideReady(rootfsPath) {
+		if cachedValid && !ip.guestOverrideReady(rootfsPath) {
 			log.Info().
 				Str("path", rootfsPath).
-				Msg("Cached rootfs predates guest-override support; rebuilding to honor --hostname/--dns")
+				Msg("Cached rootfs predates the current guest image; rebuilding")
 			cachedValid = false
 			forceRebuild = true
 		}
@@ -848,14 +849,16 @@ func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 	return nil
 }
 
-// guestOverrideVersion is bumped whenever the guest init wrapper changes in a
-// way that affects how per-task overrides (--hostname/--dns) are applied. The
-// version is recorded next to the built rootfs; a cached rootfs built by an
-// older wrapper is rebuilt on demand so an override is never silently ignored.
+// guestOverrideVersion is bumped whenever the guest image changes in a way that
+// affects a booted rootfs — the init wrapper, the guest agent, or per-task
+// override handling. The version is recorded next to the built rootfs; any
+// cached rootfs built by an older guest image is rebuilt so the change is never
+// silently missing from a booted VM.
 const guestOverrideVersion = "3"
 
-// guestOverrideReady reports whether the rootfs was built by a wrapper that
-// understands per-task hostname/DNS overrides.
+// guestOverrideReady reports whether the rootfs was built by the current guest
+// image. A missing marker, or any value other than guestOverrideVersion, means
+// the cached rootfs is stale and must be rebuilt.
 func (ip *ImagePreparer) guestOverrideReady(rootfsPath string) bool {
 	data, err := os.ReadFile(rootfsPath + ".guest-version")
 	if err != nil {
