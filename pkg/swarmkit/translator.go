@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
@@ -107,6 +108,13 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 			"smt":          false,
 		},
 		"network-interfaces": t.buildNetworkInterfaces(task),
+		// The vsock device makes the guest agent reachable from the host. The
+		// uds_path is derived from the API socket in configureVM, which is the
+		// first place that knows the socket path.
+		"vsock": map[string]interface{}{
+			"guest_cid": agent.GuestCID,
+			"vsock_id":  "vsock0",
+		},
 	}
 
 	return config, nil

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -394,7 +395,44 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 		}
 	}
 
+	// Configure vsock if provided, so the guest agent is reachable from the
+	// host. Firecracker rejects /vsock once the VM has started, so this must
+	// run before the InstanceStart action in Start.
+	if vsock, ok := configMap["vsock"].(map[string]interface{}); ok {
+		vsock["uds_path"] = vsockUDSPath(socketPath)
+
+		vsockJSON, err := json.Marshal(vsock)
+		if err != nil {
+			return fmt.Errorf("failed to marshal vsock config: %w", err)
+		}
+		req, err := http.NewRequestWithContext(ctx, "PUT",
+			"http://localhost/vsock",
+			bytes.NewReader(vsockJSON),
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create vsock request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return fmt.Errorf("failed to set vsock: %w", err)
+		}
+		resp.Body.Close()
+
+		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("vsock returned status: %d", resp.StatusCode)
+		}
+	}
+
 	return nil
+}
+
+// vsockUDSPath derives the Firecracker vsock Unix-socket path from the API
+// socket path: <dir>/<id>.sock becomes <dir>/<id>.vsock. The host dials
+// <uds_path>_<port> to reach the guest agent (see pkg/agent).
+func vsockUDSPath(socketPath string) string {
+	return strings.TrimSuffix(socketPath, ".sock") + ".vsock"
 }
 
 // Stop stops a running VM with graceful shutdown.
