@@ -2,11 +2,13 @@ package swarmkit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -368,4 +370,210 @@ func TestConvertTask_Healthcheck(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, container.Healthcheck)
 	})
+}
+
+// TestHealthcheckProbeInterval asserts a healthcheck with no positive interval
+// falls back to the default. SwarmKit's "inherit" is a nil duration, which
+// converts to zero, and a zero interval would spin the CPU between probes.
+func TestHealthcheckProbeInterval(t *testing.T) {
+	assert.Equal(t, defaultHealthcheckInterval, healthcheckProbeInterval(nil))
+	assert.Equal(t, defaultHealthcheckInterval, healthcheckProbeInterval(&types.Healthcheck{}))
+	assert.Equal(t, defaultHealthcheckInterval, healthcheckProbeInterval(&types.Healthcheck{Interval: -time.Second}))
+	assert.Equal(t, 5*time.Second, healthcheckProbeInterval(&types.Healthcheck{Interval: 5 * time.Second}))
+}
+
+// newStartController builds a Controller whose Start path boots against mocks
+// and whose awaitHealthy probes the fake vsock muxer at vsockUDS. socketPath is
+// derived so that vsockUDSPath(socketPath) resolves back to vsockUDS.
+func newStartController(t *testing.T, vsockUDS string, hc *api.HealthConfig) *Controller {
+	t.Helper()
+	return &Controller{
+		task: &api.Task{
+			ID: "task-hc-start",
+			Spec: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{
+					Container: &api.ContainerSpec{Image: "nginx", Healthcheck: hc},
+				},
+			},
+		},
+		internalTask: &types.Task{
+			ID:   "task-hc-start",
+			Spec: types.TaskSpec{Runtime: &types.Container{Image: "nginx"}},
+		},
+		config:     &Config{SocketDir: t.TempDir(), Hostname: "test-host"},
+		trans:      &MockTaskTranslator{},
+		vmmMgr:     &MockVMMManager{},
+		networkMgr: &MockNetworkManager{},
+		socketPath: strings.TrimSuffix(vsockUDS, ".vsock") + ".sock",
+		prepared:   true,
+	}
+}
+
+// TestController_Start_NoHealthcheckDoesNotProbe asserts a task with no
+// healthcheck is completely unchanged: Start returns without waiting even when
+// the vsock path is missing, so it can never have dialled it.
+func TestController_Start_NoHealthcheckDoesNotProbe(t *testing.T) {
+	missing := filepath.Join(shortHealthcheckDir(t), "missing.vsock")
+	ctrl := newStartController(t, missing, nil)
+
+	start := time.Now()
+	require.NoError(t, ctrl.Start(context.Background()))
+	assert.Less(t, time.Since(start), time.Second, "Start must not wait when no healthcheck is declared")
+}
+
+// TestController_Start_DisabledHealthcheckDoesNotProbe asserts a ["NONE"] test
+// disables the gate entirely.
+func TestController_Start_DisabledHealthcheckDoesNotProbe(t *testing.T) {
+	missing := filepath.Join(shortHealthcheckDir(t), "missing.vsock")
+	ctrl := newStartController(t, missing, &api.HealthConfig{Test: []string{"NONE"}})
+
+	start := time.Now()
+	require.NoError(t, ctrl.Start(context.Background()))
+	assert.Less(t, time.Since(start), time.Second)
+}
+
+// TestController_Start_HealthyFirstProbe asserts Start returns nil once the
+// first probe passes.
+func TestController_Start_HealthyFirstProbe(t *testing.T) {
+	_, uds := startFakeVsockMuxer(t)
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "true"},
+		Interval: gogotypes.DurationProto(10 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(2 * time.Second),
+		Retries:  3,
+	}
+	ctrl := newStartController(t, uds, hc)
+
+	require.NoError(t, ctrl.Start(context.Background()))
+}
+
+// TestController_Start_UnhealthyAfterRetries asserts that after Retries
+// consecutive failures outside the start period, Start returns an error naming
+// the command and the last output, and that it is not a context error.
+func TestController_Start_UnhealthyAfterRetries(t *testing.T) {
+	_, uds := startFakeVsockMuxer(t)
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "echo boom 1>&2; exit 3"},
+		Interval: gogotypes.DurationProto(10 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(2 * time.Second),
+		Retries:  3,
+	}
+	ctrl := newStartController(t, uds, hc)
+
+	err := ctrl.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "healthcheck failed after 3 attempts")
+	assert.Contains(t, err.Error(), "boom")
+	assert.False(t, errors.Is(err, context.Canceled), "an unhealthy verdict must not masquerade as cancellation")
+	assert.False(t, errors.Is(err, context.DeadlineExceeded))
+}
+
+// TestController_Start_StartPeriodFailuresDoNotExhaustRetries asserts a failure
+// inside the start period does not count toward Retries: the check fails once
+// then passes, with Retries=1, and Start still succeeds.
+func TestController_Start_StartPeriodFailuresDoNotExhaustRetries(t *testing.T) {
+	_, uds := startFakeVsockMuxer(t)
+	countFile := filepath.Join(shortHealthcheckDir(t), "count")
+	cmd := fmt.Sprintf(`n=$(cat %s 2>/dev/null || echo 0); n=$((n+1)); echo $n > %s; [ "$n" -ge 2 ]`,
+		countFile, countFile)
+	hc := &api.HealthConfig{
+		Test:        []string{"CMD-SHELL", cmd},
+		Interval:    gogotypes.DurationProto(10 * time.Millisecond),
+		Timeout:     gogotypes.DurationProto(2 * time.Second),
+		Retries:     1,
+		StartPeriod: gogotypes.DurationProto(5 * time.Second),
+	}
+	ctrl := newStartController(t, uds, hc)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	require.NoError(t, ctrl.Start(ctx))
+}
+
+// TestController_Start_TransportErrorIsUnhealthy asserts a dial/exec failure is
+// counted as an unhealthy probe, not surfaced as a transport error.
+func TestController_Start_TransportErrorIsUnhealthy(t *testing.T) {
+	missing := filepath.Join(shortHealthcheckDir(t), "missing.vsock")
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "true"},
+		Interval: gogotypes.DurationProto(10 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(200 * time.Millisecond),
+		Retries:  1,
+	}
+	ctrl := newStartController(t, missing, hc)
+
+	err := ctrl.Start(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "healthcheck failed")
+	assert.False(t, errors.Is(err, context.Canceled))
+}
+
+// TestController_Start_ContextCanceled asserts a shutdown surfaces as a context
+// error (which SwarmKit retries) rather than hanging or reporting unhealthy.
+func TestController_Start_ContextCanceled(t *testing.T) {
+	_, uds := startFakeVsockMuxer(t)
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "exit 3"},
+		Interval: gogotypes.DurationProto(50 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(2 * time.Second),
+		Retries:  1000,
+	}
+	ctrl := newStartController(t, uds, hc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- ctrl.Start(ctx) }()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, context.Canceled), "shutdown must surface as a context error: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start hung after cancellation")
+	}
+}
+
+// TestController_Start_ReleasesMutexDuringHealthWait proves awaitHealthy does
+// not hold c.mu: while Start is blocked waiting on health, Terminate (which
+// takes c.mu) must still complete promptly.
+func TestController_Start_ReleasesMutexDuringHealthWait(t *testing.T) {
+	_, uds := startFakeVsockMuxer(t)
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "exit 3"},
+		Interval: gogotypes.DurationProto(200 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(2 * time.Second),
+		Retries:  100,
+	}
+	ctrl := newStartController(t, uds, hc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	startErr := make(chan error, 1)
+	go func() { startErr <- ctrl.Start(ctx) }()
+
+	// Let startVM finish and the first probe fail; the loop then sleeps for the
+	// interval, so Start is now waiting on health.
+	time.Sleep(100 * time.Millisecond)
+
+	termDone := make(chan error, 1)
+	go func() { termDone <- ctrl.Terminate(context.Background()) }()
+	select {
+	case err := <-termDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Terminate blocked while Start waited on health: c.mu was held during the wait")
+	}
+
+	cancel()
+	select {
+	case err := <-startErr:
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, context.Canceled))
+	case <-time.After(3 * time.Second):
+		t.Fatal("Start did not return after ctx cancellation")
+	}
 }

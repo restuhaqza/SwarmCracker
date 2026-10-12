@@ -765,10 +765,24 @@ func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref
 	return nil
 }
 
-// Start starts the task.
+// Start starts the task and, when the task declares a healthcheck, blocks until
+// the check passes. SwarmKit's agent transitions a task to RUNNING the moment
+// Start returns, so holding Start until healthy is what makes
+// `--update-order start-first` wait for real health.
 func (c *Controller) Start(ctx context.Context) error {
 	c.logger.Info().Msg("Starting task")
 
+	if err := c.startVM(ctx); err != nil {
+		return err
+	}
+	// Health gating runs after startVM releases c.mu, so a concurrent
+	// Shutdown/Terminate/Remove is never stalled for the whole start period.
+	return c.awaitHealthy(ctx)
+}
+
+// startVM boots the VM. It is the original Start body: it holds c.mu for the
+// whole boot and returns as soon as the VM is up.
+func (c *Controller) startVM(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

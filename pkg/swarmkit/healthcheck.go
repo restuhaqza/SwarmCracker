@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/healthcheck"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -23,6 +25,12 @@ const maxHealthcheckOutput = 4 << 10
 // CLI always supplies a default, but a spec built elsewhere may not.
 const defaultHealthcheckTimeout = 30 * time.Second
 
+// defaultHealthcheckInterval is used when a task declares a healthcheck without
+// a positive interval. Like the timeout, SwarmKit's "inherit" is a nil duration
+// that converts to zero, and a zero interval would spin the CPU probing back to
+// back.
+const defaultHealthcheckInterval = 30 * time.Second
+
 // healthcheckProbeTimeout returns the probe timeout, falling back to the default
 // when the config leaves it unset or negative.
 func healthcheckProbeTimeout(h *types.Healthcheck) time.Duration {
@@ -30,6 +38,15 @@ func healthcheckProbeTimeout(h *types.Healthcheck) time.Duration {
 		return defaultHealthcheckTimeout
 	}
 	return h.Timeout
+}
+
+// healthcheckProbeInterval returns the delay between probes, falling back to the
+// default when the config leaves it unset or negative.
+func healthcheckProbeInterval(h *types.Healthcheck) time.Duration {
+	if h == nil || h.Interval <= 0 {
+		return defaultHealthcheckInterval
+	}
+	return h.Interval
 }
 
 // healthcheckCommand converts a HealthConfig.Test into the guest argv to run.
@@ -138,4 +155,76 @@ func runHealthcheck(ctx context.Context, udsPath string, h *types.Healthcheck, c
 		return false, out.String(), fmt.Errorf("healthcheck: exec: %w", err)
 	}
 	return code == 0, out.String(), nil
+}
+
+// awaitHealthy blocks until the task's healthcheck passes, fails, or ctx is
+// done. It is a no-op for a task that declares no healthcheck (or disables it),
+// so tasks without one start exactly as before.
+//
+// It must NOT be called while holding c.mu: Shutdown, Terminate and Remove also
+// take c.mu, and holding it for the whole start period would stall a
+// `service rm` until the task became healthy.
+func (c *Controller) awaitHealthy(ctx context.Context) error {
+	container := c.task.Spec.GetContainer()
+	if container == nil || container.Healthcheck == nil {
+		return nil
+	}
+
+	h := healthcheckFromAPI(container.Healthcheck)
+	argv, enabled, err := healthcheckCommand(h.Test)
+	if err != nil {
+		return fmt.Errorf("healthcheck: %w", err)
+	}
+	if !enabled {
+		return nil
+	}
+
+	tracker := healthcheck.NewTracker(h, c.startTime)
+	interval := healthcheckProbeInterval(h)
+	udsPath := vsockUDSPath(c.socketPath)
+	cmd := strings.Join(argv, " ")
+
+	attempts := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("healthcheck: %w", err)
+		}
+
+		attempts++
+		healthy, output, probeErr := runHealthcheck(ctx, udsPath, h, argv)
+
+		// A shutdown must surface as a context error, never as an unhealthy
+		// verdict: SwarmKit retries on context.Canceled/DeadlineExceeded but
+		// fails the task on anything else.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("healthcheck: %w", err)
+		}
+
+		if probeErr != nil {
+			// A transport error counts as an unhealthy probe, not a fatal
+			// error: the guest agent may still be starting up.
+			c.logger.Warn().Err(probeErr).Int("attempt", attempts).Msg("Healthcheck probe failed")
+			healthy = false
+		}
+
+		switch tracker.Observe(time.Now(), healthy) {
+		case healthcheck.VerdictHealthy:
+			c.logger.Info().Int("attempts", attempts).Msg("Task is healthy")
+			return nil
+		case healthcheck.VerdictUnhealthy:
+			c.logger.Info().
+				Int("attempts", attempts).
+				Str("command", cmd).
+				Str("output", output).
+				Msg("Task failed its healthcheck")
+			return fmt.Errorf("healthcheck failed after %d attempts: %s: %s", attempts, cmd, output)
+		}
+
+		// VerdictStarting: wait one interval, or until ctx is done.
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("healthcheck: %w", ctx.Err())
+		case <-time.After(interval):
+		}
+	}
 }
