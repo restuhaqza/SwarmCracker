@@ -252,7 +252,11 @@ pkg/image/binaries/busybox-amd64:
 	curl -L -o $@ https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
 	chmod +x $@
 
-pkg/image/binaries/sc-agent-amd64:
+# The guest agent is compiled from these sources; declaring them makes rebuilds
+# track the code so the committed artifact cannot drift silently.
+AGENT_SOURCES := $(wildcard cmd/sc-agent/*.go) $(wildcard pkg/agent/*.go) go.mod go.sum
+
+pkg/image/binaries/sc-agent-amd64: $(AGENT_SOURCES)
 	@echo "Building sc-agent-static-amd64..."
 	@mkdir -p pkg/image/binaries
 	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w" -o $@ ./cmd/sc-agent

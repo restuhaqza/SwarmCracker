@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -17,6 +18,16 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// shortTempDir creates a temporary directory with a short path. Unix socket
+// paths are limited to ~104 bytes, which t.TempDir() can exceed on some hosts.
+func shortTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("/tmp", "scls-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
 
 // vsockRequestCapture records the requests a mock Firecracker API server
 // receives over its Unix socket.
@@ -63,7 +74,7 @@ func startVsockCaptureServer(t *testing.T, socketPath string) *vsockRequestCaptu
 // TestConfigureVM_ConfiguresVsockDevice verifies the CLI VM path PUTs /vsock
 // with a uds_path derived from the API socket.
 func TestConfigureVM_ConfiguresVsockDevice(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := shortTempDir(t)
 	socketPath := filepath.Join(tmpDir, "task-vsock.sock")
 	capture := startVsockCaptureServer(t, socketPath)
 
@@ -115,7 +126,7 @@ func TestConfigureVM_ConfiguresVsockDevice(t *testing.T) {
 // TestConfigureVM_VsockErrorIsWrapped verifies a failed vsock PUT is surfaced
 // with context rather than silently ignored.
 func TestConfigureVM_VsockErrorIsWrapped(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := shortTempDir(t)
 	socketPath := filepath.Join(tmpDir, "task-vsock.sock")
 
 	listener, err := net.Listen("unix", socketPath)
