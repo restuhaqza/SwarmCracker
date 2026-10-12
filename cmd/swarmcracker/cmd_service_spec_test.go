@@ -334,11 +334,10 @@ func TestBuildServiceSpec_ExecFlagsAreHonoredOrRejected(t *testing.T) {
 // applied to every unset value.
 func TestBuildServiceSpec_HealthcheckDefaults(t *testing.T) {
 	spec, err := buildServiceSpec(serviceCreateOptions{
-		name:      "web",
-		image:     "nginx",
-		replicas:  1,
-		healthSet: true,
-		healthCmd: "curl -fsS localhost:8080/healthz",
+		name:     "web",
+		image:    "nginx",
+		replicas: 1,
+		health:   healthOptions{cmd: "curl -fsS localhost:8080/healthz", cmdSet: true},
 	})
 	require.NoError(t, err)
 
@@ -352,27 +351,34 @@ func TestBuildServiceSpec_HealthcheckDefaults(t *testing.T) {
 }
 
 // TestBuildServiceSpec_HealthcheckExplicit asserts that explicit interval,
-// timeout, retries and start-period values are carried through verbatim.
+// timeout, retries and start-period values are carried through verbatim,
+// including a retries value of 5 (not silently coerced to the default 3).
 func TestBuildServiceSpec_HealthcheckExplicit(t *testing.T) {
 	spec, err := buildServiceSpec(serviceCreateOptions{
-		name:              "web",
-		image:             "nginx",
-		replicas:          1,
-		healthSet:         true,
-		healthCmd:         "true",
-		healthInterval:    "10s",
-		healthTimeout:     "5s",
-		healthRetries:     7,
-		healthStartPeriod: "1m",
+		name:     "web",
+		image:    "nginx",
+		replicas: 1,
+		health: healthOptions{
+			cmd:            "true",
+			cmdSet:         true,
+			interval:       "7s",
+			intervalSet:    true,
+			timeout:        "5s",
+			timeoutSet:     true,
+			retries:        5,
+			retriesSet:     true,
+			startPeriod:    "1m",
+			startPeriodSet: true,
+		},
 	})
 	require.NoError(t, err)
 
 	hc := spec.Task.GetContainer().Healthcheck
 	require.NotNil(t, hc)
 	assert.Equal(t, []string{"CMD-SHELL", "true"}, hc.Test)
-	assert.Equal(t, 10*time.Second, dur(t, hc.Interval))
+	assert.Equal(t, 7*time.Second, dur(t, hc.Interval))
 	assert.Equal(t, 5*time.Second, dur(t, hc.Timeout))
-	assert.Equal(t, int32(7), hc.Retries)
+	assert.Equal(t, int32(5), hc.Retries)
 	assert.Equal(t, time.Minute, dur(t, hc.StartPeriod))
 }
 
@@ -381,7 +387,7 @@ func TestBuildServiceSpec_HealthcheckExplicit(t *testing.T) {
 func TestBuildServiceSpec_NoHealthCmdLeavesHealthcheckNil(t *testing.T) {
 	for name, o := range map[string]serviceCreateOptions{
 		"all-unset": {},
-		"empty-cmd": {healthCmd: ""},
+		"empty-cmd": {health: healthOptions{cmd: ""}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			o.name = "x"
@@ -395,20 +401,25 @@ func TestBuildServiceSpec_NoHealthCmdLeavesHealthcheckNil(t *testing.T) {
 }
 
 // TestBuildServiceSpec_RejectsInvalidHealthcheck asserts each validation
-// failure names the offending flag, so nothing is silently ignored.
+// failure names the offending flag, so nothing is silently ignored. The
+// explicit-zero cases are the contract this task fixes: --health-retries 0 and
+// --health-interval/--health-timeout 0s must error, not fall back to a default.
 func TestBuildServiceSpec_RejectsInvalidHealthcheck(t *testing.T) {
 	cases := map[string]struct {
 		o       serviceCreateOptions
 		wantSub string
 	}{
-		"other-flags-without-cmd": {serviceCreateOptions{healthSet: true, healthInterval: "10s"}, "--health-cmd"},
-		"value-without-cmd":       {serviceCreateOptions{healthInterval: "10s"}, "--health-cmd"},
-		"interval-not-positive":   {serviceCreateOptions{healthSet: true, healthCmd: "true", healthInterval: "0s"}, "--health-interval"},
-		"timeout-not-positive":    {serviceCreateOptions{healthSet: true, healthCmd: "true", healthTimeout: "0s"}, "--health-timeout"},
-		"start-period-negative":   {serviceCreateOptions{healthSet: true, healthCmd: "true", healthStartPeriod: "-1s"}, "--health-start-period"},
-		"retries-below-one":       {serviceCreateOptions{healthSet: true, healthCmd: "true", healthRetries: -1}, "--health-retries"},
-		"retries-overflow":        {serviceCreateOptions{healthSet: true, healthCmd: "true", healthRetries: 1 << 31}, "--health-retries"},
-		"interval-unparseable":    {serviceCreateOptions{healthSet: true, healthCmd: "true", healthInterval: "nope"}, "--health-interval"},
+		"other-flags-without-cmd":   {serviceCreateOptions{health: healthOptions{interval: "10s", intervalSet: true}}, "--health-cmd"},
+		"retries-without-cmd":       {serviceCreateOptions{health: healthOptions{retries: 3, retriesSet: true}}, "--health-cmd"},
+		"value-without-cmd":         {serviceCreateOptions{health: healthOptions{interval: "10s"}}, "--health-cmd"},
+		"explicit-retries-zero":     {serviceCreateOptions{health: healthOptions{cmd: "true", cmdSet: true, retries: 0, retriesSet: true}}, "--health-retries"},
+		"explicit-retries-negative": {serviceCreateOptions{health: healthOptions{cmd: "true", cmdSet: true, retries: -1, retriesSet: true}}, "--health-retries"},
+		"explicit-interval-zero":    {serviceCreateOptions{health: healthOptions{cmd: "true", cmdSet: true, interval: "0s", intervalSet: true}}, "--health-interval"},
+		"explicit-timeout-zero":     {serviceCreateOptions{health: healthOptions{cmd: "true", cmdSet: true, timeout: "0s", timeoutSet: true}}, "--health-timeout"},
+		"explicit-start-neg":        {serviceCreateOptions{health: healthOptions{cmd: "true", cmdSet: true, startPeriod: "-1s", startPeriodSet: true}}, "--health-start-period"},
+		"retries-overflow":          {serviceCreateOptions{health: healthOptions{cmd: "true", cmdSet: true, retries: 1 << 31, retriesSet: true}}, "--health-retries"},
+		"interval-unparseable":      {serviceCreateOptions{health: healthOptions{cmd: "true", cmdSet: true, interval: "nope", intervalSet: true}}, "--health-interval"},
+		"interval-explicit-empty":   {serviceCreateOptions{health: healthOptions{cmd: "true", cmdSet: true, interval: "", intervalSet: true}}, "--health-interval"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -416,6 +427,59 @@ func TestBuildServiceSpec_RejectsInvalidHealthcheck(t *testing.T) {
 			o.name = "x"
 			o.image = "nginx"
 			_, err := buildServiceSpec(o)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantSub)
+		})
+	}
+}
+
+// TestBuildHealthcheck_DistinguishesExplicitFromUnset exercises the shared,
+// cobra-free helper directly: the per-flag set bits are what let an explicit
+// zero be rejected while an unset flag keeps its Docker default.
+func TestBuildHealthcheck_DistinguishesExplicitFromUnset(t *testing.T) {
+	t.Run("unset values use defaults", func(t *testing.T) {
+		hc, err := buildHealthcheck(healthOptions{cmd: "true", cmdSet: true})
+		require.NoError(t, err)
+		require.NotNil(t, hc)
+		assert.Equal(t, 30*time.Second, dur(t, hc.Interval))
+		assert.Equal(t, 30*time.Second, dur(t, hc.Timeout))
+		assert.Equal(t, int32(3), hc.Retries)
+		assert.Equal(t, time.Duration(0), dur(t, hc.StartPeriod))
+	})
+
+	t.Run("explicit values honored", func(t *testing.T) {
+		hc, err := buildHealthcheck(healthOptions{
+			cmd:            "true",
+			cmdSet:         true,
+			interval:       "7s",
+			intervalSet:    true,
+			retries:        5,
+			retriesSet:     true,
+			startPeriod:    "2s",
+			startPeriodSet: true,
+		})
+		require.NoError(t, err)
+		require.NotNil(t, hc)
+		assert.Equal(t, 7*time.Second, dur(t, hc.Interval))
+		assert.Equal(t, int32(5), hc.Retries)
+		assert.Equal(t, 2*time.Second, dur(t, hc.StartPeriod))
+	})
+
+	for name, tc := range map[string]struct {
+		h       healthOptions
+		wantSub string
+	}{
+		"explicit-retries-zero": {healthOptions{cmd: "true", cmdSet: true, retries: 0, retriesSet: true}, "--health-retries"},
+		"explicit-interval-zero": {healthOptions{cmd: "true", cmdSet: true, interval: "0s", intervalSet: true},
+			"--health-interval"},
+		"explicit-timeout-zero": {healthOptions{cmd: "true", cmdSet: true, timeout: "0s", timeoutSet: true},
+			"--health-timeout"},
+		"explicit-start-negative": {healthOptions{cmd: "true", cmdSet: true, startPeriod: "-1s", startPeriodSet: true},
+			"--health-start-period"},
+		"retries-without-cmd": {healthOptions{retries: 3, retriesSet: true}, "--health-cmd"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := buildHealthcheck(tc.h)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantSub)
 		})

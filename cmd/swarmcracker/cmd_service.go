@@ -251,12 +251,7 @@ With --golden, the service boots a prebuilt golden image (see
 				capAdd:             capAdd,
 				capDrop:            capDrop,
 				readOnly:           readOnly,
-				healthSet:          anyFlagChanged(cmd, "health-cmd", "health-interval", "health-timeout", "health-retries", "health-start-period"),
-				healthCmd:          healthCmd,
-				healthInterval:     healthInterval,
-				healthTimeout:      healthTimeout,
-				healthRetries:      healthRetries,
-				healthStartPeriod:  healthStartPeriod,
+				health:             healthOptionsFromFlags(cmd, healthCmd, healthInterval, healthTimeout, healthRetries, healthStartPeriod),
 				constraints:        constraints,
 				placementPrefs:     placementPrefs,
 				restartSet:         anyFlagChanged(cmd, "restart-condition", "restart-delay", "restart-max-attempts", "restart-window"),
@@ -438,12 +433,7 @@ placement, restart policy, update/rollback configuration and mode.`,
 				capDrop:     capDrop,
 				readOnly:    readOnly,
 
-				healthSet:         anyFlagChanged(cmd, "health-cmd", "health-interval", "health-timeout", "health-retries", "health-start-period"),
-				healthCmd:         healthCmd,
-				healthInterval:    healthInterval,
-				healthTimeout:     healthTimeout,
-				healthRetries:     healthRetries,
-				healthStartPeriod: healthStartPeriod,
+				health: healthOptionsFromFlags(cmd, healthCmd, healthInterval, healthTimeout, healthRetries, healthStartPeriod),
 
 				modeSet:        cmd.Flags().Changed("mode"),
 				mode:           mode,
@@ -682,6 +672,25 @@ func anyFlagChanged(cmd *cobra.Command, names ...string) bool {
 		}
 	}
 	return false
+}
+
+// healthOptionsFromFlags reads the five --health-* flags together with their
+// per-flag Changed bits. The bits let buildHealthcheck tell an explicit zero
+// (--health-retries 0, --health-interval 0s) from an unset flag, so an explicit
+// zero is rejected instead of silently replaced by a Docker default.
+func healthOptionsFromFlags(cmd *cobra.Command, command, interval, timeout string, retries int, startPeriod string) healthOptions {
+	return healthOptions{
+		cmd:            command,
+		cmdSet:         cmd.Flags().Changed("health-cmd"),
+		interval:       interval,
+		intervalSet:    cmd.Flags().Changed("health-interval"),
+		timeout:        timeout,
+		timeoutSet:     cmd.Flags().Changed("health-timeout"),
+		retries:        retries,
+		retriesSet:     cmd.Flags().Changed("health-retries"),
+		startPeriod:    startPeriod,
+		startPeriodSet: cmd.Flags().Changed("health-start-period"),
+	}
 }
 
 func parseLabels(labelStrs []string) map[string]string {
@@ -1331,12 +1340,12 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 	// Replace the container healthcheck. buildHealthcheck rejects any
 	// --health-* flag that arrives without --health-cmd, so an update never
 	// silently drops a flag.
-	if opts.healthSet {
+	if opts.health.set() {
 		c := spec.Task.GetContainer()
 		if c == nil {
 			return fmt.Errorf("service %q has no container spec", svc.Spec.Annotations.Name)
 		}
-		hc, err := buildHealthcheck(opts.healthCmd, true, opts.healthInterval, opts.healthTimeout, opts.healthStartPeriod, opts.healthRetries)
+		hc, err := buildHealthcheck(opts.health)
 		if err != nil {
 			return err
 		}

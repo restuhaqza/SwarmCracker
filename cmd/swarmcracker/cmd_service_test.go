@@ -3,8 +3,10 @@ package main
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestParseMemory tests the memory parsing function
@@ -381,4 +383,67 @@ func TestServiceCommandExamples(t *testing.T) {
 
 	psCmd := newServicePSCommand()
 	assert.NotEmpty(t, psCmd.Example)
+}
+
+// TestHealthFlagsExplicitZeroWiring verifies the cobra plumbing: the per-flag
+// Changed bits captured by healthOptionsFromFlags let an explicit zero be told
+// apart from an unset flag, so buildHealthcheck rejects it instead of silently
+// applying a Docker default. Exercised against the real create command's flags
+// without a cluster.
+func TestHealthFlagsExplicitZeroWiring(t *testing.T) {
+	build := func(t *testing.T, sets map[string]string) healthOptions {
+		t.Helper()
+		cmd := newServiceCreateCommand()
+		for name, val := range sets {
+			require.NoError(t, cmd.Flags().Set(name, val))
+		}
+		cmdStr, _ := cmd.Flags().GetString("health-cmd")
+		interval, _ := cmd.Flags().GetString("health-interval")
+		timeout, _ := cmd.Flags().GetString("health-timeout")
+		retries, _ := cmd.Flags().GetInt("health-retries")
+		startPeriod, _ := cmd.Flags().GetString("health-start-period")
+		return healthOptionsFromFlags(cmd, cmdStr, interval, timeout, retries, startPeriod)
+	}
+
+	t.Run("explicit retries zero is rejected", func(t *testing.T) {
+		_, err := buildHealthcheck(build(t, map[string]string{"health-cmd": "true", "health-retries": "0"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--health-retries")
+	})
+
+	t.Run("explicit interval zero is rejected", func(t *testing.T) {
+		_, err := buildHealthcheck(build(t, map[string]string{"health-cmd": "true", "health-interval": "0s"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--health-interval")
+	})
+
+	t.Run("explicit timeout zero is rejected", func(t *testing.T) {
+		_, err := buildHealthcheck(build(t, map[string]string{"health-cmd": "true", "health-timeout": "0s"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--health-timeout")
+	})
+
+	t.Run("explicit retries without cmd is rejected", func(t *testing.T) {
+		_, err := buildHealthcheck(build(t, map[string]string{"health-retries": "3"}))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--health-cmd")
+	})
+
+	t.Run("valid explicit values are honored", func(t *testing.T) {
+		hc, err := buildHealthcheck(build(t, map[string]string{"health-cmd": "true", "health-retries": "5", "health-interval": "7s"}))
+		require.NoError(t, err)
+		require.NotNil(t, hc)
+		assert.Equal(t, int32(5), hc.Retries)
+		assert.Equal(t, 7*time.Second, dur(t, hc.Interval))
+	})
+
+	t.Run("unset keeps Docker defaults", func(t *testing.T) {
+		hc, err := buildHealthcheck(build(t, map[string]string{"health-cmd": "true"}))
+		require.NoError(t, err)
+		require.NotNil(t, hc)
+		assert.Equal(t, int32(3), hc.Retries)
+		assert.Equal(t, 30*time.Second, dur(t, hc.Interval))
+		assert.Equal(t, 30*time.Second, dur(t, hc.Timeout))
+		assert.Equal(t, time.Duration(0), dur(t, hc.StartPeriod))
+	})
 }

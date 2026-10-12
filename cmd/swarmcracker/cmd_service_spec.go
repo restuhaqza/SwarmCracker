@@ -53,16 +53,10 @@ type serviceCreateOptions struct {
 	capDrop  []string
 	readOnly bool
 
-	// Container healthcheck flags (#39). healthSet records whether the user
-	// passed any --health-* flag, so a health flag without --health-cmd is
-	// rejected instead of silently ignored. The Docker defaults are applied by
-	// buildHealthcheck whenever a value is left unset.
-	healthSet         bool
-	healthCmd         string
-	healthInterval    string
-	healthTimeout     string
-	healthRetries     int
-	healthStartPeriod string
+	// Container healthcheck flags (#39). health carries the flag values plus a
+	// per-flag "explicitly set" bit (from cobra's Flags().Changed), so an
+	// explicit zero is rejected rather than silently replaced by a default.
+	health healthOptions
 
 	// Scheduling / lifecycle (all honored natively by SwarmKit).
 	mode            string
@@ -179,7 +173,7 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		spec.Task.GetContainer().DNSConfig = &api.ContainerSpec_DNSConfig{Nameservers: dns}
 	}
 
-	if hc, err := buildHealthcheck(o.healthCmd, o.healthSet, o.healthInterval, o.healthTimeout, o.healthStartPeriod, o.healthRetries); err != nil {
+	if hc, err := buildHealthcheck(o.health); err != nil {
 		return nil, err
 	} else if hc != nil {
 		spec.Task.GetContainer().Healthcheck = hc
@@ -282,14 +276,10 @@ type serviceUpdateOptions struct {
 	capDrop     []string
 	readOnly    bool
 
-	// Container healthcheck (#39). healthSet reports whether any --health-*
-	// flag was provided; a health flag without --health-cmd is rejected.
-	healthSet         bool
-	healthCmd         string
-	healthInterval    string
-	healthTimeout     string
-	healthRetries     int
-	healthStartPeriod string
+	// Container healthcheck (#39). health carries the flag values plus a
+	// per-flag "explicitly set" bit; a health flag without --health-cmd is
+	// rejected.
+	health healthOptions
 
 	rollbackAction bool
 
@@ -482,40 +472,83 @@ const (
 	maxHealthRetries      = 1<<31 - 1
 )
 
+// healthOptions carries the container-healthcheck flag values together with a
+// per-flag "explicitly set" bit. The bit comes from cobra's Flags().Changed in
+// the command layer; keeping it in a plain struct lets buildHealthcheck stay a
+// pure, cobra-free function. Without it, an explicit zero (--health-retries 0,
+// --health-interval 0s) would be indistinguishable from "unset" and silently
+// rewritten to a Docker default.
+type healthOptions struct {
+	cmd            string
+	cmdSet         bool
+	interval       string
+	intervalSet    bool
+	timeout        string
+	timeoutSet     bool
+	retries        int
+	retriesSet     bool
+	startPeriod    string
+	startPeriodSet bool
+}
+
+// set reports whether any --health-* flag was supplied explicitly, including
+// --health-cmd itself.
+func (h healthOptions) set() bool {
+	return h.cmdSet || h.intervalSet || h.timeoutSet || h.retriesSet || h.startPeriodSet
+}
+
 // buildHealthcheck maps the --health-* options onto an api.HealthConfig. It
 // returns (nil, nil) when no healthcheck is requested, so an absent --health-cmd
 // leaves the spec field nil and downstream behaviour is unchanged. Any other
-// --health-* value (or a set flag) without --health-cmd is an error, so a flag
-// is never accepted and ignored.
-func buildHealthcheck(cmd string, set bool, interval, timeout, startPeriod string, retries int) (*api.HealthConfig, error) {
-	cmd = strings.TrimSpace(cmd)
+// --health-* flag supplied without --health-cmd is an error, so a flag is never
+// accepted and ignored.
+func buildHealthcheck(h healthOptions) (*api.HealthConfig, error) {
+	// A non-empty value counts as set even if the caller forgot the bit, so a
+	// value is never silently ignored. An explicit zero still depends on the
+	// bit (Changed-based detection), which is the whole point of the split.
+	if !h.intervalSet {
+		h.intervalSet = strings.TrimSpace(h.interval) != ""
+	}
+	if !h.timeoutSet {
+		h.timeoutSet = strings.TrimSpace(h.timeout) != ""
+	}
+	if !h.startPeriodSet {
+		h.startPeriodSet = strings.TrimSpace(h.startPeriod) != ""
+	}
+	if !h.retriesSet {
+		h.retriesSet = h.retries != 0
+	}
+
+	cmd := strings.TrimSpace(h.cmd)
 	if cmd == "" {
-		if set || strings.TrimSpace(interval) != "" || strings.TrimSpace(timeout) != "" || strings.TrimSpace(startPeriod) != "" || retries != 0 {
+		if h.set() {
 			return nil, fmt.Errorf("--health-cmd is required when any other --health-* flag is set")
 		}
 		return nil, nil
 	}
 
-	iv, err := healthDuration("--health-interval", interval, defaultHealthInterval, true)
+	iv, err := healthDuration("--health-interval", h.interval, h.intervalSet, defaultHealthInterval, true)
 	if err != nil {
 		return nil, err
 	}
-	to, err := healthDuration("--health-timeout", timeout, defaultHealthTimeout, true)
+	to, err := healthDuration("--health-timeout", h.timeout, h.timeoutSet, defaultHealthTimeout, true)
 	if err != nil {
 		return nil, err
 	}
-	sp, err := healthDuration("--health-start-period", startPeriod, 0, false)
+	sp, err := healthDuration("--health-start-period", h.startPeriod, h.startPeriodSet, 0, false)
 	if err != nil {
 		return nil, err
 	}
-	if retries == 0 {
-		retries = defaultHealthRetries
-	}
-	if retries < 1 {
-		return nil, fmt.Errorf("--health-retries must be at least 1 (got %d)", retries)
-	}
-	if retries > maxHealthRetries {
-		return nil, fmt.Errorf("--health-retries must be at most %d (got %d)", maxHealthRetries, retries)
+
+	retries := defaultHealthRetries
+	if h.retriesSet {
+		if h.retries < 1 {
+			return nil, fmt.Errorf("--health-retries must be at least 1 (got %d)", h.retries)
+		}
+		if h.retries > maxHealthRetries {
+			return nil, fmt.Errorf("--health-retries must be at most %d (got %d)", maxHealthRetries, h.retries)
+		}
+		retries = h.retries
 	}
 
 	return &api.HealthConfig{
@@ -527,15 +560,15 @@ func buildHealthcheck(cmd string, set bool, interval, timeout, startPeriod strin
 	}, nil
 }
 
-// healthDuration parses an optional healthcheck duration flag. An empty value
-// falls back to def; a non-positive value is rejected when positive is set
-// (interval/timeout) and a negative value otherwise (start-period), naming the
-// flag so the error is actionable.
-func healthDuration(flag, raw string, def time.Duration, positive bool) (time.Duration, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
+// healthDuration parses a healthcheck duration flag. When the flag was not set
+// explicitly it falls back to def; an explicit value must parse and be positive
+// (interval/timeout) or non-negative (start-period), naming the flag so the
+// error is actionable.
+func healthDuration(flag, raw string, set bool, def time.Duration, positive bool) (time.Duration, error) {
+	if !set {
 		return def, nil
 	}
+	raw = strings.TrimSpace(raw)
 	d, err := time.ParseDuration(raw)
 	if err != nil {
 		return 0, fmt.Errorf("invalid %s %q", flag, raw)
