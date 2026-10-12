@@ -238,7 +238,7 @@ tag:
 
 # Download embedded static binaries for VM rootfs injection
 .PHONY: binaries
-binaries: pkg/image/binaries/tini-amd64 pkg/image/binaries/busybox-amd64
+binaries: pkg/image/binaries/tini-amd64 pkg/image/binaries/busybox-amd64 pkg/image/binaries/sc-agent-amd64
 
 pkg/image/binaries/tini-amd64:
 	@echo "Downloading tini-static-amd64..."
@@ -251,6 +251,11 @@ pkg/image/binaries/busybox-amd64:
 	@mkdir -p pkg/image/binaries
 	curl -L -o $@ https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
 	chmod +x $@
+
+pkg/image/binaries/sc-agent-amd64:
+	@echo "Building sc-agent-static-amd64..."
+	@mkdir -p pkg/image/binaries
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w" -o $@ ./cmd/sc-agent
 
 # Multi-node development lab (creates nested VMs on this KVM host)
 lab:

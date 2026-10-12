@@ -96,7 +96,14 @@ func (ii *InitInjector) InjectIntoDir(tmpDir string, info *OCIImageInfo) error {
 			log.Info().Msg("busybox-style init detected; injecting tini wrapper to run OCI command")
 			return ii.injectTiniIntoDir(tmpDir, info)
 		}
-		// Preserve existing init, just create /init symlink
+		// Preserve existing init, just create /init symlink.
+		//
+		// Limitation: this path does not install our OCI-aware wrapper, so the
+		// guest agent is injected but not auto-started here. The image's own
+		// init is expected to launch it (or the image is not one we wrap).
+		if err := injectAgentBinary(tmpDir); err != nil {
+			return fmt.Errorf("failed to inject guest agent: %w", err)
+		}
 		initLink := filepath.Join(tmpDir, "init")
 		_ = os.Remove(initLink)
 		return os.Symlink("/sbin/init", initLink)
@@ -121,6 +128,12 @@ func (ii *InitInjector) injectTiniIntoDir(tmpDir string, info *OCIImageInfo) err
 		return fmt.Errorf("failed to write tini binary: %w", err)
 	}
 
+	// Write the embedded guest agent to /sbin/sc-agent. The init wrapper
+	// generated below starts it automatically.
+	if err := injectAgentBinary(tmpDir); err != nil {
+		return fmt.Errorf("failed to inject guest agent: %w", err)
+	}
+
 	// Create /sbin/init wrapper using OCI config
 	if err := createGenericInitWrapper(tmpDir, info, ii.config.GracePeriodSec); err != nil {
 		return fmt.Errorf("failed to create generic init wrapper: %w", err)
@@ -132,6 +145,25 @@ func (ii *InitInjector) injectTiniIntoDir(tmpDir string, info *OCIImageInfo) err
 	_ = os.Remove(initLink)
 	if err := os.Symlink("/sbin/init", initLink); err != nil {
 		return fmt.Errorf("failed to create /init symlink: %w", err)
+	}
+
+	return nil
+}
+
+// injectAgentBinary writes the embedded guest control agent to /sbin/sc-agent
+// with mode 0755. It is injected for every bootable rootfs so the executor can
+// reach the VM over vsock; the init wrapper starts it (see generateWrapperScript).
+func injectAgentBinary(tmpDir string) error {
+	sbinDir := filepath.Join(tmpDir, "sbin")
+	if err := os.MkdirAll(sbinDir, 0755); err != nil {
+		return fmt.Errorf("failed to create sbin directory: %w", err)
+	}
+
+	agentPath := filepath.Join(sbinDir, "sc-agent")
+	// Remove any pre-existing file/symlink so we never write through it.
+	_ = os.Remove(agentPath)
+	if err := os.WriteFile(agentPath, agentBinary, 0755); err != nil {
+		return fmt.Errorf("failed to write guest agent binary: %w", err)
 	}
 
 	return nil

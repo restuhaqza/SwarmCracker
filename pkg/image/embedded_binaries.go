@@ -11,3 +11,6 @@ var tiniBinary []byte
 
 //go:embed binaries/busybox-amd64
 var busyboxBinary []byte
+
+//go:embed binaries/sc-agent-amd64
+var agentBinary []byte

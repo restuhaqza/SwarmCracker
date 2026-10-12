@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 )
 
 // createGenericInitWrapper creates an /sbin/init script that uses OCI config.
@@ -148,6 +150,18 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 		userCmd = "$USER_CMD "
 		lines = append(lines, "")
 	}
+
+	// Start the SwarmCracker guest control agent (vsock). This runs after the
+	// filesystems are mounted (so /dev and /tmp exist) and before the workload
+	// exec, so the host can reach the VM as soon as the agent is listening.
+	// The port must match pkg/agent.DefaultPort.
+	lines = append(lines, "# Start the SwarmCracker guest control agent (vsock).")
+	lines = append(lines, "if [ -x /sbin/sc-agent ]; then")
+	lines = append(lines, "    _sc_i=0")
+	lines = append(lines, "    while [ ! -e /dev/vsock ] && [ \"$_sc_i\" -lt 50 ]; do sleep 0.1; _sc_i=$((_sc_i + 1)); done")
+	lines = append(lines, fmt.Sprintf("    /sbin/sc-agent -port %d >/tmp/sc-agent.log 2>&1 &", agent.DefaultPort))
+	lines = append(lines, "fi")
+	lines = append(lines, "")
 
 	// Build the exec command with tini
 	cmd := FullCommand(info)

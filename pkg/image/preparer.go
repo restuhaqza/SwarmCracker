@@ -852,7 +852,7 @@ func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 // way that affects how per-task overrides (--hostname/--dns) are applied. The
 // version is recorded next to the built rootfs; a cached rootfs built by an
 // older wrapper is rebuilt on demand so an override is never silently ignored.
-const guestOverrideVersion = "2"
+const guestOverrideVersion = "3"
 
 // guestOverrideReady reports whether the rootfs was built by a wrapper that
 // understands per-task hostname/DNS overrides.
