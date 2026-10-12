@@ -172,6 +172,9 @@ owned by the daemon (`root`, mode `0600`), so run the command as root or with
 > tasks). VMs started in the foreground by `swarmcracker vm create` are not
 > attachable, because the CLI process that owns their console exits with the VM.
 
+To run a command or copy a file instead of driving the console, use
+[`swarmcracker vm exec` and `swarmcracker vm cp`](/guides/guest-access/).
+
 **Log levels:** Set via `--log-level` flag or `logging.level` in config.yaml.
 Available: `debug`, `info`, `warn`, `error`.
 
@@ -689,6 +692,8 @@ swarmcracker vm list                    # List VMs (CLI-created + service tasks)
 swarmcracker vm status <vm-id>          # VM details (service task IDs work too)
 swarmcracker vm logs -f <vm-id>         # Follow VM logs (CLI-created VMs and service tasks)
 swarmcracker vm attach <vm-id>          # Attach to the VM serial console
+swarmcracker vm exec <vm-id> -- <cmd>   # Run a command in the guest (see Guest Access guide)
+swarmcracker vm cp <file> <vm-id>:<dst> # Copy a file in/out of the guest
 swarmcracker vm stop <vm-id>            # Stop a CLI-created VM
 swarmcracker cluster status             # Cluster overview (nodes/services/tasks)
 swarmcracker service scale <service> 0  # Stop a service's tasks (scale to zero)

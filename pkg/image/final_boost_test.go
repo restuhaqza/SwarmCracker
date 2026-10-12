@@ -129,6 +129,7 @@ func TestPrepare_NilAnnotationsInitialization(t *testing.T) {
 	imageID := generateImageID("nil-ann:v1")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 
 	ip := NewImagePreparer(&PreparerConfig{
 		RootfsDir:  rootfsDir,

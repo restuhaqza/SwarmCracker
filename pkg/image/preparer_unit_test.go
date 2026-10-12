@@ -399,6 +399,7 @@ func TestImagePreparer_CacheBehavior_Unit(t *testing.T) {
 	imageID := "nginx-latest"
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	err := os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 	require.NoError(t, err)
 
 	task := &types.Task{

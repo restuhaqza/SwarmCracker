@@ -55,6 +55,7 @@ func TestImagePreparer_Prepare_WithExistingRootfs(t *testing.T) {
 	imageID := generateImageID("nginx:latest")
 	rootfsPath := filepath.Join(tmpDir, imageID+".ext4")
 	err := os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 	require.NoError(t, err)
 
 	task := &types.Task{
@@ -318,6 +319,7 @@ func TestImagePreparer_Prepare_ConcurrentSameImage(t *testing.T) {
 	imageID := generateImageID("nginx:latest")
 	rootfsPath := filepath.Join(tmpDir, imageID+".ext4")
 	err := os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 	require.NoError(t, err)
 
 	// Try to prepare same image concurrently
@@ -357,6 +359,7 @@ func TestImagePreparer_Prepare_VerifyRootfsAnnotation(t *testing.T) {
 	imageID := generateImageID("redis:alpine")
 	rootfsPath := filepath.Join(tmpDir, imageID+".ext4")
 	err := os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 	require.NoError(t, err)
 
 	task := &types.Task{

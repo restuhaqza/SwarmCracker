@@ -19,6 +19,7 @@ func TestPrepare_SecretsForcePrivateRootfs(t *testing.T) {
 	imageID := generateImageID("secrets-private:v1")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	require.NoError(t, os.WriteFile(rootfsPath, []byte("rootfs"), 0644))
+	markCachedRootfsCurrent(t, rootfsPath)
 
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
@@ -41,6 +42,7 @@ func TestPrepare_NoSecretsUsesSharedCache(t *testing.T) {
 	imageID := generateImageID("plain:v1")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	require.NoError(t, os.WriteFile(rootfsPath, []byte("rootfs"), 0644))
+	markCachedRootfsCurrent(t, rootfsPath)
 
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
