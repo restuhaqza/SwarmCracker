@@ -1281,6 +1281,10 @@ func (c *Controller) convertTask() *types.Task {
 		container.DNS = dns.Nameservers
 	}
 
+	// Convert the container healthcheck, if any. This is the only path by
+	// which the executor learns about a declared healthcheck.
+	container.Healthcheck = healthcheckFromAPI(containerSpec.Container.Healthcheck)
+
 	// Convert mounts
 	mounts := make([]types.Mount, 0, len(containerSpec.Container.Mounts))
 	for _, m := range containerSpec.Container.Mounts {
