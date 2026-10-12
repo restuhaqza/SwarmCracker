@@ -46,9 +46,14 @@ func (c *Controller) startHealthMonitor() {
 	c.healthWG.Add(1)
 	c.healthMu.Unlock()
 
-	// The task was already healthy when Start returned, so the monitor's clock
-	// starts now.
-	start := time.Now()
+	// The start-period clock is a property of container startup, so the monitor
+	// shares the gate's origin (the VM boot) rather than restarting it here.
+	// Otherwise a task that spent 30s becoming healthy would get its whole start
+	// period granted a second time, delaying a genuine unhealthy restart.
+	start := c.startTime
+	if start.IsZero() {
+		start = time.Now()
+	}
 	interval := healthcheckProbeInterval(h)
 	udsPath := vsockUDSPath(c.socketPath)
 	cmd := strings.Join(argv, " ")
