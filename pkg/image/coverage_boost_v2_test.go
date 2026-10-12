@@ -928,6 +928,7 @@ func TestPrepare_WithInitInjection(t *testing.T) {
 	imageID := generateImageID("alpine:latest")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	err := os.WriteFile(rootfsPath, []byte("fake ext4 rootfs content"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 	require.NoError(t, err)
 
 	ip := NewImagePreparer(&PreparerConfig{
@@ -966,6 +967,7 @@ func TestPrepare_WithMultipleMountsAndSecrets(t *testing.T) {
 	imageID := generateImageID("nginx:latest")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	err := os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 	require.NoError(t, err)
 
 	// Create source directories for mounts
@@ -1625,6 +1627,7 @@ func TestPrepare_AnnotationsInitialization(t *testing.T) {
 	imageID := generateImageID("test:latest")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 
 	ip := NewImagePreparer(&PreparerConfig{
 		RootfsDir:  rootfsDir,
@@ -1656,6 +1659,7 @@ func TestPrepare_ExistingRootfsPath(t *testing.T) {
 	imageID := generateImageID("existing:v1")
 	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 	os.WriteFile(rootfsPath, []byte("existing rootfs"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 
 	ip := NewImagePreparer(&PreparerConfig{
 		RootfsDir:       rootfsDir,
@@ -2217,6 +2221,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 				imageID := generateImageID("existing:v1")
 				rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 				os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+				markCachedRootfsCurrent(t, rootfsPath)
 				return rootfsPath
 			},
 			task: &types.Task{
@@ -2234,6 +2239,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 				imageID := generateImageID("mounted:v1")
 				rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 				os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+				markCachedRootfsCurrent(t, rootfsPath)
 				return rootfsPath
 			},
 			task: &types.Task{
@@ -2259,6 +2265,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 				imageID := generateImageID("secrets:v1")
 				rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 				os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+				markCachedRootfsCurrent(t, rootfsPath)
 				return rootfsPath
 			},
 			task: &types.Task{
@@ -2282,6 +2289,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 				imageID := generateImageID("nil-ann:v1")
 				rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 				os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+				markCachedRootfsCurrent(t, rootfsPath)
 				return rootfsPath
 			},
 			task: &types.Task{
@@ -2299,6 +2307,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 				imageID := generateImageID("init:test")
 				rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 				os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+				markCachedRootfsCurrent(t, rootfsPath)
 				return rootfsPath
 			},
 			task: &types.Task{
@@ -2348,6 +2357,7 @@ func TestPrepare_WithDifferentInitSystems(t *testing.T) {
 			imageID := generateImageID("init-test:v1")
 			rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
 			os.WriteFile(rootfsPath, []byte("rootfs"), 0644)
+			markCachedRootfsCurrent(t, rootfsPath)
 
 			ip := NewImagePreparer(&PreparerConfig{
 				RootfsDir:       rootfsDir,

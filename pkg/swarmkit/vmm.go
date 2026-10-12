@@ -542,7 +542,17 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 		v.logger.Warn().Msg("No network interfaces in config")
 	}
 
-	// 5. Start the VM
+	// 5. Configure the vsock device so the guest agent is reachable from the
+	// host. Firecracker rejects /vsock once the VM has started, so this must
+	// precede the InstanceStart action.
+	if vsock, ok := cfg["vsock"].(map[string]interface{}); ok {
+		vsock["uds_path"] = vsockUDSPath(socketPath)
+		if err := v.putAPI(ctx, socketPath, "/vsock", vsock); err != nil {
+			return fmt.Errorf("failed to set vsock: %w", err)
+		}
+	}
+
+	// 6. Start the VM
 	action := Action{
 		ActionType: "InstanceStart",
 	}
@@ -1032,6 +1042,15 @@ type Action struct {
 	ActionType string `json:"action_type"`
 	// TimeoutMS is the Firecracker action timeout in milliseconds.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
+}
+
+// vsockUDSPath derives the Firecracker vsock Unix-socket path from the API
+// socket path: <dir>/<id>.sock becomes <dir>/<id>.vsock. The host reaches the
+// guest agent by dialing that muxer socket itself and sending "CONNECT <port>"
+// (see pkg/agent.Dial); "<uds_path>_<port>" is only used for guest-initiated
+// connections.
+func vsockUDSPath(socketPath string) string {
+	return strings.TrimSuffix(socketPath, ".sock") + ".vsock"
 }
 
 // createFirecrackerHTTPClient creates an HTTP client that communicates via Unix socket

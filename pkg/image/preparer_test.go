@@ -127,6 +127,7 @@ func TestImagePreparer_Prepare_Cached(t *testing.T) {
 	err := os.MkdirAll(rootfsDir, 0755)
 	require.NoError(t, err)
 	err = os.WriteFile(rootfsPath, []byte("existing image"), 0644)
+	markCachedRootfsCurrent(t, rootfsPath)
 	require.NoError(t, err)
 
 	task := &types.Task{

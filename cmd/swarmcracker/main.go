@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -75,7 +76,12 @@ func main() {
 	rootCmd.AddCommand(newVersionCommand())
 
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		// A guest exit code is not an error to report: `vm exec` already
+		// streamed the command's output, so only the status is propagated.
+		var ec *exitCodeError
+		if !errors.As(err, &ec) {
+			fmt.Fprintln(os.Stderr, err)
+		}
+		os.Exit(cliExitCode(err))
 	}
 }

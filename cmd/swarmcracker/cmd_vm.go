@@ -34,6 +34,8 @@ These commands provide VM-level operations like creating, listing, stopping, and
 	cmd.AddCommand(newVMLogsCommand())
 	cmd.AddCommand(newVMSnapshotCommand())
 	cmd.AddCommand(newVMAttachCommand())
+	cmd.AddCommand(newVMExecCommand())
+	cmd.AddCommand(newVMCpCommand())
 	// status is also available at the top level (`swarmcracker status`); expose
 	// it under `vm` too for consistency.
 	cmd.AddCommand(newStatusCommand())

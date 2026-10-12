@@ -11,6 +11,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/lifecycle"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
@@ -166,6 +167,13 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 		},
 		NetworkInterfaces: []NetworkInterface{},
 		Drives:            []Drive{},
+		// The vsock device makes the guest agent reachable from the host. The
+		// uds_path is derived from the API socket in the lifecycle manager,
+		// which is the first place that knows the socket path.
+		Vsock: &VsockConfig{
+			VsockID:  "vsock0",
+			GuestCID: agent.GuestCID,
+		},
 	}
 
 	// Apply resource limits from task spec

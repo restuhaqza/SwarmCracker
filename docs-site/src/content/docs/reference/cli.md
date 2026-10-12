@@ -234,6 +234,8 @@ Direct Firecracker microVM management.
 | `create [image]` | Create a microVM from an OCI image or a golden image |
 | `list` (alias `ls`) | List microVMs (CLI-created and daemon/service-managed) |
 | `attach <vm>` | Attach to a running microVM's serial console |
+| `exec <vm> -- <cmd...>` | Run a command inside a running microVM |
+| `cp <src> <vm>:<dst>` | Copy a file between the host and a running microVM |
 | `logs <vm-id>` | View VM logs |
 | `stop <vm-id>` | Stop a microVM |
 | `snapshot` | Manage VM snapshots (`create`, `restore`, `list`, `delete`, `cleanup`). `restore` boots a VM from a snapshot and registers it (manage it with `vm stop` / `vm list`) |
@@ -252,7 +254,9 @@ Direct Firecracker microVM management.
 | `--golden` | — | — | Boot a prebuilt golden image (`name` or `name@version`) instead of an OCI image |
 | `--golden-dir` | — | `<rootfs-dir>/golden` | Directory containing golden image artifacts |
 
-`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**.
+`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**. `vm exec` flags: `--socket-dir` (default `/var/run/firecracker`), `-i`/`--interactive`, `-t`/`--tty`, `-e`/`--env` (`K=V`, repeatable), `-w`/`--workdir`; everything after `--` is the guest command, its exit code becomes the CLI's exit code, and `-i` without `-t` only emits a warning. `vm cp` flags: `--socket-dir`, `--mode` (host→guest destination mode, default `0644`); exactly one argument carries the `<vm>:` prefix and only regular files are supported.
+
+`vm exec` and `vm cp` reach a guest agent over Firecracker's vsock device (no extra host port is opened). The channel is a trusted control path — a host-local process can run commands in the guest **as root** — so access is limited to the daemon-owned socket directory, like `vm attach`. See [Guest Access](/guides/guest-access/) for usage, the guest agent, and limitations.
 
 `vm list` and `vm status` also cover microVMs started by the daemon for services (discovered from `<socket-dir>/*.sock`; stale sockets are filtered with a liveness probe). For those VMs the guest IP comes from a `<task-id>.net.json` file the daemon writes next to the socket, and is shown by `vm status` and `vm list --format json` (the table has no IP column). `vm stop` deliberately refuses to kill a service VM — use `swarmcracker service scale <service> 0` or `swarmcracker service rm <service>` so SwarmKit updates the desired state instead of recreating the task.
 
