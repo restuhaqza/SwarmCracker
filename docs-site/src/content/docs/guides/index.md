@@ -13,6 +13,7 @@ Practical guides for using SwarmCracker.
 | [Configuration](/guides/configuration/) | Config file structure, options |
 | [SwarmKit](swarmkit.md) | Service deployment, scaling |
 | [Networking](networking.md) | TAP, bridge, VXLAN |
+| [Guest Access](/guides/guest-access/) | `vm exec`, `vm cp` over vsock |
 | [Security](/guides/security/) | Jailer, cgroups, isolation |
 | [Snapshots](/guides/snapshots/) | VM state persistence |
 | [Advanced](advanced.md) | Rolling updates, multi-arch |
