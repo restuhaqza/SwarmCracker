@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
 )
 
 // TestParseMemory tests the memory parsing function
@@ -446,4 +451,76 @@ func TestHealthFlagsExplicitZeroWiring(t *testing.T) {
 		assert.Equal(t, 30*time.Second, dur(t, hc.Timeout))
 		assert.Equal(t, time.Duration(0), dur(t, hc.StartPeriod))
 	})
+}
+
+// fakeServiceTaskClient embeds the generated ControlClient interface and
+// overrides only the RPCs `service ps` uses.
+type fakeServiceTaskClient struct {
+	api.ControlClient
+	services []*api.Service
+	tasks    []*api.Task
+}
+
+func (f *fakeServiceTaskClient) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
+	return &api.ListServicesResponse{Services: f.services}, nil
+}
+
+func (f *fakeServiceTaskClient) ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error) {
+	return &api.ListTasksResponse{Tasks: f.tasks}, nil
+}
+
+// TestListServiceTasksHealthColumn verifies `service ps` renders a HEALTH
+// column with the derived values, keeps the other columns, and honours
+// truncation.
+func TestListServiceTasksHealthColumn(t *testing.T) {
+	client := &fakeServiceTaskClient{
+		services: []*api.Service{{ID: "svc-1", Spec: api.ServiceSpec{Annotations: api.Annotations{Name: "web"}}}},
+		tasks: []*api.Task{
+			healthcheckedTask("task-healthy-000000000000", api.TaskStateRunning),
+			healthcheckedTask("task-starting-00000000000", api.TaskStateStarting),
+			healthcheckedTask("task-failed-0000000000000", api.TaskStateFailed),
+			plainTask("task-plain-000000000000000", api.TaskStateRunning),
+		},
+	}
+	// The tasks above belong to svc-1 so they survive the service filter.
+	for _, task := range client.tasks {
+		task.ServiceID = "svc-1"
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, listServiceTasksWithClient(context.Background(), client, &buf, "web", "table", "", false, false))
+
+	out := buf.String()
+	assert.Contains(t, out, "ID")
+	assert.Contains(t, out, "STATUS")
+	assert.Contains(t, out, "HEALTH")
+	assert.Contains(t, out, "NODE")
+	assert.Contains(t, out, "IMAGE")
+
+	got := healthColumn(t, out, "ID STATUS HEALTH NODE IMAGE")
+	assert.Equal(t, []string{"RUNNING", "STARTING", "FAILED", "-"}, got)
+}
+
+// TestListServiceTasksJSONHealth verifies the `service ps --format json` output
+// carries the derived health for each task.
+func TestListServiceTasksJSONHealth(t *testing.T) {
+	client := &fakeServiceTaskClient{
+		services: []*api.Service{{ID: "svc-1", Spec: api.ServiceSpec{Annotations: api.Annotations{Name: "web"}}}},
+		tasks: []*api.Task{
+			healthcheckedTask("task-healthy-000000000000", api.TaskStateRunning),
+			plainTask("task-plain-000000000000000", api.TaskStateRunning),
+		},
+	}
+	for _, task := range client.tasks {
+		task.ServiceID = "svc-1"
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, listServiceTasksWithClient(context.Background(), client, &buf, "web", "json", "", false, false))
+
+	var got []map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	require.Len(t, got, 2)
+	assert.Equal(t, "RUNNING", got[0]["health"])
+	assert.Equal(t, "-", got[1]["health"])
 }

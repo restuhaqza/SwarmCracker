@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -1114,6 +1115,13 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	}
 	defer conn.Close()
 
+	return listServiceTasksWithClient(ctx, client, os.Stdout, serviceID, format, filter, quiet, noTrunc)
+}
+
+// listServiceTasksWithClient is the body of `service ps` with the control
+// client and output writer injected, so the table/JSON rendering is
+// unit-testable without a cluster.
+func listServiceTasksWithClient(ctx context.Context, client api.ControlClient, w io.Writer, serviceID, format, filter string, quiet, noTrunc bool) error {
 	// Resolve the reference (full ID, unique ID prefix, or name) to a full ID.
 	actualServiceID, err := resolveServiceRef(ctx, client, serviceID)
 	if err != nil {
@@ -1135,7 +1143,7 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	}
 
 	if len(tasks) == 0 {
-		fmt.Printf("No tasks found for service %s\n", serviceID)
+		fmt.Fprintf(w, "No tasks found for service %s\n", serviceID)
 		return nil
 	}
 
@@ -1146,21 +1154,19 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 
 	// Output based on format
 	if format == "json" {
-		data, _ := json.MarshalIndent(tasks, "", "  ")
-		fmt.Println(string(data))
-		return nil
+		return writeTasksJSON(w, tasks)
 	}
 
 	// Table format
 	if quiet {
 		for _, task := range tasks {
-			fmt.Println(task.ID)
+			fmt.Fprintln(w, task.ID)
 		}
 		return nil
 	}
 
-	fmt.Printf("%-20s %-12s %-20s %s\n", "ID", "STATUS", "NODE", "IMAGE")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Fprintf(w, "%-20s %-12s %-12s %-20s %s\n", "ID", "STATUS", "HEALTH", "NODE", "IMAGE")
+	fmt.Fprintln(w, strings.Repeat("-", 90))
 	for _, task := range tasks {
 		taskID := task.ID
 		if !noTrunc && len(taskID) > 12 {
@@ -1175,9 +1181,9 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 		if task.Spec.GetContainer() != nil {
 			image = task.Spec.GetContainer().Image
 		}
-		fmt.Printf("%-20s %-12s %-20s %s\n", taskID, status, nodeID, image)
+		fmt.Fprintf(w, "%-20s %-12s %-12s %-20s %s\n", taskID, status, taskHealth(task), nodeID, image)
 	}
-	fmt.Printf("\nTotal: %d task(s)\n", len(tasks))
+	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
 
 	return nil
 }
