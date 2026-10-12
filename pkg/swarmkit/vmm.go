@@ -1045,8 +1045,10 @@ type Action struct {
 }
 
 // vsockUDSPath derives the Firecracker vsock Unix-socket path from the API
-// socket path: <dir>/<id>.sock becomes <dir>/<id>.vsock. The host dials
-// <uds_path>_<port> to reach the guest agent (see pkg/agent).
+// socket path: <dir>/<id>.sock becomes <dir>/<id>.vsock. The host reaches the
+// guest agent by dialing that muxer socket itself and sending "CONNECT <port>"
+// (see pkg/agent.Dial); "<uds_path>_<port>" is only used for guest-initiated
+// connections.
 func vsockUDSPath(socketPath string) string {
 	return strings.TrimSuffix(socketPath, ".sock") + ".vsock"
 }

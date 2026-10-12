@@ -48,8 +48,10 @@ func startFakeVM(t *testing.T, taskID string, script func(net.Conn)) *fakeVM {
 	go func() { _ = apiSrv.Serve(apiLn) }()
 	t.Cleanup(func() { _ = apiSrv.Close() })
 
-	// Firecracker vsock Unix-socket proxy: agent.Dial dials "<uds>_<port>".
-	vsockPath := fmt.Sprintf("%s_%d", filepath.Join(dir, taskID+".vsock"), agent.DefaultPort)
+	// Firecracker vsock Unix-socket muxer: agent.Dial dials the uds_path itself,
+	// then sends "CONNECT <port>" and accepts the arbitrary host-side port
+	// Firecracker assigns.
+	vsockPath := filepath.Join(dir, taskID+".vsock")
 	vsockLn, err := net.Listen("unix", vsockPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = vsockLn.Close() })
@@ -80,7 +82,8 @@ func serveFakeVMConn(conn net.Conn, script func(net.Conn)) {
 		_, _ = io.WriteString(conn, "ERR wrong port\n")
 		return
 	}
-	if _, err := fmt.Fprintf(conn, "OK %d\n", agent.DefaultPort); err != nil {
+	// Firecracker assigns the host-side port; it is not the guest port.
+	if _, err := fmt.Fprintf(conn, "OK %d\n", 1073741824); err != nil {
 		return
 	}
 

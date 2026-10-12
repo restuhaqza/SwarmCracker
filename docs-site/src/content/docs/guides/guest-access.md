@@ -30,10 +30,13 @@ swarmcracker vm cp myvm:/var/log/app.log ./app.log
 A small guest agent, `sc-agent`, is injected into the image at `/sbin/sc-agent`
 and started by the init wrapper at boot. It listens on **vsock port 52**.
 
-The host reaches it through Firecracker's vsock device over the Unix socket
-`<socket-dir>/<task-id>.vsock_52` (default socket directory `/var/run/firecracker`).
-The traffic never leaves the host — **no host network port is opened** and there
-is no listening TCP socket in the guest.
+The host reaches it through Firecracker's vsock device. It connects to the
+muxer socket `<socket-dir>/<task-id>.vsock` (default socket directory
+`/var/run/firecracker`) and sends `CONNECT 52` to ask Firecracker to attach the
+connection to guest vsock port 52. There is no `<task-id>.vsock_52` file in this
+host-to-guest direction: that `<socket>_<port>` path is created only for
+*guest-initiated* connections. The traffic never leaves the host — **no host
+network port is opened** and there is no listening TCP socket in the guest.
 
 The client checks the agent's protocol version during the handshake on connect
 and **fails clearly on a mismatch**, rather than mis-parsing a reply from an

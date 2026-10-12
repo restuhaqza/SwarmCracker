@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,17 +29,29 @@ func shortTempDir(t *testing.T) string {
 	return dir
 }
 
-// fakeProxy emulates Firecracker's vsock Unix-socket proxy: it performs the
-// CONNECT/OK handshake and then bridges to a guest agent via ServeConn.
+// assignedHostPort is the arbitrary host-side port the fake proxy reports in
+// its "OK" reply. It is deliberately different from any requested guest port so
+// the tests fail if the client compares the two.
+const assignedHostPort = 1073741824
+
+// fakeProxy emulates Firecracker's vsock Unix-socket muxer: it listens on the
+// uds_path itself, performs the CONNECT/OK handshake, and then bridges to a
+// guest agent via ServeConn.
 type fakeProxy struct {
 	t         *testing.T
 	ln        net.Listener
 	port      uint32
+	okPort    uint32
 	helloVer  string
 	helloType string
 	helloErr  string
 	badOK     bool
 	raw       func(net.Conn)
+
+	// dropsRemaining models Firecracker dropping the host connection because
+	// nothing is listening on the guest port yet: each dropped accept closes
+	// without replying, so the client must retry.
+	dropsRemaining atomic.Int32
 
 	mu        sync.Mutex
 	handshake string
@@ -48,7 +61,7 @@ type proxyOption func(*fakeProxy)
 
 func startProxy(t *testing.T, port uint32, opts ...proxyOption) (*fakeProxy, string) {
 	t.Helper()
-	p := &fakeProxy{t: t, port: port, helloVer: Version}
+	p := &fakeProxy{t: t, port: port, okPort: assignedHostPort, helloVer: Version}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -59,14 +72,14 @@ func startProxy(t *testing.T, port uint32, opts ...proxyOption) (*fakeProxy, str
 // handler, which can script arbitrary reply frames.
 func startRawProxy(t *testing.T, port uint32, raw func(net.Conn)) (*fakeProxy, string) {
 	t.Helper()
-	p := &fakeProxy{t: t, port: port, helloVer: Version, raw: raw}
+	p := &fakeProxy{t: t, port: port, okPort: assignedHostPort, helloVer: Version, raw: raw}
 	return p.listen(t, port)
 }
 
 func (p *fakeProxy) listen(t *testing.T, port uint32) (*fakeProxy, string) {
 	t.Helper()
 	udsPath := filepath.Join(shortTempDir(t), "vm.vsock")
-	ln, err := net.Listen("unix", fmt.Sprintf("%s_%d", udsPath, port))
+	ln, err := net.Listen("unix", udsPath)
 	require.NoError(t, err)
 	p.ln = ln
 	t.Cleanup(func() { _ = ln.Close() })
@@ -88,6 +101,12 @@ func (p *fakeProxy) serve() {
 func (p *fakeProxy) handle(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 
+	// Drop this connection without replying, as Firecracker does when the guest
+	// has not started listening on the port yet.
+	if p.dropsRemaining.Add(-1) >= 0 {
+		return
+	}
+
 	line, err := readLine(conn)
 	if err != nil {
 		return
@@ -104,7 +123,7 @@ func (p *fakeProxy) handle(conn net.Conn) {
 		_, _ = io.WriteString(conn, "ERR wrong port\n")
 		return
 	}
-	if _, err := fmt.Fprintf(conn, "OK %d\n", p.port); err != nil {
+	if _, err := fmt.Fprintf(conn, "OK %d\n", p.okPort); err != nil {
 		return
 	}
 
@@ -324,18 +343,82 @@ func TestClientDialVersionMismatch(t *testing.T) {
 	assert.Contains(t, err.Error(), "agent version mismatch: client "+Version+", guest 2")
 }
 
+// retryDialCtx bounds a Dial that is expected to fail, so the retry window does
+// not make the test suite slow.
+func retryDialCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	t.Cleanup(cancel)
+	return ctx
+}
+
 func TestClientDialBadHandshake(t *testing.T) {
 	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) { p.badOK = true })
 
-	_, err := Dial(context.Background(), uds, DefaultPort)
+	_, err := Dial(retryDialCtx(t), uds, DefaultPort)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "handshake")
 }
 
+// TestClientDialAcceptsAssignedHostPort asserts that the client dials the muxer
+// and accepts the arbitrary host-side port Firecracker assigns, rather than
+// requiring it to equal the requested guest port.
+func TestClientDialAcceptsAssignedHostPort(t *testing.T) {
+	p, uds := startProxy(t, DefaultPort)
+	require.NotEqual(t, p.port, p.okPort,
+		"the fake proxy must report a host-side port different from the guest port")
+
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	assert.Equal(t, fmt.Sprintf("CONNECT %d", DefaultPort), p.handshakeLine())
+}
+
+// TestClientDialRetriesUntilAgentListens models a guest agent that is still
+// starting: Firecracker drops the first host connection, and the client must
+// retry the handshake until the agent answers.
+func TestClientDialRetriesUntilAgentListens(t *testing.T) {
+	p, uds := startProxy(t, DefaultPort)
+	p.dropsRemaining.Store(1)
+
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	assert.Equal(t, fmt.Sprintf("CONNECT %d", DefaultPort), p.handshakeLine())
+}
+
 func TestClientDialNoSocket(t *testing.T) {
-	_, err := Dial(context.Background(), filepath.Join(shortTempDir(t), "missing.vsock"), DefaultPort)
+	_, err := Dial(retryDialCtx(t), filepath.Join(shortTempDir(t), "missing.vsock"), DefaultPort)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dial")
+}
+
+func TestParseOKLine(t *testing.T) {
+	tests := []struct {
+		line string
+		port uint32
+		ok   bool
+	}{
+		{"OK 52", 52, true},
+		{"OK 1073741824", 1073741824, true},
+		{"OK 0", 0, true},
+		{"OK", 0, false},
+		{"OK ", 0, false},
+		{"OK abc", 0, false},
+		{"OK -1", 0, false},
+		{"ERR nope", 0, false},
+		{"RST", 0, false},
+		{"", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.line, func(t *testing.T) {
+			port, ok := parseOKLine(tt.line)
+			assert.Equal(t, tt.ok, ok)
+			assert.Equal(t, tt.port, port)
+		})
+	}
 }
 
 func TestClientClose(t *testing.T) {
