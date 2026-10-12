@@ -158,6 +158,11 @@ Service (replicated microVM) management.
 | `--network` | — | Attach the service to a user-defined network (repeatable; one NIC/IP per network) |
 | `--secret` | — | Grant access to a secret: `[src=]NAME[,target=PATH][,mode=0400][,uid=N][,gid=N]` (repeatable) |
 | `--config` | — | Grant access to a config: `[src=]NAME[,target=PATH][,mode=0444][,uid=N][,gid=N]` (repeatable) |
+| `--health-cmd` | — | Container healthcheck command, run in the guest via `/bin/sh -c` (enables the healthcheck) |
+| `--health-interval` | `30s` | Time between healthcheck runs (only with `--health-cmd`) |
+| `--health-timeout` | `30s` | Per-check timeout (only with `--health-cmd`) |
+| `--health-retries` | `3` | Consecutive failures before the task is unhealthy (only with `--health-cmd`) |
+| `--health-start-period` | `0` | Grace period during which failures do not count (only with `--health-cmd`) |
 | `--user` | — | **Not supported** — rejected with a clear error |
 | `--cap-add` | — | **Not supported** — rejected with a clear error |
 | `--cap-drop` | — | **Not supported** — rejected with a clear error |
@@ -203,7 +208,21 @@ mapping is released when the service is removed or scaled down. See
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+`--health-cmd` declares a container healthcheck. The command runs **inside the
+microVM** through the guest agent over vsock — the same mechanism as `vm exec` —
+via the guest shell (`/bin/sh -c`), and the check passes when the command exits
+`0`. A task with a healthcheck is **not** reported `RUNNING` until a check
+passes; this is what makes `--update-order start-first` wait for real readiness
+(see [Container Healthchecks](/guides/operations/#container-healthchecks)). The
+other four flags tune it and apply **only** when `--health-cmd` is set:
+`--health-interval` (default `30s`), `--health-timeout` (default `30s`),
+`--health-retries` (default `3`) and `--health-start-period` (default `0`).
+Without `--health-cmd` no healthcheck exists and behaviour is unchanged. An
+invalid value is **rejected** (`--health-retries 0`, `--health-interval 0s`), as
+is any `--health-*` flag supplied without `--health-cmd`; no flag is silently
+ignored.
+
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
@@ -213,6 +232,14 @@ service's existing published ports (it errors if the service has none).
 `service inspect` prints the published ports and, for ingress services, the
 service VIP.
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc` for `ps`.
+
+`service ps` (and `task ls`) print a `HEALTH` column **derived** from the
+health-gated task state: `STARTING` while the task is still being checked,
+`RUNNING` once a check has passed, `FAILED` when the task failed its checks, and
+`-` for a task with no healthcheck (or one that has completed or stopped). The
+same value is emitted as `health` by `--format json`. See
+[Container Healthchecks](/guides/operations/#container-healthchecks) for the
+gated-rollout workflow and the API limitation behind the derived value.
 
 #### `swarmcracker task`
 
@@ -224,6 +251,12 @@ Task management.
 | `inspect <task-id>` | Inspect a task |
 
 `task ls` flags: `--all`, `--filter`, `--format`, `--no-trunc`, `--node`, `--service`, `--quiet` / `-q`.
+
+`task ls` prints the same derived `HEALTH` column as `service ps` (also emitted
+as `health` by `--format json`). `task inspect` shows a task's declared
+healthcheck (its test command, interval, timeout, retries and start period) and,
+when a check failed, the reason the executor recorded (for example
+`healthcheck failed: <cmd>: <output>`).
 
 #### `swarmcracker vm`
 

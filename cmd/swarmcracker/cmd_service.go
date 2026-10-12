@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -162,6 +163,12 @@ func newServiceCreateCommand() *cobra.Command {
 		capDrop  []string
 		readOnly bool
 
+		healthCmd         string
+		healthInterval    string
+		healthTimeout     string
+		healthRetries     int
+		healthStartPeriod string
+
 		constraints    []string
 		placementPrefs []string
 
@@ -245,6 +252,7 @@ With --golden, the service boots a prebuilt golden image (see
 				capAdd:             capAdd,
 				capDrop:            capDrop,
 				readOnly:           readOnly,
+				health:             healthOptionsFromFlags(cmd, healthCmd, healthInterval, healthTimeout, healthRetries, healthStartPeriod),
 				constraints:        constraints,
 				placementPrefs:     placementPrefs,
 				restartSet:         anyFlagChanged(cmd, "restart-condition", "restart-delay", "restart-max-attempts", "restart-window"),
@@ -295,6 +303,11 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringArrayVar(&capAdd, "cap-add", nil, "Add a Linux capability (not supported)")
 	cmd.Flags().StringArrayVar(&capDrop, "cap-drop", nil, "Drop a Linux capability (not supported)")
 	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Mount the root filesystem read-only (not supported)")
+	cmd.Flags().StringVar(&healthCmd, "health-cmd", "", "Container healthcheck command, run via the guest shell (enables the healthcheck)")
+	cmd.Flags().StringVar(&healthInterval, "health-interval", "", "Time between healthcheck runs (default 30s)")
+	cmd.Flags().StringVar(&healthTimeout, "health-timeout", "", "Time to wait for a healthcheck to complete (default 30s)")
+	cmd.Flags().IntVar(&healthRetries, "health-retries", 0, "Consecutive failures before a task is unhealthy (default 3)")
+	cmd.Flags().StringVar(&healthStartPeriod, "health-start-period", "", "Grace period before healthcheck failures count (default 0s)")
 	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Placement constraint, key==value or key!=value (repeatable, e.g. node.hostname==worker1)")
 	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Placement preference, spread=<key> (repeatable, e.g. spread=node.labels.zone)")
 	cmd.Flags().StringVar(&restartCondition, "restart-condition", "", "Restart condition: none, on-failure or any (default any)")
@@ -343,6 +356,12 @@ func newServiceUpdateCommand() *cobra.Command {
 		capAdd   []string
 		capDrop  []string
 		readOnly bool
+
+		healthCmd         string
+		healthInterval    string
+		healthTimeout     string
+		healthRetries     int
+		healthStartPeriod string
 
 		mode           string
 		constraints    []string
@@ -415,6 +434,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 				capDrop:     capDrop,
 				readOnly:    readOnly,
 
+				health: healthOptionsFromFlags(cmd, healthCmd, healthInterval, healthTimeout, healthRetries, healthStartPeriod),
+
 				modeSet:        cmd.Flags().Changed("mode"),
 				mode:           mode,
 				constraints:    constraints,
@@ -466,6 +487,11 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringArrayVar(&capAdd, "cap-add", nil, "Add a Linux capability (not supported)")
 	cmd.Flags().StringArrayVar(&capDrop, "cap-drop", nil, "Drop a Linux capability (not supported)")
 	cmd.Flags().BoolVar(&readOnly, "read-only", false, "Mount the root filesystem read-only (not supported)")
+	cmd.Flags().StringVar(&healthCmd, "health-cmd", "", "Container healthcheck command, run via the guest shell (enables the healthcheck)")
+	cmd.Flags().StringVar(&healthInterval, "health-interval", "", "Time between healthcheck runs (default 30s)")
+	cmd.Flags().StringVar(&healthTimeout, "health-timeout", "", "Time to wait for a healthcheck to complete (default 30s)")
+	cmd.Flags().IntVar(&healthRetries, "health-retries", 0, "Consecutive failures before a task is unhealthy (default 3)")
+	cmd.Flags().StringVar(&healthStartPeriod, "health-start-period", "", "Grace period before healthcheck failures count (default 0s)")
 	cmd.Flags().StringArrayVar(&constraints, "constraint", nil, "Replace placement constraints (key==value or key!=value; repeatable)")
 	cmd.Flags().StringArrayVar(&placementPrefs, "placement-pref", nil, "Replace placement preferences (spread=<key>; repeatable)")
 	cmd.Flags().StringVar(&restartCondition, "restart-condition", "", "Restart condition: none, on-failure or any")
@@ -647,6 +673,25 @@ func anyFlagChanged(cmd *cobra.Command, names ...string) bool {
 		}
 	}
 	return false
+}
+
+// healthOptionsFromFlags reads the five --health-* flags together with their
+// per-flag Changed bits. The bits let buildHealthcheck tell an explicit zero
+// (--health-retries 0, --health-interval 0s) from an unset flag, so an explicit
+// zero is rejected instead of silently replaced by a Docker default.
+func healthOptionsFromFlags(cmd *cobra.Command, command, interval, timeout string, retries int, startPeriod string) healthOptions {
+	return healthOptions{
+		cmd:            command,
+		cmdSet:         cmd.Flags().Changed("health-cmd"),
+		interval:       interval,
+		intervalSet:    cmd.Flags().Changed("health-interval"),
+		timeout:        timeout,
+		timeoutSet:     cmd.Flags().Changed("health-timeout"),
+		retries:        retries,
+		retriesSet:     cmd.Flags().Changed("health-retries"),
+		startPeriod:    startPeriod,
+		startPeriodSet: cmd.Flags().Changed("health-start-period"),
+	}
 }
 
 func parseLabels(labelStrs []string) map[string]string {
@@ -1070,6 +1115,13 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	}
 	defer conn.Close()
 
+	return listServiceTasksWithClient(ctx, client, os.Stdout, serviceID, format, filter, quiet, noTrunc)
+}
+
+// listServiceTasksWithClient is the body of `service ps` with the control
+// client and output writer injected, so the table/JSON rendering is
+// unit-testable without a cluster.
+func listServiceTasksWithClient(ctx context.Context, client api.ControlClient, w io.Writer, serviceID, format, filter string, quiet, noTrunc bool) error {
 	// Resolve the reference (full ID, unique ID prefix, or name) to a full ID.
 	actualServiceID, err := resolveServiceRef(ctx, client, serviceID)
 	if err != nil {
@@ -1091,7 +1143,7 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 	}
 
 	if len(tasks) == 0 {
-		fmt.Printf("No tasks found for service %s\n", serviceID)
+		fmt.Fprintf(w, "No tasks found for service %s\n", serviceID)
 		return nil
 	}
 
@@ -1102,21 +1154,19 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 
 	// Output based on format
 	if format == "json" {
-		data, _ := json.MarshalIndent(tasks, "", "  ")
-		fmt.Println(string(data))
-		return nil
+		return writeTasksJSON(w, tasks)
 	}
 
 	// Table format
 	if quiet {
 		for _, task := range tasks {
-			fmt.Println(task.ID)
+			fmt.Fprintln(w, task.ID)
 		}
 		return nil
 	}
 
-	fmt.Printf("%-20s %-12s %-20s %s\n", "ID", "STATUS", "NODE", "IMAGE")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Fprintf(w, "%-20s %-12s %-12s %-20s %s\n", "ID", "STATUS", "HEALTH", "NODE", "IMAGE")
+	fmt.Fprintln(w, strings.Repeat("-", 90))
 	for _, task := range tasks {
 		taskID := task.ID
 		if !noTrunc && len(taskID) > 12 {
@@ -1131,9 +1181,9 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool) err
 		if task.Spec.GetContainer() != nil {
 			image = task.Spec.GetContainer().Image
 		}
-		fmt.Printf("%-20s %-12s %-20s %s\n", taskID, status, nodeID, image)
+		fmt.Fprintf(w, "%-20s %-12s %-12s %-20s %s\n", taskID, status, taskHealth(task), nodeID, image)
 	}
-	fmt.Printf("\nTotal: %d task(s)\n", len(tasks))
+	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
 
 	return nil
 }
@@ -1291,6 +1341,21 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 				}
 			}
 		}
+	}
+
+	// Replace the container healthcheck. buildHealthcheck rejects any
+	// --health-* flag that arrives without --health-cmd, so an update never
+	// silently drops a flag.
+	if opts.health.set() {
+		c := spec.Task.GetContainer()
+		if c == nil {
+			return fmt.Errorf("service %q has no container spec", svc.Spec.Annotations.Name)
+		}
+		hc, err := buildHealthcheck(opts.health)
+		if err != nil {
+			return err
+		}
+		c.Healthcheck = hc
 	}
 
 	// Update resource limits

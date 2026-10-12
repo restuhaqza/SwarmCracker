@@ -6,12 +6,14 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -117,13 +119,20 @@ func listTasks(format, filter string, quiet, all, noTrunc bool, node, serviceID 
 	}
 	defer conn.Close()
 
+	return listTasksWithClient(ctx, client, os.Stdout, format, filter, quiet, all, noTrunc, node, serviceID)
+}
+
+// listTasksWithClient is the body of `task ls` with the control client and
+// output writer injected, so the table/JSON rendering is unit-testable without
+// a cluster.
+func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet, all, noTrunc bool, node, serviceID string) error {
 	resp, err := client.ListTasks(ctx, &api.ListTasksRequest{})
 	if err != nil {
 		return fmt.Errorf("failed to list tasks: %w", err)
 	}
 
 	if len(resp.Tasks) == 0 {
-		fmt.Println("No tasks found")
+		fmt.Fprintln(w, "No tasks found")
 		return nil
 	}
 
@@ -133,21 +142,19 @@ func listTasks(format, filter string, quiet, all, noTrunc bool, node, serviceID 
 
 	// Output based on format
 	if format == "json" {
-		data, _ := json.MarshalIndent(tasks, "", "  ")
-		fmt.Println(string(data))
-		return nil
+		return writeTasksJSON(w, tasks)
 	}
 
 	// Table format
 	if quiet {
 		for _, task := range tasks {
-			fmt.Println(task.ID)
+			fmt.Fprintln(w, task.ID)
 		}
 		return nil
 	}
 
-	fmt.Printf("%-20s %-20s %-12s %-12s %s\n", "ID", "SERVICE", "STATUS", "NODE", "IMAGE")
-	fmt.Println(strings.Repeat("-", 80))
+	fmt.Fprintf(w, "%-20s %-20s %-12s %-12s %-12s %s\n", "ID", "SERVICE", "STATUS", "HEALTH", "NODE", "IMAGE")
+	fmt.Fprintln(w, strings.Repeat("-", 90))
 	for _, task := range tasks {
 		status := task.Status.State.String()
 		nodeID := ""
@@ -170,9 +177,9 @@ func listTasks(format, filter string, quiet, all, noTrunc bool, node, serviceID 
 		if task.Spec.GetContainer() != nil {
 			image = task.Spec.GetContainer().Image
 		}
-		fmt.Printf("%-20s %-20s %-12s %-12s %s\n", task.ID, svcID, status, nodeID, image)
+		fmt.Fprintf(w, "%-20s %-20s %-12s %-12s %-12s %s\n", task.ID, svcID, status, taskHealth(task), nodeID, image)
 	}
-	fmt.Printf("\nTotal: %d task(s)\n", len(tasks))
+	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
 
 	return nil
 }
@@ -187,34 +194,69 @@ func inspectTask(taskID, format string, pretty bool) error {
 	}
 	defer conn.Close()
 
-	taskID, err = resolveTaskRef(ctx, client, taskID)
+	return inspectTaskWithClient(ctx, client, os.Stdout, taskID, format, pretty)
+}
+
+// inspectTaskWithClient is the body of `task inspect` with the control client
+// and output writer injected, so the rendering is unit-testable without a
+// cluster.
+func inspectTaskWithClient(ctx context.Context, client api.ControlClient, w io.Writer, taskID, format string, pretty bool) error {
+	resolvedID, err := resolveTaskRef(ctx, client, taskID)
 	if err != nil {
 		return err
 	}
 
-	resp, err := client.GetTask(ctx, &api.GetTaskRequest{TaskID: taskID})
+	resp, err := client.GetTask(ctx, &api.GetTaskRequest{TaskID: resolvedID})
 	if err != nil {
 		return fmt.Errorf("failed to get task: %w", err)
 	}
 
 	if format == "json" {
-		data, _ := json.MarshalIndent(resp.Task, "", "  ")
-		fmt.Println(string(data))
-	} else {
-		task := resp.Task
-		fmt.Printf("ID: %s\n", task.ID)
-		fmt.Printf("Service ID: %s\n", task.ServiceID)
-		fmt.Printf("Node ID: %s\n", task.NodeID)
-		fmt.Printf("Status: %s\n", task.Status.State.String())
-		if task.Spec.GetContainer() != nil {
-			fmt.Printf("Image: %s\n", task.Spec.GetContainer().Image)
+		data, err := json.MarshalIndent(resp.Task, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal task: %w", err)
 		}
-		if task.Status.Err != "" {
-			fmt.Printf("Error: %s\n", task.Status.Err)
+		fmt.Fprintln(w, string(data))
+		return nil
+	}
+
+	task := resp.Task
+	fmt.Fprintf(w, "ID: %s\n", task.ID)
+	fmt.Fprintf(w, "Service ID: %s\n", task.ServiceID)
+	fmt.Fprintf(w, "Node ID: %s\n", task.NodeID)
+	fmt.Fprintf(w, "Status: %s\n", task.Status.State.String())
+	if container := task.Spec.GetContainer(); container != nil {
+		fmt.Fprintf(w, "Image: %s\n", container.Image)
+		if hc := container.Healthcheck; hc != nil {
+			fmt.Fprintf(w, "Healthcheck:\n")
+			fmt.Fprintf(w, "  Test: %s\n", strings.Join(hc.Test, " "))
+			fmt.Fprintf(w, "  Interval: %s\n", healthDurationString(hc.Interval))
+			fmt.Fprintf(w, "  Timeout: %s\n", healthDurationString(hc.Timeout))
+			fmt.Fprintf(w, "  Retries: %d\n", hc.Retries)
+			fmt.Fprintf(w, "  Start Period: %s\n", healthDurationString(hc.StartPeriod))
 		}
+	}
+	// Status.Err is where the executor records the health failure reason, e.g.
+	// "healthcheck failed: <cmd>: <output>".
+	if task.Status.Err != "" {
+		fmt.Fprintf(w, "Error: %s\n", task.Status.Err)
 	}
 
 	return nil
+}
+
+// healthDurationString renders a protobuf duration as a human-readable string,
+// falling back to the raw protobuf form if it cannot be decoded. A nil duration
+// is rendered as "0s" so the inspect output always shows a value.
+func healthDurationString(d *gogotypes.Duration) string {
+	if d == nil {
+		return "0s"
+	}
+	v, err := gogotypes.DurationFromProto(d)
+	if err != nil {
+		return d.String()
+	}
+	return v.String()
 }
 
 // getSwarmClientForTask creates a SwarmKit client connection

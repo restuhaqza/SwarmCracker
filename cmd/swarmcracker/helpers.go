@@ -1,11 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"time"
 
+	"github.com/moby/swarmkit/v2/api"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/executor"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
@@ -197,4 +200,60 @@ func taskStateString(state types.TaskState) string {
 	default:
 		return "UNKNOWN"
 	}
+}
+
+// taskHealth derives a task's HEALTH value from the health-gated task state.
+//
+// SwarmKit's API carries no health field: api.ContainerStatus is only
+// {ContainerID, PID, ExitCode} and api.TaskStatus has no health. The health
+// gate (pkg/swarmkit) is therefore the signal: a healthchecked task stays in
+// STARTING while the executor waits for the check to pass, reaches RUNNING only
+// once healthy, and ends FAILED when the check fails at start or the task goes
+// unhealthy while running. Tasks that declare no healthcheck report "-".
+//
+// Known limitation: because the value is state-derived, a RUNNING task that is
+// currently failing checks still reports RUNNING until its retries are
+// exhausted and it becomes FAILED.
+func taskHealth(task *api.Task) string {
+	if task == nil {
+		return "-"
+	}
+	container := task.Spec.GetContainer()
+	if container == nil || container.Healthcheck == nil {
+		return "-"
+	}
+
+	switch task.Status.State {
+	case api.TaskStateRunning:
+		return "RUNNING"
+	case api.TaskStateFailed, api.TaskStateRejected:
+		return "FAILED"
+	case api.TaskStateCompleted, api.TaskStateShutdown, api.TaskStateRemove, api.TaskStateOrphaned:
+		return "-"
+	default:
+		// NEW, PENDING, ASSIGNED, ACCEPTED, PREPARING, READY, STARTING: the
+		// health-gated window before the task is confirmed healthy.
+		return "STARTING"
+	}
+}
+
+// taskWithHealth wraps a SwarmKit task so its JSON representation also carries
+// the derived HEALTH value, without mutating or forking the API type.
+type taskWithHealth struct {
+	*api.Task
+	Health string `json:"health"`
+}
+
+// writeTasksJSON marshals tasks as JSON with the derived health added to each.
+func writeTasksJSON(w io.Writer, tasks []*api.Task) error {
+	withHealth := make([]taskWithHealth, 0, len(tasks))
+	for _, task := range tasks {
+		withHealth = append(withHealth, taskWithHealth{Task: task, Health: taskHealth(task)})
+	}
+	data, err := json.MarshalIndent(withHealth, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal tasks: %w", err)
+	}
+	fmt.Fprintln(w, string(data))
+	return nil
 }
