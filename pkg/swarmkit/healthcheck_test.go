@@ -191,6 +191,28 @@ func TestRunHealthcheckHealthy(t *testing.T) {
 	m.waitClosed(t)
 }
 
+// TestHealthcheckProbeTimeout asserts a healthcheck with no positive timeout
+// falls back to the default. SwarmKit's "inherit" is a nil duration, which
+// converts to zero, and a zero timeout would cancel every probe instantly.
+func TestHealthcheckProbeTimeout(t *testing.T) {
+	assert.Equal(t, defaultHealthcheckTimeout, healthcheckProbeTimeout(nil))
+	assert.Equal(t, defaultHealthcheckTimeout, healthcheckProbeTimeout(&types.Healthcheck{}))
+	assert.Equal(t, defaultHealthcheckTimeout, healthcheckProbeTimeout(&types.Healthcheck{Timeout: -time.Second}))
+	assert.Equal(t, 3*time.Second, healthcheckProbeTimeout(&types.Healthcheck{Timeout: 3 * time.Second}))
+}
+
+// TestRunHealthcheckZeroTimeoutStillProbes proves the fallback end to end: a
+// spec that declares a healthcheck without a timeout still runs its probe.
+func TestRunHealthcheckZeroTimeoutStillProbes(t *testing.T) {
+	m, uds := startFakeVsockMuxer(t)
+
+	healthy, _, err := runHealthcheck(context.Background(), uds,
+		&types.Healthcheck{Timeout: 0}, []string{"/bin/sh", "-c", "echo ok"})
+	require.NoError(t, err)
+	assert.True(t, healthy)
+	m.waitClosed(t)
+}
+
 func TestRunHealthcheckNonZeroExitIsUnhealthy(t *testing.T) {
 	m, uds := startFakeVsockMuxer(t)
 	h := &types.Healthcheck{Timeout: 5 * time.Second}

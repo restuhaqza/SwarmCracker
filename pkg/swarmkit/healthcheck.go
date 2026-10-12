@@ -17,6 +17,21 @@ import (
 // returned for the failure message (4 KiB).
 const maxHealthcheckOutput = 4 << 10
 
+// defaultHealthcheckTimeout is used when a task declares a healthcheck without a
+// positive timeout. SwarmKit's "inherit" is a nil duration, which converts to
+// zero, and a zero timeout would cancel every probe the instant it starts. Our
+// CLI always supplies a default, but a spec built elsewhere may not.
+const defaultHealthcheckTimeout = 30 * time.Second
+
+// healthcheckProbeTimeout returns the probe timeout, falling back to the default
+// when the config leaves it unset or negative.
+func healthcheckProbeTimeout(h *types.Healthcheck) time.Duration {
+	if h == nil || h.Timeout <= 0 {
+		return defaultHealthcheckTimeout
+	}
+	return h.Timeout
+}
+
 // healthcheckCommand converts a HealthConfig.Test into the guest argv to run.
 //
 //	["CMD-SHELL", cmd] -> ["/bin/sh", "-c", cmd]
@@ -108,7 +123,7 @@ func runHealthcheck(ctx context.Context, udsPath string, h *types.Healthcheck, c
 		return false, "", fmt.Errorf("healthcheck: nil config")
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, h.Timeout)
+	ctx, cancel := context.WithTimeout(ctx, healthcheckProbeTimeout(h))
 	defer cancel()
 
 	client, err := agent.Dial(ctx, udsPath, agent.DefaultPort)
