@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/rs/zerolog/log"
@@ -89,7 +90,7 @@ func printVMStatus(vm *runtime.VMState) {
 	// node-local metadata file. It is only present for daemon-managed tasks that
 	// declare a healthcheck, and only on the node hosting the task — SwarmKit
 	// cannot carry it cluster-wide.
-	if vm.Health != nil {
+	if vm.Health != nil && vm.Health.State != "" {
 		fmt.Println("\n[Health]")
 		fmt.Printf("  State:        %s\n", formatHealth(vm.Health.State))
 		if vm.Health.FailingStreak > 0 {
@@ -196,14 +197,19 @@ func formatHealth(state string) string {
 }
 
 // collapseOutput flattens a probe's captured output onto a single line and
-// bounds it, so a chatty check cannot wrap the status view.
+// bounds it, so a chatty check cannot wrap the status view. Truncation happens
+// on a rune boundary so a multibyte character is never split.
 func collapseOutput(s string) string {
 	collapsed := strings.Join(strings.Fields(s), " ")
 	const maxOutput = 200
-	if len(collapsed) > maxOutput {
-		return collapsed[:maxOutput] + "..."
+	if len(collapsed) <= maxOutput {
+		return collapsed
 	}
-	return collapsed
+	cut := maxOutput
+	for cut > 0 && !utf8.RuneStart(collapsed[cut]) {
+		cut--
+	}
+	return collapsed[:cut] + "..."
 }
 
 // formatDuration formats a duration into human-readable form

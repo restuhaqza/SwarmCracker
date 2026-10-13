@@ -135,6 +135,9 @@ func (c *Controller) stopHealthMonitor() {
 	c.healthMu.Lock()
 	cancel := c.healthCancel
 	c.healthCancel = nil
+	// Stop publishing live health: teardown deletes the metadata sidecar, and a
+	// gate probe racing it must not recreate the file afterwards.
+	c.healthStopped = true
 	c.healthMu.Unlock()
 
 	if cancel == nil {

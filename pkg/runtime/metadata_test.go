@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -198,7 +197,12 @@ func TestVMMetadata_HealthOmittedWhenNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal failed: %v", err)
 	}
-	if strings.Contains(string(data), "health") {
+
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if _, ok := raw["health"]; ok {
 		t.Errorf("metadata without health emitted a health key: %s", data)
 	}
 }

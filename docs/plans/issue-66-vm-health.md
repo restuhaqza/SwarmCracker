@@ -73,6 +73,20 @@ monitor may safely hold (it must never take `c.mu`). Lock order is
 Writes are best-effort and never fail a task, exactly like the existing network
 write. A probe writes at most once per interval (30s default).
 
+### Closing the publish-vs-teardown race
+
+Teardown deletes the sidecar, and the gate publishes without `c.mu`, so without
+care a probe racing a stop could recreate the file after it was removed. This is
+a *new* window: the network write runs inside `startVM` under `c.mu`, so it could
+not race teardown.
+
+`healthStopped` (guarded by `healthMu`) closes it: `stopHealthMonitor` — the
+first thing every teardown path does, before the VM is stopped — sets it, and
+`startVM` clears it once the VM is up (so a restarted controller publishes
+again). `publishHealth` checks it under the lock *and writes under the lock*, so
+`stopHealthMonitor` cannot return (and teardown cannot delete the sidecar) while
+a publish is still in flight.
+
 ### Emission points
 
 | Moment | Published |
@@ -136,10 +150,12 @@ T1 → T2 → T3 → T4 → T5 (T3 consumes T1+T2; T4 consumes T1).
   rather than writing a fresh struct.
 - **Reader compatibility.** An old CLI ignores the new key; an old sidecar (no
   `health`) parses fine. Both are additive.
-- **A publish racing a teardown.** `stopHealthMonitor` cancels *and joins* the
-  monitor before any teardown, so the monitor can never republish after the
-  sidecar is removed. The gate runs on the agent's operation context, so a
-  teardown during the gate can in principle leave one stale sidecar; it is
-  invisible to every reader (the CLI only reads metadata for VMs it discovered or
-  knows from state, and neither exists for a removed task) and it is the same
-  pre-existing window as the network write. Not fixed here.
+- **A publish racing a teardown.** Closed by `healthStopped` + writing under
+  `healthMu` (see above): `stopHealthMonitor` is the first step of every teardown
+  and joins the monitor, and `publishHealth` can no longer land after the sidecar
+  is deleted. Covered by `TestController_PublishHealth_AfterStopIsNoop`.
+- **`unhealthy` is short-lived.** Once the retries are exhausted the VM is
+  stopped and the sidecar removed, so `unhealthy` is on disk only for that
+  instant. The useful, observable state is `failing`; the monitor test therefore
+  asserts `unhealthy` from inside the stop hook (what the daemon sees at that
+  moment) rather than expecting the file to survive.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,6 +90,32 @@ func TestController_PublishHealth_WithoutMetadataIsNoop(t *testing.T) {
 	assert.NotPanics(t, func() { bare.publishHealth(scruntime.HealthStarting, 0, "probe", "") })
 }
 
+// TestController_PublishHealth_AfterStopIsNoop covers the teardown race: a
+// teardown deletes the sidecar, and the health gate publishes without c.mu, so a
+// probe racing a stop must not recreate the file. A (re)started VM enables
+// publishing again.
+func TestController_PublishHealth_AfterStopIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	ctrl := &Controller{config: &Config{SocketDir: dir}, logger: zerolog.Nop()}
+	ctrl.writeVMMetadata(&types.Task{ID: "task-h"})
+	ctrl.publishHealth(scruntime.HealthHealthy, 0, "probe", "")
+	require.Equal(t, scruntime.HealthHealthy, readHealth(t, dir, "task-h").State)
+
+	// Teardown: stop publishing, then delete the sidecar (as the VM stop does).
+	ctrl.stopHealthMonitor()
+	require.NoError(t, scruntime.RemoveVMMetadata(dir, "task-h"))
+
+	ctrl.publishHealth(scruntime.HealthStarting, 0, "probe", "")
+	if _, ok := scruntime.ReadVMMetadata(dir, "task-h"); ok {
+		t.Error("a publish after teardown recreated the sidecar")
+	}
+
+	// A restarted VM re-enables publishing.
+	ctrl.writeVMMetadata(&types.Task{ID: "task-h"})
+	ctrl.publishHealth(scruntime.HealthHealthy, 0, "probe", "")
+	assert.Equal(t, scruntime.HealthHealthy, readHealth(t, dir, "task-h").State)
+}
+
 // TestController_Start_PublishesStartingThenHealthy asserts the gate publishes
 // its live verdict: a task held in the start period reads "starting", and the
 // moment a probe passes it reads "healthy".
@@ -150,15 +177,75 @@ func TestController_Start_PublishesUnhealthyFromGate(t *testing.T) {
 
 // TestController_HealthMonitor_PublishesFailingBeforeUnhealthy is the whole
 // point of the feature: a task that was healthy and starts failing its checks
-// must read "failing" (still RUNNING, no restart yet) before it reads
-// "unhealthy". Docker's own status hides exactly this window.
+// must read "failing" (still RUNNING, no restart yet) before it is stopped.
+// Docker's own status hides exactly this window.
+//
+// The unhealthy verdict itself is only on disk for the instant between the
+// publish and ForceStop — teardown removes the sidecar — so it is asserted from
+// inside the stop hook, which is what the daemon sees at that moment.
 func TestController_HealthMonitor_PublishesFailingBeforeUnhealthy(t *testing.T) {
 	_, uds := startFakeVsockMuxer(t)
 	hc := &api.HealthConfig{
 		Test:     []string{"CMD-SHELL", "echo boom 1>&2; exit 3"},
-		Interval: gogotypes.DurationProto(25 * time.Millisecond),
+		Interval: gogotypes.DurationProto(50 * time.Millisecond),
 		Timeout:  gogotypes.DurationProto(2 * time.Second),
-		Retries:  8,
+		Retries:  10,
+	}
+	ctrl := newMonitorController(t, uds, hc, nil)
+	ctrl.logger = zerolog.Nop()
+	ctrl.writeVMMetadata(ctrl.internalTask)
+
+	var (
+		mu           sync.Mutex
+		forceStops   int
+		stoppedState string
+	)
+	ctrl.vmmMgr = &MockVMMManager{
+		ForceStopFunc: func(ctx context.Context, task *types.Task) error {
+			mu.Lock()
+			defer mu.Unlock()
+			forceStops++
+			if md, ok := scruntime.ReadVMMetadata(ctrl.config.SocketDir, ctrl.internalTask.ID); ok && md.Health != nil {
+				stoppedState = md.Health.State
+			}
+			return nil
+		},
+	}
+	t.Cleanup(ctrl.stopHealthMonitor)
+
+	ctrl.startHealthMonitor()
+
+	failing := waitForHealthState(t, ctrl.config.SocketDir, "task-hc-monitor", scruntime.HealthFailing, 5*time.Second)
+	assert.GreaterOrEqual(t, failing.FailingStreak, 1)
+	assert.Less(t, failing.FailingStreak, 10, "the retries threshold must not be reached yet")
+	assert.Contains(t, failing.Output, "boom")
+
+	mu.Lock()
+	assert.Equal(t, 0, forceStops, "no restart may fire while the task is merely failing")
+	mu.Unlock()
+
+	waitForMonitor(t, ctrl)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, forceStops, "the VM must be stopped exactly once")
+	assert.Equal(t, scruntime.HealthUnhealthy, stoppedState,
+		"the unhealthy verdict must be on disk when the VM is stopped")
+}
+
+// TestController_HealthMonitor_PublishesFailingInsideStartPeriod pins the
+// interaction between the monitor and a long start period: the last probe
+// failed, so the state is "failing", but a start-period failure does not count
+// toward the retries (Docker semantics), so the streak stays 0 and no restart
+// fires. Reporting "healthy" here would be a lie.
+func TestController_HealthMonitor_PublishesFailingInsideStartPeriod(t *testing.T) {
+	_, uds := startFakeVsockMuxer(t)
+	hc := &api.HealthConfig{
+		Test:        []string{"CMD-SHELL", "echo boom 1>&2; exit 3"},
+		Interval:    gogotypes.DurationProto(20 * time.Millisecond),
+		Timeout:     gogotypes.DurationProto(2 * time.Second),
+		Retries:     3,
+		StartPeriod: gogotypes.DurationProto(time.Hour),
 	}
 	vmm := newForceStopRecorder()
 	ctrl := newMonitorController(t, uds, hc, vmm)
@@ -168,16 +255,26 @@ func TestController_HealthMonitor_PublishesFailingBeforeUnhealthy(t *testing.T) 
 
 	ctrl.startHealthMonitor()
 
-	failing := waitForHealthState(t, ctrl.config.SocketDir, "task-hc-monitor", scruntime.HealthFailing, 5*time.Second)
-	assert.GreaterOrEqual(t, failing.FailingStreak, 1)
-	assert.Less(t, failing.FailingStreak, 8, "the retries threshold must not be reached yet")
-	assert.Contains(t, failing.Output, "boom")
-	assert.Equal(t, 0, vmm.count(), "no restart may fire while the task is merely failing")
+	health := waitForHealthState(t, ctrl.config.SocketDir, "task-hc-monitor", scruntime.HealthFailing, 5*time.Second)
+	assert.Equal(t, 0, health.FailingStreak, "start-period failures must not count toward the retries")
+	assert.Contains(t, health.Output, "boom")
+	assert.Equal(t, 0, vmm.count(), "a start-period failure must not restart the task")
+}
 
-	vmm.wait(t)
-	waitForMonitor(t, ctrl)
+// TestController_HealthMonitor_DisabledPublishesNothing asserts a ["NONE"] test
+// starts no monitor and publishes no health, so the sidecar keeps the shape it
+// had before this feature.
+func TestController_HealthMonitor_DisabledPublishesNothing(t *testing.T) {
+	missing := filepath.Join(shortHealthcheckDir(t), "missing.vsock")
+	ctrl := newMonitorController(t, missing, &api.HealthConfig{Test: []string{"NONE"}}, newForceStopRecorder())
+	ctrl.logger = zerolog.Nop()
+	ctrl.writeVMMetadata(ctrl.internalTask)
 
-	assert.Equal(t, scruntime.HealthUnhealthy, readHealth(t, ctrl.config.SocketDir, "task-hc-monitor").State)
+	ctrl.startHealthMonitor()
+
+	md, ok := scruntime.ReadVMMetadata(ctrl.config.SocketDir, "task-hc-monitor")
+	require.True(t, ok, "the network sidecar must still exist")
+	assert.Nil(t, md.Health, "a disabled healthcheck must publish no health")
 }
 
 // TestController_HealthMonitor_PublishesHealthy asserts a passing probe keeps

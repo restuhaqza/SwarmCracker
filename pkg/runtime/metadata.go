@@ -43,7 +43,7 @@ const (
 // list`), which are the only ones that can see it: SwarmKit has no health field
 // and never polls a running task's status, so this cannot travel cluster-wide.
 type VMHealth struct {
-	// State is HealthStarting, HealthHealthy or HealthUnhealthy.
+	// State is HealthStarting, HealthHealthy, HealthFailing or HealthUnhealthy.
 	State string `json:"state"`
 	// FailingStreak is the number of consecutive failed probes that count
 	// toward the retries threshold. Per Docker semantics a start-period failure
@@ -77,9 +77,13 @@ func metadataPath(dir, taskID string) string {
 	return filepath.Join(dir, taskID+VMMetadataSuffix)
 }
 
-// WriteVMMetadata atomically writes the network metadata for a task under dir.
+// WriteVMMetadata atomically writes the runtime metadata for a task under dir.
 // The directory must exist; the write is temp-file-then-rename so a reader
 // never observes a partially written file.
+//
+// Callers must serialize writes per task: the temporary path is derived from
+// the task ID, so two concurrent writers would collide on it. The daemon's
+// controller is the only writer for a task (start, then health updates).
 func WriteVMMetadata(dir string, md *VMMetadata) error {
 	if strings.TrimSpace(dir) == "" {
 		return fmt.Errorf("metadata directory is required")
@@ -106,7 +110,7 @@ func WriteVMMetadata(dir string, md *VMMetadata) error {
 	return nil
 }
 
-// ReadVMMetadata reads the network metadata for a task from dir. It returns
+// ReadVMMetadata reads the runtime metadata for a task from dir. It returns
 // (nil, false) when the file is missing or malformed so callers can fall back
 // to other sources.
 func ReadVMMetadata(dir, taskID string) (*VMMetadata, bool) {
@@ -126,7 +130,7 @@ func ReadVMMetadata(dir, taskID string) (*VMMetadata, bool) {
 	return &md, true
 }
 
-// RemoveVMMetadata removes the network metadata file for a task under dir. It
+// RemoveVMMetadata removes the runtime metadata file for a task under dir. It
 // is a no-op when the directory/task is empty or the file is already gone.
 func RemoveVMMetadata(dir, taskID string) error {
 	if strings.TrimSpace(dir) == "" || strings.TrimSpace(taskID) == "" {

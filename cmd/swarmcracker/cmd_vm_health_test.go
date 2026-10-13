@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
@@ -238,5 +239,15 @@ func TestCollapseOutput(t *testing.T) {
 	got := collapseOutput(long)
 	if len(got) != 203 || !strings.HasSuffix(got, "...") {
 		t.Errorf("collapseOutput did not bound the output: len=%d tail=%q", len(got), got[len(got)-3:])
+	}
+
+	// A multibyte character at the cut must not be split (300 bytes, 150 runes).
+	multibyte := strings.Repeat("é", 150)
+	got = collapseOutput(multibyte)
+	if !utf8.ValidString(got) {
+		t.Errorf("collapseOutput produced invalid UTF-8: %q", got)
+	}
+	if len(got) > 204 || !strings.HasSuffix(got, "...") {
+		t.Errorf("collapseOutput did not bound the multibyte output: len=%d", len(got))
 	}
 }
