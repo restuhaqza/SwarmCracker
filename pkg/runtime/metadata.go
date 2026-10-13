@@ -6,15 +6,58 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // VMMetadataSuffix is the suffix of the per-task network metadata file the
 // daemon writes next to a VM's Firecracker API socket. The CLI reads it to
-// recover network details — most importantly the guest IP — that the daemon
-// assigns at runtime but never writes back into the SwarmKit task store.
+// recover runtime details — most importantly the guest IP, and the live
+// healthcheck state — that the daemon assigns at runtime but never writes back
+// into the SwarmKit task store.
 const VMMetadataSuffix = ".net.json"
 
-// VMMetadata is the network metadata persisted by the daemon for a running VM.
+// Health states published in VMHealth.State. They mirror the healthcheck
+// package's verdicts, but are kept as plain strings so an old reader (or an old
+// writer) degrades to "no health" instead of failing to decode.
+const (
+	// HealthStarting means the task is not healthy yet: it is still inside its
+	// start period, or has not passed a first check. A task in this state has
+	// not been reported RUNNING by SwarmKit yet.
+	HealthStarting = "starting"
+	// HealthHealthy means the most recent probe passed.
+	HealthHealthy = "healthy"
+	// HealthFailing means the most recent probe failed but the retries
+	// threshold has not been reached, so the task is still RUNNING and no
+	// restart has been triggered. This is the window Docker's own status hides:
+	// it keeps reporting "healthy" until the verdict flips. It is the whole
+	// point of publishing health from the daemon.
+	HealthFailing = "failing"
+	// HealthUnhealthy means the task has failed its check enough times in a row
+	// to be considered unhealthy; the daemon is stopping the VM so SwarmKit
+	// reschedules the task.
+	HealthUnhealthy = "unhealthy"
+)
+
+// VMHealth is the daemon's live view of a task's healthcheck. It is written
+// next to the VM socket and read by node-local commands (`vm status`, `vm
+// list`), which are the only ones that can see it: SwarmKit has no health field
+// and never polls a running task's status, so this cannot travel cluster-wide.
+type VMHealth struct {
+	// State is HealthStarting, HealthHealthy or HealthUnhealthy.
+	State string `json:"state"`
+	// FailingStreak is the number of consecutive failed probes that count
+	// toward the retries threshold. Per Docker semantics a start-period failure
+	// does not count, so it stays 0 while inside the start period.
+	FailingStreak int `json:"failing_streak,omitempty"`
+	// Output is the last probe's combined stdout+stderr, bounded by the daemon.
+	Output string `json:"output,omitempty"`
+	// Command is the probe command, for context on what is being checked.
+	Command string `json:"command,omitempty"`
+	// UpdatedAt is when this observation was recorded.
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// VMMetadata is the runtime metadata persisted by the daemon for a running VM.
 // It is best-effort enrichment for the CLI: missing or unreadable files are
 // treated as "no metadata", never as an error.
 type VMMetadata struct {
@@ -24,6 +67,9 @@ type VMMetadata struct {
 	NetworkID string `json:"network_id,omitempty"`
 	// IPAddresses are the guest IPs in CIDR form (e.g. "192.168.127.42/24").
 	IPAddresses []string `json:"ip_addresses,omitempty"`
+	// Health is the live healthcheck observation. It is nil when the task
+	// declares no healthcheck, or when the daemon has not probed yet.
+	Health *VMHealth `json:"health,omitempty"`
 }
 
 // metadataPath returns the metadata file path for a task under dir.

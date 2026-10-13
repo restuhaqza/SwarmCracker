@@ -103,9 +103,9 @@ func outputTable(vms []*runtime.VMState) error {
 	}
 
 	// Print header
-	fmt.Printf("%-20s %-12s %-14s %-25s %-8s %-12s\n",
-		"ID", "STATUS", "SERVICE", "IMAGE", "PID", "STARTED")
-	fmt.Println(strings.Repeat("-", 105))
+	fmt.Printf("%-20s %-12s %-10s %-14s %-25s %-8s %-12s\n",
+		"ID", "STATUS", "HEALTH", "SERVICE", "IMAGE", "PID", "STARTED")
+	fmt.Println(strings.Repeat("-", 107))
 
 	// Print each VM
 	for _, vm := range vms {
@@ -120,9 +120,10 @@ func outputTable(vms []*runtime.VMState) error {
 		}
 
 		// Print row
-		fmt.Printf("%-20s %-12s %-14s %-25s %-8s %-12s\n",
+		fmt.Printf("%-20s %-12s %-10s %-14s %-25s %-8s %-12s\n",
 			vm.ID,
 			formatStatus(vm.Status),
+			formatHealthColumn(vm.Health),
 			service,
 			image,
 			pid,
@@ -171,6 +172,16 @@ func formatStatus(status string) string {
 	default:
 		return status
 	}
+}
+
+// formatHealthColumn renders the HEALTH column: "-" for a VM with no
+// healthcheck (or one the daemon has not probed yet), otherwise the published
+// state. It is node-local — only VMs on this node carry a health verdict.
+func formatHealthColumn(h *runtime.VMHealth) string {
+	if h == nil || h.State == "" {
+		return "-"
+	}
+	return h.State
 }
 
 // formatUptime formats a duration into human-readable form

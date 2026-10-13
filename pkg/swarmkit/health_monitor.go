@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/healthcheck"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
@@ -98,6 +99,9 @@ func (c *Controller) monitorHealth(
 
 		switch tracker.Observe(time.Now(), healthy) {
 		case healthcheck.VerdictUnhealthy:
+			// Publish before stopping: the teardown that follows removes the
+			// sidecar, so this is the last chance to record the verdict.
+			c.publishHealth(scruntime.HealthUnhealthy, tracker.Failures(), cmd, output)
 			// Record before stopping: Wait reads the reason once the process
 			// exits, which is after this point.
 			c.recordHealthFailure(fmt.Sprintf("%s: %s", cmd, output))
@@ -109,6 +113,16 @@ func (c *Controller) monitorHealth(
 				c.logger.Error().Err(err).Msg("Failed to stop unhealthy VM")
 			}
 			return
+		default:
+			// The task was healthy when the monitor started, so a failed probe
+			// below the retries threshold is "failing": the task is still
+			// RUNNING and no restart has been triggered. Publishing that is the
+			// point of this file — it is the window Docker's own status hides.
+			if healthy {
+				c.publishHealth(scruntime.HealthHealthy, 0, cmd, output)
+			} else {
+				c.publishHealth(scruntime.HealthFailing, tracker.Failures(), cmd, output)
+			}
 		}
 	}
 }
