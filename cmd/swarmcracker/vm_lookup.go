@@ -33,13 +33,18 @@ func enrichVMs(vms []*runtime.VMState) {
 		// Network details recorded by the daemon next to the VM socket. These
 		// carry the guest IP for fallback (TAP/DHCP) allocations, which are
 		// never written back to the SwarmKit task store and would otherwise be
-		// invisible to `vm status`/`vm list`.
+		// invisible to `vm status`/`vm list`. The same file carries the daemon's
+		// live healthcheck verdict, which is the only place it can be read:
+		// SwarmKit has no health field and never polls a running task.
 		if md, ok := runtime.ReadVMMetadata(vmSocketDir, vm.ID); ok {
 			if vm.NetworkID == "" {
 				vm.NetworkID = md.NetworkID
 			}
 			if len(vm.IPAddresses) == 0 {
 				vm.IPAddresses = append([]string(nil), md.IPAddresses...)
+			}
+			if vm.Health == nil {
+				vm.Health = md.Health
 			}
 		}
 

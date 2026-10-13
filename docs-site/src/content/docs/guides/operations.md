@@ -182,6 +182,42 @@ swarmcracker task inspect --format table 5f3a1b2c
 The default `--format json` output carries the same information in the task's
 `Spec.Container.Healthcheck` and `Status.Err` fields.
 
+#### Live health on a node
+
+`service ps` cannot show the live verdict (see below), but the node running the
+task can. The executor publishes every probe result into the per-task metadata
+file next to the VM socket, and `vm status` / `vm list` read it:
+
+```bash
+# Run this on the node hosting the task.
+swarmcracker vm status 5f3a1b2c
+# [Status]
+#   State:        Running ✓
+# [Health]
+#   State:        Failing ✗ (retries not exhausted; task still running)
+#   Failing:      2 consecutive probe(s)
+#   Check:        /bin/sh -c curl -fsS http://localhost:8080/healthz
+#   Last output:  curl: (7) Failed to connect to localhost port 8080
+#   Observed:     2026-10-13 15:04:07
+```
+
+| Value | Meaning |
+|-------|---------|
+| `starting` | The task has not passed a check yet, so it is not reported `RUNNING` |
+| `healthy` | The most recent probe passed |
+| `failing` | The most recent probe failed, but the retries threshold is not reached — the task is still `RUNNING` and no restart has fired |
+| `unhealthy` | The retries are exhausted; the VM is being stopped so SwarmKit reschedules the task |
+
+`failing` is the one worth watching: it is the window between "a check started
+failing" and "the task is restarted", up to `(retries - 1) × interval` (60s with
+the defaults). `vm list` shows the same value in its `HEALTH` column, and
+`--format json` carries it as `health`.
+
+Because the metadata file lives next to the VM socket, this view is
+**node-local** — run the command on the node hosting the task. VMs started in the
+foreground by `vm create` have no daemon and no monitor, so they never carry
+health.
+
 #### The API limitation
 
 SwarmKit's API has no health field: `api.ContainerStatus` carries only
@@ -190,8 +226,12 @@ SwarmKit v2.1.2 and upstream `master`. SwarmCracker therefore **derives** the
 `HEALTH` column from the health-gated task state instead of reporting a live
 health value. One consequence: a `RUNNING` task that is currently failing checks
 keeps showing `RUNNING` until its retries are exhausted and it becomes `FAILED`.
-Reporting health directly would need a `health` field on `ContainerStatus`
-upstream.
+
+A new field alone would not fix it: SwarmKit never polls a running task's status
+(the agent blocks in `Wait`), so any value would stay frozen until the task
+exits. The honest workaround is the node-local [`vm status`](#live-health-on-a-node)
+view above; live cluster-wide health in `service ps` would need a per-node
+endpoint the CLI aggregates.
 
 ---
 
