@@ -35,6 +35,12 @@ type VMState struct {
 	NetworkID   string   `json:"network_id,omitempty"`
 	IPAddresses []string `json:"ip_addresses,omitempty"`
 
+	// Health is the live healthcheck observation for daemon-managed VMs, read
+	// from the node-local metadata file the daemon writes next to the VM socket.
+	// It is nil for a task that declares no healthcheck, and for VMs created
+	// directly with `vm create` (no daemon, so nothing probes them).
+	Health *VMHealth `json:"health,omitempty"`
+
 	// Error tracking
 	LastError string    `json:"last_error,omitempty"`
 	ErrorTime time.Time `json:"error_time,omitempty"`

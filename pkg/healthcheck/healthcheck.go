@@ -72,3 +72,11 @@ func (t *Tracker) Observe(now time.Time, healthy bool) Verdict {
 	}
 	return VerdictStarting
 }
+
+// Failures returns the number of consecutive failed probes counted toward the
+// retries threshold. Failures inside the start period do not count (Docker
+// semantics), so it stays 0 while the container is still starting up.
+//
+// It exists so a caller can publish the current streak alongside the verdict
+// without duplicating the counting rules.
+func (t *Tracker) Failures() int { return t.failures }

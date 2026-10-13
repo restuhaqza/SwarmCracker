@@ -11,6 +11,7 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/healthcheck"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -197,6 +198,10 @@ func (c *Controller) awaitHealthy(ctx context.Context) error {
 	udsPath := vsockUDSPath(c.socketPath)
 	cmd := strings.Join(argv, " ")
 
+	// Publish the starting state before the first probe so a node-local
+	// `vm status` shows the task is being checked rather than looking healthy.
+	c.publishHealth(scruntime.HealthStarting, 0, cmd, "")
+
 	attempts := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -222,15 +227,21 @@ func (c *Controller) awaitHealthy(ctx context.Context) error {
 
 		switch tracker.Observe(time.Now(), healthy) {
 		case healthcheck.VerdictHealthy:
+			c.publishHealth(scruntime.HealthHealthy, 0, cmd, output)
 			c.logger.Info().Int("attempts", attempts).Msg("Task is healthy")
 			return nil
 		case healthcheck.VerdictUnhealthy:
+			c.publishHealth(scruntime.HealthUnhealthy, tracker.Failures(), cmd, output)
 			c.logger.Info().
 				Int("attempts", attempts).
 				Str("command", cmd).
 				Str("output", output).
 				Msg("Task failed its healthcheck")
 			return fmt.Errorf("healthcheck failed after %d attempts: %s: %s", attempts, cmd, output)
+		default:
+			// VerdictStarting: the task is not RUNNING yet, so "starting" is the
+			// honest state; the streak and the last output carry the detail.
+			c.publishHealth(scruntime.HealthStarting, tracker.Failures(), cmd, output)
 		}
 
 		// VerdictStarting: wait one interval, or until ctx is done.

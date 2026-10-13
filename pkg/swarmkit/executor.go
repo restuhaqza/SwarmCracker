@@ -605,11 +605,20 @@ type Controller struct {
 
 	// Health monitor state. healthMu is dedicated to this feature: the monitor
 	// must never take c.mu, which Start holds and which Shutdown/Terminate/
-	// Remove take, or teardown would stall behind a health wait.
+	// Remove take, or teardown would stall behind a health wait. It also guards
+	// vmMetadata (the network snapshot a health update republishes alongside the
+	// live verdict, so a health write cannot drop the guest IP) and
+	// healthStopped.
 	healthCancel  context.CancelFunc
 	healthWG      sync.WaitGroup
 	healthMu      sync.Mutex
 	healthFailure string // last healthcheck failure, for Wait's message
+	vmMetadata    *scruntime.VMMetadata
+	// healthStopped is set once a teardown begins and cleared when a VM is
+	// (re)started. Teardown deletes the metadata sidecar, and the health gate
+	// publishes without c.mu, so without this flag a gate probe racing a stop
+	// could recreate the file after it was removed.
+	healthStopped bool
 
 	// internalTask holds the prepared internal task with annotations
 	internalTask *types.Task
@@ -925,7 +934,9 @@ func (c *Controller) unpublishPorts(taskID string) {
 
 // writeVMMetadata persists the prepared task's network details next to its
 // Firecracker socket so `swarmcracker vm status`/`vm list` can display them.
-// It is best-effort: a failure here must never fail the task.
+// The network fields are also kept as a snapshot so a later health update can
+// republish the file without losing them. It is best-effort: a failure here must
+// never fail the task.
 func (c *Controller) writeVMMetadata(task *types.Task) {
 	if c.config.SocketDir == "" || task == nil {
 		return
@@ -943,8 +954,54 @@ func (c *Controller) writeVMMetadata(task *types.Task) {
 		md.IPAddresses = append(md.IPAddresses, task.Networks[i].Addresses...)
 	}
 
+	c.healthMu.Lock()
+	c.vmMetadata = md
+	// The VM is up, so live health may be published again (a controller can be
+	// stopped and re-started).
+	c.healthStopped = false
+	c.healthMu.Unlock()
+
 	if err := scruntime.WriteVMMetadata(c.config.SocketDir, md); err != nil {
 		c.logger.Warn().Err(err).Msg("Failed to persist VM network metadata")
+	}
+}
+
+// publishHealth republishes the VM's metadata sidecar with the latest
+// healthcheck observation. SwarmKit has no health field and never polls a
+// running task's status, so this node-local file is the only place the live
+// verdict can be read (by `vm status`/`vm list` on the node hosting the task).
+//
+// It must never take c.mu: the health monitor calls it while Start or a teardown
+// may hold c.mu, and the lock order everywhere else is c.mu -> healthMu.
+//
+// It is a no-op when the sidecar was never written (no socket dir, or the VM was
+// never prepared), once a teardown has begun, and best-effort otherwise: a
+// failed write never fails a task. The write itself happens under healthMu so
+// that stopHealthMonitor (which clears healthStopped under the same lock) cannot
+// return - and teardown cannot delete the sidecar - while a publish is still in
+// flight.
+func (c *Controller) publishHealth(state string, failing int, cmd, output string) {
+	if c.config.SocketDir == "" {
+		return
+	}
+
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+
+	if c.vmMetadata == nil || c.healthStopped {
+		return
+	}
+	md := *c.vmMetadata
+	md.Health = &scruntime.VMHealth{
+		State:         state,
+		FailingStreak: failing,
+		Output:        output,
+		Command:       cmd,
+		UpdatedAt:     time.Now(),
+	}
+
+	if err := scruntime.WriteVMMetadata(c.config.SocketDir, &md); err != nil {
+		c.logger.Warn().Err(err).Str("state", state).Msg("Failed to persist VM health metadata")
 	}
 }
 

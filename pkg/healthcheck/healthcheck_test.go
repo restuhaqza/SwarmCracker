@@ -138,3 +138,38 @@ func TestVerdictValues(t *testing.T) {
 	assert.Equal(t, Verdict(1), VerdictHealthy)
 	assert.Equal(t, Verdict(2), VerdictUnhealthy)
 }
+
+// TestTrackerFailures covers the streak accessor the daemon publishes for
+// node-local `vm status`. It must follow the same counting rules as the verdict:
+// start-period failures do not count, and a healthy probe resets the streak.
+func TestTrackerFailures(t *testing.T) {
+	start := time.Unix(0, 0)
+
+	t.Run("start-period failures do not count", func(t *testing.T) {
+		tracker := NewTracker(&types.Healthcheck{StartPeriod: time.Minute, Retries: 3}, start)
+		for i := 0; i < 5; i++ {
+			assert.Equal(t, VerdictStarting, tracker.Observe(start.Add(time.Duration(i)*time.Second), false))
+			assert.Equal(t, 0, tracker.Failures(), "start-period failure %d must not count", i)
+		}
+	})
+
+	t.Run("failures outside the start period accumulate", func(t *testing.T) {
+		tracker := NewTracker(&types.Healthcheck{Retries: 3}, start)
+		assert.Equal(t, VerdictStarting, tracker.Observe(start, false))
+		assert.Equal(t, 1, tracker.Failures())
+		assert.Equal(t, VerdictStarting, tracker.Observe(start.Add(time.Second), false))
+		assert.Equal(t, 2, tracker.Failures())
+		assert.Equal(t, VerdictUnhealthy, tracker.Observe(start.Add(2*time.Second), false))
+		assert.Equal(t, 3, tracker.Failures())
+	})
+
+	t.Run("a healthy probe resets the streak", func(t *testing.T) {
+		tracker := NewTracker(&types.Healthcheck{Retries: 3}, start)
+		tracker.Observe(start, false)
+		tracker.Observe(start.Add(time.Second), false)
+		assert.Equal(t, 2, tracker.Failures())
+
+		assert.Equal(t, VerdictHealthy, tracker.Observe(start.Add(2*time.Second), true))
+		assert.Equal(t, 0, tracker.Failures())
+	})
+}
