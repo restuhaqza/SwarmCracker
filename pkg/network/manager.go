@@ -577,7 +577,7 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		// Create a synthetic network attachment for default bridge
 		defaultNetwork := types.NetworkAttachment{
 			Network: types.Network{
-				ID: "default",
+				ID: types.DefaultNetworkID,
 				Spec: types.NetworkSpec{
 					Name:   "default",
 					Driver: "bridge",
@@ -1104,10 +1104,11 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		return nil
 	}
 
-	// The pid file lives in this process's private /tmp, so a server started by
-	// another SwarmCracker process (e.g. the daemon) is invisible to it. Fall
-	// back to a /proc scan, which is global, and reuse that server too instead
-	// of colliding on 192.168.127.1:53.
+	// The pid file is only visible to the process that started the server: a
+	// standalone CLI run and the daemon can have different /tmp views (and a
+	// unit may set PrivateTmp), so a server started by another SwarmCracker
+	// process can be invisible. Fall back to a /proc scan, which is global, and
+	// reuse that server too instead of colliding on 192.168.127.1:53.
 	if pids := findDnsmasqPIDs(nm.config.BridgeName); len(pids) > 0 && dnsmasqServesRecords(pids) {
 		log.Debug().
 			Str("bridge", nm.config.BridgeName).
@@ -1490,10 +1491,10 @@ func (nm *NetworkManager) cleanupDnsmasq() error {
 	}
 
 	// Note: do NOT sweep /proc and kill every dnsmasq bound to our bridges.
-	// The daemon and a standalone CLI run with separate private /tmp
-	// namespaces, so a client that reuses the daemon's server would otherwise
-	// tear it down on exit. Only instances this process started (tracked via
-	// its own pid files) are removed here.
+	// The daemon and a standalone CLI run can have separate /tmp views, so a
+	// client that reuses the daemon's server would otherwise tear it down on
+	// exit. Only instances this process started (tracked via its own pid files)
+	// are removed here.
 
 	log.Info().Msg("dnsmasq cleaned up")
 	return nil
@@ -1520,7 +1521,10 @@ func (nm *NetworkManager) liveDnsmasqPID(bridgeName string) string {
 
 // findDnsmasqPIDs returns the PIDs of running dnsmasq processes bound to the
 // given bridge, found by scanning /proc.
-func findDnsmasqPIDs(bridgeName string) []string {
+// findDnsmasqPIDs returns the PIDs of running dnsmasq processes bound to the
+// given bridge, found by scanning /proc. It is a variable so a test can decide
+// whether a resolver is "running" without a real dnsmasq process.
+var findDnsmasqPIDs = func(bridgeName string) []string {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil

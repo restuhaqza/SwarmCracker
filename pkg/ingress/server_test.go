@@ -61,7 +61,8 @@ func reportRequest(body string, withCert bool) *http.Request {
 }
 
 // TestTableServer_StoresNodeReport covers the report endpoint: the report is
-// stored under the certificate's identity, and addresses are normalized.
+// stored under the certificate's identity — not the body's claim — and
+// addresses are normalized.
 func TestTableServer_StoresNodeReport(t *testing.T) {
 	reports := NewReportStore(time.Minute)
 	srv := NewTableServer(fakeProvider{}, reports, nil, ":0")
@@ -70,8 +71,24 @@ func TestTableServer_StoresNodeReport(t *testing.T) {
 	srv.Handler.ServeHTTP(rec, reportRequest(`{"node_id":"spoofed","tasks":[{"task_id":"t1","ips":["192.168.127.5/24"]}]}`, true))
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Equal(t, map[string][]string{"t1": {"192.168.127.5"}}, reports.Addresses(),
-		"the CIDR suffix is stripped and the body cannot claim another node")
+	require.Contains(t, reports.byNode, "node-1", "the report is stored under the certificate identity")
+	require.NotContains(t, reports.byNode, "spoofed", "the body cannot claim another node")
+	assert.Equal(t, map[string][]string{"t1": {"192.168.127.5"}}, reports.Addresses()["node-1"],
+		"the CIDR suffix is stripped")
+}
+
+// TestTableServer_ReportRejectsOversizedPayload asserts the size cap is enforced,
+// so a misbehaving node cannot stream the manager out of memory.
+func TestTableServer_ReportRejectsOversizedPayload(t *testing.T) {
+	reports := NewReportStore(time.Minute)
+	srv := NewTableServer(fakeProvider{}, reports, nil, ":0")
+
+	oversized := `{"tasks":[],"pad":"` + strings.Repeat("x", maxTaskReportBytes+1) + `"}`
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, reportRequest(oversized, true))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, reports.Addresses())
 }
 
 // TestTableServer_ReportRequiresCertificate asserts a report without a client

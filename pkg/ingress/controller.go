@@ -40,7 +40,10 @@ type ServiceSpec struct {
 type TaskSpec struct {
 	// ID is the task ID. Guest addresses are looked up by task ID, because the
 	// node running a task is the only place its default-bridge address exists.
-	ID        string
+	ID string
+	// NodeID is the node the task is scheduled on. A reported address is only
+	// trusted when it comes from this node.
+	NodeID    string
 	ServiceID string
 	// State is the task state; only "running" tasks are load-balanced.
 	State string
@@ -73,12 +76,16 @@ type DNSProgrammer interface {
 	ProgramDNS(records []network.DNSRecord) error
 }
 
-// AddressSource supplies the guest addresses of running tasks, keyed by task ID,
-// as reported by the node running each task. The control API only knows the
+// AddressSource supplies the guest addresses of running tasks, keyed by the
+// node that reported them and then by task ID. The control API only knows the
 // addresses of tasks attached to a network its own allocator manages, so this is
 // what lets service DNS cover plain services too.
+//
+// The reporting node is part of the key on purpose: a task's address is only
+// taken from the node the control API says is running it, so one node cannot
+// inject addresses for another node's tasks.
 type AddressSource interface {
-	Addresses() map[string][]string
+	Addresses() map[string]map[string][]string
 }
 
 // Controller reconciles the local ingress datapath with the cluster state and
@@ -118,7 +125,7 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 		return err
 	}
 
-	var reported map[string][]string
+	var reported map[string]map[string][]string
 	if c.addresses != nil {
 		reported = c.addresses.Addresses()
 	}
@@ -230,23 +237,27 @@ func BuildRoutes(services []ServiceSpec, tasks []TaskSpec) []network.IngressRout
 // a client picks one — the same shape as Docker's `dnsrr` endpoint mode.
 //
 // Addresses come from the node running each task when it has reported them
-// (reported is keyed by task ID), falling back to what the control API knows.
-// The fallback only covers tasks attached to a network the manager's allocator
-// manages, which is why the report channel exists.
+// (reported is keyed by node ID and then task ID), falling back to what the
+// control API knows. The fallback only covers tasks attached to a network the
+// manager's allocator manages, which is why the report channel exists.
 //
 // A service with no running replica produces no record at all, so scaling down
 // or losing a service stops it resolving instead of pointing at dead addresses.
 // IPs are sorted so identical cluster state always yields an identical table
 // (and therefore an unchanged revision).
-func BuildDNSRecords(services []ServiceSpec, tasks []TaskSpec, reported map[string][]string) []network.DNSRecord {
+func BuildDNSRecords(services []ServiceSpec, tasks []TaskSpec, reported map[string]map[string][]string) []network.DNSRecord {
 	backends := make(map[string][]string)
 	for _, t := range tasks {
 		if t.State != TaskStateRunning {
 			continue
 		}
 		ips := t.IPs
-		if fromNode, ok := reported[t.ID]; ok && len(fromNode) > 0 {
-			ips = fromNode
+		// Only the node the control API says is running the task may supply its
+		// address, so a node cannot inject addresses for another node's tasks.
+		if byTask, ok := reported[t.NodeID]; ok {
+			if fromNode, ok := byTask[t.ID]; ok && len(fromNode) > 0 {
+				ips = fromNode
+			}
 		}
 		for _, ip := range ips {
 			if ip != "" {

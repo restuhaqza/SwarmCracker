@@ -13,6 +13,7 @@ import (
 	"time"
 
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
 
@@ -46,6 +47,11 @@ type TaskAddressSource interface {
 // VMs on this node. The per-task sidecar is written when a VM starts and removed
 // when it stops, so it is exactly the set of tasks this node runs — and for a
 // task on the default bridge it is the only place its guest address exists.
+//
+// Only tasks on the default bridge are reported. This node's resolver serves
+// that bridge, so an address on another network — the ingress network, or a
+// user-defined one — is not reachable from the guests that ask it, and answering
+// with one would send them somewhere they cannot go.
 type SidecarAddressSource struct {
 	SocketDir string
 }
@@ -55,6 +61,9 @@ func (s SidecarAddressSource) LocalTaskAddresses() []TaskAddress {
 	metas := scruntime.ListVMMetadata(s.SocketDir)
 	out := make([]TaskAddress, 0, len(metas))
 	for _, md := range metas {
+		if md.NetworkID != types.DefaultNetworkID {
+			continue
+		}
 		ips := normalizeAddresses(md.IPAddresses)
 		if len(ips) == 0 {
 			continue
@@ -135,9 +144,11 @@ func (s *ReportStore) Put(r TaskReport) {
 	s.byNode[r.NodeID] = nodeReport{at: s.now(), byTask: byTask}
 }
 
-// Addresses returns the guest addresses of every task a node has recently
-// reported, keyed by task ID, and drops reports that have expired.
-func (s *ReportStore) Addresses() map[string][]string {
+// Addresses returns the guest addresses every node has recently reported, keyed
+// by node ID and then task ID, and drops reports that have expired. Keeping the
+// node key lets the reconciler trust an address only from the node the control
+// API says is running the task.
+func (s *ReportStore) Addresses() map[string]map[string][]string {
 	if s == nil {
 		return nil
 	}
@@ -145,15 +156,17 @@ func (s *ReportStore) Addresses() map[string][]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	out := make(map[string][]string)
+	out := make(map[string]map[string][]string, len(s.byNode))
 	for node, rep := range s.byNode {
 		if s.now().Sub(rep.at) > s.ttl {
 			delete(s.byNode, node)
 			continue
 		}
+		byTask := make(map[string][]string, len(rep.byTask))
 		for task, ips := range rep.byTask {
-			out[task] = append([]string(nil), ips...)
+			byTask[task] = append([]string(nil), ips...)
 		}
+		out[node] = byTask
 	}
 	return out
 }

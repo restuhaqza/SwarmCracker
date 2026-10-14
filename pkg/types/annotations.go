@@ -29,6 +29,12 @@ const (
 	// the guest init wrapper writes to /etc/resolv.conf. It is only a default:
 	// an explicit `--dns` on the service always wins.
 	AnnotationResolver = "swarmcracker.resolver"
+
+	// DefaultNetworkID is the network ID the executor gives the synthetic
+	// attachment it creates for a task that declares no networks, i.e. a task on
+	// the node's default bridge. Readers that care which bridge a task is on
+	// (the service DNS report) match on it.
+	DefaultNetworkID = "default"
 )
 
 // UsesPrebuiltRootfs reports whether the task runs a prebuilt golden image.

@@ -86,16 +86,22 @@ func TestControlClientSource_Services_Error(t *testing.T) {
 func TestControlClientSource_Tasks(t *testing.T) {
 	client := &fakeControlClient{tasks: []*api.Task{
 		{
+			ID:        "t1",
+			NodeID:    "node-1",
 			ServiceID: "svc1",
 			Status:    api.TaskStatus{State: api.TaskStateRunning},
 			Networks:  []*api.NetworkAttachment{{Addresses: []string{"192.168.127.5/24"}}},
 		},
 		{
+			ID:        "t2",
+			NodeID:    "node-1",
 			ServiceID: "svc1",
 			Status:    api.TaskStatus{State: api.TaskStateFailed},
 			Networks:  []*api.NetworkAttachment{{Addresses: []string{"192.168.127.9/24"}}},
 		},
 		{
+			ID:        "t3",
+			NodeID:    "node-2",
 			ServiceID: "svc2",
 			Status:    api.TaskStatus{State: api.TaskStateRunning},
 			Networks:  []*api.NetworkAttachment{{Addresses: []string{"192.168.127.6/24", "not-an-ip"}}},
@@ -105,8 +111,12 @@ func TestControlClientSource_Tasks(t *testing.T) {
 	got, err := NewControlClientSource(client).Tasks(context.Background())
 	require.NoError(t, err)
 	require.Len(t, got, 2, "only running tasks are returned")
+	assert.Equal(t, "t1", got[0].ID, "the task ID is the key the address report joins on")
+	assert.Equal(t, "node-1", got[0].NodeID, "the node is what makes a reported address trustworthy")
 	assert.Equal(t, "svc1", got[0].ServiceID)
 	assert.Equal(t, []string{"192.168.127.5"}, got[0].IPs, "CIDR suffix is stripped")
+	assert.Equal(t, "t3", got[1].ID)
+	assert.Equal(t, "node-2", got[1].NodeID)
 	assert.Equal(t, []string{"192.168.127.6"}, got[1].IPs, "invalid addresses are dropped")
 }
 

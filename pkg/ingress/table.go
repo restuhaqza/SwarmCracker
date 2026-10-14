@@ -75,7 +75,9 @@ func TableFrom(routes []network.IngressRoute, records []network.DNSRecord) Table
 	return t
 }
 
-// TableFromRoutes converts routes only, for callers that have no records.
+// TableFromRoutes converts routes only. It is kept for callers that have no
+// records to publish (tests, and any future route-only consumer); the daemon
+// always goes through TableFrom.
 func TableFromRoutes(routes []network.IngressRoute) Table {
 	return TableFrom(routes, nil)
 }

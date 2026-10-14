@@ -57,11 +57,14 @@ Each node therefore reports the addresses it has recorded for its own VMs
 - `POST /v1/ingress/report` on the manager's existing mutual-TLS table server;
   the reporting identity comes from the client certificate, never the body.
 - `ReportStore` keeps the latest report per node with a TTL (20s), so a node that
-  crashes, partitions or drains stops contributing addresses instead of leaving a
-  record pointing at something unreachable.
+  crashes, partitions or drains stops contributing its reported addresses — the
+  control-API fallback, where it exists, still follows SwarmKit's `RUNNING`
+  state.
+- The reconciler joins reports with the control API by **node ID and task ID**, so
+  a task's address is only taken from the node the control API says is running
+  it; a task is resolved only while it is `RUNNING`.
 - `Reporter` publishes every 5s from both managers and workers (a manager reports
-  to itself over the same endpoint), and the reconciler joins reports with the
-  control API by task ID — a task is only resolved while it is `RUNNING`.
+  to itself over the same endpoint).
 
 ### Serving (dnsmasq)
 
@@ -93,11 +96,12 @@ sites (manager controller, worker table client) program them.
 
 ### Explicitly out of scope (documented, not silently missing)
 
-- **User-defined networks**: a service attached to one does resolve — its
-  addresses are reported like any other — but that overlay's cross-node datapath
-  is broken (#70), so such a replica is reachable only from the same node. Those
-  bridges also get no dnsmasq of their own, so a guest attached *only* to one
-  keeps the image's resolver.
+- **User-defined networks and the ingress network**: records only cover tasks on
+  the default bridge, because that is the bridge the node's resolver serves. A
+  guest asking it cannot reach an address on another network, so answering with
+  one would send it somewhere it cannot go. Those networks also get no dnsmasq of
+  their own, so a guest attached *only* to one keeps the image's resolver; and a
+  user-defined overlay is broken cross-node anyway (#70).
 - **VIP-based resolution**: the VIP is not a routable address today, so
   `<service>` resolves to replica IPs (DNS-RR) — the issue's documented fallback.
 - **Golden images**: they boot their own init and never read `sc.dns`; the image's
@@ -113,9 +117,31 @@ sites (manager controller, worker table client) program them.
 | T2b | Node→manager task report channel: `ReportStore` with TTL, `POST /v1/ingress/report` (identity from the client certificate), `Reporter`, sidecar address source, `ListVMMetadata` | `pkg/ingress/report.go`, `server.go`, `pkg/runtime/metadata.go`, `cmd/swarmd-firecracker/*.go` | `go test ./pkg/ingress/ ./pkg/runtime/` |
 | T3 | Resolver annotation + `sc.dns` default | `pkg/types/annotations.go`, `pkg/network/manager.go`, `pkg/swarmkit/translator.go` | `go test ./pkg/swarmkit/ ./pkg/network/` |
 | T4 | Wiring (manager controller + worker client) | `cmd/swarmd-firecracker/ingress.go` | build |
-| T5 | Docs | `guides/networking.md`, `guides/operations.md` | `npm run verify` |
+| T5 | Docs | `guides/networking.md`, `reference/cli.md` | `npm run verify` |
 | T6 | Independent whole-branch review at the frozen tip | — | — |
 | T7 | Lab e2e (2 nodes) | — | see below |
+
+## Risks
+
+- **Records live in /tmp.** The addn-hosts file sits next to the other per-bridge
+  dnsmasq files (pid, log, lease) at a predictable `/tmp` path, and the shipped
+  unit sets no `PrivateTmp`. That is the same pre-existing pattern those files
+  already use, but it is a symlink-following root write primitive for a local
+  unprivileged user; hardening all four paths (a root-owned directory, or
+  `O_NOFOLLOW`) belongs in its own change rather than being smuggled in here.
+- **Single ingress manager.** Reports go to the same endpoint that serves the
+  table, which only the node owning the mesh serves, so the report channel
+  inherits the ingress mesh's one-serving-manager assumption.
+- **A report is only as good as the node's liveness.** The TTL bounds staleness
+  for reported addresses; where the control API also knows a task's address (an
+  ingress or user-defined attachment), that address follows SwarmKit's `RUNNING`
+  state instead.
+- **Multi-attachment records.** Records only cover tasks on the default bridge:
+  the reporter skips a task whose recorded network is not the default one, since
+  the resolver's clients cannot reach any other address. A task attached to the
+  default bridge *and* a user-defined network records the user-defined network as
+  its network (the sidecar carries the first attachment's ID), so such a service
+  is not resolved by name — the documented limitation, not a silent one.
 
 ## Verification
 

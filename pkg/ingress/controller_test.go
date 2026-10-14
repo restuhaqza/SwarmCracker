@@ -191,9 +191,11 @@ func TestReconcile_SkipsServicesWithoutIngressPorts(t *testing.T) {
 }
 
 // fakeAddresses supplies the task addresses a node reported.
-type fakeAddresses struct{ byTask map[string][]string }
+type fakeAddresses struct {
+	byNode map[string]map[string][]string
+}
 
-func (f fakeAddresses) Addresses() map[string][]string { return f.byTask }
+func (f fakeAddresses) Addresses() map[string]map[string][]string { return f.byNode }
 
 // TestReconcile_UsesNodeReportedAddresses is the point of the report channel: a
 // plain service's replicas have no control-API address at all, so without the
@@ -201,12 +203,12 @@ func (f fakeAddresses) Addresses() map[string][]string { return f.byTask }
 func TestReconcile_UsesNodeReportedAddresses(t *testing.T) {
 	src := &fakeSource{
 		services: []ServiceSpec{{ID: "svc1", Name: "web"}},
-		tasks:    []TaskSpec{{ID: "t1", ServiceID: "svc1", State: TaskStateRunning}},
+		tasks:    []TaskSpec{{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning}},
 	}
 	dns := &fakeDNS{}
 
-	require.NoError(t, NewController(src, &fakeLB{}, dns, fakeAddresses{byTask: map[string][]string{
-		"t1": {"192.168.127.5"},
+	require.NoError(t, NewController(src, &fakeLB{}, dns, fakeAddresses{byNode: map[string]map[string][]string{
+		"node-1": {"t1": {"192.168.127.5"}},
 	}}, time.Second).Reconcile(context.Background()))
 
 	got := map[string][]string{}
@@ -217,18 +219,35 @@ func TestReconcile_UsesNodeReportedAddresses(t *testing.T) {
 	assert.Equal(t, []string{"192.168.127.5"}, got["tasks.web"])
 }
 
+// TestReconcile_IgnoresAnotherNodesReport asserts the join is bound to the node
+// the control API says is running the task, so a node cannot inject addresses
+// for another node's tasks.
+func TestReconcile_IgnoresAnotherNodesReport(t *testing.T) {
+	src := &fakeSource{
+		services: []ServiceSpec{{ID: "svc1", Name: "web"}},
+		tasks:    []TaskSpec{{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning}},
+	}
+	dns := &fakeDNS{}
+
+	require.NoError(t, NewController(src, &fakeLB{}, dns, fakeAddresses{byNode: map[string]map[string][]string{
+		"node-2": {"t1": {"10.9.9.9"}}, // another node claims this task
+	}}, time.Second).Reconcile(context.Background()))
+
+	assert.Empty(t, dns.records(), "a report from a node that does not run the task is ignored")
+}
+
 // TestBuildDNSRecords_PrefersNodeReportedAddresses asserts the node's view wins
 // over the control API's (which can only see allocator-managed addresses), and
 // that a task with no report still falls back to it.
 func TestBuildDNSRecords_PrefersNodeReportedAddresses(t *testing.T) {
 	services := []ServiceSpec{{ID: "svc1", Name: "web"}}
 	tasks := []TaskSpec{
-		{ID: "t1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}},
-		{ID: "t2", ServiceID: "svc1", State: TaskStateRunning},
+		{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}},
+		{ID: "t2", NodeID: "node-2", ServiceID: "svc1", State: TaskStateRunning},
 	}
-	reported := map[string][]string{
-		"t1": {"192.168.127.5"},
-		"t2": {"192.168.127.6"},
+	reported := map[string]map[string][]string{
+		"node-1": {"t1": {"192.168.127.5"}},
+		"node-2": {"t2": {"192.168.127.6"}},
 	}
 
 	got := map[string][]string{}
@@ -241,7 +260,7 @@ func TestBuildDNSRecords_PrefersNodeReportedAddresses(t *testing.T) {
 // TestBuildDNSRecords_WithoutReportsFallsBack pins the pre-report behaviour.
 func TestBuildDNSRecords_WithoutReportsFallsBack(t *testing.T) {
 	services := []ServiceSpec{{ID: "svc1", Name: "web"}}
-	tasks := []TaskSpec{{ID: "t1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}}}
+	tasks := []TaskSpec{{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}}}
 
 	records := BuildDNSRecords(services, tasks, nil)
 	require.Len(t, records, 2)

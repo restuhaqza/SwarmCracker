@@ -39,8 +39,10 @@ type DNSRecord struct {
 }
 
 // dnsRecordsPath is the addn-hosts file dnsmasq re-reads on SIGHUP. It sits
-// next to the other per-bridge dnsmasq files (pid, log, leases) in this
-// process's private /tmp, which dnsmasq shares because the daemon starts it.
+// next to the other per-bridge dnsmasq files (pid, log, leases) in /tmp, which
+// is what the daemon and the dnsmasq it starts share — note that the shipped
+// unit does not set PrivateTmp, so these are ordinary world-readable /tmp paths
+// (the same pre-existing pattern as the log, pid and lease files).
 func (nm *NetworkManager) dnsRecordsPath() string {
 	return filepath.Join("/tmp", "dnsmasq-"+nm.config.BridgeName+".hosts")
 }
@@ -146,9 +148,9 @@ func validDNSName(name string) bool {
 
 // dnsmasqServing reports whether a dnsmasq instance is currently bound to this
 // manager's bridge, i.e. whether the bridge gateway is a working resolver. It
-// is a /proc scan rather than a pid-file read because a daemon restart gives
-// this process a fresh private /tmp, hiding the pid file of a server started by
-// the previous run.
+// scans /proc rather than reading the pid file because the pid file is only
+// visible to the process that started the server: a restarted daemon may not
+// share the same /tmp, so the pid file can be absent while the server is alive.
 func (nm *NetworkManager) dnsmasqServing() bool {
 	return len(findDnsmasqPIDs(nm.config.BridgeName)) > 0
 }

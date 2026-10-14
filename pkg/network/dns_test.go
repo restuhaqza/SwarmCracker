@@ -3,6 +3,7 @@
 package network
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
@@ -130,6 +131,90 @@ func TestProgramDNS_WriteFailureIsReported(t *testing.T) {
 	err := nm.ProgramDNS([]DNSRecord{{Name: "web", IPs: []string{"192.168.127.5"}}})
 	assert.Error(t, err)
 	assert.False(t, nm.dnsProgrammed, "a failed write must not be remembered as programmed")
+}
+
+// TestPrepareNetwork_ResolverAnnotation covers the producer side of the guest
+// resolver: a task is pointed at the bridge gateway only when a resolver is
+// actually running on that bridge, and only when the task stays on the default
+// bridge — a user-defined network has its own gateway and no resolver, so
+// pointing a guest there would leave it with no DNS at all.
+func TestPrepareNetwork_ResolverAnnotation(t *testing.T) {
+	base := func() *NetworkManager {
+		return NewNetworkManager(types.NetworkConfig{
+			BridgeName: "testbr0",
+			BridgeIP:   "192.168.127.1/24",
+			Subnet:     "192.168.127.0/24",
+		}).(*NetworkManager)
+	}
+	stubDnsmasq := func(pids []string) func() {
+		orig := findDnsmasqPIDs
+		findDnsmasqPIDs = func(string) []string { return pids }
+		return func() { findDnsmasqPIDs = orig }
+	}
+
+	t.Run("a live resolver on the bridge is published", func(t *testing.T) {
+		state := newMockState()
+		restore := setupMocksForTest(state)
+		defer restore()
+		defer stubDnsmasq([]string{"4242"})()
+
+		task := &types.Task{ID: "t1", Annotations: map[string]string{}}
+		require.NoError(t, base().PrepareNetwork(context.Background(), task))
+		assert.Equal(t, "192.168.127.1", task.Annotations[types.AnnotationResolver])
+	})
+
+	t.Run("no resolver, no annotation", func(t *testing.T) {
+		state := newMockState()
+		restore := setupMocksForTest(state)
+		defer restore()
+		defer stubDnsmasq(nil)()
+
+		task := &types.Task{ID: "t1", Annotations: map[string]string{}}
+		require.NoError(t, base().PrepareNetwork(context.Background(), task))
+		assert.NotContains(t, task.Annotations, types.AnnotationResolver,
+			"a guest must keep the image's resolver when nothing serves the bridge")
+	})
+
+	t.Run("a user-defined network is not pointed at the default resolver", func(t *testing.T) {
+		state := newMockState()
+		restore := setupMocksForTest(state)
+		defer restore()
+		defer stubDnsmasq([]string{"4242"})()
+
+		task := &types.Task{
+			ID:          "t1",
+			Annotations: map[string]string{},
+			Networks: []types.NetworkAttachment{{
+				Network:   types.Network{ID: "n1", Spec: types.NetworkSpec{Subnet: "10.10.0.0/24", Gateway: "10.10.0.1"}},
+				Addresses: []string{"10.10.0.17/24"},
+			}},
+		}
+		require.NoError(t, base().PrepareNetwork(context.Background(), task))
+		assert.NotContains(t, task.Annotations, types.AnnotationResolver,
+			"a user-defined network has its own gateway and no resolver")
+	})
+}
+
+// TestPrepareNetwork_ResolverAnnotationNilAnnotations asserts the annotation is
+// added even when the task arrived without an annotation map.
+func TestPrepareNetwork_ResolverAnnotationNilAnnotations(t *testing.T) {
+	state := newMockState()
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	orig := findDnsmasqPIDs
+	findDnsmasqPIDs = func(string) []string { return []string{"4242"} }
+	defer func() { findDnsmasqPIDs = orig }()
+
+	nm := NewNetworkManager(types.NetworkConfig{
+		BridgeName: "testbr0",
+		BridgeIP:   "192.168.127.1/24",
+		Subnet:     "192.168.127.0/24",
+	}).(*NetworkManager)
+
+	task := &types.Task{ID: "t1"}
+	require.NoError(t, nm.PrepareNetwork(context.Background(), task))
+	assert.Equal(t, "192.168.127.1", task.Annotations[types.AnnotationResolver])
 }
 
 func TestBridgeGatewayIP(t *testing.T) {
