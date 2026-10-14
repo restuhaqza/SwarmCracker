@@ -52,6 +52,9 @@ func startIngress(ctx context.Context, config *node.Config, executor *swarmkit.E
 	if !ok {
 		return nil
 	}
+	// Service DNS rides the same table: the resolver is programmed from the
+	// records the manager computed, on managers and workers alike.
+	dns, _ := nm.(ingress.DNSProgrammer)
 
 	cert, caPool, err := loadIngressTLS(config.StateDir)
 	if err != nil {
@@ -60,9 +63,9 @@ func startIngress(ctx context.Context, config *node.Config, executor *swarmkit.E
 	}
 
 	if ing.managerAddr == "" {
-		startIngressManager(ctx, config, lb, ing, cert, caPool)
+		startIngressManager(ctx, config, lb, dns, ing, cert, caPool)
 	} else {
-		startIngressWorker(ctx, lb, ing, cert, caPool)
+		startIngressWorker(ctx, lb, dns, ing, cert, caPool)
 	}
 
 	// Clear local ingress rules on shutdown so a node that leaves the cluster
@@ -71,12 +74,17 @@ func startIngress(ctx context.Context, config *node.Config, executor *swarmkit.E
 		if err := lb.ClearIngress(); err != nil {
 			log.G(ctx).WithError(err).Warn("Failed to clear ingress rules on shutdown")
 		}
+		if dns != nil {
+			if err := dns.ProgramDNS(nil); err != nil {
+				log.G(ctx).WithError(err).Warn("Failed to clear service DNS records on shutdown")
+			}
+		}
 	}
 }
 
 // startIngressManager runs the reconciler (control API -> local LB) and serves
 // the routing table to the other nodes.
-func startIngressManager(ctx context.Context, config *node.Config, lb ingress.LoadBalancer, ing ingressRuntime, cert tls.Certificate, caPool *x509.CertPool) {
+func startIngressManager(ctx context.Context, config *node.Config, lb ingress.LoadBalancer, dns ingress.DNSProgrammer, ing ingressRuntime, cert tls.Certificate, caPool *x509.CertPool) {
 	client, conn, err := newControlClient(config.StateDir, config.ListenControlAPI)
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Ingress mesh disabled: cannot create control client")
@@ -87,7 +95,7 @@ func startIngressManager(ctx context.Context, config *node.Config, lb ingress.Lo
 		_ = conn.Close()
 	}()
 
-	ctrl := ingress.NewController(ingress.NewControlClientSource(client), lb, 3*time.Second)
+	ctrl := ingress.NewController(ingress.NewControlClientSource(client), lb, dns, 3*time.Second)
 	go ctrl.Run(ctx)
 
 	srv := ingress.NewTableServer(ctrl, serverTLSConfig(cert, caPool), fmt.Sprintf(":%d", ing.port))
@@ -107,10 +115,10 @@ func startIngressManager(ctx context.Context, config *node.Config, lb ingress.Lo
 }
 
 // startIngressWorker fetches the routing table from a manager and programs the
-// local load balancer from it.
-func startIngressWorker(ctx context.Context, lb ingress.LoadBalancer, ing ingressRuntime, cert tls.Certificate, caPool *x509.CertPool) {
+// local load balancer and resolver from it.
+func startIngressWorker(ctx context.Context, lb ingress.LoadBalancer, dns ingress.DNSProgrammer, ing ingressRuntime, cert tls.Certificate, caPool *x509.CertPool) {
 	tc := ingress.NewTableClient(ing.tableURL(), clientTLSConfig(cert, caPool), 3*time.Second)
-	go tc.Run(ctx, lb)
+	go tc.Run(ctx, lb, dns)
 	log.G(ctx).Infof("Ingress mesh: worker fetching the table from %s", ing.managerAddr)
 }
 

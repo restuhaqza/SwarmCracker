@@ -352,6 +352,67 @@ originates on the node itself (so `curl 127.0.0.1:8080` works, like Docker).
 
 ---
 
+## Service DNS
+
+Every microVM resolves the cluster's services by name through the `dnsmasq` on
+its own node, so you do not have to look up guest IPs:
+
+```console
+$ swarmcracker vm exec <task> -- getent hosts web
+192.168.127.5    web
+$ swarmcracker vm exec <task> -- getent hosts tasks.web
+192.168.127.5    tasks.web
+192.168.127.6    tasks.web
+```
+
+| Name | Answers with |
+|------|--------------|
+| `<service>` | every running replica's IP |
+| `tasks.<service>` | every running replica's IP |
+
+A name with several replicas becomes several addresses, so the client picks one —
+the equivalent of Docker's `dnsrr` endpoint mode. Records follow the replicas: a
+task that stops is dropped from the answer within a few seconds (the table is
+recomputed and polled every 3s), and a service with no running replica stops
+resolving instead of pointing at a dead address. Anything the node does not know
+(an external hostname) is forwarded to the host's own resolver, so `apk`/`apt`
+and friends keep working.
+
+### How it fits together
+
+A manager computes the records from the control API — the same reconciler that
+builds the ingress routing table — and serves them to every node over mutual TLS
+(port `4243`). Each node writes them into its bridge `dnsmasq`'s hosts file and
+reloads it, and each guest's `/etc/resolv.conf` points at that bridge gateway.
+Service DNS is part of the ingress mesh, so `--ingress-mesh=false` turns it off
+too.
+
+An explicit `--dns` on the service always wins over the bridge resolver:
+
+```bash
+swarmcracker service create --name app --image myapp --dns 1.1.1.1
+```
+
+### Limitations
+
+- **The default network only.** A service attached to a user-defined network
+  (`--network`) keeps the image's own resolver: those networks get their own
+  bridge without a `dnsmasq`, and their cross-node datapath is still broken
+  ([#70](https://github.com/restuhaqza/SwarmCracker/issues/70)). On the default
+  network resolution is cross-node — a guest can reach a replica on another node
+  because the overlay is one shared L2 segment.
+- **Replica addresses, not the VIP.** The service VIP is allocated for ingress
+  services but is not a routable address on this datapath, so `<service>` answers
+  with the replicas.
+- **Golden images** boot their own init and never read the daemon's resolver
+  override, so the image's own `/etc/resolv.conf` applies.
+- **Names are cluster-wide.** A guest resolves any service, not only the ones on
+  its own network; per-network scoping is not implemented.
+- `dnsmasq` must be installed (it is part of the standard install). Without it no
+  resolver runs on the bridge, and a guest keeps the image's own resolver.
+
+---
+
 ## Problems
 
 ### VMs Can't Talk to Each Other

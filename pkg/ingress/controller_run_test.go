@@ -18,17 +18,17 @@ func (errSource) Services(context.Context) ([]ServiceSpec, error) {
 func (errSource) Tasks(context.Context) ([]TaskSpec, error) { return nil, nil }
 
 func TestReconcile_PropagatesSourceError(t *testing.T) {
-	err := NewController(errSource{}, &fakeLB{}, time.Second).Reconcile(context.Background())
+	err := NewController(errSource{}, &fakeLB{}, nil, time.Second).Reconcile(context.Background())
 	assert.Error(t, err)
 }
 
 func TestNewController_ClampsTinyInterval(t *testing.T) {
-	c := NewController(&fakeSource{}, &fakeLB{}, 10*time.Millisecond)
+	c := NewController(&fakeSource{}, &fakeLB{}, nil, 10*time.Millisecond)
 	assert.Equal(t, 2*time.Second, c.interval)
 }
 
 func TestController_RunToleratesReconcileErrors(t *testing.T) {
-	ctrl := NewController(errSource{}, &fakeLB{}, time.Second)
+	ctrl := NewController(errSource{}, &fakeLB{}, nil, time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -50,7 +50,7 @@ func TestController_RunReconcilesThenStops(t *testing.T) {
 		tasks:    []TaskSpec{{ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"192.168.127.5"}}},
 	}
 	lb := &fakeLB{}
-	ctrl := NewController(src, lb, time.Second)
+	ctrl := NewController(src, lb, nil, time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

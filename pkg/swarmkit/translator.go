@@ -135,7 +135,7 @@ func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
 	args = append(args, "console=ttyS0", "reboot=k", "panic=1", "pci=off", "nomodules", "init=/sbin/init")
 	args = append(args, netArgs...)
 	if container, err := task.Spec.GetContainer(); err == nil {
-		args = append(args, guestOverrideBootArgs(container)...)
+		args = append(args, guestOverrideBootArgs(container, task)...)
 	}
 	return strings.Join(args, " ")
 }
@@ -144,7 +144,11 @@ func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
 // wrapper reads from /proc/cmdline to apply per-task overrides (--hostname,
 // --dns). The CLI validates these values (hostname syntax, IP addresses) so they
 // never contain spaces.
-func guestOverrideBootArgs(container *types.Container) []string {
+//
+// The resolver defaults to the task's bridge gateway (published by the network
+// manager as AnnotationResolver) so a guest can resolve service names through
+// the node-local dnsmasq; an explicit --dns always wins.
+func guestOverrideBootArgs(container *types.Container, task *types.Task) []string {
 	if container == nil {
 		return nil
 	}
@@ -152,8 +156,13 @@ func guestOverrideBootArgs(container *types.Container) []string {
 	if h := strings.TrimSpace(container.Hostname); h != "" {
 		args = append(args, "sc.hostname="+h)
 	}
-	if len(container.DNS) > 0 {
+	switch {
+	case len(container.DNS) > 0:
 		args = append(args, "sc.dns="+strings.Join(container.DNS, ","))
+	case task != nil:
+		if r := strings.TrimSpace(task.Annotations[types.AnnotationResolver]); r != "" {
+			args = append(args, "sc.dns="+r)
+		}
 	}
 	return args
 }

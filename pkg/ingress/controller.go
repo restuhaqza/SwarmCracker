@@ -10,6 +10,8 @@ package ingress
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +28,11 @@ type PortSpec struct {
 
 // ServiceSpec is an ingress-relevant view of a service.
 type ServiceSpec struct {
-	ID    string
+	ID string
+	// Name is the service's name. It is used for service DNS records; the load
+	// balancer keys off ID.
+	Name string
+	// Ports are the service's ingress-published ports, if any.
 	Ports []PortSpec
 }
 
@@ -54,27 +60,40 @@ type LoadBalancer interface {
 	ClearIngress() error
 }
 
+// DNSProgrammer programs the node-local service-name records derived from the
+// cluster table. It is a separate dependency from LoadBalancer: a node serves
+// records whether or not it load-balances anything, and the two are programmed
+// from the same reconcile pass.
+type DNSProgrammer interface {
+	ProgramDNS(records []network.DNSRecord) error
+}
+
 // Controller reconciles the local ingress datapath with the cluster state and
 // exposes the resulting routing table.
 type Controller struct {
 	source   Source
 	lb       LoadBalancer
+	dns      DNSProgrammer
 	interval time.Duration
 
-	mu     sync.RWMutex
-	routes []network.IngressRoute
+	mu      sync.RWMutex
+	routes  []network.IngressRoute
+	records []network.DNSRecord
 }
 
 // NewController creates a controller. interval is clamped to a sane minimum.
-func NewController(source Source, lb LoadBalancer, interval time.Duration) *Controller {
+// dns may be nil, in which case service DNS records are computed but not
+// programmed.
+func NewController(source Source, lb LoadBalancer, dns DNSProgrammer, interval time.Duration) *Controller {
 	if interval < time.Second {
 		interval = 2 * time.Second
 	}
-	return &Controller{source: source, lb: lb, interval: interval}
+	return &Controller{source: source, lb: lb, dns: dns, interval: interval}
 }
 
 // Reconcile performs a single reconciliation pass: it recomputes the routing
-// table, publishes it, and programs the local load balancer.
+// table and the service-name records, publishes both, and programs the local
+// load balancer and resolver.
 func (c *Controller) Reconcile(ctx context.Context) error {
 	services, err := c.source.Services(ctx)
 	if err != nil {
@@ -86,12 +105,22 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 	}
 
 	routes := BuildRoutes(services, tasks)
+	records := BuildDNSRecords(services, tasks)
 
 	c.mu.Lock()
 	c.routes = routes
+	c.records = records
 	c.mu.Unlock()
 
-	return c.lb.ProgramIngress(routes)
+	if err := c.lb.ProgramIngress(routes); err != nil {
+		return err
+	}
+	if c.dns != nil {
+		if err := c.dns.ProgramDNS(records); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Routes returns a snapshot of the last computed routing table.
@@ -101,9 +130,16 @@ func (c *Controller) Routes() []network.IngressRoute {
 	return append([]network.IngressRoute(nil), c.routes...)
 }
 
+// Records returns a snapshot of the last computed service DNS records.
+func (c *Controller) Records() []network.DNSRecord {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]network.DNSRecord(nil), c.records...)
+}
+
 // Table returns the last computed routing table in its wire form.
 func (c *Controller) Table() Table {
-	return TableFromRoutes(c.Routes())
+	return TableFrom(c.Routes(), c.Records())
 }
 
 // Run reconciles on a timer until the context is cancelled.
@@ -167,4 +203,43 @@ func BuildRoutes(services []ServiceSpec, tasks []TaskSpec) []network.IngressRout
 		})
 	}
 	return routes
+}
+
+// BuildDNSRecords turns the cluster view into the service-name records every
+// node serves: `<name>` and `tasks.<name>` answer with the IPs of the service's
+// running replicas. A name with several replicas becomes several addresses, so
+// a client picks one — the same shape as Docker's `dnsrr` endpoint mode.
+//
+// A service with no running replica produces no record at all, so scaling down
+// or losing a service stops it resolving instead of pointing at dead addresses.
+// IPs are sorted so identical cluster state always yields an identical table
+// (and therefore an unchanged revision).
+func BuildDNSRecords(services []ServiceSpec, tasks []TaskSpec) []network.DNSRecord {
+	backends := make(map[string][]string)
+	for _, t := range tasks {
+		if t.State != TaskStateRunning {
+			continue
+		}
+		for _, ip := range t.IPs {
+			if ip != "" {
+				backends[t.ServiceID] = append(backends[t.ServiceID], ip)
+			}
+		}
+	}
+
+	records := make([]network.DNSRecord, 0, 2*len(services))
+	for _, s := range services {
+		name := strings.TrimSpace(s.Name)
+		ips := backends[s.ID]
+		if name == "" || len(ips) == 0 {
+			continue
+		}
+		sorted := append([]string(nil), ips...)
+		sort.Strings(sorted)
+		records = append(records,
+			network.DNSRecord{Name: name, IPs: sorted},
+			network.DNSRecord{Name: "tasks." + name, IPs: sorted},
+		)
+	}
+	return records
 }

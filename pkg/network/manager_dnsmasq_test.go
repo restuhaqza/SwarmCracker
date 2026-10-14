@@ -3,7 +3,6 @@ package network
 import (
 	"context"
 	"os"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -75,10 +74,16 @@ func TestSetupDHCP_ReusesRunningServer(t *testing.T) {
 	restore := setupMocksForTest(state)
 	defer restore()
 
-	// A tracked dnsmasq that is alive: point the pid file at this test process,
-	// which the mocked `kill -0` probe reports as running.
+	// A tracked dnsmasq that is alive (the mocked `kill -0` probe reports the
+	// PID as running) and that can serve service records. The PID itself is
+	// never signalled: the record-capability check is injected, so the test does
+	// not have to point the pid file at a process it must keep alive.
+	origCapable := dnsmasqRecordsCapable
+	dnsmasqRecordsCapable = func(string) bool { return true }
+	defer func() { dnsmasqRecordsCapable = origCapable }()
+
 	pidFile := "/tmp/dnsmasq-testbr0.pid"
-	require.NoError(t, os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o644))
+	require.NoError(t, os.WriteFile(pidFile, []byte("999999"), 0o644))
 	t.Cleanup(func() { _ = os.Remove(pidFile) })
 
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
@@ -91,6 +96,34 @@ func TestSetupDHCP_ReusesRunningServer(t *testing.T) {
 		assert.NotContains(t, call, "dnsmasq --interface",
 			"setupDHCP must not start a new dnsmasq while one is running")
 	}
+}
+
+// TestSetupDHCP_ReplacesRecordlessServer covers the upgrade path: an instance
+// that predates service records (no --addn-hosts) is alive and healthy but
+// cannot answer service names, so it is replaced instead of reused.
+func TestSetupDHCP_ReplacesRecordlessServer(t *testing.T) {
+	state := newMockState()
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	// Default capability: the tracked PID does not look like a dnsmasq started
+	// with --addn-hosts, so it is not reusable.
+	pidFile := "/tmp/dnsmasq-testbr0.pid"
+	require.NoError(t, os.WriteFile(pidFile, []byte("999999"), 0o644))
+	t.Cleanup(func() { _ = os.Remove(pidFile) })
+
+	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
+	nm := NewNetworkManager(config).(*NetworkManager)
+
+	require.NoError(t, nm.setupDHCP(context.Background()))
+
+	var started bool
+	for _, call := range state.calls {
+		if strings.HasPrefix(call, "dnsmasq --interface") {
+			started = true
+		}
+	}
+	assert.True(t, started, "a dnsmasq that cannot serve records must be replaced")
 }
 
 func TestSetupDHCP_StartsWhenTrackedPIDIsGone(t *testing.T) {

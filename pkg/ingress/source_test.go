@@ -36,8 +36,11 @@ func (f *fakeControlClient) ListTasks(context.Context, *api.ListTasksRequest, ..
 
 func ingressService(id string, ports ...*api.PortConfig) *api.Service {
 	return &api.Service{
-		ID:   id,
-		Spec: api.ServiceSpec{Endpoint: &api.EndpointSpec{Ports: ports}},
+		ID: id,
+		Spec: api.ServiceSpec{
+			Annotations: api.Annotations{Name: id},
+			Endpoint:    &api.EndpointSpec{Ports: ports},
+		},
 	}
 }
 
@@ -49,18 +52,30 @@ func TestControlClientSource_Services(t *testing.T) {
 		ingressService("host-svc", &api.PortConfig{
 			Protocol: api.ProtocolUDP, TargetPort: 53, PublishedPort: 5353, PublishMode: api.PublishModeHost,
 		}),
-		{ID: "no-endpoint"},
+		{ID: "no-endpoint", Spec: api.ServiceSpec{Annotations: api.Annotations{Name: "no-endpoint"}}},
 		ingressService("no-ports"),
 	}}
 
 	got, err := NewControlClientSource(client).Services(context.Background())
 	require.NoError(t, err)
-	require.Len(t, got, 1, "only ingress-published services are returned")
-	assert.Equal(t, "ingress-svc", got[0].ID)
-	require.Len(t, got[0].Ports, 1)
-	assert.Equal(t, "tcp", got[0].Ports[0].Protocol, "protocol is lowercased for iptables")
-	assert.Equal(t, uint32(8080), got[0].Ports[0].PublishedPort)
-	assert.Equal(t, uint32(80), got[0].Ports[0].TargetPort)
+	// Every service is returned: service DNS covers services that publish no
+	// ports at all, and BuildRoutes filters the load-balanced ones itself.
+	require.Len(t, got, 4)
+
+	byID := make(map[string]ServiceSpec, len(got))
+	for _, s := range got {
+		byID[s.ID] = s
+	}
+
+	assert.Equal(t, "ingress-svc", byID["ingress-svc"].Name, "the service name travels with the spec")
+	require.Len(t, byID["ingress-svc"].Ports, 1)
+	assert.Equal(t, "tcp", byID["ingress-svc"].Ports[0].Protocol, "protocol is lowercased for iptables")
+	assert.Equal(t, uint32(8080), byID["ingress-svc"].Ports[0].PublishedPort)
+	assert.Equal(t, uint32(80), byID["ingress-svc"].Ports[0].TargetPort)
+
+	assert.Empty(t, byID["host-svc"].Ports, "host-published ports are not load-balanced")
+	assert.Empty(t, byID["no-endpoint"].Ports)
+	assert.Empty(t, byID["no-ports"].Ports)
 }
 
 func TestControlClientSource_Services_Error(t *testing.T) {

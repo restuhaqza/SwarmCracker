@@ -21,7 +21,10 @@ func NewControlClientSource(client api.ControlClient) *ControlClientSource {
 	return &ControlClientSource{client: client, timeout: 10 * time.Second}
 }
 
-// Services returns the ingress-published services.
+// Services returns every service in the cluster, with its ingress-published
+// ports when it has any. All services are returned, not just ingress-published
+// ones, because service DNS records cover every service; BuildRoutes filters to
+// the ones that actually publish ports.
 func (s *ControlClientSource) Services(ctx context.Context) ([]ServiceSpec, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
@@ -33,24 +36,20 @@ func (s *ControlClientSource) Services(ctx context.Context) ([]ServiceSpec, erro
 
 	out := make([]ServiceSpec, 0, len(resp.Services))
 	for _, svc := range resp.Services {
-		if svc.Spec.Endpoint == nil {
-			continue
-		}
-		var ports []PortSpec
-		for _, p := range svc.Spec.Endpoint.Ports {
-			if p.PublishMode != api.PublishModeIngress {
-				continue
+		spec := ServiceSpec{ID: svc.ID, Name: svc.Spec.Annotations.Name}
+		if svc.Spec.Endpoint != nil {
+			for _, p := range svc.Spec.Endpoint.Ports {
+				if p.PublishMode != api.PublishModeIngress {
+					continue
+				}
+				spec.Ports = append(spec.Ports, PortSpec{
+					Protocol:      strings.ToLower(p.Protocol.String()),
+					PublishedPort: p.PublishedPort,
+					TargetPort:    p.TargetPort,
+				})
 			}
-			ports = append(ports, PortSpec{
-				Protocol:      strings.ToLower(p.Protocol.String()),
-				PublishedPort: p.PublishedPort,
-				TargetPort:    p.TargetPort,
-			})
 		}
-		if len(ports) == 0 {
-			continue
-		}
-		out = append(out, ServiceSpec{ID: svc.ID, Ports: ports})
+		out = append(out, spec)
 	}
 	return out, nil
 }
