@@ -154,7 +154,7 @@ Service (replicated microVM) management.
 | `--mount` | — | Mount a volume or host path: `type=volume\|bind,source=<src>,target=<path>[,readonly]` (repeatable) |
 | `--volume` / `-v` | — | Mount a volume or host path: `<src>:<dst>[:ro\|rw]` (repeatable) |
 | `--hostname` | — | Guest VM hostname (RFC 1123) |
-| `--dns` | — | Guest DNS nameserver, an IP address (repeatable) |
+| `--dns` | — | Guest DNS nameserver, an IP address (repeatable). Unset points the guest at its node's bridge resolver, which serves service names (see [Service DNS](/guides/networking/#service-dns)) |
 | `--network` | — | Attach the service to a user-defined network (repeatable; one NIC/IP per network) |
 | `--secret` | — | Grant access to a secret: `[src=]NAME[,target=PATH][,mode=0400][,uid=N][,gid=N]` (repeatable) |
 | `--config` | — | Grant access to a config: `[src=]NAME[,target=PATH][,mode=0444][,uid=N][,gid=N]` (repeatable) |
@@ -185,7 +185,10 @@ scheduler (`node.hostname`, `node.role`, `node.labels.*`, …). `--restart-*` an
 rolling-update orchestration.
 
 `--hostname` and `--dns` are honored: the value travels to the executor and the
-guest init applies it at boot (the VM's hostname and `/etc/resolv.conf`).
+guest init applies it at boot (the VM's hostname and `/etc/resolv.conf`). When
+`--dns` is not given, the guest is pointed at its node's bridge gateway, where
+the service-name records live — pass `--dns` to override that with your own
+resolvers.
 Because a SwarmCracker workload is a whole microVM rather than a process sharing
 a kernel, the container-execution flags `--user`, `--cap-add`, `--cap-drop` and
 `--read-only` cannot be enforced — the CLI **rejects them with a clear error** at

@@ -72,6 +72,14 @@ type NetworkManager struct {
 	// set is empty.
 	ingressProgrammed bool
 
+	// dnsRecords holds the canonical form of the last written service-name
+	// records file, so a reconcile that changes nothing does not rewrite it or
+	// reload dnsmasq. dnsProgrammed is set once the first DNS reconcile has
+	// run, so stale records from a previous daemon run are cleared even when
+	// the desired set is empty. Both are guarded by mu.
+	dnsRecords    string
+	dnsProgrammed bool
+
 	// dnsmasqMu serializes the dnsmasq lifecycle. Without it, concurrent VM
 	// creations race to kill and restart the DHCP server, leaking orphaned
 	// instances and logging "Address already in use".
@@ -531,6 +539,20 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		log.Warn().Err(err).Msg("Failed to setup DHCP, VMs may need static config")
 	}
 
+	// dnsmasq also serves DNS on the bridge gateway, which is where the
+	// node-local service records live, so point a task that stays on the
+	// default bridge at it. Tasks on a user-defined network are excluded: their
+	// bridge has its own gateway and no resolver, so the image's own resolver
+	// is a better answer than an address that answers nothing.
+	if !hasManagedAttachment(task.Networks) && nm.dnsmasqServing() {
+		if gw := nm.bridgeGatewayIP(); gw != "" {
+			if task.Annotations == nil {
+				task.Annotations = make(map[string]string, 1)
+			}
+			task.Annotations[types.AnnotationResolver] = gw
+		}
+	}
+
 	// User-defined networks are materialized locally (their own bridge + VXLAN),
 	// so they bypass the CNI path entirely.
 	if hasManagedAttachment(task.Networks) {
@@ -555,7 +577,7 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 		// Create a synthetic network attachment for default bridge
 		defaultNetwork := types.NetworkAttachment{
 			Network: types.Network{
-				ID: "default",
+				ID: types.DefaultNetworkID,
 				Spec: types.NetworkSpec{
 					Name:   "default",
 					Driver: "bridge",
@@ -1070,8 +1092,11 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		Str("gateway", gatewayIP.String()).
 		Msg("Setting up DHCP server")
 
-	// Reuse a healthy server instead of bouncing it on every VM creation.
-	if pid := nm.liveDnsmasqPID(nm.config.BridgeName); pid != "" {
+	// Reuse a healthy server instead of bouncing it on every VM creation — but
+	// only one that can serve service records. An instance started before this
+	// feature (or by an older daemon) has no --addn-hosts and would serve no
+	// records at all, so it is replaced rather than silently reused.
+	if pid := nm.liveDnsmasqPID(nm.config.BridgeName); pid != "" && dnsmasqServesRecords([]string{pid}) {
 		log.Debug().
 			Str("bridge", nm.config.BridgeName).
 			Str("pid", pid).
@@ -1079,11 +1104,12 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		return nil
 	}
 
-	// The pid file lives in this process's private /tmp, so a server started by
-	// another SwarmCracker process (e.g. the daemon) is invisible to it. Fall
-	// back to a /proc scan, which is global, and reuse that server too instead
-	// of colliding on 192.168.127.1:53.
-	if pids := findDnsmasqPIDs(nm.config.BridgeName); len(pids) > 0 {
+	// The pid file is only visible to the process that started the server: a
+	// standalone CLI run and the daemon can have different /tmp views (and a
+	// unit may set PrivateTmp), so a server started by another SwarmCracker
+	// process can be invisible. Fall back to a /proc scan, which is global, and
+	// reuse that server too instead of colliding on 192.168.127.1:53.
+	if pids := findDnsmasqPIDs(nm.config.BridgeName); len(pids) > 0 && dnsmasqServesRecords(pids) {
 		log.Debug().
 			Str("bridge", nm.config.BridgeName).
 			Strs("pids", pids).
@@ -1091,8 +1117,17 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		return nil
 	}
 
-	// Kill any existing dnsmasq for this bridge via PID file (safe, no shell injection)
+	// Kill any existing dnsmasq for this bridge: via the pid file, and via the
+	// /proc scan, because a restarted daemon has a fresh private /tmp and
+	// cannot see the pid file of a server the previous run left behind.
 	nm.killDnsmasqByPID(nm.config.BridgeName)
+	for _, pid := range findDnsmasqPIDs(nm.config.BridgeName) {
+		log.Info().
+			Str("bridge", nm.config.BridgeName).
+			Str("pid", pid).
+			Msg("Replacing dnsmasq instance that cannot serve service records")
+		nm.killByPID(pid)
+	}
 	time.Sleep(100 * time.Millisecond) // Brief pause to ensure process is killed
 
 	// Create log file with proper permissions for dnsmasq (runs as nobody).
@@ -1102,6 +1137,13 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	_ = osRemove(logFile) // Remove old file first
 	if err := osWriteFile(logFile, []byte{}, 0640); err != nil {
 		log.Warn().Err(err).Msg("Could not create dnsmasq log file")
+	}
+
+	// dnsmasq only reads its addn-hosts file at startup and on SIGHUP, so the
+	// file must exist before it starts; ProgramDNS rewrites it in place.
+	recordsFile := nm.dnsRecordsPath()
+	if err := osWriteFile(recordsFile, []byte{}, 0644); err != nil {
+		log.Warn().Err(err).Str("path", recordsFile).Msg("Could not create dnsmasq records file")
 	}
 
 	// Start dnsmasq for this bridge
@@ -1116,6 +1158,8 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	// --dhcp-range: define DHCP pool
 	// --dhcp-option=3: set gateway
 	// --dhcp-option=6: set DNS (use gateway as DNS proxy)
+	// --addn-hosts: service-name records the reconciler rewrites and reloads
+	//   with SIGHUP, so a guest can resolve service names through this bridge.
 	cmd := execCommand("dnsmasq",
 		"--interface", nm.config.BridgeName,
 		"--bind-interfaces",
@@ -1124,6 +1168,7 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		"--dhcp-range", fmt.Sprintf("%s,%s,12h", startIP.String(), endIP.String()),
 		"--dhcp-option", fmt.Sprintf("3,%s", gatewayIP.String()),
 		"--dhcp-option", fmt.Sprintf("6,%s", gatewayIP.String()),
+		"--addn-hosts", recordsFile,
 		"--log-queries",
 		"--log-dhcp",
 		"--log-facility=/tmp/dnsmasq-"+nm.config.BridgeName+".log",
@@ -1446,10 +1491,10 @@ func (nm *NetworkManager) cleanupDnsmasq() error {
 	}
 
 	// Note: do NOT sweep /proc and kill every dnsmasq bound to our bridges.
-	// The daemon and a standalone CLI run with separate private /tmp
-	// namespaces, so a client that reuses the daemon's server would otherwise
-	// tear it down on exit. Only instances this process started (tracked via
-	// its own pid files) are removed here.
+	// The daemon and a standalone CLI run can have separate /tmp views, so a
+	// client that reuses the daemon's server would otherwise tear it down on
+	// exit. Only instances this process started (tracked via its own pid files)
+	// are removed here.
 
 	log.Info().Msg("dnsmasq cleaned up")
 	return nil
@@ -1476,7 +1521,10 @@ func (nm *NetworkManager) liveDnsmasqPID(bridgeName string) string {
 
 // findDnsmasqPIDs returns the PIDs of running dnsmasq processes bound to the
 // given bridge, found by scanning /proc.
-func findDnsmasqPIDs(bridgeName string) []string {
+// findDnsmasqPIDs returns the PIDs of running dnsmasq processes bound to the
+// given bridge, found by scanning /proc. It is a variable so a test can decide
+// whether a resolver is "running" without a real dnsmasq process.
+var findDnsmasqPIDs = func(bridgeName string) []string {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil
@@ -1486,12 +1534,7 @@ func findDnsmasqPIDs(bridgeName string) []string {
 		if !entry.IsDir() {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join("/proc", entry.Name(), "cmdline"))
-		if err != nil {
-			continue
-		}
-		argv := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
-		if dnsmasqArgvMatches(argv, bridgeName) {
+		if dnsmasqArgvMatches(dnsmasqArgvForPID(entry.Name()), bridgeName) {
 			pids = append(pids, entry.Name())
 		}
 	}

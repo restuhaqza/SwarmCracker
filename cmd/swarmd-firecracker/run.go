@@ -221,6 +221,7 @@ func runAgent(ctx *cli.Context) error {
 		enabled:     ctx.Bool("ingress-mesh"),
 		port:        ingressPort,
 		managerAddr: ingressManager,
+		socketDir:   ctx.String("socket-dir"),
 	}
 
 	// Start node

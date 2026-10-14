@@ -22,6 +22,19 @@ const (
 	// to a concrete kernel path via the configured kernel profile registry, so
 	// a runtime kernel can be selected per image instead of host-wide.
 	AnnotationKernelProfile = "swarmcracker.kernel_profile"
+
+	// AnnotationResolver is the nameserver the guest should use, set by the
+	// network manager when the task's bridge has a live resolver (dnsmasq) on
+	// its gateway. The translator turns it into the sc.dns boot argument, which
+	// the guest init wrapper writes to /etc/resolv.conf. It is only a default:
+	// an explicit `--dns` on the service always wins.
+	AnnotationResolver = "swarmcracker.resolver"
+
+	// DefaultNetworkID is the network ID the executor gives the synthetic
+	// attachment it creates for a task that declares no networks, i.e. a task on
+	// the node's default bridge. Readers that care which bridge a task is on
+	// (the service DNS report) match on it.
+	DefaultNetworkID = "default"
 )
 
 // UsesPrebuiltRootfs reports whether the task runs a prebuilt golden image.

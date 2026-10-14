@@ -86,4 +86,26 @@ func TestTaskTranslatorImpl_GuestOverrides(t *testing.T) {
 		assert.NotContains(t, got, "sc.hostname=")
 		assert.NotContains(t, got, "sc.dns=")
 	})
+
+	t.Run("bridge resolver is the default", func(t *testing.T) {
+		task := &types.Task{
+			ID:          "t3",
+			Spec:        types.TaskSpec{Runtime: &types.Container{}},
+			Annotations: map[string]string{types.AnnotationResolver: "192.168.127.1"},
+		}
+		got := impl.buildBootArgs(task)
+		assert.Contains(t, got, "sc.dns=192.168.127.1",
+			"a guest on a bridge with a live resolver must use it")
+	})
+
+	t.Run("an explicit --dns beats the bridge resolver", func(t *testing.T) {
+		task := &types.Task{
+			ID:          "t4",
+			Spec:        types.TaskSpec{Runtime: &types.Container{DNS: []string{"1.1.1.1"}}},
+			Annotations: map[string]string{types.AnnotationResolver: "192.168.127.1"},
+		}
+		got := impl.buildBootArgs(task)
+		assert.Contains(t, got, "sc.dns=1.1.1.1")
+		assert.NotContains(t, got, "192.168.127.1")
+	})
 }
