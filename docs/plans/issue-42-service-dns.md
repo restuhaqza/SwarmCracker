@@ -40,9 +40,10 @@ manager→node table, the same mutual TLS, the same 3 s poll.
   behaviour is unchanged because `BuildRoutes` already ignores portless routes.
 - New `BuildDNSRecords(services, tasks, reported)` produces `[]network.DNSRecord` — for
   each service with a name, `<name>` and `tasks.<name>` → the IPs of its **running**
-  tasks, preferring the address the node running the task reported and falling back
-  to the control API's. A service with no running replica produces no record, so
-  records follow tasks starting and stopping with no stale entries.
+  tasks, taken only from the address the node running the task reported (the
+  control API's addresses are on other networks; see below). A service with no
+  running replica produces no record, so records follow tasks starting and
+  stopping with no stale entries.
 - The wire `Table` gains `Records []TableRecord{Name, IPs}`; the revision hash
   covers them, so workers detect record changes.
 
@@ -132,10 +133,12 @@ sites (manager controller, worker table client) program them.
 - **Single ingress manager.** Reports go to the same endpoint that serves the
   table, which only the node owning the mesh serves, so the report channel
   inherits the ingress mesh's one-serving-manager assumption.
-- **A report is only as good as the node's liveness.** The TTL bounds staleness
-  for reported addresses; where the control API also knows a task's address (an
-  ingress or user-defined attachment), that address follows SwarmKit's `RUNNING`
-  state instead.
+- **A report is only as good as the node's liveness.** The TTL bounds staleness:
+  a record disappears when its node stops reporting, or when the control API
+  stops reporting the task as `RUNNING`. There is deliberately no control-API
+  address fallback — those addresses are on networks this resolver's clients
+  cannot reach (found on the lab: a published task's record answered, and a
+  default-bridge guest could not ping it).
 - **Multi-attachment records.** Records only cover tasks on the default bridge:
   the reporter skips a task whose recorded network is not the default one, since
   the resolver's clients cannot reach any other address. A task attached to the

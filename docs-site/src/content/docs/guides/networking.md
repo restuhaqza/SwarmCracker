@@ -387,18 +387,18 @@ this work: the address of a task on the default bridge is allocated on the node
 and never written back into the SwarmKit task store, so the control API alone
 cannot say where a plain service's replicas live. The manager joins the reports
 with the control API — a task is only resolved while it is `RUNNING` — and serves
-the resulting records to every node in the routing table. Each node writes them
-into its bridge `dnsmasq`'s hosts file and reloads it, and each guest's
-`/etc/resolv.conf` points at that bridge gateway.
+the resulting records to every node in the routing table. Only the node's
+reported address is used; the addresses the control API knows are on the ingress
+network or a user-defined one, which a guest asking this resolver cannot reach.
+Each node writes the records into its bridge `dnsmasq`'s hosts file and reloads
+it, and each guest's `/etc/resolv.conf` points at that bridge gateway.
 
-A node that stops reporting (crash, partition, drain) stops contributing its
-*reported* addresses after a few seconds. Where the control API also knows a
-task's address — a task attached to an ingress or user-defined network — that
-address stays in the record until SwarmKit marks the task as no longer `RUNNING`,
-which is the same liveness signal `service ps` uses. Service DNS is part of the
-ingress mesh, so `--ingress-mesh=false` turns it off too; reports go to the same
-endpoint that serves the table (a manager reports to itself), so a cluster with
-several managers uses the one serving the mesh.
+A record disappears when the node running the task stops reporting (crash,
+partition, drain — within a few seconds) or when SwarmKit stops considering the
+task `RUNNING`, the same liveness signal `service ps` uses. Service DNS is part
+of the ingress mesh, so `--ingress-mesh=false` turns it off too; reports go to
+the same endpoint that serves the table (a manager reports to itself), so a
+cluster with several managers uses the one serving the mesh.
 
 An explicit `--dns` on the service always wins over the bridge resolver:
 

@@ -236,12 +236,15 @@ func BuildRoutes(services []ServiceSpec, tasks []TaskSpec) []network.IngressRout
 // running replicas. A name with several replicas becomes several addresses, so
 // a client picks one — the same shape as Docker's `dnsrr` endpoint mode.
 //
-// Addresses come from the node running each task when it has reported them
-// (reported is keyed by node ID and then task ID), falling back to what the
-// control API knows. The fallback only covers tasks attached to a network the
-// manager's allocator manages, which is why the report channel exists.
+// Addresses come only from the node running each task (reported is keyed by node
+// ID and then task ID). The control API's addresses are deliberately not used:
+// they are the ones its allocator handed out on the ingress network or a
+// user-defined one, and a guest asking this resolver — which serves the default
+// bridge — cannot reach any of them. A task no node has reported is therefore
+// not resolved at all, which is better than answering with an address the client
+// cannot use.
 //
-// A service with no running replica produces no record at all, so scaling down
+// A service with no running replica produces no record either, so scaling down
 // or losing a service stops it resolving instead of pointing at dead addresses.
 // IPs are sorted so identical cluster state always yields an identical table
 // (and therefore an unchanged revision).
@@ -251,13 +254,15 @@ func BuildDNSRecords(services []ServiceSpec, tasks []TaskSpec, reported map[stri
 		if t.State != TaskStateRunning {
 			continue
 		}
-		ips := t.IPs
 		// Only the node the control API says is running the task may supply its
 		// address, so a node cannot inject addresses for another node's tasks.
-		if byTask, ok := reported[t.NodeID]; ok {
-			if fromNode, ok := byTask[t.ID]; ok && len(fromNode) > 0 {
-				ips = fromNode
-			}
+		byTask, ok := reported[t.NodeID]
+		if !ok {
+			continue
+		}
+		ips, ok := byTask[t.ID]
+		if !ok || len(ips) == 0 {
+			continue
 		}
 		for _, ip := range ips {
 			if ip != "" {

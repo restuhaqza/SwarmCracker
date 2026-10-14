@@ -127,15 +127,19 @@ func TestReconcile_ProgramsDNSRecords(t *testing.T) {
 			{ID: "svc3", Name: "gone"}, // scaled to zero
 		},
 		tasks: []TaskSpec{
-			{ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"192.168.127.6"}},
-			{ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"192.168.127.5"}},
-			{ServiceID: "svc1", State: "failed", IPs: []string{"192.168.127.9"}},
-			{ServiceID: "svc2", State: TaskStateRunning, IPs: []string{"10.10.0.9"}},
+			{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning},
+			{ID: "t2", NodeID: "node-2", ServiceID: "svc1", State: TaskStateRunning},
+			{ID: "t3", NodeID: "node-1", ServiceID: "svc1", State: "failed"},
+			{ID: "t4", NodeID: "node-2", ServiceID: "svc2", State: TaskStateRunning},
 		},
 	}
 	dns := &fakeDNS{}
+	addrs := fakeAddresses{byNode: map[string]map[string][]string{
+		"node-1": {"t1": {"192.168.127.6"}, "t3": {"192.168.127.9"}},
+		"node-2": {"t2": {"192.168.127.5"}, "t4": {"10.10.0.9"}},
+	}}
 
-	require.NoError(t, NewController(src, &fakeLB{}, dns, nil, time.Second).Reconcile(context.Background()))
+	require.NoError(t, NewController(src, &fakeLB{}, dns, addrs, time.Second).Reconcile(context.Background()))
 
 	got := map[string][]string{}
 	for _, r := range dns.records() {
@@ -236,10 +240,10 @@ func TestReconcile_IgnoresAnotherNodesReport(t *testing.T) {
 	assert.Empty(t, dns.records(), "a report from a node that does not run the task is ignored")
 }
 
-// TestBuildDNSRecords_PrefersNodeReportedAddresses asserts the node's view wins
-// over the control API's (which can only see allocator-managed addresses), and
-// that a task with no report still falls back to it.
-func TestBuildDNSRecords_PrefersNodeReportedAddresses(t *testing.T) {
+// TestBuildDNSRecords_UsesNodeReportedAddresses asserts the node's report is the
+// only address source: the control API's addresses are on networks the resolver's
+// clients cannot reach, so a task with no report is not resolved at all.
+func TestBuildDNSRecords_UsesNodeReportedAddresses(t *testing.T) {
 	services := []ServiceSpec{{ID: "svc1", Name: "web"}}
 	tasks := []TaskSpec{
 		{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}},
@@ -257,12 +261,18 @@ func TestBuildDNSRecords_PrefersNodeReportedAddresses(t *testing.T) {
 	assert.Equal(t, []string{"192.168.127.5", "192.168.127.6"}, got["web"])
 }
 
-// TestBuildDNSRecords_WithoutReportsFallsBack pins the pre-report behaviour.
-func TestBuildDNSRecords_WithoutReportsFallsBack(t *testing.T) {
+// TestBuildDNSRecords_WithoutReportsResolvesNothing pins the deliberate absence
+// of a control-API fallback: answering with an address the client cannot reach
+// is worse than not answering.
+func TestBuildDNSRecords_WithoutReportsResolvesNothing(t *testing.T) {
 	services := []ServiceSpec{{ID: "svc1", Name: "web"}}
-	tasks := []TaskSpec{{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}}}
+	tasks := []TaskSpec{
+		{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}},
+		{ID: "t2", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning},
+	}
 
-	records := BuildDNSRecords(services, tasks, nil)
-	require.Len(t, records, 2)
-	assert.Equal(t, []string{"10.0.0.1"}, records[0].IPs)
+	assert.Empty(t, BuildDNSRecords(services, tasks, nil), "no report, no record")
+	assert.Empty(t, BuildDNSRecords(services, tasks, map[string]map[string][]string{
+		"node-9": {"t1": {"10.9.9.9"}, "t2": {"10.9.9.10"}}, // another node claims these tasks
+	}), "a report from a node that does not run the task is ignored")
 }
