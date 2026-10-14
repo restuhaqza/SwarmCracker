@@ -10,6 +10,8 @@ package ingress
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,16 +28,28 @@ type PortSpec struct {
 
 // ServiceSpec is an ingress-relevant view of a service.
 type ServiceSpec struct {
-	ID    string
+	ID string
+	// Name is the service's name. It is used for service DNS records; the load
+	// balancer keys off ID.
+	Name string
+	// Ports are the service's ingress-published ports, if any.
 	Ports []PortSpec
 }
 
 // TaskSpec is an ingress-relevant view of a task.
 type TaskSpec struct {
+	// ID is the task ID. Guest addresses are looked up by task ID, because the
+	// node running a task is the only place its default-bridge address exists.
+	ID string
+	// NodeID is the node the task is scheduled on. A reported address is only
+	// trusted when it comes from this node.
+	NodeID    string
 	ServiceID string
 	// State is the task state; only "running" tasks are load-balanced.
 	State string
-	// IPs are the task's guest addresses (one per network attachment).
+	// IPs are the task's guest addresses as the control API knows them. They are
+	// only populated for tasks attached to a network the manager's allocator
+	// manages (the ingress network, and user-defined networks).
 	IPs []string
 }
 
@@ -54,27 +68,53 @@ type LoadBalancer interface {
 	ClearIngress() error
 }
 
+// DNSProgrammer programs the node-local service-name records derived from the
+// cluster table. It is a separate dependency from LoadBalancer: a node serves
+// records whether or not it load-balances anything, and the two are programmed
+// from the same reconcile pass.
+type DNSProgrammer interface {
+	ProgramDNS(records []network.DNSRecord) error
+}
+
+// AddressSource supplies the guest addresses of running tasks, keyed by the
+// node that reported them and then by task ID. The control API only knows the
+// addresses of tasks attached to a network its own allocator manages, so this is
+// what lets service DNS cover plain services too.
+//
+// The reporting node is part of the key on purpose: a task's address is only
+// taken from the node the control API says is running it, so one node cannot
+// inject addresses for another node's tasks.
+type AddressSource interface {
+	Addresses() map[string]map[string][]string
+}
+
 // Controller reconciles the local ingress datapath with the cluster state and
 // exposes the resulting routing table.
 type Controller struct {
-	source   Source
-	lb       LoadBalancer
-	interval time.Duration
+	source    Source
+	lb        LoadBalancer
+	dns       DNSProgrammer
+	addresses AddressSource
+	interval  time.Duration
 
-	mu     sync.RWMutex
-	routes []network.IngressRoute
+	mu      sync.RWMutex
+	routes  []network.IngressRoute
+	records []network.DNSRecord
 }
 
 // NewController creates a controller. interval is clamped to a sane minimum.
-func NewController(source Source, lb LoadBalancer, interval time.Duration) *Controller {
+// dns and addresses may be nil, in which case records are computed but not
+// programmed, and only control-API addresses are used.
+func NewController(source Source, lb LoadBalancer, dns DNSProgrammer, addresses AddressSource, interval time.Duration) *Controller {
 	if interval < time.Second {
 		interval = 2 * time.Second
 	}
-	return &Controller{source: source, lb: lb, interval: interval}
+	return &Controller{source: source, lb: lb, dns: dns, addresses: addresses, interval: interval}
 }
 
 // Reconcile performs a single reconciliation pass: it recomputes the routing
-// table, publishes it, and programs the local load balancer.
+// table and the service-name records, publishes both, and programs the local
+// load balancer and resolver.
 func (c *Controller) Reconcile(ctx context.Context) error {
 	services, err := c.source.Services(ctx)
 	if err != nil {
@@ -85,13 +125,28 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 		return err
 	}
 
+	var reported map[string]map[string][]string
+	if c.addresses != nil {
+		reported = c.addresses.Addresses()
+	}
+
 	routes := BuildRoutes(services, tasks)
+	records := BuildDNSRecords(services, tasks, reported)
 
 	c.mu.Lock()
 	c.routes = routes
+	c.records = records
 	c.mu.Unlock()
 
-	return c.lb.ProgramIngress(routes)
+	if err := c.lb.ProgramIngress(routes); err != nil {
+		return err
+	}
+	if c.dns != nil {
+		if err := c.dns.ProgramDNS(records); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Routes returns a snapshot of the last computed routing table.
@@ -101,9 +156,16 @@ func (c *Controller) Routes() []network.IngressRoute {
 	return append([]network.IngressRoute(nil), c.routes...)
 }
 
+// Records returns a snapshot of the last computed service DNS records.
+func (c *Controller) Records() []network.DNSRecord {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]network.DNSRecord(nil), c.records...)
+}
+
 // Table returns the last computed routing table in its wire form.
 func (c *Controller) Table() Table {
-	return TableFromRoutes(c.Routes())
+	return TableFrom(c.Routes(), c.Records())
 }
 
 // Run reconciles on a timer until the context is cancelled.
@@ -167,4 +229,61 @@ func BuildRoutes(services []ServiceSpec, tasks []TaskSpec) []network.IngressRout
 		})
 	}
 	return routes
+}
+
+// BuildDNSRecords turns the cluster view into the service-name records every
+// node serves: `<name>` and `tasks.<name>` answer with the IPs of the service's
+// running replicas. A name with several replicas becomes several addresses, so
+// a client picks one — the same shape as Docker's `dnsrr` endpoint mode.
+//
+// Addresses come only from the node running each task (reported is keyed by node
+// ID and then task ID). The control API's addresses are deliberately not used:
+// they are the ones its allocator handed out on the ingress network or a
+// user-defined one, and a guest asking this resolver — which serves the default
+// bridge — cannot reach any of them. A task no node has reported is therefore
+// not resolved at all, which is better than answering with an address the client
+// cannot use.
+//
+// A service with no running replica produces no record either, so scaling down
+// or losing a service stops it resolving instead of pointing at dead addresses.
+// IPs are sorted so identical cluster state always yields an identical table
+// (and therefore an unchanged revision).
+func BuildDNSRecords(services []ServiceSpec, tasks []TaskSpec, reported map[string]map[string][]string) []network.DNSRecord {
+	backends := make(map[string][]string)
+	for _, t := range tasks {
+		if t.State != TaskStateRunning {
+			continue
+		}
+		// Only the node the control API says is running the task may supply its
+		// address, so a node cannot inject addresses for another node's tasks.
+		byTask, ok := reported[t.NodeID]
+		if !ok {
+			continue
+		}
+		ips, ok := byTask[t.ID]
+		if !ok || len(ips) == 0 {
+			continue
+		}
+		for _, ip := range ips {
+			if ip != "" {
+				backends[t.ServiceID] = append(backends[t.ServiceID], ip)
+			}
+		}
+	}
+
+	records := make([]network.DNSRecord, 0, 2*len(services))
+	for _, s := range services {
+		name := strings.TrimSpace(s.Name)
+		ips := backends[s.ID]
+		if name == "" || len(ips) == 0 {
+			continue
+		}
+		sorted := append([]string(nil), ips...)
+		sort.Strings(sorted)
+		records = append(records,
+			network.DNSRecord{Name: name, IPs: sorted},
+			network.DNSRecord{Name: "tasks." + name, IPs: sorted},
+		)
+	}
+	return records
 }

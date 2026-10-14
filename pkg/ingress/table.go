@@ -22,17 +22,28 @@ type TableRoute struct {
 	Backends  []string    `json:"backends"`
 }
 
+// TableRecord is one service-name record in the wire form: the names a node
+// should answer for, and the replica addresses to answer with.
+type TableRecord struct {
+	Name string   `json:"name"`
+	IPs  []string `json:"ips"`
+}
+
 // Table is the routing table a manager serves and nodes consume. Revision is a
 // short content hash so consumers can cheaply detect changes.
 type Table struct {
-	Revision string       `json:"revision"`
-	Routes   []TableRoute `json:"routes"`
+	Revision string        `json:"revision"`
+	Routes   []TableRoute  `json:"routes"`
+	Records  []TableRecord `json:"records,omitempty"`
 }
 
-// TableFromRoutes converts the internal routes into their wire form, computing
-// a stable revision from the route content.
-func TableFromRoutes(routes []network.IngressRoute) Table {
-	t := Table{Routes: make([]TableRoute, 0, len(routes))}
+// TableFrom converts the internal routes and service-name records into their
+// wire form, computing a stable revision from the content.
+func TableFrom(routes []network.IngressRoute, records []network.DNSRecord) Table {
+	t := Table{
+		Routes:  make([]TableRoute, 0, len(routes)),
+		Records: make([]TableRecord, 0, len(records)),
+	}
 	for _, r := range routes {
 		ports := make([]TablePort, 0, len(r.Ports))
 		for _, p := range r.Ports {
@@ -48,11 +59,27 @@ func TableFromRoutes(routes []network.IngressRoute) Table {
 			Backends:  append([]string(nil), r.Backends...),
 		})
 	}
-	if data, err := json.Marshal(t.Routes); err == nil {
+	for _, r := range records {
+		t.Records = append(t.Records, TableRecord{
+			Name: r.Name,
+			IPs:  append([]string(nil), r.IPs...),
+		})
+	}
+	if data, err := json.Marshal(struct {
+		Routes  []TableRoute  `json:"routes"`
+		Records []TableRecord `json:"records"`
+	}{t.Routes, t.Records}); err == nil {
 		sum := sha256.Sum256(data)
 		t.Revision = hex.EncodeToString(sum[:8])
 	}
 	return t
+}
+
+// TableFromRoutes converts routes only. It is kept for callers that have no
+// records to publish (tests, and any future route-only consumer); the daemon
+// always goes through TableFrom.
+func TableFromRoutes(routes []network.IngressRoute) Table {
+	return TableFrom(routes, nil)
 }
 
 // ToRoutes converts the wire form back into internal routes.
@@ -74,4 +101,16 @@ func (t Table) ToRoutes() []network.IngressRoute {
 		})
 	}
 	return routes
+}
+
+// ToRecords converts the wire form back into internal service-name records.
+func (t Table) ToRecords() []network.DNSRecord {
+	records := make([]network.DNSRecord, 0, len(t.Records))
+	for _, r := range t.Records {
+		records = append(records, network.DNSRecord{
+			Name: r.Name,
+			IPs:  append([]string(nil), r.IPs...),
+		})
+	}
+	return records
 }

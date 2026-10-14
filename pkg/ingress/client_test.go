@@ -13,7 +13,7 @@ import (
 )
 
 func TestTableClient_Fetch(t *testing.T) {
-	want := TableFromRoutes(sampleRoutes())
+	want := TableFrom(sampleRoutes(), sampleRecords())
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(want)
 	}))
@@ -23,6 +23,7 @@ func TestTableClient_Fetch(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want.Revision, got.Revision)
 	assert.Len(t, got.Routes, 2)
+	assert.Equal(t, sampleRecords(), got.ToRecords())
 }
 
 func TestTableClient_Fetch_StatusError(t *testing.T) {
@@ -46,22 +47,25 @@ func TestTableClient_Fetch_BadJSON(t *testing.T) {
 }
 
 func TestTableClient_RunProgramsLB(t *testing.T) {
-	want := TableFromRoutes(sampleRoutes())
+	want := TableFrom(sampleRoutes(), sampleRecords())
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(want)
 	}))
 	defer ts.Close()
 
 	lb := &fakeLB{}
+	dns := &fakeDNS{}
 	ctrl := NewTableClient(ts.URL, nil, time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		ctrl.Run(ctx, lb)
+		ctrl.Run(ctx, lb, dns)
 		close(done)
 	}()
 
 	require.Eventually(t, func() bool { return lb.count() >= 1 }, 2*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool { return dns.count() >= 1 }, 2*time.Second, 10*time.Millisecond)
+	assert.Equal(t, sampleRecords(), dns.records(), "the resolver is programmed from the same table")
 	cancel()
 	select {
 	case <-done:
@@ -81,7 +85,7 @@ func TestTableClient_RunKeepsLastOnError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		ctrl.Run(ctx, lb)
+		ctrl.Run(ctx, lb, nil)
 		close(done)
 	}()
 

@@ -141,3 +141,29 @@ func RemoveVMMetadata(dir, taskID string) error {
 	}
 	return nil
 }
+
+// ListVMMetadata reads the metadata of every task under dir. Malformed files are
+// skipped rather than failing the whole listing, so one corrupt sidecar cannot
+// hide the node's other VMs.
+func ListVMMetadata(dir string) []*VMMetadata {
+	if strings.TrimSpace(dir) == "" {
+		return nil
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*"+VMMetadataSuffix))
+	if err != nil {
+		return nil
+	}
+	out := make([]*VMMetadata, 0, len(matches))
+	for _, path := range matches {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		var md VMMetadata
+		if err := json.Unmarshal(data, &md); err != nil || md.ID == "" {
+			continue
+		}
+		out = append(out, &md)
+	}
+	return out
+}

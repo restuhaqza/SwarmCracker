@@ -352,6 +352,84 @@ originates on the node itself (so `curl 127.0.0.1:8080` works, like Docker).
 
 ---
 
+## Service DNS
+
+A microVM whose resolver points at its node's bridge gateway — the default for a
+service on the default network — resolves the cluster's services by name, so you
+do not have to look up guest IPs:
+
+```console
+$ swarmcracker vm exec <task> -- getent hosts web
+192.168.127.5    web
+$ swarmcracker vm exec <task> -- getent hosts tasks.web
+192.168.127.5    tasks.web
+192.168.127.6    tasks.web
+```
+
+| Name | Answers with |
+|------|--------------|
+| `<service>` | every running replica's IP |
+| `tasks.<service>` | every running replica's IP |
+
+A name with several replicas becomes several addresses, so the client picks one —
+the equivalent of Docker's `dnsrr` endpoint mode. Records follow the replicas: a
+task that stops is dropped from the answer within a few seconds (the table is
+recomputed and polled every 3s), and a service with no running replica stops
+resolving instead of pointing at a dead address. Anything the node does not know
+(an external hostname) is forwarded to the host's own resolver, so `apk`/`apt`
+and friends keep working.
+
+### How it fits together
+
+Every node reports the guest addresses of the tasks it runs to the manager, over
+the same mutual-TLS channel as the table (port `4243`). That report is what makes
+this work: the address of a task on the default bridge is allocated on the node
+and never written back into the SwarmKit task store, so the control API alone
+cannot say where a plain service's replicas live. The manager joins the reports
+with the control API — a task is only resolved while it is `RUNNING` — and serves
+the resulting records to every node in the routing table. Only the node's
+reported address is used; the addresses the control API knows are on the ingress
+network or a user-defined one, which a guest asking this resolver cannot reach.
+Each node writes the records into its bridge `dnsmasq`'s hosts file and reloads
+it, and each guest's `/etc/resolv.conf` points at that bridge gateway.
+
+A record disappears when the node running the task stops reporting (crash,
+partition, drain — within a few seconds) or when SwarmKit stops considering the
+task `RUNNING`, the same liveness signal `service ps` uses. Service DNS is part
+of the ingress mesh, so `--ingress-mesh=false` turns it off too; reports go to
+the same endpoint that serves the table (a manager reports to itself), so a
+cluster with several managers uses the one serving the mesh.
+
+An explicit `--dns` on the service always wins over the bridge resolver:
+
+```bash
+swarmcracker service create --name app --image myapp --dns 1.1.1.1
+```
+
+### Limitations
+
+- **Published and user-defined networks are not resolved by name.** Records only
+  cover tasks on the default bridge, because that is the bridge this node's
+  resolver serves: a guest asking it cannot reach an address on the ingress
+  network or on a user-defined one, and answering with one would send it
+  somewhere it cannot go. Reach a published service through its published port.
+  (User-defined overlays are also broken cross-node —
+  [#70](https://github.com/restuhaqza/SwarmCracker/issues/70) — and they get no
+  `dnsmasq` of their own, so a guest attached *only* to one keeps the image's
+  resolver.)
+- **Replica addresses, not the VIP.** The service VIP is allocated for ingress
+  services but is not a routable address on this datapath, so `<service>` answers
+  with the replicas.
+- **Golden images** boot their own init and never read the daemon's resolver
+  override, so the image's own `/etc/resolv.conf` applies.
+- **Names are cluster-wide.** A guest resolves any service on the default
+  network, not only the ones on its own node; per-network scoping is not
+  implemented.
+- `dnsmasq` must be installed (it is part of the standard install). Without it no
+  resolver runs on the bridge, and a guest keeps the image's own resolver.
+
+---
+
 ## Problems
 
 ### VMs Can't Talk to Each Other

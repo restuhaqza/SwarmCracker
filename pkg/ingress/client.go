@@ -57,10 +57,10 @@ func (c *TableClient) Fetch(ctx context.Context) (Table, error) {
 	return t, nil
 }
 
-// Run fetches the table on a timer and programs the load balancer from it until
-// the context is cancelled. On fetch failure it keeps the last programmed rules
-// rather than dropping them.
-func (c *TableClient) Run(ctx context.Context, lb LoadBalancer) {
+// Run fetches the table on a timer and programs the load balancer and the
+// local resolver from it until the context is cancelled. On fetch failure it
+// keeps the last programmed rules rather than dropping them. dns may be nil.
+func (c *TableClient) Run(ctx context.Context, lb LoadBalancer, dns DNSProgrammer) {
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
 
@@ -72,6 +72,11 @@ func (c *TableClient) Run(ctx context.Context, lb LoadBalancer) {
 		}
 		if err := lb.ProgramIngress(table.ToRoutes()); err != nil {
 			log.Warn().Err(err).Msg("Failed to program ingress rules from table")
+		}
+		if dns != nil {
+			if err := dns.ProgramDNS(table.ToRecords()); err != nil {
+				log.Warn().Err(err).Msg("Failed to program service DNS records from table")
+			}
 		}
 	}
 

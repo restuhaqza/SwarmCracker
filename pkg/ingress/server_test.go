@@ -1,10 +1,15 @@
 package ingress
 
 import (
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,7 +21,7 @@ func (f fakeProvider) Table() Table { return f.table }
 
 func TestTableServer_ServesTable(t *testing.T) {
 	want := TableFromRoutes(sampleRoutes())
-	srv := NewTableServer(fakeProvider{want}, nil, ":0")
+	srv := NewTableServer(fakeProvider{want}, nil, nil, ":0")
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 
@@ -33,7 +38,7 @@ func TestTableServer_ServesTable(t *testing.T) {
 }
 
 func TestTableServer_RejectsNonGET(t *testing.T) {
-	srv := NewTableServer(fakeProvider{}, nil, ":0")
+	srv := NewTableServer(fakeProvider{}, nil, nil, ":0")
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 
@@ -41,4 +46,82 @@ func TestTableServer_RejectsNonGET(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}
+
+// reportRequest builds a report request carrying a client certificate, which is
+// where the server takes the reporting node's identity from.
+func reportRequest(body string, withCert bool) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, "/v1/ingress/report", strings.NewReader(body))
+	if withCert {
+		req.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{
+			Subject: pkix.Name{CommonName: "node-1"},
+		}}}
+	}
+	return req
+}
+
+// TestTableServer_StoresNodeReport covers the report endpoint: the report is
+// stored under the certificate's identity — not the body's claim — and
+// addresses are normalized.
+func TestTableServer_StoresNodeReport(t *testing.T) {
+	reports := NewReportStore(time.Minute)
+	srv := NewTableServer(fakeProvider{}, reports, nil, ":0")
+
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, reportRequest(`{"node_id":"spoofed","tasks":[{"task_id":"t1","ips":["192.168.127.5/24"]}]}`, true))
+
+	require.Equal(t, http.StatusNoContent, rec.Code)
+	require.Contains(t, reports.byNode, "node-1", "the report is stored under the certificate identity")
+	require.NotContains(t, reports.byNode, "spoofed", "the body cannot claim another node")
+	assert.Equal(t, map[string][]string{"t1": {"192.168.127.5"}}, reports.Addresses()["node-1"],
+		"the CIDR suffix is stripped")
+}
+
+// TestTableServer_ReportRejectsOversizedPayload asserts the size cap is enforced,
+// so a misbehaving node cannot stream the manager out of memory.
+func TestTableServer_ReportRejectsOversizedPayload(t *testing.T) {
+	reports := NewReportStore(time.Minute)
+	srv := NewTableServer(fakeProvider{}, reports, nil, ":0")
+
+	oversized := `{"tasks":[],"pad":"` + strings.Repeat("x", maxTaskReportBytes+1) + `"}`
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, reportRequest(oversized, true))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, reports.Addresses())
+}
+
+// TestTableServer_ReportRequiresCertificate asserts a report without a client
+// certificate is refused, so a node cannot report on another node's behalf.
+func TestTableServer_ReportRequiresCertificate(t *testing.T) {
+	srv := NewTableServer(fakeProvider{}, NewReportStore(time.Minute), nil, ":0")
+
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, reportRequest(`{"tasks":[]}`, false))
+
+	assert.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestTableServer_ReportRejectsBadPayload asserts a malformed report is rejected
+// rather than stored as an empty one.
+func TestTableServer_ReportRejectsBadPayload(t *testing.T) {
+	reports := NewReportStore(time.Minute)
+	srv := NewTableServer(fakeProvider{}, reports, nil, ":0")
+
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, reportRequest("not json", true))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Empty(t, reports.Addresses())
+}
+
+// TestTableServer_ReportingDisabled asserts the endpoint does not exist when the
+// server was created without a store.
+func TestTableServer_ReportingDisabled(t *testing.T) {
+	srv := NewTableServer(fakeProvider{}, nil, nil, ":0")
+
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, reportRequest(`{"tasks":[]}`, true))
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
 }

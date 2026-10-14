@@ -2,6 +2,7 @@ package ingress
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +55,38 @@ func (f *fakeLB) routes() []network.IngressRoute {
 	return f.last
 }
 
+// fakeDNS records the service-name records the controller programs, so a test
+// can prove they reach the resolver.
+type fakeDNS struct {
+	mu      sync.Mutex
+	last    []network.DNSRecord
+	calls   int
+	program func([]network.DNSRecord) error
+}
+
+func (f *fakeDNS) ProgramDNS(records []network.DNSRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.last = records
+	f.calls++
+	if f.program != nil {
+		return f.program(records)
+	}
+	return nil
+}
+
+func (f *fakeDNS) records() []network.DNSRecord {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.last
+}
+
+func (f *fakeDNS) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
 func TestReconcile_UsesOnlyRunningReplicas(t *testing.T) {
 	src := &fakeSource{
 		services: []ServiceSpec{{
@@ -69,7 +102,7 @@ func TestReconcile_UsesOnlyRunningReplicas(t *testing.T) {
 	}
 	lb := &fakeLB{}
 
-	require.NoError(t, NewController(src, lb, time.Second).Reconcile(context.Background()))
+	require.NoError(t, NewController(src, lb, nil, nil, time.Second).Reconcile(context.Background()))
 
 	routes := lb.routes()
 	require.Len(t, routes, 1)
@@ -79,6 +112,59 @@ func TestReconcile_UsesOnlyRunningReplicas(t *testing.T) {
 	assert.Equal(t, uint32(8080), routes[0].Ports[0].PublishedPort)
 	assert.Equal(t, uint32(80), routes[0].Ports[0].TargetPort)
 	assert.Equal(t, "tcp", routes[0].Ports[0].Protocol)
+}
+
+// TestReconcile_ProgramsDNSRecords proves one reconcile pass programs both the
+// load balancer and the resolver: `<name>` and `tasks.<name>` answer with the
+// running replicas' IPs, a service with no running replica produces no record at
+// all, and the addresses are sorted so identical cluster state yields an
+// identical table.
+func TestReconcile_ProgramsDNSRecords(t *testing.T) {
+	src := &fakeSource{
+		services: []ServiceSpec{
+			{ID: "svc1", Name: "web"},
+			{ID: "svc2", Name: "api"},
+			{ID: "svc3", Name: "gone"}, // scaled to zero
+		},
+		tasks: []TaskSpec{
+			{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning},
+			{ID: "t2", NodeID: "node-2", ServiceID: "svc1", State: TaskStateRunning},
+			{ID: "t3", NodeID: "node-1", ServiceID: "svc1", State: "failed"},
+			{ID: "t4", NodeID: "node-2", ServiceID: "svc2", State: TaskStateRunning},
+		},
+	}
+	dns := &fakeDNS{}
+	addrs := fakeAddresses{byNode: map[string]map[string][]string{
+		"node-1": {"t1": {"192.168.127.6"}, "t3": {"192.168.127.9"}},
+		"node-2": {"t2": {"192.168.127.5"}, "t4": {"10.10.0.9"}},
+	}}
+
+	require.NoError(t, NewController(src, &fakeLB{}, dns, addrs, time.Second).Reconcile(context.Background()))
+
+	got := map[string][]string{}
+	for _, r := range dns.records() {
+		got[r.Name] = r.IPs
+	}
+	assert.Equal(t, []string{"192.168.127.5", "192.168.127.6"}, got["web"], "replicas are sorted")
+	assert.Equal(t, []string{"192.168.127.5", "192.168.127.6"}, got["tasks.web"])
+	assert.Equal(t, []string{"10.10.0.9"}, got["api"])
+	assert.Equal(t, []string{"10.10.0.9"}, got["tasks.api"])
+	assert.NotContains(t, got, "gone", "a service with no running replica must not resolve")
+	assert.NotContains(t, got, "tasks.gone")
+	assert.Equal(t, 1, dns.calls)
+}
+
+// TestReconcile_DNSFailureIsReported asserts a resolver failure surfaces as a
+// reconcile error instead of being swallowed.
+func TestReconcile_DNSFailureIsReported(t *testing.T) {
+	src := &fakeSource{
+		services: []ServiceSpec{{ID: "svc1", Name: "web"}},
+		tasks:    []TaskSpec{{ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}}},
+	}
+	dns := &fakeDNS{program: func([]network.DNSRecord) error { return errors.New("boom") }}
+
+	err := NewController(src, &fakeLB{}, dns, nil, time.Second).Reconcile(context.Background())
+	assert.Error(t, err)
 }
 
 func TestReconcile_DropsServiceWithNoHealthyReplica(t *testing.T) {
@@ -93,7 +179,7 @@ func TestReconcile_DropsServiceWithNoHealthyReplica(t *testing.T) {
 	}
 	lb := &fakeLB{}
 
-	require.NoError(t, NewController(src, lb, time.Second).Reconcile(context.Background()))
+	require.NoError(t, NewController(src, lb, nil, nil, time.Second).Reconcile(context.Background()))
 	assert.Empty(t, lb.routes(), "a service with no running replica must not be load-balanced")
 }
 
@@ -104,6 +190,89 @@ func TestReconcile_SkipsServicesWithoutIngressPorts(t *testing.T) {
 	}
 	lb := &fakeLB{}
 
-	require.NoError(t, NewController(src, lb, time.Second).Reconcile(context.Background()))
+	require.NoError(t, NewController(src, lb, nil, nil, time.Second).Reconcile(context.Background()))
 	assert.Empty(t, lb.routes())
+}
+
+// fakeAddresses supplies the task addresses a node reported.
+type fakeAddresses struct {
+	byNode map[string]map[string][]string
+}
+
+func (f fakeAddresses) Addresses() map[string]map[string][]string { return f.byNode }
+
+// TestReconcile_UsesNodeReportedAddresses is the point of the report channel: a
+// plain service's replicas have no control-API address at all, so without the
+// node's report there would be no record to serve.
+func TestReconcile_UsesNodeReportedAddresses(t *testing.T) {
+	src := &fakeSource{
+		services: []ServiceSpec{{ID: "svc1", Name: "web"}},
+		tasks:    []TaskSpec{{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning}},
+	}
+	dns := &fakeDNS{}
+
+	require.NoError(t, NewController(src, &fakeLB{}, dns, fakeAddresses{byNode: map[string]map[string][]string{
+		"node-1": {"t1": {"192.168.127.5"}},
+	}}, time.Second).Reconcile(context.Background()))
+
+	got := map[string][]string{}
+	for _, r := range dns.records() {
+		got[r.Name] = r.IPs
+	}
+	assert.Equal(t, []string{"192.168.127.5"}, got["web"])
+	assert.Equal(t, []string{"192.168.127.5"}, got["tasks.web"])
+}
+
+// TestReconcile_IgnoresAnotherNodesReport asserts the join is bound to the node
+// the control API says is running the task, so a node cannot inject addresses
+// for another node's tasks.
+func TestReconcile_IgnoresAnotherNodesReport(t *testing.T) {
+	src := &fakeSource{
+		services: []ServiceSpec{{ID: "svc1", Name: "web"}},
+		tasks:    []TaskSpec{{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning}},
+	}
+	dns := &fakeDNS{}
+
+	require.NoError(t, NewController(src, &fakeLB{}, dns, fakeAddresses{byNode: map[string]map[string][]string{
+		"node-2": {"t1": {"10.9.9.9"}}, // another node claims this task
+	}}, time.Second).Reconcile(context.Background()))
+
+	assert.Empty(t, dns.records(), "a report from a node that does not run the task is ignored")
+}
+
+// TestBuildDNSRecords_UsesNodeReportedAddresses asserts the node's report is the
+// only address source: the control API's addresses are on networks the resolver's
+// clients cannot reach, so a task with no report is not resolved at all.
+func TestBuildDNSRecords_UsesNodeReportedAddresses(t *testing.T) {
+	services := []ServiceSpec{{ID: "svc1", Name: "web"}}
+	tasks := []TaskSpec{
+		{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}},
+		{ID: "t2", NodeID: "node-2", ServiceID: "svc1", State: TaskStateRunning},
+	}
+	reported := map[string]map[string][]string{
+		"node-1": {"t1": {"192.168.127.5"}},
+		"node-2": {"t2": {"192.168.127.6"}},
+	}
+
+	got := map[string][]string{}
+	for _, r := range BuildDNSRecords(services, tasks, reported) {
+		got[r.Name] = r.IPs
+	}
+	assert.Equal(t, []string{"192.168.127.5", "192.168.127.6"}, got["web"])
+}
+
+// TestBuildDNSRecords_WithoutReportsResolvesNothing pins the deliberate absence
+// of a control-API fallback: answering with an address the client cannot reach
+// is worse than not answering.
+func TestBuildDNSRecords_WithoutReportsResolvesNothing(t *testing.T) {
+	services := []ServiceSpec{{ID: "svc1", Name: "web"}}
+	tasks := []TaskSpec{
+		{ID: "t1", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}},
+		{ID: "t2", NodeID: "node-1", ServiceID: "svc1", State: TaskStateRunning},
+	}
+
+	assert.Empty(t, BuildDNSRecords(services, tasks, nil), "no report, no record")
+	assert.Empty(t, BuildDNSRecords(services, tasks, map[string]map[string][]string{
+		"node-9": {"t1": {"10.9.9.9"}, "t2": {"10.9.9.10"}}, // another node claims these tasks
+	}), "a report from a node that does not run the task is ignored")
 }

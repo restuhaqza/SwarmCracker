@@ -48,4 +48,37 @@ func TestTable_Empty(t *testing.T) {
 	table := TableFromRoutes(nil)
 	assert.Empty(t, table.Routes)
 	assert.Empty(t, table.ToRoutes())
+	assert.Empty(t, table.Records)
+	assert.Empty(t, table.ToRecords())
+}
+
+func sampleRecords() []network.DNSRecord {
+	return []network.DNSRecord{
+		{Name: "web", IPs: []string{"192.168.127.5", "192.168.127.6"}},
+		{Name: "tasks.web", IPs: []string{"192.168.127.5", "192.168.127.6"}},
+	}
+}
+
+// TestTable_RecordsRoundTrip covers the service-name records riding the same
+// wire table as the routes, so a worker learns both from one fetch.
+func TestTable_RecordsRoundTrip(t *testing.T) {
+	records := sampleRecords()
+	table := TableFrom(sampleRoutes(), records)
+	require.Len(t, table.Records, 2)
+	assert.Equal(t, records, table.ToRecords())
+}
+
+// TestTable_RevisionTracksRecords asserts a record change alone (with no route
+// change) still moves the revision, so a node notices a service appearing or
+// losing a replica.
+func TestTable_RevisionTracksRecords(t *testing.T) {
+	base := TableFrom(sampleRoutes(), sampleRecords())
+
+	same := TableFrom(sampleRoutes(), sampleRecords())
+	assert.Equal(t, base.Revision, same.Revision)
+
+	changed := sampleRecords()
+	changed[0].IPs = []string{"192.168.127.5"}
+	other := TableFrom(sampleRoutes(), changed)
+	assert.NotEqual(t, base.Revision, other.Revision, "a record change must move the revision")
 }
