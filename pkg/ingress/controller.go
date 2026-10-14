@@ -38,10 +38,15 @@ type ServiceSpec struct {
 
 // TaskSpec is an ingress-relevant view of a task.
 type TaskSpec struct {
+	// ID is the task ID. Guest addresses are looked up by task ID, because the
+	// node running a task is the only place its default-bridge address exists.
+	ID        string
 	ServiceID string
 	// State is the task state; only "running" tasks are load-balanced.
 	State string
-	// IPs are the task's guest addresses (one per network attachment).
+	// IPs are the task's guest addresses as the control API knows them. They are
+	// only populated for tasks attached to a network the manager's allocator
+	// manages (the ingress network, and user-defined networks).
 	IPs []string
 }
 
@@ -68,13 +73,22 @@ type DNSProgrammer interface {
 	ProgramDNS(records []network.DNSRecord) error
 }
 
+// AddressSource supplies the guest addresses of running tasks, keyed by task ID,
+// as reported by the node running each task. The control API only knows the
+// addresses of tasks attached to a network its own allocator manages, so this is
+// what lets service DNS cover plain services too.
+type AddressSource interface {
+	Addresses() map[string][]string
+}
+
 // Controller reconciles the local ingress datapath with the cluster state and
 // exposes the resulting routing table.
 type Controller struct {
-	source   Source
-	lb       LoadBalancer
-	dns      DNSProgrammer
-	interval time.Duration
+	source    Source
+	lb        LoadBalancer
+	dns       DNSProgrammer
+	addresses AddressSource
+	interval  time.Duration
 
 	mu      sync.RWMutex
 	routes  []network.IngressRoute
@@ -82,13 +96,13 @@ type Controller struct {
 }
 
 // NewController creates a controller. interval is clamped to a sane minimum.
-// dns may be nil, in which case service DNS records are computed but not
-// programmed.
-func NewController(source Source, lb LoadBalancer, dns DNSProgrammer, interval time.Duration) *Controller {
+// dns and addresses may be nil, in which case records are computed but not
+// programmed, and only control-API addresses are used.
+func NewController(source Source, lb LoadBalancer, dns DNSProgrammer, addresses AddressSource, interval time.Duration) *Controller {
 	if interval < time.Second {
 		interval = 2 * time.Second
 	}
-	return &Controller{source: source, lb: lb, dns: dns, interval: interval}
+	return &Controller{source: source, lb: lb, dns: dns, addresses: addresses, interval: interval}
 }
 
 // Reconcile performs a single reconciliation pass: it recomputes the routing
@@ -104,8 +118,13 @@ func (c *Controller) Reconcile(ctx context.Context) error {
 		return err
 	}
 
+	var reported map[string][]string
+	if c.addresses != nil {
+		reported = c.addresses.Addresses()
+	}
+
 	routes := BuildRoutes(services, tasks)
-	records := BuildDNSRecords(services, tasks)
+	records := BuildDNSRecords(services, tasks, reported)
 
 	c.mu.Lock()
 	c.routes = routes
@@ -210,17 +229,26 @@ func BuildRoutes(services []ServiceSpec, tasks []TaskSpec) []network.IngressRout
 // running replicas. A name with several replicas becomes several addresses, so
 // a client picks one — the same shape as Docker's `dnsrr` endpoint mode.
 //
+// Addresses come from the node running each task when it has reported them
+// (reported is keyed by task ID), falling back to what the control API knows.
+// The fallback only covers tasks attached to a network the manager's allocator
+// manages, which is why the report channel exists.
+//
 // A service with no running replica produces no record at all, so scaling down
 // or losing a service stops it resolving instead of pointing at dead addresses.
 // IPs are sorted so identical cluster state always yields an identical table
 // (and therefore an unchanged revision).
-func BuildDNSRecords(services []ServiceSpec, tasks []TaskSpec) []network.DNSRecord {
+func BuildDNSRecords(services []ServiceSpec, tasks []TaskSpec, reported map[string][]string) []network.DNSRecord {
 	backends := make(map[string][]string)
 	for _, t := range tasks {
 		if t.State != TaskStateRunning {
 			continue
 		}
-		for _, ip := range t.IPs {
+		ips := t.IPs
+		if fromNode, ok := reported[t.ID]; ok && len(fromNode) > 0 {
+			ips = fromNode
+		}
+		for _, ip := range ips {
 			if ip != "" {
 				backends[t.ServiceID] = append(backends[t.ServiceID], ip)
 			}

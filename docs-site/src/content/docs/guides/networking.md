@@ -380,12 +380,19 @@ and friends keep working.
 
 ### How it fits together
 
-A manager computes the records from the control API — the same reconciler that
-builds the ingress routing table — and serves them to every node over mutual TLS
-(port `4243`). Each node writes them into its bridge `dnsmasq`'s hosts file and
-reloads it, and each guest's `/etc/resolv.conf` points at that bridge gateway.
-Service DNS is part of the ingress mesh, so `--ingress-mesh=false` turns it off
-too.
+Every node reports the guest addresses of the tasks it runs to the manager, over
+the same mutual-TLS channel as the table (port `4243`). That report is what makes
+this work: the address of a task on the default bridge is allocated on the node
+and never written back into the SwarmKit task store, so the control API alone
+cannot say where a plain service's replicas live. The manager joins the reports
+with the control API — a task is only resolved while it is `RUNNING` — and serves
+the resulting records to every node in the routing table. Each node writes them
+into its bridge `dnsmasq`'s hosts file and reloads it, and each guest's
+`/etc/resolv.conf` points at that bridge gateway.
+
+A node that stops reporting (crash, partition, drain) has its addresses expired
+after a few seconds, so a record never points at a node nobody can reach. Service
+DNS is part of the ingress mesh, so `--ingress-mesh=false` turns it off too.
 
 An explicit `--dns` on the service always wins over the bridge resolver:
 
@@ -395,12 +402,12 @@ swarmcracker service create --name app --image myapp --dns 1.1.1.1
 
 ### Limitations
 
-- **The default network only.** A service attached to a user-defined network
-  (`--network`) keeps the image's own resolver: those networks get their own
-  bridge without a `dnsmasq`, and their cross-node datapath is still broken
-  ([#70](https://github.com/restuhaqza/SwarmCracker/issues/70)). On the default
-  network resolution is cross-node — a guest can reach a replica on another node
-  because the overlay is one shared L2 segment.
+- **User-defined networks are still limited.** A service attached to one
+  (`--network`) does resolve, but its addresses are on that network's overlay,
+  whose cross-node datapath is still broken
+  ([#70](https://github.com/restuhaqza/SwarmCracker/issues/70)) — so it is only
+  reachable from the same node. Those networks also get no `dnsmasq` of their
+  own, so a guest attached *only* to one keeps the image's own resolver.
 - **Replica addresses, not the VIP.** The service VIP is allocated for ingress
   services but is not a routable address on this datapath, so `<service>` answers
   with the replicas.

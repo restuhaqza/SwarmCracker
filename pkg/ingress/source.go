@@ -78,7 +78,7 @@ func (s *ControlClientSource) Tasks(ctx context.Context) ([]TaskSpec, error) {
 				}
 			}
 		}
-		out = append(out, TaskSpec{ServiceID: t.ServiceID, State: TaskStateRunning, IPs: ips})
+		out = append(out, TaskSpec{ID: t.ID, ServiceID: t.ServiceID, State: TaskStateRunning, IPs: ips})
 	}
 	return out, nil
 }

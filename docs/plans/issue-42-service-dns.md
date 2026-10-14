@@ -24,6 +24,7 @@ VMs entirely. So one VM cannot reach another as `web` or `tasks.web`.
 | `dnsmasq` is launched **only for the default bridge** | `setupDHCP` has one caller, `manager.go:530`, before the managed-network branch |
 | The allocated VIP is not a routable address (the ingress datapath is host-port DNAT) | `pkg/cni` only stores `ServiceVIP`; no `VIP` reference in `cmd/` or `pkg/swarmkit` |
 | Cross-node traffic works on the **default** network but is broken on user-defined overlays | lab: `ping -c 3` 0% vs 100% loss → filed as #70 |
+| **The control API cannot see a default-bridge task address.** `api.TaskStatus` has no address field, the control API has no `UpdateTask`, and `Task.Networks[].Addresses` is written only by the manager's own network allocator (the ingress network and user-defined networks) | verified on the lab: a `RUNNING` plain task reports `IPs: null` while a published service's task carries an address (its DNAT backend). This is the same fact #66 recorded for the metadata sidecar |
 
 ## Design
 
@@ -37,12 +38,30 @@ manager→node table, the same mutual TLS, the same 3 s poll.
 - `ControlClientSource.Services` stops filtering to ingress-published services: it
   returns **every** service (with its ingress ports when it has them). Ingress
   behaviour is unchanged because `BuildRoutes` already ignores portless routes.
-- New `BuildDNSRecords(services, tasks)` produces `[]network.DNSRecord` — for each
-  service with a name, `<name>` and `tasks.<name>` → the IPs of its **running**
-  tasks. A service with no running replica produces no record, so records follow
-  tasks starting and stopping with no stale entries.
+- New `BuildDNSRecords(services, tasks, reported)` produces `[]network.DNSRecord` — for
+  each service with a name, `<name>` and `tasks.<name>` → the IPs of its **running**
+  tasks, preferring the address the node running the task reported and falling back
+  to the control API's. A service with no running replica produces no record, so
+  records follow tasks starting and stopping with no stale entries.
 - The wire `Table` gains `Records []TableRecord{Name, IPs}`; the revision hash
   covers them, so workers detect record changes.
+
+### Addresses (the report channel)
+
+The control API only knows the addresses of tasks attached to a network its own
+allocator manages, so a plain service's replicas are invisible to the manager.
+Each node therefore reports the addresses it has recorded for its own VMs
+(`SidecarAddressSource`, reading the per-task metadata sidecar — the same file
+`vm status` uses):
+
+- `POST /v1/ingress/report` on the manager's existing mutual-TLS table server;
+  the reporting identity comes from the client certificate, never the body.
+- `ReportStore` keeps the latest report per node with a TTL (20s), so a node that
+  crashes, partitions or drains stops contributing addresses instead of leaving a
+  record pointing at something unreachable.
+- `Reporter` publishes every 5s from both managers and workers (a manager reports
+  to itself over the same endpoint), and the reconciler joins reports with the
+  control API by task ID — a task is only resolved while it is `RUNNING`.
 
 ### Serving (dnsmasq)
 
@@ -74,9 +93,11 @@ sites (manager controller, worker table client) program them.
 
 ### Explicitly out of scope (documented, not silently missing)
 
-- **User-defined networks**: their bridges get no dnsmasq, and their cross-node
-  datapath is broken (#70). Service DNS is delivered on the default network; a
-  guest attached only to a user-defined network keeps the image's resolver.
+- **User-defined networks**: a service attached to one does resolve — its
+  addresses are reported like any other — but that overlay's cross-node datapath
+  is broken (#70), so such a replica is reachable only from the same node. Those
+  bridges also get no dnsmasq of their own, so a guest attached *only* to one
+  keeps the image's resolver.
 - **VIP-based resolution**: the VIP is not a routable address today, so
   `<service>` resolves to replica IPs (DNS-RR) — the issue's documented fallback.
 - **Golden images**: they boot their own init and never read `sc.dns`; the image's
@@ -89,6 +110,7 @@ sites (manager controller, worker table client) program them.
 |---|------|-------|--------|
 | T1 | `DNSRecord`, `ProgramDNS` (records file + SIGHUP), `--addn-hosts`, stale-instance restart | `pkg/network/dns.go`, `manager.go` | `go test ./pkg/network/` |
 | T2 | `Name` on the spec/table, `TableRecord`s, `BuildDNSRecords`, controller + client apply, source relaxed | `pkg/ingress/*.go` | `go test ./pkg/ingress/` |
+| T2b | Node→manager task report channel: `ReportStore` with TTL, `POST /v1/ingress/report` (identity from the client certificate), `Reporter`, sidecar address source, `ListVMMetadata` | `pkg/ingress/report.go`, `server.go`, `pkg/runtime/metadata.go`, `cmd/swarmd-firecracker/*.go` | `go test ./pkg/ingress/ ./pkg/runtime/` |
 | T3 | Resolver annotation + `sc.dns` default | `pkg/types/annotations.go`, `pkg/network/manager.go`, `pkg/swarmkit/translator.go` | `go test ./pkg/swarmkit/ ./pkg/network/` |
 | T4 | Wiring (manager controller + worker client) | `cmd/swarmd-firecracker/ingress.go` | build |
 | T5 | Docs | `guides/networking.md`, `guides/operations.md` | `npm run verify` |

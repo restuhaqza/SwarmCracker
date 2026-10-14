@@ -102,7 +102,7 @@ func TestReconcile_UsesOnlyRunningReplicas(t *testing.T) {
 	}
 	lb := &fakeLB{}
 
-	require.NoError(t, NewController(src, lb, nil, time.Second).Reconcile(context.Background()))
+	require.NoError(t, NewController(src, lb, nil, nil, time.Second).Reconcile(context.Background()))
 
 	routes := lb.routes()
 	require.Len(t, routes, 1)
@@ -135,7 +135,7 @@ func TestReconcile_ProgramsDNSRecords(t *testing.T) {
 	}
 	dns := &fakeDNS{}
 
-	require.NoError(t, NewController(src, &fakeLB{}, dns, time.Second).Reconcile(context.Background()))
+	require.NoError(t, NewController(src, &fakeLB{}, dns, nil, time.Second).Reconcile(context.Background()))
 
 	got := map[string][]string{}
 	for _, r := range dns.records() {
@@ -159,7 +159,7 @@ func TestReconcile_DNSFailureIsReported(t *testing.T) {
 	}
 	dns := &fakeDNS{program: func([]network.DNSRecord) error { return errors.New("boom") }}
 
-	err := NewController(src, &fakeLB{}, dns, time.Second).Reconcile(context.Background())
+	err := NewController(src, &fakeLB{}, dns, nil, time.Second).Reconcile(context.Background())
 	assert.Error(t, err)
 }
 
@@ -175,7 +175,7 @@ func TestReconcile_DropsServiceWithNoHealthyReplica(t *testing.T) {
 	}
 	lb := &fakeLB{}
 
-	require.NoError(t, NewController(src, lb, nil, time.Second).Reconcile(context.Background()))
+	require.NoError(t, NewController(src, lb, nil, nil, time.Second).Reconcile(context.Background()))
 	assert.Empty(t, lb.routes(), "a service with no running replica must not be load-balanced")
 }
 
@@ -186,6 +186,64 @@ func TestReconcile_SkipsServicesWithoutIngressPorts(t *testing.T) {
 	}
 	lb := &fakeLB{}
 
-	require.NoError(t, NewController(src, lb, nil, time.Second).Reconcile(context.Background()))
+	require.NoError(t, NewController(src, lb, nil, nil, time.Second).Reconcile(context.Background()))
 	assert.Empty(t, lb.routes())
+}
+
+// fakeAddresses supplies the task addresses a node reported.
+type fakeAddresses struct{ byTask map[string][]string }
+
+func (f fakeAddresses) Addresses() map[string][]string { return f.byTask }
+
+// TestReconcile_UsesNodeReportedAddresses is the point of the report channel: a
+// plain service's replicas have no control-API address at all, so without the
+// node's report there would be no record to serve.
+func TestReconcile_UsesNodeReportedAddresses(t *testing.T) {
+	src := &fakeSource{
+		services: []ServiceSpec{{ID: "svc1", Name: "web"}},
+		tasks:    []TaskSpec{{ID: "t1", ServiceID: "svc1", State: TaskStateRunning}},
+	}
+	dns := &fakeDNS{}
+
+	require.NoError(t, NewController(src, &fakeLB{}, dns, fakeAddresses{byTask: map[string][]string{
+		"t1": {"192.168.127.5"},
+	}}, time.Second).Reconcile(context.Background()))
+
+	got := map[string][]string{}
+	for _, r := range dns.records() {
+		got[r.Name] = r.IPs
+	}
+	assert.Equal(t, []string{"192.168.127.5"}, got["web"])
+	assert.Equal(t, []string{"192.168.127.5"}, got["tasks.web"])
+}
+
+// TestBuildDNSRecords_PrefersNodeReportedAddresses asserts the node's view wins
+// over the control API's (which can only see allocator-managed addresses), and
+// that a task with no report still falls back to it.
+func TestBuildDNSRecords_PrefersNodeReportedAddresses(t *testing.T) {
+	services := []ServiceSpec{{ID: "svc1", Name: "web"}}
+	tasks := []TaskSpec{
+		{ID: "t1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}},
+		{ID: "t2", ServiceID: "svc1", State: TaskStateRunning},
+	}
+	reported := map[string][]string{
+		"t1": {"192.168.127.5"},
+		"t2": {"192.168.127.6"},
+	}
+
+	got := map[string][]string{}
+	for _, r := range BuildDNSRecords(services, tasks, reported) {
+		got[r.Name] = r.IPs
+	}
+	assert.Equal(t, []string{"192.168.127.5", "192.168.127.6"}, got["web"])
+}
+
+// TestBuildDNSRecords_WithoutReportsFallsBack pins the pre-report behaviour.
+func TestBuildDNSRecords_WithoutReportsFallsBack(t *testing.T) {
+	services := []ServiceSpec{{ID: "svc1", Name: "web"}}
+	tasks := []TaskSpec{{ID: "t1", ServiceID: "svc1", State: TaskStateRunning, IPs: []string{"10.0.0.1"}}}
+
+	records := BuildDNSRecords(services, tasks, nil)
+	require.Len(t, records, 2)
+	assert.Equal(t, []string{"10.0.0.1"}, records[0].IPs)
 }

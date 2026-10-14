@@ -117,6 +117,44 @@ func TestRemoveVMMetadata(t *testing.T) {
 	}
 }
 
+// TestListVMMetadata covers a node enumerating its own VMs: malformed or
+// nameless sidecars are skipped rather than hiding the rest.
+func TestListVMMetadata(t *testing.T) {
+	dir := t.TempDir()
+
+	if got := ListVMMetadata(dir); len(got) != 0 {
+		t.Errorf("ListVMMetadata on an empty dir returned %d entries", len(got))
+	}
+	if got := ListVMMetadata(""); len(got) != 0 {
+		t.Errorf("ListVMMetadata with no dir returned %d entries", len(got))
+	}
+
+	if err := WriteVMMetadata(dir, &VMMetadata{ID: "task-a", IPAddresses: []string{"192.168.127.5/24"}}); err != nil {
+		t.Fatalf("WriteVMMetadata failed: %v", err)
+	}
+	if err := WriteVMMetadata(dir, &VMMetadata{ID: "task-b"}); err != nil {
+		t.Fatalf("WriteVMMetadata failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken"+VMMetadataSuffix), []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("failed to seed a corrupt sidecar: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "nameless"+VMMetadataSuffix), []byte(`{"ip_addresses":["10.0.0.9"]}`), 0o600); err != nil {
+		t.Fatalf("failed to seed a nameless sidecar: %v", err)
+	}
+
+	got := ListVMMetadata(dir)
+	if len(got) != 2 {
+		t.Fatalf("ListVMMetadata returned %d entries, want 2", len(got))
+	}
+	ids := map[string]bool{}
+	for _, md := range got {
+		ids[md.ID] = true
+	}
+	if !ids["task-a"] || !ids["task-b"] {
+		t.Errorf("ListVMMetadata ids = %v, want task-a and task-b", ids)
+	}
+}
+
 // TestWriteReadVMMetadata_HealthRoundTrip covers the live healthcheck
 // observation the daemon publishes for node-local `vm status`/`vm list`.
 func TestWriteReadVMMetadata_HealthRoundTrip(t *testing.T) {

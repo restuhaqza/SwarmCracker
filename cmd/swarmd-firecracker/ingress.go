@@ -27,11 +27,33 @@ type ingressRuntime struct {
 	// managerAddr is the host:port of a manager's ingress table endpoint. It is
 	// empty on managers, which serve the table themselves.
 	managerAddr string
+	// socketDir is where the daemon writes per-task VM metadata. The task report
+	// reads it: for a task on the default bridge it is the only place its guest
+	// address exists.
+	socketDir string
 }
 
 func (ing ingressRuntime) tableURL() string {
 	return fmt.Sprintf("https://%s/v1/ingress", ing.managerAddr)
 }
+
+func (ing ingressRuntime) reportURL() string {
+	host := ing.managerAddr
+	if host == "" {
+		// A manager reports to itself, over the same endpoint a worker uses.
+		host = fmt.Sprintf("127.0.0.1:%d", ing.port)
+	}
+	return fmt.Sprintf("https://%s/v1/ingress/report", host)
+}
+
+// How often a node publishes its task addresses, and how long a manager keeps
+// a report it has not seen refreshed. The TTL is several intervals so a couple
+// of failed reports do not drop a healthy node's addresses, while a node that
+// dies stops being resolved within a few seconds.
+const (
+	reportInterval = 5 * time.Second
+	reportTTL      = 20 * time.Second
+)
 
 // startIngress wires the ingress routing mesh. Managers compute the routing
 // table from the control API, program their own load balancer, and serve the
@@ -61,6 +83,18 @@ func startIngress(ctx context.Context, config *node.Config, executor *swarmkit.E
 		log.G(ctx).WithError(err).Warn("Ingress mesh disabled: TLS material unavailable")
 		return nil
 	}
+
+	// Every node reports the addresses of the tasks it runs. The manager needs
+	// them because the control API cannot see the guest address of a task on the
+	// default bridge — it is allocated here and never written back into the
+	// SwarmKit task store — and a worker's report is what the manager joins on.
+	reporter := ingress.NewReporter(
+		ing.reportURL(),
+		clientTLSConfig(cert, caPool),
+		ingress.SidecarAddressSource{SocketDir: ing.socketDir},
+		reportInterval,
+	)
+	go reporter.Run(ctx)
 
 	if ing.managerAddr == "" {
 		startIngressManager(ctx, config, lb, dns, ing, cert, caPool)
@@ -95,10 +129,15 @@ func startIngressManager(ctx context.Context, config *node.Config, lb ingress.Lo
 		_ = conn.Close()
 	}()
 
-	ctrl := ingress.NewController(ingress.NewControlClientSource(client), lb, dns, 3*time.Second)
+	// reports keeps each node's latest task report. The controller joins it with
+	// the control API view to build service-name records, which is the only way
+	// a plain service's replicas can be resolved by name.
+	reports := ingress.NewReportStore(reportTTL)
+
+	ctrl := ingress.NewController(ingress.NewControlClientSource(client), lb, dns, reports, 3*time.Second)
 	go ctrl.Run(ctx)
 
-	srv := ingress.NewTableServer(ctrl, serverTLSConfig(cert, caPool), fmt.Sprintf(":%d", ing.port))
+	srv := ingress.NewTableServer(ctrl, reports, serverTLSConfig(cert, caPool), fmt.Sprintf(":%d", ing.port))
 	go func() {
 		if err := srv.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
 			log.G(ctx).WithError(err).Warn("Ingress table server stopped")
