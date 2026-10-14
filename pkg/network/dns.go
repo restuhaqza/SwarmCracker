@@ -58,12 +58,18 @@ func (nm *NetworkManager) ProgramDNS(records []DNSRecord) error {
 	nm.mu.Lock()
 	defer nm.mu.Unlock()
 
+	path := nm.dnsRecordsPath()
 	content := renderDNSRecords(records)
 	if nm.dnsProgrammed && content == nm.dnsRecords {
-		return nil
+		// setupDHCP truncates the hosts file before starting a new dnsmasq, so
+		// the cache alone is not proof that the file still holds the records:
+		// confirm it before skipping the write, otherwise a replaced dnsmasq
+		// would serve nothing until the record set happened to change.
+		if data, err := os.ReadFile(path); err == nil && string(data) == content {
+			return nil
+		}
 	}
 
-	path := nm.dnsRecordsPath()
 	if err := osWriteFile(path, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write dns records %s: %w", path, err)
 	}

@@ -97,6 +97,27 @@ func TestProgramDNS_WritesAndIsIdempotent(t *testing.T) {
 	assert.Empty(t, string(data), "a cleared record set leaves no stale names")
 }
 
+// TestProgramDNS_RewritesAfterExternalTruncation covers the dnsmasq replacement
+// path: setupDHCP truncates the hosts file before starting a new server, so a
+// cached record set must not stop the reconciler from writing the file again.
+func TestProgramDNS_RewritesAfterExternalTruncation(t *testing.T) {
+	nm := dnsTestManager()
+	path := nm.dnsRecordsPath()
+	t.Cleanup(func() { _ = os.Remove(path) })
+
+	records := []DNSRecord{{Name: "web", IPs: []string{"192.168.127.5"}}}
+	require.NoError(t, nm.ProgramDNS(records))
+
+	// A new dnsmasq is started with an empty hosts file.
+	require.NoError(t, os.WriteFile(path, []byte{}, 0644))
+
+	require.NoError(t, nm.ProgramDNS(records))
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "192.168.127.5\tweb\n", string(data),
+		"the records must be restored after the file is reset underneath us")
+}
+
 // TestProgramDNS_WriteFailureIsReported asserts a write error surfaces instead of
 // being swallowed by the reconcile loop.
 func TestProgramDNS_WriteFailureIsReported(t *testing.T) {

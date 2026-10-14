@@ -106,12 +106,10 @@ func TestSetupDHCP_ReplacesRecordlessServer(t *testing.T) {
 	restore := setupMocksForTest(state)
 	defer restore()
 
-	// Default capability: the tracked PID does not look like a dnsmasq started
-	// with --addn-hosts, so it is not reusable.
-	pidFile := "/tmp/dnsmasq-testbr0.pid"
-	require.NoError(t, os.WriteFile(pidFile, []byte("999999"), 0o644))
-	t.Cleanup(func() { _ = os.Remove(pidFile) })
-
+	// Default capability: no tracked dnsmasq can serve records, so nothing is
+	// reusable and a fresh server must be started. No pid file is written on
+	// purpose: killByPID runs a real `kill`, and this test must not signal a
+	// process that may exist on the host.
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
 
