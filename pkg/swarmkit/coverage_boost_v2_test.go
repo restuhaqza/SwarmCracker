@@ -18,6 +18,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestHostname tests hostname function
@@ -350,6 +351,44 @@ func TestExecutor_CleanupOrphanedVMs_WithOrphanV2(t *testing.T) {
 		vmmMgr:      mockVMM,
 	}
 	e.cleanupOrphanedVMs(context.Background())
+}
+
+// TestExecutor_CleanupOrphanedVMs_FreesOrphanRootfs proves the orphan sweep
+// releases the orphaned task's per-task rootfs copy — the task is gone, so no
+// controller will ever run its teardown — while leaving an active task's copy and
+// the shared image cache alone.
+func TestExecutor_CleanupOrphanedVMs_FreesOrphanRootfs(t *testing.T) {
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "tasks"), 0o755))
+	orphanCopy := filepath.Join(tmpDir, "tasks", "orphan-task.ext4")
+	require.NoError(t, os.WriteFile(orphanCopy, []byte("orphan copy"), 0644))
+	activeCopy := filepath.Join(tmpDir, "tasks", "active-task.ext4")
+	require.NoError(t, os.WriteFile(activeCopy, []byte("active copy"), 0644))
+	cache := filepath.Join(tmpDir, "nginx-latest.ext4")
+	require.NoError(t, os.WriteFile(cache, []byte("cache"), 0644))
+
+	cmd := exec.Command("sleep", "0.1")
+	require.NoError(t, cmd.Start())
+	processes := map[string]*exec.Cmd{"orphan-task": cmd}
+	mockVMM := &MockVMMManager{
+		processes:               processes,
+		GetRunningProcessesFunc: func() map[string]*exec.Cmd { return processes },
+		RemoveProcessFunc:       func(taskID string) { delete(processes, taskID) },
+	}
+	e := &Executor{
+		config:      &Config{SocketDir: tmpDir, RootfsDir: tmpDir},
+		controllers: map[string]*Controller{"active-task": {}},
+		vmmMgr:      mockVMM,
+	}
+
+	e.cleanupOrphanedVMs(context.Background())
+
+	_, err := os.Stat(orphanCopy)
+	assert.True(t, os.IsNotExist(err), "the orphan's per-task rootfs copy must be freed")
+	_, err = os.Stat(activeCopy)
+	assert.NoError(t, err, "an active task's rootfs must be left alone")
+	_, err = os.Stat(cache)
+	assert.NoError(t, err, "the shared image cache must never be touched")
 }
 
 // TestController_Remove_WithSocketCleanup tests Remove cleans up socket

@@ -836,7 +836,8 @@ func TestControllerRemove(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create test rootfs file
-	rootfsPath := filepath.Join(rootfsDir, taskID+".ext4")
+	rootfsPath := image.TaskRootfsPath(rootfsDir, taskID)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rootfsPath), 0o755))
 	err = os.WriteFile(rootfsPath, []byte("test rootfs"), 0644)
 	require.NoError(t, err)
 

@@ -122,8 +122,8 @@ func TestTranslate(t *testing.T) {
 					t.Errorf("drive_id = %v, want task-defaults", drives[0]["drive_id"])
 				}
 
-				// Check default rootfs path
-				expectedPath := "/var/lib/firecracker/rootfs/task-defaults.ext4"
+				// Check default rootfs path (the task's own copy, never a cache)
+				expectedPath := "/var/lib/firecracker/rootfs/tasks/task-defaults.ext4"
 				if drives[0]["path_on_host"] != expectedPath {
 					t.Errorf("path_on_host = %v, want %v", drives[0]["path_on_host"], expectedPath)
 				}
@@ -656,7 +656,7 @@ func TestGetRootfsPath(t *testing.T) {
 			name:         "default path without annotation",
 			taskID:       "task-123",
 			annotations:  map[string]string{},
-			expectedPath: "/var/lib/firecracker/rootfs/task-123.ext4",
+			expectedPath: "/var/lib/firecracker/rootfs/tasks/task-123.ext4",
 		},
 		{
 			name:   "custom path from annotation",
@@ -670,7 +670,7 @@ func TestGetRootfsPath(t *testing.T) {
 			name:         "nil annotations",
 			taskID:       "task-789",
 			annotations:  nil,
-			expectedPath: "/var/lib/firecracker/rootfs/task-789.ext4",
+			expectedPath: "/var/lib/firecracker/rootfs/tasks/task-789.ext4",
 		},
 		{
 			name:   "annotation exists but empty string",

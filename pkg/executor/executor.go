@@ -166,6 +166,12 @@ func (e *FirecrackerExecutor) Prepare(ctx context.Context, t *types.Task) error 
 		}
 		rollbacks = append(rollbacks, func() {
 			log.Warn().Str("task_id", t.ID).Msg("Rolling back image preparation")
+			// Only a private per-task copy may be deleted: an image cache file is
+			// not marked ephemeral, and deleting it would break every other task
+			// using that image.
+			if t.Annotations[types.AnnotationRootfsEphemeral] != "true" {
+				return
+			}
 			if rootfsPath, ok := t.Annotations[types.AnnotationRootfs]; ok && rootfsPath != "" {
 				if err := os.Remove(rootfsPath); err != nil && !os.IsNotExist(err) {
 					log.Error().Err(err).Str("path", rootfsPath).Msg("Failed to remove prepared rootfs")
@@ -253,8 +259,22 @@ func (e *FirecrackerExecutor) Remove(ctx context.Context, t *types.Task) error {
 	}
 
 	// 3. Clean up VM resources
-	if err := e.vmmManager.Remove(ctx, t); err != nil {
-		return fmt.Errorf("failed to remove VM: %w", err)
+	removeErr := e.vmmManager.Remove(ctx, t)
+
+	// 4. Remove the per-task rootfs copy, if any — even when the VM removal
+	// failed, because the copy is otherwise orphaned disk. Only an ephemeral copy
+	// is deleted: an image cache file and a golden artifact are never marked
+	// ephemeral, so neither can be lost here.
+	if t.Annotations[types.AnnotationRootfsEphemeral] == "true" {
+		if path := t.Annotations[types.AnnotationRootfs]; path != "" {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				log.Warn().Err(err).Str("path", path).Msg("Failed to remove per-task rootfs")
+			}
+		}
+	}
+
+	if removeErr != nil {
+		return fmt.Errorf("failed to remove VM: %w", removeErr)
 	}
 
 	log.Info().

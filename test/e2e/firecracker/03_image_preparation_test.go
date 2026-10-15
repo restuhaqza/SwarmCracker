@@ -97,19 +97,21 @@ func TestE2EExtractDockerImage(t *testing.T) {
 
 		t.Log("Image extracted successfully")
 
-		// The image preparer creates an ext4 file, not a directory
-		// The file name is based on the image reference, not task ID
+		// The image preparer creates an ext4 cache named after the image, and the
+		// task boots from its own copy under tasks/.
 		rootfsFile := filepath.Join(tmpDir, "alpine-latest.ext4")
 		info, err := os.Stat(rootfsFile)
-		require.NoError(t, err, "Rootfs file should exist")
-		require.False(t, info.IsDir(), "Rootfs should be a file, not directory")
+		require.NoError(t, err, "Rootfs cache file should exist")
+		require.False(t, info.IsDir(), "Rootfs cache should be a file, not directory")
 
-		t.Logf("Rootfs file created at: %s (size: %d bytes)", rootfsFile, info.Size())
+		t.Logf("Rootfs cache created at: %s (size: %d bytes)", rootfsFile, info.Size())
 
-		// The task annotation should contain the rootfs path
+		// The task annotation points at the task's own copy, never the cache.
 		rootfsPath, ok := task.Annotations["rootfs"]
 		require.True(t, ok, "Task should have rootfs annotation")
-		require.Equal(t, rootfsFile, rootfsPath, "Rootfs path should match")
+		require.Equal(t, filepath.Join(tmpDir, "tasks", task.ID+".ext4"), rootfsPath,
+			"the task must boot from its own copy")
+		require.NotEqual(t, rootfsFile, rootfsPath, "the shared cache must never be a task's rootfs")
 
 		t.Logf("✓ Rootfs annotation set correctly: %s", rootfsPath)
 

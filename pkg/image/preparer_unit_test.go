@@ -423,7 +423,7 @@ func TestImagePreparer_CacheBehavior_Unit(t *testing.T) {
 
 	// Check annotations
 	if task.Annotations != nil {
-		assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+		assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 	}
 }
 func TestImagePreparer_Prepare_InitSystemAnnotations_Unit(t *testing.T) {

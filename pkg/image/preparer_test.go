@@ -143,7 +143,7 @@ func TestImagePreparer_Prepare_Cached(t *testing.T) {
 	ctx := context.Background()
 	err = preparer.Prepare(ctx, task)
 	require.NoError(t, err)
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestImagePreparer_Prepare_InvalidRuntime tests error handling for non-container runtime

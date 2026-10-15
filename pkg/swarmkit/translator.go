@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
@@ -307,8 +308,9 @@ func getRootfsPath(task *types.Task) string {
 	if rootfs, ok := task.Annotations["rootfs"]; ok {
 		return rootfs
 	}
-	// Default path
-	return "/var/lib/firecracker/rootfs/" + task.ID + ".ext4"
+	// Default path: the task's own copy, under the per-task directory. The image
+	// caches live one level up and are never a task's rootfs.
+	return image.TaskRootfsPath("/var/lib/firecracker/rootfs", task.ID)
 }
 
 // validateTaskID validates that a task ID is safe for use in filesystem paths

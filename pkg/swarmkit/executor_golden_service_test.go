@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/restuhaqza/swarmcracker/pkg/golden"
+	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/restuhaqza/swarmcracker/test/mocks"
 )
@@ -103,7 +104,7 @@ func TestControllerPrepare_GoldenService_SkipsImagePreparation(t *testing.T) {
 	a := ctrl.internalTask.Annotations
 
 	// The VM writes to its own copy, never the shared template.
-	wantRootfs := filepath.Join(rootfsDir, "task-golden.ext4")
+	wantRootfs := image.TaskRootfsPath(rootfsDir, "task-golden")
 	assert.Equal(t, wantRootfs, a[types.AnnotationRootfs])
 	copied, err := os.ReadFile(wantRootfs)
 	require.NoError(t, err)
@@ -113,6 +114,8 @@ func TestControllerPrepare_GoldenService_SkipsImagePreparation(t *testing.T) {
 	assert.Equal(t, "rootfs", string(untouched), "the golden template must stay intact")
 
 	assert.Equal(t, "true", a[types.AnnotationPrebuiltRootfs])
+	assert.Equal(t, "true", a[types.AnnotationRootfsEphemeral],
+		"teardown must delete the task's copy, never the golden artifact")
 	assert.Equal(t, "ubuntu-24.04-docker@1.0.0", a[types.AnnotationGolden])
 	assert.Equal(t, "guest-runtime-6.1", a[types.AnnotationKernelProfile])
 	assert.Equal(t, "quiet", a[types.AnnotationBootArgs])

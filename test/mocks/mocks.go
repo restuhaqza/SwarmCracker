@@ -180,6 +180,9 @@ func (m *MockImagePreparer) Prepare(ctx context.Context, task *types.Task) error
 	m.PreparedTasks[task.ID] = true
 	m.RootfsMap[task.ID] = rootfsPath
 	task.Annotations["rootfs"] = rootfsPath
+	// The real preparer always gives the task its own copy and marks it
+	// ephemeral, so the mock must too: teardown paths key on the marker.
+	task.Annotations[types.AnnotationRootfsEphemeral] = "true"
 	return nil
 }
 

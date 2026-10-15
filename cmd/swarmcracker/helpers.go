@@ -119,7 +119,10 @@ func createExecutor(cfg *config.Config) (*executor.FirecrackerExecutor, error) {
 // createMockTask creates a mock task for CLI-driven VM creation.
 func createMockTask(imageRef string, vcpus, memoryMB int, env []string) *types.Task {
 	return &types.Task{
-		ID:        fmt.Sprintf("task-%d", time.Now().Unix()),
+		// The VM ID names its sockets, state and private rootfs copy, so it has
+		// to be unique: two `vm create` runs in the same second used to share one
+		// (and with it, one rootfs).
+		ID:        fmt.Sprintf("task-%d", time.Now().UnixNano()),
 		ServiceID: "service-cli",
 		NodeID:    "node-local",
 		Spec: types.TaskSpec{
