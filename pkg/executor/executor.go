@@ -257,6 +257,18 @@ func (e *FirecrackerExecutor) Remove(ctx context.Context, t *types.Task) error {
 		return fmt.Errorf("failed to remove VM: %w", err)
 	}
 
+	// 4. Remove the per-task rootfs copy, if any. Only an ephemeral copy is
+	// deleted: the shared image cache is named after the image and is never a
+	// task's rootfs, and a golden artifact is not marked ephemeral, so neither
+	// can be lost here.
+	if t.Annotations[types.AnnotationRootfsEphemeral] == "true" {
+		if path := t.Annotations[types.AnnotationRootfs]; path != "" {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				log.Warn().Err(err).Str("path", path).Msg("Failed to remove per-task rootfs")
+			}
+		}
+	}
+
 	log.Info().
 		Str("task_id", t.ID).
 		Msg("Task removed successfully")

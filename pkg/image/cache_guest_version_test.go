@@ -112,7 +112,7 @@ func TestPrepare_CachedRootfsGuestVersionRebuild(t *testing.T) {
 
 		task := newTask()
 		require.NoError(t, ip.Prepare(context.Background(), task))
-		assert.Equal(t, rootfs, task.Annotations["rootfs"])
+		assert.Equal(t, perTaskRootfs(filepath.Dir(rootfs), task.ID), task.Annotations["rootfs"])
 
 		_, err := os.Stat(rootfs)
 		require.NoError(t, err, "cached rootfs must be kept when the marker matches")

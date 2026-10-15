@@ -74,7 +74,7 @@ func TestImagePreparer_Prepare_WithExistingRootfs(t *testing.T) {
 
 	// Should use cached rootfs
 	assert.NoError(t, err)
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 func TestImagePreparer_prepareImage_ErrorScenarios(t *testing.T) {
@@ -378,6 +378,6 @@ func TestImagePreparer_Prepare_VerifyRootfsAnnotation(t *testing.T) {
 
 	// Verify rootfs annotation is set correctly
 	assert.Contains(t, task.Annotations, "rootfs")
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 	assert.FileExists(t, rootfsPath)
 }

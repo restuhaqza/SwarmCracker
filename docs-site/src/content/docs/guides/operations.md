@@ -805,7 +805,9 @@ iptables -A INPUT -p udp --dport 4789 -s 192.168.1.0/24 -j ACCEPT
 
 2. **Short-term:** Remove unused rootfs images
    ```bash
-   # List stale images in the rootfs directory
+   # The rootfs directory holds the per-image cache (<image>-<tag>.ext4, never
+   # booted) and one private copy per task (<task-id>.ext4, deleted on teardown).
+   # Both look like ordinary files here; the copies of running tasks are in use.
    ls -lh /var/lib/firecracker/rootfs/
    ```
 

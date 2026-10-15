@@ -104,7 +104,7 @@ func TestPrepare_ExistingRootfsV2(t *testing.T) {
 	require.NoError(t, err)
 	// Annotations should be initialized
 	require.NotNil(t, task.Annotations)
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_AnnotationsAlreadySetV2 tests when annotations are already set
@@ -130,7 +130,7 @@ func TestPrepare_AnnotationsAlreadySetV2(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "value", task.Annotations["pre-existing"])
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_WithMountsV2 tests mount handling path

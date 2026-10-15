@@ -151,7 +151,7 @@ func TestPrepare_NilAnnotationsInitialization(t *testing.T) {
 
 	// Annotations should be initialized
 	require.NotNil(t, task.Annotations)
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_WithAllManagersEnabled tests all manager integration paths

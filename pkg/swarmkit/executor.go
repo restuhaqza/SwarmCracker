@@ -455,6 +455,15 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 			if err := scruntime.RemoveVMMetadata(e.config.SocketDir, taskID); err != nil {
 				log.Warn().Err(err).Str("task_id", taskID).Msg("Failed to remove VM metadata")
 			}
+
+			// An orphaned task's per-task rootfs copy is disk nobody will free:
+			// the task is gone, so no controller runs its teardown. Only the
+			// <task-id>.ext4 copy is touched — image cache files are named after
+			// the image, and a golden artifact is never a task's rootfs.
+			orphanRootfs := filepath.Join(e.config.RootfsDir, taskID+".ext4")
+			if err := os.Remove(orphanRootfs); err != nil && !os.IsNotExist(err) {
+				log.Warn().Err(err).Str("path", orphanRootfs).Msg("Failed to remove orphaned per-task rootfs")
+			}
 		}
 	}
 
@@ -1164,8 +1173,8 @@ func (c *Controller) Remove(ctx context.Context) error {
 	// by image ID) is the cache and must be kept; only the ephemeral per-task
 	// copy created for mount-bearing tasks is deleted.
 	rootfsPath := ""
-	if c.internalTask != nil && c.internalTask.Annotations["rootfs_ephemeral"] == "true" {
-		rootfsPath = c.internalTask.Annotations["rootfs"]
+	if c.internalTask != nil && c.internalTask.Annotations[types.AnnotationRootfsEphemeral] == "true" {
+		rootfsPath = c.internalTask.Annotations[types.AnnotationRootfs]
 	}
 	if rootfsPath == "" {
 		// Legacy per-task naming: <task-id>.ext4. Only attempt it when it

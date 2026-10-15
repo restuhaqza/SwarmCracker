@@ -1649,7 +1649,7 @@ func TestPrepare_AnnotationsInitialization(t *testing.T) {
 
 	// Annotations should be initialized
 	assert.NotNil(t, task.Annotations)
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_ExistingRootfsPath tests when rootfs already exists
@@ -1680,7 +1680,7 @@ func TestPrepare_ExistingRootfsPath(t *testing.T) {
 	require.NoError(t, err)
 
 	// Rootfs path should be set without preparing
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_WithMountsAndReadOnly tests read-only mount handling
@@ -2377,7 +2377,7 @@ func TestPrepare_WithDifferentInitSystems(t *testing.T) {
 			ctx := context.Background()
 			err := ip.Prepare(ctx, task)
 			assert.NoError(t, err)
-			assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+			assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 		})
 	}
 }

@@ -154,17 +154,8 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 			forceRebuild = true
 		}
 		if cachedValid {
-			if len(container.Mounts) == 0 && len(task.Secrets) == 0 && len(task.Configs) == 0 {
-				// No per-task mounts/secrets/configs: the shared image rootfs is
-				// used as-is.
-				log.Info().
-					Str("path", rootfsPath).
-					Msg("Rootfs already exists and valid, skipping")
-				task.Annotations["rootfs"] = rootfsPath
-				return nil
-			}
-			// Mounts/secrets/configs need a private rootfs; keep the shared base
-			// and fall through to copy it per task.
+			// The cache is a template: every task still gets its own copy below,
+			// so a guest can never write into a file other tasks share.
 			log.Info().
 				Str("path", rootfsPath).
 				Msg("Cached rootfs valid; creating a per-task copy")
@@ -197,21 +188,19 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 		ip.writeGuestOverrideMarker(rootfsPath)
 	}
 
-	// Mounts, secrets and configs are applied to a private, per-task copy of the
-	// rootfs. Baking them into the shared image rootfs would leak between tasks
-	// (and the shared cache is used directly as the VM drive, so it must never be
-	// modified). The private rootfs is marked ephemeral so the executor removes
-	// it on teardown without deleting the shared image cache.
-	taskRootfs := rootfsPath
-	needsPrivateRootfs := len(container.Mounts) > 0 || len(task.Secrets) > 0 || len(task.Configs) > 0
-	if needsPrivateRootfs {
-		private := filepath.Join(ip.rootfsDir, task.ID+".ext4")
-		if err := ip.copyRootfs(ctx, rootfsPath, private); err != nil {
-			return fmt.Errorf("failed to create per-task rootfs: %w", err)
-		}
-		taskRootfs = private
-		task.Annotations["rootfs_ephemeral"] = "true"
+	// Every task boots from its own writable copy of the image rootfs. The shared
+	// cache is a template and is never handed to a guest: booting from it directly
+	// would let anything the guest writes — a workload's files, or `vm exec` —
+	// land in a file every later task on this node shares, and a task that fills
+	// or corrupts it would break them all. The copy is sparse (a reflink where the
+	// filesystem supports one) and is marked ephemeral so teardown deletes the
+	// copy and never the cache. Mounts, secrets and configs are applied to it, so
+	// they cannot leak between tasks either.
+	taskRootfs := filepath.Join(ip.rootfsDir, task.ID+".ext4")
+	if err := ip.copyRootfs(ctx, rootfsPath, taskRootfs); err != nil {
+		return fmt.Errorf("failed to create per-task rootfs: %w", err)
 	}
+	task.Annotations[localtypes.AnnotationRootfsEphemeral] = "true"
 	if ip.volumeManager != nil && len(container.Mounts) > 0 {
 		log.Info().
 			Str("task_id", task.ID).
@@ -875,16 +864,33 @@ func (ip *ImagePreparer) writeGuestOverrideMarker(rootfsPath string) {
 	}
 }
 
+// rootfsStagingMarker marks the temporary file a per-task rootfs copy is staged
+// in before it is renamed into place (see copyRootfs), and how old such a file
+// must be before the periodic cleanup reaps it as abandoned.
+const (
+	rootfsStagingMarker = ".tmp-"
+	staleStagingAge     = 10 * time.Minute
+)
+
 // copyRootfs makes a private, per-task copy of the shared image rootfs. It uses
 // reflinks where the filesystem supports them (fast, no extra space) and falls
 // back to a sparse copy otherwise.
+//
+// The copy is staged in a unique temporary file and renamed into place. A
+// concurrent prepare of the same task — or a retry while an earlier copy is still
+// open by a running VM — therefore never observes a missing or half-written
+// rootfs: the old inode stays alive for whoever has it open, and the last rename
+// wins.
 func (ip *ImagePreparer) copyRootfs(ctx context.Context, src, dst string) error {
-	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to clear stale rootfs copy: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, "cp", "--reflink=auto", "--sparse=always", src, dst)
+	tmp := fmt.Sprintf("%s%s%d-%d", dst, rootfsStagingMarker, os.Getpid(), time.Now().UnixNano())
+	cmd := exec.CommandContext(ctx, "cp", "--reflink=auto", "--sparse=always", src, tmp)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("cp failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("failed to install per-task rootfs: %w", err)
 	}
 	return nil
 }
@@ -1111,6 +1117,19 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemove
 	for _, entry := range entries {
 		// Skip directories
 		if entry.IsDir() {
+			continue
+		}
+
+		// A staging file from an interrupted copy (a crash, a kill) is never in
+		// use — a successful copy renames it away in milliseconds — so an old one
+		// is reaped here rather than accumulating.
+		if strings.Contains(entry.Name(), rootfsStagingMarker) {
+			if info, statErr := entry.Info(); statErr == nil && time.Since(info.ModTime()) > staleStagingAge {
+				if removeErr := os.Remove(filepath.Join(ip.rootfsDir, entry.Name())); removeErr == nil {
+					filesRemoved++
+					bytesFreed += info.Size()
+				}
+			}
 			continue
 		}
 
