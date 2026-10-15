@@ -5,6 +5,7 @@ package network
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,12 +17,17 @@ import (
 // dnsTestManager builds a manager for a bridge name no real dnsmasq uses, so the
 // /proc scan in ProgramDNS finds nothing and the tests never signal a real
 // process.
-func dnsTestManager() *NetworkManager {
-	return NewNetworkManager(types.NetworkConfig{
+func dnsTestManager(t *testing.T) *NetworkManager {
+	t.Helper()
+	nm := NewNetworkManager(types.NetworkConfig{
 		BridgeName: "sc-dnsbr0",
 		BridgeIP:   "192.168.127.1/24",
 		Subnet:     "192.168.127.0/24",
 	}).(*NetworkManager)
+	// The records file lives in the runtime directory; a temp directory keeps the
+	// test off the host's /run and is cleaned up with it.
+	nm.runtimeDir = t.TempDir()
+	return nm
 }
 
 func TestRenderDNSRecords(t *testing.T) {
@@ -63,17 +69,16 @@ func TestRenderDNSRecords(t *testing.T) {
 // the reconciler can run on a timer), a change rewrites, and clearing the set
 // empties the file instead of leaving stale names behind.
 func TestProgramDNS_WritesAndIsIdempotent(t *testing.T) {
-	nm := dnsTestManager()
+	nm := dnsTestManager(t)
 	path := nm.dnsRecordsPath()
-	t.Cleanup(func() { _ = os.Remove(path) })
 
 	writes := 0
-	orig := osWriteFile
-	osWriteFile = func(p string, data []byte, perm os.FileMode) error {
+	orig := writeDnsmasqFile
+	writeDnsmasqFile = func(p string, data []byte, perm os.FileMode) error {
 		writes++
 		return orig(p, data, perm)
 	}
-	defer func() { osWriteFile = orig }()
+	defer func() { writeDnsmasqFile = orig }()
 
 	records := []DNSRecord{{Name: "web", IPs: []string{"192.168.127.5"}}}
 	require.NoError(t, nm.ProgramDNS(records))
@@ -102,9 +107,8 @@ func TestProgramDNS_WritesAndIsIdempotent(t *testing.T) {
 // path: setupDHCP truncates the hosts file before starting a new server, so a
 // cached record set must not stop the reconciler from writing the file again.
 func TestProgramDNS_RewritesAfterExternalTruncation(t *testing.T) {
-	nm := dnsTestManager()
+	nm := dnsTestManager(t)
 	path := nm.dnsRecordsPath()
-	t.Cleanup(func() { _ = os.Remove(path) })
 
 	records := []DNSRecord{{Name: "web", IPs: []string{"192.168.127.5"}}}
 	require.NoError(t, nm.ProgramDNS(records))
@@ -119,14 +123,32 @@ func TestProgramDNS_RewritesAfterExternalTruncation(t *testing.T) {
 		"the records must be restored after the file is reset underneath us")
 }
 
+// TestProgramDNS_CreatesRuntimeDir covers the reconcile path on a node where no
+// task has started yet (and where DHCP — and so setupDHCP — is disabled): the
+// reconciler must create the runtime directory itself rather than fail every
+// cycle because the records file has nowhere to live. Before #72 the file was in
+// /tmp, which always exists, so nothing had to create it.
+func TestProgramDNS_CreatesRuntimeDir(t *testing.T) {
+	nm := dnsTestManager(t)
+	nm.runtimeDir = filepath.Join(t.TempDir(), "not-created-yet")
+	require.NoDirExists(t, nm.runtimeDir)
+
+	require.NoError(t, nm.ProgramDNS([]DNSRecord{{Name: "web", IPs: []string{"10.0.0.5"}}}))
+
+	assert.DirExists(t, nm.runtimeDir)
+	data, err := os.ReadFile(nm.dnsRecordsPath())
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.5\tweb\n", string(data))
+}
+
 // TestProgramDNS_WriteFailureIsReported asserts a write error surfaces instead of
 // being swallowed by the reconcile loop.
 func TestProgramDNS_WriteFailureIsReported(t *testing.T) {
-	nm := dnsTestManager()
+	nm := dnsTestManager(t)
 
-	orig := osWriteFile
-	osWriteFile = func(string, []byte, os.FileMode) error { return os.ErrPermission }
-	defer func() { osWriteFile = orig }()
+	orig := writeDnsmasqFile
+	writeDnsmasqFile = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+	defer func() { writeDnsmasqFile = orig }()
 
 	err := nm.ProgramDNS([]DNSRecord{{Name: "web", IPs: []string{"192.168.127.5"}}})
 	assert.Error(t, err)

@@ -65,8 +65,28 @@ func TestDnsmasqArgvMatches(t *testing.T) {
 }
 
 func TestLiveDnsmasqPID_NoFile(t *testing.T) {
-	nm := &NetworkManager{config: types.NetworkConfig{BridgeName: "no-such-bridge-xyz"}}
+	nm := &NetworkManager{
+		config:     types.NetworkConfig{BridgeName: "no-such-bridge-xyz"},
+		runtimeDir: t.TempDir(),
+	}
 	assert.Equal(t, "", nm.liveDnsmasqPID("no-such-bridge-xyz"))
+}
+
+// stubDnsmasqArgv makes one PID look like a dnsmasq bound to bridge, so a test
+// can exercise the reuse and cleanup paths without spawning a process that looks
+// like dnsmasq. Every other PID keeps its real argv, so the /proc scan still sees
+// what is really running. The validation itself is covered against a real process
+// in dnsmasq_runtime_test.go.
+func stubDnsmasqArgv(t *testing.T, bridge, pid string) {
+	t.Helper()
+	orig := dnsmasqArgvForPID
+	dnsmasqArgvForPID = func(p string) []string {
+		if p == pid {
+			return []string{"/usr/sbin/dnsmasq", "--interface", bridge, "--addn-hosts", "records.hosts"}
+		}
+		return orig(p)
+	}
+	t.Cleanup(func() { dnsmasqArgvForPID = orig })
 }
 
 func TestSetupDHCP_ReusesRunningServer(t *testing.T) {
@@ -75,19 +95,20 @@ func TestSetupDHCP_ReusesRunningServer(t *testing.T) {
 	defer restore()
 
 	// A tracked dnsmasq that is alive (the mocked `kill -0` probe reports the
-	// PID as running) and that can serve service records. The PID itself is
-	// never signalled: the record-capability check is injected, so the test does
-	// not have to point the pid file at a process it must keep alive.
+	// PID as running) and that can serve service records. The PID itself is never
+	// signalled: the record-capability check is injected, so the test does not
+	// have to point the pid file at a process it must keep alive, and the argv
+	// reader is stubbed so the PID passes the "is this really our dnsmasq?" check
+	// that a pid file cannot be trusted for.
 	origCapable := dnsmasqRecordsCapable
 	dnsmasqRecordsCapable = func(string) bool { return true }
 	defer func() { dnsmasqRecordsCapable = origCapable }()
-
-	pidFile := "/tmp/dnsmasq-testbr0.pid"
-	require.NoError(t, os.WriteFile(pidFile, []byte("999999"), 0o644))
-	t.Cleanup(func() { _ = os.Remove(pidFile) })
+	stubDnsmasqArgv(t, "testbr0", "999999")
 
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
+	nm.runtimeDir = t.TempDir()
+	require.NoError(t, os.WriteFile(nm.dnsmasqPIDPath(), []byte("999999"), 0o644))
 
 	require.NoError(t, nm.setupDHCP(context.Background()))
 
@@ -108,10 +129,11 @@ func TestSetupDHCP_ReplacesRecordlessServer(t *testing.T) {
 
 	// Default capability: no tracked dnsmasq can serve records, so nothing is
 	// reusable and a fresh server must be started. No pid file is written on
-	// purpose: killByPID runs a real `kill`, and this test must not signal a
-	// process that may exist on the host.
+	// purpose: nothing is signalled here anyway, because a PID that is not a
+	// dnsmasq bound to the bridge is refused (see killDnsmasqPID).
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
+	nm.runtimeDir = t.TempDir()
 
 	require.NoError(t, nm.setupDHCP(context.Background()))
 
@@ -131,12 +153,12 @@ func TestSetupDHCP_StartsWhenTrackedPIDIsGone(t *testing.T) {
 	restore := setupMocksForTest(state)
 	defer restore()
 
-	pidFile := "/tmp/dnsmasq-testbr0.pid"
-	require.NoError(t, os.WriteFile(pidFile, []byte("999999"), 0o644))
-	t.Cleanup(func() { _ = os.Remove(pidFile) })
+	stubDnsmasqArgv(t, "testbr0", "999999")
 
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
+	nm.runtimeDir = t.TempDir()
+	require.NoError(t, os.WriteFile(nm.dnsmasqPIDPath(), []byte("999999"), 0o644))
 
 	require.NoError(t, nm.setupDHCP(context.Background()))
 

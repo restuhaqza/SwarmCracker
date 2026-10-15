@@ -272,8 +272,20 @@ swarmctl metrics <task-id>
 |-----|------|----------|
 | swarmd-firecracker (daemon) | `/var/log/swarmcracker/daemon.log` | systemd journal |
 | VM console logs | `<state-dir>/<vm-id>.log` (`/var/run/swarmcracker` as root) | Truncated on VM start |
-| dnsmasq (DHCP) | `/tmp/dnsmasq-<bridge>.log` | Manual |
+| dnsmasq (DHCP) | `/var/lib/swarmcracker/dnsmasq/dnsmasq-<bridge>.log` | Manual |
 | Firecracker stderr | captured by daemon | — |
+
+dnsmasq's per-bridge files — the log, the pid file, the DHCP lease file and the
+service-name records — live in `/var/lib/swarmcracker/dnsmasq/`, a root-owned
+directory that only root and dnsmasq's own user can write (when that user cannot
+be resolved, the directory stays root-owned and only root can). They are
+deliberately not in `/tmp`, where a predictable name would let a local user plant a
+file the daemon would write through or signal as root.
+
+That path is under the project's state directory because the shipped systemd units
+run the daemon with `ProtectSystem=strict`: only the paths those units list in
+`ReadWritePaths` are writable, and `/var/lib/swarmcracker` is one of them while
+`/run` is not.
 
 Both CLI-created VMs and daemon-managed service tasks mirror their serial
 console to `<state-dir>/<vm-id>.log`, so `swarmcracker vm logs` works for either.
@@ -293,7 +305,7 @@ swarmcracker service ps <service-name>
 swarmcracker vm logs --follow <task-id>
 
 # dnsmasq DHCP logs
-tail -f /tmp/dnsmasq-<bridge>.log
+tail -f /var/lib/swarmcracker/dnsmasq/dnsmasq-<bridge>.log
 ```
 
 **Attach to a VM console:**
@@ -425,7 +437,7 @@ swarmd-firecracker --debug
 
 3. **DHCP working?**
    ```bash
-   cat /tmp/dnsmasq-<bridge>.log | tail -20
+   cat /var/lib/swarmcracker/dnsmasq/dnsmasq-<bridge>.log | tail -20
    # Should show DHCPOFFER/DHCPACK
    ```
 
