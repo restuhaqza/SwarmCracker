@@ -87,6 +87,13 @@ SwarmCracker starts a minimal `dnsmasq` instance bound to the bridge when
 `ip_mode: "dhcp"`. If `dnsmasq` is not installed, the bridge is still created
 but DHCP allocation is unavailable.
 
+The instance's runtime files (pid, log, DHCP leases, and the service-name records
+described below) live in `/run/swarmcracker/dnsmasq/`, a root-owned directory that
+only root and the unprivileged user dnsmasq drops to can write — never in
+world-writable `/tmp`, where a predictable file name would let any local user plant
+a symlink for the daemon to write through as root, or a pid file for it to signal
+as root.
+
 ---
 
 ## Talking Across Nodes

@@ -559,6 +559,7 @@ func TestSetupDHCP_Injectable(t *testing.T) {
 
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
+	nm.runtimeDir = t.TempDir()
 
 	err := nm.setupDHCP(context.Background())
 	if err != nil {
@@ -928,15 +929,21 @@ func TestCreateTapDevice_MasterFail_Injectable(t *testing.T) {
 
 func TestSetupDHCP_WriteFileFail(t *testing.T) {
 	state := newMockState()
-	state.setFail("writefile:/tmp/dnsmasq.log", true)
 	restore := setupMocksForTest(state)
 	defer restore()
 
+	// The dnsmasq files are written through writeDnsmasqFile, which refuses to
+	// follow a symlink; a failing write must be tolerated, not fatal.
+	origWrite := writeDnsmasqFile
+	writeDnsmasqFile = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+	defer func() { writeDnsmasqFile = origWrite }()
+
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
+	nm.runtimeDir = t.TempDir()
 
 	err := nm.setupDHCP(context.Background())
-	t.Logf("setupDHCP result: %v", err)
+	assert.NoError(t, err, "a file the daemon cannot write is warned about, not fatal")
 }
 
 func TestStartPeerDiscovery_InterfaceFail(t *testing.T) {

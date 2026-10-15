@@ -20,10 +20,10 @@ import (
 // skipIfHostHasDnsmasqPidFiles refuses to run any test that reaches
 // cleanupDnsmasq when the host already has /tmp/dnsmasq-*.pid files.
 //
-// cleanupDnsmasq globs that hard-coded path and sends a real SIGTERM to every
-// PID it finds; the execCommand seam does not intercept killByPID (manager.go
-// calls exec.CommandContext(ctx, "kill", pid) directly), so exercising it on a
-// host with leftover pid files could kill a live dnsmasq process.
+// cleanupDnsmasq globs that legacy path and signals the PID it finds when it
+// really is a dnsmasq bound to that bridge (see killDnsmasqPID) — which a
+// leftover file on a developer's host could well be — and the execCommand seam
+// does not intercept the kill, so exercising it there could stop a live dnsmasq.
 func skipIfHostHasDnsmasqPidFiles(t *testing.T) {
 	t.Helper()
 
@@ -34,9 +34,10 @@ func skipIfHostHasDnsmasqPidFiles(t *testing.T) {
 	}
 }
 
-// uniqueDnsmasqPidFile returns a pid-file path under /tmp that still matches the
-// /tmp/dnsmasq-*.pid glob but is unique to this test process, so concurrent test
-// runs cannot collide.
+// uniqueDnsmasqPidFile returns a pid-file path under the legacy /tmp location
+// that still matches the /tmp/dnsmasq-*.pid glob but is unique to this test
+// process, so concurrent test runs cannot collide. The PID it holds is not a
+// dnsmasq, so cleanupDnsmasq removes the file without signalling anything.
 func uniqueDnsmasqPidFile(t *testing.T) string {
 	t.Helper()
 	return fmt.Sprintf("/tmp/dnsmasq-covtest-%d-%d.pid", os.Getpid(), time.Now().UnixNano())

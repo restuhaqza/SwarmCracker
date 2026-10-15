@@ -4,17 +4,22 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/rs/zerolog/log"
 )
 
 // dnsmasqArgvForPID returns the argv of a running process, or nil when it
 // cannot be read. It is the shared /proc reader for the dnsmasq lifecycle
-// helpers.
-func dnsmasqArgvForPID(pid string) []string {
+// helpers — including the check that a PID taken from a pid file really is a
+// dnsmasq bound to our bridge — and a variable so a test can describe a process
+// without having to spawn one that looks like dnsmasq.
+var dnsmasqArgvForPID = func(pid string) []string {
 	data, err := os.ReadFile(filepath.Join("/proc", pid, "cmdline"))
 	if err != nil {
 		return nil
@@ -38,13 +43,106 @@ type DNSRecord struct {
 	IPs []string
 }
 
-// dnsRecordsPath is the addn-hosts file dnsmasq re-reads on SIGHUP. It sits
-// next to the other per-bridge dnsmasq files (pid, log, leases) in /tmp, which
-// is what the daemon and the dnsmasq it starts share — note that the shipped
-// unit does not set PrivateTmp, so these are ordinary world-readable /tmp paths
-// (the same pre-existing pattern as the log, pid and lease files).
-func (nm *NetworkManager) dnsRecordsPath() string {
-	return filepath.Join("/tmp", "dnsmasq-"+nm.config.BridgeName+".hosts")
+// dnsmasqRuntimeDirDefault is where the per-bridge dnsmasq files live. It is a
+// root-owned tmpfs path rather than a world-writable one: at predictable names in
+// /tmp, any local user could plant a symlink for the daemon to write through as
+// root, or a pid file for the daemon to signal as root.
+var dnsmasqRuntimeDirDefault = "/run/swarmcracker/dnsmasq"
+
+// dnsmasqRuntimeDir is the directory in use, defaulting to
+// dnsmasqRuntimeDirDefault.
+func (nm *NetworkManager) dnsmasqRuntimeDir() string {
+	if nm.runtimeDir != "" {
+		return nm.runtimeDir
+	}
+	return dnsmasqRuntimeDirDefault
+}
+
+// dnsmasqFileFor is the path of one per-bridge dnsmasq file for a named bridge.
+// Every path is derived from here, so the directory is never spelled twice.
+func (nm *NetworkManager) dnsmasqFileFor(bridgeName, ext string) string {
+	return filepath.Join(nm.dnsmasqRuntimeDir(), "dnsmasq-"+bridgeName+"."+ext)
+}
+
+// dnsmasqFile is dnsmasqFileFor for this manager's bridge.
+func (nm *NetworkManager) dnsmasqFile(ext string) string {
+	return nm.dnsmasqFileFor(nm.config.BridgeName, ext)
+}
+
+// dnsRecordsPath is the addn-hosts file dnsmasq re-reads on SIGHUP.
+func (nm *NetworkManager) dnsRecordsPath() string { return nm.dnsmasqFile("hosts") }
+
+// dnsmasqPIDPath is the pid file dnsmasq writes for the daemon to read,
+// dnsmasqLogPath the log it is pointed at, and dnsmasqLeasePath the DHCP lease
+// file (dnsmasq's compiled-in default, /var/lib/misc/dnsmasq.leases, is
+// read-only under the hardened unit).
+func (nm *NetworkManager) dnsmasqPIDPath() string   { return nm.dnsmasqFile("pid") }
+func (nm *NetworkManager) dnsmasqLogPath() string   { return nm.dnsmasqFile("log") }
+func (nm *NetworkManager) dnsmasqLeasePath() string { return nm.dnsmasqFile("leases") }
+
+// dnsmasqRunAsGroup returns the gid dnsmasq drops to. dnsmasq's compiled default
+// user is "nobody", and it needs the runtime directory's group so it can create
+// and rewrite its own pid and lease files after the drop. It is a variable so a
+// test can simulate a system where that user is missing.
+var dnsmasqRunAsGroup = func() (int, error) {
+	u, err := user.Lookup("nobody")
+	if err != nil {
+		return 0, err
+	}
+	return strconv.Atoi(u.Gid)
+}
+
+// ensureDnsmasqRuntimeDir creates the runtime directory and hands it to the group
+// dnsmasq drops to, so dnsmasq can write its pid and lease files there while no
+// other local user can create, replace or list anything in it.
+//
+// A symlink or a non-directory at the path is refused rather than used: this
+// directory holds files the daemon writes as root and PIDs it signals as root.
+func (nm *NetworkManager) ensureDnsmasqRuntimeDir() error {
+	dir := nm.dnsmasqRuntimeDir()
+
+	if info, err := os.Lstat(dir); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("dnsmasq runtime directory %s is a symlink", dir)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("dnsmasq runtime directory %s is not a directory", dir)
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("cannot stat dnsmasq runtime directory %s: %w", dir, err)
+	}
+
+	// MkdirAll's mode is masked by the umask, so the mode is set explicitly below.
+	if err := os.MkdirAll(dir, 0o770); err != nil {
+		return fmt.Errorf("cannot create dnsmasq runtime directory %s: %w", dir, err)
+	}
+
+	gid, err := dnsmasqRunAsGroup()
+	if err == nil {
+		err = os.Chown(dir, 0, gid)
+	}
+	if err != nil {
+		// Without the handover (a system with no "nobody", a non-root caller)
+		// fall back to a directory that is searchable but not writable: dnsmasq
+		// still serves, only rewriting its lease file degrades.
+		log.Warn().Err(err).Str("dir", dir).
+			Msg("Could not hand the dnsmasq runtime directory to the user dnsmasq drops to")
+		return os.Chmod(dir, 0o755)
+	}
+	return os.Chmod(dir, 0o770)
+}
+
+// writeDnsmasqFile writes one of the daemon-owned dnsmasq files without following
+// a symlink at its final path, so a link planted at a predictable name can never
+// redirect a root write. It is a variable so a test can drive a failing write.
+var writeDnsmasqFile = func(path string, data []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	_, err = f.Write(data)
+	return err
 }
 
 // ProgramDNS reconciles this node's service-name records with the desired set.
@@ -72,7 +170,7 @@ func (nm *NetworkManager) ProgramDNS(records []DNSRecord) error {
 		}
 	}
 
-	if err := osWriteFile(path, []byte(content), 0644); err != nil {
+	if err := writeDnsmasqFile(path, []byte(content), 0644); err != nil {
 		return fmt.Errorf("failed to write dns records %s: %w", path, err)
 	}
 

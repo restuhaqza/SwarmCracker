@@ -41,6 +41,11 @@ type NetworkManager struct {
 	ipAllocator *IPAllocator
 	natSetup    bool
 
+	// runtimeDir holds the per-bridge dnsmasq files (pid, log, leases and the
+	// service-name records). It defaults to dnsmasqRuntimeDirDefault; a test
+	// points a manager at a temporary directory instead.
+	runtimeDir string
+
 	// nodeIndex/nodeSlots partition the shared overlay into disjoint per-node
 	// IP blocks (see IPAllocator). nodeSlots <= 1 means single-node.
 	nodeIndex uint32
@@ -458,6 +463,7 @@ func NewNetworkManager(config types.NetworkConfig) types.NetworkManager {
 		managedNetworks: make(map[string]*managedNetwork),
 		nodeIndex:       nodeIndex,
 		nodeSlots:       nodeSlots,
+		runtimeDir:      dnsmasqRuntimeDirDefault,
 	}
 
 	// Initialize IP allocator if subnet and bridge IP are configured
@@ -1051,6 +1057,14 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		// Not fatal - VMs can use static IPs
 	}
 
+	// The per-bridge files (pid, log, leases, records) live in a directory that
+	// only root and dnsmasq's own user can write, rather than in world-writable
+	// /tmp: at predictable /tmp names a local user could plant a symlink the
+	// daemon would write through as root, or a pid file it would signal as root.
+	if err := nm.ensureDnsmasqRuntimeDir(); err != nil {
+		return fmt.Errorf("dnsmasq runtime directory: %w", err)
+	}
+
 	// Parse subnet to get DHCP range
 	_, subnet, err := net.ParseCIDR(nm.config.Subnet)
 	if err != nil {
@@ -1104,11 +1118,10 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		return nil
 	}
 
-	// The pid file is only visible to the process that started the server: a
-	// standalone CLI run and the daemon can have different /tmp views (and a
-	// unit may set PrivateTmp), so a server started by another SwarmCracker
-	// process can be invisible. Fall back to a /proc scan, which is global, and
-	// reuse that server too instead of colliding on 192.168.127.1:53.
+	// The pid file lives in a directory both the daemon and a standalone CLI run
+	// share, so it is normally visible to whoever started the server. Keep the
+	// /proc scan as the global cross-check anyway, and reuse that server too
+	// instead of colliding on 192.168.127.1:53.
 	if pids := findDnsmasqPIDs(nm.config.BridgeName); len(pids) > 0 && dnsmasqServesRecords(pids) {
 		log.Debug().
 			Str("bridge", nm.config.BridgeName).
@@ -1118,31 +1131,32 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	}
 
 	// Kill any existing dnsmasq for this bridge: via the pid file, and via the
-	// /proc scan, because a restarted daemon has a fresh private /tmp and
-	// cannot see the pid file of a server the previous run left behind.
+	// /proc scan for an instance no pid file tracks (one an earlier run left
+	// behind). Both go through killDnsmasqPID, which signals nothing that is not
+	// a dnsmasq bound to this bridge.
 	nm.killDnsmasqByPID(nm.config.BridgeName)
 	for _, pid := range findDnsmasqPIDs(nm.config.BridgeName) {
 		log.Info().
 			Str("bridge", nm.config.BridgeName).
 			Str("pid", pid).
 			Msg("Replacing dnsmasq instance that cannot serve service records")
-		nm.killByPID(pid)
+		nm.killDnsmasqPID(pid, nm.config.BridgeName)
 	}
 	time.Sleep(100 * time.Millisecond) // Brief pause to ensure process is killed
 
-	// Create log file with proper permissions for dnsmasq (runs as nobody).
-	// Per-bridge log file to avoid collisions; 0640 keeps it readable by the
-	// daemon but not world-writable.
-	logFile := "/tmp/dnsmasq-" + nm.config.BridgeName + ".log"
+	// Create the log file with permissions for dnsmasq, which opens it as root
+	// at startup (before dropping to nobody) and keeps the descriptor. 0640
+	// keeps it readable by the daemon but not world-writable.
+	logFile := nm.dnsmasqLogPath()
 	_ = osRemove(logFile) // Remove old file first
-	if err := osWriteFile(logFile, []byte{}, 0640); err != nil {
-		log.Warn().Err(err).Msg("Could not create dnsmasq log file")
+	if err := writeDnsmasqFile(logFile, []byte{}, 0640); err != nil {
+		log.Warn().Err(err).Str("path", logFile).Msg("Could not create dnsmasq log file")
 	}
 
 	// dnsmasq only reads its addn-hosts file at startup and on SIGHUP, so the
 	// file must exist before it starts; ProgramDNS rewrites it in place.
 	recordsFile := nm.dnsRecordsPath()
-	if err := osWriteFile(recordsFile, []byte{}, 0644); err != nil {
+	if err := writeDnsmasqFile(recordsFile, []byte{}, 0644); err != nil {
 		log.Warn().Err(err).Str("path", recordsFile).Msg("Could not create dnsmasq records file")
 	}
 
@@ -1171,12 +1185,12 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		"--addn-hosts", recordsFile,
 		"--log-queries",
 		"--log-dhcp",
-		"--log-facility=/tmp/dnsmasq-"+nm.config.BridgeName+".log",
-		"--pid-file=/tmp/dnsmasq-"+nm.config.BridgeName+".pid",
+		"--log-facility="+logFile,
+		"--pid-file="+nm.dnsmasqPIDPath(),
 		// dnsmasq's compiled-in default lease file is /var/lib/misc/dnsmasq.leases,
 		// which is read-only under the hardened systemd unit (ProtectSystem=strict).
 		// Point it at a writable path so the DHCP fallback can start.
-		"--dhcp-leasefile=/tmp/dnsmasq-"+nm.config.BridgeName+".leases",
+		"--dhcp-leasefile="+nm.dnsmasqLeasePath(),
 	)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -1471,19 +1485,26 @@ func hasFlagValue(fields []string, flag, value string) bool {
 	return flagValue(fields, flag) == value
 }
 
-// cleanupDnsmasq kills dnsmasq instances related to swarmcracker, both via PID
-// files and by scanning running processes, so orphans from earlier runs or a
-// mid-startup replacement are reaped too.
+// cleanupDnsmasq kills the dnsmasq instances this host tracks through pid files,
+// and reaps those files, so orphans from earlier runs or a mid-startup
+// replacement are removed too. Every signal goes through killDnsmasqPID: a pid
+// file is untrusted input, so nothing is signalled that is not a dnsmasq bound to
+// that bridge.
 func (nm *NetworkManager) cleanupDnsmasq() error {
-	// Kill by per-bridge pid files (safe, no shell injection).
-	// Matches dnsmasq-<bridge>.pid files created by setupDHCP.
-	matches, err := filepath.Glob("/tmp/dnsmasq-*.pid")
-	if err == nil {
+	for _, pattern := range []string{
+		filepath.Join(nm.dnsmasqRuntimeDir(), "dnsmasq-*.pid"),
+		// Instances started before these files moved out of world-writable /tmp.
+		"/tmp/dnsmasq-*.pid",
+	} {
+		matches, err := filepath.Glob(pattern)
+		if err != nil {
+			continue
+		}
 		for _, pidFile := range matches {
 			if data, readErr := os.ReadFile(pidFile); readErr == nil {
 				pid := strings.TrimSpace(string(data))
 				if pid != "" {
-					nm.killByPID(pid)
+					nm.killDnsmasqPID(pid, dnsmasqBridgeFromPIDFile(pidFile))
 				}
 			}
 			_ = osRemove(pidFile)
@@ -1491,25 +1512,66 @@ func (nm *NetworkManager) cleanupDnsmasq() error {
 	}
 
 	// Note: do NOT sweep /proc and kill every dnsmasq bound to our bridges.
-	// The daemon and a standalone CLI run can have separate /tmp views, so a
-	// client that reuses the daemon's server would otherwise tear it down on
-	// exit. Only instances this process started (tracked via its own pid files)
-	// are removed here.
+	// A client that reuses the daemon's server would otherwise tear it down on
+	// exit. Only instances tracked through pid files are removed here.
 
 	log.Info().Msg("dnsmasq cleaned up")
 	return nil
 }
 
+// dnsmasqBridgeFromPIDFile extracts the bridge name from a
+// dnsmasq-<bridge>.pid path.
+func dnsmasqBridgeFromPIDFile(path string) string {
+	name := strings.TrimSuffix(filepath.Base(path), ".pid")
+	return strings.TrimPrefix(name, "dnsmasq-")
+}
+
+// validPID reports whether s is a plain, non-zero PID. A pid file is untrusted
+// input: a value like "-1" would otherwise turn `kill <pid>` into a signal for
+// every process this user may signal, and as root that is the whole system.
+func validPID(s string) bool {
+	if s == "" || len(s) > 7 || s == "0" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// killDnsmasqPID signals pid only when it is a dnsmasq bound to bridgeName.
+// PIDs reach this function from pid files, which are untrusted input: without the
+// check the daemon would signal an arbitrary process as root.
+func (nm *NetworkManager) killDnsmasqPID(pid, bridgeName string) bool {
+	if !validPID(pid) {
+		log.Warn().Str("pid", pid).Msg("Refusing to signal a PID that is not a plain process ID")
+		return false
+	}
+	if !dnsmasqArgvMatches(dnsmasqArgvForPID(pid), bridgeName) {
+		log.Warn().
+			Str("pid", pid).
+			Str("bridge", bridgeName).
+			Msg("Refusing to signal a PID that is not this bridge's dnsmasq")
+		return false
+	}
+	nm.killByPID(pid)
+	return true
+}
+
 // liveDnsmasqPID returns the PID of a running dnsmasq bound to bridgeName, or
 // "" when none is tracked and alive.
 func (nm *NetworkManager) liveDnsmasqPID(bridgeName string) string {
-	pidFile := "/tmp/dnsmasq-" + bridgeName + ".pid"
-	data, err := os.ReadFile(pidFile)
+	data, err := os.ReadFile(nm.dnsmasqFileFor(bridgeName, "pid"))
 	if err != nil {
 		return ""
 	}
 	pid := strings.TrimSpace(string(data))
-	if pid == "" {
+	// The pid file is untrusted input: a planted PID must not make the daemon
+	// believe a server it did not start is healthy, or it would skip starting its
+	// own. Only a live dnsmasq bound to this bridge counts.
+	if !validPID(pid) || !dnsmasqArgvMatches(dnsmasqArgvForPID(pid), bridgeName) {
 		return ""
 	}
 	// Signal 0 probes for liveness without affecting the process.
@@ -1555,9 +1617,10 @@ func dnsmasqArgvMatches(argv []string, bridgeName string) bool {
 	return false
 }
 
-// killDnsmasqByPID reads the per-bridge dnsmasq PID file and sends SIGTERM.
+// killDnsmasqByPID reads the per-bridge dnsmasq PID file and sends SIGTERM. A pid
+// file is untrusted input, so the signal is validated first (see killDnsmasqPID).
 func (nm *NetworkManager) killDnsmasqByPID(bridgeName string) {
-	pidFile := "/tmp/dnsmasq-" + bridgeName + ".pid"
+	pidFile := nm.dnsmasqFileFor(bridgeName, "pid")
 	data, err := os.ReadFile(pidFile)
 	if err != nil {
 		return
@@ -1566,7 +1629,7 @@ func (nm *NetworkManager) killDnsmasqByPID(bridgeName string) {
 	if pid == "" {
 		return
 	}
-	nm.killByPID(pid)
+	nm.killDnsmasqPID(pid, bridgeName)
 	_ = osRemove(pidFile)
 }
 
