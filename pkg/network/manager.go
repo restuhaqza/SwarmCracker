@@ -1192,14 +1192,14 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		"--dhcp-leasefile=" + nm.dnsmasqLeasePath(),
 	}
 
-	// Name the user dnsmasq drops to explicitly. Its default is a compile-time
-	// setting and the runtime directory is handed to exactly this user's group, so
-	// leaving it implicit could leave dnsmasq unable to create and rewrite its own
-	// pid and lease files after the drop. When the user cannot be resolved,
-	// dnsmasq's own default stands and the directory falls back too (see
-	// ensureDnsmasqRuntimeDir).
-	if name, _, _, err := dnsmasqDropUser(); err == nil {
-		args = append(args, "--user="+name)
+	// Name the user and group dnsmasq drops to explicitly, because its defaults are
+	// compile-time settings and the runtime directory is handed to exactly this
+	// group. Leaving them implicit is not safe: dnsmasq can end up in a group that
+	// cannot even traverse the directory, and then it silently serves nothing. When
+	// the user cannot be resolved, dnsmasq's own default stands and the directory
+	// falls back too (see ensureDnsmasqRuntimeDir).
+	if userName, groupName, _, _, err := dnsmasqDropUser(); err == nil {
+		args = append(args, "--user="+userName, "--group="+groupName)
 	}
 
 	cmd := execCommand("dnsmasq", args...)

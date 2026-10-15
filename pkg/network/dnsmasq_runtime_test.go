@@ -3,6 +3,7 @@
 package network
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,7 +72,7 @@ func TestEnsureDnsmasqRuntimeDir_HandsItToDnsmasqUser(t *testing.T) {
 	nm := runtimeTestManager(t)
 	require.NoError(t, nm.ensureDnsmasqRuntimeDir())
 
-	_, _, gid, err := dnsmasqDropUser()
+	_, _, _, gid, err := dnsmasqDropUser()
 	require.NoError(t, err)
 
 	info, err := os.Stat(nm.dnsmasqRuntimeDir())
@@ -89,7 +90,7 @@ func TestEnsureDnsmasqRuntimeDir_FallsBackWithoutDnsmasqUser(t *testing.T) {
 	nm := runtimeTestManager(t)
 
 	orig := dnsmasqDropUser
-	dnsmasqDropUser = func() (string, int, int, error) { return "", 0, 0, os.ErrNotExist }
+	dnsmasqDropUser = func() (string, string, int, int, error) { return "", "", 0, 0, os.ErrNotExist }
 	defer func() { dnsmasqDropUser = orig }()
 
 	require.NoError(t, nm.ensureDnsmasqRuntimeDir())
@@ -355,4 +356,39 @@ func TestProgramDNS_ReloadsLiveServers(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"111", "222"}, reloads,
 		"every live server must be reloaded; calls=%v", calls)
+}
+
+// TestSetupDHCP_NamesTheDropUserAndGroup covers the portability guard: dnsmasq's
+// drop user and group are compile-time defaults, so both are named explicitly and
+// therefore agree with the group the runtime directory was handed to. Without it
+// dnsmasq can end up in a group that cannot traverse the directory — the lab
+// reproduced exactly that: "failed to load names ... Permission denied" and
+// SERVFAIL for every service name.
+func TestSetupDHCP_NamesTheDropUserAndGroup(t *testing.T) {
+	state := newMockState()
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	orig := dnsmasqDropUser
+	dnsmasqDropUser = func() (string, string, int, int, error) {
+		return "nobody", "nogroup", 65534, 65534, nil
+	}
+	defer func() { dnsmasqDropUser = orig }()
+
+	nm := runtimeTestManager(t)
+	require.NoError(t, nm.setupDHCP(context.Background()))
+
+	state.mu.Lock()
+	calls := append([]string(nil), state.calls...)
+	state.mu.Unlock()
+
+	var started string
+	for _, c := range calls {
+		if strings.HasPrefix(c, "dnsmasq --interface") {
+			started = c
+		}
+	}
+	require.NotEmpty(t, started, "dnsmasq must have been started; calls=%v", calls)
+	assert.Contains(t, started, "--user=nobody")
+	assert.Contains(t, started, "--group=nogroup")
 }

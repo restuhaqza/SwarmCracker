@@ -85,24 +85,32 @@ func (nm *NetworkManager) dnsmasqPIDPath() string   { return nm.dnsmasqFile("pid
 func (nm *NetworkManager) dnsmasqLogPath() string   { return nm.dnsmasqFile("log") }
 func (nm *NetworkManager) dnsmasqLeasePath() string { return nm.dnsmasqFile("leases") }
 
-// dnsmasqDropUser resolves the user dnsmasq drops to — its compiled default,
-// "nobody". setupDHCP names that user explicitly in the dnsmasq arguments and the
-// runtime directory is handed to its group, so the two cannot drift apart: the
-// directory must be writable by exactly the user that has to create and rewrite
-// the pid and lease files after the drop. It is a variable so a test can simulate
-// a system where that user is missing.
-var dnsmasqDropUser = func() (name string, uid, gid int, err error) {
+// dnsmasqDropUser resolves the user and group dnsmasq drops to: its compiled
+// default user, "nobody", and that user's primary group.
+//
+// Both are named explicitly in the dnsmasq arguments, and the runtime directory is
+// handed to the same group, because otherwise the two can silently disagree. The
+// drop group is not necessarily the user's primary group — on the lab dnsmasq
+// ended up in the daemon's inherited group and could not even traverse the
+// directory, so it failed to load the records file with "Permission denied" and
+// answered SERVFAIL while looking perfectly healthy. It is a variable so a test
+// can simulate a system where the user is missing.
+var dnsmasqDropUser = func() (userName, groupName string, uid, gid int, err error) {
 	u, err := user.Lookup("nobody")
 	if err != nil {
-		return "", 0, 0, err
+		return "", "", 0, 0, err
 	}
 	if uid, err = strconv.Atoi(u.Uid); err != nil {
-		return "", 0, 0, err
+		return "", "", 0, 0, err
 	}
 	if gid, err = strconv.Atoi(u.Gid); err != nil {
-		return "", 0, 0, err
+		return "", "", 0, 0, err
 	}
-	return u.Username, uid, gid, nil
+	g, err := user.LookupGroupId(u.Gid)
+	if err != nil {
+		return "", "", 0, 0, err
+	}
+	return u.Username, g.Name, uid, gid, nil
 }
 
 // trustedPidFile reports whether a pid file was written by this host rather than
@@ -124,7 +132,7 @@ func trustedPidFile(path string) bool {
 	if stat.Uid == 0 {
 		return true
 	}
-	_, uid, _, err := dnsmasqDropUser()
+	_, _, uid, _, err := dnsmasqDropUser()
 	return err == nil && int(stat.Uid) == uid
 }
 
@@ -153,7 +161,7 @@ func (nm *NetworkManager) ensureDnsmasqRuntimeDir() error {
 		return fmt.Errorf("cannot create dnsmasq runtime directory %s: %w", dir, err)
 	}
 
-	_, _, gid, err := dnsmasqDropUser()
+	_, _, _, gid, err := dnsmasqDropUser()
 	if err == nil {
 		err = os.Chown(dir, 0, gid)
 	}
