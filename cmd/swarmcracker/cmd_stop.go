@@ -215,10 +215,24 @@ func cleanupVM(stateMgr *runtime.StateManager, vm *runtime.VMState) error {
 	// Remove the VM's API and console sockets if present.
 	removeVMSockets(vm)
 
+	removeEphemeralRootfs(vm)
+
 	// Remove VM from state
 	if err := stateMgr.Remove(vm.ID); err != nil {
 		log.Warn().Err(err).Msg("Failed to remove VM from state")
 	}
 
 	return nil
+}
+
+// removeEphemeralRootfs frees a VM's private rootfs copy, if it has one. The
+// shared image cache and golden artifacts are never marked ephemeral, so they
+// survive the VMs that used them.
+func removeEphemeralRootfs(vm *runtime.VMState) {
+	if vm == nil || !vm.RootfsEphemeral || vm.RootfsPath == "" {
+		return
+	}
+	if err := os.Remove(vm.RootfsPath); err != nil && !os.IsNotExist(err) {
+		log.Warn().Err(err).Str("path", vm.RootfsPath).Msg("Failed to remove per-task rootfs")
+	}
 }

@@ -1308,7 +1308,7 @@ func TestPrepare_WithCachedRootfsAndMounts(t *testing.T) {
 	_ = err
 	// With mounts the task gets a private rootfs copy; without a volume manager
 	// (e.g. running as non-root) it keeps the shared image rootfs.
-	assert.Contains(t, []string{rootfsPath, filepath.Join(filepath.Dir(rootfsPath), task.ID+".ext4")}, task.Annotations["rootfs"])
+	assert.Equal(t, TaskRootfsPath(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_WithCachedRootfsAndInitInjection tests cached rootfs with init injection

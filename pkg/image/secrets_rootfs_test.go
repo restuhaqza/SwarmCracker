@@ -33,7 +33,7 @@ func TestPrepare_SecretsForcePrivateRootfs(t *testing.T) {
 
 	_ = ip.Prepare(context.Background(), task)
 
-	private := filepath.Join(rootfsDir, task.ID+".ext4")
+	private := perTaskRootfs(rootfsDir, task.ID)
 	assert.Equal(t, private, task.Annotations["rootfs"], "secrets must use a per-task rootfs")
 	assert.Equal(t, "true", task.Annotations["rootfs_ephemeral"])
 }
@@ -53,6 +53,14 @@ func TestCleanup_ReapsAbandonedStagingFiles(t *testing.T) {
 	inFlight := filepath.Join(rootfsDir, "task-2.ext4"+rootfsStagingMarker+"789-012")
 	require.NoError(t, os.WriteFile(inFlight, []byte("a copy in progress"), 0644))
 
+	// A legitimate file whose name merely contains the marker must not be reaped
+	// by the staging rule. Its access time is fresh, so the normal rule skips it
+	// as well — which is exactly what makes this an assertion about the staging
+	// match rather than about the age rules.
+	lookalike := filepath.Join(rootfsDir, "foo.tmp-bar-abc123-latest.ext4")
+	require.NoError(t, os.WriteFile(lookalike, []byte("an image cache"), 0644))
+	require.NoError(t, os.Chtimes(lookalike, time.Now(), time.Now().Add(-time.Hour)))
+
 	removed, freed, err := ip.Cleanup(context.Background(), 7)
 	require.NoError(t, err)
 
@@ -60,11 +68,47 @@ func TestCleanup_ReapsAbandonedStagingFiles(t *testing.T) {
 	assert.EqualValues(t, len("half a copy"), freed)
 	assert.NoFileExists(t, abandoned)
 	assert.FileExists(t, inFlight, "a staging file younger than the threshold is left alone")
+	assert.FileExists(t, lookalike, "a name that merely contains the marker is not a staging file")
 }
 
 // perTaskRootfs is where a task's own writable copy of the image rootfs lives.
+// It is spelled out here rather than delegated, so a change to the layout has to
+// be made in both places.
 func perTaskRootfs(rootfsDir, taskID string) string {
-	return filepath.Join(rootfsDir, taskID+".ext4")
+	return filepath.Join(rootfsDir, "tasks", taskID+".ext4")
+}
+
+// TestPrepare_TaskNamedLikeItsImage proves the collision that used to be possible
+// cannot happen: the CLI lets a VM be named after an image (`vm create --name
+// alpine-latest alpine`), and with task copies and image caches in one directory
+// that task would have booted — and deleted — the shared cache.
+func TestPrepare_TaskNamedLikeItsImage(t *testing.T) {
+	rootfsDir := t.TempDir()
+	imageID := generateImageID("alpine:latest")
+	cache := filepath.Join(rootfsDir, imageID+".ext4")
+	makeCachedRootfs(t, cache)
+	markCachedRootfsCurrent(t, cache)
+	before, err := os.ReadFile(cache)
+	require.NoError(t, err)
+
+	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
+
+	// The task ID is exactly the image ID — the worst case.
+	task := &types.Task{
+		ID:          imageID,
+		Annotations: make(map[string]string),
+		Spec:        types.TaskSpec{Runtime: &types.Container{Image: "alpine:latest"}},
+	}
+	_ = ip.Prepare(context.Background(), task)
+
+	assert.Equal(t, perTaskRootfs(rootfsDir, task.ID), task.Annotations["rootfs"],
+		"a task named like its image still gets its own copy")
+	assert.NotEqual(t, cache, task.Annotations["rootfs"], "the task must never resolve to the cache")
+
+	after, err := os.ReadFile(cache)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "the cache must be untouched")
+	assert.FileExists(t, cache, "the cache must still be there")
 }
 
 // TestPrepare_NoSecretsStillGetsOwnRootfs is the #69 invariant: a task with no

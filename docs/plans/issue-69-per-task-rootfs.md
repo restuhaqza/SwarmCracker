@@ -41,15 +41,24 @@ Make the OCI path match the golden path: **every task gets its own writable copy
 of the image rootfs.
 
 - `pkg/image/preparer.go`: drop the `needsPrivateRootfs` condition. Always copy to
-  `<rootfs_dir>/<task-id>.ext4`, always mark `rootfs_ephemeral=true`, and keep
-  applying mounts/secrets/configs to that copy. The base stays the cache and is
-  never handed to a guest.
+  `tasks/<task-id>.ext4` — a directory of its own, because task IDs and image IDs
+  would otherwise share one namespace and the CLI lets a VM be named after an image
+  (`vm create --name alpine-latest alpine`), which would have let a task boot and
+  then delete the cache. Always mark `rootfs_ephemeral=true`, and keep applying
+  mounts/secrets/configs to the copy. The base stays the cache and is never handed
+  to a guest. The copy is staged in a unique temp file and renamed into place, so a
+  concurrent prepare (or a retry while a running VM holds the old file open) never
+  sees a missing or half-written rootfs.
 - `pkg/swarmkit/executor.go`: the orphan sweep also removes the orphaned task's
   copy, so a daemon crash (or a task killed while the daemon was down) does not
-  leak disk now that every task has one.
-- `pkg/executor/executor.go` (CLI `vm create`/`vm rm`): `Remove` deletes the
-  per-task rootfs when it is marked ephemeral, so the CLI path does not leak
-  copies either — and never touches a golden artifact.
+  leak disk now that every task has one. Golden images get their copy in the same
+  directory and are marked ephemeral too, so teardown deletes the copy and never
+  the artifact.
+- `pkg/executor/executor.go` + `cmd/swarmcracker`: the CLI's teardown frees the
+  copy — `vm stop` through `cleanupVM`, which reads the new `VMState.RootfsEphemeral`
+  — and `FirecrackerExecutor.Remove` does the same for programmatic callers. The
+  CLI's VM ID is also unique now (it used to be per-second, which made two VMs
+  share one copy).
 - No configuration knob: a knob that re-enables sharing is a knob that re-enables
   the leak, and the golden path already hard-codes the correct behaviour.
 
@@ -78,9 +87,9 @@ it is recorded as a follow-up rather than smuggled in here.
 |---|------|-------|--------|
 | T1 | Always per-task copy + ephemeral marker; comment states the invariant | `pkg/image/preparer.go` | `go test ./pkg/image/` |
 | T2 | Orphan sweep removes the orphaned task's copy | `pkg/swarmkit/executor.go` | `go test ./pkg/swarmkit/` |
-| T3 | CLI `Remove` deletes the ephemeral per-task rootfs | `pkg/executor/executor.go` | `go test ./pkg/executor/` |
+| T3 | CLI teardown frees the ephemeral copy: `VMState.RootfsEphemeral` + `cleanupVM` (`vm stop`), and `FirecrackerExecutor.Remove`; unique CLI VM IDs | `pkg/runtime/state.go`, `cmd/swarmcracker/cmd_vm.go`, `cmd_stop.go`, `pkg/executor/executor.go`, `cmd/swarmcracker/helpers.go` | `go test ./pkg/executor/ ./cmd/swarmcracker/` |
 | T4 | Update tests that pinned the shared-cache behaviour, and add the invariant test | `pkg/image/*_test.go` | `go test ./pkg/image/` |
-| T5 | Docs: the cache is a template, never a drive | `guides/operations.md`, `reference/cli.md` | `npm run verify` |
+| T5 | Docs: the cache is a template, never a drive; the copy layout and the cleanup caveat | `guides/configuration.md`, `guides/operations.md`, `reference/cli.md` | `npm run verify` |
 | T6 | Independent whole-branch review at the frozen tip | — | — |
 | T7 | Lab e2e (2 nodes) | — | see below |
 

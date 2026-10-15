@@ -78,15 +78,20 @@ Optional path to an initrd image. Leave empty to boot directly from the rootfs.
 | **Default** | `"/var/lib/firecracker/rootfs"` |
 | **Required** | Yes |
 
-Directory where OCI images are converted to ext4 root filesystems. It holds two
-kinds of file:
+Directory where OCI images are converted to ext4 root filesystems. It holds the
+per-image cache, and each task's private copy lives in a `tasks/` subdirectory so
+a task ID can never collide with an image name:
 
-- `<image>-<tag>.ext4` — the shared, per-image **cache**. It is a template: no VM
-  ever boots from it, and nothing a guest writes can reach it.
-- `<task-id>.ext4` — the private, writable copy a task actually boots from. It is
-  created when the task starts (a sparse copy, reflinked where the filesystem
-  supports one), deleted when the task is removed, and reaped by the periodic
-  cleanup if a task dies without a teardown.
+- `<image>-<tag>.ext4` (a hash suffix is added when the image name is not a plain
+  `name:tag`) — the shared **cache**. It is a template: no VM ever boots from it,
+  and nothing a guest writes can reach it.
+- `tasks/<task-id>.ext4` — the private, writable copy a task actually boots from.
+  It is created when the task starts (a sparse copy, reflinked where the
+  filesystem supports one), deleted when the task is removed or its VM is stopped,
+  and reaped by the periodic cleanup if a task dies without a teardown.
+
+With `jailer` enabled the jailer copies the rootfs into its chroot, so a task then
+holds two copies on disk.
 
 ### executor.socket_dir
 

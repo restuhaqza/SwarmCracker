@@ -806,10 +806,15 @@ iptables -A INPUT -p udp --dport 4789 -s 192.168.1.0/24 -j ACCEPT
 2. **Short-term:** Remove unused rootfs images
    ```bash
    # The rootfs directory holds the per-image cache (<image>-<tag>.ext4, never
-   # booted) and one private copy per task (<task-id>.ext4, deleted on teardown).
-   # Both look like ordinary files here; the copies of running tasks are in use.
-   ls -lh /var/lib/firecracker/rootfs/
+   # booted); each task's private copy lives in its tasks/ subdirectory and is
+   # deleted when the task or VM goes away.
+   ls -lh /var/lib/firecracker/rootfs/ /var/lib/firecracker/rootfs/tasks/
    ```
+   The periodic cleanup only reaps a copy whose **access time** is old, so a
+   running VM's rootfs is normally left alone — but on a filesystem mounted
+   `noatime` (or for a task running longer than the retention window) an old copy
+   can be reaped while its VM still runs. The VM keeps working from the open file;
+   a restart or a snapshot of it then fails.
 
 3. **Long-term:** Configure snapshot retention. (Image cleanup already runs
    automatically every 24 hours, removing rootfs images older than 7 days.)

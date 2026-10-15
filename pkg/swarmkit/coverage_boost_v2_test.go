@@ -359,9 +359,10 @@ func TestExecutor_CleanupOrphanedVMs_WithOrphanV2(t *testing.T) {
 // the shared image cache alone.
 func TestExecutor_CleanupOrphanedVMs_FreesOrphanRootfs(t *testing.T) {
 	tmpDir := t.TempDir()
-	orphanCopy := filepath.Join(tmpDir, "orphan-task.ext4")
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "tasks"), 0o755))
+	orphanCopy := filepath.Join(tmpDir, "tasks", "orphan-task.ext4")
 	require.NoError(t, os.WriteFile(orphanCopy, []byte("orphan copy"), 0644))
-	activeCopy := filepath.Join(tmpDir, "active-task.ext4")
+	activeCopy := filepath.Join(tmpDir, "tasks", "active-task.ext4")
 	require.NoError(t, os.WriteFile(activeCopy, []byte("active copy"), 0644))
 	cache := filepath.Join(tmpDir, "nginx-latest.ext4")
 	require.NoError(t, os.WriteFile(cache, []byte("cache"), 0644))

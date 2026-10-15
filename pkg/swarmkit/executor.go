@@ -457,12 +457,17 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 			}
 
 			// An orphaned task's per-task rootfs copy is disk nobody will free:
-			// the task is gone, so no controller runs its teardown. Only the
-			// <task-id>.ext4 copy is touched — image cache files are named after
-			// the image, and a golden artifact is never a task's rootfs.
-			orphanRootfs := filepath.Join(e.config.RootfsDir, taskID+".ext4")
-			if err := os.Remove(orphanRootfs); err != nil && !os.IsNotExist(err) {
-				log.Warn().Err(err).Str("path", orphanRootfs).Msg("Failed to remove orphaned per-task rootfs")
+			// the task is gone, so no controller runs its teardown. Only a task's
+			// own copy is touched — image caches live in their own directory, and
+			// a golden artifact is never a task's rootfs. Daemon task IDs are
+			// SwarmKit IDs, so the legacy flat path cannot name a cache either.
+			for _, orphanRootfs := range []string{
+				image.TaskRootfsPath(e.config.RootfsDir, taskID),
+				filepath.Join(e.config.RootfsDir, taskID+".ext4"),
+			} {
+				if err := os.Remove(orphanRootfs); err != nil && !os.IsNotExist(err) {
+					log.Warn().Err(err).Str("path", orphanRootfs).Msg("Failed to remove orphaned per-task rootfs")
+				}
 			}
 		}
 	}
@@ -764,7 +769,10 @@ func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref
 	// share a read/write rootfs, and the daemon may not be able to write to the
 	// golden store at all (ProtectSystem=strict). Removal then deletes the copy,
 	// never the golden artifact.
-	rootfs := filepath.Join(c.config.RootfsDir, task.ID+".ext4")
+	rootfs := image.TaskRootfsPath(c.config.RootfsDir, task.ID)
+	if err := os.MkdirAll(filepath.Dir(rootfs), 0o755); err != nil {
+		return fmt.Errorf("failed to create the per-task rootfs directory: %w", err)
+	}
 	if err := art.Materialize(ctx, rootfs); err != nil {
 		return err
 	}
@@ -774,6 +782,9 @@ func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref
 	}
 	task.Annotations[types.AnnotationRootfs] = rootfs
 	task.Annotations[types.AnnotationPrebuiltRootfs] = "true"
+	// The copy belongs to this task, so teardown deletes it and never the
+	// artifact it was made from.
+	task.Annotations[types.AnnotationRootfsEphemeral] = "true"
 	task.Annotations[types.AnnotationGolden] = art.Ref
 	if md := art.Metadata; md != nil {
 		if md.KernelProfile != "" {
@@ -1169,19 +1180,26 @@ func (c *Controller) Remove(ctx context.Context) error {
 		c.logger.Error().Err(err).Msg("Failed to remove VM")
 	}
 
-	// Remove the per-task rootfs copy, if any. The shared image rootfs (named
-	// by image ID) is the cache and must be kept; only the ephemeral per-task
-	// copy created for mount-bearing tasks is deleted.
+	// Remove the per-task rootfs copy, if any. The image caches (named by image
+	// ID, in their own directory) must be kept; only a task's own copy is
+	// deleted.
 	rootfsPath := ""
 	if c.internalTask != nil && c.internalTask.Annotations[types.AnnotationRootfsEphemeral] == "true" {
 		rootfsPath = c.internalTask.Annotations[types.AnnotationRootfs]
 	}
 	if rootfsPath == "" {
-		// Legacy per-task naming: <task-id>.ext4. Only attempt it when it
-		// actually exists, so removing a task never touches the image cache.
-		legacy := filepath.Join(c.config.RootfsDir, task.ID+".ext4")
-		if _, statErr := os.Stat(legacy); statErr == nil {
-			rootfsPath = legacy
+		// A prepare that failed before it recorded the annotation, or a task from
+		// before per-task copies got their own directory: try both layouts, and
+		// only when the file exists, so removing a task never touches an image
+		// cache — a daemon task ID is a SwarmKit ID, so it cannot name one.
+		for _, candidate := range []string{
+			image.TaskRootfsPath(c.config.RootfsDir, task.ID),
+			filepath.Join(c.config.RootfsDir, task.ID+".ext4"),
+		} {
+			if _, statErr := os.Stat(candidate); statErr == nil {
+				rootfsPath = candidate
+				break
+			}
 		}
 	}
 	if rootfsPath != "" {

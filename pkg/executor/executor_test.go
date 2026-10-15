@@ -309,41 +309,120 @@ func TestFirecrackerExecutor_Remove(t *testing.T) {
 }
 
 // TestFirecrackerExecutor_Remove_DeletesEphemeralRootfs proves the CLI path frees
-// a task's per-task rootfs copy, and never a shared artifact: an image cache file
-// and a golden image are not marked ephemeral.
+// a task's per-task rootfs copy — even when the VM removal itself failed, so the
+// copy cannot become orphaned disk — and never a shared artifact: an image cache
+// file and a golden image are not marked ephemeral.
 func TestFirecrackerExecutor_Remove_DeletesEphemeralRootfs(t *testing.T) {
 	dir := t.TempDir()
-	copyPath := filepath.Join(dir, "task-1.ext4")
-	require.NoError(t, os.WriteFile(copyPath, []byte("per-task copy"), 0644))
-	goldenPath := filepath.Join(dir, "golden.ext4")
-	require.NoError(t, os.WriteFile(goldenPath, []byte("golden artifact"), 0644))
+
+	newExec := func(t *testing.T, vmm *mocks.MockVMMManager) *FirecrackerExecutor {
+		t.Helper()
+		exec, err := NewFirecrackerExecutor(
+			&Config{KernelPath: "/kernel"},
+			vmm,
+			mocks.NewMockTaskTranslator(),
+			mocks.NewMockImagePreparer(),
+			mocks.NewMockNetworkManager(),
+		)
+		require.NoError(t, err)
+		return exec
+	}
+
+	t.Run("frees the task's own copy", func(t *testing.T) {
+		copyPath := filepath.Join(dir, "task-1.ext4")
+		require.NoError(t, os.WriteFile(copyPath, []byte("per-task copy"), 0644))
+		task := mocks.NewTestTask("task-1", "nginx:latest")
+		task.Annotations = map[string]string{
+			types.AnnotationRootfs:          copyPath,
+			types.AnnotationRootfsEphemeral: "true",
+		}
+
+		require.NoError(t, newExec(t, mocks.NewMockVMMManager()).Remove(context.Background(), task))
+		assert.NoFileExists(t, copyPath, "an ephemeral per-task rootfs must be deleted on removal")
+	})
+
+	t.Run("frees it even when the VM removal failed", func(t *testing.T) {
+		copyPath := filepath.Join(dir, "task-2.ext4")
+		require.NoError(t, os.WriteFile(copyPath, []byte("per-task copy"), 0644))
+		task := mocks.NewTestTask("task-2", "nginx:latest")
+		task.Annotations = map[string]string{
+			types.AnnotationRootfs:          copyPath,
+			types.AnnotationRootfsEphemeral: "true",
+		}
+		vmm := mocks.NewMockVMMManager()
+		vmm.ShouldFail = true
+
+		err := newExec(t, vmm).Remove(context.Background(), task)
+		require.Error(t, err, "the VM removal failure is reported")
+		assert.NoFileExists(t, copyPath, "the copy is still freed, so it cannot become orphaned disk")
+	})
+
+	t.Run("keeps a rootfs the task does not own", func(t *testing.T) {
+		goldenPath := filepath.Join(dir, "golden.ext4")
+		require.NoError(t, os.WriteFile(goldenPath, []byte("golden artifact"), 0644))
+		task := mocks.NewTestTask("task-3", "nginx:latest")
+		task.Annotations = map[string]string{
+			types.AnnotationRootfs:         goldenPath,
+			types.AnnotationPrebuiltRootfs: "true",
+		}
+
+		require.NoError(t, newExec(t, mocks.NewMockVMMManager()).Remove(context.Background(), task))
+		assert.FileExists(t, goldenPath, "a golden artifact must survive task removal")
+	})
+
+	t.Run("a copy that cannot be removed is reported, not fatal", func(t *testing.T) {
+		// os.Remove fails on a non-empty directory, which stands in for any copy
+		// that cannot be unlinked; removing the task must still succeed.
+		undeletable := filepath.Join(dir, "task-4.ext4")
+		require.NoError(t, os.MkdirAll(filepath.Join(undeletable, "inner"), 0o755))
+		task := mocks.NewTestTask("task-4", "nginx:latest")
+		task.Annotations = map[string]string{
+			types.AnnotationRootfs:          undeletable,
+			types.AnnotationRootfsEphemeral: "true",
+		}
+
+		require.NoError(t, newExec(t, mocks.NewMockVMMManager()).Remove(context.Background(), task))
+	})
+}
+
+// sharedRootfsPreparer mimics a prepare that leaves the task pointing at a rootfs
+// it does not own — an image cache file, or a golden artifact. Such a task carries
+// no ephemeral marker, so its rootfs must never be deleted.
+type sharedRootfsPreparer struct {
+	*mocks.MockImagePreparer
+	path string
+}
+
+func (p sharedRootfsPreparer) Prepare(_ context.Context, t *types.Task) error {
+	t.Annotations[types.AnnotationRootfs] = p.path
+	return nil
+}
+
+// TestFirecrackerExecutor_Prepare_RollbackKeepsSharedRootfs proves a failed start
+// does not delete a rootfs that is not the task's own copy.
+func TestFirecrackerExecutor_Prepare_RollbackKeepsSharedRootfs(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "alpine-latest.ext4")
+	require.NoError(t, os.WriteFile(shared, []byte("the cache"), 0644))
+
+	networkMgr := mocks.NewMockNetworkManager()
+	networkMgr.ShouldFail = true
 
 	exec, err := NewFirecrackerExecutor(
 		&Config{KernelPath: "/kernel"},
 		mocks.NewMockVMMManager(),
 		mocks.NewMockTaskTranslator(),
-		mocks.NewMockImagePreparer(),
-		mocks.NewMockNetworkManager(),
+		sharedRootfsPreparer{MockImagePreparer: mocks.NewMockImagePreparer(), path: shared},
+		networkMgr,
 	)
 	require.NoError(t, err)
 
-	ephemeral := mocks.NewTestTask("task-1", "nginx:latest")
-	ephemeral.Annotations = map[string]string{
-		types.AnnotationRootfs:          copyPath,
-		types.AnnotationRootfsEphemeral: "true",
-	}
-	require.NoError(t, exec.Remove(context.Background(), ephemeral))
-	_, err = os.Stat(copyPath)
-	assert.True(t, os.IsNotExist(err), "an ephemeral per-task rootfs must be deleted on removal")
+	task := mocks.NewTestTask("task-1", "alpine:latest")
+	task.Annotations = map[string]string{}
 
-	golden := mocks.NewTestTask("task-2", "nginx:latest")
-	golden.Annotations = map[string]string{
-		types.AnnotationRootfs:         goldenPath,
-		types.AnnotationPrebuiltRootfs: "true",
-	}
-	require.NoError(t, exec.Remove(context.Background(), golden))
-	_, err = os.Stat(goldenPath)
-	assert.NoError(t, err, "a golden artifact must survive task removal")
+	err = exec.Prepare(context.Background(), task)
+	require.Error(t, err, "the network preparation must fail")
+	assert.FileExists(t, shared, "a rootfs the task does not own must survive a failed prepare")
 }
 
 func TestFirecrackerExecutor_Close(t *testing.T) {
