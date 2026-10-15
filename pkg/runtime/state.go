@@ -29,7 +29,11 @@ type VMState struct {
 	MemoryMB   int    `json:"memory_mb,omitempty"`
 	KernelPath string `json:"kernel_path,omitempty"`
 	RootfsPath string `json:"rootfs_path,omitempty"`
-	LogPath    string `json:"log_path,omitempty"`
+	// RootfsEphemeral marks RootfsPath as a private, per-task copy that may be
+	// deleted when the VM is cleaned up. An image cache file and a golden
+	// artifact are never marked, and must survive the VMs that used them.
+	RootfsEphemeral bool   `json:"rootfs_ephemeral,omitempty"`
+	LogPath         string `json:"log_path,omitempty"`
 
 	// Network info
 	NetworkID   string   `json:"network_id,omitempty"`

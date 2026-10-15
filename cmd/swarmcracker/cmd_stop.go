@@ -69,6 +69,9 @@ func runStop(vmID string) error {
 	// Check if VM is already stopped
 	if vmState.Status == "stopped" {
 		fmt.Printf("VM %s is already stopped\n", vmID)
+		// A VM stopped before this cleanup existed (or one stopped while its
+		// process was already gone) can still be holding its rootfs copy.
+		removeEphemeralRootfs(vmState)
 		return nil
 	}
 
@@ -98,6 +101,11 @@ func runStop(vmID string) error {
 	if err := stateMgr.UpdateStatus(vmID, "stopped"); err != nil {
 		log.Warn().Err(err).Msg("Failed to update VM status")
 	}
+
+	// `vm stop` is terminal for the VM (there is no `vm start`), so free the
+	// private rootfs copy it was booted from. The shared image cache and golden
+	// artifacts are never marked ephemeral and survive.
+	removeEphemeralRootfs(vmState)
 
 	fmt.Printf("VM %s stopped successfully\n", vmID)
 
@@ -215,10 +223,24 @@ func cleanupVM(stateMgr *runtime.StateManager, vm *runtime.VMState) error {
 	// Remove the VM's API and console sockets if present.
 	removeVMSockets(vm)
 
+	removeEphemeralRootfs(vm)
+
 	// Remove VM from state
 	if err := stateMgr.Remove(vm.ID); err != nil {
 		log.Warn().Err(err).Msg("Failed to remove VM from state")
 	}
 
 	return nil
+}
+
+// removeEphemeralRootfs frees a VM's private rootfs copy, if it has one. The
+// shared image cache and golden artifacts are never marked ephemeral, so they
+// survive the VMs that used them.
+func removeEphemeralRootfs(vm *runtime.VMState) {
+	if vm == nil || !vm.RootfsEphemeral || vm.RootfsPath == "" {
+		return
+	}
+	if err := os.Remove(vm.RootfsPath); err != nil && !os.IsNotExist(err) {
+		log.Warn().Err(err).Str("path", vm.RootfsPath).Msg("Failed to remove per-task rootfs")
+	}
 }

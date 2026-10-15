@@ -626,7 +626,22 @@ func checkDoctorRootfsDir() DoctorCheck {
 		return c
 	}
 	entries, _ := os.ReadDir(rootfsDir)
-	c.Message = fmt.Sprintf("%s (%d rootfs images)", rootfsDir, len(entries))
+	images, copies := 0, 0
+	for _, e := range entries {
+		if e.IsDir() {
+			// tasks/ holds one private copy per running task.
+			if e.Name() == "tasks" {
+				if taskEntries, err := os.ReadDir(filepath.Join(rootfsDir, "tasks")); err == nil {
+					copies = len(taskEntries)
+				}
+			}
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".ext4") {
+			images++
+		}
+	}
+	c.Message = fmt.Sprintf("%s (%d image caches, %d task copies)", rootfsDir, images, copies)
 	if len(entries) > 0 {
 		c.Detail = formatEntries(entries)
 	}

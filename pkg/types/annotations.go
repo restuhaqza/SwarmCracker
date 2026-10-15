@@ -35,6 +35,12 @@ const (
 	// the node's default bridge. Readers that care which bridge a task is on
 	// (the service DNS report) match on it.
 	DefaultNetworkID = "default"
+
+	// AnnotationRootfsEphemeral marks a task whose rootfs is a private per-task
+	// copy rather than a shared artifact (an image cache file, or a golden
+	// image). Only an ephemeral copy is deleted on teardown: the shared cache and
+	// golden artifacts must survive the task that used them.
+	AnnotationRootfsEphemeral = "rootfs_ephemeral"
 )
 
 // UsesPrebuiltRootfs reports whether the task runs a prebuilt golden image.

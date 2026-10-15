@@ -956,7 +956,7 @@ func TestPrepare_WithInitInjection(t *testing.T) {
 	// Annotation should be set with the rootfs path. With mounts the task gets
 	// a private rootfs copy; without a volume manager it keeps the shared image
 	// rootfs.
-	assert.Contains(t, []string{rootfsPath, filepath.Join(filepath.Dir(rootfsPath), task.ID+".ext4")}, task.Annotations["rootfs"])
+	assert.Equal(t, TaskRootfsPath(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_WithMultipleMountsAndSecrets tests full flow with all components
@@ -1014,7 +1014,7 @@ func TestPrepare_WithMultipleMountsAndSecrets(t *testing.T) {
 	_ = err
 	// With mounts the task gets a private rootfs copy; without a volume manager
 	// it keeps the shared image rootfs.
-	assert.Contains(t, []string{rootfsPath, filepath.Join(filepath.Dir(rootfsPath), task.ID+".ext4")}, task.Annotations["rootfs"])
+	assert.Equal(t, TaskRootfsPath(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // ============================================================================
@@ -1649,7 +1649,7 @@ func TestPrepare_AnnotationsInitialization(t *testing.T) {
 
 	// Annotations should be initialized
 	assert.NotNil(t, task.Annotations)
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_ExistingRootfsPath tests when rootfs already exists
@@ -1680,7 +1680,7 @@ func TestPrepare_ExistingRootfsPath(t *testing.T) {
 	require.NoError(t, err)
 
 	// Rootfs path should be set without preparing
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_WithMountsAndReadOnly tests read-only mount handling
@@ -2341,7 +2341,7 @@ func TestPrepare_MultipleScenarios(t *testing.T) {
 				assert.NoError(t, err)
 				// With mounts the task gets a private rootfs copy; without a
 				// volume manager it keeps the shared image rootfs.
-				assert.Contains(t, []string{rootfsPath, filepath.Join(filepath.Dir(rootfsPath), tt.task.ID+".ext4")}, tt.task.Annotations["rootfs"])
+				assert.Equal(t, TaskRootfsPath(filepath.Dir(rootfsPath), tt.task.ID), tt.task.Annotations["rootfs"])
 			}
 		})
 	}
@@ -2377,7 +2377,7 @@ func TestPrepare_WithDifferentInitSystems(t *testing.T) {
 			ctx := context.Background()
 			err := ip.Prepare(ctx, task)
 			assert.NoError(t, err)
-			assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+			assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 		})
 	}
 }

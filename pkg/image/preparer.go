@@ -154,17 +154,8 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 			forceRebuild = true
 		}
 		if cachedValid {
-			if len(container.Mounts) == 0 && len(task.Secrets) == 0 && len(task.Configs) == 0 {
-				// No per-task mounts/secrets/configs: the shared image rootfs is
-				// used as-is.
-				log.Info().
-					Str("path", rootfsPath).
-					Msg("Rootfs already exists and valid, skipping")
-				task.Annotations["rootfs"] = rootfsPath
-				return nil
-			}
-			// Mounts/secrets/configs need a private rootfs; keep the shared base
-			// and fall through to copy it per task.
+			// The cache is a template: every task still gets its own copy below,
+			// so a guest can never write into a file other tasks share.
 			log.Info().
 				Str("path", rootfsPath).
 				Msg("Cached rootfs valid; creating a per-task copy")
@@ -197,21 +188,19 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 		ip.writeGuestOverrideMarker(rootfsPath)
 	}
 
-	// Mounts, secrets and configs are applied to a private, per-task copy of the
-	// rootfs. Baking them into the shared image rootfs would leak between tasks
-	// (and the shared cache is used directly as the VM drive, so it must never be
-	// modified). The private rootfs is marked ephemeral so the executor removes
-	// it on teardown without deleting the shared image cache.
-	taskRootfs := rootfsPath
-	needsPrivateRootfs := len(container.Mounts) > 0 || len(task.Secrets) > 0 || len(task.Configs) > 0
-	if needsPrivateRootfs {
-		private := filepath.Join(ip.rootfsDir, task.ID+".ext4")
-		if err := ip.copyRootfs(ctx, rootfsPath, private); err != nil {
-			return fmt.Errorf("failed to create per-task rootfs: %w", err)
-		}
-		taskRootfs = private
-		task.Annotations["rootfs_ephemeral"] = "true"
+	// Every task boots from its own writable copy of the image rootfs. The shared
+	// cache is a template and is never handed to a guest: booting from it directly
+	// would let anything the guest writes — a workload's files, or `vm exec` —
+	// land in a file every later task on this node shares, and a task that fills
+	// or corrupts it would break them all. The copy is sparse (a reflink where the
+	// filesystem supports one) and is marked ephemeral so teardown deletes the
+	// copy and never the cache. Mounts, secrets and configs are applied to it, so
+	// they cannot leak between tasks either.
+	taskRootfs := TaskRootfsPath(ip.rootfsDir, task.ID)
+	if err := ip.copyRootfs(ctx, rootfsPath, taskRootfs); err != nil {
+		return fmt.Errorf("failed to create per-task rootfs: %w", err)
 	}
+	task.Annotations[localtypes.AnnotationRootfsEphemeral] = "true"
 	if ip.volumeManager != nil && len(container.Mounts) > 0 {
 		log.Info().
 			Str("task_id", task.ID).
@@ -875,16 +864,54 @@ func (ip *ImagePreparer) writeGuestOverrideMarker(rootfsPath string) {
 	}
 }
 
+// rootfsStagingMarker marks the temporary file a per-task rootfs copy is staged
+// in before it is renamed into place (see copyRootfs), and how old such a file
+// must be before the periodic cleanup reaps it as abandoned.
+const (
+	rootfsStagingMarker = ".tmp-"
+	staleStagingAge     = 10 * time.Minute
+
+	// tasksSubdir holds the private, writable rootfs copy of each task, kept
+	// apart from the image caches. Task IDs and image IDs would otherwise share
+	// one namespace — the CLI lets a VM be named after an image
+	// (`vm create --name alpine-latest alpine`) — and a collision would let a
+	// task boot the shared cache and then delete it on teardown.
+	tasksSubdir = "tasks"
+)
+
+// TaskRootfsPath is where a task's private, writable copy of the image rootfs
+// lives: never next to the image caches, so a task can never resolve to one.
+func TaskRootfsPath(rootfsDir, taskID string) string {
+	return filepath.Join(rootfsDir, tasksSubdir, taskID+".ext4")
+}
+
+// taskRootfsDir is the directory holding every per-task copy.
+func taskRootfsDir(rootfsDir string) string {
+	return filepath.Join(rootfsDir, tasksSubdir)
+}
+
 // copyRootfs makes a private, per-task copy of the shared image rootfs. It uses
 // reflinks where the filesystem supports them (fast, no extra space) and falls
 // back to a sparse copy otherwise.
+//
+// The copy is staged in a unique temporary file and renamed into place. A
+// concurrent prepare of the same task — or a retry while an earlier copy is still
+// open by a running VM — therefore never observes a missing or half-written
+// rootfs: the old inode stays alive for whoever has it open, and the last rename
+// wins.
 func (ip *ImagePreparer) copyRootfs(ctx context.Context, src, dst string) error {
-	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to clear stale rootfs copy: %w", err)
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("failed to create the per-task rootfs directory: %w", err)
 	}
-	cmd := exec.CommandContext(ctx, "cp", "--reflink=auto", "--sparse=always", src, dst)
+	tmp := fmt.Sprintf("%s%s%d-%d", dst, rootfsStagingMarker, os.Getpid(), time.Now().UnixNano())
+	cmd := exec.CommandContext(ctx, "cp", "--reflink=auto", "--sparse=always", src, tmp)
 	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(tmp)
 		return fmt.Errorf("cp failed: %s: %w", strings.TrimSpace(string(out)), err)
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("failed to install per-task rootfs: %w", err)
 	}
 	return nil
 }
@@ -1100,13 +1127,55 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemove
 	// Safe heuristic: skip files accessed in last 24h (likely in use)
 	recentAccessThreshold := time.Now().Add(-24 * time.Hour)
 
-	// Scan directory
-	entries, readErr := os.ReadDir(ip.rootfsDir)
-	if readErr != nil {
-		return 0, 0, fmt.Errorf("failed to read rootfs directory: %w", readErr)
+	// The image caches live in the rootfs directory and each task's private copy
+	// in its tasks/ subdirectory; both are swept with the same rules.
+	for _, dir := range []string{ip.rootfsDir, taskRootfsDir(ip.rootfsDir)} {
+		removed, freed := ip.cleanupRootfsDir(dir, cutoffTime, recentAccessThreshold)
+		filesRemoved += removed
+		bytesFreed += freed
 	}
 
-	log.Debug().Int("total_files", len(entries)).Msg("Scanning rootfs directory")
+	if filesRemoved > 0 {
+		log.Info().
+			Int("files_removed", filesRemoved).
+			Int64("bytes_freed", bytesFreed).
+			Str("space_freed", formatBytes(bytesFreed)).
+			Msg("Cleanup completed")
+	} else {
+		log.Info().Msg("No old images to remove")
+	}
+
+	return filesRemoved, bytesFreed, nil
+}
+
+// isStagingFile reports whether name is a per-task copy's staging file, i.e. it
+// ends with ".ext4.tmp-<pid>-<nanos>". The shape is checked rather than the mere
+// presence of the marker, so a task or image whose name contains a literal
+// ".ext4.tmp-" cannot be reaped as if it were an abandoned copy.
+func isStagingFile(name string) bool {
+	marker := ".ext4" + rootfsStagingMarker
+	i := strings.LastIndex(name, marker)
+	if i < 0 {
+		return false
+	}
+	rest := name[i+len(marker):]
+	return strings.Count(rest, "-") == 1 && strings.Trim(rest, "0123456789-") == ""
+}
+
+// cleanupRootfsDir sweeps one directory of rootfs files: staging files abandoned
+// by an interrupted copy, and rootfs files old enough to remove that are not in
+// use. An in-use file is recognised by a recent access time — a running VM reads
+// its rootfs continuously, so ModTime stays old while the file is in use.
+func (ip *ImagePreparer) cleanupRootfsDir(dir string, cutoffTime, recentAccessThreshold time.Time) (filesRemoved int, bytesFreed int64) {
+	entries, readErr := os.ReadDir(dir)
+	if readErr != nil {
+		if !os.IsNotExist(readErr) {
+			log.Warn().Err(readErr).Str("dir", dir).Msg("Failed to read directory during cleanup")
+		}
+		return 0, 0
+	}
+
+	log.Debug().Int("total_files", len(entries)).Str("dir", dir).Msg("Scanning rootfs directory")
 
 	for _, entry := range entries {
 		// Skip directories
@@ -1114,12 +1183,26 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemove
 			continue
 		}
 
-		// Only process .ext4 files
-		if !strings.HasSuffix(entry.Name(), ".ext4") {
+		name := entry.Name()
+		filePath := filepath.Join(dir, name)
+
+		// A staging file from an interrupted copy (a crash, a kill) is never in
+		// use — a successful copy renames it away in milliseconds — so an old one
+		// is reaped here rather than accumulating.
+		if isStagingFile(name) {
+			if info, statErr := entry.Info(); statErr == nil && time.Since(info.ModTime()) > staleStagingAge {
+				if removeErr := os.Remove(filePath); removeErr == nil {
+					filesRemoved++
+					bytesFreed += info.Size()
+				}
+			}
 			continue
 		}
 
-		filePath := filepath.Join(ip.rootfsDir, entry.Name())
+		// Only process .ext4 files
+		if !strings.HasSuffix(name, ".ext4") {
+			continue
+		}
 
 		// Get file info
 		fileInfo, statErr := os.Stat(filePath)
@@ -1129,8 +1212,6 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemove
 		}
 
 		// Check if file was recently accessed (safe heuristic for in-use files)
-		// Use access time (Atime) when available — a running VM reads its rootfs
-		// continuously, so ModTime stays old while the image is in use.
 		if fileAccessTime(fileInfo).After(recentAccessThreshold) {
 			log.Debug().Str("file", filePath).Time("atime", fileAccessTime(fileInfo)).Msg("Skipping recently accessed file")
 			continue
@@ -1155,17 +1236,7 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemove
 		}
 	}
 
-	if filesRemoved > 0 {
-		log.Info().
-			Int("files_removed", filesRemoved).
-			Int64("bytes_freed", bytesFreed).
-			Str("space_freed", formatBytes(bytesFreed)).
-			Msg("Cleanup completed")
-	} else {
-		log.Info().Msg("No old images to remove")
-	}
-
-	return filesRemoved, bytesFreed, nil
+	return filesRemoved, bytesFreed
 }
 
 // fileAccessTime returns the access time of a file, preferring atime when

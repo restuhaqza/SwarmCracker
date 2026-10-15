@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -32,17 +33,101 @@ func TestPrepare_SecretsForcePrivateRootfs(t *testing.T) {
 
 	_ = ip.Prepare(context.Background(), task)
 
-	private := filepath.Join(rootfsDir, task.ID+".ext4")
+	private := perTaskRootfs(rootfsDir, task.ID)
 	assert.Equal(t, private, task.Annotations["rootfs"], "secrets must use a per-task rootfs")
 	assert.Equal(t, "true", task.Annotations["rootfs_ephemeral"])
 }
 
-func TestPrepare_NoSecretsUsesSharedCache(t *testing.T) {
+// TestCleanup_ReapsAbandonedStagingFiles proves a copy interrupted by a crash does
+// not leave its staging file behind forever, while a fresh one — a copy still in
+// progress — is left alone, and that only the staging shape is matched.
+func TestCleanup_ReapsAbandonedStagingFiles(t *testing.T) {
+	rootfsDir := t.TempDir()
+	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
+	tasksDir := taskRootfsDir(rootfsDir)
+	require.NoError(t, os.MkdirAll(tasksDir, 0o755))
+
+	abandoned := filepath.Join(tasksDir, "task-1.ext4"+rootfsStagingMarker+"123-456")
+	require.NoError(t, os.WriteFile(abandoned, []byte("half a copy"), 0644))
+	old := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(abandoned, old, old))
+
+	inFlight := filepath.Join(tasksDir, "task-2.ext4"+rootfsStagingMarker+"789-012")
+	require.NoError(t, os.WriteFile(inFlight, []byte("a copy in progress"), 0644))
+
+	// Legitimate files whose names merely contain the marker must not be reaped by
+	// the staging rule. Their access time is fresh, so the normal rule skips them
+	// as well — which is what makes these assertions about the staging match
+	// rather than about the age rules.
+	lookalike := filepath.Join(rootfsDir, "foo.tmp-bar-abc123-latest.ext4")
+	require.NoError(t, os.WriteFile(lookalike, []byte("an image cache"), 0644))
+	require.NoError(t, os.Chtimes(lookalike, time.Now(), time.Now().Add(-time.Hour)))
+	pathological := filepath.Join(tasksDir, "foo.ext4.tmp-bar.ext4")
+	require.NoError(t, os.WriteFile(pathological, []byte("a task named oddly"), 0644))
+	require.NoError(t, os.Chtimes(pathological, time.Now(), time.Now().Add(-time.Hour)))
+
+	removed, freed, err := ip.Cleanup(context.Background(), 7)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, removed, "only the abandoned staging file is reaped")
+	assert.EqualValues(t, len("half a copy"), freed)
+	assert.NoFileExists(t, abandoned)
+	assert.FileExists(t, inFlight, "a staging file younger than the threshold is left alone")
+	assert.FileExists(t, lookalike, "a name that merely contains the marker is not a staging file")
+	assert.FileExists(t, pathological, "the staging shape must match, not just the marker")
+}
+
+// perTaskRootfs is where a task's own writable copy of the image rootfs lives.
+// It is spelled out here rather than delegated, so a change to the layout has to
+// be made in both places.
+func perTaskRootfs(rootfsDir, taskID string) string {
+	return filepath.Join(rootfsDir, "tasks", taskID+".ext4")
+}
+
+// TestPrepare_TaskNamedLikeItsImage proves the collision that used to be possible
+// cannot happen: the CLI lets a VM be named after an image (`vm create --name
+// alpine-latest alpine`), and with task copies and image caches in one directory
+// that task would have booted — and deleted — the shared cache.
+func TestPrepare_TaskNamedLikeItsImage(t *testing.T) {
+	rootfsDir := t.TempDir()
+	imageID := generateImageID("alpine:latest")
+	cache := filepath.Join(rootfsDir, imageID+".ext4")
+	makeCachedRootfs(t, cache)
+	markCachedRootfsCurrent(t, cache)
+	before, err := os.ReadFile(cache)
+	require.NoError(t, err)
+
+	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
+
+	// The task ID is exactly the image ID — the worst case.
+	task := &types.Task{
+		ID:          imageID,
+		Annotations: make(map[string]string),
+		Spec:        types.TaskSpec{Runtime: &types.Container{Image: "alpine:latest"}},
+	}
+	_ = ip.Prepare(context.Background(), task)
+
+	assert.Equal(t, perTaskRootfs(rootfsDir, task.ID), task.Annotations["rootfs"],
+		"a task named like its image still gets its own copy")
+	assert.NotEqual(t, cache, task.Annotations["rootfs"], "the task must never resolve to the cache")
+
+	after, err := os.ReadFile(cache)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "the cache must be untouched")
+	assert.FileExists(t, cache, "the cache must still be there")
+}
+
+// TestPrepare_NoSecretsStillGetsOwnRootfs is the #69 invariant: a task with no
+// mounts, secrets or configs still boots from its own writable copy, so nothing a
+// guest writes can reach the file every later task on the node shares.
+func TestPrepare_NoSecretsStillGetsOwnRootfs(t *testing.T) {
 	rootfsDir := t.TempDir()
 	imageID := generateImageID("plain:v1")
-	rootfsPath := filepath.Join(rootfsDir, imageID+".ext4")
-	require.NoError(t, os.WriteFile(rootfsPath, []byte("rootfs"), 0644))
-	markCachedRootfsCurrent(t, rootfsPath)
+	cache := filepath.Join(rootfsDir, imageID+".ext4")
+	makeCachedRootfs(t, cache)
+	markCachedRootfsCurrent(t, cache)
+	before, err := os.ReadFile(cache)
+	require.NoError(t, err)
 
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
@@ -54,5 +139,19 @@ func TestPrepare_NoSecretsUsesSharedCache(t *testing.T) {
 
 	_ = ip.Prepare(context.Background(), task)
 
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"], "no secrets/mounts must reuse the shared cache")
+	want := perTaskRootfs(rootfsDir, task.ID)
+	assert.Equal(t, want, task.Annotations["rootfs"], "a plain task must not boot from the shared cache")
+	assert.NotEqual(t, cache, task.Annotations["rootfs"])
+	assert.Equal(t, "true", task.Annotations[types.AnnotationRootfsEphemeral],
+		"teardown must delete the copy, never the cache")
+	assert.FileExists(t, want, "the task's own copy must exist")
+
+	after, err := os.ReadFile(cache)
+	require.NoError(t, err)
+	assert.Equal(t, before, after, "preparing a task must not modify the shared cache")
+
+	// The copy is staged and renamed into place, so nothing is left behind.
+	staging, err := filepath.Glob(filepath.Join(rootfsDir, "*"+rootfsStagingMarker+"*"))
+	require.NoError(t, err)
+	assert.Empty(t, staging, "a successful copy must not leave a staging file")
 }

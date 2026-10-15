@@ -151,7 +151,7 @@ func TestPrepare_NilAnnotationsInitialization(t *testing.T) {
 
 	// Annotations should be initialized
 	require.NotNil(t, task.Annotations)
-	assert.Equal(t, rootfsPath, task.Annotations["rootfs"])
+	assert.Equal(t, perTaskRootfs(filepath.Dir(rootfsPath), task.ID), task.Annotations["rootfs"])
 }
 
 // TestPrepare_WithAllManagersEnabled tests all manager integration paths
@@ -204,11 +204,10 @@ func TestPrepare_WithAllManagersEnabled(t *testing.T) {
 	err := ip.Prepare(ctx, task)
 	// May fail due to mount/init operations, but code paths are exercised
 	_ = err
-	// Secrets/configs (and mounts) force a private, per-task rootfs copy, so the
-	// annotation is either the shared cache or the per-task copy.
+	// Secrets/configs (and mounts) are applied to the task's own rootfs copy; the
+	// shared cache is never a task's rootfs.
 	if err == nil {
-		private := filepath.Join(rootfsDir, task.ID+".ext4")
-		assert.Contains(t, []string{rootfsPath, private}, task.Annotations["rootfs"])
+		assert.Equal(t, TaskRootfsPath(rootfsDir, task.ID), task.Annotations["rootfs"])
 	}
 }
 

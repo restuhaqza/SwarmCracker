@@ -171,12 +171,13 @@ Service (replicated microVM) management.
 `--mount` / `--volume` attach data into the guest. A **named volume**
 (`type=volume,source=myvol` or `myvol:/data`) is a volume created with
 `swarmcracker volume create`; a **bind** mount (`type=bind,source=/host/path` or
-`/host/path:/data`) copies a host path from the node running the task. Mounts
-are materialized into a **private, per-task copy of the rootfs** at start time
-(so the shared image cache is never modified and mounts never leak between
-tasks), which means the content is a snapshot taken when the task starts — the
-data is not live-shared with the host. Read-only mounts (`:ro` / `readonly`) are
-not written back to the volume when the task stops.
+`/host/path:/data`) copies a host path from the node running the task. Every task
+boots from its own **private copy of the rootfs** — the shared image cache is
+never booted or modified, so nothing a guest writes leaks between tasks — and
+mounts are materialized into that copy at start time, which means the content is a
+snapshot taken when the task starts — the data is not live-shared with the host.
+Read-only mounts (`:ro` / `readonly`) are not written back to the volume when the
+task stops.
 
 `--mode global` runs one task per node (SwarmKit schedules it) and ignores
 `--replicas`. `--constraint` and `--placement-pref` are enforced by the SwarmKit

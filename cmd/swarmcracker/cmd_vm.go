@@ -235,6 +235,11 @@ Example:
 						MemoryMB:   memory,
 						KernelPath: cfg.Executor.KernelPath,
 						LogPath:    filepath.Join(stateMgr.GetLogDir(), task.ID+".log"),
+						// The VM boots from its own copy of the image rootfs; the
+						// copy is freed when the VM is cleaned up, while an image
+						// cache or a golden artifact is never marked ephemeral.
+						RootfsPath:      task.Annotations[types.AnnotationRootfs],
+						RootfsEphemeral: task.Annotations[types.AnnotationRootfsEphemeral] == "true",
 					}
 
 					// Get network info if available
