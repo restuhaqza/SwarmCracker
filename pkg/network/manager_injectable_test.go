@@ -20,7 +20,6 @@ var (
 	origExecCommand  func(string, ...string) *exec.Cmd
 	origExecLookPath func(string) (string, error)
 	origOsRemoveAll  func(string) error
-	origOsWriteFile  func(string, []byte, os.FileMode) error
 	origOsRemove     func(string) error
 )
 
@@ -29,7 +28,6 @@ func init() {
 	origExecCommand = execCommand
 	origExecLookPath = execLookPath
 	origOsRemoveAll = osRemoveAll
-	origOsWriteFile = osWriteFile
 	origOsRemove = osRemove
 }
 
@@ -122,16 +120,6 @@ func mockExecLookPathWithState(state *mockState) func(string) (string, error) {
 	}
 }
 
-func mockOsWriteFileWithState(state *mockState) func(string, []byte, os.FileMode) error {
-	return func(path string, data []byte, perm os.FileMode) error {
-		state.addCall("writefile:" + path)
-		if state.shouldCmdFail("writefile:" + path) {
-			return fmt.Errorf("write failed")
-		}
-		return nil
-	}
-}
-
 func mockOsRemoveWithState(state *mockState) func(string) error {
 	return func(path string) error {
 		state.addCall("remove:" + path)
@@ -155,13 +143,11 @@ func mockOsRemoveAllWithState(state *mockState) func(string) error {
 func setupMocksForTest(state *mockState) func() {
 	execCommand = mockExecCommandWithState(state)
 	execLookPath = mockExecLookPathWithState(state)
-	osWriteFile = mockOsWriteFileWithState(state)
 	osRemove = mockOsRemoveWithState(state)
 	osRemoveAll = mockOsRemoveAllWithState(state)
 	return func() {
 		execCommand = origExecCommand
 		execLookPath = origExecLookPath
-		osWriteFile = origOsWriteFile
 		osRemove = origOsRemove
 		osRemoveAll = origOsRemoveAll
 	}
@@ -559,6 +545,7 @@ func TestSetupDHCP_Injectable(t *testing.T) {
 
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
+	nm.runtimeDir = t.TempDir()
 
 	err := nm.setupDHCP(context.Background())
 	if err != nil {
@@ -928,15 +915,21 @@ func TestCreateTapDevice_MasterFail_Injectable(t *testing.T) {
 
 func TestSetupDHCP_WriteFileFail(t *testing.T) {
 	state := newMockState()
-	state.setFail("writefile:/tmp/dnsmasq.log", true)
 	restore := setupMocksForTest(state)
 	defer restore()
 
+	// The dnsmasq files are written through writeDnsmasqFile, which refuses to
+	// follow a symlink; a failing write must be tolerated, not fatal.
+	origWrite := writeDnsmasqFile
+	writeDnsmasqFile = func(string, []byte, os.FileMode) error { return os.ErrPermission }
+	defer func() { writeDnsmasqFile = origWrite }()
+
 	config := types.NetworkConfig{BridgeName: "testbr0", BridgeIP: "10.0.0.1/24", Subnet: "10.0.0.0/24"}
 	nm := NewNetworkManager(config).(*NetworkManager)
+	nm.runtimeDir = t.TempDir()
 
 	err := nm.setupDHCP(context.Background())
-	t.Logf("setupDHCP result: %v", err)
+	assert.NoError(t, err, "a file the daemon cannot write is warned about, not fatal")
 }
 
 func TestStartPeerDiscovery_InterfaceFail(t *testing.T) {
