@@ -1148,6 +1148,20 @@ func (ip *ImagePreparer) Cleanup(ctx context.Context, keepDays int) (filesRemove
 	return filesRemoved, bytesFreed, nil
 }
 
+// isStagingFile reports whether name is a per-task copy's staging file, i.e. it
+// ends with ".ext4.tmp-<pid>-<nanos>". The shape is checked rather than the mere
+// presence of the marker, so a task or image whose name contains a literal
+// ".ext4.tmp-" cannot be reaped as if it were an abandoned copy.
+func isStagingFile(name string) bool {
+	marker := ".ext4" + rootfsStagingMarker
+	i := strings.LastIndex(name, marker)
+	if i < 0 {
+		return false
+	}
+	rest := name[i+len(marker):]
+	return strings.Count(rest, "-") == 1 && strings.Trim(rest, "0123456789-") == ""
+}
+
 // cleanupRootfsDir sweeps one directory of rootfs files: staging files abandoned
 // by an interrupted copy, and rootfs files old enough to remove that are not in
 // use. An in-use file is recognised by a recent access time — a running VM reads
@@ -1174,10 +1188,8 @@ func (ip *ImagePreparer) cleanupRootfsDir(dir string, cutoffTime, recentAccessTh
 
 		// A staging file from an interrupted copy (a crash, a kill) is never in
 		// use — a successful copy renames it away in milliseconds — so an old one
-		// is reaped here rather than accumulating. The match is anchored to the
-		// staging shape (`<rootfs>.ext4.tmp-…`) so an image or VM whose name merely
-		// contains ".tmp-" cannot be reaped by it.
-		if strings.Contains(name, ".ext4"+rootfsStagingMarker) {
+		// is reaped here rather than accumulating.
+		if isStagingFile(name) {
 			if info, statErr := entry.Info(); statErr == nil && time.Since(info.ModTime()) > staleStagingAge {
 				if removeErr := os.Remove(filePath); removeErr == nil {
 					filesRemoved++

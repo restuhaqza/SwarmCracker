@@ -514,6 +514,7 @@ func TestPrepare_WithSecretsAndConfigs(t *testing.T) {
 
 	// Create a fake rootfs with annotations
 	rootfsPath := image.TaskRootfsPath(rootfsDir, task.ID)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rootfsPath), 0o755))
 	err = os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
 	require.NoError(t, err)
 
@@ -1109,6 +1110,7 @@ func TestController_NilSecretManager(t *testing.T) {
 
 	// Create fake rootfs
 	rootfsPath := image.TaskRootfsPath(rootfsDir, task.ID)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rootfsPath), 0o755))
 	err = os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
 	require.NoError(t, err)
 
@@ -1241,6 +1243,7 @@ func TestPrepare_WithSecretsOnly(t *testing.T) {
 
 	// Create fake rootfs
 	rootfsPath := image.TaskRootfsPath(rootfsDir, task.ID)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rootfsPath), 0o755))
 	err = os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
 	require.NoError(t, err)
 
@@ -1337,6 +1340,7 @@ func TestPrepare_WithConfigsOnly(t *testing.T) {
 
 	// Create fake rootfs
 	rootfsPath := image.TaskRootfsPath(rootfsDir, task.ID)
+	require.NoError(t, os.MkdirAll(filepath.Dir(rootfsPath), 0o755))
 	err = os.WriteFile(rootfsPath, []byte("fake rootfs"), 0644)
 	require.NoError(t, err)
 

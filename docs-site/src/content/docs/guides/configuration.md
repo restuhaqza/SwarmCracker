@@ -82,9 +82,10 @@ Directory where OCI images are converted to ext4 root filesystems. It holds the
 per-image cache, and each task's private copy lives in a `tasks/` subdirectory so
 a task ID can never collide with an image name:
 
-- `<image>-<tag>.ext4` (a hash suffix is added when the image name is not a plain
-  `name:tag`) — the shared **cache**. It is a template: no VM ever boots from it,
-  and nothing a guest writes can reach it.
+- `<image>-<tag>.ext4` — the shared **cache**. It is a template: no VM ever boots
+  from it, and nothing a guest writes can reach it. An image whose name contains a
+  literal `-` (e.g. `my-app:latest`) also carries a short hash, so refs that
+  flatten to the same name cannot collide.
 - `tasks/<task-id>.ext4` — the private, writable copy a task actually boots from.
   It is created when the task starts (a sparse copy, reflinked where the
   filesystem supports one), deleted when the task is removed or its VM is stopped,

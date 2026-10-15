@@ -40,26 +40,31 @@ func TestPrepare_SecretsForcePrivateRootfs(t *testing.T) {
 
 // TestCleanup_ReapsAbandonedStagingFiles proves a copy interrupted by a crash does
 // not leave its staging file behind forever, while a fresh one — a copy still in
-// progress — is left alone.
+// progress — is left alone, and that only the staging shape is matched.
 func TestCleanup_ReapsAbandonedStagingFiles(t *testing.T) {
 	rootfsDir := t.TempDir()
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
+	tasksDir := taskRootfsDir(rootfsDir)
+	require.NoError(t, os.MkdirAll(tasksDir, 0o755))
 
-	abandoned := filepath.Join(rootfsDir, "task-1.ext4"+rootfsStagingMarker+"123-456")
+	abandoned := filepath.Join(tasksDir, "task-1.ext4"+rootfsStagingMarker+"123-456")
 	require.NoError(t, os.WriteFile(abandoned, []byte("half a copy"), 0644))
 	old := time.Now().Add(-time.Hour)
 	require.NoError(t, os.Chtimes(abandoned, old, old))
 
-	inFlight := filepath.Join(rootfsDir, "task-2.ext4"+rootfsStagingMarker+"789-012")
+	inFlight := filepath.Join(tasksDir, "task-2.ext4"+rootfsStagingMarker+"789-012")
 	require.NoError(t, os.WriteFile(inFlight, []byte("a copy in progress"), 0644))
 
-	// A legitimate file whose name merely contains the marker must not be reaped
-	// by the staging rule. Its access time is fresh, so the normal rule skips it
-	// as well — which is exactly what makes this an assertion about the staging
-	// match rather than about the age rules.
+	// Legitimate files whose names merely contain the marker must not be reaped by
+	// the staging rule. Their access time is fresh, so the normal rule skips them
+	// as well — which is what makes these assertions about the staging match
+	// rather than about the age rules.
 	lookalike := filepath.Join(rootfsDir, "foo.tmp-bar-abc123-latest.ext4")
 	require.NoError(t, os.WriteFile(lookalike, []byte("an image cache"), 0644))
 	require.NoError(t, os.Chtimes(lookalike, time.Now(), time.Now().Add(-time.Hour)))
+	pathological := filepath.Join(tasksDir, "foo.ext4.tmp-bar.ext4")
+	require.NoError(t, os.WriteFile(pathological, []byte("a task named oddly"), 0644))
+	require.NoError(t, os.Chtimes(pathological, time.Now(), time.Now().Add(-time.Hour)))
 
 	removed, freed, err := ip.Cleanup(context.Background(), 7)
 	require.NoError(t, err)
@@ -69,6 +74,7 @@ func TestCleanup_ReapsAbandonedStagingFiles(t *testing.T) {
 	assert.NoFileExists(t, abandoned)
 	assert.FileExists(t, inFlight, "a staging file younger than the threshold is left alone")
 	assert.FileExists(t, lookalike, "a name that merely contains the marker is not a staging file")
+	assert.FileExists(t, pathological, "the staging shape must match, not just the marker")
 }
 
 // perTaskRootfs is where a task's own writable copy of the image rootfs lives.
