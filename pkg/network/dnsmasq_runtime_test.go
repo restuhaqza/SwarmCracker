@@ -214,9 +214,14 @@ func TestDnsmasqRuntimeDirDefaultIsNotWorldWritable(t *testing.T) {
 func TestTrustedPidFile(t *testing.T) {
 	dir := t.TempDir()
 
-	ours := filepath.Join(dir, "root-owned.pid")
+	// A file this process created: trusted exactly when this process is a user the
+	// daemon would accept — root, or the user dnsmasq drops to.
+	ours := filepath.Join(dir, "ours.pid")
 	require.NoError(t, os.WriteFile(ours, []byte("1\n"), 0o644))
-	assert.True(t, trustedPidFile(ours), "a root-owned regular file is trusted")
+	_, _, uid, _, err := dnsmasqDropUser()
+	oursIsTrusted := os.Geteuid() == 0 || (err == nil && os.Geteuid() == uid)
+	assert.Equal(t, oursIsTrusted, trustedPidFile(ours),
+		"a pid file is trusted only when root or dnsmasq's user wrote it")
 
 	link := filepath.Join(dir, "link.pid")
 	require.NoError(t, os.Symlink(ours, link))
@@ -229,9 +234,9 @@ func TestTrustedPidFile(t *testing.T) {
 	assert.False(t, trustedPidFile(filepath.Join(dir, "missing.pid")))
 
 	// A file owned by neither root nor dnsmasq's user is somebody else's.
-	foreign := filepath.Join(dir, "foreign.pid")
-	require.NoError(t, os.WriteFile(foreign, []byte("1\n"), 0o644))
 	if os.Geteuid() == 0 {
+		foreign := filepath.Join(dir, "foreign.pid")
+		require.NoError(t, os.WriteFile(foreign, []byte("1\n"), 0o644))
 		require.NoError(t, os.Chown(foreign, 12345, 12345))
 		assert.False(t, trustedPidFile(foreign), "a file another user owns is not trusted")
 	}

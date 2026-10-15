@@ -220,6 +220,11 @@ func TestNetworkManager_cleanupDnsmasq(t *testing.T) {
 
 	t.Run("reads and removes pid file", func(t *testing.T) {
 		skipIfHostHasDnsmasqPidFiles(t)
+		if os.Geteuid() != 0 {
+			// The pid file has to look like one this host wrote, and only root can
+			// create a root-owned one.
+			t.Skip("planting a trusted pid file requires root")
+		}
 
 		state := newMockState()
 		restore := setupMocksForTest(state)
