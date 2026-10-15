@@ -88,7 +88,7 @@ SwarmCracker starts a minimal `dnsmasq` instance bound to the bridge when
 but DHCP allocation is unavailable.
 
 The instance's runtime files (pid, log, DHCP leases, and the service-name records
-described below) live in `/run/swarmcracker/dnsmasq/`, a root-owned directory that
+described below) live in `/var/lib/swarmcracker/dnsmasq/`, a root-owned directory that
 only root and the unprivileged user dnsmasq drops to can write — never in
 world-writable `/tmp`, where a predictable file name would let any local user plant
 a symlink for the daemon to write through as root, or a pid file for it to signal
@@ -432,8 +432,10 @@ swarmcracker service create --name app --image myapp --dns 1.1.1.1
 - **Names are cluster-wide.** A guest resolves any service on the default
   network, not only the ones on its own node; per-network scoping is not
   implemented.
-- `dnsmasq` must be installed (it is part of the standard install). Without it no
-  resolver runs on the bridge, and a guest keeps the image's own resolver.
+- `dnsmasq` must be installed (it is part of the standard install). The daemon
+  starts one per bridge when it prepares a task, whatever `ip_mode` is, because it
+  also serves the service-name records. Without it no resolver runs on the bridge,
+  so a guest keeps the image's own resolver and service names do not resolve.
 
 ---
 

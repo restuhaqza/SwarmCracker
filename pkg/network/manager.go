@@ -26,7 +26,6 @@ var (
 	execCommand  = exec.Command
 	execLookPath = exec.LookPath
 	osRemoveAll  = os.RemoveAll
-	osWriteFile  = os.WriteFile
 	osRemove     = os.Remove
 )
 
@@ -1174,7 +1173,7 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	// --dhcp-option=6: set DNS (use gateway as DNS proxy)
 	// --addn-hosts: service-name records the reconciler rewrites and reloads
 	//   with SIGHUP, so a guest can resolve service names through this bridge.
-	cmd := execCommand("dnsmasq",
+	args := []string{
 		"--interface", nm.config.BridgeName,
 		"--bind-interfaces",
 		"--listen-address", gatewayIP.String(),
@@ -1185,13 +1184,25 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 		"--addn-hosts", recordsFile,
 		"--log-queries",
 		"--log-dhcp",
-		"--log-facility="+logFile,
-		"--pid-file="+nm.dnsmasqPIDPath(),
+		"--log-facility=" + logFile,
+		"--pid-file=" + nm.dnsmasqPIDPath(),
 		// dnsmasq's compiled-in default lease file is /var/lib/misc/dnsmasq.leases,
 		// which is read-only under the hardened systemd unit (ProtectSystem=strict).
 		// Point it at a writable path so the DHCP fallback can start.
-		"--dhcp-leasefile="+nm.dnsmasqLeasePath(),
-	)
+		"--dhcp-leasefile=" + nm.dnsmasqLeasePath(),
+	}
+
+	// Name the user dnsmasq drops to explicitly. Its default is a compile-time
+	// setting and the runtime directory is handed to exactly this user's group, so
+	// leaving it implicit could leave dnsmasq unable to create and rewrite its own
+	// pid and lease files after the drop. When the user cannot be resolved,
+	// dnsmasq's own default stands and the directory falls back too (see
+	// ensureDnsmasqRuntimeDir).
+	if name, _, _, err := dnsmasqDropUser(); err == nil {
+		args = append(args, "--user="+name)
+	}
+
+	cmd := execCommand("dnsmasq", args...)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
 		log.Error().Str("output", string(output)).Msg("dnsmasq failed to start")
@@ -1501,6 +1512,13 @@ func (nm *NetworkManager) cleanupDnsmasq() error {
 			continue
 		}
 		for _, pidFile := range matches {
+			// A pid file is untrusted input: the legacy /tmp sweep runs in a
+			// world-writable directory, so only a file this host owns is read at
+			// all.
+			if !trustedPidFile(pidFile) {
+				log.Warn().Str("file", pidFile).Msg("Ignoring a pid file this host does not own")
+				continue
+			}
 			if data, readErr := os.ReadFile(pidFile); readErr == nil {
 				pid := strings.TrimSpace(string(data))
 				if pid != "" {
@@ -1604,7 +1622,12 @@ var findDnsmasqPIDs = func(bridgeName string) []string {
 }
 
 // dnsmasqArgvMatches reports whether argv is a dnsmasq invocation bound to
-// bridgeName via --interface.
+// bridgeName via --interface. The spelling is strict (a binary whose name
+// contains "dnsmasq", then `--interface` and the bridge as two arguments): a
+// dnsmasq started another way is invisible to both the reuse check and the kill
+// guard, which is the safe direction — it is never signalled — but it is also not
+// reused, and a second instance then fails to bind :53. SwarmCracker always starts
+// dnsmasq with this spelling.
 func dnsmasqArgvMatches(argv []string, bridgeName string) bool {
 	if len(argv) == 0 || !strings.Contains(filepath.Base(argv[0]), "dnsmasq") {
 		return false

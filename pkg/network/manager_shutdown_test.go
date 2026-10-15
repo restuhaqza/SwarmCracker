@@ -18,19 +18,25 @@ import (
 )
 
 // skipIfHostHasDnsmasqPidFiles refuses to run any test that reaches
-// cleanupDnsmasq when the host already has /tmp/dnsmasq-*.pid files.
+// cleanupDnsmasq when the host already has dnsmasq pid files — in the runtime
+// directory or in the legacy /tmp location.
 //
-// cleanupDnsmasq globs that legacy path and signals the PID it finds when it
-// really is a dnsmasq bound to that bridge (see killDnsmasqPID) — which a
-// leftover file on a developer's host could well be — and the execCommand seam
-// does not intercept the kill, so exercising it there could stop a live dnsmasq.
+// cleanupDnsmasq signals a PID only when it really is a dnsmasq bound to that
+// bridge (see killDnsmasqPID), and a leftover file on a developer's host could be
+// exactly that; the execCommand seam does not intercept the kill, so exercising it
+// there could stop a live dnsmasq.
 func skipIfHostHasDnsmasqPidFiles(t *testing.T) {
 	t.Helper()
 
-	matches, err := filepath.Glob("/tmp/dnsmasq-*.pid")
-	require.NoError(t, err)
-	if len(matches) > 0 {
-		t.Skipf("host has existing dnsmasq pid files %v; refusing to risk killing a real process", matches)
+	for _, pattern := range []string{
+		filepath.Join(dnsmasqRuntimeDirDefault, "dnsmasq-*.pid"),
+		"/tmp/dnsmasq-*.pid",
+	} {
+		matches, err := filepath.Glob(pattern)
+		require.NoError(t, err)
+		if len(matches) > 0 {
+			t.Skipf("host has existing dnsmasq pid files %v; refusing to risk killing a real process", matches)
+		}
 	}
 }
 
@@ -186,10 +192,11 @@ func TestNetworkManager_killByPID(t *testing.T) {
 // TestNetworkManager_cleanupDnsmasq verifies cleanupDnsmasq tolerates a missing
 // pid file and, when one is present, reads it and removes it.
 //
-// cleanupDnsmasq sends a real SIGTERM to every PID in /tmp/dnsmasq-*.pid (the
-// kill call is not behind a seam), so both subtests first refuse to run if the
-// host has any pre-existing dnsmasq pid files. The "reads and removes" subtest
-// then creates its own uniquely named file containing a definitely-unused PID.
+// cleanupDnsmasq signals a PID only when it is really a dnsmasq bound to that
+// bridge, but the kill call is not behind a seam, so both subtests first refuse to
+// run if the host has any pre-existing dnsmasq pid files. The "reads and removes"
+// subtest then creates its own uniquely named file containing a definitely-unused
+// PID.
 func TestNetworkManager_cleanupDnsmasq(t *testing.T) {
 	t.Run("no pid file returns nil", func(t *testing.T) {
 		skipIfHostHasDnsmasqPidFiles(t)

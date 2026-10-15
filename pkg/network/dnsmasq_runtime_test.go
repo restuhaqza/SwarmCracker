@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -70,7 +71,7 @@ func TestEnsureDnsmasqRuntimeDir_HandsItToDnsmasqUser(t *testing.T) {
 	nm := runtimeTestManager(t)
 	require.NoError(t, nm.ensureDnsmasqRuntimeDir())
 
-	gid, err := dnsmasqRunAsGroup()
+	_, _, gid, err := dnsmasqDropUser()
 	require.NoError(t, err)
 
 	info, err := os.Stat(nm.dnsmasqRuntimeDir())
@@ -87,9 +88,9 @@ func TestEnsureDnsmasqRuntimeDir_HandsItToDnsmasqUser(t *testing.T) {
 func TestEnsureDnsmasqRuntimeDir_FallsBackWithoutDnsmasqUser(t *testing.T) {
 	nm := runtimeTestManager(t)
 
-	orig := dnsmasqRunAsGroup
-	dnsmasqRunAsGroup = func() (int, error) { return 0, os.ErrNotExist }
-	defer func() { dnsmasqRunAsGroup = orig }()
+	orig := dnsmasqDropUser
+	dnsmasqDropUser = func() (string, int, int, error) { return "", 0, 0, os.ErrNotExist }
+	defer func() { dnsmasqDropUser = orig }()
 
 	require.NoError(t, nm.ensureDnsmasqRuntimeDir())
 
@@ -188,4 +189,170 @@ func TestKillDnsmasqPID_RefusesNonProcessID(t *testing.T) {
 		assert.False(t, strings.HasPrefix(c, "kill "),
 			"no kill must be attempted for a non-PID: %s", c)
 	}
+}
+
+// TestDnsmasqRuntimeDirDefaultIsNotWorldWritable guards the production default
+// itself: the tests above point a manager at a temp directory, so without this
+// the default could drift back to a world-writable path unnoticed.
+func TestDnsmasqRuntimeDirDefaultIsNotWorldWritable(t *testing.T) {
+	assert.NotEqual(t, "/tmp", filepath.Dir(dnsmasqRuntimeDirDefault))
+	assert.False(t, strings.HasPrefix(dnsmasqRuntimeDirDefault, "/tmp/"),
+		"the runtime directory must not be under /tmp: %s", dnsmasqRuntimeDirDefault)
+
+	// A manager built the normal way uses it, and one built by hand (as several
+	// tests and callers do) falls back to it rather than to an empty path.
+	nm := NewNetworkManager(types.NetworkConfig{BridgeName: "testbr0"}).(*NetworkManager)
+	assert.Equal(t, dnsmasqRuntimeDirDefault, nm.dnsmasqRuntimeDir())
+	assert.Equal(t, dnsmasqRuntimeDirDefault,
+		(&NetworkManager{config: types.NetworkConfig{BridgeName: "testbr0"}}).dnsmasqRuntimeDir())
+}
+
+// TestTrustedPidFile covers the ownership gate on the legacy /tmp sweep: only a
+// pid file this host wrote is read at all, so a local user cannot plant one there
+// and have the daemon act on it.
+func TestTrustedPidFile(t *testing.T) {
+	dir := t.TempDir()
+
+	ours := filepath.Join(dir, "root-owned.pid")
+	require.NoError(t, os.WriteFile(ours, []byte("1\n"), 0o644))
+	assert.True(t, trustedPidFile(ours), "a root-owned regular file is trusted")
+
+	link := filepath.Join(dir, "link.pid")
+	require.NoError(t, os.Symlink(ours, link))
+	assert.False(t, trustedPidFile(link), "a symlink is never trusted")
+
+	fifo := filepath.Join(dir, "fifo.pid")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o644))
+	assert.False(t, trustedPidFile(fifo), "a FIFO is never trusted")
+
+	assert.False(t, trustedPidFile(filepath.Join(dir, "missing.pid")))
+
+	// A file owned by neither root nor dnsmasq's user is somebody else's.
+	foreign := filepath.Join(dir, "foreign.pid")
+	require.NoError(t, os.WriteFile(foreign, []byte("1\n"), 0o644))
+	if os.Geteuid() == 0 {
+		require.NoError(t, os.Chown(foreign, 12345, 12345))
+		assert.False(t, trustedPidFile(foreign), "a file another user owns is not trusted")
+	}
+}
+
+// TestCleanupDnsmasq_IgnoresAForeignPidFile proves the ownership gate in place:
+// a pid file planted in the legacy /tmp location by a local user (i.e. owned by
+// neither root nor dnsmasq's user) is neither signalled nor removed.
+func TestCleanupDnsmasq_IgnoresAForeignPidFile(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("planting a foreign-owned file requires root")
+	}
+
+	state := newMockState()
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	child := exec.Command("sleep", "30")
+	require.NoError(t, child.Start())
+	defer func() {
+		_ = child.Process.Kill()
+		_, _ = child.Process.Wait()
+	}()
+
+	nm := runtimeTestManager(t)
+	require.NoError(t, nm.ensureDnsmasqRuntimeDir())
+
+	// In the runtime directory, i.e. where cleanupDnsmasq looks — planted by a
+	// user that is neither root nor dnsmasq's, which is what makes it untrusted.
+	planted := nm.dnsmasqPIDPath()
+	require.NoError(t, os.WriteFile(planted, []byte(strconv.Itoa(child.Process.Pid)+"\n"), 0o644))
+	require.NoError(t, os.Chown(planted, 12345, 12345))
+
+	require.NoError(t, nm.cleanupDnsmasq())
+
+	assert.FileExists(t, planted, "a file this host does not own is left alone")
+	assert.NoError(t, child.Process.Signal(syscall.Signal(0)),
+		"and its PID is not signalled")
+}
+
+// TestWriteDnsmasqFile_RefusesFifo covers the write-side shape check: a FIFO
+// planted at a predictable name would otherwise make the write block until a
+// reader appeared, stalling the reconcile (and setupDHCP behind its lock).
+func TestWriteDnsmasqFile_RefusesFifo(t *testing.T) {
+	nm := runtimeTestManager(t)
+	require.NoError(t, nm.ensureDnsmasqRuntimeDir())
+	require.NoError(t, syscall.Mkfifo(nm.dnsRecordsPath(), 0o644))
+
+	done := make(chan error, 1)
+	go func() {
+		done <- writeDnsmasqFile(nm.dnsRecordsPath(), []byte("10.0.0.5\tweb\n"), 0o644)
+	}()
+
+	select {
+	case err := <-done:
+		require.Error(t, err, "writing to a FIFO must fail rather than block")
+	case <-time.After(5 * time.Second):
+		t.Fatal("writeDnsmasqFile blocked on a FIFO")
+	}
+}
+
+// TestEnsureDnsmasqRuntimeDir_RefusesNonDirectory covers the other shapes a
+// planted path could take: a file where the directory belongs, and a path whose
+// parent is a file (so it cannot be created at all).
+func TestEnsureDnsmasqRuntimeDir_RefusesNonDirectory(t *testing.T) {
+	nm := runtimeTestManager(t)
+	base := t.TempDir()
+
+	file := filepath.Join(base, "not-a-dir")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+	nm.runtimeDir = file
+	err := nm.ensureDnsmasqRuntimeDir()
+	require.Error(t, err, "a file at the runtime path must be refused")
+	assert.Contains(t, err.Error(), "not a directory")
+
+	nm.runtimeDir = filepath.Join(file, "dnsmasq")
+	err = nm.ensureDnsmasqRuntimeDir()
+	require.Error(t, err, "a path under a file cannot be created")
+	assert.Contains(t, err.Error(), "dnsmasq runtime directory")
+}
+
+// TestProgramDNS_ReportsAnUnusableRuntimeDir covers the reconcile side of the same
+// problem: when the runtime directory cannot exist, the reconcile says so instead
+// of silently dropping the records.
+func TestProgramDNS_ReportsAnUnusableRuntimeDir(t *testing.T) {
+	nm := dnsTestManager(t)
+	base := t.TempDir()
+	file := filepath.Join(base, "not-a-dir")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+	nm.runtimeDir = filepath.Join(file, "dnsmasq")
+
+	err := nm.ProgramDNS([]DNSRecord{{Name: "web", IPs: []string{"10.0.0.5"}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "runtime directory")
+	assert.False(t, nm.dnsProgrammed, "a failed write must not be remembered as programmed")
+}
+
+// TestProgramDNS_ReloadsLiveServers covers the reload half of the reconcile: every
+// dnsmasq bound to the bridge is sent SIGHUP, including one that outlived an
+// earlier daemon run.
+func TestProgramDNS_ReloadsLiveServers(t *testing.T) {
+	state := newMockState()
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	origFind := findDnsmasqPIDs
+	findDnsmasqPIDs = func(string) []string { return []string{"111", "222"} }
+	defer func() { findDnsmasqPIDs = origFind }()
+
+	nm := dnsTestManager(t)
+	require.NoError(t, nm.ProgramDNS([]DNSRecord{{Name: "web", IPs: []string{"10.0.0.5"}}}))
+
+	state.mu.Lock()
+	calls := append([]string(nil), state.calls...)
+	state.mu.Unlock()
+
+	var reloads []string
+	for _, c := range calls {
+		if strings.HasPrefix(c, "kill -HUP ") {
+			reloads = append(reloads, strings.TrimPrefix(c, "kill -HUP "))
+		}
+	}
+	assert.ElementsMatch(t, []string{"111", "222"}, reloads,
+		"every live server must be reloaded; calls=%v", calls)
 }

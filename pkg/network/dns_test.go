@@ -5,6 +5,7 @@ package network
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -120,6 +121,24 @@ func TestProgramDNS_RewritesAfterExternalTruncation(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "192.168.127.5\tweb\n", string(data),
 		"the records must be restored after the file is reset underneath us")
+}
+
+// TestProgramDNS_CreatesRuntimeDir covers the reconcile path on a node where no
+// task has started yet (and where DHCP — and so setupDHCP — is disabled): the
+// reconciler must create the runtime directory itself rather than fail every
+// cycle because the records file has nowhere to live. Before #72 the file was in
+// /tmp, which always exists, so nothing had to create it.
+func TestProgramDNS_CreatesRuntimeDir(t *testing.T) {
+	nm := dnsTestManager(t)
+	nm.runtimeDir = filepath.Join(t.TempDir(), "not-created-yet")
+	require.NoDirExists(t, nm.runtimeDir)
+
+	require.NoError(t, nm.ProgramDNS([]DNSRecord{{Name: "web", IPs: []string{"10.0.0.5"}}}))
+
+	assert.DirExists(t, nm.runtimeDir)
+	data, err := os.ReadFile(nm.dnsRecordsPath())
+	require.NoError(t, err)
+	assert.Equal(t, "10.0.0.5\tweb\n", string(data))
 }
 
 // TestProgramDNS_WriteFailureIsReported asserts a write error surfaces instead of

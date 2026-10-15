@@ -37,8 +37,15 @@ and no other local user can create, replace or even list anything in it.
 ## Design
 
 - **Location.** `<runtime-dir>/dnsmasq-<bridge>.{hosts,pid,log,leases}`, with the
-  runtime directory defaulting to `/run/swarmcracker/dnsmasq` (a root-owned tmpfs
-  path, not world-writable). One helper per file, so no path is spelled twice.
+  runtime directory defaulting to `/var/lib/swarmcracker/dnsmasq` — the project's
+  state directory, which the shipped unit lists in `ReadWritePaths`. One helper per
+  file, so no path is spelled twice.
+
+  The lab e2e chose the location, not the issue's suggestion: the shipped unit runs
+  with `ProtectSystem=strict` and `PrivateTmp=true`, so `/run` is read-only inside
+  it and `mkdir /run/swarmcracker/dnsmasq` fails with `read-only file system`
+  (`/var/lib/firecracker` is read-only there too; only the listed paths are
+  writable).
 - **Creation.** The daemon creates the directory before writing anything: it
   refuses a symlink or non-directory at that path, `MkdirAll`s it `0770`, and hands
   it to dnsmasq's group (`nobody`'s gid) with `Chown`/`Chmod`. When the lookup or
@@ -81,5 +88,9 @@ and no other local user can create, replace or even list anything in it.
   the runtime directory, never in `/tmp`.
 - Lab e2e: a service's name resolves inside a guest (the #42 path still works
   end to end), `setupDHCP` reuses the running instance instead of bouncing it, the
-  four files live in `/run/swarmcracker/dnsmasq` owned `root:nogroup` `0770`, no
-  `dnsmasq-*` file remains in `/tmp`, and `service rm` leaves no pid file behind.
+  four files live in the runtime directory owned `root:nogroup` `0770`, no
+  `dnsmasq-*` file remains in `/tmp`, and a planted pid file naming a live
+  non-dnsmasq process is neither signalled nor treated as a server. Note that
+  dnsmasq (and its pid file) normally outlives `service rm` — `cleanupDnsmasq` runs
+  at daemon shutdown — so the pid file is expected to be gone after a restart, not
+  after a service removal.

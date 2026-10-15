@@ -20,7 +20,6 @@ var (
 	origExecCommand  func(string, ...string) *exec.Cmd
 	origExecLookPath func(string) (string, error)
 	origOsRemoveAll  func(string) error
-	origOsWriteFile  func(string, []byte, os.FileMode) error
 	origOsRemove     func(string) error
 )
 
@@ -29,7 +28,6 @@ func init() {
 	origExecCommand = execCommand
 	origExecLookPath = execLookPath
 	origOsRemoveAll = osRemoveAll
-	origOsWriteFile = osWriteFile
 	origOsRemove = osRemove
 }
 
@@ -122,16 +120,6 @@ func mockExecLookPathWithState(state *mockState) func(string) (string, error) {
 	}
 }
 
-func mockOsWriteFileWithState(state *mockState) func(string, []byte, os.FileMode) error {
-	return func(path string, data []byte, perm os.FileMode) error {
-		state.addCall("writefile:" + path)
-		if state.shouldCmdFail("writefile:" + path) {
-			return fmt.Errorf("write failed")
-		}
-		return nil
-	}
-}
-
 func mockOsRemoveWithState(state *mockState) func(string) error {
 	return func(path string) error {
 		state.addCall("remove:" + path)
@@ -155,13 +143,11 @@ func mockOsRemoveAllWithState(state *mockState) func(string) error {
 func setupMocksForTest(state *mockState) func() {
 	execCommand = mockExecCommandWithState(state)
 	execLookPath = mockExecLookPathWithState(state)
-	osWriteFile = mockOsWriteFileWithState(state)
 	osRemove = mockOsRemoveWithState(state)
 	osRemoveAll = mockOsRemoveAllWithState(state)
 	return func() {
 		execCommand = origExecCommand
 		execLookPath = origExecLookPath
-		osWriteFile = origOsWriteFile
 		osRemove = origOsRemove
 		osRemoveAll = origOsRemoveAll
 	}
