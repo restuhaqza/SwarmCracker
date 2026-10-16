@@ -616,6 +616,35 @@ func TestCreateServiceWithRegistryAuth_MissingCredentialFailsBeforeRPC(t *testin
 	assert.Nil(t, client.spec)
 }
 
+// TestServiceCreateWithRegistryAuthRejectsGolden verifies --with-registry-auth is
+// rejected when combined with --golden: golden services are never pulled from a
+// registry, so the flag would be accepted-and-inert. The error is returned before
+// any RPC (or connection attempt).
+func TestServiceCreateWithRegistryAuthRejectsGolden(t *testing.T) {
+	cmd := newServiceCreateCommand()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--name", "web", "--golden", "ubuntu-24.04-docker@1.0.0", "--with-registry-auth"})
+
+	err := cmd.Execute()
+	require.Error(t, err, "--with-registry-auth with --golden must fail before any RPC")
+	assert.Contains(t, err.Error(), "--with-registry-auth")
+	assert.Contains(t, err.Error(), "--golden")
+}
+
+// TestResolveRegistryAuth_NonCredentialFailureHasNoLoginHint verifies that a
+// failure which is not missing credentials (here an unparsable reference) wraps
+// its own cause without suggesting `docker login`, which would not fix it.
+func TestResolveRegistryAuth_NonCredentialFailureHasNoLoginHint(t *testing.T) {
+	withDockerConfig(t, `{"auths":{}}`)
+
+	_, err := resolveRegistryAuth("not a valid ref")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, image.ErrNoRegistryCredentials)
+	assert.NotContains(t, err.Error(), "docker login", "a non-credential failure must not suggest docker login")
+	assert.Contains(t, err.Error(), "--with-registry-auth")
+}
+
 // TestListServiceTasksJSONHealth verifies the `service ps --format json` output
 // carries the derived health for each task.
 func TestListServiceTasksJSONHealth(t *testing.T) {

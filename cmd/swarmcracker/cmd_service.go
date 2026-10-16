@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -229,6 +228,13 @@ With --golden, the service boots a prebuilt golden image (see
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if image != "" && golden != "" {
 				return fmt.Errorf("--image and --golden are mutually exclusive")
+			}
+			// A golden service boots a prebuilt image and skips image
+			// preparation, so it is never pulled from a registry. Accepting
+			// --with-registry-auth here would resolve a credential for the
+			// placeholder image and silently send a payload nothing consumes.
+			if golden != "" && withRegistryAuth {
+				return fmt.Errorf("--with-registry-auth cannot be used with --golden: golden services are not pulled from a registry")
 			}
 			if golden != "" {
 				labels = append(labels, types.GoldenLabel+"="+golden)
@@ -1287,10 +1293,13 @@ func createServiceWithClient(ctx context.Context, client api.ControlClient, opts
 }
 
 // resolveRegistryAuth resolves the --with-registry-auth credential for a service
-// image into the base64 X-Registry-Auth payload the spec carries. The error is
-// actionable: it names the registry serving the image and the `docker login
-// <host>` remedy, and wraps image.ErrNoRegistryCredentials so callers can branch
-// with errors.Is. Neither the password nor the encoded payload is ever logged;
+// image into the base64 X-Registry-Auth payload the spec carries. On the
+// credential-absence path image.EncodeRegistryAuth already names the registry and
+// the `docker login <host>` remedy and wraps ErrNoRegistryCredentials, so that
+// message is returned intact (errors.Is keeps working). Every other failure - an
+// unparsable ref, a credential helper that exits non-zero, an encoding error - is
+// wrapped with its own cause and no login suggestion, because `docker login`
+// would not fix it. Neither the password nor the encoded payload is ever logged;
 // only the registry host is, at debug level.
 func resolveRegistryAuth(ref string) (string, error) {
 	encoded, err := image.EncodeRegistryAuth(ref)
@@ -1299,15 +1308,6 @@ func resolveRegistryAuth(ref string) (string, error) {
 			log.Debug().Str("registry", host).Msg("resolved registry credentials for image")
 		}
 		return encoded, nil
-	}
-
-	// EncodeRegistryAuth already names the host and the remedy for the
-	// missing-credential case; cover its other failures here so every path is
-	// actionable.
-	if !errors.Is(err, image.ErrNoRegistryCredentials) {
-		if host, hostErr := image.RegistryHostForRef(ref); hostErr == nil {
-			err = fmt.Errorf("resolving credentials for %s: run `docker login %s`: %w", host, host, err)
-		}
 	}
 	return "", fmt.Errorf("--with-registry-auth: %w", err)
 }

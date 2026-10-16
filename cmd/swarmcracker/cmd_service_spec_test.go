@@ -116,6 +116,21 @@ func TestBuildServiceSpec_RegistryAuth(t *testing.T) {
 		require.NoError(t, err)
 		assert.Nil(t, spec.Task.GetContainer().PullOptions, "no --with-registry-auth must leave PullOptions nil")
 	})
+
+	t.Run("flag set but payload empty", func(t *testing.T) {
+		// --with-registry-auth turns the keychain I/O on in createService; if that
+		// resolution yields nothing (an empty payload), buildServiceSpec must not
+		// invent an empty PullOptions, which would mark the spec as carrying auth
+		// that the workers would then misuse.
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name:             "web",
+			image:            "private.example.com/app:1",
+			replicas:         1,
+			withRegistryAuth: true,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, spec.Task.GetContainer().PullOptions, "an empty payload must leave PullOptions nil")
+	})
 }
 
 func TestBuildServiceSpec_RejectsInvalidValues(t *testing.T) {
