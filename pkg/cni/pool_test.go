@@ -1,7 +1,6 @@
 package cni
 
 import (
-	"fmt"
 	"net"
 	"testing"
 
@@ -172,10 +171,11 @@ func TestAllocateNetwork_RecordedVXLANIsKept(t *testing.T) {
 	assert.Equal(t, uint32(4045883), allocated.VXLANID, "a recorded VNI must be kept")
 }
 
-// TestAllocateNetwork_NeverTakesATakenVNI covers the other half: two networks with
-// one VNI cannot both exist on a node, because the interface lookup is by VNI — the
-// second interface is never created and that network silently loses cross-node
-// connectivity.
+// TestAllocateNetwork_NeverTakesATakenVNI is the collision coverage: whatever makes a
+// candidate taken — another network's hash landing on it, or an earlier allocation —
+// the provider must not hand it out. A hash collision cannot be constructed reliably
+// from names alone (it needs `hash(a) - hash(b) == j - i` for the indices in play), and
+// the provider cannot tell the two causes apart, so the ledger is seeded instead.
 func TestAllocateNetwork_NeverTakesATakenVNI(t *testing.T) {
 	p := newPoolProvider(t, flatPoolConfig(t))
 
@@ -199,7 +199,10 @@ func TestAllocateNetwork_NeverTakesATakenVNI(t *testing.T) {
 	assert.Equal(t, 1, holders, "the taken VNI stays with the network that holds it")
 }
 
-// TestAllocateNetwork_DistinctVXLANsForDistinctNetworks checks the ordinary case.
+// TestAllocateNetwork_DistinctVXLANsForDistinctNetworks is the ordinary case: two
+// networks allocated normally do not share a VNI. (The collision path itself is
+// covered by TestAllocateNetwork_NeverTakesATakenVNI and
+// TestAllocateNetwork_RenumbersARecordedVNIThatCollides.)
 func TestAllocateNetwork_DistinctVXLANsForDistinctNetworks(t *testing.T) {
 	p := newPoolProvider(t, flatPoolConfig(t))
 
@@ -292,37 +295,6 @@ func TestAllocateNetwork_RenumbersARecordedVNIThatCollides(t *testing.T) {
 		"a recorded VNI another network holds must be renumbered, not kept")
 	assert.Equal(t, "net-c", p.vxlanIDHolderLocked(first.VXLANID),
 		"the VNI stays with the network that holds it")
-}
-
-// TestAllocateNetwork_SkipsACollidingHash covers the hash collision itself: two names
-// whose candidates are equal. Without the walk the second network would take the
-// first one's VNI.
-func TestAllocateNetwork_SkipsACollidingHash(t *testing.T) {
-	// Find a pair of names whose candidates collide (the birthday paradox makes this
-	// quick): one whose first candidate equals the other's second.
-	var nameA, nameB string
-	var want uint32
-	seen := map[uint32]string{}
-	for i := 0; i < 20000 && nameB == ""; i++ {
-		name := fmt.Sprintf("net-%d", i)
-		if other, ok := seen[GenerateVXLANID(name, 2)]; ok && other != name {
-			nameA, nameB, want = other, name, GenerateVXLANID(name, 2)
-			break
-		}
-		seen[GenerateVXLANID(name, 1)] = name
-	}
-	require.NotEmpty(t, nameB, "expected to find two names whose candidates collide")
-
-	p := newPoolProvider(t, flatPoolConfig(t))
-	first, err := p.AllocateNetwork(NetworkAllocationRequest{Name: nameA, Driver: "vxlan"})
-	require.NoError(t, err)
-	require.Equal(t, want, first.VXLANID, "the first network takes the colliding candidate")
-
-	second, err := p.AllocateNetwork(NetworkAllocationRequest{Name: nameB, Driver: "vxlan"})
-	require.NoError(t, err)
-	assert.NotEqual(t, want, second.VXLANID, "the second network must skip the taken candidate")
-	assert.Equal(t, nameA, p.vxlanIDHolderLocked(want),
-		"the candidate stays with the network that took it")
 }
 
 // TestReleaseNetwork_FreesTheVNI keeps the ledger honest for VNIs too.
