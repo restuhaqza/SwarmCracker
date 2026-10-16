@@ -1,12 +1,43 @@
 package cni
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestAllocate_UnusableRecordedVXLANIsReplaced covers the defensive branch: a recorded
+// VNI that cannot be read, or is out of range, must be ignored with a warning rather
+// than silently becoming the network's VNI. The network still has to come out with a
+// usable one.
+func TestAllocate_UnusableRecordedVXLANIsReplaced(t *testing.T) {
+	for _, recorded := range []string{"not-a-number", "0", "16777216", "4294967296"} {
+		t.Run(recorded, func(t *testing.T) {
+			a := newTestAllocator(t)
+			n := &api.Network{
+				ID: "net-bad",
+				Spec: api.NetworkSpec{
+					Annotations:  api.Annotations{Name: "bad"},
+					DriverConfig: &api.Driver{Name: "vxlan"},
+				},
+				DriverState: &api.Driver{Options: map[string]string{"vxlan_vni": recorded}},
+			}
+
+			require.NoError(t, a.Allocate(n))
+			require.NotNil(t, n.DriverState)
+			vni := n.DriverState.Options["vxlan_vni"]
+			assert.NotEqual(t, recorded, vni, "an unusable recorded VNI must be replaced")
+
+			parsed, err := strconv.ParseUint(vni, 10, 32)
+			require.NoError(t, err, "the replacement must be a number")
+			assert.NotZero(t, parsed)
+			assert.Less(t, parsed, uint64(16777215), "the replacement must be in range")
+		})
+	}
+}
 
 // TestAllocate_AutoAllocatedSubnetSurvivesAnUpgrade is the regression test for the
 // hazard the review found: an auto-allocated network has no requested subnet, so a
