@@ -82,6 +82,9 @@ func createNetwork(name, subnet, driver string, labels []string) error {
 		DriverConfig: &api.Driver{Name: driver},
 	}
 	if subnet != "" {
+		if err := ensureSubnetIsFree(ctx, client, name, subnet); err != nil {
+			return err
+		}
 		spec.IPAM = &api.IPAMOptions{Configs: []*api.IPAMConfig{{Subnet: subnet}}}
 	}
 
@@ -95,6 +98,52 @@ func createNetwork(name, subnet, driver string, labels []string) error {
 		fmt.Printf("Subnet: %s\n", subnet)
 	}
 	fmt.Printf("Driver: %s\n", driver)
+	return nil
+}
+
+// ensureSubnetIsFree refuses a requested subnet that overlaps one a network already
+// holds, before the network is created.
+//
+// The daemon enforces the same rule when it allocates the network, but SwarmKit
+// commits a network first and allocates it afterwards: a request refused there
+// leaves a network that exists and can never be allocated, with the reason only in
+// the daemon's log. Checking here turns that into a clear error and no network
+// (#77).
+func ensureSubnetIsFree(ctx context.Context, client api.ControlClient, name, subnet string) error {
+	resp, err := client.ListNetworks(ctx, &api.ListNetworksRequest{})
+	if err != nil {
+		return fmt.Errorf("failed to list networks: %w", err)
+	}
+	return subnetOverlapError(resp.Networks, name, subnet)
+}
+
+// subnetOverlapError reports the first network whose subnet overlaps the requested
+// one. Two networks on the same addresses cannot be told apart by route, NAT rule
+// or IPAM pool, so the request is refused rather than handed to the allocator. The
+// predefined networks are included: the ingress network holds the flat L2 subnet.
+func subnetOverlapError(networks []*api.Network, name, subnet string) error {
+	_, want, err := net.ParseCIDR(subnet)
+	if err != nil {
+		return fmt.Errorf("invalid --subnet %q: %w", subnet, err)
+	}
+	for _, n := range networks {
+		if n == nil || n.IPAM == nil || n.Spec.Annotations.Name == name {
+			continue
+		}
+		for _, cfg := range n.IPAM.Configs {
+			if cfg == nil || cfg.Subnet == "" {
+				continue
+			}
+			_, have, err := net.ParseCIDR(cfg.Subnet)
+			if err != nil {
+				continue
+			}
+			if want.Contains(have.IP) || have.Contains(want.IP) {
+				return fmt.Errorf("subnet %s overlaps network %q (%s); choose a free subnet",
+					subnet, n.Spec.Annotations.Name, cfg.Subnet)
+			}
+		}
+	}
 	return nil
 }
 

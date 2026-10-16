@@ -30,7 +30,7 @@ func TestCNIProvider_PredefinedNetworks_Unit(t *testing.T) {
 func TestCNIProvider_AllocateNetwork_Bridge(t *testing.T) {
 	provider := setupCNIProvider(t)
 
-	allocated, err := provider.AllocateNetwork("test-net", "bridge", "", "")
+	allocated, err := provider.AllocateNetwork("test-net", "bridge", "", "", false, false)
 	require.NoError(t, err, "AllocateNetwork should succeed for the bridge driver")
 	require.NotNil(t, allocated)
 
@@ -55,7 +55,7 @@ func TestCNIProvider_AllocateNetwork_Bridge(t *testing.T) {
 func TestCNIProvider_AllocateNetwork_VXLAN(t *testing.T) {
 	provider := setupCNIProvider(t)
 
-	allocated, err := provider.AllocateNetwork("vxlan-net", "vxlan", "", "")
+	allocated, err := provider.AllocateNetwork("vxlan-net", "vxlan", "", "", false, false)
 	require.NoError(t, err, "AllocateNetwork should succeed for the vxlan driver")
 	require.NotNil(t, allocated)
 
@@ -73,14 +73,14 @@ func TestCNIProvider_AllocateNetwork_RequestedSubnet(t *testing.T) {
 	provider := setupCNIProvider(t)
 
 	// A user-requested subnet must be honored verbatim.
-	allocated, err := provider.AllocateNetwork("custom", "vxlan", "10.10.0.0/24", "")
+	allocated, err := provider.AllocateNetwork("custom", "vxlan", "10.10.0.0/24", "", false, false)
 	require.NoError(t, err)
 	require.NotNil(t, allocated.Subnet)
 	assert.Equal(t, "10.10.0.0/24", allocated.Subnet.String())
 	assert.Equal(t, "10.10.0.1", allocated.Gateway.String(), "gateway defaults to the first usable host")
 
 	// An explicit gateway overrides the default.
-	allocated2, err := provider.AllocateNetwork("custom2", "vxlan", "10.20.0.0/24", "10.20.0.254")
+	allocated2, err := provider.AllocateNetwork("custom2", "vxlan", "10.20.0.0/24", "10.20.0.254", false, false)
 	require.NoError(t, err)
 	assert.Equal(t, "10.20.0.0/24", allocated2.Subnet.String())
 	assert.Equal(t, "10.20.0.254", allocated2.Gateway.String())
@@ -110,7 +110,7 @@ func TestCNINetworkAllocator_Allocate_HonorsRequestedSubnet(t *testing.T) {
 func TestCNIProvider_GetNetwork(t *testing.T) {
 	provider := setupCNIProvider(t)
 
-	allocated, err := provider.AllocateNetwork("lookup-net", "bridge", "", "")
+	allocated, err := provider.AllocateNetwork("lookup-net", "bridge", "", "", false, false)
 	require.NoError(t, err)
 
 	// GetNetwork is keyed by the generated "net-N" ID, not the caller's name.

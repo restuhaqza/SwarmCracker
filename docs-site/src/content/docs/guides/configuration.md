@@ -284,6 +284,24 @@ swarmd-firecracker --vxlan-enabled --vxlan-peers 192.168.1.11,192.168.1.12
 `--vxlan-enabled` and `--vxlan-peers` flags and bake them into the generated
 `swarmd-firecracker` systemd unit.
 
+### CNI address pools (CLI flags, not config keys)
+
+> **Not read from the config file.** The CNI pools are `swarmd-firecracker` flags.
+
+With `--enable-cni`, networks are carved from two pools:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--cni-subnet-pool` | `--subnet` | Pool for the predefined networks (`ingress`, `docker_gwbridge`). Keeping it at the flat L2 subnet is what makes ingress task IPs reachable cluster-wide, so override it only deliberately |
+| `--cni-overlay-subnet-pool` | `10.0.0.0/8` | Pool user-defined networks are carved from. Kept separate so a network created without `--subnet` never takes the flat L2 subnet |
+| `--cni-subnet-size` | `24` | Prefix length of each allocated subnet |
+
+A user-defined network created without `--subnet` is carved from
+`--cni-overlay-subnet-pool`, skipping any subnet that overlaps the flat L2 subnet
+(`--subnet`) or one a network already holds. An explicit `--subnet` is honored but
+has to be free, and a network keeps the subnet it was given when it is
+re-allocated after a restart.
+
 ---
 
 ## logging

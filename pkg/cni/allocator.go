@@ -92,16 +92,26 @@ func (a *CNINetworkAllocator) Allocate(n *api.Network) error {
 		name = n.ID
 	}
 
-	// Honor a user-requested subnet/gateway when present, so a network created
-	// with an explicit subnet keeps it instead of getting one from the pool.
+	// A network that already holds an allocation keeps it. Carving is not guaranteed
+	// to be idempotent — the overlay pool hands out consecutive subnets — so
+	// re-allocating on a restart or an upgrade must not move a network's subnet out
+	// from under the tasks that already carry addresses from it (#77).
+	//
+	// A subnet the user asked for is honored too, but only that one is checked for
+	// overlaps: a recorded allocation is already in use and has to be kept.
 	var requestedSubnet, requestedGateway string
-	if n.Spec.IPAM != nil && len(n.Spec.IPAM.Configs) > 0 {
+	existing := false
+	if n.IPAM != nil && len(n.IPAM.Configs) > 0 && n.IPAM.Configs[0].Subnet != "" {
+		requestedSubnet = n.IPAM.Configs[0].Subnet
+		requestedGateway = n.IPAM.Configs[0].Gateway
+		existing = true
+	} else if n.Spec.IPAM != nil && len(n.Spec.IPAM.Configs) > 0 {
 		requestedSubnet = n.Spec.IPAM.Configs[0].Subnet
 		requestedGateway = n.Spec.IPAM.Configs[0].Gateway
 	}
 
 	// Allocate network from provider
-	allocatedNet, err := a.provider.AllocateNetwork(name, driver, requestedSubnet, requestedGateway)
+	allocatedNet, err := a.provider.AllocateNetwork(name, driver, requestedSubnet, requestedGateway, n.Spec.Ingress, existing)
 	if err != nil {
 		return fmt.Errorf("failed to allocate network: %w", err)
 	}
@@ -152,8 +162,11 @@ func (a *CNINetworkAllocator) Deallocate(n *api.Network) error {
 	delete(a.provider.ipamMgr.pools, allocatedNet.Subnet.String())
 	a.provider.ipamMgr.mu.Unlock()
 
-	// Remove from allocated networks
+	// Remove from allocated networks, and from the provider's ledger so the subnet
+	// can be handed out again (a re-created network must not be refused because a
+	// deleted one still holds its subnet).
 	delete(a.allocatedNets, n.ID)
+	a.provider.ReleaseNetwork(allocatedNet.Name, allocatedNet.Subnet.String())
 
 	return nil
 }
