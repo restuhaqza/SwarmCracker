@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -771,7 +770,9 @@ func listServices(format, filter string, quiet bool) error {
 
 	// Output based on format
 	if format == "json" {
-		data, _ := json.MarshalIndent(services, "", "  ")
+		// marshalServicesJSON masks the registry credential each service may
+		// carry, so it can never reach stdout.
+		data, _ := marshalServicesJSON(services)
 		fmt.Println(string(data))
 		return nil
 	}
@@ -1013,12 +1014,9 @@ func inspectService(serviceID, format string, pretty bool) error {
 	}
 
 	if format == "json" {
-		var data []byte
-		if pretty {
-			data, _ = json.MarshalIndent(resp.Service, "", "  ")
-		} else {
-			data, _ = json.Marshal(resp.Service)
-		}
+		// marshalServiceJSON masks the registry credential the service carries,
+		// so it can never reach stdout.
+		data, _ := marshalServiceJSON(resp.Service, pretty)
 		fmt.Println(string(data))
 	} else {
 		svc := resp.Service

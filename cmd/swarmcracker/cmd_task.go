@@ -217,7 +217,9 @@ func inspectTaskWithClient(ctx context.Context, client api.ControlClient, w io.W
 	}
 
 	if format == "json" {
-		data, err := json.MarshalIndent(resp.Task, "", "  ")
+		// redactedTask masks the registry credential the task carries, so it can
+		// never reach stdout.
+		data, err := json.MarshalIndent(redactedTask(resp.Task), "", "  ")
 		if err != nil {
 			return fmt.Errorf("failed to marshal task: %w", err)
 		}
