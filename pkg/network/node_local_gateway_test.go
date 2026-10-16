@@ -48,9 +48,14 @@ func TestNodeLocalGateway(t *testing.T) {
 			why: "no slot is derivable, so nothing is partitioned",
 		},
 		{
-			name: "a subnet too small for the slot keeps it", subnet: "10.0.4.0/30",
-			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.2/24", peers: 1, want: "10.0.4.1",
-			why: "10.0.4.2 would be the broadcast address",
+			name: "a slot that is still a usable host wins", subnet: "10.0.4.0/30",
+			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.2/24", peers: 1, want: "10.0.4.2",
+			why: "only 10.0.4.3 would be the broadcast on a /30",
+		},
+		{
+			name: "a slot landing on the broadcast keeps it", subnet: "10.0.4.0/28",
+			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.15/24", peers: 1, want: "10.0.4.1",
+			why: "10.0.4.15 is the broadcast address of a /28",
 		},
 		{
 			name: "an unparsable bridge address keeps it", subnet: "10.0.4.0/24",

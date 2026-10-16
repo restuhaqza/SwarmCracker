@@ -52,9 +52,9 @@ what the default network does with `--bridge-ip`.
   reachable from every node over the VXLAN — it is node 1's address, and node 1 holds it.
 - A node with no slot — `nodeSlots <= 1`, or an overlay bridge address outside the
   reserved range — keeps today's behaviour exactly: `<subnet>.1`.
-- A subnet too small to hold `<subnet>.<k>` as a usable host (e.g. a /30 for the second
-  node, where it would be the broadcast address) also keeps `<subnet>.1` rather than
-  inventing an address outside the range.
+- A subnet whose slot would land on the broadcast address (e.g. a /28 for slot 15) also
+  keeps `<subnet>.1` rather than inventing an address; a smaller subnet whose slot is
+  still a usable host (a /30 for slot 2) takes that host.
 
 Both sides derive the value from one exported helper —
 `network.NodeLocalGateway(subnet, clusterGateway, bridgeIP, peerCount)` — so the bridge
