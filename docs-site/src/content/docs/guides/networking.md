@@ -246,6 +246,14 @@ network reach each other normally, **including across nodes**: every network
 gets its own per-network VXLAN fanned out to the other nodes, so the network's
 L2 domain spans the cluster (the same mechanism as the default overlay).
 
+Each node holds its **own** address on the network — `<subnet>.1` on the first node,
+`<subnet>.2` on the second, and so on, mirroring the default overlay's `bridge_ip` —
+and a node's guests use its address as their default gateway. Two nodes holding one
+address would both answer ARP for it on the network's L2, and whichever answered first
+would become that guest's gateway. The subnet's first host (the gateway recorded in
+the network, e.g. `10.10.0.1`) is node 1's address and stays reachable from every other
+node over the VXLAN.
+
 Both the subnet and the VXLAN ID are assigned once and then **kept**: a daemon
 restart re-allocates the network's resources, and renumbering a live network would
 move its guests' addresses or leave its replicas without a tunnel. A *newly* assigned

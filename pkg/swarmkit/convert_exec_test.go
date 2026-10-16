@@ -108,6 +108,48 @@ func TestController_convertTask_NetworkAllocation(t *testing.T) {
 	assert.Equal(t, []string{"10.10.0.17/24"}, got.Addresses)
 }
 
+// TestController_convertTask_LocalGatewayForManagedNetwork covers a multi-node
+// configuration: the attachment's gateway is the address this node holds on the
+// network, so the guest's default route follows the node it runs on. The single-node
+// case — and the nil-config safety — is covered by
+// TestController_convertTask_NetworkAllocation above, which keeps the cluster-wide
+// gateway.
+func TestController_convertTask_LocalGatewayForManagedNetwork(t *testing.T) {
+	ctrl := &Controller{
+		task: &api.Task{
+			ID: "t1",
+			Spec: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{Container: &api.ContainerSpec{Image: "nginx"}},
+			},
+			Networks: []*api.NetworkAttachment{
+				{
+					Network: &api.Network{
+						ID: "net-1",
+						Spec: api.NetworkSpec{
+							Annotations:  api.Annotations{Name: "backend"},
+							DriverConfig: &api.Driver{Name: "vxlan"},
+						},
+						DriverState: &api.Driver{
+							Name:    "vxlan",
+							Options: map[string]string{"bridge": "br-backend", "vxlan_vni": "4096"},
+						},
+						IPAM: &api.IPAMOptions{
+							Configs: []*api.IPAMConfig{{Subnet: "10.10.0.0/24", Gateway: "10.10.0.1"}},
+						},
+					},
+					Addresses: []string{"10.10.0.17/24"},
+				},
+			},
+		},
+		config: &Config{BridgeIP: "192.168.127.2/24", VXLANPeers: []string{"192.168.127.1"}},
+	}
+
+	internal := ctrl.convertTask()
+	require.Len(t, internal.Networks, 1)
+	assert.Equal(t, "10.10.0.2", internal.Networks[0].Network.Spec.Gateway,
+		"a node's guests use its own address on the network")
+}
+
 func TestController_convertTask_HostnameAndDNS(t *testing.T) {
 	ctrl := &Controller{
 		task: &api.Task{

@@ -414,6 +414,10 @@ func (nm *NetworkManager) ensureManagedNetwork(ctx context.Context, network *typ
 			gw[len(gw)-1]++
 			gateway = gw.String()
 		}
+		// The cluster-wide gateway is what the network records, but each node holds
+		// its own address on the network, so no two nodes answer ARP for one address
+		// on the network's L2 (#76).
+		gateway = NodeLocalGateway(network.Spec.Subnet, gateway, nm.config.BridgeIP, len(nm.config.VXLANPeers))
 		ones, _ := ipNet.Mask.Size()
 		cidr = fmt.Sprintf("%s/%d", gateway, ones)
 	}

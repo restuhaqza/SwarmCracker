@@ -181,6 +181,33 @@ func TestEnsureManagedNetwork_DerivesGatewayAndVXLAN(t *testing.T) {
 	assert.Equal(t, 4096, mn.vxlanID)
 }
 
+func TestEnsureManagedNetwork_BridgeAddressFollowsTheNode(t *testing.T) {
+	state := newMockState()
+	state.setFail("ip link show br-backend", true) // force bridge creation
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := newManagedTestManager()
+	// The second node of a two-node overlay: its own address on the network is .2, and
+	// that is what its guests use as their gateway instead of the cluster-wide .1.
+	nm.config.BridgeIP = "192.168.127.2/24"
+	nm.config.VXLANPeers = []string{"192.168.127.1"}
+	nm.nodeIndex, nm.nodeSlots = 2, reservedInfraHosts
+
+	mn, err := nm.ensureManagedNetwork(context.Background(), backendNetwork())
+	require.NoError(t, err)
+
+	assert.Equal(t, "10.10.0.2", mn.gateway,
+		"the bridge holds this node's own address, not the cluster-wide gateway")
+	foundAddr := false
+	for _, c := range state.calls {
+		if strings.Contains(c, "addr add 10.10.0.2/24 dev br-backend") {
+			foundAddr = true
+		}
+	}
+	assert.True(t, foundAddr, "the bridge should hold this node's address; calls: %v", state.calls)
+}
+
 func TestEnsureManagedNetwork_InvalidSubnet(t *testing.T) {
 	state := newMockState()
 	restore := setupMocksForTest(state)
