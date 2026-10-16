@@ -156,12 +156,18 @@ carries `-`:
 
 ```bash
 swarmcracker service ps api
-# ID            STATUS    HEALTH     NODE          IMAGE
+# ID            STATUS    HEALTH     NODE          IMAGE      ERROR
 # 5f3a1b2c9d0e  RUNNING   failing    abc123def456  myapi:v3   # live: probe failing, retries not exhausted
 # 9c8d7e6f1a2b  STARTING  starting   def456abc789  myapi:v3   # live: not healthy yet
 # 1a2b3c4d5e6f  RUNNING   RUNNING    ghi789def012  myapi:v3   # no live row (older daemon / not published): derived
 # 7e6f1a2b9c8d  RUNNING   -          jkl012mno345  myapi:v3   # owning node unreachable
 ```
+
+The rows also end in an `ERROR` column (empty above, because every task shown is
+placed and running). It carries the task's `Status.Err` — why a task that SwarmKit
+could not schedule, or that an enforcer rejected, is not running — truncated at 40
+characters; `task inspect` prints the full text. See
+[`service ps`](/reference/cli/#swarmcracker-service).
 
 | Value | Source | Meaning |
 |-------|--------|---------|

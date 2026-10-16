@@ -97,10 +97,31 @@ Node management.
 | `drain <node-id>` | Drain a node (reschedule its tasks) |
 | `activate <node-id>` | Activate a drained node |
 | `promote <node-id>` | Promote a worker to manager |
+| `update <node-id>` | Update a node's placement labels (`--label-add` / `--label-rm`) |
 | `rm <node-id>` | Remove a node |
 
 `node ls` flags: `--filter`, `--format` (`table`, `json`), `--quiet` / `-q`.
 `node inspect` flags: `--format`, `--pretty`.
+
+`node update` flags: `--label-add KEY=VALUE` and `--label-rm KEY`, both
+repeatable and at least one required. For `--label-add`, `KEY=VALUE` is required
+(a missing `=` or a blank key is rejected with the offending argument named), and
+an existing key is overwritten. `--label-rm` removes a key; removing a key the
+node does not have is a **no-op**, not an error.
+
+Labels are stored on the node's spec and matched by the scheduler's
+`node.labels.*` placement constraints, so labelling a node is how a
+`node.labels.<key>==<value>` constraint becomes satisfiable:
+
+```bash
+# Constraint fails until a node carries the label
+swarmcracker node update <node-id> --label-add disk=ssd
+swarmcracker service create --name web --image nginx:alpine \
+    --constraint node.labels.disk==ssd
+
+# Remove it again
+swarmcracker node update <node-id> --label-rm disk
+```
 
 `node`, `service`, and `task` references accept an exact ID, a unique ID prefix
 (for example the 12-character ID shown by the `ls` commands), or a name
@@ -256,6 +277,17 @@ resolves node addresses), leaving only the derived value. `--health-port`
 (default `8080`) selects the port of each node's health server; an invalid port
 is rejected rather than ignored.
 
+`service ps` (and `task ls`) also end in an `ERROR` column: the reason a task is
+not running, taken from the task's `Status.Err` and **empty** for any task that
+carries none (a row with no reason prints no trailing column at all). It is
+deliberately not the task's `Status.Message`, which SwarmKit uses for routine
+transition notes ("started") even on the success path — a healthy `RUNNING` task
+would otherwise show `started` here. A blocked task — one the scheduler could not
+place, or one the constraint or volume enforcer rejected — always carries an
+`Err`, which is what the column shows. The table truncates a long reason at 40
+characters; `task inspect` (or `--format json`) prints it in full. The column is
+appended **after** `IMAGE`, so every existing column keeps its position.
+
 ##### Registry authentication
 
 `--with-registry-auth` makes the **CLI** resolve credentials for the service's
@@ -336,11 +368,13 @@ Task management.
 
 `task ls` prints the same `HEALTH` column as `service ps` — live when the owning
 node's health server is reachable, derived otherwise, also emitted as `health`
-(and `live_health` when fetched) by `--format json`. `task inspect` shows a
-task's declared healthcheck (its test command, interval, timeout, retries and
-start period) and, when a check failed, the reason the executor recorded (for
-example `healthcheck failed: <cmd>: <output>`). A registry credential the task
-carries is printed as `***`, never as its payload — see
+(and `live_health` when fetched) by `--format json`. Its rows end in the same
+`ERROR` column as `service ps`: the task's `Status.Err`, empty when it carries
+none and truncated at 40 characters (`task inspect` prints the full text).
+`task inspect` shows a task's declared healthcheck (its test command, interval,
+timeout, retries and start period) and, when a check failed, the reason the
+executor recorded (for example `healthcheck failed: <cmd>: <output>`). A registry
+credential the task carries is printed as `***`, never as its payload — see
 [Registry authentication](#registry-authentication).
 
 #### `swarmcracker vm`

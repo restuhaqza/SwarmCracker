@@ -59,9 +59,24 @@ matches your nodes through the image you deploy.
 
 `swarmctl create-service` is a minimal debug client and parses only
 `--network`, `--name`, and `--replicas` — it does **not** accept
-`--constraint`. Use `swarmcracker service` for deployment, but note that
-placement constraints are not exposed through the CLI yet; select the
-architecture through the image you deploy.
+`--constraint`. Use `swarmcracker service` for deployment: `--constraint` and
+`--placement-pref` are enforced by the SwarmKit scheduler (`node.hostname`,
+`node.role`, `node.labels.*`, …), and the architecture itself is selected
+through the image you deploy.
+
+A `node.labels.<key>` constraint is satisfiable only once a matching label
+exists on a node, and labels are set through `swarmcracker node update`:
+
+```bash
+# Label a node, then place work on it
+swarmcracker node update <node-id> --label-add disk=ssd
+swarmcracker service create --name web --image nginx:alpine \
+    --constraint node.labels.disk==ssd
+```
+
+`--label-add KEY=VALUE` and `--label-rm KEY` are both repeatable and at least one
+is required; an existing key is overwritten, and removing a key the node does not
+have is a no-op. See [`node update`](/reference/cli/#swarmcracker-node).
 
 ### Multi-Arch Images
 
