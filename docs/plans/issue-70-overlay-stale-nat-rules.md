@@ -63,16 +63,52 @@ masqueraded a different network's frames.
 ## Fix
 
 - **Delete the rule on teardown**, so a network that is removed leaves no rule
-  behind.
-- **Sweep stale managed rules at startup**: any POSTROUTING MASQUERADE rule of the
-  managed shape (`-s <subnet> ! -o <bridge>`) whose bridge no longer exists is
-  removed. Networks still in use are re-materialized on demand and re-add their
-  rule, so this is safe and it repairs nodes that already accumulated rules.
+  behind (in either the current or the earlier unguarded shape).
+- **Sweep at startup**: rules this package tagged are removed whatever bridge they
+  name (a network still in use re-materializes and re-adds its rule), and untagged
+  rules from an earlier release are removed when the bridge they name is gone and the
+  name is one of ours. This also repairs nodes that already accumulated rules.
 - **Exclude bridged traffic explicitly** with `-m physdev ! --physdev-is-bridged`:
   MASQUERADE exists for *routed* outbound traffic, and guest-to-guest frames must
-  never be translated. This makes cross-node guest traffic independent of gateway
-  addressing and of conntrack repair, rather than relying on the per-node address
-  being unique.
+  never be translated.
+- **Tag the rules** with `--comment swarmcracker:managed-nat` so the sweep recognises
+  its own rules instead of inferring from the shape — Docker's per-network rule is
+  the same shape.
+- **Guard the default network's rule too**, and replace an unguarded one an earlier
+  release installed. This is the case the issue's own reproduction hits: an
+  auto-allocated network is given the default subnet, so the default rule — not the
+  managed one — is what masquerades its guest-to-guest frames.
+
+## Review round (findings folded in)
+
+An independent review of the first revision found the following, all addressed:
+
+- **Critical — the default rule was left unguarded.** `setupNAT` installs
+  `-s <subnet> -j MASQUERADE` with no guard, and `GenerateSubnet` returns the CNI
+  pool itself when the pool equals the subnet size, so **every** auto-allocated
+  network gets the default subnet. The first revision guarded only the managed rule,
+  so the reported symptom survived on the documented `network create` path. Verified
+  on the lab before fixing: the unguarded default rule matched 17 packets while the
+  managed guarded rule matched 0, and the ping still lost 100%.
+- **Important — the sweep could delete a foreign rule.** Docker's per-network
+  masquerade rule is byte-for-byte the same shape, so deleting by shape could remove
+  it while its bridge was momentarily absent. Rules are now tagged with a comment and
+  only untagged ones whose device name is ours (`br-<name>`/`sc-<id>`, never
+  Docker's `br-<12 hex>`) are considered.
+- **Important — an upgrade did not heal a surviving bridge.** The sweep kept rules
+  whose bridge existed, so an old unguarded rule survived a restart and
+  `ensureRule` added a second, guarded one next to it. The sweep now removes every
+  tagged rule, and `setupManagedNAT`/`setupNAT` replace the unguarded shape.
+- **Important — delete-by-spec with a quoted comment.** `iptables -S` quotes a
+  comment containing `:`, and `-D` compares it literally; the sweep now unquotes it,
+  as `removeTaskRules` already did for port rules.
+- **Minor — the CLI does not run `Init`.** The plan claimed the standalone CLI path
+  sweeps too; it does not (`Init` is called from the swarmkit agent only), so there
+  is no cross-process sweep risk. The plan is corrected rather than the claim kept.
+- **Minor — test gaps.** The "not my rule" fixture is now a genuine foreign
+  masquerade rule (Docker-shaped, absent bridge), the install/delete shapes are
+  pinned by a table, the comment-unquoting path is asserted, and the default rule's
+  guard has its own test.
 
 ## Explicitly out of scope
 
@@ -80,6 +116,9 @@ masqueraded a different network's frames.
   defect (two nodes advertising the same address on one L2) and it deserves its own
   issue: the guests' gateway is a cluster-wide address today, and changing the host
   address is not a one-line change.
+- **Preventing a user-defined network from being auto-allocated the default
+  subnet.** The guard makes such a network work, but the address overlap itself
+  (issue observation #1) is a separate allocator problem.
 - The isolation chain (`SC-ISOLATION`) is **not** affected: cross-bridge traffic is
   *routed*, not bridged, so `-i br-A -o br-B` matches as intended.
 
@@ -87,19 +126,25 @@ masqueraded a different network's frames.
 
 | # | Task | Files | Verify |
 |---|------|-------|--------|
-| T1 | Managed MASQUERADE rule carries the physdev guard; a single helper owns its shape | `pkg/network/managed.go` | unit |
-| T2 | Teardown deletes the rule; startup sweep removes rules for bridges that no longer exist | `pkg/network/managed.go`, `pkg/network/manager.go` | unit |
-| T3 | Tests: rule shape, teardown deletion, stale-rule sweep (including "not my rule" cases) | `pkg/network/*_test.go` | unit |
-| T4 | Docs: the datapath note in the networking guide | `docs-site` | `npm run verify` |
-| T5 | Independent whole-branch review | — | — |
-| T6 | Lab e2e: reproduce the stale-rule failure, deploy the fix, confirm traffic and rule hygiene | — | see below |
+| T1 | One builder for every masquerade shape; managed rules guarded and tagged | `pkg/network/managed.go` | unit |
+| T2 | Teardown deletes both shapes; startup sweep removes tagged rules, stale untagged ones and replaces the default rule's unguarded shape | `pkg/network/managed.go`, `pkg/network/manager.go` | unit |
+| T3 | Tests: shape table, parser, bridge-name check, install, teardown, sweep matrix, default-rule guard | `pkg/network/managed_nat_test.go` | unit |
+| T4 | Docs: the datapath note, including the default rule | `docs-site` | `npm run verify` |
+| T5 | Independent whole-branch review, findings folded in | — | — |
+| T6 | Lab e2e: reproduce the stale-rule failure and the auto-allocated-subnet failure, deploy the fix, confirm traffic and rule hygiene | — | see below |
 
 ## Verification
 
-- Unit: the installed rule contains the physdev guard; teardown issues the delete;
-  the sweep removes managed-shape rules for absent bridges and leaves the default
-  network's rule, live networks' rules and unrelated rules alone.
-- Lab e2e: (a) with a stale rule planted for a deleted bridge and the same subnet,
-  cross-node ping fails before the fix and succeeds after; (b) `network rm` leaves
-  no POSTROUTING rule behind; (c) two networks sharing a subnet do not break each
-  other; (d) default-network cross-node traffic still works.
+- Unit: each shape is pinned by a table; the parser accepts only managed shapes; the
+  bridge-name check rejects Docker's `br-<12 hex>`; install carries the guard and the
+  comment and replaces the unguarded shape; teardown deletes both shapes; the sweep
+  deletes exactly the tagged rule (with the comment unquoted), the stale untagged one
+  and the default rule's unguarded shape, while keeping a live bridge's rule, a
+  Docker-shaped rule, a rule for a real interface and a non-masquerade; `setupNAT`
+  installs the guarded default rule.
+- Lab e2e: (a) a stale rule planted for a deleted bridge breaks a fresh subnet, and
+  removing it repairs the subnet; (b) a network on a subnet whose stale rule is still
+  present fails before the fix and works after it; (c) a network created **without**
+  `--subnet` (auto-allocated the default subnet) fails before the fix and works after
+  it; (d) `network rm` leaves no POSTROUTING rule behind; (e) default-network
+  cross-node traffic still works.

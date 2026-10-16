@@ -660,7 +660,13 @@ func runSetupNetwork() error {
 	// NAT
 	if setupNetworkNAT {
 		fmt.Println("── NAT ──")
-		natFields := strings.Fields(fmt.Sprintf("POSTROUTING -s %s ! -o %s -j MASQUERADE", setupNetworkSubnet, setupNetworkBridge))
+		// The physdev guard keeps this rule away from bridged frames, which under
+		// br_netfilter also traverse POSTROUTING: without it this rule masquerades
+		// guest-to-guest traffic on a user-defined network sharing this subnet
+		// (see the NAT section of pkg/network/managed.go).
+		natFields := strings.Fields(fmt.Sprintf(
+			"POSTROUTING -s %s ! -o %s -m physdev ! --physdev-is-bridged -j MASQUERADE",
+			setupNetworkSubnet, setupNetworkBridge))
 		checkArgs := append([]string{"-t", "nat", "-C"}, natFields...)
 		addArgs := append([]string{"-t", "nat", "-A"}, natFields...)
 		checkNat := exec.Command("iptables", checkArgs...)

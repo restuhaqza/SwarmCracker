@@ -271,6 +271,11 @@ traverse the NAT table, and a masquerade rule that catches them rewrites the
 source address of guest-to-guest traffic, which breaks the return path across
 nodes.
 
+The **default** network's masquerade rule carries the same guard, because an
+auto-allocated user-defined network can be given the default network's subnet
+(`network create` without `--subnet`): an unguarded default rule would then
+masquerade that network's guest-to-guest frames instead.
+
 ---
 
 ## Publishing a Service Port
