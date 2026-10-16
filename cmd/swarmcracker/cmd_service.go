@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,7 +16,9 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -166,6 +169,10 @@ func newServiceCreateCommand() *cobra.Command {
 		configs     []string
 		mode        string
 
+		// withRegistryAuth is --with-registry-auth (#44): send the manager's
+		// credential for --image to the nodes.
+		withRegistryAuth bool
+
 		hostname string
 		dns      []string
 		user     string
@@ -240,6 +247,7 @@ With --golden, the service boots a prebuilt golden image (see
 			return createService(serviceCreateOptions{
 				name:               name,
 				image:              image,
+				withRegistryAuth:   withRegistryAuth,
 				replicas:           replicas,
 				cpu:                cpu,
 				memory:             memory,
@@ -291,6 +299,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringVar(&name, "name", "", "Service name (required)")
 	cmd.Flags().StringVar(&image, "image", "", "Container image (or use --golden)")
 	cmd.Flags().StringVar(&golden, "golden", "", "Boot a prebuilt golden image (e.g., ubuntu-24.04-docker@1.0.0)")
+	cmd.Flags().BoolVar(&withRegistryAuth, "with-registry-auth", false, "Send registry authentication details for --image to the nodes (resolved from the manager's docker config)")
 	cmd.Flags().Uint64Var(&replicas, "replicas", 1, "Number of replicas")
 	cmd.Flags().Float64Var(&cpu, "cpu", 0, "CPU limit (cores, e.g., 1.5)")
 	cmd.Flags().StringVar(&memory, "memory", "", "Memory limit (e.g., 512M, 1G)")
@@ -1214,6 +1223,25 @@ func createService(opts serviceCreateOptions) error {
 	}
 	defer conn.Close()
 
+	return createServiceWithClient(ctx, client, opts)
+}
+
+// createServiceWithClient is createService's create path. It takes the control
+// client so tests can drive it with a fake (the same pattern as
+// listServiceTasksWithClient) and assert that a failed --with-registry-auth
+// resolution sends no request.
+func createServiceWithClient(ctx context.Context, client api.ControlClient, opts serviceCreateOptions) error {
+	// --with-registry-auth resolves the manager's credential for the image
+	// before the spec is built and before any RPC, so a missing credential is a
+	// clear, pre-create error rather than an opaque pull failure on a node.
+	if opts.withRegistryAuth {
+		encoded, err := resolveRegistryAuth(opts.image)
+		if err != nil {
+			return err
+		}
+		opts.registryAuth = encoded
+	}
+
 	spec, err := buildServiceSpec(opts)
 	if err != nil {
 		return err
@@ -1256,6 +1284,32 @@ func createService(opts serviceCreateOptions) error {
 	fmt.Printf("Image: %s\n", opts.image)
 
 	return nil
+}
+
+// resolveRegistryAuth resolves the --with-registry-auth credential for a service
+// image into the base64 X-Registry-Auth payload the spec carries. The error is
+// actionable: it names the registry serving the image and the `docker login
+// <host>` remedy, and wraps image.ErrNoRegistryCredentials so callers can branch
+// with errors.Is. Neither the password nor the encoded payload is ever logged;
+// only the registry host is, at debug level.
+func resolveRegistryAuth(ref string) (string, error) {
+	encoded, err := image.EncodeRegistryAuth(ref)
+	if err == nil {
+		if host, hostErr := image.RegistryHostForRef(ref); hostErr == nil {
+			log.Debug().Str("registry", host).Msg("resolved registry credentials for image")
+		}
+		return encoded, nil
+	}
+
+	// EncodeRegistryAuth already names the host and the remedy for the
+	// missing-credential case; cover its other failures here so every path is
+	// actionable.
+	if !errors.Is(err, image.ErrNoRegistryCredentials) {
+		if host, hostErr := image.RegistryHostForRef(ref); hostErr == nil {
+			err = fmt.Errorf("resolving credentials for %s: run `docker login %s`: %w", host, host, err)
+		}
+	}
+	return "", fmt.Errorf("--with-registry-auth: %w", err)
 }
 
 func updateService(serviceID string, opts serviceUpdateOptions) error {

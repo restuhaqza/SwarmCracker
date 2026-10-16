@@ -93,6 +93,31 @@ func TestBuildServiceSpec_DefaultsLeaveSectionsUnset(t *testing.T) {
 	assert.Nil(t, spec.Rollback, "no --rollback-* must not set a rollback config")
 }
 
+// TestBuildServiceSpec_RegistryAuth verifies --with-registry-auth puts the
+// already-resolved X-Registry-Auth payload on the container's PullOptions, and
+// that an unset payload leaves PullOptions nil (workers then use their own
+// configured credentials).
+func TestBuildServiceSpec_RegistryAuth(t *testing.T) {
+	t.Run("payload set", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name:             "web",
+			image:            "private.example.com/app:1",
+			replicas:         1,
+			withRegistryAuth: true,
+			registryAuth:     "eyJ1c2VybmFtZSI6ImJvYiJ9",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, spec.Task.GetContainer().PullOptions)
+		assert.Equal(t, "eyJ1c2VybmFtZSI6ImJvYiJ9", spec.Task.GetContainer().PullOptions.RegistryAuth)
+	})
+
+	t.Run("payload unset", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{name: "web", image: "nginx", replicas: 1})
+		require.NoError(t, err)
+		assert.Nil(t, spec.Task.GetContainer().PullOptions, "no --with-registry-auth must leave PullOptions nil")
+	})
+}
+
 func TestBuildServiceSpec_RejectsInvalidValues(t *testing.T) {
 	cases := map[string]serviceCreateOptions{
 		"mode":            {mode: "bogus"},

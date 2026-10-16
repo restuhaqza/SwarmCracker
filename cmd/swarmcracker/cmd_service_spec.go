@@ -32,6 +32,12 @@ type serviceCreateOptions struct {
 	mounts      []string
 	volumes     []string
 
+	// withRegistryAuth is --with-registry-auth (#44). registryAuth holds the
+	// resolved base64 X-Registry-Auth payload for the image; createService fills
+	// it in (resolving it is I/O), so this mapping function stays pure.
+	withRegistryAuth bool
+	registryAuth     string
+
 	// networks are the user-defined network names/IDs to attach the service to;
 	// networkTargets holds the resolved IDs.
 	networks       []string
@@ -171,6 +177,13 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 
 	if len(dns) > 0 {
 		spec.Task.GetContainer().DNSConfig = &api.ContainerSpec_DNSConfig{Nameservers: dns}
+	}
+
+	// --with-registry-auth: the payload is already resolved (createService does
+	// the keychain I/O), so it is copied onto the container verbatim. Empty means
+	// the workers fall back to their own configured credentials.
+	if o.registryAuth != "" {
+		spec.Task.GetContainer().PullOptions = &api.ContainerSpec_PullOptions{RegistryAuth: o.registryAuth}
 	}
 
 	if hc, err := buildHealthcheck(o.health); err != nil {

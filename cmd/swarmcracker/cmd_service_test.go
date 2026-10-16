@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -508,6 +511,109 @@ func TestListServiceTasksHealthColumn(t *testing.T) {
 
 	got := healthColumn(t, out, "ID STATUS HEALTH NODE IMAGE")
 	assert.Equal(t, []string{"RUNNING", "STARTING", "FAILED", "-"}, got)
+}
+
+// fakeServiceCreateClient embeds the generated ControlClient interface and
+// records CreateService calls, so tests can assert whether the create path sent
+// a request at all.
+type fakeServiceCreateClient struct {
+	api.ControlClient
+	createCalls int
+	spec        *api.ServiceSpec
+}
+
+func (f *fakeServiceCreateClient) CreateService(_ context.Context, req *api.CreateServiceRequest, _ ...grpc.CallOption) (*api.CreateServiceResponse, error) {
+	f.createCalls++
+	f.spec = req.Spec
+	return &api.CreateServiceResponse{Service: &api.Service{ID: "svc-new"}}, nil
+}
+
+// withDockerConfig points DOCKER_CONFIG at a temp dir holding a docker
+// config.json with the given auths JSON, so credential lookups are deterministic
+// and independent of the machine's real docker config.
+func withDockerConfig(t *testing.T, configJSON string) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(configJSON), 0o600))
+	t.Setenv("DOCKER_CONFIG", dir)
+}
+
+// TestServiceCreateWithRegistryAuthFlag verifies --with-registry-auth is
+// registered on `service create` and documented in its help output.
+func TestServiceCreateWithRegistryAuthFlag(t *testing.T) {
+	cmd := newServiceCreateCommand()
+
+	flag := cmd.Flags().Lookup("with-registry-auth")
+	require.NotNil(t, flag, "service create must register --with-registry-auth")
+	assert.Equal(t, "bool", flag.Value.Type())
+	assert.Equal(t, "false", flag.DefValue)
+	assert.Contains(t, cmd.UsageString(), "--with-registry-auth")
+}
+
+// TestCreateServiceWithRegistryAuth_SendsResolvedCredential verifies the create
+// path resolves the image's credential and puts the X-Registry-Auth payload on
+// the spec it sends.
+func TestCreateServiceWithRegistryAuth_SendsResolvedCredential(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"registry.test":{"username":"bob","password":"s3cret"}}}`)
+
+	client := &fakeServiceCreateClient{}
+	err := createServiceWithClient(context.Background(), client, serviceCreateOptions{
+		name:             "web",
+		image:            "registry.test/team/app:1",
+		replicas:         1,
+		withRegistryAuth: true,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, client.createCalls, "the create path must send exactly one CreateService request")
+	require.NotNil(t, client.spec)
+	require.NotNil(t, client.spec.Task.GetContainer().PullOptions)
+
+	cfg, err := image.DecodeRegistryAuth(client.spec.Task.GetContainer().PullOptions.RegistryAuth)
+	require.NoError(t, err)
+	assert.Equal(t, "bob", cfg.Username)
+	assert.Equal(t, "s3cret", cfg.Password)
+}
+
+// TestCreateServiceWithoutRegistryAuth_SendsNoPayload verifies that without the
+// flag no PullOptions are sent, so the workers keep using their own credentials.
+func TestCreateServiceWithoutRegistryAuth_SendsNoPayload(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"registry.test":{"username":"bob","password":"s3cret"}}}`)
+
+	client := &fakeServiceCreateClient{}
+	require.NoError(t, createServiceWithClient(context.Background(), client, serviceCreateOptions{
+		name:     "web",
+		image:    "registry.test/team/app:1",
+		replicas: 1,
+	}))
+
+	require.Equal(t, 1, client.createCalls)
+	require.NotNil(t, client.spec)
+	assert.Nil(t, client.spec.Task.GetContainer().PullOptions)
+}
+
+// TestCreateServiceWithRegistryAuth_MissingCredentialFailsBeforeRPC verifies a
+// missing credential is an actionable, ErrNoRegistryCredentials-wrapped error
+// and that no CreateService request is sent.
+func TestCreateServiceWithRegistryAuth_MissingCredentialFailsBeforeRPC(t *testing.T) {
+	// A config without a credential for the image's registry: the lookup fails
+	// deterministically regardless of the machine's own docker config.
+	withDockerConfig(t, `{"auths":{"other.registry.test":{"username":"x","password":"y"}}}`)
+
+	client := &fakeServiceCreateClient{}
+	err := createServiceWithClient(context.Background(), client, serviceCreateOptions{
+		name:             "web",
+		image:            "registry.test/team/app:1",
+		replicas:         1,
+		withRegistryAuth: true,
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, image.ErrNoRegistryCredentials)
+	assert.Contains(t, err.Error(), "registry.test", "the error must name the registry")
+	assert.Contains(t, err.Error(), "docker login registry.test", "the error must name the remedy")
+	assert.Zero(t, client.createCalls, "a failed credential resolution must not send a request")
+	assert.Nil(t, client.spec)
 }
 
 // TestListServiceTasksJSONHealth verifies the `service ps --format json` output
