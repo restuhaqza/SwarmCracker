@@ -515,6 +515,11 @@ func (nm *NetworkManager) Init(ctx context.Context) error {
 		log.Warn().Msg("VXLAN enabled but manager not initialized")
 	}
 
+	// Masquerade rules left by an earlier daemon run for networks that no longer
+	// exist are removed here, so a node does not keep a stale rule that could
+	// hijack a later network reusing the same subnet (#70).
+	nm.sweepStaleManagedNAT()
+
 	return nil
 }
 
@@ -1005,20 +1010,22 @@ func (nm *NetworkManager) setupNAT(ctx context.Context) error {
 		return fmt.Errorf("failed to enable IP forwarding: %w", err)
 	}
 
-	// Setup iptables masquerade rule
+	// Setup the iptables masquerade rule. It carries the physdev guard so it matches
+	// only traffic the node routes: under br_netfilter bridged frames also traverse
+	// POSTROUTING, and without the guard this rule masquerades guest-to-guest traffic
+	// on any user-defined network that was auto-allocated this same subnet, which
+	// destroys its return path (#70).
 	subnet := nm.config.Subnet
-	cmd := execCommand("iptables", "-t", "nat", "-C", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE")
-	if err := cmd.Run(); err != nil {
-		// Rule doesn't exist, add it
-		cmd = execCommand("iptables", "-t", "nat", "-A", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE")
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to add NAT rule: %w", err)
-		}
-		log.Info().Msg("NAT masquerade rule added")
+	if err := nm.deleteNatRule(masqueradeSpec(subnet, "", "", false)); err == nil {
+		log.Info().Str("subnet", subnet).Msg("Replaced an unguarded default NAT rule")
 	}
+	if err := nm.ensureRule(masqueradeSpec(subnet, "", "", true)); err != nil {
+		return fmt.Errorf("failed to add NAT rule: %w", err)
+	}
+	log.Info().Str("subnet", subnet).Msg("NAT masquerade rule in place")
 
 	// Allow forwarding from bridge
-	cmd = execCommand("iptables", "-C", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT")
+	cmd := execCommand("iptables", "-C", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT")
 	if err := cmd.Run(); err != nil {
 		cmd = execCommand("iptables", "-A", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT")
 		if err := cmd.Run(); err != nil {
@@ -1242,7 +1249,8 @@ func (nm *NetworkManager) teardownNAT() error {
 	}
 
 	rules := [][]string{
-		{"-t", "nat", "-D", "POSTROUTING", "-s", nm.config.Subnet, "-j", "MASQUERADE"},
+		append([]string{"-t", "nat", "-D"}, masqueradeSpec(nm.config.Subnet, "", "", true)...),
+		append([]string{"-t", "nat", "-D"}, masqueradeSpec(nm.config.Subnet, "", "", false)...),
 		{"-D", "FORWARD", "-i", nm.config.BridgeName, "-j", "ACCEPT"},
 		{"-D", "FORWARD", "-o", nm.config.BridgeName, "-j", "ACCEPT"},
 	}
