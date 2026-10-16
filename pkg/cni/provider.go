@@ -8,6 +8,7 @@ import (
 
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/moby/swarmkit/v2/manager/allocator/networkallocator"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -235,52 +236,65 @@ func (p *CNIProvider) ReleaseNetwork(name, subnet string) {
 	}
 }
 
-// maxVXLANAttempts bounds the search for a free VNI, and maxVXLAN is the largest
-// usable one (the space is 24-bit). VNIs are sparse — a cluster holds few networks —
-// so the bound is reached only in pathological cases.
+// maxVXLANAttempts bounds the search for a free VNI. The VNI space is 24-bit
+// (1..maxVXLAN-1) and a cluster holds few networks, so the bound is reached only in
+// pathological cases.
 const (
 	maxVXLANAttempts = 256
 	maxVXLAN         = 16777215
 )
 
 // vxlanIDLocked returns the VNI for a network: the one it already holds when it has
-// one, otherwise the first free candidate from the name's hash.
+// one and that value is still free, otherwise the first free candidate from the
+// name's hash.
 //
 // The VNI has to be both stable and unique. Stable, because every node builds the
 // network's VXLAN interface from it, so renumbering a live network on a restart
 // leaves its replicas without an L2. Unique, because two networks with one VNI cannot
-// both exist on a node: the second interface is never created — the lookup is by VNI —
-// and that network silently loses cross-node connectivity (#80).
+// both exist on a node: the kernel refuses the second interface and the lookup is by
+// VNI, so that network silently loses cross-node connectivity (#80).
+//
+// A *recorded* value that another network already holds is the #80 incident itself,
+// and keeping it would leave the network broken for good. It is renumbered instead:
+// this path only runs for a re-allocation (a restart or an upgrade), where the
+// network's tasks are gone, and the new value is persisted, so the repair sticks.
 func (p *CNIProvider) vxlanIDLocked(name string, recorded uint32) uint32 {
 	if recorded != 0 {
-		return recorded
+		if holder := p.vxlanIDHolderLocked(recorded); holder != "" {
+			log.Warn().Uint32("vni", recorded).Str("network", name).Str("held_by", holder).
+				Msg("Renumbering a network whose recorded VXLAN ID is held by another network")
+		} else {
+			return recorded
+		}
 	}
+
 	start := GenerateVXLANID(name, p.networkIndex)
 	for offset := uint32(0); offset < maxVXLANAttempts; offset++ {
 		candidate := (start + offset) % maxVXLAN
 		if candidate == 0 {
 			candidate = maxVXLAN - 1
 		}
-		if !p.vxlanIDInUseLocked(candidate) {
+		if p.vxlanIDHolderLocked(candidate) == "" {
 			return candidate
 		}
 	}
-	// Unreachable while the VNI space dwarfs the number of networks; returning the
-	// hashed value keeps the allocation usable rather than failing it.
+	log.Warn().Str("network", name).Uint32("vni", start).
+		Msg("No free VXLAN ID found; reusing the hashed one, which another network may hold")
 	return start
 }
 
-// vxlanIDInUseLocked reports whether an allocated network already holds a VNI.
-func (p *CNIProvider) vxlanIDInUseLocked(vni uint32) bool {
+// vxlanIDHolderLocked returns the name of the allocated network that holds a VNI, or
+// "" when it is free.
+func (p *CNIProvider) vxlanIDHolderLocked(vni uint32) string {
 	if vni == 0 {
-		return false
+		return ""
 	}
 	for _, n := range p.networks {
 		if n.VXLANID == vni {
-			return true
+			return n.Name
 		}
 	}
-	return false
+	return ""
 }
 
 // carveSubnetLocked hands the network a subnet from its pool, skipping candidates

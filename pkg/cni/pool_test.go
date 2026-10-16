@@ -1,6 +1,7 @@
 package cni
 
 import (
+	"fmt"
 	"net"
 	"testing"
 
@@ -270,6 +271,72 @@ func TestAllocateNetwork_NoOverlayPoolFallsBackToTheFlatPool(t *testing.T) {
 	require.NotNil(t, allocated.Subnet)
 	assert.Equal(t, "10.0.1.0/24", allocated.Subnet.String(),
 		"an unset overlay pool keeps carving from SubnetPool")
+}
+
+// TestAllocateNetwork_RenumbersARecordedVNIThatCollides is the #80 incident itself: a
+// cluster that already has two networks on one VNI has to be repaired by the upgrade,
+// not left broken. The renumbering is persisted, so the repair sticks.
+func TestAllocateNetwork_RenumbersARecordedVNIThatCollides(t *testing.T) {
+	p := newPoolProvider(t, flatPoolConfig(t))
+
+	first, err := p.AllocateNetwork(NetworkAllocationRequest{Name: "net-c", Driver: "vxlan"})
+	require.NoError(t, err)
+	require.NotZero(t, first.VXLANID)
+
+	// net-a was recorded with the same VNI before the fix.
+	second, err := p.AllocateNetwork(NetworkAllocationRequest{
+		Name: "net-a", Driver: "vxlan", RecordedVXLAN: first.VXLANID,
+	})
+	require.NoError(t, err)
+	assert.NotEqual(t, first.VXLANID, second.VXLANID,
+		"a recorded VNI another network holds must be renumbered, not kept")
+	assert.Equal(t, "net-c", p.vxlanIDHolderLocked(first.VXLANID),
+		"the VNI stays with the network that holds it")
+}
+
+// TestAllocateNetwork_SkipsACollidingHash covers the hash collision itself: two names
+// whose candidates are equal. Without the walk the second network would take the
+// first one's VNI.
+func TestAllocateNetwork_SkipsACollidingHash(t *testing.T) {
+	// Find a pair of names whose candidates collide (the birthday paradox makes this
+	// quick): one whose first candidate equals the other's second.
+	var nameA, nameB string
+	var want uint32
+	seen := map[uint32]string{}
+	for i := 0; i < 20000 && nameB == ""; i++ {
+		name := fmt.Sprintf("net-%d", i)
+		if other, ok := seen[GenerateVXLANID(name, 2)]; ok && other != name {
+			nameA, nameB, want = other, name, GenerateVXLANID(name, 2)
+			break
+		}
+		seen[GenerateVXLANID(name, 1)] = name
+	}
+	require.NotEmpty(t, nameB, "expected to find two names whose candidates collide")
+
+	p := newPoolProvider(t, flatPoolConfig(t))
+	first, err := p.AllocateNetwork(NetworkAllocationRequest{Name: nameA, Driver: "vxlan"})
+	require.NoError(t, err)
+	require.Equal(t, want, first.VXLANID, "the first network takes the colliding candidate")
+
+	second, err := p.AllocateNetwork(NetworkAllocationRequest{Name: nameB, Driver: "vxlan"})
+	require.NoError(t, err)
+	assert.NotEqual(t, want, second.VXLANID, "the second network must skip the taken candidate")
+	assert.Equal(t, nameA, p.vxlanIDHolderLocked(want),
+		"the candidate stays with the network that took it")
+}
+
+// TestReleaseNetwork_FreesTheVNI keeps the ledger honest for VNIs too.
+func TestReleaseNetwork_FreesTheVNI(t *testing.T) {
+	p := newPoolProvider(t, flatPoolConfig(t))
+
+	first, err := p.AllocateNetwork(NetworkAllocationRequest{Name: "first", Driver: "vxlan"})
+	require.NoError(t, err)
+	require.NotZero(t, first.VXLANID)
+	assert.Equal(t, "first", p.vxlanIDHolderLocked(first.VXLANID))
+
+	p.ReleaseNetwork(first.Name, first.Subnet.String())
+	assert.Empty(t, p.vxlanIDHolderLocked(first.VXLANID),
+		"a released network must not keep its VNI")
 }
 
 func TestCidrsOverlap(t *testing.T) {

@@ -7,7 +7,8 @@ Issue: [#80](https://github.com/restuhaqza/SwarmCracker/issues/80)
 
 After a daemon restart, one user-defined network silently loses cross-node
 connectivity while its siblings are fine. Two networks end up with the **same VNI**,
-and the second one's VXLAN interface is never created on any node:
+and the second one's VXLAN interface is never created on any node (the numbers below
+are the ones the issue recorded, from the pre-fix binary):
 
 ```
 $ swarmcracker network ls
@@ -62,15 +63,47 @@ from a mutable counter instead of being kept with the network.
 ## Fix
 
 - **Keep the recorded VNI.** The allocator reads the network's
-  `DriverState["vxlan_vni"]` and passes it with the recorded subnet; the provider uses
-  it verbatim. A restart or an upgrade no longer renumbers a live network.
-- **Never hand out a VNI that is taken.** When a network needs a new VNI, take the
-  first candidate from `GenerateVXLANID(name, index+salt)` that no allocated network
-  holds, bounded like the subnet carve. This covers the hash-collision case that a
-  stable index alone does not.
-- **One request struct instead of seven positional arguments** on
-  `AllocateNetwork`, so what a network already holds is explicit at the call site
+  `DriverState["vxlan_vni"]` and passes it with the recorded subnet, and the provider
+  keeps it. A restart or an upgrade no longer renumbers a live network.
+- **Repair an existing collision.** A recorded VNI that another allocated network
+  already holds *is* the #80 incident, and keeping both would leave that network broken
+  for good. It is renumbered once, with a warning naming both networks. The repair
+  persists — the new value is written back to the network's driver state — so it cannot
+  flip-flop on the next restart.
+- **Never hand out a VNI that is taken.** A network that needs a new VNI takes the
+  first free candidate from the name's hash, walking forward on a clash (bounded like
+  the subnet carve). This covers the hash-collision case that a stable index alone does
+  not.
+- **One request struct instead of six positional arguments** on `AllocateNetwork`, so
+  what a network already holds is explicit at the call site
   (`NetworkAllocationRequest{... ExistingSubnet, RecordedVXLAN ...}`).
+- A recorded value that cannot be read, or is out of range, is ignored with a warning
+  rather than silently renumbering the network.
+
+## Review round (findings folded in)
+
+An independent review of the first revision returned MERGE WITH FIXES:
+
+- **Important — an already-colliding cluster was left broken.** Keeping a recorded VNI
+  unconditionally meant the exact incident #80 describes survived the upgrade with no
+  signal (the provider had no logger at all, so the plan's "the collision is reported"
+  was false). The kernel refuses a second interface with the same VNI — the reviewer
+  verified that on the test server — so the affected network stayed dead. A colliding
+  recorded VNI is now renumbered once, with a warning naming both networks; because the
+  new value is persisted, the repair sticks.
+- **Important — the guide claimed a guarantee the code did not make.** Reworded: a
+  *newly* assigned VNI is never given to a network that already holds one, and a
+  recorded collision is repaired rather than kept.
+- **Minor — the distinct-VNI test was not a regression test** (two ordinary names never
+  collide). It now searches for a genuine hash collision and asserts that the second
+  network skips the taken candidate, and the recorded-collision case has its own test.
+- **Minor — plan inaccuracies**: "seven positional arguments" (the old signature had
+  six), a salt the code does not use, and the reporting claim above. Corrected, and the
+  lab results are recorded here.
+- **Minor — stale or imprecise comments**: `GenerateVXLANID`'s "generates a unique
+  VXLAN ID", an off-by-one on the VNI bound, an unreadable or out-of-range recorded
+  value being dropped silently, and the exhausted-search fallback returning a
+  possibly-taken value without a word. All addressed.
 
 ## Out of scope
 
@@ -92,10 +125,13 @@ from a mutable counter instead of being kept with the network.
 
 - Unit: an existing allocation keeps its VNI across a re-allocation (the regression
   test re-allocates under a *fresh* provider, which is what a restart does); a
-  candidate VNI already held by an allocated network is skipped and the next one is
-  used; distinct networks get distinct VNIs; a network with a recorded VNI that would
-  collide is still kept (stability wins over uniqueness for a live network, and the
-  collision is reported).
+  candidate VNI already held by an allocated network is skipped; a recorded VNI that
+  another network holds is renumbered rather than kept; two names whose hashes collide
+  get distinct VNIs; a released network frees its VNI; a bridge network gets none.
+- Lab e2e (done on the test server, `ecb86b5`): four user-defined networks with a
+  replica pair each, both daemons restarted — every VNI unchanged across the restart,
+  zero duplicates, all four VXLAN interfaces present on both nodes, and all four
+  networks reach their peer across nodes at **0% loss**.
 - Lab e2e: create several user-defined networks, record their VNIs, restart both
   daemons, and check that every VNI is unchanged, no two networks share one, every
   network's VXLAN interface exists on both nodes, and guest-to-guest ping works on all

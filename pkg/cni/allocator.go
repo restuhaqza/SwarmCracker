@@ -117,7 +117,14 @@ func (a *CNINetworkAllocator) Allocate(n *api.Network) error {
 	var recordedVXLAN uint32
 	if n.DriverState != nil {
 		if v := n.DriverState.Options["vxlan_vni"]; v != "" {
-			if parsed, err := strconv.ParseUint(v, 10, 32); err == nil {
+			switch parsed, err := strconv.ParseUint(v, 10, 32); {
+			case err != nil:
+				log.Warn().Err(err).Str("network", name).Str("vxlan_vni", v).
+					Msg("Ignoring an unreadable recorded VXLAN ID; the network gets a new one")
+			case parsed == 0 || parsed >= maxVXLAN:
+				log.Warn().Str("network", name).Str("vxlan_vni", v).
+					Msg("Ignoring an out-of-range recorded VXLAN ID; the network gets a new one")
+			default:
 				recordedVXLAN = uint32(parsed)
 			}
 		}
