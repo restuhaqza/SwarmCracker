@@ -1425,6 +1425,13 @@ func (c *Controller) convertTask() *types.Task {
 	// which the executor learns about a declared healthcheck.
 	container.Healthcheck = healthcheckFromAPI(containerSpec.Container.Healthcheck)
 
+	// Carry the per-task registry credentials the manager resolved at service
+	// create/update time, if any. The image preparer prefers this over its
+	// preparer-global config.
+	if po := containerSpec.Container.PullOptions; po != nil {
+		container.RegistryAuth = po.RegistryAuth
+	}
+
 	// Convert mounts
 	mounts := make([]types.Mount, 0, len(containerSpec.Container.Mounts))
 	for _, m := range containerSpec.Container.Mounts {

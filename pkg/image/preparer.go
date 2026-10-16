@@ -177,7 +177,7 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 	}
 	if !baseReady {
 		// Prepare the image with file locking for concurrent safety
-		if err := ip.prepareWithLock(ctx, container.Image, imageID, rootfsPath, minSizeBytes); err != nil {
+		if err := ip.prepareWithLock(ctx, container.Image, imageID, rootfsPath, container.RegistryAuth, minSizeBytes); err != nil {
 			return fmt.Errorf("failed to prepare image: %w", err)
 		}
 		// Store init system type in annotations (init was injected during prepareImage)
@@ -230,9 +230,26 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 	return nil
 }
 
+// authForTask returns the credentials to use for a task: the task's own
+// X-Registry-Auth payload when present, otherwise fallback.
+func authForTask(taskRegistryAuth string, fallback *RegistryAuth) (*RegistryAuth, error) {
+	if taskRegistryAuth == "" {
+		return fallback, nil
+	}
+
+	cfg, err := DecodeRegistryAuth(taskRegistryAuth)
+	if err != nil {
+		return nil, fmt.Errorf("decoding task registry credentials: %w", err)
+	}
+
+	// RegistryAuthFromConfig keeps go-containerregistry's own field precedence
+	// and makes the decoded config the priority-1 keychain.
+	return RegistryAuthFromConfig(cfg), nil
+}
+
 // prepareImage prepares an OCI image and converts to ext4 filesystem.
 // Init injection happens BEFORE ext4 creation so files are included.
-func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, outputPath string, minSizeBytes ...int64) error {
+func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, outputPath, taskRegistryAuth string, minSizeBytes ...int64) error {
 	// Image preparation (registry pull + extraction) is idempotent and cached
 	// by image ID under a file lock. SwarmKit cancels the task operation
 	// context whenever a task update arrives (e.g. a network attachment), which
@@ -251,14 +268,18 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 
 	// Step 1: Validate image manifest (OS/architecture compatibility)
 	log.Debug().Str("image", imageRef).Msg("Validating image manifest")
-	buildOpts := buildRemoteOptions(pullCtx, ip.config.RegistryAuth)
+	auth, err := authForTask(taskRegistryAuth, ip.config.RegistryAuth)
+	if err != nil {
+		return fmt.Errorf("resolving registry credentials for %q: %w", imageRef, err)
+	}
+	buildOpts := buildRemoteOptions(pullCtx, auth)
 	if err := validateImageManifest(pullCtx, imageRef, buildOpts...); err != nil {
 		return fmt.Errorf("image validation failed: %w", err)
 	}
 
 	// Step 2: Pull and extract OCI image
 	log.Debug().Str("image", imageRef).Msg("Pulling OCI image")
-	if err := ip.extractOCIImage(pullCtx, imageRef, tmpDir); err != nil {
+	if err := ip.extractOCIImage(pullCtx, imageRef, tmpDir, taskRegistryAuth); err != nil {
 		return fmt.Errorf("failed to extract OCI image: %w", err)
 	}
 
@@ -309,7 +330,7 @@ func (ip *ImagePreparer) prepareImage(ctx context.Context, imageRef, imageID, ou
 // prepareWithLock prepares an image with file locking for concurrent safety.
 // Acquires an exclusive lock on the rootfs path to prevent race conditions
 // when multiple goroutines/processes try to prepare the same image.
-func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID, rootfsPath string, minSizeBytes ...int64) error {
+func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID, rootfsPath, taskRegistryAuth string, minSizeBytes ...int64) error {
 	// Create lock file path
 	lockPath := rootfsPath + ".lock"
 
@@ -345,7 +366,7 @@ func (ip *ImagePreparer) prepareWithLock(ctx context.Context, imageRef, imageID,
 	}
 
 	// Proceed with preparation
-	return ip.prepareImage(ctx, imageRef, imageID, rootfsPath, minSizeBytes...)
+	return ip.prepareImage(ctx, imageRef, imageID, rootfsPath, taskRegistryAuth, minSizeBytes...)
 }
 
 // verifyCachedRootfs checks if a cached rootfs has a valid /init entry.
@@ -380,7 +401,7 @@ func (ip *ImagePreparer) verifyCachedRootfs(rootfsPath string) bool {
 }
 
 // extractOCIImage extracts an OCI image using go-containerregistry (primary) or docker/podman (fallback).
-func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath string) error {
+func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath, taskRegistryAuth string) error {
 	// Try different methods in order of preference (daemon-free first)
 	methods := []struct {
 		name string
@@ -388,7 +409,9 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 	}{
 		{
 			name: "go-containerregistry",
-			fn:   ip.extractWithGGCR,
+			fn: func(ctx context.Context, ref, dest string) error {
+				return ip.extractWithGGCR(ctx, ref, dest, taskRegistryAuth)
+			},
 		},
 		{
 			name: "docker",
@@ -437,7 +460,7 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 // extractWithGGCR extracts an OCI image using go-containerregistry (pure Go, no daemon).
 // This pulls directly from the registry and flattens all layers into a filesystem.
 // Also extracts OCI image configuration (ENTRYPOINT, CMD, ENV, USER, etc).
-func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath string) error {
+func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath, taskRegistryAuth string) error {
 	// Validate inputs early so callers get the same errors as before.
 	if imageRef == "" {
 		return fmt.Errorf("image reference must not be empty")
@@ -446,7 +469,12 @@ func (ip *ImagePreparer) extractWithGGCR(ctx context.Context, imageRef, destPath
 		return fmt.Errorf("destination path must not be empty")
 	}
 
-	img, fullRef, err := PullImage(ctx, imageRef, ip.config.RegistryAuth)
+	auth, err := authForTask(taskRegistryAuth, ip.config.RegistryAuth)
+	if err != nil {
+		return fmt.Errorf("resolving registry credentials for %q: %w", imageRef, err)
+	}
+
+	img, fullRef, err := PullImage(ctx, imageRef, auth)
 	if err != nil {
 		return err
 	}

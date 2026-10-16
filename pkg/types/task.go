@@ -106,6 +106,9 @@ type Container struct {
 	DiskSize string
 	// Healthcheck is the container healthcheck, or nil when none is declared.
 	Healthcheck *Healthcheck
+	// RegistryAuth is the base64 X-Registry-Auth payload from the service spec's
+	// PullOptions. Empty means the preparer's configured credentials are used.
+	RegistryAuth string
 }
 
 // Healthcheck describes how a container's health is probed. It is the canonical

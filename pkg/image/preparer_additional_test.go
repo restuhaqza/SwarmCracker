@@ -298,7 +298,7 @@ func TestExtractOCIImage_Runtimes(t *testing.T) {
 			outputPath := filepath.Join(rootfsDir, imageID+".ext4")
 
 			ctx := context.Background()
-			err := ip.prepareImage(ctx, tt.imageRef, imageID, outputPath)
+			err := ip.prepareImage(ctx, tt.imageRef, imageID, outputPath, "")
 
 			if tt.expectError {
 				assert.Error(t, err)

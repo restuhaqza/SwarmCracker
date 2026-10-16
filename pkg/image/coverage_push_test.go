@@ -1014,7 +1014,7 @@ func TestExtractOCIImage_AllMethodsSkipV2(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := ip.extractOCIImage(ctx, "invalid-image!!!", t.TempDir())
+	err := ip.extractOCIImage(ctx, "invalid-image!!!", t.TempDir(), "")
 	require.Error(t, err)
 }
 
@@ -1033,7 +1033,7 @@ func TestExtractOCIImage_DockerFallbackV2(t *testing.T) {
 
 	ctx := context.Background()
 
-	err := ip.extractOCIImage(ctx, "alpine:latest", t.TempDir())
+	err := ip.extractOCIImage(ctx, "alpine:latest", t.TempDir(), "")
 	_ = err
 }
 
@@ -1127,7 +1127,7 @@ func TestExtractWithGGCR_EmptyImageRef(t *testing.T) {
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
 	ctx := context.Background()
-	err := ip.extractWithGGCR(ctx, "", t.TempDir())
+	err := ip.extractWithGGCR(ctx, "", t.TempDir(), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "image reference must not be empty")
 }
@@ -1138,7 +1138,7 @@ func TestExtractWithGGCR_EmptyDestPath(t *testing.T) {
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
 	ctx := context.Background()
-	err := ip.extractWithGGCR(ctx, "nginx:latest", "")
+	err := ip.extractWithGGCR(ctx, "nginx:latest", "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "destination path must not be empty")
 }
@@ -1149,7 +1149,7 @@ func TestExtractWithGGCR_InvalidImageRef(t *testing.T) {
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
 	ctx := context.Background()
-	err := ip.extractWithGGCR(ctx, "!!!invalid!!!", t.TempDir())
+	err := ip.extractWithGGCR(ctx, "!!!invalid!!!", t.TempDir(), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to parse image reference")
 }
@@ -1167,7 +1167,7 @@ func TestExtractWithGGCR_SimpleImageName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// Simple name like "nginx" should get docker.io/library/ prefix
-	err := ip.extractWithGGCR(ctx, "nginx", t.TempDir())
+	err := ip.extractWithGGCR(ctx, "nginx", t.TempDir(), "")
 	// Will likely fail due to network/auth, but code path exercised
 	_ = err
 }
@@ -1185,7 +1185,7 @@ func TestExtractWithGGCR_OrgImageName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// Org/team image should get docker.io/ prefix
-	err := ip.extractWithGGCR(ctx, "myorg/myimage", t.TempDir())
+	err := ip.extractWithGGCR(ctx, "myorg/myimage", t.TempDir(), "")
 	// Will fail to pull but the prefix logic is exercised
 	_ = err
 }
@@ -1203,7 +1203,7 @@ func TestExtractWithGGCR_FullRegistry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// Full registry URL should NOT get prefix
-	err := ip.extractWithGGCR(ctx, "gcr.io/myproject/myimage:v1", t.TempDir())
+	err := ip.extractWithGGCR(ctx, "gcr.io/myproject/myimage:v1", t.TempDir(), "")
 	// Will fail to pull but the prefix logic is exercised
 	_ = err
 }
@@ -1248,7 +1248,7 @@ func TestPrepareImage_EmptyImageRefV2(t *testing.T) {
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
 	ctx := context.Background()
-	err := ip.prepareImage(ctx, "", "test-id", t.TempDir())
+	err := ip.prepareImage(ctx, "", "test-id", t.TempDir(), "")
 	require.Error(t, err)
 }
 
@@ -1258,7 +1258,7 @@ func TestPrepareImage_InvalidImageRefV2(t *testing.T) {
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: rootfsDir}).(*ImagePreparer)
 
 	ctx := context.Background()
-	err := ip.prepareImage(ctx, "!!!invalid!!!", "test-id", t.TempDir())
+	err := ip.prepareImage(ctx, "!!!invalid!!!", "test-id", t.TempDir(), "")
 	require.Error(t, err)
 }
 

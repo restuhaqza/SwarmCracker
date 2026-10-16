@@ -137,7 +137,7 @@ func TestPrepareWithLock_ConcurrentAccess(t *testing.T) {
 	defer cancel()
 
 	// The second call should detect the existing rootfs via double-check
-	err := ip.prepareWithLock(ctx, "alpine:latest", "sha256:abc123", rootfsPath)
+	err := ip.prepareWithLock(ctx, "alpine:latest", "sha256:abc123", rootfsPath, "")
 	// May or may not succeed depending on whether it re-prepares
 	t.Logf("prepareWithLock result: %v", err)
 }
