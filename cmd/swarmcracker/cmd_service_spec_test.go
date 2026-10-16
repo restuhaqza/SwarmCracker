@@ -525,3 +525,31 @@ func TestBuildHealthcheck_DistinguishesExplicitFromUnset(t *testing.T) {
 		})
 	}
 }
+
+// TestRegistryAuthForUpdate covers the three --with-registry-auth cases for
+// `service update` directly: flag absent preserves, true sets the resolved
+// payload, false clears (an empty applied payload).
+func TestRegistryAuthForUpdate(t *testing.T) {
+	const payload = "eyJ1c2VybmFtZSI6ImJvYiJ9"
+
+	tests := []struct {
+		name     string
+		set      bool
+		value    bool
+		resolved string
+		want     string
+		apply    bool
+	}{
+		{name: "absent preserves", set: false, value: false, resolved: "", want: "", apply: false},
+		{name: "true sets the resolved payload", set: true, value: true, resolved: payload, want: payload, apply: true},
+		{name: "false clears", set: true, value: false, resolved: payload, want: "", apply: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, apply := registryAuthForUpdate(tc.set, tc.value, tc.resolved)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.apply, apply)
+		})
+	}
+}

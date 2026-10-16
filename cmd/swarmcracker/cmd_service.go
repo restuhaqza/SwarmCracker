@@ -369,11 +369,14 @@ func newServiceUpdateCommand() *cobra.Command {
 		publishMode string
 		force       bool
 		rollback    bool
-		mounts      []string
-		volumes     []string
-		networks    []string
-		secrets     []string
-		configs     []string
+
+		withRegistryAuth bool
+
+		mounts   []string
+		volumes  []string
+		networks []string
+		secrets  []string
+		configs  []string
 
 		hostname string
 		dns      []string
@@ -440,15 +443,22 @@ placement, restart policy, update/rollback configuration and mode.`,
 				publishModeSet: cmd.Flags().Changed("publish-mode"),
 				force:          force,
 				rollbackAction: rollback,
-				mounts:         mounts,
-				volumes:        volumes,
-				mountsSet:      anyFlagChanged(cmd, "mount", "volume"),
-				networks:       networks,
-				networksSet:    anyFlagChanged(cmd, "network"),
-				secrets:        secrets,
-				secretsSet:     anyFlagChanged(cmd, "secret"),
-				configs:        configs,
-				configsSet:     anyFlagChanged(cmd, "config"),
+
+				// --with-registry-auth (#44) is tri-state: the set bit
+				// distinguishes "absent" (preserve) from an explicit
+				// --with-registry-auth=false (clear). updateService resolves
+				// the payload before any RPC.
+				withRegistryAuth:    withRegistryAuth,
+				withRegistryAuthSet: anyFlagChanged(cmd, "with-registry-auth"),
+				mounts:              mounts,
+				volumes:             volumes,
+				mountsSet:           anyFlagChanged(cmd, "mount", "volume"),
+				networks:            networks,
+				networksSet:         anyFlagChanged(cmd, "network"),
+				secrets:             secrets,
+				secretsSet:          anyFlagChanged(cmd, "secret"),
+				configs:             configs,
+				configsSet:          anyFlagChanged(cmd, "config"),
 
 				hostname:    hostname,
 				dns:         dns,
@@ -536,6 +546,7 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringVar(&rollbackMonitor, "rollback-monitor", "", "Duration to monitor a rolled-back task for failure")
 	cmd.Flags().Float64Var(&rollbackMaxFailureRatio, "rollback-max-failure-ratio", 0, "Fraction of tasks that may fail during rollback (0-1)")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force update even if no changes detected")
+	cmd.Flags().BoolVar(&withRegistryAuth, "with-registry-auth", false, "Send registry authentication details for --image to the nodes (resolved from the manager's docker config); pass --with-registry-auth=false to clear them")
 
 	return cmd
 }
@@ -1322,8 +1333,34 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 	}
 	defer conn.Close()
 
+	return updateServiceWithClient(ctx, client, serviceID, opts)
+}
+
+// updateServiceWithClient is updateService's update path. It takes the control
+// client so tests can drive it with a fake (the same ...WithClient seam as
+// createServiceWithClient) and assert both the registry-auth ordering and the
+// no-RPC-on-failure guarantee.
+func updateServiceWithClient(ctx context.Context, client api.ControlClient, serviceID string, opts serviceUpdateOptions) error {
+	// --with-registry-auth (#44) resolves the manager's credential for the
+	// target image before any RPC (the service lookup below included), so a
+	// missing credential is a clear, pre-update error rather than an opaque pull
+	// failure on a node.
+	if opts.withRegistryAuthSet && opts.rollbackAction {
+		return fmt.Errorf("--with-registry-auth cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags")
+	}
+	if opts.withRegistryAuthSet && opts.withRegistryAuth {
+		if opts.image == "" {
+			return fmt.Errorf("--with-registry-auth requires --image: the credential is resolved for the image the service will run")
+		}
+		encoded, err := resolveRegistryAuth(opts.image)
+		if err != nil {
+			return err
+		}
+		opts.registryAuth = encoded
+	}
+
 	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
-	serviceID, err = resolveServiceRef(ctx, client, serviceID)
+	serviceID, err := resolveServiceRef(ctx, client, serviceID)
 	if err != nil {
 		return err
 	}
@@ -1348,6 +1385,29 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 	}
 
 	spec := svc.Spec.Copy()
+
+	// --with-registry-auth on a golden service would be stored but never
+	// consumed (golden images boot their own init and are not pulled from a
+	// registry), so reject it rather than silently dropping the flag. Clearing
+	// the credential (an explicit false) stays valid.
+	if opts.withRegistryAuthSet && opts.withRegistryAuth && spec.Annotations.Labels[types.GoldenLabel] != "" {
+		return fmt.Errorf("--with-registry-auth cannot be used on a golden service: golden images are not pulled from a registry")
+	}
+
+	// Apply the --with-registry-auth decision (#44): an absent flag preserves
+	// the credential copied from the current spec, an explicit true replaces it
+	// with the pre-resolved payload, and an explicit false clears it.
+	if payload, apply := registryAuthForUpdate(opts.withRegistryAuthSet, opts.withRegistryAuth, opts.registryAuth); apply {
+		c := spec.Task.GetContainer()
+		if c == nil {
+			return fmt.Errorf("service %q has no container spec", svc.Spec.Annotations.Name)
+		}
+		if payload == "" {
+			c.PullOptions = nil
+		} else {
+			c.PullOptions = &api.ContainerSpec_PullOptions{RegistryAuth: payload}
+		}
+	}
 
 	// Update replicas when the caller explicitly provided a count. This keeps
 	// `service update` without --replicas a no-op while allowing an explicit
