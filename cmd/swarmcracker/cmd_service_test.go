@@ -488,7 +488,7 @@ func TestListServiceTasksHealthColumn(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	require.NoError(t, listServiceTasksWithClient(context.Background(), client, &buf, "web", "table", "", false, false))
+	require.NoError(t, listServiceTasksWithClient(context.Background(), client, &buf, "web", "table", "", false, false, derivedHealthOptions()))
 
 	out := buf.String()
 	assert.Contains(t, out, "ID")
@@ -516,7 +516,7 @@ func TestListServiceTasksJSONHealth(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	require.NoError(t, listServiceTasksWithClient(context.Background(), client, &buf, "web", "json", "", false, false))
+	require.NoError(t, listServiceTasksWithClient(context.Background(), client, &buf, "web", "json", "", false, false, derivedHealthOptions()))
 
 	var got []map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))

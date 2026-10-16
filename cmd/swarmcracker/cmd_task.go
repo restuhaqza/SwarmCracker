@@ -41,13 +41,15 @@ and viewing task logs.`,
 // newTaskListCommand creates the task list command
 func newTaskListCommand() *cobra.Command {
 	var (
-		format    string
-		filter    string
-		quiet     bool
-		all       bool
-		noTrunc   bool
-		node      string
-		serviceID string
+		format     string
+		filter     string
+		quiet      bool
+		all        bool
+		noTrunc    bool
+		node       string
+		serviceID  string
+		healthPort int
+		noHealth   bool
 	)
 
 	cmd := &cobra.Command{
@@ -55,7 +57,9 @@ func newTaskListCommand() *cobra.Command {
 		Short: "List tasks",
 		Long: `List all tasks in the SwarmCracker cluster.
 
-Tasks are the individual units of work that run on nodes.`,
+Tasks are the individual units of work that run on nodes. The HEALTH column
+shows the daemon's live healthcheck state, fetched from the node owning each
+task, falling back to the health-gated task state when a node cannot be reached.`,
 		Aliases: []string{"list"},
 		Example: `  swarmcracker task ls
   swarmcracker task ls --format json
@@ -65,7 +69,7 @@ Tasks are the individual units of work that run on nodes.`,
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return listTasks(format, filter, quiet, all, noTrunc, node, serviceID)
+			return listTasks(format, filter, quiet, all, noTrunc, node, serviceID, clusterHealthOptions{Port: healthPort, Disabled: noHealth})
 		},
 	}
 
@@ -76,6 +80,8 @@ Tasks are the individual units of work that run on nodes.`,
 	cmd.Flags().BoolVar(&noTrunc, "no-trunc", false, "Don't truncate output")
 	cmd.Flags().StringVar(&node, "node", "", "Filter by node ID")
 	cmd.Flags().StringVar(&serviceID, "service", "", "Filter by service ID")
+	cmd.Flags().IntVar(&healthPort, "health-port", defaultHealthPort, "Port of each node's health server, used to fetch live health")
+	cmd.Flags().BoolVar(&noHealth, "no-health", false, "Skip the live-health lookup; derive HEALTH from the task state only")
 
 	return cmd
 }
@@ -109,7 +115,7 @@ func newTaskInspectCommand() *cobra.Command {
 
 // Task operations
 
-func listTasks(format, filter string, quiet, all, noTrunc bool, node, serviceID string) error {
+func listTasks(format, filter string, quiet, all, noTrunc bool, node, serviceID string, health clusterHealthOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -119,13 +125,17 @@ func listTasks(format, filter string, quiet, all, noTrunc bool, node, serviceID 
 	}
 	defer conn.Close()
 
-	return listTasksWithClient(ctx, client, os.Stdout, format, filter, quiet, all, noTrunc, node, serviceID)
+	return listTasksWithClient(ctx, client, os.Stdout, format, filter, quiet, all, noTrunc, node, serviceID, health)
 }
 
 // listTasksWithClient is the body of `task ls` with the control client and
 // output writer injected, so the table/JSON rendering is unit-testable without
 // a cluster.
-func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet, all, noTrunc bool, node, serviceID string) error {
+func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet, all, noTrunc bool, node, serviceID string, health clusterHealthOptions) error {
+	if err := health.validate(); err != nil {
+		return err
+	}
+
 	resp, err := client.ListTasks(ctx, &api.ListTasksRequest{})
 	if err != nil {
 		return fmt.Errorf("failed to list tasks: %w", err)
@@ -140,17 +150,19 @@ func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Wri
 	tasks := resp.Tasks
 	tasks = filterTasks(tasks, filter, node, serviceID, all)
 
-	// Output based on format
-	if format == "json" {
-		return writeTasksJSON(w, tasks)
-	}
-
-	// Table format
-	if quiet {
+	// Table format: --quiet prints only IDs, so skip the health fan-out.
+	if format != "json" && quiet {
 		for _, task := range tasks {
 			fmt.Fprintln(w, task.ID)
 		}
 		return nil
+	}
+
+	lh := fetchLiveHealth(ctx, client, tasks, health)
+
+	// Output based on format
+	if format == "json" {
+		return writeTasksJSON(w, tasks, lh)
 	}
 
 	fmt.Fprintf(w, "%-20s %-20s %-12s %-12s %-12s %s\n", "ID", "SERVICE", "STATUS", "HEALTH", "NODE", "IMAGE")
@@ -169,7 +181,7 @@ func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Wri
 		if task.Spec.GetContainer() != nil {
 			image = task.Spec.GetContainer().Image
 		}
-		fmt.Fprintf(w, "%-20s %-20s %-12s %-12s %-12s %s\n", task.ID, svcID, status, taskHealth(task), nodeID, image)
+		fmt.Fprintf(w, "%-20s %-20s %-12s %-12s %-12s %s\n", task.ID, svcID, status, taskHealthDisplay(task, lh), nodeID, image)
 	}
 	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
 
