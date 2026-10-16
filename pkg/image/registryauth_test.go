@@ -6,14 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
+	"github.com/google/go-containerregistry/pkg/v1/remote"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,29 +107,63 @@ func TestEncodeRegistryAuthFor_InvalidRef(t *testing.T) {
 }
 
 func TestEncodeRegistryAuthFor_RoundTrip(t *testing.T) {
-	ra := RegistryAuthFromConfig(authn.AuthConfig{Username: "alice", Password: "s3cr3t"})
+	tests := []struct {
+		name string
+		cfg  authn.AuthConfig
+	}{
+		{
+			name: "basic credentials",
+			cfg:  authn.AuthConfig{Username: "alice", Password: "s3cr3t"},
+		},
+		{
+			// "alice:pw?" is standard base64 "YWxpY2U6cHc/" but URL-safe base64
+			// "YWxpY2U6cHc_", so this case also fails if the "auth" field ever
+			// switches to the URL alphabet — which docker cannot decode, since it
+			// reads that field with base64.StdEncoding.
+			name: "credentials whose auth field needs the standard alphabet",
+			cfg:  authn.AuthConfig{Username: "alice", Password: "pw?"},
+		},
+	}
 
-	encoded, err := EncodeRegistryAuthFor("registry.example.com/team/app:1.0", ra.Keychain)
-	require.NoError(t, err)
-	require.NotEmpty(t, encoded)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ra := RegistryAuthFromConfig(tt.cfg)
 
-	// URL-safe base64, no padding surprises.
-	assert.NotContains(t, encoded, "+")
-	assert.NotContains(t, encoded, "/")
+			encoded, err := EncodeRegistryAuthFor("registry.example.com/team/app:1.0", ra.Keychain)
+			require.NoError(t, err)
+			require.NotEmpty(t, encoded)
 
-	decoded, err := DecodeRegistryAuth(encoded)
-	require.NoError(t, err)
-	assert.Equal(t, "alice", decoded.Username)
-	assert.Equal(t, "s3cr3t", decoded.Password)
+			// URL-safe base64, no padding surprises.
+			assert.NotContains(t, encoded, "+")
+			assert.NotContains(t, encoded, "/")
 
-	// The decoded config, once wrapped, must authenticate as priority-1 keychain.
-	wrapped := RegistryAuthFromConfig(decoded)
-	auth, err := wrapped.Keychain.Resolve(mustRepoResource(t, "registry.example.com/team/app:1.0"))
-	require.NoError(t, err)
-	got, err := auth.Authorization()
-	require.NoError(t, err)
-	assert.Equal(t, "alice", got.Username)
-	assert.Equal(t, "s3cr3t", got.Password)
+			// Pin docker's wire format rather than only re-reading our own output
+			// with our own decoder: docker parses X-Registry-Auth as a flat JSON
+			// object with these exact key spellings, and its "auth" field is
+			// standard base64 of "username:password".
+			var payload map[string]string
+			require.NoError(t, json.Unmarshal(decodeXRegistryAuthPayload(t, encoded), &payload),
+				"X-Registry-Auth payload must be base64 of a flat JSON object")
+			assert.Equal(t, tt.cfg.Username, payload["username"])
+			assert.Equal(t, tt.cfg.Password, payload["password"])
+			assert.Equal(t, base64.StdEncoding.EncodeToString([]byte(tt.cfg.Username+":"+tt.cfg.Password)), payload["auth"],
+				`docker's "auth" field is standard base64 of "username:password"`)
+
+			decoded, err := DecodeRegistryAuth(encoded)
+			require.NoError(t, err)
+			assert.Equal(t, tt.cfg.Username, decoded.Username)
+			assert.Equal(t, tt.cfg.Password, decoded.Password)
+
+			// The decoded config, once wrapped, must authenticate as priority-1 keychain.
+			wrapped := RegistryAuthFromConfig(decoded)
+			auth, err := wrapped.Keychain.Resolve(mustRepoResource(t, "registry.example.com/team/app:1.0"))
+			require.NoError(t, err)
+			got, err := auth.Authorization()
+			require.NoError(t, err)
+			assert.Equal(t, tt.cfg.Username, got.Username)
+			assert.Equal(t, tt.cfg.Password, got.Password)
+		})
+	}
 }
 
 func TestEncodeRegistryAuthFor_IdentityTokenOnly(t *testing.T) {
@@ -184,10 +222,69 @@ func TestRegistryAuthFromConfig(t *testing.T) {
 	assert.Equal(t, "alice", got.Username)
 	assert.Equal(t, "s3cr3t", got.Password)
 
-	// buildRemoteOptions must take the keychain branch (context + keychain only),
-	// not fall back to basic auth or the default keychain.
-	opts := buildRemoteOptions(context.Background(), ra)
-	assert.Len(t, opts, 2)
+	// Which buildRemoteOptions branch runs is decided by exactly these fields. A
+	// non-nil Keychain selects the priority-1 branch; the empty Username,
+	// Password and Token rule out every lower-priority branch. (Counting the
+	// returned []remote.Option would be vacuous: every branch returns context
+	// plus exactly one more.)
+	assert.NotNil(t, ra.Keychain)
+	assert.Empty(t, ra.Username, "basic auth must not be set")
+	assert.Empty(t, ra.Password, "basic auth must not be set")
+	assert.Empty(t, ra.Token, "bearer auth must not be set")
+}
+
+// TestRegistryAuthFromConfig_KeychainAuthenticatesRequest drives the options
+// buildRemoteOptions derives from a config-backed RegistryAuth against a local
+// registry that requires basic auth, proving the priority-1 keychain does not
+// merely get selected but actually authenticates requests.
+func TestRegistryAuthFromConfig_KeychainAuthenticatesRequest(t *testing.T) {
+	const (
+		username = "alice"
+		password = "s3cr3t"
+	)
+
+	var (
+		mu      sync.Mutex
+		gotAuth []string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if ok {
+			mu.Lock()
+			gotAuth = append(gotAuth, user+":"+pass)
+			mu.Unlock()
+		}
+		if r.URL.Path == "/v2/" {
+			// Challenging the ping with Basic (rather than answering 200) makes
+			// go-containerregistry use its basic-auth transport, which replays
+			// the authenticator's credentials on every subsequent request.
+			w.Header().Set("WWW-Authenticate", `Basic realm="swarmcracker-test"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if !ok || user != username || pass != password {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.docker.distribution.manifest.v2+json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	host := strings.TrimPrefix(srv.URL, "http://")
+	ref, err := name.ParseReference(host + "/team/app:1.0")
+	require.NoError(t, err)
+
+	ra := RegistryAuthFromConfig(authn.AuthConfig{Username: username, Password: password})
+	desc, err := remote.Get(ref, buildRemoteOptions(context.Background(), ra)...)
+	require.NoError(t, err, "the config-backed keychain must authenticate against a registry that requires basic auth")
+	require.NotNil(t, desc)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{username + ":" + password}, gotAuth,
+		"the priority-1 keychain must put the resolved credentials on the wire")
 }
 
 func TestRegistryAuthFromConfig_EmptyConfigStillResolves(t *testing.T) {
@@ -246,6 +343,26 @@ func TestEncodeRegistryAuthReadsDockerConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "alice", decoded.Username)
 	assert.Equal(t, "s3cr3t", decoded.Password)
+}
+
+// decodeXRegistryAuthPayload base64-decodes an X-Registry-Auth payload without
+// going through DecodeRegistryAuth, so wire-format assertions inspect the JSON
+// document independently of the package's own decoder. Both standard and
+// URL-safe base64 are accepted because clients emit either for this header.
+func decodeXRegistryAuthPayload(t *testing.T, encoded string) []byte {
+	t.Helper()
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.RawURLEncoding,
+	} {
+		if raw, err := enc.DecodeString(encoded); err == nil {
+			return raw
+		}
+	}
+	t.Fatalf("X-Registry-Auth payload %q is not valid base64", encoded)
+	return nil
 }
 
 func mustRepoResource(t *testing.T, ref string) name.Repository {
