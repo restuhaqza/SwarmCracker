@@ -100,7 +100,9 @@ func fetchLiveHealth(ctx context.Context, client api.ControlClient, tasks []*api
 
 	nodeResp, err := client.ListNodes(ctx, &api.ListNodesRequest{})
 	if err != nil {
-		// Degrade to "unknown" rather than failing the whole command.
+		// Degrade to "unknown" rather than failing the whole command: no node
+		// address can be resolved, so no node can be asked and every task shows
+		// "-" — the same as if every endpoint were unreachable.
 		return lh
 	}
 	addrByNode := make(map[string]string, len(nodeResp.Nodes))
@@ -138,6 +140,11 @@ func fetchLiveHealth(ctx context.Context, client api.ControlClient, tasks []*api
 	// daemon kept the default loopback bind. Accept the loopback answer only for
 	// nodes that own a task it reports, so another node's endpoint can never be
 	// misattributed.
+	//
+	// Known limitation: a task reassigned away from this machine whose local
+	// sidecar has not been swept yet still carries its ID here and would be
+	// attributed to the node SwarmKit now reports; the window is a daemon restart
+	// on this machine plus a reassignment to a node that cannot be reached.
 	if len(pending) > 0 {
 		loopRows, loopAnswered, _ := getNodeTaskHealth(ctx, httpClient, healthLoopbackAddr, opts.Port)
 		if loopAnswered {
@@ -190,7 +197,11 @@ func fanOutNodeHealth(ctx context.Context, client *http.Client, nodeIDs []string
 		wg.Add(1)
 		go func(i int, nodeID, addr string) {
 			defer wg.Done()
-			sem <- struct{}{}
+			select {
+			case sem <- struct{}{}:
+			case <-fctx.Done():
+				return
+			}
 			defer func() { <-sem }()
 			r, ok, _ := getNodeTaskHealth(fctx, client, addr, port)
 			results[i] = result{nodeID: nodeID, rows: r, answered: ok}
@@ -258,9 +269,10 @@ func taskHealthDisplay(task *api.Task, lh liveHealth) string {
 	if !taskDeclaresHealthcheck(task) {
 		return "-"
 	}
-	// A terminal task has no live health to show: the derived value is the
-	// honest one, and a sidecar that has not been swept yet must not outrank it.
-	if !lh.enabled || !liveHealthApplies(task.Status.State) {
+	// No live health to show yet for a task that is terminal (its verdict is its
+	// state), or that SwarmKit has not scheduled to a node at all. A sidecar that
+	// has not been swept yet must not outrank either.
+	if !lh.enabled || !liveHealthApplies(task.Status.State) || task.NodeID == "" {
 		return taskHealth(task)
 	}
 	if h, ok := lh.byTask[task.ID]; ok {

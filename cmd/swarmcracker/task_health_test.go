@@ -128,6 +128,7 @@ func TestTaskHealthDisplay(t *testing.T) {
 		{"reachable without live row falls back", healthcheckedTaskOn("t-other", "node-a", api.TaskStateRunning), live, "RUNNING"},
 		{"reachable, not started", healthcheckedTaskOn("t-other", "node-a", api.TaskStateStarting), live, "STARTING"},
 		{"unreachable node", healthcheckedTaskOn("t-x", "node-b", api.TaskStateRunning), live, "-"},
+		{"unscheduled task falls back", healthcheckedTaskOn("t-nosched", "", api.TaskStatePending), live, "STARTING"},
 		{"terminal FAILED outranks a stale live row", healthcheckedTaskOn("t-live", "node-a", api.TaskStateFailed), live, "FAILED"},
 		{"terminal COMPLETED outranks a stale live row", healthcheckedTaskOn("t-live", "node-a", api.TaskStateCompleted), live, "-"},
 	}
@@ -314,6 +315,28 @@ func TestListTasksWithLiveHealth(t *testing.T) {
 	assert.Equal(t, runtime.HealthFailing, live["state"])
 	assert.Equal(t, float64(1), live["failing_streak"])
 	assert.Nil(t, got[1]["live_health"], "a task without a live row must not carry live_health")
+}
+
+// TestWriteTasksJSON_TerminalAndNil covers the JSON path's two guards: a terminal
+// task must not carry a stale live row (neither as health nor as live_health),
+// and a nil task must not panic the writer.
+func TestWriteTasksJSON_TerminalAndNil(t *testing.T) {
+	failed := healthcheckedTaskOn("t-failed", "node-a", api.TaskStateFailed)
+	lh := liveHealth{
+		enabled:   true,
+		byTask:    map[string]runtime.VMHealth{"t-failed": {State: runtime.HealthHealthy}},
+		reachable: map[string]bool{"node-a": true},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, writeTasksJSON(&buf, []*api.Task{failed, nil}, lh))
+
+	var got []map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+	require.Len(t, got, 2)
+	assert.Equal(t, "FAILED", got[0]["health"], "a terminal task reports its state, not a stale live row")
+	assert.Nil(t, got[0]["live_health"], "a terminal task must not carry live_health")
+	assert.Equal(t, "-", got[1]["health"], "a nil task renders as no health")
 }
 
 // TestListTasksQuietSkipsFanOut proves --quiet (a table run) prints only IDs and

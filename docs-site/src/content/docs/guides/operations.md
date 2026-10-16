@@ -148,16 +148,18 @@ hold the executor's lock, so `service rm` and stop are never stalled behind it.
 
 #### Seeing health
 
-`service ps` and `task ls` show a `HEALTH` column. When the CLI can reach the
-node owning a task, the column carries that node's **live** verdict; otherwise
-it falls back to the value derived from the health-gated task state:
+`service ps` and `task ls` show a `HEALTH` column. When the CLI can get the
+owning node's live verdict it carries that; when the node answered but has no
+live row for the task — or the task is terminal — it carries the value derived
+from the health-gated task state; when the node could not be reached at all it
+carries `-`:
 
 ```bash
 swarmcracker service ps api
 # ID            STATUS    HEALTH     NODE          IMAGE
 # 5f3a1b2c9d0e  RUNNING   failing    abc123def456  myapi:v3   # live: probe failing, retries not exhausted
-# 9c8d7e6f1a2b  STARTING  STARTING   def456abc789  myapi:v3   # live health not published yet
-# 1a2b3c4d5e6f  RUNNING   RUNNING    ghi789def012  myapi:v3   # node not exposed: derived value
+# 9c8d7e6f1a2b  STARTING  starting   def456abc789  myapi:v3   # live: not healthy yet
+# 1a2b3c4d5e6f  RUNNING   RUNNING    ghi789def012  myapi:v3   # no live row (older daemon / not published): derived
 # 7e6f1a2b9c8d  RUNNING   -          jkl012mno345  myapi:v3   # owning node unreachable
 ```
 
@@ -206,9 +208,11 @@ GET http://<node-address>:8080/v1/tasks/health
 {"tasks":[{"task_id":"5f3a1b2c…","state":"failing","failing_streak":2,"command":"…","output":"…","updated_at":"…"}]}
 ```
 
-`service ps` / `task ls` resolve each task's node from SwarmKit, send **one**
-request per node (each bounded by a 3s timeout), and overlay the result. Tasks
-with no healthcheck are absent from the response and keep their derived `-`.
+`service ps` / `task ls` resolve each task's node from SwarmKit and query the
+node endpoints concurrently — bounded, each request capped at 3s and the whole
+fan-out at 10s — then overlay the result. Tasks with no healthcheck are absent
+from the response and keep their derived `-`; a node whose own address does not
+answer is retried once on the CLI machine's loopback, as described below.
 
 The daemon's health server listens on `--health-addr`, which defaults to
 `127.0.0.1:8080` — node-local. To get a cluster-wide `HEALTH` column, bind it on

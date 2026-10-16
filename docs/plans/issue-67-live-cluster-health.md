@@ -214,3 +214,20 @@ An independent review of the first version found no blockers but flagged:
    and flag wiring on both commands. The mixed-case column (live lowercase vs
    derived uppercase) is kept and documented, matching the issue's vocabulary.
 
+A second pass on the fixed diff found one more real bug and two documentation
+slips:
+
+- **Unscheduled tasks.** A healthchecked task with no node yet (`NodeID == ""`,
+  i.e. NEW/PENDING/ASSIGNED right after `service create`) fell into the
+  "unreachable" branch and showed `-` instead of the derived `STARTING`. Fixed:
+  no node yet → derived.
+- **Docs.** The `service ps`/`task ls` intro still said "live, otherwise derived"
+  (omitting `-`), and the fan-out description still said "one request per node".
+- The semaphore now honours the fan-out context, so a goroutine waiting for a
+  slot past the deadline exits instead of starting a doomed request.
+- Still open (accepted, documented): the concurrency cap / 10s budget are not
+  asserted by a test; if the budget is hit, which nodes degrade to `-` depends on
+  timing; and a local sidecar not yet swept after a reassignment can be
+  attributed to the node SwarmKit now reports (very narrow window, commented in
+  the code). A `ListNodes` failure blanks the column to `-` by design.
+
