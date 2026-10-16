@@ -19,6 +19,7 @@ func TestNodeCommandStructure(t *testing.T) {
 		"drain",
 		"activate",
 		"promote",
+		"update",
 		"rm",
 	}
 

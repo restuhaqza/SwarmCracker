@@ -510,7 +510,7 @@ func TestListServiceTasksHealthColumn(t *testing.T) {
 	assert.Contains(t, out, "NODE")
 	assert.Contains(t, out, "IMAGE")
 
-	got := healthColumn(t, out, "ID STATUS HEALTH NODE IMAGE")
+	got := healthColumn(t, out, "ID STATUS HEALTH NODE IMAGE ERROR")
 	assert.Equal(t, []string{"RUNNING", "STARTING", "FAILED", "-"}, got)
 }
 

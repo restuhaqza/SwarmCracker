@@ -302,7 +302,7 @@ func TestListTasksWithLiveHealth(t *testing.T) {
 
 	var buf bytes.Buffer
 	require.NoError(t, listTasksWithClient(context.Background(), client, &buf, "table", "", false, false, false, "", "", opts))
-	assert.Equal(t, []string{"failing", "STARTING", "-"}, healthColumn(t, buf.String(), "ID SERVICE STATUS HEALTH NODE IMAGE"))
+	assert.Equal(t, []string{"failing", "STARTING", "-"}, healthColumn(t, buf.String(), "ID SERVICE STATUS HEALTH NODE IMAGE ERROR"))
 
 	buf.Reset()
 	require.NoError(t, listTasksWithClient(context.Background(), client, &buf, "json", "", false, false, false, "", "", opts))
@@ -380,7 +380,7 @@ func TestServicePSWithLiveHealth(t *testing.T) {
 
 	var buf bytes.Buffer
 	require.NoError(t, listServiceTasksWithClient(context.Background(), client, &buf, "web", "table", "", false, false, opts))
-	assert.Equal(t, []string{"unhealthy", "-"}, healthColumn(t, buf.String(), "ID STATUS HEALTH NODE IMAGE"))
+	assert.Equal(t, []string{"unhealthy", "-"}, healthColumn(t, buf.String(), "ID STATUS HEALTH NODE IMAGE ERROR"))
 }
 
 // TestInvalidHealthPortIsRejected proves the flag is validated before any RPC,

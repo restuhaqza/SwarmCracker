@@ -1223,8 +1223,12 @@ func listServiceTasksWithClient(ctx context.Context, client api.ControlClient, w
 		return writeTasksJSON(w, tasks, lh)
 	}
 
-	fmt.Fprintf(w, "%-20s %-12s %-12s %-20s %s\n", "ID", "STATUS", "HEALTH", "NODE", "IMAGE")
-	fmt.Fprintln(w, strings.Repeat("-", 90))
+	// ERROR is appended last, so STATUS (field 2 here) and HEALTH (field 3) keep
+	// their positions for the scripts that parse them. The rule spans the header
+	// it follows instead of a hard-coded width.
+	header := fmt.Sprintf("%-20s %-12s %-12s %-20s %s %s", "ID", "STATUS", "HEALTH", "NODE", "IMAGE", "ERROR")
+	fmt.Fprintln(w, header)
+	fmt.Fprintln(w, strings.Repeat("-", len(header)))
 	for _, task := range tasks {
 		taskID := task.ID
 		if !noTrunc && len(taskID) > 12 {
@@ -1239,7 +1243,13 @@ func listServiceTasksWithClient(ctx context.Context, client api.ControlClient, w
 		if task.Spec.GetContainer() != nil {
 			image = task.Spec.GetContainer().Image
 		}
-		fmt.Fprintf(w, "%-20s %-12s %-12s %-20s %s\n", taskID, status, taskHealthDisplay(task, lh), nodeID, image)
+		row := fmt.Sprintf("%-20s %-12s %-12s %-20s %s", taskID, status, taskHealthDisplay(task, lh), nodeID, image)
+		// A task with no reason prints no trailing column at all, so a row keeps
+		// exactly the shape it had before ERROR existed.
+		if reason := taskErrorColumn(task); reason != "" {
+			row += " " + reason
+		}
+		fmt.Fprintln(w, row)
 	}
 	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
 
