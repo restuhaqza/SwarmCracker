@@ -235,6 +235,54 @@ func (p *CNIProvider) ReleaseNetwork(name, subnet string) {
 	}
 }
 
+// maxVXLANAttempts bounds the search for a free VNI, and maxVXLAN is the largest
+// usable one (the space is 24-bit). VNIs are sparse — a cluster holds few networks —
+// so the bound is reached only in pathological cases.
+const (
+	maxVXLANAttempts = 256
+	maxVXLAN         = 16777215
+)
+
+// vxlanIDLocked returns the VNI for a network: the one it already holds when it has
+// one, otherwise the first free candidate from the name's hash.
+//
+// The VNI has to be both stable and unique. Stable, because every node builds the
+// network's VXLAN interface from it, so renumbering a live network on a restart
+// leaves its replicas without an L2. Unique, because two networks with one VNI cannot
+// both exist on a node: the second interface is never created — the lookup is by VNI —
+// and that network silently loses cross-node connectivity (#80).
+func (p *CNIProvider) vxlanIDLocked(name string, recorded uint32) uint32 {
+	if recorded != 0 {
+		return recorded
+	}
+	start := GenerateVXLANID(name, p.networkIndex)
+	for offset := uint32(0); offset < maxVXLANAttempts; offset++ {
+		candidate := (start + offset) % maxVXLAN
+		if candidate == 0 {
+			candidate = maxVXLAN - 1
+		}
+		if !p.vxlanIDInUseLocked(candidate) {
+			return candidate
+		}
+	}
+	// Unreachable while the VNI space dwarfs the number of networks; returning the
+	// hashed value keeps the allocation usable rather than failing it.
+	return start
+}
+
+// vxlanIDInUseLocked reports whether an allocated network already holds a VNI.
+func (p *CNIProvider) vxlanIDInUseLocked(vni uint32) bool {
+	if vni == 0 {
+		return false
+	}
+	for _, n := range p.networks {
+		if n.VXLANID == vni {
+			return true
+		}
+	}
+	return false
+}
+
 // carveSubnetLocked hands the network a subnet from its pool, skipping candidates
 // that are not free.
 //
@@ -262,23 +310,43 @@ func (p *CNIProvider) carveSubnetLocked(predefined bool) (string, error) {
 		p.config.SubnetSize, pool, maxSubnetAttempts, p.config.FlatSubnet)
 }
 
+// NetworkAllocationRequest is what the allocator asks for when it allocates a
+// network, including whatever the network already holds: a re-allocation (a restart
+// or an upgrade) has to keep that rather than renumber a live network (#77, #80).
+type NetworkAllocationRequest struct {
+	// Name and Driver identify the network.
+	Name   string
+	Driver string
+
+	// RequestedSubnet and RequestedGateway are what the user asked for (empty when
+	// the network is auto-allocated).
+	RequestedSubnet  string
+	RequestedGateway string
+
+	// Ingress marks a predefined ingress network, which stays on the flat-L2 pool.
+	Ingress bool
+
+	// ExistingSubnet marks a subnet the network already holds. It is kept without an
+	// overlap check, because moving it would break the tasks carrying addresses from
+	// it.
+	ExistingSubnet bool
+
+	// RecordedVXLAN is the VNI the network already holds (0 when it has none).
+	RecordedVXLAN uint32
+}
+
 // AllocateNetwork creates a new network allocation.
-//
-// requestedSubnet, when non-empty, is used verbatim. ingress marks a predefined
-// ingress network, which stays on the flat-L2 pool. existing marks a subnet the
-// network already holds (a re-allocation on restart or upgrade): it is kept
-// without an overlap check, because moving it would break the tasks that already
-// carry addresses from it.
-func (p *CNIProvider) AllocateNetwork(name, driver, requestedSubnet, requestedGateway string, ingress, existing bool) (*AllocatedNetwork, error) {
+func (p *CNIProvider) AllocateNetwork(req NetworkAllocationRequest) (*AllocatedNetwork, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.networkIndex++
 
-	predefined := ingress || isPredefinedNetworkName(name)
+	name, driver := req.Name, req.Driver
+	predefined := req.Ingress || isPredefinedNetworkName(name)
 
 	// Use the requested subnet when given, otherwise carve one from the pool.
-	subnet := requestedSubnet
+	subnet := req.RequestedSubnet
 	switch {
 	case subnet == "":
 		generated, err := p.carveSubnetLocked(predefined)
@@ -286,7 +354,7 @@ func (p *CNIProvider) AllocateNetwork(name, driver, requestedSubnet, requestedGa
 			return nil, err
 		}
 		subnet = generated
-	case !predefined && !existing:
+	case !predefined && !req.ExistingSubnet:
 		// Two networks on the same addresses cannot be told apart by route, NAT
 		// rule or IPAM pool, so a subnet the user is asking for now has to be free
 		// (#77). A recorded allocation is exempt: it is already in use.
@@ -303,10 +371,10 @@ func (p *CNIProvider) AllocateNetwork(name, driver, requestedSubnet, requestedGa
 		return nil, fmt.Errorf("failed to parse subnet: %w", err)
 	}
 	gateway := incrementIP(subnetNet.IP.To4())
-	if requestedGateway != "" {
-		parsed := net.ParseIP(requestedGateway)
+	if req.RequestedGateway != "" {
+		parsed := net.ParseIP(req.RequestedGateway)
 		if parsed == nil {
-			return nil, fmt.Errorf("invalid gateway %s", requestedGateway)
+			return nil, fmt.Errorf("invalid gateway %s", req.RequestedGateway)
 		}
 		gateway = parsed
 	}
@@ -336,10 +404,11 @@ func (p *CNIProvider) AllocateNetwork(name, driver, requestedSubnet, requestedGa
 		}
 	}
 
-	// Generate VXLAN ID for overlay networks
+	// VXLAN ID for overlay networks. A network that already has one keeps it; a new
+	// one never takes a VNI another network holds.
 	var vxlanID uint32
 	if driver == "vxlan" {
-		vxlanID = GenerateVXLANID(name, p.networkIndex)
+		vxlanID = p.vxlanIDLocked(name, req.RecordedVXLAN)
 	}
 
 	network := &AllocatedNetwork{
