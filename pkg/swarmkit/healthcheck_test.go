@@ -387,7 +387,7 @@ func TestHealthcheckProbeInterval(t *testing.T) {
 // derived so that vsockUDSPath(socketPath) resolves back to vsockUDS.
 func newStartController(t *testing.T, vsockUDS string, hc *api.HealthConfig) *Controller {
 	t.Helper()
-	return &Controller{
+	ctrl := &Controller{
 		task: &api.Task{
 			ID: "task-hc-start",
 			Spec: api.TaskSpec{
@@ -407,6 +407,15 @@ func newStartController(t *testing.T, vsockUDS string, hc *api.HealthConfig) *Co
 		socketPath: strings.TrimSuffix(vsockUDS, ".vsock") + ".sock",
 		prepared:   true,
 	}
+	// A Start that becomes healthy leaves the health monitor running: it watches
+	// the task for a later regression, so it outlives Start by design. Joining it
+	// here is what a teardown does in production, and without it the monitor keeps
+	// probing (and rewriting the metadata sidecar through a temp file and a rename)
+	// while t.TempDir removes the socket directory, which fails the test's cleanup
+	// with "directory not empty" — the flake this helper used to cause under a
+	// full-suite run.
+	t.Cleanup(ctrl.stopHealthMonitor)
+	return ctrl
 }
 
 // TestController_Start_NoHealthcheckDoesNotProbe asserts a task with no
