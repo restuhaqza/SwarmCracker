@@ -309,21 +309,19 @@ func TestVXLANManager_UpdatePeers_AddAndRemove(t *testing.T) {
 	t.Skip("Requires actual VXLAN device - needs root privileges")
 }
 
-// TestVXLANManager_UpdatePeers_AddPeerFails tests UpdatePeers when adding a peer fails
-
+// TestVXLANManager_UpdatePeers_AddPeerFails tests UpdatePeers when adding a
+// peer's FDB entry fails: the error is logged and the peer must NOT be recorded,
+// otherwise later updates would believe the entry exists.
 func TestVXLANManager_UpdatePeers_AddPeerFails(t *testing.T) {
+
+	// A fake `bridge` that fails for a reason other than "already exists".
+	fakeBridgeOnPath(t, `Cannot find device "br0-vxlan"`, 1)
 
 	mockExec := &MockNetlinkExecutor{
 
 		LinkByNameFunc: func(name string) (netlink.Link, error) {
 
 			return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
-
-		},
-
-		NeighAddFunc: func(neigh *netlink.Neigh) error {
-
-			return fmt.Errorf("FDB add failed")
 
 		},
 	}
@@ -343,6 +341,34 @@ func TestVXLANManager_UpdatePeers_AddPeerFails(t *testing.T) {
 	peers := vxlan.GetPeers()
 
 	assert.NotContains(t, peers, "10.0.0.2")
+
+}
+
+// TestVXLANManager_UpdatePeers_ExistingFDBEntryIsTolerated covers the other side
+// of the same branch: a peer whose FDB entry is already there ("File exists") is
+// recorded, because the kernel state is what we wanted. This is the branch that
+// made the two #84 tests depend on the machine.
+func TestVXLANManager_UpdatePeers_ExistingFDBEntryIsTolerated(t *testing.T) {
+
+	fakeBridgeOnPath(t, "RTNETLINK answers: File exists", 1)
+
+	mockExec := &MockNetlinkExecutor{
+
+		LinkByNameFunc: func(name string) (netlink.Link, error) {
+
+			return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
+
+		},
+	}
+
+	peerStore := NewStaticPeerStore(nil)
+
+	vxlan := NewVXLANManagerWithExecutor("br0", 100, "10.0.0.1/24", peerStore, mockExec)
+
+	assert.NoError(t, vxlan.UpdatePeers([]string{"10.0.0.2"}))
+
+	assert.Contains(t, vxlan.GetPeers(), "10.0.0.2",
+		"an existing FDB entry is the desired state, so the peer must be recorded")
 
 }
 
@@ -655,21 +681,21 @@ func TestVXLANManager_AddPeerForwarding_InvalidIP(t *testing.T) {
 
 // TestVXLANManager_AddPeerForwarding_VXLANNotFound tests addPeerForwarding with missing VXLAN
 
-// TestVXLANManager_AddPeerForwarding_NeighAddError tests addPeerForwarding FDB add failure
+// TestVXLANManager_AddPeerForwarding_FDBAddError tests addPeerForwarding FDB add
+// failure. It was named ..._NeighAddError, but addPeerForwarding stopped using
+// netlink NeighAdd and shells out to `bridge fdb append` for correct VXLAN FDB
+// semantics, so the mock it injected was never called: the test only failed
+// while the real command happened to fail. The fake `bridge` on PATH fails
+// deterministically instead (#84).
+func TestVXLANManager_AddPeerForwarding_FDBAddError(t *testing.T) {
 
-func TestVXLANManager_AddPeerForwarding_NeighAddError(t *testing.T) {
+	fakeBridgeOnPath(t, `Cannot find device "br0-vxlan"`, 1)
 
 	mockExec := &MockNetlinkExecutor{
 
 		LinkByNameFunc: func(name string) (netlink.Link, error) {
 
 			return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
-
-		},
-
-		NeighAddFunc: func(neigh *netlink.Neigh) error {
-
-			return fmt.Errorf("FDB operation failed")
 
 		},
 	}

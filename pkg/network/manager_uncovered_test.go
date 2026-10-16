@@ -3,6 +3,7 @@ package network
 import (
 	"context"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,11 +289,18 @@ func TestNetworkManager_SetupNAT(t *testing.T) {
 	}
 }
 
-// TestSetupNAT_DuplicateSetup tests calling setupNAT twice
+// TestSetupNAT_DuplicateSetup tests calling setupNAT twice: the second call must
+// find the rules already in place and still succeed. It used to assert that both
+// calls *failed*, which only held without privileges — as root the rules were
+// really installed (and left behind) and the assertions failed (#84). The stub
+// records the commands and succeeds, so the check is about the rule logic and the
+// host is left alone.
 func TestNetworkManager_SetupNAT_DuplicateSetup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping NAT test in short mode (requires root)")
 	}
+
+	calls := stubExec(t)
 
 	nm := &NetworkManager{
 		config: types.NetworkConfig{
@@ -302,14 +310,19 @@ func TestNetworkManager_SetupNAT_DuplicateSetup(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	// First call
-	err1 := nm.setupNAT(ctx)
-	// Second call should handle existing rules gracefully
-	err2 := nm.setupNAT(ctx)
+	require.NoError(t, nm.setupNAT(ctx), "first call")
+	require.NoError(t, nm.setupNAT(ctx), "second call must find the existing rules and not fail")
 
-	// We're testing that the function handles duplicate calls
-	assert.NotNil(t, err1)
-	assert.NotNil(t, err2)
+	// Each call checks for the guarded masquerade rule before adding it, so a
+	// repeat is a no-op. The guard is the #70 fix; assert the shape it installs.
+	guarded := "iptables -t nat -C " + strings.Join(masqueradeSpec("10.20.30.0/24", "", "", true), " ")
+	checks := 0
+	for _, c := range *calls {
+		if c == guarded {
+			checks++
+		}
+	}
+	assert.Equal(t, 2, checks, "both calls should look for the guarded masquerade rule")
 }
 
 // TestPrepareNetwork_FullFlow tests the full PrepareNetwork flow
@@ -420,12 +433,16 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 		t.Skip("Skipping TAP creation test in short mode (requires root)")
 	}
 
+	// With every `ip` call stubbed to succeed, each case reaches its assertions
+	// for any user and nothing is created on the host (#84).
+	stubExec(t)
+
 	tests := []struct {
 		name     string
 		network  types.NetworkAttachment
 		index    int
 		taskID   string
-		validate func(*TapDevice, error)
+		validate func(*testing.T, *TapDevice, error)
 	}{
 		{
 			name: "create TAP with custom bridge",
@@ -442,13 +459,11 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 			},
 			index:  0,
 			taskID: "task-custom",
-			validate: func(tap *TapDevice, err error) {
-				// Test that we get a valid TAP device structure
-				if err == nil {
-					assert.NotNil(t, tap)
-					assert.NotEmpty(t, tap.Name)
-					assert.Equal(t, "custom-bridge", tap.Bridge)
-				}
+			validate: func(t *testing.T, tap *TapDevice, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, tap)
+				assert.Equal(t, "custom-bridge", tap.Bridge)
+				assertTapName(t, tap.Name, 0)
 			},
 		},
 		{
@@ -466,11 +481,11 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 			},
 			index:  1,
 			taskID: "task-default",
-			validate: func(tap *TapDevice, err error) {
-				if err == nil {
-					assert.NotNil(t, tap)
-					assert.Contains(t, tap.Name, "tap-eth")
-				}
+			validate: func(t *testing.T, tap *TapDevice, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, tap)
+				assert.Equal(t, "default-bridge", tap.Bridge)
+				assertTapName(t, tap.Name, 1)
 			},
 		},
 	}
@@ -496,7 +511,7 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 			ctx := context.Background()
 			tap, err := nm.createTapDevice(ctx, tt.network, tt.index, tt.taskID)
 
-			tt.validate(tap, err)
+			tt.validate(t, tap, err)
 
 			// Clean up if successful
 			if err == nil && tap != nil {

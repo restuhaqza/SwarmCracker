@@ -2,7 +2,6 @@ package network
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -13,6 +12,12 @@ import (
 // Additional tests to improve coverage to 80%+
 
 func TestNetworkManager_PrepareNetwork_ErrorScenarios(t *testing.T) {
+	// The platform is stubbed to succeed, so an error can only come from the CNI
+	// plugin (which is not installed in CI or on the lab). That makes the stage
+	// the fixtures reach deterministic instead of depending on whether the host
+	// happens to have the bridge (#84).
+	stubExec(t)
+
 	tests := []struct {
 		name    string
 		task    *types.Task
@@ -173,11 +178,14 @@ func TestNetworkManager_PrepareNetwork_ErrorScenarios(t *testing.T) {
 					assert.Contains(t, err.Error(), tt.errMsg)
 				}
 			} else {
-				// In test environment without root, we expect bridge creation to fail
-				// but the logic should still execute
+				// These fixtures carry addresses, so with the bridge stubbed they
+				// reach the CNI stage: the plugin binary is absent, so the call
+				// fails there rather than at bridge creation. Assert the stage
+				// instead of accepting any platform error, and still tolerate a
+				// host where the plugin really is installed.
 				if err != nil {
-					assert.True(t, strings.Contains(err.Error(), "failed to ensure bridge") ||
-						strings.Contains(err.Error(), "failed to create TAP device"))
+					assert.Contains(t, err.Error(), "CNI ADD failed",
+						"the fixture should reach the CNI stage, not fail earlier")
 				}
 			}
 		})

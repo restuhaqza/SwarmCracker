@@ -530,6 +530,37 @@ func TestParseSize(t *testing.T) {
 }
 ```
 
+### Host-Independent Tests
+
+A test must reach the same verdict on every machine. `pkg/network` is the one
+that keeps getting this wrong, because most of its work ends in a privileged
+system call: the suite is run as **root** on some hosts (and in this project's
+lab), and as an unprivileged user in CI. A test that asserts "the privileged
+operation fails" silently inverts when it doesn't.
+
+Two real failures this caused (#84): a test injected its failure through a mock
+method the code had stopped calling (`NeighAdd`, replaced by `bridge fdb
+append`), so it only failed while the real command happened to fail; and a test
+asserted that creating a bridge fails without root, which stopped being true
+once a previous root run left the bridge behind.
+
+Rules:
+
+- **Inject the seam, do not lean on the host.** `pkg/network` already has them:
+  `stubExec(t)` swaps the `execCommand` var for a recording stub that succeeds;
+  `MockNetlinkExecutor` (via `NewVXLANManagerWithExecutor`) replaces netlink;
+  `CreateTAPDeviceWithExecutor` takes a `TAPExecutor`; and a fake binary on
+  `PATH` (see `fakeBridgeOnPath`) covers the rare direct `exec` call.
+- **Do not create real devices, routes or firewall rules from a test.** They
+  leak, they change the next run's behaviour, and they make the suite's result
+  depend on its own history.
+- **If a failure mode cannot be injected, assert what the code does for both
+  outcomes** (or accept any platform-stage error) rather than assuming the
+  unprivileged path.
+- **Prefer the value the code produces.** Asserting a name or an error message
+  that was true two refactors ago is invisible while the test cannot reach that
+  line; it surfaces the moment privileges let it.
+
 ---
 
 ## Mocking Strategy

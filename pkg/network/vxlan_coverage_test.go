@@ -64,22 +64,23 @@ func TestVXLANManager_AddPeerForwarding_Errors(t *testing.T) {
 	})
 
 	t.Run("neigh add fails", func(t *testing.T) {
+		// The name is historical: addPeerForwarding stopped using netlink NeighAdd
+		// and shells out to `bridge fdb append`, so a NeighAdd mock is never
+		// called. Fail the real command through a fake `bridge` instead (#84).
+		fakeBridgeOnPath(t, `Cannot find device "test-br-vxlan"`, 1)
+
 		mock := &MockNetlinkExecutor{
 			LinkByNameFunc: func(name string) (netlink.Link, error) {
 				return &netlink.GenericLink{
 					LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1},
 				}, nil
 			},
-			NeighAddFunc: func(neigh *netlink.Neigh) error {
-				// Use a generic error that doesn't panic
-				return assert.AnError
-			},
 		}
 
 		vm := NewVXLANManagerWithExecutor("test-br", 100, "192.168.1.1/24", nil, mock)
 		err := vm.addPeerForwarding("test-br-vxlan", "192.168.1.100")
-		// Should return error
-		assert.Error(t, err)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "failed to add FDB entry")
 	})
 }
 
@@ -314,18 +315,18 @@ func TestVXLANManager_UpdatePeers_Errors(t *testing.T) {
 	})
 
 	t.Run("peer forwarding fails for some peers", func(t *testing.T) {
+		// Fail the real `bridge fdb append` for one peer only, so no FDB entry is
+		// written to the host (#84). The peer is in argv, hence the case match.
+		fakeBridgeScriptOnPath(t, `case "$*" in
+	*192.168.1.101*) echo "RTNETLINK answers: Invalid argument"; exit 1;;
+	esac
+	exit 0`)
+
 		mock := &MockNetlinkExecutor{
 			LinkByNameFunc: func(name string) (netlink.Link, error) {
 				return &netlink.GenericLink{
 					LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1},
 				}, nil
-			},
-			NeighAddFunc: func(neigh *netlink.Neigh) error {
-				// Fail for some peers
-				if neigh.IP.String() == "192.168.1.101" {
-					return assert.AnError
-				}
-				return nil
 			},
 		}
 
@@ -333,7 +334,12 @@ func TestVXLANManager_UpdatePeers_Errors(t *testing.T) {
 		vm := NewVXLANManagerWithExecutor("test-br", 100, "192.168.1.1/24", peerStore, mock)
 		err := vm.UpdatePeers([]string{"192.168.1.100", "192.168.1.101", "192.168.1.102"})
 		// Should succeed even if some peers fail
-		assert.NoError(t, err)
+		require.NoError(t, err)
+
+		// The peer whose entry could not be written must not be recorded, while
+		// the one that succeeded must be.
+		assert.NotContains(t, vm.GetPeers(), "192.168.1.101")
+		assert.Contains(t, vm.GetPeers(), "192.168.1.102")
 	})
 }
 
