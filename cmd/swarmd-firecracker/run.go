@@ -137,10 +137,11 @@ func runAgent(ctx *cli.Context) error {
 	var networkConfig *networkallocator.Config
 
 	if ctx.Bool("enable-cni") {
-		// Align the CNI/overlay address pool with the flat L2 bridge subnet by
-		// default. The overlay is a single shared L2 segment, so allocating
-		// task IPs from a different subnet than the bridge would make them
-		// unreachable from other nodes.
+		// The predefined networks (ingress, docker_gwbridge) are carved from the
+		// flat-L2 pool, so their task IPs stay reachable cluster-wide. User-defined
+		// networks are carved from a pool of their own, so an auto-allocated network
+		// is never handed the flat L2 subnet and put on the same addresses as the
+		// default network (#77).
 		subnetPool := ctx.String("cni-subnet-pool")
 		if subnetPool == "" {
 			subnetPool = ctx.String("subnet")
@@ -148,16 +149,22 @@ func runAgent(ctx *cli.Context) error {
 		if subnetPool == "" {
 			subnetPool = cni.DefaultSubnetPool
 		}
+		overlayPool := ctx.String("cni-overlay-subnet-pool")
+		if overlayPool == "" {
+			overlayPool = cni.DefaultSubnetPool
+		}
 
 		cniConfig := &cni.CNIConfig{
-			BridgeName:   ctx.String("bridge-name"),
-			SubnetPool:   subnetPool,
-			SubnetSize:   ctx.Int("cni-subnet-size"),
-			VXLANPort:    uint32(ctx.Int("cni-vxlan-port")),
-			IPAMType:     "host-local",
-			PluginDir:    ctx.String("cni-plugin-dir"),
-			ConfigDir:    ctx.String("cni-config-dir"),
-			EnableIPMasq: true,
+			BridgeName:        ctx.String("bridge-name"),
+			SubnetPool:        subnetPool,
+			OverlaySubnetPool: overlayPool,
+			FlatSubnet:        ctx.String("subnet"),
+			SubnetSize:        ctx.Int("cni-subnet-size"),
+			VXLANPort:         uint32(ctx.Int("cni-vxlan-port")),
+			IPAMType:          "host-local",
+			PluginDir:         ctx.String("cni-plugin-dir"),
+			ConfigDir:         ctx.String("cni-config-dir"),
+			EnableIPMasq:      true,
 		}
 
 		cniProvider, err := cni.NewCNIProvider(cniConfig)
@@ -176,10 +183,11 @@ func runAgent(ctx *cli.Context) error {
 			}
 
 			log.G(context.Background()).Infof(
-				"CNI network provider enabled (plugin-dir=%s, config-dir=%s, pool=%s, vxlan-port=%d)",
+				"CNI network provider enabled (plugin-dir=%s, config-dir=%s, pool=%s, overlay-pool=%s, vxlan-port=%d)",
 				cniConfig.PluginDir,
 				cniConfig.ConfigDir,
 				cniConfig.SubnetPool,
+				cniConfig.OverlaySubnetPool,
 				cniConfig.VXLANPort,
 			)
 		}

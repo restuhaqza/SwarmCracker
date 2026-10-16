@@ -251,6 +251,22 @@ swarmcracker network ls
 swarmcracker network inspect backend   # subnet, gateway, bridge, VNI
 ```
 
+Without `--subnet`, a network is carved from the **overlay pool**
+(`--cni-overlay-subnet-pool`, `10.0.0.0/8` by default), never from the flat L2
+subnet in `--subnet`. That keeps a user-defined network off the default network's
+addresses, which matters because the two would otherwise be indistinguishable to
+the IPAM pools and NAT rules that are keyed by subnet. The predefined networks
+(`ingress`, `docker_gwbridge`) are the exception: they stay on the flat L2 subnet,
+so ingress task IPs remain reachable cluster-wide.
+
+An explicit `--subnet` is honored, but it has to be free — one that overlaps the
+flat L2 subnet or a network that already has one is refused:
+
+```bash
+swarmcracker network create --name clash --subnet 192.168.127.0/24
+# subnet 192.168.127.0/24 overlaps the flat L2 subnet 192.168.127.0/24 or a network that already has one
+```
+
 A network cannot be removed while a service is still attached:
 
 ```bash

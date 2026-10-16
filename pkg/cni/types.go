@@ -51,8 +51,23 @@ type CNIConfig struct {
 	// BridgeName is the name of the default bridge
 	BridgeName string
 
-	// SubnetPool is the IP pool for network allocation
+	// SubnetPool is the IP pool for network allocation. It is the pool the
+	// networks that must live on the flat L2 segment are carved from — the
+	// predefined ingress and gateway-bridge networks — so ingress task IPs stay
+	// reachable cluster-wide (see the ingress routing mesh).
 	SubnetPool string
+
+	// OverlaySubnetPool is the pool user-defined networks are carved from. It is
+	// deliberately separate from SubnetPool so an auto-allocated network is never
+	// handed the flat L2 subnet, which would put two networks on the same
+	// addresses (#77).
+	OverlaySubnetPool string
+
+	// FlatSubnet is the flat L2 subnet the default network lives on (the daemon's
+	// --subnet). It is reserved: a user-defined network must not be given, or ask
+	// for, addresses inside it. Empty means "nothing reserved", which is what a
+	// single-node or test configuration wants.
+	FlatSubnet string
 
 	// SubnetSize is the size of subnets allocated from the pool
 	SubnetSize int
@@ -76,14 +91,15 @@ type CNIConfig struct {
 // DefaultCNIConfig returns a default CNI configuration
 func DefaultCNIConfig() *CNIConfig {
 	return &CNIConfig{
-		BridgeName:   DefaultBridgeName,
-		SubnetPool:   DefaultSubnetPool,
-		SubnetSize:   DefaultSubnetSize,
-		VXLANPort:    DefaultVXLANPort,
-		IPAMType:     "host-local",
-		PluginDir:    DefaultPluginDir,
-		ConfigDir:    DefaultConfigDir,
-		EnableIPMasq: true,
+		BridgeName:        DefaultBridgeName,
+		SubnetPool:        DefaultSubnetPool,
+		OverlaySubnetPool: DefaultSubnetPool,
+		SubnetSize:        DefaultSubnetSize,
+		VXLANPort:         DefaultVXLANPort,
+		IPAMType:          "host-local",
+		PluginDir:         DefaultPluginDir,
+		ConfigDir:         DefaultConfigDir,
+		EnableIPMasq:      true,
 	}
 }
 

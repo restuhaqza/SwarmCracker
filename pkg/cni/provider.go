@@ -175,6 +175,72 @@ func (p *CNIProvider) GetNetwork(networkID string) (*AllocatedNetwork, error) {
 	return network, nil
 }
 
+// maxSubnetAttempts bounds how many candidate subnets are tried before giving up
+// on a pool. A pool of /8 with /24 subnets holds 65536 candidates, so this is only
+// ever reached when the pool is genuinely full.
+const maxSubnetAttempts = 256
+
+// isPredefinedNetworkName reports whether a name belongs to a network this
+// provider defines itself (see PredefinedNetworks). Those are carved from the
+// flat-L2 pool, because their task IPs have to be reachable cluster-wide.
+func isPredefinedNetworkName(name string) bool {
+	return name == IngressNetworkName || name == GWBridgeNetworkName
+}
+
+// cidrsOverlap reports whether two CIDRs share any address.
+func cidrsOverlap(a, b *net.IPNet) bool {
+	if a == nil || b == nil {
+		return false
+	}
+	return a.Contains(b.IP) || b.Contains(a.IP)
+}
+
+// subnetIsFreeLocked reports whether a subnet can be handed to a new network: it
+// must not overlap the reserved flat L2 subnet or a network that already holds one.
+func (p *CNIProvider) subnetIsFreeLocked(candidate string) bool {
+	_, cidr, err := net.ParseCIDR(candidate)
+	if err != nil {
+		return false
+	}
+	if p.config.FlatSubnet != "" {
+		if flat, _, err := ParseCIDR(p.config.FlatSubnet); err == nil && cidrsOverlap(cidr, flat) {
+			return false
+		}
+	}
+	for _, n := range p.networks {
+		if cidrsOverlap(cidr, n.Subnet) {
+			return false
+		}
+	}
+	return true
+}
+
+// carveSubnetLocked hands the network a subnet from its pool, skipping candidates
+// that are not free.
+//
+// A predefined network (ingress, docker_gwbridge) is carved from the flat-L2 pool
+// and is exempt from the free check: its subnet *is* the flat L2 subnet, which is
+// what keeps ingress task IPs reachable cluster-wide. A user-defined network is
+// carved from the overlay pool instead, so it is never handed the flat L2 subnet
+// (#77).
+func (p *CNIProvider) carveSubnetLocked(predefined bool) (string, error) {
+	pool := p.config.OverlaySubnetPool
+	if predefined || pool == "" {
+		pool = p.config.SubnetPool
+	}
+	for attempt := 0; attempt < maxSubnetAttempts; attempt++ {
+		candidate, err := GenerateSubnet(pool, p.config.SubnetSize, p.networkIndex)
+		if err != nil {
+			return "", fmt.Errorf("failed to generate subnet: %w", err)
+		}
+		if predefined || p.subnetIsFreeLocked(candidate) {
+			return candidate, nil
+		}
+		p.networkIndex++
+	}
+	return "", fmt.Errorf("no free /%d subnet left in pool %s", p.config.SubnetSize, pool)
+}
+
 // AllocateNetwork creates a new network allocation. When requestedSubnet is
 // non-empty it is used verbatim (so a user-requested subnet is honored); the
 // gateway defaults to the first usable host unless requestedGateway is set.
@@ -184,14 +250,24 @@ func (p *CNIProvider) AllocateNetwork(name, driver, requestedSubnet, requestedGa
 
 	p.networkIndex++
 
+	predefined := isPredefinedNetworkName(name)
+
 	// Use the requested subnet when given, otherwise carve one from the pool.
 	subnet := requestedSubnet
 	if subnet == "" {
-		generated, err := GenerateSubnet(p.config.SubnetPool, p.config.SubnetSize, p.networkIndex)
+		generated, err := p.carveSubnetLocked(predefined)
 		if err != nil {
-			return nil, fmt.Errorf("failed to generate subnet: %w", err)
+			return nil, err
 		}
 		subnet = generated
+	} else if !predefined && !p.subnetIsFreeLocked(subnet) {
+		// Two networks on the same addresses cannot be told apart by route, NAT
+		// rule or IPAM pool, so an explicit subnet has to be free (#77).
+		if p.config.FlatSubnet != "" {
+			return nil, fmt.Errorf("subnet %s overlaps the flat L2 subnet %s or a network that already has one",
+				subnet, p.config.FlatSubnet)
+		}
+		return nil, fmt.Errorf("subnet %s overlaps a network that already has one", subnet)
 	}
 
 	// Parse subnet and derive the gateway: the first usable host address. The
