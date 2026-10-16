@@ -71,18 +71,37 @@ func specFromOutput(t *testing.T, got string) string {
 // `service ls` listing and `service inspect` — print a placeholder instead of
 // the X-Registry-Auth payload, change nothing else about the spec, and leave the
 // response object other code still uses untouched.
+//
+// Each case drives the real command body (`listServicesWithClient` /
+// `inspectServiceWithClient`) through a captured writer, so the assertion covers
+// the production call the credential would leak from, not just the marshal
+// helper underneath it.
 func TestServiceJSONRedactsRegistryAuth(t *testing.T) {
-	svc := serviceWithRegistryAuth(t, testRegistryAuthPayload)
-
-	cases := map[string]func() ([]byte, error){
-		"service ls":                    func() ([]byte, error) { return marshalServicesJSON([]*api.Service{svc}) },
-		"service inspect --pretty":      func() ([]byte, error) { return marshalServiceJSON(svc, true) },
-		"service inspect (no --pretty)": func() ([]byte, error) { return marshalServiceJSON(svc, false) },
+	cases := map[string]func(svc *api.Service) ([]byte, error){
+		"service ls": func(svc *api.Service) ([]byte, error) {
+			client := &fakeServiceTaskClient{services: []*api.Service{svc}}
+			var buf bytes.Buffer
+			err := listServicesWithClient(context.Background(), client, &buf, "json", "", false)
+			return buf.Bytes(), err
+		},
+		"service inspect --pretty": func(svc *api.Service) ([]byte, error) {
+			client := &fakeServiceUpdateClient{service: svc}
+			var buf bytes.Buffer
+			err := inspectServiceWithClient(context.Background(), client, &buf, svc.ID, "json", true)
+			return buf.Bytes(), err
+		},
+		"service inspect (no --pretty)": func(svc *api.Service) ([]byte, error) {
+			client := &fakeServiceUpdateClient{service: svc}
+			var buf bytes.Buffer
+			err := inspectServiceWithClient(context.Background(), client, &buf, svc.ID, "json", false)
+			return buf.Bytes(), err
+		},
 	}
 
-	for name, marshal := range cases {
+	for name, run := range cases {
 		t.Run(name, func(t *testing.T) {
-			data, err := marshal()
+			svc := serviceWithRegistryAuth(t, testRegistryAuthPayload)
+			data, err := run(svc)
 			require.NoError(t, err)
 
 			assert.NotContains(t, string(data), testRegistryAuthPayload, "the credential must never reach stdout")
@@ -120,11 +139,13 @@ func TestServiceJSONRedactsPreviousSpecRegistryAuth(t *testing.T) {
 	svc := serviceWithRegistryAuth(t, testRegistryAuthPayload)
 	svc.PreviousSpec = serviceWithRegistryAuth(t, testRegistryAuthPayload).Spec.Copy()
 
-	data, err := marshalServiceJSON(svc, true)
-	require.NoError(t, err)
+	client := &fakeServiceUpdateClient{service: svc}
+	var buf bytes.Buffer
+	require.NoError(t, inspectServiceWithClient(context.Background(), client, &buf, svc.ID, "json", true))
 
-	assert.NotContains(t, string(data), testRegistryAuthPayload)
-	assert.Equal(t, 2, strings.Count(string(data), redact.Placeholder), "spec and previous spec must both be masked")
+	got := buf.String()
+	assert.NotContains(t, got, testRegistryAuthPayload)
+	assert.Equal(t, 2, strings.Count(got, redact.Placeholder), "spec and previous spec must both be masked")
 	assert.Equal(t, testRegistryAuthPayload, svc.PreviousSpec.Task.GetContainer().PullOptions.RegistryAuth,
 		"the previous spec must not be mutated")
 }
