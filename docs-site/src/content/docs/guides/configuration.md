@@ -351,6 +351,12 @@ Where logs are written. Use a file path like `/var/log/swarmcracker/daemon.log` 
 > `executor.rootfs_dir` and its own cache handling. Do not rely on these keys
 > taking effect.
 
+> **No credential key here.** `images.registry_auth` is not part of the config
+> schema, so setting it has no effect. Registry credentials for a private image
+> are read from the manager's standard Docker config at
+> `service create/update --with-registry-auth` time — see
+> [Registry Credentials](#registry-credentials).
+
 ---
 
 ## metrics
@@ -427,6 +433,70 @@ Automatically create snapshots before service updates. Recommended for productio
 | **Required** | No |
 
 Compress snapshots to reduce disk usage at the cost of slower create/restore.
+
+---
+
+## Registry Credentials
+
+Pulling a **private** image needs a registry credential. SwarmCracker does not
+read one from this config file: credentials are resolved on the **manager**,
+from the standard Docker configuration, when a service is created or updated.
+
+### Where credentials are read from
+
+`service create --with-registry-auth` resolves the credential with the Docker
+keychain, which reads:
+
+1. **`~/.docker/config.json`** — the file `docker login <registry>` writes. It
+   must be the config of the account that runs `swarmcracker` (commonly `root`),
+   so a login done as your own user is **not** visible to the manager:
+
+   ```bash
+   sudo docker login registry.example.com   # writes /root/.docker/config.json
+   ```
+
+2. **`$DOCKER_CONFIG/config.json`** — an alternative config file location.
+3. **Credential helpers** — the `credsStore` and `credHelpers` entries in that
+   file (for example `docker-credential-pass` or
+   `docker-credential-osxkeychain`).
+
+The lookup is per repository: a credential stored for `registry.example.com`
+serves `registry.example.com/team/api:1.4.0`. A bare image name such as
+`nginx:alpine` resolves against `index.docker.io`.
+
+Within the Docker config, Docker's own precedence applies: a `credHelpers` entry
+for the registry is consulted first, then the default `credsStore`, then an
+inline `auths` entry.
+
+There is **no** `swarmcracker login` command. Use `docker login` to write the
+Docker config; the CLI only reads it.
+
+### When credentials are resolved
+
+Credentials are resolved at **create/update time**, not at pull time.
+`service create --with-registry-auth` (and `service update
+--with-registry-auth`) read the config, encode an `X-Registry-Auth` payload, and
+store it on the service spec. A missing credential fails the command before any
+request is sent. The [CLI Reference → Registry
+authentication](/reference/cli/#registry-authentication) has the per-command
+semantics and the `service update` gotchas.
+
+### What runs where
+
+- The **manager** resolves and stores the credential, so it must have the Docker
+  config (or credential helper) at the moment the command runs.
+- The **worker** consumes the stored payload when it pulls the image and needs
+  **no** local Docker config and **no** `docker login`.
+- The payload never reaches logs, metrics, `service inspect`, `task inspect` or
+  their JSON output; those print `***` instead.
+
+### In the config file
+
+`images.registry_auth` is **not** a config key. The image preparer has an
+internal `registry_auth` field (`pkg/image`'s `PreparerConfig`) which is a
+preparer-global fallback, but nothing populates it from the config file, so
+setting it in YAML has no effect (the loader accepts unknown keys and ignores
+them). Configure credentials through the Docker config instead.
 
 ---
 

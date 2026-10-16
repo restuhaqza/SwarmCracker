@@ -478,6 +478,54 @@ swarmd-firecracker --debug
    journalctl -u swarmcracker-worker | grep <vm-id>
    ```
 
+### Image Pull Fails (Private Registry)
+
+**Symptoms:** a task on a worker stays pending or fails because its image could
+not be pulled; the node's daemon log shows `401 Unauthorized` /
+`pull access denied` for the image.
+
+The credential is resolved on the **manager** and stored on the service spec, so
+a worker never reads its own Docker config. Diagnose on the manager.
+
+1. **Is a credential attached to the service?**
+   ```bash
+   swarmcracker service inspect <service> | grep -i registryauth
+   # "***" means a credential is attached; no line means none is
+   ```
+   `***` is the redacted payload — the value is never shown.
+
+2. **No credential attached?** Log in on the manager as the user that runs
+   `swarmcracker`, then re-apply it:
+   ```bash
+   sudo docker login <registry-host>
+   swarmcracker service update <service> --image <ref> --with-registry-auth
+   ```
+
+3. **Wrong registry attached?** Omitting the flag on `service update` preserves
+   the existing credential, so an `--image` in a different registry keeps the
+   old registry's payload. Re-resolve for the new image:
+   ```bash
+   swarmcracker service update <service> --image <new-ref> --with-registry-auth
+   ```
+
+4. **The create/update error names the registry and the remedy:**
+   ```text
+   --with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`
+   ```
+
+5. **Credential revoked or expired?** Log in again and re-resolve:
+   ```bash
+   sudo docker login registry.example.com
+   swarmcracker service update <service> --image <ref> --with-registry-auth
+   ```
+
+6. **`--with-registry-auth=false`** clears the credential; do this only for an
+   image the nodes can pull anonymously, or pulls start being denied.
+
+See [Registry Credentials](/guides/configuration/#registry-credentials) for the
+credential sources and [Registry
+authentication](/reference/cli/#registry-authentication) for the flag semantics.
+
 ### Network Issues
 
 #### VMs Can't Reach Internet
