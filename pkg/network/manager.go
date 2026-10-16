@@ -204,11 +204,17 @@ func nodeAllocationParams(bridgeIP string, peerCount int) (uint32, uint32) {
 // that segment, and whichever node answers first becomes the guest's gateway (#76).
 //
 // clusterGateway is the cluster-wide address recorded in the network's IPAM — its
-// first usable host. It is returned unchanged when this node has no slot (a single
-// node, or an overlay bridge address outside the reserved range) and when the subnet
-// cannot hold <subnet>.<slot> as a usable host, so no address outside the subnet is
-// ever produced. The cluster-wide address stays reachable from every node over the
-// VXLAN either way: it is node 1's address, and node 1 holds it.
+// first usable host, unless the network was created with an explicit gateway. It is
+// returned unchanged when this node has no slot (a single node, or an overlay bridge
+// address outside the reserved range), for node 1 (which holds whatever the network
+// records, so a network created with --gateway keeps that gateway — and the guests'
+// default route with it) and for a subnet too small for the per-node guest blocks
+// (a /28 or smaller, where the allocator partitions nothing either, so a per-node
+// bridge address would just take an address a guest could be handed). Otherwise it
+// returns <subnet>.<slot>, which the reserved range keeps out of the guest pool.
+//
+// The value is IPv4 only: an IPv6 subnet keeps the cluster-wide address. The
+// cluster-wide address stays reachable from every node over the VXLAN either way.
 func NodeLocalGateway(subnet, clusterGateway, bridgeIP string, peerCount int) string {
 	slot, slots := nodeAllocationParams(bridgeIP, peerCount)
 	if slot == 0 || slots <= 1 {
@@ -222,8 +228,9 @@ func NodeLocalGateway(subnet, clusterGateway, bridgeIP string, peerCount int) st
 	if v4 == nil {
 		return clusterGateway
 	}
-	// The reserved range is what keeps <subnet>.<slot> out of the guest pool: the
-	// per-node guest blocks start above it.
+	if slot == 1 {
+		return clusterGateway
+	}
 	if slot > reservedInfraHosts {
 		return clusterGateway
 	}
@@ -231,10 +238,10 @@ func NodeLocalGateway(subnet, clusterGateway, bridgeIP string, peerCount int) st
 	if bits != 32 {
 		return clusterGateway
 	}
-	// The last two addresses of a subnet are its network and broadcast addresses, and
-	// a small subnet may not reach a high slot at all.
+	// Both bounds mirror the allocator's: below reservedInfraHosts+4 addresses it
+	// reserves nothing, and slot > size-2 would be the broadcast address.
 	size := uint32(1) << (bits - ones)
-	if size < 3 || slot > size-2 {
+	if size < uint32(reservedInfraHosts)+4 || slot > size-2 {
 		return clusterGateway
 	}
 	candidate := make(net.IP, len(v4))

@@ -26,12 +26,22 @@ func TestNodeLocalGateway(t *testing.T) {
 			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.1/24", peers: 1, want: "10.0.4.1",
 		},
 		{
+			name: "node 1 keeps a gateway the network records", subnet: "10.0.4.0/24",
+			clusterGateway: "10.0.4.254", bridgeIP: "192.168.127.1/24", peers: 1, want: "10.0.4.254",
+			why: "a network created with --gateway records it, and it is the guests' default route",
+		},
+		{
 			name: "node 2 holds its own address", subnet: "10.0.4.0/24",
 			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.2/24", peers: 1, want: "10.0.4.2",
 		},
 		{
 			name: "the last reserved slot is still usable", subnet: "10.0.4.0/24",
 			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.16/24", peers: 1, want: "10.0.4.16",
+		},
+		{
+			name: "the smallest partitioned subnet takes the slot", subnet: "10.0.4.0/27",
+			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.2/24", peers: 1, want: "10.0.4.2",
+			why: "a /27 is the smallest subnet the allocator gives per-node blocks",
 		},
 		{
 			name: "a wider subnet keeps the last octet", subnet: "10.30.0.0/16",
@@ -48,14 +58,9 @@ func TestNodeLocalGateway(t *testing.T) {
 			why: "no slot is derivable, so nothing is partitioned",
 		},
 		{
-			name: "a slot that is still a usable host wins", subnet: "10.0.4.0/30",
-			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.2/24", peers: 1, want: "10.0.4.2",
-			why: "only 10.0.4.3 would be the broadcast on a /30",
-		},
-		{
-			name: "a slot landing on the broadcast keeps it", subnet: "10.0.4.0/28",
-			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.15/24", peers: 1, want: "10.0.4.1",
-			why: "10.0.4.15 is the broadcast address of a /28",
+			name: "a subnet too small for per-node blocks keeps it", subnet: "10.0.4.0/30",
+			clusterGateway: "10.0.4.1", bridgeIP: "192.168.127.2/24", peers: 1, want: "10.0.4.1",
+			why: "the allocator partitions nothing below a /27, so a per-node address would just take a guest's",
 		},
 		{
 			name: "an unparsable bridge address keeps it", subnet: "10.0.4.0/24",
