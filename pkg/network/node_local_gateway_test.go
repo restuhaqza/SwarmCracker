@@ -66,9 +66,14 @@ func TestNodeLocalGateway(t *testing.T) {
 			why: "the per-node scheme is defined for IPv4 subnets",
 		},
 		{
-			name: "no recorded gateway stays empty", subnet: "10.0.4.0/24",
-			clusterGateway: "", bridgeIP: "192.168.127.2/24", peers: 1, want: "",
-			why: "the caller derives one from the subnet before asking",
+			name: "no slot and no recorded gateway stays empty", subnet: "10.0.4.0/24",
+			clusterGateway: "", bridgeIP: "192.168.127.1/24", peers: 0, want: "",
+			why: "nothing to fall back to and no slot to derive from",
+		},
+		{
+			name: "no recorded gateway still gets the node's address", subnet: "10.0.4.0/24",
+			clusterGateway: "", bridgeIP: "192.168.127.2/24", peers: 1, want: "10.0.4.2",
+			why: "the cluster gateway is only a fallback; a slot is enough to derive",
 		},
 	}
 
