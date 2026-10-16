@@ -177,14 +177,24 @@ and unprivileged in CI.
 
 ## Acceptance
 
-`go test ./pkg/network/` passes for any user on any host, no test creates real
-devices, routes or firewall rules (so the suite no longer depends on its own
-history), and the assertions describe what the code does today.
+`go test ./pkg/network/` passes for any user on any host (verified as root and as
+`nobody`, with and without `-race`/`-short`), the tests this issue covers no
+longer create real devices, routes or firewall rules, and their assertions
+describe what the code does today.
 
 ## Notes
 
 - No production code changes.
-- The test server still carries real devices left by earlier root runs
-  (`test-br0`, `br0-vxlan`, `test-br-multi-*`, a pile of `tap-*`, ...). Cleaning
-  it is worthwhile host maintenance, but it is not the fix — the suite is what
-  creates them, which is why the tests had to stop depending on that state.
+- **Residual pollution, measured and deliberately not fixed here.** Tests that
+  inject only `LinkByName` still let the real `bridge fdb append` run, and it adds
+  an entry whenever a leftover `br0-vxlan` happens to exist: a full root run of the
+  suite took `bridge fdb show dev br0-vxlan` from 1 entry to 4. Those tests do not
+  assert on the result, so they do not fail, and they are out of this issue's
+  reach (they would each need the `execCommand` seam that `addPeerForwarding` does
+  not yet use, or a per-test stub). The integration tests in
+  `integration_real_test.go` also create real bridges and TAPs on purpose; they are
+  root-gated, skipped in short mode, and clean up after themselves.
+- The test server carries real devices left by earlier root runs (`test-br0`,
+  `br0-vxlan`, `test-br-multi-*`, a pile of `tap-*`, ...). Cleaning it is
+  worthwhile host maintenance, but it is not the fix — the suite is what creates
+  them, which is why the tests had to stop depending on that state.
