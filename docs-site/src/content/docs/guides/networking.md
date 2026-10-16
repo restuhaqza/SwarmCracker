@@ -246,6 +246,14 @@ network reach each other normally, **including across nodes**: every network
 gets its own per-network VXLAN fanned out to the other nodes, so the network's
 L2 domain spans the cluster (the same mechanism as the default overlay).
 
+Both the subnet and the VXLAN ID are assigned once and then **kept**: a daemon
+restart re-allocates the network's resources, and renumbering a live network would
+move its guests' addresses or leave its replicas without a tunnel. A *newly* assigned
+VXLAN ID is never handed to a network that already holds one — a node builds each
+network's tunnel from it, so two networks cannot share one — and a network found
+holding a VXLAN ID that another network already has is renumbered once, with a warning
+naming both.
+
 ```bash
 swarmcracker network ls
 swarmcracker network inspect backend   # subnet, gateway, bridge, VNI

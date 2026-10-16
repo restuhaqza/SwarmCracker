@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -110,8 +111,35 @@ func (a *CNINetworkAllocator) Allocate(n *api.Network) error {
 		requestedGateway = n.Spec.IPAM.Configs[0].Gateway
 	}
 
+	// The VNI is kept the same way the subnet is: a network that already has one must
+	// not be renumbered, because every node builds that network's VXLAN interface
+	// from it (#80).
+	var recordedVXLAN uint32
+	if n.DriverState != nil {
+		if v := n.DriverState.Options["vxlan_vni"]; v != "" {
+			switch parsed, err := strconv.ParseUint(v, 10, 32); {
+			case err != nil:
+				log.Warn().Err(err).Str("network", name).Str("vxlan_vni", v).
+					Msg("Ignoring an unreadable recorded VXLAN ID; the network gets a new one")
+			case parsed == 0 || parsed >= maxVXLAN:
+				log.Warn().Str("network", name).Str("vxlan_vni", v).
+					Msg("Ignoring an out-of-range recorded VXLAN ID; the network gets a new one")
+			default:
+				recordedVXLAN = uint32(parsed)
+			}
+		}
+	}
+
 	// Allocate network from provider
-	allocatedNet, err := a.provider.AllocateNetwork(name, driver, requestedSubnet, requestedGateway, n.Spec.Ingress, existing)
+	allocatedNet, err := a.provider.AllocateNetwork(NetworkAllocationRequest{
+		Name:             name,
+		Driver:           driver,
+		RequestedSubnet:  requestedSubnet,
+		RequestedGateway: requestedGateway,
+		Ingress:          n.Spec.Ingress,
+		ExistingSubnet:   existing,
+		RecordedVXLAN:    recordedVXLAN,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to allocate network: %w", err)
 	}

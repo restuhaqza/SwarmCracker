@@ -163,8 +163,12 @@ func GenerateSubnet(poolCIDR string, subnetSize int, networkIndex uint32) (strin
 	return fmt.Sprintf("%s/%d", subnetIP.String(), subnetSize), nil
 }
 
-// GenerateVXLANID generates a unique VXLAN ID for an overlay network
-// Uses a hash of the network name combined with a base ID
+// GenerateVXLANID derives a VXLAN ID *candidate* from a network name and a salt
+// (a hash of the name combined with the salt).
+//
+// It is only a candidate: one name's hash can collide with another's, so callers
+// have to check the result against the VNIs already in use — see
+// CNIProvider.vxlanIDLocked. This function deliberately makes no uniqueness claim.
 func GenerateVXLANID(networkName string, baseID uint32) uint32 {
 	// VXLAN IDs are 24-bit (1-16777215)
 	// We use a simple hash approach
