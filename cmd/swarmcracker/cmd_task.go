@@ -18,6 +18,8 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+
+	"github.com/restuhaqza/swarmcracker/pkg/redact"
 )
 
 // newTaskCommand creates the task command group
@@ -217,7 +219,9 @@ func inspectTaskWithClient(ctx context.Context, client api.ControlClient, w io.W
 	}
 
 	if format == "json" {
-		data, err := json.MarshalIndent(resp.Task, "", "  ")
+		// redact.Task masks the registry credential the task carries, so it can
+		// never reach stdout.
+		data, err := json.MarshalIndent(redact.Task(resp.Task), "", "  ")
 		if err != nil {
 			return fmt.Errorf("failed to marshal task: %w", err)
 		}

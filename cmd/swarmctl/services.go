@@ -156,6 +156,8 @@ func inspectService(ctx context.Context, client api.ControlClient, id string) {
 			fmt.Fprintf(os.Stderr, "Failed to find service or task: %v\n", err)
 			os.Exit(1)
 		}
+		// printJSON redacts the registry credential a service or task spec may
+		// carry (pkg/redact), so inspect never echoes it.
 		printJSON(taskResp.Task)
 		return
 	}

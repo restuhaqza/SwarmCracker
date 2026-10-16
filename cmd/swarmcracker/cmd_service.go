@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -15,7 +14,9 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -166,6 +167,10 @@ func newServiceCreateCommand() *cobra.Command {
 		configs     []string
 		mode        string
 
+		// withRegistryAuth is --with-registry-auth (#44): send the manager's
+		// credential for --image to the nodes.
+		withRegistryAuth bool
+
 		hostname string
 		dns      []string
 		user     string
@@ -223,6 +228,13 @@ With --golden, the service boots a prebuilt golden image (see
 			if image != "" && golden != "" {
 				return fmt.Errorf("--image and --golden are mutually exclusive")
 			}
+			// A golden service boots a prebuilt image and skips image
+			// preparation, so it is never pulled from a registry. Accepting
+			// --with-registry-auth here would resolve a credential for the
+			// placeholder image and silently send a payload nothing consumes.
+			if golden != "" && withRegistryAuth {
+				return fmt.Errorf("--with-registry-auth cannot be used with --golden: golden services are not pulled from a registry")
+			}
 			if golden != "" {
 				labels = append(labels, types.GoldenLabel+"="+golden)
 			}
@@ -240,6 +252,7 @@ With --golden, the service boots a prebuilt golden image (see
 			return createService(serviceCreateOptions{
 				name:               name,
 				image:              image,
+				withRegistryAuth:   withRegistryAuth,
 				replicas:           replicas,
 				cpu:                cpu,
 				memory:             memory,
@@ -291,6 +304,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringVar(&name, "name", "", "Service name (required)")
 	cmd.Flags().StringVar(&image, "image", "", "Container image (or use --golden)")
 	cmd.Flags().StringVar(&golden, "golden", "", "Boot a prebuilt golden image (e.g., ubuntu-24.04-docker@1.0.0)")
+	cmd.Flags().BoolVar(&withRegistryAuth, "with-registry-auth", false, "Send registry authentication details for --image to the nodes (resolved from the manager's docker config)")
 	cmd.Flags().Uint64Var(&replicas, "replicas", 1, "Number of replicas")
 	cmd.Flags().Float64Var(&cpu, "cpu", 0, "CPU limit (cores, e.g., 1.5)")
 	cmd.Flags().StringVar(&memory, "memory", "", "Memory limit (e.g., 512M, 1G)")
@@ -354,11 +368,14 @@ func newServiceUpdateCommand() *cobra.Command {
 		publishMode string
 		force       bool
 		rollback    bool
-		mounts      []string
-		volumes     []string
-		networks    []string
-		secrets     []string
-		configs     []string
+
+		withRegistryAuth bool
+
+		mounts   []string
+		volumes  []string
+		networks []string
+		secrets  []string
+		configs  []string
 
 		hostname string
 		dns      []string
@@ -425,15 +442,22 @@ placement, restart policy, update/rollback configuration and mode.`,
 				publishModeSet: cmd.Flags().Changed("publish-mode"),
 				force:          force,
 				rollbackAction: rollback,
-				mounts:         mounts,
-				volumes:        volumes,
-				mountsSet:      anyFlagChanged(cmd, "mount", "volume"),
-				networks:       networks,
-				networksSet:    anyFlagChanged(cmd, "network"),
-				secrets:        secrets,
-				secretsSet:     anyFlagChanged(cmd, "secret"),
-				configs:        configs,
-				configsSet:     anyFlagChanged(cmd, "config"),
+
+				// --with-registry-auth (#44) is tri-state: the set bit
+				// distinguishes "absent" (preserve) from an explicit
+				// --with-registry-auth=false (clear). updateService resolves
+				// the payload before any RPC.
+				withRegistryAuth:    withRegistryAuth,
+				withRegistryAuthSet: anyFlagChanged(cmd, "with-registry-auth"),
+				mounts:              mounts,
+				volumes:             volumes,
+				mountsSet:           anyFlagChanged(cmd, "mount", "volume"),
+				networks:            networks,
+				networksSet:         anyFlagChanged(cmd, "network"),
+				secrets:             secrets,
+				secretsSet:          anyFlagChanged(cmd, "secret"),
+				configs:             configs,
+				configsSet:          anyFlagChanged(cmd, "config"),
 
 				hostname:    hostname,
 				dns:         dns,
@@ -521,6 +545,7 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringVar(&rollbackMonitor, "rollback-monitor", "", "Duration to monitor a rolled-back task for failure")
 	cmd.Flags().Float64Var(&rollbackMaxFailureRatio, "rollback-max-failure-ratio", 0, "Fraction of tasks that may fail during rollback (0-1)")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force update even if no changes detected")
+	cmd.Flags().BoolVar(&withRegistryAuth, "with-registry-auth", false, "Send registry authentication details for --image to the nodes (resolved from the manager's docker config); pass --with-registry-auth=false to clear them")
 
 	return cmd
 }
@@ -727,13 +752,20 @@ func listServices(format, filter string, quiet bool) error {
 	}
 	defer conn.Close()
 
+	return listServicesWithClient(ctx, client, os.Stdout, format, filter, quiet)
+}
+
+// listServicesWithClient is the body of `service ls` with the control client and
+// output writer injected, so the table/JSON rendering — including the credential
+// redaction on the JSON path — is unit-testable without a cluster.
+func listServicesWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet bool) error {
 	resp, err := client.ListServices(ctx, &api.ListServicesRequest{})
 	if err != nil {
 		return fmt.Errorf("failed to list services: %w", err)
 	}
 
 	if len(resp.Services) == 0 {
-		fmt.Println("No services found")
+		fmt.Fprintln(w, "No services found")
 		return nil
 	}
 
@@ -745,21 +777,23 @@ func listServices(format, filter string, quiet bool) error {
 
 	// Output based on format
 	if format == "json" {
-		data, _ := json.MarshalIndent(services, "", "  ")
-		fmt.Println(string(data))
+		// marshalServicesJSON masks the registry credential each service may
+		// carry, so it can never reach stdout.
+		data, _ := marshalServicesJSON(services)
+		fmt.Fprintln(w, string(data))
 		return nil
 	}
 
 	// Table format
 	if quiet {
 		for _, svc := range services {
-			fmt.Println(svc.ID)
+			fmt.Fprintln(w, svc.ID)
 		}
 		return nil
 	}
 
-	fmt.Printf("%-20s %-20s %-10s %-24s %s\n", "ID", "NAME", "REPLICAS", "PORTS", "IMAGE")
-	fmt.Println(strings.Repeat("-", 100))
+	fmt.Fprintf(w, "%-20s %-20s %-10s %-24s %s\n", "ID", "NAME", "REPLICAS", "PORTS", "IMAGE")
+	fmt.Fprintln(w, strings.Repeat("-", 100))
 	for _, svc := range services {
 		id := svc.ID
 		if len(id) > 12 {
@@ -774,9 +808,9 @@ func listServices(format, filter string, quiet bool) error {
 		if svc.Spec.Task.GetContainer() != nil {
 			image = svc.Spec.Task.GetContainer().Image
 		}
-		fmt.Printf("%-20s %-20s %-10s %-24s %s\n", id, name, replicas, formatServicePorts(svc), image)
+		fmt.Fprintf(w, "%-20s %-20s %-10s %-24s %s\n", id, name, replicas, formatServicePorts(svc), image)
 	}
-	fmt.Printf("\nTotal: %d service(s)\n", len(services))
+	fmt.Fprintf(w, "\nTotal: %d service(s)\n", len(services))
 
 	return nil
 }
@@ -975,144 +1009,152 @@ func inspectService(serviceID, format string, pretty bool) error {
 	}
 	defer conn.Close()
 
+	return inspectServiceWithClient(ctx, client, os.Stdout, serviceID, format, pretty)
+}
+
+// inspectServiceWithClient is the body of `service inspect` with the control
+// client and output writer injected, so the rendering — including the credential
+// redaction on the JSON path — is unit-testable without a cluster.
+func inspectServiceWithClient(ctx context.Context, client api.ControlClient, w io.Writer, serviceID, format string, pretty bool) error {
 	// Resolve by full ID, unique ID prefix, or name.
-	serviceID, err = resolveServiceRef(ctx, client, serviceID)
+	resolvedID, err := resolveServiceRef(ctx, client, serviceID)
 	if err != nil {
 		return err
 	}
 
-	resp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: serviceID})
+	resp, err := client.GetService(ctx, &api.GetServiceRequest{ServiceID: resolvedID})
 	if err != nil {
 		return fmt.Errorf("failed to get service: %w", err)
 	}
 
 	if format == "json" {
-		var data []byte
-		if pretty {
-			data, _ = json.MarshalIndent(resp.Service, "", "  ")
-		} else {
-			data, _ = json.Marshal(resp.Service)
+		// marshalServiceJSON masks the registry credential the service carries,
+		// so it can never reach stdout.
+		data, _ := marshalServiceJSON(resp.Service, pretty)
+		fmt.Fprintln(w, string(data))
+		return nil
+	}
+
+	writeServiceText(w, resp.Service)
+	return nil
+}
+
+// writeServiceText renders the human-readable `service inspect` output.
+func writeServiceText(w io.Writer, svc *api.Service) {
+	fmt.Fprintf(w, "ID: %s\n", svc.ID)
+	fmt.Fprintf(w, "Name: %s\n", svc.Spec.Annotations.Name)
+	fmt.Fprintf(w, "Version: %d\n", svc.Meta.Version.Index)
+	if r := svc.Spec.GetReplicated(); r != nil {
+		fmt.Fprintf(w, "Replicas: %d\n", r.Replicas)
+	} else if g := svc.Spec.GetGlobal(); g != nil {
+		fmt.Fprintf(w, "Mode: global\n")
+	}
+	if svc.Spec.Task.GetContainer() != nil {
+		container := svc.Spec.Task.GetContainer()
+		fmt.Fprintf(w, "Image: %s\n", container.Image)
+		if len(container.Command) > 0 {
+			fmt.Fprintf(w, "Command: %v\n", container.Command)
 		}
-		fmt.Println(string(data))
-	} else {
-		svc := resp.Service
-		fmt.Printf("ID: %s\n", svc.ID)
-		fmt.Printf("Name: %s\n", svc.Spec.Annotations.Name)
-		fmt.Printf("Version: %d\n", svc.Meta.Version.Index)
-		if r := svc.Spec.GetReplicated(); r != nil {
-			fmt.Printf("Replicas: %d\n", r.Replicas)
-		} else if g := svc.Spec.GetGlobal(); g != nil {
-			fmt.Printf("Mode: global\n")
+		if len(container.Args) > 0 {
+			fmt.Fprintf(w, "Args: %v\n", container.Args)
 		}
-		if svc.Spec.Task.GetContainer() != nil {
-			container := svc.Spec.Task.GetContainer()
-			fmt.Printf("Image: %s\n", container.Image)
-			if len(container.Command) > 0 {
-				fmt.Printf("Command: %v\n", container.Command)
-			}
-			if len(container.Args) > 0 {
-				fmt.Printf("Args: %v\n", container.Args)
-			}
-			if len(container.Env) > 0 {
-				fmt.Printf("Environment:\n")
-				for _, env := range container.Env {
-					fmt.Printf("  %s\n", env)
-				}
-			}
-			if container.Hostname != "" {
-				fmt.Printf("Hostname: %s\n", container.Hostname)
-			}
-			if dns := container.DNSConfig; dns != nil && len(dns.Nameservers) > 0 {
-				fmt.Printf("DNS: %s\n", strings.Join(dns.Nameservers, ", "))
-			}
-			if container.User != "" {
-				fmt.Printf("User: %s\n", container.User)
-			}
-			if container.ReadOnly {
-				fmt.Printf("Read-only rootfs: true\n")
-			}
-			if len(container.CapabilityAdd) > 0 || len(container.CapabilityDrop) > 0 {
-				fmt.Printf("Capabilities: add=%v drop=%v\n", container.CapabilityAdd, container.CapabilityDrop)
+		if len(container.Env) > 0 {
+			fmt.Fprintf(w, "Environment:\n")
+			for _, env := range container.Env {
+				fmt.Fprintf(w, "  %s\n", env)
 			}
 		}
-		if svc.Spec.Endpoint != nil && len(svc.Spec.Endpoint.Ports) > 0 {
-			fmt.Printf("Published Ports:\n")
-			for _, p := range svc.Spec.Endpoint.Ports {
-				fmt.Printf("  %d: -> %d/%s (%s)\n", p.PublishedPort, p.TargetPort, strings.ToLower(p.Protocol.String()), strings.ToLower(p.PublishMode.String()))
-			}
+		if container.Hostname != "" {
+			fmt.Fprintf(w, "Hostname: %s\n", container.Hostname)
 		}
-		if svc.Endpoint != nil && len(svc.Endpoint.VirtualIPs) > 0 {
-			fmt.Printf("Virtual IPs:\n")
-			for _, v := range svc.Endpoint.VirtualIPs {
-				fmt.Printf("  %s (%s)\n", v.Addr, v.NetworkID)
-			}
+		if dns := container.DNSConfig; dns != nil && len(dns.Nameservers) > 0 {
+			fmt.Fprintf(w, "DNS: %s\n", strings.Join(dns.Nameservers, ", "))
 		}
-		if nets := svc.Spec.Task.Networks; len(nets) > 0 {
-			fmt.Printf("Networks:\n")
-			for _, n := range nets {
-				if n.Target != "" {
-					fmt.Printf("  %s\n", n.Target)
-				}
-			}
+		if container.User != "" {
+			fmt.Fprintf(w, "User: %s\n", container.User)
 		}
-		if container := svc.Spec.Task.GetContainer(); container != nil {
-			if len(container.Secrets) > 0 {
-				fmt.Printf("Secrets:\n")
-				for _, s := range container.Secrets {
-					fmt.Printf("  %s\n", formatGrant(s.SecretName, s.GetFile()))
-				}
-			}
-			if len(container.Configs) > 0 {
-				fmt.Printf("Configs:\n")
-				for _, c := range container.Configs {
-					fmt.Printf("  %s\n", formatGrant(c.ConfigName, c.GetFile()))
-				}
-			}
+		if container.ReadOnly {
+			fmt.Fprintf(w, "Read-only rootfs: true\n")
 		}
-		if svc.Spec.Task.Resources != nil && svc.Spec.Task.Resources.Limits != nil {
-			limits := svc.Spec.Task.Resources.Limits
-			if limits.NanoCPUs > 0 {
-				fmt.Printf("CPU Limit: %.2f cores\n", float64(limits.NanoCPUs)/1e9)
-			}
-			if limits.MemoryBytes > 0 {
-				fmt.Printf("Memory Limit: %d bytes\n", limits.MemoryBytes)
-			}
+		if len(container.CapabilityAdd) > 0 || len(container.CapabilityDrop) > 0 {
+			fmt.Fprintf(w, "Capabilities: add=%v drop=%v\n", container.CapabilityAdd, container.CapabilityDrop)
 		}
-		if p := svc.Spec.Task.Placement; p != nil && (len(p.Constraints) > 0 || len(p.Preferences) > 0) {
-			fmt.Printf("Placement:\n")
-			for _, c := range p.Constraints {
-				fmt.Printf("  constraint: %s\n", c)
-			}
-			for _, pref := range p.Preferences {
-				if s := pref.GetSpread(); s != nil {
-					fmt.Printf("  preference: spread=%s\n", s.SpreadDescriptor)
-				}
-			}
+	}
+	if svc.Spec.Endpoint != nil && len(svc.Spec.Endpoint.Ports) > 0 {
+		fmt.Fprintf(w, "Published Ports:\n")
+		for _, p := range svc.Spec.Endpoint.Ports {
+			fmt.Fprintf(w, "  %d: -> %d/%s (%s)\n", p.PublishedPort, p.TargetPort, strings.ToLower(p.Protocol.String()), strings.ToLower(p.PublishMode.String()))
 		}
-		if rp := svc.Spec.Task.Restart; rp != nil {
-			fmt.Printf("Restart Policy: %s", restartConditionString(rp.Condition))
-			if rp.MaxAttempts > 0 {
-				fmt.Printf(" (max %d attempts)", rp.MaxAttempts)
-			}
-			fmt.Printf("\n")
+	}
+	if svc.Endpoint != nil && len(svc.Endpoint.VirtualIPs) > 0 {
+		fmt.Fprintf(w, "Virtual IPs:\n")
+		for _, v := range svc.Endpoint.VirtualIPs {
+			fmt.Fprintf(w, "  %s (%s)\n", v.Addr, v.NetworkID)
 		}
-		if uc := svc.Spec.Update; uc != nil {
-			fmt.Printf("Update Config: order=%s parallelism=%d failure-action=%s\n",
-				updateOrderString(uc.Order), uc.Parallelism, failureActionString(uc.FailureAction))
-		}
-		if uc := svc.Spec.Rollback; uc != nil {
-			fmt.Printf("Rollback Config: order=%s parallelism=%d failure-action=%s\n",
-				updateOrderString(uc.Order), uc.Parallelism, failureActionString(uc.FailureAction))
-		}
-		if len(svc.Spec.Annotations.Labels) > 0 {
-			fmt.Printf("Labels:\n")
-			for k, v := range svc.Spec.Annotations.Labels {
-				fmt.Printf("  %s=%s\n", k, v)
+	}
+	if nets := svc.Spec.Task.Networks; len(nets) > 0 {
+		fmt.Fprintf(w, "Networks:\n")
+		for _, n := range nets {
+			if n.Target != "" {
+				fmt.Fprintf(w, "  %s\n", n.Target)
 			}
 		}
 	}
-
-	return nil
+	if container := svc.Spec.Task.GetContainer(); container != nil {
+		if len(container.Secrets) > 0 {
+			fmt.Fprintf(w, "Secrets:\n")
+			for _, s := range container.Secrets {
+				fmt.Fprintf(w, "  %s\n", formatGrant(s.SecretName, s.GetFile()))
+			}
+		}
+		if len(container.Configs) > 0 {
+			fmt.Fprintf(w, "Configs:\n")
+			for _, c := range container.Configs {
+				fmt.Fprintf(w, "  %s\n", formatGrant(c.ConfigName, c.GetFile()))
+			}
+		}
+	}
+	if svc.Spec.Task.Resources != nil && svc.Spec.Task.Resources.Limits != nil {
+		limits := svc.Spec.Task.Resources.Limits
+		if limits.NanoCPUs > 0 {
+			fmt.Fprintf(w, "CPU Limit: %.2f cores\n", float64(limits.NanoCPUs)/1e9)
+		}
+		if limits.MemoryBytes > 0 {
+			fmt.Fprintf(w, "Memory Limit: %d bytes\n", limits.MemoryBytes)
+		}
+	}
+	if p := svc.Spec.Task.Placement; p != nil && (len(p.Constraints) > 0 || len(p.Preferences) > 0) {
+		fmt.Fprintf(w, "Placement:\n")
+		for _, c := range p.Constraints {
+			fmt.Fprintf(w, "  constraint: %s\n", c)
+		}
+		for _, pref := range p.Preferences {
+			if s := pref.GetSpread(); s != nil {
+				fmt.Fprintf(w, "  preference: spread=%s\n", s.SpreadDescriptor)
+			}
+		}
+	}
+	if rp := svc.Spec.Task.Restart; rp != nil {
+		fmt.Fprintf(w, "Restart Policy: %s", restartConditionString(rp.Condition))
+		if rp.MaxAttempts > 0 {
+			fmt.Fprintf(w, " (max %d attempts)", rp.MaxAttempts)
+		}
+		fmt.Fprintf(w, "\n")
+	}
+	if uc := svc.Spec.Update; uc != nil {
+		fmt.Fprintf(w, "Update Config: order=%s parallelism=%d failure-action=%s\n",
+			updateOrderString(uc.Order), uc.Parallelism, failureActionString(uc.FailureAction))
+	}
+	if uc := svc.Spec.Rollback; uc != nil {
+		fmt.Fprintf(w, "Rollback Config: order=%s parallelism=%d failure-action=%s\n",
+			updateOrderString(uc.Order), uc.Parallelism, failureActionString(uc.FailureAction))
+	}
+	if len(svc.Spec.Annotations.Labels) > 0 {
+		fmt.Fprintf(w, "Labels:\n")
+		for k, v := range svc.Spec.Annotations.Labels {
+			fmt.Fprintf(w, "  %s=%s\n", k, v)
+		}
+	}
 }
 
 func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool, health clusterHealthOptions) error {
@@ -1214,6 +1256,25 @@ func createService(opts serviceCreateOptions) error {
 	}
 	defer conn.Close()
 
+	return createServiceWithClient(ctx, client, opts)
+}
+
+// createServiceWithClient is createService's create path. It takes the control
+// client so tests can drive it with a fake (the same pattern as
+// listServiceTasksWithClient) and assert that a failed --with-registry-auth
+// resolution sends no request.
+func createServiceWithClient(ctx context.Context, client api.ControlClient, opts serviceCreateOptions) error {
+	// --with-registry-auth resolves the manager's credential for the image
+	// before the spec is built and before any RPC, so a missing credential is a
+	// clear, pre-create error rather than an opaque pull failure on a node.
+	if opts.withRegistryAuth {
+		encoded, err := resolveRegistryAuth(opts.image)
+		if err != nil {
+			return err
+		}
+		opts.registryAuth = encoded
+	}
+
 	spec, err := buildServiceSpec(opts)
 	if err != nil {
 		return err
@@ -1258,6 +1319,26 @@ func createService(opts serviceCreateOptions) error {
 	return nil
 }
 
+// resolveRegistryAuth resolves the --with-registry-auth credential for a service
+// image into the base64 X-Registry-Auth payload the spec carries. On the
+// credential-absence path image.EncodeRegistryAuth already names the registry and
+// the `docker login <host>` remedy and wraps ErrNoRegistryCredentials, so that
+// message is returned intact (errors.Is keeps working). Every other failure - an
+// unparsable ref, a credential helper that exits non-zero, an encoding error - is
+// wrapped with its own cause and no login suggestion, because `docker login`
+// would not fix it. Neither the password nor the encoded payload is ever logged;
+// only the registry host is, at debug level.
+func resolveRegistryAuth(ref string) (string, error) {
+	encoded, err := image.EncodeRegistryAuth(ref)
+	if err == nil {
+		if host, hostErr := image.RegistryHostForRef(ref); hostErr == nil {
+			log.Debug().Str("registry", host).Msg("resolved registry credentials for image")
+		}
+		return encoded, nil
+	}
+	return "", fmt.Errorf("--with-registry-auth: %w", err)
+}
+
 func updateService(serviceID string, opts serviceUpdateOptions) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1268,8 +1349,25 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 	}
 	defer conn.Close()
 
+	return updateServiceWithClient(ctx, client, serviceID, opts)
+}
+
+// updateServiceWithClient is updateService's update path. It takes the control
+// client so tests can drive it with a fake (the same ...WithClient seam as
+// createServiceWithClient) and assert both the registry-auth ordering (no
+// update RPC before a rejected resolution) and what spec was submitted.
+func updateServiceWithClient(ctx context.Context, client api.ControlClient, serviceID string, opts serviceUpdateOptions) error {
+	// Validate the flag combinations that need no service lookup first, so the
+	// most helpful error is the one returned.
+	if opts.withRegistryAuthSet && opts.rollbackAction {
+		return fmt.Errorf("--with-registry-auth cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags")
+	}
+	if opts.withRegistryAuthSet && opts.withRegistryAuth && opts.image == "" {
+		return fmt.Errorf("--with-registry-auth requires --image: the credential is resolved for the image the service will run")
+	}
+
 	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
-	serviceID, err = resolveServiceRef(ctx, client, serviceID)
+	serviceID, err := resolveServiceRef(ctx, client, serviceID)
 	if err != nil {
 		return err
 	}
@@ -1287,6 +1385,33 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 		return applyServiceSpec(ctx, client, svc, svc.PreviousSpec.Copy())
 	}
 
+	// --with-registry-auth on a golden service would be stored but never
+	// consumed (golden images boot their own init and are not pulled from a
+	// registry), so reject it rather than silently dropping the flag. Clearing
+	// the credential (an explicit false) stays valid.
+	//
+	// Whether the service is golden is only knowable from the spec the lookup
+	// above fetched, so this rejection sits above the credential resolution:
+	// placed after it, a golden service would resolve an unused credential (or
+	// fail on a missing one) before reaching this clearer error. The lookup is
+	// a read and mutates nothing.
+	if opts.withRegistryAuthSet && opts.withRegistryAuth && svc.Spec.Annotations.Labels[types.GoldenLabel] != "" {
+		return fmt.Errorf("--with-registry-auth cannot be used on a golden service: golden images are not pulled from a registry")
+	}
+
+	// --with-registry-auth (#44) resolves the CLI's credential for the target
+	// image — the CLI dials the local socket, so in a normal install this runs
+	// on the manager as the account that invokes swarmcracker. The service
+	// lookup above is a read, so a missing credential is still a clear error
+	// before the update RPC rather than an opaque pull failure on a node.
+	if opts.withRegistryAuthSet && opts.withRegistryAuth {
+		encoded, err := resolveRegistryAuth(opts.image)
+		if err != nil {
+			return err
+		}
+		opts.registryAuth = encoded
+	}
+
 	// Parse memory
 	memoryBytes, err := parseMemory(opts.memoryLimit)
 	if err != nil {
@@ -1294,6 +1419,21 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 	}
 
 	spec := svc.Spec.Copy()
+
+	// Apply the --with-registry-auth decision (#44): an absent flag preserves
+	// the credential copied from the current spec, an explicit true replaces it
+	// with the pre-resolved payload, and an explicit false clears it.
+	if payload, apply := registryAuthForUpdate(opts.withRegistryAuthSet, opts.withRegistryAuth, opts.registryAuth); apply {
+		c := spec.Task.GetContainer()
+		if c == nil {
+			return fmt.Errorf("service %q has no container spec", svc.Spec.Annotations.Name)
+		}
+		if payload == "" {
+			c.PullOptions = nil
+		} else {
+			c.PullOptions = &api.ContainerSpec_PullOptions{RegistryAuth: payload}
+		}
+	}
 
 	// Update replicas when the caller explicitly provided a count. This keeps
 	// `service update` without --replicas a no-op while allowing an explicit

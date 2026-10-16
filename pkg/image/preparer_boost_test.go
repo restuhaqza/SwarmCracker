@@ -108,7 +108,7 @@ func TestImagePreparer_prepareImage_ErrorScenarios(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ip.prepareImage(context.Background(), tt.imageRef, tt.imageID, tt.outputPath)
+			err := ip.prepareImage(context.Background(), tt.imageRef, tt.imageID, tt.outputPath, "")
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -160,7 +160,7 @@ func TestImagePreparer_extractOCIImage_ErrorPaths(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ip.extractOCIImage(context.Background(), tt.imageRef, tt.destPath)
+			err := ip.extractOCIImage(context.Background(), tt.imageRef, tt.destPath, "")
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
