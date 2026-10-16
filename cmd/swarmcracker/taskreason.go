@@ -16,9 +16,10 @@ const taskErrorReasonWidth = 40
 // task's Status.Err verbatim, or "" for a nil task or one carrying no Err.
 //
 // Status.Err is deliberately the *only* source. SwarmKit's field contract
-// (vendored api/types.proto:584-591, "TaskStatus") reserves Err for "messages
-// that should be surfaced to users" and Message for "notes on routine state
-// transitions": the agent's controller writes Message="accepted"/"prepared"/
+// (message TaskStatus in swarmkit/v2/api/types.proto:572; the Err/Message rule
+// at :598-599) reserves Err for "messages that should be surfaced to users" and
+// Message for "notes on routine state transitions": the agent's controller
+// writes Message="accepted"/"prepared"/
 // "started"/"finished" on the success path (agent/exec/controller.go) and the
 // scheduler clears Err once a task is placed (manager/scheduler/scheduler.go),
 // so a healthy RUNNING task would print "started" in the ERROR column were

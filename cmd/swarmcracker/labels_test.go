@@ -53,6 +53,16 @@ func TestParseLabelAssignments(t *testing.T) {
 			want:  map[string]string{"disk": "hdd"},
 		},
 		{
+			name:  "padded key and value are trimmed",
+			pairs: []string{"  disk = ssd  "},
+			want:  map[string]string{"disk": "ssd"},
+		},
+		{
+			name:  "inner spaces in a value survive the trim",
+			pairs: []string{"rule= a b  c "},
+			want:  map[string]string{"rule": "a b  c"},
+		},
+		{
 			name:    "missing separator",
 			pairs:   []string{"disk"},
 			wantErr: `invalid label "disk": expected KEY=VALUE`,
@@ -66,6 +76,11 @@ func TestParseLabelAssignments(t *testing.T) {
 			name:    "blank key",
 			pairs:   []string{" =ssd"},
 			wantErr: `invalid label " =ssd": key must not be empty`,
+		},
+		{
+			name:    "whitespace-only key",
+			pairs:   []string{" \t =ssd"},
+			wantErr: `invalid label " \t =ssd": key must not be empty`,
 		},
 		{
 			name:    "later argument is rejected and named",
@@ -130,6 +145,18 @@ func TestApplyLabelChanges(t *testing.T) {
 			add:     []string{"disk=ssd"},
 			remove:  []string{"disk"},
 			want:    map[string]string{"disk": "ssd"},
+		},
+		{
+			name:    "padded key and value are trimmed before they are stored",
+			current: map[string]string{"zone": "a"},
+			add:     []string{" disk = ssd "},
+			want:    map[string]string{"disk": "ssd", "zone": "a"},
+		},
+		{
+			name:    "padded removal key removes the label it names",
+			current: map[string]string{"disk": "ssd", "zone": "a"},
+			remove:  []string{" disk "},
+			want:    map[string]string{"zone": "a"},
 		},
 		{
 			name:    "invalid add",
@@ -282,6 +309,22 @@ func TestUpdateNodeLabelsWithClient_RemovingMissingKeyIsNoOp(t *testing.T) {
 	assert.Equal(t, map[string]string{"disk": "ssd"}, client.updatedReq.Spec.Annotations.Labels)
 }
 
+// TestUpdateNodeLabelsWithClient_TrimsKeyAndValue pins the operator-facing
+// promise that a padded flag does what a user means: `--label-add " tier = gold "`
+// stores `tier=gold` (so a node.labels.tier constraint can match) and a padded
+// `--label-rm " zone "` removes `zone` instead of silently no-opping.
+func TestUpdateNodeLabelsWithClient_TrimsKeyAndValue(t *testing.T) {
+	node := labelledNode("abcdef0123456789abcdef01", map[string]string{"disk": "hdd", "zone": "a"})
+	client := &fakeNodeClient{node: node}
+
+	require.NoError(t, updateNodeLabelsWithClient(context.Background(), client, io.Discard, "abcdef",
+		[]string{" tier = gold "}, []string{" zone "}))
+
+	require.Equal(t, 1, client.updateCalls)
+	require.NotNil(t, client.updatedReq)
+	assert.Equal(t, map[string]string{"disk": "hdd", "tier": "gold"}, client.updatedReq.Spec.Annotations.Labels)
+}
+
 // TestUpdateNodeLabelsWithClient_RejectsBeforeAnyRPC is the guard against
 // accepting a flag and ignoring it: a bad argument (or an invocation that
 // changes nothing) fails before the node is even looked up.
@@ -301,6 +344,11 @@ func TestUpdateNodeLabelsWithClient_RejectsBeforeAnyRPC(t *testing.T) {
 			name:    "add with empty key",
 			add:     []string{"=ssd"},
 			wantErr: `invalid label "=ssd": key must not be empty`,
+		},
+		{
+			name:    "add with whitespace-only key",
+			add:     []string{" \t =ssd"},
+			wantErr: `key must not be empty`,
 		},
 		{
 			name:    "remove with empty key",

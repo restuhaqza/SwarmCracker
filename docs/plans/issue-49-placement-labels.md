@@ -36,9 +36,10 @@ Program: `docs/plans/backlog-program.md` · Slice 2 of the sequential backlog.
    (`cmd/swarmcracker/cmd_node.go:342-379`): `resolveNodeRef` → `GetNode` → mutate
    `Spec.Annotations.Labels` → `UpdateNode` with the current `NodeVersion`.
 2. An `ERROR` column **appended** to `service ps` and `task ls`, carrying
-   `Status.Err`, falling back to `Status.Message`, empty when neither is set. Appending
-   at the end keeps every existing positional parse intact (this project's lab scripts
-   read fields 3 and 4).
+   `Status.Err` only, empty when there is none — SwarmKit puts routine transition
+   notes like "started" in `Status.Message`, so a fallback would print a note in an
+   ERROR column. Appending at the end keeps every existing positional parse intact
+   (this project's lab scripts read fields 3 and 4).
 3. Docs: correct the stale statement and document the new flag and the new column.
 
 ### Interfaces (binding)
@@ -57,8 +58,9 @@ func parseLabelAssignments(pairs []string) (map[string]string, error)
 // never mutating the input map.
 func applyLabelChanges(current map[string]string, add, remove []string) (map[string]string, error)
 
-// taskErrorReason is the operator-facing reason for a task, preferring Status.Err and
-// falling back to Status.Message; "" when the task carries neither.
+// taskErrorReason is the operator-facing reason for a task: Status.Err only, "" when
+// there is none (Status.Message carries routine transition notes like "started", so it
+// is not a reason).
 func taskErrorReason(task *api.Task) string
 ```
 
@@ -118,8 +120,9 @@ Files: `cmd/swarmcracker/cmd_service.go`, `cmd/swarmcracker/cmd_task.go`,
 plus their `_test.go` files.
 
 Steps:
-1. Add the pure `taskErrorReason(task *api.Task) string` (prefer `Status.Err`, fall back
-   to `Status.Message`, `""` otherwise). Unit-test it directly.
+1. Add the pure `taskErrorReason(task *api.Task) string` (`Status.Err` only, `""`
+   otherwise — not `Status.Message`, which carries routine transition notes). Unit-test
+   it directly.
 2. Append an `ERROR` column to the `service ps` table
    (`cmd_service.go:1226-1244`) and the `task ls` table (`cmd_task.go:171`), as the
    **last** column. Keep the existing columns and their order untouched (positional
