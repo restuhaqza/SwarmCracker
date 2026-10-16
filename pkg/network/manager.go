@@ -757,7 +757,14 @@ func (nm *NetworkManager) prepareNetworkWithCNI(ctx context.Context, task *types
 		// Get network name and IP from SwarmKit attachment
 		networkName := attachment.Network.Spec.Name
 		if networkName == "" {
-			networkName = attachment.Network.ID[:8]
+			// An attachment can arrive without a name, and its ID can be absent or
+			// shorter than the prefix taken here: slice only what is there. The value
+			// labels the CNI config lookup, so it keeps the ID-prefix shape it has
+			// always had, and a malformed attachment must not panic the daemon.
+			networkName = attachment.Network.ID
+			if len(networkName) > 8 {
+				networkName = networkName[:8]
+			}
 		}
 
 		// If no SwarmKit-assigned IP, fall back to DHCP/TAP allocation

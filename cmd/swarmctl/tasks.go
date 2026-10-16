@@ -30,14 +30,8 @@ func listTasks(ctx context.Context, client api.ControlClient) {
 	fmt.Println(strings.Repeat("-", 80))
 	for _, task := range resp.Tasks {
 		status := task.Status.State.String()
-		nodeID := ""
-		if task.NodeID != "" {
-			nodeID = task.NodeID[:12]
-		}
-		svcID := ""
-		if task.ServiceID != "" {
-			svcID = task.ServiceID[:12]
-		}
+		nodeID := shortID(task.NodeID, 12)
+		svcID := shortID(task.ServiceID, 12)
 		image := ""
 		if task.Spec.GetContainer() != nil {
 			image = task.Spec.GetContainer().Image

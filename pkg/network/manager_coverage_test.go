@@ -51,6 +51,28 @@ func TestNetworkManager_PrepareNetwork_ErrorScenarios(t *testing.T) {
 			wantErr: false, // Should handle gracefully
 		},
 		{
+			name: "short network ID",
+			task: &types.Task{
+				ID:        "task-short-network-id",
+				ServiceID: "service-1",
+				Networks: []types.NetworkAttachment{
+					{
+						Network: types.Network{
+							ID: "abc",
+							Spec: types.NetworkSpec{
+								DriverConfig: &types.DriverConfig{
+									Bridge: &types.BridgeConfig{
+										Name: "test-br0",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: false, // Shorter than the prefix its name is taken from
+		},
+		{
 			name: "network without driver config",
 			task: &types.Task{
 				ID:        "task-no-driver-config",

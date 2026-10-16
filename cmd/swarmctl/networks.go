@@ -90,7 +90,7 @@ func listNetworks(ctx context.Context, client api.ControlClient) {
 		if net.Spec.IPAM != nil && len(net.Spec.IPAM.Configs) > 0 {
 			subnet = net.Spec.IPAM.Configs[0].Subnet
 		}
-		fmt.Printf("%-20s %-20s %-15s %s\n", net.ID[:12], name, driver, subnet)
+		fmt.Printf("%-20s %-20s %-15s %s\n", shortID(net.ID, 12), name, driver, subnet)
 	}
 	fmt.Printf("\nTotal: %d network(s)\n", len(resp.Networks))
 }

@@ -27,7 +27,7 @@ func listNodes(ctx context.Context, client api.ControlClient) {
 		status := node.Status.State.String()
 		avail := node.Spec.Availability.String()
 		hostname := node.Description.Hostname
-		fmt.Printf("%-20s %-12s %-20s %s\n", node.ID[:12], status, hostname, avail)
+		fmt.Printf("%-20s %-12s %-20s %s\n", shortID(node.ID, 12), status, hostname, avail)
 	}
 	fmt.Printf("\nTotal: %d node(s)\n", len(resp.Nodes))
 }
