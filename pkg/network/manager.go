@@ -515,6 +515,11 @@ func (nm *NetworkManager) Init(ctx context.Context) error {
 		log.Warn().Msg("VXLAN enabled but manager not initialized")
 	}
 
+	// Masquerade rules left by an earlier daemon run for networks that no longer
+	// exist are removed here, so a node does not keep a stale rule that could
+	// hijack a later network reusing the same subnet (#70).
+	nm.sweepStaleManagedNAT()
+
 	return nil
 }
 

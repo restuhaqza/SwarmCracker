@@ -259,8 +259,17 @@ swarmcracker network rm backend
 ```
 
 Removing the last service that uses a network tears down its per-node bridge
-(`br-<name>`) and VXLAN interface, so `network rm` leaves nothing behind. The
-network is re-materialized on demand the next time a task attaches to it.
+(`br-<name>`), its VXLAN interface and its NAT rule, so `network rm` leaves
+nothing behind. The network is re-materialized on demand the next time a task
+attaches to it.
+
+Outbound NAT for a user-defined network is installed with a `physdev` guard, so it
+applies only to traffic the node **routes** off the network — never to frames it is
+merely bridging between two guests. That distinction matters: with
+`bridge-nf-call-iptables` enabled (the Docker/CNI default) bridged frames also
+traverse the NAT table, and a masquerade rule that catches them rewrites the
+source address of guest-to-guest traffic, which breaks the return path across
+nodes.
 
 ---
 

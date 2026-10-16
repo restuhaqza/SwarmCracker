@@ -130,16 +130,95 @@ func (nm *NetworkManager) ensureNetworkVXLAN(bridge string, vni int) (*VXLANMana
 	return vxm, nil
 }
 
+// managedMasqueradeSpec is the nat POSTROUTING spec for one managed network's
+// subnet, shared by the install, delete and sweep paths so the rule can never be
+// added in one shape and looked for in another.
+//
+// The physdev guard is the part that matters. MASQUERADE exists so VMs on the
+// network keep outbound connectivity, and it must never touch a frame that is
+// merely being bridged from one guest to another. Under br_netfilter
+// (bridge-nf-call-iptables=1, the Docker/CNI default) bridged frames do reach
+// POSTROUTING, with the *bridge* as their out interface, so `! -o <bridge>` alone
+// does not exclude them: a rule left behind by a torn-down network that reused this
+// subnet would masquerade these frames, rewriting their source to the bridge
+// address and destroying the return path (#70).
+func managedMasqueradeSpec(subnet, bridge string) []string {
+	return []string{
+		"POSTROUTING",
+		"-s", subnet,
+		"!", "-o", bridge,
+		"-m", "physdev", "!", "--physdev-is-bridged",
+		"-j", "MASQUERADE",
+	}
+}
+
+// managedMasqueradeBridge returns the bridge named by a managed-network
+// masquerade rule, or "" when the rule is not one. The default network's rule
+// (`-s <subnet> -j MASQUERADE`) has no `! -o`, which is what keeps the two apart
+// when sweeping.
+func managedMasqueradeBridge(fields []string) string {
+	if len(fields) < 3 || fields[0] != "-A" || fields[1] != "POSTROUTING" {
+		return ""
+	}
+	if flagValue(fields, "-s") == "" || !hasFlagValue(fields, "-j", "MASQUERADE") {
+		return ""
+	}
+	for i := 0; i+2 < len(fields); i++ {
+		if fields[i] == "!" && fields[i+1] == "-o" {
+			return unquote(fields[i+2])
+		}
+	}
+	return ""
+}
+
 // setupManagedNAT adds a masquerade rule for the network's subnet so VMs on it
 // keep outbound connectivity.
 func (nm *NetworkManager) setupManagedNAT(bridge, subnet string) {
-	rule := []string{"-t", "nat", "-C", "POSTROUTING", "-s", subnet, "!", "-o", bridge, "-j", "MASQUERADE"}
-	if err := execCommand("iptables", rule...).Run(); err == nil {
+	if err := nm.ensureRule(managedMasqueradeSpec(subnet, bridge)); err != nil {
+		log.Warn().Err(err).Str("subnet", subnet).Msg("Failed to add NAT rule for managed network")
+	}
+}
+
+// removeManagedNAT drops the masquerade rule for a network's subnet. A network
+// that is torn down must not leave the rule behind: it is keyed only by subnet, so
+// it would hijack a later network that reuses that subnet (#70).
+func (nm *NetworkManager) removeManagedNAT(bridge, subnet string) {
+	if subnet == "" {
 		return
 	}
-	add := []string{"-t", "nat", "-A", "POSTROUTING", "-s", subnet, "!", "-o", bridge, "-j", "MASQUERADE"}
-	if err := execCommand("iptables", add...).Run(); err != nil {
-		log.Warn().Err(err).Str("subnet", subnet).Msg("Failed to add NAT rule for managed network")
+	spec := append([]string{"-t", "nat", "-D"}, managedMasqueradeSpec(subnet, bridge)...)
+	if err := execCommand("iptables", spec...).Run(); err != nil {
+		log.Debug().Err(err).Str("subnet", subnet).Msg("Managed NAT rule not present during teardown")
+	}
+}
+
+// bridgeExists reports whether a bridge device is present on this node.
+func (nm *NetworkManager) bridgeExists(bridge string) bool {
+	return execCommand("ip", "link", "show", bridge).Run() == nil
+}
+
+// sweepStaleManagedNAT removes managed-network masquerade rules whose bridge no
+// longer exists, repairing nodes that accumulated them while teardown did not
+// remove its own. A network still in use re-materializes on demand and re-adds its
+// rule, so nothing that is needed is lost.
+func (nm *NetworkManager) sweepStaleManagedNAT() {
+	out, err := execCommand("iptables", "-t", "nat", "-S", "POSTROUTING").Output()
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		bridge := managedMasqueradeBridge(fields)
+		if bridge == "" || nm.bridgeExists(bridge) {
+			continue
+		}
+		// Delete by spec: exec takes argv, so the "!" needs no shell escaping.
+		spec := append([]string{"-t", "nat", "-D"}, fields[1:]...)
+		if err := execCommand("iptables", spec...).Run(); err != nil {
+			log.Warn().Err(err).Str("bridge", bridge).Msg("Failed to remove stale managed NAT rule")
+			continue
+		}
+		log.Info().Str("bridge", bridge).Msg("Removed NAT rule of a network that no longer exists")
 	}
 }
 
@@ -389,6 +468,10 @@ func (nm *NetworkManager) teardownManagedNetwork(mn *managedNetwork) {
 	delete(nm.managedNetworks, mn.id)
 	nm.mu.Unlock()
 
+	// Drop the network's masquerade rule together with its bridge: left behind, it
+	// is keyed only by subnet and would hijack a later network that reuses it.
+	nm.removeManagedNAT(mn.bridge, mn.subnet)
+
 	if mn.vxlanMgr != nil {
 		name := mn.vxlanMgr.vxlanName()
 		if err := execCommand("ip", "link", "delete", name).Run(); err != nil {
@@ -400,6 +483,10 @@ func (nm *NetworkManager) teardownManagedNetwork(mn *managedNetwork) {
 			log.Debug().Err(err).Str("bridge", mn.bridge).Msg("Managed bridge already gone")
 		}
 	}
+
+	// Anything else whose bridge is now gone — a network torn down by an earlier
+	// daemon run — is stale for the same reason.
+	nm.sweepStaleManagedNAT()
 
 	nm.rebuildIsolationRules()
 
