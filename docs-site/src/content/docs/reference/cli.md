@@ -310,12 +310,15 @@ flags, so `--rollback` combined with `--with-registry-auth` is rejected.
 > node. Always pass `--with-registry-auth --image <ref>` when the new image lives
 > in a different registry, or `--with-registry-auth=false` to drop the old one.
 
-**Redaction.** The stored payload is never printed. `service inspect` (including
-its JSON output), `service ls --format json`, `service ps --format json`,
-`task inspect`, `task ls --format json` and the equivalent `swarmctl` output
-replace the credential with `***`, so an operator can see that a service carries
-credentials without seeing what they are. The payload is also kept out of logs
-and metrics.
+**Redaction.** The stored payload is never printed. The JSON renderings —
+`service inspect` (its default output), `service ls --format json`, `service ps
+--format json`, `task inspect`, `task ls --format json` and the equivalent
+`swarmctl` output — replace the credential with `***` (masked on a copy of the
+spec, so the response the command keeps using is untouched), so an operator can
+see that a service carries credentials without seeing what they are. The
+plain-text renderings (`service inspect` with a non-JSON `--format`, the tables)
+omit the credential field entirely. The payload is also kept out of logs and
+metrics.
 
 #### `swarmcracker task`
 

@@ -289,8 +289,13 @@ Steps:
    `service update` flag tables, and a short section on what it does and what it
    errors with.
 2. `guides/configuration.md`: where credentials come from — `~/.docker/config.json`
-   and credential helpers on the **manager** (resolved at create/update time), the
-   `images.registry_auth` config field, and precedence.
+   and credential helpers on the **manager** (resolved at create/update time), and
+   precedence. **Refuted during T6 (2026-10-17):** the `images.registry_auth` config
+   field assumed by the original brief does not exist — `pkg/config`'s
+   `ImagesConfig` has no such field and `cmd/swarmcracker/helpers.go:85` never sets
+   `image.PreparerConfig.RegistryAuth`, so a `registry_auth` key in the config file
+   is silently ignored. The shipped docs (configuration.md, operations.md) state
+   this and point at the Docker config instead.
 3. State explicitly that credentials are redacted in `service inspect`,
    `task inspect` and JSON output, and that the worker does not need a local Docker
    config.

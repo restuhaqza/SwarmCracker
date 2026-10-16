@@ -489,10 +489,12 @@ a worker never reads its own Docker config. Diagnose on the manager.
 
 1. **Is a credential attached to the service?**
    ```bash
-   swarmcracker service inspect <service> | grep -i registryauth
-   # "***" means a credential is attached; no line means none is
+   swarmcracker service inspect <service> | grep -i registry_auth
+   # a line showing "registry_auth": "***" means a credential is attached;
+   # no matching line at all means the service carries none
    ```
-   `***` is the redacted payload — the value is never shown.
+   `***` is the redacted payload — the value is never shown. The key is
+   `registry_auth` (the spec's snake_case JSON tag), not `registryAuth`.
 
 2. **No credential attached?** Log in on the manager as the user that runs
    `swarmcracker`, then re-apply it:
@@ -510,7 +512,7 @@ a worker never reads its own Docker config. Diagnose on the manager.
 
 4. **The create/update error names the registry and the remedy:**
    ```text
-   --with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`
+   --with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`: no registry credentials found
    ```
 
 5. **Credential revoked or expired?** Log in again and re-resolve:
