@@ -175,9 +175,9 @@ func (p *CNIProvider) GetNetwork(networkID string) (*AllocatedNetwork, error) {
 	return network, nil
 }
 
-// maxSubnetAttempts bounds how many candidate subnets are tried before giving up
-// on a pool. A pool of /8 with /24 subnets holds 65536 candidates, so this is only
-// ever reached when the pool is genuinely full.
+// maxSubnetAttempts bounds how many consecutive candidates are tried before a
+// carve gives up. It can be reached by a pool that is genuinely full or by one
+// whose next candidates are all reserved or taken, so the error says which.
 const maxSubnetAttempts = 256
 
 // isPredefinedNetworkName reports whether a name belongs to a network this
@@ -195,24 +195,44 @@ func cidrsOverlap(a, b *net.IPNet) bool {
 	return a.Contains(b.IP) || b.Contains(a.IP)
 }
 
-// subnetIsFreeLocked reports whether a subnet can be handed to a new network: it
-// must not overlap the reserved flat L2 subnet or a network that already holds one.
-func (p *CNIProvider) subnetIsFreeLocked(candidate string) bool {
+// subnetConflictLocked describes what a candidate subnet collides with, or "" when
+// it is free. Naming the conflict (the reserved flat L2 subnet, or which network)
+// matters because "no free subnet" is otherwise indistinguishable from a mistake
+// in the pool configuration.
+func (p *CNIProvider) subnetConflictLocked(candidate string) string {
 	_, cidr, err := net.ParseCIDR(candidate)
 	if err != nil {
-		return false
+		return "is not a valid CIDR"
 	}
 	if p.config.FlatSubnet != "" {
 		if flat, _, err := ParseCIDR(p.config.FlatSubnet); err == nil && cidrsOverlap(cidr, flat) {
-			return false
+			return fmt.Sprintf("overlaps the flat L2 subnet %s", p.config.FlatSubnet)
 		}
 	}
 	for _, n := range p.networks {
 		if cidrsOverlap(cidr, n.Subnet) {
-			return false
+			return fmt.Sprintf("overlaps network %q (%s)", n.Name, n.Subnet.String())
 		}
 	}
-	return true
+	return ""
+}
+
+// ReleaseNetwork forgets a network's allocation, so its subnet becomes available
+// again. Without this the ledger would keep a deleted network's subnet reserved for
+// the lifetime of the daemon, and re-creating the network would be refused.
+//
+// It matches on the name and subnet rather than the map key: the allocator replaces
+// the ID this provider generated with the SwarmKit network ID, so by the time a
+// network is deallocated the ledger's key no longer identifies it.
+func (p *CNIProvider) ReleaseNetwork(name, subnet string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for key, n := range p.networks {
+		if n.Name == name && n.Subnet != nil && n.Subnet.String() == subnet {
+			delete(p.networks, key)
+			return
+		}
+	}
 }
 
 // carveSubnetLocked hands the network a subnet from its pool, skipping candidates
@@ -233,41 +253,46 @@ func (p *CNIProvider) carveSubnetLocked(predefined bool) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to generate subnet: %w", err)
 		}
-		if predefined || p.subnetIsFreeLocked(candidate) {
+		if predefined || p.subnetConflictLocked(candidate) == "" {
 			return candidate, nil
 		}
 		p.networkIndex++
 	}
-	return "", fmt.Errorf("no free /%d subnet left in pool %s", p.config.SubnetSize, pool)
+	return "", fmt.Errorf("no free /%d subnet in pool %s after %d candidates: the flat L2 subnet %s is reserved and every other candidate was taken",
+		p.config.SubnetSize, pool, maxSubnetAttempts, p.config.FlatSubnet)
 }
 
-// AllocateNetwork creates a new network allocation. When requestedSubnet is
-// non-empty it is used verbatim (so a user-requested subnet is honored); the
-// gateway defaults to the first usable host unless requestedGateway is set.
-func (p *CNIProvider) AllocateNetwork(name, driver, requestedSubnet, requestedGateway string) (*AllocatedNetwork, error) {
+// AllocateNetwork creates a new network allocation.
+//
+// requestedSubnet, when non-empty, is used verbatim. ingress marks a predefined
+// ingress network, which stays on the flat-L2 pool. existing marks a subnet the
+// network already holds (a re-allocation on restart or upgrade): it is kept
+// without an overlap check, because moving it would break the tasks that already
+// carry addresses from it.
+func (p *CNIProvider) AllocateNetwork(name, driver, requestedSubnet, requestedGateway string, ingress, existing bool) (*AllocatedNetwork, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.networkIndex++
 
-	predefined := isPredefinedNetworkName(name)
+	predefined := ingress || isPredefinedNetworkName(name)
 
 	// Use the requested subnet when given, otherwise carve one from the pool.
 	subnet := requestedSubnet
-	if subnet == "" {
+	switch {
+	case subnet == "":
 		generated, err := p.carveSubnetLocked(predefined)
 		if err != nil {
 			return nil, err
 		}
 		subnet = generated
-	} else if !predefined && !p.subnetIsFreeLocked(subnet) {
+	case !predefined && !existing:
 		// Two networks on the same addresses cannot be told apart by route, NAT
-		// rule or IPAM pool, so an explicit subnet has to be free (#77).
-		if p.config.FlatSubnet != "" {
-			return nil, fmt.Errorf("subnet %s overlaps the flat L2 subnet %s or a network that already has one",
-				subnet, p.config.FlatSubnet)
+		// rule or IPAM pool, so a subnet the user is asking for now has to be free
+		// (#77). A recorded allocation is exempt: it is already in use.
+		if reason := p.subnetConflictLocked(subnet); reason != "" {
+			return nil, fmt.Errorf("subnet %s %s", subnet, reason)
 		}
-		return nil, fmt.Errorf("subnet %s overlaps a network that already has one", subnet)
 	}
 
 	// Parse subnet and derive the gateway: the first usable host address. The

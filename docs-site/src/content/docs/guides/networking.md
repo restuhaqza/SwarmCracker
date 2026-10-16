@@ -260,12 +260,19 @@ the IPAM pools and NAT rules that are keyed by subnet. The predefined networks
 so ingress task IPs remain reachable cluster-wide.
 
 An explicit `--subnet` is honored, but it has to be free — one that overlaps the
-flat L2 subnet or a network that already has one is refused:
+flat L2 subnet or a network that already has one is refused before anything is
+created:
 
 ```bash
 swarmcracker network create --name clash --subnet 192.168.127.0/24
-# subnet 192.168.127.0/24 overlaps the flat L2 subnet 192.168.127.0/24 or a network that already has one
+# subnet 192.168.127.0/24 overlaps network "ingress" (192.168.127.0/24); choose a free subnet
 ```
+
+The daemon refuses the same overlap when it allocates a network, so a client that
+does not go through this CLI (the API directly, `swarmctl`) cannot end up with two
+networks on the same addresses either. There the refusal is recorded in the
+daemon's log and the network is left unallocated, because SwarmKit commits a
+network before allocating it.
 
 A network cannot be removed while a service is still attached:
 

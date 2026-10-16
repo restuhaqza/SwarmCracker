@@ -51,10 +51,10 @@ type CNIConfig struct {
 	// BridgeName is the name of the default bridge
 	BridgeName string
 
-	// SubnetPool is the IP pool for network allocation. It is the pool the
-	// networks that must live on the flat L2 segment are carved from — the
-	// predefined ingress and gateway-bridge networks — so ingress task IPs stay
-	// reachable cluster-wide (see the ingress routing mesh).
+	// SubnetPool is the pool the predefined networks (ingress, docker_gwbridge) are
+	// carved from. It defaults to the flat L2 subnet (the daemon's --subnet), which
+	// is what keeps ingress task IPs reachable cluster-wide; overriding it moves
+	// those networks off the flat L2, so do that only deliberately.
 	SubnetPool string
 
 	// OverlaySubnetPool is the pool user-defined networks are carved from. It is

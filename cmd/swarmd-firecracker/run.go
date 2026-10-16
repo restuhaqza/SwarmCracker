@@ -137,11 +137,11 @@ func runAgent(ctx *cli.Context) error {
 	var networkConfig *networkallocator.Config
 
 	if ctx.Bool("enable-cni") {
-		// The predefined networks (ingress, docker_gwbridge) are carved from the
-		// flat-L2 pool, so their task IPs stay reachable cluster-wide. User-defined
-		// networks are carved from a pool of their own, so an auto-allocated network
-		// is never handed the flat L2 subnet and put on the same addresses as the
-		// default network (#77).
+		// The predefined networks (ingress, docker_gwbridge) are carved from a pool
+		// that defaults to the flat L2 subnet, so their task IPs stay reachable
+		// cluster-wide. User-defined networks are carved from a pool of their own, so
+		// an auto-allocated network is never handed the flat L2 subnet and put on the
+		// same addresses as the default network (#77).
 		subnetPool := ctx.String("cni-subnet-pool")
 		if subnetPool == "" {
 			subnetPool = ctx.String("subnet")
