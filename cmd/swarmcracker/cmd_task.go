@@ -157,21 +157,13 @@ func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Wri
 	fmt.Fprintln(w, strings.Repeat("-", 90))
 	for _, task := range tasks {
 		status := task.Status.State.String()
-		nodeID := ""
-		if task.NodeID != "" {
-			if noTrunc {
-				nodeID = task.NodeID
-			} else {
-				nodeID = task.NodeID[:12]
-			}
+		nodeID := task.NodeID
+		if !noTrunc && len(nodeID) > 12 {
+			nodeID = nodeID[:12]
 		}
-		svcID := ""
-		if task.ServiceID != "" {
-			if noTrunc {
-				svcID = task.ServiceID
-			} else {
-				svcID = task.ServiceID[:12]
-			}
+		svcID := task.ServiceID
+		if !noTrunc && len(svcID) > 12 {
+			svcID = svcID[:12]
 		}
 		image := ""
 		if task.Spec.GetContainer() != nil {
