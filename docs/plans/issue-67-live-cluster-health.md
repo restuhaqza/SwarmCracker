@@ -173,13 +173,44 @@ T1 → T2 → T3 → T4.
 ## Risks
 
 - **Fan-out cost.** One `ListNodes` plus one small HTTP GET per node used by
-  the (already filtered) tasks, each bounded by `healthRequestTimeout`. A node
-  that hangs costs one timeout, not one per task. `--no-health` opts out.
+  the (already filtered) tasks, issued concurrently (bounded to 8) under a 10s
+  total budget, each bounded by `healthRequestTimeout`. A node that hangs costs
+  one timeout, not one per task. `--no-health` opts out.
 - **`failing` is short-lived.** The restart fires after
   `(retries - 1) × interval`; the e2e observes it inside that window (same as
   #66's node-local test).
-- **Old nodes.** A node running a daemon without the endpoint (or with it bound
-  to localhost) simply answers 404 / refuses the connection → `-`. Mixed-version
+- **Old nodes.** A node running a daemon without the endpoint answers 404, so it
+  counts as reachable and its tasks keep the derived value — mixed-version
   clusters degrade per node instead of failing the command.
+- **Default bind.** Each daemon binds `127.0.0.1:8080` by default, so a remote
+  node's endpoint is not reachable and its tasks show `-`. To keep the common
+  case working, a node whose own address does not answer is retried on the
+  loopback of the machine running the CLI, accepted only if that endpoint
+  reports a task the node owns (so another node's daemon is never
+  misattributed).
 - **Path drift.** Avoided by exporting `runtime.TaskHealthPath` from the package
   both sides import.
+
+## Review round (2026-10-16)
+
+An independent review of the first version found no blockers but flagged:
+
+1. **Docs/`--help` vs code.** The help text and `cli.md` said an unreachable
+   node falls back to the derived value, while the code showed `-` for any
+   non-200 (so an old daemon 404ing lost the column). Fixed by treating *any*
+   HTTP response as "the node is up": `getNodeTaskHealth` now returns
+   `answered`, and only a transport failure yields `-`. Help/docs rewritten to
+   state the three cases exactly.
+2. **Fan-out could eat the command budget.** Per-node requests were serial over
+   a randomly-ordered map with a shared 30s context. Now sorted node order,
+   concurrent (bounded to 8) under a 10s fan-out budget.
+3. **Default-config degradation.** Documented, and mitigated by the loopback
+   fallback above plus a `--no-health` escape hatch.
+4. Nits addressed: terminal tasks no longer report a stale live row; the daemon
+   handler allows `HEAD` and encodes before writing the header;
+   `writeTasksJSON` is nil-tolerant; "no secrets" softened in the docs; tests
+   added for 404/malformed bodies, loopback attribution and non-misattribution,
+   `ListNodes` failure, the quiet path, terminal states, invalid-port rejection,
+   and flag wiring on both commands. The mixed-case column (live lowercase vs
+   derived uppercase) is kept and documented, matching the issue's vocabulary.
+
