@@ -870,6 +870,20 @@ func findSubstring(s, substr string) bool {
 	return false
 }
 
+// fakeBridgeOnPath shadows the real `bridge` executable with a temp script that
+// prints output and exits with code. It makes the `bridge fdb add|del` paths
+// deterministic: no root, no real device, and no leftover FDB entry from an
+// earlier run. Without it the outcome depends on the machine — the real command
+// fails on an unprivileged host but succeeds as root when a stale device with
+// the same name still holds an entry, which is how #84 flaked.
+func fakeBridgeOnPath(t *testing.T, output string, code int) {
+	t.Helper()
+	dir := t.TempDir()
+	body := fmt.Sprintf("#!/bin/sh\ncat <<'BRIDGE_EOF'\n%s\nBRIDGE_EOF\nexit %d\n", output, code)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bridge"), []byte(body), 0o755))
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
 // TestVXLANManager_removePeerForwarding covers peer-FDB removal. It must never
 // panic and must skip gracefully when the VXLAN interface is already gone or
 // when the underlying `bridge fdb del` reports a missing entry. No root and no
@@ -922,11 +936,7 @@ func TestVXLANManager_removePeerForwarding(t *testing.T) {
 	t.Run("stale FDB entry reported by bridge is tolerated", func(t *testing.T) {
 		// Inject a fake `bridge` that reports a missing entry, mimicking the
 		// stale-FDB case. removePeerForwarding should treat it as success.
-		dir := t.TempDir()
-		script := filepath.Join(dir, "bridge")
-		require.NoError(t, os.WriteFile(script,
-			[]byte("#!/bin/sh\necho 'RTNETLINK answers: No such file or directory'\nexit 1\n"), 0755))
-		t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+		fakeBridgeOnPath(t, "RTNETLINK answers: No such file or directory", 1)
 
 		mock := &MockNetlinkExecutor{
 			LinkByNameFunc: func(name string) (netlink.Link, error) {

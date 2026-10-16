@@ -173,15 +173,38 @@ func TestNetworkManager_PrepareNetwork_ErrorScenarios(t *testing.T) {
 					assert.Contains(t, err.Error(), tt.errMsg)
 				}
 			} else {
-				// In test environment without root, we expect bridge creation to fail
-				// but the logic should still execute
+				// These fixtures carry addresses, so they reach the platform
+				// layer, and which call fails depends on the host rather than on
+				// the code under test: with neither privileges nor a bridge yet,
+				// ensureBridge fails; with a leftover bridge but no CNI plugin,
+				// CNI ADD fails. Accept any platform stage, and tolerate real
+				// success. What the fixtures are checking is that the
+				// ID/address handling ran; see #84.
 				if err != nil {
-					assert.True(t, strings.Contains(err.Error(), "failed to ensure bridge") ||
-						strings.Contains(err.Error(), "failed to create TAP device"))
+					assert.True(t, isPlatformStageError(err), "unexpected error: %v", err)
 				}
 			}
 		})
 	}
+}
+
+// platformStageErrors are the calls PrepareNetwork can fail at once it is past
+// its own validation, in the order it makes them.
+var platformStageErrors = []string{
+	"failed to ensure bridge",
+	"failed to create TAP device",
+	"CNI ADD failed",
+}
+
+// isPlatformStageError reports whether err came from the platform layer rather
+// than from PrepareNetwork's own validation.
+func isPlatformStageError(err error) bool {
+	for _, stage := range platformStageErrors {
+		if strings.Contains(err.Error(), stage) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestNetworkManager_PrepareNetwork_ConcurrentMultipleTasks(t *testing.T) {
