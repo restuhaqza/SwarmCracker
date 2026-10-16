@@ -117,9 +117,10 @@ func newServicePSCommand() *cobra.Command {
 		Short: "List tasks of a service",
 		Long: `List all tasks belonging to a service.
 
-The HEALTH column shows the daemon's live healthcheck state for each task,
-fetched from the node that owns it, falling back to the health-gated task state
-when a node cannot be reached.`,
+The HEALTH column shows the daemon's live healthcheck state for each task, read
+from the node that owns it. A task the owning node has not published health for
+falls back to the health-gated task state; a node that cannot be reached shows
+"-".`,
 		Example: `  swarmcracker service ps my-service
   swarmcracker service ps --format json my-service
   swarmcracker service ps --no-health my-service`,

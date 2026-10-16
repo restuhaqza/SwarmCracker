@@ -8,7 +8,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -24,6 +26,15 @@ const (
 	// healthRequestTimeout bounds each per-node health request, so one slow or
 	// unreachable node cannot stall `service ps`/`task ls`.
 	healthRequestTimeout = 3 * time.Second
+	// healthFanoutTimeout bounds the whole fan-out: a cluster whose node
+	// addresses silently drop traffic must not eat the command's own 30s budget.
+	healthFanoutTimeout = 10 * time.Second
+	// healthMaxConcurrency caps how many node requests are in flight at once.
+	healthMaxConcurrency = 8
+	// healthLoopbackAddr is tried for a node whose own address did not answer.
+	// The CLI usually runs on a node, and a daemon keeping the default
+	// 127.0.0.1 bind is only reachable there.
+	healthLoopbackAddr = "127.0.0.1"
 	// maxHealthResponseBytes caps how much of a node's response is decoded.
 	maxHealthResponseBytes = 1 << 20
 )
@@ -62,7 +73,8 @@ type liveHealth struct {
 // fetchLiveHealth queries the health endpoint of every node that hosts a
 // healthchecked task in tasks, and returns the live health it collected. It
 // never fails the command: a node that is unreachable, unknown, or running an
-// older daemon simply stays absent from reachable.
+// older daemon simply stays absent from reachable (and its tasks fall back to
+// the derived value).
 func fetchLiveHealth(ctx context.Context, client api.ControlClient, tasks []*api.Task, opts clusterHealthOptions) liveHealth {
 	lh := liveHealth{
 		enabled:   !opts.Disabled,
@@ -74,14 +86,15 @@ func fetchLiveHealth(ctx context.Context, client api.ControlClient, tasks []*api
 	}
 
 	// Only healthchecked tasks can have live health, and only tasks that are
-	// already assigned to a node can be looked up.
-	needed := map[string]struct{}{}
+	// already assigned to a node can be looked up. Keep each node's task IDs so a
+	// loopback answer can only be attributed to the node that owns them.
+	nodeTasks := map[string][]string{}
 	for _, task := range tasks {
 		if taskDeclaresHealthcheck(task) && task.NodeID != "" {
-			needed[task.NodeID] = struct{}{}
+			nodeTasks[task.NodeID] = append(nodeTasks[task.NodeID], task.ID)
 		}
 	}
-	if len(needed) == 0 {
+	if len(nodeTasks) == 0 {
 		return lh
 	}
 
@@ -95,30 +108,111 @@ func fetchLiveHealth(ctx context.Context, client api.ControlClient, tasks []*api
 		addrByNode[n.ID] = n.Status.Addr
 	}
 
+	// Deterministic order keeps the output (and any debugging) stable.
+	nodeIDs := make([]string, 0, len(nodeTasks))
+	for id := range nodeTasks {
+		nodeIDs = append(nodeIDs, id)
+	}
+	sort.Strings(nodeIDs)
+
 	httpClient := opts.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: healthRequestTimeout}
 	}
 
-	for nodeID := range needed {
+	rows, answered := fanOutNodeHealth(ctx, httpClient, nodeIDs, addrByNode, opts.Port)
+
+	var pending []string
+	for _, nodeID := range nodeIDs {
+		if answered[nodeID] {
+			lh.reachable[nodeID] = true
+			for _, row := range rows[nodeID] {
+				lh.byTask[row.TaskID] = row.VMHealth
+			}
+			continue
+		}
+		pending = append(pending, nodeID)
+	}
+
+	// A node whose own address did not answer may still be this machine, whose
+	// daemon kept the default loopback bind. Accept the loopback answer only for
+	// nodes that own a task it reports, so another node's endpoint can never be
+	// misattributed.
+	if len(pending) > 0 {
+		loopRows, loopAnswered, _ := getNodeTaskHealth(ctx, httpClient, healthLoopbackAddr, opts.Port)
+		if loopAnswered {
+			owned := make(map[string]bool, len(loopRows))
+			for _, row := range loopRows {
+				owned[row.TaskID] = true
+			}
+			for _, nodeID := range pending {
+				if !ownsAny(nodeTasks[nodeID], owned) {
+					continue
+				}
+				lh.reachable[nodeID] = true
+				for _, id := range nodeTasks[nodeID] {
+					for _, row := range loopRows {
+						if row.TaskID == id {
+							lh.byTask[row.TaskID] = row.VMHealth
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return lh
+}
+
+// fanOutNodeHealth queries every node that has an address, concurrently and
+// bounded, and reports what each node answered.
+func fanOutNodeHealth(ctx context.Context, client *http.Client, nodeIDs []string, addrByNode map[string]string, port int) (map[string][]runtime.TaskHealth, map[string]bool) {
+	rows := make(map[string][]runtime.TaskHealth, len(nodeIDs))
+	answered := make(map[string]bool, len(nodeIDs))
+
+	type result struct {
+		nodeID   string
+		rows     []runtime.TaskHealth
+		answered bool
+	}
+	results := make([]result, len(nodeIDs))
+
+	fctx, cancel := context.WithTimeout(ctx, healthFanoutTimeout)
+	defer cancel()
+
+	sem := make(chan struct{}, healthMaxConcurrency)
+	var wg sync.WaitGroup
+	for i, nodeID := range nodeIDs {
 		addr := addrByNode[nodeID]
 		if addr == "" {
 			continue
 		}
-		rows, err := getNodeTaskHealth(ctx, httpClient, addr, opts.Port)
-		if err != nil {
+		wg.Add(1)
+		go func(i int, nodeID, addr string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			r, ok, _ := getNodeTaskHealth(fctx, client, addr, port)
+			results[i] = result{nodeID: nodeID, rows: r, answered: ok}
+		}(i, nodeID, addr)
+	}
+	wg.Wait()
+
+	for _, r := range results {
+		if r.nodeID == "" {
 			continue
 		}
-		lh.reachable[nodeID] = true
-		for _, row := range rows {
-			lh.byTask[row.TaskID] = row.VMHealth
-		}
+		rows[r.nodeID] = r.rows
+		answered[r.nodeID] = r.answered
 	}
-	return lh
+	return rows, answered
 }
 
-// getNodeTaskHealth fetches one node's live per-task health.
-func getNodeTaskHealth(ctx context.Context, client *http.Client, addr string, port int) ([]runtime.TaskHealth, error) {
+// getNodeTaskHealth fetches one node's live per-task health. answered reports
+// whether the node responded at all: a non-200 (for example a 404 from a daemon
+// without the endpoint) or an undecodable body still means the node is up, so
+// its tasks should fall back to the derived value rather than to "-".
+func getNodeTaskHealth(ctx context.Context, client *http.Client, addr string, port int) (tasks []runtime.TaskHealth, answered bool, err error) {
 	u := url.URL{
 		Scheme: "http",
 		Host:   net.JoinHostPort(addr, strconv.Itoa(port)),
@@ -126,34 +220,47 @@ func getNodeTaskHealth(ctx context.Context, client *http.Client, addr string, po
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("health endpoint returned %s", resp.Status)
+		return nil, true, fmt.Errorf("health endpoint returned %s", resp.Status)
 	}
 
 	var out runtime.TaskHealthResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxHealthResponseBytes)).Decode(&out); err != nil {
-		return nil, err
+		return nil, true, err
 	}
-	return out.Tasks, nil
+	return out.Tasks, true, nil
+}
+
+// ownsAny reports whether ids intersects set.
+func ownsAny(ids []string, set map[string]bool) bool {
+	for _, id := range ids {
+		if set[id] {
+			return true
+		}
+	}
+	return false
 }
 
 // taskHealthDisplay is the value shown in the HEALTH column: the daemon's live
 // state when it could be fetched, otherwise the state-derived value, and "-"
-// when the owning node could not be reached (never a possibly-wrong value).
+// when the owning node could not be reached at all (never a possibly-wrong
+// value).
 func taskHealthDisplay(task *api.Task, lh liveHealth) string {
 	if !taskDeclaresHealthcheck(task) {
 		return "-"
 	}
-	if !lh.enabled {
+	// A terminal task has no live health to show: the derived value is the
+	// honest one, and a sidecar that has not been swept yet must not outrank it.
+	if !lh.enabled || !liveHealthApplies(task.Status.State) {
 		return taskHealth(task)
 	}
 	if h, ok := lh.byTask[task.ID]; ok {
@@ -165,6 +272,19 @@ func taskHealthDisplay(task *api.Task, lh liveHealth) string {
 		return taskHealth(task)
 	}
 	return "-"
+}
+
+// liveHealthApplies reports whether a task's state is one where a live
+// healthcheck verdict is meaningful — the VM is up, or is being health-gated
+// towards RUNNING. Terminal states carry their own verdict (FAILED) or none.
+func liveHealthApplies(state api.TaskState) bool {
+	switch state {
+	case api.TaskStateFailed, api.TaskStateRejected, api.TaskStateCompleted,
+		api.TaskStateShutdown, api.TaskStateRemove, api.TaskStateOrphaned:
+		return false
+	default:
+		return true
+	}
 }
 
 // taskWithHealth wraps a SwarmKit task so its JSON representation also carries
@@ -182,9 +302,11 @@ func writeTasksJSON(w io.Writer, tasks []*api.Task, lh liveHealth) error {
 	withHealth := make([]taskWithHealth, 0, len(tasks))
 	for _, task := range tasks {
 		row := taskWithHealth{Task: task, Health: taskHealthDisplay(task, lh)}
-		if h, ok := lh.byTask[task.ID]; ok && taskDeclaresHealthcheck(task) {
-			live := h
-			row.LiveHealth = &live
+		if taskDeclaresHealthcheck(task) && liveHealthApplies(task.Status.State) {
+			if h, ok := lh.byTask[task.ID]; ok {
+				live := h
+				row.LiveHealth = &live
+			}
 		}
 		withHealth = append(withHealth, row)
 	}

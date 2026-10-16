@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -312,6 +313,14 @@ func TestServicePSCommandFlags(t *testing.T) {
 	noTruncFlag := cmd.Flags().Lookup("no-trunc")
 	assert.NotNil(t, noTruncFlag)
 	assert.Equal(t, "false", noTruncFlag.DefValue)
+
+	healthPortFlag := cmd.Flags().Lookup("health-port")
+	assert.NotNil(t, healthPortFlag)
+	assert.Equal(t, strconv.Itoa(defaultHealthPort), healthPortFlag.DefValue)
+
+	noHealthFlag := cmd.Flags().Lookup("no-health")
+	assert.NotNil(t, noHealthFlag)
+	assert.Equal(t, "false", noHealthFlag.DefValue)
 }
 
 // TestServiceScaleCommand tests the scale command

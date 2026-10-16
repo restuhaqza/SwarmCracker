@@ -261,9 +261,11 @@ which `service ps` / `task ls` fan out to:
 [Container Healthchecks](/guides/operations/#seeing-health)). Tasks that declare
 no healthcheck are absent. The response is deterministic (sorted by `task_id`).
 
-**Trust model.** Health only — no secrets, no authentication. The bind address
-(`--health-addr`, default `127.0.0.1:8080`) is the boundary; binding it on the
-cluster network exposes the same information as `/healthz` and `/metrics`.
+**Trust model.** Health only — no authentication; the payload is the healthcheck
+state plus the probe's last bounded output, which can carry whatever the check
+printed. The bind address (`--health-addr`, default `127.0.0.1:8080`) is the
+boundary; binding it on the cluster network exposes the same information as
+`/healthz` and `/metrics`.
 
 
 ---

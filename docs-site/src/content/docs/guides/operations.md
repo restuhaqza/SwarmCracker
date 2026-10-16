@@ -235,14 +235,24 @@ endpoint is not exposed and you do not want any extra requests. An invalid
 `--health-port` is rejected; it is never silently ignored.
 
 **Trust model.** The endpoint returns health only — state, failing streak, the
-probe command and its last (bounded) output. There is no authentication and no
-secret. The bind address *is* the boundary: the default `127.0.0.1:8080` exposes
-it to nothing, and binding `0.0.0.0` exposes it to the cluster network exactly
-like the existing `/healthz` and `/metrics` (which are on the same server).
+probe command and its last (bounded) output, which can contain whatever the
+check itself printed. There is no authentication. The bind address *is* the
+boundary: the default `127.0.0.1:8080` exposes it to nothing, and binding `0.0.0.0`
+exposes it to the cluster network exactly like the existing `/healthz` and
+`/metrics` (which are on the same server).
 
-A node running an older daemon, or one whose health server is not reachable,
-simply contributes no live values: that node's tasks degrade to the derived
-value, or to `-` if the node is unreachable entirely. The command still succeeds.
+The CLI queries each task's node at `Node.Status.Addr` (the address the manager
+observed) on that port. If a node's own address does not answer, the CLI also
+tries `127.0.0.1` there — the daemon's default bind — and accepts the answer only
+for nodes that own a task it reports. So a daemon on the machine the CLI runs on
+is reached even with the default loopback bind, while a genuinely remote node
+whose daemon is not exposed shows `-` rather than a possibly-wrong value. A node
+that *did* answer, but has no live row for a task (an older daemon without the
+endpoint, or a task that has not started yet), falls back to the derived value.
+
+Exposing the endpoint is therefore what buys a cluster-wide live column, not just
+an optimisation. `--no-health` is the escape hatch when it is not exposed and you
+would rather see the derived value than `-`.
 
 #### Live health on a single node
 

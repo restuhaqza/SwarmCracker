@@ -58,8 +58,9 @@ func newTaskListCommand() *cobra.Command {
 		Long: `List all tasks in the SwarmCracker cluster.
 
 Tasks are the individual units of work that run on nodes. The HEALTH column
-shows the daemon's live healthcheck state, fetched from the node owning each
-task, falling back to the health-gated task state when a node cannot be reached.`,
+shows the daemon's live healthcheck state, read from the node owning each task;
+a task the owning node has not published health for falls back to the
+health-gated task state, and a node that cannot be reached shows "-".`,
 		Aliases: []string{"list"},
 		Example: `  swarmcracker task ls
   swarmcracker task ls --format json

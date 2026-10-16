@@ -64,7 +64,16 @@ func TestTaskHealthHandler_RejectsNonGET(t *testing.T) {
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
 	}
-	if allow := rec.Header().Get("Allow"); allow != http.MethodGet {
-		t.Errorf("Allow = %q, want %q", allow, http.MethodGet)
+	if allow := rec.Header().Get("Allow"); allow != "GET, HEAD" {
+		t.Errorf("Allow = %q, want %q", allow, "GET, HEAD")
+	}
+}
+
+func TestTaskHealthHandler_AllowsHEAD(t *testing.T) {
+	rec := httptest.NewRecorder()
+	taskHealthHandler(t.TempDir()).ServeHTTP(rec, httptest.NewRequest(http.MethodHead, runtime.TaskHealthPath, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 }

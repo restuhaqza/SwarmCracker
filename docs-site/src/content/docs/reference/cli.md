@@ -239,12 +239,14 @@ service VIP.
 
 `service ps` (and `task ls`) print a `HEALTH` column. It is the **live**
 healthcheck state fetched from the node owning each task (`starting`, `healthy`,
-`failing`, `unhealthy`) when that node's health server is reachable, and the
-**derived** health-gated state otherwise (`STARTING` while the task is still
-being checked, `RUNNING` once a check has passed, `FAILED` when the task failed
-its checks). A task with no healthcheck, or one whose node cannot be reached,
-shows `-`. The same value is emitted as `health` by `--format json`, with the raw
-observation as `live_health` when it was fetched. See
+`failing`, `unhealthy`) when that node's health server is reachable; a node that
+answered without a live row for the task — an older daemon, or a task that has
+not started — and any terminal task fall back to the **derived** health-gated
+state (`STARTING` while the task is still being checked, `RUNNING` once a check
+has passed, `FAILED` when the task failed its checks). A task with no healthcheck,
+or one whose node did not answer at all, shows `-`. The same value is emitted as
+`health` by `--format json`, with the raw observation as `live_health` when it
+was fetched. See
 [Container Healthchecks](/guides/operations/#seeing-health) for the gated-rollout
 workflow, the live fan-out, and the API limitation behind the derived value.
 

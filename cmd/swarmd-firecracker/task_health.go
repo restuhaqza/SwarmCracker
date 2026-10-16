@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 
@@ -19,16 +20,21 @@ import (
 // on the cluster network only when the cluster-wide HEALTH column is wanted.
 func taskHealthHandler(socketDir string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
+		// Encode before touching the ResponseWriter so a marshal failure is a
+		// clean 500 rather than a truncated body with a superfluous header.
+		var buf bytes.Buffer
 		resp := runtime.TaskHealthResponse{Tasks: runtime.CollectTaskHealth(socketDir)}
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(resp); err != nil {
+		if err := json.NewEncoder(&buf).Encode(resp); err != nil {
 			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = buf.WriteTo(w)
 	})
 }
