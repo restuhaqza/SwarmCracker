@@ -169,18 +169,60 @@ and unprivileged in CI.
 ### T6 — verification
 
 - `go test ./pkg/network/` as **root** and as **`nobody`**, plus `-race` and
-  `-short`: zero failures in all four. Done: all four green.
+  `-short`: zero failures in all four on the lab.
+- **A clean host is the real test**, and the lab is not one: it carries the
+  leftovers (which is exactly how the original failures became invisible). The
+  suite is run in a throwaway privileged container built from `golang:1.26` plus
+  `iproute2`, `iptables`, `procps` and `kmod` — no leftover devices, and the
+  tooling the tests shell out to — as root and as uid 65534. Both PASS. Without
+  the tooling the container is not comparable (every test that reaches the
+  platform fails to exec `ip`), which is worth knowing before trusting such a
+  run.
 - `verify.sh <branch> main`: head-only empty, base-only = the tests this fixes.
 - CI, `gofmt`, `vet`, `golangci-lint`.
-- The lab is already on `main`, so the lab check *is* running the package there as
-  root and as `nobody`; nothing to deploy for a tests-and-docs branch.
+
+## Review round
+
+An independent review reproduced the environment properly (clean privileged
+container, both users) and found that the branch did **not** yet meet its own
+acceptance: a clean root host still failed.
+
+- **BLOCKER** `TestDefaultNetlinkExecutor_LinkAdd_Fail` created `test-br-xyz` and
+  asserted the creation failed. As root it succeeds, the assertion fails, and the
+  device is left behind — which is why the *next* root run passed and the lab
+  looked green. Fixed with a name longer than IFNAMSIZ (rejected for every user,
+  leaves nothing behind), plus an assertion that the name still does not exist.
+- The same dead-`NeighAdd` shape existed in
+  `TestVXLANManager_AddPeerForwarding_Errors/neigh add fails` (passes or fails
+  depending on a leftover `test-br-vxlan`), and
+  `.../peer forwarding fails for some peers` kept writing real FDB entries: both
+  now use the fake `bridge`, the latter with a per-peer script, and it asserts
+  which peers were recorded instead of only "no error".
+- `TestNetworkManager_CreateTapDevice_FullCreation` still asserted the retired
+  `tap-eth` name and skipped every assertion whenever creation failed — both
+  host-dependent and unable to catch a regression. It stubs the platform, takes
+  the subtest's `*testing.T` in its validators and asserts the naming contract.
+- `TestNetworkManager_CreateTapDevice_Comprehensive` never used its
+  `expectError` field and guarded every check behind `err == nil`, so it passed
+  with `createTapDevice` broken. Success is asserted explicitly now.
+- The first version of the CNI-path fix widened the accepted error to any of
+  three platform stages, which is close to accepting anything. With the bridge
+  stubbed the call deterministically reaches the CNI stage, so the assertion now
+  names that stage.
+- The positive cases added for the mock-injected tests only asserted `err == nil`,
+  which a regression that skips `LinkAdd`/`RouteAdd` also produces. They assert
+  the link and the route handed to the kernel instead.
+
+The review also confirmed what is *not* wrong: no test in the package calls
+`t.Parallel()`, so swapping the package-level `execCommand` and using `t.Setenv`
+are not races and cannot leak across tests.
 
 ## Acceptance
 
-`go test ./pkg/network/` passes for any user on any host (verified as root and as
-`nobody`, with and without `-race`/`-short`), the tests this issue covers no
-longer create real devices, routes or firewall rules, and their assertions
-describe what the code does today.
+`go test ./pkg/network/` passes for any user on any host — verified on the lab and
+in a **clean** privileged container as root and as an unprivileged uid — the tests
+this issue covers no longer create real devices, routes or firewall rules, and
+their assertions describe what the code does today.
 
 ## Notes
 
