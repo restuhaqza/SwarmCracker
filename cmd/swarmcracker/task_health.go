@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/redact"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
 
@@ -310,12 +311,12 @@ type taskWithHealth struct {
 
 // writeTasksJSON marshals tasks as JSON with the HEALTH value overlaying the
 // state-derived one, plus the raw live observation when it was fetched. Each
-// task is serialized through redactedTask, so a registry credential on its spec
+// task is serialized through redact.Task, so a registry credential on its spec
 // can never reach stdout.
 func writeTasksJSON(w io.Writer, tasks []*api.Task, lh liveHealth) error {
 	withHealth := make([]taskWithHealth, 0, len(tasks))
 	for _, task := range tasks {
-		row := taskWithHealth{Task: redactedTask(task), Health: taskHealthDisplay(task, lh)}
+		row := taskWithHealth{Task: redact.Task(task), Health: taskHealthDisplay(task, lh)}
 		if taskDeclaresHealthcheck(task) && liveHealthApplies(task.Status.State) {
 			if h, ok := lh.byTask[task.ID]; ok {
 				live := h

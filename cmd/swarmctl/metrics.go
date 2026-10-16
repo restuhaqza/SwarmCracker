@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/redact"
 )
 
 // getTaskMetrics retrieves resource metrics from a running Firecracker VM.
@@ -63,9 +64,24 @@ func getTaskMetrics(ctx context.Context, client api.ControlClient, taskID string
 	}
 }
 
-// printJSON marshals and prints a value as indented JSON.
+// marshalJSON renders v as the indented JSON swarmctl prints. Service and task
+// responses carry a registry credential on their container spec's PullOptions,
+// so they are redacted first (pkg/redact, the same implementation the
+// swarmcracker CLI uses): a credential must never reach stdout.
+func marshalJSON(v interface{}) ([]byte, error) {
+	switch obj := v.(type) {
+	case *api.Service:
+		v = redact.Service(obj)
+	case *api.Task:
+		v = redact.Task(obj)
+	}
+	return json.MarshalIndent(v, "", "  ")
+}
+
+// printJSON marshals and prints a value as indented JSON, redacting registry
+// credentials on service and task responses.
 func printJSON(v interface{}) {
-	data, err := json.MarshalIndent(v, "", "  ")
+	data, err := marshalJSON(v)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to marshal: %v\n", err)
 		os.Exit(1)

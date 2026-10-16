@@ -8,9 +8,14 @@ import (
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/redact"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// The redaction itself lives in pkg/redact, which cmd/swarmctl uses as well, and
+// is unit-tested there. These tests cover this binary's wiring: every JSON path
+// that prints a service or task must go through it.
 
 // testRegistryAuthPayload is a recognisable X-Registry-Auth payload — the base64
 // encoding of "secret-registry-auth-payload". Any output containing it has
@@ -40,7 +45,7 @@ func taskSpecMaskedJSON(t *testing.T, task *api.Task) string {
 	data, err := json.Marshal(task.Spec)
 	require.NoError(t, err)
 	require.Contains(t, string(data), testRegistryAuthPayload, "the fixture must carry the credential")
-	return strings.Replace(string(data), testRegistryAuthPayload, redactedRegistryAuth, 1)
+	return strings.Replace(string(data), testRegistryAuthPayload, redact.Placeholder, 1)
 }
 
 // specFromOutput extracts the "spec" object of the first task document in got,
@@ -81,13 +86,13 @@ func TestServiceJSONRedactsRegistryAuth(t *testing.T) {
 			require.NoError(t, err)
 
 			assert.NotContains(t, string(data), testRegistryAuthPayload, "the credential must never reach stdout")
-			assert.Contains(t, string(data), redactedRegistryAuth, "the placeholder must show that credentials are attached")
+			assert.Contains(t, string(data), redact.Placeholder, "the placeholder must show that credentials are attached")
 
 			// The rest of the spec round-trips: the document differs from the
 			// service's own JSON only in the masked credential.
 			original, err := json.Marshal(svc)
 			require.NoError(t, err)
-			expected := strings.Replace(string(original), testRegistryAuthPayload, redactedRegistryAuth, 1)
+			expected := strings.Replace(string(original), testRegistryAuthPayload, redact.Placeholder, 1)
 			assert.JSONEq(t, expected, bareServiceJSON(t, data), "only the credential may change")
 
 			assert.Equal(t, testRegistryAuthPayload, svc.Spec.Task.GetContainer().PullOptions.RegistryAuth,
@@ -119,7 +124,7 @@ func TestServiceJSONRedactsPreviousSpecRegistryAuth(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.NotContains(t, string(data), testRegistryAuthPayload)
-	assert.Equal(t, 2, strings.Count(string(data), redactedRegistryAuth), "spec and previous spec must both be masked")
+	assert.Equal(t, 2, strings.Count(string(data), redact.Placeholder), "spec and previous spec must both be masked")
 	assert.Equal(t, testRegistryAuthPayload, svc.PreviousSpec.Task.GetContainer().PullOptions.RegistryAuth,
 		"the previous spec must not be mutated")
 }
@@ -168,7 +173,7 @@ func TestTaskJSONRedactsRegistryAuth(t *testing.T) {
 func assertTaskOutputRedacted(t *testing.T, got string, task *api.Task) {
 	t.Helper()
 	assert.NotContains(t, got, testRegistryAuthPayload, "the credential must never reach stdout")
-	assert.Contains(t, got, redactedRegistryAuth, "the placeholder must show that credentials are attached")
+	assert.Contains(t, got, redact.Placeholder, "the placeholder must show that credentials are attached")
 	assert.JSONEq(t, taskSpecMaskedJSON(t, task), specFromOutput(t, got), "only the credential may change in the spec")
 	assert.Equal(t, testRegistryAuthPayload, task.Spec.GetContainer().PullOptions.RegistryAuth,
 		"redaction must not mutate the task object")
@@ -205,7 +210,7 @@ func TestTaskTableOutputCannotCarryRegistryAuth(t *testing.T) {
 			var buf bytes.Buffer
 			require.NoError(t, run(&buf))
 			assert.NotContains(t, buf.String(), testRegistryAuthPayload)
-			assert.NotContains(t, buf.String(), redactedRegistryAuth)
+			assert.NotContains(t, buf.String(), redact.Placeholder)
 		})
 	}
 }
@@ -215,17 +220,17 @@ func TestTaskTableOutputCannotCarryRegistryAuth(t *testing.T) {
 // placeholder.
 func TestJSONWithoutRegistryAuthIsUnchanged(t *testing.T) {
 	svc := serviceWithRegistryAuth(t, "")
-	assert.Nil(t, redactedService(svc).Spec.Task.GetContainer().PullOptions, "a credential-less spec must keep a nil PullOptions")
+	assert.Nil(t, redact.Service(svc).Spec.Task.GetContainer().PullOptions, "a credential-less spec must keep a nil PullOptions")
 
 	data, err := marshalServiceJSON(svc, true)
 	require.NoError(t, err)
 	expected, err := json.MarshalIndent(svc, "", "  ")
 	require.NoError(t, err)
 	assert.JSONEq(t, string(expected), string(data))
-	assert.NotContains(t, string(data), redactedRegistryAuth)
+	assert.NotContains(t, string(data), redact.Placeholder)
 
 	task := taskWithRegistryAuth("task-0000000000000000001", "")
-	assert.Nil(t, redactedTask(task).Spec.GetContainer().PullOptions)
+	assert.Nil(t, redact.Task(task).Spec.GetContainer().PullOptions)
 
 	client := &fakeTaskClient{tasks: []*api.Task{task}}
 	var buf bytes.Buffer
@@ -235,11 +240,11 @@ func TestJSONWithoutRegistryAuthIsUnchanged(t *testing.T) {
 	assert.JSONEq(t, string(expectedTask), buf.String())
 }
 
-// TestRedactedNilSpecs covers the nil guards the JSON paths rely on: a nil
-// service or task copies to nil rather than panicking.
-func TestRedactedNilSpecs(t *testing.T) {
-	assert.Nil(t, redactedService(nil))
-	assert.Nil(t, redactedTask(nil))
+// TestRedactedNilServiceMarshal covers the nil guard the service JSON path
+// relies on: a nil service copies to nil and marshals as null rather than
+// panicking.
+func TestRedactedNilServiceMarshal(t *testing.T) {
+	assert.Nil(t, redact.Service(nil))
 
 	data, err := marshalServiceJSON(nil, true)
 	require.NoError(t, err)
