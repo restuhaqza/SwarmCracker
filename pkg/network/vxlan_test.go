@@ -393,15 +393,19 @@ func TestVXLANManager_addPeerForwarding(t *testing.T) {
 	}
 }
 
+// TestVXLANManager_AddRouteToSubnet covers route validation and the two
+// platform outcomes. Each case injects its own executor: with the real one the
+// outcome depended on the host — as root a leftover "br0" made the route add
+// succeed, so no error came back, the assertion failed and the route leaked into
+// the host's routing table (#84).
 func TestVXLANManager_AddRouteToSubnet(t *testing.T) {
-	mgr := NewVXLANManager("br0", 42, "10.0.0.1/24", nil)
-
 	tests := []struct {
 		name            string
 		remoteSubnet    string
 		remoteOverlayIP string
 		wantErr         bool
 		errContains     string
+		netlink         NetlinkExecutor
 	}{
 		{
 			name:            "invalid subnet - empty",
@@ -457,13 +461,30 @@ func TestVXLANManager_AddRouteToSubnet(t *testing.T) {
 			remoteSubnet:    "192.168.2.0/24",
 			remoteOverlayIP: "10.0.0.2",
 			wantErr:         true,
-			errContains:     "", // Accept any error (could be "bridge not found" or "operation not permitted")
+			errContains:     "bridge not found",
+		},
+		{
+			name:            "valid CIDRs and a present bridge",
+			remoteSubnet:    "192.168.2.0/24",
+			remoteOverlayIP: "10.0.0.2",
+			wantErr:         false,
+			netlink: &MockNetlinkExecutor{
+				LinkByNameFunc: func(name string) (netlink.Link, error) {
+					return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
+				},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := mgr.AddRouteToSubnet(tt.remoteSubnet, tt.remoteOverlayIP)
+			exec := tt.netlink
+			if exec == nil {
+				exec = missingLinksExecutor()
+			}
+
+			err := NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, exec).
+				AddRouteToSubnet(tt.remoteSubnet, tt.remoteOverlayIP)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("AddRouteToSubnet() error = %v, wantErr %v", err, tt.wantErr)
@@ -637,6 +658,19 @@ func TestVXLANManager_StopPeerDiscovery(t *testing.T) {
 	})
 }
 
+// missingLinksExecutor returns a mock whose LinkByName reports "not found" for
+// every name, so a VXLAN manager can be driven without a real device. The VXLAN
+// tests used the real executor, and then a host that happened to have a leftover
+// device with the same name (the suite creates them when run as root) changed
+// their outcome entirely (#84).
+func missingLinksExecutor() *MockNetlinkExecutor {
+	return &MockNetlinkExecutor{
+		LinkByNameFunc: func(name string) (netlink.Link, error) {
+			return nil, fmt.Errorf("link not found: %s", name)
+		},
+	}
+}
+
 func TestVXLANManager_SetupVXLAN(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -679,13 +713,16 @@ func TestVXLANManager_SetupVXLAN(t *testing.T) {
 			physInterface: "eth0",
 			localIP:       "192.168.1.10",
 			wantErr:       true,
-			// Could fail at various stages (interface not found, bridge not found, etc.)
+			errContains:   "physical interface",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mgr := NewVXLANManager("br0", 42, "10.0.0.1/24", nil)
+			// Neither the VXLAN nor the physical interface exists, so
+			// createVXLANInterface always reaches the input validation these
+			// cases are about.
+			mgr := NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, missingLinksExecutor())
 			err := mgr.SetupVXLAN(tt.physInterface, tt.localIP)
 
 			if (err != nil) != tt.wantErr {
@@ -703,8 +740,6 @@ func TestVXLANManager_SetupVXLAN(t *testing.T) {
 }
 
 func TestVXLANManager_createVXLANInterface(t *testing.T) {
-	mgr := NewVXLANManager("br0", 42, "10.0.0.1/24", nil)
-
 	tests := []struct {
 		name          string
 		vxlanName     string
@@ -712,6 +747,7 @@ func TestVXLANManager_createVXLANInterface(t *testing.T) {
 		localIP       string
 		wantErr       bool
 		errContains   string
+		netlink       NetlinkExecutor
 	}{
 		{
 			name:          "invalid local IP - empty",
@@ -759,12 +795,44 @@ func TestVXLANManager_createVXLANInterface(t *testing.T) {
 			physInterface: "lo", // loopback exists
 			localIP:       "127.0.0.1",
 			wantErr:       true,
-			// May fail at netlink.LinkAdd stage
+			errContains:   "failed to add VXLAN link",
+			netlink: &MockNetlinkExecutor{
+				LinkByNameFunc: func(name string) (netlink.Link, error) {
+					if name == "lo" {
+						return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
+					}
+					return nil, fmt.Errorf("link not found: %s", name)
+				},
+				LinkAddFunc: func(netlink.Link) error {
+					return fmt.Errorf("operation not permitted")
+				},
+			},
+		},
+		{
+			name:          "creates the interface when the links exist",
+			vxlanName:     "br0-vxlan",
+			physInterface: "lo",
+			localIP:       "127.0.0.1",
+			wantErr:       false,
+			netlink: &MockNetlinkExecutor{
+				LinkByNameFunc: func(name string) (netlink.Link, error) {
+					if name == "lo" {
+						return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
+					}
+					return nil, fmt.Errorf("link not found: %s", name)
+				},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			exec := tt.netlink
+			if exec == nil {
+				exec = missingLinksExecutor()
+			}
+			mgr := NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, exec)
+
 			err := mgr.createVXLANInterface(tt.vxlanName, tt.physInterface, tt.localIP)
 
 			if (err != nil) != tt.wantErr {

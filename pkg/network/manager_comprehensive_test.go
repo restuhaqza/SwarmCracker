@@ -657,6 +657,11 @@ func TestNetworkManager_CreateTapDevice_Comprehensive(t *testing.T) {
 		t.Skip("Skipping TAP creation test in short mode")
 	}
 
+	// The stub makes every `ip` call succeed, so each case reaches its
+	// assertions without creating real devices and without depending on
+	// privileges (#84).
+	stubExec(t)
+
 	tests := []struct {
 		name        string
 		setupFunc   func(*NetworkManager)
@@ -691,7 +696,8 @@ func TestNetworkManager_CreateTapDevice_Comprehensive(t *testing.T) {
 				if err == nil && tap != nil {
 					assert.Equal(t, "br-custom", tap.Bridge, "Should use custom bridge")
 					assert.NotEmpty(t, tap.Name, "Should have TAP name")
-					assert.Contains(t, tap.Name, "tap-eth", "Should have tap-eth prefix")
+					assert.Contains(t, tap.Name, "tap-", "Should have tap- prefix")
+					assertTapName(t, tap.Name, 0)
 				}
 			},
 		},
@@ -717,7 +723,7 @@ func TestNetworkManager_CreateTapDevice_Comprehensive(t *testing.T) {
 			validate: func(t *testing.T, tap *TapDevice, err error) {
 				if err == nil && tap != nil {
 					assert.Equal(t, "br-default", tap.Bridge, "Should use default bridge")
-					assert.Contains(t, tap.Name, "tap-eth1", "Should have correct index")
+					assertTapName(t, tap.Name, 1)
 				}
 			},
 		},
@@ -742,7 +748,7 @@ func TestNetworkManager_CreateTapDevice_Comprehensive(t *testing.T) {
 			expectError: false,
 			validate: func(t *testing.T, tap *TapDevice, err error) {
 				if err == nil && tap != nil {
-					assert.Contains(t, tap.Name, "tap-eth10", "Should have high index")
+					assertTapName(t, tap.Name, 10)
 				}
 			},
 		},
