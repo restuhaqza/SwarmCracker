@@ -1,9 +1,7 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"runtime"
 	"time"
@@ -214,15 +212,10 @@ func taskStateString(state types.TaskState) string {
 // once healthy, and ends FAILED when the check fails at start or the task goes
 // unhealthy while running. Tasks that declare no healthcheck report "-".
 //
-// Known limitation: because the value is state-derived, a RUNNING task that is
-// currently failing checks still reports RUNNING until its retries are
-// exhausted and it becomes FAILED.
+// This is the fallback for when the daemon's live health cannot be fetched; see
+// taskHealthDisplay for the live-overlaid value.
 func taskHealth(task *api.Task) string {
-	if task == nil {
-		return "-"
-	}
-	container := task.Spec.GetContainer()
-	if container == nil || container.Healthcheck == nil {
+	if !taskDeclaresHealthcheck(task) {
 		return "-"
 	}
 
@@ -240,23 +233,12 @@ func taskHealth(task *api.Task) string {
 	}
 }
 
-// taskWithHealth wraps a SwarmKit task so its JSON representation also carries
-// the derived HEALTH value, without mutating or forking the API type.
-type taskWithHealth struct {
-	*api.Task
-	Health string `json:"health"`
-}
-
-// writeTasksJSON marshals tasks as JSON with the derived health added to each.
-func writeTasksJSON(w io.Writer, tasks []*api.Task) error {
-	withHealth := make([]taskWithHealth, 0, len(tasks))
-	for _, task := range tasks {
-		withHealth = append(withHealth, taskWithHealth{Task: task, Health: taskHealth(task)})
+// taskDeclaresHealthcheck reports whether a task's container declares a
+// healthcheck. Only such a task can have a live health value.
+func taskDeclaresHealthcheck(task *api.Task) bool {
+	if task == nil {
+		return false
 	}
-	data, err := json.MarshalIndent(withHealth, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal tasks: %w", err)
-	}
-	fmt.Fprintln(w, string(data))
-	return nil
+	container := task.Spec.GetContainer()
+	return container != nil && container.Healthcheck != nil
 }

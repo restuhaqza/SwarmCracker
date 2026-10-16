@@ -358,7 +358,10 @@ Where logs are written. Use a file path like `/var/log/swarmcracker/daemon.log` 
 > **Not implemented.** The `metrics` section (`enabled`, `address`, `format`)
 > is accepted by the config loader but has no consumers. Prometheus metrics are
 > always served by the daemon's health server at
-> `http://127.0.0.1:8080/metrics` (configurable with `--health-addr`).
+> `http://127.0.0.1:8080/metrics` (configurable with `--health-addr`). The same
+> server exposes `/healthz` and the live per-task health at `/v1/tasks/health`
+> that `service ps` / `task ls` fan out to; see
+> [Container Healthchecks](/guides/operations/#live-health-cluster-wide).
 
 ---
 

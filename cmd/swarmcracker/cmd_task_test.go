@@ -140,7 +140,7 @@ func TestListTasksHealthColumn(t *testing.T) {
 	}}
 
 	var buf bytes.Buffer
-	require.NoError(t, listTasksWithClient(context.Background(), client, &buf, "table", "", false, false, false, "", ""))
+	require.NoError(t, listTasksWithClient(context.Background(), client, &buf, "table", "", false, false, false, "", "", derivedHealthOptions()))
 
 	out := buf.String()
 	assert.Contains(t, out, "ID")
@@ -163,7 +163,7 @@ func TestListTasksJSONHealth(t *testing.T) {
 	}}
 
 	var buf bytes.Buffer
-	require.NoError(t, listTasksWithClient(context.Background(), client, &buf, "json", "", false, false, false, "", ""))
+	require.NoError(t, listTasksWithClient(context.Background(), client, &buf, "json", "", false, false, false, "", "", derivedHealthOptions()))
 
 	var got []map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
@@ -182,7 +182,7 @@ func TestListTasksQuietUnchanged(t *testing.T) {
 	}}
 
 	var buf bytes.Buffer
-	require.NoError(t, listTasksWithClient(context.Background(), client, &buf, "table", "", true, false, false, "", ""))
+	require.NoError(t, listTasksWithClient(context.Background(), client, &buf, "table", "", true, false, false, "", "", derivedHealthOptions()))
 
 	assert.Equal(t, "task-healthy-000000000000\n", buf.String())
 }

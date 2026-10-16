@@ -39,9 +39,11 @@ const (
 )
 
 // VMHealth is the daemon's live view of a task's healthcheck. It is written
-// next to the VM socket and read by node-local commands (`vm status`, `vm
-// list`), which are the only ones that can see it: SwarmKit has no health field
-// and never polls a running task's status, so this cannot travel cluster-wide.
+// next to the VM socket and read by the node-local commands (`vm status`, `vm
+// list`) and by the daemon's per-node health endpoint, which `service ps`/`task
+// ls` fan out to. SwarmKit itself has no health field and never polls a running
+// task's status, so the value travels through that endpoint rather than through
+// the task store.
 type VMHealth struct {
 	// State is HealthStarting, HealthHealthy, HealthFailing or HealthUnhealthy.
 	State string `json:"state"`
