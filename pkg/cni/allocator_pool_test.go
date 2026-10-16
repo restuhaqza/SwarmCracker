@@ -1,12 +1,43 @@
 package cni
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestAllocate_UnusableRecordedVXLANIsReplaced covers the defensive branch: a recorded
+// VNI that cannot be read, or is out of range, must be ignored with a warning rather
+// than silently becoming the network's VNI. The network still has to come out with a
+// usable one.
+func TestAllocate_UnusableRecordedVXLANIsReplaced(t *testing.T) {
+	for _, recorded := range []string{"not-a-number", "0", "16777216", "4294967296"} {
+		t.Run(recorded, func(t *testing.T) {
+			a := newTestAllocator(t)
+			n := &api.Network{
+				ID: "net-bad",
+				Spec: api.NetworkSpec{
+					Annotations:  api.Annotations{Name: "bad"},
+					DriverConfig: &api.Driver{Name: "vxlan"},
+				},
+				DriverState: &api.Driver{Options: map[string]string{"vxlan_vni": recorded}},
+			}
+
+			require.NoError(t, a.Allocate(n))
+			require.NotNil(t, n.DriverState)
+			vni := n.DriverState.Options["vxlan_vni"]
+			assert.NotEqual(t, recorded, vni, "an unusable recorded VNI must be replaced")
+
+			parsed, err := strconv.ParseUint(vni, 10, 32)
+			require.NoError(t, err, "the replacement must be a number")
+			assert.NotZero(t, parsed)
+			assert.Less(t, parsed, uint64(16777215), "the replacement must be in range")
+		})
+	}
+}
 
 // TestAllocate_AutoAllocatedSubnetSurvivesAnUpgrade is the regression test for the
 // hazard the review found: an auto-allocated network has no requested subnet, so a
@@ -25,15 +56,21 @@ func TestAllocate_AutoAllocatedSubnetSurvivesAnUpgrade(t *testing.T) {
 	require.NoError(t, err)
 
 	n := &api.Network{
-		ID:   "net-auto",
-		Spec: api.NetworkSpec{Annotations: api.Annotations{Name: "auto"}},
+		ID: "net-auto",
+		Spec: api.NetworkSpec{
+			Annotations:  api.Annotations{Name: "auto"},
+			DriverConfig: &api.Driver{Name: "vxlan"},
+		},
 	}
 	require.NoError(t, oldAlloc.Allocate(n))
 	require.NotNil(t, n.IPAM)
 	require.NotEmpty(t, n.IPAM.Configs)
-	recorded := n.IPAM.Configs[0].Subnet
-	require.Equal(t, "192.168.127.0/24", recorded,
+	recordedSubnet := n.IPAM.Configs[0].Subnet
+	require.Equal(t, "192.168.127.0/24", recordedSubnet,
 		"the pre-fix pool hands out the flat L2 subnet")
+	require.NotNil(t, n.DriverState)
+	recordedVNI := n.DriverState.Options["vxlan_vni"]
+	require.NotEmpty(t, recordedVNI, "an overlay network records its VNI")
 
 	// The upgrade: the same network is re-allocated by a daemon that now carves
 	// user networks from the overlay pool.
@@ -45,9 +82,22 @@ func TestAllocate_AutoAllocatedSubnetSurvivesAnUpgrade(t *testing.T) {
 	newAlloc, err := NewCNINetworkAllocator(newProvider, nil)
 	require.NoError(t, err)
 
+	// A decoy is allocated first, so a value that was regenerated rather than kept
+	// would come out different (a restart re-allocates in an arbitrary order).
+	decoy := &api.Network{
+		ID: "net-decoy",
+		Spec: api.NetworkSpec{
+			Annotations:  api.Annotations{Name: "decoy"},
+			DriverConfig: &api.Driver{Name: "vxlan"},
+		},
+	}
+	require.NoError(t, newAlloc.Allocate(decoy))
+
 	require.NoError(t, newAlloc.Allocate(n))
-	assert.Equal(t, recorded, n.IPAM.Configs[0].Subnet,
+	assert.Equal(t, recordedSubnet, n.IPAM.Configs[0].Subnet,
 		"an upgrade must not move an auto-allocated network's subnet")
+	assert.Equal(t, recordedVNI, n.DriverState.Options["vxlan_vni"],
+		"an upgrade must not renumber a network's VNI (#80)")
 }
 
 // TestAllocate_DeletedNetworkReleasesItsSubnet is the other half of the review's
