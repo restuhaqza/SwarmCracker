@@ -76,6 +76,10 @@ func TestNetworkManager_PrepareNetwork_EmptyNetworks(t *testing.T) {
 
 	require.NoError(t, nm.PrepareNetwork(context.Background(), task))
 
+	// prepareNetworkWithCNI is not involved and the platform is stubbed, so the
+	// default TAP is the only device. Note the map holds one entry even though
+	// PrepareNetwork calls createTapDevice twice for this case (manager.go:664
+	// then the per-attachment loop at :689, which rebuilds the same name).
 	devices := snapshotTapDevices(nm)
 	require.Len(t, devices, 1, "a task with no attachment gets exactly one default TAP")
 	assert.Equal(t, "br0", devices[0].Bridge, "the default TAP goes on the configured bridge")

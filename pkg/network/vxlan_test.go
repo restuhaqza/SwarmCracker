@@ -405,7 +405,6 @@ func TestVXLANManager_AddRouteToSubnet(t *testing.T) {
 		remoteOverlayIP string
 		wantErr         bool
 		errContains     string
-		netlink         NetlinkExecutor
 	}{
 		{
 			name:            "invalid subnet - empty",
@@ -463,25 +462,11 @@ func TestVXLANManager_AddRouteToSubnet(t *testing.T) {
 			wantErr:         true,
 			errContains:     "bridge not found",
 		},
-		{
-			name:            "valid CIDRs and a present bridge",
-			remoteSubnet:    "192.168.2.0/24",
-			remoteOverlayIP: "10.0.0.2",
-			wantErr:         false,
-			netlink: &MockNetlinkExecutor{
-				LinkByNameFunc: func(name string) (netlink.Link, error) {
-					return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
-				},
-			},
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			exec := tt.netlink
-			if exec == nil {
-				exec = missingLinksExecutor()
-			}
+			exec := missingLinksExecutor()
 
 			err := NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, exec).
 				AddRouteToSubnet(tt.remoteSubnet, tt.remoteOverlayIP)
@@ -498,6 +483,29 @@ func TestVXLANManager_AddRouteToSubnet(t *testing.T) {
 			}
 		})
 	}
+
+	// The happy path asserts the route it hands to the kernel, not just that no
+	// error came back: "nil" is also what a regression that skips RouteAdd gives.
+	t.Run("valid CIDRs and a present bridge adds the route", func(t *testing.T) {
+		var added []*netlink.Route
+		exec := &MockNetlinkExecutor{
+			LinkByNameFunc: func(name string) (netlink.Link, error) {
+				return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 7}}, nil
+			},
+			RouteAddFunc: func(route *netlink.Route) error {
+				added = append(added, route)
+				return nil
+			},
+		}
+
+		require.NoError(t, NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, exec).
+			AddRouteToSubnet("192.168.2.0/24", "10.0.0.2"))
+
+		require.Len(t, added, 1, "the route must actually be added")
+		assert.Equal(t, "192.168.2.0/24", added[0].Dst.String())
+		assert.Equal(t, "10.0.0.2", added[0].Gw.String())
+		assert.Equal(t, 7, added[0].LinkIndex, "the route must use the bridge's index")
+	})
 }
 
 func TestVXLANManager_enableProxySettings(t *testing.T) {
@@ -808,21 +816,6 @@ func TestVXLANManager_createVXLANInterface(t *testing.T) {
 				},
 			},
 		},
-		{
-			name:          "creates the interface when the links exist",
-			vxlanName:     "br0-vxlan",
-			physInterface: "lo",
-			localIP:       "127.0.0.1",
-			wantErr:       false,
-			netlink: &MockNetlinkExecutor{
-				LinkByNameFunc: func(name string) (netlink.Link, error) {
-					if name == "lo" {
-						return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 1}}, nil
-					}
-					return nil, fmt.Errorf("link not found: %s", name)
-				},
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -847,6 +840,36 @@ func TestVXLANManager_createVXLANInterface(t *testing.T) {
 			}
 		})
 	}
+
+	// The happy path asserts the link the code builds, not just that no error came
+	// back: a regression that skips LinkAdd also returns nil.
+	t.Run("creates the interface when the links exist", func(t *testing.T) {
+		var added []netlink.Link
+		var broughtUp []netlink.Link
+		exec := &MockNetlinkExecutor{
+			LinkByNameFunc: func(name string) (netlink.Link, error) {
+				if name == "lo" {
+					return &netlink.Dummy{LinkAttrs: netlink.LinkAttrs{Name: name, Index: 3}}, nil
+				}
+				return nil, fmt.Errorf("link not found: %s", name)
+			},
+			LinkAddFunc:   func(link netlink.Link) error { added = append(added, link); return nil },
+			LinkSetUpFunc: func(link netlink.Link) error { broughtUp = append(broughtUp, link); return nil },
+		}
+
+		require.NoError(t, NewVXLANManagerWithExecutor("br0", 42, "10.0.0.1/24", nil, exec).
+			createVXLANInterface("br0-vxlan", "lo", "127.0.0.1"))
+
+		require.Len(t, added, 1, "the VXLAN link must actually be created")
+		vxlan, ok := added[0].(*netlink.Vxlan)
+		require.True(t, ok, "a VXLAN link must be added, got %T", added[0])
+		assert.Equal(t, "br0-vxlan", vxlan.Name)
+		assert.Equal(t, 42, vxlan.VxlanId)
+		assert.Equal(t, 4789, vxlan.Port)
+		assert.Equal(t, 3, vxlan.VtepDevIndex, "the physical link's index must be used")
+		assert.Equal(t, "127.0.0.1", vxlan.SrcAddr.String())
+		assert.Len(t, broughtUp, 1, "the new link must be brought up")
+	})
 }
 
 func TestVXLANManager_Integration(t *testing.T) {
@@ -946,9 +969,17 @@ func findSubstring(s, substr string) bool {
 // the same name still holds an entry, which is how #84 flaked.
 func fakeBridgeOnPath(t *testing.T, output string, code int) {
 	t.Helper()
+	body := fmt.Sprintf("cat <<'BRIDGE_EOF'\n%s\nBRIDGE_EOF\nexit %d", output, code)
+	fakeBridgeScriptOnPath(t, body)
+}
+
+// fakeBridgeScriptOnPath is fakeBridgeOnPath for a script that has to vary by
+// invocation, e.g. to fail for one peer and succeed for another. The peer is in
+// the argv, so `case "$*" in ...` can tell them apart.
+func fakeBridgeScriptOnPath(t *testing.T, body string) {
+	t.Helper()
 	dir := t.TempDir()
-	body := fmt.Sprintf("#!/bin/sh\ncat <<'BRIDGE_EOF'\n%s\nBRIDGE_EOF\nexit %d\n", output, code)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "bridge"), []byte(body), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bridge"), []byte("#!/bin/sh\n"+body+"\n"), 0o755))
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 

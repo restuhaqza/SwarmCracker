@@ -433,12 +433,16 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 		t.Skip("Skipping TAP creation test in short mode (requires root)")
 	}
 
+	// With every `ip` call stubbed to succeed, each case reaches its assertions
+	// for any user and nothing is created on the host (#84).
+	stubExec(t)
+
 	tests := []struct {
 		name     string
 		network  types.NetworkAttachment
 		index    int
 		taskID   string
-		validate func(*TapDevice, error)
+		validate func(*testing.T, *TapDevice, error)
 	}{
 		{
 			name: "create TAP with custom bridge",
@@ -455,13 +459,11 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 			},
 			index:  0,
 			taskID: "task-custom",
-			validate: func(tap *TapDevice, err error) {
-				// Test that we get a valid TAP device structure
-				if err == nil {
-					assert.NotNil(t, tap)
-					assert.NotEmpty(t, tap.Name)
-					assert.Equal(t, "custom-bridge", tap.Bridge)
-				}
+			validate: func(t *testing.T, tap *TapDevice, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, tap)
+				assert.Equal(t, "custom-bridge", tap.Bridge)
+				assertTapName(t, tap.Name, 0)
 			},
 		},
 		{
@@ -479,11 +481,11 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 			},
 			index:  1,
 			taskID: "task-default",
-			validate: func(tap *TapDevice, err error) {
-				if err == nil {
-					assert.NotNil(t, tap)
-					assert.Contains(t, tap.Name, "tap-eth")
-				}
+			validate: func(t *testing.T, tap *TapDevice, err error) {
+				require.NoError(t, err)
+				require.NotNil(t, tap)
+				assert.Equal(t, "default-bridge", tap.Bridge)
+				assertTapName(t, tap.Name, 1)
 			},
 		},
 	}
@@ -509,7 +511,7 @@ func TestNetworkManager_CreateTapDevice_FullCreation(t *testing.T) {
 			ctx := context.Background()
 			tap, err := nm.createTapDevice(ctx, tt.network, tt.index, tt.taskID)
 
-			tt.validate(tap, err)
+			tt.validate(t, tap, err)
 
 			// Clean up if successful
 			if err == nil && tap != nil {

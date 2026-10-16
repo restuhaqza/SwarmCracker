@@ -800,6 +800,16 @@ func TestNetworkManager_CreateTapDevice_Comprehensive(t *testing.T) {
 			ctx := context.Background()
 			tap, err := nm.createTapDevice(ctx, tt.network, tt.index, tt.taskID)
 
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				// The platform is stubbed to succeed, so every case here is
+				// expected to create the device. Without this the validate
+				// functions (all guarded by `err == nil`) would silently skip
+				// and the test would pass with createTapDevice broken (#84).
+				require.NoError(t, err, "case %q should succeed with the stubbed platform", tt.name)
+			}
+
 			if tt.validate != nil {
 				tt.validate(t, tap, err)
 			}

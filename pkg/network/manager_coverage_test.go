@@ -2,7 +2,6 @@ package network
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -13,6 +12,12 @@ import (
 // Additional tests to improve coverage to 80%+
 
 func TestNetworkManager_PrepareNetwork_ErrorScenarios(t *testing.T) {
+	// The platform is stubbed to succeed, so an error can only come from the CNI
+	// plugin (which is not installed in CI or on the lab). That makes the stage
+	// the fixtures reach deterministic instead of depending on whether the host
+	// happens to have the bridge (#84).
+	stubExec(t)
+
 	tests := []struct {
 		name    string
 		task    *types.Task
@@ -173,38 +178,18 @@ func TestNetworkManager_PrepareNetwork_ErrorScenarios(t *testing.T) {
 					assert.Contains(t, err.Error(), tt.errMsg)
 				}
 			} else {
-				// These fixtures carry addresses, so they reach the platform
-				// layer, and which call fails depends on the host rather than on
-				// the code under test: with neither privileges nor a bridge yet,
-				// ensureBridge fails; with a leftover bridge but no CNI plugin,
-				// CNI ADD fails. Accept any platform stage, and tolerate real
-				// success. What the fixtures are checking is that the
-				// ID/address handling ran; see #84.
+				// These fixtures carry addresses, so with the bridge stubbed they
+				// reach the CNI stage: the plugin binary is absent, so the call
+				// fails there rather than at bridge creation. Assert the stage
+				// instead of accepting any platform error, and still tolerate a
+				// host where the plugin really is installed.
 				if err != nil {
-					assert.True(t, isPlatformStageError(err), "unexpected error: %v", err)
+					assert.Contains(t, err.Error(), "CNI ADD failed",
+						"the fixture should reach the CNI stage, not fail earlier")
 				}
 			}
 		})
 	}
-}
-
-// platformStageErrors are the calls PrepareNetwork can fail at once it is past
-// its own validation, in the order it makes them.
-var platformStageErrors = []string{
-	"failed to ensure bridge",
-	"failed to create TAP device",
-	"CNI ADD failed",
-}
-
-// isPlatformStageError reports whether err came from the platform layer rather
-// than from PrepareNetwork's own validation.
-func isPlatformStageError(err error) bool {
-	for _, stage := range platformStageErrors {
-		if strings.Contains(err.Error(), stage) {
-			return true
-		}
-	}
-	return false
 }
 
 func TestNetworkManager_PrepareNetwork_ConcurrentMultipleTasks(t *testing.T) {
