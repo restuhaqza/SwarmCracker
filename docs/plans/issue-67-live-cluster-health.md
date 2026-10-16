@@ -63,7 +63,7 @@ const (
     healthRequestTimeout  = 3 * time.Second
 )
 
-type healthOptions struct {
+type clusterHealthOptions struct {
     Disabled   bool          // --no-health
     Port       int           // --health-port (default 8080)
     HTTPClient *http.Client  // tests inject a client; nil → default
@@ -121,9 +121,8 @@ Both flags are honored or rejected, never silently ignored (project rule):
 
 - `--no-health` skips the fan-out entirely (no `ListNodes`, no HTTP).
 - `--health-port 0` or negative is **rejected** with a clear error before any
-  RPC (`--health-port must be between 1 and 65535`).
-- `--health-port` with `--no-health` is accepted but inert *by construction*
-  (the port is only read by the fan-out); the help text says so.
+  RPC (`--health-port must be between 1 and 65535`), even alongside
+  `--no-health`: an invalid value is never silently ignored.
 
 ### T3 — docs
 

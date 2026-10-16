@@ -148,22 +148,35 @@ hold the executor's lock, so `service rm` and stop are never stalled behind it.
 
 #### Seeing health
 
-`service ps` and `task ls` show a `HEALTH` column, derived from the health-gated
-task state:
+`service ps` and `task ls` show a `HEALTH` column. When the CLI can reach the
+node owning a task, the column carries that node's **live** verdict; otherwise
+it falls back to the value derived from the health-gated task state:
 
 ```bash
 swarmcracker service ps api
-# ID            STATUS    HEALTH    NODE          IMAGE
-# 5f3a1b2c9d0e  RUNNING   RUNNING   abc123def456  myapi:v3
-# 9c8d7e6f1a2b  STARTING  STARTING  def456abc789  myapi:v3
+# ID            STATUS    HEALTH     NODE          IMAGE
+# 5f3a1b2c9d0e  RUNNING   failing    abc123def456  myapi:v3   # live: probe failing, retries not exhausted
+# 9c8d7e6f1a2b  STARTING  STARTING   def456abc789  myapi:v3   # live health not published yet
+# 1a2b3c4d5e6f  RUNNING   RUNNING    ghi789def012  myapi:v3   # node not exposed: derived value
+# 7e6f1a2b9c8d  RUNNING   -          jkl012mno345  myapi:v3   # owning node unreachable
 ```
 
-| Value | Meaning |
-|-------|---------|
-| `STARTING` | The task is still being checked (not yet healthy) |
-| `RUNNING` | A check has passed |
-| `FAILED` | The task failed its checks |
-| `-` | No healthcheck (or the task has completed or stopped) |
+| Value | Source | Meaning |
+|-------|--------|---------|
+| `starting` | live | The task has not passed a check yet, so it is not reported `RUNNING` |
+| `healthy` | live | The most recent probe passed |
+| `failing` | live | The most recent probe failed, but the retries threshold is not reached — the task is still `RUNNING` and no restart has fired |
+| `unhealthy` | live | The retries are exhausted; the VM is being stopped so SwarmKit reschedules the task |
+| `STARTING` / `RUNNING` / `FAILED` | derived | Live health was not available (an older daemon, or a task that has not published yet), so the health-gated task state is shown |
+| `-` | — | No healthcheck, the task has completed or stopped, or the owning node could not be reached |
+
+`failing` is the one worth watching: it is the window between "a check started
+failing" and "the task is restarted", up to `(retries - 1) × interval` (60s with
+the defaults). It is the value the derived column cannot show.
+
+`--format json` emits the display value as `health` and, when it was fetched,
+the raw live observation as `live_health` (`state`, `failing_streak`, `output`,
+`command`, `updated_at`).
 
 `task inspect` shows the declared healthcheck and, when a check failed, the
 reason the executor recorded:
@@ -182,11 +195,59 @@ swarmcracker task inspect --format table 5f3a1b2c
 The default `--format json` output carries the same information in the task's
 `Spec.Container.Healthcheck` and `Status.Err` fields.
 
-#### Live health on a node
+#### Live health, cluster-wide
 
-`service ps` cannot show the live verdict (see below), but the node running the
-task can. The executor publishes every probe result into the per-task metadata
-file next to the VM socket, and `vm status` / `vm list` read it:
+The live verdict comes from the node that owns the task. The executor publishes
+every probe result into the per-task metadata file next to the VM socket, and
+the daemon serves it on its health server:
+
+```
+GET http://<node-address>:8080/v1/tasks/health
+{"tasks":[{"task_id":"5f3a1b2c…","state":"failing","failing_streak":2,"command":"…","output":"…","updated_at":"…"}]}
+```
+
+`service ps` / `task ls` resolve each task's node from SwarmKit, send **one**
+request per node (each bounded by a 3s timeout), and overlay the result. Tasks
+with no healthcheck are absent from the response and keep their derived `-`.
+
+The daemon's health server listens on `--health-addr`, which defaults to
+`127.0.0.1:8080` — node-local. To get a cluster-wide `HEALTH` column, bind it on
+the cluster network when starting the daemon:
+
+```bash
+# In each node's systemd unit (or on the command line)
+swarmd-firecracker --health-addr 0.0.0.0:8080 …
+```
+
+and, if the daemons bind a port other than 8080, tell the CLI:
+
+```bash
+swarmcracker service ps api --health-port 9090
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--health-port` | `8080` | Port of each node's health server |
+| `--no-health` | `false` | Skip the fan-out; derive `HEALTH` from the task state only |
+
+`--no-health` also skips the `ListNodes` call, so it is the escape hatch when the
+endpoint is not exposed and you do not want any extra requests. An invalid
+`--health-port` is rejected; it is never silently ignored.
+
+**Trust model.** The endpoint returns health only — state, failing streak, the
+probe command and its last (bounded) output. There is no authentication and no
+secret. The bind address *is* the boundary: the default `127.0.0.1:8080` exposes
+it to nothing, and binding `0.0.0.0` exposes it to the cluster network exactly
+like the existing `/healthz` and `/metrics` (which are on the same server).
+
+A node running an older daemon, or one whose health server is not reachable,
+simply contributes no live values: that node's tasks degrade to the derived
+value, or to `-` if the node is unreachable entirely. The command still succeeds.
+
+#### Live health on a single node
+
+The same data is available locally, without the fan-out. `vm status` / `vm list`
+read the metadata file directly:
 
 ```bash
 # Run this on the node hosting the task.
@@ -201,37 +262,21 @@ swarmcracker vm status 5f3a1b2c
 #   Observed:     2026-10-13 15:04:07
 ```
 
-| Value | Meaning |
-|-------|---------|
-| `starting` | The task has not passed a check yet, so it is not reported `RUNNING` |
-| `healthy` | The most recent probe passed |
-| `failing` | The most recent probe failed, but the retries threshold is not reached — the task is still `RUNNING` and no restart has fired |
-| `unhealthy` | The retries are exhausted; the VM is being stopped so SwarmKit reschedules the task |
-
-`failing` is the one worth watching: it is the window between "a check started
-failing" and "the task is restarted", up to `(retries - 1) × interval` (60s with
-the defaults). `vm list` shows the same value in its `HEALTH` column, and
-`--format json` carries it as `health`.
-
-Because the metadata file lives next to the VM socket, this view is
-**node-local** — run the command on the node hosting the task. VMs started in the
-foreground by `vm create` have no daemon and no monitor, so they never carry
-health.
+This is **node-local**: run the command on the node hosting the task. VMs started
+in the foreground by `vm create` have no daemon and no monitor, so they never
+carry health.
 
 #### The API limitation
 
 SwarmKit's API has no health field: `api.ContainerStatus` carries only
 `ContainerID`, `PID` and `ExitCode`, and `api.TaskStatus` has none — unchanged in
-SwarmKit v2.1.2 and upstream `master`. SwarmCracker therefore **derives** the
-`HEALTH` column from the health-gated task state instead of reporting a live
-health value. One consequence: a `RUNNING` task that is currently failing checks
-keeps showing `RUNNING` until its retries are exhausted and it becomes `FAILED`.
+SwarmKit v2.1.2 and upstream `master`. A new field alone would not fix it: while
+a task is `RUNNING` the agent blocks in `Wait` and never polls its status, so any
+value would stay frozen until the task exits. SwarmCracker therefore **derives**
+the fallback `HEALTH` value from the health-gated task state, and gets the live
+value — including `failing`, which the derived value cannot express — from each
+node's health endpoint as described above.
 
-A new field alone would not fix it: SwarmKit never polls a running task's status
-(the agent blocks in `Wait`), so any value would stay frozen until the task
-exits. The honest workaround is the node-local [`vm status`](#live-health-on-a-node)
-view above; live cluster-wide health in `service ps` would need a per-node
-endpoint the CLI aggregates.
 
 ---
 

@@ -232,6 +232,40 @@ otherwise.
 Each check's `status` is `"ok"` or `"error"`; `message` carries the
 human-readable detail. There are no `timestamp` or `consul` fields.
 
+### Per-task health
+
+The same server exposes the live healthcheck state of every task the node hosts,
+which `service ps` / `task ls` fan out to:
+
+| Attribute | Value |
+|-----------|-------|
+| **Endpoint** | `GET /v1/tasks/health` |
+| **Method** | `GET` only (others get HTTP `405`) |
+
+```json
+{
+    "tasks": [
+        {
+            "task_id": "5f3a1b2c9d0e",
+            "state": "failing",
+            "failing_streak": 2,
+            "command": "/bin/sh -c curl -fsS http://localhost:8080/healthz",
+            "output": "curl: (7) Failed to connect to localhost port 8080",
+            "updated_at": "2026-10-16T15:04:07Z"
+        }
+    ]
+}
+```
+
+`state` is one of `starting`, `healthy`, `failing` or `unhealthy` (see
+[Container Healthchecks](/guides/operations/#seeing-health)). Tasks that declare
+no healthcheck are absent. The response is deterministic (sorted by `task_id`).
+
+**Trust model.** Health only — no secrets, no authentication. The bind address
+(`--health-addr`, default `127.0.0.1:8080`) is the boundary; binding it on the
+cluster network exposes the same information as `/healthz` and `/metrics`.
+
+
 ---
 
 ## Firecracker Machine Config API

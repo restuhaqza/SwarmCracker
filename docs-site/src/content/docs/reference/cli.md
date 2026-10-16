@@ -235,15 +235,23 @@ unchanged. `service scale <service> 0` always scales to zero.
 service's existing published ports (it errors if the service has none).
 `service inspect` prints the published ports and, for ingress services, the
 service VIP.
-`service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc` for `ps`.
+`service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc`, `--health-port`, `--no-health` for `ps`.
 
-`service ps` (and `task ls`) print a `HEALTH` column **derived** from the
-health-gated task state: `STARTING` while the task is still being checked,
-`RUNNING` once a check has passed, `FAILED` when the task failed its checks, and
-`-` for a task with no healthcheck (or one that has completed or stopped). The
-same value is emitted as `health` by `--format json`. See
-[Container Healthchecks](/guides/operations/#container-healthchecks) for the
-gated-rollout workflow and the API limitation behind the derived value.
+`service ps` (and `task ls`) print a `HEALTH` column. It is the **live**
+healthcheck state fetched from the node owning each task (`starting`, `healthy`,
+`failing`, `unhealthy`) when that node's health server is reachable, and the
+**derived** health-gated state otherwise (`STARTING` while the task is still
+being checked, `RUNNING` once a check has passed, `FAILED` when the task failed
+its checks). A task with no healthcheck, or one whose node cannot be reached,
+shows `-`. The same value is emitted as `health` by `--format json`, with the raw
+observation as `live_health` when it was fetched. See
+[Container Healthchecks](/guides/operations/#seeing-health) for the gated-rollout
+workflow, the live fan-out, and the API limitation behind the derived value.
+
+`--no-health` skips the live lookup entirely (and the `ListNodes` call that
+resolves node addresses), leaving only the derived value. `--health-port`
+(default `8080`) selects the port of each node's health server; an invalid port
+is rejected rather than ignored.
 
 #### `swarmcracker task`
 
@@ -254,13 +262,14 @@ Task management.
 | `ls` | List tasks |
 | `inspect <task-id>` | Inspect a task |
 
-`task ls` flags: `--all`, `--filter`, `--format`, `--no-trunc`, `--node`, `--service`, `--quiet` / `-q`.
+`task ls` flags: `--all`, `--filter`, `--format`, `--no-trunc`, `--node`, `--service`, `--quiet` / `-q`, `--health-port`, `--no-health`.
 
-`task ls` prints the same derived `HEALTH` column as `service ps` (also emitted
-as `health` by `--format json`). `task inspect` shows a task's declared
-healthcheck (its test command, interval, timeout, retries and start period) and,
-when a check failed, the reason the executor recorded (for example
-`healthcheck failed: <cmd>: <output>`).
+`task ls` prints the same `HEALTH` column as `service ps` — live when the owning
+node's health server is reachable, derived otherwise, also emitted as `health`
+(and `live_health` when fetched) by `--format json`. `task inspect` shows a
+task's declared healthcheck (its test command, interval, timeout, retries and
+start period) and, when a check failed, the reason the executor recorded (for
+example `healthcheck failed: <cmd>: <output>`).
 
 #### `swarmcracker vm`
 
