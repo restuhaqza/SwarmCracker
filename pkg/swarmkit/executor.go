@@ -1485,6 +1485,12 @@ func (c *Controller) convertTask() *types.Task {
 			subnet = n.Network.IPAM.Configs[0].Subnet
 			gateway = n.Network.IPAM.Configs[0].Gateway
 		}
+		// A user-defined network gives each node its own address on it, and a node's
+		// guests use that address as their gateway, so the guest's default route
+		// follows the node it runs on rather than the cluster-wide record (#76).
+		if subnet != "" && gateway != "" && c.config != nil {
+			gateway = network.NodeLocalGateway(subnet, gateway, c.config.BridgeIP, len(c.config.VXLANPeers))
+		}
 
 		netSpec := types.NetworkSpec{
 			Name:         n.Network.Spec.Annotations.Name,

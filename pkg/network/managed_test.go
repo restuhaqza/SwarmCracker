@@ -181,6 +181,61 @@ func TestEnsureManagedNetwork_DerivesGatewayAndVXLAN(t *testing.T) {
 	assert.Equal(t, 4096, mn.vxlanID)
 }
 
+func TestEnsureManagedNetwork_BridgeAddressFollowsTheNode(t *testing.T) {
+	state := newMockState()
+	state.setFail("ip link show br-backend", true) // force bridge creation
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := newManagedTestManager()
+	// The second node of a two-node overlay: its own address on the network is .2, and
+	// that is what its guests use as their gateway instead of the cluster-wide .1.
+	nm.config.BridgeIP = "192.168.127.2/24"
+	nm.config.VXLANPeers = []string{"192.168.127.1"}
+	nm.nodeIndex, nm.nodeSlots = 2, reservedInfraHosts
+
+	mn, err := nm.ensureManagedNetwork(context.Background(), backendNetwork())
+	require.NoError(t, err)
+
+	assert.Equal(t, "10.10.0.2", mn.gateway,
+		"the bridge holds this node's own address, not the cluster-wide gateway")
+	foundAddr := false
+	for _, c := range state.calls {
+		if strings.Contains(c, "addr add 10.10.0.2/24 dev br-backend") {
+			foundAddr = true
+		}
+	}
+	assert.True(t, foundAddr, "the bridge should hold this node's address; calls: %v", state.calls)
+}
+
+// TestEnsureManagedNetwork_ReplacesAStaleBridgeAddress covers the upgrade path: a bridge
+// an earlier release created holds the cluster-wide address on every node, because the
+// address used to come from the subnet alone. Materializing the network on a second node
+// must drop that address — leaving it next to the node's own would keep the duplicate
+// (#76) and both would answer ARP on the network's L2.
+func TestEnsureManagedNetwork_ReplacesAStaleBridgeAddress(t *testing.T) {
+	state := newMockState()
+	state.setFail("ip link show br-backend", true) // force bridge creation
+	// The bridge as the earlier release left it on this node.
+	state.setOutput("ip -4 -o addr show dev br-backend",
+		"7: br-backend    inet 10.10.0.1/24 scope global br-backend\\       valid_lft forever preferred_lft forever\n")
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := newManagedTestManager()
+	nm.config.BridgeIP = "192.168.127.2/24"
+	nm.config.VXLANPeers = []string{"192.168.127.1"}
+	nm.nodeIndex, nm.nodeSlots = 2, reservedInfraHosts
+
+	mn, err := nm.ensureManagedNetwork(context.Background(), backendNetwork())
+	require.NoError(t, err)
+
+	assert.Equal(t, "10.10.0.2", mn.gateway)
+	assert.Contains(t, state.calls, "ip addr del 10.10.0.1/24 dev br-backend",
+		"the stale cluster-wide address must be removed, not joined")
+	assert.Contains(t, state.calls, "ip addr add 10.10.0.2/24 dev br-backend")
+}
+
 func TestEnsureManagedNetwork_InvalidSubnet(t *testing.T) {
 	state := newMockState()
 	restore := setupMocksForTest(state)

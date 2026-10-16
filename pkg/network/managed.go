@@ -100,6 +100,42 @@ func (nm *NetworkManager) setBridgeAddr(bridge, cidr string) error {
 	return nil
 }
 
+// reconcileBridgeAddr makes a bridge hold exactly the address this node should have on
+// the network, dropping any other IPv4 address it carries.
+//
+// Adding alone is not enough: a bridge an earlier release created holds the
+// cluster-wide address on every node, because the address used to be derived from the
+// subnet alone. Left there, it keeps the duplicate this fix exists to remove — both
+// that address and the node's own would answer ARP on the network's L2 (#76), which is
+// why the stale one has to go rather than merely being joined. Only the bridge named
+// here is touched, and only its IPv4 addresses: the link-local IPv6 address stays.
+func (nm *NetworkManager) reconcileBridgeAddr(bridge, cidr string) error {
+	if cidr == "" {
+		return nil
+	}
+	if out, err := execCommand("ip", "-4", "-o", "addr", "show", "dev", bridge).Output(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			for i := 0; i+1 < len(fields); i++ {
+				// "… inet <cidr> scope …" — with -o the line also carries the device
+				// name, so the address is found by its keyword, not a fixed index.
+				if fields[i] != "inet" || fields[i+1] == cidr {
+					continue
+				}
+				stale := fields[i+1]
+				if err := execCommand("ip", "addr", "del", stale, "dev", bridge).Run(); err != nil {
+					log.Warn().Err(err).Str("bridge", bridge).Str("address", stale).
+						Msg("Failed to remove a stale address from a managed bridge")
+					continue
+				}
+				log.Info().Str("bridge", bridge).Str("address", stale).Str("kept", cidr).
+					Msg("Removed a stale address from a managed bridge")
+			}
+		}
+	}
+	return nm.setBridgeAddr(bridge, cidr)
+}
+
 // ensureNetworkVXLAN creates the per-network overlay VXLAN interface (VNI),
 // attaches it to the network's bridge, and programs an FDB entry for every peer
 // node so the network's L2 domain spans the cluster. Best-effort on nodes
@@ -414,10 +450,14 @@ func (nm *NetworkManager) ensureManagedNetwork(ctx context.Context, network *typ
 			gw[len(gw)-1]++
 			gateway = gw.String()
 		}
+		// The cluster-wide gateway is what the network records, but each node holds
+		// its own address on the network, so no two nodes answer ARP for one address
+		// on the network's L2 (#76).
+		gateway = NodeLocalGateway(network.Spec.Subnet, gateway, nm.config.BridgeIP, len(nm.config.VXLANPeers))
 		ones, _ := ipNet.Mask.Size()
 		cidr = fmt.Sprintf("%s/%d", gateway, ones)
 	}
-	if err := nm.setBridgeAddr(bridge, cidr); err != nil {
+	if err := nm.reconcileBridgeAddr(bridge, cidr); err != nil {
 		log.Warn().Err(err).Str("bridge", bridge).Msg("Failed to set managed bridge address")
 	}
 

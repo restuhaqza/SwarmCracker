@@ -193,6 +193,66 @@ func nodeAllocationParams(bridgeIP string, peerCount int) (uint32, uint32) {
 	return idx, reservedInfraHosts
 }
 
+// NodeLocalGateway returns the address this node holds on a network with the given
+// subnet — the address its bridge takes, and the one its own guests use as their
+// default gateway.
+//
+// It mirrors the default overlay, where each node's bridge takes <subnet>.<slot>
+// (--bridge-ip gives .1 to the first node, .2 to the second, ...). Handing every node
+// the same address instead puts two ARP respondents for one address on a single L2: a
+// user-defined network's bridge is fanned out over its own VXLAN, so all nodes share
+// that segment, and whichever node answers first becomes the guest's gateway (#76).
+//
+// clusterGateway is the cluster-wide address recorded in the network's IPAM — its
+// first usable host, unless the network was created with an explicit gateway. It is
+// returned unchanged when this node has no slot (a single node, or an overlay bridge
+// address outside the reserved range), for node 1 (which holds whatever the network
+// records, so a network created with --gateway keeps that gateway — and the guests'
+// default route with it) and for a subnet too small for the per-node guest blocks
+// (a /28 or smaller, where the allocator partitions nothing either, so a per-node
+// bridge address would just take an address a guest could be handed). Otherwise it
+// returns <subnet>.<slot>, which the reserved range keeps out of the guest pool.
+//
+// The value is IPv4 only: an IPv6 subnet keeps the cluster-wide address. The
+// cluster-wide address stays reachable from every node over the VXLAN either way.
+func NodeLocalGateway(subnet, clusterGateway, bridgeIP string, peerCount int) string {
+	slot, slots := nodeAllocationParams(bridgeIP, peerCount)
+	if slot == 0 || slots <= 1 {
+		return clusterGateway
+	}
+	_, ipNet, err := net.ParseCIDR(subnet)
+	if err != nil {
+		return clusterGateway
+	}
+	v4 := ipNet.IP.To4()
+	if v4 == nil {
+		return clusterGateway
+	}
+	if slot == 1 {
+		return clusterGateway
+	}
+	if slot > reservedInfraHosts {
+		return clusterGateway
+	}
+	ones, bits := ipNet.Mask.Size()
+	if bits != 32 {
+		return clusterGateway
+	}
+	// Both bounds mirror the allocator's: below reservedInfraHosts+4 addresses it
+	// reserves nothing, and slot > size-2 would be the broadcast address.
+	size := uint32(1) << (bits - ones)
+	if size < uint32(reservedInfraHosts)+4 || slot > size-2 {
+		return clusterGateway
+	}
+	candidate := make(net.IP, len(v4))
+	copy(candidate, v4)
+	candidate[3] += byte(slot)
+	if !ipNet.Contains(candidate) {
+		return clusterGateway
+	}
+	return candidate.String()
+}
+
 // Allocate allocates an IP address for a VM ID.
 func (a *IPAllocator) Allocate(vmID string) (string, error) {
 	a.mu.Lock()
