@@ -17,6 +17,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/health"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 	"github.com/urfave/cli/v2"
 )
@@ -113,6 +114,8 @@ func runAgent(ctx *cli.Context) error {
 		mux := http.NewServeMux()
 		mux.Handle("/healthz", healthChecker)
 		mux.Handle("/metrics", promhttp.Handler())
+		// Live per-task health, aggregated cluster-wide by `service ps`/`task ls`.
+		mux.Handle(runtime.TaskHealthPath, taskHealthHandler(ctx.String("socket-dir")))
 		healthAddr := ctx.String("health-addr")
 
 		// Wrap with security middleware: rate limiting + request timeout
