@@ -30,9 +30,15 @@ func TestDefaultNetlinkExecutor_LinkByName_NotExist(t *testing.T) {
 
 func TestDefaultNetlinkExecutor_LinkAdd_Fail(t *testing.T) {
 	e := NewDefaultNetlinkExecutor()
-	// Creating a bridge without root will fail
-	err := e.LinkAdd(&netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: "test-br-xyz"}})
+	// The name is longer than IFNAMSIZ, so the kernel rejects it for every user.
+	// Creating "test-br-xyz" instead only failed without privileges: as root it
+	// succeeded, the assertion failed, and the device was left behind — which is
+	// then why the *next* root run passed (#84).
+	err := e.LinkAdd(&netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: "test-br-xyz-way-too-long"}})
 	require.Error(t, err)
+	// Nothing must have been created, whatever the outcome above.
+	_, lookupErr := e.LinkByName("test-br-xyz-way-too-long")
+	require.Error(t, lookupErr, "the rejected name must not exist")
 }
 
 func TestDefaultNetlinkExecutor_LinkDel_Fail(t *testing.T) {

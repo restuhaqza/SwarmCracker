@@ -15,10 +15,20 @@ import (
 // Since `ip` binary exists on the system, some paths are testable.
 // =============================================================================
 
+// TestCreateTAPDevice_Wrapper_Fails covers the CreateTAPDevice wrapper's error
+// path. It used to rely on "no root → tuntap add fails", but as root the device
+// was really created (and left behind) and the *bridge attach* failed, so the
+// expected message never matched (#84). An over-long name is rejected by the
+// kernel for every user, so the creation call is the one that fails and nothing
+// is left behind.
 func TestCreateTAPDevice_Wrapper_Fails(t *testing.T) {
-	// CreateTAPDevice calls real ip command → will fail without root
-	_, err := CreateTAPDevice("tap-test-xyz", "br-test-xyz")
-	require.Error(t, err) // No root → tuntap add fails
+	// Longer than IFNAMSIZ (16, so 15 usable bytes): `ip tuntap add` cannot
+	// accept it, with or without privileges.
+	const tooLong = "tap-this-name-is-too-long-for-a-nic"
+	require.Greater(t, len(tooLong), 15)
+
+	_, err := CreateTAPDevice(tooLong, "br-test-xyz")
+	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to create TAP device")
 }
 

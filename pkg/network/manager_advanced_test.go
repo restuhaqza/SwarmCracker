@@ -54,16 +54,19 @@ func TestNetworkManager_NewNetworkManager(t *testing.T) {
 	}
 }
 
-// TestNetworkManager_PrepareNetwork_EmptyNetworks tests task with no networks
+// TestNetworkManager_PrepareNetwork_EmptyNetworks tests task with no networks.
+// A task with no attachment gets a default TAP on the configured bridge, so the
+// assertion is about that device. The old "0 TAP devices" expectation only held
+// because creating the bridge failed without privileges: as root the default TAP
+// was created and the test failed (#84). The stub keeps the host untouched.
 func TestNetworkManager_PrepareNetwork_EmptyNetworks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	config := types.NetworkConfig{
-		BridgeName: "br0",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
+	stubExec(t)
+
+	nm := NewNetworkManager(types.NetworkConfig{BridgeName: "br0"}).(*NetworkManager)
 
 	task := &types.Task{
 		ID:        "task-empty",
@@ -71,20 +74,26 @@ func TestNetworkManager_PrepareNetwork_EmptyNetworks(t *testing.T) {
 		Networks:  []types.NetworkAttachment{},
 	}
 
-	ctx := context.Background()
-	err := nm.PrepareNetwork(ctx, task)
+	require.NoError(t, nm.PrepareNetwork(context.Background(), task))
 
-	// Will fail without root trying to create bridge
-	if err != nil {
-		t.Logf("PrepareNetwork failed (expected without root): %v", err)
-	}
+	// prepareNetworkWithCNI is not involved and the platform is stubbed, so the
+	// default TAP is the only device. Note the map holds one entry even though
+	// PrepareNetwork calls createTapDevice twice for this case (manager.go:664
+	// then the per-attachment loop at :689, which rebuilds the same name).
+	devices := snapshotTapDevices(nm)
+	require.Len(t, devices, 1, "a task with no attachment gets exactly one default TAP")
+	assert.Equal(t, "br0", devices[0].Bridge, "the default TAP goes on the configured bridge")
+}
 
-	// No TAP devices should be created
+// snapshotTapDevices copies the manager's TAP devices under its lock.
+func snapshotTapDevices(nm *NetworkManager) []*TapDevice {
 	nm.mu.RLock()
-	devices := len(nm.tapDevices)
-	nm.mu.RUnlock()
-
-	assert.Equal(t, 0, devices, "Should have no TAP devices")
+	defer nm.mu.RUnlock()
+	devices := make([]*TapDevice, 0, len(nm.tapDevices))
+	for _, tap := range nm.tapDevices {
+		devices = append(devices, tap)
+	}
+	return devices
 }
 
 // TestNetworkManager_PrepareNetwork_NilNetworks tests task with nil network slice
@@ -93,10 +102,9 @@ func TestNetworkManager_PrepareNetwork_NilNetworks(t *testing.T) {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	config := types.NetworkConfig{
-		BridgeName: "br0",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
+	stubExec(t)
+
+	nm := NewNetworkManager(types.NetworkConfig{BridgeName: "br0"}).(*NetworkManager)
 
 	task := &types.Task{
 		ID:        "task-nil",
@@ -104,20 +112,11 @@ func TestNetworkManager_PrepareNetwork_NilNetworks(t *testing.T) {
 		Networks:  nil,
 	}
 
-	ctx := context.Background()
-	err := nm.PrepareNetwork(ctx, task)
+	require.NoError(t, nm.PrepareNetwork(context.Background(), task))
 
-	// Will fail without root trying to create bridge
-	if err != nil {
-		t.Logf("PrepareNetwork failed (expected without root): %v", err)
-	}
-
-	// No TAP devices should be created
-	nm.mu.RLock()
-	devices := len(nm.tapDevices)
-	nm.mu.RUnlock()
-
-	assert.Equal(t, 0, devices, "Should have no TAP devices")
+	devices := snapshotTapDevices(nm)
+	require.Len(t, devices, 1, "a nil attachment gets exactly one default TAP")
+	assert.Equal(t, "br0", devices[0].Bridge, "the default TAP goes on the configured bridge")
 }
 
 // TestNetworkManager_PrepareNetwork_SingleNetwork tests single network attachment
@@ -601,41 +600,26 @@ func TestNetworkManager_createTapDevice_NilDriverConfig(t *testing.T) {
 	assert.Equal(t, "br0", tap.Bridge, "Should use default bridge from config")
 }
 
+// assertTapName asserts the deterministic name createTapDevice derives:
+// tap-<first 8 hex of sha256(taskID)>-<index>. The scheme has to stay in step
+// with the translator, so assert its shape rather than recomputing the hash.
+func assertTapName(t *testing.T, name string, index int) {
+	t.Helper()
+	assert.Regexp(t, fmt.Sprintf(`^tap-[0-9a-f]{8}-%d$`, index), name)
+}
+
 // TestNetworkManager_createTapDevice_InterfaceName tests interface naming
 func TestNetworkManager_createTapDevice_InterfaceName(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
 
-	config := types.NetworkConfig{
-		BridgeName: "br0",
-	}
-	nm := NewNetworkManager(config).(*NetworkManager)
+	stubExec(t) // never create real devices
 
-	tests := []struct {
-		name     string
-		index    int
-		expected string
-	}{
-		{
-			name:     "first interface",
-			index:    0,
-			expected: "tap-eth0",
-		},
-		{
-			name:     "second interface",
-			index:    1,
-			expected: "tap-eth1",
-		},
-		{
-			name:     "tenth interface",
-			index:    10,
-			expected: "tap-eth10",
-		},
-	}
+	nm := NewNetworkManager(types.NetworkConfig{BridgeName: "br0"}).(*NetworkManager)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, index := range []int{0, 1, 10} {
+		t.Run(fmt.Sprintf("interface %d", index), func(t *testing.T) {
 			network := types.NetworkAttachment{
 				Network: types.Network{
 					ID: "network-1",
@@ -650,16 +634,28 @@ func TestNetworkManager_createTapDevice_InterfaceName(t *testing.T) {
 				Addresses: []string{"192.168.1.10/24"},
 			}
 
-			ctx := context.Background()
-			tap, err := nm.createTapDevice(ctx, network, tt.index, "test-task")
+			tap, err := nm.createTapDevice(context.Background(), network, index, "test-task")
+			require.NoError(t, err)
+			require.NotNil(t, tap)
 
-			if err != nil {
-				t.Skipf("createTapDevice failed (expected without root): %v", err)
-			}
-
-			assert.Contains(t, tap.Name, fmt.Sprintf("eth%d", tt.index))
+			assertTapName(t, tap.Name, index)
 		})
 	}
+
+	// The name is a function of (task, index) alone, so two calls agree.
+	t.Run("stable for the same task and index", func(t *testing.T) {
+		network := types.NetworkAttachment{
+			Network: types.Network{ID: "network-1", Spec: types.NetworkSpec{
+				DriverConfig: &types.DriverConfig{Bridge: &types.BridgeConfig{Name: "br0"}},
+			}},
+			Addresses: []string{"192.168.1.10/24"},
+		}
+		first, err := nm.createTapDevice(context.Background(), network, 3, "test-task")
+		require.NoError(t, err)
+		second, err := nm.createTapDevice(context.Background(), network, 3, "test-task")
+		require.NoError(t, err)
+		assert.Equal(t, first.Name, second.Name)
+	})
 }
 
 // TestNetworkManager_removeTapDevice_Logging tests device removal logging

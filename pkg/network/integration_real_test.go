@@ -286,9 +286,17 @@ func TestIntegration_NetworkManager_SetupNAT(t *testing.T) {
 	bridgeName := testhelpers.RandomName("test-br")
 	subnet := "10.99.5.0/24"
 
+	// setupNAT installs the *guarded* masquerade rule (#70): under br_netfilter
+	// bridged frames also traverse POSTROUTING, so the rule must skip them.
+	// Checking for the unguarded shape never matched once the guard landed, and
+	// cleanup deleted a rule that was not there, leaving the real one behind
+	// (#84). Build the expectation from the same helper production uses.
+	spec := masqueradeSpec(subnet, "", "", true)
+	chain, ruleArgs := spec[0], spec[1:]
+
 	t.Cleanup(func() {
 		// Clean up iptables rules
-		testhelpers.CleanupIptablesRule(t, "nat", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE")
+		testhelpers.CleanupIptablesRule(t, "nat", chain, ruleArgs...)
 		testhelpers.CleanupIptablesRule(t, "filter", "FORWARD", "-i", bridgeName, "-j", "ACCEPT")
 		testhelpers.CleanupIptablesRule(t, "filter", "FORWARD", "-o", bridgeName, "-j", "ACCEPT")
 		testhelpers.CleanupLink(t, bridgeName)
@@ -308,7 +316,8 @@ func TestIntegration_NetworkManager_SetupNAT(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify iptables rules
-	assert.True(t, testhelpers.IptablesRuleExists(t, "nat", "POSTROUTING", "-s", subnet, "-j", "MASQUERADE"))
+	assert.True(t, testhelpers.IptablesRuleExists(t, "nat", chain, ruleArgs...),
+		"the guarded MASQUERADE rule should be in POSTROUTING")
 	assert.True(t, testhelpers.IptablesRuleExists(t, "filter", "FORWARD", "-i", bridgeName, "-j", "ACCEPT"))
 	assert.True(t, testhelpers.IptablesRuleExists(t, "filter", "FORWARD", "-o", bridgeName, "-j", "ACCEPT"))
 }
