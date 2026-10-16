@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/image"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -510,6 +514,144 @@ func TestListServiceTasksHealthColumn(t *testing.T) {
 	assert.Equal(t, []string{"RUNNING", "STARTING", "FAILED", "-"}, got)
 }
 
+// fakeServiceCreateClient embeds the generated ControlClient interface and
+// records CreateService calls, so tests can assert whether the create path sent
+// a request at all.
+type fakeServiceCreateClient struct {
+	api.ControlClient
+	createCalls int
+	spec        *api.ServiceSpec
+}
+
+func (f *fakeServiceCreateClient) CreateService(_ context.Context, req *api.CreateServiceRequest, _ ...grpc.CallOption) (*api.CreateServiceResponse, error) {
+	f.createCalls++
+	f.spec = req.Spec
+	return &api.CreateServiceResponse{Service: &api.Service{ID: "svc-new"}}, nil
+}
+
+// withDockerConfig points DOCKER_CONFIG at a temp dir holding a docker
+// config.json with the given auths JSON, so credential lookups are deterministic
+// and independent of the machine's real docker config.
+func withDockerConfig(t *testing.T, configJSON string) {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.json"), []byte(configJSON), 0o600))
+	t.Setenv("DOCKER_CONFIG", dir)
+}
+
+// TestServiceCreateWithRegistryAuthFlag verifies --with-registry-auth is
+// registered on `service create` and documented in its help output.
+func TestServiceCreateWithRegistryAuthFlag(t *testing.T) {
+	cmd := newServiceCreateCommand()
+
+	flag := cmd.Flags().Lookup("with-registry-auth")
+	require.NotNil(t, flag, "service create must register --with-registry-auth")
+	assert.Equal(t, "bool", flag.Value.Type())
+	assert.Equal(t, "false", flag.DefValue)
+	assert.Contains(t, cmd.UsageString(), "--with-registry-auth")
+}
+
+// TestCreateServiceWithRegistryAuth_SendsResolvedCredential verifies the create
+// path resolves the image's credential and puts the X-Registry-Auth payload on
+// the spec it sends.
+func TestCreateServiceWithRegistryAuth_SendsResolvedCredential(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"registry.test":{"username":"bob","password":"s3cret"}}}`)
+
+	client := &fakeServiceCreateClient{}
+	err := createServiceWithClient(context.Background(), client, serviceCreateOptions{
+		name:             "web",
+		image:            "registry.test/team/app:1",
+		replicas:         1,
+		withRegistryAuth: true,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, client.createCalls, "the create path must send exactly one CreateService request")
+	require.NotNil(t, client.spec)
+	require.NotNil(t, client.spec.Task.GetContainer().PullOptions)
+
+	cfg, err := image.DecodeRegistryAuth(client.spec.Task.GetContainer().PullOptions.RegistryAuth)
+	require.NoError(t, err)
+	assert.Equal(t, "bob", cfg.Username)
+	assert.Equal(t, "s3cret", cfg.Password)
+}
+
+// TestCreateServiceWithoutRegistryAuth_SendsNoPayload verifies that without the
+// flag no PullOptions are sent, so the workers keep using their own credentials.
+func TestCreateServiceWithoutRegistryAuth_SendsNoPayload(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"registry.test":{"username":"bob","password":"s3cret"}}}`)
+
+	client := &fakeServiceCreateClient{}
+	require.NoError(t, createServiceWithClient(context.Background(), client, serviceCreateOptions{
+		name:     "web",
+		image:    "registry.test/team/app:1",
+		replicas: 1,
+	}))
+
+	require.Equal(t, 1, client.createCalls)
+	require.NotNil(t, client.spec)
+	assert.Nil(t, client.spec.Task.GetContainer().PullOptions)
+}
+
+// TestCreateServiceWithRegistryAuth_MissingCredentialFailsBeforeRPC verifies a
+// missing credential is an actionable, ErrNoRegistryCredentials-wrapped error
+// and that no CreateService request is sent.
+func TestCreateServiceWithRegistryAuth_MissingCredentialFailsBeforeRPC(t *testing.T) {
+	// A config without a credential for the image's registry: the lookup fails
+	// deterministically regardless of the machine's own docker config.
+	withDockerConfig(t, `{"auths":{"other.registry.test":{"username":"x","password":"y"}}}`)
+
+	client := &fakeServiceCreateClient{}
+	err := createServiceWithClient(context.Background(), client, serviceCreateOptions{
+		name:             "web",
+		image:            "registry.test/team/app:1",
+		replicas:         1,
+		withRegistryAuth: true,
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, image.ErrNoRegistryCredentials)
+	assert.Contains(t, err.Error(), "registry.test", "the error must name the registry")
+	assert.Contains(t, err.Error(), "docker login registry.test", "the error must name the remedy")
+	assert.Zero(t, client.createCalls, "a failed credential resolution must not send a request")
+	assert.Nil(t, client.spec)
+}
+
+// TestServiceCreateWithRegistryAuthRejectsGolden verifies --with-registry-auth is
+// rejected when combined with --golden: golden services are never pulled from a
+// registry, so the flag would be accepted-and-inert. The error is returned before
+// any RPC (or connection attempt).
+func TestServiceCreateWithRegistryAuthRejectsGolden(t *testing.T) {
+	cmd := newServiceCreateCommand()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{"--name", "web", "--golden", "ubuntu-24.04-docker@1.0.0", "--with-registry-auth"})
+
+	err := cmd.Execute()
+	require.Error(t, err, "--with-registry-auth with --golden must fail before any RPC")
+	assert.Contains(t, err.Error(), "--with-registry-auth")
+	assert.Contains(t, err.Error(), "--golden")
+}
+
+// TestResolveRegistryAuth_NonCredentialFailureHasNoLoginHint verifies that a
+// failure which is not missing credentials wraps its own cause without
+// suggesting `docker login`, which would not fix it. The input has to get past
+// both reference parsing and the credential-absence check, or the branch under
+// test is never exercised: a `credHelpers` entry naming a helper that does not
+// exist makes the keychain fail with an exec error for a parseable registry.test
+// ref.
+func TestResolveRegistryAuth_NonCredentialFailureHasNoLoginHint(t *testing.T) {
+	withDockerConfig(t, `{"credHelpers":{"registry.test":"definitely-not-a-real-helper-xyz"}}`)
+
+	_, err := resolveRegistryAuth("registry.test/team/app:1")
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, image.ErrNoRegistryCredentials)
+	assert.NotContains(t, err.Error(), "docker login", "a non-credential failure must not suggest docker login")
+	assert.Contains(t, err.Error(), "--with-registry-auth")
+	assert.Contains(t, err.Error(), "definitely-not-a-real-helper-xyz",
+		"the underlying credential-helper failure must be surfaced, not replaced")
+}
+
 // TestListServiceTasksJSONHealth verifies the `service ps --format json` output
 // carries the derived health for each task.
 func TestListServiceTasksJSONHealth(t *testing.T) {
@@ -532,4 +674,257 @@ func TestListServiceTasksJSONHealth(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, "RUNNING", got[0]["health"])
 	assert.Equal(t, "-", got[1]["health"])
+}
+
+// fakeServiceUpdateClient embeds the generated ControlClient and records the
+// service lookups and the update, so tests can assert the registry-auth
+// ordering (no RPC before a failed resolution) and what spec was submitted.
+type fakeServiceUpdateClient struct {
+	api.ControlClient
+	service     *api.Service
+	listCalls   int
+	getCalls    int
+	updateCalls int
+	updatedSpec *api.ServiceSpec
+}
+
+func (f *fakeServiceUpdateClient) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
+	f.listCalls++
+	if f.service == nil {
+		return &api.ListServicesResponse{}, nil
+	}
+	return &api.ListServicesResponse{Services: []*api.Service{f.service}}, nil
+}
+
+func (f *fakeServiceUpdateClient) GetService(context.Context, *api.GetServiceRequest, ...grpc.CallOption) (*api.GetServiceResponse, error) {
+	f.getCalls++
+	return &api.GetServiceResponse{Service: f.service}, nil
+}
+
+func (f *fakeServiceUpdateClient) UpdateService(_ context.Context, req *api.UpdateServiceRequest, _ ...grpc.CallOption) (*api.UpdateServiceResponse, error) {
+	f.updateCalls++
+	f.updatedSpec = req.Spec
+	return &api.UpdateServiceResponse{}, nil
+}
+
+// serviceWithRegistryAuth builds a one-container service carrying the given
+// X-Registry-Auth payload (empty leaves PullOptions nil).
+func serviceWithRegistryAuth(t *testing.T, registryAuth string) *api.Service {
+	t.Helper()
+	container := &api.ContainerSpec{Image: "registry.test/team/app:1"}
+	if registryAuth != "" {
+		container.PullOptions = &api.ContainerSpec_PullOptions{RegistryAuth: registryAuth}
+	}
+	return &api.Service{
+		ID: "svc-1",
+		Spec: api.ServiceSpec{
+			Annotations: api.Annotations{Name: "web"},
+			Task: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{Container: container},
+			},
+		},
+	}
+}
+
+// TestServiceUpdateWithRegistryAuthFlag verifies --with-registry-auth is
+// registered on `service update` and documented in its help output.
+func TestServiceUpdateWithRegistryAuthFlag(t *testing.T) {
+	cmd := newServiceUpdateCommand()
+
+	flag := cmd.Flags().Lookup("with-registry-auth")
+	require.NotNil(t, flag, "service update must register --with-registry-auth")
+	assert.Equal(t, "bool", flag.Value.Type())
+	assert.Equal(t, "false", flag.DefValue)
+	assert.Contains(t, cmd.UsageString(), "--with-registry-auth")
+}
+
+// TestUpdateServiceWithoutRegistryAuth_PreservesCredential verifies an update
+// that does not mention --with-registry-auth keeps the credential already on
+// the service instead of silently dropping it.
+func TestUpdateServiceWithoutRegistryAuth_PreservesCredential(t *testing.T) {
+	withDockerConfig(t, `{"auths":{}}`)
+
+	client := &fakeServiceUpdateClient{service: serviceWithRegistryAuth(t, "existing-payload")}
+	require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		replicas:    2,
+		replicasSet: true,
+	}))
+
+	require.Equal(t, 1, client.updateCalls)
+	require.NotNil(t, client.updatedSpec)
+	require.NotNil(t, client.updatedSpec.Task.GetContainer().PullOptions)
+	assert.Equal(t, "existing-payload", client.updatedSpec.Task.GetContainer().PullOptions.RegistryAuth)
+}
+
+// TestUpdateServiceWithImageChangeWithoutFlag_PreservesOldRegistryCredential
+// covers the surprise the docs warn about: `--image` names a different registry
+// but --with-registry-auth is omitted, so the previous registry's payload is
+// carried forward through svc.Spec.Copy() and the next pull fails with a 401.
+// Asserting on the spec sent to UpdateService pins that behaviour.
+func TestUpdateServiceWithImageChangeWithoutFlag_PreservesOldRegistryCredential(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"other.registry.test":{"username":"bob","password":"s3cret"}}}`)
+
+	client := &fakeServiceUpdateClient{service: serviceWithRegistryAuth(t, "previous-registry-payload")}
+	require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		image: "other.registry.test/team/app:1",
+	}))
+
+	require.Equal(t, 1, client.updateCalls)
+	require.NotNil(t, client.updatedSpec)
+	container := client.updatedSpec.Task.GetContainer()
+	require.NotNil(t, container)
+	assert.Equal(t, "other.registry.test/team/app:1", container.Image)
+	require.NotNil(t, container.PullOptions,
+		"omitting --with-registry-auth must not drop the credential the spec already carries")
+	assert.Equal(t, "previous-registry-payload", container.PullOptions.RegistryAuth,
+		"the previous registry's payload is carried forward to the new image's registry")
+}
+
+// TestUpdateServiceWithRegistryAuth_SendsResolvedCredential verifies the update
+// path resolves the target image's credential and replaces the payload on the
+// spec it sends.
+func TestUpdateServiceWithRegistryAuth_SendsResolvedCredential(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"registry.test":{"username":"bob","password":"s3cret"}}}`)
+
+	client := &fakeServiceUpdateClient{service: serviceWithRegistryAuth(t, "old-payload")}
+	err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		image:               "registry.test/team/app:2",
+		withRegistryAuth:    true,
+		withRegistryAuthSet: true,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, client.updateCalls)
+	require.NotNil(t, client.updatedSpec)
+	require.NotNil(t, client.updatedSpec.Task.GetContainer().PullOptions)
+
+	cfg, err := image.DecodeRegistryAuth(client.updatedSpec.Task.GetContainer().PullOptions.RegistryAuth)
+	require.NoError(t, err)
+	assert.Equal(t, "bob", cfg.Username)
+	assert.Equal(t, "s3cret", cfg.Password)
+}
+
+// TestUpdateServiceWithRegistryAuthFalse_ClearsCredential verifies an explicit
+// --with-registry-auth=false drops the credential from the updated spec.
+func TestUpdateServiceWithRegistryAuthFalse_ClearsCredential(t *testing.T) {
+	withDockerConfig(t, `{"auths":{}}`)
+
+	client := &fakeServiceUpdateClient{service: serviceWithRegistryAuth(t, "old-payload")}
+	require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		withRegistryAuth:    false,
+		withRegistryAuthSet: true,
+	}))
+
+	require.Equal(t, 1, client.updateCalls)
+	require.NotNil(t, client.updatedSpec)
+	assert.Nil(t, client.updatedSpec.Task.GetContainer().PullOptions)
+}
+
+// TestUpdateServiceWithRegistryAuth_MissingCredentialFailsBeforeUpdateRPC verifies a
+// missing credential is an actionable, ErrNoRegistryCredentials-wrapped error
+// and that the update RPC is never sent. The service lookup does run: the
+// golden rejection needs the fetched spec and therefore precedes the
+// resolution, but it is a read that mutates nothing.
+func TestUpdateServiceWithRegistryAuth_MissingCredentialFailsBeforeUpdateRPC(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"other.registry.test":{"username":"x","password":"y"}}}`)
+
+	client := &fakeServiceUpdateClient{service: serviceWithRegistryAuth(t, "old-payload")}
+	err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		image:               "registry.test/team/app:2",
+		withRegistryAuth:    true,
+		withRegistryAuthSet: true,
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, image.ErrNoRegistryCredentials)
+	assert.Contains(t, err.Error(), "registry.test", "the error must name the registry")
+	assert.Contains(t, err.Error(), "docker login registry.test", "the error must name the remedy")
+	assert.Equal(t, 1, client.getCalls, "the service must be fetched to decide whether it is golden")
+	assert.Zero(t, client.updateCalls, "a failed resolution must not send the update RPC")
+	assert.Nil(t, client.updatedSpec)
+}
+
+// TestUpdateServiceWithRegistryAuth_RequiresImage verifies setting credentials
+// without --image fails before any RPC: the credential is resolved for the
+// target image, which the caller must therefore name.
+func TestUpdateServiceWithRegistryAuth_RequiresImage(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"registry.test":{"username":"bob","password":"s3cret"}}}`)
+
+	client := &fakeServiceUpdateClient{service: serviceWithRegistryAuth(t, "old-payload")}
+	err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		withRegistryAuth:    true,
+		withRegistryAuthSet: true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--image")
+	assert.Zero(t, client.listCalls)
+	assert.Zero(t, client.updateCalls)
+}
+
+// TestUpdateServiceWithRegistryAuth_RejectsRollback verifies --with-registry-auth
+// cannot be combined with --rollback, which ignores other flags, so the flag is
+// never accepted-and-ignored.
+func TestUpdateServiceWithRegistryAuth_RejectsRollback(t *testing.T) {
+	client := &fakeServiceUpdateClient{service: serviceWithRegistryAuth(t, "old-payload")}
+	err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		image:               "registry.test/team/app:2",
+		withRegistryAuth:    true,
+		withRegistryAuthSet: true,
+		rollbackAction:      true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--rollback")
+	assert.Zero(t, client.listCalls)
+	assert.Zero(t, client.updateCalls)
+}
+
+// TestUpdateServiceWithRegistryAuth_RejectsGolden verifies setting credentials
+// on a golden service fails: golden images are not pulled from a registry, so
+// the flag would otherwise be stored and never consumed.
+func TestUpdateServiceWithRegistryAuth_RejectsGolden(t *testing.T) {
+	withDockerConfig(t, `{"auths":{"registry.test":{"username":"bob","password":"s3cret"}}}`)
+
+	svc := serviceWithRegistryAuth(t, "old-payload")
+	svc.Spec.Annotations.Labels = map[string]string{types.GoldenLabel: "ubuntu-24.04-docker@1.0.0"}
+	client := &fakeServiceUpdateClient{service: svc}
+
+	err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		image:               "registry.test/team/app:2",
+		withRegistryAuth:    true,
+		withRegistryAuthSet: true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--with-registry-auth")
+	assert.Contains(t, err.Error(), "golden")
+	assert.Zero(t, client.updateCalls)
+}
+
+// TestUpdateServiceWithRegistryAuth_RejectsGoldenBeforeResolvingCredential
+// pins the ordering fix: the golden decision is made from the fetched service
+// and must come before the credential is resolved. With no credential stored
+// for the image's registry, a resolution-first ordering would report
+// ErrNoRegistryCredentials instead of the more helpful golden error.
+func TestUpdateServiceWithRegistryAuth_RejectsGoldenBeforeResolvingCredential(t *testing.T) {
+	// No credential for registry.test, so a resolution attempted first fails.
+	withDockerConfig(t, `{"auths":{"other.registry.test":{"username":"x","password":"y"}}}`)
+
+	svc := serviceWithRegistryAuth(t, "old-payload")
+	svc.Spec.Annotations.Labels = map[string]string{types.GoldenLabel: "ubuntu-24.04-docker@1.0.0"}
+	client := &fakeServiceUpdateClient{service: svc}
+
+	err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		image:               "registry.test/team/app:2",
+		withRegistryAuth:    true,
+		withRegistryAuthSet: true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--with-registry-auth")
+	assert.Contains(t, err.Error(), "golden")
+	assert.NotErrorIs(t, err, image.ErrNoRegistryCredentials,
+		"the golden service must be rejected before the credential is resolved")
+	assert.Zero(t, client.updateCalls)
 }

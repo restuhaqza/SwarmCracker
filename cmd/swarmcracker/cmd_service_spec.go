@@ -32,6 +32,12 @@ type serviceCreateOptions struct {
 	mounts      []string
 	volumes     []string
 
+	// withRegistryAuth is --with-registry-auth (#44). registryAuth holds the
+	// resolved base64 X-Registry-Auth payload for the image; createService fills
+	// it in (resolving it is I/O), so this mapping function stays pure.
+	withRegistryAuth bool
+	registryAuth     string
+
 	// networks are the user-defined network names/IDs to attach the service to;
 	// networkTargets holds the resolved IDs.
 	networks       []string
@@ -173,6 +179,13 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		spec.Task.GetContainer().DNSConfig = &api.ContainerSpec_DNSConfig{Nameservers: dns}
 	}
 
+	// --with-registry-auth: the payload is already resolved (createService does
+	// the keychain I/O), so it is copied onto the container verbatim. Empty means
+	// the workers fall back to their own configured credentials.
+	if o.registryAuth != "" {
+		spec.Task.GetContainer().PullOptions = &api.ContainerSpec_PullOptions{RegistryAuth: o.registryAuth}
+	}
+
 	if hc, err := buildHealthcheck(o.health); err != nil {
 		return nil, err
 	} else if hc != nil {
@@ -255,6 +268,16 @@ type serviceUpdateOptions struct {
 	publishModeSet bool
 	force          bool
 
+	// Registry credentials (#44). withRegistryAuth is the --with-registry-auth
+	// value; withRegistryAuthSet records whether the flag was given at all, so
+	// an absent flag preserves the credential already on the service while an
+	// explicit --with-registry-auth=false clears it. registryAuth holds the
+	// already-resolved base64 X-Registry-Auth payload (updateService does the
+	// keychain I/O), keeping this mapping pure.
+	withRegistryAuth    bool
+	withRegistryAuthSet bool
+	registryAuth        string
+
 	mounts    []string
 	volumes   []string
 	mountsSet bool
@@ -310,6 +333,30 @@ type serviceUpdateOptions struct {
 	rollbackFailAction string
 	rollbackMonitor    string
 	rollbackMaxRatio   float64
+}
+
+// registryAuthForUpdate is the pure decision behind `service update
+// --with-registry-auth` (#44). It maps the flag's set bit and value to what the
+// updated spec should carry:
+//
+//   - the flag was absent (set=false): return apply=false so the credential
+//     copied onto the spec from the current service is preserved untouched;
+//   - the flag was given true (set=true, value=true): return the
+//     already-resolved payload with apply=true so it replaces the current
+//     credential;
+//   - the flag was given false (set=true, value=false): return an empty payload
+//     with apply=true so the credential is cleared.
+//
+// resolved is ignored unless the flag was given true; callers resolve it from
+// the keychain before any RPC so a missing credential fails fast.
+func registryAuthForUpdate(set, value bool, resolved string) (payload string, apply bool) {
+	if !set {
+		return "", false
+	}
+	if !value {
+		return "", true
+	}
+	return resolved, true
 }
 
 func normalizeServiceMode(m string) (string, error) {

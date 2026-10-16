@@ -59,7 +59,7 @@ func TestExtractWithGGCR_Validation_Low(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			err := ip.extractWithGGCR(ctx, tt.imageRef, tt.destPath)
+			err := ip.extractWithGGCR(ctx, tt.imageRef, tt.destPath, "")
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -532,7 +532,7 @@ func TestPrepareImage_Low(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 
-			err := ip.prepareImage(ctx, tt.imageRef, tt.imageID, tt.outputPath)
+			err := ip.prepareImage(ctx, tt.imageRef, tt.imageID, tt.outputPath, "")
 
 			if tt.wantErr {
 				assert.Error(t, err)

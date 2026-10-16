@@ -93,6 +93,46 @@ func TestBuildServiceSpec_DefaultsLeaveSectionsUnset(t *testing.T) {
 	assert.Nil(t, spec.Rollback, "no --rollback-* must not set a rollback config")
 }
 
+// TestBuildServiceSpec_RegistryAuth verifies --with-registry-auth puts the
+// already-resolved X-Registry-Auth payload on the container's PullOptions, and
+// that an unset payload leaves PullOptions nil (workers then use their own
+// configured credentials).
+func TestBuildServiceSpec_RegistryAuth(t *testing.T) {
+	t.Run("payload set", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name:             "web",
+			image:            "private.example.com/app:1",
+			replicas:         1,
+			withRegistryAuth: true,
+			registryAuth:     "eyJ1c2VybmFtZSI6ImJvYiJ9",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, spec.Task.GetContainer().PullOptions)
+		assert.Equal(t, "eyJ1c2VybmFtZSI6ImJvYiJ9", spec.Task.GetContainer().PullOptions.RegistryAuth)
+	})
+
+	t.Run("payload unset", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{name: "web", image: "nginx", replicas: 1})
+		require.NoError(t, err)
+		assert.Nil(t, spec.Task.GetContainer().PullOptions, "no --with-registry-auth must leave PullOptions nil")
+	})
+
+	t.Run("flag set but payload empty", func(t *testing.T) {
+		// --with-registry-auth turns the keychain I/O on in createService; if that
+		// resolution yields nothing (an empty payload), buildServiceSpec must not
+		// invent an empty PullOptions, which would mark the spec as carrying auth
+		// that the workers would then misuse.
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name:             "web",
+			image:            "private.example.com/app:1",
+			replicas:         1,
+			withRegistryAuth: true,
+		})
+		require.NoError(t, err)
+		assert.Nil(t, spec.Task.GetContainer().PullOptions, "an empty payload must leave PullOptions nil")
+	})
+}
+
 func TestBuildServiceSpec_RejectsInvalidValues(t *testing.T) {
 	cases := map[string]serviceCreateOptions{
 		"mode":            {mode: "bogus"},
@@ -482,6 +522,34 @@ func TestBuildHealthcheck_DistinguishesExplicitFromUnset(t *testing.T) {
 			_, err := buildHealthcheck(tc.h)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantSub)
+		})
+	}
+}
+
+// TestRegistryAuthForUpdate covers the three --with-registry-auth cases for
+// `service update` directly: flag absent preserves, true sets the resolved
+// payload, false clears (an empty applied payload).
+func TestRegistryAuthForUpdate(t *testing.T) {
+	const payload = "eyJ1c2VybmFtZSI6ImJvYiJ9"
+
+	tests := []struct {
+		name     string
+		set      bool
+		value    bool
+		resolved string
+		want     string
+		apply    bool
+	}{
+		{name: "absent preserves", set: false, value: false, resolved: "", want: "", apply: false},
+		{name: "true sets the resolved payload", set: true, value: true, resolved: payload, want: payload, apply: true},
+		{name: "false clears", set: true, value: false, resolved: payload, want: "", apply: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, apply := registryAuthForUpdate(tc.set, tc.value, tc.resolved)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.apply, apply)
 		})
 	}
 }

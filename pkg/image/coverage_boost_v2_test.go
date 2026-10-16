@@ -1235,7 +1235,7 @@ func TestExtractWithGGCR_InvalidReference(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			err := ip.extractWithGGCR(ctx, tt.imageRef, tt.destPath)
+			err := ip.extractWithGGCR(ctx, tt.imageRef, tt.destPath, "")
 
 			if tt.wantErr {
 				assert.Error(t, err)
@@ -2652,7 +2652,7 @@ func TestPrepareImage_CleanupOnError(t *testing.T) {
 	defer cancel()
 
 	// This should fail and cleanup temp directory
-	err := ip.prepareImage(ctx, "nonexistent:image", "test-id", t.TempDir()+"/output.ext4")
+	err := ip.prepareImage(ctx, "nonexistent:image", "test-id", t.TempDir()+"/output.ext4", "")
 	assert.Error(t, err)
 }
 
@@ -2663,7 +2663,7 @@ func TestExtractOCIImage_AllMethodsFail(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := ip.extractOCIImage(ctx, "invalid-image-ref:nonexistent", t.TempDir())
+	err := ip.extractOCIImage(ctx, "invalid-image-ref:nonexistent", t.TempDir(), "")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "no image extraction method")
 }
@@ -3034,7 +3034,7 @@ func TestExtractOCIImage_EmptyDestPath(t *testing.T) {
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: t.TempDir()}).(*ImagePreparer)
 
 	ctx := context.Background()
-	err := ip.extractOCIImage(ctx, "alpine:latest", "")
+	err := ip.extractOCIImage(ctx, "alpine:latest", "", "")
 
 	// Should fail due to empty dest
 	assert.Error(t, err)
@@ -3045,7 +3045,7 @@ func TestExtractOCIImage_EmptyImageRef(t *testing.T) {
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: t.TempDir()}).(*ImagePreparer)
 
 	ctx := context.Background()
-	err := ip.extractOCIImage(ctx, "", t.TempDir())
+	err := ip.extractOCIImage(ctx, "", t.TempDir(), "")
 
 	assert.Error(t, err)
 }

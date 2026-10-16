@@ -1,12 +1,14 @@
 package swarmkit
 
 import (
+	"context"
 	"os"
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
 	configstore "github.com/restuhaqza/swarmcracker/pkg/swarmkit/configs"
 	secretstore "github.com/restuhaqza/swarmcracker/pkg/swarmkit/secrets"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -148,6 +150,86 @@ func TestController_convertTask_LocalGatewayForManagedNetwork(t *testing.T) {
 	require.Len(t, internal.Networks, 1)
 	assert.Equal(t, "10.10.0.2", internal.Networks[0].Network.Spec.Gateway,
 		"a node's guests use its own address on the network")
+}
+
+func TestController_convertTask_RegistryAuth(t *testing.T) {
+	const payload = "eyJ1c2VybmFtZSI6ImJvYiIsInBhc3N3b3JkIjoic2VjcmV0In0="
+
+	tests := []struct {
+		name     string
+		pullOpts *api.ContainerSpec_PullOptions
+		expected string
+	}{
+		{
+			name:     "carries the service spec credential",
+			pullOpts: &api.ContainerSpec_PullOptions{RegistryAuth: payload},
+			expected: payload,
+		},
+		{
+			name:     "tolerates nil PullOptions",
+			pullOpts: nil,
+			expected: "",
+		},
+		{
+			name:     "tolerates an empty payload",
+			pullOpts: &api.ContainerSpec_PullOptions{},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := &Controller{
+				task: &api.Task{
+					ID: "t1",
+					Spec: api.TaskSpec{
+						Runtime: &api.TaskSpec_Container{Container: &api.ContainerSpec{
+							Image:       "private.example.com/app:1",
+							PullOptions: tt.pullOpts,
+						}},
+					},
+				},
+			}
+
+			container, err := ctrl.convertTask().Spec.GetContainer()
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, container.RegistryAuth)
+		})
+	}
+}
+
+// TestController_convertTask_RegistryAuthReachesPreparer proves the copy survives
+// to the image preparer: the preparer test double observes the same task, with
+// the credential attached, that convertTask produced.
+func TestController_convertTask_RegistryAuthReachesPreparer(t *testing.T) {
+	const payload = "eyJ1c2VybmFtZSI6ImJvYiJ9"
+
+	ctrl := &Controller{
+		task: &api.Task{
+			ID: "t1",
+			Spec: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{Container: &api.ContainerSpec{
+					Image:       "private.example.com/app:1",
+					PullOptions: &api.ContainerSpec_PullOptions{RegistryAuth: payload},
+				}},
+			},
+		},
+	}
+
+	var seen *types.Task
+	prep := &MockImagePreparer{
+		PrepareFunc: func(_ context.Context, task *types.Task) error {
+			seen = task
+			return nil
+		},
+	}
+
+	internal := ctrl.convertTask()
+	require.NoError(t, prep.Prepare(context.Background(), internal))
+	require.NotNil(t, seen)
+	container, err := seen.Spec.GetContainer()
+	require.NoError(t, err)
+	assert.Equal(t, payload, container.RegistryAuth)
 }
 
 func TestController_convertTask_HostnameAndDNS(t *testing.T) {

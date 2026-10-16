@@ -127,6 +127,7 @@ Service (replicated microVM) management.
 | `--name` | (required) | Service name |
 | `--image` | — | Container image (required unless `--golden`) |
 | `--golden` | — | Boot a prebuilt golden image (e.g. `ubuntu-24.04-docker@1.0.0`) |
+| `--with-registry-auth` | `false` | Send the manager's credentials for `--image` to the nodes (resolved at create time; see [Registry authentication](#registry-authentication)) |
 | `--replicas` | `1` | Number of replicas |
 | `--cpu` | — | CPU limit (cores, e.g. `1.5`) |
 | `--memory` | — | Memory limit (e.g. `512M`, `1G`) |
@@ -226,7 +227,7 @@ invalid value is **rejected** (`--health-retries 0`, `--health-interval 0s`), as
 is any `--health-*` flag supplied without `--health-cmd`; no flag is silently
 ignored.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
@@ -255,6 +256,73 @@ resolves node addresses), leaving only the derived value. `--health-port`
 (default `8080`) selects the port of each node's health server; an invalid port
 is rejected rather than ignored.
 
+##### Registry authentication
+
+`--with-registry-auth` makes the **CLI** resolve credentials for the service's
+`--image` and attach them to the service spec, so a task can pull a private
+image on a node that has no Docker configuration of its own. The CLI dials the
+manager's local socket, so in a normal install that is the manager itself.
+Credentials are read from the standard Docker config (`~/.docker/config.json`,
+including credential helpers) — the file `docker login <registry>` writes. There
+is **no** `swarmcracker login` command; the CLI only reads that config. See
+[Registry Credentials](/guides/configuration/#registry-credentials) for where
+the credentials are read from, and what runs where.
+
+```bash
+# Once, on the manager, as the user that runs swarmcracker (often root):
+sudo docker login registry.example.com
+
+# The worker needs no login and no local Docker config:
+swarmcracker service create \
+    --name api \
+    --image registry.example.com/team/api:1.4.0 \
+    --with-registry-auth
+```
+
+If no credential can be found for the image's registry, `service create` fails
+**before any request is sent**, and `service update` fails **before the update
+request is sent** — it first reads the service to decide whether it is golden,
+so the `GetService` lookup does run. Nothing is created or modified in either
+case, and the error names the registry and the remedy:
+
+```text
+--with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`
+```
+
+The flag is **rejected** with `--golden` (golden images are booted from a local
+sealed image, not pulled from a registry), and `service update
+--with-registry-auth` is rejected on a golden service for the same reason.
+
+On `service update` the flag is tri-state, and the middle row is the one to
+watch:
+
+| Invocation | Effect on the stored credential |
+|------------|---------------------------------|
+| flag omitted | **Preserved** — the service keeps the credential it already carries |
+| `--with-registry-auth` | Re-resolved for `--image`, which is therefore **required** (`--with-registry-auth requires --image`) |
+| `--with-registry-auth=false` | **Cleared** — the spec stops carrying any credential |
+
+`--rollback` **restores the previous spec's** credential and ignores the other
+flags, so `--rollback` combined with `--with-registry-auth` is rejected.
+
+> **Changing the registry without the flag.** `service update --image` does
+> **not** re-resolve the credential. An update that names a new image but omits
+> `--with-registry-auth` keeps the payload already on the spec — so pointing a
+> service at an image in a **different** registry carries the **previous**
+> registry's credential forward, and the next pull fails with a `401` on the
+> node. Always pass `--with-registry-auth --image <ref>` when the new image lives
+> in a different registry, or `--with-registry-auth=false` to drop the old one.
+
+**Redaction.** The stored payload is never printed. The JSON renderings —
+`service inspect` (its default output), `service ls --format json`, `service ps
+--format json`, `task inspect`, `task ls --format json` and the equivalent
+`swarmctl` output — replace the credential with `***` (masked on a copy of the
+spec, so the response the command keeps using is untouched), so an operator can
+see that a service carries credentials without seeing what they are. The
+plain-text renderings (`service inspect` with a non-JSON `--format`, the tables)
+omit the credential field entirely. The payload is also kept out of logs and
+metrics.
+
 #### `swarmcracker task`
 
 Task management.
@@ -271,7 +339,9 @@ node's health server is reachable, derived otherwise, also emitted as `health`
 (and `live_health` when fetched) by `--format json`. `task inspect` shows a
 task's declared healthcheck (its test command, interval, timeout, retries and
 start period) and, when a check failed, the reason the executor recorded (for
-example `healthcheck failed: <cmd>: <output>`).
+example `healthcheck failed: <cmd>: <output>`). A registry credential the task
+carries is printed as `***`, never as its payload — see
+[Registry authentication](#registry-authentication).
 
 #### `swarmcracker vm`
 
@@ -493,6 +563,10 @@ swarmctl snapshot list
 swarmctl snapshot restore <snapshot-name>
 swarmctl snapshot rm <snapshot-name>
 ```
+
+Anything that serializes a service or task (`inspect`, `ls-services`,
+`ls-tasks`) replaces a registry credential with `***`, the same redaction as the
+main CLI.
 
 ---
 
