@@ -820,12 +820,12 @@ func TestUpdateServiceWithRegistryAuthFalse_ClearsCredential(t *testing.T) {
 	assert.Nil(t, client.updatedSpec.Task.GetContainer().PullOptions)
 }
 
-// TestUpdateServiceWithRegistryAuth_MissingCredentialFailsBeforeRPC verifies a
+// TestUpdateServiceWithRegistryAuth_MissingCredentialFailsBeforeUpdateRPC verifies a
 // missing credential is an actionable, ErrNoRegistryCredentials-wrapped error
 // and that the update RPC is never sent. The service lookup does run: the
 // golden rejection needs the fetched spec and therefore precedes the
 // resolution, but it is a read that mutates nothing.
-func TestUpdateServiceWithRegistryAuth_MissingCredentialFailsBeforeRPC(t *testing.T) {
+func TestUpdateServiceWithRegistryAuth_MissingCredentialFailsBeforeUpdateRPC(t *testing.T) {
 	withDockerConfig(t, `{"auths":{"other.registry.test":{"username":"x","password":"y"}}}`)
 
 	client := &fakeServiceUpdateClient{service: serviceWithRegistryAuth(t, "old-payload")}

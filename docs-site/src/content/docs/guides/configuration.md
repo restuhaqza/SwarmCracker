@@ -477,8 +477,11 @@ Docker config; the CLI only reads it.
 Credentials are resolved at **create/update time**, not at pull time.
 `service create --with-registry-auth` (and `service update
 --with-registry-auth`) read the config, encode an `X-Registry-Auth` payload, and
-store it on the service spec. A missing credential fails the command before any
-request is sent. The [CLI Reference → Registry
+store it on the service spec. A missing credential fails `service create` before
+any request is sent, and `service update` before the update request is sent: the
+update first reads the service to decide whether it is golden, so its
+`GetService` lookup does run. Nothing is created or modified in either case.
+The [CLI Reference → Registry
 authentication](/reference/cli/#registry-authentication) has the per-command
 semantics and the `service update` gotchas.
 

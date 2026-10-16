@@ -258,12 +258,13 @@ is rejected rather than ignored.
 
 ##### Registry authentication
 
-`--with-registry-auth` makes the **manager** resolve credentials for the
-service's `--image` and attach them to the service spec, so a task can pull a
-private image on a node that has no Docker configuration of its own. Credentials
-are read from the standard Docker config (`~/.docker/config.json`, including
-credential helpers) — the file `docker login <registry>` writes. There is **no**
-`swarmcracker login` command; the CLI only reads that config. See
+`--with-registry-auth` makes the **CLI** resolve credentials for the service's
+`--image` and attach them to the service spec, so a task can pull a private
+image on a node that has no Docker configuration of its own. The CLI dials the
+manager's local socket, so in a normal install that is the manager itself.
+Credentials are read from the standard Docker config (`~/.docker/config.json`,
+including credential helpers) — the file `docker login <registry>` writes. There
+is **no** `swarmcracker login` command; the CLI only reads that config. See
 [Registry Credentials](/guides/configuration/#registry-credentials) for where
 the credentials are read from, and what runs where.
 
@@ -278,9 +279,11 @@ swarmcracker service create \
     --with-registry-auth
 ```
 
-If no credential can be found for the image's registry, the command fails
-**before any request is sent** (no service or task is created), naming the
-registry and the remedy:
+If no credential can be found for the image's registry, `service create` fails
+**before any request is sent**, and `service update` fails **before the update
+request is sent** — it first reads the service to decide whether it is golden,
+so the `GetService` lookup does run. Nothing is created or modified in either
+case, and the error names the registry and the remedy:
 
 ```text
 --with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`

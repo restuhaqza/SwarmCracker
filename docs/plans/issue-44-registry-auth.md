@@ -110,7 +110,8 @@ payload, so `buildServiceSpec` stays pure; `createService` does the I/O.
   host- and privilege-independent (no reliance on leftover devices or on running as
   root) per `docs-site/.../contributing/testing/unit-tests.md`.
 - A flag is never accepted-and-ignored: `--with-registry-auth` either works or
-  fails with a clear error **before** any RPC.
+  fails with a clear error **before** the mutating RPC (`service update` may
+  first read the service to decide whether it is golden).
 - Docs live in `docs-site/src/content/docs/`.
 - Tests run on the Linux test server (`root@192.168.18.25`, checkout
   `/root/sc-verify`); this workstation is darwin and `cmd/...` does not build here.
