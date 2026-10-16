@@ -1354,25 +1354,16 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 
 // updateServiceWithClient is updateService's update path. It takes the control
 // client so tests can drive it with a fake (the same ...WithClient seam as
-// createServiceWithClient) and assert both the registry-auth ordering and the
-// no-RPC-on-failure guarantee.
+// createServiceWithClient) and assert both the registry-auth ordering (no
+// update RPC before a rejected resolution) and what spec was submitted.
 func updateServiceWithClient(ctx context.Context, client api.ControlClient, serviceID string, opts serviceUpdateOptions) error {
-	// --with-registry-auth (#44) resolves the manager's credential for the
-	// target image before any RPC (the service lookup below included), so a
-	// missing credential is a clear, pre-update error rather than an opaque pull
-	// failure on a node.
+	// Validate the flag combinations that need no service lookup first, so the
+	// most helpful error is the one returned.
 	if opts.withRegistryAuthSet && opts.rollbackAction {
 		return fmt.Errorf("--with-registry-auth cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags")
 	}
-	if opts.withRegistryAuthSet && opts.withRegistryAuth {
-		if opts.image == "" {
-			return fmt.Errorf("--with-registry-auth requires --image: the credential is resolved for the image the service will run")
-		}
-		encoded, err := resolveRegistryAuth(opts.image)
-		if err != nil {
-			return err
-		}
-		opts.registryAuth = encoded
+	if opts.withRegistryAuthSet && opts.withRegistryAuth && opts.image == "" {
+		return fmt.Errorf("--with-registry-auth requires --image: the credential is resolved for the image the service will run")
 	}
 
 	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
@@ -1394,6 +1385,33 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 		return applyServiceSpec(ctx, client, svc, svc.PreviousSpec.Copy())
 	}
 
+	// --with-registry-auth on a golden service would be stored but never
+	// consumed (golden images boot their own init and are not pulled from a
+	// registry), so reject it rather than silently dropping the flag. Clearing
+	// the credential (an explicit false) stays valid.
+	//
+	// Whether the service is golden is only knowable from the spec the lookup
+	// above fetched, so this rejection sits above the credential resolution:
+	// placed after it, a golden service would resolve an unused credential (or
+	// fail on a missing one) before reaching this clearer error. The lookup is
+	// a read and mutates nothing.
+	if opts.withRegistryAuthSet && opts.withRegistryAuth && svc.Spec.Annotations.Labels[types.GoldenLabel] != "" {
+		return fmt.Errorf("--with-registry-auth cannot be used on a golden service: golden images are not pulled from a registry")
+	}
+
+	// --with-registry-auth (#44) resolves the CLI's credential for the target
+	// image — the CLI dials the local socket, so in a normal install this runs
+	// on the manager as the account that invokes swarmcracker. The service
+	// lookup above is a read, so a missing credential is still a clear error
+	// before the update RPC rather than an opaque pull failure on a node.
+	if opts.withRegistryAuthSet && opts.withRegistryAuth {
+		encoded, err := resolveRegistryAuth(opts.image)
+		if err != nil {
+			return err
+		}
+		opts.registryAuth = encoded
+	}
+
 	// Parse memory
 	memoryBytes, err := parseMemory(opts.memoryLimit)
 	if err != nil {
@@ -1401,14 +1419,6 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 	}
 
 	spec := svc.Spec.Copy()
-
-	// --with-registry-auth on a golden service would be stored but never
-	// consumed (golden images boot their own init and are not pulled from a
-	// registry), so reject it rather than silently dropping the flag. Clearing
-	// the credential (an explicit false) stays valid.
-	if opts.withRegistryAuthSet && opts.withRegistryAuth && spec.Annotations.Labels[types.GoldenLabel] != "" {
-		return fmt.Errorf("--with-registry-auth cannot be used on a golden service: golden images are not pulled from a registry")
-	}
 
 	// Apply the --with-registry-auth decision (#44): an absent flag preserves
 	// the credential copied from the current spec, an explicit true replaces it

@@ -283,7 +283,7 @@ If no credential can be found for the image's registry, the command fails
 registry and the remedy:
 
 ```text
---with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`: no registry credentials found
+--with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`
 ```
 
 The flag is **rejected** with `--golden` (golden images are booted from a local

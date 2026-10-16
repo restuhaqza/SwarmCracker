@@ -439,8 +439,9 @@ Compress snapshots to reduce disk usage at the cost of slower create/restore.
 ## Registry Credentials
 
 Pulling a **private** image needs a registry credential. SwarmCracker does not
-read one from this config file: credentials are resolved on the **manager**,
-from the standard Docker configuration, when a service is created or updated.
+read one from this config file: the CLI resolves it from the standard Docker
+configuration, when a service is created or updated, and stores it on the
+service spec.
 
 ### Where credentials are read from
 
@@ -483,12 +484,17 @@ semantics and the `service update` gotchas.
 
 ### What runs where
 
-- The **manager** resolves and stores the credential, so it must have the Docker
-  config (or credential helper) at the moment the command runs.
+- The **CLI** resolves the credential and stores it on the service spec, so the
+  account that runs `swarmcracker` needs the Docker config (or credential
+  helper) at the moment the command runs. The CLI dials the manager's local
+  socket, so in a normal install that is the manager itself.
 - The **worker** consumes the stored payload when it pulls the image and needs
   **no** local Docker config and **no** `docker login`.
-- The payload never reaches logs, metrics, `service inspect`, `task inspect` or
-  their JSON output; those print `***` instead.
+- The payload never reaches logs, metrics, or the JSON renderings of
+  `service inspect`, `task inspect`, `service ls` and `task ls`: those replace it
+  with `***`, so an operator can see that a service carries credentials without
+  seeing what they are. The plain-text renderings (`service inspect` with a
+  non-JSON `--format`, the tables) omit the credential field entirely.
 
 ### In the config file
 

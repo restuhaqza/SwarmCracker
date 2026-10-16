@@ -402,6 +402,14 @@ func (ip *ImagePreparer) verifyCachedRootfs(rootfsPath string) bool {
 
 // extractOCIImage extracts an OCI image using go-containerregistry (primary) or docker/podman (fallback).
 func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath, taskRegistryAuth string) error {
+	// A task-level credential is only honoured by go-containerregistry: the
+	// docker/podman CLIs take no auth, so on a node where the registry pull
+	// fails first they would silently degrade to an unauthenticated pull. When
+	// a credential is present, skip them entirely and let the authenticated
+	// failure (e.g. UNAUTHORIZED) reach the operator instead of hiding it behind
+	// the "no extraction method available" summary below.
+	hasTaskCredential := taskRegistryAuth != ""
+
 	// Try different methods in order of preference (daemon-free first)
 	methods := []struct {
 		name string
@@ -425,8 +433,13 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 
 	var lastErr error
 	for _, method := range methods {
-		// Skip CLI methods if tool not available
 		if method.name != "go-containerregistry" {
+			// The CLI fallbacks cannot carry the task's credential: they would
+			// pull anonymously and mask the real failure.
+			if hasTaskCredential {
+				continue
+			}
+			// Skip CLI methods if tool not available
 			if _, err := exec.LookPath(method.name); err != nil {
 				continue
 			}
@@ -449,6 +462,13 @@ func (ip *ImagePreparer) extractOCIImage(ctx context.Context, imageRef, destPath
 		}
 
 		return nil
+	}
+
+	if hasTaskCredential && lastErr != nil {
+		// The CLI fallbacks were skipped because they cannot carry the task's
+		// credential, so there is no method list to summarise: report the
+		// authenticated attempt's real error.
+		return lastErr
 	}
 
 	if lastErr != nil {

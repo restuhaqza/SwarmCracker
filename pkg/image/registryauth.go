@@ -47,7 +47,7 @@ func EncodeRegistryAuthFor(ref string, kc authn.Keychain) (string, error) {
 		return "", fmt.Errorf("resolving credentials for %s: %w", host, err)
 	}
 	if cfg == nil || (cfg.Username == "" && cfg.Password == "" && cfg.IdentityToken == "" && cfg.RegistryToken == "") {
-		return "", fmt.Errorf("no registry credentials found for %s: run `docker login %s`: %w", host, host, ErrNoRegistryCredentials)
+		return "", fmt.Errorf("%w for %s: run `docker login %s`", ErrNoRegistryCredentials, host, host)
 	}
 
 	payload, err := json.Marshal(cfg)

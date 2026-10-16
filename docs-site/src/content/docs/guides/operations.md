@@ -512,7 +512,7 @@ a worker never reads its own Docker config. Diagnose on the manager.
 
 4. **The create/update error names the registry and the remedy:**
    ```text
-   --with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`: no registry credentials found
+   --with-registry-auth: no registry credentials found for registry.example.com: run `docker login registry.example.com`
    ```
 
 5. **Credential revoked or expired?** Log in again and re-resolve:
