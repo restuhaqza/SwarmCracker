@@ -246,6 +246,21 @@ network reach each other normally, **including across nodes**: every network
 gets its own per-network VXLAN fanned out to the other nodes, so the network's
 L2 domain spans the cluster (the same mechanism as the default overlay).
 
+Each node holds its **own** address on the network — `<subnet>.1` on the first node,
+`<subnet>.2` on the second, and so on, mirroring the default overlay's `bridge_ip` —
+and a node's guests use its address as their default gateway. Two nodes holding one
+address would both answer ARP for it on the network's L2, and whichever answered first
+would become that guest's gateway. Node 1 holds whatever the network records as its
+gateway, so a network created with `--gateway` keeps it (and keeps the guests' default
+route with it), and that address stays reachable from every other node over the VXLAN.
+
+The per-node addresses need what the per-node guest blocks need: a subnet of at least
+`/27`, and each node configured with its own `bridge_ip` (`.1`, `.2`, …) and
+`--vxlan-peers` — without those every node computes slot 1 and keeps the recorded
+gateway. The `ingress` and `docker_gwbridge` bridges are carved from the default
+overlay's subnet, so each node's holds that node's single address on that segment, just
+like its default bridge.
+
 Both the subnet and the VXLAN ID are assigned once and then **kept**: a daemon
 restart re-allocates the network's resources, and renumbering a live network would
 move its guests' addresses or leave its replicas without a tunnel. A *newly* assigned
@@ -465,10 +480,8 @@ swarmcracker service create --name app --image myapp --dns 1.1.1.1
   resolver serves: a guest asking it cannot reach an address on the ingress
   network or on a user-defined one, and answering with one would send it
   somewhere it cannot go. Reach a published service through its published port.
-  (User-defined overlays are also broken cross-node —
-  [#70](https://github.com/restuhaqza/SwarmCracker/issues/70) — and they get no
-  `dnsmasq` of their own, so a guest attached *only* to one keeps the image's
-  resolver.)
+  (User-defined overlays get no `dnsmasq` of their own, so a guest attached *only* to
+  one keeps the image's resolver.)
 - **Replica addresses, not the VIP.** The service VIP is allocated for ingress
   services but is not a routable address on this datapath, so `<service>` answers
   with the replicas.
