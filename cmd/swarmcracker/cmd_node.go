@@ -6,9 +6,11 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,6 +37,7 @@ draining, and removing nodes.`,
 	cmd.AddCommand(newNodeDrainCommand())
 	cmd.AddCommand(newNodeActivateCommand())
 	cmd.AddCommand(newNodePromoteCommand())
+	cmd.AddCommand(newNodeUpdateCommand())
 	cmd.AddCommand(newNodeRemoveCommand())
 
 	return cmd
@@ -186,6 +189,43 @@ For active nodes, use --force to remove without confirmation.`,
 	}
 
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Force removal without confirmation")
+
+	return cmd
+}
+
+// newNodeUpdateCommand creates the node update command
+func newNodeUpdateCommand() *cobra.Command {
+	var (
+		labelAdd []string
+		labelRm  []string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "update <node-id>",
+		Short: "Update a node's placement labels",
+		Long: `Update the placement labels of a node.
+
+Labels are matched by the scheduler's node.labels.* placement constraints, so
+labelling a node is how a "node.labels.<key>==<value>" constraint becomes
+satisfiable.
+
+--label-add KEY=VALUE may be repeated; an existing key is overwritten.
+--label-rm KEY may be repeated; removing a key the node does not have is a
+no-op, not an error. At least one of the two flags is required.`,
+		Example: `  swarmcracker node update 123abc... --label-add disk=ssd
+  swarmcracker node update 123abc... --label-add disk=ssd --label-add zone=a
+  swarmcracker node update 123abc... --label-rm disk`,
+		Args: cobra.ExactArgs(1),
+		PreRun: func(cmd *cobra.Command, args []string) {
+			setupLogging(logLevel)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return updateNodeLabels(args[0], labelAdd, labelRm)
+		},
+	}
+
+	cmd.Flags().StringArrayVar(&labelAdd, "label-add", nil, "Add or overwrite a node label as KEY=VALUE (repeatable)")
+	cmd.Flags().StringArrayVar(&labelRm, "label-rm", nil, "Remove a node label by KEY (repeatable; a key the node does not have is a no-op)")
 
 	return cmd
 }
@@ -376,6 +416,92 @@ func setNodeAvailability(nodeID string, availability api.NodeSpec_Availability) 
 
 	fmt.Printf("Node %s availability set to %s\n", nodeID, availability.String())
 	return nil
+}
+
+// updateNodeLabels applies --label-add/--label-rm to a node's placement labels.
+//
+// Every argument is validated before the control client is dialled, so a
+// mistyped flag fails with a clear error instead of after a round-trip (and
+// without depending on the swarm socket at all).
+func updateNodeLabels(nodeID string, add, remove []string) error {
+	if err := validateLabelUpdate(add, remove); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, conn, err := getSwarmClient()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	return updateNodeLabelsWithClient(ctx, client, os.Stdout, nodeID, add, remove)
+}
+
+// updateNodeLabelsWithClient is updateNodeLabels' update path. It takes the
+// control client and output writer so tests can drive it with a fake (the same
+// ...WithClient seam as updateServiceWithClient) and assert that a rejected
+// argument sends no RPC.
+//
+// It revalidates the arguments rather than trusting a caller of the seam, so no
+// entry point can accept a flag it then ignores.
+func updateNodeLabelsWithClient(ctx context.Context, client api.ControlClient, w io.Writer, nodeID string, add, remove []string) error {
+	if err := validateLabelUpdate(add, remove); err != nil {
+		return err
+	}
+
+	nodeID, err := resolveNodeRef(ctx, client, nodeID)
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.GetNode(ctx, &api.GetNodeRequest{NodeID: nodeID})
+	if err != nil {
+		return fmt.Errorf("failed to get node: %w", err)
+	}
+
+	node := resp.Node
+	// Labels are applied to a copy of the current map: applyLabelChanges never
+	// mutates its input, so a failed update cannot leave the fetched node
+	// half-changed.
+	labels, err := applyLabelChanges(node.Spec.Annotations.Labels, add, remove)
+	if err != nil {
+		return err
+	}
+	node.Spec.Annotations.Labels = labels
+
+	_, err = client.UpdateNode(ctx, &api.UpdateNodeRequest{
+		NodeID:      nodeID,
+		NodeVersion: &node.Meta.Version,
+		Spec:        &node.Spec,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update node: %w", err)
+	}
+
+	writeNodeLabels(w, nodeID, labels)
+	return nil
+}
+
+// writeNodeLabels prints the node's labels in a stable (sorted) order so the
+// result of an update is visible to the operator.
+func writeNodeLabels(w io.Writer, nodeID string, labels map[string]string) {
+	fmt.Fprintf(w, "Node %s labels updated\n", nodeID)
+	if len(labels) == 0 {
+		fmt.Fprintln(w, "  (no labels)")
+		return
+	}
+
+	keys := make([]string, 0, len(labels))
+	for k := range labels {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fmt.Fprintf(w, "  %s=%s\n", k, labels[k])
+	}
 }
 
 func promoteNode(nodeID string) error {

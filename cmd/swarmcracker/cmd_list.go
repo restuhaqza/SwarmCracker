@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/rs/zerolog/log"
@@ -137,14 +138,19 @@ func outputTable(vms []*runtime.VMState) error {
 }
 
 // truncateMiddle shortens s to at most max characters, appending an ellipsis.
+// It counts characters (runes), not bytes, so a multi-byte rune is never split
+// in half: the result is always valid UTF-8 and never wider than max characters.
+// Reasons in the `service ps` / `task ls` ERROR column and image or service names
+// in `vm list` can all carry non-ASCII text.
 func truncateMiddle(s string, max int) string {
-	if len(s) <= max {
+	if utf8.RuneCountInString(s) <= max {
 		return s
 	}
+	runes := []rune(s)
 	if max <= 3 {
-		return s[:max]
+		return string(runes[:max])
 	}
-	return s[:max-3] + "..."
+	return string(runes[:max-3]) + "..."
 }
 
 // outputJSON displays VMs in JSON format
