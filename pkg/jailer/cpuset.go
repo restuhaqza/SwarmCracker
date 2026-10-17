@@ -46,28 +46,45 @@ func ParseCPUSet(s string) (string, error) {
 		if part == "" {
 			return "", fmt.Errorf("invalid cpuset %q: empty list element", s)
 		}
-
-		lo, hi, isRange := strings.Cut(part, "-")
-		start, err := parseCPUSetID(lo, s, part)
+		r, err := parseCPUSetElement(part, s)
 		if err != nil {
 			return "", err
 		}
-		end := start
-		if isRange {
-			if hi == "" {
-				return "", fmt.Errorf("invalid cpuset %q: element %q has a trailing '-', want N or N-M", s, part)
-			}
-			end, err = parseCPUSetID(hi, s, part)
-			if err != nil {
-				return "", err
-			}
-			if end < start {
-				return "", fmt.Errorf("invalid cpuset %q: element %q is reversed, want ascending N-M", s, part)
-			}
-		}
-		ranges = append(ranges, cpusetRange{start: start, end: end})
+		ranges = append(ranges, r)
 	}
 
+	return formatCPUSetRanges(mergeCPUSetRanges(ranges)), nil
+}
+
+// parseCPUSetElement parses one comma-separated cpulist element ("N" or
+// "N-M") into an inclusive range.
+func parseCPUSetElement(part, whole string) (cpusetRange, error) {
+	lo, hi, isRange := strings.Cut(part, "-")
+
+	start, err := parseCPUSetID(lo, whole, part)
+	if err != nil {
+		return cpusetRange{}, err
+	}
+	if !isRange {
+		return cpusetRange{start: start, end: start}, nil
+	}
+	if hi == "" {
+		return cpusetRange{}, fmt.Errorf("invalid cpuset %q: element %q has a trailing '-', want N or N-M", whole, part)
+	}
+
+	end, err := parseCPUSetID(hi, whole, part)
+	if err != nil {
+		return cpusetRange{}, err
+	}
+	if end < start {
+		return cpusetRange{}, fmt.Errorf("invalid cpuset %q: element %q is reversed, want ascending N-M", whole, part)
+	}
+	return cpusetRange{start: start, end: end}, nil
+}
+
+// mergeCPUSetRanges sorts ranges ascending and merges overlapping and adjacent
+// ones.
+func mergeCPUSetRanges(ranges []cpusetRange) []cpusetRange {
 	sort.Slice(ranges, func(i, j int) bool {
 		if ranges[i].start == ranges[j].start {
 			return ranges[i].end < ranges[j].end
@@ -79,8 +96,7 @@ func ParseCPUSet(s string) (string, error) {
 	for _, r := range ranges {
 		if n := len(merged); n > 0 {
 			last := &merged[n-1]
-			adjacent := last.end < math.MaxInt64 && r.start == last.end+1
-			if r.start <= last.end || adjacent {
+			if overlapsOrAbuts(*last, r) {
 				if r.end > last.end {
 					last.end = r.end
 				}
@@ -89,9 +105,21 @@ func ParseCPUSet(s string) (string, error) {
 		}
 		merged = append(merged, r)
 	}
+	return merged
+}
 
+// overlapsOrAbuts reports whether r overlaps last or starts immediately after
+// it. The MaxInt64 guard keeps the +1 from wrapping.
+func overlapsOrAbuts(last, r cpusetRange) bool {
+	adjacent := last.end < math.MaxInt64 && r.start == last.end+1
+	return r.start <= last.end || adjacent
+}
+
+// formatCPUSetRanges renders merged ranges as a canonical cpulist, printing a
+// single-element range as a bare number.
+func formatCPUSetRanges(ranges []cpusetRange) string {
 	var b strings.Builder
-	for i, r := range merged {
+	for i, r := range ranges {
 		if i > 0 {
 			b.WriteByte(',')
 		}
@@ -101,7 +129,7 @@ func ParseCPUSet(s string) (string, error) {
 			b.WriteString(strconv.FormatInt(r.end, 10))
 		}
 	}
-	return b.String(), nil
+	return b.String()
 }
 
 // parseCPUSetID parses one decimal CPU/node ID out of a cpulist element.
