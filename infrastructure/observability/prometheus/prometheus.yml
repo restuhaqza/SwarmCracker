@@ -1,5 +1,18 @@
-# Prometheus scrape configuration for SwarmCracker
-# Drop into your prometheus.yml scrape_configs section.
+# Prometheus configuration for SwarmCracker
+# Mounted at /etc/prometheus/prometheus.yml by
+# infrastructure/observability/docker-compose.yml; alerts.yml sits next to it.
+
+# Rule files are resolved relative to the directory of this file.
+rule_files:
+  - alerts.yml
+
+# Alerts are delivered to the Alertmanager service defined in the same compose
+# file, reached by its compose DNS name on the shared monitoring network.
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
 
 scrape_configs:
   - job_name: swarmcracker
