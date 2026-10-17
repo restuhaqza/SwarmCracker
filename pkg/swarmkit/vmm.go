@@ -552,7 +552,20 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 		}
 	}
 
-	// 6. Start the VM
+	// 6. Configure the virtio-balloon device when the task requested one.
+	// Firecracker rejects /balloon once the VM has started, so this must
+	// precede the InstanceStart action as well.
+	if balloonRaw, ok := cfg["balloon"]; ok {
+		device, err := parseBalloonConfig(balloonRaw)
+		if err != nil {
+			return fmt.Errorf("failed to set balloon: %w", err)
+		}
+		if err := v.putAPI(ctx, socketPath, "/balloon", device); err != nil {
+			return fmt.Errorf("failed to set balloon: %w", err)
+		}
+	}
+
+	// 7. Start the VM
 	action := Action{
 		ActionType: "InstanceStart",
 	}
@@ -1020,6 +1033,13 @@ type MachineConfig struct {
 	TrackDirtyPages bool `json:"track_dirty_pages,omitempty"`
 }
 
+// balloonDevice is the Firecracker PUT /balloon request body.
+type balloonDevice struct {
+	AmountMib             int64 `json:"amount_mib"`
+	DeflateOnOOM          bool  `json:"deflate_on_oom"`
+	StatsPollingIntervalS int   `json:"stats_polling_interval_s"`
+}
+
 type BootSource struct {
 	KernelImagePath string `json:"kernel_image_path"`
 	BootArgs        string `json:"boot_args,omitempty"`
@@ -1094,6 +1114,28 @@ func (v *VMMManager) putAPI(ctx context.Context, socketPath, path string, data i
 	}
 
 	return nil
+}
+
+// parseBalloonConfig normalises the "balloon" config entry into a /balloon
+// request body. The amount can arrive as int64 (from the translator's map) or
+// float64 (after a JSON round-trip), so the entry is decoded into a typed
+// struct rather than type-asserted; any other shape is a wrapped error instead
+// of a request Firecracker would reject.
+func parseBalloonConfig(raw interface{}) (balloonDevice, error) {
+	var device balloonDevice
+	if raw == nil {
+		return device, fmt.Errorf("invalid balloon config: <nil>")
+	}
+
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return device, fmt.Errorf("invalid balloon config %v: %w", raw, err)
+	}
+	if err := json.Unmarshal(encoded, &device); err != nil {
+		return device, fmt.Errorf("invalid balloon config %v: %w", raw, err)
+	}
+
+	return device, nil
 }
 
 // GetRunningProcesses returns a map of all running Firecracker processes.
