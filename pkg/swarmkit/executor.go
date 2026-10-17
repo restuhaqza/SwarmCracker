@@ -110,6 +110,9 @@ type Config struct {
 	ReservedMemoryMB int      `yaml:"reserved_memory_mb"`
 	MaxImageAgeDays  int      `yaml:"max_image_age_days"`
 	StateDir         string   `yaml:"state_dir"`
+	// SnapshotDir holds VM snapshots. Empty defaults to
+	// configpkg.DefaultSnapshotDir, the directory the snapshot manager uses.
+	SnapshotDir string `yaml:"snapshot_dir"`
 	// LogDir holds per-VM console logs (<LogDir>/<task-id>.log). Empty defaults
 	// to runtime.DefaultLogDir(), the same directory the CLI uses.
 	LogDir string `yaml:"log_dir"`
@@ -182,6 +185,9 @@ func NewExecutor(config *Config) (*Executor, error) {
 	}
 	if config.LogDir == "" {
 		config.LogDir = scruntime.DefaultLogDir()
+	}
+	if config.SnapshotDir == "" {
+		config.SnapshotDir = configpkg.DefaultSnapshotDir
 	}
 	if config.KernelProfiles == nil {
 		config.KernelProfiles = configpkg.DefaultKernelProfiles()
@@ -329,6 +335,10 @@ func NewExecutor(config *Config) (*Executor, error) {
 func (e *Executor) periodicCleanup(ctx context.Context) {
 	defer close(e.cleanupDone)
 
+	// Publish disk usage once at daemon start so the series exist from the
+	// first scrape, then refresh it on the VM ticker below.
+	e.sampleDiskUsage()
+
 	imageTicker := time.NewTicker(24 * time.Hour)
 	defer imageTicker.Stop()
 
@@ -349,6 +359,7 @@ func (e *Executor) periodicCleanup(ctx context.Context) {
 		case <-imageTicker.C:
 			e.runCleanup(ctx)
 		case <-vmTicker.C:
+			e.sampleDiskUsage()
 			e.cleanupOrphanedVMs(ctx)
 		case <-ctx.Done():
 			log.Debug().Msg("Periodic cleanup goroutine stopping")
@@ -628,6 +639,11 @@ type Controller struct {
 	healthMu      sync.Mutex
 	healthFailure string // last healthcheck failure, for Wait's message
 	vmMetadata    *scruntime.VMMetadata
+	// healthService is the metric label for the VM's service (ServiceID, or
+	// the task ID when the task has no service), captured with vmMetadata so
+	// publishHealth can label the health gauge without taking c.mu or reading
+	// c.task, which Update may reassign.
+	healthService string
 	// healthStopped is set once a teardown begins and cleared when a VM is
 	// (re)started. Teardown deletes the metadata sidecar, and the health gate
 	// publishes without c.mu, so without this flag a gate probe racing a stop
@@ -881,8 +897,9 @@ func (c *Controller) startVM(ctx context.Context) error {
 
 	// Start VM
 	if err := c.vmmMgr.Start(ctx, task, vmConfig); err != nil {
-		// Record boot failure metric
-		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "boot_failure")
+		// A VM that never started was never counted running and is not a
+		// crash: record it only as a boot failure.
+		swarmcrackermetrics.RecordVMBootError(c.config.Hostname, "boot_failure")
 		return fmt.Errorf("failed to start VM: %w", err)
 	}
 
@@ -896,10 +913,7 @@ func (c *Controller) startVM(ctx context.Context) error {
 
 	// Record boot duration and VM started metric
 	bootDuration := time.Since(c.startTime).Seconds()
-	service := c.task.ServiceID
-	if service == "" {
-		service = c.task.ID // fallback: use task ID if no service ID
-	}
+	service := serviceName(task)
 	swarmcrackermetrics.RecordVMBootDuration(c.config.Hostname, service, bootDuration)
 	swarmcrackermetrics.RecordVMStarted(c.config.Hostname, service)
 
@@ -939,6 +953,19 @@ func balloonMibFromTask(task *types.Task) (int64, bool) {
 		return 0, false
 	}
 	return mib, true
+}
+
+// serviceName is the label value per-service metrics use: the SwarmKit service
+// ID, falling back to the task ID for a task that has no service (the same
+// derivation startVM has always used for the boot-duration/started metrics).
+func serviceName(task *types.Task) string {
+	if task == nil {
+		return ""
+	}
+	if task.ServiceID != "" {
+		return task.ServiceID
+	}
+	return task.ID
 }
 
 // publishPorts programs host-side forwarding for the task's published ports
@@ -1023,6 +1050,9 @@ func (c *Controller) writeVMMetadata(task *types.Task) {
 
 	c.healthMu.Lock()
 	c.vmMetadata = md
+	// Capture the service label for the health gauge alongside the snapshot:
+	// publishHealth runs without c.mu, so it cannot read c.task safely.
+	c.healthService = serviceName(task)
 	// The VM is up, so live health may be published again (a controller can be
 	// stopped and re-started).
 	c.healthStopped = false
@@ -1058,6 +1088,11 @@ func (c *Controller) publishHealth(state string, failing int, cmd, output string
 	if c.vmMetadata == nil || c.healthStopped {
 		return
 	}
+
+	// Publish the same verdict the sidecar is about to carry. This is the one
+	// place health state changes, so it is the one writer for the health gauge.
+	swarmcrackermetrics.RecordVMHealth(c.config.Hostname, c.healthService, state)
+
 	md := *c.vmMetadata
 	md.Health = &scruntime.VMHealth{
 		State:         state,
@@ -1077,11 +1112,12 @@ func (c *Controller) Wait(ctx context.Context) error {
 	c.logger.Debug().Msg("Waiting for task")
 
 	task := c.convertTask()
+	service := serviceName(task)
 
 	status, err := c.vmmMgr.Wait(ctx, task)
 	if err != nil {
 		// Process exited abnormally (crashed)
-		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "unexpected_exit")
+		swarmcrackermetrics.RecordVMCrash(c.config.Hostname, service, "unexpected_exit")
 		return err
 	}
 
@@ -1090,7 +1126,7 @@ func (c *Controller) Wait(ctx context.Context) error {
 	// surface the reason. The monitor records before it force-stops the VM, so
 	// by the time Wait returns the reason is already set.
 	if reason := c.healthcheckFailure(); reason != "" {
-		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "unhealthy")
+		swarmcrackermetrics.RecordVMCrash(c.config.Hostname, service, "unhealthy")
 		if status != nil && status.Err != nil {
 			return fmt.Errorf("healthcheck failed: %s: %w", reason, status.Err)
 		}
@@ -1099,7 +1135,7 @@ func (c *Controller) Wait(ctx context.Context) error {
 
 	if status != nil && status.Err != nil {
 		// Task returned with non-zero exit code
-		swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "exit_error")
+		swarmcrackermetrics.RecordVMCrash(c.config.Hostname, service, "exit_error")
 		return status.Err
 	}
 
@@ -1184,7 +1220,7 @@ func (c *Controller) Terminate(ctx context.Context) error {
 	c.started = false
 
 	// Record crash metric (force terminate is abnormal shutdown)
-	swarmcrackermetrics.RecordVMCrashed(c.config.Hostname, "force_terminate")
+	swarmcrackermetrics.RecordVMCrash(c.config.Hostname, serviceName(task), "force_terminate")
 
 	c.logger.Info().Msg("Task terminated forcefully")
 	return nil
