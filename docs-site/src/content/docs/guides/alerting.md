@@ -69,7 +69,10 @@ A crash decrements `swarmcracker_vms_running`, because the VM *was* counted when
 it started. A stop the desired state asked for (SwarmKit `Shutdown`/`Terminate` —
 `service rm`, a scale-down, a rolling update) is **not** a crash: it records
 `swarmcracker_vms_total{status="stopped"}` instead, so it never feeds
-`SwarmCrackerVMCrashLoop`. `SwarmCrackerVMCrashLoop` fires on three or more
+`SwarmCrackerVMCrashLoop`. A clean self-exit — the workload finished on its own
+and the VM exited zero, so the task goes `COMPLETE` — also records
+`swarmcracker_vms_total{status="stopped"}`, so a `stopped` count is not
+necessarily operator-initiated. `SwarmCrackerVMCrashLoop` fires on three or more
 crashes in fifteen minutes for the same `instance`/`service`/`reason`, held for
 five.
 

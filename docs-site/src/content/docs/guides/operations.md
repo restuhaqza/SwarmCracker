@@ -349,7 +349,10 @@ them as a pair:
   the desired state asked for (SwarmKit `Shutdown`/`Terminate` — `service rm`, a
   scale-down, a rolling update) is **not** a crash: it records
   `swarmcracker_vms_total{status="stopped"}` instead, so it never feeds the
-  crash-loop rule.
+  crash-loop rule. A clean self-exit — the workload finished on its own and the
+  VM exited zero, so the task goes `COMPLETE` — also records
+  `swarmcracker_vms_total{status="stopped"}`, so a `stopped` count is not
+  necessarily operator-initiated.
 
 `swarmcracker_vm_health` is a one-hot gauge over `starting`, `healthy`, `failing`
 and `unhealthy` — exactly one has value `1` per `instance`/`service`. The four
