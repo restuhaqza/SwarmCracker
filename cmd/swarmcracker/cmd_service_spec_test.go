@@ -604,6 +604,34 @@ func TestBuildServiceSpec_Balloon(t *testing.T) {
 		assert.Contains(t, err.Error(), `"128"`)
 	})
 
+	// The conflict check is presence-based, not value-based: `--label
+	// swarmcracker.balloon=` sets the key to the empty value, which is still an
+	// explicit request and must not be silently overwritten by the flag.
+	t.Run("an explicit empty label is a conflict, not an override", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			labels:     []string{types.BalloonLabel + "="},
+			balloonMib: 256, balloonSet: true,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib 256")
+		assert.Contains(t, err.Error(), types.BalloonLabel)
+		assert.Contains(t, err.Error(), "--label")
+	})
+
+	// ...while the same empty label without the flag is left exactly as the user
+	// wrote it (there is nothing to drop).
+	t.Run("an explicit empty label without the flag is left alone", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			labels: []string{types.BalloonLabel + "="},
+		})
+		require.NoError(t, err)
+		existing, ok := spec.Annotations.Labels[types.BalloonLabel]
+		assert.True(t, ok, "the user's label must survive")
+		assert.Equal(t, "", existing)
+	})
+
 	t.Run("zero target is rejected", func(t *testing.T) {
 		_, err := buildServiceSpec(serviceCreateOptions{
 			name: "web", image: "nginx", replicas: 1,

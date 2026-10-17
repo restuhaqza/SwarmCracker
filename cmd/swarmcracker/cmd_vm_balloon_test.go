@@ -103,3 +103,63 @@ func TestWithBalloonAnnotation(t *testing.T) {
 		assert.False(t, ok, "an unset flag must not add an annotation")
 	})
 }
+
+// TestBuildVMCreateTask_CarriesGoldenAndBalloonAnnotations drives the assembly
+// the `vm create` RunE performs: `buildVMCreateTask` is the function that sets
+// the task annotations, and RunE calls it with exactly these inputs (the
+// resolved golden annotations and the validated --balloon-mib target). It pins
+// the regression the task brief named: a `vm create --golden --balloon-mib N`
+// task must carry both the golden annotations and the balloon target on the task
+// handed downstream; reverting the merge inside that function to an assignment
+// would silently drop one of them and this test would fail.
+func TestBuildVMCreateTask_CarriesGoldenAndBalloonAnnotations(t *testing.T) {
+	golden := func() map[string]string {
+		return map[string]string{
+			types.AnnotationRootfs:         "/var/lib/firecracker/golden/ubuntu-24.04-docker.ext4",
+			types.AnnotationPrebuiltRootfs: "true",
+			types.AnnotationGolden:         "ubuntu-24.04-docker@1.0.0",
+		}
+	}
+
+	t.Run("golden annotations and the target both survive", func(t *testing.T) {
+		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, golden(), "256")
+
+		assert.Equal(t, "256", task.Annotations[types.BalloonLabel])
+		assert.Equal(t, "/var/lib/firecracker/golden/ubuntu-24.04-docker.ext4", task.Annotations[types.AnnotationRootfs],
+			"the golden rootfs must survive the balloon merge")
+		assert.Equal(t, "true", task.Annotations[types.AnnotationPrebuiltRootfs])
+		assert.Equal(t, "ubuntu-24.04-docker@1.0.0", task.Annotations[types.AnnotationGolden])
+		assert.Len(t, task.Annotations, 4)
+	})
+
+	t.Run("no flag leaves the golden annotations unchanged", func(t *testing.T) {
+		want := golden()
+		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, want, "")
+
+		assert.Equal(t, want, task.Annotations)
+		_, ok := task.Annotations[types.BalloonLabel]
+		assert.False(t, ok, "an unset --balloon-mib must not add an annotation")
+	})
+
+	t.Run("no golden and no flag keeps the mock task's annotations", func(t *testing.T) {
+		task := buildVMCreateTask("alpine:latest", 1, 512, []string{"A=B"}, nil, "")
+
+		assert.Equal(t, createMockTask("alpine:latest", 1, 512, []string{"A=B"}).Annotations, task.Annotations)
+		assert.Nil(t, task.Annotations, "an unconfigured vm create must not gain an annotation map")
+	})
+
+	t.Run("no golden with the flag sets only the target", func(t *testing.T) {
+		task := buildVMCreateTask("alpine:latest", 1, 512, nil, nil, "128")
+
+		require.Len(t, task.Annotations, 1)
+		assert.Equal(t, "128", task.Annotations[types.BalloonLabel])
+	})
+
+	t.Run("the requested resources still reach the task", func(t *testing.T) {
+		task := buildVMCreateTask("alpine:latest", 3, 2048, nil, nil, "256")
+
+		require.NotNil(t, task.Spec.Resources.Limits)
+		assert.Equal(t, int64(2048*1024*1024), task.Spec.Resources.Limits.MemoryBytes)
+		assert.Equal(t, int64(3*1e9), task.Spec.Resources.Limits.NanoCPUs)
+	})
+}

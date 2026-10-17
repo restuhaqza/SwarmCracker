@@ -154,8 +154,10 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		}
 		// A user-supplied label for the same key is the lower-level way to
 		// request a balloon; honouring it silently would drop the flag. Accept
-		// it only when it agrees.
-		if existing := svcLabels[types.BalloonLabel]; existing != "" && existing != value {
+		// it only when it agrees. The check is presence-based, not value-based:
+		// a label explicitly set to the empty value is still an explicit
+		// request, and the flag must not silently overwrite it.
+		if existing, ok := svcLabels[types.BalloonLabel]; ok && existing != value {
 			return nil, fmt.Errorf("--balloon-mib %d conflicts with the %s label %q already set via --label", o.balloonMib, types.BalloonLabel, existing)
 		}
 		svcLabels[types.BalloonLabel] = value

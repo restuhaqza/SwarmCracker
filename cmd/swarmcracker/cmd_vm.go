@@ -151,14 +151,9 @@ Example:
 				log.Warn().Err(err).Msg("Failed to create state manager, VM tracking disabled")
 			}
 
-			// Create a mock task
-			task := createMockTask(imageRef, vcpus, memory, env)
-			if goldenAnnotations != nil {
-				task.Annotations = goldenAnnotations
-			}
-			// Merge, never assign: the golden annotations above are already in
-			// the map, and a fresh map would drop them.
-			task.Annotations = withBalloonAnnotation(task.Annotations, balloonValue)
+			// Assemble the task that is handed downstream, carrying both the
+			// golden-image annotations and the validated balloon target.
+			task := buildVMCreateTask(imageRef, vcpus, memory, env, goldenAnnotations, balloonValue)
 
 			// Override task ID with name if provided
 			if name != "" {
@@ -312,6 +307,23 @@ Example:
 	cmd.Flags().StringVar(&goldenDir, "golden-dir", "", "Directory containing golden image artifacts (default: <rootfs-dir>/golden)")
 
 	return cmd
+}
+
+// buildVMCreateTask assembles the task a `vm create` run hands downstream: the
+// mock task for the requested resources, carrying the golden-image annotations
+// (when a golden image was resolved) and the validated memory-balloon target. It
+// is a function of its inputs, rather than inline in RunE, so that the merge of
+// the two annotation sources is directly testable: the golden annotations and
+// the balloon target must both survive onto the task the executor is given. An
+// assignment of goldenAnnotations in place of the merge would silently drop the
+// balloon target (or vice versa); withBalloonAnnotation always merges.
+func buildVMCreateTask(imageRef string, vcpus, memory int, env []string, goldenAnnotations map[string]string, balloonValue string) *types.Task {
+	task := createMockTask(imageRef, vcpus, memory, env)
+	if goldenAnnotations != nil {
+		task.Annotations = goldenAnnotations
+	}
+	task.Annotations = withBalloonAnnotation(task.Annotations, balloonValue)
+	return task
 }
 
 // withBalloonAnnotation merges a validated --balloon-mib target into a task's
