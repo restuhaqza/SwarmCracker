@@ -57,18 +57,21 @@ in fifteen minutes, held for five.
 ### Failure mode 2 — VMs that fail after reaching running (crash loop)
 
 `swarmcracker_vm_crashes_total{instance,service,reason}` is written on the
-post-start paths only, with one of four `reason` values:
+post-start paths only, with one of three `reason` values:
 
 | `reason` | When |
 |----------|------|
-| `unexpected_exit` | `Wait` returned an error the VM process did not explain |
+| `unexpected_exit` | the VM exited on its own: `Wait` returned an error, the wait was not cancelled by a desired-state change, and no health failure was recorded |
 | `unhealthy` | the healthcheck exhausted its retries and the monitor force-stopped the VM |
 | `exit_error` | the task returned a non-zero exit code |
-| `force_terminate` | the task was force-terminated (an abnormal shutdown) |
 
 A crash decrements `swarmcracker_vms_running`, because the VM *was* counted when
-it started. `SwarmCrackerVMCrashLoop` fires on three or more crashes in fifteen
-minutes for the same `instance`/`service`/`reason`, held for five.
+it started. A stop the desired state asked for (SwarmKit `Shutdown`/`Terminate` —
+`service rm`, a scale-down, a rolling update) is **not** a crash: it records
+`swarmcracker_vms_total{status="stopped"}` instead, so it never feeds
+`SwarmCrackerVMCrashLoop`. `SwarmCrackerVMCrashLoop` fires on three or more
+crashes in fifteen minutes for the same `instance`/`service`/`reason`, held for
+five.
 
 ### Failure mode 3 — a task whose healthcheck keeps failing
 

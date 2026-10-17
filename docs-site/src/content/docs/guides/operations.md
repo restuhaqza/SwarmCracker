@@ -342,9 +342,14 @@ them as a pair:
   the gauge negative; that bug is fixed. This path also does not touch the crash
   counter.
 - `swarmcracker_vm_crashes_total` is written only for a failure **after** the VM
-  reached running, with `reason` one of `unexpected_exit`, `unhealthy`,
-  `exit_error` or `force_terminate`. A crash decrements
-  `swarmcracker_vms_running`, because the VM was counted when it started.
+  reached running — a VM that exited on its own (`unexpected_exit`), an exhausted
+  healthcheck that force-stopped the VM (`unhealthy`), or a task that returned a
+  non-zero exit code (`exit_error`). A crash decrements
+  `swarmcracker_vms_running`, because the VM was counted when it started. A stop
+  the desired state asked for (SwarmKit `Shutdown`/`Terminate` — `service rm`, a
+  scale-down, a rolling update) is **not** a crash: it records
+  `swarmcracker_vms_total{status="stopped"}` instead, so it never feeds the
+  crash-loop rule.
 
 `swarmcracker_vm_health` is a one-hot gauge over `starting`, `healthy`, `failing`
 and `unhealthy` — exactly one has value `1` per `instance`/`service`. The four
