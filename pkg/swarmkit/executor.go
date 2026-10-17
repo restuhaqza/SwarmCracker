@@ -1260,6 +1260,11 @@ func (c *Controller) Wait(ctx context.Context) error {
 	// counted as running forever. The latch keeps this single when a desired-state
 	// stop or a health force-stop (which claim first) already owns the record,
 	// and a crash path never reaches here because it returns above.
+	//
+	// This is only an *observed* exit-zero. VMMManager.Wait returns
+	// errTaskNotTracked — an error, handled above — for a task it no longer
+	// tracks (a reaped VM), so that case is classified as a crash rather than
+	// reaching this stop.
 	c.recordTerminalStop()
 	return nil
 }

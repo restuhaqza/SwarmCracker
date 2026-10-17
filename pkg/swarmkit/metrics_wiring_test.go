@@ -309,6 +309,51 @@ func TestController_CleanSelfExitRecordsStop(t *testing.T) {
 		"vms_running must equal started-1 (1-1): a clean exit is not a leak")
 }
 
+// TestController_UntrackedWaitIsACrash is the regression for the untracked
+// `!ok` shape of VMMManager.Wait. A first Wait can be cancelled by a
+// desired-state change and record nothing; if a later Wait runs after a
+// teardown already called forgetProcess, the manager has no process bookkeeping
+// and cannot report how the VM exited. That is not the observed exit-zero
+// recordTerminalStop is for: returning Complete/nil for it let a reaped VM be
+// recorded as a *stop*, hiding a crash from the crash-loop rule. Driving the
+// real manager (rather than a mock that hard-codes the old shape) is what makes
+// this fail under the pre-fix Complete/nil return.
+func TestController_UntrackedWaitIsACrash(t *testing.T) {
+	instance := "wiring-untracked"
+	service := "svc-untracked"
+
+	swarmcrackermetrics.VMsRunning.Set(0)
+	t.Cleanup(func() { swarmcrackermetrics.VMsRunning.Set(0) })
+
+	// The real manager with no bookkeeping for the task: exactly the state
+	// forgetProcess leaves behind.
+	realVMM := &VMMManager{}
+
+	ctrl := newMetricsWiringController(instance, service, &MockVMMManager{
+		WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
+			return realVMM.Wait(ctx, task)
+		},
+	})
+	require.NoError(t, ctrl.startVM(context.Background()))
+
+	stoppedBefore := testutil.ToFloat64(
+		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "stopped"))
+	crashBefore := testutil.ToFloat64(
+		swarmcrackermetrics.VMCrashes.WithLabelValues(instance, service, "unexpected_exit"))
+
+	err := ctrl.Wait(context.Background())
+
+	require.Error(t, err, "an untracked wait is not an observed clean exit")
+	assert.Equal(t, crashBefore+1, testutil.ToFloat64(
+		swarmcrackermetrics.VMCrashes.WithLabelValues(instance, service, "unexpected_exit")),
+		"a wait on an untracked/reaped VM must be recorded as a crash")
+	assert.Equal(t, stoppedBefore, testutil.ToFloat64(
+		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "stopped")),
+		"an unobserved exit must not be recorded as a stop")
+	assert.Equal(t, 0.0, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
+		"vms_running must not leak for a reaped VM")
+}
+
 // TestController_DesiredStateStopRacesCleanWait is the new interaction this fix
 // introduces. A Wait that observes a clean exit now wants to record a stop, and
 // the Shutdown the desired state asked for (service rm / scale-down / rolling
