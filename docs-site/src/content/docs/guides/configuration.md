@@ -505,14 +505,23 @@ v2 the message is:
 cannot apply cpuset "0-3" to task <task-id>: the cgroup manager could not be created: cgroup v2 not available on this system (host online CPUs: unknown)
 ```
 
-A task that requested **no cpuset** is not failed by any of this. The failure is
-logged as a warning and the VM runs without limits (or without the controllers
-that were unavailable):
+A task that requested **no cpuset** is not failed by any of this: controller
+delegation and cgroup creation degrade to warnings, and the VM starts:
 
 ```text
 Failed to enable cgroup controllers, continuing without the unavailable ones
 Failed to create cgroup, running the VM without cgroup limits
 ```
+
+Read the second warning literally. When the `cpu` or `memory` controller cannot
+be written — `cpu.max`, or `memory.max`/`memory.high` — the daemon removes the
+**whole** per-task cgroup, so **no limit applies at all**, not just the one whose
+controller was missing. An unavailable `io` controller costs only `io.weight`,
+which is best-effort anyway. Only an unavailable **`cpuset`** controller leaves
+a fully working quota cgroup: with no pin requested there is nothing to refuse.
+(If a pin *was* requested and only the quota fails, the cgroup is kept with the
+pin in place — see
+[CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).)
 
 Check the controllers the kernel offers before rolling out pinned services:
 

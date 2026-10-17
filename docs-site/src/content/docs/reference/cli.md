@@ -267,7 +267,12 @@ best-effort. See [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-a
 The pin travels to the node as the `swarmcracker.cpuset` service label (a
 `vm create` VM carries it as a task annotation), so a hand-set
 `--label swarmcracker.cpuset=<list>` that **disagrees** with `--cpuset` is
-refused rather than resolved silently; an agreeing value is accepted.
+refused rather than resolved silently. The check compares the flag's
+**canonical** form with the label **exactly as written**, so the label must
+already be canonical: `--label swarmcracker.cpuset=1-3 --cpuset 3,1-2` is
+accepted (the flag canonicalises to `1-3`), while
+`--label swarmcracker.cpuset=3,1-2 --cpuset 1-3` is refused even though both
+name CPUs 1-3 — the label is not canonicalised before the comparison.
 
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.

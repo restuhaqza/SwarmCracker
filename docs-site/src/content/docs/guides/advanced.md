@@ -154,11 +154,19 @@ jailer is enabled.
 
 | Enforced value | File | Limit | If it cannot be applied |
 |----------------|------|-------|-------------------------|
-| CPU set | `cpuset.cpus` (and `cpuset.mems`) | Exactly the requested CPUs | **Fatal** — the VM does not start |
+| CPU set | `cpuset.cpus` | Exactly the requested CPUs | **Fatal** — the VM does not start |
 | CPU quota | `cpu.max` | `<quota> 1000000`, from `--cpu`/`--cpu-limit` (1 vCPU = `1000000 1000000`) | Warning; the VM runs |
 | Memory hard limit | `memory.max` | Guest memory **+ 128 MiB** | Warning; the VM runs |
 | Memory throttle | `memory.high` | 90% of `memory.max` | Warning; the VM runs |
 | I/O weight | `io.weight` | `default 100` | Warning; the VM runs |
+
+`cpuset.mems` is written next to a requested `cpuset.cpus`, but it is **not**
+part of the request and there is no flag for it: it is a **NUMA-node** list
+(a node mask such as `0-1`, not CPU numbers), and the daemon resolves it
+automatically — the nearest readable ancestor `cpuset.mems` (`swarmcracker/`,
+then the cgroup root), else the host's online nodes from
+`/sys/devices/system/node/online`. A pin therefore never restricts memory to a
+subset of the nodes the host already allows.
 
 **The cpuset is a hard promise.** If the requested CPUs are not online on the
 node — or the `cpuset` controller cannot be delegated there — the VM is **not
@@ -199,12 +207,17 @@ The cgroup is removed on stop, on remove, and when a start fails.
 
 ### Verify it on the host
 
-Run these on the node that owns the task (`swarmcracker service ps <service>`
-shows the task ID):
+Run these on the node that owns the task. The `service ps` **table truncates the
+ID to 12 characters**, while the cgroup directory is named with the **full**
+task ID — so take the ID from `-q`, which prints it untruncated:
 
 ```bash
-TASK=<task-id>
+# Full task ID of the service's first replica (substitute your service name;
+# with several replicas, pick the task running on this node).
+TASK=$(swarmcracker service ps -q api | head -1)
 BASE=/sys/fs/cgroup/swarmcracker/$TASK
+
+ls "$BASE"                       # the directory must exist, or TASK is wrong
 
 cat "$BASE/cpuset.cpus"          # the pin, canonicalised (e.g. 0-3)
 cat "$BASE/cgroup.procs"         # the VMM process's PID
@@ -222,7 +235,8 @@ grep Cpus_allowed_list "/proc/$PID/status"
 is the pin actually in effect, not just a stored request. An unpinned service VM
 leaves `cpuset.cpus` empty, which means "inherit the parent's set", and a
 `vm create` VM without `--cpuset` has no directory under
-`/sys/fs/cgroup/swarmcracker/` at all.
+`/sys/fs/cgroup/swarmcracker/` at all. For a direct VM, use the ID `vm create`
+prints on success (or `swarmcracker task ls -q`); it is already the full one.
 
 There are **no cgroup metrics**. The daemon exports no CPU/memory/IO series from
 these files, so the files above are the observable surface; see
@@ -231,10 +245,14 @@ these files, so the files above are the observable surface; see
 ### Host requirements
 
 cgroup v2 must be mounted at `/sys/fs/cgroup` and the daemon must be able to
-delegate `cpu`, `memory`, `io` and `cpuset` into the per-task cgroups. A v1-only
-host, or one where the daemon's own cgroup cannot be delegated (a systemd unit
-needs `Delegate=yes`), fails the pin with an error naming the controllers that
-could not be enabled. See
+delegate `cpu`, `memory`, `io` and `cpuset` into the per-task cgroups. On the
+shipped install the daemon runs as **root** with `/sys/fs/cgroup` as the cgroup
+root, and writes `cgroup.subtree_control` there directly — **no systemd drop-in
+is needed**. Delegation only has to be arranged when the daemon's
+`/sys/fs/cgroup` is a **delegated subtree** (a container, or a unit started in a
+cgroup namespace); for such a systemd unit that is `Delegate=yes`. Either way, a
+v1-only host or a refused delegation fails the pin with an error naming the
+controllers that could not be enabled. See
 [Configuration → cgroups](/guides/configuration/#cgroup-v2-host-requirements) for
 the requirement, the exact error, and what happens without a pin.
 
