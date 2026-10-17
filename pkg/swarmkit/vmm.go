@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -813,6 +814,14 @@ func (v *VMMManager) ForceStop(ctx context.Context, task *types.Task) error {
 	return nil
 }
 
+// errTaskNotTracked is returned by Wait when the manager has no process
+// bookkeeping for the task. It is deliberately not the clean-exit signal: the
+// bookkeeping is removed by a teardown (Stop/ForceStop/Remove call
+// forgetProcess), so an untracked Wait cannot say how the VM exited. Only a
+// completed waitForProcess may report a clean exit; a reaped task must be
+// classified as an unexplained exit, not a stop.
+var errTaskNotTracked = errors.New("task is not tracked by the VMM manager")
+
 // Wait waits for the Firecracker VM to exit.
 func (v *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
 	v.processMutex.Lock()
@@ -820,10 +829,7 @@ func (v *VMMManager) Wait(ctx context.Context, task *types.Task) (*types.TaskSta
 	v.processMutex.Unlock()
 
 	if !ok {
-		return &types.TaskStatus{
-			State:   types.TaskStateComplete,
-			Message: "Task completed",
-		}, nil
+		return nil, errTaskNotTracked
 	}
 
 	// Wait for process (exactly once per task). Respect context cancellation so

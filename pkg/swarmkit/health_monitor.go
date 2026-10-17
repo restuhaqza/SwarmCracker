@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/healthcheck"
+	swarmcrackermetrics "github.com/restuhaqza/swarmcracker/pkg/metrics"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
@@ -105,6 +106,11 @@ func (c *Controller) monitorHealth(
 			// Record before stopping: Wait reads the reason once the process
 			// exits, which is after this point.
 			c.recordHealthFailure(fmt.Sprintf("%s: %s", cmd, output))
+			// The verdict is the source of this stop, so this path owns the
+			// terminal classification: record the crash here, before the kill,
+			// so the failure signal survives even if the wait that observes the
+			// exit is cancelled by a concurrent desired-state update.
+			c.recordTerminalCrash(c.healthServiceName(), "unhealthy")
 			c.logger.Warn().
 				Str("command", cmd).
 				Str("output", output).
@@ -138,6 +144,18 @@ func (c *Controller) stopHealthMonitor() {
 	// Stop publishing live health: teardown deletes the metadata sidecar, and a
 	// gate probe racing it must not recreate the file afterwards.
 	c.healthStopped = true
+	// Clear the health gauge for this task. This is the single choke point every
+	// teardown path goes through (Shutdown, Terminate, Remove and Close all call
+	// it), it is the last writer to run for the task, and it already holds
+	// healthMu, so the clear is ordered after any in-flight publishHealth. Once
+	// a VM is torn down nothing will ever publish a newer verdict for it, so
+	// leaving the last state at 1 would make an alert fire and never resolve.
+	// Clearing here also covers a VM the monitor itself force-stopped, and a
+	// scaled-down service, not just a controller that reached Remove. The clear
+	// is a no-op for a task that never published health (healthService is empty).
+	if c.config != nil {
+		swarmcrackermetrics.RecordVMHealth(c.config.Hostname, c.healthService, "")
+	}
 	c.healthMu.Unlock()
 
 	if cancel == nil {
@@ -152,6 +170,15 @@ func (c *Controller) recordHealthFailure(reason string) {
 	c.healthMu.Lock()
 	c.healthFailure = reason
 	c.healthMu.Unlock()
+}
+
+// healthServiceName returns the metric service label captured at boot, for the
+// monitor's terminal classification. It takes healthMu (which the monitor does
+// not otherwise hold) rather than c.mu, which the monitor must never take.
+func (c *Controller) healthServiceName() string {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	return c.healthService
 }
 
 // healthcheckFailure returns the recorded health failure reason, if any.

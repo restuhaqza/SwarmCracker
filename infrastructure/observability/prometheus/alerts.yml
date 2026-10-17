@@ -1,5 +1,19 @@
 # Prometheus Alert Rules for SwarmCracker
-# Drop into your Prometheus config: rule_files: ["swarmcracker-alerts.yml"]
+#
+# Every expr below reads a series this repository actually exports (see
+# pkg/metrics/prometheus.go). A rule on a series no writer produces can never
+# fire, so the rules that referenced node_filesystem_*,
+# consul_health_node_status, swarmcracker_vms_expected,
+# swarmcracker_manager_health, swarmcracker_raft_health and
+# swarmcracker_vxlan_* were removed rather than left looking functional.
+#
+# Loaded by prometheus.yml (rule_files: [alerts.yml]); the names are kept
+# honest by the guard test pkg/metrics/alertrules_test.go.
+#
+# The health rule watches state="failing", not the terminal state="unhealthy":
+# the monitor publishes "unhealthy" and immediately force-stops the VM, and the
+# teardown choke point clears the health series seconds later, so a rule on that
+# state can never satisfy a real `for:`. See the rule's comment for the timing.
 
 groups:
   - name: swarmcracker
@@ -15,108 +29,97 @@ groups:
           description: "The SwarmCracker health endpoint on {{ $labels.instance }} has been unreachable for 2 minutes."
           runbook: "https://swarmcracker.dev/guides/disaster-recovery/#scenario-1-worker-node-failure"
 
-      # ── VM Boot Failures ──
-      - alert: SwarmCrackerVMBootFailure
-        expr: rate(swarmcracker_vm_boot_errors_total[5m]) > 0
+      # ── Failure mode 1: VMs that never reach running ──
+      - alert: SwarmCrackerVMBootFailureLoop
+        expr: increase(swarmcracker_vm_boot_errors_total[15m]) > 3
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "VM boot errors detected on {{ $labels.instance }}"
-          description: "{{ $value }} VM boot errors per second in the last 5 minutes. Check Firecracker logs."
+          summary: "VM boot failures on {{ $labels.instance }}"
+          description: "{{ $value }} boot failures in the last 15 minutes (reason {{ $labels.reason }}). Firecracker, the kernel or the rootfs may be broken."
+          runbook: "https://swarmcracker.dev/guides/disaster-recovery/#scenario-1-worker-node-failure"
 
-      - alert: SwarmCrackerVMBootFailureHigh
-        expr: rate(swarmcracker_vm_boot_errors_total[5m]) > 0.1
+      # ── Failure mode 2: VMs that fail after reaching running (crash loop) ──
+      - alert: SwarmCrackerVMCrashLoop
+        expr: increase(swarmcracker_vm_crashes_total[15m]) >= 3
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "High rate of VM boot errors on {{ $labels.instance }}"
-          description: "{{ $value }} VM boot errors per second — firecracker or kernel may be broken."
+          summary: "VM crash loop for {{ $labels.service }} on {{ $labels.instance }}"
+          description: "{{ $value }} crashes in the last 15 minutes (reason {{ $labels.reason }}). The service cannot stay up."
+          runbook: "https://swarmcracker.dev/guides/operations/#container-healthchecks"
 
-      # ── VXLAN Overlay ──
-      - alert: SwarmCrackerVXLANPartition
-        expr: swarmcracker_vxlan_peers < swarmcracker_vxlan_expected_peers
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "VXLAN partition detected"
-          description: "{{ $labels.instance }} sees {{ $value }} peers but expects {{ $labels.expected }}. Check node connectivity and Consul."
-
-      - alert: SwarmCrackerVXLANPeerLost
-        expr: swarmcracker_vxlan_peers - swarmcracker_vxlan_peers offset 5m < 0
-        for: 2m
+      # ── Failure mode 3: a task whose healthcheck keeps failing ──
+      #
+      # RecordVMHealth publishes a one-hot state per service. While a probe keeps
+      # failing but the retries threshold has not been reached, the task is still
+      # RUNNING and the daemon publishes state="failing" on every failed probe
+      # (pkg/swarmkit/health_monitor.go, the `default:` branch). The gauge stays 1
+      # continuously between probes, so it is the sustained signal that a
+      # healthcheck is failing.
+      #
+      # state="unhealthy" is not a workable trigger: the monitor publishes it and
+      # then immediately ForceStops the VM and returns (health_monitor.go:105-116),
+      # and stopHealthMonitor clears all four health series for the task seconds
+      # later. A rule with a real `for:` on the terminal state would therefore
+      # always resolve before it could fire.
+      #
+      # for: 30s is one default probe interval (--health-interval 30s). The gauge
+      # is 1 for as long as probes keep failing, so 30s means "at least two
+      # consecutive failed probes": a single failed probe that the next probe
+      # clears stays 1 for one interval only and cannot fire the alert. At the CLI
+      # defaults (--health-retries 3, --health-start-period 0s) the failing streak
+      # covers (retries-1) intervals = 60s, so the alert fires about one interval
+      # before the VM is force-stopped — while the task is still alive and
+      # reschedulable — and it resolves as soon as the state flips back to
+      # "healthy" or the teardown clears the series. global.evaluation_interval is
+      # set to 15s in prometheus.yml (the built-in default is 1m) so that this
+      # 30s window is actually observed; the guard test pins that coupling.
+      - alert: SwarmCrackerTaskHealthcheckFailing
+        expr: swarmcracker_vm_health{state="failing"} > 0
+        for: 30s
         labels:
           severity: warning
         annotations:
-          summary: "VXLAN peer lost on {{ $labels.instance }}"
-          description: "Peer count decreased — a node may have left or lost network connectivity."
+          summary: "Task {{ $labels.service }} is failing its healthcheck on {{ $labels.instance }}"
+          description: "The healthcheck for {{ $labels.service }} has failed at least twice in a row and the failing streak is still building. The task is still running; SwarmCracker stops and reschedules it once the retries threshold is reached."
+          runbook: "https://swarmcracker.dev/guides/operations/#container-healthchecks"
 
-      # ── Disk Space ──
+      # Terminal-state companion: the last state the monitor publishes before it
+      # stops the VM. Best-effort only — for the reasons above the teardown clears
+      # the series seconds later, so `for: 0s` catches the verdict only if a scrape
+      # and an evaluation happen to land in that gap (they rarely do at a 15s
+      # interval). It is kept so the terminal state is still visible if the stop
+      # path ever stalls; the rule above is the one that fires.
+      - alert: SwarmCrackerTaskUnhealthy
+        expr: swarmcracker_vm_health{state="unhealthy"} > 0
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task {{ $labels.service }} is unhealthy on {{ $labels.instance }}"
+          description: "The healthcheck for {{ $labels.service }} exhausted its retries and SwarmCracker is stopping the VM so SwarmKit reschedules the task."
+          runbook: "https://swarmcracker.dev/guides/operations/#container-healthchecks"
+
+      # ── Failure mode 4: disk pressure on a SwarmCracker path ──
       - alert: SwarmCrackerDiskWarning
-        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/var/lib/swarmcracker"} / node_filesystem_size_bytes{mountpoint="/var/lib/swarmcracker"})) * 100 > 80
-        for: 5m
+        expr: swarmcracker_disk_usage_bytes / swarmcracker_disk_total_bytes > 0.8
+        for: 10m
         labels:
           severity: warning
         annotations:
-          summary: "SwarmCracker disk usage >80% on {{ $labels.instance }}"
-          description: "{{ $value | humanize }}% used on /var/lib/swarmcracker. Clean up old snapshots or expand storage."
+          summary: "SwarmCracker path {{ $labels.path }} is over 80% full on {{ $labels.instance }}"
+          description: "{{ $value | humanizePercentage }} used on the {{ $labels.path }} path. Clean up old snapshots or expand storage."
+          runbook: "https://swarmcracker.dev/guides/operations/#disk-full"
 
       - alert: SwarmCrackerDiskCritical
-        expr: (1 - (node_filesystem_avail_bytes{mountpoint="/var/lib/swarmcracker"} / node_filesystem_size_bytes{mountpoint="/var/lib/swarmcracker"})) * 100 > 95
+        expr: swarmcracker_disk_usage_bytes / swarmcracker_disk_total_bytes > 0.9
         for: 5m
         labels:
           severity: critical
         annotations:
-          summary: "SwarmCracker disk usage >95% on {{ $labels.instance }} — CRITICAL"
-          description: "{{ $value | humanize }}% used. Snapshots and new VMs will fail. Immediate cleanup required."
-
-      # ── Consul Health ──
-      - alert: SwarmCrackerConsulDown
-        expr: consul_health_node_status{status="critical"} == 1
-        for: 3m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Consul agent unhealthy on {{ $labels.node }}"
-          description: "If VXLAN static peers are not configured, new nodes cannot discover peers."
-
-      # ── SwarmKit Manager ──
-      - alert: SwarmCrackerManagerUnhealthy
-        expr: swarmcracker_manager_health == 0
-        for: 3m
-        labels:
-          severity: critical
-        annotations:
-          summary: "SwarmKit manager is unhealthy"
-          description: "The SwarmKit manager on {{ $labels.instance }} reports failing health. Check Raft consensus."
-
-      - alert: SwarmCrackerNoManager
-        expr: count(swarmcracker_manager_health == 1) == 0
-        for: 1m
-        labels:
-          severity: critical
-        annotations:
-          summary: "No healthy SwarmCracker manager"
-          description: "All manager nodes are unhealthy. The cluster cannot schedule new work."
-
-      # ── Raft Consensus ──
-      - alert: SwarmCrackerRaftUnhealthy
-        expr: swarmcracker_raft_health == 0
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "SwarmKit Raft consensus unhealthy"
-          description: "Raft leader may be lost or log is inconsistent. Run 'swarmcracker cluster health'."
-
-      # ── VM Count Anomaly ──
-      - alert: SwarmCrackerVMCountLow
-        expr: swarmcracker_vms_running < swarmcracker_vms_expected * 0.5
-        for: 5m
-        labels:
-          severity: critical
-        annotations:
-          summary: "Expected VM count >> actual — possible mass failure"
-          description: "Only {{ $value }} VMs running but {{ $labels.expected }} expected. Check node status."
+          summary: "SwarmCracker path {{ $labels.path }} is over 90% full on {{ $labels.instance }} — CRITICAL"
+          description: "{{ $value | humanizePercentage }} used. Snapshots and new VMs will fail soon. Immediate cleanup required."
+          runbook: "https://swarmcracker.dev/guides/operations/#disk-full"

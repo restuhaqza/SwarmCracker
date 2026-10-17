@@ -318,17 +318,53 @@ swarmctl metrics <task-id>
 > `swarmcracker metrics` shows live per-VM resource usage, including VMs started
 > by the daemon for services. Use the Prometheus endpoint above for scraping.
 
-**Key metrics** (all prefixed `swarmcracker_`):
-- `swarmcracker_vms_running` — VMs currently running on this node
-- `swarmcracker_vms_total` — VM lifecycle transitions by status
-- `swarmcracker_vm_cpu_seconds` — CPU time consumed per VM (`task_id`, `service` labels)
-- `swarmcracker_vm_memory_bytes` — Memory used per VM
-- `swarmcracker_vm_net_rx_bytes` / `swarmcracker_vm_net_tx_bytes` — Network I/O per VM
-- `swarmcracker_vm_boot_duration_seconds` — VM boot time
-- `swarmcracker_vm_balloon_mib` — Configured memory-balloon target per VM, in MiB (`instance`, `task_id`, `service` labels)
-- `swarmcracker_vxlan_peers` / `swarmcracker_vxlan_expected_peers` — Overlay peers
-- `swarmcracker_manager_health` / `swarmcracker_raft_health` — Manager/Raft health
-- `swarmcracker_disk_usage_bytes` — Disk usage of SwarmCracker directories
+**Metrics written today** (all prefixed `swarmcracker_`):
+
+| Metric | Labels | Meaning |
+|--------|--------|---------|
+| `swarmcracker_vms_running` | — | VMs currently running on this node |
+| `swarmcracker_vms_total` | `instance`, `status` (`started`/`stopped`/`crashed`) | VM lifecycle transitions |
+| `swarmcracker_vm_boot_duration_seconds` | `instance`, `service` | Time from VM start to running |
+| `swarmcracker_vm_boot_errors_total` | `instance`, `reason` (always `boot_failure`) | VMs that never reached running |
+| `swarmcracker_vm_crashes_total` | `instance`, `service`, `reason` | VMs that failed after reaching running |
+| `swarmcracker_vm_health` | `instance`, `service`, `state` | One-hot live healthcheck state |
+| `swarmcracker_vm_balloon_mib` | `instance`, `task_id`, `service` | Configured memory-balloon target, in MiB |
+| `swarmcracker_disk_usage_bytes` | `instance`, `path` | Bytes used on a SwarmCracker directory |
+| `swarmcracker_disk_total_bytes` | `instance`, `path` | Capacity of that filesystem |
+
+Two of these split what used to be one overloaded signal, and it is worth reading
+them as a pair:
+
+- `swarmcracker_vm_boot_errors_total` is written **only** on the boot path, when
+  the VMM fails to start the VM (`reason` is always `boot_failure`). A VM that
+  never started was never counted running, so this path does **not** move
+  `swarmcracker_vms_running` — it previously decremented it, which could drive
+  the gauge negative; that bug is fixed. This path also does not touch the crash
+  counter.
+- `swarmcracker_vm_crashes_total` is written only for a failure **after** the VM
+  reached running — a VM that exited on its own (`unexpected_exit`), an exhausted
+  healthcheck that force-stopped the VM (`unhealthy`), or a task that returned a
+  non-zero exit code (`exit_error`). A crash decrements
+  `swarmcracker_vms_running`, because the VM was counted when it started. A stop
+  the desired state asked for (SwarmKit `Shutdown`/`Terminate` — `service rm`, a
+  scale-down, a rolling update) is **not** a crash: it records
+  `swarmcracker_vms_total{status="stopped"}` instead, so it never feeds the
+  crash-loop rule. A clean self-exit — the workload finished on its own and the
+  VM exited zero, so the task goes `COMPLETE` — also records
+  `swarmcracker_vms_total{status="stopped"}`, so a `stopped` count is not
+  necessarily operator-initiated.
+
+`swarmcracker_vm_health` is a one-hot gauge over `starting`, `healthy`, `failing`
+and `unhealthy` — exactly one has value `1` per `instance`/`service`. The four
+series are **removed** when a task is torn down, so a stale verdict cannot linger.
+It is not a second health source: it publishes the same `pkg/runtime` states the
+node-local metadata sidecar carries, from the single place health state changes.
+
+`swarmcracker_disk_usage_bytes` and `swarmcracker_disk_total_bytes` are sampled at
+daemon start and on the five-minute ticker for the configured `rootfs`,
+`snapshots` and `state` paths. A path that is unset, missing or unreadable emits
+no series at all, so the pressure ratio is never computed against a directory the
+daemon does not own.
 
 `swarmcracker_vm_balloon_mib` is set when a **service** task's VM starts, and
 only for a task that configured a balloon (`--balloon-mib` or the
@@ -336,11 +372,22 @@ only for a task that configured a balloon (`--balloon-mib` or the
 It reports the target that was *configured*, not live usage, so an unconfigured
 task emits no series and a VM created directly with `vm create --balloon-mib`
 emits no series at all; removing or scaling down a task leaves its last reported
-value in place until the node is restarted. Of the per-VM series, only
-`swarmcracker_vm_balloon_mib` and `swarmcracker_vm_boot_duration_seconds` are
-written: `swarmcracker_vm_cpu_seconds`, `swarmcracker_vm_memory_bytes`,
-`swarmcracker_vm_net_rx_bytes` and `swarmcracker_vm_net_tx_bytes` are defined but
-not yet populated by any code path, so do not read them as current usage.
+value in place until the node is restarted.
+
+**Declared but not populated.** The following series are registered so an
+operator sees the intended shape, but no code path writes them — do not read them
+as current values:
+
+- `swarmcracker_vm_cpu_seconds`, `swarmcracker_vm_memory_bytes`,
+  `swarmcracker_vm_net_rx_bytes`, `swarmcracker_vm_net_tx_bytes` — per-VM
+  resource usage.
+- `swarmcracker_vxlan_peers`, `swarmcracker_vxlan_expected_peers` — overlay peer
+  counts.
+- `swarmcracker_manager_health`, `swarmcracker_raft_health` — manager/Raft health.
+
+The default alert rules read only series that are written today; the rules that
+referenced the unpopulated series above were removed rather than left inert. See
+[Alerting](/guides/alerting/) for the rule set and a verification recipe.
 
 ### Logging
 
@@ -660,10 +707,14 @@ If you lose 2 of 3 managers:
 
 #### VMs Are Slow
 
-1. **Check CPU steal:**
+1. **Check host CPU pressure:**
    ```bash
-   curl -s http://127.0.0.1:8080/metrics | grep swarmcracker_vm_cpu
+   top -b -n1 | head -20
+   vmstat 1 5
    ```
+   The per-VM `swarmcracker_vm_cpu_seconds` series is declared but not populated,
+   so it cannot be used to attribute slowness to a single VM; measure on the host
+   or inside the guest instead.
 
 2. **Check memory pressure:**
    ```bash

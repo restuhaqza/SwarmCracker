@@ -356,9 +356,12 @@ func TestControllerWait(t *testing.T) {
 	ctrl, err := NewController(task, cfg, imagePrep, networkMgr, vmmMgr, nil, secretMgr)
 	require.NoError(t, err)
 
-	// Test wait when task is not in processes map (should return success)
+	// A task the manager no longer tracks is not an observed clean exit: its
+	// bookkeeping was removed by a teardown, so Wait reports the unobserved end
+	// rather than a success (which would record a stop and hide a crash).
 	err = ctrl.Wait(context.Background())
-	assert.NoError(t, err, "Wait for non-running task should succeed")
+	assert.ErrorIs(t, err, errTaskNotTracked,
+		"Wait for an untracked task must report the unobserved exit, not succeed")
 }
 
 // TestControllerClose tests the Controller Close method
