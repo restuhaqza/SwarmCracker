@@ -187,13 +187,15 @@ written is logged as a warning and the VM starts anyway — the hypervisor alrea
 bounds the guest to its vCPU count and memory size. The cgroup is kept so a
 requested pin still takes effect. Quotas come from the task's `Resources.Limits`,
 else `Resources.Reservations`, else the VM's booted size (`--cpu` / `--memory`,
-or the 1 vCPU / 512 MiB defaults): the CPU quota is one microsecond-second per
-vCPU, and the memory cap is the guest's memory plus the headroom below.
+or the 1 vCPU / 512 MiB defaults): the CPU quota is 1,000,000 µs of CPU time per 1,000,000 µs period
+per vCPU (one full core-second per second), and the memory cap is the guest's
+memory plus the headroom below.
 
 **A malformed request fails the task; a host-side quota failure does not.** The
 warnings above describe enforcement failing on the host after a valid request.
-A request that cannot be honoured at all — a CPU limit below 1000us (for example
-a sub-1-nanocore value), or a cpuset that does not parse — is rejected while the
+A request that cannot be honoured at all — a CPU limit below 0.001 core (fewer
+than 1,000,000 NanoCPUs, i.e. a quota under 1,000 µs), or a cpuset that does not
+parse — is rejected while the
 limits are derived, **before any cgroup file is written**, and fails the task
 even when it requested no cpuset.
 
