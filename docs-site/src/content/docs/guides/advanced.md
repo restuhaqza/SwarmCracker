@@ -190,6 +190,13 @@ else `Resources.Reservations`, else the VM's booted size (`--cpu` / `--memory`,
 or the 1 vCPU / 512 MiB defaults): the CPU quota is one microsecond-second per
 vCPU, and the memory cap is the guest's memory plus the headroom below.
 
+**A malformed request fails the task; a host-side quota failure does not.** The
+warnings above describe enforcement failing on the host after a valid request.
+A request that cannot be honoured at all — a CPU limit below 1000us (for example
+a sub-1-nanocore value), or a cpuset that does not parse — is rejected while the
+limits are derived, **before any cgroup file is written**, and fails the task
+even when it requested no cpuset.
+
 **Why `memory.max` is larger than the VM's memory.** The cgroup accounts for the
 whole VMM process, whose resident memory is the guest's RAM *plus* Firecracker's
 own allocations. A limit equal to the guest size would OOM-kill a healthy VM, so

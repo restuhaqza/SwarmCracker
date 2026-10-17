@@ -314,6 +314,7 @@ empty value is an error. The new pin takes effect on the task SwarmKit starts
 next, so a rolling update moves the VM to the requested CPUs. `--cpuset` cannot
 be combined with `--rollback`, which restores the previous spec and ignores
 other flags: the combination is rejected rather than silently dropping the pin.
+
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc`, `--health-port`, `--no-health` for `ps`.
 
 `service ps` (and `task ls`) print a `HEALTH` column. It is the **live**
