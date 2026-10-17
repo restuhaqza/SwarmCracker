@@ -11,6 +11,7 @@ package metrics
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
 
 // Metric name prefix for all SwarmCracker metrics.
@@ -55,6 +56,34 @@ var VMBootErrors = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name:      "vm_boot_errors_total",
 	Help:      "Total number of VM boot failures by reason.",
 }, []string{"instance", "reason"})
+
+// VMCrashes counts VM failures that happened after a VM reached running.
+// Type: CounterVec
+// Labels: instance, service, reason
+//
+// It is deliberately separate from VMBootErrors: a boot failure and a
+// post-start crash are different failure modes with different remedies, and
+// only the latter means a VM that was counted running has gone away.
+var VMCrashes = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: namespace,
+	Name:      "vm_crashes_total",
+	Help:      "Total number of VM crashes after reaching running state, by reason.",
+}, []string{"instance", "service", "reason"})
+
+// VMHealth is the live healthcheck state of a service on a node, as a one-hot
+// gauge: exactly one state label per {instance,service} has value 1 and the
+// other three have value 0.
+// Type: GaugeVec
+// Labels: instance, service, state
+//
+// This is not a second health source: the state strings are pkg/runtime's
+// VMHealth states, published from the same choke point that persists them to
+// the node-local sidecar.
+var VMHealth = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: namespace,
+	Name:      "vm_health",
+	Help:      "Live healthcheck state of a microVM service (1 for the current state, 0 otherwise).",
+}, []string{"instance", "service", "state"})
 
 // ── Network Metrics ───────────────────────────────────────────────
 
@@ -107,6 +136,17 @@ var DiskUsageBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: namespace,
 	Name:      "disk_usage_bytes",
 	Help:      "Disk space used by SwarmCracker directory.",
+}, []string{"instance", "path"})
+
+// DiskTotalBytes tracks the total capacity of the filesystem backing a
+// SwarmCracker directory, published alongside DiskUsageBytes so a pressure
+// alert can be a ratio rather than an absolute threshold.
+// Type: Gauge
+// Labels: instance, path (e.g., snapshots, rootfs, state)
+var DiskTotalBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: namespace,
+	Name:      "disk_total_bytes",
+	Help:      "Total disk space of the filesystem backing a SwarmCracker directory.",
 }, []string{"instance", "path"})
 
 // ── Per-VM Resource Metrics ───────────────────────────────────────
@@ -178,13 +218,56 @@ func RecordVMStopped(instance string) {
 	VMsTotal.WithLabelValues(instance, "stopped").Inc()
 }
 
-// RecordVMCrashed records a VM crash event.
-// Decrements VMsRunning and increments VMsTotal{status="crashed"}.
-func RecordVMCrashed(instance, reason string) {
+// RecordVMBootError records a VM that never reached running.
+// It increments VMBootErrors{reason} and nothing else: a VM that failed to
+// boot was never counted as running, so VMsRunning must not move, and it is not
+// a crash.
+func RecordVMBootError(instance, reason string) {
+	VMBootErrors.WithLabelValues(instance, reason).Inc()
+}
+
+// RecordVMCrash records a VM failure after it reached running.
+// It decrements VMsRunning (the VM was counted when it started), increments
+// VMsTotal{status="crashed"} and VMCrashes{service,reason}. It does not touch
+// VMBootErrors: a post-start crash is not a boot failure.
+func RecordVMCrash(instance, service, reason string) {
 	VMsRunning.Dec()
 	VMsTotal.WithLabelValues(instance, "crashed").Inc()
-	if reason != "" {
-		VMBootErrors.WithLabelValues(instance, reason).Inc()
+	VMCrashes.WithLabelValues(instance, service, reason).Inc()
+}
+
+// vmHealthStates are the one-hot states VMHealth publishes. They are
+// pkg/runtime's VMHealth states, so the gauge and the node-local sidecar always
+// agree on what a state is called.
+var vmHealthStates = []string{
+	scruntime.HealthStarting,
+	scruntime.HealthHealthy,
+	scruntime.HealthFailing,
+	scruntime.HealthUnhealthy,
+}
+
+// RecordVMHealth publishes a one-hot health state for a service on a node: the
+// given state becomes 1 and the other three become 0. An empty or unknown state
+// deletes all four series for {instance,service}, so a task that no longer
+// reports health leaves no stale series behind.
+func RecordVMHealth(instance, service, state string) {
+	known := false
+	for _, s := range vmHealthStates {
+		if s == state {
+			known = true
+			break
+		}
+	}
+	if !known {
+		VMHealth.DeletePartialMatch(prometheus.Labels{"instance": instance, "service": service})
+		return
+	}
+	for _, s := range vmHealthStates {
+		if s == state {
+			VMHealth.WithLabelValues(instance, service, s).Set(1)
+			continue
+		}
+		VMHealth.WithLabelValues(instance, service, s).Set(0)
 	}
 }
 
@@ -199,4 +282,13 @@ func RecordVMBootDuration(instance, service string, durationSeconds float64) {
 // a VM without one gets no series, so the metric always carries signal.
 func RecordVMBalloon(instance, taskID, service string, mib float64) {
 	VMBalloonMB.WithLabelValues(instance, taskID, service).Set(mib)
+}
+
+// RecordDiskUsage publishes used and total bytes for one path. Callers must
+// only invoke it for a path that exists: a missing path gets no series rather
+// than a misleading zero, so a pressure ratio is never computed against a
+// directory the daemon does not actually own.
+func RecordDiskUsage(instance, path string, usedBytes, totalBytes uint64) {
+	DiskUsageBytes.WithLabelValues(instance, path).Set(float64(usedBytes))
+	DiskTotalBytes.WithLabelValues(instance, path).Set(float64(totalBytes))
 }

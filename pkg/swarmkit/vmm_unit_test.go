@@ -2,6 +2,7 @@ package swarmkit
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -714,13 +715,14 @@ func TestWait(t *testing.T) {
 		name      string
 		setup     func(*VMMManager) string
 		wantState types.TaskState
+		wantErr   error
 	}{
 		{
-			name: "no process returns Complete",
+			name: "untracked task returns errTaskNotTracked",
 			setup: func(v *VMMManager) string {
 				return "nonexistent-task"
 			},
-			wantState: types.TaskStateComplete,
+			wantErr: errTaskNotTracked,
 		},
 		{
 			name: "wait for completed process",
@@ -753,12 +755,18 @@ func TestWait(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			taskID := tt.setup(vmm)
-			if taskID == "" && tt.name != "no process returns Complete" {
+			if taskID == "" && tt.wantErr == nil {
 				t.Skip("cannot create test process")
 			}
 
 			task := &types.Task{ID: taskID}
 			status, err := vmm.Wait(ctx, task)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("Wait() error = %v; want %v", err, tt.wantErr)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("Wait() error = %v", err)
 			}

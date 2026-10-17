@@ -1,0 +1,43 @@
+# Alertmanager configuration for SwarmCracker
+#
+# The default receiver is a local webhook: Alertmanager POSTs every alert to
+# http://127.0.0.1:9095/swarmcracker-alerts, which nothing listens on unless you
+# start a listener yourself. That is deliberately safe as a default —
+# loopback-only, no credentials, no third party — and unlike a real sink it
+# cannot leak cluster metadata. It also means alerts are visible even before an
+# operator wires up Slack or email: `docker compose logs alertmanager` shows
+# every notification and the POST attempts.
+#
+# To use a real sink, comment out the webhook receiver and uncomment Slack or
+# email below, then point the route at it, and reload with:
+#   docker compose exec alertmanager kill -HUP 1
+
+route:
+  receiver: default-webhook
+  group_by: [alertname, instance]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: default-webhook
+    webhook_configs:
+      - url: http://127.0.0.1:9095/swarmcracker-alerts
+        send_resolved: true
+
+  # ── Slack (commented out — fill in the webhook URL and channel) ──
+  # - name: slack
+  #   slack_configs:
+  #     - api_url: "https://hooks.slack.com/services/REPLACE/WITH/YOUR/WEBHOOK"
+  #       channel: "#swarmcracker-alerts"
+  #       send_resolved: true
+
+  # ── Email (commented out — fill in the relay and addresses) ──
+  # - name: email
+  #   email_configs:
+  #     - to: "ops@example.com"
+  #       from: "alertmanager@example.com"
+  #       smarthost: "smtp.example.com:587"
+  #       auth_username: "REPLACE"
+  #       auth_password: "REPLACE"
+  #       send_resolved: true

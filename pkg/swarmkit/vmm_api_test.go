@@ -565,8 +565,10 @@ func TestVMMManager_Wait_VMM(t *testing.T) {
 		task := &types.Task{ID: "task-nonexistent"}
 		ctx := context.Background()
 		status, err := vmm.Wait(ctx, task)
-		require.NoError(t, err)
-		assert.Equal(t, types.TaskStateComplete, status.State)
+		// An untracked task is not a reported clean exit: the manager has no
+		// observation of how it ended, so it must not hand back Complete/nil.
+		require.ErrorIs(t, err, errTaskNotTracked)
+		assert.Nil(t, status)
 	})
 }
 
