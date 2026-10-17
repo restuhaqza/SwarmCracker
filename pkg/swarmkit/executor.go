@@ -628,6 +628,17 @@ type Controller struct {
 	started    bool
 	startTime  time.Time // tracks when Start was called, used for boot duration metric
 
+	// Terminal classification. Exactly one terminal event (a stop or a crash)
+	// is recorded per VM lifetime, even though Wait, Shutdown, Terminate,
+	// Remove and the health monitor's force-stop can all observe the same VM's
+	// end. Recording two of them for one VM drove vms_running negative.
+	// terminalMu guards the latch and is only ever taken while c.mu is held
+	// (startVM, Shutdown, Terminate) or on its own (Wait); it is never taken
+	// while holding healthMu.
+	terminalMu      sync.Mutex
+	terminalClaimed bool
+	terminalKind    string // "stopped" or "crashed:<reason>", recorded for logs
+
 	// Health monitor state. healthMu is dedicated to this feature: the monitor
 	// must never take c.mu, which Start holds and which Shutdown/Terminate/
 	// Remove take, or teardown would stall behind a health wait. It also guards
@@ -905,6 +916,10 @@ func (c *Controller) startVM(ctx context.Context) error {
 
 	c.started = true
 
+	// A (re)started VM gets its own single terminal record: the previous life's
+	// event, if any, was recorded when it ended.
+	c.resetTerminal()
+
 	// Persist the VM's network details next to its socket. The daemon is the
 	// only component that knows the guest IP for fallback (TAP/DHCP)
 	// allocation: it is never written back to the SwarmKit task store, so the
@@ -1053,6 +1068,9 @@ func (c *Controller) writeVMMetadata(task *types.Task) {
 	// Capture the service label for the health gauge alongside the snapshot:
 	// publishHealth runs without c.mu, so it cannot read c.task safely.
 	c.healthService = serviceName(task)
+	// A fresh boot has no health verdict yet: a reason left over from a
+	// previous life must not mislabel this life's exit.
+	c.healthFailure = ""
 	// The VM is up, so live health may be published again (a controller can be
 	// stopped and re-started).
 	c.healthStopped = false
@@ -1107,6 +1125,62 @@ func (c *Controller) publishHealth(state string, failing int, cmd, output string
 	}
 }
 
+// terminalStopped is the classification for a stop the desired state asked for
+// (SwarmKit's Shutdown/Terminate: a scale-down, a rolling update, or an
+// explicit `service rm`). Such a stop is not a crash, and must not feed the
+// crash-loop rule.
+const terminalStopped = "stopped"
+
+// claimTerminal reserves the single terminal event for the current VM life and
+// reports whether this caller owns it. The first caller wins; every later
+// caller records nothing. A teardown claims *before* it stops the VM, so a stop
+// the desired state asked for is classified as a stop even when Wait observes
+// the same exit.
+func (c *Controller) claimTerminal(kind string) bool {
+	c.terminalMu.Lock()
+	defer c.terminalMu.Unlock()
+	if c.terminalClaimed {
+		return false
+	}
+	c.terminalClaimed = true
+	c.terminalKind = kind
+	return true
+}
+
+// releaseTerminal gives a claim back when the stop that reserved it did not
+// happen (the VMM refused to stop the VM), so a later path can still record the
+// VM's single terminal event.
+func (c *Controller) releaseTerminal(kind string) {
+	c.terminalMu.Lock()
+	defer c.terminalMu.Unlock()
+	if c.terminalClaimed && c.terminalKind == kind {
+		c.terminalClaimed = false
+		c.terminalKind = ""
+	}
+}
+
+// resetTerminal starts a fresh classification for a VM that is (re)starting:
+// the previous VM life's event, if any, was already recorded when it ended.
+func (c *Controller) resetTerminal() {
+	c.terminalMu.Lock()
+	c.terminalClaimed = false
+	c.terminalKind = ""
+	c.terminalMu.Unlock()
+}
+
+// recordTerminalCrash records the VM's single terminal event as a crash with
+// reason, but only for the caller that owns the classification. A second path
+// that observes the same exit therefore records nothing.
+func (c *Controller) recordTerminalCrash(service, reason string) {
+	if c.config == nil {
+		return
+	}
+	if !c.claimTerminal("crashed:" + reason) {
+		return
+	}
+	swarmcrackermetrics.RecordVMCrash(c.config.Hostname, service, reason)
+}
+
 // Wait waits for the task to exit.
 func (c *Controller) Wait(ctx context.Context) error {
 	c.logger.Debug().Msg("Waiting for task")
@@ -1115,27 +1189,45 @@ func (c *Controller) Wait(ctx context.Context) error {
 	service := serviceName(task)
 
 	status, err := c.vmmMgr.Wait(ctx, task)
-	if err != nil {
-		// Process exited abnormally (crashed)
-		swarmcrackermetrics.RecordVMCrash(c.config.Hostname, service, "unexpected_exit")
+
+	// A cancelled wait is not an exit: SwarmKit cancelled this operation so it
+	// can service a new desired state (shutdown, update, removal). The path that
+	// services that desired state owns the terminal record; recording a crash
+	// here is how an operator-initiated `service rm --force` used to come out as
+	// vm_crashes_total{reason="unexpected_exit"}. The error is still returned so
+	// the task manager's retry path is unchanged.
+	if ctx.Err() != nil {
 		return err
 	}
 
-	// A recorded health failure is the cause of the exit: report it so
-	// SwarmKit sets task.Status.Err from this error and the CLI (Task 5) can
-	// surface the reason. The monitor records before it force-stops the VM, so
-	// by the time Wait returns the reason is already set.
+	// A recorded health failure is the cause of the exit, so it is checked
+	// before the raw wait error: the monitor force-kills the VM, and the kill
+	// makes Wait return an error too. The reason is reported to SwarmKit as well
+	// so task.Status.Err carries it and the CLI (Task 5) can surface it. The
+	// monitor records before it force-stops the VM, so by the time Wait returns
+	// the reason is already set. The monitor also claims the terminal record at
+	// the source; recording here is the fallback for a control path that never
+	// started a monitor goroutine.
 	if reason := c.healthcheckFailure(); reason != "" {
-		swarmcrackermetrics.RecordVMCrash(c.config.Hostname, service, "unhealthy")
+		c.recordTerminalCrash(service, "unhealthy")
 		if status != nil && status.Err != nil {
 			return fmt.Errorf("healthcheck failed: %s: %w", reason, status.Err)
+		}
+		if err != nil {
+			return fmt.Errorf("healthcheck failed: %s: %w", reason, err)
 		}
 		return fmt.Errorf("healthcheck failed: %s", reason)
 	}
 
+	if err != nil {
+		// Process exited abnormally (crashed)
+		c.recordTerminalCrash(service, "unexpected_exit")
+		return err
+	}
+
 	if status != nil && status.Err != nil {
 		// Task returned with non-zero exit code
-		swarmcrackermetrics.RecordVMCrash(c.config.Hostname, service, "exit_error")
+		c.recordTerminalCrash(service, "exit_error")
 		return status.Err
 	}
 
@@ -1160,6 +1252,13 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 
 	task := c.convertTask()
 
+	// Claim the terminal classification before stopping: the desired state
+	// asked for this stop, so it must be recorded as a stop even if a concurrent
+	// Wait observes the same exit. If another path owns the record already (the
+	// VM crashed on its own), the stop still happens but is not counted again —
+	// that double count is what drove vms_running negative.
+	claimed := c.claimTerminal(terminalStopped)
+
 	// Create a shutdown context with 30 second timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -1167,6 +1266,9 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	// Attempt graceful shutdown via VMM manager
 	if err := c.vmmMgr.Stop(shutdownCtx, task); err != nil {
 		c.logger.Error().Err(err).Msg("Graceful shutdown failed")
+		if claimed {
+			c.releaseTerminal(terminalStopped)
+		}
 		return fmt.Errorf("failed to shutdown VM: %w", err)
 	}
 
@@ -1183,8 +1285,10 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	// Mark as not started
 	c.started = false
 
-	// Record stopped metric
-	swarmcrackermetrics.RecordVMStopped(c.config.Hostname)
+	// Record the single terminal event for this VM.
+	if claimed {
+		swarmcrackermetrics.RecordVMStopped(c.config.Hostname)
+	}
 
 	c.logger.Info().Msg("Task shut down successfully")
 	return nil
@@ -1207,9 +1311,18 @@ func (c *Controller) Terminate(ctx context.Context) error {
 
 	task := c.convertTask()
 
+	// Terminate is an unconditional stop of the target, not a crash: it is
+	// dispatched by the agent/operator side, not by the VM exiting. Claiming
+	// before the stop makes a concurrent Wait's observation of the exit a no-op
+	// and keeps the record single.
+	claimed := c.claimTerminal(terminalStopped)
+
 	// Force kill immediately without grace period
 	if err := c.vmmMgr.Stop(ctx, task); err != nil {
 		c.logger.Error().Err(err).Msg("Force terminate failed")
+		if claimed {
+			c.releaseTerminal(terminalStopped)
+		}
 		return fmt.Errorf("failed to force terminate VM: %w", err)
 	}
 
@@ -1219,8 +1332,10 @@ func (c *Controller) Terminate(ctx context.Context) error {
 	// Mark as not started
 	c.started = false
 
-	// Record crash metric (force terminate is abnormal shutdown)
-	swarmcrackermetrics.RecordVMCrash(c.config.Hostname, serviceName(task), "force_terminate")
+	// Record the single terminal event for this VM.
+	if claimed {
+		swarmcrackermetrics.RecordVMStopped(c.config.Hostname)
+	}
 
 	c.logger.Info().Msg("Task terminated forcefully")
 	return nil

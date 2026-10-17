@@ -106,6 +106,11 @@ func (c *Controller) monitorHealth(
 			// Record before stopping: Wait reads the reason once the process
 			// exits, which is after this point.
 			c.recordHealthFailure(fmt.Sprintf("%s: %s", cmd, output))
+			// The verdict is the source of this stop, so this path owns the
+			// terminal classification: record the crash here, before the kill,
+			// so the failure signal survives even if the wait that observes the
+			// exit is cancelled by a concurrent desired-state update.
+			c.recordTerminalCrash(c.healthServiceName(), "unhealthy")
 			c.logger.Warn().
 				Str("command", cmd).
 				Str("output", output).
@@ -165,6 +170,15 @@ func (c *Controller) recordHealthFailure(reason string) {
 	c.healthMu.Lock()
 	c.healthFailure = reason
 	c.healthMu.Unlock()
+}
+
+// healthServiceName returns the metric service label captured at boot, for the
+// monitor's terminal classification. It takes healthMu (which the monitor does
+// not otherwise hold) rather than c.mu, which the monitor must never take.
+func (c *Controller) healthServiceName() string {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	return c.healthService
 }
 
 // healthcheckFailure returns the recorded health failure reason, if any.
