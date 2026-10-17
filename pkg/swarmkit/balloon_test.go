@@ -134,3 +134,38 @@ func TestConfigureVM_NoBalloonWhenUnconfigured(t *testing.T) {
 	assert.False(t, ok, "an unconfigured VM must not PUT /balloon")
 	assert.NotContains(t, capture.sequence(), "/balloon")
 }
+
+// TestJailerVMConfig_CarriesBalloonTarget verifies the reduced config a jailed
+// Firecracker is configured with keeps the balloon entry — otherwise a jailed
+// service VM would silently ignore its configured target.
+func TestJailerVMConfig_CarriesBalloonTarget(t *testing.T) {
+	balloon := map[string]interface{}{
+		"amount_mib":               int64(256),
+		"deflate_on_oom":           true,
+		"stats_polling_interval_s": 0,
+	}
+	cfg := balloonTestConfig(balloon)
+
+	jailed := jailerVMConfig(
+		cfg,
+		cfg["machine-config"].(map[string]interface{}),
+		cfg["boot-source"].(map[string]interface{}),
+	)
+
+	assert.Equal(t, balloon, jailed["balloon"], "the jailed config must carry the balloon target")
+}
+
+// TestJailerVMConfig_NoBalloonWhenUnconfigured verifies the jailed config does
+// not invent a balloon entry for an unconfigured VM.
+func TestJailerVMConfig_NoBalloonWhenUnconfigured(t *testing.T) {
+	cfg := balloonTestConfig(nil)
+
+	jailed := jailerVMConfig(
+		cfg,
+		cfg["machine-config"].(map[string]interface{}),
+		cfg["boot-source"].(map[string]interface{}),
+	)
+
+	_, ok := jailed["balloon"]
+	assert.False(t, ok, "an unconfigured VM must not gain a balloon entry")
+}

@@ -324,6 +324,34 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 	return nil
 }
 
+// jailerVMConfig builds the reduced config a jailed Firecracker is configured
+// with: all paths are chroot-relative. The caller's balloon target is carried
+// over, because the device can only be created before boot — without it a
+// jailed service VM would silently ignore its configured balloon annotation.
+func jailerVMConfig(cfg, machineConfig, bootSource map[string]interface{}) map[string]interface{} {
+	jailed := map[string]interface{}{
+		"machine-config": machineConfig,
+		"boot-source": map[string]interface{}{
+			"kernel_image_path": "/kernel/vmlinux",
+			"boot_args":         bootSource["boot_args"],
+		},
+		"drives": []interface{}{
+			map[string]interface{}{
+				"drive_id":       "rootfs",
+				"path_on_host":   "/drives/rootfs.ext4",
+				"is_root_device": true,
+				"is_read_only":   false,
+			},
+		},
+	}
+
+	if balloon, ok := cfg["balloon"]; ok {
+		jailed["balloon"] = balloon
+	}
+
+	return jailed
+}
+
 // startWithJailer starts Firecracker inside jailer with isolation.
 func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, config interface{}) error {
 	// Parse config to extract VM settings
@@ -420,21 +448,7 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 	v.processMutex.Unlock()
 
 	// Configure VM via API with chroot-relative paths
-	jailerConfig := map[string]interface{}{
-		"machine-config": machineConfig,
-		"boot-source": map[string]interface{}{
-			"kernel_image_path": "/kernel/vmlinux",
-			"boot_args":         bootSource["boot_args"],
-		},
-		"drives": []interface{}{
-			map[string]interface{}{
-				"drive_id":       "rootfs",
-				"path_on_host":   "/drives/rootfs.ext4",
-				"is_root_device": true,
-				"is_read_only":   false,
-			},
-		},
-	}
+	jailerConfig := jailerVMConfig(cfg, machineConfig, bootSource)
 
 	if err := v.configureVM(ctx, task, process.SocketPath, jailerConfig); err != nil {
 		v.logger.Error().Err(err).Msg("Failed to configure jailed VM")
