@@ -726,25 +726,45 @@ func TestBalloonLabelValue_Validation(t *testing.T) {
 }
 
 // TestServiceMemoryMib pins the size a service's --balloon-mib is validated
-// against: the declared --memory value, else the 512 MiB default the daemon
-// falls back to. It is the same effective size the node boots, so there is no
-// floor here either — a declared 256 MiB stays 256 MiB.
+// against: the declared --memory value when whole-MiB, else the size resolved
+// from the current task resources the same way the daemon does
+// (types.ResolveVMSize: Limits then Reservations then the 512 MiB default). A
+// declared 256 MiB stays 256 MiB — there is no floor.
 func TestServiceMemoryMib(t *testing.T) {
 	tests := []struct {
 		name  string
 		bytes int64
+		res   *api.ResourceRequirements
 		want  int64
 	}{
-		{name: "unset uses the default", bytes: 0, want: 512},
+		{name: "unset with no resources uses the default", bytes: 0, want: 512},
 		{name: "a declared 256 MiB is honoured, not floored", bytes: 256 * 1024 * 1024, want: 256},
 		{name: "a declared 512 MiB stays 512", bytes: 512 * 1024 * 1024, want: 512},
 		{name: "a declared 2 GiB is honoured", bytes: 2 * 1024 * 1024 * 1024, want: 2048},
-		{name: "a sub-MiB value keeps the default", bytes: 1024, want: 512},
+		{name: "a sub-MiB declared value keeps the default", bytes: 1024, want: 512},
+		{
+			name: "an existing Limits size is resolved when no --memory is given",
+			res:  &api.ResourceRequirements{Limits: &api.Resources{MemoryBytes: 256 * 1024 * 1024}},
+			want: 256,
+		},
+		{
+			name: "a size living only in Reservations is resolved",
+			res:  &api.ResourceRequirements{Reservations: &api.Resources{MemoryBytes: 1024 * 1024 * 1024}},
+			want: 1024,
+		},
+		{
+			name: "Limits wins over Reservations",
+			res: &api.ResourceRequirements{
+				Limits:       &api.Resources{MemoryBytes: 256 * 1024 * 1024},
+				Reservations: &api.Resources{MemoryBytes: 1024 * 1024 * 1024},
+			},
+			want: 256,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, serviceMemoryMib(tc.bytes))
+			assert.Equal(t, tc.want, serviceMemoryMib(tc.bytes, tc.res))
 		})
 	}
 }
