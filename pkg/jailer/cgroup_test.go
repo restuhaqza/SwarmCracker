@@ -943,3 +943,22 @@ func keysOf(set map[string]struct{}) []string {
 	}
 	return out
 }
+
+// TestCreateCgroup_MemsRejectionNamesMemoryNodes pins the axis of a cpuset.mems
+// failure hint: the host list that matters there is NUMA memory nodes, not CPUs.
+func TestCreateCgroup_MemsRejectionNamesMemoryNodes(t *testing.T) {
+	mgr, base := newTempCgroupManager(t)
+	taskID := "task-mems-reject"
+	// A directory in place of cpuset.mems makes the write fail, which is the
+	// temp-dir equivalent of a kernel rejection.
+	require.NoError(t, os.MkdirAll(filepath.Join(base, taskID, "cpuset.mems"), 0o755))
+
+	nodes := filepath.Join(t.TempDir(), "node-online")
+	require.NoError(t, os.WriteFile(nodes, []byte("0-1\n"), 0o644))
+	mgr.nodeOnlinePath = nodes
+
+	err := mgr.CreateCgroup(taskID, ResourceLimits{CpusetMems: "0"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "online memory nodes: 0-1")
+	assert.NotContains(t, err.Error(), "online CPUs")
+}

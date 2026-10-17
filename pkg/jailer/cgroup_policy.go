@@ -78,7 +78,7 @@ func CreateVMCgroup(mgr CgroupOps, managerErr error, logger zerolog.Logger, req 
 		if managerErr != nil {
 			reason = "the cgroup manager could not be created: " + managerErr.Error()
 		}
-		return false, rejectCpuset(taskID, request, "unknown", reason)
+		return false, rejectCpuset(taskID, request, "unknown", errors.New(reason))
 	}
 
 	limits, err := deriveResourceLimits(req.Task, req.VCPUs, req.MemoryMB)
@@ -90,7 +90,7 @@ func CreateVMCgroup(mgr CgroupOps, managerErr error, logger zerolog.Logger, req 
 	// only lists an undelegated controller in the child's file set.
 	if err := mgr.EnsureControllers(DefaultControllers...); err != nil {
 		if request != "" && controllersBlockCpuset(err) {
-			return false, rejectCpuset(taskID, request, onlineCPUs(mgr), err.Error())
+			return false, rejectCpuset(taskID, request, onlineCPUs(mgr), err)
 		}
 		logger.Warn().Err(err).Strs("controllers", DefaultControllers).
 			Msg("Failed to enable cgroup controllers, continuing without the unavailable ones")
@@ -112,7 +112,7 @@ func CreateVMCgroup(mgr CgroupOps, managerErr error, logger zerolog.Logger, req 
 			return true, nil
 		}
 		RemoveVMCgroup(mgr, logger, taskID)
-		return false, rejectCpuset(taskID, request, onlineCPUs(mgr), err.Error())
+		return false, rejectCpuset(taskID, request, onlineCPUs(mgr), err)
 	}
 
 	return true, nil
@@ -129,7 +129,7 @@ func AttachVMProcess(mgr CgroupOps, logger zerolog.Logger, task *types.Task, pid
 
 	if err := mgr.AddProcess(task.ID, pid); err != nil {
 		if request := CpusetRequest(task); request != "" {
-			return rejectCpuset(task.ID, request, onlineCPUs(mgr), err.Error())
+			return rejectCpuset(task.ID, request, onlineCPUs(mgr), err)
 		}
 		logger.Warn().Err(err).Str("task_id", task.ID).
 			Msg("Failed to add the VM process to its cgroup, running the VM without cgroup limits")
@@ -211,10 +211,21 @@ func onlineCPUs(mgr CgroupOps) string {
 }
 
 // rejectCpuset builds the hard error a cpuset that cannot be applied must
-// produce: it names the request and the host's online CPUs.
-func rejectCpuset(taskID, request, online, reason string) error {
-	return fmt.Errorf("cannot apply cpuset %q to task %s: %s (host online CPUs: %s)",
-		request, taskID, reason, online)
+// produce: it names the request and the host's online CPUs, each exactly once.
+// A typed cgroup failure already describes its stage, and a cpuset write also
+// names the host list it collided with, so those parts are not repeated.
+func rejectCpuset(taskID, request, online string, cause error) error {
+	var cgroupErr *CgroupError
+	if errors.As(cause, &cgroupErr) && cgroupErr.TaskID == taskID {
+		if cgroupErr.hostHinted {
+			return fmt.Errorf("cannot apply cpuset %q to task %s: %s",
+				request, taskID, cgroupErr.detail())
+		}
+		return fmt.Errorf("cannot apply cpuset %q to task %s: %s (host online CPUs: %s)",
+			request, taskID, cgroupErr.detail(), online)
+	}
+	return fmt.Errorf("cannot apply cpuset %q to task %s: %v (host online CPUs: %s)",
+		request, taskID, cause, online)
 }
 
 // controllersBlockCpuset reports whether an EnsureControllers failure makes a

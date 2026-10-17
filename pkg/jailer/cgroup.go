@@ -336,18 +336,28 @@ type CgroupError struct {
 	// Field is the controller file being written, e.g. "cpuset.cpus", when the
 	// failing step targets a single file. It is empty otherwise.
 	Field string
+	// hostHinted marks an Err that already names the host list it failed
+	// against (the cpuset writers do). Callers that add their own host hint
+	// check it so the hint is not repeated.
+	hostHinted bool
 	// Err is the underlying failure.
 	Err error
 }
 
 // Error implements error.
 func (e *CgroupError) Error() string {
+	if e.TaskID != "" {
+		return "task " + e.TaskID + ": " + e.detail()
+	}
+	return e.detail()
+}
+
+// detail renders the stage, its field and the underlying failure without the
+// task prefix, for a caller that already names the task in its own message.
+func (e *CgroupError) detail() string {
 	what := fmt.Sprintf("cgroup %s stage", e.Stage)
 	if e.Field != "" {
 		what += " (" + e.Field + ")"
-	}
-	if e.TaskID != "" {
-		return fmt.Sprintf("task %s: %s: %v", e.TaskID, what, e.Err)
 	}
 	return fmt.Sprintf("%s: %v", what, e.Err)
 }
@@ -370,13 +380,21 @@ func IsQuotaStage(err error) bool {
 	return false
 }
 
-// stageError attributes err to stage and taskID without losing the field of an
-// inner *CgroupError (the cpuset writers already know their file name).
+// stageError attributes err to stage and taskID. A failure already typed for
+// the same stage is returned as-is (with the task filled in), so the stage is
+// never repeated when it is wrapped on the way out of CreateCgroup.
 func stageError(taskID string, stage CgroupStage, err error) *CgroupError {
-	e := &CgroupError{TaskID: taskID, Stage: stage, Err: err}
 	var inner *CgroupError
+	if errors.As(err, &inner) && inner.Stage == stage {
+		if inner.TaskID == "" {
+			inner.TaskID = taskID
+		}
+		return inner
+	}
+	e := &CgroupError{TaskID: taskID, Stage: stage, Err: err}
 	if errors.As(err, &inner) && inner.Field != "" {
 		e.Field = inner.Field
+		e.hostHinted = inner.hostHinted
 	}
 	return e
 }
@@ -678,22 +696,51 @@ func (m *CgroupManager) resolveCpusetMems(requested string) (string, string, err
 }
 
 // writeCpusetFile writes one cpuset controller file, wrapping a kernel
-// rejection with the requested value, its source, and the host's online CPUs
-// so the error explains what the request collided with.
+// rejection with the requested value, its source, and the host list it
+// collided with so the error explains the request. The failing file is named by
+// the wrapping *CgroupError's Field; the host axis differs per file: CPUs for
+// cpuset.cpus, NUMA memory nodes for cpuset.mems.
 func (m *CgroupManager) writeCpusetFile(cgroupPath, name, value, source string) error {
 	path := filepath.Join(cgroupPath, name)
 	if err := os.WriteFile(path, []byte(value), 0644); err != nil {
-		online, onlineErr := m.OnlineCPUs()
-		if onlineErr != nil {
-			online = "unknown"
+		axis, online := "online CPUs", ""
+		if name == "cpuset.mems" {
+			axis = "online memory nodes"
+			online = m.onlineMemoryNodes()
+		} else {
+			cpuList, onlineErr := m.OnlineCPUs()
+			if onlineErr != nil {
+				cpuList = "unknown"
+			}
+			online = cpuList
 		}
 		return &CgroupError{
-			Stage: CgroupStageCpuset,
-			Field: name,
-			Err:   fmt.Errorf("failed to write %s %q (source: %s; online CPUs: %s): %w", name, value, source, online, err),
+			Stage:      CgroupStageCpuset,
+			Field:      name,
+			hostHinted: true,
+			Err:        fmt.Errorf("failed to write %q (source: %s; %s: %s): %w", value, source, axis, online, err),
 		}
 	}
 	return nil
+}
+
+// onlineMemoryNodes reports the host's online NUMA nodes for an error hint. Like
+// OnlineCPUs it is best-effort: an unreadable list says "unknown" rather than
+// masking the write failure.
+func (m *CgroupManager) onlineMemoryNodes() string {
+	path := m.nodeOnlinePath
+	if path == "" {
+		path = defaultNodeOnlinePath
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "unknown"
+	}
+	raw := strings.TrimSpace(string(data))
+	if raw == "" {
+		return "unknown"
+	}
+	return raw
 }
 
 // setCPULimits configures CPU resource limits.

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -346,4 +347,39 @@ func TestIsQuotaStage(t *testing.T) {
 			assert.Equal(t, tt.want, IsQuotaStage(tt.err))
 		})
 	}
+}
+
+// ensureOKCgroupOps lets a test exercise the write stages of the real,
+// temp-dir manager through the shared policy without a delegated cgroup tree.
+type ensureOKCgroupOps struct{ *CgroupManager }
+
+func (ensureOKCgroupOps) EnsureControllers(...string) error { return nil }
+
+// TestCreateVMCgroup_CpusetErrorNamesEachPartOnce pins the lab-facing message:
+// the stage, the task ID and the host's online CPUs each appear once, while the
+// request, the file and the kernel error stay actionable.
+func TestCreateVMCgroup_CpusetErrorNamesEachPartOnce(t *testing.T) {
+	mgr, base := newTempCgroupManager(t)
+	taskID := "task-dedup"
+	require.NoError(t, os.MkdirAll(filepath.Join(base, taskID, "cpuset.cpus"), 0o755))
+
+	dir := t.TempDir()
+	online := filepath.Join(dir, "cpu-online")
+	require.NoError(t, os.WriteFile(online, []byte("0-1\n"), 0o644))
+	mgr.cpuOnlinePath = online
+	nodes := filepath.Join(dir, "node-online")
+	require.NoError(t, os.WriteFile(nodes, []byte("0\n"), 0o644))
+	mgr.nodeOnlinePath = nodes
+
+	task := &types.Task{ID: taskID, Annotations: map[string]string{types.CpusetLabel: "999"}}
+	_, err := CreateVMCgroup(ensureOKCgroupOps{mgr}, nil, zerolog.Nop(), CgroupRequest{Task: task, VCPUs: 1, MemoryMB: 128})
+	require.Error(t, err)
+
+	msg := err.Error()
+	assert.Equal(t, 1, strings.Count(msg, "cgroup cpuset stage"), "stage must appear once: %s", msg)
+	assert.Equal(t, 1, strings.Count(msg, "to task "+taskID), "task ID must appear once: %s", msg)
+	assert.Equal(t, 1, strings.Count(msg, "online CPUs"), "host CPU hint must appear once: %s", msg)
+	assert.Contains(t, msg, `"999"`, "the requested set must stay actionable")
+	assert.Contains(t, msg, "cpuset.cpus", "the failing file must stay actionable")
+	assert.Contains(t, msg, "source: CpusetCPUs")
 }
