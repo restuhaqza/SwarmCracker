@@ -88,6 +88,10 @@ const DiskSizeLabel = "swarmcracker.disk"
 // rootfs from an OCI image. It is read from the task's service labels.
 const GoldenLabel = "swarmcracker.golden"
 
+// BalloonLabel carries the memory-balloon target in MiB on a service, e.g.
+// "swarmcracker.balloon=256". Absent means no balloon device is configured.
+const BalloonLabel = "swarmcracker.balloon"
+
 // Container specifies container configuration.
 type Container struct {
 	Image   string
@@ -147,6 +151,14 @@ type ResourceRequirements struct {
 type Resources struct {
 	NanoCPUs    int64
 	MemoryBytes int64
+}
+
+// BalloonConfig describes the virtio-balloon device configured for a VM.
+type BalloonConfig struct {
+	// AmountMib is how much memory the balloon reclaims from the guest (MiB).
+	AmountMib int64
+	// DeflateOnOOM lets the guest reclaim ballooned memory under memory pressure.
+	DeflateOnOOM bool
 }
 
 // RestartPolicy specifies restart behavior.

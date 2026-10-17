@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -87,6 +88,15 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 		return nil, err
 	}
 
+	// The memory-balloon target is a per-service annotation, and the device is
+	// created before boot (it cannot be added to a running VM), so a target that
+	// is malformed or not smaller than the VM must fail here rather than be
+	// silently dropped.
+	balloon, err := resolveBalloon(task, memoryMB)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build boot args with network config if available
 	bootArgs := t.buildBootArgs(task)
 
@@ -116,6 +126,16 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 			"guest_cid": agent.GuestCID,
 			"vsock_id":  "vsock0",
 		},
+	}
+
+	// Only a task that requested a balloon gets the device; an unconfigured task
+	// produces exactly the map it did before.
+	if balloon != nil {
+		config["balloon"] = map[string]interface{}{
+			"amount_mib":               balloon.AmountMib,
+			"deflate_on_oom":           balloon.DeflateOnOOM,
+			"stats_polling_interval_s": 0,
+		}
 	}
 
 	return config, nil
@@ -262,6 +282,35 @@ func (t *taskTranslatorImpl) resolveKernelPath(task *types.Task) (string, error)
 		return "", fmt.Errorf("kernel profile %q maps to %s, which is not available: %w", profile, path, err)
 	}
 	return path, nil
+}
+
+// resolveBalloon reads the memory-balloon target from a task's annotation and
+// validates it against the VM's memory size. It returns nil when the task does
+// not request a balloon, so an unconfigured VM's configuration is unchanged. A
+// malformed or unsatisfiable target is a hard error, never ignored.
+func resolveBalloon(task *types.Task, memSizeMib int) (*types.BalloonConfig, error) {
+	raw := ""
+	if task != nil {
+		raw = strings.TrimSpace(task.Annotations[types.BalloonLabel])
+	}
+	if raw == "" {
+		return nil, nil
+	}
+
+	amountMib, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid memory balloon target %q (%s): must be a positive integer MiB: %w", raw, types.BalloonLabel, err)
+	}
+	if amountMib <= 0 {
+		return nil, fmt.Errorf("invalid memory balloon target %q (%s): must be a positive integer MiB", raw, types.BalloonLabel)
+	}
+	if amountMib >= int64(memSizeMib) {
+		return nil, fmt.Errorf("invalid memory balloon target %d MiB (%s): must be less than the VM memory size %d MiB", amountMib, types.BalloonLabel, memSizeMib)
+	}
+
+	// deflate_on_oom is always true: the guest may reclaim ballooned memory when
+	// it comes under pressure instead of being OOM-killed.
+	return &types.BalloonConfig{AmountMib: amountMib, DeflateOnOOM: true}, nil
 }
 
 // buildNetworkInterfaces creates network interface configs from task attachments.

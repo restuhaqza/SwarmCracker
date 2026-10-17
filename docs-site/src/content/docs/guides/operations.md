@@ -325,9 +325,22 @@ swarmctl metrics <task-id>
 - `swarmcracker_vm_memory_bytes` — Memory used per VM
 - `swarmcracker_vm_net_rx_bytes` / `swarmcracker_vm_net_tx_bytes` — Network I/O per VM
 - `swarmcracker_vm_boot_duration_seconds` — VM boot time
+- `swarmcracker_vm_balloon_mib` — Configured memory-balloon target per VM, in MiB (`instance`, `task_id`, `service` labels)
 - `swarmcracker_vxlan_peers` / `swarmcracker_vxlan_expected_peers` — Overlay peers
 - `swarmcracker_manager_health` / `swarmcracker_raft_health` — Manager/Raft health
 - `swarmcracker_disk_usage_bytes` — Disk usage of SwarmCracker directories
+
+`swarmcracker_vm_balloon_mib` is set when a **service** task's VM starts, and
+only for a task that configured a balloon (`--balloon-mib` or the
+`swarmcracker.balloon` label) — see [Memory Balloon](/guides/advanced/#memory-balloon).
+It reports the target that was *configured*, not live usage, so an unconfigured
+task emits no series and a VM created directly with `vm create --balloon-mib`
+emits no series at all; removing or scaling down a task leaves its last reported
+value in place until the node is restarted. Of the per-VM series, only
+`swarmcracker_vm_balloon_mib` and `swarmcracker_vm_boot_duration_seconds` are
+written: `swarmcracker_vm_cpu_seconds`, `swarmcracker_vm_memory_bytes`,
+`swarmcracker_vm_net_rx_bytes` and `swarmcracker_vm_net_tx_bytes` are defined but
+not yet populated by any code path, so do not read them as current usage.
 
 ### Logging
 
@@ -839,6 +852,24 @@ swarmcracker cluster leave
 # Clean up
 swarmcracker cluster reset
 ```
+
+### Memory Balloon
+
+`--balloon-mib <n>` makes the node reclaim up to `n` MiB of a VM's memory from
+boot, regardless of host pressure, while the **guest** can take that memory back
+when *it* comes under pressure instead of being OOM-killed. Two operational
+points matter:
+
+- **It is set at boot, not at runtime.** A running VM cannot gain a balloon, so
+  `service update --balloon-mib <n>` rolls the task with the new target and
+  `--balloon-mib 0` removes it.
+- **The guest must cooperate.** The guest takes memory back through
+  `deflate_on_oom`, and that only works if the guest kernel ships the
+  virtio-balloon driver; otherwise the device exists but the guest's memory is
+  unchanged.
+
+See [Memory Balloon](/guides/advanced/#memory-balloon) for units, validation, the
+`swarmcracker.balloon` label, and the metric.
 
 ---
 

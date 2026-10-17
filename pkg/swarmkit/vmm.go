@@ -324,6 +324,34 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 	return nil
 }
 
+// jailerVMConfig builds the reduced config a jailed Firecracker is configured
+// with: all paths are chroot-relative. The caller's balloon target is carried
+// over, because the device can only be created before boot — without it a
+// jailed service VM would silently ignore its configured balloon annotation.
+func jailerVMConfig(cfg, machineConfig, bootSource map[string]interface{}) map[string]interface{} {
+	jailed := map[string]interface{}{
+		"machine-config": machineConfig,
+		"boot-source": map[string]interface{}{
+			"kernel_image_path": "/kernel/vmlinux",
+			"boot_args":         bootSource["boot_args"],
+		},
+		"drives": []interface{}{
+			map[string]interface{}{
+				"drive_id":       "rootfs",
+				"path_on_host":   "/drives/rootfs.ext4",
+				"is_root_device": true,
+				"is_read_only":   false,
+			},
+		},
+	}
+
+	if balloon, ok := cfg["balloon"]; ok {
+		jailed["balloon"] = balloon
+	}
+
+	return jailed
+}
+
 // startWithJailer starts Firecracker inside jailer with isolation.
 func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, config interface{}) error {
 	// Parse config to extract VM settings
@@ -420,21 +448,7 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 	v.processMutex.Unlock()
 
 	// Configure VM via API with chroot-relative paths
-	jailerConfig := map[string]interface{}{
-		"machine-config": machineConfig,
-		"boot-source": map[string]interface{}{
-			"kernel_image_path": "/kernel/vmlinux",
-			"boot_args":         bootSource["boot_args"],
-		},
-		"drives": []interface{}{
-			map[string]interface{}{
-				"drive_id":       "rootfs",
-				"path_on_host":   "/drives/rootfs.ext4",
-				"is_root_device": true,
-				"is_read_only":   false,
-			},
-		},
-	}
+	jailerConfig := jailerVMConfig(cfg, machineConfig, bootSource)
 
 	if err := v.configureVM(ctx, task, process.SocketPath, jailerConfig); err != nil {
 		v.logger.Error().Err(err).Msg("Failed to configure jailed VM")
@@ -552,7 +566,20 @@ func (v *VMMManager) configureVM(ctx context.Context, task *types.Task, socketPa
 		}
 	}
 
-	// 6. Start the VM
+	// 6. Configure the virtio-balloon device when the task requested one.
+	// Firecracker rejects /balloon once the VM has started, so this must
+	// precede the InstanceStart action as well.
+	if balloonRaw, ok := cfg["balloon"]; ok {
+		device, err := parseBalloonConfig(balloonRaw)
+		if err != nil {
+			return fmt.Errorf("failed to set balloon: %w", err)
+		}
+		if err := v.putAPI(ctx, socketPath, "/balloon", device); err != nil {
+			return fmt.Errorf("failed to set balloon: %w", err)
+		}
+	}
+
+	// 7. Start the VM
 	action := Action{
 		ActionType: "InstanceStart",
 	}
@@ -1020,6 +1047,13 @@ type MachineConfig struct {
 	TrackDirtyPages bool `json:"track_dirty_pages,omitempty"`
 }
 
+// balloonDevice is the Firecracker PUT /balloon request body.
+type balloonDevice struct {
+	AmountMib             int64 `json:"amount_mib"`
+	DeflateOnOOM          bool  `json:"deflate_on_oom"`
+	StatsPollingIntervalS int   `json:"stats_polling_interval_s"`
+}
+
 type BootSource struct {
 	KernelImagePath string `json:"kernel_image_path"`
 	BootArgs        string `json:"boot_args,omitempty"`
@@ -1094,6 +1128,28 @@ func (v *VMMManager) putAPI(ctx context.Context, socketPath, path string, data i
 	}
 
 	return nil
+}
+
+// parseBalloonConfig normalises the "balloon" config entry into a /balloon
+// request body. The amount can arrive as int64 (from the translator's map) or
+// float64 (after a JSON round-trip), so the entry is decoded into a typed
+// struct rather than type-asserted; any other shape is a wrapped error instead
+// of a request Firecracker would reject.
+func parseBalloonConfig(raw interface{}) (balloonDevice, error) {
+	var device balloonDevice
+	if raw == nil {
+		return device, fmt.Errorf("invalid balloon config: <nil>")
+	}
+
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return device, fmt.Errorf("invalid balloon config %v: %w", raw, err)
+	}
+	if err := json.Unmarshal(encoded, &device); err != nil {
+		return device, fmt.Errorf("invalid balloon config %v: %w", raw, err)
+	}
+
+	return device, nil
 }
 
 // GetRunningProcesses returns a map of all running Firecracker processes.

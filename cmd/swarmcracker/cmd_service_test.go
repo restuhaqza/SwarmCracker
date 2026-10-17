@@ -928,3 +928,158 @@ func TestUpdateServiceWithRegistryAuth_RejectsGoldenBeforeResolvingCredential(t 
 		"the golden service must be rejected before the credential is resolved")
 	assert.Zero(t, client.updateCalls)
 }
+
+// TestServiceBalloonFlagRegistered verifies --balloon-mib is registered on both
+// service commands, so the flag a user types is never an unknown-flag error and
+// is documented in their help output.
+func TestServiceBalloonFlagRegistered(t *testing.T) {
+	create := newServiceCreateCommand()
+	flag := create.Flags().Lookup("balloon-mib")
+	require.NotNil(t, flag, "service create must register --balloon-mib")
+	assert.Equal(t, "int", flag.Value.Type())
+	assert.Equal(t, "0", flag.DefValue)
+	assert.Contains(t, create.UsageString(), "--balloon-mib")
+
+	update := newServiceUpdateCommand()
+	flag = update.Flags().Lookup("balloon-mib")
+	require.NotNil(t, flag, "service update must register --balloon-mib")
+	assert.Equal(t, "int", flag.Value.Type())
+	assert.Equal(t, "0", flag.DefValue)
+	assert.Contains(t, update.UsageString(), "--balloon-mib")
+}
+
+// TestCreateService_BalloonLabel verifies --balloon-mib reaches the spec the
+// create path submits, that an unset flag adds nothing, and that an invalid
+// target fails before the create RPC.
+func TestCreateService_BalloonLabel(t *testing.T) {
+	t.Run("target reaches the spec", func(t *testing.T) {
+		client := &fakeServiceCreateClient{}
+		require.NoError(t, createServiceWithClient(context.Background(), client, serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			memory: "1G", balloonMib: 256, balloonSet: true,
+		}))
+
+		require.Equal(t, 1, client.createCalls)
+		require.NotNil(t, client.spec)
+		assert.Equal(t, "256", client.spec.Annotations.Labels[types.BalloonLabel])
+	})
+
+	t.Run("no flag leaves no label", func(t *testing.T) {
+		client := &fakeServiceCreateClient{}
+		require.NoError(t, createServiceWithClient(context.Background(), client, serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+		}))
+
+		require.Equal(t, 1, client.createCalls)
+		_, ok := client.spec.Annotations.Labels[types.BalloonLabel]
+		assert.False(t, ok, "an unset --balloon-mib must not add a label")
+	})
+
+	t.Run("invalid target sends no RPC", func(t *testing.T) {
+		client := &fakeServiceCreateClient{}
+		err := createServiceWithClient(context.Background(), client, serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			balloonMib: -1, balloonSet: true,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib -1")
+		assert.Zero(t, client.createCalls, "an invalid balloon must not send the create RPC")
+		assert.Nil(t, client.spec)
+	})
+}
+
+// serviceWithBalloon builds a one-container service carrying an optional
+// swarmcracker.balloon label and, when memoryBytes is positive, a memory limit.
+func serviceWithBalloon(label string, memoryBytes int64) *api.Service {
+	labels := map[string]string{}
+	if label != "" {
+		labels[types.BalloonLabel] = label
+	}
+	svc := &api.Service{
+		ID: "svc-1",
+		Spec: api.ServiceSpec{
+			Annotations: api.Annotations{Name: "web", Labels: labels},
+			Task: api.TaskSpec{
+				Runtime: &api.TaskSpec_Container{Container: &api.ContainerSpec{Image: "nginx"}},
+			},
+		},
+	}
+	if memoryBytes > 0 {
+		svc.Spec.Task.Resources = &api.ResourceRequirements{
+			Limits: &api.Resources{MemoryBytes: memoryBytes},
+		}
+	}
+	return svc
+}
+
+// TestUpdateServiceBalloon_TriState verifies --balloon-mib is tri-state on
+// `service update`: absent preserves the current label, a value sets it, and an
+// explicit 0 removes it. It also pins the validation against the updated
+// service's memory, before the update RPC.
+func TestUpdateServiceBalloon_TriState(t *testing.T) {
+	t.Run("absent preserves the current label", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithBalloon("256", 0)}
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			replicas: 2, replicasSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		assert.Equal(t, "256", client.updatedSpec.Annotations.Labels[types.BalloonLabel])
+	})
+
+	t.Run("value sets the label", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithBalloon("256", 0)}
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			balloonMib: 128, balloonSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		assert.Equal(t, "128", client.updatedSpec.Annotations.Labels[types.BalloonLabel])
+	})
+
+	t.Run("explicit zero removes the label", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithBalloon("256", 0)}
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			balloonMib: 0, balloonSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		_, ok := client.updatedSpec.Annotations.Labels[types.BalloonLabel]
+		assert.False(t, ok, "an explicit --balloon-mib 0 must remove the label")
+	})
+
+	t.Run("validated against the memory given with the update", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithBalloon("", 0)}
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			memoryLimit: "1G", balloonMib: 512, balloonSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		assert.Equal(t, "512", client.updatedSpec.Annotations.Labels[types.BalloonLabel])
+	})
+
+	t.Run("target not smaller than the service memory is rejected before the RPC", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithBalloon("", 512*1024*1024)}
+		err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			balloonMib: 512, balloonSet: true,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib 512")
+		assert.Contains(t, err.Error(), "memory size 512")
+		assert.Zero(t, client.updateCalls, "an invalid target must not send the update RPC")
+		assert.Nil(t, client.updatedSpec)
+	})
+
+	t.Run("negative target is rejected", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithBalloon("", 0)}
+		err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			balloonMib: -1, balloonSet: true,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib -1")
+		assert.Zero(t, client.updateCalls)
+	})
+}
