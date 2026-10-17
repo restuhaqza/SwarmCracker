@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/healthcheck"
+	swarmcrackermetrics "github.com/restuhaqza/swarmcracker/pkg/metrics"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
@@ -138,6 +139,18 @@ func (c *Controller) stopHealthMonitor() {
 	// Stop publishing live health: teardown deletes the metadata sidecar, and a
 	// gate probe racing it must not recreate the file afterwards.
 	c.healthStopped = true
+	// Clear the health gauge for this task. This is the single choke point every
+	// teardown path goes through (Shutdown, Terminate, Remove and Close all call
+	// it), it is the last writer to run for the task, and it already holds
+	// healthMu, so the clear is ordered after any in-flight publishHealth. Once
+	// a VM is torn down nothing will ever publish a newer verdict for it, so
+	// leaving the last state at 1 would make an alert fire and never resolve.
+	// Clearing here also covers a VM the monitor itself force-stopped, and a
+	// scaled-down service, not just a controller that reached Remove. The clear
+	// is a no-op for a task that never published health (healthService is empty).
+	if c.config != nil {
+		swarmcrackermetrics.RecordVMHealth(c.config.Hostname, c.healthService, "")
+	}
 	c.healthMu.Unlock()
 
 	if cancel == nil {
