@@ -9,6 +9,10 @@ hypervisor escape, not a shared-kernel privilege escalation. On the host side,
 the optional **Firecracker jailer** adds a second ring of defence around the
 VMM process itself.
 
+Per-task **cgroup v2** limits (CPU, memory, I/O, and an optional CPU pin) are
+applied by the daemon **independently of the jailer**: enabling the jailer is not
+required for them, and this guide verifies both.
+
 This guide covers the host-side isolation model, how to enable the jailer, and a
 hardening checklist.
 
@@ -43,7 +47,7 @@ The jailer provides:
 
 - **Filesystem isolation** — Firecracker is chrooted; it cannot see the host filesystem.
 - **Privilege dropping** — the VMM runs as an unprivileged user, not root.
-- **Resource limits** — cgroup v1/v2 caps CPU, memory, and I/O per VM.
+- **Cgroup placement** — the jailer puts the VMM in its own cgroup under `--parent-cgroup`. SwarmCracker's per-task cgroup v2 limits (CPU, memory, I/O and `--cpuset`) are applied by the daemon on both the jailed and direct paths, so they do not depend on this flag.
 - **Namespace isolation** — dedicated PID and network namespaces and TAP device.
 - **Syscall filtering** — Firecracker applies its own seccomp-bpf policy.
 
@@ -124,9 +128,15 @@ sudo swarmd-firecracker \
 | `--jailer-path` | `/usr/local/bin/jailer` | Jailer binary path |
 | `--jailer-uid` / `--jailer-gid` | `1000` | UID/GID for jailed processes |
 | `--jailer-chroot-dir` | `/var/lib/swarmcracker/jailer` | Chroot base directory |
-| `--parent-cgroup` | `firecracker` | Parent cgroup for VM limits |
-| `--cgroup-version` | auto-detect | `v1` or `v2` |
-| `--enable-cgroups` | `true` | Enforce cgroup resource limits |
+| `--parent-cgroup` | `firecracker` | Cgroup the jailer places the VMM in (jailer only — it does not move SwarmCracker's per-task cgroup) |
+| `--cgroup-version` | auto-detect | `v1` or `v2` passed to the jailer; SwarmCracker's per-task cgroup is always v2 |
+| `--enable-cgroups` | `true` | Apply per-task CPU/memory/I/O limits; independent of `--enable-jailer` |
+
+There is no host-wide cpuset flag: the CPU pin is requested per service or VM
+with `--cpuset` (`service create`, `service update`, `vm create`), and a task
+that cannot be pinned fails to start. See
+[CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits)
+for the enforced files and the failure policy.
 
 To persist the change:
 
@@ -159,13 +169,30 @@ ls -la /var/lib/swarmcracker/jailer/<task-id>/
 # log/    logging FIFO
 ```
 
-**Cgroup limits** — under the parent cgroup:
+**Cgroup limits and CPU pin** — one cgroup per task, whether or not the jailer is
+enabled:
 
 ```bash
-cat /sys/fs/cgroup/firecracker/<task-id>/cpu.max        # quota period
-cat /sys/fs/cgroup/firecracker/<task-id>/memory.max     # limit in bytes
-cat /sys/fs/cgroup/firecracker/<task-id>/memory.current # live usage
+TASK=<task-id>
+BASE=/sys/fs/cgroup/swarmcracker/$TASK
+
+cat "$BASE/cpuset.cpus"          # requested pin (empty = not pinned)
+cat "$BASE/cgroup.procs"         # the VMM process's PID
+cat "$BASE/cpu.max"              # "<quota> 1000000" microseconds
+cat "$BASE/memory.max"           # guest memory + 128 MiB, in bytes
+cat "$BASE/memory.high"          # 90% of memory.max
+cat "$BASE/memory.current"       # live usage
+cat "$BASE/io.weight"            # "default 100"
+
+PID=$(cat "$BASE/cgroup.procs")
+taskset -pc "$PID"               # affinity actually in effect
+grep Cpus_allowed_list "/proc/$PID/status"
 ```
+
+`taskset -pc` and `Cpus_allowed_list` must agree with `cpuset.cpus`. The path is
+`/sys/fs/cgroup/swarmcracker/<task-id>/` even with `--parent-cgroup` set — that
+flag configures the jailer's own cgroup. A `vm create` VM has a cgroup only when
+`--cpuset` was given.
 
 **Syscall filtering** — Firecracker's own seccomp policy:
 
@@ -182,7 +209,8 @@ grep Seccomp /proc/$PID/status
 | KVM access limited to the daemon + firecracker user | `ls -la /dev/kvm` |
 | Dedicated unprivileged user exists | `id firecracker` |
 | Jailer enabled and validated | `swarmcracker config file validate` |
-| cgroup limits enforced per VM | `cat /sys/fs/cgroup/firecracker/<task-id>/memory.max` |
+| cgroup limits enforced per VM | `cat /sys/fs/cgroup/swarmcracker/<task-id>/memory.max` |
+| Requested CPU pin in effect | `cpuset.cpus` matches `taskset -pc $(cat cgroup.procs)` |
 | Chroot base directory locked down | `ls -la /srv/jailer` |
 | One network namespace + TAP per VM | `ip netns list` |
 | Workloads never run as root inside the guest | image `USER` directive |
@@ -199,14 +227,35 @@ sudo chown -R firecracker:firecracker /var/lib/swarmcracker/jailer
 sudo usermod -aG kvm firecracker
 ```
 
-### `failed to create cgroup: operation not permitted`
+### `cannot apply cpuset "0-3" to task …`
 
-Verify cgroup v2 is mounted, or force v1:
+The node could not pin the VM, so it did not start. The message names the
+controllers it tried to enable, the parent that refused, and the host's online
+CPUs. Check both sides:
 
 ```bash
-cat /sys/fs/cgroup/cgroup.controllers   # should list controllers
-# then either fix the mount, or set --cgroup-version v1
+cat /sys/devices/system/cpu/online                  # what the host actually has
+cat /sys/fs/cgroup/cgroup.controllers               # what the kernel advertises
+cat /sys/fs/cgroup/cgroup.subtree_control            # what is delegated
+cat /sys/fs/cgroup/swarmcracker/cgroup.subtree_control
 ```
+
+If `cpuset` is missing from `cgroup.controllers`, the host kernel cannot provide
+it. If the cpuset is online but the write failed, the daemon cannot delegate
+through its parent cgroup: on a systemd unit whose `/sys/fs/cgroup` is a
+delegated subtree, set `Delegate=yes` (see
+[Configuration → cgroup v2 host requirements](/guides/configuration/#cgroup-v2-host-requirements)).
+A request for CPUs the host does not have is a scheduling problem, not a cgroup
+one — constrain the service to suitable nodes, or change the pin.
+
+### `Failed to enable cgroup controllers, continuing…`
+
+This is the quota path, not the pin: the task requested no cpuset (or only the
+`cpu`/`memory`/`io` controllers it does not strictly need were unavailable), so
+the VM starts without the controllers that were unavailable. If the warning
+appears for `cpu`, `memory` or `io` on a task that *did* request a cpuset, the
+pin still takes effect — check `cpuset.cpus` and `taskset -pc` as above. See
+[CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).
 
 ### Firecracker exits immediately with `SIGSYS`
 
@@ -243,6 +292,9 @@ executor:
 Without the jailer the VMM runs with host privileges and no chroot. Never use
 this in a multi-tenant or internet-facing deployment.
 :::
+
+Per-task cgroup limits (and a requested `--cpuset`) are applied on the direct
+path too — disabling the jailer does not disable them.
 
 ## References
 

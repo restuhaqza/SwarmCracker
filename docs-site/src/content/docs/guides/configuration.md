@@ -134,7 +134,7 @@ Default memory in megabytes per VM when not specified in the task spec.
 | **Default** | `false` |
 | **Required** | No |
 
-Enable Firecracker jailer for additional process isolation (chroot, UID/GID drop, network namespace, cgroups).
+Enable Firecracker jailer for additional process isolation (chroot, UID/GID drop, network namespace). Per-task cgroup limits are independent of this flag — see [cgroup v2 host requirements](#cgroup-v2-host-requirements).
 
 ### executor.init_system
 
@@ -438,6 +438,92 @@ Automatically create snapshots before service updates. Recommended for productio
 | **Required** | No |
 
 Compress snapshots to reduce disk usage at the cost of slower create/restore.
+
+---
+
+## cgroup v2 host requirements
+
+SwarmCracker applies per-task **cgroup v2** limits outside the YAML config: there
+are no `cgroup.*` keys in this file. The daemon flags control it
+(`swarmd-firecracker` is flags-only, like the VXLAN and CNI settings above).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--enable-cgroups` | `true` | Apply per-task cgroup limits. **No longer requires `--enable-jailer`** — it applies to both the jailed and the direct start paths |
+| `--parent-cgroup` | `firecracker` | Parent cgroup passed to the **jailer** for its own cgroup; it does not move SwarmCracker's per-task cgroup |
+| `--cgroup-version` | auto-detect | `v1`/`v2` passed to the **jailer**. SwarmCracker's own per-task cgroup is always cgroup v2 |
+
+Each service task's cgroup is `/sys/fs/cgroup/swarmcracker/<task-id>/`, holding
+the VMM process (Firecracker, or the jailer process that launches it). `vm
+create` creates one only when `--cpuset` is given. The quota files and their
+values are described in
+[CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).
+
+### Requirements
+
+The host must satisfy all of these:
+
+- **cgroup v2 is mounted** at `/sys/fs/cgroup`. A v1-only host is not supported
+  for these limits: the daemon cannot create its cgroup manager, and a requested
+  cpuset fails (see below). Without a pin, the task runs without limits.
+- The kernel **advertises** `cpu`, `memory`, `io` and `cpuset` in the parent
+  cgroup's `cgroup.controllers`.
+- The daemon can **write `cgroup.subtree_control`** in `/sys/fs/cgroup` and in
+  `/sys/fs/cgroup/swarmcracker`, so the controllers are delegated into the
+  per-task cgroup. On a normal install the daemon runs as root and the parent is
+  the cgroup root, which it writes directly. If the daemon runs inside its own
+  cgroup — a container, or a unit whose `/sys/fs/cgroup` is a delegated subtree
+  (cgroup namespace) — that cgroup must delegate the four controllers. For a
+  systemd unit that is `Delegate=yes`:
+
+  ```ini
+  # /etc/systemd/system/swarmcracker-worker.service.d/cgroup-delegate.conf
+  [Service]
+  Delegate=yes
+  ```
+
+  ```bash
+  sudo systemctl daemon-reload
+  sudo systemctl restart swarmcracker-worker
+  ```
+
+### What the operator sees when delegation fails
+
+A **requested cpuset** turns a delegation failure into a task failure. The error
+names the requested set, the controllers it tried to enable, the parent that
+refused, and the host's online CPUs:
+
+```text
+cannot apply cpuset "0-3" to task <task-id>: failed to enable cgroup controllers [cpu memory io cpuset]: cpuset: cannot delegate through parent /sys/fs/cgroup: <write error> (host online CPUs: 0-7)
+```
+
+When the kernel does not advertise the controller at all, the same wrapper
+carries `not advertised by the kernel: cpuset` instead. On a host without cgroup
+v2 the message is:
+
+```text
+cannot apply cpuset "0-3" to task <task-id>: the cgroup manager could not be created: cgroup v2 not available on this system (host online CPUs: unknown)
+```
+
+A task that requested **no cpuset** is not failed by any of this. The failure is
+logged as a warning and the VM runs without limits (or without the controllers
+that were unavailable):
+
+```text
+Failed to enable cgroup controllers, continuing without the unavailable ones
+Failed to create cgroup, running the VM without cgroup limits
+```
+
+Check the controllers the kernel offers before rolling out pinned services:
+
+```bash
+cat /sys/fs/cgroup/cgroup.controllers
+cat /sys/fs/cgroup/cgroup.subtree_control
+cat /sys/fs/cgroup/swarmcracker/cgroup.subtree_control
+```
+
+See [Security → Verify isolation](/guides/security/#verify-isolation) for the
+per-task files to read once a VM is running.
 
 ---
 

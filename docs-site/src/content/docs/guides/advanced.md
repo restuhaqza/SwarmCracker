@@ -120,6 +120,126 @@ an invalid value fails the task loudly.
 
 ---
 
+## CPU Pinning and cgroup Limits
+
+`--cpuset` pins a VM's VMM process to a set of host CPUs. Independently, each
+service task gets a **cgroup v2** cgroup that caps the VM's CPU, memory and I/O.
+The pin is a hard promise; the quotas are defence in depth around the VM size
+the hypervisor already enforces.
+
+```bash
+# Pin a service to CPUs 0-3 and give it two vCPUs
+swarmcracker service create --name api --image myapp:1.4 \
+    --cpu 2 --cpuset 0-3
+
+# Re-pin it (effective on the next task SwarmKit starts), or remove the pin
+swarmcracker service update api --cpuset 4-7
+swarmcracker service update api --cpuset ""
+
+# A direct VM is pinned on the host that runs the command
+swarmcracker vm create --cpu 2 --memory 1024 --cpuset 0-3 alpine:latest
+```
+
+The value is a Linux **cpulist** — `0`, `0-3`, `0-3,8` — and it is canonicalised
+before it is stored (`3,1-2` becomes `1-3`). See the
+[CLI reference](/reference/cli/#swarmcracker-service) for the flag semantics:
+syntax, `--cpuset ""` clearing (on `service update` only), and why
+`--cpuset` cannot be combined with `--rollback`.
+
+### What is enforced
+
+The cgroup lives at `/sys/fs/cgroup/swarmcracker/<task-id>/` and holds the VMM
+process — Firecracker itself, or the jailer process that launches it when the
+jailer is enabled.
+
+| Enforced value | File | Limit | If it cannot be applied |
+|----------------|------|-------|-------------------------|
+| CPU set | `cpuset.cpus` (and `cpuset.mems`) | Exactly the requested CPUs | **Fatal** — the VM does not start |
+| CPU quota | `cpu.max` | `<quota> 1000000`, from `--cpu`/`--cpu-limit` (1 vCPU = `1000000 1000000`) | Warning; the VM runs |
+| Memory hard limit | `memory.max` | Guest memory **+ 128 MiB** | Warning; the VM runs |
+| Memory throttle | `memory.high` | 90% of `memory.max` | Warning; the VM runs |
+| I/O weight | `io.weight` | `default 100` | Warning; the VM runs |
+
+**The cpuset is a hard promise.** If the requested CPUs are not online on the
+node — or the `cpuset` controller cannot be delegated there — the VM is **not
+started**. The error names the request and the host's online CPUs
+(`/sys/devices/system/cpu/online`), for example:
+
+```text
+cannot apply cpuset "0-3" to task <task-id>: ... (host online CPUs: 0-1,8-15)
+```
+
+There is **no scheduler admission** for CPU availability: the CLI checks the
+syntax, and a task can be placed on a node that cannot honour the pin. Use a
+placement constraint (for example `node.labels.cpus==0-3`) to keep pinned
+services off unsuitable nodes.
+
+**The quotas are defence in depth.** A CPU, memory or I/O quota that cannot be
+written is logged as a warning and the VM starts anyway — the hypervisor already
+bounds the guest to its vCPU count and memory size. The cgroup is kept so a
+requested pin still takes effect. Quotas come from the task's `Resources.Limits`,
+else `Resources.Reservations`, else the VM's booted size (`--cpu` / `--memory`,
+or the 1 vCPU / 512 MiB defaults): the CPU quota is one microsecond-second per
+vCPU, and the memory cap is the guest's memory plus the headroom below.
+
+**Why `memory.max` is larger than the VM's memory.** The cgroup accounts for the
+whole VMM process, whose resident memory is the guest's RAM *plus* Firecracker's
+own allocations. A limit equal to the guest size would OOM-kill a healthy VM, so
+the daemon adds **128 MiB** of headroom: a 512 MiB VM gets `memory.max` of
+640 MiB, and `memory.high` (the throttle threshold) of 576 MiB. The guest is
+still bounded at 512 MiB by the hypervisor; the extra 128 MiB is for the VMM, not
+for the workload.
+
+**Which VMs get a cgroup.** Service tasks get one whenever the daemon's
+`--enable-cgroups` is on — **the default** — and this **no longer requires
+`--enable-jailer`** (also off by default), so cgroups apply to both the jailed
+and the direct start paths. A `vm create` VM gets a cgroup **only when
+`--cpuset` is given**; without it the command never touches `/sys/fs/cgroup`.
+The cgroup is removed on stop, on remove, and when a start fails.
+
+### Verify it on the host
+
+Run these on the node that owns the task (`swarmcracker service ps <service>`
+shows the task ID):
+
+```bash
+TASK=<task-id>
+BASE=/sys/fs/cgroup/swarmcracker/$TASK
+
+cat "$BASE/cpuset.cpus"          # the pin, canonicalised (e.g. 0-3)
+cat "$BASE/cgroup.procs"         # the VMM process's PID
+cat "$BASE/cpu.max"              # "<quota> 1000000", e.g. "2000000 1000000"
+cat "$BASE/memory.max"           # guest memory + 128 MiB, in bytes
+cat "$BASE/memory.high"          # 90% of memory.max
+cat "$BASE/io.weight"            # "default 100"
+
+PID=$(cat "$BASE/cgroup.procs")
+taskset -pc "$PID"               # the process's current CPU affinity
+grep Cpus_allowed_list "/proc/$PID/status"
+```
+
+`taskset -pc <pid>` and `Cpus_allowed_list` must agree with `cpuset.cpus`; that
+is the pin actually in effect, not just a stored request. An unpinned service VM
+leaves `cpuset.cpus` empty, which means "inherit the parent's set", and a
+`vm create` VM without `--cpuset` has no directory under
+`/sys/fs/cgroup/swarmcracker/` at all.
+
+There are **no cgroup metrics**. The daemon exports no CPU/memory/IO series from
+these files, so the files above are the observable surface; see
+[Metrics](/guides/operations/#metrics) for the series that do exist.
+
+### Host requirements
+
+cgroup v2 must be mounted at `/sys/fs/cgroup` and the daemon must be able to
+delegate `cpu`, `memory`, `io` and `cpuset` into the per-task cgroups. A v1-only
+host, or one where the daemon's own cgroup cannot be delegated (a systemd unit
+needs `Delegate=yes`), fails the pin with an error naming the controllers that
+could not be enabled. See
+[Configuration → cgroups](/guides/configuration/#cgroup-v2-host-requirements) for
+the requirement, the exact error, and what happens without a pin.
+
+---
+
 ## Multi-Architecture Support
 
 SwarmCracker supports multiple CPU architectures. Pick the variant that
