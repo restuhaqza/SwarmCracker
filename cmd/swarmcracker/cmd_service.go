@@ -1441,8 +1441,11 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 	// --balloon-mib is tri-state: an absent flag preserves the service's current
 	// label (copied above), a positive value sets it, and an explicit 0 removes
 	// it. The target is validated against the memory the updated task will carry
-	// — the --memory-limit given with this update, else the limit already on the
-	// service — so the flag is never accepted and then ignored.
+	// — the --memory-limit given with this update, else the effective size of
+	// the service's current spec (its Limits, else its Reservations, else the
+	// default) — so the flag is never accepted and then ignored, and a size that
+	// lives in Reservations (set by an API client) is resolved the same way the
+	// node resolves it.
 	if opts.balloonSet {
 		switch {
 		case opts.balloonMib < 0:
@@ -1450,11 +1453,7 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 		case opts.balloonMib == 0:
 			delete(spec.Annotations.Labels, types.BalloonLabel)
 		default:
-			memBytes := memoryBytes
-			if memBytes == 0 && spec.Task.Resources != nil && spec.Task.Resources.Limits != nil {
-				memBytes = spec.Task.Resources.Limits.MemoryBytes
-			}
-			value, err := balloonLabelValue(int64(opts.balloonMib), true, serviceMemoryMib(memBytes))
+			value, err := balloonLabelValue(int64(opts.balloonMib), true, serviceMemoryMib(memoryBytes, spec.Task.Resources))
 			if err != nil {
 				return err
 			}

@@ -180,10 +180,11 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 		},
 	}
 
-	// Apply resource limits from task spec
-	if task.Spec.Resources.Limits != nil {
-		tt.applyResources(config, task.Spec.Resources.Limits)
-	}
+	// Size the VM from the declared resources. Precedence is
+	// Limits -> Reservations -> this translator's configured defaults, the same
+	// rule the daemon translator (pkg/swarmkit) applies, so the two producers
+	// cannot disagree about where the size comes from.
+	tt.applyResources(config, &task.Spec.Resources)
 
 	// The memory-balloon target is a per-service annotation, and the device is
 	// created before boot (it cannot be added to a running VM), so a target that
@@ -449,21 +450,16 @@ func (tt *TaskTranslator) buildInitArgs(containerCmd []string) []string {
 	}
 }
 
-// applyResources applies resource limits to the VM configuration.
-func (tt *TaskTranslator) applyResources(config *VMMConfig, limits *types.Resources) {
-	if limits.MemoryBytes > 0 {
-		// Convert bytes to MiB
-		config.MachineConfig.MemSizeMib = int(limits.MemoryBytes / 1024 / 1024)
-	}
-
-	if limits.NanoCPUs > 0 {
-		// Convert nano CPUs to vCPUs (1 vCPU = 1e9 nano CPUs)
-		vcpus := int(limits.NanoCPUs / 1e9)
-		if vcpus < 1 {
-			vcpus = 1
-		}
-		config.MachineConfig.VcpuCount = vcpus
-	}
+// applyResources sizes the VM from the task's declared resources. It uses the
+// same precedence as the daemon translator (pkg/swarmkit): the hard cap
+// (Limits) when one is declared, else the soft reservation (Reservations), else
+// this translator's configured defaults. A declared value is honoured as
+// declared — there is no silent floor, so an explicit 256 MiB request boots a
+// 256 MiB VM.
+func (tt *TaskTranslator) applyResources(config *VMMConfig, res *types.ResourceRequirements) {
+	vcpus, memoryMB := types.ResolveVMSize(res, tt.defaultVCPUs, tt.defaultMemMB)
+	config.MachineConfig.VcpuCount = vcpus
+	config.MachineConfig.MemSizeMib = memoryMB
 }
 
 // resolveBalloon reads the memory-balloon target from a task's annotation and

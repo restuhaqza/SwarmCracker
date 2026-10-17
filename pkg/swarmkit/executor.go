@@ -1490,12 +1490,21 @@ func (c *Controller) convertTask() *types.Task {
 	}
 	container.Mounts = mounts
 
-	// Convert resources
+	// Convert resources. Both arms are carried: the VM is sized from the hard
+	// cap (Limits) when the user declared one, falling back to the reservation.
 	resources := &types.ResourceRequirements{}
-	if c.task.Spec.Resources != nil && c.task.Spec.Resources.Reservations != nil {
-		resources.Reservations = &types.Resources{
-			NanoCPUs:    c.task.Spec.Resources.Reservations.NanoCPUs,
-			MemoryBytes: c.task.Spec.Resources.Reservations.MemoryBytes,
+	if c.task.Spec.Resources != nil {
+		if lim := c.task.Spec.Resources.Limits; lim != nil {
+			resources.Limits = &types.Resources{
+				NanoCPUs:    lim.NanoCPUs,
+				MemoryBytes: lim.MemoryBytes,
+			}
+		}
+		if res := c.task.Spec.Resources.Reservations; res != nil {
+			resources.Reservations = &types.Resources{
+				NanoCPUs:    res.NanoCPUs,
+				MemoryBytes: res.MemoryBytes,
+			}
 		}
 	}
 

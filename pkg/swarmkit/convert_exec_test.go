@@ -256,3 +256,67 @@ func TestController_convertTask_HostnameAndDNS(t *testing.T) {
 	assert.Equal(t, "web-1", container.Hostname)
 	assert.Equal(t, []string{"1.1.1.1", "8.8.8.8"}, container.DNS)
 }
+
+// TestController_convertTask_CopiesResourceLimits verifies the agent carries
+// both arms of the API resource requirements: the CLI writes Limits, so a
+// conversion that dropped it left the VM silently at its defaults (#95).
+func TestController_convertTask_CopiesResourceLimits(t *testing.T) {
+	ctrl := &Controller{
+		task: &api.Task{
+			ID: "t-resources",
+			Spec: api.TaskSpec{
+				Resources: &api.ResourceRequirements{
+					Limits: &api.Resources{
+						NanoCPUs:    2e9,
+						MemoryBytes: 1024 * 1024 * 1024,
+					},
+					Reservations: &api.Resources{
+						NanoCPUs:    1e9,
+						MemoryBytes: 256 * 1024 * 1024,
+					},
+				},
+				Runtime: &api.TaskSpec_Container{
+					Container: &api.ContainerSpec{Image: "app"},
+				},
+			},
+		},
+	}
+
+	internal := ctrl.convertTask()
+
+	require.NotNil(t, internal.Spec.Resources.Limits, "an explicit limit must survive conversion")
+	assert.Equal(t, int64(2e9), internal.Spec.Resources.Limits.NanoCPUs)
+	assert.Equal(t, int64(1024*1024*1024), internal.Spec.Resources.Limits.MemoryBytes)
+
+	require.NotNil(t, internal.Spec.Resources.Reservations, "a reservation must still survive conversion")
+	assert.Equal(t, int64(1e9), internal.Spec.Resources.Reservations.NanoCPUs)
+	assert.Equal(t, int64(256*1024*1024), internal.Spec.Resources.Reservations.MemoryBytes)
+}
+
+// TestController_convertTask_LimitsWithoutReservations covers the CLI's actual
+// shape: service create writes Limits alone and no reservation.
+func TestController_convertTask_LimitsWithoutReservations(t *testing.T) {
+	ctrl := &Controller{
+		task: &api.Task{
+			ID: "t-limits-only",
+			Spec: api.TaskSpec{
+				Resources: &api.ResourceRequirements{
+					Limits: &api.Resources{
+						NanoCPUs:    3e9,
+						MemoryBytes: 1024 * 1024 * 1024,
+					},
+				},
+				Runtime: &api.TaskSpec_Container{
+					Container: &api.ContainerSpec{Image: "app"},
+				},
+			},
+		},
+	}
+
+	internal := ctrl.convertTask()
+
+	require.NotNil(t, internal.Spec.Resources.Limits)
+	assert.Equal(t, int64(3e9), internal.Spec.Resources.Limits.NanoCPUs)
+	assert.Equal(t, int64(1024*1024*1024), internal.Spec.Resources.Limits.MemoryBytes)
+	assert.Nil(t, internal.Spec.Resources.Reservations)
+}

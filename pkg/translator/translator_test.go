@@ -360,7 +360,7 @@ func TestTaskTranslator_applyResources(t *testing.T) {
 				},
 			}
 
-			translator.applyResources(config, tt.limits)
+			translator.applyResources(config, &types.ResourceRequirements{Limits: tt.limits})
 
 			assert.Equal(t, tt.wantVCPUs, config.MachineConfig.VcpuCount)
 			assert.Equal(t, tt.wantMemMB, config.MachineConfig.MemSizeMib)

@@ -67,11 +67,13 @@ swarmcracker service update cache --balloon-mib 0
 ### Units and validation
 
 `--balloon-mib` is an integer count of **MiB**, not a size string (`256`, not
-`256m`). It must be a **positive integer smaller than the VM's memory limit**: a
-target at or above the memory can never be honoured, so the request is rejected
-with an error naming both numbers — before the service is created or the VM is
-prepared. A service's memory limit is floored at the platform minimum of 512 MiB
-when the target is validated, matching the size the node will actually boot.
+`256m`). It must be a **positive integer smaller than the memory the VM will boot
+with**: a target at or above the memory can never be honoured, so the request is
+rejected with an error naming both numbers — before the service is created or the
+VM is prepared. That memory is the size the VM will actually boot with — the
+declared `--memory`, or the **512 MiB default** when nothing is declared — so
+`--memory 256m --balloon-mib 300` is rejected rather than accepted against a
+floor the VM would never have.
 
 On `service create` and `vm create` the flag is optional; an omitted flag means
 no balloon device. Because the flag exists only to configure one, an explicit
