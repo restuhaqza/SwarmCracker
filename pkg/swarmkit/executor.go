@@ -1181,7 +1181,27 @@ func (c *Controller) recordTerminalCrash(service, reason string) {
 	swarmcrackermetrics.RecordVMCrash(c.config.Hostname, service, reason)
 }
 
+// recordTerminalStop records the VM's single terminal event as a stop, but only
+// for the caller that owns the classification. It is the classification for an
+// exit nobody *asked* for that is nevertheless not a crash: the workload
+// finished on its own and the process exited zero.
+func (c *Controller) recordTerminalStop() {
+	if c.config == nil {
+		return
+	}
+	if !c.claimTerminal(terminalStopped) {
+		return
+	}
+	swarmcrackermetrics.RecordVMStopped(c.config.Hostname)
+}
+
 // Wait waits for the task to exit.
+//
+// Per SwarmKit's Controller contract (agent/exec/executor.go:322-327), a nil
+// return is what makes the task manager transition the task to COMPLETE
+// ("finished"); any error makes it fatal (FAILED). So a nil return here means
+// the VM went away on its own and the task completed, and that clean end still
+// needs its single terminal record.
 func (c *Controller) Wait(ctx context.Context) error {
 	c.logger.Debug().Msg("Waiting for task")
 
@@ -1231,6 +1251,16 @@ func (c *Controller) Wait(ctx context.Context) error {
 		return status.Err
 	}
 
+	// The workload finished on its own: the VM process exited zero and SwarmKit
+	// will mark the task COMPLETE. That is not what the desired state asked for
+	// (this is not a stop SwarmKit initiated) and it is not a crash (the process
+	// reported success) — but the VM *is* gone, so its one terminal event is a
+	// stop. Recording nothing here is how vms_running leaked upward for every
+	// clean in-guest exit (e.g. `kill -TERM 1` via `vm exec`): the VM stayed
+	// counted as running forever. The latch keeps this single when a desired-state
+	// stop or a health force-stop (which claim first) already owns the record,
+	// and a crash path never reaches here because it returns above.
+	c.recordTerminalStop()
 	return nil
 }
 

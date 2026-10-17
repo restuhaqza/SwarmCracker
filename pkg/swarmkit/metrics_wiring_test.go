@@ -217,11 +217,18 @@ func TestController_DesiredStateStopMetricsWiring(t *testing.T) {
 }
 
 // TestController_SelfExitRecordsCrashAndNoStop pins the other half of the
-// classification: a VM that goes away on its own records a crash (its existing
-// reason) and no stop, so vms_running still tracks a genuine loss.
+// classification: a VM that goes away on its own with a non-zero/error status
+// records a crash (reason unexpected_exit) and no stop, so vms_running still
+// tracks a genuine loss and the crash-loop rule sees it.
 func TestController_SelfExitRecordsCrashAndNoStop(t *testing.T) {
 	instance := "wiring-self-exit"
 	service := "svc-self-exit"
+
+	// Self-contained: one VM is started and ends exactly once, so the gauge
+	// must be exactly started-1 (0) afterwards. A leak stays above 0; a double
+	// record drops below 0.
+	swarmcrackermetrics.VMsRunning.Set(0)
+	t.Cleanup(func() { swarmcrackermetrics.VMsRunning.Set(0) })
 
 	ctrl := newMetricsWiringController(instance, service, &MockVMMManager{
 		WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
@@ -229,8 +236,9 @@ func TestController_SelfExitRecordsCrashAndNoStop(t *testing.T) {
 		},
 	})
 	require.NoError(t, ctrl.startVM(context.Background()))
+	require.Equal(t, 1.0, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
+		"the VM is counted running before it exits")
 
-	runningBefore := testutil.ToFloat64(swarmcrackermetrics.VMsRunning)
 	stoppedBefore := testutil.ToFloat64(
 		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "stopped"))
 	crashBefore := testutil.ToFloat64(
@@ -240,12 +248,119 @@ func TestController_SelfExitRecordsCrashAndNoStop(t *testing.T) {
 
 	assert.Equal(t, crashBefore+1, testutil.ToFloat64(
 		swarmcrackermetrics.VMCrashes.WithLabelValues(instance, service, "unexpected_exit")),
-		"a self-exit is a crash")
+		"a non-zero self-exit is a crash")
 	assert.Equal(t, stoppedBefore, testutil.ToFloat64(
 		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "stopped")),
-		"a self-exit is not a stop")
-	assert.Equal(t, runningBefore-1, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
-		"a self-exit decrements vms_running exactly once")
+		"a non-zero self-exit is not a stop")
+	assert.Equal(t, 0.0, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
+		"vms_running must equal started-1 (1-1): the error self-exit must not leak")
+}
+
+// TestController_CleanSelfExitRecordsStop reproduces the lab observation behind
+// this slice's defect: the workload is killed inside the guest (`kill -TERM 1`
+// via `vm exec`), so the VM shuts down cleanly, VMMManager.Wait returns a
+// complete status with no error, and SwarmKit marks the task COMPLETE
+// (agent/exec/executor.go: `ctlr.Wait` nil -> TaskStateCompleted). Nothing
+// recorded a terminal event, so vms_running leaked upward — one VM kept being
+// counted as running after it was gone. A clean self-exit must claim the
+// single terminal record as a *stop*: the VM is gone, but nothing crashed, so
+// it must not feed the crash-loop rule.
+func TestController_CleanSelfExitRecordsStop(t *testing.T) {
+	instance := "wiring-clean-exit"
+	service := "svc-clean-exit"
+
+	swarmcrackermetrics.VMsRunning.Set(0)
+	t.Cleanup(func() { swarmcrackermetrics.VMsRunning.Set(0) })
+
+	ctrl := newMetricsWiringController(instance, service, &MockVMMManager{
+		WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
+			// What VMMManager.Wait returns for a process that exited zero.
+			return &types.TaskStatus{
+				State:   types.TaskStateComplete,
+				Message: "Task completed successfully",
+			}, nil
+		},
+	})
+	require.NoError(t, ctrl.startVM(context.Background()))
+	require.Equal(t, 1.0, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
+		"the VM is counted running before the clean exit")
+
+	stoppedBefore := testutil.ToFloat64(
+		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "stopped"))
+	crashBefore := testutil.ToFloat64(
+		swarmcrackermetrics.VMCrashes.WithLabelValues(instance, service, "unexpected_exit"))
+
+	require.NoError(t, ctrl.Wait(context.Background()))
+
+	assert.Equal(t, stoppedBefore+1, testutil.ToFloat64(
+		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "stopped")),
+		"a clean self-exit records exactly one stop")
+	assert.Equal(t, crashBefore, testutil.ToFloat64(
+		swarmcrackermetrics.VMCrashes.WithLabelValues(instance, service, "unexpected_exit")),
+		"a clean exit is not a crash")
+	assert.Equal(t, 0, countSamples(t, "swarmcracker_vm_crashes_total",
+		map[string]string{"instance": instance}),
+		"a clean exit must leave the crash counter untouched")
+	assert.Equal(t, 0.0, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
+		"vms_running must equal started-1 (1-1): a clean exit is not a leak")
+}
+
+// TestController_DesiredStateStopRacesCleanWait is the new interaction this fix
+// introduces. A Wait that observes a clean exit now wants to record a stop, and
+// the Shutdown the desired state asked for (service rm / scale-down / rolling
+// update) also records a stop; the two can race for the same VM. The terminal
+// latch must still let exactly one of them through — one stop per VM — so the
+// clean exit is not decremented twice and vms_running never goes negative.
+func TestController_DesiredStateStopRacesCleanWait(t *testing.T) {
+	instance := "wiring-stop-races-clean"
+	service := "svc-stop-races-clean"
+
+	swarmcrackermetrics.VMsRunning.Set(0)
+	t.Cleanup(func() { swarmcrackermetrics.VMsRunning.Set(0) })
+
+	const rounds = 50
+
+	stoppedBefore := testutil.ToFloat64(
+		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "stopped"))
+	crashedBefore := testutil.ToFloat64(
+		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "crashed"))
+
+	for i := 0; i < rounds; i++ {
+		ctrl := newMetricsWiringController(instance, service, &MockVMMManager{
+			WaitFunc: func(ctx context.Context, task *types.Task) (*types.TaskStatus, error) {
+				return &types.TaskStatus{State: types.TaskStateComplete}, nil
+			},
+		})
+		require.NoError(t, ctrl.startVM(context.Background()))
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			_ = ctrl.Wait(context.Background())
+		}()
+		go func() {
+			defer wg.Done()
+			_ = ctrl.Shutdown(context.Background())
+		}()
+		wg.Wait()
+
+		require.GreaterOrEqual(t, testutil.ToFloat64(swarmcrackermetrics.VMsRunning), 0.0,
+			"vms_running must never be negative for a single VM (round %d)", i)
+	}
+
+	stopped := testutil.ToFloat64(
+		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "stopped")) - stoppedBefore
+	crashed := testutil.ToFloat64(
+		swarmcrackermetrics.VMsTotal.WithLabelValues(instance, "crashed")) - crashedBefore
+
+	assert.Equal(t, float64(rounds), stopped,
+		"a desired-state stop racing a clean wait is still exactly one stop per VM")
+	assert.Equal(t, 0.0, crashed,
+		"a desired-state stop racing a clean wait must not record a crash")
+	assert.Equal(t, 0.0, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
+		"%d VMs started and %d stops: the gauge must return to its origin",
+		rounds, int(stopped))
 }
 
 // TestController_CancelledWaitRecordsNothing reproduces the lab observation
