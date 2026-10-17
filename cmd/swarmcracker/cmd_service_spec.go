@@ -32,6 +32,12 @@ type serviceCreateOptions struct {
 	mounts      []string
 	volumes     []string
 
+	// balloonMib is --balloon-mib: the memory-balloon target in MiB. balloonSet
+	// records whether the flag was given at all, so an explicit 0 is rejected
+	// rather than mistaken for "unset" and silently ignored.
+	balloonMib int
+	balloonSet bool
+
 	// withRegistryAuth is --with-registry-auth (#44). registryAuth holds the
 	// resolved base64 X-Registry-Auth payload for the image; createService fills
 	// it in (resolving it is I/O), so this mapping function stays pure.
@@ -134,6 +140,25 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		if _, ok := svcLabels[types.DiskSizeLabel]; !ok {
 			svcLabels[types.DiskSizeLabel] = o.disk
 		}
+	}
+
+	// A memory-balloon target travels as the swarmcracker.balloon service label,
+	// which the executor copies onto each task. Validate it here — against the
+	// memory the VM will get — so an invalid request fails before any RPC, and
+	// an unset flag adds nothing at all.
+	if value, err := balloonLabelValue(int64(o.balloonMib), o.balloonSet, serviceMemoryMib(memoryBytes)); err != nil {
+		return nil, err
+	} else if value != "" {
+		if svcLabels == nil {
+			svcLabels = make(map[string]string)
+		}
+		// A user-supplied label for the same key is the lower-level way to
+		// request a balloon; honouring it silently would drop the flag. Accept
+		// it only when it agrees.
+		if existing := svcLabels[types.BalloonLabel]; existing != "" && existing != value {
+			return nil, fmt.Errorf("--balloon-mib %d conflicts with the %s label %q already set via --label", o.balloonMib, types.BalloonLabel, existing)
+		}
+		svcLabels[types.BalloonLabel] = value
 	}
 
 	if svcLabels[types.GoldenLabel] != "" && (hostname != "" || len(dns) > 0) {
@@ -282,6 +307,12 @@ type serviceUpdateOptions struct {
 	volumes   []string
 	mountsSet bool
 
+	// balloonMib/balloonSet are --balloon-mib on `service update`: tri-state, so
+	// absent preserves the service's current label, a value sets it, and an
+	// explicit 0 removes it (see updateServiceWithClient).
+	balloonMib int
+	balloonSet bool
+
 	networks    []string
 	networksSet bool
 
@@ -368,6 +399,42 @@ func normalizeServiceMode(m string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid --mode %q (want replicated or global)", m)
 	}
+}
+
+// minServiceMemoryMib is the memory size the daemon's service translator falls
+// back to when a task carries no memory reservation, and the floor it applies to
+// a smaller one (pkg/swarmkit/translator.go).
+const minServiceMemoryMib = 512
+
+// serviceMemoryMib is the VM memory size in MiB a service will get: the parsed
+// --memory value (0 when the flag is unset) floored at the platform minimum.
+// This mirrors the daemon-side translator, which the CLI cannot query, so an
+// invalid --balloon-mib is caught here instead of after the service is created.
+func serviceMemoryMib(memoryBytes int64) int64 {
+	if mib := memoryBytes / (1024 * 1024); mib > minServiceMemoryMib {
+		return mib
+	}
+	return minServiceMemoryMib
+}
+
+// balloonLabelValue validates --balloon-mib against the VM's memory size (MiB)
+// and returns the value to carry as types.BalloonLabel. An unset flag returns ""
+// so nothing is added and an unconfigured service stays byte-identical to
+// before. A non-positive target, or one that is not smaller than the VM's
+// memory, is an error naming the offending value: the balloon device is created
+// before boot (it cannot be added to a running VM), so such a request can never
+// be honoured and must not be accepted.
+func balloonLabelValue(balloonMib int64, set bool, memMib int64) (string, error) {
+	if !set {
+		return "", nil
+	}
+	if balloonMib <= 0 {
+		return "", fmt.Errorf("invalid --balloon-mib %d: must be a positive integer (MiB)", balloonMib)
+	}
+	if memMib > 0 && balloonMib >= memMib {
+		return "", fmt.Errorf("invalid --balloon-mib %d: must be less than the VM memory size %d MiB", balloonMib, memMib)
+	}
+	return strconv.FormatInt(balloonMib, 10), nil
 }
 
 func buildPlacement(constraints, prefs []string) (*api.Placement, error) {

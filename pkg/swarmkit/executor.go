@@ -734,6 +734,21 @@ func (c *Controller) Prepare(ctx context.Context) error {
 		Int("networks_count", len(task.Networks)).
 		Msg("Storing internalTask after network prep")
 
+	// A service may request a memory-balloon target (label
+	// "swarmcracker.balloon"). Both translators read it from the task
+	// annotation, and a service label reaches the executor through
+	// ServiceAnnotations.Labels, so copy it across here — at prepare time, before
+	// the task is translated into a VM config at Start. A service without the
+	// label adds nothing, so its config is byte-identical to before. The map is
+	// created only when there is something to add, exactly like the golden
+	// annotations above.
+	if balloon := strings.TrimSpace(c.task.ServiceAnnotations.Labels[types.BalloonLabel]); balloon != "" {
+		if task.Annotations == nil {
+			task.Annotations = make(map[string]string)
+		}
+		task.Annotations[types.BalloonLabel] = balloon
+	}
+
 	// Store the prepared task with annotations and network attachments
 	c.internalTask = task
 

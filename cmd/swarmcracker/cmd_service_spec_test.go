@@ -553,3 +553,133 @@ func TestRegistryAuthForUpdate(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildServiceSpec_Balloon verifies --balloon-mib travels as the
+// types.BalloonLabel service label (the carrier the executor copies onto the
+// task) and that an unset flag adds no label at all.
+func TestBuildServiceSpec_Balloon(t *testing.T) {
+	t.Run("unset adds no label", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{name: "web", image: "nginx", replicas: 1})
+		require.NoError(t, err)
+		_, ok := spec.Annotations.Labels[types.BalloonLabel]
+		assert.False(t, ok, "an unset --balloon-mib must not add a label")
+	})
+
+	t.Run("set carries the target", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			memory: "1G", balloonMib: 256, balloonSet: true,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "256", spec.Annotations.Labels[types.BalloonLabel])
+	})
+
+	t.Run("set without a memory limit still carries the target", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			balloonMib: 128, balloonSet: true,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "128", spec.Annotations.Labels[types.BalloonLabel])
+	})
+
+	t.Run("agrees with an explicit label", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			labels:     []string{types.BalloonLabel + "=256"},
+			balloonMib: 256, balloonSet: true,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "256", spec.Annotations.Labels[types.BalloonLabel])
+	})
+
+	t.Run("a conflicting explicit label is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			labels:     []string{types.BalloonLabel + "=128"},
+			balloonMib: 256, balloonSet: true,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib 256")
+		assert.Contains(t, err.Error(), `"128"`)
+	})
+
+	t.Run("zero target is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			balloonMib: 0, balloonSet: true,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib 0")
+		assert.Contains(t, err.Error(), "positive")
+	})
+
+	t.Run("target not smaller than the memory is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			memory: "512M", balloonMib: 512, balloonSet: true,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib 512")
+		assert.Contains(t, err.Error(), "memory size 512")
+	})
+}
+
+// TestBalloonLabelValue_Validation pins the two validation errors directly: a
+// non-positive target and a target that is not smaller than the VM's memory.
+// Both name the offending value, and neither ever produces a label value.
+func TestBalloonLabelValue_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		mib     int64
+		set     bool
+		memMib  int64
+		want    string
+		wantErr []string
+	}{
+		{name: "unset adds nothing", set: false, memMib: 512, want: ""},
+		{name: "valid target", mib: 256, set: true, memMib: 512, want: "256"},
+		{name: "zero rejected", mib: 0, set: true, memMib: 512, wantErr: []string{"--balloon-mib 0", "positive"}},
+		{name: "negative rejected", mib: -1, set: true, memMib: 512, wantErr: []string{"--balloon-mib -1", "positive"}},
+		{name: "equal to memory rejected", mib: 512, set: true, memMib: 512, wantErr: []string{"--balloon-mib 512", "memory size 512"}},
+		{name: "larger than memory rejected", mib: 2048, set: true, memMib: 1024, wantErr: []string{"--balloon-mib 2048", "memory size 1024"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := balloonLabelValue(tc.mib, tc.set, tc.memMib)
+			if len(tc.wantErr) > 0 {
+				require.Error(t, err)
+				for _, want := range tc.wantErr {
+					assert.Contains(t, err.Error(), want)
+				}
+				assert.Empty(t, got, "a rejected target must not produce a label value")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestServiceMemoryMib pins the size a service's --balloon-mib is validated
+// against: the --memory value (0 means unset) floored at the platform minimum
+// the daemon's translator applies.
+func TestServiceMemoryMib(t *testing.T) {
+	tests := []struct {
+		name  string
+		bytes int64
+		want  int64
+	}{
+		{name: "unset", bytes: 0, want: 512},
+		{name: "below the floor", bytes: 256 * 1024 * 1024, want: 512},
+		{name: "at the floor", bytes: 512 * 1024 * 1024, want: 512},
+		{name: "above the floor", bytes: 2 * 1024 * 1024 * 1024, want: 2048},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, serviceMemoryMib(tc.bytes))
+		})
+	}
+}
