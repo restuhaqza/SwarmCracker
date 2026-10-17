@@ -3,8 +3,8 @@ package swarmkit
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"testing"
 
@@ -96,9 +96,15 @@ func (f *fakeCgroupManager) snapshot() (created []cgroupCreate, added []cgroupAd
 // without ever launching a VM.
 func cgroupTestVMM(t *testing.T, mgr cgroupManager) *VMMManager {
 	t.Helper()
+	// A short path matters: Unix domain sockets are capped at ~108 bytes and
+	// t.TempDir() embeds the (long) test name.
+	socketDir, err := os.MkdirTemp("", "sckcg")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+
 	return &VMMManager{
 		firecrackerPath: "/nonexistent/firecracker-binary",
-		socketDir:       filepath.Join(t.TempDir(), "sockets"),
+		socketDir:       socketDir,
 		cgroupMgr:       mgr,
 		processes:       make(map[string]*exec.Cmd),
 		processWaits:    make(map[string]*processWait),
@@ -438,7 +444,7 @@ func TestStartWithJailer_RejectsCpusetBeforeJailerStart(t *testing.T) {
 	assert.Equal(t, int64(4_000_000), created[0].limits.CPUQuotaUs,
 		"the jailed path falls back to the VMConfig size")
 	assert.Equal(t, int64(1024*1024*1024)+types.CgroupMemoryHeadroom, created[0].limits.MemoryMax)
-	assert.Equal(t, "1", created[0].limits.CpusetCPUs)
+	assert.Equal(t, "0-1", created[0].limits.CpusetCPUs)
 	assert.Equal(t, []string{"task-jailer-cpuset"}, removed)
 }
 
