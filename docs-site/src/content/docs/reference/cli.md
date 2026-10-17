@@ -152,6 +152,7 @@ Service (replicated microVM) management.
 | `--replicas` | `1` | Number of replicas |
 | `--cpu` | — | CPU limit (cores, e.g. `1.5`) |
 | `--memory` | — | Memory limit (e.g. `512M`, `1G`) |
+| `--balloon-mib` | — | Memory-balloon target in MiB (positive integer, less than the VM's memory; see [Memory Balloon](/guides/advanced/#memory-balloon)) |
 | `--disk` | content-based | Minimum VM rootfs size (e.g. `10G`); adds the `swarmcracker.disk` service label |
 | `--env` / `-e` | — | Environment variables |
 | `--command` | — | Override the container command |
@@ -231,6 +232,8 @@ mapping is released when the service is removed or scaled down. See
 
 `--disk` sets a **minimum** rootfs size. By default the rootfs is sized from the image content plus 50% overhead (floor 100 MB); with `--disk 10G` it is grown to at least 10 GB, leaving the rest as free space in the guest. The prepared rootfs is keyed by image, so requesting a larger disk rebuilds that image's rootfs (and it is not shrunk again by a later smaller request).
 
+`--balloon-mib <int>` configures a **virtio-balloon device** that lets the node reclaim up to `<int>` MiB of the guest's memory. The unit is MiB — an explicit integer, not a `512m` size string — and the value must be a **positive integer smaller than the VM's memory limit**; an invalid value is rejected with an error naming both numbers, before any request is sent. Omitting the flag means no balloon; an explicit `--balloon-mib 0` is rejected as invalid rather than treated as "no balloon" (the flag exists only to configure a device). The target travels to the node as the service label `swarmcracker.balloon`, so combining `--balloon-mib` with a `--label swarmcracker.balloon=<n>` that **disagrees** is refused rather than resolved silently. The device is created before the VM boots, is configured with `deflate_on_oom: true`, and only takes effect when the guest kernel ships the virtio-balloon driver — see [Memory Balloon](/guides/advanced/#memory-balloon).
+
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
@@ -248,7 +251,7 @@ invalid value is **rejected** (`--health-retries 0`, `--health-interval 0s`), as
 is any `--health-*` flag supplied without `--health-cmd`; no flag is silently
 ignored.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
@@ -257,6 +260,11 @@ unchanged. `service scale <service> 0` always scales to zero.
 service's existing published ports (it errors if the service has none).
 `service inspect` prints the published ports and, for ingress services, the
 service VIP.
+`--balloon-mib` on `service update` validates a new target against the memory the
+updated task will carry — the `--memory-limit` given on the same command, else
+the limit already on the service — and sets the `swarmcracker.balloon` label, so
+the change takes effect on the task SwarmKit starts next (the device cannot be
+reconfigured in place).
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc`, `--health-port`, `--no-health` for `ps`.
 
 `service ps` (and `task ls`) print a `HEALTH` column. It is the **live**
@@ -400,11 +408,14 @@ Direct Firecracker microVM management.
 | `--name` | `-n` | auto | VM name |
 | `--cpu` | — | `1` | vCPUs |
 | `--memory` | `-m` | `512` | Memory (MB) |
+| `--balloon-mib` | — | — | Memory-balloon target in MiB (positive integer, less than `--memory`; see [Memory Balloon](/guides/advanced/#memory-balloon)) |
 | `--network` | — | — | Network to attach |
 | `--detach` | `-d` | `false` | Detached mode |
 | `--env` | `-e` | — | Environment variables |
 | `--golden` | — | — | Boot a prebuilt golden image (`name` or `name@version`) instead of an OCI image |
 | `--golden-dir` | — | `<rootfs-dir>/golden` | Directory containing golden image artifacts |
+
+`vm create --balloon-mib <int>` configures a virtio-balloon target on the VM, with the same MiB units and validation as `service create --balloon-mib` (a positive integer smaller than `--memory`, rejected before anything is created). It is carried on the task as the `swarmcracker.balloon` annotation; a direct `vm create` VM does **not** report the target as a Prometheus series (see [the metric](/guides/operations/#metrics)).
 
 `vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**. `vm exec` flags: `--socket-dir` (default `/var/run/firecracker`), `-i`/`--interactive`, `-t`/`--tty`, `-e`/`--env` (`K=V`, repeatable), `-w`/`--workdir`; everything after `--` is the guest command, its exit code becomes the CLI's exit code, and `-i` without `-t` only emits a warning. `vm cp` flags: `--socket-dir`, `--mode` (host→guest destination mode, default `0644`); exactly one argument carries the `<vm>:` prefix and only regular files are supported.
 

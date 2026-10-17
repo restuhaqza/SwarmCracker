@@ -1,9 +1,9 @@
 ---
 title: "Advanced Topics"
-description: "Rolling updates, multi-arch, init systems, build from source."
+description: "Rolling updates, memory balloon, multi-arch, init systems, build from source."
 ---
 
-> Rolling updates, multi-arch, init systems, build from source.
+> Rolling updates, memory balloon, multi-arch, init systems, build from source.
 
 ---
 
@@ -40,6 +40,78 @@ SwarmKit controls update behavior (not SwarmCracker):
 | Delay | 0s | Wait between batches |
 | Monitor | 5s | Verify task stability |
 | Failure Action | pause | On failure: pause/continue/rollback |
+
+---
+
+## Memory Balloon
+
+A service and a `vm create` VM can declare a **virtio-balloon** target: how much
+guest memory the node is allowed to reclaim while the VM runs. It trims a VM's
+resident memory under host pressure; it does not let a VM grow beyond its memory
+limit.
+
+```bash
+# A 1 GiB VM that can give back up to 256 MiB
+swarmcracker service create --name cache --image redis:7 \
+    --memory 1G --balloon-mib 256
+
+# Direct VMs take the same flag
+swarmcracker vm create --memory 1024 --balloon-mib 256 alpine:latest
+
+# Change the target on a running service (rolls the task), or remove it
+swarmcracker service update cache --balloon-mib 384
+swarmcracker service update cache --balloon-mib 0
+```
+
+### Units and validation
+
+`--balloon-mib` is an integer count of **MiB**, not a size string (`256`, not
+`256m`). It must be a **positive integer smaller than the VM's memory limit**: a
+target at or above the memory can never be honoured, so the request is rejected
+with an error naming both numbers — before the service is created or the VM is
+prepared. A service's memory limit is floored at the platform minimum of 512 MiB
+when the target is validated, matching the size the node will actually boot.
+
+On `service create` and `vm create` the flag is optional; an omitted flag means
+no balloon device. Because the flag exists only to configure one, an explicit
+`--balloon-mib 0` is rejected as invalid rather than read as "no balloon". On
+`service update` the flag is **tri-state**: omitting it keeps the service's
+current target, a value replaces it, and `--balloon-mib 0` removes it. An update
+validates a new target against the memory the task will get — the
+`--memory-limit` given on the same command, else the limit already on the
+service.
+
+### The device, and when it takes effect
+
+The balloon is created **before the VM boots** (`PUT /balloon` runs before
+`InstanceStart`), and Firecracker rejects the request once a VM is running. It
+therefore **cannot be added to a running VM**: enable it when the VM is created,
+or let `service update` roll the task with the new target.
+
+The device is configured with **`deflate_on_oom: true`**, so when the guest comes
+under memory pressure it can take the ballooned pages back instead of being
+OOM-killed — reclamation is cooperative, not a hard cap. Statistics polling is
+left off.
+
+The balloon only takes effect if the **guest kernel has the virtio-balloon
+driver**. If it does not, the device still exists on the host side, but the
+guest's memory use is unchanged — the guest has no way to hand pages back. Check
+the image's kernel before relying on the flag.
+
+A service that does not declare a balloon gets **no balloon key at all**, so its
+VM config and the requests sent to Firecracker are byte-identical to a build
+without the feature.
+
+### How the target reaches the node
+
+For a service the target travels as the **`swarmcracker.balloon` service label**,
+which SwarmKit copies onto each task and the node reads when it translates the
+task into a VM config (a `vm create` VM carries it as a task annotation instead).
+You can set that label directly with `--label swarmcracker.balloon=<n>`, but
+`--balloon-mib` and a `swarmcracker.balloon` label that **disagree** are refused
+rather than resolved silently; a label whose value agrees is accepted. A hand-set
+label bypasses the CLI's check and is validated by the node at translation time,
+where an invalid value fails the task loudly.
 
 ---
 
