@@ -1,9 +1,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,10 +22,44 @@ func TestVMCreateBalloonFlag(t *testing.T) {
 	assert.Contains(t, cmd.UsageString(), "--balloon-mib")
 }
 
+// writeBalloonTestConfig writes a minimal, valid configuration to a fresh temp
+// directory and returns its path. The command test passes it explicitly through
+// the global --config flag so it never depends on the ambient
+// /etc/swarmcracker/config.yaml: where that file is absent (CI), `vm create`
+// otherwise fails while loading configuration and never reaches the balloon
+// validation under test.
+//
+// The contents are the smallest a config needs to load and validate: the
+// version marker, the two paths Validate requires, and nothing else — the
+// loader fills the remaining fields from SetDefaults. It is not a real host
+// config, and it is only ever read.
+func writeBalloonTestConfig(t *testing.T) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := "version: 1\nexecutor:\n  kernel_path: /var/lib/swarmcracker/vmlinux\n  rootfs_dir: /var/lib/swarmcracker/rootfs\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+// newRootWithConfig mirrors the slice of the real CLI's root that `vm create`
+// depends on: the global persistent --config flag (registered on the root in
+// main.go) plus the vm command group. Driving the flag — rather than letting the
+// command fall back to the host's default path — is what makes the test below
+// host-independent.
+func newRootWithConfig() *cobra.Command {
+	root := &cobra.Command{Use: "swarmcracker"}
+	root.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Path to configuration file (default: /etc/swarmcracker/config.yaml)")
+	root.AddCommand(newVMCommand())
+	return root
+}
+
 // TestVMCreateBalloonRejectedBeforeAnythingIsCreated verifies the two validation
 // errors fire from the command itself, before any VM is created: a non-positive
 // target, and a target that is not smaller than the VM's memory (both numbers
-// named).
+// named). The configuration is supplied explicitly via --config so the test
+// exercises the same code path on any host, whether or not the default config
+// file exists.
 func TestVMCreateBalloonRejectedBeforeAnythingIsCreated(t *testing.T) {
 	tests := []struct {
 		name string
@@ -53,10 +90,10 @@ func TestVMCreateBalloonRejectedBeforeAnythingIsCreated(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cmd := newVMCreateCommand()
+			cmd := newRootWithConfig()
 			cmd.SilenceUsage = true
 			cmd.SilenceErrors = true
-			cmd.SetArgs(tc.args)
+			cmd.SetArgs(append([]string{"vm", "create", "--config", writeBalloonTestConfig(t)}, tc.args...))
 
 			err := cmd.Execute()
 			require.Error(t, err)
