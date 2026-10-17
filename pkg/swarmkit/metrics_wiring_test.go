@@ -298,9 +298,13 @@ func TestController_CleanSelfExitRecordsStop(t *testing.T) {
 	assert.Equal(t, crashBefore, testutil.ToFloat64(
 		swarmcrackermetrics.VMCrashes.WithLabelValues(instance, service, "unexpected_exit")),
 		"a clean exit is not a crash")
-	assert.Equal(t, 0, countSamples(t, "swarmcracker_vm_crashes_total",
-		map[string]string{"instance": instance}),
-		"a clean exit must leave the crash counter untouched")
+	// NB: the WithLabelValues call above instantiates that series (at 0), so a
+	// countSamples check on vm_crashes_total would see it rather than prove the
+	// absence of a crash. VMsTotal{status="crashed"} is the series only a crash
+	// writer touches, and nothing in this test has created it.
+	assert.Equal(t, 0, countSamples(t, "swarmcracker_vms_total",
+		map[string]string{"instance": instance, "status": "crashed"}),
+		"a clean exit must not be counted as a crashed VM")
 	assert.Equal(t, 0.0, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
 		"vms_running must equal started-1 (1-1): a clean exit is not a leak")
 }
