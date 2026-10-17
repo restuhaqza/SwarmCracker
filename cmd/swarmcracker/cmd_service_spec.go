@@ -10,6 +10,7 @@ import (
 
 	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
@@ -37,6 +38,12 @@ type serviceCreateOptions struct {
 	// rather than mistaken for "unset" and silently ignored.
 	balloonMib int
 	balloonSet bool
+
+	// cpuset is --cpuset: the host CPUs the VM is pinned to (a Linux cpulist).
+	// cpusetSet records whether the flag was given at all, so an explicit
+	// value is never mistaken for "unset" and silently dropped.
+	cpuset    string
+	cpusetSet bool
 
 	// withRegistryAuth is --with-registry-auth (#44). registryAuth holds the
 	// resolved base64 X-Registry-Auth payload for the image; createService fills
@@ -161,6 +168,29 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 			return nil, fmt.Errorf("--balloon-mib %d conflicts with the %s label %q already set via --label", o.balloonMib, types.BalloonLabel, existing)
 		}
 		svcLabels[types.BalloonLabel] = value
+	}
+
+	// A cpuset pin travels as the swarmcracker.cpuset service label, which the
+	// executor copies onto each task and the cgroup applies. Validate the list
+	// here so a malformed request fails before any RPC, and store the canonical
+	// form so what the CLI reports and what the daemon parses never differ. An
+	// unset flag adds nothing at all.
+	if o.cpusetSet {
+		value, err := canonicalCpuset(o.cpuset)
+		if err != nil {
+			return nil, err
+		}
+		if svcLabels == nil {
+			svcLabels = make(map[string]string)
+		}
+		// Mirror --balloon-mib: --label is the lower-level way to request the
+		// same pin, so accept a user-supplied label only when it agrees —
+		// honouring one silently would drop the flag. Presence-based, so a
+		// label explicitly set to the empty value is still a request.
+		if existing, ok := svcLabels[types.CpusetLabel]; ok && existing != value {
+			return nil, fmt.Errorf("--cpuset %q conflicts with the %s label %q already set via --label", o.cpuset, types.CpusetLabel, existing)
+		}
+		svcLabels[types.CpusetLabel] = value
 	}
 
 	if svcLabels[types.GoldenLabel] != "" && (hostname != "" || len(dns) > 0) {
@@ -315,6 +345,13 @@ type serviceUpdateOptions struct {
 	balloonMib int
 	balloonSet bool
 
+	// cpuset/cpusetSet are --cpuset on `service update`: tri-state, so absent
+	// preserves the service's current label, a value pins the VM to those host
+	// CPUs (stored canonically), and an explicit empty value removes the pin
+	// (see updateServiceWithClient).
+	cpuset    string
+	cpusetSet bool
+
 	networks    []string
 	networksSet bool
 
@@ -464,6 +501,20 @@ func balloonLabelValue(balloonMib int64, set bool, memMib int64) (string, error)
 		return "", fmt.Errorf("invalid --balloon-mib %d: must be less than the VM memory size %d MiB", balloonMib, memMib)
 	}
 	return strconv.FormatInt(balloonMib, 10), nil
+}
+
+// canonicalCpuset validates a --cpuset cpulist and returns the canonical form
+// to store (ranges ascending, overlaps/adjacencies merged, no leading zeros).
+// The CLI, the daemon and the jailer then all parse the same string. A
+// malformed or empty value is an error naming the flag and the offending value:
+// the pin would otherwise be stored and only fail, or silently mismatch, at VM
+// start, so the request must be rejected before any RPC.
+func canonicalCpuset(value string) (string, error) {
+	canonical, err := jailer.ParseCPUSet(value)
+	if err != nil {
+		return "", fmt.Errorf("--cpuset %q: %w", value, err)
+	}
+	return canonical, nil
 }
 
 func buildPlacement(constraints, prefs []string) (*api.Placement, error) {

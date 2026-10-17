@@ -385,7 +385,8 @@ type VMMManager struct {
     useJailer       bool
     jailerConfig    *jailer.Config
     jailer          *jailer.Jailer
-    cgroupMgr       *jailer.CgroupManager
+    cgroupMgr       jailer.CgroupOps
+    cgroupErr       error
     processes       map[string]*exec.Cmd
     processWaits    map[string]*processWait
     processMutex    sync.Mutex
