@@ -293,11 +293,27 @@ func enableControllersAt(dir string, controllers []string) error {
 	return nil
 }
 
+// validateResourceLimits rejects limit values that CreateCgroup would otherwise
+// accept and silently skip. Zero means "unset" everywhere; a negative value is
+// never meaningful.
+func validateResourceLimits(limits ResourceLimits) error {
+	if limits.IOWeight < 0 {
+		return fmt.Errorf("invalid IOWeight %d: must be non-negative (0 means unset)", limits.IOWeight)
+	}
+	return nil
+}
+
 // CreateCgroup creates a cgroup with resource limits for a task.
 func (m *CgroupManager) CreateCgroup(taskID string, limits ResourceLimits) error {
 	m.logger.Info().
 		Str("task_id", taskID).
 		Msg("Creating cgroup")
+
+	// Reject unhonourable limits before creating anything, so a bad request
+	// never leaves a partially configured cgroup behind.
+	if err := validateResourceLimits(limits); err != nil {
+		return fmt.Errorf("invalid resource limits for task %s: %w", taskID, err)
+	}
 
 	cgroupPath := filepath.Join(m.basePath, taskID)
 
@@ -641,7 +657,8 @@ func (m *CgroupManager) setMemoryLimits(cgroupPath string, limits ResourceLimits
 // setIOLimits configures IO resource limits.
 func (m *CgroupManager) setIOLimits(cgroupPath string, limits ResourceLimits) error {
 	// Set IO weight. The cgroup v2 format is "default <weight>"; a bare number
-	// is rejected by the kernel.
+	// is rejected by the kernel. Zero means "unset" here; CreateCgroup rejects
+	// negative weights up front, so this gate never silently drops a value.
 	if limits.IOWeight > 0 {
 		ioWeightPath := filepath.Join(cgroupPath, "io.weight")
 		weight := fmt.Sprintf("default %d", limits.IOWeight)

@@ -1,6 +1,7 @@
 package jailer
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -686,6 +687,49 @@ func TestCreateCgroup_InvalidCpusetRejected(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.want)
 			assert.Contains(t, err.Error(), "invalid cpuset")
+		})
+	}
+}
+
+// TestCreateCgroup_IOWeightValidation covers the IOWeight guard: a negative
+// value is rejected before anything is created, while 0 stays "unset" (no
+// io.weight written) and a positive value is written verbatim.
+func TestCreateCgroup_IOWeightValidation(t *testing.T) {
+	tests := []struct {
+		name     string
+		weight   int
+		wantErr  bool
+		wantFile string // "" means io.weight must not be written
+	}{
+		{name: "zero is unset", weight: 0, wantFile: ""},
+		{name: "positive is written", weight: 500, wantFile: "default 500"},
+		{name: "negative rejected", weight: -1, wantErr: true},
+		{name: "large negative rejected", weight: -500, wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mgr, base := newTempCgroupManager(t)
+			taskID := "task-io-weight"
+
+			err := mgr.CreateCgroup(taskID, ResourceLimits{IOWeight: tt.weight})
+			if !tt.wantErr {
+				require.NoError(t, err)
+				ioWeightPath := filepath.Join(base, taskID, "io.weight")
+				if tt.wantFile == "" {
+					_, statErr := os.Stat(ioWeightPath)
+					assert.True(t, os.IsNotExist(statErr), "io.weight must not be written when IOWeight is 0")
+				} else {
+					assert.Equal(t, tt.wantFile, readFileString(t, ioWeightPath))
+				}
+				return
+			}
+
+			require.Error(t, err, "a negative IOWeight must be rejected, not skipped")
+			assert.Contains(t, err.Error(), "IOWeight", "error must name the field")
+			assert.Contains(t, err.Error(), fmt.Sprintf("%d", tt.weight), "error must name the offending value")
+			_, statErr := os.Stat(filepath.Join(base, taskID))
+			assert.True(t, os.IsNotExist(statErr), "a rejected request must not create a cgroup directory")
 		})
 	}
 }
