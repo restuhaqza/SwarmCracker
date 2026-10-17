@@ -143,7 +143,10 @@ type Mount struct {
 
 // ResourceRequirements specifies resource limits.
 type ResourceRequirements struct {
-	Limits       *Resources
+	// Limits is the hard cap the user declared (service create --cpu/--memory).
+	Limits *Resources
+	// Reservations is the soft reservation, honoured as a fallback source when
+	// no hard cap is declared.
 	Reservations *Resources
 }
 
@@ -151,6 +154,49 @@ type ResourceRequirements struct {
 type Resources struct {
 	NanoCPUs    int64
 	MemoryBytes int64
+}
+
+// ResolveVMSize returns the vCPU count and memory (MiB) a VM should be booted
+// with. A microVM is a hard allocation, so it is sized from the hard cap
+// (Limits) when the caller declared one, else the soft reservation
+// (Reservations), else defaultVCPUs/defaultMemoryMB.
+//
+// A declared value is honoured as declared: there is no silent floor, so an
+// explicit 256 MiB request yields a 256 MiB VM. A value that is absent,
+// negative, or too small to be a whole MiB (or a whole vCPU) leaves the
+// corresponding default in place, so a caller that declared nothing keeps the
+// defaults unchanged.
+//
+// Both translators (pkg/swarmkit and pkg/translator) size VMs through this
+// helper so their answers can never disagree.
+func ResolveVMSize(res *ResourceRequirements, defaultVCPUs, defaultMemoryMB int) (vcpus int, memoryMB int) {
+	vcpus, memoryMB = defaultVCPUs, defaultMemoryMB
+	if res == nil {
+		return vcpus, memoryMB
+	}
+
+	src := res.Limits
+	if src == nil {
+		src = res.Reservations
+	}
+	if src == nil {
+		return vcpus, memoryMB
+	}
+
+	if src.NanoCPUs > 0 {
+		vcpus = int(src.NanoCPUs / 1e9)
+		if vcpus < 1 {
+			vcpus = 1
+		}
+	}
+
+	// Integer division discards sub-MiB remainders; a value too small to be a
+	// whole MiB is treated as undeclared and keeps the default.
+	if mb := int(src.MemoryBytes / (1024 * 1024)); src.MemoryBytes > 0 && mb > 0 {
+		memoryMB = mb
+	}
+
+	return vcpus, memoryMB
 }
 
 // BalloonConfig describes the virtio-balloon device configured for a VM.

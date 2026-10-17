@@ -1083,3 +1083,44 @@ func TestUpdateServiceBalloon_TriState(t *testing.T) {
 		assert.Zero(t, client.updateCalls)
 	})
 }
+
+// serviceWithReservationOnly builds a one-container service whose size lives
+// only in Resources.Reservations — the shape an API client can create, which
+// this CLI itself never does (it writes Limits).
+func serviceWithReservationOnly(memoryBytes int64) *api.Service {
+	svc := serviceWithBalloon("", 0)
+	svc.Spec.Task.Resources = &api.ResourceRequirements{
+		Reservations: &api.Resources{MemoryBytes: memoryBytes},
+	}
+	return svc
+}
+
+// TestUpdateServiceBalloon_ReservationOnlyMemory pins that `service update`
+// validates --balloon-mib against the effective size of the current spec,
+// including a size that lives only in Resources.Reservations. Before the fix
+// this path read Limits alone and fell back to the 512 MiB default, so it could
+// accept a target the node (which resolves Reservations too) would refuse.
+func TestUpdateServiceBalloon_ReservationOnlyMemory(t *testing.T) {
+	t.Run("target above the reserved size is rejected before the RPC", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithReservationOnly(1024 * 1024 * 1024)}
+		err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			balloonMib: 2048, balloonSet: true,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib 2048")
+		assert.Contains(t, err.Error(), "memory size 1024")
+		assert.Zero(t, client.updateCalls, "an invalid target must not send the update RPC")
+		assert.Nil(t, client.updatedSpec)
+	})
+
+	t.Run("target below the reserved size is accepted", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithReservationOnly(1024 * 1024 * 1024)}
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			balloonMib: 512, balloonSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		assert.Equal(t, "512", client.updatedSpec.Annotations.Labels[types.BalloonLabel])
+	})
+}

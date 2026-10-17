@@ -285,18 +285,18 @@ func TestTranslateResourceLimits(t *testing.T) {
 			expectedMemMB: 512,
 		},
 		{
-			name:          "very small nanoCPUs floors to 1 vCPU",
+			name:          "very small nanoCPUs floors to 1 vCPU but memory is honoured",
 			nanoCPUs:      1,
 			memoryBytes:   256 * 1024 * 1024, // 256MB
 			expectedVCPUs: 1,                 // minimum enforced
-			expectedMemMB: 512,               // minimum enforced
+			expectedMemMB: 256,               // honoured as declared, no floor
 		},
 		{
-			name:          "memory below minimum floors to 512MB",
+			name:          "memory below 512 MiB is honoured as declared",
 			nanoCPUs:      1e9,
 			memoryBytes:   256 * 1024 * 1024, // 256MB
 			expectedVCPUs: 1,
-			expectedMemMB: 512, // minimum enforced
+			expectedMemMB: 256, // the old silent 512 floor is gone
 		},
 		{
 			name:          "zero resources use defaults",
@@ -306,7 +306,7 @@ func TestTranslateResourceLimits(t *testing.T) {
 			expectedMemMB: 512, // default
 		},
 		{
-			name:          "256MB memory (exact minimum)",
+			name:          "512 MiB memory is honoured as declared",
 			nanoCPUs:      1e9,
 			memoryBytes:   512 * 1024 * 1024, // 512MB
 			expectedVCPUs: 1,

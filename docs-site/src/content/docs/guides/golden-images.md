@@ -121,8 +121,10 @@ format for building both.
   (`init=/init` in one path), plus `ip=<ip>::<gw>:<mask>::eth0:off`.
 - Exactly **one** drive is created: `task.ID` -> the rootfs `.ext4`,
   `is_root_device: true`, `is_read_only: false`.
-- `machine-config` is sized from SwarmKit `Resources.Reservations` (min 1 vCPU /
-  512 MiB).
+- `machine-config` is sized from the task's declared resources via
+  `pkg/types.ResolveVMSize`, in the order `Resources.Limits` →
+  `Resources.Reservations` → the `1 vCPU / 512 MiB` defaults. A declared value is
+  honoured exactly — there is no `512 MiB` floor.
 
 ### 2.3 What the snapshot package adds
 

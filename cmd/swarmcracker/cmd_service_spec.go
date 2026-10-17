@@ -146,7 +146,7 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 	// which the executor copies onto each task. Validate it here — against the
 	// memory the VM will get — so an invalid request fails before any RPC, and
 	// an unset flag adds nothing at all.
-	if value, err := balloonLabelValue(int64(o.balloonMib), o.balloonSet, serviceMemoryMib(memoryBytes)); err != nil {
+	if value, err := balloonLabelValue(int64(o.balloonMib), o.balloonSet, serviceMemoryMib(memoryBytes, nil)); err != nil {
 		return nil, err
 	} else if value != "" {
 		if svcLabels == nil {
@@ -403,20 +403,47 @@ func normalizeServiceMode(m string) (string, error) {
 	}
 }
 
-// minServiceMemoryMib is the memory size the daemon's service translator falls
-// back to when a task carries no memory reservation, and the floor it applies to
-// a smaller one (pkg/swarmkit/translator.go).
-const minServiceMemoryMib = 512
+// defaultServiceMemoryMib is the memory size (MiB) a service's VM gets when no
+// --memory is declared — the same default the daemon's translator applies
+// (pkg/swarmkit/translator.go via pkg/types.ResolveVMSize). It is a default,
+// not a floor: an explicit --memory below it is honoured as declared, because
+// the daemon no longer applies a floor either.
+const defaultServiceMemoryMib = 512
 
-// serviceMemoryMib is the VM memory size in MiB a service will get: the parsed
-// --memory value (0 when the flag is unset) floored at the platform minimum.
-// This mirrors the daemon-side translator, which the CLI cannot query, so an
-// invalid --balloon-mib is caught here instead of after the service is created.
-func serviceMemoryMib(memoryBytes int64) int64 {
-	if mib := memoryBytes / (1024 * 1024); mib > minServiceMemoryMib {
+// serviceMemoryMib resolves the effective VM memory size in MiB that
+// --balloon-mib is validated against. A --memory declared by this invocation
+// (already parsed to bytes) replaces Limits, so it wins when whole-MiB; when
+// none was declared the size is resolved from the supplied task resources
+// (res) exactly as the daemon does, via pkg/types.ResolveVMSize
+// (Limits -> Reservations -> defaultServiceMemoryMib). Because both the command
+// and the node resolve through the same helper, this path cannot accept a
+// balloon target the node then refuses. A sub-MiB declared value keeps the
+// default, matching ResolveVMSize. Callers with no existing spec (create) pass
+// res == nil.
+func serviceMemoryMib(memoryBytes int64, res *api.ResourceRequirements) int64 {
+	if mib := memoryBytes / (1024 * 1024); mib > 0 {
 		return mib
 	}
-	return minServiceMemoryMib
+	_, memMib := types.ResolveVMSize(vmResourceRequirements(res), 1, defaultServiceMemoryMib)
+	return int64(memMib)
+}
+
+// vmResourceRequirements adapts a SwarmKit api.ResourceRequirements to the
+// SwarmCracker types.ResourceRequirements that types.ResolveVMSize consumes, so
+// the CLI and the daemon resolve a VM's size from the same two arms (Limits
+// then Reservations) with no re-implementation to drift.
+func vmResourceRequirements(res *api.ResourceRequirements) *types.ResourceRequirements {
+	if res == nil {
+		return nil
+	}
+	out := &types.ResourceRequirements{}
+	if res.Limits != nil {
+		out.Limits = &types.Resources{NanoCPUs: res.Limits.NanoCPUs, MemoryBytes: res.Limits.MemoryBytes}
+	}
+	if res.Reservations != nil {
+		out.Reservations = &types.Resources{NanoCPUs: res.Reservations.NanoCPUs, MemoryBytes: res.Reservations.MemoryBytes}
+	}
+	return out
 }
 
 // balloonLabelValue validates --balloon-mib against the VM's memory size (MiB)

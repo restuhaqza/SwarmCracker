@@ -651,6 +651,41 @@ func TestBuildServiceSpec_Balloon(t *testing.T) {
 		assert.Contains(t, err.Error(), "--balloon-mib 512")
 		assert.Contains(t, err.Error(), "memory size 512")
 	})
+
+	// A target that fits the old 512 MiB floor but not the declared 256 MiB VM
+	// must be rejected before any RPC: buildServiceSpec is the pre-RPC validator
+	// and it now validates against the size the node will actually boot (#95).
+	t.Run("a target above a small declared VM is rejected naming both numbers", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			memory: "256m", balloonMib: 300, balloonSet: true,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib 300")
+		assert.Contains(t, err.Error(), "memory size 256")
+	})
+
+	// ...while a target that is smaller than the small declared VM is accepted.
+	t.Run("a target below a small declared VM is accepted", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			memory: "256m", balloonMib: 128, balloonSet: true,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, "128", spec.Annotations.Labels[types.BalloonLabel])
+	})
+
+	// With no --memory the VM keeps the 512 MiB default, so that is still what
+	// the balloon is validated against.
+	t.Run("without --memory the 512 MiB default is the baseline", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1,
+			balloonMib: 512, balloonSet: true,
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--balloon-mib 512")
+		assert.Contains(t, err.Error(), "memory size 512")
+	})
 }
 
 // TestBalloonLabelValue_Validation pins the two validation errors directly: a
@@ -691,23 +726,45 @@ func TestBalloonLabelValue_Validation(t *testing.T) {
 }
 
 // TestServiceMemoryMib pins the size a service's --balloon-mib is validated
-// against: the --memory value (0 means unset) floored at the platform minimum
-// the daemon's translator applies.
+// against: the declared --memory value when whole-MiB, else the size resolved
+// from the current task resources the same way the daemon does
+// (types.ResolveVMSize: Limits then Reservations then the 512 MiB default). A
+// declared 256 MiB stays 256 MiB — there is no floor.
 func TestServiceMemoryMib(t *testing.T) {
 	tests := []struct {
 		name  string
 		bytes int64
+		res   *api.ResourceRequirements
 		want  int64
 	}{
-		{name: "unset", bytes: 0, want: 512},
-		{name: "below the floor", bytes: 256 * 1024 * 1024, want: 512},
-		{name: "at the floor", bytes: 512 * 1024 * 1024, want: 512},
-		{name: "above the floor", bytes: 2 * 1024 * 1024 * 1024, want: 2048},
+		{name: "unset with no resources uses the default", bytes: 0, want: 512},
+		{name: "a declared 256 MiB is honoured, not floored", bytes: 256 * 1024 * 1024, want: 256},
+		{name: "a declared 512 MiB stays 512", bytes: 512 * 1024 * 1024, want: 512},
+		{name: "a declared 2 GiB is honoured", bytes: 2 * 1024 * 1024 * 1024, want: 2048},
+		{name: "a sub-MiB declared value keeps the default", bytes: 1024, want: 512},
+		{
+			name: "an existing Limits size is resolved when no --memory is given",
+			res:  &api.ResourceRequirements{Limits: &api.Resources{MemoryBytes: 256 * 1024 * 1024}},
+			want: 256,
+		},
+		{
+			name: "a size living only in Reservations is resolved",
+			res:  &api.ResourceRequirements{Reservations: &api.Resources{MemoryBytes: 1024 * 1024 * 1024}},
+			want: 1024,
+		},
+		{
+			name: "Limits wins over Reservations",
+			res: &api.ResourceRequirements{
+				Limits:       &api.Resources{MemoryBytes: 256 * 1024 * 1024},
+				Reservations: &api.Resources{MemoryBytes: 1024 * 1024 * 1024},
+			},
+			want: 256,
+		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, serviceMemoryMib(tc.bytes))
+			assert.Equal(t, tc.want, serviceMemoryMib(tc.bytes, tc.res))
 		})
 	}
 }
