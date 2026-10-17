@@ -64,6 +64,22 @@ func TestRecordVMBootDuration(t *testing.T) {
 	count := testutil.CollectAndCount(VMBootDuration, "swarmcracker_vm_boot_duration_seconds")
 	assert.Greater(t, count, 0, "should have at least one histogram sample")
 }
+
+func TestRecordVMBalloon(t *testing.T) {
+	RecordVMBalloon("balloon-instance", "task-1", "web", 256)
+
+	// The gauge carries exactly the configured target, not an approximation.
+	assert.Equal(t, 256.0,
+		testutil.ToFloat64(VMBalloonMB.WithLabelValues("balloon-instance", "task-1", "web")))
+
+	// Each VM is tracked independently: a second VM's target does not disturb
+	// the first's, and re-recording a VM overwrites (it is a gauge, not a sum).
+	RecordVMBalloon("balloon-instance", "task-2", "web", 1024)
+	assert.Equal(t, 256.0,
+		testutil.ToFloat64(VMBalloonMB.WithLabelValues("balloon-instance", "task-1", "web")))
+	assert.Equal(t, 1024.0,
+		testutil.ToFloat64(VMBalloonMB.WithLabelValues("balloon-instance", "task-2", "web")))
+}
 func TestMetricsAreRegistered(t *testing.T) {
 	// Verify all metrics are registered with the default prometheus registry
 	metrics := []prometheus.Collector{
@@ -76,6 +92,7 @@ func TestMetricsAreRegistered(t *testing.T) {
 		ManagerHealth,
 		RaftHealth,
 		DiskUsageBytes,
+		VMBalloonMB,
 		VMCPU,
 		VMMemory,
 		VMNetRx,

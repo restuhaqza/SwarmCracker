@@ -903,10 +903,42 @@ func (c *Controller) startVM(ctx context.Context) error {
 	swarmcrackermetrics.RecordVMBootDuration(c.config.Hostname, service, bootDuration)
 	swarmcrackermetrics.RecordVMStarted(c.config.Hostname, service)
 
+	// A VM that requested a memory balloon records its configured target. The
+	// annotation is the same carrier the translator read to build the device, so
+	// the series reflects exactly what was configured. A VM without a balloon
+	// emits no series at all: a zero-valued series would carry no signal.
+	// Translation validated the value before the VM started, so an unparseable
+	// annotation cannot normally reach here; if one did, no series is invented
+	// for it (the translator would already have failed the task loudly).
+	if mib, ok := balloonMibFromTask(task); ok {
+		swarmcrackermetrics.RecordVMBalloon(c.config.Hostname, task.ID, service, float64(mib))
+	}
+
 	c.logger.Info().
 		Float64("boot_duration_seconds", bootDuration).
 		Msg("Task started")
 	return nil
+}
+
+// balloonMibFromTask returns the memory-balloon target a task was configured
+// with, in MiB, and whether one is configured at all. It reads the same task
+// annotation the translator reads, so the value reported by any caller matches
+// the device that was built for the VM. The bool is false for a task with no
+// balloon (or, defensively, an unparseable annotation), so callers can avoid
+// emitting a series that carries no signal.
+func balloonMibFromTask(task *types.Task) (int64, bool) {
+	if task == nil {
+		return 0, false
+	}
+	raw := strings.TrimSpace(task.Annotations[types.BalloonLabel])
+	if raw == "" {
+		return 0, false
+	}
+	mib, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return mib, true
 }
 
 // publishPorts programs host-side forwarding for the task's published ports
