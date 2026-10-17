@@ -9,6 +9,11 @@
 #
 # Loaded by prometheus.yml (rule_files: [alerts.yml]); the names are kept
 # honest by the guard test pkg/metrics/alertrules_test.go.
+#
+# The health rule watches state="failing", not the terminal state="unhealthy":
+# the monitor publishes "unhealthy" and immediately force-stops the VM, and the
+# teardown choke point clears the health series seconds later, so a rule on that
+# state can never satisfy a real `for:`. See the rule's comment for the timing.
 
 groups:
   - name: swarmcracker
@@ -46,15 +51,56 @@ groups:
           description: "{{ $value }} crashes in the last 15 minutes (reason {{ $labels.reason }}). The service cannot stay up."
           runbook: "https://swarmcracker.dev/guides/operations/#container-healthchecks"
 
-      # ── Failure mode 3: a task whose healthcheck is failing ──
-      - alert: SwarmCrackerTaskUnhealthy
-        expr: swarmcracker_vm_health{state="unhealthy"} > 0
-        for: 2m
+      # ── Failure mode 3: a task whose healthcheck keeps failing ──
+      #
+      # RecordVMHealth publishes a one-hot state per service. While a probe keeps
+      # failing but the retries threshold has not been reached, the task is still
+      # RUNNING and the daemon publishes state="failing" on every failed probe
+      # (pkg/swarmkit/health_monitor.go, the `default:` branch). The gauge stays 1
+      # continuously between probes, so it is the sustained signal that a
+      # healthcheck is failing.
+      #
+      # state="unhealthy" is not a workable trigger: the monitor publishes it and
+      # then immediately ForceStops the VM and returns (health_monitor.go:105-116),
+      # and stopHealthMonitor clears all four health series for the task seconds
+      # later. A rule with a real `for:` on the terminal state would therefore
+      # always resolve before it could fire.
+      #
+      # for: 30s is one default probe interval (--health-interval 30s). The gauge
+      # is 1 for as long as probes keep failing, so 30s means "at least two
+      # consecutive failed probes": a single failed probe that the next probe
+      # clears stays 1 for one interval only and cannot fire the alert. At the CLI
+      # defaults (--health-retries 3, --health-start-period 0s) the failing streak
+      # covers (retries-1) intervals = 60s, so the alert fires about one interval
+      # before the VM is force-stopped — while the task is still alive and
+      # reschedulable — and it resolves as soon as the state flips back to
+      # "healthy" or the teardown clears the series. global.evaluation_interval is
+      # set to 15s in prometheus.yml (the built-in default is 1m) so that this
+      # 30s window is actually observed; the guard test pins that coupling.
+      - alert: SwarmCrackerTaskHealthcheckFailing
+        expr: swarmcracker_vm_health{state="failing"} > 0
+        for: 30s
         labels:
           severity: warning
         annotations:
-          summary: "Task {{ $labels.service }} unhealthy on {{ $labels.instance }}"
-          description: "The healthcheck for {{ $labels.service }} has reported unhealthy for 2 minutes."
+          summary: "Task {{ $labels.service }} is failing its healthcheck on {{ $labels.instance }}"
+          description: "The healthcheck for {{ $labels.service }} has failed at least twice in a row and the failing streak is still building. The task is still running; SwarmCracker stops and reschedules it once the retries threshold is reached."
+          runbook: "https://swarmcracker.dev/guides/operations/#container-healthchecks"
+
+      # Terminal-state companion: the last state the monitor publishes before it
+      # stops the VM. Best-effort only — for the reasons above the teardown clears
+      # the series seconds later, so `for: 0s` catches the verdict only if a scrape
+      # and an evaluation happen to land in that gap (they rarely do at a 15s
+      # interval). It is kept so the terminal state is still visible if the stop
+      # path ever stalls; the rule above is the one that fires.
+      - alert: SwarmCrackerTaskUnhealthy
+        expr: swarmcracker_vm_health{state="unhealthy"} > 0
+        for: 0s
+        labels:
+          severity: warning
+        annotations:
+          summary: "Task {{ $labels.service }} is unhealthy on {{ $labels.instance }}"
+          description: "The healthcheck for {{ $labels.service }} exhausted its retries and SwarmCracker is stopping the VM so SwarmKit reschedules the task."
           runbook: "https://swarmcracker.dev/guides/operations/#container-healthchecks"
 
       # ── Failure mode 4: disk pressure on a SwarmCracker path ──

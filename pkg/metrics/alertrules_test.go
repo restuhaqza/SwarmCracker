@@ -7,8 +7,10 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
@@ -97,6 +99,21 @@ var prometheusGeneratedMetrics = map[string]bool{
 	"up": true,
 }
 
+// reLabelEquality matches a plain `name="value"` equality matcher. Regex
+// matchers (=~, !~) and negations (!=) deliberately do not match: only a plain
+// equality pins a literal label value that must exist in the code or the config.
+var reLabelEquality = regexp.MustCompile(`([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"((?:[^"\\]|\\.)*)"`)
+
+// labelEqualities returns, per label name, the literal values an expression
+// requires with a plain `=` matcher.
+func labelEqualities(expr string) map[string][]string {
+	out := map[string][]string{}
+	for _, m := range reLabelEquality.FindAllStringSubmatch(expr, -1) {
+		out[m[1]] = append(out[m[1]], m[2])
+	}
+	return out
+}
+
 // exportedMetricNames returns the metric family names registered with the
 // default Prometheus registry — the registry pkg/metrics declares its series on
 // — so the rule file is checked against the code, not a hand-written list.
@@ -138,16 +155,21 @@ func exportedMetricNames(t *testing.T) map[string]bool {
 
 // ── The rule files ────────────────────────────────────────────────
 
+type alertRule struct {
+	Alert       string            `yaml:"alert"`
+	Expr        string            `yaml:"expr"`
+	For         string            `yaml:"for"`
+	Labels      map[string]string `yaml:"labels"`
+	Annotations map[string]string `yaml:"annotations"`
+
+	// group is the owning group's name, filled in by allRules.
+	group string
+}
+
 type alertRuleFile struct {
 	Groups []struct {
-		Name  string `yaml:"name"`
-		Rules []struct {
-			Alert       string            `yaml:"alert"`
-			Expr        string            `yaml:"expr"`
-			For         string            `yaml:"for"`
-			Labels      map[string]string `yaml:"labels"`
-			Annotations map[string]string `yaml:"annotations"`
-		} `yaml:"rules"`
+		Name  string      `yaml:"name"`
+		Rules []alertRule `yaml:"rules"`
 	} `yaml:"groups"`
 }
 
@@ -161,6 +183,44 @@ func loadAlertRules(t *testing.T) alertRuleFile {
 	require.NoError(t, yaml.Unmarshal(raw, &f))
 	require.NotEmpty(t, f.Groups, "alerts.yml must define at least one group")
 	return f
+}
+
+// prometheusConfig is the subset of prometheus.yml the guard needs: the scrape
+// jobs a rule is allowed to name, and the global evaluation interval that every
+// `for:` is ultimately rounded to.
+type prometheusConfig struct {
+	Global struct {
+		EvaluationInterval string `yaml:"evaluation_interval"`
+	} `yaml:"global"`
+	ScrapeConfigs []struct {
+		JobName string `yaml:"job_name"`
+	} `yaml:"scrape_configs"`
+}
+
+func loadPrometheusConfig(t *testing.T) prometheusConfig {
+	t.Helper()
+
+	raw, err := os.ReadFile(repoPath(t, "infrastructure/observability/prometheus/prometheus.yml"))
+	require.NoError(t, err)
+
+	var cfg prometheusConfig
+	require.NoError(t, yaml.Unmarshal(raw, &cfg))
+	require.NotEmpty(t, cfg.ScrapeConfigs, "prometheus.yml must define at least one scrape job")
+	return cfg
+}
+
+// allRules flattens every rule in the file, keeping the group name for messages.
+func allRules(t *testing.T, f alertRuleFile) []alertRule {
+	t.Helper()
+
+	var out []alertRule
+	for _, g := range f.Groups {
+		for _, r := range g.Rules {
+			r.group = g.Name
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 func TestMetricNamesExtraction(t *testing.T) {
@@ -214,19 +274,17 @@ func TestAlertRulesReferenceOnlyExportedSeries(t *testing.T) {
 
 	ruleCount := 0
 	referenced := map[string]bool{}
-	for _, g := range rules.Groups {
-		for _, r := range g.Rules {
-			ruleCount++
-			require.NotEmptyf(t, r.Expr, "rule %q has no expr", r.Alert)
+	for _, r := range allRules(t, rules) {
+		ruleCount++
+		require.NotEmptyf(t, r.Expr, "rule %q has no expr", r.Alert)
 
-			names := metricNames(r.Expr)
-			require.NotEmptyf(t, names, "rule %q: no metric name extracted from %q", r.Alert, r.Expr)
+		names := metricNames(r.Expr)
+		require.NotEmptyf(t, names, "rule %q: no metric name extracted from %q", r.Alert, r.Expr)
 
-			for _, n := range names {
-				referenced[n] = true
-				assert.Truef(t, registered[n] || prometheusGeneratedMetrics[n],
-					"rule %q references %q, which this repo does not register as a metric", r.Alert, n)
-			}
+		for _, n := range names {
+			referenced[n] = true
+			assert.Truef(t, registered[n] || prometheusGeneratedMetrics[n],
+				"rule %q references %q, which this repo does not register as a metric", r.Alert, n)
 		}
 	}
 
@@ -244,6 +302,103 @@ func TestAlertRulesReferenceOnlyExportedSeries(t *testing.T) {
 	}
 }
 
+// healthStates are the values RecordVMHealth can publish, read straight from the
+// constants the daemon writes into VMHealth.State. A rule matching anything else
+// (a typo like `state="unhealty"`) matches no series the daemon ever produces, so
+// it can never fire even though its metric name is registered.
+var healthStates = map[string]bool{
+	scruntime.HealthStarting:  true,
+	scruntime.HealthHealthy:   true,
+	scruntime.HealthFailing:   true,
+	scruntime.HealthUnhealthy: true,
+}
+
+// TestAlertRulesMatchRealHealthStates closes the hole the registered-name guard
+// leaves: the metric may exist while the label value a rule filters on does not.
+func TestAlertRulesMatchRealHealthStates(t *testing.T) {
+	rules := loadAlertRules(t)
+
+	checked := 0
+	for _, r := range allRules(t, rules) {
+		if !strings.Contains(r.Expr, "swarmcracker_vm_health") {
+			continue
+		}
+		states := labelEqualities(r.Expr)["state"]
+		require.NotEmptyf(t, states,
+			"rule %q (group %s) reads swarmcracker_vm_health with no state matcher, so it matches every health series including healthy ones",
+			r.Alert, r.group)
+		for _, s := range states {
+			checked++
+			assert.Truef(t, healthStates[s],
+				"rule %q (group %s) matches state=%q, which is not one of the states the daemon publishes (%s)",
+				r.Alert, r.group, s, strings.Join([]string{
+					scruntime.HealthStarting, scruntime.HealthHealthy,
+					scruntime.HealthFailing, scruntime.HealthUnhealthy,
+				}, ", "))
+		}
+	}
+	assert.NotZero(t, checked, "no rule matched a swarmcracker_vm_health state; the guard checked nothing")
+}
+
+// TestAlertRulesReferenceRealScrapeJobs pins every job="..." matcher in the rules
+// to a job prometheus.yml actually scrapes: `up{job="typo"} == 0` is an empty
+// vector forever, so it passes a metric-name guard while never firing.
+func TestAlertRulesReferenceRealScrapeJobs(t *testing.T) {
+	cfg := loadPrometheusConfig(t)
+	jobs := map[string]bool{}
+	for _, sc := range cfg.ScrapeConfigs {
+		jobs[sc.JobName] = true
+	}
+
+	rules := loadAlertRules(t)
+	checked := 0
+	for _, r := range allRules(t, rules) {
+		for _, job := range labelEqualities(r.Expr)["job"] {
+			checked++
+			assert.Truef(t, jobs[job],
+				"rule %q (group %s) matches job=%q, which no scrape_config in prometheus.yml defines",
+				r.Alert, r.group, job)
+		}
+	}
+	assert.NotZero(t, checked, "no rule matched a job label; the guard checked nothing")
+}
+
+// TestRuleEvaluationIntervalCanObserveFors fails when rules are evaluated less
+// often than the shortest `for:` in the file. global.evaluation_interval is the
+// rule manager's evaluation interval and its built-in default is 1m — coarser
+// than the 30s health rule, which would leave the condition free to rise and
+// clear between two evaluations.
+func TestRuleEvaluationIntervalCanObserveFors(t *testing.T) {
+	cfg := loadPrometheusConfig(t)
+	require.NotEmptyf(t, cfg.Global.EvaluationInterval,
+		"prometheus.yml must set global.evaluation_interval; the 1m default is coarser than the shortest rule `for:`")
+
+	eval, err := time.ParseDuration(cfg.Global.EvaluationInterval)
+	require.NoErrorf(t, err, "global.evaluation_interval %q is not a duration", cfg.Global.EvaluationInterval)
+	require.Positive(t, eval, "global.evaluation_interval must be positive")
+
+	shortest := time.Duration(0)
+	for _, r := range allRules(t, loadAlertRules(t)) {
+		if r.For == "" || r.For == "0s" {
+			continue
+		}
+		d, err := time.ParseDuration(r.For)
+		if err != nil {
+			// Prometheus-only units (d/w/y) cannot be shorter than the
+			// second/millisecond range this invariant cares about.
+			continue
+		}
+		if shortest == 0 || d < shortest {
+			shortest = d
+		}
+	}
+	require.NotZero(t, shortest, "no rule declares a `for:` to check the evaluation interval against")
+
+	assert.LessOrEqualf(t, eval, shortest,
+		"global.evaluation_interval (%s) is coarser than the shortest rule `for:` (%s): a rule can be pending for a window shorter than its own evaluation interval",
+		eval, shortest)
+}
+
 func TestAlertRulesCoverEveryFailureMode(t *testing.T) {
 	rules := loadAlertRules(t)
 
@@ -253,20 +408,15 @@ func TestAlertRulesCoverEveryFailureMode(t *testing.T) {
 	}{
 		{"VMs that never reach running", []string{"swarmcracker_vm_boot_errors_total"}},
 		{"crash loop after running", []string{"swarmcracker_vm_crashes_total"}},
-		{"unhealthy task", []string{"swarmcracker_vm_health"}},
+		{"healthcheck failing or unhealthy", []string{"swarmcracker_vm_health"}},
 		{"disk pressure", []string{"swarmcracker_disk_usage_bytes", "swarmcracker_disk_total_bytes"}},
 	}
 
 	for _, m := range modes {
 		found := false
-		for _, g := range rules.Groups {
-			for _, r := range g.Rules {
-				if containsAll(r.Expr, m.requires) {
-					found = true
-					break
-				}
-			}
-			if found {
+		for _, r := range allRules(t, rules) {
+			if containsAll(r.Expr, m.requires) {
+				found = true
 				break
 			}
 		}

@@ -2,6 +2,13 @@
 # Mounted at /etc/prometheus/prometheus.yml by
 # infrastructure/observability/docker-compose.yml; alerts.yml sits next to it.
 
+global:
+  # The rule manager's evaluation interval comes from here; the built-in default
+  # is 1m. 15s matches the scrape interval below, and it is what keeps the 30s
+  # `for:` on SwarmCrackerTaskHealthcheckFailing in alerts.yml observable (see
+  # that rule's comment for the publish/teardown timing).
+  evaluation_interval: 15s
+
 # Rule files are resolved relative to the directory of this file.
 rule_files:
   - alerts.yml
@@ -15,19 +22,44 @@ alerting:
             - alertmanager:9093
 
 scrape_configs:
+  # ── SwarmCracker nodes ────────────────────────────────────────────────────
+  # Each node runs its own health/metrics server (`swarmd-firecracker
+  # --health-addr`); this job scrapes /metrics on it. The default bind is
+  # 127.0.0.1:8080, which is node-local and NOT reachable from this Prometheus
+  # container, so bind the daemon to an address the container can route to (the
+  # node's LAN address, or 0.0.0.0:8080) on every node you want to scrape.
+  #
+  # The placeholder targets that used to live here (manager1..3, worker1..3) are
+  # not services in infrastructure/observability/docker-compose.yml, so a stock
+  # `docker compose up` could never scrape them and SwarmCrackerNodeDown would
+  # fire for all six, forever. They are commented out for that reason — replace
+  # them with your cluster's nodes, one `host:port` per node:
+  #
+  #   - manager1:8080
+  #   - manager2:8080
+  #   - manager3:8080
+  #   - worker1:8080
+  #   - worker2:8080
+  #   - worker3:8080
+  #
+  # Single-node / local run: target the machine that runs this stack. Inside the
+  # compose network that is the host, not 127.0.0.1 (which is the Prometheus
+  # container itself). Add
+  # `extra_hosts: ["host.docker.internal:host-gateway"]` to the prometheus
+  # service in docker-compose.yml and target `host.docker.internal:8080`, or use
+  # the monitoring network's gateway
+  # (`docker network inspect monitoring -f '{{(index .IPAM.Config 0).Gateway}}'`):
+  #
+  #   - host.docker.internal:8080
+  #
+  # Use a bare compose service name (e.g. `manager1:8080`) only when a service by
+  # that name actually runs on the monitoring network.
   - job_name: swarmcracker
     scrape_interval: 15s
     scrape_timeout: 5s
     static_configs:
-      - targets:
-          # Manager nodes
-          - manager1:8080
-          - manager2:8080
-          - manager3:8080
-          # Worker nodes
-          - worker1:8080
-          - worker2:8080
-          - worker3:8080
+      # Intentionally empty: see the comments above. Add your nodes here.
+      - targets: []
         labels:
           cluster: production
           env: prod
