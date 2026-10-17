@@ -111,6 +111,20 @@ var DiskUsageBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
 
 // ── Per-VM Resource Metrics ───────────────────────────────────────
 
+// VMBalloonMB records the configured memory-balloon target per VM, in MiB.
+// Type: Gauge
+// Labels: instance, task_id, service
+//
+// Unlike the other per-VM series below, this one has a real writer: it is set
+// from the task's balloon annotation when a VM is booted (see
+// RecordVMBalloon). A VM without a configured balloon emits no series, because
+// an unset gauge carrying no signal would be worse than no series at all.
+var VMBalloonMB = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: namespace,
+	Name:      "vm_balloon_mib",
+	Help:      "Configured memory-balloon target for a microVM, in MiB.",
+}, []string{"instance", "task_id", "service"})
+
 // VMCPU tracks CPU usage per VM.
 // Type: Gauge
 // Labels: instance, task_id, service
@@ -178,4 +192,11 @@ func RecordVMCrashed(instance, reason string) {
 // Uses Observe to add an observation to the histogram.
 func RecordVMBootDuration(instance, service string, durationSeconds float64) {
 	VMBootDuration.WithLabelValues(instance, service).Observe(durationSeconds)
+}
+
+// RecordVMBalloon records the configured memory-balloon target for a VM.
+// Callers must only invoke it for a VM that actually has a balloon configured:
+// a VM without one gets no series, so the metric always carries signal.
+func RecordVMBalloon(instance, taskID, service string, mib float64) {
+	VMBalloonMB.WithLabelValues(instance, taskID, service).Set(mib)
 }

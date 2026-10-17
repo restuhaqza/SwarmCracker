@@ -157,6 +157,7 @@ func newServiceCreateCommand() *cobra.Command {
 		args        []string
 		labels      []string
 		disk        string
+		balloonMib  int
 		golden      string
 		publish     []string
 		publishMode string
@@ -257,6 +258,8 @@ With --golden, the service boots a prebuilt golden image (see
 				cpu:                cpu,
 				memory:             memory,
 				disk:               disk,
+				balloonMib:         balloonMib,
+				balloonSet:         cmd.Flags().Changed("balloon-mib"),
 				env:                env,
 				command:            command,
 				args:               args,
@@ -309,6 +312,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().Float64Var(&cpu, "cpu", 0, "CPU limit (cores, e.g., 1.5)")
 	cmd.Flags().StringVar(&memory, "memory", "", "Memory limit (e.g., 512M, 1G)")
 	cmd.Flags().StringVar(&disk, "disk", "", "Minimum rootfs disk size for the VM (e.g., 10G)")
+	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB, must be less than the memory limit (the guest can reclaim it via deflate-on-OOM)")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", nil, "Environment variables (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&command, "command", nil, "Override default container command")
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
@@ -362,6 +366,7 @@ func newServiceUpdateCommand() *cobra.Command {
 		replicas    uint64
 		cpuLimit    float64
 		memoryLimit string
+		balloonMib  int
 		image       string
 		env         []string
 		envRemove   []string
@@ -449,6 +454,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 				// the payload before any RPC.
 				withRegistryAuth:    withRegistryAuth,
 				withRegistryAuthSet: anyFlagChanged(cmd, "with-registry-auth"),
+				balloonMib:          balloonMib,
+				balloonSet:          anyFlagChanged(cmd, "balloon-mib"),
 				mounts:              mounts,
 				volumes:             volumes,
 				mountsSet:           anyFlagChanged(cmd, "mount", "volume"),
@@ -504,6 +511,7 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().Uint64Var(&replicas, "replicas", 0, "Number of replicas (0 = no change)")
 	cmd.Flags().Float64Var(&cpuLimit, "cpu-limit", 0, "CPU limit in cores (0 = no change)")
 	cmd.Flags().StringVar(&memoryLimit, "memory-limit", "", "Memory limit (e.g., 512M, 1G)")
+	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB; must be less than the memory limit (0 removes the balloon)")
 	cmd.Flags().StringVar(&image, "image", "", "New container image")
 	cmd.Flags().StringArrayVar(&env, "env-add", nil, "Add environment variable (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&envRemove, "env-rm", nil, "Remove environment variable")
@@ -1429,6 +1437,33 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 	}
 
 	spec := svc.Spec.Copy()
+
+	// --balloon-mib is tri-state: an absent flag preserves the service's current
+	// label (copied above), a positive value sets it, and an explicit 0 removes
+	// it. The target is validated against the memory the updated task will carry
+	// — the --memory-limit given with this update, else the limit already on the
+	// service — so the flag is never accepted and then ignored.
+	if opts.balloonSet {
+		switch {
+		case opts.balloonMib < 0:
+			return fmt.Errorf("invalid --balloon-mib %d: must be 0 (remove the balloon) or a positive integer MiB", opts.balloonMib)
+		case opts.balloonMib == 0:
+			delete(spec.Annotations.Labels, types.BalloonLabel)
+		default:
+			memBytes := memoryBytes
+			if memBytes == 0 && spec.Task.Resources != nil && spec.Task.Resources.Limits != nil {
+				memBytes = spec.Task.Resources.Limits.MemoryBytes
+			}
+			value, err := balloonLabelValue(int64(opts.balloonMib), true, serviceMemoryMib(memBytes))
+			if err != nil {
+				return err
+			}
+			if spec.Annotations.Labels == nil {
+				spec.Annotations.Labels = make(map[string]string)
+			}
+			spec.Annotations.Labels[types.BalloonLabel] = value
+		}
+	}
 
 	// Apply the --with-registry-auth decision (#44): an absent flag preserves
 	// the credential copied from the current spec, an explicit true replaces it

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/rs/zerolog/log"
@@ -93,6 +94,9 @@ type VMMConfig struct {
 	NetworkInterfaces []NetworkInterface `json:"network-interfaces"`
 	Drives            []Drive            `json:"drives"`
 	Vsock             *VsockConfig       `json:"vsock,omitempty"`
+	// Balloon is set only when the task requests a memory-balloon target; the
+	// omitempty tag keeps an unconfigured VM's config byte-identical to before.
+	Balloon map[string]interface{} `json:"balloon,omitempty"`
 }
 
 // BootSourceConfig specifies boot configuration.
@@ -179,6 +183,22 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 	// Apply resource limits from task spec
 	if task.Spec.Resources.Limits != nil {
 		tt.applyResources(config, task.Spec.Resources.Limits)
+	}
+
+	// The memory-balloon target is a per-service annotation, and the device is
+	// created before boot (it cannot be added to a running VM), so a target that
+	// is malformed or not smaller than the VM must fail here rather than be
+	// silently dropped.
+	balloon, err := resolveBalloon(task, config.MachineConfig.MemSizeMib)
+	if err != nil {
+		return nil, err
+	}
+	if balloon != nil {
+		config.Balloon = map[string]interface{}{
+			"amount_mib":               balloon.AmountMib,
+			"deflate_on_oom":           balloon.DeflateOnOOM,
+			"stats_polling_interval_s": 0,
+		}
 	}
 
 	// Add network interfaces
@@ -444,6 +464,35 @@ func (tt *TaskTranslator) applyResources(config *VMMConfig, limits *types.Resour
 		}
 		config.MachineConfig.VcpuCount = vcpus
 	}
+}
+
+// resolveBalloon reads the memory-balloon target from a task's annotation and
+// validates it against the VM's memory size. It returns nil when the task does
+// not request a balloon, so an unconfigured VM's configuration is unchanged. A
+// malformed or unsatisfiable target is a hard error, never ignored.
+func resolveBalloon(task *types.Task, memSizeMib int) (*types.BalloonConfig, error) {
+	raw := ""
+	if task != nil {
+		raw = strings.TrimSpace(task.Annotations[types.BalloonLabel])
+	}
+	if raw == "" {
+		return nil, nil
+	}
+
+	amountMib, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid memory balloon target %q (%s): must be a positive integer MiB: %w", raw, types.BalloonLabel, err)
+	}
+	if amountMib <= 0 {
+		return nil, fmt.Errorf("invalid memory balloon target %q (%s): must be a positive integer MiB", raw, types.BalloonLabel)
+	}
+	if amountMib >= int64(memSizeMib) {
+		return nil, fmt.Errorf("invalid memory balloon target %d MiB (%s): must be less than the VM memory size %d MiB", amountMib, types.BalloonLabel, memSizeMib)
+	}
+
+	// deflate_on_oom is always true: the guest may reclaim ballooned memory when
+	// it comes under pressure instead of being OOM-killed.
+	return &types.BalloonConfig{AmountMib: amountMib, DeflateOnOOM: true}, nil
 }
 
 // buildNetworkInterface creates a network interface configuration.

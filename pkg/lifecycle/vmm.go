@@ -129,6 +129,13 @@ type MachineConfig struct {
 	HtEnabled  bool `json:"ht_enabled"`
 }
 
+// balloonDevice is the Firecracker PUT /balloon request body.
+type balloonDevice struct {
+	AmountMib             int64 `json:"amount_mib"`
+	DeflateOnOOM          bool  `json:"deflate_on_oom"`
+	StatsPollingIntervalS int   `json:"stats_polling_interval_s"`
+}
+
 // NewVMMManager creates a new VMMManager.
 func NewVMMManager(config interface{}) types.VMMManager {
 	var cfg *ManagerConfig
@@ -355,6 +362,19 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 
 		if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("machine config returned status: %d", resp.StatusCode)
+		}
+	}
+
+	// Configure the virtio-balloon device if the configuration requests one.
+	// Firecracker rejects /balloon once the VM has started, so this must run
+	// before the InstanceStart action in Start.
+	if balloonRaw, ok := configMap["balloon"]; ok {
+		device, err := parseBalloonConfig(balloonRaw)
+		if err != nil {
+			return fmt.Errorf("failed to set balloon: %w", err)
+		}
+		if err := vm.putAPI(ctx, socketPath, "/balloon", device); err != nil {
+			return fmt.Errorf("failed to set balloon: %w", err)
 		}
 	}
 
@@ -824,6 +844,59 @@ func newUnixClient(socketPath string, timeout time.Duration) *http.Client {
 			},
 		},
 	}
+}
+
+// putAPI sends a PUT request to the Firecracker API over its Unix socket.
+func (vm *VMMManager) putAPI(ctx context.Context, socketPath, path string, data interface{}) error {
+	client := newUnixClient(socketPath, 5*time.Second)
+
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("failed to marshal JSON for %s: %w", path, err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://localhost"+path, bytes.NewReader(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request for %s: %w", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request to %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent &&
+		resp.StatusCode != http.StatusCreated &&
+		resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("API returned status %d for %s: %s", resp.StatusCode, path, string(body))
+	}
+
+	return nil
+}
+
+// parseBalloonConfig normalises the "balloon" config entry into a /balloon
+// request body. The amount can arrive as int64 (from a translator's map) or
+// float64 (after a JSON round-trip), so the entry is decoded into a typed
+// struct rather than type-asserted; any other shape is a wrapped error instead
+// of a request Firecracker would reject.
+func parseBalloonConfig(raw interface{}) (balloonDevice, error) {
+	var device balloonDevice
+	if raw == nil {
+		return device, fmt.Errorf("invalid balloon config: <nil>")
+	}
+
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return device, fmt.Errorf("invalid balloon config %v: %w", raw, err)
+	}
+	if err := json.Unmarshal(encoded, &device); err != nil {
+		return device, fmt.Errorf("invalid balloon config %v: %w", raw, err)
+	}
+
+	return device, nil
 }
 
 // Snapshot creates a snapshot of a running VM.

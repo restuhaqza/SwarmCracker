@@ -46,14 +46,15 @@ These commands provide VM-level operations like creating, listing, stopping, and
 // newVMCreateCommand creates the VM create command
 func newVMCreateCommand() *cobra.Command {
 	var (
-		name      string
-		vcpus     int
-		memory    int
-		network   string
-		detach    bool
-		env       []string
-		goldenRef string
-		goldenDir string
+		name       string
+		vcpus      int
+		memory     int
+		balloonMib int
+		network    string
+		detach     bool
+		env        []string
+		goldenRef  string
+		goldenDir  string
 	)
 
 	cmd := &cobra.Command{
@@ -128,6 +129,15 @@ Example:
 				fmt.Printf("Using golden image %s (%s)\n", art.Ref, art.Path)
 			}
 
+			// Validate the memory-balloon target before any RPC. The VM's
+			// effective memory is --memory (the golden-image default of 2048
+			// above is already applied), so a target that is not smaller than it
+			// can never be honoured and is rejected here with both numbers.
+			balloonValue, err := balloonLabelValue(int64(balloonMib), cmd.Flags().Changed("balloon-mib"), int64(memory))
+			if err != nil {
+				return err
+			}
+
 			// Create executor
 			exec, err := createExecutor(cfg)
 			if err != nil {
@@ -141,11 +151,9 @@ Example:
 				log.Warn().Err(err).Msg("Failed to create state manager, VM tracking disabled")
 			}
 
-			// Create a mock task
-			task := createMockTask(imageRef, vcpus, memory, env)
-			if goldenAnnotations != nil {
-				task.Annotations = goldenAnnotations
-			}
+			// Assemble the task that is handed downstream, carrying both the
+			// golden-image annotations and the validated balloon target.
+			task := buildVMCreateTask(imageRef, vcpus, memory, env, goldenAnnotations, balloonValue)
 
 			// Override task ID with name if provided
 			if name != "" {
@@ -291,6 +299,7 @@ Example:
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Name for the VM (auto-generated if not specified)")
 	cmd.Flags().IntVar(&vcpus, "cpu", 1, "Number of vCPUs to allocate")
 	cmd.Flags().IntVarP(&memory, "memory", "m", 512, "Memory in MB to allocate")
+	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB, must be less than --memory (the guest can reclaim it via deflate-on-OOM)")
 	cmd.Flags().StringVar(&network, "network", "", "Network to attach the VM to")
 	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "Run in detached mode (don't wait for completion)")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", []string{}, "Environment variables (e.g., -e KEY=value)")
@@ -298,6 +307,39 @@ Example:
 	cmd.Flags().StringVar(&goldenDir, "golden-dir", "", "Directory containing golden image artifacts (default: <rootfs-dir>/golden)")
 
 	return cmd
+}
+
+// buildVMCreateTask assembles the task a `vm create` run hands downstream: the
+// mock task for the requested resources, carrying the golden-image annotations
+// (when a golden image was resolved) and the validated memory-balloon target. It
+// is a function of its inputs, rather than inline in RunE, so that the merge of
+// the two annotation sources is directly testable: the golden annotations and
+// the balloon target must both survive onto the task the executor is given. An
+// assignment of goldenAnnotations in place of the merge would silently drop the
+// balloon target (or vice versa); withBalloonAnnotation always merges.
+func buildVMCreateTask(imageRef string, vcpus, memory int, env []string, goldenAnnotations map[string]string, balloonValue string) *types.Task {
+	task := createMockTask(imageRef, vcpus, memory, env)
+	if goldenAnnotations != nil {
+		task.Annotations = goldenAnnotations
+	}
+	task.Annotations = withBalloonAnnotation(task.Annotations, balloonValue)
+	return task
+}
+
+// withBalloonAnnotation merges a validated --balloon-mib target into a task's
+// annotation map, creating the map only when there is a target to add. It must
+// merge: a `vm create` task may already carry the golden-image annotations, and
+// replacing the map would silently drop them. An empty target leaves the map
+// untouched, so a VM created without the flag is identical to before.
+func withBalloonAnnotation(annotations map[string]string, value string) map[string]string {
+	if value == "" {
+		return annotations
+	}
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[types.BalloonLabel] = value
+	return annotations
 }
 
 // newVMListCommand creates the VM list command
