@@ -1388,6 +1388,13 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 	if opts.withRegistryAuthSet && opts.rollbackAction {
 		return fmt.Errorf("--with-registry-auth cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags")
 	}
+	// --cpuset belongs in the same guard: the rollback branch below submits
+	// PreviousSpec and never consults the pin, so accepting the flag here would
+	// validate it and then silently drop it. Rejected for an explicit empty
+	// value too, which is a request to clear the pin that a rollback cannot honour.
+	if opts.cpusetSet && opts.rollbackAction {
+		return fmt.Errorf("--cpuset cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags")
+	}
 	if opts.withRegistryAuthSet && opts.withRegistryAuth && opts.image == "" {
 		return fmt.Errorf("--with-registry-auth requires --image: the credential is resolved for the image the service will run")
 	}

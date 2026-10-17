@@ -43,6 +43,14 @@ These commands provide VM-level operations like creating, listing, stopping, and
 	return cmd
 }
 
+// vmCreateTaskHook, when non-nil, receives the task `vm create` has assembled
+// and ends the command there. Production leaves it nil, so the command goes on
+// to launch the VM exactly as before. Tests set it (and restore it with
+// t.Cleanup) to drive the real command path — flag parsing, canonicalisation
+// and task assembly — and assert what the task handed downstream carries,
+// without needing KVM or a Firecracker install.
+var vmCreateTaskHook func(task *types.Task) error
+
 // newVMCreateCommand creates the VM create command
 func newVMCreateCommand() *cobra.Command {
 	var (
@@ -151,6 +159,24 @@ Example:
 				return err
 			}
 
+			// Assemble the task that is handed downstream, carrying the
+			// golden-image annotations and the validated balloon target and
+			// cpuset. Assembly is pure and runs before the executor exists, so
+			// the task the command hands downstream is observable through
+			// vmCreateTaskHook and identical on both paths.
+			task := buildVMCreateTask(imageRef, vcpus, memory, env, goldenAnnotations, balloonValue, cpusetValue)
+
+			// Override task ID with name if provided
+			if name != "" {
+				task.ID = name
+			}
+
+			// Tests observe the assembled task here instead of booting a VM;
+			// production falls through with the hook nil.
+			if hook := vmCreateTaskHook; hook != nil {
+				return hook(task)
+			}
+
 			// Create executor
 			exec, err := createExecutor(cfg)
 			if err != nil {
@@ -162,15 +188,6 @@ Example:
 			stateMgr, err := runtime.NewStateManager("")
 			if err != nil {
 				log.Warn().Err(err).Msg("Failed to create state manager, VM tracking disabled")
-			}
-
-			// Assemble the task that is handed downstream, carrying both the
-			// golden-image annotations and the validated balloon target.
-			task := buildVMCreateTask(imageRef, vcpus, memory, env, goldenAnnotations, balloonValue, cpusetValue)
-
-			// Override task ID with name if provided
-			if name != "" {
-				task.ID = name
 			}
 
 			// Prepare context with timeout

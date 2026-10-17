@@ -281,6 +281,78 @@ func TestVMCreateCpusetRejectedBeforeAnythingIsCreated(t *testing.T) {
 	}
 }
 
+// TestUpdateServiceCpuset_RejectsRollback verifies --cpuset cannot be combined
+// with --rollback. The rollback branch submits PreviousSpec and never consults
+// the pin, so accepting the flag would validate it and then silently drop it.
+// PreviousSpec is populated so that, with the guard removed, the rollback would
+// actually be applied — asserting updateCalls stays zero is what pins "no RPC".
+func TestUpdateServiceCpuset_RejectsRollback(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "a pin", value: "0-3"},
+		{name: "an unsorted pin", value: "3,1-2"},
+		{name: "an explicit empty pin", value: ""},
+		{name: "a malformed pin", value: "5-3"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := serviceWithCpuset("0-3")
+			svc.PreviousSpec = serviceWithCpuset("0").Spec.Copy()
+
+			client := &fakeServiceUpdateClient{service: svc}
+			err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+				cpuset:         tc.value,
+				cpusetSet:      true,
+				rollbackAction: true,
+			})
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--cpuset", "the error must name the flag")
+			assert.Contains(t, err.Error(), "--rollback", "the error must name the conflicting flag")
+			assert.Contains(t, err.Error(), "previous spec",
+				"the error must explain why the combination is rejected")
+			assert.Zero(t, client.getCalls, "the combination must be rejected before the service lookup")
+			assert.Zero(t, client.listCalls)
+			assert.Zero(t, client.updateCalls, "a rejected combination must not apply the rollback")
+			assert.Nil(t, client.updatedSpec)
+		})
+	}
+}
+
+// TestVMCreateCpusetAnnotationThroughCommand drives a valid --cpuset through
+// `vm create`'s own RunE and asserts the task assembled there carries the
+// canonical pin. Testing buildVMCreateTask alone cannot catch the regression
+// this covers: RunE passing the raw flag value, or "" instead of the canonical
+// cpusetValue, would leave every other test green. The task is observed through
+// vmCreateTaskHook, so no VM is booted, and the configuration is a temp file
+// supplied via --config, as in the other command-level vm create tests.
+func TestVMCreateCpusetAnnotationThroughCommand(t *testing.T) {
+	var assembled *types.Task
+	vmCreateTaskHook = func(task *types.Task) error {
+		assembled = task
+		return nil
+	}
+	t.Cleanup(func() { vmCreateTaskHook = nil })
+
+	cmd := newRootWithConfig()
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+	cmd.SetArgs([]string{
+		"vm", "create",
+		"--config", writeBalloonTestConfig(t),
+		"--cpuset", "3,1-2",
+		"alpine:latest",
+	})
+
+	require.NoError(t, cmd.Execute())
+	require.NotNil(t, assembled, "vm create must hand an assembled task downstream")
+	assert.Equal(t, "1-3", assembled.Annotations[types.AnnotationCpuset],
+		"RunE must hand buildVMCreateTask the canonical --cpuset, not the value as typed")
+}
+
 // TestBuildVMCreateTask_CarriesCpusetAnnotation verifies the canonical pin is
 // merged onto the task as types.AnnotationCpuset, alongside — not instead of —
 // the golden-image annotations and the balloon target. Reverting the merge to
