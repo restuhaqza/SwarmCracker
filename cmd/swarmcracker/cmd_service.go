@@ -158,6 +158,7 @@ func newServiceCreateCommand() *cobra.Command {
 		labels      []string
 		disk        string
 		balloonMib  int
+		cpuset      string
 		golden      string
 		publish     []string
 		publishMode string
@@ -260,6 +261,8 @@ With --golden, the service boots a prebuilt golden image (see
 				disk:               disk,
 				balloonMib:         balloonMib,
 				balloonSet:         cmd.Flags().Changed("balloon-mib"),
+				cpuset:             cpuset,
+				cpusetSet:          cmd.Flags().Changed("cpuset"),
 				env:                env,
 				command:            command,
 				args:               args,
@@ -313,6 +316,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringVar(&memory, "memory", "", "Memory limit (e.g., 512M, 1G)")
 	cmd.Flags().StringVar(&disk, "disk", "", "Minimum rootfs disk size for the VM (e.g., 10G)")
 	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB, must be less than the memory limit (the guest can reclaim it via deflate-on-OOM)")
+	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", nil, "Environment variables (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&command, "command", nil, "Override default container command")
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
@@ -367,6 +371,7 @@ func newServiceUpdateCommand() *cobra.Command {
 		cpuLimit    float64
 		memoryLimit string
 		balloonMib  int
+		cpuset      string
 		image       string
 		env         []string
 		envRemove   []string
@@ -456,6 +461,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 				withRegistryAuthSet: anyFlagChanged(cmd, "with-registry-auth"),
 				balloonMib:          balloonMib,
 				balloonSet:          anyFlagChanged(cmd, "balloon-mib"),
+				cpuset:              cpuset,
+				cpusetSet:           anyFlagChanged(cmd, "cpuset"),
 				mounts:              mounts,
 				volumes:             volumes,
 				mountsSet:           anyFlagChanged(cmd, "mount", "volume"),
@@ -512,6 +519,7 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().Float64Var(&cpuLimit, "cpu-limit", 0, "CPU limit in cores (0 = no change)")
 	cmd.Flags().StringVar(&memoryLimit, "memory-limit", "", "Memory limit (e.g., 512M, 1G)")
 	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB; must be less than the memory limit (0 removes the balloon)")
+	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online, and an empty value removes the pin")
 	cmd.Flags().StringVar(&image, "image", "", "New container image")
 	cmd.Flags().StringArrayVar(&env, "env-add", nil, "Add environment variable (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&envRemove, "env-rm", nil, "Remove environment variable")
@@ -1384,6 +1392,20 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 		return fmt.Errorf("--with-registry-auth requires --image: the credential is resolved for the image the service will run")
 	}
 
+	// --cpuset is validated before any RPC. Absent preserves the service's
+	// current pin (copied with the spec below); an explicit empty value removes
+	// it; a value is canonicalised once here, so a malformed list fails before
+	// the lookup and update RPCs and the stored form is the one the daemon and
+	// the jailer parse.
+	cpusetValue := ""
+	if opts.cpusetSet && opts.cpuset != "" {
+		value, err := canonicalCpuset(opts.cpuset)
+		if err != nil {
+			return err
+		}
+		cpusetValue = value
+	}
+
 	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
 	serviceID, err := resolveServiceRef(ctx, client, serviceID)
 	if err != nil {
@@ -1461,6 +1483,20 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 				spec.Annotations.Labels = make(map[string]string)
 			}
 			spec.Annotations.Labels[types.BalloonLabel] = value
+		}
+	}
+
+	// --cpuset is tri-state too: absent leaves the copied label untouched, an
+	// explicit empty value removes the pin, and a value replaces it with the
+	// canonical form validated above.
+	if opts.cpusetSet {
+		if opts.cpuset == "" {
+			delete(spec.Annotations.Labels, types.CpusetLabel)
+		} else {
+			if spec.Annotations.Labels == nil {
+				spec.Annotations.Labels = make(map[string]string)
+			}
+			spec.Annotations.Labels[types.CpusetLabel] = cpusetValue
 		}
 	}
 

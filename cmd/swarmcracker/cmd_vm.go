@@ -50,6 +50,7 @@ func newVMCreateCommand() *cobra.Command {
 		vcpus      int
 		memory     int
 		balloonMib int
+		cpuset     string
 		network    string
 		detach     bool
 		env        []string
@@ -88,6 +89,18 @@ Example:
 			}
 			if goldenRef != "" && imageRef != "" {
 				return fmt.Errorf("--golden and an image argument are mutually exclusive")
+			}
+
+			// Validate --cpuset before the configuration is loaded and before
+			// any RPC: a malformed list must never reach the executor, where it
+			// can only fail (or silently mismatch) at VM start.
+			cpusetValue := ""
+			if cmd.Flags().Changed("cpuset") {
+				value, err := canonicalCpuset(cpuset)
+				if err != nil {
+					return err
+				}
+				cpusetValue = value
 			}
 
 			// Load configuration
@@ -153,7 +166,7 @@ Example:
 
 			// Assemble the task that is handed downstream, carrying both the
 			// golden-image annotations and the validated balloon target.
-			task := buildVMCreateTask(imageRef, vcpus, memory, env, goldenAnnotations, balloonValue)
+			task := buildVMCreateTask(imageRef, vcpus, memory, env, goldenAnnotations, balloonValue, cpusetValue)
 
 			// Override task ID with name if provided
 			if name != "" {
@@ -300,6 +313,7 @@ Example:
 	cmd.Flags().IntVar(&vcpus, "cpu", 1, "Number of vCPUs to allocate")
 	cmd.Flags().IntVarP(&memory, "memory", "m", 512, "Memory in MB to allocate")
 	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB, must be less than --memory (the guest can reclaim it via deflate-on-OOM)")
+	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online")
 	cmd.Flags().StringVar(&network, "network", "", "Network to attach the VM to")
 	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "Run in detached mode (don't wait for completion)")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", []string{}, "Environment variables (e.g., -e KEY=value)")
@@ -311,18 +325,20 @@ Example:
 
 // buildVMCreateTask assembles the task a `vm create` run hands downstream: the
 // mock task for the requested resources, carrying the golden-image annotations
-// (when a golden image was resolved) and the validated memory-balloon target. It
-// is a function of its inputs, rather than inline in RunE, so that the merge of
-// the two annotation sources is directly testable: the golden annotations and
-// the balloon target must both survive onto the task the executor is given. An
-// assignment of goldenAnnotations in place of the merge would silently drop the
-// balloon target (or vice versa); withBalloonAnnotation always merges.
-func buildVMCreateTask(imageRef string, vcpus, memory int, env []string, goldenAnnotations map[string]string, balloonValue string) *types.Task {
+// (when a golden image was resolved) and the validated memory-balloon and
+// cpuset values. It is a function of its inputs, rather than inline in RunE, so
+// that the merge of the annotation sources is directly testable: the golden
+// annotations and each validated value must all survive onto the task the
+// executor is given. An assignment of goldenAnnotations in place of the merge
+// would silently drop the balloon target or the cpuset (or vice versa);
+// withBalloonAnnotation/withCpusetAnnotation always merge.
+func buildVMCreateTask(imageRef string, vcpus, memory int, env []string, goldenAnnotations map[string]string, balloonValue, cpusetValue string) *types.Task {
 	task := createMockTask(imageRef, vcpus, memory, env)
 	if goldenAnnotations != nil {
 		task.Annotations = goldenAnnotations
 	}
 	task.Annotations = withBalloonAnnotation(task.Annotations, balloonValue)
+	task.Annotations = withCpusetAnnotation(task.Annotations, cpusetValue)
 	return task
 }
 
@@ -339,6 +355,23 @@ func withBalloonAnnotation(annotations map[string]string, value string) map[stri
 		annotations = make(map[string]string)
 	}
 	annotations[types.BalloonLabel] = value
+	return annotations
+}
+
+// withCpusetAnnotation merges a validated --cpuset pin into a task's annotation
+// map, creating the map only when there is a pin to add. It must merge for the
+// same reason as withBalloonAnnotation: a `vm create --golden` task already
+// carries the golden-image annotations, and replacing the map would drop them.
+// An empty value leaves the map untouched, so a VM created without the flag is
+// identical to before.
+func withCpusetAnnotation(annotations map[string]string, value string) map[string]string {
+	if value == "" {
+		return annotations
+	}
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	annotations[types.AnnotationCpuset] = value
 	return annotations
 }
 
