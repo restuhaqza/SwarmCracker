@@ -23,6 +23,11 @@ const (
 	// a runtime kernel can be selected per image instead of host-wide.
 	AnnotationKernelProfile = "swarmcracker.kernel_profile"
 
+	// AnnotationCpuset carries a cgroup v2 cpuset request (Linux cpulist
+	// syntax, e.g. "0-3") for the task's VMM process. It is the task-side form
+	// of the "swarmcracker.cpuset" service label (see CpusetLabel).
+	AnnotationCpuset = "swarmcracker.cpuset"
+
 	// AnnotationResolver is the nameserver the guest should use, set by the
 	// network manager when the task's bridge has a live resolver (dnsmasq) on
 	// its gateway. The translator turns it into the sc.dns boot argument, which

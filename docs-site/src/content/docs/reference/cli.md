@@ -153,6 +153,7 @@ Service (replicated microVM) management.
 | `--cpu` | — | CPU cores (e.g. `1.5`); sizes the microVM (see below) |
 | `--memory` | — | Memory size (e.g. `512M`, `1G`); sizes the microVM, honoured exactly (see below) |
 | `--balloon-mib` | — | Memory-balloon target in MiB (positive integer, less than the memory the VM will boot with; see [Memory Balloon](/guides/advanced/#memory-balloon)) |
+| `--cpuset` | — | Pin the VM to these host CPUs (Linux cpulist: `0`, `0-3`, `0-3,8`); the host must have those CPUs online (see [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits)) |
 | `--disk` | content-based | Minimum VM rootfs size (e.g. `10G`); adds the `swarmcracker.disk` service label |
 | `--env` / `-e` | — | Environment variables |
 | `--command` | — | Override the container command |
@@ -247,6 +248,32 @@ mapping is released when the service is removed or scaled down. See
 
 `--balloon-mib <int>` configures a **virtio-balloon device** that lets the node reclaim up to `<int>` MiB of the guest's memory. The unit is MiB — an explicit integer, not a `512m` size string — and the value must be a **positive integer smaller than the memory the VM will boot with** (the `--memory` given on the same command, else the 512 MiB default); an invalid value is rejected with an error naming both numbers, before any request is sent — including a target that only exceeds a *small* declared memory, so `--memory 256m --balloon-mib 300` fails at the CLI. Omitting the flag means no balloon; an explicit `--balloon-mib 0` is rejected as invalid rather than treated as "no balloon" (the flag exists only to configure a device). The target travels to the node as the service label `swarmcracker.balloon`, so combining `--balloon-mib` with a `--label swarmcracker.balloon=<n>` that **disagrees** is refused rather than resolved silently. The device is created before the VM boots, is configured with `deflate_on_oom: true`, and only takes effect when the guest kernel ships the virtio-balloon driver — see [Memory Balloon](/guides/advanced/#memory-balloon).
 
+`--cpuset` pins the VM to host CPUs. The value is a Linux **cpulist** — a single
+CPU (`0`), a range (`0-3`), or a comma-separated list of both (`0-3,8`) — and the
+flag has **no shorthand**. The value is **canonicalised before it is stored**
+(ranges ascending, overlapping and adjacent ranges merged), so `--cpuset 3,1-2`
+is stored — and shown by `service inspect` — as `1-3`. A malformed or empty
+value is rejected with an error naming the flag and the value before any request
+is sent; on `service create` an empty value is an error, not "no pin".
+
+The CLI validates the **syntax only**: there is no scheduler admission for CPU
+availability. The pin is applied by the node when it starts the VM, so a task can
+be placed on a node whose CPUs do not include the requested set and **fail
+there** with an error naming the requested set and that host's online CPUs
+(`/sys/devices/system/cpu/online`). A cpuset is a **hard promise** — a VM that
+cannot be pinned does not start; the CPU/memory/IO quotas around it are
+best-effort. See [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).
+
+The pin travels to the node as the `swarmcracker.cpuset` service label (a
+`vm create` VM carries it as a task annotation), so a hand-set
+`--label swarmcracker.cpuset=<list>` that **disagrees** with `--cpuset` is
+refused rather than resolved silently. The check compares the flag's
+**canonical** form with the label **exactly as written**, so the label must
+already be canonical: `--label swarmcracker.cpuset=1-3 --cpuset 3,1-2` is
+accepted (the flag canonicalises to `1-3`), while
+`--label swarmcracker.cpuset=3,1-2 --cpuset 1-3` is refused even though both
+name CPUs 1-3 — the label is not canonicalised before the comparison.
+
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
@@ -264,7 +291,7 @@ invalid value is **rejected** (`--health-retries 0`, `--health-interval 0s`), as
 is any `--health-*` flag supplied without `--health-cmd`; no flag is silently
 ignored.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--cpuset` (tri-state: omit to preserve the current pin, a cpulist to set it, an empty value to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
@@ -278,6 +305,16 @@ updated task will carry — the `--memory-limit` given on the same command, else
 the limit already on the service (and the 512 MiB default when it declares none)
 — and sets the `swarmcracker.balloon` label, so the change takes effect on the
 task SwarmKit starts next (the device cannot be reconfigured in place).
+
+`--cpuset` on `service update` is **tri-state**: omitting it leaves the service's
+current pin untouched, a cpulist replaces it (canonicalised, as above), and an
+explicit empty value — `--cpuset ""` — **removes** the pin. This clearing form
+exists only on `service update`; on `service create` and `vm create` an explicit
+empty value is an error. The new pin takes effect on the task SwarmKit starts
+next, so a rolling update moves the VM to the requested CPUs. `--cpuset` cannot
+be combined with `--rollback`, which restores the previous spec and ignores
+other flags: the combination is rejected rather than silently dropping the pin.
+
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc`, `--health-port`, `--no-health` for `ps`.
 
 `service ps` (and `task ls`) print a `HEALTH` column. It is the **live**
@@ -422,6 +459,7 @@ Direct Firecracker microVM management.
 | `--cpu` | — | `1` | vCPUs |
 | `--memory` | `-m` | `512` | Memory (MB) |
 | `--balloon-mib` | — | — | Memory-balloon target in MiB (positive integer, less than `--memory`; see [Memory Balloon](/guides/advanced/#memory-balloon)) |
+| `--cpuset` | — | — | Pin the VM to these host CPUs (Linux cpulist: `0`, `0-3`, `0-3,8`); the host must have those CPUs online (see [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits)) |
 | `--network` | — | — | Network to attach |
 | `--detach` | `-d` | `false` | Detached mode |
 | `--env` | `-e` | — | Environment variables |
@@ -429,6 +467,14 @@ Direct Firecracker microVM management.
 | `--golden-dir` | — | `<rootfs-dir>/golden` | Directory containing golden image artifacts |
 
 `vm create --balloon-mib <int>` configures a virtio-balloon target on the VM, with the same MiB units and validation as `service create --balloon-mib` (a positive integer smaller than `--memory`, rejected before anything is created). It is carried on the task as the `swarmcracker.balloon` annotation; a direct `vm create` VM does **not** report the target as a Prometheus series (see [the metric](/guides/operations/#metrics)).
+
+`vm create --cpuset <cpulist>` pins the VM to host CPUs, with the same syntax and
+canonicalisation as `service create --cpuset` (`3,1-2` becomes `1-3`). An empty
+value is an error; there is no "clear" form here. A direct VM gets **no cgroup at
+all unless `--cpuset` is given** (unlike a service task, which gets one whenever
+the daemon's cgroups are enabled), and the requested CPUs must be online on the
+host running the command or the VM does not start. See
+[CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).
 
 `vm create --cpu`/`--memory` size the VM directly (the defaults above are applied
 when the flags are omitted), and a declared size is honoured **exactly** — no

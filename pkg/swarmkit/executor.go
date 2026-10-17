@@ -302,6 +302,11 @@ func NewExecutor(config *Config) (*Executor, error) {
 			FirecrackerPath: config.FirecrackerPath,
 			SocketDir:       config.SocketDir,
 			LogDir:          config.LogDir,
+			// cgroups apply without the jailer too: the direct path runs the
+			// Firecracker process as this user, and its per-task cgroup is what
+			// carries the service's CPU/memory/cpuset. Without this the setting
+			// (on by default) would only ever reach jailed VMs.
+			EnableCgroups: config.EnableCgroups,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create VMM manager: %w", err)
@@ -774,6 +779,19 @@ func (c *Controller) Prepare(ctx context.Context) error {
 			task.Annotations = make(map[string]string)
 		}
 		task.Annotations[types.BalloonLabel] = balloon
+	}
+
+	// The same bridge for a cpuset request ("swarmcracker.cpuset"): the VMM
+	// manager reads it from the task annotation when it creates the VM's cgroup,
+	// and a service label only reaches the executor through
+	// ServiceAnnotations.Labels. Copying it here is what makes the label reach
+	// the VM; without it the request would be accepted and silently ignored. A
+	// service without the label adds nothing.
+	if cpuset := strings.TrimSpace(c.task.ServiceAnnotations.Labels[types.CpusetLabel]); cpuset != "" {
+		if task.Annotations == nil {
+			task.Annotations = make(map[string]string)
+		}
+		task.Annotations[types.CpusetLabel] = cpuset
 	}
 
 	// Store the prepared task with annotations and network attachments

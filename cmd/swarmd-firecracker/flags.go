@@ -164,7 +164,7 @@ func newAppFlags() []cli.Flag {
 		},
 		&cli.BoolFlag{
 			Name:  "enable-cgroups",
-			Usage: "Enable cgroup resource limits (requires jailer)",
+			Usage: "Apply per-task cgroup v2 resource limits to the VMM (on both jailed and direct start paths)",
 			Value: true,
 		},
 		// CNI Network Provider flags

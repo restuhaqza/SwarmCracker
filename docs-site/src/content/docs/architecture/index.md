@@ -274,12 +274,17 @@ database.
 | VM vCPUs | 1 | `executor.default_vcpus` or task spec |
 | VM Memory | 512 MB | `executor.default_memory_mb` or task spec |
 | VM Disk | 1 GB | rootfs size (image-dependent) |
-| CPU Quota | Unlimited | jailer `--enable-cgroups` with `--parent-cgroup` |
-| Memory Limit | VM RAM | jailer `--enable-cgroups` with `--parent-cgroup` |
+| CPU Quota | vCPU count (`cpu.max`) | task resources; `--enable-cgroups` (default on) |
+| Memory Limit | guest RAM + 128 MiB (`memory.max`) | task resources; `--enable-cgroups` (default on) |
+| CPU pin | none | `--cpuset` on the service or VM |
 
-Cgroup limits are applied by the Firecracker jailer. Select the cgroup
-hierarchy version with `--cgroup-version` (for example `v2`); there are no
-`cgroup.*` keys in the YAML config.
+Per-task cgroup v2 limits are applied by the daemon — and by `vm create` only
+when `--cpuset` is given — not by the jailer. `--enable-cgroups` defaults to
+true and no longer requires `--enable-jailer`; `--parent-cgroup` and
+`--cgroup-version` configure the jailer's own cgroup only. There are no
+`cgroup.*` keys in the YAML config. See
+[CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits)
+and [cgroup v2 host requirements](/guides/configuration/#cgroup-v2-host-requirements).
 
 Task specs can override the defaults:
 

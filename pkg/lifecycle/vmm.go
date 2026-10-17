@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -29,6 +30,15 @@ type VMMManager struct {
 	mu            sync.RWMutex
 	socketDir     string
 	consoleWriter io.Writer
+	// cgroupMgr is created lazily, only for a task that requests a cpuset. It is
+	// an interface so tests can inject a fake instead of writing to /sys.
+	// cgroupMu guards it: Start creates it, while Stop/Remove read it without
+	// holding the manager lock.
+	cgroupMu  sync.Mutex
+	cgroupMgr jailer.CgroupOps
+	// cgroupErr remembers why the real manager could not be created, so a cpuset
+	// request can be rejected with the reason.
+	cgroupErr error
 }
 
 // SetConsoleWriter redirects the serial console of VMs started from now on to
@@ -187,6 +197,27 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 		return fmt.Errorf("invalid config: nil configuration")
 	}
 
+	// A `vm create` VM is cgrouped only when its task asks to be pinned: with no
+	// cpuset annotation this makes no cgroup calls and behaves exactly as before.
+	// A refused cpuset fails here, before any process exists.
+	cgrouped, err := vm.prepareCgroup(task, config)
+	if err != nil {
+		return err
+	}
+
+	var startErr error
+	// Remove the cgroup on every path that does not reach a registered VM. This
+	// cannot key on startErr: the early LookPath/cmd.Start failures return before
+	// it is set, and a cgroup of a VM that never ran must not leak.
+	cgroupKept := false
+	if cgrouped {
+		defer func() {
+			if !cgroupKept {
+				vm.removeCgroup(task.ID)
+			}
+		}()
+	}
+
 	// Find Firecracker binary
 	fcBinary, err := exec.LookPath("firecracker")
 	if err != nil {
@@ -201,9 +232,17 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 	cmd := exec.Command(fcBinary, "--api-sock", socketPath, "--id", task.ID)
 	cmd.Stdout, cmd.Stderr = vm.consoleStdio()
 
-	var startErr error
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start firecracker: %w", err)
+	}
+
+	// Attach the VMM to its cgroup now that it has a pid; a cpuset that could not
+	// be attached never took effect, so that fails the VM.
+	if cgrouped {
+		if err := vm.addCgroupProcess(task, cmd.Process.Pid); err != nil {
+			startErr = err
+			return startErr
+		}
 	}
 
 	// Ensure cleanup on failure
@@ -284,6 +323,8 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 	vmInstance.SetState(VMStateRunning)
 
 	vm.vms[task.ID] = vmInstance
+	// The VM is running with its cgroup: from here on teardown owns the removal.
+	cgroupKept = true
 
 	log.Info().
 		Str("task_id", task.ID).
@@ -487,12 +528,18 @@ func (vm *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	vmInstance.SetState(VMStateStopping)
 
 	// If init system is enabled, try graceful shutdown first
+	var stopErr error
 	if vmInstance.InitSystem != "none" {
-		return vm.gracefulShutdown(ctx, vmInstance)
+		stopErr = vm.gracefulShutdown(ctx, vmInstance)
+	} else {
+		// Otherwise, use the old method (SendCtrlAltDel)
+		stopErr = vm.hardShutdown(ctx, vmInstance)
 	}
 
-	// Otherwise, use the old method (SendCtrlAltDel)
-	return vm.hardShutdown(ctx, vmInstance)
+	// A cgroup must not outlive its VM; this is a no-op when the VM never had one.
+	vm.removeCgroup(task.ID)
+
+	return stopErr
 }
 
 // gracefulShutdown attempts to gracefully shutdown the VM using init system.
@@ -769,6 +816,9 @@ func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 
 	// Remove from map
 	delete(vm.vms, task.ID)
+
+	// A cgroup must not outlive its VM; this is a no-op when the VM never had one.
+	vm.removeCgroup(task.ID)
 
 	log.Info().
 		Str("task_id", task.ID).
