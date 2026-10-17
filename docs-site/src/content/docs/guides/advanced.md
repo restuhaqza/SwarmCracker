@@ -46,9 +46,10 @@ SwarmKit controls update behavior (not SwarmCracker):
 ## Memory Balloon
 
 A service and a `vm create` VM can declare a **virtio-balloon** target: how much
-guest memory the node is allowed to reclaim while the VM runs. It trims a VM's
-resident memory under host pressure; it does not let a VM grow beyond its memory
-limit.
+guest memory the node reclaims from the VM. The balloon inflates to that target
+from boot and holds it there regardless of host pressure; the **guest** can take
+the memory back when *it* comes under pressure. A balloon never lets a VM grow
+beyond its memory limit.
 
 ```bash
 # A 1 GiB VM that can give back up to 256 MiB
@@ -109,9 +110,11 @@ which SwarmKit copies onto each task and the node reads when it translates the
 task into a VM config (a `vm create` VM carries it as a task annotation instead).
 You can set that label directly with `--label swarmcracker.balloon=<n>`, but
 `--balloon-mib` and a `swarmcracker.balloon` label that **disagree** are refused
-rather than resolved silently; a label whose value agrees is accepted. A hand-set
-label bypasses the CLI's check and is validated by the node at translation time,
-where an invalid value fails the task loudly.
+rather than resolved silently; a label whose value agrees is accepted (compared
+as the literal string, so `--label swarmcracker.balloon=0256` is refused
+alongside `--balloon-mib 256` even though the numbers agree). A hand-set label
+bypasses the CLI's check and is validated by the node at translation time, where
+an invalid value fails the task loudly.
 
 ---
 

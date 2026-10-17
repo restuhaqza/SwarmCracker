@@ -336,10 +336,11 @@ only for a task that configured a balloon (`--balloon-mib` or the
 It reports the target that was *configured*, not live usage, so an unconfigured
 task emits no series and a VM created directly with `vm create --balloon-mib`
 emits no series at all; removing or scaling down a task leaves its last reported
-value in place until the node is restarted. This is the one per-VM resource
-series with a live writer: `swarmcracker_vm_cpu_seconds`,
-`swarmcracker_vm_memory_bytes` and `swarmcracker_vm_net_*` are defined but not
-yet populated by any code path, so do not read them as current usage.
+value in place until the node is restarted. Of the per-VM series, only
+`swarmcracker_vm_balloon_mib` and `swarmcracker_vm_boot_duration_seconds` are
+written: `swarmcracker_vm_cpu_seconds`, `swarmcracker_vm_memory_bytes`,
+`swarmcracker_vm_net_rx_bytes` and `swarmcracker_vm_net_tx_bytes` are defined but
+not yet populated by any code path, so do not read them as current usage.
 
 ### Logging
 
@@ -854,15 +855,18 @@ swarmcracker cluster reset
 
 ### Memory Balloon
 
-`--balloon-mib` lets a VM give memory back to its node under pressure instead of
-being capped hard. Two operational points matter:
+`--balloon-mib <n>` makes the node reclaim up to `n` MiB of a VM's memory from
+boot, regardless of host pressure, while the **guest** can take that memory back
+when *it* comes under pressure instead of being OOM-killed. Two operational
+points matter:
 
 - **It is set at boot, not at runtime.** A running VM cannot gain a balloon, so
   `service update --balloon-mib <n>` rolls the task with the new target and
   `--balloon-mib 0` removes it.
-- **The guest must cooperate.** Reclamation happens through `deflate_on_oom`,
-  and only works if the guest kernel ships the virtio-balloon driver; otherwise
-  the device exists but the guest's memory is unchanged.
+- **The guest must cooperate.** The guest takes memory back through
+  `deflate_on_oom`, and that only works if the guest kernel ships the
+  virtio-balloon driver; otherwise the device exists but the guest's memory is
+  unchanged.
 
 See [Memory Balloon](/guides/advanced/#memory-balloon) for units, validation, the
 `swarmcracker.balloon` label, and the metric.
