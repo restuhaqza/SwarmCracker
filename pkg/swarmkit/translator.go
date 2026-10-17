@@ -57,29 +57,12 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 	// For now, return a simple config structure
 	// This will be expanded to use the full translator package
 
-	vcpus := 1
-	memoryMB := 512
-
-	// Try to get resource specifications if task has a container runtime
+	// A VM is a hard allocation: size it from the hard cap (Limits) when the
+	// user declared one, else the reservation (Reservations), else the 1 vCPU /
+	// 512 MiB defaults. A declared value is honoured as declared.
+	vcpus, memoryMB := 1, 512
 	if _, err := task.Spec.GetContainer(); err == nil {
-		// Resource-based sizing
-		if task.Spec.Resources.Reservations != nil {
-			res := task.Spec.Resources.Reservations
-			// Convert nanoCPUs to vCPUs (1 vCPU = 1e9 nanoCPUs)
-			if res.NanoCPUs > 0 {
-				vcpus = int(res.NanoCPUs / 1e9)
-				if vcpus < 1 {
-					vcpus = 1
-				}
-			}
-			// Convert bytes to MB
-			if res.MemoryBytes > 0 {
-				memoryMB = int(res.MemoryBytes / (1024 * 1024))
-				if memoryMB < 512 {
-					memoryMB = 512
-				}
-			}
-		}
+		vcpus, memoryMB = resolveSize(&task.Spec.Resources)
 	}
 
 	// A prebuilt golden image may pin its own kernel through a profile.
@@ -139,6 +122,15 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 	}
 
 	return config, nil
+}
+
+// resolveSize returns the vCPU count and memory (MiB) a VM should be booted
+// with: the hard cap (Limits) when the user declared one, else the soft
+// reservation (Reservations), else the 1 vCPU / 512 MiB defaults. A declared
+// value is returned as declared — there is no silent floor, so an explicit
+// 256 MiB request boots a 256 MiB VM.
+func resolveSize(res *types.ResourceRequirements) (vcpus int, memoryMB int) {
+	return types.ResolveVMSize(res, 1, 512)
 }
 
 // buildBootArgs builds kernel boot arguments with network config.
