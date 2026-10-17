@@ -403,20 +403,24 @@ func normalizeServiceMode(m string) (string, error) {
 	}
 }
 
-// minServiceMemoryMib is the memory size the daemon's service translator falls
-// back to when a task carries no memory reservation, and the floor it applies to
-// a smaller one (pkg/swarmkit/translator.go).
-const minServiceMemoryMib = 512
+// defaultServiceMemoryMib is the memory size (MiB) a service's VM gets when no
+// --memory is declared — the same default the daemon's translator applies
+// (pkg/swarmkit/translator.go via pkg/types.ResolveVMSize). It is a default,
+// not a floor: an explicit --memory below it is honoured as declared, because
+// the daemon no longer applies a floor either.
+const defaultServiceMemoryMib = 512
 
-// serviceMemoryMib is the VM memory size in MiB a service will get: the parsed
-// --memory value (0 when the flag is unset) floored at the platform minimum.
-// This mirrors the daemon-side translator, which the CLI cannot query, so an
-// invalid --balloon-mib is caught here instead of after the service is created.
+// serviceMemoryMib is the effective VM memory size in MiB a service will boot
+// with: the parsed --memory value when one was declared, else
+// defaultServiceMemoryMib. This is the same size the daemon translator resolves
+// (pkg/types.ResolveVMSize: Limits -> Reservations -> 512), so validating
+// --balloon-mib against it can never accept a target the node then refuses. A
+// sub-MiB value keeps the default, matching ResolveVMSize.
 func serviceMemoryMib(memoryBytes int64) int64 {
-	if mib := memoryBytes / (1024 * 1024); mib > minServiceMemoryMib {
+	if mib := memoryBytes / (1024 * 1024); mib > 0 {
 		return mib
 	}
-	return minServiceMemoryMib
+	return defaultServiceMemoryMib
 }
 
 // balloonLabelValue validates --balloon-mib against the VM's memory size (MiB)
