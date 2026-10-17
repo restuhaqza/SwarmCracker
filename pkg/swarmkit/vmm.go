@@ -34,7 +34,7 @@ type VMMManager struct {
 	useJailer       bool
 	jailerConfig    *jailer.Config
 	jailer          *jailer.Jailer
-	cgroupMgr       cgroupManager
+	cgroupMgr       jailer.CgroupOps
 	// cgroupErr records why the cgroup manager could not be created, so a task
 	// that requests a cpuset can be rejected with the reason instead of the
 	// request being silently ignored.
@@ -845,6 +845,10 @@ func (v *VMMManager) ForceStop(ctx context.Context, task *types.Task) error {
 	// Wait for process to actually exit (should be immediate).
 	// waitForProcess ensures Wait is called exactly once per task.
 	_ = v.waitForProcess(task.ID, cmd)
+
+	// A force-stopped VM's cgroup must not outlive it, exactly like Stop/Remove:
+	// this is the only remaining teardown path the health monitor reaches.
+	v.removeVMCgroup(task.ID)
 
 	v.forgetProcess(task.ID)
 	v.cleanupVMSockets(task.ID)

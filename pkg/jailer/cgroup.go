@@ -2,6 +2,7 @@
 package jailer
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -303,6 +304,83 @@ func validateResourceLimits(limits ResourceLimits) error {
 	return nil
 }
 
+// CgroupStage identifies the step of a cgroup operation that failed.
+type CgroupStage string
+
+const (
+	// CgroupStageValidate rejects unhonourable limits before anything is created.
+	CgroupStageValidate CgroupStage = "validate"
+	// CgroupStageCreateDir creates the per-task cgroup directory.
+	CgroupStageCreateDir CgroupStage = "create-dir"
+	// CgroupStageCpuset writes cpuset.cpus or cpuset.mems.
+	CgroupStageCpuset CgroupStage = "cpuset"
+	// CgroupStageCPU writes cpu.max.
+	CgroupStageCPU CgroupStage = "cpu"
+	// CgroupStageMemory writes memory.max or memory.high.
+	CgroupStageMemory CgroupStage = "memory"
+	// CgroupStageIO writes io.weight or io.max.
+	CgroupStageIO CgroupStage = "io"
+	// CgroupStageAttach writes the VMM process to cgroup.procs.
+	CgroupStageAttach CgroupStage = "attach"
+)
+
+// CgroupError reports which stage of a per-task cgroup operation failed and,
+// when the failing step targets a single controller file, which field it was. It
+// exists so a caller can tell a cpuset that could not be applied (fatal) from a
+// quota that could not be applied (a warning) without matching error text.
+type CgroupError struct {
+	// TaskID is the task whose cgroup was being configured.
+	TaskID string
+	// Stage is the step that failed.
+	Stage CgroupStage
+	// Field is the controller file being written, e.g. "cpuset.cpus", when the
+	// failing step targets a single file. It is empty otherwise.
+	Field string
+	// Err is the underlying failure.
+	Err error
+}
+
+// Error implements error.
+func (e *CgroupError) Error() string {
+	what := fmt.Sprintf("cgroup %s stage", e.Stage)
+	if e.Field != "" {
+		what += " (" + e.Field + ")"
+	}
+	if e.TaskID != "" {
+		return fmt.Sprintf("task %s: %s: %v", e.TaskID, what, e.Err)
+	}
+	return fmt.Sprintf("%s: %v", what, e.Err)
+}
+
+// Unwrap returns the underlying failure.
+func (e *CgroupError) Unwrap() error { return e.Err }
+
+// IsQuotaStage reports whether err is a *CgroupError from a quota stage (cpu,
+// memory or io). By the time a quota write runs the cpuset has already been
+// applied, so a failure there leaves behind a usable, pinned cgroup.
+func IsQuotaStage(err error) bool {
+	var cgroupErr *CgroupError
+	if !errors.As(err, &cgroupErr) {
+		return false
+	}
+	switch cgroupErr.Stage {
+	case CgroupStageCPU, CgroupStageMemory, CgroupStageIO:
+		return true
+	}
+	return false
+}
+
+// stageError attributes err to stage and taskID without losing the field of an
+// inner *CgroupError (the cpuset writers already know their file name).
+func stageError(taskID string, stage CgroupStage, err error) *CgroupError {
+	e := &CgroupError{TaskID: taskID, Stage: stage, Err: err}
+	var inner *CgroupError
+	if errors.As(err, &inner) && inner.Field != "" {
+		e.Field = inner.Field
+	}
+	return e
+}
+
 // CreateCgroup creates a cgroup with resource limits for a task.
 func (m *CgroupManager) CreateCgroup(taskID string, limits ResourceLimits) error {
 	m.logger.Info().
@@ -312,31 +390,31 @@ func (m *CgroupManager) CreateCgroup(taskID string, limits ResourceLimits) error
 	// Reject unhonourable limits before creating anything, so a bad request
 	// never leaves a partially configured cgroup behind.
 	if err := validateResourceLimits(limits); err != nil {
-		return fmt.Errorf("invalid resource limits for task %s: %w", taskID, err)
+		return stageError(taskID, CgroupStageValidate, err)
 	}
 
 	cgroupPath := filepath.Join(m.basePath, taskID)
 
 	// Create cgroup directory
 	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
-		return fmt.Errorf("failed to create cgroup dir: %w", err)
+		return stageError(taskID, CgroupStageCreateDir, fmt.Errorf("failed to create cgroup dir: %w", err))
 	}
 
 	// Set the cpuset first: cpuset.mems must be populated before any process
 	// is added (AddProcess writes cgroup.procs), otherwise the kernel refuses
 	// the process with ENOSPC.
 	if err := m.setCpusetLimits(cgroupPath, limits); err != nil {
-		return fmt.Errorf("failed to set cpuset limits: %w", err)
+		return stageError(taskID, CgroupStageCpuset, err)
 	}
 
 	// Set CPU limits
 	if err := m.setCPULimits(cgroupPath, limits); err != nil {
-		return fmt.Errorf("failed to set CPU limits: %w", err)
+		return stageError(taskID, CgroupStageCPU, err)
 	}
 
 	// Set memory limits
 	if err := m.setMemoryLimits(cgroupPath, limits); err != nil {
-		return fmt.Errorf("failed to set memory limits: %w", err)
+		return stageError(taskID, CgroupStageMemory, err)
 	}
 
 	// Set IO limits
@@ -365,7 +443,12 @@ func (m *CgroupManager) AddProcess(taskID string, pid int) error {
 	// Write PID to cgroup.procs
 	data := fmt.Sprintf("%d", pid)
 	if err := os.WriteFile(procsFile, []byte(data), 0644); err != nil {
-		return fmt.Errorf("failed to add process to cgroup: %w", err)
+		return &CgroupError{
+			TaskID: taskID,
+			Stage:  CgroupStageAttach,
+			Field:  "cgroup.procs",
+			Err:    fmt.Errorf("failed to add process to cgroup: %w", err),
+		}
 	}
 
 	m.logger.Info().
@@ -520,12 +603,16 @@ func (m *CgroupManager) setCpusetLimits(cgroupPath string, limits ResourceLimits
 		var err error
 		cpus, err = ParseCPUSet(limits.CpusetCPUs)
 		if err != nil {
-			return fmt.Errorf("invalid CpusetCPUs: %w", err)
+			return &CgroupError{
+				Stage: CgroupStageCpuset,
+				Field: "cpuset.cpus",
+				Err:   fmt.Errorf("invalid CpusetCPUs: %w", err),
+			}
 		}
 	}
 	mems, source, err := m.resolveCpusetMems(limits.CpusetMems)
 	if err != nil {
-		return err
+		return &CgroupError{Stage: CgroupStageCpuset, Field: "cpuset.mems", Err: err}
 	}
 
 	if cpus != "" {
@@ -600,7 +687,11 @@ func (m *CgroupManager) writeCpusetFile(cgroupPath, name, value, source string) 
 		if onlineErr != nil {
 			online = "unknown"
 		}
-		return fmt.Errorf("failed to write %s %q (source: %s; online CPUs: %s): %w", name, value, source, online, err)
+		return &CgroupError{
+			Stage: CgroupStageCpuset,
+			Field: name,
+			Err:   fmt.Errorf("failed to write %s %q (source: %s; online CPUs: %s): %w", name, value, source, online, err),
+		}
 	}
 	return nil
 }

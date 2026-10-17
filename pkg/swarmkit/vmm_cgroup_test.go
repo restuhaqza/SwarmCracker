@@ -94,7 +94,7 @@ func (f *fakeCgroupManager) snapshot() (created []cgroupCreate, added []cgroupAd
 // cgroupTestVMM builds a manager whose cgroup manager is the fake and whose
 // Firecracker binary does not exist, so a start path reaches the cgroup code
 // without ever launching a VM.
-func cgroupTestVMM(t *testing.T, mgr cgroupManager) *VMMManager {
+func cgroupTestVMM(t *testing.T, mgr jailer.CgroupOps) *VMMManager {
 	t.Helper()
 	// A short path matters: Unix domain sockets are capped at ~108 bytes and
 	// t.TempDir() embeds the (long) test name.
@@ -120,83 +120,6 @@ func cgroupTestConfig(vcpus, memoryMB int) map[string]interface{} {
 			"vcpu_count":   vcpus,
 			"mem_size_mib": memoryMB,
 		},
-	}
-}
-
-func TestCgroupResourceLimits(t *testing.T) {
-	const mib = int64(1024 * 1024)
-
-	tests := []struct {
-		name     string
-		task     *types.Task
-		vcpus    int
-		memoryMB int
-		want     jailer.ResourceLimits
-		wantErr  string
-	}{
-		{
-			name:     "the VM size is the fallback when the spec is silent",
-			task:     &types.Task{ID: "t1"},
-			vcpus:    2,
-			memoryMB: 512,
-			want: jailer.ResourceLimits{
-				CPUQuotaUs: 2_000_000,
-				MemoryMax:  512*mib + types.CgroupMemoryHeadroom,
-				MemoryHigh: (512*mib + types.CgroupMemoryHeadroom) * 9 / 10,
-				IOWeight:   100,
-			},
-		},
-		{
-			name: "declared limits win and the cpuset is canonicalised",
-			task: &types.Task{
-				ID: "t1",
-				Spec: types.TaskSpec{Resources: types.ResourceRequirements{Limits: &types.Resources{
-					NanoCPUs:    1500000000,
-					MemoryBytes: 256 * mib,
-				}}},
-				Annotations: map[string]string{types.CpusetLabel: "3,1-2"},
-			},
-			vcpus:    4,
-			memoryMB: 1024,
-			want: jailer.ResourceLimits{
-				CPUQuotaUs: 1_500_000,
-				MemoryMax:  256*mib + types.CgroupMemoryHeadroom,
-				MemoryHigh: (256*mib + types.CgroupMemoryHeadroom) * 9 / 10,
-				IOWeight:   100,
-				CpusetCPUs: "1-3",
-			},
-		},
-		{
-			name:     "a malformed annotation is rejected by naming the value",
-			task:     &types.Task{ID: "t1", Annotations: map[string]string{types.CpusetLabel: "0,a"}},
-			vcpus:    1,
-			memoryMB: 512,
-			wantErr:  `"0,a"`,
-		},
-		{
-			name: "an unrepresentable CPU request is rejected by naming the value",
-			task: &types.Task{
-				ID:   "t1",
-				Spec: types.TaskSpec{Resources: types.ResourceRequirements{Limits: &types.Resources{NanoCPUs: 500}}},
-			},
-			vcpus:    1,
-			memoryMB: 512,
-			wantErr:  "500 NanoCPUs",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := cgroupResourceLimits(tt.task, tt.vcpus, tt.memoryMB)
-
-			if tt.wantErr != "" {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tt.wantErr)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-		})
 	}
 }
 
@@ -232,7 +155,7 @@ func TestStartDirect_AppliesDerivedCgroupLimits(t *testing.T) {
 	}, created[0].limits)
 
 	require.Len(t, ensure, 1, "controllers must be delegated exactly once per start")
-	assert.Equal(t, cgroupControllers, ensure[0])
+	assert.Equal(t, jailer.DefaultControllers, ensure[0])
 
 	assert.Empty(t, added, "no process exists to attach")
 	assert.Equal(t, []string{"task-direct-cgroup"}, removed,
@@ -286,7 +209,7 @@ func TestStartDirect_CpusetControllerUnavailableIsFatal(t *testing.T) {
 	fake := &fakeCgroupManager{
 		online: "0-7",
 		ensureErr: &jailer.ControllersError{
-			Requested:   cgroupControllers,
+			Requested:   jailer.DefaultControllers,
 			Unavailable: []string{"cpuset"},
 		},
 	}
@@ -314,7 +237,7 @@ func TestStartDirect_QuotaControllerUnavailableIsWarning(t *testing.T) {
 	fake := &fakeCgroupManager{
 		online: "0-7",
 		ensureErr: &jailer.ControllersError{
-			Requested:   cgroupControllers,
+			Requested:   jailer.DefaultControllers,
 			Unavailable: []string{"cpu", "memory", "io"},
 		},
 	}
@@ -334,8 +257,12 @@ func TestStartDirect_QuotaControllerUnavailableIsWarning(t *testing.T) {
 // is not started and the partially created cgroup is removed.
 func TestStartDirect_CpusetWriteFailureIsFatal(t *testing.T) {
 	fake := &fakeCgroupManager{
-		online:    "0-7",
-		createErr: errors.New("failed to set cpuset limits: failed to write cpuset.cpus"),
+		online: "0-7",
+		createErr: &jailer.CgroupError{
+			Stage: jailer.CgroupStageCpuset,
+			Field: "cpuset.cpus",
+			Err:   errors.New("failed to write cpuset.cpus"),
+		},
 	}
 	vmm := cgroupTestVMM(t, fake)
 
@@ -358,8 +285,12 @@ func TestStartDirect_CpusetWriteFailureIsFatal(t *testing.T) {
 // is only a warning and does not discard the pinning.
 func TestStartDirect_CpusetQuotaFailureKeepsCgroup(t *testing.T) {
 	fake := &fakeCgroupManager{
-		online:    "0-7",
-		createErr: errors.New("failed to set CPU limits: failed to write cpu.max"),
+		online: "0-7",
+		createErr: &jailer.CgroupError{
+			Stage: jailer.CgroupStageCPU,
+			Field: "cpu.max",
+			Err:   errors.New("failed to write cpu.max"),
+		},
 	}
 	vmm := cgroupTestVMM(t, fake)
 
@@ -407,8 +338,12 @@ func TestStartDirect_AddProcessFailureIsFatal(t *testing.T) {
 // VMConfig, and refuses a cpuset before the jailer (which is nil here) runs.
 func TestStartWithJailer_RejectsCpusetBeforeJailerStart(t *testing.T) {
 	fake := &fakeCgroupManager{
-		online:    "0-7",
-		createErr: errors.New("failed to set cpuset limits: boom"),
+		online: "0-7",
+		createErr: &jailer.CgroupError{
+			Stage: jailer.CgroupStageCpuset,
+			Field: "cpuset.cpus",
+			Err:   errors.New("boom"),
+		},
 	}
 	vmm := cgroupTestVMM(t, fake)
 	vmm.useJailer = true
@@ -518,4 +453,77 @@ func TestCreateVMCgroup_Disabled(t *testing.T) {
 	}, 1, 512)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cgroup v2 not available on this system")
+}
+
+// TestForceStop_RemovesCgroup pins the last teardown path: a health-monitor force
+// stop must not leave the VM's cgroup behind.
+func TestForceStop_RemovesCgroup(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	require.NoError(t, cmd.Start())
+	defer func() { _ = cmd.Process.Kill() }()
+
+	fake := &fakeCgroupManager{online: "0-7"}
+	vmm := &VMMManager{
+		socketDir: t.TempDir(),
+		cgroupMgr: fake,
+		processes: map[string]*exec.Cmd{"task-forcestop-cgroup": cmd},
+		logger:    zerolog.Nop(),
+	}
+
+	task := &types.Task{ID: "task-forcestop-cgroup"}
+	require.NoError(t, vmm.ForceStop(context.Background(), task))
+
+	_, _, removed, _ := fake.snapshot()
+	assert.Equal(t, []string{"task-forcestop-cgroup"}, removed,
+		"a force-stopped VM's cgroup must not outlive it")
+}
+
+// TestCreateVMCgroup_TypedStagePolicy pins the daemon side of the shared
+// classification: it keys on the typed stage, never on error text, so a
+// cpuset-stage failure is fatal and a quota-stage failure is only a warning
+// whatever the messages say.
+func TestCreateVMCgroup_TypedStagePolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		stage     jailer.CgroupStage
+		wantFatal bool
+	}{
+		{name: "a cpuset stage failure is fatal", stage: jailer.CgroupStageCpuset, wantFatal: true},
+		{name: "a create-dir failure is fatal", stage: jailer.CgroupStageCreateDir, wantFatal: true},
+		{name: "a CPU quota stage failure is a warning", stage: jailer.CgroupStageCPU, wantFatal: false},
+		{name: "a memory quota stage failure is a warning", stage: jailer.CgroupStageMemory, wantFatal: false},
+		{name: "an IO quota stage failure is a warning", stage: jailer.CgroupStageIO, wantFatal: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeCgroupManager{
+				online: "0-7",
+				createErr: &jailer.CgroupError{
+					Stage: tt.stage,
+					Err:   errors.New("stage failed"),
+				},
+			}
+			vmm := cgroupTestVMM(t, fake)
+			task := &types.Task{
+				ID:          "task-stage",
+				Annotations: map[string]string{types.CpusetLabel: "0-1"},
+			}
+
+			created, err := vmm.createVMCgroup(task, 1, 512)
+			_, _, removed, _ := fake.snapshot()
+
+			if tt.wantFatal {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), `cannot apply cpuset "0-1"`)
+				assert.False(t, created)
+				assert.Equal(t, []string{"task-stage"}, removed,
+					"a fatal cpuset failure must remove the partial cgroup")
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, created, "the cpuset is in place, so the cgroup is kept")
+			assert.Empty(t, removed)
+		})
+	}
 }

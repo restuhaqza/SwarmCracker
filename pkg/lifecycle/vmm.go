@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -34,7 +35,7 @@ type VMMManager struct {
 	// cgroupMu guards it: Start creates it, while Stop/Remove read it without
 	// holding the manager lock.
 	cgroupMu  sync.Mutex
-	cgroupMgr cgroupManager
+	cgroupMgr jailer.CgroupOps
 	// cgroupErr remembers why the real manager could not be created, so a cpuset
 	// request can be rejected with the reason.
 	cgroupErr error
@@ -205,9 +206,13 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 	}
 
 	var startErr error
+	// Remove the cgroup on every path that does not reach a registered VM. This
+	// cannot key on startErr: the early LookPath/cmd.Start failures return before
+	// it is set, and a cgroup of a VM that never ran must not leak.
+	cgroupKept := false
 	if cgrouped {
 		defer func() {
-			if startErr != nil {
+			if !cgroupKept {
 				vm.removeCgroup(task.ID)
 			}
 		}()
@@ -318,6 +323,8 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 	vmInstance.SetState(VMStateRunning)
 
 	vm.vms[task.ID] = vmInstance
+	// The VM is running with its cgroup: from here on teardown owns the removal.
+	cgroupKept = true
 
 	log.Info().
 		Str("task_id", task.ID).

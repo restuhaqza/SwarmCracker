@@ -3,7 +3,9 @@ package lifecycle
 import (
 	"context"
 	"errors"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -89,7 +91,7 @@ func (f *fakeCgroupManager) snapshot() (created []cgroupCreate, removed []string
 }
 
 // newCgroupVMM builds a lifecycle manager around the fake cgroup manager.
-func newCgroupVMM(t *testing.T, mgr cgroupManager) *VMMManager {
+func newCgroupVMM(t *testing.T, mgr jailer.CgroupOps) *VMMManager {
 	t.Helper()
 	socketDir := t.TempDir()
 	return &VMMManager{
@@ -162,7 +164,7 @@ func TestPrepareCgroup_DerivesLimitsFromSpec(t *testing.T) {
 	}, creates[0].limits)
 
 	require.Len(t, ensure, 1)
-	assert.Equal(t, cgroupControllers, ensure[0])
+	assert.Equal(t, jailer.DefaultControllers, ensure[0])
 }
 
 // TestPrepareCgroup_FallsBackToVMSize pins the fallback when the task declares
@@ -208,7 +210,7 @@ func TestPrepareCgroup_CpusetControllerUnavailableIsFatal(t *testing.T) {
 	fake := &fakeCgroupManager{
 		online: "0-3",
 		ensureErr: &jailer.ControllersError{
-			Requested:   cgroupControllers,
+			Requested:   jailer.DefaultControllers,
 			Unavailable: []string{"cpuset"},
 		},
 	}
@@ -227,8 +229,12 @@ func TestPrepareCgroup_CpusetControllerUnavailableIsFatal(t *testing.T) {
 // a quota write failure does not discard the cgroup that carries the pinning.
 func TestPrepareCgroup_QuotaFailureKeepsCpuset(t *testing.T) {
 	fake := &fakeCgroupManager{
-		online:    "0-3",
-		createErr: errors.New("failed to set memory limits: failed to write memory.max"),
+		online: "0-3",
+		createErr: &jailer.CgroupError{
+			Stage: jailer.CgroupStageMemory,
+			Field: "memory.max",
+			Err:   errors.New("failed to write memory.max"),
+		},
 	}
 	vm := newCgroupVMM(t, fake)
 
@@ -244,8 +250,12 @@ func TestPrepareCgroup_QuotaFailureKeepsCpuset(t *testing.T) {
 // is fatal and cleans up the partially created cgroup.
 func TestPrepareCgroup_CpusetWriteFailureIsFatal(t *testing.T) {
 	fake := &fakeCgroupManager{
-		online:    "0-3",
-		createErr: errors.New("failed to set cpuset limits: failed to write cpuset.cpus"),
+		online: "0-3",
+		createErr: &jailer.CgroupError{
+			Stage: jailer.CgroupStageCpuset,
+			Field: "cpuset.cpus",
+			Err:   errors.New("failed to write cpuset.cpus"),
+		},
 	}
 	vm := newCgroupVMM(t, fake)
 
@@ -315,4 +325,90 @@ func TestRemove_RemovesCgroup(t *testing.T) {
 
 	_, removed, _ := fake.snapshot()
 	assert.Equal(t, []string{"task-remove"}, removed)
+}
+
+// TestStart_LookPathFailureRemovesCgroup pins the teardown for a failure that
+// happens after the cgroup exists but before any process does.
+func TestStart_LookPathFailureRemovesCgroup(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	fake := &fakeCgroupManager{online: "0-3"}
+	vm := newCgroupVMM(t, fake)
+
+	err := vm.Start(context.Background(), cpusetTask("0-1"), machineConfig(2, 512))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "firecracker binary not found")
+
+	creates, removed, _ := fake.snapshot()
+	require.Len(t, creates, 1, "the cgroup is created before the binary lookup")
+	assert.Equal(t, []string{"task-lifecycle-cgroup"}, removed,
+		"a VM that never ran must not leak its cgroup")
+}
+
+// TestStart_ProcessStartFailureRemovesCgroup pins the same for a cmd.Start
+// failure: LookPath accepts the file (it is executable) and the kernel rejects
+// the missing interpreter, so the failure lands after the cgroup exists.
+func TestStart_ProcessStartFailureRemovesCgroup(t *testing.T) {
+	binDir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(binDir, "firecracker"),
+		[]byte("#!/nonexistent/interpreter\n"),
+		0o755,
+	))
+	t.Setenv("PATH", binDir)
+
+	fake := &fakeCgroupManager{online: "0-3"}
+	vm := newCgroupVMM(t, fake)
+
+	err := vm.Start(context.Background(), cpusetTask("0-1"), machineConfig(2, 512))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start firecracker")
+
+	_, removed, _ := fake.snapshot()
+	assert.Equal(t, []string{"task-lifecycle-cgroup"}, removed,
+		"a VM whose process never started must not leak its cgroup")
+}
+
+// TestPrepareCgroup_TypedStagePolicy pins the `vm create` side of the shared
+// classification: it too keys on the typed stage, never on error text, so a
+// cpuset-stage failure is fatal and a quota-stage failure is only a warning.
+func TestPrepareCgroup_TypedStagePolicy(t *testing.T) {
+	tests := []struct {
+		name      string
+		stage     jailer.CgroupStage
+		wantFatal bool
+	}{
+		{name: "a cpuset stage failure is fatal", stage: jailer.CgroupStageCpuset, wantFatal: true},
+		{name: "a create-dir failure is fatal", stage: jailer.CgroupStageCreateDir, wantFatal: true},
+		{name: "a CPU quota stage failure is a warning", stage: jailer.CgroupStageCPU, wantFatal: false},
+		{name: "a memory quota stage failure is a warning", stage: jailer.CgroupStageMemory, wantFatal: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeCgroupManager{
+				online: "0-3",
+				createErr: &jailer.CgroupError{
+					Stage: tt.stage,
+					Err:   errors.New("stage failed"),
+				},
+			}
+			vm := newCgroupVMM(t, fake)
+
+			created, err := vm.prepareCgroup(cpusetTask("0-1"), machineConfig(2, 512))
+			_, removed, _ := fake.snapshot()
+
+			if tt.wantFatal {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), `cannot apply cpuset "0-1"`)
+				assert.False(t, created)
+				assert.Equal(t, []string{"task-lifecycle-cgroup"}, removed,
+					"a fatal cpuset failure must remove the partial cgroup")
+				return
+			}
+			require.NoError(t, err)
+			assert.True(t, created, "the cpuset is in place, so the cgroup is kept")
+			assert.Empty(t, removed)
+		})
+	}
 }
