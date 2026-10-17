@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -91,6 +92,85 @@ const GoldenLabel = "swarmcracker.golden"
 // BalloonLabel carries the memory-balloon target in MiB on a service, e.g.
 // "swarmcracker.balloon=256". Absent means no balloon device is configured.
 const BalloonLabel = "swarmcracker.balloon"
+
+// CpusetLabel carries a cgroup v2 cpuset request on a service, e.g.
+// "swarmcracker.cpuset=0-3". It pins the VM's Firecracker process to exactly
+// those CPUs; absent means "do not pin". The annotation uses the same key (see
+// AnnotationCpuset).
+const CpusetLabel = AnnotationCpuset
+
+// CgroupMemoryHeadroom is added to the guest's declared memory to cap the
+// Firecracker process: the cgroup holds the VMM, whose RSS is the guest's memory
+// plus Firecracker's own overhead, so a limit equal to the guest size would
+// OOM-kill a healthy VM.
+const CgroupMemoryHeadroom int64 = 128 << 20
+
+// CgroupLimits is the resource envelope a task's VM cgroup must enforce.
+type CgroupLimits struct {
+	// CPUQuotaUs is the CPU quota in microseconds per one-second period. Zero
+	// means the task declared no CPU limit and the caller should use the VM's
+	// resolved vCPU count.
+	CPUQuotaUs int64
+
+	// MemoryMaxB is the hard memory cap for the VMM process, headroom included.
+	// Zero means the task declared no memory limit and the caller should use
+	// the VM's resolved memory plus CgroupMemoryHeadroom.
+	MemoryMaxB int64
+
+	// CpusetCPUs is the requested cpuset exactly as written (trimmed). It is
+	// deliberately not parsed or canonicalised here: pkg/types stays free of
+	// cgroup syntax knowledge, and every VMM path validates the request with
+	// jailer.ParseCPUSet before creating a cgroup. Empty means "do not pin".
+	CpusetCPUs string
+}
+
+// ResolveCgroupLimits derives a task's cgroup limits from the resources it
+// declared, using the same source precedence as ResolveVMSize: the hard cap
+// (Limits) when declared, else the soft reservation (Reservations). CPU and
+// memory always come from the same source, so the cgroup can never be derived
+// from a mix of the two.
+//
+// A zero CPUQuotaUs or MemoryMaxB means the task declared no such limit; the
+// caller substitutes the VM's own resolved size. Only values that cannot be
+// represented as a cgroup limit are rejected (a positive CPU request below the
+// kernel's 1000us minimum), and the error names the offending value.
+func ResolveCgroupLimits(task *Task) (CgroupLimits, error) {
+	if task == nil {
+		return CgroupLimits{}, nil
+	}
+
+	limits := CgroupLimits{
+		CpusetCPUs: strings.TrimSpace(task.Annotations[CpusetLabel]),
+	}
+
+	src := task.Spec.Resources.Limits
+	if src == nil {
+		src = task.Spec.Resources.Reservations
+	}
+	if src == nil {
+		return limits, nil
+	}
+	// NanoCPUs are nanoseconds of CPU per second; a cgroup v2 quota is
+	// microseconds per second, so the conversion is a division by 1000. The
+	// kernel rejects a quota below 1000us, so a smaller positive request is
+	// refused instead of being rounded down to "unlimited".
+	if src.NanoCPUs > 0 {
+		if src.NanoCPUs < 1e6 {
+			return CgroupLimits{}, fmt.Errorf(
+				"invalid CPU limit %d NanoCPUs on task %s: a cgroup v2 quota must be at least 1000us (1000000 NanoCPUs)",
+				src.NanoCPUs, task.ID)
+		}
+		limits.CPUQuotaUs = src.NanoCPUs / 1000
+	}
+
+	// The headroom is what keeps the VMM itself alive: the guest's declared
+	// memory is not the whole process.
+	if src.MemoryBytes > 0 {
+		limits.MemoryMaxB = src.MemoryBytes + CgroupMemoryHeadroom
+	}
+
+	return limits, nil
+}
 
 // Container specifies container configuration.
 type Container struct {

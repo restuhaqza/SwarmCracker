@@ -34,14 +34,18 @@ type VMMManager struct {
 	useJailer       bool
 	jailerConfig    *jailer.Config
 	jailer          *jailer.Jailer
-	cgroupMgr       *jailer.CgroupManager
-	processes       map[string]*exec.Cmd
-	processWaits    map[string]*processWait
-	processMutex    sync.Mutex
-	consoles        map[string]*console.Server
-	consoleMutex    sync.Mutex
-	logFiles        map[string]*os.File
-	logMutex        sync.Mutex
+	cgroupMgr       cgroupManager
+	// cgroupErr records why the cgroup manager could not be created, so a task
+	// that requests a cpuset can be rejected with the reason instead of the
+	// request being silently ignored.
+	cgroupErr    error
+	processes    map[string]*exec.Cmd
+	processWaits map[string]*processWait
+	processMutex sync.Mutex
+	consoles     map[string]*console.Server
+	consoleMutex sync.Mutex
+	logFiles     map[string]*os.File
+	logMutex     sync.Mutex
 	// logDir, when non-empty, is where each VM's console output is mirrored as
 	// <logDir>/<task-id>.log so `swarmcracker vm logs <task-id>` can read it.
 	logDir string
@@ -193,19 +197,26 @@ func NewVMMManagerWithConfig(cfg *VMMManagerConfig) (*VMMManager, error) {
 			return nil, fmt.Errorf("failed to create jailer: %w", err)
 		}
 
-		// Create cgroup manager if enabled
-		if cfg.EnableCgroups {
-			v.cgroupMgr, err = jailer.NewCgroupManager("")
-			if err != nil {
-				v.logger.Warn().Err(err).Msg("Failed to create cgroup manager, continuing without cgroups")
-			}
-		}
-
 		v.logger.Info().
 			Str("jailer_path", jailerPath).
 			Str("chroot_dir", jailerChrootDir).
 			Str("cgroup_version", cgroupVersion).
 			Msg("Jailer initialized")
+	}
+
+	// Create the cgroup manager for *both* start paths. A construction failure
+	// is recorded rather than returned: a task that requests no cpuset can still
+	// run without cgroups (as before), while one that does request a cpuset is
+	// rejected from Start with this reason. Nothing is touched when cgroups are
+	// disabled.
+	if cfg.EnableCgroups {
+		mgr, err := jailer.NewCgroupManager("")
+		if err != nil {
+			v.cgroupErr = err
+			v.logger.Warn().Err(err).Msg("Failed to create cgroup manager, cgroup limits are unavailable")
+		} else {
+			v.cgroupMgr = mgr
+		}
 	}
 
 	return v, nil
@@ -225,10 +236,26 @@ func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interfa
 }
 
 // startDirect starts Firecracker without jailer (legacy mode).
-func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config interface{}) error {
+func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config interface{}) (startErr error) {
 	// Create socket directory
 	if err := os.MkdirAll(v.socketDir, 0755); err != nil {
 		return fmt.Errorf("failed to create socket dir: %w", err)
+	}
+
+	// Apply the task's cgroup before the VMM exists: a refused cpuset must fail
+	// the task without ever starting a process. The VM process is attached to
+	// the cgroup once it has a pid, and the cgroup is torn down if startup fails.
+	vcpus, memoryMB := machineSize(config)
+	cgrouped, err := v.createVMCgroup(task, vcpus, memoryMB)
+	if err != nil {
+		return err
+	}
+	if cgrouped {
+		defer func() {
+			if startErr != nil {
+				v.removeVMCgroup(task.ID)
+			}
+		}()
 	}
 
 	socketPath := filepath.Join(v.socketDir, task.ID+".sock")
@@ -297,6 +324,17 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 	v.processes[task.ID] = cmd
 	v.processMutex.Unlock()
 
+	// Attach the VMM to its cgroup now that it has a pid. A cpuset that could
+	// not be attached never took effect, so that fails the VM.
+	if err := v.addVMCgroupProcess(task, cgrouped, cmd.Process.Pid); err != nil {
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			log.Warn().Err(killErr).Msg("Failed to kill process after cgroup error")
+		}
+		v.closeConsole(task.ID)
+		socketCleanupNeeded = true
+		return err
+	}
+
 	// Wait for socket to be created
 	if err := v.waitForSocket(ctx, socketPath, 10*time.Second); err != nil {
 		if killErr := cmd.Process.Kill(); killErr != nil {
@@ -354,7 +392,7 @@ func jailerVMConfig(cfg, machineConfig, bootSource map[string]interface{}) map[s
 }
 
 // startWithJailer starts Firecracker inside jailer with isolation.
-func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, config interface{}) error {
+func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, config interface{}) (startErr error) {
 	// Parse config to extract VM settings
 	cfg, ok := config.(map[string]interface{})
 	if !ok {
@@ -413,30 +451,34 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 		HtEnabled:  toBool(machineConfig["smt"]), // Extract SMT from machine config
 	}
 
+	// Create the task's cgroup before the jailer (and thus Firecracker) starts, so
+	// a refused cpuset fails the task without a process to clean up. The jailer's
+	// pid is added once it exists.
+	cgrouped, err := v.createVMCgroup(task, jailerCfg.VcpuCount, jailerCfg.MemoryMB)
+	if err != nil {
+		return err
+	}
+	if cgrouped {
+		defer func() {
+			if startErr != nil {
+				v.removeVMCgroup(task.ID)
+			}
+		}()
+	}
+
 	// Start jailed VM
 	process, err := v.jailer.Start(ctx, jailerCfg)
 	if err != nil {
 		return fmt.Errorf("failed to start jailed VM: %w", err)
 	}
 
-	// Apply cgroup limits if enabled
-	if v.cgroupMgr != nil && v.jailerConfig != nil {
-		// Create cgroup with resource limits
-		limits := jailer.ResourceLimits{
-			CPUQuotaUs: int64(jailerCfg.VcpuCount * 1000000), // 1 CPU per vcpu
-			MemoryMax:  int64(jailerCfg.MemoryMB) * 1024 * 1024,
-			MemoryHigh: int64(jailerCfg.MemoryMB) * 1024 * 1024 * 90 / 100, // 90% of max
-			IOWeight:   100,
+	// Attach the jailer (and through it Firecracker) to its cgroup. A cpuset
+	// that could not be applied never took effect, so that fails the VM.
+	if err := v.addVMCgroupProcess(task, cgrouped, process.Pid); err != nil {
+		if stopErr := v.jailer.Stop(ctx, task.ID); stopErr != nil {
+			v.logger.Warn().Err(stopErr).Msg("Failed to stop jailer after cgroup error")
 		}
-
-		if err := v.cgroupMgr.CreateCgroup(task.ID, limits); err != nil {
-			v.logger.Warn().Err(err).Msg("Failed to create cgroup")
-		} else {
-			// Add jailer process to cgroup
-			if err := v.cgroupMgr.AddProcess(task.ID, process.Pid); err != nil {
-				v.logger.Warn().Err(err).Msg("Failed to add process to cgroup")
-			}
-		}
+		return err
 	}
 
 	// Store process reference (use jailer PID as proxy)
@@ -737,13 +779,10 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 		if err := v.jailer.Stop(ctx, task.ID); err != nil {
 			v.logger.Error().Err(err).Msg("Jailer stop failed")
 		}
-		// Clean up cgroup if enabled
-		if v.cgroupMgr != nil {
-			if err := v.cgroupMgr.RemoveCgroup(task.ID); err != nil {
-				v.logger.Warn().Err(err).Msg("Failed to remove cgroup")
-			}
-		}
 	}
+
+	// The cgroup must not outlive the VM, on either start path.
+	v.removeVMCgroup(task.ID)
 
 	v.processMutex.Lock()
 	cmd, ok := v.processes[task.ID]
@@ -975,13 +1014,11 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 		if err := v.jailer.ForceStop(ctx, task.ID); err != nil {
 			v.logger.Warn().Err(err).Msg("Jailer force stop failed")
 		}
-		// Clean up cgroup
-		if v.cgroupMgr != nil {
-			if err := v.cgroupMgr.RemoveCgroup(task.ID); err != nil {
-				v.logger.Warn().Err(err).Msg("Failed to remove cgroup")
-			}
-		}
 	}
+
+	// Remove the task's cgroup on either start path; the cgroup must not
+	// outlive its VM.
+	v.removeVMCgroup(task.ID)
 
 	v.processMutex.Lock()
 	cmd, ok := v.processes[task.ID]
