@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
@@ -44,6 +45,13 @@ type fakeCgroupManager struct {
 	removed   []string
 	removeErr error
 
+	// removeProcessAlive, when set, is evaluated at every RemoveCgroup call and
+	// its result recorded in removeAlive. It pins teardown ordering against the
+	// VMM process's lifetime: RemoveCgroup migrates a live process to the root
+	// cgroup, so it must only run after the process has exited.
+	removeProcessAlive func() bool
+	removeAlive        []bool
+
 	online    string
 	onlineErr error
 }
@@ -72,6 +80,9 @@ func (f *fakeCgroupManager) AddProcess(taskID string, pid int) error {
 func (f *fakeCgroupManager) RemoveCgroup(taskID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.removeProcessAlive != nil {
+		f.removeAlive = append(f.removeAlive, f.removeProcessAlive())
+	}
 	f.removed = append(f.removed, taskID)
 	return f.removeErr
 }
@@ -89,6 +100,14 @@ func (f *fakeCgroupManager) snapshot() (created []cgroupCreate, added []cgroupAd
 		append([]cgroupAdd(nil), f.added...),
 		append([]string(nil), f.removed...),
 		append([][]string(nil), f.ensureCalls...)
+}
+
+// removeLiveness returns the process-liveness observation recorded at each
+// RemoveCgroup call, in call order.
+func (f *fakeCgroupManager) removeLiveness() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.removeAlive...)
 }
 
 // cgroupTestVMM builds a manager whose cgroup manager is the fake and whose
@@ -425,6 +444,79 @@ func TestRemove_RemovesCgroupOnDirectPath(t *testing.T) {
 
 	_, _, removed, _ := fake.snapshot()
 	assert.Equal(t, []string{"task-remove-cgroup"}, removed)
+}
+
+// TestStop_RemovesCgroupAfterProcessExit pins teardown ordering: RemoveCgroup
+// migrates the VMM process back to the root cgroup, so it must run only after the
+// process has exited. The fake evaluates liveness at removal time, which fails
+// with the old order (removal before SIGTERM).
+func TestStop_RemovesCgroupAfterProcessExit(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	require.NoError(t, cmd.Start())
+	defer func() { _ = cmd.Process.Kill() }()
+
+	fake := &fakeCgroupManager{online: "0-7"}
+	fake.removeProcessAlive = func() bool {
+		return cmd.Process.Signal(syscall.Signal(0)) == nil
+	}
+	vmm := &VMMManager{
+		socketDir: t.TempDir(),
+		cgroupMgr: fake,
+		processes: map[string]*exec.Cmd{"task-stop-order": cmd},
+		logger:    zerolog.Nop(),
+	}
+
+	require.NoError(t, vmm.Stop(context.Background(), &types.Task{ID: "task-stop-order"}))
+
+	_, _, removed, _ := fake.snapshot()
+	assert.Equal(t, []string{"task-stop-order"}, removed)
+	assert.Equal(t, []bool{false}, fake.removeLiveness(),
+		"the cgroup must be removed only after the process has exited")
+}
+
+// TestRemove_RemovesCgroupAfterProcessExit pins the same ordering on the removal
+// path, which kills the process before tearing the cgroup down.
+func TestRemove_RemovesCgroupAfterProcessExit(t *testing.T) {
+	cmd := exec.Command("sleep", "30")
+	require.NoError(t, cmd.Start())
+	defer func() { _ = cmd.Process.Kill() }()
+
+	fake := &fakeCgroupManager{online: "0-7"}
+	fake.removeProcessAlive = func() bool {
+		return cmd.Process.Signal(syscall.Signal(0)) == nil
+	}
+	vmm := &VMMManager{
+		socketDir: t.TempDir(),
+		cgroupMgr: fake,
+		processes: map[string]*exec.Cmd{"task-remove-order": cmd},
+		logger:    zerolog.Nop(),
+	}
+
+	require.NoError(t, vmm.Remove(context.Background(), &types.Task{ID: "task-remove-order"}))
+
+	_, _, removed, _ := fake.snapshot()
+	assert.Equal(t, []string{"task-remove-order"}, removed)
+	assert.Equal(t, []bool{false}, fake.removeLiveness(),
+		"the cgroup must be removed only after the process has been killed and reaped")
+}
+
+// TestStop_UntrackedStillRemovesCgroup pins the error path: an untracked task
+// still lists its cgroup file, so returning "task not found" must not skip
+// teardown.
+func TestStop_UntrackedStillRemovesCgroup(t *testing.T) {
+	fake := &fakeCgroupManager{online: "0-7"}
+	vmm := &VMMManager{
+		socketDir: t.TempDir(),
+		cgroupMgr: fake,
+		processes: map[string]*exec.Cmd{},
+		logger:    zerolog.Nop(),
+	}
+
+	require.Error(t, vmm.Stop(context.Background(), &types.Task{ID: "task-stop-missing"}))
+
+	_, _, removed, _ := fake.snapshot()
+	assert.Equal(t, []string{"task-stop-missing"}, removed,
+		"the early task-not-found return must still remove the cgroup")
 }
 
 // TestCreateVMCgroup_Disabled pins that a disabled manager means no cgroup calls

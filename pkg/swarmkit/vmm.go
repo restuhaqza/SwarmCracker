@@ -781,13 +781,13 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 		}
 	}
 
-	// The cgroup must not outlive the VM, on either start path.
-	v.removeVMCgroup(task.ID)
-
 	v.processMutex.Lock()
 	cmd, ok := v.processes[task.ID]
 	v.processMutex.Unlock()
 	if !ok {
+		// The cgroup must not outlive the VM, on either start path, even when
+		// the process bookkeeping is already gone.
+		v.removeVMCgroup(task.ID)
 		return fmt.Errorf("task not found")
 	}
 
@@ -815,6 +815,11 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 		}
 		<-done // reap the waiter goroutine
 	}
+
+	// Remove the cgroup only after the VMM process is gone: RemoveCgroup
+	// migrates a live process back to the root cgroup, which would silently
+	// drop the quota and the pin for the rest of a timed-out stop.
+	v.removeVMCgroup(task.ID)
 
 	v.forgetProcess(task.ID)
 	v.cleanupVMSockets(task.ID)
@@ -1020,10 +1025,6 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 		}
 	}
 
-	// Remove the task's cgroup on either start path; the cgroup must not
-	// outlive its VM.
-	v.removeVMCgroup(task.ID)
-
 	v.processMutex.Lock()
 	cmd, ok := v.processes[task.ID]
 	v.processMutex.Unlock()
@@ -1041,6 +1042,11 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 			}
 		}
 	}
+
+	// Remove the task's cgroup on either start path, and only after the VMM
+	// process has exited: RemoveCgroup migrates a live process to the root
+	// cgroup, which would drop its quota and pin.
+	v.removeVMCgroup(task.ID)
 
 	// Remove socket if exists
 	socketPath := filepath.Join(v.socketDir, task.ID+".sock")
