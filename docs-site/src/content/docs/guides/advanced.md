@@ -222,14 +222,14 @@ fails.
 
 ### Verify it on the host
 
-Run these on the node that owns the task. The `service ps` / `task ls` **tables
-truncate the ID to 12 characters**, while the cgroup directory is named with the
+Run these on the node that owns the task. The `service ps` **table truncates the
+task ID to 12 characters**, while the cgroup directory is named with the
 **full** task ID — so take the ID from `-q`, which prints it untruncated. Filter
 to *this* node and to running tasks instead of picking the first row:
 
 ```bash
 # Full task ID of the service's running task on this node. NODE_ID is this
-# node's ID (`swarmcracker node ls`); SERVICE_ID is the service's ID
+# node's ID (`swarmcracker node ls -q`); SERVICE_ID is the service's ID
 # (`swarmcracker service ls -q --filter name=api`).
 TASK=$(swarmcracker task ls -q --filter state=running \
   --node "$NODE_ID" --service "$SERVICE_ID" | head -1)
@@ -379,13 +379,13 @@ plus `--constraint node.labels.hugepages==yes`).
 
 #### Verify it on the host
 
-Use the **full** task ID: the `service ps` / `task ls` tables truncate it to 12
+Use the **full** task ID: the `service ps` table truncates it to 12
 characters, while the cgroup directory uses the whole ID; `-q` prints it
 untruncated. The cgroup path is node-local, so filter for the **running** task
 on **this** node rather than taking the first row:
 
 ```bash
-# NODE_ID from `swarmcracker node ls`; SERVICE_ID from
+# NODE_ID from `swarmcracker node ls -q`; SERVICE_ID from
 # `swarmcracker service ls -q --filter name=api`.
 TASK=$(swarmcracker task ls -q --filter state=running \
   --node "$NODE_ID" --service "$SERVICE_ID" | head -1)
@@ -473,7 +473,7 @@ The cgroup path is node-local: use the full task ID of the **running** task on
 **this** node, filtered rather than taken from the first row.
 
 ```bash
-# NODE_ID from `swarmcracker node ls`; SERVICE_ID from
+# NODE_ID from `swarmcracker node ls -q`; SERVICE_ID from
 # `swarmcracker service ls -q --filter name=db`.
 TASK=$(swarmcracker task ls -q --filter state=running \
   --node "$NODE_ID" --service "$SERVICE_ID" | head -1)
