@@ -32,7 +32,7 @@ Name: SwarmCracker. Existing copy, factual claims, and links (GitHub, releases, 
 
 ## Evidence on Hand
 
-Real: install script URL, CLI commands, terminal output sequence, docs URLs, GitHub repo, release tag v0.10.0, Apache 2.0 LICENSE. No customer logos, testimonials, benchmarks, or pricing exist — future work must not fabricate them.
+Real: install script URL, CLI commands, terminal output sequence, docs URLs, GitHub repo, release tag v0.11.0, Apache 2.0 LICENSE. No customer logos, testimonials, benchmarks, or pricing exist — future work must not fabricate them.
 
 ## Product Principles
 
