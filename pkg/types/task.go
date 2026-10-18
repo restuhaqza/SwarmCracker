@@ -135,6 +135,41 @@ func ParseHugepages(raw string) (bool, error) {
 	}
 }
 
+// HugepagesMachineValue is the only value Firecracker accepts for
+// machine-config.huge_pages: 2M pages are the sole supported size.
+const HugepagesMachineValue = "2M"
+
+// hugepageMiB2M is the size of one huge page, in MiB. Guest memory must be a
+// whole number of them, so a size that is not a multiple of 2 is unbootable
+// with huge pages.
+const hugepageMiB2M = 2
+
+// ResolveHugepages turns a task's hugepages request into Firecracker's
+// machine-config huge_pages value. It returns "" when the task requested no
+// hugepages, so an unconfigured VM's machine-config stays unchanged (no key at
+// all), and HugepagesMachineValue when it did.
+//
+// A malformed request, or a memory size that cannot be expressed in whole 2M
+// pages, is a hard error. Both VMM start paths need the same rule and the same
+// message, so it lives here rather than in either translator: Firecracker
+// rejects a hugepage request whose mem_size_mib is odd, and silently dropping
+// the request would boot 4K memory behind the user's back.
+func ResolveHugepages(raw string, memSizeMib int) (string, error) {
+	requested, err := ParseHugepages(raw)
+	if err != nil {
+		return "", err
+	}
+	if !requested {
+		return "", nil
+	}
+	if memSizeMib%hugepageMiB2M != 0 {
+		return "", fmt.Errorf(
+			"invalid hugepage-backed memory size %d MiB: 2M huge pages require a multiple of %d MiB",
+			memSizeMib, hugepageMiB2M)
+	}
+	return HugepagesMachineValue, nil
+}
+
 // CgroupMemoryHeadroom is added to the guest's declared memory to cap the
 // Firecracker process: the cgroup holds the VMM, whose RSS is the guest's memory
 // plus Firecracker's own overhead, so a limit equal to the guest size would

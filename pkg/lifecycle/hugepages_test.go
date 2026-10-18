@@ -35,6 +35,20 @@ func hugepagesTask(request string) *types.Task {
 	return &types.Task{ID: "task-lifecycle-hugepages", Annotations: annotations}
 }
 
+// hugepagesPlacementTask is a `vm create`-shaped task that asks for hugepages
+// *and* a cgroup placement, so the ordering claim has teeth: if the pool check
+// ran after prepareCgroup, these annotations would create one.
+func hugepagesPlacementTask(request, cpuset, numa string) *types.Task {
+	task := hugepagesTask(request)
+	if cpuset != "" {
+		task.Annotations[types.CpusetLabel] = cpuset
+	}
+	if numa != "" {
+		task.Annotations[types.NumaLabel] = numa
+	}
+	return task
+}
+
 // TestStart_RejectsShortHugepagesPoolBeforeAnythingStarts pins that the pool is
 // checked before the cgroup or the VMM exists, so a refused request leaves no
 // process and no cgroup behind.
@@ -54,6 +68,43 @@ func TestStart_RejectsShortHugepagesPoolBeforeAnythingStarts(t *testing.T) {
 	assert.Empty(t, creates)
 	assert.Empty(t, removed, "nothing was created, so nothing needs removing")
 	assert.Empty(t, vm.vms, "a refused request must not register a VM")
+}
+
+// TestStart_RefusedHugepagesLeavesNoCgroupForPlacementRequests pins the ordering
+// claim with a task that would otherwise be cgrouped. A hugepages-only task
+// makes prepareCgroup a no-op, so asserting "no cgroup" there cannot fail; a
+// cpuset or NUMA request makes the gate live, and the pool refusal must still
+// come first: no EnsureControllers/CreateCgroup, no RemoveCgroup cleanup, and no
+// registered VM.
+func TestStart_RefusedHugepagesLeavesNoCgroupForPlacementRequests(t *testing.T) {
+	placements := []struct {
+		name   string
+		cpuset string
+		numa   string
+	}{
+		{name: "cpuset", cpuset: "0-1"},
+		{name: "numa", numa: "0"},
+		{name: "cpuset and numa", cpuset: "0-1", numa: "0-1"},
+	}
+
+	for _, placement := range placements {
+		t.Run(placement.name, func(t *testing.T) {
+			fake := &fakeCgroupManager{online: "0-3"}
+			vm := newCgroupVMM(t, fake)
+			vm.hugepagesPoolPath = writeHugepagesFixture(t, hugepagesMeminfo)
+
+			task := hugepagesPlacementTask("true", placement.cpuset, placement.numa)
+			err := vm.Start(context.Background(), task, machineConfig(1, 512))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "128 free of 512 allocated")
+
+			creates, removed, ensure := fake.snapshot()
+			assert.Empty(t, ensure, "the pool check must run before EnsureControllers")
+			assert.Empty(t, creates, "the pool check must run before CreateCgroup")
+			assert.Empty(t, removed, "nothing was created, so nothing may be torn down")
+			assert.Empty(t, vm.vms, "a refused request must not register a VM")
+		})
+	}
 }
 
 // TestStart_LargeEnoughHugepagesPoolProceeds pins the accepting side: the check

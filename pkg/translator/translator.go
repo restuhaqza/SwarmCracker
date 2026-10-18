@@ -485,27 +485,16 @@ func applyHugepages(config *VMMConfig, task *types.Task) error {
 		raw = task.Annotations[types.HugepagesLabel]
 	}
 
-	requested, err := types.ParseHugepages(raw)
+	// The request is resolved by types.ResolveHugepages, the same helper the
+	// daemon's translator uses, so both start paths emit one identical rule.
+	value, err := types.ResolveHugepages(raw, config.MachineConfig.MemSizeMib)
 	if err != nil {
 		return err
 	}
-	if !requested {
-		return nil
-	}
 
-	if memSizeMib := config.MachineConfig.MemSizeMib; memSizeMib%hugepagesMiB2M != 0 {
-		return fmt.Errorf(
-			"invalid hugepage-backed memory size %d MiB: 2M huge pages require a multiple of %d MiB",
-			memSizeMib, hugepagesMiB2M)
-	}
-
-	config.MachineConfig.HugePages = "2M"
+	config.MachineConfig.HugePages = value
 	return nil
 }
-
-// hugepagesMiB2M is the size of one huge page, in MiB: 2M is the only size
-// Firecracker supports, so guest memory must be a multiple of it.
-const hugepagesMiB2M = 2
 
 // resolveBalloon reads the memory-balloon target from a task's annotation and
 // validates it against the VM's memory size. It returns nil when the task does

@@ -18,6 +18,47 @@ func TestHugepagesAnnotationConstants(t *testing.T) {
 	assert.Equal(t, NumaLabel, AnnotationNumaNode)
 }
 
+// TestResolveHugepages covers the machine-config value both VMM paths emit: no
+// request must stay "absent" (empty), a request must be the sole value
+// Firecracker accepts, and a memory size that cannot be whole 2M pages must be
+// rejected rather than silently booting 4K memory.
+func TestResolveHugepages(t *testing.T) {
+	tests := []struct {
+		name     string
+		in       string
+		memoryMB int
+		want     string
+		wantErr  string
+	}{
+		{name: "absent", in: "", memoryMB: 512, want: ""},
+		{name: "false", in: "false", memoryMB: 512, want: ""},
+		{name: "true", in: "true", memoryMB: 512, want: HugepagesMachineValue},
+		{name: "2M synonym", in: "2M", memoryMB: 512, want: HugepagesMachineValue},
+		{name: "malformed", in: "yes", memoryMB: 512, wantErr: `invalid hugepages value "yes"`},
+		{
+			name:     "odd memory size",
+			in:       "true",
+			memoryMB: 513,
+			wantErr:  "invalid hugepage-backed memory size 513 MiB: 2M huge pages require a multiple of 2 MiB",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ResolveHugepages(tt.in, tt.memoryMB)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Empty(t, got)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // TestParseHugepages covers the accepted spellings and the strict rejection:
 // a value that is not a recognised request must not silently mean 4K memory.
 func TestParseHugepages(t *testing.T) {

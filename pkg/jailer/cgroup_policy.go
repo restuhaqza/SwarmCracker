@@ -184,12 +184,7 @@ func deriveResourceLimits(task *types.Task, vcpus, memoryMB int) (ResourceLimits
 	if resolved.CpusetCPUs != "" {
 		cpus, err := ParseCPUSet(resolved.CpusetCPUs)
 		if err != nil {
-			taskID := ""
-			if task != nil {
-				taskID = task.ID
-			}
-			return ResourceLimits{}, fmt.Errorf("invalid cpuset annotation %s=%q on task %s: %w",
-				types.CpusetLabel, resolved.CpusetCPUs, taskID, err)
+			return ResourceLimits{}, invalidPlacementAnnotation(task, "cpuset", types.CpusetLabel, resolved.CpusetCPUs, err)
 		}
 		limits.CpusetCPUs = cpus
 	}
@@ -201,12 +196,7 @@ func deriveResourceLimits(task *types.Task, vcpus, memoryMB int) (ResourceLimits
 	if resolved.NumaNodes != "" {
 		nodes, err := ParseCPUSet(resolved.NumaNodes)
 		if err != nil {
-			taskID := ""
-			if task != nil {
-				taskID = task.ID
-			}
-			return ResourceLimits{}, fmt.Errorf("invalid NUMA node annotation %s=%q on task %s: %w",
-				types.NumaLabel, resolved.NumaNodes, taskID, err)
+			return ResourceLimits{}, invalidPlacementAnnotation(task, "NUMA node", types.NumaLabel, resolved.NumaNodes, err)
 		}
 		limits.CpusetMems = nodes
 	}
@@ -225,6 +215,21 @@ func deriveResourceLimits(task *types.Task, vcpus, memoryMB int) (ResourceLimits
 	}
 
 	return limits, nil
+}
+
+// invalidPlacementAnnotation builds the hard error for a placement annotation
+// that is not valid Linux cpulist syntax. The cpuset and the NUMA-node request
+// are both cpulists parsed by ParseCPUSet, so they share one constructor: the
+// two rejections name the label, the value, and the task in the same way, and
+// cannot drift apart. Both wrap the underlying parse error rather than
+// introducing a type, matching the rest of this file.
+func invalidPlacementAnnotation(task *types.Task, noun, label, value string, cause error) error {
+	taskID := ""
+	if task != nil {
+		taskID = task.ID
+	}
+	return fmt.Errorf("invalid %s annotation %s=%q on task %s: %w",
+		noun, label, value, taskID, cause)
 }
 
 // onlineCPUs reports the host's online CPUs for an error message. It is

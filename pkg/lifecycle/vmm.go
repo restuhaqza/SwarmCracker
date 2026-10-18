@@ -141,9 +141,6 @@ type MachineConfig struct {
 	VCPUs      int  `json:"vcpu_count"`
 	MemSizeMib int  `json:"mem_size_mib"`
 	HtEnabled  bool `json:"ht_enabled"`
-	// HugePages is Firecracker's huge_pages value ("2M"); omitempty keeps an
-	// unconfigured VM's request unchanged.
-	HugePages string `json:"huge_pages,omitempty"`
 }
 
 // balloonDevice is the Firecracker PUT /balloon request body.
