@@ -4,7 +4,16 @@
 // Types
 // ---------------------------------------------------------------------------
 
-export type IconName = 'kernel' | 'swarm' | 'kvm' | 'boot' | 'network' | 'update';
+export type IconName =
+  | 'kernel'
+  | 'swarm'
+  | 'kvm'
+  | 'boot'
+  | 'network'
+  | 'update'
+  | 'qos'
+  | 'observe'
+  | 'registry';
 
 export interface NavItem {
   label: string;
@@ -118,6 +127,21 @@ export const features: Feature[] = [
     title: 'Rolling updates',
     body: 'Standard SwarmKit rolling-update strategies work out of the box — update images, change resource limits, or roll back with familiar flags.',
   },
+  {
+    icon: 'qos',
+    title: 'Resource QoS',
+    body: 'cgroup v2 CPU, memory and I/O limits, --cpuset pinning, 2M hugepages and --numa-node memory placement — enforced per VM, with a clear failure when the host cannot honour a hard request.',
+  },
+  {
+    icon: 'observe',
+    title: 'Observability & alerts',
+    body: 'Prometheus metrics for VM health, crashes and disk usage, plus shipped alert rules and an Alertmanager sink — wired by default instead of left inert.',
+  },
+  {
+    icon: 'registry',
+    title: 'Private registries',
+    body: 'service create --with-registry-auth forwards the manager’s registry credentials to workers, so private images pull without a second config on every node.',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -213,6 +237,12 @@ export const comparison: ComparisonRow[] = [
     docker: 'Overlay / bridge networks',
     kubernetes: 'Requires CNI plugin selection',
   },
+  {
+    aspect: 'Resource controls',
+    swarmcracker: 'cgroup v2 quotas, CPU pinning, hugepages, NUMA placement',
+    docker: 'CPU/memory limits on a shared kernel',
+    kubernetes: 'Requests and limits; hugepages via a plugin, no VM pinning',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -262,6 +292,16 @@ export const docsCards: DocsCard[] = [
     title: 'Security',
     body: 'Understand the isolation model, jailer configuration, and security best practices.',
     href: 'https://docs.swarmcracker.com/guides/security/',
+  },
+  {
+    title: 'Resource QoS',
+    body: 'Memory balloon, CPU pinning, cgroup limits, hugepages, and NUMA placement.',
+    href: 'https://docs.swarmcracker.com/guides/advanced/',
+  },
+  {
+    title: 'Alerting',
+    body: 'Crash-loop and health signals, the shipped rules, and the Alertmanager sink.',
+    href: 'https://docs.swarmcracker.com/guides/alerting/',
   },
 ];
 

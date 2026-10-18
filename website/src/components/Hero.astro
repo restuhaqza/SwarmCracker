@@ -1,5 +1,5 @@
 ---
-import { links } from '../data/site';
+import { links, site } from '../data/site';
 
 const installCmd = 'curl -fsSL https://swarmcracker.com/install.sh | sudo bash';
 ---
@@ -56,6 +56,37 @@ const installCmd = 'curl -fsSL https://swarmcracker.com/install.sh | sudo bash';
     color: var(--yard-ink-muted);
     margin: 0 0 2rem;
     max-width: 34ch;
+  }
+
+  .hero__release {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45rem 0.7rem;
+    margin: -1.15rem 0 1.9rem;
+    font-family: var(--yard-font-mono);
+    font-size: 0.8125rem;
+    line-height: 1.4;
+    color: var(--yard-ink-muted);
+  }
+
+  .hero__release-tag {
+    padding: 0.12rem 0.45rem;
+    border: 1.5px solid var(--yard-asphalt);
+    background: var(--yard-asphalt);
+    color: var(--yard-paper);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+
+  .hero__release a {
+    color: inherit;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .hero__release a:hover {
+    color: var(--yard-ink);
   }
 
   .hero__ctas {
@@ -381,6 +412,12 @@ const installCmd = 'curl -fsSL https://swarmcracker.com/install.sh | sudo bash';
         Firecracker microVMs with SwarmKit orchestration
       </h1>
       <p class="hero__sub">Docker Swarm UX with hardware-isolated VMs.</p>
+
+      <p class="hero__release">
+        <span class="hero__release-tag">{site.version}</span>
+        <span>hugepages · NUMA placement · cgroup v2 · alerting</span>
+        <a href={links.releases}>Release notes</a>
+      </p>
 
       <div class="hero__ctas">
         <a href="#quickstart" class="btn btn--primary">Install SwarmCracker</a>
