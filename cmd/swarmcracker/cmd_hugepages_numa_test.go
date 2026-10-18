@@ -99,6 +99,37 @@ func TestBuildServiceSpec_Hugepages(t *testing.T) {
 		_, ok := spec.Annotations.Labels[types.HugepagesLabel]
 		assert.False(t, ok, "--hugepages=false is not a hugepages request")
 	})
+
+	t.Run("an agreeing --label is accepted", func(t *testing.T) {
+		o := base()
+		o.hugepages, o.hugepagesSet = true, true
+		o.labels = []string{types.HugepagesLabel + "=true"}
+		spec, err := buildServiceSpec(o)
+		require.NoError(t, err)
+		assert.Equal(t, "true", spec.Annotations.Labels[types.HugepagesLabel])
+	})
+
+	t.Run("a conflicting --label is rejected", func(t *testing.T) {
+		o := base()
+		o.hugepages, o.hugepagesSet = true, true
+		o.labels = []string{types.HugepagesLabel + "=false"}
+		_, err := buildServiceSpec(o)
+		require.Error(t, err, "--hugepages must not silently overwrite a --label that disables it")
+		assert.Contains(t, err.Error(), "--hugepages=true")
+		assert.Contains(t, err.Error(), types.HugepagesLabel)
+		assert.Contains(t, err.Error(), `"false"`)
+	})
+
+	t.Run("explicit false conflicting with a true --label is rejected", func(t *testing.T) {
+		o := base()
+		o.hugepages, o.hugepagesSet = false, true
+		o.labels = []string{types.HugepagesLabel + "=true"}
+		_, err := buildServiceSpec(o)
+		require.Error(t, err, "--hugepages=false must not leave an enabled --label behind")
+		assert.Contains(t, err.Error(), "--hugepages=false")
+		assert.Contains(t, err.Error(), types.HugepagesLabel)
+		assert.Contains(t, err.Error(), `"true"`)
+	})
 }
 
 // TestBuildServiceSpec_NumaNode verifies the create mapping: an unset flag adds
@@ -215,6 +246,52 @@ func TestCreateService_PlacementLabels(t *testing.T) {
 		assert.Zero(t, client.createCalls, "a malformed nodelist must not send the create RPC")
 		assert.Nil(t, client.spec)
 	})
+}
+
+// TestCreateService_HugepagesLabelConflict pins both directions of the
+// --hugepages/--label agreement check at the create path: a flag that
+// contradicts a user-supplied swarmcracker.hugepages label must fail before the
+// CreateService RPC, and an agreeing label must still create. The fake client
+// is how the zero-RPC assertion is observed; `service create` dials the manager
+// before it builds the spec, so this is the seam the other create-path tests
+// use too (the temp --config helper only wires `vm create`).
+func TestCreateService_HugepagesLabelConflict(t *testing.T) {
+	tests := []struct {
+		name      string
+		hugepages bool
+		label     string
+		wantErr   bool
+	}{
+		{name: "flag enables, label disables", hugepages: true, label: "false", wantErr: true},
+		{name: "flag disables, label enables", hugepages: false, label: "true", wantErr: true},
+		{name: "flag enables, label agrees", hugepages: true, label: "true"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &fakeServiceCreateClient{}
+			err := createServiceWithClient(context.Background(), client, serviceCreateOptions{
+				name: "web", image: "nginx", replicas: 1,
+				hugepages: tc.hugepages, hugepagesSet: true,
+				labels: []string{types.HugepagesLabel + "=" + tc.label},
+			})
+
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), fmt.Sprintf("--hugepages=%t", tc.hugepages),
+					"the error must name the flag and its value")
+				assert.Contains(t, err.Error(), tc.label, "the error must name the conflicting label value")
+				assert.Zero(t, client.createCalls, "a conflicting --label must not send the create RPC")
+				assert.Nil(t, client.spec)
+				return
+			}
+
+			require.NoError(t, err)
+			require.Equal(t, 1, client.createCalls)
+			require.NotNil(t, client.spec)
+			assert.Equal(t, "true", client.spec.Annotations.Labels[types.HugepagesLabel])
+		})
+	}
 }
 
 // serviceWithPlacement builds a one-container service carrying the given

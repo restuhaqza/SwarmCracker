@@ -212,11 +212,26 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 	// cpuset.mems. Hugepages is a boolean request — the only stored form is
 	// "true" — so only an opt-in adds a label. A false flag (the default, or an
 	// explicit --hugepages=false) is not a request at all.
-	if o.hugepages {
-		if svcLabels == nil {
-			svcLabels = make(map[string]string)
+	if o.hugepagesSet {
+		// Mirror --balloon-mib/--cpuset/--numa-node: --label is the lower-level
+		// way to request the same backing, so accept a user-supplied label only
+		// when it agrees — honouring one silently would drop the flag, and an
+		// explicit --hugepages=false must not leave an enabled label behind.
+		// The comparison is semantic (types.ParseHugepages), because "2M" is a
+		// synonym for "true" and "false"/"0"/"none" all mean 4K memory; a
+		// label that cannot be read is a conflict too, never an override.
+		if existing, ok := svcLabels[types.HugepagesLabel]; ok {
+			requested, err := types.ParseHugepages(existing)
+			if err != nil || requested != o.hugepages {
+				return nil, fmt.Errorf("--hugepages=%t conflicts with the %s label %q already set via --label", o.hugepages, types.HugepagesLabel, existing)
+			}
 		}
-		svcLabels[types.HugepagesLabel] = "true"
+		if o.hugepages {
+			if svcLabels == nil {
+				svcLabels = make(map[string]string)
+			}
+			svcLabels[types.HugepagesLabel] = "true"
+		}
 	}
 
 	// --numa-node is validated here, like --cpuset, so a malformed list fails
