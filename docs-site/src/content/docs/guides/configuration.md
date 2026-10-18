@@ -559,7 +559,9 @@ grep -i huge /proc/meminfo
 ```
 
 - **2M pages only.** `Hugepagesize` must be `2048 kB`; a host configured for 1G
-  pages is refused. Transparent hugepages are not a substitute.
+  pages is refused. Firecracker v1.15.1 offers only 2M hugetlbfs pages through
+  `huge_pages`, and SwarmCracker exposes exactly that; it does not expose a
+  transparent-hugepage setting.
 - **Allocate the pool explicitly.** Firecracker maps guest memory from the pool
   and does not allocate huge pages on demand. Set the total with
   `sysctl -w vm.nr_hugepages=<pages>` and persist it (for example in
@@ -573,7 +575,8 @@ grep -i huge /proc/meminfo
   Constrain hugepage workloads to nodes you have sized (for example a
   `node.labels.hugepages==yes` node label plus a matching `--constraint`).
 
-The node checks `Hugepagesize`, the request's parity, and
+The request's parity is checked earlier, while the task is translated
+(`resolveHugepages`). The node then checks `Hugepagesize` and
 `HugePages_Free >= mem_size_mib / 2` **before** the VMM process or its cgroup
 exists. If the pool is short, the task fails and names the request, the pages
 needed, the pool, and the total that would fix it:
@@ -597,12 +600,25 @@ cat /sys/devices/system/node/online      # e.g. 0-1
 cat /sys/devices/system/node/node*/meminfo | grep MemTotal
 ```
 
-The nodes must be online on the node that runs the VM. An offline or
-non-existent node is a **hard failure** — the task does not fall back to another
-node — and the error names the request and the failing cgroup stage:
+The nodes must be online on the node that runs the VM, and allowed by the
+task's parent cgroup. Before the task's cgroup directory is created, the node
+pre-checks every requested node against the host's online memory-node list
+(`/sys/devices/system/node/online`) and the parent cgroup's allowed memory nodes
+(`cpuset.mems.effective`, from the nearest readable ancestor; if none is
+readable, only the online list is enforced); if either excludes a requested
+node, the task fails and the remaining nodes are never used as a fallback. That pre-check is deliberate: the kernel by itself
+accepts an offline-but-possible node, keeps it in `cpuset.mems`, and silently
+narrows the effective `Mems_allowed_list` to the parent ∩ online intersection:
 
 ```text
-cannot apply NUMA node list "3" to task <task-id>: cgroup cpuset stage (cpuset.mems): failed to write "3" (source: CpusetMems; online memory nodes: 0-1): ...
+cannot apply NUMA node list "3" to task <task-id>: cgroup validate stage: requested NUMA nodes 3 are not grantable: node(s) 3 are not online (host online NUMA nodes: 0-1)
+```
+
+A node the parent withholds is reported separately, against the parent's
+effective file:
+
+```text
+cannot apply NUMA node list "3" to task <task-id>: cgroup validate stage: requested NUMA nodes 3 are not grantable: node(s) 3 are excluded by the parent cgroup's cpuset.mems.effective 0-1 (/sys/fs/cgroup/swarmcracker/cpuset.mems.effective; host online NUMA nodes: 0-1)
 ```
 
 Because the binding is written through the cgroup, the host also needs the

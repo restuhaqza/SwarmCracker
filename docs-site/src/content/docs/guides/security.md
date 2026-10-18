@@ -195,12 +195,14 @@ cat "$BASE/io.weight"            # "default 100"
 PID=$(cat "$BASE/cgroup.procs")
 taskset -pc "$PID"               # affinity actually in effect
 grep Cpus_allowed_list "/proc/$PID/status"
-grep Mems_allowed_list "/proc/$PID/status"   # must equal cpuset.mems
-grep HugetlbPages "/proc/$PID/status"        # non-zero when 2M pages back the guest
+grep Mems_allowed_list "/proc/$PID/status"   # effective set (can be narrower than cpuset.mems)
+grep HugetlbPages "/proc/$PID/status"        # in kB; non-zero when 2M pages back the guest
 ```
 
-`taskset -pc`, `Cpus_allowed_list` and `Mems_allowed_list` must agree with
-`cpuset.cpus` and `cpuset.mems`. The path is
+`taskset -pc` and `Cpus_allowed_list` must agree with `cpuset.cpus`.
+`Mems_allowed_list` is the **effective** set and is always contained in
+`cpuset.mems`, but it can legitimately be narrower when a parent cgroup
+restricts memory nodes — do not require equality. The path is
 `/sys/fs/cgroup/swarmcracker/<task-id>/` even with `--parent-cgroup` set — that
 flag configures the jailer's own cgroup. A `vm create` VM has a cgroup only when
 `--cpuset` or `--numa-node` was given. Use the **full** task ID
@@ -223,8 +225,8 @@ grep Seccomp /proc/$PID/status
 | Jailer enabled and validated | `swarmcracker config file validate` |
 | cgroup limits enforced per VM | `cat /sys/fs/cgroup/swarmcracker/<task-id>/memory.max` |
 | Requested CPU pin in effect | `cpuset.cpus` matches `taskset -pc $(cat cgroup.procs)` |
-| Requested NUMA memory binding in effect | `cpuset.mems` matches `Mems_allowed_list` in `/proc/<pid>/status` |
-| Hugepage-backed guest memory | `HugetlbPages` in `/proc/<pid>/status` is non-zero and `HugePages_Free` fell |
+| Requested NUMA memory binding in effect | `Mems_allowed_list` is contained in `cpuset.mems` (narrower is legitimate when a parent cgroup restricts nodes) |
+| Hugepage-backed guest memory | `HugetlbPages` (kB) in `/proc/<pid>/status` is non-zero and `HugePages_Free` fell |
 | Chroot base directory locked down | `ls -la /srv/jailer` |
 | One network namespace + TAP per VM | `ip netns list` |
 | Workloads never run as root inside the guest | image `USER` directive |

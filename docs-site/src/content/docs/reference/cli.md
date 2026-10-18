@@ -277,10 +277,12 @@ accepted (the flag canonicalises to `1-3`), while
 name CPUs 1-3 — the label is not canonicalised before the comparison.
 
 `--hugepages` asks the node to back the guest memory with **2M huge pages**
-(2M is the only page size Firecracker supports). It is a boolean flag: on
-`service create` and `vm create` only the opt-in form (`true`) is stored, as the
-`swarmcracker.hugepages` service label (a `vm create` VM carries it as a task
-annotation); an omitted flag means ordinary 4K memory and changes nothing. The
+(2M is the only page size Firecracker v1.15.1 offers through `huge_pages`). It
+is a boolean flag: on `service create` and `vm create` only the opt-in form
+(`true`) is stored, as the `swarmcracker.hugepages` service label (a `vm create`
+VM carries it as a task annotation); an omitted flag on those commands makes no
+request, so the VM uses ordinary 4K memory. On `service update` an omitted flag
+leaves the existing request untouched, and `--hugepages=false` removes it. The
 host must already have a 2M hugepage pool large enough for the VM — see
 [Hugepages](/guides/advanced/#hugepages) for sizing it and for the failure
 shape. A request for a memory size that is not an even number of MiB is rejected
