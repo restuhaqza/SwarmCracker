@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.11.0] - 2026-10-19
+
+### Added
+- **Private-registry authentication** — `service create --with-registry-auth`
+  ships the manager's registry credentials in the service spec
+  (`PullOptions.RegistryAuth`), so workers pull private images; the credential
+  is masked from task output (`pkg/redact`), and `--with-registry-auth=false`
+  clears it on update.
+- **Settable node labels** — `swarmcracker node update --label-add KEY=VALUE`
+  (repeatable, overwrites) and `--label-rm KEY` (removing a missing key is a
+  no-op), so placement constraints are managed without editing state.
+- **Unschedulable reasons** — a task that cannot be placed now reports the
+  reason (constraint, volume, …) instead of a bare PENDING.
+- **Memory balloon** — per-service `--balloon-mib` (default off), the
+  `swarmcracker.balloon` label, and the `vm_balloon_mib` gauge; an invalid
+  target fails the task instead of being dropped.
+- **CPU pinning** — `--cpuset` on `service create`/`update` and `vm create`,
+  stored canonically and applied as a cgroup v2 `cpuset.cpus` pin; an offline
+  CPU fails the task naming the request and the host's online CPUs.
+- **cgroup v2 enforcement** — CPU/memory/IO quotas derived from the task's
+  limits, applied on both daemon start paths **without requiring the jailer**;
+  controller delegation is now written (`cgroup.subtree_control`).
+- **Hugepages** — `--hugepages` backs guest memory with 2M pages after a host
+  pool pre-check (`HugePages_Free`, even sizing) that fails the task with the
+  required/free numbers and the `vm.nr_hugepages` value to set.
+- **NUMA memory placement** — `--numa-node` binds the VM's memory to host NUMA
+  nodes via `cpuset.mems`, pre-checked against the online nodes and the parent
+  cgroup's effective set.
+- **Alerting** — `vm_crashes_total`, one-hot `vm_health`, and
+  `disk_usage_bytes`/`disk_total_bytes`; default `rule_files` and `alerting`
+  are wired for the first time, an Alertmanager service ships in the compose
+  stack, and every shipped rule references a series that is actually written.
+  New `guides/alerting.md`.
+
 ### Changed
 - **Documentation** — Replaced the MkDocs Material site with an Astro Starlight
   site (`docs-site/`), deployed to Cloudflare Pages. Curated the content:
@@ -14,6 +50,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pages, and corrected stale commands, config defaults, and the jailer schema.
   Old URLs (`/user/…`, `/dev/…`) redirect to the new information architecture
   via `docs-site/public/_redirects`.
+- **QoS flags are tri-state on update** — `--cpuset`, `--hugepages` and
+  `--numa-node` keep the existing value when omitted, clear it on an explicit
+  empty/false, and are rejected together with `--rollback` (which previously
+  accepted and silently dropped them).
+- **`--rollback` rejects update flags** — every update flag that mutates the
+  spec is refused with `--rollback` instead of being validated and dropped
+  (balloon, CPU/memory limits, env, mounts, network, secrets, health,
+  placement, restart/update config, mode, force).
+- **Daemon cgroups no longer require the jailer** — `--enable-cgroups` (default
+  true) applies the per-VM cgroup on both start paths.
+
+### Fixed
+- **VM sizing** — `--memory` and `--cpu` were accepted but ignored (VMs always
+  booted with the defaults); the declared values now reach the machine config.
+- **cgroup limits** — `memory.max` equalled the guest size and would OOM-kill
+  the VMM (now guest + 128 MiB headroom), `io.weight` used an invalid v2 form
+  and never took effect, controller delegation was never written, and
+  `Stop`/`Remove` removed the cgroup **before** killing the VM (leaving a
+  timed-out stop running with no quota and no pin).
+- **Orphan cleanup** — a VM left behind by a daemon restart kept its cgroup
+  forever.
+- **Alert state** — boot failures were counted as crashes (and could drive
+  `vms_running` negative), operator stops were recorded as crashes, and a clean
+  self-exit leaked `vms_running`.
+- **Inert alert rules** — nine shipped rules referenced series that were never
+  written; removed rather than left as silent no-ops.
 
 ---
 
@@ -222,6 +284,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ---
 
 [Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.10.0...HEAD
+[0.11.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.0...v0.9.1
