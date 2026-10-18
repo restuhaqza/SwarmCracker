@@ -214,19 +214,25 @@ for the workload.
 `--enable-jailer`** (also off by default), so cgroups apply to both the jailed
 and the direct start paths. A `vm create` VM gets a cgroup **only when
 `--cpuset` or `--numa-node` is given**; without either the command never touches
-`/sys/fs/cgroup`. The cgroup is removed on stop, on remove, and when a start
+`/sys/fs/cgroup`. That CLI path is not gated by the daemon's
+`executor.enable_cgroups` (`--enable-cgroups`): the flag controls service tasks
+only, so `vm create --cpuset` creates a cgroup even when the daemon runs with
+cgroups disabled. The cgroup is removed on stop, on remove, and when a start
 fails.
 
 ### Verify it on the host
 
-Run these on the node that owns the task. The `service ps` **table truncates the
-ID to 12 characters**, while the cgroup directory is named with the **full**
-task ID — so take the ID from `-q`, which prints it untruncated:
+Run these on the node that owns the task. The `service ps` / `task ls` **tables
+truncate the ID to 12 characters**, while the cgroup directory is named with the
+**full** task ID — so take the ID from `-q`, which prints it untruncated. Filter
+to *this* node and to running tasks instead of picking the first row:
 
 ```bash
-# Full task ID of the service's first replica (substitute your service name;
-# with several replicas, pick the task running on this node).
-TASK=$(swarmcracker service ps -q api | head -1)
+# Full task ID of the service's running task on this node. NODE_ID is this
+# node's ID (`swarmcracker node ls`); SERVICE_ID is the service's ID
+# (`swarmcracker service ls -q --filter name=api`).
+TASK=$(swarmcracker task ls -q --filter state=running \
+  --node "$NODE_ID" --service "$SERVICE_ID" | head -1)
 BASE=/sys/fs/cgroup/swarmcracker/$TASK
 
 ls "$BASE"                       # the directory must exist, or TASK is wrong
@@ -373,14 +379,16 @@ plus `--constraint node.labels.hugepages==yes`).
 
 #### Verify it on the host
 
-Use the **full** task ID: the `service ps` table truncates it to 12 characters,
-while the cgroup directory uses the whole ID. `service ps -q` prints it
-untruncated. The cgroup path is node-local, so with several replicas take the ID
-of the **running** task on **this** node — `-q | head -1` can pick a task on
-another node or one that is not running.
+Use the **full** task ID: the `service ps` / `task ls` tables truncate it to 12
+characters, while the cgroup directory uses the whole ID; `-q` prints it
+untruncated. The cgroup path is node-local, so filter for the **running** task
+on **this** node rather than taking the first row:
 
 ```bash
-TASK=$(swarmcracker service ps -q api | head -1)   # substitute your service
+# NODE_ID from `swarmcracker node ls`; SERVICE_ID from
+# `swarmcracker service ls -q --filter name=api`.
+TASK=$(swarmcracker task ls -q --filter state=running \
+  --node "$NODE_ID" --service "$SERVICE_ID" | head -1)
 BASE=/sys/fs/cgroup/swarmcracker/$TASK
 PID=$(cat "$BASE/cgroup.procs")
 
@@ -462,11 +470,13 @@ invalid NUMA node annotation swarmcracker.numa-node="1-" on task <task-id>: ...
 #### Verify it on the host
 
 The cgroup path is node-local: use the full task ID of the **running** task on
-**this** node. `service ps -q | head -1` can pick a task on another node or one
-that is not running.
+**this** node, filtered rather than taken from the first row.
 
 ```bash
-TASK=$(swarmcracker service ps -q db | head -1)    # full task ID; with several replicas, pick the running task on this node
+# NODE_ID from `swarmcracker node ls`; SERVICE_ID from
+# `swarmcracker service ls -q --filter name=db`.
+TASK=$(swarmcracker task ls -q --filter state=running \
+  --node "$NODE_ID" --service "$SERVICE_ID" | head -1)
 BASE=/sys/fs/cgroup/swarmcracker/$TASK
 PID=$(cat "$BASE/cgroup.procs")
 

@@ -1399,21 +1399,52 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 // other flag, so accepting one would validate it and then silently drop it. An
 // explicit empty value counts as a request too (it asks to clear a label), and
 // every rejected flag is named in the one error.
+//
+// The list covers every flag that takes effect on the normal update path:
+// replicas, the CPU/memory limits, the balloon, cpuset/hugepages/NUMA, image,
+// env, ports, mounts, networks, secrets, configs, hostname/DNS, the
+// healthcheck, placement, restart, the update/rollback configuration, mode,
+// force and the registry credential. A flag not listed here is not read by the
+// update path either (--user/--cap-add/--cap-drop/--read-only are rejected by
+// validateUnsupportedExecFlags, which runs first, so they never reach a
+// rollback). Keep this list in step with the options struct: any new mutating
+// flag that is not added here is silently dropped by --rollback.
 func rejectRollbackFlagConflicts(opts serviceUpdateOptions) error {
+	if !opts.rollbackAction {
+		return nil
+	}
 	var flags []string
-	if opts.withRegistryAuthSet {
-		flags = append(flags, "--with-registry-auth")
+	add := func(cond bool, name string) {
+		if cond {
+			flags = append(flags, name)
+		}
 	}
-	if opts.cpusetSet {
-		flags = append(flags, "--cpuset")
-	}
-	if opts.hugepagesSet {
-		flags = append(flags, "--hugepages")
-	}
-	if opts.numaNodeSet {
-		flags = append(flags, "--numa-node")
-	}
-	if !opts.rollbackAction || len(flags) == 0 {
+	add(opts.withRegistryAuthSet, "--with-registry-auth")
+	add(opts.replicasSet, "--replicas")
+	add(opts.cpuLimit > 0, "--cpu-limit")
+	add(opts.memoryLimit != "", "--memory-limit")
+	add(opts.balloonSet, "--balloon-mib")
+	add(opts.cpusetSet, "--cpuset")
+	add(opts.hugepagesSet, "--hugepages")
+	add(opts.numaNodeSet, "--numa-node")
+	add(opts.image != "", "--image")
+	add(len(opts.env) > 0, "--env-add")
+	add(len(opts.envRemove) > 0, "--env-rm")
+	add(opts.publishModeSet, "--publish-mode")
+	add(opts.mountsSet, "--mount/--volume")
+	add(opts.networksSet, "--network")
+	add(opts.secretsSet, "--secret")
+	add(opts.configsSet, "--config")
+	add(opts.hostnameSet, "--hostname")
+	add(opts.dnsSet, "--dns")
+	add(opts.health.set(), "--health-*")
+	add(opts.placementSet, "--constraint/--placement-pref")
+	add(opts.restartSet, "--restart-*")
+	add(opts.updateSet, "--update-*")
+	add(opts.rollbackSet, "--rollback-*")
+	add(opts.modeSet, "--mode")
+	add(opts.force, "--force")
+	if len(flags) == 0 {
 		return nil
 	}
 	return fmt.Errorf("%s cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags", strings.Join(flags, ", "))
@@ -1439,12 +1470,20 @@ func setOrDeleteLabel(spec *api.ServiceSpec, key, value string, present bool) {
 // createServiceWithClient) and assert both the registry-auth ordering (no
 // update RPC before a rejected resolution) and what spec was submitted.
 func updateServiceWithClient(ctx context.Context, client api.ControlClient, serviceID string, opts serviceUpdateOptions) error {
-	// Validate the flag combinations that need no service lookup first, so the
-	// most helpful error is the one returned. --with-registry-auth and the
-	// placement flags (--cpuset, --hugepages, --numa-node) are all rejected with
-	// --rollback: the rollback branch below submits PreviousSpec and never
-	// consults them, so accepting one would validate it and then silently drop
-	// it (including an explicit --hugepages=false / --numa-node "" clear).
+	// Container-execution flags the microVM executor cannot honour are rejected
+	// before anything else, including --rollback: their own guard names the flag
+	// and the reason, and running it ahead of the rollback branch means a
+	// rollback can never swallow one of them.
+	if err := validateUnsupportedExecFlags(opts.user, opts.capAdd, opts.capDrop, opts.readOnly); err != nil {
+		return err
+	}
+
+	// Validate the flag combinations that need no service lookup next, so the
+	// most helpful error is the one returned. Every mutating update flag is
+	// rejected with --rollback: the rollback branch below submits PreviousSpec
+	// and never consults them, so accepting one would validate it and then
+	// silently drop it (including an explicit --hugepages=false / --numa-node ""
+	// clear).
 	if err := rejectRollbackFlagConflicts(opts); err != nil {
 		return err
 	}
@@ -1776,11 +1815,8 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 		spec.Task.GetContainer().Configs = refs
 	}
 
-	// Container-execution flags: reject the ones the microVM executor cannot
-	// enforce, and apply the guest overrides we can honor.
-	if err := validateUnsupportedExecFlags(opts.user, opts.capAdd, opts.capDrop, opts.readOnly); err != nil {
-		return err
-	}
+	// Container-execution flags the executor cannot enforce were rejected at the
+	// top of this function; apply the guest overrides we can honor.
 	if opts.hostnameSet || opts.dnsSet {
 		if spec.Annotations.Labels[types.GoldenLabel] != "" {
 			return fmt.Errorf("--hostname/--dns are not supported with --golden: golden images boot their own init")

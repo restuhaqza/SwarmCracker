@@ -456,6 +456,13 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 				<-done // reap the waiter goroutine to avoid a leak
 			}
 
+			// The process is gone (both branches above reaped it), so its cgroup
+			// can be removed. An orphan has no controller left to run the normal
+			// teardown, so without this every daemon restart would leak one
+			// cgroup forever. Removal is best-effort: the shared policy logs a
+			// warning if it fails.
+			e.vmmMgr.RemoveVMCgroup(taskID)
+
 			// Remove from VMM manager's process map
 			e.vmmMgr.RemoveProcess(taskID)
 

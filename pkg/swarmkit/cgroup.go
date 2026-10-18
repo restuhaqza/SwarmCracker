@@ -36,6 +36,20 @@ func (v *VMMManager) removeVMCgroup(taskID string) {
 	jailer.RemoveVMCgroup(v.cgroupMgr, v.logger, taskID)
 }
 
+// RemoveVMCgroup removes a task's cgroup through the same shared policy as the
+// normal teardown. The orphan sweep uses it for a task that has no controller
+// left to run Remove, so the "no cgroup outlives its VM" guarantee also holds
+// after a daemon restart.
+//
+// The caller must only call it once the VMM process is confirmed gone: removing
+// a cgroup while the process is still alive re-parents it and silently drops the
+// placement. Removal is best-effort — the shared policy logs a warning and this
+// method returns nothing, because teardown must not fail on an already-gone
+// cgroup.
+func (v *VMMManager) RemoveVMCgroup(taskID string) {
+	v.removeVMCgroup(taskID)
+}
+
 // machineSize extracts the VM's resolved vCPU count and memory (MiB) from a
 // translator config. A config that does not carry a machine-config yields
 // zeroes, which simply means "no fallback from the guest size": the cgroup then
