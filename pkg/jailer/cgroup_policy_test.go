@@ -380,6 +380,7 @@ func TestCreateCgroup_TypedCpusetStage(t *testing.T) {
 	online := filepath.Join(t.TempDir(), "cpu-online")
 	require.NoError(t, os.WriteFile(online, []byte("0-3\n"), 0o644))
 	mgr.cpuOnlinePath = online
+	withOnlineNodes(t, mgr, "0")
 
 	err := mgr.CreateCgroup(taskID, ResourceLimits{CpusetCPUs: "4-7", CpusetMems: "0"})
 	require.Error(t, err)
