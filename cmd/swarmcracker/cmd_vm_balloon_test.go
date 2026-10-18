@@ -179,7 +179,7 @@ func TestBuildVMCreateTask_CarriesGoldenAndBalloonAnnotations(t *testing.T) {
 	})
 
 	t.Run("no golden and no flag keeps the mock task's annotations", func(t *testing.T) {
-		task := buildVMCreateTask("alpine:latest", 1, 512, []string{"A=B"}, nil, "", "", false)
+		task := buildVMCreateTask("alpine:latest", 1, 512, []string{"A=B"}, nil, "", "", "", false)
 
 		assert.Equal(t, createMockTask("alpine:latest", 1, 512, []string{"A=B"}).Annotations, task.Annotations)
 		assert.Nil(t, task.Annotations, "an unconfigured vm create must not gain an annotation map")
