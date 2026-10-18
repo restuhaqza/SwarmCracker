@@ -11,6 +11,17 @@ Firecracker MicroVMs with SwarmKit Orchestration
 
 </div>
 
+> **Status: actively developed (pre-1.0, v0.11.0).**
+>
+> SwarmCracker is under active development. Flags, configuration keys, on-disk
+> formats and internal APIs may change between minor releases, and some rough
+> edges remain. It is **not yet recommended for production workloads that need a
+> stability guarantee** — run it in a lab, kick the tyres, and
+> [open an issue](https://github.com/restuhaqza/SwarmCracker/issues) (or a pull
+> request) with what you find. The
+> [roadmap epic #40](https://github.com/restuhaqza/SwarmCracker/issues/40)
+> tracks what is next, and every release is tagged from `main`.
+
 ---
 
 Imagine running containers, but with actual VMs instead. That's SwarmCracker — SwarmKit tasks become Firecracker microVMs, each with its own kernel and hardware-level isolation.
@@ -120,7 +131,11 @@ The docs site is built with Astro Starlight; its source lives in
 [`docs-site/`](docs-site/) and is deployed to Cloudflare Pages by
 `.github/workflows/docs.yml`.
 
-## Production Readiness: 10/10
+## Engineering Checks
+
+Quality gates on `main` today — a snapshot of test hygiene and feature
+completeness, **not** a production-stability guarantee (see the status note at
+the top):
 
 - ✅ 87.6% test coverage (19 packages)
 - ✅ E2E test suite in `test/e2e` (41 top-level Go tests)
