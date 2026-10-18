@@ -9,9 +9,11 @@ hypervisor escape, not a shared-kernel privilege escalation. On the host side,
 the optional **Firecracker jailer** adds a second ring of defence around the
 VMM process itself.
 
-Per-task **cgroup v2** limits (CPU, memory, I/O, and an optional CPU pin) are
-applied by the daemon **independently of the jailer**: enabling the jailer is not
-required for them, and this guide verifies both.
+Per-task **cgroup v2** limits (CPU, memory, I/O, an optional CPU pin and an
+optional NUMA memory binding) are applied by the daemon **independently of the
+jailer**: enabling the jailer is not required for them, and this guide verifies
+both. Guest memory can also be backed by the host's 2M hugepage pool; that is a
+per-workload request enforced by the node at start, not a jailer setting.
 
 This guide covers the host-side isolation model, how to enable the jailer, and a
 hardening checklist.
@@ -47,7 +49,7 @@ The jailer provides:
 
 - **Filesystem isolation** — Firecracker is chrooted; it cannot see the host filesystem.
 - **Privilege dropping** — the VMM runs as an unprivileged user, not root.
-- **Cgroup placement** — the jailer puts the VMM in its own cgroup under `--parent-cgroup`. SwarmCracker's per-task cgroup v2 limits (CPU, memory, I/O and `--cpuset`) are applied by the daemon on both the jailed and direct paths, so they do not depend on this flag.
+- **Cgroup placement** — the jailer puts the VMM in its own cgroup under `--parent-cgroup`. SwarmCracker's per-task cgroup v2 limits (CPU, memory, I/O, `--cpuset` and `--numa-node`) are applied by the daemon on both the jailed and direct paths, so they do not depend on this flag.
 - **Namespace isolation** — dedicated PID and network namespaces and TAP device.
 - **Syscall filtering** — Firecracker applies its own seccomp-bpf policy.
 
@@ -132,11 +134,16 @@ sudo swarmd-firecracker \
 | `--cgroup-version` | auto-detect | `v1` or `v2` passed to the jailer; SwarmCracker's per-task cgroup is always v2 |
 | `--enable-cgroups` | `true` | Apply per-task CPU/memory/I/O limits; independent of `--enable-jailer` |
 
-There is no host-wide cpuset flag: the CPU pin is requested per service or VM
-with `--cpuset` (`service create`, `service update`, `vm create`), and a task
-that cannot be pinned fails to start. See
-[CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits)
-for the enforced files and the failure policy.
+There are no cluster-wide placement settings: CPU pinning, 2M hugepage backing and
+NUMA memory binding are requested **per service or VM** with `--cpuset`,
+`--hugepages` and `--numa-node` (`service create`, `service update`,
+`vm create`). Each is a hard promise — a task that cannot be pinned, cannot get
+its hugepage pool, or cannot be bound to the listed nodes fails to start rather
+than running with a silently weaker placement. See
+[CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits),
+[Hugepages](/guides/advanced/#hugepages) and
+[NUMA placement](/guides/advanced/#numa-placement) for the enforced files and the
+failure policy.
 
 To persist the change:
 
@@ -169,14 +176,15 @@ ls -la /var/lib/swarmcracker/jailer/<task-id>/
 # log/    logging FIFO
 ```
 
-**Cgroup limits and CPU pin** — one cgroup per task, whether or not the jailer is
-enabled:
+**Cgroup limits and placement** — one cgroup per task, whether or not the jailer
+is enabled:
 
 ```bash
 TASK=<task-id>
 BASE=/sys/fs/cgroup/swarmcracker/$TASK
 
 cat "$BASE/cpuset.cpus"          # requested pin (empty = not pinned)
+cat "$BASE/cpuset.mems"          # NUMA memory binding (node mask, e.g. 0-1)
 cat "$BASE/cgroup.procs"         # the VMM process's PID
 cat "$BASE/cpu.max"              # "<quota> 1000000" microseconds
 cat "$BASE/memory.max"           # guest memory + 128 MiB, in bytes
@@ -187,12 +195,16 @@ cat "$BASE/io.weight"            # "default 100"
 PID=$(cat "$BASE/cgroup.procs")
 taskset -pc "$PID"               # affinity actually in effect
 grep Cpus_allowed_list "/proc/$PID/status"
+grep Mems_allowed_list "/proc/$PID/status"   # must equal cpuset.mems
+grep HugetlbPages "/proc/$PID/status"        # non-zero when 2M pages back the guest
 ```
 
-`taskset -pc` and `Cpus_allowed_list` must agree with `cpuset.cpus`. The path is
+`taskset -pc`, `Cpus_allowed_list` and `Mems_allowed_list` must agree with
+`cpuset.cpus` and `cpuset.mems`. The path is
 `/sys/fs/cgroup/swarmcracker/<task-id>/` even with `--parent-cgroup` set — that
 flag configures the jailer's own cgroup. A `vm create` VM has a cgroup only when
-`--cpuset` was given.
+`--cpuset` or `--numa-node` was given. Use the **full** task ID
+(`service ps -q`), not the 12-character table form.
 
 **Syscall filtering** — Firecracker's own seccomp policy:
 
@@ -211,6 +223,8 @@ grep Seccomp /proc/$PID/status
 | Jailer enabled and validated | `swarmcracker config file validate` |
 | cgroup limits enforced per VM | `cat /sys/fs/cgroup/swarmcracker/<task-id>/memory.max` |
 | Requested CPU pin in effect | `cpuset.cpus` matches `taskset -pc $(cat cgroup.procs)` |
+| Requested NUMA memory binding in effect | `cpuset.mems` matches `Mems_allowed_list` in `/proc/<pid>/status` |
+| Hugepage-backed guest memory | `HugetlbPages` in `/proc/<pid>/status` is non-zero and `HugePages_Free` fell |
 | Chroot base directory locked down | `ls -la /srv/jailer` |
 | One network namespace + TAP per VM | `ip netns list` |
 | Workloads never run as root inside the guest | image `USER` directive |
@@ -250,11 +264,12 @@ one — constrain the service to suitable nodes, or change the pin.
 
 ### `Failed to enable cgroup controllers, continuing…`
 
-This is the quota path, not the pin: the task requested no cpuset (or only the
-`cpu`/`memory`/`io` controllers it does not strictly need were unavailable), so
-the VM starts without the controllers that were unavailable. If the warning
-appears for `cpu`, `memory` or `io` on a task that *did* request a cpuset, the
-pin still takes effect — check `cpuset.cpus` and `taskset -pc` as above. See
+This is the quota path, not the pin: the task requested no CPU or memory
+placement, or only the `cpu`/`memory`/`io` controllers it does not strictly need
+were unavailable, so the VM starts without them. If the warning appears for
+`cpu`, `memory` or `io` on a task that *did* request a cpuset or a NUMA binding,
+the placement still takes effect — check `cpuset.cpus`, `cpuset.mems` and
+`taskset -pc` as above. See
 [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).
 
 ### Firecracker exits immediately with `SIGSYS`

@@ -160,13 +160,15 @@ jailer is enabled.
 | Memory throttle | `memory.high` | 90% of `memory.max` | Warning; the VM runs |
 | I/O weight | `io.weight` | `default 100` | Warning; the VM runs |
 
-`cpuset.mems` is written next to a requested `cpuset.cpus`, but it is **not**
-part of the request and there is no flag for it: it is a **NUMA-node** list
-(a node mask such as `0-1`, not CPU numbers), and the daemon resolves it
-automatically — the nearest readable ancestor `cpuset.mems` (`swarmcracker/`,
-then the cgroup root), else the host's online nodes from
-`/sys/devices/system/node/online`. A pin therefore never restricts memory to a
-subset of the nodes the host already allows.
+`cpuset.mems` is written next to a requested `cpuset.cpus` as well. It is a
+**NUMA-node** list (a node mask such as `0-1`, not CPU numbers). Without an
+explicit request the daemon resolves it automatically — the nearest readable
+ancestor `cpuset.mems` (`swarmcracker/`, then the cgroup root), else the host's
+online nodes from `/sys/devices/system/node/online` — so a CPU pin never
+restricts memory to a subset of the nodes the host already allows.
+**`--numa-node` overrides that resolution** with an explicit list, which is what
+binds the guest memory to the named nodes; see
+[NUMA placement](#numa-placement) below.
 
 **The cpuset is a hard promise.** If the requested CPUs are not online on the
 node — or the `cpuset` controller cannot be delegated there — the VM is **not
@@ -197,7 +199,7 @@ A request that cannot be honoured at all — a CPU limit below 0.001 core (fewer
 than 1,000,000 NanoCPUs, i.e. a quota under 1,000 µs), or a cpuset that does not
 parse — is rejected while the
 limits are derived, **before any cgroup file is written**, and fails the task
-even when it requested no cpuset.
+even when it requested no CPU or memory placement.
 
 **Why `memory.max` is larger than the VM's memory.** The cgroup accounts for the
 whole VMM process, whose resident memory is the guest's RAM *plus* Firecracker's
@@ -211,8 +213,9 @@ for the workload.
 `--enable-cgroups` is on — **the default** — and this **no longer requires
 `--enable-jailer`** (also off by default), so cgroups apply to both the jailed
 and the direct start paths. A `vm create` VM gets a cgroup **only when
-`--cpuset` is given**; without it the command never touches `/sys/fs/cgroup`.
-The cgroup is removed on stop, on remove, and when a start fails.
+`--cpuset` or `--numa-node` is given**; without either the command never touches
+`/sys/fs/cgroup`. The cgroup is removed on stop, on remove, and when a start
+fails.
 
 ### Verify it on the host
 
@@ -264,6 +267,212 @@ v1-only host or a refused delegation fails the pin with an error naming the
 controllers that could not be enabled. See
 [Configuration → cgroups](/guides/configuration/#cgroup-v2-host-requirements) for
 the requirement, the exact error, and what happens without a pin.
+
+---
+
+## Hugepages and NUMA Placement
+
+Two opt-in flags configure how a VM's memory is backed and placed on the host.
+Both are per-workload — there is no daemon-wide switch and no `config.yaml` key —
+and both are validated by the CLI for syntax only, then enforced by the node when
+it starts the VM. A request the host cannot satisfy **fails the task**; it is
+never silently downgraded.
+
+```bash
+# Service: 2 GiB guest memory backed by 2M pages, on NUMA node 0, CPUs 0-3
+swarmcracker service create --name api --image myapp:1.4 \
+    --memory 2G --hugepages --cpuset 0-3 --numa-node 0
+
+# Change or clear either request (effective on the next task)
+swarmcracker service update api --hugepages=false
+swarmcracker service update api --numa-node ""
+
+# Direct VM: the same flags, applied on the host running the command
+swarmcracker vm create --memory 2048 --hugepages --numa-node 0 alpine:latest
+```
+
+### Hugepages
+
+`--hugepages` asks Firecracker to back the guest memory with **2M huge pages**.
+Firecracker supports no other hugepage size, so the flag is a boolean request,
+not a size: it is stored as `swarmcracker.hugepages=true` and an omitted flag
+(or `--hugepages=false` on update) means ordinary 4K memory.
+
+#### Host prerequisites
+
+The pages come from the host's **pre-allocated hugetlbfs pool**, which is
+host-global and shared by every hugepage-backed VM on that node. On each node
+that may run the workload:
+
+```bash
+grep -i huge /proc/meminfo
+# HugePages_Total:    1024        <- pages currently allocated
+# HugePages_Free:     1024        <- allocated pages not yet in use
+# Hugepagesize:       2048 kB     <- must be 2M
+```
+
+- **The pool must already exist.** Firecracker maps guest memory with
+  `MAP_NORESERVE` from that pool; it does not allocate huge pages on demand.
+  Size the pool with `sysctl vm.nr_hugepages=<pages>` (persist it in
+  `/etc/sysctl.d/`). The value is the pool **total**, not an increment: a 2 GiB
+  VM needs `1024` pages, two concurrently running 2 GiB VMs need `2048`, and
+  pages already used by something else count too.
+- **The page size must be 2M.** A host configured with 1G pages fails the
+  request; 1G pages and transparent hugepages are not supported.
+- **Memory must be an even number of MiB.** 2M pages cannot cover an odd tail,
+  so `--memory 513` is rejected while the task is translated rather than booted
+  at 4K.
+
+#### What the node checks
+
+Before the VMM process exists — and before any cgroup is created — the node
+reads `/proc/meminfo` and requires all of:
+
+1. `Hugepagesize` is `2048 kB`.
+2. The guest memory is a positive, even number of MiB.
+3. `HugePages_Free` is at least `mem_size_mib / 2`.
+
+The check uses the same `mem_size_mib` the VM boots with, so a refusal cannot
+disagree with the guest size. A task that did not request hugepages never reads
+the pool and behaves exactly as before.
+
+#### Failure shape
+
+A short pool is a **hard failure**: the task does not start, and it leaves no VM
+and no cgroup behind. The error names the request, the pages needed, the host
+pool, and the `vm.nr_hugepages` total that would leave enough free pages —
+`(Total - Free) + required`:
+
+```text
+task <task-id>: cannot back a 512 MiB VM with 2M huge pages (256 pages needed): the host pool has 100 free of 512 allocated: raise the pool total to 668 pages with sysctl vm.nr_hugepages=668
+```
+
+A wrong page size is reported first, with the same request/pool wrapper:
+
+```text
+task <task-id>: cannot back a 512 MiB VM with 2M huge pages (256 pages needed): the host pool has 0 free of 0 allocated: the host's hugepage size is 1048576 KiB, but Firecracker supports only 2M (2048 KiB) pages: reconfigure the host pool with 2M pages
+```
+
+An odd size fails earlier, in translation, naming the size:
+
+```text
+invalid hugepage-backed memory size 513 MiB: 2M huge pages require a multiple of 2 MiB
+```
+
+There is **no scheduler admission** for pool capacity, and the check is a
+pre-flight snapshot of a host-global pool — two starts racing for the last pages
+can both pass it, and the loser faults later. Constrain hugepage workloads to
+nodes you have sized for them (for example a `node.labels.hugepages==yes` label
+plus `--constraint node.labels.hugepages==yes`).
+
+#### Verify it on the host
+
+Use the **full** task ID: the `service ps` table truncates it to 12 characters,
+while the cgroup directory uses the whole ID. `service ps -q` prints it
+untruncated.
+
+```bash
+TASK=$(swarmcracker service ps -q api | head -1)   # substitute your service
+BASE=/sys/fs/cgroup/swarmcracker/$TASK
+PID=$(cat "$BASE/cgroup.procs")
+
+# The VMM process's hugetlb-backed memory, in kB (non-zero when hugepages are in use)
+grep -E 'HugetlbPages|VmRSS' "/proc/$PID/status"
+
+# The host pool the VM drew from; Free falls as the guest faults its memory in
+grep -i huge /proc/meminfo
+```
+
+`HugetlbPages` is the authoritative per-process counter (`smaps` shows the same
+backing per mapping); it grows toward `mem_size_mib` as the guest touches its
+memory. `HugePages_Free` falls as those pages are faulted, so it may not drop by
+the full page count immediately after boot. For a direct VM, use the ID
+`vm create` printed (or `swarmcracker task ls -q`); it is already the full one.
+
+### NUMA Placement
+
+`--numa-node <nodelist>` binds the VM's **guest memory** to the listed host NUMA
+nodes by writing `cpuset.mems` on the task's cgroup. The kernel then allocates
+the guest's pages only from those nodes, which is observable as
+`Mems_allowed_list` in `/proc/<pid>/status`.
+
+```bash
+# Memory on node 0, CPUs pinned to 0-3
+swarmcracker service create --name db --image postgres:16 \
+    --memory 4G --cpuset 0-3 --numa-node 0
+
+# A range is allowed; the value is canonicalised before storage (3,1 -> 1,3)
+swarmcracker service update db --numa-node 0-1
+```
+
+- **Syntax** is a Linux cpulist of **node numbers**: `0`, `0-1`, `0-1,3`.
+  Overlapping and adjacent ranges are merged, so `1,0` is stored and shown as
+  `0-1`. A malformed list is rejected before any RPC.
+- **It binds memory, not CPUs.** CPU affinity is `--cpuset`; pass both for a
+  full node placement. `--numa-node` does not derive CPUs from the node and
+  `--cpuset` does not derive memory nodes.
+- **It does not create guest topology.** Firecracker exposes no SRAT or NUMA
+  topology, so the guest still sees **one** NUMA node (`numactl --hardware`
+  inside the guest shows a single node). The placement is host-side only.
+- **A NUMA-only request creates a cgroup**, on both the daemon and `vm create`
+  paths, because `cpuset.mems` needs one — even when `--cpuset` was not given.
+- **It overrides the automatic value.** Without the flag, a cgroup's
+  `cpuset.mems` is inherited from the nearest readable ancestor or the host's
+  online nodes; an explicit request replaces that with exactly the named nodes.
+- **No scheduler admission.** The node applies the list at VM start. An offline
+  node (or a node the host does not have) fails the task rather than falling
+  back to another node, which would be the silent ignore this project forbids.
+
+The failure names the request, the task, and the failing cgroup stage:
+
+```text
+cannot apply NUMA node list "3" to task <task-id>: cgroup cpuset stage (cpuset.mems): failed to write "3" (source: CpusetMems; online memory nodes: 0-1): ...
+```
+
+A malformed annotation that bypassed the CLI (a hand-set
+`swarmcracker.numa-node` label) fails as:
+
+```text
+invalid NUMA node annotation swarmcracker.numa-node="1-" on task <task-id>: ...
+```
+
+#### Verify it on the host
+
+```bash
+TASK=$(swarmcracker service ps -q db | head -1)    # full task ID, not the 12-char table form
+BASE=/sys/fs/cgroup/swarmcracker/$TASK
+PID=$(cat "$BASE/cgroup.procs")
+
+cat "$BASE/cpuset.mems"                 # the binding, canonicalised (e.g. 0 or 0-1)
+cat "$BASE/cpuset.cpus"                 # the CPU pin, if --cpuset was also given
+grep Mems_allowed_list "/proc/$PID/status"   # must equal cpuset.mems
+```
+
+`cpuset.mems` is the stored request; `Mems_allowed_list` is what the process
+actually got. They must agree — if they do not, the binding never took effect
+and the VM was refused (a placement failure is fatal). For a `vm create` VM,
+take the ID the command printed instead of `service ps`.
+
+### Known limitations
+
+- **2M pages only.** 1G pages, transparent hugepages, and mixed page sizes are
+  not supported; guest memory must be an even number of MiB.
+- **Snapshot restore of a hugepage-backed VM is UFFD-only.** `vm snapshot
+  create` works, but Firecracker can restore hugepage-backed memory only through
+  a userfaultfd backend. SwarmCracker's file-backed restore path
+  (`PUT /snapshot/load` with `mem_file_path`) cannot restore such a snapshot —
+  Firecracker rejects the load loudly. UFFD restore is not implemented yet; see
+  [Snapshots → Limitations](/guides/snapshots/#limitations).
+- **The balloon cannot reclaim hugepage backing.** A hugepage-backed VM may
+  still configure `--balloon-mib`, and the balloon can inflate, but it frees
+  guest pages at 4K granularity and those pages are 2M-backed. Do not rely on
+  the balloon to return hugepage memory to the host pool.
+- **The guest sees a single NUMA node.** Host-side `--numa-node` placement has
+  no guest-visible topology.
+- **No scheduler admission and no reservation.** Pool and node availability are
+  checked on the node at start; a task can be placed on a node that cannot
+  satisfy it and fail there. The hugepage pool is host-global, so concurrent
+  starts can race.
 
 ---
 
