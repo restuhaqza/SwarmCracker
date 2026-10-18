@@ -9,9 +9,9 @@ import (
 // pkg/jailer, so the daemon and `vm create` cannot drift apart. It returns true
 // when a cgroup exists and the VMM process should be added to it.
 //
-// pkg/jailer owns the failure policy: a cpuset that cannot be applied is
-// returned as an error (the VM never starts); a CPU/memory/IO quota problem is
-// logged and the VM runs.
+// pkg/jailer owns the failure policy: a placement request (cpuset or NUMA node
+// list) that cannot be applied is returned as an error (the VM never starts);
+// a CPU/memory/IO quota problem is logged and the VM runs.
 func (v *VMMManager) createVMCgroup(task *types.Task, vcpus, memoryMB int) (bool, error) {
 	return jailer.CreateVMCgroup(v.cgroupMgr, v.cgroupErr, v.logger, jailer.CgroupRequest{
 		Task:     task,

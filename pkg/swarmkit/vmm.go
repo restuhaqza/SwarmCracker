@@ -38,14 +38,18 @@ type VMMManager struct {
 	// cgroupErr records why the cgroup manager could not be created, so a task
 	// that requests a cpuset can be rejected with the reason instead of the
 	// request being silently ignored.
-	cgroupErr    error
-	processes    map[string]*exec.Cmd
-	processWaits map[string]*processWait
-	processMutex sync.Mutex
-	consoles     map[string]*console.Server
-	consoleMutex sync.Mutex
-	logFiles     map[string]*os.File
-	logMutex     sync.Mutex
+	cgroupErr error
+	// hugepagesPoolPath is the /proc/meminfo-style file read for a hugepages
+	// pre-flight check. Empty means the production default ("/proc/meminfo");
+	// tests point it at a fixture.
+	hugepagesPoolPath string
+	processes         map[string]*exec.Cmd
+	processWaits      map[string]*processWait
+	processMutex      sync.Mutex
+	consoles          map[string]*console.Server
+	consoleMutex      sync.Mutex
+	logFiles          map[string]*os.File
+	logMutex          sync.Mutex
 	// logDir, when non-empty, is where each VM's console output is mirrored as
 	// <logDir>/<task-id>.log so `swarmcracker vm logs <task-id>` can read it.
 	logDir string
@@ -228,6 +232,15 @@ func (v *VMMManager) Start(ctx context.Context, task *types.Task, config interfa
 		Str("task_id", task.ID).
 		Bool("jailer", v.useJailer).
 		Msg("Starting Firecracker VM")
+
+	// A hugepage request is a hard promise: an undersized host pool makes the
+	// VM fault with SIGBUS after it starts. Check it here, before either start
+	// path creates a process or a cgroup, so both paths share exactly one
+	// check and a refusal leaves nothing behind. A task that asks for no
+	// hugepages never reads the host pool.
+	if err := v.checkHugepages(task, config); err != nil {
+		return err
+	}
 
 	if v.useJailer {
 		return v.startWithJailer(ctx, task, config)
@@ -1098,6 +1111,9 @@ type MachineConfig struct {
 	MemSizeMib      int  `json:"mem_size_mib"`
 	HtEnabled       bool `json:"ht_enabled"`
 	TrackDirtyPages bool `json:"track_dirty_pages,omitempty"`
+	// HugePages is Firecracker's huge_pages value ("2M"); omitempty keeps an
+	// unconfigured VM's request unchanged.
+	HugePages string `json:"huge_pages,omitempty"`
 }
 
 // balloonDevice is the Firecracker PUT /balloon request body.

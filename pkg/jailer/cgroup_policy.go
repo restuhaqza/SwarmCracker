@@ -45,40 +45,53 @@ func CpusetRequest(task *types.Task) string {
 	return strings.TrimSpace(task.Annotations[types.CpusetLabel])
 }
 
+// NumaRequest returns the host NUMA-node list task asked its memory to be bound
+// to, trimmed, or "" when it asked for none. Like CpusetRequest it is validated
+// later by CreateVMCgroup, with the same cpulist parser.
+func NumaRequest(task *types.Task) string {
+	if task == nil {
+		return ""
+	}
+	return strings.TrimSpace(task.Annotations[types.NumaLabel])
+}
+
 // CreateVMCgroup creates req's per-task cgroup and applies the one failure policy
 // both VMM paths share. It returns true when a cgroup exists and the VMM process
 // should be attached to it via AttachVMProcess.
 //
 // The policy:
-//   - no cgroup manager and no cpuset requested: no cgroup calls at all, no
-//     error (the VM runs exactly as it did before cgroups existed here);
-//   - no cgroup manager but a cpuset requested: a fatal error naming the request
-//     and why the manager is unavailable;
-//   - a controller needed for the requested cpuset cannot be enabled: fatal;
-//   - any cpuset stage (parse, cpuset.cpus, cpuset.mems) fails: fatal, naming the
-//     request and the host's online CPUs, after removing the partial cgroup;
+//   - no cgroup manager and neither a cpuset nor a NUMA node list requested: no
+//     cgroup calls at all, no error (the VM runs exactly as it did before
+//     cgroups existed here);
+//   - no cgroup manager but a placement requested: a fatal error naming the
+//     request and why the manager is unavailable;
+//   - a controller needed for the requested placement cannot be enabled: fatal;
+//   - any placement stage (parse, cpuset.cpus, cpuset.mems) fails: fatal,
+//     naming the request and the host's online CPUs, after removing the partial
+//     cgroup;
 //   - a CPU/memory/IO quota stage fails: a warning, and the cgroup is kept so the
 //     pinning still takes effect;
-//   - no cpuset requested and CreateCgroup fails: a warning, the partial cgroup
-//     is removed, and the VM runs without limits.
+//   - no placement requested and CreateCgroup fails: a warning, the partial
+//     cgroup is removed, and the VM runs without limits.
 //
-// A cpuset failure is never downgraded to a warning.
+// A placement failure is never downgraded to a warning.
 func CreateVMCgroup(mgr CgroupOps, managerErr error, logger zerolog.Logger, req CgroupRequest) (bool, error) {
 	taskID := ""
 	if req.Task != nil {
 		taskID = req.Task.ID
 	}
-	request := CpusetRequest(req.Task)
+	cpuset, numa := CpusetRequest(req.Task), NumaRequest(req.Task)
+	requested := cpuset != "" || numa != ""
 
 	if mgr == nil {
-		if request == "" {
+		if !requested {
 			return false, nil
 		}
 		reason := "cgroups are disabled on this node (enable_cgroups=false)"
 		if managerErr != nil {
 			reason = "the cgroup manager could not be created: " + managerErr.Error()
 		}
-		return false, rejectCpuset(taskID, request, "unknown", errors.New(reason))
+		return false, rejectPlacement(taskID, cpuset, numa, "unknown", errors.New(reason))
 	}
 
 	limits, err := deriveResourceLimits(req.Task, req.VCPUs, req.MemoryMB)
@@ -89,15 +102,15 @@ func CreateVMCgroup(mgr CgroupOps, managerErr error, logger zerolog.Logger, req 
 	// Delegating the controllers is a prerequisite for the per-task cgroup: v2
 	// only lists an undelegated controller in the child's file set.
 	if err := mgr.EnsureControllers(DefaultControllers...); err != nil {
-		if request != "" && controllersBlockCpuset(err) {
-			return false, rejectCpuset(taskID, request, onlineCPUs(mgr), err)
+		if requested && controllersBlockCpuset(err) {
+			return false, rejectPlacement(taskID, cpuset, numa, onlineCPUs(mgr), err)
 		}
 		logger.Warn().Err(err).Strs("controllers", DefaultControllers).
 			Msg("Failed to enable cgroup controllers, continuing without the unavailable ones")
 	}
 
 	if err := mgr.CreateCgroup(taskID, limits); err != nil {
-		if request == "" {
+		if !requested {
 			logger.Warn().Err(err).Str("task_id", taskID).
 				Msg("Failed to create cgroup, running the VM without cgroup limits")
 			// A failed create can still have left a partial directory behind.
@@ -105,31 +118,32 @@ func CreateVMCgroup(mgr CgroupOps, managerErr error, logger zerolog.Logger, req 
 			return false, nil
 		}
 		if IsQuotaStage(err) {
-			// The cpuset is in place; only the quota could not be written. Keep
-			// the cgroup so the pinning still takes effect.
+			// The placement is in place; only the quota could not be written.
+			// Keep the cgroup so the pinning still takes effect.
 			logger.Warn().Err(err).Str("task_id", taskID).
-				Msg("Failed to apply cgroup quota limits, keeping the cpuset")
+				Msg("Failed to apply cgroup quota limits, keeping the placement")
 			return true, nil
 		}
 		RemoveVMCgroup(mgr, logger, taskID)
-		return false, rejectCpuset(taskID, request, onlineCPUs(mgr), err)
+		return false, rejectPlacement(taskID, cpuset, numa, onlineCPUs(mgr), err)
 	}
 
 	return true, nil
 }
 
 // AttachVMProcess adds pid to task's cgroup, applying the same failure policy as
-// CreateVMCgroup: a cpuset that never took effect (the process could not be
+// CreateVMCgroup: a placement that never took effect (the process could not be
 // attached) is a fatal error naming the request and the host's online CPUs; a
-// task that asked for no cpuset merely runs without limits.
+// task that asked for no placement merely runs without limits.
 func AttachVMProcess(mgr CgroupOps, logger zerolog.Logger, task *types.Task, pid int) error {
 	if mgr == nil || task == nil {
 		return nil
 	}
 
 	if err := mgr.AddProcess(task.ID, pid); err != nil {
-		if request := CpusetRequest(task); request != "" {
-			return rejectCpuset(task.ID, request, onlineCPUs(mgr), err)
+		cpuset, numa := CpusetRequest(task), NumaRequest(task)
+		if cpuset != "" || numa != "" {
+			return rejectPlacement(task.ID, cpuset, numa, onlineCPUs(mgr), err)
 		}
 		logger.Warn().Err(err).Str("task_id", task.ID).
 			Msg("Failed to add the VM process to its cgroup, running the VM without cgroup limits")
@@ -180,6 +194,23 @@ func deriveResourceLimits(task *types.Task, vcpus, memoryMB int) (ResourceLimits
 		limits.CpusetCPUs = cpus
 	}
 
+	// An explicit NUMA request overrides the auto-resolved memory nodes: the
+	// manager only consults its parent/online fallback when CpusetMems is empty,
+	// so a canonical non-empty value here wins. A malformed list is a hard error,
+	// never a silent fallback to another node.
+	if resolved.NumaNodes != "" {
+		nodes, err := ParseCPUSet(resolved.NumaNodes)
+		if err != nil {
+			taskID := ""
+			if task != nil {
+				taskID = task.ID
+			}
+			return ResourceLimits{}, fmt.Errorf("invalid NUMA node annotation %s=%q on task %s: %w",
+				types.NumaLabel, resolved.NumaNodes, taskID, err)
+		}
+		limits.CpusetMems = nodes
+	}
+
 	// Fall back to the VM's resolved size: one microsecond-second of quota per
 	// vCPU (1 vCPU = 1e9 nanoCPUs = 1e6 us), and the guest's memory plus the
 	// VMM's headroom.
@@ -226,6 +257,25 @@ func rejectCpuset(taskID, request, online string, cause error) error {
 	}
 	return fmt.Errorf("cannot apply cpuset %q to task %s: %v (host online CPUs: %s)",
 		request, taskID, cause, online)
+}
+
+// rejectPlacement builds the hard error a placement request that cannot be
+// applied must produce. A cpuset keeps its established message; a NUMA-only
+// request names the node list so the operator can tell which request failed. A
+// typed cgroup failure already describes its stage and, for cpuset.mems, names
+// the host node list it collided with, so those parts are not repeated.
+func rejectPlacement(taskID, cpuset, numa, online string, cause error) error {
+	if cpuset != "" {
+		return rejectCpuset(taskID, cpuset, online, cause)
+	}
+
+	var cgroupErr *CgroupError
+	if errors.As(cause, &cgroupErr) && cgroupErr.TaskID == taskID {
+		return fmt.Errorf("cannot apply NUMA node list %q to task %s: %s",
+			numa, taskID, cgroupErr.detail())
+	}
+	return fmt.Errorf("cannot apply NUMA node list %q to task %s: %v",
+		numa, taskID, cause)
 }
 
 // controllersBlockCpuset reports whether an EnsureControllers failure makes a

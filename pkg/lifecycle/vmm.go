@@ -39,6 +39,10 @@ type VMMManager struct {
 	// cgroupErr remembers why the real manager could not be created, so a cpuset
 	// request can be rejected with the reason.
 	cgroupErr error
+	// hugepagesPoolPath is the /proc/meminfo-style file read for a hugepages
+	// pre-flight check. Empty means the production default; tests point it at a
+	// fixture.
+	hugepagesPoolPath string
 }
 
 // SetConsoleWriter redirects the serial console of VMs started from now on to
@@ -137,6 +141,9 @@ type MachineConfig struct {
 	VCPUs      int  `json:"vcpu_count"`
 	MemSizeMib int  `json:"mem_size_mib"`
 	HtEnabled  bool `json:"ht_enabled"`
+	// HugePages is Firecracker's huge_pages value ("2M"); omitempty keeps an
+	// unconfigured VM's request unchanged.
+	HugePages string `json:"huge_pages,omitempty"`
 }
 
 // balloonDevice is the Firecracker PUT /balloon request body.
@@ -197,9 +204,17 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 		return fmt.Errorf("invalid config: nil configuration")
 	}
 
-	// A `vm create` VM is cgrouped only when its task asks to be pinned: with no
-	// cpuset annotation this makes no cgroup calls and behaves exactly as before.
-	// A refused cpuset fails here, before any process exists.
+	// A hugepage request is a hard promise: an undersized host pool makes the
+	// VM fault with SIGBUS after it boots. Check it before the cgroup or the
+	// process exists, so a refusal leaves nothing behind.
+	if err := vm.checkHugepages(task, config); err != nil {
+		return err
+	}
+
+	// A `vm create` VM is cgrouped only when its task asks to be pinned: with
+	// neither a cpuset nor a NUMA node list this makes no cgroup calls and
+	// behaves exactly as before. A refused placement fails here, before any
+	// process exists.
 	cgrouped, err := vm.prepareCgroup(task, config)
 	if err != nil {
 		return err
