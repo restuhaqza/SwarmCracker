@@ -456,6 +456,13 @@ func (e *Executor) cleanupOrphanedVMs(ctx context.Context) {
 				<-done // reap the waiter goroutine to avoid a leak
 			}
 
+			// The process is gone (both branches above reaped it), so its cgroup
+			// can be removed. An orphan has no controller left to run the normal
+			// teardown, so without this every daemon restart would leak one
+			// cgroup forever. Removal is best-effort: the shared policy logs a
+			// warning if it fails.
+			e.vmmMgr.RemoveVMCgroup(taskID)
+
 			// Remove from VMM manager's process map
 			e.vmmMgr.RemoveProcess(taskID)
 
@@ -792,6 +799,30 @@ func (c *Controller) Prepare(ctx context.Context) error {
 			task.Annotations = make(map[string]string)
 		}
 		task.Annotations[types.CpusetLabel] = cpuset
+	}
+
+	// The same bridge for a hugepages request ("swarmcracker.hugepages"): the
+	// start path checks the host pool and both translators turn the annotation
+	// into the Firecracker machine config's huge_pages, and neither ever sees the
+	// service label. Without this copy the flag would be accepted by the CLI and
+	// silently ignored here, leaving the VM on 4K memory. A service without the
+	// label adds nothing.
+	if hugepages := strings.TrimSpace(c.task.ServiceAnnotations.Labels[types.HugepagesLabel]); hugepages != "" {
+		if task.Annotations == nil {
+			task.Annotations = make(map[string]string)
+		}
+		task.Annotations[types.HugepagesLabel] = hugepages
+	}
+
+	// And for a NUMA-node request ("swarmcracker.numa-node"): the cgroup policy
+	// reads it from the annotation to write cpuset.mems, so a label that is not
+	// bridged leaves the VMM unpinned to any node. A service without the label
+	// adds nothing.
+	if numa := strings.TrimSpace(c.task.ServiceAnnotations.Labels[types.NumaLabel]); numa != "" {
+		if task.Annotations == nil {
+			task.Annotations = make(map[string]string)
+		}
+		task.Annotations[types.NumaLabel] = numa
 	}
 
 	// Store the prepared task with annotations and network attachments

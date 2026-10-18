@@ -30,30 +30,42 @@ type cpusetRange struct {
 // zero-padded number ("01"). Rejecting rather than repairing keeps a typo from
 // silently pinning a VM to an unintended CPU.
 func ParseCPUSet(s string) (string, error) {
+	ranges, err := parseCPUSetRanges(s)
+	if err != nil {
+		return "", err
+	}
+	return formatCPUSetRanges(mergeCPUSetRanges(ranges)), nil
+}
+
+// parseCPUSetRanges applies ParseCPUSet's syntax checks and returns the parsed
+// ranges unsorted and unmerged. It is the one parser behind both the canonical
+// form and the NUMA grantability checks, so a list that ParseCPUSet accepts can
+// never be rejected (or read differently) by a comparison.
+func parseCPUSetRanges(s string) ([]cpusetRange, error) {
 	if s == "" {
-		return "", fmt.Errorf("invalid cpuset %q: empty", s)
+		return nil, fmt.Errorf("invalid cpuset %q: empty", s)
 	}
 	if strings.TrimSpace(s) == "" {
-		return "", fmt.Errorf("invalid cpuset %q: whitespace-only", s)
+		return nil, fmt.Errorf("invalid cpuset %q: whitespace-only", s)
 	}
 	if strings.IndexFunc(s, unicode.IsSpace) >= 0 {
-		return "", fmt.Errorf("invalid cpuset %q: must not contain whitespace", s)
+		return nil, fmt.Errorf("invalid cpuset %q: must not contain whitespace", s)
 	}
 
 	parts := strings.Split(s, ",")
 	ranges := make([]cpusetRange, 0, len(parts))
 	for _, part := range parts {
 		if part == "" {
-			return "", fmt.Errorf("invalid cpuset %q: empty list element", s)
+			return nil, fmt.Errorf("invalid cpuset %q: empty list element", s)
 		}
 		r, err := parseCPUSetElement(part, s)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		ranges = append(ranges, r)
 	}
 
-	return formatCPUSetRanges(mergeCPUSetRanges(ranges)), nil
+	return ranges, nil
 }
 
 // parseCPUSetElement parses one comma-separated cpulist element ("N" or

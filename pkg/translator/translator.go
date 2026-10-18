@@ -111,6 +111,11 @@ type MachineConfig struct {
 	VcpuCount  int  `json:"vcpu_count"`
 	MemSizeMib int  `json:"mem_size_mib"`
 	Smt        bool `json:"smt"`
+	// HugePages is Firecracker's huge_pages value ("2M") when the task asked
+	// for hugepage-backed memory. omitempty keeps an unconfigured VM's JSON
+	// byte-identical to before (Firecracker's other value, "None", is the
+	// default).
+	HugePages string `json:"huge_pages,omitempty"`
 }
 
 // NetworkInterface specifies network configuration.
@@ -185,6 +190,14 @@ func (tt *TaskTranslator) Translate(task *types.Task) (interface{}, error) {
 	// rule the daemon translator (pkg/swarmkit) applies, so the two producers
 	// cannot disagree about where the size comes from.
 	tt.applyResources(config, &task.Spec.Resources)
+
+	// Hugepage backing is a per-task annotation. Resolve it after sizing so an
+	// odd memory size (which cannot be mapped with 2M pages) is rejected here
+	// rather than by a Firecracker start failure. An unconfigured task leaves
+	// HugePages empty, keeping the machine-config JSON unchanged.
+	if err := applyHugepages(config, task); err != nil {
+		return nil, err
+	}
 
 	// The memory-balloon target is a per-service annotation, and the device is
 	// created before boot (it cannot be added to a running VM), so a target that
@@ -460,6 +473,27 @@ func (tt *TaskTranslator) applyResources(config *VMMConfig, res *types.ResourceR
 	vcpus, memoryMB := types.ResolveVMSize(res, tt.defaultVCPUs, tt.defaultMemMB)
 	config.MachineConfig.VcpuCount = vcpus
 	config.MachineConfig.MemSizeMib = memoryMB
+}
+
+// applyHugepages turns a task's hugepages annotation into the Firecracker
+// machine-config value. Firecracker supports only 2M pages, so the value is
+// "2M" or absent; a malformed request or a memory size that cannot be expressed
+// in whole 2M pages is a hard error rather than a silent fallback to 4K memory.
+func applyHugepages(config *VMMConfig, task *types.Task) error {
+	raw := ""
+	if task != nil {
+		raw = task.Annotations[types.HugepagesLabel]
+	}
+
+	// The request is resolved by types.ResolveHugepages, the same helper the
+	// daemon's translator uses, so both start paths emit one identical rule.
+	value, err := types.ResolveHugepages(raw, config.MachineConfig.MemSizeMib)
+	if err != nil {
+		return err
+	}
+
+	config.MachineConfig.HugePages = value
+	return nil
 }
 
 // resolveBalloon reads the memory-balloon target from a task's annotation and

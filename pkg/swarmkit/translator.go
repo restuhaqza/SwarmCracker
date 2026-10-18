@@ -80,8 +80,26 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 		return nil, err
 	}
 
+	// Hugepage backing is also a per-task annotation. Resolve it after sizing so
+	// a request that cannot be expressed in whole 2M pages fails here instead of
+	// being silently booted as 4K memory. No request leaves the machine-config
+	// map byte-identical (no huge_pages key at all).
+	hugePages, err := resolveHugepages(task, memoryMB)
+	if err != nil {
+		return nil, err
+	}
+
 	// Build boot args with network config if available
 	bootArgs := t.buildBootArgs(task)
+
+	machineConfig := map[string]interface{}{
+		"vcpu_count":   vcpus,
+		"mem_size_mib": memoryMB,
+		"smt":          false,
+	}
+	if hugePages != "" {
+		machineConfig["huge_pages"] = hugePages
+	}
 
 	config := map[string]interface{}{
 		"boot-source": map[string]interface{}{
@@ -96,11 +114,7 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 				"is_read_only":   false,
 			},
 		},
-		"machine-config": map[string]interface{}{
-			"vcpu_count":   vcpus,
-			"mem_size_mib": memoryMB,
-			"smt":          false,
-		},
+		"machine-config":     machineConfig,
 		"network-interfaces": t.buildNetworkInterfaces(task),
 		// The vsock device makes the guest agent reachable from the host. The
 		// uds_path is derived from the API socket in configureVM, which is the
@@ -274,6 +288,19 @@ func (t *taskTranslatorImpl) resolveKernelPath(task *types.Task) (string, error)
 		return "", fmt.Errorf("kernel profile %q maps to %s, which is not available: %w", profile, path, err)
 	}
 	return path, nil
+}
+
+// resolveHugepages returns Firecracker's machine-config huge_pages value for a
+// task, or "" when it requested no hugepage-backed memory. The daemon does not
+// use pkg/translator, so this is the translation that makes the hugepages
+// annotation actually reach the Firecracker API here; without it the pool check
+// in Start would guard a request that then booted 4K memory.
+func resolveHugepages(task *types.Task, memSizeMib int) (string, error) {
+	raw := ""
+	if task != nil {
+		raw = task.Annotations[types.HugepagesLabel]
+	}
+	return types.ResolveHugepages(raw, memSizeMib)
 }
 
 // resolveBalloon reads the memory-balloon target from a task's annotation and

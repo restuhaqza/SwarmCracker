@@ -59,6 +59,8 @@ func newVMCreateCommand() *cobra.Command {
 		memory     int
 		balloonMib int
 		cpuset     string
+		hugepages  bool
+		numaNode   string
 		network    string
 		detach     bool
 		env        []string
@@ -111,6 +113,18 @@ Example:
 				cpusetValue = value
 			}
 
+			// --numa-node is the same contract: validate the cpulist before the
+			// configuration is loaded, so a malformed request never reaches the
+			// executor. --hugepages is a boolean and needs no validation.
+			numaNodeValue := ""
+			if cmd.Flags().Changed("numa-node") {
+				value, err := canonicalCPUSet("--numa-node", numaNode)
+				if err != nil {
+					return err
+				}
+				numaNodeValue = value
+			}
+
 			// Load configuration
 			cfg, err := loadConfigWithOverrides(cfgFile)
 			if err != nil {
@@ -160,11 +174,12 @@ Example:
 			}
 
 			// Assemble the task that is handed downstream, carrying the
-			// golden-image annotations and the validated balloon target and
-			// cpuset. Assembly is pure and runs before the executor exists, so
-			// the task the command hands downstream is observable through
-			// vmCreateTaskHook and identical on both paths.
-			task := buildVMCreateTask(imageRef, vcpus, memory, env, goldenAnnotations, balloonValue, cpusetValue)
+			// golden-image annotations and the validated balloon target,
+			// cpuset, NUMA binding and hugepages request. Assembly is pure and
+			// runs before the executor exists, so the task the command hands
+			// downstream is observable through vmCreateTaskHook and identical on
+			// both paths.
+			task := buildVMCreateTask(imageRef, vcpus, memory, env, goldenAnnotations, balloonValue, cpusetValue, numaNodeValue, hugepages)
 
 			// Override task ID with name if provided
 			if name != "" {
@@ -331,6 +346,8 @@ Example:
 	cmd.Flags().IntVarP(&memory, "memory", "m", 512, "Memory in MB to allocate")
 	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB, must be less than --memory (the guest can reclaim it via deflate-on-OOM)")
 	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online")
+	cmd.Flags().BoolVar(&hugepages, "hugepages", false, "Back the VM's guest memory with 2M huge pages; the host must have a sufficiently large hugepage pool")
+	cmd.Flags().StringVar(&numaNode, "numa-node", "", "Bind the VM's memory to these host NUMA nodes (Linux cpulist: 0, 0-1); the host must have those nodes online")
 	cmd.Flags().StringVar(&network, "network", "", "Network to attach the VM to")
 	cmd.Flags().BoolVarP(&detach, "detach", "d", false, "Run in detached mode (don't wait for completion)")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", []string{}, "Environment variables (e.g., -e KEY=value)")
@@ -342,54 +359,68 @@ Example:
 
 // buildVMCreateTask assembles the task a `vm create` run hands downstream: the
 // mock task for the requested resources, carrying the golden-image annotations
-// (when a golden image was resolved) and the validated memory-balloon and
-// cpuset values. It is a function of its inputs, rather than inline in RunE, so
-// that the merge of the annotation sources is directly testable: the golden
-// annotations and each validated value must all survive onto the task the
-// executor is given. An assignment of goldenAnnotations in place of the merge
-// would silently drop the balloon target or the cpuset (or vice versa);
-// withBalloonAnnotation/withCpusetAnnotation always merge.
-func buildVMCreateTask(imageRef string, vcpus, memory int, env []string, goldenAnnotations map[string]string, balloonValue, cpusetValue string) *types.Task {
+// (when a golden image was resolved) and the validated memory-balloon, cpuset,
+// NUMA-node and hugepages values. It is a function of its inputs, rather than
+// inline in RunE, so that the merge of the annotation sources is directly
+// testable: the golden annotations and each validated value must all survive
+// onto the task the executor is given. An assignment of goldenAnnotations in
+// place of the merge would silently drop the balloon target or the placement
+// (or vice versa); each with...Annotation helper always merges.
+func buildVMCreateTask(imageRef string, vcpus, memory int, env []string, goldenAnnotations map[string]string, balloonValue, cpusetValue, numaNodeValue string, hugepages bool) *types.Task {
 	task := createMockTask(imageRef, vcpus, memory, env)
 	if goldenAnnotations != nil {
 		task.Annotations = goldenAnnotations
 	}
 	task.Annotations = withBalloonAnnotation(task.Annotations, balloonValue)
 	task.Annotations = withCpusetAnnotation(task.Annotations, cpusetValue)
+	task.Annotations = withNumaNodeAnnotation(task.Annotations, numaNodeValue)
+	task.Annotations = withHugepagesAnnotation(task.Annotations, hugepages)
 	return task
 }
 
-// withBalloonAnnotation merges a validated --balloon-mib target into a task's
-// annotation map, creating the map only when there is a target to add. It must
-// merge: a `vm create` task may already carry the golden-image annotations, and
-// replacing the map would silently drop them. An empty target leaves the map
-// untouched, so a VM created without the flag is identical to before.
-func withBalloonAnnotation(annotations map[string]string, value string) map[string]string {
+// withAnnotation merges one annotation into a task's map, creating the map only
+// when there is a value to add. It must merge: a `vm create` task may already
+// carry the golden-image annotations, and replacing the map would silently drop
+// them. An empty value leaves the map untouched, so a VM created without the
+// flag is identical to before.
+func withAnnotation(annotations map[string]string, key, value string) map[string]string {
 	if value == "" {
 		return annotations
 	}
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
-	annotations[types.BalloonLabel] = value
+	annotations[key] = value
 	return annotations
 }
 
+// withBalloonAnnotation merges a validated --balloon-mib target into a task's
+// annotation map.
+func withBalloonAnnotation(annotations map[string]string, value string) map[string]string {
+	return withAnnotation(annotations, types.BalloonLabel, value)
+}
+
 // withCpusetAnnotation merges a validated --cpuset pin into a task's annotation
-// map, creating the map only when there is a pin to add. It must merge for the
-// same reason as withBalloonAnnotation: a `vm create --golden` task already
-// carries the golden-image annotations, and replacing the map would drop them.
-// An empty value leaves the map untouched, so a VM created without the flag is
-// identical to before.
+// map. It must merge for the same reason as withBalloonAnnotation.
 func withCpusetAnnotation(annotations map[string]string, value string) map[string]string {
-	if value == "" {
+	return withAnnotation(annotations, types.AnnotationCpuset, value)
+}
+
+// withNumaNodeAnnotation merges a canonical --numa-node nodelist into a task's
+// annotation map, creating the map only when there is a binding to add. An
+// empty value leaves the map untouched.
+func withNumaNodeAnnotation(annotations map[string]string, value string) map[string]string {
+	return withAnnotation(annotations, types.AnnotationNumaNode, value)
+}
+
+// withHugepagesAnnotation merges an opted-in --hugepages request into a task's
+// annotation map. The stored form is "true": hugepages is a boolean request,
+// not a page size, so --hugepages=false adds nothing at all.
+func withHugepagesAnnotation(annotations map[string]string, requested bool) map[string]string {
+	if !requested {
 		return annotations
 	}
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-	annotations[types.AnnotationCpuset] = value
-	return annotations
+	return withAnnotation(annotations, types.AnnotationHugepages, "true")
 }
 
 // newVMListCommand creates the VM list command

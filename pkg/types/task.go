@@ -99,6 +99,77 @@ const BalloonLabel = "swarmcracker.balloon"
 // AnnotationCpuset).
 const CpusetLabel = AnnotationCpuset
 
+// HugepagesLabel carries a request to back a service's guest memory with 2M
+// huge pages, e.g. "swarmcracker.hugepages=true". It is a boolean request, not
+// a page size: absent means ordinary 4K memory. The annotation uses the same
+// key (see AnnotationHugepages).
+const HugepagesLabel = AnnotationHugepages
+
+// NumaLabel carries a host NUMA-node placement request on a service, e.g.
+// "swarmcracker.numa-node=0-1". It binds the VM's memory to exactly those nodes
+// through cpuset.mems; absent means "do not place". The annotation uses the
+// same key (see AnnotationNumaNode).
+const NumaLabel = AnnotationNumaNode
+
+// ParseHugepages interprets a hugepages request from a service label or task
+// annotation. The value is a boolean request, not a size: Firecracker supports
+// only 2M pages, so "2M" is accepted as a synonym for "true" and no other value
+// names a page size. Leading and trailing whitespace and letter case are
+// ignored.
+//
+//	""  "none"  "false"  "0" -> false
+//	"true"  "2m"             -> true
+//
+// Anything else is rejected with an error naming the allowed values, so a typo
+// cannot silently fall back to 4K memory.
+func ParseHugepages(raw string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "none", "false", "0":
+		return false, nil
+	case "true", "2m":
+		return true, nil
+	default:
+		return false, fmt.Errorf(
+			"invalid hugepages value %q: want one of \"true\", \"false\", \"2M\" (2M is the only page size Firecracker supports)",
+			raw)
+	}
+}
+
+// HugepagesMachineValue is the only value Firecracker accepts for
+// machine-config.huge_pages: 2M pages are the sole supported size.
+const HugepagesMachineValue = "2M"
+
+// hugepageMiB2M is the size of one huge page, in MiB. Guest memory must be a
+// whole number of them, so a size that is not a multiple of 2 is unbootable
+// with huge pages.
+const hugepageMiB2M = 2
+
+// ResolveHugepages turns a task's hugepages request into Firecracker's
+// machine-config huge_pages value. It returns "" when the task requested no
+// hugepages, so an unconfigured VM's machine-config stays unchanged (no key at
+// all), and HugepagesMachineValue when it did.
+//
+// A malformed request, or a memory size that cannot be expressed in whole 2M
+// pages, is a hard error. Both VMM start paths need the same rule and the same
+// message, so it lives here rather than in either translator: Firecracker
+// rejects a hugepage request whose mem_size_mib is odd, and silently dropping
+// the request would boot 4K memory behind the user's back.
+func ResolveHugepages(raw string, memSizeMib int) (string, error) {
+	requested, err := ParseHugepages(raw)
+	if err != nil {
+		return "", err
+	}
+	if !requested {
+		return "", nil
+	}
+	if memSizeMib%hugepageMiB2M != 0 {
+		return "", fmt.Errorf(
+			"invalid hugepage-backed memory size %d MiB: 2M huge pages require a multiple of %d MiB",
+			memSizeMib, hugepageMiB2M)
+	}
+	return HugepagesMachineValue, nil
+}
+
 // CgroupMemoryHeadroom is added to the guest's declared memory to cap the
 // Firecracker process: the cgroup holds the VMM, whose RSS is the guest's memory
 // plus Firecracker's own overhead, so a limit equal to the guest size would
@@ -122,6 +193,12 @@ type CgroupLimits struct {
 	// cgroup syntax knowledge, and every VMM path validates the request with
 	// jailer.ParseCPUSet before creating a cgroup. Empty means "do not pin".
 	CpusetCPUs string
+
+	// NumaNodes is the requested host NUMA-node list exactly as written
+	// (trimmed). Like CpusetCPUs it is not parsed or canonicalised here; every
+	// VMM path validates it with jailer.ParseCPUSet before writing
+	// cpuset.mems. Empty means "do not place".
+	NumaNodes string
 }
 
 // ResolveCgroupLimits derives a task's cgroup limits from the resources it
@@ -141,6 +218,7 @@ func ResolveCgroupLimits(task *Task) (CgroupLimits, error) {
 
 	limits := CgroupLimits{
 		CpusetCPUs: strings.TrimSpace(task.Annotations[CpusetLabel]),
+		NumaNodes:  strings.TrimSpace(task.Annotations[NumaLabel]),
 	}
 
 	src := task.Spec.Resources.Limits

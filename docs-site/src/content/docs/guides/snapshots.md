@@ -158,6 +158,11 @@ swarmctl snapshot rm <snapshot-name>
 - **Rootfs path** — the rootfs must be accessible at the same path on restore.
 - **Firecracker version** — requires v1.14.0+ for the current snapshot API.
 - **Network state** — active network connections may not survive a restore.
+- **Hugepage-backed VMs cannot be restored through this path.** Creating a
+  snapshot of a VM started with `--hugepages` works, but Firecracker can restore
+  hugepage-backed memory only through a userfaultfd (UFFD) backend. The
+  file-backed `restore` in SwarmCracker cannot, and Firecracker rejects the load.
+  See [Hugepages → Known limitations](/guides/advanced/#known-limitations).
 
 ---
 

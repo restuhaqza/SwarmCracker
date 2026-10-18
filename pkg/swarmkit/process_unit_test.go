@@ -422,3 +422,5 @@ func (m *mockVMMProcessTracker) RemoveProcess(taskID string) {
 	delete(m.processes, taskID)
 	m.removedTasks = append(m.removedTasks, taskID)
 }
+
+func (m *mockVMMProcessTracker) RemoveVMCgroup(taskID string) {}

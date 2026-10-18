@@ -277,9 +277,12 @@ database.
 | CPU Quota | vCPU count (`cpu.max`) | task resources; `--enable-cgroups` (default on) |
 | Memory Limit | guest RAM + 128 MiB (`memory.max`) | task resources; `--enable-cgroups` (default on) |
 | CPU pin | none | `--cpuset` on the service or VM |
+| NUMA memory binding | none (`cpuset.mems` inherited) | `--numa-node` on the service or VM |
+| Hugepage backing | 4K pages | `--hugepages` on the service or VM (host 2M pool required) |
 
 Per-task cgroup v2 limits are applied by the daemon — and by `vm create` only
-when `--cpuset` is given — not by the jailer. `--enable-cgroups` defaults to
+when `--cpuset` or `--numa-node` is given — not by the jailer.
+`--enable-cgroups` defaults to
 true and no longer requires `--enable-jailer`; `--parent-cgroup` and
 `--cgroup-version` configure the jailer's own cgroup only. There are no
 `cgroup.*` keys in the YAML config. See

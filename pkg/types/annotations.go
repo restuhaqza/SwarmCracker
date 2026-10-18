@@ -28,6 +28,18 @@ const (
 	// of the "swarmcracker.cpuset" service label (see CpusetLabel).
 	AnnotationCpuset = "swarmcracker.cpuset"
 
+	// AnnotationHugepages marks a task whose guest memory must be backed by 2M
+	// huge pages. It is the task-side form of the "swarmcracker.hugepages"
+	// service label (see HugepagesLabel). Only "true" is stored; absent means
+	// ordinary 4K memory.
+	AnnotationHugepages = "swarmcracker.hugepages"
+
+	// AnnotationNumaNode carries a host NUMA-node placement request (Linux
+	// cpulist syntax, e.g. "0-1") for the task's VMM process. It binds guest
+	// memory through cpuset.mems and is the task-side form of the
+	// "swarmcracker.numa-node" service label (see NumaLabel).
+	AnnotationNumaNode = "swarmcracker.numa-node"
+
 	// AnnotationResolver is the nameserver the guest should use, set by the
 	// network manager when the task's bridge has a live resolver (dnsmasq) on
 	// its gateway. The translator turns it into the sc.dns boot argument, which

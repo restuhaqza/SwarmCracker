@@ -549,6 +549,8 @@ func (m *mockVMMManagerSuccess) GetRunningProcesses() map[string]*exec.Cmd {
 
 func (m *mockVMMManagerSuccess) RemoveProcess(taskID string) {}
 
+func (m *mockVMMManagerSuccess) RemoveVMCgroup(taskID string) {}
+
 type mockVMMManagerError struct {
 	startErr   error
 	stopErr    error
@@ -600,3 +602,5 @@ func (m *mockVMMManagerError) GetRunningProcesses() map[string]*exec.Cmd {
 }
 
 func (m *mockVMMManagerError) RemoveProcess(taskID string) {}
+
+func (m *mockVMMManagerError) RemoveVMCgroup(taskID string) {}

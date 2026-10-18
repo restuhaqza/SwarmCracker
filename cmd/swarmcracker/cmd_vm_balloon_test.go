@@ -159,7 +159,7 @@ func TestBuildVMCreateTask_CarriesGoldenAndBalloonAnnotations(t *testing.T) {
 	}
 
 	t.Run("golden annotations and the target both survive", func(t *testing.T) {
-		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, golden(), "256", "")
+		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, golden(), "256", "", "", false)
 
 		assert.Equal(t, "256", task.Annotations[types.BalloonLabel])
 		assert.Equal(t, "/var/lib/firecracker/golden/ubuntu-24.04-docker.ext4", task.Annotations[types.AnnotationRootfs],
@@ -171,7 +171,7 @@ func TestBuildVMCreateTask_CarriesGoldenAndBalloonAnnotations(t *testing.T) {
 
 	t.Run("no flag leaves the golden annotations unchanged", func(t *testing.T) {
 		want := golden()
-		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, want, "", "")
+		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, want, "", "", "", false)
 
 		assert.Equal(t, want, task.Annotations)
 		_, ok := task.Annotations[types.BalloonLabel]
@@ -179,21 +179,21 @@ func TestBuildVMCreateTask_CarriesGoldenAndBalloonAnnotations(t *testing.T) {
 	})
 
 	t.Run("no golden and no flag keeps the mock task's annotations", func(t *testing.T) {
-		task := buildVMCreateTask("alpine:latest", 1, 512, []string{"A=B"}, nil, "", "")
+		task := buildVMCreateTask("alpine:latest", 1, 512, []string{"A=B"}, nil, "", "", "", false)
 
 		assert.Equal(t, createMockTask("alpine:latest", 1, 512, []string{"A=B"}).Annotations, task.Annotations)
 		assert.Nil(t, task.Annotations, "an unconfigured vm create must not gain an annotation map")
 	})
 
 	t.Run("no golden with the flag sets only the target", func(t *testing.T) {
-		task := buildVMCreateTask("alpine:latest", 1, 512, nil, nil, "128", "")
+		task := buildVMCreateTask("alpine:latest", 1, 512, nil, nil, "128", "", "", false)
 
 		require.Len(t, task.Annotations, 1)
 		assert.Equal(t, "128", task.Annotations[types.BalloonLabel])
 	})
 
 	t.Run("the requested resources still reach the task", func(t *testing.T) {
-		task := buildVMCreateTask("alpine:latest", 3, 2048, nil, nil, "256", "")
+		task := buildVMCreateTask("alpine:latest", 3, 2048, nil, nil, "256", "", "", false)
 
 		require.NotNil(t, task.Spec.Resources.Limits)
 		assert.Equal(t, int64(2048*1024*1024), task.Spec.Resources.Limits.MemoryBytes)

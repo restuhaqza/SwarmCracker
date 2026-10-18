@@ -9,9 +9,9 @@ import (
 // pkg/jailer, so the daemon and `vm create` cannot drift apart. It returns true
 // when a cgroup exists and the VMM process should be added to it.
 //
-// pkg/jailer owns the failure policy: a cpuset that cannot be applied is
-// returned as an error (the VM never starts); a CPU/memory/IO quota problem is
-// logged and the VM runs.
+// pkg/jailer owns the failure policy: a placement request (cpuset or NUMA node
+// list) that cannot be applied is returned as an error (the VM never starts);
+// a CPU/memory/IO quota problem is logged and the VM runs.
 func (v *VMMManager) createVMCgroup(task *types.Task, vcpus, memoryMB int) (bool, error) {
 	return jailer.CreateVMCgroup(v.cgroupMgr, v.cgroupErr, v.logger, jailer.CgroupRequest{
 		Task:     task,
@@ -34,6 +34,20 @@ func (v *VMMManager) addVMCgroupProcess(task *types.Task, created bool, pid int)
 // cgroup exists and makes no calls at all when cgroups are disabled.
 func (v *VMMManager) removeVMCgroup(taskID string) {
 	jailer.RemoveVMCgroup(v.cgroupMgr, v.logger, taskID)
+}
+
+// RemoveVMCgroup removes a task's cgroup through the same shared policy as the
+// normal teardown. The orphan sweep uses it for a task that has no controller
+// left to run Remove, so the "no cgroup outlives its VM" guarantee also holds
+// after a daemon restart.
+//
+// The caller must only call it once the VMM process is confirmed gone: removing
+// a cgroup while the process is still alive re-parents it and silently drops the
+// placement. Removal is best-effort — the shared policy logs a warning and this
+// method returns nothing, because teardown must not fail on an already-gone
+// cgroup.
+func (v *VMMManager) RemoveVMCgroup(taskID string) {
+	v.removeVMCgroup(taskID)
 }
 
 // machineSize extracts the VM's resolved vCPU count and memory (MiB) from a

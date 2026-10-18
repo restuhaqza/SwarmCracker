@@ -365,7 +365,7 @@ func TestBuildVMCreateTask_CarriesCpusetAnnotation(t *testing.T) {
 	}
 
 	t.Run("pin merges with the golden annotations and the balloon", func(t *testing.T) {
-		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, golden, "256", "1-3")
+		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, golden, "256", "1-3", "", false)
 
 		assert.Equal(t, "1-3", task.Annotations[types.AnnotationCpuset])
 		assert.Equal(t, "256", task.Annotations[types.BalloonLabel])
@@ -376,7 +376,7 @@ func TestBuildVMCreateTask_CarriesCpusetAnnotation(t *testing.T) {
 
 	t.Run("no pin leaves the map untouched", func(t *testing.T) {
 		want := map[string]string{types.AnnotationGolden: "ubuntu-24.04-docker@1.0.0"}
-		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, want, "", "")
+		task := buildVMCreateTask("golden:ubuntu-24.04-docker@1.0.0", 2, 2048, nil, want, "", "", "", false)
 
 		assert.Equal(t, want, task.Annotations)
 		_, ok := task.Annotations[types.AnnotationCpuset]
@@ -384,7 +384,7 @@ func TestBuildVMCreateTask_CarriesCpusetAnnotation(t *testing.T) {
 	})
 
 	t.Run("pin alone creates the annotation map", func(t *testing.T) {
-		task := buildVMCreateTask("alpine:latest", 1, 512, nil, nil, "", "0-3")
+		task := buildVMCreateTask("alpine:latest", 1, 512, nil, nil, "", "0-3", "", false)
 
 		require.Len(t, task.Annotations, 1)
 		assert.Equal(t, "0-3", task.Annotations[types.AnnotationCpuset])

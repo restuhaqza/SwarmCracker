@@ -32,14 +32,18 @@ func (vm *VMMManager) ensureCgroupManager() (jailer.CgroupOps, error) {
 
 // prepareCgroup applies the task's cgroup when it asked to be pinned, through the
 // same policy the daemon uses (pkg/jailer). It returns false — and makes no
-// cgroup calls at all — when the task carries no cpuset annotation, which keeps
-// `vm create` exactly as it was for every other VM.
+// cgroup calls at all — when the task carries neither a cpuset nor a NUMA node
+// list, which keeps `vm create` exactly as it was for every other VM.
 //
-// A cpuset that cannot be applied is a hard error, naming the request and the
+// A cgroup is needed when either is requested: cpuset.cpus pins the CPUs and
+// cpuset.mems binds the guest memory to the NUMA nodes, so a NUMA-only request
+// has nowhere to go without a cgroup.
+//
+// A request that cannot be applied is a hard error, naming the request and the
 // host's online CPUs; a CPU/memory/IO quota problem is only a warning and the
-// returned bool still reports the created cgroup, so the pinning takes effect.
+// returned bool still reports the created cgroup, so the placement takes effect.
 func (vm *VMMManager) prepareCgroup(task *types.Task, config interface{}) (bool, error) {
-	if jailer.CpusetRequest(task) == "" {
+	if jailer.CpusetRequest(task) == "" && jailer.NumaRequest(task) == "" {
 		return false, nil
 	}
 
