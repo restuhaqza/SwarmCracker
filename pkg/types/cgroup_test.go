@@ -108,6 +108,30 @@ func TestResolveCgroupLimits(t *testing.T) {
 			want: CgroupLimits{},
 		},
 		{
+			name: "a numa-node annotation is returned verbatim and trimmed",
+			task: &Task{
+				ID:          "t1",
+				Annotations: map[string]string{NumaLabel: " 1,0 "},
+			},
+			want: CgroupLimits{NumaNodes: "1,0"},
+		},
+		{
+			name: "cpuset and numa-node annotations are resolved together",
+			task: &Task{
+				ID:          "t1",
+				Annotations: map[string]string{CpusetLabel: "0-1", NumaLabel: "0"},
+			},
+			want: CgroupLimits{CpusetCPUs: "0-1", NumaNodes: "0"},
+		},
+		{
+			name: "a whitespace-only numa-node annotation means no placement",
+			task: &Task{
+				ID:          "t1",
+				Annotations: map[string]string{NumaLabel: "   "},
+			},
+			want: CgroupLimits{},
+		},
+		{
 			name: "a CPU request below the kernel minimum is rejected by value",
 			task: &Task{
 				ID:   "t1",
