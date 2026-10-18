@@ -45,6 +45,19 @@ type serviceCreateOptions struct {
 	cpuset    string
 	cpusetSet bool
 
+	// hugepages/hugepagesSet are --hugepages: back guest memory with 2M huge
+	// pages. hugepagesSet records whether the flag was given at all, so
+	// --hugepages=false on create is still a no-label request rather than an
+	// instruction to store something.
+	hugepages    bool
+	hugepagesSet bool
+
+	// numaNode/numaNodeSet are --numa-node: the host NUMA nodes to bind the
+	// VM's memory to (a Linux cpulist). numaNodeSet records whether the flag
+	// was given at all, so an explicit value is never mistaken for "unset".
+	numaNode    string
+	numaNodeSet bool
+
 	// withRegistryAuth is --with-registry-auth (#44). registryAuth holds the
 	// resolved base64 X-Registry-Auth payload for the image; createService fills
 	// it in (resolving it is I/O), so this mapping function stays pure.
@@ -191,6 +204,38 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 			return nil, fmt.Errorf("--cpuset %q conflicts with the %s label %q already set via --label", o.cpuset, types.CpusetLabel, existing)
 		}
 		svcLabels[types.CpusetLabel] = value
+	}
+
+	// Hugepages and NUMA placement travel as service labels too: the executor
+	// copies them onto each task, where the translator turns hugepages into the
+	// Firecracker machine-config and the cgroup turns the nodelist into
+	// cpuset.mems. Hugepages is a boolean request — the only stored form is
+	// "true" — so only an opt-in adds a label. A false flag (the default, or an
+	// explicit --hugepages=false) is not a request at all.
+	if o.hugepages {
+		if svcLabels == nil {
+			svcLabels = make(map[string]string)
+		}
+		svcLabels[types.HugepagesLabel] = "true"
+	}
+
+	// --numa-node is validated here, like --cpuset, so a malformed list fails
+	// before any RPC, and stored canonically so what the CLI reports and what
+	// the daemon parses never differ.
+	if o.numaNodeSet {
+		value, err := canonicalCPUSet("--numa-node", o.numaNode)
+		if err != nil {
+			return nil, err
+		}
+		if svcLabels == nil {
+			svcLabels = make(map[string]string)
+		}
+		// Mirror --cpuset: --label is the lower-level way to request the same
+		// binding, so accept a user-supplied label only when it agrees.
+		if existing, ok := svcLabels[types.NumaLabel]; ok && existing != value {
+			return nil, fmt.Errorf("--numa-node %q conflicts with the %s label %q already set via --label", o.numaNode, types.NumaLabel, existing)
+		}
+		svcLabels[types.NumaLabel] = value
 	}
 
 	if svcLabels[types.GoldenLabel] != "" && (hostname != "" || len(dns) > 0) {
@@ -352,6 +397,16 @@ type serviceUpdateOptions struct {
 	cpuset    string
 	cpusetSet bool
 
+	// hugepages/hugepagesSet and numaNode/numaNodeSet are --hugepages and
+	// --numa-node on `service update`, both tri-state like --cpuset: absent
+	// preserves the service's current label, a value replaces it, and an
+	// explicit --hugepages=false / --numa-node "" removes it (see
+	// updateServiceWithClient).
+	hugepages    bool
+	hugepagesSet bool
+	numaNode     string
+	numaNodeSet  bool
+
 	networks    []string
 	networksSet bool
 
@@ -503,18 +558,27 @@ func balloonLabelValue(balloonMib int64, set bool, memMib int64) (string, error)
 	return strconv.FormatInt(balloonMib, 10), nil
 }
 
-// canonicalCpuset validates a --cpuset cpulist and returns the canonical form
-// to store (ranges ascending, overlaps/adjacencies merged, no leading zeros).
-// The CLI, the daemon and the jailer then all parse the same string. A
-// malformed or empty value is an error naming the flag and the offending value:
-// the pin would otherwise be stored and only fail, or silently mismatch, at VM
-// start, so the request must be rejected before any RPC.
-func canonicalCpuset(value string) (string, error) {
+// canonicalCPUSet validates a Linux cpulist for the named flag and returns the
+// canonical form to store (ranges ascending, overlaps/adjacencies merged, no
+// leading zeros). --cpuset and --numa-node accept the same syntax, so both
+// share this one parser and canonicaliser instead of duplicating it: the CLI,
+// the daemon and the jailer then all parse the same string. A malformed or
+// empty value is an error naming the flag and the offending value: the request
+// would otherwise be stored and only fail, or silently mismatch, at VM start,
+// so it must be rejected before any RPC.
+func canonicalCPUSet(flag, value string) (string, error) {
 	canonical, err := jailer.ParseCPUSet(value)
 	if err != nil {
-		return "", fmt.Errorf("--cpuset %q: %w", value, err)
+		return "", fmt.Errorf("%s %q: %w", flag, value, err)
 	}
 	return canonical, nil
+}
+
+// canonicalCpuset is canonicalCPUSet for --cpuset. It keeps the cpuset call
+// sites reading as a cpuset operation while sharing the cpulist parser with
+// --numa-node.
+func canonicalCpuset(value string) (string, error) {
+	return canonicalCPUSet("--cpuset", value)
 }
 
 func buildPlacement(constraints, prefs []string) (*api.Placement, error) {
