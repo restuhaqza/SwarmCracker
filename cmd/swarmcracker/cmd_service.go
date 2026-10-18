@@ -159,6 +159,8 @@ func newServiceCreateCommand() *cobra.Command {
 		disk        string
 		balloonMib  int
 		cpuset      string
+		hugepages   bool
+		numaNode    string
 		golden      string
 		publish     []string
 		publishMode string
@@ -263,6 +265,10 @@ With --golden, the service boots a prebuilt golden image (see
 				balloonSet:         cmd.Flags().Changed("balloon-mib"),
 				cpuset:             cpuset,
 				cpusetSet:          cmd.Flags().Changed("cpuset"),
+				hugepages:          hugepages,
+				hugepagesSet:       cmd.Flags().Changed("hugepages"),
+				numaNode:           numaNode,
+				numaNodeSet:        cmd.Flags().Changed("numa-node"),
 				env:                env,
 				command:            command,
 				args:               args,
@@ -317,6 +323,8 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringVar(&disk, "disk", "", "Minimum rootfs disk size for the VM (e.g., 10G)")
 	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB, must be less than the memory limit (the guest can reclaim it via deflate-on-OOM)")
 	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online")
+	cmd.Flags().BoolVar(&hugepages, "hugepages", false, "Back the VM's guest memory with 2M huge pages; the host must have a sufficiently large hugepage pool")
+	cmd.Flags().StringVar(&numaNode, "numa-node", "", "Bind the VM's memory to these host NUMA nodes (Linux cpulist: 0, 0-1); the host must have those nodes online")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", nil, "Environment variables (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&command, "command", nil, "Override default container command")
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
@@ -372,6 +380,8 @@ func newServiceUpdateCommand() *cobra.Command {
 		memoryLimit string
 		balloonMib  int
 		cpuset      string
+		hugepages   bool
+		numaNode    string
 		image       string
 		env         []string
 		envRemove   []string
@@ -463,6 +473,10 @@ placement, restart policy, update/rollback configuration and mode.`,
 				balloonSet:          anyFlagChanged(cmd, "balloon-mib"),
 				cpuset:              cpuset,
 				cpusetSet:           anyFlagChanged(cmd, "cpuset"),
+				hugepages:           hugepages,
+				hugepagesSet:        anyFlagChanged(cmd, "hugepages"),
+				numaNode:            numaNode,
+				numaNodeSet:         anyFlagChanged(cmd, "numa-node"),
 				mounts:              mounts,
 				volumes:             volumes,
 				mountsSet:           anyFlagChanged(cmd, "mount", "volume"),
@@ -520,6 +534,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringVar(&memoryLimit, "memory-limit", "", "Memory limit (e.g., 512M, 1G)")
 	cmd.Flags().IntVar(&balloonMib, "balloon-mib", 0, "Memory-balloon target in MiB; must be less than the memory limit (0 removes the balloon)")
 	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online, and an empty value removes the pin")
+	cmd.Flags().BoolVar(&hugepages, "hugepages", false, "Back the VM's guest memory with 2M huge pages; the host must have a sufficiently large hugepage pool, and --hugepages=false removes the request")
+	cmd.Flags().StringVar(&numaNode, "numa-node", "", "Bind the VM's memory to these host NUMA nodes (Linux cpulist: 0, 0-1); the host must have those nodes online, and an empty value removes the binding")
 	cmd.Flags().StringVar(&image, "image", "", "New container image")
 	cmd.Flags().StringArrayVar(&env, "env-add", nil, "Add environment variable (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&envRemove, "env-rm", nil, "Remove environment variable")
@@ -1378,22 +1394,98 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 	return updateServiceWithClient(ctx, client, serviceID, opts)
 }
 
+// rejectRollbackFlagConflicts returns an error when a flag the rollback branch
+// can never honour was given. A rollback submits PreviousSpec and ignores every
+// other flag, so accepting one would validate it and then silently drop it. An
+// explicit empty value counts as a request too (it asks to clear a label), and
+// every rejected flag is named in the one error.
+//
+// The list covers every flag that takes effect on the normal update path:
+// replicas, the CPU/memory limits, the balloon, cpuset/hugepages/NUMA, image,
+// env, ports, mounts, networks, secrets, configs, hostname/DNS, the
+// healthcheck, placement, restart, the update/rollback configuration, mode,
+// force and the registry credential. A flag not listed here is not read by the
+// update path either (--user/--cap-add/--cap-drop/--read-only are rejected by
+// validateUnsupportedExecFlags, which runs first, so they never reach a
+// rollback). Keep this list in step with the options struct: any new mutating
+// flag that is not added here is silently dropped by --rollback.
+func rejectRollbackFlagConflicts(opts serviceUpdateOptions) error {
+	if !opts.rollbackAction {
+		return nil
+	}
+	var flags []string
+	add := func(cond bool, name string) {
+		if cond {
+			flags = append(flags, name)
+		}
+	}
+	add(opts.withRegistryAuthSet, "--with-registry-auth")
+	add(opts.replicasSet, "--replicas")
+	add(opts.cpuLimit > 0, "--cpu-limit")
+	add(opts.memoryLimit != "", "--memory-limit")
+	add(opts.balloonSet, "--balloon-mib")
+	add(opts.cpusetSet, "--cpuset")
+	add(opts.hugepagesSet, "--hugepages")
+	add(opts.numaNodeSet, "--numa-node")
+	add(opts.image != "", "--image")
+	add(len(opts.env) > 0, "--env-add")
+	add(len(opts.envRemove) > 0, "--env-rm")
+	add(opts.publishModeSet, "--publish-mode")
+	add(opts.mountsSet, "--mount/--volume")
+	add(opts.networksSet, "--network")
+	add(opts.secretsSet, "--secret")
+	add(opts.configsSet, "--config")
+	add(opts.hostnameSet, "--hostname")
+	add(opts.dnsSet, "--dns")
+	add(opts.health.set(), "--health-*")
+	add(opts.placementSet, "--constraint/--placement-pref")
+	add(opts.restartSet, "--restart-*")
+	add(opts.updateSet, "--update-*")
+	add(opts.rollbackSet, "--rollback-*")
+	add(opts.modeSet, "--mode")
+	add(opts.force, "--force")
+	if len(flags) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags", strings.Join(flags, ", "))
+}
+
+// setOrDeleteLabel applies one tri-state decision to a copied service spec:
+// present=false deletes the label, present=true stores the value (creating the
+// label map when the service had none). Deleting from a nil map is a no-op, so
+// clearing a label on a service that never had it is safe.
+func setOrDeleteLabel(spec *api.ServiceSpec, key, value string, present bool) {
+	if !present {
+		delete(spec.Annotations.Labels, key)
+		return
+	}
+	if spec.Annotations.Labels == nil {
+		spec.Annotations.Labels = make(map[string]string)
+	}
+	spec.Annotations.Labels[key] = value
+}
+
 // updateServiceWithClient is updateService's update path. It takes the control
 // client so tests can drive it with a fake (the same ...WithClient seam as
 // createServiceWithClient) and assert both the registry-auth ordering (no
 // update RPC before a rejected resolution) and what spec was submitted.
 func updateServiceWithClient(ctx context.Context, client api.ControlClient, serviceID string, opts serviceUpdateOptions) error {
-	// Validate the flag combinations that need no service lookup first, so the
-	// most helpful error is the one returned.
-	if opts.withRegistryAuthSet && opts.rollbackAction {
-		return fmt.Errorf("--with-registry-auth cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags")
+	// Container-execution flags the microVM executor cannot honour are rejected
+	// before anything else, including --rollback: their own guard names the flag
+	// and the reason, and running it ahead of the rollback branch means a
+	// rollback can never swallow one of them.
+	if err := validateUnsupportedExecFlags(opts.user, opts.capAdd, opts.capDrop, opts.readOnly); err != nil {
+		return err
 	}
-	// --cpuset belongs in the same guard: the rollback branch below submits
-	// PreviousSpec and never consults the pin, so accepting the flag here would
-	// validate it and then silently drop it. Rejected for an explicit empty
-	// value too, which is a request to clear the pin that a rollback cannot honour.
-	if opts.cpusetSet && opts.rollbackAction {
-		return fmt.Errorf("--cpuset cannot be combined with --rollback: a rollback restores the previous spec and ignores other flags")
+
+	// Validate the flag combinations that need no service lookup next, so the
+	// most helpful error is the one returned. Every mutating update flag is
+	// rejected with --rollback: the rollback branch below submits PreviousSpec
+	// and never consults them, so accepting one would validate it and then
+	// silently drop it (including an explicit --hugepages=false / --numa-node ""
+	// clear).
+	if err := rejectRollbackFlagConflicts(opts); err != nil {
+		return err
 	}
 	if opts.withRegistryAuthSet && opts.withRegistryAuth && opts.image == "" {
 		return fmt.Errorf("--with-registry-auth requires --image: the credential is resolved for the image the service will run")
@@ -1411,6 +1503,18 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 			return err
 		}
 		cpusetValue = value
+	}
+
+	// --numa-node is canonicalised here for the same reason: absent preserves
+	// the service's current binding, an explicit empty value removes it, and a
+	// value must fail before the lookup and update RPCs if it is malformed.
+	numaNodeValue := ""
+	if opts.numaNodeSet && opts.numaNode != "" {
+		value, err := canonicalCPUSet("--numa-node", opts.numaNode)
+		if err != nil {
+			return err
+		}
+		numaNodeValue = value
 	}
 
 	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
@@ -1497,14 +1601,20 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 	// explicit empty value removes the pin, and a value replaces it with the
 	// canonical form validated above.
 	if opts.cpusetSet {
-		if opts.cpuset == "" {
-			delete(spec.Annotations.Labels, types.CpusetLabel)
-		} else {
-			if spec.Annotations.Labels == nil {
-				spec.Annotations.Labels = make(map[string]string)
-			}
-			spec.Annotations.Labels[types.CpusetLabel] = cpusetValue
-		}
+		setOrDeleteLabel(spec, types.CpusetLabel, cpusetValue, opts.cpuset != "")
+	}
+
+	// --hugepages is tri-state: absent leaves the copied label untouched,
+	// --hugepages=false removes it, and --hugepages sets "true" (the only stored
+	// form the translator accepts).
+	if opts.hugepagesSet {
+		setOrDeleteLabel(spec, types.HugepagesLabel, "true", opts.hugepages)
+	}
+
+	// --numa-node is tri-state like --cpuset: an explicit empty value removes
+	// the binding, otherwise the canonical nodelist replaces it.
+	if opts.numaNodeSet {
+		setOrDeleteLabel(spec, types.NumaLabel, numaNodeValue, opts.numaNode != "")
 	}
 
 	// Apply the --with-registry-auth decision (#44): an absent flag preserves
@@ -1705,11 +1815,8 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 		spec.Task.GetContainer().Configs = refs
 	}
 
-	// Container-execution flags: reject the ones the microVM executor cannot
-	// enforce, and apply the guest overrides we can honor.
-	if err := validateUnsupportedExecFlags(opts.user, opts.capAdd, opts.capDrop, opts.readOnly); err != nil {
-		return err
-	}
+	// Container-execution flags the executor cannot enforce were rejected at the
+	// top of this function; apply the guest overrides we can honor.
 	if opts.hostnameSet || opts.dnsSet {
 		if spec.Annotations.Labels[types.GoldenLabel] != "" {
 			return fmt.Errorf("--hostname/--dns are not supported with --golden: golden images boot their own init")

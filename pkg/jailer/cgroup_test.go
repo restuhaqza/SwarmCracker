@@ -545,11 +545,22 @@ func readFileString(t *testing.T, path string) string {
 	return string(data)
 }
 
+// withOnlineNodes points mgr at a fixture host NUMA-node list instead of the
+// real /sys/devices/system/node/online, so an explicit cpuset.mems request is
+// checked against a known host.
+func withOnlineNodes(t *testing.T, mgr *CgroupManager, nodes string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "node-online")
+	require.NoError(t, os.WriteFile(path, []byte(nodes+"\n"), 0o644))
+	mgr.nodeOnlinePath = path
+}
+
 // TestCreateCgroup_WritesCanonicalV2Files asserts the exact contents of every
 // file the manager writes, including the canonical cpuset values and the v2
 // io.weight syntax ("default <weight>", not a bare number).
 func TestCreateCgroup_WritesCanonicalV2Files(t *testing.T) {
 	mgr, base := newTempCgroupManager(t)
+	withOnlineNodes(t, mgr, "0-2")
 	taskID := "task-full"
 
 	require.NoError(t, mgr.CreateCgroup(taskID, ResourceLimits{
@@ -594,6 +605,7 @@ func TestCreateCgroup_NoCpusetWritesWhenUnset(t *testing.T) {
 func TestCreateCgroup_CpusetMemsResolution(t *testing.T) {
 	t.Run("explicit", func(t *testing.T) {
 		mgr, base := newTempCgroupManager(t)
+		withOnlineNodes(t, mgr, "0-2")
 		require.NoError(t, mgr.CreateCgroup("task-mems-explicit", ResourceLimits{
 			CpusetCPUs: "2",
 			CpusetMems: "2,0",
@@ -661,6 +673,7 @@ func TestCreateCgroup_CpusetRejectionNamesRequestAndOnline(t *testing.T) {
 	online := filepath.Join(t.TempDir(), "cpu-online")
 	require.NoError(t, os.WriteFile(online, []byte("0-3\n"), 0o644))
 	mgr.cpuOnlinePath = online
+	withOnlineNodes(t, mgr, "0")
 
 	err := mgr.CreateCgroup(taskID, ResourceLimits{CpusetCPUs: "4-7", CpusetMems: "0"})
 	require.Error(t, err)

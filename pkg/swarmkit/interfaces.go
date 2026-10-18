@@ -32,6 +32,9 @@ type VMMManagerInterface interface {
 	GetRunningProcesses() map[string]*exec.Cmd
 	// RemoveProcess removes a process from the manager's tracking
 	RemoveProcess(taskID string)
+	// RemoveVMCgroup removes a task's cgroup, if any. Callers must only use it
+	// once the task's VMM process is confirmed gone.
+	RemoveVMCgroup(taskID string)
 }
 
 // ImagePreparerInterface defines the interface for image preparation.

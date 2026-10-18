@@ -22,10 +22,11 @@ type stubCgroupOps struct {
 	removeErr error
 	online    string
 
-	ensureCalls [][]string
-	created     []string
-	added       []int
-	removed     []string
+	ensureCalls   [][]string
+	created       []string
+	createdLimits []ResourceLimits
+	added         []int
+	removed       []string
 }
 
 func (s *stubCgroupOps) EnsureControllers(controllers ...string) error {
@@ -33,8 +34,9 @@ func (s *stubCgroupOps) EnsureControllers(controllers ...string) error {
 	return s.ensureErr
 }
 
-func (s *stubCgroupOps) CreateCgroup(taskID string, _ ResourceLimits) error {
+func (s *stubCgroupOps) CreateCgroup(taskID string, limits ResourceLimits) error {
 	s.created = append(s.created, taskID)
+	s.createdLimits = append(s.createdLimits, limits)
 	return s.createErr
 }
 
@@ -52,6 +54,12 @@ func (s *stubCgroupOps) OnlineCPUs() (string, error) { return s.online, nil }
 
 func pinnedTask() *types.Task {
 	return &types.Task{ID: "task-pinned", Annotations: map[string]string{types.CpusetLabel: "0-1"}}
+}
+
+// numaTask is a task that requests host NUMA placement only: no cpuset, so a
+// cgroup still has to be created for cpuset.mems to have somewhere to go.
+func numaTask(nodes string) *types.Task {
+	return &types.Task{ID: "task-numa", Annotations: map[string]string{types.NumaLabel: nodes}}
 }
 
 func plainTask() *types.Task { return &types.Task{ID: "task-plain"} }
@@ -100,6 +108,43 @@ func TestDeriveResourceLimits(t *testing.T) {
 				MemoryHigh: (256*mib + types.CgroupMemoryHeadroom) * 9 / 10,
 				IOWeight:   100,
 				CpusetCPUs: "1-3",
+			},
+		},
+		{
+			name:     "NUMA nodes are canonicalised into cpuset.mems",
+			task:     &types.Task{ID: "t1", Annotations: map[string]string{types.NumaLabel: "1,0"}},
+			vcpus:    1,
+			memoryMB: 512,
+			want: ResourceLimits{
+				CPUQuotaUs: 1_000_000,
+				MemoryMax:  512*mib + types.CgroupMemoryHeadroom,
+				MemoryHigh: (512*mib + types.CgroupMemoryHeadroom) * 9 / 10,
+				IOWeight:   100,
+				CpusetMems: "0-1",
+			},
+		},
+		{
+			name:     "a malformed NUMA list is rejected by naming the label and value",
+			task:     &types.Task{ID: "t1", Annotations: map[string]string{types.NumaLabel: "0,a"}},
+			vcpus:    1,
+			memoryMB: 512,
+			wantErr:  `invalid NUMA node annotation swarmcracker.numa-node="0,a"`,
+		},
+		{
+			name: "cpuset and NUMA placement are independent",
+			task: &types.Task{ID: "t1", Annotations: map[string]string{
+				types.CpusetLabel: "3,1-2",
+				types.NumaLabel:   "1,0",
+			}},
+			vcpus:    1,
+			memoryMB: 512,
+			want: ResourceLimits{
+				CPUQuotaUs: 1_000_000,
+				MemoryMax:  512*mib + types.CgroupMemoryHeadroom,
+				MemoryHigh: (512*mib + types.CgroupMemoryHeadroom) * 9 / 10,
+				IOWeight:   100,
+				CpusetCPUs: "1-3",
+				CpusetMems: "0-1",
 			},
 		},
 		{
@@ -158,6 +203,30 @@ func TestCreateVMCgroup_FailurePolicy(t *testing.T) {
 			name:      "no manager and no cpuset is a no-op",
 			noManager: true,
 			task:      plainTask(),
+		},
+		{
+			name:      "no manager rejects a requested NUMA node list",
+			noManager: true,
+			task:      numaTask("0-1"),
+			wantErr:   []string{`cannot apply NUMA node list "0-1"`, "cgroups are disabled"},
+		},
+		{
+			name:        "a NUMA-only request still creates a cgroup",
+			task:        numaTask("0-1"),
+			wantCreated: true,
+		},
+		{
+			name:        "a NUMA-only cpuset.mems failure is fatal",
+			task:        numaTask("0-1"),
+			createErr:   &CgroupError{Stage: CgroupStageCpuset, Field: "cpuset.mems", Err: errors.New("boom")},
+			wantErr:     []string{`cannot apply NUMA node list "0-1"`, "cpuset.mems"},
+			wantRemoved: []string{"task-numa"},
+		},
+		{
+			name:        "a NUMA-only quota failure is a warning",
+			task:        numaTask("0-1"),
+			createErr:   &CgroupError{Stage: CgroupStageMemory, Err: errors.New("memory.max is read-only")},
+			wantCreated: true,
 		},
 		{
 			name:      "no manager rejects a requested cpuset",
@@ -246,6 +315,36 @@ func TestCreateVMCgroup_FailurePolicy(t *testing.T) {
 	}
 }
 
+// TestCreateVMCgroup_NumaOnlySetsCpusetMems pins that a NUMA-only request
+// reaches CreateCgroup as a canonical cpuset.mems value: that is what makes the
+// placement effective, and it is why a cgroup is created even without a cpuset.
+func TestCreateVMCgroup_NumaOnlySetsCpusetMems(t *testing.T) {
+	stub := &stubCgroupOps{online: "0-7"}
+
+	created, err := CreateVMCgroup(stub, nil, zerolog.Nop(), CgroupRequest{
+		Task:     numaTask("1,0"),
+		VCPUs:    1,
+		MemoryMB: 512,
+	})
+	require.NoError(t, err)
+	assert.True(t, created)
+	require.Len(t, stub.createdLimits, 1)
+	assert.Equal(t, "0-1", stub.createdLimits[0].CpusetMems)
+	assert.Empty(t, stub.createdLimits[0].CpusetCPUs, "a NUMA-only request must not pin CPUs")
+}
+
+// TestAttachVMProcess_NumaOnlyFailureIsFatal pins the attach half for a
+// NUMA-only task: a placement that never took effect fails the VM, with the
+// node list named.
+func TestAttachVMProcess_NumaOnlyFailureIsFatal(t *testing.T) {
+	stub := &stubCgroupOps{online: "0-7", addErr: errors.New("cgroup.procs is read-only")}
+
+	err := AttachVMProcess(stub, zerolog.Nop(), numaTask("0-1"), 4242)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `cannot apply NUMA node list "0-1"`)
+	assert.Contains(t, err.Error(), "cgroup.procs is read-only")
+}
+
 // TestAttachVMProcess_FailurePolicy pins the attach half: a requested cpuset that
 // never took effect is fatal, anything else is a warning.
 func TestAttachVMProcess_FailurePolicy(t *testing.T) {
@@ -281,6 +380,7 @@ func TestCreateCgroup_TypedCpusetStage(t *testing.T) {
 	online := filepath.Join(t.TempDir(), "cpu-online")
 	require.NoError(t, os.WriteFile(online, []byte("0-3\n"), 0o644))
 	mgr.cpuOnlinePath = online
+	withOnlineNodes(t, mgr, "0")
 
 	err := mgr.CreateCgroup(taskID, ResourceLimits{CpusetCPUs: "4-7", CpusetMems: "0"})
 	require.Error(t, err)

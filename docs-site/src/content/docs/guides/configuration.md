@@ -455,8 +455,8 @@ are no `cgroup.*` keys in this file. The daemon flags control it
 
 Each service task's cgroup is `/sys/fs/cgroup/swarmcracker/<task-id>/`, holding
 the VMM process (Firecracker, or the jailer process that launches it). `vm
-create` creates one only when `--cpuset` is given. The quota files and their
-values are described in
+create` creates one only when `--cpuset` or `--numa-node` is given. The quota
+files and their values are described in
 [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).
 
 ### Requirements
@@ -465,7 +465,8 @@ The host must satisfy all of these:
 
 - **cgroup v2 is mounted** at `/sys/fs/cgroup`. A v1-only host is not supported
   for these limits: the daemon cannot create its cgroup manager, and a requested
-  cpuset fails (see below). Without a pin, the task runs without limits.
+  cpuset or NUMA node list fails (see below). Without a placement request, the
+  task runs without limits.
 - The kernel **advertises** `cpu`, `memory`, `io` and `cpuset` in the parent
   cgroup's `cgroup.controllers`.
 - The daemon can **write `cgroup.subtree_control`** in `/sys/fs/cgroup` and in
@@ -489,9 +490,9 @@ The host must satisfy all of these:
 
 ### What the operator sees when delegation fails
 
-A **requested cpuset** turns a delegation failure into a task failure. The error
-names the requested set, the controllers it tried to enable, the parent that
-refused, and the host's online CPUs:
+A **requested cpuset or NUMA node list** turns a delegation failure into a task
+failure. The error names the requested set, the controllers it tried to enable,
+the parent that refused, and the host's online CPUs:
 
 ```text
 cannot apply cpuset "0-3" to task <task-id>: failed to enable cgroup controllers [cpu memory io cpuset]: cpuset: cannot delegate through parent /sys/fs/cgroup: <write error> (host online CPUs: 0-7)
@@ -505,8 +506,9 @@ v2 the message is:
 cannot apply cpuset "0-3" to task <task-id>: the cgroup manager could not be created: cgroup v2 not available on this system (host online CPUs: unknown)
 ```
 
-A task that requested **no cpuset** is not failed by any of this: controller
-delegation and cgroup creation degrade to warnings, and the VM starts:
+A task that requested **neither a cpuset nor a NUMA binding** is not failed by
+any of this: controller delegation and cgroup creation degrade to warnings, and
+the VM starts:
 
 ```text
 Failed to enable cgroup controllers, continuing without the unavailable ones
@@ -518,9 +520,9 @@ be written — `cpu.max`, or `memory.max`/`memory.high` — the daemon removes t
 **whole** per-task cgroup, so **no limit applies at all**, not just the one whose
 controller was missing. An unavailable `io` controller costs only `io.weight`,
 which is best-effort anyway. Only an unavailable **`cpuset`** controller leaves
-a fully working quota cgroup: with no pin requested there is nothing to refuse.
-(If a pin *was* requested and only the quota fails, the cgroup is kept with the
-pin in place — see
+a fully working quota cgroup: with no CPU or memory placement requested there is
+nothing to refuse. (If a placement *was* requested and only the quota fails, the
+cgroup is kept with the placement in place — see
 [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).)
 
 Check the controllers the kernel offers before rolling out pinned services:
@@ -533,6 +535,98 @@ cat /sys/fs/cgroup/swarmcracker/cgroup.subtree_control
 
 See [Security → Verify isolation](/guides/security/#verify-isolation) for the
 per-task files to read once a VM is running.
+
+---
+
+## Hugepages and NUMA host prerequisites
+
+`--hugepages` and `--numa-node` are per-workload requests (`service create`,
+`service update`, `vm create`), not daemon settings: there are no config keys for
+them and no host-wide switch. The **host** must provide what they ask for, and
+the node enforces the request when it starts the VM. See
+[Advanced → Hugepages and NUMA Placement](/guides/advanced/#hugepages-and-numa-placement)
+for the flag semantics and on-host verification.
+
+### Hugepage pool
+
+The node that runs the VM needs a pre-allocated **2M** hugetlbfs pool:
+
+```bash
+grep -i huge /proc/meminfo
+# HugePages_Total:    1024
+# HugePages_Free:     1024
+# Hugepagesize:       2048 kB
+```
+
+- **2M pages only.** `Hugepagesize` must be `2048 kB`; a host configured for 1G
+  pages is refused. Firecracker v1.15.1 offers only 2M hugetlbfs pages through
+  `huge_pages`, and SwarmCracker exposes exactly that; it does not expose a
+  transparent-hugepage setting.
+- **Allocate the pool explicitly.** Firecracker maps guest memory from the pool
+  and does not allocate huge pages on demand. Set the total with
+  `sysctl -w vm.nr_hugepages=<pages>` and persist it (for example in
+  `/etc/sysctl.d/90-hugepages.conf`). The value is the pool **total**, not an
+  increment: 2 MiB of guest memory needs one page, so a 2 GiB VM needs 1024
+  pages, and the pool must also cover pages already in use and every other
+  hugepage-backed VM on the node.
+- **Memory must be an even number of MiB.** An odd `--memory` is rejected while
+  the task is translated, because the 2M pages cannot cover the odd tail.
+- **The pool is host-global and shared.** It is not partitioned per service.
+  Constrain hugepage workloads to nodes you have sized (for example a
+  `node.labels.hugepages==yes` node label plus a matching `--constraint`).
+
+The request's parity is checked earlier, while the task is translated
+(`resolveHugepages`). The node then checks `Hugepagesize` and
+`HugePages_Free >= mem_size_mib / 2` **before** the VMM process or its cgroup
+exists. If the pool is short, the task fails and names the request, the pages
+needed, the pool, and the total that would fix it:
+
+```text
+task <task-id>: cannot back a 512 MiB VM with 2M huge pages (256 pages needed): the host pool has 100 free of 512 allocated: raise the pool total to 668 pages with sysctl vm.nr_hugepages=668
+```
+
+`668` is `(Total - Free) + required`: `vm.nr_hugepages` sets the total, so
+setting it to the requirement alone would still leave the VM short. A host with
+the wrong page size is reported first, in the same wrapper, with
+`the host's hugepage size is ... KiB, but Firecracker supports only 2M (2048 KiB) pages`.
+
+### NUMA nodes
+
+`--numa-node` lists host **node numbers** (a cpulist such as `0` or `0-1`) and
+binds the VM's memory through `cpuset.mems`. Check what the host has online:
+
+```bash
+cat /sys/devices/system/node/online      # e.g. 0-1
+cat /sys/devices/system/node/node*/meminfo | grep MemTotal
+```
+
+The nodes must be online on the node that runs the VM, and allowed by the
+task's parent cgroup. Before the task's cgroup directory is created, the node
+pre-checks every requested node against the host's online memory-node list
+(`/sys/devices/system/node/online`) and the parent cgroup's allowed memory nodes
+(`cpuset.mems.effective`, from the nearest readable ancestor; if none is
+readable, only the online list is enforced); if either excludes a requested
+node, the task fails and the remaining nodes are never used as a fallback. That pre-check is deliberate: the kernel by itself
+accepts an offline-but-possible node, keeps it in `cpuset.mems`, and silently
+narrows the effective `Mems_allowed_list` to the parent ∩ online intersection:
+
+```text
+cannot apply NUMA node list "3" to task <task-id>: cgroup validate stage: requested NUMA nodes 3 are not grantable: node(s) 3 are not online (host online NUMA nodes: 0-1)
+```
+
+A node the parent withholds is reported separately, against the parent's
+effective file:
+
+```text
+cannot apply NUMA node list "3" to task <task-id>: cgroup validate stage: requested NUMA nodes 3 are not grantable: node(s) 3 are excluded by the parent cgroup's cpuset.mems.effective 0-1 (/sys/fs/cgroup/swarmcracker/cpuset.mems.effective; host online NUMA nodes: 0-1)
+```
+
+Because the binding is written through the cgroup, the host also needs the
+cgroup v2 `cpuset` controller delegated as described above; a NUMA-only request
+creates a per-task cgroup even when `--cpuset` is not given. There is **no
+scheduler admission** for either feature: the CLI validates syntax only, and the
+task can be placed on a node that cannot satisfy the request and fail there. Use
+placement constraints to keep these workloads on suitable nodes.
 
 ---
 

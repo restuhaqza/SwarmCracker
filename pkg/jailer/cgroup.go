@@ -411,6 +411,14 @@ func (m *CgroupManager) CreateCgroup(taskID string, limits ResourceLimits) error
 		return stageError(taskID, CgroupStageValidate, err)
 	}
 
+	// A NUMA request is a hard promise, but the kernel does not enforce it: an
+	// offline or parent-excluded node stays in cpuset.mems verbatim while the
+	// effective mems silently narrows to the online ∩ parent intersection. Prove
+	// every requested node is grantable here, before the cgroup exists.
+	if err := m.validateNumaGrant(limits.CpusetMems); err != nil {
+		return stageError(taskID, CgroupStageValidate, err)
+	}
+
 	cgroupPath := filepath.Join(m.basePath, taskID)
 
 	// Create cgroup directory
@@ -724,20 +732,32 @@ func (m *CgroupManager) writeCpusetFile(cgroupPath, name, value, source string) 
 	return nil
 }
 
-// onlineMemoryNodes reports the host's online NUMA nodes for an error hint. Like
-// OnlineCPUs it is best-effort: an unreadable list says "unknown" rather than
-// masking the write failure.
-func (m *CgroupManager) onlineMemoryNodes() string {
+// onlineNodeList returns the host's online NUMA-node list, read from
+// nodeOnlinePath (default /sys/devices/system/node/online). Unlike
+// onlineMemoryNodes it reports why the list is unavailable, because a NUMA
+// grantability check cannot be answered from an unreadable host list.
+func (m *CgroupManager) onlineNodeList() (string, error) {
 	path := m.nodeOnlinePath
 	if path == "" {
 		path = defaultNodeOnlinePath
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "unknown"
+		return "", fmt.Errorf("failed to read online NUMA nodes from %s: %w", path, err)
 	}
 	raw := strings.TrimSpace(string(data))
 	if raw == "" {
+		return "", fmt.Errorf("online NUMA node list at %s is empty", path)
+	}
+	return raw, nil
+}
+
+// onlineMemoryNodes reports the host's online NUMA nodes for an error hint. Like
+// OnlineCPUs it is best-effort: an unreadable list says "unknown" rather than
+// masking the write failure.
+func (m *CgroupManager) onlineMemoryNodes() string {
+	raw, err := m.onlineNodeList()
+	if err != nil {
 		return "unknown"
 	}
 	return raw

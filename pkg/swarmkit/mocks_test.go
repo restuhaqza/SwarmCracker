@@ -22,6 +22,7 @@ type MockVMMManager struct {
 	DescribeFunc            func(ctx context.Context, task *types.Task) (*types.TaskStatus, error)
 	GetRunningProcessesFunc func() map[string]*exec.Cmd
 	RemoveProcessFunc       func(taskID string)
+	RemoveVMCgroupFunc      func(taskID string)
 	processes               map[string]*exec.Cmd
 }
 
@@ -105,6 +106,12 @@ func (m *MockVMMManager) RemoveProcess(taskID string) {
 	}
 	if m.processes != nil {
 		delete(m.processes, taskID)
+	}
+}
+
+func (m *MockVMMManager) RemoveVMCgroup(taskID string) {
+	if m.RemoveVMCgroupFunc != nil {
+		m.RemoveVMCgroupFunc(taskID)
 	}
 }
 

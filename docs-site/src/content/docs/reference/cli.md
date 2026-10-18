@@ -154,6 +154,8 @@ Service (replicated microVM) management.
 | `--memory` | — | Memory size (e.g. `512M`, `1G`); sizes the microVM, honoured exactly (see below) |
 | `--balloon-mib` | — | Memory-balloon target in MiB (positive integer, less than the memory the VM will boot with; see [Memory Balloon](/guides/advanced/#memory-balloon)) |
 | `--cpuset` | — | Pin the VM to these host CPUs (Linux cpulist: `0`, `0-3`, `0-3,8`); the host must have those CPUs online (see [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits)) |
+| `--hugepages` | `false` | Back the guest memory with 2M huge pages; the host must have a large enough pre-allocated hugepage pool (see [Hugepages](/guides/advanced/#hugepages)) |
+| `--numa-node` | — | Bind the VM's memory to these host NUMA nodes (Linux cpulist: `0`, `0-1`); the host must have those nodes online (see [NUMA placement](/guides/advanced/#numa-placement)) |
 | `--disk` | content-based | Minimum VM rootfs size (e.g. `10G`); adds the `swarmcracker.disk` service label |
 | `--env` / `-e` | — | Environment variables |
 | `--command` | — | Override the container command |
@@ -274,6 +276,37 @@ accepted (the flag canonicalises to `1-3`), while
 `--label swarmcracker.cpuset=3,1-2 --cpuset 1-3` is refused even though both
 name CPUs 1-3 — the label is not canonicalised before the comparison.
 
+`--hugepages` asks the node to back the guest memory with **2M huge pages**
+(2M is the only page size Firecracker v1.15.1 offers through `huge_pages`). It
+is a boolean flag: on `service create` and `vm create` only the opt-in form
+(`true`) is stored, as the `swarmcracker.hugepages` service label (a `vm create`
+VM carries it as a task annotation); an omitted flag on those commands makes no
+request, so the VM uses ordinary 4K memory. On `service update` an omitted flag
+leaves the existing request untouched, and `--hugepages=false` removes it. The
+host must already have a 2M hugepage pool large enough for the VM — see
+[Hugepages](/guides/advanced/#hugepages) for sizing it and for the failure
+shape. A request for a memory size that is not an even number of MiB is rejected
+while the task is translated, because 2M pages cannot cover the odd tail.
+
+`--numa-node <nodelist>` binds the VM's **memory** to the listed host NUMA nodes
+through `cpuset.mems`. The value is a Linux **cpulist** of node numbers — `0`,
+`0-1`, `0-1,3` — and is **canonicalised before it is stored** (`1,0` becomes
+`0-1`). Like `--cpuset` it travels as the `swarmcracker.numa-node` service label
+(annotation for `vm create`), and a hand-set label that disagrees with the flag
+is refused. It binds only memory: it does not change the CPU affinity, so
+combine it with `--cpuset` (for example `--cpuset 0-3 --numa-node 0`) for a full
+node placement. Firecracker exposes **no guest NUMA topology** — the guest still
+sees a single node. See [NUMA placement](/guides/advanced/#numa-placement) for
+verification and the failure shape.
+
+Neither flag is admitted by the scheduler: they are validated for syntax (and
+canonicalised) **before any request is sent**, but the node applies them when it
+starts the VM. A node whose pool or online nodes cannot satisfy the request
+**fails the task**, naming the request and the host's state — this is a hard
+error, not a warning. On `service create` and `vm create` an empty
+`--numa-node ""` is an error, not "no binding". On `service update`, both flags
+are also rejected together with `--rollback`.
+
 `--image` and `--golden` are mutually exclusive. With `--golden`, the reference
 is recorded as the `swarmcracker.golden` service label and no OCI image is pulled.
 
@@ -291,7 +324,7 @@ invalid value is **rejected** (`--health-retries 0`, `--health-interval 0s`), as
 is any `--health-*` flag supplied without `--health-cmd`; no flag is silently
 ignored.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--cpuset` (tri-state: omit to preserve the current pin, a cpulist to set it, an empty value to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--cpuset` (tri-state: omit to preserve the current pin, a cpulist to set it, an empty value to remove it), `--hugepages` (tri-state: omit to preserve the current request, `--hugepages` to set it, `--hugepages=false` to remove it), `--numa-node` (tri-state: omit to preserve the current binding, a nodelist to set it, an empty value to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
@@ -314,6 +347,20 @@ empty value is an error. The new pin takes effect on the task SwarmKit starts
 next, so a rolling update moves the VM to the requested CPUs. `--cpuset` cannot
 be combined with `--rollback`, which restores the previous spec and ignores
 other flags: the combination is rejected rather than silently dropping the pin.
+
+`--hugepages` and `--numa-node` on `service update` are **tri-state** too.
+Omitting a flag leaves the service's current request untouched; giving it
+replaces the stored label (`--hugepages` sets `swarmcracker.hugepages=true`, and
+`--numa-node 3,1-2` stores the canonical `1-3`); `--hugepages=false` and
+`--numa-node ""` **remove** the request. A malformed `--numa-node` fails before
+the service lookup, so no RPC is sent, and the new placement takes effect on the
+task SwarmKit starts next (assigning `--hugepages` cannot change a running VM in
+place). Neither flag can be combined with `--rollback`: the rollback branch
+submits the previous spec and never consults them, so the combination —
+including an explicit `--hugepages=false` or `--numa-node ""` clear — is
+rejected instead of being silently dropped. See
+[Hugepages](/guides/advanced/#hugepages) and
+[NUMA placement](/guides/advanced/#numa-placement).
 
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc`, `--health-port`, `--no-health` for `ps`.
 
@@ -460,6 +507,8 @@ Direct Firecracker microVM management.
 | `--memory` | `-m` | `512` | Memory (MB) |
 | `--balloon-mib` | — | — | Memory-balloon target in MiB (positive integer, less than `--memory`; see [Memory Balloon](/guides/advanced/#memory-balloon)) |
 | `--cpuset` | — | — | Pin the VM to these host CPUs (Linux cpulist: `0`, `0-3`, `0-3,8`); the host must have those CPUs online (see [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits)) |
+| `--hugepages` | — | `false` | Back the guest memory with 2M huge pages; the host must have a large enough pre-allocated hugepage pool (see [Hugepages](/guides/advanced/#hugepages)) |
+| `--numa-node` | — | — | Bind the VM's memory to these host NUMA nodes (Linux cpulist: `0`, `0-1`); the host must have those nodes online (see [NUMA placement](/guides/advanced/#numa-placement)) |
 | `--network` | — | — | Network to attach |
 | `--detach` | `-d` | `false` | Detached mode |
 | `--env` | `-e` | — | Environment variables |
@@ -471,10 +520,22 @@ Direct Firecracker microVM management.
 `vm create --cpuset <cpulist>` pins the VM to host CPUs, with the same syntax and
 canonicalisation as `service create --cpuset` (`3,1-2` becomes `1-3`). An empty
 value is an error; there is no "clear" form here. A direct VM gets **no cgroup at
-all unless `--cpuset` is given** (unlike a service task, which gets one whenever
-the daemon's cgroups are enabled), and the requested CPUs must be online on the
-host running the command or the VM does not start. See
+all unless `--cpuset` or `--numa-node` is given** (unlike a service task, which
+gets one whenever the daemon's cgroups are enabled), and the requested CPUs must
+be online on the host running the command or the VM does not start. See
 [CPU Pinning and cgroup Limits](/guides/advanced/#cpu-pinning-and-cgroup-limits).
+
+`vm create --hugepages` and `--numa-node` have the same semantics as their
+`service create` counterparts: 2M huge pages backed by the host's pre-allocated
+pool, and a memory binding to the listed host NUMA nodes through `cpuset.mems`.
+They are carried on the task as the `swarmcracker.hugepages` and
+`swarmcracker.numa-node` annotations; the VM runs on the host that executes the
+command, so the pool and the nodes must exist **there**. An empty
+`--numa-node ""` is an error (there is no existing spec to clear). The node
+checks the pool and the node list before starting the VMM: a request the host
+cannot satisfy leaves **no VM and no cgroup** behind. See
+[Hugepages](/guides/advanced/#hugepages) and
+[NUMA placement](/guides/advanced/#numa-placement).
 
 `vm create --cpu`/`--memory` size the VM directly (the defaults above are applied
 when the flags are omitted), and a declared size is honoured **exactly** — no

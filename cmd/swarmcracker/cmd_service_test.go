@@ -880,6 +880,231 @@ func TestUpdateServiceWithRegistryAuth_RejectsRollback(t *testing.T) {
 	assert.Zero(t, client.updateCalls)
 }
 
+// TestUpdateService_RejectsEveryFlagDroppedByRollback is the per-flag audit of
+// the rollback branch: each mutating flag, given alone with --rollback, must be
+// named in the error and must not reach the service lookup or the update RPC.
+// PreviousSpec is populated so that, with a flag missing from the guard, the
+// rollback would actually be applied — updateCalls staying zero is what proves
+// the flag was not silently dropped.
+func TestUpdateService_RejectsEveryFlagDroppedByRollback(t *testing.T) {
+	tests := []struct {
+		name string
+		opts serviceUpdateOptions
+		want []string
+	}{
+		{
+			name: "with-registry-auth clear",
+			opts: serviceUpdateOptions{withRegistryAuthSet: true},
+			want: []string{"--with-registry-auth"},
+		},
+		{
+			name: "replicas",
+			opts: serviceUpdateOptions{replicas: 2, replicasSet: true},
+			want: []string{"--replicas"},
+		},
+		{
+			name: "cpu limit",
+			opts: serviceUpdateOptions{cpuLimit: 1.5},
+			want: []string{"--cpu-limit"},
+		},
+		{
+			name: "memory limit",
+			opts: serviceUpdateOptions{memoryLimit: "1G"},
+			want: []string{"--memory-limit"},
+		},
+		{
+			name: "balloon",
+			opts: serviceUpdateOptions{balloonMib: 128, balloonSet: true},
+			want: []string{"--balloon-mib"},
+		},
+		{
+			name: "cpuset",
+			opts: serviceUpdateOptions{cpuset: "0-1", cpusetSet: true},
+			want: []string{"--cpuset"},
+		},
+		{
+			name: "hugepages",
+			opts: serviceUpdateOptions{hugepages: true, hugepagesSet: true},
+			want: []string{"--hugepages"},
+		},
+		{
+			name: "numa node",
+			opts: serviceUpdateOptions{numaNode: "0", numaNodeSet: true},
+			want: []string{"--numa-node"},
+		},
+		{
+			name: "image",
+			opts: serviceUpdateOptions{image: "registry.test/team/app:2"},
+			want: []string{"--image"},
+		},
+		{
+			name: "env add",
+			opts: serviceUpdateOptions{env: []string{"A=B"}},
+			want: []string{"--env-add"},
+		},
+		{
+			name: "env remove",
+			opts: serviceUpdateOptions{envRemove: []string{"A"}},
+			want: []string{"--env-rm"},
+		},
+		{
+			name: "publish mode",
+			opts: serviceUpdateOptions{publishMode: "host", publishModeSet: true},
+			want: []string{"--publish-mode"},
+		},
+		{
+			name: "mount",
+			opts: serviceUpdateOptions{mounts: []string{"type=volume,source=v,target=/v"}, mountsSet: true},
+			want: []string{"--mount", "--volume"},
+		},
+		{
+			name: "volume",
+			opts: serviceUpdateOptions{volumes: []string{"v:/v"}, mountsSet: true},
+			want: []string{"--mount", "--volume"},
+		},
+		{
+			name: "network",
+			opts: serviceUpdateOptions{networks: []string{"net"}, networksSet: true},
+			want: []string{"--network"},
+		},
+		{
+			name: "secret",
+			opts: serviceUpdateOptions{secrets: []string{"s"}, secretsSet: true},
+			want: []string{"--secret"},
+		},
+		{
+			name: "config",
+			opts: serviceUpdateOptions{configs: []string{"c"}, configsSet: true},
+			want: []string{"--config"},
+		},
+		{
+			name: "hostname",
+			opts: serviceUpdateOptions{hostname: "web-1", hostnameSet: true},
+			want: []string{"--hostname"},
+		},
+		{
+			name: "dns",
+			opts: serviceUpdateOptions{dns: []string{"1.1.1.1"}, dnsSet: true},
+			want: []string{"--dns"},
+		},
+		{
+			name: "healthcheck",
+			opts: serviceUpdateOptions{health: healthOptions{cmd: "true", cmdSet: true}},
+			want: []string{"--health-*"},
+		},
+		{
+			name: "constraint",
+			opts: serviceUpdateOptions{placementSet: true},
+			want: []string{"--constraint", "--placement-pref"},
+		},
+		{
+			name: "placement preference",
+			opts: serviceUpdateOptions{placementPrefs: []string{"spread=node.labels.zone"}, placementSet: true},
+			want: []string{"--constraint", "--placement-pref"},
+		},
+		{
+			name: "restart policy",
+			opts: serviceUpdateOptions{restartSet: true, restartCond: "any"},
+			want: []string{"--restart-*"},
+		},
+		{
+			name: "update config",
+			opts: serviceUpdateOptions{updateSet: true, updateOrder: "start-first"},
+			want: []string{"--update-*"},
+		},
+		{
+			name: "rollback config",
+			opts: serviceUpdateOptions{rollbackSet: true, rollbackOrder: "stop-first"},
+			want: []string{"--rollback-*"},
+		},
+		{
+			name: "mode",
+			opts: serviceUpdateOptions{modeSet: true, mode: "global"},
+			want: []string{"--mode"},
+		},
+		{
+			name: "force",
+			opts: serviceUpdateOptions{force: true},
+			want: []string{"--force"},
+		},
+		{
+			name: "several flags are all named",
+			opts: serviceUpdateOptions{
+				replicas: 2, replicasSet: true,
+				balloonMib: 128, balloonSet: true,
+				cpuLimit: 2, memoryLimit: "2G",
+				image: "registry.test/team/app:2",
+			},
+			want: []string{"--replicas", "--balloon-mib", "--cpu-limit", "--memory-limit", "--image"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := serviceWithRegistryAuth(t, "")
+			svc.PreviousSpec = svc.Spec.Copy()
+
+			opts := tc.opts
+			opts.rollbackAction = true
+			client := &fakeServiceUpdateClient{service: svc}
+			err := updateServiceWithClient(context.Background(), client, "web", opts)
+
+			require.Error(t, err)
+			for _, want := range tc.want {
+				assert.Contains(t, err.Error(), want, "the error must name the offending flag")
+			}
+			assert.Contains(t, err.Error(), "--rollback", "the error must name the conflicting flag")
+			assert.Contains(t, err.Error(), "previous spec",
+				"the error must explain why the combination is rejected")
+			assert.Zero(t, client.getCalls, "the combination must be rejected before the service lookup")
+			assert.Zero(t, client.listCalls)
+			assert.Zero(t, client.updateCalls, "a rejected combination must not apply the rollback")
+			assert.Nil(t, client.updatedSpec)
+		})
+	}
+}
+
+// TestUpdateService_UnsupportedExecFlagRejectedBeforeRollback pins the ordering
+// that keeps --user/--cap-add/--cap-drop/--read-only out of the rollback guard:
+// their own guard runs first, so a rollback cannot swallow them and the error
+// names the flag and the reason.
+func TestUpdateService_UnsupportedExecFlagRejectedBeforeRollback(t *testing.T) {
+	svc := serviceWithRegistryAuth(t, "")
+	svc.PreviousSpec = svc.Spec.Copy()
+
+	client := &fakeServiceUpdateClient{service: svc}
+	err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		user:           "root",
+		rollbackAction: true,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--user")
+	assert.Contains(t, err.Error(), "not supported")
+	assert.NotContains(t, err.Error(), "--rollback")
+	assert.Zero(t, client.getCalls)
+	assert.Zero(t, client.updateCalls)
+}
+
+// TestUpdateService_RollbackAloneAppliesPreviousSpec keeps the widened guard
+// honest: a plain --rollback must still submit PreviousSpec.
+func TestUpdateService_RollbackAloneAppliesPreviousSpec(t *testing.T) {
+	svc := serviceWithRegistryAuth(t, "")
+	previous := svc.Spec.Copy()
+	previous.Annotations.Labels = map[string]string{"restored": "previous-spec"}
+	svc.PreviousSpec = previous
+
+	client := &fakeServiceUpdateClient{service: svc}
+	require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+		rollbackAction: true,
+	}))
+
+	require.Equal(t, 1, client.updateCalls)
+	require.NotNil(t, client.updatedSpec)
+	assert.Equal(t, "previous-spec", client.updatedSpec.Annotations.Labels["restored"],
+		"a plain --rollback must submit PreviousSpec")
+}
+
 // TestUpdateServiceWithRegistryAuth_RejectsGolden verifies setting credentials
 // on a golden service fails: golden images are not pulled from a registry, so
 // the flag would otherwise be stored and never consumed.
