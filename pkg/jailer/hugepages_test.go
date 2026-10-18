@@ -57,6 +57,18 @@ func TestReadHugepagesPool(t *testing.T) {
 			wantErr: []string{"meminfo", "HugePages_Free"},
 		},
 		{
+			name: "missing page size names the file and the key",
+			content: "HugePages_Total:       512\n" +
+				"HugePages_Free:        128\n",
+			wantErr: []string{"meminfo", "Hugepagesize"},
+		},
+		{
+			name: "missing total names the file and the key",
+			content: "Hugepagesize:       2048 kB\n" +
+				"HugePages_Free:        128\n",
+			wantErr: []string{"meminfo", "HugePages_Total"},
+		},
+		{
 			name: "malformed count names the key and the value",
 			content: "Hugepagesize:       2048 kB\n" +
 				"HugePages_Total:      many\n" +
@@ -141,6 +153,7 @@ func TestCheckHugepages(t *testing.T) {
 		pool    HugepagesPool
 		sizeMiB int
 		wantErr []string
+		notWant []string // substrings the error must not contain
 	}{
 		{
 			name:    "enough free pages",
@@ -160,18 +173,43 @@ func TestCheckHugepages(t *testing.T) {
 				"cannot back a 2048 MiB VM",
 				"1024 pages needed",
 				"0 free of 0 allocated",
+				"raise the pool total to 1024 pages",
 				"vm.nr_hugepages=1024",
 			},
 		},
 		{
-			name:    "short pool names the numbers and the sysctl",
+			name:    "short pool raises the total to in-use plus required",
 			pool:    HugepagesPool{PageSizeKB: 2048, Total: 512, Free: 100},
 			sizeMiB: 1024,
 			wantErr: []string{
 				"1024 MiB",
 				"512 pages needed",
 				"100 free of 512 allocated",
-				"vm.nr_hugepages=512",
+				"raise the pool total to 924 pages",
+				"vm.nr_hugepages=924",
+			},
+			notWant: []string{"vm.nr_hugepages=512"},
+		},
+		{
+			name:    "fully allocated pool raises the total to required",
+			pool:    HugepagesPool{PageSizeKB: 2048, Total: 512, Free: 0},
+			sizeMiB: 1024,
+			wantErr: []string{
+				"512 pages needed",
+				"0 free of 512 allocated",
+				"raise the pool total to 1024 pages",
+				"vm.nr_hugepages=1024",
+			},
+		},
+		{
+			name:    "partly used pool counts in-use pages in the total",
+			pool:    HugepagesPool{PageSizeKB: 2048, Total: 300, Free: 100},
+			sizeMiB: 512,
+			wantErr: []string{
+				"256 pages needed",
+				"100 free of 300 allocated",
+				"raise the pool total to 456 pages",
+				"vm.nr_hugepages=456",
 			},
 		},
 		{
@@ -184,6 +222,16 @@ func TestCheckHugepages(t *testing.T) {
 				"1048576 KiB",
 				"only 2M",
 			},
+		},
+		{
+			name:    "wrong page size is reported before an invalid request",
+			pool:    HugepagesPool{PageSizeKB: 1048576, Total: 4, Free: 4},
+			sizeMiB: 2047,
+			wantErr: []string{
+				"1048576 KiB",
+				"only 2M",
+			},
+			notWant: []string{"multiple of 2 MiB"},
 		},
 		{
 			name:    "odd request names the size and the multiple",
@@ -221,6 +269,9 @@ func TestCheckHugepages(t *testing.T) {
 			assert.Equal(t, tt.pool.Total, hpErr.Total)
 			for _, want := range tt.wantErr {
 				assert.Contains(t, err.Error(), want)
+			}
+			for _, notWant := range tt.notWant {
+				assert.NotContains(t, err.Error(), notWant)
 			}
 		})
 	}

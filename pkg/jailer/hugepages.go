@@ -186,22 +186,22 @@ func (e *HugepagesError) Error() string {
 // must be configured with 2M pages and have enough of them free to back sizeMiB
 // of guest memory. Every rejection is a *HugepagesError, so a caller can
 // type-assert one type and surface the operator-facing message unchanged.
+//
+// Checks run page size first, then request validity, then the free-vs-required
+// comparison: a wrong-page-size host is the more fundamental misconfiguration,
+// so it is reported even when the request itself is also unusable.
 func CheckHugepages(pool HugepagesPool, sizeMiB int) error {
-	required, err := RequiredHugepages(sizeMiB)
-	if err != nil {
-		return &HugepagesError{
-			SizeMiB:    sizeMiB,
-			PageSizeKB: pool.PageSizeKB,
-			Free:       pool.Free,
-			Total:      pool.Total,
-			Reason:     err.Error(),
-		}
-	}
+	required, reqErr := RequiredHugepages(sizeMiB)
 
 	if pool.PageSizeKB != hugepageSizeKB2M {
+		// Only a valid request has a meaningful page count to report.
+		requiredPages := 0
+		if reqErr == nil {
+			requiredPages = required
+		}
 		return &HugepagesError{
 			SizeMiB:       sizeMiB,
-			RequiredPages: required,
+			RequiredPages: requiredPages,
 			PageSizeKB:    pool.PageSizeKB,
 			Free:          pool.Free,
 			Total:         pool.Total,
@@ -211,16 +211,44 @@ func CheckHugepages(pool HugepagesPool, sizeMiB int) error {
 		}
 	}
 
+	if reqErr != nil {
+		return &HugepagesError{
+			SizeMiB:    sizeMiB,
+			PageSizeKB: pool.PageSizeKB,
+			Free:       pool.Free,
+			Total:      pool.Total,
+			Reason:     reqErr.Error(),
+		}
+	}
+
 	if pool.Free < required {
+		// vm.nr_hugepages sets the pool total, not an increment, so the
+		// operator must size it to the pages already in use plus this VM's
+		// pages; setting it to required alone would still leave the VM short.
+		target := hugepagesPoolTarget(pool, required)
 		return &HugepagesError{
 			SizeMiB:       sizeMiB,
 			RequiredPages: required,
 			PageSizeKB:    pool.PageSizeKB,
 			Free:          pool.Free,
 			Total:         pool.Total,
-			Reason:        fmt.Sprintf("allocate at least %d pages with sysctl vm.nr_hugepages=%d", required, required),
+			Reason: fmt.Sprintf(
+				"raise the pool total to %d pages with sysctl vm.nr_hugepages=%d",
+				target, target),
 		}
 	}
 
 	return nil
+}
+
+// hugepagesPoolTarget is the vm.nr_hugepages value that would leave required
+// pages free: the pages already in use plus this VM's pages. A Free greater
+// than Total cannot happen on a real host, but clamping the in-use count at
+// zero keeps a malformed fixture from suggesting a total below required.
+func hugepagesPoolTarget(pool HugepagesPool, required int) int {
+	inUse := pool.Total - pool.Free
+	if inUse < 0 {
+		inUse = 0
+	}
+	return inUse + required
 }
