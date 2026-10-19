@@ -165,6 +165,21 @@ func (c *Client) ListServices(ctx context.Context) ([]v1.Service, error) {
 	return items, nil
 }
 
+// ListNodes returns the cluster nodes, ordered by creation time then ID.
+func (c *Client) ListNodes(ctx context.Context) ([]v1.Node, error) {
+	resp, err := c.control.ListNodes(ctx, &api.ListNodesRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	nodes := sortNodes(resp.Nodes)
+	items := make([]v1.Node, 0, len(nodes))
+	for _, node := range nodes {
+		items = append(items, nodeFromSwarmkit(node))
+	}
+	return items, nil
+}
+
 // ListTasks returns tasks with their service and node names, ordered by
 // creation time then ID.
 //
