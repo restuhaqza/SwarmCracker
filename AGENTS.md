@@ -52,7 +52,7 @@ MicroVM (isolated kernel + workload)
 | **Snapshot** | `pkg/snapshot` | VM snapshot/restore lifecycle | 87.9% coverage |
 | **SwarmKit** | `pkg/swarmkit` | SwarmKit API integration | 87.0% coverage |
 | **Types** | `pkg/types` | Shared interfaces and data structures | 100.0% coverage |
-| **API v1** | `pkg/api/v1` | Stable wire DTOs for the public contract (phase 0: ServiceList) | unit tests + OpenAPI schema |
+| **API v1** | `pkg/api/v1` | Stable wire DTOs for the public contract (phase 0: ServiceList, TaskList) | unit tests + OpenAPI schema |
 | **Client** | `pkg/client` | The single dial/TLS/SwarmKit mapping layer used by the CLI | unit tests |
 | **Output** | `pkg/output` | Envelope, error and exit-code writer | unit tests |
 

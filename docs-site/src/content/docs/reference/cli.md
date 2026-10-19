@@ -483,9 +483,11 @@ Task management.
 new modes, a service name. `-o json` emits the v1 `TaskList` envelope
 (`schemaVersion`, `kind`, `items`, `next`), and `-o name` emits one task ID per
 line. Phase 0 omits `health` from the v1 envelope; the legacy table and
-`--format json` keep their existing health fields. Empty results are valid JSON
-(`items: []` with `-o json`, `[]` with `--format json`), never prose. `-o` and
-`--format` are mutually exclusive.
+`--format json` keep their existing health fields. Empty results stay parseable
+in JSON: `items: []` with `-o json` and `[]` with `--format json`; table mode
+still prints `No tasks found`. `-o` and `--format` must not be combined in the
+same invocation. In the new modes `--filter state=` is case-insensitive; the
+legacy path keeps its original comparison.
 
 `task ls` prints the same `HEALTH` column as `service ps` — live when the owning
 node's health server is reachable, derived otherwise, also emitted as `health`

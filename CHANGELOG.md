@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TaskList` envelope (including service/node names, state, image, addresses,
   ports and exit code) and `-o name` emits IDs; legacy `--format json` still
   works, but empty results now emit `[]` instead of prose. Phase 0 omits live
-  health from the v1 envelope.
+  health from the v1 envelope. Invalid combinations are rejected as usage
+  errors: `-o table --format`, `-o ndjson`, `-o json|name --quiet`, and
+  `--health-port` in the new modes.
 
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global

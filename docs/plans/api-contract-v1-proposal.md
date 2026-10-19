@@ -431,6 +431,7 @@ Notes:
 }
 ```
 
+- The DTO also carries `message` and `error` when SwarmKit reports them.
 - `health.status` is `starting | healthy | failing | unhealthy`. It is omitted
   when the task declares no healthcheck.
 - Health is **capability-gated**: `GET /v1/tasks/{ref}` includes it when the

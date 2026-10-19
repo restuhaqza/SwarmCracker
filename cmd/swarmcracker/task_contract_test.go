@@ -175,21 +175,24 @@ func TestLegacyTaskListTableEmptyKeepsProse(t *testing.T) {
 // after `listTasksContract` dials.
 func TestTaskListModeValidation(t *testing.T) {
 	tests := []struct {
-		name   string
-		format string
-		setup  func(t *testing.T, cmd *cobra.Command)
+		name    string
+		format  string
+		wantMsg string
+		setup   func(t *testing.T, cmd *cobra.Command)
 	}{
 		{name: "ndjson is unsupported", format: "ndjson"},
 		{
-			name:   "json with quiet",
-			format: "json",
+			name:    "json with quiet",
+			format:  "json",
+			wantMsg: "use -o name instead of --quiet",
 			setup: func(t *testing.T, cmd *cobra.Command) {
 				require.NoError(t, cmd.Flags().Set("quiet", "true"))
 			},
 		},
 		{
-			name:   "name with quiet",
-			format: "name",
+			name:    "name with quiet",
+			format:  "name",
+			wantMsg: "do not combine -o name with --quiet",
 			setup: func(t *testing.T, cmd *cobra.Command) {
 				require.NoError(t, cmd.Flags().Set("quiet", "true"))
 			},
@@ -212,8 +215,9 @@ func TestTaskListModeValidation(t *testing.T) {
 		// `service ls`, where the two flags are mutually exclusive in every
 		// mode, and it must be rejected before the legacy path dials.
 		{
-			name:   "table with legacy format flag",
-			format: "table",
+			name:    "table with legacy format flag",
+			format:  "table",
+			wantMsg: "use either --output or --format, not both",
 			setup: func(t *testing.T, cmd *cobra.Command) {
 				require.NoError(t, cmd.Flags().Set("format", "json"))
 			},
@@ -237,6 +241,9 @@ func TestTaskListModeValidation(t *testing.T) {
 			var typed *output.Error
 			require.ErrorAs(t, err, &typed)
 			assert.Equal(t, output.CodeUsage, typed.Code)
+			if tt.wantMsg != "" {
+				assert.Contains(t, typed.Message, tt.wantMsg)
+			}
 		})
 	}
 }

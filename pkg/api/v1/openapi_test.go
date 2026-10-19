@@ -102,7 +102,7 @@ func TestOpenAPITaskListFixtures(t *testing.T) {
 			ExitCode:     ptr[int32](137),
 			Health: &TaskHealth{
 				Status:        "healthy",
-				FailingStreak: 0,
+				FailingStreak: 2,
 				Output:        "ok",
 				Command:       "curl -f http://localhost/",
 				CheckedAt:     "2026-10-19T10:04:10Z",

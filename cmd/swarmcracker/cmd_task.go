@@ -92,6 +92,9 @@ those modes.`,
 				// The contract path has no live-health lookup: phase 0 emits
 				// the local read model only.
 				if quiet {
+					if output.Format(outputFormat) == output.FormatName {
+						return output.NewError(output.CodeUsage, "do not combine -o name with --quiet")
+					}
 					return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
 				}
 				if cmd.Flags().Changed("health-port") {
@@ -107,7 +110,7 @@ those modes.`,
 	cmd.Flags().StringVar(&format, "format", "table", "Legacy output format (table, json)")
 	cmd.Flags().StringVar(&filter, "filter", "", "Filter output (e.g., 'node=xxx', 'state=running')")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only display IDs")
-	cmd.Flags().BoolVar(&all, "all", false, "Show all tasks (including stopped)")
+	cmd.Flags().BoolVar(&all, "all", false, "Show all tasks (currently a no-op; preserved for compatibility)")
 	cmd.Flags().BoolVar(&noTrunc, "no-trunc", false, "Don't truncate output")
 	cmd.Flags().StringVar(&node, "node", "", "Filter by node ID")
 	cmd.Flags().StringVar(&serviceID, "service", "", "Filter by service ID (or name with -o json/name)")

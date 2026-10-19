@@ -52,7 +52,22 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
-        - name: label
+        - name: name
+          in: query
+          schema: { type: string }
+        - name: id
+          in: query
+          schema: { type: string }
+        - name: service
+          in: query
+          schema: { type: string }
+        - name: node
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string }
+        - name: desiredState
           in: query
           schema: { type: string }
       responses:
@@ -257,7 +272,7 @@ components:
         serviceName: { type: string }
         nodeId: { type: string }
         nodeName: { type: string }
-        slot: { type: integer, format: uint64 }
+        slot: { type: integer, format: int64 }
         state: { type: string }
         desiredState: { type: string }
         message: { type: string }
