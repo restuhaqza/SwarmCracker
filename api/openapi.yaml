@@ -41,6 +41,36 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks:
+    get:
+      operationId: listTasks
+      summary: List tasks
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: label
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of tasks
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/TaskList" }
+        "207":
+          description: A page where some nodes could not answer; inspect `partial`
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/TaskList" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
 components:
   schemas:
     ServiceList:
@@ -196,6 +226,61 @@ components:
         ports:
           type: array
           items: { $ref: "#/components/schemas/Port" }
+
+    TaskList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [TaskList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Task" }
+        next:
+          type: string
+          nullable: true
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/Warning" }
+        partial:
+          type: array
+          items: { $ref: "#/components/schemas/Partial" }
+
+    Task:
+      type: object
+      required: [id, revision, serviceId, state, desiredState]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        revision: { type: string }
+        serviceId: { type: string }
+        serviceName: { type: string }
+        nodeId: { type: string }
+        nodeName: { type: string }
+        slot: { type: integer, format: uint64 }
+        state: { type: string }
+        desiredState: { type: string }
+        message: { type: string }
+        error: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        image: { type: string }
+        addresses: { type: array, items: { type: string } }
+        ports:
+          type: array
+          items: { $ref: "#/components/schemas/Port" }
+        exitCode: { type: integer, format: int32 }
+        health: { $ref: "#/components/schemas/TaskHealth" }
+
+    TaskHealth:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [starting, healthy, failing, unhealthy] }
+        failingStreak: { type: integer }
+        output: { type: string }
+        command: { type: string }
+        checkedAt: { type: string, format: date-time }
 
     Warning:
       type: object

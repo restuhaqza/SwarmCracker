@@ -72,6 +72,59 @@ func TestOpenAPIServiceListFixtures(t *testing.T) {
 	validateAgainst(t, doc, "ServiceList", value)
 }
 
+func TestOpenAPITaskListFixtures(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	fixture, err := os.ReadFile(filepath.Join("testdata", "task-list-empty.json"))
+	require.NoError(t, err)
+
+	var empty any
+	require.NoError(t, json.Unmarshal(fixture, &empty))
+	validateAgainst(t, doc, "TaskList", empty)
+
+	full := NewTaskList([]Task{
+		{
+			ID:           "t1abc",
+			Name:         "web.1.abc123",
+			Revision:     "42",
+			ServiceID:    "q1svc",
+			ServiceName:  "web",
+			NodeID:       "n2node",
+			NodeName:     "node-2",
+			Slot:         1,
+			State:        "running",
+			DesiredState: "running",
+			CreatedAt:    "2026-10-19T10:01:00Z",
+			UpdatedAt:    "2026-10-19T10:01:04Z",
+			Image:        "nginx:1.27-alpine",
+			Addresses:    []string{"10.0.1.7"},
+			Ports:        []Port{{Target: 80, Protocol: "tcp"}},
+			ExitCode:     ptr[int32](137),
+			Health: &TaskHealth{
+				Status:        "healthy",
+				FailingStreak: 0,
+				Output:        "ok",
+				Command:       "curl -f http://localhost/",
+				CheckedAt:     "2026-10-19T10:04:10Z",
+			},
+		},
+		{
+			ID:           "t2def",
+			Revision:     "43",
+			ServiceID:    "q1svc",
+			State:        "failed",
+			DesiredState: "shutdown",
+			Message:      "task failed",
+			Error:        "signal: killed",
+		},
+	})
+	data, err := json.Marshal(full)
+	require.NoError(t, err)
+	var value any
+	require.NoError(t, json.Unmarshal(data, &value))
+	validateAgainst(t, doc, "TaskList", value)
+}
+
 func TestOpenAPIErrorDocument(t *testing.T) {
 	doc := loadOpenAPI(t)
 	value := NewErrorDocument(Error{
