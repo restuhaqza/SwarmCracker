@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -44,8 +45,9 @@ func (f *fakeNodeListClient) ListNodes(context.Context, *api.ListNodesRequest, .
 	return &api.ListNodesResponse{Nodes: f.nodes}, nil
 }
 
-// contractNodes is a two-node fixture used by the JSON, name and filter tests:
-// one manager in zone a with a disk label, one worker with no labels.
+// contractNodes is a two-node fixture used by the JSON/filter tests and the
+// filtered name-mode test: one manager in zone a with a disk label, one worker
+// with no labels.
 func contractNodes() []v1.Node {
 	return []v1.Node{
 		{
@@ -116,6 +118,37 @@ func TestNodeListContractNameMode(t *testing.T) {
 		context.Background(), lister, &buf, "name", "",
 	))
 	assert.Equal(t, "id1\nid2\n", buf.String())
+}
+
+// TestNodeListContractNameModeWithFilter is success criterion 3 as a composite:
+// the filter and the name rendering together, rather than each in isolation.
+func TestNodeListContractNameModeWithFilter(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, listNodesContractWithClient(
+		context.Background(), &fakeNodeLister{nodes: contractNodes()}, &buf, "name", "role=manager",
+	))
+	assert.Equal(t, "id1\n", buf.String())
+}
+
+// TestNodeListContractFilteredEmptyItemsIsArray asserts the filtered-to-empty
+// case at the raw JSON level: unmarshalling into v1.NodeList would accept
+// `items: null`, so the value itself is checked here.
+func TestNodeListContractFilteredEmptyItemsIsArray(t *testing.T) {
+	lister := &fakeNodeLister{nodes: []v1.Node{{ID: "id2", Role: "worker"}}}
+
+	var buf bytes.Buffer
+	require.NoError(t, listNodesContractWithClient(
+		context.Background(), lister, &buf, "json", "role=manager",
+	))
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc), buf.String())
+	items, ok := doc["items"]
+	require.True(t, ok, "items must be present")
+	require.NotNil(t, items, "items must not be null")
+	list, ok := items.([]any)
+	require.True(t, ok, "items must be a JSON array")
+	assert.Empty(t, list)
 }
 
 func TestNodeListContractMapsRPCError(t *testing.T) {
@@ -223,6 +256,76 @@ func TestLegacyNodeListTableEmptyKeepsProse(t *testing.T) {
 		context.Background(), &fakeNodeListClient{}, &buf, "table", "", false,
 	))
 	assert.Contains(t, buf.String(), "No nodes found")
+}
+
+// TestLegacyNodeListTableNonEmptyPreservesShape pins the human-facing table on a
+// non-empty result: the four columns, the 12-character ID truncation and the
+// total line. Without it a renamed column, a lost truncation or a dropped total
+// would stay green.
+func TestLegacyNodeListTableNonEmptyPreservesShape(t *testing.T) {
+	const fullID = "abcdef1234567890abcdef1234567890"
+
+	node := &api.Node{
+		ID:          fullID,
+		Spec:        api.NodeSpec{Availability: api.NodeAvailabilityDrain},
+		Description: &api.NodeDescription{Hostname: "manager-a"},
+		Status:      api.NodeStatus{State: api.NodeStatus_READY},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, listNodesWithClient(
+		context.Background(), &fakeNodeListClient{nodes: []*api.Node{node}}, &buf, "table", "", false,
+	))
+	out := buf.String()
+
+	lines := strings.Split(out, "\n")
+	require.GreaterOrEqual(t, len(lines), 2, out)
+	for _, column := range []string{"ID", "STATUS", "HOSTNAME", "AVAILABILITY"} {
+		assert.Contains(t, lines[0], column)
+	}
+
+	prefix := fullID[:12]
+	var row string
+	for _, line := range lines {
+		if strings.Contains(line, prefix) {
+			row = line
+			break
+		}
+	}
+	require.NotEmpty(t, row, "expected a row carrying the 12-character ID prefix:\n%s", out)
+	assert.NotContains(t, row, fullID, "the table must truncate the node ID")
+	// The legacy table prints the protobuf enum names verbatim, unlike the
+	// lowercase v1 read model.
+	assert.Contains(t, row, "READY")
+	assert.Contains(t, row, "manager-a")
+	assert.Contains(t, row, "DRAIN")
+
+	assert.Contains(t, out, "Total: 1 node(s)")
+}
+
+// TestLegacyNodeListJSONNonEmptyPreservesRawArray pins the legacy JSON shape on a
+// non-empty result: a raw SwarmKit []Node array, not the v1 envelope.
+func TestLegacyNodeListJSONNonEmptyPreservesRawArray(t *testing.T) {
+	node := &api.Node{
+		ID:          "abcdef1234567890",
+		Spec:        api.NodeSpec{DesiredRole: api.NodeRoleManager},
+		Description: &api.NodeDescription{Hostname: "manager-a"},
+		Status:      api.NodeStatus{State: api.NodeStatus_READY},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, listNodesWithClient(
+		context.Background(), &fakeNodeListClient{nodes: []*api.Node{node}}, &buf, "json", "", false,
+	))
+
+	var got []map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got), buf.String())
+	require.Len(t, got, 1)
+	assert.Equal(t, node.ID, got[0]["id"])
+	assert.Contains(t, got[0], "spec")
+	assert.Contains(t, got[0], "status")
+	assert.NotContains(t, got[0], "schemaVersion")
+	assert.NotContains(t, got[0], "kind")
 }
 
 // TestNodeListModeValidation proves every -o rejection happens before a client

@@ -93,7 +93,7 @@ node array for scripts that already parse it.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&format, "format", "table", "Output format (table, json)")
+	cmd.Flags().StringVar(&format, "format", "table", "Legacy output format (table, json)")
 	cmd.Flags().StringVar(&filter, "filter", "", "Filter output (e.g., 'role=manager')")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only display IDs")
 
