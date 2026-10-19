@@ -18,6 +18,10 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 )
 
 // newNodeCommand creates the node command group
@@ -52,18 +56,40 @@ func newNodeListCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:     "ls",
-		Short:   "List nodes in the cluster",
-		Long:    `List all nodes in the SwarmCracker cluster with their status.`,
+		Use:   "ls",
+		Short: "List nodes in the cluster",
+		Long: `List all nodes in the SwarmCracker cluster with their status.
+
+Use -o json or -o name for the v1 envelope; --format json keeps the legacy
+node array for scripts that already parse it.`,
 		Aliases: []string{"list"},
 		Example: `  swarmcracker node ls
-  swarmcracker node ls --format json
+  swarmcracker node ls -o json
+  swarmcracker node ls -o name
+  swarmcracker node ls --format json          # legacy shape
   swarmcracker node ls --filter "role=manager"`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return listNodes(format, filter, quiet)
+			if outputFormat != "" && cmd.Flags().Changed("format") {
+				return output.NewError(output.CodeUsage, "use either --output or --format, not both")
+			}
+			if outputFormat == "" || output.Format(outputFormat) == output.FormatTable {
+				return listNodes(format, filter, quiet)
+			}
+			switch output.Format(outputFormat) {
+			case output.FormatJSON, output.FormatName:
+				if quiet {
+					if output.Format(outputFormat) == output.FormatName {
+						return output.NewError(output.CodeUsage, "do not combine -o name with --quiet")
+					}
+					return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
+				}
+				return listNodesContract(outputFormat, filter)
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for node ls", outputFormat)
+			}
 		},
 	}
 
@@ -293,13 +319,26 @@ func listNodes(format, filter string, quiet bool) error {
 	}
 	defer conn.Close()
 
+	return listNodesWithClient(ctx, client, os.Stdout, format, filter, quiet)
+}
+
+// listNodesWithClient is the body of the legacy `--format` path with the control
+// client and output writer injected, so the table and JSON rendering is
+// testable without a cluster.
+func listNodesWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet bool) error {
 	resp, err := client.ListNodes(ctx, &api.ListNodesRequest{})
 	if err != nil {
 		return fmt.Errorf("failed to list nodes: %w", err)
 	}
 
 	if len(resp.Nodes) == 0 {
-		fmt.Println("No nodes found")
+		// JSON mode must stay parseable on a healthy empty cluster. Table mode
+		// keeps the human-friendly message.
+		if format == "json" {
+			fmt.Fprintln(w, "[]")
+			return nil
+		}
+		fmt.Fprintln(w, "No nodes found")
 		return nil
 	}
 
@@ -312,21 +351,29 @@ func listNodes(format, filter string, quiet bool) error {
 
 	// Output based on format
 	if format == "json" {
-		data, _ := json.MarshalIndent(nodes, "", "  ")
-		fmt.Println(string(data))
+		// A filter that matches nothing must not marshal a nil slice as null.
+		if len(nodes) == 0 {
+			fmt.Fprintln(w, "[]")
+			return nil
+		}
+		data, err := json.MarshalIndent(nodes, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal nodes: %w", err)
+		}
+		fmt.Fprintln(w, string(data))
 		return nil
 	}
 
 	// Table format
 	if quiet {
 		for _, node := range nodes {
-			fmt.Println(node.ID)
+			fmt.Fprintln(w, node.ID)
 		}
 		return nil
 	}
 
-	fmt.Printf("%-20s %-12s %-20s %s\n", "ID", "STATUS", "HOSTNAME", "AVAILABILITY")
-	fmt.Println(strings.Repeat("-", 70))
+	fmt.Fprintf(w, "%-20s %-12s %-20s %s\n", "ID", "STATUS", "HOSTNAME", "AVAILABILITY")
+	fmt.Fprintln(w, strings.Repeat("-", 70))
 	for _, node := range nodes {
 		status := node.Status.State.String()
 		avail := node.Spec.Availability.String()
@@ -338,11 +385,105 @@ func listNodes(format, filter string, quiet bool) error {
 		if len(id) > 12 {
 			id = id[:12]
 		}
-		fmt.Printf("%-20s %-12s %-20s %s\n", id, status, hostname, avail)
+		fmt.Fprintf(w, "%-20s %-12s %-20s %s\n", id, status, hostname, avail)
 	}
-	fmt.Printf("\nTotal: %d node(s)\n", len(nodes))
+	fmt.Fprintf(w, "\nTotal: %d node(s)\n", len(nodes))
 
 	return nil
+}
+
+// nodeLister is the narrow client surface the contract path needs. Keeping it
+// small lets the command be tested without certificates or a live manager.
+type nodeLister interface {
+	ListNodes(context.Context) ([]v1.Node, error)
+}
+
+// listNodesContract is the `-o json` / `-o name` path. Unlike the legacy
+// --format json path, it emits the v1 envelope.
+func listNodesContract(format, filter string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := client.New(client.DefaultConfig())
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	defer c.Close()
+
+	return listNodesContractWithClient(ctx, c, os.Stdout, format, filter)
+}
+
+func listNodesContractWithClient(ctx context.Context, l nodeLister, w io.Writer, format, filter string) error {
+	nodes, err := l.ListNodes(ctx)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	nodes = filterV1Nodes(nodes, filter)
+
+	switch output.Format(format) {
+	case output.FormatJSON:
+		return output.WriteJSON(w, v1.NewNodeList(nodes))
+	case output.FormatName:
+		for _, node := range nodes {
+			fmt.Fprintln(w, node.ID)
+		}
+		return nil
+	default:
+		return output.NewErrorf(output.CodeUsage, "unsupported output format %q for node ls", format)
+	}
+}
+
+// filterV1Nodes applies one key=value filter to the v1 read model.
+//
+// role, membership, availability, state and hostname compare case-insensitively
+// against the lowercase v1 values; id is exact. An unknown key (or a filter with
+// no '=') matches everything, preserving the legacy filterNodes behavior.
+//
+// label is a selector rather than a value: `label=key` matches key presence and
+// `label=key=value` matches both. Label values stay exact because labels are
+// case-sensitive, unlike the enum fields above.
+func filterV1Nodes(nodes []v1.Node, filter string) []v1.Node {
+	out := make([]v1.Node, 0, len(nodes))
+
+	key, value, ok := strings.Cut(filter, "=")
+	if !ok {
+		return append(out, nodes...)
+	}
+
+	if key == "label" {
+		labelKey, labelValue, hasValue := strings.Cut(value, "=")
+		for _, node := range nodes {
+			got, present := node.Labels[labelKey]
+			if present && (!hasValue || got == labelValue) {
+				out = append(out, node)
+			}
+		}
+		return out
+	}
+
+	for _, node := range nodes {
+		var matched bool
+		switch key {
+		case "role":
+			matched = strings.EqualFold(node.Role, value)
+		case "membership":
+			matched = strings.EqualFold(node.Membership, value)
+		case "availability":
+			matched = strings.EqualFold(node.Availability, value)
+		case "state":
+			matched = strings.EqualFold(node.State, value)
+		case "id":
+			matched = node.ID == value
+		case "hostname":
+			matched = strings.EqualFold(node.Hostname, value)
+		default:
+			matched = true
+		}
+		if matched {
+			out = append(out, node)
+		}
+	}
+	return out
 }
 
 func inspectNode(nodeID, format string, pretty bool) error {
