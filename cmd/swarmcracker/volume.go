@@ -403,7 +403,7 @@ func newVolumeExportCommand(volumesDir *string) *cobra.Command {
 		Long: `Export volume data to a tar.gz file for backup or transfer.
 
 Examples:
-  swarmcracker volume export my-data -o backup.tar.gz`,
+  swarmcracker volume export my-data -O backup.tar.gz`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
@@ -445,7 +445,7 @@ Examples:
 		},
 	}
 
-	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "Output file path (default: <name>.tar.gz)")
+	cmd.Flags().StringVarP(&outputFile, "output-file", "O", "", "Output file path (default: <name>.tar.gz)")
 	return cmd
 }
 

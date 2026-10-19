@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
@@ -57,12 +60,26 @@ func newServiceListCommand() *cobra.Command {
 		Short:   "List services",
 		Aliases: []string{"list"},
 		Example: `  swarmcracker service ls
-  swarmcracker service ls --format json
+  swarmcracker service ls -o json
+  swarmcracker service ls --format json          # legacy shape
   swarmcracker service ls --filter "name=my-service"`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat != "" {
+				if cmd.Flags().Changed("format") {
+					return output.NewError(output.CodeUsage, "use either --output or --format, not both")
+				}
+				switch output.Format(outputFormat) {
+				case output.FormatJSON, output.FormatName:
+					return listServicesContract(outputFormat, filter)
+				case output.FormatTable:
+					return listServices(format, filter, quiet)
+				default:
+					return output.NewErrorf(output.CodeUsage, "unsupported output format %q for service ls", outputFormat)
+				}
+			}
 			return listServices(format, filter, quiet)
 		},
 	}
@@ -793,10 +810,16 @@ func listServices(format, filter string, quiet bool) error {
 func listServicesWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet bool) error {
 	resp, err := client.ListServices(ctx, &api.ListServicesRequest{})
 	if err != nil {
-		return fmt.Errorf("failed to list services: %w", err)
+		return output.FromGRPC(err)
 	}
 
 	if len(resp.Services) == 0 {
+		// JSON mode must stay parseable on a healthy empty cluster. Table mode
+		// keeps the human-friendly message.
+		if format == "json" {
+			fmt.Fprintln(w, "[]")
+			return nil
+		}
 		fmt.Fprintln(w, "No services found")
 		return nil
 	}
@@ -845,6 +868,72 @@ func listServicesWithClient(ctx context.Context, client api.ControlClient, w io.
 	fmt.Fprintf(w, "\nTotal: %d service(s)\n", len(services))
 
 	return nil
+}
+
+// serviceLister is the narrow client surface the contract path needs. Keeping
+// it small lets the command be tested without certificates or a live manager.
+type serviceLister interface {
+	ListServices(context.Context) ([]v1.Service, error)
+}
+
+// listServicesContract is the `-o json` / `-o name` path. Unlike the legacy
+// --format json path, it emits the v1 envelope and includes the observed task
+// counts in each service status.
+func listServicesContract(format, filter string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := client.New(client.DefaultConfig())
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	defer c.Close()
+
+	return listServicesContractWithClient(ctx, c, os.Stdout, format, filter)
+}
+
+func listServicesContractWithClient(ctx context.Context, l serviceLister, w io.Writer, format, filter string) error {
+	services, err := l.ListServices(ctx)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	services = filterV1Services(services, filter)
+
+	switch output.Format(format) {
+	case output.FormatJSON:
+		return output.WriteJSON(w, v1.NewServiceList(services))
+	case output.FormatName:
+		for _, svc := range services {
+			fmt.Fprintln(w, svc.ID)
+		}
+		return nil
+	default:
+		return output.NewErrorf(output.CodeUsage, "unsupported output format %q for service ls", format)
+	}
+}
+
+func filterV1Services(services []v1.Service, filter string) []v1.Service {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return services
+	}
+	name := ""
+	if strings.HasPrefix(filter, "name=") {
+		name = strings.TrimPrefix(filter, "name=")
+	}
+	out := make([]v1.Service, 0, len(services))
+	for _, svc := range services {
+		if name != "" {
+			if svc.Name == name {
+				out = append(out, svc)
+			}
+			continue
+		}
+		if strings.Contains(svc.ID, filter) || strings.Contains(svc.Name, filter) {
+			out = append(out, svc)
+		}
+	}
+	return out
 }
 
 // resolveNetworkTargets resolves --network names/IDs to full network IDs.

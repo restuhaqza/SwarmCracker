@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **API contract foundation** — `pkg/api/v1` wire types, `pkg/output` envelope/
+  error/exit-code writer, `pkg/client` as the single SwarmKit dialing and
+  mapping layer, and `swarmcracker service ls -o json|name` with the v1
+  `ServiceList` envelope. Legacy `--format json` still works, but now emits
+  `[]` instead of prose on an empty cluster.
+- `api/openapi.yaml` with a schema test that validates the service fixtures.
+
+### Changed
+- `volume export -o` is now `volume export -O` / `--output-file`; the global
+  `-o` / `--output` flag is reserved for machine output formats.
+
 ---
 
 ## [0.11.0] - 2026-10-19

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +24,7 @@ var (
 	sshKeyPath     string
 	knownHostsPath string
 	insecureSSH    bool
+	outputFormat   string
 )
 
 func main() {
@@ -31,6 +33,10 @@ func main() {
 		Short:   "SwarmCracker CLI - Run containers as Firecracker microVMs",
 		Long:    `SwarmCracker is a CLI tool for running containers as isolated Firecracker microVMs.`,
 		Version: Version,
+		// main owns error rendering so JSON mode can emit a single Error
+		// document instead of Cobra's prose line.
+		SilenceErrors: true,
+		SilenceUsage:  true,
 	}
 
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Path to configuration file (default: /etc/swarmcracker/config.yaml)")
@@ -40,6 +46,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&sshKeyPath, "ssh-key", "", "SSH private key path for remote deployment")
 	rootCmd.PersistentFlags().StringVar(&knownHostsPath, "known-hosts", "", "Path to SSH known_hosts file")
 	rootCmd.PersistentFlags().BoolVar(&insecureSSH, "insecure-ssh", false, "Skip SSH host key verification (WARNING: allows MITM attacks)")
+	rootCmd.PersistentFlags().StringVarP(&outputFormat, "output", "o", "", "Output format: table, json, name (commands that support it)")
 
 	// New command structure
 	rootCmd.AddCommand(newClusterCommand())
@@ -80,7 +87,11 @@ func main() {
 		// streamed the command's output, so only the status is propagated.
 		var ec *exitCodeError
 		if !errors.As(err, &ec) {
-			fmt.Fprintln(os.Stderr, err)
+			if outputFormat == "json" || outputFormat == "ndjson" {
+				_ = output.WriteError(os.Stderr, err)
+			} else {
+				fmt.Fprintln(os.Stderr, err)
+			}
 		}
 		os.Exit(cliExitCode(err))
 	}

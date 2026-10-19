@@ -22,6 +22,7 @@ The main CLI for cluster management, service deployment, and VM operations.
 | `--ssh-key` | — | — | SSH private key for remote deployment |
 | `--known-hosts` | — | — | Path to the SSH known_hosts file |
 | `--insecure-ssh` | — | `false` | Skip SSH host key verification |
+| `--output` | `-o` | — | Machine output format for commands that support it (`table`, `json`, `name`) |
 | `--version` | `-v` | — | Print version information |
 | `--help` | `-h` | — | Help for any command |
 
@@ -364,6 +365,13 @@ rejected instead of being silently dropped. See
 
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc`, `--health-port`, `--no-health` for `ps`.
 
+`service ls` also accepts the global `-o` / `--output` flag. `-o json` emits the
+v1 `ServiceList` envelope (`schemaVersion`, `kind`, `items`, `next`) and `-o name`
+emits one ID per line; `--format json` remains the frozen legacy shape. On a
+healthy empty cluster, both JSON paths emit valid JSON (`items: []` or `[]`)
+instead of prose, and a failure in `-o json` mode writes a single `Error`
+document to stderr.
+
 `service ps` (and `task ls`) print a `HEALTH` column. It is the **live**
 healthcheck state fetched from the node owning each task (`starting`, `healthy`,
 `failing`, `unhealthy`) when that node's health server is reachable; a node that
@@ -601,12 +609,12 @@ Persistent volume management.
 | `rm <name>` | Delete a volume |
 | `snapshot <name>` | Snapshot a volume |
 | `restore <name> --snapshot <file>` | Restore a volume from a snapshot |
-| `export <name> --output <file>` | Export volume data |
+| `export <name> --output-file <file>` | Export volume data |
 | `import <name> <archive>` | Import volume data |
 
 `volume create` flags: `--type` / `-t` (`dir` or `block`), `--size` / `-s` (MB), `--opt`. The `--volumes-dir` / `-d` global flag sets the storage directory (default `/var/lib/swarmcracker/volumes`).
 
-`volume rm` requires `--force` / `-f` to confirm. `volume restore` requires `--snapshot` / `-s <file>`; `volume export` writes to `--output` / `-o <file>` (default `<name>.tar.gz`); `volume ls --json` emits JSON.
+`volume rm` requires `--force` / `-f` to confirm. `volume restore` requires `--snapshot` / `-s <file>`; `volume export` writes to `--output-file` / `-O <file>` (default `<name>.tar.gz`; the old `-o` shorthand is now reserved for the global output format); `volume ls --json` emits JSON.
 
 #### `swarmcracker asset`
 

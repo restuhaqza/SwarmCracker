@@ -52,6 +52,9 @@ MicroVM (isolated kernel + workload)
 | **Snapshot** | `pkg/snapshot` | VM snapshot/restore lifecycle | 87.9% coverage |
 | **SwarmKit** | `pkg/swarmkit` | SwarmKit API integration | 87.0% coverage |
 | **Types** | `pkg/types` | Shared interfaces and data structures | 100.0% coverage |
+| **API v1** | `pkg/api/v1` | Stable wire DTOs for the public contract (phase 0: ServiceList) | unit tests + OpenAPI schema |
+| **Client** | `pkg/client` | The single dial/TLS/SwarmKit mapping layer used by the CLI | unit tests |
+| **Output** | `pkg/output` | Envelope, error and exit-code writer | unit tests |
 
 > Coverage measured 2026-09-29 (total `./pkg/...` 87.6%); see
 > `docs-site/src/content/docs/contributing/testing/unit-tests.md` for the full
@@ -123,6 +126,7 @@ swarmcracker/
 | `cmd/swarmcracker/main.go` | CLI tool entry point |
 | `pkg/executor/executor.go` | Main executor logic |
 | `pkg/config/config.go` | Configuration structures |
+| `api/openapi.yaml` | Normative OpenAPI 3.1 schema for the public API |
 | `docs-site/src/content/docs/` | Published documentation (Astro Starlight) |
 
 ---
