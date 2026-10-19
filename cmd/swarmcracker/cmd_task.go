@@ -19,6 +19,9 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/redact"
 )
 
@@ -72,6 +75,27 @@ health-gated task state, and a node that cannot be reached shows "-".`,
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat != "" {
+				switch output.Format(outputFormat) {
+				case output.FormatTable:
+					return listTasks(format, filter, quiet, all, noTrunc, node, serviceID, clusterHealthOptions{Port: healthPort, Disabled: noHealth})
+				case output.FormatJSON, output.FormatName:
+					// The contract path has no live-health lookup: phase 0
+					// emits the local read model only.
+					if cmd.Flags().Changed("format") {
+						return output.NewError(output.CodeUsage, "use either --output or --format, not both")
+					}
+					if quiet {
+						return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
+					}
+					if cmd.Flags().Changed("health-port") {
+						return output.NewError(output.CodeUsage, "--health-port is not supported with -o json or -o name")
+					}
+					return listTasksContract(outputFormat, filter, all, node, serviceID)
+				default:
+					return output.NewErrorf(output.CodeUsage, "unsupported output format %q for task ls", outputFormat)
+				}
+			}
 			return listTasks(format, filter, quiet, all, noTrunc, node, serviceID, clusterHealthOptions{Port: healthPort, Disabled: noHealth})
 		},
 	}
@@ -145,6 +169,12 @@ func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Wri
 	}
 
 	if len(resp.Tasks) == 0 {
+		// JSON mode must stay parseable on a healthy empty cluster. Table mode
+		// keeps the human-friendly message.
+		if format == "json" {
+			fmt.Fprintln(w, "[]")
+			return nil
+		}
 		fmt.Fprintln(w, "No tasks found")
 		return nil
 	}
@@ -199,6 +229,83 @@ func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Wri
 	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
 
 	return nil
+}
+
+// taskLister is the narrow client surface the contract path needs. Keeping it
+// small lets the command be tested without certificates or a live manager.
+type taskLister interface {
+	ListTasks(context.Context) ([]v1.Task, error)
+}
+
+// listTasksContract is the `-o json` / `-o name` path. Unlike the legacy
+// --format json path, it emits the v1 envelope, with no health and no redacted
+// SwarmKit payload.
+func listTasksContract(format, filter string, all bool, node, serviceID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := client.New(client.DefaultConfig())
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	defer c.Close()
+
+	return listTasksContractWithClient(ctx, c, os.Stdout, format, filter, all, node, serviceID)
+}
+
+func listTasksContractWithClient(ctx context.Context, l taskLister, w io.Writer, format, filter string, all bool, node, serviceID string) error {
+	tasks, err := l.ListTasks(ctx)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	tasks = filterV1Tasks(tasks, filter, node, serviceID, all)
+
+	switch output.Format(format) {
+	case output.FormatJSON:
+		return output.WriteJSON(w, v1.NewTaskList(tasks))
+	case output.FormatName:
+		for _, task := range tasks {
+			fmt.Fprintln(w, task.ID)
+		}
+		return nil
+	default:
+		return output.NewErrorf(output.CodeUsage, "unsupported output format %q for task ls", format)
+	}
+}
+
+// filterV1Tasks mirrors the legacy filterTasks, with two contract-safe
+// improvements for the v1 path only: `state=` compares case-insensitively
+// against the lowercase v1 state, and --service matches either the service ID or
+// the task's service name.
+//
+// all is accepted for signature parity with filterTasks but intentionally
+// unused: the legacy --all is a no-op, and this slice preserves that behavior
+// instead of silently changing what scripts see.
+func filterV1Tasks(tasks []v1.Task, filter, node, serviceID string, all bool) []v1.Task {
+	var (
+		hasState   = strings.HasPrefix(filter, "state=")
+		state      = strings.TrimPrefix(filter, "state=")
+		hasNode    = strings.HasPrefix(filter, "node=")
+		nodePrefix = strings.TrimPrefix(filter, "node=")
+	)
+
+	out := make([]v1.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if node != "" && task.NodeID != node {
+			continue
+		}
+		if serviceID != "" && task.ServiceID != serviceID && task.ServiceName != serviceID {
+			continue
+		}
+		if hasState && !strings.EqualFold(task.State, state) {
+			continue
+		}
+		if hasNode && !strings.HasPrefix(task.NodeID, nodePrefix) {
+			continue
+		}
+		out = append(out, task)
+	}
+	return out
 }
 
 func inspectTask(taskID, format string, pretty bool) error {
