@@ -192,27 +192,39 @@ rm -f cmd/swarmcracker/swarmcracker.test
 
 **Depends on:** Task 2.
 
-## Task 4 — Docs, changelog and final verification
+## Task 4 — Docs, changelog, minor polish and final verification
 
-**Goal:** Document the new mode and record the slice.
+**Goal:** Document the new mode, record the slice, and close the file-local
+user-facing minors promoted from Task 3.
 
 **Files:**
 - `docs-site/src/content/docs/reference/cli.md`
 - `CHANGELOG.md`
+- `cmd/swarmcracker/cmd_task.go` (help/examples and conflict ordering only)
+- `cmd/swarmcracker/task_contract_test.go` (next-key assertion and one mode test)
 - `docs/plans/api-contract-v1-proposal.md` only if a factual note is needed
 
 **Steps:**
 1. Extend the `task ls` reference with `-o json`/`-o name`, the health omission,
-   and the empty-list guarantee.
-2. Add an Unreleased changelog line.
-3. Run docs verification and the focused test suite.
-4. Report any deferred minors for the final review.
+   service-name matching, and the empty-list guarantee.
+2. Update the command help/examples: show `-o json` and `-o name`, say
+   `--service` accepts an ID or name in the new modes.
+3. Hoist the `--format` conflict check so `-o table --format json` is a usage
+   error, matching `service ls`, and remove the duplicated legacy `listTasks`
+   call in `RunE`.
+4. Assert that `next` is present and null in the empty contract test, and add
+   the `-o table --format json` usage case.
+5. Add an Unreleased changelog line.
+6. Run docs verification and the focused + command test suites.
+7. Report any deferred minors for the final review.
 
 **Verification:**
 ```bash
+gofmt -w cmd/swarmcracker/cmd_task.go cmd/swarmcracker/task_contract_test.go
 cd docs-site && npm run verify
 go test ./pkg/api/v1 ./pkg/client ./pkg/output
 GOOS=linux GOARCH=amd64 go build ./cmd/swarmcracker
+# cmd tests in the Linux container, as in Task 3
 ```
 
 **Depends on:** Task 3.
