@@ -75,6 +75,7 @@ func (c Config) withDefaults() Config {
 type controlClient interface {
 	ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error)
 	ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error)
+	ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error)
 }
 
 // Client is a typed SwarmCracker client. It is safe for concurrent use.
@@ -160,6 +161,35 @@ func (c *Client) ListServices(ctx context.Context) ([]v1.Service, error) {
 			continue
 		}
 		items = append(items, serviceFromSwarmkit(svc, counts[svc.ID]))
+	}
+	return items, nil
+}
+
+// ListTasks returns tasks with their service and node names, ordered by
+// creation time then ID.
+//
+// Node names come from one ListNodes call, so a node read failure fails the
+// list: the contract includes nodeName and a caller that cannot read nodes
+// cannot produce the document. An empty task list never calls ListNodes.
+func (c *Client) ListTasks(ctx context.Context) ([]v1.Task, error) {
+	resp, err := c.control.ListTasks(ctx, &api.ListTasksRequest{})
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Tasks) == 0 {
+		return []v1.Task{}, nil
+	}
+
+	nodes, err := c.control.ListNodes(ctx, &api.ListNodesRequest{})
+	if err != nil {
+		return nil, err
+	}
+	names := nodeNameIndex(nodes.Nodes)
+
+	tasks := sortTasks(resp.Tasks)
+	items := make([]v1.Task, 0, len(tasks))
+	for _, task := range tasks {
+		items = append(items, taskFromSwarmkit(task, names))
 	}
 	return items, nil
 }

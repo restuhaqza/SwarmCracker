@@ -18,6 +18,9 @@ type fakeControl struct {
 	tasks          []*api.Task
 	taskErr        error
 	listTasksCalls int
+	nodes          []*api.Node
+	nodeErr        error
+	listNodesCalls int
 }
 
 func (f *fakeControl) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
@@ -30,6 +33,14 @@ func (f *fakeControl) ListTasks(context.Context, *api.ListTasksRequest, ...grpc.
 		return nil, f.taskErr
 	}
 	return &api.ListTasksResponse{Tasks: f.tasks}, nil
+}
+
+func (f *fakeControl) ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error) {
+	f.listNodesCalls++
+	if f.nodeErr != nil {
+		return nil, f.nodeErr
+	}
+	return &api.ListNodesResponse{Nodes: f.nodes}, nil
 }
 
 func TestListServicesMapsServiceAndCounts(t *testing.T) {
