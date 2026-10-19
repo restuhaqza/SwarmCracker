@@ -74,6 +74,47 @@ func TestNodeDocumentEnvelope(t *testing.T) {
 	assert.Equal(t, float64(16<<30), resources["memoryBytes"])
 }
 
+// TestNodeOptionalJSONKeys pins the optional-field tags at the JSON boundary: a
+// node whose source populates every field must emit every documented key, so a
+// consumer can rely on presence rather than guessing which keys may vanish.
+func TestNodeOptionalJSONKeys(t *testing.T) {
+	full := Node{
+		ID:           "n4full",
+		Hostname:     "node-4",
+		Revision:     "12",
+		CreatedAt:    "2026-10-18T08:00:00Z",
+		UpdatedAt:    "2026-10-19T10:03:00Z",
+		Role:         "manager",
+		Membership:   "accepted",
+		Availability: "active",
+		State:        "ready",
+		Address:      "192.168.1.14",
+		Labels:       map[string]string{"zone": "b"},
+		Resources:    &NodeResources{CPUs: 4, MemoryBytes: 8 << 30},
+		Manager:      &NodeManager{Leader: true, Reachable: true, Address: "192.168.1.14:4242", RaftID: 2},
+		AgentVersion: "0.11.0",
+	}
+
+	data, err := json.Marshal(NewNodeDocument(full))
+	require.NoError(t, err)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(data, &doc))
+
+	for _, key := range []string{
+		"id", "hostname", "revision", "createdAt", "updatedAt",
+		"role", "membership", "availability", "state", "address",
+		"labels", "resources", "manager", "agentVersion",
+	} {
+		assert.Contains(t, doc, key)
+	}
+
+	assert.Equal(t, "2026-10-18T08:00:00Z", doc["createdAt"])
+	assert.Equal(t, "2026-10-19T10:03:00Z", doc["updatedAt"])
+	assert.Equal(t, "192.168.1.14", doc["address"])
+	assert.Equal(t, map[string]any{"zone": "b"}, doc["labels"])
+}
+
 func TestNodeManagerIsEmittedWhenPresent(t *testing.T) {
 	manager := Node{
 		ID:           "n2manager",

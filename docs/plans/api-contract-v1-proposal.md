@@ -528,15 +528,17 @@ characters. Ambiguity returns `400 ambiguous` with candidates.
 
 | Query | Applies to | Repeatable | Semantics |
 | --- | --- | --- | --- |
-| `name` | all | yes | Exact name |
+| `name` | named resources | yes | Exact name |
 | `id` | all | yes | Exact ID |
 | `label` | all | yes | `k` or `k=v`, AND across repeats |
 | `service` | tasks | no | Service ID or name |
 | `node` | tasks | no | Node ID or hostname |
+| `hostname` | nodes | no | Exact hostname (case-insensitive) |
 | `state` | tasks, nodes | yes | Exact state, OR across repeats |
 | `desiredState` | tasks | yes | Exact desired state |
 | `role` | nodes | no | `manager` / `worker` |
 | `membership` | nodes | no | `accepted` / `pending` / `rejected` |
+| `availability` | nodes | no | `active` / `pause` / `drain` |
 
 Unknown query parameters are rejected with `invalid`. A typo'd filter that
 silently widens a query is a correctness bug.

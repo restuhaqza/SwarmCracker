@@ -108,9 +108,14 @@ Node management.
 and `next`. `-o name` emits one node ID per line. Both accept the same filters:
 `role=`, `membership=`, `availability=`, `state=`, `id=`, `hostname=`,
 `label=key` (key present) and `label=key=value`; enum and hostname values are
-case-insensitive, label values are exact. An empty `-o json` result is
-`items: []`, an empty legacy `--format json` result is `[]`, and table mode
-still prints `No nodes found`. `-o` and `--format` must not be combined.
+case-insensitive, label values are exact, and `id=` is exact and
+case-sensitive (it is not a prefix match). An empty `-o json` result is
+`items: []` and an empty legacy `--format json` result is `[]`. On an empty
+cluster, table mode prints `No nodes found`; a filter that matches nothing
+instead prints the column header and `Total: 0 node(s)`. A failure in `-o json`
+mode writes a single `Error` document to stderr and the process exits with that
+error's status code instead of `0`; `-o name` prints the failure as plain text
+and exits the same way. `-o` and `--format` must not be combined.
 
 `node inspect` flags: `--format`, `--pretty`.
 
