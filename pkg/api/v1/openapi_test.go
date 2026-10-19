@@ -125,6 +125,58 @@ func TestOpenAPITaskListFixtures(t *testing.T) {
 	validateAgainst(t, doc, "TaskList", value)
 }
 
+func TestOpenAPINodeListFixtures(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	fixture, err := os.ReadFile(filepath.Join("testdata", "node-list-empty.json"))
+	require.NoError(t, err)
+
+	var empty any
+	require.NoError(t, json.Unmarshal(fixture, &empty))
+	validateAgainst(t, doc, "NodeList", empty)
+
+	full := NewNodeList([]Node{
+		{
+			ID:           "n1manager",
+			Hostname:     "node-1",
+			Revision:     "9",
+			CreatedAt:    "2026-10-18T08:00:00Z",
+			UpdatedAt:    "2026-10-19T10:03:00Z",
+			Role:         "manager",
+			Membership:   "accepted",
+			Availability: "active",
+			State:        "ready",
+			Address:      "192.168.1.11",
+			Labels:       map[string]string{"zone": "a"},
+			Resources:    &NodeResources{CPUs: 8, MemoryBytes: 16 << 30},
+			Manager: &NodeManager{
+				Leader:    true,
+				Reachable: true,
+				Address:   "192.168.1.11:4242",
+				RaftID:    1,
+			},
+			AgentVersion: "29.0.1",
+		},
+		{
+			ID:           "n2worker",
+			Hostname:     "node-2",
+			Revision:     "10",
+			CreatedAt:    "2026-10-18T08:05:00Z",
+			UpdatedAt:    "2026-10-19T10:04:00Z",
+			Role:         "worker",
+			Membership:   "accepted",
+			Availability: "pause",
+			State:        "down",
+			Resources:    &NodeResources{CPUs: 3.5, MemoryBytes: 2 << 30},
+		},
+	})
+	data, err := json.Marshal(full)
+	require.NoError(t, err)
+	var value any
+	require.NoError(t, json.Unmarshal(data, &value))
+	validateAgainst(t, doc, "NodeList", value)
+}
+
 func TestOpenAPIErrorDocument(t *testing.T) {
 	doc := loadOpenAPI(t)
 	value := NewErrorDocument(Error{
