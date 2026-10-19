@@ -101,7 +101,17 @@ Node management.
 | `update <node-id>` | Update a node's placement labels (`--label-add` / `--label-rm`) |
 | `rm <node-id>` | Remove a node |
 
-`node ls` flags: `--filter`, `--format` (`table`, `json`), `--quiet` / `-q`.
+`node ls` flags: `--filter`, `--output` / `-o` (`table`, `json`, `name`), legacy
+`--format` (`table`, `json`), `--quiet` / `-q`.
+
+`-o json` emits the v1 `NodeList` envelope — `schemaVersion`, `kind`, `items`
+and `next`. `-o name` emits one node ID per line. Both accept the same filters:
+`role=`, `membership=`, `availability=`, `state=`, `id=`, `hostname=`,
+`label=key` (key present) and `label=key=value`; enum and hostname values are
+case-insensitive, label values are exact. An empty `-o json` result is
+`items: []`, an empty legacy `--format json` result is `[]`, and table mode
+still prints `No nodes found`. `-o` and `--format` must not be combined.
+
 `node inspect` flags: `--format`, `--pretty`.
 
 `node update` flags: `--label-add KEY=VALUE` and `--label-rm KEY`, both

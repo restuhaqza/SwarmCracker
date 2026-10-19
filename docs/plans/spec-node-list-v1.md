@@ -138,8 +138,8 @@ values are omitted, never `null` except the document's `next`.
 
 ## Success criteria
 
-1. `node ls -o json` on a fake empty list emits exactly
-   `{"schemaVersion":1,"kind":"NodeList","items":[],"next":null}`.
+1. `node ls -o json` on a fake empty list emits an indented JSON document
+   containing exactly `schemaVersion`, `kind`, `items: []` and `next: null`.
 2. A non-empty list validates against `api/openapi.yaml` and includes `id`,
    `hostname`, `revision`, `role`, `membership`, `availability`, `state`,
    `address`, `labels`, `resources` and `manager` when present.

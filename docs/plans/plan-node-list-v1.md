@@ -88,7 +88,7 @@ func NewNodeDocument(node Node) NodeDocument
 3. Add the empty golden fixture.
 4. Extend `api/openapi.yaml` with `NodeList`, `Node`, `NodeResources`,
    `NodeManager` and a `/v1/nodes` GET skeleton. Parameters: `id`, `hostname`,
-   `label`, `role`, `membership`, `state`, `limit`, `cursor`.
+   `label`, `role`, `membership`, `availability`, `state`, `limit`, `cursor`.
 5. Extend `openapi_test.go` to validate the empty and a fully populated
    `NodeList`; assert a worker omits `manager`.
 
