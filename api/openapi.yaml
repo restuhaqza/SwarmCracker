@@ -106,6 +106,9 @@ paths:
         - name: membership
           in: query
           schema: { type: string }
+        - name: availability
+          in: query
+          schema: { type: string }
         - name: state
           in: query
           schema: { type: string }

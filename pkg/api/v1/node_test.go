@@ -116,6 +116,7 @@ func TestNodeManagerIsEmittedWhenPresent(t *testing.T) {
 		Manager:      &NodeManager{Leader: false, Reachable: false},
 	})
 	require.NoError(t, err)
+	doc = nil
 	require.NoError(t, json.Unmarshal(data, &doc))
 
 	got, ok = doc["manager"].(map[string]any)

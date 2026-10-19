@@ -41,8 +41,9 @@ Success means:
    is a usage error.
 8. `-o ndjson` is not supported for `node ls`; it is a usage error.
 9. The new path supports `role=`, `membership=`, `availability=`, `state=`,
-   `id=` and `hostname=` filters. Unknown filter keys are ignored, matching the
-   legacy `filterNodes` behavior. Values are case-insensitive.
+   `id=`, `hostname=` and `label=` filters. Unknown filter keys are ignored,
+   matching the legacy `filterNodes` behavior. Values are case-insensitive,
+   except `label` values, which are exact because labels are case-sensitive.
 10. `--format json` with a filter that matches nothing emits `[]`, not `null`.
     This is a bug fix covered by the empty-list requirement.
 

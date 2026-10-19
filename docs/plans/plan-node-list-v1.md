@@ -164,7 +164,11 @@ func filterV1Nodes(nodes []v1.Node, filter string) []v1.Node
   - call `ListNodes`, filter the DTOs, then emit `v1.NewNodeList` or IDs.
 - `-o ndjson` → `usage`.
 - `filterV1Nodes` supports `role=`, `membership=`, `availability=`, `state=`,
-  `id=`, `hostname=`; values case-insensitive; unknown keys ignored.
+  `id=`, `hostname=` and `label=`; values case-insensitive; unknown keys
+  ignored. `label=` is the exception: it is a selector, not a plain value match:
+  - `label=key` matches when the key is present;
+  - `label=key=value` matches key and value;
+  - label values are exact (case-sensitive, as labels are).
 - Legacy empty branch: `--format json` prints `[]`; table still prints
   `No nodes found`.
 - After legacy filtering, if the result is empty, `--format json` prints `[]`
