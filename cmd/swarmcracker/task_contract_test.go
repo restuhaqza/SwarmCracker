@@ -39,7 +39,9 @@ func TestTaskListContractEmptyIsParseable(t *testing.T) {
 	items, ok := doc["items"].([]any)
 	require.True(t, ok, "items must be a JSON array")
 	assert.Empty(t, items)
-	assert.Nil(t, doc["next"])
+	next, ok := doc["next"]
+	require.True(t, ok, "next must be present")
+	assert.Nil(t, next)
 }
 
 func TestTaskListContractJSONAndFilter(t *testing.T) {
@@ -202,6 +204,16 @@ func TestTaskListModeValidation(t *testing.T) {
 		{
 			name:   "json with legacy format flag",
 			format: "json",
+			setup: func(t *testing.T, cmd *cobra.Command) {
+				require.NoError(t, cmd.Flags().Set("format", "json"))
+			},
+		},
+		// -o table with an explicit --format is a conflict too: it matches
+		// `service ls`, where the two flags are mutually exclusive in every
+		// mode, and it must be rejected before the legacy path dials.
+		{
+			name:   "table with legacy format flag",
+			format: "table",
 			setup: func(t *testing.T, cmd *cobra.Command) {
 				require.NoError(t, cmd.Flags().Set("format", "json"))
 			},

@@ -65,48 +65,52 @@ func newTaskListCommand() *cobra.Command {
 Tasks are the individual units of work that run on nodes. The HEALTH column
 shows the daemon's live healthcheck state, read from the node owning each task;
 a task the owning node has not published health for falls back to the
-health-gated task state, and a node that cannot be reached shows "-".`,
+health-gated task state, and a node that cannot be reached shows "-".
+
+Use -o json or -o name for the v1 envelope; phase 0 omits live health from
+those modes.`,
 		Aliases: []string{"list"},
 		Example: `  swarmcracker task ls
-  swarmcracker task ls --format json
+  swarmcracker task ls -o json
+  swarmcracker task ls -o name
+  swarmcracker task ls --format json          # legacy shape
   swarmcracker task ls --filter "node=123abc..."
   swarmcracker task ls --all`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if outputFormat != "" {
-				switch output.Format(outputFormat) {
-				case output.FormatTable:
-					return listTasks(format, filter, quiet, all, noTrunc, node, serviceID, clusterHealthOptions{Port: healthPort, Disabled: noHealth})
-				case output.FormatJSON, output.FormatName:
-					// The contract path has no live-health lookup: phase 0
-					// emits the local read model only.
-					if cmd.Flags().Changed("format") {
-						return output.NewError(output.CodeUsage, "use either --output or --format, not both")
-					}
-					if quiet {
-						return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
-					}
-					if cmd.Flags().Changed("health-port") {
-						return output.NewError(output.CodeUsage, "--health-port is not supported with -o json or -o name")
-					}
-					return listTasksContract(outputFormat, filter, all, node, serviceID)
-				default:
-					return output.NewErrorf(output.CodeUsage, "unsupported output format %q for task ls", outputFormat)
-				}
+			if outputFormat != "" && cmd.Flags().Changed("format") {
+				return output.NewError(output.CodeUsage, "use either --output or --format, not both")
 			}
-			return listTasks(format, filter, quiet, all, noTrunc, node, serviceID, clusterHealthOptions{Port: healthPort, Disabled: noHealth})
+			if outputFormat == "" || output.Format(outputFormat) == output.FormatTable {
+				return listTasks(format, filter, quiet, all, noTrunc, node, serviceID,
+					clusterHealthOptions{Port: healthPort, Disabled: noHealth})
+			}
+			switch output.Format(outputFormat) {
+			case output.FormatJSON, output.FormatName:
+				// The contract path has no live-health lookup: phase 0 emits
+				// the local read model only.
+				if quiet {
+					return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
+				}
+				if cmd.Flags().Changed("health-port") {
+					return output.NewError(output.CodeUsage, "--health-port is not supported with -o json/name in phase 0")
+				}
+				return listTasksContract(outputFormat, filter, all, node, serviceID)
+			default:
+				return output.NewErrorf(output.CodeUsage, "unsupported output format %q for task ls", outputFormat)
+			}
 		},
 	}
 
-	cmd.Flags().StringVar(&format, "format", "table", "Output format (table, json)")
+	cmd.Flags().StringVar(&format, "format", "table", "Legacy output format (table, json)")
 	cmd.Flags().StringVar(&filter, "filter", "", "Filter output (e.g., 'node=xxx', 'state=running')")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only display IDs")
 	cmd.Flags().BoolVar(&all, "all", false, "Show all tasks (including stopped)")
 	cmd.Flags().BoolVar(&noTrunc, "no-trunc", false, "Don't truncate output")
 	cmd.Flags().StringVar(&node, "node", "", "Filter by node ID")
-	cmd.Flags().StringVar(&serviceID, "service", "", "Filter by service ID")
+	cmd.Flags().StringVar(&serviceID, "service", "", "Filter by service ID (or name with -o json/name)")
 	cmd.Flags().IntVar(&healthPort, "health-port", defaultHealthPort, "Port of each node's health server, used to fetch live health")
 	cmd.Flags().BoolVar(&noHealth, "no-health", false, "Skip the live-health lookup; derive HEALTH from the task state only")
 

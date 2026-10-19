@@ -477,7 +477,15 @@ Task management.
 | `ls` | List tasks |
 | `inspect <task-id>` | Inspect a task |
 
-`task ls` flags: `--all`, `--filter`, `--format`, `--no-trunc`, `--node`, `--service`, `--quiet` / `-q`, `--health-port`, `--no-health`.
+`task ls` flags: `-o` / `--output`, `--all`, `--filter`, `--format`, `--no-trunc`, `--node`, `--service`, `--quiet` / `-q`, `--health-port`, `--no-health`.
+
+`-o` selects the output mode, and `--service` accepts a service ID or, in the
+new modes, a service name. `-o json` emits the v1 `TaskList` envelope
+(`schemaVersion`, `kind`, `items`, `next`), and `-o name` emits one task ID per
+line. Phase 0 omits `health` from the v1 envelope; the legacy table and
+`--format json` keep their existing health fields. Empty results are valid JSON
+(`items: []` with `-o json`, `[]` with `--format json`), never prose. `-o` and
+`--format` are mutually exclusive.
 
 `task ls` prints the same `HEALTH` column as `service ps` — live when the owning
 node's health server is reachable, derived otherwise, also emitted as `health`
