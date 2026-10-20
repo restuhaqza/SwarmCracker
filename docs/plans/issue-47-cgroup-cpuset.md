@@ -126,7 +126,7 @@ func ResolveCgroupLimits(task *Task) (CgroupLimits, error) // validates the anno
 - Tests must be **non-root and CI-safe**: a real `/sys/fs/cgroup` assertion only behind the
   existing `isCgroupV2Available()` skip; everything else against `t.TempDir()` (the pattern in
   `pkg/jailer/cgroup_test.go:23-28`). Table-driven + testify.
-- Tests run on the Linux test server (`root@192.168.18.25`, checkout `/root/sc-verify`); the
+- Tests run on the Linux test server (`root@test-server`, checkout `/root/sc-verify`); the
   workstation is darwin (`cmd/...` does not build here). A command-level test that loads
   configuration must pass it explicitly (temp `--config`) — never rely on
   `/etc/swarmcracker/config.yaml`.

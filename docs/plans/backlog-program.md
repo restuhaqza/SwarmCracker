@@ -50,7 +50,7 @@ before merge.
 
 ## Standing constraints (apply to every slice)
 
-- Tests run on the Linux test server (`root@192.168.18.25`), never on the darwin
+- Tests run on the Linux test server (`root@test-server`), never on the darwin
   workstation; only `gofmt`/static checks are local.
 - No flag may be accepted and silently ignored: it either works or fails with a clear
   error (typed where the CLI must branch).

@@ -114,14 +114,14 @@ func TestBridgeCommandStructure(t *testing.T) {
 func TestParseVXLANPeers(t *testing.T) {
 	out := `5: vxlan0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1450 qdisc noqueue state UNKNOWN mode DEFAULT group default
     link/ether 1e:2c:3a:4b:5c:6d brd ff:ff:ff:ff:ff:ff promiscuity 0
-    vxlan id 42 local 192.168.18.25 remote 192.168.18.26 dev eth0 port 4789
+    vxlan id 42 local 192.0.2.10 remote 192.0.2.11 dev eth0 port 4789
 `
 	peers := parseVXLANPeers(out)
 	if len(peers) != 1 {
 		t.Fatalf("expected 1 peer, got %d", len(peers))
 	}
 	p := peers[0]
-	if p.Interface != "vxlan0" || p.VNI != "42" || p.Local != "192.168.18.25" || p.Remote != "192.168.18.26" {
+	if p.Interface != "vxlan0" || p.VNI != "42" || p.Local != "192.0.2.10" || p.Remote != "192.0.2.11" {
 		t.Errorf("unexpected peer: %+v", p)
 	}
 	if got := parseVXLANPeers(""); len(got) != 0 {

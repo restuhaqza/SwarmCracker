@@ -94,7 +94,7 @@ because the API needs an exact integer and the unit must not be ambiguous).
 - A flag/field that is not honoured must fail loudly. Absent config must not change any
   request bytes.
 - Tests: table-driven + testify, host- and privilege-independent.
-- Tests run on the Linux test server (`root@192.168.18.25`, checkout `/root/sc-verify`);
+- Tests run on the Linux test server (`root@test-server`, checkout `/root/sc-verify`);
   this workstation is darwin and `cmd/...` does not build here.
 - `pkg/...` coverage stays ≥ 85%; a touched package must not drop by more than 0.1pp.
 - Docs live in `docs-site/src/content/docs/`.

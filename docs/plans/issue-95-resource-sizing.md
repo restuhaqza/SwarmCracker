@@ -61,7 +61,7 @@ func resolveSize(res *types.ResourceRequirements) (vcpus int, memoryMB int)
 - Tests: table-driven + testify, host- and privilege-independent. **A command-level test
   that loads configuration must supply it explicitly** (`--config` with a temp file), never
   rely on the ambient `/etc/swarmcracker/config.yaml` — this bit slice 3 in CI.
-- Tests run on the Linux test server (`root@192.168.18.25`, checkout `/root/sc-verify`);
+- Tests run on the Linux test server (`root@test-server`, checkout `/root/sc-verify`);
   this workstation is darwin and `cmd/...` does not build here.
 - Pre-existing root-only failures exist in `pkg/image`, `pkg/swarmkit`, `pkg/network`;
   verify with `/root/sc-cmp.sh <base-sha> <pkgs...>` and require an **empty head-only** set.

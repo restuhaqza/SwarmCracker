@@ -113,10 +113,10 @@ payload, so `buildServiceSpec` stays pure; `createService` does the I/O.
   fails with a clear error **before** the mutating RPC (`service update` may
   first read the service to decide whether it is golden).
 - Docs live in `docs-site/src/content/docs/`.
-- Tests run on the Linux test server (`root@192.168.18.25`, checkout
+- Tests run on the Linux test server (`root@test-server`, checkout
   `/root/sc-verify`); this workstation is darwin and `cmd/...` does not build here.
   Canonical check:
-  `ssh root@192.168.18.25 'set -e; cd /root/sc-verify && git fetch -q origin && git checkout -q <branch> && git reset -q --hard origin/<branch> && gofmt -l pkg cmd; go vet ./...; go test -count=1 <pkgs>'`
+  `ssh root@test-server 'set -e; cd /root/sc-verify && git fetch -q origin && git checkout -q <branch> && git reset -q --hard origin/<branch> && gofmt -l pkg cmd; go vet ./...; go test -count=1 <pkgs>'`
 
 ## Task T1 — credential resolution and encoding (`pkg/image`)
 
@@ -149,7 +149,7 @@ Steps:
 6. Do not add logging of credential material anywhere.
 
 Verification:
-`ssh root@192.168.18.25 '... go test -count=1 ./pkg/image/...'` and locally
+`ssh root@test-server '... go test -count=1 ./pkg/image/...'` and locally
 `gofmt -l pkg`. Tests must cover: round-trip encode→decode preserves
 username/password; a temp `DOCKER_CONFIG` `config.json` with an `auths` entry is
 read (proves the standard Docker config path); no credentials for a registry →
