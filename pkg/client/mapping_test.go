@@ -11,10 +11,15 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 type fakeControl struct {
 	services       []*api.Service
+	service        *api.Service
+	serviceErr     error
+	getServiceCall int
 	tasks          []*api.Task
 	taskErr        error
 	listTasksCalls int
@@ -25,6 +30,22 @@ type fakeControl struct {
 
 func (f *fakeControl) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
 	return &api.ListServicesResponse{Services: f.services}, nil
+}
+
+func (f *fakeControl) GetService(_ context.Context, req *api.GetServiceRequest, _ ...grpc.CallOption) (*api.GetServiceResponse, error) {
+	f.getServiceCall++
+	if f.serviceErr != nil {
+		return nil, f.serviceErr
+	}
+	if f.service != nil {
+		return &api.GetServiceResponse{Service: f.service}, nil
+	}
+	for _, svc := range f.services {
+		if svc.ID == req.ServiceID {
+			return &api.GetServiceResponse{Service: svc}, nil
+		}
+	}
+	return &api.GetServiceResponse{}, nil
 }
 
 func (f *fakeControl) ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error) {
@@ -102,6 +123,38 @@ func TestListServicesEmptySkipsTaskCall(t *testing.T) {
 	assert.Empty(t, items)
 	assert.NotNil(t, items, "empty list must not be nil")
 	assert.Zero(t, control.listTasksCalls)
+}
+
+func TestGetServiceMapsStatus(t *testing.T) {
+	control := &fakeControl{
+		service: testService(),
+		tasks: []*api.Task{
+			{ServiceID: "svc-1", Status: api.TaskStatus{State: api.TaskStateRunning}},
+			{ServiceID: "svc-1", Status: api.TaskStatus{State: api.TaskStateStarting}},
+		},
+	}
+
+	got, err := (&Client{control: control}).GetService(context.Background(), "svc-1")
+	require.NoError(t, err)
+	assert.Equal(t, "web", got.Name)
+	assert.Equal(t, "replicated", got.Spec.Mode)
+	assert.Equal(t, 3, got.Status.DesiredTasks)
+	assert.Equal(t, 1, got.Status.RunningTasks)
+	assert.Equal(t, 1, got.Status.TasksInTransition)
+	assert.False(t, got.Status.Converged)
+	assert.Equal(t, 1, control.getServiceCall)
+}
+
+func TestGetServiceNoServiceIsNotFound(t *testing.T) {
+	_, err := (&Client{control: &fakeControl{}}).GetService(context.Background(), "missing")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetServiceTaskFailureIsReturned(t *testing.T) {
+	control := &fakeControl{service: testService(), taskErr: assert.AnError}
+	_, err := (&Client{control: control}).GetService(context.Background(), "svc-1")
+	require.ErrorIs(t, err, assert.AnError)
 }
 
 func TestListServicesTaskFailureIsReturned(t *testing.T) {

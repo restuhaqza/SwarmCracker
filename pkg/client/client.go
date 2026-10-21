@@ -18,7 +18,9 @@ import (
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/apiversion"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 )
 
 // Config controls how the client reaches a manager.
@@ -74,6 +76,7 @@ func (c Config) withDefaults() Config {
 // Keeping it narrow makes the client testable with a small fake.
 type controlClient interface {
 	ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error)
+	GetService(context.Context, *api.GetServiceRequest, ...grpc.CallOption) (*api.GetServiceResponse, error)
 	ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error)
 	ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error)
 }
@@ -164,6 +167,26 @@ func (c *Client) ListServices(ctx context.Context) ([]v1.Service, error) {
 		items = append(items, serviceFromSwarmkit(svc, counts[svc.ID]))
 	}
 	return items, nil
+}
+
+// GetService returns one service with its observed task counts.
+func (c *Client) GetService(ctx context.Context, id string) (v1.Service, error) {
+	resp, err := c.control.GetService(ctx, &api.GetServiceRequest{ServiceID: id})
+	if err != nil {
+		return v1.Service{}, err
+	}
+	if resp == nil || resp.Service == nil {
+		return v1.Service{}, status.Error(codes.NotFound, "service not found")
+	}
+
+	tasks, err := c.control.ListTasks(ctx, &api.ListTasksRequest{
+		Filters: &api.ListTasksRequest_Filters{ServiceIDs: []string{id}},
+	})
+	if err != nil {
+		return v1.Service{}, err
+	}
+
+	return serviceFromSwarmkit(resp.Service, countTasks(tasks.Tasks)[id]), nil
 }
 
 // ListNodes returns the cluster nodes, ordered by creation time then ID.

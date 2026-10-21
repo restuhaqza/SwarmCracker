@@ -103,12 +103,22 @@ func newServiceInspectCommand() *cobra.Command {
 		Short: "Inspect a service",
 		Long:  `Display detailed information about a service.`,
 		Example: `  swarmcracker service inspect my-service
+  swarmcracker service inspect -o json my-service
   swarmcracker service inspect --format json my-service`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat != "" {
+				if cmd.Flags().Changed("format") {
+					return output.NewError(output.CodeUsage, "use either --output or --format, not both")
+				}
+				if output.Format(outputFormat) != output.FormatJSON {
+					return output.NewErrorf(output.CodeUsage, "unsupported output format %q for service inspect", outputFormat)
+				}
+				return inspectServiceContract(args[0])
+			}
 			return inspectService(args[0], format, pretty)
 		},
 	}
@@ -1158,6 +1168,81 @@ func inspectServiceWithClient(ctx context.Context, client api.ControlClient, w i
 
 	writeServiceText(w, resp.Service)
 	return nil
+}
+
+// serviceInspector is the narrow client surface the v1 inspect path needs.
+type serviceInspector interface {
+	ListServices(context.Context) ([]v1.Service, error)
+	GetService(context.Context, string) (v1.Service, error)
+}
+
+// inspectServiceContract is the `-o json` path. It emits the v1 ServiceDocument
+// instead of the legacy raw SwarmKit object.
+func inspectServiceContract(ref string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := client.New(client.DefaultConfig())
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	defer c.Close()
+
+	return inspectServiceContractWithClient(ctx, c, os.Stdout, ref)
+}
+
+func inspectServiceContractWithClient(ctx context.Context, inspector serviceInspector, w io.Writer, ref string) error {
+	services, err := inspector.ListServices(ctx)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+
+	id, err := resolveV1ServiceRef(ref, services)
+	if err != nil {
+		return err
+	}
+
+	svc, err := inspector.GetService(ctx, id)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+
+	return output.WriteJSON(w, v1.NewServiceDocument(svc))
+}
+
+// resolveV1ServiceRef matches an exact ID, then an exact name, then a unique
+// ID prefix. The order keeps a name that also looks like an ID prefix stable.
+func resolveV1ServiceRef(ref string, services []v1.Service) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", output.NewError(output.CodeUsage, "service reference is required")
+	}
+
+	for _, svc := range services {
+		if svc.ID == ref {
+			return svc.ID, nil
+		}
+	}
+	for _, svc := range services {
+		if svc.Name == ref {
+			return svc.ID, nil
+		}
+	}
+
+	var matches []string
+	for _, svc := range services {
+		if strings.HasPrefix(svc.ID, ref) {
+			matches = append(matches, svc.ID)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", output.NewErrorf(output.CodeNotFound, "service not found: %s", ref)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", output.NewErrorf(output.CodeAmbiguous, "service %q is ambiguous: matches %s", ref, strings.Join(matches, ", "))
+	}
 }
 
 // writeServiceText renders the human-readable `service inspect` output.

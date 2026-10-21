@@ -387,6 +387,13 @@ healthy empty cluster, both JSON paths emit valid JSON (`items: []` or `[]`)
 instead of prose, and a failure in `-o json` mode writes a single `Error`
 document to stderr.
 
+`service inspect` also accepts the global `-o json` flag. It emits the v1
+`ServiceDocument` envelope (`schemaVersion`, `kind`, identity, spec and observed
+status) and resolves a full service ID, an exact name, or a unique ID prefix.
+`--format json` remains the legacy raw SwarmKit object with credential
+redaction; `-o name` and `-o table` are not defined for `service inspect`.
+Not-found and ambiguous references exit with status 3.
+
 `service ps` (and `task ls`) print a `HEALTH` column. It is the **live**
 healthcheck state fetched from the node owning each task (`starting`, `healthy`,
 `failing`, `unhealthy`) when that node's health server is reachable; a node that
