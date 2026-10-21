@@ -108,18 +108,19 @@ func New(cfg Config) (*Client, error) {
 	// The control socket has no DNS name to verify; the CA and client
 	// certificate still authenticate both ends. This exception is local to the
 	// Unix-socket transport and must never be used for TCP.
-	tlsConfig := &tls.Config{ //nolint:gosec // Unix socket has no hostname
-		Certificates:       []tls.Certificate{cert},
-		RootCAs:            pool,
-		MinVersion:         tls.VersionTLS12,
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		RootCAs:      pool,
+		MinVersion:   tls.VersionTLS12,
+		//nolint:gosec // G402: Unix socket has no hostname to verify.
 		InsecureSkipVerify: true,
 	}
 
 	opts := []grpc.DialOption{
 		apiversion.WithVersion(),
 		grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
-		grpc.WithContextDialer(func(_ context.Context, _ string) (net.Conn, error) {
-			return net.Dial("unix", cfg.SocketPath)
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", cfg.SocketPath)
 		}),
 	}
 

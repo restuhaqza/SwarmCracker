@@ -53,6 +53,7 @@ func serviceFromSwarmkit(svc *api.Service, counts taskCounts) v1.Service {
 		Task: taskSpec(container, &svc.Spec.Task),
 	}
 	if replicated := svc.Spec.GetReplicated(); replicated != nil {
+		//nolint:gosec // G115: SwarmKit replica counts are bounded by the API.
 		replicas := int64(replicated.Replicas)
 		spec.Replicas = &replicas
 	}

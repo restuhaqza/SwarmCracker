@@ -134,6 +134,92 @@ func TestServiceFromSwarmkitGlobalMode(t *testing.T) {
 	assert.True(t, got.Status.Converged)
 }
 
+func TestModeStringVariants(t *testing.T) {
+	cases := []struct {
+		name string
+		spec api.ServiceSpec
+		want string
+	}{
+		{"replicated", api.ServiceSpec{Mode: &api.ServiceSpec_Replicated{Replicated: &api.ReplicatedService{}}}, "replicated"},
+		{"global", api.ServiceSpec{Mode: &api.ServiceSpec_Global{Global: &api.GlobalService{}}}, "global"},
+		{"replicated-job", api.ServiceSpec{Mode: &api.ServiceSpec_ReplicatedJob{ReplicatedJob: &api.ReplicatedJob{}}}, "replicated-job"},
+		{"global-job", api.ServiceSpec{Mode: &api.ServiceSpec_GlobalJob{GlobalJob: &api.GlobalJob{}}}, "global-job"},
+		{"unknown", api.ServiceSpec{}, "unknown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, modeString(tc.spec))
+		})
+	}
+}
+
+func TestMountsAndMountTypeStrings(t *testing.T) {
+	assert.Nil(t, mounts(nil))
+
+	got := mounts([]api.Mount{
+		{Type: api.MountTypeBind, Source: "/host", Target: "/container", ReadOnly: true},
+		{Type: api.MountTypeVolume, Source: "data", Target: "/data"},
+		{Type: api.MountTypeTmpfs, Target: "/tmp"},
+		{Type: api.MountTypeNamedPipe, Target: `\\.\pipe\test`},
+		{Type: api.MountTypeCluster, Source: "cluster-vol", Target: "/cluster"},
+	})
+	require.Len(t, got, 5)
+	assert.Equal(t, v1.Mount{Type: "bind", Source: "/host", Target: "/container", ReadOnly: true}, got[0])
+	assert.Equal(t, "volume", got[1].Type)
+	assert.Equal(t, "tmpfs", got[2].Type)
+	assert.Equal(t, "npipe", got[3].Type)
+	assert.Equal(t, "cluster", got[4].Type)
+
+	assert.Equal(t, "bind", mountTypeString(api.MountTypeBind))
+	assert.Equal(t, "volume", mountTypeString(api.MountTypeVolume))
+	assert.Equal(t, "tmpfs", mountTypeString(api.MountTypeTmpfs))
+	assert.Equal(t, "npipe", mountTypeString(api.MountTypeNamedPipe))
+	assert.Equal(t, "cluster", mountTypeString(api.MountTypeCluster))
+	assert.Equal(t, "", mountTypeString(api.Mount_MountType(99)))
+}
+
+func TestPortsEndpointAndNetworksEdgeCases(t *testing.T) {
+	assert.Nil(t, ports(nil))
+	assert.Nil(t, ports(&api.EndpointSpec{}))
+	assert.Nil(t, endpoint(nil))
+	assert.Nil(t, endpoint(&api.Endpoint{}))
+	assert.Nil(t, endpoint(&api.Endpoint{Ports: []*api.PortConfig{nil}}))
+	assert.Nil(t, networks(nil))
+
+	portList := ports(&api.EndpointSpec{Ports: []*api.PortConfig{
+		nil,
+		{TargetPort: 53, PublishedPort: 5353, Protocol: api.ProtocolUDP, PublishMode: api.PublishModeHost},
+		{TargetPort: 99, Protocol: api.ProtocolSCTP},
+	}})
+	require.Len(t, portList, 2)
+	assert.Equal(t, "udp", portList[0].Protocol)
+	assert.Equal(t, "host", portList[0].Mode)
+	assert.Equal(t, "sctp", portList[1].Protocol)
+
+	ep := endpoint(&api.Endpoint{Ports: []*api.PortConfig{nil, {TargetPort: 80, PublishedPort: 8080}}})
+	require.NotNil(t, ep)
+	require.Len(t, ep.Ports, 1)
+	assert.Equal(t, uint32(80), ep.Ports[0].Target)
+
+	nets := networks([]*api.NetworkAttachmentConfig{
+		nil,
+		{Target: "net-1", Aliases: []string{"web"}},
+	})
+	require.Len(t, nets, 1)
+	assert.Equal(t, "net-1", nets[0].ID)
+	assert.Equal(t, []string{"web"}, nets[0].Aliases)
+}
+
+func TestHealthcheckEnvAndCopyMapEdgeCases(t *testing.T) {
+	assert.Nil(t, healthcheck(nil))
+	assert.Nil(t, healthcheck(&api.HealthConfig{}))
+	assert.Nil(t, envMap(nil))
+	assert.Nil(t, envMap([]string{"MALFORMED", "=value"}))
+	assert.Equal(t, map[string]string{"A": "1"}, envMap([]string{"A=1"}))
+	assert.Nil(t, copyMap(nil))
+	assert.Equal(t, map[string]string{"k": "v"}, copyMap(map[string]string{"k": "v"}))
+}
+
 func testService() *api.Service {
 	return &api.Service{
 		ID: "svc-1",
