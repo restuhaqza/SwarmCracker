@@ -211,7 +211,20 @@ func (c *Client) ListNodes(ctx context.Context) ([]v1.Node, error) {
 // list: the contract includes nodeName and a caller that cannot read nodes
 // cannot produce the document. An empty task list never calls ListNodes.
 func (c *Client) ListTasks(ctx context.Context) ([]v1.Task, error) {
-	resp, err := c.control.ListTasks(ctx, &api.ListTasksRequest{})
+	return c.listTasks(ctx, &api.ListTasksRequest{})
+}
+
+// ListServiceTasks returns one service's tasks, ordered by creation time then
+// ID. The manager filters the task list; the node lookup is shared with
+// ListTasks so nodeName stays populated.
+func (c *Client) ListServiceTasks(ctx context.Context, serviceID string) ([]v1.Task, error) {
+	return c.listTasks(ctx, &api.ListTasksRequest{
+		Filters: &api.ListTasksRequest_Filters{ServiceIDs: []string{serviceID}},
+	})
+}
+
+func (c *Client) listTasks(ctx context.Context, req *api.ListTasksRequest) ([]v1.Task, error) {
+	resp, err := c.control.ListTasks(ctx, req)
 	if err != nil {
 		return nil, err
 	}

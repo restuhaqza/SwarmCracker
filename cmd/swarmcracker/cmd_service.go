@@ -150,6 +150,7 @@ from the node that owns it. A task the owning node has not published health for
 falls back to the health-gated task state; a node that cannot be reached shows
 "-".`,
 		Example: `  swarmcracker service ps my-service
+  swarmcracker service ps -o json my-service
   swarmcracker service ps --format json my-service
   swarmcracker service ps --no-health my-service`,
 		Args: cobra.ExactArgs(1),
@@ -157,6 +158,29 @@ falls back to the health-gated task state; a node that cannot be reached shows
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat != "" {
+				if cmd.Flags().Changed("format") {
+					return output.NewError(output.CodeUsage, "use either --output or --format, not both")
+				}
+				if output.Format(outputFormat) == output.FormatTable {
+					return listServiceTasks(args[0], format, filter, quiet, noTrunc, clusterHealthOptions{Port: healthPort, Disabled: noHealth})
+				}
+				switch output.Format(outputFormat) {
+				case output.FormatJSON, output.FormatName:
+					if quiet {
+						if output.Format(outputFormat) == output.FormatName {
+							return output.NewError(output.CodeUsage, "do not combine -o name with --quiet")
+						}
+						return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
+					}
+					if cmd.Flags().Changed("health-port") {
+						return output.NewError(output.CodeUsage, "--health-port is not supported with -o json/name in phase 0")
+					}
+					return listServiceTasksContract(args[0], outputFormat, filter)
+				default:
+					return output.NewErrorf(output.CodeUsage, "unsupported output format %q for service ps", outputFormat)
+				}
+			}
 			return listServiceTasks(args[0], format, filter, quiet, noTrunc, clusterHealthOptions{Port: healthPort, Disabled: noHealth})
 		},
 	}
@@ -1460,6 +1484,56 @@ func listServiceTasksWithClient(ctx context.Context, client api.ControlClient, w
 	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
 
 	return nil
+}
+
+// serviceTaskLister is the narrow client surface the v1 service-ps path needs.
+type serviceTaskLister interface {
+	ListServices(context.Context) ([]v1.Service, error)
+	ListServiceTasks(context.Context, string) ([]v1.Task, error)
+}
+
+// listServiceTasksContract is the `-o json` / `-o name` path. It reuses the
+// TaskList envelope: service ps is the task list scoped to one service.
+func listServiceTasksContract(ref, format, filter string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := client.New(client.DefaultConfig())
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	defer c.Close()
+
+	return listServiceTasksContractWithClient(ctx, c, os.Stdout, ref, format, filter)
+}
+
+func listServiceTasksContractWithClient(ctx context.Context, l serviceTaskLister, w io.Writer, ref, format, filter string) error {
+	services, err := l.ListServices(ctx)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	id, err := resolveV1ServiceRef(ref, services)
+	if err != nil {
+		return err
+	}
+
+	tasks, err := l.ListServiceTasks(ctx, id)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	tasks = filterV1Tasks(tasks, filter, "", "", false)
+
+	switch output.Format(format) {
+	case output.FormatJSON:
+		return output.WriteJSON(w, v1.NewTaskList(tasks))
+	case output.FormatName:
+		for _, task := range tasks {
+			fmt.Fprintln(w, task.ID)
+		}
+		return nil
+	default:
+		return output.NewErrorf(output.CodeUsage, "unsupported output format %q for service ps", format)
+	}
 }
 
 func createService(opts serviceCreateOptions) error {

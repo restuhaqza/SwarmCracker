@@ -394,6 +394,12 @@ status) and resolves a full service ID, an exact name, or a unique ID prefix.
 redaction; `-o name` and `-o table` are not defined for `service inspect`.
 Not-found and ambiguous references exit with status 3.
 
+`service ps` also accepts the global `-o json` / `-o name` flags. It emits the
+v1 `TaskList` envelope scoped to the resolved service (or one task ID per line
+for `-o name`); phase 0 omits live health from those modes, so `--health-port`
+is rejected and `--quiet` is replaced by `-o name`. `--format json` keeps the
+legacy task array, including its health and error fields.
+
 `service ps` (and `task ls`) print a `HEALTH` column. It is the **live**
 healthcheck state fetched from the node owning each task (`starting`, `healthy`,
 `failing`, `unhealthy`) when that node's health server is reachable; a node that

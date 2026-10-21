@@ -23,6 +23,7 @@ type fakeControl struct {
 	tasks          []*api.Task
 	taskErr        error
 	listTasksCalls int
+	lastTaskReq    *api.ListTasksRequest
 	nodes          []*api.Node
 	nodeErr        error
 	listNodesCalls int
@@ -48,8 +49,9 @@ func (f *fakeControl) GetService(_ context.Context, req *api.GetServiceRequest, 
 	return &api.GetServiceResponse{}, nil
 }
 
-func (f *fakeControl) ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error) {
+func (f *fakeControl) ListTasks(_ context.Context, req *api.ListTasksRequest, _ ...grpc.CallOption) (*api.ListTasksResponse, error) {
 	f.listTasksCalls++
+	f.lastTaskReq = req
 	if f.taskErr != nil {
 		return nil, f.taskErr
 	}
