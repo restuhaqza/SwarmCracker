@@ -99,6 +99,10 @@ func TestOpenAPIServiceDocumentFixture(t *testing.T) {
 	require.Len(t, path.Get.Parameters, 1)
 	require.Equal(t, "id", path.Get.Parameters[0].Value.Name)
 	require.True(t, path.Get.Parameters[0].Value.Required)
+
+	tasksPath := doc.Paths.Find("/v1/services/{id}/tasks")
+	require.NotNil(t, tasksPath, "service-tasks path missing")
+	require.NotNil(t, tasksPath.Get)
 }
 
 func TestOpenAPITaskListFixtures(t *testing.T) {

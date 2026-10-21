@@ -140,6 +140,34 @@ func TestListTasksSortsByCreatedAtThenID(t *testing.T) {
 	assert.Equal(t, []string{"task-a", "task-b", "task-c"}, ids)
 }
 
+func TestListServiceTasksFiltersRequest(t *testing.T) {
+	control := &fakeControl{tasks: []*api.Task{{
+		ID:        "task-1",
+		ServiceID: "svc-1",
+		Status:    api.TaskStatus{State: api.TaskStateRunning},
+	}}}
+
+	got, err := (&Client{control: control}).ListServiceTasks(context.Background(), "svc-1")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "svc-1", got[0].ServiceID)
+	require.NotNil(t, control.lastTaskReq)
+	require.NotNil(t, control.lastTaskReq.Filters)
+	assert.Equal(t, []string{"svc-1"}, control.lastTaskReq.Filters.ServiceIDs)
+}
+
+func TestListServiceTasksEmptySkipsNodeCall(t *testing.T) {
+	control := &fakeControl{}
+
+	got, err := (&Client{control: control}).ListServiceTasks(context.Background(), "svc-1")
+	require.NoError(t, err)
+	assert.Empty(t, got)
+	assert.NotNil(t, got)
+	assert.Zero(t, control.listNodesCalls)
+	require.NotNil(t, control.lastTaskReq)
+	assert.Equal(t, []string{"svc-1"}, control.lastTaskReq.Filters.ServiceIDs)
+}
+
 func TestListTasksEmptySkipsNodeCall(t *testing.T) {
 	control := &fakeControl{}
 

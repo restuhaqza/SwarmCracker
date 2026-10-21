@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the v1 `ServiceDocument` envelope and resolves full IDs, exact names, and
   unique ID prefixes. Legacy `--format json` keeps the raw SwarmKit object and
   its credential redaction.
+- **Service ps v1 output** — `swarmcracker service ps -o json` emits the v1
+  `TaskList` envelope scoped to one service, and `-o name` emits task IDs.
+  Phase 0 omits live health from these modes; `--format json` keeps the legacy
+  task array.
 
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global
