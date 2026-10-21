@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **API contract foundation** — `pkg/api/v1` wire types, `pkg/output` envelope/
+  error/exit-code writer, `pkg/client` as the single SwarmKit dialing and
+  mapping layer, and `swarmcracker service ls -o json|name` with the v1
+  `ServiceList` envelope. Legacy `--format json` still works, but now emits
+  `[]` instead of prose on an empty cluster.
+- `api/openapi.yaml` with a schema test that validates the service fixtures.
+- **Task list v1 output** — `swarmcracker task ls -o json` emits the v1
+  `TaskList` envelope (including service/node names, state, image, addresses,
+  ports and exit code) and `-o name` emits IDs; legacy `--format json` still
+  works, but empty results now emit `[]` instead of prose. Phase 0 omits live
+  health from the v1 envelope. Invalid combinations are rejected as usage
+  errors: `-o table --format`, `-o ndjson`, `-o json|name --quiet`, and
+  `--health-port` in the new modes.
+- **Node list v1 output** — `swarmcracker node ls -o json` emits the v1
+  `NodeList` envelope (hostname, role, membership, availability, state, address,
+  labels, resources, manager status and agent version) and `-o name` emits IDs;
+  legacy `--format json` keeps its array shape, but empty and filtered-empty
+  results now emit `[]` instead of prose or `null`.
+
+### Changed
+- `volume export -o` is now `volume export -O` / `--output-file`; the global
+  `-o` / `--output` flag is reserved for machine output formats.
+
 ---
 
 ## [0.11.0] - 2026-10-19

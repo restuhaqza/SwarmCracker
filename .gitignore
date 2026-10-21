@@ -160,3 +160,6 @@ website/.wrangler/
 # Wrangler / Cloudflare local caches (may contain account metadata)
 .wrangler/
 .cloudflare/
+
+# Spec-driven development workspace (local, not committed)
+.sdd/

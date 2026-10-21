@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
 )
 
@@ -35,7 +36,7 @@ func cliExitCode(err error) int {
 	if errors.As(err, &ec) && ec.code > 0 {
 		return ec.code
 	}
-	return 1
+	return output.ExitCode(err)
 }
 
 // vmExecOptions are the inputs to execInVM. They are kept separate from the

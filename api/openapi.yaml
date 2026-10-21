@@ -1,0 +1,452 @@
+openapi: 3.1.0
+info:
+  title: SwarmCracker API
+  version: "1"
+  description: >
+    Stable machine contract for SwarmCracker. This file is the normative
+    description of the public resource documents. It currently covers the
+    phase-0 core read model: services, the shared error document and the
+    envelope.
+servers:
+  - url: https://mgr:4244
+    description: Manager public API (phase 1; TLS + bearer token)
+paths:
+  /v1/services:
+    get:
+      operationId: listServices
+      summary: List services
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: label
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of services
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ServiceList" }
+        "207":
+          description: A page where some nodes could not answer; inspect `partial`
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ServiceList" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks:
+    get:
+      operationId: listTasks
+      summary: List tasks
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: name
+          in: query
+          schema: { type: string }
+        - name: id
+          in: query
+          schema: { type: string }
+        - name: service
+          in: query
+          schema: { type: string }
+        - name: node
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string }
+        - name: desiredState
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of tasks
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/TaskList" }
+        "207":
+          description: A page where some nodes could not answer; inspect `partial`
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/TaskList" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/nodes:
+    get:
+      operationId: listNodes
+      summary: List nodes
+      parameters:
+        - name: id
+          in: query
+          schema: { type: string }
+        - name: hostname
+          in: query
+          schema: { type: string }
+        - name: label
+          in: query
+          schema: { type: string }
+        - name: role
+          in: query
+          schema: { type: string }
+        - name: membership
+          in: query
+          schema: { type: string }
+        - name: availability
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of nodes
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/NodeList" }
+        "207":
+          description: A page where some nodes could not answer; inspect `partial`
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/NodeList" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+components:
+  schemas:
+    ServiceList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [ServiceList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Service" }
+        next:
+          type: string
+          nullable: true
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/Warning" }
+        partial:
+          type: array
+          items: { $ref: "#/components/schemas/Partial" }
+
+    Service:
+      type: object
+      required: [id, name, revision, spec, status]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        revision: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        spec: { $ref: "#/components/schemas/ServiceSpec" }
+        status: { $ref: "#/components/schemas/ServiceStatus" }
+
+    ServiceSpec:
+      type: object
+      required: [mode, task]
+      properties:
+        mode: { type: string, enum: [replicated, global, replicated-job, global-job, unknown] }
+        replicas:
+          type: integer
+          format: int64
+          nullable: true
+        task: { $ref: "#/components/schemas/TaskSpec" }
+        update: { $ref: "#/components/schemas/UpdateConfig" }
+        rollback: { $ref: "#/components/schemas/UpdateConfig" }
+        placement: { $ref: "#/components/schemas/Placement" }
+
+    TaskSpec:
+      type: object
+      required: [image]
+      properties:
+        image: { type: string }
+        command: { type: array, items: { type: string } }
+        args: { type: array, items: { type: string } }
+        env:
+          type: object
+          additionalProperties: { type: string }
+        user: { type: string }
+        workdir: { type: string }
+        vcpus: { type: integer, format: int64 }
+        memoryBytes: { type: integer, format: int64 }
+        ports:
+          type: array
+          items: { $ref: "#/components/schemas/Port" }
+        mounts:
+          type: array
+          items: { $ref: "#/components/schemas/Mount" }
+        networks:
+          type: array
+          items: { $ref: "#/components/schemas/NetworkAttachment" }
+        restartPolicy: { $ref: "#/components/schemas/RestartPolicy" }
+        healthcheck: { $ref: "#/components/schemas/Healthcheck" }
+        stopSignal: { type: string }
+        stopGraceMs: { type: integer, format: int64 }
+        readOnlyRootfs: { type: boolean }
+
+    Port:
+      type: object
+      required: [target]
+      properties:
+        target: { type: integer, minimum: 0, maximum: 65535 }
+        published: { type: integer, minimum: 0, maximum: 65535 }
+        protocol: { type: string, enum: [tcp, udp, sctp] }
+        mode: { type: string, enum: [ingress, host] }
+
+    Mount:
+      type: object
+      required: [type, target]
+      properties:
+        type: { type: string, enum: [bind, volume, tmpfs, npipe, cluster] }
+        source: { type: string }
+        target: { type: string }
+        readOnly: { type: boolean }
+
+    NetworkAttachment:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        aliases: { type: array, items: { type: string } }
+
+    RestartPolicy:
+      type: object
+      properties:
+        condition: { type: string, enum: [none, on-failure, any] }
+        delayMs: { type: integer, format: int64 }
+        maxAttempts: { type: integer, format: uint64 }
+        windowMs: { type: integer, format: int64 }
+
+    Healthcheck:
+      type: object
+      required: [test]
+      properties:
+        test: { type: array, items: { type: string } }
+        intervalMs: { type: integer, format: int64 }
+        timeoutMs: { type: integer, format: int64 }
+        retries: { type: integer, format: int64 }
+        startPeriodMs: { type: integer, format: int64 }
+
+    UpdateConfig:
+      type: object
+      properties:
+        parallelism: { type: integer, format: uint64 }
+        delayMs: { type: integer, format: int64 }
+        failureAction: { type: string, enum: [pause, continue, rollback] }
+        order: { type: string, enum: [stop-first, start-first] }
+        monitorMs: { type: integer, format: int64 }
+        maxFailureRatio: { type: number, format: float }
+
+    Placement:
+      type: object
+      properties:
+        constraints: { type: array, items: { type: string } }
+
+    ServiceStatus:
+      type: object
+      required: [desiredTasks, runningTasks, tasksInTransition, converged]
+      properties:
+        desiredTasks: { type: integer }
+        runningTasks: { type: integer }
+        tasksInTransition: { type: integer }
+        converged: { type: boolean }
+        message: { type: string }
+        endpoint: { $ref: "#/components/schemas/Endpoint" }
+
+    Endpoint:
+      type: object
+      properties:
+        ports:
+          type: array
+          items: { $ref: "#/components/schemas/Port" }
+
+    TaskList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [TaskList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Task" }
+        next:
+          type: string
+          nullable: true
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/Warning" }
+        partial:
+          type: array
+          items: { $ref: "#/components/schemas/Partial" }
+
+    Task:
+      type: object
+      required: [id, revision, serviceId, state, desiredState]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        revision: { type: string }
+        serviceId: { type: string }
+        serviceName: { type: string }
+        nodeId: { type: string }
+        nodeName: { type: string }
+        slot: { type: integer, format: int64 }
+        state: { type: string }
+        desiredState: { type: string }
+        message: { type: string }
+        error: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        image: { type: string }
+        addresses: { type: array, items: { type: string } }
+        ports:
+          type: array
+          items: { $ref: "#/components/schemas/Port" }
+        exitCode: { type: integer, format: int32 }
+        health: { $ref: "#/components/schemas/TaskHealth" }
+
+    TaskHealth:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [starting, healthy, failing, unhealthy] }
+        failingStreak: { type: integer }
+        output: { type: string }
+        command: { type: string }
+        checkedAt: { type: string, format: date-time }
+
+    NodeList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [NodeList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Node" }
+        next:
+          type: string
+          nullable: true
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/Warning" }
+        partial:
+          type: array
+          items: { $ref: "#/components/schemas/Partial" }
+
+    Node:
+      type: object
+      required: [id, revision, role, membership, availability, state]
+      properties:
+        id: { type: string }
+        hostname: { type: string }
+        revision: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        role: { type: string }
+        membership: { type: string }
+        availability: { type: string }
+        state: { type: string }
+        address: { type: string }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        resources: { $ref: "#/components/schemas/NodeResources" }
+        manager: { $ref: "#/components/schemas/NodeManager" }
+        agentVersion: { type: string }
+
+    NodeResources:
+      type: object
+      properties:
+        cpus: { type: number, format: double }
+        memoryBytes: { type: integer, format: int64 }
+
+    NodeManager:
+      type: object
+      required: [leader, reachable]
+      properties:
+        leader: { type: boolean }
+        reachable: { type: boolean }
+        address: { type: string }
+        raftId: { type: integer, format: int64 }
+
+    Warning:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+
+    Partial:
+      type: object
+      required: [nodeId, error]
+      properties:
+        nodeId: { type: string }
+        nodeName: { type: string }
+        error: { $ref: "#/components/schemas/Error" }
+
+    ErrorDocument:
+      type: object
+      required: [schemaVersion, kind, error]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [Error] }
+        error: { $ref: "#/components/schemas/Error" }
+
+    Error:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid
+            - ambiguous
+            - not_found
+            - unauthenticated
+            - forbidden
+            - conflict
+            - cursor_expired
+            - rate_limited
+            - unavailable
+            - timeout
+            - unsupported_version
+            - not_implemented
+            - internal
+            - usage
+            - unreachable
+        message: { type: string }
+        requestId: { type: string }
+        retryable: { type: boolean }
+        details: { type: object, additionalProperties: true }
