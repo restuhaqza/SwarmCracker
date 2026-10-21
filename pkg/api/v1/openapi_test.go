@@ -72,6 +72,35 @@ func TestOpenAPIServiceListFixtures(t *testing.T) {
 	validateAgainst(t, doc, "ServiceList", value)
 }
 
+func TestOpenAPIServiceDocumentFixture(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	value := NewServiceDocument(Service{
+		ID:       "svc-1",
+		Name:     "web",
+		Revision: "17",
+		Spec: ServiceSpec{
+			Mode:     "replicated",
+			Replicas: ptr[int64](3),
+			Task:     TaskSpec{Image: "nginx:alpine"},
+		},
+		Status: ServiceStatus{DesiredTasks: 3, RunningTasks: 3, Converged: true},
+	})
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+
+	var decoded any
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	validateAgainst(t, doc, "ServiceDocument", decoded)
+
+	path := doc.Paths.Find("/v1/services/{id}")
+	require.NotNil(t, path, "single-service path missing")
+	require.NotNil(t, path.Get)
+	require.Len(t, path.Get.Parameters, 1)
+	require.Equal(t, "id", path.Get.Parameters[0].Value.Name)
+	require.True(t, path.Get.Parameters[0].Value.Required)
+}
+
 func TestOpenAPITaskListFixtures(t *testing.T) {
 	doc := loadOpenAPI(t)
 

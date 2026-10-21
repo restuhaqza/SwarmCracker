@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   labels, resources, manager status and agent version) and `-o name` emits IDs;
   legacy `--format json` keeps its array shape, but empty and filtered-empty
   results now emit `[]` instead of prose or `null`.
+- **Service inspect v1 output** — `swarmcracker service inspect -o json` emits
+  the v1 `ServiceDocument` envelope and resolves full IDs, exact names, and
+  unique ID prefixes. Legacy `--format json` keeps the raw SwarmKit object and
+  its credential redaction.
 
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global

@@ -41,6 +41,26 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/services/{id}:
+    get:
+      operationId: getService
+      summary: Get one service
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: A single service
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ServiceDocument" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/tasks:
     get:
       operationId: listTasks
@@ -154,6 +174,15 @@ components:
         partial:
           type: array
           items: { $ref: "#/components/schemas/Partial" }
+
+    ServiceDocument:
+      allOf:
+        - $ref: "#/components/schemas/Service"
+        - type: object
+          required: [schemaVersion, kind]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [Service] }
 
     Service:
       type: object
