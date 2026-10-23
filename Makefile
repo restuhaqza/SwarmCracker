@@ -53,7 +53,7 @@ api-check:
 	@echo "Running API contract acceptance..."
 	$(GO) test ./pkg/api/v1 ./pkg/client ./pkg/output
 	@if [ "$$(uname -s)" = "Linux" ]; then \
-		$(GO) test ./cmd/swarmcracker -run 'Test.*Contract|TestCLIExitCode|TestExitCode' -count=1; \
+		$(GO) test ./cmd/swarmcracker -run 'Test.*Contract|TestCLIExitCode|TestExitCode|Test.*ControlClientBoundary' -count=1; \
 	else \
 		echo "Skipping cmd/swarmcracker contract tests on $$(uname -s); run make api-check on Linux/CI"; \
 	fi
