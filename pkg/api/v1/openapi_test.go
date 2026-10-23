@@ -282,6 +282,45 @@ func TestOpenAPINodeListFixtures(t *testing.T) {
 	validateAgainst(t, doc, "NodeList", value)
 }
 
+func TestOpenAPIVersionInfo(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	for _, tc := range []struct {
+		name  string
+		value VersionInfo
+	}{
+		{
+			name:  "populated",
+			value: NewVersionInfo([]string{"v1"}, "v0.12.0", "1", "cluster-1", []string{"http-read"}),
+		},
+		{
+			name:  "empty lists and cluster",
+			value: NewVersionInfo(nil, "v0.12.0", "1", "", nil),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.value)
+			require.NoError(t, err)
+			var generic any
+			require.NoError(t, json.Unmarshal(data, &generic))
+			validateAgainst(t, doc, "VersionInfo", generic)
+		})
+	}
+
+	path := doc.Paths.Find("/v1/version")
+	require.NotNil(t, path, "version path missing")
+	require.NotNil(t, path.Get, "version GET operation missing")
+
+	okResponse := path.Get.Responses.Status(200)
+	require.NotNil(t, okResponse, "version 200 response missing")
+	media := okResponse.Value.Content.Get("application/vnd.swarmcracker.v1+json")
+	require.NotNil(t, media, "version 200 media type missing")
+	require.NotNil(t, media.Schema)
+	require.Equal(t, "#/components/schemas/VersionInfo", media.Schema.Ref)
+
+	require.NotNil(t, path.Get.Responses.Value("4XX"), "version 4XX response missing")
+}
+
 func TestOpenAPIErrorDocument(t *testing.T) {
 	doc := loadOpenAPI(t)
 	value := NewErrorDocument(Error{

@@ -11,6 +11,21 @@ servers:
   - url: https://mgr:4244
     description: Manager public API (phase 1; TLS + bearer token)
 paths:
+  /v1/version:
+    get:
+      operationId: getVersion
+      summary: Get the server version, supported API versions and capabilities
+      responses:
+        "200":
+          description: The server's identity and feature-detection data
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/VersionInfo" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/services:
     get:
       operationId: listServices
@@ -670,3 +685,20 @@ components:
         requestId: { type: string }
         retryable: { type: boolean }
         details: { type: object, additionalProperties: true }
+
+    VersionInfo:
+      type: object
+      required:
+        [schemaVersion, kind, apiVersions, serverVersion, grpcProtocolVersion, capabilities]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [VersionInfo] }
+        apiVersions:
+          type: array
+          items: { type: string }
+        serverVersion: { type: string }
+        grpcProtocolVersion: { type: string }
+        clusterId: { type: string }
+        capabilities:
+          type: array
+          items: { type: string }
