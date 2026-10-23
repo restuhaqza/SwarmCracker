@@ -890,23 +890,43 @@ func listServicesTableWithClient(ctx context.Context, l serviceLister, w io.Writ
 		return nil
 	}
 
-	fmt.Fprintf(w, "%-20s %-20s %-10s %-24s %s\n", "ID", "NAME", "REPLICAS", "PORTS", "IMAGE")
-	fmt.Fprintln(w, strings.Repeat("-", 100))
+	writeServiceTableHeader(w)
 	for _, svc := range services {
-		id := svc.ID
-		if len(id) > 12 {
-			id = id[:12]
-		}
-		fmt.Fprintf(w, "%-20s %-20s %-10s %-24s %s\n",
-			id, svc.Name, formatV1ServiceReplicas(svc), formatV1ServicePorts(svc), svc.Spec.Task.Image)
+		writeServiceTableRow(w, svc.ID, svc.Name, formatV1ServiceReplicas(svc),
+			formatV1ServicePorts(svc), svc.Spec.Task.Image)
 	}
-	fmt.Fprintf(w, "\nTotal: %d service(s)\n", len(services))
+	writeServiceTableTotal(w, len(services))
 
 	return nil
 }
 
-// formatV1ServiceReplicas mirrors the local table: a service without a replica
-// count is reported as "global", exactly as the legacy path prints it.
+// serviceTableLayout is the one definition of the frozen `service ls` table:
+// the local and remote lists both render through it.
+const serviceTableLayout = "%-20s %-20s %-10s %-24s %s\n"
+
+// writeServiceTableHeader writes the column header and its rule.
+func writeServiceTableHeader(w io.Writer) {
+	fmt.Fprintf(w, serviceTableLayout, "ID", "NAME", "REPLICAS", "PORTS", "IMAGE")
+	fmt.Fprintln(w, strings.Repeat("-", 100))
+}
+
+// writeServiceTableRow renders one service row, truncating the ID to the
+// shared 12-character width. replicas, ports and image are already formatted.
+func writeServiceTableRow(w io.Writer, id, name, replicas, ports, image string) {
+	if len(id) > 12 {
+		id = id[:12]
+	}
+	fmt.Fprintf(w, serviceTableLayout, id, name, replicas, ports, image)
+}
+
+// writeServiceTableTotal writes the trailing count line.
+func writeServiceTableTotal(w io.Writer, n int) {
+	fmt.Fprintf(w, "\nTotal: %d service(s)\n", n)
+}
+
+// formatV1ServiceReplicas renders the replica count the way the local table
+// does: a non-replicated mode is "global"; a replicated service whose count the
+// server omitted prints "0", never "global".
 func formatV1ServiceReplicas(svc v1.Service) string {
 	if svc.Spec.Replicas != nil {
 		return fmt.Sprintf("%d", *svc.Spec.Replicas)
@@ -981,13 +1001,8 @@ func listServicesWithClient(ctx context.Context, client legacy.ControlClient, w 
 		return nil
 	}
 
-	fmt.Fprintf(w, "%-20s %-20s %-10s %-24s %s\n", "ID", "NAME", "REPLICAS", "PORTS", "IMAGE")
-	fmt.Fprintln(w, strings.Repeat("-", 100))
+	writeServiceTableHeader(w)
 	for _, svc := range services {
-		id := svc.ID
-		if len(id) > 12 {
-			id = id[:12]
-		}
 		name := svc.Spec.Annotations.Name
 		replicas := "global"
 		if r := svc.Spec.GetReplicated(); r != nil {
@@ -997,9 +1012,9 @@ func listServicesWithClient(ctx context.Context, client legacy.ControlClient, w 
 		if svc.Spec.Task.GetContainer() != nil {
 			image = svc.Spec.Task.GetContainer().Image
 		}
-		fmt.Fprintf(w, "%-20s %-20s %-10s %-24s %s\n", id, name, replicas, formatServicePorts(svc), image)
+		writeServiceTableRow(w, svc.ID, name, replicas, formatServicePorts(svc), image)
 	}
-	fmt.Fprintf(w, "\nTotal: %d service(s)\n", len(services))
+	writeServiceTableTotal(w, len(services))
 
 	return nil
 }
@@ -1051,20 +1066,29 @@ func filterV1Services(services []v1.Service, filter string) []v1.Service {
 	if filter == "" {
 		return services
 	}
-	name := ""
-	if strings.HasPrefix(filter, "name=") {
-		name = strings.TrimPrefix(filter, "name=")
-	}
+
+	// Mirror filterServices: name= is an exact match, id= is a prefix match,
+	// anything else is a substring of the ID or the name.
+	byName := strings.HasPrefix(filter, "name=")
+	byIDPrefix := strings.HasPrefix(filter, "id=")
+	name := strings.TrimPrefix(filter, "name=")
+	idPrefix := strings.TrimPrefix(filter, "id=")
+
 	out := make([]v1.Service, 0, len(services))
 	for _, svc := range services {
-		if name != "" {
+		switch {
+		case byName:
 			if svc.Name == name {
 				out = append(out, svc)
 			}
-			continue
-		}
-		if strings.Contains(svc.ID, filter) || strings.Contains(svc.Name, filter) {
-			out = append(out, svc)
+		case byIDPrefix:
+			if strings.HasPrefix(svc.ID, idPrefix) {
+				out = append(out, svc)
+			}
+		default:
+			if strings.Contains(svc.ID, filter) || strings.Contains(svc.Name, filter) {
+				out = append(out, svc)
+			}
 		}
 	}
 	return out

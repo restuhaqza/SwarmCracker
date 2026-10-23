@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
@@ -73,6 +74,61 @@ func remoteUnsupported() error {
 			"use a read command with -o json or -o name")
 }
 
+// remoteCapableReadPaths are the read commands that understand --host. The list
+// is explicit so a new command cannot inherit remote support by accident, and a
+// command outside it fails loudly instead of reading the local cluster.
+var remoteCapableReadPaths = map[string]struct{}{
+	"swarmcracker service ls":      {},
+	"swarmcracker service inspect": {},
+	"swarmcracker service ps":      {},
+	"swarmcracker task ls":         {},
+	"swarmcracker task inspect":    {},
+	"swarmcracker node ls":         {},
+	"swarmcracker node inspect":    {},
+	"swarmcracker config ls":       {},
+	"swarmcracker config inspect":  {},
+	"swarmcracker secret ls":       {},
+	"swarmcracker secret inspect":  {},
+	"swarmcracker network ls":      {},
+	"swarmcracker network inspect": {},
+}
+
+// commandAllowsRemote reports whether cmd may run when --host is set. The
+// command path (not the invoked alias) identifies the leaf, so `service list`
+// and `service ls` take the same decision.
+func commandAllowsRemote(cmd *cobra.Command) bool {
+	path := cmd.CommandPath()
+
+	// The root, help and version never read a cluster.
+	if path == "swarmcracker" || path == "swarmcracker help" || path == "swarmcracker version" {
+		return true
+	}
+
+	// `api token` edits the local token store and never contacts a manager.
+	if path == "swarmcracker api" || strings.HasPrefix(path, "swarmcracker api ") {
+		return true
+	}
+
+	_, ok := remoteCapableReadPaths[path]
+	return ok
+}
+
+// guardRemoteHost refuses --host on a command that would otherwise read the
+// local cluster. It is installed as the root PersistentPreRunE, so it covers
+// every command (including the daemon-socket `vm` group) without each one
+// remembering the check. A remote flag that silently falls back to the local
+// control socket is the failure mode this prevents.
+func guardRemoteHost(cmd *cobra.Command, _ []string) error {
+	if apiHost == "" || commandAllowsRemote(cmd) {
+		return nil
+	}
+
+	return output.NewErrorf(output.CodeUsage,
+		"--host is not supported by %q: this command only reads the local cluster; "+
+			"remote reads are available on service/task/node/config/secret/network ls|inspect|ps "+
+			"(with -o json or -o name)", cmd.CommandPath())
+}
+
 // newAPICommand groups the programmatic-API operator commands.
 func newAPICommand() *cobra.Command {
 	cmd := &cobra.Command{
@@ -80,9 +136,14 @@ func newAPICommand() *cobra.Command {
 		Short: "Manage the programmatic API",
 		Long: `Manage the manager's programmatic API.
 
-Tokens are stored on the manager in <state-dir>/api/tokens.json. A token's
-secret is printed once at creation and never again; the file holds only its
-hash. Reads against a manager use the global -H, --ca and --token-file flags.`,
+Tokens are stored on the manager in <api-dir>/tokens.json. A token's secret is
+printed once at creation and never again; the file holds only its hash. Reads
+against a manager use the global -H, --ca and --token-file flags.
+
+The daemon takes its state directory from --state-dir and does not read
+SWARM_STATE_DIR. The CLI resolves the default token path from SWARM_STATE_DIR
+when it is set, otherwise /var/lib/swarmkit; pass --token-file to name the store
+explicitly.`,
 	}
 
 	cmd.AddCommand(newAPITokenCommand())
@@ -96,8 +157,10 @@ func newAPITokenCommand() *cobra.Command {
 		Long: `Manage the bearer tokens the programmatic API accepts.
 
 These commands edit the local token file and never contact the manager. The
-global --token-file flag names that file; otherwise it is
-<state-dir>/api/tokens.json.`,
+global --token-file flag names that file; otherwise the CLI uses
+<SWARM_STATE_DIR or /var/lib/swarmkit>/api/tokens.json. The daemon's own
+--state-dir flag sets where it looks for the store; SWARM_STATE_DIR is only the
+CLI's default.`,
 	}
 
 	cmd.AddCommand(newAPITokenCreateCommand())
@@ -151,6 +214,13 @@ func newAPITokenListCommand() *cobra.Command {
 		Aliases: []string{"ls"},
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// The table is the only representation; silently ignoring -o json
+			// would hand a caller an unparseable document.
+			if outputFormat != "" && output.Format(outputFormat) != output.FormatTable {
+				return output.NewErrorf(output.CodeUsage,
+					"api token list only supports table output; %q is not supported", outputFormat)
+			}
+
 			store, err := openAPITokenStore()
 			if err != nil {
 				return err

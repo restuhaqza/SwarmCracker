@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,13 +24,17 @@ import (
 
 // resetAPIFlags clears the remote/token flags and restores them afterwards, so
 // a test that sets them cannot leak into the next one through the package vars.
+// -o is included because the root parser writes it during Execute.
 func resetAPIFlags(t *testing.T) {
 	t.Helper()
 
 	host, ca, tokenFile, token, serverName := apiHost, apiCA, apiTokenFile, apiToken, apiTLSServerName
+	format := outputFormat
 	apiHost, apiCA, apiTokenFile, apiToken, apiTLSServerName = "", "", "", "", ""
+	outputFormat = ""
 	t.Cleanup(func() {
 		apiHost, apiCA, apiTokenFile, apiToken, apiTLSServerName = host, ca, tokenFile, token, serverName
+		outputFormat = format
 	})
 }
 
@@ -212,6 +217,45 @@ func TestRemoteServiceListTable(t *testing.T) {
 	assert.Equal(t, want, buf.String())
 }
 
+// A remote `service ls --filter id=<prefix>` must match the local semantics:
+// the contract filter is a prefix match, not a substring match.
+func TestRemoteServiceListTableFilterByIDPrefix(t *testing.T) {
+	resetAPIFlags(t)
+
+	endpoint, caFile := newAPITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeAPITestDocument(w, http.StatusOK, v1.NewServiceList([]v1.Service{
+			{ID: "svc-0123456789abcdef", Name: "web", Spec: v1.ServiceSpec{Mode: "global"}},
+			{ID: "svc-89abcdef01234567", Name: "db", Spec: v1.ServiceSpec{Mode: "global"}},
+		}))
+	})
+	apiHost, apiCA = endpoint, caFile
+
+	c, err := newContractClient()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	var buf bytes.Buffer
+	require.NoError(t, listServicesTableWithClient(context.Background(), c, &buf, "id=svc-0123", false))
+
+	out := buf.String()
+	assert.Contains(t, out, "svc-01234567")
+	assert.NotContains(t, out, "svc-89abcdef")
+	assert.Contains(t, out, "Total: 1 service(s)")
+}
+
+func TestFilterV1ServicesMatchesLocalSemantics(t *testing.T) {
+	services := []v1.Service{
+		{ID: "svc-0123456789abcdef", Name: "web"},
+		{ID: "svc-89abcdef01234567", Name: "db"},
+	}
+
+	assert.Len(t, filterV1Services(services, "name=web"), 1)
+	assert.Empty(t, filterV1Services(services, "name=we"), "name= is exact")
+	assert.Len(t, filterV1Services(services, "id=svc-0123"), 1)
+	assert.Empty(t, filterV1Services(services, "id=0123"), "id= is a prefix, not a substring")
+	assert.Len(t, filterV1Services(services, "web"), 1, "a bare filter stays a substring match")
+}
+
 func TestServiceListTableRoutesToHost(t *testing.T) {
 	resetAPIFlags(t)
 
@@ -228,6 +272,103 @@ func TestServiceListTableRoutesToHost(t *testing.T) {
 	assert.Contains(t, out, "svc-01234567")
 	assert.Contains(t, out, "web")
 	assert.Contains(t, out, "Total: 1 service(s)")
+}
+
+// --host on a command that only knows the local control socket must be a usage
+// error, not a silent read of the local cluster.
+func TestLocalOnlyCommandsWithHostAreUsage(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"cluster token", []string{"-H", "https://mgr:4244", "cluster", "token"}},
+		{"vm list", []string{"-H", "https://mgr:4244", "vm", "ls"}},
+		{"service create", []string{"-H", "https://mgr:4244", "service", "create", "--name", "web", "--image", "nginx"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resetAPIFlags(t)
+			// Point the local socket at nothing: a guard failure must not be
+			// masked by an unrelated dial error.
+			t.Setenv("SWARM_SOCKET", filepath.Join(t.TempDir(), "missing.sock"))
+
+			root := newRootCommand()
+			root.SetArgs(tc.args)
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+
+			err := root.Execute()
+			typed := requireCode(t, err, output.CodeUsage)
+			assert.Contains(t, typed.Message, "--host")
+		})
+	}
+}
+
+// The guard must not block the commands that do understand --host.
+func TestRemoteCapableCommandWithHostStillWorks(t *testing.T) {
+	resetAPIFlags(t)
+
+	endpoint, caFile := newAPITestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		writeAPITestDocument(w, http.StatusOK, v1.NewServiceList([]v1.Service{
+			{ID: "svc-0123456789abcdef", Name: "web", Spec: v1.ServiceSpec{Mode: "global"}},
+		}))
+	})
+
+	root := newRootCommand()
+	root.SetArgs([]string{"-H", endpoint, "--ca", caFile, "service", "ls"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+
+	var execErr error
+	out := captureStdout(t, func() { execErr = root.Execute() })
+	require.NoError(t, execErr)
+	assert.Contains(t, out, "svc-01234567")
+	assert.Contains(t, out, "Total: 1 service(s)")
+}
+
+func TestAPITokenListRejectsJSONOutput(t *testing.T) {
+	resetAPIFlags(t)
+
+	apiTokenFile = filepath.Join(t.TempDir(), "tokens.json")
+	outputFormat = "json"
+
+	_, err := runAPICommand(t, "token", "list")
+	typed := requireCode(t, err, output.CodeUsage)
+	assert.Contains(t, typed.Message, "table output")
+}
+
+// `api token` edits the local store, so --host must not block it.
+func TestAPITokenCreateWithHostStillWorks(t *testing.T) {
+	resetAPIFlags(t)
+
+	store := filepath.Join(t.TempDir(), "tokens.json")
+
+	root := newRootCommand()
+	root.SetArgs([]string{"-H", "https://mgr:4244", "--token-file", store, "api", "token", "create", "--name", "ci"})
+	root.SetErr(io.Discard)
+
+	var execErr error
+	out := captureStdout(t, func() { execErr = root.Execute() })
+	require.NoError(t, execErr)
+	assert.True(t, strings.HasPrefix(strings.TrimSpace(out), "sc_"), out)
+
+	reopened, err := apihttp.OpenTokenStore(store)
+	require.NoError(t, err)
+	require.Len(t, reopened.List(), 1)
+}
+
+func TestVersionWithHostStillWorks(t *testing.T) {
+	resetAPIFlags(t)
+
+	root := newRootCommand()
+	root.SetArgs([]string{"-H", "https://mgr:4244", "version"})
+	root.SetOut(io.Discard)
+	root.SetErr(io.Discard)
+
+	var execErr error
+	out := captureStdout(t, func() { execErr = root.Execute() })
+	require.NoError(t, execErr)
+	assert.Contains(t, out, Version)
 }
 
 func TestFormatV1ServiceReplicas(t *testing.T) {

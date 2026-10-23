@@ -55,6 +55,10 @@ func newRootCommand() *cobra.Command {
 		// document instead of Cobra's prose line.
 		SilenceErrors: true,
 		SilenceUsage:  true,
+		// Every command is checked before it runs: --host on a command that
+		// only knows the local control socket must fail instead of quietly
+		// reading the local cluster.
+		PersistentPreRunE: guardRemoteHost,
 	}
 
 	rootCmd.PersistentFlags().StringVarP(&cfgFile, "config", "c", "", "Path to configuration file (default: /etc/swarmcracker/config.yaml)")
