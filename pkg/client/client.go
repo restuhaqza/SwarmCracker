@@ -79,6 +79,8 @@ type controlClient interface {
 	GetService(context.Context, *api.GetServiceRequest, ...grpc.CallOption) (*api.GetServiceResponse, error)
 	ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error)
 	ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error)
+	ListConfigs(context.Context, *api.ListConfigsRequest, ...grpc.CallOption) (*api.ListConfigsResponse, error)
+	ListSecrets(context.Context, *api.ListSecretsRequest, ...grpc.CallOption) (*api.ListSecretsResponse, error)
 }
 
 // Client is a typed SwarmCracker client. It is safe for concurrent use.
@@ -187,6 +189,38 @@ func (c *Client) GetService(ctx context.Context, id string) (v1.Service, error) 
 	}
 
 	return serviceFromSwarmkit(resp.Service, countTasks(tasks.Tasks)[id]), nil
+}
+
+// ListConfigs returns config metadata without payloads, ordered by creation
+// time then ID.
+func (c *Client) ListConfigs(ctx context.Context) ([]v1.Config, error) {
+	resp, err := c.control.ListConfigs(ctx, &api.ListConfigsRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	configs := sortConfigs(resp.Configs)
+	items := make([]v1.Config, 0, len(configs))
+	for _, cfg := range configs {
+		items = append(items, configFromSwarmkit(cfg))
+	}
+	return items, nil
+}
+
+// ListSecrets returns secret metadata without payloads, ordered by creation
+// time then ID.
+func (c *Client) ListSecrets(ctx context.Context) ([]v1.Secret, error) {
+	resp, err := c.control.ListSecrets(ctx, &api.ListSecretsRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	secrets := sortSecrets(resp.Secrets)
+	items := make([]v1.Secret, 0, len(secrets))
+	for _, secret := range secrets {
+		items = append(items, secretFromSwarmkit(secret))
+	}
+	return items, nil
 }
 
 // ListNodes returns the cluster nodes, ordered by creation time then ID.
