@@ -688,6 +688,11 @@ Manage SwarmKit secrets.
 | `inspect <name\|id>` | Inspect a secret (the value is never shown) |
 | `rm <name\|id>` | Remove a secret (blocked while a service uses it) |
 
+`config ls` and `secret ls` also accept the global `-o json` / `-o name` flags.
+The v1 documents carry metadata only (`id`, `name`, `revision`, timestamps,
+labels, and `driver` for secrets); payloads never appear. `--format json` keeps
+the legacy list shape, and `--quiet` is replaced by `-o name` on the v1 path.
+
 Secret and config values are injected into the microVM's rootfs at the path a
 service requests with `service create --secret` / `--config`. SwarmKit redacts
 secret values from the control API, so they never appear in `inspect`.

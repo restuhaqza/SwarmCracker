@@ -10,6 +10,9 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
 )
 
@@ -109,12 +112,69 @@ func newSecretListCommand() *cobra.Command {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat != "" {
+				if cmd.Flags().Changed("format") {
+					return output.NewError(output.CodeUsage, "use either --output or --format, not both")
+				}
+				if output.Format(outputFormat) == output.FormatTable {
+					return listSecrets(format, quiet)
+				}
+				switch output.Format(outputFormat) {
+				case output.FormatJSON, output.FormatName:
+					if quiet {
+						if output.Format(outputFormat) == output.FormatName {
+							return output.NewError(output.CodeUsage, "do not combine -o name with --quiet")
+						}
+						return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
+					}
+					return listSecretsContract(outputFormat)
+				default:
+					return output.NewErrorf(output.CodeUsage, "unsupported output format %q for secret ls", outputFormat)
+				}
+			}
 			return listSecrets(format, quiet)
 		},
 	}
 	cmd.Flags().StringVar(&format, "format", "table", "Output format (table, json)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only display IDs")
 	return cmd
+}
+
+// secretLister is the narrow client surface the v1 secret path needs.
+type secretLister interface {
+	ListSecrets(context.Context) ([]v1.Secret, error)
+}
+
+func listSecretsContract(format string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := client.New(client.DefaultConfig())
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	defer c.Close()
+
+	return listSecretsContractWithClient(ctx, c, os.Stdout, format)
+}
+
+func listSecretsContractWithClient(ctx context.Context, l secretLister, w io.Writer, format string) error {
+	secrets, err := l.ListSecrets(ctx)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+
+	switch output.Format(format) {
+	case output.FormatJSON:
+		return output.WriteJSON(w, v1.NewSecretList(secrets))
+	case output.FormatName:
+		for _, secret := range secrets {
+			fmt.Fprintln(w, secret.ID)
+		}
+		return nil
+	default:
+		return output.NewErrorf(output.CodeUsage, "unsupported output format %q for secret ls", format)
+	}
 }
 
 func listSecrets(format string, quiet bool) error {

@@ -90,6 +90,56 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/configs:
+    get:
+      operationId: listConfigs
+      summary: List configs
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: label
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of config metadata
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ConfigList" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/secrets:
+    get:
+      operationId: listSecrets
+      summary: List secrets
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: label
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of secret metadata
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SecretList" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/tasks:
     get:
       operationId: listTasks
@@ -185,6 +235,59 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
 components:
   schemas:
+    Config:
+      type: object
+      required: [id, name, revision]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        revision: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+
+    ConfigList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [ConfigList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Config" }
+        next:
+          type: string
+          nullable: true
+
+    Secret:
+      type: object
+      required: [id, name, revision]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        revision: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        driver: { type: string }
+
+    SecretList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [SecretList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Secret" }
+        next:
+          type: string
+          nullable: true
+
     ServiceList:
       type: object
       required: [schemaVersion, kind, items, next]

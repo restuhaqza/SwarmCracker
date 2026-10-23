@@ -34,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `TaskList` envelope scoped to one service, and `-o name` emits task IDs.
   Phase 0 omits live health from these modes; `--format json` keeps the legacy
   task array.
+- **Config and secret list v1 output** — `config ls -o json` / `secret ls -o json`
+  emit the v1 metadata envelopes (`id`, name, revision, timestamps, labels and
+  secret driver); `-o name` emits IDs. Payloads are never serialized. Legacy
+  `--format json` keeps the existing list shape.
 
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global

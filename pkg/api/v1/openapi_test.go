@@ -27,6 +27,53 @@ func validateAgainst(t *testing.T, doc *openapi3.T, name string, value any) {
 	require.NoError(t, schema.Value.VisitJSON(value), "document does not match %s", name)
 }
 
+func TestOpenAPIConfigAndSecretLists(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	for _, tc := range []struct {
+		name    string
+		fixture string
+		value   any
+	}{
+		{
+			name:    "ConfigList",
+			fixture: "config-list-empty.json",
+			value: NewConfigList([]Config{{
+				ID: "cfg-1", Name: "app", Revision: "3",
+				CreatedAt: "2026-10-19T10:00:00Z",
+				Labels:    map[string]string{"team": "payments"},
+			}}),
+		},
+		{
+			name:    "SecretList",
+			fixture: "secret-list-empty.json",
+			value: NewSecretList([]Secret{{
+				ID: "sec-1", Name: "token", Revision: "4",
+				CreatedAt: "2026-10-19T10:00:00Z",
+				Labels:    map[string]string{"env": "prod"},
+				Driver:    "external",
+			}}),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture, err := os.ReadFile(filepath.Join("testdata", tc.fixture))
+			require.NoError(t, err)
+			var empty any
+			require.NoError(t, json.Unmarshal(fixture, &empty))
+			validateAgainst(t, doc, tc.name, empty)
+
+			data, err := json.Marshal(tc.value)
+			require.NoError(t, err)
+			var full any
+			require.NoError(t, json.Unmarshal(data, &full))
+			validateAgainst(t, doc, tc.name, full)
+		})
+	}
+
+	require.NotNil(t, doc.Paths.Find("/v1/configs"))
+	require.NotNil(t, doc.Paths.Find("/v1/secrets"))
+}
+
 func TestOpenAPIServiceListFixtures(t *testing.T) {
 	doc := loadOpenAPI(t)
 
