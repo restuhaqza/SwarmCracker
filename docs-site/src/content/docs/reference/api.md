@@ -413,18 +413,22 @@ runs takes effect without a restart.
 
 ### Remote CLI reads
 
-A remote read is available on the contract path — `-o json` or `-o name` — for
-`service ls|inspect|ps`, `task ls|inspect`, `node ls|inspect`,
-`config ls|inspect`, `secret ls|inspect` and `network ls|inspect`. `service ls`
-is the one command whose default table also reads the API, so `service ls`,
-`service ls -o table` and `-o json` / `-o name` all work against `--host`.
+Remote reads are narrower than the read commands suggest. `-o json` works for
+`service ls|inspect|ps`, `task ls`, `node ls`, `config ls`, `secret ls` and
+`network ls`; `-o name` works only on the list commands (`service ls`,
+`service ps`, `task ls`, `node ls`, `config ls`, `secret ls`, `network ls`).
+`service inspect` is JSON-only and rejects `-o name`, and the non-service
+inspects — `task`, `node`, `config`, `secret`, `network` — have no contract path
+at all: they call the legacy client and are a **usage error** under `--host`.
+Only `service ls` has a remote table, so `service ls`, `service ls -o table`,
+`-o json` and `-o name` all work against `--host`.
 
-Every other default table output for these commands is a **usage error** when
-`--host` is set (`--host selects a remote manager: this command only supports the
-local control socket; use a read command with -o json or -o name`), and any
-command outside the list above is refused the same way. It never silently falls
-back to the local cluster. Without `--host` the same commands read the local
-socket, so a cluster member needs no flags.
+Every other default table output is a **usage error** when `--host` is set
+(`--host selects a remote manager: this command only supports the local control
+socket; use a read command with -o json or -o name`), and any command outside the
+remote reads above is refused the same way. It never silently falls back to the
+local cluster. Without `--host` the same commands read the local socket, so a
+cluster member needs no flags.
 
 ```bash
 swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
@@ -437,9 +441,9 @@ swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
 `-o json` prints a v1 document, but for lists it is **not** a byte-for-byte
 passthrough: the CLI follows every `next` cursor and rebuilds one document from
 the merged pages, so `next` is always `null` and any `warnings`/`partial` from the
-individual responses are dropped. Single-resource reads (`inspect`) emit the one
-document they fetched. `-o name` prints identifiers one per line. JSON output is
-available on the reads listed above.
+individual responses are dropped. Single-resource reads (`service inspect`) emit
+the one document they fetched. `-o name` prints identifiers one per line. JSON
+output is available on every remote read listed above.
 
 ### Errors and exit codes
 
