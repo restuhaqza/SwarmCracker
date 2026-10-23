@@ -78,10 +78,16 @@ type controlClient interface {
 	ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error)
 	GetService(context.Context, *api.GetServiceRequest, ...grpc.CallOption) (*api.GetServiceResponse, error)
 	ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error)
+	GetTask(context.Context, *api.GetTaskRequest, ...grpc.CallOption) (*api.GetTaskResponse, error)
 	ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error)
+	GetNode(context.Context, *api.GetNodeRequest, ...grpc.CallOption) (*api.GetNodeResponse, error)
 	ListNetworks(context.Context, *api.ListNetworksRequest, ...grpc.CallOption) (*api.ListNetworksResponse, error)
+	GetNetwork(context.Context, *api.GetNetworkRequest, ...grpc.CallOption) (*api.GetNetworkResponse, error)
 	ListConfigs(context.Context, *api.ListConfigsRequest, ...grpc.CallOption) (*api.ListConfigsResponse, error)
+	GetConfig(context.Context, *api.GetConfigRequest, ...grpc.CallOption) (*api.GetConfigResponse, error)
 	ListSecrets(context.Context, *api.ListSecretsRequest, ...grpc.CallOption) (*api.ListSecretsResponse, error)
+	GetSecret(context.Context, *api.GetSecretRequest, ...grpc.CallOption) (*api.GetSecretResponse, error)
+	ListClusters(context.Context, *api.ListClustersRequest, ...grpc.CallOption) (*api.ListClustersResponse, error)
 }
 
 // Client is a typed SwarmCracker client. It is safe for concurrent use.
@@ -190,6 +196,92 @@ func (c *Client) GetService(ctx context.Context, id string) (v1.Service, error) 
 	}
 
 	return serviceFromSwarmkit(resp.Service, countTasks(tasks.Tasks)[id]), nil
+}
+
+// GetTask returns one task with its node name resolved.
+//
+// The node name comes from one ListNodes call and only when the task has a
+// node; a task that has not been scheduled needs no node lookup.
+func (c *Client) GetTask(ctx context.Context, id string) (v1.Task, error) {
+	resp, err := c.control.GetTask(ctx, &api.GetTaskRequest{TaskID: id})
+	if err != nil {
+		return v1.Task{}, err
+	}
+	if resp == nil || resp.Task == nil {
+		return v1.Task{}, status.Error(codes.NotFound, "task not found")
+	}
+
+	var names map[string]string
+	if resp.Task.NodeID != "" {
+		nodes, err := c.control.ListNodes(ctx, &api.ListNodesRequest{})
+		if err != nil {
+			return v1.Task{}, err
+		}
+		names = nodeNameIndex(nodes.Nodes)
+	}
+
+	return taskFromSwarmkit(resp.Task, names), nil
+}
+
+// GetNode returns one cluster node.
+func (c *Client) GetNode(ctx context.Context, id string) (v1.Node, error) {
+	resp, err := c.control.GetNode(ctx, &api.GetNodeRequest{NodeID: id})
+	if err != nil {
+		return v1.Node{}, err
+	}
+	if resp == nil || resp.Node == nil {
+		return v1.Node{}, status.Error(codes.NotFound, "node not found")
+	}
+	return nodeFromSwarmkit(resp.Node), nil
+}
+
+// GetNetwork returns one user-defined network.
+func (c *Client) GetNetwork(ctx context.Context, id string) (v1.Network, error) {
+	resp, err := c.control.GetNetwork(ctx, &api.GetNetworkRequest{NetworkID: id})
+	if err != nil {
+		return v1.Network{}, err
+	}
+	if resp == nil || resp.Network == nil {
+		return v1.Network{}, status.Error(codes.NotFound, "network not found")
+	}
+	return networkFromSwarmkit(resp.Network), nil
+}
+
+// GetConfig returns one config's metadata. The payload is never read.
+func (c *Client) GetConfig(ctx context.Context, id string) (v1.Config, error) {
+	resp, err := c.control.GetConfig(ctx, &api.GetConfigRequest{ConfigID: id})
+	if err != nil {
+		return v1.Config{}, err
+	}
+	if resp == nil || resp.Config == nil {
+		return v1.Config{}, status.Error(codes.NotFound, "config not found")
+	}
+	return configFromSwarmkit(resp.Config), nil
+}
+
+// GetSecret returns one secret's metadata. The payload is never read.
+func (c *Client) GetSecret(ctx context.Context, id string) (v1.Secret, error) {
+	resp, err := c.control.GetSecret(ctx, &api.GetSecretRequest{SecretID: id})
+	if err != nil {
+		return v1.Secret{}, err
+	}
+	if resp == nil || resp.Secret == nil {
+		return v1.Secret{}, status.Error(codes.NotFound, "secret not found")
+	}
+	return secretFromSwarmkit(resp.Secret), nil
+}
+
+// ClusterID returns the cluster's ID, which a local manager answers because a
+// node belongs to exactly one cluster. An empty cluster list is NotFound.
+func (c *Client) ClusterID(ctx context.Context) (string, error) {
+	resp, err := c.control.ListClusters(ctx, &api.ListClustersRequest{})
+	if err != nil {
+		return "", err
+	}
+	if resp == nil || len(resp.Clusters) == 0 || resp.Clusters[0] == nil {
+		return "", status.Error(codes.NotFound, "cluster not found")
+	}
+	return resp.Clusters[0].ID, nil
 }
 
 // ListNetworks returns user-defined networks, ordered by creation time then

@@ -12,6 +12,18 @@ type Config struct {
 	Labels    map[string]string `json:"labels,omitempty"`
 }
 
+// ConfigDocument is a single-resource Config document.
+type ConfigDocument struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Kind          string `json:"kind"`
+	Config
+}
+
+// NewConfigDocument wraps a Config in the v1 envelope.
+func NewConfigDocument(config Config) ConfigDocument {
+	return ConfigDocument{SchemaVersion: SchemaVersion, Kind: KindConfig, Config: config}
+}
+
 // ConfigList is a paginated list of configs.
 type ConfigList struct {
 	SchemaVersion int       `json:"schemaVersion"`

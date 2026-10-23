@@ -37,3 +37,28 @@ func TestNetworkListGoldenFixture(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, string(fixture), string(data))
 }
+
+func TestNetworkDocumentEnvelope(t *testing.T) {
+	network := Network{
+		ID:         "net-1",
+		Name:       "app",
+		Revision:   "2",
+		CreatedAt:  "2026-10-19T10:00:00Z",
+		Driver:     "overlay",
+		IPAM:       &NetworkIPAM{Subnet: "10.0.1.0/24", Gateway: "10.0.1.1"},
+		Labels:     map[string]string{"tier": "data"},
+		Attachable: true,
+	}
+
+	data, err := json.Marshal(NewNetworkDocument(network))
+	require.NoError(t, err)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(data, &doc))
+	assert.Equal(t, float64(SchemaVersion), doc["schemaVersion"])
+	assert.Equal(t, KindNetwork, doc["kind"])
+	assert.Equal(t, "net-1", doc["id"])
+	assert.Equal(t, "app", doc["name"])
+	assert.Equal(t, "overlay", doc["driver"])
+	assert.NotContains(t, doc, "items", "a document is not a list")
+}

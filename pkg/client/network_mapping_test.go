@@ -8,7 +8,46 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestGetNetworkMapsNetwork(t *testing.T) {
+	control := &fakeControl{network: &api.Network{
+		ID: "net-1",
+		Meta: api.Meta{
+			Version:   api.Version{Index: 2},
+			CreatedAt: &gogotypes.Timestamp{Seconds: 100},
+		},
+		Spec: api.NetworkSpec{
+			Annotations:  api.Annotations{Name: "app", Labels: map[string]string{"tier": "data"}},
+			DriverConfig: &api.Driver{Name: "overlay"},
+			Attachable:   true,
+		},
+	}}
+
+	got, err := (&Client{control: control}).GetNetwork(context.Background(), "net-1")
+	require.NoError(t, err)
+	assert.Equal(t, "net-1", got.ID)
+	assert.Equal(t, "app", got.Name)
+	assert.Equal(t, "2", got.Revision)
+	assert.Equal(t, "overlay", got.Driver)
+	assert.True(t, got.Attachable)
+	assert.Equal(t, map[string]string{"tier": "data"}, got.Labels)
+	assert.Equal(t, 1, control.getNetworkCall)
+}
+
+func TestGetNetworkMissingIsNotFound(t *testing.T) {
+	_, err := (&Client{control: &fakeControl{}}).GetNetwork(context.Background(), "missing")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetNetworkFailureIsReturned(t *testing.T) {
+	control := &fakeControl{getNetworkErr: assert.AnError}
+	_, err := (&Client{control: control}).GetNetwork(context.Background(), "net-1")
+	require.ErrorIs(t, err, assert.AnError)
+}
 
 func TestListNetworksMapsAndFiltersBuiltins(t *testing.T) {
 	control := &fakeControl{networks: []*api.Network{

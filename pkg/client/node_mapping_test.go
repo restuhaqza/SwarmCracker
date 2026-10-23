@@ -8,7 +8,35 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestGetNodeMapsNode(t *testing.T) {
+	control := &fakeControl{node: testManagerNode()}
+
+	got, err := (&Client{control: control}).GetNode(context.Background(), "node-manager-1")
+	require.NoError(t, err)
+	assert.Equal(t, "node-manager-1", got.ID)
+	assert.Equal(t, "manager-1", got.Hostname)
+	assert.Equal(t, "manager", got.Role)
+	assert.Equal(t, "ready", got.State)
+	require.NotNil(t, got.Manager)
+	assert.True(t, got.Manager.Leader)
+	assert.Equal(t, 1, control.getNodeCall)
+}
+
+func TestGetNodeMissingIsNotFound(t *testing.T) {
+	_, err := (&Client{control: &fakeControl{}}).GetNode(context.Background(), "missing")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetNodeFailureIsReturned(t *testing.T) {
+	control := &fakeControl{getNodeErr: assert.AnError}
+	_, err := (&Client{control: control}).GetNode(context.Background(), "node-1")
+	require.ErrorIs(t, err, assert.AnError)
+}
 
 func TestListNodesMapsNode(t *testing.T) {
 	control := &fakeControl{nodes: []*api.Node{testManagerNode()}}

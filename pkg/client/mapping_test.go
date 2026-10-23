@@ -24,15 +24,33 @@ type fakeControl struct {
 	taskErr        error
 	listTasksCalls int
 	lastTaskReq    *api.ListTasksRequest
+	task           *api.Task
+	getTaskErr     error
+	getTaskCall    int
 	nodes          []*api.Node
 	nodeErr        error
 	listNodesCalls int
+	node           *api.Node
+	getNodeErr     error
+	getNodeCall    int
 	networks       []*api.Network
 	networkErr     error
+	network        *api.Network
+	getNetworkErr  error
+	getNetworkCall int
 	configs        []*api.Config
 	configErr      error
+	config         *api.Config
+	getConfigErr   error
+	getConfigCall  int
 	secrets        []*api.Secret
 	secretErr      error
+	secret         *api.Secret
+	getSecretErr   error
+	getSecretCall  int
+	clusters       []*api.Cluster
+	clusterErr     error
+	clusterCalls   int
 }
 
 func (f *fakeControl) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
@@ -91,6 +109,94 @@ func (f *fakeControl) ListSecrets(context.Context, *api.ListSecretsRequest, ...g
 		return nil, f.secretErr
 	}
 	return &api.ListSecretsResponse{Secrets: f.secrets}, nil
+}
+
+func (f *fakeControl) GetTask(_ context.Context, req *api.GetTaskRequest, _ ...grpc.CallOption) (*api.GetTaskResponse, error) {
+	f.getTaskCall++
+	if f.getTaskErr != nil {
+		return nil, f.getTaskErr
+	}
+	if f.task != nil {
+		return &api.GetTaskResponse{Task: f.task}, nil
+	}
+	for _, task := range f.tasks {
+		if task != nil && task.ID == req.TaskID {
+			return &api.GetTaskResponse{Task: task}, nil
+		}
+	}
+	return &api.GetTaskResponse{}, nil
+}
+
+func (f *fakeControl) GetNode(_ context.Context, req *api.GetNodeRequest, _ ...grpc.CallOption) (*api.GetNodeResponse, error) {
+	f.getNodeCall++
+	if f.getNodeErr != nil {
+		return nil, f.getNodeErr
+	}
+	if f.node != nil {
+		return &api.GetNodeResponse{Node: f.node}, nil
+	}
+	for _, node := range f.nodes {
+		if node != nil && node.ID == req.NodeID {
+			return &api.GetNodeResponse{Node: node}, nil
+		}
+	}
+	return &api.GetNodeResponse{}, nil
+}
+
+func (f *fakeControl) GetNetwork(_ context.Context, req *api.GetNetworkRequest, _ ...grpc.CallOption) (*api.GetNetworkResponse, error) {
+	f.getNetworkCall++
+	if f.getNetworkErr != nil {
+		return nil, f.getNetworkErr
+	}
+	if f.network != nil {
+		return &api.GetNetworkResponse{Network: f.network}, nil
+	}
+	for _, network := range f.networks {
+		if network != nil && network.ID == req.NetworkID {
+			return &api.GetNetworkResponse{Network: network}, nil
+		}
+	}
+	return &api.GetNetworkResponse{}, nil
+}
+
+func (f *fakeControl) GetConfig(_ context.Context, req *api.GetConfigRequest, _ ...grpc.CallOption) (*api.GetConfigResponse, error) {
+	f.getConfigCall++
+	if f.getConfigErr != nil {
+		return nil, f.getConfigErr
+	}
+	if f.config != nil {
+		return &api.GetConfigResponse{Config: f.config}, nil
+	}
+	for _, config := range f.configs {
+		if config != nil && config.ID == req.ConfigID {
+			return &api.GetConfigResponse{Config: config}, nil
+		}
+	}
+	return &api.GetConfigResponse{}, nil
+}
+
+func (f *fakeControl) GetSecret(_ context.Context, req *api.GetSecretRequest, _ ...grpc.CallOption) (*api.GetSecretResponse, error) {
+	f.getSecretCall++
+	if f.getSecretErr != nil {
+		return nil, f.getSecretErr
+	}
+	if f.secret != nil {
+		return &api.GetSecretResponse{Secret: f.secret}, nil
+	}
+	for _, secret := range f.secrets {
+		if secret != nil && secret.ID == req.SecretID {
+			return &api.GetSecretResponse{Secret: secret}, nil
+		}
+	}
+	return &api.GetSecretResponse{}, nil
+}
+
+func (f *fakeControl) ListClusters(context.Context, *api.ListClustersRequest, ...grpc.CallOption) (*api.ListClustersResponse, error) {
+	f.clusterCalls++
+	if f.clusterErr != nil {
+		return nil, f.clusterErr
+	}
+	return &api.ListClustersResponse{Clusters: f.clusters}, nil
 }
 
 func TestListServicesMapsServiceAndCounts(t *testing.T) {

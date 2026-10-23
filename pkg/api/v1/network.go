@@ -19,6 +19,18 @@ type NetworkIPAM struct {
 	Gateway string `json:"gateway,omitempty"`
 }
 
+// NetworkDocument is a single-resource Network document.
+type NetworkDocument struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Kind          string `json:"kind"`
+	Network
+}
+
+// NewNetworkDocument wraps a Network in the v1 envelope.
+func NewNetworkDocument(network Network) NetworkDocument {
+	return NetworkDocument{SchemaVersion: SchemaVersion, Kind: KindNetwork, Network: network}
+}
+
 // NetworkList is a paginated list of user-defined networks.
 type NetworkList struct {
 	SchemaVersion int       `json:"schemaVersion"`

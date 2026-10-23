@@ -9,7 +9,104 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestGetConfigMapsMetadata(t *testing.T) {
+	control := &fakeControl{config: &api.Config{
+		ID: "cfg-1",
+		Meta: api.Meta{
+			Version:   api.Version{Index: 3},
+			CreatedAt: &gogotypes.Timestamp{Seconds: 100},
+			UpdatedAt: &gogotypes.Timestamp{Seconds: 200},
+		},
+		Spec: api.ConfigSpec{
+			Annotations: api.Annotations{Name: "app", Labels: map[string]string{"team": "payments"}},
+			Data:        []byte("must-not-be-returned"),
+		},
+	}}
+
+	got, err := (&Client{control: control}).GetConfig(context.Background(), "cfg-1")
+	require.NoError(t, err)
+	assert.Equal(t, "cfg-1", got.ID)
+	assert.Equal(t, "app", got.Name)
+	assert.Equal(t, "3", got.Revision)
+	assert.Equal(t, map[string]string{"team": "payments"}, got.Labels)
+	assert.Equal(t, time.Unix(100, 0).UTC().Format(time.RFC3339Nano), got.CreatedAt)
+	assert.Equal(t, 1, control.getConfigCall)
+}
+
+func TestGetConfigMissingIsNotFound(t *testing.T) {
+	_, err := (&Client{control: &fakeControl{}}).GetConfig(context.Background(), "missing")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetConfigFailureIsReturned(t *testing.T) {
+	control := &fakeControl{getConfigErr: assert.AnError}
+	_, err := (&Client{control: control}).GetConfig(context.Background(), "cfg-1")
+	require.ErrorIs(t, err, assert.AnError)
+}
+
+func TestGetSecretMapsMetadata(t *testing.T) {
+	control := &fakeControl{secret: &api.Secret{
+		ID: "sec-1",
+		Meta: api.Meta{
+			Version:   api.Version{Index: 7},
+			CreatedAt: &gogotypes.Timestamp{Seconds: 100},
+			UpdatedAt: &gogotypes.Timestamp{Seconds: 200},
+		},
+		Spec: api.SecretSpec{
+			Annotations: api.Annotations{Name: "token", Labels: map[string]string{"env": "prod"}},
+			Data:        []byte("must-not-be-returned"),
+			Driver:      &api.Driver{Name: "external"},
+		},
+	}}
+
+	got, err := (&Client{control: control}).GetSecret(context.Background(), "sec-1")
+	require.NoError(t, err)
+	assert.Equal(t, "sec-1", got.ID)
+	assert.Equal(t, "token", got.Name)
+	assert.Equal(t, "7", got.Revision)
+	assert.Equal(t, "external", got.Driver)
+	assert.Equal(t, map[string]string{"env": "prod"}, got.Labels)
+	assert.Equal(t, time.Unix(200, 0).UTC().Format(time.RFC3339Nano), got.UpdatedAt)
+	assert.Equal(t, 1, control.getSecretCall)
+}
+
+func TestGetSecretMissingIsNotFound(t *testing.T) {
+	_, err := (&Client{control: &fakeControl{}}).GetSecret(context.Background(), "missing")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetSecretFailureIsReturned(t *testing.T) {
+	control := &fakeControl{getSecretErr: assert.AnError}
+	_, err := (&Client{control: control}).GetSecret(context.Background(), "sec-1")
+	require.ErrorIs(t, err, assert.AnError)
+}
+
+func TestClusterIDReturnsFirstCluster(t *testing.T) {
+	control := &fakeControl{clusters: []*api.Cluster{{ID: "cluster-1"}, {ID: "cluster-2"}}}
+
+	got, err := (&Client{control: control}).ClusterID(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "cluster-1", got)
+	assert.Equal(t, 1, control.clusterCalls)
+}
+
+func TestClusterIDEmptyIsNotFound(t *testing.T) {
+	_, err := (&Client{control: &fakeControl{}}).ClusterID(context.Background())
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestClusterIDFailureIsReturned(t *testing.T) {
+	control := &fakeControl{clusterErr: assert.AnError}
+	_, err := (&Client{control: control}).ClusterID(context.Background())
+	require.ErrorIs(t, err, assert.AnError)
+}
 
 func TestListConfigsMapsMetadataAndOrder(t *testing.T) {
 	control := &fakeControl{configs: []*api.Config{

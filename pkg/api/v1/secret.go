@@ -11,6 +11,19 @@ type Secret struct {
 	Driver    string            `json:"driver,omitempty"`
 }
 
+// SecretDocument is a single-resource Secret document. It carries metadata
+// only; the payload has no path into a read document.
+type SecretDocument struct {
+	SchemaVersion int    `json:"schemaVersion"`
+	Kind          string `json:"kind"`
+	Secret
+}
+
+// NewSecretDocument wraps a Secret in the v1 envelope.
+func NewSecretDocument(secret Secret) SecretDocument {
+	return SecretDocument{SchemaVersion: SchemaVersion, Kind: KindSecret, Secret: secret}
+}
+
 // SecretList is a paginated list of secrets.
 type SecretList struct {
 	SchemaVersion int       `json:"schemaVersion"`

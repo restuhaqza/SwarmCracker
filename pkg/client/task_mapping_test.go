@@ -9,7 +9,63 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestGetTaskMapsAndResolvesNodeName(t *testing.T) {
+	control := &fakeControl{
+		task: testTask(),
+		nodes: []*api.Node{
+			{ID: "node-1", Description: &api.NodeDescription{Hostname: "node-2"}},
+		},
+	}
+
+	got, err := (&Client{control: control}).GetTask(context.Background(), "task-1")
+	require.NoError(t, err)
+	assert.Equal(t, "task-1", got.ID)
+	assert.Equal(t, "web.1.task-1", got.Name)
+	assert.Equal(t, "svc-1", got.ServiceID)
+	assert.Equal(t, "node-1", got.NodeID)
+	assert.Equal(t, "node-2", got.NodeName)
+	assert.Equal(t, "running", got.State)
+	assert.Equal(t, 1, control.getTaskCall)
+	assert.Equal(t, 1, control.listNodesCalls)
+}
+
+func TestGetTaskWithoutNodeSkipsNodeLookup(t *testing.T) {
+	task := testTask()
+	task.NodeID = ""
+
+	control := &fakeControl{task: task}
+
+	got, err := (&Client{control: control}).GetTask(context.Background(), "task-1")
+	require.NoError(t, err)
+	assert.Empty(t, got.NodeID)
+	assert.Empty(t, got.NodeName)
+	assert.Zero(t, control.listNodesCalls, "a task without a node must not read nodes")
+}
+
+func TestGetTaskMissingIsNotFound(t *testing.T) {
+	_, err := (&Client{control: &fakeControl{}}).GetTask(context.Background(), "missing")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetTaskErrorsAreReturned(t *testing.T) {
+	t.Run("get task", func(t *testing.T) {
+		control := &fakeControl{getTaskErr: assert.AnError}
+		_, err := (&Client{control: control}).GetTask(context.Background(), "task-1")
+		require.ErrorIs(t, err, assert.AnError)
+		assert.Zero(t, control.listNodesCalls)
+	})
+
+	t.Run("list nodes", func(t *testing.T) {
+		control := &fakeControl{task: testTask(), nodeErr: assert.AnError}
+		_, err := (&Client{control: control}).GetTask(context.Background(), "task-1")
+		require.ErrorIs(t, err, assert.AnError)
+	})
+}
 
 func TestListTasksMapsTask(t *testing.T) {
 	task := testTask()

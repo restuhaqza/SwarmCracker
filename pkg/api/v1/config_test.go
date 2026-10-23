@@ -37,3 +37,27 @@ func TestConfigListGoldenFixture(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, string(fixture), string(data))
 }
+
+func TestConfigDocumentEnvelope(t *testing.T) {
+	config := Config{
+		ID:        "cfg-1",
+		Name:      "app",
+		Revision:  "3",
+		CreatedAt: "2026-10-19T10:00:00Z",
+		UpdatedAt: "2026-10-19T11:00:00Z",
+		Labels:    map[string]string{"team": "payments"},
+	}
+
+	data, err := json.Marshal(NewConfigDocument(config))
+	require.NoError(t, err)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(data, &doc))
+	assert.Equal(t, float64(SchemaVersion), doc["schemaVersion"])
+	assert.Equal(t, KindConfig, doc["kind"])
+	assert.Equal(t, "cfg-1", doc["id"])
+	assert.Equal(t, "app", doc["name"])
+	assert.NotContains(t, doc, "data", "config payload must never be serialized")
+	assert.NotContains(t, doc, "value", "config payload must never be serialized")
+	assert.NotContains(t, doc, "items", "a document is not a list")
+}
