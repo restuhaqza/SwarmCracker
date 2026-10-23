@@ -456,7 +456,7 @@ func TestExecRelayedNodeFailureIsAuditedAsError(t *testing.T) {
 // controller can still reach the underlying Flush.
 func TestExecStatusRecorderPreservesStreaming(t *testing.T) {
 	rec := httptest.NewRecorder()
-	recorder := &execStatusRecorder{ResponseWriter: rec}
+	recorder := &relayStatusRecorder{ResponseWriter: rec}
 
 	require.Zero(t, recorder.Status(), "nothing has been written yet")
 	require.Equal(t, http.ResponseWriter(rec), recorder.Unwrap(),
@@ -477,7 +477,7 @@ func TestExecStatusRecorderPreservesStreaming(t *testing.T) {
 // wins while an informational response does not latch.
 func TestExecStatusRecorderKeepsFirstFinalStatus(t *testing.T) {
 	rec := httptest.NewRecorder()
-	recorder := &execStatusRecorder{ResponseWriter: rec}
+	recorder := &relayStatusRecorder{ResponseWriter: rec}
 
 	recorder.WriteHeader(http.StatusEarlyHints)
 	require.Zero(t, recorder.Status(), "an informational response is not the outcome")

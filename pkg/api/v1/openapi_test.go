@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/stretchr/testify/assert"
@@ -695,6 +696,97 @@ func TestOpenAPIExec(t *testing.T) {
 		require.Containsf(t, frameSchema, key, "ExecFrame.%s missing", key)
 	}
 	require.NotContains(t, frameSchema, "exit_code", "exec keys are camelCase")
+}
+
+// TestOpenAPILogsAndFiles pins the two remaining task-scoped routes. Logs are
+// the second NDJSON stream and files are the only raw-body route, so the
+// contract must say so explicitly instead of implying a JSON envelope.
+func TestOpenAPILogsAndFiles(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	logs := doc.Paths.Find("/v1/tasks/{id}/logs")
+	require.NotNil(t, logs, "logs path missing")
+	require.NotNil(t, logs.Get, "logs GET operation missing")
+	op := logs.Get
+
+	require.Contains(t, op.Description, "tasks:logs", "the operation must name its scope")
+	require.Contains(t, op.Description, "selectors", "logs must state they are not selector-gated")
+	require.Contains(t, op.Description, "eof", "the follow/eof rule must be documented")
+
+	id := findParameter(t, op.Parameters, "id")
+	require.True(t, id.Required)
+	for _, name := range []string{"tail", "since", "follow"} {
+		param := findParameter(t, op.Parameters, name)
+		require.NotNilf(t, param.Schema, "logs %s parameter schema missing", name)
+	}
+
+	ok := op.Responses.Value("200")
+	require.NotNil(t, ok, "logs 200 response missing")
+	stream := ok.Value.Content.Get(NDJSONMediaType)
+	require.NotNilf(t, stream, "the log response must be %s", NDJSONMediaType)
+	require.Equal(t, "#/components/schemas/LogFrame", stream.Schema.Ref)
+
+	for _, status := range []string{"400", "401", "403", "404", "429", "503"} {
+		response := op.Responses.Value(status)
+		require.NotNilf(t, response, "logs %s response missing", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"logs %s must be declared in %s", status, v1MediaType)
+	}
+
+	files := doc.Paths.Find("/v1/tasks/{id}/files")
+	require.NotNil(t, files, "files path missing")
+	require.NotNil(t, files.Get, "files GET operation missing")
+	require.NotNil(t, files.Put, "files PUT operation missing")
+
+	for _, fileOp := range []*openapi3.Operation{files.Get, files.Put} {
+		require.Contains(t, fileOp.Description, "tasks:files", "the operation must name its scope")
+		require.Contains(t, fileOp.Description, "task.files", "the audit action must be documented")
+
+		pathParam := findParameter(t, fileOp.Parameters, "path")
+		require.True(t, pathParam.Required, "path is required")
+		require.NotContains(t, fileOp.Description, "tar", "there is no archive mode")
+	}
+
+	getFile := files.Get.Responses.Value("200")
+	require.NotNil(t, getFile, "files GET 200 response missing")
+	octets := getFile.Value.Content.Get("application/octet-stream")
+	require.NotNil(t, octets, "a file read must be application/octet-stream")
+	require.Equal(t, "binary", octets.Schema.Value.Format, "the body is raw bytes")
+
+	putFile := files.Put
+	require.NotNil(t, putFile.RequestBody)
+	require.True(t, putFile.RequestBody.Value.Required)
+	upload := putFile.RequestBody.Value.Content.Get("application/octet-stream")
+	require.NotNil(t, upload, "a file write body must be application/octet-stream")
+	require.Equal(t, "binary", upload.Schema.Value.Format, "the body is raw bytes")
+
+	noContent := putFile.Responses.Value("204")
+	require.NotNil(t, noContent, "a successful write is 204")
+	for _, status := range []string{"400", "401", "403", "404", "413", "415", "429", "503"} {
+		response := putFile.Responses.Value(status)
+		require.NotNilf(t, response, "files PUT %s response missing", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"files PUT %s must be declared in %s", status, v1MediaType)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value LogFrame
+	}{
+		{name: "LogFrame", value: LogDataFrame(time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC), []byte("hello\n"))},
+		{name: "LogFrame", value: LogEOFFrame()},
+	} {
+		data, err := json.Marshal(tc.value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		validateAgainst(t, doc, tc.name, generic)
+	}
+
+	frameSchema := documentSchemaProperties(t, doc, "LogFrame")
+	for _, key := range []string{"type", "stream", "time", "data"} {
+		require.Containsf(t, frameSchema, key, "LogFrame.%s missing", key)
+	}
 }
 
 func TestOpenAPIErrorDocument(t *testing.T) {

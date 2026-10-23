@@ -7,6 +7,7 @@ import (
 
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/urfave/cli/v2"
 )
 
@@ -18,6 +19,9 @@ const defaultBrokerListen = "0.0.0.0:4245"
 type brokerRuntime struct {
 	listenAddr string
 	socketDir  string
+	// logDir holds the per-task console logs. It is the directory the executor
+	// writes, so a task's log is the one `swarmcracker vm logs` reads.
+	logDir string
 }
 
 // brokerRuntimeFrom resolves the broker settings. An empty listen address
@@ -27,6 +31,7 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 	return brokerRuntime{
 		listenAddr: ctx.String("broker-listen"),
 		socketDir:  ctx.String("socket-dir"),
+		logDir:     scruntime.DefaultLogDir(),
 	}
 }
 
@@ -52,17 +57,28 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Addr:      cfg.listenAddr,
 		TLSConfig: serverTLSConfig(cert, caPool),
-		Tasks:     broker.SocketDirSource{Dir: cfg.socketDir},
+		Tasks:     broker.SocketDirSource{Dir: cfg.socketDir, LogDir: cfg.logDir},
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	// Exec is the first operation the node serves. The handler dials the task's
-	// guest agent over the vsock muxer; the public route has already resolved
-	// the reference and enforced the caller's selectors.
-	if err := srv.Handle("exec", broker.NewExecHandler(broker.DialAgent)); err != nil {
-		return nil, nil, err
+	// The node serves exec, logs and files. Exec and files dial the task's guest
+	// agent over the vsock muxer; logs read the console file the executor wrote.
+	// The public route has already resolved the reference and enforced the
+	// caller's selectors.
+	handlers := []struct {
+		op string
+		h  broker.Handler
+	}{
+		{"exec", broker.NewExecHandler(broker.DialAgent)},
+		{"logs", broker.NewLogsHandler()},
+		{"files", broker.NewFilesHandler(broker.DialAgent)},
+	}
+	for _, entry := range handlers {
+		if err := srv.Handle(entry.op, entry.h); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	lis, err := srv.Listen()

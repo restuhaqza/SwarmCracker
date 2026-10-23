@@ -447,8 +447,8 @@ func TestVersionDocument(t *testing.T) {
 	assert.Equal(t, "0.11.0", info.ServerVersion)
 	assert.Equal(t, "v1", info.GRPCProtocolVersion)
 	assert.Equal(t, "cluster-1", info.ClusterID)
-	assert.Equal(t, []string{"read", "write", "events", "exec"}, info.Capabilities,
-		"nil capabilities default to the served surface: read, write, events and exec")
+	assert.Equal(t, []string{"read", "write", "events", "exec", "logs", "files"}, info.Capabilities,
+		"nil capabilities default to the served surface")
 }
 
 func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
@@ -456,7 +456,7 @@ func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
 	api := newTestAPIWithConfig(t, fc, Config{
 		ServerVersion: "0.11.0",
 		GRPCVersion:   "v1",
-		Capabilities:  []string{"read", "write", "events", "exec"},
+		Capabilities:  []string{"read", "write", "events", "exec", "logs", "files"},
 	})
 
 	rec := api.do(t, http.MethodGet, "/v1/version", withToken(api.token))
@@ -464,7 +464,7 @@ func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
 
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
-	assert.Equal(t, []string{"read", "write", "events", "exec"}, info.Capabilities)
+	assert.Equal(t, []string{"read", "write", "events", "exec", "logs", "files"}, info.Capabilities)
 	assert.Equal(t, "from-client", info.ClusterID, "empty config cluster ID falls back to the client")
 }
 
@@ -478,7 +478,7 @@ func TestVersionClusterFallbackToleratesClientError(t *testing.T) {
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.Empty(t, info.ClusterID)
-	assert.Equal(t, []string{"read", "write", "events", "exec"}, info.Capabilities)
+	assert.Equal(t, []string{"read", "write", "events", "exec", "logs", "files"}, info.Capabilities)
 }
 
 func TestEmptyServiceListIsExactlyEmpty(t *testing.T) {

@@ -12,10 +12,19 @@ import (
 // task (see pkg/runtime: <socketDir>/<taskID>.sock).
 const vmSocketSuffix = ".sock"
 
+// consoleLogSuffix is the console log suffix the executor uses for a task (see
+// pkg/runtime: <logDir>/<taskID>.log). The Firecracker console merges stdout and
+// stderr into this one file.
+const consoleLogSuffix = ".log"
+
 // Task is one local microVM the node broker can route to.
 type Task struct {
 	ID         string
 	SocketPath string // Firecracker API socket, e.g. /var/run/firecracker/<id>.sock
+	// LogPath is the task's Firecracker console log, e.g.
+	// /var/run/swarmcracker/<id>.log. It is empty when the source has no log
+	// directory; the log handler then answers not_found rather than guessing.
+	LogPath string
 }
 
 // VsockPath returns the Firecracker vsock muxer path for the task:
@@ -35,12 +44,16 @@ type TaskSource interface {
 	Lookup(ctx context.Context, taskID string) (Task, bool, error)
 }
 
-// SocketDirSource resolves <dir>/<taskID>.sock. It rejects empty IDs and any
-// ID containing a path separator or a dot: task IDs come from an untrusted URL
-// path, and without that check ".." (or "a/../../b") would address a file
-// outside the socket directory.
+// SocketDirSource resolves <dir>/<taskID>.sock and, when LogDir is set,
+// <logDir>/<taskID>.log. It rejects empty IDs and any ID containing a path
+// separator or a dot: task IDs come from an untrusted URL path, and without that
+// check ".." (or "a/../../b") would address a file outside the socket directory.
 type SocketDirSource struct {
 	Dir string
+	// LogDir holds the per-task console logs. Empty leaves Task.LogPath empty:
+	// a broker that does not know the log directory must not read a path
+	// relative to its working directory.
+	LogDir string
 }
 
 // Lookup returns the task whose API socket exists in the configured directory.
@@ -64,7 +77,14 @@ func (s SocketDirSource) Lookup(_ context.Context, taskID string) (Task, bool, e
 		return Task{}, false, fmt.Errorf("task socket %s is a directory", socketPath)
 	}
 
-	return Task{ID: taskID, SocketPath: socketPath}, true, nil
+	task := Task{ID: taskID, SocketPath: socketPath}
+	if s.LogDir != "" {
+		// Derived, not probed: a task resolves while its console log is still
+		// being created, and the log handler owns the not-found answer.
+		task.LogPath = filepath.Join(s.LogDir, taskID+consoleLogSuffix)
+	}
+
+	return task, true, nil
 }
 
 // validateTaskID rejects the shapes that could escape the socket directory.

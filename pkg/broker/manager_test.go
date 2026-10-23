@@ -372,7 +372,11 @@ func TestManagerProxyRewritesRelayedNodeErrors(t *testing.T) {
 		status int
 		code   output.Code
 	}{
+		{http.StatusBadRequest, output.CodeInvalid},
 		{http.StatusNotFound, codeNotFound},
+		{http.StatusRequestEntityTooLarge, output.CodeInvalid},
+		{http.StatusUnsupportedMediaType, output.CodeInvalid},
+		{http.StatusInternalServerError, output.CodeInternal},
 		{http.StatusNotImplemented, codeNotImplemented},
 		{http.StatusServiceUnavailable, codeUnavailable},
 	}

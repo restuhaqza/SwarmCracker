@@ -24,6 +24,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v2"
 )
@@ -49,6 +50,8 @@ func TestBrokerRuntimeFrom_Defaults(t *testing.T) {
 
 	require.Equal(t, "0.0.0.0:4245", cfg.listenAddr)
 	require.Equal(t, "/var/run/firecracker", cfg.socketDir)
+	require.Equal(t, runtime.DefaultLogDir(), cfg.logDir,
+		"the broker reads the same console logs the executor writes")
 }
 
 func TestBrokerRuntimeFrom_EmptyListenDisables(t *testing.T) {
@@ -178,6 +181,93 @@ func TestStartBroker_RequiresCertificates(t *testing.T) {
 	require.Error(t, err)
 	require.Nil(t, srv)
 	require.Nil(t, stop)
+}
+
+// TestStartBroker_ServesLogs proves the node registers the log operation and
+// reads the log directory the executor writes: an mTLS GET returns the console
+// backlog as NDJSON and ends with eof.
+func TestStartBroker_ServesLogs(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "task-1.log"),
+		[]byte("console line\n"), 0o600))
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: logDir}
+	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/logs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "application/x-ndjson", resp.Header.Get("Content-Type"))
+
+	frames := []v1.LogFrame{}
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var frame v1.LogFrame
+		if err := decoder.Decode(&frame); err != nil {
+			break
+		}
+		frames = append(frames, frame)
+	}
+	require.Len(t, frames, 2)
+	require.Equal(t, v1.LogFrameTypeLog, frames[0].Type)
+	require.Equal(t, []byte("console line\n"), frames[0].Data)
+	require.Equal(t, v1.LogFrameTypeEOF, frames[1].Type)
+}
+
+// TestStartBroker_RegistersFiles proves the file operation is registered: a task
+// with no guest muxer answers the broker's unavailable rather than the server's
+// not-implemented.
+func TestStartBroker_RegistersFiles(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
+	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/files?path=/etc/hostname")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode,
+		"files must be registered, not 501")
+}
+
+// TestStartBroker_LogsUnavailableTaskIs404 pins the daemon's not-found answer for
+// a task whose console log was never written.
+func TestStartBroker_LogsUnavailableTaskIs404(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
+	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/logs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
 func TestStartBroker_ServesMTLSAndStops(t *testing.T) {

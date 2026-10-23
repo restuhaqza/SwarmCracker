@@ -136,7 +136,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, output.NewError(output.CodeInvalid, "apihttp: Config.Client must not be nil")
 	}
 	if cfg.Capabilities == nil {
-		cfg.Capabilities = []string{"read", "write", "events", "exec"}
+		cfg.Capabilities = []string{"read", "write", "events", "exec", "logs", "files"}
 	}
 	if cfg.EventHeartbeat <= 0 {
 		cfg.EventHeartbeat = defaultEventHeartbeat
@@ -185,6 +185,14 @@ func (s *Server) routes() {
 	// Idempotency-Key middleware, which buffers a response to replay it.
 	s.handleRoutes("/v1/tasks/{id}/exec",
 		streamPost(ScopeTasksExec, s.execTask))
+	// Logs are an NDJSON stream and files are raw bytes. Neither is a JSON
+	// document, and a PUT must not be buffered by the Idempotency-Key
+	// middleware, so only POST ever takes that path.
+	s.handleRoutes("/v1/tasks/{id}/logs", read(ScopeTasksLogs, s.taskLogs))
+	s.handleRoutes("/v1/tasks/{id}/files",
+		read(ScopeTasksFiles, s.getTaskFile),
+		write(http.MethodPut, ScopeTasksFiles, s.putTaskFile),
+	)
 
 	s.handleRoutes("/v1/nodes",
 		read(ScopeNodesRead, s.listNodes),
@@ -408,7 +416,8 @@ func checkAccept(r *http.Request) error {
 	for _, part := range strings.Split(raw, ",") {
 		mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
 		switch mediaType {
-		case "*/*", "application/json", MediaType, "text/event-stream", "application/x-ndjson":
+		case "*/*", "application/json", MediaType, "text/event-stream", "application/x-ndjson",
+			"application/octet-stream":
 			return nil
 		}
 	}

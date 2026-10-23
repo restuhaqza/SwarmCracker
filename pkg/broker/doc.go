@@ -23,16 +23,20 @@
 // (501), unavailable (503, a task-source failure) and unreachable (503, the
 // manager could not reach the node).
 //
-// On the way back to a public caller the manager rewrites a relayed 404, 501 or
-// 503 Error document into the public envelope (the v1 media type, the API
-// version header and the caller's requestId). A successful response — including
-// the NDJSON exec stream — is forwarded byte for byte.
+// On the way back to a public caller the manager rewrites a relayed 4xx/5xx
+// Error document into the public envelope (the v1 media type, the API version
+// header and the caller's requestId), so a node's typed 400 for a directory or
+// 413 for an oversized upload reaches the caller in the same shape. A successful
+// response — the NDJSON exec and log streams and the raw file bytes — is
+// forwarded byte for byte.
 //
 // # Operations
 //
-// Exec is served today (non-interactive only). Interactive TTY over the API is
-// a WebSocket follow-up, so a tty request is a typed 501 with
-// details.reason "tty_not_supported".
+// Exec (non-interactive only), logs and files are served. Logs read the task's
+// Firecracker console file, so they need no guest agent; files travel through the
+// guest agent over the vsock muxer. Interactive TTY over the API is a WebSocket
+// follow-up, so a tty request is a typed 501 with details.reason
+// "tty_not_supported".
 //
 // # Trust
 //

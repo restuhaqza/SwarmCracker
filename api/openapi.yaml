@@ -1228,6 +1228,209 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}/logs:
+    get:
+      operationId: getTaskLogs
+      summary: Stream a task's console log
+      description: >
+        Requires tasks:logs, which every role carries. The task reference is
+        resolved server-side and the request is relayed to the node that runs the
+        task, so the caller never picks a host. Logs are reader-scoped: task
+        selectors do not gate them and the read is not audited. The response is
+        the documented exception to the v1 envelope and is an
+        `application/x-ndjson` stream of LogFrame objects, one per line, flushed
+        as output is produced and never buffered. The Firecracker console merges
+        stdout and stderr, so `stream` is always stdout. `tail` selects the
+        backlog (default 200, maximum 10000; a larger value is clamped); `since`
+        is an RFC3339 instant applied before `tail`. The console file carries no
+        per-line timestamps, so backlog lines are stamped with the file's
+        modification time and followed lines with the time they were read. A
+        `follow` stream never ends with `eof`: it ends when the caller
+        disconnects or the task disappears. A missing task or a task with no log
+        is 404; an unreachable node is 503.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, a unique id prefix of at least 4
+            characters, or a unique task name.
+        - name: tail
+          in: query
+          schema: { type: integer, minimum: 0, default: 200 }
+          description: >
+            Number of backlog lines, oldest to newest. Negative or non-numeric is
+            400 invalid; above 10000 is clamped.
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+          description: >
+            Only backlog lines at or after this instant. Invalid RFC3339 is 400
+            invalid.
+        - name: follow
+          in: query
+          schema: { type: boolean, default: false }
+          description: >
+            Keep streaming appended output. A value that is not a boolean is 400
+            invalid.
+      responses:
+        "200":
+          description: >
+            The log stream: one LogFrame JSON object per line, flushed as output
+            is produced, not a JSON array and not the v1 envelope. A non-following
+            stream always ends with one `eof` frame, which a caller must see to
+            treat the backlog as complete. A following stream has no terminal
+            frame.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/LogFrame" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}/files:
+    get:
+      operationId: getTaskFile
+      summary: Read a regular file from a task
+      description: >
+        Requires tasks:files. The task reference is resolved server-side, the
+        caller's task selectors are enforced (a runner needs a matching selector;
+        a mismatch is 403) and the attempt is audited as `task.files` with result
+        ok or error. The audit resource is the task: the path and the contents are
+        never recorded. The response is raw bytes — the documented exception to
+        the v1 envelope — with Content-Type application/octet-stream. Only regular
+        files are served: the path must be absolute and must not contain a `..`
+        segment (400 invalid otherwise). A directory is 400 invalid with
+        details.reason "directory_not_supported"; a missing file is 404.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, a unique id prefix of at least 4
+            characters, or a unique task name.
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+          description: >
+            Absolute guest path. Cleaned before use; a `..` segment is refused
+            rather than collapsed.
+      responses:
+        "200":
+          description: The file bytes, streamed as they arrive.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    put:
+      operationId: putTaskFile
+      summary: Write a regular file in a task
+      description: >
+        Requires tasks:files. The task reference is resolved server-side, the
+        caller's task selectors are enforced and the attempt is audited as
+        `task.files`. The body is the raw file: Content-Type must be
+        application/octet-stream (415 otherwise) and the response is 204 on
+        success. The body is limited to 1 GiB (413, details.reason
+        "payload_too_large"); the manager forwards the upload without buffering
+        it. `mode` is an octal file mode between 0000 and 0777 (default 0644;
+        anything else is 400 invalid). The path rules of GET apply. Audit records
+        the task, never the path or the contents.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, a unique id prefix of at least 4
+            characters, or a unique task name.
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+          description: >
+            Absolute guest path. Cleaned before use; a `..` segment is refused
+            rather than collapsed.
+        - name: mode
+          in: query
+          schema: { type: string, default: "0644", pattern: "^[0-7]{3,4}$" }
+          description: >
+            Octal file mode between 0000 and 0777. Anything else is 400 invalid.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "204":
+          description: The file was written.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/nodes:
     get:
       operationId: listNodes
@@ -2436,6 +2639,34 @@ components:
           description: >
             Error code on an error frame: "internal" for a mid-stream failure,
             "timeout" when the deadline expired.
+
+    LogFrame:
+      type: object
+      required: [type]
+      description: >
+        One frame of a task log stream: exactly one JSON object per line, newline
+        terminated. A non-following stream ends with one `eof` frame; a following
+        stream has no terminal frame. The console log merges stdout and stderr,
+        so `stream` is always stdout.
+      properties:
+        type:
+          type: string
+          enum: [log, eof]
+        stream:
+          type: string
+          enum: [stdout]
+          description: The merged console stream. Set on log frames only.
+        time:
+          type: string
+          format: date-time
+          description: >
+            RFC3339Nano timestamp. An approximation: the console file has no
+            per-line timestamps, so backlog lines carry the file's modification
+            time and followed lines carry the time they were read.
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded raw console bytes. Set on log frames only.
 
     NodeList:
       type: object

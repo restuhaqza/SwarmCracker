@@ -138,7 +138,7 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 		ServerVersion: Version,
 		GRPCVersion:   apiversion.Current,
 		ClusterID:     clusterID,
-		Capabilities:  []string{"read", "write", "events", "exec"},
+		Capabilities:  []string{"read", "write", "events", "exec", "logs", "files"},
 		RateLimit:     apihttp.NewRateLimiter(cfg.rateLimit, cfg.rateBurst),
 	})
 	if err != nil {

@@ -63,7 +63,7 @@ func (s *Server) execTask(w http.ResponseWriter, r *http.Request) {
 	}
 	resource := v1.AuditResource{Kind: v1.KindTask, ID: task.ID, Name: task.Name}
 
-	labels, err := s.execServiceLabels(r.Context(), task)
+	labels, err := s.taskServiceLabels(r.Context(), task)
 	if err != nil {
 		s.recordExecAudit(r, resource, "error")
 		s.writeError(w, r, err)
@@ -83,7 +83,7 @@ func (s *Server) execTask(w http.ResponseWriter, r *http.Request) {
 
 	// Wrap the writer so the relayed status is observable: Proxy reports only a
 	// resolve failure, so a node 4xx/5xx would otherwise be audited as success.
-	recorder := &execStatusRecorder{ResponseWriter: w}
+	recorder := &relayStatusRecorder{ResponseWriter: w}
 	if err := s.cfg.Broker.Proxy(r.Context(), recorder, r, task.ID, execOperation); err != nil {
 		// A resolve failure happens before anything is written, so it is still
 		// safe to answer with a typed document.
@@ -103,14 +103,14 @@ func (s *Server) execTask(w http.ResponseWriter, r *http.Request) {
 	s.recordExecAudit(r, resource, "ok")
 }
 
-// execStatusRecorder records the status the broker relayed while passing every
-// write straight through. It is deliberately not a buffer: the response is an
-// NDJSON stream that is flushed frame by frame.
+// relayStatusRecorder records the status the broker relayed while passing every
+// write straight through. It is deliberately not a buffer: exec answers with an
+// NDJSON stream and files with raw bytes, and both are flushed as they arrive.
 //
 // Unwrap exposes the underlying writer so http.NewResponseController finds its
 // Flush (and any other optional interface); without it the wrapper would hide
 // streaming from the reverse proxy.
-type execStatusRecorder struct {
+type relayStatusRecorder struct {
 	http.ResponseWriter
 	status int
 	wrote  bool
@@ -119,7 +119,7 @@ type execStatusRecorder struct {
 // WriteHeader records the first final status and forwards it. Informational
 // responses (1xx except 101 Switching Protocols) precede the final one and must
 // not latch the recorded outcome.
-func (r *execStatusRecorder) WriteHeader(status int) {
+func (r *relayStatusRecorder) WriteHeader(status int) {
 	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
 		r.ResponseWriter.WriteHeader(status)
 		return
@@ -133,7 +133,7 @@ func (r *execStatusRecorder) WriteHeader(status int) {
 
 // Write records the implicit 200 of a handler that writes without a header and
 // forwards the bytes unchanged.
-func (r *execStatusRecorder) Write(data []byte) (int, error) {
+func (r *relayStatusRecorder) Write(data []byte) (int, error) {
 	if !r.wrote {
 		r.status = http.StatusOK
 		r.wrote = true
@@ -142,10 +142,10 @@ func (r *execStatusRecorder) Write(data []byte) (int, error) {
 }
 
 // Unwrap returns the wrapped writer for http.ResponseController.
-func (r *execStatusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+func (r *relayStatusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
 // Status is the relayed HTTP status, or 0 when nothing was written.
-func (r *execStatusRecorder) Status() int { return r.status }
+func (r *relayStatusRecorder) Status() int { return r.status }
 
 // parseExecRequest reads and validates one exec body, restoring the body for
 // the proxy. The returned status is the HTTP status for a failure the taxonomy
@@ -218,11 +218,12 @@ func validateExecRequest(req v1.ExecRequest) (int, error) {
 	return 0, nil
 }
 
-// execServiceLabels returns the labels of the task's service. A task without a
-// service has none. A missing service is not an error: a selector that matches
-// on task ID still works, while one that needs labels fails closed because the
-// label map is empty. Any other lookup failure is returned.
-func (s *Server) execServiceLabels(ctx context.Context, task v1.Task) (map[string]string, error) {
+// taskServiceLabels returns the labels of the task's service, which a selector
+// matches on. A task without a service has none. A missing service is not an
+// error: a selector that matches on task ID still works, while one that needs
+// labels fails closed because the label map is empty. Any other lookup failure
+// is returned.
+func (s *Server) taskServiceLabels(ctx context.Context, task v1.Task) (map[string]string, error) {
 	if task.ServiceID == "" {
 		return nil, nil
 	}

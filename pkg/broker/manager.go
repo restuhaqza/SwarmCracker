@@ -228,12 +228,13 @@ func (m *Manager) writeProxyError(w http.ResponseWriter, r *http.Request, err *o
 
 // rewriteRelayedError converts an internal node error document into the public
 // envelope: the v1 media type, the API version header and the caller's request
-// ID. Only a 4xx/503 v1 Error document is touched; anything else (an NDJSON
-// stream, an HTML error from a proxy, an empty body) is passed through.
+// ID. Every 4xx/5xx body is inspected, not a fixed status list, so a node's typed
+// 400 (a directory instead of a file), 413 (an oversized upload) or 415 reaches
+// the caller in the public envelope too. Anything that is not a v1 Error
+// document — an NDJSON stream, an HTML error from a proxy, an empty body — is
+// passed through unchanged.
 func rewriteRelayedError(resp *http.Response) error {
-	if resp.StatusCode != http.StatusNotFound &&
-		resp.StatusCode != http.StatusNotImplemented &&
-		resp.StatusCode != http.StatusServiceUnavailable {
+	if resp.StatusCode < http.StatusBadRequest {
 		return nil
 	}
 	if resp.Body == nil {
