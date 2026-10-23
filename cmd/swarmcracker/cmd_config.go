@@ -10,7 +10,6 @@ import (
 
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
-	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
@@ -136,9 +135,9 @@ func listConfigsContract(format string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c, err := client.New(client.DefaultConfig())
+	c, err := newContractClient()
 	if err != nil {
-		return output.FromGRPC(err)
+		return err
 	}
 	defer c.Close()
 
@@ -148,7 +147,7 @@ func listConfigsContract(format string) error {
 func listConfigsContractWithClient(ctx context.Context, l configLister, w io.Writer, format string) error {
 	configs, err := l.ListConfigs(ctx)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 
 	switch output.Format(format) {

@@ -15,7 +15,6 @@ import (
 
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
-	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
@@ -687,6 +686,10 @@ func newServiceRemoveCommand() *cobra.Command {
 
 // SwarmKit client helper for service operations
 func getSwarmClientForService() (legacy.ControlClient, *grpc.ClientConn, error) {
+	if apiHost != "" {
+		return nil, nil, remoteUnsupported()
+	}
+
 	socketPath := "/var/run/swarmkit/swarm.sock"
 	if envSocket := os.Getenv("SWARM_SOCKET"); envSocket != "" {
 		socketPath = envSocket
@@ -827,6 +830,17 @@ func parseLabels(labelStrs []string) map[string]string {
 // Service operations implementation
 
 func listServices(format, filter string, quiet bool) error {
+	// A remote flag must never silently read the wrong cluster: the legacy
+	// --format json document is a local-only shape, so point at the contract
+	// document instead of dialing the local socket with --host set.
+	if apiHost != "" && format == "json" {
+		return output.NewError(output.CodeUsage,
+			"legacy --format json reads the local manager; use -o json with --host")
+	}
+	if apiHost != "" {
+		return listServicesRemoteTable(filter, quiet)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -837,6 +851,91 @@ func listServices(format, filter string, quiet bool) error {
 	defer conn.Close()
 
 	return listServicesWithClient(ctx, client, os.Stdout, format, filter, quiet)
+}
+
+// listServicesRemoteTable renders `service ls` from a remote manager with the
+// same columns and layout as the local table.
+func listServicesRemoteTable(filter string, quiet bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := newContractClient()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	return listServicesTableWithClient(ctx, c, os.Stdout, filter, quiet)
+}
+
+// listServicesTableWithClient is the remote table body with the lister and
+// writer injected, so the rendering is testable without a live manager.
+func listServicesTableWithClient(ctx context.Context, l serviceLister, w io.Writer, filter string, quiet bool) error {
+	services, err := l.ListServices(ctx)
+	if err != nil {
+		return contractError(err)
+	}
+
+	if len(services) == 0 {
+		fmt.Fprintln(w, "No services found")
+		return nil
+	}
+
+	services = filterV1Services(services, filter)
+
+	if quiet {
+		for _, svc := range services {
+			fmt.Fprintln(w, svc.ID)
+		}
+		return nil
+	}
+
+	fmt.Fprintf(w, "%-20s %-20s %-10s %-24s %s\n", "ID", "NAME", "REPLICAS", "PORTS", "IMAGE")
+	fmt.Fprintln(w, strings.Repeat("-", 100))
+	for _, svc := range services {
+		id := svc.ID
+		if len(id) > 12 {
+			id = id[:12]
+		}
+		fmt.Fprintf(w, "%-20s %-20s %-10s %-24s %s\n",
+			id, svc.Name, formatV1ServiceReplicas(svc), formatV1ServicePorts(svc), svc.Spec.Task.Image)
+	}
+	fmt.Fprintf(w, "\nTotal: %d service(s)\n", len(services))
+
+	return nil
+}
+
+// formatV1ServiceReplicas mirrors the local table: a service without a replica
+// count is reported as "global", exactly as the legacy path prints it.
+func formatV1ServiceReplicas(svc v1.Service) string {
+	if svc.Spec.Replicas != nil {
+		return fmt.Sprintf("%d", *svc.Spec.Replicas)
+	}
+	// A replicated service always carries its count; a server that omitted it is
+	// shown as 0 instead of being mislabelled global.
+	if svc.Spec.Mode == "replicated" {
+		return "0"
+	}
+	return "global"
+}
+
+// formatV1ServicePorts renders the contract ports as "host:target/proto", the
+// same shape the local table uses.
+func formatV1ServicePorts(svc v1.Service) string {
+	ports := svc.Spec.Task.Ports
+	if len(ports) == 0 {
+		return "-"
+	}
+
+	parts := make([]string, 0, len(ports))
+	for _, p := range ports {
+		proto := strings.ToLower(p.Protocol)
+		if proto == "" {
+			proto = "tcp"
+		}
+		parts = append(parts, fmt.Sprintf("%d:%d/%s", p.Published, p.Target, proto))
+	}
+	return strings.Join(parts, ",")
 }
 
 // listServicesWithClient is the body of `service ls` with the control client and
@@ -918,9 +1017,9 @@ func listServicesContract(format, filter string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c, err := client.New(client.DefaultConfig())
+	c, err := newContractClient()
 	if err != nil {
-		return output.FromGRPC(err)
+		return err
 	}
 	defer c.Close()
 
@@ -930,7 +1029,7 @@ func listServicesContract(format, filter string) error {
 func listServicesContractWithClient(ctx context.Context, l serviceLister, w io.Writer, format, filter string) error {
 	services, err := l.ListServices(ctx)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 	services = filterV1Services(services, filter)
 
@@ -1207,9 +1306,9 @@ func inspectServiceContract(ref string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c, err := client.New(client.DefaultConfig())
+	c, err := newContractClient()
 	if err != nil {
-		return output.FromGRPC(err)
+		return err
 	}
 	defer c.Close()
 
@@ -1219,7 +1318,7 @@ func inspectServiceContract(ref string) error {
 func inspectServiceContractWithClient(ctx context.Context, inspector serviceInspector, w io.Writer, ref string) error {
 	services, err := inspector.ListServices(ctx)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 
 	id, err := resolveV1ServiceRef(ref, services)
@@ -1229,7 +1328,7 @@ func inspectServiceContractWithClient(ctx context.Context, inspector serviceInsp
 
 	svc, err := inspector.GetService(ctx, id)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 
 	return output.WriteJSON(w, v1.NewServiceDocument(svc))
@@ -1499,9 +1598,9 @@ func listServiceTasksContract(ref, format, filter string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c, err := client.New(client.DefaultConfig())
+	c, err := newContractClient()
 	if err != nil {
-		return output.FromGRPC(err)
+		return err
 	}
 	defer c.Close()
 
@@ -1511,7 +1610,7 @@ func listServiceTasksContract(ref, format, filter string) error {
 func listServiceTasksContractWithClient(ctx context.Context, l serviceTaskLister, w io.Writer, ref, format, filter string) error {
 	services, err := l.ListServices(ctx)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 	id, err := resolveV1ServiceRef(ref, services)
 	if err != nil {
@@ -1520,7 +1619,7 @@ func listServiceTasksContractWithClient(ctx context.Context, l serviceTaskLister
 
 	tasks, err := l.ListServiceTasks(ctx, id)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 	tasks = filterV1Tasks(tasks, filter, "", "", false)
 

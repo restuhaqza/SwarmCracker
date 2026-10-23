@@ -28,6 +28,24 @@ var (
 )
 
 func main() {
+	if err := newRootCommand().Execute(); err != nil {
+		// A guest exit code is not an error to report: `vm exec` already
+		// streamed the command's output, so only the status is propagated.
+		var ec *exitCodeError
+		if !errors.As(err, &ec) {
+			if outputFormat == "json" || outputFormat == "ndjson" {
+				_ = output.WriteError(os.Stderr, err)
+			} else {
+				fmt.Fprintln(os.Stderr, err)
+			}
+		}
+		os.Exit(cliExitCode(err))
+	}
+}
+
+// newRootCommand builds the whole command tree. It is separate from main so a
+// test can parse the global flags without executing a command.
+func newRootCommand() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:     "swarmcracker",
 		Short:   "SwarmCracker CLI - Run containers as Firecracker microVMs",
@@ -47,8 +65,14 @@ func main() {
 	rootCmd.PersistentFlags().StringVar(&knownHostsPath, "known-hosts", "", "Path to SSH known_hosts file")
 	rootCmd.PersistentFlags().BoolVar(&insecureSSH, "insecure-ssh", false, "Skip SSH host key verification (WARNING: allows MITM attacks)")
 	rootCmd.PersistentFlags().StringVarP(&outputFormat, "output", "o", "", "Output format: table, json, name (commands that support it)")
+	rootCmd.PersistentFlags().StringVarP(&apiHost, "host", "H", "", "Manager API endpoint, e.g. https://mgr:4244")
+	rootCmd.PersistentFlags().StringVar(&apiCA, "ca", "", "PEM CA for the manager API")
+	rootCmd.PersistentFlags().StringVar(&apiTokenFile, "token-file", "", "File containing the bearer token")
+	rootCmd.PersistentFlags().StringVar(&apiToken, "token", "", "Explicit bearer token (wins over --token-file)")
+	rootCmd.PersistentFlags().StringVar(&apiTLSServerName, "tls-server-name", "", "TLS server name override")
 
 	// New command structure
+	rootCmd.AddCommand(newAPICommand())
 	rootCmd.AddCommand(newClusterCommand())
 	rootCmd.AddCommand(newNodeCommand())
 	rootCmd.AddCommand(newServiceCommand())
@@ -82,17 +106,5 @@ func main() {
 	rootCmd.AddCommand(newDoctorCommand())
 	rootCmd.AddCommand(newVersionCommand())
 
-	if err := rootCmd.Execute(); err != nil {
-		// A guest exit code is not an error to report: `vm exec` already
-		// streamed the command's output, so only the status is propagated.
-		var ec *exitCodeError
-		if !errors.As(err, &ec) {
-			if outputFormat == "json" || outputFormat == "ndjson" {
-				_ = output.WriteError(os.Stderr, err)
-			} else {
-				fmt.Fprintln(os.Stderr, err)
-			}
-		}
-		os.Exit(cliExitCode(err))
-	}
+	return rootCmd
 }

@@ -20,7 +20,6 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
-	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 )
@@ -260,6 +259,10 @@ no-op, not an error. At least one of the two flags is required.`,
 // SwarmKit client helpers
 
 func getSwarmClient() (legacy.ControlClient, *grpc.ClientConn, error) {
+	if apiHost != "" {
+		return nil, nil, remoteUnsupported()
+	}
+
 	socketPath := "/var/run/swarmkit/swarm.sock"
 	if envSocket := os.Getenv("SWARM_SOCKET"); envSocket != "" {
 		socketPath = envSocket
@@ -405,9 +408,9 @@ func listNodesContract(format, filter string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c, err := client.New(client.DefaultConfig())
+	c, err := newContractClient()
 	if err != nil {
-		return output.FromGRPC(err)
+		return err
 	}
 	defer c.Close()
 
@@ -417,7 +420,7 @@ func listNodesContract(format, filter string) error {
 func listNodesContractWithClient(ctx context.Context, l nodeLister, w io.Writer, format, filter string) error {
 	nodes, err := l.ListNodes(ctx)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 	nodes = filterV1Nodes(nodes, filter)
 

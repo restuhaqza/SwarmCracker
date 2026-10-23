@@ -20,7 +20,6 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
-	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/redact"
@@ -252,9 +251,9 @@ func listTasksContract(format, filter string, all bool, node, serviceID string) 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c, err := client.New(client.DefaultConfig())
+	c, err := newContractClient()
 	if err != nil {
-		return output.FromGRPC(err)
+		return err
 	}
 	defer c.Close()
 
@@ -264,7 +263,7 @@ func listTasksContract(format, filter string, all bool, node, serviceID string) 
 func listTasksContractWithClient(ctx context.Context, l taskLister, w io.Writer, format, filter string, all bool, node, serviceID string) error {
 	tasks, err := l.ListTasks(ctx)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 	tasks = filterV1Tasks(tasks, filter, node, serviceID, all)
 
@@ -396,6 +395,10 @@ func healthDurationString(d *gogotypes.Duration) string {
 // getSwarmClientForTask creates a SwarmKit client connection
 // Note: This is a duplicate of getSwarmClient to avoid import conflicts
 func getSwarmClientForTask() (legacy.ControlClient, *grpc.ClientConn, error) {
+	if apiHost != "" {
+		return nil, nil, remoteUnsupported()
+	}
+
 	socketPath := "/var/run/swarmkit/swarm.sock"
 	if envSocket := os.Getenv("SWARM_SOCKET"); envSocket != "" {
 		socketPath = envSocket

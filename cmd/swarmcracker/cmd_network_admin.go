@@ -12,7 +12,6 @@ import (
 
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
-	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
@@ -206,9 +205,9 @@ func listNetworksContract(format string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	c, err := client.New(client.DefaultConfig())
+	c, err := newContractClient()
 	if err != nil {
-		return output.FromGRPC(err)
+		return err
 	}
 	defer c.Close()
 
@@ -218,7 +217,7 @@ func listNetworksContract(format string) error {
 func listNetworksContractWithClient(ctx context.Context, l networkLister, w io.Writer, format string) error {
 	networks, err := l.ListNetworks(ctx)
 	if err != nil {
-		return output.FromGRPC(err)
+		return contractError(err)
 	}
 
 	switch output.Format(format) {
