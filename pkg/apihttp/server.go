@@ -78,6 +78,12 @@ type Client interface {
 	CreateNetwork(context.Context, v1.NetworkWrite, v1.WriteOptions) (v1.Network, error)
 	DeleteNetwork(context.Context, string, v1.WriteOptions) (v1.Network, error)
 	UpdateNode(context.Context, string, []byte, v1.WriteOptions) (v1.Node, error)
+
+	// WatchEvents opens the manager's change stream. The events channel is
+	// closed at end of stream; errors after the stream started arrive on the
+	// error channel. An initial failure (an expired cursor, for example) is the
+	// returned error.
+	WatchEvents(context.Context, v1.EventOptions) (<-chan v1.Event, <-chan error, error)
 }
 
 // Config is the server's wiring. Tokens may be nil for a Unix-socket-only
@@ -98,6 +104,9 @@ type Config struct {
 	GRPCVersion   string
 	ClusterID     string
 	Capabilities  []string
+	// EventHeartbeat is the SSE/NDJSON keep-alive interval. Zero means 15s;
+	// tests set a short interval.
+	EventHeartbeat time.Duration
 }
 
 // Server serves the v1 read surface. It is safe for concurrent use once New has
@@ -113,7 +122,10 @@ func New(cfg Config) (*Server, error) {
 		return nil, output.NewError(output.CodeInvalid, "apihttp: Config.Client must not be nil")
 	}
 	if cfg.Capabilities == nil {
-		cfg.Capabilities = []string{"read", "write"}
+		cfg.Capabilities = []string{"read", "write", "events"}
+	}
+	if cfg.EventHeartbeat <= 0 {
+		cfg.EventHeartbeat = defaultEventHeartbeat
 	}
 	// Idempotency is manager-local and in memory; every server gets one so a
 	// POST with an Idempotency-Key is never silently unprotected.
@@ -191,6 +203,7 @@ func (s *Server) routes() {
 	)
 
 	s.handleRoutes("/v1/audit", read(ScopeAuditRead, s.listAudit))
+	s.handleRoutes("/v1/events", read(ScopeEventsRead, s.watchEvents))
 
 	// Every path is owned by this package: an unknown one is a typed 404, never
 	// ServeMux's plain-text "404 page not found".
@@ -355,7 +368,7 @@ func checkAccept(r *http.Request) error {
 	for _, part := range strings.Split(raw, ",") {
 		mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
 		switch mediaType {
-		case "*/*", "application/json", MediaType:
+		case "*/*", "application/json", MediaType, "text/event-stream", "application/x-ndjson":
 			return nil
 		}
 	}
@@ -526,8 +539,10 @@ func typedError(err error) *output.Error {
 // statusForCode maps the stable error code to its HTTP status.
 func statusForCode(code output.Code) int {
 	switch code {
-	case output.CodeInvalid, output.CodeAmbiguous, output.CodeCursorExpired, output.CodeUsage:
+	case output.CodeInvalid, output.CodeAmbiguous, output.CodeUsage:
 		return http.StatusBadRequest
+	case output.CodeCursorExpired:
+		return http.StatusGone
 	case output.CodeNotFound:
 		return http.StatusNotFound
 	case output.CodeUnauthenticated:

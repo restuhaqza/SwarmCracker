@@ -119,6 +119,7 @@ type controlClient interface {
 // Client is a typed SwarmCracker client. It is safe for concurrent use.
 type Client struct {
 	control controlClient
+	watch   api.WatchClient
 	conn    *grpc.ClientConn
 	remote  *remoteClient
 }
@@ -171,7 +172,7 @@ func New(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("dial control socket: %w", err)
 	}
 
-	return &Client{control: api.NewControlClient(conn), conn: conn}, nil
+	return &Client{control: api.NewControlClient(conn), watch: api.NewWatchClient(conn), conn: conn}, nil
 }
 
 // Close releases the transport. A local client closes its gRPC connection; a

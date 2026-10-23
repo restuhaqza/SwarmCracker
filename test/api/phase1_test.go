@@ -519,6 +519,14 @@ func (f *fakeClient) GetSecret(_ context.Context, id string) (v1.Secret, error) 
 
 func (f *fakeClient) ClusterID(context.Context) (string, error) { return f.clusterID, nil }
 
+func (f *fakeClient) WatchEvents(context.Context, v1.EventOptions) (<-chan v1.Event, <-chan error, error) {
+	events := make(chan v1.Event)
+	close(events)
+	errs := make(chan error)
+	close(errs)
+	return events, errs, nil
+}
+
 // The phase-1 acceptance suite is read-only. These four exist so the fake
 // satisfies apihttp.Client; they answer not_implemented rather than pretending a
 // write happened.

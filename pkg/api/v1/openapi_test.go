@@ -1197,3 +1197,16 @@ func TestOpenAPIApplyModifiers(t *testing.T) {
 	assert.Contains(t, *conflict.Value.Description, "idempotency_key_reuse")
 	assert.Contains(t, *conflict.Value.Description, "in_progress")
 }
+
+func TestOpenAPIEvents(t *testing.T) {
+	doc := loadOpenAPI(t)
+	require.NotNil(t, doc.Paths.Find("/v1/events"))
+
+	event := NewEvent("18422", "2026-10-19T10:04:12Z", "service.updated",
+		EventResource{Kind: KindService, ID: "svc-1", Name: "web"}, "17")
+	data, err := json.Marshal(event)
+	require.NoError(t, err)
+	var value any
+	require.NoError(t, json.Unmarshal(data, &value))
+	validateAgainst(t, doc, "Event", value)
+}

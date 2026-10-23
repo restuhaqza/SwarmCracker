@@ -1316,6 +1316,69 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/events:
+    get:
+      operationId: watchEvents
+      summary: Stream resource changes
+      description: >
+        SSE by default; send Accept application/x-ndjson for one JSON object per
+        line. The stream begins with a ready frame. Each event's id/cursor is
+        SwarmKit's watch index and can be replayed with `since` or
+        `Last-Event-ID`. Requires events:read. An expired cursor is 410
+        cursor_expired with details.action "relist". Heartbeat comments are sent
+        every 15 seconds on SSE. manager-local v1.
+      parameters:
+        - name: types
+          in: query
+          description: Comma-separated resource types.
+          schema:
+            type: string
+            example: service,task,node
+        - name: since
+          in: query
+          description: Watch cursor to resume from.
+          schema: { type: string }
+        - name: label
+          in: query
+          description: Repeatable label selector.
+          schema: { type: string }
+        - name: include
+          in: query
+          description: Set to object to embed the mapped resource.
+          schema: { type: string, enum: [object] }
+      responses:
+        "200":
+          description: An event stream
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            text/event-stream:
+              schema: { type: string }
+            application/x-ndjson:
+              schema: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "410":
+          description: The cursor is older than the retained watch log.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
 components:
   securitySchemes:
     bearerAuth:
@@ -2320,6 +2383,33 @@ components:
         id: { type: string }
         name: { type: string }
 
+    EventResource:
+      type: object
+      required: [kind, id]
+      properties:
+        kind: { type: string }
+        id: { type: string }
+        name: { type: string }
+    Event:
+      type: object
+      required: [schemaVersion, kind, cursor, type, resource]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [Event] }
+        cursor: { type: string }
+        at: { type: string, format: date-time }
+        type:
+          type: string
+          description: "<resource>.<created|updated|removed>"
+        resource: { $ref: "#/components/schemas/EventResource" }
+        revision: { type: string }
+        changed:
+          type: array
+          items: { type: string }
+        actor: { $ref: "#/components/schemas/AuditActor" }
+        object:
+          type: object
+          additionalProperties: true
     AuditRecord:
       type: object
       required: [at, requestId, actor, action, resource, result]

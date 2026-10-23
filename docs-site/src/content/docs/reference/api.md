@@ -568,6 +568,30 @@ not audited, and an audit append failure does not fail a committed mutation. A d
 run is not a mutation and is never audited; an idempotent replay does not append a
 second record; a wait timeout audits the committed mutation once.
 
+### Events
+
+`GET /v1/events` streams the manager's change feed. SSE is the default; send
+`Accept: application/x-ndjson` for one JSON object per line. The stream starts
+with a `ready` frame and then emits one event per change:
+
+```json
+{"schemaVersion":1,"kind":"Event","cursor":"18422","at":"2026-10-19T10:04:12Z",
+ "type":"service.updated","resource":{"kind":"Service","id":"svc-1","name":"web"},
+ "revision":"18"}
+```
+
+- `types` is a comma-separated subset of `service,task,node,network,config,secret`.
+- `since` (or `Last-Event-ID`) is the cursor to resume from. A cursor older than
+  the retained watch log is `410 cursor_expired` with `details.action: "relist"`.
+- `label=k` / `label=k=v` filters events by resource labels.
+- `include=object` embeds the mapped resource. Config `data` is included only
+  for a `configs:read-values` identity; secret data is never included.
+- SSE events carry `id: <cursor>` and `event: <resource>.<created|updated|removed>`;
+  the server sends a `: ping` comment every 15 seconds. Delivery is
+  at-least-once across reconnects, so consumers dedupe by cursor.
+- The stream requires `events:read`. The actor and changed-path fields are
+  gateway-observed/optional in this phase; they are omitted when unavailable.
+
 ### Idempotency, wait and dry run
 
 Three opt-in modifiers sit on top of the writes. Without them the phase-2

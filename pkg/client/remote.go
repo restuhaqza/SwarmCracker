@@ -37,6 +37,9 @@ type remoteClient struct {
 	baseURL *url.URL
 	token   string
 	http    *http.Client
+	// stream is the no-timeout client for SSE/NDJSON. http.Client.Timeout
+	// bounds the whole response body, which would cut a watch stream.
+	stream *http.Client
 }
 
 // newRemote builds the remote backend. Every failure here is a configuration
@@ -82,6 +85,7 @@ func newRemote(cfg Config) (*Client, error) {
 		baseURL: base,
 		token:   token,
 		http:    &http.Client{Timeout: timeout, Transport: transport},
+		stream:  &http.Client{Transport: transport},
 	}}, nil
 }
 

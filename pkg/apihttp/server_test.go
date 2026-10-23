@@ -55,6 +55,12 @@ type fakeClient struct {
 	deleteCalls       int
 	rollbackCalls     int
 
+	// Event stream.
+	events       chan v1.Event
+	eventErrs    chan error
+	watchErr     error
+	gotEventOpts v1.EventOptions
+
 	// Named write surface (config, secret, network, node).
 	createdConfig  v1.Config
 	updatedConfig  v1.Config
@@ -178,6 +184,25 @@ func (f *fakeClient) GetSecret(context.Context, string) (v1.Secret, error) {
 
 func (f *fakeClient) ClusterID(context.Context) (string, error) {
 	return f.clusterID, f.clusterErr
+}
+
+func (f *fakeClient) WatchEvents(_ context.Context, opts v1.EventOptions) (<-chan v1.Event, <-chan error, error) {
+	f.gotEventOpts = opts
+	if f.watchErr != nil {
+		return nil, nil, f.watchErr
+	}
+	events := f.events
+	if events == nil {
+		events = make(chan v1.Event)
+		close(events)
+	}
+	errs := f.eventErrs
+	if errs == nil {
+		// An open channel that never fires: a closed one would race the events
+		// channel in the handler's select and end the stream early.
+		errs = make(chan error)
+	}
+	return events, errs, nil
 }
 
 func (f *fakeClient) CreateService(_ context.Context, write v1.ServiceWrite, opts v1.WriteOptions) (v1.Service, error) {
@@ -419,7 +444,7 @@ func TestVersionDocument(t *testing.T) {
 	assert.Equal(t, "0.11.0", info.ServerVersion)
 	assert.Equal(t, "v1", info.GRPCProtocolVersion)
 	assert.Equal(t, "cluster-1", info.ClusterID)
-	assert.Equal(t, []string{"read", "write"}, info.Capabilities,
+	assert.Equal(t, []string{"read", "write", "events"}, info.Capabilities,
 		"nil capabilities default to the served surface: read and write")
 }
 
@@ -428,7 +453,7 @@ func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
 	api := newTestAPIWithConfig(t, fc, Config{
 		ServerVersion: "0.11.0",
 		GRPCVersion:   "v1",
-		Capabilities:  []string{"read", "write"},
+		Capabilities:  []string{"read", "write", "events"},
 	})
 
 	rec := api.do(t, http.MethodGet, "/v1/version", withToken(api.token))
@@ -436,7 +461,7 @@ func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
 
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
-	assert.Equal(t, []string{"read", "write"}, info.Capabilities)
+	assert.Equal(t, []string{"read", "write", "events"}, info.Capabilities)
 	assert.Equal(t, "from-client", info.ClusterID, "empty config cluster ID falls back to the client")
 }
 
@@ -450,7 +475,7 @@ func TestVersionClusterFallbackToleratesClientError(t *testing.T) {
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.Empty(t, info.ClusterID)
-	assert.Equal(t, []string{"read", "write"}, info.Capabilities)
+	assert.Equal(t, []string{"read", "write", "events"}, info.Capabilities)
 }
 
 func TestEmptyServiceListIsExactlyEmpty(t *testing.T) {
@@ -1024,7 +1049,7 @@ func TestErrorStatusMapping(t *testing.T) {
 	}{
 		{output.CodeInvalid, http.StatusBadRequest},
 		{output.CodeAmbiguous, http.StatusBadRequest},
-		{output.CodeCursorExpired, http.StatusBadRequest},
+		{output.CodeCursorExpired, http.StatusGone},
 		{output.CodeNotFound, http.StatusNotFound},
 		{output.CodeUnauthenticated, http.StatusUnauthorized},
 		{output.CodeForbidden, http.StatusForbidden},
