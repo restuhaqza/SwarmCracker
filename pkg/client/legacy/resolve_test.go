@@ -1,4 +1,4 @@
-package main
+package legacy
 
 import (
 	"testing"
@@ -9,35 +9,35 @@ import (
 
 func TestMatchRef(t *testing.T) {
 	candidates := []refCandidate{
-		{ID: "abcdef1234567890alpha", Name: "web"},
-		{ID: "abcdef1234567890beta", Name: "api"},
-		{ID: "ffffffffffffffffffffffff", Name: ""},
+		{ID: "abcdef1234567890alpha", Name: "api"},
+		{ID: "abcdef1234567890beta", Name: "web"},
+		{ID: "deadbeef00000000", Name: "worker"},
 	}
 
-	// Exact ID.
+	// Full ID wins.
 	id, err := matchRef("abcdef1234567890alpha", "service", candidates)
 	require.NoError(t, err)
 	assert.Equal(t, "abcdef1234567890alpha", id)
 
-	// Exact name.
+	// Exact name wins before a prefix.
 	id, err = matchRef("api", "service", candidates)
 	require.NoError(t, err)
-	assert.Equal(t, "abcdef1234567890beta", id)
+	assert.Equal(t, "abcdef1234567890alpha", id)
 
-	// Ambiguous prefix (two share "abcdef").
+	// Unique prefix.
+	id, err = matchRef("dead", "service", candidates)
+	require.NoError(t, err)
+	assert.Equal(t, "deadbeef00000000", id)
+
+	// Missing.
+	_, err = matchRef("ffff", "service", candidates)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+
+	// Ambiguous prefix.
 	_, err = matchRef("abcdef", "service", candidates)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "ambiguous")
-
-	// Unique prefix.
-	id, err = matchRef("ffff", "service", candidates)
-	require.NoError(t, err)
-	assert.Equal(t, "ffffffffffffffffffffffff", id)
-
-	// Unknown.
-	_, err = matchRef("deadbeef", "service", candidates)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found")
 
 	// Empty.
 	_, err = matchRef("", "service", candidates)

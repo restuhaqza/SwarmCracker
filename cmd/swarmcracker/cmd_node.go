@@ -21,6 +21,7 @@ import (
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 )
 
@@ -496,7 +497,7 @@ func inspectNode(nodeID, format string, pretty bool) error {
 	}
 	defer conn.Close()
 
-	nodeID, err = resolveNodeRef(ctx, client, nodeID)
+	nodeID, err = legacy.ResolveNodeRef(ctx, client, nodeID)
 	if err != nil {
 		return err
 	}
@@ -530,7 +531,7 @@ func setNodeAvailability(nodeID string, availability api.NodeSpec_Availability) 
 	}
 	defer conn.Close()
 
-	nodeID, err = resolveNodeRef(ctx, client, nodeID)
+	nodeID, err = legacy.ResolveNodeRef(ctx, client, nodeID)
 	if err != nil {
 		return err
 	}
@@ -593,7 +594,7 @@ func updateNodeLabelsWithClient(ctx context.Context, client api.ControlClient, w
 		return err
 	}
 
-	nodeID, err := resolveNodeRef(ctx, client, nodeID)
+	nodeID, err := legacy.ResolveNodeRef(ctx, client, nodeID)
 	if err != nil {
 		return err
 	}
@@ -655,7 +656,7 @@ func promoteNode(nodeID string) error {
 	}
 	defer conn.Close()
 
-	nodeID, err = resolveNodeRef(ctx, client, nodeID)
+	nodeID, err = legacy.ResolveNodeRef(ctx, client, nodeID)
 	if err != nil {
 		return err
 	}
@@ -714,7 +715,7 @@ func removeNode(nodeID string, force bool) error {
 	}
 	defer conn.Close()
 
-	nodeID, err = resolveNodeRef(ctx, client, nodeID)
+	nodeID, err = legacy.ResolveNodeRef(ctx, client, nodeID)
 	if err != nil {
 		return err
 	}

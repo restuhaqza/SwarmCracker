@@ -22,7 +22,6 @@ var legacyControlClientFiles = map[string]bool{
 	"cmd_secret.go":        true,
 	"cmd_service.go":       true,
 	"cmd_task.go":          true,
-	"resolve.go":           true,
 	"task_health.go":       true,
 }
 
