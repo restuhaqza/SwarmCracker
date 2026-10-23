@@ -204,7 +204,8 @@ func (m *Manager) routeFor(ctx context.Context, task v1.Task, op string) (Route,
 // It strips Authorization, Proxy-Authorization and Cookie before forwarding, so
 // the node never sees a public user token. A resolve error is returned to the
 // caller; transport errors are rendered as a 503 v1 ErrorDocument with code
-// "unreachable".
+// "unavailable": the contract reserves "unreachable" for the client, which
+// synthesizes it from its own failed dial.
 func (m *Manager) Proxy(ctx context.Context, w http.ResponseWriter, r *http.Request, taskRef, op string) error {
 	route, err := m.Resolve(ctx, taskRef, op)
 	if err != nil {
@@ -241,9 +242,11 @@ func (m *Manager) Proxy(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, _ error) {
 			// The underlying transport error can name an internal address, so
 			// the document stays stable and the configured writer decides what
-			// the caller is told.
-			m.writeProxyError(rw, req, output.NewErrorf(codeUnreachable,
-				"node %q broker is unreachable", route.Node.ID))
+			// the caller is told. A node down is unavailable, not unreachable:
+			// the server never sends the client-synthesized code.
+			m.writeProxyError(rw, req, output.NewErrorf(codeUnavailable,
+				"node %q broker is unavailable", route.Node.ID).
+				WithDetails(map[string]any{"nodeId": route.Node.ID}))
 		},
 	}
 
@@ -401,10 +404,13 @@ func decodeNodeHealthError(body io.Reader, status int, nodeID string) error {
 
 // healthTransportError maps a failed dial or a deadline to a retryable failure.
 // The underlying error can name an internal address, so it never reaches the
-// message.
+// message. A node that cannot be reached is unavailable: "unreachable" is
+// client-synthesized and never appears in a server document.
 func healthTransportError(ctx context.Context, nodeID string, err error) *output.Error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-		return output.NewErrorf(output.CodeTimeout, "node %q health check timed out", nodeID)
+		return output.NewErrorf(output.CodeTimeout, "node %q health check timed out", nodeID).
+			WithDetails(map[string]any{"nodeId": nodeID})
 	}
-	return output.NewErrorf(codeUnreachable, "node %q broker is unreachable", nodeID)
+	return output.NewErrorf(codeUnavailable, "node %q broker is unavailable", nodeID).
+		WithDetails(map[string]any{"nodeId": nodeID})
 }

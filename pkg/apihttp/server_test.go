@@ -447,8 +447,8 @@ func TestVersionDocument(t *testing.T) {
 	assert.Equal(t, "0.11.0", info.ServerVersion)
 	assert.Equal(t, "v1", info.GRPCProtocolVersion)
 	assert.Equal(t, "cluster-1", info.ClusterID)
-	assert.Equal(t, []string{"read", "write", "events", "exec", "logs", "files"}, info.Capabilities,
-		"nil capabilities default to the served surface")
+	assert.Equal(t, []string{"read", "write", "events"}, info.Capabilities,
+		"nil capabilities default to the served surface; exec, logs and files need a broker")
 }
 
 func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
@@ -456,7 +456,7 @@ func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
 	api := newTestAPIWithConfig(t, fc, Config{
 		ServerVersion: "0.11.0",
 		GRPCVersion:   "v1",
-		Capabilities:  []string{"read", "write", "events", "exec", "logs", "files"},
+		Capabilities:  []string{"read", "write", "events"},
 	})
 
 	rec := api.do(t, http.MethodGet, "/v1/version", withToken(api.token))
@@ -464,7 +464,7 @@ func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
 
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
-	assert.Equal(t, []string{"read", "write", "events", "exec", "logs", "files"}, info.Capabilities)
+	assert.Equal(t, []string{"read", "write", "events"}, info.Capabilities)
 	assert.Equal(t, "from-client", info.ClusterID, "empty config cluster ID falls back to the client")
 }
 
@@ -496,6 +496,10 @@ func TestVersionCapabilitiesFollowTheBroker(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.NotContains(t, info.Capabilities, "health",
 		"without a broker there is no health route to promise")
+	for _, capability := range []string{"exec", "logs", "files"} {
+		assert.NotContains(t, info.Capabilities, capability,
+			"without a broker the version document must not promise %s", capability)
+	}
 }
 
 // TestVersionCapabilitiesKeepNarrowingButNotBrokerOperations proves an explicit
@@ -528,7 +532,7 @@ func TestVersionClusterFallbackToleratesClientError(t *testing.T) {
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.Empty(t, info.ClusterID)
-	assert.Equal(t, []string{"read", "write", "events", "exec", "logs", "files"}, info.Capabilities)
+	assert.Equal(t, []string{"read", "write", "events"}, info.Capabilities)
 }
 
 func TestEmptyServiceListIsExactlyEmpty(t *testing.T) {

@@ -1305,7 +1305,9 @@ paths:
         disconnects, when the task's VM stops, or when its log disappears. Logs
         remain available after the task exits — the console file outlives the VM
         — so this is the route to use to find out why a task failed. A missing
-        task or a task with no log is 404; an unreachable node is 503.
+        task or a task with no log is 404; a node that cannot be reached is 503
+        unavailable. A manager with no node broker answers 501 not_implemented
+        with details.capability "logs".
       parameters:
         - name: id
           in: path
@@ -1355,6 +1357,8 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "4XX":
@@ -1381,7 +1385,8 @@ paths:
         details.reason "directory_not_supported"; a missing file is 404. The
         task must be running: a completed or crashed task has no guest agent, so
         it is 404 not_found (its console log stays readable through the logs
-        route).
+        route). A manager with no node broker answers 501 not_implemented with
+        details.capability "files".
       parameters:
         - name: id
           in: path
@@ -1415,6 +1420,8 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
         "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "4XX":
@@ -1438,7 +1445,8 @@ paths:
         it. `mode` is an octal file mode between 0000 and 0777 (default 0644;
         anything else is 400 invalid). The path rules of GET apply. The task must
         be running: a completed task has no guest agent and is 404 not_found. Audit
-        records the task, never the path or the contents.
+        records the task, never the path or the contents. A manager with no node
+        broker answers 501 not_implemented with details.capability "files".
       parameters:
         - name: id
           in: path
@@ -1483,6 +1491,8 @@ paths:
         "415":
           $ref: "#/components/responses/UnsupportedMediaType"
         "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
         "4XX":
@@ -1900,10 +1910,11 @@ components:
         not_implemented and details.capability names it. A dry run on a rollback
         answers this: the previous spec is not the document that would be written.
         A `tty:true` exec also answers this, with details.reason
-        "tty_not_supported": interactive exec over the API is a follow-up. A
-        health-enriched task read answers this, with details.capability "health",
-        when the serving manager has no node broker: there is no node path to
-        read health through.
+        "tty_not_supported": interactive exec over the API is a follow-up. Task
+        exec, logs and files answer this on a manager with no node broker, and so
+        does a health-enriched task read: details.capability names the operation
+        ("exec", "logs", "files" or "health") and there is no node path to serve
+        it.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -1912,12 +1923,13 @@ components:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
     ServiceUnavailable:
       description: >
-        The manager cannot complete the request because a node is unreachable or
-        the node's guest agent is unavailable: code is unavailable, or
-        unreachable when the node broker itself could not be contacted. The
-        operation may be retried; retryable is true when a retry can succeed. A
-        single-task health read that cannot reach its node answers this: one
-        document has no partial array to carry the failure.
+        The manager cannot complete the request because a node is down or the
+        node's guest agent is unavailable: code is unavailable. The operation
+        may be retried; retryable is true when a retry can succeed. A node the
+        manager cannot contact is unavailable, never unreachable: that code is
+        reserved for a client's own failed dial. A single-task health read that
+        cannot reach its node answers this: one document has no partial array to
+        carry the failure.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -2815,7 +2827,14 @@ components:
       properties:
         nodeId: { type: string }
         nodeName: { type: string }
-        error: { $ref: "#/components/schemas/Error" }
+        error:
+          allOf:
+            - $ref: "#/components/schemas/Error"
+            - type: object
+              required: [requestId]
+          description: >
+            A complete Error object. Unlike a top-level Error, requestId is
+            required here: a partial is tied to the request that produced it.
 
     ErrorDocument:
       type: object

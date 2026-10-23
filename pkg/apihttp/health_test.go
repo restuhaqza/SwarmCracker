@@ -159,6 +159,10 @@ func TestListTasksHealthOneNodeFailsIs207(t *testing.T) {
 	require.Equal(t, "node-1", partial.NodeName)
 	require.Equal(t, string(output.CodeUnavailable), partial.Error.Code)
 	require.True(t, partial.Error.Retryable)
+	require.Equal(t, rec.Header().Get(requestIDHeader), partial.Error.RequestID,
+		"a partial error is a complete Error, including the requestId")
+	require.Equal(t, "node-1", partial.Error.Details["nodeId"],
+		"a partial error carries typed details")
 	require.Contains(t, partial.Error.Message, "node-1")
 	require.NotContains(t, partial.Error.Message, "127.0.0.1",
 		"a partial must not expose an internal address")

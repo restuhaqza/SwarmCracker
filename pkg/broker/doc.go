@@ -20,8 +20,9 @@
 //
 // Failures the broker generates itself are v1 Error documents, so a manager
 // handler can relay them without translating: not_found (404), not_implemented
-// (501), unavailable (503, a task-source failure) and unreachable (503, the
-// manager could not reach the node).
+// (501) and unavailable (503, a task-source failure or a node the manager could
+// not reach). "unreachable" is deliberately absent: the contract reserves it for
+// the client, which synthesizes it from a failed dial.
 //
 // On the way back to a public caller the manager rewrites a relayed 4xx/5xx
 // Error document into the public envelope (the v1 media type, the API version

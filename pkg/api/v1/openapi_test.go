@@ -731,7 +731,7 @@ func TestOpenAPILogsAndFiles(t *testing.T) {
 	require.NotNilf(t, stream, "the log response must be %s", NDJSONMediaType)
 	require.Equal(t, "#/components/schemas/LogFrame", stream.Schema.Ref)
 
-	for _, status := range []string{"400", "401", "403", "404", "429", "503"} {
+	for _, status := range []string{"400", "401", "403", "404", "429", "501", "503"} {
 		response := op.Responses.Value(status)
 		require.NotNilf(t, response, "logs %s response missing", status)
 		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
@@ -760,6 +760,13 @@ func TestOpenAPILogsAndFiles(t *testing.T) {
 	require.NotNil(t, octets, "a file read must be application/octet-stream")
 	require.Equal(t, "binary", octets.Schema.Value.Format, "the body is raw bytes")
 
+	for _, status := range []string{"400", "401", "403", "404", "429", "501", "503"} {
+		response := files.Get.Responses.Value(status)
+		require.NotNilf(t, response, "files GET %s response missing", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"files GET %s must be declared in %s", status, v1MediaType)
+	}
+
 	putFile := files.Put
 	require.NotNil(t, putFile.RequestBody)
 	require.True(t, putFile.RequestBody.Value.Required)
@@ -769,7 +776,7 @@ func TestOpenAPILogsAndFiles(t *testing.T) {
 
 	noContent := putFile.Responses.Value("204")
 	require.NotNil(t, noContent, "a successful write is 204")
-	for _, status := range []string{"400", "401", "403", "404", "413", "415", "429", "503"} {
+	for _, status := range []string{"400", "401", "403", "404", "413", "415", "429", "501", "503"} {
 		response := putFile.Responses.Value(status)
 		require.NotNilf(t, response, "files PUT %s response missing", status)
 		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
@@ -1440,6 +1447,21 @@ func TestOpenAPIHealth(t *testing.T) {
 	assert.Contains(t, *partial.Value.Description, "partial")
 	assert.Contains(t, *partial.Value.Description, "items")
 
+	// Every partial[].error is a complete Error: the schema requires the same
+	// fields as ErrorDocument.error plus requestId.
+	partialError := doc.Components.Schemas["Partial"].Value.Properties["error"].Value
+	require.NotEmpty(t, partialError.AllOf, "Partial.error must extend Error")
+	requestIDRequired := false
+	for _, clause := range partialError.AllOf {
+		require.NotNil(t, clause.Value)
+		for _, field := range clause.Value.Required {
+			if field == "requestId" {
+				requestIDRequired = true
+			}
+		}
+	}
+	assert.True(t, requestIDRequired, "Partial.error must require requestId")
+
 	enriched := NewTaskList([]Task{
 		{ID: "t1abc", Revision: "42", ServiceID: "svc-1", State: "running", DesiredState: "running",
 			NodeID: "n1", NodeName: "node-1", Health: &TaskHealth{Status: "healthy"}},
@@ -1452,7 +1474,9 @@ func TestOpenAPIHealth(t *testing.T) {
 		Error: Error{
 			Code:      "unavailable",
 			Message:   `health is unavailable for node "node-2"`,
+			RequestID: "req_abc123def456",
 			Retryable: true,
+			Details:   map[string]any{"nodeId": "n2"},
 		},
 	}}
 	validateAgainst(t, doc, "TaskList", marshal(t, enriched))

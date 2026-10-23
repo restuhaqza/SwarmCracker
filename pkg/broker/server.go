@@ -36,7 +36,6 @@ const (
 	codeNotFound       = output.CodeNotFound
 	codeNotImplemented = output.CodeNotImplemented
 	codeUnavailable    = output.CodeUnavailable
-	codeUnreachable    = output.CodeUnreachable
 )
 
 // Handler is one operation (exec, logs, files, health) for one task. It

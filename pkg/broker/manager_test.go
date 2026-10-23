@@ -339,8 +339,10 @@ func TestManagerProxyUnreachableNodeIs503(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	require.Equal(t, "application/json", rec.Header().Get("Content-Type"))
 	doc := decodeErrorDocument(t, rec.Body)
-	require.Equal(t, string(codeUnreachable), doc.Error.Code)
+	require.Equal(t, string(codeUnavailable), doc.Error.Code,
+		"a node down is unavailable; unreachable is client-synthesized only")
 	require.True(t, doc.Error.Retryable)
+	require.Equal(t, "node-1", doc.Error.Details["nodeId"])
 }
 
 func TestManagerProxyReturnsResolveErrors(t *testing.T) {
@@ -451,7 +453,7 @@ func TestManagerProxyLeavesSuccessStreamsUntouched(t *testing.T) {
 
 // TestManagerProxyUsesErrorWriterForTransportFailures proves the public handler
 // owns the envelope: a nil hook keeps the internal default, and a configured
-// hook receives a typed unreachable failure.
+// hook receives a typed unavailable failure.
 func TestManagerProxyUsesErrorWriterForTransportFailures(t *testing.T) {
 	port := freePort(t)
 
@@ -475,7 +477,7 @@ func TestManagerProxyUsesErrorWriterForTransportFailures(t *testing.T) {
 			got.code = typed.Code
 			w.Header().Set("Content-Type", publicMediaType)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			_, _ = io.WriteString(w, `{"schemaVersion":1,"kind":"Error","error":{"code":"unreachable","message":"x","retryable":true}}`)
+			_, _ = io.WriteString(w, `{"schemaVersion":1,"kind":"Error","error":{"code":"unavailable","message":"x","retryable":true}}`)
 		},
 	})
 	require.NoError(t, err)
@@ -486,7 +488,7 @@ func TestManagerProxyUsesErrorWriterForTransportFailures(t *testing.T) {
 		"a transport failure is rendered by Proxy, not returned")
 
 	require.True(t, got.called, "ManagerConfig.ErrorWriter must render the failure")
-	require.Equal(t, output.CodeUnreachable, got.code)
+	require.Equal(t, output.CodeUnavailable, got.code)
 	require.NotNil(t, got.req)
 	require.Equal(t, publicMediaType, rec.Header().Get("Content-Type"))
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
@@ -695,7 +697,8 @@ func TestManagerHealthRelaysANodeError(t *testing.T) {
 }
 
 // TestManagerHealthUnreachableNodeIsTyped proves a transport failure is a
-// retryable, stable message that names no internal address.
+// retryable, stable message that names no internal address. The code is
+// unavailable: unreachable belongs to the client's own failed dial.
 func TestManagerHealthUnreachableNodeIsTyped(t *testing.T) {
 	port := freePort(t)
 
@@ -711,7 +714,8 @@ func TestManagerHealthUnreachableNodeIsTyped(t *testing.T) {
 
 	var typed *output.Error
 	require.ErrorAs(t, err, &typed)
-	require.Equal(t, output.CodeUnreachable, typed.Code)
+	require.Equal(t, output.CodeUnavailable, typed.Code)
+	require.Equal(t, "node-1", typed.Details["nodeId"])
 	require.True(t, typed.Retryable)
 	require.NotContains(t, typed.Message, strconv.Itoa(port),
 		"the message must not expose the internal broker port")

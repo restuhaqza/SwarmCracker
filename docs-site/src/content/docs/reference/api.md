@@ -321,10 +321,13 @@ single documents — on two listeners:
 | **TLS/TCP** | `127.0.0.1:4244` by default (`--api-listen`) | `Authorization: Bearer <token>` on **every** route, including `/v1/version` |
 | **Unix socket** | `<state-dir>/api.sock` (default `/var/lib/swarmkit/api.sock`) | none — the socket's file mode is the credential |
 
-The read surface is phase 1; **writes** are phase 2: services (create, patch,
+The read surface is phase 1 and **writes** are phase 2: services (create, patch,
 delete, rollback) and configs, secrets, networks and nodes (create, patch,
-delete). They require the resource's `:write` scope. Task exec, logs, files and
-events are later phases.
+delete). They require the resource's `:write` scope. Phase 3 adds task exec,
+log streaming, file transfer and live `?health` enrichment; the manager relays
+them to the node that runs the task through an internal mTLS broker, so the
+caller never picks a host. A manager with no broker wired answers those routes
+`501 not_implemented` with `details.capability`.
 
 `api/openapi.yaml` in the repository is the normative contract for every route,
 schema, header and error code; this section is the operator's guide to it.
@@ -351,8 +354,13 @@ phase-2 writes below.
 | DELETE | `/v1/services/{id}` | `204` (requires `services:write`) |
 | POST | `/v1/services/{id}/rollback` | `ServiceDocument` (requires `services:write`) |
 | GET | `/v1/services/{id}/tasks` | `TaskList` |
-| GET | `/v1/tasks` | `TaskList` |
-| GET | `/v1/tasks/{id}` | `TaskDocument` |
+| GET | `/v1/tasks` | `TaskList` (`?health=true` enriches each task) |
+| GET | `/v1/tasks/{id}` | `TaskDocument` (`?health=true` enriches the task) |
+| POST | `/v1/tasks/{id}/exec` | NDJSON `ExecFrame` stream (non-interactive; requires `tasks:exec`) |
+| GET | `/v1/tasks/{id}/logs` | NDJSON `LogFrame` stream (`tail`, `since`, `follow`; requires `tasks:logs`) |
+| GET | `/v1/tasks/{id}/files` | raw file bytes (requires `tasks:files`) |
+| PUT | `/v1/tasks/{id}/files` | `204` (raw upload, `mode`; requires `tasks:files`) |
+| GET | `/v1/events` | SSE or NDJSON `Event` stream (requires `events:read`) |
 | GET | `/v1/nodes` | `NodeList` |
 | GET | `/v1/nodes/{id}` | `NodeDocument` |
 | PATCH | `/v1/nodes/{id}` | `NodeDocument` (availability + labels; requires `nodes:write`, admin only) |
@@ -378,9 +386,11 @@ name shared by two objects, which only node hostnames can be — that matches mo
 than one object is `400 ambiguous` with `details.candidates`; a shorter non-exact
 value is `400 invalid`.
 
-`GET /v1/version` reports `capabilities: ["read", "write"]`, so a client that
-feature-detects the write surface sees it. Every phase-2 write route listed above
-is served.
+`GET /v1/version` reports `capabilities: ["read", "write", "events"]` on a
+manager without a node broker. A manager with a wired broker also advertises
+`exec`, `logs`, `files` and `health`, and every advertised operation has a
+route. A client that feature-detects the surface sees exactly what the server
+serves; the phase-2 write routes above are covered by `write`.
 
 Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
 also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
@@ -593,6 +603,40 @@ with a `ready` frame and then emits one event per change:
 - The stream requires `events:read`. The actor and changed-path fields are
   gateway-observed/optional in this phase; they are omitted when unavailable.
 
+### Task exec, logs, files and health
+
+These four capabilities are relayed by the manager to the node that runs the
+task. They require a wired node broker (`--broker-listen`, default
+`0.0.0.0:4245` on `swarmd-firecracker`); when it is absent the routes answer
+`501 not_implemented` with `details.capability` (`exec`, `logs`, `files` or
+`health`) and `/v1/version` does not advertise them. The relay uses the
+cluster's mutual TLS identity, never the caller's bearer token.
+
+- **Exec** — `POST /v1/tasks/{id}/exec` takes an `ExecRequest` and streams
+  NDJSON `ExecFrame` objects. A successful stream ends with exactly one `exit`
+  frame; a non-zero guest status is still a successful API call. `tty: true`
+  (and therefore `stdin: true`) is `501 not_implemented` with
+  `details.reason: "tty_not_supported"`; local `vm exec -it` is unaffected. The
+  task must be running (404 otherwise). Audited as `task.exec`.
+- **Logs** — `GET /v1/tasks/{id}/logs` streams the Firecracker console as NDJSON
+  `LogFrame` objects. `tail` defaults to 200 (max 10000), `since` is RFC3339 and
+  `follow` keeps the stream open. A non-following stream always ends with `eof`.
+  Logs remain readable after the task exits, so this is the route for a failed
+  task. Not audited, and task selectors do not gate reads.
+- **Files** — `GET` and `PUT /v1/tasks/{id}/files` use raw
+  `application/octet-stream`. The path must be absolute and may not contain a
+  `..` segment; a directory is `400 invalid` with
+  `details.reason: "directory_not_supported"`, a missing file is 404. `PUT`
+  accepts a `mode` and a body up to 1 GiB. The task must be running. Audited as
+  `task.files`; the path and contents are never recorded.
+- **Health** — add `?health=true` to `GET /v1/tasks` or `GET /v1/tasks/{id}`.
+  The list keeps its normal shape and answers `207` with one `partial` entry per
+  node whose health could not be read; each `partial[].error` is a complete
+  Error with `requestId`, `retryable` and `details.nodeId`, while the readable
+  tasks keep their documents. A single-task read has no partial array, so an
+  unreachable node is `503 unavailable` with `details.nodeId`. A task that
+  published no healthcheck omits `health`.
+
 ### Idempotency, wait and dry run
 
 Three opt-in modifiers sit on top of the writes. Without them the phase-2
@@ -681,6 +725,18 @@ curl --cacert <state-dir>/api/tls.crt \
 
 An audit path that cannot be opened fails API startup rather than deferring the
 error to the first write.
+
+Every node also serves the internal broker that backs exec, logs, files and
+health:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--broker-listen` | `0.0.0.0:4245` | mTLS listen address for the node broker; empty disables it |
+
+The manager derives the same port from the node address, so a manager and its
+nodes must agree on `4245` (or the node's advertised address must carry the
+broker port). A node without a broker still serves the read API, but the
+manager's exec, logs, files and health relay answers `503 unavailable`.
 
 These flags belong to `swarmd-firecracker`. Defaults follow `--state-dir`, so
 moving the state directory moves the socket, certificate and token store with it.

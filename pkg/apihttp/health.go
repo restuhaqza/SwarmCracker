@@ -166,7 +166,7 @@ collect:
 		}
 	}
 
-	return enriched, healthPartials(enriched, errs)
+	return enriched, healthPartials(ctx, enriched, errs)
 }
 
 // taskWithHealth attaches one task's health. A broker failure is returned to the
@@ -192,10 +192,13 @@ func (s *Server) fetchTaskHealth(ctx context.Context, task v1.Task) (*v1.TaskHea
 }
 
 // healthPartials returns one partial per failed node, in page order, so a node
-// hosting several tasks is reported once.
-func healthPartials(tasks []v1.Task, errs []error) []v1.Partial {
+// hosting several tasks is reported once. Each partial's error is a complete
+// Error object: the page's requestId, retryability and typed details travel with
+// it, exactly as they would on an ErrorDocument.
+func healthPartials(ctx context.Context, tasks []v1.Task, errs []error) []v1.Partial {
 	var partials []v1.Partial
 	index := make(map[string]int, len(errs))
+	requestID := RequestIDFromContext(ctx)
 
 	for i, err := range errs {
 		if err == nil {
@@ -218,7 +221,9 @@ func healthPartials(tasks []v1.Task, errs []error) []v1.Partial {
 			Error: v1.Error{
 				Code:      string(output.CodeUnavailable),
 				Message:   healthPartialMessage(tasks[i]),
+				RequestID: requestID,
 				Retryable: true,
+				Details:   map[string]any{"nodeId": nodeID},
 			},
 		})
 	}

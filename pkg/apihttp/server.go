@@ -119,10 +119,10 @@ type Config struct {
 	GRPCVersion   string
 	ClusterID     string
 	// Capabilities is the advertised capability list. Nil means the served
-	// surface. New always adds the broker operations (exec, logs, files, health)
-	// when Broker is non-nil, so a supplied list can narrow the read/write
-	// surface but never deny an operation the server actually serves: a wired
-	// broker and GET /v1/version cannot disagree.
+	// surface: read, write and events. New always adds the broker operations
+	// (exec, logs, files, health) when Broker is non-nil, so a supplied list can
+	// narrow the read/write surface but never deny an operation the server
+	// actually serves: a wired broker and GET /v1/version cannot disagree.
 	Capabilities []string
 	// EventHeartbeat is the SSE/NDJSON keep-alive interval. Zero means 15s;
 	// tests set a short interval.
@@ -148,7 +148,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, output.NewError(output.CodeInvalid, "apihttp: Config.Client must not be nil")
 	}
 	if cfg.Capabilities == nil {
-		cfg.Capabilities = []string{"read", "write", "events", "exec", "logs", "files"}
+		cfg.Capabilities = []string{"read", "write", "events"}
 	}
 	// A wired broker serves these operations, so they are advertised no matter
 	// what the caller supplied. This package owns the advertisement; an embedder
