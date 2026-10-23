@@ -170,9 +170,15 @@ func unchangedFile(cached, info os.FileInfo) bool {
 // phase-1 schema and the current one are accepted; a phase-1 record carries no
 // scopes, so its role is expanded here.
 //
-// An unknown role fails the load. Guessing a scope set for a role nobody defined
-// would authorize something the operator never granted, and fail-closed is the
-// whole point of the taxonomy.
+// The role is the upper bound for a record's scopes whatever the file says: an
+// explicit scope set is re-validated with the same rules as the mint path, and a
+// record carrying an unknown or out-of-role scope fails the load. Otherwise a
+// restored or hand-edited token file could grant authority its role never
+// carries — a reader with tokens:admin, say — and List/audit would describe a
+// role that does not match the token's real power.
+//
+// An unknown role fails the load too: guessing a scope set for a role nobody
+// defined would authorize something the operator never granted.
 func parseTokenFile(data []byte, path string) ([]Token, error) {
 	var file tokenFile
 	if err := json.Unmarshal(data, &file); err != nil {
@@ -189,24 +195,39 @@ func parseTokenFile(data []byte, path string) ([]Token, error) {
 	tokens := make([]Token, 0, len(file.Tokens))
 	for _, dt := range file.Tokens {
 		tok := Token{
-			ID:            dt.ID,
-			Name:          dt.Name,
-			Role:          dt.Role,
-			CreatedAt:     dt.CreatedAt,
-			Scopes:        dt.Scopes,
-			TaskSelectors: dt.TaskSelectors,
-			ExpiresAt:     dt.ExpiresAt,
-			LastUsedAt:    dt.LastUsedAt,
-			Hash:          dt.Hash,
+			ID:         dt.ID,
+			Name:       dt.Name,
+			Role:       dt.Role,
+			CreatedAt:  dt.CreatedAt,
+			ExpiresAt:  dt.ExpiresAt,
+			LastUsedAt: dt.LastUsedAt,
+			Hash:       dt.Hash,
 		}
+
 		roleScopes, err := RoleScopes(tok.Role)
 		if err != nil {
 			return nil, output.NewErrorf(output.CodeInvalid,
 				"token store %s: token %q: %v", path, tok.ID, err)
 		}
-		if len(tok.Scopes) == 0 {
-			tok.Scopes = scopeStrings(roleScopes)
+
+		scopes := roleScopes
+		if len(dt.Scopes) > 0 {
+			if scopes, err = resolveScopes(tok.Role, roleScopes, dt.Scopes); err != nil {
+				return nil, output.NewErrorf(output.CodeInvalid,
+					"token store %s: token %q: %v", path, tok.ID, err)
+			}
 		}
+		tok.Scopes = scopeStrings(scopes)
+
+		// A loaded selector goes through the same normalization as a minted one,
+		// so an entry that was hand-edited to be blank cannot match by accident.
+		selectors, err := normalizeSelectors(dt.TaskSelectors)
+		if err != nil {
+			return nil, output.NewErrorf(output.CodeInvalid,
+				"token store %s: token %q: %v", path, tok.ID, err)
+		}
+		tok.TaskSelectors = selectors
+
 		tokens = append(tokens, tok)
 	}
 	return tokens, nil

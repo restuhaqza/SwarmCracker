@@ -1091,10 +1091,11 @@ components:
       properties:
         type:
           type: string
-          enum: [token, local]
+          enum: [token, local, unknown]
           description: >
             token for a bearer-authenticated TCP request, local for the trusted
-            Unix socket where the file mode is the credential.
+            Unix socket where the file mode is the credential, and unknown when
+            the record was produced without a request identity.
         id: { type: string }
         name: { type: string }
 

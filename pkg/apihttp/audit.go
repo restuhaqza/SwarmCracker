@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -74,6 +76,12 @@ func OpenAuditStore(path string, retention time.Duration) (*AuditStore, error) {
 }
 
 // load reads the file and applies retention.
+//
+// A malformed line is skipped on its own and the rest of the log is still read:
+// a crash can truncate the final line, and a hand-edited file can carry junk.
+// Only records that the loader could read are ever rewritten, and a rewrite only
+// happens when something actually expired, so a skipped line cannot take its
+// neighbours with it.
 func (s *AuditStore) load() error {
 	data, err := os.ReadFile(s.path)
 	if err != nil {
@@ -84,24 +92,32 @@ func (s *AuditStore) load() error {
 	}
 
 	records := make([]v1.AuditRecord, 0, bytes.Count(data, []byte{'\n'})+1)
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64*1024), auditMaxLineBytes)
-	for scanner.Scan() {
-		line := bytes.TrimSpace(scanner.Bytes())
-		if len(line) == 0 {
+	reader := bufio.NewReaderSize(bytes.NewReader(data), 64*1024)
+	for {
+		line, lineErr := readAuditLine(reader)
+		if errors.Is(lineErr, errAuditLineTooLong) {
+			// The reader already consumed up to the next newline: skip this one
+			// record and keep reading the ones behind it.
 			continue
 		}
-		var rec v1.AuditRecord
-		if err := json.Unmarshal(line, &rec); err != nil {
-			continue
+		if lineErr != nil && !errors.Is(lineErr, io.EOF) {
+			return output.NewErrorf(output.CodeInternal, "read audit store %s: %v", s.path, lineErr)
 		}
-		if rec.At == "" || rec.Action == "" {
-			continue
+
+		if line = bytes.TrimSpace(line); len(line) > 0 {
+			var rec v1.AuditRecord
+			// A record without at, action or requestId cannot be ordered or
+			// paged (the cursor needs a non-empty id), so it is skipped like any
+			// other malformed line.
+			if err := json.Unmarshal(line, &rec); err == nil &&
+				rec.At != "" && rec.Action != "" && rec.RequestID != "" {
+				records = append(records, rec)
+			}
 		}
-		records = append(records, rec)
-	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
-		return output.NewErrorf(output.CodeInternal, "read audit store %s: %v", s.path, err)
+
+		if errors.Is(lineErr, io.EOF) {
+			break
+		}
 	}
 
 	cutoff := time.Now().Add(-s.retention)
@@ -128,8 +144,60 @@ func (s *AuditStore) load() error {
 	return s.rewriteLocked()
 }
 
+// errAuditLineTooLong marks a line that exceeded auditMaxLineBytes. The reader
+// has already discarded it up to the next newline, so the caller can skip that
+// one record and continue with the rest of the file.
+var errAuditLineTooLong = errors.New("audit line too long")
+
+// readAuditLine returns one line without its terminator. io.EOF may come with a
+// non-empty line, for a file that ends without a newline.
+//
+// A line longer than auditMaxLineBytes is not returned at all: the rest of it is
+// discarded up to the next '\n' and errAuditLineTooLong is reported, so one
+// oversized record cannot hide every record behind it.
+func readAuditLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	tooLong := false
+
+	for {
+		chunk, err := reader.ReadSlice('\n')
+
+		if !tooLong {
+			// The cap covers the record itself; one extra byte is the newline.
+			if len(line)+len(chunk) > auditMaxLineBytes+1 {
+				tooLong = true
+				line = nil
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+
+		switch {
+		case err == nil:
+			if tooLong {
+				return nil, errAuditLineTooLong
+			}
+			return line, nil
+		case errors.Is(err, bufio.ErrBufferFull):
+			continue
+		case errors.Is(err, io.EOF):
+			if tooLong {
+				return nil, errAuditLineTooLong
+			}
+			return line, io.EOF
+		default:
+			return nil, err
+		}
+	}
+}
+
 // Append writes one record and fsyncs it. A nil receiver is not used here: the
 // Server checks for a nil store so read routes stay a no-op.
+//
+// The encoded record must fit auditMaxLineBytes, the same cap the loader applies.
+// Rejecting an oversized record here is what keeps the store from writing a line
+// it cannot read back: a resource name big enough to cross the cap would
+// otherwise poison the log for every record behind it.
 func (s *AuditStore) Append(rec v1.AuditRecord) error {
 	if strings.TrimSpace(rec.At) == "" || rec.RequestID == "" || rec.Action == "" {
 		return output.NewError(output.CodeInvalid,
@@ -140,6 +208,12 @@ func (s *AuditStore) Append(rec v1.AuditRecord) error {
 	if err != nil {
 		return output.NewErrorf(output.CodeInternal, "encode audit record: %v", err)
 	}
+	if len(line) > auditMaxLineBytes {
+		return output.NewErrorf(output.CodeInvalid,
+			"audit record is %d bytes; the audit log accepts at most %d bytes per record",
+			len(line), auditMaxLineBytes).
+			WithDetails(map[string]any{"bytes": len(line), "limit": auditMaxLineBytes})
+	}
 	line = append(line, '\n')
 
 	s.mu.Lock()
@@ -148,6 +222,13 @@ func (s *AuditStore) Append(rec v1.AuditRecord) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), auditDirMode); err != nil {
 		return output.NewErrorf(output.CodeInternal, "create audit store directory: %v", err)
 	}
+
+	// Remember whether this append creates the file, so its directory entry is
+	// fsynced too. The data fsync alone does not survive a power loss on a files
+	// system that has not committed the new name yet.
+	_, statErr := os.Stat(s.path)
+	created := errors.Is(statErr, fs.ErrNotExist)
+
 	file, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, auditFileMode)
 	if err != nil {
 		return output.NewErrorf(output.CodeInternal, "open audit store %s: %v", s.path, err)
@@ -163,8 +244,32 @@ func (s *AuditStore) Append(rec v1.AuditRecord) error {
 	if err := file.Close(); err != nil {
 		return output.NewErrorf(output.CodeInternal, "close audit store %s: %v", s.path, err)
 	}
+	if created {
+		if err := syncDir(filepath.Dir(s.path)); err != nil {
+			return output.NewErrorf(output.CodeInternal, "sync audit store directory: %v", err)
+		}
+	}
 
 	s.records = append(s.records, rec)
+	return nil
+}
+
+// syncDir flushes a directory entry so a newly created file survives a power
+// loss. A directory that cannot be fsynced (some network filesystems report
+// EINVAL or ENOTSUP) is not an error: the record itself is already synced.
+func syncDir(dir string) error {
+	handle, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+
+	if err := handle.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return err
+	}
 	return nil
 }
 
@@ -225,12 +330,21 @@ func (s *Server) recordAudit(r *http.Request, action string, res v1.AuditResourc
 		return nil
 	}
 
-	identity, _ := IdentityFrom(r.Context())
+	// Every handler runs under wrap, which stores an Identity. A caller outside
+	// that path still gets a record the wire schema accepts: an empty actor type
+	// would violate the AuditActor enum. "unknown" is the honest answer for "the
+	// request carried no identity".
+	identity, ok := IdentityFrom(r.Context())
+	actorType := identity.Type
+	if !ok || actorType == "" {
+		actorType = v1.AuditActorUnknown
+	}
+
 	return s.cfg.Audit.Append(v1.AuditRecord{
 		At:        time.Now().UTC().Format(time.RFC3339Nano),
 		RequestID: requestIDFrom(r),
 		Actor: v1.AuditActor{
-			Type: identity.Type,
+			Type: actorType,
 			ID:   identity.TokenID,
 			Name: identity.Name,
 		},

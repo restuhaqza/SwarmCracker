@@ -817,3 +817,109 @@ func TestReturnedTokensDoNotShareState(t *testing.T) {
 	assert.Equal(t, "payments", first.TaskSelectors.Labels["team"])
 	assert.NotEqual(t, "mutated:read", first.Scopes[0])
 }
+
+// TestLoadRejectsOutOfRoleScopes pins the load-side half of the role guarantee:
+// a scope set read from disk is validated exactly like a minted one, so a
+// restored or hand-edited file cannot grant authority the role does not carry.
+func TestLoadRejectsOutOfRoleScopes(t *testing.T) {
+	cases := []struct {
+		name   string
+		role   string
+		scopes []string
+	}{
+		{"reader cannot administer tokens", RoleReader, []string{"tokens:admin"}},
+		{"reader cannot write secrets", RoleReader, []string{"secrets:write"}},
+		{"runner cannot write services", RoleRunner, []string{"services:write"}},
+		{"operator cannot audit", RoleOperator, []string{"audit:read"}},
+		{"unknown scope", RoleAdmin, []string{"services:delete"}},
+		{"one bad scope among good ones", RoleAdmin, []string{"services:read", "nope:read"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "tokens.json")
+			writeTokenFile(t, path, tokenFile{
+				SchemaVersion: schemaVersion,
+				Tokens: []diskToken{{
+					ID: "tok_00000005", Name: "edited", Role: tc.role,
+					Hash: hashSecret("sc_edited"), CreatedAt: "2026-01-01T00:00:00Z",
+					Scopes: tc.scopes,
+				}},
+			})
+
+			store, err := OpenTokenStore(path)
+			require.Error(t, err)
+			assert.Nil(t, store)
+			assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+			assert.Contains(t, err.Error(), "tok_00000005")
+		})
+	}
+}
+
+// TestLoadKeepsAValidNarrowedScopeSet makes sure the validation does not widen a
+// token that legitimately holds less than its role.
+func TestLoadKeepsAValidNarrowedScopeSet(t *testing.T) {
+	const secret = "sc_narrowedload"
+
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	writeTokenFile(t, path, tokenFile{
+		SchemaVersion: schemaVersion,
+		Tokens: []diskToken{{
+			ID: "tok_00000006", Name: "narrow", Role: RoleOperator,
+			Hash: hashSecret(secret), CreatedAt: "2026-01-01T00:00:00Z",
+			Scopes: []string{"services:write", "services:read", "services:read"},
+		}},
+	})
+
+	store, err := OpenTokenStore(path)
+	require.NoError(t, err)
+
+	got, ok := store.Authenticate(secret)
+	require.True(t, ok)
+	assert.Equal(t, []string{"services:write", "services:read"}, got.Scopes,
+		"a valid set is kept, deduplicated, and never widened to the whole role")
+}
+
+// TestLoadValidatesSelectors applies the mint-time normalization to a selector
+// read from disk: blank entries fail closed, real entries are trimmed.
+func TestLoadValidatesSelectors(t *testing.T) {
+	t.Run("blank entry fails the load", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "tokens.json")
+		writeTokenFile(t, path, tokenFile{
+			SchemaVersion: schemaVersion,
+			Tokens: []diskToken{{
+				ID: "tok_00000007", Name: "edited", Role: RoleRunner,
+				Hash: hashSecret("sc_edited"), CreatedAt: "2026-01-01T00:00:00Z",
+				TaskSelectors: &TaskSelectors{ServiceIDs: []string{"   "}},
+			}},
+		})
+
+		store, err := OpenTokenStore(path)
+		require.Error(t, err)
+		assert.Nil(t, store)
+		assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+	})
+
+	t.Run("entries are trimmed", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "tokens.json")
+		writeTokenFile(t, path, tokenFile{
+			SchemaVersion: schemaVersion,
+			Tokens: []diskToken{{
+				ID: "tok_00000008", Name: "trimmed", Role: RoleRunner,
+				Hash: hashSecret("sc_trimmed"), CreatedAt: "2026-01-01T00:00:00Z",
+				TaskSelectors: &TaskSelectors{
+					ServiceIDs: []string{"  svc-1 "},
+					Labels:     map[string]string{" team ": "payments"},
+				},
+			}},
+		})
+
+		store, err := OpenTokenStore(path)
+		require.NoError(t, err)
+
+		list := store.List()
+		require.Len(t, list, 1)
+		require.NotNil(t, list[0].TaskSelectors)
+		assert.Equal(t, []string{"svc-1"}, list[0].TaskSelectors.ServiceIDs)
+		assert.Equal(t, map[string]string{"team": "payments"}, list[0].TaskSelectors.Labels)
+	})
+}

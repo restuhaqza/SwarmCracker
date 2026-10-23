@@ -1,13 +1,17 @@
 package v1
 
-// AuditActor is who caused an audited write. Type is "token" for a bearer token
-// and "local" for the trusted Unix socket, where the file mode is the
-// credential and there is no token to name.
+// AuditActor is who caused an audited write. Type is "token" for a bearer token,
+// "local" for the trusted Unix socket (where the file mode is the credential),
+// and "unknown" when a record was produced outside the request middleware and no
+// identity is available.
 type AuditActor struct {
 	Type string `json:"type"`
 	ID   string `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 }
+
+// AuditActorUnknown is the actor type for a request that carried no identity.
+const AuditActorUnknown = "unknown"
 
 // AuditResource is the object an audited write touched. Kind is the document
 // kind ("Service", "Config", …); ID and Name are optional so a failed create

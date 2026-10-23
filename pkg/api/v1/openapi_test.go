@@ -650,6 +650,14 @@ func TestOpenAPIAuditSurface(t *testing.T) {
 					Resource:  AuditResource{Kind: "Config"},
 					Result:    "error",
 				},
+				{
+					At:        "2026-10-23T10:00:02Z",
+					RequestID: "req_0123456789ad",
+					Actor:     AuditActor{Type: AuditActorUnknown},
+					Action:    "network.create",
+					Resource:  AuditResource{Kind: "Network", Name: "frontend"},
+					Result:    "ok",
+				},
 			}),
 		},
 	} {

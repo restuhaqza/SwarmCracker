@@ -46,6 +46,13 @@ func TestAuditRecordJSON(t *testing.T) {
 	data, err = json.Marshal(local)
 	require.NoError(t, err)
 	assert.JSONEq(t, `{"type": "local"}`, string(data))
+
+	// A record produced without a request identity must still name a type the
+	// wire schema accepts.
+	assert.Equal(t, "unknown", AuditActorUnknown)
+	data, err = json.Marshal(AuditActor{Type: AuditActorUnknown})
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"type": "unknown"}`, string(data))
 }
 
 func TestAuditListJSON(t *testing.T) {

@@ -1,6 +1,7 @@
 package apihttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -354,4 +355,168 @@ func TestRecordAuditWithoutStoreIsNoOp(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/services", nil)
 	assert.NoError(t, srv.recordAudit(req, "service.create", v1.AuditResource{Kind: "Service"}, "ok"))
+}
+
+// writeAuditLines writes one JSONL file from already-encoded lines.
+func writeAuditLines(t *testing.T, path string, lines ...[]byte) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	for _, line := range lines {
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+	return buf.Bytes()
+}
+
+func mustMarshalRecord(t *testing.T, rec v1.AuditRecord) []byte {
+	t.Helper()
+	line, err := json.Marshal(rec)
+	require.NoError(t, err)
+	return line
+}
+
+// TestAuditStoreReadsPastAnOversizedLine is the regression for a poisoned log: an
+// over-long line used to stop the scan, hiding every record behind it, and the
+// next retention rewrite then deleted them from disk.
+func TestAuditStoreReadsPastAnOversizedLine(t *testing.T) {
+	now := time.Now().UTC()
+
+	expired := auditRecord(now.Add(-2*time.Hour).Format(time.RFC3339Nano), "req_expired", "service.create")
+	middle := auditRecord(now.Add(-30*time.Minute).Format(time.RFC3339Nano), "req_middle", "service.update")
+	tail := auditRecord(now.Add(-10*time.Minute).Format(time.RFC3339Nano), "req_tail", "service.delete")
+
+	// A real record whose resource name is far past the cap, so the line the
+	// loader must skip is one the encoder could produce.
+	huge := auditRecord(now.Add(-20*time.Minute).Format(time.RFC3339Nano), "req_huge", "service.update")
+	huge.Resource.Name = strings.Repeat("n", 2*auditMaxLineBytes)
+
+	t.Run("no pruning still reads both neighbours", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		before := writeAuditLines(t, path,
+			mustMarshalRecord(t, middle), mustMarshalRecord(t, huge), mustMarshalRecord(t, tail))
+
+		store, err := OpenAuditStore(path, 0) // 30 days: nothing expires
+		require.NoError(t, err)
+
+		records, _, err := store.List(10, "")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"req_middle", "req_tail"}, requestIDs(records))
+
+		after, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Equal(t, before, after, "an open with nothing to prune must not rewrite the file")
+	})
+
+	t.Run("pruning keeps the tail on disk", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "audit.jsonl")
+		writeAuditLines(t, path,
+			mustMarshalRecord(t, expired),
+			mustMarshalRecord(t, middle),
+			mustMarshalRecord(t, huge),
+			mustMarshalRecord(t, tail))
+
+		store, err := OpenAuditStore(path, time.Hour)
+		require.NoError(t, err)
+
+		records, _, err := store.List(10, "")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"req_middle", "req_tail"}, requestIDs(records),
+			"records behind the oversized line must still be read")
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "req_middle")
+		assert.Contains(t, string(data), "req_tail", "the tail must survive the retention rewrite")
+		assert.NotContains(t, string(data), "req_expired")
+		assert.NotContains(t, string(data), "req_huge", "the unreadable line is dropped by the rewrite")
+		assert.Equal(t, 2, strings.Count(string(data), "\n"))
+
+		reopened, err := OpenAuditStore(path, time.Hour)
+		require.NoError(t, err)
+		again, _, err := reopened.List(10, "")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"req_middle", "req_tail"}, requestIDs(again))
+	})
+}
+
+// TestAuditAppendRejectsOversizedRecord keeps the writer inside the cap the
+// loader enforces: the store must never author a line it cannot read back.
+func TestAuditAppendRejectsOversizedRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	store, err := OpenAuditStore(path, 0)
+	require.NoError(t, err)
+
+	rec := auditRecord(time.Now().UTC().Format(time.RFC3339Nano), "req_oversized", "service.create")
+	rec.Resource.Name = strings.Repeat("n", auditMaxLineBytes)
+
+	err = store.Append(rec)
+	require.Error(t, err)
+	assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.EqualValues(t, auditMaxLineBytes, typed.Details["limit"])
+	assert.Greater(t, typed.Details["bytes"], auditMaxLineBytes)
+
+	_, statErr := os.Stat(path)
+	assert.True(t, os.IsNotExist(statErr), "a rejected record must not create the file")
+
+	records, _, err := store.List(10, "")
+	require.NoError(t, err)
+	assert.Empty(t, records)
+
+	// A record just inside the cap is accepted and reads back.
+	small := auditRecord(time.Now().UTC().Format(time.RFC3339Nano), "req_small", "service.create")
+	small.Resource.Name = strings.Repeat("n", 4096)
+	require.NoError(t, store.Append(small))
+
+	reopened, err := OpenAuditStore(path, 0)
+	require.NoError(t, err)
+	records, _, err = reopened.List(10, "")
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "req_small", records[0].RequestID)
+}
+
+// TestAuditStoreSkipsRecordWithoutRequestID covers a hand-edited line that would
+// otherwise break pagination: the cursor needs a non-empty id.
+func TestAuditStoreSkipsRecordWithoutRequestID(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.jsonl")
+	writeAuditLines(t, path,
+		[]byte(`{"at":"2026-10-23T10:00:00Z","action":"service.create","actor":{"type":"local"},"resource":{"kind":"Service"},"result":"ok"}`),
+		mustMarshalRecord(t, auditRecord("2026-10-23T10:00:01Z", "req_good", "service.update")),
+	)
+
+	store, err := OpenAuditStore(path, 0)
+	require.NoError(t, err)
+
+	records, next, err := store.List(1, "")
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "req_good", records[0].RequestID)
+	assert.Nil(t, next, "the single readable record is the whole page")
+}
+
+// TestRecordAuditMissingIdentityUsesUnknownActor keeps recordAudit from writing
+// an empty actor type, which the wire schema does not allow.
+func TestRecordAuditMissingIdentityUsesUnknownActor(t *testing.T) {
+	store, err := OpenAuditStore(filepath.Join(t.TempDir(), "audit.jsonl"), 0)
+	require.NoError(t, err)
+
+	srv, err := New(Config{Client: &fakeClient{}, Audit: store})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/services", nil)
+	// Only the request ID: no Identity, as if the helper were called outside wrap.
+	req = req.WithContext(context.WithValue(req.Context(), requestIDKey{}, "req_noidentity"))
+
+	require.NoError(t, srv.recordAudit(req, "service.create",
+		v1.AuditResource{Kind: "Service"}, "ok"))
+
+	records, _, err := store.List(10, "")
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, v1.AuditActor{Type: "unknown"}, records[0].Actor)
 }

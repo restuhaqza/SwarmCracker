@@ -467,10 +467,14 @@ secret.
 
 ### Audit log
 
-Every mutation and every `exec`/`files` call is recorded to an append-only JSONL
-log on the manager (0600, one record per line, fsynced per append). Records are
-kept 30 days by default (`--api-audit-retention`), and a crash-truncated or
-malformed line is skipped on load instead of making the log unreadable.
+Every mutation and every `exec`/`files` call **will be** recorded to an
+append-only JSONL log on the manager (0600, one record per line, fsynced per
+append) once the write surface lands; this phase ships no write routes and no
+handler calls the recorder yet, so the log stays empty. Records are kept 30 days
+by default (`--api-audit-retention`). A crash-truncated or malformed line is
+skipped on load instead of making the log unreadable, and only the offending line
+is skipped — the records behind it are still read. A record larger than 1 MiB is
+refused rather than written, so one oversized entry cannot break the log.
 
 ```bash
 # Needs an admin token: audit:read is admin-only. There is no CLI subcommand for
