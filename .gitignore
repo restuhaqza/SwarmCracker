@@ -152,6 +152,9 @@ coverage.out
 # Local design drafts (untracked by intent)
 docs/design/
 
+# Internal planning docs are local-only (contain lab/test details)
+/docs/plans/
+
 # Website
 website/node_modules/
 website/dist/
