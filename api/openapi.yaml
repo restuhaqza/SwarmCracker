@@ -5,10 +5,10 @@ info:
   description: >
     Stable machine contract for SwarmCracker. This file is the normative
     description of the public API: every read route, the phase-2 write routes for
-    services, configs, secrets, networks and nodes, the resource documents, the
-    shared response headers, the error document and the bearer authentication
-    model. The trusted Unix socket serves the same documents without a token; its
-    file mode is the credential.
+    services, configs, secrets, networks and nodes, the task exec output stream,
+    the resource documents, the shared response headers, the error document and
+    the bearer authentication model. The trusted Unix socket serves the same
+    documents without a token; its file mode is the credential.
 servers:
   - url: https://mgr:4244
     description: Manager public API (phase 1; TLS + bearer token)
@@ -1154,6 +1154,80 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}/exec:
+    post:
+      operationId: execTask
+      summary: Run a command in a task and stream its output
+      description: >
+        Requires tasks:exec. The task reference is resolved server-side and the
+        request is relayed to the node that runs the task, so the caller never
+        picks a host. Selectors are enforced: a runner token runs only the tasks
+        its selectors match, and a runner token without selectors is 403. The
+        body is an ExecRequest; the response is the documented exception to the
+        v1 envelope and is an `application/x-ndjson` stream of ExecFrame
+        objects. Interactive exec is not implemented over HTTP: a body with
+        `tty:true` (and therefore any `stdin:true` request, which requires a
+        TTY) is rejected before proxying with 501 not_implemented and
+        details.reason "tty_not_supported". Local `vm exec -it` is unaffected.
+        The attempt is audited as task.exec; a relayed node failure is audited
+        as error, not ok.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, or a unique id prefix of at least 4
+            characters. A task name is accepted when it is unique.
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/ExecRequest" }
+      responses:
+        "200":
+          description: >
+            The exec output stream: one ExecFrame JSON object per line, flushed
+            as output is produced, not a JSON array and not the v1 envelope. A
+            successful stream ends with exactly one `exit` frame, which is
+            required: a stream that ends without it is a failed exec and must
+            not be treated as success. A non-zero guest exit is still a
+            successful API call and arrives as `exit` with `exitCode` (plus
+            `signal` and `exitCode` 128+N when the guest was killed by signal
+            N). If the command starts and then fails, the terminal frame is
+            `error` with `code` "internal" or "timeout" instead, and no exit
+            code is fabricated.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/ExecFrame" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/nodes:
     get:
       operationId: listNodes
@@ -1523,7 +1597,8 @@ components:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
     PayloadTooLarge:
       description: >
-        The body exceeds 8 MiB. code is invalid and details.reason is
+        The body exceeds the route's limit: 8 MiB for a write document, 1 MiB
+        for an exec request. code is invalid and details.reason is
         "payload_too_large".
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
@@ -1559,6 +1634,20 @@ components:
         The route exists but does not implement the requested capability. code is
         not_implemented and details.capability names it. A dry run on a rollback
         answers this: the previous spec is not the document that would be written.
+        A `tty:true` exec also answers this, with details.reason
+        "tty_not_supported": interactive exec over the API is a follow-up.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    ServiceUnavailable:
+      description: >
+        The manager cannot complete the request because a node is unreachable or
+        the node's guest agent is unavailable: code is unavailable, or
+        unreachable when the node broker itself could not be contacted. The
+        operation may be retried; retryable is true when a retry can succeed.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -2272,6 +2361,81 @@ components:
           properties:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Task] }
+
+    ExecRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: >
+            The argv to run. Required and non-empty; the first element is the
+            executable.
+        env:
+          type: object
+          additionalProperties: { type: string }
+          description: >
+            Environment variables for the command. A key must be non-empty and
+            must not contain "="; values are sent to the guest as K=V after
+            stable sorting. Audit records never carry them.
+        workdir:
+          type: string
+          description: Working directory, passed through; the guest validates it.
+        tty:
+          type: boolean
+          default: false
+          description: >
+            Request a pseudo-terminal. Always 501 not_implemented over HTTP
+            (details.reason "tty_not_supported").
+        stdin:
+          type: boolean
+          default: false
+          description: >
+            Attach stdin. Requires tty, so over HTTP it is 400 invalid with
+            details.reason "stdin_requires_tty".
+        timeoutMs:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+          description: >
+            Server-side deadline for the whole command in milliseconds. 0 means
+            no server-side deadline. A negative value is 400 invalid.
+
+    ExecFrame:
+      type: object
+      required: [type]
+      description: >
+        One frame of the exec stream: exactly one JSON object per line, newline
+        terminated. The stream ends with one `exit` frame, or with one `error`
+        frame when the command failed after it started.
+      properties:
+        type:
+          type: string
+          enum: [stdout, stderr, exit, error]
+        data:
+          type: string
+          format: byte
+          description: >
+            Base64-encoded raw output bytes from the guest. Set on stdout and
+            stderr frames.
+        exitCode:
+          type: integer
+          description: >
+            Process status on an exit frame. When the guest was killed by signal
+            N this is 128+N.
+        signal:
+          type: integer
+          description: >
+            The terminating signal number on an exit frame; absent for a normal
+            exit.
+        code:
+          type: string
+          description: >
+            Error code on an error frame: "internal" for a mid-stream failure,
+            "timeout" when the deadline expired.
 
     NodeList:
       type: object

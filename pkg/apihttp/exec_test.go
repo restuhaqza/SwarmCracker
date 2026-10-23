@@ -425,6 +425,69 @@ func TestExecProxyFailureIsReported(t *testing.T) {
 	require.Equal(t, string(output.CodeUnavailable), doc.Error.Code)
 }
 
+// TestExecRelayedNodeFailureIsAuditedAsError pins that a node error relayed by
+// the broker is a failed exec even though Proxy itself returned nil: the guest
+// agent was unavailable, so the command never ran.
+func TestExecRelayedNodeFailureIsAuditedAsError(t *testing.T) {
+	fc := &execFakeClient{fakeClient: &fakeClient{}}
+	fc.task = v1.Task{ID: "task-1", ServiceID: "svc-1", Name: "web.1"}
+	broker := &fakeBroker{respond: func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", MediaType)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w,
+			`{"schemaVersion":1,"kind":"Error","error":{"code":"unavailable","message":"guest agent is unavailable"}}`)
+	}}
+	api := newExecTestAPI(t, fc, broker)
+
+	rec := postExec(t, api, api.admin, `{"command":["true"]}`)
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, "the relayed status reaches the caller")
+
+	records, _, err := api.audit.List(10, "")
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "task.exec", records[0].Action)
+	assert.Equal(t, "error", records[0].Result,
+		"a relayed node failure means the stream was never served")
+	assert.Equal(t, "task-1", records[0].Resource.ID)
+}
+
+// TestExecStatusRecorderPreservesStreaming pins the wrapper the audit relies on:
+// every write is passed straight through (no buffering) and the response
+// controller can still reach the underlying Flush.
+func TestExecStatusRecorderPreservesStreaming(t *testing.T) {
+	rec := httptest.NewRecorder()
+	recorder := &execStatusRecorder{ResponseWriter: rec}
+
+	require.Zero(t, recorder.Status(), "nothing has been written yet")
+	require.Equal(t, http.ResponseWriter(rec), recorder.Unwrap(),
+		"Unwrap must expose the underlying writer")
+
+	require.NoError(t, http.NewResponseController(recorder).Flush(),
+		"the recorder must not hide Flush")
+	require.True(t, rec.Flushed, "the flush must reach the underlying writer")
+
+	n, err := recorder.Write([]byte("frame\n"))
+	require.NoError(t, err)
+	require.Equal(t, len("frame\n"), n)
+	require.Equal(t, "frame\n", rec.Body.String(), "writes must not be buffered")
+	require.Equal(t, http.StatusOK, recorder.Status(), "an implicit 200 is recorded")
+}
+
+// TestExecStatusRecorderKeepsFirstFinalStatus pins that the first final status
+// wins while an informational response does not latch.
+func TestExecStatusRecorderKeepsFirstFinalStatus(t *testing.T) {
+	rec := httptest.NewRecorder()
+	recorder := &execStatusRecorder{ResponseWriter: rec}
+
+	recorder.WriteHeader(http.StatusEarlyHints)
+	require.Zero(t, recorder.Status(), "an informational response is not the outcome")
+
+	recorder.WriteHeader(http.StatusServiceUnavailable)
+	recorder.WriteHeader(http.StatusOK)
+	require.Equal(t, http.StatusServiceUnavailable, recorder.Status(),
+		"the first final status is the one that was served")
+}
+
 func TestExecAuditRecordsOkAndError(t *testing.T) {
 	fc := &execFakeClient{fakeClient: &fakeClient{}}
 	fc.task = v1.Task{ID: "task-1", ServiceID: "svc-1", Name: "web.1"}

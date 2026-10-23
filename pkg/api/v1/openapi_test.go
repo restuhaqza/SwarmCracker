@@ -605,6 +605,98 @@ func TestOpenAPIListParameters(t *testing.T) {
 	}
 }
 
+// TestOpenAPIExec pins the exec route and its wire DTOs. Exec is the one v1
+// route whose response is a stream, so the contract must say so explicitly.
+func TestOpenAPIExec(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	item := doc.Paths.Find("/v1/tasks/{id}/exec")
+	require.NotNil(t, item, "exec path missing")
+	require.NotNil(t, item.Post, "exec POST operation missing")
+	op := item.Post
+
+	require.Contains(t, op.Description, "tasks:exec", "the operation must name its scope")
+	require.Contains(t, op.Description, "tty_not_supported",
+		"the TTY follow-up must be documented on the operation")
+
+	id := findParameter(t, op.Parameters, "id")
+	require.True(t, id.Required)
+	require.NotNil(t, id.Schema)
+	require.True(t, id.Schema.Value.Type.Is("string"))
+
+	// The operation inherits the global bearer requirement, like every other
+	// route in this file.
+	require.Empty(t, op.Security, "exec must inherit the global bearer requirement")
+
+	require.NotNil(t, op.RequestBody)
+	require.True(t, op.RequestBody.Value.Required)
+	requestMedia := op.RequestBody.Value.Content.Get(v1MediaType)
+	require.NotNilf(t, requestMedia, "the exec request body must be %s", v1MediaType)
+	require.NotNil(t, requestMedia.Schema)
+	require.Equal(t, "#/components/schemas/ExecRequest", requestMedia.Schema.Ref)
+
+	ok := op.Responses.Value("200")
+	require.NotNil(t, ok, "exec 200 response missing")
+	require.NotNil(t, ok.Value)
+	stream := ok.Value.Content.Get(NDJSONMediaType)
+	require.NotNilf(t, stream, "the exec response must be %s", NDJSONMediaType)
+	require.NotNil(t, stream.Schema)
+	require.Equal(t, "#/components/schemas/ExecFrame", stream.Schema.Ref)
+	require.NotNil(t, ok.Value.Description)
+	require.Contains(t, *ok.Value.Description, "per line",
+		"the stream must be documented as one JSON object per line")
+	require.Contains(t, *ok.Value.Description, "exit",
+		"a terminal exit frame must be documented")
+
+	// Every failure is a typed v1 error document.
+	for _, status := range []string{"400", "401", "403", "413", "415", "429", "501", "503"} {
+		response := op.Responses.Value(status)
+		require.NotNilf(t, response, "exec %s response missing", status)
+		require.NotNilf(t, response.Value, "exec %s response unresolved", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"exec %s must be declared in %s", status, v1MediaType)
+	}
+
+	// The DTO schemas describe exactly what the Go types put on the wire.
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{name: "ExecRequest", value: ExecRequest{Command: []string{"echo", "hi"}}},
+		{name: "ExecRequest", value: ExecRequest{
+			Command:   []string{"env"},
+			Env:       map[string]string{"APP": "prod"},
+			WorkDir:   "/srv",
+			TTY:       true,
+			Stdin:     true,
+			TimeoutMs: 1500,
+		}},
+		{name: "ExecFrame", value: StdoutFrame([]byte("hello\n"))},
+		{name: "ExecFrame", value: StderrFrame([]byte("warning\n"))},
+		{name: "ExecFrame", value: ExitFrame(0)},
+		{name: "ExecFrame", value: SignalExitFrame(9)},
+		{name: "ExecFrame", value: ErrorFrame("internal")},
+	} {
+		data, err := json.Marshal(tc.value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		validateAgainst(t, doc, tc.name, generic)
+	}
+
+	requestSchema := documentSchemaProperties(t, doc, "ExecRequest")
+	for _, key := range []string{"command", "env", "workdir", "tty", "stdin", "timeoutMs"} {
+		require.Containsf(t, requestSchema, key, "ExecRequest.%s missing", key)
+	}
+	require.NotContains(t, requestSchema, "timeout_ms", "exec keys are camelCase")
+
+	frameSchema := documentSchemaProperties(t, doc, "ExecFrame")
+	for _, key := range []string{"type", "data", "exitCode", "signal", "code"} {
+		require.Containsf(t, frameSchema, key, "ExecFrame.%s missing", key)
+	}
+	require.NotContains(t, frameSchema, "exit_code", "exec keys are camelCase")
+}
+
 func TestOpenAPIErrorDocument(t *testing.T) {
 	doc := loadOpenAPI(t)
 	value := NewErrorDocument(Error{

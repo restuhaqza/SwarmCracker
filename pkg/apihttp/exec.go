@@ -81,7 +81,10 @@ func (s *Server) execTask(w http.ResponseWriter, r *http.Request) {
 	// can name it.
 	r.Header.Set(requestIDHeader, requestIDFrom(r))
 
-	if err := s.cfg.Broker.Proxy(r.Context(), w, r, task.ID, execOperation); err != nil {
+	// Wrap the writer so the relayed status is observable: Proxy reports only a
+	// resolve failure, so a node 4xx/5xx would otherwise be audited as success.
+	recorder := &execStatusRecorder{ResponseWriter: w}
+	if err := s.cfg.Broker.Proxy(r.Context(), recorder, r, task.ID, execOperation); err != nil {
 		// A resolve failure happens before anything is written, so it is still
 		// safe to answer with a typed document.
 		s.recordExecAudit(r, resource, "error")
@@ -89,8 +92,60 @@ func (s *Server) execTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The stream was served only when the node accepted the exec. A relayed
+	// 4xx/5xx (a node 503 for an unavailable guest agent, a relayed 404 or 501)
+	// means the command never ran; a broker that wrote nothing served nothing.
+	if status := recorder.Status(); status == 0 || status >= http.StatusBadRequest {
+		s.recordExecAudit(r, resource, "error")
+		return
+	}
+
 	s.recordExecAudit(r, resource, "ok")
 }
+
+// execStatusRecorder records the status the broker relayed while passing every
+// write straight through. It is deliberately not a buffer: the response is an
+// NDJSON stream that is flushed frame by frame.
+//
+// Unwrap exposes the underlying writer so http.NewResponseController finds its
+// Flush (and any other optional interface); without it the wrapper would hide
+// streaming from the reverse proxy.
+type execStatusRecorder struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+}
+
+// WriteHeader records the first final status and forwards it. Informational
+// responses (1xx except 101 Switching Protocols) precede the final one and must
+// not latch the recorded outcome.
+func (r *execStatusRecorder) WriteHeader(status int) {
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		r.ResponseWriter.WriteHeader(status)
+		return
+	}
+	if !r.wrote {
+		r.status = status
+		r.wrote = true
+	}
+	r.ResponseWriter.WriteHeader(status)
+}
+
+// Write records the implicit 200 of a handler that writes without a header and
+// forwards the bytes unchanged.
+func (r *execStatusRecorder) Write(data []byte) (int, error) {
+	if !r.wrote {
+		r.status = http.StatusOK
+		r.wrote = true
+	}
+	return r.ResponseWriter.Write(data)
+}
+
+// Unwrap returns the wrapped writer for http.ResponseController.
+func (r *execStatusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Status is the relayed HTTP status, or 0 when nothing was written.
+func (r *execStatusRecorder) Status() int { return r.status }
 
 // parseExecRequest reads and validates one exec body, restoring the body for
 // the proxy. The returned status is the HTTP status for a failure the taxonomy
