@@ -105,25 +105,48 @@ func EnsureCertificate(dir, hostname string, extraHosts []string) (certFile, key
 }
 
 // certificateIsValid reports whether certFile/keyFile form a loadable pair that
-// is already valid and still outlives tlsRenewBefore. A pair whose NotBefore is
-// in the future is rejected so a not-yet-valid certificate is never served.
+// is already valid and still outlives tlsRenewBefore.
 func certificateIsValid(certFile, keyFile string) bool {
 	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return false
 	}
+	return pairIsValid(&pair)
+}
 
-	// LoadX509KeyPair documents that Certificate.Leaf is populated on success
-	// (Go 1.23+), and it parses the leaf to check that the key matches, so both
-	// the chain and the parsed certificate are guaranteed here; no extra
-	// len(pair.Certificate)/ParseCertificate guards are needed.
-	leaf := pair.Leaf
+// pairIsValid reports whether pair holds a certificate that is already valid and
+// still outlives tlsRenewBefore. A pair whose NotBefore is in the future is
+// rejected so a not-yet-valid certificate is never served.
+func pairIsValid(pair *tls.Certificate) bool {
+	leaf, ok := pairLeaf(pair)
+	if !ok {
+		return false
+	}
 
 	now := time.Now()
 	if now.Before(leaf.NotBefore) {
 		return false
 	}
 	return now.Add(tlsRenewBefore).Before(leaf.NotAfter)
+}
+
+// pairLeaf returns the parsed leaf certificate of pair. LoadX509KeyPair normally
+// populates Certificate.Leaf, but that is not guaranteed: GODEBUG with
+// x509keypairleaf=0 restores the pre-Go 1.23 behaviour of leaving it nil, and a
+// tls.Certificate built by hand may too. Parse the first chain entry in that
+// case; a pair with no certificate, or one that does not parse, is never valid.
+func pairLeaf(pair *tls.Certificate) (*x509.Certificate, bool) {
+	if pair.Leaf != nil {
+		return pair.Leaf, true
+	}
+	if len(pair.Certificate) == 0 {
+		return nil, false
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return nil, false
+	}
+	return leaf, true
 }
 
 // generateCertificate returns a self-signed PEM certificate and its ECDSA

@@ -261,6 +261,57 @@ func TestEnsureCertificateRegeneratesNotYetValidPair(t *testing.T) {
 	assertNoTempCertificateFiles(t, dir)
 }
 
+// TestPairIsValidResolvesNilLeaf covers the reuse path when Certificate.Leaf is
+// nil, as it is under GODEBUG=x509keypairleaf=0. The pair is loaded normally and
+// then stripped, so the test does not depend on the GODEBUG setting itself.
+func TestPairIsValidResolvesNilLeaf(t *testing.T) {
+	cases := map[string]struct {
+		notBefore time.Time
+		notAfter  time.Time
+		want      bool
+	}{
+		"fresh pair is valid": {
+			notBefore: time.Now().Add(-time.Minute),
+			notAfter:  time.Now().Add(tlsValidity),
+			want:      true,
+		},
+		"expiring pair is invalid": {
+			notBefore: time.Now().Add(-time.Minute),
+			notAfter:  time.Now().Add(10 * 24 * time.Hour),
+			want:      false,
+		},
+		"not-yet-valid pair is invalid": {
+			notBefore: time.Now().Add(time.Hour),
+			notAfter:  time.Now().Add(tlsValidity),
+			want:      false,
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			certPEM, keyPEM, err := generateCertificate(testHostname, nil, tc.notBefore, tc.notAfter)
+			require.NoError(t, err)
+			certFile, keyFile := writePair(t, t.TempDir(), certPEM, keyPEM)
+
+			pair, err := tls.LoadX509KeyPair(certFile, keyFile)
+			require.NoError(t, err)
+			require.NotNil(t, pair.Leaf)
+			require.Equal(t, tc.want, pairIsValid(&pair))
+
+			pair.Leaf = nil
+			assert.Equal(t, tc.want, pairIsValid(&pair), "a nil Leaf must be parsed from Certificate[0]")
+		})
+	}
+}
+
+// TestPairIsValidRejectsMissingOrCorruptChain covers the nil-Leaf fallback when
+// there is nothing usable to parse.
+func TestPairIsValidRejectsMissingOrCorruptChain(t *testing.T) {
+	assert.False(t, pairIsValid(&tls.Certificate{}), "a pair with no certificate is never valid")
+	assert.False(t, pairIsValid(&tls.Certificate{Certificate: [][]byte{[]byte("not a certificate")}}),
+		"an unparseable leaf is never valid")
+}
+
 func TestEnsureCertificateRegeneratesCorruptPair(t *testing.T) {
 	cases := map[string]struct {
 		cert, key []byte
