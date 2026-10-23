@@ -187,142 +187,177 @@ func (c *Client) applyTaskPatch(ctx context.Context, spec *api.ServiceSpec, patc
 
 	for key, value := range patch {
 		switch key {
-		case "image":
-			image, err := patchString("spec.task.image", value)
-			if err != nil {
+		case "image", "command", "args", "env", "user", "workdir", "stopSignal":
+			if err := applyContainerStringPatch(container, key, value); err != nil {
 				return err
 			}
-			if strings.TrimSpace(image) == "" {
-				return invalidField("spec.task.image", "must not be empty")
-			}
-			container.Image = strings.TrimSpace(image)
-		case "command":
-			command, err := patchStringSlice("spec.task.command", value)
-			if err != nil {
+		case "stopGraceMs", "readOnlyRootfs", "vcpus", "memoryBytes", "registryAuth":
+			if err := applyContainerRuntimePatch(&spec.Task, container, key, value); err != nil {
 				return err
 			}
-			container.Command = command
-		case "args":
-			args, err := patchStringSlice("spec.task.args", value)
-			if err != nil {
+		case "ports", "mounts", "networks", "restartPolicy", "healthcheck":
+			if err := c.applyTaskTopologyPatch(ctx, spec, container, key, value, allowBindMounts); err != nil {
 				return err
 			}
-			container.Args = args
-		case "env":
-			if err := applyEnvPatch(container, value); err != nil {
-				return err
-			}
-		case "user":
-			user, err := patchOptionalString("spec.task.user", value)
-			if err != nil {
-				return err
-			}
-			container.User = user
-		case "workdir":
-			dir, err := patchOptionalString("spec.task.workdir", value)
-			if err != nil {
-				return err
-			}
-			container.Dir = dir
-		case "stopSignal":
-			signal, err := patchOptionalString("spec.task.stopSignal", value)
-			if err != nil {
-				return err
-			}
-			container.StopSignal = signal
-		case "stopGraceMs":
-			if value == nil {
-				container.StopGracePeriod = nil
-				break
-			}
-			ms, err := patchInt("spec.task.stopGraceMs", value)
-			if err != nil {
-				return err
-			}
-			if ms < 0 {
-				return invalidField("spec.task.stopGraceMs", "must be >= 0")
-			}
-			container.StopGracePeriod = durationProto(ms)
-		case "readOnlyRootfs":
-			readOnly, err := patchOptionalBool("spec.task.readOnlyRootfs", value)
-			if err != nil {
-				return err
-			}
-			container.ReadOnly = readOnly
-		case "vcpus":
-			vcpus, err := patchOptionalInt("spec.task.vcpus", value)
-			if err != nil {
-				return err
-			}
-			if vcpus < 0 {
-				return invalidField("spec.task.vcpus", "must be >= 0")
-			}
-			applyCPULimit(&spec.Task, vcpus)
-		case "memoryBytes":
-			memory, err := patchOptionalInt("spec.task.memoryBytes", value)
-			if err != nil {
-				return err
-			}
-			if memory < 0 {
-				return invalidField("spec.task.memoryBytes", "must be >= 0")
-			}
-			applyMemoryLimit(&spec.Task, memory)
-		case "ports":
-			ports, err := patchPorts(value)
-			if err != nil {
-				return err
-			}
-			if spec.Endpoint == nil && len(ports) > 0 {
-				spec.Endpoint = &api.EndpointSpec{}
-			}
-			if spec.Endpoint != nil {
-				// Only Ports is modeled; EndpointSpec.Mode (the resolver) and any
-				// future field stay as they were.
-				spec.Endpoint.Ports = ports
-			}
-		case "mounts":
-			mounts, err := patchMounts(value, allowBindMounts)
-			if err != nil {
-				return err
-			}
-			container.Mounts = mounts
-		case "networks":
-			networks, err := c.patchNetworks(ctx, value)
-			if err != nil {
-				return err
-			}
-			spec.Task.Networks = networks
-			// The deprecated ServiceSpec.Networks shadow is cleared so a read
-			// cannot report two different attachment lists.
-			spec.Networks = nil
-		case "restartPolicy":
-			if err := applyRestartPatch(&spec.Task.Restart, value); err != nil {
-				return err
-			}
-		case "healthcheck":
-			if err := applyHealthcheckPatch(container, value); err != nil {
-				return err
-			}
-		case "registryAuth":
-			if value == nil {
-				container.PullOptions = nil
-				break
-			}
-			auth, err := patchString("spec.task.registryAuth", value)
-			if err != nil {
-				return err
-			}
-			// An empty string means "no credential", exactly as on create; it
-			// must not leave a non-nil PullOptions that reads as cleared but is
-			// a different spec.
-			if auth == "" {
-				container.PullOptions = nil
-				break
-			}
-			container.PullOptions = &api.ContainerSpec_PullOptions{RegistryAuth: auth}
 		default:
 			return unknownPatchField("spec.task." + key)
 		}
+	}
+	return nil
+}
+
+// applyContainerStringPatch handles the scalar and list fields of
+// spec.task.*. It is split from applyTaskPatch to keep each switch small.
+func applyContainerStringPatch(container *api.ContainerSpec, key string, value any) error {
+	switch key {
+	case "image":
+		image, err := patchString("spec.task.image", value)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(image) == "" {
+			return invalidField("spec.task.image", "must not be empty")
+		}
+		container.Image = strings.TrimSpace(image)
+	case "command":
+		command, err := patchStringSlice("spec.task.command", value)
+		if err != nil {
+			return err
+		}
+		container.Command = command
+	case "args":
+		args, err := patchStringSlice("spec.task.args", value)
+		if err != nil {
+			return err
+		}
+		container.Args = args
+	case "env":
+		return applyEnvPatch(container, value)
+	case "user":
+		user, err := patchOptionalString("spec.task.user", value)
+		if err != nil {
+			return err
+		}
+		container.User = user
+	case "workdir":
+		dir, err := patchOptionalString("spec.task.workdir", value)
+		if err != nil {
+			return err
+		}
+		container.Dir = dir
+	case "stopSignal":
+		signal, err := patchOptionalString("spec.task.stopSignal", value)
+		if err != nil {
+			return err
+		}
+		container.StopSignal = signal
+	default:
+		return unknownPatchField("spec.task." + key)
+	}
+	return nil
+}
+
+// applyContainerRuntimePatch handles the container and resource fields of
+// spec.task.*.
+func applyContainerRuntimePatch(task *api.TaskSpec, container *api.ContainerSpec, key string, value any) error {
+	switch key {
+	case "stopGraceMs":
+		if value == nil {
+			container.StopGracePeriod = nil
+			return nil
+		}
+		ms, err := patchInt("spec.task.stopGraceMs", value)
+		if err != nil {
+			return err
+		}
+		if ms < 0 {
+			return invalidField("spec.task.stopGraceMs", "must be >= 0")
+		}
+		container.StopGracePeriod = durationProto(ms)
+	case "readOnlyRootfs":
+		readOnly, err := patchOptionalBool("spec.task.readOnlyRootfs", value)
+		if err != nil {
+			return err
+		}
+		container.ReadOnly = readOnly
+	case "vcpus":
+		vcpus, err := patchOptionalInt("spec.task.vcpus", value)
+		if err != nil {
+			return err
+		}
+		if vcpus < 0 {
+			return invalidField("spec.task.vcpus", "must be >= 0")
+		}
+		applyCPULimit(task, vcpus)
+	case "memoryBytes":
+		memory, err := patchOptionalInt("spec.task.memoryBytes", value)
+		if err != nil {
+			return err
+		}
+		if memory < 0 {
+			return invalidField("spec.task.memoryBytes", "must be >= 0")
+		}
+		applyMemoryLimit(task, memory)
+	case "registryAuth":
+		if value == nil {
+			container.PullOptions = nil
+			return nil
+		}
+		auth, err := patchString("spec.task.registryAuth", value)
+		if err != nil {
+			return err
+		}
+		// An empty string means "no credential", exactly as on create; it
+		// must not leave a non-nil PullOptions that reads as cleared but is
+		// a different spec.
+		if auth == "" {
+			container.PullOptions = nil
+			return nil
+		}
+		container.PullOptions = &api.ContainerSpec_PullOptions{RegistryAuth: auth}
+	default:
+		return unknownPatchField("spec.task." + key)
+	}
+	return nil
+}
+
+// applyTaskTopologyPatch handles the fields that attach or shape the task.
+func (c *Client) applyTaskTopologyPatch(ctx context.Context, spec *api.ServiceSpec, container *api.ContainerSpec, key string, value any, allowBindMounts bool) error {
+	switch key {
+	case "ports":
+		ports, err := patchPorts(value)
+		if err != nil {
+			return err
+		}
+		if spec.Endpoint == nil && len(ports) > 0 {
+			spec.Endpoint = &api.EndpointSpec{}
+		}
+		if spec.Endpoint != nil {
+			// Only Ports is modeled; EndpointSpec.Mode (the resolver) and any
+			// future field stay as they were.
+			spec.Endpoint.Ports = ports
+		}
+	case "mounts":
+		mounts, err := patchMounts(value, allowBindMounts)
+		if err != nil {
+			return err
+		}
+		container.Mounts = mounts
+	case "networks":
+		networks, err := c.patchNetworks(ctx, value)
+		if err != nil {
+			return err
+		}
+		spec.Task.Networks = networks
+		// The deprecated ServiceSpec.Networks shadow is cleared so a read
+		// cannot report two different attachment lists.
+		spec.Networks = nil
+	case "restartPolicy":
+		return applyRestartPatch(&spec.Task.Restart, value)
+	case "healthcheck":
+		return applyHealthcheckPatch(container, value)
+	default:
+		return unknownPatchField("spec.task." + key)
 	}
 	return nil
 }
@@ -504,52 +539,64 @@ func applyHealthcheckPatch(container *api.ContainerSpec, value any) error {
 	health := container.Healthcheck
 
 	for key, raw := range object {
-		switch key {
-		case "test":
-			health.Test = test
-		case "intervalMs":
-			ms, err := patchOptionalInt("spec.task.healthcheck.intervalMs", raw)
-			if err != nil {
-				return err
-			}
-			duration, err := durationOrNil("spec.task.healthcheck.intervalMs", ms)
-			if err != nil {
-				return err
-			}
-			health.Interval = duration
-		case "timeoutMs":
-			ms, err := patchOptionalInt("spec.task.healthcheck.timeoutMs", raw)
-			if err != nil {
-				return err
-			}
-			duration, err := durationOrNil("spec.task.healthcheck.timeoutMs", ms)
-			if err != nil {
-				return err
-			}
-			health.Timeout = duration
-		case "startPeriodMs":
-			ms, err := patchOptionalInt("spec.task.healthcheck.startPeriodMs", raw)
-			if err != nil {
-				return err
-			}
-			duration, err := durationOrNil("spec.task.healthcheck.startPeriodMs", ms)
-			if err != nil {
-				return err
-			}
-			health.StartPeriod = duration
-		case "retries":
-			retries, err := patchOptionalInt("spec.task.healthcheck.retries", raw)
-			if err != nil {
-				return err
-			}
-			if retries < 0 || retries > math.MaxInt32 {
-				return invalidField("spec.task.healthcheck.retries", "must be between 0 and 2147483647")
-			}
-			//nolint:gosec // bounded above
-			health.Retries = int32(retries)
-		default:
-			return unknownPatchField("spec.task.healthcheck." + key)
+		if err := applyHealthcheckField(health, key, raw); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// applyHealthcheckField merges one healthcheck field into health.
+func applyHealthcheckField(health *api.HealthConfig, key string, raw any) error {
+	switch key {
+	case "test":
+		test, err := patchStringSlice("spec.task.healthcheck.test", raw)
+		if err != nil {
+			return err
+		}
+		health.Test = test
+	case "intervalMs":
+		ms, err := patchOptionalInt("spec.task.healthcheck.intervalMs", raw)
+		if err != nil {
+			return err
+		}
+		duration, err := durationOrNil("spec.task.healthcheck.intervalMs", ms)
+		if err != nil {
+			return err
+		}
+		health.Interval = duration
+	case "timeoutMs":
+		ms, err := patchOptionalInt("spec.task.healthcheck.timeoutMs", raw)
+		if err != nil {
+			return err
+		}
+		duration, err := durationOrNil("spec.task.healthcheck.timeoutMs", ms)
+		if err != nil {
+			return err
+		}
+		health.Timeout = duration
+	case "startPeriodMs":
+		ms, err := patchOptionalInt("spec.task.healthcheck.startPeriodMs", raw)
+		if err != nil {
+			return err
+		}
+		duration, err := durationOrNil("spec.task.healthcheck.startPeriodMs", ms)
+		if err != nil {
+			return err
+		}
+		health.StartPeriod = duration
+	case "retries":
+		retries, err := patchOptionalInt("spec.task.healthcheck.retries", raw)
+		if err != nil {
+			return err
+		}
+		if retries < 0 || retries > math.MaxInt32 {
+			return invalidField("spec.task.healthcheck.retries", "must be between 0 and 2147483647")
+		}
+		//nolint:gosec // bounded above
+		health.Retries = int32(retries)
+	default:
+		return unknownPatchField("spec.task.healthcheck." + key)
 	}
 	return nil
 }
@@ -570,65 +617,73 @@ func applyUpdatePatch(target **api.UpdateConfig, path string, value any) error {
 	policy := *target
 
 	for key, raw := range object {
-		switch key {
-		case "parallelism":
-			parallelism, err := patchOptionalUint(path+".parallelism", raw)
-			if err != nil {
-				return err
-			}
-			policy.Parallelism = parallelism
-		case "delayMs":
-			ms, err := patchOptionalInt(path+".delayMs", raw)
-			if err != nil {
-				return err
-			}
-			if ms < 0 {
-				return invalidField(path+".delayMs", "must be >= 0")
-			}
-			policy.Delay = time.Duration(ms) * time.Millisecond
-		case "failureAction":
-			action, err := patchOptionalString(path+".failureAction", raw)
-			if err != nil {
-				return err
-			}
-			policy.FailureAction, err = updateFailureAction(action, path+".failureAction")
-			if err != nil {
-				return err
-			}
-		case "order":
-			order, err := patchOptionalString(path+".order", raw)
-			if err != nil {
-				return err
-			}
-			policy.Order, err = updateOrder(order, path+".order")
-			if err != nil {
-				return err
-			}
-		case "monitorMs":
-			ms, err := patchOptionalInt(path+".monitorMs", raw)
-			if err != nil {
-				return err
-			}
-			policy.Monitor, err = durationOrNil(path+".monitorMs", ms)
-			if err != nil {
-				return err
-			}
-		case "maxFailureRatio":
-			if raw == nil {
-				policy.MaxFailureRatio = 0
-				break
-			}
-			ratio, err := patchFloat(path+".maxFailureRatio", raw)
-			if err != nil {
-				return err
-			}
-			if ratio < 0 || ratio > 1 {
-				return invalidField(path+".maxFailureRatio", "must be between 0 and 1")
-			}
-			policy.MaxFailureRatio = float32(ratio)
-		default:
-			return unknownPatchField(path + "." + key)
+		if err := applyUpdateField(policy, path, key, raw); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+// applyUpdateField merges one update/rollback policy field.
+func applyUpdateField(policy *api.UpdateConfig, path, key string, raw any) error {
+	switch key {
+	case "parallelism":
+		parallelism, err := patchOptionalUint(path+".parallelism", raw)
+		if err != nil {
+			return err
+		}
+		policy.Parallelism = parallelism
+	case "delayMs":
+		ms, err := patchOptionalInt(path+".delayMs", raw)
+		if err != nil {
+			return err
+		}
+		if ms < 0 {
+			return invalidField(path+".delayMs", "must be >= 0")
+		}
+		policy.Delay = time.Duration(ms) * time.Millisecond
+	case "failureAction":
+		action, err := patchOptionalString(path+".failureAction", raw)
+		if err != nil {
+			return err
+		}
+		policy.FailureAction, err = updateFailureAction(action, path+".failureAction")
+		if err != nil {
+			return err
+		}
+	case "order":
+		order, err := patchOptionalString(path+".order", raw)
+		if err != nil {
+			return err
+		}
+		policy.Order, err = updateOrder(order, path+".order")
+		if err != nil {
+			return err
+		}
+	case "monitorMs":
+		ms, err := patchOptionalInt(path+".monitorMs", raw)
+		if err != nil {
+			return err
+		}
+		policy.Monitor, err = durationOrNil(path+".monitorMs", ms)
+		if err != nil {
+			return err
+		}
+	case "maxFailureRatio":
+		if raw == nil {
+			policy.MaxFailureRatio = 0
+			return nil
+		}
+		ratio, err := patchFloat(path+".maxFailureRatio", raw)
+		if err != nil {
+			return err
+		}
+		if ratio < 0 || ratio > 1 {
+			return invalidField(path+".maxFailureRatio", "must be between 0 and 1")
+		}
+		policy.MaxFailureRatio = float32(ratio)
+	default:
+		return unknownPatchField(path + "." + key)
 	}
 	return nil
 }

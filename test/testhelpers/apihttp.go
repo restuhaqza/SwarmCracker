@@ -29,7 +29,8 @@ func ShortTempDir(t *testing.T) string {
 func FreeTCPAddr(t *testing.T) string {
 	t.Helper()
 
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	lis, err := lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	addr := lis.Addr().String()
 	require.NoError(t, lis.Close())
