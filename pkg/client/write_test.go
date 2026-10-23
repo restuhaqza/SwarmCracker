@@ -825,7 +825,8 @@ func TestRollbackService(t *testing.T) {
 		require.NotNil(t, control.updateServiceReq)
 		assert.Equal(t, api.UpdateServiceRequest_PREVIOUS, control.updateServiceReq.Rollback)
 		assert.EqualValues(t, 17, control.updateServiceReq.ServiceVersion.Index)
-		assert.Nil(t, control.updateServiceReq.Spec, "a rollback never sends a spec")
+		require.NotNil(t, control.updateServiceReq.Spec, "SwarmKit validates Spec even on rollback")
+		assert.Equal(t, "nginx:alpine", control.updateServiceReq.Spec.Task.GetContainer().Image)
 	})
 
 	t.Run("If-Match is required", func(t *testing.T) {

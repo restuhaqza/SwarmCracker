@@ -189,7 +189,10 @@ func (c *Client) RollbackService(ctx context.Context, ref string, opts v1.WriteO
 	resp, err := c.control.UpdateService(ctx, &api.UpdateServiceRequest{
 		ServiceID:      id,
 		ServiceVersion: &api.Version{Index: current.Meta.Version.Index},
-		// A rollback ignores Spec: the manager restores PreviousSpec.
+		// SwarmKit validates Spec before it reaches the rollback branch, so a
+		// rollback must carry the current spec even though the manager ignores it
+		// and restores PreviousSpec.
+		Spec:     current.Spec.Copy(),
 		Rollback: api.UpdateServiceRequest_PREVIOUS,
 	})
 	if err != nil {
