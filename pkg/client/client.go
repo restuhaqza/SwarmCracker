@@ -162,10 +162,17 @@ func New(cfg Config) (*Client, error) {
 	return &Client{control: api.NewControlClient(conn), conn: conn}, nil
 }
 
-// Close releases the gRPC connection. A remote client keeps no persistent
-// transport state, so Close is a safe no-op there.
+// Close releases the transport. A local client closes its gRPC connection; a
+// remote client closes idle HTTP keep-alive connections.
 func (c *Client) Close() error {
-	if c == nil || c.conn == nil {
+	if c == nil {
+		return nil
+	}
+	if c.remote != nil {
+		c.remote.close()
+		return nil
+	}
+	if c.conn == nil {
 		return nil
 	}
 	return c.conn.Close()
@@ -317,7 +324,8 @@ func (c *Client) GetSecret(ctx context.Context, id string) (v1.Secret, error) {
 }
 
 // ClusterID returns the cluster's ID, which a local manager answers because a
-// node belongs to exactly one cluster. An empty cluster list is NotFound.
+// node belongs to exactly one cluster. An empty cluster list is NotFound; a
+// remote version document with an empty clusterId is NotFound too.
 func (c *Client) ClusterID(ctx context.Context) (string, error) {
 	if c.remote != nil {
 		return c.remote.clusterID(ctx)

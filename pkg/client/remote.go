@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -24,6 +25,9 @@ const (
 	remoteDefaultTimeout = 30 * time.Second
 	// maxListPages stops a server that never returns a null next cursor.
 	maxListPages = 1000
+	// maxResponseBytes bounds one decoded body so a misbehaving server cannot
+	// exhaust client memory. A list page is orders of magnitude smaller.
+	maxResponseBytes = 8 << 20
 )
 
 // remoteClient reads the public HTTPS API. It carries no SwarmKit state: the
@@ -80,6 +84,15 @@ func newRemote(cfg Config) (*Client, error) {
 	}}, nil
 }
 
+// close releases idle keep-alive connections. The client stays usable: a later
+// request simply dials again.
+func (r *remoteClient) close() {
+	if r == nil || r.http == nil {
+		return
+	}
+	r.http.CloseIdleConnections()
+}
+
 // parseEndpoint accepts only an https URL with a host. Plain HTTP over TCP is
 // rejected rather than downgraded: the bearer token must never travel in the
 // clear.
@@ -129,9 +142,35 @@ func loadToken(cfg Config) (string, error) {
 	return strings.TrimSpace(string(raw)), nil
 }
 
+// validateSegments rejects path segments that URL joining would silently
+// collapse. An empty or dot-segment ID would otherwise turn a single-resource
+// read into a list, parent or version read that still decodes cleanly.
+func validateSegments(segments []string) error {
+	for _, segment := range segments {
+		switch segment {
+		case "", ".", "..":
+			return output.NewErrorf(output.CodeUsage, "invalid resource id %q: must not be empty or a dot segment", segment)
+		}
+	}
+	return nil
+}
+
+// transportError maps a failed request or body read. A cancelled or expired
+// context is the caller's deadline, not an unreachable server.
+func transportError(op string, err error) *output.Error {
+	code := output.CodeUnreachable
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		code = output.CodeTimeout
+	}
+	return output.NewErrorf(code, "%s: %v", op, err)
+}
+
 // get performs one GET and returns the body of a 2xx response. Every failure
 // leaves as *output.Error so callers keep the stable codes and exit statuses.
 func (r *remoteClient) get(ctx context.Context, segments []string, query url.Values) ([]byte, error) {
+	if err := validateSegments(segments); err != nil {
+		return nil, err
+	}
 	// JoinPath joins raw path elements, so escape each one first: a slash in an
 	// ID must stay inside that segment instead of creating a new one.
 	escaped := make([]string, len(segments))
@@ -153,13 +192,18 @@ func (r *remoteClient) get(ctx context.Context, segments []string, query url.Val
 
 	resp, err := r.http.Do(req)
 	if err != nil {
-		return nil, output.NewErrorf(output.CodeUnreachable, "GET %s: %v", path, err)
+		return nil, transportError("GET "+path, err)
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	// Read one byte past the bound so an oversized body is detected rather than
+	// silently truncated into a decode failure.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
-		return nil, output.NewErrorf(output.CodeUnreachable, "read response for %s: %v", path, err)
+		return nil, transportError("read response for "+path, err)
+	}
+	if len(body) > maxResponseBytes {
+		return nil, output.NewErrorf(output.CodeInternal, "GET %s: response exceeds %d bytes", path, maxResponseBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, decodeErrorDocument(path, resp.StatusCode, resp.Status, body)
@@ -232,14 +276,19 @@ func (r *remoteClient) getDocument(ctx context.Context, segments []string, out a
 	return decodeJSON(strings.Join(segments, "/"), body, out)
 }
 
-// paginate follows next cursors until null. Each page is decoded by decode,
-// which returns the page's next cursor.
-func (r *remoteClient) paginate(ctx context.Context, segments []string, decode func([]byte) (*string, error)) error {
+// paginate follows next cursors until one is absent, accumulating every page's
+// items. extract reads the items and next cursor out of the concrete document
+// type, so a list method only names its document. A cursor that repeats would
+// otherwise loop until maxListPages; it is reported as a server bug instead.
+func paginate[T any, D any](r *remoteClient, ctx context.Context, segments []string, extract func(*D) ([]T, *string)) ([]T, error) {
 	path := strings.Join(segments, "/")
+	items := []T{}
 	cursor := ""
+	seen := make(map[string]struct{})
+
 	for page := 0; ; page++ {
 		if page >= maxListPages {
-			return output.NewErrorf(output.CodeInternal, "list %s did not terminate after %d pages", path, maxListPages)
+			return nil, output.NewErrorf(output.CodeInternal, "list %s did not terminate after %d pages", path, maxListPages)
 		}
 
 		query := url.Values{}
@@ -248,151 +297,75 @@ func (r *remoteClient) paginate(ctx context.Context, segments []string, decode f
 		}
 		body, err := r.get(ctx, segments, query)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		next, err := decode(body)
-		if err != nil {
-			return err
+
+		var doc D
+		if err := decodeJSON(path, body, &doc); err != nil {
+			return nil, err
 		}
+		pageItems, next := extract(&doc)
+		items = append(items, pageItems...)
+
 		if next == nil || *next == "" {
-			return nil
+			return items, nil
 		}
+		if _, repeated := seen[*next]; repeated {
+			return nil, output.NewErrorf(output.CodeInternal, "list %s repeated cursor %q", path, *next)
+		}
+		seen[*next] = struct{}{}
 		cursor = *next
 	}
 }
 
 // listServices returns every page of services.
 func (r *remoteClient) listServices(ctx context.Context) ([]v1.Service, error) {
-	segments := []string{"v1", "services"}
-	path := strings.Join(segments, "/")
-	items := []v1.Service{}
-	err := r.paginate(ctx, segments, func(body []byte) (*string, error) {
-		var doc v1.ServiceList
-		if err := decodeJSON(path, body, &doc); err != nil {
-			return nil, err
-		}
-		items = append(items, doc.Items...)
-		return doc.Next, nil
+	return paginate(r, ctx, []string{"v1", "services"}, func(doc *v1.ServiceList) ([]v1.Service, *string) {
+		return doc.Items, doc.Next
 	})
-	if err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 // listTasks returns every page of tasks.
 func (r *remoteClient) listTasks(ctx context.Context) ([]v1.Task, error) {
-	segments := []string{"v1", "tasks"}
-	path := strings.Join(segments, "/")
-	items := []v1.Task{}
-	err := r.paginate(ctx, segments, func(body []byte) (*string, error) {
-		var doc v1.TaskList
-		if err := decodeJSON(path, body, &doc); err != nil {
-			return nil, err
-		}
-		items = append(items, doc.Items...)
-		return doc.Next, nil
+	return paginate(r, ctx, []string{"v1", "tasks"}, func(doc *v1.TaskList) ([]v1.Task, *string) {
+		return doc.Items, doc.Next
 	})
-	if err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 // listServiceTasks returns every page of one service's tasks.
 func (r *remoteClient) listServiceTasks(ctx context.Context, serviceID string) ([]v1.Task, error) {
-	segments := []string{"v1", "services", serviceID, "tasks"}
-	path := strings.Join(segments, "/")
-	items := []v1.Task{}
-	err := r.paginate(ctx, segments, func(body []byte) (*string, error) {
-		var doc v1.TaskList
-		if err := decodeJSON(path, body, &doc); err != nil {
-			return nil, err
-		}
-		items = append(items, doc.Items...)
-		return doc.Next, nil
+	return paginate(r, ctx, []string{"v1", "services", serviceID, "tasks"}, func(doc *v1.TaskList) ([]v1.Task, *string) {
+		return doc.Items, doc.Next
 	})
-	if err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 // listNodes returns every page of nodes.
 func (r *remoteClient) listNodes(ctx context.Context) ([]v1.Node, error) {
-	segments := []string{"v1", "nodes"}
-	path := strings.Join(segments, "/")
-	items := []v1.Node{}
-	err := r.paginate(ctx, segments, func(body []byte) (*string, error) {
-		var doc v1.NodeList
-		if err := decodeJSON(path, body, &doc); err != nil {
-			return nil, err
-		}
-		items = append(items, doc.Items...)
-		return doc.Next, nil
+	return paginate(r, ctx, []string{"v1", "nodes"}, func(doc *v1.NodeList) ([]v1.Node, *string) {
+		return doc.Items, doc.Next
 	})
-	if err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 // listNetworks returns every page of user-defined networks. The server, not
 // the client, hides built-in networks.
 func (r *remoteClient) listNetworks(ctx context.Context) ([]v1.Network, error) {
-	segments := []string{"v1", "networks"}
-	path := strings.Join(segments, "/")
-	items := []v1.Network{}
-	err := r.paginate(ctx, segments, func(body []byte) (*string, error) {
-		var doc v1.NetworkList
-		if err := decodeJSON(path, body, &doc); err != nil {
-			return nil, err
-		}
-		items = append(items, doc.Items...)
-		return doc.Next, nil
+	return paginate(r, ctx, []string{"v1", "networks"}, func(doc *v1.NetworkList) ([]v1.Network, *string) {
+		return doc.Items, doc.Next
 	})
-	if err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 // listConfigs returns every page of config metadata.
 func (r *remoteClient) listConfigs(ctx context.Context) ([]v1.Config, error) {
-	segments := []string{"v1", "configs"}
-	path := strings.Join(segments, "/")
-	items := []v1.Config{}
-	err := r.paginate(ctx, segments, func(body []byte) (*string, error) {
-		var doc v1.ConfigList
-		if err := decodeJSON(path, body, &doc); err != nil {
-			return nil, err
-		}
-		items = append(items, doc.Items...)
-		return doc.Next, nil
+	return paginate(r, ctx, []string{"v1", "configs"}, func(doc *v1.ConfigList) ([]v1.Config, *string) {
+		return doc.Items, doc.Next
 	})
-	if err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 // listSecrets returns every page of secret metadata.
 func (r *remoteClient) listSecrets(ctx context.Context) ([]v1.Secret, error) {
-	segments := []string{"v1", "secrets"}
-	path := strings.Join(segments, "/")
-	items := []v1.Secret{}
-	err := r.paginate(ctx, segments, func(body []byte) (*string, error) {
-		var doc v1.SecretList
-		if err := decodeJSON(path, body, &doc); err != nil {
-			return nil, err
-		}
-		items = append(items, doc.Items...)
-		return doc.Next, nil
+	return paginate(r, ctx, []string{"v1", "secrets"}, func(doc *v1.SecretList) ([]v1.Secret, *string) {
+		return doc.Items, doc.Next
 	})
-	if err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 // getService returns one service document as served.
@@ -450,11 +423,15 @@ func (r *remoteClient) getSecret(ctx context.Context, id string) (v1.Secret, err
 	return doc.Secret, nil
 }
 
-// clusterID reads the cluster identity from the version document.
+// clusterID reads the cluster identity from the version document. An empty
+// clusterId is NotFound, matching the local backend's empty cluster list.
 func (r *remoteClient) clusterID(ctx context.Context) (string, error) {
 	var doc v1.VersionInfo
 	if err := r.getDocument(ctx, []string{"v1", "version"}, &doc); err != nil {
 		return "", err
+	}
+	if doc.ClusterID == "" {
+		return "", output.NewError(output.CodeNotFound, "cluster not found")
 	}
 	return doc.ClusterID, nil
 }
