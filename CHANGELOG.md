@@ -38,6 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   emit the v1 metadata envelopes (`id`, name, revision, timestamps, labels and
   secret driver); `-o name` emits IDs. Payloads are never serialized. Legacy
   `--format json` keeps the existing list shape.
+- **Network list v1 output** — `network ls -o json` emits the v1 `NetworkList`
+  for user-defined networks (identity, driver, first IPAM pool, labels and
+  attachability); `-o name` emits IDs. Legacy `--format json` keeps the raw
+  array.
 
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global

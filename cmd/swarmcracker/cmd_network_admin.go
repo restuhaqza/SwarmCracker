@@ -4,11 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
 )
 
@@ -162,6 +167,26 @@ func newNetworkListCommand() *cobra.Command {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if outputFormat != "" {
+				if cmd.Flags().Changed("format") {
+					return output.NewError(output.CodeUsage, "use either --output or --format, not both")
+				}
+				if output.Format(outputFormat) == output.FormatTable {
+					return listUserNetworks(format, quiet)
+				}
+				switch output.Format(outputFormat) {
+				case output.FormatJSON, output.FormatName:
+					if quiet {
+						if output.Format(outputFormat) == output.FormatName {
+							return output.NewError(output.CodeUsage, "do not combine -o name with --quiet")
+						}
+						return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
+					}
+					return listNetworksContract(outputFormat)
+				default:
+					return output.NewErrorf(output.CodeUsage, "unsupported output format %q for network ls", outputFormat)
+				}
+			}
 			return listUserNetworks(format, quiet)
 		},
 	}
@@ -169,6 +194,43 @@ func newNetworkListCommand() *cobra.Command {
 	cmd.Flags().StringVar(&format, "format", "table", "Output format (table, json)")
 	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Only display IDs")
 	return cmd
+}
+
+// networkLister is the narrow client surface the v1 network path needs.
+type networkLister interface {
+	ListNetworks(context.Context) ([]v1.Network, error)
+}
+
+func listNetworksContract(format string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := client.New(client.DefaultConfig())
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+	defer c.Close()
+
+	return listNetworksContractWithClient(ctx, c, os.Stdout, format)
+}
+
+func listNetworksContractWithClient(ctx context.Context, l networkLister, w io.Writer, format string) error {
+	networks, err := l.ListNetworks(ctx)
+	if err != nil {
+		return output.FromGRPC(err)
+	}
+
+	switch output.Format(format) {
+	case output.FormatJSON:
+		return output.WriteJSON(w, v1.NewNetworkList(networks))
+	case output.FormatName:
+		for _, network := range networks {
+			fmt.Fprintln(w, network.ID)
+		}
+		return nil
+	default:
+		return output.NewErrorf(output.CodeUsage, "unsupported output format %q for network ls", format)
+	}
 }
 
 func listUserNetworks(format string, quiet bool) error {

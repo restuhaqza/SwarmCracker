@@ -27,6 +27,31 @@ func validateAgainst(t *testing.T, doc *openapi3.T, name string, value any) {
 	require.NoError(t, schema.Value.VisitJSON(value), "document does not match %s", name)
 }
 
+func TestOpenAPINetworkListFixture(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	fixture, err := os.ReadFile(filepath.Join("testdata", "network-list-empty.json"))
+	require.NoError(t, err)
+	var empty any
+	require.NoError(t, json.Unmarshal(fixture, &empty))
+	validateAgainst(t, doc, "NetworkList", empty)
+
+	full := NewNetworkList([]Network{{
+		ID: "net-1", Name: "app", Revision: "2", Driver: "overlay",
+		CreatedAt:  "2026-10-19T10:00:00Z",
+		IPAM:       &NetworkIPAM{Subnet: "10.0.1.0/24", Gateway: "10.0.1.1"},
+		Labels:     map[string]string{"tier": "data"},
+		Attachable: true,
+	}})
+	data, err := json.Marshal(full)
+	require.NoError(t, err)
+	var value any
+	require.NoError(t, json.Unmarshal(data, &value))
+	validateAgainst(t, doc, "NetworkList", value)
+
+	require.NotNil(t, doc.Paths.Find("/v1/networks"))
+}
+
 func TestOpenAPIConfigAndSecretLists(t *testing.T) {
 	doc := loadOpenAPI(t)
 

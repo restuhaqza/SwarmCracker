@@ -79,6 +79,7 @@ type controlClient interface {
 	GetService(context.Context, *api.GetServiceRequest, ...grpc.CallOption) (*api.GetServiceResponse, error)
 	ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error)
 	ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error)
+	ListNetworks(context.Context, *api.ListNetworksRequest, ...grpc.CallOption) (*api.ListNetworksResponse, error)
 	ListConfigs(context.Context, *api.ListConfigsRequest, ...grpc.CallOption) (*api.ListConfigsResponse, error)
 	ListSecrets(context.Context, *api.ListSecretsRequest, ...grpc.CallOption) (*api.ListSecretsResponse, error)
 }
@@ -189,6 +190,26 @@ func (c *Client) GetService(ctx context.Context, id string) (v1.Service, error) 
 	}
 
 	return serviceFromSwarmkit(resp.Service, countTasks(tasks.Tasks)[id]), nil
+}
+
+// ListNetworks returns user-defined networks, ordered by creation time then
+// ID. The built-in ingress and gateway networks are excluded, matching the
+// legacy table.
+func (c *Client) ListNetworks(ctx context.Context) ([]v1.Network, error) {
+	resp, err := c.control.ListNetworks(ctx, &api.ListNetworksRequest{})
+	if err != nil {
+		return nil, err
+	}
+
+	networks := sortNetworks(resp.Networks)
+	items := make([]v1.Network, 0, len(networks))
+	for _, network := range networks {
+		if isBuiltinNetwork(network) {
+			continue
+		}
+		items = append(items, networkFromSwarmkit(network))
+	}
+	return items, nil
 }
 
 // ListConfigs returns config metadata without payloads, ordered by creation

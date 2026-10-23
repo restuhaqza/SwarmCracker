@@ -635,6 +635,12 @@ tears down that node's bridge and VXLAN. `network bridge status` flags:
 `--bridge` (default `swarm-br0`), `--format` (`table`, `json`). `network ls` and
 `network inspect` flags: `--format` (`table`/`json`, `inspect` defaults to `json`).
 
+`network ls` also accepts the global `-o json` / `-o name` flags. The v1
+`NetworkList` contains user-defined networks only (the built-in `ingress` and
+`docker_gwbridge` networks are excluded, matching the table) with identity,
+driver, first IPAM pool, labels and attachability. `-o name` prints IDs.
+`--format json` keeps the legacy raw network array.
+
 #### `swarmcracker volume`
 
 Persistent volume management.
