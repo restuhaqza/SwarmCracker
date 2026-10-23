@@ -11,14 +11,15 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,6 +54,8 @@ func TestPhase1(t *testing.T) {
 		var info v1.VersionInfo
 		require.NoError(t, json.Unmarshal(body, &info), string(body))
 		assert.Equal(t, []string{"v1"}, info.APIVersions)
+		assert.Equal(t, serverVersion, info.ServerVersion)
+		assert.Equal(t, grpcVersion, info.GRPCProtocolVersion)
 		assert.Equal(t, []string{"read"}, info.Capabilities)
 		assert.Equal(t, testClusterID, info.ClusterID)
 	})
@@ -80,10 +83,9 @@ func TestPhase1(t *testing.T) {
 
 		// Read the raw bytes: re-marshalling would hide a stray field or a
 		// pretty-printed body. The encoder terminates the one-line document
-		// with a single newline.
+		// with exactly one newline, so the byte count is pinned too.
 		const want = `{"schemaVersion":1,"kind":"ServiceList","items":[],"next":null}`
-		require.Equal(t, 1, strings.Count(string(body), "\n"), "body must be one line: %q", body)
-		assert.Equal(t, want, strings.TrimSuffix(string(body), "\n"), "body must be exactly the contract document")
+		assert.Equal(t, want+"\n", string(body), "body must be exactly the contract document plus one newline")
 	})
 
 	t.Run("pagination follows next", func(t *testing.T) {
@@ -153,20 +155,13 @@ func TestPhase1(t *testing.T) {
 
 	t.Run("remote client reads the same server", func(t *testing.T) {
 		h := newHarness(t, newFakeClient())
-
-		c, err := client.New(client.Config{
-			Endpoint: h.ts.URL,
-			CAFile:   h.caFile,
-			Token:    h.token,
-		})
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = c.Close() })
+		c := h.remoteClient(t)
 
 		ctx := context.Background()
 
 		services, err := c.ListServices(ctx)
 		require.NoError(t, err)
-		require.Len(t, services, 3, "the client must follow every next cursor")
+		require.Len(t, services, 3, "the three-item fixture fits in one default page")
 		assert.Equal(t, []string{"svc-1", "svc-2", "svc-3"}, serviceIDs(services))
 
 		clusterID, err := c.ClusterID(ctx)
@@ -182,6 +177,29 @@ func TestPhase1(t *testing.T) {
 		var typed *output.Error
 		require.ErrorAs(t, err, &typed, "a remote failure must keep the stable code: %v", err)
 		assert.Equal(t, output.CodeNotFound, typed.Code)
+	})
+
+	t.Run("remote client follows every next cursor", func(t *testing.T) {
+		// One item more than the server's default page size, so the client has
+		// no choice but to follow a cursor to see the whole stream.
+		const total = 101
+
+		h := newHarness(t, paginatedFakeClient(total))
+
+		// Prove the fixture really spans two pages first: if it fit in one, the
+		// client assertion below would pass without following anything.
+		status, _, body := h.do(t, "/v1/services")
+		require.Equal(t, http.StatusOK, status, string(body))
+
+		var first v1.ServiceList
+		require.NoError(t, json.Unmarshal(body, &first), string(body))
+		require.Len(t, first.Items, 100, "the default page must stop at the page size")
+		require.NotNil(t, first.Next, "a truncated default page must carry a next cursor")
+
+		services, err := h.remoteClient(t).ListServices(context.Background())
+		require.NoError(t, err)
+		require.Len(t, services, total, "the client must follow every next cursor")
+		assert.Equal(t, fixtureIDs(total), serviceIDs(services), "the pages must concatenate in order")
 	})
 }
 
@@ -232,6 +250,21 @@ func newHarness(t *testing.T, fake *fakeClient) *harness {
 	}
 }
 
+// remoteClient returns the real remote transport configured against this
+// harness's TLS listener and CA file.
+func (h *harness) remoteClient(t *testing.T) *client.Client {
+	t.Helper()
+
+	c, err := client.New(client.Config{
+		Endpoint: h.ts.URL,
+		CAFile:   h.caFile,
+		Token:    h.token,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
 // do performs one authenticated GET over TLS. mutate may override headers after
 // the defaults are set, which is how the missing-token and If-None-Match cases
 // are expressed.
@@ -249,6 +282,18 @@ func (h *harness) do(t *testing.T, path string, mutate ...func(*http.Request)) (
 	resp, err := h.client.Do(req)
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
+
+	// Every response -- success, error or 304 -- carries the version header.
+	require.Equal(t, apihttp.APIVersion, resp.Header.Get("X-SwarmCracker-Api-Version"),
+		"%s must advertise the API version", path)
+	// Every response with a body is a v1 document. net/http strips
+	// Content-Type from a 304 before it reaches the wire
+	// (net/http/transfer.go suppressedHeaders304), even though writeJSON sets
+	// it, so a 304 can only be checked for its validator and empty body.
+	if resp.StatusCode != http.StatusNotModified {
+		require.Equal(t, apihttp.MediaType, resp.Header.Get("Content-Type"),
+			"%s must serve the v1 media type", path)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -367,6 +412,33 @@ func newFakeClient() *fakeClient {
 			CreatedAt: "2026-01-01T00:00:00Z",
 		}},
 	}
+}
+
+// paginatedFakeClient returns n services ordered by createdAt then id. The item
+// structs are minimal on purpose: a fixture larger than the default page size
+// stays cheap.
+func paginatedFakeClient(n int) *fakeClient {
+	ids := fixtureIDs(n)
+	services := make([]v1.Service, 0, n)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i, id := range ids {
+		services = append(services, v1.Service{
+			ID:        id,
+			Name:      id,
+			Revision:  "1",
+			CreatedAt: start.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+		})
+	}
+	return &fakeClient{clusterID: testClusterID, services: services}
+}
+
+// fixtureIDs is the ordered ID sequence paginatedFakeClient produces.
+func fixtureIDs(n int) []string {
+	ids := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		ids = append(ids, fmt.Sprintf("svc-%03d", i))
+	}
+	return ids
 }
 
 func (f *fakeClient) ListServices(context.Context) ([]v1.Service, error) { return f.services, nil }
