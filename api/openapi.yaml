@@ -1169,8 +1169,10 @@ paths:
         `tty:true` (and therefore any `stdin:true` request, which requires a
         TTY) is rejected before proxying with 501 not_implemented and
         details.reason "tty_not_supported". Local `vm exec -it` is unaffected.
-        The attempt is audited as task.exec; a relayed node failure is audited
-        as error, not ok.
+        The task must be running: a completed or crashed task has no guest agent,
+        so it is 404 not_found (its console log stays readable through the logs
+        route). The attempt is audited as task.exec; a relayed node failure is
+        audited as error, not ok.
       parameters:
         - name: id
           in: path
@@ -1246,8 +1248,10 @@ paths:
         per-line timestamps, so backlog lines are stamped with the file's
         modification time and followed lines with the time they were read. A
         `follow` stream never ends with `eof`: it ends when the caller
-        disconnects or the task disappears. A missing task or a task with no log
-        is 404; an unreachable node is 503.
+        disconnects, when the task's VM stops, or when its log disappears. Logs
+        remain available after the task exits — the console file outlives the VM
+        — so this is the route to use to find out why a task failed. A missing
+        task or a task with no log is 404; an unreachable node is 503.
       parameters:
         - name: id
           in: path
@@ -1320,7 +1324,10 @@ paths:
         the v1 envelope — with Content-Type application/octet-stream. Only regular
         files are served: the path must be absolute and must not contain a `..`
         segment (400 invalid otherwise). A directory is 400 invalid with
-        details.reason "directory_not_supported"; a missing file is 404.
+        details.reason "directory_not_supported"; a missing file is 404. The
+        task must be running: a completed or crashed task has no guest agent, so
+        it is 404 not_found (its console log stays readable through the logs
+        route).
       parameters:
         - name: id
           in: path
@@ -1375,8 +1382,9 @@ paths:
         success. The body is limited to 1 GiB (413, details.reason
         "payload_too_large"); the manager forwards the upload without buffering
         it. `mode` is an octal file mode between 0000 and 0777 (default 0644;
-        anything else is 400 invalid). The path rules of GET apply. Audit records
-        the task, never the path or the contents.
+        anything else is 400 invalid). The path rules of GET apply. The task must
+        be running: a completed task has no guest agent and is 404 not_found. Audit
+        records the task, never the path or the contents.
       parameters:
         - name: id
           in: path

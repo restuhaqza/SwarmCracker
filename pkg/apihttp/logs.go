@@ -7,7 +7,9 @@
 //
 // Logs are reader-scoped (tasks:logs): unlike exec and files they are not gated
 // by task selectors and they are not audited, because reading a task's console
-// output is the same authority a reader already has over the task list.
+// output is the same authority a reader already has over the task list. They also
+// stay available after the task exits: the node reads the console file, not the
+// VM, so a completed or crashed task's output is still served.
 package apihttp
 
 import (

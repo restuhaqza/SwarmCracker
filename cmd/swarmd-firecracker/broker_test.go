@@ -270,6 +270,38 @@ func TestStartBroker_LogsUnavailableTaskIs404(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+// TestStartBroker_ServesLogsForExitedTask pins the daemon wiring for a task that
+// has stopped: its socket is gone, so it resolves as a log-only task. Logs stay
+// readable; files needs a live guest and is a typed 404 rather than a dial.
+func TestStartBroker_ServesLogsForExitedTask(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "task-1.log"),
+		[]byte("boom\n"), 0o600))
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: logDir}
+	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/logs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"a task's console log must stay readable after it exits")
+
+	filesResp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/files?path=/etc/hostname")
+	require.NoError(t, err)
+	defer filesResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, filesResp.StatusCode,
+		"files has no guest for a task that is not running")
+}
+
 func TestStartBroker_ServesMTLSAndStops(t *testing.T) {
 	stateDir := t.TempDir()
 	clientCert, pool := seedBrokerCertificates(t, stateDir)

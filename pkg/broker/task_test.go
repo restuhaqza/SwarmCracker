@@ -17,7 +17,47 @@ func TestSocketDirSourceLookupFindsRunningTask(t *testing.T) {
 	task, ok, err := SocketDirSource{Dir: dir}.Lookup(context.Background(), "task-1")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, Task{ID: "task-1", SocketPath: socketPath}, task)
+	require.Equal(t, Task{ID: "task-1", SocketPath: socketPath, Running: true}, task)
+}
+
+// TestSocketDirSourceLookupFindsExitedTaskByLog pins that a task whose VM is
+// gone still resolves while its console log exists: reading the log is the
+// "why did it crash" case, and the log handler must be able to serve it.
+func TestSocketDirSourceLookupFindsExitedTaskByLog(t *testing.T) {
+	dir := t.TempDir()
+	logDir := t.TempDir()
+	logPath := filepath.Join(logDir, "task-1.log")
+	require.NoError(t, os.WriteFile(logPath, []byte("boom\n"), 0o600))
+
+	task, ok, err := SocketDirSource{Dir: dir, LogDir: logDir}.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, Task{ID: "task-1", LogPath: logPath}, task,
+		"a log-only task has no socket path and is not running")
+}
+
+// TestSocketDirSourceExitedTaskWithoutLogIsMissing pins the other half: once
+// neither the socket nor the log exists, the task is gone.
+func TestSocketDirSourceExitedTaskWithoutLogIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	logDir := t.TempDir()
+
+	task, ok, err := SocketDirSource{Dir: dir, LogDir: logDir}.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.False(t, ok)
+	require.Zero(t, task)
+}
+
+// TestSocketDirSourceExitedTaskLogMustBeRegular pins that a directory named like
+// a log does not resolve a task the log handler could not serve.
+func TestSocketDirSourceExitedTaskLogMustBeRegular(t *testing.T) {
+	dir := t.TempDir()
+	logDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(logDir, "task-1.log"), 0o700))
+
+	_, ok, err := SocketDirSource{Dir: dir, LogDir: logDir}.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.False(t, ok)
 }
 
 func TestSocketDirSourceLookupMissingTask(t *testing.T) {

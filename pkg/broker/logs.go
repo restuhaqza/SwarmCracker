@@ -13,7 +13,10 @@ package broker
 //
 // The response is application/x-ndjson — the documented exception to the v1
 // envelope — so output is followed while the task runs. Frames are written and
-// flushed one at a time; the whole backlog is never buffered.
+// flushed one at a time; a single frame and a single read never exceed the read
+// buffer, so neither the backlog nor a newline-free line is ever held in memory.
+// The console file outlives the task, so logs stay readable after a task exits;
+// a follow stream ends when the VM stops or the log disappears.
 
 import (
 	"bufio"
@@ -25,7 +28,6 @@ import (
 	"net/http"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -40,8 +42,10 @@ const (
 	// logPollInterval is how often a following stream checks for appended
 	// bytes. It is deliberately short: a console log is interactive output.
 	logPollInterval = 250 * time.Millisecond
-	// logReadBuffer bounds one line-reader's buffer. A longer line is still
-	// read; the buffer only decides how often the file is touched.
+	// logReadBuffer bounds one read and one frame. A line longer than the
+	// buffer — a progress bar using \r, or binary output — is framed in
+	// buffer-sized chunks instead of being accumulated, so no frame and no
+	// allocation grows with the line.
 	logReadBuffer = 64 * 1024
 	// logScanBlock is the block size of the backwards tail scan.
 	logScanBlock = 32 * 1024
@@ -108,7 +112,7 @@ func serveLogs(ctx context.Context, task Task, w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	stream.follow(ctx, task.LogPath, file, next, query.since)
+	stream.follow(ctx, task, file, next, query.since)
 }
 
 // parseLogsQuery validates tail, since and follow. Every rejection is a typed
@@ -255,10 +259,14 @@ func (s *logStream) flush() {
 	}
 }
 
-// emit streams the bytes in [start, end) as log frames, one complete line each,
-// and returns the offset after the last complete line. includePartial also emits
-// a trailing line that has no newline yet. Lines are framed as they are read, so
-// even a maximum-size backlog is never held in memory.
+// emit streams the bytes in [start, end) as log frames and returns the offset
+// after the last byte it consumed. A complete line is one frame; a line longer
+// than the read buffer is several buffer-sized frames, because ReadSlice hands
+// back a full buffer with ErrBufferFull instead of growing. That keeps every
+// frame and every allocation bounded no matter how the log is formatted.
+// includePartial also emits a trailing chunk that has no newline yet; a
+// following stream leaves it for the next poll so a line is not cut in half by
+// an arbitrary pause.
 func (s *logStream) emit(file *os.File, start, end int64, at time.Time, includePartial bool) (int64, error) {
 	if end <= start {
 		return start, nil
@@ -266,51 +274,67 @@ func (s *logStream) emit(file *os.File, start, end int64, at time.Time, includeP
 
 	reader := bufio.NewReaderSize(io.NewSectionReader(file, start, end-start), logReadBuffer)
 	next := start
-	for {
-		line, err := reader.ReadString('\n')
-		if strings.HasSuffix(line, "\n") {
-			if frameErr := s.frame(v1.LogDataFrame(at, []byte(line))); frameErr != nil {
+	for next < end {
+		chunk, err := reader.ReadSlice('\n')
+
+		switch {
+		case len(chunk) > 0 && chunk[len(chunk)-1] == '\n':
+			// A whole line, possibly the last chunk of a long one.
+			if frameErr := s.frame(v1.LogDataFrame(at, chunk)); frameErr != nil {
 				return next, frameErr
 			}
-			next += int64(len(line))
-		}
-		if err != nil {
-			break
+			next += int64(len(chunk))
+		case errors.Is(err, bufio.ErrBufferFull):
+			// The line is longer than the buffer: frame what we have and
+			// continue. The next call resumes mid-line, so the frames are
+			// byte-for-byte the same stream.
+			if frameErr := s.frame(v1.LogDataFrame(at, chunk)); frameErr != nil {
+				return next, frameErr
+			}
+			next += int64(len(chunk))
+		default:
+			// End of the window (or a read failure) inside a line. Only a
+			// finite stream emits it: a follower keeps the partial line for the
+			// poll that completes it.
+			if includePartial && len(chunk) > 0 {
+				if frameErr := s.frame(v1.LogDataFrame(at, chunk)); frameErr != nil {
+					return end, frameErr
+				}
+				next += int64(len(chunk))
+			}
+			if err != nil && !errors.Is(err, io.EOF) {
+				return next, err
+			}
+			return next, nil
 		}
 	}
 
-	if !includePartial || next >= end {
-		return next, nil
-	}
-
-	// A final line without its newline. It still belongs to the backlog.
-	partial, err := readRange(file, next, end)
-	if err != nil {
-		return next, err
-	}
-	if len(partial) > 0 {
-		if frameErr := s.frame(v1.LogDataFrame(at, partial)); frameErr != nil {
-			return end, frameErr
-		}
-	}
-	return end, nil
+	return next, nil
 }
 
-// follow polls the log for appended bytes until the request is cancelled or the
-// task's log disappears. It never writes an eof: a following stream ends only
-// when there is nothing left to follow.
-func (s *logStream) follow(ctx context.Context, path string, file *os.File, pos int64, since time.Time) {
+// follow polls the log for appended bytes until the request is cancelled, the
+// task stops running or the task's log disappears. It never writes an eof: a
+// following stream ends only when there is nothing left to follow.
+func (s *logStream) follow(ctx context.Context, task Task, file *os.File, pos int64, since time.Time) {
 	ticker := time.NewTicker(logPollInterval)
 	defer ticker.Stop()
 
 	for {
+		// The console log outlives the VM, so a finished task would leave this
+		// loop polling a static file forever. The API socket is the liveness
+		// signal, and checking it before the wait also ends a follow of a task
+		// that was already gone when the request arrived.
+		if !task.stillRunning() {
+			return
+		}
+
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
 		}
 
-		size, ok := logSize(path)
+		size, ok := logSize(task.LogPath)
 		if !ok {
 			return
 		}
@@ -345,16 +369,4 @@ func logSize(path string) (int64, bool) {
 		return 0, false
 	}
 	return info.Size(), true
-}
-
-// readRange returns the raw bytes in [start, end).
-func readRange(file *os.File, start, end int64) ([]byte, error) {
-	if end <= start {
-		return nil, nil
-	}
-	buf := make([]byte, end-start)
-	if _, err := file.ReadAt(buf, start); err != nil {
-		return nil, err
-	}
-	return buf, nil
 }

@@ -25,15 +25,18 @@ import (
 )
 
 // writeLogFile writes lines (each gets a trailing newline) and returns the task
-// the handler resolves to.
+// the handler resolves to. The socket file makes it a running task, which a
+// follow stream needs: liveness is the socket, not the log.
 func writeLogFile(t *testing.T, lines ...string) Task {
 	t.Helper()
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "task-1.log")
+	socketPath := filepath.Join(dir, "task-1.sock")
 	require.NoError(t, os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600))
+	require.NoError(t, os.WriteFile(socketPath, nil, 0o600))
 
-	return Task{ID: "task-1", SocketPath: filepath.Join(dir, "task-1.sock"), LogPath: path}
+	return Task{ID: "task-1", SocketPath: socketPath, Running: true, LogPath: path}
 }
 
 // runLogsHandler runs the handler with a request for path and returns the
@@ -418,14 +421,199 @@ func TestLogsHandlerFollowsPartialLine(t *testing.T) {
 	assert.Equal(t, v1.LogFrameTypeEOF, frames[1].Type)
 }
 
-// TestLogsHandlerLongLine pins that the handler's line reader copes with a long
-// line rather than failing the stream.
-func TestLogsHandlerLongLine(t *testing.T) {
-	long := strings.Repeat("x", 256*1024)
+// TestLogsHandlerFollowHoldsBackAPartialLine pins the follow half of that rule:
+// a follower waits for the newline instead of framing half a line, so one line
+// is not split across a poll boundary.
+func TestLogsHandlerFollowHoldsBackAPartialLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-1.log")
+	socketPath := filepath.Join(dir, "task-1.sock")
+	require.NoError(t, os.WriteFile(path, []byte("partial"), 0o600))
+	require.NoError(t, os.WriteFile(socketPath, nil, 0o600))
+	task := Task{ID: "task-1", SocketPath: socketPath, Running: true, LogPath: path}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	rec := newStreamRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/tasks/task-1/logs?follow=true", nil).WithContext(ctx)
+	go func() {
+		defer close(done)
+		NewLogsHandler()(ctx, task, rec, req)
+	}()
+
+	require.Never(t, func() bool {
+		return len(decodeLogFrames(t, []byte(rec.Body()))) > 0
+	}, 2*logPollInterval, 20*time.Millisecond,
+		"a partial line must not be framed before its newline arrives")
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	require.NoError(t, err)
+	_, err = f.WriteString("\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	waitForLine(t, rec, "partial")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the follow handler must stop when the request context is cancelled")
+	}
+}
+
+// TestLogsHandlerServesTheLogOfAnExitedTask pins that logs do not depend on a
+// live socket: the socket source resolves a log-only task after the VM stops,
+// and the handler serves its backlog.
+func TestLogsHandlerServesTheLogOfAnExitedTask(t *testing.T) {
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "task-1.log"), []byte("boom\n"), 0o600))
+
+	task, ok, err := SocketDirSource{Dir: socketDir, LogDir: logDir}.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	rec := runLogsHandler(t, context.Background(), task, "/v1/tasks/task-1/logs")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	frames := decodeLogFrames(t, rec.Body.Bytes())
+	require.Len(t, frames, 2)
+	assert.Equal(t, []byte("boom\n"), frames[0].Data)
+	assert.Equal(t, v1.LogFrameTypeEOF, frames[1].Type)
+}
+
+// TestLogsHandlerFollowEndsWhenTheTaskStops pins that a follow stream ends when
+// the VM goes away even though the console log remains: polling a static file
+// forever leaves the client with no terminal condition.
+func TestLogsHandlerFollowEndsWhenTheTaskStops(t *testing.T) {
+	task := writeLogFile(t, "before")
+
+	done := make(chan struct{})
+	rec := newStreamRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/tasks/task-1/logs?follow=true", nil)
+	go func() {
+		defer close(done)
+		NewLogsHandler()(context.Background(), task, rec, req)
+	}()
+
+	waitForLine(t, rec, "before")
+
+	require.NoError(t, os.Remove(task.SocketPath))
+	require.FileExists(t, task.LogPath, "the log outlives the task, so it cannot be the liveness signal")
+
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a follow stream must end when the task stops running")
+	}
+}
+
+// TestLogsHandlerFollowOfAnExitedTaskEndsAfterTheBacklog pins the log-only case:
+// there is nothing to follow, so the stream ends after the backlog and still
+// invents no eof.
+func TestLogsHandlerFollowOfAnExitedTaskEndsAfterTheBacklog(t *testing.T) {
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "task-1.log"), []byte("boom\n"), 0o600))
+
+	task, ok, err := SocketDirSource{Dir: socketDir, LogDir: logDir}.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	done := make(chan struct{})
+	rec := newStreamRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/tasks/task-1/logs?follow=true", nil)
+	go func() {
+		defer close(done)
+		NewLogsHandler()(context.Background(), task, rec, req)
+	}()
+
+	waitForLine(t, rec, "boom")
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a follow stream of a task that is already gone must end")
+	}
+
+	for _, frame := range decodeLogFrames(t, []byte(rec.Body())) {
+		assert.NotEqual(t, v1.LogFrameTypeEOF, frame.Type,
+			"a following stream must not invent an eof")
+	}
+}
+
+// TestLogsHandlerLongLineIsFramedInBoundedChunks pins that a line longer than
+// the read buffer is split into buffer-sized frames rather than accumulated: the
+// concatenated data is still the exact line, and no frame exceeds the buffer.
+func TestLogsHandlerLongLineIsFramedInBoundedChunks(t *testing.T) {
+	long := strings.Repeat("x", 2*logReadBuffer+123)
 	task := writeLogFile(t, long)
 
 	rec := runLogsHandler(t, context.Background(), task, "/v1/tasks/task-1/logs")
 	frames := decodeLogFrames(t, rec.Body.Bytes())
-	require.Len(t, frames, 2)
-	assert.Equal(t, len(long)+1, len(frames[0].Data))
+	require.Greater(t, len(frames), 2, "a line longer than the buffer must be chunked")
+
+	var joined strings.Builder
+	for _, frame := range frames[:len(frames)-1] {
+		require.Equal(t, v1.LogFrameTypeLog, frame.Type)
+		require.LessOrEqual(t, len(frame.Data), logReadBuffer,
+			"no frame may exceed the read buffer")
+		joined.Write(frame.Data)
+	}
+	assert.Equal(t, long+"\n", joined.String())
+	assert.Equal(t, v1.LogFrameTypeEOF, frames[len(frames)-1].Type)
+}
+
+// newlineFreeRecorder decodes each frame but keeps only its size, so a test can
+// observe a huge newline-free log without itself retaining the whole body.
+type newlineFreeRecorder struct {
+	header    http.Header
+	status    int
+	frames    int
+	totalData int64
+	maxData   int
+}
+
+func (r *newlineFreeRecorder) Header() http.Header { return r.header }
+
+func (r *newlineFreeRecorder) WriteHeader(status int) { r.status = status }
+
+func (r *newlineFreeRecorder) Write(p []byte) (int, error) {
+	var frame v1.LogFrame
+	if err := json.Unmarshal(bytes.TrimSpace(p), &frame); err != nil {
+		return 0, err
+	}
+	if frame.Type == v1.LogFrameTypeLog {
+		r.frames++
+		r.totalData += int64(len(frame.Data))
+		if len(frame.Data) > r.maxData {
+			r.maxData = len(frame.Data)
+		}
+	}
+	return len(p), nil
+}
+
+// TestLogsHandlerBoundsANewlineFreeLog covers the shape that defeats a line
+// reader: a console log with no newline at all (a progress bar using \r, binary
+// output, `cat /dev/urandom`). tailStart finds no line boundary and returns 0,
+// so the whole file is in the backlog; the handler must still frame it in
+// buffer-sized chunks instead of allocating the region.
+func TestLogsHandlerBoundsANewlineFreeLog(t *testing.T) {
+	content := strings.Repeat("y", 3*logReadBuffer+17)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "task-1.log")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	task := Task{ID: "task-1", LogPath: path}
+
+	rec := &newlineFreeRecorder{header: make(http.Header)}
+	req := httptest.NewRequest(http.MethodGet, "/v1/tasks/task-1/logs", nil)
+	NewLogsHandler()(context.Background(), task, rec, req)
+
+	require.Equal(t, http.StatusOK, rec.status)
+	require.Greater(t, rec.frames, 1, "the newline-free region must be chunked")
+	assert.Equal(t, int64(len(content)), rec.totalData, "chunking must not lose bytes")
+	assert.LessOrEqual(t, rec.maxData, logReadBuffer,
+		"a frame must never hold the whole newline-free region")
 }

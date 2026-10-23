@@ -9,6 +9,10 @@ package broker
 //
 // Interactive TTY is a follow-up: the request is rejected with a typed 501
 // before any dial. The public route rejects it too; this is defence in depth.
+//
+// Exec needs a live guest agent. A task that has exited keeps its console log
+// (readable through the logs operation) but has no guest, so exec answers a
+// typed 404 not_found instead of dialing a dead vsock path.
 
 import (
 	"bytes"
@@ -69,12 +73,15 @@ func serveExec(ctx context.Context, dial ExecDialer, task Task, w http.ResponseW
 		return
 	}
 
-	vsockPath := task.VsockPath()
-	if vsockPath == "" {
-		writeError(w, http.StatusServiceUnavailable, codeUnavailable,
-			"task %q has no guest socket", task.ID)
+	// A stopped task keeps its console log but has no guest agent. Dialing the
+	// vsock path of a dead VM would fail opaquely (or reach a path that was
+	// reused), so it is not_found, like any other task the node cannot serve.
+	if !task.guestAvailable() {
+		writeError(w, http.StatusNotFound, codeNotFound,
+			"task %q is not running", task.ID)
 		return
 	}
+	vsockPath := task.VsockPath()
 
 	// The deadline covers the dial and the whole command. A caller-supplied
 	// timeout of 0 means no server-side deadline.

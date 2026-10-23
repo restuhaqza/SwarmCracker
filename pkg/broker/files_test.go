@@ -61,7 +61,7 @@ func (f *fakeFileGuest) Close() error {
 
 // fileTask is the task every file test resolves to.
 func fileTask() Task {
-	return Task{ID: "task-1", SocketPath: "/var/run/firecracker/task-1.sock"}
+	return Task{ID: "task-1", SocketPath: "/var/run/firecracker/task-1.sock", Running: true}
 }
 
 // runFilesHandler runs the handler for one request and returns the response.
@@ -278,18 +278,41 @@ func TestFilesHandlerBoundsChunkedBody(t *testing.T) {
 	assert.Equal(t, "payload_too_large", doc.Error.Details["reason"])
 }
 
-func TestFilesHandlerMissingGuestSocket(t *testing.T) {
+func TestFilesHandlerGuestDialFailureIsUnavailable(t *testing.T) {
 	dial := &fakeDialer{err: errors.New("dial unix /var/run/firecracker/task-1.vsock: no such file")}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/tasks/task-1/files?path=/etc/hostname", nil)
 
 	newFilesHandler(dial.dial, 1<<20)(context.Background(),
-		Task{ID: "task-1"}, rec, req)
+		fileTask(), rec, req)
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	doc := decodeErrorDocument(t, rec.Body)
 	assert.Equal(t, string(output.CodeUnavailable), doc.Error.Code)
 	assert.NotContains(t, rec.Body.String(), "vsock")
+}
+
+// TestFilesHandlerRejectsNonRunningTask pins that files needs a live guest: an
+// exited task keeps its log but has no VM, so both directions answer a typed 404
+// without dialing an empty or recycled vsock path.
+func TestFilesHandlerRejectsNonRunningTask(t *testing.T) {
+	task := Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"}
+
+	for _, method := range []string{http.MethodGet, http.MethodPut} {
+		t.Run(method, func(t *testing.T) {
+			dial := &fakeDialer{guest: &fakeFileGuest{}}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(method, "/v1/tasks/task-1/files?path=/etc/hostname",
+				strings.NewReader("x"))
+
+			newFilesHandler(dial.dial, 1<<20)(context.Background(), task, rec, req)
+
+			require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+			doc := decodeErrorDocument(t, rec.Body)
+			assert.Equal(t, string(output.CodeNotFound), doc.Error.Code)
+			assert.Empty(t, dial.gotPath, "a non-running task must not be dialed")
+		})
+	}
 }
 
 func TestFilesHandlerUnsupportedMethod(t *testing.T) {

@@ -619,6 +619,8 @@ func TestOpenAPIExec(t *testing.T) {
 	require.Contains(t, op.Description, "tasks:exec", "the operation must name its scope")
 	require.Contains(t, op.Description, "tty_not_supported",
 		"the TTY follow-up must be documented on the operation")
+	require.Contains(t, op.Description, "must be running",
+		"exec must state that it needs a live task")
 
 	id := findParameter(t, op.Parameters, "id")
 	require.True(t, id.Required)
@@ -712,6 +714,8 @@ func TestOpenAPILogsAndFiles(t *testing.T) {
 	require.Contains(t, op.Description, "tasks:logs", "the operation must name its scope")
 	require.Contains(t, op.Description, "selectors", "logs must state they are not selector-gated")
 	require.Contains(t, op.Description, "eof", "the follow/eof rule must be documented")
+	require.Contains(t, op.Description, "after the task exits",
+		"logs must state that they stay available after a task exits")
 
 	id := findParameter(t, op.Parameters, "id")
 	require.True(t, id.Required)
@@ -741,6 +745,8 @@ func TestOpenAPILogsAndFiles(t *testing.T) {
 	for _, fileOp := range []*openapi3.Operation{files.Get, files.Put} {
 		require.Contains(t, fileOp.Description, "tasks:files", "the operation must name its scope")
 		require.Contains(t, fileOp.Description, "task.files", "the audit action must be documented")
+		require.Contains(t, fileOp.Description, "must be running",
+			"files must state that the task has to be running")
 
 		pathParam := findParameter(t, fileOp.Parameters, "path")
 		require.True(t, pathParam.Required, "path is required")

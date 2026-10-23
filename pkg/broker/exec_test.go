@@ -62,7 +62,7 @@ func (d *fakeDialer) dial(_ context.Context, vsockPath string, port uint32) (Gue
 }
 
 func testExecTask() Task {
-	return Task{ID: "task-1", SocketPath: "/var/run/firecracker/task-1.sock"}
+	return Task{ID: "task-1", SocketPath: "/var/run/firecracker/task-1.sock", Running: true}
 }
 
 func execRequest(t *testing.T, body string) *http.Request {
@@ -247,14 +247,29 @@ func TestExecHandlerRejectsInvalidEnvKey(t *testing.T) {
 	}
 }
 
-func TestExecHandlerTaskWithoutSocketIs503(t *testing.T) {
-	handler := NewExecHandler((&fakeDialer{guest: &fakeGuest{}}).dial)
-	rec := httptest.NewRecorder()
-	handler(context.Background(), Task{ID: "task-1"}, rec, execRequest(t, `{"command":["true"]}`))
+// TestExecHandlerRejectsNonRunningTask pins that exec needs a live guest: an
+// exited task keeps its log but has no VM, so dialing would be wrong. It is a
+// typed 404, not a 503 and not an empty vsock path.
+func TestExecHandlerRejectsNonRunningTask(t *testing.T) {
+	cases := map[string]Task{
+		"no task at all":     {ID: "task-1"},
+		"log-only task":      {ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"},
+		"running flag clear": {ID: "task-1", SocketPath: "/var/run/firecracker/task-1.sock"},
+	}
 
-	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
-	doc := decodeErrorDocument(t, rec.Body)
-	assert.Equal(t, string(codeUnavailable), doc.Error.Code)
+	for name, task := range cases {
+		t.Run(name, func(t *testing.T) {
+			dial := &fakeDialer{guest: &fakeGuest{}}
+			handler := NewExecHandler(dial.dial)
+			rec := httptest.NewRecorder()
+			handler(context.Background(), task, rec, execRequest(t, `{"command":["true"]}`))
+
+			require.Equal(t, http.StatusNotFound, rec.Code)
+			doc := decodeErrorDocument(t, rec.Body)
+			assert.Equal(t, string(codeNotFound), doc.Error.Code)
+			assert.Empty(t, dial.gotPath, "a non-running task must not be dialed")
+		})
+	}
 }
 
 // flushRecorder counts flushes so the test can prove a frame is not buffered.

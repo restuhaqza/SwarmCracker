@@ -14,6 +14,10 @@ package broker
 // http.MaxBytesReader while the guest reads.
 //
 // Audit is the public layer's job; nothing here records who read what.
+//
+// Files need a live guest agent. A task that has exited keeps its console log
+// (readable through the logs operation) but has no guest, so files answers a
+// typed 404 not_found instead of dialing a dead vsock path.
 
 import (
 	"context"
@@ -153,11 +157,14 @@ func serveFilePut(ctx context.Context, dial ExecDialer, limit int64, task Task, 
 
 // dialFileGuest resolves the task's guest agent and its file-transfer half.
 func dialFileGuest(ctx context.Context, dial ExecDialer, task Task) (GuestFileTransfer, func(), int, *output.Error) {
-	vsockPath := task.VsockPath()
-	if vsockPath == "" {
-		return nil, nil, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
-			"task %q has no guest socket", task.ID)
+	// A task that has exited keeps its console log but has no guest agent, so
+	// files is not_found rather than a dial of an empty or recycled vsock path.
+	if !task.guestAvailable() {
+		return nil, nil, http.StatusNotFound, output.NewErrorf(output.CodeNotFound,
+			"task %q is not running", task.ID)
 	}
+
+	vsockPath := task.VsockPath()
 
 	guest, err := dial(ctx, vsockPath, agent.DefaultPort)
 	if err != nil {

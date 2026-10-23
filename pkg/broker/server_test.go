@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -199,6 +201,40 @@ func TestServerTaskSourceErrorIsUnavailable(t *testing.T) {
 	doc := decodeErrorDocument(t, rec.Body)
 	require.Equal(t, string(codeUnavailable), doc.Error.Code)
 	require.True(t, doc.Error.Retryable)
+}
+
+// TestServerServesLogsForAnExitedTask pins the log-only resolution end to end:
+// with the VM gone and only its console log left, logs still serves the backlog
+// while exec and files answer a typed 404 instead of dialing.
+func TestServerServesLogsForAnExitedTask(t *testing.T) {
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "task-1.log"), []byte("boom\n"), 0o600))
+
+	srv := newRouteServer(t, SocketDirSource{Dir: socketDir, LogDir: logDir})
+	require.NoError(t, srv.Handle("logs", NewLogsHandler()))
+	require.NoError(t, srv.Handle("exec",
+		NewExecHandler((&fakeDialer{guest: &fakeGuest{}}).dial)))
+	require.NoError(t, srv.Handle("files",
+		NewFilesHandler((&fakeDialer{guest: &fakeFileGuest{}}).dial)))
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec,
+		httptest.NewRequest(http.MethodGet, "/v1/tasks/task-1/logs", nil))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	execReq := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-1/exec",
+		strings.NewReader(`{"command":["true"]}`))
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, execReq)
+	require.Equal(t, http.StatusNotFound, rec.Code, "exec needs a live guest")
+	require.Equal(t, string(codeNotFound), decodeErrorDocument(t, rec.Body).Error.Code)
+
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec,
+		httptest.NewRequest(http.MethodGet, "/v1/tasks/task-1/files?path=/etc/hostname", nil))
+	require.Equal(t, http.StatusNotFound, rec.Code, "files needs a live guest")
+	require.Equal(t, string(codeNotFound), decodeErrorDocument(t, rec.Body).Error.Code)
 }
 
 func TestServerHandleRejectsBadRegistrations(t *testing.T) {
