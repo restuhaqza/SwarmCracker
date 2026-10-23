@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/log"
+	"github.com/moby/swarmkit/v2/node"
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/apiversion"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
@@ -44,6 +45,16 @@ type apiRuntime struct {
 	certDir   string
 }
 
+// startAPIForNode starts the programmatic API when config describes a manager.
+// A worker has no local cluster state to read, so it never starts one, even when
+// --api-disabled was not passed.
+func startAPIForNode(ctx context.Context, cfg apiRuntime, config *node.Config) (func(), error) {
+	if config.JoinAddr != "" {
+		return func() {}, nil
+	}
+	return startAPI(ctx, cfg, config.StateDir, config.Hostname, config.ListenControlAPI)
+}
+
 // startAPI starts the manager's programmatic read API: a trusted Unix socket and
 // a TLS TCP listener backed by the local control socket. It returns a stop
 // function that is safe to call more than once.
@@ -51,6 +62,10 @@ type apiRuntime struct {
 // A disabled API returns a no-op stop and creates nothing. When the token file
 // is missing the TCP listener starts with an empty store, so every TCP read
 // answers 401 until an operator mints a token.
+//
+// The listeners are bound before startAPI returns, so a busy port or an occupied
+// socket path is reported to the caller as a startup error rather than
+// discovered later by a client or by the shutdown path.
 func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenControlAPI string) (func(), error) {
 	if !cfg.enabled {
 		return func() {}, nil
@@ -96,14 +111,33 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 		return nil, err
 	}
 
-	log.G(ctx).Infof("Programmatic API: unix socket %s, TLS %s", cfg.socket, cfg.tcpAddr)
-	log.G(ctx).Infof("Programmatic API: certificate %s (key %s)", certFile, keyFile)
-	log.G(ctx).Infof("Programmatic API: TCP reads need a bearer token; create one with " +
-		"`swarmcracker api token create --name <name> --role reader`")
-
 	runCtx, cancel := context.WithCancel(ctx)
+	listeners, err := srv.Listen(runCtx, cfg.socket, cfg.tcpAddr)
+	if err != nil {
+		cancel()
+		_ = c.Close()
+		return nil, err
+	}
+
+	// Log only what is actually bound, and only after the bind succeeded: the
+	// caller reports the error above, and a log line must never claim a listener
+	// that a client cannot reach.
+	switch {
+	case cfg.socket != "" && cfg.tcpAddr != "":
+		log.G(ctx).Infof("Programmatic API: unix socket %s, TLS %s", cfg.socket, cfg.tcpAddr)
+	case cfg.socket != "":
+		log.G(ctx).Infof("Programmatic API: unix socket %s", cfg.socket)
+	case cfg.tcpAddr != "":
+		log.G(ctx).Infof("Programmatic API: TLS %s", cfg.tcpAddr)
+	}
+	if cfg.tcpAddr != "" {
+		log.G(ctx).Infof("Programmatic API: certificate %s (key %s)", certFile, keyFile)
+		log.G(ctx).Infof("Programmatic API: TCP reads need a bearer token; create one with " +
+			"`swarmcracker api token create --name <name> --role reader`")
+	}
+
 	done := make(chan error, 1)
-	go func() { done <- srv.Serve(runCtx, cfg.socket, cfg.tcpAddr) }()
+	go func() { done <- listeners.Serve(runCtx) }()
 
 	var once sync.Once
 	stop := func() {

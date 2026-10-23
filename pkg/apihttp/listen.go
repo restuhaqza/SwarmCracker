@@ -1,6 +1,7 @@
 // This file owns the two listeners the manager API binds: a trusted Unix socket
 // whose file mode is the credential, and a TLS TCP address whose requests must
-// carry a bearer token. Serve runs both until its context is canceled.
+// carry a bearer token. Listen binds them and Serve runs them until its context
+// is canceled.
 package apihttp
 
 import (
@@ -39,24 +40,53 @@ type boundServer struct {
 	listener net.Listener
 }
 
-// Serve listens on unixPath and tcpAddr until ctx is canceled.
+// Listeners is a set of bound listeners that Serve has not started yet.
+//
+// Binding is separate from serving so a caller can learn about a busy port or an
+// occupied socket path before it announces the API as running: Listen returns
+// the bind error, and Serve only starts after Listen succeeded.
+type Listeners struct {
+	bound []boundServer
+}
+
+// Serve binds the configured addresses and serves them until ctx is canceled.
 //
 // The Unix listener serves UnixHandler (no token check, mode 0600); the TCP
 // listener serves Handler over TLS using tls.crt and tls.key from Config.CertDir.
 // An empty address skips that listener; an empty pair is an error.
 //
 // Serve returns nil when ctx cancellation ended the listeners, and an error that
-// names the address when either listener could not be bound.
+// names the address when either listener could not be bound. Use Listen plus
+// (*Listeners).Serve when the caller needs the bind error before serving.
 func (s *Server) Serve(ctx context.Context, unixPath, tcpAddr string) error {
+	listeners, err := s.Listen(ctx, unixPath, tcpAddr)
+	if err != nil {
+		return err
+	}
+	return listeners.Serve(ctx)
+}
+
+// Listen binds unixPath and tcpAddr without accepting a request. It returns the
+// bound listeners, which the caller must hand to Serve or close with Close.
+func (s *Server) Listen(ctx context.Context, unixPath, tcpAddr string) (*Listeners, error) {
 	if unixPath == "" && tcpAddr == "" {
-		return output.NewError(output.CodeInvalid, "apihttp: Serve needs at least one listen address")
+		return nil, output.NewError(output.CodeInvalid, "apihttp: Serve needs at least one listen address")
 	}
 
 	bound, err := s.bind(ctx, unixPath, tcpAddr)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer closeListeners(bound)
+	return &Listeners{bound: bound}, nil
+}
+
+// Serve serves the bound listeners until ctx is canceled.
+//
+// Cancellation stops both listeners and returns nil. If one listener stops
+// serving first, the other is shut down too and its error is returned.
+func (l *Listeners) Serve(ctx context.Context) error {
+	bound := l.bound
+	defer l.Close()
 
 	errCh := make(chan error, len(bound))
 	for _, b := range bound {
@@ -67,7 +97,7 @@ func (s *Server) Serve(ctx context.Context, unixPath, tcpAddr string) error {
 	pending := len(bound)
 	select {
 	case <-ctx.Done():
-		// A normal shutdown: stop both listeners below and report success.
+		// A normal shutdown: both listeners are stopped below.
 	case err := <-errCh:
 		pending--
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -76,8 +106,11 @@ func (s *Server) Serve(ctx context.Context, unixPath, tcpAddr string) error {
 	}
 
 	// One listener failing tears the other down too, so Serve never leaves half
-	// the API running. Shutdown errors are deliberately ignored: the listeners
-	// are going away regardless, and in-flight requests were cancelled with ctx.
+	// the API running. Shutdown closes both listeners and gives in-flight
+	// requests up to shutdownGrace to finish; a handler that keeps working past
+	// that is aborted because every request context derives from ctx
+	// (BaseContext), which cancellation has already ended. Shutdown errors are
+	// deliberately ignored: the listeners are going away regardless.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 	defer cancel()
 	for _, b := range bound {
@@ -87,17 +120,25 @@ func (s *Server) Serve(ctx context.Context, unixPath, tcpAddr string) error {
 		<-errCh
 	}
 
-	// A UnixListener normally unlinks itself on close; removing again covers the
-	// case where Close lost the race with a concurrent bind.
-	if unixPath != "" {
-		_ = os.Remove(unixPath)
-	}
-
 	return serveErr
 }
 
+// Close closes every listener. It is for a caller that bound with Listen and
+// then decided not to serve; Serve already closes what it was given.
+func (l *Listeners) Close() error {
+	var firstErr error
+	for _, b := range l.bound {
+		if err := b.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) && firstErr == nil {
+			firstErr = err
+		}
+	}
+	l.bound = nil
+	return firstErr
+}
+
 // bind opens both listeners before either serves a request, so a partial bind
-// never leaves a live listener behind.
+// never leaves a live listener behind. Both servers inherit ctx as their base
+// context, so cancellation ends a request handler that outlives the drain.
 func (s *Server) bind(ctx context.Context, unixPath, tcpAddr string) ([]boundServer, error) {
 	bound := make([]boundServer, 0, 2)
 
@@ -107,7 +148,11 @@ func (s *Server) bind(ctx context.Context, unixPath, tcpAddr string) ([]boundSer
 			return nil, err
 		}
 		bound = append(bound, boundServer{
-			server:   &http.Server{Handler: s.UnixHandler(), ReadHeaderTimeout: readHeaderTimeout},
+			server: &http.Server{
+				Handler:           s.UnixHandler(),
+				ReadHeaderTimeout: readHeaderTimeout,
+				BaseContext:       func(net.Listener) context.Context { return ctx },
+			},
 			listener: lis,
 		})
 	}
@@ -124,7 +169,11 @@ func (s *Server) bind(ctx context.Context, unixPath, tcpAddr string) ([]boundSer
 			return nil, err
 		}
 		bound = append(bound, boundServer{
-			server:   &http.Server{Handler: s.Handler(), ReadHeaderTimeout: readHeaderTimeout},
+			server: &http.Server{
+				Handler:           s.Handler(),
+				ReadHeaderTimeout: readHeaderTimeout,
+				BaseContext:       func(net.Listener) context.Context { return ctx },
+			},
 			listener: lis,
 		})
 	}
@@ -160,7 +209,7 @@ func (s *Server) tlsConfig() (*tls.Config, error) {
 func listenUnix(ctx context.Context, path string) (net.Listener, error) {
 	lis, err := bindUnix(ctx, path)
 	if err != nil {
-		return nil, output.NewErrorf(output.CodeInternal, "listen on unix socket %s: %v", path, err)
+		return nil, bindError(path, err)
 	}
 	return lis, nil
 }
@@ -214,9 +263,20 @@ func listenTCP(ctx context.Context, addr string, cfg *tls.Config) (net.Listener,
 	var lc net.ListenConfig
 	lis, err := lc.Listen(ctx, "tcp", addr)
 	if err != nil {
-		return nil, output.NewErrorf(output.CodeInternal, "listen on TCP address %s: %v", addr, err)
+		return nil, bindError("TCP address "+addr, err)
 	}
 	return tls.NewListener(lis, cfg), nil
+}
+
+// bindError names the address a bind failed on. A typed error keeps its code:
+// refusing to replace a non-socket path is invalid, not internal, and rewrapping
+// it would hide that from the caller.
+func bindError(addr string, err error) error {
+	var typed *output.Error
+	if errors.As(err, &typed) {
+		return typed
+	}
+	return output.NewErrorf(output.CodeInternal, "listen on %s: %v", addr, err)
 }
 
 // closeListeners releases every listener a failed bind opened.

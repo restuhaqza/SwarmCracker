@@ -239,6 +239,50 @@ func TestReloadFromDisk(t *testing.T) {
 	assert.Equal(t, tok, got)
 }
 
+// TestReloadSeesExternalCreateAndRevoke covers the daemon's view of a token file
+// the CLI mutates: the store was opened before the file existed and must pick up
+// both a new token and its revocation without being reopened.
+func TestReloadSeesExternalCreateAndRevoke(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	store, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	_, ok := store.Authenticate("sc_not-a-token")
+	require.False(t, ok)
+
+	// A second store stands in for the CLI running in another process.
+	writer, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	secret, tok, err := writer.Create("minted-elsewhere", RoleReader)
+	require.NoError(t, err)
+
+	got, ok := store.Authenticate(secret)
+	require.True(t, ok, "authentication must see a token created after the store was opened")
+	assert.Equal(t, tok, got)
+
+	require.NoError(t, writer.Revoke(tok.ID))
+	_, ok = store.Authenticate(secret)
+	require.False(t, ok, "authentication must see a token revoked after the store was opened")
+
+	require.NoError(t, store.Reload())
+	assert.Empty(t, store.List())
+}
+
+func TestReloadKeepsTokensWhenFileIsUnchanged(t *testing.T) {
+	store, path := newTestStore(t)
+	secret, _, err := store.Create("stable", RoleReader)
+	require.NoError(t, err)
+
+	// A second OpenTokenStore stands in for another process that only read the
+	// file; reloading must not lose the in-memory set.
+	_, err = OpenTokenStore(path)
+	require.NoError(t, err)
+	require.NoError(t, store.Reload())
+
+	_, ok := store.Authenticate(secret)
+	assert.True(t, ok)
+	assert.Len(t, store.List(), 1)
+}
+
 func TestFileAndDirectoryModes(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "state")
 	path := filepath.Join(dir, "tokens.json")

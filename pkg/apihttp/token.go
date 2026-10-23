@@ -69,10 +69,20 @@ type tokenFile struct {
 
 // TokenStore is a token set backed by a single JSON file. It is safe for
 // concurrent use; every mutation is persisted before it returns.
+//
+// The file is shared with other processes: the CLI mints and revokes tokens
+// while the daemon serves requests. Authentication therefore re-reads the file
+// when it changed on disk, so a token created after start-up is accepted without
+// a restart. Create and Revoke persist the whole in-memory set; a long-lived
+// store that shares the file with another writer should Reload before mutating.
 type TokenStore struct {
 	mu     sync.RWMutex
 	path   string
 	tokens []Token
+	// loaded is the identity of the file the in-memory set came from; nil means
+	// the file did not exist at the last load. It is what makes a reload cheap:
+	// an unchanged file skips the read and the JSON parse.
+	loaded os.FileInfo
 }
 
 // OpenTokenStore loads path, or returns an empty store when the file does not
@@ -83,15 +93,69 @@ func OpenTokenStore(path string) (*TokenStore, error) {
 	}
 
 	s := &TokenStore{path: path}
+	// s is not shared yet, so no lock is needed here.
+	if err := s.reloadLocked(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
 
-	data, err := os.ReadFile(path)
+// Reload re-reads the token file when it changed since the last load, so tokens
+// another process created or revoked take effect. Authentication calls it on
+// every request; call it directly when a caller needs the refresh up front.
+func (s *TokenStore) Reload() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.reloadLocked()
+}
+
+// reloadLocked replaces the in-memory set with the file's contents when the file
+// changed. The caller must hold s.mu for writing, or own s exclusively.
+func (s *TokenStore) reloadLocked() error {
+	// Stat before reading: if the file is replaced between the two calls the
+	// cached identity stays older than the content, so the next reload repeats
+	// the work instead of missing the change.
+	info, err := os.Stat(s.path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return s, nil
+			// A missing file is an empty set: revoking by deleting the file takes
+			// effect like any other change.
+			s.tokens = nil
+			s.loaded = nil
+			return nil
 		}
-		return nil, output.NewErrorf(output.CodeInternal, "read token store %s: %v", path, err)
+		return output.NewErrorf(output.CodeInternal, "read token store %s: %v", s.path, err)
+	}
+	if s.loaded != nil && unchangedFile(s.loaded, info) {
+		return nil
 	}
 
+	data, err := os.ReadFile(s.path)
+	if err != nil {
+		return output.NewErrorf(output.CodeInternal, "read token store %s: %v", s.path, err)
+	}
+	tokens, err := parseTokenFile(data, s.path)
+	if err != nil {
+		return err
+	}
+
+	s.tokens = tokens
+	s.loaded = info
+	return nil
+}
+
+// unchangedFile reports whether info still describes the cached file. Every
+// write is an atomic rename, so a replaced file has a new identity; size and
+// modification time cover an in-place rewrite.
+func unchangedFile(cached, info os.FileInfo) bool {
+	return os.SameFile(cached, info) &&
+		cached.Size() == info.Size() &&
+		cached.ModTime().Equal(info.ModTime())
+}
+
+// parseTokenFile decodes one token file and validates its schema.
+func parseTokenFile(data []byte, path string) ([]Token, error) {
 	var file tokenFile
 	if err := json.Unmarshal(data, &file); err != nil {
 		return nil, output.NewErrorf(output.CodeInvalid, "parse token store %s: %v", path, err)
@@ -111,8 +175,7 @@ func OpenTokenStore(path string) (*TokenStore, error) {
 			Hash:      dt.Hash,
 		})
 	}
-	s.tokens = tokens
-	return s, nil
+	return tokens, nil
 }
 
 // Create validates name/role, generates the secret and persists the token.
@@ -160,14 +223,20 @@ func (s *TokenStore) Create(name, role string) (string, Token, error) {
 
 // Authenticate hashes secret and constant-time compares it against the stored
 // hashes. An empty secret never authenticates.
+//
+// The store is refreshed from disk first, so a token minted by another process
+// (the CLI) works immediately. A refresh failure keeps the last good set: an
+// unreadable token file must never authenticate an unknown secret, and it must
+// not lock a reader out of the tokens it already knows either.
 func (s *TokenStore) Authenticate(secret string) (Token, bool) {
 	if secret == "" {
 		return Token{}, false
 	}
 	want := hashSecret(secret)
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	_ = s.reloadLocked()
+	defer s.mu.Unlock()
 
 	for _, tok := range s.tokens {
 		if subtle.ConstantTimeCompare([]byte(want), []byte(tok.Hash)) == 1 {
@@ -179,7 +248,8 @@ func (s *TokenStore) Authenticate(secret string) (Token, bool) {
 	return Token{}, false
 }
 
-// List returns tokens without hashes, in creation order.
+// List returns tokens without hashes, in creation order. It reports the set this
+// process holds; call Reload to see changes another process made.
 func (s *TokenStore) List() []Token {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -246,6 +316,14 @@ func (s *TokenStore) persistLocked() error {
 
 	if err := writeFileAtomic(s.path, data); err != nil {
 		return output.NewErrorf(output.CodeInternal, "write token store %s: %v", s.path, err)
+	}
+
+	// Record the file this set was just written to, so the next authentication
+	// does not re-read it. A failed stat simply forces that re-read.
+	if info, err := os.Stat(s.path); err == nil {
+		s.loaded = info
+	} else {
+		s.loaded = nil
 	}
 	return nil
 }

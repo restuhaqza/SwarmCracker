@@ -133,17 +133,13 @@ func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRunt
 		printJoinTokens(ctx, config.StateDir)
 	}
 
-	// Only a manager serves the programmatic API: a worker has no local cluster
-	// state to read. A failure is logged rather than fatal, so a port conflict
-	// cannot take down an otherwise healthy manager.
-	stopAPI := func() {}
-	if config.JoinAddr == "" {
-		stop, err := startAPI(ctx, api, config.StateDir, config.Hostname, config.ListenControlAPI)
-		if err != nil {
-			log.G(ctx).WithError(err).Warn("Programmatic API disabled: failed to start")
-		} else {
-			stopAPI = stop
-		}
+	// Only a manager serves the programmatic API: startAPIForNode is a no-op on a
+	// worker. A failure is logged rather than fatal, so a port conflict cannot
+	// take down an otherwise healthy manager.
+	stopAPI, apiErr := startAPIForNode(ctx, api, config)
+	if apiErr != nil {
+		log.G(ctx).WithError(apiErr).Warn("Programmatic API disabled: failed to start")
+		stopAPI = func() {}
 	}
 
 	// Wire the ingress routing mesh: managers serve the routing table and

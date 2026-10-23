@@ -1,5 +1,6 @@
-// Package testhelpers provides utilities for network integration tests.
-// These tests require root/CAP_NET_ADMIN privileges and are skipped when running unprivileged.
+// Package testhelpers provides utilities for integration and HTTP API tests.
+// Some helpers (network namespaces, root-only setup) require root/CAP_NET_ADMIN
+// privileges and skip when running unprivileged.
 //
 // Run integration tests with:
 //

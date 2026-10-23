@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"io/fs"
@@ -12,11 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
+	"github.com/moby/swarmkit/v2/node"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/apiversion"
+	"github.com/restuhaqza/swarmcracker/test/testhelpers"
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v2"
 )
@@ -38,7 +37,7 @@ func runAPIFlags(t *testing.T, args ...string) apiRuntime {
 }
 
 func TestAPIRuntimeFrom_Defaults(t *testing.T) {
-	stateDir := shortTempDir(t)
+	stateDir := testhelpers.ShortTempDir(t)
 	cfg := runAPIFlags(t, "--state-dir", stateDir)
 
 	require.True(t, cfg.enabled)
@@ -57,7 +56,7 @@ func TestAPIRuntimeFrom_DefaultStateDirPaths(t *testing.T) {
 }
 
 func TestAPIRuntimeFrom_Overrides(t *testing.T) {
-	stateDir := shortTempDir(t)
+	stateDir := testhelpers.ShortTempDir(t)
 	cfg := runAPIFlags(t,
 		"--state-dir", stateDir,
 		"--api-listen", "0.0.0.0:4444",
@@ -98,7 +97,7 @@ func TestAPICertHosts(t *testing.T) {
 }
 
 func TestStartAPI_DisabledIsNoOp(t *testing.T) {
-	stateDir := shortTempDir(t)
+	stateDir := testhelpers.ShortTempDir(t)
 	cfg := apiRuntime{
 		enabled:   false,
 		tcpAddr:   "127.0.0.1:4244",
@@ -120,7 +119,7 @@ func TestStartAPI_DisabledIsNoOp(t *testing.T) {
 }
 
 func TestStartAPI_RequiresNodeCertificates(t *testing.T) {
-	stateDir := shortTempDir(t)
+	stateDir := testhelpers.ShortTempDir(t)
 	cfg := apiRuntime{
 		enabled:   true,
 		socket:    filepath.Join(stateDir, "api.sock"),
@@ -135,14 +134,40 @@ func TestStartAPI_RequiresNodeCertificates(t *testing.T) {
 	require.NoFileExists(t, cfg.socket)
 }
 
+// TestStartAPI_BusyTCPPortFails is the reason startAPI binds before returning:
+// the caller must learn about a taken port at startup, not at shutdown.
+func TestStartAPI_BusyTCPPortFails(t *testing.T) {
+	stateDir := testhelpers.ShortTempDir(t)
+	seedNodeCertificates(t, stateDir)
+
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer held.Close()
+	busyAddr := held.Addr().String()
+
+	cfg := apiRuntime{
+		enabled:   true,
+		tcpAddr:   busyAddr,
+		socket:    filepath.Join(stateDir, "api.sock"),
+		tokenFile: filepath.Join(stateDir, "api", "tokens.json"),
+		certDir:   filepath.Join(stateDir, "api"),
+	}
+
+	stop, err := startAPI(context.Background(), cfg, stateDir, "node-1", filepath.Join(stateDir, "swarm.sock"))
+	require.Error(t, err, "a busy TCP port must be reported by startAPI")
+	require.Nil(t, stop)
+	require.Contains(t, err.Error(), busyAddr, "the error must name the address")
+	require.NoFileExists(t, cfg.socket, "a failed bind must not leave a Unix socket behind")
+}
+
 func TestStartAPI_ServesVersionAndStops(t *testing.T) {
-	stateDir := shortTempDir(t)
+	stateDir := testhelpers.ShortTempDir(t)
 	seedNodeCertificates(t, stateDir)
 
 	sock := filepath.Join(stateDir, "api.sock")
 	cfg := apiRuntime{
 		enabled:   true,
-		tcpAddr:   freeTCPAddr(t),
+		tcpAddr:   testhelpers.FreeTCPAddr(t),
 		socket:    sock,
 		tokenFile: filepath.Join(stateDir, "api", "tokens.json"),
 		certDir:   filepath.Join(stateDir, "api"),
@@ -152,7 +177,7 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, stop)
 
-	resp := waitForGet(t, unixHTTPClient(sock), "http://unix/v1/version", nil)
+	resp := testhelpers.WaitForGet(t, testhelpers.UnixHTTPClient(sock), "http://unix/v1/version", apihttp.MediaType, nil)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 
@@ -170,7 +195,8 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 	require.FileExists(t, certFile)
 	require.FileExists(t, filepath.Join(cfg.certDir, "tls.key"))
 
-	tcpResp := waitForGet(t, tlsHTTPClient(t, certFile), "https://"+cfg.tcpAddr+"/v1/version", nil)
+	tcpResp := testhelpers.WaitForGet(t, testhelpers.TLSHTTPClient(t, certFile),
+		"https://"+cfg.tcpAddr+"/v1/version", apihttp.MediaType, nil)
 	require.Equal(t, http.StatusUnauthorized, tcpResp.StatusCode)
 	tcpResp.Body.Close()
 
@@ -180,6 +206,37 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 	_, err = os.Stat(sock)
 	require.True(t, errors.Is(err, fs.ErrNotExist), "the socket should be gone after stop")
 	require.NoFileExists(t, cfg.tokenFile, "the token store is only written on the first mutation")
+}
+
+// TestStartAPIForNode_WorkerNeverStartsTheAPI pins the manager-only rule: the
+// daemon passes every node through startAPIForNode, and a worker must end up with
+// no listener and no API files.
+func TestStartAPIForNode_WorkerNeverStartsTheAPI(t *testing.T) {
+	stateDir := testhelpers.ShortTempDir(t)
+	seedNodeCertificates(t, stateDir)
+
+	cfg := apiRuntime{
+		enabled:   true,
+		tcpAddr:   testhelpers.FreeTCPAddr(t),
+		socket:    filepath.Join(stateDir, "api.sock"),
+		tokenFile: filepath.Join(stateDir, "api", "tokens.json"),
+		certDir:   filepath.Join(stateDir, "api"),
+	}
+	config := &node.Config{
+		StateDir:         stateDir,
+		Hostname:         "worker-1",
+		JoinAddr:         "10.0.0.1:4242",
+		ListenControlAPI: filepath.Join(stateDir, "swarm.sock"),
+	}
+
+	stop, err := startAPIForNode(context.Background(), cfg, config)
+	require.NoError(t, err)
+	require.NotNil(t, stop)
+	stop()
+	stop() // idempotent
+
+	require.NoFileExists(t, cfg.socket, "a worker must not bind the API socket")
+	require.NoDirExists(t, cfg.certDir, "a worker must not create API material")
 }
 
 // seedNodeCertificates writes the cluster TLS material client.New loads. The
@@ -202,86 +259,4 @@ func seedNodeCertificates(t *testing.T, stateDir string) {
 	require.NoError(t, os.WriteFile(filepath.Join(certDir, "swarm-node.crt"), certPEM, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(certDir, "swarm-node.key"), keyPEM, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(certDir, "swarm-root-ca.crt"), certPEM, 0o644))
-}
-
-// shortTempDir returns a temporary directory with a short absolute path: the
-// daemon's Unix socket address must fit the platform's sun_path limit.
-func shortTempDir(t *testing.T) string {
-	t.Helper()
-
-	dir, err := os.MkdirTemp("", "swarmd")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
-}
-
-// freeTCPAddr returns a loopback address whose port was free a moment ago.
-func freeTCPAddr(t *testing.T) string {
-	t.Helper()
-
-	lis, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	addr := lis.Addr().String()
-	require.NoError(t, lis.Close())
-	return addr
-}
-
-// unixHTTPClient dials the daemon's trusted Unix socket.
-func unixHTTPClient(path string) *http.Client {
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", path)
-			},
-		},
-	}
-}
-
-// tlsHTTPClient trusts exactly the API certificate at certFile.
-func tlsHTTPClient(t *testing.T, certFile string) *http.Client {
-	t.Helper()
-
-	pemBytes, err := os.ReadFile(certFile)
-	require.NoError(t, err)
-	pool := x509.NewCertPool()
-	require.True(t, pool.AppendCertsFromPEM(pemBytes), "certificate file must hold a PEM certificate")
-
-	return &http.Client{
-		Timeout: 10 * time.Second,
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-			TLSClientConfig: &tls.Config{
-				RootCAs:    pool,
-				MinVersion: tls.VersionTLS12,
-			},
-		},
-	}
-}
-
-// waitForGet retries a GET until the listener has finished binding. Any HTTP
-// response is final, including 401.
-func waitForGet(t *testing.T, c *http.Client, url string, headers map[string]string) *http.Response {
-	t.Helper()
-
-	deadline := time.Now().Add(5 * time.Second)
-	var lastErr error
-	for {
-		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
-		require.NoError(t, err)
-		for name, value := range headers {
-			req.Header.Set(name, value)
-		}
-
-		resp, err := c.Do(req)
-		if err == nil {
-			return resp
-		}
-		lastErr = err
-		if time.Now().After(deadline) {
-			t.Fatalf("GET %s did not reach the server: %v", url, lastErr)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 }
