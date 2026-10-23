@@ -31,6 +31,8 @@ func TestGetTaskMapsAndResolvesNodeName(t *testing.T) {
 	assert.Equal(t, "running", got.State)
 	assert.Equal(t, 1, control.getTaskCall)
 	assert.Equal(t, 1, control.listNodesCalls)
+	require.NotNil(t, control.lastGetTaskReq, "GetTask must be called with a request")
+	assert.Equal(t, "task-1", control.lastGetTaskReq.TaskID)
 }
 
 func TestGetTaskWithoutNodeSkipsNodeLookup(t *testing.T) {
@@ -50,6 +52,42 @@ func TestGetTaskMissingIsNotFound(t *testing.T) {
 	_, err := (&Client{control: &fakeControl{}}).GetTask(context.Background(), "missing")
 	require.Error(t, err)
 	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetTaskNilResponseIsNotFound(t *testing.T) {
+	control := &fakeControl{nilResponse: true}
+
+	_, err := (&Client{control: control}).GetTask(context.Background(), "task-1")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+	assert.Equal(t, 1, control.getTaskCall)
+	require.NotNil(t, control.lastGetTaskReq)
+	assert.Equal(t, "task-1", control.lastGetTaskReq.TaskID)
+}
+
+func TestGetTaskUnknownNodeLeavesNameEmpty(t *testing.T) {
+	control := &fakeControl{
+		task: testTask(),
+		nodes: []*api.Node{
+			{ID: "node-other", Description: &api.NodeDescription{Hostname: "other"}},
+		},
+	}
+
+	got, err := (&Client{control: control}).GetTask(context.Background(), "task-1")
+	require.NoError(t, err)
+	assert.Equal(t, "node-1", got.NodeID)
+	assert.Empty(t, got.NodeName)
+	assert.Equal(t, 1, control.listNodesCalls)
+}
+
+func TestGetTaskNilNodeListKeepsNameEmpty(t *testing.T) {
+	control := &fakeControl{task: testTask(), nilNodes: true}
+
+	got, err := (&Client{control: control}).GetTask(context.Background(), "task-1")
+	require.NoError(t, err)
+	assert.Equal(t, "task-1", got.ID)
+	assert.Empty(t, got.NodeName)
+	assert.Equal(t, 1, control.listNodesCalls)
 }
 
 func TestGetTaskErrorsAreReturned(t *testing.T) {

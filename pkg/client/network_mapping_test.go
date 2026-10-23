@@ -35,12 +35,25 @@ func TestGetNetworkMapsNetwork(t *testing.T) {
 	assert.True(t, got.Attachable)
 	assert.Equal(t, map[string]string{"tier": "data"}, got.Labels)
 	assert.Equal(t, 1, control.getNetworkCall)
+	require.NotNil(t, control.lastGetNetworkReq, "GetNetwork must be called with a request")
+	assert.Equal(t, "net-1", control.lastGetNetworkReq.NetworkID)
 }
 
 func TestGetNetworkMissingIsNotFound(t *testing.T) {
 	_, err := (&Client{control: &fakeControl{}}).GetNetwork(context.Background(), "missing")
 	require.Error(t, err)
 	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetNetworkNilResponseIsNotFound(t *testing.T) {
+	control := &fakeControl{nilResponse: true}
+
+	_, err := (&Client{control: control}).GetNetwork(context.Background(), "net-1")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+	assert.Equal(t, 1, control.getNetworkCall)
+	require.NotNil(t, control.lastGetNetworkReq)
+	assert.Equal(t, "net-1", control.lastGetNetworkReq.NetworkID)
 }
 
 func TestGetNetworkFailureIsReturned(t *testing.T) {

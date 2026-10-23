@@ -217,7 +217,9 @@ func (c *Client) GetTask(ctx context.Context, id string) (v1.Task, error) {
 		if err != nil {
 			return v1.Task{}, err
 		}
-		names = nodeNameIndex(nodes.Nodes)
+		if nodes != nil {
+			names = nodeNameIndex(nodes.Nodes)
+		}
 	}
 
 	return taskFromSwarmkit(resp.Task, names), nil
@@ -235,7 +237,10 @@ func (c *Client) GetNode(ctx context.Context, id string) (v1.Node, error) {
 	return nodeFromSwarmkit(resp.Node), nil
 }
 
-// GetNetwork returns one user-defined network.
+// GetNetwork returns one network by ID.
+//
+// Unlike ListNetworks, a direct read does not filter built-in networks, so
+// ingress and docker_gwbridge are returned; only the list hides them.
 func (c *Client) GetNetwork(ctx context.Context, id string) (v1.Network, error) {
 	resp, err := c.control.GetNetwork(ctx, &api.GetNetworkRequest{NetworkID: id})
 	if err != nil {

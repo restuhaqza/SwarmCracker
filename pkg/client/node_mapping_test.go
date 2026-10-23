@@ -24,12 +24,25 @@ func TestGetNodeMapsNode(t *testing.T) {
 	require.NotNil(t, got.Manager)
 	assert.True(t, got.Manager.Leader)
 	assert.Equal(t, 1, control.getNodeCall)
+	require.NotNil(t, control.lastGetNodeReq, "GetNode must be called with a request")
+	assert.Equal(t, "node-manager-1", control.lastGetNodeReq.NodeID)
 }
 
 func TestGetNodeMissingIsNotFound(t *testing.T) {
 	_, err := (&Client{control: &fakeControl{}}).GetNode(context.Background(), "missing")
 	require.Error(t, err)
 	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetNodeNilResponseIsNotFound(t *testing.T) {
+	control := &fakeControl{nilResponse: true}
+
+	_, err := (&Client{control: control}).GetNode(context.Background(), "node-1")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+	assert.Equal(t, 1, control.getNodeCall)
+	require.NotNil(t, control.lastGetNodeReq)
+	assert.Equal(t, "node-1", control.lastGetNodeReq.NodeID)
 }
 
 func TestGetNodeFailureIsReturned(t *testing.T) {

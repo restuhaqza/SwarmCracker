@@ -35,12 +35,25 @@ func TestGetConfigMapsMetadata(t *testing.T) {
 	assert.Equal(t, map[string]string{"team": "payments"}, got.Labels)
 	assert.Equal(t, time.Unix(100, 0).UTC().Format(time.RFC3339Nano), got.CreatedAt)
 	assert.Equal(t, 1, control.getConfigCall)
+	require.NotNil(t, control.lastGetConfigReq, "GetConfig must be called with a request")
+	assert.Equal(t, "cfg-1", control.lastGetConfigReq.ConfigID)
 }
 
 func TestGetConfigMissingIsNotFound(t *testing.T) {
 	_, err := (&Client{control: &fakeControl{}}).GetConfig(context.Background(), "missing")
 	require.Error(t, err)
 	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetConfigNilResponseIsNotFound(t *testing.T) {
+	control := &fakeControl{nilResponse: true}
+
+	_, err := (&Client{control: control}).GetConfig(context.Background(), "cfg-1")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+	assert.Equal(t, 1, control.getConfigCall)
+	require.NotNil(t, control.lastGetConfigReq)
+	assert.Equal(t, "cfg-1", control.lastGetConfigReq.ConfigID)
 }
 
 func TestGetConfigFailureIsReturned(t *testing.T) {
@@ -73,12 +86,25 @@ func TestGetSecretMapsMetadata(t *testing.T) {
 	assert.Equal(t, map[string]string{"env": "prod"}, got.Labels)
 	assert.Equal(t, time.Unix(200, 0).UTC().Format(time.RFC3339Nano), got.UpdatedAt)
 	assert.Equal(t, 1, control.getSecretCall)
+	require.NotNil(t, control.lastGetSecretReq, "GetSecret must be called with a request")
+	assert.Equal(t, "sec-1", control.lastGetSecretReq.SecretID)
 }
 
 func TestGetSecretMissingIsNotFound(t *testing.T) {
 	_, err := (&Client{control: &fakeControl{}}).GetSecret(context.Background(), "missing")
 	require.Error(t, err)
 	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestGetSecretNilResponseIsNotFound(t *testing.T) {
+	control := &fakeControl{nilResponse: true}
+
+	_, err := (&Client{control: control}).GetSecret(context.Background(), "sec-1")
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+	assert.Equal(t, 1, control.getSecretCall)
+	require.NotNil(t, control.lastGetSecretReq)
+	assert.Equal(t, "sec-1", control.lastGetSecretReq.SecretID)
 }
 
 func TestGetSecretFailureIsReturned(t *testing.T) {
@@ -98,6 +124,12 @@ func TestClusterIDReturnsFirstCluster(t *testing.T) {
 
 func TestClusterIDEmptyIsNotFound(t *testing.T) {
 	_, err := (&Client{control: &fakeControl{}}).ClusterID(context.Background())
+	require.Error(t, err)
+	assert.Equal(t, codes.NotFound, status.Code(err))
+}
+
+func TestClusterIDNilResponseIsNotFound(t *testing.T) {
+	_, err := (&Client{control: &fakeControl{nilResponse: true}}).ClusterID(context.Background())
 	require.Error(t, err)
 	assert.Equal(t, codes.NotFound, status.Code(err))
 }
