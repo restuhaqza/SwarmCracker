@@ -19,9 +19,21 @@ type fakeControl struct {
 	nilResponse       bool
 	nilNodes          bool
 	services          []*api.Service
+	listServicesErr   error
 	service           *api.Service
 	serviceErr        error
 	getServiceCall    int
+	createServiceReq  *api.CreateServiceRequest
+	createServiceErr  error
+	createServiceCall int
+	createdService    *api.Service
+	updateServiceReq  *api.UpdateServiceRequest
+	updateServiceErr  error
+	updateServiceCall int
+	updatedService    *api.Service
+	removeServiceReq  *api.RemoveServiceRequest
+	removeServiceErr  error
+	removeServiceCall int
 	tasks             []*api.Task
 	taskErr           error
 	listTasksCalls    int
@@ -61,7 +73,37 @@ type fakeControl struct {
 }
 
 func (f *fakeControl) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
+	if f.listServicesErr != nil {
+		return nil, f.listServicesErr
+	}
 	return &api.ListServicesResponse{Services: f.services}, nil
+}
+
+func (f *fakeControl) CreateService(_ context.Context, req *api.CreateServiceRequest, _ ...grpc.CallOption) (*api.CreateServiceResponse, error) {
+	f.createServiceCall++
+	f.createServiceReq = req
+	if f.createServiceErr != nil {
+		return nil, f.createServiceErr
+	}
+	return &api.CreateServiceResponse{Service: f.createdService}, nil
+}
+
+func (f *fakeControl) UpdateService(_ context.Context, req *api.UpdateServiceRequest, _ ...grpc.CallOption) (*api.UpdateServiceResponse, error) {
+	f.updateServiceCall++
+	f.updateServiceReq = req
+	if f.updateServiceErr != nil {
+		return nil, f.updateServiceErr
+	}
+	return &api.UpdateServiceResponse{Service: f.updatedService}, nil
+}
+
+func (f *fakeControl) RemoveService(_ context.Context, req *api.RemoveServiceRequest, _ ...grpc.CallOption) (*api.RemoveServiceResponse, error) {
+	f.removeServiceCall++
+	f.removeServiceReq = req
+	if f.removeServiceErr != nil {
+		return nil, f.removeServiceErr
+	}
+	return &api.RemoveServiceResponse{}, nil
 }
 
 func (f *fakeControl) GetService(_ context.Context, req *api.GetServiceRequest, _ ...grpc.CallOption) (*api.GetServiceResponse, error) {

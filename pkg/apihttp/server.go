@@ -41,9 +41,13 @@ const (
 	etagHeader = "ETag"
 )
 
-// Client is the read surface the HTTP layer needs. It is deliberately narrower
-// than pkg/client: the server depends on the behaviour, not the transport, so
-// tests and future backends can implement it without SwarmKit.
+// Client is the surface the HTTP layer needs. It is deliberately narrower than
+// pkg/client: the server depends on the behaviour, not the transport, so tests
+// and future backends can implement it without SwarmKit.
+//
+// The write methods take v1.WriteOptions rather than HTTP headers so the
+// transport stays out of the client: the same interface serves the local
+// SwarmKit path and the remote HTTP path.
 type Client interface {
 	ListServices(context.Context) ([]v1.Service, error)
 	GetService(context.Context, string) (v1.Service, error)
@@ -59,6 +63,11 @@ type Client interface {
 	ListSecrets(context.Context) ([]v1.Secret, error)
 	GetSecret(context.Context, string) (v1.Secret, error)
 	ClusterID(context.Context) (string, error)
+
+	CreateService(context.Context, v1.ServiceWrite, v1.WriteOptions) (v1.Service, error)
+	UpdateService(context.Context, string, []byte, v1.WriteOptions) (v1.Service, error)
+	DeleteService(context.Context, string, v1.WriteOptions) (v1.Service, error)
+	RollbackService(context.Context, string, v1.WriteOptions) (v1.Service, error)
 }
 
 // Config is the server's wiring. Tokens may be nil for a Unix-socket-only
@@ -99,47 +108,88 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// routes registers every route with the scope it requires. Each path also gets
-// a method-agnostic handler so a non-GET request returns a typed 405 rather than
-// ServeMux's plain-text default.
+// routes registers every route with the method it serves and the scope it
+// requires.
 //
-// Scope map (contract §8.1): the resource a route reads decides the scope, and
+// Scope map (contract §8.1): the resource a route touches decides the scope, and
 // the service-tasks subresource belongs to the task reader, not the service
-// reader.
+// reader. A path is registered exactly once, with all of its methods, so the
+// catch-all handler that produces a typed 405 cannot collide with another
+// registration.
 func (s *Server) routes() {
-	s.handleScoped("/v1/version", ScopeClusterRead, s.getVersion)
+	s.handleRoutes("/v1/version", read(ScopeClusterRead, s.getVersion))
 
-	s.handleScoped("/v1/services", ScopeServicesRead, s.listServices)
-	s.handleScoped("/v1/services/{id}", ScopeServicesRead, s.getService)
-	s.handleScoped("/v1/services/{id}/tasks", ScopeTasksRead, s.listServiceTasks)
+	s.handleRoutes("/v1/services",
+		read(ScopeServicesRead, s.listServices),
+		write(http.MethodPost, ScopeServicesWrite, s.createService),
+	)
+	s.handleRoutes("/v1/services/{id}",
+		read(ScopeServicesRead, s.getService),
+		write(http.MethodPatch, ScopeServicesWrite, s.updateService),
+		write(http.MethodDelete, ScopeServicesWrite, s.deleteService),
+	)
+	s.handleRoutes("/v1/services/{id}/tasks", read(ScopeTasksRead, s.listServiceTasks))
+	s.handleRoutes("/v1/services/{id}/rollback",
+		write(http.MethodPost, ScopeServicesWrite, s.rollbackService))
 
-	s.handleScoped("/v1/tasks", ScopeTasksRead, s.listTasks)
-	s.handleScoped("/v1/tasks/{id}", ScopeTasksRead, s.getTask)
+	s.handleRoutes("/v1/tasks", read(ScopeTasksRead, s.listTasks))
+	s.handleRoutes("/v1/tasks/{id}", read(ScopeTasksRead, s.getTask))
 
-	s.handleScoped("/v1/nodes", ScopeNodesRead, s.listNodes)
-	s.handleScoped("/v1/nodes/{id}", ScopeNodesRead, s.getNode)
+	s.handleRoutes("/v1/nodes", read(ScopeNodesRead, s.listNodes))
+	s.handleRoutes("/v1/nodes/{id}", read(ScopeNodesRead, s.getNode))
 
-	s.handleScoped("/v1/networks", ScopeNetworksRead, s.listNetworks)
-	s.handleScoped("/v1/networks/{id}", ScopeNetworksRead, s.getNetwork)
+	s.handleRoutes("/v1/networks", read(ScopeNetworksRead, s.listNetworks))
+	s.handleRoutes("/v1/networks/{id}", read(ScopeNetworksRead, s.getNetwork))
 
-	s.handleScoped("/v1/configs", ScopeConfigsRead, s.listConfigs)
-	s.handleScoped("/v1/configs/{id}", ScopeConfigsRead, s.getConfig)
+	s.handleRoutes("/v1/configs", read(ScopeConfigsRead, s.listConfigs))
+	s.handleRoutes("/v1/configs/{id}", read(ScopeConfigsRead, s.getConfig))
 
-	s.handleScoped("/v1/secrets", ScopeSecretsRead, s.listSecrets)
-	s.handleScoped("/v1/secrets/{id}", ScopeSecretsRead, s.getSecret)
+	s.handleRoutes("/v1/secrets", read(ScopeSecretsRead, s.listSecrets))
+	s.handleRoutes("/v1/secrets/{id}", read(ScopeSecretsRead, s.getSecret))
 
-	s.handleScoped("/v1/audit", ScopeAuditRead, s.listAudit)
+	s.handleRoutes("/v1/audit", read(ScopeAuditRead, s.listAudit))
 
 	// Every path is owned by this package: an unknown one is a typed 404, never
 	// ServeMux's plain-text "404 page not found".
 	s.mux.HandleFunc("/", s.notFound)
 }
 
-// handleScoped registers a GET route behind scope enforcement. The method
-// rejections stay unscoped: an authenticated token learns the same 405 whether
-// or not it holds the scope, and no other method reaches a handler.
-func (s *Server) handleScoped(pattern string, scope Scope, h http.HandlerFunc) {
-	s.handle(pattern, s.requireScope(scope, h))
+// route is one method on one path: the scope it needs and the handler it runs.
+type route struct {
+	method string
+	scope  Scope
+	handle http.HandlerFunc
+}
+
+// read registers a GET route.
+func read(scope Scope, h http.HandlerFunc) route {
+	return route{method: http.MethodGet, scope: scope, handle: h}
+}
+
+// write registers one mutating method. Writes authenticate and negotiate the
+// request media type in the same middleware as reads; the handler checks its own
+// body media type after the route scope has been enforced.
+func write(method string, scope Scope, h http.HandlerFunc) route {
+	return route{method: method, scope: scope, handle: h}
+}
+
+// handleRoutes registers every method of one path plus the typed method
+// rejection for the rest.
+//
+// The scope check lives inside each method registration, so a token that lacks
+// the write scope gets a 403 with details.requiredScope, not a 405: the route
+// exists, the caller may not use it. HEAD is registered explicitly (405) because
+// Go's ServeMux would otherwise serve it through the GET pattern.
+func (s *Server) handleRoutes(pattern string, routes ...route) {
+	methods := make([]string, 0, len(routes))
+	for _, rt := range routes {
+		s.mux.HandleFunc(rt.method+" "+pattern, s.requireScope(rt.scope, rt.handle))
+		methods = append(methods, rt.method)
+	}
+
+	allow := strings.Join(methods, ", ")
+	s.mux.HandleFunc(http.MethodHead+" "+pattern, s.methodNotAllowed(allow))
+	s.mux.HandleFunc(pattern, s.methodNotAllowed(allow))
 }
 
 // requireScope is the per-route authorization check. It reads the Identity the
@@ -153,16 +203,6 @@ func (s *Server) requireScope(scope Scope, h http.HandlerFunc) http.HandlerFunc 
 		}
 		h(w, r)
 	}
-}
-
-// handle registers the GET route and the typed rejections for every other
-// method on the same path. The method-specific patterns are more specific, so
-// GET wins. HEAD is registered explicitly: without it Go's ServeMux would serve
-// HEAD through the GET pattern, and this surface is strictly GET-only.
-func (s *Server) handle(pattern string, h http.HandlerFunc) {
-	s.mux.HandleFunc(http.MethodGet+" "+pattern, h)
-	s.mux.HandleFunc(http.MethodHead+" "+pattern, s.methodNotAllowed)
-	s.mux.HandleFunc(pattern, s.methodNotAllowed)
 }
 
 // Handler returns the TCP listener's handler: every request must carry a valid
@@ -336,20 +376,34 @@ func identityForToken(token Token) Identity {
 	}
 }
 
-// writeJSON writes one successful document. The ETag is the quoted SHA-256 of
-// the exact body bytes, so a validator can be compared without re-serializing.
+// writeJSON writes one successful document with the phase-1 validator: the
+// quoted SHA-256 of the exact body bytes. Lists keep this; a single service
+// carries its SwarmKit revision instead.
 func (s *Server) writeJSON(w http.ResponseWriter, r *http.Request, status int, value any) {
+	s.writeJSONWithETag(w, r, status, value, "")
+}
+
+// writeJSONWithETag writes one successful document with an explicit validator.
+// An empty etag falls back to the body hash, so a document without a revision
+// still answers If-None-Match.
+func (s *Server) writeJSONWithETag(w http.ResponseWriter, r *http.Request, status int, value any, etag string) {
 	body, err := encodeJSON(value)
 	if err != nil {
 		s.writeError(w, r, output.NewErrorf(output.CodeInternal, "encode response: %v", err))
 		return
 	}
+	if etag == "" {
+		etag = etagFor(body)
+	}
 
-	etag := etagFor(body)
 	w.Header().Set("Content-Type", MediaType)
 	w.Header().Set(etagHeader, etag)
 
-	if etagMatches(r.Header.Get("If-None-Match"), etag) {
+	// If-None-Match is a conditional read. On a write, the same header carries a
+	// different meaning (create-only on POST), so it must not turn a success
+	// into a 304.
+	if (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		etagMatches(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -478,10 +532,12 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 		WithDetails(map[string]any{"resource": "route"}))
 }
 
-// methodNotAllowed answers a known path with a typed 405. The read surface is
-// GET-only, so Allow names exactly that method.
-func (s *Server) methodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", "GET")
-	s.writeErrorStatus(w, r, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
-		"method %s is not allowed on %s", r.Method, r.URL.Path))
+// methodNotAllowed answers a known path with a typed 405. The allowed methods
+// are the ones registered for that path, in registration order.
+func (s *Server) methodNotAllowed(allow string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", allow)
+		s.writeErrorStatus(w, r, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
+			"method %s is not allowed on %s", r.Method, r.URL.Path))
+	}
 }

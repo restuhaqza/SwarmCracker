@@ -63,7 +63,11 @@ func (s *Server) getService(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, v1.NewServiceDocument(service))
+	// The validator of a single service is its SwarmKit revision, not the body
+	// hash: If-Match on a later PATCH compares revisions, so the value the read
+	// hands out must be the one the write expects.
+	s.writeJSONWithETag(w, r, http.StatusOK,
+		v1.NewServiceDocument(service), revisionETag(service.Revision))
 }
 
 func (s *Server) listServiceTasks(w http.ResponseWriter, r *http.Request) {

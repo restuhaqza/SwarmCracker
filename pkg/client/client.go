@@ -91,6 +91,9 @@ func (c Config) withDefaults() Config {
 type controlClient interface {
 	ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error)
 	GetService(context.Context, *api.GetServiceRequest, ...grpc.CallOption) (*api.GetServiceResponse, error)
+	CreateService(context.Context, *api.CreateServiceRequest, ...grpc.CallOption) (*api.CreateServiceResponse, error)
+	UpdateService(context.Context, *api.UpdateServiceRequest, ...grpc.CallOption) (*api.UpdateServiceResponse, error)
+	RemoveService(context.Context, *api.RemoveServiceRequest, ...grpc.CallOption) (*api.RemoveServiceResponse, error)
 	ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error)
 	GetTask(context.Context, *api.GetTaskRequest, ...grpc.CallOption) (*api.GetTaskResponse, error)
 	ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error)
@@ -207,17 +210,17 @@ func (c *Client) ListServices(ctx context.Context) ([]v1.Service, error) {
 	return items, nil
 }
 
-// GetService returns one service with its observed task counts.
-func (c *Client) GetService(ctx context.Context, id string) (v1.Service, error) {
+// GetService returns one service with its observed task counts. ref accepts an
+// exact ID, an exact name, or a unique ID prefix of at least four characters.
+func (c *Client) GetService(ctx context.Context, ref string) (v1.Service, error) {
 	if c.remote != nil {
-		return c.remote.getService(ctx, id)
+		// The remote server resolves the reference; this client must not list
+		// the cluster to resolve it a second time.
+		return c.remote.getService(ctx, ref)
 	}
-	resp, err := c.control.GetService(ctx, &api.GetServiceRequest{ServiceID: id})
+	id, svc, err := c.getServiceObject(ctx, ref)
 	if err != nil {
 		return v1.Service{}, err
-	}
-	if resp == nil || resp.Service == nil {
-		return v1.Service{}, status.Error(codes.NotFound, "service not found")
 	}
 
 	tasks, err := c.control.ListTasks(ctx, &api.ListTasksRequest{
@@ -227,7 +230,7 @@ func (c *Client) GetService(ctx context.Context, id string) (v1.Service, error) 
 		return v1.Service{}, err
 	}
 
-	return serviceFromSwarmkit(resp.Service, countTasks(tasks.Tasks)[id]), nil
+	return serviceFromSwarmkit(svc, countTasks(tasks.Tasks)[id]), nil
 }
 
 // GetTask returns one task with its node name resolved.
@@ -434,13 +437,18 @@ func (c *Client) ListTasks(ctx context.Context) ([]v1.Task, error) {
 
 // ListServiceTasks returns one service's tasks, ordered by creation time then
 // ID. The manager filters the task list; the node lookup is shared with
-// ListTasks so nodeName stays populated.
-func (c *Client) ListServiceTasks(ctx context.Context, serviceID string) ([]v1.Task, error) {
+// ListTasks so nodeName stays populated. ref accepts an exact ID, an exact name,
+// or a unique ID prefix of at least four characters.
+func (c *Client) ListServiceTasks(ctx context.Context, ref string) ([]v1.Task, error) {
 	if c.remote != nil {
-		return c.remote.listServiceTasks(ctx, serviceID)
+		return c.remote.listServiceTasks(ctx, ref)
+	}
+	id, err := c.resolveServiceRef(ctx, ref)
+	if err != nil {
+		return nil, err
 	}
 	return c.listTasks(ctx, &api.ListTasksRequest{
-		Filters: &api.ListTasksRequest_Filters{ServiceIDs: []string{serviceID}},
+		Filters: &api.ListTasksRequest_Filters{ServiceIDs: []string{id}},
 	})
 }
 

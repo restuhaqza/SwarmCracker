@@ -38,6 +38,22 @@ type fakeClient struct {
 	clusterErr   error
 	err          error
 	gotServiceID string
+
+	// Write surface. One result field per method keeps a test explicit about
+	// which call it exercised.
+	createdService    v1.Service
+	updatedService    v1.Service
+	deletedService    v1.Service
+	rolledBackService v1.Service
+	writeErr          error
+	gotWrite          v1.ServiceWrite
+	gotPatch          []byte
+	gotRef            string
+	gotWriteOpts      v1.WriteOptions
+	createCalls       int
+	updateCalls       int
+	deleteCalls       int
+	rollbackCalls     int
 }
 
 func (f *fakeClient) ListServices(context.Context) ([]v1.Service, error) {
@@ -135,6 +151,47 @@ func (f *fakeClient) GetSecret(context.Context, string) (v1.Secret, error) {
 
 func (f *fakeClient) ClusterID(context.Context) (string, error) {
 	return f.clusterID, f.clusterErr
+}
+
+func (f *fakeClient) CreateService(_ context.Context, write v1.ServiceWrite, opts v1.WriteOptions) (v1.Service, error) {
+	f.createCalls++
+	f.gotWrite = write
+	f.gotWriteOpts = opts
+	if f.writeErr != nil {
+		return v1.Service{}, f.writeErr
+	}
+	return f.createdService, nil
+}
+
+func (f *fakeClient) UpdateService(_ context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Service, error) {
+	f.updateCalls++
+	f.gotRef = ref
+	f.gotPatch = patch
+	f.gotWriteOpts = opts
+	if f.writeErr != nil {
+		return v1.Service{}, f.writeErr
+	}
+	return f.updatedService, nil
+}
+
+func (f *fakeClient) DeleteService(_ context.Context, ref string, opts v1.WriteOptions) (v1.Service, error) {
+	f.deleteCalls++
+	f.gotRef = ref
+	f.gotWriteOpts = opts
+	if f.writeErr != nil {
+		return v1.Service{}, f.writeErr
+	}
+	return f.deletedService, nil
+}
+
+func (f *fakeClient) RollbackService(_ context.Context, ref string, opts v1.WriteOptions) (v1.Service, error) {
+	f.rollbackCalls++
+	f.gotRef = ref
+	f.gotWriteOpts = opts
+	if f.writeErr != nil {
+		return v1.Service{}, f.writeErr
+	}
+	return f.rolledBackService, nil
 }
 
 type testAPI struct {
@@ -777,9 +834,11 @@ func TestServiceTasksRoute(t *testing.T) {
 func TestMethodNotAllowedIsTyped(t *testing.T) {
 	api := newTestAPI(t, &fakeClient{})
 
-	rec := api.do(t, http.MethodPost, "/v1/services", withToken(api.token))
+	// PUT is not part of the service surface; POST is (create). A method the
+	// route does not serve stays a 405 and names what it does serve.
+	rec := api.do(t, http.MethodPut, "/v1/services", withToken(api.token))
 	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
-	assert.Equal(t, "GET", rec.Header().Get("Allow"))
+	assert.Equal(t, "GET, POST", rec.Header().Get("Allow"))
 	assertWireHeaders(t, rec)
 
 	doc := decodeError(t, rec)
@@ -791,7 +850,7 @@ func TestHeadOnListRouteIs405(t *testing.T) {
 
 	rec := api.do(t, http.MethodHead, "/v1/services", withToken(api.token))
 	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
-	assert.Equal(t, "GET", rec.Header().Get("Allow"))
+	assert.Equal(t, "GET, POST", rec.Header().Get("Allow"))
 	assertWireHeaders(t, rec)
 
 	doc := decodeError(t, rec)

@@ -518,3 +518,22 @@ func (f *fakeClient) GetSecret(_ context.Context, id string) (v1.Secret, error) 
 }
 
 func (f *fakeClient) ClusterID(context.Context) (string, error) { return f.clusterID, nil }
+
+// The phase-1 acceptance suite is read-only. These four exist so the fake
+// satisfies apihttp.Client; they answer not_implemented rather than pretending a
+// write happened.
+func (f *fakeClient) CreateService(context.Context, v1.ServiceWrite, v1.WriteOptions) (v1.Service, error) {
+	return v1.Service{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) UpdateService(context.Context, string, []byte, v1.WriteOptions) (v1.Service, error) {
+	return v1.Service{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) DeleteService(context.Context, string, v1.WriteOptions) (v1.Service, error) {
+	return v1.Service{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) RollbackService(context.Context, string, v1.WriteOptions) (v1.Service, error) {
+	return v1.Service{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}

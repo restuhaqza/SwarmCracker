@@ -33,7 +33,11 @@ type AuditRecord struct {
 	Action    string        `json:"action"`
 	Resource  AuditResource `json:"resource"`
 	Result    string        `json:"result"`
-	SourceIP  string        `json:"sourceIp,omitempty"`
+	// Precondition is how the write's If-Match was satisfied: "" when the
+	// caller sent none, "revision" for an exact revision and "any" for
+	// If-Match: "*". An unconditional write is visible in the log.
+	Precondition string `json:"precondition,omitempty"`
+	SourceIP     string `json:"sourceIp,omitempty"`
 }
 
 // AuditList is a paginated list of audit records.

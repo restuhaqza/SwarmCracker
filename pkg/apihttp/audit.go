@@ -348,11 +348,26 @@ func (s *Server) recordAudit(r *http.Request, action string, res v1.AuditResourc
 			ID:   identity.TokenID,
 			Name: identity.Name,
 		},
-		Action:   action,
-		Resource: res,
-		Result:   result,
-		SourceIP: auditSourceIP(r),
+		Action:       action,
+		Resource:     res,
+		Result:       result,
+		Precondition: auditPrecondition(r),
+		SourceIP:     auditSourceIP(r),
 	})
+}
+
+// auditPrecondition classifies the request's If-Match so an unconditional write
+// (`If-Match: *`) is distinguishable from a revision-checked one in the log.
+func auditPrecondition(r *http.Request) string {
+	raw := strings.TrimSpace(r.Header.Get("If-Match"))
+	switch raw {
+	case "":
+		return ""
+	case "*":
+		return "any"
+	default:
+		return "revision"
+	}
 }
 
 // auditSourceIP returns the TCP peer address, host only. A forwarded header is

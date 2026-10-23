@@ -312,8 +312,7 @@ Used by `swarmctl` for VM introspection and the executor for lifecycle managemen
 
 ## Public HTTP API (v1)
 
-Phase 1 ships a **read-only** HTTP API. The manager that initialized the cluster
-serves the same v1 resource documents the CLI emits — `schemaVersion`, `kind`,
+The manager serves versioned resource documents — `schemaVersion`, `kind`,
 `items`, `next` for lists and `schemaVersion`, `kind` plus the resource fields for
 single documents — on two listeners:
 
@@ -321,6 +320,10 @@ single documents — on two listeners:
 |----------|---------|----------------|
 | **TLS/TCP** | `127.0.0.1:4244` by default (`--api-listen`) | `Authorization: Bearer <token>` on **every** route, including `/v1/version` |
 | **Unix socket** | `<state-dir>/api.sock` (default `/var/lib/swarmkit/api.sock`) | none — the socket's file mode is the credential |
+
+The read surface is phase 1; **service writes** (create, patch, delete,
+rollback) are phase 2 and require the `services:write` scope. Task exec, logs,
+files and events are later phases.
 
 `api/openapi.yaml` in the repository is the normative contract for every route,
 schema, header and error code; this section is the operator's guide to it.
@@ -334,31 +337,41 @@ the Unix socket while disabling the TCP listener.
 
 ### Routes
 
-Everything is `GET`. Phase 1 has no write routes.
+Reads are `GET`; services also accept the phase-2 writes below.
 
-| Route | Returns |
-|-------|---------|
-| `/v1/version` | `VersionInfo` (API versions, server version, capabilities) |
-| `/v1/services` | `ServiceList` |
-| `/v1/services/{id}` | `ServiceDocument` |
-| `/v1/services/{id}/tasks` | `TaskList` |
-| `/v1/tasks` | `TaskList` |
-| `/v1/tasks/{id}` | `TaskDocument` |
-| `/v1/nodes` | `NodeList` |
-| `/v1/nodes/{id}` | `NodeDocument` |
-| `/v1/networks` | `NetworkList` |
-| `/v1/networks/{id}` | `NetworkDocument` |
-| `/v1/configs` | `ConfigList` |
-| `/v1/configs/{id}` | `ConfigDocument` |
-| `/v1/secrets` | `SecretList` (metadata only — never a payload) |
-| `/v1/secrets/{id}` | `SecretDocument` (metadata only) |
-| `/v1/audit` | `AuditList` (requires `audit:read`, which only `admin` holds) |
+| Method | Route | Returns |
+|--------|-------|---------|
+| GET | `/v1/version` | `VersionInfo` (API versions, server version, capabilities) |
+| GET | `/v1/services` | `ServiceList` |
+| POST | `/v1/services` | `ServiceDocument` (create; requires `services:write`) |
+| GET | `/v1/services/{id}` | `ServiceDocument` |
+| PATCH | `/v1/services/{id}` | `ServiceDocument` (merge patch; requires `services:write`) |
+| DELETE | `/v1/services/{id}` | `204` (requires `services:write`) |
+| POST | `/v1/services/{id}/rollback` | `ServiceDocument` (requires `services:write`) |
+| GET | `/v1/services/{id}/tasks` | `TaskList` |
+| GET | `/v1/tasks` | `TaskList` |
+| GET | `/v1/tasks/{id}` | `TaskDocument` |
+| GET | `/v1/nodes` | `NodeList` |
+| GET | `/v1/nodes/{id}` | `NodeDocument` |
+| GET | `/v1/networks` | `NetworkList` |
+| GET | `/v1/networks/{id}` | `NetworkDocument` |
+| GET | `/v1/configs` | `ConfigList` |
+| GET | `/v1/configs/{id}` | `ConfigDocument` |
+| GET | `/v1/secrets` | `SecretList` (metadata only — never a payload) |
+| GET | `/v1/secrets/{id}` | `SecretDocument` (metadata only) |
+| GET | `/v1/audit` | `AuditList` (requires `audit:read`, which only `admin` holds) |
+
+The `{id}` path parameter accepts an exact id, an exact name, or a unique id
+prefix of at least four characters. A prefix that matches more than one object is
+`400 ambiguous` with `details.candidates`; a shorter non-exact value is
+`400 invalid`.
 
 Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
 also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
-`X-Request-Id`, and every `200` carries an `ETag` (send it back as
-`If-None-Match` to get `304`). Responses use the
-`application/vnd.swarmcracker.v1+json` media type.
+`X-Request-Id`. A read answers `If-None-Match` with `304`. A list `ETag` is the
+hash of the response body; a single service `ETag` is its quoted SwarmKit
+revision (`"17"`), which is exactly the value a later `PATCH` expects in
+`If-Match`. Responses use the `application/vnd.swarmcracker.v1+json` media type.
 
 `GET /v1/configs/{id}` includes the payload in `data` only when the caller holds
 `configs:read-values`. A plain `configs:read` token receives the metadata
@@ -366,6 +379,83 @@ document with the field absent, and the list route never leaks a payload. The
 manager does not read config payloads yet, so `data` is currently always absent;
 the field and its scope gate are defined now so the value path can land without a
 contract change.
+
+### Service writes
+
+Every write requires `services:write` (an `operator` or `admin` token). A reader
+gets `403 forbidden` with `details.requiredScope: "services:write"`.
+
+```bash
+# Create: the body is a ServiceWrite, not a Service.
+curl --cacert <state-dir>/api/tls.crt \
+  -H "Authorization: Bearer $(cat operator.token)" \
+  -H "Content-Type: application/vnd.swarmcracker.v1+json" \
+  -d '{"name":"web","spec":{"mode":"replicated","replicas":2,
+       "task":{"image":"nginx:1.27-alpine","ports":[{"target":80,"published":8080}]}}}' \
+  https://mgr:4244/v1/services
+```
+
+The create response is `201 Created` with a `ServiceDocument` and
+`ETag: "<revision>"`. A name conflict is `409 conflict`. `If-None-Match: *`
+marks the request create-only; it does not turn the call into an upsert, and any
+other value of that header is `invalid`. The body is capped at 8 MiB (`413`), the
+`Content-Type` must be `application/vnd.swarmcracker.v1+json` (`415`), and unknown
+body fields are `400 invalid` with `details.fields`.
+
+**Merge patch.** `PATCH /v1/services/{id}` takes
+`Content-Type: application/merge-patch+json` and the body is an RFC 7386 merge
+patch over the writable subtree. There is deliberately no `PUT`: a curated DTO
+cannot safely replace a whole SwarmKit spec, because it does not model every
+field.
+
+- `null` resets an optional scalar to its default; `null` on a map key deletes
+  that key; `[]` clears an array; a non-empty array replaces the array.
+- Only the fields present in the patch are written. SwarmKit fields the API does
+  not model — mount volume options, privileges, endpoint resolver mode, placement
+  preferences, log drivers — survive untouched.
+- `id`, `name`, `revision`, `createdAt`, `updatedAt`, `status` and `spec.mode`
+  are immutable. Sending one is `400 invalid` with `details.fields`, as is an
+  unknown field at any depth.
+- `spec.task.registryAuth` is the write-only pull credential. Absent on a patch
+  preserves the current credential, `null` clears it, and a string replaces it.
+  It never appears in a response, because the read types have no such field.
+
+```bash
+# Scale to 3, keeping every field the patch does not name.
+curl --cacert <state-dir>/api/tls.crt -X PATCH \
+  -H "Authorization: Bearer $(cat operator.token)" \
+  -H "Content-Type: application/merge-patch+json" \
+  -H 'If-Match: "17"' \
+  -d '{"spec":{"replicas":3}}' \
+  https://mgr:4244/v1/services/web
+```
+
+**Preconditions.** `PATCH` and `rollback` require `If-Match`; `DELETE` accepts it
+optionally.
+
+| Situation | Answer |
+|-----------|--------|
+| `If-Match` missing on PATCH or rollback | `428 conflict`, `details.required: "If-Match"` |
+| `If-Match` does not match the current revision | `412 conflict` with `details.expectedRevision` and `details.currentRevision` |
+| Weak validator (`W/"17"`) | `412 conflict` — a weak tag is never the strong revision |
+| `If-Match: *` | Matches any revision, but the service must exist |
+| Missing service with `If-Match` | `412` (preconditions are evaluated before `ignoreMissing`) |
+| Missing service without `If-Match` | `404`, or `204` with `?ignoreMissing=true` |
+
+Use the `ETag` of the last read as `If-Match`; do not invent a revision.
+
+**Delete.** `DELETE /v1/services/{id}` answers `204` with no body. The check and
+the removal are not atomic: SwarmKit's `RemoveServiceRequest` carries no version,
+so an update can land in between. The delete wins. Callers that need strict
+ordering patch first and then delete.
+
+**Rollback.** `POST /v1/services/{id}/rollback` takes no body (a non-empty body is
+`400`) and requires `If-Match`. It restores the service's previous spec and
+answers `200` with the new `ServiceDocument` and revision.
+
+Every write appends an audit record (`service.create`, `service.update`,
+`service.delete`, `service.rollback`) with the actor, the resource that was
+written and `result: ok` or `error`.
 
 ### Manager flags
 
@@ -467,14 +557,18 @@ secret.
 
 ### Audit log
 
-Every mutation and every `exec`/`files` call **will be** recorded to an
-append-only JSONL log on the manager (0600, one record per line, fsynced per
-append) once the write surface lands; this phase ships no write routes and no
-handler calls the recorder yet, so the log stays empty. Records are kept 30 days
-by default (`--api-audit-retention`). A crash-truncated or malformed line is
-skipped on load instead of making the log unreadable, and only the offending line
-is skipped — the records behind it are still read. A record larger than 1 MiB is
-refused rather than written, so one oversized entry cannot break the log.
+Every mutation is recorded to an append-only JSONL log on the manager (0600, one
+record per line, fsynced per append). Records are kept 30 days by default
+(`--api-audit-retention`). A crash-truncated or malformed line is skipped on load
+instead of making the log unreadable, and only the offending line is skipped —
+the records behind it are still read. A record larger than 1 MiB is refused
+rather than written, so one oversized entry cannot break the log.
+
+The service writes above record `service.create`, `service.update`,
+`service.delete` and `service.rollback`. A failed write records `result: "error"`
+with the reference or attempted name; a successful delete records the document
+as it was before removal. Config, secret, network and node writes (phase 2) will
+add their own actions.
 
 ```bash
 # Needs an admin token: audit:read is admin-only. There is no CLI subcommand for
@@ -489,15 +583,17 @@ curl --cacert <state-dir>/api/tls.crt \
 `requestId`, ascending. Each record names the actor (`type: "token"` with the
 token ID and name, or `type: "local"` for the Unix socket), the action, the
 resource, `result` (`ok` or `error`) and `sourceIp` — the TCP peer, never a
-forwarded header, and absent for a Unix-socket request. Secret and config values
-are never recorded. A manager without an audit log answers
-`501 not_implemented` with `details.capability: "audit"`.
+forwarded header, and absent for a Unix-socket request. A write that used
+`If-Match: *` records `precondition: "any"`; an exact revision records
+`precondition: "revision"`, so an unconditional update is visible in the log.
+Secret and config values are never recorded. A manager without an audit log
+answers `501 not_implemented` with `details.capability: "audit"`.
 
-Phase 2 adds no write routes, so the log stays empty until the write surface
-lands; the records it will carry are `service.create`, `service.update`,
-`service.delete`, `config.create`, `config.update`, `config.delete`,
+Phase 2 has started: service writes are audited today. Config, secret, network
+and node writes will add `config.create`, `config.update`, `config.delete`,
 `secret.create`, `secret.update`, `secret.delete`, `network.create`,
-`network.delete` and `node.update`.
+`network.delete` and `node.update`, and phase 3 adds `task.exec`, `task.files`
+and `task.snapshot`.
 
 ### Remote CLI reads
 

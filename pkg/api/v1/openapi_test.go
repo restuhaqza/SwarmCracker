@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/getkin/kin-openapi/openapi3"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -634,13 +635,14 @@ func TestOpenAPIAuditSurface(t *testing.T) {
 			name: "populated",
 			value: NewAuditList([]AuditRecord{
 				{
-					At:        "2026-10-23T10:00:00.123456789Z",
-					RequestID: "req_0123456789ab",
-					Actor:     AuditActor{Type: "token", ID: "tok_deadbeef", Name: "ci"},
-					Action:    "service.update",
-					Resource:  AuditResource{Kind: "Service", ID: "svc-1", Name: "web"},
-					Result:    "ok",
-					SourceIP:  "10.0.0.5",
+					At:           "2026-10-23T10:00:00.123456789Z",
+					RequestID:    "req_0123456789ab",
+					Actor:        AuditActor{Type: "token", ID: "tok_deadbeef", Name: "ci"},
+					Action:       "service.update",
+					Resource:     AuditResource{Kind: "Service", ID: "svc-1", Name: "web"},
+					Result:       "ok",
+					Precondition: "revision",
+					SourceIP:     "10.0.0.5",
 				},
 				{
 					At:        "2026-10-23T10:00:01Z",
@@ -717,4 +719,155 @@ func TestOpenAPIConfigDataIsOptional(t *testing.T) {
 	require.True(t, field.Value.Type.Is("string"))
 	require.NotContains(t, schema.Value.Required, "data",
 		"a plain configs:read response omits the payload")
+}
+
+// TestOpenAPIServiceWriteSurface pins the phase-2 write contract: the request
+// schemas, the precondition headers and the statuses each route can answer.
+func TestOpenAPIServiceWriteSurface(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	replicas := int64(3)
+	write := ServiceWrite{
+		Name:   "web",
+		Labels: map[string]string{"team": "payments"},
+		Spec: ServiceSpecWrite{
+			Mode:     "replicated",
+			Replicas: &replicas,
+			Task: TaskSpecWrite{
+				TaskSpec: TaskSpec{
+					Image:    "nginx:alpine",
+					Command:  []string{"nginx"},
+					Env:      map[string]string{"APP_ENV": "prod"},
+					Ports:    []Port{{Target: 80, Published: 8080, Protocol: "tcp", Mode: "ingress"}},
+					Mounts:   []Mount{{Type: "volume", Source: "data", Target: "/data"}},
+					Networks: []NetworkAttachment{{ID: "net-1", Name: "app"}},
+				},
+				RegistryAuth: "cmVnaXN0cnk=",
+			},
+			Update: &UpdateConfig{Parallelism: 1, FailureAction: "pause"},
+		},
+	}
+
+	data, err := json.Marshal(write)
+	require.NoError(t, err)
+	var generic any
+	require.NoError(t, json.Unmarshal(data, &generic))
+	validateAgainst(t, doc, "ServiceWrite", generic)
+
+	// The credential is documented on the write schema only.
+	document, err := json.Marshal(NewServiceDocument(Service{
+		ID: "svc-1", Name: "web", Revision: "7",
+		Spec: ServiceSpec{Mode: "replicated", Task: TaskSpec{Image: "nginx"}},
+	}))
+	require.NoError(t, err)
+	var readDocument any
+	require.NoError(t, json.Unmarshal(document, &readDocument))
+	validateAgainst(t, doc, "ServiceDocument", readDocument)
+
+	for _, name := range []string{"Service", "ServiceSpec", "TaskSpec", "ServiceDocument"} {
+		schema := doc.Components.Schemas[name]
+		require.NotNil(t, schema, name)
+		_, documented := schema.Value.Properties["registryAuth"]
+		require.Falsef(t, documented, "%s must not document registryAuth", name)
+	}
+
+	// Create.
+	create := doc.Paths.Find("/v1/services")
+	require.NotNil(t, create)
+	require.NotNil(t, create.Post, "POST /v1/services missing")
+	require.NotNil(t, create.Post.RequestBody)
+	requestMedia := create.Post.RequestBody.Value.Content.Get(v1MediaType)
+	require.NotNil(t, requestMedia, "create body must be the v1 media type")
+	require.Equal(t, "#/components/schemas/ServiceWrite", requestMedia.Schema.Ref)
+	requireTypedResponseFor(t, create.Post, "201", "ServiceDocument")
+	requireTypedResponseFor(t, create.Post, "400", "ErrorDocument")
+	requireTypedResponseFor(t, create.Post, "409", "ErrorDocument")
+	requireTypedResponseFor(t, create.Post, "413", "ErrorDocument")
+	requireTypedResponseFor(t, create.Post, "415", "ErrorDocument")
+
+	ifNoneMatch := findParameter(t, create.Post.Parameters, "If-None-Match")
+	require.Equal(t, "header", ifNoneMatch.In)
+
+	// Patch.
+	update := doc.Paths.Find("/v1/services/{id}")
+	require.NotNil(t, update)
+	require.NotNil(t, update.Patch, "PATCH /v1/services/{id} missing")
+	require.NotNil(t, update.Patch.RequestBody)
+	patchMedia := update.Patch.RequestBody.Value.Content.Get(MergePatchMediaType)
+	require.NotNil(t, patchMedia, "patch body must be application/merge-patch+json")
+	require.Equal(t, "#/components/schemas/ServicePatch", patchMedia.Schema.Ref)
+
+	ifMatch := findParameter(t, update.Patch.Parameters, "If-Match")
+	assert.True(t, ifMatch.Required, "If-Match is required on PATCH")
+	assert.Equal(t, "header", ifMatch.In)
+
+	requireTypedResponseFor(t, update.Patch, "200", "ServiceDocument")
+	requireTypedResponseFor(t, update.Patch, "412", "ErrorDocument")
+	requireTypedResponseFor(t, update.Patch, "428", "ErrorDocument")
+	requireTypedResponseFor(t, update.Patch, "415", "ErrorDocument")
+
+	// Delete.
+	require.NotNil(t, update.Delete, "DELETE /v1/services/{id} missing")
+	require.NotNil(t, update.Delete.Responses.Status(204), "delete must document 204")
+	require.Empty(t, update.Delete.Responses.Status(204).Value.Content,
+		"a 204 has no body")
+	requireTypedResponseFor(t, update.Delete, "404", "ErrorDocument")
+	requireTypedResponseFor(t, update.Delete, "412", "ErrorDocument")
+
+	ignoreMissing := findParameter(t, update.Delete.Parameters, "ignoreMissing")
+	assert.Equal(t, "query", ignoreMissing.In)
+	assert.False(t, ignoreMissing.Required)
+	ifMatch = findParameter(t, update.Delete.Parameters, "If-Match")
+	assert.False(t, ifMatch.Required, "If-Match is optional on DELETE")
+
+	// Rollback.
+	rollback := doc.Paths.Find("/v1/services/{id}/rollback")
+	require.NotNil(t, rollback, "rollback path missing")
+	require.NotNil(t, rollback.Post)
+	requireTypedResponseFor(t, rollback.Post, "200", "ServiceDocument")
+	requireTypedResponseFor(t, rollback.Post, "428", "ErrorDocument")
+	assert.True(t, findParameter(t, rollback.Post.Parameters, "If-Match").Required,
+		"If-Match is required on rollback")
+
+	// The patch schema refuses spec.mode and unknown fields by construction.
+	patchSchema := doc.Components.Schemas["ServicePatch"]
+	require.NotNil(t, patchSchema)
+	require.NotContains(t, patchSchema.Value.Properties["spec"].Value.Properties, "mode",
+		"spec.mode must not be writable")
+	require.NoError(t, patchSchema.Value.VisitJSON(map[string]any{
+		"spec": map[string]any{"task": map[string]any{"env": map[string]any{"A": nil}}},
+	}), "a nested null map value is a valid merge patch")
+	require.Error(t, patchSchema.Value.VisitJSON(map[string]any{
+		"spec": map[string]any{"mode": "global"},
+	}), "spec.mode is immutable")
+	require.Error(t, patchSchema.Value.VisitJSON(map[string]any{
+		"bogus": true,
+	}), "unknown patch fields are refused")
+}
+
+// requireTypedResponseFor is requireTypedResponse's operation-level twin.
+func requireTypedResponseFor(t *testing.T, operation *openapi3.Operation, status, schema string) {
+	t.Helper()
+
+	response := operation.Responses.Value(status)
+	require.NotNilf(t, response, "%s response missing", status)
+	require.NotNilf(t, response.Value, "%s response unresolved", status)
+
+	media := response.Value.Content.Get(v1MediaType)
+	require.NotNilf(t, media, "%s is not declared in %s", status, v1MediaType)
+	require.NotNilf(t, media.Schema, "%s schema missing", status)
+	require.Equal(t, "#/components/schemas/"+schema, media.Schema.Ref,
+		"%s must reference %s", status, schema)
+}
+
+// findParameter returns one named parameter or fails.
+func findParameter(t *testing.T, parameters openapi3.Parameters, name string) *openapi3.Parameter {
+	t.Helper()
+	for _, parameter := range parameters {
+		if parameter.Value != nil && parameter.Value.Name == name {
+			return parameter.Value
+		}
+	}
+	require.FailNowf(t, "parameter missing", "%q is not declared", name)
+	return nil
 }

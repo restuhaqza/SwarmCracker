@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -165,56 +166,102 @@ func transportError(op string, err error) *output.Error {
 	return output.NewErrorf(code, "%s: %v", op, err)
 }
 
-// get performs one GET and returns the body of a 2xx response. Every failure
+// remoteRequest is one call to the manager's API. Building it here keeps the
+// method, content type and preconditions in one place for reads and writes.
+type remoteRequest struct {
+	method      string
+	segments    []string
+	query       url.Values
+	body        []byte
+	contentType string
+	headers     map[string]string
+}
+
+// remoteResponse is the status, headers and body of one successful call.
+type remoteResponse struct {
+	status int
+	header http.Header
+	body   []byte
+}
+
+// do performs one request and returns the body of a 2xx response. Every failure
 // leaves as *output.Error so callers keep the stable codes and exit statuses.
-func (r *remoteClient) get(ctx context.Context, segments []string, query url.Values) ([]byte, error) {
-	if err := validateSegments(segments); err != nil {
+func (r *remoteClient) do(ctx context.Context, call remoteRequest) (*remoteResponse, error) {
+	if err := validateSegments(call.segments); err != nil {
 		return nil, err
 	}
 	// JoinPath joins raw path elements, so escape each one first: a slash in an
 	// ID must stay inside that segment instead of creating a new one.
-	escaped := make([]string, len(segments))
-	for i, segment := range segments {
+	escaped := make([]string, len(call.segments))
+	for i, segment := range call.segments {
 		escaped[i] = url.PathEscape(segment)
 	}
 	u := r.baseURL.JoinPath(escaped...)
-	u.RawQuery = query.Encode()
+	if call.query != nil {
+		u.RawQuery = call.query.Encode()
+	}
 	path := u.EscapedPath()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	var body io.Reader
+	if call.body != nil {
+		body = bytes.NewReader(call.body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, call.method, u.String(), body)
 	if err != nil {
 		return nil, output.NewErrorf(output.CodeInternal, "build request for %s: %v", path, err)
 	}
 	req.Header.Set("Accept", mediaTypeV1)
+	if call.contentType != "" {
+		req.Header.Set("Content-Type", call.contentType)
+	}
+	for name, value := range call.headers {
+		req.Header.Set(name, value)
+	}
 	if r.token != "" {
 		req.Header.Set("Authorization", "Bearer "+r.token)
 	}
 
 	resp, err := r.http.Do(req)
 	if err != nil {
-		return nil, transportError("GET "+path, err)
+		return nil, transportError(call.method+" "+path, err)
 	}
 	defer resp.Body.Close()
 
 	// Read one byte past the bound so an oversized body is detected rather than
 	// silently truncated into a decode failure.
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	responseBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, transportError("read response for "+path, err)
 	}
-	if len(body) > maxResponseBytes {
-		return nil, output.NewErrorf(output.CodeInternal, "GET %s: response exceeds %d bytes", path, maxResponseBytes)
+	if len(responseBody) > maxResponseBytes {
+		return nil, output.NewErrorf(output.CodeInternal,
+			"%s %s: response exceeds %d bytes", call.method, path, maxResponseBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, decodeErrorDocument(path, resp.StatusCode, resp.Status, body)
+		return nil, decodeErrorDocument(call.method, path, resp.StatusCode, resp.Status, responseBody)
 	}
-	return body, nil
+
+	return &remoteResponse{status: resp.StatusCode, header: resp.Header, body: responseBody}, nil
+}
+
+// get performs one GET and returns its body.
+func (r *remoteClient) get(ctx context.Context, segments []string, query url.Values) ([]byte, error) {
+	resp, err := r.do(ctx, remoteRequest{
+		method:   http.MethodGet,
+		segments: segments,
+		query:    query,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp.body, nil
 }
 
 // decodeErrorDocument turns a failure body into *output.Error. A typed server
 // document is preserved field for field; anything else falls back to the
 // closest code for the HTTP status.
-func decodeErrorDocument(path string, statusCode int, status string, body []byte) error {
+func decodeErrorDocument(method, path string, statusCode int, status string, body []byte) error {
 	var doc v1.ErrorDocument
 	if err := json.Unmarshal(body, &doc); err == nil && doc.Kind == v1.KindError && doc.Error.Code != "" {
 		e := output.NewError(output.Code(doc.Error.Code), doc.Error.Message)
@@ -226,7 +273,7 @@ func decodeErrorDocument(path string, statusCode int, status string, body []byte
 		e.Details = doc.Error.Details
 		return e
 	}
-	return output.NewErrorf(codeForStatus(statusCode), "GET %s: server returned %s", path, status)
+	return output.NewErrorf(codeForStatus(statusCode), "%s %s: server returned %s", method, path, status)
 }
 
 // codeForStatus maps a bare HTTP status onto the contract's codes for servers
@@ -370,11 +417,7 @@ func (r *remoteClient) listSecrets(ctx context.Context) ([]v1.Secret, error) {
 
 // getService returns one service document as served.
 func (r *remoteClient) getService(ctx context.Context, id string) (v1.Service, error) {
-	var doc v1.ServiceDocument
-	if err := r.getDocument(ctx, []string{"v1", "services", id}, &doc); err != nil {
-		return v1.Service{}, err
-	}
-	return doc.Service, nil
+	return r.getServiceDocument(ctx, id)
 }
 
 // getTask returns one task document as served. The server resolves nodeName,
@@ -434,4 +477,136 @@ func (r *remoteClient) clusterID(ctx context.Context) (string, error) {
 		return "", output.NewError(output.CodeNotFound, "cluster not found")
 	}
 	return doc.ClusterID, nil
+}
+
+// createService sends POST /v1/services. The server resolves and validates the
+// body, so this path must not duplicate the local mapping.
+func (r *remoteClient) createService(ctx context.Context, write v1.ServiceWrite, opts v1.WriteOptions) (v1.Service, error) {
+	if err := checkCreateOnly(opts); err != nil {
+		return v1.Service{}, err
+	}
+
+	body, err := json.Marshal(write)
+	if err != nil {
+		return v1.Service{}, output.NewErrorf(output.CodeInternal, "encode service: %v", err)
+	}
+
+	headers := make(map[string]string)
+	if opts.IfNoneMatch != "" {
+		headers["If-None-Match"] = opts.IfNoneMatch
+	}
+
+	resp, err := r.do(ctx, remoteRequest{
+		method:      http.MethodPost,
+		segments:    []string{"v1", "services"},
+		body:        body,
+		contentType: mediaTypeV1,
+		headers:     headers,
+	})
+	if err != nil {
+		return v1.Service{}, err
+	}
+
+	var doc v1.ServiceDocument
+	if err := decodeJSON("v1/services", resp.body, &doc); err != nil {
+		return v1.Service{}, err
+	}
+	return doc.Service, nil
+}
+
+// updateService sends PATCH /v1/services/{ref} with the raw merge patch: the
+// server owns parsing, validation and the SwarmKit overlay.
+func (r *remoteClient) updateService(ctx context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Service, error) {
+	if err := requireIfMatch(opts.IfMatch); err != nil {
+		return v1.Service{}, err
+	}
+
+	resp, err := r.do(ctx, remoteRequest{
+		method:      http.MethodPatch,
+		segments:    []string{"v1", "services", ref},
+		body:        patch,
+		contentType: v1.MergePatchMediaType,
+		headers:     ifMatchHeader(opts.IfMatch),
+	})
+	if err != nil {
+		return v1.Service{}, err
+	}
+
+	var doc v1.ServiceDocument
+	if err := decodeJSON("v1/services/"+ref, resp.body, &doc); err != nil {
+		return v1.Service{}, err
+	}
+	return doc.Service, nil
+}
+
+// deleteService GETs the service first so it can return the document as it was
+// before the removal, then sends DELETE /v1/services/{ref}.
+//
+// The GET is not a precondition check: If-Match is forwarded and evaluated by
+// the server, which is the only side that can see the current revision. A
+// missing service still goes on to DELETE when If-Match or ignoreMissing was
+// given, so the server decides between 412, 404 and 204.
+func (r *remoteClient) deleteService(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Service, error) {
+	previous, getErr := r.getServiceDocument(ctx, ref)
+	if getErr != nil && !isNotFound(getErr) {
+		return v1.Service{}, getErr
+	}
+	if getErr != nil && opts.IfMatch == "" && !opts.IgnoreMissing {
+		return v1.Service{}, getErr
+	}
+
+	query := url.Values{}
+	if opts.IgnoreMissing {
+		query.Set("ignoreMissing", "true")
+	}
+
+	if _, err := r.do(ctx, remoteRequest{
+		method:   http.MethodDelete,
+		segments: []string{"v1", "services", ref},
+		query:    query,
+		headers:  ifMatchHeader(opts.IfMatch),
+	}); err != nil {
+		return v1.Service{}, err
+	}
+
+	return previous, nil
+}
+
+// rollbackService sends POST /v1/services/{ref}/rollback with no body.
+func (r *remoteClient) rollbackService(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Service, error) {
+	if err := requireIfMatch(opts.IfMatch); err != nil {
+		return v1.Service{}, err
+	}
+
+	resp, err := r.do(ctx, remoteRequest{
+		method:   http.MethodPost,
+		segments: []string{"v1", "services", ref, "rollback"},
+		headers:  ifMatchHeader(opts.IfMatch),
+	})
+	if err != nil {
+		return v1.Service{}, err
+	}
+
+	var doc v1.ServiceDocument
+	if err := decodeJSON("v1/services/"+ref+"/rollback", resp.body, &doc); err != nil {
+		return v1.Service{}, err
+	}
+	return doc.Service, nil
+}
+
+// getServiceDocument fetches one service document.
+func (r *remoteClient) getServiceDocument(ctx context.Context, ref string) (v1.Service, error) {
+	var doc v1.ServiceDocument
+	if err := r.getDocument(ctx, []string{"v1", "services", ref}, &doc); err != nil {
+		return v1.Service{}, err
+	}
+	return doc.Service, nil
+}
+
+// ifMatchHeader renders the optional If-Match header.
+func ifMatchHeader(ifMatch string) map[string]string {
+	if strings.TrimSpace(ifMatch) == "" {
+		return nil
+	}
+	return map[string]string{"If-Match": ifMatch}
 }

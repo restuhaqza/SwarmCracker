@@ -4,10 +4,10 @@ info:
   version: "1"
   description: >
     Stable machine contract for SwarmCracker. This file is the normative
-    description of the phase-1 public read API: every list and get route, the
-    resource documents, the shared response headers, the error document and the
-    bearer authentication model. The trusted Unix socket serves the same
-    documents without a token; its file mode is the credential.
+    description of the public API: every read route, the phase-2 service write
+    routes, the resource documents, the shared response headers, the error
+    document and the bearer authentication model. The trusted Unix socket serves
+    the same documents without a token; its file mode is the credential.
 servers:
   - url: https://mgr:4244
     description: Manager public API (phase 1; TLS + bearer token)
@@ -83,6 +83,59 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+    post:
+      operationId: createService
+      summary: Create a service
+      description: >
+        Requires services:write. The body is a ServiceWrite: the writable
+        subtree plus the write-only `spec.task.registryAuth`. The response never
+        carries the credential. `If-None-Match: "*"` marks the request
+        create-only; it does not turn POST into an upsert, and a name conflict is
+        always a 409.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: ["*"]
+          description: >
+            Create-only marker. Only `*` is accepted; any other value is invalid.
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/ServiceWrite" }
+      responses:
+        "201":
+          description: The created service
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ServiceDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/services/{id}:
     get:
       operationId: getService
@@ -108,6 +161,182 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    patch:
+      operationId: updateService
+      summary: Merge-patch a service
+      description: >
+        Requires services:write. The body is an RFC 7386 merge patch over the
+        writable service subtree. Only the fields present in the patch are
+        written: SwarmKit fields this API does not model survive untouched.
+        `null` resets an optional scalar, `null` on a map key deletes that key and
+        `[]` clears an array. `id`, `name`, `revision`, the timestamps, `status`
+        and `spec.mode` are immutable. If-Match is required.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Service reference: exact id, exact name, or a unique id prefix of at
+            least 4 characters.
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string }
+          description: >
+            The revision from the last read. `"17"` must equal the current
+            revision; `*` matches any revision but the service must exist; a weak
+            `W/"17"` never matches. Missing is 428, stale or weak is 412.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: "#/components/schemas/ServicePatch" }
+      responses:
+        "200":
+          description: The updated service
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ServiceDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    delete:
+      operationId: deleteService
+      summary: Delete a service
+      description: >
+        Requires services:write. Preconditions are evaluated before
+        `ignoreMissing`: a missing service with If-Match is 412, without it 404,
+        or 204 when `ignoreMissing=true`. Delete is not atomic with the
+        precondition: SwarmKit's RemoveServiceRequest carries no version, so a
+        concurrent update can land between the check and the removal.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Service reference: exact id, exact name, or a unique id prefix of at
+            least 4 characters.
+        - name: ignoreMissing
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: Treat a missing service as success (204).
+        - name: If-Match
+          in: header
+          required: false
+          schema: { type: string }
+          description: >
+            Optional. When present it is evaluated before ignoreMissing; `*`
+            matches any revision but the service must exist.
+      responses:
+        "204":
+          description: Deleted. No body.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/services/{id}/rollback:
+    post:
+      operationId: rollbackService
+      summary: Roll a service back to its previous spec
+      description: >
+        Requires services:write. No request body: a non-empty body is invalid.
+        If-Match is required, because a rollback is an update to the current
+        spec.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Service reference: exact id, exact name, or a unique id prefix of at
+            least 4 characters.
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The rolled-back service
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ServiceDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
         "4XX":
           description: Typed failure
           headers:
@@ -595,6 +824,75 @@ components:
       content:
         application/vnd.swarmcracker.v1+json:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
+    BadRequest:
+      description: >
+        Invalid input: an unknown or immutable field, a bad enum, a malformed
+        merge patch or an unresolvable reference. details.fields names the
+        offending path when there is one.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    NotFound:
+      description: No resource matches the reference.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    Conflict:
+      description: >
+        A conflicting state: a duplicate name on create, or a concurrent update
+        the manager refused. code is conflict.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    PreconditionRequired:
+      description: >
+        The write needs If-Match. code is conflict and details.required is
+        "If-Match".
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    PreconditionFailed:
+      description: >
+        The If-Match revision is stale or weak, or the service is gone. code is
+        conflict and details carries expectedRevision and currentRevision.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    PayloadTooLarge:
+      description: >
+        The body exceeds 8 MiB. code is invalid and details.reason is
+        "payload_too_large".
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    UnsupportedMediaType:
+      description: >
+        The request Content-Type is missing or not the one this route accepts.
+        code is invalid and details.reason is "unsupported_media_type".
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
   headers:
     X-SwarmCracker-Api-Version:
       description: The API version that answered. Always 1 in phase 1.
@@ -604,8 +902,10 @@ components:
       schema: { type: string }
     ETag:
       description: >
-        Quoted SHA-256 of the exact response body. Send it back as If-None-Match
-        to receive 304 when nothing changed.
+        A strong validator. For a single service it is the quoted SwarmKit
+        revision (`"17"`), the value If-Match expects; lists use the quoted
+        SHA-256 of the response body. Send it back as If-None-Match to receive
+        304 when nothing changed.
       schema: { type: string }
     WWW-Authenticate:
       description: Always `Bearer` on a 401.
@@ -813,6 +1113,135 @@ components:
         stopSignal: { type: string }
         stopGraceMs: { type: integer, format: int64 }
         readOnlyRootfs: { type: boolean }
+
+    ServiceWrite:
+      type: object
+      required: [name, spec]
+      description: >
+        The POST /v1/services body. Separate from Service so the write-only
+        registry credential can never appear on a response.
+      properties:
+        name: { type: string, minLength: 1 }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        spec: { $ref: "#/components/schemas/ServiceSpecWrite" }
+
+    ServiceSpecWrite:
+      type: object
+      required: [task]
+      properties:
+        mode:
+          type: string
+          enum: [replicated, global]
+          default: replicated
+          description: Immutable after create.
+        replicas:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+          description: >
+            Only valid for mode replicated. Omitted or null means 1. A global
+            service must not carry it.
+        task: { $ref: "#/components/schemas/TaskSpecWrite" }
+        update: { $ref: "#/components/schemas/UpdateConfig" }
+        rollback: { $ref: "#/components/schemas/UpdateConfig" }
+        placement: { $ref: "#/components/schemas/Placement" }
+
+    TaskSpecWrite:
+      allOf:
+        - $ref: "#/components/schemas/TaskSpec"
+        - type: object
+          properties:
+            registryAuth:
+              type: string
+              writeOnly: true
+              description: >
+                The base64 X-Registry-Auth payload SwarmKit hands the node when
+                it pulls the image. Write-only: it is never present on a response.
+                Absent on a patch preserves the existing credential; null clears
+                it.
+
+    ServicePatch:
+      type: object
+      additionalProperties: false
+      description: >
+        An RFC 7386 merge patch over the writable service subtree. null resets an
+        optional scalar to its default, null on a map key deletes that key, and an
+        empty array clears an array. id, name, revision, timestamps, status and
+        spec.mode are immutable and rejected.
+      properties:
+        labels:
+          type: [object, "null"]
+          additionalProperties: { type: [string, "null"] }
+        spec: { $ref: "#/components/schemas/ServiceSpecPatch" }
+
+    ServiceSpecPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        replicas:
+          type: [integer, "null"]
+          format: int64
+          minimum: 0
+        task: { $ref: "#/components/schemas/TaskSpecPatch" }
+        update:
+          anyOf:
+            - $ref: "#/components/schemas/UpdateConfig"
+            - type: "null"
+        rollback:
+          anyOf:
+            - $ref: "#/components/schemas/UpdateConfig"
+            - type: "null"
+        placement:
+          anyOf:
+            - $ref: "#/components/schemas/Placement"
+            - type: "null"
+
+    TaskSpecPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        image: { type: string }
+        command:
+          type: [array, "null"]
+          items: { type: string }
+        args:
+          type: [array, "null"]
+          items: { type: string }
+        env:
+          type: [object, "null"]
+          additionalProperties: { type: [string, "null"] }
+        user: { type: [string, "null"] }
+        workdir: { type: [string, "null"] }
+        vcpus: { type: [integer, "null"], format: int64, minimum: 0 }
+        memoryBytes: { type: [integer, "null"], format: int64, minimum: 0 }
+        ports:
+          type: [array, "null"]
+          items: { $ref: "#/components/schemas/Port" }
+        mounts:
+          type: [array, "null"]
+          items: { $ref: "#/components/schemas/Mount" }
+        networks:
+          type: [array, "null"]
+          items: { $ref: "#/components/schemas/NetworkAttachment" }
+        restartPolicy:
+          anyOf:
+            - $ref: "#/components/schemas/RestartPolicy"
+            - type: "null"
+        healthcheck:
+          anyOf:
+            - $ref: "#/components/schemas/Healthcheck"
+            - type: "null"
+        stopSignal: { type: [string, "null"] }
+        stopGraceMs: { type: [integer, "null"], format: int64, minimum: 0 }
+        readOnlyRootfs: { type: [boolean, "null"] }
+        registryAuth:
+          type: [string, "null"]
+          writeOnly: true
+          description: >
+            Write-only. Absent preserves the existing pull credential, null
+            clears it, a string replaces it.
 
     Port:
       type: object
@@ -1119,6 +1548,13 @@ components:
         result:
           type: string
           enum: [ok, error]
+        precondition:
+          type: string
+          enum: [revision, any]
+          description: >
+            How the write's If-Match was satisfied: revision for an exact
+            revision, any for `If-Match: "*"`. Absent when the write carried no
+            precondition.
         sourceIp:
           type: string
           description: >

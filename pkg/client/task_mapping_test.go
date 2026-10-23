@@ -235,11 +235,14 @@ func TestListTasksSortsByCreatedAtThenID(t *testing.T) {
 }
 
 func TestListServiceTasksFiltersRequest(t *testing.T) {
-	control := &fakeControl{tasks: []*api.Task{{
-		ID:        "task-1",
-		ServiceID: "svc-1",
-		Status:    api.TaskStatus{State: api.TaskStateRunning},
-	}}}
+	control := &fakeControl{
+		services: []*api.Service{{ID: "svc-1", Spec: api.ServiceSpec{Annotations: api.Annotations{Name: "web"}}}},
+		tasks: []*api.Task{{
+			ID:        "task-1",
+			ServiceID: "svc-1",
+			Status:    api.TaskStatus{State: api.TaskStateRunning},
+		}},
+	}
 
 	got, err := (&Client{control: control}).ListServiceTasks(context.Background(), "svc-1")
 	require.NoError(t, err)
@@ -251,7 +254,9 @@ func TestListServiceTasksFiltersRequest(t *testing.T) {
 }
 
 func TestListServiceTasksEmptySkipsNodeCall(t *testing.T) {
-	control := &fakeControl{}
+	control := &fakeControl{
+		services: []*api.Service{{ID: "svc-1", Spec: api.ServiceSpec{Annotations: api.Annotations{Name: "web"}}}},
+	}
 
 	got, err := (&Client{control: control}).ListServiceTasks(context.Background(), "svc-1")
 	require.NoError(t, err)
