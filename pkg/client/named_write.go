@@ -125,6 +125,9 @@ func (c *Client) UpdateConfig(ctx context.Context, ref string, patch []byte, opt
 // the zero document, because the wire DELETE carries no body and must work for a
 // token that holds configs:write without configs:read.
 func (c *Client) DeleteConfig(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Config, error) {
+	if opts.DryRun {
+		return v1.Config{}, dryRunUnsupportedOnDelete()
+	}
 	if c.remote != nil {
 		return c.remote.deleteConfig(ctx, ref, opts)
 	}
@@ -253,6 +256,9 @@ func (c *Client) UpdateSecret(ctx context.Context, ref string, patch []byte, opt
 // removal. Like DeleteConfig, a remote client returns the zero document so a
 // write-only token never needs read scope.
 func (c *Client) DeleteSecret(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Secret, error) {
+	if opts.DryRun {
+		return v1.Secret{}, dryRunUnsupportedOnDelete()
+	}
 	if c.remote != nil {
 		return c.remote.deleteSecret(ctx, ref, opts)
 	}
@@ -319,6 +325,9 @@ func (c *Client) CreateNetwork(ctx context.Context, write v1.NetworkWrite, opts 
 // removal. Like DeleteConfig, a remote client returns the zero document so a
 // write-only token never needs read scope.
 func (c *Client) DeleteNetwork(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Network, error) {
+	if opts.DryRun {
+		return v1.Network{}, dryRunUnsupportedOnDelete()
+	}
 	if c.remote != nil {
 		return c.remote.deleteNetwork(ctx, ref, opts)
 	}

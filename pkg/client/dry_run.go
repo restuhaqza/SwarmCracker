@@ -93,6 +93,21 @@ func (c *Client) ensureNetworkNameFree(ctx context.Context, name string) error {
 	return nil
 }
 
+// dryRunUnsupportedOnDelete is the client-side mirror of the HTTP layer's
+// refusal: a delete has no document to preview, so a dry run would have to do
+// the deletion to answer.
+func dryRunUnsupportedOnDelete() error {
+	return invalidField("dryRun", "is not supported on delete")
+}
+
+// dryRunUnsupportedOnRollback is the client-side mirror of the HTTP layer's 501:
+// the previous spec is not the document a rollback would write.
+func dryRunUnsupportedOnRollback() error {
+	return output.NewError(output.CodeNotImplemented,
+		"dryRun is not supported on rollback").
+		WithDetails(map[string]any{"capability": "dryRun"})
+}
+
 // synthesizedService strips the identity of a create preview: the object was
 // never persisted, so it has no id, revision, or timestamps to report.
 func synthesizedService(service v1.Service) v1.Service {

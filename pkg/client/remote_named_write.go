@@ -63,6 +63,10 @@ func (r *remoteClient) patchJSON(ctx context.Context, segments []string, patch [
 // hold `<resource>:write` without `<resource>:read`, and the previous document is
 // a local-client convenience, not part of the wire contract.
 func (r *remoteClient) deleteRequest(ctx context.Context, segments []string, opts v1.WriteOptions) error {
+	if opts.DryRun {
+		return dryRunUnsupportedOnDelete()
+	}
+
 	query := url.Values{}
 	if opts.IgnoreMissing {
 		query.Set("ignoreMissing", "true")

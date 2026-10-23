@@ -538,3 +538,83 @@ func TestIdempotencyContractConstants(t *testing.T) {
 	assert.Equal(t, "Idempotency-Replayed", idempotencyReplayedHeader)
 	assert.Equal(t, 24*time.Hour, DefaultIdempotencyTTL)
 }
+
+// TestIdempotencyMiddlewareBadModifierDoesNotSpendKey pins the request-shape
+// distinction: a malformed modifier is not a result and must not be replayed.
+func TestIdempotencyMiddlewareBadModifierDoesNotSpendKey(t *testing.T) {
+	fc := &fakeClient{createdService: v1.Service{ID: "svc-1", Name: "web", Revision: "7"}}
+	api := newWriteTestAPI(t, fc)
+
+	bad := api.doWrite(t, http.MethodPost, "/v1/services?dryRun=1", idempotencyBody("web"),
+		withToken(api.operator), withContentType(MediaType),
+		withHeader(idempotencyKeyHeader, "key-1"))
+	require.Equal(t, http.StatusBadRequest, bad.Code, bad.Body.String())
+
+	good := api.doWrite(t, http.MethodPost, "/v1/services", idempotencyBody("web"),
+		withToken(api.operator), withContentType(MediaType),
+		withHeader(idempotencyKeyHeader, "key-1"))
+	require.Equal(t, http.StatusCreated, good.Code, good.Body.String())
+	assert.Empty(t, good.Header().Get(idempotencyReplayedHeader))
+	assert.Equal(t, 1, fc.createCalls)
+}
+
+// TestIdempotencyReplayedErrorUsesCurrentRequestID proves a replayed 4xx body is
+// re-rendered, not echoed with the first request's requestId.
+func TestIdempotencyReplayedErrorUsesCurrentRequestID(t *testing.T) {
+	fc := &fakeClient{writeErr: output.NewError(output.CodeConflict, "service already exists")}
+	api := newWriteTestAPI(t, fc)
+
+	first := api.doWrite(t, http.MethodPost, "/v1/services", idempotencyBody("web"),
+		withToken(api.operator), withContentType(MediaType),
+		withHeader(idempotencyKeyHeader, "key-1"))
+	require.Equal(t, http.StatusConflict, first.Code, first.Body.String())
+
+	fc.writeErr = nil
+	second := api.doWrite(t, http.MethodPost, "/v1/services", idempotencyBody("web"),
+		withToken(api.operator), withContentType(MediaType),
+		withHeader(idempotencyKeyHeader, "key-1"))
+	require.Equal(t, http.StatusConflict, second.Code, second.Body.String())
+	assert.Equal(t, "true", second.Header().Get(idempotencyReplayedHeader))
+	assert.Equal(t, 1, fc.createCalls, "the replay did not run the handler again")
+
+	doc := decodeError(t, second)
+	assert.Equal(t, second.Header().Get(requestIDHeader), doc.Error.RequestID,
+		"the replayed error must carry the current request id")
+	assert.NotEqual(t, first.Header().Get(requestIDHeader), second.Header().Get(requestIDHeader))
+}
+
+// TestIdempotencyMiddlewareRollbackWithContentType proves a client-supplied
+// Content-Type does not disable idempotency on the bodyless rollback POST.
+func TestIdempotencyMiddlewareRollbackWithContentType(t *testing.T) {
+	fc := &fakeClient{rolledBackService: v1.Service{ID: "svc-1", Name: "web", Revision: "19"}}
+	api := newWriteTestAPI(t, fc)
+
+	first := api.doWrite(t, http.MethodPost, "/v1/services/web/rollback", nil,
+		withToken(api.operator), withContentType(MediaType),
+		withHeader("If-Match", `"18"`),
+		withHeader(idempotencyKeyHeader, "key-1"))
+	require.Equal(t, http.StatusOK, first.Code, first.Body.String())
+
+	second := api.doWrite(t, http.MethodPost, "/v1/services/web/rollback", nil,
+		withToken(api.operator), withContentType(MediaType),
+		withHeader("If-Match", `"18"`),
+		withHeader(idempotencyKeyHeader, "key-1"))
+	require.Equal(t, http.StatusOK, second.Code, second.Body.String())
+	assert.Equal(t, "true", second.Header().Get(idempotencyReplayedHeader))
+	assert.Equal(t, 1, fc.rollbackCalls)
+}
+
+// TestIdempotencyStorePreconditionRequiredIsNotStored pins the 428 rule: a
+// missing If-Match is a correctable request shape, so the retry must run.
+func TestIdempotencyStorePreconditionRequiredIsNotStored(t *testing.T) {
+	store := NewIdempotencyStore(0)
+
+	_, err := store.Begin("key-1", "scope-a", "hash-a")
+	require.NoError(t, err)
+	store.Complete("key-1", "scope-a", http.StatusPreconditionRequired,
+		http.Header{"Content-Type": []string{MediaType}}, []byte(`{"kind":"Error"}`+"\n"))
+
+	replay, err := store.Begin("key-1", "scope-a", "hash-a")
+	require.NoError(t, err)
+	assert.Nil(t, replay, "a 428 must not spend the key")
+}

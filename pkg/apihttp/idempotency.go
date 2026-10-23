@@ -15,6 +15,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 	"mime"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 )
 
@@ -139,7 +141,9 @@ func (s *IdempotencyStore) Complete(key, scope string, status int, header http.H
 	defer s.mu.Unlock()
 
 	composite := scopeKey(key, scope)
-	if status >= http.StatusInternalServerError {
+	// A 5xx and a missing If-Match are retryable shapes, not results: storing
+	// them would spend the key on a request the caller can correct.
+	if status >= http.StatusInternalServerError || status == http.StatusPreconditionRequired {
 		delete(s.entries, composite)
 		return
 	}
@@ -261,12 +265,23 @@ func idempotencyScope(r *http.Request) string {
 // is a POST with no body and no content type, so the path is the exception that
 // keeps "no Content-Type" from being treated as "not a create".
 func idempotencyEligible(r *http.Request) bool {
+	// A rollback is a POST with no body; a client may still send a Content-Type
+	// header, and that must not make a double rollback possible.
+	if strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/rollback") {
+		return true
+	}
 	raw := strings.TrimSpace(r.Header.Get("Content-Type"))
 	if raw == "" {
-		return strings.HasSuffix(strings.TrimSuffix(r.URL.Path, "/"), "/rollback")
+		return false
 	}
 	mediaType, _, err := mime.ParseMediaType(raw)
 	return err == nil && strings.EqualFold(mediaType, MediaType)
+}
+
+// isServiceWritePath reports whether a wait belongs on this route. Wait is only
+// meaningful for a service create, patch or rollback.
+func isServiceWritePath(path string) bool {
+	return path == "/v1/services" || strings.HasPrefix(path, "/v1/services/")
 }
 
 // idempotent wraps a POST handler with the replay store.
@@ -295,7 +310,23 @@ func (s *Server) idempotent(h http.HandlerFunc) http.HandlerFunc {
 		}
 		// A dry run writes nothing, so there is nothing to replay; the handler
 		// still validates and reports its own bad dryRun value.
-		if dryRun, _ := parseDryRun(r.URL.Query()); dryRun {
+		query := r.URL.Query()
+		dryRun, err := parseDryRun(query)
+		if err != nil {
+			// A malformed modifier is a request-shape failure. It must not spend
+			// the key: the corrected retry is a different request.
+			h(w, r)
+			return
+		}
+		if dryRun {
+			h(w, r)
+			return
+		}
+		if _, _, err := parseWait(query); err != nil {
+			h(w, r)
+			return
+		}
+		if (query.Has("wait") || query.Has("timeoutMs")) && !isServiceWritePath(r.URL.Path) {
 			h(w, r)
 			return
 		}
@@ -319,7 +350,7 @@ func (s *Server) idempotent(h http.HandlerFunc) http.HandlerFunc {
 			copyContractHeaders(w.Header(), replay.Header)
 			w.Header().Set(idempotencyReplayedHeader, "true")
 			w.WriteHeader(replay.Status)
-			_, _ = w.Write(replay.Body)
+			_, _ = w.Write(replayBody(*replay, r))
 			return
 		}
 
@@ -368,6 +399,25 @@ func bufferIdempotentBody(r *http.Request) (body []byte, ok bool) {
 		return nil, false
 	}
 	return body, true
+}
+
+// replayBody returns the stored bytes for a success, and re-renders an error
+// document with the current request ID. A replayed 4xx is a response to this
+// request, so its requestId must match this request's X-Request-Id.
+func replayBody(replay Replay, r *http.Request) []byte {
+	if replay.Status < 400 {
+		return replay.Body
+	}
+	var doc v1.ErrorDocument
+	if err := json.Unmarshal(replay.Body, &doc); err != nil || doc.Kind != v1.KindError {
+		return replay.Body
+	}
+	doc.Error.RequestID = requestIDFrom(r)
+	body, err := encodeJSON(doc)
+	if err != nil {
+		return replay.Body
+	}
+	return body
 }
 
 // responseCapture is the writer a stored handler runs into. It records the

@@ -414,3 +414,72 @@ func TestRemoteDryRunForwardsQuery(t *testing.T) {
 		assert.Empty(t, got.dryRun)
 	})
 }
+
+// TestDryRunRefusesDeleteAndRollback is the guard against a preview causing
+// data loss: a dry run on a destructive verb must fail before any RPC.
+func TestDryRunRefusesDeleteAndRollback(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("service delete", func(t *testing.T) {
+		control := &fakeControl{service: serviceFixture("svc-1", "web", 3)}
+		_, err := writeClient(control).DeleteService(ctx, "web", v1.WriteOptions{DryRun: true})
+		requireCode(t, err, output.CodeInvalid)
+		assert.Zero(t, control.removeServiceCall)
+	})
+
+	t.Run("config delete", func(t *testing.T) {
+		control := &fakeControl{config: configFixture("cfg-1", "app", 3, nil, "")}
+		_, err := writeClient(control).DeleteConfig(ctx, "app", v1.WriteOptions{DryRun: true})
+		requireCode(t, err, output.CodeInvalid)
+		assert.Zero(t, control.removeConfigCall)
+	})
+
+	t.Run("secret delete", func(t *testing.T) {
+		control := &fakeControl{secret: secretFixture("sec-1", "token", 3, nil, "")}
+		_, err := writeClient(control).DeleteSecret(ctx, "token", v1.WriteOptions{DryRun: true})
+		requireCode(t, err, output.CodeInvalid)
+		assert.Zero(t, control.removeSecretCall)
+	})
+
+	t.Run("network delete", func(t *testing.T) {
+		control := &fakeControl{network: networkFixture("net-1", "app", 3, "overlay")}
+		_, err := writeClient(control).DeleteNetwork(ctx, "app", v1.WriteOptions{DryRun: true})
+		requireCode(t, err, output.CodeInvalid)
+		assert.Zero(t, control.removeNetworkCall)
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		control := &fakeControl{service: serviceFixture("svc-1", "web", 3)}
+		_, err := writeClient(control).RollbackService(ctx, "web", v1.WriteOptions{IfMatch: `"3"`, DryRun: true})
+		requireCode(t, err, output.CodeNotImplemented)
+		assert.Zero(t, control.updateServiceCall)
+	})
+}
+
+// TestRemoteDryRunRefusesDestructiveVerbs proves the remote client does not
+// send a DELETE or rollback request when the caller asked for a dry run.
+func TestRemoteDryRunRefusesDestructiveVerbs(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("service delete", func(t *testing.T) {
+		called := false
+		c := newTestRemote(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			http.Error(w, "must not be called", http.StatusInternalServerError)
+		})
+		_, err := c.DeleteService(ctx, "web", v1.WriteOptions{DryRun: true})
+		requireCode(t, err, output.CodeInvalid)
+		assert.False(t, called)
+	})
+
+	t.Run("rollback", func(t *testing.T) {
+		called := false
+		c := newTestRemote(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+			called = true
+			http.Error(w, "must not be called", http.StatusInternalServerError)
+		})
+		_, err := c.RollbackService(ctx, "web", v1.WriteOptions{IfMatch: `"3"`, DryRun: true})
+		requireCode(t, err, output.CodeNotImplemented)
+		assert.False(t, called)
+	})
+}

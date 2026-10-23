@@ -128,6 +128,9 @@ func (c *Client) UpdateService(ctx context.Context, ref string, patch []byte, op
 // A miss with IgnoreMissing is (zero, nil): the caller asked for the end state,
 // not for the object. Any other miss keeps its error.
 func (c *Client) DeleteService(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Service, error) {
+	if opts.DryRun {
+		return v1.Service{}, dryRunUnsupportedOnDelete()
+	}
 	if c.remote != nil {
 		return c.remote.deleteService(ctx, ref, opts)
 	}
@@ -165,6 +168,9 @@ func (c *Client) DeleteService(ctx context.Context, ref string, opts v1.WriteOpt
 // RollbackService asks SwarmKit to restore the service's previous spec. It is an
 // update, so it requires If-Match like any other PATCH.
 func (c *Client) RollbackService(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Service, error) {
+	if opts.DryRun {
+		return v1.Service{}, dryRunUnsupportedOnRollback()
+	}
 	if c.remote != nil {
 		return c.remote.rollbackService(ctx, ref, opts)
 	}

@@ -10,9 +10,11 @@ package apihttp
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -127,6 +129,7 @@ func serviceWriteQuery(r *http.Request) (v1.WriteOptions, bool, time.Duration, e
 // the wait is also a warning, carrying the last good document — turning it into
 // an error would invite a client to retry a write that already succeeded.
 func (s *Server) waitForService(ctx context.Context, id string, timeout time.Duration) (v1.Service, *v1.Warning) {
+	start := time.Now()
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(waitPollInterval)
@@ -134,11 +137,20 @@ func (s *Server) waitForService(ctx context.Context, id string, timeout time.Dur
 
 	var last v1.Service
 	for {
-		document, err := s.cfg.Client.GetService(ctx, id)
+		remaining := timeout - time.Since(start)
+		if remaining <= 0 {
+			return timedOutWait(last, timeout)
+		}
+		callCtx, cancel := context.WithTimeout(ctx, remaining)
+		document, err := s.cfg.Client.GetService(callCtx, id)
+		cancel()
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				return timedOutWait(last, timeout)
+			}
 			return last, &v1.Warning{
 				Code:    waitErrorCode,
-				Message: "reading the service while waiting: " + err.Error(),
+				Message: "reading the service while waiting: " + safeWaitError(err),
 			}
 		}
 		last = document
@@ -154,6 +166,20 @@ func (s *Server) waitForService(ctx context.Context, id string, timeout time.Dur
 		case <-ticker.C:
 		}
 	}
+}
+
+// safeWaitError keeps a useful message without echoing a raw gRPC status line.
+// The manager's internal error chain is not part of the wire contract.
+func safeWaitError(err error) string {
+	message := err.Error()
+	message = strings.TrimPrefix(message, "rpc error: ")
+	if index := strings.Index(message, "desc = "); index >= 0 {
+		message = message[index+len("desc = "):]
+	}
+	if len(message) > 200 {
+		message = message[:200]
+	}
+	return message
 }
 
 // timedOutWait is the success-with-a-warning document of a wait timeout.

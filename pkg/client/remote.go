@@ -549,6 +549,12 @@ func (r *remoteClient) updateService(ctx context.Context, ref string, patch []by
 // missing service still goes on to DELETE when If-Match or ignoreMissing was
 // given, so the server decides between 412, 404 and 204.
 func (r *remoteClient) deleteService(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Service, error) {
+	if opts.DryRun {
+		// The wire contract answers 400 for this; refusing here means no request
+		// leaves the process at all.
+		return v1.Service{}, dryRunUnsupportedOnDelete()
+	}
+
 	previous, getErr := r.getServiceDocument(ctx, ref)
 	if getErr != nil && !isNotFound(getErr) {
 		return v1.Service{}, getErr
@@ -576,6 +582,9 @@ func (r *remoteClient) deleteService(ctx context.Context, ref string, opts v1.Wr
 
 // rollbackService sends POST /v1/services/{ref}/rollback with no body.
 func (r *remoteClient) rollbackService(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Service, error) {
+	if opts.DryRun {
+		return v1.Service{}, dryRunUnsupportedOnRollback()
+	}
 	if err := requireIfMatch(opts.IfMatch); err != nil {
 		return v1.Service{}, err
 	}

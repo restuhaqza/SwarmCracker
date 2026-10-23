@@ -80,6 +80,7 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 	if wait {
 		waited, warnings := s.waitServiceDocument(r.Context(), service, timeout)
 		document = v1.NewServiceDocument(waited)
+		document.DryRun = opts.DryRun
 		document.Warnings = warnings
 		service = waited
 	}
@@ -138,6 +139,7 @@ func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
 	if wait {
 		waited, warnings := s.waitServiceDocument(r.Context(), service, timeout)
 		document = v1.NewServiceDocument(waited)
+		document.DryRun = opts.DryRun
 		document.Warnings = warnings
 		service = waited
 	}

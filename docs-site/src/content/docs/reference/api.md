@@ -578,7 +578,8 @@ plus rollback). The key is trimmed and scoped to the token, the method and the
 path, so two callers never collide. A retry with the same key and the same body
 returns the original status, headers and body plus `Idempotency-Replayed: true`;
 the first response never carries that header, and the replay carries the
-*retrying* request's `X-Request-Id`. The same key with a different body is
+*retrying* request's `X-Request-Id` (a replayed error document is re-rendered
+with that same current `requestId`). The same key with a different body is
 `409 conflict` with `details.reason: "idempotency_key_reuse"`; the same key while
 the first request is still running is `409 conflict` with
 `details.reason: "in_progress"`, `retryable: true` and
@@ -589,7 +590,9 @@ State is **manager-local and in memory**, with a 24 h TTL. It is not replicated
 and does not survive a restart, so a retry across a leader change can still
 create twice — that is the v1 single-manager decision, not a bug. A 5xx is never
 stored, so a failed create can be retried with the same key; a dry run is never
-stored because nothing was written.
+stored because nothing was written. A malformed `dryRun`/`wait`/`timeoutMs`
+modifier, a `428` missing `If-Match`, and a `5xx` do not spend the key: the
+corrected request runs normally.
 
 ```bash
 curl --cacert <state-dir>/api/tls.crt \
