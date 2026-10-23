@@ -686,7 +686,7 @@ func newServiceRemoveCommand() *cobra.Command {
 }
 
 // SwarmKit client helper for service operations
-func getSwarmClientForService() (api.ControlClient, *grpc.ClientConn, error) {
+func getSwarmClientForService() (legacy.ControlClient, *grpc.ClientConn, error) {
 	socketPath := "/var/run/swarmkit/swarm.sock"
 	if envSocket := os.Getenv("SWARM_SOCKET"); envSocket != "" {
 		socketPath = envSocket
@@ -732,7 +732,7 @@ func getSwarmClientForService() (api.ControlClient, *grpc.ClientConn, error) {
 		return nil, nil, fmt.Errorf("failed to connect to swarm: %w", err)
 	}
 
-	client := api.NewControlClient(conn)
+	client := legacy.NewControlClient(conn)
 	return client, conn, nil
 }
 
@@ -842,7 +842,7 @@ func listServices(format, filter string, quiet bool) error {
 // listServicesWithClient is the body of `service ls` with the control client and
 // output writer injected, so the table/JSON rendering — including the credential
 // redaction on the JSON path — is unit-testable without a cluster.
-func listServicesWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet bool) error {
+func listServicesWithClient(ctx context.Context, client legacy.ControlClient, w io.Writer, format, filter string, quiet bool) error {
 	resp, err := client.ListServices(ctx, &api.ListServicesRequest{})
 	if err != nil {
 		return output.FromGRPC(err)
@@ -974,7 +974,7 @@ func filterV1Services(services []v1.Service, filter string) []v1.Service {
 // resolveNetworkTargets resolves --network names/IDs to full network IDs.
 // A service may join several networks (one NIC per network, in order); a
 // network listed more than once is attached only once.
-func resolveNetworkTargets(ctx context.Context, client api.ControlClient, names []string) ([]string, error) {
+func resolveNetworkTargets(ctx context.Context, client legacy.ControlClient, names []string) ([]string, error) {
 	if len(names) == 0 {
 		return nil, nil
 	}
@@ -1005,7 +1005,7 @@ func formatGrant(name string, ft *api.FileTarget) string {
 
 // buildSecretReferences resolves --secret values (name/ID + target/mode) to
 // SwarmKit secret references.
-func buildSecretReferences(ctx context.Context, client api.ControlClient, specs []string) ([]*api.SecretReference, error) {
+func buildSecretReferences(ctx context.Context, client legacy.ControlClient, specs []string) ([]*api.SecretReference, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
@@ -1049,7 +1049,7 @@ func buildSecretReferences(ctx context.Context, client api.ControlClient, specs 
 }
 
 // buildConfigReferences resolves --config values to SwarmKit config references.
-func buildConfigReferences(ctx context.Context, client api.ControlClient, specs []string) ([]*api.ConfigReference, error) {
+func buildConfigReferences(ctx context.Context, client legacy.ControlClient, specs []string) ([]*api.ConfigReference, error) {
 	if len(specs) == 0 {
 		return nil, nil
 	}
@@ -1171,7 +1171,7 @@ func inspectService(serviceID, format string, pretty bool) error {
 // inspectServiceWithClient is the body of `service inspect` with the control
 // client and output writer injected, so the rendering — including the credential
 // redaction on the JSON path — is unit-testable without a cluster.
-func inspectServiceWithClient(ctx context.Context, client api.ControlClient, w io.Writer, serviceID, format string, pretty bool) error {
+func inspectServiceWithClient(ctx context.Context, client legacy.ControlClient, w io.Writer, serviceID, format string, pretty bool) error {
 	// Resolve by full ID, unique ID prefix, or name.
 	resolvedID, err := legacy.ResolveServiceRef(ctx, client, serviceID)
 	if err != nil {
@@ -1404,7 +1404,7 @@ func listServiceTasks(serviceID, format, filter string, quiet, noTrunc bool, hea
 // listServiceTasksWithClient is the body of `service ps` with the control
 // client and output writer injected, so the table/JSON rendering is
 // unit-testable without a cluster.
-func listServiceTasksWithClient(ctx context.Context, client api.ControlClient, w io.Writer, serviceID, format, filter string, quiet, noTrunc bool, health clusterHealthOptions) error {
+func listServiceTasksWithClient(ctx context.Context, client legacy.ControlClient, w io.Writer, serviceID, format, filter string, quiet, noTrunc bool, health clusterHealthOptions) error {
 	if err := health.validate(); err != nil {
 		return err
 	}
@@ -1554,7 +1554,7 @@ func createService(opts serviceCreateOptions) error {
 // client so tests can drive it with a fake (the same pattern as
 // listServiceTasksWithClient) and assert that a failed --with-registry-auth
 // resolution sends no request.
-func createServiceWithClient(ctx context.Context, client api.ControlClient, opts serviceCreateOptions) error {
+func createServiceWithClient(ctx context.Context, client legacy.ControlClient, opts serviceCreateOptions) error {
 	// --with-registry-auth resolves the manager's credential for the image
 	// before the spec is built and before any RPC, so a missing credential is a
 	// clear, pre-create error rather than an opaque pull failure on a node.
@@ -1718,7 +1718,7 @@ func setOrDeleteLabel(spec *api.ServiceSpec, key, value string, present bool) {
 // client so tests can drive it with a fake (the same ...WithClient seam as
 // createServiceWithClient) and assert both the registry-auth ordering (no
 // update RPC before a rejected resolution) and what spec was submitted.
-func updateServiceWithClient(ctx context.Context, client api.ControlClient, serviceID string, opts serviceUpdateOptions) error {
+func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, serviceID string, opts serviceUpdateOptions) error {
 	// Container-execution flags the microVM executor cannot honour are rejected
 	// before anything else, including --rollback: their own guard names the flag
 	// and the reason, and running it ahead of the rollback branch means a
@@ -2134,7 +2134,7 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 }
 
 // applyServiceSpec submits an updated spec for an existing service.
-func applyServiceSpec(ctx context.Context, client api.ControlClient, svc *api.Service, spec *api.ServiceSpec) error {
+func applyServiceSpec(ctx context.Context, client legacy.ControlClient, svc *api.Service, spec *api.ServiceSpec) error {
 	_, err := client.UpdateService(ctx, &api.UpdateServiceRequest{
 		ServiceID:      svc.ID,
 		ServiceVersion: &svc.Meta.Version,

@@ -259,7 +259,7 @@ no-op, not an error. At least one of the two flags is required.`,
 
 // SwarmKit client helpers
 
-func getSwarmClient() (api.ControlClient, *grpc.ClientConn, error) {
+func getSwarmClient() (legacy.ControlClient, *grpc.ClientConn, error) {
 	socketPath := "/var/run/swarmkit/swarm.sock"
 	if envSocket := os.Getenv("SWARM_SOCKET"); envSocket != "" {
 		socketPath = envSocket
@@ -306,7 +306,7 @@ func getSwarmClient() (api.ControlClient, *grpc.ClientConn, error) {
 		return nil, nil, fmt.Errorf("failed to connect to swarm: %w", err)
 	}
 
-	client := api.NewControlClient(conn)
+	client := legacy.NewControlClient(conn)
 	return client, conn, nil
 }
 
@@ -326,7 +326,7 @@ func listNodes(format, filter string, quiet bool) error {
 // listNodesWithClient is the body of the legacy `--format` path with the control
 // client and output writer injected, so the table and JSON rendering is
 // testable without a cluster.
-func listNodesWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet bool) error {
+func listNodesWithClient(ctx context.Context, client legacy.ControlClient, w io.Writer, format, filter string, quiet bool) error {
 	resp, err := client.ListNodes(ctx, &api.ListNodesRequest{})
 	if err != nil {
 		return fmt.Errorf("failed to list nodes: %w", err)
@@ -589,7 +589,7 @@ func updateNodeLabels(nodeID string, add, remove []string) error {
 //
 // It revalidates the arguments rather than trusting a caller of the seam, so no
 // entry point can accept a flag it then ignores.
-func updateNodeLabelsWithClient(ctx context.Context, client api.ControlClient, w io.Writer, nodeID string, add, remove []string) error {
+func updateNodeLabelsWithClient(ctx context.Context, client legacy.ControlClient, w io.Writer, nodeID string, add, remove []string) error {
 	if err := validateLabelUpdate(add, remove); err != nil {
 		return err
 	}

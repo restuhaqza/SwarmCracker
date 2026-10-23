@@ -17,34 +17,23 @@ Success means:
 
 ## Current allowlist
 
-These files still use the raw SwarmKit control client for legacy paths:
-
-```text
-cmd_config.go
-cmd_network_admin.go
-cmd_node.go
-cmd_secret.go
-cmd_service.go
-cmd_task.go
-task_health.go
-```
-
-`pkg/client` itself is the allowed implementation boundary. `pkg/api` has no
+The allowlist is **empty**. Legacy command paths reach the raw control surface
+through `pkg/client/legacy`; `pkg/client` and `pkg/client/legacy` are the only
+packages that may reference `api.ControlClient`. `pkg/api` has no
 control-client reference and is guarded separately.
 
-## Migration order
+## Migration result
 
-1. **Read-only helpers first.** `resolve.go`, `task_health.go`, then the list
-   and inspect paths. These need client wrappers that keep raw SwarmKit fields
-   for the legacy renderers.
+1. **Read-only helpers.** `resolve.go` moved to `pkg/client/legacy`; the
+   remaining raw read paths use the `legacy.ControlClient` adapter.
 2. **Write paths.** Service create/update/scale/remove, node availability,
-   config/secret create/remove and network create/remove.
-3. **Delete the allowlist.** When the last file moves, remove the map from
-   `client_boundary_test.go`; the test then enforces an empty set.
+   config/secret create/remove and network create/remove all use the same
+   adapter.
+3. **Allowlist deleted.** `client_boundary_test.go` now enforces an empty set.
 
-Each step must keep `make api-check` and the full `cmd/swarmcracker` suite green.
-The legacy JSON shapes are frozen; wrappers may expose raw results internally,
-but no new command may import `api.ControlClient`.
+The legacy JSON shapes are frozen; the adapter exposes raw results internally,
+but no command file names `api.ControlClient`. The adapter is deleted when the
+legacy JSON output reaches its N+2 removal window.
 
 ## Verification
 

@@ -166,7 +166,7 @@ func listTasks(format, filter string, quiet, all, noTrunc bool, node, serviceID 
 // listTasksWithClient is the body of `task ls` with the control client and
 // output writer injected, so the table/JSON rendering is unit-testable without
 // a cluster.
-func listTasksWithClient(ctx context.Context, client api.ControlClient, w io.Writer, format, filter string, quiet, all, noTrunc bool, node, serviceID string, health clusterHealthOptions) error {
+func listTasksWithClient(ctx context.Context, client legacy.ControlClient, w io.Writer, format, filter string, quiet, all, noTrunc bool, node, serviceID string, health clusterHealthOptions) error {
 	if err := health.validate(); err != nil {
 		return err
 	}
@@ -332,7 +332,7 @@ func inspectTask(taskID, format string, pretty bool) error {
 // inspectTaskWithClient is the body of `task inspect` with the control client
 // and output writer injected, so the rendering is unit-testable without a
 // cluster.
-func inspectTaskWithClient(ctx context.Context, client api.ControlClient, w io.Writer, taskID, format string, pretty bool) error {
+func inspectTaskWithClient(ctx context.Context, client legacy.ControlClient, w io.Writer, taskID, format string, pretty bool) error {
 	resolvedID, err := legacy.ResolveTaskRef(ctx, client, taskID)
 	if err != nil {
 		return err
@@ -395,7 +395,7 @@ func healthDurationString(d *gogotypes.Duration) string {
 
 // getSwarmClientForTask creates a SwarmKit client connection
 // Note: This is a duplicate of getSwarmClient to avoid import conflicts
-func getSwarmClientForTask() (api.ControlClient, *grpc.ClientConn, error) {
+func getSwarmClientForTask() (legacy.ControlClient, *grpc.ClientConn, error) {
 	socketPath := "/var/run/swarmkit/swarm.sock"
 	if envSocket := os.Getenv("SWARM_SOCKET"); envSocket != "" {
 		socketPath = envSocket
@@ -441,6 +441,6 @@ func getSwarmClientForTask() (api.ControlClient, *grpc.ClientConn, error) {
 		return nil, nil, fmt.Errorf("failed to connect to swarm: %w", err)
 	}
 
-	client := api.NewControlClient(conn)
+	client := legacy.NewControlClient(conn)
 	return client, conn, nil
 }
