@@ -106,6 +106,7 @@ secrets
 
 # Source files whose names match the secret patterns above.
 !cmd/swarmcracker/cmd_secret.go
+!pkg/api/v1/secret.go
 !pkg/swarmkit/secrets/
 !pkg/swarmkit/secrets/**
 
