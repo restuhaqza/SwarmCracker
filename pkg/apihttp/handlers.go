@@ -152,9 +152,15 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		task, err = s.taskWithHealth(r.Context(), task)
 		if err != nil {
 			// A single-task read cannot report a partial, so a node it cannot
-			// reach makes the read unavailable.
-			s.writeError(w, r, output.NewErrorf(output.CodeUnavailable,
-				"health is unavailable for task %q", task.ID))
+			// reach makes the read unavailable. The node ID still travels in
+			// details, exactly as it does on a list partial, so a caller that
+			// handles both shapes reads the same key.
+			failure := output.NewErrorf(output.CodeUnavailable,
+				"health is unavailable for task %q", task.ID)
+			if task.NodeID != "" {
+				failure = failure.WithDetails(map[string]any{"nodeId": task.NodeID})
+			}
+			s.writeError(w, r, failure)
 			return
 		}
 	}

@@ -11,8 +11,9 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-// defaultBrokerListen is the broker's cluster-wide port. The manager derives
-// the same port from the node address, so this is the only place it is chosen.
+// defaultBrokerListen is the broker's cluster-wide port. The manager always
+// dials its own fixed port (broker defaultPort) and ignores any port in the
+// node's advertised address, so both sides must agree on 4245.
 const defaultBrokerListen = "0.0.0.0:4245"
 
 // brokerRuntime holds the daemon's node broker settings.

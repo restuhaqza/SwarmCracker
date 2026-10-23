@@ -348,6 +348,8 @@ func TestGetTaskHealthBrokerFailureIs503(t *testing.T) {
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
 	doc := decodeErrorBody(t, rec)
 	require.Equal(t, string(output.CodeUnavailable), doc.Error.Code)
+	require.Equal(t, "node-1", doc.Error.Details["nodeId"],
+		"the single-task 503 names the node, like a list partial")
 	require.Nil(t, doc.Error.Details["partial"])
 	require.NotContains(t, rec.Body.String(), "10.0.0.5",
 		"the public error must not expose an internal address")

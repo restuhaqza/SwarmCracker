@@ -733,10 +733,14 @@ health:
 |------|---------|-------------|
 | `--broker-listen` | `0.0.0.0:4245` | mTLS listen address for the node broker; empty disables it |
 
-The manager derives the same port from the node address, so a manager and its
-nodes must agree on `4245` (or the node's advertised address must carry the
-broker port). A node without a broker still serves the read API, but the
-manager's exec, logs, files and health relay answers `503 unavailable`.
+The manager always dials the fixed broker port `4245` and ignores any port in a
+node's advertised address — the address is reduced to its host and `4245` is
+joined back on. A manager and its nodes must therefore agree on `4245`;
+advertising `node:9999` at registration does not move the broker. A node
+without a broker still serves the read API, but the manager's relay to it
+fails: exec, logs and files answer `503 unavailable`, a single-task health read
+answers `503 unavailable`, and a health-enriched task list answers `207 partial`
+with that node in `partial`.
 
 These flags belong to `swarmd-firecracker`. Defaults follow `--state-dir`, so
 moving the state directory moves the socket, certificate and token store with it.
