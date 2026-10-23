@@ -1,9 +1,12 @@
 package broker
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -23,6 +26,19 @@ const (
 	// brokerScheme is the only scheme the broker uses. There is no plain-HTTP
 	// fallback.
 	brokerScheme = "https"
+
+	// publicMediaType and publicAPIVersion are the public envelope's type and
+	// version. They are duplicated here rather than imported so the broker does
+	// not depend on pkg/apihttp (whose Broker interface points back at Manager).
+	publicMediaType  = "application/vnd.swarmcracker.v1+json"
+	publicAPIVersion = "1"
+	apiVersionHeader = "X-SwarmCracker-Api-Version"
+	requestIDHeader  = "X-Request-Id"
+
+	// maxRelayedErrorBytes bounds an error body the manager decodes. A broker
+	// error document is far smaller; the cap stops a hostile node from making
+	// the manager buffer an unbounded body.
+	maxRelayedErrorBytes = 1 << 20
 )
 
 // operationPattern is the shape of an operation segment. Anything else (an
@@ -46,14 +62,19 @@ type ManagerConfig struct {
 	Nodes  NodeReader
 	Port   int          // default 4245
 	Client *http.Client // required; transport must carry the cluster mTLS config
+	// ErrorWriter renders a transport failure as the caller's error envelope.
+	// The public handler passes apihttp.WriteError so a public caller gets the
+	// v1 media type and its request ID; nil keeps the internal v1 default.
+	ErrorWriter func(w http.ResponseWriter, r *http.Request, err error)
 }
 
 // Manager resolves a task to its node and proxies a caller's request there.
 type Manager struct {
-	tasks     TaskReader
-	nodes     NodeReader
-	port      int
-	transport http.RoundTripper
+	tasks       TaskReader
+	nodes       NodeReader
+	port        int
+	transport   http.RoundTripper
+	errorWriter func(w http.ResponseWriter, r *http.Request, err error)
 }
 
 // Route is one resolved task-to-node destination inside the cluster.
@@ -91,10 +112,11 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	}
 
 	return &Manager{
-		tasks:     cfg.Tasks,
-		nodes:     cfg.Nodes,
-		port:      port,
-		transport: transport,
+		tasks:       cfg.Tasks,
+		nodes:       cfg.Nodes,
+		port:        port,
+		transport:   transport,
+		errorWriter: cfg.ErrorWriter,
 	}, nil
 }
 
@@ -176,16 +198,76 @@ func (m *Manager) Proxy(ctx context.Context, w http.ResponseWriter, r *http.Requ
 			pr.Out.Header.Del("Cookie")
 			pr.SetXForwarded()
 		},
-		ErrorHandler: func(rw http.ResponseWriter, _ *http.Request, _ error) {
+		// A node error is an internal document; rewrite it as the public one so
+		// the caller never sees application/json or a missing requestId. A
+		// successful stream is not an error document and is left byte-for-byte
+		// intact.
+		ModifyResponse: rewriteRelayedError,
+		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, _ error) {
 			// The underlying transport error can name an internal address, so
-			// the document stays stable and a later public handler decides what
+			// the document stays stable and the configured writer decides what
 			// the caller is told.
-			writeError(rw, http.StatusServiceUnavailable, codeUnreachable,
-				"node %q broker is unreachable", route.Node.ID)
+			m.writeProxyError(rw, req, output.NewErrorf(codeUnreachable,
+				"node %q broker is unreachable", route.Node.ID))
 		},
 	}
 
 	proxy.ServeHTTP(w, r.WithContext(ctx))
+	return nil
+}
+
+// writeProxyError renders a transport failure with the configured public error
+// writer, or with the internal v1 document when none is set.
+func (m *Manager) writeProxyError(w http.ResponseWriter, r *http.Request, err *output.Error) {
+	if m.errorWriter != nil {
+		m.errorWriter(w, r, err)
+		return
+	}
+	writeTypedError(w, http.StatusServiceUnavailable, err)
+}
+
+// rewriteRelayedError converts an internal node error document into the public
+// envelope: the v1 media type, the API version header and the caller's request
+// ID. Only a 4xx/503 v1 Error document is touched; anything else (an NDJSON
+// stream, an HTML error from a proxy, an empty body) is passed through.
+func rewriteRelayedError(resp *http.Response) error {
+	if resp.StatusCode != http.StatusNotFound &&
+		resp.StatusCode != http.StatusNotImplemented &&
+		resp.StatusCode != http.StatusServiceUnavailable {
+		return nil
+	}
+	if resp.Body == nil {
+		return nil
+	}
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxRelayedErrorBytes+1))
+	_ = resp.Body.Close()
+	// Restore a readable body before returning: ReverseProxy owns the copy of
+	// whatever is left here.
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if readErr != nil || len(body) > maxRelayedErrorBytes {
+		return nil //nolint:nilerr // the original body is forwarded unchanged
+	}
+
+	var doc v1.ErrorDocument
+	if err := json.Unmarshal(body, &doc); err != nil || doc.Kind != v1.KindError {
+		return nil //nolint:nilerr // not a v1 error document: pass it through
+	}
+	if doc.Error.RequestID == "" && resp.Request != nil {
+		doc.Error.RequestID = resp.Request.Header.Get(requestIDHeader)
+	}
+
+	rewritten, err := encodeDocument(doc)
+	if err != nil {
+		return nil //nolint:nilerr // leave the original body in place
+	}
+
+	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+	resp.ContentLength = int64(len(rewritten))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+	resp.Header.Set("Content-Type", publicMediaType)
+	resp.Header.Set("X-Content-Type-Options", "nosniff")
+	resp.Header.Set(apiVersionHeader, publicAPIVersion)
 	return nil
 }
 

@@ -58,6 +58,13 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		return nil, nil, err
 	}
 
+	// Exec is the first operation the node serves. The handler dials the task's
+	// guest agent over the vsock muxer; the public route has already resolved
+	// the reference and enforced the caller's selectors.
+	if err := srv.Handle("exec", broker.NewExecHandler(broker.DialAgent)); err != nil {
+		return nil, nil, err
+	}
+
 	lis, err := srv.Listen()
 	if err != nil {
 		return nil, nil, err

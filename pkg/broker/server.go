@@ -223,7 +223,12 @@ func splitTaskPath(path string) (taskID, op string, ok bool) {
 // output.Error.Document wraps the payload in v1.NewErrorDocument with the
 // code's retry semantics.
 func writeError(w http.ResponseWriter, status int, code output.Code, format string, args ...any) {
-	body, err := encodeDocument(output.NewErrorf(code, format, args...).Document())
+	writeTypedError(w, status, output.NewErrorf(code, format, args...))
+}
+
+// writeTypedError is writeError for an error that already carries details.
+func writeTypedError(w http.ResponseWriter, status int, typed *output.Error) {
+	body, err := encodeDocument(typed.Document())
 	if err != nil {
 		body = []byte(`{"schemaVersion":1,"kind":"Error","error":{"code":"internal","message":"encode error","retryable":false}}`)
 	}

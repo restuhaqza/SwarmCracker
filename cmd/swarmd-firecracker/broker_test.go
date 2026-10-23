@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -8,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
@@ -15,9 +17,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v2"
@@ -206,4 +211,91 @@ func TestStartBroker_ServesMTLSAndStops(t *testing.T) {
 	client.CloseIdleConnections()
 	_, err = client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/health")
 	require.Error(t, err, "the stop function must shut the broker down")
+}
+
+// fakeVsockAgent speaks enough of the Firecracker vsock muxer and guest-agent
+// protocol to answer one exec. It lets the daemon test prove the exec operation
+// is registered and streams without a real microVM.
+func fakeVsockAgent(t *testing.T, ln net.Listener, stdout string, code int) {
+	t.Helper()
+
+	conn, err := ln.Accept()
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+
+	reader := bufio.NewReader(conn)
+	if _, err := reader.ReadString('\n'); err != nil {
+		return
+	}
+	if _, err := io.WriteString(conn, "OK 1\n"); err != nil {
+		return
+	}
+
+	var hello agent.Request
+	if _, err := agent.ReadFrame(reader, &hello); err != nil {
+		return
+	}
+	if err := agent.WriteFrame(conn, agent.Message{Type: "hello", Version: agent.Version}); err != nil {
+		return
+	}
+
+	var req agent.Request
+	if _, err := agent.ReadFrame(reader, &req); err != nil {
+		return
+	}
+	if err := agent.WriteFrame(conn, agent.Message{Type: "stdout", Data: []byte(stdout)}); err != nil {
+		return
+	}
+	_ = agent.WriteFrame(conn, agent.Message{Type: "exit", Code: &code})
+}
+
+// TestStartBroker_ExecStreamsFromTheGuest proves the node registers the exec
+// operation: an mTLS POST reaches the guest agent and comes back as NDJSON.
+func TestStartBroker_ExecStreamsFromTheGuest(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	vsockPath := filepath.Join(socketDir, "task-1.vsock")
+	ln, err := net.Listen("unix", vsockPath)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go fakeVsockAgent(t, ln, "hello from guest\n", 0)
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir}
+	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Post("https://"+srv.Addr()+"/v1/tasks/task-1/exec",
+		"application/json", strings.NewReader(`{"command":["echo","hi"]}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	require.Equal(t, "application/x-ndjson", resp.Header.Get("Content-Type"))
+
+	decoder := json.NewDecoder(resp.Body)
+	var frames []v1.ExecFrame
+	for {
+		var frame v1.ExecFrame
+		if err := decoder.Decode(&frame); err == io.EOF {
+			break
+		} else {
+			require.NoError(t, err)
+		}
+		frames = append(frames, frame)
+	}
+
+	require.Len(t, frames, 2)
+	require.Equal(t, v1.FrameStdout, frames[0].Type)
+	require.Equal(t, []byte("hello from guest\n"), frames[0].Data)
+	require.Equal(t, v1.FrameExit, frames[1].Type)
+	require.NotNil(t, frames[1].ExitCode)
+	require.Equal(t, 0, *frames[1].ExitCode)
 }

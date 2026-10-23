@@ -87,11 +87,21 @@ type Client interface {
 	WatchEvents(context.Context, v1.EventOptions) (<-chan v1.Event, <-chan error, error)
 }
 
+// Broker is the manager's node-broker transport. The public handler depends on
+// the behaviour (resolve, authorize, relay), not on pkg/broker's concrete
+// Manager, so tests can substitute one and the packages stay acyclic.
+type Broker interface {
+	Proxy(ctx context.Context, w http.ResponseWriter, r *http.Request, taskRef, op string) error
+}
+
 // Config is the server's wiring. Tokens may be nil for a Unix-socket-only
 // deployment: Handler then rejects every request, UnixHandler still works.
 type Config struct {
 	Client Client
 	Tokens *TokenStore
+	// Broker relays task-scoped operations (exec today) to the node that runs
+	// the task. A nil broker leaves those routes answering 501.
+	Broker Broker
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore
@@ -126,7 +136,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, output.NewError(output.CodeInvalid, "apihttp: Config.Client must not be nil")
 	}
 	if cfg.Capabilities == nil {
-		cfg.Capabilities = []string{"read", "write", "events"}
+		cfg.Capabilities = []string{"read", "write", "events", "exec"}
 	}
 	if cfg.EventHeartbeat <= 0 {
 		cfg.EventHeartbeat = defaultEventHeartbeat
@@ -171,6 +181,10 @@ func (s *Server) routes() {
 
 	s.handleRoutes("/v1/tasks", read(ScopeTasksRead, s.listTasks))
 	s.handleRoutes("/v1/tasks/{id}", read(ScopeTasksRead, s.getTask))
+	// Exec is a stream, not a JSON document: it must not pass through the
+	// Idempotency-Key middleware, which buffers a response to replay it.
+	s.handleRoutes("/v1/tasks/{id}/exec",
+		streamPost(ScopeTasksExec, s.execTask))
 
 	s.handleRoutes("/v1/nodes",
 		read(ScopeNodesRead, s.listNodes),
@@ -222,6 +236,9 @@ type route struct {
 	method string
 	scope  Scope
 	handle http.HandlerFunc
+	// streaming marks a route whose response is a stream. It opts out of the
+	// Idempotency-Key middleware, which buffers a whole response to replay it.
+	streaming bool
 }
 
 // read registers a GET route.
@@ -236,6 +253,12 @@ func write(method string, scope Scope, h http.HandlerFunc) route {
 	return route{method: method, scope: scope, handle: h}
 }
 
+// streamPost registers a POST whose response is streamed rather than a single
+// document. It is the only route that skips the Idempotency-Key middleware.
+func streamPost(scope Scope, h http.HandlerFunc) route {
+	return route{method: http.MethodPost, scope: scope, handle: h, streaming: true}
+}
+
 // handleRoutes registers every method of one path plus the typed method
 // rejection for the rest.
 //
@@ -247,7 +270,7 @@ func (s *Server) handleRoutes(pattern string, routes ...route) {
 	methods := make([]string, 0, len(routes))
 	for _, rt := range routes {
 		handler := rt.handle
-		if rt.method == http.MethodPost {
+		if rt.method == http.MethodPost && !rt.streaming {
 			// A POST is a create or a rollback: the only routes an
 			// Idempotency-Key can protect. Auth and scope run first, so an
 			// unauthorized request never reserves a key.
@@ -494,6 +517,15 @@ func (s *Server) writeJSONWithETag(w http.ResponseWriter, r *http.Request, statu
 	_, _ = w.Write(body)
 }
 
+// WriteError writes one public v1 error document with the status implied by its
+// code, using the request ID the middleware stored on the request. It is
+// exported for the broker manager's ErrorWriter hook: a transport failure is
+// detected inside the proxy, but the public envelope belongs to this package.
+func WriteError(w http.ResponseWriter, r *http.Request, err error) {
+	typed := typedError(err)
+	writeErrorDocument(w, r, statusForCode(typed.Code), typed)
+}
+
 // writeError writes one typed error document with the status implied by its
 // code. Every failure carries the same request ID that the middleware put in
 // X-Request-Id.
@@ -505,8 +537,12 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 // writeErrorStatus writes a typed error document with an explicit status, for
 // failures whose status the taxonomy cannot infer (405).
 func (s *Server) writeErrorStatus(w http.ResponseWriter, r *http.Request, status int, err error) {
-	typed := typedError(err)
+	writeErrorDocument(w, r, status, typedError(err))
+}
 
+// writeErrorDocument renders one typed failure. It is the only place the v1
+// error envelope is built for the public server.
+func writeErrorDocument(w http.ResponseWriter, r *http.Request, status int, typed *output.Error) {
 	// Copy rather than mutate: the same *output.Error value may be shared by
 	// many requests (a client's sentinel error, for example).
 	payload := v1.Error{

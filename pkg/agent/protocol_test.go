@@ -46,6 +46,31 @@ func TestWriteReadFrameRoundTripRequest(t *testing.T) {
 	assert.Equal(t, req, got)
 }
 
+// TestMessageSignalRoundTrip proves an exit frame can carry a terminating
+// signal, and that a normal exit omits it.
+func TestMessageSignalRoundTrip(t *testing.T) {
+	signal := 9
+	code := 137
+	var buf bytes.Buffer
+	require.NoError(t, WriteFrame(&buf, Message{Type: "exit", Code: &code, Signal: &signal}))
+
+	var msg Message
+	_, err := ReadFrame(&buf, &msg)
+	require.NoError(t, err)
+	require.NotNil(t, msg.Code)
+	require.NotNil(t, msg.Signal)
+	assert.Equal(t, 137, *msg.Code)
+	assert.Equal(t, 9, *msg.Signal)
+
+	buf.Reset()
+	code = 0
+	require.NoError(t, WriteFrame(&buf, Message{Type: "exit", Code: &code}))
+	msg = Message{}
+	_, err = ReadFrame(&buf, &msg)
+	require.NoError(t, err)
+	assert.Nil(t, msg.Signal, "a normal exit must not carry a signal")
+}
+
 func TestReadFrameRejectsZeroLength(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, binary.Write(&buf, binary.BigEndian, uint32(0)))

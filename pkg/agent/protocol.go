@@ -48,7 +48,10 @@ type Message struct {
 	Version string `json:"version,omitempty"`
 	Data    []byte `json:"data,omitempty"`
 	Code    *int   `json:"code,omitempty"`
-	Error   string `json:"error,omitempty"`
+	// Signal is set on an exit frame when the guest process was terminated by a
+	// signal. A normal exit omits it.
+	Signal *int   `json:"signal,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 // WriteFrame marshals v as JSON and writes it to w prefixed by a 4-byte

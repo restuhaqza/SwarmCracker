@@ -202,7 +202,7 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
 	require.Equal(t, Version, doc.ServerVersion)
 	require.Equal(t, apiversion.Current, doc.GRPCProtocolVersion)
-	require.Equal(t, []string{"read", "write", "events"}, doc.Capabilities)
+	require.Equal(t, []string{"read", "write", "events", "exec"}, doc.Capabilities)
 	// The stub control socket is unreachable, so there is no cluster ID yet;
 	// the version probe must answer anyway.
 	require.Empty(t, doc.ClusterID)
@@ -356,4 +356,31 @@ func seedNodeCertificates(t *testing.T, stateDir string) {
 	require.NoError(t, os.WriteFile(filepath.Join(certDir, "swarm-node.crt"), certPEM, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(certDir, "swarm-node.key"), keyPEM, 0o600))
 	require.NoError(t, os.WriteFile(filepath.Join(certDir, "swarm-root-ca.crt"), certPEM, 0o644))
+}
+
+// fakeBrokerSources satisfies the broker's task and node readers without a
+// SwarmKit cluster.
+type fakeBrokerSources struct{}
+
+func (fakeBrokerSources) GetTask(context.Context, string) (v1.Task, error) {
+	return v1.Task{}, errors.New("not used")
+}
+
+func (fakeBrokerSources) GetNode(context.Context, string) (v1.Node, error) {
+	return v1.Node{}, errors.New("not used")
+}
+
+// TestNewBrokerManager_RequiresClusterTLS pins that the manager-side broker is
+// built from the node's cluster identity and is optional when the material is
+// unavailable (the API still serves, exec answers 501).
+func TestNewBrokerManager_RequiresClusterTLS(t *testing.T) {
+	_, err := newBrokerManager(t.TempDir(), fakeBrokerSources{}, fakeBrokerSources{})
+	require.Error(t, err, "without certificate material there is no broker manager")
+
+	stateDir := testhelpers.ShortTempDir(t)
+	seedNodeCertificates(t, stateDir)
+
+	mgr, err := newBrokerManager(stateDir, fakeBrokerSources{}, fakeBrokerSources{})
+	require.NoError(t, err)
+	require.NotNil(t, mgr)
 }

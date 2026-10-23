@@ -362,6 +362,132 @@ func TestManagerProxyReturnsResolveErrors(t *testing.T) {
 	require.Empty(t, rec.Body.String())
 }
 
+// TestManagerProxyRewritesRelayedNodeErrors proves the Task 17 parked finding:
+// a node error relayed through the manager carries the public media type, the
+// API version header and the caller's request ID.
+func TestManagerProxyRewritesRelayedNodeErrors(t *testing.T) {
+	pki := newTestPKI(t)
+
+	cases := []struct {
+		status int
+		code   output.Code
+	}{
+		{http.StatusNotFound, codeNotFound},
+		{http.StatusNotImplemented, codeNotImplemented},
+		{http.StatusServiceUnavailable, codeUnavailable},
+	}
+
+	for _, tc := range cases {
+		t.Run(string(tc.code), func(t *testing.T) {
+			src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+			_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+				"exec": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+					writeError(w, tc.status, tc.code, "node says no")
+				},
+			})
+
+			host, port := brokerTarget(t, baseURL)
+			mgr := newTestManager(t,
+				&stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+				&stubNodeReader{node: v1.Node{ID: "node-1", Address: host}},
+				port,
+				pki.httpClient(),
+			)
+
+			req := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-ref/exec", nil)
+			req.Header.Set("X-Request-Id", "req_abc123def456")
+			rec := httptest.NewRecorder()
+			require.NoError(t, mgr.Proxy(context.Background(), rec, req, "task-ref", "exec"))
+
+			require.Equal(t, tc.status, rec.Code)
+			require.Equal(t, publicMediaType, rec.Header().Get("Content-Type"))
+			require.Equal(t, publicAPIVersion, rec.Header().Get(apiVersionHeader))
+
+			doc := decodeErrorDocument(t, rec.Body)
+			require.Equal(t, string(tc.code), doc.Error.Code)
+			require.Equal(t, "req_abc123def456", doc.Error.RequestID,
+				"the relayed error must carry the caller's request ID")
+		})
+	}
+}
+
+// TestManagerProxyLeavesSuccessStreamsUntouched proves ModifyResponse only
+// rewrites error documents: a 200 NDJSON stream keeps its media type and bytes.
+func TestManagerProxyLeavesSuccessStreamsUntouched(t *testing.T) {
+	pki := newTestPKI(t)
+
+	const body = "{\"type\":\"stdout\",\"data\":\"aGkK\"}\n{\"type\":\"exit\",\"exitCode\":0}\n"
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"exec": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/x-ndjson")
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, body)
+		},
+	})
+
+	host, port := brokerTarget(t, baseURL)
+	mgr := newTestManager(t,
+		&stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+		&stubNodeReader{node: v1.Node{ID: "node-1", Address: host}},
+		port,
+		pki.httpClient(),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-ref/exec", nil)
+	req.Header.Set("X-Request-Id", "req_abc123def456")
+	rec := httptest.NewRecorder()
+	require.NoError(t, mgr.Proxy(context.Background(), rec, req, "task-ref", "exec"))
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "application/x-ndjson", rec.Header().Get("Content-Type"))
+	require.Equal(t, body, rec.Body.String())
+}
+
+// TestManagerProxyUsesErrorWriterForTransportFailures proves the public handler
+// owns the envelope: a nil hook keeps the internal default, and a configured
+// hook receives a typed unreachable failure.
+func TestManagerProxyUsesErrorWriterForTransportFailures(t *testing.T) {
+	port := freePort(t)
+
+	type observed struct {
+		called bool
+		code   output.Code
+		req    *http.Request
+	}
+	got := observed{}
+
+	mgr, err := NewManager(ManagerConfig{
+		Tasks:  &stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+		Nodes:  &stubNodeReader{node: v1.Node{ID: "node-1", Address: "127.0.0.1"}},
+		Port:   port,
+		Client: &http.Client{Transport: &http.Transport{}},
+		ErrorWriter: func(w http.ResponseWriter, r *http.Request, err error) {
+			got.called = true
+			got.req = r
+			var typed *output.Error
+			require.ErrorAs(t, err, &typed)
+			got.code = typed.Code
+			w.Header().Set("Content-Type", publicMediaType)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, `{"schemaVersion":1,"kind":"Error","error":{"code":"unreachable","message":"x","retryable":true}}`)
+		},
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-ref/exec", nil)
+	rec := httptest.NewRecorder()
+	require.NoError(t, mgr.Proxy(context.Background(), rec, req, "task-ref", "exec"),
+		"a transport failure is rendered by Proxy, not returned")
+
+	require.True(t, got.called, "ManagerConfig.ErrorWriter must render the failure")
+	require.Equal(t, output.CodeUnreachable, got.code)
+	require.NotNil(t, got.req)
+	require.Equal(t, publicMediaType, rec.Header().Get("Content-Type"))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code)
+}
+
 // TestManagerProxyStreamsFlushedChunks proves FlushInterval: -1: the handler
 // sets a Content-Length and flushes the first chunk, then waits. A buffering
 // proxy would never deliver the first chunk before the handler returns.

@@ -45,6 +45,31 @@ func exitCode(err error) int {
 	return -1
 }
 
+// signalExitBase is the shell convention for a signal-terminated process.
+const signalExitBase = 128
+
+// exitStatus maps a cmd.Wait error to the pair the exit frame carries: the
+// process status and, when it was killed, the terminating signal. A signalled
+// process reports 128+signal, matching a POSIX shell.
+func exitStatus(err error) (code, signal int) {
+	code = exitCode(err)
+	signal = exitSignal(err)
+	if signal > 0 {
+		code = signalExitBase + signal
+	}
+	return code, signal
+}
+
+// exitMessage builds the terminal frame for a finished command.
+func exitMessage(waitErr error) Message {
+	code, signal := exitStatus(waitErr)
+	msg := Message{Type: "exit", Code: &code}
+	if signal > 0 {
+		msg.Signal = &signal
+	}
+	return msg
+}
+
 // messageWriter streams process output to the client as frames of one type.
 type messageWriter struct {
 	s   *server
@@ -74,8 +99,7 @@ func (s *server) runNonTTY(req *Request) error {
 	}
 	// Wait also waits for the goroutines os/exec spawns to copy output into the
 	// writers above, so every output frame precedes the exit frame.
-	code := exitCode(cmd.Wait())
-	return s.write(Message{Type: "exit", Code: &code})
+	return s.write(exitMessage(cmd.Wait()))
 }
 
 // runTTY runs the command attached to a pseudo-terminal. A TTY merges stderr
@@ -118,8 +142,7 @@ func (s *server) runTTY(req *Request) error {
 	}
 
 	streamFrames(s, master, "stdout")
-	code := exitCode(cmd.Wait())
-	return s.write(Message{Type: "exit", Code: &code})
+	return s.write(exitMessage(cmd.Wait()))
 }
 
 // streamFrames copies r to the client as frames of the given type until EOF or

@@ -246,36 +246,57 @@ func (c *Client) pumpStdin(r io.Reader, done <-chan struct{}) {
 	}
 }
 
+// ExecResult is the outcome of one guest command: its exit status and, when the
+// process was terminated by a signal, that signal.
+type ExecResult struct {
+	ExitCode int
+	Signal   int
+}
+
 // Exec runs cmd in the guest and streams its output to the writers in opts. It
 // returns the guest process exit code. A guest-side failure (for example an
 // unknown binary) is reported as an error, not an exit code.
 //
+// It is the single-shot wrapper around ExecStatus, kept for callers that only
+// need the status.
+func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int, error) {
+	result, err := c.ExecStatus(ctx, cmd, opts)
+	if err != nil {
+		return 0, err
+	}
+	return result.ExitCode, nil
+}
+
+// ExecStatus is Exec with the terminating signal preserved. A signal-terminated
+// guest reports ExitCode 128+signal and Signal set; a normal exit reports
+// Signal 0.
+//
 // Stdin forwarding is only supported for TTY sessions: opts.Stdin non-nil with
 // opts.TTY false returns an error, because the protocol carries no stdin frame
 // for non-TTY commands. When opts.Stdin is set, the bytes are written raw to the
-// connection under the client's write mutex, and the pump stops when Exec
+// connection under the client's write mutex, and the pump stops when ExecStatus
 // returns.
 //
 // A TTY exec always consumes the client: the guest ends the session after it
 // (raw stdin shares the stream with framed requests), so the connection cannot
-// be reused. Any later Exec/CopyTo/CopyFrom fails with errConsumed. A non-TTY
-// exec leaves the client usable.
-func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int, error) {
+// be reused. Any later Exec/ExecStatus/CopyTo/CopyFrom fails with errConsumed.
+// A non-TTY exec leaves the client usable.
+func (c *Client) ExecStatus(ctx context.Context, cmd []string, opts ExecOptions) (ExecResult, error) {
 	if c.consumed {
-		return 0, errConsumed
+		return ExecResult{}, errConsumed
 	}
 	if len(cmd) == 0 {
-		return 0, fmt.Errorf("exec: empty command")
+		return ExecResult{}, fmt.Errorf("exec: empty command")
 	}
 	if opts.Stdin != nil && !opts.TTY {
-		return 0, fmt.Errorf("stdin forwarding requires a TTY")
+		return ExecResult{}, fmt.Errorf("stdin forwarding requires a TTY")
 	}
 	stop := c.watchContext(ctx)
 	defer stop()
 
 	req := Request{Op: "exec", Command: cmd, TTY: opts.TTY, Env: opts.Env, WorkDir: opts.WorkDir}
 	if err := c.write(req); err != nil {
-		return 0, fmt.Errorf("exec: send request: %w", err)
+		return ExecResult{}, fmt.Errorf("exec: send request: %w", err)
 	}
 	if opts.TTY {
 		// The guest ends the connection after a TTY exec, so the client is no
@@ -291,32 +312,43 @@ func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int,
 	for {
 		var msg Message
 		if _, err := ReadFrame(c.conn, &msg); err != nil {
-			return 0, fmt.Errorf("exec: read frame: %w", err)
+			return ExecResult{}, fmt.Errorf("exec: read frame: %w", err)
 		}
 		switch msg.Type {
 		case "stdout":
 			if opts.Stdout != nil {
 				if _, err := opts.Stdout.Write(msg.Data); err != nil {
-					return 0, fmt.Errorf("exec: write stdout: %w", err)
+					return ExecResult{}, fmt.Errorf("exec: write stdout: %w", err)
 				}
 			}
 		case "stderr":
 			if opts.Stderr != nil {
 				if _, err := opts.Stderr.Write(msg.Data); err != nil {
-					return 0, fmt.Errorf("exec: write stderr: %w", err)
+					return ExecResult{}, fmt.Errorf("exec: write stderr: %w", err)
 				}
 			}
 		case "exit":
-			if msg.Code == nil {
-				return 0, fmt.Errorf("exec: exit frame missing code")
-			}
-			return *msg.Code, nil
+			return exitResult(msg)
 		case "error":
-			return 0, fmt.Errorf("exec: %s", msg.Error)
+			return ExecResult{}, fmt.Errorf("exec: %s", msg.Error)
 		default:
-			return 0, fmt.Errorf("exec: unexpected message type %q", msg.Type)
+			return ExecResult{}, fmt.Errorf("exec: unexpected message type %q", msg.Type)
 		}
 	}
+}
+
+// exitResult converts an exit frame into the caller's result. A signal wins over
+// the frame's code: the guest may report 128+N, and the client recomputes it so
+// both agree even with an older guest.
+func exitResult(msg Message) (ExecResult, error) {
+	if msg.Signal != nil && *msg.Signal > 0 {
+		signal := *msg.Signal
+		return ExecResult{ExitCode: signalExitBase + signal, Signal: signal}, nil
+	}
+	if msg.Code == nil {
+		return ExecResult{}, fmt.Errorf("exec: exit frame missing code")
+	}
+	return ExecResult{ExitCode: *msg.Code}, nil
 }
 
 // CopyTo streams src to guestPath with the given mode (0644 when mode is 0).

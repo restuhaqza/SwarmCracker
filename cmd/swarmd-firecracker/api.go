@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/moby/swarmkit/v2/node"
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/apiversion"
+	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
 )
 
@@ -116,15 +118,27 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	}
 	idCancel()
 
+	// Exec is relayed through the manager-side broker. It reuses the node's
+	// cluster certificate, the same identity the ingress mesh uses, so no user
+	// token ever travels to a node. When the material is unavailable the API
+	// still starts; exec then answers a typed 501 instead of failing startup.
+	var apiBroker apihttp.Broker
+	if mgr, brokerErr := newBrokerManager(stateDir, c, c); brokerErr != nil {
+		log.G(ctx).WithError(brokerErr).Warn("Programmatic API: exec disabled (node broker manager unavailable)")
+	} else {
+		apiBroker = mgr
+	}
+
 	srv, err := apihttp.New(apihttp.Config{
 		Client:        c,
+		Broker:        apiBroker,
 		Tokens:        store,
 		Audit:         audit,
 		CertDir:       cfg.certDir,
 		ServerVersion: Version,
 		GRPCVersion:   apiversion.Current,
 		ClusterID:     clusterID,
-		Capabilities:  []string{"read", "write", "events"},
+		Capabilities:  []string{"read", "write", "events", "exec"},
 		RateLimit:     apihttp.NewRateLimiter(cfg.rateLimit, cfg.rateBurst),
 	})
 	if err != nil {
@@ -200,4 +214,32 @@ func apiCertHosts(tcpAddr string) []string {
 		return nil
 	}
 	return []string{host}
+}
+
+// newBrokerManager builds the manager side of the node broker: the transport
+// that carries exec from the public API to the node running a task.
+//
+// It authenticates with the node's cluster certificate, so the node broker sees
+// the manager's cluster identity and never a public bearer token. The public
+// error hook is apihttp.WriteError, which is the only writer that knows the
+// caller's request ID and the v1 media type.
+func newBrokerManager(stateDir string, tasks broker.TaskReader, nodes broker.NodeReader) (*broker.Manager, error) {
+	cert, caPool, err := loadIngressTLS(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("node broker: %w", err)
+	}
+
+	transport := &http.Transport{
+		TLSClientConfig:     clientTLSConfig(cert, caPool),
+		MaxIdleConns:        16,
+		IdleConnTimeout:     90 * time.Second,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+
+	return broker.NewManager(broker.ManagerConfig{
+		Tasks:       tasks,
+		Nodes:       nodes,
+		Client:      &http.Client{Transport: transport},
+		ErrorWriter: apihttp.WriteError,
+	})
 }

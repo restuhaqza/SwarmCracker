@@ -15,13 +15,24 @@
 //
 // {taskID} is a full task ID, never a name or a prefix; the manager resolves
 // user input before proxying. {op} is one of the lowercase operation names a
-// later phase registers on the node (exec, logs, files, health). Anything else
-// is a 404. An unregistered operation on a known task is a 501.
+// later phase registers on the node. A malformed path or an unknown task is a
+// 404; a known task with an unregistered operation is a 501.
 //
 // Failures the broker generates itself are v1 Error documents, so a manager
 // handler can relay them without translating: not_found (404), not_implemented
 // (501), unavailable (503, a task-source failure) and unreachable (503, the
 // manager could not reach the node).
+//
+// On the way back to a public caller the manager rewrites a relayed 404, 501 or
+// 503 Error document into the public envelope (the v1 media type, the API
+// version header and the caller's requestId). A successful response — including
+// the NDJSON exec stream — is forwarded byte for byte.
+//
+// # Operations
+//
+// Exec is served today (non-interactive only). Interactive TTY over the API is
+// a WebSocket follow-up, so a tty request is a typed 501 with
+// details.reason "tty_not_supported".
 //
 // # Trust
 //
