@@ -44,7 +44,7 @@ func (c *Client) CreateService(ctx context.Context, write v1.ServiceWrite, opts 
 		return v1.Service{}, err
 	}
 
-	spec, err := c.buildServiceSpec(ctx, write)
+	spec, err := c.buildServiceSpec(ctx, write, opts.AllowBindMounts)
 	if err != nil {
 		return v1.Service{}, err
 	}
@@ -89,8 +89,14 @@ func (c *Client) UpdateService(ctx context.Context, ref string, patch []byte, op
 	if err != nil {
 		return v1.Service{}, err
 	}
+	if len(decoded) == 0 {
+		// An empty merge patch changes nothing. Answering the current document
+		// without an UpdateService call keeps a reconciler that sends {} every
+		// loop from churning revisions and PreviousSpec.
+		return serviceFromSwarmkit(current, taskCounts{}), nil
+	}
 	spec := current.Spec.Copy()
-	if err := c.applyServicePatch(ctx, spec, decoded); err != nil {
+	if err := c.applyServicePatch(ctx, spec, decoded, opts.AllowBindMounts); err != nil {
 		return v1.Service{}, err
 	}
 
@@ -396,7 +402,7 @@ func isNotFound(err error) bool {
 }
 
 // buildServiceSpec maps the wire DTO to a new SwarmKit spec.
-func (c *Client) buildServiceSpec(ctx context.Context, write v1.ServiceWrite) (*api.ServiceSpec, error) {
+func (c *Client) buildServiceSpec(ctx context.Context, write v1.ServiceWrite, allowBindMounts bool) (*api.ServiceSpec, error) {
 	name := strings.TrimSpace(write.Name)
 	if name == "" {
 		return nil, invalidField("name", "must not be empty")
@@ -413,7 +419,7 @@ func (c *Client) buildServiceSpec(ctx context.Context, write v1.ServiceWrite) (*
 		return nil, err
 	}
 
-	container, err := containerSpec(write.Spec.Task)
+	container, err := containerSpec(write.Spec.Task, allowBindMounts)
 	if err != nil {
 		return nil, err
 	}
@@ -509,7 +515,7 @@ func validateReplicas(mode string, replicas *int64) error {
 }
 
 // containerSpec maps the writable task fields onto a ContainerSpec.
-func containerSpec(task v1.TaskSpecWrite) (*api.ContainerSpec, error) {
+func containerSpec(task v1.TaskSpecWrite, allowBindMounts bool) (*api.ContainerSpec, error) {
 	container := &api.ContainerSpec{
 		Image:      strings.TrimSpace(task.Image),
 		Command:    append([]string(nil), task.Command...),
@@ -533,7 +539,7 @@ func containerSpec(task v1.TaskSpecWrite) (*api.ContainerSpec, error) {
 		container.StopGracePeriod = durationProto(task.StopGraceMs)
 	}
 
-	mounts, err := mountSpecs(task.Mounts)
+	mounts, err := mountSpecs(task.Mounts, allowBindMounts)
 	if err != nil {
 		return nil, err
 	}
@@ -562,8 +568,8 @@ func envList(env map[string]string) ([]string, error) {
 	}
 	keys := make([]string, 0, len(env))
 	for key := range env {
-		if strings.TrimSpace(key) == "" {
-			return nil, invalidField("spec.task.env", "keys must not be empty")
+		if err := validEnvKey(key); err != nil {
+			return nil, err
 		}
 		keys = append(keys, key)
 	}
@@ -574,6 +580,22 @@ func envList(env map[string]string) ([]string, error) {
 		out = append(out, key+"="+env[key])
 	}
 	return out, nil
+}
+
+// validEnvKey rejects a key that cannot round-trip through SwarmKit's K=V list.
+// A key containing '=' would read back as a different key, and surrounding
+// whitespace is never part of an environment variable name.
+func validEnvKey(key string) error {
+	switch {
+	case strings.TrimSpace(key) == "":
+		return invalidField("spec.task.env", "keys must not be empty")
+	case key != strings.TrimSpace(key):
+		return invalidField("spec.task.env", "keys must not have surrounding whitespace")
+	case strings.ContainsRune(key, '='):
+		return invalidField("spec.task.env", `keys must not contain "="`)
+	default:
+		return nil
+	}
 }
 
 // resourcesSpec maps vcpus and memoryBytes onto Limits. A zero value means "no
@@ -669,14 +691,14 @@ func portSpecs(in []v1.Port) ([]*api.PortConfig, error) {
 }
 
 // mountSpecs maps the container mounts.
-func mountSpecs(in []v1.Mount) ([]api.Mount, error) {
+func mountSpecs(in []v1.Mount, allowBindMounts bool) ([]api.Mount, error) {
 	if len(in) == 0 {
 		return nil, nil
 	}
 	out := make([]api.Mount, 0, len(in))
 	for i, m := range in {
 		path := "spec.task.mounts[" + strconv.Itoa(i) + "]"
-		kind, err := mountType(m.Type, path+".type")
+		kind, err := mountType(m.Type, path+".type", allowBindMounts)
 		if err != nil {
 			return nil, err
 		}
@@ -854,10 +876,14 @@ func publishMode(raw, path string) (api.PortConfig_PublishMode, error) {
 	}
 }
 
-// mountType maps the lowercase wire enum.
-func mountType(raw, path string) (api.Mount_MountType, error) {
+// mountType maps the lowercase wire enum. A bind mount references a host path,
+// which the contract reserves for admin (contract §5.3).
+func mountType(raw, path string, allowBindMounts bool) (api.Mount_MountType, error) {
 	switch raw {
 	case "bind":
+		if !allowBindMounts {
+			return api.MountTypeBind, bindMountForbidden(path)
+		}
 		return api.MountTypeBind, nil
 	case "volume":
 		return api.MountTypeVolume, nil
@@ -871,6 +897,21 @@ func mountType(raw, path string) (api.Mount_MountType, error) {
 		return api.MountTypeBind, invalidField(path,
 			`must be "bind", "volume", "tmpfs", "npipe" or "cluster"`)
 	}
+}
+
+// bindMountForbidden is the 403 for a bind mount sent without the admin role.
+//
+// The role is named in details.requiredRole rather than details.requiredScope:
+// the caller already holds services:write, and adding an admin-only scope would
+// invent a scope the token model does not have.
+func bindMountForbidden(path string) error {
+	return output.NewErrorf(output.CodeForbidden,
+		"%s: bind mounts require the admin role", path).
+		WithDetails(map[string]any{
+			"reason":       "bind_mount_requires_admin",
+			"requiredRole": "admin",
+			"fields":       map[string]any{path: "requires the admin role"},
+		})
 }
 
 // restartCondition maps the lowercase wire enum.

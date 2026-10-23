@@ -2,6 +2,7 @@ package apihttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -24,10 +25,10 @@ type writeTestAPI struct {
 	reader   string
 }
 
-func newWriteTestAPI(t *testing.T, fc *fakeClient) *writeTestAPI {
+func newWriteTestAPI(t *testing.T, client Client) *writeTestAPI {
 	t.Helper()
-	if fc == nil {
-		fc = &fakeClient{}
+	if client == nil {
+		client = &fakeClient{}
 	}
 
 	tokenStore, err := OpenTokenStore(filepath.Join(t.TempDir(), "tokens.json"))
@@ -44,7 +45,7 @@ func newWriteTestAPI(t *testing.T, fc *fakeClient) *writeTestAPI {
 	require.NoError(t, err)
 
 	srv, err := New(Config{
-		Client:        fc,
+		Client:        client,
 		Tokens:        tokenStore,
 		Audit:         audit,
 		ServerVersion: "0.11.0",
@@ -64,6 +65,57 @@ func newWriteTestAPI(t *testing.T, fc *fakeClient) *writeTestAPI {
 		operator: operator,
 		reader:   reader,
 	}
+}
+
+// bindGuard is fakeClient plus the one Client-contract rule a handler test has
+// to observe: a bind mount is refused unless the caller passed AllowBindMounts.
+// It lets the HTTP test prove the role → flag → 403 chain end to end without
+// importing the real client or duplicating the whole overlay.
+type bindGuard struct {
+	*fakeClient
+}
+
+func bindMountDenied() error {
+	return output.NewError(output.CodeForbidden, "bind mounts require the admin role").
+		WithDetails(map[string]any{
+			"reason":       "bind_mount_requires_admin",
+			"requiredRole": "admin",
+		})
+}
+
+func (b bindGuard) CreateService(ctx context.Context, write v1.ServiceWrite, opts v1.WriteOptions) (v1.Service, error) {
+	if !opts.AllowBindMounts && hasBindMount(write.Spec.Task.Mounts) {
+		return v1.Service{}, bindMountDenied()
+	}
+	return b.fakeClient.CreateService(ctx, write, opts)
+}
+
+func (b bindGuard) UpdateService(ctx context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Service, error) {
+	if !opts.AllowBindMounts {
+		var decoded struct {
+			Spec struct {
+				Task struct {
+					Mounts []v1.Mount `json:"mounts"`
+				} `json:"task"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(patch, &decoded); err != nil {
+			return v1.Service{}, output.NewErrorf(output.CodeInvalid, "test fake: %v", err)
+		}
+		if hasBindMount(decoded.Spec.Task.Mounts) {
+			return v1.Service{}, bindMountDenied()
+		}
+	}
+	return b.fakeClient.UpdateService(ctx, ref, patch, opts)
+}
+
+func hasBindMount(mounts []v1.Mount) bool {
+	for _, mount := range mounts {
+		if mount.Type == "bind" {
+			return true
+		}
+	}
+	return false
 }
 
 // doWrite sends a request with a body.
@@ -417,6 +469,19 @@ func TestUpdateServiceHTTP(t *testing.T) {
 		require.Len(t, records, 1)
 		assert.Equal(t, "any", records[0].Precondition)
 	})
+
+	t.Run("oversized patch is 413", func(t *testing.T) {
+		fc := &fakeClient{}
+		api := newWriteTestAPI(t, fc)
+
+		body := []byte(`{"spec":{"task":{"image":"` + strings.Repeat("a", maxWriteBodyBytes) + `"}}}`)
+		rec := api.doWrite(t, http.MethodPatch, "/v1/services/web", body,
+			withToken(api.operator), withContentType(v1.MergePatchMediaType),
+			withHeader("If-Match", `"17"`))
+		require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+		assert.Equal(t, "payload_too_large", decodeError(t, rec).Error.Details["reason"])
+		assert.Zero(t, fc.updateCalls)
+	})
 }
 
 func TestDeleteServiceHTTP(t *testing.T) {
@@ -440,6 +505,17 @@ func TestDeleteServiceHTTP(t *testing.T) {
 		assert.Equal(t, "svc-1", records[0].Resource.ID, "the audit names the deleted document")
 		assert.Equal(t, "web", records[0].Resource.Name)
 		assert.Equal(t, "revision", records[0].Precondition)
+	})
+
+	t.Run("success without If-Match is allowed", func(t *testing.T) {
+		fc := &fakeClient{deletedService: v1.Service{ID: "svc-1", Name: "web", Revision: "17"}}
+		api := newWriteTestAPI(t, fc)
+
+		rec := api.doWrite(t, http.MethodDelete, "/v1/services/web", nil,
+			withToken(api.operator))
+		require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+		assert.Empty(t, fc.gotWriteOpts.IfMatch, "no precondition was sent")
+		assert.Equal(t, 1, fc.deleteCalls)
 	})
 
 	t.Run("ignoreMissing is 204 and audits the reference", func(t *testing.T) {
@@ -569,13 +645,93 @@ func TestGetServiceETagIsRevision(t *testing.T) {
 func TestServiceWriteMethodNotAllowed(t *testing.T) {
 	api := newWriteTestAPI(t, &fakeClient{})
 
-	rec := api.do(t, http.MethodPut, "/v1/services/svc-1", withToken(api.token))
-	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
-	assert.Equal(t, "GET, PATCH, DELETE", rec.Header().Get("Allow"))
+	for _, tc := range []struct {
+		method string
+		target string
+		allow  string
+	}{
+		{http.MethodPut, "/v1/services/svc-1", "GET, PATCH, DELETE"},
+		{http.MethodPut, "/v1/services", "GET, POST"},
+		{http.MethodGet, "/v1/services/svc-1/rollback", "POST"},
+		{http.MethodPost, "/v1/services/svc-1/tasks", "GET"},
+	} {
+		rec := api.do(t, tc.method, tc.target, withToken(api.token))
+		require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+		assert.Equalf(t, tc.allow, rec.Header().Get("Allow"), "%s %s", tc.method, tc.target)
 
-	rec = api.do(t, http.MethodPut, "/v1/services", withToken(api.token))
-	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
-	assert.Equal(t, "GET, POST", rec.Header().Get("Allow"))
+		doc := decodeError(t, rec)
+		assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+		assert.Equalf(t, "method_not_allowed", doc.Error.Details["reason"],
+			"%s %s must name the plumbing in details.reason", tc.method, tc.target)
+	}
+}
+
+// TestBindMountsRequireAdminRole proves the role → WriteOptions → client-rule
+// chain at the HTTP layer. The actual mapping lives in pkg/client (see its
+// TestBindMountsRequireAdmin); bindGuard applies that one contract rule so the
+// handler's flag is observable end to end.
+func TestBindMountsRequireAdminRole(t *testing.T) {
+	bindBody := []byte(`{"name":"web","spec":{"task":{"image":"nginx",` +
+		`"mounts":[{"type":"bind","source":"/srv","target":"/data"}]}}}`)
+	bindPatch := []byte(`{"spec":{"task":{"mounts":[{"type":"bind","source":"/srv","target":"/data"}]}}}`)
+
+	t.Run("operator create is forbidden", func(t *testing.T) {
+		fc := &fakeClient{}
+		api := newWriteTestAPI(t, bindGuard{fakeClient: fc})
+
+		rec := api.doWrite(t, http.MethodPost, "/v1/services", bindBody,
+			withToken(api.operator), withContentType(MediaType))
+		require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+		doc := decodeError(t, rec)
+		assert.Equal(t, string(output.CodeForbidden), doc.Error.Code)
+		assert.Equal(t, "admin", doc.Error.Details["requiredRole"])
+		assert.Equal(t, "bind_mount_requires_admin", doc.Error.Details["reason"])
+		assert.False(t, fc.gotWriteOpts.AllowBindMounts)
+	})
+
+	t.Run("admin create is allowed", func(t *testing.T) {
+		fc := &fakeClient{createdService: v1.Service{ID: "svc-1", Name: "web", Revision: "1"}}
+		api := newWriteTestAPI(t, bindGuard{fakeClient: fc})
+
+		rec := api.doWrite(t, http.MethodPost, "/v1/services", bindBody,
+			withToken(api.token), withContentType(MediaType))
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		assert.True(t, fc.gotWriteOpts.AllowBindMounts)
+	})
+
+	t.Run("operator patch is forbidden", func(t *testing.T) {
+		fc := &fakeClient{}
+		api := newWriteTestAPI(t, bindGuard{fakeClient: fc})
+
+		rec := api.doWrite(t, http.MethodPatch, "/v1/services/web", bindPatch,
+			withToken(api.operator), withContentType(v1.MergePatchMediaType),
+			withHeader("If-Match", `"17"`))
+		require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+		assert.False(t, fc.gotWriteOpts.AllowBindMounts)
+	})
+
+	t.Run("admin patch is allowed", func(t *testing.T) {
+		fc := &fakeClient{updatedService: v1.Service{ID: "svc-1", Name: "web", Revision: "18"}}
+		api := newWriteTestAPI(t, bindGuard{fakeClient: fc})
+
+		rec := api.doWrite(t, http.MethodPatch, "/v1/services/web", bindPatch,
+			withToken(api.token), withContentType(v1.MergePatchMediaType),
+			withHeader("If-Match", `"17"`))
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.True(t, fc.gotWriteOpts.AllowBindMounts)
+	})
+
+	t.Run("operator patch that does not touch mounts is allowed", func(t *testing.T) {
+		fc := &fakeClient{updatedService: v1.Service{ID: "svc-1", Name: "web", Revision: "18"}}
+		api := newWriteTestAPI(t, bindGuard{fakeClient: fc})
+
+		rec := api.doWrite(t, http.MethodPatch, "/v1/services/web",
+			[]byte(`{"spec":{"replicas":2}}`),
+			withToken(api.operator), withContentType(v1.MergePatchMediaType),
+			withHeader("If-Match", `"17"`))
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	})
 }
 
 // TestServiceWriteDoesNotLeakRegistryAuth proves the invariant across every

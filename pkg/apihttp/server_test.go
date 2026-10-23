@@ -299,7 +299,8 @@ func TestVersionDocument(t *testing.T) {
 	assert.Equal(t, "0.11.0", info.ServerVersion)
 	assert.Equal(t, "v1", info.GRPCProtocolVersion)
 	assert.Equal(t, "cluster-1", info.ClusterID)
-	assert.Equal(t, []string{"read"}, info.Capabilities, "nil capabilities default to read")
+	assert.Equal(t, []string{"read", "write"}, info.Capabilities,
+		"nil capabilities default to the served surface: read and write")
 }
 
 func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
@@ -329,7 +330,7 @@ func TestVersionClusterFallbackToleratesClientError(t *testing.T) {
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.Empty(t, info.ClusterID)
-	assert.Equal(t, []string{"read"}, info.Capabilities)
+	assert.Equal(t, []string{"read", "write"}, info.Capabilities)
 }
 
 func TestEmptyServiceListIsExactlyEmpty(t *testing.T) {
@@ -843,6 +844,8 @@ func TestMethodNotAllowedIsTyped(t *testing.T) {
 
 	doc := decodeError(t, rec)
 	assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	assert.Equal(t, "method_not_allowed", doc.Error.Details["reason"],
+		"a 405 must name the plumbing in details.reason (contract §4.2)")
 }
 
 func TestHeadOnListRouteIs405(t *testing.T) {

@@ -1119,7 +1119,9 @@ components:
       required: [name, spec]
       description: >
         The POST /v1/services body. Separate from Service so the write-only
-        registry credential can never appear on a response.
+        registry credential can never appear on a response. `spec.task.env` keys
+        must not contain "=" or surrounding whitespace, and a `bind` mount
+        requires the admin role.
       properties:
         name: { type: string, minLength: 1 }
         labels:
@@ -1233,6 +1235,10 @@ components:
           anyOf:
             - $ref: "#/components/schemas/Healthcheck"
             - type: "null"
+          description: >
+            Merged field by field; null removes it. An explicitly empty `test`
+            array also clears the whole healthcheck (SwarmKit would read an empty
+            test as "inherit").
         stopSignal: { type: [string, "null"] }
         stopGraceMs: { type: [integer, "null"], format: int64, minimum: 0 }
         readOnlyRootfs: { type: [boolean, "null"] }
@@ -1256,7 +1262,15 @@ components:
       type: object
       required: [type, target]
       properties:
-        type: { type: string, enum: [bind, volume, tmpfs, npipe, cluster] }
+        type:
+          type: string
+          enum: [bind, volume, tmpfs, npipe, cluster]
+          description: >
+            v1 writes accept every SwarmKit mount type. `bind` references a host
+            path and requires the admin role (contract §5.3): an operator token is
+            refused with 403 forbidden and details.requiredRole "admin". `npipe`
+            and `cluster` are additive extensions to the contract's
+            volume/bind/tmpfs set.
         source: { type: string }
         target: { type: string }
         readOnly: { type: boolean }
@@ -1495,7 +1509,14 @@ components:
         message: { type: string }
         requestId: { type: string }
         retryable: { type: boolean }
-        details: { type: object, additionalProperties: true }
+        details:
+          type: object
+          additionalProperties: true
+          description: >
+            Typed failure context. When details.fields is present it maps an
+            offending path to a reason. 405, 413 and 415 keep code `invalid` and
+            put `method_not_allowed`, `payload_too_large` or
+            `unsupported_media_type` in details.reason.
 
     VersionInfo:
       type: object

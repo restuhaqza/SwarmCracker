@@ -51,7 +51,10 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	service, err := s.cfg.Client.CreateService(r.Context(), body,
-		v1.WriteOptions{IfNoneMatch: ifNoneMatch})
+		v1.WriteOptions{
+			IfNoneMatch:     ifNoneMatch,
+			AllowBindMounts: mayBindMount(r),
+		})
 	if err != nil {
 		s.recordServiceAudit(r, "service.create",
 			v1.AuditResource{Kind: v1.KindService, Name: body.Name}, "error")
@@ -88,7 +91,10 @@ func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
 
 	ref := r.PathValue("id")
 	service, err := s.cfg.Client.UpdateService(r.Context(), ref, patch,
-		v1.WriteOptions{IfMatch: ifMatch})
+		v1.WriteOptions{
+			IfMatch:         ifMatch,
+			AllowBindMounts: mayBindMount(r),
+		})
 	if err != nil {
 		s.recordServiceAudit(r, "service.update",
 			v1.AuditResource{Kind: v1.KindService, Name: ref}, "error")
@@ -162,6 +168,15 @@ func (s *Server) rollbackService(w http.ResponseWriter, r *http.Request) {
 	s.recordServiceAudit(r, "service.rollback", serviceAuditResource(service, ref), "ok")
 	s.writeJSONWithETag(w, r, http.StatusOK,
 		v1.NewServiceDocument(service), revisionETag(service.Revision))
+}
+
+// mayBindMount reports whether this identity may write a bind mount. The
+// contract reserves host-path mounts for the admin role; the trusted Unix
+// socket's LocalIdentity is admin, so local callers are not locked out of their
+// own manager.
+func mayBindMount(r *http.Request) bool {
+	identity, ok := IdentityFrom(r.Context())
+	return ok && identity.Role == RoleAdmin
 }
 
 // requireContentType enforces the request media type. It returns the status and

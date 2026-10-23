@@ -54,4 +54,9 @@ type WriteOptions struct {
 	IfNoneMatch string
 	// IgnoreMissing turns a delete of an absent resource into a success.
 	IgnoreMissing bool
+	// AllowBindMounts permits `mounts[].type: "bind"`, which references a host
+	// path. The contract reserves bind mounts for the admin role; the HTTP layer
+	// sets this from the authenticated identity so pkg/client never has to know
+	// about roles.
+	AllowBindMounts bool
 }

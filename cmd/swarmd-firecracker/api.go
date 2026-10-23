@@ -122,7 +122,7 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 		ServerVersion: Version,
 		GRPCVersion:   apiversion.Current,
 		ClusterID:     clusterID,
-		Capabilities:  []string{"read"},
+		Capabilities:  []string{"read", "write"},
 	})
 	if err != nil {
 		_ = c.Close()

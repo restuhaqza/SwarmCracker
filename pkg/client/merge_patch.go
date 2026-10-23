@@ -58,7 +58,7 @@ func decodeMergePatch(body []byte) (map[string]any, error) {
 }
 
 // applyServicePatch overlays the top level of a merge patch.
-func (c *Client) applyServicePatch(ctx context.Context, spec *api.ServiceSpec, patch map[string]any) error {
+func (c *Client) applyServicePatch(ctx context.Context, spec *api.ServiceSpec, patch map[string]any, allowBindMounts bool) error {
 	for key, value := range patch {
 		switch key {
 		case "labels":
@@ -70,7 +70,7 @@ func (c *Client) applyServicePatch(ctx context.Context, spec *api.ServiceSpec, p
 			if err != nil {
 				return err
 			}
-			if err := c.applySpecPatch(ctx, spec, object); err != nil {
+			if err := c.applySpecPatch(ctx, spec, object, allowBindMounts); err != nil {
 				return err
 			}
 		case "id", "name", "revision", "createdAt", "updatedAt", "status",
@@ -86,7 +86,7 @@ func (c *Client) applyServicePatch(ctx context.Context, spec *api.ServiceSpec, p
 }
 
 // applySpecPatch overlays spec.*.
-func (c *Client) applySpecPatch(ctx context.Context, spec *api.ServiceSpec, patch map[string]any) error {
+func (c *Client) applySpecPatch(ctx context.Context, spec *api.ServiceSpec, patch map[string]any, allowBindMounts bool) error {
 	for key, value := range patch {
 		switch key {
 		case "mode":
@@ -100,7 +100,7 @@ func (c *Client) applySpecPatch(ctx context.Context, spec *api.ServiceSpec, patc
 			if err != nil {
 				return err
 			}
-			if err := c.applyTaskPatch(ctx, spec, object); err != nil {
+			if err := c.applyTaskPatch(ctx, spec, object, allowBindMounts); err != nil {
 				return err
 			}
 		case "update":
@@ -172,7 +172,7 @@ func applyReplicasPatch(spec *api.ServiceSpec, value any) error {
 }
 
 // applyTaskPatch overlays spec.task.*.
-func (c *Client) applyTaskPatch(ctx context.Context, spec *api.ServiceSpec, patch map[string]any) error {
+func (c *Client) applyTaskPatch(ctx context.Context, spec *api.ServiceSpec, patch map[string]any, allowBindMounts bool) error {
 	container := spec.Task.GetContainer()
 	if container == nil {
 		return invalidField("spec.task", "the service has no container spec to patch")
@@ -274,7 +274,7 @@ func (c *Client) applyTaskPatch(ctx context.Context, spec *api.ServiceSpec, patc
 				spec.Endpoint.Ports = ports
 			}
 		case "mounts":
-			mounts, err := patchMounts(value)
+			mounts, err := patchMounts(value, allowBindMounts)
 			if err != nil {
 				return err
 			}
@@ -305,6 +305,13 @@ func (c *Client) applyTaskPatch(ctx context.Context, spec *api.ServiceSpec, patc
 			if err != nil {
 				return err
 			}
+			// An empty string means "no credential", exactly as on create; it
+			// must not leave a non-nil PullOptions that reads as cleared but is
+			// a different spec.
+			if auth == "" {
+				container.PullOptions = nil
+				break
+			}
 			container.PullOptions = &api.ContainerSpec_PullOptions{RegistryAuth: auth}
 		default:
 			return unknownPatchField("spec.task." + key)
@@ -332,8 +339,8 @@ func applyEnvPatch(container *api.ContainerSpec, value any) error {
 		env = make(map[string]string, len(object))
 	}
 	for key, raw := range object {
-		if key == "" {
-			return invalidField("spec.task.env", "keys must not be empty")
+		if err := validEnvKey(key); err != nil {
+			return err
 		}
 		if raw == nil {
 			delete(env, key)
@@ -351,33 +358,45 @@ func applyEnvPatch(container *api.ContainerSpec, value any) error {
 }
 
 // applyCPULimit writes NanoCPUs while leaving the rest of Resources alone. A
-// zero value against an absent Limits block is a no-op: creating an empty block
+// zero value against no resources at all is a no-op: creating an empty block
 // would rewrite bytes the caller did not change.
 func applyCPULimit(task *api.TaskSpec, vcpus int64) {
-	if vcpus == 0 && (task.Resources == nil || task.Resources.Limits == nil) {
+	if vcpus == 0 && (task.Resources == nil ||
+		(task.Resources.Limits == nil && task.Resources.Reservations == nil)) {
 		return
 	}
-	if task.Resources == nil {
-		task.Resources = &api.ResourceRequirements{}
-	}
-	if task.Resources.Limits == nil {
-		task.Resources.Limits = &api.Resources{}
-	}
-	task.Resources.Limits.NanoCPUs = vcpus * nanoCPUsPerVCPU
+	ensureLimits(task).NanoCPUs = vcpus * nanoCPUsPerVCPU
 }
 
 // applyMemoryLimit writes MemoryBytes with the same no-op rule as the CPU limit.
 func applyMemoryLimit(task *api.TaskSpec, memoryBytes int64) {
-	if memoryBytes == 0 && (task.Resources == nil || task.Resources.Limits == nil) {
+	if memoryBytes == 0 && (task.Resources == nil ||
+		(task.Resources.Limits == nil && task.Resources.Reservations == nil)) {
 		return
 	}
+	ensureLimits(task).MemoryBytes = memoryBytes
+}
+
+// ensureLimits returns the block a cpu/memory patch writes to.
+//
+// Every consumer reads Limits and falls back to Reservations only when Limits is
+// absent, so materialising an empty Limits for a patch that names one half of
+// the pair would make the other half's reservation inert: a vcpus-only patch
+// would read memoryBytes 0 and drop the memory cap. A new Limits is therefore
+// seeded from Reservations, and the reservation itself stays untouched.
+func ensureLimits(task *api.TaskSpec) *api.Resources {
 	if task.Resources == nil {
 		task.Resources = &api.ResourceRequirements{}
 	}
 	if task.Resources.Limits == nil {
-		task.Resources.Limits = &api.Resources{}
+		limits := &api.Resources{}
+		if reservations := task.Resources.Reservations; reservations != nil {
+			limits.NanoCPUs = reservations.NanoCPUs
+			limits.MemoryBytes = reservations.MemoryBytes
+		}
+		task.Resources.Limits = limits
 	}
-	task.Resources.Limits.MemoryBytes = memoryBytes
+	return task.Resources.Limits
 }
 
 // applyRestartPatch merges only the named restart fields, so an unmodeled field
@@ -447,7 +466,9 @@ func applyRestartPatch(target **api.RestartPolicy, value any) error {
 	return nil
 }
 
-// applyHealthcheckPatch merges the healthcheck. null removes it entirely.
+// applyHealthcheckPatch merges the healthcheck. null removes it entirely; an
+// explicitly emptied `test` array clears it too, because SwarmKit would read an
+// empty test as "inherit", which is not what the merge-patch `[]` rule means.
 func applyHealthcheckPatch(container *api.ContainerSpec, value any) error {
 	if value == nil {
 		container.Healthcheck = nil
@@ -457,6 +478,19 @@ func applyHealthcheckPatch(container *api.ContainerSpec, value any) error {
 	if err != nil {
 		return err
 	}
+
+	var test []string
+	if raw, ok := object["test"]; ok {
+		test, err = patchStringSlice("spec.task.healthcheck.test", raw)
+		if err != nil {
+			return err
+		}
+		if len(test) == 0 {
+			container.Healthcheck = nil
+			return nil
+		}
+	}
+
 	if container.Healthcheck == nil {
 		container.Healthcheck = &api.HealthConfig{}
 	}
@@ -465,13 +499,6 @@ func applyHealthcheckPatch(container *api.ContainerSpec, value any) error {
 	for key, raw := range object {
 		switch key {
 		case "test":
-			test, err := patchStringSlice("spec.task.healthcheck.test", raw)
-			if err != nil {
-				return err
-			}
-			if len(test) == 0 {
-				return invalidField("spec.task.healthcheck.test", "must not be empty")
-			}
 			health.Test = test
 		case "intervalMs":
 			ms, err := patchOptionalInt("spec.task.healthcheck.intervalMs", raw)
@@ -693,7 +720,7 @@ func patchPorts(value any) ([]*api.PortConfig, error) {
 }
 
 // patchMounts validates an array replacement. null or [] clears the list.
-func patchMounts(value any) ([]api.Mount, error) {
+func patchMounts(value any, allowBindMounts bool) ([]api.Mount, error) {
 	if value == nil {
 		return nil, nil
 	}
@@ -747,7 +774,7 @@ func patchMounts(value any) ([]api.Mount, error) {
 		out = append(out, mount)
 	}
 
-	return mountSpecs(out)
+	return mountSpecs(out, allowBindMounts)
 }
 
 // patchNetworks resolves an array replacement of network attachments.

@@ -100,7 +100,7 @@ func New(cfg Config) (*Server, error) {
 		return nil, output.NewError(output.CodeInvalid, "apihttp: Config.Client must not be nil")
 	}
 	if cfg.Capabilities == nil {
-		cfg.Capabilities = []string{"read"}
+		cfg.Capabilities = []string{"read", "write"}
 	}
 
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
@@ -534,10 +534,16 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 
 // methodNotAllowed answers a known path with a typed 405. The allowed methods
 // are the ones registered for that path, in registration order.
+//
+// The body keeps the stable `invalid` code and names the plumbing in
+// details.reason (contract §4.2), so an SDK can tell "wrong method" from any
+// other invalid request without growing its exception set.
 func (s *Server) methodNotAllowed(allow string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", allow)
-		s.writeErrorStatus(w, r, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
-			"method %s is not allowed on %s", r.Method, r.URL.Path))
+		s.writeErrorStatus(w, r, http.StatusMethodNotAllowed,
+			output.NewErrorf(output.CodeInvalid,
+				"method %s is not allowed on %s", r.Method, r.URL.Path).
+				WithDetails(map[string]any{"reason": "method_not_allowed"}))
 	}
 }

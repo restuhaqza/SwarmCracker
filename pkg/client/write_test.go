@@ -249,6 +249,12 @@ func TestCreateServiceValidation(t *testing.T) {
 		{"empty env key", func(w *v1.ServiceWrite) {
 			w.Spec.Task.Env = map[string]string{"": "x"}
 		}, "spec.task.env"},
+		{"env key with equals", func(w *v1.ServiceWrite) {
+			w.Spec.Task.Env = map[string]string{"A=B": "x"}
+		}, "spec.task.env"},
+		{"env key with surrounding space", func(w *v1.ServiceWrite) {
+			w.Spec.Task.Env = map[string]string{" A": "x"}
+		}, "spec.task.env"},
 		{"bad port protocol", func(w *v1.ServiceWrite) {
 			w.Spec.Task.Ports = []v1.Port{{Target: 80, Protocol: "tcp6"}}
 		}, "spec.task.ports[0].protocol"},
@@ -501,8 +507,10 @@ func TestUpdateServiceMergePatchRules(t *testing.T) {
 	})
 
 	t.Run("array replacement replaces the whole array", func(t *testing.T) {
+		current := serviceWithUnmodeledFields()
+		current.Spec.Networks = []*api.NetworkAttachmentConfig{{Target: "legacy-net"}}
 		control := &fakeControl{
-			service:        serviceWithUnmodeledFields(),
+			service:        current,
 			networks:       []*api.Network{networkByName("net-2", "frontend")},
 			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
 		}
@@ -513,6 +521,8 @@ func TestUpdateServiceMergePatchRules(t *testing.T) {
 		networks := control.updateServiceReq.Spec.Task.Networks
 		require.Len(t, networks, 1)
 		assert.Equal(t, "net-2", networks[0].Target)
+		assert.Nil(t, control.updateServiceReq.Spec.Networks,
+			"the deprecated ServiceSpec.Networks shadow must be cleared with the replacement")
 	})
 }
 
@@ -845,4 +855,213 @@ func TestServiceWriteNamingIsResolved(t *testing.T) {
 		require.NotNil(t, control.removeServiceReq)
 		assert.Equal(t, "svc-1", control.removeServiceReq.ServiceID, ref)
 	}
+}
+
+func TestBindMountsRequireAdmin(t *testing.T) {
+	writeWithBind := func() v1.ServiceWrite {
+		return v1.ServiceWrite{
+			Name: "web",
+			Spec: v1.ServiceSpecWrite{Task: v1.TaskSpecWrite{TaskSpec: v1.TaskSpec{
+				Image:  "nginx",
+				Mounts: []v1.Mount{{Type: "bind", Source: "/srv/data", Target: "/data"}},
+			}}},
+		}
+	}
+
+	t.Run("create is forbidden without the admin role", func(t *testing.T) {
+		control := &fakeControl{}
+		_, err := writeClient(control).CreateService(context.Background(), writeWithBind(), v1.WriteOptions{})
+		typed := requireCode(t, err, output.CodeForbidden)
+		assert.Equal(t, "admin", typed.Details["requiredRole"])
+		assert.Equal(t, "bind_mount_requires_admin", typed.Details["reason"])
+		assert.Zero(t, control.createServiceCall, "a forbidden bind mount never reaches SwarmKit")
+	})
+
+	t.Run("create is allowed for admin", func(t *testing.T) {
+		control := &fakeControl{createdService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 1}}}}
+		_, err := writeClient(control).CreateService(context.Background(), writeWithBind(),
+			v1.WriteOptions{AllowBindMounts: true})
+		require.NoError(t, err)
+		require.Len(t, control.createServiceReq.Spec.Task.GetContainer().Mounts, 1)
+		assert.Equal(t, api.MountTypeBind, control.createServiceReq.Spec.Task.GetContainer().Mounts[0].Type)
+	})
+
+	t.Run("patch is forbidden without the admin role", func(t *testing.T) {
+		control := &fakeControl{service: serviceWithUnmodeledFields()}
+		patch := []byte(`{"spec":{"task":{"mounts":[{"type":"bind","source":"/srv","target":"/data"}]}}}`)
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1", patch,
+			v1.WriteOptions{IfMatch: `"17"`})
+		typed := requireCode(t, err, output.CodeForbidden)
+		assert.Equal(t, "admin", typed.Details["requiredRole"])
+		assert.Zero(t, control.updateServiceCall)
+	})
+
+	t.Run("patch is allowed for admin", func(t *testing.T) {
+		control := &fakeControl{
+			service:        serviceWithUnmodeledFields(),
+			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
+		}
+		patch := []byte(`{"spec":{"task":{"mounts":[{"type":"bind","source":"/srv","target":"/data"}]}}}`)
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1", patch,
+			v1.WriteOptions{IfMatch: `"17"`, AllowBindMounts: true})
+		require.NoError(t, err)
+		require.Len(t, control.updateServiceReq.Spec.Task.GetContainer().Mounts, 1)
+	})
+
+	t.Run("an untouched existing bind mount is not re-checked", func(t *testing.T) {
+		current := serviceWithUnmodeledFields()
+		current.Spec.Task.GetContainer().Mounts = []api.Mount{{
+			Type: api.MountTypeBind, Source: "/srv/old", Target: "/old",
+		}}
+		control := &fakeControl{
+			service:        current,
+			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
+		}
+
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+			[]byte(`{"spec":{"replicas":2}}`), v1.WriteOptions{IfMatch: `"17"`})
+		require.NoError(t, err)
+		require.Len(t, control.updateServiceReq.Spec.Task.GetContainer().Mounts, 1)
+		assert.Equal(t, api.MountTypeBind, control.updateServiceReq.Spec.Task.GetContainer().Mounts[0].Type)
+	})
+}
+
+// TestUpdateServiceSeedsLimitsFromReservations is the regression test for a
+// one-field resource patch neutralising an existing reservation: every consumer
+// reads Limits and falls back to Reservations only when Limits is absent.
+func TestUpdateServiceSeedsLimitsFromReservations(t *testing.T) {
+	newCurrent := func() *api.Service {
+		current := serviceWithUnmodeledFields()
+		current.Spec.Task.Resources = &api.ResourceRequirements{
+			Reservations: &api.Resources{
+				NanoCPUs:    1_000_000_000,
+				MemoryBytes: 256 << 20,
+			},
+		}
+		return current
+	}
+
+	t.Run("vcpus-only patch keeps the memory reservation effective", func(t *testing.T) {
+		control := &fakeControl{
+			service:        newCurrent(),
+			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
+		}
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+			[]byte(`{"spec":{"task":{"vcpus":2}}}`), v1.WriteOptions{IfMatch: `"17"`})
+		require.NoError(t, err)
+
+		resources := control.updateServiceReq.Spec.Task.Resources
+		require.NotNil(t, resources.Limits, "the patch must materialise a limit")
+		assert.EqualValues(t, 2*nanoCPUsPerVCPU, resources.Limits.NanoCPUs)
+		assert.EqualValues(t, 256<<20, resources.Limits.MemoryBytes,
+			"the unpatched half must be seeded from Reservations, not zeroed")
+		require.NotNil(t, resources.Reservations)
+		assert.EqualValues(t, 1_000_000_000, resources.Reservations.NanoCPUs)
+		assert.EqualValues(t, 256<<20, resources.Reservations.MemoryBytes)
+
+		read := serviceFromSwarmkit(&api.Service{Spec: *control.updateServiceReq.Spec}, taskCounts{})
+		assert.EqualValues(t, 2, read.Spec.Task.VCPUs)
+		assert.EqualValues(t, 256<<20, read.Spec.Task.MemoryBytes,
+			"the read document must not regress when only vcpus is patched")
+	})
+
+	t.Run("memory-only patch keeps the CPU reservation effective", func(t *testing.T) {
+		control := &fakeControl{
+			service:        newCurrent(),
+			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
+		}
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+			[]byte(`{"spec":{"task":{"memoryBytes":1073741824}}}`), v1.WriteOptions{IfMatch: `"17"`})
+		require.NoError(t, err)
+
+		resources := control.updateServiceReq.Spec.Task.Resources
+		require.NotNil(t, resources.Limits)
+		assert.EqualValues(t, 1_000_000_000, resources.Limits.NanoCPUs,
+			"the unpatched half must be seeded from Reservations, not zeroed")
+		assert.EqualValues(t, 1<<30, resources.Limits.MemoryBytes)
+
+		read := serviceFromSwarmkit(&api.Service{Spec: *control.updateServiceReq.Spec}, taskCounts{})
+		assert.EqualValues(t, 1, read.Spec.Task.VCPUs)
+		assert.EqualValues(t, 1<<30, read.Spec.Task.MemoryBytes)
+	})
+}
+
+func TestUpdateServiceEmptyPatchIsNoOp(t *testing.T) {
+	control := &fakeControl{service: serviceWithUnmodeledFields()}
+
+	got, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+		[]byte(`{}`), v1.WriteOptions{IfMatch: `"17"`})
+	require.NoError(t, err)
+	assert.Equal(t, "17", got.Revision, "an empty patch must not bump the revision")
+	assert.Zero(t, control.updateServiceCall, "an empty patch must not reach SwarmKit")
+}
+
+func TestUpdateServicePatchEdgeCases(t *testing.T) {
+	t.Run("registryAuth empty string clears", func(t *testing.T) {
+		control := &fakeControl{
+			service:        serviceWithUnmodeledFields(),
+			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
+		}
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+			[]byte(`{"spec":{"task":{"registryAuth":""}}}`), v1.WriteOptions{IfMatch: `"17"`})
+		require.NoError(t, err)
+		assert.Nil(t, control.updateServiceReq.Spec.Task.GetContainer().PullOptions)
+	})
+
+	t.Run("healthcheck test [] clears the healthcheck", func(t *testing.T) {
+		current := serviceWithUnmodeledFields()
+		current.Spec.Task.GetContainer().Healthcheck = &api.HealthConfig{
+			Test: []string{"CMD", "true"},
+		}
+		control := &fakeControl{
+			service:        current,
+			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
+		}
+
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+			[]byte(`{"spec":{"task":{"healthcheck":{"test":[]}}}}`), v1.WriteOptions{IfMatch: `"17"`})
+		require.NoError(t, err)
+		assert.Nil(t, control.updateServiceReq.Spec.Task.GetContainer().Healthcheck)
+	})
+
+	t.Run("env key with equals is rejected", func(t *testing.T) {
+		control := &fakeControl{service: serviceWithUnmodeledFields()}
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+			[]byte(`{"spec":{"task":{"env":{"A=B":"x"}}}}`), v1.WriteOptions{IfMatch: `"17"`})
+		requireField(t, err, "spec.task.env")
+		assert.Zero(t, control.updateServiceCall)
+	})
+
+	t.Run("ports replacement preserves the endpoint resolver mode", func(t *testing.T) {
+		control := &fakeControl{
+			service:        serviceWithUnmodeledFields(),
+			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
+		}
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+			[]byte(`{"spec":{"task":{"ports":[{"target":443}]}}}`), v1.WriteOptions{IfMatch: `"17"`})
+		require.NoError(t, err)
+
+		endpoint := control.updateServiceReq.Spec.Endpoint
+		require.NotNil(t, endpoint)
+		assert.Equal(t, api.ResolutionModeDNSRoundRobin, endpoint.Mode)
+		require.Len(t, endpoint.Ports, 1)
+		assert.EqualValues(t, 443, endpoint.Ports[0].TargetPort)
+	})
+
+	t.Run("constraints replacement preserves placement preferences", func(t *testing.T) {
+		control := &fakeControl{
+			service:        serviceWithUnmodeledFields(),
+			updatedService: &api.Service{ID: "svc-1", Meta: api.Meta{Version: api.Version{Index: 18}}},
+		}
+		_, err := writeClient(control).UpdateService(context.Background(), "svc-1",
+			[]byte(`{"spec":{"placement":{"constraints":["node.labels.zone==b"]}}}`),
+			v1.WriteOptions{IfMatch: `"17"`})
+		require.NoError(t, err)
+
+		placement := control.updateServiceReq.Spec.Task.Placement
+		require.NotNil(t, placement)
+		assert.Equal(t, []string{"node.labels.zone==b"}, placement.Constraints)
+		assert.Len(t, placement.Preferences, 1, "preferences must survive a constraints patch")
+		assert.EqualValues(t, 4, placement.MaxReplicas)
+	})
 }

@@ -366,6 +366,10 @@ prefix of at least four characters. A prefix that matches more than one object i
 `400 ambiguous` with `details.candidates`; a shorter non-exact value is
 `400 invalid`.
 
+`GET /v1/version` reports `capabilities: ["read", "write"]`, so a client that
+feature-detects the write surface sees it. Config, secret, network and node
+writes arrive in a later phase.
+
 Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
 also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
 `X-Request-Id`. A read answers `If-None-Match` with `304`. A list `ETag` is the
@@ -410,6 +414,8 @@ field.
 
 - `null` resets an optional scalar to its default; `null` on a map key deletes
   that key; `[]` clears an array; a non-empty array replaces the array.
+  `healthcheck.test: []` clears the whole healthcheck (SwarmKit would read an
+  empty test list as "inherit"); `healthcheck: null` is equivalent.
 - Only the fields present in the patch are written. SwarmKit fields the API does
   not model — mount volume options, privileges, endpoint resolver mode, placement
   preferences, log drivers — survive untouched.
@@ -417,8 +423,14 @@ field.
   are immutable. Sending one is `400 invalid` with `details.fields`, as is an
   unknown field at any depth.
 - `spec.task.registryAuth` is the write-only pull credential. Absent on a patch
-  preserves the current credential, `null` clears it, and a string replaces it.
-  It never appears in a response, because the read types have no such field.
+  preserves the current credential, `null` (or `""`) clears it, and a non-empty
+  string replaces it. It never appears in a response, because the read types have
+  no such field.
+- `mounts[].type: "bind"` references a host path and requires the **admin** role
+  (contract §5.3). An operator token is refused with `403 forbidden` and
+  `details.requiredRole: "admin"`. The check only runs when the patch names
+  `mounts`, so editing an unrelated field on a service that already has a bind
+  mount is allowed.
 
 ```bash
 # Scale to 3, keeping every field the patch does not name.
@@ -442,7 +454,9 @@ optionally.
 | Missing service with `If-Match` | `412` (preconditions are evaluated before `ignoreMissing`) |
 | Missing service without `If-Match` | `404`, or `204` with `?ignoreMissing=true` |
 
-Use the `ETag` of the last read as `If-Match`; do not invent a revision.
+Use the `ETag` of the last read as `If-Match`; do not invent a revision. A PATCH
+that omits both `Content-Type` and `If-Match` answers `415` first: the server does
+not evaluate preconditions on a body it cannot parse.
 
 **Delete.** `DELETE /v1/services/{id}` answers `204` with no body. The check and
 the removal are not atomic: SwarmKit's `RemoveServiceRequest` carries no version,
@@ -453,9 +467,12 @@ ordering patch first and then delete.
 `400`) and requires `If-Match`. It restores the service's previous spec and
 answers `200` with the new `ServiceDocument` and revision.
 
-Every write appends an audit record (`service.create`, `service.update`,
-`service.delete`, `service.rollback`) with the actor, the resource that was
-written and `result: ok` or `error`.
+Every write that reaches the backend appends an audit record (`service.create`,
+`service.update`, `service.delete`, `service.rollback`) with the actor, the
+resource that was written and `result: ok` or `error`. A request rejected before
+the backend (415, 413, a body that cannot be decoded, a missing `If-Match`) is not
+audited, and an audit append failure does not fail a mutation that has already
+committed.
 
 ### Manager flags
 
@@ -557,12 +574,20 @@ secret.
 
 ### Audit log
 
-Every mutation is recorded to an append-only JSONL log on the manager (0600, one
-record per line, fsynced per append). Records are kept 30 days by default
-(`--api-audit-retention`). A crash-truncated or malformed line is skipped on load
-instead of making the log unreadable, and only the offending line is skipped —
-the records behind it are still read. A record larger than 1 MiB is refused
-rather than written, so one oversized entry cannot break the log.
+Every mutation that reaches the backend is appended to a JSONL log on the manager
+(0600, one record per line, fsynced per append). A request rejected before the
+backend (415, 413, an undecodable body, a missing `If-Match`) is not recorded.
+Records are kept 30 days by default (`--api-audit-retention`). A crash-truncated
+or malformed line is skipped on load instead of making the log unreadable, and
+only the offending line is skipped — the records behind it are still read. A
+record larger than 1 MiB is refused rather than written, so one oversized entry
+cannot break the log.
+
+Appending is best effort after the mutation has committed: a failed append (for
+example `ENOSPC`) is not surfaced to the caller and does not roll the write back,
+because failing the response would invite a retry that duplicates a create. That
+means a full or read-only audit file stops recording without an error in the API
+response; watch the manager's log and the file itself.
 
 The service writes above record `service.create`, `service.update`,
 `service.delete` and `service.rollback`. A failed write records `result: "error"`
