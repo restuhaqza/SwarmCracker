@@ -88,7 +88,7 @@ func checkAndMigrateClusterAddress(stateDir, advertiseAddr string) error {
 	return nil
 }
 
-func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRuntime) error {
+func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRuntime, api apiRuntime) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -133,6 +133,19 @@ func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRunt
 		printJoinTokens(ctx, config.StateDir)
 	}
 
+	// Only a manager serves the programmatic API: a worker has no local cluster
+	// state to read. A failure is logged rather than fatal, so a port conflict
+	// cannot take down an otherwise healthy manager.
+	stopAPI := func() {}
+	if config.JoinAddr == "" {
+		stop, err := startAPI(ctx, api, config.StateDir, config.Hostname, config.ListenControlAPI)
+		if err != nil {
+			log.G(ctx).WithError(err).Warn("Programmatic API disabled: failed to start")
+		} else {
+			stopAPI = stop
+		}
+	}
+
 	// Wire the ingress routing mesh: managers serve the routing table and
 	// balance locally; workers fetch the table and balance locally too.
 	ingressCleanup := startIngress(ctx, config, executor, ing)
@@ -140,6 +153,10 @@ func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRunt
 	// Wait for shutdown signal
 	sig := <-sigChan
 	log.G(ctx).WithField("signal", sig).Info("Received shutdown signal")
+
+	// Stop the API first: in-flight reads then finish against a live manager
+	// instead of a half-stopped one.
+	stopAPI()
 
 	// Stop the node gracefully
 	log.G(ctx).Info("Stopping node...")

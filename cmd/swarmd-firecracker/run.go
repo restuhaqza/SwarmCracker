@@ -236,7 +236,7 @@ func runAgent(ctx *cli.Context) error {
 	}
 
 	// Start node
-	if err := startNode(nodeConfig, fcExecutor, ingressCfg); err != nil {
+	if err := startNode(nodeConfig, fcExecutor, ingressCfg, apiRuntimeFrom(ctx)); err != nil {
 		return fmt.Errorf("failed to start node: %w", err)
 	}
 

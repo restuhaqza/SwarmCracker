@@ -64,8 +64,11 @@ type Client interface {
 // Config is the server's wiring. Tokens may be nil for a Unix-socket-only
 // deployment: Handler then rejects every request, UnixHandler still works.
 type Config struct {
-	Client        Client
-	Tokens        *TokenStore
+	Client Client
+	Tokens *TokenStore
+	// CertDir holds tls.crt and tls.key for the TLS listener. Serve requires it
+	// only when a TCP address is configured; EnsureCertificate writes the pair.
+	CertDir       string
 	ServerVersion string
 	GRPCVersion   string
 	ClusterID     string

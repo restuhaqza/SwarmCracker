@@ -1,6 +1,8 @@
 package main
 
 import (
+	"path/filepath"
+
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/urfave/cli/v2"
 )
@@ -236,5 +238,54 @@ func newAppFlags() []cli.Flag {
 			Usage: "Election tick in seconds",
 			Value: 10,
 		},
+		// Programmatic API (managers only)
+		&cli.StringFlag{
+			Name:  "api-listen",
+			Usage: "TLS listen address for the programmatic API (managers only; empty disables the TCP listener)",
+			Value: defaultAPIListen,
+		},
+		&cli.StringFlag{
+			Name:  "api-socket",
+			Usage: "Unix socket for the trusted programmatic API (managers only)",
+			Value: filepath.Join(defaultStateDir, defaultAPISocketName),
+		},
+		&cli.StringFlag{
+			Name:  "api-token-file",
+			Usage: "File holding the programmatic API bearer tokens",
+			Value: filepath.Join(defaultStateDir, defaultAPIDirName, "tokens.json"),
+		},
+		&cli.StringFlag{
+			Name:  "api-cert-dir",
+			Usage: "Directory holding the programmatic API TLS certificate (tls.crt, tls.key)",
+			Value: filepath.Join(defaultStateDir, defaultAPIDirName),
+		},
+		&cli.BoolFlag{
+			Name:  "api-disabled",
+			Usage: "Do not start the programmatic API on this manager",
+			Value: false,
+		},
 	}
+}
+
+// apiRuntimeFrom resolves the API settings. Path defaults follow --state-dir, so
+// an operator who only moves the state directory keeps the API files with it.
+func apiRuntimeFrom(ctx *cli.Context) apiRuntime {
+	stateDir := ctx.String("state-dir")
+
+	return apiRuntime{
+		enabled:   !ctx.Bool("api-disabled"),
+		tcpAddr:   ctx.String("api-listen"),
+		socket:    flagOrDefault(ctx, "api-socket", filepath.Join(stateDir, defaultAPISocketName)),
+		tokenFile: flagOrDefault(ctx, "api-token-file", filepath.Join(stateDir, defaultAPIDirName, "tokens.json")),
+		certDir:   flagOrDefault(ctx, "api-cert-dir", filepath.Join(stateDir, defaultAPIDirName)),
+	}
+}
+
+// flagOrDefault returns the flag's value, or derived when the operator did not
+// set it explicitly.
+func flagOrDefault(ctx *cli.Context, name, derived string) string {
+	if ctx.IsSet(name) {
+		return ctx.String(name)
+	}
+	return derived
 }
