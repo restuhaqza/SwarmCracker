@@ -26,7 +26,6 @@ cmd_node.go
 cmd_secret.go
 cmd_service.go
 cmd_task.go
-resolve.go
 task_health.go
 ```
 

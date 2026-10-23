@@ -1,4 +1,8 @@
-package main
+// Package legacy holds transitional adapters for command paths that still need
+// raw SwarmKit values for their frozen legacy output. New contract paths must
+// use pkg/client instead. This package is deleted when the legacy JSON output
+// reaches its N+2 removal window.
+package legacy
 
 import (
 	"context"
@@ -54,9 +58,9 @@ func matchRef(ref, kind string, candidates []refCandidate) (string, error) {
 	}
 }
 
-// resolveServiceRef resolves a service reference (full ID, unique ID prefix, or
+// ResolveServiceRef resolves a service reference (full ID, unique ID prefix, or
 // name) to its full ID.
-func resolveServiceRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
+func ResolveServiceRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
 	resp, err := client.ListServices(ctx, &api.ListServicesRequest{})
 	if err != nil {
 		return "", fmt.Errorf("failed to list services: %w", err)
@@ -68,9 +72,9 @@ func resolveServiceRef(ctx context.Context, client api.ControlClient, ref string
 	return matchRef(ref, "service", candidates)
 }
 
-// resolveNodeRef resolves a node reference (full ID, unique ID prefix, or
+// ResolveNodeRef resolves a node reference (full ID, unique ID prefix, or
 // hostname) to its full ID.
-func resolveNodeRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
+func ResolveNodeRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
 	resp, err := client.ListNodes(ctx, &api.ListNodesRequest{})
 	if err != nil {
 		return "", fmt.Errorf("failed to list nodes: %w", err)
@@ -86,9 +90,9 @@ func resolveNodeRef(ctx context.Context, client api.ControlClient, ref string) (
 	return matchRef(ref, "node", candidates)
 }
 
-// resolveTaskRef resolves a task reference (full ID or unique ID prefix) to its
+// ResolveTaskRef resolves a task reference (full ID or unique ID prefix) to its
 // full ID.
-func resolveTaskRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
+func ResolveTaskRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
 	resp, err := client.ListTasks(ctx, &api.ListTasksRequest{})
 	if err != nil {
 		return "", fmt.Errorf("failed to list tasks: %w", err)

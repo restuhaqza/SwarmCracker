@@ -16,6 +16,7 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -1172,7 +1173,7 @@ func inspectService(serviceID, format string, pretty bool) error {
 // redaction on the JSON path — is unit-testable without a cluster.
 func inspectServiceWithClient(ctx context.Context, client api.ControlClient, w io.Writer, serviceID, format string, pretty bool) error {
 	// Resolve by full ID, unique ID prefix, or name.
-	resolvedID, err := resolveServiceRef(ctx, client, serviceID)
+	resolvedID, err := legacy.ResolveServiceRef(ctx, client, serviceID)
 	if err != nil {
 		return err
 	}
@@ -1409,7 +1410,7 @@ func listServiceTasksWithClient(ctx context.Context, client api.ControlClient, w
 	}
 
 	// Resolve the reference (full ID, unique ID prefix, or name) to a full ID.
-	actualServiceID, err := resolveServiceRef(ctx, client, serviceID)
+	actualServiceID, err := legacy.ResolveServiceRef(ctx, client, serviceID)
 	if err != nil {
 		return err
 	}
@@ -1766,7 +1767,7 @@ func updateServiceWithClient(ctx context.Context, client api.ControlClient, serv
 	}
 
 	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
-	serviceID, err := resolveServiceRef(ctx, client, serviceID)
+	serviceID, err := legacy.ResolveServiceRef(ctx, client, serviceID)
 	if err != nil {
 		return err
 	}
@@ -2167,7 +2168,7 @@ func removeService(serviceID string, force bool) error {
 	defer conn.Close()
 
 	// Resolve the reference (full ID, unique ID prefix, or name).
-	actualID, err := resolveServiceRef(ctx, client, serviceID)
+	actualID, err := legacy.ResolveServiceRef(ctx, client, serviceID)
 	if err != nil {
 		return err
 	}

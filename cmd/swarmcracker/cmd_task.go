@@ -21,6 +21,7 @@ import (
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/redact"
 )
@@ -332,7 +333,7 @@ func inspectTask(taskID, format string, pretty bool) error {
 // and output writer injected, so the rendering is unit-testable without a
 // cluster.
 func inspectTaskWithClient(ctx context.Context, client api.ControlClient, w io.Writer, taskID, format string, pretty bool) error {
-	resolvedID, err := resolveTaskRef(ctx, client, taskID)
+	resolvedID, err := legacy.ResolveTaskRef(ctx, client, taskID)
 	if err != nil {
 		return err
 	}
