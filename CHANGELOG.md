@@ -42,6 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for user-defined networks (identity, driver, first IPAM pool, labels and
   attachability); `-o name` emits IDs. Legacy `--format json` keeps the raw
   array.
+- **API contract acceptance** — `make api-check` runs the envelope, OpenAPI,
+  client and command contract tests. The `partial` error code now maps to exit
+  status 7, completing the documented exit-code table.
 
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global

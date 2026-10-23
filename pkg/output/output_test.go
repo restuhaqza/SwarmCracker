@@ -24,6 +24,7 @@ func TestExitCodes(t *testing.T) {
 		{CodeNotFound, 3},
 		{CodeAmbiguous, 3},
 		{CodeConflict, 4},
+		{CodePartial, 7},
 		{CodeUnauthenticated, 5},
 		{CodeForbidden, 5},
 		{CodeUnreachable, 6},

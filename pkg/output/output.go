@@ -44,6 +44,7 @@ const (
 	CodeForbidden          Code = "forbidden"
 	CodeConflict           Code = "conflict"
 	CodeCursorExpired      Code = "cursor_expired"
+	CodePartial            Code = "partial"
 	CodeRateLimited        Code = "rate_limited"
 	CodeUnavailable        Code = "unavailable"
 	CodeTimeout            Code = "timeout"
@@ -124,6 +125,8 @@ func exitCode(code Code) int {
 		return 3
 	case CodeConflict:
 		return 4
+	case CodePartial:
+		return 7
 	case CodeUnauthenticated, CodeForbidden:
 		return 5
 	case CodeRateLimited, CodeUnavailable, CodeTimeout, CodeUnreachable:

@@ -46,6 +46,18 @@ test:
 	$(GO) test -v -race -coverprofile=coverage.out ./pkg/...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
+# API contract acceptance: envelopes, OpenAPI fixtures, exit codes and the
+# command-level contract paths. The cmd package is Linux-only; run this target
+# on Linux (hosted CI) rather than macOS.
+api-check:
+	@echo "Running API contract acceptance..."
+	$(GO) test ./pkg/api/v1 ./pkg/client ./pkg/output
+	@if [ "$$(uname -s)" = "Linux" ]; then \
+		$(GO) test ./cmd/swarmcracker -run 'Test.*Contract|TestCLIExitCode|TestExitCode' -count=1; \
+	else \
+		echo "Skipping cmd/swarmcracker contract tests on $$(uname -s); run make api-check on Linux/CI"; \
+	fi
+
 # Run unit tests only
 test-unit:
 	@echo "Running unit tests..."
@@ -234,7 +246,7 @@ tag:
 	@echo "Tag $(TAG) created. Push with:"
 	@echo "  git push origin $(TAG)"
 
-.PHONY: all swarmcracker install test test-quick test-all integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
+.PHONY: all swarmcracker install test test-quick test-all api-check integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
 
 # Download embedded static binaries for VM rootfs injection
 .PHONY: binaries
