@@ -33,8 +33,22 @@ type Config struct {
 	StateDir string
 	// CertDir overrides StateDir/certificates when set.
 	CertDir string
-	// Timeout is the dial/request default. Zero is replaced by 10s.
+	// Timeout is the dial/request default. Zero is replaced by 10s locally and
+	// 30s for a remote endpoint.
 	Timeout time.Duration
+
+	// Endpoint is the manager's HTTPS API base URL, e.g.
+	// https://manager:4244. Empty means the local Unix socket.
+	Endpoint string
+	// CAFile is the PEM CA bundle used to verify Endpoint. It is required
+	// whenever Endpoint is set; there is no unverified fallback.
+	CAFile string
+	// TokenFile holds a bearer token. Surrounding whitespace is trimmed.
+	TokenFile string
+	// Token is an explicit bearer token. It wins over TokenFile.
+	Token string
+	// ServerName overrides the TLS server name used to verify Endpoint.
+	ServerName string
 }
 
 // DefaultConfig reads the same environment variables as the legacy CLI.
@@ -94,11 +108,15 @@ type controlClient interface {
 type Client struct {
 	control controlClient
 	conn    *grpc.ClientConn
+	remote  *remoteClient
 }
 
-// New dials the manager's local control socket. Remote HTTP and bearer-token
-// transports are added in phase 1 behind this same API.
+// New returns a client for cfg. A non-empty Config.Endpoint selects the remote
+// HTTPS API; otherwise the manager's local control socket is dialed.
 func New(cfg Config) (*Client, error) {
+	if cfg.Endpoint != "" {
+		return newRemote(cfg)
+	}
 	cfg = cfg.withDefaults()
 
 	cert, err := tls.LoadX509KeyPair(
@@ -144,7 +162,8 @@ func New(cfg Config) (*Client, error) {
 	return &Client{control: api.NewControlClient(conn), conn: conn}, nil
 }
 
-// Close releases the gRPC connection.
+// Close releases the gRPC connection. A remote client keeps no persistent
+// transport state, so Close is a safe no-op there.
 func (c *Client) Close() error {
 	if c == nil || c.conn == nil {
 		return nil
@@ -154,6 +173,9 @@ func (c *Client) Close() error {
 
 // ListServices returns services with their desired/running task counts.
 func (c *Client) ListServices(ctx context.Context) ([]v1.Service, error) {
+	if c.remote != nil {
+		return c.remote.listServices(ctx)
+	}
 	resp, err := c.control.ListServices(ctx, &api.ListServicesRequest{})
 	if err != nil {
 		return nil, err
@@ -180,6 +202,9 @@ func (c *Client) ListServices(ctx context.Context) ([]v1.Service, error) {
 
 // GetService returns one service with its observed task counts.
 func (c *Client) GetService(ctx context.Context, id string) (v1.Service, error) {
+	if c.remote != nil {
+		return c.remote.getService(ctx, id)
+	}
 	resp, err := c.control.GetService(ctx, &api.GetServiceRequest{ServiceID: id})
 	if err != nil {
 		return v1.Service{}, err
@@ -203,6 +228,9 @@ func (c *Client) GetService(ctx context.Context, id string) (v1.Service, error) 
 // The node name comes from one ListNodes call and only when the task has a
 // node; a task that has not been scheduled needs no node lookup.
 func (c *Client) GetTask(ctx context.Context, id string) (v1.Task, error) {
+	if c.remote != nil {
+		return c.remote.getTask(ctx, id)
+	}
 	resp, err := c.control.GetTask(ctx, &api.GetTaskRequest{TaskID: id})
 	if err != nil {
 		return v1.Task{}, err
@@ -227,6 +255,9 @@ func (c *Client) GetTask(ctx context.Context, id string) (v1.Task, error) {
 
 // GetNode returns one cluster node.
 func (c *Client) GetNode(ctx context.Context, id string) (v1.Node, error) {
+	if c.remote != nil {
+		return c.remote.getNode(ctx, id)
+	}
 	resp, err := c.control.GetNode(ctx, &api.GetNodeRequest{NodeID: id})
 	if err != nil {
 		return v1.Node{}, err
@@ -242,6 +273,9 @@ func (c *Client) GetNode(ctx context.Context, id string) (v1.Node, error) {
 // Unlike ListNetworks, a direct read does not filter built-in networks, so
 // ingress and docker_gwbridge are returned; only the list hides them.
 func (c *Client) GetNetwork(ctx context.Context, id string) (v1.Network, error) {
+	if c.remote != nil {
+		return c.remote.getNetwork(ctx, id)
+	}
 	resp, err := c.control.GetNetwork(ctx, &api.GetNetworkRequest{NetworkID: id})
 	if err != nil {
 		return v1.Network{}, err
@@ -254,6 +288,9 @@ func (c *Client) GetNetwork(ctx context.Context, id string) (v1.Network, error) 
 
 // GetConfig returns one config's metadata. The payload is never read.
 func (c *Client) GetConfig(ctx context.Context, id string) (v1.Config, error) {
+	if c.remote != nil {
+		return c.remote.getConfig(ctx, id)
+	}
 	resp, err := c.control.GetConfig(ctx, &api.GetConfigRequest{ConfigID: id})
 	if err != nil {
 		return v1.Config{}, err
@@ -266,6 +303,9 @@ func (c *Client) GetConfig(ctx context.Context, id string) (v1.Config, error) {
 
 // GetSecret returns one secret's metadata. The payload is never read.
 func (c *Client) GetSecret(ctx context.Context, id string) (v1.Secret, error) {
+	if c.remote != nil {
+		return c.remote.getSecret(ctx, id)
+	}
 	resp, err := c.control.GetSecret(ctx, &api.GetSecretRequest{SecretID: id})
 	if err != nil {
 		return v1.Secret{}, err
@@ -279,6 +319,9 @@ func (c *Client) GetSecret(ctx context.Context, id string) (v1.Secret, error) {
 // ClusterID returns the cluster's ID, which a local manager answers because a
 // node belongs to exactly one cluster. An empty cluster list is NotFound.
 func (c *Client) ClusterID(ctx context.Context) (string, error) {
+	if c.remote != nil {
+		return c.remote.clusterID(ctx)
+	}
 	resp, err := c.control.ListClusters(ctx, &api.ListClustersRequest{})
 	if err != nil {
 		return "", err
@@ -293,6 +336,9 @@ func (c *Client) ClusterID(ctx context.Context) (string, error) {
 // ID. The built-in ingress and gateway networks are excluded, matching the
 // legacy table.
 func (c *Client) ListNetworks(ctx context.Context) ([]v1.Network, error) {
+	if c.remote != nil {
+		return c.remote.listNetworks(ctx)
+	}
 	resp, err := c.control.ListNetworks(ctx, &api.ListNetworksRequest{})
 	if err != nil {
 		return nil, err
@@ -312,6 +358,9 @@ func (c *Client) ListNetworks(ctx context.Context) ([]v1.Network, error) {
 // ListConfigs returns config metadata without payloads, ordered by creation
 // time then ID.
 func (c *Client) ListConfigs(ctx context.Context) ([]v1.Config, error) {
+	if c.remote != nil {
+		return c.remote.listConfigs(ctx)
+	}
 	resp, err := c.control.ListConfigs(ctx, &api.ListConfigsRequest{})
 	if err != nil {
 		return nil, err
@@ -328,6 +377,9 @@ func (c *Client) ListConfigs(ctx context.Context) ([]v1.Config, error) {
 // ListSecrets returns secret metadata without payloads, ordered by creation
 // time then ID.
 func (c *Client) ListSecrets(ctx context.Context) ([]v1.Secret, error) {
+	if c.remote != nil {
+		return c.remote.listSecrets(ctx)
+	}
 	resp, err := c.control.ListSecrets(ctx, &api.ListSecretsRequest{})
 	if err != nil {
 		return nil, err
@@ -343,6 +395,9 @@ func (c *Client) ListSecrets(ctx context.Context) ([]v1.Secret, error) {
 
 // ListNodes returns the cluster nodes, ordered by creation time then ID.
 func (c *Client) ListNodes(ctx context.Context) ([]v1.Node, error) {
+	if c.remote != nil {
+		return c.remote.listNodes(ctx)
+	}
 	resp, err := c.control.ListNodes(ctx, &api.ListNodesRequest{})
 	if err != nil {
 		return nil, err
@@ -363,6 +418,9 @@ func (c *Client) ListNodes(ctx context.Context) ([]v1.Node, error) {
 // list: the contract includes nodeName and a caller that cannot read nodes
 // cannot produce the document. An empty task list never calls ListNodes.
 func (c *Client) ListTasks(ctx context.Context) ([]v1.Task, error) {
+	if c.remote != nil {
+		return c.remote.listTasks(ctx)
+	}
 	return c.listTasks(ctx, &api.ListTasksRequest{})
 }
 
@@ -370,6 +428,9 @@ func (c *Client) ListTasks(ctx context.Context) ([]v1.Task, error) {
 // ID. The manager filters the task list; the node lookup is shared with
 // ListTasks so nodeName stays populated.
 func (c *Client) ListServiceTasks(ctx context.Context, serviceID string) ([]v1.Task, error) {
+	if c.remote != nil {
+		return c.remote.listServiceTasks(ctx, serviceID)
+	}
 	return c.listTasks(ctx, &api.ListTasksRequest{
 		Filters: &api.ListTasksRequest_Filters{ServiceIDs: []string{serviceID}},
 	})
