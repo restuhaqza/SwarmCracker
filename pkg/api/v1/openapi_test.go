@@ -321,6 +321,234 @@ func TestOpenAPIVersionInfo(t *testing.T) {
 	require.NotNil(t, path.Get.Responses.Value("4XX"), "version 4XX response missing")
 }
 
+// v1MediaType is the media type every phase-1 route answers with.
+const v1MediaType = "application/vnd.swarmcracker.v1+json"
+
+// requireTypedResponse asserts one response status exists, is declared in the v1
+// media type and references schema.
+func requireTypedResponse(t *testing.T, doc *openapi3.T, path, status, schema string) {
+	t.Helper()
+
+	item := doc.Paths.Find(path)
+	require.NotNil(t, item, "%s path missing", path)
+	require.NotNil(t, item.Get, "%s GET operation missing", path)
+
+	response := item.Get.Responses.Value(status)
+	require.NotNilf(t, response, "%s %s response missing", path, status)
+	require.NotNilf(t, response.Value, "%s %s response unresolved", path, status)
+
+	media := response.Value.Content.Get(v1MediaType)
+	require.NotNilf(t, media, "%s %s is not declared in %s", path, status, v1MediaType)
+	require.NotNilf(t, media.Schema, "%s %s schema missing", path, status)
+	require.Equal(t, "#/components/schemas/"+schema, media.Schema.Ref,
+		"%s %s must reference %s", path, status, schema)
+}
+
+// TestOpenAPISingleResourceDocuments validates every single-resource document
+// constructor against its schema and pins each get-by-id path to that schema.
+func TestOpenAPISingleResourceDocuments(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	for _, tc := range []struct {
+		name  string
+		path  string
+		value any
+	}{
+		{
+			name: "TaskDocument",
+			path: "/v1/tasks/{id}",
+			value: NewTaskDocument(Task{
+				ID: "t1abc", Name: "web.1.abc123", Revision: "42",
+				ServiceID: "svc-1", ServiceName: "web", NodeID: "node-1", NodeName: "node-1",
+				Slot: 1, State: "running", DesiredState: "running",
+				CreatedAt: "2026-10-19T10:01:00Z", UpdatedAt: "2026-10-19T10:01:04Z",
+				Image: "nginx:alpine", Addresses: []string{"10.0.1.7"},
+				Ports: []Port{{Target: 80, Protocol: "tcp"}}, ExitCode: ptr[int32](0),
+				Health: &TaskHealth{Status: "healthy"},
+			}),
+		},
+		{
+			name: "NodeDocument",
+			path: "/v1/nodes/{id}",
+			value: NewNodeDocument(Node{
+				ID: "node-1", Hostname: "node-1", Revision: "9",
+				CreatedAt: "2026-10-18T08:00:00Z", UpdatedAt: "2026-10-19T10:03:00Z",
+				Role: "manager", Membership: "accepted", Availability: "active", State: "ready",
+				Address: "192.168.1.11", Labels: map[string]string{"zone": "a"},
+				Resources:    &NodeResources{CPUs: 8, MemoryBytes: 16 << 30},
+				Manager:      &NodeManager{Leader: true, Reachable: true, Address: "192.168.1.11:4242", RaftID: 1},
+				AgentVersion: "29.0.1",
+			}),
+		},
+		{
+			name: "NetworkDocument",
+			path: "/v1/networks/{id}",
+			value: NewNetworkDocument(Network{
+				ID: "net-1", Name: "app", Revision: "2", CreatedAt: "2026-10-19T10:00:00Z",
+				Driver: "overlay",
+				IPAM:   &NetworkIPAM{Subnet: "10.0.1.0/24", Gateway: "10.0.1.1"},
+				Labels: map[string]string{"tier": "data"}, Attachable: true,
+			}),
+		},
+		{
+			name: "ConfigDocument",
+			path: "/v1/configs/{id}",
+			value: NewConfigDocument(Config{
+				ID: "cfg-1", Name: "app", Revision: "3",
+				CreatedAt: "2026-10-19T10:00:00Z", UpdatedAt: "2026-10-19T10:01:00Z",
+				Labels: map[string]string{"team": "payments"},
+			}),
+		},
+		{
+			name: "SecretDocument",
+			path: "/v1/secrets/{id}",
+			value: NewSecretDocument(Secret{
+				ID: "sec-1", Name: "token", Revision: "4",
+				CreatedAt: "2026-10-19T10:00:00Z", UpdatedAt: "2026-10-19T10:01:00Z",
+				Labels: map[string]string{"env": "prod"}, Driver: "external",
+			}),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.value)
+			require.NoError(t, err)
+			var generic any
+			require.NoError(t, json.Unmarshal(data, &generic))
+			validateAgainst(t, doc, tc.name, generic)
+
+			requireTypedResponse(t, doc, tc.path, "200", tc.name)
+			requireTypedResponse(t, doc, tc.path, "401", "ErrorDocument")
+			requireTypedResponse(t, doc, tc.path, "403", "ErrorDocument")
+			requireTypedResponse(t, doc, tc.path, "4XX", "ErrorDocument")
+
+			params := doc.Paths.Find(tc.path).Get.Parameters
+			require.Len(t, params, 1)
+			require.Equal(t, "id", params[0].Value.Name)
+			require.True(t, params[0].Value.Required)
+		})
+	}
+}
+
+// TestOpenAPIBearerSecurity pins the phase-1 token model: one bearer scheme,
+// required globally, with no public path. /v1/version needs a token too.
+func TestOpenAPIBearerSecurity(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	scheme, ok := doc.Components.SecuritySchemes["bearerAuth"]
+	require.True(t, ok, "bearerAuth security scheme missing")
+	require.NotNil(t, scheme.Value)
+	require.Equal(t, "http", scheme.Value.Type)
+	require.Equal(t, "bearer", scheme.Value.Scheme)
+
+	require.NotEmpty(t, doc.Security, "global security requirement missing")
+	required := false
+	for _, requirement := range doc.Security {
+		if _, ok := requirement["bearerAuth"]; ok {
+			required = true
+		}
+	}
+	require.True(t, required, "global security must require bearerAuth")
+
+	for path, item := range doc.Paths.Map() {
+		if item.Get == nil {
+			continue
+		}
+		// An operation-level security list overrides the global one, so an empty
+		// or different list here would make the path unauthenticated or
+		// differently authenticated.
+		require.Emptyf(t, item.Get.Security, "%s must inherit the global bearer requirement", path)
+	}
+}
+
+// TestOpenAPICommonResponseHeaders asserts the shared response headers are
+// declared on a representative list and get response.
+func TestOpenAPICommonResponseHeaders(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	apiVersion, ok := doc.Components.Headers["X-SwarmCracker-Api-Version"]
+	require.True(t, ok, "X-SwarmCracker-Api-Version component header missing")
+	require.NotNil(t, apiVersion.Value)
+	require.NotNil(t, apiVersion.Value.Schema)
+	require.NotNil(t, apiVersion.Value.Schema.Value)
+	require.True(t, apiVersion.Value.Schema.Value.Type.Is("integer"))
+	require.Len(t, apiVersion.Value.Schema.Value.Enum, 1)
+	require.EqualValues(t, 1, apiVersion.Value.Schema.Value.Enum[0])
+
+	requestID, ok := doc.Components.Headers["X-Request-Id"]
+	require.True(t, ok, "X-Request-Id component header missing")
+	require.NotNil(t, requestID.Value)
+	require.NotNil(t, requestID.Value.Schema.Value)
+	require.True(t, requestID.Value.Schema.Value.Type.Is("string"))
+
+	etag, ok := doc.Components.Headers["ETag"]
+	require.True(t, ok, "ETag component header missing")
+	require.NotNil(t, etag.Value)
+	require.NotNil(t, etag.Value.Schema.Value)
+	require.True(t, etag.Value.Schema.Value.Type.Is("string"))
+
+	for _, tc := range []struct{ path, status string }{
+		{"/v1/services", "200"},
+		{"/v1/services/{id}", "200"},
+		{"/v1/tasks", "200"},
+		{"/v1/tasks/{id}", "200"},
+		{"/v1/services", "4XX"},
+	} {
+		response := doc.Paths.Find(tc.path).Get.Responses.Value(tc.status)
+		require.NotNilf(t, response, "%s %s response missing", tc.path, tc.status)
+
+		for _, name := range []string{"X-SwarmCracker-Api-Version", "X-Request-Id"} {
+			header, ok := response.Value.Headers[name]
+			require.Truef(t, ok, "%s %s must declare %s", tc.path, tc.status, name)
+			require.NotNilf(t, header.Value, "%s %s header %s unresolved", tc.path, tc.status, name)
+		}
+
+		if tc.status == "200" {
+			header, ok := response.Value.Headers["ETag"]
+			require.Truef(t, ok, "%s 200 must declare ETag", tc.path)
+			require.NotNil(t, header.Value)
+		}
+	}
+
+	// A conditional read must be part of the contract, not just the docs.
+	for _, path := range []string{"/v1/services", "/v1/services/{id}"} {
+		notModified := doc.Paths.Find(path).Get.Responses.Value("304")
+		require.NotNilf(t, notModified, "%s 304 response missing", path)
+		require.NotNil(t, notModified.Value)
+		require.Empty(t, notModified.Value.Content, "%s 304 must not carry a body", path)
+	}
+}
+
+// TestOpenAPIListParameters asserts every list path keeps pagination and that
+// the paths whose resources support labels accept one.
+func TestOpenAPIListParameters(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	for _, tc := range []struct {
+		path      string
+		hasLabels bool
+	}{
+		{"/v1/services", true},
+		{"/v1/services/{id}/tasks", false},
+		{"/v1/tasks", false},
+		{"/v1/nodes", true},
+		{"/v1/networks", true},
+		{"/v1/configs", true},
+		{"/v1/secrets", true},
+	} {
+		item := doc.Paths.Find(tc.path)
+		require.NotNilf(t, item, "%s path missing", tc.path)
+
+		names := map[string]bool{}
+		for _, param := range item.Get.Parameters {
+			names[param.Value.Name] = true
+		}
+
+		require.Truef(t, names["limit"], "%s must accept limit", tc.path)
+		require.Truef(t, names["cursor"], "%s must accept cursor", tc.path)
+		require.Equalf(t, tc.hasLabels, names["label"], "%s label parameter mismatch", tc.path)
+	}
+}
+
 func TestOpenAPIErrorDocument(t *testing.T) {
 	doc := loadOpenAPI(t)
 	value := NewErrorDocument(Error{

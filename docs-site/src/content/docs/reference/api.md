@@ -1,9 +1,26 @@
 ---
 title: "SwarmCracker API Reference"
-description: "gRPC API protocol between swarmd-firecracker and swarmcracker CLI / swarmctl."
+description: "The public HTTP API (v1) and the internal gRPC protocol between swarmd-firecracker and swarmcracker CLI / swarmctl."
 ---
 
-> gRPC API protocol between swarmd-firecracker and swarmcracker CLI / swarmctl.
+> The public HTTP API (v1) and the internal gRPC protocol between swarmd-firecracker and swarmcracker CLI / swarmctl.
+
+---
+
+## Overview
+
+SwarmCracker has two machine surfaces:
+
+| Surface | Audience | Contract |
+|---------|----------|----------|
+| **HTTP API v1** | operators, CI, external readers | `api/openapi.yaml` — see [Public HTTP API (v1)](#public-http-api-v1) |
+| **gRPC control protocol** | the CLI and `swarmctl` against a cluster member | internal; versioned with `x-swarmcracker-version` (this page, below) |
+
+The gRPC section is the *internal* protocol: it is not a supported integration
+point and its messages may change with SwarmKit. The HTTP API is the public,
+documented contract.
+
+SwarmCracker uses **SwarmKit's gRPC API** via the `github.com/moby/swarmkit/v2/api` package, extended with a custom **API versioning protocol** (`pkg/apiversion`).
 
 ---
 
@@ -296,6 +313,137 @@ Used by `swarmctl` for VM introspection and the executor for lifecycle managemen
 | Executor bridge | `pkg/swarmkit/executor.go` (SwarmKit → Firecracker translation) |
 | CNI network allocator | `pkg/cni/allocator.go` |
 | Network discovery | `pkg/discovery/consul.go` |
+
+---
+
+## Public HTTP API (v1)
+
+Phase 1 ships a **read-only** HTTP API. A manager serves the same v1 resource
+documents the CLI emits — `schemaVersion`, `kind`, `items`, `next` for lists and
+`schemaVersion`, `kind` plus the resource fields for single documents — on two
+listeners:
+
+| Listener | Address | Authentication |
+|----------|---------|----------------|
+| **TLS/TCP** | `127.0.0.1:4244` by default (`--api-listen`) | `Authorization: Bearer <token>` on **every** route, including `/v1/version` |
+| **Unix socket** | `<state-dir>/api.sock` (default `/var/lib/swarmkit/api.sock`) | none — the socket's file mode is the credential |
+
+`api/openapi.yaml` in the repository is the normative contract for every route,
+schema, header and error code; this section is the operator's guide to it.
+
+Only managers serve the API: a worker has no local cluster state to read, so it
+never starts either listener. `--api-disabled` turns both off on a manager, and
+`--api-listen ""` keeps the Unix socket while disabling the TCP listener.
+
+### Routes
+
+Everything is `GET`. Phase 1 has no write routes.
+
+| Route | Returns |
+|-------|---------|
+| `/v1/version` | `VersionInfo` (API versions, server version, capabilities) |
+| `/v1/services` | `ServiceList` |
+| `/v1/services/{id}` | `ServiceDocument` |
+| `/v1/services/{id}/tasks` | `TaskList` |
+| `/v1/tasks` | `TaskList` |
+| `/v1/tasks/{id}` | `TaskDocument` |
+| `/v1/nodes` | `NodeList` |
+| `/v1/nodes/{id}` | `NodeDocument` |
+| `/v1/networks` | `NetworkList` |
+| `/v1/networks/{id}` | `NetworkDocument` |
+| `/v1/configs` | `ConfigList` |
+| `/v1/configs/{id}` | `ConfigDocument` |
+| `/v1/secrets` | `SecretList` (metadata only — never a payload) |
+| `/v1/secrets/{id}` | `SecretDocument` (metadata only) |
+
+Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
+also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
+`X-Request-Id`, and every `200` carries an `ETag` (send it back as
+`If-None-Match` to get `304`). Responses use the
+`application/vnd.swarmcracker.v1+json` media type.
+
+### Manager flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--api-listen` | `127.0.0.1:4244` | TLS listen address; empty disables the TCP listener |
+| `--api-socket` | `<state-dir>/api.sock` | trusted Unix socket |
+| `--api-cert-dir` | `<state-dir>/api` | directory holding `tls.crt` and `tls.key` |
+| `--api-token-file` | `<state-dir>/api/tokens.json` | bearer token store |
+| `--api-disabled` | `false` | do not start the API on this manager |
+
+These flags belong to `swarmd-firecracker`. Defaults follow `--state-dir`, so
+moving the state directory moves the socket, certificate and token store with it.
+
+### TLS
+
+TCP always verifies TLS, and there is deliberately no unverified mode. On first
+start the manager generates a **self-signed certificate** for its hostname,
+`127.0.0.1`, `::1` and the host part of `--api-listen`, and writes it to
+`<api-cert-dir>/tls.crt` / `tls.key`.
+
+Because the bootstrap certificate is self-signed, a remote client must trust it
+explicitly with `--ca <api-cert-dir>/tls.crt`. The client uses no system trust
+store and treats a missing `--ca` as a usage error rather than skipping
+verification. If the certificate does not name the address you dial, pass
+`--tls-server-name`. Signing the API certificate with the cluster CA is a
+follow-up, not part of phase 1 — rotate the bootstrap certificate by replacing
+the files in `--api-cert-dir` and restarting the daemon.
+
+The Unix socket is **trusted**: it performs no token check, because the socket's
+file mode (`0600`, owned by the daemon user) is the credential. Reach it with
+`ssh` or a local `swarmcracker` invocation, not through a TCP proxy.
+
+### Tokens
+
+```bash
+# On the manager: print a new secret once, then hand it to the client.
+swarmcracker api token create --name ci --role reader
+
+# Inspect or revoke the store (local file; never contacts a manager).
+swarmcracker api token list
+swarmcracker api token revoke <token-id>
+```
+
+`--role` is `reader` (read every route) or `admin` (also read; reserved for the
+write surface a later phase adds). The secret is printed once at creation and
+only its SHA-256 hash is written to `tokens.json`, so it cannot be recovered
+later. The CLI's `--token-file` names that store; without it the CLI uses
+`<SWARM_STATE_DIR or /var/lib/swarmkit>/api/tokens.json`. The daemon re-reads
+the file when it changes, so a token minted or revoked while the daemon runs
+takes effect without a restart.
+
+### Remote CLI reads
+
+These commands understand `-H` / `--host` and then read the HTTP API instead of
+the local control socket: `service ls|inspect|ps`, `task ls|inspect`,
+`node ls|inspect`, `config ls|inspect`, `secret ls|inspect` and
+`network ls|inspect`. Any other command refuses `--host` and says so; it never
+silently falls back to the local cluster. Without `--host` the same commands
+read the local socket, so a cluster member needs no flags.
+
+```bash
+swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
+  --token-file reader.token service ls
+swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
+  --token-file reader.token service ls -o json
+```
+
+`reader.token` holds the raw secret (surrounding whitespace is trimmed).
+`-o json` emits exactly the v1 document the API returned; `-o name` prints
+identifiers one per line. JSON output is available on the reads listed above.
+
+### Errors and exit codes
+
+A failed request answers with the `ErrorDocument` envelope — `schemaVersion`,
+`kind: Error` and `error {code, message, requestId, retryable, details}` — and
+the same `requestId` appears in the `X-Request-Id` response header. Codes are
+stable; messages are not. The authoritative list of wire codes is the `Error`
+schema in `api/openapi.yaml`. The CLI maps its stable codes to process exit
+statuses in `pkg/output` (`usage`/`invalid`/`unsupported_version` → `2`,
+`not_found`/`ambiguous` → `3`, `conflict` → `4`, `unauthenticated`/`forbidden` →
+`5`, `rate_limited`/`unavailable`/`timeout`/`unreachable` → `6`, `partial` →
+`7`, anything else → `1`).
 
 ---
 

@@ -4,12 +4,18 @@ info:
   version: "1"
   description: >
     Stable machine contract for SwarmCracker. This file is the normative
-    description of the public resource documents. It currently covers the
-    phase-0 core read model: services, the shared error document and the
-    envelope.
+    description of the phase-1 public read API: every list and get route, the
+    resource documents, the shared response headers, the error document and the
+    bearer authentication model. The trusted Unix socket serves the same
+    documents without a token; its file mode is the credential.
 servers:
   - url: https://mgr:4244
     description: Manager public API (phase 1; TLS + bearer token)
+security:
+  # Every phase-1 TCP route needs a reader or admin bearer token, including
+  # /v1/version. The trusted Unix socket (<state-dir>/api.sock) is the same
+  # documents without a token; its file mode is the credential.
+  - bearerAuth: []
 paths:
   /v1/version:
     get:
@@ -18,11 +24,24 @@ paths:
       responses:
         "200":
           description: The server's identity and feature-detection data
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/VersionInfo" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -43,16 +62,33 @@ paths:
       responses:
         "200":
           description: A page of services
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ServiceList" }
         "207":
           description: A page where some nodes could not answer; inspect `partial`
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ServiceList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -68,11 +104,24 @@ paths:
       responses:
         "200":
           description: A single service
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ServiceDocument" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -97,11 +146,24 @@ paths:
       responses:
         "200":
           description: A page of tasks for one service
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/TaskList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -122,11 +184,57 @@ paths:
       responses:
         "200":
           description: A page of user-defined networks
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/NetworkList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/networks/{id}:
+    get:
+      operationId: getNetwork
+      summary: Get one user-defined network
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: A single user-defined network
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/NetworkDocument" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -147,11 +255,57 @@ paths:
       responses:
         "200":
           description: A page of config metadata
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ConfigList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/configs/{id}:
+    get:
+      operationId: getConfig
+      summary: Get one config
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: A single config's metadata
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ConfigDocument" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -172,11 +326,57 @@ paths:
       responses:
         "200":
           description: A page of secret metadata
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/SecretList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/secrets/{id}:
+    get:
+      operationId: getSecret
+      summary: Get one secret's metadata
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: A single secret's metadata (never its payload)
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SecretDocument" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -212,16 +412,66 @@ paths:
       responses:
         "200":
           description: A page of tasks
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/TaskList" }
         "207":
           description: A page where some nodes could not answer; inspect `partial`
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/TaskList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}:
+    get:
+      operationId: getTask
+      summary: Get one task
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: A single task
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/TaskDocument" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -260,20 +510,120 @@ paths:
       responses:
         "200":
           description: A page of nodes
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/NodeList" }
         "207":
           description: A page where some nodes could not answer; inspect `partial`
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/NodeList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "4XX":
           description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/nodes/{id}:
+    get:
+      operationId: getNode
+      summary: Get one node
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: A single node
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/NodeDocument" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        A reader or admin token minted on the manager with
+        `swarmcracker api token create`. Every TCP route requires one, including
+        /v1/version.
+  responses:
+    Unauthenticated:
+      description: Missing or invalid bearer token
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        WWW-Authenticate: { $ref: "#/components/headers/WWW-Authenticate" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    NotModified:
+      description: >
+        The document is unchanged since the ETag sent in If-None-Match. The
+        response has no body.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        ETag: { $ref: "#/components/headers/ETag" }
+    Forbidden:
+      description: The token's role may not perform this read
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+  headers:
+    X-SwarmCracker-Api-Version:
+      description: The API version that answered. Always 1 in phase 1.
+      schema: { type: integer, enum: [1] }
+    X-Request-Id:
+      description: Per-request identifier; an error document repeats it as `requestId`.
+      schema: { type: string }
+    ETag:
+      description: >
+        Quoted SHA-256 of the exact response body. Send it back as If-None-Match
+        to receive 304 when nothing changed.
+      schema: { type: string }
+    WWW-Authenticate:
+      description: Always `Bearer` on a 401.
+      schema: { type: string }
+
   schemas:
     NetworkIPAM:
       type: object
@@ -309,6 +659,15 @@ components:
           type: string
           nullable: true
 
+    NetworkDocument:
+      allOf:
+        - $ref: "#/components/schemas/Network"
+        - type: object
+          required: [schemaVersion, kind]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [Network] }
+
     Config:
       type: object
       required: [id, name, revision]
@@ -334,6 +693,15 @@ components:
         next:
           type: string
           nullable: true
+
+    ConfigDocument:
+      allOf:
+        - $ref: "#/components/schemas/Config"
+        - type: object
+          required: [schemaVersion, kind]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [Config] }
 
     Secret:
       type: object
@@ -361,6 +729,15 @@ components:
         next:
           type: string
           nullable: true
+
+    SecretDocument:
+      allOf:
+        - $ref: "#/components/schemas/Secret"
+        - type: object
+          required: [schemaVersion, kind]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [Secret] }
 
     ServiceList:
       type: object
@@ -580,6 +957,15 @@ components:
         command: { type: string }
         checkedAt: { type: string, format: date-time }
 
+    TaskDocument:
+      allOf:
+        - $ref: "#/components/schemas/Task"
+        - type: object
+          required: [schemaVersion, kind]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [Task] }
+
     NodeList:
       type: object
       required: [schemaVersion, kind, items, next]
@@ -634,6 +1020,15 @@ components:
         reachable: { type: boolean }
         address: { type: string }
         raftId: { type: integer, format: int64 }
+
+    NodeDocument:
+      allOf:
+        - $ref: "#/components/schemas/Node"
+        - type: object
+          required: [schemaVersion, kind]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [Node] }
 
     Warning:
       type: object
