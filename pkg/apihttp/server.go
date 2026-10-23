@@ -118,10 +118,18 @@ type Config struct {
 	ServerVersion string
 	GRPCVersion   string
 	ClusterID     string
-	Capabilities  []string
+	// Capabilities is the advertised capability list. Nil means the served
+	// surface. New always adds the broker operations (exec, logs, files, health)
+	// when Broker is non-nil, so a supplied list can narrow the read/write
+	// surface but never deny an operation the server actually serves: a wired
+	// broker and GET /v1/version cannot disagree.
+	Capabilities []string
 	// EventHeartbeat is the SSE/NDJSON keep-alive interval. Zero means 15s;
 	// tests set a short interval.
 	EventHeartbeat time.Duration
+	// HealthPageBudget is the wall-clock budget of one task list's health
+	// fan-out. Zero means 5s; tests set a short budget.
+	HealthPageBudget time.Duration
 	// RateLimit is the per-token bucket. Zero installs the 10 req/s, burst 20
 	// default in New.
 	RateLimit *RateLimiter
@@ -142,8 +150,17 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Capabilities == nil {
 		cfg.Capabilities = []string{"read", "write", "events", "exec", "logs", "files"}
 	}
+	// A wired broker serves these operations, so they are advertised no matter
+	// what the caller supplied. This package owns the advertisement; an embedder
+	// that builds a broker cannot forget the capability it enables.
+	if cfg.Broker != nil {
+		cfg.Capabilities = withBrokerCapabilities(cfg.Capabilities)
+	}
 	if cfg.EventHeartbeat <= 0 {
 		cfg.EventHeartbeat = defaultEventHeartbeat
+	}
+	if cfg.HealthPageBudget <= 0 {
+		cfg.HealthPageBudget = healthPageBudget
 	}
 	if cfg.RateLimit == nil {
 		cfg.RateLimit = NewRateLimiter(DefaultRatePerSecond, DefaultRateBurst)
@@ -157,6 +174,32 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
 	s.routes()
 	return s, nil
+}
+
+// brokerCapabilities are the operations only a configured Broker can serve.
+// They are the single list New unions into the advertisement, so the version
+// document cannot promise less than the routes reach.
+var brokerCapabilities = []string{"exec", "logs", "files", "health"}
+
+// withBrokerCapabilities returns capabilities plus every broker operation it
+// lacks, preserving the caller's order and appending the missing ones in the
+// canonical order. An explicitly narrowed list keeps its narrowing for every
+// other capability; it cannot remove an operation the server serves.
+func withBrokerCapabilities(capabilities []string) []string {
+	effective := make([]string, len(capabilities), len(capabilities)+len(brokerCapabilities))
+	copy(effective, capabilities)
+
+	present := make(map[string]struct{}, len(effective))
+	for _, capability := range effective {
+		present[capability] = struct{}{}
+	}
+	for _, capability := range brokerCapabilities {
+		if _, ok := present[capability]; ok {
+			continue
+		}
+		effective = append(effective, capability)
+	}
+	return effective
 }
 
 // routes registers every route with the method it serves and the scope it

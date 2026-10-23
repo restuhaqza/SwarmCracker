@@ -13,6 +13,10 @@ package apihttp
 //     503 unavailable.
 //   - A task that publishes no healthcheck keeps the key off the wire: an empty
 //     object would claim an observation that does not exist.
+//   - The whole fan-out of one page shares a wall-clock budget, not only a
+//     per-task deadline: a large page is many waves of fetches, and a response
+//     must not be held open for all of them. Tasks still unanswered when the
+//     budget expires become node partials, exactly like a failed fetch.
 //
 // The manager never dials a node directly. The fan-out goes through the same
 // broker Manager that serves exec, logs and files, so there is one node
@@ -25,7 +29,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -42,6 +45,12 @@ const (
 	// healthPerTaskTimeout bounds one task's fetch, so a node that stops
 	// answering cannot hold a page open.
 	healthPerTaskTimeout = 2 * time.Second
+	// healthPageBudget is the default wall-clock budget of one page's whole
+	// health fan-out. The per-task deadline bounds a single fetch; this bounds
+	// the response. At the default limit a page is several waves of fetches, so
+	// without it a slow cluster could hold a response for tens of seconds.
+	// Config.HealthPageBudget overrides it.
+	healthPageBudget = 5 * time.Second
 )
 
 // healthRequested reports whether the caller asked for health enrichment. An
@@ -66,9 +75,22 @@ func healthRequested(r *http.Request) (bool, error) {
 	}
 }
 
+// healthFetch is one task's completed (or abandoned) health read.
+type healthFetch struct {
+	index  int
+	health *v1.TaskHealth
+	err    error
+}
+
 // tasksWithHealth copies the page and attaches the health of every task it can
 // reach, returning the partials for the nodes it cannot. Results land at their
 // task's index, so enrichment can never reorder a page.
+//
+// The fan-out runs under one page budget. Every per-task context derives from it,
+// so an expiring page cancels the fetches still in flight, and the tasks that had
+// not answered become partials instead of holding the response. The handler never
+// waits past the budget: a worker that has not finished deposits its result into a
+// buffered channel nobody reads and exits on the cancelled context.
 func (s *Server) tasksWithHealth(ctx context.Context, tasks []v1.Task) ([]v1.Task, []v1.Partial) {
 	enriched := make([]v1.Task, len(tasks))
 	copy(enriched, tasks)
@@ -76,29 +98,73 @@ func (s *Server) tasksWithHealth(ctx context.Context, tasks []v1.Task) ([]v1.Tas
 		return enriched, nil
 	}
 
-	errs := make([]error, len(enriched))
-	var wg sync.WaitGroup
+	pageCtx, cancel := context.WithTimeout(ctx, s.cfg.HealthPageBudget)
+	defer cancel()
+
+	// Buffered to the page size, so a worker can always deposit its result and
+	// exit even after the handler stopped collecting.
+	results := make(chan healthFetch, len(enriched))
 	sem := make(chan struct{}, healthFanoutLimit)
 
+	pending := 0
 	for i := range enriched {
 		if enriched[i].NodeID == "" {
 			continue // an unplaced task has no node to ask
 		}
-		wg.Add(1)
+		pending++
 		go func(i int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			health, err := s.fetchTaskHealth(ctx, enriched[i])
-			if err != nil {
-				errs[i] = err
+			// Waiting for a worker slot counts against the page budget: a
+			// queue of slow fetches must not outlive it.
+			select {
+			case sem <- struct{}{}:
+			case <-pageCtx.Done():
+				results <- healthFetch{index: i, err: pageCtx.Err()}
 				return
 			}
-			enriched[i].Health = health
+			defer func() { <-sem }()
+
+			health, err := s.fetchTaskHealth(pageCtx, enriched[i])
+			results <- healthFetch{index: i, health: health, err: err}
 		}(i)
 	}
-	wg.Wait()
+
+	errs := make([]error, len(enriched))
+	settled := make([]bool, len(enriched))
+	apply := func(fetch healthFetch) {
+		settled[fetch.index] = true
+		if fetch.err != nil {
+			errs[fetch.index] = fetch.err
+			return
+		}
+		enriched[fetch.index].Health = fetch.health
+	}
+
+collect:
+	for collected := 0; collected < pending; {
+		select {
+		case fetch := <-results:
+			collected++
+			apply(fetch)
+		case <-pageCtx.Done():
+			// Take what already answered so a completed fetch is never
+			// downgraded to a partial, then stop waiting for the rest.
+			for {
+				select {
+				case fetch := <-results:
+					collected++
+					apply(fetch)
+				default:
+					break collect
+				}
+			}
+		}
+	}
+
+	for i := range enriched {
+		if !settled[i] && enriched[i].NodeID != "" {
+			errs[i] = pageCtx.Err()
+		}
+	}
 
 	return enriched, healthPartials(enriched, errs)
 }

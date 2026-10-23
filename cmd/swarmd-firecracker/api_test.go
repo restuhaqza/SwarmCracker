@@ -385,16 +385,3 @@ func TestNewBrokerManager_RequiresClusterTLS(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, mgr)
 }
-
-// TestAPICapabilities_HealthRequiresTheBroker pins the capability rule: health is
-// advertised only when the node broker manager is wired, because the manager
-// fans every health read out through it.
-func TestAPICapabilities_HealthRequiresTheBroker(t *testing.T) {
-	require.Equal(t,
-		[]string{"read", "write", "events", "exec", "logs", "files", "health"},
-		apiCapabilities(true))
-	require.Equal(t,
-		[]string{"read", "write", "events", "exec", "logs", "files"},
-		apiCapabilities(false),
-		"a manager without a broker must not advertise health")
-}

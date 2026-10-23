@@ -423,6 +423,109 @@ func TestGetTaskHealthDeadlineIsBounded(t *testing.T) {
 	require.WithinDuration(t, started.Add(healthPerTaskTimeout), deadline, time.Second)
 }
 
+// TestListTasksHealthPageBudgetStopsASlowPage proves the page has its own
+// wall-clock budget: a node that never answers is bounded by it, not by its
+// per-task deadline times the number of waves, and the page still answers 207
+// with the failed node as a partial.
+func TestListTasksHealthPageBudgetStopsASlowPage(t *testing.T) {
+	const budget = 100 * time.Millisecond
+
+	api := newExecTestAPIWithConfig(t, nil, nil, func(cfg *Config) {
+		cfg.HealthPageBudget = budget
+	})
+	api.client.tasks = []v1.Task{
+		taskAt("task-1", "node-slow", "2026-10-24T10:00:00Z"),
+		taskAt("task-2", "node-slow", "2026-10-24T10:01:00Z"),
+	}
+	api.broker.healthFn = func(ctx context.Context, _ v1.Task) (*v1.TaskHealth, error) {
+		<-ctx.Done() // a node that never answers
+		return nil, ctx.Err()
+	}
+
+	started := time.Now()
+	rec := getTasksWithHealth(t, api, "/v1/tasks?health=true")
+	elapsed := time.Since(started)
+
+	require.Equal(t, http.StatusMultiStatus, rec.Code)
+	require.Less(t, elapsed, healthPerTaskTimeout,
+		"the page budget, not the per-task deadline, must end the fan-out")
+	require.Less(t, elapsed, time.Second)
+
+	doc := decodeTaskList(t, rec)
+	require.Len(t, doc.Items, 2, "a 207 still carries the full page")
+	require.Len(t, doc.Partial, 1, "one partial per failed node")
+	require.Equal(t, "node-slow", doc.Partial[0].NodeID)
+	require.Equal(t, string(output.CodeUnavailable), doc.Partial[0].Error.Code)
+	require.True(t, doc.Partial[0].Error.Retryable)
+	for _, item := range doc.Items {
+		require.Nil(t, item.Health)
+	}
+}
+
+// TestListTasksHealthPageBudgetKeepsAnswers proves a mixed page keeps the health
+// a readable task returned while the slow node becomes a partial when the page
+// budget expires.
+func TestListTasksHealthPageBudgetKeepsAnswers(t *testing.T) {
+	const budget = 100 * time.Millisecond
+
+	api := newExecTestAPIWithConfig(t, nil, nil, func(cfg *Config) {
+		cfg.HealthPageBudget = budget
+	})
+	api.client.tasks = []v1.Task{
+		taskAt("task-1", "node-fast", "2026-10-24T10:00:00Z"),
+		taskAt("task-2", "node-slow", "2026-10-24T10:01:00Z"),
+	}
+	api.broker.healthFn = func(ctx context.Context, task v1.Task) (*v1.TaskHealth, error) {
+		if task.NodeID == "node-slow" {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+		return healthyTaskHealth("healthy"), nil
+	}
+
+	started := time.Now()
+	rec := getTasksWithHealth(t, api, "/v1/tasks?health=true")
+	require.Less(t, time.Since(started), time.Second)
+
+	require.Equal(t, http.StatusMultiStatus, rec.Code)
+	doc := decodeTaskList(t, rec)
+	require.Len(t, doc.Items, 2)
+	require.NotNil(t, doc.Items[0].Health, "a task that answered keeps its health")
+	require.Equal(t, "healthy", doc.Items[0].Health.Status)
+	require.Nil(t, doc.Items[1].Health)
+	require.Len(t, doc.Partial, 1)
+	require.Equal(t, "node-slow", doc.Partial[0].NodeID)
+}
+
+// TestListTasksHealthPageBudgetDoesNotWaitForAStuckBroker proves the handler
+// returns when the budget expires even if the broker ignores its context: the
+// worker deposits its result into the buffered channel and exits on its own.
+func TestListTasksHealthPageBudgetDoesNotWaitForAStuckBroker(t *testing.T) {
+	const budget = 50 * time.Millisecond
+
+	api := newExecTestAPIWithConfig(t, nil, nil, func(cfg *Config) {
+		cfg.HealthPageBudget = budget
+	})
+	api.client.tasks = []v1.Task{taskAt("task-1", "node-1", "2026-10-24T10:00:00Z")}
+
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	api.broker.healthFn = func(context.Context, v1.Task) (*v1.TaskHealth, error) {
+		<-release // misbehaves: does not observe cancellation
+		return healthyTaskHealth("late"), nil
+	}
+
+	started := time.Now()
+	rec := getTasksWithHealth(t, api, "/v1/tasks?health=true")
+	require.Less(t, time.Since(started), time.Second,
+		"the handler must not wait for a broker that ignores the budget")
+
+	require.Equal(t, http.StatusMultiStatus, rec.Code)
+	doc := decodeTaskList(t, rec)
+	require.Len(t, doc.Partial, 1)
+	require.Equal(t, "node-1", doc.Partial[0].NodeID)
+}
+
 // TestListTasksHealthOrderingIsStable is a smoke test that enrichment cannot
 // reorder a page even when the answers arrive out of order.
 func TestListTasksHealthOrderingIsStable(t *testing.T) {

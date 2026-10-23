@@ -110,6 +110,18 @@ type execTestAPI struct {
 
 func newExecTestAPI(t *testing.T, client *execFakeClient, broker *fakeBroker) *execTestAPI {
 	t.Helper()
+	return newExecTestAPIWithConfig(t, client, broker, nil)
+}
+
+// newExecTestAPIWithConfig is newExecTestAPI with a hook to adjust the server
+// config before New, for the tests that need a short page budget.
+func newExecTestAPIWithConfig(
+	t *testing.T,
+	client *execFakeClient,
+	broker *fakeBroker,
+	mutate func(*Config),
+) *execTestAPI {
+	t.Helper()
 	if client == nil {
 		client = &execFakeClient{fakeClient: &fakeClient{}}
 	}
@@ -129,7 +141,7 @@ func newExecTestAPI(t *testing.T, client *execFakeClient, broker *fakeBroker) *e
 	audit, err := OpenAuditStore(filepath.Join(t.TempDir(), "audit.jsonl"), 0)
 	require.NoError(t, err)
 
-	srv, err := New(Config{
+	cfg := Config{
 		Client:        client,
 		Broker:        broker,
 		Tokens:        store,
@@ -138,7 +150,12 @@ func newExecTestAPI(t *testing.T, client *execFakeClient, broker *fakeBroker) *e
 		GRPCVersion:   "v1",
 		ClusterID:     "cluster-1",
 		RateLimit:     NewRateLimiter(1e9, 1e9),
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+
+	srv, err := New(cfg)
 	require.NoError(t, err)
 
 	admin := mint("admin", RoleAdmin, nil)
