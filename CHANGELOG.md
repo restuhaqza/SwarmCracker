@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **API contract acceptance** — `make api-check` runs the envelope, OpenAPI,
   client and command contract tests. The `partial` error code now maps to exit
   status 7, completing the documented exit-code table.
+- **Client-boundary guard** — a test now rejects new `api.ControlClient` imports
+  in `cmd/swarmcracker` and `pkg/api`, with an explicit allowlist for the legacy
+  paths still being migrated.
 
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global
