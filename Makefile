@@ -46,12 +46,12 @@ test:
 	$(GO) test -v -race -coverprofile=coverage.out ./pkg/...
 	$(GO) tool cover -html=coverage.out -o coverage.html
 
-# API contract acceptance: envelopes, OpenAPI fixtures, exit codes and the
-# command-level contract paths. The cmd package is Linux-only; run this target
-# on Linux (hosted CI) rather than macOS.
+# API contract acceptance: envelopes, OpenAPI fixtures, exit codes, the phase-1
+# end-to-end suite (test/api) and the command-level contract paths. Only the cmd
+# package is Linux-only; everything before the split runs on every platform.
 api-check:
 	@echo "Running API contract acceptance..."
-	$(GO) test ./pkg/api/v1 ./pkg/client ./pkg/output
+	$(GO) test ./pkg/api/v1 ./pkg/client ./pkg/output ./test/api
 	@if [ "$$(uname -s)" = "Linux" ]; then \
 		$(GO) test ./cmd/swarmcracker -run 'Test.*Contract|TestCLIExitCode|TestExitCode|Test.*ControlClientBoundary' -count=1; \
 	else \
