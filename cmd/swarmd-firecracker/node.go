@@ -88,7 +88,7 @@ func checkAndMigrateClusterAddress(stateDir, advertiseAddr string) error {
 	return nil
 }
 
-func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRuntime, api apiRuntime) error {
+func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRuntime, api apiRuntime, brk brokerRuntime) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -133,6 +133,16 @@ func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRunt
 		printJoinTokens(ctx, config.StateDir)
 	}
 
+	// The broker is the manager-to-node transport for exec, logs, files and
+	// health. It needs the cluster certificate, so it starts after the node is
+	// ready. A failure is logged rather than fatal: a busy broker port must not
+	// take down a node that is otherwise healthy.
+	_, stopBroker, brokerErr := startBroker(ctx, brk, config.StateDir)
+	if brokerErr != nil {
+		log.G(ctx).WithError(brokerErr).Warn("Node broker disabled: failed to start")
+		stopBroker = func() {}
+	}
+
 	// Only a manager serves the programmatic API: startAPIForNode is a no-op on a
 	// worker. A failure is logged rather than fatal, so a port conflict cannot
 	// take down an otherwise healthy manager.
@@ -153,6 +163,11 @@ func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRunt
 	// Stop the API first: in-flight reads then finish against a live manager
 	// instead of a half-stopped one.
 	stopAPI()
+
+	// Stop the broker next, still before the node: an exec or log stream that is
+	// already running finishes against a live node, and no new manager request
+	// arrives during teardown.
+	stopBroker()
 
 	// Stop the node gracefully
 	log.G(ctx).Info("Stopping node...")

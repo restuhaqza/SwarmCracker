@@ -285,6 +285,12 @@ func newAppFlags() []cli.Flag {
 			Usage: "Do not start the programmatic API on this manager",
 			Value: false,
 		},
+		// Node broker (internal manager-to-node transport)
+		&cli.StringFlag{
+			Name:  "broker-listen",
+			Usage: "TLS listen address for the node broker (internal manager-to-node transport; empty disables the broker)",
+			Value: defaultBrokerListen,
+		},
 	}
 }
 
