@@ -59,4 +59,10 @@ type WriteOptions struct {
 	// sets this from the authenticated identity so pkg/client never has to know
 	// about roles.
 	AllowBindMounts bool
+	// DryRun asks for the full validation, reference resolution and
+	// precondition evaluation of a write without persisting it. The returned
+	// document is the document that would have been written: a create
+	// synthesises one with an empty id, revision and timestamps, and an update
+	// carries the merged spec with the current metadata.
+	DryRun bool
 }

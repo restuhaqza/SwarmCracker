@@ -88,6 +88,9 @@ type Config struct {
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore
+	// Idempotency is the manager-local Idempotency-Key store. It is optional: New
+	// installs a default store (24 h TTL) when it is nil.
+	Idempotency *IdempotencyStore
 	// CertDir holds tls.crt and tls.key for the TLS listener. Serve requires it
 	// only when a TCP address is configured; EnsureCertificate writes the pair.
 	CertDir       string
@@ -111,6 +114,11 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.Capabilities == nil {
 		cfg.Capabilities = []string{"read", "write"}
+	}
+	// Idempotency is manager-local and in memory; every server gets one so a
+	// POST with an Idempotency-Key is never silently unprotected.
+	if cfg.Idempotency == nil {
+		cfg.Idempotency = NewIdempotencyStore(DefaultIdempotencyTTL)
 	}
 
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
@@ -218,7 +226,14 @@ func write(method string, scope Scope, h http.HandlerFunc) route {
 func (s *Server) handleRoutes(pattern string, routes ...route) {
 	methods := make([]string, 0, len(routes))
 	for _, rt := range routes {
-		s.mux.HandleFunc(rt.method+" "+pattern, s.requireScope(rt.scope, rt.handle))
+		handler := rt.handle
+		if rt.method == http.MethodPost {
+			// A POST is a create or a rollback: the only routes an
+			// Idempotency-Key can protect. Auth and scope run first, so an
+			// unauthorized request never reserves a key.
+			handler = s.idempotent(handler)
+		}
+		s.mux.HandleFunc(rt.method+" "+pattern, s.requireScope(rt.scope, handler))
 		methods = append(methods, rt.method)
 	}
 

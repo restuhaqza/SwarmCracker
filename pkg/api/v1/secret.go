@@ -13,10 +13,13 @@ type Secret struct {
 
 // SecretDocument is a single-resource Secret document. It carries metadata
 // only; the payload has no path into a read document.
+//
+// DryRun marks the response to a write that was validated but not persisted.
 type SecretDocument struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Kind          string `json:"kind"`
 	Secret
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // NewSecretDocument wraps a Secret in the v1 envelope.

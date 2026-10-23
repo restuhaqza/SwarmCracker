@@ -499,6 +499,7 @@ func (r *remoteClient) createService(ctx context.Context, write v1.ServiceWrite,
 	resp, err := r.do(ctx, remoteRequest{
 		method:      http.MethodPost,
 		segments:    []string{"v1", "services"},
+		query:       writeQuery(opts),
 		body:        body,
 		contentType: mediaTypeV1,
 		headers:     headers,
@@ -524,6 +525,7 @@ func (r *remoteClient) updateService(ctx context.Context, ref string, patch []by
 	resp, err := r.do(ctx, remoteRequest{
 		method:      http.MethodPatch,
 		segments:    []string{"v1", "services", ref},
+		query:       writeQuery(opts),
 		body:        patch,
 		contentType: v1.MergePatchMediaType,
 		headers:     ifMatchHeader(opts.IfMatch),

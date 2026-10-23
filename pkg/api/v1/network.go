@@ -20,10 +20,13 @@ type NetworkIPAM struct {
 }
 
 // NetworkDocument is a single-resource Network document.
+//
+// DryRun marks the response to a write that was validated but not persisted.
 type NetworkDocument struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Kind          string `json:"kind"`
 	Network
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // NewNetworkDocument wraps a Network in the v1 envelope.

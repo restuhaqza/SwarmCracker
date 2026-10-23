@@ -49,6 +49,17 @@ func (c *Client) CreateService(ctx context.Context, write v1.ServiceWrite, opts 
 		return v1.Service{}, err
 	}
 
+	if opts.DryRun {
+		// A dry run still resolves every reference (buildServiceSpec already
+		// listed the networks) and still refuses a duplicate name, because the
+		// real create would. Nothing is persisted, so the document has no id,
+		// revision or timestamps.
+		if err := c.ensureServiceNameFree(ctx, spec.Annotations.Name); err != nil {
+			return v1.Service{}, err
+		}
+		return synthesizedService(serviceFromSwarmkit(&api.Service{Spec: *spec}, taskCounts{})), nil
+	}
+
 	resp, err := c.control.CreateService(ctx, &api.CreateServiceRequest{Spec: spec})
 	if err != nil {
 		return v1.Service{}, err
@@ -98,6 +109,14 @@ func (c *Client) UpdateService(ctx context.Context, ref string, patch []byte, op
 	spec := current.Spec.Copy()
 	if err := c.applyServicePatch(ctx, spec, decoded, opts.AllowBindMounts); err != nil {
 		return v1.Service{}, err
+	}
+
+	if opts.DryRun {
+		// The merged spec is what would be written; the current metadata is all
+		// the caller can honestly be shown for a write that did not happen.
+		preview := current.Copy()
+		preview.Spec = *spec
+		return serviceFromSwarmkit(preview, taskCounts{}), nil
 	}
 
 	return c.commitServiceUpdate(ctx, id, spec, current)

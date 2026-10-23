@@ -13,10 +13,16 @@ type Service struct {
 }
 
 // ServiceDocument is a single-resource Service document.
+//
+// DryRun marks the response to a write that was validated but not persisted, and
+// Warnings carries non-fatal wait outcomes (a wait timeout or a read error while
+// waiting). Both fields are absent on a normal read.
 type ServiceDocument struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Kind          string `json:"kind"`
 	Service
+	DryRun   bool      `json:"dryRun,omitempty"`
+	Warnings []Warning `json:"warnings,omitempty"`
 }
 
 // NewServiceDocument wraps a Service in the v1 envelope.

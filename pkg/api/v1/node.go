@@ -41,10 +41,13 @@ type NodeManager struct {
 }
 
 // NodeDocument is a single-resource Node document.
+//
+// DryRun marks the response to a write that was validated but not persisted.
 type NodeDocument struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Kind          string `json:"kind"`
 	Node
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // NewNodeDocument wraps a Node in the v1 envelope.

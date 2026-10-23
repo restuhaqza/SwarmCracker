@@ -34,6 +34,12 @@ const (
 
 // createService serves POST /v1/services.
 func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
+	opts, wait, timeout, err := serviceWriteQuery(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	if status, err := requireContentType(r, MediaType); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -51,26 +57,45 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	service, err := s.cfg.Client.CreateService(r.Context(), body,
-		v1.WriteOptions{
-			IfNoneMatch:     ifNoneMatch,
-			AllowBindMounts: mayBindMount(r),
-		})
+	opts.IfNoneMatch = ifNoneMatch
+	opts.AllowBindMounts = mayBindMount(r)
+
+	service, err := s.cfg.Client.CreateService(r.Context(), body, opts)
 	if err != nil {
-		s.recordServiceAudit(r, "service.create",
-			v1.AuditResource{Kind: v1.KindService, Name: body.Name}, "error")
+		// A dry run is not a mutation: it is never audited, not even on failure.
+		if !opts.DryRun {
+			s.recordServiceAudit(r, "service.create",
+				v1.AuditResource{Kind: v1.KindService, Name: body.Name}, "error")
+		}
 		s.writeWriteError(w, r, err)
 		return
 	}
 
-	s.recordServiceAudit(r, "service.create", serviceAuditResource(service, body.Name), "ok")
-	s.writeJSONWithETag(w, r, http.StatusCreated,
-		v1.NewServiceDocument(service), revisionETag(service.Revision))
+	if !opts.DryRun {
+		s.recordServiceAudit(r, "service.create", serviceAuditResource(service, body.Name), "ok")
+	}
+
+	document := v1.NewServiceDocument(service)
+	document.DryRun = opts.DryRun
+	if wait {
+		waited, warnings := s.waitServiceDocument(r.Context(), service, timeout)
+		document = v1.NewServiceDocument(waited)
+		document.Warnings = warnings
+		service = waited
+	}
+
+	s.writeJSONWithETag(w, r, http.StatusCreated, document, revisionETag(service.Revision))
 }
 
 // updateService serves PATCH /v1/services/{id}. The body is an RFC 7386 merge
 // patch; pkg/client parses and applies it over the current spec.
 func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
+	opts, wait, timeout, err := serviceWriteQuery(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	if status, err := requireContentType(r, v1.MergePatchMediaType); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -90,27 +115,49 @@ func (s *Server) updateService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	opts.IfMatch = ifMatch
+	opts.AllowBindMounts = mayBindMount(r)
+
 	ref := r.PathValue("id")
-	service, err := s.cfg.Client.UpdateService(r.Context(), ref, patch,
-		v1.WriteOptions{
-			IfMatch:         ifMatch,
-			AllowBindMounts: mayBindMount(r),
-		})
+	service, err := s.cfg.Client.UpdateService(r.Context(), ref, patch, opts)
 	if err != nil {
-		s.recordServiceAudit(r, "service.update",
-			v1.AuditResource{Kind: v1.KindService, Name: ref}, "error")
+		if !opts.DryRun {
+			s.recordServiceAudit(r, "service.update",
+				v1.AuditResource{Kind: v1.KindService, Name: ref}, "error")
+		}
 		s.writeWriteError(w, r, err)
 		return
 	}
 
-	s.recordServiceAudit(r, "service.update", serviceAuditResource(service, ref), "ok")
-	s.writeJSONWithETag(w, r, http.StatusOK,
-		v1.NewServiceDocument(service), revisionETag(service.Revision))
+	if !opts.DryRun {
+		s.recordServiceAudit(r, "service.update", serviceAuditResource(service, ref), "ok")
+	}
+
+	document := v1.NewServiceDocument(service)
+	document.DryRun = opts.DryRun
+	if wait {
+		waited, warnings := s.waitServiceDocument(r.Context(), service, timeout)
+		document = v1.NewServiceDocument(waited)
+		document.Warnings = warnings
+		service = waited
+	}
+
+	s.writeJSONWithETag(w, r, http.StatusOK, document, revisionETag(service.Revision))
 }
 
 // deleteService serves DELETE /v1/services/{id}.
 func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
-	ignoreMissing, status, err := parseIgnoreMissing(r.URL.Query())
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := rejectDeleteDryRun(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	ignoreMissing, status, err := parseIgnoreMissing(query)
 	if err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -136,6 +183,27 @@ func (s *Server) deleteService(w http.ResponseWriter, r *http.Request) {
 
 // rollbackService serves POST /v1/services/{id}/rollback.
 func (s *Server) rollbackService(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	dryRun, err := parseDryRun(query)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if dryRun {
+		// The previous spec is not the document a rollback would write, so a dry
+		// run cannot honestly show one. Refuse the capability instead of
+		// pretending.
+		s.writeError(w, r, notImplemented("dryRun",
+			"dryRun is not supported on rollback"))
+		return
+	}
+
+	wait, timeout, err := parseWait(query)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	ifMatch := strings.TrimSpace(r.Header.Get("If-Match"))
 	if ifMatch == "" {
 		s.writeWriteError(w, r, output.PreconditionRequired())
@@ -167,8 +235,16 @@ func (s *Server) rollbackService(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.recordServiceAudit(r, "service.rollback", serviceAuditResource(service, ref), "ok")
-	s.writeJSONWithETag(w, r, http.StatusOK,
-		v1.NewServiceDocument(service), revisionETag(service.Revision))
+
+	document := v1.NewServiceDocument(service)
+	if wait {
+		waited, warnings := s.waitServiceDocument(r.Context(), service, timeout)
+		document = v1.NewServiceDocument(waited)
+		document.Warnings = warnings
+		service = waited
+	}
+
+	s.writeJSONWithETag(w, r, http.StatusOK, document, revisionETag(service.Revision))
 }
 
 // mayBindMount reports whether this identity may write a bind mount. The

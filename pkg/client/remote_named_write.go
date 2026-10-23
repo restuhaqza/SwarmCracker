@@ -15,8 +15,10 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 )
 
-// postJSON sends a create with the v1 media type and decodes the response.
-func (r *remoteClient) postJSON(ctx context.Context, segments []string, value any, headers map[string]string, out any) error {
+// postJSON sends a create with the v1 media type and decodes the response. A
+// dry run is forwarded as a query parameter: the server does the validation and
+// precondition work, so this client never duplicates it.
+func (r *remoteClient) postJSON(ctx context.Context, segments []string, value any, opts v1.WriteOptions, out any) error {
 	body, err := json.Marshal(value)
 	if err != nil {
 		return output.NewErrorf(output.CodeInternal, "encode %s: %v", strings.Join(segments, "/"), err)
@@ -25,9 +27,10 @@ func (r *remoteClient) postJSON(ctx context.Context, segments []string, value an
 	resp, err := r.do(ctx, remoteRequest{
 		method:      http.MethodPost,
 		segments:    segments,
+		query:       writeQuery(opts),
 		body:        body,
 		contentType: mediaTypeV1,
-		headers:     headers,
+		headers:     ifNoneMatchHeader(opts.IfNoneMatch),
 	})
 	if err != nil {
 		return err
@@ -44,6 +47,7 @@ func (r *remoteClient) patchJSON(ctx context.Context, segments []string, patch [
 	resp, err := r.do(ctx, remoteRequest{
 		method:      http.MethodPatch,
 		segments:    segments,
+		query:       writeQuery(opts),
 		body:        patch,
 		contentType: v1.MergePatchMediaType,
 		headers:     ifMatchHeader(opts.IfMatch),
@@ -78,8 +82,7 @@ func (r *remoteClient) createConfig(ctx context.Context, write v1.ConfigWrite, o
 		return v1.Config{}, err
 	}
 	var doc v1.ConfigDocument
-	if err := r.postJSON(ctx, []string{"v1", "configs"}, write,
-		ifNoneMatchHeader(opts.IfNoneMatch), &doc); err != nil {
+	if err := r.postJSON(ctx, []string{"v1", "configs"}, write, opts, &doc); err != nil {
 		return v1.Config{}, err
 	}
 	return doc.Config, nil
@@ -108,8 +111,7 @@ func (r *remoteClient) createSecret(ctx context.Context, write v1.SecretWrite, o
 		return v1.Secret{}, err
 	}
 	var doc v1.SecretDocument
-	if err := r.postJSON(ctx, []string{"v1", "secrets"}, write,
-		ifNoneMatchHeader(opts.IfNoneMatch), &doc); err != nil {
+	if err := r.postJSON(ctx, []string{"v1", "secrets"}, write, opts, &doc); err != nil {
 		return v1.Secret{}, err
 	}
 	return doc.Secret, nil
@@ -137,8 +139,7 @@ func (r *remoteClient) createNetwork(ctx context.Context, write v1.NetworkWrite,
 		return v1.Network{}, err
 	}
 	var doc v1.NetworkDocument
-	if err := r.postJSON(ctx, []string{"v1", "networks"}, write,
-		ifNoneMatchHeader(opts.IfNoneMatch), &doc); err != nil {
+	if err := r.postJSON(ctx, []string{"v1", "networks"}, write, opts, &doc); err != nil {
 		return v1.Network{}, err
 	}
 	return doc.Network, nil
@@ -167,4 +168,12 @@ func ifNoneMatchHeader(ifNoneMatch string) map[string]string {
 		return nil
 	}
 	return map[string]string{"If-None-Match": ifNoneMatch}
+}
+
+// writeQuery renders the write modifiers that travel as query parameters.
+func writeQuery(opts v1.WriteOptions) url.Values {
+	if !opts.DryRun {
+		return nil
+	}
+	return url.Values{"dryRun": []string{"true"}}
 }

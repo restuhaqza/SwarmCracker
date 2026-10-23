@@ -564,7 +564,80 @@ Every write that reaches the backend appends an audit record: `config.create`,
 `config.update`, `config.delete`, `secret.create`, `secret.update`,
 `secret.delete`, `network.create`, `network.delete` and `node.update`. A request
 rejected before the backend (415, 413, undecodable body, missing `If-Match`) is
-not audited, and an audit append failure does not fail a committed mutation.
+not audited, and an audit append failure does not fail a committed mutation. A dry
+run is not a mutation and is never audited; an idempotent replay does not append a
+second record; a wait timeout audits the committed mutation once.
+
+### Idempotency, wait and dry run
+
+Three opt-in modifiers sit on top of the writes. Without them the phase-2
+behaviour is unchanged.
+
+**`Idempotency-Key`** (POST only: service, config, secret and network create,
+plus rollback). The key is trimmed and scoped to the token, the method and the
+path, so two callers never collide. A retry with the same key and the same body
+returns the original status, headers and body plus `Idempotency-Replayed: true`;
+the first response never carries that header, and the replay carries the
+*retrying* request's `X-Request-Id`. The same key with a different body is
+`409 conflict` with `details.reason: "idempotency_key_reuse"`; the same key while
+the first request is still running is `409 conflict` with
+`details.reason: "in_progress"`, `retryable: true` and
+`details.retryAfterMs: 250`. A key longer than 255 bytes, or one containing
+control characters, is `400 invalid` with `details.fields`.
+
+State is **manager-local and in memory**, with a 24 h TTL. It is not replicated
+and does not survive a restart, so a retry across a leader change can still
+create twice — that is the v1 single-manager decision, not a bug. A 5xx is never
+stored, so a failed create can be retried with the same key; a dry run is never
+stored because nothing was written.
+
+```bash
+curl --cacert <state-dir>/api/tls.crt \
+  -H "Authorization: Bearer $(cat operator.token)" \
+  -H "Content-Type: application/vnd.swarmcracker.v1+json" \
+  -H "Idempotency-Key: 8f14e45f-ea1b-4c1f-9b1a-2f4b7f0d3a11" \
+  -d '{"name":"web","spec":{"task":{"image":"nginx:1.27-alpine"}}}' \
+  https://mgr:4244/v1/services
+```
+
+**`wait=converged` and `timeoutMs`** (service create, patch and rollback only).
+The response is held until `status.converged` is true or the budget expires
+(default 60000 ms, maximum 600000). A timeout is not an error: the mutation
+committed, so the normal 200/201 is returned with `status.converged: false` and
+`warnings: [{"code": "wait_timeout", "message": "service did not converge within
+150ms"}]`. A manager read failure while waiting is
+`warnings: [{"code": "wait_error", ...}]` with the last good document. Wait
+requests are exempt from the normal 30 s request timeout and are bounded only by
+`timeoutMs`. `wait` on any other write route is `400 invalid`, as is `wait`
+together with `dryRun`.
+
+```bash
+curl --cacert <state-dir>/api/tls.crt -X PATCH \
+  -H "Authorization: Bearer $(cat operator.token)" \
+  -H "Content-Type: application/merge-patch+json" \
+  -H 'If-Match: "17"' \
+  -d '{"spec":{"replicas":3}}' \
+  "https://mgr:4244/v1/services/web?wait=converged&timeoutMs=120000"
+```
+
+**`dryRun=true`** (create and patch). Validation, reference resolution and the
+preconditions run exactly as on the real call; nothing is persisted. The response
+has the normal status (201 create, 200 patch) with `dryRun: true`. A create
+preview has an empty `id`, `revision` and timestamps and checks that the name is
+free; a patch preview is the merged document carrying the current metadata.
+`If-Match` still applies (stale is `412`) and `If-None-Match: *` against an
+existing name is still `409`. A dry run writes no audit record. It is not
+supported on delete (`400 invalid`) or rollback (`501 not_implemented` with
+`details.capability: "dryRun"`): a delete has no document to preview, and the
+previous spec is not what a rollback would write.
+
+```bash
+curl --cacert <state-dir>/api/tls.crt \
+  -H "Authorization: Bearer $(cat operator.token)" \
+  -H "Content-Type: application/vnd.swarmcracker.v1+json" \
+  -d '{"name":"web","spec":{"task":{"image":"nginx:1.27-alpine"}}}' \
+  "https://mgr:4244/v1/services?dryRun=true"
+```
 
 ### Manager flags
 

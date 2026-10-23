@@ -41,6 +41,17 @@ func binaryNotSupported(path string) error {
 
 // createConfig serves POST /v1/configs.
 func (s *Server) createConfig(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	dryRun, err := parseDryRun(query)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	if status, err := requireContentType(r, MediaType); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -58,23 +69,40 @@ func (s *Server) createConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	config, err := s.cfg.Client.CreateConfig(r.Context(), body,
-		v1.WriteOptions{IfNoneMatch: ifNoneMatch})
+		v1.WriteOptions{IfNoneMatch: ifNoneMatch, DryRun: dryRun})
 	if err != nil {
-		s.writeNamedAudit(r, "config.create",
-			namedAuditResource(v1.KindConfig, "", "", body.Name), "error")
+		if !dryRun {
+			s.writeNamedAudit(r, "config.create",
+				namedAuditResource(v1.KindConfig, "", "", body.Name), "error")
+		}
 		s.writeWriteError(w, r, err)
 		return
 	}
 
-	s.writeNamedAudit(r, "config.create",
-		namedAuditResource(v1.KindConfig, config.ID, config.Name, body.Name), "ok")
-	s.writeJSONWithETag(w, r, http.StatusCreated,
-		v1.NewConfigDocument(configForResponse(r, config)), revisionETag(config.Revision))
+	if !dryRun {
+		s.writeNamedAudit(r, "config.create",
+			namedAuditResource(v1.KindConfig, config.ID, config.Name, body.Name), "ok")
+	}
+
+	document := v1.NewConfigDocument(configForResponse(r, config))
+	document.DryRun = dryRun
+	s.writeJSONWithETag(w, r, http.StatusCreated, document, revisionETag(config.Revision))
 }
 
 // updateConfig serves PATCH /v1/configs/{id}. The body is an RFC 7386 merge
 // patch; pkg/client accepts labels only.
 func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	dryRun, err := parseDryRun(query)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	if status, err := requireContentType(r, v1.MergePatchMediaType); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -93,23 +121,40 @@ func (s *Server) updateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ref := r.PathValue("id")
-	config, err := s.cfg.Client.UpdateConfig(r.Context(), ref, patch, v1.WriteOptions{IfMatch: ifMatch})
+	config, err := s.cfg.Client.UpdateConfig(r.Context(), ref, patch,
+		v1.WriteOptions{IfMatch: ifMatch, DryRun: dryRun})
 	if err != nil {
-		s.writeNamedAudit(r, "config.update",
-			namedAuditResource(v1.KindConfig, "", "", ref), "error")
+		if !dryRun {
+			s.writeNamedAudit(r, "config.update",
+				namedAuditResource(v1.KindConfig, "", "", ref), "error")
+		}
 		s.writeWriteError(w, r, err)
 		return
 	}
 
-	s.writeNamedAudit(r, "config.update",
-		namedAuditResource(v1.KindConfig, config.ID, config.Name, ref), "ok")
-	s.writeJSONWithETag(w, r, http.StatusOK,
-		v1.NewConfigDocument(configForResponse(r, config)), revisionETag(config.Revision))
+	if !dryRun {
+		s.writeNamedAudit(r, "config.update",
+			namedAuditResource(v1.KindConfig, config.ID, config.Name, ref), "ok")
+	}
+
+	document := v1.NewConfigDocument(configForResponse(r, config))
+	document.DryRun = dryRun
+	s.writeJSONWithETag(w, r, http.StatusOK, document, revisionETag(config.Revision))
 }
 
 // deleteConfig serves DELETE /v1/configs/{id}.
 func (s *Server) deleteConfig(w http.ResponseWriter, r *http.Request) {
-	ignoreMissing, status, err := parseIgnoreMissing(r.URL.Query())
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := rejectDeleteDryRun(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	ignoreMissing, status, err := parseIgnoreMissing(query)
 	if err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -144,6 +189,17 @@ func configForResponse(r *http.Request, config v1.Config) v1.Config {
 
 // createSecret serves POST /v1/secrets.
 func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	dryRun, err := parseDryRun(query)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	if status, err := requireContentType(r, MediaType); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -161,23 +217,40 @@ func (s *Server) createSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	secret, err := s.cfg.Client.CreateSecret(r.Context(), body,
-		v1.WriteOptions{IfNoneMatch: ifNoneMatch})
+		v1.WriteOptions{IfNoneMatch: ifNoneMatch, DryRun: dryRun})
 	if err != nil {
-		s.writeNamedAudit(r, "secret.create",
-			namedAuditResource(v1.KindSecret, "", "", body.Name), "error")
+		if !dryRun {
+			s.writeNamedAudit(r, "secret.create",
+				namedAuditResource(v1.KindSecret, "", "", body.Name), "error")
+		}
 		s.writeWriteError(w, r, err)
 		return
 	}
 
-	s.writeNamedAudit(r, "secret.create",
-		namedAuditResource(v1.KindSecret, secret.ID, secret.Name, body.Name), "ok")
-	s.writeJSONWithETag(w, r, http.StatusCreated,
-		v1.NewSecretDocument(secret), revisionETag(secret.Revision))
+	if !dryRun {
+		s.writeNamedAudit(r, "secret.create",
+			namedAuditResource(v1.KindSecret, secret.ID, secret.Name, body.Name), "ok")
+	}
+
+	document := v1.NewSecretDocument(secret)
+	document.DryRun = dryRun
+	s.writeJSONWithETag(w, r, http.StatusCreated, document, revisionETag(secret.Revision))
 }
 
 // updateSecret serves PATCH /v1/secrets/{id}. The body is a merge patch;
 // pkg/client accepts labels only.
 func (s *Server) updateSecret(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	dryRun, err := parseDryRun(query)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	if status, err := requireContentType(r, v1.MergePatchMediaType); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -196,23 +269,40 @@ func (s *Server) updateSecret(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ref := r.PathValue("id")
-	secret, err := s.cfg.Client.UpdateSecret(r.Context(), ref, patch, v1.WriteOptions{IfMatch: ifMatch})
+	secret, err := s.cfg.Client.UpdateSecret(r.Context(), ref, patch,
+		v1.WriteOptions{IfMatch: ifMatch, DryRun: dryRun})
 	if err != nil {
-		s.writeNamedAudit(r, "secret.update",
-			namedAuditResource(v1.KindSecret, "", "", ref), "error")
+		if !dryRun {
+			s.writeNamedAudit(r, "secret.update",
+				namedAuditResource(v1.KindSecret, "", "", ref), "error")
+		}
 		s.writeWriteError(w, r, err)
 		return
 	}
 
-	s.writeNamedAudit(r, "secret.update",
-		namedAuditResource(v1.KindSecret, secret.ID, secret.Name, ref), "ok")
-	s.writeJSONWithETag(w, r, http.StatusOK,
-		v1.NewSecretDocument(secret), revisionETag(secret.Revision))
+	if !dryRun {
+		s.writeNamedAudit(r, "secret.update",
+			namedAuditResource(v1.KindSecret, secret.ID, secret.Name, ref), "ok")
+	}
+
+	document := v1.NewSecretDocument(secret)
+	document.DryRun = dryRun
+	s.writeJSONWithETag(w, r, http.StatusOK, document, revisionETag(secret.Revision))
 }
 
 // deleteSecret serves DELETE /v1/secrets/{id}.
 func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
-	ignoreMissing, status, err := parseIgnoreMissing(r.URL.Query())
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := rejectDeleteDryRun(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	ignoreMissing, status, err := parseIgnoreMissing(query)
 	if err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -237,6 +327,17 @@ func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request) {
 
 // createNetwork serves POST /v1/networks.
 func (s *Server) createNetwork(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	dryRun, err := parseDryRun(query)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	if status, err := requireContentType(r, MediaType); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -254,24 +355,40 @@ func (s *Server) createNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	network, err := s.cfg.Client.CreateNetwork(r.Context(), body,
-		v1.WriteOptions{IfNoneMatch: ifNoneMatch})
+		v1.WriteOptions{IfNoneMatch: ifNoneMatch, DryRun: dryRun})
 	if err != nil {
-		s.writeNamedAudit(r, "network.create",
-			namedAuditResource(v1.KindNetwork, "", "", body.Name), "error")
+		if !dryRun {
+			s.writeNamedAudit(r, "network.create",
+				namedAuditResource(v1.KindNetwork, "", "", body.Name), "error")
+		}
 		s.writeWriteError(w, r, err)
 		return
 	}
 
-	s.writeNamedAudit(r, "network.create",
-		namedAuditResource(v1.KindNetwork, network.ID, network.Name, body.Name), "ok")
-	s.writeJSONWithETag(w, r, http.StatusCreated,
-		v1.NewNetworkDocument(network), revisionETag(network.Revision))
+	if !dryRun {
+		s.writeNamedAudit(r, "network.create",
+			namedAuditResource(v1.KindNetwork, network.ID, network.Name, body.Name), "ok")
+	}
+
+	document := v1.NewNetworkDocument(network)
+	document.DryRun = dryRun
+	s.writeJSONWithETag(w, r, http.StatusCreated, document, revisionETag(network.Revision))
 }
 
 // deleteNetwork serves DELETE /v1/networks/{id}. There is no network update, so
 // PATCH and PUT are answered by the route table's typed 405 (Allow: GET, DELETE).
 func (s *Server) deleteNetwork(w http.ResponseWriter, r *http.Request) {
-	ignoreMissing, status, err := parseIgnoreMissing(r.URL.Query())
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if err := rejectDeleteDryRun(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
+	ignoreMissing, status, err := parseIgnoreMissing(query)
 	if err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -297,6 +414,17 @@ func (s *Server) deleteNetwork(w http.ResponseWriter, r *http.Request) {
 // updateNode serves PATCH /v1/nodes/{id}. The body is a merge patch; pkg/client
 // accepts availability and labels only.
 func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	if err := rejectWait(query); err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	dryRun, err := parseDryRun(query)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	if status, err := requireContentType(r, v1.MergePatchMediaType); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
@@ -315,18 +443,25 @@ func (s *Server) updateNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ref := r.PathValue("id")
-	node, err := s.cfg.Client.UpdateNode(r.Context(), ref, patch, v1.WriteOptions{IfMatch: ifMatch})
+	node, err := s.cfg.Client.UpdateNode(r.Context(), ref, patch,
+		v1.WriteOptions{IfMatch: ifMatch, DryRun: dryRun})
 	if err != nil {
-		s.writeNamedAudit(r, "node.update",
-			namedAuditResource(v1.KindNode, "", "", ref), "error")
+		if !dryRun {
+			s.writeNamedAudit(r, "node.update",
+				namedAuditResource(v1.KindNode, "", "", ref), "error")
+		}
 		s.writeWriteError(w, r, err)
 		return
 	}
 
-	s.writeNamedAudit(r, "node.update",
-		namedAuditResource(v1.KindNode, node.ID, node.Hostname, ref), "ok")
-	s.writeJSONWithETag(w, r, http.StatusOK,
-		v1.NewNodeDocument(node), revisionETag(node.Revision))
+	if !dryRun {
+		s.writeNamedAudit(r, "node.update",
+			namedAuditResource(v1.KindNode, node.ID, node.Hostname, ref), "ok")
+	}
+
+	document := v1.NewNodeDocument(node)
+	document.DryRun = dryRun
+	s.writeJSONWithETag(w, r, http.StatusOK, document, revisionETag(node.Revision))
 }
 
 // namedAuditResource names the object a write touched. A failed create never

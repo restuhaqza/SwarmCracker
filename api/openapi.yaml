@@ -102,6 +102,10 @@ paths:
             enum: ["*"]
           description: >
             Create-only marker. Only `*` is accepted; any other value is invalid.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/DryRun"
+        - $ref: "#/components/parameters/Wait"
+        - $ref: "#/components/parameters/TimeoutMs"
       requestBody:
         required: true
         content:
@@ -114,6 +118,7 @@ paths:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
             ETag: { $ref: "#/components/headers/ETag" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ServiceDocument" }
@@ -196,6 +201,9 @@ paths:
             The revision from the last read. `"17"` must equal the current
             revision; `*` matches any revision but the service must exist; a weak
             `W/"17"` never matches. Missing is 428, stale or weak is 412.
+        - $ref: "#/components/parameters/DryRun"
+        - $ref: "#/components/parameters/Wait"
+        - $ref: "#/components/parameters/TimeoutMs"
       requestBody:
         required: true
         content:
@@ -246,6 +254,7 @@ paths:
         or 204 when `ignoreMissing=true`. Delete is not atomic with the
         precondition: SwarmKit's RemoveServiceRequest carries no version, so a
         concurrent update can land between the check and the removal.
+        A `dryRun` parameter is 400 invalid: there is nothing to preview on a delete.
       parameters:
         - name: id
           in: path
@@ -300,6 +309,7 @@ paths:
         Requires services:write. No request body: a non-empty body is invalid.
         If-Match is required, because a rollback is an update to the current
         spec.
+        A `dryRun` parameter is 501 not_implemented with `details.capability: "dryRun"`: the previous spec is not the document that would be written.
       parameters:
         - name: id
           in: path
@@ -312,6 +322,10 @@ paths:
           in: header
           required: true
           schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/DryRun"
+        - $ref: "#/components/parameters/Wait"
+        - $ref: "#/components/parameters/TimeoutMs"
       responses:
         "200":
           description: The rolled-back service
@@ -319,6 +333,7 @@ paths:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
             ETag: { $ref: "#/components/headers/ETag" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ServiceDocument" }
@@ -338,6 +353,8 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "428":
           $ref: "#/components/responses/PreconditionRequired"
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "4XX":
           description: Typed failure
           headers:
@@ -441,6 +458,8 @@ paths:
             type: string
             enum: ["*"]
           description: Create-only marker. Only `*` is accepted.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/DryRun"
       requestBody:
         required: true
         content:
@@ -453,6 +472,7 @@ paths:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
             ETag: { $ref: "#/components/headers/ETag" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/NetworkDocument" }
@@ -522,6 +542,7 @@ paths:
         Requires networks:write. Preconditions are evaluated before
         `ignoreMissing`. There is no network update: PATCH and PUT on this path
         answer 405.
+        A `dryRun` parameter is 400 invalid: there is nothing to preview on a delete.
       parameters:
         - name: id
           in: path
@@ -621,6 +642,8 @@ paths:
             type: string
             enum: ["*"]
           description: Create-only marker. Only `*` is accepted.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/DryRun"
       requestBody:
         required: true
         content:
@@ -633,6 +656,7 @@ paths:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
             ETag: { $ref: "#/components/headers/ETag" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ConfigDocument" }
@@ -712,6 +736,7 @@ paths:
           description: >
             The revision from the last read. `*` matches any revision but the
             config must exist; a weak `W/"3"` never matches.
+        - $ref: "#/components/parameters/DryRun"
       requestBody:
         required: true
         content:
@@ -760,6 +785,7 @@ paths:
         Requires configs:write. Preconditions are evaluated before
         `ignoreMissing`: a missing config with If-Match is 412, without it 404,
         or 204 when `ignoreMissing=true`.
+        A `dryRun` parameter is 400 invalid: there is nothing to preview on a delete.
       parameters:
         - name: id
           in: path
@@ -853,6 +879,8 @@ paths:
             type: string
             enum: ["*"]
           description: Create-only marker. Only `*` is accepted.
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/DryRun"
       requestBody:
         required: true
         content:
@@ -865,6 +893,7 @@ paths:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
             ETag: { $ref: "#/components/headers/ETag" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/SecretDocument" }
@@ -944,6 +973,7 @@ paths:
           description: >
             The revision from the last read. `*` matches any revision but the
             secret must exist; a weak `W/"3"` never matches.
+        - $ref: "#/components/parameters/DryRun"
       requestBody:
         required: true
         content:
@@ -992,6 +1022,7 @@ paths:
         Requires secrets:write. Preconditions are evaluated before
         `ignoreMissing`: a missing secret with If-Match is 412, without it 404,
         or 204 when `ignoreMissing=true`.
+        A `dryRun` parameter is 400 invalid: there is nothing to preview on a delete.
       parameters:
         - name: id
           in: path
@@ -1193,6 +1224,7 @@ paths:
           description: >
             The revision from the last read. `*` matches any revision but the node
             must exist.
+        - $ref: "#/components/parameters/DryRun"
       requestBody:
         required: true
         content:
@@ -1343,8 +1375,12 @@ components:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
     Conflict:
       description: >
-        A conflicting state: a duplicate name on create, or a concurrent update
-        the manager refused. code is conflict.
+        A conflicting state: a duplicate name on create, a concurrent update the
+        manager refused, or an Idempotency-Key problem. code is conflict. An
+        idempotency failure names itself in details.reason: "idempotency_key_reuse"
+        when the key was already used with a different body, and "in_progress"
+        (with retryable: true and details.retryAfterMs: 250) while the first
+        request with that key is still running.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -1404,6 +1440,83 @@ components:
       content:
         application/vnd.swarmcracker.v1+json:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
+    NotImplemented:
+      description: >
+        The route exists but does not implement the requested capability. code is
+        not_implemented and details.capability names it. A dry run on a rollback
+        answers this: the previous spec is not the document that would be written.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 255
+      description: >
+        Manager-local create retry key. Trimmed; an empty value means no
+        idempotency, and a value longer than 255 bytes or containing control
+        characters is 400 invalid. Scope is the token, the method and the path, so
+        two callers never collide. A replay returns the original status, headers
+        and body plus `Idempotency-Replayed: true` and the current
+        `X-Request-Id`. The same key with a different body is 409 conflict
+        (`details.reason: "idempotency_key_reuse"`); the same key while the first
+        request runs is 409 conflict (`details.reason: "in_progress"`,
+        `retryable: true`, `details.retryAfterMs: 250`). State is in memory on the
+        serving manager with a 24 h TTL; it is not replicated, so a retry after a
+        leader change can create twice. A 5xx is not stored and may be retried
+        with the same key. Ignored on a dry run, because a dry run persists
+        nothing to replay.
+    DryRun:
+      name: dryRun
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+      description: >
+        Validate, resolve references and evaluate `If-Match` / `If-None-Match`
+        without persisting. The response is the document that would have been
+        written, with `dryRun: true`; a create preview has an empty id, revision
+        and timestamps, and an update preview carries the current metadata. The
+        precondition still applies: a stale `If-Match` is 412 and an existing name
+        with `If-None-Match: *` is 409. A dry run writes no audit record. Only
+        `true` and `false` are accepted.
+    Wait:
+      name: wait
+      in: query
+      required: false
+      schema:
+        type: string
+        enum: [converged]
+      description: >
+        Service create, patch and rollback only. Hold the response until
+        `status.converged` is true or `timeoutMs` expires. A timeout is not an
+        error: the mutation committed, so the normal success status is returned
+        with `status.converged: false` and `warnings: [{"code": "wait_timeout"}]`.
+        A read failure while waiting is `warnings: [{"code": "wait_error", ...}]`
+        with the last good document. Any other value is 400 invalid, and a wait
+        on another write route is 400 invalid because only services converge.
+        Cannot be combined with `dryRun`. Wait requests are exempt from the normal
+        30 s request timeout and bounded only by `timeoutMs`.
+    TimeoutMs:
+      name: timeoutMs
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 600000
+        default: 60000
+      description: >
+        Wait budget in milliseconds. Only valid with `wait=converged`; without it
+        the request is 400 invalid. Default 60000, maximum 600000.
   headers:
     X-SwarmCracker-Api-Version:
       description: The API version that answered. Always 1 in phase 1.
@@ -1424,6 +1537,12 @@ components:
     Allow:
       description: The methods this path serves, comma-separated, in registration order.
       schema: { type: string }
+    Idempotency-Replayed:
+      description: >
+        Present and `true` only on a response replayed from an Idempotency-Key
+        store. The first response never carries it. The body, status and contract
+        headers are the originals; `X-Request-Id` is the current request's.
+      schema: { type: string, enum: ["true"] }
 
   schemas:
     NetworkIPAM:
@@ -1467,6 +1586,9 @@ components:
           properties:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Network] }
+            dryRun:
+              type: boolean
+              description: Present and true only on the response to a dry-run write.
 
     Config:
       type: object
@@ -1510,6 +1632,9 @@ components:
           properties:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Config] }
+            dryRun:
+              type: boolean
+              description: Present and true only on the response to a dry-run write.
 
     Secret:
       type: object
@@ -1545,6 +1670,9 @@ components:
           properties:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Secret] }
+            dryRun:
+              type: boolean
+              description: Present and true only on the response to a dry-run write.
 
     ConfigWrite:
       type: object
@@ -1675,6 +1803,19 @@ components:
           properties:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Service] }
+            dryRun:
+              type: boolean
+              description: >
+                Present and true only on the response to a dry-run create or
+                patch: the document was validated but not persisted.
+            warnings:
+              type: array
+              description: >
+                Non-fatal outcomes of a wait. `wait_timeout` means the mutation
+                committed but the service did not converge within `timeoutMs`;
+                `wait_error` means a read failed while waiting and the document is
+                the last good one.
+              items: { $ref: "#/components/schemas/Warning" }
 
     Service:
       type: object
@@ -2078,6 +2219,9 @@ components:
           properties:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Node] }
+            dryRun:
+              type: boolean
+              description: Present and true only on the response to a dry-run write.
 
     Warning:
       type: object

@@ -20,6 +20,7 @@ type capturedRequest struct {
 	contentType string
 	ifMatch     string
 	ifNoneMatch string
+	dryRun      string
 	ignore      string
 	body        []byte
 }
@@ -36,6 +37,7 @@ func captureRequest(t *testing.T, r *http.Request) capturedRequest {
 		contentType: r.Header.Get("Content-Type"),
 		ifMatch:     r.Header.Get("If-Match"),
 		ifNoneMatch: r.Header.Get("If-None-Match"),
+		dryRun:      r.URL.Query().Get("dryRun"),
 		ignore:      r.URL.Query().Get("ignoreMissing"),
 		body:        body,
 	}

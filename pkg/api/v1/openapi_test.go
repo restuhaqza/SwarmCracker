@@ -1045,3 +1045,155 @@ func findParameter(t *testing.T, parameters openapi3.Parameters, name string) *o
 	require.FailNowf(t, "parameter missing", "%q is not declared", name)
 	return nil
 }
+
+// documentSchemaProperties returns the properties of a *Document schema, which
+// is written as an allOf of the resource and the envelope.
+func documentSchemaProperties(t *testing.T, doc *openapi3.T, name string) map[string]*openapi3.SchemaRef {
+	t.Helper()
+
+	schema, ok := doc.Components.Schemas[name]
+	require.True(t, ok, "schema %q missing", name)
+	require.NotNil(t, schema.Value)
+	if len(schema.Value.Properties) > 0 {
+		return schema.Value.Properties
+	}
+	require.NotEmptyf(t, schema.Value.AllOf, "%s has no properties", name)
+	last := schema.Value.AllOf[len(schema.Value.AllOf)-1]
+	require.NotNil(t, last.Value)
+	return last.Value.Properties
+}
+
+// findParameterOrNil is findParameter without failing, for negative assertions.
+func findParameterOrNil(operation *openapi3.Operation, name string) *openapi3.Parameter {
+	for _, parameter := range operation.Parameters {
+		if parameter.Value != nil && parameter.Value.Name == name {
+			return parameter.Value
+		}
+	}
+	return nil
+}
+
+// TestOpenAPIApplyModifiers pins the idempotency, wait and dry-run surface: the
+// parameters each write operation accepts, the replay header, the 501 on
+// rollback and the document fields a caller can rely on.
+func TestOpenAPIApplyModifiers(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	// Service create: idempotency, dry run and wait.
+	create := doc.Paths.Find("/v1/services").Post
+	require.NotNil(t, create, "POST /v1/services missing")
+
+	idempotencyKey := findParameter(t, create.Parameters, "Idempotency-Key")
+	assert.Equal(t, "header", idempotencyKey.In)
+	assert.False(t, idempotencyKey.Required)
+	require.NotNil(t, idempotencyKey.Schema.Value)
+	require.NotNil(t, idempotencyKey.Schema.Value.MaxLength)
+	assert.EqualValues(t, 255, *idempotencyKey.Schema.Value.MaxLength)
+	assert.Contains(t, idempotencyKey.Description, "idempotency_key_reuse")
+	assert.Contains(t, idempotencyKey.Description, "in_progress")
+
+	dryRun := findParameter(t, create.Parameters, "dryRun")
+	assert.Equal(t, "query", dryRun.In)
+	assert.False(t, dryRun.Required)
+
+	wait := findParameter(t, create.Parameters, "wait")
+	require.NotNil(t, wait.Schema.Value)
+	require.Len(t, wait.Schema.Value.Enum, 1)
+	assert.Equal(t, "converged", wait.Schema.Value.Enum[0])
+
+	timeout := findParameter(t, create.Parameters, "timeoutMs")
+	require.NotNil(t, timeout.Schema.Value.Max)
+	assert.EqualValues(t, 600000, *timeout.Schema.Value.Max)
+	assert.EqualValues(t, 60000, timeout.Schema.Value.Default)
+
+	replayHeader := create.Responses.Value("201").Value.Headers["Idempotency-Replayed"]
+	require.NotNil(t, replayHeader, "201 must document Idempotency-Replayed")
+
+	// Service patch: dry run and wait, but not idempotency (PATCH bodies are not
+	// stored: the middleware only wraps POST).
+	update := doc.Paths.Find("/v1/services/{id}").Patch
+	require.NotNil(t, findParameter(t, update.Parameters, "dryRun"))
+	require.NotNil(t, findParameter(t, update.Parameters, "wait"))
+	require.NotNil(t, findParameter(t, update.Parameters, "timeoutMs"))
+	assert.Nil(t, findParameterOrNil(update, "Idempotency-Key"),
+		"only a POST can be idempotency-replayed")
+
+	// Rollback: idempotency + wait, and a documented 501 for a dry run.
+	rollback := doc.Paths.Find("/v1/services/{id}/rollback").Post
+	require.NotNil(t, findParameter(t, rollback.Parameters, "Idempotency-Key"))
+	require.NotNil(t, findParameter(t, rollback.Parameters, "wait"))
+	require.NotNil(t, findParameter(t, rollback.Parameters, "dryRun"))
+	requireTypedResponseFor(t, rollback, "501", "ErrorDocument")
+	notImplemented := doc.Components.Responses["NotImplemented"]
+	require.NotNil(t, notImplemented)
+	require.NotNil(t, notImplemented.Value.Description)
+	assert.Contains(t, *notImplemented.Value.Description, "dry run")
+
+	// Named creates take idempotency + dry run; named patches take dry run only.
+	for _, path := range []string{"/v1/configs", "/v1/secrets", "/v1/networks"} {
+		post := doc.Paths.Find(path).Post
+		require.NotNilf(t, post, "POST %s missing", path)
+		require.NotNilf(t, findParameter(t, post.Parameters, "Idempotency-Key"),
+			"%s must accept Idempotency-Key", path)
+		require.NotNilf(t, findParameter(t, post.Parameters, "dryRun"),
+			"%s must accept dryRun", path)
+		assert.Nilf(t, findParameterOrNil(post, "wait"),
+			"%s must not advertise wait", path)
+		require.NotNilf(t, post.Responses.Value("201").Value.Headers["Idempotency-Replayed"],
+			"%s must document the replay header", path)
+	}
+	for _, path := range []string{"/v1/configs/{id}", "/v1/secrets/{id}", "/v1/nodes/{id}"} {
+		patch := doc.Paths.Find(path).Patch
+		require.NotNilf(t, patch, "PATCH %s missing", path)
+		require.NotNilf(t, findParameter(t, patch.Parameters, "dryRun"),
+			"%s must accept dryRun", path)
+		assert.Nilf(t, findParameterOrNil(patch, "wait"),
+			"%s must not advertise wait", path)
+	}
+
+	// A delete takes no dry run; its description says so.
+	for _, path := range []string{"/v1/services/{id}", "/v1/configs/{id}", "/v1/secrets/{id}", "/v1/networks/{id}"} {
+		remove := doc.Paths.Find(path).Delete
+		require.NotNilf(t, remove, "DELETE %s missing", path)
+		assert.Nilf(t, findParameterOrNil(remove, "dryRun"),
+			"%s must not advertise dryRun", path)
+		assert.Containsf(t, remove.Description, "dryRun",
+			"%s delete description must refuse dryRun", path)
+	}
+
+	// Every single-resource document can say it was a dry run; only a service
+	// carries wait warnings.
+	for _, name := range []string{
+		"ServiceDocument", "ConfigDocument", "SecretDocument", "NetworkDocument", "NodeDocument",
+	} {
+		properties := documentSchemaProperties(t, doc, name)
+		assert.Containsf(t, properties, "dryRun", "%s must document dryRun", name)
+	}
+
+	serviceProperties := documentSchemaProperties(t, doc, "ServiceDocument")
+	assert.Contains(t, serviceProperties, "warnings")
+
+	document := ServiceDocument{
+		SchemaVersion: SchemaVersion,
+		Kind:          KindService,
+		Service: Service{
+			ID: "svc-1", Name: "web", Revision: "7",
+			Spec:   ServiceSpec{Mode: "replicated", Task: TaskSpec{Image: "nginx"}},
+			Status: ServiceStatus{DesiredTasks: 2, Converged: false},
+		},
+		DryRun:   true,
+		Warnings: []Warning{{Code: "wait_timeout", Message: "service did not converge within 150ms"}},
+	}
+	data, err := json.Marshal(document)
+	require.NoError(t, err)
+	var decoded any
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	validateAgainst(t, doc, "ServiceDocument", decoded)
+
+	// The Conflict response documents both idempotency reasons.
+	conflict := doc.Components.Responses["Conflict"]
+	require.NotNil(t, conflict)
+	require.NotNil(t, conflict.Value.Description)
+	assert.Contains(t, *conflict.Value.Description, "idempotency_key_reuse")
+	assert.Contains(t, *conflict.Value.Description, "in_progress")
+}

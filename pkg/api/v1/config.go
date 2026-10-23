@@ -16,10 +16,13 @@ type Config struct {
 }
 
 // ConfigDocument is a single-resource Config document.
+//
+// DryRun marks the response to a write that was validated but not persisted.
 type ConfigDocument struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Kind          string `json:"kind"`
 	Config
+	DryRun bool `json:"dryRun,omitempty"`
 }
 
 // NewConfigDocument wraps a Config in the v1 envelope.

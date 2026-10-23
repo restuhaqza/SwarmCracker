@@ -37,6 +37,13 @@ func (c *Client) CreateConfig(ctx context.Context, write v1.ConfigWrite, opts v1
 		return v1.Config{}, err
 	}
 
+	if opts.DryRun {
+		if err := c.ensureConfigNameFree(ctx, spec.Annotations.Name); err != nil {
+			return v1.Config{}, err
+		}
+		return synthesizedConfig(configFromSwarmkit(&api.Config{Spec: *spec})), nil
+	}
+
 	resp, err := c.control.CreateConfig(ctx, &api.CreateConfigRequest{Spec: spec})
 	if err != nil {
 		return v1.Config{}, err
@@ -87,6 +94,12 @@ func (c *Client) UpdateConfig(ctx context.Context, ref string, patch []byte, opt
 		default:
 			return v1.Config{}, unknownPatchField(key)
 		}
+	}
+
+	if opts.DryRun {
+		preview := current.Copy()
+		preview.Spec = *spec
+		return configFromSwarmkit(preview), nil
 	}
 
 	resp, err := c.control.UpdateConfig(ctx, &api.UpdateConfigRequest{
@@ -156,6 +169,13 @@ func (c *Client) CreateSecret(ctx context.Context, write v1.SecretWrite, opts v1
 		return v1.Secret{}, err
 	}
 
+	if opts.DryRun {
+		if err := c.ensureSecretNameFree(ctx, spec.Annotations.Name); err != nil {
+			return v1.Secret{}, err
+		}
+		return synthesizedSecret(secretFromSwarmkit(&api.Secret{Spec: *spec})), nil
+	}
+
 	resp, err := c.control.CreateSecret(ctx, &api.CreateSecretRequest{Spec: spec})
 	if err != nil {
 		return v1.Secret{}, err
@@ -206,6 +226,12 @@ func (c *Client) UpdateSecret(ctx context.Context, ref string, patch []byte, opt
 		default:
 			return v1.Secret{}, unknownPatchField(key)
 		}
+	}
+
+	if opts.DryRun {
+		preview := current.Copy()
+		preview.Spec = *spec
+		return secretFromSwarmkit(preview), nil
 	}
 
 	resp, err := c.control.UpdateSecret(ctx, &api.UpdateSecretRequest{
@@ -269,6 +295,13 @@ func (c *Client) CreateNetwork(ctx context.Context, write v1.NetworkWrite, opts 
 	spec, err := networkSpec(write)
 	if err != nil {
 		return v1.Network{}, err
+	}
+
+	if opts.DryRun {
+		if err := c.ensureNetworkNameFree(ctx, spec.Annotations.Name); err != nil {
+			return v1.Network{}, err
+		}
+		return synthesizedNetwork(networkFromSwarmkit(&api.Network{Spec: *spec})), nil
 	}
 
 	resp, err := c.control.CreateNetwork(ctx, &api.CreateNetworkRequest{Spec: spec})
@@ -363,6 +396,12 @@ func (c *Client) UpdateNode(ctx context.Context, ref string, patch []byte, opts 
 		default:
 			return v1.Node{}, unknownPatchField(key)
 		}
+	}
+
+	if opts.DryRun {
+		preview := current.Copy()
+		preview.Spec = *spec
+		return nodeFromSwarmkit(preview), nil
 	}
 
 	resp, err := c.control.UpdateNode(ctx, &api.UpdateNodeRequest{
