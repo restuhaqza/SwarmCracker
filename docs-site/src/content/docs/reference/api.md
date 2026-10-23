@@ -858,6 +858,15 @@ statuses in `pkg/output` (`usage`/`invalid`/`unsupported_version` → `2`,
 `5`, `rate_limited`/`unavailable`/`timeout`/`unreachable` → `6`, `partial` →
 `7`, anything else → `1`).
 
+### Rate limits
+
+Every authenticated token gets its own request bucket: **10 requests/second
+with a burst of 20** by default. The manager answers `429 Too Many Requests`,
+`code: "rate_limited"`, `retryable: true`, `details.retryAfterMs`, and a
+`Retry-After` header in seconds. Other tokens are unaffected. The daemon
+exposes `--api-rate-limit` and `--api-rate-burst` for operators who need a
+different budget. An event stream counts as one request, not one per event.
+
 ---
 
 ## See Also

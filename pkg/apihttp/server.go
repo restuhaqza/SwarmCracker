@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,6 +108,9 @@ type Config struct {
 	// EventHeartbeat is the SSE/NDJSON keep-alive interval. Zero means 15s;
 	// tests set a short interval.
 	EventHeartbeat time.Duration
+	// RateLimit is the per-token bucket. Zero installs the 10 req/s, burst 20
+	// default in New.
+	RateLimit *RateLimiter
 }
 
 // Server serves the v1 read surface. It is safe for concurrent use once New has
@@ -126,6 +130,9 @@ func New(cfg Config) (*Server, error) {
 	}
 	if cfg.EventHeartbeat <= 0 {
 		cfg.EventHeartbeat = defaultEventHeartbeat
+	}
+	if cfg.RateLimit == nil {
+		cfg.RateLimit = NewRateLimiter(DefaultRatePerSecond, DefaultRateBurst)
 	}
 	// Idempotency is manager-local and in memory; every server gets one so a
 	// POST with an Idempotency-Key is never silently unprotected.
@@ -301,6 +308,16 @@ func (s *Server) wrap(requireAuth bool) http.Handler {
 			}
 		}
 		r = r.WithContext(withIdentity(r.Context(), identity))
+
+		if allowed, retryAfter := s.cfg.RateLimit.Allow(rateLimitKey(identity)); !allowed {
+			seconds := int((retryAfter + time.Second - 1) / time.Second)
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", strconv.Itoa(seconds))
+			s.writeError(w, r, rateLimitError(retryAfter, s.cfg.RateLimit))
+			return
+		}
 
 		if err := checkAccept(r); err != nil {
 			s.writeError(w, r, err)

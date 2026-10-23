@@ -230,6 +230,7 @@ func newHarness(t *testing.T, fake *fakeClient) *harness {
 		ServerVersion: serverVersion,
 		GRPCVersion:   grpcVersion,
 		Capabilities:  []string{"read"},
+		RateLimit:     apihttp.NewRateLimiter(1e9, 1e9),
 		// ClusterID stays empty so /v1/version proves the client fallback.
 	})
 	require.NoError(t, err)

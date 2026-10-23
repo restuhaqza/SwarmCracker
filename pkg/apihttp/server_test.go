@@ -361,6 +361,9 @@ func newTestAPIWithConfig(t *testing.T, fc *fakeClient, cfg Config) *testAPI {
 		fc = &fakeClient{}
 	}
 	cfg.Client = fc
+	if cfg.RateLimit == nil {
+		cfg.RateLimit = NewRateLimiter(1e9, 1e9)
+	}
 
 	store, err := OpenTokenStore(filepath.Join(t.TempDir(), "tokens.json"))
 	require.NoError(t, err)

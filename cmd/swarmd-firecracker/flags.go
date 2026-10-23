@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 
+	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/urfave/cli/v2"
 )
@@ -269,6 +270,16 @@ func newAppFlags() []cli.Flag {
 			Usage: "How long audit records are kept",
 			Value: defaultAPIAuditRetention,
 		},
+		&cli.Float64Flag{
+			Name:  "api-rate-limit",
+			Usage: "Per-token requests per second for the programmatic API",
+			Value: apihttp.DefaultRatePerSecond,
+		},
+		&cli.IntFlag{
+			Name:  "api-rate-burst",
+			Usage: "Per-token burst for the programmatic API rate limit",
+			Value: apihttp.DefaultRateBurst,
+		},
 		&cli.BoolFlag{
 			Name:  "api-disabled",
 			Usage: "Do not start the programmatic API on this manager",
@@ -290,6 +301,8 @@ func apiRuntimeFrom(ctx *cli.Context) apiRuntime {
 		certDir:        flagOrDefault(ctx, "api-cert-dir", filepath.Join(stateDir, defaultAPIDirName)),
 		auditFile:      flagOrDefault(ctx, "api-audit-file", filepath.Join(stateDir, defaultAPIDirName, defaultAPIAuditName)),
 		auditRetention: ctx.Duration("api-audit-retention"),
+		rateLimit:      ctx.Float64("api-rate-limit"),
+		rateBurst:      ctx.Int("api-rate-burst"),
 	}
 }
 

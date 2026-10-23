@@ -49,6 +49,8 @@ type apiRuntime struct {
 	certDir        string
 	auditFile      string
 	auditRetention time.Duration
+	rateLimit      float64
+	rateBurst      int
 }
 
 // startAPIForNode starts the programmatic API when config describes a manager.
@@ -123,6 +125,7 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 		GRPCVersion:   apiversion.Current,
 		ClusterID:     clusterID,
 		Capabilities:  []string{"read", "write", "events"},
+		RateLimit:     apihttp.NewRateLimiter(cfg.rateLimit, cfg.rateBurst),
 	})
 	if err != nil {
 		_ = c.Close()

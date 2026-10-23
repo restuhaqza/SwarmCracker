@@ -51,6 +51,7 @@ func newWriteTestAPI(t *testing.T, client Client) *writeTestAPI {
 		ServerVersion: "0.11.0",
 		GRPCVersion:   "v1",
 		ClusterID:     "cluster-1",
+		RateLimit:     NewRateLimiter(1e9, 1e9),
 	})
 	require.NoError(t, err)
 
