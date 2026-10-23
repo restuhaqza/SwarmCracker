@@ -66,6 +66,9 @@ type Client interface {
 type Config struct {
 	Client Client
 	Tokens *TokenStore
+	// Audit is the manager-local audit log. It is optional: a nil store makes
+	// recordAudit a no-op and GET /v1/audit answer 501.
+	Audit *AuditStore
 	// CertDir holds tls.crt and tls.key for the TLS listener. Serve requires it
 	// only when a TCP address is configured; EnsureCertificate writes the pair.
 	CertDir       string
@@ -96,34 +99,60 @@ func New(cfg Config) (*Server, error) {
 	return s, nil
 }
 
-// routes registers every phase-1 read route. Each path also gets a
-// method-agnostic handler so a non-GET request returns a typed 405 rather than
+// routes registers every route with the scope it requires. Each path also gets
+// a method-agnostic handler so a non-GET request returns a typed 405 rather than
 // ServeMux's plain-text default.
+//
+// Scope map (contract §8.1): the resource a route reads decides the scope, and
+// the service-tasks subresource belongs to the task reader, not the service
+// reader.
 func (s *Server) routes() {
-	s.handle("/v1/version", s.getVersion)
+	s.handleScoped("/v1/version", ScopeClusterRead, s.getVersion)
 
-	s.handle("/v1/services", s.listServices)
-	s.handle("/v1/services/{id}", s.getService)
-	s.handle("/v1/services/{id}/tasks", s.listServiceTasks)
+	s.handleScoped("/v1/services", ScopeServicesRead, s.listServices)
+	s.handleScoped("/v1/services/{id}", ScopeServicesRead, s.getService)
+	s.handleScoped("/v1/services/{id}/tasks", ScopeTasksRead, s.listServiceTasks)
 
-	s.handle("/v1/tasks", s.listTasks)
-	s.handle("/v1/tasks/{id}", s.getTask)
+	s.handleScoped("/v1/tasks", ScopeTasksRead, s.listTasks)
+	s.handleScoped("/v1/tasks/{id}", ScopeTasksRead, s.getTask)
 
-	s.handle("/v1/nodes", s.listNodes)
-	s.handle("/v1/nodes/{id}", s.getNode)
+	s.handleScoped("/v1/nodes", ScopeNodesRead, s.listNodes)
+	s.handleScoped("/v1/nodes/{id}", ScopeNodesRead, s.getNode)
 
-	s.handle("/v1/networks", s.listNetworks)
-	s.handle("/v1/networks/{id}", s.getNetwork)
+	s.handleScoped("/v1/networks", ScopeNetworksRead, s.listNetworks)
+	s.handleScoped("/v1/networks/{id}", ScopeNetworksRead, s.getNetwork)
 
-	s.handle("/v1/configs", s.listConfigs)
-	s.handle("/v1/configs/{id}", s.getConfig)
+	s.handleScoped("/v1/configs", ScopeConfigsRead, s.listConfigs)
+	s.handleScoped("/v1/configs/{id}", ScopeConfigsRead, s.getConfig)
 
-	s.handle("/v1/secrets", s.listSecrets)
-	s.handle("/v1/secrets/{id}", s.getSecret)
+	s.handleScoped("/v1/secrets", ScopeSecretsRead, s.listSecrets)
+	s.handleScoped("/v1/secrets/{id}", ScopeSecretsRead, s.getSecret)
+
+	s.handleScoped("/v1/audit", ScopeAuditRead, s.listAudit)
 
 	// Every path is owned by this package: an unknown one is a typed 404, never
 	// ServeMux's plain-text "404 page not found".
 	s.mux.HandleFunc("/", s.notFound)
+}
+
+// handleScoped registers a GET route behind scope enforcement. The method
+// rejections stay unscoped: an authenticated token learns the same 405 whether
+// or not it holds the scope, and no other method reaches a handler.
+func (s *Server) handleScoped(pattern string, scope Scope, h http.HandlerFunc) {
+	s.handle(pattern, s.requireScope(scope, h))
+}
+
+// requireScope is the per-route authorization check. It reads the Identity the
+// middleware stored and denies by default.
+func (s *Server) requireScope(scope Scope, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		identity, ok := IdentityFrom(r.Context())
+		if !ok || !identity.HasScope(scope) {
+			s.writeError(w, r, forbiddenScope(scope))
+			return
+		}
+		h(w, r)
+	}
 }
 
 // handle registers the GET route and the typed rejections for every other
@@ -137,7 +166,7 @@ func (s *Server) handle(pattern string, h http.HandlerFunc) {
 }
 
 // Handler returns the TCP listener's handler: every request must carry a valid
-// reader or admin bearer token.
+// bearer token. The token's role and scopes then decide which routes it reaches.
 func (s *Server) Handler() http.Handler { return s.wrap(true) }
 
 // UnixHandler returns the trusted local-socket handler. It performs no token
@@ -147,6 +176,9 @@ func (s *Server) UnixHandler() http.Handler { return s.wrap(false) }
 // wrap applies the middleware shared by both listeners. The order is deliberate:
 // establish identity and version headers for every response, authenticate before
 // doing any work on the authenticated listener, then negotiate the media type.
+//
+// The authenticated listener stores the token's Identity; the Unix listener
+// stores LocalIdentity, because the socket's file mode is the credential.
 func (s *Server) wrap(requireAuth bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := newRequestID()
@@ -156,12 +188,17 @@ func (s *Server) wrap(requireAuth bool) http.Handler {
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
 		r = withCleanPath(r)
 
+		identity := LocalIdentity()
 		if requireAuth {
-			if err := s.authenticate(r); err != nil {
+			var err error
+			identity, err = s.authenticate(r)
+			if err != nil {
 				s.writeError(w, r, err)
 				return
 			}
 		}
+		r = r.WithContext(withIdentity(r.Context(), identity))
+
 		if err := checkAccept(r); err != nil {
 			s.writeError(w, r, err)
 			return
@@ -248,38 +285,54 @@ func checkQuery(r *http.Request) error {
 	return nil
 }
 
-// authenticate validates the bearer token on the TCP listener.
-func (s *Server) authenticate(r *http.Request) error {
+// authenticate validates the bearer token on the TCP listener and returns the
+// identity it establishes. Every 401 response byte is unchanged from phase 1:
+// the failure modes and their messages are the contract.
+func (s *Server) authenticate(r *http.Request) (Identity, error) {
 	header := strings.TrimSpace(r.Header.Get(authorizationHeader))
 	if header == "" {
-		return output.NewError(output.CodeUnauthenticated, "missing bearer token")
+		return Identity{}, output.NewError(output.CodeUnauthenticated, "missing bearer token")
 	}
 
 	scheme, secret, found := strings.Cut(header, " ")
 	if !found || !strings.EqualFold(scheme, bearerScheme) {
-		return output.NewError(output.CodeUnauthenticated, "authorization must use the Bearer scheme")
+		return Identity{}, output.NewError(output.CodeUnauthenticated, "authorization must use the Bearer scheme")
 	}
 	secret = strings.TrimSpace(secret)
 	if secret == "" {
-		return output.NewError(output.CodeUnauthenticated, "missing bearer token")
+		return Identity{}, output.NewError(output.CodeUnauthenticated, "missing bearer token")
 	}
 
 	if s.cfg.Tokens == nil {
-		return output.NewError(output.CodeUnauthenticated, "no API tokens are configured")
+		return Identity{}, output.NewError(output.CodeUnauthenticated, "no API tokens are configured")
 	}
 
 	token, ok := s.cfg.Tokens.Authenticate(secret)
 	if !ok {
-		return output.NewError(output.CodeUnauthenticated, "invalid bearer token")
+		// A wrong secret and an expired record are the same answer: the caller
+		// learns nothing about which tokens exist.
+		return Identity{}, output.NewError(output.CodeUnauthenticated, "invalid bearer token")
 	}
 
-	switch token.Role {
-	case RoleReader, RoleAdmin:
-		return nil
-	default:
-		// The store rejects unknown roles at creation time; this is defence in
-		// depth for a hand-edited token file.
-		return output.NewErrorf(output.CodeForbidden, "token role %q may not read the API", token.Role)
+	return identityForToken(token), nil
+}
+
+// identityForToken converts a stored token into the request Identity. The scope
+// set is exactly what the store issued; the role is kept for the task-selector
+// rule and for diagnostics.
+func identityForToken(token Token) Identity {
+	scopes := make([]Scope, 0, len(token.Scopes))
+	for _, scope := range token.Scopes {
+		scopes = append(scopes, Scope(scope))
+	}
+
+	return Identity{
+		Type:      "token",
+		TokenID:   token.ID,
+		Name:      token.Name,
+		Role:      token.Role,
+		Scopes:    scopes,
+		Selectors: token.TaskSelectors,
 	}
 }
 

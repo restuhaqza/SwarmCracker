@@ -507,15 +507,66 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/audit:
+    get:
+      operationId: listAudit
+      summary: List audit records
+      description: >
+        Manager-local, append-only audit records ordered by at then requestId,
+        ascending. Requires the audit:read scope, which only the admin role
+        grants. A manager that does not record an audit log answers 501 with
+        details.capability "audit". Secret and config values are never recorded.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of audit records
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/AuditList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "501":
+          description: >
+            This manager does not record an audit log. details.capability is
+            "audit".
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
 components:
   securitySchemes:
     bearerAuth:
       type: http
       scheme: bearer
       description: >
-        A reader or admin token minted on the manager with
-        `swarmcracker api token create`. Every TCP route requires one, including
-        /v1/version.
+        A bearer token minted on the manager with
+        `swarmcracker api token create` and carrying the scope the route needs.
+        Every TCP route requires one, including /v1/version. The trusted Unix
+        socket needs no token: its file mode is the credential.
   responses:
     Unauthenticated:
       description: Missing or invalid bearer token
@@ -535,7 +586,9 @@ components:
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
         ETag: { $ref: "#/components/headers/ETag" }
     Forbidden:
-      description: The token's role may not perform this read
+      description: >
+        The token lacks the scope this route requires (details.requiredScope), or
+        its task selectors do not match (details.reason).
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -613,6 +666,13 @@ components:
         labels:
           type: object
           additionalProperties: { type: string }
+        data:
+          type: string
+          description: >
+            Config payload. Present only when the caller holds
+            configs:read-values; a plain configs:read response omits the field
+            entirely (it is never sent empty). The manager does not read config
+            payloads yet, so it is currently always absent.
 
     ConfigList:
       type: object
@@ -1024,3 +1084,54 @@ components:
         capabilities:
           type: array
           items: { type: string }
+
+    AuditActor:
+      type: object
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [token, local]
+          description: >
+            token for a bearer-authenticated TCP request, local for the trusted
+            Unix socket where the file mode is the credential.
+        id: { type: string }
+        name: { type: string }
+
+    AuditResource:
+      type: object
+      required: [kind]
+      properties:
+        kind: { type: string }
+        id: { type: string }
+        name: { type: string }
+
+    AuditRecord:
+      type: object
+      required: [at, requestId, actor, action, resource, result]
+      properties:
+        at: { type: string, format: date-time }
+        requestId: { type: string }
+        actor: { $ref: "#/components/schemas/AuditActor" }
+        action: { type: string }
+        resource: { $ref: "#/components/schemas/AuditResource" }
+        result:
+          type: string
+          enum: [ok, error]
+        sourceIp:
+          type: string
+          description: >
+            The TCP peer address, host only. Absent for a Unix-socket request.
+            A forwarded header is never used.
+
+    AuditList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [AuditList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/AuditRecord" }
+        next:
+          type: [string, "null"]

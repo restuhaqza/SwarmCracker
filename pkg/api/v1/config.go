@@ -1,8 +1,10 @@
 package v1
 
-// Config is config metadata. The payload is never part of a read document:
-// config values are only available through the configs:read-values capability,
-// which phase 0 does not issue.
+// Config is config metadata.
+//
+// Data holds the config payload and is only present for an identity carrying
+// configs:read-values. A plain configs:read token must never receive it, and the
+// field is omitted (not empty) when no value getter populated it.
 type Config struct {
 	ID        string            `json:"id"`
 	Name      string            `json:"name"`
@@ -10,6 +12,7 @@ type Config struct {
 	CreatedAt string            `json:"createdAt,omitempty"`
 	UpdatedAt string            `json:"updatedAt,omitempty"`
 	Labels    map[string]string `json:"labels,omitempty"`
+	Data      *string           `json:"data,omitempty"`
 }
 
 // ConfigDocument is a single-resource Config document.

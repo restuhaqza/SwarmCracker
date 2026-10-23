@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -476,6 +477,10 @@ func TestAPITokenListOmitsHashes(t *testing.T) {
 	assert.Contains(t, out, "NAME")
 	assert.Contains(t, out, "ROLE")
 	assert.Contains(t, out, "CREATED")
+	assert.Contains(t, out, "SCOPES")
+	assert.Contains(t, out, "EXPIRES")
+	assert.Contains(t, out, "all", "an unnarrowed token holds its whole role")
+	assert.Contains(t, out, "-", "a token without an expiry prints -")
 	assert.Contains(t, out, created.ID)
 	assert.Contains(t, out, admin.ID)
 	assert.Contains(t, out, "ci")
@@ -606,4 +611,178 @@ func hashesFromTokenFile(t *testing.T, raw []byte) []string {
 		hashes = append(hashes, tok.Hash)
 	}
 	return hashes
+}
+
+func TestAPITokenCreateWithScopeAndSelector(t *testing.T) {
+	resetAPIFlags(t)
+
+	storePath := filepath.Join(t.TempDir(), "tokens.json")
+	apiTokenFile = storePath
+
+	expires := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	out, err := runAPICommand(t,
+		"token", "create",
+		"--name", "build",
+		"--role", "runner",
+		"--scope", "tasks:read",
+		"--scope", "tasks:exec",
+		"--service-id", "svc-1",
+		"--task-id", "task-9",
+		"--selector-label", "team=payments",
+		"--expires-at", expires,
+	)
+	require.NoError(t, err)
+
+	secret := strings.TrimSuffix(out, "\n")
+	require.True(t, strings.HasPrefix(secret, "sc_"), out)
+
+	store, err := apihttp.OpenTokenStore(storePath)
+	require.NoError(t, err)
+	list := store.List()
+	require.Len(t, list, 1)
+
+	tok := list[0]
+	assert.Equal(t, "build", tok.Name)
+	assert.Equal(t, apihttp.RoleRunner, tok.Role)
+	assert.Equal(t, []string{"tasks:read", "tasks:exec"}, tok.Scopes)
+	require.NotNil(t, tok.TaskSelectors)
+	assert.Equal(t, []string{"svc-1"}, tok.TaskSelectors.ServiceIDs)
+	assert.Equal(t, []string{"task-9"}, tok.TaskSelectors.TaskIDs)
+	assert.Equal(t, map[string]string{"team": "payments"}, tok.TaskSelectors.Labels)
+	assert.Equal(t, expires, tok.ExpiresAt)
+
+	got, ok := store.Authenticate(secret)
+	require.True(t, ok)
+	assert.Equal(t, tok.Scopes, got.Scopes)
+}
+
+// A runner without a selector must fail at mint time: tasks:exec alone would be
+// cluster-wide root inside every guest.
+func TestAPITokenCreateRunnerRequiresSelector(t *testing.T) {
+	resetAPIFlags(t)
+
+	apiTokenFile = filepath.Join(t.TempDir(), "tokens.json")
+
+	_, err := runAPICommand(t, "token", "create", "--name", "ci", "--role", "runner")
+	require.Error(t, err)
+	typed := requireCode(t, err, output.CodeInvalid)
+	assert.Contains(t, typed.Message, "selector")
+
+	// Nothing was written.
+	_, statErr := os.Stat(apiTokenFile)
+	assert.True(t, errors.Is(statErr, os.ErrNotExist))
+}
+
+func TestAPITokenCreateOperatorNeedsNoSelector(t *testing.T) {
+	resetAPIFlags(t)
+
+	storePath := filepath.Join(t.TempDir(), "tokens.json")
+	apiTokenFile = storePath
+
+	_, err := runAPICommand(t, "token", "create", "--name", "ops", "--role", "operator")
+	require.NoError(t, err)
+
+	store, err := apihttp.OpenTokenStore(storePath)
+	require.NoError(t, err)
+	list := store.List()
+	require.Len(t, list, 1)
+	assert.Nil(t, list[0].TaskSelectors)
+}
+
+func TestAPITokenCreateRejectsBadSelectorLabel(t *testing.T) {
+	resetAPIFlags(t)
+
+	apiTokenFile = filepath.Join(t.TempDir(), "tokens.json")
+
+	for _, label := range []string{"team", "=payments", " =payments"} {
+		_, err := runAPICommand(t,
+			"token", "create", "--name", "ci", "--role", "runner",
+			"--service-id", "svc-1", "--selector-label", label)
+		require.Error(t, err, label)
+		requireCode(t, err, output.CodeInvalid)
+	}
+}
+
+func TestAPITokenCreateScopeOutsideRoleIsInvalid(t *testing.T) {
+	resetAPIFlags(t)
+
+	apiTokenFile = filepath.Join(t.TempDir(), "tokens.json")
+
+	_, err := runAPICommand(t,
+		"token", "create", "--name", "ci", "--role", "reader", "--scope", "services:write")
+	require.Error(t, err)
+	requireCode(t, err, output.CodeInvalid)
+}
+
+func TestAPITokenCreateRejectsPastExpiry(t *testing.T) {
+	resetAPIFlags(t)
+
+	apiTokenFile = filepath.Join(t.TempDir(), "tokens.json")
+
+	past := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	_, err := runAPICommand(t,
+		"token", "create", "--name", "ci", "--expires-at", past)
+	require.Error(t, err)
+	requireCode(t, err, output.CodeInvalid)
+}
+
+func TestAPITokenListShowsNarrowedScopesAndExpiry(t *testing.T) {
+	resetAPIFlags(t)
+
+	storePath := filepath.Join(t.TempDir(), "tokens.json")
+	apiTokenFile = storePath
+
+	store, err := apihttp.OpenTokenStore(storePath)
+	require.NoError(t, err)
+
+	expires := time.Now().Add(12 * time.Hour).UTC().Format(time.RFC3339)
+	_, narrowed, err := store.CreateWithOptions("narrow", apihttp.RoleOperator, apihttp.TokenOptions{
+		Scopes:    []string{"services:read", "services:write"},
+		ExpiresAt: expires,
+	})
+	require.NoError(t, err)
+	_, full, err := store.Create("wide", apihttp.RoleReader)
+	require.NoError(t, err)
+	// The same whole role, requested in a different order, still reads as "all".
+	_, reordered, err := store.CreateWithOptions("reordered", apihttp.RoleReader, apihttp.TokenOptions{
+		Scopes: []string{"cluster:read", "services:read"},
+	})
+	require.NoError(t, err)
+	_, fullOrder, err := store.CreateWithOptions("full-order", apihttp.RoleReader, apihttp.TokenOptions{
+		Scopes: []string{
+			"cluster:read", "events:read", "secrets:read", "configs:read",
+			"networks:read", "nodes:read", "tasks:logs", "tasks:read", "services:read",
+		},
+	})
+	require.NoError(t, err)
+
+	out, err := runAPICommand(t, "token", "list")
+	require.NoError(t, err)
+
+	var narrowLine, wideLine, reorderedLine, fullOrderLine string
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.Contains(line, narrowed.ID):
+			narrowLine = line
+		case strings.Contains(line, full.ID):
+			wideLine = line
+		case strings.Contains(line, reordered.ID):
+			reorderedLine = line
+		case strings.Contains(line, fullOrder.ID):
+			fullOrderLine = line
+		}
+	}
+	require.NotEmpty(t, narrowLine)
+	require.NotEmpty(t, wideLine)
+	require.NotEmpty(t, reorderedLine)
+	require.NotEmpty(t, fullOrderLine)
+
+	assert.Contains(t, narrowLine, "services:read,services:write")
+	assert.Contains(t, narrowLine, expires)
+
+	assert.Contains(t, wideLine, "all")
+	assert.Contains(t, wideLine, "-", "a token without an expiry shows a dash")
+	assert.Contains(t, reorderedLine, "cluster:read,services:read")
+	assert.Contains(t, fullOrderLine, "all",
+		"the whole role in a different order is still the whole role")
 }

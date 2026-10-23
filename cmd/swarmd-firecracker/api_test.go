@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/moby/swarmkit/v2/node"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -45,6 +46,8 @@ func TestAPIRuntimeFrom_Defaults(t *testing.T) {
 	require.Equal(t, filepath.Join(stateDir, "api.sock"), cfg.socket)
 	require.Equal(t, filepath.Join(stateDir, "api", "tokens.json"), cfg.tokenFile)
 	require.Equal(t, filepath.Join(stateDir, "api"), cfg.certDir)
+	require.Equal(t, filepath.Join(stateDir, "api", "audit.jsonl"), cfg.auditFile)
+	require.Equal(t, 720*time.Hour, cfg.auditRetention)
 }
 
 func TestAPIRuntimeFrom_DefaultStateDirPaths(t *testing.T) {
@@ -53,6 +56,8 @@ func TestAPIRuntimeFrom_DefaultStateDirPaths(t *testing.T) {
 	require.Equal(t, filepath.Join(defaultStateDir, "api.sock"), cfg.socket)
 	require.Equal(t, filepath.Join(defaultStateDir, "api", "tokens.json"), cfg.tokenFile)
 	require.Equal(t, filepath.Join(defaultStateDir, "api"), cfg.certDir)
+	require.Equal(t, filepath.Join(defaultStateDir, "api", "audit.jsonl"), cfg.auditFile)
+	require.Equal(t, 30*24*time.Hour, cfg.auditRetention)
 }
 
 func TestAPIRuntimeFrom_Overrides(t *testing.T) {
@@ -63,6 +68,8 @@ func TestAPIRuntimeFrom_Overrides(t *testing.T) {
 		"--api-socket", "/tmp/api-test.sock",
 		"--api-token-file", "/tmp/api-test-tokens.json",
 		"--api-cert-dir", "/tmp/api-test-certs",
+		"--api-audit-file", "/tmp/api-test-audit.jsonl",
+		"--api-audit-retention", "48h",
 		"--api-disabled",
 	)
 
@@ -71,6 +78,8 @@ func TestAPIRuntimeFrom_Overrides(t *testing.T) {
 	require.Equal(t, "/tmp/api-test.sock", cfg.socket)
 	require.Equal(t, "/tmp/api-test-tokens.json", cfg.tokenFile)
 	require.Equal(t, "/tmp/api-test-certs", cfg.certDir)
+	require.Equal(t, "/tmp/api-test-audit.jsonl", cfg.auditFile)
+	require.Equal(t, 48*time.Hour, cfg.auditRetention)
 }
 
 func TestAPICertHosts(t *testing.T) {
@@ -99,11 +108,13 @@ func TestAPICertHosts(t *testing.T) {
 func TestStartAPI_DisabledIsNoOp(t *testing.T) {
 	stateDir := testhelpers.ShortTempDir(t)
 	cfg := apiRuntime{
-		enabled:   false,
-		tcpAddr:   "127.0.0.1:4244",
-		socket:    filepath.Join(stateDir, "api.sock"),
-		tokenFile: filepath.Join(stateDir, "api", "tokens.json"),
-		certDir:   filepath.Join(stateDir, "api"),
+		enabled:        false,
+		tcpAddr:        "127.0.0.1:4244",
+		socket:         filepath.Join(stateDir, "api.sock"),
+		tokenFile:      filepath.Join(stateDir, "api", "tokens.json"),
+		certDir:        filepath.Join(stateDir, "api"),
+		auditFile:      filepath.Join(stateDir, "api", "audit.jsonl"),
+		auditRetention: 720 * time.Hour,
 	}
 
 	stop, err := startAPI(context.Background(), cfg, stateDir, "node-1", filepath.Join(stateDir, "swarm.sock"))
@@ -121,10 +132,12 @@ func TestStartAPI_DisabledIsNoOp(t *testing.T) {
 func TestStartAPI_RequiresNodeCertificates(t *testing.T) {
 	stateDir := testhelpers.ShortTempDir(t)
 	cfg := apiRuntime{
-		enabled:   true,
-		socket:    filepath.Join(stateDir, "api.sock"),
-		tokenFile: filepath.Join(stateDir, "api", "tokens.json"),
-		certDir:   filepath.Join(stateDir, "api"),
+		enabled:        true,
+		socket:         filepath.Join(stateDir, "api.sock"),
+		tokenFile:      filepath.Join(stateDir, "api", "tokens.json"),
+		certDir:        filepath.Join(stateDir, "api"),
+		auditFile:      filepath.Join(stateDir, "api", "audit.jsonl"),
+		auditRetention: 720 * time.Hour,
 	}
 
 	stop, err := startAPI(context.Background(), cfg, stateDir, "node-1", filepath.Join(stateDir, "swarm.sock"))
@@ -146,11 +159,13 @@ func TestStartAPI_BusyTCPPortFails(t *testing.T) {
 	busyAddr := held.Addr().String()
 
 	cfg := apiRuntime{
-		enabled:   true,
-		tcpAddr:   busyAddr,
-		socket:    filepath.Join(stateDir, "api.sock"),
-		tokenFile: filepath.Join(stateDir, "api", "tokens.json"),
-		certDir:   filepath.Join(stateDir, "api"),
+		enabled:        true,
+		tcpAddr:        busyAddr,
+		socket:         filepath.Join(stateDir, "api.sock"),
+		tokenFile:      filepath.Join(stateDir, "api", "tokens.json"),
+		certDir:        filepath.Join(stateDir, "api"),
+		auditFile:      filepath.Join(stateDir, "api", "audit.jsonl"),
+		auditRetention: 720 * time.Hour,
 	}
 
 	stop, err := startAPI(context.Background(), cfg, stateDir, "node-1", filepath.Join(stateDir, "swarm.sock"))
@@ -166,11 +181,13 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 
 	sock := filepath.Join(stateDir, "api.sock")
 	cfg := apiRuntime{
-		enabled:   true,
-		tcpAddr:   testhelpers.FreeTCPAddr(t),
-		socket:    sock,
-		tokenFile: filepath.Join(stateDir, "api", "tokens.json"),
-		certDir:   filepath.Join(stateDir, "api"),
+		enabled:        true,
+		tcpAddr:        testhelpers.FreeTCPAddr(t),
+		socket:         sock,
+		tokenFile:      filepath.Join(stateDir, "api", "tokens.json"),
+		certDir:        filepath.Join(stateDir, "api"),
+		auditFile:      filepath.Join(stateDir, "api", "audit.jsonl"),
+		auditRetention: 720 * time.Hour,
 	}
 
 	stop, err := startAPI(context.Background(), cfg, stateDir, "node-1", filepath.Join(stateDir, "swarm.sock"))
@@ -200,12 +217,90 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 	require.Equal(t, http.StatusUnauthorized, tcpResp.StatusCode)
 	tcpResp.Body.Close()
 
+	// The trusted Unix listener reaches the audit route and reports an empty,
+	// non-null list: no mutation has been recorded yet.
+	unixAudit := testhelpers.WaitForGet(t, testhelpers.UnixHTTPClient(sock),
+		"http://unix/v1/audit", apihttp.MediaType, nil)
+	require.Equal(t, http.StatusOK, unixAudit.StatusCode)
+	var auditDoc struct {
+		Kind  string          `json:"kind"`
+		Items json.RawMessage `json:"items"`
+	}
+	require.NoError(t, json.NewDecoder(unixAudit.Body).Decode(&auditDoc))
+	unixAudit.Body.Close()
+	require.Equal(t, v1.KindAuditList, auditDoc.Kind)
+	require.Equal(t, "[]", string(auditDoc.Items))
+
+	// A reader token authenticates but does not hold audit:read.
+	require.NoFileExists(t, cfg.tokenFile, "the token store is only written on the first mutation")
+
+	store, err := apihttp.OpenTokenStore(cfg.tokenFile)
+	require.NoError(t, err)
+	readerSecret, _, err := store.Create("phase-one-reader", apihttp.RoleReader)
+	require.NoError(t, err)
+
+	tlsClient := testhelpers.TLSHTTPClient(t, certFile)
+	readerResp := testhelpers.WaitForGet(t, tlsClient,
+		"https://"+cfg.tcpAddr+"/v1/audit", apihttp.MediaType,
+		map[string]string{"Authorization": "Bearer " + readerSecret})
+	require.Equal(t, http.StatusForbidden, readerResp.StatusCode)
+	var errDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(readerResp.Body).Decode(&errDoc))
+	readerResp.Body.Close()
+	require.Equal(t, "audit:read", errDoc.Error.Details["requiredScope"])
+
+	// The same token reads a route its role grants.
+	readerVersion := testhelpers.WaitForGet(t, tlsClient,
+		"https://"+cfg.tcpAddr+"/v1/version", apihttp.MediaType,
+		map[string]string{"Authorization": "Bearer " + readerSecret})
+	require.Equal(t, http.StatusOK, readerVersion.StatusCode)
+	readerVersion.Body.Close()
+
+	adminSecret, _, err := store.Create("phase-two-admin", apihttp.RoleAdmin)
+	require.NoError(t, err)
+
+	adminResp := testhelpers.WaitForGet(t, tlsClient,
+		"https://"+cfg.tcpAddr+"/v1/audit", apihttp.MediaType,
+		map[string]string{"Authorization": "Bearer " + adminSecret})
+	require.Equal(t, http.StatusOK, adminResp.StatusCode)
+	adminResp.Body.Close()
+
+	// No mutation ran, so nothing has been audited yet and the log file does not
+	// exist: opening the store must not create it.
+	require.NoFileExists(t, cfg.auditFile)
+
 	stop()
 	stop() // idempotent
 
 	_, err = os.Stat(sock)
 	require.True(t, errors.Is(err, fs.ErrNotExist), "the socket should be gone after stop")
-	require.NoFileExists(t, cfg.tokenFile, "the token store is only written on the first mutation")
+}
+
+// TestStartAPI_BadAuditFileFails pins the startup contract: an unusable audit
+// path is a startup error, not a surprise on the first write.
+func TestStartAPI_BadAuditFileFails(t *testing.T) {
+	stateDir := testhelpers.ShortTempDir(t)
+	seedNodeCertificates(t, stateDir)
+
+	// A directory at the audit path cannot be opened as a JSONL file.
+	auditPath := filepath.Join(stateDir, "api", "audit.jsonl")
+	require.NoError(t, os.MkdirAll(auditPath, 0o700))
+
+	cfg := apiRuntime{
+		enabled:        true,
+		tcpAddr:        testhelpers.FreeTCPAddr(t),
+		socket:         filepath.Join(stateDir, "api.sock"),
+		tokenFile:      filepath.Join(stateDir, "api", "tokens.json"),
+		certDir:        filepath.Join(stateDir, "api"),
+		auditFile:      auditPath,
+		auditRetention: 720 * time.Hour,
+	}
+
+	stop, err := startAPI(context.Background(), cfg, stateDir, "node-1", filepath.Join(stateDir, "swarm.sock"))
+	require.Error(t, err)
+	require.Nil(t, stop)
+	require.Contains(t, err.Error(), auditPath)
+	require.NoFileExists(t, cfg.socket, "a failed audit open must not leave a Unix socket behind")
 }
 
 // TestStartAPIForNode_WorkerNeverStartsTheAPI pins the manager-only rule: the
@@ -216,11 +311,13 @@ func TestStartAPIForNode_WorkerNeverStartsTheAPI(t *testing.T) {
 	seedNodeCertificates(t, stateDir)
 
 	cfg := apiRuntime{
-		enabled:   true,
-		tcpAddr:   testhelpers.FreeTCPAddr(t),
-		socket:    filepath.Join(stateDir, "api.sock"),
-		tokenFile: filepath.Join(stateDir, "api", "tokens.json"),
-		certDir:   filepath.Join(stateDir, "api"),
+		enabled:        true,
+		tcpAddr:        testhelpers.FreeTCPAddr(t),
+		socket:         filepath.Join(stateDir, "api.sock"),
+		tokenFile:      filepath.Join(stateDir, "api", "tokens.json"),
+		certDir:        filepath.Join(stateDir, "api"),
+		auditFile:      filepath.Join(stateDir, "api", "audit.jsonl"),
+		auditRetention: 720 * time.Hour,
 	}
 	config := &node.Config{
 		StateDir:         stateDir,

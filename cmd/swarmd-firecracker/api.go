@@ -26,6 +26,10 @@ const (
 	// defaultAPISocketName is the trusted Unix socket name, relative to
 	// --state-dir.
 	defaultAPISocketName = "api.sock"
+	// defaultAPIAuditName is the audit log name, relative to --state-dir.
+	defaultAPIAuditName = "audit.jsonl"
+	// defaultAPIAuditRetention is the contract's 30-day default.
+	defaultAPIAuditRetention = apihttp.DefaultAuditRetention
 
 	// apiStopTimeout bounds how long stop waits for the listeners to drain. It
 	// exceeds apihttp's 5s shutdown grace so a slow drain is not misreported as a
@@ -38,11 +42,13 @@ const (
 
 // apiRuntime holds the daemon's programmatic API settings.
 type apiRuntime struct {
-	enabled   bool
-	tcpAddr   string
-	socket    string
-	tokenFile string
-	certDir   string
+	enabled        bool
+	tcpAddr        string
+	socket         string
+	tokenFile      string
+	certDir        string
+	auditFile      string
+	auditRetention time.Duration
 }
 
 // startAPIForNode starts the programmatic API when config describes a manager.
@@ -76,6 +82,17 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 		return nil, err
 	}
 
+	// The audit log is opened before the certificate and the listeners: a bad
+	// audit path must fail startup, not a write that arrives later.
+	retention := cfg.auditRetention
+	if retention <= 0 {
+		retention = defaultAPIAuditRetention
+	}
+	audit, err := apihttp.OpenAuditStore(cfg.auditFile, retention)
+	if err != nil {
+		return nil, fmt.Errorf("open programmatic API audit log %s: %w", cfg.auditFile, err)
+	}
+
 	certFile, keyFile, err := apihttp.EnsureCertificate(cfg.certDir, hostname, apiCertHosts(cfg.tcpAddr))
 	if err != nil {
 		return nil, err
@@ -100,6 +117,7 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	srv, err := apihttp.New(apihttp.Config{
 		Client:        c,
 		Tokens:        store,
+		Audit:         audit,
 		CertDir:       cfg.certDir,
 		ServerVersion: Version,
 		GRPCVersion:   apiversion.Current,
@@ -135,6 +153,7 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 		log.G(ctx).Infof("Programmatic API: TCP reads need a bearer token; create one with " +
 			"`swarmcracker api token create --name <name> --role reader`")
 	}
+	log.G(ctx).Infof("Programmatic API: audit log %s (retention %s)", cfg.auditFile, retention)
 
 	done := make(chan error, 1)
 	go func() { done <- listeners.Serve(runCtx) }()

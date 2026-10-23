@@ -619,3 +619,94 @@ func TestOpenAPIErrorDocument(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &generic))
 	validateAgainst(t, doc, "ErrorDocument", generic)
 }
+
+// TestOpenAPIAuditSurface pins GET /v1/audit and the audit schemas. The route is
+// the only way an operator reads the log, so its document shape is contract.
+func TestOpenAPIAuditSurface(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	for _, tc := range []struct {
+		name  string
+		value AuditList
+	}{
+		{name: "empty", value: NewAuditList(nil)},
+		{
+			name: "populated",
+			value: NewAuditList([]AuditRecord{
+				{
+					At:        "2026-10-23T10:00:00.123456789Z",
+					RequestID: "req_0123456789ab",
+					Actor:     AuditActor{Type: "token", ID: "tok_deadbeef", Name: "ci"},
+					Action:    "service.update",
+					Resource:  AuditResource{Kind: "Service", ID: "svc-1", Name: "web"},
+					Result:    "ok",
+					SourceIP:  "10.0.0.5",
+				},
+				{
+					At:        "2026-10-23T10:00:01Z",
+					RequestID: "req_0123456789ac",
+					Actor:     AuditActor{Type: "local"},
+					Action:    "config.delete",
+					Resource:  AuditResource{Kind: "Config"},
+					Result:    "error",
+				},
+			}),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(tc.value)
+			require.NoError(t, err)
+			var generic any
+			require.NoError(t, json.Unmarshal(data, &generic))
+			validateAgainst(t, doc, "AuditList", generic)
+		})
+	}
+
+	requireTypedResponse(t, doc, "/v1/audit", "200", "AuditList")
+	requireTypedResponse(t, doc, "/v1/audit", "403", "ErrorDocument")
+	requireTypedResponse(t, doc, "/v1/audit", "501", "ErrorDocument")
+	requireTypedResponse(t, doc, "/v1/audit", "4XX", "ErrorDocument")
+
+	path := doc.Paths.Find("/v1/audit")
+	require.NotNil(t, path)
+	require.NotNil(t, path.Get)
+	require.NotNil(t, path.Get.Responses.Status(401), "audit 401 response missing")
+	require.NotNil(t, path.Get.Responses.Status(304), "audit 304 response missing")
+
+	names := make([]string, 0, len(path.Get.Parameters))
+	for _, param := range path.Get.Parameters {
+		require.NotNil(t, param.Value)
+		names = append(names, param.Value.Name)
+		require.Equal(t, "query", param.Value.In, param.Value.Name)
+		require.False(t, param.Value.Required, param.Value.Name)
+		require.NotNil(t, param.Value.Schema)
+	}
+	require.ElementsMatch(t, []string{"limit", "cursor"}, names)
+}
+
+// TestOpenAPIConfigDataIsOptional pins the payload field: documented, typed as a
+// string, and never required, because only configs:read-values produces it.
+func TestOpenAPIConfigDataIsOptional(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	payload := "listen 8080"
+	value := NewConfigDocument(Config{
+		ID: "cfg-1", Name: "app", Revision: "3", Data: &payload,
+	})
+	data, err := json.Marshal(value)
+	require.NoError(t, err)
+	var generic any
+	require.NoError(t, json.Unmarshal(data, &generic))
+	validateAgainst(t, doc, "ConfigDocument", generic)
+
+	schema := doc.Components.Schemas["Config"]
+	require.NotNil(t, schema)
+	require.NotNil(t, schema.Value)
+
+	field, ok := schema.Value.Properties["data"]
+	require.True(t, ok, "Config.data must be documented")
+	require.NotNil(t, field.Value)
+	require.True(t, field.Value.Type.Is("string"))
+	require.NotContains(t, schema.Value.Required, "data",
+		"a plain configs:read response omits the payload")
+}

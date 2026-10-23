@@ -171,8 +171,13 @@ CLI's default.`,
 
 func newAPITokenCreateCommand() *cobra.Command {
 	var (
-		name string
-		role string
+		name       string
+		role       string
+		scopes     []string
+		serviceIDs []string
+		taskIDs    []string
+		labels     []string
+		expiresAt  string
 	)
 
 	cmd := &cobra.Command{
@@ -181,17 +186,34 @@ func newAPITokenCreateCommand() *cobra.Command {
 		Long: `Mint a token and print its secret to stdout, once.
 
 Store the output somewhere safe: the token file keeps only a hash, so the secret
-cannot be recovered later.`,
+cannot be recovered later.
+
+--role expands to a scope set (reader, runner, operator or admin). --scope
+narrows it: every requested scope must be part of the role, and a token can never
+hold more. A runner must carry at least one task selector (--service-id,
+--task-id or --selector-label); operator and admin may omit them, which means all
+tasks.`,
 		Example: `  swarmcracker api token create --name ci --role reader
+  swarmcracker api token create --name deploy --role operator --scope services:write --scope services:read
+  swarmcracker api token create --name build --role runner --service-id svc-123 --expires-at 2026-12-01T00:00:00Z
   swarmcracker --token-file /etc/swarmcracker/api/tokens.json api token create --name ops --role admin`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			selectors, err := tokenSelectors(serviceIDs, taskIDs, labels)
+			if err != nil {
+				return err
+			}
+
 			store, err := openAPITokenStore()
 			if err != nil {
 				return err
 			}
 
-			secret, _, err := store.Create(name, role)
+			secret, _, err := store.CreateWithOptions(name, role, apihttp.TokenOptions{
+				Scopes:        scopes,
+				TaskSelectors: selectors,
+				ExpiresAt:     expiresAt,
+			})
 			if err != nil {
 				return err
 			}
@@ -203,8 +225,46 @@ cannot be recovered later.`,
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", "Token name (required)")
-	cmd.Flags().StringVar(&role, "role", apihttp.RoleReader, "Token role (reader or admin)")
+	cmd.Flags().StringVar(&role, "role", apihttp.RoleReader,
+		"Token role (reader, runner, operator or admin)")
+	cmd.Flags().StringArrayVar(&scopes, "scope", nil,
+		"Narrow the token to one scope (repeatable); defaults to the whole role")
+	cmd.Flags().StringArrayVar(&serviceIDs, "service-id", nil,
+		"Task selector: restrict the token to a service ID (repeatable)")
+	cmd.Flags().StringArrayVar(&taskIDs, "task-id", nil,
+		"Task selector: restrict the token to a task ID (repeatable)")
+	cmd.Flags().StringArrayVar(&labels, "selector-label", nil,
+		"Task selector: require a service label, as k=v (repeatable)")
+	cmd.Flags().StringVar(&expiresAt, "expires-at", "",
+		"Expiry as an RFC3339 timestamp, for example 2026-12-01T00:00:00Z (default: never)")
 	return cmd
+}
+
+// tokenSelectors turns the repeatable selector flags into a selector set. No
+// flag at all means nil, which the token store reads as "no restriction".
+func tokenSelectors(serviceIDs, taskIDs, labels []string) (*apihttp.TaskSelectors, error) {
+	if len(serviceIDs) == 0 && len(taskIDs) == 0 && len(labels) == 0 {
+		return nil, nil
+	}
+
+	selectors := &apihttp.TaskSelectors{
+		ServiceIDs: serviceIDs,
+		TaskIDs:    taskIDs,
+	}
+	if len(labels) == 0 {
+		return selectors, nil
+	}
+
+	selectors.Labels = make(map[string]string, len(labels))
+	for _, raw := range labels {
+		key, value, found := strings.Cut(raw, "=")
+		if !found || strings.TrimSpace(key) == "" {
+			return nil, output.NewErrorf(output.CodeInvalid,
+				"selector label %q must be key=value", raw)
+		}
+		selectors.Labels[strings.TrimSpace(key)] = value
+	}
+	return selectors, nil
 }
 
 func newAPITokenListCommand() *cobra.Command {
@@ -213,6 +273,11 @@ func newAPITokenListCommand() *cobra.Command {
 		Short:   "List tokens",
 		Aliases: []string{"ls"},
 		Args:    cobra.NoArgs,
+		Long: `List the tokens in the local store.
+
+SCOPES prints "all" when a token still holds every scope its role grants, and
+the comma-separated scope list when it was narrowed with --scope. EXPIRES prints
+the token's expiry, or "-" when it never expires. Hashes are never printed.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// The table is the only representation; silently ignoring -o json
 			// would hand a caller an unparseable document.
@@ -233,15 +298,55 @@ func newAPITokenListCommand() *cobra.Command {
 				return nil
 			}
 
-			fmt.Fprintf(w, "%-14s %-24s %-8s %s\n", "ID", "NAME", "ROLE", "CREATED")
+			fmt.Fprintf(w, "%-14s %-24s %-9s %-20s %-10s %s\n",
+				"ID", "NAME", "ROLE", "CREATED", "SCOPES", "EXPIRES")
 			for _, tok := range tokens {
 				// Token carries no usable hash after List; printing the struct's
 				// fields explicitly keeps it that way.
-				fmt.Fprintf(w, "%-14s %-24s %-8s %s\n", tok.ID, tok.Name, tok.Role, tok.CreatedAt)
+				fmt.Fprintf(w, "%-14s %-24s %-9s %-20s %-10s %s\n",
+					tok.ID, tok.Name, tok.Role, tok.CreatedAt, formatTokenScopes(tok), formatTokenExpiry(tok.ExpiresAt))
 			}
 			return nil
 		},
 	}
+}
+
+// formatTokenScopes abbreviates the scope column: a token holding exactly its
+// role's set prints "all", a narrowed one prints its scopes.
+func formatTokenScopes(tok apihttp.Token) string {
+	roleScopes, err := apihttp.RoleScopes(tok.Role)
+	if err == nil && sameScopeSet(roleScopes, tok.Scopes) {
+		return "all"
+	}
+
+	return strings.Join(tok.Scopes, ",")
+}
+
+// sameScopeSet compares two unique scope sets regardless of order, so
+// `--scope` flags given in a different order still read as the full role.
+func sameScopeSet(roleScopes []apihttp.Scope, scopes []string) bool {
+	if len(roleScopes) != len(scopes) {
+		return false
+	}
+
+	have := make(map[string]bool, len(scopes))
+	for _, scope := range scopes {
+		have[scope] = true
+	}
+	for _, scope := range roleScopes {
+		if !have[string(scope)] {
+			return false
+		}
+	}
+	return true
+}
+
+// formatTokenExpiry prints the expiry, or "-" for a token that never expires.
+func formatTokenExpiry(expiresAt string) string {
+	if expiresAt == "" {
+		return "-"
+	}
+	return expiresAt
 }
 
 func newAPITokenRevokeCommand() *cobra.Command {

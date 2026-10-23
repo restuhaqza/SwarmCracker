@@ -66,8 +66,15 @@ func TestCreateAndAuthenticate(t *testing.T) {
 
 	got, ok := store.Authenticate(secret)
 	require.True(t, ok)
-	assert.Equal(t, tok, got)
 	assert.Empty(t, got.Hash)
+	assert.Equal(t, tok.ID, got.ID)
+	assert.Equal(t, tok.Name, got.Name)
+	assert.Equal(t, tok.Role, got.Role)
+	assert.Equal(t, tok.CreatedAt, got.CreatedAt)
+	assert.Equal(t, tok.Scopes, got.Scopes)
+	assert.NotEmpty(t, got.LastUsedAt, "authentication records the last use")
+	_, err = time.Parse(time.RFC3339, got.LastUsedAt)
+	require.NoError(t, err)
 }
 
 func TestCreateSecretIs32RandomBytes(t *testing.T) {
@@ -236,7 +243,9 @@ func TestReloadFromDisk(t *testing.T) {
 
 	got, ok := reloaded.Authenticate(secret)
 	require.True(t, ok)
-	assert.Equal(t, tok, got)
+	assert.Equal(t, tok.ID, got.ID)
+	assert.Equal(t, tok.Scopes, got.Scopes)
+	assert.NotEmpty(t, got.LastUsedAt)
 }
 
 // TestReloadSeesExternalCreateAndRevoke covers the daemon's view of a token file
@@ -257,7 +266,8 @@ func TestReloadSeesExternalCreateAndRevoke(t *testing.T) {
 
 	got, ok := store.Authenticate(secret)
 	require.True(t, ok, "authentication must see a token created after the store was opened")
-	assert.Equal(t, tok, got)
+	assert.Equal(t, tok.ID, got.ID)
+	assert.Equal(t, tok.Scopes, got.Scopes)
 
 	require.NoError(t, writer.Revoke(tok.ID))
 	_, ok = store.Authenticate(secret)
@@ -315,12 +325,16 @@ func TestFileSchema(t *testing.T) {
 		Tokens        []map[string]any `json:"tokens"`
 	}
 	require.NoError(t, json.Unmarshal(data, &raw))
-	assert.Equal(t, 1, raw.SchemaVersion)
+	assert.Equal(t, 2, raw.SchemaVersion)
 	require.Len(t, raw.Tokens, 1)
 	assert.Equal(t, tok.ID, raw.Tokens[0]["id"])
 	assert.Equal(t, tok.Name, raw.Tokens[0]["name"])
 	assert.Equal(t, RoleReader, raw.Tokens[0]["role"])
 	assert.Equal(t, tok.CreatedAt, raw.Tokens[0]["createdAt"])
+
+	roleScopes, err := RoleScopes(RoleReader)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, scopeStrings(roleScopes), raw.Tokens[0]["scopes"])
 
 	sum := sha256.Sum256([]byte(secret))
 	assert.Equal(t, hex.EncodeToString(sum[:]), raw.Tokens[0]["hash"])
@@ -330,7 +344,7 @@ func TestOpenTokenStoreRejectsMalformedFiles(t *testing.T) {
 	cases := map[string]string{
 		"invalid json":    `{"schemaVersion":1,"tokens":`,
 		"empty file":      "",
-		"wrong version":   `{"schemaVersion":2,"tokens":[]}`,
+		"wrong version":   `{"schemaVersion":3,"tokens":[]}`,
 		"missing version": `{"tokens":[]}`,
 	}
 	for name, content := range cases {
@@ -398,4 +412,408 @@ func assertNoTempFiles(t *testing.T, dir string) {
 	matches, err := filepath.Glob(filepath.Join(dir, ".tokens-*.tmp"))
 	require.NoError(t, err)
 	assert.Empty(t, matches, "failed writes must clean up their temporary files")
+}
+
+// TestCreateUsesTheFullRoleScopeSet pins the default: a role creates a token
+// that holds exactly what the role grants.
+func TestCreateUsesTheFullRoleScopeSet(t *testing.T) {
+	for _, role := range []string{RoleReader, RoleRunner, RoleOperator, RoleAdmin} {
+		t.Run(role, func(t *testing.T) {
+			store, _ := newTestStore(t)
+
+			opts := TokenOptions{TaskSelectors: &TaskSelectors{ServiceIDs: []string{"svc-1"}}}
+			_, tok, err := store.CreateWithOptions("ci", role, opts)
+			require.NoError(t, err)
+
+			want, err := RoleScopes(role)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, scopeStrings(want), tok.Scopes)
+		})
+	}
+}
+
+func TestCreateWithOptionsNarrowsScopes(t *testing.T) {
+	store, path := newTestStore(t)
+
+	secret, tok, err := store.CreateWithOptions("ci", RoleOperator, TokenOptions{
+		Scopes: []string{"services:read", "services:write", "services:read"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"services:read", "services:write"}, tok.Scopes,
+		"requested scopes are deduplicated and keep their requested order")
+	assert.NotContains(t, tok.Scopes, string(ScopeTasksExec),
+		"a narrowed token must not keep the rest of the role")
+
+	got, ok := store.Authenticate(secret)
+	require.True(t, ok)
+	assert.Equal(t, tok.Scopes, got.Scopes)
+
+	// The narrowing survives a reload.
+	reopened, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	list := reopened.List()
+	require.Len(t, list, 1)
+	assert.Equal(t, tok.Scopes, list[0].Scopes)
+}
+
+func TestCreateWithOptionsRejectsScopesOutsideTheRole(t *testing.T) {
+	cases := []struct {
+		name   string
+		role   string
+		scopes []string
+	}{
+		{"reader cannot write", RoleReader, []string{"services:write"}},
+		{"reader cannot read values", RoleReader, []string{"configs:read-values"}},
+		{"runner cannot write", RoleRunner, []string{"services:write"}},
+		{"operator cannot audit", RoleOperator, []string{"audit:read"}},
+		{"operator cannot administer tokens", RoleOperator, []string{"tokens:admin"}},
+		{"unknown scope", RoleAdmin, []string{"services:delete"}},
+		{"empty scope", RoleAdmin, []string{"  "}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store, path := newTestStore(t)
+
+			secret, tok, err := store.CreateWithOptions("ci", tc.role, TokenOptions{Scopes: tc.scopes})
+			require.Error(t, err)
+			assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+			assert.Empty(t, secret)
+			assert.Zero(t, tok)
+			assert.Empty(t, store.List())
+			_, statErr := os.Stat(path)
+			assert.True(t, os.IsNotExist(statErr), "a rejected create must not write the file")
+		})
+	}
+}
+
+func TestCreateRunnerRequiresSelector(t *testing.T) {
+	cases := map[string]*TaskSelectors{
+		"nil selector":   nil,
+		"empty selector": {},
+		"blank ids":      {ServiceIDs: []string{"   "}},
+	}
+	for name, selectors := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, _ := newTestStore(t)
+
+			_, _, err := store.CreateWithOptions("ci", RoleRunner, TokenOptions{TaskSelectors: selectors})
+			require.Error(t, err)
+			assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+			assert.Contains(t, err.Error(), "selector")
+		})
+	}
+
+	t.Run("non-runner may omit selectors", func(t *testing.T) {
+		for _, role := range []string{RoleOperator, RoleAdmin} {
+			store, _ := newTestStore(t)
+			_, tok, err := store.CreateWithOptions("ops", role, TokenOptions{})
+			require.NoError(t, err)
+			assert.Nil(t, tok.TaskSelectors, "no selector means all tasks")
+		}
+	})
+}
+
+func TestCreateWithOptionsNormalizesSelectors(t *testing.T) {
+	store, path := newTestStore(t)
+
+	_, tok, err := store.CreateWithOptions("ci", RoleRunner, TokenOptions{
+		TaskSelectors: &TaskSelectors{
+			ServiceIDs: []string{"  svc-1  "},
+			TaskIDs:    []string{"task-1"},
+			Labels:     map[string]string{" team ": "payments"},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, tok.TaskSelectors)
+	assert.Equal(t, []string{"svc-1"}, tok.TaskSelectors.ServiceIDs)
+	assert.Equal(t, []string{"task-1"}, tok.TaskSelectors.TaskIDs)
+	assert.Equal(t, map[string]string{"team": "payments"}, tok.TaskSelectors.Labels)
+
+	// The selector is part of the on-disk record.
+	reopened, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	list := reopened.List()
+	require.Len(t, list, 1)
+	assert.Equal(t, tok.TaskSelectors, list[0].TaskSelectors)
+}
+
+func TestCreateWithOptionsRejectsEmptySelectorEntries(t *testing.T) {
+	cases := map[string]*TaskSelectors{
+		"empty service id": {ServiceIDs: []string{""}},
+		"empty task id":    {TaskIDs: []string{"  "}},
+		"empty label key":  {Labels: map[string]string{"": "payments"}},
+	}
+	for name, selectors := range cases {
+		t.Run(name, func(t *testing.T) {
+			store, _ := newTestStore(t)
+			_, _, err := store.CreateWithOptions("ci", RoleOperator, TokenOptions{TaskSelectors: selectors})
+			require.Error(t, err)
+			assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+		})
+	}
+}
+
+func TestCreateWithOptionsExpiry(t *testing.T) {
+	store, path := newTestStore(t)
+
+	future := time.Now().Add(time.Hour).UTC()
+
+	t.Run("stored canonically in UTC", func(t *testing.T) {
+		offset := future.In(time.FixedZone("plus2", 2*3600)).Format(time.RFC3339)
+		_, tok, err := store.CreateWithOptions("expiring", RoleReader, TokenOptions{ExpiresAt: offset})
+		require.NoError(t, err)
+		assert.Equal(t, future.Format(time.RFC3339), tok.ExpiresAt)
+		assert.True(t, strings.HasSuffix(tok.ExpiresAt, "Z"), tok.ExpiresAt)
+	})
+
+	t.Run("past is rejected", func(t *testing.T) {
+		_, _, err := store.CreateWithOptions("expired", RoleReader, TokenOptions{
+			ExpiresAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+		})
+		require.Error(t, err)
+		assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+	})
+
+	t.Run("malformed is rejected", func(t *testing.T) {
+		_, _, err := store.CreateWithOptions("bad", RoleReader, TokenOptions{ExpiresAt: "tomorrow"})
+		require.Error(t, err)
+		assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+	})
+
+	reopened, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	list := reopened.List()
+	require.Len(t, list, 1)
+	assert.Equal(t, future.Format(time.RFC3339), list[0].ExpiresAt)
+}
+
+// TestAuthenticateRejectsExpiredToken writes the record directly: Create refuses
+// an expiry in the past, and the load path must still fail closed when time
+// catches up with a token minted earlier.
+func TestAuthenticateRejectsExpiredToken(t *testing.T) {
+	const secret = "sc_expiredtoken"
+
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	writeTokenFile(t, path, tokenFile{
+		SchemaVersion: schemaVersion,
+		Tokens: []diskToken{{
+			ID:        "tok_00000001",
+			Name:      "expired",
+			Role:      RoleReader,
+			Hash:      hashSecret(secret),
+			CreatedAt: time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339),
+			ExpiresAt: time.Now().Add(-time.Hour).UTC().Format(time.RFC3339),
+		}},
+	})
+
+	store, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	require.Len(t, store.List(), 1, "an expired token stays listed")
+
+	_, ok := store.Authenticate(secret)
+	assert.False(t, ok, "an expired token must never authenticate")
+	assert.Empty(t, store.List()[0].LastUsedAt, "a rejected token is not used")
+}
+
+func TestAuthenticateFailsClosedOnUnparseableExpiry(t *testing.T) {
+	const secret = "sc_badexpiry"
+
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	writeTokenFile(t, path, tokenFile{
+		SchemaVersion: schemaVersion,
+		Tokens: []diskToken{{
+			ID: "tok_00000002", Name: "bad", Role: RoleReader,
+			Hash: hashSecret(secret), CreatedAt: "2026-01-01T00:00:00Z",
+			ExpiresAt: "not-a-timestamp",
+		}},
+	})
+
+	store, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	_, ok := store.Authenticate(secret)
+	assert.False(t, ok)
+}
+
+// TestAuthenticateDoesNotWriteTheTokenFile pins the no-write rule: a read must
+// not turn into a token-file mutation.
+func TestAuthenticateDoesNotWriteTheTokenFile(t *testing.T) {
+	store, path := newTestStore(t)
+	secret, _, err := store.Create("ci", RoleReader)
+	require.NoError(t, err)
+
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	beforeInfo, err := os.Stat(path)
+	require.NoError(t, err)
+
+	for i := 0; i < 3; i++ {
+		_, ok := store.Authenticate(secret)
+		require.True(t, ok)
+	}
+
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	afterInfo, err := os.Stat(path)
+	require.NoError(t, err)
+
+	assert.Equal(t, before, after, "authentication must not rewrite the token file")
+	assert.True(t, beforeInfo.ModTime().Equal(afterInfo.ModTime()))
+
+	assert.NotEmpty(t, store.List()[0].LastUsedAt, "last used is still tracked in memory")
+
+	// The metadata is persisted by the next mutation, not by the read.
+	_, _, err = store.Create("second", RoleReader)
+	require.NoError(t, err)
+	persisted, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(persisted), `"lastUsedAt"`)
+}
+
+// TestPhase1TokenFileMigratesToV2 loads a phase-1 record (role only, no scopes),
+// authenticates it, and asserts the next mutation writes schemaVersion 2 with
+// the expanded scope set.
+func TestPhase1TokenFileMigratesToV2(t *testing.T) {
+	const secret = "sc_phaseone"
+
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	writeTokenFile(t, path, tokenFile{
+		SchemaVersion: schemaVersionPhase1,
+		Tokens: []diskToken{{
+			ID: "tok_00000003", Name: "phase-one", Role: RoleAdmin,
+			Hash: hashSecret(secret), CreatedAt: "2026-01-01T00:00:00Z",
+		}},
+	})
+
+	store, err := OpenTokenStore(path)
+	require.NoError(t, err)
+
+	list := store.List()
+	require.Len(t, list, 1)
+	assert.Equal(t, RoleAdmin, list[0].Role)
+	assert.NotEmpty(t, list[0].Scopes, "a phase-1 record has its role expanded on load")
+	assert.Nil(t, list[0].TaskSelectors)
+	assert.Empty(t, list[0].ExpiresAt)
+
+	got, ok := store.Authenticate(secret)
+	require.True(t, ok, "a phase-1 token must keep working")
+	assert.Contains(t, got.Scopes, string(ScopeAuditRead))
+
+	// Any mutation upgrades the file.
+	_, _, err = store.CreateWithOptions("runner", RoleRunner, TokenOptions{
+		TaskSelectors: &TaskSelectors{ServiceIDs: []string{"svc-1"}},
+	})
+	require.NoError(t, err)
+
+	var raw struct {
+		SchemaVersion int              `json:"schemaVersion"`
+		Tokens        []map[string]any `json:"tokens"`
+	}
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Equal(t, 2, raw.SchemaVersion)
+	require.Len(t, raw.Tokens, 2)
+	assert.Equal(t, "tok_00000003", raw.Tokens[0]["id"])
+	assert.NotEmpty(t, raw.Tokens[0]["scopes"], "the migrated record now carries its scopes")
+
+	// The rewritten file still loads.
+	reopened, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	assert.Len(t, reopened.List(), 2)
+}
+
+// TestPhase1UnknownRoleFailsLoad keeps a hand-edited role from authorizing
+// anything: an unknown role has no scope set to expand.
+func TestPhase1UnknownRoleFailsLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	writeTokenFile(t, path, tokenFile{
+		SchemaVersion: schemaVersionPhase1,
+		Tokens: []diskToken{{
+			ID: "tok_00000004", Name: "auditor", Role: "auditor",
+			Hash: hashSecret("sc_whatever"), CreatedAt: "2026-01-01T00:00:00Z",
+		}},
+	})
+
+	store, err := OpenTokenStore(path)
+	require.Error(t, err)
+	assert.Nil(t, store)
+	assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+	assert.Contains(t, err.Error(), "auditor")
+}
+
+// TestListReportsNewMetadata pins what an operator sees: scopes, selector and
+// expiry, but never the hash.
+func TestListReportsNewMetadata(t *testing.T) {
+	store, _ := newTestStore(t)
+
+	expires := time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)
+	_, _, err := store.CreateWithOptions("ci", RoleRunner, TokenOptions{
+		Scopes:        []string{"tasks:read", "tasks:exec"},
+		TaskSelectors: &TaskSelectors{Labels: map[string]string{"team": "payments"}},
+		ExpiresAt:     expires,
+	})
+	require.NoError(t, err)
+
+	list := store.List()
+	require.Len(t, list, 1)
+	assert.Equal(t, []string{"tasks:read", "tasks:exec"}, list[0].Scopes)
+	assert.Equal(t, map[string]string{"team": "payments"}, list[0].TaskSelectors.Labels)
+	assert.Equal(t, expires, list[0].ExpiresAt)
+	assert.Empty(t, list[0].Hash)
+
+	data, err := json.Marshal(list)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "hash")
+}
+
+// writeTokenFile writes one token file for the load-path tests.
+func writeTokenFile(t *testing.T, path string, file tokenFile) {
+	t.Helper()
+
+	data, err := json.MarshalIndent(file, "", "  ")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(path, append(data, '\n'), 0o600))
+}
+
+// TestReturnedTokensDoNotShareState pins that a caller cannot edit the store
+// through a token it was handed: List, Authenticate and Create all return a copy.
+func TestReturnedTokensDoNotShareState(t *testing.T) {
+	store, path := newTestStore(t)
+
+	secret, created, err := store.CreateWithOptions("ci", RoleRunner, TokenOptions{
+		TaskSelectors: &TaskSelectors{
+			ServiceIDs: []string{"svc-1"},
+			Labels:     map[string]string{"team": "payments"},
+		},
+	})
+	require.NoError(t, err)
+
+	mutate := func(tok *Token) {
+		tok.Scopes[0] = "mutated:read"
+		tok.TaskSelectors.ServiceIDs[0] = "svc-2"
+		tok.TaskSelectors.Labels["team"] = "search"
+	}
+
+	mutate(&created)
+
+	list := store.List()
+	require.Len(t, list, 1)
+	mutate(&list[0])
+
+	got, ok := store.Authenticate(secret)
+	require.True(t, ok)
+	assert.Equal(t, []string{"svc-1"}, got.TaskSelectors.ServiceIDs)
+	assert.Equal(t, "payments", got.TaskSelectors.Labels["team"])
+	assert.NotEqual(t, "mutated:read", got.Scopes[0])
+
+	// A persist writes the store's copy, not a caller's mutation.
+	_, _, err = store.Create("second", RoleReader)
+	require.NoError(t, err)
+
+	reopened, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	first := reopened.List()[0]
+	assert.Equal(t, []string{"svc-1"}, first.TaskSelectors.ServiceIDs)
+	assert.Equal(t, "payments", first.TaskSelectors.Labels["team"])
+	assert.NotEqual(t, "mutated:read", first.Scopes[0])
 }

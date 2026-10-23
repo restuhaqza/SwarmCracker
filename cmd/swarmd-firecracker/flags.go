@@ -259,6 +259,16 @@ func newAppFlags() []cli.Flag {
 			Usage: "Directory holding the programmatic API TLS certificate (tls.crt, tls.key)",
 			Value: filepath.Join(defaultStateDir, defaultAPIDirName),
 		},
+		&cli.StringFlag{
+			Name:  "api-audit-file",
+			Usage: "Append-only audit log for programmatic API writes (managers only)",
+			Value: filepath.Join(defaultStateDir, defaultAPIDirName, defaultAPIAuditName),
+		},
+		&cli.DurationFlag{
+			Name:  "api-audit-retention",
+			Usage: "How long audit records are kept",
+			Value: defaultAPIAuditRetention,
+		},
 		&cli.BoolFlag{
 			Name:  "api-disabled",
 			Usage: "Do not start the programmatic API on this manager",
@@ -273,11 +283,13 @@ func apiRuntimeFrom(ctx *cli.Context) apiRuntime {
 	stateDir := ctx.String("state-dir")
 
 	return apiRuntime{
-		enabled:   !ctx.Bool("api-disabled"),
-		tcpAddr:   ctx.String("api-listen"),
-		socket:    flagOrDefault(ctx, "api-socket", filepath.Join(stateDir, defaultAPISocketName)),
-		tokenFile: flagOrDefault(ctx, "api-token-file", filepath.Join(stateDir, defaultAPIDirName, "tokens.json")),
-		certDir:   flagOrDefault(ctx, "api-cert-dir", filepath.Join(stateDir, defaultAPIDirName)),
+		enabled:        !ctx.Bool("api-disabled"),
+		tcpAddr:        ctx.String("api-listen"),
+		socket:         flagOrDefault(ctx, "api-socket", filepath.Join(stateDir, defaultAPISocketName)),
+		tokenFile:      flagOrDefault(ctx, "api-token-file", filepath.Join(stateDir, defaultAPIDirName, "tokens.json")),
+		certDir:        flagOrDefault(ctx, "api-cert-dir", filepath.Join(stateDir, defaultAPIDirName)),
+		auditFile:      flagOrDefault(ctx, "api-audit-file", filepath.Join(stateDir, defaultAPIDirName, defaultAPIAuditName)),
+		auditRetention: ctx.Duration("api-audit-retention"),
 	}
 }
 

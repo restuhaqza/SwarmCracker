@@ -200,6 +200,9 @@ func (s *Server) listConfigs(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	if !canReadConfigValues(r) {
+		items = redactConfigValues(items)
+	}
 
 	page, next, err := paginateRequest(r, items, func(v v1.Config) (string, string) {
 		return v.CreatedAt, v.ID
@@ -220,7 +223,29 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
+	if !canReadConfigValues(r) {
+		config.Data = nil
+	}
 	s.writeJSON(w, r, http.StatusOK, v1.NewConfigDocument(config))
+}
+
+// canReadConfigValues reports whether the caller may see config payloads. A
+// plain configs:read token never may.
+func canReadConfigValues(r *http.Request) bool {
+	identity, ok := IdentityFrom(r.Context())
+	return ok && identity.HasScope(ScopeConfigsReadValues)
+}
+
+// redactConfigValues returns a copy of items without their payloads, so a list
+// response cannot leak what GetConfig would withhold. The copy keeps the
+// client's slice untouched.
+func redactConfigValues(items []v1.Config) []v1.Config {
+	out := make([]v1.Config, len(items))
+	copy(out, items)
+	for i := range out {
+		out[i].Data = nil
+	}
+	return out
 }
 
 func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {

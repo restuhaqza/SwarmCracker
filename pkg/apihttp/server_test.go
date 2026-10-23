@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -799,13 +798,15 @@ func TestHeadOnListRouteIs405(t *testing.T) {
 	assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
 }
 
-func TestUnknownRoleTokenIsForbidden(t *testing.T) {
+// TestUnknownRoleTokenFileIsRejected pins the fail-closed load rule: a
+// hand-edited role with no scope set must make the store unreadable rather than
+// authorize anything. Create rejects an unknown role up front; the load path is
+// the defence for a file edited outside the CLI.
+func TestUnknownRoleTokenFileIsRejected(t *testing.T) {
 	const secret = "sc_unknownrole"
 
-	// Write the token file directly: TokenStore.Create rejects unknown roles, so
-	// this is the hand-edited-file case the authentication defence covers.
 	tokenPath := filepath.Join(t.TempDir(), "tokens.json")
-	file := tokenFile{
+	writeTokenFile(t, tokenPath, tokenFile{
 		SchemaVersion: schemaVersion,
 		Tokens: []diskToken{{
 			ID:        "tok_00000000",
@@ -814,34 +815,16 @@ func TestUnknownRoleTokenIsForbidden(t *testing.T) {
 			Hash:      hashSecret(secret),
 			CreatedAt: "2026-01-01T00:00:00Z",
 		}},
-	}
-	data, err := json.Marshal(file)
-	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(tokenPath, data, tokenFileMode))
+	})
 
 	store, err := OpenTokenStore(tokenPath)
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Nil(t, store)
 
-	srv, err := New(Config{
-		Client:        &fakeClient{},
-		Tokens:        store,
-		ServerVersion: "0.11.0",
-		GRPCVersion:   "v1",
-	})
-	require.NoError(t, err)
-
-	req := httptest.NewRequest(http.MethodGet, "/v1/version", nil)
-	req.Header.Set("Accept", MediaType)
-	req.Header.Set("Authorization", "Bearer "+secret)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
-	assertWireHeaders(t, rec)
-
-	doc := decodeError(t, rec)
-	assert.Equal(t, string(output.CodeForbidden), doc.Error.Code)
-	assert.Contains(t, doc.Error.Message, "auditor")
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodeInvalid, typed.Code)
+	assert.Contains(t, typed.Message, "auditor")
 }
 
 func TestNewValidatesConfig(t *testing.T) {
@@ -885,4 +868,237 @@ func TestErrorMessagesAreNotJSONHTML(t *testing.T) {
 	rec := api.do(t, http.MethodGet, "/v1/tasks/t-1", withToken(api.token))
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.False(t, strings.Contains(rec.Body.String(), `\u003c`), rec.Body.String())
+}
+
+// mint creates a token with options and returns its secret.
+func (a *testAPI) mint(t *testing.T, name, role string, opts TokenOptions) string {
+	t.Helper()
+	secret, _, err := a.store.CreateWithOptions(name, role, opts)
+	require.NoError(t, err)
+	return secret
+}
+
+// TestReaderReadsEveryPhase1Route pins the default role against the whole phase-1
+// surface: if a route is added without a reachable role, this fails.
+func TestReaderReadsEveryPhase1Route(t *testing.T) {
+	fc := &fakeClient{
+		services:     []v1.Service{{ID: "svc-1", CreatedAt: "2026-01-01T00:00:00Z"}},
+		service:      v1.Service{ID: "svc-1"},
+		serviceTasks: []v1.Task{{ID: "task-1"}},
+		tasks:        []v1.Task{{ID: "task-1"}},
+		task:         v1.Task{ID: "task-1"},
+		nodes:        []v1.Node{{ID: "node-1"}},
+		node:         v1.Node{ID: "node-1"},
+		networks:     []v1.Network{{ID: "net-1"}},
+		network:      v1.Network{ID: "net-1"},
+		configs:      []v1.Config{{ID: "cfg-1"}},
+		config:       v1.Config{ID: "cfg-1"},
+		secrets:      []v1.Secret{{ID: "sec-1"}},
+		secret:       v1.Secret{ID: "sec-1"},
+	}
+	api := newTestAPI(t, fc)
+
+	for _, target := range []string{
+		"/v1/version",
+		"/v1/services",
+		"/v1/services/svc-1",
+		"/v1/services/svc-1/tasks",
+		"/v1/tasks",
+		"/v1/tasks/task-1",
+		"/v1/nodes",
+		"/v1/nodes/node-1",
+		"/v1/networks",
+		"/v1/networks/net-1",
+		"/v1/configs",
+		"/v1/configs/cfg-1",
+		"/v1/secrets",
+		"/v1/secrets/sec-1",
+	} {
+		t.Run(target, func(t *testing.T) {
+			rec := api.do(t, http.MethodGet, target, withToken(api.token))
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			assertWireHeaders(t, rec)
+		})
+	}
+}
+
+// TestNarrowedTokenIsForbidden pins scope enforcement: a token may only reach the
+// routes its own scope set covers.
+func TestNarrowedTokenIsForbidden(t *testing.T) {
+	api := newTestAPI(t, &fakeClient{})
+
+	narrowed := api.mint(t, "services-only", RoleReader, TokenOptions{
+		Scopes: []string{"services:read"},
+	})
+
+	t.Run("granted scope works", func(t *testing.T) {
+		rec := api.do(t, http.MethodGet, "/v1/services", withToken(narrowed))
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	})
+
+	cases := []struct {
+		target string
+		scope  string
+	}{
+		{"/v1/version", "cluster:read"},
+		{"/v1/services/svc-1/tasks", "tasks:read"},
+		{"/v1/tasks", "tasks:read"},
+		{"/v1/nodes", "nodes:read"},
+		{"/v1/networks", "networks:read"},
+		{"/v1/configs", "configs:read"},
+		{"/v1/secrets", "secrets:read"},
+		{"/v1/audit", "audit:read"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.target, func(t *testing.T) {
+			rec := api.do(t, http.MethodGet, tc.target, withToken(narrowed))
+			require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+			assertWireHeaders(t, rec)
+			assert.Empty(t, rec.Header().Get("WWW-Authenticate"),
+				"an authenticated token that lacks a scope is not prompted to authenticate")
+
+			doc := decodeError(t, rec)
+			assert.Equal(t, string(output.CodeForbidden), doc.Error.Code)
+			assert.Equal(t, tc.scope, doc.Error.Details["requiredScope"])
+		})
+	}
+}
+
+// TestRunnerScopeSetReachesTaskRoutes documents what the runner role unlocks
+// once the phase-3 routes exist: its scope set is what those handlers check.
+func TestRunnerScopeSetReachesTaskRoutes(t *testing.T) {
+	api := newTestAPI(t, &fakeClient{})
+
+	runner := api.mint(t, "ci", RoleRunner, TokenOptions{
+		TaskSelectors: &TaskSelectors{ServiceIDs: []string{"svc-1"}},
+	})
+
+	rec := api.do(t, http.MethodGet, "/v1/tasks", withToken(runner))
+	assert.Equal(t, http.StatusOK, rec.Code, "a runner keeps every reader scope")
+
+	operator := api.mint(t, "ops", RoleOperator, TokenOptions{})
+	rec = api.do(t, http.MethodGet, "/v1/audit", withToken(operator))
+	assert.Equal(t, http.StatusForbidden, rec.Code, "operator does not hold audit:read")
+
+	admin := api.mint(t, "root", RoleAdmin, TokenOptions{})
+	rec = api.do(t, http.MethodGet, "/v1/audit", withToken(admin))
+	assert.Equal(t, http.StatusNotImplemented, rec.Code, "no audit store is configured in this test")
+}
+
+func TestAuditRoute(t *testing.T) {
+	audit, err := OpenAuditStore(filepath.Join(t.TempDir(), "audit.jsonl"), 0)
+	require.NoError(t, err)
+
+	api := newTestAPIWithConfig(t, &fakeClient{}, Config{
+		ServerVersion: "0.11.0",
+		GRPCVersion:   "v1",
+		Audit:         audit,
+	})
+
+	t.Run("reader is forbidden", func(t *testing.T) {
+		rec := api.do(t, http.MethodGet, "/v1/audit", withToken(api.token))
+		require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+
+		doc := decodeError(t, rec)
+		assert.Equal(t, "audit:read", doc.Error.Details["requiredScope"])
+	})
+
+	t.Run("admin reads an empty list", func(t *testing.T) {
+		admin := api.mint(t, "root", RoleAdmin, TokenOptions{})
+
+		rec := api.do(t, http.MethodGet, "/v1/audit", withToken(admin))
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assertWireHeaders(t, rec)
+
+		var doc struct {
+			SchemaVersion int             `json:"schemaVersion"`
+			Kind          string          `json:"kind"`
+			Items         json.RawMessage `json:"items"`
+			Next          *string         `json:"next"`
+		}
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+		assert.Equal(t, v1.SchemaVersion, doc.SchemaVersion)
+		assert.Equal(t, v1.KindAuditList, doc.Kind)
+		assert.Equal(t, "[]", string(doc.Items), "an empty audit log is [] and never null")
+		assert.Nil(t, doc.Next)
+	})
+
+	t.Run("unix handler reads it too", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/audit", nil)
+		req.Header.Set("Accept", MediaType)
+		rec := httptest.NewRecorder()
+		api.unix.ServeHTTP(rec, req)
+
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	})
+
+	t.Run("limit is validated", func(t *testing.T) {
+		admin := api.mint(t, "root-2", RoleAdmin, TokenOptions{})
+		rec := api.do(t, http.MethodGet, "/v1/audit?limit=5000", withToken(admin))
+		require.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Equal(t, string(output.CodeInvalid), decodeError(t, rec).Error.Code)
+	})
+}
+
+// TestAuditRouteWithoutStoreIs501 keeps a manager that never configured the log
+// from pretending it has one.
+func TestAuditRouteWithoutStoreIs501(t *testing.T) {
+	api := newTestAPI(t, &fakeClient{})
+	admin := api.mint(t, "root", RoleAdmin, TokenOptions{})
+
+	rec := api.do(t, http.MethodGet, "/v1/audit", withToken(admin))
+	require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
+
+	doc := decodeError(t, rec)
+	assert.Equal(t, string(output.CodeNotImplemented), doc.Error.Code)
+	assert.Equal(t, "audit", doc.Error.Details["capability"])
+}
+
+// TestConfigValuesRequireReadValuesScope pins the one payload-bearing field: a
+// plain configs:read token never receives data, on either config route.
+func TestConfigValuesRequireReadValuesScope(t *testing.T) {
+	payload := "listen 8080"
+	fc := &fakeClient{
+		config:  v1.Config{ID: "cfg-1", Data: &payload},
+		configs: []v1.Config{{ID: "cfg-1", CreatedAt: "2026-01-01T00:00:00Z", Data: &payload}},
+	}
+	api := newTestAPI(t, fc)
+
+	t.Run("reader gets metadata only", func(t *testing.T) {
+		for _, target := range []string{"/v1/configs/cfg-1", "/v1/configs"} {
+			rec := api.do(t, http.MethodGet, target, withToken(api.token))
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			assert.NotContains(t, rec.Body.String(), payload, target)
+			assert.NotContains(t, rec.Body.String(), `"data"`, target)
+		}
+	})
+
+	t.Run("operator with read-values gets the payload", func(t *testing.T) {
+		operator := api.mint(t, "ops", RoleOperator, TokenOptions{})
+
+		rec := api.do(t, http.MethodGet, "/v1/configs/cfg-1", withToken(operator))
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Contains(t, rec.Body.String(), `"data":"`+payload+`"`)
+
+		rec = api.do(t, http.MethodGet, "/v1/configs", withToken(operator))
+		require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+		assert.Contains(t, rec.Body.String(), `"data":"`+payload+`"`)
+	})
+
+	t.Run("the client's slice is not mutated", func(t *testing.T) {
+		require.NotNil(t, fc.configs[0].Data, "redaction must copy, not edit the client's data")
+	})
+}
+
+// TestMethodRejectionIsIndependentOfScope keeps an unscoped 405 working: method
+// support is a route property, not an authorization decision.
+func TestMethodRejectionForNarrowToken(t *testing.T) {
+	api := newTestAPI(t, &fakeClient{})
+	narrowed := api.mint(t, "services-only", RoleReader, TokenOptions{
+		Scopes: []string{"services:read"},
+	})
+
+	rec := api.do(t, http.MethodPost, "/v1/nodes", withToken(narrowed))
+	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+	assert.Equal(t, "GET", rec.Header().Get("Allow"))
 }

@@ -352,12 +352,20 @@ Everything is `GET`. Phase 1 has no write routes.
 | `/v1/configs/{id}` | `ConfigDocument` |
 | `/v1/secrets` | `SecretList` (metadata only — never a payload) |
 | `/v1/secrets/{id}` | `SecretDocument` (metadata only) |
+| `/v1/audit` | `AuditList` (requires `audit:read`, which only `admin` holds) |
 
 Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
 also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
 `X-Request-Id`, and every `200` carries an `ETag` (send it back as
 `If-None-Match` to get `304`). Responses use the
 `application/vnd.swarmcracker.v1+json` media type.
+
+`GET /v1/configs/{id}` includes the payload in `data` only when the caller holds
+`configs:read-values`. A plain `configs:read` token receives the metadata
+document with the field absent, and the list route never leaks a payload. The
+manager does not read config payloads yet, so `data` is currently always absent;
+the field and its scope gate are defined now so the value path can land without a
+contract change.
 
 ### Manager flags
 
@@ -367,7 +375,12 @@ also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
 | `--api-socket` | `<state-dir>/api.sock` | trusted Unix socket |
 | `--api-cert-dir` | `<state-dir>/api` | directory holding `tls.crt` and `tls.key` |
 | `--api-token-file` | `<state-dir>/api/tokens.json` | bearer token store |
+| `--api-audit-file` | `<state-dir>/api/audit.jsonl` | append-only audit log |
+| `--api-audit-retention` | `720h` | how long audit records are kept |
 | `--api-disabled` | `false` | do not start the API on this manager |
+
+An audit path that cannot be opened fails API startup rather than deferring the
+error to the first write.
 
 These flags belong to `swarmd-firecracker`. Defaults follow `--state-dir`, so
 moving the state directory moves the socket, certificate and token store with it.
@@ -402,14 +415,85 @@ swarmcracker api token list
 swarmcracker api token revoke <token-id>
 ```
 
-`--role` is `reader` or `admin`. No phase-1 route distinguishes them: today
-`admin` has exactly the same read access as `reader` and exists only as the
-reserved role for the write surface a later phase adds. The secret is printed
-once at creation and only its SHA-256 hash is written to `tokens.json`, so it
-cannot be recovered later. The CLI's `--token-file` names that store; without it
-the CLI uses `<SWARM_STATE_DIR or /var/lib/swarmkit>/api/tokens.json`. The daemon
-re-reads the file when it changes, so a token minted or revoked while the daemon
-runs takes effect without a restart.
+`--role` is `reader`, `runner`, `operator` or `admin`; each expands to a scope
+set (below). The secret is printed once at creation and only its SHA-256 hash is
+written to `tokens.json`, so it cannot be recovered later. The CLI's
+`--token-file` names that store; without it the CLI uses
+`<SWARM_STATE_DIR or /var/lib/swarmkit>/api/tokens.json`. The daemon re-reads the
+file when it changes, so a token minted or revoked while the daemon runs takes
+effect without a restart.
+
+### Scopes, roles and task selectors
+
+Scopes are enforced server-side, deny by default: a route a token's scopes do not
+cover answers `403 forbidden` with `details.requiredScope`. Roles expand to
+scopes at mint time, and `--scope` can only narrow a role, never add to it.
+
+| Role | Scopes | Use |
+|------|--------|-----|
+| `reader` | `services:read`, `tasks:read`, `tasks:logs`, `nodes:read`, `networks:read`, `configs:read`, `secrets:read`, `events:read`, `cluster:read` | dashboards, monitoring, read-only CI |
+| `runner` | reader + `tasks:exec`, `tasks:files`, `tasks:snapshots` | CI that builds or tests inside VMs |
+| `operator` | runner + `services:write`, `networks:write`, `configs:write`, `configs:read-values`, `secrets:write` | deploys |
+| `admin` | everything, including `nodes:write`, `tokens:admin`, `audit:read` | cluster administration |
+
+Every route names the scope it needs: `/v1/version` is `cluster:read`,
+`/v1/services/{id}/tasks` is `tasks:read`, `/v1/audit` is `audit:read`, and the
+other resource routes use their own `*:read` scope. The trusted Unix socket is a
+local administrator (`type: "local"`, role `admin`) because its file mode is the
+credential.
+
+A token may also carry **task selectors**, which restrict which tasks it can
+`exec`, transfer files to or snapshot (phase 3). Selectors do not narrow the read
+routes: a runner still lists every task its `tasks:read` scope covers.
+
+```bash
+swarmcracker api token create --name build --role runner \
+  --service-id svc-0123456789abcdef \
+  --selector-label team=payments \
+  --scope tasks:read --scope tasks:exec \
+  --expires-at 2026-12-01T00:00:00Z
+```
+
+The three dimensions (`--service-id`, `--task-id`, `--selector-label`) are ANDed,
+and every label must match. A `runner` token **must** carry at least one
+selector: minting one without is refused, and an existing one without a selector
+fails closed with `403 forbidden` and `details.reason: "selector_required"`.
+`operator` and `admin` may omit selectors, which means all tasks. `--expires-at`
+takes an RFC3339 timestamp; an expired token answers `401 unauthenticated`.
+
+`api token list` shows `SCOPES` (`all` when the token still holds its whole
+role) and `EXPIRES` (`-` when it never expires), and never prints a hash or a
+secret.
+
+### Audit log
+
+Every mutation and every `exec`/`files` call is recorded to an append-only JSONL
+log on the manager (0600, one record per line, fsynced per append). Records are
+kept 30 days by default (`--api-audit-retention`), and a crash-truncated or
+malformed line is skipped on load instead of making the log unreadable.
+
+```bash
+# Needs an admin token: audit:read is admin-only. There is no CLI subcommand for
+# the log yet, so read it with curl.
+curl --cacert <state-dir>/api/tls.crt \
+  -H "Authorization: Bearer $(cat admin.token)" \
+  -H "Accept: application/vnd.swarmcracker.v1+json" \
+  "https://mgr:4244/v1/audit?limit=50"
+```
+
+`GET /v1/audit?limit=&cursor=` returns an `AuditList` ordered by `at`, then
+`requestId`, ascending. Each record names the actor (`type: "token"` with the
+token ID and name, or `type: "local"` for the Unix socket), the action, the
+resource, `result` (`ok` or `error`) and `sourceIp` — the TCP peer, never a
+forwarded header, and absent for a Unix-socket request. Secret and config values
+are never recorded. A manager without an audit log answers
+`501 not_implemented` with `details.capability: "audit"`.
+
+Phase 2 adds no write routes, so the log stays empty until the write surface
+lands; the records it will carry are `service.create`, `service.update`,
+`service.delete`, `config.create`, `config.update`, `config.delete`,
+`secret.create`, `secret.update`, `secret.delete`, `network.create`,
+`network.delete` and `node.update`.
 
 ### Remote CLI reads
 

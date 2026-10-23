@@ -61,3 +61,24 @@ func TestConfigDocumentEnvelope(t *testing.T) {
 	assert.NotContains(t, doc, "value", "config payload must never be serialized")
 	assert.NotContains(t, doc, "items", "a document is not a list")
 }
+
+// TestConfigDocumentDataRoundTrips pins the one field that carries a config
+// payload: it only appears when a value getter populated it, and never as an
+// empty string.
+func TestConfigDocumentDataRoundTrips(t *testing.T) {
+	payload := "listen 8080"
+	doc := NewConfigDocument(Config{ID: "cfg-1", Name: "app", Revision: "3", Data: &payload})
+
+	data, err := json.Marshal(doc)
+	require.NoError(t, err)
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, payload, decoded["data"])
+
+	empty := ""
+	data, err = json.Marshal(NewConfigDocument(Config{ID: "cfg-2", Data: &empty}))
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, "", decoded["data"], "an empty payload must still be distinguishable from absent")
+}
