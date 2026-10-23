@@ -208,6 +208,59 @@ func TestEnsureCertificateRegeneratesExpiringSoon(t *testing.T) {
 	assert.WithinDuration(t, time.Now().Add(365*24*time.Hour), leaf.NotAfter, time.Minute)
 }
 
+func TestEnsureCertificateRenewalBoundary(t *testing.T) {
+	cases := map[string]struct {
+		remaining  time.Duration
+		regenerate bool
+	}{
+		"31 days left is reused":      {remaining: 31 * 24 * time.Hour},
+		"exactly 30 days regenerates": {remaining: 30 * 24 * time.Hour, regenerate: true},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			now := time.Now()
+			oldCertPEM, oldKeyPEM, err := generateCertificate(testHostname, nil, now.Add(-time.Minute), now.Add(tc.remaining))
+			require.NoError(t, err)
+			certFile, keyFile := writePair(t, dir, oldCertPEM, oldKeyPEM)
+
+			certFile, keyFile, err = EnsureCertificate(dir, testHostname, nil)
+			require.NoError(t, err)
+
+			if !tc.regenerate {
+				assert.Equal(t, oldCertPEM, readFile(t, certFile), "more than 30 days left must be reused")
+				assert.Equal(t, oldKeyPEM, readFile(t, keyFile))
+				return
+			}
+
+			assert.NotEqual(t, oldCertPEM, readFile(t, certFile), "30 days or less left must be replaced")
+			assert.NotEqual(t, oldKeyPEM, readFile(t, keyFile))
+
+			leaf, _ := loadLeaf(t, certFile, keyFile)
+			assert.WithinDuration(t, time.Now().Add(tlsValidity), leaf.NotAfter, time.Minute)
+		})
+	}
+}
+
+func TestEnsureCertificateRegeneratesNotYetValidPair(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	futureCertPEM, futureKeyPEM, err := generateCertificate(testHostname, nil, now.Add(time.Hour), now.Add(tlsValidity))
+	require.NoError(t, err)
+	certFile, keyFile := writePair(t, dir, futureCertPEM, futureKeyPEM)
+
+	certFile, keyFile, err = EnsureCertificate(dir, testHostname, nil)
+	require.NoError(t, err)
+
+	assert.NotEqual(t, futureCertPEM, readFile(t, certFile), "a not-yet-valid certificate must be replaced")
+	assert.NotEqual(t, futureKeyPEM, readFile(t, keyFile))
+
+	leaf, _ := loadLeaf(t, certFile, keyFile)
+	assert.False(t, leaf.NotBefore.After(time.Now()), "the replacement must already be valid")
+	assertNoTempCertificateFiles(t, dir)
+}
+
 func TestEnsureCertificateRegeneratesCorruptPair(t *testing.T) {
 	cases := map[string]struct {
 		cert, key []byte
@@ -285,6 +338,18 @@ func TestEnsureCertificateRejectsEmptyDir(t *testing.T) {
 	}
 }
 
+func TestEnsureCertificateTrimsDir(t *testing.T) {
+	dir := t.TempDir()
+
+	certFile, keyFile, err := EnsureCertificate("  "+dir+"  ", testHostname, nil)
+	require.NoError(t, err)
+
+	assert.Equal(t, filepath.Join(dir, "tls.crt"), certFile)
+	assert.Equal(t, filepath.Join(dir, "tls.key"), keyFile)
+	_, err = tls.LoadX509KeyPair(certFile, keyFile)
+	require.NoError(t, err)
+}
+
 func TestEnsureCertificateSanitizesExtraHosts(t *testing.T) {
 	certFile, keyFile, err := EnsureCertificate(t.TempDir(), "", []string{" ", "", " db.internal ", "db.internal"})
 	require.NoError(t, err)
@@ -327,6 +392,28 @@ func TestEnsureCertificateReportsWriteFailure(t *testing.T) {
 	_, _, err := EnsureCertificate(dir, testHostname, nil)
 	require.Error(t, err)
 	assert.Equal(t, output.CodeInternal, requireErrorCode(t, err))
+	assertNoTempCertificateFiles(t, dir)
+}
+
+func TestEnsureCertificateRecoversWhenCertRenameFails(t *testing.T) {
+	dir := t.TempDir()
+
+	// A non-empty directory at the certificate path makes the final rename fail
+	// after the key has already been renamed into place. Rename reports EISDIR
+	// here (the source is a file, not a directory); any error takes the same
+	// recovery branch.
+	certFile := filepath.Join(dir, "tls.crt")
+	keyFile := filepath.Join(dir, "tls.key")
+	require.NoError(t, os.MkdirAll(certFile, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(certFile, "occupied"), []byte("x"), 0o600))
+
+	_, _, err := EnsureCertificate(dir, testHostname, nil)
+	require.Error(t, err)
+	assert.Equal(t, output.CodeInternal, requireErrorCode(t, err))
+	assert.Contains(t, err.Error(), "write certificate pair in", "the failure must come from the write, not an earlier step")
+
+	_, statErr := os.Stat(keyFile)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the already-renamed key must be removed")
 	assertNoTempCertificateFiles(t, dir)
 }
 

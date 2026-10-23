@@ -258,29 +258,8 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 
-	tmp, err := os.CreateTemp(dir, ".tokens-*.tmp")
+	tmpPath, err := writeTempFile(dir, ".tokens-*.tmp", data, tokenFileMode)
 	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-
-	fail := func(err error) error {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return err
-	}
-
-	if err := tmp.Chmod(tokenFileMode); err != nil {
-		return fail(err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {

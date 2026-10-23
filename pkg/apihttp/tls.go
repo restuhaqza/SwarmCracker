@@ -1,10 +1,9 @@
-package apihttp
-
 // This file owns the manager API's bootstrap TLS certificate: a self-signed
 // ECDSA P-256 server certificate persisted next to the token store. It exists so
 // the HTTPS listener starts without operator-provided files. The same
 // certificate acts as its own trust root (IsCA), so a client can pin tls.crt as
 // its CA; replacing it with a cluster-CA-signed leaf is a follow-up.
+package apihttp
 
 import (
 	"crypto/ecdsa"
@@ -29,6 +28,12 @@ import (
 // regenerations could otherwise interleave their renames and leave a
 // certificate with the wrong key. Generation happens at most once per manager
 // start, so a single package-wide lock is cheap enough.
+//
+// This lock is in-process only: it does not coordinate another process (for
+// example a CLI and the manager) writing the same directory. Cross-process
+// locking is deliberately out of scope; fsync keeps each file durable, and a
+// crash between the two renames is repaired by the next call, which sees a
+// mismatched pair, regenerates, and finds no temp files.
 var tlsMu sync.Mutex
 
 const (
@@ -54,10 +59,21 @@ const (
 // EnsureCertificate returns the paths to a persisted server certificate and
 // key, generating them when absent or within 30 days of expiry.
 //
-// The files are <dir>/tls.crt (0644) and <dir>/tls.key (0600); dir is created
-// with mode 0700 when missing. A valid existing pair is reused untouched.
+// The files are <dir>/tls.crt (0644) and <dir>/tls.key (0600); dir is trimmed
+// of surrounding whitespace and created with mode 0700 when missing. A valid
+// existing pair is reused untouched.
+//
+// hostname is a DNS name: it is added to the certificate's DNS SANs. IP
+// addresses must not be passed as hostname; put advertised IP addresses in
+// extraHosts, which adds each entry as an IP SAN when it parses as an IP
+// address and as a DNS SAN otherwise. The loopback addresses 127.0.0.1 and ::1
+// are always included.
+//
+// A reused pair must also already be valid now: a certificate whose NotBefore
+// lies in the future is regenerated rather than served.
 func EnsureCertificate(dir, hostname string, extraHosts []string) (certFile, keyFile string, err error) {
-	if strings.TrimSpace(dir) == "" {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
 		return "", "", output.NewError(output.CodeInvalid, "certificate directory must not be empty")
 	}
 
@@ -88,22 +104,26 @@ func EnsureCertificate(dir, hostname string, extraHosts []string) (certFile, key
 	return certFile, keyFile, nil
 }
 
-// certificateIsValid reports whether certFile/keyFile form a loadable pair whose
-// leaf still outlives tlsRenewBefore.
+// certificateIsValid reports whether certFile/keyFile form a loadable pair that
+// is already valid and still outlives tlsRenewBefore. A pair whose NotBefore is
+// in the future is rejected so a not-yet-valid certificate is never served.
 func certificateIsValid(certFile, keyFile string) bool {
 	pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
 		return false
 	}
-	if len(pair.Certificate) == 0 {
-		return false
-	}
 
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
+	// LoadX509KeyPair documents that Certificate.Leaf is populated on success
+	// (Go 1.23+), and it parses the leaf to check that the key matches, so both
+	// the chain and the parsed certificate are guaranteed here; no extra
+	// len(pair.Certificate)/ParseCertificate guards are needed.
+	leaf := pair.Leaf
+
+	now := time.Now()
+	if now.Before(leaf.NotBefore) {
 		return false
 	}
-	return time.Now().Add(tlsRenewBefore).Before(leaf.NotAfter)
+	return now.Add(tlsRenewBefore).Before(leaf.NotAfter)
 }
 
 // generateCertificate returns a self-signed PEM certificate and its ECDSA
@@ -206,11 +226,11 @@ func certificateHosts(hostname string, extraHosts []string) (dnsNames []string, 
 // them into place. On failure it removes any temporary files and a key it has
 // already renamed, so the next call sees a missing file and regenerates.
 func writeCertificatePair(certFile, keyFile string, certPEM, keyPEM []byte) error {
-	keyTmp, err := writeTempFile(keyFile, keyPEM, tlsKeyMode)
+	keyTmp, err := writeTempFile(filepath.Dir(keyFile), "."+filepath.Base(keyFile)+"-*.tmp", keyPEM, tlsKeyMode)
 	if err != nil {
 		return err
 	}
-	certTmp, err := writeTempFile(certFile, certPEM, tlsCertMode)
+	certTmp, err := writeTempFile(filepath.Dir(certFile), "."+filepath.Base(certFile)+"-*.tmp", certPEM, tlsCertMode)
 	if err != nil {
 		_ = os.Remove(keyTmp)
 		return err
@@ -230,36 +250,4 @@ func writeCertificatePair(certFile, keyFile string, certPEM, keyPEM []byte) erro
 	}
 
 	return nil
-}
-
-// writeTempFile writes data to a temporary file beside path with mode and
-// returns the temporary path. The caller renames or removes it.
-func writeTempFile(path string, data []byte, mode os.FileMode) (string, error) {
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
-	if err != nil {
-		return "", err
-	}
-	tmpPath := tmp.Name()
-
-	fail := func(err error) (string, error) {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return "", err
-	}
-
-	if err := tmp.Chmod(mode); err != nil {
-		return fail(err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return "", err
-	}
-	return tmpPath, nil
 }
