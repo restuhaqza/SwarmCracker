@@ -1,15 +1,22 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
+	"io"
 	"testing"
 	"time"
 
 	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func watchMeta(revision uint64) api.Meta {
@@ -126,4 +133,97 @@ func TestWatchRequestTypesAndCursor(t *testing.T) {
 
 	_, err = watchRequest(v1.EventOptions{Since: "not-a-number"})
 	assert.Error(t, err)
+}
+
+func TestWatchCursorLagsBatch(t *testing.T) {
+	assert.Equal(t, "9", cursorFor(&api.WatchMessage{Version: &api.Version{Index: 10}}))
+	assert.Equal(t, "0", cursorFor(&api.WatchMessage{Version: &api.Version{Index: 0}}))
+	assert.Empty(t, cursorFor(&api.WatchMessage{}))
+}
+
+type failingWatchReceiver struct{ err error }
+
+func (f failingWatchReceiver) Recv() (*api.WatchMessage, error) { return nil, f.err }
+
+func TestWatchFirstReceiveMapsCompaction(t *testing.T) {
+	_, err := receiveWatch(failingWatchReceiver{err: status.Error(codes.OutOfRange, "compacted")})
+	require.Error(t, err)
+	mapped := watchError(err)
+	var typed *output.Error
+	require.ErrorAs(t, mapped, &typed)
+	assert.Equal(t, output.CodeCursorExpired, typed.Code)
+	assert.Equal(t, "relist", typed.Details["action"])
+}
+
+type fakeWatchClient struct {
+	stream api.Watch_WatchClient
+	err    error
+}
+
+func (f fakeWatchClient) Watch(context.Context, *api.WatchRequest, ...grpc.CallOption) (api.Watch_WatchClient, error) {
+	return f.stream, f.err
+}
+
+type fakeWatchStream struct {
+	first    error
+	messages []*api.WatchMessage
+}
+
+func (f *fakeWatchStream) Recv() (*api.WatchMessage, error) {
+	if f.first != nil {
+		return nil, f.first
+	}
+	if len(f.messages) == 0 {
+		return nil, io.EOF
+	}
+	message := f.messages[0]
+	f.messages = f.messages[1:]
+	return message, nil
+}
+
+func (f *fakeWatchStream) Header() (metadata.MD, error) { return nil, nil }
+func (f *fakeWatchStream) Trailer() metadata.MD         { return nil }
+func (f *fakeWatchStream) CloseSend() error             { return nil }
+func (f *fakeWatchStream) Context() context.Context     { return context.Background() }
+func (f *fakeWatchStream) SendMsg(any) error            { return nil }
+func (f *fakeWatchStream) RecvMsg(any) error            { return nil }
+
+// TestWatchEventsReturnsCompactionOnFirstReceive is the real-path 410: SwarmKit
+// reports a compacted resume cursor from the first Recv, not from Watch.
+func TestWatchEventsReturnsCompactionOnFirstReceive(t *testing.T) {
+	c := &Client{watch: fakeWatchClient{stream: &fakeWatchStream{
+		first: status.Error(codes.OutOfRange, "requested index is unavailable due to compaction"),
+	}}}
+	_, _, err := c.WatchEvents(context.Background(), v1.EventOptions{Since: "1"})
+	require.Error(t, err)
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodeCursorExpired, typed.Code)
+	assert.Equal(t, "relist", typed.Details["action"])
+}
+
+func TestWatchEventsLagsTheBatchCursor(t *testing.T) {
+	event := func(action api.WatchActionKind, revision uint64) *api.WatchMessage_Event {
+		service := serviceFixture("svc-1", "web", revision)
+		service.Meta = watchMeta(revision)
+		return &api.WatchMessage_Event{Action: action, Object: &api.Object{Object: &api.Object_Service{Service: service}}}
+	}
+	stream := &fakeWatchStream{messages: []*api.WatchMessage{
+		{}, // SwarmKit's empty start message.
+		{Version: &api.Version{Index: 12}, Events: []*api.WatchMessage_Event{
+			event(api.WatchActionKindCreate, 11),
+			event(api.WatchActionKindUpdate, 12),
+		}},
+	}}
+	c := &Client{watch: fakeWatchClient{stream: stream}}
+	events, errs, err := c.WatchEvents(context.Background(), v1.EventOptions{})
+	require.NoError(t, err)
+
+	first := <-events
+	second := <-events
+	assert.Equal(t, "11", first.Cursor, "the cursor must be the previous batch boundary")
+	assert.Equal(t, "11", second.Cursor, "every event in the batch shares the resumable cursor")
+	assert.Equal(t, "service.created", first.Type)
+	assert.Equal(t, "service.updated", second.Type)
+	<-errs
 }

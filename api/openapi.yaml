@@ -1350,11 +1350,13 @@ paths:
       summary: Stream resource changes
       description: >
         SSE by default; send Accept application/x-ndjson for one JSON object per
-        line. The stream begins with a ready frame. Each event's id/cursor is
-        SwarmKit's watch index and can be replayed with `since` or
-        `Last-Event-ID`. Requires events:read. An expired cursor is 410
-        cursor_expired with details.action "relist". Heartbeat comments are sent
-        every 15 seconds on SSE. manager-local v1.
+        line. The stream begins with a ready frame. The id/cursor is the watch
+        batch boundary; every event in one batch shares it, so resuming may
+        re-deliver that batch (at-least-once). Dedupe by resource and revision,
+        not by cursor alone. Resume with `since` or `Last-Event-ID`. Requires
+        events:read. An expired cursor is 410 cursor_expired with details.action
+        "relist". Heartbeat comments are sent every 15 seconds on SSE.
+        manager-local v1.
       parameters:
         - name: types
           in: query
@@ -1468,6 +1470,9 @@ components:
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        Idempotency-Replayed:
+          description: Present and true only when a retry replayed a stored 4xx.
+          schema: { type: string, enum: ["true"] }
       content:
         application/vnd.swarmcracker.v1+json:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -1490,6 +1495,9 @@ components:
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        Idempotency-Replayed:
+          description: Present and true only when a retry replayed a stored 4xx.
+          schema: { type: string, enum: ["true"] }
       content:
         application/vnd.swarmcracker.v1+json:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
@@ -1576,9 +1584,11 @@ components:
         request runs is 409 conflict (`details.reason: "in_progress"`,
         `retryable: true`, `details.retryAfterMs: 250`). State is in memory on the
         serving manager with a 24 h TTL; it is not replicated, so a retry after a
-        leader change can create twice. A 5xx is not stored and may be retried
-        with the same key. Ignored on a dry run, because a dry run persists
-        nothing to replay.
+        leader change can create twice. A 5xx, a 428 missing If-Match, a 412
+        stale precondition, and a malformed dryRun/wait/timeoutMs are not
+        stored, so the corrected request may reuse the key. A replayed 4xx also
+        carries `Idempotency-Replayed: true`. Ignored on a dry run, because a
+        dry run persists nothing to replay.
     DryRun:
       name: dryRun
       in: query

@@ -39,12 +39,40 @@ func (c *Client) WatchEvents(ctx context.Context, opts v1.EventOptions) (<-chan 
 		return nil, nil, watchError(err)
 	}
 
+	// SwarmKit reports a compacted resume cursor on the first Recv, not on the
+	// Watch call. Prime one message before returning so the HTTP layer can still
+	// answer 410 instead of a 200 stream with an error frame.
+	first, err := receiveWatch(stream)
+	if err != nil {
+		return nil, nil, watchError(err)
+	}
+
 	events := make(chan v1.Event, watchBuffer)
 	errs := make(chan error, 1)
+
+	emit := func(message *api.WatchMessage) bool {
+		cursor := cursorFor(message)
+		for _, event := range message.Events {
+			converted, ok := eventFromWatch(event, cursor, opts)
+			if !ok {
+				continue
+			}
+			select {
+			case events <- converted:
+			case <-ctx.Done():
+				return false
+			}
+		}
+		return true
+	}
+
 	go func() {
 		defer close(events)
 		defer close(errs)
 
+		if !emit(first) {
+			return
+		}
 		for {
 			message, err := stream.Recv()
 			if err != nil {
@@ -53,24 +81,36 @@ func (c *Client) WatchEvents(ctx context.Context, opts v1.EventOptions) (<-chan 
 				}
 				return
 			}
-			cursor := ""
-			if message.Version != nil {
-				cursor = strconv.FormatUint(message.Version.Index, 10)
-			}
-			for _, event := range message.Events {
-				converted, ok := eventFromWatch(event, cursor, opts)
-				if !ok {
-					continue
-				}
-				select {
-				case events <- converted:
-				case <-ctx.Done():
-					return
-				}
+			if !emit(message) {
+				return
 			}
 		}
 	}()
 	return events, errs, nil
+}
+
+// watchReceiver is the one method the event loop needs from the gRPC stream, so
+// the first-message error path is testable without a SwarmKit server.
+type watchReceiver interface {
+	Recv() (*api.WatchMessage, error)
+}
+
+func receiveWatch(stream watchReceiver) (*api.WatchMessage, error) {
+	return stream.Recv()
+}
+
+// cursorFor is the batch boundary the client may safely resume from. The version
+// on a WatchMessage covers the whole batch, so using it as the id of every event
+// would let a reconnect in the middle of a batch skip the rest. The previous
+// version re-delivers the batch (at-least-once) instead of losing it.
+func cursorFor(message *api.WatchMessage) string {
+	if message == nil || message.Version == nil {
+		return ""
+	}
+	if message.Version.Index == 0 {
+		return "0"
+	}
+	return strconv.FormatUint(message.Version.Index-1, 10)
 }
 
 // watchRequest maps the public type list and cursor onto SwarmKit's watch

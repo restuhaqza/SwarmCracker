@@ -78,6 +78,12 @@ func (s *Server) watchEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	selector, err := parseLabelSelectors(r.URL.Query()["label"])
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+
 	events, errs, err := s.cfg.Client.WatchEvents(r.Context(), opts)
 	if err != nil {
 		s.writeError(w, r, err)
@@ -113,13 +119,6 @@ func (s *Server) watchEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeSSE(w, "", "ready", []byte(`{"type":"ready"}`))
 	}
 	flush()
-
-	selector, err := parseLabelSelectors(r.URL.Query()["label"])
-	if err != nil {
-		s.writeStreamError(w, r, format, err)
-		flush()
-		return
-	}
 
 	for {
 		select {

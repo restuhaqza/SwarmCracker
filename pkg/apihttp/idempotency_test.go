@@ -618,3 +618,23 @@ func TestIdempotencyStorePreconditionRequiredIsNotStored(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, replay, "a 428 must not spend the key")
 }
+
+func TestIdempotencyStorePreconditionFailedIsNotStored(t *testing.T) {
+	store := NewIdempotencyStore(0)
+	_, err := store.Begin("key-1", "scope-a", "hash-a")
+	require.NoError(t, err)
+	store.Complete("key-1", "scope-a", http.StatusPreconditionFailed,
+		http.Header{"Content-Type": []string{MediaType}}, []byte(`{"kind":"Error"}`+"\n"))
+	replay, err := store.Begin("key-1", "scope-a", "hash-a")
+	require.NoError(t, err)
+	assert.Nil(t, replay, "a 412 must not spend the key")
+}
+
+func TestIdempotencyStoreIsBounded(t *testing.T) {
+	store := NewIdempotencyStore(0)
+	for i := 0; i < maxIdempotencyEntries+10; i++ {
+		_, err := store.Begin(string(rune('a'+i%26))+string(rune(i)), "scope", "hash")
+		require.NoError(t, err)
+	}
+	assert.LessOrEqual(t, len(store.entries), maxIdempotencyEntries)
+}

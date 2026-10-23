@@ -99,6 +99,7 @@ func TestEventsInvalidQuery(t *testing.T) {
 		"/v1/events?types=volume",
 		"/v1/events?since=not-a-cursor",
 		"/v1/events?include=everything",
+		"/v1/events?label==",
 	} {
 		rec := doEvents(t, api, target, withToken(api.reader))
 		assert.Equal(t, http.StatusBadRequest, rec.Code, target)

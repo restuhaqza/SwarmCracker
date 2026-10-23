@@ -588,7 +588,8 @@ with a `ready` frame and then emits one event per change:
   for a `configs:read-values` identity; secret data is never included.
 - SSE events carry `id: <cursor>` and `event: <resource>.<created|updated|removed>`;
   the server sends a `: ping` comment every 15 seconds. Delivery is
-  at-least-once across reconnects, so consumers dedupe by cursor.
+  at-least-once across reconnects; every event in a batch shares one cursor, so
+  dedupe by resource + revision, not by cursor alone.
 - The stream requires `events:read`. The actor and changed-path fields are
   gateway-observed/optional in this phase; they are omitted when unavailable.
 
@@ -615,8 +616,8 @@ and does not survive a restart, so a retry across a leader change can still
 create twice — that is the v1 single-manager decision, not a bug. A 5xx is never
 stored, so a failed create can be retried with the same key; a dry run is never
 stored because nothing was written. A malformed `dryRun`/`wait`/`timeoutMs`
-modifier, a `428` missing `If-Match`, and a `5xx` do not spend the key: the
-corrected request runs normally.
+modifier, a `428` missing `If-Match`, a `412` stale precondition, and a `5xx`
+do not spend the key: the corrected request runs normally.
 
 ```bash
 curl --cacert <state-dir>/api/tls.crt \

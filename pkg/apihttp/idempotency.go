@@ -42,6 +42,14 @@ const (
 	// is long enough for the first request's write to land and short enough that
 	// a client retry loop does not sleep through the window.
 	idempotencyRetryAfterMs = 250
+
+	// maxIdempotencyEntries bounds the store. A token at the 10 req/s limit for
+	// 24 h would otherwise keep hundreds of thousands of responses in memory.
+	maxIdempotencyEntries = 10000
+	// idempotencySweepEvery amortizes the expiry scan: the lookup path already
+	// drops an expired key, and a full sweep every N reservations bounds the
+	// rest without an O(n) scan per POST.
+	idempotencySweepEvery = 256
 )
 
 // contractHeaders are the only response headers a replay carries. A request ID
@@ -69,6 +77,7 @@ type Replay struct {
 type idempotencyEntry struct {
 	bodyHash  string
 	completed bool
+	createdAt time.Time
 	expiresAt time.Time
 	replay    Replay
 }
@@ -80,7 +89,8 @@ type IdempotencyStore struct {
 	entries map[string]*idempotencyEntry
 	ttl     time.Duration
 	// now is injectable so the expiry test does not sleep.
-	now func() time.Time
+	now    func() time.Time
+	begins int
 }
 
 // NewIdempotencyStore returns an empty store. A non-positive ttl means
@@ -103,29 +113,41 @@ func NewIdempotencyStore(ttl time.Duration) *IdempotencyStore {
 //   - a completed entry with the same body hash: return a copy to replay;
 //   - an in-flight or different-body entry: a typed conflict.
 //
-// Expired entries are swept on every Begin, so an idle store releases its keys
-// when it is next used rather than needing a background goroutine.
+// Expired entries are dropped on lookup and swept periodically, so an idle store
+// releases its keys when it is next used rather than needing a background
+// goroutine; the periodic sweep keeps the scan off the hot path.
 func (s *IdempotencyStore) Begin(key, scope, bodyHash string) (*Replay, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := s.now()
-	s.sweepLocked(now)
-
-	entry, ok := s.entries[scopeKey(key, scope)]
-	if ok {
-		if entry.bodyHash != bodyHash {
-			return nil, idempotencyKeyReuseError()
-		}
-		if !entry.completed {
-			return nil, idempotencyInProgressError()
-		}
-		replay := cloneReplay(entry.replay)
-		return &replay, nil
+	s.begins++
+	if s.begins%idempotencySweepEvery == 0 {
+		s.sweepLocked(now)
 	}
 
-	s.entries[scopeKey(key, scope)] = &idempotencyEntry{
+	composite := scopeKey(key, scope)
+	if entry, ok := s.entries[composite]; ok {
+		if !entry.expiresAt.After(now) {
+			delete(s.entries, composite)
+		} else {
+			if entry.bodyHash != bodyHash {
+				return nil, idempotencyKeyReuseError()
+			}
+			if !entry.completed {
+				return nil, idempotencyInProgressError()
+			}
+			replay := cloneReplay(entry.replay)
+			return &replay, nil
+		}
+	}
+
+	if len(s.entries) >= maxIdempotencyEntries {
+		s.evictOldestLocked()
+	}
+	s.entries[composite] = &idempotencyEntry{
 		bodyHash:  bodyHash,
+		createdAt: now,
 		expiresAt: now.Add(s.ttl),
 	}
 	return nil, nil
@@ -143,7 +165,7 @@ func (s *IdempotencyStore) Complete(key, scope string, status int, header http.H
 	composite := scopeKey(key, scope)
 	// A 5xx and a missing If-Match are retryable shapes, not results: storing
 	// them would spend the key on a request the caller can correct.
-	if status >= http.StatusInternalServerError || status == http.StatusPreconditionRequired {
+	if status >= http.StatusInternalServerError || status == http.StatusPreconditionRequired || status == http.StatusPreconditionFailed {
 		delete(s.entries, composite)
 		return
 	}
@@ -174,6 +196,32 @@ func (s *IdempotencyStore) sweepLocked(now time.Time) {
 		if !entry.expiresAt.After(now) {
 			delete(s.entries, key)
 		}
+	}
+}
+
+// evictOldestLocked makes room for one new reservation. A completed entry is a
+// better victim than an in-flight one: dropping an in-flight reservation lets a
+// concurrent retry execute twice. If every entry is in flight, the oldest is
+// dropped and its retry will execute normally.
+func (s *IdempotencyStore) evictOldestLocked() {
+	var anyKey string
+	var anyAt time.Time
+	var doneKey string
+	var doneAt time.Time
+	for key, entry := range s.entries {
+		if anyKey == "" || entry.createdAt.Before(anyAt) {
+			anyKey, anyAt = key, entry.createdAt
+		}
+		if entry.completed && (doneKey == "" || entry.createdAt.Before(doneAt)) {
+			doneKey, doneAt = key, entry.createdAt
+		}
+	}
+	if doneKey != "" {
+		delete(s.entries, doneKey)
+		return
+	}
+	if anyKey != "" {
+		delete(s.entries, anyKey)
 	}
 }
 
