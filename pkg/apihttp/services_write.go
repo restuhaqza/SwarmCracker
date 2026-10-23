@@ -38,9 +38,9 @@ func (s *Server) createService(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ifNoneMatch := strings.TrimSpace(r.Header.Get("If-None-Match"))
-	if ifNoneMatch != "" && ifNoneMatch != "*" {
-		s.writeError(w, r, invalidField("If-None-Match", `must be exactly "*" on create`))
+	ifNoneMatch, err := createOnlyIfNoneMatch(r)
+	if err != nil {
+		s.writeError(w, r, err)
 		return
 	}
 

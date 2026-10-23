@@ -152,7 +152,11 @@ func (s *Server) getNode(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, v1.NewNodeDocument(node))
+	// The validator of a single resource is its revision: If-Match on a later
+	// PATCH compares revisions, so the value a read hands out must be the one the
+	// write expects.
+	s.writeJSONWithETag(w, r, http.StatusOK,
+		v1.NewNodeDocument(node), revisionETag(node.Revision))
 }
 
 func (s *Server) listNetworks(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +192,8 @@ func (s *Server) getNetwork(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, v1.NewNetworkDocument(network))
+	s.writeJSONWithETag(w, r, http.StatusOK,
+		v1.NewNetworkDocument(network), revisionETag(network.Revision))
 }
 
 func (s *Server) listConfigs(w http.ResponseWriter, r *http.Request) {
@@ -227,10 +232,8 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	if !canReadConfigValues(r) {
-		config.Data = nil
-	}
-	s.writeJSON(w, r, http.StatusOK, v1.NewConfigDocument(config))
+	s.writeJSONWithETag(w, r, http.StatusOK,
+		v1.NewConfigDocument(configForResponse(r, config)), revisionETag(config.Revision))
 }
 
 // canReadConfigValues reports whether the caller may see config payloads. A
@@ -285,7 +288,8 @@ func (s *Server) getSecret(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, r, err)
 		return
 	}
-	s.writeJSON(w, r, http.StatusOK, v1.NewSecretDocument(secret))
+	s.writeJSONWithETag(w, r, http.StatusOK,
+		v1.NewSecretDocument(secret), revisionETag(secret.Revision))
 }
 
 // labelSelector is one parsed ?label= value. hasValue distinguishes "key" from

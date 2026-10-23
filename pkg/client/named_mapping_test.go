@@ -23,7 +23,7 @@ func TestGetConfigMapsMetadata(t *testing.T) {
 		},
 		Spec: api.ConfigSpec{
 			Annotations: api.Annotations{Name: "app", Labels: map[string]string{"team": "payments"}},
-			Data:        []byte("must-not-be-returned"),
+			Data:        []byte("listen 8080"),
 		},
 	}}
 
@@ -33,6 +33,8 @@ func TestGetConfigMapsMetadata(t *testing.T) {
 	assert.Equal(t, "app", got.Name)
 	assert.Equal(t, "3", got.Revision)
 	assert.Equal(t, map[string]string{"team": "payments"}, got.Labels)
+	require.NotNil(t, got.Data, "the client maps the payload; the HTTP layer redacts it by scope")
+	assert.Equal(t, "listen 8080", *got.Data)
 	assert.Equal(t, time.Unix(100, 0).UTC().Format(time.RFC3339Nano), got.CreatedAt)
 	assert.Equal(t, 1, control.getConfigCall)
 	require.NotNil(t, control.lastGetConfigReq, "GetConfig must be called with a request")
@@ -150,7 +152,7 @@ func TestListConfigsMapsMetadataAndOrder(t *testing.T) {
 			},
 			Spec: api.ConfigSpec{
 				Annotations: api.Annotations{Name: "b", Labels: map[string]string{"team": "payments"}},
-				Data:        []byte("must-not-be-returned"),
+				Data:        []byte("payload-b"),
 			},
 		},
 		nil,
@@ -172,6 +174,9 @@ func TestListConfigsMapsMetadataAndOrder(t *testing.T) {
 	assert.Equal(t, "2", got[1].Revision)
 	assert.Equal(t, map[string]string{"team": "payments"}, got[1].Labels)
 	assert.Equal(t, time.Unix(200, 0).UTC().Format(time.RFC3339Nano), got[1].CreatedAt)
+	require.NotNil(t, got[1].Data, "the list carries the payload for the HTTP layer to redact")
+	assert.Equal(t, "payload-b", *got[1].Data)
+	assert.Nil(t, got[0].Data, "a config without a payload omits data rather than sending an empty string")
 }
 
 func TestListConfigsEmptyAndFailure(t *testing.T) {

@@ -4,10 +4,11 @@ info:
   version: "1"
   description: >
     Stable machine contract for SwarmCracker. This file is the normative
-    description of the public API: every read route, the phase-2 service write
-    routes, the resource documents, the shared response headers, the error
-    document and the bearer authentication model. The trusted Unix socket serves
-    the same documents without a token; its file mode is the credential.
+    description of the public API: every read route, the phase-2 write routes for
+    services, configs, secrets, networks and nodes, the resource documents, the
+    shared response headers, the error document and the bearer authentication
+    model. The trusted Unix socket serves the same documents without a token; its
+    file mode is the credential.
 servers:
   - url: https://mgr:4244
     description: Manager public API (phase 1; TLS + bearer token)
@@ -422,7 +423,63 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+    post:
+      operationId: createNetwork
+      summary: Create a network
+      description: >
+        Requires networks:write. The body is a NetworkWrite: name, driver
+        (default "overlay"), an optional `ipam` pool whose subnet must parse as
+        CIDR and whose gateway must sit inside it, labels and `attachable`.
+        `If-None-Match: "*"` marks the request create-only. There is no update:
+        driver, IPAM and labels are fixed at create.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: ["*"]
+          description: Create-only marker. Only `*` is accepted.
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/NetworkWrite" }
+      responses:
+        "201":
+          description: The created network
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/NetworkDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/networks/{id}:
+    description: >
+      Networks have no update in v1: driver, IPAM and labels are fixed at create.
+      PATCH and PUT answer 405 invalid with details.reason "method_not_allowed"
+      and Allow: GET, DELETE.
     get:
       operationId: getNetwork
       summary: Get one user-defined network
@@ -447,6 +504,59 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    delete:
+      operationId: deleteNetwork
+      summary: Delete a network
+      description: >
+        Requires networks:write. Preconditions are evaluated before
+        `ignoreMissing`. There is no network update: PATCH and PUT on this path
+        answer 405.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Network reference: exact id, exact name, or a unique id prefix of at
+            least 4 characters.
+        - name: ignoreMissing
+          in: query
+          required: false
+          schema: { type: boolean }
+        - name: If-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted. No body.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "4XX":
           description: Typed failure
           headers:
@@ -493,6 +603,58 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+    post:
+      operationId: createConfig
+      summary: Create a config
+      description: >
+        Requires configs:write. The body is a ConfigWrite: name, labels and a
+        UTF-8 `data` payload. A payload that is not valid UTF-8 is 400 invalid
+        with details.reason "binary_not_supported". `If-None-Match: "*"` marks the
+        request create-only. The response carries `data` only when the caller also
+        holds configs:read-values.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: ["*"]
+          description: Create-only marker. Only `*` is accepted.
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/ConfigWrite" }
+      responses:
+        "201":
+          description: The created config
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ConfigDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/configs/{id}:
     get:
       operationId: getConfig
@@ -518,6 +680,116 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    patch:
+      operationId: updateConfig
+      summary: Merge-patch a config's labels
+      description: >
+        Requires configs:write. The body is an RFC 7386 merge patch. `labels` is
+        the only writable field: `data`, `name`, `id`, `revision`, the timestamps,
+        `schemaVersion` and `kind` are immutable and rejected with 400 invalid.
+        If-Match is required; a missing header is 428 and a stale or weak one 412.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Config reference: exact id, exact name, or a unique id prefix of at
+            least 4 characters.
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string }
+          description: >
+            The revision from the last read. `*` matches any revision but the
+            config must exist; a weak `W/"3"` never matches.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: "#/components/schemas/ConfigPatch" }
+      responses:
+        "200":
+          description: The updated config
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ConfigDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    delete:
+      operationId: deleteConfig
+      summary: Delete a config
+      description: >
+        Requires configs:write. Preconditions are evaluated before
+        `ignoreMissing`: a missing config with If-Match is 412, without it 404,
+        or 204 when `ignoreMissing=true`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: ignoreMissing
+          in: query
+          required: false
+          schema: { type: boolean }
+        - name: If-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted. No body.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "4XX":
           description: Typed failure
           headers:
@@ -564,6 +836,57 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+    post:
+      operationId: createSecret
+      summary: Create a secret
+      description: >
+        Requires secrets:write. The body is a SecretWrite: name, labels and
+        exactly one of `data` (base64) or `driver`. Both or neither is 400 invalid,
+        as is data that is not valid base64. `If-None-Match: "*"` marks the request
+        create-only. No secret response ever carries the payload.
+      parameters:
+        - name: If-None-Match
+          in: header
+          required: false
+          schema:
+            type: string
+            enum: ["*"]
+          description: Create-only marker. Only `*` is accepted.
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/SecretWrite" }
+      responses:
+        "201":
+          description: The created secret's metadata
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SecretDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/secrets/{id}:
     get:
       operationId: getSecret
@@ -589,6 +912,116 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    patch:
+      operationId: updateSecret
+      summary: Merge-patch a secret's labels
+      description: >
+        Requires secrets:write. The body is an RFC 7386 merge patch. `labels` is
+        the only writable field: `data`, `driver`, `name`, `id`, `revision`, the
+        timestamps, `schemaVersion` and `kind` are immutable and rejected with 400 invalid.
+        If-Match is required; a missing header is 428 and a stale or weak one 412.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Secret reference: exact id, exact name, or a unique id prefix of at
+            least 4 characters.
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string }
+          description: >
+            The revision from the last read. `*` matches any revision but the
+            secret must exist; a weak `W/"3"` never matches.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: "#/components/schemas/SecretPatch" }
+      responses:
+        "200":
+          description: The updated secret's metadata
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SecretDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    delete:
+      operationId: deleteSecret
+      summary: Delete a secret
+      description: >
+        Requires secrets:write. Preconditions are evaluated before
+        `ignoreMissing`: a missing secret with If-Match is 412, without it 404,
+        or 204 when `ignoreMissing=true`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: ignoreMissing
+          in: query
+          required: false
+          schema: { type: boolean }
+        - name: If-Match
+          in: header
+          required: false
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted. No body.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
         "4XX":
           description: Typed failure
           headers:
@@ -728,6 +1161,70 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    patch:
+      operationId: updateNode
+      summary: Merge-patch a node's availability and labels
+      description: >
+        Requires nodes:write, which only the admin role holds. The body is an RFC
+        7386 merge patch. `availability` (active, pause or drain) and `labels` are
+        the only writable fields: `role`, `membership` and every read-envelope
+        field are immutable and rejected with 400 invalid. If-Match is required.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Node reference: exact id, exact hostname, or a unique id prefix of at
+            least 4 characters.
+        - name: If-Match
+          in: header
+          required: true
+          schema: { type: string }
+          description: >
+            The revision from the last read. `*` matches any revision but the node
+            must exist.
+      requestBody:
+        required: true
+        content:
+          application/merge-patch+json:
+            schema: { $ref: "#/components/schemas/NodePatch" }
+      responses:
+        "200":
+          description: The updated node
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/NodeDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "412":
+          $ref: "#/components/responses/PreconditionFailed"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "428":
+          $ref: "#/components/responses/PreconditionRequired"
         "4XX":
           description: Typed failure
           headers:
@@ -893,6 +1390,19 @@ components:
       content:
         application/vnd.swarmcracker.v1+json:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
+    MethodNotAllowed:
+      description: >
+        The path exists but does not serve this method. code is invalid and
+        details.reason is "method_not_allowed"; the Allow header lists the methods
+        it does serve. A network has no update, so PATCH and PUT on
+        /v1/networks/{id} answer this with Allow: GET, DELETE.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        Allow: { $ref: "#/components/headers/Allow" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
   headers:
     X-SwarmCracker-Api-Version:
       description: The API version that answered. Always 1 in phase 1.
@@ -902,13 +1412,16 @@ components:
       schema: { type: string }
     ETag:
       description: >
-        A strong validator. For a single service it is the quoted SwarmKit
+        A strong validator. For a single resource it is the quoted SwarmKit
         revision (`"17"`), the value If-Match expects; lists use the quoted
         SHA-256 of the response body. Send it back as If-None-Match to receive
         304 when nothing changed.
       schema: { type: string }
     WWW-Authenticate:
       description: Always `Bearer` on a 401.
+      schema: { type: string }
+    Allow:
+      description: The methods this path serves, comma-separated, in registration order.
       schema: { type: string }
 
   schemas:
@@ -969,10 +1482,10 @@ components:
         data:
           type: string
           description: >
-            Config payload. Present only when the caller holds
+            Config payload, UTF-8 text. Present only when the caller holds
             configs:read-values; a plain configs:read response omits the field
-            entirely (it is never sent empty). The manager does not read config
-            payloads yet, so it is currently always absent.
+            entirely (it is never sent empty). It is absent when the config has no
+            payload. A secret never has a data field on any read path.
 
     ConfigList:
       type: object
@@ -1029,6 +1542,105 @@ components:
           properties:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Secret] }
+
+    ConfigWrite:
+      type: object
+      required: [name]
+      description: >
+        The POST /v1/configs body. `data` is UTF-8 text; a payload that is not
+        valid UTF-8 is refused with details.reason "binary_not_supported".
+      properties:
+        name: { type: string, minLength: 1 }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        data:
+          type: string
+          description: UTF-8 payload, opaque to the API.
+
+    ConfigPatch:
+      type: object
+      additionalProperties: false
+      description: >
+        An RFC 7386 merge patch over a config. `labels` is the only writable
+        field: data, name, id, revision, the timestamps, schemaVersion and kind are
+        immutable. null clears every label and a null value deletes one key.
+      properties:
+        labels:
+          type: [object, "null"]
+          additionalProperties: { type: [string, "null"] }
+
+    SecretDriver:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, minLength: 1 }
+        options:
+          type: object
+          additionalProperties: { type: string }
+
+    SecretWrite:
+      type: object
+      required: [name]
+      description: >
+        The POST /v1/secrets body. Exactly one of `data` (base64) or `driver` must
+        be present; both or neither is 400 invalid. No response ever echoes the
+        payload.
+      oneOf:
+        - required: [data]
+        - required: [driver]
+      properties:
+        name: { type: string, minLength: 1 }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        data:
+          type: string
+          format: byte
+          writeOnly: true
+          description: Base64-encoded payload. Never returned on any read path.
+        driver: { $ref: "#/components/schemas/SecretDriver" }
+
+    SecretPatch:
+      type: object
+      additionalProperties: false
+      description: >
+        An RFC 7386 merge patch over a secret. `labels` is the only writable
+        field: data, driver, name, id, revision, the timestamps, schemaVersion and
+        kind are immutable.
+      properties:
+        labels:
+          type: [object, "null"]
+          additionalProperties: { type: [string, "null"] }
+
+    NetworkWrite:
+      type: object
+      required: [name]
+      description: >
+        The POST /v1/networks body. The driver defaults to "overlay"; the IPAM
+        subnet must parse as CIDR and a gateway must sit inside it. There is no
+        update, so driver, IPAM and labels are fixed at create.
+      properties:
+        name: { type: string, minLength: 1 }
+        driver: { type: string, default: overlay }
+        ipam: { $ref: "#/components/schemas/NetworkIPAM" }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        attachable: { type: boolean }
+
+    NodePatch:
+      type: object
+      additionalProperties: false
+      description: >
+        An RFC 7386 merge patch over a node. `availability` and `labels` are the
+        only writable fields; role, membership and the read-envelope fields are
+        immutable. Availability is not nullable: it is a required enum.
+      properties:
+        availability: { type: string, enum: [active, pause, drain] }
+        labels:
+          type: [object, "null"]
+          additionalProperties: { type: [string, "null"] }
 
     ServiceList:
       type: object

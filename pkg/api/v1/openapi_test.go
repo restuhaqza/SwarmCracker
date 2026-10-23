@@ -845,6 +845,180 @@ func TestOpenAPIServiceWriteSurface(t *testing.T) {
 	}), "unknown patch fields are refused")
 }
 
+// TestOpenAPINamedWriteSurface pins the phase-2 config, secret, network and node
+// writes: the request schemas, the preconditions, the statuses and the fact that
+// a network has no update.
+func TestOpenAPINamedWriteSurface(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	marshal := func(t *testing.T, value any) any {
+		t.Helper()
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		return generic
+	}
+
+	t.Run("request schemas", func(t *testing.T) {
+		validateAgainst(t, doc, "ConfigWrite", marshal(t, ConfigWrite{
+			Name: "app", Labels: map[string]string{"team": "payments"}, Data: "listen 8080",
+		}))
+		validateAgainst(t, doc, "SecretWrite", marshal(t, SecretWrite{
+			Name: "token", Data: "aGk=",
+		}))
+		validateAgainst(t, doc, "SecretWrite", marshal(t, SecretWrite{
+			Name: "external", Driver: &SecretDriver{Name: "vault", Options: map[string]string{"path": "secret/app"}},
+		}))
+		validateAgainst(t, doc, "NetworkWrite", marshal(t, NetworkWrite{
+			Name: "frontend", Driver: "overlay",
+			IPAM:   &NetworkIPAM{Subnet: "10.0.1.0/24", Gateway: "10.0.1.1"},
+			Labels: map[string]string{"tier": "edge"}, Attachable: true,
+		}))
+		validateAgainst(t, doc, "ConfigPatch", marshal(t, map[string]any{
+			"labels": map[string]any{"team": "search", "env": nil},
+		}))
+		validateAgainst(t, doc, "SecretPatch", marshal(t, map[string]any{
+			"labels": map[string]any{"env": "prod"},
+		}))
+		validateAgainst(t, doc, "NodePatch", marshal(t, map[string]any{
+			"availability": "drain",
+			"labels":       map[string]any{"zone": "b"},
+		}))
+	})
+
+	t.Run("secret payload is one of data or driver", func(t *testing.T) {
+		schema := doc.Components.Schemas["SecretWrite"]
+		require.NotNil(t, schema)
+		require.NotNil(t, schema.Value)
+
+		require.Error(t, schema.Value.VisitJSON(map[string]any{
+			"name": "token", "data": "aGk=", "driver": map[string]any{"name": "vault"},
+		}), "data and driver are mutually exclusive")
+		require.Error(t, schema.Value.VisitJSON(map[string]any{"name": "token"}),
+			"one of data or driver is required")
+	})
+
+	t.Run("no read document carries secret data", func(t *testing.T) {
+		for _, name := range []string{"Secret", "SecretDocument", "SecretList"} {
+			schema := doc.Components.Schemas[name]
+			require.NotNil(t, schema, name)
+			if schema.Value.Properties == nil {
+				continue
+			}
+			_, documented := schema.Value.Properties["data"]
+			assert.Falsef(t, documented, "%s must not have a data field", name)
+		}
+	})
+
+	t.Run("config create", func(t *testing.T) {
+		item := doc.Paths.Find("/v1/configs")
+		require.NotNil(t, item)
+		require.NotNil(t, item.Post, "POST /v1/configs missing")
+		require.NotNil(t, item.Post.RequestBody)
+
+		media := item.Post.RequestBody.Value.Content.Get(v1MediaType)
+		require.NotNil(t, media)
+		require.Equal(t, "#/components/schemas/ConfigWrite", media.Schema.Ref)
+
+		requireTypedResponseFor(t, item.Post, "201", "ConfigDocument")
+		requireTypedResponseFor(t, item.Post, "413", "ErrorDocument")
+		requireTypedResponseFor(t, item.Post, "415", "ErrorDocument")
+		assert.False(t, findParameter(t, item.Post.Parameters, "If-None-Match").Required)
+	})
+
+	t.Run("config patch and delete", func(t *testing.T) {
+		item := doc.Paths.Find("/v1/configs/{id}")
+		require.NotNil(t, item)
+		require.NotNil(t, item.Patch)
+		require.NotNil(t, item.Patch.RequestBody)
+
+		media := item.Patch.RequestBody.Value.Content.Get(MergePatchMediaType)
+		require.NotNil(t, media)
+		require.Equal(t, "#/components/schemas/ConfigPatch", media.Schema.Ref)
+
+		requireTypedResponseFor(t, item.Patch, "200", "ConfigDocument")
+		requireTypedResponseFor(t, item.Patch, "412", "ErrorDocument")
+		requireTypedResponseFor(t, item.Patch, "428", "ErrorDocument")
+		assert.True(t, findParameter(t, item.Patch.Parameters, "If-Match").Required)
+
+		require.NotNil(t, item.Delete, "DELETE /v1/configs/{id} missing")
+		require.NotNil(t, item.Delete.Responses.Status(204))
+		assert.False(t, findParameter(t, item.Delete.Parameters, "ignoreMissing").Required)
+
+		// The payload is not writable through a patch.
+		patch := doc.Components.Schemas["ConfigPatch"]
+		require.Error(t, patch.Value.VisitJSON(map[string]any{"data": "new"}))
+		require.Error(t, patch.Value.VisitJSON(map[string]any{"name": "other"}))
+	})
+
+	t.Run("secret create, patch and delete", func(t *testing.T) {
+		create := doc.Paths.Find("/v1/secrets")
+		require.NotNil(t, create)
+		require.NotNil(t, create.Post)
+		media := create.Post.RequestBody.Value.Content.Get(v1MediaType)
+		require.NotNil(t, media)
+		require.Equal(t, "#/components/schemas/SecretWrite", media.Schema.Ref)
+		requireTypedResponseFor(t, create.Post, "201", "SecretDocument")
+
+		item := doc.Paths.Find("/v1/secrets/{id}")
+		require.NotNil(t, item)
+		require.NotNil(t, item.Patch)
+		patchMedia := item.Patch.RequestBody.Value.Content.Get(MergePatchMediaType)
+		require.NotNil(t, patchMedia)
+		require.Equal(t, "#/components/schemas/SecretPatch", patchMedia.Schema.Ref)
+		assert.True(t, findParameter(t, item.Patch.Parameters, "If-Match").Required)
+		require.NotNil(t, item.Delete)
+
+		patch := doc.Components.Schemas["SecretPatch"]
+		require.Error(t, patch.Value.VisitJSON(map[string]any{"data": "aGk="}))
+		require.Error(t, patch.Value.VisitJSON(map[string]any{"driver": map[string]any{"name": "vault"}}))
+	})
+
+	t.Run("network create and delete, no update", func(t *testing.T) {
+		create := doc.Paths.Find("/v1/networks")
+		require.NotNil(t, create)
+		require.NotNil(t, create.Post, "POST /v1/networks missing")
+		media := create.Post.RequestBody.Value.Content.Get(v1MediaType)
+		require.NotNil(t, media)
+		require.Equal(t, "#/components/schemas/NetworkWrite", media.Schema.Ref)
+		requireTypedResponseFor(t, create.Post, "201", "NetworkDocument")
+
+		item := doc.Paths.Find("/v1/networks/{id}")
+		require.NotNil(t, item)
+		require.NotNil(t, item.Delete, "DELETE /v1/networks/{id} missing")
+		require.Nil(t, item.Patch, "a network has no update")
+		require.Nil(t, item.Put, "a network has no update")
+		assert.Contains(t, item.Description, "405",
+			"the path must document that PATCH and PUT are refused")
+		assert.Contains(t, item.Description, "GET, DELETE")
+
+		notAllowed := item.Get.Responses.Value("405")
+		require.NotNil(t, notAllowed, "the 405 response must be declared")
+	})
+}
+
+// TestOpenAPIConfigWriteAndReadPayloads pins the one payload rule: a config write
+// carries data, a config read carries it only behind configs:read-values, and a
+// secret read never has the field at all.
+func TestOpenAPIConfigWriteAndReadPayloads(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	schema := doc.Components.Schemas["Config"]
+	require.NotNil(t, schema)
+	data := schema.Value.Properties["data"]
+	require.NotNil(t, data)
+	require.NotNil(t, data.Value)
+	assert.Contains(t, data.Value.Description, "configs:read-values")
+
+	write := doc.Components.Schemas["ConfigWrite"]
+	require.NotNil(t, write)
+	writeData := write.Value.Properties["data"]
+	require.NotNil(t, writeData)
+	require.NotNil(t, writeData.Value)
+	assert.True(t, writeData.Value.Type.Is("string"))
+}
+
 // requireTypedResponseFor is requireTypedResponse's operation-level twin.
 func requireTypedResponseFor(t *testing.T, operation *openapi3.Operation, status, schema string) {
 	t.Helper()

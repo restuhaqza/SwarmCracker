@@ -122,31 +122,38 @@ func (c *Client) applySpecPatch(ctx context.Context, spec *api.ServiceSpec, patc
 	return nil
 }
 
-// applyLabelsPatch merges labels. null clears every label; a null value deletes
-// one key.
+// applyLabelsPatch merges a service's labels. null clears every label; a null
+// value deletes one key.
 func applyLabelsPatch(spec *api.ServiceSpec, value any) error {
+	return applyAnnotationsLabelsPatch(&spec.Annotations, "labels", value)
+}
+
+// applyAnnotationsLabelsPatch merges labels on any annotated object. Configs,
+// secrets and nodes use the same RFC 7386 rules as a service, so the merge lives
+// in one place instead of four copies that could drift apart.
+func applyAnnotationsLabelsPatch(annotations *api.Annotations, path string, value any) error {
 	if value == nil {
-		spec.Annotations.Labels = nil
+		annotations.Labels = nil
 		return nil
 	}
 
-	object, err := patchObject("labels", value)
+	object, err := patchObject(path, value)
 	if err != nil {
 		return err
 	}
 	for key, raw := range object {
 		if raw == nil {
-			delete(spec.Annotations.Labels, key)
+			delete(annotations.Labels, key)
 			continue
 		}
-		label, err := patchString("labels."+key, raw)
+		label, err := patchString(path+"."+key, raw)
 		if err != nil {
 			return err
 		}
-		if spec.Annotations.Labels == nil {
-			spec.Annotations.Labels = make(map[string]string, len(object))
+		if annotations.Labels == nil {
+			annotations.Labels = make(map[string]string, len(object))
 		}
-		spec.Annotations.Labels[key] = label
+		annotations.Labels[key] = label
 	}
 	return nil
 }

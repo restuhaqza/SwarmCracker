@@ -68,6 +68,16 @@ type Client interface {
 	UpdateService(context.Context, string, []byte, v1.WriteOptions) (v1.Service, error)
 	DeleteService(context.Context, string, v1.WriteOptions) (v1.Service, error)
 	RollbackService(context.Context, string, v1.WriteOptions) (v1.Service, error)
+
+	CreateConfig(context.Context, v1.ConfigWrite, v1.WriteOptions) (v1.Config, error)
+	UpdateConfig(context.Context, string, []byte, v1.WriteOptions) (v1.Config, error)
+	DeleteConfig(context.Context, string, v1.WriteOptions) (v1.Config, error)
+	CreateSecret(context.Context, v1.SecretWrite, v1.WriteOptions) (v1.Secret, error)
+	UpdateSecret(context.Context, string, []byte, v1.WriteOptions) (v1.Secret, error)
+	DeleteSecret(context.Context, string, v1.WriteOptions) (v1.Secret, error)
+	CreateNetwork(context.Context, v1.NetworkWrite, v1.WriteOptions) (v1.Network, error)
+	DeleteNetwork(context.Context, string, v1.WriteOptions) (v1.Network, error)
+	UpdateNode(context.Context, string, []byte, v1.WriteOptions) (v1.Node, error)
 }
 
 // Config is the server's wiring. Tokens may be nil for a Unix-socket-only
@@ -135,17 +145,42 @@ func (s *Server) routes() {
 	s.handleRoutes("/v1/tasks", read(ScopeTasksRead, s.listTasks))
 	s.handleRoutes("/v1/tasks/{id}", read(ScopeTasksRead, s.getTask))
 
-	s.handleRoutes("/v1/nodes", read(ScopeNodesRead, s.listNodes))
-	s.handleRoutes("/v1/nodes/{id}", read(ScopeNodesRead, s.getNode))
+	s.handleRoutes("/v1/nodes",
+		read(ScopeNodesRead, s.listNodes),
+	)
+	s.handleRoutes("/v1/nodes/{id}",
+		read(ScopeNodesRead, s.getNode),
+		write(http.MethodPatch, ScopeNodesWrite, s.updateNode),
+	)
 
-	s.handleRoutes("/v1/networks", read(ScopeNetworksRead, s.listNetworks))
-	s.handleRoutes("/v1/networks/{id}", read(ScopeNetworksRead, s.getNetwork))
+	s.handleRoutes("/v1/networks",
+		read(ScopeNetworksRead, s.listNetworks),
+		write(http.MethodPost, ScopeNetworksWrite, s.createNetwork),
+	)
+	s.handleRoutes("/v1/networks/{id}",
+		read(ScopeNetworksRead, s.getNetwork),
+		write(http.MethodDelete, ScopeNetworksWrite, s.deleteNetwork),
+	)
 
-	s.handleRoutes("/v1/configs", read(ScopeConfigsRead, s.listConfigs))
-	s.handleRoutes("/v1/configs/{id}", read(ScopeConfigsRead, s.getConfig))
+	s.handleRoutes("/v1/configs",
+		read(ScopeConfigsRead, s.listConfigs),
+		write(http.MethodPost, ScopeConfigsWrite, s.createConfig),
+	)
+	s.handleRoutes("/v1/configs/{id}",
+		read(ScopeConfigsRead, s.getConfig),
+		write(http.MethodPatch, ScopeConfigsWrite, s.updateConfig),
+		write(http.MethodDelete, ScopeConfigsWrite, s.deleteConfig),
+	)
 
-	s.handleRoutes("/v1/secrets", read(ScopeSecretsRead, s.listSecrets))
-	s.handleRoutes("/v1/secrets/{id}", read(ScopeSecretsRead, s.getSecret))
+	s.handleRoutes("/v1/secrets",
+		read(ScopeSecretsRead, s.listSecrets),
+		write(http.MethodPost, ScopeSecretsWrite, s.createSecret),
+	)
+	s.handleRoutes("/v1/secrets/{id}",
+		read(ScopeSecretsRead, s.getSecret),
+		write(http.MethodPatch, ScopeSecretsWrite, s.updateSecret),
+		write(http.MethodDelete, ScopeSecretsWrite, s.deleteSecret),
+	)
 
 	s.handleRoutes("/v1/audit", read(ScopeAuditRead, s.listAudit))
 

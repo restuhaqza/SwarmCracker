@@ -102,8 +102,17 @@ type controlClient interface {
 	GetNetwork(context.Context, *api.GetNetworkRequest, ...grpc.CallOption) (*api.GetNetworkResponse, error)
 	ListConfigs(context.Context, *api.ListConfigsRequest, ...grpc.CallOption) (*api.ListConfigsResponse, error)
 	GetConfig(context.Context, *api.GetConfigRequest, ...grpc.CallOption) (*api.GetConfigResponse, error)
+	CreateConfig(context.Context, *api.CreateConfigRequest, ...grpc.CallOption) (*api.CreateConfigResponse, error)
+	UpdateConfig(context.Context, *api.UpdateConfigRequest, ...grpc.CallOption) (*api.UpdateConfigResponse, error)
+	RemoveConfig(context.Context, *api.RemoveConfigRequest, ...grpc.CallOption) (*api.RemoveConfigResponse, error)
 	ListSecrets(context.Context, *api.ListSecretsRequest, ...grpc.CallOption) (*api.ListSecretsResponse, error)
 	GetSecret(context.Context, *api.GetSecretRequest, ...grpc.CallOption) (*api.GetSecretResponse, error)
+	CreateSecret(context.Context, *api.CreateSecretRequest, ...grpc.CallOption) (*api.CreateSecretResponse, error)
+	UpdateSecret(context.Context, *api.UpdateSecretRequest, ...grpc.CallOption) (*api.UpdateSecretResponse, error)
+	RemoveSecret(context.Context, *api.RemoveSecretRequest, ...grpc.CallOption) (*api.RemoveSecretResponse, error)
+	CreateNetwork(context.Context, *api.CreateNetworkRequest, ...grpc.CallOption) (*api.CreateNetworkResponse, error)
+	RemoveNetwork(context.Context, *api.RemoveNetworkRequest, ...grpc.CallOption) (*api.RemoveNetworkResponse, error)
+	UpdateNode(context.Context, *api.UpdateNodeRequest, ...grpc.CallOption) (*api.UpdateNodeResponse, error)
 	ListClusters(context.Context, *api.ListClustersRequest, ...grpc.CallOption) (*api.ListClustersResponse, error)
 }
 
@@ -263,67 +272,63 @@ func (c *Client) GetTask(ctx context.Context, id string) (v1.Task, error) {
 	return taskFromSwarmkit(resp.Task, names), nil
 }
 
-// GetNode returns one cluster node.
-func (c *Client) GetNode(ctx context.Context, id string) (v1.Node, error) {
+// GetNode returns one cluster node. ref accepts an exact ID, an exact hostname,
+// or a unique ID prefix of at least four characters.
+func (c *Client) GetNode(ctx context.Context, ref string) (v1.Node, error) {
 	if c.remote != nil {
-		return c.remote.getNode(ctx, id)
+		return c.remote.getNode(ctx, ref)
 	}
-	resp, err := c.control.GetNode(ctx, &api.GetNodeRequest{NodeID: id})
+	_, node, err := c.getNodeObject(ctx, ref)
 	if err != nil {
 		return v1.Node{}, err
 	}
-	if resp == nil || resp.Node == nil {
-		return v1.Node{}, status.Error(codes.NotFound, "node not found")
-	}
-	return nodeFromSwarmkit(resp.Node), nil
+	return nodeFromSwarmkit(node), nil
 }
 
-// GetNetwork returns one network by ID.
+// GetNetwork returns one network. ref accepts an exact ID, an exact name, or a
+// unique ID prefix of at least four characters.
 //
 // Unlike ListNetworks, a direct read does not filter built-in networks, so
 // ingress and docker_gwbridge are returned; only the list hides them.
-func (c *Client) GetNetwork(ctx context.Context, id string) (v1.Network, error) {
+func (c *Client) GetNetwork(ctx context.Context, ref string) (v1.Network, error) {
 	if c.remote != nil {
-		return c.remote.getNetwork(ctx, id)
+		return c.remote.getNetwork(ctx, ref)
 	}
-	resp, err := c.control.GetNetwork(ctx, &api.GetNetworkRequest{NetworkID: id})
+	_, network, err := c.getNetworkObject(ctx, ref)
 	if err != nil {
 		return v1.Network{}, err
 	}
-	if resp == nil || resp.Network == nil {
-		return v1.Network{}, status.Error(codes.NotFound, "network not found")
-	}
-	return networkFromSwarmkit(resp.Network), nil
+	return networkFromSwarmkit(network), nil
 }
 
-// GetConfig returns one config's metadata. The payload is never read.
-func (c *Client) GetConfig(ctx context.Context, id string) (v1.Config, error) {
+// GetConfig returns one config including its payload. ref accepts an exact ID,
+// an exact name, or a unique ID prefix of at least four characters.
+//
+// The payload is carried on the document; pkg/apihttp is what removes it for an
+// identity without configs:read-values.
+func (c *Client) GetConfig(ctx context.Context, ref string) (v1.Config, error) {
 	if c.remote != nil {
-		return c.remote.getConfig(ctx, id)
+		return c.remote.getConfig(ctx, ref)
 	}
-	resp, err := c.control.GetConfig(ctx, &api.GetConfigRequest{ConfigID: id})
+	_, config, err := c.getConfigObject(ctx, ref)
 	if err != nil {
 		return v1.Config{}, err
 	}
-	if resp == nil || resp.Config == nil {
-		return v1.Config{}, status.Error(codes.NotFound, "config not found")
-	}
-	return configFromSwarmkit(resp.Config), nil
+	return configFromSwarmkit(config), nil
 }
 
-// GetSecret returns one secret's metadata. The payload is never read.
-func (c *Client) GetSecret(ctx context.Context, id string) (v1.Secret, error) {
+// GetSecret returns one secret's metadata. The payload is never read. ref
+// accepts an exact ID, an exact name, or a unique ID prefix of at least four
+// characters.
+func (c *Client) GetSecret(ctx context.Context, ref string) (v1.Secret, error) {
 	if c.remote != nil {
-		return c.remote.getSecret(ctx, id)
+		return c.remote.getSecret(ctx, ref)
 	}
-	resp, err := c.control.GetSecret(ctx, &api.GetSecretRequest{SecretID: id})
+	_, secret, err := c.getSecretObject(ctx, ref)
 	if err != nil {
 		return v1.Secret{}, err
 	}
-	if resp == nil || resp.Secret == nil {
-		return v1.Secret{}, status.Error(codes.NotFound, "secret not found")
-	}
-	return secretFromSwarmkit(resp.Secret), nil
+	return secretFromSwarmkit(secret), nil
 }
 
 // ClusterID returns the cluster's ID, which a local manager answers because a

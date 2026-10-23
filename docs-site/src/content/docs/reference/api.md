@@ -321,9 +321,10 @@ single documents — on two listeners:
 | **TLS/TCP** | `127.0.0.1:4244` by default (`--api-listen`) | `Authorization: Bearer <token>` on **every** route, including `/v1/version` |
 | **Unix socket** | `<state-dir>/api.sock` (default `/var/lib/swarmkit/api.sock`) | none — the socket's file mode is the credential |
 
-The read surface is phase 1; **service writes** (create, patch, delete,
-rollback) are phase 2 and require the `services:write` scope. Task exec, logs,
-files and events are later phases.
+The read surface is phase 1; **writes** are phase 2: services (create, patch,
+delete, rollback) and configs, secrets, networks and nodes (create, patch,
+delete). They require the resource's `:write` scope. Task exec, logs, files and
+events are later phases.
 
 `api/openapi.yaml` in the repository is the normative contract for every route,
 schema, header and error code; this section is the operator's guide to it.
@@ -337,7 +338,8 @@ the Unix socket while disabling the TCP listener.
 
 ### Routes
 
-Reads are `GET`; services also accept the phase-2 writes below.
+Reads are `GET`; services, configs, secrets, networks and nodes also accept the
+phase-2 writes below.
 
 | Method | Route | Returns |
 |--------|-------|---------|
@@ -353,12 +355,21 @@ Reads are `GET`; services also accept the phase-2 writes below.
 | GET | `/v1/tasks/{id}` | `TaskDocument` |
 | GET | `/v1/nodes` | `NodeList` |
 | GET | `/v1/nodes/{id}` | `NodeDocument` |
+| PATCH | `/v1/nodes/{id}` | `NodeDocument` (availability + labels; requires `nodes:write`, admin only) |
 | GET | `/v1/networks` | `NetworkList` |
+| POST | `/v1/networks` | `NetworkDocument` (create; requires `networks:write`) |
 | GET | `/v1/networks/{id}` | `NetworkDocument` |
+| DELETE | `/v1/networks/{id}` | `204` (requires `networks:write`) |
 | GET | `/v1/configs` | `ConfigList` |
+| POST | `/v1/configs` | `ConfigDocument` (create; requires `configs:write`) |
 | GET | `/v1/configs/{id}` | `ConfigDocument` |
+| PATCH | `/v1/configs/{id}` | `ConfigDocument` (labels only; requires `configs:write`) |
+| DELETE | `/v1/configs/{id}` | `204` (requires `configs:write`) |
 | GET | `/v1/secrets` | `SecretList` (metadata only — never a payload) |
+| POST | `/v1/secrets` | `SecretDocument` (create; requires `secrets:write`) |
 | GET | `/v1/secrets/{id}` | `SecretDocument` (metadata only) |
+| PATCH | `/v1/secrets/{id}` | `SecretDocument` (labels only; requires `secrets:write`) |
+| DELETE | `/v1/secrets/{id}` | `204` (requires `secrets:write`) |
 | GET | `/v1/audit` | `AuditList` (requires `audit:read`, which only `admin` holds) |
 
 The `{id}` path parameter accepts an exact id, an exact name, or a unique id
@@ -367,22 +378,22 @@ prefix of at least four characters. A prefix that matches more than one object i
 `400 invalid`.
 
 `GET /v1/version` reports `capabilities: ["read", "write"]`, so a client that
-feature-detects the write surface sees it. Config, secret, network and node
-writes arrive in a later phase.
+feature-detects the write surface sees it. Every phase-2 write route listed above
+is served.
 
 Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
 also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
 `X-Request-Id`. A read answers `If-None-Match` with `304`. A list `ETag` is the
-hash of the response body; a single service `ETag` is its quoted SwarmKit
+hash of the response body; a single-resource `ETag` is the quoted SwarmKit
 revision (`"17"`), which is exactly the value a later `PATCH` expects in
 `If-Match`. Responses use the `application/vnd.swarmcracker.v1+json` media type.
 
 `GET /v1/configs/{id}` includes the payload in `data` only when the caller holds
 `configs:read-values`. A plain `configs:read` token receives the metadata
 document with the field absent, and the list route never leaks a payload. The
-manager does not read config payloads yet, so `data` is currently always absent;
-the field and its scope gate are defined now so the value path can land without a
-contract change.
+same rule applies to a write response: a token that may write a value but not
+read values back does not get it echoed. The payload is a UTF-8 string; binary
+configs are refused on create.
 
 ### Service writes
 
@@ -473,6 +484,82 @@ resource that was written and `result: ok` or `error`. A request rejected before
 the backend (415, 413, a body that cannot be decoded, a missing `If-Match`) is not
 audited, and an audit append failure does not fail a mutation that has already
 committed.
+
+### Config, secret, network and node writes
+
+These routes follow the same transport rules as service writes: the create body
+is `application/vnd.swarmcracker.v1+json`, a patch body is
+`application/merge-patch+json`, both are capped at 8 MiB, and unknown fields are
+`400 invalid`. Preconditions behave exactly as above: a PATCH requires `If-Match`
+(`428` when missing, `412` when stale or weak), DELETE accepts it optionally, and
+preconditions are evaluated before `?ignoreMissing=true`.
+
+| Route | Scope | Writable fields |
+|-------|-------|-----------------|
+| `POST /v1/configs` | `configs:write` | `name`, `labels`, `data` |
+| `PATCH /v1/configs/{ref}` | `configs:write` | `labels` only |
+| `DELETE /v1/configs/{ref}` | `configs:write` | — |
+| `POST /v1/secrets` | `secrets:write` | `name`, `labels`, `data` **or** `driver` |
+| `PATCH /v1/secrets/{ref}` | `secrets:write` | `labels` only |
+| `DELETE /v1/secrets/{ref}` | `secrets:write` | — |
+| `POST /v1/networks` | `networks:write` | `name`, `driver`, `ipam`, `labels`, `attachable` |
+| `DELETE /v1/networks/{ref}` | `networks:write` | — |
+| `PATCH /v1/nodes/{ref}` | `nodes:write` (admin) | `availability`, `labels` |
+
+A reader token on any of these routes is `403 forbidden` with
+`details.requiredScope`; it is never `405` or `415`.
+
+**Configs.** `data` is the payload as UTF-8 text. A payload that is not valid
+UTF-8 is `400 invalid` with `details.reason: "binary_not_supported"`. `PATCH`
+accepts `labels` only: `data`, `name`, `id`, `revision`, `createdAt`,
+`updatedAt`, `schemaVersion` and `kind` are immutable and rejected with
+`400 invalid`. The payload is visible only to a token holding
+`configs:read-values` (an `operator` or `admin` by default), on reads *and* on
+the response to a write.
+
+**Secrets.** A create carries exactly one of `data` (base64) or `driver`
+(`{name, options}`). Sending both or neither is `400 invalid`, as is data that is
+not valid base64. `PATCH` accepts `labels` only: `data`, `driver`, `name`, `id`,
+`revision`, the timestamps, `schemaVersion` and `kind` are immutable. No secret
+response ever contains the payload — there is no `data` field on any read
+document, for any scope. Rotation is create-new and repoint the service, then
+delete the old secret.
+
+**Networks.** `driver` defaults to `overlay`. `ipam` is `{subnet, gateway}`; a
+non-empty subnet must parse as CIDR and a gateway must be an IP address inside
+it, otherwise the create is `400 invalid`. There is **no network update**:
+driver, IPAM and labels are fixed at create, and `PATCH` or `PUT` on
+`/v1/networks/{id}` answers `405 invalid` with
+`details.reason: "method_not_allowed"` and `Allow: GET, DELETE`.
+
+**Nodes.** Only `availability` (`active`, `pause` or `drain`) and `labels` are
+writable. `role`, `membership` and every read-envelope field are immutable and
+rejected with `400 invalid`. Node writes require `nodes:write`, which only the
+`admin` role holds, and `If-Match` is mandatory because SwarmKit's `UpdateNode`
+replaces the whole node spec.
+
+```bash
+# Create a config. An operator (configs:read-values) sees the value in the response.
+curl --cacert <state-dir>/api/tls.crt \
+  -H "Authorization: Bearer $(cat operator.token)" \
+  -H "Content-Type: application/vnd.swarmcracker.v1+json" \
+  -d '{"name":"app-config","data":"listen 8080","labels":{"team":"payments"}}' \
+  https://mgr:4244/v1/configs
+
+# Drain a node (admin only).
+curl --cacert <state-dir>/api/tls.crt -X PATCH \
+  -H "Authorization: Bearer $(cat admin.token)" \
+  -H "Content-Type: application/merge-patch+json" \
+  -H 'If-Match: "9"' \
+  -d '{"availability":"drain"}' \
+  https://mgr:4244/v1/nodes/node-2
+```
+
+Every write that reaches the backend appends an audit record: `config.create`,
+`config.update`, `config.delete`, `secret.create`, `secret.update`,
+`secret.delete`, `network.create`, `network.delete` and `node.update`. A request
+rejected before the backend (415, 413, undecodable body, missing `If-Match`) is
+not audited, and an audit append failure does not fail a committed mutation.
 
 ### Manager flags
 

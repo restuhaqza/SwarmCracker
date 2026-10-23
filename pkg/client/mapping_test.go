@@ -34,6 +34,39 @@ type fakeControl struct {
 	removeServiceReq  *api.RemoveServiceRequest
 	removeServiceErr  error
 	removeServiceCall int
+	createConfigReq   *api.CreateConfigRequest
+	createConfigErr   error
+	createConfigCall  int
+	createdConfig     *api.Config
+	updateConfigReq   *api.UpdateConfigRequest
+	updateConfigErr   error
+	updateConfigCall  int
+	updatedConfig     *api.Config
+	removeConfigReq   *api.RemoveConfigRequest
+	removeConfigErr   error
+	removeConfigCall  int
+	createSecretReq   *api.CreateSecretRequest
+	createSecretErr   error
+	createSecretCall  int
+	createdSecret     *api.Secret
+	updateSecretReq   *api.UpdateSecretRequest
+	updateSecretErr   error
+	updateSecretCall  int
+	updatedSecret     *api.Secret
+	removeSecretReq   *api.RemoveSecretRequest
+	removeSecretErr   error
+	removeSecretCall  int
+	createNetworkReq  *api.CreateNetworkRequest
+	createNetworkErr  error
+	createNetworkCall int
+	createdNetwork    *api.Network
+	removeNetworkReq  *api.RemoveNetworkRequest
+	removeNetworkErr  error
+	removeNetworkCall int
+	updateNodeReq     *api.UpdateNodeRequest
+	updateNodeErr     error
+	updateNodeCall    int
+	updatedNode       *api.Node
 	tasks             []*api.Task
 	taskErr           error
 	listTasksCalls    int
@@ -104,6 +137,87 @@ func (f *fakeControl) RemoveService(_ context.Context, req *api.RemoveServiceReq
 		return nil, f.removeServiceErr
 	}
 	return &api.RemoveServiceResponse{}, nil
+}
+
+func (f *fakeControl) CreateConfig(_ context.Context, req *api.CreateConfigRequest, _ ...grpc.CallOption) (*api.CreateConfigResponse, error) {
+	f.createConfigCall++
+	f.createConfigReq = req
+	if f.createConfigErr != nil {
+		return nil, f.createConfigErr
+	}
+	return &api.CreateConfigResponse{Config: f.createdConfig}, nil
+}
+
+func (f *fakeControl) UpdateConfig(_ context.Context, req *api.UpdateConfigRequest, _ ...grpc.CallOption) (*api.UpdateConfigResponse, error) {
+	f.updateConfigCall++
+	f.updateConfigReq = req
+	if f.updateConfigErr != nil {
+		return nil, f.updateConfigErr
+	}
+	return &api.UpdateConfigResponse{Config: f.updatedConfig}, nil
+}
+
+func (f *fakeControl) RemoveConfig(_ context.Context, req *api.RemoveConfigRequest, _ ...grpc.CallOption) (*api.RemoveConfigResponse, error) {
+	f.removeConfigCall++
+	f.removeConfigReq = req
+	if f.removeConfigErr != nil {
+		return nil, f.removeConfigErr
+	}
+	return &api.RemoveConfigResponse{}, nil
+}
+
+func (f *fakeControl) CreateSecret(_ context.Context, req *api.CreateSecretRequest, _ ...grpc.CallOption) (*api.CreateSecretResponse, error) {
+	f.createSecretCall++
+	f.createSecretReq = req
+	if f.createSecretErr != nil {
+		return nil, f.createSecretErr
+	}
+	return &api.CreateSecretResponse{Secret: f.createdSecret}, nil
+}
+
+func (f *fakeControl) UpdateSecret(_ context.Context, req *api.UpdateSecretRequest, _ ...grpc.CallOption) (*api.UpdateSecretResponse, error) {
+	f.updateSecretCall++
+	f.updateSecretReq = req
+	if f.updateSecretErr != nil {
+		return nil, f.updateSecretErr
+	}
+	return &api.UpdateSecretResponse{Secret: f.updatedSecret}, nil
+}
+
+func (f *fakeControl) RemoveSecret(_ context.Context, req *api.RemoveSecretRequest, _ ...grpc.CallOption) (*api.RemoveSecretResponse, error) {
+	f.removeSecretCall++
+	f.removeSecretReq = req
+	if f.removeSecretErr != nil {
+		return nil, f.removeSecretErr
+	}
+	return &api.RemoveSecretResponse{}, nil
+}
+
+func (f *fakeControl) CreateNetwork(_ context.Context, req *api.CreateNetworkRequest, _ ...grpc.CallOption) (*api.CreateNetworkResponse, error) {
+	f.createNetworkCall++
+	f.createNetworkReq = req
+	if f.createNetworkErr != nil {
+		return nil, f.createNetworkErr
+	}
+	return &api.CreateNetworkResponse{Network: f.createdNetwork}, nil
+}
+
+func (f *fakeControl) RemoveNetwork(_ context.Context, req *api.RemoveNetworkRequest, _ ...grpc.CallOption) (*api.RemoveNetworkResponse, error) {
+	f.removeNetworkCall++
+	f.removeNetworkReq = req
+	if f.removeNetworkErr != nil {
+		return nil, f.removeNetworkErr
+	}
+	return &api.RemoveNetworkResponse{}, nil
+}
+
+func (f *fakeControl) UpdateNode(_ context.Context, req *api.UpdateNodeRequest, _ ...grpc.CallOption) (*api.UpdateNodeResponse, error) {
+	f.updateNodeCall++
+	f.updateNodeReq = req
+	if f.updateNodeErr != nil {
+		return nil, f.updateNodeErr
+	}
+	return &api.UpdateNodeResponse{Node: f.updatedNode}, nil
 }
 
 func (f *fakeControl) GetService(_ context.Context, req *api.GetServiceRequest, _ ...grpc.CallOption) (*api.GetServiceResponse, error) {

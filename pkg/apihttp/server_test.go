@@ -54,6 +54,33 @@ type fakeClient struct {
 	updateCalls       int
 	deleteCalls       int
 	rollbackCalls     int
+
+	// Named write surface (config, secret, network, node).
+	createdConfig  v1.Config
+	updatedConfig  v1.Config
+	deletedConfig  v1.Config
+	createdSecret  v1.Secret
+	updatedSecret  v1.Secret
+	deletedSecret  v1.Secret
+	createdNetwork v1.Network
+	deletedNetwork v1.Network
+	updatedNode    v1.Node
+	namedErr       error
+	gotConfigWrite v1.ConfigWrite
+	gotSecretWrite v1.SecretWrite
+	gotNetworkWrit v1.NetworkWrite
+	gotNamedRef    string
+	gotNamedPatch  []byte
+	gotNamedOpts   v1.WriteOptions
+	configCreates  int
+	configUpdates  int
+	configDeletes  int
+	secretCreates  int
+	secretUpdates  int
+	secretDeletes  int
+	networkCreates int
+	networkDeletes int
+	nodeUpdates    int
 }
 
 func (f *fakeClient) ListServices(context.Context) ([]v1.Service, error) {
@@ -192,6 +219,99 @@ func (f *fakeClient) RollbackService(_ context.Context, ref string, opts v1.Writ
 		return v1.Service{}, f.writeErr
 	}
 	return f.rolledBackService, nil
+}
+
+func (f *fakeClient) CreateConfig(_ context.Context, write v1.ConfigWrite, opts v1.WriteOptions) (v1.Config, error) {
+	f.configCreates++
+	f.gotConfigWrite = write
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Config{}, f.namedErr
+	}
+	return f.createdConfig, nil
+}
+
+func (f *fakeClient) UpdateConfig(_ context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Config, error) {
+	f.configUpdates++
+	f.gotNamedRef = ref
+	f.gotNamedPatch = patch
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Config{}, f.namedErr
+	}
+	return f.updatedConfig, nil
+}
+
+func (f *fakeClient) DeleteConfig(_ context.Context, ref string, opts v1.WriteOptions) (v1.Config, error) {
+	f.configDeletes++
+	f.gotNamedRef = ref
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Config{}, f.namedErr
+	}
+	return f.deletedConfig, nil
+}
+
+func (f *fakeClient) CreateSecret(_ context.Context, write v1.SecretWrite, opts v1.WriteOptions) (v1.Secret, error) {
+	f.secretCreates++
+	f.gotSecretWrite = write
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Secret{}, f.namedErr
+	}
+	return f.createdSecret, nil
+}
+
+func (f *fakeClient) UpdateSecret(_ context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Secret, error) {
+	f.secretUpdates++
+	f.gotNamedRef = ref
+	f.gotNamedPatch = patch
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Secret{}, f.namedErr
+	}
+	return f.updatedSecret, nil
+}
+
+func (f *fakeClient) DeleteSecret(_ context.Context, ref string, opts v1.WriteOptions) (v1.Secret, error) {
+	f.secretDeletes++
+	f.gotNamedRef = ref
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Secret{}, f.namedErr
+	}
+	return f.deletedSecret, nil
+}
+
+func (f *fakeClient) CreateNetwork(_ context.Context, write v1.NetworkWrite, opts v1.WriteOptions) (v1.Network, error) {
+	f.networkCreates++
+	f.gotNetworkWrit = write
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Network{}, f.namedErr
+	}
+	return f.createdNetwork, nil
+}
+
+func (f *fakeClient) DeleteNetwork(_ context.Context, ref string, opts v1.WriteOptions) (v1.Network, error) {
+	f.networkDeletes++
+	f.gotNamedRef = ref
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Network{}, f.namedErr
+	}
+	return f.deletedNetwork, nil
+}
+
+func (f *fakeClient) UpdateNode(_ context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Node, error) {
+	f.nodeUpdates++
+	f.gotNamedRef = ref
+	f.gotNamedPatch = patch
+	f.gotNamedOpts = opts
+	if f.namedErr != nil {
+		return v1.Node{}, f.namedErr
+	}
+	return f.updatedNode, nil
 }
 
 type testAPI struct {

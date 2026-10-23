@@ -537,3 +537,41 @@ func (f *fakeClient) DeleteService(context.Context, string, v1.WriteOptions) (v1
 func (f *fakeClient) RollbackService(context.Context, string, v1.WriteOptions) (v1.Service, error) {
 	return v1.Service{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
 }
+
+// The named writes are phase 2 as well. They answer not_implemented for the same
+// reason: this suite must never pretend a mutation happened.
+func (f *fakeClient) CreateConfig(context.Context, v1.ConfigWrite, v1.WriteOptions) (v1.Config, error) {
+	return v1.Config{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) UpdateConfig(context.Context, string, []byte, v1.WriteOptions) (v1.Config, error) {
+	return v1.Config{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) DeleteConfig(context.Context, string, v1.WriteOptions) (v1.Config, error) {
+	return v1.Config{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) CreateSecret(context.Context, v1.SecretWrite, v1.WriteOptions) (v1.Secret, error) {
+	return v1.Secret{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) UpdateSecret(context.Context, string, []byte, v1.WriteOptions) (v1.Secret, error) {
+	return v1.Secret{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) DeleteSecret(context.Context, string, v1.WriteOptions) (v1.Secret, error) {
+	return v1.Secret{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) CreateNetwork(context.Context, v1.NetworkWrite, v1.WriteOptions) (v1.Network, error) {
+	return v1.Network{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) DeleteNetwork(context.Context, string, v1.WriteOptions) (v1.Network, error) {
+	return v1.Network{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
+
+func (f *fakeClient) UpdateNode(context.Context, string, []byte, v1.WriteOptions) (v1.Node, error) {
+	return v1.Node{}, output.NewError(output.CodeNotImplemented, "phase1 fake has no write surface")
+}
