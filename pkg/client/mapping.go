@@ -1,6 +1,7 @@
 package client
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -382,4 +383,23 @@ func copyMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+// sortServices orders services by creation time then ID, the contract order.
+// It drops nil entries, so callers never need a nil guard.
+func sortServices(services []*api.Service) []*api.Service {
+	sorted := make([]*api.Service, 0, len(services))
+	for _, service := range services {
+		if service != nil {
+			sorted = append(sorted, service)
+		}
+	}
+	sort.SliceStable(sorted, func(i, j int) bool {
+		left, right := timestampTime(sorted[i].Meta.CreatedAt), timestampTime(sorted[j].Meta.CreatedAt)
+		if !left.Equal(right) {
+			return left.Before(right)
+		}
+		return sorted[i].ID < sorted[j].ID
+	})
+	return sorted
 }

@@ -284,6 +284,38 @@ func TestListServicesMapsServiceAndCounts(t *testing.T) {
 	assert.Equal(t, uint32(8080), got.Status.Endpoint.Ports[0].Published)
 }
 
+func TestListServicesOrdersByCreatedAtThenID(t *testing.T) {
+	// SwarmKit returns services in ID order, not creation order, so an
+	// unsorted list must be reordered before it reaches pagination.
+	older := testService()
+	older.ID = "svc-z"
+	older.Meta.CreatedAt = &gogotypes.Timestamp{Seconds: 1700000000}
+
+	sameTimeA := testService()
+	sameTimeA.ID = "svc-a"
+	sameTimeA.Meta.CreatedAt = &gogotypes.Timestamp{Seconds: 1700000500}
+
+	sameTimeB := testService()
+	sameTimeB.ID = "svc-b"
+	sameTimeB.Meta.CreatedAt = &gogotypes.Timestamp{Seconds: 1700000500}
+
+	newer := testService()
+	newer.ID = "svc-m"
+	newer.Meta.CreatedAt = &gogotypes.Timestamp{Seconds: 1700000900}
+
+	control := &fakeControl{
+		services: []*api.Service{sameTimeB, newer, older, sameTimeA},
+	}
+
+	items, err := (&Client{control: control}).ListServices(context.Background())
+	require.NoError(t, err)
+	require.Len(t, items, 4)
+	assert.Equal(t, "svc-z", items[0].ID, "oldest first")
+	assert.Equal(t, "svc-a", items[1].ID, "equal createdAt breaks the tie on ID")
+	assert.Equal(t, "svc-b", items[2].ID)
+	assert.Equal(t, "svc-m", items[3].ID, "newest last")
+}
+
 func TestListServicesEmptySkipsTaskCall(t *testing.T) {
 	control := &fakeControl{}
 	items, err := (&Client{control: control}).ListServices(context.Background())

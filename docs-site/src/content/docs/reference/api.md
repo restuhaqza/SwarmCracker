@@ -312,10 +312,10 @@ Used by `swarmctl` for VM introspection and the executor for lifecycle managemen
 
 ## Public HTTP API (v1)
 
-Phase 1 ships a **read-only** HTTP API. A manager serves the same v1 resource
-documents the CLI emits — `schemaVersion`, `kind`, `items`, `next` for lists and
-`schemaVersion`, `kind` plus the resource fields for single documents — on two
-listeners:
+Phase 1 ships a **read-only** HTTP API. The manager that initialized the cluster
+serves the same v1 resource documents the CLI emits — `schemaVersion`, `kind`,
+`items`, `next` for lists and `schemaVersion`, `kind` plus the resource fields for
+single documents — on two listeners:
 
 | Listener | Address | Authentication |
 |----------|---------|----------------|
@@ -325,9 +325,12 @@ listeners:
 `api/openapi.yaml` in the repository is the normative contract for every route,
 schema, header and error code; this section is the operator's guide to it.
 
-Only managers serve the API: a worker has no local cluster state to read, so it
-never starts either listener. `--api-disabled` turns both off on a manager, and
-`--api-listen ""` keeps the Unix socket while disabling the TCP listener.
+Only the manager that initialized the cluster serves the API in phase 1: the
+daemon starts both listeners when its configuration carries no join address
+(`JoinAddr == ""`). A worker, and a manager that joined an existing cluster,
+starts neither. Serving the API on joined managers is a follow-up. `--api-disabled`
+turns both listeners off on the initializing manager, and `--api-listen ""` keeps
+the Unix socket while disabling the TCP listener.
 
 ### Routes
 
@@ -410,12 +413,18 @@ runs takes effect without a restart.
 
 ### Remote CLI reads
 
-These commands understand `-H` / `--host` and then read the HTTP API instead of
-the local control socket: `service ls|inspect|ps`, `task ls|inspect`,
-`node ls|inspect`, `config ls|inspect`, `secret ls|inspect` and
-`network ls|inspect`. Any other command refuses `--host` and says so; it never
-silently falls back to the local cluster. Without `--host` the same commands
-read the local socket, so a cluster member needs no flags.
+A remote read is available on the contract path — `-o json` or `-o name` — for
+`service ls|inspect|ps`, `task ls|inspect`, `node ls|inspect`,
+`config ls|inspect`, `secret ls|inspect` and `network ls|inspect`. `service ls`
+is the one command whose default table also reads the API, so `service ls`,
+`service ls -o table` and `-o json` / `-o name` all work against `--host`.
+
+Every other default table output for these commands is a **usage error** when
+`--host` is set (`--host selects a remote manager: this command only supports the
+local control socket; use a read command with -o json or -o name`), and any
+command outside the list above is refused the same way. It never silently falls
+back to the local cluster. Without `--host` the same commands read the local
+socket, so a cluster member needs no flags.
 
 ```bash
 swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \

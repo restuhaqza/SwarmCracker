@@ -51,7 +51,7 @@ test:
 # package is Linux-only; everything before the split runs on every platform.
 api-check:
 	@echo "Running API contract acceptance..."
-	$(GO) test ./pkg/api/v1 ./pkg/client ./pkg/output ./test/api
+	$(GO) test ./pkg/api/v1 ./pkg/client ./pkg/output ./pkg/apihttp ./test/api
 	@if [ "$$(uname -s)" = "Linux" ]; then \
 		$(GO) test ./cmd/swarmcracker -run 'Test.*Contract|TestCLIExitCode|TestExitCode|Test.*ControlClientBoundary' -count=1; \
 	else \

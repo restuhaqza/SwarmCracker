@@ -559,34 +559,48 @@ func TestOpenAPICommonResponseHeaders(t *testing.T) {
 	}
 }
 
-// TestOpenAPIListParameters asserts every list path keeps pagination and that
-// the paths whose resources support labels accept one.
+// TestOpenAPIListParameters pins the exact query surface of every list path.
+// Phase 1 only implements limit, cursor and label, so an added-but-unserved
+// parameter (state, role, hostname, …) must fail the contract test.
 func TestOpenAPIListParameters(t *testing.T) {
 	doc := loadOpenAPI(t)
 
 	for _, tc := range []struct {
-		path      string
-		hasLabels bool
+		path   string
+		params []string
 	}{
-		{"/v1/services", true},
-		{"/v1/services/{id}/tasks", false},
-		{"/v1/tasks", false},
-		{"/v1/nodes", true},
-		{"/v1/networks", true},
-		{"/v1/configs", true},
-		{"/v1/secrets", true},
+		{"/v1/services", []string{"limit", "cursor", "label"}},
+		{"/v1/services/{id}/tasks", []string{"id", "limit", "cursor"}},
+		{"/v1/tasks", []string{"limit", "cursor"}},
+		{"/v1/nodes", []string{"label", "limit", "cursor"}},
+		{"/v1/networks", []string{"limit", "cursor", "label"}},
+		{"/v1/configs", []string{"limit", "cursor", "label"}},
+		{"/v1/secrets", []string{"limit", "cursor", "label"}},
 	} {
 		item := doc.Paths.Find(tc.path)
 		require.NotNilf(t, item, "%s path missing", tc.path)
+		require.NotNilf(t, item.Get, "%s GET operation missing", tc.path)
 
-		names := map[string]bool{}
+		names := make([]string, 0, len(item.Get.Parameters))
 		for _, param := range item.Get.Parameters {
-			names[param.Value.Name] = true
+			require.NotNilf(t, param.Value, "%s parameter unresolved", tc.path)
+			names = append(names, param.Value.Name)
+
+			if param.Value.In == "path" {
+				require.Truef(t, param.Value.Required,
+					"%s path parameter %s must be required", tc.path, param.Value.Name)
+				continue
+			}
+			require.Equalf(t, "query", param.Value.In,
+				"%s parameter %s must be a query parameter", tc.path, param.Value.Name)
+			require.Falsef(t, param.Value.Required,
+				"%s query parameter %s must be optional", tc.path, param.Value.Name)
+			require.NotNilf(t, param.Value.Schema, "%s parameter %s has no schema",
+				tc.path, param.Value.Name)
 		}
 
-		require.Truef(t, names["limit"], "%s must accept limit", tc.path)
-		require.Truef(t, names["cursor"], "%s must accept cursor", tc.path)
-		require.Equalf(t, tc.hasLabels, names["label"], "%s label parameter mismatch", tc.path)
+		require.ElementsMatchf(t, tc.params, names,
+			"%s must declare exactly these parameters", tc.path)
 	}
 }
 

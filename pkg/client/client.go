@@ -178,7 +178,9 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// ListServices returns services with their desired/running task counts.
+// ListServices returns services with their desired/running task counts,
+// ordered by creation time then ID. SwarmKit returns them in ID order, which is
+// not stable across a create, so the contract order is applied here.
 func (c *Client) ListServices(ctx context.Context) ([]v1.Service, error) {
 	if c.remote != nil {
 		return c.remote.listServices(ctx)
@@ -197,11 +199,9 @@ func (c *Client) ListServices(ctx context.Context) ([]v1.Service, error) {
 	}
 
 	counts := countTasks(tasks.Tasks)
-	items := make([]v1.Service, 0, len(resp.Services))
-	for _, svc := range resp.Services {
-		if svc == nil {
-			continue
-		}
+	services := sortServices(resp.Services)
+	items := make([]v1.Service, 0, len(services))
+	for _, svc := range services {
 		items = append(items, serviceFromSwarmkit(svc, counts[svc.ID]))
 	}
 	return items, nil

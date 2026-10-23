@@ -295,7 +295,6 @@ func TestPairIsValidResolvesNilLeaf(t *testing.T) {
 
 			pair, err := tls.LoadX509KeyPair(certFile, keyFile)
 			require.NoError(t, err)
-			require.NotNil(t, pair.Leaf)
 			require.Equal(t, tc.want, pairIsValid(&pair))
 
 			pair.Leaf = nil

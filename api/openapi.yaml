@@ -69,15 +69,6 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ServiceList" }
-        "207":
-          description: A page where some nodes could not answer; inspect `partial`
-          headers:
-            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
-            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
-            ETag: { $ref: "#/components/headers/ETag" }
-          content:
-            application/vnd.swarmcracker.v1+json:
-              schema: { $ref: "#/components/schemas/ServiceList" }
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -138,9 +129,6 @@ paths:
           in: query
           schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
         - name: cursor
-          in: query
-          schema: { type: string }
-        - name: state
           in: query
           schema: { type: string }
       responses:
@@ -391,36 +379,9 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
-        - name: name
-          in: query
-          schema: { type: string }
-        - name: id
-          in: query
-          schema: { type: string }
-        - name: service
-          in: query
-          schema: { type: string }
-        - name: node
-          in: query
-          schema: { type: string }
-        - name: state
-          in: query
-          schema: { type: string }
-        - name: desiredState
-          in: query
-          schema: { type: string }
       responses:
         "200":
           description: A page of tasks
-          headers:
-            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
-            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
-            ETag: { $ref: "#/components/headers/ETag" }
-          content:
-            application/vnd.swarmcracker.v1+json:
-              schema: { $ref: "#/components/schemas/TaskList" }
-        "207":
-          description: A page where some nodes could not answer; inspect `partial`
           headers:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -480,25 +441,7 @@ paths:
       operationId: listNodes
       summary: List nodes
       parameters:
-        - name: id
-          in: query
-          schema: { type: string }
-        - name: hostname
-          in: query
-          schema: { type: string }
         - name: label
-          in: query
-          schema: { type: string }
-        - name: role
-          in: query
-          schema: { type: string }
-        - name: membership
-          in: query
-          schema: { type: string }
-        - name: availability
-          in: query
-          schema: { type: string }
-        - name: state
           in: query
           schema: { type: string }
         - name: limit
@@ -510,15 +453,6 @@ paths:
       responses:
         "200":
           description: A page of nodes
-          headers:
-            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
-            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
-            ETag: { $ref: "#/components/headers/ETag" }
-          content:
-            application/vnd.swarmcracker.v1+json:
-              schema: { $ref: "#/components/schemas/NodeList" }
-        "207":
-          description: A page where some nodes could not answer; inspect `partial`
           headers:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -656,8 +590,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Network" }
         next:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     NetworkDocument:
       allOf:
@@ -691,8 +624,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Config" }
         next:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     ConfigDocument:
       allOf:
@@ -727,8 +659,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Secret" }
         next:
-          type: string
-          nullable: true
+          type: [string, "null"]
 
     SecretDocument:
       allOf:
@@ -749,8 +680,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Service" }
         next:
-          type: string
-          nullable: true
+          type: [string, "null"]
         warnings:
           type: array
           items: { $ref: "#/components/schemas/Warning" }
@@ -788,9 +718,8 @@ components:
       properties:
         mode: { type: string, enum: [replicated, global, replicated-job, global-job, unknown] }
         replicas:
-          type: integer
+          type: [integer, "null"]
           format: int64
-          nullable: true
         task: { $ref: "#/components/schemas/TaskSpec" }
         update: { $ref: "#/components/schemas/UpdateConfig" }
         rollback: { $ref: "#/components/schemas/UpdateConfig" }
@@ -912,8 +841,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Task" }
         next:
-          type: string
-          nullable: true
+          type: [string, "null"]
         warnings:
           type: array
           items: { $ref: "#/components/schemas/Warning" }
@@ -976,8 +904,7 @@ components:
           type: array
           items: { $ref: "#/components/schemas/Node" }
         next:
-          type: string
-          nullable: true
+          type: [string, "null"]
         warnings:
           type: array
           items: { $ref: "#/components/schemas/Warning" }
