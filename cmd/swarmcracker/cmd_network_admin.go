@@ -13,6 +13,7 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
 )
@@ -114,7 +115,7 @@ func createNetwork(name, subnet, driver string, labels []string) error {
 // leaves a network that exists and can never be allocated, with the reason only in
 // the daemon's log. Checking here turns that into a clear error and no network
 // (#77).
-func ensureSubnetIsFree(ctx context.Context, client api.ControlClient, name, subnet string) error {
+func ensureSubnetIsFree(ctx context.Context, client legacy.ControlClient, name, subnet string) error {
 	resp, err := client.ListNetworks(ctx, &api.ListNetworksRequest{})
 	if err != nil {
 		return fmt.Errorf("failed to list networks: %w", err)
@@ -398,7 +399,7 @@ func removeUserNetwork(ref string) error {
 }
 
 // resolveNetworkRef maps a full ID, unique ID prefix, or name to a network ID.
-func resolveNetworkRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
+func resolveNetworkRef(ctx context.Context, client legacy.ControlClient, ref string) (string, error) {
 	resp, err := client.ListNetworks(ctx, &api.ListNetworksRequest{})
 	if err != nil {
 		return "", fmt.Errorf("failed to list networks: %w", err)

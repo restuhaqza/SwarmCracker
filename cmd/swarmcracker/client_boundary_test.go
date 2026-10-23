@@ -10,20 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// legacyControlClientFiles is the migration allowlist. Every entry is a
-// command file that still uses the raw SwarmKit client for a legacy path.
-// A file must be removed from this list when it is migrated; the test also
-// fails if a migrated file still appears, so the allowlist cannot go stale
-// silently.
-var legacyControlClientFiles = map[string]bool{
-	"cmd_config.go":        true,
-	"cmd_network_admin.go": true,
-	"cmd_node.go":          true,
-	"cmd_secret.go":        true,
-	"cmd_service.go":       true,
-	"cmd_task.go":          true,
-	"task_health.go":       true,
-}
+// legacyControlClientFiles is the migration allowlist. It is empty: every
+// command path now reaches the raw SwarmKit control surface through
+// pkg/client/legacy. A new direct api.ControlClient reference must be routed
+// through pkg/client instead of re-opening this list.
+var legacyControlClientFiles = map[string]bool{}
 
 func TestCommandControlClientBoundary(t *testing.T) {
 	found := controlClientFiles(t, ".")

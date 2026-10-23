@@ -12,6 +12,7 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
 )
@@ -340,7 +341,7 @@ func printJSON(v interface{}) error {
 // servicesUsing returns the names of services whose container spec references
 // the given dependency ID. extract pulls the referenced IDs out of a container
 // spec (secrets or configs).
-func servicesUsing(ctx context.Context, client api.ControlClient, extract func(*api.ContainerSpec) []string, id string) ([]string, error) {
+func servicesUsing(ctx context.Context, client legacy.ControlClient, extract func(*api.ContainerSpec) []string, id string) ([]string, error) {
 	resp, err := client.ListServices(ctx, &api.ListServicesRequest{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list services: %w", err)
@@ -362,7 +363,7 @@ func servicesUsing(ctx context.Context, client api.ControlClient, extract func(*
 }
 
 // resolveSecretRef maps a full ID, unique ID prefix, or name to a secret ID.
-func resolveSecretRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
+func resolveSecretRef(ctx context.Context, client legacy.ControlClient, ref string) (string, error) {
 	resp, err := client.ListSecrets(ctx, &api.ListSecretsRequest{})
 	if err != nil {
 		return "", fmt.Errorf("failed to list secrets: %w", err)

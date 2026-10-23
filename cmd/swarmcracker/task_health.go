@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/redact"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
@@ -76,7 +77,7 @@ type liveHealth struct {
 // never fails the command: a node that is unreachable, unknown, or running an
 // older daemon simply stays absent from reachable (and its tasks fall back to
 // the derived value).
-func fetchLiveHealth(ctx context.Context, client api.ControlClient, tasks []*api.Task, opts clusterHealthOptions) liveHealth {
+func fetchLiveHealth(ctx context.Context, client legacy.ControlClient, tasks []*api.Task, opts clusterHealthOptions) liveHealth {
 	lh := liveHealth{
 		enabled:   !opts.Disabled,
 		byTask:    map[string]runtime.VMHealth{},

@@ -11,6 +11,7 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/client/legacy"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/spf13/cobra"
 )
@@ -316,7 +317,7 @@ type configView struct {
 }
 
 // resolveConfigRef maps a full ID, unique ID prefix, or name to a config ID.
-func resolveConfigRef(ctx context.Context, client api.ControlClient, ref string) (string, error) {
+func resolveConfigRef(ctx context.Context, client legacy.ControlClient, ref string) (string, error) {
 	resp, err := client.ListConfigs(ctx, &api.ListConfigsRequest{})
 	if err != nil {
 		return "", fmt.Errorf("failed to list configs: %w", err)
