@@ -22,12 +22,6 @@ documented contract.
 
 SwarmCracker uses **SwarmKit's gRPC API** via the `github.com/moby/swarmkit/v2/api` package, extended with a custom **API versioning protocol** (`pkg/apiversion`).
 
----
-
-## Overview
-
-SwarmCracker uses **SwarmKit's gRPC API** via the `github.com/moby/swarmkit/v2/api` package, extended with a custom **API versioning protocol** (`pkg/apiversion`).
-
 ```
 ┌──────────────────┐       Unix Socket       ┌────────────────────────┐
 │  swarmcracker    │ ───── gRPC (TLS) ────── │  swarmd-firecracker    │
@@ -405,13 +399,14 @@ swarmcracker api token list
 swarmcracker api token revoke <token-id>
 ```
 
-`--role` is `reader` (read every route) or `admin` (also read; reserved for the
-write surface a later phase adds). The secret is printed once at creation and
-only its SHA-256 hash is written to `tokens.json`, so it cannot be recovered
-later. The CLI's `--token-file` names that store; without it the CLI uses
-`<SWARM_STATE_DIR or /var/lib/swarmkit>/api/tokens.json`. The daemon re-reads
-the file when it changes, so a token minted or revoked while the daemon runs
-takes effect without a restart.
+`--role` is `reader` or `admin`. No phase-1 route distinguishes them: today
+`admin` has exactly the same read access as `reader` and exists only as the
+reserved role for the write surface a later phase adds. The secret is printed
+once at creation and only its SHA-256 hash is written to `tokens.json`, so it
+cannot be recovered later. The CLI's `--token-file` names that store; without it
+the CLI uses `<SWARM_STATE_DIR or /var/lib/swarmkit>/api/tokens.json`. The daemon
+re-reads the file when it changes, so a token minted or revoked while the daemon
+runs takes effect without a restart.
 
 ### Remote CLI reads
 
@@ -430,8 +425,12 @@ swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
 ```
 
 `reader.token` holds the raw secret (surrounding whitespace is trimmed).
-`-o json` emits exactly the v1 document the API returned; `-o name` prints
-identifiers one per line. JSON output is available on the reads listed above.
+`-o json` prints a v1 document, but for lists it is **not** a byte-for-byte
+passthrough: the CLI follows every `next` cursor and rebuilds one document from
+the merged pages, so `next` is always `null` and any `warnings`/`partial` from the
+individual responses are dropped. Single-resource reads (`inspect`) emit the one
+document they fetched. `-o name` prints identifiers one per line. JSON output is
+available on the reads listed above.
 
 ### Errors and exit codes
 

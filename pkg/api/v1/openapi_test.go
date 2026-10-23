@@ -344,12 +344,14 @@ func requireTypedResponse(t *testing.T, doc *openapi3.T, path, status, schema st
 		"%s %s must reference %s", path, status, schema)
 }
 
-// TestOpenAPISingleResourceDocuments validates every single-resource document
-// constructor against its schema and pins each get-by-id path to that schema.
-func TestOpenAPISingleResourceDocuments(t *testing.T) {
-	doc := loadOpenAPI(t)
-
-	for _, tc := range []struct {
+// singleResourceDocumentCases returns each new phase-1 document constructor,
+// fully populated, together with the get-by-id path that serves it.
+func singleResourceDocumentCases() []struct {
+	name  string
+	path  string
+	value any
+} {
+	return []struct {
 		name  string
 		path  string
 		value any
@@ -408,7 +410,15 @@ func TestOpenAPISingleResourceDocuments(t *testing.T) {
 				Labels: map[string]string{"env": "prod"}, Driver: "external",
 			}),
 		},
-	} {
+	}
+}
+
+// TestOpenAPISingleResourceDocuments validates every single-resource document
+// constructor against its schema and pins each get-by-id path to that schema.
+func TestOpenAPISingleResourceDocuments(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	for _, tc := range singleResourceDocumentCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			data, err := json.Marshal(tc.value)
 			require.NoError(t, err)
@@ -424,7 +434,41 @@ func TestOpenAPISingleResourceDocuments(t *testing.T) {
 			params := doc.Paths.Find(tc.path).Get.Parameters
 			require.Len(t, params, 1)
 			require.Equal(t, "id", params[0].Value.Name)
+			require.Equal(t, "path", params[0].Value.In,
+				"%s id parameter must be a path parameter", tc.path)
 			require.True(t, params[0].Value.Required)
+		})
+	}
+}
+
+// TestOpenAPIResourceDocumentRequiresEnvelope pins the document envelope as
+// mandatory: a body without kind or schemaVersion must fail validation.
+func TestOpenAPIResourceDocumentRequiresEnvelope(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	for _, tc := range singleResourceDocumentCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			schema, ok := doc.Components.Schemas[tc.name]
+			require.True(t, ok, "schema %q missing", tc.name)
+			require.NotNil(t, schema.Value)
+
+			data, err := json.Marshal(tc.value)
+			require.NoError(t, err)
+			var populated map[string]any
+			require.NoError(t, json.Unmarshal(data, &populated))
+			require.NoError(t, schema.Value.VisitJSON(populated),
+				"populated %s must validate", tc.name)
+
+			for _, field := range []string{"kind", "schemaVersion"} {
+				stripped := make(map[string]any, len(populated))
+				for key, value := range populated {
+					if key != field {
+						stripped[key] = value
+					}
+				}
+				require.Error(t, schema.Value.VisitJSON(stripped),
+					"%s without %q must fail validation", tc.name, field)
+			}
 		})
 	}
 }
@@ -441,13 +485,10 @@ func TestOpenAPIBearerSecurity(t *testing.T) {
 	require.Equal(t, "bearer", scheme.Value.Scheme)
 
 	require.NotEmpty(t, doc.Security, "global security requirement missing")
-	required := false
-	for _, requirement := range doc.Security {
-		if _, ok := requirement["bearerAuth"]; ok {
-			required = true
-		}
-	}
-	require.True(t, required, "global security must require bearerAuth")
+	require.Len(t, doc.Security, 1, "exactly one global security requirement")
+	require.NotEmpty(t, doc.Security[0], "global security requirement must not be empty")
+	require.Contains(t, doc.Security[0], "bearerAuth",
+		"global security must require bearerAuth")
 
 	for path, item := range doc.Paths.Map() {
 		if item.Get == nil {

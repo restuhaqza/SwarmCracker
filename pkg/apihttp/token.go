@@ -27,7 +27,9 @@ import (
 const (
 	// RoleReader may read the v1 API.
 	RoleReader = "reader"
-	// RoleAdmin may read the v1 API and manage tokens.
+	// RoleAdmin currently has the same read access as RoleReader: no phase-1
+	// route distinguishes the two. The role is reserved for the phase-2 write
+	// surface.
 	RoleAdmin = "admin"
 
 	schemaVersion = 1
