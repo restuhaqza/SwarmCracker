@@ -2,6 +2,7 @@ package apihttp
 
 import (
 	"encoding/base64"
+	"net/url"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/output"
@@ -14,20 +15,24 @@ func TestParseLimit(t *testing.T) {
 		in   string
 		want int
 	}{
-		{"", 100},
 		{"1", 1},
 		{"2", 2},
 		{"100", 100},
 		{"1000", 1000},
 	}
 	for _, tc := range cases {
-		got, err := parseLimit(tc.in)
+		got, err := parseLimit(url.Values{"limit": {tc.in}})
 		require.NoError(t, err, tc.in)
 		assert.Equal(t, tc.want, got, tc.in)
 	}
 
-	for _, in := range []string{"0", "-1", "1001", "5000", "abc", "1.5", " "} {
-		_, err := parseLimit(in)
+	// An absent parameter means the default.
+	got, err := parseLimit(url.Values{})
+	require.NoError(t, err)
+	assert.Equal(t, 100, got)
+
+	for _, in := range []string{"", "0", "-1", "1001", "5000", "abc", "1.5", " "} {
+		_, err := parseLimit(url.Values{"limit": {in}})
 		require.Error(t, err, in)
 		var typed *output.Error
 		require.ErrorAs(t, err, &typed)
@@ -122,6 +127,51 @@ func TestPaginateSameTimestampUsesIDTiebreak(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, page2, 1)
 	assert.Equal(t, "b", page2[0].id)
+}
+
+func TestPaginateFractionalSecondsAcrossPageBoundary(t *testing.T) {
+	// Go formats RFC3339Nano with trailing zeros stripped, so these values have
+	// different fractional widths. Lexically, "...00.12Z" sorts AFTER
+	// "...00.125Z" (Z > 5), which used to make the cursor skip .125 entirely.
+	items := []pageItem{
+		{"2026-01-01T00:00:00.12Z", "a"},
+		{"2026-01-01T00:00:00.125Z", "b"},
+		{"2026-01-01T00:00:00.13Z", "c"},
+		{"2026-01-01T00:00:01Z", "d"},
+	}
+
+	var seen []string
+	cursor := ""
+	for pages := 0; ; pages++ {
+		require.Less(t, pages, 10, "pagination did not terminate")
+
+		page, next, err := paginate(items, 1, cursor, pageKey)
+		require.NoError(t, err)
+		for _, item := range page {
+			seen = append(seen, item.id)
+		}
+		if next == nil {
+			break
+		}
+		cursor = *next
+	}
+
+	assert.Equal(t, []string{"a", "b", "c", "d"}, seen, "no item may be dropped at a fractional-second boundary")
+}
+
+func TestAfterCursorComparesInstants(t *testing.T) {
+	cursor := pageCursor{createdAt: "2026-01-01T00:00:00.12Z", id: "a"}
+
+	// Later instant but lexically smaller string.
+	assert.True(t, afterCursor("2026-01-01T00:00:00.125Z", "b", cursor))
+	// Earlier instant, lexically larger string.
+	assert.False(t, afterCursor("2026-01-01T00:00:00.119Z", "b", cursor))
+	// The same instant written with another offset is equal, so the ID decides.
+	assert.True(t, afterCursor("2026-01-01T01:00:00.12+01:00", "b", cursor))
+
+	// Values that do not parse fall back to lexical order.
+	assert.True(t, afterCursor("zzz", "b", pageCursor{createdAt: "aaa", id: "a"}))
+	assert.False(t, afterCursor("aaa", "b", pageCursor{createdAt: "zzz", id: "a"}))
 }
 
 func TestPaginateRejectsBadCursor(t *testing.T) {

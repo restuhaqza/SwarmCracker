@@ -7,8 +7,10 @@ package apihttp
 import (
 	"encoding/base64"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 )
@@ -30,14 +32,16 @@ type pageCursor struct {
 	id        string
 }
 
-// parseLimit validates the limit query parameter. An absent value means the
-// default; zero, negatives, non-numeric values and values over the maximum are
-// invalid, with the offending field named in details.fields.
-func parseLimit(raw string) (int, error) {
-	if raw == "" {
+// parseLimit validates the limit query parameter. An absent parameter means the
+// default; a present but empty value is invalid, exactly like any other
+// non-numeric one. Zero, negatives and values over the maximum are invalid too,
+// with the offending field named in details.fields.
+func parseLimit(query url.Values) (int, error) {
+	if !query.Has("limit") {
 		return defaultLimit, nil
 	}
 
+	raw := query.Get("limit")
 	limit, err := strconv.Atoi(raw)
 	if err != nil || limit <= 0 || limit > maxLimit {
 		return 0, output.NewErrorf(output.CodeInvalid,
@@ -111,19 +115,34 @@ func paginate[T any](items []T, limit int, rawCursor string, key func(T) (string
 }
 
 // afterCursor reports whether the item at createdAt/id sorts strictly after the
-// cursor. RFC 3339 timestamps compare correctly as strings.
+// cursor. Timestamps are compared as instants: RFC 3339 allows a fractional
+// second of variable width (Go's RFC3339Nano drops trailing zeros), and
+// "...00.12Z" sorts after "...00.125Z" as a string even though it is earlier.
+// If either value does not parse, the comparison falls back to raw strings so a
+// non-conforming client stream still pages deterministically.
 func afterCursor(createdAt, id string, cursor pageCursor) bool {
-	if createdAt != cursor.createdAt {
-		return createdAt > cursor.createdAt
+	if cmp := compareCreatedAt(createdAt, cursor.createdAt); cmp != 0 {
+		return cmp > 0
 	}
 	return id > cursor.id
+}
+
+// compareCreatedAt orders two RFC 3339 timestamps as instants, falling back to
+// lexical order when either one cannot be parsed.
+func compareCreatedAt(a, b string) int {
+	ta, aerr := time.Parse(time.RFC3339Nano, a)
+	tb, berr := time.Parse(time.RFC3339Nano, b)
+	if aerr == nil && berr == nil {
+		return ta.Compare(tb)
+	}
+	return strings.Compare(a, b)
 }
 
 // paginateRequest applies the limit and cursor query parameters to items.
 func paginateRequest[T any](r *http.Request, items []T, key func(T) (string, string)) ([]T, *string, error) {
 	query := r.URL.Query()
 
-	limit, err := parseLimit(query.Get("limit"))
+	limit, err := parseLimit(query)
 	if err != nil {
 		return nil, nil, err
 	}

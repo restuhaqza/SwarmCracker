@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -122,11 +123,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/", s.notFound)
 }
 
-// handle registers the GET route and a fallback for other methods on the same
-// path. The method-specific pattern is more specific, so GET wins.
-func (s *Server) handle(path string, h http.HandlerFunc) {
-	s.mux.HandleFunc(http.MethodGet+" "+path, h)
-	s.mux.HandleFunc(path, s.methodNotAllowed)
+// handle registers the GET route and the typed rejections for every other
+// method on the same path. The method-specific patterns are more specific, so
+// GET wins. HEAD is registered explicitly: without it Go's ServeMux would serve
+// HEAD through the GET pattern, and this surface is strictly GET-only.
+func (s *Server) handle(pattern string, h http.HandlerFunc) {
+	s.mux.HandleFunc(http.MethodGet+" "+pattern, h)
+	s.mux.HandleFunc(http.MethodHead+" "+pattern, s.methodNotAllowed)
+	s.mux.HandleFunc(pattern, s.methodNotAllowed)
 }
 
 // Handler returns the TCP listener's handler: every request must carry a valid
@@ -147,6 +151,7 @@ func (s *Server) wrap(requireAuth bool) http.Handler {
 		w.Header().Set(requestIDHeader, requestID)
 
 		r = r.WithContext(context.WithValue(r.Context(), requestIDKey{}, requestID))
+		r = withCleanPath(r)
 
 		if requireAuth {
 			if err := s.authenticate(r); err != nil {
@@ -168,6 +173,31 @@ func (s *Server) wrap(requireAuth bool) http.Handler {
 
 // requestIDKey is the context key for the per-request ID.
 type requestIDKey struct{}
+
+// withCleanPath canonicalizes the request path before routing. ServeMux
+// answers a non-canonical path (a doubled slash or a "."/".." segment) with its
+// own text/html 307, which would bypass the typed v1 envelope. Cleaning here
+// keeps every response a v1 document and preserves a single trailing slash so
+// the router still applies its own subtree rules.
+func withCleanPath(r *http.Request) *http.Request {
+	if r.URL == nil || r.URL.Path == "" {
+		return r
+	}
+
+	cleaned := path.Clean(r.URL.Path)
+	if cleaned != "/" && strings.HasSuffix(r.URL.Path, "/") {
+		cleaned += "/"
+	}
+	if cleaned == r.URL.Path {
+		return r
+	}
+
+	u := *r.URL
+	u.Path = cleaned
+	u.RawPath = ""
+	r.URL = &u
+	return r
+}
 
 func requestIDFrom(r *http.Request) string {
 	id, _ := r.Context().Value(requestIDKey{}).(string)
@@ -348,7 +378,7 @@ func statusForCode(code output.Code) int {
 		return http.StatusConflict
 	case output.CodeRateLimited:
 		return http.StatusTooManyRequests
-	case output.CodeUnavailable:
+	case output.CodeUnavailable, output.CodeUnreachable:
 		return http.StatusServiceUnavailable
 	case output.CodeTimeout:
 		return http.StatusGatewayTimeout
@@ -392,10 +422,10 @@ func (s *Server) notFound(w http.ResponseWriter, r *http.Request) {
 		WithDetails(map[string]any{"resource": "route"}))
 }
 
-// methodNotAllowed answers a known path with a typed 405. GET patterns also
-// serve HEAD, so both methods are advertised.
+// methodNotAllowed answers a known path with a typed 405. The read surface is
+// GET-only, so Allow names exactly that method.
 func (s *Server) methodNotAllowed(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Allow", "GET, HEAD")
+	w.Header().Set("Allow", "GET")
 	s.writeErrorStatus(w, r, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
 		"method %s is not allowed on %s", r.Method, r.URL.Path))
 }

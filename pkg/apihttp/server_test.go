@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -189,6 +190,21 @@ func (a *testAPI) do(t *testing.T, method, target string, opts ...func(*http.Req
 	return rec
 }
 
+func (a *testAPI) doRawPath(t *testing.T, method, rawPath string, opts ...func(*http.Request)) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, "/", nil)
+	// Set the path directly: httptest.NewRequest would parse "//host/x" as a
+	// network-path reference and lose the doubled slash.
+	req.URL.Path = rawPath
+	req.Header.Set("Accept", MediaType)
+	for _, opt := range opts {
+		opt(req)
+	}
+	rec := httptest.NewRecorder()
+	a.handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func withToken(token string) func(*http.Request) {
 	return func(r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -363,6 +379,7 @@ func TestPaginationOverHTTP(t *testing.T) {
 		"/v1/services?limit=0",
 		"/v1/services?limit=-1",
 		"/v1/services?limit=abc",
+		"/v1/services?limit=",
 	} {
 		bad := api.do(t, http.MethodGet, target, withToken(api.token))
 		require.Equal(t, http.StatusBadRequest, bad.Code, target)
@@ -440,6 +457,24 @@ func TestLabelFilter(t *testing.T) {
 	})
 }
 
+func TestLabelFilterRepeatedParamsAreANDed(t *testing.T) {
+	fc := &fakeClient{services: []v1.Service{
+		{ID: "svc-1", CreatedAt: "2026-01-01T00:00:00Z", Labels: map[string]string{"team": "payments", "tier": "gold"}},
+		{ID: "svc-2", CreatedAt: "2026-01-02T00:00:00Z", Labels: map[string]string{"team": "payments", "tier": "silver"}},
+		{ID: "svc-3", CreatedAt: "2026-01-03T00:00:00Z", Labels: map[string]string{"team": "search", "tier": "gold"}},
+	}}
+	api := newTestAPI(t, fc)
+
+	rec := api.do(t, http.MethodGet,
+		"/v1/services?label=team%3Dpayments&label=tier%3Dgold", withToken(api.token))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var list v1.ServiceList
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &list))
+	require.Len(t, list.Items, 1, "both selectors must match (logical AND)")
+	assert.Equal(t, "svc-1", list.Items[0].ID)
+}
+
 func TestETagAndIfNoneMatch(t *testing.T) {
 	api := newTestAPI(t, &fakeClient{services: []v1.Service{
 		{ID: "svc-1", Name: "one", CreatedAt: "2026-01-01T00:00:00Z"},
@@ -499,6 +534,19 @@ func TestGRPCErrorMapping(t *testing.T) {
 	assert.True(t, doc.Error.Retryable)
 }
 
+func TestUnreachableMapsTo503(t *testing.T) {
+	fc := &fakeClient{err: output.NewError(output.CodeUnreachable, "dial manager: connection refused")}
+	api := newTestAPI(t, fc)
+
+	rec := api.do(t, http.MethodGet, "/v1/services", withToken(api.token))
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	assertWireHeaders(t, rec)
+
+	doc := decodeError(t, rec)
+	assert.Equal(t, string(output.CodeUnreachable), doc.Error.Code)
+	assert.True(t, doc.Error.Retryable)
+}
+
 func TestUnknownRouteIsTypedNotFound(t *testing.T) {
 	api := newTestAPI(t, &fakeClient{})
 
@@ -510,6 +558,53 @@ func TestUnknownRouteIsTypedNotFound(t *testing.T) {
 	assert.Equal(t, string(output.CodeNotFound), doc.Error.Code)
 	assert.Equal(t, "route", doc.Error.Details["resource"])
 	assert.Contains(t, doc.Error.Message, "/v1/widgets")
+}
+
+func TestNonCanonicalPathsStayV1Documents(t *testing.T) {
+	fc := &fakeClient{
+		services: []v1.Service{{ID: "svc-1", CreatedAt: "2026-01-01T00:00:00Z"}},
+		secrets:  []v1.Secret{{ID: "sec-1"}},
+	}
+	api := newTestAPI(t, fc)
+
+	// ServeMux would normally answer each of these with its own text/html 307.
+	cases := []struct{ raw, kind string }{
+		{"//v1/services", v1.KindServiceList},
+		{"/v1//services", v1.KindServiceList},
+		{"/v1/services/../secrets", v1.KindSecretList},
+	}
+	for _, tc := range cases {
+		t.Run(tc.raw, func(t *testing.T) {
+			rec := api.doRawPath(t, http.MethodGet, tc.raw, withToken(api.token))
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			assertWireHeaders(t, rec)
+			assert.Empty(t, rec.Header().Get("Location"), "must not fall through to a ServeMux redirect")
+
+			var doc struct {
+				Kind string `json:"kind"`
+			}
+			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+			assert.Equal(t, tc.kind, doc.Kind)
+		})
+	}
+
+	t.Run("normalized unknown path is a typed 404", func(t *testing.T) {
+		rec := api.doRawPath(t, http.MethodGet, "//v1/widgets", withToken(api.token))
+		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+		assertWireHeaders(t, rec)
+		assert.Empty(t, rec.Header().Get("Location"))
+
+		doc := decodeError(t, rec)
+		assert.Equal(t, string(output.CodeNotFound), doc.Error.Code)
+		assert.Equal(t, "route", doc.Error.Details["resource"])
+	})
+
+	t.Run("trailing slash stays a typed 404", func(t *testing.T) {
+		rec := api.doRawPath(t, http.MethodGet, "/v1/services/", withToken(api.token))
+		require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+		assertWireHeaders(t, rec)
+		assert.Empty(t, rec.Header().Get("Location"))
+	})
 }
 
 func TestUnsupportedAcceptIs406(t *testing.T) {
@@ -535,6 +630,22 @@ func TestUnsupportedAcceptIs406(t *testing.T) {
 			withToken(api.token), withHeader("Accept", accept))
 		assert.Equal(t, http.StatusOK, rec.Code, accept)
 	}
+}
+
+func TestUnixHandlerRejectsUnsupportedAccept(t *testing.T) {
+	api := newTestAPI(t, &fakeClient{})
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/version", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	api.unix.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusNotAcceptable, rec.Code, rec.Body.String())
+	assertWireHeaders(t, rec)
+
+	doc := decodeError(t, rec)
+	assert.Equal(t, string(output.CodeUnsupportedVersion), doc.Error.Code)
+	assert.Equal(t, []any{"v1"}, doc.Error.Details["supported"])
 }
 
 func TestRequestIDIsStableWithinResponse(t *testing.T) {
@@ -669,11 +780,68 @@ func TestMethodNotAllowedIsTyped(t *testing.T) {
 
 	rec := api.do(t, http.MethodPost, "/v1/services", withToken(api.token))
 	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
-	assert.Equal(t, "GET, HEAD", rec.Header().Get("Allow"))
+	assert.Equal(t, "GET", rec.Header().Get("Allow"))
 	assertWireHeaders(t, rec)
 
 	doc := decodeError(t, rec)
 	assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+}
+
+func TestHeadOnListRouteIs405(t *testing.T) {
+	api := newTestAPI(t, &fakeClient{services: []v1.Service{{ID: "svc-1"}}})
+
+	rec := api.do(t, http.MethodHead, "/v1/services", withToken(api.token))
+	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+	assert.Equal(t, "GET", rec.Header().Get("Allow"))
+	assertWireHeaders(t, rec)
+
+	doc := decodeError(t, rec)
+	assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+}
+
+func TestUnknownRoleTokenIsForbidden(t *testing.T) {
+	const secret = "sc_unknownrole"
+
+	// Write the token file directly: TokenStore.Create rejects unknown roles, so
+	// this is the hand-edited-file case the authentication defence covers.
+	tokenPath := filepath.Join(t.TempDir(), "tokens.json")
+	file := tokenFile{
+		SchemaVersion: schemaVersion,
+		Tokens: []diskToken{{
+			ID:        "tok_00000000",
+			Name:      "auditor",
+			Role:      "auditor",
+			Hash:      hashSecret(secret),
+			CreatedAt: "2026-01-01T00:00:00Z",
+		}},
+	}
+	data, err := json.Marshal(file)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(tokenPath, data, tokenFileMode))
+
+	store, err := OpenTokenStore(tokenPath)
+	require.NoError(t, err)
+
+	srv, err := New(Config{
+		Client:        &fakeClient{},
+		Tokens:        store,
+		ServerVersion: "0.11.0",
+		GRPCVersion:   "v1",
+	})
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/version", nil)
+	req.Header.Set("Accept", MediaType)
+	req.Header.Set("Authorization", "Bearer "+secret)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	assertWireHeaders(t, rec)
+
+	doc := decodeError(t, rec)
+	assert.Equal(t, string(output.CodeForbidden), doc.Error.Code)
+	assert.Contains(t, doc.Error.Message, "auditor")
 }
 
 func TestNewValidatesConfig(t *testing.T) {
@@ -698,6 +866,7 @@ func TestErrorStatusMapping(t *testing.T) {
 		{output.CodeConflict, http.StatusConflict},
 		{output.CodeRateLimited, http.StatusTooManyRequests},
 		{output.CodeUnavailable, http.StatusServiceUnavailable},
+		{output.CodeUnreachable, http.StatusServiceUnavailable},
 		{output.CodeTimeout, http.StatusGatewayTimeout},
 		{output.CodeNotImplemented, http.StatusNotImplemented},
 		{output.CodeUnsupportedVersion, http.StatusNotAcceptable},
