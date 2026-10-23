@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
@@ -205,9 +206,32 @@ func unsupportedMediaType(want string) error {
 // readJSONWrite decodes one strict JSON body under the write cap. It returns the
 // status to use on failure (400 or 413) and no error on success.
 func readJSONWrite(w http.ResponseWriter, r *http.Request, out any) (int, error) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxWriteBodyBytes)
+	return readJSONBody(w, r, out, false)
+}
 
-	decoder := json.NewDecoder(r.Body)
+// readJSONWriteUTF8 is readJSONWrite plus a raw-byte UTF-8 check.
+//
+// Go's JSON decoder is lenient: invalid UTF-8 inside a JSON string is replaced
+// with U+FFFD instead of failing. A route whose body carries a text payload must
+// therefore inspect the raw bytes before decoding, or the payload is accepted
+// and silently corrupted. Only create-config uses this; every other v1 body is
+// base64 or an identifier, where the leniency cannot change a stored value.
+func readJSONWriteUTF8(w http.ResponseWriter, r *http.Request, out any) (int, error) {
+	return readJSONBody(w, r, out, true)
+}
+
+// readJSONBody buffers one capped body, optionally refuses non-UTF-8 bytes, and
+// decodes exactly one JSON object with unknown fields disallowed.
+func readJSONBody(w http.ResponseWriter, r *http.Request, out any, requireUTF8 bool) (int, error) {
+	body, status, err := readWriteBody(w, r)
+	if err != nil {
+		return status, err
+	}
+	if requireUTF8 && !utf8.Valid(body) {
+		return http.StatusBadRequest, binaryNotSupported("data")
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 
 	if err := decoder.Decode(out); err != nil {
@@ -216,12 +240,6 @@ func readJSONWrite(w http.ResponseWriter, r *http.Request, out any) (int, error)
 
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		// A body longer than the cap can trip the limiter while looking for the
-		// trailing token; report the size, not a shape error.
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			return decodeWriteFailure(err)
-		}
 		return http.StatusBadRequest, output.NewError(output.CodeInvalid,
 			"the request body must contain exactly one JSON object").
 			WithDetails(map[string]any{"reason": "invalid_body"})

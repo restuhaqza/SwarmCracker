@@ -72,34 +72,30 @@ func TestRemoteUpdateConfigRequiresIfMatch(t *testing.T) {
 	assert.Equal(t, "If-Match", typed.Details["required"])
 }
 
-func TestRemoteDeleteConfigGetsThenDeletes(t *testing.T) {
+// TestRemoteDeleteConfigSendsOnlyDelete pins the write-only-token rule: a remote
+// delete never reads first, so configs:write without configs:read can delete. The
+// previous document is a local-client convenience and is not returned remotely.
+func TestRemoteDeleteConfigSendsOnlyDelete(t *testing.T) {
 	var calls []capturedRequest
 	c := newTestRemote(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, captureRequest(t, r))
-		switch r.Method {
-		case http.MethodGet:
-			writeTestDocument(w, http.StatusOK, v1.NewConfigDocument(v1.Config{
-				ID: "cfg-1", Name: "app", Revision: "4",
-			}))
-		case http.MethodDelete:
-			w.WriteHeader(http.StatusNoContent)
-		default:
-			t.Errorf("unexpected method %s", r.Method)
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE (no pre-fetch)", r.Method)
 		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	previous, err := c.DeleteConfig(context.Background(), "app", v1.WriteOptions{
 		IfMatch: `"4"`, IgnoreMissing: true,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "cfg-1", previous.ID)
+	assert.Equal(t, v1.Config{}, previous, "a remote delete returns the zero document")
 
-	require.Len(t, calls, 2)
-	assert.Equal(t, http.MethodGet, calls[0].method)
+	require.Len(t, calls, 1)
+	assert.Equal(t, http.MethodDelete, calls[0].method)
 	assert.Equal(t, "/v1/configs/app", calls[0].path)
-	assert.Equal(t, http.MethodDelete, calls[1].method)
-	assert.Equal(t, `"4"`, calls[1].ifMatch)
-	assert.Equal(t, "true", calls[1].ignore)
+	assert.Equal(t, `"4"`, calls[0].ifMatch)
+	assert.Equal(t, "true", calls[0].ignore)
 }
 
 func TestRemoteCreateSecretSendsBase64Body(t *testing.T) {
@@ -147,27 +143,24 @@ func TestRemoteUpdateSecretRequest(t *testing.T) {
 	assert.Equal(t, `"3"`, got.ifMatch)
 }
 
-func TestRemoteDeleteSecretGetsThenDeletes(t *testing.T) {
+// TestRemoteDeleteSecretSendsOnlyDelete mirrors the config rule.
+func TestRemoteDeleteSecretSendsOnlyDelete(t *testing.T) {
 	var calls []capturedRequest
 	c := newTestRemote(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, captureRequest(t, r))
-		switch r.Method {
-		case http.MethodGet:
-			writeTestDocument(w, http.StatusOK, v1.NewSecretDocument(v1.Secret{
-				ID: "sec-1", Name: "token", Revision: "3",
-			}))
-		case http.MethodDelete:
-			w.WriteHeader(http.StatusNoContent)
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE (no pre-fetch)", r.Method)
 		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	previous, err := c.DeleteSecret(context.Background(), "token", v1.WriteOptions{})
 	require.NoError(t, err)
-	assert.Equal(t, "sec-1", previous.ID)
+	assert.Equal(t, v1.Secret{}, previous)
 
-	require.Len(t, calls, 2)
-	assert.Equal(t, http.MethodDelete, calls[1].method)
-	assert.Equal(t, "/v1/secrets/token", calls[1].path)
+	require.Len(t, calls, 1)
+	assert.Equal(t, http.MethodDelete, calls[0].method)
+	assert.Equal(t, "/v1/secrets/token", calls[0].path)
 }
 
 func TestRemoteCreateNetworkRequest(t *testing.T) {
@@ -197,27 +190,25 @@ func TestRemoteCreateNetworkRequest(t *testing.T) {
 	assert.Equal(t, "10.0.1.0/24", decoded.IPAM.Subnet)
 }
 
-func TestRemoteDeleteNetworkGetsThenDeletes(t *testing.T) {
+// TestRemoteDeleteNetworkSendsOnlyDelete mirrors the config rule.
+func TestRemoteDeleteNetworkSendsOnlyDelete(t *testing.T) {
 	var calls []capturedRequest
 	c := newTestRemote(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, captureRequest(t, r))
-		switch r.Method {
-		case http.MethodGet:
-			writeTestDocument(w, http.StatusOK, v1.NewNetworkDocument(v1.Network{
-				ID: "net-1", Name: "frontend", Revision: "2",
-			}))
-		case http.MethodDelete:
-			w.WriteHeader(http.StatusNoContent)
+		if r.Method != http.MethodDelete {
+			t.Errorf("method = %s, want DELETE (no pre-fetch)", r.Method)
 		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 
 	previous, err := c.DeleteNetwork(context.Background(), "net-1", v1.WriteOptions{IfMatch: `"2"`})
 	require.NoError(t, err)
-	assert.Equal(t, "net-1", previous.ID)
+	assert.Equal(t, v1.Network{}, previous)
 
-	require.Len(t, calls, 2)
-	assert.Equal(t, http.MethodDelete, calls[1].method)
-	assert.Equal(t, `"2"`, calls[1].ifMatch)
+	require.Len(t, calls, 1)
+	assert.Equal(t, http.MethodDelete, calls[0].method)
+	assert.Equal(t, "/v1/networks/net-1", calls[0].path)
+	assert.Equal(t, `"2"`, calls[0].ifMatch)
 }
 
 func TestRemoteUpdateNodeRequest(t *testing.T) {

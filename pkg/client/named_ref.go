@@ -30,16 +30,30 @@ type namedObject struct {
 
 // matchNamedRef is the pure half of resolution, so the ordering and ambiguity
 // rules are testable without a control fake.
+//
+// An exact id wins first. An exact name (a node's hostname) is checked next, and
+// every match is collected: SwarmKit enforces unique names for configs, secrets
+// and networks, but node hostnames are agent-reported and not unique, so a name
+// that matches two objects must be ambiguous rather than resolved by list order.
+// Only when no exact name matches does the unique-ID-prefix rule apply.
 func matchNamedRef(kind, ref string, objects []namedObject) (string, error) {
 	for _, object := range objects {
 		if object.id == ref {
 			return object.id, nil
 		}
 	}
+
+	byName := make([]namedObject, 0, 2)
 	for _, object := range objects {
 		if object.name != "" && object.name == ref {
-			return object.id, nil
+			byName = append(byName, object)
 		}
+	}
+	switch {
+	case len(byName) == 1:
+		return byName[0].id, nil
+	case len(byName) > 1:
+		return "", ambiguousNamedRef(kind, ref, byName)
 	}
 
 	if len(ref) < minRefPrefix {
@@ -62,17 +76,24 @@ func matchNamedRef(kind, ref string, objects []namedObject) (string, error) {
 	case 1:
 		return matches[0].id, nil
 	default:
-		candidates := make([]map[string]string, 0, len(matches))
-		for _, match := range matches {
-			candidates = append(candidates, map[string]string{
-				"id":   match.id,
-				"name": match.name,
-			})
-		}
-		return "", output.NewErrorf(output.CodeAmbiguous,
-			"%s reference %q matches %d %ss", kind, ref, len(matches), kind).
-			WithDetails(map[string]any{"candidates": candidates})
+		return "", ambiguousNamedRef(kind, ref, matches)
 	}
+}
+
+// ambiguousNamedRef is the one ambiguity answer: the contract's 400 ambiguous
+// with a candidates array of {id, name}. Both the name and the prefix rule use
+// it, so a caller cannot tell which rule produced the ambiguity from the shape.
+func ambiguousNamedRef(kind, ref string, matches []namedObject) error {
+	candidates := make([]map[string]string, 0, len(matches))
+	for _, match := range matches {
+		candidates = append(candidates, map[string]string{
+			"id":   match.id,
+			"name": match.name,
+		})
+	}
+	return output.NewErrorf(output.CodeAmbiguous,
+		"%s reference %q matches %d %ss", kind, ref, len(matches), kind).
+		WithDetails(map[string]any{"candidates": candidates})
 }
 
 // requireRef rejects an empty reference before it reaches SwarmKit, which would

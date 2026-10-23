@@ -3,6 +3,7 @@ package client
 import (
 	"sort"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -11,6 +12,12 @@ import (
 // configFromSwarmkit maps one SwarmKit config. The payload is carried here; the
 // HTTP layer is what withholds it from an identity without configs:read-values,
 // so a local caller of pkg/client still sees the value it is entitled to.
+//
+// A config created out of band (docker config create, another SwarmKit client)
+// may hold arbitrary bytes. v1 config data is UTF-8 text, and the API does not
+// transcode: a non-UTF-8 payload is withheld (Data stays nil) rather than turned
+// into a string whose JSON encoding would substitute U+FFFD and silently return
+// a value different from the stored one. The metadata is still returned.
 func configFromSwarmkit(config *api.Config) v1.Config {
 	out := v1.Config{
 		ID:        config.ID,
@@ -20,7 +27,7 @@ func configFromSwarmkit(config *api.Config) v1.Config {
 		UpdatedAt: timestamp(config.Meta.UpdatedAt),
 		Labels:    copyMap(config.Spec.Annotations.Labels),
 	}
-	if len(config.Spec.Data) > 0 {
+	if len(config.Spec.Data) > 0 && utf8.Valid(config.Spec.Data) {
 		data := string(config.Spec.Data)
 		out.Data = &data
 	}

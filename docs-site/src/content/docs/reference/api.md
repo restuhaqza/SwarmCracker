@@ -372,10 +372,11 @@ phase-2 writes below.
 | DELETE | `/v1/secrets/{id}` | `204` (requires `secrets:write`) |
 | GET | `/v1/audit` | `AuditList` (requires `audit:read`, which only `admin` holds) |
 
-The `{id}` path parameter accepts an exact id, an exact name, or a unique id
-prefix of at least four characters. A prefix that matches more than one object is
-`400 ambiguous` with `details.candidates`; a shorter non-exact value is
-`400 invalid`.
+The `{id}` path parameter accepts an exact id, an exact name (for a node, the
+hostname), or a unique id prefix of at least four characters. A prefix — or a
+name shared by two objects, which only node hostnames can be — that matches more
+than one object is `400 ambiguous` with `details.candidates`; a shorter non-exact
+value is `400 invalid`.
 
 `GET /v1/version` reports `capabilities: ["read", "write"]`, so a client that
 feature-detects the write surface sees it. Every phase-2 write route listed above
@@ -393,7 +394,9 @@ revision (`"17"`), which is exactly the value a later `PATCH` expects in
 document with the field absent, and the list route never leaks a payload. The
 same rule applies to a write response: a token that may write a value but not
 read values back does not get it echoed. The payload is a UTF-8 string; binary
-configs are refused on create.
+configs are refused on create with `details.reason: "binary_not_supported"`, and
+a config stored out of band with a non-UTF-8 payload reads with `data` absent —
+the API does not transcode or repair bytes it cannot represent.
 
 ### Service writes
 
@@ -517,18 +520,20 @@ accepts `labels` only: `data`, `name`, `id`, `revision`, `createdAt`,
 `configs:read-values` (an `operator` or `admin` by default), on reads *and* on
 the response to a write.
 
-**Secrets.** A create carries exactly one of `data` (base64) or `driver`
-(`{name, options}`). Sending both or neither is `400 invalid`, as is data that is
-not valid base64. `PATCH` accepts `labels` only: `data`, `driver`, `name`, `id`,
-`revision`, the timestamps, `schemaVersion` and `kind` are immutable. No secret
-response ever contains the payload — there is no `data` field on any read
-document, for any scope. Rotation is create-new and repoint the service, then
-delete the old secret.
+**Secrets.** A create carries exactly one of `data` (standard base64, padding
+optional) or `driver` (`{name, options}`). Sending both or neither is
+`400 invalid`, as is data that is not valid base64. `PATCH` accepts `labels`
+only: `data`, `driver`, `name`, `id`, `revision`, the timestamps,
+`schemaVersion` and `kind` are immutable. No secret response ever contains the
+payload — there is no `data` field on any read document, for any scope. Rotation
+is create-new and repoint the service, then delete the old secret.
 
-**Networks.** `driver` defaults to `overlay`. `ipam` is `{subnet, gateway}`; a
-non-empty subnet must parse as CIDR and a gateway must be an IP address inside
-it, otherwise the create is `400 invalid`. There is **no network update**:
-driver, IPAM and labels are fixed at create, and `PATCH` or `PUT` on
+**Networks.** `driver` defaults to `overlay`. `ipam` is `{subnet, gateway}`; the
+subnet must be a network address in CIDR form (`10.0.1.0/24`, not
+`10.0.1.7/24`), the gateway must be an IP address inside it, and neither the
+network address nor the IPv4 broadcast address is a usable gateway. A violation
+is `400 invalid` with the field named. There is **no network update**: driver,
+IPAM and labels are fixed at create, and `PATCH` or `PUT` on
 `/v1/networks/{id}` answers `405 invalid` with
 `details.reason: "method_not_allowed"` and `Allow: GET, DELETE`.
 

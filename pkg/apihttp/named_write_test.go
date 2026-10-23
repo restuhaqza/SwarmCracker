@@ -333,6 +333,112 @@ func TestNodeWriteHTTP(t *testing.T) {
 	assert.Equal(t, "worker-a", records[0].Resource.Name)
 }
 
+// TestConfigCreateRejectsNonUTF8Body pins the create-side value rule at the
+// transport edge. Go's JSON decoder would otherwise replace the raw bytes with
+// U+FFFD and store a payload the caller never sent.
+func TestConfigCreateRejectsNonUTF8Body(t *testing.T) {
+	fc := &fakeClient{createdConfig: v1.Config{ID: "cfg-1", Name: "bin", Revision: "1"}}
+	api := newWriteTestAPI(t, fc)
+
+	body := []byte("{\"name\":\"bin\",\"data\":\"\xff\xfe\"}")
+	rec := api.doWrite(t, http.MethodPost, "/v1/configs", body,
+		withToken(api.operator), withContentType(MediaType))
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	doc := decodeError(t, rec)
+	assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	assert.Equal(t, "binary_not_supported", doc.Error.Details["reason"])
+	fields, ok := doc.Error.Details["fields"].(map[string]any)
+	require.True(t, ok, rec.Body.String())
+	assert.Contains(t, fields, "data")
+	assert.Zero(t, fc.configCreates, "a body that is not UTF-8 must never reach the client")
+}
+
+// TestNetworkCreateForwardsIfNoneMatch pins the create-only marker on networks.
+func TestNetworkCreateForwardsIfNoneMatch(t *testing.T) {
+	fc := &fakeClient{createdNetwork: v1.Network{ID: "net-1", Name: "frontend", Revision: "1"}}
+	api := newWriteTestAPI(t, fc)
+
+	rec := api.doWrite(t, http.MethodPost, "/v1/networks", []byte(`{"name":"frontend"}`),
+		withToken(api.operator), withContentType(MediaType), withHeader("If-None-Match", "*"))
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	assert.Equal(t, "*", fc.gotNamedOpts.IfNoneMatch,
+		"the create-only marker is forwarded for networks too")
+}
+
+// TestNamedWritePatchesOversizedBody pins the 413 on PATCH, not just create.
+func TestNamedWritePatchesOversizedBody(t *testing.T) {
+	fc := &fakeClient{updatedConfig: v1.Config{ID: "cfg-1", Name: "app", Revision: "2"}}
+	api := newWriteTestAPI(t, fc)
+
+	oversized := []byte(`{"labels":{"a":"` + strings.Repeat("a", maxWriteBodyBytes) + `"}}`)
+	rec := api.doWrite(t, http.MethodPatch, "/v1/configs/app", oversized,
+		withToken(api.operator), withContentType(v1.MergePatchMediaType),
+		withHeader("If-Match", `"1"`))
+
+	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+	doc := decodeError(t, rec)
+	assert.Equal(t, "payload_too_large", doc.Error.Details["reason"])
+	assert.Zero(t, fc.configUpdates)
+}
+
+// TestNamedDeleteIgnoreMissing pins the delete shapes: a miss with ignoreMissing
+// is 204 and audited, while a stale precondition stays 412 even with it set.
+func TestNamedDeleteIgnoreMissing(t *testing.T) {
+	t.Run("missing is 204 and audited", func(t *testing.T) {
+		fc := &fakeClient{}
+		api := newWriteTestAPI(t, fc)
+
+		rec := api.doWrite(t, http.MethodDelete, "/v1/configs/gone?ignoreMissing=true", nil,
+			withToken(api.operator))
+		require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+		assert.True(t, fc.gotNamedOpts.IgnoreMissing)
+
+		records := api.records(t)
+		require.Len(t, records, 1)
+		assert.Equal(t, "config.delete", records[0].Action)
+		assert.Equal(t, "ok", records[0].Result)
+		assert.Equal(t, "gone", records[0].Resource.Name,
+			"an ignoreMissing miss audits the reference the caller used")
+	})
+
+	t.Run("stale If-Match wins over ignoreMissing", func(t *testing.T) {
+		fc := &fakeClient{namedErr: output.PreconditionFailed(`"1"`, `"2"`)}
+		api := newWriteTestAPI(t, fc)
+
+		rec := api.doWrite(t, http.MethodDelete, "/v1/configs/gone?ignoreMissing=true", nil,
+			withToken(api.operator), withHeader("If-Match", `"1"`))
+		require.Equal(t, http.StatusPreconditionFailed, rec.Code, rec.Body.String())
+		assert.True(t, fc.gotNamedOpts.IgnoreMissing,
+			"the handler forwards both; the client evaluates the precondition first")
+
+		records := api.records(t)
+		require.Len(t, records, 1)
+		assert.Equal(t, "error", records[0].Result)
+	})
+}
+
+// TestNodePatchWeakIfMatch pins that the raw validator reaches the client and a
+// weak failure maps to 412 with details.weak.
+func TestNodePatchWeakIfMatch(t *testing.T) {
+	weak := output.PreconditionFailed(`"6"`, `"6"`)
+	weak.Details["weak"] = true
+	fc := &fakeClient{namedErr: weak}
+	api := newWriteTestAPI(t, fc)
+
+	rec := api.doWrite(t, http.MethodPatch, "/v1/nodes/worker-a",
+		[]byte(`{"availability":"drain"}`),
+		withToken(api.token), withContentType(v1.MergePatchMediaType),
+		withHeader("If-Match", `W/"6"`))
+
+	require.Equal(t, http.StatusPreconditionFailed, rec.Code, rec.Body.String())
+	assert.Equal(t, `W/"6"`, fc.gotNamedOpts.IfMatch, "a weak validator is forwarded unchanged")
+
+	doc := decodeError(t, rec)
+	assert.Equal(t, output.ReasonPreconditionFailed, doc.Error.Details["reason"])
+	assert.Equal(t, true, doc.Error.Details["weak"])
+}
+
 // TestNamedGetsCarryRevisionETag pins the validator of every single-resource
 // read: the revision the later write expects, plus 304 on If-None-Match.
 func TestNamedGetsCarryRevisionETag(t *testing.T) {

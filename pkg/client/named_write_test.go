@@ -447,8 +447,14 @@ func TestCreateNetworkRejectsBadInput(t *testing.T) {
 	}{
 		{"empty name", v1.NetworkWrite{}, "name"},
 		{"bad subnet", v1.NetworkWrite{Name: "x", IPAM: &v1.NetworkIPAM{Subnet: "10.0.1.0"}}, "ipam.subnet"},
+		{"subnet with host bits", v1.NetworkWrite{Name: "x",
+			IPAM: &v1.NetworkIPAM{Subnet: "10.0.1.7/24"}}, "ipam.subnet"},
 		{"gateway outside subnet", v1.NetworkWrite{Name: "x",
 			IPAM: &v1.NetworkIPAM{Subnet: "10.0.1.0/24", Gateway: "10.0.2.1"}}, "ipam.gateway"},
+		{"gateway is the network address", v1.NetworkWrite{Name: "x",
+			IPAM: &v1.NetworkIPAM{Subnet: "10.0.1.0/24", Gateway: "10.0.1.0"}}, "ipam.gateway"},
+		{"gateway is the broadcast address", v1.NetworkWrite{Name: "x",
+			IPAM: &v1.NetworkIPAM{Subnet: "10.0.1.0/24", Gateway: "10.0.1.255"}}, "ipam.gateway"},
 		{"gateway without subnet", v1.NetworkWrite{Name: "x",
 			IPAM: &v1.NetworkIPAM{Gateway: "10.0.2.1"}}, "ipam.gateway"},
 		{"bad gateway", v1.NetworkWrite{Name: "x",
@@ -586,6 +592,88 @@ func TestUpdateNodePreconditionsAndRefs(t *testing.T) {
 		assert.Equal(t, "6", got.Revision)
 		assert.Zero(t, control.updateNodeCall)
 	})
+}
+
+func TestDuplicateHostnameIsAmbiguous(t *testing.T) {
+	first := nodeFixture("node-1111", "worker-a", 6)
+	second := nodeFixture("node-2222", "worker-a", 2)
+	control := &fakeControl{nodes: []*api.Node{first, second}, updatedNode: first}
+	client := writeClient(control)
+
+	// A node hostname is agent-reported and not unique, so a repeated name must
+	// never resolve by list order: that would read (or mutate) an arbitrary node.
+	_, err := client.GetNode(context.Background(), "worker-a")
+	typed := requireCode(t, err, output.CodeAmbiguous)
+	candidates, ok := typed.Details["candidates"].([]map[string]string)
+	require.True(t, ok, "%#v", typed.Details["candidates"])
+	require.Len(t, candidates, 2)
+	assert.Equal(t, "node-1111", candidates[0]["id"])
+	assert.Equal(t, "worker-a", candidates[0]["name"])
+	assert.Equal(t, "node-2222", candidates[1]["id"])
+
+	_, err = client.UpdateNode(context.Background(), "worker-a",
+		[]byte(`{"availability":"drain"}`), v1.WriteOptions{IfMatch: `"6"`})
+	requireCode(t, err, output.CodeAmbiguous)
+	assert.Zero(t, control.updateNodeCall, "an ambiguous reference must never reach UpdateNode")
+}
+
+func TestDuplicateResourceNameIsAmbiguous(t *testing.T) {
+	// SwarmKit enforces unique config names, but the resolver is shared and must
+	// not depend on that: two objects with one name is ambiguity, not a pick.
+	configs := []*api.Config{
+		configFixture("cfg-1111", "app", 1, nil, ""),
+		configFixture("cfg-2222", "app", 2, nil, ""),
+	}
+	_, err := (&Client{control: &fakeControl{configs: configs}}).GetConfig(context.Background(), "app")
+	typed := requireCode(t, err, output.CodeAmbiguous)
+	candidates, ok := typed.Details["candidates"].([]map[string]string)
+	require.True(t, ok)
+	require.Len(t, candidates, 2)
+}
+
+func TestConfigMappingWithholdsNonUTF8Payload(t *testing.T) {
+	control := &fakeControl{config: &api.Config{
+		ID:   "cfg-bin",
+		Meta: api.Meta{Version: api.Version{Index: 1}},
+		Spec: api.ConfigSpec{
+			Annotations: api.Annotations{Name: "binary"},
+			Data:        []byte{0x1f, 0x8b, 0x08, 0x00, 0x61, 0xff, 0xfe},
+		},
+	}}
+
+	got, err := (&Client{control: control}).GetConfig(context.Background(), "cfg-bin")
+	require.NoError(t, err)
+	assert.Equal(t, "cfg-bin", got.ID)
+	assert.Equal(t, "binary", got.Name)
+	assert.Nil(t, got.Data,
+		"a non-UTF-8 payload is withheld, never transcoded to U+FFFD")
+}
+
+func TestCreateSecretAcceptsUnpaddedBase64(t *testing.T) {
+	control := &fakeControl{createdSecret: secretFixture("sec-3", "token", 1, nil, "hi")}
+
+	_, err := writeClient(control).CreateSecret(context.Background(), v1.SecretWrite{
+		Name: "token",
+		Data: "aGk", // "hi" without RFC 4648 padding
+	}, v1.WriteOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, control.createSecretReq)
+	assert.Equal(t, []byte("hi"), control.createSecretReq.Spec.Data)
+}
+
+func TestCreateNetworkIPv6IPAM(t *testing.T) {
+	control := &fakeControl{createdNetwork: networkFixture("net-6", "v6", 1, "overlay")}
+
+	_, err := writeClient(control).CreateNetwork(context.Background(), v1.NetworkWrite{
+		Name: "v6",
+		IPAM: &v1.NetworkIPAM{Subnet: "fd00:1::/64", Gateway: "fd00:1::1"},
+	}, v1.WriteOptions{})
+	require.NoError(t, err, "IPv6 has no broadcast address, so the last address is a valid gateway")
+
+	spec := control.createNetworkReq.Spec
+	require.NotNil(t, spec.IPAM)
+	assert.Equal(t, "fd00:1::/64", spec.IPAM.Configs[0].Subnet)
+	assert.Equal(t, "fd00:1::1", spec.IPAM.Configs[0].Gateway)
 }
 
 func TestNamedGettersResolveNamesAndPrefixes(t *testing.T) {

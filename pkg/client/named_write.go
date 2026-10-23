@@ -107,6 +107,10 @@ func (c *Client) UpdateConfig(ctx context.Context, ref string, patch []byte, opt
 // DeleteConfig removes a config and returns the document as it was before the
 // removal. A miss with IgnoreMissing is (zero, nil); preconditions are evaluated
 // before IgnoreMissing.
+//
+// The previous document is a local-client convenience: a remote client returns
+// the zero document, because the wire DELETE carries no body and must work for a
+// token that holds configs:write without configs:read.
 func (c *Client) DeleteConfig(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Config, error) {
 	if c.remote != nil {
 		return c.remote.deleteConfig(ctx, ref, opts)
@@ -220,7 +224,8 @@ func (c *Client) UpdateSecret(ctx context.Context, ref string, patch []byte, opt
 }
 
 // DeleteSecret removes a secret and returns the document as it was before the
-// removal.
+// removal. Like DeleteConfig, a remote client returns the zero document so a
+// write-only token never needs read scope.
 func (c *Client) DeleteSecret(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Secret, error) {
 	if c.remote != nil {
 		return c.remote.deleteSecret(ctx, ref, opts)
@@ -278,7 +283,8 @@ func (c *Client) CreateNetwork(ctx context.Context, write v1.NetworkWrite, opts 
 }
 
 // DeleteNetwork removes a network and returns the document as it was before the
-// removal.
+// removal. Like DeleteConfig, a remote client returns the zero document so a
+// write-only token never needs read scope.
 func (c *Client) DeleteNetwork(ctx context.Context, ref string, opts v1.WriteOptions) (v1.Network, error) {
 	if c.remote != nil {
 		return c.remote.deleteNetwork(ctx, ref, opts)
@@ -426,6 +432,12 @@ func secretSpec(write v1.SecretWrite) (*api.SecretSpec, error) {
 
 	decoded, err := base64.StdEncoding.DecodeString(write.Data)
 	if err != nil {
+		// A caller that omitted the RFC 4648 padding is still unambiguous: the
+		// unpadded alphabet decodes the same bytes, so accept it rather than
+		// making base64 trivia a 400.
+		decoded, err = base64.RawStdEncoding.DecodeString(write.Data)
+	}
+	if err != nil {
 		return nil, invalidField("data", "must be base64-encoded")
 	}
 	spec.Data = decoded
@@ -464,17 +476,29 @@ func networkSpec(write v1.NetworkWrite) (*api.NetworkSpec, error) {
 		return nil, invalidField("ipam.gateway", "requires ipam.subnet")
 	}
 
-	_, pool, err := net.ParseCIDR(subnet)
+	address, pool, err := net.ParseCIDR(subnet)
 	if err != nil {
 		return nil, invalidField("ipam.subnet", "must be a CIDR address")
 	}
+	if !address.Equal(pool.IP) {
+		// 10.0.1.7/24 describes the same pool as 10.0.1.0/24, but storing it
+		// verbatim would make the document claim a host address where the wire
+		// contract shows a pool.
+		return nil, invalidField("ipam.subnet", "must be a network address without host bits")
+	}
 	if gateway != "" {
-		address := net.ParseIP(gateway)
-		if address == nil {
+		gatewayIP := net.ParseIP(gateway)
+		if gatewayIP == nil {
 			return nil, invalidField("ipam.gateway", "must be an IP address")
 		}
-		if !pool.Contains(address) {
+		if !pool.Contains(gatewayIP) {
 			return nil, invalidField("ipam.gateway", "must be inside ipam.subnet")
+		}
+		if gatewayIP.Equal(pool.IP) {
+			return nil, invalidField("ipam.gateway", "must not be the network address")
+		}
+		if broadcast := ipv4Broadcast(pool); broadcast != nil && gatewayIP.To4().Equal(broadcast) {
+			return nil, invalidField("ipam.gateway", "must not be the broadcast address")
 		}
 	}
 
@@ -482,6 +506,28 @@ func networkSpec(write v1.NetworkWrite) (*api.NetworkSpec, error) {
 		Configs: []*api.IPAMConfig{{Subnet: subnet, Gateway: gateway}},
 	}
 	return spec, nil
+}
+
+// ipv4Broadcast returns the last address of an IPv4 pool, or nil when the pool
+// is not IPv4. IPv6 has no broadcast address, so no such check applies there.
+func ipv4Broadcast(pool *net.IPNet) net.IP {
+	network := pool.IP.To4()
+	if network == nil {
+		return nil
+	}
+	mask := pool.Mask
+	if len(mask) == net.IPv6len {
+		mask = mask[12:]
+	}
+	if len(mask) != net.IPv4len {
+		return nil
+	}
+
+	broadcast := make(net.IP, net.IPv4len)
+	for i := range broadcast {
+		broadcast[i] = network[i] | ^mask[i]
+	}
+	return broadcast
 }
 
 // nodeAvailability maps the lowercase wire enum onto SwarmKit's. The read

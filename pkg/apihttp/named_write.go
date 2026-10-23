@@ -26,6 +26,19 @@ func createOnlyIfNoneMatch(r *http.Request) (string, error) {
 	return value, nil
 }
 
+// binaryNotSupported is the contract's refusal of a config payload that is not
+// UTF-8 text (contract §5.6). It is produced here because the refusal has to
+// happen before the JSON decoder can replace the bytes; pkg/client produces the
+// same document for a direct Go call.
+func binaryNotSupported(path string) error {
+	return output.NewErrorf(output.CodeInvalid,
+		"%s must be UTF-8 text; binary payloads are not supported in v1", path).
+		WithDetails(map[string]any{
+			"reason": "binary_not_supported",
+			"fields": map[string]any{path: "must be UTF-8 text"},
+		})
+}
+
 // createConfig serves POST /v1/configs.
 func (s *Server) createConfig(w http.ResponseWriter, r *http.Request) {
 	if status, err := requireContentType(r, MediaType); err != nil {
@@ -39,7 +52,7 @@ func (s *Server) createConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body v1.ConfigWrite
-	if status, err := readJSONWrite(w, r, &body); err != nil {
+	if status, err := readJSONWriteUTF8(w, r, &body); err != nil {
 		s.writeErrorStatus(w, r, status, err)
 		return
 	}

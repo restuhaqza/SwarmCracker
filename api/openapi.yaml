@@ -428,10 +428,11 @@ paths:
       summary: Create a network
       description: >
         Requires networks:write. The body is a NetworkWrite: name, driver
-        (default "overlay"), an optional `ipam` pool whose subnet must parse as
-        CIDR and whose gateway must sit inside it, labels and `attachable`.
-        `If-None-Match: "*"` marks the request create-only. There is no update:
-        driver, IPAM and labels are fixed at create.
+        (default "overlay"), an optional `ipam` pool whose subnet must be a
+        network address in CIDR form and whose gateway must sit inside it (not the
+        network or broadcast address), labels and `attachable`. `If-None-Match:
+        "*"` marks the request create-only. There is no update: driver, IPAM and
+        labels are fixed at create.
       parameters:
         - name: If-None-Match
           in: header
@@ -1485,7 +1486,9 @@ components:
             Config payload, UTF-8 text. Present only when the caller holds
             configs:read-values; a plain configs:read response omits the field
             entirely (it is never sent empty). It is absent when the config has no
-            payload. A secret never has a data field on any read path.
+            payload, and when the config was stored out of band with a non-UTF-8
+            payload: the API does not transcode bytes to U+FFFD. A secret never
+            has a data field on any read path.
 
     ConfigList:
       type: object
@@ -1598,7 +1601,9 @@ components:
           type: string
           format: byte
           writeOnly: true
-          description: Base64-encoded payload. Never returned on any read path.
+          description: >
+            Base64-encoded payload. Standard base64 with or without RFC 4648
+            padding is accepted. Never returned on any read path.
         driver: { $ref: "#/components/schemas/SecretDriver" }
 
     SecretPatch:
@@ -1617,8 +1622,10 @@ components:
       type: object
       required: [name]
       description: >
-        The POST /v1/networks body. The driver defaults to "overlay"; the IPAM
-        subnet must parse as CIDR and a gateway must sit inside it. There is no
+        The POST /v1/networks body. The driver defaults to "overlay". The IPAM
+        subnet must be a network address in CIDR form (10.0.1.0/24, not
+        10.0.1.7/24), the gateway must sit inside it, and neither the network
+        address nor the IPv4 broadcast address is a usable gateway. There is no
         update, so driver, IPAM and labels are fixed at create.
       properties:
         name: { type: string, minLength: 1 }
