@@ -27,6 +27,8 @@ type fakeControl struct {
 	nodes          []*api.Node
 	nodeErr        error
 	listNodesCalls int
+	networks       []*api.Network
+	networkErr     error
 	configs        []*api.Config
 	configErr      error
 	secrets        []*api.Secret
@@ -68,6 +70,13 @@ func (f *fakeControl) ListNodes(context.Context, *api.ListNodesRequest, ...grpc.
 		return nil, f.nodeErr
 	}
 	return &api.ListNodesResponse{Nodes: f.nodes}, nil
+}
+
+func (f *fakeControl) ListNetworks(context.Context, *api.ListNetworksRequest, ...grpc.CallOption) (*api.ListNetworksResponse, error) {
+	if f.networkErr != nil {
+		return nil, f.networkErr
+	}
+	return &api.ListNetworksResponse{Networks: f.networks}, nil
 }
 
 func (f *fakeControl) ListConfigs(context.Context, *api.ListConfigsRequest, ...grpc.CallOption) (*api.ListConfigsResponse, error) {

@@ -90,6 +90,31 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/networks:
+    get:
+      operationId: listNetworks
+      summary: List user-defined networks
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 1000, default: 100 }
+        - name: cursor
+          in: query
+          schema: { type: string }
+        - name: label
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: A page of user-defined networks
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/NetworkList" }
+        "4XX":
+          description: Typed failure
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/configs:
     get:
       operationId: listConfigs
@@ -235,6 +260,40 @@ paths:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
 components:
   schemas:
+    NetworkIPAM:
+      type: object
+      properties:
+        subnet: { type: string }
+        gateway: { type: string }
+
+    Network:
+      type: object
+      required: [id, name, revision]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        revision: { type: string }
+        createdAt: { type: string, format: date-time }
+        driver: { type: string }
+        ipam: { $ref: "#/components/schemas/NetworkIPAM" }
+        labels:
+          type: object
+          additionalProperties: { type: string }
+        attachable: { type: boolean }
+
+    NetworkList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [NetworkList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Network" }
+        next:
+          type: string
+          nullable: true
+
     Config:
       type: object
       required: [id, name, revision]
