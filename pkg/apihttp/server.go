@@ -477,6 +477,7 @@ func (s *Server) writeJSONWithETag(w http.ResponseWriter, r *http.Request, statu
 	}
 
 	w.Header().Set("Content-Type", MediaType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set(etagHeader, etag)
 
 	// If-None-Match is a conditional read. On a write, the same header carries a
@@ -489,6 +490,7 @@ func (s *Server) writeJSONWithETag(w http.ResponseWriter, r *http.Request, statu
 	}
 
 	w.WriteHeader(status)
+	//nolint:gosec // G705: body is a JSON document served as application/json.
 	_, _ = w.Write(body)
 }
 
@@ -524,7 +526,9 @@ func (s *Server) writeErrorStatus(w http.ResponseWriter, r *http.Request, status
 		w.Header().Set("WWW-Authenticate", bearerScheme)
 	}
 	w.Header().Set("Content-Type", MediaType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
+	//nolint:gosec // G705: body is a JSON document served as application/json.
 	_, _ = w.Write(body)
 }
 

@@ -168,96 +168,107 @@ func eventFromWatch(event *api.WatchMessage_Event, cursor string, opts v1.EventO
 		return v1.Event{}, false
 	}
 
-	object := event.Object.GetObject()
-	switch obj := object.(type) {
+	switch obj := event.Object.GetObject().(type) {
 	case *api.Object_Service:
-		service := obj.Service
-		if service == nil {
-			return v1.Event{}, false
-		}
-		mapped := serviceFromSwarmkit(service, taskCounts{})
-		out := eventDocument(cursor, action, v1.KindService, service.ID, mapped.Name,
-			mapped.Revision, service.Meta, mapped.Labels)
-		if opts.IncludeObject {
-			out.Object = mapped
-		}
-		return out, true
-
+		return watchServiceEvent(obj.Service, cursor, action, opts)
 	case *api.Object_Task:
-		task := obj.Task
-		if task == nil {
-			return v1.Event{}, false
-		}
-		mapped := taskFromSwarmkit(task, nil)
-		labels := task.Annotations.Labels
-		if len(labels) == 0 {
-			labels = task.ServiceAnnotations.Labels
-		}
-		out := eventDocument(cursor, action, v1.KindTask, task.ID, task.Annotations.Name,
-			mapped.Revision, task.Meta, labels)
-		if opts.IncludeObject {
-			out.Object = mapped
-		}
-		return out, true
-
+		return watchTaskEvent(obj.Task, cursor, action, opts)
 	case *api.Object_Node:
-		node := obj.Node
-		if node == nil {
-			return v1.Event{}, false
-		}
-		mapped := nodeFromSwarmkit(node)
-		out := eventDocument(cursor, action, v1.KindNode, node.ID, mapped.Hostname,
-			mapped.Revision, node.Meta, mapped.Labels)
-		if opts.IncludeObject {
-			out.Object = mapped
-		}
-		return out, true
-
+		return watchNodeEvent(obj.Node, cursor, action, opts)
 	case *api.Object_Network:
-		network := obj.Network
-		if network == nil {
-			return v1.Event{}, false
-		}
-		mapped := networkFromSwarmkit(network)
-		out := eventDocument(cursor, action, v1.KindNetwork, network.ID, mapped.Name,
-			mapped.Revision, network.Meta, mapped.Labels)
-		if opts.IncludeObject {
-			out.Object = mapped
-		}
-		return out, true
-
+		return watchNetworkEvent(obj.Network, cursor, action, opts)
 	case *api.Object_Config:
-		config := obj.Config
-		if config == nil {
-			return v1.Event{}, false
-		}
-		mapped := configFromSwarmkit(config)
-		if !opts.IncludeConfigValues {
-			mapped.Data = nil
-		}
-		out := eventDocument(cursor, action, v1.KindConfig, config.ID, mapped.Name,
-			mapped.Revision, config.Meta, mapped.Labels)
-		if opts.IncludeObject {
-			out.Object = mapped
-		}
-		return out, true
-
+		return watchConfigEvent(obj.Config, cursor, action, opts)
 	case *api.Object_Secret:
-		secret := obj.Secret
-		if secret == nil {
-			return v1.Event{}, false
-		}
-		mapped := secretFromSwarmkit(secret)
-		out := eventDocument(cursor, action, v1.KindSecret, secret.ID, mapped.Name,
-			mapped.Revision, secret.Meta, mapped.Labels)
-		if opts.IncludeObject {
-			out.Object = mapped
-		}
-		return out, true
-
+		return watchSecretEvent(obj.Secret, cursor, action, opts)
 	default:
 		return v1.Event{}, false
 	}
+}
+
+func watchServiceEvent(service *api.Service, cursor, action string, opts v1.EventOptions) (v1.Event, bool) {
+	if service == nil {
+		return v1.Event{}, false
+	}
+	mapped := serviceFromSwarmkit(service, taskCounts{})
+	out := eventDocument(cursor, action, v1.KindService, service.ID, mapped.Name,
+		mapped.Revision, service.Meta, mapped.Labels)
+	if opts.IncludeObject {
+		out.Object = mapped
+	}
+	return out, true
+}
+
+func watchTaskEvent(task *api.Task, cursor, action string, opts v1.EventOptions) (v1.Event, bool) {
+	if task == nil {
+		return v1.Event{}, false
+	}
+	mapped := taskFromSwarmkit(task, nil)
+	labels := task.Annotations.Labels
+	if len(labels) == 0 {
+		labels = task.ServiceAnnotations.Labels
+	}
+	out := eventDocument(cursor, action, v1.KindTask, task.ID, task.Annotations.Name,
+		mapped.Revision, task.Meta, labels)
+	if opts.IncludeObject {
+		out.Object = mapped
+	}
+	return out, true
+}
+
+func watchNodeEvent(node *api.Node, cursor, action string, opts v1.EventOptions) (v1.Event, bool) {
+	if node == nil {
+		return v1.Event{}, false
+	}
+	mapped := nodeFromSwarmkit(node)
+	out := eventDocument(cursor, action, v1.KindNode, node.ID, mapped.Hostname,
+		mapped.Revision, node.Meta, mapped.Labels)
+	if opts.IncludeObject {
+		out.Object = mapped
+	}
+	return out, true
+}
+
+func watchNetworkEvent(network *api.Network, cursor, action string, opts v1.EventOptions) (v1.Event, bool) {
+	if network == nil {
+		return v1.Event{}, false
+	}
+	mapped := networkFromSwarmkit(network)
+	out := eventDocument(cursor, action, v1.KindNetwork, network.ID, mapped.Name,
+		mapped.Revision, network.Meta, mapped.Labels)
+	if opts.IncludeObject {
+		out.Object = mapped
+	}
+	return out, true
+}
+
+func watchConfigEvent(config *api.Config, cursor, action string, opts v1.EventOptions) (v1.Event, bool) {
+	if config == nil {
+		return v1.Event{}, false
+	}
+	mapped := configFromSwarmkit(config)
+	if !opts.IncludeConfigValues {
+		mapped.Data = nil
+	}
+	out := eventDocument(cursor, action, v1.KindConfig, config.ID, mapped.Name,
+		mapped.Revision, config.Meta, mapped.Labels)
+	if opts.IncludeObject {
+		out.Object = mapped
+	}
+	return out, true
+}
+
+func watchSecretEvent(secret *api.Secret, cursor, action string, opts v1.EventOptions) (v1.Event, bool) {
+	if secret == nil {
+		return v1.Event{}, false
+	}
+	mapped := secretFromSwarmkit(secret)
+	out := eventDocument(cursor, action, v1.KindSecret, secret.ID, mapped.Name,
+		mapped.Revision, secret.Meta, mapped.Labels)
+	if opts.IncludeObject {
+		out.Object = mapped
+	}
+	return out, true
 }
 
 // eventDocument builds the common event fields. The event type is

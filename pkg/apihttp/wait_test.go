@@ -426,7 +426,7 @@ func (d *dryRunAwareClient) CreateService(_ context.Context, write v1.ServiceWri
 	d.commits++
 	d.gotWrite = write
 	d.gotWriteOpts = opts
-	return d.fakeClient.createdService, nil
+	return d.createdService, nil
 }
 
 func (d *dryRunAwareClient) UpdateService(_ context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Service, error) {
@@ -437,7 +437,7 @@ func (d *dryRunAwareClient) UpdateService(_ context.Context, ref string, patch [
 	d.gotRef = ref
 	d.gotPatch = patch
 	d.gotWriteOpts = opts
-	return d.fakeClient.updatedService, nil
+	return d.updatedService, nil
 }
 
 func TestDryRunServiceCreateHTTP(t *testing.T) {

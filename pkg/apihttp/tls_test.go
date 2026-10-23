@@ -196,9 +196,9 @@ func TestEnsureCertificateRegeneratesExpiringSoon(t *testing.T) {
 	now := time.Now()
 	oldCertPEM, oldKeyPEM, err := generateCertificate(testHostname, nil, now.Add(-time.Minute), now.Add(10*24*time.Hour))
 	require.NoError(t, err)
-	certFile, keyFile := writePair(t, dir, oldCertPEM, oldKeyPEM)
+	_, _ = writePair(t, dir, oldCertPEM, oldKeyPEM)
 
-	certFile, keyFile, err = EnsureCertificate(dir, testHostname, nil)
+	certFile, keyFile, err := EnsureCertificate(dir, testHostname, nil)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, oldCertPEM, readFile(t, certFile), "a certificate expiring within 30 days must be replaced")
@@ -223,9 +223,9 @@ func TestEnsureCertificateRenewalBoundary(t *testing.T) {
 			now := time.Now()
 			oldCertPEM, oldKeyPEM, err := generateCertificate(testHostname, nil, now.Add(-time.Minute), now.Add(tc.remaining))
 			require.NoError(t, err)
-			certFile, keyFile := writePair(t, dir, oldCertPEM, oldKeyPEM)
+			_, _ = writePair(t, dir, oldCertPEM, oldKeyPEM)
 
-			certFile, keyFile, err = EnsureCertificate(dir, testHostname, nil)
+			certFile, keyFile, err := EnsureCertificate(dir, testHostname, nil)
 			require.NoError(t, err)
 
 			if !tc.regenerate {
@@ -248,9 +248,9 @@ func TestEnsureCertificateRegeneratesNotYetValidPair(t *testing.T) {
 	now := time.Now()
 	futureCertPEM, futureKeyPEM, err := generateCertificate(testHostname, nil, now.Add(time.Hour), now.Add(tlsValidity))
 	require.NoError(t, err)
-	certFile, keyFile := writePair(t, dir, futureCertPEM, futureKeyPEM)
+	_, _ = writePair(t, dir, futureCertPEM, futureKeyPEM)
 
-	certFile, keyFile, err = EnsureCertificate(dir, testHostname, nil)
+	certFile, keyFile, err := EnsureCertificate(dir, testHostname, nil)
 	require.NoError(t, err)
 
 	assert.NotEqual(t, futureCertPEM, readFile(t, certFile), "a not-yet-valid certificate must be replaced")

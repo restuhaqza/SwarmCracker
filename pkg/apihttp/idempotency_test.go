@@ -229,10 +229,10 @@ type blockingCreateClient struct {
 }
 
 func (b *blockingCreateClient) CreateService(ctx context.Context, write v1.ServiceWrite, opts v1.WriteOptions) (v1.Service, error) {
-	b.fakeClient.createCalls++
+	b.createCalls++
 	close(b.entered)
 	<-b.release
-	return b.fakeClient.createdService, nil
+	return b.createdService, nil
 }
 
 func TestIdempotencyMiddlewareReplay(t *testing.T) {
@@ -359,7 +359,7 @@ func (f *flakyCreateClient) CreateService(ctx context.Context, write v1.ServiceW
 	if f.createCalls == 1 {
 		return v1.Service{}, output.NewError(output.CodeInternal, "manager exploded")
 	}
-	return f.fakeClient.createdService, nil
+	return f.createdService, nil
 }
 
 func TestIdempotencyMiddlewareDryRunIsNotStored(t *testing.T) {

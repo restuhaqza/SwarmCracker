@@ -49,8 +49,8 @@ func TestRateLimitMiddleware(t *testing.T) {
 		RateLimit: NewRateLimiter(0.001, 1),
 	})
 	require.NoError(t, err)
-	api.testAPI.handler = srv.Handler()
-	api.testAPI.token = reader
+	api.handler = srv.Handler()
+	api.token = reader
 	api.operator = operator
 	api.reader = reader
 

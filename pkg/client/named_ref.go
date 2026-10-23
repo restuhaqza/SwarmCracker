@@ -376,18 +376,6 @@ func (c *Client) secretForWrite(ctx context.Context, ref, ifMatch string) (strin
 	return id, secret, nil
 }
 
-// networkForWrite is configForWrite's network twin.
-func (c *Client) networkForWrite(ctx context.Context, ref, ifMatch string) (string, *api.Network, error) {
-	id, network, err := c.getNetworkObject(ctx, ref)
-	if err != nil {
-		if ifMatch != "" && isNotFound(err) {
-			return "", nil, output.PreconditionFailed(tagValue(ifMatch), "")
-		}
-		return "", nil, err
-	}
-	return id, network, nil
-}
-
 // nodeForWrite is configForWrite's node twin.
 func (c *Client) nodeForWrite(ctx context.Context, ref, ifMatch string) (string, *api.Node, error) {
 	id, node, err := c.getNodeObject(ctx, ref)
