@@ -433,12 +433,13 @@ func TestOpenAPISingleResourceDocuments(t *testing.T) {
 			requireTypedResponse(t, doc, tc.path, "403", "ErrorDocument")
 			requireTypedResponse(t, doc, tc.path, "4XX", "ErrorDocument")
 
-			params := doc.Paths.Find(tc.path).Get.Parameters
-			require.Len(t, params, 1)
-			require.Equal(t, "id", params[0].Value.Name)
-			require.Equal(t, "path", params[0].Value.In,
+			// The id path parameter is the route's identity; a get-by-id may
+			// also take an optional query parameter (health), so only the path
+			// parameter is pinned here.
+			id := findParameter(t, doc.Paths.Find(tc.path).Get.Parameters, "id")
+			require.Equal(t, "path", id.In,
 				"%s id parameter must be a path parameter", tc.path)
-			require.True(t, params[0].Value.Required)
+			require.True(t, id.Required)
 		})
 	}
 }
@@ -573,7 +574,7 @@ func TestOpenAPIListParameters(t *testing.T) {
 	}{
 		{"/v1/services", []string{"limit", "cursor", "label"}},
 		{"/v1/services/{id}/tasks", []string{"id", "limit", "cursor"}},
-		{"/v1/tasks", []string{"limit", "cursor"}},
+		{"/v1/tasks", []string{"limit", "cursor", "health"}},
 		{"/v1/nodes", []string{"label", "limit", "cursor"}},
 		{"/v1/networks", []string{"limit", "cursor", "label"}},
 		{"/v1/configs", []string{"limit", "cursor", "label"}},
@@ -1399,4 +1400,85 @@ func TestOpenAPIEvents(t *testing.T) {
 	var value any
 	require.NoError(t, json.Unmarshal(data, &value))
 	validateAgainst(t, doc, "Event", value)
+}
+
+// TestOpenAPIHealth pins the health capability surface: the query parameter on
+// both task reads, the 207 partial list, the 501 capability failure and the
+// single-task 503. The 207 body is a normal TaskList, never an Error document.
+func TestOpenAPIHealth(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	marshal := func(t *testing.T, value any) any {
+		t.Helper()
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		return generic
+	}
+
+	for _, path := range []string{"/v1/tasks", "/v1/tasks/{id}"} {
+		item := doc.Paths.Find(path)
+		require.NotNilf(t, item, "%s path missing", path)
+		require.NotNilf(t, item.Get, "%s GET operation missing", path)
+
+		param := findParameter(t, item.Get.Parameters, "health")
+		assert.Equal(t, "query", param.In, "%s health must be a query parameter", path)
+		assert.False(t, param.Required, "%s health is optional", path)
+		require.NotNilf(t, param.Schema, "%s health schema missing", path)
+		assert.True(t, param.Schema.Value.Type.Is("boolean"),
+			"%s health must be a boolean", path)
+		assert.Contains(t, param.Description, "health",
+			"%s health must be documented", path)
+	}
+
+	// The list answers a 207 partial with a normal TaskList, readable tasks
+	// included.
+	requireTypedResponse(t, doc, "/v1/tasks", "207", "TaskList")
+	partial := doc.Paths.Find("/v1/tasks").Get.Responses.Value("207")
+	require.NotNil(t, partial.Value.Description)
+	assert.Contains(t, *partial.Value.Description, "partial")
+	assert.Contains(t, *partial.Value.Description, "items")
+
+	enriched := NewTaskList([]Task{
+		{ID: "t1abc", Revision: "42", ServiceID: "svc-1", State: "running", DesiredState: "running",
+			NodeID: "n1", NodeName: "node-1", Health: &TaskHealth{Status: "healthy"}},
+		{ID: "t2def", Revision: "43", ServiceID: "svc-1", State: "running", DesiredState: "running",
+			NodeID: "n2", NodeName: "node-2"},
+	})
+	enriched.Partial = []Partial{{
+		NodeID:   "n2",
+		NodeName: "node-2",
+		Error: Error{
+			Code:      "unavailable",
+			Message:   `health is unavailable for node "node-2"`,
+			Retryable: true,
+		},
+	}}
+	validateAgainst(t, doc, "TaskList", marshal(t, enriched))
+
+	// The capability and single-task failures are typed error documents.
+	requireTypedResponse(t, doc, "/v1/tasks", "501", "ErrorDocument")
+	requireTypedResponse(t, doc, "/v1/tasks/{id}", "501", "ErrorDocument")
+	requireTypedResponse(t, doc, "/v1/tasks/{id}", "503", "ErrorDocument")
+
+	// TaskHealth is exactly the Go DTO: five camelCase fields.
+	validateAgainst(t, doc, "TaskHealth", marshal(t, TaskHealth{
+		Status:        "failing",
+		FailingStreak: 2,
+		Output:        "connection refused",
+		Command:       "curl -fsS http://127.0.0.1/",
+		CheckedAt:     "2026-10-24T12:00:00.123456789Z",
+	}))
+
+	properties := documentSchemaProperties(t, doc, "TaskHealth")
+	for _, key := range []string{"status", "failingStreak", "output", "command", "checkedAt"} {
+		assert.Containsf(t, properties, key, "TaskHealth.%s missing", key)
+	}
+	assert.NotContains(t, properties, "failing_streak", "health keys are camelCase")
+
+	status := doc.Components.Schemas["TaskHealth"].Value.Properties["status"].Value
+	assert.ElementsMatch(t,
+		[]string{"starting", "healthy", "failing", "unhealthy"}, status.Enum,
+		"the status enum must match runtime.VMHealth states")
 }

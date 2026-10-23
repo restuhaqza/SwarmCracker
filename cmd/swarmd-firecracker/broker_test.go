@@ -314,12 +314,16 @@ func TestStartBroker_ServesMTLSAndStops(t *testing.T) {
 	require.NotNil(t, srv)
 	require.NotNil(t, stop)
 
-	require.NoError(t, srv.Handle("health", func(_ context.Context, task broker.Task, w http.ResponseWriter, _ *http.Request) {
+	// Every real operation (exec, logs, files, health) is registered by
+	// startBroker, so this test registers a probe operation instead: the point is
+	// that the registry dispatches to a custom handler with the resolved task
+	// over mTLS.
+	require.NoError(t, srv.Handle("probe", func(_ context.Context, task broker.Task, w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "task="+task.ID)
 	}))
 
 	client := brokerTestClient(clientCert, pool)
-	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/health")
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/probe")
 	require.NoError(t, err)
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
@@ -331,7 +335,7 @@ func TestStartBroker_ServesMTLSAndStops(t *testing.T) {
 	stop() // idempotent
 
 	client.CloseIdleConnections()
-	_, err = client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/health")
+	_, err = client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/probe")
 	require.Error(t, err, "the stop function must shut the broker down")
 }
 
@@ -420,4 +424,65 @@ func TestStartBroker_ExecStreamsFromTheGuest(t *testing.T) {
 	require.Equal(t, v1.FrameExit, frames[1].Type)
 	require.NotNil(t, frames[1].ExitCode)
 	require.Equal(t, 0, *frames[1].ExitCode)
+}
+
+// TestStartBroker_RegistersHealth proves the health operation is registered and
+// reads the sidecar the executor publishes next to the VM socket: the node
+// answers live health, not 501.
+func TestStartBroker_RegistersHealth(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+	require.NoError(t, runtime.WriteVMMetadata(socketDir, &runtime.VMMetadata{
+		ID: "task-1",
+		Health: &runtime.VMHealth{
+			State:         runtime.HealthFailing,
+			FailingStreak: 2,
+			Output:        "connection refused",
+			Command:       "curl -fsS http://127.0.0.1/",
+			UpdatedAt:     time.Now().UTC(),
+		},
+	}))
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
+	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/health")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode, "health must be registered, not 501")
+
+	var got v1.TaskHealth
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&got))
+	require.Equal(t, "failing", got.Status)
+	require.Equal(t, 2, got.FailingStreak)
+	require.Equal(t, "connection refused", got.Output)
+}
+
+// TestStartBroker_HealthWithoutSidecarIs204 proves a task that publishes no
+// healthcheck is 204, not an error: the metadata file is simply absent.
+func TestStartBroker_HealthWithoutSidecarIs204(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
+	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/health")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
 }

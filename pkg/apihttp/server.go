@@ -92,6 +92,10 @@ type Client interface {
 // Manager, so tests can substitute one and the packages stay acyclic.
 type Broker interface {
 	Proxy(ctx context.Context, w http.ResponseWriter, r *http.Request, taskRef, op string) error
+	// Health reads one task's live health from the node that hosts it. A nil
+	// TaskHealth with a nil error means the task publishes none: that is an
+	// absent value, not a failure.
+	Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, error)
 }
 
 // Config is the server's wiring. Tokens may be nil for a Unix-socket-only
@@ -391,7 +395,15 @@ func withCleanPath(r *http.Request) *http.Request {
 }
 
 func requestIDFrom(r *http.Request) string {
-	id, _ := r.Context().Value(requestIDKey{}).(string)
+	return RequestIDFromContext(r.Context())
+}
+
+// RequestIDFromContext returns the request ID the middleware stored on a
+// request's context, or "" when there is none. It is the reader the daemon wires
+// into the broker manager, so a node-side fetch can carry the caller's request
+// ID without the broker importing this package.
+func RequestIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
 	return id
 }
 

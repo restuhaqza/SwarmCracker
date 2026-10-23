@@ -1088,6 +1088,15 @@ paths:
     get:
       operationId: listTasks
       summary: List tasks
+      description: >
+        Requires tasks:read. With `health=true` every task on the resolved page
+        is enriched with the live healthcheck state its node publishes. Health
+        travels through the node broker: the manager never dials a node's
+        loopback endpoint. Enrichment is best-effort, so a page that loses a node
+        is answered 207 with the readable tasks in `items` and one `partial`
+        entry per failed node. A task that has published no health omits `health`
+        entirely; an empty object is never emitted. Without `health=true` the
+        response is exactly the unenriched list.
       parameters:
         - name: limit
           in: query
@@ -1095,9 +1104,32 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+        - name: health
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >
+            Enrich every task on the page with its live health. Only `true` and
+            `false` are accepted. Requires a node broker on the serving manager;
+            without one the request is 501 not_implemented with
+            details.capability "health".
       responses:
         "200":
           description: A page of tasks
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/TaskList" }
+        "207":
+          description: >
+            A partial page. This is a normal TaskList document, not an Error
+            document: `items` contains every readable task of the page and
+            `partial` names one entry per node whose health could not be read.
+            A task on a failed node keeps `health` omitted. Pagination and item
+            order are unchanged from a 200.
           headers:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -1112,6 +1144,8 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "4XX":
           description: Typed failure
           headers:
@@ -1124,11 +1158,25 @@ paths:
     get:
       operationId: getTask
       summary: Get one task
+      description: >
+        Requires tasks:read. With `health=true` the task is enriched with the
+        live healthcheck state its node publishes. A task that has published no
+        health omits `health`. If the node cannot be reached the read is 503
+        unavailable: a single-task document has no `partial` array to carry the
+        failure.
       parameters:
         - name: id
           in: path
           required: true
           schema: { type: string }
+        - name: health
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >
+            Enrich the task with its live health. Only `true` and `false` are
+            accepted. Requires a node broker on the serving manager; without one
+            the request is 501 not_implemented with details.capability "health".
       responses:
         "200":
           description: A single task
@@ -1145,7 +1193,13 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
         "4XX":
           description: Typed failure
           headers:
@@ -1846,7 +1900,10 @@ components:
         not_implemented and details.capability names it. A dry run on a rollback
         answers this: the previous spec is not the document that would be written.
         A `tty:true` exec also answers this, with details.reason
-        "tty_not_supported": interactive exec over the API is a follow-up.
+        "tty_not_supported": interactive exec over the API is a follow-up. A
+        health-enriched task read answers this, with details.capability "health",
+        when the serving manager has no node broker: there is no node path to
+        read health through.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -1858,7 +1915,9 @@ components:
         The manager cannot complete the request because a node is unreachable or
         the node's guest agent is unavailable: code is unavailable, or
         unreachable when the node broker itself could not be contacted. The
-        operation may be retried; retryable is true when a retry can succeed.
+        operation may be retried; retryable is true when a retry can succeed. A
+        single-task health read that cannot reach its node answers this: one
+        document has no partial array to carry the failure.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }

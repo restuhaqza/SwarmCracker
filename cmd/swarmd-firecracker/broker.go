@@ -63,8 +63,9 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		return nil, nil, err
 	}
 
-	// The node serves exec, logs and files. Exec and files dial the task's guest
-	// agent over the vsock muxer; logs read the console file the executor wrote.
+	// The node serves exec, logs, files and health. Exec and files dial the
+	// task's guest agent over the vsock muxer; logs read the console file the
+	// executor wrote; health reads the per-task sidecar the executor publishes.
 	// The public route has already resolved the reference and enforced the
 	// caller's selectors.
 	handlers := []struct {
@@ -74,6 +75,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{"exec", broker.NewExecHandler(broker.DialAgent)},
 		{"logs", broker.NewLogsHandler()},
 		{"files", broker.NewFilesHandler(broker.DialAgent)},
+		{"health", broker.NewHealthHandler()},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {

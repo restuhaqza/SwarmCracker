@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
@@ -39,6 +40,11 @@ const (
 	// error document is far smaller; the cap stops a hostile node from making
 	// the manager buffer an unbounded body.
 	maxRelayedErrorBytes = 1 << 20
+
+	// defaultHealthTimeout bounds one health fetch when ManagerConfig names no
+	// deadline. It is short on purpose: health is best-effort enrichment and a
+	// list page fans out to several nodes.
+	defaultHealthTimeout = 2 * time.Second
 )
 
 // operationPattern is the shape of an operation segment. Anything else (an
@@ -62,19 +68,31 @@ type ManagerConfig struct {
 	Nodes  NodeReader
 	Port   int          // default 4245
 	Client *http.Client // required; transport must carry the cluster mTLS config
+	// HealthTimeout bounds one health fetch. Zero means defaultHealthTimeout.
+	// It is per request so a node that stops answering cannot hold a list
+	// fan-out open.
+	HealthTimeout time.Duration
 	// ErrorWriter renders a transport failure as the caller's error envelope.
 	// The public handler passes apihttp.WriteError so a public caller gets the
 	// v1 media type and its request ID; nil keeps the internal v1 default.
 	ErrorWriter func(w http.ResponseWriter, r *http.Request, err error)
+	// RequestIDFrom reads the caller's request ID from a context. The public
+	// handler passes its own reader (apihttp.RequestIDFromContext), so a node
+	// can name the request that caused a fetch without this package importing
+	// pkg/apihttp. Nil omits the header.
+	RequestIDFrom func(ctx context.Context) string
 }
 
 // Manager resolves a task to its node and proxies a caller's request there.
 type Manager struct {
-	tasks       TaskReader
-	nodes       NodeReader
-	port        int
-	transport   http.RoundTripper
-	errorWriter func(w http.ResponseWriter, r *http.Request, err error)
+	tasks         TaskReader
+	nodes         NodeReader
+	port          int
+	client        *http.Client
+	transport     http.RoundTripper
+	healthTimeout time.Duration
+	errorWriter   func(w http.ResponseWriter, r *http.Request, err error)
+	requestIDFrom func(ctx context.Context) string
 }
 
 // Route is one resolved task-to-node destination inside the cluster.
@@ -111,12 +129,20 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		transport = http.DefaultTransport
 	}
 
+	healthTimeout := cfg.HealthTimeout
+	if healthTimeout <= 0 {
+		healthTimeout = defaultHealthTimeout
+	}
+
 	return &Manager{
-		tasks:       cfg.Tasks,
-		nodes:       cfg.Nodes,
-		port:        port,
-		transport:   transport,
-		errorWriter: cfg.ErrorWriter,
+		tasks:         cfg.Tasks,
+		nodes:         cfg.Nodes,
+		port:          port,
+		client:        cfg.Client,
+		transport:     transport,
+		healthTimeout: healthTimeout,
+		errorWriter:   cfg.ErrorWriter,
+		requestIDFrom: cfg.RequestIDFrom,
 	}, nil
 }
 
@@ -127,13 +153,22 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 // always carries a concrete task ID rather than user input. A task source or
 // node source failure is returned unchanged; the public handler maps it.
 func (m *Manager) Resolve(ctx context.Context, taskRef, op string) (Route, error) {
-	if !operationPattern.MatchString(op) {
-		return Route{}, output.NewErrorf(output.CodeInvalid, "unsupported broker operation %q", op)
-	}
-
 	task, err := m.tasks.GetTask(ctx, taskRef)
 	if err != nil {
 		return Route{}, err
+	}
+	return m.routeFor(ctx, task, op)
+}
+
+// routeFor maps an already-resolved task to its node and the node broker URL.
+// It is the single node-address rule: the broker port is always the configured
+// one and an advertised address carrying its own port is reduced to its host.
+func (m *Manager) routeFor(ctx context.Context, task v1.Task, op string) (Route, error) {
+	if !operationPattern.MatchString(op) {
+		return Route{}, output.NewErrorf(output.CodeInvalid, "unsupported broker operation %q", op)
+	}
+	if task.ID == "" {
+		return Route{}, output.NewError(output.CodeInvalid, "task ID must not be empty")
 	}
 	if task.NodeID == "" {
 		return Route{}, output.NewErrorf(output.CodeUnavailable, "task %q is not assigned to a node", task.ID)
@@ -288,4 +323,88 @@ func nodeHost(address string) string {
 		return strings.TrimSuffix(strings.TrimPrefix(address, "["), "]")
 	}
 	return address
+}
+
+// Health fetches one task's live health from the node that hosts it. The node
+// reads the sidecar the executor publishes, so the manager never dials a
+// loopback endpoint and never needs a second credential.
+//
+// (nil, nil) means "no health published": a node 204 (nothing probed yet) and a
+// node 404 (the task has no VM on that node) are both absent, not failures, so a
+// list fan-out must not report them as partial.
+func (m *Manager) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, error) {
+	route, err := m.routeFor(ctx, task, healthOperation)
+	if err != nil {
+		return nil, err
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, m.healthTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, route.URL.String(), nil)
+	if err != nil {
+		return nil, output.NewErrorf(output.CodeInternal,
+			"build node %q health request", route.Node.ID)
+	}
+	if m.requestIDFrom != nil {
+		if id := m.requestIDFrom(ctx); id != "" {
+			req.Header.Set(requestIDHeader, id)
+		}
+	}
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, healthTransportError(ctx, route.Node.ID, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusNoContent, http.StatusNotFound:
+		return nil, nil
+	case http.StatusOK:
+		return decodeNodeHealth(resp.Body, route.Node.ID)
+	default:
+		return nil, decodeNodeHealthError(resp.Body, resp.StatusCode, route.Node.ID)
+	}
+}
+
+// decodeNodeHealth reads one health document. A node that breaks the wire
+// contract is an internal failure rather than a half-filled TaskHealth.
+func decodeNodeHealth(body io.Reader, nodeID string) (*v1.TaskHealth, error) {
+	var health v1.TaskHealth
+	decoder := json.NewDecoder(io.LimitReader(body, maxRelayedErrorBytes))
+	if err := decoder.Decode(&health); err != nil || health.Status == "" {
+		return nil, output.NewErrorf(output.CodeInternal,
+			"node %q returned an unreadable health document", nodeID)
+	}
+	return &health, nil
+}
+
+// decodeNodeHealthError relays a node error document. Its code, message and
+// retry hint are the contract, so they are preserved; a body that is not a v1
+// error document becomes a stable unavailable failure that names no address.
+func decodeNodeHealthError(body io.Reader, status int, nodeID string) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxRelayedErrorBytes))
+	if err == nil {
+		var doc v1.ErrorDocument
+		if unmarshalErr := json.Unmarshal(data, &doc); unmarshalErr == nil &&
+			doc.Kind == v1.KindError && doc.Error.Code != "" {
+			typed := output.NewError(output.Code(doc.Error.Code), doc.Error.Message)
+			typed.Retryable = doc.Error.Retryable
+			typed.Details = doc.Error.Details
+			return typed
+		}
+	}
+	return output.NewErrorf(codeUnavailable, "node %q health is unavailable (status %d)",
+		nodeID, status)
+}
+
+// healthTransportError maps a failed dial or a deadline to a retryable failure.
+// The underlying error can name an internal address, so it never reaches the
+// message.
+func healthTransportError(ctx context.Context, nodeID string, err error) *output.Error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return output.NewErrorf(output.CodeTimeout, "node %q health check timed out", nodeID)
+	}
+	return output.NewErrorf(codeUnreachable, "node %q broker is unreachable", nodeID)
 }

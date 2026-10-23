@@ -202,7 +202,8 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
 	require.Equal(t, Version, doc.ServerVersion)
 	require.Equal(t, apiversion.Current, doc.GRPCProtocolVersion)
-	require.Equal(t, []string{"read", "write", "events", "exec", "logs", "files"}, doc.Capabilities)
+	require.Equal(t, []string{"read", "write", "events", "exec", "logs", "files", "health"}, doc.Capabilities,
+		"the node certificates are present, so the broker manager and health are wired")
 	// The stub control socket is unreachable, so there is no cluster ID yet;
 	// the version probe must answer anyway.
 	require.Empty(t, doc.ClusterID)
@@ -383,4 +384,17 @@ func TestNewBrokerManager_RequiresClusterTLS(t *testing.T) {
 	mgr, err := newBrokerManager(stateDir, fakeBrokerSources{}, fakeBrokerSources{})
 	require.NoError(t, err)
 	require.NotNil(t, mgr)
+}
+
+// TestAPICapabilities_HealthRequiresTheBroker pins the capability rule: health is
+// advertised only when the node broker manager is wired, because the manager
+// fans every health read out through it.
+func TestAPICapabilities_HealthRequiresTheBroker(t *testing.T) {
+	require.Equal(t,
+		[]string{"read", "write", "events", "exec", "logs", "files", "health"},
+		apiCapabilities(true))
+	require.Equal(t,
+		[]string{"read", "write", "events", "exec", "logs", "files"},
+		apiCapabilities(false),
+		"a manager without a broker must not advertise health")
 }

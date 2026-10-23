@@ -573,3 +573,277 @@ func TestManagerProxyStreamsFlushedChunks(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, second, string(rest))
 }
+
+// healthTestManager builds a manager that dials the test broker at baseURL. The
+// timeout and the request-ID source are explicit so a test can pin both.
+func healthTestManager(t *testing.T, pki testPKI, baseURL string, timeout time.Duration,
+	requestIDFrom func(context.Context) string,
+) *Manager {
+	t.Helper()
+
+	host, port := brokerTarget(t, baseURL)
+	mgr, err := NewManager(ManagerConfig{
+		Tasks:         &stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+		Nodes:         &stubNodeReader{node: v1.Node{ID: "node-1", Address: host}},
+		Port:          port,
+		Client:        pki.httpClient(),
+		HealthTimeout: timeout,
+		RequestIDFrom: requestIDFrom,
+	})
+	require.NoError(t, err)
+	return mgr
+}
+
+// TestManagerHealthDecodesTheNodeDocument pins the happy path: one GET to the
+// node's health operation, decoded into the public TaskHealth DTO.
+func TestManagerHealthDecodesTheNodeDocument(t *testing.T) {
+	pki := newTestPKI(t)
+
+	var gotPath, gotMethod string
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"health": func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+			gotPath, gotMethod = r.URL.Path, r.Method
+			body, err := encodeDocument(v1.TaskHealth{
+				Status:        "failing",
+				FailingStreak: 2,
+				Output:        "connection refused",
+				Command:       "curl -fsS http://127.0.0.1/",
+				CheckedAt:     "2026-10-24T12:00:00.123456789Z",
+			})
+			require.NoError(t, err)
+			w.Header().Set("Content-Type", publicMediaType)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+		},
+	})
+
+	mgr := healthTestManager(t, pki, baseURL, 0, nil)
+	health, err := mgr.Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	require.NoError(t, err)
+	require.NotNil(t, health)
+	require.Equal(t, "/v1/tasks/task-1/health", gotPath)
+	require.Equal(t, http.MethodGet, gotMethod)
+	require.Equal(t, v1.TaskHealth{
+		Status:        "failing",
+		FailingStreak: 2,
+		Output:        "connection refused",
+		Command:       "curl -fsS http://127.0.0.1/",
+		CheckedAt:     "2026-10-24T12:00:00.123456789Z",
+	}, *health)
+}
+
+// TestManagerHealthNoContentIsNotAnError pins 204: the task publishes no
+// health, which is not a failure and must not become a partial.
+func TestManagerHealthNoContentIsNotAnError(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"health": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	health, err := healthTestManager(t, pki, baseURL, 0, nil).
+		Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	require.NoError(t, err)
+	require.Nil(t, health)
+}
+
+// TestManagerHealthNotFoundIsNotAnError pins the node's 404: the task exists but
+// has no health, which is the same answer as 204 on the public surface.
+func TestManagerHealthNotFoundIsNotAnError(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"health": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusNotFound, output.CodeNotFound, "task %q has no health", "task-1")
+		},
+	})
+
+	health, err := healthTestManager(t, pki, baseURL, 0, nil).
+		Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	require.NoError(t, err)
+	require.Nil(t, health)
+}
+
+// TestManagerHealthRelaysANodeError pins the typed failure: the node's code and
+// message are preserved so the caller can tell unavailable from a bad request.
+func TestManagerHealthRelaysANodeError(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"health": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			writeError(w, http.StatusServiceUnavailable, output.CodeUnavailable, "health sidecar is unavailable")
+		},
+	})
+
+	_, err := healthTestManager(t, pki, baseURL, 0, nil).
+		Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, output.CodeUnavailable, typed.Code)
+	require.Equal(t, "health sidecar is unavailable", typed.Message)
+	require.True(t, typed.Retryable)
+}
+
+// TestManagerHealthUnreachableNodeIsTyped proves a transport failure is a
+// retryable, stable message that names no internal address.
+func TestManagerHealthUnreachableNodeIsTyped(t *testing.T) {
+	port := freePort(t)
+
+	mgr, err := NewManager(ManagerConfig{
+		Tasks:  &stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+		Nodes:  &stubNodeReader{node: v1.Node{ID: "node-1", Address: "127.0.0.1"}},
+		Port:   port,
+		Client: &http.Client{Transport: &http.Transport{}},
+	})
+	require.NoError(t, err)
+
+	_, err = mgr.Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, output.CodeUnreachable, typed.Code)
+	require.True(t, typed.Retryable)
+	require.NotContains(t, typed.Message, strconv.Itoa(port),
+		"the message must not expose the internal broker port")
+	require.NotContains(t, typed.Message, "127.0.0.1",
+		"the message must not expose the internal broker address")
+}
+
+// TestManagerHealthCarriesTheRequestID proves the caller's request ID reaches the
+// node, so a node-side log line can name the public request that caused it.
+func TestManagerHealthCarriesTheRequestID(t *testing.T) {
+	pki := newTestPKI(t)
+
+	gotRequestID := ""
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"health": func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+			gotRequestID = r.Header.Get(requestIDHeader)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	mgr := healthTestManager(t, pki, baseURL, 0, func(context.Context) string {
+		return "req_abc123def456"
+	})
+	_, err := mgr.Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	require.NoError(t, err)
+	require.Equal(t, "req_abc123def456", gotRequestID)
+}
+
+// TestManagerHealthTimesOut proves the per-request deadline: a node that never
+// answers cannot hold the caller's fan-out open.
+func TestManagerHealthTimesOut(t *testing.T) {
+	pki := newTestPKI(t)
+
+	release := make(chan struct{})
+	defer close(release)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"health": func(ctx context.Context, _ Task, _ http.ResponseWriter, _ *http.Request) {
+			select {
+			case <-release:
+			case <-ctx.Done():
+			}
+		},
+	})
+
+	mgr := healthTestManager(t, pki, baseURL, 50*time.Millisecond, nil)
+
+	started := time.Now()
+	_, err := mgr.Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+	require.Less(t, time.Since(started), 5*time.Second, "Health must honour its own deadline")
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, output.CodeTimeout, typed.Code)
+	require.True(t, typed.Retryable)
+}
+
+// TestManagerHealthTaskWithoutNodeIsUnavailable pins the resolution rule: a task
+// the manager cannot place is not dialed anywhere.
+func TestManagerHealthTaskWithoutNodeIsUnavailable(t *testing.T) {
+	mgr := newTestManager(t,
+		&stubTaskReader{task: v1.Task{ID: "task-1"}},
+		&stubNodeReader{node: v1.Node{ID: "node-1", Address: "192.168.1.10"}},
+		0,
+		&http.Client{},
+	)
+
+	_, err := mgr.Health(context.Background(), v1.Task{ID: "task-1"})
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, output.CodeUnavailable, typed.Code)
+}
+
+// TestManagerHealthRejectsAMalformedDocument proves a node that breaks the wire
+// contract is a typed internal failure, not a partially filled TaskHealth.
+func TestManagerHealthRejectsAMalformedDocument(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"health": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", publicMediaType)
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"status":`)
+		},
+	})
+
+	_, err := healthTestManager(t, pki, baseURL, 0, nil).
+		Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, output.CodeInternal, typed.Code)
+}
+
+// TestManagerHealthUsesTheNodeAddressRule proves Health resolves its target the
+// same way Proxy does: a node with no advertised address falls back to its
+// manager status address, and the broker port is the configured one (the
+// advertised 9999 is not used).
+func TestManagerHealthUsesTheNodeAddressRule(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"health": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			body, err := encodeDocument(v1.TaskHealth{Status: "healthy"})
+			require.NoError(t, err)
+			w.Header().Set("Content-Type", publicMediaType)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+		},
+	})
+
+	host, port := brokerTarget(t, baseURL)
+	mgr, err := NewManager(ManagerConfig{
+		Tasks: &stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+		Nodes: &stubNodeReader{node: v1.Node{
+			ID:      "node-1",
+			Manager: &v1.NodeManager{Address: net.JoinHostPort(host, "9999")},
+		}},
+		Port:   port,
+		Client: pki.httpClient(),
+	})
+	require.NoError(t, err)
+
+	health, err := mgr.Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	require.NoError(t, err)
+	require.NotNil(t, health)
+	require.Equal(t, "healthy", health.Status)
+}

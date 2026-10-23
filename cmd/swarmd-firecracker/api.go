@@ -138,7 +138,7 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 		ServerVersion: Version,
 		GRPCVersion:   apiversion.Current,
 		ClusterID:     clusterID,
-		Capabilities:  []string{"read", "write", "events", "exec", "logs", "files"},
+		Capabilities:  apiCapabilities(apiBroker != nil),
 		RateLimit:     apihttp.NewRateLimiter(cfg.rateLimit, cfg.rateBurst),
 	})
 	if err != nil {
@@ -237,9 +237,22 @@ func newBrokerManager(stateDir string, tasks broker.TaskReader, nodes broker.Nod
 	}
 
 	return broker.NewManager(broker.ManagerConfig{
-		Tasks:       tasks,
-		Nodes:       nodes,
-		Client:      &http.Client{Transport: transport},
-		ErrorWriter: apihttp.WriteError,
+		Tasks:         tasks,
+		Nodes:         nodes,
+		Client:        &http.Client{Transport: transport},
+		ErrorWriter:   apihttp.WriteError,
+		RequestIDFrom: apihttp.RequestIDFromContext,
 	})
+}
+
+// apiCapabilities is the capability list the version endpoint advertises. Health
+// is advertised only when the node broker manager is wired: the fan-out is the
+// only path a health read takes, so a manager without it would promise a
+// capability every health request answers 501 for.
+func apiCapabilities(hasBroker bool) []string {
+	capabilities := []string{"read", "write", "events", "exec", "logs", "files"}
+	if hasBroker {
+		capabilities = append(capabilities, "health")
+	}
+	return capabilities
 }

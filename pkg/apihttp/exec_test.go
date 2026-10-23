@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,7 +45,8 @@ func (f *execFakeClient) GetService(_ context.Context, id string) (v1.Service, e
 	return f.service, nil
 }
 
-// fakeBroker records the proxy call and answers with one NDJSON frame.
+// fakeBroker records the proxy call and answers with one NDJSON frame. Health is
+// called concurrently by the list fan-out, so its state is mutex-guarded.
 type fakeBroker struct {
 	calls        int
 	gotTaskRef   string
@@ -52,6 +54,11 @@ type fakeBroker struct {
 	gotRequestID string
 	err          error
 	respond      func(w http.ResponseWriter, r *http.Request)
+
+	healthFn       func(ctx context.Context, task v1.Task) (*v1.TaskHealth, error)
+	healthMu       sync.Mutex
+	healthCalls    int
+	gotHealthTasks []v1.Task
 }
 
 func (f *fakeBroker) Proxy(_ context.Context, w http.ResponseWriter, r *http.Request, taskRef, op string) error {
@@ -72,6 +79,20 @@ func (f *fakeBroker) Proxy(_ context.Context, w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusOK)
 	_, _ = io.WriteString(w, `{"type":"exit","exitCode":0}`+"\n")
 	return nil
+}
+
+// Health serves the health capability. A test that does not configure healthFn
+// answers "no health published", which is the 204 contract.
+func (f *fakeBroker) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, error) {
+	f.healthMu.Lock()
+	f.healthCalls++
+	f.gotHealthTasks = append(f.gotHealthTasks, task)
+	f.healthMu.Unlock()
+
+	if f.healthFn != nil {
+		return f.healthFn(ctx, task)
+	}
+	return nil, nil
 }
 
 type execTestAPI struct {
