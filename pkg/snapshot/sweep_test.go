@@ -40,6 +40,18 @@ func TestNewManagerSweepsOrphanSnapshotDirectories(t *testing.T) {
 	require.NoError(t, os.MkdirAll(unrelated, 0o755))
 	require.NoError(t, os.Chtimes(unrelated, old, old))
 
+	// An operator directory that merely starts with the snapshot prefix is not
+	// this store's to delete, even without metadata and long past the sweep age.
+	operator := filepath.Join(root, "snap-backup-2026")
+	require.NoError(t, os.MkdirAll(operator, 0o755))
+	require.NoError(t, os.Chtimes(operator, old, old))
+
+	// Only the exact snap-<16 hex> shape is a reservation. A lookalike with the
+	// right prefix but the wrong shape is left alone too.
+	lookalike := filepath.Join(root, "snap-not-a-snapshot")
+	require.NoError(t, os.MkdirAll(lookalike, 0o755))
+	require.NoError(t, os.Chtimes(lookalike, old, old))
+
 	_, err := NewManager(SnapshotConfig{SnapshotDir: root})
 	require.NoError(t, err)
 
@@ -47,6 +59,8 @@ func TestNewManagerSweepsOrphanSnapshotDirectories(t *testing.T) {
 	assert.DirExists(t, fresh, "a fresh reservation may belong to a create in flight")
 	assert.DirExists(t, published, "a published snapshot must survive the sweep")
 	assert.DirExists(t, unrelated, "an unrelated directory must never be swept")
+	assert.DirExists(t, operator, "only the store's own snap-<16 hex> shape is swept")
+	assert.DirExists(t, lookalike, "a directory the store could not have named must never be swept")
 }
 
 // TestNewManagerKeepsAPublishedSnapshotWithoutMetadataAge is the boundary of the

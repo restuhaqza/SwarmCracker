@@ -375,12 +375,6 @@ func NewManager(config SnapshotConfig) (*Manager, error) {
 // looks like a snapshot.
 const stagingPrefix = "snapshot-staging-"
 
-// publishedPrefix is the prefix of a snapshot directory (see
-// snapshotIDPattern). A directory with this prefix that has no metadata.json is
-// a reservation a crash left between reserveSnapshotDir's mkdir and the
-// publishSnapshot rename; it is not a snapshot and no reader lists it.
-const publishedPrefix = "snap-"
-
 // stagingSweepAge bounds how long a leftover directory may sit unused before
 // NewManager removes it. The guard matters because a create can be in flight in
 // another process — the daemon copying a multi-GB disk while an operator runs a
@@ -391,11 +385,12 @@ const stagingSweepAge = time.Hour
 // sweepLeftovers removes the directories a crashed create left behind, so an
 // aborted copy costs at most stagingSweepAge of disk instead of leaking forever.
 // Two shapes are leftovers: a staging directory, which never holds metadata, and
-// a reserved snap-* directory without metadata.json. A published snapshot always
-// has metadata.json and is never touched, and a directory younger than
-// stagingSweepAge may belong to a create running in another process. Failures are
-// logged, never returned: a leftover directory must not stop a manager (and
-// therefore the node's snapshot store) from starting.
+// a reserved snap-<16 hex> directory without metadata.json. A published snapshot
+// always has metadata.json and is never touched, a directory younger than
+// stagingSweepAge may belong to a create running in another process, and a
+// directory the store could not have named is never swept. Failures are logged,
+// never returned: a leftover directory must not stop a manager (and therefore the
+// node's snapshot store) from starting.
 func sweepLeftovers(snapshotDir string) {
 	entries, err := os.ReadDir(snapshotDir)
 	if err != nil {
@@ -412,7 +407,7 @@ func sweepLeftovers(snapshotDir string) {
 		switch {
 		case strings.HasPrefix(name, stagingPrefix):
 			// Always a leftover: a staging directory is renamed away on success.
-		case strings.HasPrefix(name, publishedPrefix):
+		case snapshotIDPattern.MatchString(name):
 			if _, err := os.Stat(filepath.Join(snapshotDir, name, metadataFile)); err == nil {
 				continue // a published snapshot, complete and restorable
 			}
