@@ -52,18 +52,21 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 // node's existing cluster certificate, so a manager authenticates with the same
 // identity it uses for the ingress mesh, and no user token is involved.
 //
-// It returns the server and a stop function that is safe to call more than
-// once. A disabled broker returns (nil, no-op, nil); a certificate or bind
-// failure is returned rather than swallowed, so a misconfigured node fails
-// loudly instead of silently refusing manager traffic.
-func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*broker.Server, func(), error) {
+// It returns the server, whether the experimental snapshot store actually became
+// active, and a stop function that is safe to call more than once. The boolean is
+// the effective capability: a node whose snapshot store failed to build must not
+// advertise `snapshots` even when --snapshots-enable was passed. A disabled broker
+// returns (nil, false, no-op, nil); a certificate or bind failure is returned
+// rather than swallowed, so a misconfigured node fails loudly instead of silently
+// refusing manager traffic.
+func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*broker.Server, bool, func(), error) {
 	if cfg.listenAddr == "" {
-		return nil, func() {}, nil
+		return nil, false, func() {}, nil
 	}
 
 	cert, caPool, err := loadIngressTLS(stateDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("node broker: %w", err)
+		return nil, false, nil, fmt.Errorf("node broker: %w", err)
 	}
 
 	srv, err := broker.NewServer(broker.ServerConfig{
@@ -72,7 +75,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		Tasks:     broker.SocketDirSource{Dir: cfg.socketDir, LogDir: cfg.logDir},
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, false, nil, err
 	}
 
 	// The node serves exec, logs, files, health and the experimental snapshots
@@ -81,6 +84,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	// sidecar the executor publishes; snapshots use the node-local pkg/snapshot
 	// store. The public route has already resolved the reference and enforced the
 	// caller's selectors.
+	snapshotOp, snapshotsActive := snapshotHandler(ctx, cfg)
 	handlers := []struct {
 		op string
 		h  broker.Handler
@@ -89,17 +93,17 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{"logs", broker.NewLogsHandler()},
 		{"files", broker.NewFilesHandler(broker.DialAgent)},
 		{"health", broker.NewHealthHandler()},
-		{"snapshots", snapshotHandler(ctx, cfg)},
+		{"snapshots", snapshotOp},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {
-			return nil, nil, err
+			return nil, false, nil, err
 		}
 	}
 
 	lis, err := srv.Listen()
 	if err != nil {
-		return nil, nil, err
+		return nil, false, nil, err
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -120,17 +124,19 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	}
 
 	log.G(ctx).Infof("Node broker listening on %s", srv.Addr())
-	return srv, stop, nil
+	return srv, snapshotsActive, stop, nil
 }
 
-// snapshotHandler builds the experimental snapshots operation. Disabled means a
-// registered handler with no store, which answers a typed 501 — the route still
-// exists. A manager construction failure is logged and degrades to the same
-// disabled handler: a bad snapshot directory must not stop the broker, because
-// exec, logs, files and health do not depend on it.
-func snapshotHandler(ctx context.Context, cfg brokerRuntime) broker.Handler {
+// snapshotHandler builds the experimental snapshots operation and reports whether
+// its store is usable. Disabled means a registered handler with no store, which
+// answers a typed 501 — the route still exists. A manager construction failure is
+// logged and degrades to the same disabled handler: a bad snapshot directory must
+// not stop the broker, because exec, logs, files and health do not depend on it.
+// The boolean is what the daemon passes to the API runtime, so /v1/version never
+// advertises a store that does not exist.
+func snapshotHandler(ctx context.Context, cfg brokerRuntime) (broker.Handler, bool) {
 	if !cfg.snapshotsEnabled {
-		return broker.NewSnapshotHandler(nil)
+		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}), false
 	}
 
 	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{
@@ -141,7 +147,11 @@ func snapshotHandler(ctx context.Context, cfg brokerRuntime) broker.Handler {
 	})
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Node broker: snapshots disabled (snapshot store unavailable)")
-		return broker.NewSnapshotHandler(nil)
+		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}), false
 	}
-	return broker.NewSnapshotHandler(mgr)
+	return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{
+		Store:     mgr,
+		SocketDir: cfg.socketDir,
+		MaxAge:    168 * time.Hour,
+	}), true
 }

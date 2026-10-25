@@ -48,9 +48,10 @@ func TestStartBroker_DisabledSnapshotsIs501(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, snapshotsActive, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
+	require.False(t, snapshotsActive, "a disabled capability must not be reported active")
 
 	client := brokerTestClient(clientCert, pool)
 	defer client.CloseIdleConnections()
@@ -99,9 +100,10 @@ func TestStartBroker_EnabledSnapshotsListsMetadata(t *testing.T) {
 		snapshotsEnabled: true,
 		snapshotDir:      snapshotDir,
 	}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, snapshotsActive, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
+	require.True(t, snapshotsActive, "a usable store must report the capability active")
 
 	client := brokerTestClient(clientCert, pool)
 	defer client.CloseIdleConnections()
@@ -163,4 +165,57 @@ func TestStartAPI_AdvertisesSnapshotsWhenEnabled(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
 	require.Contains(t, doc.Capabilities, "snapshots")
 	require.Contains(t, doc.Capabilities, "exec", "the shared broker transport is still advertised")
+}
+
+// TestStartAPI_OmitsSnapshotsWhenStoreFails pins I5: a snapshot store that could
+// not be constructed must not be advertised. The broker reports the effective
+// state, and the API runtime forwards it instead of echoing the flag.
+func TestStartAPI_OmitsSnapshotsWhenStoreFails(t *testing.T) {
+	// A regular file where a directory should be makes MkdirAll fail with
+	// ENOTDIR, so snapshot.NewManager returns an error.
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	require.NoError(t, os.WriteFile(notADir, nil, 0o600))
+	badSnapshotDir := filepath.Join(notADir, "snapshots")
+
+	brokerStateDir := t.TempDir()
+	_, _ = seedBrokerCertificates(t, brokerStateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	_, snapshotsActive, stopBroker, err := startBroker(context.Background(), brokerRuntime{
+		listenAddr:       "127.0.0.1:0",
+		socketDir:        socketDir,
+		logDir:           t.TempDir(),
+		snapshotsEnabled: true,
+		snapshotDir:      badSnapshotDir,
+	}, brokerStateDir)
+	require.NoError(t, err, "the broker must still start when the snapshot store fails")
+	defer stopBroker()
+	require.False(t, snapshotsActive, "a store that failed to build must not report active")
+
+	apiStateDir := testhelpers.ShortTempDir(t)
+	seedNodeCertificates(t, apiStateDir)
+	sock := filepath.Join(apiStateDir, "api.sock")
+
+	stopAPI, err := startAPI(context.Background(), apiRuntime{
+		enabled:          true,
+		socket:           sock,
+		tokenFile:        filepath.Join(apiStateDir, "api", "tokens.json"),
+		certDir:          filepath.Join(apiStateDir, "api"),
+		auditFile:        filepath.Join(apiStateDir, "api", "audit.jsonl"),
+		auditRetention:   720 * time.Hour,
+		snapshotsEnabled: snapshotsActive,
+	}, apiStateDir, "node-1", filepath.Join(apiStateDir, "swarm.sock"))
+	require.NoError(t, err)
+	defer stopAPI()
+
+	resp := testhelpers.WaitForGet(t, testhelpers.UnixHTTPClient(sock), "http://unix/v1/version", apihttp.MediaType, nil)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var doc v1.VersionInfo
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
+	require.NotContains(t, doc.Capabilities, "snapshots",
+		"the version document must not promise a store that does not exist")
+	require.Contains(t, doc.Capabilities, "exec", "the rest of the broker surface still works")
 }

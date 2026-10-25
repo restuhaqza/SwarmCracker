@@ -31,14 +31,24 @@ type fakeSnapshotBroker struct {
 	restoreErr error
 	deleteErr  error
 
+	// createBlock keeps CreateSnapshot blocked until the request context ends;
+	// the test uses it to exercise a real deadline.
+	createBlock bool
+
 	calls       int
 	gotTask     v1.Task
+	gotRequest  v1.SnapshotCreateRequest
 	gotID       string
 	gotDeadline bool
 }
 
-func (f *fakeSnapshotBroker) CreateSnapshot(ctx context.Context, task v1.Task) (v1.Snapshot, error) {
+func (f *fakeSnapshotBroker) CreateSnapshot(ctx context.Context, task v1.Task, req v1.SnapshotCreateRequest) (v1.Snapshot, error) {
 	f.record(ctx, task)
+	f.gotRequest = req
+	if f.createBlock {
+		<-ctx.Done()
+		return v1.Snapshot{}, ctx.Err()
+	}
 	return f.create, f.createErr
 }
 
@@ -200,7 +210,9 @@ func TestSnapshotsCreateListRestoreDelete(t *testing.T) {
 	rec := api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
 		withSnapshotToken(api.admin), withSnapshotBody(`{"vcpus": 2, "memoryMB": 1024}`))
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
-	require.True(t, broker.gotDeadline, "create must run under a server deadline")
+	require.False(t, broker.gotDeadline, "the manager owns the 30 s deadline; the handler adds none")
+	assert.Equal(t, v1.SnapshotCreateRequest{VCPUs: 2, MemoryMB: 1024}, broker.gotRequest,
+		"the parsed body must reach the transport, not be validated and dropped")
 
 	var created v1.SnapshotDocument
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &created))
@@ -333,11 +345,46 @@ func TestSnapshotsCreateBodyRules(t *testing.T) {
 	rec = api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
 		withSnapshotToken(api.admin), withSnapshotBody(`{"vcpus": -1}`))
 	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Equal(t, "vcpus", decodeErrorBody(t, rec).Error.Details["parameter"])
+
+	rec = api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
+		withSnapshotToken(api.admin), withSnapshotBody(`{"memoryMB": -1}`))
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Equal(t, "memoryMB", decodeErrorBody(t, rec).Error.Details["parameter"])
+
+	for _, rootfs := range []string{
+		"relative/rootfs",
+		"/var/lib/firecracker/rootfs/../escape",
+		"/var/lib/firecracker/rootfs/.",
+		"/",
+	} {
+		rec = api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
+			withSnapshotToken(api.admin), withSnapshotBody(`{"rootfsPath": "`+rootfs+`"}`))
+		require.Equal(t, http.StatusBadRequest, rec.Code, "%s: %s", rootfs, rec.Body.String())
+		assert.Equal(t, "rootfsPath", decodeErrorBody(t, rec).Error.Details["parameter"])
+	}
 
 	oversized := `{"rootfsPath": "` + strings.Repeat("a", 64<<10) + `"}`
 	rec = api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
 		withSnapshotToken(api.admin), withSnapshotBody(oversized))
 	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+}
+
+// TestSnapshotsCreateBodyReachesTheTransport pins I1: every validated field,
+// including rootfsPath, is carried to the manager and therefore to the node's
+// snapshot.CreateOptions.
+func TestSnapshotsCreateBodyReachesTheTransport(t *testing.T) {
+	broker := &fakeSnapshotBroker{create: v1.Snapshot{ID: "snap-1"}}
+	api := newSnapshotTestAPI(t, nil, broker, nil)
+
+	const rootfs = "/var/lib/firecracker/rootfs/task-1"
+	rec := api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
+		withSnapshotToken(api.admin),
+		withSnapshotBody(`{"vcpus": 4, "memoryMB": 2048, "rootfsPath": "`+rootfs+`"}`))
+
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	assert.Equal(t, v1.SnapshotCreateRequest{VCPUs: 4, MemoryMB: 2048, RootfsPath: rootfs},
+		broker.gotRequest)
 }
 
 // TestSnapshotsInvalidIDIs400 pins id validation: an id is one safe path
@@ -399,17 +446,26 @@ func TestSnapshotsAudit(t *testing.T) {
 	}
 }
 
-// TestSnapshotsTimeoutIs504 pins the server-side deadline: the handler passes a
-// bounded context and relays the manager's timeout code as 504.
+// TestSnapshotsTimeoutIs504 exercises a real deadline: the blocking fake returns
+// when the request context expires, and the handler maps context.DeadlineExceeded
+// to 504 timeout. The manager owns the 30 s default; this test supplies the
+// request's own deadline.
 func TestSnapshotsTimeoutIs504(t *testing.T) {
-	broker := &fakeSnapshotBroker{createErr: output.NewError(output.CodeTimeout,
-		"node \"node-1\" snapshot request timed out")}
-	api := newSnapshotTestAPI(t, nil, broker, func(cfg *Config) {
-		cfg.SnapshotTimeout = 10 * time.Millisecond
-	})
+	broker := &fakeSnapshotBroker{createBlock: true}
+	api := newSnapshotTestAPI(t, nil, broker, nil)
 
-	rec := api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
-		withSnapshotToken(api.admin), withSnapshotBody(`{}`))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/web-1/snapshots", nil)
+	req = req.WithContext(ctx)
+	req.Header.Set("Accept", MediaType)
+	req.Header.Set("Authorization", "Bearer "+api.admin)
+	rec := httptest.NewRecorder()
+
+	started := time.Now()
+	api.handler.ServeHTTP(rec, req)
+	require.Less(t, time.Since(started), time.Second, "the handler must return when the deadline expires")
 
 	require.Equal(t, http.StatusGatewayTimeout, rec.Code, rec.Body.String())
 	assert.Equal(t, string(output.CodeTimeout), decodeErrorBody(t, rec).Error.Code)
@@ -439,6 +495,7 @@ func TestSnapshotsVersionCapability(t *testing.T) {
 		cfg.SnapshotsEnabled = false
 	})
 	rec = disabled.do(t, http.MethodGet, "/v1/version", withSnapshotToken(disabled.admin))
+	info = v1.VersionInfo{}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.NotContains(t, info.Capabilities, "snapshots")
 
@@ -448,6 +505,7 @@ func TestSnapshotsVersionCapability(t *testing.T) {
 		cfg.Capabilities = []string{"read", "snapshots"}
 	})
 	rec = claimed.do(t, http.MethodGet, "/v1/version", withSnapshotToken(claimed.admin))
+	info = v1.VersionInfo{}
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.NotContains(t, info.Capabilities, "snapshots")
 }

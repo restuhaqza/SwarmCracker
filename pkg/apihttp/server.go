@@ -116,8 +116,6 @@ type Config struct {
 	// not_implemented with details.capability "snapshots", before the task is
 	// resolved or audited.
 	SnapshotsEnabled bool
-	// SnapshotTimeout bounds one create or restore request. Zero means 30s.
-	SnapshotTimeout time.Duration
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore

@@ -137,15 +137,19 @@ func startNode(config *node.Config, executor *swarmkit.Executor, ing ingressRunt
 	// health. It needs the cluster certificate, so it starts after the node is
 	// ready. A failure is logged rather than fatal: a busy broker port must not
 	// take down a node that is otherwise healthy.
-	_, stopBroker, brokerErr := startBroker(ctx, brk, config.StateDir)
+	_, snapshotsActive, stopBroker, brokerErr := startBroker(ctx, brk, config.StateDir)
 	if brokerErr != nil {
 		log.G(ctx).WithError(brokerErr).Warn("Node broker disabled: failed to start")
 		stopBroker = func() {}
+		snapshotsActive = false
 	}
 
 	// Only a manager serves the programmatic API: startAPIForNode is a no-op on a
 	// worker. A failure is logged rather than fatal, so a port conflict cannot
-	// take down an otherwise healthy manager.
+	// take down an otherwise healthy manager. The advertised snapshot capability
+	// is the effective one from the broker: a store that failed to build must not
+	// appear in /v1/version.
+	api.snapshotsEnabled = snapshotsActive
 	stopAPI, apiErr := startAPIForNode(ctx, api, config)
 	if apiErr != nil {
 		log.G(ctx).WithError(apiErr).Warn("Programmatic API disabled: failed to start")

@@ -14,12 +14,18 @@ package broker
 //
 // The handler never publishes the snapshot's memory or state path, its socket
 // path or its checksum. pkg/snapshot errors carry absolute paths, so they are
-// mapped to fixed messages here: only the classification crosses the wire. The
-// public layer repeats the same rule for the same reason.
+// classified through the package's sentinel errors and mapped to fixed messages
+// here: only the classification crosses the wire. The public layer repeats the
+// same rule for the same reason.
 //
 // Restore is experimental. It starts a Firecracker process outside SwarmKit's
 // task lifecycle, so a restored VM may outlive the task it came from; the
 // manager's TrackRestoredProcess is the only bookkeeping pkg/snapshot keeps.
+// Restores for one task are serialized inside this handler so two requests in the
+// same daemon cannot race for the same restored socket. A process started by a
+// previous daemon lifetime is NOT covered by that lock: a crash during restore
+// can leave an untracked Firecracker process behind. That residual risk is
+// documented in the public OpenAPI description as well.
 //
 // A nil store keeps the operation registered but answers a typed 501: the public
 // layer already gates snapshots on the capability, so this is defence in depth.
@@ -32,9 +38,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -54,6 +62,10 @@ const (
 	// restore copy a whole VM memory image, so this is well above a health probe;
 	// ManagerConfig.SnapshotTimeout overrides it.
 	defaultSnapshotTimeout = 30 * time.Second
+
+	// maxSnapshotScopeBytes bounds one service/node query value. Real IDs are far
+	// shorter; the cap only stops a caller from pushing a path-sized value through.
+	maxSnapshotScopeBytes = 256
 )
 
 // SnapshotStore is the narrow view of *snapshot.Manager the handler needs. Tests
@@ -64,19 +76,42 @@ type SnapshotStore interface {
 	ListSnapshots(filter snapshot.SnapshotFilter) ([]*snapshot.SnapshotInfo, error)
 	RestoreFromSnapshot(ctx context.Context, info *snapshot.SnapshotInfo, socketPath string) error
 	DeleteSnapshot(ctx context.Context, snapshotID string) error
+	CleanupOldSnapshots(ctx context.Context, maxAge time.Duration) (int, int64, error)
+}
+
+// SnapshotHandlerConfig configures the snapshots operation.
+type SnapshotHandlerConfig struct {
+	// Store is the node-local snapshot store. Nil keeps the route registered but
+	// answers 501 not_implemented with details.capability "snapshots".
+	Store SnapshotStore
+	// SocketDir is the directory for restored VM sockets. Restore writes
+	// <SocketDir>/<taskID>-restored.sock; empty falls back to the directory of the
+	// task's own socket, so a running task still restores beside itself.
+	SocketDir string
+	// MaxAge enables opportunistic retention: after a successful create the
+	// handler removes snapshots older than MaxAge. Zero disables the cleanup.
+	MaxAge time.Duration
+}
+
+// snapshotHandler holds the per-task restore lock. The lock lives in the handler
+// instance, so two requests that reach the same daemon share it.
+type snapshotHandler struct {
+	cfg SnapshotHandlerConfig
+
+	mu        sync.Mutex
+	restoring map[string]struct{}
 }
 
 // NewSnapshotHandler builds the snapshots operation. A nil store keeps the route
 // and answers 501 not_implemented with details.capability "snapshots".
-func NewSnapshotHandler(store SnapshotStore) Handler {
-	return func(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request) {
-		serveSnapshots(ctx, store, task, w, r)
-	}
+func NewSnapshotHandler(cfg SnapshotHandlerConfig) Handler {
+	h := &snapshotHandler{cfg: cfg, restoring: make(map[string]struct{})}
+	return h.serve
 }
 
-// serveSnapshots dispatches one snapshot request by method and query.
-func serveSnapshots(ctx context.Context, store SnapshotStore, task Task, w http.ResponseWriter, r *http.Request) {
-	if store == nil {
+// serve dispatches one snapshot request by method and query.
+func (h *snapshotHandler) serve(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request) {
+	if h.cfg.Store == nil {
 		writeSnapshotDisabled(w)
 		return
 	}
@@ -93,15 +128,15 @@ func serveSnapshots(ctx context.Context, store SnapshotStore, task Task, w http.
 
 	switch r.Method {
 	case http.MethodGet:
-		serveSnapshotList(store, task, w)
+		h.serveList(task, w)
 	case http.MethodPost:
 		if r.URL.Query().Has("restore") {
-			serveSnapshotRestore(ctx, store, task, r.URL.Query().Get("restore"), w)
+			h.serveRestore(ctx, task, r.URL.Query().Get("restore"), w)
 			return
 		}
-		serveSnapshotCreate(ctx, store, task, w, r)
+		h.serveCreate(ctx, task, w, r)
 	case http.MethodDelete:
-		serveSnapshotDelete(ctx, store, task, r.URL.Query().Get("id"), w)
+		h.serveDelete(ctx, task, r.URL.Query().Get("id"), w)
 	}
 }
 
@@ -111,46 +146,106 @@ func snapshotMethodAllowed(method string) bool {
 }
 
 // validateSnapshotQuery enforces the small query grammar: `restore` belongs to a
-// POST and `id` to a DELETE. Anything else would be silently ignored, which
-// would turn a typo into the wrong operation.
+// POST and `id` to a DELETE. `service` and `node` are internal create scope the
+// manager sends, so they are accepted only on a create, once each, and must be
+// opaque values that could never look like a path. Anything else would be
+// silently ignored, which would turn a typo into the wrong operation.
 func validateSnapshotQuery(r *http.Request) *output.Error {
 	query := r.URL.Query()
+	if err := validateSnapshotQueryKeys(query); err != nil {
+		return err
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		return validateSnapshotListQuery(query)
+	case http.MethodPost:
+		return validateSnapshotCreateQuery(query)
+	case http.MethodDelete:
+		return validateSnapshotDeleteQuery(query)
+	}
+	return nil
+}
+
+// validateSnapshotQueryKeys rejects an unknown key and a repeated key, which
+// would otherwise be silently ignored.
+func validateSnapshotQueryKeys(query url.Values) *output.Error {
 	for key, values := range query {
-		if key != "id" && key != "restore" {
+		switch key {
+		case "id", "restore", "service", "node":
+		default:
 			return invalidSnapshotParameter(key, "is not a snapshot query parameter")
 		}
 		if len(values) != 1 {
 			return invalidSnapshotParameter(key, "must be set exactly once")
 		}
 	}
+	return nil
+}
 
-	switch r.Method {
-	case http.MethodGet:
-		if query.Has("restore") {
-			return invalidSnapshotParameter("restore", "is not accepted on a list")
+// validateSnapshotListQuery accepts no parameter at all.
+func validateSnapshotListQuery(query url.Values) *output.Error {
+	return rejectSnapshotQueryKeys(query, []string{"restore", "id", "service", "node"}, "is not accepted on a list")
+}
+
+// validateSnapshotCreateQuery accepts the internal service/node scope on a create
+// and only the snapshot ID on a restore.
+func validateSnapshotCreateQuery(query url.Values) *output.Error {
+	if query.Has("id") {
+		return invalidSnapshotParameter("id", "is not accepted on a create")
+	}
+	if query.Has("restore") {
+		if err := rejectSnapshotQueryKeys(query, []string{"service", "node"}, "is not accepted on a restore"); err != nil {
+			return err
 		}
-		if query.Has("id") {
-			return invalidSnapshotParameter("id", "is not accepted on a list")
-		}
-	case http.MethodPost:
-		if query.Has("id") {
-			return invalidSnapshotParameter("id", "is not accepted on a create")
-		}
-		if query.Has("restore") && !v1.ValidSnapshotID(query.Get("restore")) {
+		if !v1.ValidSnapshotID(query.Get("restore")) {
 			return invalidSnapshotParameter("restore", "must be a snapshot ID")
 		}
-	case http.MethodDelete:
-		if query.Has("restore") {
-			return invalidSnapshotParameter("restore", "is not accepted on a delete")
-		}
-		if !query.Has("id") || query.Get("id") == "" {
-			return invalidSnapshotParameter("id", "is required to delete a snapshot")
-		}
-		if !v1.ValidSnapshotID(query.Get("id")) {
-			return invalidSnapshotParameter("id", "must be a snapshot ID")
+		return nil
+	}
+	for _, key := range []string{"service", "node"} {
+		if query.Has(key) && !validSnapshotScope(query.Get(key)) {
+			return invalidSnapshotParameter(key, "must be an opaque ID, not a path")
 		}
 	}
 	return nil
+}
+
+// validateSnapshotDeleteQuery requires one well-formed id and nothing else.
+func validateSnapshotDeleteQuery(query url.Values) *output.Error {
+	if err := rejectSnapshotQueryKeys(query, []string{"restore", "service", "node"}, "is not accepted on a delete"); err != nil {
+		return err
+	}
+	if !query.Has("id") || query.Get("id") == "" {
+		return invalidSnapshotParameter("id", "is required to delete a snapshot")
+	}
+	if !v1.ValidSnapshotID(query.Get("id")) {
+		return invalidSnapshotParameter("id", "must be a snapshot ID")
+	}
+	return nil
+}
+
+// rejectSnapshotQueryKeys returns the first present key's typed 400.
+func rejectSnapshotQueryKeys(query url.Values, keys []string, message string) *output.Error {
+	for _, key := range keys {
+		if query.Has(key) {
+			return invalidSnapshotParameter(key, message)
+		}
+	}
+	return nil
+}
+
+// validSnapshotScope reports whether a service or node value can be carried
+// safely. The node treats the value as an opaque string recorded in metadata, so
+// the only rule is that it cannot look like a path or carry a control byte.
+func validSnapshotScope(value string) bool {
+	if value == "" || len(value) > maxSnapshotScopeBytes {
+		return false
+	}
+	if value == "." || value == ".." {
+		return false
+	}
+	return !strings.ContainsAny(value, "/\\\x00\n\r")
 }
 
 // invalidSnapshotParameter is the typed 400 for a bad query value.
@@ -159,12 +254,12 @@ func invalidSnapshotParameter(parameter, message string) *output.Error {
 		WithDetails(map[string]any{"parameter": parameter})
 }
 
-// serveSnapshotList answers the task's snapshots in ascending (createdAt, id)
-// order. pkg/snapshot sorts newest first; the list contract is oldest first, so
-// the handler sorts. The task filter is applied here as well as in the store so a
+// serveList answers the task's snapshots in ascending (createdAt, id) order.
+// pkg/snapshot sorts newest first; the list contract is oldest first, so the
+// handler sorts. The task filter is applied here as well as in the store so a
 // store that ignores its filter cannot serve another task's snapshots.
-func serveSnapshotList(store SnapshotStore, task Task, w http.ResponseWriter) {
-	infos, err := store.ListSnapshots(snapshot.SnapshotFilter{TaskID: task.ID})
+func (h *snapshotHandler) serveList(task Task, w http.ResponseWriter) {
+	infos, err := h.cfg.Store.ListSnapshots(snapshot.SnapshotFilter{TaskID: task.ID})
 	if err != nil {
 		writeSnapshotStoreError(w, "list", err)
 		return
@@ -186,8 +281,10 @@ func serveSnapshotList(store SnapshotStore, task Task, w http.ResponseWriter) {
 	writeSnapshotDocument(w, http.StatusOK, v1.NewSnapshotList(snapshotInfosToV1(owned)))
 }
 
-// serveSnapshotCreate snapshots the task's running VM on its own socket.
-func serveSnapshotCreate(ctx context.Context, store SnapshotStore, task Task, w http.ResponseWriter, r *http.Request) {
+// serveCreate snapshots the task's running VM on its own socket. The manager
+// sends the task's service and node IDs so the store can group snapshots for
+// retention; the node records them as opaque metadata.
+func (h *snapshotHandler) serveCreate(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request) {
 	if !taskRunning(task) {
 		writeSnapshotTaskNotRunning(w, task.ID)
 		return
@@ -199,7 +296,9 @@ func serveSnapshotCreate(ctx context.Context, store SnapshotStore, task Task, w 
 		return
 	}
 
-	info, createErr := store.CreateSnapshot(ctx, task.ID, task.SocketPath, snapshot.CreateOptions{
+	info, createErr := h.cfg.Store.CreateSnapshot(ctx, task.ID, task.SocketPath, snapshot.CreateOptions{
+		ServiceID:  r.URL.Query().Get("service"),
+		NodeID:     r.URL.Query().Get("node"),
 		VCPUCount:  request.VCPUs,
 		MemoryMB:   request.MemoryMB,
 		RootfsPath: request.RootfsPath,
@@ -214,18 +313,30 @@ func serveSnapshotCreate(ctx context.Context, store SnapshotStore, task Task, w 
 		return
 	}
 
+	// Retention is opportunistic: the snapshot exists, so a cleanup failure must
+	// not turn a successful create into an error. The store keeps its files and a
+	// later create retries the cleanup.
+	if h.cfg.MaxAge > 0 {
+		_, _, _ = h.cfg.Store.CleanupOldSnapshots(ctx, h.cfg.MaxAge)
+	}
+
 	writeSnapshotDocument(w, http.StatusCreated, v1.NewSnapshotDocument(snapshotInfoToV1(info)))
 }
 
-// serveSnapshotRestore restores one of the task's snapshots into a fresh
-// Firecracker process on <socketDir>/<taskID>-restored.sock.
-func serveSnapshotRestore(ctx context.Context, store SnapshotStore, task Task, snapshotID string, w http.ResponseWriter) {
-	if !taskRunning(task) {
-		writeSnapshotTaskNotRunning(w, task.ID)
+// serveRestore restores one of the task's snapshots into a fresh Firecracker
+// process on <SocketDir>/<taskID>-restored.sock. It does not require a live task:
+// the VM a snapshot came from may already be finished. Restores for one task are
+// serialized so two requests cannot race for the same socket.
+func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotID string, w http.ResponseWriter) {
+	if !h.acquireRestore(task.ID) {
+		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
+			"a restore for task %q is already in progress", task.ID).
+			WithDetails(map[string]any{"reason": "restore_in_progress"}))
 		return
 	}
+	defer h.releaseRestore(task.ID)
 
-	info, found, err := findTaskSnapshot(store, task.ID, snapshotID)
+	info, found, err := findTaskSnapshot(h.cfg.Store, task.ID, snapshotID)
 	if err != nil {
 		writeSnapshotStoreError(w, "list", err)
 		return
@@ -235,8 +346,7 @@ func serveSnapshotRestore(ctx context.Context, store SnapshotStore, task Task, s
 		return
 	}
 
-	socketPath := filepath.Join(filepath.Dir(task.SocketPath), task.ID+"-restored.sock")
-	if err := store.RestoreFromSnapshot(ctx, info, socketPath); err != nil {
+	if err := h.cfg.Store.RestoreFromSnapshot(ctx, info, h.restoredSocketPath(task)); err != nil {
 		writeSnapshotStoreError(w, "restore", err)
 		return
 	}
@@ -244,9 +354,39 @@ func serveSnapshotRestore(ctx context.Context, store SnapshotStore, task Task, s
 	writeSnapshotDocument(w, http.StatusOK, v1.NewSnapshotDocument(snapshotInfoToV1(info)))
 }
 
-// serveSnapshotDelete removes one of the task's snapshots.
-func serveSnapshotDelete(ctx context.Context, store SnapshotStore, task Task, snapshotID string, w http.ResponseWriter) {
-	_, found, err := findTaskSnapshot(store, task.ID, snapshotID)
+// restoredSocketPath is the restored VM's API socket. The configured directory is
+// independent of the task's own socket, so a finished task can still restore.
+func (h *snapshotHandler) restoredSocketPath(task Task) string {
+	dir := h.cfg.SocketDir
+	if dir == "" {
+		dir = filepath.Dir(task.SocketPath)
+	}
+	return filepath.Join(dir, task.ID+"-restored.sock")
+}
+
+// acquireRestore reserves the task's restore slot. False means another restore
+// for the same task is still running.
+func (h *snapshotHandler) acquireRestore(taskID string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, busy := h.restoring[taskID]; busy {
+		return false
+	}
+	h.restoring[taskID] = struct{}{}
+	return true
+}
+
+// releaseRestore frees the task's restore slot. It always runs, including when
+// the store fails, so a failed restore does not wedge the task.
+func (h *snapshotHandler) releaseRestore(taskID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.restoring, taskID)
+}
+
+// serveDelete removes one of the task's snapshots.
+func (h *snapshotHandler) serveDelete(ctx context.Context, task Task, snapshotID string, w http.ResponseWriter) {
+	_, found, err := findTaskSnapshot(h.cfg.Store, task.ID, snapshotID)
 	if err != nil {
 		writeSnapshotStoreError(w, "list", err)
 		return
@@ -256,7 +396,7 @@ func serveSnapshotDelete(ctx context.Context, store SnapshotStore, task Task, sn
 		return
 	}
 
-	if err := store.DeleteSnapshot(ctx, snapshotID); err != nil {
+	if err := h.cfg.Store.DeleteSnapshot(ctx, snapshotID); err != nil {
 		writeSnapshotStoreError(w, "delete", err)
 		return
 	}
@@ -279,8 +419,8 @@ func findTaskSnapshot(store SnapshotStore, taskID, snapshotID string) (*snapshot
 	return nil, false, nil
 }
 
-// taskRunning reports whether the task has a live Firecracker API socket, which
-// both create and restore need.
+// taskRunning reports whether the task has a live Firecracker API socket.
+// Snapshotting needs one; restoring does not, because it starts a new VM.
 func taskRunning(task Task) bool {
 	return task.Running && task.SocketPath != ""
 }
@@ -415,33 +555,35 @@ func writeSnapshotStoreError(w http.ResponseWriter, action string, err error) {
 	writeTypedError(w, status, typed)
 }
 
-// mapSnapshotStoreError classifies a store failure without ever repeating its
-// text: pkg/snapshot errors name absolute paths, sockets and checksums.
+// mapSnapshotStoreError classifies a store failure through pkg/snapshot's
+// sentinels without ever repeating its text: pkg/snapshot errors name absolute
+// paths, sockets and checksums.
 func mapSnapshotStoreError(action string, err error) (int, *output.Error) {
 	var netErr net.Error
-	if errors.Is(err, context.DeadlineExceeded) ||
+	if errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
 		(errors.As(err, &netErr) && netErr.Timeout()) {
 		return http.StatusGatewayTimeout, output.NewErrorf(output.CodeTimeout,
-			"the snapshot %s timed out", action).WithDetails(map[string]any{
-			"reason":    "snapshot_timeout",
-			"retryable": true,
-		})
+			"the snapshot %s timed out", action).
+			WithDetails(map[string]any{"reason": "snapshot_timeout"})
 	}
 
-	message := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(message, "not found"), strings.Contains(message, "no such file"):
+	case errors.Is(err, snapshot.ErrNotFound):
 		return http.StatusNotFound, output.NewError(output.CodeNotFound,
 			"the snapshot is not available on this node").
 			WithDetails(map[string]any{"reason": "snapshot_not_found"})
-	case strings.Contains(message, "firecracker"):
-		// The binary is missing, the API socket never came up or a call was
-		// rejected. The retryability of the error document already says whether
-		// a retry can help, so no internal detail is added.
-		return http.StatusServiceUnavailable, output.NewError(output.CodeUnavailable,
-			"snapshots are unavailable on this node").
-			WithDetails(map[string]any{"reason": "snapshots_unavailable"})
-	case strings.Contains(message, "checksum"):
+	case errors.Is(err, snapshot.ErrSocketMissing):
+		// The task's Firecracker socket vanished between the source snapshot of
+		// tasks and this call, so there is no VM left to snapshot.
+		return http.StatusConflict, output.NewError(output.CodeConflict,
+			"the task's VM is no longer running on this node").
+			WithDetails(map[string]any{"reason": "task_not_running"})
+	case errors.Is(err, snapshot.ErrSnapshotIncomplete):
+		return http.StatusConflict, output.NewError(output.CodeConflict,
+			"the snapshot is incomplete on this node").
+			WithDetails(map[string]any{"reason": "snapshot_incomplete"})
+	case errors.Is(err, snapshot.ErrChecksumMismatch):
 		return http.StatusInternalServerError, output.NewError(output.CodeInternal,
 			"the snapshot failed its integrity check").
 			WithDetails(map[string]any{"reason": "checksum_mismatch"})

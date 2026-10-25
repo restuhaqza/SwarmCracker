@@ -29,7 +29,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"time"
+	"path/filepath"
+	"strings"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
@@ -43,16 +44,13 @@ const (
 	snapshotAuditAction = "task.snapshot"
 	// maxSnapshotBodyBytes bounds one optional create body.
 	maxSnapshotBodyBytes = 64 << 10
-	// defaultSnapshotTimeout bounds one create or restore. Config.SnapshotTimeout
-	// overrides it for tests and for an operator with a slow node.
-	defaultSnapshotTimeout = 30 * time.Second
 )
 
 // SnapshotBroker is the manager's snapshot transport. It is a second optional
 // interface rather than four more methods on Broker, so exec, logs, files and
 // health fakes stay untouched.
 type SnapshotBroker interface {
-	CreateSnapshot(ctx context.Context, task v1.Task) (v1.Snapshot, error)
+	CreateSnapshot(ctx context.Context, task v1.Task, req v1.SnapshotCreateRequest) (v1.Snapshot, error)
 	ListTaskSnapshots(ctx context.Context, task v1.Task) ([]v1.Snapshot, error)
 	RestoreSnapshot(ctx context.Context, task v1.Task, snapshotID string) (v1.Snapshot, error)
 	DeleteSnapshot(ctx context.Context, task v1.Task, snapshotID string) error
@@ -74,14 +72,6 @@ func (s *Server) requireSnapshots(w http.ResponseWriter, r *http.Request) bool {
 			"reason":     "snapshots_disabled",
 		}))
 	return false
-}
-
-// snapshotTimeout is the per-request deadline for create and restore.
-func (s *Server) snapshotTimeout() time.Duration {
-	if s.cfg.SnapshotTimeout <= 0 {
-		return defaultSnapshotTimeout
-	}
-	return s.cfg.SnapshotTimeout
 }
 
 // listTaskSnapshots serves GET /v1/tasks/{ref}/snapshots.
@@ -142,7 +132,7 @@ func (s *Server) createTaskSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, err := s.validateSnapshotCreateBody(w, r)
+	request, status, err := s.validateSnapshotCreateBody(w, r)
 	if err != nil {
 		s.recordSnapshotAudit(r, auditResourceForRef(ref), "error")
 		s.writeErrorStatus(w, r, status, err)
@@ -154,10 +144,7 @@ func (s *Server) createTaskSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), s.snapshotTimeout())
-	defer cancel()
-
-	snapshot, err := s.cfg.Snapshots.CreateSnapshot(ctx, task)
+	snapshot, err := s.cfg.Snapshots.CreateSnapshot(r.Context(), task, request)
 	if err != nil {
 		s.recordSnapshotAudit(r, resource, "error")
 		s.writeError(w, r, err)
@@ -200,10 +187,7 @@ func (s *Server) serveSnapshotRestore(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), s.snapshotTimeout())
-	defer cancel()
-
-	snapshot, err := s.cfg.Snapshots.RestoreSnapshot(ctx, task, snapshotID)
+	snapshot, err := s.cfg.Snapshots.RestoreSnapshot(r.Context(), task, snapshotID)
 	if err != nil {
 		s.recordSnapshotAudit(r, resource, "error")
 		s.writeError(w, r, err)
@@ -287,10 +271,10 @@ func (s *Server) resolveSnapshotTask(w http.ResponseWriter, r *http.Request, ref
 // validateSnapshotCreateBody reads the optional strict create body. An empty
 // body is valid and needs no content type; a body must declare MediaType.
 //
-// The body is validated here even though the transport snapshots the task's own
-// VM: accepting a field the API cannot honour would be worse than rejecting it,
-// and the node records the resources the running VM actually has.
-func (s *Server) validateSnapshotCreateBody(w http.ResponseWriter, r *http.Request) (int, error) {
+// The parsed request is returned and forwarded to the manager, which sends it as
+// the node's JSON body: validating a field the transport then drops would accept
+// an instruction the API cannot honour.
+func (s *Server) validateSnapshotCreateBody(w http.ResponseWriter, r *http.Request) (v1.SnapshotCreateRequest, int, error) {
 	var request v1.SnapshotCreateRequest
 
 	r.Body = http.MaxBytesReader(w, r.Body, maxSnapshotBodyBytes)
@@ -298,43 +282,72 @@ func (s *Server) validateSnapshotCreateBody(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return http.StatusRequestEntityTooLarge,
+			return request, http.StatusRequestEntityTooLarge,
 				output.NewErrorf(output.CodeInvalid, "the request body exceeds %d bytes", maxSnapshotBodyBytes).
 					WithDetails(map[string]any{
 						"reason": "payload_too_large",
 						"limit":  maxSnapshotBodyBytes,
 					})
 		}
-		return http.StatusBadRequest,
+		return request, http.StatusBadRequest,
 			output.NewErrorf(output.CodeInvalid, "read request body: %v", err)
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
-		return 0, nil
+		return request, 0, nil
 	}
 
 	if status, err := requireContentType(r, MediaType); err != nil {
-		return status, err
+		return request, status, err
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		return http.StatusBadRequest,
+		return request, http.StatusBadRequest,
 			output.NewError(output.CodeInvalid,
 				"invalid JSON body: the snapshot request has unknown or malformed fields").
 				WithDetails(map[string]any{"reason": "invalid_body"})
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return http.StatusBadRequest, output.NewError(output.CodeInvalid,
+		return request, http.StatusBadRequest, output.NewError(output.CodeInvalid,
 			"the request body must contain exactly one JSON object")
 	}
-	if request.VCPUs < 0 || request.MemoryMB < 0 {
-		return http.StatusBadRequest,
-			output.NewError(output.CodeInvalid, "vcpus and memoryMB must be zero or positive").
-				WithDetails(map[string]any{"reason": "invalid_resources"})
+	if request.VCPUs < 0 {
+		return request, http.StatusBadRequest,
+			output.NewError(output.CodeInvalid, "vcpus must be zero or positive").
+				WithDetails(map[string]any{"parameter": "vcpus"})
 	}
-	return 0, nil
+	if request.MemoryMB < 0 {
+		return request, http.StatusBadRequest,
+			output.NewError(output.CodeInvalid, "memoryMB must be zero or positive").
+				WithDetails(map[string]any{"parameter": "memoryMB"})
+	}
+	if request.RootfsPath != "" && !validSnapshotRootfsPath(request.RootfsPath) {
+		return request, http.StatusBadRequest,
+			output.NewError(output.CodeInvalid,
+				"rootfsPath must be an absolute, cleaned path without a .. segment").
+				WithDetails(map[string]any{"parameter": "rootfsPath"})
+	}
+	return request, 0, nil
+}
+
+// validSnapshotRootfsPath accepts an absolute path in its cleaned form with no
+// parent segment. The node records the path in the snapshot metadata, so a
+// traversal or relative value must never leave the public layer.
+func validSnapshotRootfsPath(raw string) bool {
+	if !filepath.IsAbs(raw) || filepath.Clean(raw) != raw || raw == "/" {
+		return false
+	}
+	if strings.ContainsAny(raw, "\x00\n\r") {
+		return false
+	}
+	for _, segment := range strings.Split(raw, "/") {
+		if segment == ".." {
+			return false
+		}
+	}
+	return true
 }
 
 // writeSnapshotMissingTask is the 400 for a flat form with no ?task=. No audit

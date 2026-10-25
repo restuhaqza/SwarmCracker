@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -35,9 +37,18 @@ type fakeSnapshotStore struct {
 	restoreErr     error
 	gotRestoreInfo *snapshot.SnapshotInfo
 	gotRestoreSock string
+	// restoreStarted, when non-nil, is closed as soon as a restore enters the
+	// store; restoreRelease, when non-nil, blocks it until the test allows it.
+	restoreStarted chan struct{}
+	restoreRelease chan struct{}
 
 	deleteErr error
 	deleted   []string
+
+	cleanupErr     error
+	cleanupCalls   int
+	gotCleanupAge  time.Duration
+	cleanupRemoved int
 }
 
 func (f *fakeSnapshotStore) CreateSnapshot(
@@ -62,12 +73,27 @@ func (f *fakeSnapshotStore) RestoreFromSnapshot(
 	_ context.Context, info *snapshot.SnapshotInfo, socketPath string,
 ) error {
 	f.gotRestoreInfo, f.gotRestoreSock = info, socketPath
+	if f.restoreStarted != nil {
+		close(f.restoreStarted)
+	}
+	if f.restoreRelease != nil {
+		<-f.restoreRelease
+	}
 	return f.restoreErr
 }
 
 func (f *fakeSnapshotStore) DeleteSnapshot(_ context.Context, snapshotID string) error {
 	f.deleted = append(f.deleted, snapshotID)
 	return f.deleteErr
+}
+
+func (f *fakeSnapshotStore) CleanupOldSnapshots(_ context.Context, maxAge time.Duration) (int, int64, error) {
+	f.cleanupCalls++
+	f.gotCleanupAge = maxAge
+	if f.cleanupErr != nil {
+		return 0, 0, f.cleanupErr
+	}
+	return f.cleanupRemoved, 0, nil
 }
 
 // snapshotTask is the running task every node-handler test serves.
@@ -80,9 +106,15 @@ func snapshotTask() Task {
 	}
 }
 
-// serveSnapshot drives the handler directly: task resolution is the server's
-// job and is exercised separately.
+// serveSnapshot drives the handler directly with no configured socket directory:
+// task resolution is the server's job and is exercised separately.
 func serveSnapshot(t *testing.T, store SnapshotStore, task Task, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	return serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store}, task, method, target, body)
+}
+
+// serveSnapshotWithConfig drives the handler with an explicit handler config.
+func serveSnapshotWithConfig(t *testing.T, cfg SnapshotHandlerConfig, task Task, method, target, body string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var reader io.Reader
@@ -91,7 +123,22 @@ func serveSnapshot(t *testing.T, store SnapshotStore, task Task, method, target,
 	}
 	req := httptest.NewRequest(method, target, reader)
 	rec := httptest.NewRecorder()
-	NewSnapshotHandler(store)(context.Background(), task, rec, req)
+	NewSnapshotHandler(cfg)(context.Background(), task, rec, req)
+	return rec
+}
+
+// serveHandler drives one already-built handler instance, for tests that need the
+// same handler (and therefore the same in-flight state) across requests.
+func serveHandler(t *testing.T, handler Handler, task Task, method, target, body string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	var reader io.Reader
+	if body != "" {
+		reader = strings.NewReader(body)
+	}
+	req := httptest.NewRequest(method, target, reader)
+	rec := httptest.NewRecorder()
+	handler(context.Background(), task, rec, req)
 	return rec
 }
 
@@ -182,6 +229,35 @@ func TestSnapshotHandlerCreateUsesTheTaskSocket(t *testing.T) {
 		}, store.gotCreate)
 	})
 
+	t.Run("service and node metadata", func(t *testing.T) {
+		store := &fakeSnapshotStore{createInfo: testSnapshotInfo("snap-1", "task-1", time.Now().UTC())}
+
+		rec := serveSnapshot(t, store, snapshotTask(), http.MethodPost,
+			"/v1/tasks/task-1/snapshots?service=svc-1&node=node-1", "")
+
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		require.Equal(t, "svc-1", store.gotCreate.ServiceID)
+		require.Equal(t, "node-1", store.gotCreate.NodeID)
+
+		// The scope is metadata: it must also come back on the wire so a client
+		// can see which service and node a snapshot belongs to.
+		var doc v1.SnapshotDocument
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+		require.Equal(t, "svc-1", doc.ServiceID)
+		require.Equal(t, "node-1", doc.NodeID)
+	})
+
+	t.Run("path-like service is rejected", func(t *testing.T) {
+		store := &fakeSnapshotStore{}
+
+		rec := serveSnapshot(t, store, snapshotTask(), http.MethodPost,
+			"/v1/tasks/task-1/snapshots?service=../etc", "")
+
+		require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+		require.Equal(t, string(output.CodeInvalid), decodeSnapshotError(t, rec).Error.Code)
+		require.Empty(t, store.gotTaskID, "a path-like scope must not reach the store")
+	})
+
 	t.Run("unknown field", func(t *testing.T) {
 		store := &fakeSnapshotStore{}
 
@@ -209,8 +285,56 @@ func TestSnapshotHandlerCreateLogOnlyTaskIs404(t *testing.T) {
 	require.Empty(t, store.gotTaskID)
 }
 
-// TestSnapshotHandlerRestoreUsesTheRestoredSocket pins restore: the snapshot must
-// belong to the task and the process is started on the restored socket name.
+// TestSnapshotHandlerCreatePrunesOldSnapshots pins opportunistic retention: a
+// successful create invokes the age cleanup when the handler configures one, and
+// a cleanup failure never fails the create.
+func TestSnapshotHandlerCreatePrunesOldSnapshots(t *testing.T) {
+	const maxAge = 7 * 24 * time.Hour
+
+	t.Run("cleanup runs when max age is configured", func(t *testing.T) {
+		store := &fakeSnapshotStore{createInfo: testSnapshotInfo("snap-1", "task-1", time.Now().UTC())}
+
+		rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, MaxAge: maxAge},
+			snapshotTask(), http.MethodPost, "/v1/tasks/task-1/snapshots", "")
+
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		require.Equal(t, 1, store.cleanupCalls)
+		require.Equal(t, maxAge, store.gotCleanupAge)
+	})
+
+	t.Run("no max age does not clean up", func(t *testing.T) {
+		store := &fakeSnapshotStore{createInfo: testSnapshotInfo("snap-1", "task-1", time.Now().UTC())}
+
+		rec := serveSnapshot(t, store, snapshotTask(), http.MethodPost, "/v1/tasks/task-1/snapshots", "")
+
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		require.Zero(t, store.cleanupCalls)
+	})
+
+	t.Run("cleanup failure does not fail the create", func(t *testing.T) {
+		store := &fakeSnapshotStore{
+			createInfo: testSnapshotInfo("snap-1", "task-1", time.Now().UTC()),
+			cleanupErr: errors.New("failed to read snapshot directory: /var/lib/firecracker/snapshots"),
+		}
+
+		rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, MaxAge: maxAge},
+			snapshotTask(), http.MethodPost, "/v1/tasks/task-1/snapshots", "")
+
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		require.Equal(t, 1, store.cleanupCalls)
+	})
+
+	t.Run("a failed create does not clean up", func(t *testing.T) {
+		store := &fakeSnapshotStore{createErr: errors.New("boom")}
+
+		rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, MaxAge: maxAge},
+			snapshotTask(), http.MethodPost, "/v1/tasks/task-1/snapshots", "")
+
+		require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+		require.Zero(t, store.cleanupCalls)
+	})
+}
+
 func TestSnapshotHandlerRestoreUsesTheRestoredSocket(t *testing.T) {
 	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
 	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
@@ -227,8 +351,63 @@ func TestSnapshotHandlerRestoreUsesTheRestoredSocket(t *testing.T) {
 	require.Equal(t, "snap-1", doc.ID)
 }
 
-// TestSnapshotHandlerRestoreOtherTaskSnapshotIs404 proves one task cannot restore
-// another task's snapshot through its own route.
+// TestSnapshotHandlerRestoreLogOnlyTaskUsesSocketDir pins restore for a finished
+// task: a restore needs no live task socket, so it starts the VM on the
+// configured socket directory instead of failing as "not running".
+func TestSnapshotHandlerRestoreLogOnlyTaskUsesSocketDir(t *testing.T) {
+	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
+	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
+	socketDir := t.TempDir()
+	logOnly := Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"}
+
+	rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: socketDir},
+		logOnly, http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, filepath.Join(socketDir, "task-1-restored.sock"), store.gotRestoreSock)
+}
+
+// TestSnapshotHandlerRestoreIsSerializedPerTask pins the in-process restore lock:
+// a second concurrent restore for the same task is 409 restore_in_progress and
+// never reaches the store.
+func TestSnapshotHandlerRestoreIsSerializedPerTask(t *testing.T) {
+	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
+	store := &fakeSnapshotStore{
+		list:           []*snapshot.SnapshotInfo{info},
+		restoreStarted: make(chan struct{}),
+		restoreRelease: make(chan struct{}),
+	}
+	handler := NewSnapshotHandler(SnapshotHandlerConfig{Store: store, SocketDir: t.TempDir()})
+
+	firstDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", nil)
+		rec := httptest.NewRecorder()
+		handler(context.Background(), snapshotTask(), rec, req)
+		firstDone <- rec
+	}()
+
+	<-store.restoreStarted
+
+	second := serveHandler(t, handler, snapshotTask(), http.MethodPost,
+		"/v1/tasks/task-1/snapshots?restore=snap-1", "")
+
+	require.Equal(t, http.StatusConflict, second.Code, second.Body.String())
+	doc := decodeSnapshotError(t, second)
+	require.Equal(t, string(output.CodeConflict), doc.Error.Code)
+	require.Equal(t, "restore_in_progress", doc.Error.Details["reason"])
+
+	close(store.restoreRelease)
+	require.Equal(t, http.StatusOK, (<-firstDone).Code)
+
+	// The lock is released: a later restore is accepted again.
+	store.restoreStarted = nil
+	store.restoreRelease = nil
+	rec := serveHandler(t, handler, snapshotTask(), http.MethodPost,
+		"/v1/tasks/task-1/snapshots?restore=snap-1", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+}
+
 func TestSnapshotHandlerRestoreOtherTaskSnapshotIs404(t *testing.T) {
 	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{
 		testSnapshotInfo("snap-other", "task-2", time.Now().UTC()),
@@ -361,8 +540,83 @@ func TestSnapshotHandlerStoreErrorIs503WithoutPaths(t *testing.T) {
 	})
 }
 
-// requireNoSnapshotLeak asserts an error body names no node path, socket file or
-// checksum.
+// TestSnapshotHandlerClassifiesStoreErrors pins the sentinel mapping that
+// replaces substring matching: each store failure has one stable status, code and
+// reason, and no message ever carries a path.
+func TestSnapshotHandlerClassifiesStoreErrors(t *testing.T) {
+	cases := []struct {
+		name       string
+		storeErr   error
+		wantStatus int
+		wantCode   output.Code
+		wantReason string
+	}{
+		{
+			name:       "not found",
+			storeErr:   fmt.Errorf("%w: snap-1", snapshot.ErrNotFound),
+			wantStatus: http.StatusNotFound,
+			wantCode:   output.CodeNotFound,
+			wantReason: "snapshot_not_found",
+		},
+		{
+			name:       "socket missing",
+			storeErr:   fmt.Errorf("%w: /var/run/firecracker/task-1.sock", snapshot.ErrSocketMissing),
+			wantStatus: http.StatusConflict,
+			wantCode:   output.CodeConflict,
+			wantReason: "task_not_running",
+		},
+		{
+			name:       "snapshot incomplete",
+			storeErr:   fmt.Errorf("%w: state file not found: /var/lib/firecracker/snapshots/snap-1/vm.state", snapshot.ErrSnapshotIncomplete),
+			wantStatus: http.StatusConflict,
+			wantCode:   output.CodeConflict,
+			wantReason: "snapshot_incomplete",
+		},
+		{
+			name:       "checksum mismatch",
+			storeErr:   fmt.Errorf("%w: expected deadbeef, got cafebabe", snapshot.ErrChecksumMismatch),
+			wantStatus: http.StatusInternalServerError,
+			wantCode:   output.CodeInternal,
+			wantReason: "checksum_mismatch",
+		},
+		{
+			name:       "canceled context",
+			storeErr:   context.Canceled,
+			wantStatus: http.StatusGatewayTimeout,
+			wantCode:   output.CodeTimeout,
+			wantReason: "snapshot_timeout",
+		},
+		{
+			name:       "expired deadline",
+			storeErr:   context.DeadlineExceeded,
+			wantStatus: http.StatusGatewayTimeout,
+			wantCode:   output.CodeTimeout,
+			wantReason: "snapshot_timeout",
+		},
+		{
+			name:       "unclassified store failure",
+			storeErr:   errors.New("firecracker API not ready after restore: /var/run/firecracker/task-1-restored.sock"),
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   output.CodeUnavailable,
+			wantReason: "snapshot_store_error",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &fakeSnapshotStore{createErr: tc.storeErr}
+
+			rec := serveSnapshot(t, store, snapshotTask(), http.MethodPost, "/v1/tasks/task-1/snapshots", "")
+
+			require.Equal(t, tc.wantStatus, rec.Code, rec.Body.String())
+			doc := decodeSnapshotError(t, rec)
+			require.Equal(t, string(tc.wantCode), doc.Error.Code)
+			require.Equal(t, tc.wantReason, doc.Error.Details["reason"])
+			requireNoSnapshotLeak(t, rec.Body.String())
+		})
+	}
+}
+
 func requireNoSnapshotLeak(t *testing.T, body string) {
 	t.Helper()
 
@@ -397,8 +651,8 @@ func TestSnapshotHandlerCreateBodyCap(t *testing.T) {
 // overwrite the operation: the registry's duplicate error is returned.
 func TestNewSnapshotHandlerDuplicateRegistration(t *testing.T) {
 	srv := newRouteServer(t, &fakeTaskSource{})
-	require.NoError(t, srv.Handle("snapshots", NewSnapshotHandler(&fakeSnapshotStore{})))
-	require.Error(t, srv.Handle("snapshots", NewSnapshotHandler(&fakeSnapshotStore{})))
+	require.NoError(t, srv.Handle("snapshots", NewSnapshotHandler(SnapshotHandlerConfig{Store: &fakeSnapshotStore{}})))
+	require.Error(t, srv.Handle("snapshots", NewSnapshotHandler(SnapshotHandlerConfig{Store: &fakeSnapshotStore{}})))
 }
 
 // --- manager side ---
@@ -434,16 +688,20 @@ func encodeNodeSnapshot(t *testing.T, w http.ResponseWriter, status int, value a
 }
 
 // TestManagerCreateSnapshotSendsPost pins the create request: POST the task's
-// snapshot operation, no query, the caller's request ID and a 201 document back.
+// snapshot operation with the task's service/node scope, the caller's request ID
+// and the public create body as the node's JSON body.
 func TestManagerCreateSnapshotSendsPost(t *testing.T) {
 	pki := newTestPKI(t)
 
-	var gotMethod, gotPath, gotQuery, gotRequestID string
+	var gotMethod, gotPath, gotQuery, gotRequestID, gotBody, gotContentType string
 	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
 	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
 		"snapshots": func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
 			gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
 			gotRequestID = r.Header.Get(requestIDHeader)
+			gotContentType = r.Header.Get("Content-Type")
+			body, _ := io.ReadAll(r.Body)
+			gotBody = string(body)
 			encodeNodeSnapshot(t, w, http.StatusCreated, v1.NewSnapshotDocument(v1.Snapshot{
 				ID: "snap-1", TaskID: "task-1", CreatedAt: "2026-10-24T12:00:00Z",
 			}))
@@ -453,13 +711,24 @@ func TestManagerCreateSnapshotSendsPost(t *testing.T) {
 	mgr := snapshotTestManager(t, pki, baseURL, 0, func(context.Context) string {
 		return "req_abc123def456"
 	})
-	got, err := mgr.CreateSnapshot(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+	task := v1.Task{ID: "task-1", ServiceID: "svc-1", NodeID: "node-1"}
+	got, err := mgr.CreateSnapshot(context.Background(), task, v1.SnapshotCreateRequest{
+		VCPUs: 2, MemoryMB: 1024, RootfsPath: "/var/lib/firecracker/rootfs/task-1",
+	})
 
 	require.NoError(t, err)
 	require.Equal(t, http.MethodPost, gotMethod)
 	require.Equal(t, "/v1/tasks/task-1/snapshots", gotPath)
-	require.Empty(t, gotQuery)
+	require.Equal(t, "node=node-1&service=svc-1", gotQuery,
+		"the manager must send the task's snapshot scope so retention can group by service")
 	require.Equal(t, "req_abc123def456", gotRequestID)
+	require.Equal(t, publicMediaType, gotContentType)
+
+	var sent v1.SnapshotCreateRequest
+	require.NoError(t, json.Unmarshal([]byte(gotBody), &sent))
+	require.Equal(t, v1.SnapshotCreateRequest{
+		VCPUs: 2, MemoryMB: 1024, RootfsPath: "/var/lib/firecracker/rootfs/task-1",
+	}, sent)
 	require.Equal(t, "snap-1", got.ID)
 	require.Equal(t, "task-1", got.TaskID)
 }
@@ -488,8 +757,56 @@ func TestManagerListTaskSnapshotsSendsGet(t *testing.T) {
 	require.Equal(t, "snap-2", got[1].ID)
 }
 
-// TestManagerRestoreSnapshotSendsQuery pins restore: POST with restore=<id>, and
-// a 200 document back.
+// TestManagerListTaskSnapshotsSortsByCreatedAtThenID pins the manager's ordering:
+// pagination must not depend on the node's list order.
+func TestManagerListTaskSnapshotsSortsByCreatedAtThenID(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"snapshots": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			encodeNodeSnapshot(t, w, http.StatusOK, v1.NewSnapshotList([]v1.Snapshot{
+				{ID: "snap-b", CreatedAt: "2026-10-24T12:00:02Z"},
+				{ID: "snap-c", CreatedAt: "2026-10-24T12:00:01.5Z"},
+				{ID: "snap-d", CreatedAt: "2026-10-24T12:00:01Z"},
+				{ID: "snap-a", CreatedAt: "2026-10-24T12:00:01Z"},
+			}))
+		},
+	})
+
+	got, err := snapshotTestManager(t, pki, baseURL, 0, nil).
+		ListTaskSnapshots(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	require.NoError(t, err)
+	require.Equal(t, []string{"snap-a", "snap-d", "snap-c", "snap-b"},
+		[]string{got[0].ID, got[1].ID, got[2].ID, got[3].ID},
+		"fractional seconds must sort before whole seconds at the same instant")
+}
+
+// TestManagerListTaskSnapshotsDecodesAPage limits the list decoder to a
+// response-sized budget rather than the error-body cap: a legitimate snapshot
+// path can push a document past the small error limit.
+func TestManagerListTaskSnapshotsDecodesAPage(t *testing.T) {
+	pki := newTestPKI(t)
+
+	longPath := "/var/lib/firecracker/rootfs/" + strings.Repeat("a", 2<<20)
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"snapshots": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			encodeNodeSnapshot(t, w, http.StatusOK, v1.NewSnapshotList([]v1.Snapshot{
+				{ID: "snap-1", RootfsPath: longPath},
+			}))
+		},
+	})
+
+	got, err := snapshotTestManager(t, pki, baseURL, 0, nil).
+		ListTaskSnapshots(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	require.NoError(t, err, "a document past the error-body limit is still a valid page")
+	require.Len(t, got, 1)
+	require.Equal(t, longPath, got[0].RootfsPath)
+}
+
 func TestManagerRestoreSnapshotSendsQuery(t *testing.T) {
 	pki := newTestPKI(t)
 
@@ -533,8 +850,27 @@ func TestManagerDeleteSnapshotSendsDelete(t *testing.T) {
 	require.Equal(t, "id=snap-1", gotQuery)
 }
 
-// TestManagerSnapshotRelaysTypedNodeError pins the relay rule: a node's 404 keeps
-// its code, message and details.
+// TestManagerDeleteSnapshotRejectsANon204Success pins the delete status: only 204
+// is a delete. A 200 with a document means the node did not delete anything.
+func TestManagerDeleteSnapshotRejectsANon204Success(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"snapshots": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			encodeNodeSnapshot(t, w, http.StatusOK, v1.NewSnapshotDocument(v1.Snapshot{ID: "snap-1"}))
+		},
+	})
+
+	err := snapshotTestManager(t, pki, baseURL, 0, nil).
+		DeleteSnapshot(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"}, "snap-1")
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, output.CodeInternal, typed.Code)
+	require.NotContains(t, typed.Message, "/var/")
+}
+
 func TestManagerSnapshotRelaysTypedNodeError(t *testing.T) {
 	pki := newTestPKI(t)
 
@@ -601,7 +937,7 @@ func TestManagerSnapshotTimesOut(t *testing.T) {
 	mgr := snapshotTestManager(t, pki, baseURL, 50*time.Millisecond, nil)
 
 	started := time.Now()
-	_, err := mgr.CreateSnapshot(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+	_, err := mgr.CreateSnapshot(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"}, v1.SnapshotCreateRequest{})
 	require.Less(t, time.Since(started), 5*time.Second, "CreateSnapshot must honour its own deadline")
 
 	var typed *output.Error

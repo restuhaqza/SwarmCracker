@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -40,6 +41,12 @@ const (
 	// error document is far smaller; the cap stops a hostile node from making
 	// the manager buffer an unbounded body.
 	maxRelayedErrorBytes = 1 << 20
+
+	// maxRelayedDocumentBytes bounds a successful snapshot document or page. A
+	// page can legitimately carry long rootfs paths, so it uses the same 8 MiB
+	// response budget pkg/client applies to one decoded response rather than the
+	// much smaller error-body limit.
+	maxRelayedDocumentBytes = 8 << 20
 
 	// defaultHealthTimeout bounds one health fetch when ManagerConfig names no
 	// deadline. It is short on purpose: health is best-effort enrichment and a
@@ -434,9 +441,24 @@ func healthTransportError(ctx context.Context, nodeID string, err error) *output
 // (routeFor), one deadline and one wire decoder, and they relay a node's typed
 // error unchanged so the public handler can answer the same code.
 
-// CreateSnapshot snapshots a running task's VM on its own node.
-func (m *Manager) CreateSnapshot(ctx context.Context, task v1.Task) (v1.Snapshot, error) {
-	return m.snapshotDocument(ctx, task, http.MethodPost, nil)
+// CreateSnapshot snapshots a running task's VM on its own node. The task's
+// service and node IDs travel as internal query parameters so the store can group
+// snapshots for retention; req becomes the node's JSON body.
+func (m *Manager) CreateSnapshot(ctx context.Context, task v1.Task, req v1.SnapshotCreateRequest) (v1.Snapshot, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return v1.Snapshot{}, output.NewError(output.CodeInternal,
+			"the snapshot create request could not be encoded")
+	}
+
+	query := make(url.Values, 2)
+	if task.ServiceID != "" {
+		query.Set("service", task.ServiceID)
+	}
+	if task.NodeID != "" {
+		query.Set("node", task.NodeID)
+	}
+	return m.snapshotDocument(ctx, task, http.MethodPost, query, body)
 }
 
 // RestoreSnapshot restores one of a task's snapshots on the node that holds it.
@@ -444,12 +466,14 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, task v1.Task, snapshotID 
 	if !v1.ValidSnapshotID(snapshotID) {
 		return v1.Snapshot{}, errInvalidSnapshotID()
 	}
-	return m.snapshotDocument(ctx, task, http.MethodPost, url.Values{"restore": {snapshotID}})
+	return m.snapshotDocument(ctx, task, http.MethodPost, url.Values{"restore": {snapshotID}}, nil)
 }
 
-// ListTaskSnapshots lists the snapshots the task's node holds for it.
+// ListTaskSnapshots lists the snapshots the task's node holds for it, ordered by
+// (createdAt, id) ascending. The manager sorts rather than trusting the node so
+// pagination is stable regardless of the node's own order.
 func (m *Manager) ListTaskSnapshots(ctx context.Context, task v1.Task) ([]v1.Snapshot, error) {
-	resp, route, err := m.callSnapshot(ctx, task, http.MethodGet, nil)
+	resp, route, err := m.callSnapshot(ctx, task, http.MethodGet, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -466,6 +490,7 @@ func (m *Manager) ListTaskSnapshots(ctx context.Context, task v1.Task) ([]v1.Sna
 	if doc.Items == nil {
 		return []v1.Snapshot{}, nil
 	}
+	sortSnapshots(doc.Items)
 	return doc.Items, nil
 }
 
@@ -475,23 +500,30 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, task v1.Task, snapshotID s
 		return errInvalidSnapshotID()
 	}
 
-	resp, route, err := m.callSnapshot(ctx, task, http.MethodDelete, url.Values{"id": {snapshotID}})
+	resp, route, err := m.callSnapshot(ctx, task, http.MethodDelete, url.Values{"id": {snapshotID}}, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+	if resp.StatusCode == http.StatusNoContent {
 		return nil
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// A 2xx that is not 204 did not delete: only the 204 contract is a
+		// success here.
+		return output.NewErrorf(output.CodeInternal,
+			"node %q returned status %d for a snapshot delete", route.Node.ID, resp.StatusCode).
+			WithDetails(map[string]any{"nodeId": route.Node.ID})
 	}
 	return decodeSnapshotNodeError(resp.Body, resp.StatusCode, route.Node.ID)
 }
 
 // snapshotDocument performs a create or restore and decodes the 200/201 document.
 func (m *Manager) snapshotDocument(
-	ctx context.Context, task v1.Task, method string, query url.Values,
+	ctx context.Context, task v1.Task, method string, query url.Values, body []byte,
 ) (v1.Snapshot, error) {
-	resp, route, err := m.callSnapshot(ctx, task, method, query)
+	resp, route, err := m.callSnapshot(ctx, task, method, query, body)
 	if err != nil {
 		return v1.Snapshot{}, err
 	}
@@ -509,10 +541,11 @@ func (m *Manager) snapshotDocument(
 }
 
 // callSnapshot resolves the task's node, builds the operation URL and performs
-// one request under the snapshot deadline. The returned body owns the deadline:
-// closing it releases the context, so a caller must always close it.
+// one request under the snapshot deadline. A non-nil body is sent as the node's
+// JSON document. The returned body owns the deadline: closing it releases the
+// context, so a caller must always close it.
 func (m *Manager) callSnapshot(
-	ctx context.Context, task v1.Task, method string, query url.Values,
+	ctx context.Context, task v1.Task, method string, query url.Values, body []byte,
 ) (*http.Response, Route, error) {
 	route, err := m.routeFor(ctx, task, snapshotOperation)
 	if err != nil {
@@ -525,11 +558,19 @@ func (m *Manager) callSnapshot(
 	if len(query) > 0 {
 		target.RawQuery = query.Encode()
 	}
-	req, err := http.NewRequestWithContext(callCtx, method, target.String(), nil)
+
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(callCtx, method, target.String(), reader)
 	if err != nil {
 		cancel()
 		return nil, route, output.NewErrorf(output.CodeInternal,
 			"build node %q snapshot request", route.Node.ID)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", publicMediaType)
 	}
 	if m.requestIDFrom != nil {
 		if id := m.requestIDFrom(ctx); id != "" {
@@ -573,7 +614,32 @@ func snapshotTransportError(ctx context.Context, nodeID string, err error) *outp
 
 // decodeSnapshotWire decodes one bounded snapshot document from the node wire.
 func decodeSnapshotWire(body io.Reader, out any) error {
-	return json.NewDecoder(io.LimitReader(body, maxRelayedErrorBytes)).Decode(out)
+	return json.NewDecoder(io.LimitReader(body, maxRelayedDocumentBytes)).Decode(out)
+}
+
+// sortSnapshots orders a page by (createdAt, id) ascending. Timestamps are
+// RFC3339Nano strings; parsing them is required because a fractional second is
+// lexicographically smaller than the bare second ("…00.5Z" < "…00Z") even though
+// it is later in time. A value that does not parse falls back to a string compare.
+func sortSnapshots(items []v1.Snapshot) {
+	sort.SliceStable(items, func(i, j int) bool {
+		return snapshotBefore(items[i], items[j])
+	})
+}
+
+// snapshotBefore reports whether a sorts before b by (createdAt, id).
+func snapshotBefore(a, b v1.Snapshot) bool {
+	if at, aErr := time.Parse(time.RFC3339Nano, a.CreatedAt); aErr == nil {
+		if bt, bErr := time.Parse(time.RFC3339Nano, b.CreatedAt); bErr == nil {
+			if !at.Equal(bt) {
+				return at.Before(bt)
+			}
+		}
+	}
+	if a.CreatedAt != b.CreatedAt {
+		return a.CreatedAt < b.CreatedAt
+	}
+	return a.ID < b.ID
 }
 
 // decodeSnapshotNodeError relays a node error document: its code, message,

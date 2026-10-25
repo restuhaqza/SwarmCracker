@@ -1550,6 +1550,8 @@ paths:
               schema: { $ref: "#/components/schemas/SnapshotDocument" }
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
@@ -1651,12 +1653,18 @@ paths:
         anything is audited. The snapshot must belong to the task. Restore starts
         a fresh Firecracker process outside SwarmKit's task lifecycle, so the
         restored VM may outlive the task it came from; this is why the capability
-        is experimental. The response is the Snapshot document, not the restored
-        task. Selectors are enforced as for exec and the attempt is audited as
-        task.snapshot. A snapshot the node does not hold for the task is 404
-        not_found with details.reason "snapshot_not_found"; a task that is not
-        running is 404 with details.reason "task_not_running". A restore that
-        exceeds its 30 s deadline is 504 with code timeout.
+        is experimental. A task does not need to be running: the restore starts a
+        new VM on the node's socket directory, so a finished task's snapshot can
+        be restored. Restores are serialized per task; a concurrent restore for
+        the same task is 409 conflict with details.reason "restore_in_progress".
+        A crash during restore, or a process left by an earlier daemon lifetime,
+        can leave an untracked Firecracker process behind. The response is the
+        Snapshot document, not the restored task. Selectors are enforced as for
+        exec and the attempt is audited as task.snapshot. A snapshot the node does
+        not hold for the task is 404 not_found with details.reason
+        "snapshot_not_found"; a snapshot whose files are incomplete is 409 with
+        details.reason "snapshot_incomplete". A restore that exceeds its 30 s
+        deadline is 504 with code timeout.
       parameters:
         - name: id
           in: path
@@ -1681,6 +1689,8 @@ paths:
               schema: { $ref: "#/components/schemas/SnapshotDocument" }
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
@@ -1829,10 +1839,15 @@ paths:
         `task` is required: a snapshot lives on the node that ran the task. Missing
         `task` is 400 invalid with details.parameter "task". The snapshot must
         belong to that task; restore starts a Firecracker process outside
-        SwarmKit's task lifecycle, so the restored VM may outlive the task. A
-        snapshot the node does not hold is 404 with details.reason
-        "snapshot_not_found"; a task that is not running is 404 with
-        details.reason "task_not_running". A restore that exceeds its 30 s
+        SwarmKit's task lifecycle, so the restored VM may outlive the task. The
+        task does not need to be running: restore starts a new VM on the node's
+        socket directory. Restores are serialized per task; a concurrent restore
+        for the same task is 409 conflict with details.reason
+        "restore_in_progress". A crash during restore, or a process left by an
+        earlier daemon lifetime, can leave an untracked Firecracker process
+        behind. A snapshot the node does not hold is 404 with details.reason
+        "snapshot_not_found"; a snapshot whose files are incomplete is 409 with
+        details.reason "snapshot_incomplete". A restore that exceeds its 30 s
         deadline is 504 with code timeout. Selectors are enforced and the attempt
         is audited as task.snapshot.
       parameters:
@@ -1859,6 +1874,8 @@ paths:
               schema: { $ref: "#/components/schemas/SnapshotDocument" }
         "400":
           $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "401":
           $ref: "#/components/responses/Unauthenticated"
         "403":
