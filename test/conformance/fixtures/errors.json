@@ -1,0 +1,94 @@
+{
+  "schemaVersion": 1,
+  "name": "errors",
+  "cases": [
+    {
+      "name": "unknown service is not_found",
+      "request": {
+        "method": "GET",
+        "path": "/v1/services/conformance-suite-absent",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 404,
+        "errorCode": "not_found"
+      }
+    },
+    {
+      "name": "a reader may not write",
+      "request": {
+        "method": "POST",
+        "path": "/v1/services",
+        "role": "reader",
+        "body": {
+          "name": "conformance-forbidden",
+          "spec": {"mode": "replicated", "task": {"image": "nginx:alpine"}}
+        }
+      },
+      "expect": {
+        "status": 403,
+        "errorCode": "forbidden"
+      }
+    },
+    {
+      "name": "a patch without If-Match is 428",
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/services/conformance-suite-absent",
+        "role": "admin",
+        "contentType": "application/merge-patch+json",
+        "body": {"labels": {"suite": "conformance"}}
+      },
+      "expect": {
+        "status": 428,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "name": "a stale If-Match is 412",
+      "mockOnly": true,
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/services/web",
+        "role": "admin",
+        "contentType": "application/merge-patch+json",
+        "headers": {"If-Match": "\"99\""},
+        "body": {"labels": {"suite": "conformance"}}
+      },
+      "expect": {
+        "status": 412,
+        "errorCode": "conflict"
+      }
+    },
+    {
+      "name": "the wrong content type is 415",
+      "request": {
+        "method": "POST",
+        "path": "/v1/services",
+        "role": "admin",
+        "contentType": "application/json",
+        "body": {
+          "name": "conformance-content-type",
+          "spec": {"mode": "replicated", "task": {"image": "nginx:alpine"}}
+        }
+      },
+      "expect": {
+        "status": 415,
+        "errorCode": "invalid"
+      }
+    },
+    {
+      "name": "an unsupported Accept is 406",
+      "request": {
+        "method": "GET",
+        "path": "/v1/version",
+        "role": "reader",
+        "accept": "application/vnd.swarmcracker.v2+json"
+      },
+      "expect": {
+        "status": 406,
+        "errorCode": "unsupported_version"
+      }
+    }
+  ]
+}

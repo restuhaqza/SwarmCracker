@@ -11,6 +11,7 @@ on:
       - 'Makefile'
       - 'Dockerfile'
       - 'sdk/**'
+      - 'test/conformance/**'
       - 'tools/sdkgen/**'
       - 'api/openapi.yaml'
       - '.github/workflows/ci.yml'
@@ -146,6 +147,23 @@ jobs:
 
       - name: Go SDK compile check
         run: go test ./sdk/go ./tools/sdkgen
+
+  # One declarative fixture set, executed against the real apihttp handler with
+  # an in-memory backend on loopback TLS. The identical fixtures run against a
+  # live manager in the scheduled conformance-lab workflow.
+  conformance:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: API conformance fixtures
+        run: make conformance
 
   build:
     runs-on: ubuntu-latest

@@ -58,6 +58,18 @@ api-check:
 		echo "Skipping cmd/swarmcracker contract tests on $$(uname -s); run make api-check on Linux/CI"; \
 	fi
 
+# API conformance fixtures. `conformance` runs the same declarative cases an SDK
+# can be pointed at against the real apihttp handler with an in-memory backend on
+# loopback TLS: no cluster, no root, no Firecracker. `conformance-lab` runs the
+# identical fixtures against a live manager; it skips cleanly when
+# CONFORMANCE_HOST/CONFORMANCE_READER_TOKEN are not set and mutates nothing
+# unless CONFORMANCE_ALLOW_MUTATION=1. See test/conformance/README.md.
+conformance:
+	$(GO) test ./test/conformance -run TestConformanceMock -count=1
+
+conformance-lab:
+	$(GO) test ./test/conformance -run TestConformanceLab -count=1 -timeout 10m
+
 # SDK models and clients. `sdk-gen` rewrites the committed generated files from
 # the normative spec, `sdk-check` proves they are current without writing (and
 # that the Python package compiles), and `sdk-test` runs both stdlib-only client

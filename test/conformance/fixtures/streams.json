@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "name": "streams",
+  "cases": [
+    {
+      "name": "events arrive as SSE frames",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/events",
+        "role": "reader",
+        "accept": "text/event-stream"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {"Content-Type": "text/event-stream"}
+      },
+      "stream": {"frames": 2}
+    },
+    {
+      "name": "exec streams stdout then exit",
+      "mockOnly": true,
+      "request": {
+        "method": "POST",
+        "path": "/v1/tasks/task-a/exec",
+        "role": "runner",
+        "body": {"command": ["echo", "hello"]}
+      },
+      "expect": {
+        "status": 200,
+        "headers": {"Content-Type": "application/x-ndjson"}
+      },
+      "stream": {"frames": 2, "lastType": "exit"}
+    },
+    {
+      "name": "logs stream one line then eof",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/tasks/task-a/logs",
+        "query": {"tail": "10"},
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {"Content-Type": "application/x-ndjson"}
+      },
+      "stream": {"frames": 2, "lastType": "eof"}
+    }
+  ]
+}

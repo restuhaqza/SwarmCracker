@@ -1,0 +1,81 @@
+name: API conformance (lab)
+
+# The lab leg of the conformance suite: the same declarative fixtures the PR CI
+# runs against the in-process mock, executed against a real manager. It is a
+# schedule plus a manual trigger, never a push gate: a lab outage must not block
+# a merge, and this run must never mutate the cluster unless explicitly allowed.
+
+on:
+  schedule:
+    # Weekly, Monday 04:00 UTC.
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+    inputs:
+      allow_mutation:
+        description: "Run the mutating cases against the lab cluster"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: conformance-lab
+  cancel-in-progress: false
+
+jobs:
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      # The values are mapped to env here and never echoed. CONFORMANCE_CA is the
+      # path to a PEM file the workflow writes below; it is a secret, so only the
+      # path is printed and only after it has been written.
+      - name: Write the lab CA
+        id: ca
+        env:
+          CONFORMANCE_CA_PEM: ${{ secrets.CONFORMANCE_CA }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONFORMANCE_CA_PEM:-}" ]; then
+            echo "path=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          umask 077
+          ca_path="${RUNNER_TEMP}/conformance-ca.pem"
+          printf '%s\n' "${CONFORMANCE_CA_PEM}" > "${ca_path}"
+          echo "path=${ca_path}" >> "$GITHUB_OUTPUT"
+
+      - name: Check the lab is configured
+        id: lab
+        env:
+          CONFORMANCE_HOST: ${{ secrets.CONFORMANCE_HOST }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CONFORMANCE_HOST:-}" ]; then
+            echo "::notice::CONFORMANCE_HOST is not configured; skipping the lab run"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run the fixtures against the lab manager
+        if: steps.lab.outputs.configured == 'true'
+        env:
+          CONFORMANCE_HOST: ${{ secrets.CONFORMANCE_HOST }}
+          CONFORMANCE_CA: ${{ steps.ca.outputs.path }}
+          CONFORMANCE_READER_TOKEN: ${{ secrets.CONFORMANCE_READER_TOKEN }}
+          CONFORMANCE_RUNNER_TOKEN: ${{ secrets.CONFORMANCE_RUNNER_TOKEN }}
+          CONFORMANCE_ADMIN_TOKEN: ${{ secrets.CONFORMANCE_ADMIN_TOKEN }}
+          CONFORMANCE_ALLOW_MUTATION: ${{ (github.event_name == 'workflow_dispatch' && inputs.allow_mutation) && '1' || '0' }}
+        run: make conformance-lab
+
+      - name: Remove the lab CA
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/conformance-ca.pem"
