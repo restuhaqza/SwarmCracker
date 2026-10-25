@@ -79,10 +79,11 @@ type ManagerConfig struct {
 	// It is per request so a node that stops answering cannot hold a list
 	// fan-out open.
 	HealthTimeout time.Duration
-	// SnapshotTimeout bounds one snapshot operation (list, create, restore or
-	// delete). Zero means defaultSnapshotTimeout. Create and restore copy a whole
-	// VM memory image, so the deadline is generous; it exists so a node that
-	// stops answering cannot hold a public request open.
+	// SnapshotTimeout bounds one snapshot operation (list, create, restore,
+	// stop-restored or delete). Zero means DefaultSnapshotTimeout. Create and
+	// restore copy a whole VM memory image and create also copies the task disk,
+	// so the deadline is generous; it exists so a node that stops answering
+	// cannot hold a public request open.
 	SnapshotTimeout time.Duration
 	// ErrorWriter renders a transport failure as the caller's error envelope.
 	// The public handler passes apihttp.WriteError so a public caller gets the
@@ -149,7 +150,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 
 	snapshotTimeout := cfg.SnapshotTimeout
 	if snapshotTimeout <= 0 {
-		snapshotTimeout = defaultSnapshotTimeout
+		snapshotTimeout = DefaultSnapshotTimeout
 	}
 
 	return &Manager{
@@ -473,7 +474,7 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, task v1.Task, snapshotID 
 // (createdAt, id) ascending. The manager sorts rather than trusting the node so
 // pagination is stable regardless of the node's own order.
 func (m *Manager) ListTaskSnapshots(ctx context.Context, task v1.Task) ([]v1.Snapshot, error) {
-	resp, route, err := m.callSnapshot(ctx, task, http.MethodGet, nil, nil)
+	resp, route, err := m.callSnapshot(ctx, task, snapshotOperation, http.MethodGet, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -494,13 +495,35 @@ func (m *Manager) ListTaskSnapshots(ctx context.Context, task v1.Task) ([]v1.Sna
 	return doc.Items, nil
 }
 
+// StopRestored stops the restored VM a previous restore started for the task on
+// its node. It is a DELETE with no body and no query; a task the node does not
+// track answers 404 not_found with details.reason "no_restored_vm", which is
+// relayed as the typed not-found error.
+func (m *Manager) StopRestored(ctx context.Context, task v1.Task) error {
+	resp, route, err := m.callSnapshot(ctx, task, restoredOperation, http.MethodDelete, nil, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return output.NewErrorf(output.CodeInternal,
+			"node %q returned status %d for a restored VM stop", route.Node.ID, resp.StatusCode).
+			WithDetails(map[string]any{"nodeId": route.Node.ID})
+	}
+	return decodeSnapshotNodeError(resp.Body, resp.StatusCode, route.Node.ID)
+}
+
 // DeleteSnapshot removes one of a task's snapshots.
 func (m *Manager) DeleteSnapshot(ctx context.Context, task v1.Task, snapshotID string) error {
 	if !v1.ValidSnapshotID(snapshotID) {
 		return errInvalidSnapshotID()
 	}
 
-	resp, route, err := m.callSnapshot(ctx, task, http.MethodDelete, url.Values{"id": {snapshotID}}, nil)
+	resp, route, err := m.callSnapshot(ctx, task, snapshotOperation, http.MethodDelete, url.Values{"id": {snapshotID}}, nil)
 	if err != nil {
 		return err
 	}
@@ -523,7 +546,7 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, task v1.Task, snapshotID s
 func (m *Manager) snapshotDocument(
 	ctx context.Context, task v1.Task, method string, query url.Values, body []byte,
 ) (v1.Snapshot, error) {
-	resp, route, err := m.callSnapshot(ctx, task, method, query, body)
+	resp, route, err := m.callSnapshot(ctx, task, snapshotOperation, method, query, body)
 	if err != nil {
 		return v1.Snapshot{}, err
 	}
@@ -541,13 +564,15 @@ func (m *Manager) snapshotDocument(
 }
 
 // callSnapshot resolves the task's node, builds the operation URL and performs
-// one request under the snapshot deadline. A non-nil body is sent as the node's
-// JSON document. The returned body owns the deadline: closing it releases the
-// context, so a caller must always close it.
+// one request under the snapshot deadline. op names the broker operation —
+// snapshotOperation for the four snapshot methods, restoredOperation for a
+// stop-restored. A non-nil body is sent as the node's JSON document. The
+// returned body owns the deadline: closing it releases the context, so a caller
+// must always close it.
 func (m *Manager) callSnapshot(
-	ctx context.Context, task v1.Task, method string, query url.Values, body []byte,
+	ctx context.Context, task v1.Task, op, method string, query url.Values, body []byte,
 ) (*http.Response, Route, error) {
-	route, err := m.routeFor(ctx, task, snapshotOperation)
+	route, err := m.routeFor(ctx, task, op)
 	if err != nil {
 		return nil, Route{}, err
 	}

@@ -198,6 +198,9 @@ var operationSpecs = map[string]operationSpec{
 	"files":     {methods: []string{http.MethodGet, http.MethodPut}},
 	"health":    {methods: []string{http.MethodGet}},
 	"snapshots": {methods: []string{http.MethodGet, http.MethodPost, http.MethodDelete}},
+	// restored stops the process a snapshot restore started for one task. It is
+	// a DELETE because it removes that VM, and it takes no body and no query.
+	"restored": {methods: []string{http.MethodDelete}},
 }
 
 // route resolves the task, then dispatches to the registered operation.

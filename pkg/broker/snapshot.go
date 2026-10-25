@@ -7,6 +7,10 @@ package broker
 //	POST   /v1/tasks/{taskID}/snapshots?restore=<id>
 //	DELETE /v1/tasks/{taskID}/snapshots?id=<id>
 //
+// and the restored-VM stop operation:
+//
+//	DELETE /v1/tasks/{taskID}/restored
+//
 // A snapshot is node-local: pkg/snapshot writes <snapshotDir>/<id>/metadata.json
 // and that directory is the source of truth. The node therefore answers from its
 // own store, filtered to the task the manager resolved; there is no manager-side
@@ -87,10 +91,11 @@ const (
 	// short; the cap only stops a hostile caller from exhausting memory.
 	snapshotBodyLimit = 64 << 10
 
-	// defaultSnapshotTimeout bounds one manager-side snapshot request. Create and
-	// restore copy a whole VM memory image, so this is well above a health probe;
-	// ManagerConfig.SnapshotTimeout overrides it.
-	defaultSnapshotTimeout = 30 * time.Second
+	// DefaultSnapshotTimeout bounds one manager-side snapshot request. Create and
+	// restore copy a whole VM memory image, and create also copies the task disk
+	// (a snapshot is a self-contained restore point), so the default is minutes
+	// rather than seconds. ManagerConfig.SnapshotTimeout overrides it.
+	DefaultSnapshotTimeout = 5 * time.Minute
 
 	// maxSnapshotScopeBytes bounds one service/node query value. Real IDs are far
 	// shorter; the cap only stops a caller from pushing a path-sized value through.
@@ -111,6 +116,9 @@ type SnapshotStore interface {
 	RestoreFromSnapshot(ctx context.Context, info *snapshot.SnapshotInfo, socketPath string) error
 	DeleteSnapshot(ctx context.Context, snapshotID string) error
 	CleanupOldSnapshots(ctx context.Context, maxAge time.Duration) (int, int64, error)
+	// StopRestored stops the restored VM the store tracks for taskID. It answers
+	// snapshot.ErrNoRestoredVM when this node tracks none.
+	StopRestored(taskID string) error
 }
 
 // SnapshotHandlerConfig configures the snapshots operation.
@@ -134,6 +142,9 @@ type SnapshotHandlerConfig struct {
 	RootfsDir string
 }
 
+// restoredOperation is the broker operation name for stopping a restored VM.
+const restoredOperation = "restored"
+
 // snapshotHandler holds the per-task restore lock. The lock lives in the handler
 // instance, so two requests that reach the same daemon share it.
 type snapshotHandler struct {
@@ -153,6 +164,77 @@ func NewSnapshotHandler(cfg SnapshotHandlerConfig) Handler {
 	}
 	h := &snapshotHandler{cfg: cfg, restoring: make(map[string]struct{})}
 	return h.serve
+}
+
+// restoredHandler serves DELETE /v1/tasks/{taskID}/restored: it stops the
+// Firecracker process a previous restore started for the task and removes the
+// socket that process owned.
+type restoredHandler struct {
+	cfg SnapshotHandlerConfig
+}
+
+// NewRestoredHandler builds the restored-VM stop operation. It takes the same
+// configuration as the snapshots operation and must share its store: only the
+// manager that restored the VM holds the process handle, so a second store would
+// answer no_restored_vm for its own restores. A nil (or typed-nil) store keeps
+// the route registered and answers the same typed 501 as the snapshots
+// operation.
+func NewRestoredHandler(cfg SnapshotHandlerConfig) Handler {
+	if snapshotStoreDisabled(cfg.Store) {
+		cfg.Store = nil
+	}
+	h := &restoredHandler{cfg: cfg}
+	return h.serve
+}
+
+// serve dispatches the one method the operation implements. The method check
+// runs before the store gate, exactly like the snapshots operation: a wrong
+// method is 405 with Allow even while snapshots are disabled, and only DELETE
+// can answer 501.
+func (h *restoredHandler) serve(_ context.Context, task Task, w http.ResponseWriter, r *http.Request) {
+	if !operationSpecs[restoredOperation].allows(r.Method) {
+		w.Header().Set("Allow", operationSpecs[restoredOperation].allow())
+		writeTypedError(w, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
+			"method %s is not allowed on a restored VM", r.Method).
+			WithDetails(map[string]any{"reason": "method_not_allowed"}))
+		return
+	}
+	if snapshotStoreDisabled(h.cfg.Store) {
+		writeSnapshotDisabled(w)
+		return
+	}
+	for key := range r.URL.Query() {
+		writeTypedError(w, http.StatusBadRequest, invalidSnapshotParameter(key,
+			"is not accepted on a stop-restored"))
+		return
+	}
+
+	if err := h.cfg.Store.StopRestored(task.ID); err != nil {
+		if errors.Is(err, snapshot.ErrNoRestoredVM) {
+			writeRestoredNotFound(w, task.ID)
+			return
+		}
+		writeSnapshotStoreError(w, "stop-restored", err)
+		return
+	}
+
+	// The process is gone, so the socket is a stale file. Best effort: a failure
+	// leaves a file the next restore removes anyway (it probes liveness, not
+	// presence), and the VM the caller asked to stop is already stopped.
+	if socketPath, ok := restoredSocketPath(h.cfg, task); ok {
+		_ = os.Remove(socketPath)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeRestoredNotFound is the 404 for a task whose restored VM this node does
+// not track: never restored here, already stopped, or restored by an earlier
+// daemon lifetime.
+func writeRestoredNotFound(w http.ResponseWriter, taskID string) {
+	writeTypedError(w, http.StatusNotFound, output.NewErrorf(output.CodeNotFound,
+		"task %q has no restored VM on this node", taskID).
+		WithDetails(map[string]any{"reason": "no_restored_vm"}))
 }
 
 // snapshotStoreDisabled reports whether store implements nothing. A typed-nil
@@ -421,7 +503,7 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 	}
 	defer h.releaseRestore(task.ID)
 
-	socketPath, configured := h.restoredSocketPath(task)
+	socketPath, configured := restoredSocketPath(h.cfg, task)
 	if !configured {
 		writeTypedError(w, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
 			"this node has no snapshot socket directory to restore task %q", task.ID).
@@ -474,8 +556,8 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 // independent of the task's own socket, so a finished task can still restore. The
 // boolean is false when neither is known: a CWD-relative socket would make the
 // restored VM depend on the daemon's working directory.
-func (h *snapshotHandler) restoredSocketPath(task Task) (string, bool) {
-	dir := h.cfg.SocketDir
+func restoredSocketPath(cfg SnapshotHandlerConfig, task Task) (string, bool) {
+	dir := cfg.SocketDir
 	if dir == "" {
 		if task.SocketPath == "" {
 			return "", false
