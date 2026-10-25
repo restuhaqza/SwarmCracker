@@ -73,7 +73,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
         - name: label
           in: query
           schema: { type: string }
@@ -412,7 +413,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
       responses:
         "200":
           description: A page of tasks for one service
@@ -458,7 +460,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
         - name: label
           in: query
           schema: { type: string }
@@ -659,7 +662,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
         - name: label
           in: query
           schema: { type: string }
@@ -914,7 +918,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
         - name: label
           in: query
           schema: { type: string }
@@ -1162,7 +1167,8 @@ paths:
         is answered 207 with the readable tasks in `items` and one `partial`
         entry per failed node. A task that has published no health omits `health`
         entirely; an empty object is never emitted. Without `health=true` the
-        response is exactly the unenriched list.
+        response is exactly the unenriched list. `label` is accepted for SDK
+        compatibility and ignored: this list is never filtered by it.
       parameters:
         - name: limit
           in: query
@@ -1177,7 +1183,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
         - name: health
           in: query
           required: false
@@ -1187,6 +1194,17 @@ paths:
             `false` are accepted. Requires a node broker on the serving manager;
             without one the request is 501 not_implemented with
             details.capability "health".
+        - name: label
+          in: query
+          schema: { type: string }
+          description: >
+            Accepted and currently ignored: the list is not filtered by label.
+            The parameter is declared so that the v1 SDKs, which document
+            forwarding a `label` selector on every list, keep working unchanged.
+            It changes neither `items` nor the cursor binding, and unlike every
+            other route that declares `label` (`/v1/services`, `/v1/nodes`,
+            `/v1/networks`, `/v1/configs`, `/v1/secrets`, `/v1/events`) a value
+            here is not even parsed — filter tasks client-side instead.
       responses:
         "200":
           description: A page of tasks
@@ -1793,7 +1811,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
       responses:
         "200":
           description: A page of the task's snapshots.
@@ -2082,7 +2101,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
       responses:
         "200":
           description: A page of the task's snapshots.
@@ -2277,7 +2297,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
       responses:
         "200":
           description: A page of nodes
@@ -2430,7 +2451,8 @@ paths:
             the flat snapshot routes); `limit` may change between pages. A
             cursor sent to a different query is 400 invalid with
             details.reason "cursor_mismatch", and a cursor this server did not
-            issue is 400 invalid.
+            issue is 400 invalid, with `details.cursor` carrying the rejected
+            value.
       responses:
         "200":
           description: A page of audit records
@@ -3751,8 +3773,10 @@ components:
           description: >
             Typed failure context. When details.fields is present it maps an
             offending path to a reason. details.parameter names an unknown query
-            parameter. details.reason names a specific rejection, for example
-            "cursor_mismatch" (a cursor from a different route or filter),
+            parameter. details.cursor carries the value of a cursor this server
+            did not issue (a malformed or truncated cursor). details.reason names
+            a specific rejection, for example "cursor_mismatch" (a cursor from a
+            different route or filter — the value is not echoed back),
             "invalid_snapshot_id" (a snapshot id that is not one safe path
             segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid`
             and put `method_not_allowed`, `payload_too_large` or

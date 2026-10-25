@@ -564,7 +564,9 @@ func TestOpenAPICommonResponseHeaders(t *testing.T) {
 
 // TestOpenAPIListParameters pins the exact query surface of every list path.
 // Phase 1 only implements limit, cursor and label, so an added-but-unserved
-// parameter (state, role, hostname, …) must fail the contract test.
+// parameter (state, role, hostname, …) must fail the contract test. `/v1/tasks`
+// also declares `label`: the route accepts it (the v1 SDKs forward it) but does
+// not filter on it, which its parameter description states.
 func TestOpenAPIListParameters(t *testing.T) {
 	doc := loadOpenAPI(t)
 
@@ -574,7 +576,7 @@ func TestOpenAPIListParameters(t *testing.T) {
 	}{
 		{"/v1/services", []string{"limit", "cursor", "label"}},
 		{"/v1/services/{id}/tasks", []string{"id", "limit", "cursor"}},
-		{"/v1/tasks", []string{"limit", "cursor", "health"}},
+		{"/v1/tasks", []string{"limit", "cursor", "health", "label"}},
 		{"/v1/nodes", []string{"label", "limit", "cursor"}},
 		{"/v1/networks", []string{"limit", "cursor", "label"}},
 		{"/v1/configs", []string{"limit", "cursor", "label"}},

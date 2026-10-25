@@ -81,7 +81,7 @@ class Error(TypedDict):
     message: str
     requestId: NotRequired[str]
     retryable: bool
-    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
+    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
     details: NotRequired[dict[str, Any]]
 
 class ErrorDocument(TypedDict):
@@ -274,7 +274,7 @@ class PartialError(TypedDict):
     message: str
     requestId: str
     retryable: bool
-    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
+    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
     details: NotRequired[dict[str, Any]]
 
 class Placement(TypedDict):
