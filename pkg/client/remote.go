@@ -40,6 +40,11 @@ type remoteClient struct {
 	// stream is the no-timeout client for SSE/NDJSON. http.Client.Timeout
 	// bounds the whole response body, which would cut a watch stream.
 	stream *http.Client
+	// attach is the no-timeout client for the attach console. It never
+	// negotiates HTTP/2: the session needs HTTP/1.1 full duplex, so a manager
+	// that later advertises h2 must not silently switch it to a protocol that
+	// cannot carry both directions at once.
+	attach *http.Client
 }
 
 // newRemote builds the remote backend. Every failure here is a configuration
@@ -81,21 +86,36 @@ func newRemote(cfg Config) (*Client, error) {
 		ExpectContinueTimeout: time.Second,
 	}
 
+	// The HTTP/1.1-only console client. A clone keeps one dialer and one TLS
+	// configuration for the whole remote client; only the protocol negotiation
+	// differs.
+	consoleTransport := transport.Clone()
+	consoleTransport.ForceAttemptHTTP2 = false
+	// A non-nil (empty) TLSNextProto is the documented way to disable HTTP/2 on
+	// a transport, even if ForceAttemptHTTP2 is ever turned back on.
+	consoleTransport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+
 	return &Client{remote: &remoteClient{
 		baseURL: base,
 		token:   token,
 		http:    &http.Client{Timeout: timeout, Transport: transport},
 		stream:  &http.Client{Transport: transport},
+		attach:  &http.Client{Transport: consoleTransport},
 	}}, nil
 }
 
 // close releases idle keep-alive connections. The client stays usable: a later
 // request simply dials again.
 func (r *remoteClient) close() {
-	if r == nil || r.http == nil {
+	if r == nil {
 		return
 	}
-	r.http.CloseIdleConnections()
+	if r.http != nil {
+		r.http.CloseIdleConnections()
+	}
+	if r.attach != nil {
+		r.attach.CloseIdleConnections()
+	}
 }
 
 // parseEndpoint accepts only an https URL with a host. Plain HTTP over TCP is
