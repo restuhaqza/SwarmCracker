@@ -3,6 +3,7 @@ package conformance
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -30,8 +31,8 @@ func TestConformanceLab(t *testing.T) {
 	if host == "" || reader == "" {
 		t.Skipf("lab conformance needs %s and %s; configure the environment to run it", envHost, envReaderToken)
 	}
-	if !strings.HasPrefix(host, "https://") && !strings.HasPrefix(host, "http://") {
-		t.Fatalf("%s must be an http:// or https:// base URL", envHost)
+	if err := validateLabHost(host); err != nil {
+		t.Fatal(err)
 	}
 
 	tokens := map[string]string{"reader": reader}
@@ -44,13 +45,13 @@ func TestConformanceLab(t *testing.T) {
 		tokens[role] = token
 	}
 
-	// A task-scoped stream (exec, logs) needs a task id that exists on this
-	// cluster. It is not a token and not a secret: the operator names one.
+	// A task-scoped stream (exec, logs, attach) needs a task id that exists on
+	// this cluster. It is not a token and not a secret: the operator names one.
 	vars := map[string]string{}
 	if task := strings.TrimSpace(os.Getenv(envTaskID)); task != "" {
 		vars["task"] = task
 	} else {
-		t.Logf("%s is not set; task-scoped stream cases will skip", envTaskID)
+		t.Logf("%s is not set; task-scoped stream and snapshot cases will skip", envTaskID)
 	}
 
 	client := &http.Client{
@@ -62,14 +63,37 @@ func TestConformanceLab(t *testing.T) {
 		},
 	}
 
+	// The capability set decides which gated cases run, and the build string is
+	// the evidence a lab report has to name. The probe is a real request, so a
+	// manager that cannot answer it fails the run instead of guessing.
+	info := fetchVersion(t, client, host, reader)
+	t.Logf("lab manager: %s", describeCapabilities(info))
+
 	Run(t, Env{
 		BaseURL:       host,
 		Client:        client,
 		Tokens:        tokens,
 		Vars:          vars,
+		Capabilities:  info.Capabilities,
 		Lab:           true,
 		AllowMutation: os.Getenv(envAllowMutation) == "1",
 	}, "fixtures")
+}
+
+// validateLabHost enforces the lab transport rule: HTTPS only. The run carries
+// bearer tokens and, with mutation allowed, creates real objects, so a cleartext
+// listener is never an acceptable fallback — a typo must fail loudly instead of
+// sending a token over plain HTTP.
+func validateLabHost(host string) error {
+	scheme, rest, _ := strings.Cut(host, "://")
+	switch {
+	case rest == "" || strings.TrimSpace(rest) == "":
+		return fmt.Errorf("%s must be an absolute https:// URL", envHost)
+	case !strings.EqualFold(scheme, "https"):
+		return fmt.Errorf("%s must start with https:// (got %q): the lab run carries bearer tokens and refuses a cleartext target",
+			envHost, scheme+"://")
+	}
+	return nil
 }
 
 // labRoots returns the trust store for the lab listener: the system roots plus
@@ -97,4 +121,33 @@ func labRoots(t *testing.T) *x509.CertPool {
 		t.Fatalf("%s (%s) contains no PEM certificate", envCA, path)
 	}
 	return pool
+}
+
+// TestValidateLabHost pins the transport rule: the lab run carries bearer tokens,
+// so a cleartext URL is refused outright instead of silently downgraded.
+func TestValidateLabHost(t *testing.T) {
+	tests := []struct {
+		host    string
+		wantErr bool
+	}{
+		{host: "https://127.0.0.1:4244"},
+		{host: "HTTPS://manager.example:8443"},
+		{host: "http://127.0.0.1:4244", wantErr: true},
+		{host: "http://manager.example:8443", wantErr: true},
+		{host: "127.0.0.1:4244", wantErr: true},
+		{host: "https://", wantErr: true},
+		{host: "", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.host, func(t *testing.T) {
+			err := validateLabHost(tc.host)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("validateLabHost(%q) = %v, want an error: %v", tc.host, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "https://") {
+				t.Fatalf("the error must name the https:// rule, got %v", err)
+			}
+		})
+	}
 }
