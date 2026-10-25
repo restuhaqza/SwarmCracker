@@ -116,8 +116,12 @@ func allowSkips() bool {
 // each skipped case and what would let it run, so the fix is a variable, not an
 // investigation.
 //
-// A mock-only case is the one exception: no setting can make it run against a
-// live manager, and the mock leg is where it is proven.
+// Two kinds are not failures. A mock-only case is one no setting can make run
+// against a live manager, and the mock leg is where it is proven. An
+// absent-capability case is the same shape from the other side: it asserts the
+// documented disabled behaviour (a 501), so a manager that advertises the
+// capability is the one configuration in which it cannot apply — its twin case
+// (`requiresCapabilities`) is what asserts the enabled behaviour, and it runs.
 func labSkipFailure(summary Summary, allowed bool) error {
 	if allowed {
 		return nil
@@ -125,7 +129,7 @@ func labSkipFailure(summary Summary, allowed bool) error {
 
 	lines := make([]string, 0, len(summary.Skips))
 	for _, skip := range summary.Skips {
-		if skip.Kind == SkipMockOnly {
+		if skip.Kind == SkipMockOnly || skip.Kind == SkipAbsentCapability {
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("  %s: %s", skip.Case, enableHint(skip)))
@@ -148,6 +152,10 @@ func enableHint(skip Skip) string {
 		return "set " + envAllowMutation + "=1"
 	case SkipCapability:
 		return fmt.Sprintf("a manager that advertises %s", skip.Detail)
+	case SkipAbsentCapability:
+		// The opposite mode: this case asserts the disabled behaviour, so a
+		// manager that advertises the capability is exactly when it cannot run.
+		return fmt.Sprintf("a manager that does not enable %s (this case asserts the documented disabled behaviour)", skip.Detail)
 	case SkipToken:
 		if name, ok := tokenEnvForRole[skip.Detail]; ok {
 			return "set " + name
@@ -338,5 +346,102 @@ func TestLabSkipsAreStrictByDefault(t *testing.T) {
 	t.Setenv(envAllowSkips, "")
 	if err := labSkipFailure(configured, allowSkips()); err != nil {
 		t.Fatalf("a configured run must pass the strict policy, got %v", err)
+	}
+}
+
+// TestAbsentCapabilitySkipsAreNotMissingPreconditions is the second finding from
+// the first real lab run: a manager started with `--snapshots-enable` advertises
+// the capability, so the seven `absentCapabilities: ["snapshots"]` cases correctly
+// do not apply. They are the opposite-mode twins of the enabled cases, not a
+// missing precondition the operator could supply, so strict mode must not fail on
+// them — while a genuinely missing `CONFORMANCE_TASK_ID` still fails.
+func TestAbsentCapabilitySkipsAreNotMissingPreconditions(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-SwarmCracker-Api-Version", "1")
+		w.Header().Set("X-Request-Id", "req_test")
+		w.Header().Set("Content-Type", MediaType)
+		_, _ = w.Write([]byte(`{"kind":"VersionInfo"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	env := Env{
+		BaseURL:      server.URL,
+		Client:       server.Client(),
+		Tokens:       map[string]string{"reader": "test-token"},
+		Capabilities: []string{"read", "snapshots"},
+		Lab:          true,
+	}
+
+	// The disabled-behaviour case and a case that always runs: with snapshots
+	// advertised, the only skip is the opposite-mode one.
+	enabled := t.TempDir()
+	writeFixture(t, enabled, "gates.json", `{
+		"schemaVersion": 1,
+		"name": "gates",
+		"cases": [
+			{
+				"name": "a disabled snapshot list is 501",
+				"absentCapabilities": ["snapshots"],
+				"request": {"method": "GET", "path": "/v1/snapshots", "role": "reader"},
+				"expect": {"status": 501, "errorCode": "not_implemented"}
+			},
+			{
+				"name": "runs",
+				"request": {"method": "GET", "path": "/v1/version", "role": "reader"},
+				"expect": {"status": 200, "kind": "VersionInfo"}
+			}
+		]
+	}`)
+
+	summary := Run(t, env, enabled)
+	if len(summary.Skips) != 1 || summary.Skips[0].Kind != SkipAbsentCapability {
+		t.Fatalf("want one %s skip, got %+v", SkipAbsentCapability, summary.Skips)
+	}
+
+	t.Setenv(envAllowSkips, "")
+	if err := labSkipFailure(summary, allowSkips()); err != nil {
+		t.Fatalf("an opposite-mode skip must not fail a strict run, got %v", err)
+	}
+
+	// The hint must say the opposite of the required-capability hint: this case
+	// runs against a manager that has the capability off.
+	hint := enableHint(summary.Skips[0])
+	if !strings.Contains(hint, "does not enable snapshots") {
+		t.Fatalf("the hint must name the opposite mode, got %q", hint)
+	}
+	if strings.Contains(hint, "advertises") {
+		t.Fatalf("the hint must not ask for the capability it cannot run with, got %q", hint)
+	}
+
+	// A genuinely missing task id is still a strict failure, and the exempt skip
+	// stays out of the message.
+	taskScoped := t.TempDir()
+	writeFixture(t, taskScoped, "task.json", `{
+		"schemaVersion": 1,
+		"name": "task",
+		"cases": [
+			{
+				"name": "a disabled snapshot list is 501",
+				"absentCapabilities": ["snapshots"],
+				"request": {"method": "GET", "path": "/v1/snapshots", "role": "reader"},
+				"expect": {"status": 501, "errorCode": "not_implemented"}
+			},
+			{
+				"name": "task scoped",
+				"request": {"method": "GET", "path": "/v1/tasks/$task/version", "role": "reader"},
+				"expect": {"status": 200, "kind": "VersionInfo"}
+			}
+		]
+	}`)
+
+	err := labSkipFailure(Run(t, env, taskScoped), allowSkips())
+	if err == nil {
+		t.Fatalf("a missing %s must still fail a strict run", envTaskID)
+	}
+	if !strings.Contains(err.Error(), "/task_scoped") || !strings.Contains(err.Error(), envTaskID) {
+		t.Fatalf("the failure must name the task-scoped case and %s, got:\n%s", envTaskID, err)
+	}
+	if strings.Contains(err.Error(), "a_disabled_snapshot_list_is_501") {
+		t.Fatalf("the opposite-mode skip must stay out of the failure:\n%s", err)
 	}
 }

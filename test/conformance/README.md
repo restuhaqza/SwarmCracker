@@ -79,8 +79,10 @@ silently runs fewer cases is worse than one that fails.
 
 The case above shows every document block in one place. A `stream` case replaces
 the document expectation with `stream: {"frames": 2, "lastType": "exit"}` (a
-framed stream) or `stream: {"bytes": 14}` (a raw console); it carries no `kind`,
-no `requestIdInBody` and no `follow`.
+deterministic framed stream), `stream: {"untilType": "eof", "minFrames": 1,
+"maxFrames": 200}` (a framed stream whose length the server chooses) or
+`stream: {"bytes": 14}` (a raw console); it carries no `kind`, no
+`requestIdInBody` and no `follow`.
 
 ### Rules
 
@@ -158,8 +160,17 @@ no `requestIdInBody` and no `follow`.
   as soon as it has seen `frames` data frames (or the terminal `lastType`, or the
   2 s deadline), then closes the body. It counts data frames, ignoring the `ready`
   and `ping` control frames. `lastType` names the frame that must end the stream:
-  `exec` ends with `exit`, a non-following log stream with `eof`.
-  `stream: {bytes: N}` reads a raw `application/octet-stream` body instead — the
+  `exec` ends with `exit`. A pinned count is only for a deterministic stream.
+- `stream: {untilType: "eof", minFrames: N, maxFrames: M}` reads to a named
+  terminal frame instead of a count. It is the shape for a stream whose length the
+  server chooses: a real console log carries as many lines as the guest printed, so
+  a pinned count stops before `eof` and fails a correct server (this happened in
+  the first lab run). `untilType` itself is the end marker, not payload;
+  `minFrames` is how many payload frames must precede it, and `maxFrames` caps the
+  read (terminal frame included) so a server that never sends the terminal frame
+  fails with the observed frames instead of hanging. Both are required, and
+  `maxFrames` must exceed `minFrames`.
+- `stream: {bytes: N}` reads a raw `application/octet-stream` body instead — the
   attach console, which has no frames to count.
 - `requiresCapabilities` / `absentCapabilities` gate a case on the target's
   `GET /v1/version` capability list. A leg that declares its capabilities (both
@@ -179,19 +190,27 @@ no `requestIdInBody` and no `follow`.
   that needs an existing object asserts `200` with `kind` and only `absentKeys`;
   name-specific `jsonPaths` belong in a `mockOnly` case.
 - A case gated by `requiresCapabilities` / `absentCapabilities` skips on a target
-  whose `/v1/version` disagrees. That is a declared gate: the lab leg reports it
-  as a `SKIP` line naming the capability, and the mock leg allows it while still
-  failing on any other skip.
+  whose `/v1/version` disagrees. Both are declared gates: the mock leg allows them
+  while still failing on any other skip.
+- **A missing required capability fails a strict lab run; an advertised absent
+  capability does not.** `requiresCapabilities` skip means a precondition the
+  operator could supply, so strict mode names the capability to enable.
+  `absentCapabilities` is the opposite-mode twin: the case asserts the documented
+  disabled behaviour (a `501`), so a manager that has the capability on is exactly
+  the one configuration where it cannot apply — no setting would make it run, and
+  the enabled case is what proves the feature. It is exempt from the strict policy
+  like a `mockOnly` case, and its hint says "a manager that does not enable X".
 - A task-scoped stream or snapshot case (`$task`) skips in the lab when
   `CONFORMANCE_TASK_ID` is not set: the cluster, not the runner, lacks the value.
+  That skip stays strict.
 - **The lab run is strict by default.** After the run, every case that did not
   run fails it, with a message listing each skipped case and the variable that
   would enable it (`CONFORMANCE_ALLOW_MUTATION=1`, `CONFORMANCE_TASK_ID`, a
   manager that advertises the capability, the earlier case that captures a
   value). A green lab run therefore means the cases were exercised, not skipped.
-  `CONFORMANCE_ALLOW_SKIPS=1` is the only opt-out. A `mockOnly` case is never
-  counted: no setting makes it run against a live manager, and the mock leg is
-  where it is proven.
+  `CONFORMANCE_ALLOW_SKIPS=1` is the only opt-out. A `mockOnly` case and an
+  `absentCapabilities` case are never counted: no setting makes either run against
+  a live manager, and the mock leg is where the disabled behaviour is proven.
 - **The mock run may skip only a declared capability gate.** `TestConformanceMock`
   fails if any other case was skipped, and asserts both the exact number of cases
   in `expectedMockCases` and the exact number of gates in
@@ -248,17 +267,22 @@ The stream cases run in both legs. A live manager cannot be pinned to mock data,
 so in lab mode the terminal frame is what is asserted (`exit` for exec, `eof` for
 logs), extra data frames are allowed, and an event stream that opened and sent
 only the `ready` control frame passes: a quiet cluster has no changes to report,
-and the mock leg proves the frame content. The attach case asserts the `200` and
-`application/octet-stream`; a guest console that prints nothing before the 2 s
-deadline is logged and accepted, because the mock leg proves the relay copies
-console bytes.
+and the mock leg proves the frame content. The logs case reads **to** `eof`
+(`untilType` with `minFrames: 1`) instead of pinning a frame count, because a
+console log has as many lines as the guest printed — the first lab run saw two
+lines plus `eof`, which a pinned `frames: 2` truncated before the terminal frame.
+The attach case asserts the `200` and `application/octet-stream`; a guest console
+that prints nothing before the 2 s deadline is logged and accepted, because the
+mock leg proves the relay copies console bytes.
 
 The snapshot cases are gated, so one fixture set fits both a default manager and
 one started with `--snapshots-enable`:
 
 - the seven `501 not_implemented` cases in `errors.json` carry
   `absentCapabilities: ["snapshots"]`, so they run against a default manager and
-  skip (with a reason) against one that advertises the capability;
+  skip against one that advertises the capability. That skip is the
+  opposite-mode twin of the enabled cases, not a missing precondition, so a
+  strict lab run passes on it (the first lab run failed here);
 - `write.json` creates a snapshot (`presentKeys` + `minValues.sizeBytes`, then a
   `capture` of the id and a `DELETE` that cleans it up) and `errors.json` asserts
   `DELETE /v1/tasks/{id}/restored` → `404 no_restored_vm`, both
@@ -279,10 +303,10 @@ printed; a failure names the request path, status and a body truncated to 2 KiB,
 never the `Authorization` header.
 
 Once the run starts, it is strict: a case that did not run fails it unless
-`CONFORMANCE_ALLOW_SKIPS=1` (the `mockOnly` cases are exempt, because no setting
-would make them run). The failure lists every skipped case with the variable that
-would enable it, so "the lab passed" cannot mean "the lab skipped the interesting
-half".
+`CONFORMANCE_ALLOW_SKIPS=1` (the `mockOnly` cases and the `absentCapabilities`
+cases are exempt, because no setting would make either run). The failure lists
+every skipped case with the variable that would enable it, so "the lab passed"
+cannot mean "the lab skipped the interesting half".
 
 The scheduled workflow is `.github/workflows/conformance-lab.yml`. It writes the
 `CONFORMANCE_CA` secret to a temporary file, refuses to run without

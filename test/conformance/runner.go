@@ -108,8 +108,15 @@ const (
 	// No setting turns it on against a live manager: it is the one skip a lab
 	// run is allowed to report and pass.
 	SkipMockOnly = "mock-only"
-	// SkipCapability is a case the target's /v1/version gates out.
+	// SkipCapability is a case the target's /v1/version gates out because it
+	// lacks a capability the case requires.
 	SkipCapability = "capability"
+	// SkipAbsentCapability is a case the target's capability set turns off by
+	// having the capability: it asserts the documented disabled behaviour (a
+	// 501), so it is the opposite-mode twin of SkipCapability. No setting makes a
+	// snapshots-enabled manager answer it, which is why a lab run may report it
+	// and still pass — like a mock-only skip.
+	SkipAbsentCapability = "absent-capability"
 	// SkipMutation is a mutating case the run did not allow.
 	SkipMutation = "mutation"
 	// SkipToken is a case whose role has no token in this environment.
@@ -243,12 +250,15 @@ func suffixedValues(values map[string]string, suffix string) map[string]string {
 }
 
 // gatedSkipReason reports why a capability gate skips this case, plus the
-// capability list that gated it, or empty strings when the case may run. An
-// environment that declared no capability set is not gated: the runner trusts the
-// fixture, which is what the runner's own tests rely on.
-func (e Env) gatedSkipReason(c Case) (reason, detail string) {
+// capability list that gated it and the skip kind, or empty strings when the case
+// may run. The kind separates the two directions: a missing required capability
+// is a precondition the operator can supply, while an advertised absent
+// capability means the case is asserted in its opposite mode and does not apply.
+// An environment that declared no capability set is not gated: the runner trusts
+// the fixture, which is what the runner's own tests rely on.
+func (e Env) gatedSkipReason(c Case) (reason, detail, kind string) {
 	if e.Capabilities == nil {
-		return "", ""
+		return "", "", ""
 	}
 
 	advertised := make(map[string]bool, len(e.Capabilities))
@@ -264,7 +274,7 @@ func (e Env) gatedSkipReason(c Case) (reason, detail string) {
 	}
 	if len(missing) > 0 {
 		return fmt.Sprintf("this environment does not advertise %s; run it against a manager that enables the capability",
-			strings.Join(missing, ", ")), strings.Join(missing, " and ")
+			strings.Join(missing, ", ")), strings.Join(missing, " and "), SkipCapability
 	}
 
 	present := make([]string, 0, len(c.AbsentCapabilities))
@@ -275,9 +285,9 @@ func (e Env) gatedSkipReason(c Case) (reason, detail string) {
 	}
 	if len(present) > 0 {
 		return fmt.Sprintf("this environment advertises %s, so the disabled-capability case does not apply",
-			strings.Join(present, ", ")), strings.Join(present, " and ")
+			strings.Join(present, ", ")), strings.Join(present, " and "), SkipAbsentCapability
 	}
-	return "", ""
+	return "", "", ""
 }
 
 // capture stores the response values a later case in the same file references,
@@ -316,15 +326,16 @@ func runCase(t *testing.T, env Env, c Case, vars map[string]string, summary *Sum
 
 	c = resolveRunTokens(c, env.RunSuffix)
 
-	switch gate, detail := env.gatedSkipReason(c); {
+	gate, detail, kind := env.gatedSkipReason(c)
+	switch {
 	case env.Lab && c.MockOnly:
 		summary.recordSkip(t, SkipMockOnly, "")
 		t.Skip("mock-only case: it asserts fixture data a live cluster need not contain")
 	case gate != "":
 		// A capability gate is a declared skip: the target was asked and said no.
-		// The lab leg reports it (and, strict by default, fails on it), and the
-		// mock leg allows it and fails on any other.
-		summary.recordSkip(t, SkipCapability, detail)
+		// The lab leg reports it (and, strict by default, fails on a required
+		// one) and the mock leg allows it and fails on any other.
+		summary.recordSkip(t, kind, detail)
 		summary.Gated++
 		t.Skip(gate)
 	case c.Mutating && !env.AllowMutation:
