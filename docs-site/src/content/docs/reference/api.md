@@ -635,7 +635,9 @@ cluster's mutual TLS identity, never the caller's bearer token.
   frame; a non-zero guest status is still a successful API call. `tty: true`
   (and therefore `stdin: true`) is `501 not_implemented` with
   `details.reason: "tty_not_supported"`; local `vm exec -it` is unaffected. The
-  task must be running (404 otherwise). Audited as `task.exec`.
+  task must be running (404 otherwise). Audited as `task.exec`. For an
+  interactive session use attach below: exec over the API does not carry a TTY
+  in v1, and a browser or a plain HTTP client cannot drive a terminal either.
 - **Attach** — `POST /v1/tasks/{id}/attach` is the interactive console (R18): one
   HTTP/1.1 request, full duplex. The chunked request body is your stdin and the
   chunked response body is the guest console, both flushed as bytes arrive, so a
@@ -643,9 +645,14 @@ cluster's mutual TLS identity, never the caller's bearer token.
   `application/octet-stream`, not NDJSON and not the v1 envelope. Close the
   request body to send the guest an EOF; the session ends when the console
   closes or you disconnect. There is no WebSocket and no second connection, and
-  the route takes no query parameter (`?tty=` is `400 invalid`). It requires
-  `tasks:exec` and the same task selectors as exec, and the task must be running
-  with its console socket present: otherwise `404 not_found` with
+  the route takes no query parameter (`?tty=` is `400 invalid`). The transport is
+  HTTP/1.1 full duplex only: the server calls
+  `http.NewResponseController(w).EnableFullDuplex()` before it reads the body, so
+  the route requires an HTTP/1.1 connection and **does not work over HTTP/2**.
+  Browsers and h2-only clients (`curl --http2`, a fetch/XHR client) are not
+  supported clients for it; the `swarmcracker` CLI (`vm attach -H`) is. It
+  requires `tasks:exec` and the same task selectors as exec, and the task must be
+  running with its console socket present: otherwise `404 not_found` with
   `details.reason: "console_unavailable"`; a console that exists but cannot be
   dialed is `503 unavailable` with the same reason and `retryable: true`.
   Audited as `task.attach`.
