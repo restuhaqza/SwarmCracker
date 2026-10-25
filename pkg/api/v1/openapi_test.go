@@ -1506,3 +1506,81 @@ func TestOpenAPIHealth(t *testing.T) {
 		[]string{"starting", "healthy", "failing", "unhealthy"}, status.Enum,
 		"the status enum must match runtime.VMHealth states")
 }
+
+// TestOpenAPISnapshotContract pins the experimental snapshot surface: the seven
+// paths, the 501 on every operation, the flat forms' required task parameter and
+// a Snapshot schema that matches the Go tags exactly.
+func TestOpenAPISnapshotContract(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	decode := func(t *testing.T, value any) any {
+		t.Helper()
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		return generic
+	}
+
+	validateAgainst(t, doc, "SnapshotDocument", decode(t, NewSnapshotDocument(Snapshot{
+		ID:         "snap-a1b2c3d4e5f60718",
+		TaskID:     "task-1",
+		ServiceID:  "svc-1",
+		NodeID:     "node-1",
+		CreatedAt:  "2026-10-24T12:00:00.123456789Z",
+		SizeBytes:  268435456,
+		MemoryMB:   256,
+		VCPUCount:  2,
+		RootfsPath: "/var/lib/firecracker/rootfs/task-1",
+		Checksum:   "0f343b0931126a20f133d67c2b018a3b",
+	})))
+	validateAgainst(t, doc, "SnapshotList", decode(t, NewSnapshotList(nil)))
+	validateAgainst(t, doc, "SnapshotList", decode(t, NewSnapshotList([]Snapshot{{ID: "snap-1"}})))
+	validateAgainst(t, doc, "SnapshotCreateRequest", decode(t, SnapshotCreateRequest{}))
+	validateAgainst(t, doc, "SnapshotCreateRequest", decode(t, SnapshotCreateRequest{
+		VCPUs:      2,
+		MemoryMB:   1024,
+		RootfsPath: "/var/lib/firecracker/rootfs/x",
+	}))
+
+	properties := documentSchemaProperties(t, doc, "Snapshot")
+	for _, key := range []string{
+		"id", "taskId", "serviceId", "nodeId", "createdAt",
+		"sizeBytes", "memoryMB", "vcpuCount", "rootfsPath", "checksum",
+	} {
+		assert.Containsf(t, properties, key, "Snapshot.%s missing", key)
+	}
+	for _, forbidden := range []string{"memoryPath", "statePath", "memory_path", "state_path"} {
+		assert.NotContains(t, properties, forbidden,
+			"a snapshot's memory and state paths must never be part of the contract")
+	}
+
+	operations := map[string]*openapi3.Operation{
+		"/v1/tasks/{id}/snapshots":         doc.Paths.Find("/v1/tasks/{id}/snapshots").Post,
+		"/v1/tasks/{id}/snapshots get":     doc.Paths.Find("/v1/tasks/{id}/snapshots").Get,
+		"/v1/tasks/{id}/snapshots/restore": doc.Paths.Find("/v1/tasks/{id}/snapshots/{sid}/restore").Post,
+		"/v1/tasks/{id}/snapshots/delete":  doc.Paths.Find("/v1/tasks/{id}/snapshots/{sid}").Delete,
+		"/v1/snapshots":                    doc.Paths.Find("/v1/snapshots").Get,
+		"/v1/snapshots/restore":            doc.Paths.Find("/v1/snapshots/{id}/restore").Post,
+		"/v1/snapshots/delete":             doc.Paths.Find("/v1/snapshots/{id}").Delete,
+	}
+	for name, operation := range operations {
+		require.NotNilf(t, operation, "%s missing", name)
+		require.NotNilf(t, operation.Responses.Status(501),
+			"%s must document the capability gate", name)
+	}
+
+	create := doc.Paths.Find("/v1/tasks/{id}/snapshots").Post
+	require.NotNil(t, create.RequestBody)
+	require.False(t, create.RequestBody.Value.Required, "the create body is optional")
+
+	for _, operation := range []*openapi3.Operation{
+		doc.Paths.Find("/v1/snapshots").Get,
+		doc.Paths.Find("/v1/snapshots/{id}/restore").Post,
+		doc.Paths.Find("/v1/snapshots/{id}").Delete,
+	} {
+		task := findParameter(t, operation.Parameters, "task")
+		assert.Equal(t, "query", task.In)
+		assert.True(t, task.Required, "a flat snapshot route requires ?task=")
+	}
+}

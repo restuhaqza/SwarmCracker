@@ -106,6 +106,18 @@ type Config struct {
 	// Broker relays task-scoped operations (exec today) to the node that runs
 	// the task. A nil broker leaves those routes answering 501.
 	Broker Broker
+	// Snapshots is the manager-side transport for the experimental snapshot
+	// surface. It is deliberately a second, optional interface so the exec,
+	// logs, files and health fakes do not have to grow four methods. A nil
+	// transport leaves the snapshot routes answering 501.
+	Snapshots SnapshotBroker
+	// SnapshotsEnabled gates the experimental snapshot surface. Snapshots are
+	// disabled by default: with this false every snapshot route answers 501
+	// not_implemented with details.capability "snapshots", before the task is
+	// resolved or audited.
+	SnapshotsEnabled bool
+	// SnapshotTimeout bounds one create or restore request. Zero means 30s.
+	SnapshotTimeout time.Duration
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore
@@ -152,10 +164,16 @@ func New(cfg Config) (*Server, error) {
 	}
 	// A wired broker serves these operations, so they are advertised no matter
 	// what the caller supplied. This package owns the advertisement; an embedder
-	// that builds a broker cannot forget the capability it enables.
-	if cfg.Broker != nil {
-		cfg.Capabilities = withBrokerCapabilities(cfg.Capabilities)
+	// that builds a broker cannot forget the capability it enables. Snapshots
+	// are experimental and gated separately: they are only promised when the
+	// capability, its transport and the shared broker transport are all wired.
+	// A supplied list that claims snapshots while the capability is disabled is
+	// stripped: the version document must never promise a route that answers 501.
+	snapshotsAdvertised := cfg.Broker != nil && cfg.SnapshotsEnabled && cfg.Snapshots != nil
+	if !snapshotsAdvertised {
+		cfg.Capabilities = withoutCapability(cfg.Capabilities, snapshotCapability)
 	}
+	cfg.Capabilities = withBrokerCapabilities(cfg.Capabilities, cfg.Broker != nil, snapshotsAdvertised)
 	if cfg.EventHeartbeat <= 0 {
 		cfg.EventHeartbeat = defaultEventHeartbeat
 	}
@@ -181,25 +199,55 @@ func New(cfg Config) (*Server, error) {
 // document cannot promise less than the routes reach.
 var brokerCapabilities = []string{"exec", "logs", "files", "health"}
 
-// withBrokerCapabilities returns capabilities plus every broker operation it
-// lacks, preserving the caller's order and appending the missing ones in the
-// canonical order. An explicitly narrowed list keeps its narrowing for every
-// other capability; it cannot remove an operation the server serves.
-func withBrokerCapabilities(capabilities []string) []string {
-	effective := make([]string, len(capabilities), len(capabilities)+len(brokerCapabilities))
+// withBrokerCapabilities returns capabilities plus every operation the wired
+// transports serve, preserving the caller's order and appending the missing ones
+// in the canonical order. An explicitly narrowed list keeps its narrowing for
+// every other capability; it cannot remove an operation the server serves.
+//
+// Snapshots are listed last and only when both the shared broker transport and
+// the snapshot capability are enabled: the routes need a node broker to relay
+// through, so advertising them without one would be a promise the server cannot
+// keep.
+func withBrokerCapabilities(capabilities []string, broker, snapshots bool) []string {
+	extra := make([]string, 0, len(brokerCapabilities)+1)
+	if broker {
+		extra = append(extra, brokerCapabilities...)
+	}
+	if broker && snapshots {
+		extra = append(extra, snapshotCapability)
+	}
+
+	effective := make([]string, len(capabilities), len(capabilities)+len(extra))
 	copy(effective, capabilities)
 
 	present := make(map[string]struct{}, len(effective))
 	for _, capability := range effective {
 		present[capability] = struct{}{}
 	}
-	for _, capability := range brokerCapabilities {
+	for _, capability := range extra {
 		if _, ok := present[capability]; ok {
 			continue
 		}
 		effective = append(effective, capability)
 	}
 	return effective
+}
+
+// withoutCapability returns capabilities without name, preserving order. It is
+// how a gated capability that is disabled is removed from a caller-supplied list:
+// the version document must not promise a route that answers 501.
+func withoutCapability(capabilities []string, name string) []string {
+	if len(capabilities) == 0 {
+		return capabilities
+	}
+
+	kept := make([]string, 0, len(capabilities))
+	for _, capability := range capabilities {
+		if capability != name {
+			kept = append(kept, capability)
+		}
+	}
+	return kept
 }
 
 // routes registers every route with the method it serves and the scope it
@@ -240,6 +288,22 @@ func (s *Server) routes() {
 		read(ScopeTasksFiles, s.getTaskFile),
 		write(http.MethodPut, ScopeTasksFiles, s.putTaskFile),
 	)
+	// Snapshots are experimental and capability-gated. The task-scoped forms are
+	// the primary path; the flat /v1/snapshots forms require ?task= because a
+	// snapshot lives on one node.
+	s.handleRoutes("/v1/tasks/{id}/snapshots",
+		read(ScopeTasksSnapshots, s.listTaskSnapshots),
+		write(http.MethodPost, ScopeTasksSnapshots, s.createTaskSnapshot),
+	)
+	s.handleRoutes("/v1/tasks/{id}/snapshots/{sid}/restore",
+		write(http.MethodPost, ScopeTasksSnapshots, s.restoreTaskSnapshot))
+	s.handleRoutes("/v1/tasks/{id}/snapshots/{sid}",
+		write(http.MethodDelete, ScopeTasksSnapshots, s.deleteTaskSnapshot))
+	s.handleRoutes("/v1/snapshots", read(ScopeTasksSnapshots, s.listSnapshots))
+	s.handleRoutes("/v1/snapshots/{id}/restore",
+		write(http.MethodPost, ScopeTasksSnapshots, s.restoreSnapshot))
+	s.handleRoutes("/v1/snapshots/{id}",
+		write(http.MethodDelete, ScopeTasksSnapshots, s.deleteSnapshot))
 
 	s.handleRoutes("/v1/nodes",
 		read(ScopeNodesRead, s.listNodes),

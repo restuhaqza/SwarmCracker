@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/urfave/cli/v2"
 )
 
@@ -23,6 +25,13 @@ type brokerRuntime struct {
 	// logDir holds the per-task console logs. It is the directory the executor
 	// writes, so a task's log is the one `swarmcracker vm logs` reads.
 	logDir string
+	// snapshotsEnabled turns on the experimental snapshot operation. It is
+	// disabled by default: the handler is still registered, so a manager gets a
+	// typed 501 instead of the server's unregistered-operation answer.
+	snapshotsEnabled bool
+	// snapshotDir is the pkg/snapshot root. pkg/snapshot writes
+	// <snapshotDir>/<id>/metadata.json and that directory is the source of truth.
+	snapshotDir string
 }
 
 // brokerRuntimeFrom resolves the broker settings. An empty listen address
@@ -30,9 +39,11 @@ type brokerRuntime struct {
 // manager traffic.
 func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 	return brokerRuntime{
-		listenAddr: ctx.String("broker-listen"),
-		socketDir:  ctx.String("socket-dir"),
-		logDir:     scruntime.DefaultLogDir(),
+		listenAddr:       ctx.String("broker-listen"),
+		socketDir:        ctx.String("socket-dir"),
+		logDir:           scruntime.DefaultLogDir(),
+		snapshotsEnabled: ctx.Bool("snapshots-enable"),
+		snapshotDir:      ctx.String("snapshot-dir"),
 	}
 }
 
@@ -64,10 +75,11 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		return nil, nil, err
 	}
 
-	// The node serves exec, logs, files and health. Exec and files dial the
-	// task's guest agent over the vsock muxer; logs read the console file the
-	// executor wrote; health reads the per-task sidecar the executor publishes.
-	// The public route has already resolved the reference and enforced the
+	// The node serves exec, logs, files, health and the experimental snapshots
+	// operation. Exec and files dial the task's guest agent over the vsock muxer;
+	// logs read the console file the executor wrote; health reads the per-task
+	// sidecar the executor publishes; snapshots use the node-local pkg/snapshot
+	// store. The public route has already resolved the reference and enforced the
 	// caller's selectors.
 	handlers := []struct {
 		op string
@@ -77,6 +89,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{"logs", broker.NewLogsHandler()},
 		{"files", broker.NewFilesHandler(broker.DialAgent)},
 		{"health", broker.NewHealthHandler()},
+		{"snapshots", snapshotHandler(ctx, cfg)},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {
@@ -108,4 +121,27 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 
 	log.G(ctx).Infof("Node broker listening on %s", srv.Addr())
 	return srv, stop, nil
+}
+
+// snapshotHandler builds the experimental snapshots operation. Disabled means a
+// registered handler with no store, which answers a typed 501 — the route still
+// exists. A manager construction failure is logged and degrades to the same
+// disabled handler: a bad snapshot directory must not stop the broker, because
+// exec, logs, files and health do not depend on it.
+func snapshotHandler(ctx context.Context, cfg brokerRuntime) broker.Handler {
+	if !cfg.snapshotsEnabled {
+		return broker.NewSnapshotHandler(nil)
+	}
+
+	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{
+		Enabled:      true,
+		SnapshotDir:  cfg.snapshotDir,
+		MaxSnapshots: 3,
+		MaxAge:       168 * time.Hour,
+	})
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("Node broker: snapshots disabled (snapshot store unavailable)")
+		return broker.NewSnapshotHandler(nil)
+	}
+	return broker.NewSnapshotHandler(mgr)
 }

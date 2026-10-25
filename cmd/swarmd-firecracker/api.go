@@ -53,6 +53,10 @@ type apiRuntime struct {
 	auditRetention time.Duration
 	rateLimit      float64
 	rateBurst      int
+	// snapshotsEnabled advertises the experimental snapshot capability. The
+	// routes are served by the same broker manager, so the transport must be
+	// wired too; apihttp gates on both.
+	snapshotsEnabled bool
 }
 
 // startAPIForNode starts the programmatic API when config describes a manager.
@@ -124,23 +128,32 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	// still starts; exec then answers a typed 501 instead of failing startup.
 	// apihttp.New advertises exec, logs, files and health from this same value,
 	// so the version document cannot deny a route the broker enables.
+	//
+	// Snapshots reuse the same manager and are advertised only when the operator
+	// enabled them. A nil interface must be left nil: assigning a nil
+	// *broker.Manager would produce a non-nil interface that the capability check
+	// would trust.
 	var apiBroker apihttp.Broker
+	var snapshotBroker apihttp.SnapshotBroker
 	if mgr, brokerErr := newBrokerManager(stateDir, c, c); brokerErr != nil {
 		log.G(ctx).WithError(brokerErr).Warn("Programmatic API: exec disabled (node broker manager unavailable)")
 	} else {
 		apiBroker = mgr
+		snapshotBroker = mgr
 	}
 
 	srv, err := apihttp.New(apihttp.Config{
-		Client:        c,
-		Broker:        apiBroker,
-		Tokens:        store,
-		Audit:         audit,
-		CertDir:       cfg.certDir,
-		ServerVersion: Version,
-		GRPCVersion:   apiversion.Current,
-		ClusterID:     clusterID,
-		RateLimit:     apihttp.NewRateLimiter(cfg.rateLimit, cfg.rateBurst),
+		Client:           c,
+		Broker:           apiBroker,
+		Snapshots:        snapshotBroker,
+		SnapshotsEnabled: cfg.snapshotsEnabled,
+		Tokens:           store,
+		Audit:            audit,
+		CertDir:          cfg.certDir,
+		ServerVersion:    Version,
+		GRPCVersion:      apiversion.Current,
+		ClusterID:        clusterID,
+		RateLimit:        apihttp.NewRateLimiter(cfg.rateLimit, cfg.rateBurst),
 	})
 	if err != nil {
 		_ = c.Close()

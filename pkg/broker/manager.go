@@ -72,6 +72,11 @@ type ManagerConfig struct {
 	// It is per request so a node that stops answering cannot hold a list
 	// fan-out open.
 	HealthTimeout time.Duration
+	// SnapshotTimeout bounds one snapshot operation (list, create, restore or
+	// delete). Zero means defaultSnapshotTimeout. Create and restore copy a whole
+	// VM memory image, so the deadline is generous; it exists so a node that
+	// stops answering cannot hold a public request open.
+	SnapshotTimeout time.Duration
 	// ErrorWriter renders a transport failure as the caller's error envelope.
 	// The public handler passes apihttp.WriteError so a public caller gets the
 	// v1 media type and its request ID; nil keeps the internal v1 default.
@@ -85,14 +90,15 @@ type ManagerConfig struct {
 
 // Manager resolves a task to its node and proxies a caller's request there.
 type Manager struct {
-	tasks         TaskReader
-	nodes         NodeReader
-	port          int
-	client        *http.Client
-	transport     http.RoundTripper
-	healthTimeout time.Duration
-	errorWriter   func(w http.ResponseWriter, r *http.Request, err error)
-	requestIDFrom func(ctx context.Context) string
+	tasks           TaskReader
+	nodes           NodeReader
+	port            int
+	client          *http.Client
+	transport       http.RoundTripper
+	healthTimeout   time.Duration
+	snapshotTimeout time.Duration
+	errorWriter     func(w http.ResponseWriter, r *http.Request, err error)
+	requestIDFrom   func(ctx context.Context) string
 }
 
 // Route is one resolved task-to-node destination inside the cluster.
@@ -134,15 +140,21 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		healthTimeout = defaultHealthTimeout
 	}
 
+	snapshotTimeout := cfg.SnapshotTimeout
+	if snapshotTimeout <= 0 {
+		snapshotTimeout = defaultSnapshotTimeout
+	}
+
 	return &Manager{
-		tasks:         cfg.Tasks,
-		nodes:         cfg.Nodes,
-		port:          port,
-		client:        cfg.Client,
-		transport:     transport,
-		healthTimeout: healthTimeout,
-		errorWriter:   cfg.ErrorWriter,
-		requestIDFrom: cfg.RequestIDFrom,
+		tasks:           cfg.Tasks,
+		nodes:           cfg.Nodes,
+		port:            port,
+		client:          cfg.Client,
+		transport:       transport,
+		healthTimeout:   healthTimeout,
+		snapshotTimeout: snapshotTimeout,
+		errorWriter:     cfg.ErrorWriter,
+		requestIDFrom:   cfg.RequestIDFrom,
 	}, nil
 }
 
@@ -413,4 +425,187 @@ func healthTransportError(ctx context.Context, nodeID string, err error) *output
 	}
 	return output.NewErrorf(codeUnavailable, "node %q broker is unavailable", nodeID).
 		WithDetails(map[string]any{"nodeId": nodeID})
+}
+
+// --- snapshots ---
+//
+// The four snapshot methods are manager-built requests: the caller's token never
+// travels to a node, so there is nothing to strip. They share one route rule
+// (routeFor), one deadline and one wire decoder, and they relay a node's typed
+// error unchanged so the public handler can answer the same code.
+
+// CreateSnapshot snapshots a running task's VM on its own node.
+func (m *Manager) CreateSnapshot(ctx context.Context, task v1.Task) (v1.Snapshot, error) {
+	return m.snapshotDocument(ctx, task, http.MethodPost, nil)
+}
+
+// RestoreSnapshot restores one of a task's snapshots on the node that holds it.
+func (m *Manager) RestoreSnapshot(ctx context.Context, task v1.Task, snapshotID string) (v1.Snapshot, error) {
+	if !v1.ValidSnapshotID(snapshotID) {
+		return v1.Snapshot{}, errInvalidSnapshotID()
+	}
+	return m.snapshotDocument(ctx, task, http.MethodPost, url.Values{"restore": {snapshotID}})
+}
+
+// ListTaskSnapshots lists the snapshots the task's node holds for it.
+func (m *Manager) ListTaskSnapshots(ctx context.Context, task v1.Task) ([]v1.Snapshot, error) {
+	resp, route, err := m.callSnapshot(ctx, task, http.MethodGet, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, decodeSnapshotNodeError(resp.Body, resp.StatusCode, route.Node.ID)
+	}
+
+	var doc v1.SnapshotList
+	if err := decodeSnapshotWire(resp.Body, &doc); err != nil || doc.Kind != v1.KindSnapshotList {
+		return nil, snapshotUnreadable(route.Node.ID)
+	}
+	if doc.Items == nil {
+		return []v1.Snapshot{}, nil
+	}
+	return doc.Items, nil
+}
+
+// DeleteSnapshot removes one of a task's snapshots.
+func (m *Manager) DeleteSnapshot(ctx context.Context, task v1.Task, snapshotID string) error {
+	if !v1.ValidSnapshotID(snapshotID) {
+		return errInvalidSnapshotID()
+	}
+
+	resp, route, err := m.callSnapshot(ctx, task, http.MethodDelete, url.Values{"id": {snapshotID}})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	return decodeSnapshotNodeError(resp.Body, resp.StatusCode, route.Node.ID)
+}
+
+// snapshotDocument performs a create or restore and decodes the 200/201 document.
+func (m *Manager) snapshotDocument(
+	ctx context.Context, task v1.Task, method string, query url.Values,
+) (v1.Snapshot, error) {
+	resp, route, err := m.callSnapshot(ctx, task, method, query)
+	if err != nil {
+		return v1.Snapshot{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return v1.Snapshot{}, decodeSnapshotNodeError(resp.Body, resp.StatusCode, route.Node.ID)
+	}
+
+	var doc v1.SnapshotDocument
+	if err := decodeSnapshotWire(resp.Body, &doc); err != nil || doc.ID == "" {
+		return v1.Snapshot{}, snapshotUnreadable(route.Node.ID)
+	}
+	return doc.Snapshot, nil
+}
+
+// callSnapshot resolves the task's node, builds the operation URL and performs
+// one request under the snapshot deadline. The returned body owns the deadline:
+// closing it releases the context, so a caller must always close it.
+func (m *Manager) callSnapshot(
+	ctx context.Context, task v1.Task, method string, query url.Values,
+) (*http.Response, Route, error) {
+	route, err := m.routeFor(ctx, task, snapshotOperation)
+	if err != nil {
+		return nil, Route{}, err
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, m.snapshotTimeout)
+
+	target := *route.URL
+	if len(query) > 0 {
+		target.RawQuery = query.Encode()
+	}
+	req, err := http.NewRequestWithContext(callCtx, method, target.String(), nil)
+	if err != nil {
+		cancel()
+		return nil, route, output.NewErrorf(output.CodeInternal,
+			"build node %q snapshot request", route.Node.ID)
+	}
+	if m.requestIDFrom != nil {
+		if id := m.requestIDFrom(ctx); id != "" {
+			req.Header.Set(requestIDHeader, id)
+		}
+	}
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		cancel()
+		return nil, route, snapshotTransportError(ctx, route.Node.ID, err)
+	}
+	resp.Body = &snapshotResponseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, route, nil
+}
+
+// snapshotResponseBody releases the per-request deadline when the body closes.
+type snapshotResponseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+// Close closes the body and then releases the request deadline.
+func (b *snapshotResponseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
+// snapshotTransportError maps a failed dial or a deadline to a stable failure.
+// A node down is unavailable, never unreachable, and the message names no
+// internal address.
+func snapshotTransportError(ctx context.Context, nodeID string, err error) *output.Error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
+		return output.NewErrorf(output.CodeTimeout, "node %q snapshot request timed out", nodeID).
+			WithDetails(map[string]any{"nodeId": nodeID})
+	}
+	return output.NewErrorf(codeUnavailable, "node %q broker is unavailable", nodeID).
+		WithDetails(map[string]any{"nodeId": nodeID})
+}
+
+// decodeSnapshotWire decodes one bounded snapshot document from the node wire.
+func decodeSnapshotWire(body io.Reader, out any) error {
+	return json.NewDecoder(io.LimitReader(body, maxRelayedErrorBytes)).Decode(out)
+}
+
+// decodeSnapshotNodeError relays a node error document: its code, message,
+// retry hint and details are the contract. A body that is not a v1 error document
+// becomes a stable unavailable failure that names no address.
+func decodeSnapshotNodeError(body io.Reader, status int, nodeID string) error {
+	data, err := io.ReadAll(io.LimitReader(body, maxRelayedErrorBytes))
+	if err == nil {
+		var doc v1.ErrorDocument
+		if unmarshalErr := json.Unmarshal(data, &doc); unmarshalErr == nil &&
+			doc.Kind == v1.KindError && doc.Error.Code != "" {
+			typed := output.NewError(output.Code(doc.Error.Code), doc.Error.Message)
+			typed.Retryable = doc.Error.Retryable
+			typed.Details = doc.Error.Details
+			return typed
+		}
+	}
+	return output.NewErrorf(codeUnavailable, "snapshot request failed on node %q (status %d)",
+		nodeID, status)
+}
+
+// snapshotUnreadable is the typed internal failure for a node that breaks the
+// snapshot wire contract, so a caller never receives a half-filled document.
+func snapshotUnreadable(nodeID string) *output.Error {
+	return output.NewErrorf(output.CodeInternal,
+		"node %q returned an unreadable snapshot document", nodeID).
+		WithDetails(map[string]any{"nodeId": nodeID})
+}
+
+// errInvalidSnapshotID is the typed 400 for an id that could address a directory
+// outside the snapshot root.
+func errInvalidSnapshotID() *output.Error {
+	return output.NewError(output.CodeInvalid, "snapshot ID is malformed").
+		WithDetails(map[string]any{"parameter": "id"})
 }
