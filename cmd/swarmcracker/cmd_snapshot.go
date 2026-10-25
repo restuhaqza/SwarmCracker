@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -29,6 +31,7 @@ enabling fast restore (faster than cold boot) and future live migration.
 Example:
   swarmcracker vm snapshot create <task-id>
   swarmcracker vm snapshot restore <snapshot-id>
+  swarmcracker vm snapshot stop-restored <task-id>
   swarmcracker vm snapshot list
   swarmcracker vm snapshot delete <snapshot-id>
   swarmcracker vm snapshot cleanup`,
@@ -36,6 +39,7 @@ Example:
 
 	cmd.AddCommand(newSnapshotCreateCommand())
 	cmd.AddCommand(newSnapshotRestoreCommand())
+	cmd.AddCommand(newSnapshotStopRestoredCommand())
 	cmd.AddCommand(newSnapshotListCommand())
 	cmd.AddCommand(newSnapshotDeleteCommand())
 	cmd.AddCommand(newSnapshotCleanupCommand())
@@ -258,6 +262,182 @@ Example:
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Path for new Firecracker API socket")
 
 	return cmd
+}
+
+// --- stop-restored ---
+
+// defaultRestoredSocketDir mirrors the daemon's default --socket-dir. A restore
+// writes <socket-dir>/<taskID>-restored.sock, so the same directory is where a
+// local stop looks.
+const defaultRestoredSocketDir = "/var/run/firecracker"
+
+// restoredSocketSuffix names the API socket of a restored VM.
+const restoredSocketSuffix = "-restored.sock"
+
+func newSnapshotStopRestoredCommand() *cobra.Command {
+	var socketDir string
+
+	cmd := &cobra.Command{
+		Use:   "stop-restored <task>",
+		Short: "Stop the VM a snapshot restore started",
+		Long: `Stop the restored microVM a snapshot restore started for a task.
+
+A restored VM runs outside SwarmKit's task lifecycle, so "task rm" or a service
+update does not touch it. On the node that restored it, this command sends
+SIGTERM to the Firecracker process behind <task>-restored.sock, waits up to ten
+seconds, then sends SIGKILL, and removes the socket.
+
+<task> is a task ID or any unique prefix of one. With -H the manager asks the
+node that holds the restored VM through the API instead, which needs the
+experimental snapshot capability on that node.
+
+Example:
+  swarmcracker vm snapshot stop-restored 5f3a1b2c9d
+  swarmcracker vm snapshot stop-restored --socket-dir /run/fc task-123
+  swarmcracker -H https://mgr:4244 --ca ca.pem vm snapshot stop-restored task-123`,
+		Args: cobra.ExactArgs(1),
+		PreRun: func(cmd *cobra.Command, args []string) {
+			setupLogging(logLevel)
+		},
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+
+			// A remote stop goes through the manager: only the node that started
+			// the process has its handle, and pkg/client is the single API client.
+			if apiHost != "" {
+				c, err := newContractClient()
+				if err != nil {
+					return err
+				}
+				defer func() { _ = c.Close() }()
+
+				if err := c.StopRestoredTask(ctx, args[0]); err != nil {
+					return err
+				}
+				fmt.Fprintf(cmd.OutOrStdout(), "Stopped the restored VM for %s.\n", args[0])
+				return nil
+			}
+
+			taskID, err := stopLocalRestoredVM(args[0], socketDir)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Stopped the restored VM for %s.\n", taskID)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&socketDir, "socket-dir", defaultRestoredSocketDir,
+		"Directory holding Firecracker API sockets (<socket-dir>/<task>-restored.sock)")
+
+	return cmd
+}
+
+// restoredPIDBySocket is runtime.FindFirecrackerPIDBySocket. It is a variable so
+// a test can hand back the PID of a process it started: the real lookup reads
+// procfs and therefore only works on Linux.
+var restoredPIDBySocket = runtime.FindFirecrackerPIDBySocket
+
+// stopLocalRestoredVM resolves a task reference on this node, stops the
+// Firecracker process behind its restored socket and removes that socket. It
+// returns the resolved task ID.
+func stopLocalRestoredVM(ref, socketDir string) (string, error) {
+	taskID, socketPath, err := resolveRestoredSocket(socketDir, ref)
+	if err != nil {
+		return "", err
+	}
+
+	pid := restoredPIDBySocket(socketPath)
+	if pid <= 0 {
+		// The socket exists but no Firecracker process owns it: a stale file from
+		// a crashed or already-stopped VM. Removing it is safe and is what a
+		// later restore would do anyway, but the caller asked to stop a VM, so
+		// say there is none instead of claiming success.
+		return "", output.NewErrorf(output.CodeNotFound,
+			"task %q has no running restored VM on this node (stale socket %s)", taskID, socketPath).
+			WithDetails(map[string]any{"reason": "no_restored_vm"})
+	}
+
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return "", output.NewErrorf(output.CodeInternal,
+			"find the restored VM process for task %q: %v", taskID, err)
+	}
+	if err := snapshot.StopProcess(proc); err != nil {
+		return "", output.NewErrorf(output.CodeInternal,
+			"stop the restored VM for task %q: %v", taskID, err)
+	}
+
+	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("remove restored VM socket %s: %w", socketPath, err)
+	}
+	return taskID, nil
+}
+
+// resolveRestoredSocket maps a task reference to a task ID and its restored
+// socket under socketDir. An exact ID wins; otherwise the reference is a unique
+// ID prefix, the same rule `vm attach` and the task reads use. Ambiguity is
+// reported with the candidates so the operator can retype a longer prefix.
+func resolveRestoredSocket(socketDir, ref string) (string, string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", "", output.NewError(output.CodeUsage, "a task reference is required")
+	}
+
+	entries, err := os.ReadDir(socketDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", "", output.NewErrorf(output.CodeNotFound,
+				"%q does not match any restored VM: %s does not exist", ref, socketDir).
+				WithDetails(map[string]any{"reason": "no_restored_vm"})
+		}
+		return "", "", fmt.Errorf("read socket directory %s: %w", socketDir, err)
+	}
+
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, restoredSocketSuffix) {
+			continue
+		}
+		id := strings.TrimSuffix(name, restoredSocketSuffix)
+		if id == "" {
+			continue
+		}
+		if id == ref {
+			return id, filepath.Join(socketDir, name), nil
+		}
+		ids = append(ids, id)
+	}
+
+	sort.Strings(ids)
+	var matches []string
+	for _, id := range ids {
+		if strings.HasPrefix(id, ref) {
+			matches = append(matches, id)
+		}
+	}
+
+	switch len(matches) {
+	case 0:
+		if len(ids) == 0 {
+			return "", "", output.NewErrorf(output.CodeNotFound,
+				"no restored VM found under %s", socketDir).
+				WithDetails(map[string]any{"reason": "no_restored_vm"})
+		}
+		return "", "", output.NewErrorf(output.CodeNotFound,
+			"%q does not match any restored VM (available: %s)", ref, strings.Join(ids, ", ")).
+			WithDetails(map[string]any{"reason": "no_restored_vm"})
+	case 1:
+		return matches[0], filepath.Join(socketDir, matches[0]+restoredSocketSuffix), nil
+	default:
+		return "", "", output.NewErrorf(output.CodeUsage,
+			"%q matches multiple restored VMs: %s", ref, strings.Join(matches, ", ")).
+			WithDetails(map[string]any{"parameter": "task"})
+	}
 }
 
 // --- list ---
