@@ -425,7 +425,15 @@ surface sees exactly what the server serves; the phase-2 write routes above are
 covered by `write`.
 
 Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
-also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
+also accept `label`. Every route declares the query parameters it implements, and
+a name outside that set is `400 invalid` with `details.parameter` — a typo fails
+loudly instead of silently changing the request. A cursor is bound to the route
+and to the filter values that produced the page (the `label` selectors, the
+`task` reference on the flat snapshot routes), so reusing it on a different
+query is `400 invalid` with `details.reason: "cursor_mismatch"`; `limit` may
+change between pages.
+
+Every response carries `X-SwarmCracker-Api-Version: 1` and
 `X-Request-Id`. A read answers `If-None-Match` with `304`. A list `ETag` is the
 hash of the response body; a single-resource `ETag` is the quoted SwarmKit
 revision (`"17"`), which is exactly the value a later `PATCH` expects in
@@ -709,12 +717,21 @@ anything is audited.
 - **Create** snapshots a running task's VM on its node and may pause it briefly.
   It also copies the task disk, so the manager's default deadline is **5
   minutes** (`--snapshot-timeout`); a create that exceeds it is `504` with code
-  `timeout`. A task that is not running is `404` with
-  `details.reason: "task_not_running"`.
+  `timeout`. The copy is part of the snapshot: its path lives only in the node's
+  `metadata.json` (recorded as `disk_path`) and never crosses the wire, while
+  `sizeBytes` counts the memory image, the state file and the disk copy. A task
+  that is not running is `404` with `details.reason: "task_not_running"`.
 - **Restore** is refused for a task that is still running: `409 conflict` with
   `details.reason: "restore_task_running"`. The live VM owns its rootfs and a
   restored second VM on the same file would corrupt both. Restoring the snapshot
-  of an exited task is the supported case.
+  of an exited task is the supported case; when the task disk is gone, restore
+  copies the snapshot's disk copy back to the recorded `rootfsPath` first. A
+  snapshot whose copy and whose task disk are both missing is `409 conflict` with
+  `details.reason: "snapshot_incomplete"`.
+- **A malformed snapshot id is a client error.** `{sid}` must be one safe path
+  segment shaped like `snap-…`; anything else is `400 invalid` with
+  `details.reason: "invalid_snapshot_id"`, on the task-scoped and the flat forms
+  alike.
 - **Restore can outlive SwarmKit.** It starts a Firecracker process outside
   SwarmKit's task tracker, so the restored VM is not scheduler-managed.
   `DELETE /v1/tasks/{id}/restored` stops it on the node that started it: SIGTERM,
@@ -1015,12 +1032,18 @@ output is available on every remote read listed above.
 A failed request answers with the `ErrorDocument` envelope — `schemaVersion`,
 `kind: Error` and `error {code, message, requestId, retryable, details}` — and
 the same `requestId` appears in the `X-Request-Id` response header. Codes are
-stable; messages are not. The authoritative list of wire codes is the `Error`
+stable; messages are not. `details` is typed context, and three shapes are worth
+matching on: `details.parameter` names an unknown query parameter (`400
+invalid`), `details.reason: "cursor_mismatch"` means the cursor came from a
+different route or filter (`400 invalid`, with no cursor echoed back), and
+`details.reason: "invalid_snapshot_id"` means the snapshot id is not one safe
+path segment (`400 invalid`). The authoritative list of wire codes is the `Error`
 schema in `api/openapi.yaml`. The CLI maps its stable codes to process exit
 statuses in `pkg/output` (`usage`/`invalid`/`unsupported_version` → `2`,
 `not_found`/`ambiguous` → `3`, `conflict` → `4`, `unauthenticated`/`forbidden` →
 `5`, `rate_limited`/`unavailable`/`timeout`/`unreachable` → `6`, `partial` →
-`7`, anything else → `1`).
+`7`, anything else → `1`). Exit `7` is the `task ls --health` partial result:
+the page printed, but at least one node could not be read.
 
 ### Rate limits
 

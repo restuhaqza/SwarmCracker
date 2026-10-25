@@ -81,7 +81,7 @@ class Error(TypedDict):
     message: str
     requestId: NotRequired[str]
     retryable: bool
-    # Typed failure context. When details.fields is present it maps an offending path to a reason. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
+    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
     details: NotRequired[dict[str, Any]]
 
 class ErrorDocument(TypedDict):
@@ -274,7 +274,7 @@ class PartialError(TypedDict):
     message: str
     requestId: str
     retryable: bool
-    # Typed failure context. When details.fields is present it maps an offending path to a reason. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
+    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
     details: NotRequired[dict[str, Any]]
 
 class Placement(TypedDict):
@@ -416,15 +416,17 @@ class ServiceWrite(TypedDict):
     spec: ServiceSpecWrite
 
 class Snapshot(TypedDict):
-    """One VM snapshot. Only `rootfsPath` is published: the memory and state files are node-local and never cross the wire. `memoryMB` is camel-cased to match the contract even though the engine's internal field is MemoryMB. Every field except `id` is optional, so a node that recorded less metadata still produces a valid document."""
+    """One VM snapshot. Only `rootfsPath` is published: the memory and state files are node-local and never cross the wire, and so is the snapshot's own copy of the task disk. The copy path is recorded in the node's metadata.json (as disk_path), which is the only record of a snapshot and is never a wire field. `sizeBytes` is the total footprint on the node: the memory image, the state file and the disk copy, so it is approximately memoryMB plus the task disk size. `memoryMB` is camel-cased to match the contract even though the engine's internal field is MemoryMB. Every field except `id` is optional, so a node that recorded less metadata still produces a valid document."""
     id: str
     taskId: NotRequired[str]
     serviceId: NotRequired[str]
     nodeId: NotRequired[str]
     createdAt: NotRequired[str]
+    # Total bytes the snapshot occupies on its node: memory image, state file and the disk copy.
     sizeBytes: NotRequired[int]
     memoryMB: NotRequired[int]
     vcpuCount: NotRequired[int]
+    # The absolute task rootfs path the snapshot was taken from. Restore puts the snapshot's disk copy back at this path when the task disk is gone.
     rootfsPath: NotRequired[str]
     checksum: NotRequired[str]
 
@@ -443,9 +445,11 @@ class SnapshotDocument(TypedDict):
     serviceId: NotRequired[str]
     nodeId: NotRequired[str]
     createdAt: NotRequired[str]
+    # Total bytes the snapshot occupies on its node: memory image, state file and the disk copy.
     sizeBytes: NotRequired[int]
     memoryMB: NotRequired[int]
     vcpuCount: NotRequired[int]
+    # The absolute task rootfs path the snapshot was taken from. Restore puts the snapshot's disk copy back at this path when the task disk is gone.
     rootfsPath: NotRequired[str]
     checksum: NotRequired[str]
     schemaVersion: Literal[1]

@@ -23,6 +23,11 @@ The main CLI for cluster management, service deployment, and VM operations.
 | `--known-hosts` | — | — | Path to the SSH known_hosts file |
 | `--insecure-ssh` | — | `false` | Skip SSH host key verification |
 | `--output` | `-o` | — | Machine output format for commands that support it (`table`, `json`, `name`) |
+| `--host` | `-H` | — | Manager API endpoint (e.g. `https://mgr:4244`); selects the v1 API instead of the local control socket |
+| `--ca` | — | — | PEM CA bundle for the manager API; required with `-H` (plaintext HTTP is refused) |
+| `--token-file` | — | — | File containing the bearer token for `-H` |
+| `--token` | — | — | Explicit bearer token (wins over `--token-file`) |
+| `--tls-server-name` | — | — | TLS server name override when the certificate does not name the dialled host |
 | `--version` | `-v` | — | Print version information |
 | `--help` | `-h` | — | Help for any command |
 
@@ -625,6 +630,8 @@ duplex, the route does not work over HTTP/2. Without `-H`, `vm attach` is
 unchanged and uses `--socket-dir` on the node that hosts the task.
 
 **`vm snapshot stop-restored <task>`** stops the VM a snapshot restore started. A restore runs outside SwarmKit, so `vm stop` cannot reach it. Locally the command reads `<socket-dir>/<task>-restored.sock` (default `/var/run/firecracker`), resolves the Firecracker PID, sends SIGTERM, waits up to ten seconds, then SIGKILLs it and removes the socket; `<task>` may be an exact ID or any unique prefix. With `-H` it sends `DELETE /v1/tasks/{id}/restored` to the manager, which relays the stop to the node that holds the restored VM; the route needs the node's experimental snapshot capability and answers `404 not_found` with `details.reason: "no_restored_vm"` when nothing is tracked there.
+
+`vm snapshot create` and `restore` over `-H` are bounded by the manager's snapshot deadline, which is `--snapshot-timeout` on `swarmd-firecracker` (default `5m`); a `504 timeout` means the request outran that deadline. `create` copies the whole task disk, so size the deadline for your slowest disk rather than a small memory image. `--snapshot-timeout` is a daemon flag, not a flag on `vm snapshot`.
 
 `vm list` and `vm status` also cover microVMs started by the daemon for services (discovered from `<socket-dir>/*.sock`; stale sockets are filtered with a liveness probe). For those VMs the guest IP comes from a `<task-id>.net.json` file the daemon writes next to the socket, and is shown by `vm status` and `vm list --format json` (the table has no IP column). The same file carries the daemon's **live healthcheck verdict**: `vm status` prints a `[Health]` section (state, consecutive failures, the check command, the last output, when it was observed) and `vm list` shows it in its `HEALTH` column (and as `health` in `--format json`). The states are `starting`, `healthy`, `failing` (a probe is failing but the retries threshold is not reached — the task is still running) and `unhealthy`. Because the file lives next to the VM socket, this is node-local: run the command on the node hosting the task. A task with no healthcheck, and a VM created directly with `vm create`, show `-`. `vm stop` deliberately refuses to kill a service VM — use `swarmcracker service scale <service> 0` or `swarmcracker service rm <service>` so SwarmKit updates the desired state instead of recreating the task.
 

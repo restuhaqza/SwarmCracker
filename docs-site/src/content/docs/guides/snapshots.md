@@ -230,7 +230,9 @@ complete:
 
 The metadata records the snapshot ID, task/service/node IDs, creation time, vCPU
 count, memory size, rootfs path, the snapshot-owned disk copy, and a SHA-256
-checksum of the state file.
+checksum of the state file. `metadata.json` is node-local and is never served:
+the HTTP API publishes `rootfsPath` and `sizeBytes`, not the disk copy's path
+(recorded in the metadata as `disk_path`).
 
 **Disk cost.** Memory plus disk, per snapshot: a task with a 4 GiB disk and 1 GiB
 of RAM costs about 5 GiB per snapshot, and `max_snapshots`/`max_age` decide how

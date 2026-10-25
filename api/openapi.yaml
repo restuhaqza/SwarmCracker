@@ -11,6 +11,10 @@ info:
     the same documents without a token; its file mode is the credential. The
     snapshot routes are experimental and disabled by default: a manager must opt
     in, and until it does every snapshot route answers 501 not_implemented.
+    Every operation declares the query parameters it implements; a name outside
+    that set is 400 invalid with details.parameter rather than being ignored, and
+    a list cursor is bound to the route and filter that produced it (400
+    details.reason "cursor_mismatch" otherwise).
 servers:
   - url: https://mgr:4244
     description: Manager public API (phase 1; TLS + bearer token)
@@ -34,6 +38,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/VersionInfo" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -60,6 +66,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
         - name: label
           in: query
           schema: { type: string }
@@ -73,6 +87,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ServiceList" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -166,6 +182,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ServiceDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -387,6 +405,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
       responses:
         "200":
           description: A page of tasks for one service
@@ -397,6 +423,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/TaskList" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -423,6 +451,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
         - name: label
           in: query
           schema: { type: string }
@@ -436,6 +472,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/NetworkList" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -531,6 +569,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/NetworkDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -612,6 +652,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
         - name: label
           in: query
           schema: { type: string }
@@ -625,6 +673,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ConfigList" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -715,6 +765,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ConfigDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -855,6 +907,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
         - name: label
           in: query
           schema: { type: string }
@@ -868,6 +928,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/SecretList" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -957,6 +1019,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/SecretDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -1106,6 +1170,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
         - name: health
           in: query
           required: false
@@ -1125,6 +1197,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/TaskList" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "207":
           description: >
             A partial page. This is a normal TaskList document, not an Error
@@ -1189,6 +1263,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/TaskDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -1618,10 +1694,13 @@ paths:
         with details.reason "vm_socket_missing".
         pkg/snapshot's metadata.json is the source of truth; there is no
         manager-side index. The attempt is audited as task.snapshot. A snapshot's
-        memory and state paths never cross the wire: only rootfsPath is published.
+        memory and state paths never cross the wire, and neither does the path of
+        the snapshot-owned disk copy: only rootfsPath is published. Both live in
+        the node's metadata.json (the copy as disk_path) and are node-local.
         A create copies the task disk, so the manager's deadline defaults to five
         minutes (--snapshot-timeout); a create or restore that exceeds it is 504
-        with code timeout.
+        with code timeout. sizeBytes on the response counts the memory image, the
+        state file and the disk copy.
       parameters:
         - name: id
           in: path
@@ -1707,6 +1786,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
       responses:
         "200":
           description: A page of the task's snapshots.
@@ -1772,7 +1859,9 @@ paths:
         does not hold for the task is 404 not_found with details.reason
         "snapshot_not_found"; a snapshot whose files are incomplete is 409 with
         details.reason "snapshot_incomplete". A restore that exceeds the manager's
-        snapshot deadline (five minutes by default) is 504 with code timeout.
+        snapshot deadline (five minutes by default) is 504 with code timeout. A
+        snapshot id that is not a single safe path segment is 400 invalid with
+        details.reason "invalid_snapshot_id".
       parameters:
         - name: id
           in: path
@@ -1840,7 +1929,9 @@ paths:
         record, so there is nothing to clean up elsewhere. 204 on success. A
         snapshot the node does not hold for the task is 404 not_found with
         details.reason "snapshot_not_found". Selectors are enforced as for exec
-        and the attempt is audited as task.snapshot.
+        and the attempt is audited as task.snapshot. A snapshot id that is not a
+        single safe path segment is 400 invalid with details.reason
+        "invalid_snapshot_id".
       parameters:
         - name: id
           in: path
@@ -1901,7 +1992,8 @@ paths:
         details.reason "no_restored_vm". The route takes no body and no query
         parameter, so an unknown parameter is 400 invalid. The attempt is audited
         as task.restored.stop. A request that exceeds the manager's snapshot
-        deadline is 504 with code timeout.
+        deadline (five minutes by default, --snapshot-timeout) is 504 with code
+        timeout.
       parameters:
         - name: id
           in: path
@@ -1983,6 +2075,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
       responses:
         "200":
           description: A page of the task's snapshots.
@@ -2045,7 +2145,9 @@ paths:
         "snapshot_not_found"; a snapshot whose files are incomplete is 409 with
         details.reason "snapshot_incomplete". A restore that exceeds the manager's
         snapshot deadline (five minutes by default) is 504 with code timeout.
-        Selectors are enforced and the attempt is audited as task.snapshot.
+        Selectors are enforced and the attempt is audited as task.snapshot. A
+        snapshot id that is not a single safe path segment is 400 invalid with
+        details.reason "invalid_snapshot_id".
       parameters:
         - name: id
           in: path
@@ -2112,7 +2214,8 @@ paths:
         and pkg/snapshot's metadata is the only record. 204 on success. A
         snapshot the node does not hold is 404 with details.reason
         "snapshot_not_found". Selectors are enforced and the attempt is audited
-        as task.snapshot.
+        as task.snapshot. A snapshot id that is not a single safe path segment is
+        400 invalid with details.reason "invalid_snapshot_id".
       parameters:
         - name: id
           in: path
@@ -2167,6 +2270,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
       responses:
         "200":
           description: A page of nodes
@@ -2177,6 +2288,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/NodeList" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -2211,6 +2324,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/NodeDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -2308,6 +2423,14 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+          description: >
+            Opaque cursor taken from a previous response's `next`. It is bound to
+            the route and to the effective filter values that produced the page
+            (the label selectors on routes that filter, the `task` reference on
+            the flat snapshot routes); `limit` may change between pages. A
+            cursor sent to a different query is 400 invalid with
+            details.reason "cursor_mismatch", and a cursor this server did not
+            issue is 400 invalid.
       responses:
         "200":
           description: A page of audit records
@@ -2318,6 +2441,8 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/AuditList" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "304":
           $ref: "#/components/responses/NotModified"
         "401":
@@ -2464,8 +2589,22 @@ components:
     BadRequest:
       description: >
         Invalid input: an unknown or immutable field, a bad enum, a malformed
-        merge patch or an unresolvable reference. details.fields names the
-        offending path when there is one.
+        merge patch, an unresolvable reference, or a query parameter the route
+        does not implement. The code is invalid for input the server cannot
+        interpret and ambiguous when a reference matches more than one object;
+        messages are not stable, the typed context is. details.fields names an
+        offending body path.
+        details.parameter names an unknown query parameter — every operation
+        declares the parameters it accepts, and a name outside that set is a
+        typo the server refuses rather than ignores (when several names are
+        unknown, the lexicographically first is reported, so the answer is
+        deterministic). details.reason names the specific rejection where the
+        operation documents one: "cursor_mismatch" for a cursor issued for a
+        different route or filter, "invalid_snapshot_id" for a snapshot id that
+        is not a single safe path segment, "method_not_allowed",
+        "payload_too_large" and "unsupported_media_type" for the 405/413/415
+        shapes described on the Error schema, and the per-route reasons named in
+        each operation's description.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -3302,7 +3441,12 @@ components:
       required: [id]
       description: >
         One VM snapshot. Only `rootfsPath` is published: the memory and state
-        files are node-local and never cross the wire. `memoryMB` is camel-cased
+        files are node-local and never cross the wire, and so is the snapshot's
+        own copy of the task disk. The copy path is recorded in the node's
+        metadata.json (as disk_path), which is the only record of a snapshot and
+        is never a wire field. `sizeBytes` is the total footprint on the node:
+        the memory image, the state file and the disk copy, so it is
+        approximately memoryMB plus the task disk size. `memoryMB` is camel-cased
         to match the contract even though the engine's internal field is
         MemoryMB. Every field except `id` is optional, so a node that recorded
         less metadata still produces a valid document.
@@ -3312,10 +3456,20 @@ components:
         serviceId: { type: string }
         nodeId: { type: string }
         createdAt: { type: string, format: date-time }
-        sizeBytes: { type: integer, format: int64 }
+        sizeBytes:
+          type: integer
+          format: int64
+          description: >
+            Total bytes the snapshot occupies on its node: memory image, state
+            file and the disk copy.
         memoryMB: { type: integer }
         vcpuCount: { type: integer }
-        rootfsPath: { type: string }
+        rootfsPath:
+          type: string
+          description: >
+            The absolute task rootfs path the snapshot was taken from. Restore
+            puts the snapshot's disk copy back at this path when the task disk
+            is gone.
         checksum: { type: string }
 
     SnapshotDocument:
@@ -3596,8 +3750,12 @@ components:
           additionalProperties: true
           description: >
             Typed failure context. When details.fields is present it maps an
-            offending path to a reason. 405, 413 and 415 keep code `invalid` and
-            put `method_not_allowed`, `payload_too_large` or
+            offending path to a reason. details.parameter names an unknown query
+            parameter. details.reason names a specific rejection, for example
+            "cursor_mismatch" (a cursor from a different route or filter),
+            "invalid_snapshot_id" (a snapshot id that is not one safe path
+            segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid`
+            and put `method_not_allowed`, `payload_too_large` or
             `unsupported_media_type` in details.reason.
 
     VersionInfo:
