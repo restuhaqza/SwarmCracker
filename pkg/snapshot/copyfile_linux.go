@@ -3,6 +3,7 @@
 package snapshot
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -14,21 +15,25 @@ import (
 // copyFileData copies the bytes of src into dst. It first asks the filesystem to
 // share the source's blocks (a reflink costs no data copy), then copies only the
 // data extents so a sparse disk keeps its holes, and finally falls back to a
-// plain byte copy when the filesystem supports neither.
-func copyFileData(dst, src *os.File) error {
-	if err := cloneExtents(dst, src); err == nil {
+// plain byte copy when the filesystem supports neither. Every attempt is subject
+// to ctx, so a cancelled request stops between chunks.
+func copyFileData(ctx context.Context, dst, src *os.File) error {
+	if err := cloneExtents(ctx, dst, src); err == nil {
 		return nil
 	}
-	if err := copyDataExtents(dst, src); err == nil {
+	if err := copyDataExtents(ctx, dst, src); err == nil {
 		return nil
 	}
-	return copyAll(dst, src)
+	return copyAll(ctx, dst, src)
 }
 
 // cloneExtents asks the filesystem to share the source's extents (FICLONE).
 // EOPNOTSUPP, EXDEV, EINVAL and similar are expected on a filesystem without
 // reflink support; the caller falls back, so the error is only a signal.
-func cloneExtents(dst, src *os.File) error {
+func cloneExtents(ctx context.Context, dst, src *os.File) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := resetForCopy(dst, src); err != nil {
 		return err
 	}
@@ -37,7 +42,7 @@ func cloneExtents(dst, src *os.File) error {
 
 // copyDataExtents copies only what SEEK_DATA reports, so a sparse disk image
 // keeps its holes instead of turning into gigabytes of zero blocks.
-func copyDataExtents(dst, src *os.File) error {
+func copyDataExtents(ctx context.Context, dst, src *os.File) error {
 	if err := resetForCopy(dst, src); err != nil {
 		return err
 	}
@@ -87,7 +92,9 @@ func copyDataExtents(dst, src *os.File) error {
 		if _, err := dst.Seek(dataOffset, io.SeekStart); err != nil {
 			return err
 		}
-		if _, err := io.CopyN(dst, src, holeOffset-dataOffset); err != nil {
+		// One extent can be gigabytes long, so it is copied in chunks that check
+		// ctx between them.
+		if _, err := copyRange(ctx, dst, src, holeOffset-dataOffset); err != nil {
 			return err
 		}
 

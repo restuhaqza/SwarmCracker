@@ -440,10 +440,10 @@ func TestResumeVM_Error(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestCallSnapshotCreate_Error tests callSnapshotCreate error handling.
-func TestCallSnapshotCreate_Error(t *testing.T) {
+// TestPutSnapshotCreate_Error tests putSnapshotCreate error handling.
+func TestPutSnapshotCreate_Error(t *testing.T) {
 	// Non-existent socket
-	err := callSnapshotCreate(
+	err := putSnapshotCreate(
 		context.Background(),
 		"/nonexistent/socket.sock",
 		"/tmp/state",

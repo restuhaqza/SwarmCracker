@@ -4,6 +4,7 @@ package snapshot
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -49,7 +50,7 @@ func TestCopyDataExtentsKeepsHoles(t *testing.T) {
 	dstFile, err := os.OpenFile(dstPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	require.NoError(t, err)
 
-	require.NoError(t, copyDataExtents(dstFile, srcFile))
+	require.NoError(t, copyDataExtents(context.Background(), dstFile, srcFile))
 	require.NoError(t, dstFile.Close())
 
 	got, err := os.ReadFile(dstPath)
@@ -73,7 +74,7 @@ func TestCopyDataExtentsAllHole(t *testing.T) {
 	dstFile, err := os.OpenFile(dstPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
 	require.NoError(t, err)
 
-	require.NoError(t, copyDataExtents(dstFile, srcFile))
+	require.NoError(t, copyDataExtents(context.Background(), dstFile, srcFile))
 	require.NoError(t, dstFile.Close())
 
 	info, err := os.Stat(dstPath)
@@ -84,4 +85,28 @@ func TestCopyDataExtentsAllHole(t *testing.T) {
 func writeAt(f *os.File, data []byte, offset int64) error {
 	_, err := f.WriteAt(data, offset)
 	return err
+}
+
+// TestCopyFileRemovesADestinationThatCannotBeWritten pins the cleanup a full disk
+// needs: the destination is opened successfully, the data copy fails, and no
+// partial destination is left behind for a restore to mistake for a disk. The
+// destination is a symlink to /dev/full, so the write fails on a device that
+// accepts the open — the same shape as ENOSPC, without filling a real filesystem.
+func TestCopyFileRemovesADestinationThatCannotBeWritten(t *testing.T) {
+	const devFull = "/dev/full"
+	require.FileExists(t, devFull, "the test needs the kernel's always-ENOSPC device")
+
+	dir := t.TempDir()
+	src := filepath.Join(dir, "task.ext4")
+	require.NoError(t, os.WriteFile(src, testDiskContent(), 0o600))
+
+	dst := filepath.Join(dir, "copy.ext4")
+	require.NoError(t, os.Symlink(devFull, dst))
+
+	err := copyFile(context.Background(), src, dst)
+	require.Error(t, err)
+
+	_, statErr := os.Stat(dst)
+	assert.True(t, os.IsNotExist(statErr), "a destination that cannot be written must be removed")
+	require.FileExists(t, devFull, "the copy must never remove the device it was pointed at")
 }

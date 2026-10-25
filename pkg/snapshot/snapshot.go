@@ -4,9 +4,12 @@
 // restoration, listing, deletion, and cleanup of old snapshots.
 //
 // The Firecracker snapshot API works as follows:
-//  1. PUT /snapshot/create — snapshot a running VM (pauses internally)
-//  2. Start firecracker --snapshot <state-file> — boot from snapshot
-//  3. PUT /snapshot/load — load memory backend into restored VM
+//  1. PATCH /vm — pause the VM
+//  2. PUT /snapshot/create — write state and memory for the paused VM
+//  3. copy the task disk, still paused, so the two images are one instant
+//  4. PATCH /vm — resume
+//  5. start firecracker --api-sock <socket>
+//  6. PUT /snapshot/load — load memory backend into the restored VM
 package snapshot
 
 import (
@@ -168,7 +171,19 @@ type CreateOptions struct {
 
 // Manager manages VM snapshot lifecycle.
 type Manager struct {
-	config            SnapshotConfig
+	config SnapshotConfig
+
+	// createMu serializes creates. A create pauses a VM, copies a whole disk and
+	// publishes one directory; two of them interleaving on one node would pause a
+	// VM twice and race the directory reservation, so this is held for the whole
+	// operation.
+	createMu sync.Mutex
+
+	// mu guards the short critical sections: a listing, a delete and the
+	// restored-process map. It is deliberately not held across a create's disk
+	// copy, which can run for minutes, so a copy does not block ListSnapshots (and
+	// therefore the broker's list and delete). Publication is a single rename, so a
+	// reader sees either no snapshot or a complete one without the lock.
 	mu                sync.Mutex
 	restoredProcesses map[string]*os.Process // taskID -> process for restored VMs
 }
@@ -191,21 +206,68 @@ func NewManager(config SnapshotConfig) (*Manager, error) {
 		return nil, fmt.Errorf("failed to create snapshot directory %s: %w", config.SnapshotDir, err)
 	}
 
+	sweepStaging(config.SnapshotDir)
+
 	return &Manager{config: config}, nil
+}
+
+// stagingPrefix names the directory a create builds in. It is never a snapshot:
+// a snapshot directory appears with one rename after its metadata is written, so
+// a crash mid-copy leaves only this prefix behind and never a directory that
+// looks like a snapshot.
+const stagingPrefix = "snapshot-staging-"
+
+// stagingSweepAge bounds how long a staging directory may sit unused before
+// NewManager removes it. The guard matters because a create can be in flight in
+// another process — the daemon copying a multi-GB disk while an operator runs a
+// CLI command that constructs its own manager — and that create's staging
+// directory is only seconds old when the copy starts.
+const stagingSweepAge = time.Hour
+
+// sweepStaging removes staging directories that a crashed create left behind, so
+// an aborted copy costs at most stagingSweepAge of disk instead of leaking
+// forever. Failures are logged, never returned: a leftover directory must not
+// stop a manager (and therefore the node's snapshot store) from starting.
+func sweepStaging(snapshotDir string) {
+	entries, err := os.ReadDir(snapshotDir)
+	if err != nil {
+		return
+	}
+
+	cutoff := time.Now().Add(-stagingSweepAge)
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingPrefix) {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		dir := filepath.Join(snapshotDir, entry.Name())
+		if err := os.RemoveAll(dir); err != nil {
+			log.Warn().Err(err).Str("dir", dir).Msg("Failed to remove a leftover snapshot staging directory")
+			continue
+		}
+		log.Info().Str("dir", dir).Msg("Removed a leftover snapshot staging directory")
+	}
 }
 
 // CreateSnapshot snapshots a running VM via the Firecracker API.
 //
-// It calls PUT /snapshot/create on the Firecracker Unix socket, which
-// internally pauses the VM, writes state and memory files, then exits.
-// The snapshot files are then moved to the managed snapshot directory.
+// The VM is paused for the whole operation: state and memory are written by
+// PUT /snapshot/create, then the task disk is copied, and only then is the VM
+// resumed. Copying the disk after a resume would leave the memory image at time
+// T and the disk at T+copy, so a restore could flush page-cache data from the
+// memory image over newer disk state. The snapshot is built in a staging
+// directory and published with one rename, so an interrupted create leaves no
+// snapshot-shaped directory and no metadata.
 func (m *Manager) CreateSnapshot(
 	ctx context.Context,
 	taskID, socketPath string,
 	opts CreateOptions,
 ) (*SnapshotInfo, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.createMu.Lock()
+	defer m.createMu.Unlock()
 
 	if socketPath == "" {
 		return nil, fmt.Errorf("socket path is required")
@@ -217,83 +279,96 @@ func (m *Manager) CreateSnapshot(
 	}
 
 	// Create a staging directory for the snapshot
-	stagingDir, err := os.MkdirTemp(m.config.SnapshotDir, "snapshot-staging-")
+	stagingDir, err := os.MkdirTemp(m.config.SnapshotDir, stagingPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create staging directory: %w", err)
 	}
-	defer os.RemoveAll(stagingDir)
 
-	statePath := filepath.Join(stagingDir, "vm.state")
-	memoryPath := filepath.Join(stagingDir, "vm.mem")
+	stagingStatePath := filepath.Join(stagingDir, "vm.state")
+	stagingMemoryPath := filepath.Join(stagingDir, "vm.mem")
+	stagingDiskPath := filepath.Join(stagingDir, diskFileName)
+
+	// published is set once the staging directory has become the snapshot
+	// directory. Until then every exit path removes the staging directory, so a
+	// failed create leaves nothing behind.
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(stagingDir)
+		}
+	}()
 
 	log.Info().
 		Str("task_id", taskID).
 		Str("socket", socketPath).
 		Msg("Creating VM snapshot")
 
-	// Call Firecracker snapshot API
-	if err := callSnapshotCreate(ctx, socketPath, statePath, memoryPath); err != nil {
-		return nil, fmt.Errorf("failed to create snapshot via Firecracker API: %w", err)
-	}
-
-	// Reserve a final directory with a fresh ID. The Firecracker snapshot already
-	// exists in the staging directory, so this is the point of no return: a
-	// directory that is already there belongs to another snapshot and is never
-	// reused.
-	snapshotID, snapshotDir, err := m.reserveSnapshotDir()
+	// Pause for the whole window. The deferred resume is the guarantee that the
+	// VM is woken on every exit path, including a cancelled request and a failed
+	// copy; the explicit resume below ends the window as soon as the snapshot is
+	// published.
+	vm, err := pauseForSnapshot(ctx, socketPath)
 	if err != nil {
 		return nil, err
 	}
+	defer vm.resume()
 
-	// Move files to final location
-	finalStatePath := filepath.Join(snapshotDir, "vm.state")
-	finalMemoryPath := filepath.Join(snapshotDir, "vm.mem")
-
-	if err := os.Rename(statePath, finalStatePath); err != nil {
-		os.RemoveAll(snapshotDir)
-		return nil, fmt.Errorf("failed to move state file: %w", err)
-	}
-	if err := os.Rename(memoryPath, finalMemoryPath); err != nil {
-		os.RemoveAll(snapshotDir)
-		return nil, fmt.Errorf("failed to move memory file: %w", err)
+	// Call Firecracker snapshot API
+	if err := putSnapshotCreate(ctx, socketPath, stagingStatePath, stagingMemoryPath); err != nil {
+		return nil, fmt.Errorf("failed to create snapshot via Firecracker API: %w", err)
 	}
 
 	// A Firecracker snapshot is memory and device state: the block device still
 	// points at the task disk, which the executor deletes with the task. Copy it
-	// so the snapshot is a restore point on its own. Failure means the snapshot
+	// now, while the VM is still paused, so the snapshot is a restore point on its
+	// own and both images describe the same instant. Failure means the snapshot
 	// would be unusable after cleanup, so no snapshot is kept at all.
 	var diskPath string
 	var diskSize int64
 	if opts.RootfsPath != "" {
-		diskPath = filepath.Join(snapshotDir, diskFileName)
-		if err := copyFile(opts.RootfsPath, diskPath); err != nil {
-			os.RemoveAll(snapshotDir)
+		if err := copyDiskFile(ctx, opts.RootfsPath, stagingDiskPath); err != nil {
 			return nil, fmt.Errorf("failed to copy task disk %s into the snapshot: %w", opts.RootfsPath, err)
 		}
-		diskSize, err = fileSize(diskPath)
+		diskSize, err = fileSize(stagingDiskPath)
 		if err != nil {
-			os.RemoveAll(snapshotDir)
 			return nil, fmt.Errorf("failed to stat snapshot disk copy: %w", err)
 		}
 	}
 
 	// Calculate sizes and checksum
-	stateSize, err := fileSize(finalStatePath)
+	stateSize, err := fileSize(stagingStatePath)
 	if err != nil {
-		os.RemoveAll(snapshotDir)
 		return nil, fmt.Errorf("failed to stat state file: %w", err)
 	}
 
-	memorySize, err := fileSize(finalMemoryPath)
+	memorySize, err := fileSize(stagingMemoryPath)
 	if err != nil {
-		os.RemoveAll(snapshotDir)
 		return nil, fmt.Errorf("failed to stat memory file: %w", err)
 	}
 
-	checksum, err := sha256File(finalStatePath)
+	checksum, err := sha256File(stagingStatePath)
 	if err != nil {
-		os.RemoveAll(snapshotDir)
 		return nil, fmt.Errorf("failed to checksum state file: %w", err)
+	}
+
+	// Reserve a final directory with a fresh ID. A directory that is already there
+	// belongs to another snapshot and is never reused.
+	snapshotID, snapshotDir, err := m.reserveSnapshotDir()
+	if err != nil {
+		return nil, err
+	}
+
+	// From here on the reserved directory belongs to this create; any failure
+	// removes it so no reader ever sees a snapshot without metadata.
+	keepDir := false
+	defer func() {
+		if !keepDir {
+			_ = os.RemoveAll(snapshotDir)
+		}
+	}()
+
+	if opts.RootfsPath != "" {
+		diskPath = filepath.Join(snapshotDir, diskFileName)
 	}
 
 	info := &SnapshotInfo{
@@ -302,8 +377,8 @@ func (m *Manager) CreateSnapshot(
 		ServiceID:  opts.ServiceID,
 		NodeID:     opts.NodeID,
 		CreatedAt:  time.Now().UTC(),
-		MemoryPath: finalMemoryPath,
-		StatePath:  finalStatePath,
+		MemoryPath: filepath.Join(snapshotDir, "vm.mem"),
+		StatePath:  filepath.Join(snapshotDir, "vm.state"),
 		SizeBytes:  stateSize + memorySize + diskSize,
 		VCPUCount:  opts.VCPUCount,
 		MemoryMB:   opts.MemoryMB,
@@ -313,15 +388,26 @@ func (m *Manager) CreateSnapshot(
 		Metadata:   opts.Metadata,
 	}
 
-	// Save metadata
-	if err := saveMetadata(snapshotDir, info); err != nil {
-		os.RemoveAll(snapshotDir)
+	// Metadata is written inside the staging directory but records the final
+	// paths, so the rename below publishes a directory that is already complete:
+	// the snapshot becomes visible in one step, with its metadata.
+	if err := saveMetadata(stagingDir, info); err != nil {
 		return nil, fmt.Errorf("failed to save snapshot metadata: %w", err)
 	}
 
+	if err := m.publishSnapshot(stagingDir, snapshotDir); err != nil {
+		return nil, err
+	}
+	published = true
+	keepDir = true
+
+	// The snapshot exists on disk; the VM does not need to stay paused while old
+	// snapshots are swept.
+	vm.resume()
+
 	// Enforce max snapshots per service
 	if m.config.MaxSnapshots > 0 && info.ServiceID != "" {
-		m.enforceMaxSnapshots(info.ServiceID)
+		m.enforceMaxSnapshotsLocked(info.ServiceID)
 	}
 
 	log.Info().
@@ -333,10 +419,24 @@ func (m *Manager) CreateSnapshot(
 	return info, nil
 }
 
+// publishSnapshot makes a fully built staging directory visible as the snapshot
+// directory with one rename. The reserved directory is empty, so removing it and
+// renaming in its place loses nothing, and a reader (or a crash) sees either no
+// snapshot or a complete one — never a directory without metadata.
+func (m *Manager) publishSnapshot(stagingDir, snapshotDir string) error {
+	if err := os.Remove(snapshotDir); err != nil {
+		return fmt.Errorf("failed to prepare snapshot directory: %w", err)
+	}
+	if err := os.Rename(stagingDir, snapshotDir); err != nil {
+		return fmt.Errorf("failed to publish snapshot directory: %w", err)
+	}
+	return nil
+}
+
 // reserveSnapshotDir creates and returns a snapshot ID and its directory. The
 // directory is created with mkdir, not mkdirall: an ID that already has a
 // directory is retried with a new ID rather than reused, because overwriting it
-// would silently destroy a valid restore point. Caller must hold m.mu.
+// would silently destroy a valid restore point. Caller must hold m.createMu.
 func (m *Manager) reserveSnapshotDir() (id string, dir string, err error) {
 	for attempt := 0; attempt < snapshotIDAttempts; attempt++ {
 		id = generateSnapshotID()
@@ -399,7 +499,7 @@ func (m *Manager) RestoreFromSnapshot(
 				return fmt.Errorf("%w: snapshot disk copy %s not found and the task disk %s is gone: %v",
 					ErrSnapshotIncomplete, info.DiskPath, info.RootfsPath, copyErr)
 			}
-			if copyErr := copyFile(info.DiskPath, info.RootfsPath); copyErr != nil {
+			if copyErr := copyFile(ctx, info.DiskPath, info.RootfsPath); copyErr != nil {
 				return fmt.Errorf("failed to restore task disk from snapshot: %w", copyErr)
 			}
 			log.Info().
@@ -582,6 +682,15 @@ func (m *Manager) CleanupOldSnapshots(ctx context.Context, maxAge time.Duration)
 	return removed, freed, nil
 }
 
+// enforceMaxSnapshotsLocked applies the per-service limit under m.mu. A create
+// calls it after publication, so the new snapshot is visible to the sweep.
+func (m *Manager) enforceMaxSnapshotsLocked(serviceID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.enforceMaxSnapshots(serviceID)
+}
+
 // enforceMaxSnapshots removes the oldest snapshots for a service when the limit is exceeded.
 // Caller must hold m.mu.
 func (m *Manager) enforceMaxSnapshots(serviceID string) {
@@ -641,30 +750,49 @@ func resumeVM(ctx context.Context, socketPath string) error {
 	return patchFirecrackerAPI(ctx, socketPath, "/vm", payload)
 }
 
-// callSnapshotCreate calls PUT /snapshot/create on the Firecracker API.
-// For Firecracker v1.14.0+, the API expects snapshot_type, snapshot_path, and mem_file_path.
-// The VM must be paused before calling this.
-func callSnapshotCreate(ctx context.Context, socketPath, statePath, memoryPath string) (err error) {
-	// Pause VM first (required in v1.14.0+)
-	if err := pauseVM(ctx, socketPath); err != nil {
-		return fmt.Errorf("failed to pause VM: %w", err)
-	}
+// pausedVM is a VM a create paused and must wake again. resume is idempotent:
+// the deferred call is the guarantee, and the explicit call after the disk copy
+// is what keeps the pause window to the snapshot itself.
+type pausedVM struct {
+	ctx        context.Context
+	socketPath string
+	resumeOnce sync.Once
+}
 
-	// Ensure VM is resumed on any exit path (success or failure). The caller's
-	// context may already be done by now — the manager's 30 s deadline fires
-	// while a full memory dump is still in flight — and resuming on that context
-	// would fail immediately, leaving the VM paused forever. A fresh bounded
-	// context keeps the operation's values but drops its cancellation, so the
-	// resume always gets a chance to run.
-	defer func() {
-		resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resumeTimeout)
+// pauseForSnapshot pauses the VM (required before /snapshot/create in Firecracker
+// v1.14.0+) and returns the handle that resumes it.
+func pauseForSnapshot(ctx context.Context, socketPath string) (*pausedVM, error) {
+	if err := pauseVM(ctx, socketPath); err != nil {
+		return nil, fmt.Errorf("failed to pause VM: %w", err)
+	}
+	return &pausedVM{ctx: ctx, socketPath: socketPath}, nil
+}
+
+// resume wakes the VM exactly once. The caller's context may already be done by
+// now — a create that timed out mid-copy, or one that was cancelled — and
+// resuming on that context would fail immediately, leaving the VM paused
+// forever. A fresh bounded context keeps the operation's values but drops its
+// cancellation, so the resume always gets a chance to run.
+func (p *pausedVM) resume() {
+	if p == nil {
+		return
+	}
+	p.resumeOnce.Do(func() {
+		resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(p.ctx), resumeTimeout)
 		defer cancel()
-		if resumeErr := resumeVM(resumeCtx, socketPath); resumeErr != nil {
-			log.Warn().Err(resumeErr).
+
+		if err := resumeVM(resumeCtx, p.socketPath); err != nil {
+			log.Warn().Err(err).
 				Msg("failed to resume VM after snapshot; the VM is still paused and may need a manual resume")
 		}
-	}()
+	})
+}
 
+// putSnapshotCreate calls PUT /snapshot/create on the Firecracker API.
+// For Firecracker v1.14.0+, the API expects snapshot_type, snapshot_path, and mem_file_path.
+// The VM must already be paused: the caller owns the pause window, because it
+// also spans the disk copy that follows.
+func putSnapshotCreate(ctx context.Context, socketPath, statePath, memoryPath string) error {
 	payload := map[string]interface{}{
 		"snapshot_type": "Full",
 		"snapshot_path": statePath,
