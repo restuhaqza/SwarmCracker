@@ -204,6 +204,56 @@ func TestRemoteListTasksHealthFollowsPages(t *testing.T) {
 	assert.Equal(t, "page-2", <-cursors)
 }
 
+// TestRemoteListTasksHealthDedupesNodeAcrossPages proves the aggregation folds
+// the partials of the same node: the manager emits one partial per page per
+// failed node, so a node owning tasks on two 207 pages would otherwise appear
+// twice in the aggregated document. The first entry wins and its missing name is
+// backfilled from the later page.
+func TestRemoteListTasksHealthDedupesNodeAcrossPages(t *testing.T) {
+	next := "page-2"
+	c := newTestRemote(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("cursor") {
+		case "":
+			doc := v1.NewTaskList([]v1.Task{{ID: "task-1", NodeID: "node-2"}})
+			doc.Next = &next
+			doc.Partial = []v1.Partial{{NodeID: "node-2"}}
+			writeTestDocument(w, http.StatusMultiStatus, doc)
+		case "page-2":
+			doc := v1.NewTaskList([]v1.Task{{ID: "task-2", NodeID: "node-2"}})
+			doc.Partial = []v1.Partial{{NodeID: "node-2", NodeName: "worker-2"}}
+			writeTestDocument(w, http.StatusMultiStatus, doc)
+		default:
+			t.Errorf("unexpected cursor %q", r.URL.Query().Get("cursor"))
+			writeTestDocument(w, http.StatusOK, v1.NewTaskList(nil))
+		}
+	})
+
+	doc, partial, err := c.ListTasksHealth(context.Background())
+	require.NoError(t, err)
+	assert.True(t, partial)
+	require.Len(t, doc.Items, 2)
+
+	require.Len(t, doc.Partial, 1, "the same node must be named once across pages")
+	assert.Equal(t, "node-2", doc.Partial[0].NodeID)
+	assert.Equal(t, "worker-2", doc.Partial[0].NodeName, "the later page backfills the missing name")
+	assert.Nil(t, doc.Next)
+}
+
+// TestRemoteListTasksHealthPartialWithoutNodeIDIsKept keeps an unnamed partial:
+// it identifies no node, so folding it into an existing entry would drop it.
+func TestRemoteListTasksHealthPartialWithoutNodeIDIsKept(t *testing.T) {
+	c := newTestRemote(t, Config{}, func(w http.ResponseWriter, _ *http.Request) {
+		doc := v1.NewTaskList([]v1.Task{{ID: "task-1"}})
+		doc.Partial = []v1.Partial{{}, {}}
+		writeTestDocument(w, http.StatusMultiStatus, doc)
+	})
+
+	doc, partial, err := c.ListTasksHealth(context.Background())
+	require.NoError(t, err)
+	assert.True(t, partial)
+	assert.Len(t, doc.Partial, 2)
+}
+
 // TestRemoteListTasksHealthServerErrorIsTyped keeps the existing mapping for any
 // non-2xx answer other than 207.
 func TestRemoteListTasksHealthServerErrorIsTyped(t *testing.T) {

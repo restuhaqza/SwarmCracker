@@ -388,11 +388,16 @@ func (r *remoteClient) listTasks(ctx context.Context) ([]v1.Task, error) {
 // TaskList document, not an error, so `do` already returns it; this method only
 // records the partial flag. `next` stays nil because the pages are consumed
 // here, exactly like the unenriched list.
+//
+// Partials are folded by node: the manager emits one per page per failed node,
+// so a node that owns tasks on two pages arrives twice. The aggregated document
+// names it once.
 func (r *remoteClient) listTasksHealth(ctx context.Context) (v1.TaskList, bool, error) {
 	doc := v1.NewTaskList(nil)
 	partial := false
 	cursor := ""
 	seen := make(map[string]struct{})
+	partialIndex := make(map[string]int)
 
 	for page := 0; ; page++ {
 		if page >= maxListPages {
@@ -424,7 +429,9 @@ func (r *remoteClient) listTasksHealth(ctx context.Context) (v1.TaskList, bool, 
 		}
 
 		doc.Items = append(doc.Items, pageDoc.Items...)
-		doc.Partial = append(doc.Partial, pageDoc.Partial...)
+		for _, entry := range pageDoc.Partial {
+			mergePartial(&doc.Partial, partialIndex, entry)
+		}
 		doc.Warnings = append(doc.Warnings, pageDoc.Warnings...)
 
 		if pageDoc.Next == nil || *pageDoc.Next == "" {
@@ -437,6 +444,26 @@ func (r *remoteClient) listTasksHealth(ctx context.Context) (v1.TaskList, bool, 
 		seen[*pageDoc.Next] = struct{}{}
 		cursor = *pageDoc.Next
 	}
+}
+
+// mergePartial appends one page's partial, or folds it into the entry already
+// recorded for that node: the manager emits one partial per page per failed
+// node, so a node hosting tasks on several pages would otherwise repeat. The
+// first entry wins; a later page may carry the node name the first one lacked,
+// which is backfilled so the single entry stays usable — the same rule
+// pkg/apihttp/health.go applies inside one page. A partial without a node ID
+// names nothing, so it cannot be folded and is always kept.
+func mergePartial(dst *[]v1.Partial, index map[string]int, entry v1.Partial) {
+	if entry.NodeID != "" {
+		if at, dup := index[entry.NodeID]; dup {
+			if (*dst)[at].NodeName == "" {
+				(*dst)[at].NodeName = entry.NodeName
+			}
+			return
+		}
+		index[entry.NodeID] = len(*dst)
+	}
+	*dst = append(*dst, entry)
 }
 
 // listServiceTasks returns every page of one service's tasks.

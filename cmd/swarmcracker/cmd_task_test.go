@@ -330,6 +330,36 @@ func TestTaskListHealthPartialStderrDocument(t *testing.T) {
 	assert.Contains(t, doc.Error.Message, "worker-2")
 }
 
+// TestTaskListHealthPartialErrorCountsDistinctNodes proves the message counts
+// nodes, not entries: an aggregated partial list that names the same node twice
+// (one partial per page per failed node) must read "1 node(s)" once.
+func TestTaskListHealthPartialErrorCountsDistinctNodes(t *testing.T) {
+	err := partialTasksError([]v1.Partial{
+		{NodeID: "node-2"},
+		{NodeID: "node-2", NodeName: "worker-2"},
+		{NodeID: "node-3", NodeName: "worker-3"},
+	})
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodePartial, typed.Code)
+	assert.Equal(t, "health is partial: 2 node(s) did not answer: worker-2, worker-3", typed.Message)
+	assert.Equal(t, 7, output.ExitCode(err))
+}
+
+// TestTaskListHealthPartialErrorRepeatsNoName covers the no-node-ID path: two
+// entries that carry only the same name are one node.
+func TestTaskListHealthPartialErrorRepeatsNoName(t *testing.T) {
+	err := partialTasksError([]v1.Partial{
+		{NodeName: "worker-2"},
+		{NodeName: "worker-2"},
+	})
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, "health is partial: 1 node(s) did not answer: worker-2", typed.Message)
+}
+
 // TestTaskListHealthJSONComplete pins the 200 path: one document, no error, exit
 // 0.
 func TestTaskListHealthJSONComplete(t *testing.T) {

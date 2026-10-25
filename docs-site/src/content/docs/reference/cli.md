@@ -526,7 +526,9 @@ node); `-o name` emits one task ID per line; table mode prints the same columns
 as above with `HEALTH` taken from the API page. A partial page is a normal
 document, not a failed request: the tasks are printed first, then the command
 writes one `Error` document with code `partial` to stderr in `-o json` mode
-(a message naming the silent nodes in table and `-o name` modes) and exits **7**.
+(a message naming each silent node once in table and `-o name` modes) and exits **7**.
+Pages are merged before either is printed, so a node that owns tasks on several
+pages appears once in `partial` and once in that message.
 A complete page exits **0**. Without `--health` every existing mode is unchanged.
 
 `task ls` prints the same `HEALTH` column as `service ps` — live when the owning

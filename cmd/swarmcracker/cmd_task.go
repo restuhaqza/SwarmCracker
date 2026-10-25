@@ -430,9 +430,35 @@ func taskHealthAPIDisplay(task v1.Task) string {
 // partialTasksError is the typed error a partial page produces: its message
 // names every node that did not answer, so table and name modes still explain
 // the exit status on stderr. JSON mode renders it as the Error document.
+//
+// Only json/ndjson emits that document; `-o name` (and table) deliberately print
+// prose here, because main owns error rendering and emits Error documents only
+// for the JSON output formats. Changing that would alter every command's stderr
+// bytes, so the prose is the repo convention and the exit code (7) is identical
+// across modes.
+//
+// Nodes are counted once: a partial list that repeats a node (a server or an
+// older aggregator can) must not read "2 node(s) did not answer: worker-2,
+// worker-2". The first entry wins and a missing node name is backfilled from a
+// later one, matching how the client folds pages.
 func partialTasksError(partials []v1.Partial) error {
-	names := make([]string, 0, len(partials))
+	folded := make([]v1.Partial, 0, len(partials))
+	index := make(map[string]int, len(partials))
 	for _, partial := range partials {
+		if identity := partialNodeIdentity(partial); identity != "" {
+			if at, dup := index[identity]; dup {
+				if folded[at].NodeName == "" {
+					folded[at].NodeName = partial.NodeName
+				}
+				continue
+			}
+			index[identity] = len(folded)
+		}
+		folded = append(folded, partial)
+	}
+
+	names := make([]string, 0, len(folded))
+	for _, partial := range folded {
 		name := partial.NodeName
 		if name == "" {
 			name = partial.NodeID
@@ -447,6 +473,16 @@ func partialTasksError(partials []v1.Partial) error {
 	}
 	return output.NewErrorf(output.CodePartial,
 		"health is partial: %d node(s) did not answer: %s", len(names), strings.Join(names, ", "))
+}
+
+// partialNodeIdentity is the key a partial folds by: its node ID, or the name
+// when the document carries only that. An entry with neither names no node, so
+// it keeps its own place instead of collapsing into another anonymous entry.
+func partialNodeIdentity(partial v1.Partial) string {
+	if partial.NodeID != "" {
+		return partial.NodeID
+	}
+	return partial.NodeName
 }
 
 // filterV1Tasks mirrors the legacy filterTasks, with two contract-safe
