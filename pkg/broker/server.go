@@ -194,6 +194,7 @@ func (s operationSpec) allows(method string) bool {
 // for every method, because there is no method set to enforce.
 var operationSpecs = map[string]operationSpec{
 	"exec":      {methods: []string{http.MethodPost}},
+	"attach":    {methods: []string{http.MethodPost}},
 	"logs":      {methods: []string{http.MethodGet}},
 	"files":     {methods: []string{http.MethodGet, http.MethodPut}},
 	"health":    {methods: []string{http.MethodGet}},

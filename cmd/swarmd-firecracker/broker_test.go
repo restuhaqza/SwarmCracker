@@ -248,6 +248,37 @@ func TestStartBroker_RegistersFiles(t *testing.T) {
 		"files must be registered, not 501")
 }
 
+// TestStartBroker_RegistersAttach proves the daemon registers the attach
+// operation and derives the console socket from --socket-dir: a running task
+// with no console socket answers the handler's typed 404 console_unavailable,
+// not the server's 501 for an unregistered operation.
+func TestStartBroker_RegistersAttach(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Post("https://"+srv.Addr()+"/v1/tasks/task-1/attach",
+		"application/octet-stream", strings.NewReader("x"))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusNotFound, resp.StatusCode,
+		"attach must be registered, not 501; the task has no console socket")
+	var doc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
+	require.Equal(t, "not_found", doc.Error.Code)
+	require.Equal(t, "console_unavailable", doc.Error.Details["reason"])
+}
+
 // TestStartBroker_LogsUnavailableTaskIs404 pins the daemon's not-found answer for
 // a task whose console log was never written.
 func TestStartBroker_LogsUnavailableTaskIs404(t *testing.T) {
