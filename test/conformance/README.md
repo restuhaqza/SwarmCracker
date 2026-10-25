@@ -86,7 +86,8 @@ no `requestIdInBody` and no `follow`.
 
 - `role` is `reader`, `runner` or `admin`. The runner supplies the token; a
   fixture never contains one. A role with no token configured skips only the
-  cases that need it (with a log line, never a failure).
+  cases that need it; in the lab leg that skip fails the run unless
+  `CONFORMANCE_ALLOW_SKIPS=1` is set.
 - `expect.kind` checks the document `kind`; `expect.errorCode` checks
   `error.code`. Exactly one must be set, except for a documentless status
   (`204`/`304`) and for a `stream` case, which asserts frames instead.
@@ -112,9 +113,11 @@ no `requestIdInBody` and no `follow`.
 - `requestIdInBody: false` asserts the request ID is not echoed at
   `requestIdPath` (default: the top-level `requestId`); `true` asserts it is, and
   that the value is this request's `X-Request-Id`. Every error document echoes it
-  in `error.requestId` automatically. The health partial is the one success
-  document that carries a nested echo (`partial.0.error.requestId`), so it is the
-  case that uses `true`.
+  in `error.requestId` automatically. No success DTO carries a top-level
+  `requestId`, so `true` is only usable with an explicit `requestIdPath`. The
+  health partial (`partial.0.error.requestId`) is the one success document that
+  carries a nested echo; the case that asserts it is `mockOnly`, so the `true`
+  branch runs in the mock leg only.
 - `expect.headers` are exact-match assertions.
 - `request.body` is a JSON value. `null` or an absent body sends no body. A body
   is sent as the v1 media type unless `request.contentType` overrides it (a
@@ -181,6 +184,14 @@ no `requestIdInBody` and no `follow`.
   failing on any other skip.
 - A task-scoped stream or snapshot case (`$task`) skips in the lab when
   `CONFORMANCE_TASK_ID` is not set: the cluster, not the runner, lacks the value.
+- **The lab run is strict by default.** After the run, every case that did not
+  run fails it, with a message listing each skipped case and the variable that
+  would enable it (`CONFORMANCE_ALLOW_MUTATION=1`, `CONFORMANCE_TASK_ID`, a
+  manager that advertises the capability, the earlier case that captures a
+  value). A green lab run therefore means the cases were exercised, not skipped.
+  `CONFORMANCE_ALLOW_SKIPS=1` is the only opt-out. A `mockOnly` case is never
+  counted: no setting makes it run against a live manager, and the mock leg is
+  where it is proven.
 - **The mock run may skip only a declared capability gate.** `TestConformanceMock`
   fails if any other case was skipped, and asserts both the exact number of cases
   in `expectedMockCases` and the exact number of gates in
@@ -222,10 +233,11 @@ only gated skips.
 | `CONFORMANCE_HOST` | base URL of the manager's TLS listener (required, `https://` only) |
 | `CONFORMANCE_CA` | path to a PEM CA to trust, in addition to the system roots (optional) |
 | `CONFORMANCE_READER_TOKEN` | reader token (required) |
-| `CONFORMANCE_RUNNER_TOKEN` | runner token; runner cases skip without it (optional) |
-| `CONFORMANCE_ADMIN_TOKEN` | admin token; admin cases skip without it (optional) |
-| `CONFORMANCE_TASK_ID` | a running task id for the exec/logs/attach and snapshot cases; they skip without it (optional) |
+| `CONFORMANCE_RUNNER_TOKEN` | runner token; without it runner cases skip and the run fails (unless `CONFORMANCE_ALLOW_SKIPS=1`) |
+| `CONFORMANCE_ADMIN_TOKEN` | admin token; without it admin cases skip and the run fails (unless `CONFORMANCE_ALLOW_SKIPS=1`) |
+| `CONFORMANCE_TASK_ID` | a running task id for the exec/logs/attach and snapshot cases; without it they skip and the run fails (unless `CONFORMANCE_ALLOW_SKIPS=1`) |
 | `CONFORMANCE_ALLOW_MUTATION` | `1` runs the mutating cases; default off |
+| `CONFORMANCE_ALLOW_SKIPS` | `1` accepts skipped cases; unset is strict, and a skip fails the run |
 
 Before running a case, the lab leg reads `GET /v1/version` with the reader token
 and logs the daemon build and capability list. That is what gates the new cases
@@ -266,13 +278,23 @@ carries bearer tokens, so there is no cleartext fallback. Tokens are never
 printed; a failure names the request path, status and a body truncated to 2 KiB,
 never the `Authorization` header.
 
+Once the run starts, it is strict: a case that did not run fails it unless
+`CONFORMANCE_ALLOW_SKIPS=1` (the `mockOnly` cases are exempt, because no setting
+would make them run). The failure lists every skipped case with the variable that
+would enable it, so "the lab passed" cannot mean "the lab skipped the interesting
+half".
+
 The scheduled workflow is `.github/workflows/conformance-lab.yml`. It writes the
 `CONFORMANCE_CA` secret to a temporary file, refuses to run without
 `CONFORMANCE_HOST`, and deletes the file afterwards. Set the repository variable
 `CONFORMANCE_TASK_ID` to a task that exists on the cluster to run the exec, logs,
-attach and snapshot cases; without it they skip. Operators who prefer to seed a
-cluster can use the `mockOnly` case names as a checklist, but the lab run itself
-does not require seeded data.
+attach and snapshot cases; without it they skip, which fails the run. The weekly
+schedule sets `CONFORMANCE_ALLOW_SKIPS=1` because it never allows mutation and so
+must skip the mutating cases by policy; a manual dispatch does not set it, so a
+dispatched run has to exercise the cases (dispatch with `allow_mutation` enabled
+to run the whole set). Operators who prefer to seed a cluster can use the
+`mockOnly` case names as a checklist, but the lab run itself does not require
+seeded data.
 
 ## Adding a case
 

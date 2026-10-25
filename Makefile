@@ -64,7 +64,8 @@ api-check:
 # identical fixtures against a live manager; it skips cleanly when
 # CONFORMANCE_HOST/CONFORMANCE_READER_TOKEN are not set, refuses a
 # non-https:// host (the run carries bearer tokens), and mutates nothing unless
-# CONFORMANCE_ALLOW_MUTATION=1. See test/conformance/README.md.
+# CONFORMANCE_ALLOW_MUTATION=1. Once it starts it is strict: a case that did not
+# run fails it unless CONFORMANCE_ALLOW_SKIPS=1. See test/conformance/README.md.
 conformance:
 	$(GO) test ./test/conformance -run TestConformanceMock -count=1
 
