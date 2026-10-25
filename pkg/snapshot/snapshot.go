@@ -185,23 +185,60 @@ type Manager struct {
 	// operation.
 	createMu sync.Mutex
 
-	// mu guards the short critical sections: a listing, a delete and the
-	// restored-process map. It is deliberately not held across a create's disk
-	// copy, which can run for minutes, so a copy does not block ListSnapshots (and
-	// therefore the broker's list and delete). Publication is a single rename, so a
-	// reader sees either no snapshot or a complete one without the lock.
+	// mu guards the short critical sections: a listing, a delete, the
+	// restored-process map and the restore/stop lock map. It is deliberately not
+	// held across a create's disk copy, which can run for minutes, so a copy does
+	// not block ListSnapshots (and therefore the broker's list and delete).
+	// Publication is a single rename, so a reader sees either no snapshot or a
+	// complete one without the lock.
 	mu                sync.Mutex
-	restoredProcesses map[string]*os.Process // taskID -> process for restored VMs
+	restoredProcesses map[string]*restoredVM // taskID -> process and socket
+	restoredLocks     map[string]*sync.Mutex // taskID -> restore/stop serialization
+}
+
+// restoredVM is one Firecracker process a restore started, together with the API
+// socket it owns. The socket travels with the process because the stop path has
+// to unlink it under the same per-task lock a restore holds: unlinking outside
+// that lock could delete the socket a concurrent restore just created.
+type restoredVM struct {
+	proc       *os.Process
+	socketPath string
 }
 
 // TrackRestoredProcess registers a restored VM process for lifecycle tracking.
-func (m *Manager) TrackRestoredProcess(taskID string, proc *os.Process) {
+// socketPath is the API socket the process owns; empty means the caller has none,
+// and StopRestored then leaves the filesystem alone.
+func (m *Manager) TrackRestoredProcess(taskID string, proc *os.Process, socketPath string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.trackRestoredLocked(taskID, proc, socketPath)
+}
+
+// trackRestoredLocked records one restored VM. Caller must hold m.mu.
+func (m *Manager) trackRestoredLocked(taskID string, proc *os.Process, socketPath string) {
 	if m.restoredProcesses == nil {
-		m.restoredProcesses = make(map[string]*os.Process)
+		m.restoredProcesses = make(map[string]*restoredVM)
 	}
-	m.restoredProcesses[taskID] = proc
+	m.restoredProcesses[taskID] = &restoredVM{proc: proc, socketPath: socketPath}
+}
+
+// restoredLock returns the mutex that serializes a restore and a stop for one
+// task. Both touch the same socket path, so a stop must never run between a
+// restore's unlink and its new process. The map is bounded by the tasks this
+// daemon has restored, exactly like the process map.
+func (m *Manager) restoredLock(taskID string) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.restoredLocks == nil {
+		m.restoredLocks = make(map[string]*sync.Mutex)
+	}
+	lock, ok := m.restoredLocks[taskID]
+	if !ok {
+		lock = &sync.Mutex{}
+		m.restoredLocks[taskID] = lock
+	}
+	return lock
 }
 
 // restoredStopTimeout is the graceful window a restored VM gets after SIGTERM
@@ -215,30 +252,58 @@ const restoredStopTimeout = 10 * time.Second
 const restoredStopPoll = 50 * time.Millisecond
 
 // StopRestored stops the restored VM tracked for taskID: SIGTERM, wait up to
-// restoredStopTimeout for it to exit, then SIGKILL. A successfully stopped VM is
-// removed from the map before the wait, so a second stop cannot signal a PID the
-// OS may have reused; the second call answers ErrNoRestoredVM.
+// restoredStopTimeout for it to exit, then SIGKILL, and only then remove the map
+// entry and unlink the VM's own socket. The whole sequence holds the task's
+// restore/stop lock, so it can never unlink a socket a concurrent restore just
+// created. A failed signal keeps the entry: the process may still be alive, and a
+// later stop must be able to retry it.
 func (m *Manager) StopRestored(taskID string) error {
+	lock := m.restoredLock(taskID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	m.mu.Lock()
-	proc, tracked := m.restoredProcesses[taskID]
-	// The entry is dropped either way: a process that cannot be signalled is not
-	// retryable through this map, and a stale entry would make a later stop
-	// signal whatever now owns the PID.
-	delete(m.restoredProcesses, taskID)
+	vm, tracked := m.restoredProcesses[taskID]
 	m.mu.Unlock()
 
-	if !tracked || proc == nil {
+	if !tracked || vm == nil || vm.proc == nil {
 		return fmt.Errorf("%w: task %q has no restored VM on this node", ErrNoRestoredVM, taskID)
 	}
 
-	log.Info().Str("task_id", taskID).Int("pid", proc.Pid).Msg("Stopping restored VM")
+	log.Info().Str("task_id", taskID).Int("pid", vm.proc.Pid).Msg("Stopping restored VM")
 
-	if err := StopProcess(proc); err != nil {
+	if err := StopProcess(vm.proc); err != nil {
+		// The process is still there or its fate is unknown, so the entry stays
+		// and the caller can retry. Dropping it here would make the VM
+		// unreachable while its PID may still be alive.
 		return fmt.Errorf("failed to stop the restored VM for task %q: %w", taskID, err)
 	}
 
-	log.Info().Str("task_id", taskID).Int("pid", proc.Pid).Msg("Restored VM stopped")
+	// The process is confirmed gone (StopProcess treats os.ErrProcessDone as
+	// gone), so the entry is dropped now and a second stop answers
+	// ErrNoRestoredVM instead of signalling a PID the OS may have reused.
+	m.mu.Lock()
+	delete(m.restoredProcesses, taskID)
+	m.mu.Unlock()
+
+	// The socket is this manager's file, so the stop owns its removal while it
+	// still holds the restore/stop lock. Best effort: the VM is already stopped.
+	if vm.socketPath != "" {
+		if err := os.Remove(vm.socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Warn().Err(err).Str("socket", vm.socketPath).
+				Msg("Failed to remove the restored VM socket")
+		}
+	}
+
+	log.Info().Str("task_id", taskID).Int("pid", vm.proc.Pid).Msg("Restored VM stopped")
 	return nil
+}
+
+// signalProcess delivers one signal to a process. It is a variable only so a test
+// can force a failed SIGTERM and prove the map entry survives for a retry;
+// production never replaces it.
+var signalProcess = func(proc *os.Process, sig syscall.Signal) error {
+	return proc.Signal(sig)
 }
 
 // StopProcess terminates one VM process: SIGTERM, a bounded wait for it to exit,
@@ -251,7 +316,7 @@ func StopProcess(proc *os.Process) error {
 		return nil
 	}
 
-	if err := proc.Signal(syscall.SIGTERM); err != nil {
+	if err := signalProcess(proc, syscall.SIGTERM); err != nil {
 		if errors.Is(err, os.ErrProcessDone) {
 			return nil
 		}
@@ -265,13 +330,13 @@ func StopProcess(proc *os.Process) error {
 	log.Warn().Int("pid", proc.Pid).
 		Dur("grace", restoredStopTimeout).
 		Msg("VM did not exit after SIGTERM; killing it")
-	if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+	if err := signalProcess(proc, syscall.SIGKILL); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return fmt.Errorf("signal SIGKILL: %w", err)
 	}
 
 	// The kill is immediate: a process that ignores SIGKILL because it is stuck
-	// in the kernel is not going to answer this call either. The map entry is
-	// already gone, so a second stop does not wait for it.
+	// in the kernel is not going to answer this call either. The caller drops its
+	// map entry only after this returns nil, so a retry is still possible on error.
 	return nil
 }
 
@@ -603,27 +668,17 @@ func (m *Manager) RestoreFromSnapshot(
 	}
 
 	// When the snapshot recorded a rootfs path, ensure the restored VM's block
-	// device has a disk to point at. A snapshot that owns a copy puts it back
-	// after the executor removed the original; one without a copy needs the
-	// original in place, exactly as before disk copies existed.
-	if info.RootfsPath != "" {
-		if _, err := os.Stat(info.RootfsPath); err != nil {
-			if info.DiskPath == "" {
-				return fmt.Errorf("%w: snapshot rootfs not found at %s: %v", ErrSnapshotIncomplete, info.RootfsPath, err)
-			}
-			if _, copyErr := os.Stat(info.DiskPath); copyErr != nil {
-				return fmt.Errorf("%w: snapshot disk copy %s not found and the task disk %s is gone: %v",
-					ErrSnapshotIncomplete, info.DiskPath, info.RootfsPath, copyErr)
-			}
-			if copyErr := copyFile(ctx, info.DiskPath, info.RootfsPath); copyErr != nil {
-				return fmt.Errorf("failed to restore task disk from snapshot: %w", copyErr)
-			}
-			log.Info().
-				Str("snapshot_id", info.ID).
-				Str("rootfs_path", info.RootfsPath).
-				Msg("Restored the task disk from the snapshot copy")
-		}
+	// device has a disk to point at.
+	if err := ensureRestoredDisk(ctx, info); err != nil {
+		return err
 	}
+
+	// A restore and a stop share this task's socket path and process entry, so
+	// they are serialized from here on: a stop that ran between the unlink below
+	// and the new process would unlink the socket the restore had just created.
+	restoreLock := m.restoredLock(info.TaskID)
+	restoreLock.Lock()
+	defer restoreLock.Unlock()
 
 	log.Info().
 		Str("snapshot_id", info.ID).
@@ -646,18 +701,38 @@ func (m *Manager) RestoreFromSnapshot(
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("failed to start firecracker for restore: %w", err)
 	}
+	proc := cmd.Process
 
-	// Track the restored VM process so it can be stopped later
-	m.TrackRestoredProcess(info.TaskID, cmd.Process)
+	// The daemon owns this process, so it reaps it: without a Wait every stop or
+	// failed load would leave a zombie under the daemon. Wait is also what marks
+	// the *os.Process done, which makes the stop path's Signal report
+	// os.ErrProcessDone — the "already stopped" answer it treats as success.
+	go func() {
+		if waitErr := cmd.Wait(); waitErr != nil {
+			log.Debug().Err(waitErr).Int("pid", proc.Pid).
+				Msg("Restored firecracker process exited")
+		}
+	}()
+
+	// Track the restored VM process and the socket it owns, so a later stop can
+	// reach both under this task's lock.
+	m.mu.Lock()
+	m.trackRestoredLocked(info.TaskID, proc, socketPath)
+	m.mu.Unlock()
 
 	// Ensure cleanup on failure
 	startErr := false
 	defer func() {
 		if startErr {
-			if killErr := cmd.Process.Kill(); killErr != nil {
+			if killErr := proc.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
 				log.Warn().Err(killErr).Msg("Failed to kill firecracker in snapshot cleanup")
 			}
-			if remErr := os.Remove(socketPath); remErr != nil {
+			// The process is gone, so its entry must not outlive this attempt: a
+			// later stop would resolve the task to a PID the OS may have reused.
+			m.mu.Lock()
+			delete(m.restoredProcesses, info.TaskID)
+			m.mu.Unlock()
+			if remErr := os.Remove(socketPath); remErr != nil && !errors.Is(remErr, os.ErrNotExist) {
 				log.Warn().Err(remErr).Msg("Failed to remove socket in snapshot cleanup")
 			}
 		}
@@ -680,6 +755,38 @@ func (m *Manager) RestoreFromSnapshot(
 		Str("snapshot_id", info.ID).
 		Msg("VM restored from snapshot successfully")
 
+	return nil
+}
+
+// ensureRestoredDisk makes sure the VM the restore is about to start has a disk
+// for its block device. A snapshot that owns a copy puts it back after the
+// executor removed the original; one without a copy needs the original in place,
+// exactly as before disk copies existed.
+func ensureRestoredDisk(ctx context.Context, info *SnapshotInfo) error {
+	if info.RootfsPath == "" {
+		return nil
+	}
+
+	_, rootfsErr := os.Stat(info.RootfsPath)
+	if rootfsErr == nil {
+		return nil
+	}
+
+	if info.DiskPath == "" {
+		return fmt.Errorf("%w: snapshot rootfs not found at %s: %v", ErrSnapshotIncomplete, info.RootfsPath, rootfsErr)
+	}
+	if _, copyErr := os.Stat(info.DiskPath); copyErr != nil {
+		return fmt.Errorf("%w: snapshot disk copy %s not found and the task disk %s is gone: %v",
+			ErrSnapshotIncomplete, info.DiskPath, info.RootfsPath, copyErr)
+	}
+	if err := copyFile(ctx, info.DiskPath, info.RootfsPath); err != nil {
+		return fmt.Errorf("failed to restore task disk from snapshot: %w", err)
+	}
+
+	log.Info().
+		Str("snapshot_id", info.ID).
+		Str("rootfs_path", info.RootfsPath).
+		Msg("Restored the task disk from the snapshot copy")
 	return nil
 }
 
