@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Literal, NotRequired, TypedDict, Union
 
 class AuditActor(TypedDict):
+    # token for a bearer-authenticated TCP request, local for the trusted Unix socket where the file mode is the credential, and unknown when the record was produced without a request identity.
     type: Literal["token", "local", "unknown"]
     id: NotRequired[str]
     name: NotRequired[str]
@@ -21,7 +22,9 @@ class AuditRecord(TypedDict):
     action: str
     resource: AuditResource
     result: Literal["ok", "error"]
+    # How the write's If-Match was satisfied: revision for an exact revision, any for `If-Match: "*"`. Absent when the write carried no precondition.
     precondition: NotRequired[Literal["revision", "any"]]
+    # The TCP peer address, host only. Absent for a Unix-socket request. A forwarded header is never used.
     sourceIp: NotRequired[str]
 
 class AuditResource(TypedDict):
@@ -36,6 +39,7 @@ class Config(TypedDict):
     createdAt: NotRequired[str]
     updatedAt: NotRequired[str]
     labels: NotRequired[dict[str, str]]
+    # Config payload, UTF-8 text. Present only when the caller holds configs:read-values; a plain configs:read response omits the field entirely (it is never sent empty). It is absent when the config has no payload, and when the config was stored out of band with a non-UTF-8 payload: the API does not transcode bytes to U+FFFD. A secret never has a data field on any read path.
     data: NotRequired[str]
 
 class ConfigDocument(TypedDict):
@@ -45,9 +49,11 @@ class ConfigDocument(TypedDict):
     createdAt: NotRequired[str]
     updatedAt: NotRequired[str]
     labels: NotRequired[dict[str, str]]
+    # Config payload, UTF-8 text. Present only when the caller holds configs:read-values; a plain configs:read response omits the field entirely (it is never sent empty). It is absent when the config has no payload, and when the config was stored out of band with a non-UTF-8 payload: the API does not transcode bytes to U+FFFD. A secret never has a data field on any read path.
     data: NotRequired[str]
     schemaVersion: Literal[1]
     kind: Literal["Config"]
+    # Present and true only on the response to a dry-run write.
     dryRun: NotRequired[bool]
 
 class ConfigList(TypedDict):
@@ -64,6 +70,7 @@ class ConfigWrite(TypedDict):
     """The POST /v1/configs body. `data` is UTF-8 text; a payload that is not valid UTF-8 is refused with details.reason "binary_not_supported"."""
     name: str
     labels: NotRequired[dict[str, str]]
+    # UTF-8 payload, opaque to the API.
     data: NotRequired[str]
 
 class Endpoint(TypedDict):
@@ -74,6 +81,7 @@ class Error(TypedDict):
     message: str
     requestId: NotRequired[str]
     retryable: bool
+    # Typed failure context. When details.fields is present it maps an offending path to a reason. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
     details: NotRequired[dict[str, Any]]
 
 class ErrorDocument(TypedDict):
@@ -86,6 +94,7 @@ class Event(TypedDict):
     kind: Literal["Event"]
     cursor: str
     at: NotRequired[str]
+    # <resource>.<created|updated|removed>
     type: str
     resource: EventResource
     revision: NotRequired[str]
@@ -101,17 +110,27 @@ class EventResource(TypedDict):
 class ExecFrame(TypedDict):
     """One frame of the exec stream: exactly one JSON object per line, newline terminated. The stream ends with one `exit` frame, or with one `error` frame when the command failed after it started."""
     type: Literal["stdout", "stderr", "exit", "error"]
+    # Base64-encoded raw output bytes from the guest. Set on stdout and stderr frames.
     data: NotRequired[str]  # base64
+    # Process status on an exit frame. When the guest was killed by signal N this is 128+N.
     exitCode: NotRequired[int]
+    # The terminating signal number on an exit frame; absent for a normal exit.
     signal: NotRequired[int]
+    # Error code on an error frame: "internal" for a mid-stream failure, "timeout" when the deadline expired.
     code: NotRequired[str]
 
 class ExecRequest(TypedDict):
+    # The argv to run. Required and non-empty; the first element is the executable.
     command: list[str]
+    # Environment variables for the command. A key must be non-empty and must not contain "="; values are sent to the guest as K=V after stable sorting. Audit records never carry them.
     env: NotRequired[dict[str, str]]
+    # Working directory, passed through; the guest validates it.
     workdir: NotRequired[str]
+    # Request a pseudo-terminal. Always 501 not_implemented over HTTP (details.reason "tty_not_supported").
     tty: NotRequired[bool]
+    # Attach stdin. Requires tty, so over HTTP it is 400 invalid with details.reason "stdin_requires_tty".
     stdin: NotRequired[bool]
+    # Server-side deadline for the whole command in milliseconds. 0 means no server-side deadline. A negative value is 400 invalid.
     timeoutMs: NotRequired[int]
 
 class Healthcheck(TypedDict):
@@ -124,11 +143,15 @@ class Healthcheck(TypedDict):
 class LogFrame(TypedDict):
     """One frame of a task log stream: exactly one JSON object per line, newline terminated. A non-following stream ends with one `eof` frame; a following stream has no terminal frame. The console log merges stdout and stderr, so `stream` is always stdout."""
     type: Literal["log", "eof"]
+    # The merged console stream. Set on log frames only.
     stream: NotRequired[Literal["stdout"]]
+    # RFC3339Nano timestamp. An approximation: the console file has no per-line timestamps, so backlog lines carry the file's modification time and followed lines carry the time they were read.
     time: NotRequired[str]
+    # Base64-encoded raw console bytes. Set on log frames only.
     data: NotRequired[str]  # base64
 
 class Mount(TypedDict):
+    # v1 writes accept every SwarmKit mount type. `bind` references a host path and requires the admin role (contract §5.3): an operator token is refused with 403 forbidden and details.requiredRole "admin". `npipe` and `cluster` are additive extensions to the contract's volume/bind/tmpfs set.
     type: Literal["bind", "volume", "tmpfs", "npipe", "cluster"]
     source: NotRequired[str]
     target: str
@@ -160,6 +183,7 @@ class NetworkDocument(TypedDict):
     attachable: NotRequired[bool]
     schemaVersion: Literal[1]
     kind: Literal["Network"]
+    # Present and true only on the response to a dry-run write.
     dryRun: NotRequired[bool]
 
 class NetworkIPAM(TypedDict):
@@ -213,6 +237,7 @@ class NodeDocument(TypedDict):
     agentVersion: NotRequired[str]
     schemaVersion: Literal[1]
     kind: Literal["Node"]
+    # Present and true only on the response to a dry-run write.
     dryRun: NotRequired[bool]
 
 class NodeList(TypedDict):
@@ -249,6 +274,7 @@ class PartialError(TypedDict):
     message: str
     requestId: str
     retryable: bool
+    # Typed failure context. When details.fields is present it maps an offending path to a reason. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
     details: NotRequired[dict[str, Any]]
 
 class Placement(TypedDict):
@@ -285,6 +311,7 @@ class SecretDocument(TypedDict):
     driver: NotRequired[str]
     schemaVersion: Literal[1]
     kind: Literal["Secret"]
+    # Present and true only on the response to a dry-run write.
     dryRun: NotRequired[bool]
 
 class SecretDriver(TypedDict):
@@ -306,6 +333,7 @@ class SecretWrite(TypedDict):
     """The POST /v1/secrets body. Exactly one of `data` (base64) or `driver` must be present; both or neither is 400 invalid. No response ever echoes the payload."""
     name: str
     labels: NotRequired[dict[str, str]]
+    # Base64-encoded payload. Standard base64 with or without RFC 4648 padding is accepted. Never returned on any read path.
     data: NotRequired[str]  # base64
     driver: NotRequired[SecretDriver]
 
@@ -330,7 +358,9 @@ class ServiceDocument(TypedDict):
     status: ServiceStatus
     schemaVersion: Literal[1]
     kind: Literal["Service"]
+    # Present and true only on the response to a dry-run create or patch: the document was validated but not persisted.
     dryRun: NotRequired[bool]
+    # Non-fatal outcomes of a wait. `wait_timeout` means the mutation committed but the service did not converge within `timeoutMs`; `wait_error` means a read failed while waiting and the document is the last good one.
     warnings: NotRequired[list[Warning]]
 
 class ServiceList(TypedDict):
@@ -362,7 +392,9 @@ class ServiceSpecPatch(TypedDict):
     placement: NotRequired[Union[Placement, None]]
 
 class ServiceSpecWrite(TypedDict):
+    # Immutable after create.
     mode: NotRequired[Literal["replicated", "global"]]
+    # Only valid for mode replicated. Omitted or null means 1. A global service must not carry it.
     replicas: NotRequired[Union[int, None]]
     task: TaskSpecWrite
     update: NotRequired[UpdateConfig]
@@ -398,8 +430,11 @@ class Snapshot(TypedDict):
 
 class SnapshotCreateRequest(TypedDict):
     """The optional body of POST /v1/tasks/{id}/snapshots. Every field is optional and unknown fields are rejected. An empty body is valid: the node snapshots the VM with the resources it is running with."""
+    # vCPUs to record for the snapshot.
     vcpus: NotRequired[int]
+    # Memory in MiB to record for the snapshot.
     memoryMB: NotRequired[int]
+    # Absolute rootfs path to record for the snapshot. A relative path or one containing a `..` segment is 400 invalid. Redundant separators, a trailing slash and `.` segments all name the same absolute directory and are accepted.
     rootfsPath: NotRequired[str]
 
 class SnapshotDocument(TypedDict):
@@ -513,10 +548,12 @@ class TaskSpecPatch(TypedDict):
     mounts: NotRequired[Union[list[Mount], None]]
     networks: NotRequired[Union[list[NetworkAttachment], None]]
     restartPolicy: NotRequired[Union[RestartPolicy, None]]
+    # Merged field by field; null removes it. An explicitly empty `test` array also clears the whole healthcheck (SwarmKit would read an empty test as "inherit").
     healthcheck: NotRequired[Union[Healthcheck, None]]
     stopSignal: NotRequired[Union[str, None]]
     stopGraceMs: NotRequired[Union[int, None]]
     readOnlyRootfs: NotRequired[Union[bool, None]]
+    # Write-only. Absent preserves the existing pull credential, null clears it, a string replaces it.
     registryAuth: NotRequired[Union[str, None]]
 
 class TaskSpecWrite(TypedDict):
@@ -536,6 +573,7 @@ class TaskSpecWrite(TypedDict):
     stopSignal: NotRequired[str]
     stopGraceMs: NotRequired[int]
     readOnlyRootfs: NotRequired[bool]
+    # The base64 X-Registry-Auth payload SwarmKit hands the node when it pulls the image. Write-only: it is never present on a response. Absent on a patch preserves the existing credential; null clears it.
     registryAuth: NotRequired[str]
 
 class UpdateConfig(TypedDict):
@@ -553,6 +591,7 @@ class VersionInfo(TypedDict):
     serverVersion: str
     grpcProtocolVersion: str
     clusterId: NotRequired[str]
+    # Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. A capability that is advertised is served; the version document never promises a route that answers 501.
     capabilities: list[str]
 
 class Warning(TypedDict):

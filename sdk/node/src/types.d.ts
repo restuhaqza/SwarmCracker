@@ -651,6 +651,7 @@ export interface VersionInfo {
   serverVersion: string;
   grpcProtocolVersion: string;
   clusterId?: string;
+  /** Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. A capability that is advertised is served; the version document never promises a route that answers 501. */
   capabilities: string[];
 }
 

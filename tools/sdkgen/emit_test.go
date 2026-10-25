@@ -401,3 +401,71 @@ func TestPyDocIsSafeInsideADocstring(t *testing.T) {
 		})
 	}
 }
+
+const describedSpec = `    Thing:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+          description: >
+            The identifier.
+
+            Never empty.
+        blob:
+          type: string
+          format: byte
+          description: Base64 payload.
+        bare: {type: string}
+`
+
+// TestGeneratePythonPropertyDescriptions is item 3: a property description
+// becomes one comment line directly above its field, folded like the class
+// docstring, while a field without a description gains no line at all.
+func TestGeneratePythonPropertyDescriptions(t *testing.T) {
+	spec := mustParse(t, specWith(describedSpec))
+	python, err := GeneratePython(spec)
+	if err != nil {
+		t.Fatalf("GeneratePython() error = %v", err)
+	}
+
+	want := `class Thing(TypedDict):
+    # The identifier. Never empty.
+    id: str
+    # Base64 payload.
+    blob: NotRequired[str]  # base64
+    bare: NotRequired[str]
+`
+	if !strings.Contains(string(python), want) {
+		t.Errorf("property descriptions are not emitted as comments above each field\n--- got ---\n%s\n--- want ---\n%s", python, want)
+	}
+}
+
+// TestPythonPropertyCommentsCannotEscapeTheLine covers the failure mode a naive
+// implementation has: a description that carries a newline, a quote or a
+// backslash must stay inside its own comment and never end the field block.
+func TestPythonPropertyCommentsCannotEscapeTheLine(t *testing.T) {
+	src := specWith(`    Thing:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "line one\nline two \"class Evil(TypedDict):\" back\\slash"
+`)
+	spec := mustParse(t, src)
+	python, err := GeneratePython(spec)
+	if err != nil {
+		t.Fatalf("GeneratePython() error = %v", err)
+	}
+
+	want := `class Thing(TypedDict):
+    # line one line two "class Evil(TypedDict):" back\slash
+    id: NotRequired[str]
+`
+	if !strings.Contains(string(python), want) {
+		t.Errorf("description was not folded into one safe comment\n--- got ---\n%s\n--- want ---\n%s", python, want)
+	}
+	if strings.Contains(string(python), "class Evil(TypedDict):\n") {
+		t.Errorf("a description escaped its comment\n%s", python)
+	}
+}

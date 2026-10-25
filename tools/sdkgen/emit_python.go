@@ -80,6 +80,9 @@ func pyClass(schema *Schema) string {
 		out.WriteString(`    """` + pyDoc(resolved.Description) + `"""` + "\n")
 	}
 	for _, property := range resolved.Properties {
+		if comment := pyPropertyComment(property.Type); comment != "" {
+			out.WriteString(comment)
+		}
 		annotation := pyType(property.Type)
 		if !resolved.IsRequired(property.Name) {
 			annotation = "NotRequired[" + annotation + "]"
@@ -91,6 +94,19 @@ func pyClass(schema *Schema) string {
 		out.WriteString("\n")
 	}
 	return strings.TrimSuffix(out.String(), "\n")
+}
+
+// pyPropertyComment renders a property description as a comment line above its
+// field. A TypedDict field cannot carry a docstring (the class-level one already
+// describes the whole schema), and `Annotated` would change the annotation the
+// client sees, so a plain comment is the only way to keep the upstream prose
+// next to the field. The description is folded onto one line, exactly like the
+// class docstring, so a YAML block scalar cannot end the comment early.
+func pyPropertyComment(t *Type) string {
+	if t.Description == "" {
+		return ""
+	}
+	return "    # " + oneLine(t.Description) + "\n"
 }
 
 // pyAlias renders one module-level type alias.
