@@ -49,6 +49,22 @@ Example:
 
 // --- create ---
 
+// defaultSnapshotTimeout is the deadline for one local snapshot create or
+// restore. It matches the daemon's --snapshot-timeout default (pkg/broker's
+// DefaultSnapshotTimeout): both operations copy the whole task disk, so a fixed
+// 60 seconds would fail on any host whose filesystem lacks reflinks.
+const defaultSnapshotTimeout = 5 * time.Minute
+
+// snapshotOperationContext builds the context one local snapshot operation runs
+// under. It is a variable only so a test can observe the value the --timeout flag
+// delivered; production never replaces it.
+var snapshotOperationContext = func(timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		timeout = defaultSnapshotTimeout
+	}
+	return context.WithTimeout(context.Background(), timeout)
+}
+
 func newSnapshotCreateCommand() *cobra.Command {
 	var (
 		socketPath string
@@ -57,6 +73,7 @@ func newSnapshotCreateCommand() *cobra.Command {
 		vcpus      int
 		memoryMB   int
 		rootfsPath string
+		timeout    time.Duration
 	)
 
 	cmd := &cobra.Command{
@@ -66,9 +83,15 @@ func newSnapshotCreateCommand() *cobra.Command {
 
 The VM must be running and accessible via its Firecracker API socket.
 
+The snapshot owns a copy of the task disk, taken while the VM is paused, so the
+operation lasts as long as that copy. --timeout (default 5m, the daemon's own
+snapshot default) bounds the whole create: raise it on a filesystem without
+reflinks, where ten gigabytes is not a thirty-second copy.
+
 Example:
   swarmcracker vm snapshot create task-123
-  swarmcracker vm snapshot create task-123 --socket /var/run/firecracker/task-123.sock`,
+  swarmcracker vm snapshot create task-123 --socket /var/run/firecracker/task-123.sock
+  swarmcracker vm snapshot create task-123 --timeout 15m`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
@@ -106,7 +129,7 @@ Example:
 				RootfsPath: rootfsPath,
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ctx, cancel := snapshotOperationContext(timeout)
 			defer cancel()
 
 			info, err := mgr.CreateSnapshot(ctx, taskID, socketPath, opts)
@@ -131,6 +154,8 @@ Example:
 	cmd.Flags().IntVar(&vcpus, "vcpus", 0, "vCPU count (for metadata)")
 	cmd.Flags().IntVar(&memoryMB, "memory", 0, "Memory in MB (for metadata)")
 	cmd.Flags().StringVar(&rootfsPath, "rootfs", "", "Rootfs path (default: <rootfs-dir>/tasks/<task-id>.ext4 when it exists)")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultSnapshotTimeout,
+		"Deadline for the whole create, including the task-disk copy")
 
 	return cmd
 }
@@ -164,8 +189,21 @@ func taskRootfsPath(cfg *config.Config, socketPath string) string {
 
 // --- restore ---
 
+// snapshotProbeTimeout bounds the liveness probe of the task's own API socket.
+// A live Firecracker answers a machine-config request in microseconds; the
+// timeout only covers a wedged process.
+const snapshotProbeTimeout = 500 * time.Millisecond
+
+// taskVMSocketAlive is runtime.IsVMSocketAlive. It is a variable only so a test
+// can answer for the node without starting a Firecracker process; production
+// never replaces it.
+var taskVMSocketAlive = runtime.IsVMSocketAlive
+
 func newSnapshotRestoreCommand() *cobra.Command {
-	var socketPath string
+	var (
+		socketPath string
+		timeout    time.Duration
+	)
 
 	cmd := &cobra.Command{
 		Use:   "restore <snapshot-id>",
@@ -175,9 +213,14 @@ func newSnapshotRestoreCommand() *cobra.Command {
 The restored VM will start with the exact memory state and configuration
 it had when the snapshot was taken.
 
+The snapshot's disk copy is written back to the recorded rootfs path first, which
+can take as long as the disk copy took at create time. --timeout (default 5m, the
+daemon's own snapshot default) bounds the whole restore.
+
 Example:
   swarmcracker vm snapshot restore snap-abc123def4567890
-  swarmcracker vm snapshot restore snap-abc123def4567890 --socket /var/run/firecracker/task-123.sock`,
+  swarmcracker vm snapshot restore snap-abc123def4567890 --socket /var/run/firecracker/task-123.sock
+  swarmcracker vm snapshot restore snap-abc123def4567890 --timeout 15m`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
@@ -220,7 +263,21 @@ Example:
 				socketPath = filepath.Join(cfg.Executor.SocketDir, target.TaskID+"-restored.sock")
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			// A restore writes the snapshot's disk over the task's own rootfs, so a
+			// task whose VM is still running on this node must be refused before
+			// that copy: the live VM owns the file. The API path answers the same
+			// case with 409 restore_task_running, and a second Firecracker (the old
+			// outcome) corrupts both VMs anyway.
+			if cfg.Executor.SocketDir != "" {
+				taskSocket := filepath.Join(cfg.Executor.SocketDir, target.TaskID+".sock")
+				if taskVMSocketAlive(taskSocket, snapshotProbeTimeout) {
+					return output.NewErrorf(output.CodeConflict,
+						"task %q is still running; restoring its snapshot would overwrite the live rootfs", target.TaskID).
+						WithDetails(map[string]any{"reason": "restore_task_running"})
+				}
+			}
+
+			ctx, cancel := snapshotOperationContext(timeout)
 			defer cancel()
 
 			if err := mgr.RestoreFromSnapshot(ctx, target, socketPath); err != nil {
@@ -260,6 +317,8 @@ Example:
 	}
 
 	cmd.Flags().StringVar(&socketPath, "socket", "", "Path for new Firecracker API socket")
+	cmd.Flags().DurationVar(&timeout, "timeout", defaultSnapshotTimeout,
+		"Deadline for the whole restore, including writing the task disk back")
 
 	return cmd
 }

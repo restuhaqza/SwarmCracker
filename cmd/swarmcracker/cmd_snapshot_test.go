@@ -9,10 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -180,6 +183,118 @@ func TestSnapshotCreateDerivesTheTaskDiskFromTheSocket(t *testing.T) {
 	copied, err := os.ReadFile(info.DiskPath)
 	require.NoError(t, err)
 	assert.Equal(t, content, copied)
+}
+
+// TestSnapshotTimeoutFlagReachesTheOperationContext pins the deadline flag on
+// both local snapshot operations. Create and restore copy the whole task disk, so
+// the default is the daemon's own five minutes — a fixed 60 seconds would fail on
+// any filesystem without reflinks — and an explicit value is what the operation
+// context is built with.
+func TestSnapshotTimeoutFlagReachesTheOperationContext(t *testing.T) {
+	// The CLI and the daemon must not drift: one copies the disk in the foreground,
+	// the other relays the same request.
+	require.Equal(t, broker.DefaultSnapshotTimeout, defaultSnapshotTimeout)
+
+	createCmd := newSnapshotCreateCommand()
+	restoreCmd := newSnapshotRestoreCommand()
+
+	for _, cmd := range []*cobra.Command{createCmd, restoreCmd} {
+		flag := cmd.Flags().Lookup("timeout")
+		require.NotNil(t, flag, "%q must expose --timeout", cmd.Name())
+		assert.Equal(t, defaultSnapshotTimeout.String(), flag.DefValue,
+			"%q must default to the disk-copy deadline", cmd.Name())
+	}
+
+	snapshotTestConfig(t)
+
+	var got []time.Duration
+	original := snapshotOperationContext
+	t.Cleanup(func() { snapshotOperationContext = original })
+	snapshotOperationContext = func(timeout time.Duration) (context.Context, context.CancelFunc) {
+		got = append(got, timeout)
+		// Fail the operation immediately: the deadline value is the assertion,
+		// not the snapshot itself.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx, func() {}
+	}
+
+	require.NoError(t, createCmd.Flags().Set("socket", fakeSnapshotAPISocket(t)))
+	require.NoError(t, createCmd.Flags().Set("timeout", "42s"))
+	require.Error(t, createCmd.RunE(createCmd, []string{"task-1"}),
+		"a cancelled operation context must fail the create")
+
+	writeSnapshotForRestore(t, snapshotDirFromConfig(t))
+
+	require.NoError(t, restoreCmd.Flags().Set("timeout", "90s"))
+	require.Error(t, restoreCmd.RunE(restoreCmd, []string{testRestoreSnapshotID}),
+		"a cancelled operation context must fail the restore")
+
+	assert.Equal(t, []time.Duration{42 * time.Second, 90 * time.Second}, got,
+		"each command must build its operation context from the flag")
+}
+
+// testRestoreSnapshotID is the snapshot the timeout test restores.
+const testRestoreSnapshotID = "snap-0123456789abcdef"
+
+// TestSnapshotRestoreRefusesARunningTask pins the local half of the API's
+// `restore_task_running` rule: a restore writes the snapshot's disk over the
+// task's own rootfs, so a VM that is still running on this node must be refused
+// before the copy. Otherwise the restore would overwrite a live disk.
+func TestSnapshotRestoreRefusesARunningTask(t *testing.T) {
+	snapshotTestConfig(t)
+	writeSnapshotForRestore(t, snapshotDirFromConfig(t))
+
+	original := taskVMSocketAlive
+	t.Cleanup(func() { taskVMSocketAlive = original })
+	var probed string
+	taskVMSocketAlive = func(socketPath string, _ time.Duration) bool {
+		probed = socketPath
+		return true
+	}
+
+	cmd := newSnapshotRestoreCommand()
+	err := cmd.RunE(cmd, []string{testRestoreSnapshotID})
+
+	require.Error(t, err)
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed, "the refusal must be a typed error")
+	assert.Equal(t, output.CodeConflict, typed.Code)
+	assert.Equal(t, "restore_task_running", typed.Details["reason"])
+	assert.Contains(t, probed, "task-1.sock", "the guard must probe the task's own VM socket")
+}
+
+// snapshotDirFromConfig reads back the snapshot directory snapshotTestConfig
+// wrote, so a test can place a snapshot where the command will look for it.
+func snapshotDirFromConfig(t *testing.T) string {
+	t.Helper()
+
+	cfg, err := config.LoadConfig(cfgFile)
+	require.NoError(t, err)
+	return cfg.Snapshot.SnapshotDir
+}
+
+// writeSnapshotForRestore publishes the smallest snapshot a restore accepts: a
+// state file, a memory file and a disk copy, with a recorded rootfs path.
+func writeSnapshotForRestore(t *testing.T, snapshotDir string) {
+	t.Helper()
+
+	dir := filepath.Join(snapshotDir, testRestoreSnapshotID)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "vm.state"), []byte("state"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "vm.mem"), []byte("memory"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "rootfs.ext4"), []byte("disk"), 0o600))
+
+	metadata, err := json.Marshal(&snapshot.SnapshotInfo{
+		ID:         testRestoreSnapshotID,
+		TaskID:     "task-1",
+		StatePath:  "vm.state",
+		MemoryPath: "vm.mem",
+		DiskPath:   "rootfs.ext4",
+		RootfsPath: filepath.Join(t.TempDir(), "task-1.ext4"),
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "metadata.json"), metadata, 0o600))
 }
 
 // fakeSnapshotAPISocket serves the two calls a create makes, so a CLI test can
