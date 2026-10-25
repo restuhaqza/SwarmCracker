@@ -42,7 +42,7 @@ func TestCreateOptions_Fields(t *testing.T) {
 
 func TestSnapshotInfo_SizeCalculation(t *testing.T) {
 	info := &SnapshotInfo{
-		ID:         "snap-1",
+		ID:         "snap-9f2460b56367bc4e",
 		MemoryPath: "/tmp/mem",
 		StatePath:  "/tmp/state",
 		SizeBytes:  1024000,

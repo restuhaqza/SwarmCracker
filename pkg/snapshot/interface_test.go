@@ -9,7 +9,7 @@ import (
 
 func TestSnapshotInfo_JSONRoundTrip(t *testing.T) {
 	info := &SnapshotInfo{
-		ID:         "snap-123",
+		ID:         "snap-9ef823231b0cef6d",
 		TaskID:     "task-456",
 		ServiceID:  "svc-789",
 		NodeID:     "node-001",
@@ -42,7 +42,7 @@ func TestSnapshotFilter_Matches(t *testing.T) {
 	now := time.Now().UTC()
 
 	info := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		TaskID:    "task-1",
 		ServiceID: "svc-1",
 		NodeID:    "node-1",
@@ -125,7 +125,7 @@ func TestGenerateSnapshotID_Interface(t *testing.T) {
 
 func TestMatchesFilter_EmptyFilter(t *testing.T) {
 	info := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		CreatedAt: time.Now().UTC(),
 	}
 
@@ -139,7 +139,7 @@ func TestMatchesFilter_EmptyFilter(t *testing.T) {
 func TestMatchesFilter_AllFields_Interface(t *testing.T) {
 	now := time.Now().UTC()
 	info := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		TaskID:    "task-1",
 		ServiceID: "svc-1",
 		NodeID:    "node-1",
@@ -162,7 +162,7 @@ func TestMatchesFilter_AllFields_Interface(t *testing.T) {
 func TestMatchesFilter_PartialMatch(t *testing.T) {
 	now := time.Now().UTC()
 	info := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		TaskID:    "task-1",
 		ServiceID: "svc-2", // Different
 		CreatedAt: now,

@@ -56,7 +56,7 @@ func TestRestoreFromSnapshot_StateFileNotFound(t *testing.T) {
 	require.NoError(t, err)
 
 	info := &SnapshotInfo{
-		ID:         "snap-test",
+		ID:         "snap-825b9a610b6fba70",
 		StatePath:  "/nonexistent/state/file",
 		MemoryPath: "/nonexistent/memory/file",
 	}
@@ -77,7 +77,7 @@ func TestRestoreFromSnapshot_MemoryFileNotFound(t *testing.T) {
 	require.NoError(t, os.WriteFile(statePath, []byte("state data"), 0644))
 
 	info := &SnapshotInfo{
-		ID:         "snap-test",
+		ID:         "snap-825b9a610b6fba70",
 		StatePath:  statePath,
 		MemoryPath: "/nonexistent/memory/file",
 	}
@@ -100,7 +100,7 @@ func TestRestoreFromSnapshot_ChecksumMismatch_Extended(t *testing.T) {
 	require.NoError(t, os.WriteFile(memoryPath, []byte("memory data"), 0644))
 
 	info := &SnapshotInfo{
-		ID:         "snap-test",
+		ID:         "snap-825b9a610b6fba70",
 		StatePath:  statePath,
 		MemoryPath: memoryPath,
 		Checksum:   "invalidchecksum1234567890abcdef1234567890", // Wrong checksum
@@ -125,7 +125,7 @@ func TestRestoreFromSnapshot_ChecksumVerificationError(t *testing.T) {
 
 	// Set a checksum that will be verified
 	info := &SnapshotInfo{
-		ID:         "snap-test",
+		ID:         "snap-825b9a610b6fba70",
 		StatePath:  statePath,
 		MemoryPath: memoryPath,
 		Checksum:   "abc123def456",
@@ -155,7 +155,7 @@ func TestRestoreFromSnapshot_ValidChecksum(t *testing.T) {
 	require.NoError(t, err)
 
 	info := &SnapshotInfo{
-		ID:         "snap-test",
+		ID:         "snap-825b9a610b6fba70",
 		StatePath:  statePath,
 		MemoryPath: memoryPath,
 		Checksum:   actualChecksum, // Correct checksum
@@ -173,7 +173,7 @@ func TestRestoreFromSnapshot_ValidChecksum(t *testing.T) {
 // TestSnapshotInfo_ZeroValues tests SnapshotInfo with zero/empty values
 func TestSnapshotInfo_ZeroValues(t *testing.T) {
 	info := &SnapshotInfo{
-		ID:        "snap-test",
+		ID:        "snap-825b9a610b6fba70",
 		TaskID:    "task-1",
 		CreatedAt: time.Now().UTC(),
 	}
@@ -243,7 +243,7 @@ func TestCleanupOldSnapshots_ZeroMaxAge_Extended(t *testing.T) {
 
 	// Create a snapshot
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-old",
+		ID:        "snap-620e78288084ad19",
 		CreatedAt: time.Now().UTC().Add(-48 * time.Hour),
 		SizeBytes: 100,
 	})
@@ -263,7 +263,7 @@ func TestCleanupOldSnapshots_NegativeMaxAge_Extended(t *testing.T) {
 
 	// Create a snapshot
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-old",
+		ID:        "snap-620e78288084ad19",
 		CreatedAt: time.Now().UTC().Add(-48 * time.Hour),
 		SizeBytes: 100,
 	})
@@ -302,7 +302,7 @@ func TestDeleteSnapshot_CleanupError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try to delete non-existent snapshot
-	err = mgr.DeleteSnapshot(context.Background(), "nonexistent-snapshot")
+	err = mgr.DeleteSnapshot(context.Background(), "snap-00000000000000ff")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -441,12 +441,12 @@ func TestEnforceMaxSnapshots_NoServiceID(t *testing.T) {
 
 	// Create snapshots without service ID
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		CreatedAt: time.Now().UTC().Add(-3 * time.Hour),
 		SizeBytes: 100,
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-2",
+		ID:        "snap-a5962db575d43297",
 		CreatedAt: time.Now().UTC().Add(-2 * time.Hour),
 		SizeBytes: 200,
 	})
@@ -473,7 +473,7 @@ func TestEnforceMaxSnapshots_ZeroMaxSnapshots(t *testing.T) {
 
 	// Create snapshots
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		ServiceID: "nginx",
 		CreatedAt: time.Now().UTC(),
 		SizeBytes: 100,
@@ -500,14 +500,14 @@ func TestCleanupOldSnapshots_UsesConfigMaxAge(t *testing.T) {
 
 	// Create old snapshot (older than max age)
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-old",
+		ID:        "snap-620e78288084ad19",
 		CreatedAt: time.Now().UTC().Add(-3 * time.Hour),
 		SizeBytes: 100,
 	})
 
 	// Create recent snapshot (within max age)
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-new",
+		ID:        "snap-0357b8bb2aea9846",
 		CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
 		SizeBytes: 200,
 	})
@@ -543,7 +543,7 @@ func TestSnapshotInfo_WithMetadata(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	info := &SnapshotInfo{
-		ID:         "snap-test",
+		ID:         "snap-825b9a610b6fba70",
 		TaskID:     "task-1",
 		CreatedAt:  time.Now().UTC(),
 		MemoryPath: filepath.Join(tmpDir, "vm.mem"),

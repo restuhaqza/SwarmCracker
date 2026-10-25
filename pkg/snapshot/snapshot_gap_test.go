@@ -89,7 +89,7 @@ func TestCreateSnapshot_FileMoveFailure(t *testing.T) {
 
 	// Create staging and snapshot directories
 	stagingDir := filepath.Join(tmpDir, "snapshot-staging-test")
-	snapshotDir := filepath.Join(tmpDir, "snap-test")
+	snapshotDir := filepath.Join(tmpDir, "snap-825b9a610b6fba70")
 	require.NoError(t, os.MkdirAll(stagingDir, 0755))
 	require.NoError(t, os.MkdirAll(snapshotDir, 0444)) // Read-only
 
@@ -149,7 +149,7 @@ func TestCreateSnapshot_MetadataSaveFailure(t *testing.T) {
 
 	// Try to save metadata to non-existent directory
 	testInfo := &SnapshotInfo{
-		ID:        "snap-test",
+		ID:        "snap-825b9a610b6fba70",
 		TaskID:    "task-1",
 		CreatedAt: time.Now().UTC(),
 	}
@@ -197,7 +197,7 @@ func TestLoadMetadata_CorruptedJSON(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	// Create directory with corrupted JSON
-	snapDir := filepath.Join(tmpDir, "snap-test")
+	snapDir := filepath.Join(tmpDir, "snap-825b9a610b6fba70")
 	require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 	metadataPath := filepath.Join(snapDir, metadataFile)
@@ -212,7 +212,7 @@ func TestLoadMetadata_CorruptedJSON(t *testing.T) {
 func TestLoadMetadata_MissingFields(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	snapDir := filepath.Join(tmpDir, "snap-test")
+	snapDir := filepath.Join(tmpDir, "snap-825b9a610b6fba70")
 	require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 	// Create metadata with missing ID field
@@ -244,7 +244,7 @@ func TestLoadMetadata_NonExistentDirectory(t *testing.T) {
 func TestLoadMetadata_EmptyMetadataFile(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	snapDir := filepath.Join(tmpDir, "snap-test")
+	snapDir := filepath.Join(tmpDir, "snap-825b9a610b6fba70")
 	require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 	metadataPath := filepath.Join(snapDir, metadataFile)
@@ -262,14 +262,14 @@ func TestListSnapshots_WithCorruptedSnapshots(t *testing.T) {
 
 	// Create valid snapshot
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-valid",
+		ID:        "snap-8c5d30ff5b94ada4",
 		TaskID:    "task-1",
 		ServiceID: "nginx",
 		CreatedAt: time.Now().UTC(),
 	})
 
 	// Create corrupted snapshot directory
-	corruptedDir := filepath.Join(tmpDir, "snap-corrupted")
+	corruptedDir := filepath.Join(tmpDir, "snap-3a30843eccfa3be2")
 	require.NoError(t, os.MkdirAll(corruptedDir, 0755))
 	metadataPath := filepath.Join(corruptedDir, metadataFile)
 	require.NoError(t, os.WriteFile(metadataPath, []byte("{invalid}"), 0644))
@@ -278,7 +278,7 @@ func TestListSnapshots_WithCorruptedSnapshots(t *testing.T) {
 	snapshots, err := mgr.ListSnapshots(SnapshotFilter{})
 	require.NoError(t, err)
 	assert.Len(t, snapshots, 1)
-	assert.Equal(t, "snap-valid", snapshots[0].ID)
+	assert.Equal(t, "snap-8c5d30ff5b94ada4", snapshots[0].ID)
 }
 
 // TestListSnapshots_DirectoryReadError tests error reading snapshot directory.
@@ -326,20 +326,20 @@ func TestEnforceMaxSnapshots_DeleteError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create 2 snapshots
-	snap1 := filepath.Join(tmpDir, "snap-1")
-	snap2 := filepath.Join(tmpDir, "snap-2")
+	snap1 := filepath.Join(tmpDir, "snap-9f2460b56367bc4e")
+	snap2 := filepath.Join(tmpDir, "snap-a5962db575d43297")
 	require.NoError(t, os.MkdirAll(snap1, 0755))
 	require.NoError(t, os.MkdirAll(snap2, 0755))
 
 	// Create metadata for both
 	info1 := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		ServiceID: "nginx",
 		CreatedAt: time.Now().UTC().Add(-2 * time.Hour),
 		SizeBytes: 100,
 	}
 	info2 := &SnapshotInfo{
-		ID:        "snap-2",
+		ID:        "snap-a5962db575d43297",
 		ServiceID: "nginx",
 		CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
 		SizeBytes: 200,
@@ -373,10 +373,10 @@ func TestCleanupOldSnapshots_DeleteError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create old snapshot
-	oldSnap := filepath.Join(tmpDir, "snap-old")
+	oldSnap := filepath.Join(tmpDir, "snap-620e78288084ad19")
 	require.NoError(t, os.MkdirAll(oldSnap, 0755))
 	info := &SnapshotInfo{
-		ID:        "snap-old",
+		ID:        "snap-620e78288084ad19",
 		CreatedAt: time.Now().UTC().Add(-48 * time.Hour),
 		SizeBytes: 100,
 	}
@@ -401,7 +401,7 @@ func TestDeleteSnapshot_PermissionError(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create snapshot with read-only contents
-	snapDir := filepath.Join(tmpDir, "snap-readonly")
+	snapDir := filepath.Join(tmpDir, "snap-5dfe928b890ac5d9")
 	require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 	// Create a read-only subdirectory
@@ -410,7 +410,7 @@ func TestDeleteSnapshot_PermissionError(t *testing.T) {
 	defer os.Chmod(subDir, 0755)
 
 	// Try to delete - might fail on some systems
-	err = mgr.DeleteSnapshot(context.Background(), "snap-readonly")
+	err = mgr.DeleteSnapshot(context.Background(), "snap-5dfe928b890ac5d9")
 	// May succeed or fail depending on OS
 	_ = err
 }
@@ -421,7 +421,7 @@ func TestDeleteSnapshot_NonExistent(t *testing.T) {
 	mgr, err := NewManager(SnapshotConfig{SnapshotDir: tmpDir})
 	require.NoError(t, err)
 
-	err = mgr.DeleteSnapshot(context.Background(), "snap-nonexistent")
+	err = mgr.DeleteSnapshot(context.Background(), "snap-b7801bb532b1b1f7")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -720,12 +720,12 @@ func TestCreateSnapshot_OptionsDefaults(t *testing.T) {
 func TestLoadMetadata_RelativePaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	snapDir := filepath.Join(tmpDir, "snap-test")
+	snapDir := filepath.Join(tmpDir, "snap-825b9a610b6fba70")
 	require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 	// Create metadata with relative paths
 	info := &SnapshotInfo{
-		ID:         "snap-test",
+		ID:         "snap-825b9a610b6fba70",
 		MemoryPath: "vm.mem",
 		StatePath:  "vm.state",
 	}
@@ -743,7 +743,7 @@ func TestLoadMetadata_RelativePaths(t *testing.T) {
 func TestLoadMetadata_AbsolutePaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	snapDir := filepath.Join(tmpDir, "snap-test")
+	snapDir := filepath.Join(tmpDir, "snap-825b9a610b6fba70")
 	require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 	// Create metadata with absolute paths
@@ -751,7 +751,7 @@ func TestLoadMetadata_AbsolutePaths(t *testing.T) {
 	statePath := filepath.Join(tmpDir, "state", "vm.state")
 
 	info := &SnapshotInfo{
-		ID:         "snap-test",
+		ID:         "snap-825b9a610b6fba70",
 		MemoryPath: memPath,
 		StatePath:  statePath,
 	}
@@ -777,7 +777,7 @@ func TestCleanupOldSnapshots_ZeroMaxAge(t *testing.T) {
 
 	// Create old snapshot
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-old",
+		ID:        "snap-620e78288084ad19",
 		CreatedAt: time.Now().UTC().Add(-48 * time.Hour),
 		SizeBytes: 100,
 	})
@@ -801,7 +801,7 @@ func TestCleanupOldSnapshots_NegativeMaxAge(t *testing.T) {
 
 	// Create old snapshot
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-old",
+		ID:        "snap-620e78288084ad19",
 		CreatedAt: time.Now().UTC().Add(-48 * time.Hour),
 		SizeBytes: 100,
 	})
@@ -887,7 +887,7 @@ func TestListSnapshots_Sorted(t *testing.T) {
 
 	for i, tm := range times {
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        fmt.Sprintf("snap-%d", i),
+			ID:        fmt.Sprintf("snap-%016x", i),
 			CreatedAt: tm,
 		})
 	}
@@ -897,10 +897,11 @@ func TestListSnapshots_Sorted(t *testing.T) {
 	require.Len(t, snapshots, 3)
 
 	// Should be sorted newest first
-	// snap-1 (1h ago), snap-2 (2h ago), snap-0 (3h ago)
-	assert.Equal(t, "snap-1", snapshots[0].ID)
-	assert.Equal(t, "snap-2", snapshots[1].ID)
-	assert.Equal(t, "snap-0", snapshots[2].ID)
+	// snap-0000000000000001 (1h ago), snap-0000000000000002 (2h ago),
+	// snap-0000000000000000 (3h ago).
+	assert.Equal(t, "snap-0000000000000001", snapshots[0].ID)
+	assert.Equal(t, "snap-0000000000000002", snapshots[1].ID)
+	assert.Equal(t, "snap-0000000000000000", snapshots[2].ID)
 }
 
 // TestHTTPTransport_DialError tests HTTP transport dial errors.
@@ -1000,10 +1001,11 @@ func TestEnforceMaxSnapshots_MultipleServices(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create snapshots for multiple services
+	serviceIndex := map[string]int{"nginx": 0, "redis": 1, "postgres": 2}
 	for i := 0; i < 3; i++ {
 		for _, serviceID := range []string{"nginx", "redis", "postgres"} {
 			createTestSnapshot(t, tmpDir, &SnapshotInfo{
-				ID:        fmt.Sprintf("snap-%s-%d", serviceID, i),
+				ID:        fmt.Sprintf("snap-%016x", serviceIndex[serviceID]*10+i),
 				ServiceID: serviceID,
 				CreatedAt: time.Now().UTC().Add(time.Duration(-i) * time.Hour),
 				SizeBytes: int64(100 * (i + 1)),
@@ -1032,7 +1034,7 @@ func TestDeleteSnapshot_Retry(t *testing.T) {
 	mgr, err := NewManager(SnapshotConfig{SnapshotDir: tmpDir})
 	require.NoError(t, err)
 
-	snapshotID := "snap-nonexistent"
+	snapshotID := "snap-b7801bb532b1b1f7"
 
 	// Try deleting multiple times
 	for i := 0; i < 3; i++ {
@@ -1050,11 +1052,11 @@ func TestListSnapshots_FullScan(t *testing.T) {
 
 	// Create various items in the directory
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-valid-1",
+		ID:        "snap-ead1895ee82d7e0b",
 		CreatedAt: time.Now().UTC(),
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-valid-2",
+		ID:        "snap-a739f5dc79939146",
 		CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
 	})
 
@@ -1144,11 +1146,11 @@ func TestLoadMetadata_PathResolution(t *testing.T) {
 			// We need to temporarily override the snapshot dir
 			// For this test, we'll just verify the logic works
 			tmpDir := t.TempDir()
-			snapDir := filepath.Join(tmpDir, "snap-dir")
+			snapDir := filepath.Join(tmpDir, "snap-c89f73f6a763fc1a")
 			require.NoError(t, os.MkdirAll(snapDir, 0755))
 
 			info := &SnapshotInfo{
-				ID:         "snap-test",
+				ID:         "snap-825b9a610b6fba70",
 				MemoryPath: tt.memoryPath,
 				StatePath:  tt.statePath,
 			}
@@ -1281,7 +1283,7 @@ func TestCreateOptions_AllFields(t *testing.T) {
 func TestSnapshotInfo_AllFields(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	info := &SnapshotInfo{
-		ID:         "snap-test123",
+		ID:         "snap-e4d5c5c37450953b",
 		TaskID:     "task-abc",
 		ServiceID:  "service-xyz",
 		NodeID:     "node-1",
@@ -1298,7 +1300,7 @@ func TestSnapshotInfo_AllFields(t *testing.T) {
 		},
 	}
 
-	assert.Equal(t, "snap-test123", info.ID)
+	assert.Equal(t, "snap-e4d5c5c37450953b", info.ID)
 	assert.Equal(t, "task-abc", info.TaskID)
 	assert.Equal(t, "service-xyz", info.ServiceID)
 	assert.Equal(t, "node-1", info.NodeID)

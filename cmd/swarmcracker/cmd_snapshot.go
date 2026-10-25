@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"text/tabwriter"
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/rs/zerolog/log"
@@ -144,6 +146,9 @@ Example:
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			snapshotID := args[0]
+			if err := validateSnapshotIDArg(snapshotID); err != nil {
+				return err
+			}
 
 			cfg, err := loadSnapshotConfig(cfgFile)
 			if err != nil {
@@ -314,6 +319,9 @@ Example:
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			snapshotID := args[0]
+			if err := validateSnapshotIDArg(snapshotID); err != nil {
+				return err
+			}
 
 			cfg, err := loadSnapshotConfig(cfgFile)
 			if err != nil {
@@ -418,6 +426,23 @@ Example:
 }
 
 // --- Helpers ---
+
+// snapshotIDPattern is the shape `vm snapshot create` writes: snap- plus 16
+// lowercase hex characters.
+var snapshotIDPattern = regexp.MustCompile(`^snap-[0-9a-f]{16}$`)
+
+// validateSnapshotIDArg rejects a snapshot ID that is not one safe path segment
+// before any configuration is loaded or any directory is joined. A CLI usage
+// mistake is CodeUsage, which exits 2; the package refuses the same shapes with
+// ErrInvalidSnapshotID as defence in depth.
+func validateSnapshotIDArg(id string) error {
+	if snapshotIDPattern.MatchString(id) {
+		return nil
+	}
+	return output.NewErrorf(output.CodeUsage,
+		"invalid snapshot ID %q: want snap- followed by 16 lowercase hex characters", id).
+		WithDetails(map[string]any{"parameter": "snapshot-id"})
+}
 
 // loadSnapshotConfig loads configuration with snapshot defaults.
 func loadSnapshotConfig(path string) (*config.Config, error) {

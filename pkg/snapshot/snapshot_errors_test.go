@@ -29,7 +29,7 @@ func TestSnapshotSentinelsClassifyStoreFailures(t *testing.T) {
 		mgr, err := NewManager(SnapshotConfig{SnapshotDir: t.TempDir()})
 		require.NoError(t, err)
 
-		err = mgr.DeleteSnapshot(context.Background(), "snap-missing")
+		err = mgr.DeleteSnapshot(context.Background(), "snap-7bca9e1459f61af0")
 
 		require.ErrorIs(t, err, ErrNotFound)
 		require.Contains(t, err.Error(), "snapshot not found")
@@ -40,7 +40,7 @@ func TestSnapshotSentinelsClassifyStoreFailures(t *testing.T) {
 		require.NoError(t, err)
 
 		err = mgr.RestoreFromSnapshot(context.Background(), &SnapshotInfo{
-			ID:         "snap-1",
+			ID:         "snap-9f2460b56367bc4e",
 			StatePath:  filepath.Join(t.TempDir(), "vm.state"),
 			MemoryPath: filepath.Join(t.TempDir(), "vm.mem"),
 		}, filepath.Join(t.TempDir(), "restored.sock"))
@@ -58,7 +58,7 @@ func TestSnapshotSentinelsClassifyStoreFailures(t *testing.T) {
 		require.NoError(t, os.WriteFile(statePath, []byte("state"), 0o600))
 
 		err = mgr.RestoreFromSnapshot(context.Background(), &SnapshotInfo{
-			ID:         "snap-1",
+			ID:         "snap-9f2460b56367bc4e",
 			StatePath:  statePath,
 			MemoryPath: filepath.Join(dir, "vm.mem"),
 		}, filepath.Join(t.TempDir(), "restored.sock"))
@@ -78,7 +78,7 @@ func TestSnapshotSentinelsClassifyStoreFailures(t *testing.T) {
 		require.NoError(t, os.WriteFile(memoryPath, []byte("memory"), 0o600))
 
 		err = mgr.RestoreFromSnapshot(context.Background(), &SnapshotInfo{
-			ID:         "snap-1",
+			ID:         "snap-9f2460b56367bc4e",
 			StatePath:  statePath,
 			MemoryPath: memoryPath,
 			Checksum:   "deadbeef",
@@ -101,7 +101,7 @@ func TestSnapshotSentinelsClassifyStoreFailures(t *testing.T) {
 		require.NoError(t, err)
 
 		err = mgr.RestoreFromSnapshot(context.Background(), &SnapshotInfo{
-			ID:         "snap-1",
+			ID:         "snap-9f2460b56367bc4e",
 			StatePath:  statePath,
 			MemoryPath: memoryPath,
 			Checksum:   checksum,

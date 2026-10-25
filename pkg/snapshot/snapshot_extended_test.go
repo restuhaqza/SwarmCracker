@@ -237,7 +237,7 @@ func TestListSnapshotsWithMissingFiles(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create a directory without metadata
-		emptyDir := filepath.Join(tmpDir, "snap-invalid")
+		emptyDir := filepath.Join(tmpDir, "snap-19462bd41b5b0e10")
 		err = os.MkdirAll(emptyDir, 0755)
 		require.NoError(t, err)
 
@@ -254,20 +254,20 @@ func TestListSnapshotsWithMissingFiles(t *testing.T) {
 
 		// Create valid snapshot
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-valid",
+			ID:        "snap-8c5d30ff5b94ada4",
 			TaskID:    "task-1",
 			CreatedAt: time.Now().UTC(),
 		})
 
 		// Create invalid directories
-		os.MkdirAll(filepath.Join(tmpDir, "snap-no-metadata"), 0755)
+		os.MkdirAll(filepath.Join(tmpDir, "snap-76fea4be2051275f"), 0755)
 		os.WriteFile(filepath.Join(tmpDir, "not-a-dir.txt"), []byte("test"), 0644)
 
 		// List should only return the valid snapshot
 		snapshots, err := mgr.ListSnapshots(SnapshotFilter{})
 		require.NoError(t, err)
 		assert.Len(t, snapshots, 1)
-		assert.Equal(t, "snap-valid", snapshots[0].ID)
+		assert.Equal(t, "snap-8c5d30ff5b94ada4", snapshots[0].ID)
 	})
 }
 
@@ -310,7 +310,7 @@ func TestEnforceMaxSnapshotsEdgeCases(t *testing.T) {
 		require.NoError(t, err)
 
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-1",
+			ID:        "snap-9f2460b56367bc4e",
 			ServiceID: "nginx",
 			CreatedAt: time.Now().UTC(),
 		})
@@ -335,32 +335,32 @@ func TestEnforceMaxSnapshotsEdgeCases(t *testing.T) {
 
 		// Create snapshots for multiple services
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-nginx-1",
+			ID:        "snap-15935626f2848dd8",
 			ServiceID: "nginx",
 			CreatedAt: time.Now().UTC().Add(-3 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-nginx-2",
+			ID:        "snap-92ae174aeaa3ee82",
 			ServiceID: "nginx",
 			CreatedAt: time.Now().UTC().Add(-2 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-nginx-3",
+			ID:        "snap-8582f38a56e1221b",
 			ServiceID: "nginx",
 			CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-redis-1",
+			ID:        "snap-35f8867b9a47cae2",
 			ServiceID: "redis",
 			CreatedAt: time.Now().UTC().Add(-3 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-redis-2",
+			ID:        "snap-267eae8f064fc8bd",
 			ServiceID: "redis",
 			CreatedAt: time.Now().UTC().Add(-2 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-redis-3",
+			ID:        "snap-53fa705fb593471c",
 			ServiceID: "redis",
 			CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
 		})

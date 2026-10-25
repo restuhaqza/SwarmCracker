@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -47,7 +48,22 @@ var (
 	// ErrChecksumMismatch means the state file no longer matches the checksum
 	// recorded at snapshot time.
 	ErrChecksumMismatch = errors.New("state file checksum mismatch")
+	// ErrInvalidSnapshotID means the ID is not one safe path segment in the
+	// shape this package generates. It is checked before any filesystem join, so
+	// ".", "..", a separator or a Windows-style separator can never address a
+	// directory outside the snapshot root.
+	ErrInvalidSnapshotID = errors.New("invalid snapshot ID")
 )
+
+// snapshotIDPattern is the exact shape generateSnapshotID produces. It is
+// deliberately narrower than the wire rule in pkg/api/v1: the node is the store,
+// so only an ID this package could have written is accepted here.
+var snapshotIDPattern = regexp.MustCompile(`^snap-[0-9a-f]{16}$`)
+
+// validSnapshotID reports whether id is a well-formed snapshot ID.
+func validSnapshotID(id string) bool {
+	return snapshotIDPattern.MatchString(id)
+}
 
 // SnapshotInfo holds metadata about a VM snapshot.
 //
@@ -429,7 +445,15 @@ func (m *Manager) listSnapshotsUnlocked(filter SnapshotFilter) ([]*SnapshotInfo,
 }
 
 // DeleteSnapshot removes a snapshot by ID.
+//
+// The ID is validated before the filesystem join: an ID is one directory name,
+// and "..", "/" or a Windows-style separator would address something outside
+// the snapshot root.
 func (m *Manager) DeleteSnapshot(_ context.Context, snapshotID string) error {
+	if !validSnapshotID(snapshotID) {
+		return fmt.Errorf("%w: %q", ErrInvalidSnapshotID, snapshotID)
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -508,6 +532,13 @@ func (m *Manager) enforceMaxSnapshots(serviceID string) {
 	var freed int64
 	for i := len(snapshots) - 1; i >= len(snapshots)-toRemove; i-- {
 		snap := snapshots[i]
+		// A metadata file is node-local data, but it is still the input to a
+		// RemoveAll below: an ID that is not one safe directory name must never
+		// reach the join, even when the file was written by other software.
+		if !validSnapshotID(snap.ID) {
+			log.Warn().Str("snapshot_id", snap.ID).Msg("Skipping snapshot with an invalid ID")
+			continue
+		}
 		snapshotDir := filepath.Join(m.config.SnapshotDir, snap.ID)
 		if err := os.RemoveAll(snapshotDir); err != nil {
 			log.Warn().Err(err).Str("snapshot_id", snap.ID).Msg("Failed to remove old snapshot")
