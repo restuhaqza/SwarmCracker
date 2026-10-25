@@ -310,6 +310,10 @@ func (s *Server) routes() {
 		write(http.MethodPost, ScopeTasksSnapshots, s.restoreTaskSnapshot))
 	s.handleRoutes("/v1/tasks/{id}/snapshots/{sid}",
 		write(http.MethodDelete, ScopeTasksSnapshots, s.deleteTaskSnapshot))
+	// A restored VM starts outside SwarmKit's task lifecycle, so stopping it is
+	// its own route rather than a task stop.
+	s.handleRoutes("/v1/tasks/{id}/restored",
+		write(http.MethodDelete, ScopeTasksSnapshots, s.stopTaskRestored))
 	s.handleRoutes("/v1/snapshots",
 		accepts(read(ScopeTasksSnapshots, s.listSnapshots), "task", "limit", "cursor"))
 	s.handleRoutes("/v1/snapshots/{id}/restore",

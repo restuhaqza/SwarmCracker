@@ -1527,8 +1527,9 @@ paths:
         pkg/snapshot's metadata.json is the source of truth; there is no
         manager-side index. The attempt is audited as task.snapshot. A snapshot's
         memory and state paths never cross the wire: only rootfsPath is published.
-        A create or restore that exceeds its 30 s deadline is 504 with code
-        timeout.
+        A create copies the task disk, so the manager's deadline defaults to five
+        minutes (--snapshot-timeout); a create or restore that exceeds it is 504
+        with code timeout.
       parameters:
         - name: id
           in: path
@@ -1678,8 +1679,8 @@ paths:
         for exec and the attempt is audited as task.snapshot. A snapshot the node
         does not hold for the task is 404 not_found with details.reason
         "snapshot_not_found"; a snapshot whose files are incomplete is 409 with
-        details.reason "snapshot_incomplete". A restore that exceeds its 30 s
-        deadline is 504 with code timeout.
+        details.reason "snapshot_incomplete". A restore that exceeds the manager's
+        snapshot deadline (five minutes by default) is 504 with code timeout.
       parameters:
         - name: id
           in: path
@@ -1788,6 +1789,82 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}/restored:
+    delete:
+      operationId: stopTaskRestored
+      summary: Stop a restored VM (experimental)
+      description: >
+        Requires tasks:snapshots. Experimental and disabled by default: a manager
+        that has not enabled snapshots answers 501 not_implemented with
+        details.capability "snapshots" before the task is resolved and before
+        anything is audited. A restore starts a Firecracker process outside
+        SwarmKit's task lifecycle, so a task stop or a service update does not
+        reach it; this route stops it on the node that restored it. The task
+        reference is resolved server-side and the caller's task selectors are
+        enforced exactly as exec and the snapshot routes do. The node sends
+        SIGTERM to the process, waits up to ten seconds, then sends SIGKILL, and
+        removes the restored API socket. 204 on success. A node that tracks no
+        restored VM for the task — never restored there, already stopped, or
+        restored by an earlier daemon lifetime — answers 404 not_found with
+        details.reason "no_restored_vm". The route takes no body and no query
+        parameter, so an unknown parameter is 400 invalid. The attempt is audited
+        as task.restored.stop. A request that exceeds the manager's snapshot
+        deadline is 504 with code timeout.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, a unique id prefix of at least 4
+            characters, or a unique task name.
+      responses:
+        "204":
+          description: The restored VM was stopped.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: >
+            The task does not exist, or the node that ran it tracks no restored VM
+            for it: code not_found, details.reason "no_restored_vm".
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+        "405":
+          $ref: "#/components/responses/MethodNotAllowed"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          description: >
+            The stop exceeded the manager's snapshot deadline: code timeout,
+            retryable true.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/snapshots:
     get:
       operationId: listSnapshots
@@ -1874,9 +1951,9 @@ paths:
         socket no longer answers, can still leave an untracked Firecracker process
         behind. A snapshot the node does not hold is 404 with details.reason
         "snapshot_not_found"; a snapshot whose files are incomplete is 409 with
-        details.reason "snapshot_incomplete". A restore that exceeds its 30 s
-        deadline is 504 with code timeout. Selectors are enforced and the attempt
-        is audited as task.snapshot.
+        details.reason "snapshot_incomplete". A restore that exceeds the manager's
+        snapshot deadline (five minutes by default) is 504 with code timeout.
+        Selectors are enforced and the attempt is audited as task.snapshot.
       parameters:
         - name: id
           in: path

@@ -1507,7 +1507,7 @@ func TestOpenAPIHealth(t *testing.T) {
 		"the status enum must match runtime.VMHealth states")
 }
 
-// TestOpenAPISnapshotContract pins the experimental snapshot surface: the seven
+// TestOpenAPISnapshotContract pins the experimental snapshot surface: the eight
 // paths, the 501 on every operation, the flat forms' required task parameter and
 // a Snapshot schema that matches the Go tags exactly.
 func TestOpenAPISnapshotContract(t *testing.T) {
@@ -1560,6 +1560,7 @@ func TestOpenAPISnapshotContract(t *testing.T) {
 		"/v1/tasks/{id}/snapshots get":     doc.Paths.Find("/v1/tasks/{id}/snapshots").Get,
 		"/v1/tasks/{id}/snapshots/restore": doc.Paths.Find("/v1/tasks/{id}/snapshots/{sid}/restore").Post,
 		"/v1/tasks/{id}/snapshots/delete":  doc.Paths.Find("/v1/tasks/{id}/snapshots/{sid}").Delete,
+		"/v1/tasks/{id}/restored":          doc.Paths.Find("/v1/tasks/{id}/restored").Delete,
 		"/v1/snapshots":                    doc.Paths.Find("/v1/snapshots").Get,
 		"/v1/snapshots/restore":            doc.Paths.Find("/v1/snapshots/{id}/restore").Post,
 		"/v1/snapshots/delete":             doc.Paths.Find("/v1/snapshots/{id}").Delete,
@@ -1602,4 +1603,15 @@ func TestOpenAPISnapshotContract(t *testing.T) {
 	// running is 404, a socket that disappeared under the node is 409.
 	assert.Contains(t, create.Description, "task_not_running")
 	assert.Contains(t, create.Description, "vm_socket_missing")
+
+	// Stopping a restored VM is its own documented contract: 204, the
+	// no_restored_vm reason, a 405 for any other method and the audit action.
+	stop := doc.Paths.Find("/v1/tasks/{id}/restored").Delete
+	require.NotNil(t, stop)
+	assert.Contains(t, stop.Description, "no_restored_vm")
+	assert.Contains(t, stop.Description, "task.restored.stop")
+	assert.Contains(t, stop.Description, "SIGTERM")
+	require.NotNil(t, stop.Responses.Status(204))
+	require.NotNil(t, stop.Responses.Status(404))
+	require.NotNil(t, stop.Responses.Status(405))
 }

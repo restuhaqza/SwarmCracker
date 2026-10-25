@@ -4,6 +4,7 @@
 //	GET    /v1/tasks/{ref}/snapshots
 //	POST   /v1/tasks/{ref}/snapshots/{id}/restore
 //	DELETE /v1/tasks/{ref}/snapshots/{id}
+//	DELETE /v1/tasks/{ref}/restored
 //	GET    /v1/snapshots?task={ref}
 //	POST   /v1/snapshots/{id}/restore?task={ref}
 //	DELETE /v1/snapshots/{id}?task={ref}
@@ -38,18 +39,25 @@ const (
 	snapshotCapability = "snapshots"
 	// snapshotAuditAction is the audit action recorded for every attempt.
 	snapshotAuditAction = "task.snapshot"
+	// restoredAuditAction is the audit action recorded for every stop-restored
+	// attempt. It is separate from snapshotAuditAction because it stops a VM the
+	// snapshot surface started, not the snapshot store itself.
+	restoredAuditAction = "task.restored.stop"
 	// maxSnapshotBodyBytes bounds one optional create body.
 	maxSnapshotBodyBytes = 64 << 10
 )
 
 // SnapshotBroker is the manager's snapshot transport. It is a second optional
-// interface rather than four more methods on Broker, so exec, logs, files and
+// interface rather than five more methods on Broker, so exec, logs, files and
 // health fakes stay untouched.
 type SnapshotBroker interface {
 	CreateSnapshot(ctx context.Context, task v1.Task, req v1.SnapshotCreateRequest) (v1.Snapshot, error)
 	ListTaskSnapshots(ctx context.Context, task v1.Task) ([]v1.Snapshot, error)
 	RestoreSnapshot(ctx context.Context, task v1.Task, snapshotID string) (v1.Snapshot, error)
 	DeleteSnapshot(ctx context.Context, task v1.Task, snapshotID string) error
+	// StopRestored stops the restored VM a previous restore started for the task
+	// on its node. A task the node does not track is the typed not-found error.
+	StopRestored(ctx context.Context, task v1.Task) error
 }
 
 // snapshotsAvailable is the single snapshot predicate. The route gate and the
@@ -209,6 +217,31 @@ func (s *Server) deleteTaskSnapshot(w http.ResponseWriter, r *http.Request) {
 	s.serveSnapshotDelete(w, r, r.PathValue("id"), r.PathValue("sid"), false)
 }
 
+// stopTaskRestored serves DELETE /v1/tasks/{ref}/restored: it stops the
+// Firecracker process a snapshot restore started for the task. The task is
+// resolved first — the route is task-scoped and the caller's selectors apply —
+// then the node that ran the task stops the VM it tracks. A node that tracks no
+// restored VM answers 404 not_found with details.reason "no_restored_vm".
+func (s *Server) stopTaskRestored(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSnapshots(w, r) {
+		return
+	}
+
+	task, resource, ok := s.resolveSnapshotTask(w, r, r.PathValue("id"))
+	if !ok {
+		return
+	}
+
+	if err := s.cfg.Snapshots.StopRestored(r.Context(), task); err != nil {
+		s.recordRestoredAudit(r, resource, "error")
+		s.writeError(w, r, err)
+		return
+	}
+
+	s.recordRestoredAudit(r, resource, "ok")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // deleteSnapshot serves DELETE /v1/snapshots/{id}?task={ref}.
 func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSnapshots(w, r) {
@@ -350,4 +383,10 @@ func (s *Server) writeSnapshotInvalidID(w http.ResponseWriter, r *http.Request, 
 // a snapshot path, checksum or file size is never recorded.
 func (s *Server) recordSnapshotAudit(r *http.Request, resource v1.AuditResource, result string) {
 	_ = s.recordAudit(r, snapshotAuditAction, resource, result)
+}
+
+// recordRestoredAudit writes one task.restored.stop record, again naming only the
+// task.
+func (s *Server) recordRestoredAudit(r *http.Request, resource v1.AuditResource, result string) {
+	_ = s.recordAudit(r, restoredAuditAction, resource, result)
 }
