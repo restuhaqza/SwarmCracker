@@ -110,16 +110,16 @@ func TestSnapshotConfig_Default_Interface(t *testing.T) {
 
 func TestGenerateSnapshotID_Interface(t *testing.T) {
 	// Test that generateSnapshotID returns a valid ID
-	id := generateSnapshotID("task-123")
+	id := generateSnapshotID()
 
 	if id == "" {
 		t.Error("generateSnapshotID should return non-empty string")
 	}
 
-	// Different inputs should produce different IDs
-	id2 := generateSnapshotID("task-different")
+	// Consecutive calls must produce different IDs, even in the same clock tick.
+	id2 := generateSnapshotID()
 	if id == id2 {
-		t.Error("Different inputs should produce different IDs")
+		t.Error("Consecutive calls should produce different IDs")
 	}
 }
 

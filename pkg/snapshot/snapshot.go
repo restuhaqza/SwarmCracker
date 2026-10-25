@@ -11,7 +11,9 @@ package snapshot
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
@@ -93,7 +96,7 @@ type SnapshotInfo struct {
 	// StatePath is the absolute path to the VM state snapshot file.
 	StatePath string `json:"state_path"`
 
-	// SizeBytes is the total size of the snapshot (memory + state).
+	// SizeBytes is the total size of the snapshot (memory + state + disk copy).
 	SizeBytes int64 `json:"size_bytes"`
 
 	// VCPUCount is the number of vCPUs the VM had at snapshot time.
@@ -104,6 +107,13 @@ type SnapshotInfo struct {
 
 	// RootfsPath is the path to the rootfs image the VM was using.
 	RootfsPath string `json:"rootfs_path"`
+
+	// DiskPath is the snapshot-owned copy of the task disk, normally
+	// <SnapshotDir>/<id>/rootfs.ext4. A Firecracker snapshot captures memory and
+	// device state only, so without this copy a restore depends on the executor
+	// keeping the original disk. Empty for snapshots taken before disk copies
+	// existed; those restore exactly as they did.
+	DiskPath string `json:"disk_path,omitempty"`
 
 	// Checksum is the SHA-256 checksum of the state file for integrity verification.
 	Checksum string `json:"checksum"`
@@ -226,11 +236,13 @@ func (m *Manager) CreateSnapshot(
 		return nil, fmt.Errorf("failed to create snapshot via Firecracker API: %w", err)
 	}
 
-	// Generate snapshot ID and create final directory
-	snapshotID := generateSnapshotID(taskID)
-	snapshotDir := filepath.Join(m.config.SnapshotDir, snapshotID)
-	if err := os.MkdirAll(snapshotDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create snapshot directory: %w", err)
+	// Reserve a final directory with a fresh ID. The Firecracker snapshot already
+	// exists in the staging directory, so this is the point of no return: a
+	// directory that is already there belongs to another snapshot and is never
+	// reused.
+	snapshotID, snapshotDir, err := m.reserveSnapshotDir()
+	if err != nil {
+		return nil, err
 	}
 
 	// Move files to final location
@@ -244,6 +256,25 @@ func (m *Manager) CreateSnapshot(
 	if err := os.Rename(memoryPath, finalMemoryPath); err != nil {
 		os.RemoveAll(snapshotDir)
 		return nil, fmt.Errorf("failed to move memory file: %w", err)
+	}
+
+	// A Firecracker snapshot is memory and device state: the block device still
+	// points at the task disk, which the executor deletes with the task. Copy it
+	// so the snapshot is a restore point on its own. Failure means the snapshot
+	// would be unusable after cleanup, so no snapshot is kept at all.
+	var diskPath string
+	var diskSize int64
+	if opts.RootfsPath != "" {
+		diskPath = filepath.Join(snapshotDir, diskFileName)
+		if err := copyFile(opts.RootfsPath, diskPath); err != nil {
+			os.RemoveAll(snapshotDir)
+			return nil, fmt.Errorf("failed to copy task disk %s into the snapshot: %w", opts.RootfsPath, err)
+		}
+		diskSize, err = fileSize(diskPath)
+		if err != nil {
+			os.RemoveAll(snapshotDir)
+			return nil, fmt.Errorf("failed to stat snapshot disk copy: %w", err)
+		}
 	}
 
 	// Calculate sizes and checksum
@@ -273,10 +304,11 @@ func (m *Manager) CreateSnapshot(
 		CreatedAt:  time.Now().UTC(),
 		MemoryPath: finalMemoryPath,
 		StatePath:  finalStatePath,
-		SizeBytes:  stateSize + memorySize,
+		SizeBytes:  stateSize + memorySize + diskSize,
 		VCPUCount:  opts.VCPUCount,
 		MemoryMB:   opts.MemoryMB,
 		RootfsPath: opts.RootfsPath,
+		DiskPath:   diskPath,
 		Checksum:   checksum,
 		Metadata:   opts.Metadata,
 	}
@@ -299,6 +331,25 @@ func (m *Manager) CreateSnapshot(
 		Msg("Snapshot created successfully")
 
 	return info, nil
+}
+
+// reserveSnapshotDir creates and returns a snapshot ID and its directory. The
+// directory is created with mkdir, not mkdirall: an ID that already has a
+// directory is retried with a new ID rather than reused, because overwriting it
+// would silently destroy a valid restore point. Caller must hold m.mu.
+func (m *Manager) reserveSnapshotDir() (id string, dir string, err error) {
+	for attempt := 0; attempt < snapshotIDAttempts; attempt++ {
+		id = generateSnapshotID()
+		dir = filepath.Join(m.config.SnapshotDir, id)
+		if mkErr := os.Mkdir(dir, 0o755); mkErr != nil {
+			if errors.Is(mkErr, os.ErrExist) {
+				continue
+			}
+			return "", "", fmt.Errorf("failed to create snapshot directory: %w", mkErr)
+		}
+		return id, dir, nil
+	}
+	return "", "", fmt.Errorf("failed to allocate a unique snapshot directory after %d attempts", snapshotIDAttempts)
 }
 
 // RestoreFromSnapshot restores a VM from a snapshot.
@@ -335,11 +386,26 @@ func (m *Manager) RestoreFromSnapshot(
 		}
 	}
 
-	// When the snapshot recorded a rootfs path, ensure it still exists: the
-	// restored VM's block device points at it.
+	// When the snapshot recorded a rootfs path, ensure the restored VM's block
+	// device has a disk to point at. A snapshot that owns a copy puts it back
+	// after the executor removed the original; one without a copy needs the
+	// original in place, exactly as before disk copies existed.
 	if info.RootfsPath != "" {
 		if _, err := os.Stat(info.RootfsPath); err != nil {
-			return fmt.Errorf("%w: snapshot rootfs not found at %s: %v", ErrSnapshotIncomplete, info.RootfsPath, err)
+			if info.DiskPath == "" {
+				return fmt.Errorf("%w: snapshot rootfs not found at %s: %v", ErrSnapshotIncomplete, info.RootfsPath, err)
+			}
+			if _, copyErr := os.Stat(info.DiskPath); copyErr != nil {
+				return fmt.Errorf("%w: snapshot disk copy %s not found and the task disk %s is gone: %v",
+					ErrSnapshotIncomplete, info.DiskPath, info.RootfsPath, copyErr)
+			}
+			if copyErr := copyFile(info.DiskPath, info.RootfsPath); copyErr != nil {
+				return fmt.Errorf("failed to restore task disk from snapshot: %w", copyErr)
+			}
+			log.Info().
+				Str("snapshot_id", info.ID).
+				Str("rootfs_path", info.RootfsPath).
+				Msg("Restored the task disk from the snapshot copy")
 		}
 	}
 
@@ -731,6 +797,9 @@ func loadMetadata(dir string) (*SnapshotInfo, error) {
 	if !filepath.IsAbs(info.StatePath) {
 		info.StatePath = filepath.Join(dir, "vm.state")
 	}
+	if info.DiskPath != "" && !filepath.IsAbs(info.DiskPath) {
+		info.DiskPath = filepath.Join(dir, diskFileName)
+	}
 
 	return &info, nil
 }
@@ -756,9 +825,36 @@ func matchesFilter(info *SnapshotInfo, filter SnapshotFilter) bool {
 	return true
 }
 
-func generateSnapshotID(taskID string) string {
-	h := sha256.Sum256([]byte(fmt.Sprintf("%s-%d", taskID, time.Now().UnixNano())))
-	return fmt.Sprintf("snap-%s", hex.EncodeToString(h[:])[:16])
+// snapshotIDBytes is the random payload of an ID: 8 bytes, 16 hex characters,
+// which is exactly the shape snapshotIDPattern accepts.
+const snapshotIDBytes = 8
+
+// snapshotIDAttempts bounds the retry when a generated ID already has a
+// directory. A collision past this many tries is a broken source, not bad luck.
+const snapshotIDAttempts = 5
+
+// snapshotIDSource is the randomness behind generateSnapshotID. It is a variable
+// only so tests can force the fallback or a collision; production never sets it.
+var snapshotIDSource = rand.Read
+
+// snapshotIDFallback keeps IDs unique inside one process when the random source
+// fails.
+var snapshotIDFallback atomic.Uint32
+
+// generateSnapshotID returns a random ID in the shape snapshotIDPattern accepts.
+// Time is deliberately not part of the normal path: two snapshots created inside
+// the same clock tick used to get the same ID, and the second create silently
+// reused the first snapshot's directory.
+func generateSnapshotID() string {
+	var buf [snapshotIDBytes]byte
+	if _, err := snapshotIDSource(buf[:]); err != nil {
+		// A broken build or an exhausted sandbox must not stop snapshots. The
+		// counter guarantees in-process uniqueness; the time half only makes a
+		// collision with another process less likely.
+		binary.BigEndian.PutUint32(buf[:4], uint32(time.Now().UnixNano()>>8))
+		binary.BigEndian.PutUint32(buf[4:], snapshotIDFallback.Add(1))
+	}
+	return "snap-" + hex.EncodeToString(buf[:])
 }
 
 func sha256File(path string) (string, error) {

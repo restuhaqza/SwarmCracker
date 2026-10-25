@@ -70,7 +70,7 @@ func TestDeleteSnapshotAcceptsTheGeneratedShape(t *testing.T) {
 	mgr, err := NewManager(SnapshotConfig{SnapshotDir: snapshotDir})
 	require.NoError(t, err)
 
-	generated := generateSnapshotID("task-1")
+	generated := generateSnapshotID()
 	require.True(t, ValidSnapshotID(generated), generated)
 	require.Regexp(t, `^snap-[0-9a-f]{16}$`, generated)
 

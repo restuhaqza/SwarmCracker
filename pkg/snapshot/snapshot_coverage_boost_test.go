@@ -364,22 +364,19 @@ func TestMatchesFilter_EdgeCases(t *testing.T) {
 
 // TestGenerateSnapshotID_EdgeCases tests snapshot ID generation edge cases
 func TestGenerateSnapshotID_EdgeCases(t *testing.T) {
-	// Empty task ID
-	id1 := generateSnapshotID("")
-	assert.NotEmpty(t, id1)
-	assert.Contains(t, id1, "snap-")
+	// An ID no longer derives from the task ID, so the property worth pinning is
+	// that every call is well formed and differs from the previous one.
+	id1 := generateSnapshotID()
+	assert.True(t, ValidSnapshotID(id1), id1)
 
-	// Very long task ID
-	longTaskID := "task-with-a-very-long-name-that-might-exceed-normal-lengths-but-should-still-work"
-	id2 := generateSnapshotID(longTaskID)
-	assert.NotEmpty(t, id2)
-	assert.Contains(t, id2, "snap-")
+	id2 := generateSnapshotID()
+	assert.True(t, ValidSnapshotID(id2), id2)
 
-	// Task ID with special characters
-	specialTaskID := "task-with-special-chars!@#$%^&*()"
-	id3 := generateSnapshotID(specialTaskID)
-	assert.NotEmpty(t, id3)
-	assert.Contains(t, id3, "snap-")
+	id3 := generateSnapshotID()
+	assert.True(t, ValidSnapshotID(id3), id3)
+
+	assert.NotEqual(t, id1, id2)
+	assert.NotEqual(t, id2, id3)
 }
 
 // TestSHA256File_EmptyFile tests checksum of empty file

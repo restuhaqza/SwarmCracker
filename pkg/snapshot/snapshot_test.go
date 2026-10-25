@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -467,20 +468,37 @@ func TestSHA256FileNonexistent(t *testing.T) {
 }
 
 func TestGenerateSnapshotID(t *testing.T) {
-	id1 := generateSnapshotID("task-1")
-	id2 := generateSnapshotID("task-1")
-	id3 := generateSnapshotID("task-2")
+	// IDs must not depend on clock granularity: consecutive calls in the same
+	// nanosecond used to produce the same ID.
+	seen := make(map[string]struct{}, 4096)
+	for i := 0; i < 4096; i++ {
+		id := generateSnapshotID()
 
-	// IDs should start with "snap-"
-	assert.True(t, strings.HasPrefix(id1, "snap-"))
-	assert.True(t, strings.HasPrefix(id2, "snap-"))
-	assert.True(t, strings.HasPrefix(id3, "snap-"))
+		assert.Regexp(t, `^snap-[0-9a-f]{16}$`, id)
+		_, duplicate := seen[id]
+		require.False(t, duplicate, "duplicate snapshot ID %q on call %d", id, i)
+		seen[id] = struct{}{}
+	}
+}
 
-	// Same task ID with different timestamps should produce different IDs
-	assert.NotEqual(t, id1, id2)
+// TestGenerateSnapshotIDFallback pins the no-randomness path: when the source
+// fails, IDs still come out in the accepted shape and stay unique in-process.
+func TestGenerateSnapshotIDFallback(t *testing.T) {
+	original := snapshotIDSource
+	t.Cleanup(func() { snapshotIDSource = original })
+	snapshotIDSource = func([]byte) (int, error) {
+		return 0, errors.New("no entropy")
+	}
 
-	// Different task IDs should produce different IDs
-	assert.NotEqual(t, id1, id3)
+	seen := make(map[string]struct{}, 1024)
+	for i := 0; i < 1024; i++ {
+		id := generateSnapshotID()
+
+		assert.Regexp(t, `^snap-[0-9a-f]{16}$`, id)
+		_, duplicate := seen[id]
+		require.False(t, duplicate, "duplicate fallback snapshot ID %q on call %d", id, i)
+		seen[id] = struct{}{}
+	}
 }
 
 func TestFileSize(t *testing.T) {

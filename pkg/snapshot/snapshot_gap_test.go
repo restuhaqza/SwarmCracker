@@ -69,7 +69,7 @@ func TestCreateSnapshot_SnapshotDirFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(memoryPath, []byte("memory"), 0644))
 
 	// Make snapshot directory creation fail by creating a file with the same name
-	snapshotID := generateSnapshotID("task-1")
+	snapshotID := generateSnapshotID()
 	snapshotDir := filepath.Join(tmpDir, snapshotID)
 	require.NoError(t, os.WriteFile(snapshotDir, []byte("block"), 0644))
 
@@ -116,7 +116,7 @@ func TestCreateSnapshot_FileStatFailure(t *testing.T) {
 	require.NoError(t, os.WriteFile(socketPath, []byte("dummy"), 0644))
 
 	// Create snapshot directory and files
-	snapshotID := generateSnapshotID("task-1")
+	snapshotID := generateSnapshotID()
 	snapshotDir := filepath.Join(tmpDir, snapshotID)
 	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
 
@@ -621,7 +621,7 @@ func TestGenerateSnapshotID_Uniqueness(t *testing.T) {
 
 	// Generate 1000 IDs and verify uniqueness
 	for i := 0; i < 1000; i++ {
-		id := generateSnapshotID("task-1")
+		id := generateSnapshotID()
 		assert.False(t, ids[id], "Duplicate ID generated: %s", id)
 		ids[id] = true
 	}
@@ -1088,7 +1088,7 @@ func TestNewManager_DefaultConfig(t *testing.T) {
 
 // TestGenerateSnapshotID_Format tests snapshot ID format.
 func TestGenerateSnapshotID_Format(t *testing.T) {
-	id := generateSnapshotID("test-task")
+	id := generateSnapshotID()
 
 	// ID should start with "snap-"
 	assert.True(t, strings.HasPrefix(id, "snap-"))
@@ -1177,14 +1177,13 @@ func TestLoadMetadata_PathResolution(t *testing.T) {
 // TestCreateSnapshot_IDUniqueness tests that snapshot IDs are unique.
 func TestCreateSnapshot_IDUniqueness(t *testing.T) {
 	ids := make(map[string]bool)
-	taskID := "task-unique-test"
 
-	// Generate multiple IDs for same task
+	// Generate multiple IDs back to back: uniqueness must not depend on how much
+	// time passes between calls.
 	for i := 0; i < 10; i++ {
-		id := generateSnapshotID(taskID)
+		id := generateSnapshotID()
 		assert.False(t, ids[id], "Duplicate ID: %s", id)
 		ids[id] = true
-		time.Sleep(1 * time.Millisecond) // Ensure different timestamps
 	}
 
 	assert.Len(t, ids, 10)

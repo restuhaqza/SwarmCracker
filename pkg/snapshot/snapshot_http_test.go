@@ -36,6 +36,12 @@ func TestCreateSnapshot_UnixSocketSuccess(t *testing.T) {
 
 	socketPath := testSocketPath(t, "fc.sock")
 
+	// A real disk is required now: a snapshot owns a copy of it, so a create for
+	// a VM whose disk is gone is a failure rather than a snapshot that cannot be
+	// restored later.
+	rootfsPath := filepath.Join(t.TempDir(), "task-1.ext4")
+	require.NoError(t, os.WriteFile(rootfsPath, []byte("disk image"), 0o640))
+
 	pauseCalled := false
 	createCalled := false
 
@@ -88,7 +94,7 @@ func TestCreateSnapshot_UnixSocketSuccess(t *testing.T) {
 			NodeID:     "worker-1",
 			VCPUCount:  2,
 			MemoryMB:   1024,
-			RootfsPath: "/path/to/rootfs.ext4",
+			RootfsPath: rootfsPath,
 		},
 	)
 
@@ -99,6 +105,8 @@ func TestCreateSnapshot_UnixSocketSuccess(t *testing.T) {
 	assert.True(t, createCalled)
 	assert.FileExists(t, info.StatePath)
 	assert.FileExists(t, info.MemoryPath)
+	assert.Equal(t, filepath.Join(tmpDir, info.ID, diskFileName), info.DiskPath)
+	assert.FileExists(t, info.DiskPath)
 }
 
 // TestCallSnapshotCreateResumesWhenTheParentContextIsCanceled pins that a
