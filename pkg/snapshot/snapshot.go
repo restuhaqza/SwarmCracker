@@ -32,6 +32,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
@@ -59,6 +60,11 @@ var (
 	// ".", "..", a separator or a Windows-style separator can never address a
 	// directory outside the snapshot root.
 	ErrInvalidSnapshotID = errors.New("invalid snapshot ID")
+	// ErrNoRestoredVM means this manager tracks no restored VM for the task: it
+	// was never restored here, it was already stopped, or the daemon that
+	// restored it is gone. A restored VM starts outside SwarmKit's task
+	// lifecycle, so the in-memory map is the only record this package keeps.
+	ErrNoRestoredVM = errors.New("no restored VM")
 )
 
 // snapshotIDPattern is the exact shape generateSnapshotID produces. It is
@@ -197,6 +203,93 @@ func (m *Manager) TrackRestoredProcess(taskID string, proc *os.Process) {
 	}
 	m.restoredProcesses[taskID] = proc
 }
+
+// restoredStopTimeout is the graceful window a restored VM gets after SIGTERM
+// before it is killed. Firecracker has no shutdown handshake, but the guest may
+// still flush its filesystems, so the same ten seconds a stopped task gets is
+// applied here.
+const restoredStopTimeout = 10 * time.Second
+
+// restoredStopPoll is how often the stop loop re-checks whether the process is
+// gone. It only bounds how late the SIGKILL can be.
+const restoredStopPoll = 50 * time.Millisecond
+
+// StopRestored stops the restored VM tracked for taskID: SIGTERM, wait up to
+// restoredStopTimeout for it to exit, then SIGKILL. A successfully stopped VM is
+// removed from the map before the wait, so a second stop cannot signal a PID the
+// OS may have reused; the second call answers ErrNoRestoredVM.
+func (m *Manager) StopRestored(taskID string) error {
+	m.mu.Lock()
+	proc, tracked := m.restoredProcesses[taskID]
+	// The entry is dropped either way: a process that cannot be signalled is not
+	// retryable through this map, and a stale entry would make a later stop
+	// signal whatever now owns the PID.
+	delete(m.restoredProcesses, taskID)
+	m.mu.Unlock()
+
+	if !tracked || proc == nil {
+		return fmt.Errorf("%w: task %q has no restored VM on this node", ErrNoRestoredVM, taskID)
+	}
+
+	log.Info().Str("task_id", taskID).Int("pid", proc.Pid).Msg("Stopping restored VM")
+
+	if err := StopProcess(proc); err != nil {
+		return fmt.Errorf("failed to stop the restored VM for task %q: %w", taskID, err)
+	}
+
+	log.Info().Str("task_id", taskID).Int("pid", proc.Pid).Msg("Restored VM stopped")
+	return nil
+}
+
+// StopProcess terminates one VM process: SIGTERM, a bounded wait for it to exit,
+// then SIGKILL. A process that already exited is success, because the caller
+// asked for the end state. It is exported for the CLI's local stop-restored path,
+// which resolves the PID itself; both entry points must apply the same signals
+// and the same grace window.
+func StopProcess(proc *os.Process) error {
+	if proc == nil {
+		return nil
+	}
+
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		if errors.Is(err, os.ErrProcessDone) {
+			return nil
+		}
+		return fmt.Errorf("signal SIGTERM: %w", err)
+	}
+
+	if waitForProcessExit(proc.Pid, restoredStopTimeout) {
+		return nil
+	}
+
+	log.Warn().Int("pid", proc.Pid).
+		Dur("grace", restoredStopTimeout).
+		Msg("VM did not exit after SIGTERM; killing it")
+	if err := proc.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("signal SIGKILL: %w", err)
+	}
+
+	// The kill is immediate: a process that ignores SIGKILL because it is stuck
+	// in the kernel is not going to answer this call either. The map entry is
+	// already gone, so a second stop does not wait for it.
+	return nil
+}
+
+// waitForProcessExit polls until pid is gone or timeout expires, reporting
+// whether it exited in time.
+func waitForProcessExit(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if !processAlive(pid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(restoredStopPoll)
+	}
+}
+
 func NewManager(config SnapshotConfig) (*Manager, error) {
 	if config.SnapshotDir == "" {
 		config.SnapshotDir = DefaultSnapshotConfig().SnapshotDir
@@ -206,7 +299,7 @@ func NewManager(config SnapshotConfig) (*Manager, error) {
 		return nil, fmt.Errorf("failed to create snapshot directory %s: %w", config.SnapshotDir, err)
 	}
 
-	sweepStaging(config.SnapshotDir)
+	sweepLeftovers(config.SnapshotDir)
 
 	return &Manager{config: config}, nil
 }
@@ -217,18 +310,28 @@ func NewManager(config SnapshotConfig) (*Manager, error) {
 // looks like a snapshot.
 const stagingPrefix = "snapshot-staging-"
 
-// stagingSweepAge bounds how long a staging directory may sit unused before
+// publishedPrefix is the prefix of a snapshot directory (see
+// snapshotIDPattern). A directory with this prefix that has no metadata.json is
+// a reservation a crash left between reserveSnapshotDir's mkdir and the
+// publishSnapshot rename; it is not a snapshot and no reader lists it.
+const publishedPrefix = "snap-"
+
+// stagingSweepAge bounds how long a leftover directory may sit unused before
 // NewManager removes it. The guard matters because a create can be in flight in
 // another process — the daemon copying a multi-GB disk while an operator runs a
-// CLI command that constructs its own manager — and that create's staging
-// directory is only seconds old when the copy starts.
+// CLI command that constructs its own manager — and that create's staging (or
+// freshly reserved) directory is only seconds old when the copy starts.
 const stagingSweepAge = time.Hour
 
-// sweepStaging removes staging directories that a crashed create left behind, so
-// an aborted copy costs at most stagingSweepAge of disk instead of leaking
-// forever. Failures are logged, never returned: a leftover directory must not
-// stop a manager (and therefore the node's snapshot store) from starting.
-func sweepStaging(snapshotDir string) {
+// sweepLeftovers removes the directories a crashed create left behind, so an
+// aborted copy costs at most stagingSweepAge of disk instead of leaking forever.
+// Two shapes are leftovers: a staging directory, which never holds metadata, and
+// a reserved snap-* directory without metadata.json. A published snapshot always
+// has metadata.json and is never touched, and a directory younger than
+// stagingSweepAge may belong to a create running in another process. Failures are
+// logged, never returned: a leftover directory must not stop a manager (and
+// therefore the node's snapshot store) from starting.
+func sweepLeftovers(snapshotDir string) {
 	entries, err := os.ReadDir(snapshotDir)
 	if err != nil {
 		return
@@ -236,19 +339,32 @@ func sweepStaging(snapshotDir string) {
 
 	cutoff := time.Now().Add(-stagingSweepAge)
 	for _, entry := range entries {
-		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), stagingPrefix) {
+		if !entry.IsDir() {
 			continue
 		}
+		name := entry.Name()
+
+		switch {
+		case strings.HasPrefix(name, stagingPrefix):
+			// Always a leftover: a staging directory is renamed away on success.
+		case strings.HasPrefix(name, publishedPrefix):
+			if _, err := os.Stat(filepath.Join(snapshotDir, name, metadataFile)); err == nil {
+				continue // a published snapshot, complete and restorable
+			}
+		default:
+			continue
+		}
+
 		info, err := entry.Info()
 		if err != nil || info.ModTime().After(cutoff) {
 			continue
 		}
-		dir := filepath.Join(snapshotDir, entry.Name())
+		dir := filepath.Join(snapshotDir, name)
 		if err := os.RemoveAll(dir); err != nil {
-			log.Warn().Err(err).Str("dir", dir).Msg("Failed to remove a leftover snapshot staging directory")
+			log.Warn().Err(err).Str("dir", dir).Msg("Failed to remove a leftover snapshot directory")
 			continue
 		}
-		log.Info().Str("dir", dir).Msg("Removed a leftover snapshot staging directory")
+		log.Info().Str("dir", dir).Msg("Removed a leftover snapshot directory")
 	}
 }
 
