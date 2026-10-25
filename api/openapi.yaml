@@ -5,12 +5,12 @@ info:
   description: >
     Stable machine contract for SwarmCracker. This file is the normative
     description of the public API: every read route, the phase-2 write routes for
-    services, configs, secrets, networks and nodes, the task exec output stream,
-    the resource documents, the shared response headers, the error document and
-    the bearer authentication model. The trusted Unix socket serves the same
-    documents without a token; its file mode is the credential. The snapshot
-    routes are experimental and disabled by default: a manager must opt in, and
-    until it does every snapshot route answers 501 not_implemented.
+    services, configs, secrets, networks and nodes, the task exec and attach
+    streams, the resource documents, the shared response headers, the error
+    document and the bearer authentication model. The trusted Unix socket serves
+    the same documents without a token; its file mode is the credential. The
+    snapshot routes are experimental and disabled by default: a manager must opt
+    in, and until it does every snapshot route answers 501 not_implemented.
 servers:
   - url: https://mgr:4244
     description: Manager public API (phase 1; TLS + bearer token)
@@ -1286,6 +1286,98 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}/attach:
+    post:
+      operationId: attachTask
+      summary: Attach to a task's interactive console over one full-duplex stream
+      description: >
+        Requires tasks:exec. The task reference is resolved server-side and the
+        request is relayed to the node that runs the task, so the caller never
+        picks a host. Selectors are enforced exactly as for exec: a runner token
+        runs only the tasks its selectors match, and a runner token without
+        selectors is 403.
+
+        The transport is one HTTP/1.1 request, full duplex: the chunked request
+        body is the caller's stdin and the chunked response body is the guest
+        console. Both directions are live at the same time, so a prompt can
+        arrive before the caller has finished typing. There is no WebSocket and
+        no second connection. The response is raw
+        `application/octet-stream` (the documented exception to the v1
+        envelope) and is flushed as the guest writes. The caller half-closes the
+        request body to send the guest an EOF; the session ends when the console
+        closes, the caller disconnects, or the request is cancelled.
+
+        The route takes no query parameter: the transport already carries a TTY,
+        so `?tty=` and every other unknown name are 400 invalid with
+        details.parameter. The route is streaming, so an `Idempotency-Key` is
+        ignored rather than buffered. The task must be running and its console
+        must exist: a stopped task, or one whose console socket is missing, is
+        404 not_found with details.reason "console_unavailable". A console that
+        exists but cannot be dialed is 503 unavailable with the same reason and
+        retryable true. The attempt is audited as task.attach with the resolved
+        task ID; a relayed node failure is audited as error, not ok.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, or a unique id prefix of at least 4
+            characters. A task name is accepted when it is unique.
+      requestBody:
+        required: false
+        description: >
+          The caller's stdin, streamed to the guest console as it is written. It
+          is absent for a read-only attach, and the caller closes it to signal
+          EOF to the guest.
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "200":
+          description: >
+            The guest console output, streamed while the request body is still
+            open. Bytes are flushed as they arrive and are not framed: there is
+            no NDJSON envelope and no terminal frame, because a console has
+            neither. The stream ends when the console closes; the caller should
+            treat a closed response as the end of the session rather than as a
+            failure.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: >
+            The task does not exist, is not running, or has no console socket.
+            For a task this node manages but cannot attach to, code is not_found
+            and details.reason is "console_unavailable".
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/tasks/{id}/logs:
     get:
       operationId: getTaskLogs
@@ -2469,10 +2561,10 @@ components:
         answers this: the previous spec is not the document that would be written.
         A `tty:true` exec also answers this, with details.reason
         "tty_not_supported": interactive exec over the API is a follow-up. Task
-        exec, logs and files answer this on a manager with no node broker, and so
-        does a health-enriched task read: details.capability names the operation
-        ("exec", "logs", "files" or "health") and there is no node path to serve
-        it. Every snapshot route answers this on a manager that has not enabled
+        exec, logs, files and attach answer this on a manager with no node
+        broker, and so does a health-enriched task read: details.capability names
+        the operation ("exec", "logs", "files", "health" or "attach") and there
+        is no node path to serve it. Every snapshot route answers this on a manager that has not enabled
         the experimental capability, with details.capability "snapshots" and
         details.reason "snapshots_disabled", before the task is resolved or
         audited.
@@ -3524,6 +3616,13 @@ components:
         capabilities:
           type: array
           items: { type: string }
+          description: >
+            Feature detection. read, write and events are always served. exec,
+            logs, files, health and attach are advertised only when the manager
+            has a node broker wired, because they are relayed to the node that
+            runs the task. snapshots is advertised only when the experimental
+            snapshot surface is enabled. A capability that is advertised is
+            served; the version document never promises a route that answers 501.
 
     AuditActor:
       type: object

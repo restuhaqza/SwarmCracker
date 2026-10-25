@@ -105,8 +105,9 @@ type Broker interface {
 type Config struct {
 	Client Client
 	Tokens *TokenStore
-	// Broker relays task-scoped operations (exec today) to the node that runs
-	// the task. A nil broker leaves those routes answering 501.
+	// Broker relays task-scoped operations (exec, logs, files, health, attach)
+	// to the node that runs the task. A nil broker leaves those routes answering
+	// 501.
 	Broker Broker
 	// Snapshots is the manager-side transport for the experimental snapshot
 	// surface. It is deliberately a second, optional interface so the exec,
@@ -199,7 +200,7 @@ func New(cfg Config) (*Server, error) {
 // brokerCapabilities are the operations only a configured Broker can serve.
 // They are the single list New unions into the advertisement, so the version
 // document cannot promise less than the routes reach.
-var brokerCapabilities = []string{"exec", "logs", "files", "health"}
+var brokerCapabilities = []string{"exec", "logs", "files", "health", "attach"}
 
 // withBrokerCapabilities returns capabilities plus every operation the wired
 // transports serve, preserving the caller's order and appending the missing ones
@@ -290,6 +291,12 @@ func (s *Server) routes() {
 	// Idempotency-Key middleware, which buffers a response to replay it.
 	s.handleRoutes("/v1/tasks/{id}/exec",
 		streamPost(ScopeTasksExec, s.execTask))
+	// Attach is one full-duplex stream in raw bytes: the request body is the
+	// caller's stdin and the response body the guest console. Like exec it
+	// bypasses the Idempotency-Key middleware, and it accepts no query parameter
+	// (a `?tty=` typo is a 400, because the transport already carries a TTY).
+	s.handleRoutes("/v1/tasks/{id}/attach",
+		streamPost(ScopeTasksExec, s.attachTask))
 	// Logs are an NDJSON stream and files are raw bytes. Neither is a JSON
 	// document, and a PUT must not be buffered by the Idempotency-Key
 	// middleware, so only POST ever takes that path.

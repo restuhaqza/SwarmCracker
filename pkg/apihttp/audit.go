@@ -323,8 +323,9 @@ func (s *AuditStore) rewriteLocked() error {
 // Phase-2 write handlers call it with these action names:
 // service.create, service.update, service.delete, config.create, config.update,
 // config.delete, secret.create, secret.update, secret.delete, network.create,
-// network.delete and node.update. Phase-3 adds task.exec, task.files and
-// task.snapshot. Result is "ok" or "error"; nothing here inspects it.
+// network.delete and node.update. Phase-3 adds task.exec, task.attach,
+// task.files and task.snapshot. Result is "ok" or "error"; nothing here inspects
+// it.
 func (s *Server) recordAudit(r *http.Request, action string, res v1.AuditResource, result string) error {
 	if s.cfg.Audit == nil {
 		return nil

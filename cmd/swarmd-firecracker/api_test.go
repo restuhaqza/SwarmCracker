@@ -202,7 +202,7 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
 	require.Equal(t, Version, doc.ServerVersion)
 	require.Equal(t, apiversion.Current, doc.GRPCProtocolVersion)
-	require.Equal(t, []string{"read", "write", "events", "exec", "logs", "files", "health"}, doc.Capabilities,
+	require.Equal(t, []string{"read", "write", "events", "exec", "logs", "files", "health", "attach"}, doc.Capabilities,
 		"the node certificates are present, so the broker manager and health are wired")
 	// The stub control socket is unreachable, so there is no cluster ID yet;
 	// the version probe must answer anyway.
