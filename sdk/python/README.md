@@ -4,9 +4,9 @@ A thin, standard-library-only client for the SwarmCracker API v1, plus the
 models generated from [`api/openapi.yaml`](../../api/openapi.yaml).
 
 - **Python 3.11+**, no third-party dependency (only `urllib`, `json`, `ssl`,
-  `base64` and `typing`).
+  `email` and `base64`).
 - **No business logic.** The client is a transport wrapper: no caching, no
-  retries, no request parallelism, no hidden state.
+  hidden state. Retries are opt-in and default to zero.
 - **Not thread safe.** It is safe to reuse one client for sequential requests.
 
 ## Install
@@ -51,6 +51,15 @@ client.tasks.get(ref, *, health=None) -> TaskDocument
 client.tasks.exec(ref, command, *, env=None, workdir=None) -> ExecStream
 client.tasks.logs(ref, *, follow=False, tail=None, since=None) -> LogStream
 
+client.tasks.files_get(task, path) -> bytes
+client.tasks.files_put(task, path, data, mode=None) -> None
+
+client.tasks.snapshots_list(task=None, *, limit=None, cursor=None) -> SnapshotList
+client.tasks.snapshots_create(task, vcpus=None, memory_mb=None) -> SnapshotDocument
+client.tasks.snapshots_restore(task, snapshot) -> SnapshotDocument
+client.tasks.snapshots_delete(task, snapshot) -> None
+client.tasks.snapshots_stop_restored(task) -> None
+
 client.events.watch(*, types=None, since=None) -> EventStream
 ```
 
@@ -60,6 +69,34 @@ parameters. `health=True` is sent as `health=true`.
 The returned values are the generated `TypedDict` models from
 `swarmcracker.types`, so they are plain dictionaries at runtime and type
 checkers see their fields.
+
+## Files and snapshots
+
+`files_get` returns the file's bytes, not an envelope document; `files_put` sends
+`data` verbatim as `Content-Type: application/octet-stream` and returns `None` on
+the 204. `mode` is an octal string between `0000` and `0777`. The task must be
+running and the path absolute: both are enforced by the server and surface as
+`ApiError`.
+
+```python
+payload = client.tasks.files_get("5f3a1b2c9d", "/etc/hostname")
+client.tasks.files_put("5f3a1b2c9d", "/tmp/hello", b"hi\n", mode="0644")
+```
+
+The snapshot routes are experimental: a manager that has not enabled them
+answers `501 not_implemented` with `details.capability` `"snapshots"`.
+`snapshots_list`, `snapshots_restore` and `snapshots_delete` use the flat
+`/v1/snapshots` routes, so the task is a query parameter; `task` is required by
+the API and omitting it is a typed `400 invalid`. `snapshots_create` and
+`snapshots_stop_restored` are task-scoped.
+
+```python
+page = client.tasks.snapshots_list("5f3a1b2c9d")
+snapshot = client.tasks.snapshots_create("5f3a1b2c9d", vcpus=2, memory_mb=512)
+client.tasks.snapshots_restore("5f3a1b2c9d", snapshot["id"])
+client.tasks.snapshots_stop_restored("5f3a1b2c9d")
+client.tasks.snapshots_delete("5f3a1b2c9d", snapshot["id"])
+```
 
 ## Streaming
 
@@ -117,16 +154,31 @@ except ApiError as error:
 | `status` | The HTTP status; `0` for a transport failure |
 | `request_id` | The `X-Request-Id` (also repeated by the error document) |
 | `retryable` | Whether the server says a retry can succeed |
+| `retry_after` | The raw `Retry-After` header of the response, when the server sent one; otherwise `None` |
 | `details` | Typed failure context, or `None` |
 
 The bearer token is never included in an error or a message.
 
 ### Retries
 
-The client does not retry automatically — a deliberate divergence from contract
-§13.5. Retry idempotent calls yourself (`GET`, and a `POST` carrying an
-`Idempotency-Key`) on `429` or `5xx`, and honour `Retry-After` when the response
-sets it. Never retry a stream or a `POST` without an idempotency key.
+Retries are opt-in: `Client(..., retries=N)` with `N = 0` (the default) keeps the
+v1 semantics of exactly one attempt. With `N > 0` the client makes at most `N`
+extra attempts, and **only** for an idempotent request:
+
+- `GET`, `DELETE` and the files `PUT` (whose whole body is resent);
+- a `POST` that carries an `Idempotency-Key`;
+- a response of `429` or `5xx`.
+
+A stream (`exec`, `logs`, `events`) is never retried, and neither is a `POST`
+without an idempotency key. Transport failures are not retried either.
+
+The wait before a retry is the response's `Retry-After` header — delta-seconds
+or an HTTP date — capped at `retry_max_wait` (default 30 s). With no such header
+it is `retry_backoff` (default 0.5 s) doubled on each attempt, also capped. The
+raw header stays available as `ApiError.retry_after`.
+
+`retry_backoff`, `retry_max_wait` and `sleep` (the wait function) are
+constructor keyword arguments; `sleep` exists so tests can inject a fake one.
 
 ## Wire details
 
@@ -160,7 +212,7 @@ read the annotations and are correct); treat the models as static types.
 
 ## Not in this round
 
-Snapshot and files routes, retries, pagination helpers and request timeouts per
-call. `tasks.list(label=...)` is forwarded as specified but the current manager
-does not filter the task list by label. The Node client lives in
-[`sdk/node`](../node/README.md) and has the same surface.
+Pagination helpers and request timeouts per call. `tasks.list(label=...)` is
+forwarded as specified but the current manager does not filter the task list by
+label. The Node client lives in [`sdk/node`](../node/README.md) and has the same
+surface.
