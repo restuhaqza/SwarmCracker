@@ -32,6 +32,13 @@ type brokerRuntime struct {
 	// snapshotDir is the pkg/snapshot root. pkg/snapshot writes
 	// <snapshotDir>/<id>/metadata.json and that directory is the source of truth.
 	snapshotDir string
+	// rootfsDir is the executor's rootfs directory, recorded on a snapshot so
+	// restore can tell a missing task disk from a corrupt snapshot.
+	rootfsDir string
+	// taskAlive decides whether an existing task socket belongs to a live VMM.
+	// Nil keeps the stat-only resolution tests use; the daemon sets it to the
+	// Firecracker process probe.
+	taskAlive func(socketPath string) bool
 }
 
 // brokerRuntimeFrom resolves the broker settings. An empty listen address
@@ -44,6 +51,8 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 		logDir:           scruntime.DefaultLogDir(),
 		snapshotsEnabled: ctx.Bool("snapshots-enable"),
 		snapshotDir:      ctx.String("snapshot-dir"),
+		rootfsDir:        ctx.String("rootfs-dir"),
+		taskAlive:        taskSocketAlive,
 	}
 }
 
@@ -59,6 +68,15 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 // returns (nil, false, no-op, nil); a certificate or bind failure is returned
 // rather than swallowed, so a misconfigured node fails loudly instead of silently
 // refusing manager traffic.
+// taskSocketAlive reports whether a Firecracker API socket still belongs to a
+// live VMM. The process table is the signal rather than an API probe: during
+// startup the socket exists before the API answers, and treating that window
+// as exited would turn a legitimate exec into a 404. A crashed VMM leaves its
+// socket file behind, which is the case this probe exists to catch.
+func taskSocketAlive(socketPath string) bool {
+	return scruntime.FindFirecrackerPIDBySocket(socketPath) > 0
+}
+
 func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*broker.Server, bool, func(), error) {
 	if cfg.listenAddr == "" {
 		return nil, false, func() {}, nil
@@ -72,7 +90,11 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Addr:      cfg.listenAddr,
 		TLSConfig: serverTLSConfig(cert, caPool),
-		Tasks:     broker.SocketDirSource{Dir: cfg.socketDir, LogDir: cfg.logDir},
+		Tasks: broker.SocketDirSource{
+			Dir:       cfg.socketDir,
+			LogDir:    cfg.logDir,
+			IsRunning: cfg.taskAlive,
+		},
 	})
 	if err != nil {
 		return nil, false, nil, err
@@ -153,5 +175,6 @@ func snapshotHandler(ctx context.Context, cfg brokerRuntime) (broker.Handler, bo
 		Store:     mgr,
 		SocketDir: cfg.socketDir,
 		MaxAge:    168 * time.Hour,
+		RootfsDir: cfg.rootfsDir,
 	}), true
 }

@@ -1659,7 +1659,10 @@ paths:
         is experimental. The task must no longer be running: its rootfs is still
         in use, and restoring a second VM over the same file would corrupt both,
         so a running task is 409 conflict with details.reason
-        "restore_task_running". A task that has exited can be restored: the
+        "restore_task_running". A task that has exited can be restored while its
+        per-task disk (<rootfs-dir>/tasks/<taskID>.ext4) still exists: Firecracker
+        snapshots capture memory and device state, not disk bytes, so a cleaned-up
+        task answers 409 conflict with details.reason "snapshot_incomplete". The
         restore starts a new VM on the node's socket directory. Restores are
         serialized per task; a concurrent restore for
         the same task is 409 conflict with details.reason "restore_in_progress".
@@ -1854,8 +1857,11 @@ paths:
         SwarmKit's task lifecycle, so the restored VM may outlive the task. The
         task must no longer be running: its rootfs is still in use, and a second
         Firecracker on the same file would corrupt both, so a running task is 409
-        conflict with details.reason "restore_task_running". An exited task can
-        be restored: restore starts a new VM on the node's socket directory.
+        conflict with details.reason "restore_task_running". A task whose per-task
+        disk (<rootfs-dir>/tasks/<taskID>.ext4) was cleaned up answers 409
+        conflict with details.reason "snapshot_incomplete" before a VMM starts.
+        An exited task whose disk still exists can be restored: restore starts a
+        new VM on the node's socket directory.
         Restores are serialized per task; a concurrent restore
         for the same task is 409 conflict with details.reason
         "restore_in_progress". Every restore reuses the same restored socket on

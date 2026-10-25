@@ -117,7 +117,14 @@ Two behaviours are worth knowing before you script this:
 - **A restore is refused while the task is running**: `409 conflict` with
   `details.reason: "restore_task_running"`. The live VM still owns its rootfs,
   and a second Firecracker on the same `rootfs.ext4` would corrupt both. Stop the
-  task first; restoring an exited task's snapshot is the supported case.
+  task first.
+- **A restore needs the task's disk to still exist.** Firecracker snapshots
+  capture memory and device state, not the disk bytes. The snapshot records
+  `<rootfs-dir>/tasks/<taskID>.ext4`, and the executor removes that file when the
+  task is cleaned up. Once it is gone the restore is `409 conflict` with
+  `details.reason: "snapshot_incomplete"`; it does not silently start a VM with a
+  missing disk. Keeping a disk copy per snapshot is a follow-up, so treat an
+  exited task's snapshot as a short-lived restore point, not a backup.
 
 Restore is experimental for a second reason: it starts a Firecracker process
 outside SwarmKit's task tracker. The restored VM is not scheduler-managed, so if

@@ -121,6 +121,15 @@ func serveExec(ctx context.Context, dial ExecDialer, task Task, w http.ResponseW
 		_ = stream.terminal(v1.ErrorFrame(execErrorCode(ctx, err)))
 		return
 	}
+	// A negative code is not a guest exit status. The guest agent reports one
+	// when it could not read the process's wait status, which is what an agent
+	// predating signal reporting does for a signal-killed command. Emitting it
+	// as an exit frame would tell the caller that the command ran and returned
+	// -1, so the stream fails instead.
+	if result.ExitCode < 0 {
+		_ = stream.terminal(v1.ErrorFrame(string(output.CodeInternal)))
+		return
+	}
 	if result.Signal > 0 {
 		_ = stream.terminal(v1.SignalExitFrame(result.Signal))
 		return

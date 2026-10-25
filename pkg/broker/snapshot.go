@@ -62,6 +62,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -120,6 +121,13 @@ type SnapshotHandlerConfig struct {
 	// MaxAge enables opportunistic retention: after a successful create the
 	// handler removes snapshots older than MaxAge. Zero disables the cleanup.
 	MaxAge time.Duration
+	// RootfsDir is the executor's rootfs directory. A Firecracker snapshot
+	// records the VM's block-device path but not the disk contents, so the
+	// handler records <RootfsDir>/tasks/<taskID>.ext4 as the snapshot's rootfs
+	// when the caller does not name one. Restore then fails with a precise
+	// snapshot_incomplete instead of starting a VMM that cannot open its disk.
+	// Empty leaves the field unset.
+	RootfsDir string
 }
 
 // snapshotHandler holds the per-task restore lock. The lock lives in the handler
@@ -325,12 +333,19 @@ func (h *snapshotHandler) serveCreate(ctx context.Context, task Task, w http.Res
 		return
 	}
 
+	rootfsPath := request.RootfsPath
+	if rootfsPath == "" && h.cfg.RootfsDir != "" {
+		// The snapshot's memory image references this per-task disk, and the
+		// executor removes it when the task is cleaned up. Recording it makes
+		// restore's preflight honest instead of failing inside Firecracker.
+		rootfsPath = filepath.Join(h.cfg.RootfsDir, "tasks", task.ID+".ext4")
+	}
 	info, createErr := h.cfg.Store.CreateSnapshot(ctx, task.ID, task.SocketPath, snapshot.CreateOptions{
 		ServiceID:  r.URL.Query().Get("service"),
 		NodeID:     r.URL.Query().Get("node"),
 		VCPUCount:  request.VCPUs,
 		MemoryMB:   request.MemoryMB,
-		RootfsPath: request.RootfsPath,
+		RootfsPath: rootfsPath,
 	})
 	if createErr != nil {
 		writeSnapshotStoreError(w, "create", createErr)
@@ -400,6 +415,19 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
 			"a restored VM for task %q is already running on this node", task.ID).
 			WithDetails(map[string]any{"reason": "restore_already_running"}))
+		return
+	}
+
+	// The snapshot records the VM's vsock device with its host-side path
+	// <socketDir>/<taskID>.vsock. A VMM that crashed leaves that file behind,
+	// and the restored Firecracker cannot bind it again (EADDRINUSE), so clear
+	// it first. The task is not running here (the guard above returned), so no
+	// live backend owns the path.
+	vsockPath := filepath.Join(filepath.Dir(socketPath), task.ID+".vsock")
+	if err := os.Remove(vsockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		writeTypedError(w, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
+			"cannot clear the stale vsock path for task %q", task.ID).
+			WithDetails(map[string]any{"reason": "vsock_path_busy"}))
 		return
 	}
 

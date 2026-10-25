@@ -217,6 +217,22 @@ func TestSnapshotHandlerCreateUsesTheTaskSocket(t *testing.T) {
 		require.Equal(t, "snap-1", doc.ID)
 	})
 
+	// A Firecracker snapshot references the VM's block device, not its bytes.
+	// Recording the executor's per-task disk makes restore's preflight honest:
+	// once the task is cleaned up the disk is gone, and restore can say so
+	// instead of failing inside Firecracker with a generic 503.
+	t.Run("records the task disk when rootfs is not given", func(t *testing.T) {
+		store := &fakeSnapshotStore{createInfo: testSnapshotInfo("snap-1", "task-1", time.Now().UTC())}
+
+		rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{
+			Store:     store,
+			RootfsDir: "/var/lib/firecracker/rootfs",
+		}, snapshotTask(), http.MethodPost, "/v1/tasks/task-1/snapshots", "")
+
+		require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+		require.Equal(t, "/var/lib/firecracker/rootfs/tasks/task-1.ext4", store.gotCreate.RootfsPath)
+	})
+
 	t.Run("explicit resources", func(t *testing.T) {
 		store := &fakeSnapshotStore{createInfo: testSnapshotInfo("snap-1", "task-1", time.Now().UTC())}
 
@@ -388,6 +404,26 @@ func TestSnapshotHandlerRestoreLogOnlyTaskUsesSocketDir(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Equal(t, filepath.Join(socketDir, "task-1-restored.sock"), store.gotRestoreSock)
+}
+
+// TestSnapshotHandlerRestoreClearsStaleVsock pins the crash-recovery detail the
+// real smoke found: the snapshot references <socketDir>/<taskID>.vsock, and a
+// dead VMM leaves that file behind. Without removing it Firecracker fails with
+// EADDRINUSE, so the handler clears it before starting the restored VM.
+func TestSnapshotHandlerRestoreClearsStaleVsock(t *testing.T) {
+	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
+	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
+	socketDir := shortSocketDir(t)
+	vsockPath := filepath.Join(socketDir, "task-1.vsock")
+	require.NoError(t, os.WriteFile(vsockPath, nil, 0o600))
+
+	rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: socketDir},
+		Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"},
+		http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
+
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	_, err := os.Stat(vsockPath)
+	require.ErrorIs(t, err, os.ErrNotExist, "the stale vsock path must be cleared before the restore")
 }
 
 // TestSnapshotHandlerRestoreRejectsARunningTask pins that a restore may only
