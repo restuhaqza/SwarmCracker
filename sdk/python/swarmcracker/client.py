@@ -290,6 +290,17 @@ def _stream_transport_error(exc: BaseException) -> ApiError:
     return ApiError("unreachable", f"the stream failed before it completed: {exc}")
 
 
+def _body_transport_error(exc: BaseException) -> ApiError:
+    """Turn a mid-body I/O failure on a buffered response into an ApiError.
+
+    A body shorter than its declared ``Content-Length`` raises
+    http.client.IncompleteRead (or ConnectionResetError, depending on timing);
+    both are transport failures and must surface as code="unreachable" with
+    status 0 rather than escape as a raw http.client exception.
+    """
+    return ApiError("unreachable", f"the response body failed before it completed: {exc}")
+
+
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Refuse every redirect.
 
@@ -899,7 +910,8 @@ class Tasks:
 
         The body is bytes, not an envelope document. The path must be absolute
         and the task must still be running; both are enforced by the server and
-        surface as :class:`ApiError`.
+        surface as :class:`ApiError`. A body that ends before its declared length
+        is a transport failure: ``ApiError`` with code ``unreachable``.
         """
         response = self._client._open(
             "GET",
@@ -908,10 +920,11 @@ class Tasks:
             accept=OCTET_STREAM_MEDIA_TYPE,
         )
         try:
-            raw = response.read()
+            return response.read()
+        except (OSError, http.client.HTTPException) as exc:
+            raise _body_transport_error(exc) from None
         finally:
             response.close()
-        return raw
 
     def files_put(
         self,

@@ -416,6 +416,11 @@ class Handler(BaseHTTPRequestHandler):
             if guest_path == "/missing":
                 self._json(404, error_document("not_found", "no such file"))
                 return True
+            if guest_path == "/truncated":
+                # Content-Length promises more than the body carries: the client
+                # must map the short read to ApiError("unreachable").
+                self._truncated_file(FILE_BYTES)
+                return True
             self._send(200, FILE_BYTES, OCTET_STREAM_MEDIA_TYPE)
             return True
         if method == "PUT":
@@ -542,6 +547,22 @@ class Handler(BaseHTTPRequestHandler):
         """
         self._start_stream(content_type)
         self.wfile.write(b"%x\r\n" % (len(chunk) + 32) + chunk)
+        self.wfile.flush()
+        self.close_connection = True
+
+    def _truncated_file(self, body):
+        """Answer 200 with a Content-Length larger than the bytes written.
+
+        The buffered reader raises http.client.IncompleteRead; a file read must
+        map that to ApiError("unreachable") exactly like a stream failure.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", OCTET_STREAM_MEDIA_TYPE)
+        self.send_header("Content-Length", str(len(body) + 32))
+        self.send_header(API_VERSION_HEADER, "1")
+        self.send_header("X-Request-Id", REQUEST_ID)
+        self.end_headers()
+        self.wfile.write(body)
         self.wfile.flush()
         self.close_connection = True
 
@@ -708,6 +729,15 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(caught.exception.status, 404)
         self.assertEqual(caught.exception.request_id, REQUEST_ID)
         self.assertNotIn(TOKEN, str(caught.exception))
+
+    def test_files_get_maps_a_truncated_body_to_unreachable(self):
+        with self.assertRaises(ApiError) as caught:
+            self.client.tasks.files_get("t1", "/truncated")
+        error = caught.exception
+        self.assertEqual(error.code, "unreachable")
+        self.assertEqual(error.status, 0)
+        self.assertIn("body", error.message)
+        self.assertNotIn(TOKEN, str(error))
 
     def test_files_put_sends_raw_bytes_content_type_and_mode(self):
         self.assertIsNone(
