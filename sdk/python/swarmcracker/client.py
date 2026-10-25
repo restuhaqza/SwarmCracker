@@ -319,8 +319,16 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _decode_json(response: Any) -> Any:
-    """Decode one JSON response body, or None for an empty body."""
-    raw = response.read()
+    """Decode one JSON response body, or None for an empty body.
+
+    A body that ends before its declared length raises http.client.IncompleteRead
+    from ``read()``; that is a transport failure, so it becomes an ApiError with
+    code ``unreachable`` instead of escaping as a raw http.client exception.
+    """
+    try:
+        raw = response.read()
+    except (OSError, http.client.HTTPException) as exc:
+        raise _body_transport_error(exc) from None
     if not raw:
         return None
     try:

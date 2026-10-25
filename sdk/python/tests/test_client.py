@@ -452,6 +452,9 @@ class Handler(BaseHTTPRequestHandler):
     def _service_route(self, method, path, record):
         reference = urllib.parse.unquote(path[len("/v1/services/"):])
         if method == "GET":
+            if reference == "truncated-json":
+                self._truncated_json(json.dumps(dict(SERVICE, id=reference)).encode("utf-8"))
+                return True
             self._json(200, dict(SERVICE, id=reference))
             return True
         if method == "PATCH":
@@ -573,6 +576,24 @@ class Handler(BaseHTTPRequestHandler):
         """
         self.send_response(200)
         self.send_header("Content-Type", OCTET_STREAM_MEDIA_TYPE)
+        self.send_header("Content-Length", str(len(body) + 32))
+        self.send_header(API_VERSION_HEADER, "1")
+        self.send_header("X-Request-Id", REQUEST_ID)
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.close_connection = True
+
+
+    def _truncated_json(self, body):
+        """Answer 200 with a JSON Content-Type but a body shorter than declared.
+
+        The buffered reader raises http.client.IncompleteRead from read(); a JSON
+        decode must map that to ApiError("unreachable") rather than letting the
+        raw http.client exception escape.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", V1_MEDIA_TYPE)
         self.send_header("Content-Length", str(len(body) + 32))
         self.send_header(API_VERSION_HEADER, "1")
         self.send_header("X-Request-Id", REQUEST_ID)
@@ -993,6 +1014,15 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "internal")
         self.assertEqual(caught.exception.status, 500)
         self.assertEqual(caught.exception.request_id, REQUEST_ID)
+
+    def test_a_truncated_json_body_is_unreachable(self):
+        with self.assertRaises(ApiError) as caught:
+            self.client.services.get("truncated-json")
+        error = caught.exception
+        self.assertEqual(error.code, "unreachable")
+        self.assertEqual(error.status, 0)
+        self.assertIn("body", error.message)
+        self.assertNotIn(TOKEN, str(error))
 
     def test_redirects_are_refused_so_the_token_is_never_replayed(self):
         sink = ThreadingHTTPServer(("127.0.0.1", 0), SinkHandler)
