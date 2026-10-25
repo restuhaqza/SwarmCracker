@@ -155,19 +155,23 @@ Four behaviours are worth knowing before you script this:
   default deadline is **5 minutes** (`--snapshot-timeout` on the daemon); a create
   past it is `504 timeout`. Ten gigabytes over a filesystem without reflinks is
   not a 30-second copy. The node resumes the VM even when the deadline fires or
-  the copy fails, so a timed-out create does not leave it paused. Set the flag
-  above your disk-copy time.
+  the copy fails, so a timed-out create does not leave it paused. Size the
+  deadline above your disk-copy time — `--snapshot-timeout` on the daemon for an
+  API create, `--timeout` (default `5m`) on a local `vm snapshot create`.
 - **A restore is refused while the task is running**: `409 conflict` with
-  `details.reason: "restore_task_running"`. The live VM still owns its rootfs,
-  and a second Firecracker on the same `rootfs.ext4` would corrupt both. Stop the
-  task first.
-- **A restore puts the disk back if it is gone.** Firecracker snapshots capture
-  memory and device state, not the disk bytes, so `create` copies the task disk
-  into the snapshot directory. If the executor already removed
-  `<rootfs-dir>/tasks/<taskID>.ext4`, `restore` copies the snapshot's copy back to
-  that path before the VM starts. An existing task disk is never overwritten —
-  it is the live VM's disk. A snapshot whose copy and whose task disk are both
-  missing is `409 conflict` with `details.reason: "snapshot_incomplete"`; it
+  `details.reason: "restore_task_running"`, and the local `vm snapshot restore`
+  refuses the same case (exit `4`). The live VM still owns its rootfs, a restore
+  writes the snapshot's disk copy over that file, and a second Firecracker on the
+  same `rootfs.ext4` would corrupt both. Stop the task first.
+- **A restore writes the disk copy back.** Firecracker snapshots capture memory
+  and device state, not the disk bytes, so `create` copies the task disk into the
+  snapshot directory. `restore` writes that copy to the recorded
+  `<rootfs-dir>/tasks/<taskID>.ext4` before the VM starts, replacing whatever is
+  already there: stopping a restored VM leaves its disk behind, and reusing it
+  would run this snapshot's memory image against another VM's writes. The copy is
+  staged beside the target and renamed over it, so a failed restore leaves the
+  previous disk intact. A snapshot whose copy is missing and whose task disk is
+  gone too is `409 conflict` with `details.reason: "snapshot_incomplete"`; it
   never starts a VM with a missing disk.
 - **A restored VM is stopped explicitly.** It has no SwarmKit task, so `task rm`
   or a service update leaves it running. `DELETE /v1/tasks/{id}/restored` (and

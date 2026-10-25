@@ -63,11 +63,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     audited once as `task.attach`.
   - **Snapshots are real restore points** — create copies the task disk
     (reflink, else a sparse copy) while the VM stays paused, so memory and disk
-    describe the same instant; restore copies it back when the task disk is
-    gone. A restored VM is stopped explicitly with
+    describe the same instant; restore always writes that copy over the recorded
+    rootfs path, replacing whatever is there (a stopped restored VM leaves its
+    disk behind, and its writes do not belong to this snapshot's memory image).
+    A restore of a task that is still running is refused, over the API and from
+    the local CLI. A restored VM is stopped explicitly with
     `DELETE /v1/tasks/{id}/restored` or `vm snapshot stop-restored`. Snapshot
     requests the manager relays to a node default to a five-minute deadline
-    (`swarmd-firecracker --snapshot-timeout`).
+    (`swarmd-firecracker --snapshot-timeout`), and local
+    `vm snapshot create` / `restore` take the same five-minute `--timeout`
+    instead of a fixed 60-second context.
   - **Query hardening** — each route declares the query parameters it
     implements; an unknown name is `400 invalid` with `details.parameter` instead
     of being silently ignored, and a list cursor is bound to the route and filter

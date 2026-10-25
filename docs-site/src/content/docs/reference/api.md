@@ -729,10 +729,11 @@ anything is audited.
 - **Restore** is refused for a task that is still running: `409 conflict` with
   `details.reason: "restore_task_running"`. The live VM owns its rootfs and a
   restored second VM on the same file would corrupt both. Restoring the snapshot
-  of an exited task is the supported case; when the task disk is gone, restore
-  copies the snapshot's disk copy back to the recorded `rootfsPath` first. A
-  snapshot whose copy and whose task disk are both missing is `409 conflict` with
-  `details.reason: "snapshot_incomplete"`.
+  of an exited task is the supported case; restore writes the snapshot's disk copy
+  to the recorded `rootfsPath` first, replacing whatever is there (a stopped
+  restored VM leaves its disk behind, and its writes do not belong to this
+  snapshot's memory image). A snapshot whose copy is missing and whose task disk
+  is gone too is `409 conflict` with `details.reason: "snapshot_incomplete"`.
 - **A malformed snapshot id is a client error.** `{sid}` must be one safe path
   segment shaped like `snap-…`; anything else is `400 invalid` with
   `details.reason: "invalid_snapshot_id"`, on the task-scoped and the flat forms
