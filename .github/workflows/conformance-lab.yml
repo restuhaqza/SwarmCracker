@@ -73,8 +73,9 @@ jobs:
           CONFORMANCE_READER_TOKEN: ${{ secrets.CONFORMANCE_READER_TOKEN }}
           CONFORMANCE_RUNNER_TOKEN: ${{ secrets.CONFORMANCE_RUNNER_TOKEN }}
           CONFORMANCE_ADMIN_TOKEN: ${{ secrets.CONFORMANCE_ADMIN_TOKEN }}
-          # A task id is not a secret: it is the cluster object the exec/logs
-          # stream cases run against. Unset, those three cases skip.
+          # A task id is not a secret: it is the cluster object the exec/logs/
+          # attach and snapshot cases run against. Unset, those cases skip.
+          # CONFORMANCE_HOST must be an https:// URL.
           CONFORMANCE_TASK_ID: ${{ vars.CONFORMANCE_TASK_ID }}
           CONFORMANCE_ALLOW_MUTATION: ${{ (github.event_name == 'workflow_dispatch' && inputs.allow_mutation) && '1' || '0' }}
         run: make conformance-lab
