@@ -44,8 +44,19 @@ type remoteClient struct {
 	// negotiates HTTP/2: the session needs HTTP/1.1 full duplex, so a manager
 	// that later advertises h2 must not silently switch it to a protocol that
 	// cannot carry both directions at once. It also never follows a redirect;
-	// see newRemote.
+	// see refuseRedirect.
 	attach *http.Client
+}
+
+// refuseRedirect is the CheckRedirect policy of every remote client. The manager
+// API never legitimately redirects, so a 3xx is a misconfiguration or an
+// attacker in the path, and Go's default (follow up to 10 hops) is wrong in both
+// cases: a same-host https->http hop would replay the bearer token in the clear,
+// and the followed response would be a body the document or stream decoder
+// cannot read. Returning ErrUseLastResponse hands the 3xx back so the normal
+// non-2xx error mapping reports it like any other failure.
+func refuseRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // newRemote builds the remote backend. Every failure here is a configuration
@@ -99,19 +110,22 @@ func newRemote(cfg Config) (*Client, error) {
 	return &Client{remote: &remoteClient{
 		baseURL: base,
 		token:   token,
-		http:    &http.Client{Timeout: timeout, Transport: transport},
-		stream:  &http.Client{Transport: transport},
+		http: &http.Client{
+			Timeout:       timeout,
+			Transport:     transport,
+			CheckRedirect: refuseRedirect,
+		},
+		stream: &http.Client{
+			Transport:     transport,
+			CheckRedirect: refuseRedirect,
+		},
 		attach: &http.Client{
 			Transport: consoleTransport,
-			// A redirect is never part of the attach protocol. Following one
-			// would turn the full-duplex POST into a GET whose body (an HTML
-			// error page, typically) would be copied to the terminal as
-			// console output, and a same-host https->http hop would replay the
-			// bearer token in the clear. Returning the response leaves it to
-			// the normal non-2xx error mapping instead.
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
+			// The full-duplex POST must not be followed: the hop would turn it
+			// into a GET whose body (an HTML error page, typically) would be
+			// copied to the terminal as console output. See refuseRedirect for
+			// the token and error-mapping reasons shared with the other two.
+			CheckRedirect: refuseRedirect,
 		},
 	}}, nil
 }
