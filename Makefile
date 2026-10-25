@@ -91,6 +91,14 @@ sdk-test-node:
 
 sdk-test: sdk-test-python sdk-test-node
 
+# Type-check the Node declarations with the pinned TypeScript compiler, the only
+# devDependency of sdk/node. `npm ci` must run first (CI installs from the
+# committed lockfile in its own step); the runtime package keeps zero
+# dependencies, so `npm ci --omit=dev` installs nothing and the client stays
+# importable with the Node standard library alone.
+sdk-typecheck:
+	cd sdk/node && npm run typecheck
+
 # Run unit tests only
 test-unit:
 	@echo "Running unit tests..."
@@ -286,7 +294,7 @@ tag:
 	@echo "Tag $(TAG) created. Push with:"
 	@echo "  git push origin $(TAG)"
 
-.PHONY: all swarmcracker install test test-quick test-all api-check sdk-gen sdk-check sdk-test sdk-test-python sdk-test-node integration-test e2e-test testinfra lint fmt clean examples cli-image release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
+.PHONY: all swarmcracker install test test-quick test-all api-check sdk-gen sdk-check sdk-test sdk-test-python sdk-test-node sdk-typecheck integration-test e2e-test testinfra lint fmt clean examples cli-image release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
 
 # Download embedded static binaries for VM rootfs injection
 .PHONY: binaries
