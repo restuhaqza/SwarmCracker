@@ -145,6 +145,8 @@
         "status": 207,
         "kind": "TaskList",
         "items": 2,
+        "requestIdInBody": true,
+        "requestIdPath": "partial.0.error.requestId",
         "jsonPaths": {
           "partial.0.nodeId": "node-b",
           "partial.0.error.code": "unavailable"

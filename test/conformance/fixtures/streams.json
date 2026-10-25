@@ -43,6 +43,20 @@
         "headers": {"Content-Type": "application/x-ndjson"}
       },
       "stream": {"frames": 2, "lastType": "eof"}
+    },
+    {
+      "name": "attach relays the console as raw bytes",
+      "requiresCapabilities": ["attach"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/tasks/$task/attach",
+        "role": "runner"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {"Content-Type": "application/octet-stream"}
+      },
+      "stream": {"bytes": 14}
     }
   ]
 }

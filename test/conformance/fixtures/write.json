@@ -10,7 +10,7 @@
         "path": "/v1/services",
         "role": "admin",
         "body": {
-          "name": "conformance-ws",
+          "name": "conformance-ws-{{run}}",
           "labels": {"suite": "conformance"},
           "spec": {
             "mode": "replicated",
@@ -24,7 +24,7 @@
         "kind": "Service",
         "requestIdInBody": false,
         "jsonPaths": {
-          "name": "conformance-ws",
+          "name": "conformance-ws-{{run}}",
           "spec.mode": "replicated",
           "spec.task.image": "nginx:alpine"
         }
@@ -35,7 +35,7 @@
       "mutating": true,
       "request": {
         "method": "PATCH",
-        "path": "/v1/services/conformance-ws",
+        "path": "/v1/services/conformance-ws-{{run}}",
         "role": "admin",
         "contentType": "application/merge-patch+json",
         "headers": {"If-Match": "$etag"},
@@ -45,7 +45,7 @@
         "status": 200,
         "kind": "Service",
         "jsonPaths": {
-          "name": "conformance-ws",
+          "name": "conformance-ws-{{run}}",
           "labels.patched": "true"
         }
       }
@@ -55,7 +55,7 @@
       "mutating": true,
       "request": {
         "method": "DELETE",
-        "path": "/v1/services/conformance-ws",
+        "path": "/v1/services/conformance-ws-{{run}}",
         "role": "admin",
         "headers": {"If-Match": "$etag"}
       },
@@ -69,7 +69,7 @@
       "request": {
         "method": "GET",
         "path": "/v1/audit",
-        "query": {"limit": "5"},
+        "query": {"limit": "1000"},
         "role": "admin"
       },
       "expect": {
@@ -78,7 +78,7 @@
         "requestIdInBody": false,
         "jsonPaths": {
           "items.*.action": "service.delete",
-          "items.*.resource.name": "conformance-ws"
+          "items.*.resource.name": "conformance-ws-{{run}}"
         },
         "absentKeysAnywhere": ["data"]
       }
@@ -91,7 +91,7 @@
         "path": "/v1/configs",
         "role": "admin",
         "body": {
-          "name": "conformance-config",
+          "name": "conformance-config-{{run}}",
           "labels": {"suite": "conformance"},
           "data": "listen 8080"
         }
@@ -100,7 +100,7 @@
         "status": 201,
         "kind": "Config",
         "jsonPaths": {
-          "name": "conformance-config",
+          "name": "conformance-config-{{run}}",
           "data": "listen 8080"
         }
       }
@@ -110,7 +110,7 @@
       "mutating": true,
       "request": {
         "method": "DELETE",
-        "path": "/v1/configs/conformance-config",
+        "path": "/v1/configs/conformance-config-{{run}}",
         "role": "admin",
         "headers": {"If-Match": "$etag"}
       },
@@ -126,7 +126,7 @@
         "path": "/v1/secrets",
         "role": "admin",
         "body": {
-          "name": "conformance-secret",
+          "name": "conformance-secret-{{run}}",
           "labels": {"suite": "conformance"},
           "data": "c2VjcmV0"
         }
@@ -135,7 +135,7 @@
         "status": 201,
         "kind": "Secret",
         "requestIdInBody": false,
-        "jsonPaths": {"name": "conformance-secret"},
+        "jsonPaths": {"name": "conformance-secret-{{run}}"},
         "absentKeysAnywhere": ["data"]
       }
     },
@@ -144,7 +144,7 @@
       "mutating": true,
       "request": {
         "method": "DELETE",
-        "path": "/v1/secrets/conformance-secret",
+        "path": "/v1/secrets/conformance-secret-{{run}}",
         "role": "admin",
         "headers": {"If-Match": "$etag"}
       },
@@ -159,9 +159,9 @@
         "method": "POST",
         "path": "/v1/services",
         "role": "admin",
-        "headers": {"Idempotency-Key": "conformance-idem-service"},
+        "headers": {"Idempotency-Key": "conformance-idem-{{run}}"},
         "body": {
-          "name": "conformance-idem",
+          "name": "conformance-idem-{{run}}",
           "labels": {"suite": "conformance"},
           "spec": {
             "mode": "replicated",
@@ -174,7 +174,7 @@
         "status": 201,
         "kind": "Service",
         "requestIdInBody": false,
-        "jsonPaths": {"name": "conformance-idem"},
+        "jsonPaths": {"name": "conformance-idem-{{run}}"},
         "absentKeysAnywhere": ["registryAuth"]
       },
       "repeat": {"times": 2, "sameBody": true}
@@ -184,9 +184,41 @@
       "mutating": true,
       "request": {
         "method": "DELETE",
-        "path": "/v1/services/conformance-idem",
+        "path": "/v1/services/conformance-idem-{{run}}",
         "role": "admin",
         "headers": {"If-Match": "$etag"}
+      },
+      "expect": {
+        "status": 204
+      }
+    },
+    {
+      "name": "create a snapshot and expose its total size",
+      "mutating": true,
+      "requiresCapabilities": ["snapshots"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/tasks/$task/snapshots",
+        "role": "admin"
+      },
+      "expect": {
+        "status": 201,
+        "kind": "Snapshot",
+        "requestIdInBody": false,
+        "presentKeys": ["id", "createdAt", "rootfsPath", "sizeBytes"],
+        "minValues": {"sizeBytes": 1}
+      },
+      "capture": {"snapshot": "id"}
+    },
+    {
+      "name": "delete the snapshot it created",
+      "mutating": true,
+      "requiresCapabilities": ["snapshots"],
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/snapshots/$snapshot",
+        "query": {"task": "$task"},
+        "role": "admin"
       },
       "expect": {
         "status": 204

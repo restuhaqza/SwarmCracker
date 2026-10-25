@@ -25,6 +25,22 @@ import (
 // that declares another version is a fatal error, never a best-effort parse.
 const SchemaVersion = 1
 
+// RunToken marks the text every mutating create name and every Idempotency-Key
+// must carry. The runner replaces it with a per-run suffix (UTC timestamp plus
+// random characters), so two runs — sequential or parallel, in CI or by hand —
+// never create the same named object and never replay another run's stored
+// Idempotency-Key response.
+const RunToken = "{{run}}"
+
+// reservedVars are the variable names the runner supplies itself. A capture may
+// not shadow them: $etag and $next are bound from responses, and $task comes from
+// the environment.
+var reservedVars = map[string]bool{
+	"etag": true,
+	"next": true,
+	"task": true,
+}
+
 // knownRoles is the closed set of token roles a fixture may name. The runner
 // owns which secret to use; the fixture only says which authority it needs.
 var knownRoles = map[string]bool{
@@ -63,9 +79,18 @@ type Case struct {
 	Mutating bool `json:"mutating,omitempty"`
 	// MockOnly marks a case that asserts data only the in-process fixture set
 	// guarantees. Lab runs skip these: they must never assume cluster contents.
-	MockOnly bool    `json:"mockOnly,omitempty"`
-	Request  Request `json:"request"`
-	Expect   Expect  `json:"expect"`
+	MockOnly bool `json:"mockOnly,omitempty"`
+	// RequiresCapabilities names the capabilities (as advertised by
+	// GET /v1/version) the target must have for this case to run. A run that
+	// declares its capability set skips the case when one is missing; the mock
+	// leg counts that skip as an explicit gate, not as a silent loss.
+	RequiresCapabilities []string `json:"requiresCapabilities,omitempty"`
+	// AbsentCapabilities names capabilities the target must NOT have. It is how
+	// a case asserts the documented disabled behaviour (a 501) without breaking
+	// a manager that was started with the capability enabled.
+	AbsentCapabilities []string `json:"absentCapabilities,omitempty"`
+	Request            Request  `json:"request"`
+	Expect             Expect   `json:"expect"`
 	// Follow follows one next cursor when Expect.NextPresent is true.
 	Follow *Follow `json:"follow,omitempty"`
 	// Repeat sends the same request more than once. It is how a fixture proves
@@ -73,6 +98,10 @@ type Case struct {
 	Repeat *Repeat `json:"repeat,omitempty"`
 	// Stream reads an SSE or NDJSON response instead of a JSON document.
 	Stream *Stream `json:"stream,omitempty"`
+	// Capture stores values from the response document as variables for later
+	// cases in the same file: alias -> dot path. It is how a create's generated
+	// id reaches the DELETE that cleans it up, without pinning server ids.
+	Capture map[string]string `json:"capture,omitempty"`
 }
 
 // Repeat turns one case into several identical requests.
@@ -111,16 +140,29 @@ type Expect struct {
 	ErrorCode   string `json:"errorCode,omitempty"`
 	Items       *int   `json:"items,omitempty"`
 	NextPresent *bool  `json:"nextPresent,omitempty"`
-	// RequestIDInBody asserts the presence (true) or absence (false) of a
-	// top-level requestId in a success document. An error document always echoes
-	// the request ID in error.requestId and does not use this flag.
+	// RequestIDInBody asserts the presence (true) or absence (false) of the
+	// request ID echo at RequestIDPath in a success document. An error document
+	// always echoes the request ID in error.requestId and does not use this flag.
 	RequestIDInBody *bool `json:"requestIdInBody,omitempty"`
+	// RequestIDPath is the dot path the echo is asserted at. It defaults to the
+	// top-level "requestId" and is only meaningful with requestIdInBody: true.
+	// The health partial is the one success document that carries it nested
+	// (partial.0.error.requestId).
+	RequestIDPath string `json:"requestIdPath,omitempty"`
 	// Headers are exact-match assertions on the response.
 	Headers map[string]string `json:"headers,omitempty"`
 	// JSONPaths are dot paths with numeric array indexes, compared as strings.
 	// A "*" segment matches any array element, so "items.*.action" asserts that
 	// at least one item carries the action.
 	JSONPaths map[string]string `json:"jsonPaths,omitempty"`
+	// PresentKeys are dot paths that must exist. It is the complement of
+	// AbsentKeys and the only way to assert a value the fixture cannot name, such
+	// as a server-generated path or a size.
+	PresentKeys []string `json:"presentKeys,omitempty"`
+	// MinValues are dot paths whose value must be a JSON integer at least the
+	// given minimum. It is how a case asserts sizeBytes is a real total without
+	// pinning a byte count the node chooses.
+	MinValues map[string]int64 `json:"minValues,omitempty"`
 	// AbsentKeys are dot paths that must not exist in the body.
 	AbsentKeys []string `json:"absentKeys,omitempty"`
 	// AbsentKeysAnywhere are key names that must not appear at any depth. Use it
@@ -141,10 +183,15 @@ type Follow struct {
 // stream (exit for exec, eof for logs); when set, reading also stops there, so a
 // live stream that keeps emitting is not read to the deadline.
 //
-// A stream case carries one of these instead of an expectation document.
+// A stream case carries one of these instead of an expectation document. A raw
+// stream — attach, the one route that serves console bytes — sets Bytes instead:
+// it has no frames to count.
 type Stream struct {
 	Frames   int    `json:"frames,omitempty"`
 	LastType string `json:"lastType,omitempty"`
+	// Bytes is how many raw bytes a stream case reads before it stops. It is the
+	// assertion for application/octet-stream, which carries no frames.
+	Bytes int `json:"bytes,omitempty"`
 }
 
 // Load reads every *.json file in dir, sorted by name, and validates it.
@@ -175,7 +222,37 @@ func Load(dir string) ([]Fixture, error) {
 		}
 		fixtures = append(fixtures, fixture)
 	}
+	if err := assertUniqueCreateNames(fixtures); err != nil {
+		return nil, fmt.Errorf("conformance: %s: %w", dir, err)
+	}
 	return fixtures, nil
+}
+
+// assertUniqueCreateNames is the loader's cross-file rule: no two mutating cases
+// may create the same named object, and (checked per case) every such name must
+// carry the run token. Two files with the same literal name would collide in one
+// run — the second create would be a 409 — and the case that asserted a 201 would
+// fail for a reason that has nothing to do with the contract.
+func assertUniqueCreateNames(fixtures []Fixture) error {
+	seen := make(map[string]string)
+	for _, fixture := range fixtures {
+		for _, c := range fixture.Cases {
+			if !c.Mutating {
+				continue
+			}
+			name := c.createdName()
+			if name == "" {
+				continue
+			}
+			where := fmt.Sprintf("%s case %q", filepath.Base(fixture.Source), c.Name)
+			if first, duplicate := seen[name]; duplicate {
+				return fmt.Errorf("mutating name %q is created twice (%s and %s); a single run cannot create it once",
+					name, first, where)
+			}
+			seen[name] = where
+		}
+	}
+	return nil
 }
 
 // LoadFile reads and validates one fixture file. The decoder is strict: an
@@ -273,11 +350,34 @@ func (c Case) validate() error {
 			return errors.New("absentKeysAnywhere entries must be non-empty key names")
 		}
 	}
-
-	for name := range c.Request.Headers {
-		if forbiddenHeaders[strings.ToLower(strings.TrimSpace(name))] {
-			return fmt.Errorf("request header %q may not be set by a fixture", name)
+	for _, key := range c.Expect.PresentKeys {
+		if strings.TrimSpace(key) == "" {
+			return errors.New("presentKeys entries must be non-empty dot paths")
 		}
+	}
+	for path := range c.Expect.MinValues {
+		if strings.TrimSpace(path) == "" {
+			return errors.New("minValues keys must be non-empty dot paths")
+		}
+	}
+	absent := make(map[string]bool, len(c.Expect.AbsentKeys))
+	for _, path := range c.Expect.AbsentKeys {
+		absent[path] = true
+	}
+	for _, path := range c.Expect.PresentKeys {
+		if absent[path] {
+			return fmt.Errorf("path %q is both presentKeys and absentKeys", path)
+		}
+	}
+
+	if err := c.validateCapabilities(); err != nil {
+		return err
+	}
+	if err := c.validateRunNames(); err != nil {
+		return err
+	}
+	if err := c.validateCapture(); err != nil {
+		return err
 	}
 
 	strict := c.Stream == nil
@@ -286,7 +386,17 @@ func (c Case) validate() error {
 	}
 
 	if c.Stream != nil {
-		if c.Stream.Frames <= 0 {
+		if c.Expect.RequestIDInBody != nil {
+			return errors.New("requestIdInBody describes a JSON document, not a stream")
+		}
+		raw := c.Stream.Bytes > 0
+		structured := c.Stream.Frames > 0 || c.Stream.LastType != ""
+		switch {
+		case raw && structured:
+			return errors.New("stream takes either bytes (a raw stream) or frames/lastType (a framed stream), not both")
+		case !raw && !structured:
+			return errors.New("stream needs a positive frames count or a positive bytes count")
+		case !raw && c.Stream.Frames <= 0:
 			return errors.New("stream needs a positive frames count")
 		}
 	}
@@ -316,6 +426,76 @@ func (c Case) validate() error {
 	return nil
 }
 
+// validateCapabilities checks the two capability gates: a name must be usable
+// and a case may not require and forbid the same capability.
+func (c Case) validateCapabilities() error {
+	required := make(map[string]bool, len(c.RequiresCapabilities))
+	for _, name := range c.RequiresCapabilities {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("requiresCapabilities entries must be non-empty names")
+		}
+		required[name] = true
+	}
+	for _, name := range c.AbsentCapabilities {
+		if strings.TrimSpace(name) == "" {
+			return errors.New("absentCapabilities entries must be non-empty names")
+		}
+		if required[name] {
+			return fmt.Errorf("capability %q is both required and absent", name)
+		}
+	}
+	return nil
+}
+
+// validateRunNames enforces the per-run rule: a mutating create and a mutating
+// Idempotency-Key must carry the run token, so a repeated or parallel run cannot
+// reuse the name or replay the key. A literal name is a collision waiting for the
+// second run.
+func (c Case) validateRunNames() error {
+	if !c.Mutating {
+		return nil
+	}
+	if name := c.createdName(); name != "" && !strings.Contains(name, RunToken) {
+		return fmt.Errorf("mutating create name %q must contain %s so runs cannot collide", name, RunToken)
+	}
+	if key := c.Request.Headers["Idempotency-Key"]; key != "" && !strings.Contains(key, RunToken) {
+		return fmt.Errorf("mutating Idempotency-Key %q must contain %s so a later run cannot replay this one", key, RunToken)
+	}
+	return nil
+}
+
+// createdName returns the name a create body declares, or "" when the case does
+// not create a named object. It is what the loader's uniqueness rule compares.
+func (c Case) createdName() string {
+	if c.Request.Method != http.MethodPost || len(c.Request.Body) == 0 {
+		return ""
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(c.Request.Body, &body); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(body.Name)
+}
+
+// validateCapture checks the capture aliases: they become variables, so they must
+// be usable names and must not shadow one the runner owns.
+func (c Case) validateCapture() error {
+	for alias, path := range c.Capture {
+		if !isVariableName(alias) {
+			return fmt.Errorf("capture alias %q is not a variable name", alias)
+		}
+		if reservedVars[alias] {
+			return fmt.Errorf("capture alias %q shadows a variable the runner owns", alias)
+		}
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("capture %q needs a non-empty dot path", alias)
+		}
+	}
+	return nil
+}
+
 // validateExpect checks one expectation block. strict requires exactly one of
 // kind and errorCode; a follow block and a stream may omit both.
 func validateExpect(e Expect, strict bool, where string) error {
@@ -329,6 +509,14 @@ func validateExpect(e Expect, strict bool, where string) error {
 	}
 	hasKind := e.Kind != ""
 	hasCode := e.ErrorCode != ""
+	if hasCode && e.RequestIDInBody != nil {
+		// The error path asserts error.requestId itself; a success-only flag on an
+		// error case would be accepted and then silently never checked.
+		return fmt.Errorf("%s: requestIdInBody applies to a success document, not an error document", where)
+	}
+	if e.RequestIDPath != "" && (e.RequestIDInBody == nil || !*e.RequestIDInBody) {
+		return fmt.Errorf("%s: requestIdPath is only meaningful with requestIdInBody: true", where)
+	}
 
 	documentless := e.Status == http.StatusNoContent || e.Status == http.StatusNotModified
 	switch {
