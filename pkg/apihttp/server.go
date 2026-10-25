@@ -415,16 +415,20 @@ func accepts(rt route, names ...string) route {
 func (s *Server) handleRoutes(pattern string, routes ...route) {
 	methods := make([]string, 0, len(routes))
 	for _, rt := range routes {
-		// Unknown query parameters are rejected first: a request the route
-		// cannot interpret must not reach the Idempotency-Key store or the
-		// handler.
-		handler := s.checkQueryNames(rt.query, rt.handle)
+		handler := rt.handle
 		if rt.method == http.MethodPost && !rt.streaming {
 			// A POST is a create or a rollback: the only routes an
 			// Idempotency-Key can protect. Auth and scope run first, so an
 			// unauthorized request never reserves a key.
 			handler = s.idempotent(handler)
 		}
+		// The query check wraps the finished handler, so it runs before the
+		// Idempotency-Key middleware: a request the route cannot interpret
+		// must neither create nor spend a key, otherwise the 400 for a typo
+		// would be stored and replayed for a corrected retry with the same
+		// key. Authentication (in wrap) and requireScope still run first, so
+		// an unauthorized caller never learns a route's parameter set.
+		handler = s.checkQueryNames(rt.query, handler)
 		s.mux.HandleFunc(rt.method+" "+pattern, s.requireScope(rt.scope, handler))
 		methods = append(methods, rt.method)
 	}

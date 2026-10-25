@@ -88,6 +88,72 @@ func TestUnknownQueryParameterOnSnapshotsRoutes(t *testing.T) {
 	}
 }
 
+// TestUnknownQueryParameterIsDeterministic pins the tie-break: when several
+// names are unknown, the lexicographically first is reported, so the answer does
+// not depend on map iteration order.
+func TestUnknownQueryParameterIsDeterministic(t *testing.T) {
+	api := newTestAPI(t, &fakeClient{})
+	admin := adminToken(t, api)
+
+	for _, target := range []string{
+		"/v1/tasks?zebra=1&apple=1",
+		"/v1/tasks?apple=1&zebra=1",
+		"/v1/tasks?mango=1&apple=1&zebra=1",
+	} {
+		t.Run(target, func(t *testing.T) {
+			rec := api.do(t, http.MethodGet, target, admin)
+
+			require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+			doc := decodeError(t, rec)
+			assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+			assert.Equal(t, "apple", doc.Error.Details["parameter"],
+				"the lexicographically first unknown name is reported")
+		})
+	}
+}
+
+// TestUnknownQueryParameterDoesNotSpendIdempotencyKey pins the middleware order:
+// the query check runs before the Idempotency-Key store, so a malformed query
+// neither creates nor spends a key. A corrected retry with the same key must
+// execute instead of replaying the 400.
+func TestUnknownQueryParameterDoesNotSpendIdempotencyKey(t *testing.T) {
+	fc := &fakeClient{createdService: v1.Service{
+		ID: "svc-1", Name: "web", Revision: "7",
+		Spec:   v1.ServiceSpec{Mode: "replicated", Task: v1.TaskSpec{Image: "nginx:alpine"}},
+		Status: v1.ServiceStatus{DesiredTasks: 1, Converged: true},
+	}}
+	api := newWriteTestAPI(t, fc)
+	body := idempotencyBody("web")
+
+	bad := api.doWrite(t, http.MethodPost, "/v1/services?bogus=1", body,
+		withToken(api.operator), withContentType(MediaType),
+		withHeader(idempotencyKeyHeader, "key-typo"))
+	require.Equal(t, http.StatusBadRequest, bad.Code, bad.Body.String())
+	doc := decodeError(t, bad)
+	assert.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	assert.Equal(t, "bogus", doc.Error.Details["parameter"])
+	assert.Empty(t, bad.Header().Get(idempotencyReplayedHeader))
+	assert.Equal(t, 0, fc.createCalls, "a malformed query never reaches the handler")
+	assert.Empty(t, api.records(t), "a malformed query is not audited as a write")
+
+	// The corrected request with the same key is a new request, not a replay.
+	good := api.doWrite(t, http.MethodPost, "/v1/services", body,
+		withToken(api.operator), withContentType(MediaType),
+		withHeader(idempotencyKeyHeader, "key-typo"))
+	require.Equal(t, http.StatusCreated, good.Code, good.Body.String())
+	assert.Empty(t, good.Header().Get(idempotencyReplayedHeader),
+		"the 400 was not stored, so the corrected request executes")
+	assert.Equal(t, 1, fc.createCalls)
+
+	// The successful response did spend the key: an exact retry replays it.
+	retry := api.doWrite(t, http.MethodPost, "/v1/services", body,
+		withToken(api.operator), withContentType(MediaType),
+		withHeader(idempotencyKeyHeader, "key-typo"))
+	require.Equal(t, http.StatusCreated, retry.Code, retry.Body.String())
+	assert.Equal(t, "true", retry.Header().Get(idempotencyReplayedHeader))
+	assert.Equal(t, 1, fc.createCalls, "a replay does not run the handler again")
+}
+
 // TestDocumentedQueryParametersStillWork is the other half of the rule: the
 // parameters the contract documents keep reaching their handler. The stream and
 // write routes are covered by their own suites; this pins the read lists.
