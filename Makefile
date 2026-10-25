@@ -95,9 +95,16 @@ sdk-test: sdk-test-python sdk-test-node
 # devDependency of sdk/node. `npm ci` must run first (CI installs from the
 # committed lockfile in its own step); the runtime package keeps zero
 # dependencies, so `npm ci --omit=dev` installs nothing and the client stays
-# importable with the Node standard library alone.
+# importable with the Node standard library alone. The second step regenerates
+# tools/sdkgen/testdata/accepted.yaml into a temp dir and type-checks it, and
+# re-proves that every name the generator refuses as a TypeScript declaration is
+# refused by this compiler too. That Go step skips with an actionable message
+# when node_modules is absent, so `go test ./tools/sdkgen` and `make sdk-check`
+# still run on a bare checkout; this target itself needs `npm ci` first, and the
+# sdk CI job installs before calling it, so the gates never skip there.
 sdk-typecheck:
 	cd sdk/node && npm run typecheck
+	$(GO) test -v ./tools/sdkgen -run 'TestPinnedTSC|TestAcceptedFixtureTypeChecks' -count=1
 
 # Run unit tests only
 test-unit:
