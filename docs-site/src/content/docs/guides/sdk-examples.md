@@ -208,8 +208,10 @@ but not diffed. `files_get`/`filesGet` returns the file's bytes (not an envelope
 `files_put`/`filesPut` sends the whole body, and `mode` is an octal string. The
 snapshot helpers use the flat `/v1/snapshots` routes for list/restore/delete, so
 the task travels as a query parameter and is required; create and stop-restored
-are task-scoped. Snapshots need `--snapshots-enable` on the node: until then every
-route answers `501 not_implemented` with `details.capability: "snapshots"`.
+are task-scoped. Snapshots need `--snapshots-enable` on the manager daemon that
+serves the API — and on the node whose VM is snapshotted, since the request is
+relayed to it: until then every route answers `501 not_implemented` with
+`details.capability: "snapshots"`.
 
 `retries` is the number of *extra* attempts for an idempotent request (`GET`,
 `DELETE`, and the files `PUT`, whose whole body is resent) that fails with `429`

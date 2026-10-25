@@ -66,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     describe the same instant; restore copies it back when the task disk is
     gone. A restored VM is stopped explicitly with
     `DELETE /v1/tasks/{id}/restored` or `vm snapshot stop-restored`. Snapshot
-    requests default to a five-minute deadline (`--snapshot-timeout`).
+    requests the manager relays to a node default to a five-minute deadline
+    (`swarmd-firecracker --snapshot-timeout`).
   - **Query hardening** — each route declares the query parameters it
     implements; an unknown name is `400 invalid` with `details.parameter` instead
     of being silently ignored, and a list cursor is bound to the route and filter
@@ -77,9 +78,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     resending an idempotent body exactly), and the generated types are gated by
     a pinned TypeScript compiler over a hostile/accepted fixture.
   - **Internal ingress declared private** — `:4243` (`/v1/ingress`,
-    `/v1/ingress/report`) joins `:4242`, `:4245` and `:8080` as an explicitly
-    private, unsupported listener (R19/G7); all documented as `0.0.0.0` with
-    mutual TLS as the only boundary.
+    `/v1/ingress/report`) joins `:4242` and `:4245` as an explicitly private,
+    unsupported listener (R19/G7). All three bind all interfaces with cluster
+    mutual TLS as the only boundary. `:8080` (health and metrics) is in the same
+    unsupported set but a different shape: loopback only (`127.0.0.1:8080` by
+    default, `--health-addr`) and **no authentication**, so the bind address is
+    the boundary.
   - **Daemon image fixed** — `Dockerfile` builds without `make` or a shadowed
     package, produces a static non-PIE daemon, and CI builds and runs it.
   - **Conformance hardened and run for real** — fixtures carry per-run
@@ -91,9 +95,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global
   `-o` / `--output` flag is reserved for machine output formats.
-- Snapshot operations now have a default deadline (`--snapshot-timeout 5m`), so a
-  create is no longer unbounded; a request past it is `504 timeout` and the node
-  still resumes the VM.
+- Snapshot operations now have a default deadline (`--snapshot-timeout 5m` on
+  `swarmd-firecracker`), so a create relayed through the manager API is no longer
+  unbounded; a request past it is `504 timeout` and the node still resumes the VM.
+  The local `vm snapshot create` / `restore` commands keep their own 60-second
+  context and are unaffected.
 - The `:4243` ingress endpoints and the node broker are documented as private:
   they are not part of the v1 contract and may change in any minor release.
 

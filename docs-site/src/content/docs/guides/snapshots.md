@@ -102,8 +102,9 @@ swarmcracker -H https://mgr:4244 --ca ca.pem \
 
 The manager exposes the same snapshots through API v1, but the surface is
 **experimental and disabled by default**. Start `swarmd-firecracker` with
-`--snapshots-enable` on the node (and keep its broker enabled) to turn it on.
-While it is off, every snapshot route answers `501 not_implemented` with
+`--snapshots-enable` on the manager (the API gate) and on the node that runs the
+task (the operation itself), keeping the node broker enabled. While it is off,
+every snapshot route answers `501 not_implemented` with
 `details.capability: "snapshots"`; `/v1/version` does not advertise the
 capability, so a client can feature-detect it.
 

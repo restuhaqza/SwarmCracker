@@ -424,14 +424,19 @@ the snapshot routes stop answering `501`. A client that feature-detects the
 surface sees exactly what the server serves; the phase-2 write routes above are
 covered by `write`.
 
-Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
-also accept `label`. Every route declares the query parameters it implements, and
-a name outside that set is `400 invalid` with `details.parameter` — a typo fails
-loudly instead of silently changing the request. A cursor is bound to the route
-and to the filter values that produced the page (the `label` selectors, the
-`task` reference on the flat snapshot routes), so reusing it on a different
-query is `400 invalid` with `details.reason: "cursor_mismatch"`; `limit` may
-change between pages.
+Every list accepts `limit` and `cursor`; `GET /v1/services/<id>/tasks` accepts only
+those two. Services, nodes, networks, configs and secrets also accept `label` and
+filter by it. `GET /v1/tasks` accepts `label` too, but only for compatibility with
+the SDKs, which document forwarding a selector on every list — the task list is
+**not** filtered by it and the value is not parsed, so it changes neither `items`
+nor the cursor binding. Every route declares the query parameters it implements
+(the operation in `api/openapi.yaml` is the per-route list), and a name outside
+that route's set is `400 invalid` with `details.parameter` — a typo fails loudly
+instead of silently changing the request. A cursor is bound to the route and to
+the filter values that produced the page (the `label` selectors on the routes that
+filter, the `task` reference on the flat snapshot routes), so reusing it on a
+different query is `400 invalid` with `details.reason: "cursor_mismatch"`; `limit`
+may change between pages.
 
 Every response carries `X-SwarmCracker-Api-Version: 1` and
 `X-Request-Id`. A read answers `If-None-Match` with `304`. A list `ETag` is the
@@ -1032,10 +1037,12 @@ output is available on every remote read listed above.
 A failed request answers with the `ErrorDocument` envelope — `schemaVersion`,
 `kind: Error` and `error {code, message, requestId, retryable, details}` — and
 the same `requestId` appears in the `X-Request-Id` response header. Codes are
-stable; messages are not. `details` is typed context, and three shapes are worth
+stable; messages are not. `details` is typed context, and four shapes are worth
 matching on: `details.parameter` names an unknown query parameter (`400
-invalid`), `details.reason: "cursor_mismatch"` means the cursor came from a
-different route or filter (`400 invalid`, with no cursor echoed back), and
+invalid`), `details.cursor` carries the value of a cursor this server did not
+issue (malformed or truncated, `400 invalid`, with no `reason`),
+`details.reason: "cursor_mismatch"` means a well-formed cursor came from a
+different route or filter (`400 invalid`, and the value is not echoed back), and
 `details.reason: "invalid_snapshot_id"` means the snapshot id is not one safe
 path segment (`400 invalid`). The authoritative list of wire codes is the `Error`
 schema in `api/openapi.yaml`. The CLI maps its stable codes to process exit
