@@ -271,10 +271,7 @@ async function route(state, req, res, { entry, url }) {
       return true;
     }
     if (method === 'DELETE') {
-      if (!entry.headers['if-match']) {
-        sendJson(res, 428, errorDocument('invalid', 'If-Match is required'));
-        return true;
-      }
+      // If-Match is optional on DELETE: the API rejects only a stale value.
       res.writeHead(204, { 'X-Request-Id': REQUEST_ID });
       res.end();
       return true;
@@ -527,6 +524,13 @@ test('services.delete sends If-Match and returns null on 204', async () => {
   await withManager(async ({ client, lastRequest }) => {
     assert.equal(await client.services.delete('s1', { ifMatch: '3' }), null);
     assert.equal(lastRequest('DELETE', '/v1/services/s1').headers['if-match'], '3');
+  });
+});
+
+test('services.delete omits the header when ifMatch is absent', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    assert.equal(await client.services.delete('s1'), null);
+    assert.equal(lastRequest('DELETE', '/v1/services/s1').headers['if-match'], undefined);
   });
 });
 

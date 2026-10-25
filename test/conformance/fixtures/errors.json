@@ -89,6 +89,100 @@
         "status": 406,
         "errorCode": "unsupported_version"
       }
+    },
+    {
+      "name": "a disabled snapshot list is 501",
+      "request": {
+        "method": "GET",
+        "path": "/v1/tasks/conformance-suite-absent/snapshots",
+        "role": "admin"
+      },
+      "expect": {
+        "status": 501,
+        "errorCode": "not_implemented",
+        "jsonPaths": {"error.details.capability": "snapshots"}
+      }
+    },
+    {
+      "name": "a disabled snapshot create is 501",
+      "request": {
+        "method": "POST",
+        "path": "/v1/tasks/conformance-suite-absent/snapshots",
+        "role": "admin"
+      },
+      "expect": {
+        "status": 501,
+        "errorCode": "not_implemented",
+        "jsonPaths": {"error.details.capability": "snapshots"}
+      }
+    },
+    {
+      "name": "a disabled task snapshot restore is 501",
+      "request": {
+        "method": "POST",
+        "path": "/v1/tasks/conformance-suite-absent/snapshots/snap-conformance/restore",
+        "role": "admin"
+      },
+      "expect": {
+        "status": 501,
+        "errorCode": "not_implemented",
+        "jsonPaths": {"error.details.capability": "snapshots"}
+      }
+    },
+    {
+      "name": "a disabled task snapshot delete is 501",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/tasks/conformance-suite-absent/snapshots/snap-conformance",
+        "role": "admin"
+      },
+      "expect": {
+        "status": 501,
+        "errorCode": "not_implemented",
+        "jsonPaths": {"error.details.capability": "snapshots"}
+      }
+    },
+    {
+      "name": "a disabled flat snapshot list is 501",
+      "request": {
+        "method": "GET",
+        "path": "/v1/snapshots",
+        "query": {"task": "conformance-suite-absent"},
+        "role": "admin"
+      },
+      "expect": {
+        "status": 501,
+        "errorCode": "not_implemented",
+        "jsonPaths": {"error.details.capability": "snapshots"}
+      }
+    },
+    {
+      "name": "a disabled flat snapshot restore is 501",
+      "request": {
+        "method": "POST",
+        "path": "/v1/snapshots/snap-conformance/restore",
+        "query": {"task": "conformance-suite-absent"},
+        "role": "admin"
+      },
+      "expect": {
+        "status": 501,
+        "errorCode": "not_implemented",
+        "jsonPaths": {"error.details.capability": "snapshots"}
+      }
+    },
+    {
+      "name": "a disabled flat snapshot delete is 501",
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/snapshots/snap-conformance",
+        "query": {"task": "conformance-suite-absent"},
+        "role": "admin"
+      },
+      "expect": {
+        "status": 501,
+        "errorCode": "not_implemented",
+        "jsonPaths": {"error.details.capability": "snapshots"}
+      }
     }
   ]
 }

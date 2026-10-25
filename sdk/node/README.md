@@ -70,8 +70,8 @@ client.events.watch({ types, since, signal }) -> EventStream
 
 `label` accepts one selector or an array, which is sent as repeated `label`
 parameters. `health: true` is sent as `health=true`. `ifMatch` is required by
-`patch` and `delete` and is sent as `If-Match`; `idempotencyKey` is optional on
-`create`.
+`patch` and optional on `delete`; it is sent as `If-Match` only when you pass it.
+`idempotencyKey` is optional on `create`.
 
 The returned values are the generated interfaces from `types.d.ts`, so an editor
 completes their fields.
@@ -155,6 +155,13 @@ try {
 A configuration mistake (an unreadable token or CA file) throws `ApiError` with
 code `usage` and status `0`; an invalid constructor argument throws `TypeError`.
 The bearer token is never included in an error or a message.
+
+### Retries
+
+The client does not retry automatically — a deliberate divergence from contract
+§13.5. Retry idempotent calls yourself (`GET`, and a `POST` carrying an
+`Idempotency-Key`) on `429` or `5xx`, and honour `Retry-After` when the response
+sets it. Never retry a stream or a `POST` without an idempotency key.
 
 ## Wire details
 

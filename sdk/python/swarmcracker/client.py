@@ -216,6 +216,17 @@ def _transport_error(exc: BaseException) -> ApiError:
     return ApiError("unreachable", f"cannot reach the SwarmCracker API: {reason}")
 
 
+def _stream_transport_error(exc: BaseException) -> ApiError:
+    """Turn a mid-stream I/O failure into the code="unreachable" ApiError.
+
+    The stream already answered 200 when its body began, so ``status`` is 0: the
+    failure is transport, not a status the server sent. A truncated chunked body
+    raises http.client.IncompleteRead, which would otherwise escape as a raw
+    exception from whatever protocol library happened to be underneath.
+    """
+    return ApiError("unreachable", f"the stream failed before it completed: {exc}")
+
+
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Refuse every redirect.
 
@@ -349,6 +360,10 @@ class ExecStream:
                     exit_code = frame.get("exitCode")
                     self._exit_code = int(exit_code) if exit_code is not None else 0
                 yield frame
+        except ApiError:
+            raise
+        except (OSError, http.client.HTTPException) as exc:
+            raise _stream_transport_error(exc) from None
         finally:
             self.close()
 
@@ -405,6 +420,10 @@ class LogStream:
         )
         try:
             yield from _iter_frames(self._response)
+        except ApiError:
+            raise
+        except (OSError, http.client.HTTPException) as exc:
+            raise _stream_transport_error(exc) from None
         finally:
             self.close()
 
@@ -480,6 +499,10 @@ class EventStream:
                     name = value
                 elif field == "data":
                     data.append(value)
+        except ApiError:
+            raise
+        except (OSError, http.client.HTTPException) as exc:
+            raise _stream_transport_error(exc) from None
         finally:
             self.close()
 
@@ -678,10 +701,15 @@ class Services:
             media_type=MERGE_PATCH_MEDIA_TYPE,
         )
 
-    def delete(self, reference: str, *, if_match: str) -> None:
-        """DELETE /v1/services/{ref}: delete a service."""
+    def delete(self, reference: str, *, if_match: str | None = None) -> None:
+        """DELETE /v1/services/{ref}: delete a service.
+
+        ``if_match`` is optional; the API only rejects a stale or weak value, not
+        an absent one.
+        """
+        headers = {"If-Match": if_match} if if_match is not None else None
         self._client._request(
-            "DELETE", f"/v1/services/{_quote(reference)}", headers={"If-Match": if_match}
+            "DELETE", f"/v1/services/{_quote(reference)}", headers=headers
         )
         return None
 

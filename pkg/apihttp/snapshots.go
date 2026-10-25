@@ -56,12 +56,19 @@ type SnapshotBroker interface {
 	DeleteSnapshot(ctx context.Context, task v1.Task, snapshotID string) error
 }
 
+// snapshotsAvailable is the single snapshot predicate. The route gate and the
+// capability advertisement both call it, so the version document can never
+// promise a snapshot route that answers 501, or hide one that works.
+func snapshotsAvailable(cfg Config) bool {
+	return cfg.SnapshotsEnabled && cfg.Snapshots != nil
+}
+
 // requireSnapshots answers 501 when the capability or its transport is missing
 // and reports whether the request may continue. It runs before task resolution
 // and before any audit record: a request to a disabled capability did not touch
 // a task.
 func (s *Server) requireSnapshots(w http.ResponseWriter, r *http.Request) bool {
-	if s.cfg.SnapshotsEnabled && s.cfg.Snapshots != nil {
+	if snapshotsAvailable(s.cfg) {
 		return true
 	}
 

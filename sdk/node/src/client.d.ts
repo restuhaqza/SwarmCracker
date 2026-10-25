@@ -166,8 +166,12 @@ export interface PatchOptions {
 }
 
 export interface DeleteOptions {
-  /** Required: the resource revision (or `"*"`) the delete applies to. */
-  ifMatch: string;
+  /**
+   * Optional: the resource revision (or `"*"`) the delete applies to. The API
+   * rejects a stale value but accepts an absent one; the header is only sent
+   * when this is set.
+   */
+  ifMatch?: string;
 }
 
 export interface ExecOptions {

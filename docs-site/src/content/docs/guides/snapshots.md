@@ -66,6 +66,68 @@ swarmcracker vm snapshot cleanup --max-age 168h
 
 ---
 
+## HTTP API (experimental)
+
+The manager exposes the same snapshots through API v1, but the surface is
+**experimental and disabled by default**. Start `swarmd-firecracker` with
+`--snapshots-enable` on the node (and keep its broker enabled) to turn it on.
+While it is off, every snapshot route answers `501 not_implemented` with
+`details.capability: "snapshots"`; `/v1/version` does not advertise the
+capability, so a client can feature-detect it.
+
+| Method | Route | Purpose |
+|--------|-------|---------|
+| `POST` | `/v1/tasks/{id}/snapshots` | create a snapshot of the running task |
+| `GET` | `/v1/tasks/{id}/snapshots` | list the task's snapshots |
+| `POST` | `/v1/tasks/{id}/snapshots/{sid}/restore` | restore one snapshot |
+| `DELETE` | `/v1/tasks/{id}/snapshots/{sid}` | delete one snapshot |
+| `GET` | `/v1/snapshots?task={id}` | list (flat address) |
+| `POST` | `/v1/snapshots/{sid}/restore?task={id}` | restore (flat address) |
+| `DELETE` | `/v1/snapshots/{sid}?task={id}` | delete (flat address) |
+
+All seven routes require `tasks:snapshots` (a `runner` or `admin` token). The
+task-scoped forms are the primary address. The flat forms need `?task=` because a
+snapshot lives on the node that ran the task, and a snapshot id alone does not
+say which node to ask; a flat restore or delete without `task` is `400 invalid`.
+
+```bash
+# Create, list, restore and delete through the task-scoped routes
+curl -sS -X POST \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/vnd.swarmcracker.v1+json' \
+  "$API/v1/tasks/$TASK/snapshots" -d '{"vcpus": 1, "memoryMB": 256}'
+
+curl -sS -H "Authorization: Bearer $TOKEN" "$API/v1/tasks/$TASK/snapshots"
+
+curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
+  "$API/v1/tasks/$TASK/snapshots/$SNAPSHOT/restore"
+
+curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "$API/v1/tasks/$TASK/snapshots/$SNAPSHOT"
+
+# The same operations through the flat address
+curl -sS -H "Authorization: Bearer $TOKEN" "$API/v1/snapshots?task=$TASK"
+```
+
+Two behaviours are worth knowing before you script this:
+
+- **A create needs a running task** (404 `task_not_running` otherwise) and may
+  pause the VM briefly. The manager's default deadline is 30 s; a create past it
+  is `504 timeout`. The node resumes the VM even when the deadline fires, so a
+  timed-out create does not leave it paused.
+- **A restore is refused while the task is running**: `409 conflict` with
+  `details.reason: "restore_task_running"`. The live VM still owns its rootfs,
+  and a second Firecracker on the same `rootfs.ext4` would corrupt both. Stop the
+  task first; restoring an exited task's snapshot is the supported case.
+
+Restore is experimental for a second reason: it starts a Firecracker process
+outside SwarmKit's task tracker. The restored VM is not scheduler-managed, so if
+you do not stop it through the node, an operator must stop it manually. A crash
+during restore can leave the process behind too. See
+[Limitations](#limitations) and the API reference's
+[Snapshots section](/reference/api/#snapshots-experimental).
+
+---
+
 ## Configuration
 
 ```yaml

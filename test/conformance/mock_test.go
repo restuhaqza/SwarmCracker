@@ -41,7 +41,7 @@ const (
 // case that silently stops running (a stricter skip policy, a lost file, a typo
 // in a case name that a filter no longer matches) is a regression the mock leg
 // must fail on, so the count is pinned here and bumped with every new case.
-const expectedMockCases = 34
+const expectedMockCases = 41
 
 // TestConformanceMock executes every fixture against the real handler with an
 // in-memory backend. Mutations always run: this backend is thrown away. No case

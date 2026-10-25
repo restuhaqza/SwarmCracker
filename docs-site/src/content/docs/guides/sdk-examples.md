@@ -260,8 +260,10 @@ takes the same two files as read-only mounts.
 
 - **File transfer** — `GET`/`PUT /v1/tasks/{id}/files` use raw
   `application/octet-stream`, not the JSON envelope, so neither SDK wraps it.
-- **Snapshots** — the snapshot routes are experimental and have no SDK surface;
-  use the CLI (`swarmcracker vm snapshot`).
+- **Snapshots** — the experimental snapshot routes are not wrapped by the
+  Python or Node client yet. Call them directly over HTTP (they are ordinary v1
+  documents) or generate from `api/openapi.yaml`; see the
+  [snapshots guide](/guides/snapshots/#http-api-experimental).
 - **Browser clients** — the Node client needs a CA from the filesystem and a
   trusted token store, so it is a server-side client. A browser build would need
   a different trust story; the repository does not ship one.

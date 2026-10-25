@@ -109,7 +109,8 @@ type Config struct {
 	// Snapshots is the manager-side transport for the experimental snapshot
 	// surface. It is deliberately a second, optional interface so the exec,
 	// logs, files and health fakes do not have to grow four methods. A nil
-	// transport leaves the snapshot routes answering 501.
+	// transport leaves the snapshot routes answering 501; a wired one is all
+	// the surface needs, independently of Broker.
 	Snapshots SnapshotBroker
 	// SnapshotsEnabled gates the experimental snapshot surface. Snapshots are
 	// disabled by default: with this false every snapshot route answers 501
@@ -163,11 +164,12 @@ func New(cfg Config) (*Server, error) {
 	// A wired broker serves these operations, so they are advertised no matter
 	// what the caller supplied. This package owns the advertisement; an embedder
 	// that builds a broker cannot forget the capability it enables. Snapshots
-	// are experimental and gated separately: they are only promised when the
-	// capability, its transport and the shared broker transport are all wired.
-	// A supplied list that claims snapshots while the capability is disabled is
-	// stripped: the version document must never promise a route that answers 501.
-	snapshotsAdvertised := cfg.Broker != nil && cfg.SnapshotsEnabled && cfg.Snapshots != nil
+	// are experimental and gated separately: their own transport and the
+	// operator's switch are all they need, and the advertisement uses exactly
+	// the predicate the route gate uses. A supplied list that claims snapshots
+	// while the capability is disabled is stripped: the version document must
+	// never promise a route that answers 501.
+	snapshotsAdvertised := snapshotsAvailable(cfg)
 	if !snapshotsAdvertised {
 		cfg.Capabilities = withoutCapability(cfg.Capabilities, snapshotCapability)
 	}
@@ -202,16 +204,14 @@ var brokerCapabilities = []string{"exec", "logs", "files", "health"}
 // in the canonical order. An explicitly narrowed list keeps its narrowing for
 // every other capability; it cannot remove an operation the server serves.
 //
-// Snapshots are listed last and only when both the shared broker transport and
-// the snapshot capability are enabled: the routes need a node broker to relay
-// through, so advertising them without one would be a promise the server cannot
-// keep.
+// The shared broker and the snapshot transport are independent: snapshots need
+// their own transport, not the broker that relays exec, logs, files and health.
 func withBrokerCapabilities(capabilities []string, broker, snapshots bool) []string {
 	extra := make([]string, 0, len(brokerCapabilities)+1)
 	if broker {
 		extra = append(extra, brokerCapabilities...)
 	}
-	if broker && snapshots {
+	if snapshots {
 		extra = append(extra, snapshotCapability)
 	}
 

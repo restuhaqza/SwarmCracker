@@ -44,7 +44,7 @@ client.services.list(*, label=None, limit=None, cursor=None) -> ServiceList
 client.services.get(ref) -> ServiceDocument
 client.services.create(body, *, idempotency_key=None) -> ServiceDocument
 client.services.patch(ref, patch, *, if_match, wait=None) -> ServiceDocument
-client.services.delete(ref, *, if_match) -> None
+client.services.delete(ref, *, if_match=None) -> None
 
 client.tasks.list(*, label=None, limit=None, cursor=None, health=None) -> TaskList
 client.tasks.get(ref, *, health=None) -> TaskDocument
@@ -121,6 +121,13 @@ except ApiError as error:
 
 The bearer token is never included in an error or a message.
 
+### Retries
+
+The client does not retry automatically — a deliberate divergence from contract
+§13.5. Retry idempotent calls yourself (`GET`, and a `POST` carrying an
+`Idempotency-Key`) on `429` or `5xx`, and honour `Retry-After` when the response
+sets it. Never retry a stream or a `POST` without an idempotency key.
+
 ## Wire details
 
 Every request carries `Accept: application/vnd.swarmcracker.v1+json` (or the
@@ -128,8 +135,9 @@ stream media type) and `X-SwarmCracker-Api-Version: 1`. Writes carry
 `Content-Type: application/vnd.swarmcracker.v1+json`, except
 `services.patch`, whose body is an RFC 7386 merge patch and therefore uses
 `application/merge-patch+json` — the only media type the PATCH route accepts.
-`If-Match` is a keyword-only argument on `patch` and `delete`;
-`idempotency_key` is optional on `create`.
+`If-Match` is a keyword-only argument on `patch` and on `delete`; `patch`
+requires it and `delete` sends it only when you pass one (the API rejects a stale
+value, not an absent one). `idempotency_key` is optional on `create`.
 
 Redirects are never followed: a `3xx` surfaces as `ApiError` with code
 `internal`, so the bearer token cannot be replayed to another origin.

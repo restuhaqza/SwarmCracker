@@ -214,11 +214,44 @@ class Handler(BaseHTTPRequestHandler):
                 content_type=NDJSON_MEDIA_TYPE,
             )
             return True
+        if method == "POST" and path == "/v1/tasks/t10/exec":
+            # One frame, then the connection dies mid-body: the chunked stream
+            # never gets its terminating chunk.
+            self._truncated_stream(
+                NDJSON_MEDIA_TYPE,
+                json.dumps(
+                    {"type": "stdout", "data": base64.b64encode(b"partial\n").decode()}
+                ).encode("utf-8")
+                + b"\n",
+            )
+            return True
+        if method == "GET" and path == "/v1/tasks/t10/logs":
+            self._truncated_stream(
+                NDJSON_MEDIA_TYPE,
+                json.dumps(
+                    {
+                        "type": "log",
+                        "stream": "stdout",
+                        "time": "2026-10-25T10:00:00Z",
+                        "data": base64.b64encode(b"partial\n").decode(),
+                    }
+                ).encode("utf-8")
+                + b"\n",
+            )
+            return True
         if method == "GET" and path == "/v1/events":
             # The test server reports a typed failure when the subscription asks
-            # for the reserved, test-only type "error".
+            # for the reserved, test-only type "error", and a transport failure
+            # when it asks for "drop".
             if record["query"].get("types") == ["error"]:
                 self._sse_error_stream()
+            elif record["query"].get("types") == ["drop"]:
+                self._truncated_stream(
+                    SSE_MEDIA_TYPE,
+                    b"event: service.created\ndata: "
+                    + json.dumps(event("7", "service.created", "s1")).encode("utf-8")
+                    + b"\n\n",
+                )
             else:
                 self._sse_stream()
             return True
@@ -257,9 +290,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, document)
             return True
         if method == "DELETE":
-            if "if-match" not in record["headers"]:
-                self._json(428, error_document("invalid", "If-Match is required"))
-                return True
+            # If-Match is optional on DELETE: the API rejects only a stale value.
             self._send(204, b"", V1_MEDIA_TYPE)
             return True
         return False
@@ -343,6 +374,18 @@ class Handler(BaseHTTPRequestHandler):
     def _end_stream(self):
         self.wfile.write(b"0\r\n\r\n")
         self.wfile.flush()
+
+    def _truncated_stream(self, content_type, chunk):
+        """Announce more body than is sent, then close.
+
+        The client's chunked reader raises http.client.IncompleteRead (or
+        ConnectionResetError, depending on timing): both are transport
+        failures and must surface as ApiError("unreachable").
+        """
+        self._start_stream(content_type)
+        self.wfile.write(b"%x\r\n" % (len(chunk) + 32) + chunk)
+        self.wfile.flush()
+        self.close_connection = True
 
 
 class SinkHandler(BaseHTTPRequestHandler):
@@ -465,6 +508,11 @@ class ClientTest(unittest.TestCase):
         request = self.last_request("DELETE", "/v1/services/s1")
         self.assertEqual(request["headers"]["if-match"], "3")
 
+    def test_services_delete_omits_the_header_when_if_match_is_absent(self):
+        self.assertIsNone(self.client.services.delete("s1"))
+        request = self.last_request("DELETE", "/v1/services/s1")
+        self.assertNotIn("if-match", request["headers"])
+
     # -- tasks --------------------------------------------------------------
 
     def test_tasks_list_sends_health_true_and_pagination(self):
@@ -515,6 +563,17 @@ class ClientTest(unittest.TestCase):
             _ = run.exit_code
         self.assertEqual(caught.exception.code, "unreachable")
         self.assertEqual(caught.exception.status, 0)
+
+    def test_exec_mid_stream_transport_failure_is_unreachable(self):
+        frames = []
+        with self.assertRaises(ApiError) as caught:
+            with self.client.tasks.exec("t10", ["sh"]) as run:
+                for frame in run:
+                    frames.append(frame)
+        self.assertEqual([frame["type"] for frame in frames], ["stdout"])
+        self.assertEqual(caught.exception.code, "unreachable")
+        self.assertEqual(caught.exception.status, 0)
+        self.assertNotIn(TOKEN, str(caught.exception))
 
     def test_exec_error_frame_raises_the_frame_code(self):
         with self.assertRaises(ApiError) as caught:
@@ -569,6 +628,25 @@ class ClientTest(unittest.TestCase):
         )
 
     # -- events -------------------------------------------------------------
+
+    def test_logs_mid_stream_transport_failure_is_unreachable(self):
+        frames = []
+        with self.assertRaises(ApiError) as caught:
+            for frame in self.client.tasks.logs("t10", follow=True):
+                frames.append(frame)
+        self.assertEqual([frame["type"] for frame in frames], ["log"])
+        self.assertEqual(frames[0].data, b"partial\n")
+        self.assertEqual(caught.exception.code, "unreachable")
+        self.assertEqual(caught.exception.status, 0)
+
+    def test_events_mid_stream_transport_failure_is_unreachable(self):
+        events = []
+        with self.assertRaises(ApiError) as caught:
+            for item in self.client.events.watch(types=["drop"]):
+                events.append(item)
+        self.assertEqual([item["cursor"] for item in events], ["7"])
+        self.assertEqual(caught.exception.code, "unreachable")
+        self.assertEqual(caught.exception.status, 0)
 
     def test_events_watch_yields_events_and_stops_at_end(self):
         events = list(self.client.events.watch(types=["service", "task"]))

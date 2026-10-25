@@ -16,16 +16,22 @@ package broker
 // path or its checksum. pkg/snapshot errors carry absolute paths, so they are
 // classified through the package's sentinel errors and mapped to fixed messages
 // here: only the classification crosses the wire. The public layer repeats the
-// same rule for the same reason.
+// same rule for the same reason. The checksum itself is a document field on the
+// create and restore responses: it is the integrity value a caller may verify,
+// and it names no path.
 //
 // Restore is experimental. It starts a Firecracker process outside SwarmKit's
 // task lifecycle, so a restored VM may outlive the task it came from; the
-// manager's TrackRestoredProcess is the only bookkeeping pkg/snapshot keeps.
+// manager's TrackRestoredProcess is the only bookkeeping pkg/snapshot keeps. A
+// task that is still running is refused (409 restore_task_running): its rootfs
+// is in use, and restoring a second VM over that file would corrupt both.
 //
 // Every restore for one task reuses <socketDir>/<taskID>-restored.sock, and
-// pkg/snapshot unlinks that path before it starts the new process. Two guards
-// protect the VM that owns it:
+// pkg/snapshot unlinks that path before it starts the new process. Three guards
+// protect the VM that owns the rootfs and socket:
 //
+//   - A task that is still running is refused before any store call: 409 conflict
+//     with details.reason "restore_task_running".
 //   - Restores for one task are serialized inside this handler, so two requests
 //     in the same daemon cannot race for the same socket.
 //   - Before restoring, the handler probes the restored socket with
@@ -347,11 +353,20 @@ func (h *snapshotHandler) serveCreate(ctx context.Context, task Task, w http.Res
 }
 
 // serveRestore restores one of the task's snapshots into a fresh Firecracker
-// process on <SocketDir>/<taskID>-restored.sock. It does not require a live task:
-// the VM a snapshot came from may already be finished. Restores for one task are
-// serialized, and a restored VM that is still answering on that socket is never
-// replaced: pkg/snapshot would unlink the socket and orphan the process.
+// process on <SocketDir>/<taskID>-restored.sock. It requires a task whose own VM
+// is gone: a running task's rootfs is still in use, and pkg/snapshot restores the
+// same file, so a second Firecracker on one rootfs.ext4 would corrupt both. An
+// exited task is the normal case — the snapshot's main use is bringing a
+// finished VM back. Restores for one task are serialized, and a restored VM that
+// is still answering on that socket is never replaced: pkg/snapshot would unlink
+// the socket and orphan the process.
 func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotID string, w http.ResponseWriter) {
+	if task.Running {
+		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
+			"task %q is still running; restoring its snapshot would share the live rootfs", task.ID).
+			WithDetails(map[string]any{"reason": "restore_task_running"}))
+		return
+	}
 	if !h.acquireRestore(task.ID) {
 		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
 			"a restore for task %q is already in progress", task.ID).
@@ -467,7 +482,8 @@ func findTaskSnapshot(store SnapshotStore, taskID, snapshotID string) (*snapshot
 }
 
 // taskRunning reports whether the task has a live Firecracker API socket.
-// Snapshotting needs one; restoring does not, because it starts a new VM.
+// Snapshotting needs one; restoring needs the opposite, because the task's own
+// rootfs must no longer be in use.
 func taskRunning(task Task) bool {
 	return task.Running && task.SocketPath != ""
 }

@@ -550,10 +550,18 @@ func callSnapshotCreate(ctx context.Context, socketPath, statePath, memoryPath s
 		return fmt.Errorf("failed to pause VM: %w", err)
 	}
 
-	// Ensure VM is resumed on any exit path (success or failure)
+	// Ensure VM is resumed on any exit path (success or failure). The caller's
+	// context may already be done by now — the manager's 30 s deadline fires
+	// while a full memory dump is still in flight — and resuming on that context
+	// would fail immediately, leaving the VM paused forever. A fresh bounded
+	// context keeps the operation's values but drops its cancellation, so the
+	// resume always gets a chance to run.
 	defer func() {
-		if resumeErr := resumeVM(ctx, socketPath); resumeErr != nil {
-			log.Warn().Err(resumeErr).Msg("failed to resume VM after snapshot")
+		resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resumeTimeout)
+		defer cancel()
+		if resumeErr := resumeVM(resumeCtx, socketPath); resumeErr != nil {
+			log.Warn().Err(resumeErr).
+				Msg("failed to resume VM after snapshot; the VM is still paused and may need a manual resume")
 		}
 	}()
 
@@ -653,6 +661,11 @@ func patchFirecrackerAPI(ctx context.Context, socketPath, apiPath string, payloa
 }
 
 // --- Metadata persistence ---
+
+// resumeTimeout bounds the deferred resume after a snapshot create. It is
+// independent of the caller's deadline: a request that timed out still has to
+// wake the VM it paused.
+const resumeTimeout = 10 * time.Second
 
 const metadataFile = "metadata.json"
 

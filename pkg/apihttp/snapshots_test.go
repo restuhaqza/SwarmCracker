@@ -532,6 +532,30 @@ func TestSnapshotsVersionCapability(t *testing.T) {
 	assert.NotContains(t, info.Capabilities, "snapshots")
 }
 
+// TestSnapshotsVersionCapabilityNeedsNoBroker pins the other half of the
+// advertisement rule: snapshots are relayed through their own transport, so a
+// server whose snapshot transport is wired advertises the capability even when
+// the shared broker is absent. Advertisement and the route gate use one
+// predicate (SnapshotsEnabled && Snapshots != nil).
+func TestSnapshotsVersionCapabilityNeedsNoBroker(t *testing.T) {
+	api := newTestAPIWithConfig(t, &fakeClient{}, Config{
+		ServerVersion:    "0.11.0",
+		GRPCVersion:      "v1",
+		Snapshots:        &fakeSnapshotBroker{},
+		SnapshotsEnabled: true,
+	})
+
+	rec := api.do(t, http.MethodGet, "/v1/version", withToken(api.token))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var info v1.VersionInfo
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
+	assert.Contains(t, info.Capabilities, "snapshots",
+		"the snapshot transport is wired, so the version document must advertise it")
+	assert.NotContains(t, info.Capabilities, "exec",
+		"a nil shared broker still means no exec route to promise")
+}
+
 // TestSnapshotsMissingTaskIs400BeforeResolution pins that a flat request with no
 // task is answered without a lookup.
 func TestSnapshotsMissingTaskIs400BeforeResolution(t *testing.T) {

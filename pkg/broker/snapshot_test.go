@@ -359,13 +359,15 @@ func TestSnapshotHandlerCreatePrunesOldSnapshots(t *testing.T) {
 func TestSnapshotHandlerRestoreUsesTheRestoredSocket(t *testing.T) {
 	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
 	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
+	socketDir := shortSocketDir(t)
+	logOnly := Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"}
 
-	rec := serveSnapshot(t, store, snapshotTask(), http.MethodPost,
-		"/v1/tasks/task-1/snapshots?restore=snap-1", "")
+	rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: socketDir},
+		logOnly, http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Same(t, info, store.gotRestoreInfo)
-	require.Equal(t, "/var/run/firecracker/task-1-restored.sock", store.gotRestoreSock)
+	require.Equal(t, filepath.Join(socketDir, "task-1-restored.sock"), store.gotRestoreSock)
 
 	var doc v1.SnapshotDocument
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
@@ -386,6 +388,28 @@ func TestSnapshotHandlerRestoreLogOnlyTaskUsesSocketDir(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Equal(t, filepath.Join(socketDir, "task-1-restored.sock"), store.gotRestoreSock)
+}
+
+// TestSnapshotHandlerRestoreRejectsARunningTask pins that a restore may only
+// start a new VM for a task whose own VM is gone. A running task's rootfs is
+// still in use, and pkg/snapshot restores the same file, so a second
+// Firecracker on one rootfs.ext4 would silently corrupt both. The guard runs
+// before any store call.
+func TestSnapshotHandlerRestoreRejectsARunningTask(t *testing.T) {
+	store := &fakeSnapshotStore{
+		list: []*snapshot.SnapshotInfo{testSnapshotInfo("snap-1", "task-1", time.Now().UTC())},
+	}
+
+	rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: shortSocketDir(t)},
+		snapshotTask(), http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
+
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	doc := decodeSnapshotError(t, rec)
+	require.Equal(t, string(output.CodeConflict), doc.Error.Code)
+	require.Equal(t, "restore_task_running", doc.Error.Details["reason"])
+	require.Zero(t, store.gotFilter, "the store must not be consulted")
+	require.Nil(t, store.gotRestoreInfo)
+	requireNoSnapshotLeak(t, rec.Body.String())
 }
 
 // shortSocketDir returns a short temporary directory: a Unix socket path is
@@ -520,19 +544,20 @@ func TestSnapshotHandlerRestoreIsSerializedPerTask(t *testing.T) {
 		restoreStarted: make(chan struct{}),
 		restoreRelease: make(chan struct{}),
 	}
-	handler := NewSnapshotHandler(SnapshotHandlerConfig{Store: store, SocketDir: t.TempDir()})
+	handler := NewSnapshotHandler(SnapshotHandlerConfig{Store: store, SocketDir: shortSocketDir(t)})
+	logOnly := Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"}
 
 	firstDone := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		req := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", nil)
 		rec := httptest.NewRecorder()
-		handler(context.Background(), snapshotTask(), rec, req)
+		handler(context.Background(), logOnly, rec, req)
 		firstDone <- rec
 	}()
 
 	<-store.restoreStarted
 
-	second := serveHandler(t, handler, snapshotTask(), http.MethodPost,
+	second := serveHandler(t, handler, logOnly, http.MethodPost,
 		"/v1/tasks/task-1/snapshots?restore=snap-1", "")
 
 	require.Equal(t, http.StatusConflict, second.Code, second.Body.String())
@@ -546,7 +571,7 @@ func TestSnapshotHandlerRestoreIsSerializedPerTask(t *testing.T) {
 	// The lock is released: a later restore is accepted again.
 	store.restoreStarted = nil
 	store.restoreRelease = nil
-	rec := serveHandler(t, handler, snapshotTask(), http.MethodPost,
+	rec := serveHandler(t, handler, logOnly, http.MethodPost,
 		"/v1/tasks/task-1/snapshots?restore=snap-1", "")
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 }
@@ -555,9 +580,10 @@ func TestSnapshotHandlerRestoreOtherTaskSnapshotIs404(t *testing.T) {
 	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{
 		testSnapshotInfo("snap-other", "task-2", time.Now().UTC()),
 	}}
+	logOnly := Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"}
 
-	rec := serveSnapshot(t, store, snapshotTask(), http.MethodPost,
-		"/v1/tasks/task-1/snapshots?restore=snap-other", "")
+	rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: shortSocketDir(t)},
+		logOnly, http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-other", "")
 
 	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 	doc := decodeSnapshotError(t, rec)
@@ -675,8 +701,9 @@ func TestSnapshotHandlerStoreErrorIs503WithoutPaths(t *testing.T) {
 			restoreErr: errors.New("firecracker API not ready after restore: /var/run/firecracker/task-1-restored.sock"),
 		}
 
-		rec := serveSnapshot(t, store, snapshotTask(), http.MethodPost,
-			"/v1/tasks/task-1/snapshots?restore=snap-1", "")
+		rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: shortSocketDir(t)},
+			Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"},
+			http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
 
 		require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
 		requireNoSnapshotLeak(t, rec.Body.String())

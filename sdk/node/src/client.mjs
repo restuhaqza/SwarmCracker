@@ -576,11 +576,9 @@ export class Services {
 
   /** DELETE /v1/services/{ref}: delete a service. */
   async delete(reference, { ifMatch } = {}) {
-    if (!ifMatch) {
-      throw new TypeError('services.delete requires ifMatch');
-    }
+    const headers = ifMatch ? { 'If-Match': ifMatch } : null;
     await this.#client._request('DELETE', `/v1/services/${quoteReference(reference)}`, {
-      headers: { 'If-Match': ifMatch },
+      headers,
     });
     return null;
   }

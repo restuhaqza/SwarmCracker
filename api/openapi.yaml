@@ -1656,9 +1656,12 @@ paths:
         anything is audited. The snapshot must belong to the task. Restore starts
         a fresh Firecracker process outside SwarmKit's task lifecycle, so the
         restored VM may outlive the task it came from; this is why the capability
-        is experimental. A task does not need to be running: the restore starts a
-        new VM on the node's socket directory, so a finished task's snapshot can
-        be restored. Restores are serialized per task; a concurrent restore for
+        is experimental. The task must no longer be running: its rootfs is still
+        in use, and restoring a second VM over the same file would corrupt both,
+        so a running task is 409 conflict with details.reason
+        "restore_task_running". A task that has exited can be restored: the
+        restore starts a new VM on the node's socket directory. Restores are
+        serialized per task; a concurrent restore for
         the same task is 409 conflict with details.reason "restore_in_progress".
         Every restore reuses the same restored socket on the node, so a restored
         VM that is still answering there is never replaced: a restore that finds
@@ -1849,8 +1852,11 @@ paths:
         `task` is 400 invalid with details.parameter "task". The snapshot must
         belong to that task; restore starts a Firecracker process outside
         SwarmKit's task lifecycle, so the restored VM may outlive the task. The
-        task does not need to be running: restore starts a new VM on the node's
-        socket directory. Restores are serialized per task; a concurrent restore
+        task must no longer be running: its rootfs is still in use, and a second
+        Firecracker on the same file would corrupt both, so a running task is 409
+        conflict with details.reason "restore_task_running". An exited task can
+        be restored: restore starts a new VM on the node's socket directory.
+        Restores are serialized per task; a concurrent restore
         for the same task is 409 conflict with details.reason
         "restore_in_progress". Every restore reuses the same restored socket on
         the node, so a restored VM that is still answering there is never

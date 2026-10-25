@@ -184,6 +184,12 @@ logs), extra data frames are allowed, and an event stream that opened and sent
 only the `ready` control frame passes: a quiet cluster has no changes to report,
 and the mock leg proves the frame content.
 
+The snapshot cases in `errors.json` assert the shipped default: snapshots are
+disabled, so all seven routes answer `501 not_implemented`. They mutate nothing
+and are safe on a lab cluster, but a manager started with `--snapshots-enable`
+will (correctly) fail them; enable snapshots only in a run that expects the
+capability.
+
 `make conformance-lab` skips cleanly (exit 0) when `CONFORMANCE_HOST` or
 `CONFORMANCE_READER_TOKEN` is missing. Tokens are never printed; a failure names
 the request path, status and a body truncated to 2 KiB, never the

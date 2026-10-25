@@ -8,10 +8,17 @@
 # mounted read-only. Neither is baked into the image, so one image serves every
 # cluster and rotating a token does not rebuild it:
 #   docker run --rm \
+#     --user "$(id -u):$(id -g)" \
 #     -v "$PWD/ca.crt:/ca.crt:ro" \
 #     -v "$PWD/token:/token:ro" \
 #     swarmcracker-cli:dev -H https://mgr:4244 --ca /ca.crt --token-file /token service ls
 #
+# The --user line matters on Linux: the image's default uid 65532 cannot read a
+# token file that is 0600 and owned by you, and a bind mount keeps the host uid.
+# Running as your own uid (the image is still non-root) keeps the 0600 token
+# private to you. The alternative is to hand the mount to 65532:
+#   install -m 0400 -o 65532 -g 65532 token /some/dir/token
+#     -v /some/dir/token:/token:ro
 # Both mounts are read-only on purpose: the container never writes a credential
 # and never needs the daemon's state directory.
 #

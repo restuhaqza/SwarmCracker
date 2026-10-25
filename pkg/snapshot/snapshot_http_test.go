@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,13 +16,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// testSocketPath returns a listening path in a short temporary directory. A
+// Unix socket path is limited to roughly 104 bytes, which t.TempDir() exceeds on
+// macOS once the test name is part of the path.
+func testSocketPath(t *testing.T, name string) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "sc-sock-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, name)
+}
+
 // TestCreateSnapshot_UnixSocketSuccess tests CreateSnapshot with real Unix socket server
 func TestCreateSnapshot_UnixSocketSuccess(t *testing.T) {
 	tmpDir := t.TempDir()
 	mgr, err := NewManager(SnapshotConfig{SnapshotDir: tmpDir})
 	require.NoError(t, err)
 
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 
 	pauseCalled := false
 	createCalled := false
@@ -88,10 +101,84 @@ func TestCreateSnapshot_UnixSocketSuccess(t *testing.T) {
 	assert.FileExists(t, info.MemoryPath)
 }
 
+// TestCallSnapshotCreateResumesWhenTheParentContextIsCanceled pins that a
+// canceled create cannot leave the VM paused forever. The manager's 30 s
+// deadline fires while Firecracker is writing the snapshot, so the request
+// context is already done when the deferred resume runs; the resume must use a
+// fresh context anyway. The error the caller sees is still the cancellation.
+func TestCallSnapshotCreateResumesWhenTheParentContextIsCanceled(t *testing.T) {
+	tmpDir := t.TempDir()
+	socketPath := testSocketPath(t, "fc.sock")
+	statePath := filepath.Join(tmpDir, "vm.state")
+	memoryPath := filepath.Join(tmpDir, "vm.mem")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var mu sync.Mutex
+	var states []string
+	resumed := make(chan struct{})
+
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	defer listener.Close()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/vm", func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			State string `json:"state"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		mu.Lock()
+		states = append(states, payload.State)
+		mu.Unlock()
+		if payload.State == "Resumed" {
+			select {
+			case <-resumed:
+			default:
+				close(resumed)
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/snapshot/create", func(w http.ResponseWriter, _ *http.Request) {
+		// The deadline fires before Firecracker answers, exactly as a slow
+		// full-memory dump behaves under the manager's 30 s timeout.
+		cancel()
+		time.Sleep(100 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	server := &http.Server{Handler: mux}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	defer server.Shutdown(context.Background())
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(socketPath)
+		return err == nil
+	}, 2*time.Second, 100*time.Millisecond)
+
+	err = callSnapshotCreate(ctx, socketPath, statePath, memoryPath)
+	require.Error(t, err, "a canceled create must not report success")
+	require.ErrorIs(t, err, context.Canceled, "the caller sees the cancellation, not a silent success")
+
+	select {
+	case <-resumed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the VM was left paused: no resume request arrived after the canceled create")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, []string{"Paused", "Resumed"}, states)
+}
+
 // TestCallSnapshotCreate_Success tests callSnapshotCreate with real Unix socket
 func TestCallSnapshotCreate_Success(t *testing.T) {
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 	statePath := filepath.Join(tmpDir, "vm.state")
 	memoryPath := filepath.Join(tmpDir, "vm.mem")
 
@@ -136,7 +223,7 @@ func TestCallSnapshotCreate_Success(t *testing.T) {
 // TestCallSnapshotCreate_PauseError tests callSnapshotCreate pause error
 func TestCallSnapshotCreate_PauseError(t *testing.T) {
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 	statePath := filepath.Join(tmpDir, "vm.state")
 	memoryPath := filepath.Join(tmpDir, "vm.mem")
 
@@ -169,7 +256,7 @@ func TestCallSnapshotCreate_PauseError(t *testing.T) {
 // TestCallSnapshotCreate_SnapshotError tests callSnapshotCreate snapshot error
 func TestCallSnapshotCreate_SnapshotError(t *testing.T) {
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 	statePath := filepath.Join(tmpDir, "vm.state")
 	memoryPath := filepath.Join(tmpDir, "vm.mem")
 
@@ -214,8 +301,7 @@ func TestPutFirecrackerAPI_UnixSocketSuccess(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			socketPath := filepath.Join(tmpDir, "fc.sock")
+			socketPath := testSocketPath(t, "fc.sock")
 
 			listener, err := net.Listen("unix", socketPath)
 			require.NoError(t, err)
@@ -264,8 +350,7 @@ func TestPutFirecrackerAPI_UnixSocketError(t *testing.T) {
 
 	for _, tc := range errorCases {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			socketPath := filepath.Join(tmpDir, "fc.sock")
+			socketPath := testSocketPath(t, "fc.sock")
 
 			listener, err := net.Listen("unix", socketPath)
 			require.NoError(t, err)
@@ -312,8 +397,7 @@ func TestPutFirecrackerAPI_UnixSocketConnectionError(t *testing.T) {
 
 // TestPutFirecrackerAPI_UnixSocketMarshalError tests JSON marshal error
 func TestPutFirecrackerAPI_UnixSocketMarshalError(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 
 	payload := make(chan int)
 
@@ -334,8 +418,7 @@ func TestPatchFirecrackerAPI_UnixSocketSuccess(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			socketPath := filepath.Join(tmpDir, "fc.sock")
+			socketPath := testSocketPath(t, "fc.sock")
 
 			listener, err := net.Listen("unix", socketPath)
 			require.NoError(t, err)
@@ -384,8 +467,7 @@ func TestPatchFirecrackerAPI_UnixSocketError(t *testing.T) {
 
 	for _, tc := range errorCases {
 		t.Run(tc.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			socketPath := filepath.Join(tmpDir, "fc.sock")
+			socketPath := testSocketPath(t, "fc.sock")
 
 			listener, err := net.Listen("unix", socketPath)
 			require.NoError(t, err)
@@ -431,8 +513,7 @@ func TestPatchFirecrackerAPI_UnixSocketConnectionError(t *testing.T) {
 
 // TestPatchFirecrackerAPI_UnixSocketMarshalError tests JSON marshal error
 func TestPatchFirecrackerAPI_UnixSocketMarshalError(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 
 	payload := make(chan int)
 
@@ -443,8 +524,7 @@ func TestPatchFirecrackerAPI_UnixSocketMarshalError(t *testing.T) {
 
 // TestPutFirecrackerAPI_ContextCancelled tests context cancellation
 func TestPutFirecrackerAPI_ContextCancelled(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
@@ -477,8 +557,7 @@ func TestPutFirecrackerAPI_ContextCancelled(t *testing.T) {
 
 // TestPatchFirecrackerAPI_ContextCancelled tests context cancellation
 func TestPatchFirecrackerAPI_ContextCancelled(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
@@ -512,7 +591,7 @@ func TestPatchFirecrackerAPI_ContextCancelled(t *testing.T) {
 // TestCallSnapshotLoad_HTTPError tests callSnapshotLoad with HTTP error
 func TestCallSnapshotLoad_HTTPError(t *testing.T) {
 	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 	statePath := filepath.Join(tmpDir, "vm.state")
 	memoryPath := filepath.Join(tmpDir, "vm.mem")
 
@@ -544,8 +623,7 @@ func TestCallSnapshotLoad_HTTPError(t *testing.T) {
 
 // TestCallInstanceStart_HTTPError tests callInstanceStart with HTTP error
 func TestCallInstanceStart_HTTPError(t *testing.T) {
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "fc.sock")
+	socketPath := testSocketPath(t, "fc.sock")
 
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
