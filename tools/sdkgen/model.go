@@ -221,6 +221,9 @@ func Parse(src []byte, file string) (*Spec, error) {
 	}
 	names := make([]string, 0, len(entries))
 	for _, entry := range entries {
+		if err := p.checkSchemaName(entry.key, "#/components/schemas/"+entry.key); err != nil {
+			return nil, err
+		}
 		p.nodes[entry.key] = entry.value
 		names = append(names, entry.key)
 	}
@@ -569,7 +572,11 @@ func (p *parser) fillObject(n *yaml.Node, path string, resolved *Type) error {
 			return err
 		}
 		for _, entry := range entries {
-			propType, err := p.resolveNode(entry.value, path+"/properties/"+entry.key)
+			propertyPath := path + "/properties/" + entry.key
+			if err := p.checkPropertyName(entry.key, propertyPath); err != nil {
+				return err
+			}
+			propType, err := p.resolveNode(entry.value, propertyPath)
 			if err != nil {
 				return err
 			}
