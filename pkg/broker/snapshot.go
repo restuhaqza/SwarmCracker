@@ -26,9 +26,10 @@ package broker
 //
 // Restore is experimental. It starts a Firecracker process outside SwarmKit's
 // task lifecycle, so a restored VM may outlive the task it came from; the
-// manager's TrackRestoredProcess is the only bookkeeping pkg/snapshot keeps. A
-// task that is still running is refused (409 restore_task_running): its rootfs
-// is in use, and restoring a second VM over that file would corrupt both.
+// store's restored-VM map (process plus socket, see pkg/snapshot) is the only
+// bookkeeping. A task that is still running is refused (409 restore_task_running):
+// its rootfs is in use, and restoring a second VM over that file would corrupt
+// both.
 //
 // Every restore for one task reuses <socketDir>/<taskID>-restored.sock, and
 // pkg/snapshot unlinks that path before it starts the new process. Three guards
@@ -53,6 +54,11 @@ package broker
 // restored VM whose socket was removed out of band, can still leave an untracked
 // Firecracker process behind. That residual risk is documented in the public
 // OpenAPI description as well.
+//
+// The stop path owns nothing on the filesystem here: StopRestored signals the
+// tracked process, drops its entry and unlinks the socket it recorded, all under
+// a per-task lock shared with restore. The handler only relays the outcome, so it
+// can never unlink a socket a concurrent restore just created.
 //
 // A nil store keeps the operation registered but answers a typed 501: the public
 // layer already gates snapshots on the capability, so this is defence in depth.
@@ -218,12 +224,10 @@ func (h *restoredHandler) serve(_ context.Context, task Task, w http.ResponseWri
 		return
 	}
 
-	// The process is gone, so the socket is a stale file. Best effort: a failure
-	// leaves a file the next restore removes anyway (it probes liveness, not
-	// presence), and the VM the caller asked to stop is already stopped.
-	if socketPath, ok := restoredSocketPath(h.cfg, task); ok {
-		_ = os.Remove(socketPath)
-	}
+	// No socket cleanup here: the store owns the socket and unlinks it inside
+	// StopRestored, under the per-task lock that serializes restore and stop.
+	// Doing it here too would race a concurrent restore that had just recreated
+	// the path.
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -73,9 +73,12 @@ func TestRestoredHandlerNoRestoredVMIs404(t *testing.T) {
 	assert.Equal(t, []string{"task-1"}, store.stoppedRestored)
 }
 
-// TestRestoredHandlerStopsAndRemovesSocket pins success: 204, the store stopped
-// exactly the resolved task, and the stale socket is removed.
-func TestRestoredHandlerStopsAndRemovesSocket(t *testing.T) {
+// TestRestoredHandlerStopsAndLeavesTheSocketToTheStore pins success: 204, the
+// store stopped exactly the resolved task, and the handler itself does not touch
+// the filesystem. The store owns the socket (it unlinks it inside StopRestored
+// under the per-task restore lock), so a handler-side unlink would race a
+// concurrent restore.
+func TestRestoredHandlerStopsAndLeavesTheSocketToTheStore(t *testing.T) {
 	socketDir := t.TempDir()
 	socketPath := filepath.Join(socketDir, "task-1-restored.sock")
 	require.NoError(t, os.WriteFile(socketPath, nil, 0o600))
@@ -87,18 +90,46 @@ func TestRestoredHandlerStopsAndRemovesSocket(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Empty(t, rec.Body.String(), "204 carries no document")
 	assert.Equal(t, []string{"task-1"}, store.stoppedRestored)
-	_, err := os.Stat(socketPath)
-	assert.ErrorIs(t, err, os.ErrNotExist, "the stopped VM's socket must be gone")
+	assert.FileExists(t, socketPath, "only the store may unlink the restored VM's socket")
 }
 
-// TestRestoredHandlerSocketRemovalIsBestEffort pins that an absent socket is not
-// an error: the VM the caller asked to stop is stopped.
-func TestRestoredHandlerSocketRemovalIsBestEffort(t *testing.T) {
+// TestRestoredHandlerNeedsNoSocketDir pins that the handler has no filesystem
+// work of its own: a node with no socket directory configured still answers 204
+// for a store that stopped its VM.
+func TestRestoredHandlerNeedsNoSocketDir(t *testing.T) {
 	store := &fakeSnapshotStore{}
-	rec := serveRestored(t, SnapshotHandlerConfig{Store: store, SocketDir: t.TempDir()},
+	rec := serveRestored(t, SnapshotHandlerConfig{Store: store},
 		snapshotTask(), http.MethodDelete, "/v1/tasks/task-1/restored")
 
 	require.Equal(t, http.StatusNoContent, rec.Code)
+}
+
+// TestRestoredHandlerRealStoreRemovesTheSocket pins the ownership claim end to
+// end: the handler relays, and the store — a real manager — ends the process and
+// unlinks the socket it recorded.
+func TestRestoredHandlerRealStoreRemovesTheSocket(t *testing.T) {
+	socketDir := t.TempDir()
+	socketPath := filepath.Join(socketDir, "task-1-restored.sock")
+	require.NoError(t, os.WriteFile(socketPath, nil, 0o600))
+
+	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{SnapshotDir: t.TempDir()})
+	require.NoError(t, err)
+	cmd := exec.Command("sleep", "30")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	})
+	mgr.TrackRestoredProcess("task-1", cmd.Process, socketPath)
+
+	rec := serveRestored(t, SnapshotHandlerConfig{Store: mgr, SocketDir: socketDir},
+		snapshotTask(), http.MethodDelete, "/v1/tasks/task-1/restored")
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	_, statErr := os.Stat(socketPath)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the store removes the socket it tracked")
 }
 
 // TestRestoredHandlerStoreErrorMaps pins that any other store failure goes
@@ -128,7 +159,7 @@ func TestRestoredHandlerSecondStopIs404(t *testing.T) {
 			_, _ = cmd.Process.Wait()
 		}
 	})
-	mgr.TrackRestoredProcess("task-1", cmd.Process)
+	mgr.TrackRestoredProcess("task-1", cmd.Process, "")
 
 	handler := NewRestoredHandler(SnapshotHandlerConfig{Store: mgr, SocketDir: t.TempDir()})
 
