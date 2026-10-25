@@ -448,7 +448,7 @@ func TestVersionDocument(t *testing.T) {
 	assert.Equal(t, "v1", info.GRPCProtocolVersion)
 	assert.Equal(t, "cluster-1", info.ClusterID)
 	assert.Equal(t, []string{"read", "write", "events"}, info.Capabilities,
-		"nil capabilities default to the served surface: read and write")
+		"nil capabilities default to the served surface; exec, logs and files need a broker")
 }
 
 func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
@@ -466,6 +466,60 @@ func TestVersionCapabilitiesAndClusterFallback(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.Equal(t, []string{"read", "write", "events"}, info.Capabilities)
 	assert.Equal(t, "from-client", info.ClusterID, "empty config cluster ID falls back to the client")
+}
+
+// TestVersionCapabilitiesFollowTheBroker pins the single source of capability
+// advertisement: a server built with a broker advertises every broker operation
+// even when the caller left Capabilities nil, and a server without one does not
+// claim health. The version document and the 501 rule cannot disagree.
+func TestVersionCapabilitiesFollowTheBroker(t *testing.T) {
+	withBroker := newTestAPIWithConfig(t, &fakeClient{}, Config{
+		ServerVersion: "0.11.0",
+		GRPCVersion:   "v1",
+		Broker:        &fakeBroker{},
+	})
+
+	rec := withBroker.do(t, http.MethodGet, "/v1/version", withToken(withBroker.token))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var info v1.VersionInfo
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
+	assert.Equal(t,
+		[]string{"read", "write", "events", "exec", "logs", "files", "health"},
+		info.Capabilities,
+		"a wired broker advertises exec, logs, files and health")
+
+	withoutBroker := newTestAPI(t, nil)
+	rec = withoutBroker.do(t, http.MethodGet, "/v1/version", withToken(withoutBroker.token))
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
+	assert.NotContains(t, info.Capabilities, "health",
+		"without a broker there is no health route to promise")
+	for _, capability := range []string{"exec", "logs", "files"} {
+		assert.NotContains(t, info.Capabilities, capability,
+			"without a broker the version document must not promise %s", capability)
+	}
+}
+
+// TestVersionCapabilitiesKeepNarrowingButNotBrokerOperations proves an explicit
+// list is still the caller's: New narrows nothing away, keeps its order and only
+// appends the operations the broker serves.
+func TestVersionCapabilitiesKeepNarrowingButNotBrokerOperations(t *testing.T) {
+	api := newTestAPIWithConfig(t, &fakeClient{}, Config{
+		ServerVersion: "0.11.0",
+		GRPCVersion:   "v1",
+		Capabilities:  []string{"read", "exec"},
+		Broker:        &fakeBroker{},
+	})
+
+	rec := api.do(t, http.MethodGet, "/v1/version", withToken(api.token))
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var info v1.VersionInfo
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
+	assert.Equal(t, []string{"read", "exec", "logs", "files", "health"}, info.Capabilities,
+		"the caller's order survives; the broker operations cannot be denied")
 }
 
 func TestVersionClusterFallbackToleratesClientError(t *testing.T) {

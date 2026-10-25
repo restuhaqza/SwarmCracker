@@ -91,12 +91,23 @@ func (s *Server) listServiceTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
+	health, err := healthRequested(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if health && !s.requireBroker(w, r, healthCapability) {
+		return
+	}
+
 	items, err := s.cfg.Client.ListTasks(r.Context())
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
 
+	// The page is resolved before health is fetched: enrichment is scoped to the
+	// tasks this response actually contains.
 	page, next, err := paginateRequest(r, items, func(v v1.Task) (string, string) {
 		return v.CreatedAt, v.ID
 	})
@@ -107,15 +118,53 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 
 	doc := v1.NewTaskList(page)
 	doc.Next = next
-	s.writeJSON(w, r, http.StatusOK, doc)
+
+	status := http.StatusOK
+	if health {
+		// A partial page is still a normal TaskList: the readable tasks are
+		// included and `partial` names only the nodes that could not be read.
+		doc.Items, doc.Partial = s.tasksWithHealth(r.Context(), page)
+		if len(doc.Partial) > 0 {
+			status = http.StatusMultiStatus
+		}
+	}
+
+	s.writeJSON(w, r, status, doc)
 }
 
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
+	health, err := healthRequested(r)
+	if err != nil {
+		s.writeError(w, r, err)
+		return
+	}
+	if health && !s.requireBroker(w, r, healthCapability) {
+		return
+	}
+
 	task, err := s.cfg.Client.GetTask(r.Context(), r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
 	}
+
+	if health {
+		task, err = s.taskWithHealth(r.Context(), task)
+		if err != nil {
+			// A single-task read cannot report a partial, so a node it cannot
+			// reach makes the read unavailable. The node ID still travels in
+			// details, exactly as it does on a list partial, so a caller that
+			// handles both shapes reads the same key.
+			failure := output.NewErrorf(output.CodeUnavailable,
+				"health is unavailable for task %q", task.ID)
+			if task.NodeID != "" {
+				failure = failure.WithDetails(map[string]any{"nodeId": task.NodeID})
+			}
+			s.writeError(w, r, failure)
+			return
+		}
+	}
+
 	s.writeJSON(w, r, http.StatusOK, v1.NewTaskDocument(task))
 }
 

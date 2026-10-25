@@ -216,6 +216,63 @@ func TestClientExecServerError(t *testing.T) {
 	assert.Contains(t, err.Error(), "exec:")
 }
 
+// TestClientExecStatusReportsSignal proves a signal-terminated guest maps to
+// ExitCode 128+N and a populated Signal, and that Exec keeps returning it.
+func TestClientExecStatusReportsSignal(t *testing.T) {
+	_, uds := startRawProxy(t, DefaultPort, func(conn net.Conn) {
+		var req Request
+		_, _ = ReadFrame(conn, &req)
+		signal := 9
+		code := 137
+		_ = WriteFrame(conn, Message{Type: "exit", Code: &code, Signal: &signal})
+	})
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	result, err := c.ExecStatus(context.Background(), []string{"sleep", "100"}, ExecOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 137, result.ExitCode)
+	assert.Equal(t, 9, result.Signal)
+}
+
+// TestClientExecStatusNormalExitHasNoSignal pins the normal-exit shape and that
+// the Exec wrapper still returns the guest code.
+func TestClientExecStatusNormalExitHasNoSignal(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort)
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	result, err := c.ExecStatus(context.Background(), []string{"sh", "-c", "exit 4"}, ExecOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 4, result.ExitCode)
+	assert.Zero(t, result.Signal)
+
+	code, err := c.Exec(context.Background(), []string{"sh", "-c", "exit 5"}, ExecOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 5, code, "Exec must still return the guest exit code")
+}
+
+// TestClientExecStatusBareSignalFrame proves a signal-only exit frame still
+// yields the shell convention rather than a missing-code failure.
+func TestClientExecStatusBareSignalFrame(t *testing.T) {
+	_, uds := startRawProxy(t, DefaultPort, func(conn net.Conn) {
+		var req Request
+		_, _ = ReadFrame(conn, &req)
+		signal := 15
+		_ = WriteFrame(conn, Message{Type: "exit", Signal: &signal})
+	})
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	result, err := c.ExecStatus(context.Background(), []string{"true"}, ExecOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 143, result.ExitCode)
+	assert.Equal(t, 15, result.Signal)
+}
+
 func TestClientExecEmptyCommand(t *testing.T) {
 	_, uds := startProxy(t, DefaultPort)
 	c, err := Dial(context.Background(), uds, DefaultPort)

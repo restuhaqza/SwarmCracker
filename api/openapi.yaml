@@ -5,10 +5,10 @@ info:
   description: >
     Stable machine contract for SwarmCracker. This file is the normative
     description of the public API: every read route, the phase-2 write routes for
-    services, configs, secrets, networks and nodes, the resource documents, the
-    shared response headers, the error document and the bearer authentication
-    model. The trusted Unix socket serves the same documents without a token; its
-    file mode is the credential.
+    services, configs, secrets, networks and nodes, the task exec output stream,
+    the resource documents, the shared response headers, the error document and
+    the bearer authentication model. The trusted Unix socket serves the same
+    documents without a token; its file mode is the credential.
 servers:
   - url: https://mgr:4244
     description: Manager public API (phase 1; TLS + bearer token)
@@ -1088,6 +1088,15 @@ paths:
     get:
       operationId: listTasks
       summary: List tasks
+      description: >
+        Requires tasks:read. With `health=true` every task on the resolved page
+        is enriched with the live healthcheck state its node publishes. Health
+        travels through the node broker: the manager never dials a node's
+        loopback endpoint. Enrichment is best-effort, so a page that loses a node
+        is answered 207 with the readable tasks in `items` and one `partial`
+        entry per failed node. A task that has published no health omits `health`
+        entirely; an empty object is never emitted. Without `health=true` the
+        response is exactly the unenriched list.
       parameters:
         - name: limit
           in: query
@@ -1095,9 +1104,32 @@ paths:
         - name: cursor
           in: query
           schema: { type: string }
+        - name: health
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >
+            Enrich every task on the page with its live health. Only `true` and
+            `false` are accepted. Requires a node broker on the serving manager;
+            without one the request is 501 not_implemented with
+            details.capability "health".
       responses:
         "200":
           description: A page of tasks
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/TaskList" }
+        "207":
+          description: >
+            A partial page. This is a normal TaskList document, not an Error
+            document: `items` contains every readable task of the page and
+            `partial` names one entry per node whose health could not be read.
+            A task on a failed node keeps `health` omitted. Pagination and item
+            order are unchanged from a 200.
           headers:
             X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
             X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -1112,6 +1144,8 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
         "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
         "4XX":
           description: Typed failure
           headers:
@@ -1124,11 +1158,25 @@ paths:
     get:
       operationId: getTask
       summary: Get one task
+      description: >
+        Requires tasks:read. With `health=true` the task is enriched with the
+        live healthcheck state its node publishes. A task that has published no
+        health omits `health`. If the node cannot be reached the read is 503
+        unavailable: a single-task document has no `partial` array to carry the
+        failure.
       parameters:
         - name: id
           in: path
           required: true
           schema: { type: string }
+        - name: health
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >
+            Enrich the task with its live health. Only `true` and `false` are
+            accepted. Requires a node broker on the serving manager; without one
+            the request is 501 not_implemented with details.capability "health".
       responses:
         "200":
           description: A single task
@@ -1145,7 +1193,308 @@ paths:
           $ref: "#/components/responses/Unauthenticated"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}/exec:
+    post:
+      operationId: execTask
+      summary: Run a command in a task and stream its output
+      description: >
+        Requires tasks:exec. The task reference is resolved server-side and the
+        request is relayed to the node that runs the task, so the caller never
+        picks a host. Selectors are enforced: a runner token runs only the tasks
+        its selectors match, and a runner token without selectors is 403. The
+        body is an ExecRequest; the response is the documented exception to the
+        v1 envelope and is an `application/x-ndjson` stream of ExecFrame
+        objects. Interactive exec is not implemented over HTTP: a body with
+        `tty:true` (and therefore any `stdin:true` request, which requires a
+        TTY) is rejected before proxying with 501 not_implemented and
+        details.reason "tty_not_supported". Local `vm exec -it` is unaffected.
+        The task must be running: a completed or crashed task has no guest agent,
+        so it is 404 not_found (its console log stays readable through the logs
+        route). The attempt is audited as task.exec; a relayed node failure is
+        audited as error, not ok.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, or a unique id prefix of at least 4
+            characters. A task name is accepted when it is unique.
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/ExecRequest" }
+      responses:
+        "200":
+          description: >
+            The exec output stream: one ExecFrame JSON object per line, flushed
+            as output is produced, not a JSON array and not the v1 envelope. A
+            successful stream ends with exactly one `exit` frame, which is
+            required: a stream that ends without it is a failed exec and must
+            not be treated as success. A non-zero guest exit is still a
+            successful API call and arrives as `exit` with `exitCode` (plus
+            `signal` and `exitCode` 128+N when the guest was killed by signal
+            N). If the command starts and then fails, the terminal frame is
+            `error` with `code` "internal" or "timeout" instead, and no exit
+            code is fabricated.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/ExecFrame" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}/logs:
+    get:
+      operationId: getTaskLogs
+      summary: Stream a task's console log
+      description: >
+        Requires tasks:logs, which every role carries. The task reference is
+        resolved server-side and the request is relayed to the node that runs the
+        task, so the caller never picks a host. Logs are reader-scoped: task
+        selectors do not gate them and the read is not audited. The response is
+        the documented exception to the v1 envelope and is an
+        `application/x-ndjson` stream of LogFrame objects, one per line, flushed
+        as output is produced and never buffered. The Firecracker console merges
+        stdout and stderr, so `stream` is always stdout. `tail` selects the
+        backlog (default 200, maximum 10000; a larger value is clamped); `since`
+        is an RFC3339 instant applied before `tail`. The console file carries no
+        per-line timestamps, so backlog lines are stamped with the file's
+        modification time and followed lines with the time they were read. A
+        `follow` stream never ends with `eof`: it ends when the caller
+        disconnects, when the task's VM stops, or when its log disappears. Logs
+        remain available after the task exits — the console file outlives the VM
+        — so this is the route to use to find out why a task failed. A missing
+        task or a task with no log is 404; a node that cannot be reached is 503
+        unavailable. A manager with no node broker answers 501 not_implemented
+        with details.capability "logs".
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, a unique id prefix of at least 4
+            characters, or a unique task name.
+        - name: tail
+          in: query
+          schema: { type: integer, minimum: 0, default: 200 }
+          description: >
+            Number of backlog lines, oldest to newest. Negative or non-numeric is
+            400 invalid; above 10000 is clamped.
+        - name: since
+          in: query
+          schema: { type: string, format: date-time }
+          description: >
+            Only backlog lines at or after this instant. Invalid RFC3339 is 400
+            invalid.
+        - name: follow
+          in: query
+          schema: { type: boolean, default: false }
+          description: >
+            Keep streaming appended output. A value that is not a boolean is 400
+            invalid.
+      responses:
+        "200":
+          description: >
+            The log stream: one LogFrame JSON object per line, flushed as output
+            is produced, not a JSON array and not the v1 envelope. A non-following
+            stream always ends with one `eof` frame, which a caller must see to
+            treat the backlog as complete. A following stream has no terminal
+            frame.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/LogFrame" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/tasks/{id}/files:
+    get:
+      operationId: getTaskFile
+      summary: Read a regular file from a task
+      description: >
+        Requires tasks:files. The task reference is resolved server-side, the
+        caller's task selectors are enforced (a runner needs a matching selector;
+        a mismatch is 403) and the attempt is audited as `task.files` with result
+        ok or error. The audit resource is the task: the path and the contents are
+        never recorded. The response is raw bytes — the documented exception to
+        the v1 envelope — with Content-Type application/octet-stream. Only regular
+        files are served: the path must be absolute and must not contain a `..`
+        segment (400 invalid otherwise). A directory is 400 invalid with
+        details.reason "directory_not_supported"; a missing file is 404. The
+        task must be running: a completed or crashed task has no guest agent, so
+        it is 404 not_found (its console log stays readable through the logs
+        route). A manager with no node broker answers 501 not_implemented with
+        details.capability "files".
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, a unique id prefix of at least 4
+            characters, or a unique task name.
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+          description: >
+            Absolute guest path. Cleaned before use; a `..` segment is refused
+            rather than collapsed.
+      responses:
+        "200":
+          description: The file bytes, streamed as they arrive.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    put:
+      operationId: putTaskFile
+      summary: Write a regular file in a task
+      description: >
+        Requires tasks:files. The task reference is resolved server-side, the
+        caller's task selectors are enforced and the attempt is audited as
+        `task.files`. The body is the raw file: Content-Type must be
+        application/octet-stream (415 otherwise) and the response is 204 on
+        success. The body is limited to 1 GiB (413, details.reason
+        "payload_too_large"); the manager forwards the upload without buffering
+        it. `mode` is an octal file mode between 0000 and 0777 (default 0644;
+        anything else is 400 invalid). The path rules of GET apply. The task must
+        be running: a completed task has no guest agent and is 404 not_found. Audit
+        records the task, never the path or the contents. A manager with no node
+        broker answers 501 not_implemented with details.capability "files".
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: >
+            Task reference: exact task id, a unique id prefix of at least 4
+            characters, or a unique task name.
+        - name: path
+          in: query
+          required: true
+          schema: { type: string }
+          description: >
+            Absolute guest path. Cleaned before use; a `..` segment is refused
+            rather than collapsed.
+        - name: mode
+          in: query
+          schema: { type: string, default: "0644", pattern: "^[0-7]{3,4}$" }
+          description: >
+            Octal file mode between 0000 and 0777. Anything else is 400 invalid.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "204":
+          description: The file was written.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
         "4XX":
           description: Typed failure
           headers:
@@ -1523,7 +1872,8 @@ components:
           schema: { $ref: "#/components/schemas/ErrorDocument" }
     PayloadTooLarge:
       description: >
-        The body exceeds 8 MiB. code is invalid and details.reason is
+        The body exceeds the route's limit: 8 MiB for a write document, 1 MiB
+        for an exec request. code is invalid and details.reason is
         "payload_too_large".
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
@@ -1559,6 +1909,27 @@ components:
         The route exists but does not implement the requested capability. code is
         not_implemented and details.capability names it. A dry run on a rollback
         answers this: the previous spec is not the document that would be written.
+        A `tty:true` exec also answers this, with details.reason
+        "tty_not_supported": interactive exec over the API is a follow-up. Task
+        exec, logs and files answer this on a manager with no node broker, and so
+        does a health-enriched task read: details.capability names the operation
+        ("exec", "logs", "files" or "health") and there is no node path to serve
+        it.
+      headers:
+        X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+        X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+      content:
+        application/vnd.swarmcracker.v1+json:
+          schema: { $ref: "#/components/schemas/ErrorDocument" }
+    ServiceUnavailable:
+      description: >
+        The manager cannot complete the request because a node is down or the
+        node's guest agent is unavailable: code is unavailable. The operation
+        may be retried; retryable is true when a retry can succeed. A node the
+        manager cannot contact is unavailable, never unreachable: that code is
+        reserved for a client's own failed dial. A single-task health read that
+        cannot reach its node answers this: one document has no partial array to
+        carry the failure.
       headers:
         X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
         X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
@@ -2273,6 +2644,109 @@ components:
             schemaVersion: { type: integer, enum: [1] }
             kind: { type: string, enum: [Task] }
 
+    ExecRequest:
+      type: object
+      required: [command]
+      properties:
+        command:
+          type: array
+          minItems: 1
+          items: { type: string }
+          description: >
+            The argv to run. Required and non-empty; the first element is the
+            executable.
+        env:
+          type: object
+          additionalProperties: { type: string }
+          description: >
+            Environment variables for the command. A key must be non-empty and
+            must not contain "="; values are sent to the guest as K=V after
+            stable sorting. Audit records never carry them.
+        workdir:
+          type: string
+          description: Working directory, passed through; the guest validates it.
+        tty:
+          type: boolean
+          default: false
+          description: >
+            Request a pseudo-terminal. Always 501 not_implemented over HTTP
+            (details.reason "tty_not_supported").
+        stdin:
+          type: boolean
+          default: false
+          description: >
+            Attach stdin. Requires tty, so over HTTP it is 400 invalid with
+            details.reason "stdin_requires_tty".
+        timeoutMs:
+          type: integer
+          format: int64
+          minimum: 0
+          default: 0
+          description: >
+            Server-side deadline for the whole command in milliseconds. 0 means
+            no server-side deadline. A negative value is 400 invalid.
+
+    ExecFrame:
+      type: object
+      required: [type]
+      description: >
+        One frame of the exec stream: exactly one JSON object per line, newline
+        terminated. The stream ends with one `exit` frame, or with one `error`
+        frame when the command failed after it started.
+      properties:
+        type:
+          type: string
+          enum: [stdout, stderr, exit, error]
+        data:
+          type: string
+          format: byte
+          description: >
+            Base64-encoded raw output bytes from the guest. Set on stdout and
+            stderr frames.
+        exitCode:
+          type: integer
+          description: >
+            Process status on an exit frame. When the guest was killed by signal
+            N this is 128+N.
+        signal:
+          type: integer
+          description: >
+            The terminating signal number on an exit frame; absent for a normal
+            exit.
+        code:
+          type: string
+          description: >
+            Error code on an error frame: "internal" for a mid-stream failure,
+            "timeout" when the deadline expired.
+
+    LogFrame:
+      type: object
+      required: [type]
+      description: >
+        One frame of a task log stream: exactly one JSON object per line, newline
+        terminated. A non-following stream ends with one `eof` frame; a following
+        stream has no terminal frame. The console log merges stdout and stderr,
+        so `stream` is always stdout.
+      properties:
+        type:
+          type: string
+          enum: [log, eof]
+        stream:
+          type: string
+          enum: [stdout]
+          description: The merged console stream. Set on log frames only.
+        time:
+          type: string
+          format: date-time
+          description: >
+            RFC3339Nano timestamp. An approximation: the console file has no
+            per-line timestamps, so backlog lines carry the file's modification
+            time and followed lines carry the time they were read.
+        data:
+          type: string
+          format: byte
+          description: Base64-encoded raw console bytes. Set on log frames only.
+
     NodeList:
       type: object
       required: [schemaVersion, kind, items, next]
@@ -2353,7 +2827,14 @@ components:
       properties:
         nodeId: { type: string }
         nodeName: { type: string }
-        error: { $ref: "#/components/schemas/Error" }
+        error:
+          allOf:
+            - $ref: "#/components/schemas/Error"
+            - type: object
+              required: [requestId]
+          description: >
+            A complete Error object. Unlike a top-level Error, requestId is
+            required here: a partial is tied to the request that produced it.
 
     ErrorDocument:
       type: object

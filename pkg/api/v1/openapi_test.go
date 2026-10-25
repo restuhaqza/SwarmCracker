@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/stretchr/testify/assert"
@@ -432,12 +433,13 @@ func TestOpenAPISingleResourceDocuments(t *testing.T) {
 			requireTypedResponse(t, doc, tc.path, "403", "ErrorDocument")
 			requireTypedResponse(t, doc, tc.path, "4XX", "ErrorDocument")
 
-			params := doc.Paths.Find(tc.path).Get.Parameters
-			require.Len(t, params, 1)
-			require.Equal(t, "id", params[0].Value.Name)
-			require.Equal(t, "path", params[0].Value.In,
+			// The id path parameter is the route's identity; a get-by-id may
+			// also take an optional query parameter (health), so only the path
+			// parameter is pinned here.
+			id := findParameter(t, doc.Paths.Find(tc.path).Get.Parameters, "id")
+			require.Equal(t, "path", id.In,
 				"%s id parameter must be a path parameter", tc.path)
-			require.True(t, params[0].Value.Required)
+			require.True(t, id.Required)
 		})
 	}
 }
@@ -572,7 +574,7 @@ func TestOpenAPIListParameters(t *testing.T) {
 	}{
 		{"/v1/services", []string{"limit", "cursor", "label"}},
 		{"/v1/services/{id}/tasks", []string{"id", "limit", "cursor"}},
-		{"/v1/tasks", []string{"limit", "cursor"}},
+		{"/v1/tasks", []string{"limit", "cursor", "health"}},
 		{"/v1/nodes", []string{"label", "limit", "cursor"}},
 		{"/v1/networks", []string{"limit", "cursor", "label"}},
 		{"/v1/configs", []string{"limit", "cursor", "label"}},
@@ -602,6 +604,202 @@ func TestOpenAPIListParameters(t *testing.T) {
 
 		require.ElementsMatchf(t, tc.params, names,
 			"%s must declare exactly these parameters", tc.path)
+	}
+}
+
+// TestOpenAPIExec pins the exec route and its wire DTOs. Exec is the one v1
+// route whose response is a stream, so the contract must say so explicitly.
+func TestOpenAPIExec(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	item := doc.Paths.Find("/v1/tasks/{id}/exec")
+	require.NotNil(t, item, "exec path missing")
+	require.NotNil(t, item.Post, "exec POST operation missing")
+	op := item.Post
+
+	require.Contains(t, op.Description, "tasks:exec", "the operation must name its scope")
+	require.Contains(t, op.Description, "tty_not_supported",
+		"the TTY follow-up must be documented on the operation")
+	require.Contains(t, op.Description, "must be running",
+		"exec must state that it needs a live task")
+
+	id := findParameter(t, op.Parameters, "id")
+	require.True(t, id.Required)
+	require.NotNil(t, id.Schema)
+	require.True(t, id.Schema.Value.Type.Is("string"))
+
+	// The operation inherits the global bearer requirement, like every other
+	// route in this file.
+	require.Empty(t, op.Security, "exec must inherit the global bearer requirement")
+
+	require.NotNil(t, op.RequestBody)
+	require.True(t, op.RequestBody.Value.Required)
+	requestMedia := op.RequestBody.Value.Content.Get(v1MediaType)
+	require.NotNilf(t, requestMedia, "the exec request body must be %s", v1MediaType)
+	require.NotNil(t, requestMedia.Schema)
+	require.Equal(t, "#/components/schemas/ExecRequest", requestMedia.Schema.Ref)
+
+	ok := op.Responses.Value("200")
+	require.NotNil(t, ok, "exec 200 response missing")
+	require.NotNil(t, ok.Value)
+	stream := ok.Value.Content.Get(NDJSONMediaType)
+	require.NotNilf(t, stream, "the exec response must be %s", NDJSONMediaType)
+	require.NotNil(t, stream.Schema)
+	require.Equal(t, "#/components/schemas/ExecFrame", stream.Schema.Ref)
+	require.NotNil(t, ok.Value.Description)
+	require.Contains(t, *ok.Value.Description, "per line",
+		"the stream must be documented as one JSON object per line")
+	require.Contains(t, *ok.Value.Description, "exit",
+		"a terminal exit frame must be documented")
+
+	// Every failure is a typed v1 error document.
+	for _, status := range []string{"400", "401", "403", "413", "415", "429", "501", "503"} {
+		response := op.Responses.Value(status)
+		require.NotNilf(t, response, "exec %s response missing", status)
+		require.NotNilf(t, response.Value, "exec %s response unresolved", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"exec %s must be declared in %s", status, v1MediaType)
+	}
+
+	// The DTO schemas describe exactly what the Go types put on the wire.
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{name: "ExecRequest", value: ExecRequest{Command: []string{"echo", "hi"}}},
+		{name: "ExecRequest", value: ExecRequest{
+			Command:   []string{"env"},
+			Env:       map[string]string{"APP": "prod"},
+			WorkDir:   "/srv",
+			TTY:       true,
+			Stdin:     true,
+			TimeoutMs: 1500,
+		}},
+		{name: "ExecFrame", value: StdoutFrame([]byte("hello\n"))},
+		{name: "ExecFrame", value: StderrFrame([]byte("warning\n"))},
+		{name: "ExecFrame", value: ExitFrame(0)},
+		{name: "ExecFrame", value: SignalExitFrame(9)},
+		{name: "ExecFrame", value: ErrorFrame("internal")},
+	} {
+		data, err := json.Marshal(tc.value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		validateAgainst(t, doc, tc.name, generic)
+	}
+
+	requestSchema := documentSchemaProperties(t, doc, "ExecRequest")
+	for _, key := range []string{"command", "env", "workdir", "tty", "stdin", "timeoutMs"} {
+		require.Containsf(t, requestSchema, key, "ExecRequest.%s missing", key)
+	}
+	require.NotContains(t, requestSchema, "timeout_ms", "exec keys are camelCase")
+
+	frameSchema := documentSchemaProperties(t, doc, "ExecFrame")
+	for _, key := range []string{"type", "data", "exitCode", "signal", "code"} {
+		require.Containsf(t, frameSchema, key, "ExecFrame.%s missing", key)
+	}
+	require.NotContains(t, frameSchema, "exit_code", "exec keys are camelCase")
+}
+
+// TestOpenAPILogsAndFiles pins the two remaining task-scoped routes. Logs are
+// the second NDJSON stream and files are the only raw-body route, so the
+// contract must say so explicitly instead of implying a JSON envelope.
+func TestOpenAPILogsAndFiles(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	logs := doc.Paths.Find("/v1/tasks/{id}/logs")
+	require.NotNil(t, logs, "logs path missing")
+	require.NotNil(t, logs.Get, "logs GET operation missing")
+	op := logs.Get
+
+	require.Contains(t, op.Description, "tasks:logs", "the operation must name its scope")
+	require.Contains(t, op.Description, "selectors", "logs must state they are not selector-gated")
+	require.Contains(t, op.Description, "eof", "the follow/eof rule must be documented")
+	require.Contains(t, op.Description, "after the task exits",
+		"logs must state that they stay available after a task exits")
+
+	id := findParameter(t, op.Parameters, "id")
+	require.True(t, id.Required)
+	for _, name := range []string{"tail", "since", "follow"} {
+		param := findParameter(t, op.Parameters, name)
+		require.NotNilf(t, param.Schema, "logs %s parameter schema missing", name)
+	}
+
+	ok := op.Responses.Value("200")
+	require.NotNil(t, ok, "logs 200 response missing")
+	stream := ok.Value.Content.Get(NDJSONMediaType)
+	require.NotNilf(t, stream, "the log response must be %s", NDJSONMediaType)
+	require.Equal(t, "#/components/schemas/LogFrame", stream.Schema.Ref)
+
+	for _, status := range []string{"400", "401", "403", "404", "429", "501", "503"} {
+		response := op.Responses.Value(status)
+		require.NotNilf(t, response, "logs %s response missing", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"logs %s must be declared in %s", status, v1MediaType)
+	}
+
+	files := doc.Paths.Find("/v1/tasks/{id}/files")
+	require.NotNil(t, files, "files path missing")
+	require.NotNil(t, files.Get, "files GET operation missing")
+	require.NotNil(t, files.Put, "files PUT operation missing")
+
+	for _, fileOp := range []*openapi3.Operation{files.Get, files.Put} {
+		require.Contains(t, fileOp.Description, "tasks:files", "the operation must name its scope")
+		require.Contains(t, fileOp.Description, "task.files", "the audit action must be documented")
+		require.Contains(t, fileOp.Description, "must be running",
+			"files must state that the task has to be running")
+
+		pathParam := findParameter(t, fileOp.Parameters, "path")
+		require.True(t, pathParam.Required, "path is required")
+		require.NotContains(t, fileOp.Description, "tar", "there is no archive mode")
+	}
+
+	getFile := files.Get.Responses.Value("200")
+	require.NotNil(t, getFile, "files GET 200 response missing")
+	octets := getFile.Value.Content.Get("application/octet-stream")
+	require.NotNil(t, octets, "a file read must be application/octet-stream")
+	require.Equal(t, "binary", octets.Schema.Value.Format, "the body is raw bytes")
+
+	for _, status := range []string{"400", "401", "403", "404", "429", "501", "503"} {
+		response := files.Get.Responses.Value(status)
+		require.NotNilf(t, response, "files GET %s response missing", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"files GET %s must be declared in %s", status, v1MediaType)
+	}
+
+	putFile := files.Put
+	require.NotNil(t, putFile.RequestBody)
+	require.True(t, putFile.RequestBody.Value.Required)
+	upload := putFile.RequestBody.Value.Content.Get("application/octet-stream")
+	require.NotNil(t, upload, "a file write body must be application/octet-stream")
+	require.Equal(t, "binary", upload.Schema.Value.Format, "the body is raw bytes")
+
+	noContent := putFile.Responses.Value("204")
+	require.NotNil(t, noContent, "a successful write is 204")
+	for _, status := range []string{"400", "401", "403", "404", "413", "415", "429", "501", "503"} {
+		response := putFile.Responses.Value(status)
+		require.NotNilf(t, response, "files PUT %s response missing", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"files PUT %s must be declared in %s", status, v1MediaType)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		value LogFrame
+	}{
+		{name: "LogFrame", value: LogDataFrame(time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC), []byte("hello\n"))},
+		{name: "LogFrame", value: LogEOFFrame()},
+	} {
+		data, err := json.Marshal(tc.value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		validateAgainst(t, doc, tc.name, generic)
+	}
+
+	frameSchema := documentSchemaProperties(t, doc, "LogFrame")
+	for _, key := range []string{"type", "stream", "time", "data"} {
+		require.Containsf(t, frameSchema, key, "LogFrame.%s missing", key)
 	}
 }
 
@@ -1209,4 +1407,102 @@ func TestOpenAPIEvents(t *testing.T) {
 	var value any
 	require.NoError(t, json.Unmarshal(data, &value))
 	validateAgainst(t, doc, "Event", value)
+}
+
+// TestOpenAPIHealth pins the health capability surface: the query parameter on
+// both task reads, the 207 partial list, the 501 capability failure and the
+// single-task 503. The 207 body is a normal TaskList, never an Error document.
+func TestOpenAPIHealth(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	marshal := func(t *testing.T, value any) any {
+		t.Helper()
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		return generic
+	}
+
+	for _, path := range []string{"/v1/tasks", "/v1/tasks/{id}"} {
+		item := doc.Paths.Find(path)
+		require.NotNilf(t, item, "%s path missing", path)
+		require.NotNilf(t, item.Get, "%s GET operation missing", path)
+
+		param := findParameter(t, item.Get.Parameters, "health")
+		assert.Equal(t, "query", param.In, "%s health must be a query parameter", path)
+		assert.False(t, param.Required, "%s health is optional", path)
+		require.NotNilf(t, param.Schema, "%s health schema missing", path)
+		assert.True(t, param.Schema.Value.Type.Is("boolean"),
+			"%s health must be a boolean", path)
+		assert.Contains(t, param.Description, "health",
+			"%s health must be documented", path)
+	}
+
+	// The list answers a 207 partial with a normal TaskList, readable tasks
+	// included.
+	requireTypedResponse(t, doc, "/v1/tasks", "207", "TaskList")
+	partial := doc.Paths.Find("/v1/tasks").Get.Responses.Value("207")
+	require.NotNil(t, partial.Value.Description)
+	assert.Contains(t, *partial.Value.Description, "partial")
+	assert.Contains(t, *partial.Value.Description, "items")
+
+	// Every partial[].error is a complete Error: the schema requires the same
+	// fields as ErrorDocument.error plus requestId.
+	partialError := doc.Components.Schemas["Partial"].Value.Properties["error"].Value
+	require.NotEmpty(t, partialError.AllOf, "Partial.error must extend Error")
+	requestIDRequired := false
+	for _, clause := range partialError.AllOf {
+		require.NotNil(t, clause.Value)
+		for _, field := range clause.Value.Required {
+			if field == "requestId" {
+				requestIDRequired = true
+			}
+		}
+	}
+	assert.True(t, requestIDRequired, "Partial.error must require requestId")
+
+	enriched := NewTaskList([]Task{
+		{ID: "t1abc", Revision: "42", ServiceID: "svc-1", State: "running", DesiredState: "running",
+			NodeID: "n1", NodeName: "node-1", Health: &TaskHealth{Status: "healthy"}},
+		{ID: "t2def", Revision: "43", ServiceID: "svc-1", State: "running", DesiredState: "running",
+			NodeID: "n2", NodeName: "node-2"},
+	})
+	enriched.Partial = []Partial{{
+		NodeID:   "n2",
+		NodeName: "node-2",
+		Error: Error{
+			Code:      "unavailable",
+			Message:   `health is unavailable for node "node-2"`,
+			RequestID: "req_abc123def456",
+			Retryable: true,
+			Details:   map[string]any{"nodeId": "n2"},
+		},
+	}}
+	validateAgainst(t, doc, "TaskList", marshal(t, enriched))
+
+	// The capability and single-task failures are typed error documents.
+	requireTypedResponse(t, doc, "/v1/tasks", "501", "ErrorDocument")
+	requireTypedResponse(t, doc, "/v1/tasks/{id}", "501", "ErrorDocument")
+	requireTypedResponse(t, doc, "/v1/tasks/{id}", "503", "ErrorDocument")
+
+	// TaskHealth is exactly the Go DTO: five camelCase fields.
+	validateAgainst(t, doc, "TaskHealth", marshal(t, TaskHealth{
+		Status:        "failing",
+		FailingStreak: 2,
+		Output:        "connection refused",
+		Command:       "curl -fsS http://127.0.0.1/",
+		CheckedAt:     "2026-10-24T12:00:00.123456789Z",
+	}))
+
+	properties := documentSchemaProperties(t, doc, "TaskHealth")
+	for _, key := range []string{"status", "failingStreak", "output", "command", "checkedAt"} {
+		assert.Containsf(t, properties, key, "TaskHealth.%s missing", key)
+	}
+	assert.NotContains(t, properties, "failing_streak", "health keys are camelCase")
+
+	status := doc.Components.Schemas["TaskHealth"].Value.Properties["status"].Value
+	assert.ElementsMatch(t,
+		[]string{"starting", "healthy", "failing", "unhealthy"}, status.Enum,
+		"the status enum must match runtime.VMHealth states")
 }

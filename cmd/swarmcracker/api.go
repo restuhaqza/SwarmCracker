@@ -74,10 +74,10 @@ func remoteUnsupported() error {
 			"use a read command with -o json or -o name")
 }
 
-// remoteCapableReadPaths are the read commands that understand --host. The list
-// is explicit so a new command cannot inherit remote support by accident, and a
+// remoteCapablePaths are the commands that understand --host. The list is
+// explicit so a new command cannot inherit remote support by accident, and a
 // command outside it fails loudly instead of reading the local cluster.
-var remoteCapableReadPaths = map[string]struct{}{
+var remoteCapablePaths = map[string]struct{}{
 	"swarmcracker service ls":      {},
 	"swarmcracker service inspect": {},
 	"swarmcracker service ps":      {},
@@ -91,6 +91,9 @@ var remoteCapableReadPaths = map[string]struct{}{
 	"swarmcracker secret inspect":  {},
 	"swarmcracker network ls":      {},
 	"swarmcracker network inspect": {},
+	// vm exec is the first remote-capable mutation: it streams a command's
+	// output from the node that runs the task through the public API.
+	"swarmcracker vm exec": {},
 }
 
 // commandAllowsRemote reports whether cmd may run when --host is set. The
@@ -109,7 +112,7 @@ func commandAllowsRemote(cmd *cobra.Command) bool {
 		return true
 	}
 
-	_, ok := remoteCapableReadPaths[path]
+	_, ok := remoteCapablePaths[path]
 	return ok
 }
 
@@ -125,8 +128,8 @@ func guardRemoteHost(cmd *cobra.Command, _ []string) error {
 
 	return output.NewErrorf(output.CodeUsage,
 		"--host is not supported by %q: this command only reads the local cluster; "+
-			"remote reads are available on service/task/node/config/secret/network ls|inspect|ps "+
-			"(with -o json or -o name)", cmd.CommandPath())
+			"remote operations are available on service/task/node/config/secret/network ls|inspect|ps "+
+			"and vm exec (with -o json or -o name where it applies)", cmd.CommandPath())
 }
 
 // newAPICommand groups the programmatic-API operator commands.

@@ -87,11 +87,25 @@ type Client interface {
 	WatchEvents(context.Context, v1.EventOptions) (<-chan v1.Event, <-chan error, error)
 }
 
+// Broker is the manager's node-broker transport. The public handler depends on
+// the behaviour (resolve, authorize, relay), not on pkg/broker's concrete
+// Manager, so tests can substitute one and the packages stay acyclic.
+type Broker interface {
+	Proxy(ctx context.Context, w http.ResponseWriter, r *http.Request, taskRef, op string) error
+	// Health reads one task's live health from the node that hosts it. A nil
+	// TaskHealth with a nil error means the task publishes none: that is an
+	// absent value, not a failure.
+	Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, error)
+}
+
 // Config is the server's wiring. Tokens may be nil for a Unix-socket-only
 // deployment: Handler then rejects every request, UnixHandler still works.
 type Config struct {
 	Client Client
 	Tokens *TokenStore
+	// Broker relays task-scoped operations (exec today) to the node that runs
+	// the task. A nil broker leaves those routes answering 501.
+	Broker Broker
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore
@@ -104,10 +118,18 @@ type Config struct {
 	ServerVersion string
 	GRPCVersion   string
 	ClusterID     string
-	Capabilities  []string
+	// Capabilities is the advertised capability list. Nil means the served
+	// surface: read, write and events. New always adds the broker operations
+	// (exec, logs, files, health) when Broker is non-nil, so a supplied list can
+	// narrow the read/write surface but never deny an operation the server
+	// actually serves: a wired broker and GET /v1/version cannot disagree.
+	Capabilities []string
 	// EventHeartbeat is the SSE/NDJSON keep-alive interval. Zero means 15s;
 	// tests set a short interval.
 	EventHeartbeat time.Duration
+	// HealthPageBudget is the wall-clock budget of one task list's health
+	// fan-out. Zero means 5s; tests set a short budget.
+	HealthPageBudget time.Duration
 	// RateLimit is the per-token bucket. Zero installs the 10 req/s, burst 20
 	// default in New.
 	RateLimit *RateLimiter
@@ -128,8 +150,17 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Capabilities == nil {
 		cfg.Capabilities = []string{"read", "write", "events"}
 	}
+	// A wired broker serves these operations, so they are advertised no matter
+	// what the caller supplied. This package owns the advertisement; an embedder
+	// that builds a broker cannot forget the capability it enables.
+	if cfg.Broker != nil {
+		cfg.Capabilities = withBrokerCapabilities(cfg.Capabilities)
+	}
 	if cfg.EventHeartbeat <= 0 {
 		cfg.EventHeartbeat = defaultEventHeartbeat
+	}
+	if cfg.HealthPageBudget <= 0 {
+		cfg.HealthPageBudget = healthPageBudget
 	}
 	if cfg.RateLimit == nil {
 		cfg.RateLimit = NewRateLimiter(DefaultRatePerSecond, DefaultRateBurst)
@@ -143,6 +174,32 @@ func New(cfg Config) (*Server, error) {
 	s := &Server{cfg: cfg, mux: http.NewServeMux()}
 	s.routes()
 	return s, nil
+}
+
+// brokerCapabilities are the operations only a configured Broker can serve.
+// They are the single list New unions into the advertisement, so the version
+// document cannot promise less than the routes reach.
+var brokerCapabilities = []string{"exec", "logs", "files", "health"}
+
+// withBrokerCapabilities returns capabilities plus every broker operation it
+// lacks, preserving the caller's order and appending the missing ones in the
+// canonical order. An explicitly narrowed list keeps its narrowing for every
+// other capability; it cannot remove an operation the server serves.
+func withBrokerCapabilities(capabilities []string) []string {
+	effective := make([]string, len(capabilities), len(capabilities)+len(brokerCapabilities))
+	copy(effective, capabilities)
+
+	present := make(map[string]struct{}, len(effective))
+	for _, capability := range effective {
+		present[capability] = struct{}{}
+	}
+	for _, capability := range brokerCapabilities {
+		if _, ok := present[capability]; ok {
+			continue
+		}
+		effective = append(effective, capability)
+	}
+	return effective
 }
 
 // routes registers every route with the method it serves and the scope it
@@ -171,6 +228,18 @@ func (s *Server) routes() {
 
 	s.handleRoutes("/v1/tasks", read(ScopeTasksRead, s.listTasks))
 	s.handleRoutes("/v1/tasks/{id}", read(ScopeTasksRead, s.getTask))
+	// Exec is a stream, not a JSON document: it must not pass through the
+	// Idempotency-Key middleware, which buffers a response to replay it.
+	s.handleRoutes("/v1/tasks/{id}/exec",
+		streamPost(ScopeTasksExec, s.execTask))
+	// Logs are an NDJSON stream and files are raw bytes. Neither is a JSON
+	// document, and a PUT must not be buffered by the Idempotency-Key
+	// middleware, so only POST ever takes that path.
+	s.handleRoutes("/v1/tasks/{id}/logs", read(ScopeTasksLogs, s.taskLogs))
+	s.handleRoutes("/v1/tasks/{id}/files",
+		read(ScopeTasksFiles, s.getTaskFile),
+		write(http.MethodPut, ScopeTasksFiles, s.putTaskFile),
+	)
 
 	s.handleRoutes("/v1/nodes",
 		read(ScopeNodesRead, s.listNodes),
@@ -222,6 +291,9 @@ type route struct {
 	method string
 	scope  Scope
 	handle http.HandlerFunc
+	// streaming marks a route whose response is a stream. It opts out of the
+	// Idempotency-Key middleware, which buffers a whole response to replay it.
+	streaming bool
 }
 
 // read registers a GET route.
@@ -236,6 +308,12 @@ func write(method string, scope Scope, h http.HandlerFunc) route {
 	return route{method: method, scope: scope, handle: h}
 }
 
+// streamPost registers a POST whose response is streamed rather than a single
+// document. It is the only route that skips the Idempotency-Key middleware.
+func streamPost(scope Scope, h http.HandlerFunc) route {
+	return route{method: http.MethodPost, scope: scope, handle: h, streaming: true}
+}
+
 // handleRoutes registers every method of one path plus the typed method
 // rejection for the rest.
 //
@@ -247,7 +325,7 @@ func (s *Server) handleRoutes(pattern string, routes ...route) {
 	methods := make([]string, 0, len(routes))
 	for _, rt := range routes {
 		handler := rt.handle
-		if rt.method == http.MethodPost {
+		if rt.method == http.MethodPost && !rt.streaming {
 			// A POST is a create or a rollback: the only routes an
 			// Idempotency-Key can protect. Auth and scope run first, so an
 			// unauthorized request never reserves a key.
@@ -360,7 +438,15 @@ func withCleanPath(r *http.Request) *http.Request {
 }
 
 func requestIDFrom(r *http.Request) string {
-	id, _ := r.Context().Value(requestIDKey{}).(string)
+	return RequestIDFromContext(r.Context())
+}
+
+// RequestIDFromContext returns the request ID the middleware stored on a
+// request's context, or "" when there is none. It is the reader the daemon wires
+// into the broker manager, so a node-side fetch can carry the caller's request
+// ID without the broker importing this package.
+func RequestIDFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(requestIDKey{}).(string)
 	return id
 }
 
@@ -385,7 +471,8 @@ func checkAccept(r *http.Request) error {
 	for _, part := range strings.Split(raw, ",") {
 		mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
 		switch mediaType {
-		case "*/*", "application/json", MediaType, "text/event-stream", "application/x-ndjson":
+		case "*/*", "application/json", MediaType, "text/event-stream", "application/x-ndjson",
+			"application/octet-stream":
 			return nil
 		}
 	}
@@ -494,6 +581,15 @@ func (s *Server) writeJSONWithETag(w http.ResponseWriter, r *http.Request, statu
 	_, _ = w.Write(body)
 }
 
+// WriteError writes one public v1 error document with the status implied by its
+// code, using the request ID the middleware stored on the request. It is
+// exported for the broker manager's ErrorWriter hook: a transport failure is
+// detected inside the proxy, but the public envelope belongs to this package.
+func WriteError(w http.ResponseWriter, r *http.Request, err error) {
+	typed := typedError(err)
+	writeErrorDocument(w, r, statusForCode(typed.Code), typed)
+}
+
 // writeError writes one typed error document with the status implied by its
 // code. Every failure carries the same request ID that the middleware put in
 // X-Request-Id.
@@ -505,8 +601,12 @@ func (s *Server) writeError(w http.ResponseWriter, r *http.Request, err error) {
 // writeErrorStatus writes a typed error document with an explicit status, for
 // failures whose status the taxonomy cannot infer (405).
 func (s *Server) writeErrorStatus(w http.ResponseWriter, r *http.Request, status int, err error) {
-	typed := typedError(err)
+	writeErrorDocument(w, r, status, typedError(err))
+}
 
+// writeErrorDocument renders one typed failure. It is the only place the v1
+// error envelope is built for the public server.
+func writeErrorDocument(w http.ResponseWriter, r *http.Request, status int, typed *output.Error) {
 	// Copy rather than mutate: the same *output.Error value may be shared by
 	// many requests (a client's sentinel error, for example).
 	payload := v1.Error{
