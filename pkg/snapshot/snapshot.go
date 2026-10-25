@@ -1044,7 +1044,8 @@ func callInstanceStart(ctx context.Context, socketPath string) error {
 
 // putFirecrackerAPI sends a PUT request to the Firecracker API over a Unix socket.
 func putFirecrackerAPI(ctx context.Context, socketPath, apiPath string, payload interface{}) error {
-	client := newUnixHTTPClient(socketPath, 30*time.Second)
+	client := firecrackerClientFactory(socketPath, 30*time.Second)
+	defer client.CloseIdleConnections()
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -1076,7 +1077,8 @@ func putFirecrackerAPI(ctx context.Context, socketPath, apiPath string, payload 
 
 // patchFirecrackerAPI sends a PATCH request to the Firecracker API over a Unix socket.
 func patchFirecrackerAPI(ctx context.Context, socketPath, apiPath string, payload interface{}) error {
-	client := newUnixHTTPClient(socketPath, 30*time.Second)
+	client := firecrackerClientFactory(socketPath, 30*time.Second)
+	defer client.CloseIdleConnections()
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -1225,10 +1227,25 @@ func fileSize(path string) (int64, error) {
 	return info.Size(), nil
 }
 
+// firecrackerClientFactory builds the client for a single Firecracker API call.
+// It is a variable only so tests can observe that call paths close what they
+// open; production never sets it.
+var firecrackerClientFactory = newUnixHTTPClient
+
+// newUnixHTTPClient returns a client scoped to one Firecracker API call.
+//
+// Keep-alives are disabled on purpose. Every call builds its own client, so a
+// pooled connection could never be reused: it would stay open inside
+// Firecracker until it timed out or the process exited. Firecracker caps how
+// many API connections it accepts, and the leak was enough to exhaust it after
+// a handful of pause/snapshot/resume cycles — the next call then failed with
+// "Too many open connections" and left the VM paused. With keep-alives off the
+// connection is closed once the caller closes the response body.
 func newUnixHTTPClient(socketPath string, timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
+			DisableKeepAlives: true,
 			DialContext: func(_ context.Context, _, _ string) (net.Conn, error) {
 				return net.Dial("unix", socketPath)
 			},
@@ -1238,13 +1255,16 @@ func newUnixHTTPClient(socketPath string, timeout time.Duration) *http.Client {
 
 func waitForSocket(socketPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	client := newUnixHTTPClient(socketPath, 100*time.Millisecond)
+	client := firecrackerClientFactory(socketPath, 100*time.Millisecond)
+	defer client.CloseIdleConnections()
 
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(socketPath); err == nil {
 			resp, err := client.Get("http://localhost/")
-			if err == nil {
+			if resp != nil {
 				resp.Body.Close()
+			}
+			if err == nil {
 				return nil
 			}
 		}
