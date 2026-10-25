@@ -59,6 +59,9 @@ swarmcracker vm snapshot list --node <node-id>
 # Restore a VM from a snapshot
 swarmcracker vm snapshot restore <snapshot-id>
 
+# Stop the VM a restore started (SIGTERM, then SIGKILL after 10 s)
+swarmcracker vm snapshot stop-restored <task-id>
+
 # Delete a snapshot
 swarmcracker vm snapshot delete <snapshot-id>
 
@@ -77,6 +80,22 @@ VM started by hand with `vm create --rootfs`): a file that does not exist is
 never recorded, and the snapshot then behaves as it did before disk copies
 existed — a restore needs the original disk in place.
 
+`stop-restored` stops the VM a restore started. On the node it reads
+`<socket-dir>/<task>-restored.sock` (default `/var/run/firecracker`), resolves the
+Firecracker PID from the process table, sends SIGTERM, waits up to ten seconds,
+sends SIGKILL if the process is still there, and removes the socket. `<task>` may
+be a task ID or a unique prefix of one. With `-H` the command asks the manager
+instead, which relays the pass to the node that holds the restored VM.
+
+```bash
+# Local: on the node that restored the VM
+swarmcracker vm snapshot stop-restored 5f3a1b2c9d
+
+# Remote: from anywhere with a token and the manager CA
+swarmcracker -H https://mgr:4244 --ca ca.pem \
+  --token-file token vm snapshot stop-restored 5f3a1b2c9d
+```
+
 ---
 
 ## HTTP API (experimental)
@@ -94,14 +113,17 @@ capability, so a client can feature-detect it.
 | `GET` | `/v1/tasks/{id}/snapshots` | list the task's snapshots |
 | `POST` | `/v1/tasks/{id}/snapshots/{sid}/restore` | restore one snapshot |
 | `DELETE` | `/v1/tasks/{id}/snapshots/{sid}` | delete one snapshot |
+| `DELETE` | `/v1/tasks/{id}/restored` | stop the VM a restore started |
 | `GET` | `/v1/snapshots?task={id}` | list (flat address) |
 | `POST` | `/v1/snapshots/{sid}/restore?task={id}` | restore (flat address) |
 | `DELETE` | `/v1/snapshots/{sid}?task={id}` | delete (flat address) |
 
-All seven routes require `tasks:snapshots` (a `runner` or `admin` token). The
+All eight routes require `tasks:snapshots` (a `runner` or `admin` token). The
 task-scoped forms are the primary address. The flat forms need `?task=` because a
 snapshot lives on the node that ran the task, and a snapshot id alone does not
 say which node to ask; a flat restore or delete without `task` is `400 invalid`.
+Stopping a restored VM has no flat form: the task is the only address, because
+the process belongs to the node that restored it.
 
 ```bash
 # Create, list, restore and delete through the task-scoped routes
@@ -114,6 +136,10 @@ curl -sS -H "Authorization: Bearer $TOKEN" "$API/v1/tasks/$TASK/snapshots"
 curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
   "$API/v1/tasks/$TASK/snapshots/$SNAPSHOT/restore"
 
+# Stop the restored VM (204, or 404 with details.reason "no_restored_vm")
+curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
+  "$API/v1/tasks/$TASK/restored"
+
 curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
   "$API/v1/tasks/$TASK/snapshots/$SNAPSHOT"
 
@@ -121,14 +147,15 @@ curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
 curl -sS -H "Authorization: Bearer $TOKEN" "$API/v1/snapshots?task=$TASK"
 ```
 
-Three behaviours are worth knowing before you script this:
+Four behaviours are worth knowing before you script this:
 
 - **A create needs a running task** (404 `task_not_running` otherwise) and pauses
   the VM for the whole snapshot: state, memory and the task disk. The manager's
-  default deadline is 30 s; a create past it is `504 timeout`. The node resumes
-  the VM even when the deadline fires or the copy fails, so a timed-out create
-  does not leave it paused. A large disk therefore wants a deadline above the
-  copy time (`ManagerConfig.SnapshotTimeout`).
+  default deadline is **5 minutes** (`--snapshot-timeout` on the daemon); a create
+  past it is `504 timeout`. Ten gigabytes over a filesystem without reflinks is
+  not a 30-second copy. The node resumes the VM even when the deadline fires or
+  the copy fails, so a timed-out create does not leave it paused. Set the flag
+  above your disk-copy time.
 - **A restore is refused while the task is running**: `409 conflict` with
   `details.reason: "restore_task_running"`. The live VM still owns its rootfs,
   and a second Firecracker on the same `rootfs.ext4` would corrupt both. Stop the
@@ -141,11 +168,20 @@ Three behaviours are worth knowing before you script this:
   it is the live VM's disk. A snapshot whose copy and whose task disk are both
   missing is `409 conflict` with `details.reason: "snapshot_incomplete"`; it
   never starts a VM with a missing disk.
+- **A restored VM is stopped explicitly.** It has no SwarmKit task, so `task rm`
+  or a service update leaves it running. `DELETE /v1/tasks/{id}/restored` (and
+  `swarmcracker vm snapshot stop-restored <task>`) sends SIGTERM, waits up to ten
+  seconds, sends SIGKILL, and removes the `<task>-restored.sock` socket. A node
+  that tracks no restored VM answers `404 not_found` with
+  `details.reason: "no_restored_vm"`; the stop is audited as
+  `task.restored.stop`.
 
 Restore is experimental for a second reason: it starts a Firecracker process
 outside SwarmKit's task tracker. The restored VM is not scheduler-managed, so if
-you do not stop it through the node, an operator must stop it manually. A crash
-during restore can leave the process behind too. See
+you do not stop it through the node, an operator must stop it manually; use
+`vm snapshot stop-restored` (or the `restored` route) to end it. A crash during
+restore can leave the process behind too, and a process from an earlier daemon
+lifetime is no longer tracked, so it needs a manual `kill`. See
 [Limitations](#limitations) and the API reference's
 [Snapshots section](/reference/api/#snapshots-experimental).
 
@@ -171,6 +207,10 @@ snapshot:
 | `max_age` | `168h` (7 days) | Age threshold used by `cleanup` |
 | `auto_snapshot` | `false` | Snapshot automatically on VM start |
 | `compress` | `false` | Compress snapshot files |
+
+The daemon flags that back this surface are `--snapshots-enable`,
+`--snapshot-dir` and `--snapshot-timeout` (default `5m`, the deadline for one
+snapshot request relayed to a node; raise it on a filesystem without reflinks).
 
 ---
 
@@ -204,7 +244,10 @@ copy included, and `snapshot list`/`size_bytes` include it.
 A create leaves nothing half-written: it builds the snapshot in a
 `snapshot-staging-*` directory and renames it into place after the metadata is
 written. A directory with that prefix is an interrupted create, is ignored by
-`list`, and is swept by the next manager start once it is an hour old.
+`list`, and is swept by the next manager start once it is an hour old. The same
+sweep removes a reserved `snap-*` directory that has no `metadata.json`: that is
+a SIGKILL between reserving the ID and publishing the finished snapshot, not a
+snapshot. A real snapshot always has metadata, so it is never swept.
 
 ---
 
@@ -306,6 +349,19 @@ swarmcracker vm create --memory 256 alpine:latest
 
 # Or reclaim space
 swarmcracker vm snapshot cleanup --max-age 24h
+```
+
+### A Restored VM Will Not Stop
+
+```bash
+# Check that the node still tracks the process
+ls -l /var/run/firecracker/<task>-restored.sock
+
+# Try the explicit stop (ten-second grace, then SIGKILL)
+swarmcracker vm snapshot stop-restored <task>
+
+# A process from an earlier daemon lifetime is no longer tracked: find it
+ps -eo pid,args | grep firecracker
 ```
 
 ---

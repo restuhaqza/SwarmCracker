@@ -368,6 +368,7 @@ phase-2 writes below.
 | GET | `/v1/tasks/{id}/snapshots` | `SnapshotList` (experimental) |
 | POST | `/v1/tasks/{id}/snapshots/{sid}/restore` | `SnapshotDocument` (experimental) |
 | DELETE | `/v1/tasks/{id}/snapshots/{sid}` | `204` (experimental) |
+| DELETE | `/v1/tasks/{id}/restored` | `204` (experimental; stops the VM a restore started) |
 | GET | `/v1/snapshots?task={id}` | `SnapshotList` (flat address; `task` required) |
 | POST | `/v1/snapshots/{sid}/restore?task={id}` | `SnapshotDocument` (flat address) |
 | DELETE | `/v1/snapshots/{sid}?task={id}` | `204` (flat address) |
@@ -657,7 +658,7 @@ cluster's mutual TLS identity, never the caller's bearer token.
 
 Snapshots are **disabled by default** and enabled per node with
 `--snapshots-enable` (plus the node broker they are relayed through). While they
-are off, all seven snapshot routes answer `501 not_implemented` with
+are off, every snapshot route answers `501 not_implemented` with
 `details.capability: "snapshots"`, before the task is resolved and before
 anything is audited.
 
@@ -666,16 +667,22 @@ anything is audited.
   require `?task={id}`: a snapshot lives on one node, and the flat path alone
   does not name a task to resolve that node through.
 - **Create** snapshots a running task's VM on its node and may pause it briefly.
-  The manager's default deadline is 30 s; a create that exceeds it is `504` with
-  code `timeout`. A task that is not running is `404` with
+  It also copies the task disk, so the manager's default deadline is **5
+  minutes** (`--snapshot-timeout`); a create that exceeds it is `504` with code
+  `timeout`. A task that is not running is `404` with
   `details.reason: "task_not_running"`.
 - **Restore** is refused for a task that is still running: `409 conflict` with
   `details.reason: "restore_task_running"`. The live VM owns its rootfs and a
   restored second VM on the same file would corrupt both. Restoring the snapshot
   of an exited task is the supported case.
 - **Restore can outlive SwarmKit.** It starts a Firecracker process outside
-  SwarmKit's task tracker, so the restored VM is not scheduler-managed. If it is
-  not stopped through the node, an operator must stop it manually.
+  SwarmKit's task tracker, so the restored VM is not scheduler-managed.
+  `DELETE /v1/tasks/{id}/restored` stops it on the node that started it: SIGTERM,
+  up to ten seconds of grace, SIGKILL, then the restored socket is removed. A
+  node that tracks no restored VM for the task — never restored there, already
+  stopped, or restored by an earlier daemon lifetime — answers `404 not_found`
+  with `details.reason: "no_restored_vm"`. The route takes no body or query and
+  is audited as `task.restored.stop`.
 
 See the [snapshots guide](/guides/snapshots/#http-api-experimental) for the CLI
 workflow, the file layout and the known limitations; `api/openapi.yaml` has the
@@ -778,6 +785,7 @@ health:
 | `--broker-listen` | `0.0.0.0:4245` | mTLS listen address for the node broker; empty disables it |
 | `--snapshots-enable` | `false` | enable the experimental snapshot capability on this node |
 | `--snapshot-dir` | `/var/lib/firecracker/snapshots` | pkg/snapshot root (`<id>/metadata.json` is the source of truth) |
+| `--snapshot-timeout` | `5m` | deadline for one snapshot request relayed to a node; create copies the whole task disk |
 
 The manager always dials the fixed broker port `4245` and ignores any port in a
 node's advertised address — the address is reduced to its host and `4245` is
@@ -916,8 +924,8 @@ answers `501 not_implemented` with `details.capability: "audit"`.
 Phase 2 has started: service writes are audited today. Config, secret, network
 and node writes will add `config.create`, `config.update`, `config.delete`,
 `secret.create`, `secret.update`, `secret.delete`, `network.create`,
-`network.delete` and `node.update`, and phase 3 adds `task.exec`, `task.files`
-and `task.snapshot`.
+`network.delete` and `node.update`, and phase 3 adds `task.exec`, `task.files`,
+`task.snapshot` and `task.restored.stop`.
 
 ### Remote CLI reads
 
@@ -937,6 +945,10 @@ socket; use a read command with -o json or -o name`), and any command outside th
 remote reads above is refused the same way. It never silently falls back to the
 local cluster. Without `--host` the same commands read the local socket, so a
 cluster member needs no flags.
+
+Two mutations are remote-capable too: `vm exec` streams from the task's node, and
+`vm snapshot stop-restored` sends the DELETE to the node that holds the restored
+VM (`-H` is the only way to reach it from another machine).
 
 ```bash
 swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
