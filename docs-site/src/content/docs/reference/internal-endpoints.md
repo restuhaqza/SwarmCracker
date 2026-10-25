@@ -24,14 +24,22 @@ support commitment for these listeners. The supported, versioned surface is the
 
 | Port | Where | Listener | Purpose | Transport / authentication |
 |------|-------|----------|---------|----------------------------|
-| `4243` | manager | `GET /v1/ingress` | Serve the ingress routing table to the other nodes | TLS with **cluster mutual TLS** (node certificate required) |
-| `4243` | every node (manager: itself, workers: toward the manager) | `POST /v1/ingress/report` | Accept a node's report of the guest addresses it runs | TLS with **cluster mutual TLS**; node identity comes from the client certificate |
+| `4243` | manager | `GET /v1/ingress` | Serve the ingress routing table to the other nodes | **All interfaces** (`0.0.0.0`); TLS with **cluster mutual TLS** (node certificate required) |
+| `4243` | every node (manager: itself, workers: toward the manager) | `POST /v1/ingress/report` | Accept a node's report of the guest addresses it runs | **All interfaces** (`0.0.0.0`); TLS with **cluster mutual TLS**; node identity comes from the client certificate |
 | `4242` | every node | SwarmKit remote API (gRPC) | Raft replication between managers, agent registration and control-API traffic | TLS with **cluster mutual TLS**; a joining node also presents the **join token** |
 | `4245` | every node | Node broker (mTLS HTTP) | Relay `exec`, `attach`, `logs`, `files` and `health` from the manager to the node that runs the task | TLS with **cluster mutual TLS**; the manager's node certificate, never a caller's bearer token |
 | `8080` | every node | Health and metrics HTTP | `GET /healthz`, `GET /metrics`, `GET /v1/tasks/health` | **Loopback only** (`127.0.0.1:8080` by default), **no authentication** — the bind address is the boundary |
 
 The defaults above are what a stock `swarmd-firecracker` uses. Each has a flag;
 see [Changing or disabling a listener](#changing-or-disabling-a-listener).
+
+All three cluster listeners — `:4243`, `:4242` and `:4245` — bind **all
+interfaces** (`0.0.0.0`) by default, not loopback. None of them is protected by
+the host firewall the daemon does not manage: **cluster mutual TLS is the only
+boundary**. Anything that can route to the port can attempt the handshake, and
+anything holding a valid cluster node certificate passes it. Restricting these
+ports to the cluster network is therefore the operator's job, not the daemon's —
+see [Firewalling the cluster listeners](#firewalling-the-cluster-listeners).
 
 ## `:4243` — ingress routing table
 
@@ -41,11 +49,21 @@ reports below) and serves it; every node fetches it and programs its own load
 balancer and resolver from the result. `GET /v1/ingress` returns that table as
 a JSON document.
 
-**Transport and authentication.** The server is started with
+**Transport and authentication.** The listener is
+`fmt.Sprintf(":%d", port)` in `startIngressManager`, so with the default port it
+binds **`0.0.0.0:4243` — every interface, not loopback**. There is no bind-address
+flag: `--ingress-mesh` only enables or disables the mesh and `--ingress-port`
+only changes the port. The only access control is TLS: the server is started with
 `tls.RequireAndVerifyClientCert` against the cluster CA, so only a holder of a
 valid cluster node certificate can read the table. There is no bearer token, no
 basic auth and no unauthenticated mode. A client that cannot present a node
 certificate is rejected during the handshake.
+
+**Exposure.** Cluster mutual TLS is the *only* boundary on `:4243`. The daemon
+does not restrict the bind address and does not install firewall rules, so the
+port is as reachable as the host's network and firewall allow. Making it
+cluster-only is an operational step the operator owns — see
+[Firewalling the cluster listeners](#firewalling-the-cluster-listeners).
 
 **Private — not part of the v1 contract.** The response body is an internal
 struct with no `schemaVersion` and no stability guarantee; it may gain, lose or
@@ -62,7 +80,8 @@ addresses of the tasks it runs (`{"tasks":[{"task_id":"…","ips":["…"]}]}`) e
 few seconds; the manager keeps the latest report per node with a short TTL and
 joins it with the control API view to answer service DNS.
 
-**Transport and authentication.** Same mutual-TLS listener as the table, with a
+**Transport and authentication.** Same mutual-TLS listener as the table, on the
+same all-interfaces bind (`0.0.0.0:4243`), with a
 stricter rule: the manager takes the reporting node's identity from the **client
 certificate's common name**, not from the body. A node cannot report addresses
 on another node's behalf, and a request without a peer certificate is answered
@@ -144,6 +163,19 @@ it exposes the same information as `/healthz` and `/metrics`, unauthenticated,
 to everyone who can reach the address. Keep the default loopback bind unless a
 scraper on another host forces otherwise, and firewall it if you do.
 
+## Firewalling the cluster listeners
+
+`:4243`, `:4242` and `:4245` all bind `0.0.0.0`. Their mutual-TLS handshake is
+the authentication boundary, but it is not a network boundary: a host that can
+route to the port still learns the service exists and still gets to spend TLS
+handshakes against it. There is no flag to rebind `:4243` and no daemon-managed
+firewall, so the network boundary is the operator's responsibility.
+
+The daemons assume every node sees every other node on these ports, so the rule
+is "cluster network only, cluster network wide" — not "manager only". Restating
+the page-level caution: a node certificate is the credential, so a lost or
+leaked certificate, not the bind address, is the real exposure.
+
 ## Other private surfaces (Unix sockets)
 
 These are not TCP ports but they follow the same rule: private, internal, and
@@ -179,7 +211,7 @@ this page documents.
 
 | Listener | Flag | Default | To disable |
 |----------|------|---------|------------|
-| `:4243` ingress mesh | `--ingress-mesh`, `--ingress-port` | enabled, `4243` | `--ingress-mesh=false` |
+| `:4243` ingress mesh | `--ingress-mesh`, `--ingress-port` | enabled, `0.0.0.0:4243` (no bind-address flag) | `--ingress-mesh=false`; firewall the port to keep it cluster-only |
 | `:4242` SwarmKit remote API | `--listen-remote-api` | `0.0.0.0:4242` | bind `127.0.0.1:4242` on worker-only nodes |
 | `:4245` node broker | `--broker-listen` | `0.0.0.0:4245` | empty string disables it (the manager's relayed routes then answer `501`) |
 | `:8080` health/metrics | `--health-addr` | `127.0.0.1:8080` | rebind to loopback, or firewall it |
