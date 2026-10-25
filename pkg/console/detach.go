@@ -7,6 +7,7 @@ package console
 import (
 	"errors"
 	"io"
+	"sync/atomic"
 )
 
 // The Ctrl-P Ctrl-Q detach sequence.
@@ -33,8 +34,9 @@ const readBufferBytes = 1024
 // boundaries: a read may end with a pending Ctrl-P byte, and the next read
 // decides whether it was a detach prefix or a byte to forward.
 //
-// A DetachReader is not safe for concurrent use; exactly one goroutine reads
-// from it, while any goroutine may watch Done.
+// A DetachReader is not safe for concurrent use by readers: exactly one
+// goroutine reads from it. Any goroutine may however call Detached or watch
+// Done while that read is in flight, because both observe atomics.
 type DetachReader struct {
 	r io.Reader
 
@@ -48,7 +50,9 @@ type DetachReader struct {
 	// pendingCtrlP carries a prefix byte across reads.
 	pendingCtrlP bool
 
-	detached bool
+	// detached is set by the reading goroutine and read by whoever owns the
+	// transport, so it must be atomic rather than a plain bool.
+	detached atomic.Bool
 	done     chan struct{}
 }
 
@@ -79,7 +83,7 @@ func (d *DetachReader) Read(p []byte) (int, error) {
 			d.pendingErr = nil
 			return 0, err
 		}
-		if d.detached {
+		if d.detached.Load() {
 			return 0, ErrDetached
 		}
 
@@ -88,7 +92,7 @@ func (d *DetachReader) Read(p []byte) (int, error) {
 			var detached bool
 			d.pending, d.pendingCtrlP, detached = filterDetach(d.pending[:0], d.buf[:n], d.pendingCtrlP)
 			if detached {
-				d.detached = true
+				d.detached.Store(true)
 				close(d.done)
 			} else if err != nil {
 				d.pendingErr = err
@@ -117,9 +121,10 @@ func (d *DetachReader) Done() <-chan struct{} {
 	return d.done
 }
 
-// Detached reports whether the detach sequence has been seen.
+// Detached reports whether the detach sequence has been seen. It is safe to
+// call from any goroutine while another one reads.
 func (d *DetachReader) Detached() bool {
-	return d.detached
+	return d.detached.Load()
 }
 
 // filterDetach copies the bytes of src that are not part of the detach sequence

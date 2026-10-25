@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -132,6 +133,49 @@ func assertClosed(t *testing.T, ch <-chan struct{}) {
 	default:
 		t.Fatal("channel should be closed")
 	}
+}
+
+// TestDetachReaderDetachedIsReadableWhileReading pins the concurrency
+// contract: the reading goroutine sets the detach flag while another goroutine
+// polls Detached and watches Done. The attach client does exactly that, and
+// under -race this fails if the flag is a plain bool.
+func TestDetachReaderDetachedIsReadableWhileReading(t *testing.T) {
+	stdinR, stdinW := io.Pipe()
+	filter := NewDetachReader(stdinR)
+
+	readDone := make(chan error, 1)
+	go func() { _, err := io.Copy(io.Discard, filter); readDone <- err }()
+
+	polled := make(chan struct{})
+	go func() {
+		defer close(polled)
+		deadline := time.After(5 * time.Second)
+		for {
+			select {
+			case <-filter.Done():
+				return
+			case <-deadline:
+				return
+			default:
+				_ = filter.Detached()
+			}
+		}
+	}()
+
+	_, err := stdinW.Write([]byte("hello"))
+	require.NoError(t, err)
+	_, err = stdinW.Write([]byte("\x10\x11"))
+	require.NoError(t, err)
+
+	select {
+	case err := <-readDone:
+		require.ErrorIs(t, err, ErrDetached)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reader did not stop on the detach sequence")
+	}
+
+	<-polled
+	assert.True(t, filter.Detached())
 }
 
 // TestDetachReaderByteIdenticalToPlainCopy checks the common case in bulk: with
