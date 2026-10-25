@@ -10,6 +10,9 @@ on:
       - 'go.sum'
       - 'Makefile'
       - 'Dockerfile'
+      - 'sdk/**'
+      - 'tools/sdkgen/**'
+      - 'api/openapi.yaml'
       - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
   pull_request:
@@ -113,6 +116,36 @@ jobs:
         with:
           name: coverage
           path: coverage.out
+
+  # The generated models, the Python client and the Node client are checked
+  # together: a spec change must regenerate both SDKs, and both suites must pass.
+  sdk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Generator drift check
+        run: make sdk-check
+
+      - name: SDK test suites
+        run: make sdk-test
+
+      - name: Go SDK compile check
+        run: go test ./sdk/go ./tools/sdkgen
 
   build:
     runs-on: ubuntu-latest

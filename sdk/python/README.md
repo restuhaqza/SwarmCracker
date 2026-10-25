@@ -140,9 +140,10 @@ Redirects are never followed: a `3xx` surfaces as `ApiError` with code
 `tools/sdkgen` from `api/openapi.yaml` and committed. Do not edit them by hand:
 
 ```bash
-make sdk-gen     # rewrite both files from the spec
-make sdk-check   # fail if either file is stale; never writes
-make sdk-test    # run this SDK's test suite
+make sdk-gen       # rewrite both files from the spec
+make sdk-check     # fail if either file is stale; never writes
+make sdk-test      # run the Python and Node suites
+make sdk-test-python  # run only this SDK's suite
 ```
 
 Because the models are generated with `from __future__ import annotations`,
@@ -151,6 +152,7 @@ read the annotations and are correct); treat the models as static types.
 
 ## Not in this round
 
-Snapshot and files routes, Node.js client, retries, pagination helpers and
-request timeouts per call. `tasks.list(label=...)` is forwarded as specified but
-the current manager does not filter the task list by label.
+Snapshot and files routes, retries, pagination helpers and request timeouts per
+call. `tasks.list(label=...)` is forwarded as specified but the current manager
+does not filter the task list by label. The Node client lives in
+[`sdk/node`](../node/README.md) and has the same surface.

@@ -1,0 +1,21 @@
+{
+  "name": "swarmcracker-sdk",
+  "version": "0.1.0",
+  "description": "A dependency-free Node client for the SwarmCracker API v1",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./src/index.mjs",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.mjs"
+    }
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test"
+  }
+}

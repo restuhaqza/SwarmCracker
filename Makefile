@@ -58,10 +58,10 @@ api-check:
 		echo "Skipping cmd/swarmcracker contract tests on $$(uname -s); run make api-check on Linux/CI"; \
 	fi
 
-# SDK models and client. `sdk-gen` rewrites the committed generated files from
+# SDK models and clients. `sdk-gen` rewrites the committed generated files from
 # the normative spec, `sdk-check` proves they are current without writing (and
-# that the Python package compiles), and `sdk-test` runs the stdlib-only client
-# suite. No network and no third-party package is needed for any of them.
+# that the Python package compiles), and `sdk-test` runs both stdlib-only client
+# suites. No network and no third-party package is needed for any of them.
 sdk-gen:
 	$(GO) run ./tools/sdkgen -spec api/openapi.yaml
 
@@ -69,8 +69,15 @@ sdk-check:
 	$(GO) run ./tools/sdkgen -spec api/openapi.yaml -check
 	python3 -m compileall -q sdk/python/swarmcracker
 
-sdk-test:
+sdk-test-python:
 	python3 -m unittest discover -s sdk/python/tests -t sdk/python
+
+# The Node test runner in the Node 22 build we use does not accept a directory
+# argument, so the shell expands the file list here. That works on Node 18+.
+sdk-test-node:
+	node --test sdk/node/test/*.test.mjs
+
+sdk-test: sdk-test-python sdk-test-node
 
 # Run unit tests only
 test-unit:
@@ -260,7 +267,7 @@ tag:
 	@echo "Tag $(TAG) created. Push with:"
 	@echo "  git push origin $(TAG)"
 
-.PHONY: all swarmcracker install test test-quick test-all api-check sdk-gen sdk-check sdk-test integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
+.PHONY: all swarmcracker install test test-quick test-all api-check sdk-gen sdk-check sdk-test sdk-test-python sdk-test-node integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
 
 # Download embedded static binaries for VM rootfs injection
 .PHONY: binaries
