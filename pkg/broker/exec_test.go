@@ -142,6 +142,21 @@ func TestExecHandlerSignalExit(t *testing.T) {
 	assert.Equal(t, 9, *frames[0].Signal)
 }
 
+// TestExecHandlerNegativeExitIsAnErrorFrame pins that an agent which could not
+// read the wait status (-1) does not turn into a successful exit frame: the
+// caller must not believe the command ran and returned -1.
+func TestExecHandlerNegativeExitIsAnErrorFrame(t *testing.T) {
+	guest := &fakeGuest{result: agent.ExecResult{ExitCode: -1}}
+	rec := runExecHandler(t, &fakeDialer{guest: guest}, `{"command":["sh","-c","kill -TERM $$"]}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	frames := decodeFrames(t, rec.Body.Bytes())
+	require.Len(t, frames, 1)
+	assert.Equal(t, v1.FrameError, frames[0].Type)
+	assert.Equal(t, string(output.CodeInternal), frames[0].Code)
+	assert.Nil(t, frames[0].ExitCode)
+}
+
 func TestExecHandlerDialFailureIs503(t *testing.T) {
 	dial := &fakeDialer{err: errors.New("no such vsock socket /var/run/firecracker/task-1.vsock")}
 	rec := runExecHandler(t, dial, `{"command":["true"]}`)

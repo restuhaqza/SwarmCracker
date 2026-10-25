@@ -1,0 +1,255 @@
+{
+  "schemaVersion": 1,
+  "name": "read",
+  "cases": [
+    {
+      "name": "version",
+      "request": {
+        "method": "GET",
+        "path": "/v1/version",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "VersionInfo",
+        "requestIdInBody": false,
+        "jsonPaths": {
+          "kind": "VersionInfo",
+          "apiVersions.0": "v1",
+          "capabilities.0": "read"
+        },
+        "absentKeys": ["error"]
+      }
+    },
+    {
+      "name": "services list",
+      "request": {
+        "method": "GET",
+        "path": "/v1/services",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "ServiceList",
+        "requestIdInBody": false,
+        "absentKeysAnywhere": ["registryAuth"]
+      }
+    },
+    {
+      "name": "services page one follows the cursor",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/services",
+        "query": {"limit": "1"},
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "ServiceList",
+        "items": 1,
+        "nextPresent": true,
+        "requestIdInBody": false,
+        "headers": {"X-SwarmCracker-Api-Version": "1"},
+        "jsonPaths": {"items.0.name": "web"}
+      },
+      "follow": {
+        "path": "/v1/services",
+        "query": {"cursor": "$next"},
+        "expect": {
+          "status": 200,
+          "items": 1,
+          "nextPresent": false,
+          "jsonPaths": {"items.0.name": "api"}
+        }
+      }
+    },
+    {
+      "name": "service by name",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/services/web",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "Service",
+        "requestIdInBody": false,
+        "jsonPaths": {
+          "name": "web",
+          "spec.mode": "replicated",
+          "spec.task.image": "nginx:alpine"
+        },
+        "absentKeysAnywhere": ["registryAuth"]
+      }
+    },
+    {
+      "name": "service by unique id prefix",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/services/svc-web",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "Service",
+        "jsonPaths": {
+          "name": "web"
+        }
+      }
+    },
+    {
+      "name": "an ambiguous id prefix is rejected with its candidates",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/services/svc-",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 400,
+        "errorCode": "ambiguous",
+        "jsonPaths": {
+          "error.details.candidates.0.name": "web",
+          "error.details.candidates.1.name": "api"
+        }
+      }
+    },
+    {
+      "name": "tasks list without health",
+      "request": {
+        "method": "GET",
+        "path": "/v1/tasks",
+        "query": {"health": "false"},
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "TaskList",
+        "requestIdInBody": false,
+        "absentKeys": ["partial"]
+      }
+    },
+    {
+      "name": "tasks list with health reports the unreachable node",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/tasks",
+        "query": {"health": "true"},
+        "role": "reader"
+      },
+      "expect": {
+        "status": 207,
+        "kind": "TaskList",
+        "items": 2,
+        "jsonPaths": {
+          "partial.0.nodeId": "node-b",
+          "partial.0.error.code": "unavailable"
+        }
+      }
+    },
+    {
+      "name": "nodes list",
+      "request": {
+        "method": "GET",
+        "path": "/v1/nodes",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "NodeList",
+        "requestIdInBody": false
+      }
+    },
+    {
+      "name": "networks list",
+      "request": {
+        "method": "GET",
+        "path": "/v1/networks",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "NetworkList",
+        "requestIdInBody": false
+      }
+    },
+    {
+      "name": "configs list",
+      "request": {
+        "method": "GET",
+        "path": "/v1/configs",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "ConfigList",
+        "requestIdInBody": false,
+        "absentKeysAnywhere": ["data"]
+      }
+    },
+    {
+      "name": "config value is readable by an admin",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/configs",
+        "role": "admin"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "ConfigList",
+        "items": 1,
+        "jsonPaths": {
+          "items.0.name": "settings",
+          "items.0.data": "listen 8080"
+        }
+      }
+    },
+    {
+      "name": "secret list never carries a payload",
+      "request": {
+        "method": "GET",
+        "path": "/v1/secrets",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "SecretList",
+        "requestIdInBody": false,
+        "absentKeysAnywhere": ["data"]
+      }
+    },
+    {
+      "name": "audit list is readable by an admin",
+      "request": {
+        "method": "GET",
+        "path": "/v1/audit",
+        "query": {"limit": "5"},
+        "role": "admin"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "AuditList",
+        "requestIdInBody": false,
+        "absentKeysAnywhere": ["data"]
+      }
+    },
+    {
+      "name": "limit above the ceiling is invalid",
+      "request": {
+        "method": "GET",
+        "path": "/v1/services",
+        "query": {"limit": "5000"},
+        "role": "reader"
+      },
+      "expect": {
+        "status": 400,
+        "errorCode": "invalid"
+      }
+    }
+  ]
+}

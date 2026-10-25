@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/moby/swarmkit/v2/log"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/urfave/cli/v2"
 )
 
@@ -23,6 +25,20 @@ type brokerRuntime struct {
 	// logDir holds the per-task console logs. It is the directory the executor
 	// writes, so a task's log is the one `swarmcracker vm logs` reads.
 	logDir string
+	// snapshotsEnabled turns on the experimental snapshot operation. It is
+	// disabled by default: the handler is still registered, so a manager gets a
+	// typed 501 instead of the server's unregistered-operation answer.
+	snapshotsEnabled bool
+	// snapshotDir is the pkg/snapshot root. pkg/snapshot writes
+	// <snapshotDir>/<id>/metadata.json and that directory is the source of truth.
+	snapshotDir string
+	// rootfsDir is the executor's rootfs directory, recorded on a snapshot so
+	// restore can tell a missing task disk from a corrupt snapshot.
+	rootfsDir string
+	// taskAlive decides whether an existing task socket belongs to a live VMM.
+	// Nil keeps the stat-only resolution tests use; the daemon sets it to the
+	// Firecracker process probe.
+	taskAlive func(socketPath string) bool
 }
 
 // brokerRuntimeFrom resolves the broker settings. An empty listen address
@@ -30,9 +46,13 @@ type brokerRuntime struct {
 // manager traffic.
 func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 	return brokerRuntime{
-		listenAddr: ctx.String("broker-listen"),
-		socketDir:  ctx.String("socket-dir"),
-		logDir:     scruntime.DefaultLogDir(),
+		listenAddr:       ctx.String("broker-listen"),
+		socketDir:        ctx.String("socket-dir"),
+		logDir:           scruntime.DefaultLogDir(),
+		snapshotsEnabled: ctx.Bool("snapshots-enable"),
+		snapshotDir:      ctx.String("snapshot-dir"),
+		rootfsDir:        ctx.String("rootfs-dir"),
+		taskAlive:        taskSocketAlive,
 	}
 }
 
@@ -41,34 +61,52 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 // node's existing cluster certificate, so a manager authenticates with the same
 // identity it uses for the ingress mesh, and no user token is involved.
 //
-// It returns the server and a stop function that is safe to call more than
-// once. A disabled broker returns (nil, no-op, nil); a certificate or bind
-// failure is returned rather than swallowed, so a misconfigured node fails
-// loudly instead of silently refusing manager traffic.
-func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*broker.Server, func(), error) {
+// It returns the server, whether the experimental snapshot store actually became
+// active, and a stop function that is safe to call more than once. The boolean is
+// the effective capability: a node whose snapshot store failed to build must not
+// advertise `snapshots` even when --snapshots-enable was passed. A disabled broker
+// returns (nil, false, no-op, nil); a certificate or bind failure is returned
+// rather than swallowed, so a misconfigured node fails loudly instead of silently
+// refusing manager traffic.
+// taskSocketAlive reports whether a Firecracker API socket still belongs to a
+// live VMM. The process table is the signal rather than an API probe: during
+// startup the socket exists before the API answers, and treating that window
+// as exited would turn a legitimate exec into a 404. A crashed VMM leaves its
+// socket file behind, which is the case this probe exists to catch.
+func taskSocketAlive(socketPath string) bool {
+	return scruntime.FindFirecrackerPIDBySocket(socketPath) > 0
+}
+
+func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*broker.Server, bool, func(), error) {
 	if cfg.listenAddr == "" {
-		return nil, func() {}, nil
+		return nil, false, func() {}, nil
 	}
 
 	cert, caPool, err := loadIngressTLS(stateDir)
 	if err != nil {
-		return nil, nil, fmt.Errorf("node broker: %w", err)
+		return nil, false, nil, fmt.Errorf("node broker: %w", err)
 	}
 
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Addr:      cfg.listenAddr,
 		TLSConfig: serverTLSConfig(cert, caPool),
-		Tasks:     broker.SocketDirSource{Dir: cfg.socketDir, LogDir: cfg.logDir},
+		Tasks: broker.SocketDirSource{
+			Dir:       cfg.socketDir,
+			LogDir:    cfg.logDir,
+			IsRunning: cfg.taskAlive,
+		},
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, false, nil, err
 	}
 
-	// The node serves exec, logs, files and health. Exec and files dial the
-	// task's guest agent over the vsock muxer; logs read the console file the
-	// executor wrote; health reads the per-task sidecar the executor publishes.
-	// The public route has already resolved the reference and enforced the
+	// The node serves exec, logs, files, health and the experimental snapshots
+	// operation. Exec and files dial the task's guest agent over the vsock muxer;
+	// logs read the console file the executor wrote; health reads the per-task
+	// sidecar the executor publishes; snapshots use the node-local pkg/snapshot
+	// store. The public route has already resolved the reference and enforced the
 	// caller's selectors.
+	snapshotOp, snapshotsActive := snapshotHandler(ctx, cfg)
 	handlers := []struct {
 		op string
 		h  broker.Handler
@@ -77,16 +115,17 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{"logs", broker.NewLogsHandler()},
 		{"files", broker.NewFilesHandler(broker.DialAgent)},
 		{"health", broker.NewHealthHandler()},
+		{"snapshots", snapshotOp},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {
-			return nil, nil, err
+			return nil, false, nil, err
 		}
 	}
 
 	lis, err := srv.Listen()
 	if err != nil {
-		return nil, nil, err
+		return nil, false, nil, err
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -107,5 +146,35 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	}
 
 	log.G(ctx).Infof("Node broker listening on %s", srv.Addr())
-	return srv, stop, nil
+	return srv, snapshotsActive, stop, nil
+}
+
+// snapshotHandler builds the experimental snapshots operation and reports whether
+// its store is usable. Disabled means a registered handler with no store, which
+// answers a typed 501 — the route still exists. A manager construction failure is
+// logged and degrades to the same disabled handler: a bad snapshot directory must
+// not stop the broker, because exec, logs, files and health do not depend on it.
+// The boolean is what the daemon passes to the API runtime, so /v1/version never
+// advertises a store that does not exist.
+func snapshotHandler(ctx context.Context, cfg brokerRuntime) (broker.Handler, bool) {
+	if !cfg.snapshotsEnabled {
+		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}), false
+	}
+
+	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{
+		Enabled:      true,
+		SnapshotDir:  cfg.snapshotDir,
+		MaxSnapshots: 3,
+		MaxAge:       168 * time.Hour,
+	})
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("Node broker: snapshots disabled (snapshot store unavailable)")
+		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}), false
+	}
+	return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{
+		Store:     mgr,
+		SocketDir: cfg.socketDir,
+		MaxAge:    168 * time.Hour,
+		RootfsDir: cfg.rootfsDir,
+	}), true
 }

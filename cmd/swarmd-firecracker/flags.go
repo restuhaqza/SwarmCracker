@@ -5,6 +5,7 @@ import (
 
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
+	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/urfave/cli/v2"
 )
 
@@ -291,6 +292,17 @@ func newAppFlags() []cli.Flag {
 			Usage: "TLS listen address for the node broker (internal manager-to-node transport; empty disables the broker)",
 			Value: defaultBrokerListen,
 		},
+		// Experimental snapshots (node-local, capability-gated)
+		&cli.BoolFlag{
+			Name:  "snapshots-enable",
+			Usage: "Enable the experimental snapshot API (node-local VM snapshots; disabled by default)",
+			Value: false,
+		},
+		&cli.StringFlag{
+			Name:  "snapshot-dir",
+			Usage: "Directory holding VM snapshots",
+			Value: config.DefaultSnapshotDir,
+		},
 	}
 }
 
@@ -309,6 +321,9 @@ func apiRuntimeFrom(ctx *cli.Context) apiRuntime {
 		auditRetention: ctx.Duration("api-audit-retention"),
 		rateLimit:      ctx.Float64("api-rate-limit"),
 		rateBurst:      ctx.Int("api-rate-burst"),
+		// Snapshots are node-local, but the manager advertises the capability it
+		// serves, so the API runtime needs the same switch the broker reads.
+		snapshotsEnabled: ctx.Bool("snapshots-enable"),
 	}
 }
 

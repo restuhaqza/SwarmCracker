@@ -14,6 +14,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,6 +29,24 @@ import (
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/rs/zerolog/log"
+)
+
+// Sentinel errors classify a store failure for callers that must answer a
+// stable code rather than inspect an error string. The messages are the leading
+// phrase of the wrapped failure, so wrapping with %w both keeps the text
+// readable and makes errors.Is work.
+var (
+	// ErrNotFound means the store holds no snapshot with that ID.
+	ErrNotFound = errors.New("snapshot not found")
+	// ErrSocketMissing means the task's Firecracker API socket is gone, so the
+	// VM a snapshot would need is no longer running.
+	ErrSocketMissing = errors.New("firecracker socket not found")
+	// ErrSnapshotIncomplete means a snapshot's files (state, memory or rootfs)
+	// are missing or unusable.
+	ErrSnapshotIncomplete = errors.New("snapshot is incomplete")
+	// ErrChecksumMismatch means the state file no longer matches the checksum
+	// recorded at snapshot time.
+	ErrChecksumMismatch = errors.New("state file checksum mismatch")
 )
 
 // SnapshotInfo holds metadata about a VM snapshot.
@@ -165,7 +184,7 @@ func (m *Manager) CreateSnapshot(
 
 	// Verify socket exists
 	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
-		return nil, fmt.Errorf("firecracker socket not found: %s", socketPath)
+		return nil, fmt.Errorf("%w: %s", ErrSocketMissing, socketPath)
 	}
 
 	// Create a staging directory for the snapshot
@@ -280,10 +299,10 @@ func (m *Manager) RestoreFromSnapshot(
 
 	// Verify snapshot files exist
 	if _, err := os.Stat(info.StatePath); os.IsNotExist(err) {
-		return fmt.Errorf("state file not found: %s", info.StatePath)
+		return fmt.Errorf("%w: state file not found: %s", ErrSnapshotIncomplete, info.StatePath)
 	}
 	if _, err := os.Stat(info.MemoryPath); os.IsNotExist(err) {
-		return fmt.Errorf("memory file not found: %s", info.MemoryPath)
+		return fmt.Errorf("%w: memory file not found: %s", ErrSnapshotIncomplete, info.MemoryPath)
 	}
 
 	// Verify checksum
@@ -293,7 +312,7 @@ func (m *Manager) RestoreFromSnapshot(
 			return fmt.Errorf("failed to verify state checksum: %w", err)
 		}
 		if checksum != info.Checksum {
-			return fmt.Errorf("state file checksum mismatch: expected %s, got %s", info.Checksum, checksum)
+			return fmt.Errorf("%w: expected %s, got %s", ErrChecksumMismatch, info.Checksum, checksum)
 		}
 	}
 
@@ -301,7 +320,7 @@ func (m *Manager) RestoreFromSnapshot(
 	// restored VM's block device points at it.
 	if info.RootfsPath != "" {
 		if _, err := os.Stat(info.RootfsPath); err != nil {
-			return fmt.Errorf("snapshot rootfs not found at %s: %w", info.RootfsPath, err)
+			return fmt.Errorf("%w: snapshot rootfs not found at %s: %v", ErrSnapshotIncomplete, info.RootfsPath, err)
 		}
 	}
 
@@ -417,7 +436,7 @@ func (m *Manager) DeleteSnapshot(_ context.Context, snapshotID string) error {
 	snapshotDir := filepath.Join(m.config.SnapshotDir, snapshotID)
 
 	if _, err := os.Stat(snapshotDir); os.IsNotExist(err) {
-		return fmt.Errorf("snapshot not found: %s", snapshotID)
+		return fmt.Errorf("%w: %s", ErrNotFound, snapshotID)
 	}
 
 	log.Info().Str("snapshot_id", snapshotID).Msg("Deleting snapshot")
@@ -531,10 +550,18 @@ func callSnapshotCreate(ctx context.Context, socketPath, statePath, memoryPath s
 		return fmt.Errorf("failed to pause VM: %w", err)
 	}
 
-	// Ensure VM is resumed on any exit path (success or failure)
+	// Ensure VM is resumed on any exit path (success or failure). The caller's
+	// context may already be done by now — the manager's 30 s deadline fires
+	// while a full memory dump is still in flight — and resuming on that context
+	// would fail immediately, leaving the VM paused forever. A fresh bounded
+	// context keeps the operation's values but drops its cancellation, so the
+	// resume always gets a chance to run.
 	defer func() {
-		if resumeErr := resumeVM(ctx, socketPath); resumeErr != nil {
-			log.Warn().Err(resumeErr).Msg("failed to resume VM after snapshot")
+		resumeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), resumeTimeout)
+		defer cancel()
+		if resumeErr := resumeVM(resumeCtx, socketPath); resumeErr != nil {
+			log.Warn().Err(resumeErr).
+				Msg("failed to resume VM after snapshot; the VM is still paused and may need a manual resume")
 		}
 	}()
 
@@ -634,6 +661,11 @@ func patchFirecrackerAPI(ctx context.Context, socketPath, apiPath string, payloa
 }
 
 // --- Metadata persistence ---
+
+// resumeTimeout bounds the deferred resume after a snapshot create. It is
+// independent of the caller's deadline: a request that timed out still has to
+// wake the VM it paused.
+const resumeTimeout = 10 * time.Second
 
 const metadataFile = "metadata.json"
 

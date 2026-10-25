@@ -58,6 +58,39 @@ api-check:
 		echo "Skipping cmd/swarmcracker contract tests on $$(uname -s); run make api-check on Linux/CI"; \
 	fi
 
+# API conformance fixtures. `conformance` runs the same declarative cases an SDK
+# can be pointed at against the real apihttp handler with an in-memory backend on
+# loopback TLS: no cluster, no root, no Firecracker. `conformance-lab` runs the
+# identical fixtures against a live manager; it skips cleanly when
+# CONFORMANCE_HOST/CONFORMANCE_READER_TOKEN are not set and mutates nothing
+# unless CONFORMANCE_ALLOW_MUTATION=1. See test/conformance/README.md.
+conformance:
+	$(GO) test ./test/conformance -run TestConformanceMock -count=1
+
+conformance-lab:
+	$(GO) test ./test/conformance -run TestConformanceLab -count=1 -timeout 10m
+
+# SDK models and clients. `sdk-gen` rewrites the committed generated files from
+# the normative spec, `sdk-check` proves they are current without writing (and
+# that the Python package compiles), and `sdk-test` runs both stdlib-only client
+# suites. No network and no third-party package is needed for any of them.
+sdk-gen:
+	$(GO) run ./tools/sdkgen -spec api/openapi.yaml
+
+sdk-check:
+	$(GO) run ./tools/sdkgen -spec api/openapi.yaml -check
+	python3 -m compileall -q sdk/python/swarmcracker
+
+sdk-test-python:
+	python3 -m unittest discover -s sdk/python/tests -t sdk/python
+
+# The Node test runner in the Node 22 build we use does not accept a directory
+# argument, so the shell expands the file list here. That works on Node 18+.
+sdk-test-node:
+	node --test sdk/node/test/*.test.mjs
+
+sdk-test: sdk-test-python sdk-test-node
+
 # Run unit tests only
 test-unit:
 	@echo "Running unit tests..."
@@ -104,10 +137,16 @@ clean:
 	rm -f swarmcracker swarmcracker-agent swarmctl swarmd-firecracker
 	rm -rf docs-site/dist docs-site/.astro
 
-# Run examples
-examples: all
-	@echo "Running examples..."
-	$(BUILD_DIR)/$(BINARY_NAME) --help
+# Runnable SDK examples. `make examples` builds the loopback fixture in
+# test/examples/mockserver and runs the Python and Node examples against it. It
+# needs go, python3 and node: no cluster, no root, no Docker, no network.
+examples:
+	@./test/examples/run.sh
+
+# CLI-only image: the client, not the daemon (that is Dockerfile). Non-root, no
+# shell; mount the CA and token read-only. See Dockerfile.cli for the run line.
+cli-image:
+	docker build -f Dockerfile.cli -t swarmcracker-cli:dev .
 
 # Build release binaries for multiple platforms
 release:
@@ -225,7 +264,8 @@ help:
 	@echo "  lint             Run linters"
 	@echo "  fmt              Format code"
 	@echo "  clean            Clean build artifacts"
-	@echo "  examples         Run examples"
+	@echo "  examples         Run the SDK examples against a loopback fixture"
+	@echo "  cli-image        Build the client-only Docker image (Dockerfile.cli)"
 	@echo "  release          Build release binaries"
 	@echo "  docs             Generate documentation"
 	@echo "  race             Run with race detector"
@@ -246,7 +286,7 @@ tag:
 	@echo "Tag $(TAG) created. Push with:"
 	@echo "  git push origin $(TAG)"
 
-.PHONY: all swarmcracker install test test-quick test-all api-check integration-test e2e-test testinfra lint fmt clean examples release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
+.PHONY: all swarmcracker install test test-quick test-all api-check sdk-gen sdk-check sdk-test sdk-test-python sdk-test-node integration-test e2e-test testinfra lint fmt clean examples cli-image release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
 
 # Download embedded static binaries for VM rootfs injection
 .PHONY: binaries

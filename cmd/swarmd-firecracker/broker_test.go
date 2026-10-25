@@ -165,7 +165,7 @@ func brokerTestClient(cert tls.Certificate, pool *x509.CertPool) *http.Client {
 }
 
 func TestStartBroker_DisabledIsNoOp(t *testing.T) {
-	srv, stop, err := startBroker(context.Background(), brokerRuntime{}, t.TempDir())
+	srv, _, stop, err := startBroker(context.Background(), brokerRuntime{}, t.TempDir())
 	require.NoError(t, err)
 	require.Nil(t, srv)
 	require.NotNil(t, stop)
@@ -177,7 +177,7 @@ func TestStartBroker_DisabledIsNoOp(t *testing.T) {
 func TestStartBroker_RequiresCertificates(t *testing.T) {
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: t.TempDir()}
 
-	srv, stop, err := startBroker(context.Background(), cfg, t.TempDir())
+	srv, _, stop, err := startBroker(context.Background(), cfg, t.TempDir())
 	require.Error(t, err)
 	require.Nil(t, srv)
 	require.Nil(t, stop)
@@ -196,7 +196,7 @@ func TestStartBroker_ServesLogs(t *testing.T) {
 		[]byte("console line\n"), 0o600))
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: logDir}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
 
@@ -234,7 +234,7 @@ func TestStartBroker_RegistersFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
 
@@ -257,7 +257,7 @@ func TestStartBroker_LogsUnavailableTaskIs404(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
 
@@ -282,7 +282,7 @@ func TestStartBroker_ServesLogsForExitedTask(t *testing.T) {
 		[]byte("boom\n"), 0o600))
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: logDir}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
 
@@ -309,7 +309,7 @@ func TestStartBroker_ServesMTLSAndStops(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 	require.NotNil(t, stop)
@@ -392,7 +392,7 @@ func TestStartBroker_ExecStreamsFromTheGuest(t *testing.T) {
 	go fakeVsockAgent(t, ln, "hello from guest\n", 0)
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
 
@@ -446,7 +446,7 @@ func TestStartBroker_RegistersHealth(t *testing.T) {
 	}))
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
 
@@ -474,7 +474,7 @@ func TestStartBroker_HealthWithoutSidecarIs204(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
 
 	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
-	srv, stop, err := startBroker(context.Background(), cfg, stateDir)
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
 

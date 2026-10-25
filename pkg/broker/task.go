@@ -86,6 +86,13 @@ type SocketDirSource struct {
 	// a broker that does not know the log directory must not read a path
 	// relative to its working directory.
 	LogDir string
+	// IsRunning, when set, decides whether an existing socket file belongs to a
+	// live VMM. A crashed Firecracker leaves its socket file behind, and a bare
+	// stat would then report the dead task as running: exec would dial a dead
+	// vsock path (503 instead of 404) and restore would refuse a snapshot for a
+	// task that no longer exists. Nil keeps the stat-only behaviour tests and
+	// embedders rely on; the daemon wires a process probe.
+	IsRunning func(socketPath string) bool
 }
 
 // Lookup returns the task whose API socket exists in the configured directory,
@@ -106,15 +113,20 @@ func (s SocketDirSource) Lookup(_ context.Context, taskID string) (Task, bool, e
 		if info.IsDir() {
 			return Task{}, false, fmt.Errorf("task socket %s is a directory", socketPath)
 		}
-		return Task{
-			ID:         taskID,
-			SocketPath: socketPath,
-			Running:    true,
-			// Derived, not probed: a task resolves while its console log is
-			// still being created, and the log handler owns the not-found
-			// answer.
-			LogPath: s.logPath(taskID),
-		}, true, nil
+		if s.IsRunning == nil || s.IsRunning(socketPath) {
+			return Task{
+				ID:         taskID,
+				SocketPath: socketPath,
+				Running:    true,
+				// Derived, not probed: a task resolves while its console log is
+				// still being created, and the log handler owns the not-found
+				// answer.
+				LogPath: s.logPath(taskID),
+			}, true, nil
+		}
+		// The file is a leftover from a VMM that is no longer alive. Fall
+		// through to the log-only answer: the console log is still the best
+		// evidence of why it stopped.
 	case !os.IsNotExist(err):
 		return Task{}, false, fmt.Errorf("stat task socket %s: %w", socketPath, err)
 	}

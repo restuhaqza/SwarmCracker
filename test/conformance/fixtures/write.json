@@ -1,0 +1,196 @@
+{
+  "schemaVersion": 1,
+  "name": "write",
+  "cases": [
+    {
+      "name": "create a service",
+      "mutating": true,
+      "request": {
+        "method": "POST",
+        "path": "/v1/services",
+        "role": "admin",
+        "body": {
+          "name": "conformance-ws",
+          "labels": {"suite": "conformance"},
+          "spec": {
+            "mode": "replicated",
+            "replicas": 1,
+            "task": {"image": "nginx:alpine"}
+          }
+        }
+      },
+      "expect": {
+        "status": 201,
+        "kind": "Service",
+        "requestIdInBody": false,
+        "jsonPaths": {
+          "name": "conformance-ws",
+          "spec.mode": "replicated",
+          "spec.task.image": "nginx:alpine"
+        }
+      }
+    },
+    {
+      "name": "patch the service with the returned revision",
+      "mutating": true,
+      "request": {
+        "method": "PATCH",
+        "path": "/v1/services/conformance-ws",
+        "role": "admin",
+        "contentType": "application/merge-patch+json",
+        "headers": {"If-Match": "$etag"},
+        "body": {"labels": {"suite": "conformance", "patched": "true"}}
+      },
+      "expect": {
+        "status": 200,
+        "kind": "Service",
+        "jsonPaths": {
+          "name": "conformance-ws",
+          "labels.patched": "true"
+        }
+      }
+    },
+    {
+      "name": "delete the service",
+      "mutating": true,
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/services/conformance-ws",
+        "role": "admin",
+        "headers": {"If-Match": "$etag"}
+      },
+      "expect": {
+        "status": 204
+      }
+    },
+    {
+      "name": "the write that just ran is in the audit log",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/audit",
+        "query": {"limit": "5"},
+        "role": "admin"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "AuditList",
+        "requestIdInBody": false,
+        "jsonPaths": {
+          "items.*.action": "service.delete",
+          "items.*.resource.name": "conformance-ws"
+        },
+        "absentKeysAnywhere": ["data"]
+      }
+    },
+    {
+      "name": "create a config",
+      "mutating": true,
+      "request": {
+        "method": "POST",
+        "path": "/v1/configs",
+        "role": "admin",
+        "body": {
+          "name": "conformance-config",
+          "labels": {"suite": "conformance"},
+          "data": "listen 8080"
+        }
+      },
+      "expect": {
+        "status": 201,
+        "kind": "Config",
+        "jsonPaths": {
+          "name": "conformance-config",
+          "data": "listen 8080"
+        }
+      }
+    },
+    {
+      "name": "delete the config",
+      "mutating": true,
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/configs/conformance-config",
+        "role": "admin",
+        "headers": {"If-Match": "$etag"}
+      },
+      "expect": {
+        "status": 204
+      }
+    },
+    {
+      "name": "create a secret",
+      "mutating": true,
+      "request": {
+        "method": "POST",
+        "path": "/v1/secrets",
+        "role": "admin",
+        "body": {
+          "name": "conformance-secret",
+          "labels": {"suite": "conformance"},
+          "data": "c2VjcmV0"
+        }
+      },
+      "expect": {
+        "status": 201,
+        "kind": "Secret",
+        "requestIdInBody": false,
+        "jsonPaths": {"name": "conformance-secret"},
+        "absentKeysAnywhere": ["data"]
+      }
+    },
+    {
+      "name": "delete the secret",
+      "mutating": true,
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/secrets/conformance-secret",
+        "role": "admin",
+        "headers": {"If-Match": "$etag"}
+      },
+      "expect": {
+        "status": 204
+      }
+    },
+    {
+      "name": "a repeated create with an Idempotency-Key replays the first document",
+      "mutating": true,
+      "request": {
+        "method": "POST",
+        "path": "/v1/services",
+        "role": "admin",
+        "headers": {"Idempotency-Key": "conformance-idem-service"},
+        "body": {
+          "name": "conformance-idem",
+          "labels": {"suite": "conformance"},
+          "spec": {
+            "mode": "replicated",
+            "replicas": 1,
+            "task": {"image": "nginx:alpine"}
+          }
+        }
+      },
+      "expect": {
+        "status": 201,
+        "kind": "Service",
+        "requestIdInBody": false,
+        "jsonPaths": {"name": "conformance-idem"},
+        "absentKeysAnywhere": ["registryAuth"]
+      },
+      "repeat": {"times": 2, "sameBody": true}
+    },
+    {
+      "name": "delete the replayed service",
+      "mutating": true,
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/services/conformance-idem",
+        "role": "admin",
+        "headers": {"If-Match": "$etag"}
+      },
+      "expect": {
+        "status": 204
+      }
+    }
+  ]
+}

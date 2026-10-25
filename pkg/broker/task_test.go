@@ -60,6 +60,61 @@ func TestSocketDirSourceExitedTaskLogMustBeRegular(t *testing.T) {
 	require.False(t, ok)
 }
 
+// TestSocketDirSourceTreatsAStaleSocketAsExited pins the crash case: the VMM
+// dies without removing its socket file, so a stat alone would call the task
+// running and exec would dial a dead vsock path. The injected probe is what the
+// daemon wires to the Firecracker process table.
+func TestSocketDirSourceTreatsAStaleSocketAsExited(t *testing.T) {
+	dir := t.TempDir()
+	logDir := t.TempDir()
+	socketPath := filepath.Join(dir, "task-1.sock")
+	logPath := filepath.Join(logDir, "task-1.log")
+	require.NoError(t, os.WriteFile(socketPath, nil, 0o600))
+	require.NoError(t, os.WriteFile(logPath, []byte("boom\n"), 0o600))
+
+	src := SocketDirSource{
+		Dir:       dir,
+		LogDir:    logDir,
+		IsRunning: func(string) bool { return false },
+	}
+	task, ok, err := src.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, Task{ID: "task-1", LogPath: logPath}, task,
+		"a stale socket must not resolve as a running task")
+}
+
+// TestSocketDirSourceStaleSocketWithoutLogIsMissing pins that the leftover
+// socket alone does not keep a dead task alive.
+func TestSocketDirSourceStaleSocketWithoutLogIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	logDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "task-1.sock"), nil, 0o600))
+
+	src := SocketDirSource{
+		Dir:       dir,
+		LogDir:    logDir,
+		IsRunning: func(string) bool { return false },
+	}
+	_, ok, err := src.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.False(t, ok)
+}
+
+// TestSocketDirSourceLiveProbeKeepsTheTaskRunning pins that a probe which says
+// the VMM is alive keeps the socket path and Running true.
+func TestSocketDirSourceLiveProbeKeepsTheTaskRunning(t *testing.T) {
+	dir := t.TempDir()
+	socketPath := filepath.Join(dir, "task-1.sock")
+	require.NoError(t, os.WriteFile(socketPath, nil, 0o600))
+
+	src := SocketDirSource{Dir: dir, IsRunning: func(string) bool { return true }}
+	task, ok, err := src.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, Task{ID: "task-1", SocketPath: socketPath, Running: true}, task)
+}
+
 func TestSocketDirSourceLookupMissingTask(t *testing.T) {
 	task, ok, err := SocketDirSource{Dir: t.TempDir()}.Lookup(context.Background(), "task-1")
 	require.NoError(t, err)

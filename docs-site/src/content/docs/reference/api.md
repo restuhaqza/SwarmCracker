@@ -332,6 +332,10 @@ caller never picks a host. A manager with no broker wired answers those routes
 `api/openapi.yaml` in the repository is the normative contract for every route,
 schema, header and error code; this section is the operator's guide to it.
 
+Runnable `Client` programs for Python (`sdk/python`) and Node (`sdk/node`) are in
+[SDK examples](/guides/sdk-examples/); Go callers use
+[`pkg/client`](/guides/sdk-examples/#go).
+
 Only the manager that initialized the cluster serves the API in phase 1: the
 daemon starts both listeners when its configuration carries no join address
 (`JoinAddr == ""`). A worker, and a manager that joined an existing cluster,
@@ -360,6 +364,13 @@ phase-2 writes below.
 | GET | `/v1/tasks/{id}/logs` | NDJSON `LogFrame` stream (`tail`, `since`, `follow`; requires `tasks:logs`) |
 | GET | `/v1/tasks/{id}/files` | raw file bytes (requires `tasks:files`) |
 | PUT | `/v1/tasks/{id}/files` | `204` (raw upload, `mode`; requires `tasks:files`) |
+| POST | `/v1/tasks/{id}/snapshots` | `SnapshotDocument` (experimental; requires `tasks:snapshots`) |
+| GET | `/v1/tasks/{id}/snapshots` | `SnapshotList` (experimental) |
+| POST | `/v1/tasks/{id}/snapshots/{sid}/restore` | `SnapshotDocument` (experimental) |
+| DELETE | `/v1/tasks/{id}/snapshots/{sid}` | `204` (experimental) |
+| GET | `/v1/snapshots?task={id}` | `SnapshotList` (flat address; `task` required) |
+| POST | `/v1/snapshots/{sid}/restore?task={id}` | `SnapshotDocument` (flat address) |
+| DELETE | `/v1/snapshots/{sid}?task={id}` | `204` (flat address) |
 | GET | `/v1/events` | SSE or NDJSON `Event` stream (requires `events:read`) |
 | GET | `/v1/nodes` | `NodeList` |
 | GET | `/v1/nodes/{id}` | `NodeDocument` |
@@ -389,8 +400,13 @@ value is `400 invalid`.
 `GET /v1/version` reports `capabilities: ["read", "write", "events"]` on a
 manager without a node broker. A manager with a wired broker also advertises
 `exec`, `logs`, `files` and `health`, and every advertised operation has a
-route. A client that feature-detects the surface sees exactly what the server
-serves; the phase-2 write routes above are covered by `write`.
+route. When the operator passes `--snapshots-enable`, a manager whose snapshot
+transport is wired also advertises `snapshots` (experimental; see the
+[snapshots guide](/guides/snapshots/#http-api-experimental)). The advertisement
+and the route gate use the same condition, so `snapshots` appears exactly when
+the snapshot routes stop answering `501`. A client that feature-detects the
+surface sees exactly what the server serves; the phase-2 write routes above are
+covered by `write`.
 
 Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
 also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
@@ -637,6 +653,34 @@ cluster's mutual TLS identity, never the caller's bearer token.
   unreachable node is `503 unavailable` with `details.nodeId`. A task that
   published no healthcheck omits `health`.
 
+### Snapshots (experimental)
+
+Snapshots are **disabled by default** and enabled per node with
+`--snapshots-enable` (plus the node broker they are relayed through). While they
+are off, all seven snapshot routes answer `501 not_implemented` with
+`details.capability: "snapshots"`, before the task is resolved and before
+anything is audited.
+
+- **Routes.** The task-scoped forms (`/v1/tasks/{id}/snapshots…`) are the
+  primary address. The flat forms (`/v1/snapshots…`) are a convenience and
+  require `?task={id}`: a snapshot lives on one node, and the flat path alone
+  does not name a task to resolve that node through.
+- **Create** snapshots a running task's VM on its node and may pause it briefly.
+  The manager's default deadline is 30 s; a create that exceeds it is `504` with
+  code `timeout`. A task that is not running is `404` with
+  `details.reason: "task_not_running"`.
+- **Restore** is refused for a task that is still running: `409 conflict` with
+  `details.reason: "restore_task_running"`. The live VM owns its rootfs and a
+  restored second VM on the same file would corrupt both. Restoring the snapshot
+  of an exited task is the supported case.
+- **Restore can outlive SwarmKit.** It starts a Firecracker process outside
+  SwarmKit's task tracker, so the restored VM is not scheduler-managed. If it is
+  not stopped through the node, an operator must stop it manually.
+
+See the [snapshots guide](/guides/snapshots/#http-api-experimental) for the CLI
+workflow, the file layout and the known limitations; `api/openapi.yaml` has the
+normative schema and every error code.
+
 ### Idempotency, wait and dry run
 
 Three opt-in modifiers sit on top of the writes. Without them the phase-2
@@ -732,6 +776,8 @@ health:
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--broker-listen` | `0.0.0.0:4245` | mTLS listen address for the node broker; empty disables it |
+| `--snapshots-enable` | `false` | enable the experimental snapshot capability on this node |
+| `--snapshot-dir` | `/var/lib/firecracker/snapshots` | pkg/snapshot root (`<id>/metadata.json` is the source of truth) |
 
 The manager always dials the fixed broker port `4245` and ignores any port in a
 node's advertised address — the address is reduced to its host and `4245` is

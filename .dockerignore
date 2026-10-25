@@ -1,6 +1,10 @@
 .git
+.sdd/
+.impeccable/
 build/
 dist/
+docs-site/node_modules/
+docs-site/dist/
 *.out
 test-automation/
 .github/
