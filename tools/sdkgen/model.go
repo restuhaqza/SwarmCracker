@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -94,6 +95,10 @@ type Type struct {
 	Extra    *Type
 	// Enum holds the literals of KindEnum.
 	Enum []Literal
+	// Merged reports that this object is the result of an allOf merge. An inline
+	// occurrence of such an object is given a synthesised component name so it
+	// can carry its merged required set (Partial.error).
+	Merged bool
 	// RequiresOneOf records a oneOf whose members are requirement-only
 	// fragments (SecretWrite), which is not expressible as a union. Each inner
 	// slice is one alternative's required property set.
@@ -102,12 +107,20 @@ type Type struct {
 
 // Property returns the named property of an object, or nil.
 func (t *Type) Property(name string) *Type {
-	for _, p := range t.Properties {
-		if p.Name == name {
-			return p.Type
-		}
+	if index := t.propertyIndex(name); index >= 0 {
+		return t.Properties[index].Type
 	}
 	return nil
+}
+
+// propertyIndex returns the position of a named property, or -1.
+func (t *Type) propertyIndex(name string) int {
+	for i, p := range t.Properties {
+		if p.Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 // IsRequired reports whether the named property is in the required set.
@@ -175,7 +188,9 @@ type parser struct {
 	busy     map[string]bool
 }
 
-// Parse reads an OpenAPI document and resolves components.schemas.
+// Parse reads an OpenAPI document and resolves components.schemas. An allOf
+// merged inside a property is given a synthesised component name, so every type
+// the emitters see is either a scalar, a container or a named schema.
 func Parse(src []byte, file string) (*Spec, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(src, &doc); err != nil {
@@ -217,12 +232,30 @@ func Parse(src []byte, file string) (*Spec, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := p.checkInline(resolved, schemaPath(name), true); err != nil {
-			return nil, err
-		}
 		schema := &Schema{Name: name, Type: resolved}
 		spec.Schemas = append(spec.Schemas, schema)
-		spec.byName[name] = schema
+	}
+	// An allOf merged inside a property (Partial.error) has no component name of
+	// its own; synthesise one now that every declared name is known, so both
+	// emitters can declare the merged required set instead of collapsing to the
+	// referenced type.
+	taken := make(map[string]bool, len(names))
+	for _, name := range names {
+		taken[name] = true
+	}
+	synthesised := make([]*Schema, 0, 1)
+	for _, schema := range spec.Schemas {
+		if err := p.hoist(schema.Type, schema.Name, schemaPath(schema.Name), taken, &synthesised); err != nil {
+			return nil, err
+		}
+	}
+	spec.Schemas = append(spec.Schemas, synthesised...)
+	sort.Slice(spec.Schemas, func(i, j int) bool { return spec.Schemas[i].Name < spec.Schemas[j].Name })
+	for _, schema := range spec.Schemas {
+		if err := p.checkInline(schema.Type, schemaPath(schema.Name), true); err != nil {
+			return nil, err
+		}
+		spec.byName[schema.Name] = schema
 	}
 	return spec, nil
 }
@@ -306,6 +339,9 @@ func (p *parser) resolveNode(n *yaml.Node, path string) (*Type, error) {
 		return p.resolveRef(n, ref, path, description, nullable)
 	}
 	if allOf := lookupKey(n, "allOf"); allOf != nil {
+		if err := p.rejectCombinatorSiblings(n, "allOf", path); err != nil {
+			return nil, err
+		}
 		merged, err := p.mergeAllOf(allOf, path+"/allOf")
 		if err != nil {
 			return nil, err
@@ -319,6 +355,41 @@ func (p *parser) resolveNode(n *yaml.Node, path string) (*Type, error) {
 		return p.combine(n, anyOf, "anyOf", path, description, nullable)
 	}
 	return p.base(n, path, description, nullable)
+}
+
+// shapedKeywords are the keywords that describe a node's own shape. A node that
+// carries one next to a combinator would have it silently ignored, so it is a
+// hard error instead.
+var shapedKeywords = map[string]bool{
+	"properties": true, "required": true, "additionalProperties": true,
+	"items": true, "type": true, "enum": true,
+}
+
+// combinatorKeywords are the union/merge keywords. Two on one node are
+// ambiguous, and the parser would silently apply only the first.
+var combinatorKeywords = map[string]bool{
+	"allOf": true, "oneOf": true, "anyOf": true,
+}
+
+// rejectCombinatorSiblings fails loudly when a combinator would swallow a
+// sibling that shapes the node: `allOf`/`oneOf`/`anyOf` members only describe
+// their own schemas, the parent's properties are never merged in.
+func (p *parser) rejectCombinatorSiblings(n *yaml.Node, keyword, path string) error {
+	entries, err := p.entries(n, path)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.key == keyword {
+			continue
+		}
+		if !shapedKeywords[entry.key] && !combinatorKeywords[entry.key] {
+			continue
+		}
+		return p.errf(path, "%s cannot be combined with a sibling %q; "+
+			"move it into one of the %s members", keyword, entry.key, keyword)
+	}
+	return nil
 }
 
 // checkKeywords rejects a schema keyword the generator would otherwise ignore.
@@ -596,9 +667,7 @@ func (p *parser) mergeAllOf(list *yaml.Node, path string) (*Type, error) {
 	if list.Kind != yaml.SequenceNode || len(list.Content) == 0 {
 		return nil, p.errf(path, "allOf must be a non-empty list")
 	}
-	merged := &Type{Kind: KindObject}
-	shaped := 0
-	shapedRef := ""
+	merged := &Type{Kind: KindObject, Merged: true}
 	for i, member := range list.Content {
 		memberPath := fmt.Sprintf("%s/%d", path, i)
 		memberType, err := p.member(member, memberPath)
@@ -608,26 +677,12 @@ func (p *parser) mergeAllOf(list *yaml.Node, path string) (*Type, error) {
 		if memberType.Kind != KindObject {
 			return nil, p.errf(memberPath, "allOf member must be an object schema after $ref resolution")
 		}
-		if len(memberType.Properties) > 0 || memberType.HasExtra {
-			shaped++
-			shapedRef = ""
-			if ref := lookupKey(member, "$ref"); ref != nil {
-				shapedRef, err = p.refName(ref, memberPath)
-				if err != nil {
-					return nil, err
-				}
-			}
-		}
 		if err := p.mergeInto(merged, memberType, path); err != nil {
 			return nil, err
 		}
 	}
-	// A nested allOf whose only shaped member is a $ref and whose other members
-	// only add required names describes that referenced type (Partial.error).
-	// A reference cannot carry a narrowed required set, so it stays the ref.
-	if shaped == 1 && shapedRef != "" {
-		return &Type{Kind: KindRef, Ref: shapedRef}, nil
-	}
+	// A required name no member declares is a spec bug, not a modelling choice:
+	// the merged object would claim a property it never describes.
 	for _, name := range merged.Required {
 		if merged.Property(name) == nil {
 			return nil, p.errf(path, "required names undeclared property %q", name)
@@ -659,10 +714,13 @@ func (p *parser) member(n *yaml.Node, path string) (*Type, error) {
 // clash, unless the two declarations disagree about the type.
 func (p *parser) mergeInto(merged, member *Type, path string) error {
 	for _, prop := range member.Properties {
-		if existing := merged.Property(prop.Name); existing != nil {
-			if !sameType(existing, prop.Type) {
+		if index := merged.propertyIndex(prop.Name); index >= 0 {
+			if !sameType(merged.Properties[index].Type, prop.Type) {
 				return p.errf(path, "conflicting types for property %q", prop.Name)
 			}
+			// Later members win on a name clash: their declaration (and with it
+			// their description) replaces the earlier one.
+			merged.Properties[index].Type = prop.Type
 			if !merged.IsRequired(prop.Name) && member.IsRequired(prop.Name) {
 				merged.Required = append(merged.Required, prop.Name)
 			}
@@ -674,7 +732,7 @@ func (p *parser) mergeInto(merged, member *Type, path string) error {
 		}
 	}
 	for _, name := range member.Required {
-		if merged.Property(name) == nil && !merged.IsRequired(name) {
+		if !merged.IsRequired(name) {
 			merged.Required = append(merged.Required, name)
 		}
 	}
@@ -700,6 +758,11 @@ func (p *parser) combine(n, list *yaml.Node, keyword, path, description string, 
 	}
 	if fragments > 0 {
 		return p.combineRequirements(n, list, keyword, path, description, nullable, fragments)
+	}
+	// A requirement-only oneOf legitimately sits next to the parent object's
+	// properties; every other sibling would be dropped by the union.
+	if err := p.rejectCombinatorSiblings(n, keyword, path); err != nil {
+		return nil, err
 	}
 
 	variants := make([]*Type, 0, len(list.Content))
@@ -785,6 +848,85 @@ func decorate(resolved *Type, description string, nullable bool) *Type {
 	}
 	resolved.Nullable = resolved.Nullable || nullable
 	return resolved
+}
+
+// hoist gives every inline allOf-merged object a component name and rewrites its
+// slot to a $ref, so a merged required set survives into both languages. Other
+// inline objects stay rejected by checkInline: they need no name.
+func (p *parser) hoist(t *Type, owner, path string, taken map[string]bool, out *[]*Schema) error {
+	if t == nil {
+		return nil
+	}
+	for i := range t.Properties {
+		property := &t.Properties[i]
+		replacement, err := p.hoistSlot(
+			property.Type, owner+exportedName(property.Name), path+"/properties/"+property.Name, taken, out)
+		if err != nil {
+			return err
+		}
+		property.Type = replacement
+	}
+	if t.Items != nil {
+		replacement, err := p.hoistSlot(t.Items, owner+"Item", path+"/items", taken, out)
+		if err != nil {
+			return err
+		}
+		t.Items = replacement
+	}
+	for i := range t.Variants {
+		replacement, err := p.hoistSlot(
+			t.Variants[i], fmt.Sprintf("%sVariant%d", owner, i+1),
+			fmt.Sprintf("%s/variants/%d", path, i), taken, out)
+		if err != nil {
+			return err
+		}
+		t.Variants[i] = replacement
+	}
+	if t.Extra != nil {
+		replacement, err := p.hoistSlot(t.Extra, owner+"Value", path+"/additionalProperties", taken, out)
+		if err != nil {
+			return err
+		}
+		t.Extra = replacement
+	}
+	return nil
+}
+
+// hoistSlot returns the type that should replace a child slot: the original, or
+// a $ref to a synthesised schema when the slot holds an inline merged object.
+func (p *parser) hoistSlot(t *Type, name, path string, taken map[string]bool, out *[]*Schema) (*Type, error) {
+	if t == nil {
+		return nil, nil
+	}
+	if t.Kind != KindObject || !t.Merged || len(t.Properties) == 0 {
+		if err := p.hoist(t, name, path, taken, out); err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
+	if taken[name] {
+		return nil, p.errf(path, "cannot synthesise a type named %q: the name is already taken", name)
+	}
+	if err := p.hoist(t, name, path, taken, out); err != nil {
+		return nil, err
+	}
+	hoisted := *t
+	// Nullability belongs to the slot, not to the synthesised object.
+	hoisted.Nullable = false
+	taken[name] = true
+	*out = append(*out, &Schema{Name: name, Type: &hoisted})
+	return &Type{Kind: KindRef, Ref: name, Nullable: t.Nullable}, nil
+}
+
+// exportedName upper-cases the first rune of a property name so it can prefix a
+// synthesised component name: Partial + error = PartialError.
+func exportedName(name string) string {
+	if name == "" {
+		return ""
+	}
+	runes := []rune(name)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 // checkInline rejects an inline object with named properties: only a named

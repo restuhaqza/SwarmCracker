@@ -294,8 +294,17 @@ export interface NodeResources {
 export interface Partial {
   nodeId: string;
   nodeName?: string;
-  /** A complete Error object. Unlike a top-level Error, requestId is required here: a partial is tied to the request that produced it. */
-  error: Error;
+  error: PartialError;
+}
+
+/** A complete Error object. Unlike a top-level Error, requestId is required here: a partial is tied to the request that produced it. */
+export interface PartialError {
+  code: "invalid" | "ambiguous" | "not_found" | "unauthenticated" | "forbidden" | "conflict" | "cursor_expired" | "rate_limited" | "unavailable" | "timeout" | "unsupported_version" | "not_implemented" | "internal" | "usage" | "unreachable";
+  message: string;
+  requestId: string;
+  retryable: boolean;
+  /** Typed failure context. When details.fields is present it maps an offending path to a reason. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
+  details?: Record<string, unknown>;
 }
 
 export interface Placement {

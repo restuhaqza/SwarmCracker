@@ -31,8 +31,8 @@ func tsInterface(schema *Schema) string {
 	resolved := schema.Type
 	var out strings.Builder
 	if resolved.HasExtra {
-		out.WriteString("// additionalProperties is not modelled here: " +
-			"an interface cannot express a typed index signature.\n")
+		out.WriteString("// additionalProperties is not modelled here: a typed index signature " +
+			"must also cover the declared properties.\n")
 	}
 	if resolved.Description != "" {
 		out.WriteString("/** " + tsDoc(resolved.Description) + " */\n")

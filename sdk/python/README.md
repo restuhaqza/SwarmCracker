@@ -78,7 +78,9 @@ Each frame keeps the wire keys (`frame["type"]`, `frame["data"]`, or
 `frame.type` / `frame.data` for convenience). `data` is always `bytes` and is
 `b""` on frames without a payload. An `error` frame raises `ApiError` with that
 frame's code; a stream that ends without an exit frame makes `run.exit_code`
-raise `ApiError` with code `unreachable`.
+raise `ApiError` with code `unreachable`. A frame that breaks the contract (no
+`type`, an unknown exec frame type, or `data` that is not a base64 string)
+raises `ApiError` with code `internal`.
 
 ```python
 for frame in client.tasks.logs("5f3a1b2c9d", follow=True, tail=100):
@@ -128,6 +130,9 @@ stream media type) and `X-SwarmCracker-Api-Version: 1`. Writes carry
 `application/merge-patch+json` — the only media type the PATCH route accepts.
 `If-Match` is a keyword-only argument on `patch` and `delete`;
 `idempotency_key` is optional on `create`.
+
+Redirects are never followed: a `3xx` surfaces as `ApiError` with code
+`internal`, so the bearer token cannot be replayed to another origin.
 
 ## Generated models
 

@@ -38,6 +38,8 @@ MERGE_PATCH_MEDIA_TYPE = "application/merge-patch+json"
 NDJSON_MEDIA_TYPE = "application/x-ndjson"
 #: The media type of the event stream.
 SSE_MEDIA_TYPE = "text/event-stream"
+#: The frame types of an exec stream (pkg/api/v1.ExecFrame).
+EXEC_FRAME_TYPES = frozenset({"stdout", "stderr", "exit", "error"})
 #: The API version this client speaks, sent on every request.
 API_VERSION = "1"
 API_VERSION_HEADER = "X-SwarmCracker-Api-Version"
@@ -190,6 +192,15 @@ def _http_error(exc: urllib.error.HTTPError) -> ApiError:
         raw = b""
     finally:
         exc.close()
+    if 300 <= status < 400:
+        # The redirect handler refuses to follow, so urllib surfaces the 3xx.
+        # Following it would replay the bearer token to another origin.
+        return ApiError(
+            "internal",
+            "the server answered with a redirect; the client refuses to follow it",
+            status=status,
+            request_id=request_id,
+        )
     if not raw:
         return _api_error(None, status, request_id)
     try:
@@ -203,6 +214,18 @@ def _transport_error(exc: BaseException) -> ApiError:
     """Turn a transport failure into the code="unreachable" ApiError."""
     reason = getattr(exc, "reason", None) or exc
     return ApiError("unreachable", f"cannot reach the SwarmCracker API: {reason}")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect.
+
+    Following one would resend the request (and the bearer token) to whatever
+    origin the response names, so a redirect becomes a typed failure instead.
+    """
+
+    # The signature is fixed by urllib.request.HTTPRedirectHandler.
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 def _decode_json(response: Any) -> Any:
@@ -224,15 +247,22 @@ def _decode_frame(payload: Any, status: int) -> Frame:
     """Decode one NDJSON frame: base64 data becomes bytes."""
     if not isinstance(payload, dict):
         raise ApiError("internal", "the stream carried a frame that is not a JSON object", status=status)
+    kind = payload.get("type")
+    if not isinstance(kind, str) or not kind:
+        raise ApiError("internal", "the stream carried a frame without a type", status=status)
     frame = Frame(payload)
     encoded = frame.get("data")
-    if encoded:
-        try:
-            frame["data"] = base64.b64decode(encoded)
-        except ValueError:
-            raise ApiError("internal", "the stream carried data that is not base64", status=status) from None
-    else:
+    if encoded is None or encoded == "":
         frame["data"] = b""
+        return frame
+    if not isinstance(encoded, str):
+        raise ApiError(
+            "internal", "the stream carried data that is not a base64 string", status=status
+        )
+    try:
+        frame["data"] = base64.b64decode(encoded, validate=True)
+    except ValueError:
+        raise ApiError("internal", "the stream carried data that is not base64", status=status) from None
     return frame
 
 
@@ -301,14 +331,21 @@ class ExecStream:
         )
         try:
             for frame in _iter_frames(self._response):
-                if frame["type"] == "error":
+                kind = frame["type"]
+                if kind not in EXEC_FRAME_TYPES:
+                    raise ApiError(
+                        "internal",
+                        f"the exec stream carried an unknown frame type {kind!r}",
+                        status=getattr(self._response, "status", 0),
+                    )
+                if kind == "error":
                     code = frame.get("code") or "internal"
                     raise ApiError(
                         code,
                         f"the exec stream reported an error: {code}",
                         status=getattr(self._response, "status", 0),
                     )
-                if frame["type"] == "exit":
+                if kind == "exit":
                     exit_code = frame.get("exitCode")
                     self._exit_code = int(exit_code) if exit_code is not None else 0
                 yield frame
@@ -369,7 +406,7 @@ class LogStream:
         try:
             yield from _iter_frames(self._response)
         finally:
-            self._response.close()
+            self.close()
 
     def __enter__(self) -> LogStream:
         return self
@@ -444,7 +481,7 @@ class EventStream:
                 elif field == "data":
                     data.append(value)
         finally:
-            self._response.close()
+            self.close()
 
     def __enter__(self) -> EventStream:
         return self
@@ -513,7 +550,9 @@ class Client:
                 token = handle.read().strip()
         self._token = token or None
         context = ssl.create_default_context(cafile=ca)
-        self._opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=context))
+        self._opener = urllib.request.build_opener(
+            _NoRedirectHandler(), urllib.request.HTTPSHandler(context=context)
+        )
         self._timeout = timeout
         self.services = Services(self)
         self.tasks = Tasks(self)

@@ -54,6 +54,15 @@ TASK = {
 }
 
 
+#: Exec streams that violate the frame contract, keyed by route.
+EXEC_FAULTS = {
+    "/v1/tasks/t4/exec": [{"data": base64.b64encode(b"x").decode()}],
+    "/v1/tasks/t5/exec": [{"type": "bogus"}],
+    "/v1/tasks/t6/exec": [{"type": "stdout", "data": 42}],
+    "/v1/tasks/t7/exec": [{"type": "stdout", "data": "%%% not base64 %%%"}],
+}
+
+
 def error_document(code: str, message: str, *, retryable: bool = False, details=None) -> dict:
     return {
         "schemaVersion": 1,
@@ -182,6 +191,9 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/v1/tasks/t3/exec":
             self._exec_stream([{"type": "error", "code": "timeout"}])
             return True
+        if method == "POST" and path in EXEC_FAULTS:
+            self._exec_stream(EXEC_FAULTS[path])
+            return True
         if method == "GET" and path == "/v1/tasks/t1/logs":
             self._exec_stream(
                 [
@@ -203,7 +215,15 @@ class Handler(BaseHTTPRequestHandler):
             )
             return True
         if method == "GET" and path == "/v1/events":
-            self._sse_stream()
+            # The test server reports a typed failure when the subscription asks
+            # for the reserved, test-only type "error".
+            if record["query"].get("types") == ["error"]:
+                self._sse_error_stream()
+            else:
+                self._sse_stream()
+            return True
+        if method == "GET" and path == "/v1/redirect":
+            self._redirect(self.server.redirect_to)
             return True
         if method == "GET" and path == "/v1/forbidden":
             self._json(
@@ -288,6 +308,27 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _sse_error_stream(self):
+        self._start_stream(SSE_MEDIA_TYPE)
+        try:
+            self._chunk(b"event: ready\ndata: {}\n\n")
+            self._chunk(
+                b"event: error\ndata: "
+                + json.dumps(error_document("unavailable", "the broker is down", retryable=True)).encode(
+                    "utf-8"
+                )
+                + b"\n\n"
+            )
+            self._end_stream()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def _redirect(self, location):
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def _start_stream(self, content_type):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -304,12 +345,31 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
 
+class SinkHandler(BaseHTTPRequestHandler):
+    """Records any request that reaches it: a redirect must not."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        self.server.requests.append({key.lower(): value for key, value in self.headers.items()})
+        body = b'{"ok": true}'
+        self.send_response(200)
+        self.send_header("Content-Type", V1_MEDIA_TYPE)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
 class ClientTest(unittest.TestCase):
     """One throwaway server per test, so every request log starts empty."""
 
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.requests = []
+        self.server.redirect_to = ""
         self.thread = threading.Thread(
             target=self.server.serve_forever,
             kwargs={"poll_interval": 0.01},
@@ -462,6 +522,34 @@ class ClientTest(unittest.TestCase):
                 list(run)
         self.assertEqual(caught.exception.code, "timeout")
 
+    def test_exec_frame_without_a_type_is_internal(self):
+        with self.assertRaises(ApiError) as caught:
+            with self.client.tasks.exec("t4", ["sh"]) as run:
+                list(run)
+        self.assertEqual(caught.exception.code, "internal")
+        self.assertIn("type", caught.exception.message)
+
+    def test_exec_frame_with_an_unknown_type_is_internal(self):
+        with self.assertRaises(ApiError) as caught:
+            with self.client.tasks.exec("t5", ["sh"]) as run:
+                list(run)
+        self.assertEqual(caught.exception.code, "internal")
+        self.assertIn("bogus", caught.exception.message)
+
+    def test_exec_frame_with_non_string_data_is_internal(self):
+        with self.assertRaises(ApiError) as caught:
+            with self.client.tasks.exec("t6", ["sh"]) as run:
+                list(run)
+        self.assertEqual(caught.exception.code, "internal")
+        self.assertIn("base64", caught.exception.message)
+
+    def test_exec_frame_with_invalid_base64_is_internal(self):
+        with self.assertRaises(ApiError) as caught:
+            with self.client.tasks.exec("t7", ["sh"]) as run:
+                list(run)
+        self.assertEqual(caught.exception.code, "internal")
+        self.assertIn("base64", caught.exception.message)
+
     # -- logs ---------------------------------------------------------------
 
     def test_logs_decode_data_and_keep_time_and_stream(self):
@@ -498,6 +586,25 @@ class ClientTest(unittest.TestCase):
         request = self.last_request("GET", "/v1/events")
         self.assertEqual(request["headers"]["last-event-id"], "7")
 
+    def test_events_watch_raises_api_error_on_an_error_event(self):
+        with self.assertRaises(ApiError) as caught:
+            list(self.client.events.watch(types=["error"]))
+        error = caught.exception
+        self.assertEqual(error.code, "unavailable")
+        self.assertEqual(error.message, "the broker is down")
+        self.assertTrue(error.retryable)
+        self.assertEqual(error.status, 200)
+        self.assertEqual(error.request_id, REQUEST_ID)
+
+    def test_logs_and_events_clear_the_response_after_closing(self):
+        logs = self.client.tasks.logs("t1")
+        list(logs)
+        self.assertIsNone(logs._response)
+
+        events = self.client.events.watch()
+        list(events)
+        self.assertIsNone(events._response)
+
     # -- errors -------------------------------------------------------------
 
     def test_api_error_carries_the_error_document_fields(self):
@@ -517,6 +624,28 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "internal")
         self.assertEqual(caught.exception.status, 500)
         self.assertEqual(caught.exception.request_id, REQUEST_ID)
+
+    def test_redirects_are_refused_so_the_token_is_never_replayed(self):
+        sink = ThreadingHTTPServer(("127.0.0.1", 0), SinkHandler)
+        sink.requests = []
+        thread = threading.Thread(
+            target=sink.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        thread.start()
+        try:
+            self.server.redirect_to = (
+                f"http://127.0.0.1:{sink.server_address[1]}/capture"
+            )
+            with self.assertRaises(ApiError) as caught:
+                self.client._request("GET", "/v1/redirect")
+            self.assertEqual(caught.exception.status, 302)
+            self.assertEqual(caught.exception.code, "internal")
+            self.assertIn("redirect", caught.exception.message)
+            self.assertEqual(sink.requests, [], "the redirect target was contacted")
+        finally:
+            sink.shutdown()
+            sink.server_close()
+            thread.join(timeout=5)
 
     def test_transport_failure_is_unreachable_and_never_carries_the_token(self):
         with socket.socket() as probe:

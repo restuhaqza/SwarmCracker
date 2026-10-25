@@ -116,6 +116,33 @@ func TestParseRealSpec(t *testing.T) {
 		}
 	})
 
+	t.Run("inline allOf property becomes a named type", func(t *testing.T) {
+		partial := mustSchema(t, spec, "Partial")
+		field := partial.Property("error")
+		if field == nil || field.Kind != KindRef || field.Ref != "PartialError" {
+			t.Fatalf("Partial.error = %+v, want $ref PartialError", field)
+		}
+		hoisted := mustSchema(t, spec, "PartialError")
+		if hoisted.Kind != KindObject {
+			t.Fatalf("PartialError kind = %v, want object", hoisted.Kind)
+		}
+		for _, name := range []string{"code", "message", "requestId", "retryable"} {
+			if hoisted.Property(name) == nil {
+				t.Errorf("PartialError is missing the inherited property %q", name)
+			}
+			if !hoisted.IsRequired(name) {
+				t.Errorf("PartialError.%s should be required", name)
+			}
+		}
+		if !strings.Contains(hoisted.Description, "requestId is required here") {
+			t.Errorf("PartialError description = %q, want the allOf node's description", hoisted.Description)
+		}
+		// The synthesized type is a component schema like any other.
+		if spec.Lookup("PartialError") == nil {
+			t.Error("PartialError is not registered in the spec")
+		}
+	})
+
 	t.Run("anyOf with a null member is nullable", func(t *testing.T) {
 		update := mustSchema(t, spec, "ServiceSpecPatch").Property("update")
 		if update == nil || update.Kind != KindRef || update.Ref != "UpdateConfig" || !update.Nullable {
@@ -228,6 +255,43 @@ func TestParseRejectsUnsupportedConstructs(t *testing.T) {
 			name:    "allOf member is not an object",
 			schemas: "    Bad:\n      allOf:\n        - {type: string}\n",
 			want:    []string{"#/components/schemas/Bad/allOf/0", "object"},
+		},
+		{
+			name: "allOf with a sibling properties",
+			schemas: "    Bad:\n      allOf:\n        - {type: object}\n" +
+				"      properties:\n        a: {type: string}\n",
+			want: []string{"#/components/schemas/Bad", "allOf", "sibling"},
+		},
+		{
+			name: "oneOf with a sibling properties",
+			schemas: "    Bad:\n      oneOf:\n        - {type: string}\n        - {type: integer}\n" +
+				"      properties:\n        a: {type: string}\n",
+			want: []string{"#/components/schemas/Bad", "oneOf", "sibling"},
+		},
+		{
+			name: "anyOf with a sibling required",
+			schemas: "    Bad:\n      anyOf:\n        - {type: string}\n        - {type: integer}\n" +
+				"      required: [a]\n",
+			want: []string{"#/components/schemas/Bad", "anyOf", "sibling"},
+		},
+		{
+			name: "two combinators on one node",
+			schemas: "    Bad:\n      allOf:\n        - {type: object}\n" +
+				"      oneOf:\n        - {type: string}\n        - {type: integer}\n",
+			want: []string{"#/components/schemas/Bad", "allOf", "oneOf"},
+		},
+		{
+			name: "allOf required names a property no member declares",
+			schemas: "    Bad:\n      allOf:\n        - type: object\n          properties:\n            a: {type: string}\n" +
+				"        - type: object\n          required: [missing]\n",
+			want: []string{"#/components/schemas/Bad/allOf", "missing"},
+		},
+		{
+			name: "synthesised inline type name is already taken",
+			schemas: "    BadError: {type: object, properties: {a: {type: string}}}\n" +
+				"    Bad:\n      type: object\n      properties:\n        error:\n          allOf:\n" +
+				"            - type: object\n              properties:\n                b: {type: string}\n",
+			want: []string{"#/components/schemas/Bad/properties/error", "already taken"},
 		},
 		{
 			name: "allOf property clash with a different type",
@@ -363,6 +427,56 @@ func TestParseCombinedSchemas(t *testing.T) {
 	typed := mustSchema(t, spec, "Typed")
 	if !typed.HasExtra || typed.Extra == nil || typed.Extra.Ref != "Plain" {
 		t.Errorf("Typed = %+v, want map<string, $ref Plain>", typed)
+	}
+}
+
+func TestParseMergesAllOfIntoOneObject(t *testing.T) {
+	src := specWith(`    Base:
+      type: object
+      required: [id]
+      properties:
+        id: {type: string}
+        note: {type: string}
+    Extended:
+      allOf:
+        - $ref: '#/components/schemas/Base'
+        - type: object
+          required: [note]
+          properties:
+            note:
+              type: string
+              description: Later members win.
+            extra: {type: boolean}
+    Nested:
+      type: object
+      properties:
+        inline:
+          allOf:
+            - $ref: '#/components/schemas/Base'
+            - type: object
+              required: [note]
+`)
+	spec := mustParse(t, src)
+
+	extended := mustSchema(t, spec, "Extended")
+	want := []string{"id", "note", "extra"}
+	if got := propertyNames(extended); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("Extended properties = %v, want %v", got, want)
+	}
+	if !extended.IsRequired("id") || !extended.IsRequired("note") || extended.IsRequired("extra") {
+		t.Errorf("Extended required = %v, want the union [id note]", extended.Required)
+	}
+	if note := extended.Property("note"); note == nil || note.Description != "Later members win." {
+		t.Errorf("Extended.note = %+v, want the later member's declaration", note)
+	}
+
+	nested := mustSchema(t, spec, "Nested").Property("inline")
+	if nested == nil || nested.Kind != KindRef || nested.Ref != "NestedInline" {
+		t.Fatalf("Nested.inline = %+v, want $ref NestedInline", nested)
+	}
+	hoisted := mustSchema(t, spec, "NestedInline")
+	if !hoisted.IsRequired("note") || hoisted.Property("id") == nil {
+		t.Errorf("NestedInline = %+v, want the merged Base object with note required", hoisted)
 	}
 }
 

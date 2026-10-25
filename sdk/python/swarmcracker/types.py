@@ -241,7 +241,15 @@ class NodeResources(TypedDict):
 class Partial(TypedDict):
     nodeId: str
     nodeName: NotRequired[str]
-    error: Error
+    error: PartialError
+
+class PartialError(TypedDict):
+    """A complete Error object. Unlike a top-level Error, requestId is required here: a partial is tied to the request that produced it."""
+    code: Literal["invalid", "ambiguous", "not_found", "unauthenticated", "forbidden", "conflict", "cursor_expired", "rate_limited", "unavailable", "timeout", "unsupported_version", "not_implemented", "internal", "usage", "unreachable"]
+    message: str
+    requestId: str
+    retryable: bool
+    details: NotRequired[dict[str, Any]]
 
 class Placement(TypedDict):
     constraints: NotRequired[list[str]]

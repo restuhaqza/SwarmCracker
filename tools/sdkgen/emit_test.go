@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -195,7 +196,8 @@ func TestGenerateEdgeCases(t *testing.T) {
 		"  /** base64 */",
 		"  blob?: string;",
 		"/** base64 */\nexport type Blob = string;",
-		"// additionalProperties is not modelled here: an interface cannot express a typed index signature.",
+		"// additionalProperties is not modelled here: a typed index signature " +
+			"must also cover the declared properties.",
 		"  id: string;",
 		"  count?: number;",
 		"  flag?: boolean;",
@@ -208,6 +210,131 @@ func TestGenerateEdgeCases(t *testing.T) {
 		if !strings.Contains(string(typescript), line+"\n") && !strings.Contains(string(typescript), line) {
 			t.Errorf("TypeScript output is missing %q\n%s", line, typescript)
 		}
+	}
+}
+
+// declaration returns the text of one emitted declaration: from its first line
+// up to the blank line that follows it.
+func declaration(t *testing.T, text, start string) string {
+	t.Helper()
+	index := strings.Index(text, start)
+	if index < 0 {
+		t.Fatalf("%q not found\n%s", start, text)
+	}
+	rest := text[index:]
+	if end := strings.Index(rest, "\n\n"); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
+func TestGeneratedModelsCarryTheNamedAllOfProperty(t *testing.T) {
+	src, err := os.ReadFile(realSpecPath)
+	if err != nil {
+		t.Fatalf("read spec: %v", err)
+	}
+	spec, err := Parse(src, "api/openapi.yaml")
+	if err != nil {
+		t.Fatalf("Parse(%s) error = %v", realSpecPath, err)
+	}
+
+	python, err := GeneratePython(spec)
+	if err != nil {
+		t.Fatalf("GeneratePython() error = %v", err)
+	}
+	hoisted := declaration(t, string(python), "class PartialError(TypedDict):")
+	if !strings.Contains(hoisted, "\n    requestId: str") {
+		t.Errorf("PartialError must require requestId\n%s", hoisted)
+	}
+	if partial := declaration(t, string(python), "class Partial(TypedDict):"); !strings.Contains(partial, "\n    error: PartialError") {
+		t.Errorf("Partial.error must reference PartialError\n%s", partial)
+	}
+
+	typescript, err := GenerateTypeScript(spec)
+	if err != nil {
+		t.Fatalf("GenerateTypeScript() error = %v", err)
+	}
+	hoisted = declaration(t, string(typescript), "export interface PartialError {")
+	if !strings.Contains(hoisted, "\n  requestId: string;") {
+		t.Errorf("PartialError must require requestId\n%s", hoisted)
+	}
+	if strings.Contains(hoisted, "requestId?:") {
+		t.Errorf("PartialError.requestId must be required\n%s", hoisted)
+	}
+	if partial := declaration(t, string(typescript), "export interface Partial {"); !strings.Contains(partial, "\n  error: PartialError;") {
+		t.Errorf("Partial.error must reference PartialError\n%s", partial)
+	}
+}
+
+func TestGenerateTypedOneOfUnion(t *testing.T) {
+	src := specWith(`    Alpha: {type: object, properties: {a: {type: string}}}
+    Beta: {type: object, properties: {b: {type: integer}}}
+    Either:
+      oneOf:
+        - $ref: '#/components/schemas/Alpha'
+        - $ref: '#/components/schemas/Beta'
+    Holder:
+      type: object
+      properties:
+        value: {$ref: '#/components/schemas/Either'}
+`)
+	spec := mustParse(t, src)
+
+	python, err := GeneratePython(spec)
+	if err != nil {
+		t.Fatalf("GeneratePython() error = %v", err)
+	}
+	if !strings.Contains(string(python), "\nEither = Union[Alpha, Beta]\n") {
+		t.Errorf("Python oneOf is not a Union alias\n%s", python)
+	}
+	if !strings.Contains(string(python), "\n    value: NotRequired[Either]\n") {
+		t.Errorf("Holder.value does not reference the union alias\n%s", python)
+	}
+
+	typescript, err := GenerateTypeScript(spec)
+	if err != nil {
+		t.Fatalf("GenerateTypeScript() error = %v", err)
+	}
+	if !strings.Contains(string(typescript), "\nexport type Either = Alpha | Beta;\n") {
+		t.Errorf("TypeScript oneOf is not a union alias\n%s", typescript)
+	}
+	if !strings.Contains(string(typescript), "\n  value?: Either;\n") {
+		t.Errorf("Holder.value does not reference the union alias\n%s", typescript)
+	}
+}
+
+func TestGenerateKeepsTheRequirementOnlyOneOfComment(t *testing.T) {
+	// SecretWrite is the one shape a union cannot express: the oneOf members only
+	// name required sets, so the constraint survives as a comment.
+	src := specWith(`    Write:
+      type: object
+      oneOf:
+        - required: [data]
+        - required: [driver]
+      properties:
+        data: {type: string}
+        driver: {type: string}
+`)
+	spec := mustParse(t, src)
+
+	python, err := GeneratePython(spec)
+	if err != nil {
+		t.Fatalf("GeneratePython() error = %v", err)
+	}
+	want := "oneOf: one of these required sets must hold: [data], [driver]."
+	if !strings.Contains(string(python), "# "+want+"\nclass Write(TypedDict):") {
+		t.Errorf("Python output lost the requirement-only oneOf note\n%s", python)
+	}
+	if !strings.Contains(string(python), "\n    data: NotRequired[str]\n") {
+		t.Errorf("Write.data must stay optional\n%s", python)
+	}
+
+	typescript, err := GenerateTypeScript(spec)
+	if err != nil {
+		t.Fatalf("GenerateTypeScript() error = %v", err)
+	}
+	if !strings.Contains(string(typescript), "// "+want+"\nexport interface Write {") {
+		t.Errorf("TypeScript output lost the requirement-only oneOf note\n%s", typescript)
 	}
 }
 
