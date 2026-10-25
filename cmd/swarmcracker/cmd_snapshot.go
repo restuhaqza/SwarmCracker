@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -86,6 +87,13 @@ Example:
 				socketPath = filepath.Join(cfg.Executor.SocketDir, taskID+".sock")
 			}
 
+			// A snapshot owns a copy of the task disk, so create needs the disk path
+			// even when the operator did not pass --rootfs: the executor keeps one
+			// disk per task, and the socket names the task.
+			if rootfsPath == "" {
+				rootfsPath = taskRootfsPath(cfg, socketPath)
+			}
+
 			opts := snapshot.CreateOptions{
 				ServiceID:  serviceID,
 				NodeID:     nodeID,
@@ -118,9 +126,36 @@ Example:
 	cmd.Flags().StringVar(&nodeID, "node", "", "Node ID for metadata")
 	cmd.Flags().IntVar(&vcpus, "vcpus", 0, "vCPU count (for metadata)")
 	cmd.Flags().IntVar(&memoryMB, "memory", 0, "Memory in MB (for metadata)")
-	cmd.Flags().StringVar(&rootfsPath, "rootfs", "", "Rootfs path (for metadata)")
+	cmd.Flags().StringVar(&rootfsPath, "rootfs", "", "Rootfs path (default: <rootfs-dir>/tasks/<task-id>.ext4 when it exists)")
 
 	return cmd
+}
+
+// taskRootfsPath derives the disk the executor keeps for the task behind a
+// Firecracker API socket: <rootfs dir>/tasks/<task id>.ext4, where the task ID is
+// the socket's file name without its .sock suffix. The broker derives the same
+// path for an API-created snapshot, so the two entry points produce the same
+// self-contained restore point.
+//
+// It returns "" when the file does not exist, which keeps the historical "no disk
+// recorded" shape for a VM started from a disk the executor does not manage: a
+// wrong guess would fail the create instead of recording a snapshot.
+func taskRootfsPath(cfg *config.Config, socketPath string) string {
+	if cfg.Executor.RootfsDir == "" {
+		return ""
+	}
+
+	taskID := strings.TrimSuffix(filepath.Base(socketPath), ".sock")
+	if taskID == "" || taskID == "." || taskID == string(filepath.Separator) {
+		return ""
+	}
+
+	candidate := filepath.Join(cfg.Executor.RootfsDir, "tasks", taskID+".ext4")
+	if _, err := os.Stat(candidate); err != nil {
+		return ""
+	}
+
+	return candidate
 }
 
 // --- restore ---
