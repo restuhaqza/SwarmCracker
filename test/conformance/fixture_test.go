@@ -565,23 +565,27 @@ func TestValidateRejectsBadCaptures(t *testing.T) {
 	}
 }
 
+// streamFixture wraps one stream shape in an otherwise valid stream case, so a
+// validation test only has to name the shape under test.
+func streamFixture(s Stream) Fixture {
+	return Fixture{SchemaVersion: SchemaVersion, Name: "streams", Cases: []Case{{
+		Name:    "attach",
+		Request: Request{Method: "POST", Path: "/v1/tasks/t/attach", Role: "runner"},
+		Expect:  Expect{Status: 200},
+		Stream:  &s,
+	}}}
+}
+
 // TestValidateRejectsAnAmbiguousStream pins the two stream shapes: a framed
 // stream counts frames, a raw stream reads bytes, and a case picks one.
 func TestValidateRejectsAnAmbiguousStream(t *testing.T) {
-	stream := func(s Stream) Fixture {
-		return Fixture{SchemaVersion: SchemaVersion, Name: "streams", Cases: []Case{{
-			Name:    "attach",
-			Request: Request{Method: "POST", Path: "/v1/tasks/t/attach", Role: "runner"},
-			Expect:  Expect{Status: 200},
-			Stream:  &s,
-		}}}
-	}
+	stream := streamFixture
 
 	if err := stream(Stream{Bytes: 4}).Validate(); err != nil {
 		t.Fatalf("a bytes-only stream must validate: %v", err)
 	}
 	if err := stream(Stream{Bytes: 4, Frames: 2}).Validate(); err == nil ||
-		!strings.Contains(err.Error(), "not both") {
+		!strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("want the mixed stream rejected, got %v", err)
 	}
 	if err := stream(Stream{}).Validate(); err == nil || !strings.Contains(err.Error(), "stream") {
@@ -592,6 +596,39 @@ func TestValidateRejectsAnAmbiguousStream(t *testing.T) {
 	echoing.Cases[0].Expect.RequestIDInBody = boolPtr(true)
 	if err := echoing.Validate(); err == nil || !strings.Contains(err.Error(), "not a stream") {
 		t.Fatalf("want requestIdInBody on a stream rejected, got %v", err)
+	}
+}
+
+// TestValidateBoundedStreamShape pins the untilType shape: a bounded read needs a
+// floor and a cap so it can neither pass on an empty stream nor hang on a server
+// that never sends the terminal frame, and it replaces the pinned count instead
+// of adding to it.
+func TestValidateBoundedStreamShape(t *testing.T) {
+	if err := streamFixture(Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 200}).Validate(); err != nil {
+		t.Fatalf("a bounded stream must validate: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		stream Stream
+		want   string
+	}{
+		{name: "no floor", stream: Stream{UntilType: "eof", MaxFrames: 200}, want: "minFrames"},
+		{name: "no cap", stream: Stream{UntilType: "eof", MinFrames: 1}, want: "maxFrames"},
+		{name: "cap at the floor", stream: Stream{UntilType: "eof", MinFrames: 4, MaxFrames: 4}, want: "must exceed"},
+		{name: "count and terminal", stream: Stream{Frames: 2, UntilType: "eof", MinFrames: 1, MaxFrames: 9}, want: "exactly one"},
+		{name: "lastType and untilType", stream: Stream{LastType: "eof", UntilType: "eof", MinFrames: 1, MaxFrames: 9}, want: "name one"},
+		{name: "bounds on an exact stream", stream: Stream{Frames: 2, MinFrames: 1, MaxFrames: 9}, want: "require untilType"},
+		{name: "bounds on a raw stream", stream: Stream{Bytes: 4, MinFrames: 1}, want: "not a raw one"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := streamFixture(tc.stream).Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
 	}
 }
 
@@ -647,6 +684,13 @@ func TestLoadReadsTheNewAssertions(t *testing.T) {
 				"request": {"method": "POST", "path": "/v1/tasks/t/attach", "role": "runner"},
 				"expect": {"status": 200},
 				"stream": {"bytes": 14}
+			},
+			{
+				"name": "logs",
+				"requiresCapabilities": ["logs"],
+				"request": {"method": "GET", "path": "/v1/tasks/t/logs", "role": "reader"},
+				"expect": {"status": 200},
+				"stream": {"untilType": "eof", "minFrames": 1, "maxFrames": 200}
 			}
 		]
 	}`)
@@ -675,5 +719,9 @@ func TestLoadReadsTheNewAssertions(t *testing.T) {
 	}
 	if second := fixtures[0].Cases[1]; second.Stream == nil || second.Stream.Bytes != 14 {
 		t.Errorf("stream = %+v", fixtures[0].Cases[1].Stream)
+	}
+	bounded := fixtures[0].Cases[2].Stream
+	if bounded == nil || bounded.UntilType != "eof" || bounded.MinFrames != 1 || bounded.MaxFrames != 200 {
+		t.Errorf("bounded stream = %+v", bounded)
 	}
 }

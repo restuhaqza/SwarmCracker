@@ -621,6 +621,7 @@ type result struct {
 	stream    bool
 	raw       bool
 	frames    int
+	payload   int
 	controls  int
 	rawBytes  int
 	lastType  string
@@ -630,6 +631,7 @@ type result struct {
 // streamRead is what one streaming response yielded before the reader stopped.
 type streamRead struct {
 	frames   int
+	payload  int
 	controls int
 	rawBytes int
 	lastType string
@@ -665,8 +667,9 @@ func send(t *testing.T, client *http.Client, req *http.Request, stream *Stream) 
 			res.streamErr = read.err
 			return res
 		}
-		read := readStream(resp.Body, stream.Frames, stream.LastType)
+		read := readStream(resp.Body, *stream)
 		res.frames = read.frames
+		res.payload = read.payload
 		res.controls = read.controls
 		res.lastType = read.lastType
 		res.streamErr = read.err
@@ -682,12 +685,21 @@ func send(t *testing.T, client *http.Client, req *http.Request, stream *Stream) 
 }
 
 // readStream counts SSE data lines and NDJSON lines, ignoring the ready and
-// ping control frames. It returns as soon as it has seen want data frames, a
-// frame of the terminal type, EOF or the request deadline: a live follow stream
-// never ends on its own, so the runner stops reading rather than waiting for the
-// server to close it.
-func readStream(body io.Reader, want int, terminal string) streamRead {
+// ping control frames. It returns as soon as it has seen the number of frames the
+// case asks for, a frame of the terminal type, the bounded read's frame cap, EOF
+// or the request deadline: a live follow stream never ends on its own, so the
+// runner stops reading rather than waiting for the server to close it.
+//
+// A bounded read (untilType) also counts the payload frames before the terminal
+// one, which is the floor a log case asserts: the terminal frame itself is the end
+// marker, not a line.
+func readStream(body io.Reader, spec Stream) streamRead {
 	var read streamRead
+
+	terminal := spec.LastType
+	if spec.bounded() {
+		terminal = spec.UntilType
+	}
 
 	reader := bufio.NewReader(body)
 	for {
@@ -697,14 +709,22 @@ func readStream(body io.Reader, want int, terminal string) streamRead {
 			if typ != "" {
 				read.lastType = typ
 			}
-			if typ == readyFrame || typ == pingFrame {
+			switch {
+			case typ == readyFrame || typ == pingFrame:
 				read.controls++
-			} else {
+			case typ != "" && typ == terminal:
 				read.frames++
+			default:
+				read.frames++
+				read.payload++
 			}
 		}
 
-		if read.frames >= want || (terminal != "" && read.lastType == terminal) {
+		if spec.bounded() {
+			if read.lastType == spec.UntilType || read.frames >= spec.MaxFrames {
+				return read
+			}
+		} else if read.frames >= spec.Frames || (spec.LastType != "" && read.lastType == spec.LastType) {
 			return read
 		}
 		if readErr != nil {
@@ -805,8 +825,9 @@ func assertJSONContentType(t *testing.T, label string, res *result) {
 	}
 }
 
-// assertStream checks the stream media type, the frame count and the terminal
-// frame.
+// assertStream checks the stream media type and then the shape's assertion: an
+// exact frame count, a bounded read to a named terminal frame, or a raw byte
+// count.
 //
 // The mock is deterministic, so it asserts the exact count. A live manager is
 // not: an exec command or a log tail may carry more frames than the fixture
@@ -826,6 +847,11 @@ func assertStream(t *testing.T, c Case, res *result, lab bool) {
 	case eventStreamMediaType, ndjsonMediaType:
 	default:
 		res.failf(t, c.Name, "want an SSE or NDJSON content type, got %q", got)
+	}
+
+	if c.Stream.bounded() {
+		assertBoundedStream(t, c, res)
+		return
 	}
 
 	if want := c.Stream.LastType; want != "" && res.lastType != want {
@@ -852,6 +878,32 @@ func assertStream(t *testing.T, c Case, res *result, lab bool) {
 	}
 
 	res.failf(t, c.Name, "want at least %d data frames, got %d (last type %q)", c.Stream.Frames, res.frames, res.lastType)
+}
+
+// assertBoundedStream checks a stream read to a named terminal frame. It behaves
+// the same in both legs: "read until eof, and prove the tail carried a line" is
+// true of the mock and of a real console, and the frame count is the server's to
+// choose either way.
+func assertBoundedStream(t *testing.T, c Case, res *result) {
+	t.Helper()
+	if err := c.Stream.boundedProblem(res); err != nil {
+		res.failf(t, c.Name, "%v", err)
+	}
+}
+
+// boundedProblem is a bounded stream's assertion as a value, so a test can pin
+// both outcomes — the terminal frame arrived with enough payload, and the
+// terminal frame never arrived — without failing the test binary.
+func (s Stream) boundedProblem(res *result) error {
+	if res.lastType != s.UntilType {
+		return fmt.Errorf("want a final %q frame, got %q after %d payload frames (cap %d frames)",
+			s.UntilType, res.lastType, res.payload, s.MaxFrames)
+	}
+	if res.payload < s.MinFrames {
+		return fmt.Errorf("want at least %d payload frames before %q, got %d",
+			s.MinFrames, s.UntilType, res.payload)
+	}
+	return nil
 }
 
 // assertRawStream checks a raw console relay (attach): the response is
@@ -1200,7 +1252,8 @@ func (r *result) failf(t *testing.T, label, format string, args ...any) {
 		if r.raw {
 			message += fmt.Sprintf("\nstream: %d console bytes", r.rawBytes)
 		} else {
-			message += fmt.Sprintf("\nstream: %d data frames, %d control frames, last type %q", r.frames, r.controls, r.lastType)
+			message += fmt.Sprintf("\nstream: %d frames (%d payload), %d control frames, last type %q",
+				r.frames, r.payload, r.controls, r.lastType)
 		}
 	}
 	t.Fatalf("%s: %s\nrequest: %s %s\nstatus: %d\nbody: %s",

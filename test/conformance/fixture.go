@@ -178,20 +178,91 @@ type Follow struct {
 	Expect Expect            `json:"expect"`
 }
 
-// Frames is the number of data frames a stream case waits for: reading stops as
-// soon as that many have arrived. LastType names the frame that must end the
-// stream (exit for exec, eof for logs); when set, reading also stops there, so a
-// live stream that keeps emitting is not read to the deadline.
+// Stream is a streamed response's assertion. A case names exactly one of three
+// shapes: an exact frame count (Frames, optionally with LastType), a read to a
+// named terminal frame (UntilType with MinFrames and MaxFrames), or a raw byte
+// count (Bytes, for attach, the one route that serves console bytes).
 //
-// A stream case carries one of these instead of an expectation document. A raw
-// stream — attach, the one route that serves console bytes — sets Bytes instead:
-// it has no frames to count.
+// Frames is the number of frames a deterministic stream carries: reading stops as
+// soon as that many have arrived. LastType names the frame that must end it (exit
+// for exec); when set, reading also stops there, so a live stream that keeps
+// emitting is not read to the deadline.
+//
+// UntilType is the shape for a stream whose length the server chooses: a real
+// console log carries as many lines as the guest printed, so a pinned count stops
+// before eof and fails a correct server. The case reads until that frame arrives
+// instead, with MinFrames and MaxFrames bounding the read.
 type Stream struct {
 	Frames   int    `json:"frames,omitempty"`
 	LastType string `json:"lastType,omitempty"`
+	// UntilType names the frame that ends a bounded read. The frame itself is not
+	// counted as payload: it is the end marker, not a line.
+	UntilType string `json:"untilType,omitempty"`
+	// MinFrames is the fewest payload frames that must precede the terminal frame.
+	// It is what keeps "read until eof" from passing on a stream that carried no
+	// line at all. Required with UntilType.
+	MinFrames int `json:"minFrames,omitempty"`
+	// MaxFrames bounds a bounded read, terminal frame included: reading stops
+	// after that many frames even when the terminal frame never arrives, so a
+	// server that omits it fails with the observed frames instead of hanging to
+	// the deadline. Required with UntilType, and greater than MinFrames.
+	MaxFrames int `json:"maxFrames,omitempty"`
 	// Bytes is how many raw bytes a stream case reads before it stops. It is the
 	// assertion for application/octet-stream, which carries no frames.
 	Bytes int `json:"bytes,omitempty"`
+}
+
+// bounded reports whether the case reads to a named terminal frame instead of a
+// pinned frame count.
+func (s Stream) bounded() bool { return s.UntilType != "" }
+
+// validate checks that a stream names exactly one read shape and that the bounded
+// shape is fully specified: an unbounded read could hang, and a read with no floor
+// would pass on a stream that carried nothing.
+func (s Stream) validate() error {
+	shapes := 0
+	if s.Bytes > 0 {
+		shapes++
+	}
+	if s.Frames > 0 {
+		shapes++
+	}
+	if s.bounded() {
+		shapes++
+	}
+	switch {
+	case shapes == 0:
+		return errors.New("stream needs a positive frames count, a positive bytes count or an untilType")
+	case shapes > 1:
+		return errors.New("stream names exactly one of bytes (a raw stream), frames/lastType (an exact framed stream) or untilType (a bounded framed stream)")
+	}
+
+	if s.Bytes > 0 {
+		if s.LastType != "" || s.MinFrames > 0 || s.MaxFrames > 0 {
+			return errors.New("stream: lastType, minFrames and maxFrames describe a framed stream, not a raw one")
+		}
+		return nil
+	}
+	if s.Frames > 0 {
+		if s.MinFrames > 0 || s.MaxFrames > 0 {
+			return errors.New("stream: minFrames and maxFrames require untilType")
+		}
+		return nil
+	}
+
+	if s.LastType != "" {
+		return errors.New("stream: lastType and untilType assert the same terminal frame; name one")
+	}
+	if s.MinFrames < 1 {
+		return errors.New("stream: untilType needs a positive minFrames (payload frames before the terminal frame)")
+	}
+	if s.MaxFrames < 1 {
+		return errors.New("stream: untilType needs a positive maxFrames cap, so a missing terminal frame fails instead of hanging")
+	}
+	if s.MaxFrames <= s.MinFrames {
+		return fmt.Errorf("stream: maxFrames (%d) must exceed minFrames (%d)", s.MaxFrames, s.MinFrames)
+	}
+	return nil
 }
 
 // Load reads every *.json file in dir, sorted by name, and validates it.
@@ -389,15 +460,8 @@ func (c Case) validate() error {
 		if c.Expect.RequestIDInBody != nil {
 			return errors.New("requestIdInBody describes a JSON document, not a stream")
 		}
-		raw := c.Stream.Bytes > 0
-		structured := c.Stream.Frames > 0 || c.Stream.LastType != ""
-		switch {
-		case raw && structured:
-			return errors.New("stream takes either bytes (a raw stream) or frames/lastType (a framed stream), not both")
-		case !raw && !structured:
-			return errors.New("stream needs a positive frames count or a positive bytes count")
-		case !raw && c.Stream.Frames <= 0:
-			return errors.New("stream needs a positive frames count")
+		if err := c.Stream.validate(); err != nil {
+			return err
 		}
 	}
 	if c.Repeat != nil {

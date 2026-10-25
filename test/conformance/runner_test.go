@@ -147,7 +147,7 @@ func TestReadStreamStopsAtTheTargetFrameCount(t *testing.T) {
 	}
 
 	done := make(chan streamRead, 1)
-	go func() { done <- readStream(blockingAfter(body), 2, "") }()
+	go func() { done <- readStream(blockingAfter(body), Stream{Frames: 2}) }()
 
 	select {
 	case got := <-done:
@@ -169,7 +169,7 @@ func TestReadStreamStopsAtTheTerminalFrame(t *testing.T) {
 	body := `{"type":"stdout","data":"aGVsbG8="}` + "\n" + `{"type":"exit","exitCode":0}` + "\n"
 
 	done := make(chan streamRead, 1)
-	go func() { done <- readStream(blockingAfter(body), 5, "exit") }()
+	go func() { done <- readStream(blockingAfter(body), Stream{Frames: 5, LastType: "exit"}) }()
 
 	select {
 	case got := <-done:
@@ -184,7 +184,129 @@ func TestReadStreamStopsAtTheTerminalFrame(t *testing.T) {
 	}
 }
 
-// TestAssertStreamAcceptsAQuietLabCluster pins the lab tolerance: a live event
+// logStreamBody builds an NDJSON console log: count log frames, then the eof
+// frame when eof is true. A real console log has as many lines as the guest
+// printed, which is what the fixture must not pin.
+func logStreamBody(count int, eof bool) string {
+	var body strings.Builder
+	for i := 0; i < count; i++ {
+		body.WriteString(`{"type":"log","stream":"stdout","data":"YQ=="}`)
+		body.WriteString("\n")
+	}
+	if eof {
+		body.WriteString(`{"type":"eof"}`)
+		body.WriteString("\n")
+	}
+	return body.String()
+}
+
+// TestReadStreamReadsAVariableLogToItsTerminalFrame is the first real lab run's
+// finding: the task's console carried two log frames plus eof, so the fixture's
+// pinned `frames: 2` stopped before the terminal frame and failed a correct
+// server. untilType reads every line and stops at eof, not at a count.
+func TestReadStreamReadsAVariableLogToItsTerminalFrame(t *testing.T) {
+	spec := Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 20}
+
+	done := make(chan streamRead, 1)
+	go func() { done <- readStream(blockingAfter(logStreamBody(5, true)), spec) }()
+
+	select {
+	case got := <-done:
+		if got.lastType != "eof" {
+			t.Fatalf("last type = %q, want eof after every log line", got.lastType)
+		}
+		if got.payload != 5 {
+			t.Fatalf("payload frames = %d, want the five lines before eof", got.payload)
+		}
+		passed := &result{stream: true, lastType: got.lastType, payload: got.payload}
+		if err := spec.boundedProblem(passed); err != nil {
+			t.Fatalf("a variable-length log must satisfy the bounded stream: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a bounded read waited for a live stream to end instead of stopping at eof")
+	}
+}
+
+// TestBoundedStreamFailsWithoutItsTerminalFrame pins the other half of the shape:
+// a stream that keeps emitting and never sends eof stops at the cap and fails,
+// instead of passing on whatever frames happened to arrive.
+func TestBoundedStreamFailsWithoutItsTerminalFrame(t *testing.T) {
+	spec := Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 6}
+
+	done := make(chan streamRead, 1)
+	go func() { done <- readStream(blockingAfter(logStreamBody(20, false)), spec) }()
+
+	var got streamRead
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a bounded read must stop at its frame cap instead of waiting for an eof that never comes")
+	}
+	if got.frames != spec.MaxFrames {
+		t.Fatalf("frames = %d, want the cap %d", got.frames, spec.MaxFrames)
+	}
+
+	err := spec.boundedProblem(&result{stream: true, lastType: got.lastType, payload: got.payload})
+	if err == nil {
+		t.Fatal("a stream without its terminal frame must fail")
+	}
+	if !strings.Contains(err.Error(), `"eof"`) {
+		t.Fatalf("the failure must name the missing terminal frame, got %v", err)
+	}
+}
+
+// TestBoundedStreamNeedsAPayloadFrame keeps minFrames honest: an eof on a stream
+// that carried no line is not a log tail.
+func TestBoundedStreamNeedsAPayloadFrame(t *testing.T) {
+	spec := Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 5}
+	got := readStream(strings.NewReader(logStreamBody(0, true)), spec)
+
+	if got.lastType != "eof" {
+		t.Fatalf("last type = %q, want eof", got.lastType)
+	}
+	err := spec.boundedProblem(&result{stream: true, lastType: got.lastType, payload: got.payload})
+	if err == nil {
+		t.Fatal("eof alone must not satisfy minFrames")
+	}
+	if !strings.Contains(err.Error(), "at least 1 payload frames") {
+		t.Fatalf("the failure must name the missing payload frames, got %v", err)
+	}
+}
+
+// TestPinnedFrameCountStopsBeforeEof is why the logs fixture moved to untilType:
+// read with the old `frames: 2` spec, a two-line console log stops on the second
+// line, so lastType is "log" and the `lastType: "eof"` assertion cannot hold. The
+// mock's one-line log hid this; the first real task did not.
+func TestPinnedFrameCountStopsBeforeEof(t *testing.T) {
+	read := readStream(strings.NewReader(logStreamBody(2, true)), Stream{Frames: 2, LastType: "eof"})
+
+	if read.lastType != "log" {
+		t.Fatalf("last type = %q, want the second log line (the old fixture's failure)", read.lastType)
+	}
+	if read.frames != 2 {
+		t.Fatalf("frames = %d, want the pinned 2", read.frames)
+	}
+}
+
+// TestAssertStreamAcceptsAVariableLogLength pins the fixture fix at the
+// assertion level, in both legs: two log frames then eof pass with untilType,
+// where the old `frames: 2` + `lastType: eof` fixture failed on that server.
+func TestAssertStreamAcceptsAVariableLogLength(t *testing.T) {
+	c := Case{Name: "logs", Stream: &Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 20}}
+
+	for _, lab := range []bool{false, true} {
+		res := &result{
+			status:   http.StatusOK,
+			header:   http.Header{"Content-Type": []string{ndjsonMediaType}},
+			stream:   true,
+			frames:   3,
+			payload:  2,
+			lastType: "eof",
+		}
+		assertStream(t, c, res, lab)
+	}
+}
+
 // stream on a cluster that changed nothing sends the ready frame and no data,
 // and that must not fail the run. The mock leg is where frame content is proven.
 func TestAssertStreamAcceptsAQuietLabCluster(t *testing.T) {
