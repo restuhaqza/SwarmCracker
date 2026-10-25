@@ -20,6 +20,16 @@ The gRPC section is the *internal* protocol: it is not a supported integration
 point and its messages may change with SwarmKit. The HTTP API is the public,
 documented contract.
 
+### Private endpoints
+
+The daemons also listen on ports that are **not** part of the v1 contract and
+are not documented here: `:4243` (`/v1/ingress`, `/v1/ingress/report`), the
+SwarmKit remote API on `:4242`, the node broker on `:4245`, and each node's
+health/metrics server on `:8080`. They are cluster-internal or loopback-only and
+may change in any minor release — do not build on them. See
+[Internal (Private) Endpoints](/reference/internal-endpoints/) for the purpose,
+the authentication and the exact wording of that promise.
+
 SwarmCracker uses **SwarmKit's gRPC API** via the `github.com/moby/swarmkit/v2/api` package, extended with a custom **API versioning protocol** (`pkg/apiversion`).
 
 ```
@@ -226,6 +236,10 @@ The daemon exposes a **local HTTP health endpoint** for monitoring:
 
 The handler returns HTTP `200` when every check passes and HTTP `503`
 otherwise.
+
+This server is a **private** loopback endpoint, not part of the v1 contract; it
+is documented in [Internal (Private) Endpoints](/reference/internal-endpoints/)
+together with what it exposes and why the bind address is the only boundary.
 
 ### Response
 
@@ -1021,6 +1035,7 @@ different budget. An event stream counts as one request, not one per event.
 
 ## See Also
 
+- [Internal (Private) Endpoints](/reference/internal-endpoints/)
 - [SwarmKit Integration Architecture](/architecture/swarmkit/)
 - [API Versioning Package](https://github.com/restuhaqza/SwarmCracker/tree/main/pkg/apiversion)
 - [SwarmKit API Docs](https://pkg.go.dev/github.com/moby/swarmkit/v2/api)

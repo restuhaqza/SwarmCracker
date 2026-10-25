@@ -185,6 +185,12 @@ Three or more manager nodes form a Raft quorum behind a load balancer on port
 overlay (UDP 4789, VNI 100). Consul discovers peers and feeds the VXLAN
 forwarding database.
 
+Only the v1 HTTP API (`:4244` or the Unix socket) is a supported machine
+surface. The other listeners on a node — `:4243` ingress, `:4242` SwarmKit,
+`:4245` node broker and the loopback `:8080` health/metrics server — are
+cluster-internal and private; see
+[Internal (Private) Endpoints](/reference/internal-endpoints/).
+
 ---
 
 ## Security Model
@@ -305,6 +311,8 @@ resources:
 
 | Topic | Document |
 |-------|----------|
+| v1 API (public) | [API Reference](/reference/api/) |
+| Private endpoints | [Internal (Private) Endpoints](/reference/internal-endpoints/) |
 | SwarmKit integration | [SwarmKit Integration](/architecture/swarmkit/) |
 | Network internals | [Network Reference](/contributing/reference/network/) |
 | VM lifecycle | [Lifecycle Reference](/contributing/reference/lifecycle/) |
