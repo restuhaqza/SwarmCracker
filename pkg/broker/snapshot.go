@@ -12,13 +12,13 @@ package broker
 // own store, filtered to the task the manager resolved; there is no manager-side
 // index and no SwarmKit record.
 //
-// The handler never publishes the snapshot's memory or state path, its socket
-// path or its checksum. pkg/snapshot errors carry absolute paths, so they are
-// classified through the package's sentinel errors and mapped to fixed messages
-// here: only the classification crosses the wire. The public layer repeats the
-// same rule for the same reason. The checksum itself is a document field on the
-// create and restore responses: it is the integrity value a caller may verify,
-// and it names no path.
+// The handler never publishes the snapshot's memory or state path, or its
+// socket path. pkg/snapshot errors carry absolute paths, so they are classified
+// through the package's sentinel errors and mapped to fixed messages here: only
+// the classification crosses the wire. The public layer repeats the same rule
+// for the same reason. The checksum is deliberately different: it is a document
+// field on the create and restore responses, because it is the integrity value
+// a caller may verify and it names no path.
 //
 // Restore is experimental. It starts a Firecracker process outside SwarmKit's
 // task lifecycle, so a restored VM may outlive the task it came from; the

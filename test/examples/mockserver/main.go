@@ -316,7 +316,8 @@ func main() {
 		log.Fatalf("mockserver: %v", err)
 	}
 
-	listener, err := net.Listen("tcp", *listen)
+	var listenConfig net.ListenConfig
+	listener, err := listenConfig.Listen(context.Background(), "tcp", *listen)
 	if err != nil {
 		log.Fatalf("mockserver: %v", err)
 	}
