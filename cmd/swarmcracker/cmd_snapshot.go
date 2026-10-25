@@ -371,8 +371,15 @@ func stopLocalRestoredVM(ref, socketDir string) (string, error) {
 			"stop the restored VM for task %q: %v", taskID, err)
 	}
 
+	// The store owns socket removal: pkg/snapshot.StopRestored unlinks the socket
+	// under the per-task lock that serializes a restore and a stop, so it cannot
+	// delete a socket a concurrent restore just created. This command runs in a
+	// different process with its own manager, so it only clears the stale file it
+	// resolved here; that is a convenience, never the primary mechanism, and a
+	// failure does not turn a completed stop into an error.
 	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("remove restored VM socket %s: %w", socketPath, err)
+		log.Debug().Err(err).Str("socket", socketPath).
+			Msg("Failed to remove the stale restored VM socket")
 	}
 	return taskID, nil
 }

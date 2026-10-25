@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/stretchr/testify/assert"
@@ -51,9 +52,17 @@ func TestStopRestoredVMKillsTheProcessAndRemovesTheSocket(t *testing.T) {
 	})
 	withRestoredPID(t, cmd.Process.Pid)
 
+	start := time.Now()
 	taskID, err := stopLocalRestoredVM("task-1", socketDir)
+	elapsed := time.Since(start)
 	require.NoError(t, err)
 	assert.Equal(t, "task-1", taskID)
+
+	// A cooperative process ends on SIGTERM, so the command must finish well
+	// before the 10 s grace window expires; anything close to it means SIGTERM was
+	// not delivered and the SIGKILL fallback did the work.
+	assert.Less(t, elapsed, 5*time.Second,
+		"a SIGTERM-terminated restore must not wait out the SIGKILL deadline")
 
 	_, waitErr := cmd.Process.Wait()
 	require.NoError(t, waitErr, "the process must have exited")
