@@ -11,9 +11,12 @@ on:
       - 'Makefile'
       - 'Dockerfile'
       - 'sdk/**'
+      - 'docs-site/examples/**'
+      - 'test/examples/**'
       - 'test/conformance/**'
       - 'tools/sdkgen/**'
       - 'api/openapi.yaml'
+      - 'Dockerfile.cli'
       - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
   pull_request:
@@ -221,3 +224,38 @@ jobs:
         with:
           name: benchmark
           path: benchmark.txt
+
+  # The documentation's executable contract: both SDK examples run against the
+  # loopback fixture (no cluster, no token, no secret) and the client-only image
+  # is built and executed, so a stale snippet or a root/shell regression in
+  # Dockerfile.cli fails the PR.
+  examples:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Fixture tests
+        run: go test ./test/examples/mockserver -count=1
+
+      - name: SDK examples
+        run: make examples
+
+      - name: Build the CLI image
+        run: docker build -f Dockerfile.cli -t swarmcracker-cli:ci .
+
+      - name: Run the CLI image
+        run: docker run --rm swarmcracker-cli:ci version

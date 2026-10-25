@@ -1,0 +1,31 @@
+# The client-only image: `swarmcracker -H https://mgr:4244 ...` and nothing else.
+# The daemon image is ./Dockerfile; this file does not replace it.
+#
+# Build (or `make cli-image`):
+#   docker build -f Dockerfile.cli -t swarmcracker-cli:dev .
+#
+# Run it as non-root, with the cluster's CA certificate and the bearer token
+# mounted read-only. Neither is baked into the image, so one image serves every
+# cluster and rotating a token does not rebuild it:
+#   docker run --rm \
+#     -v "$PWD/ca.crt:/ca.crt:ro" \
+#     -v "$PWD/token:/token:ro" \
+#     swarmcracker-cli:dev -H https://mgr:4244 --ca /ca.crt --token-file /token service ls
+#
+# Both mounts are read-only on purpose: the container never writes a credential
+# and never needs the daemon's state directory.
+#
+# The runtime layer is distroless static nonroot: no shell, no package manager,
+# no root user, so a compromised CLI process has no interpreter to fall back on.
+FROM golang:1.26-alpine AS build
+RUN apk add --no-cache git
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o /out/swarmcracker ./cmd/swarmcracker
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/swarmcracker /usr/local/bin/swarmcracker
+USER nonroot:nonroot
+ENTRYPOINT ["/usr/local/bin/swarmcracker"]
