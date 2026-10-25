@@ -11,6 +11,9 @@ import (
 
 	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/moby/swarmkit/v2/api"
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
@@ -252,4 +255,238 @@ func TestInspectTaskJSONUnchanged(t *testing.T) {
 	container, ok := runtime["container"].(map[string]any)
 	require.True(t, ok, "spec.Runtime.container should be an object")
 	assert.Contains(t, container, "healthcheck")
+}
+
+// fakeTaskHealthLister is the narrow lister the --health path needs, so the
+// rendering and the partial exit can be exercised without certificates or a
+// live manager.
+type fakeTaskHealthLister struct {
+	doc     v1.TaskList
+	partial bool
+	err     error
+}
+
+func (f *fakeTaskHealthLister) ListTasksHealth(context.Context) (v1.TaskList, bool, error) {
+	return f.doc, f.partial, f.err
+}
+
+// partialTaskHealthDoc is one readable task, one task on a node that did not
+// answer, and the partial entry the manager reports for that node.
+func partialTaskHealthDoc() v1.TaskList {
+	doc := v1.NewTaskList([]v1.Task{
+		{
+			ID: "task-1", ServiceID: "svc-1", NodeID: "node-1", NodeName: "worker-1",
+			State: "running", Image: "nginx:alpine",
+			Health: &v1.TaskHealth{Status: "unhealthy"},
+		},
+		{
+			ID: "task-2", ServiceID: "svc-2", NodeID: "node-2", NodeName: "worker-2",
+			State: "running", Image: "redis:7",
+		},
+	})
+	doc.Partial = []v1.Partial{{NodeID: "node-2", NodeName: "worker-2"}}
+	return doc
+}
+
+// TestTaskListHealthJSONPartial proves the JSON path prints the document first,
+// including its partial array, and only then returns the partial error that maps
+// to exit 7.
+func TestTaskListHealthJSONPartial(t *testing.T) {
+	lister := &fakeTaskHealthLister{doc: partialTaskHealthDoc(), partial: true}
+
+	var buf bytes.Buffer
+	err := listTasksWithHealthClient(context.Background(), lister, &buf, "json", "", false, false, "", "")
+	require.Error(t, err)
+	assert.Equal(t, 7, output.ExitCode(err))
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodePartial, typed.Code)
+	assert.Contains(t, typed.Message, "worker-2")
+	// cliExitCode is what main applies, and 7 is the documented partial status.
+	assert.Equal(t, 7, cliExitCode(err))
+
+	var doc v1.TaskList
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &doc), buf.String())
+	require.Len(t, doc.Items, 2)
+	require.Len(t, doc.Partial, 1)
+	require.NotNil(t, doc.Items[0].Health)
+	assert.Equal(t, "unhealthy", doc.Items[0].Health.Status)
+}
+
+// TestTaskListHealthPartialStderrDocument pins the document main writes to
+// stderr in -o json mode: exactly the v1 Error envelope with code "partial".
+func TestTaskListHealthPartialStderrDocument(t *testing.T) {
+	err := partialTasksError([]v1.Partial{{NodeID: "node-2", NodeName: "worker-2"}})
+
+	var stderr bytes.Buffer
+	require.NoError(t, output.WriteError(&stderr, err))
+
+	var doc v1.ErrorDocument
+	require.NoError(t, json.Unmarshal(stderr.Bytes(), &doc), stderr.String())
+	assert.Equal(t, v1.SchemaVersion, doc.SchemaVersion)
+	assert.Equal(t, v1.KindError, doc.Kind)
+	assert.Equal(t, string(output.CodePartial), doc.Error.Code)
+	assert.Contains(t, doc.Error.Message, "worker-2")
+}
+
+// TestTaskListHealthJSONComplete pins the 200 path: one document, no error, exit
+// 0.
+func TestTaskListHealthJSONComplete(t *testing.T) {
+	doc := v1.NewTaskList([]v1.Task{
+		{ID: "task-1", State: "running", Health: &v1.TaskHealth{Status: "healthy"}},
+	})
+
+	var buf bytes.Buffer
+	err := listTasksWithHealthClient(context.Background(), &fakeTaskHealthLister{doc: doc}, &buf,
+		"json", "", false, false, "", "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, output.ExitCode(err))
+
+	var got v1.TaskList
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &got), buf.String())
+	require.Len(t, got.Items, 1)
+	assert.Empty(t, got.Partial)
+}
+
+// TestTaskListHealthNamePartial proves -o name keeps its stdout shape and still
+// reports the partial.
+func TestTaskListHealthNamePartial(t *testing.T) {
+	lister := &fakeTaskHealthLister{doc: partialTaskHealthDoc(), partial: true}
+
+	var buf bytes.Buffer
+	err := listTasksWithHealthClient(context.Background(), lister, &buf, "name", "", false, false, "", "")
+	assert.Equal(t, "task-1\ntask-2\n", buf.String())
+	require.Error(t, err)
+	assert.Equal(t, 7, output.ExitCode(err))
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodePartial, typed.Code)
+}
+
+// TestTaskListHealthTable proves the table prints the API's HEALTH value and
+// that the partial error is what names the silent node on stderr.
+func TestTaskListHealthTable(t *testing.T) {
+	lister := &fakeTaskHealthLister{doc: partialTaskHealthDoc(), partial: true}
+
+	var buf bytes.Buffer
+	err := listTasksWithHealthClient(context.Background(), lister, &buf, "table", "", false, false, "", "")
+	require.Error(t, err)
+	assert.Equal(t, 7, output.ExitCode(err))
+	assert.Contains(t, err.Error(), "worker-2")
+
+	out := buf.String()
+	assert.Equal(t, []string{"unhealthy", "-"}, healthColumn(t, out, "ID SERVICE STATUS HEALTH NODE IMAGE ERROR"))
+	assert.Contains(t, out, "RUNNING")
+	assert.Contains(t, out, "nginx:alpine")
+}
+
+// TestTaskListHealthTableQuiet keeps --quiet's ID-only output on the API path.
+func TestTaskListHealthTableQuiet(t *testing.T) {
+	lister := &fakeTaskHealthLister{doc: partialTaskHealthDoc(), partial: true}
+
+	var buf bytes.Buffer
+	err := listTasksWithHealthClient(context.Background(), lister, &buf, "table", "", true, false, "", "")
+	assert.Equal(t, "task-1\ntask-2\n", buf.String())
+	assert.Equal(t, 7, output.ExitCode(err))
+}
+
+// TestTaskListHealthMapsClientError keeps the stable-code mapping of a failed
+// health read: a non-partial failure never prints a document.
+func TestTaskListHealthMapsClientError(t *testing.T) {
+	lister := &fakeTaskHealthLister{err: output.NewError(output.CodeUnavailable, "node broker is down")}
+
+	var buf bytes.Buffer
+	err := listTasksWithHealthClient(context.Background(), lister, &buf, "json", "", false, false, "", "")
+	require.Error(t, err)
+	assert.Empty(t, buf.String())
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodeUnavailable, typed.Code)
+	assert.Equal(t, 6, output.ExitCode(err))
+}
+
+// TestTaskListHealthFlagValidation proves every rejection happens before a
+// client is built: each case must return CodeUsage.
+func TestTaskListHealthFlagValidation(t *testing.T) {
+	prevHost, prevFormat := apiHost, outputFormat
+	t.Cleanup(func() {
+		apiHost, outputFormat = prevHost, prevFormat
+	})
+
+	tests := []struct {
+		name    string
+		host    string
+		wantMsg string
+		setup   func(t *testing.T, cmd *cobra.Command)
+	}{
+		{
+			name:    "requires a remote host",
+			wantMsg: "--host",
+		},
+		{
+			name:    "rejected with no-health",
+			host:    "https://mgr:4244",
+			wantMsg: "--no-health",
+			setup: func(t *testing.T, cmd *cobra.Command) {
+				require.NoError(t, cmd.Flags().Set("no-health", "true"))
+			},
+		},
+		{
+			name:    "rejected with a changed health-port",
+			host:    "https://mgr:4244",
+			wantMsg: "--health-port",
+			setup: func(t *testing.T, cmd *cobra.Command) {
+				require.NoError(t, cmd.Flags().Set("health-port", "9000"))
+			},
+		},
+		{
+			name:    "rejected with the legacy format flag",
+			host:    "https://mgr:4244",
+			wantMsg: "--format",
+			setup: func(t *testing.T, cmd *cobra.Command) {
+				require.NoError(t, cmd.Flags().Set("format", "json"))
+			},
+		},
+		{
+			name:    "rejected with ndjson output",
+			host:    "https://mgr:4244",
+			wantMsg: "unsupported output format",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			apiHost, outputFormat = tt.host, ""
+			if tt.name == "rejected with ndjson output" {
+				outputFormat = "ndjson"
+			}
+
+			cmd := newTaskListCommand()
+			require.NoError(t, cmd.Flags().Set("health", "true"))
+			if tt.setup != nil {
+				tt.setup(t, cmd)
+			}
+
+			err := cmd.RunE(cmd, nil)
+			require.Error(t, err)
+
+			var typed *output.Error
+			require.ErrorAs(t, err, &typed)
+			assert.Equal(t, output.CodeUsage, typed.Code)
+			assert.Contains(t, typed.Message, tt.wantMsg)
+		})
+	}
+}
+
+// TestTaskListHealthFlagExists pins the new flag and its default.
+func TestTaskListHealthFlagExists(t *testing.T) {
+	cmd := newTaskListCommand()
+
+	flag := cmd.Flags().Lookup("health")
+	require.NotNil(t, flag)
+	assert.Equal(t, "false", flag.DefValue)
+	assert.Contains(t, flag.Usage, "exit 7")
 }

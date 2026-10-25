@@ -505,7 +505,7 @@ Task management.
 | `ls` | List tasks |
 | `inspect <task-id>` | Inspect a task |
 
-`task ls` flags: `-o` / `--output`, `--all`, `--filter`, `--format`, `--no-trunc`, `--node`, `--service`, `--quiet` / `-q`, `--health-port`, `--no-health`.
+`task ls` flags: `-o` / `--output`, `--all`, `--filter`, `--format`, `--no-trunc`, `--node`, `--service`, `--quiet` / `-q`, `--health-port`, `--no-health`, `--health`.
 
 `-o` selects the output mode, and `--service` accepts a service ID or, in the
 new modes, a service name. `-o json` emits the v1 `TaskList` envelope
@@ -516,6 +516,18 @@ in JSON: `items: []` with `-o json` and `[]` with `--format json`; table mode
 still prints `No tasks found`. `-o` and `--format` must not be combined in the
 same invocation. In the new modes `--filter state=` is case-insensitive; the
 legacy path keeps its original comparison.
+
+`--health` reads live health through the manager API (`GET /v1/tasks?health=true`)
+instead of each node's health server, so it requires `-H` / `--host`. It is
+rejected with `--no-health`, with a changed `--health-port`, and with the legacy
+`--format` flag. With `-o json` it emits exactly one `TaskList` document on
+stdout (`health` included, and `partial` when the manager could not read a
+node); `-o name` emits one task ID per line; table mode prints the same columns
+as above with `HEALTH` taken from the API page. A partial page is a normal
+document, not a failed request: the tasks are printed first, then the command
+writes one `Error` document with code `partial` to stderr in `-o json` mode
+(a message naming the silent nodes in table and `-o name` modes) and exits **7**.
+A complete page exits **0**. Without `--health` every existing mode is unchanged.
 
 `task ls` prints the same `HEALTH` column as `service ps` — live when the owning
 node's health server is reachable, derived otherwise, also emitted as `health`
