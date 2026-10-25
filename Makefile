@@ -239,7 +239,11 @@ test-quick:
 # Create docker image
 docker-image:
 	@echo "Building Docker image..."
-	docker build -t swarmcracker:$(VERSION) .
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t swarmcracker:$(VERSION) .
 
 # Run with hot reload (development)
 dev:
