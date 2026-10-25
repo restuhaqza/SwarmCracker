@@ -94,6 +94,9 @@ var remoteCapablePaths = map[string]struct{}{
 	// vm exec is the first remote-capable mutation: it streams a command's
 	// output from the node that runs the task through the public API.
 	"swarmcracker vm exec": {},
+	// vm attach carries the interactive console over the same relay, so an
+	// operator can reach a task's console from any machine with a token.
+	"swarmcracker vm attach": {},
 	// vm snapshot stop-restored is a manager-relayed mutation: only the node that
 	// started the restored VM holds its process, so -H is the only way to reach it
 	// from another machine.
@@ -133,7 +136,7 @@ func guardRemoteHost(cmd *cobra.Command, _ []string) error {
 	return output.NewErrorf(output.CodeUsage,
 		"--host is not supported by %q: this command only reads the local cluster; "+
 			"remote operations are available on service/task/node/config/secret/network ls|inspect|ps, "+
-			"vm exec and vm snapshot stop-restored (with -o json or -o name where it applies)", cmd.CommandPath())
+			"vm exec, vm attach and vm snapshot stop-restored (with -o json or -o name where it applies)", cmd.CommandPath())
 }
 
 // newAPICommand groups the programmatic-API operator commands.
