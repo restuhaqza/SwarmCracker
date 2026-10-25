@@ -10,11 +10,17 @@ description: "Save and restore VM state — crash recovery, fast boot, debugging
 ## Overview
 
 SwarmCracker can snapshot a running Firecracker microVM and restore it later.
-A snapshot captures the **full VM state**: guest memory plus CPU/device state
-(Firecracker `snapshot_type: Full`). This requires **Firecracker v1.14.0+** — the
-version installed by `swarmcracker setup install`.
+A snapshot is a **self-contained restore point**: guest memory plus CPU/device
+state (Firecracker `snapshot_type: Full`) **and** a copy of the task's disk.
 
-Calling `create` pauses the VM, writes the snapshot, and the VM can then resume.
+`create` pauses the VM, asks Firecracker to write state and memory, copies the
+task disk into the snapshot directory, and only then resumes the VM. The pause
+matters: pausing for the whole sequence is what makes the memory image and the
+disk copy describe the same instant, so a restore cannot replay stale
+page-cache data from the memory image over newer disk state.
+
+This requires **Firecracker v1.14.0+** — the version installed by
+`swarmcracker setup install`.
 
 ---
 
@@ -41,7 +47,6 @@ swarmcracker vm snapshot create <task-id>
 swarmcracker vm snapshot create <task-id> \
   --service <service-id> \
   --node <node-id> \
-  --rootfs /var/lib/firecracker/rootfs/<image>.ext4 \
   --vcpus 2 \
   --memory 512
 
@@ -63,6 +68,14 @@ swarmcracker vm snapshot cleanup --max-age 168h
 
 `create` determines the Firecracker API socket from `--socket` (default:
 `<socket-dir>/<task-id>.sock`). `restore` can set a new socket with `--socket`.
+
+`create` copies the task's disk, so it needs to know where that disk is. The
+executor keeps one disk per task at `<rootfs-dir>/tasks/<task-id>.ext4`, and the
+CLI derives the task ID from the socket's file name, so no flag is needed for a
+normal task. Pass `--rootfs` when the VM's disk is somewhere else (for example a
+VM started by hand with `vm create --rootfs`): a file that does not exist is
+never recorded, and the snapshot then behaves as it did before disk copies
+existed — a restore needs the original disk in place.
 
 ---
 
@@ -108,23 +121,26 @@ curl -sS -X DELETE -H "Authorization: Bearer $TOKEN" \
 curl -sS -H "Authorization: Bearer $TOKEN" "$API/v1/snapshots?task=$TASK"
 ```
 
-Two behaviours are worth knowing before you script this:
+Three behaviours are worth knowing before you script this:
 
-- **A create needs a running task** (404 `task_not_running` otherwise) and may
-  pause the VM briefly. The manager's default deadline is 30 s; a create past it
-  is `504 timeout`. The node resumes the VM even when the deadline fires, so a
-  timed-out create does not leave it paused.
+- **A create needs a running task** (404 `task_not_running` otherwise) and pauses
+  the VM for the whole snapshot: state, memory and the task disk. The manager's
+  default deadline is 30 s; a create past it is `504 timeout`. The node resumes
+  the VM even when the deadline fires or the copy fails, so a timed-out create
+  does not leave it paused. A large disk therefore wants a deadline above the
+  copy time (`ManagerConfig.SnapshotTimeout`).
 - **A restore is refused while the task is running**: `409 conflict` with
   `details.reason: "restore_task_running"`. The live VM still owns its rootfs,
   and a second Firecracker on the same `rootfs.ext4` would corrupt both. Stop the
   task first.
-- **A restore needs the task's disk to still exist.** Firecracker snapshots
-  capture memory and device state, not the disk bytes. The snapshot records
-  `<rootfs-dir>/tasks/<taskID>.ext4`, and the executor removes that file when the
-  task is cleaned up. Once it is gone the restore is `409 conflict` with
-  `details.reason: "snapshot_incomplete"`; it does not silently start a VM with a
-  missing disk. Keeping a disk copy per snapshot is a follow-up, so treat an
-  exited task's snapshot as a short-lived restore point, not a backup.
+- **A restore puts the disk back if it is gone.** Firecracker snapshots capture
+  memory and device state, not the disk bytes, so `create` copies the task disk
+  into the snapshot directory. If the executor already removed
+  `<rootfs-dir>/tasks/<taskID>.ext4`, `restore` copies the snapshot's copy back to
+  that path before the VM starts. An existing task disk is never overwritten —
+  it is the live VM's disk. A snapshot whose copy and whose task disk are both
+  missing is `409 conflict` with `details.reason: "snapshot_incomplete"`; it
+  never starts a VM with a missing disk.
 
 Restore is experimental for a second reason: it starts a Firecracker process
 outside SwarmKit's task tracker. The restored VM is not scheduler-managed, so if
@@ -160,18 +176,35 @@ snapshot:
 
 ## Snapshot Storage
 
-Each snapshot gets its own ID and directory:
+Each snapshot gets its own ID and directory, published in one step once it is
+complete:
 
 ```
 /var/lib/firecracker/snapshots/
 └── snap-a1b2c3d4e5f67890/
     ├── vm.state      # VM state (~15 KB)
     ├── vm.mem        # Memory image (≈ VM RAM size)
-    └── …             # metadata (JSON)
+    ├── rootfs.ext4   # Copy of the task disk (≈ disk size)
+    └── metadata.json # Snapshot record
 ```
 
 The metadata records the snapshot ID, task/service/node IDs, creation time, vCPU
-count, memory size, rootfs path, and a SHA-256 checksum of the state file.
+count, memory size, rootfs path, the snapshot-owned disk copy, and a SHA-256
+checksum of the state file.
+
+**Disk cost.** Memory plus disk, per snapshot: a task with a 4 GiB disk and 1 GiB
+of RAM costs about 5 GiB per snapshot, and `max_snapshots`/`max_age` decide how
+many are kept. Where the filesystem supports reflinks the copy is initially free
+(blocks are shared until one side changes); elsewhere it is a full copy. There is
+no separate space pre-flight: a create that runs out of space (or cannot
+otherwise copy) fails and deletes the partial snapshot rather than keeping one
+that cannot be restored. Deleting a snapshot removes the whole directory, disk
+copy included, and `snapshot list`/`size_bytes` include it.
+
+A create leaves nothing half-written: it builds the snapshot in a
+`snapshot-staging-*` directory and renames it into place after the metadata is
+written. A directory with that prefix is an interrupted create, is ignored by
+`list`, and is swept by the next manager start once it is an hour old.
 
 ---
 
@@ -223,8 +256,10 @@ swarmctl snapshot rm <snapshot-name>
 
 - **VM must be paused** before snapshot (handled automatically by `create`).
 - **Snapshots are node-local** — they are not replicated across the cluster.
-- **Size** — the memory file is roughly the VM's RAM size.
-- **Rootfs path** — the rootfs must be accessible at the same path on restore.
+- **Size** — a snapshot is roughly the VM's RAM plus its disk; see
+  [Snapshot Storage](#snapshot-storage).
+- **Rootfs path** — a restore puts the disk copy back at the recorded path, so
+  the parent directory must be writable by the daemon.
 - **Firecracker version** — requires v1.14.0+ for the current snapshot API.
 - **Network state** — active network connections may not survive a restore.
 - **Hugepage-backed VMs cannot be restored through this path.** Creating a
@@ -257,6 +292,10 @@ swarmcracker vm snapshot list
 
 # Confirm the files are present
 ls /var/lib/firecracker/snapshots/<snapshot-id>/
+
+# Restoring after the task was cleaned up needs rootfs.ext4 in the snapshot
+# and a writable <rootfs-dir>/tasks directory to put it back
+df -h /var/lib/firecracker/rootfs
 ```
 
 ### Snapshots Too Large
