@@ -16,7 +16,10 @@ the CA contents and the request headers are never printed.
 
 import os
 import sys
+from sys import stderr
 
+# In this repository the SDK is not installed: use the checkout. The published
+# snippet shows the installed form, which needs no bootstrap.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "sdk", "python"))
 
 from swarmcracker import ApiError, Client
@@ -25,16 +28,25 @@ from swarmcracker import ApiError, Client
 def main() -> int:
     host = os.environ.get("SWARMCRACKER_HOST")
     if not host:
-        print("error=usage", file=sys.stderr)
-        print("SWARMCRACKER_HOST is not set", file=sys.stderr)
+        print("error=usage", file=stderr)
+        print("SWARMCRACKER_HOST is not set", file=stderr)
         return 1
 
+    # The constructor validates the host and reads the CA and token files, so a
+    # refused host or an unreadable file is a usage error, not a request failure.
+    # It has to be caught here: outside this block it would escape as a traceback.
     try:
-        with Client(
+        client = Client(
             host,
             ca=os.environ.get("SWARMCRACKER_CA") or None,
             token_file=os.environ.get("SWARMCRACKER_TOKEN_FILE") or None,
-        ) as client:
+        )
+    except (ValueError, OSError):
+        print("error=usage", file=stderr)
+        return 1
+
+    try:
+        with client:
             version = client.version()
             print(f"version={version['serverVersion']}")
             print("capabilities=" + ",".join(sorted(version.get("capabilities") or [])))
@@ -57,16 +69,11 @@ def main() -> int:
                 print(f"exec.exit={exit_code}")
                 print(f"exec.stdout={stdout.decode('utf-8', 'replace').strip()}")
     except ApiError as error:
-        print(f"error={error.code}", file=sys.stderr)
-        return 1
-    except ValueError:
-        # A host the client refuses (plain http to a non-loopback address, both
-        # a token and a token_file, ...) is a usage error, not a server failure.
-        print("error=usage", file=sys.stderr)
+        print(f"error={error.code}", file=stderr)
         return 1
 
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

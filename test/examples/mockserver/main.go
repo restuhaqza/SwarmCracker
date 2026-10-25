@@ -10,10 +10,15 @@
 //
 //	GET  /v1/version
 //	GET  /v1/services   (two services; honours limit and cursor with a real next)
-//	POST /v1/tasks/{id}/exec  (NDJSON: one stdout frame, then exit 0)
+//	POST /v1/tasks/{id}/exec  (NDJSON: one stdout frame, then the exit status)
 //
 // Every response carries the v1 media type, X-SwarmCracker-Api-Version and
 // X-Request-Id, and an unknown path or method answers a v1 ErrorDocument.
+//
+// -exit-code N sets the guest status the exec stream reports (default 0), so the
+// runner can prove that the examples print a failed command and still exit 0.
+// Each services request is logged to stderr so the runner can assert the page
+// size the examples asked for.
 package main
 
 import (
@@ -96,10 +101,12 @@ var services = []service{
 // handler serves the fixture and counts requests for X-Request-Id.
 type handler struct {
 	requests atomic.Uint64
+	// exitCode is the guest status the exec stream reports.
+	exitCode int
 }
 
-func newHandler() http.Handler {
-	return &handler{}
+func newHandler(exitCode int) http.Handler {
+	return &handler{exitCode: exitCode}
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -145,6 +152,10 @@ func (h *handler) version(w http.ResponseWriter) {
 
 func (h *handler) listServices(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
+
+	// run.sh asserts the examples ask for a page of two.
+	fmt.Fprintf(os.Stderr, "mockserver: %s /v1/services limit=%s cursor=%s\n",
+		r.Method, query.Get("limit"), query.Get("cursor"))
 
 	limit := len(services)
 	if raw := query.Get("limit"); raw != "" {
@@ -221,7 +232,7 @@ func (h *handler) exec(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 
 	encoder := json.NewEncoder(w)
-	exitCode := 0
+	exitCode := h.exitCode
 	frames := []execFrame{
 		{Type: "stdout", Data: []byte(execStdout)},
 		{Type: "exit", ExitCode: &exitCode},
@@ -294,6 +305,7 @@ func checkLoopback(host string) error {
 
 func main() {
 	listen := flag.String("listen", "127.0.0.1:0", "loopback address to serve on")
+	exitCode := flag.Int("exit-code", 0, "guest exit status the exec stream reports")
 	flag.Parse()
 
 	host, _, err := net.SplitHostPort(*listen)
@@ -314,7 +326,7 @@ func main() {
 	_ = os.Stdout.Sync()
 
 	server := &http.Server{
-		Handler:           newHandler(),
+		Handler:           newHandler(*exitCode),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -25,8 +25,12 @@ make examples
 `test/examples/run.sh` builds `test/examples/mockserver`, a loopback-only fixture
 with a fixed dataset and no authentication, runs both programs against it, and
 compares the exact output lines — first on the read path, then with
-`SWARMCRACKER_TASK=t1` on the exec path. It needs `go`, `python3` and `node`; no
-cluster, root, Docker or network.
+`SWARMCRACKER_TASK=t1` on the exec path. Two more passes pin the contracts a
+reader relies on: the fixture restarted with `-exit-code 3` proves a failed guest
+command still prints `exec.exit=3` and the program still exits 0, and an
+unreadable `SWARMCRACKER_CA` plus a non-loopback `http://` host prove the
+constructor's failures print one `error=usage` line and no traceback. It needs
+`go`, `python3` and `node`; no cluster, root, Docker or network.
 
 To run one program by hand against anything that speaks v1:
 

@@ -23,13 +23,17 @@ async function main() {
     return 1;
   }
 
-  const client = new Client({
-    host,
-    ca: process.env.SWARMCRACKER_CA || undefined,
-    tokenFile: process.env.SWARMCRACKER_TOKEN_FILE || undefined,
-  });
-
+  let client;
   try {
+    // The constructor validates the host and reads the CA and token files, so a
+    // refused host or an unreadable file must be caught here too: outside this
+    // block it would escape as an unhandled rejection and a stack trace.
+    client = new Client({
+      host,
+      ca: process.env.SWARMCRACKER_CA || undefined,
+      tokenFile: process.env.SWARMCRACKER_TOKEN_FILE || undefined,
+    });
+
     const version = await client.version();
     console.log(`version=${version.serverVersion}`);
     console.log(`capabilities=${[...(version.capabilities ?? [])].sort().join(',')}`);
@@ -67,7 +71,7 @@ async function main() {
     }
     throw error;
   } finally {
-    client.close();
+    client?.close();
   }
 
   return 0;

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,7 +35,7 @@ func decodeBody[T any](t *testing.T, response *http.Response) T {
 // an error document. The examples print serverVersion and the sorted
 // capabilities, so both must be present here.
 func TestVersion(t *testing.T) {
-	server := httptest.NewServer(newHandler())
+	server := httptest.NewServer(newHandler(0))
 	defer server.Close()
 
 	response := get(t, server.URL+"/v1/version")
@@ -80,7 +81,7 @@ type listDocument struct {
 // TestListServicesPagination asserts the examples' page size and that the next
 // cursor is real: following it yields the remaining service.
 func TestListServicesPagination(t *testing.T) {
-	server := httptest.NewServer(newHandler())
+	server := httptest.NewServer(newHandler(0))
 	defer server.Close()
 
 	first := decodeBody[listDocument](t, get(t, server.URL+"/v1/services?limit=2"))
@@ -127,7 +128,7 @@ type errorDocument struct {
 // TestErrors asserts that the fixture answers unknown routes, bad queries and
 // wrong methods with a decodable v1 ErrorDocument that names the request.
 func TestErrors(t *testing.T) {
-	server := httptest.NewServer(newHandler())
+	server := httptest.NewServer(newHandler(0))
 	defer server.Close()
 
 	cases := []struct {
@@ -176,51 +177,66 @@ func TestErrors(t *testing.T) {
 }
 
 // TestExec asserts the NDJSON frame set the examples consume: one stdout frame
-// carrying "example\n" and exactly one exit frame with status 0.
+// carrying "example\n" and exactly one exit frame with the configured status.
+// It also asserts the v1 headers, as the other routes do.
 func TestExec(t *testing.T) {
-	server := httptest.NewServer(newHandler())
-	defer server.Close()
-
-	response, err := http.Post(server.URL+"/v1/tasks/t1/exec", v1MediaType, strings.NewReader(`{"command":["true"]}`))
-	if err != nil {
-		t.Fatalf("POST exec: %v", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("status = %d, want 200", response.StatusCode)
-	}
-	if got := response.Header.Get("Content-Type"); got != ndjsonMediaType {
-		t.Errorf("Content-Type = %q, want %q", got, ndjsonMediaType)
-	}
-
 	type frame struct {
 		Type     string `json:"type"`
 		Data     []byte `json:"data"`
 		ExitCode *int   `json:"exitCode"`
 	}
-	var frames []frame
-	scanner := bufio.NewScanner(response.Body)
-	for scanner.Scan() {
-		var decoded frame
-		if err := json.Unmarshal(scanner.Bytes(), &decoded); err != nil {
-			t.Fatalf("decode frame %q: %v", scanner.Text(), err)
-		}
-		frames = append(frames, decoded)
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("read stream: %v", err)
+
+	for _, want := range []int{0, 3} {
+		t.Run(fmt.Sprintf("exit %d", want), func(t *testing.T) {
+			server := httptest.NewServer(newHandler(want))
+			defer server.Close()
+
+			response, err := http.Post(server.URL+"/v1/tasks/t1/exec", v1MediaType, strings.NewReader(`{"command":["true"]}`))
+			if err != nil {
+				t.Fatalf("POST exec: %v", err)
+			}
+			defer func() { _ = response.Body.Close() }()
+
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want 200", response.StatusCode)
+			}
+			if got := response.Header.Get("Content-Type"); got != ndjsonMediaType {
+				t.Errorf("Content-Type = %q, want %q", got, ndjsonMediaType)
+			}
+			if got := response.Header.Get(apiVersionHeader); got != apiVersion {
+				t.Errorf("%s = %q, want %q", apiVersionHeader, got, apiVersion)
+			}
+			if got := response.Header.Get(requestIDHeader); got == "" {
+				t.Errorf("%s is empty", requestIDHeader)
+			}
+
+			var frames []frame
+			scanner := bufio.NewScanner(response.Body)
+			for scanner.Scan() {
+				var decoded frame
+				if err := json.Unmarshal(scanner.Bytes(), &decoded); err != nil {
+					t.Fatalf("decode frame %q: %v", scanner.Text(), err)
+				}
+				frames = append(frames, decoded)
+			}
+			if err := scanner.Err(); err != nil {
+				t.Fatalf("read stream: %v", err)
+			}
+
+			if len(frames) != 2 {
+				t.Fatalf("frames = %d, want 2", len(frames))
+			}
+			if frames[0].Type != "stdout" || !bytes.Equal(frames[0].Data, []byte(execStdout)) {
+				t.Errorf("first frame = %q %q, want stdout %q", frames[0].Type, frames[0].Data, execStdout)
+			}
+			if frames[1].Type != "exit" || frames[1].ExitCode == nil || *frames[1].ExitCode != want {
+				t.Errorf("last frame = %+v, want exit %d", frames[1], want)
+			}
+		})
 	}
 
-	if len(frames) != 2 {
-		t.Fatalf("frames = %d, want 2", len(frames))
-	}
-	if frames[0].Type != "stdout" || !bytes.Equal(frames[0].Data, []byte(execStdout)) {
-		t.Errorf("first frame = %q %q, want stdout %q", frames[0].Type, frames[0].Data, execStdout)
-	}
-	if frames[1].Type != "exit" || frames[1].ExitCode == nil || *frames[1].ExitCode != 0 {
-		t.Errorf("last frame = %+v, want exit 0", frames[1])
-	}
+	server := httptest.NewServer(newHandler(0))
+	defer server.Close()
 
 	empty, err := http.Post(server.URL+"/v1/tasks/t1/exec", v1MediaType, strings.NewReader(`{"command":[]}`))
 	if err != nil {

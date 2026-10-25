@@ -22,6 +22,9 @@ The snippets below are the example files with the installed-package import. In
 the repository the Python file inserts `sdk/python` on `sys.path` and the Node
 file imports `sdk/node/src/index.mjs` by relative path; nothing else differs.
 
+Go callers do not need either package: the CLI and the tests use `pkg/client`,
+the Go SDK, which is part of this module. See [Go](#go).
+
 ## Python
 
 `sdk/python` contains the `swarmcracker` package: Python 3.11+, standard library
@@ -47,7 +50,7 @@ the CA contents and the request headers are never printed.
 """
 
 import os
-import sys
+from sys import stderr
 
 from swarmcracker import ApiError, Client
 
@@ -55,16 +58,25 @@ from swarmcracker import ApiError, Client
 def main() -> int:
     host = os.environ.get("SWARMCRACKER_HOST")
     if not host:
-        print("error=usage", file=sys.stderr)
-        print("SWARMCRACKER_HOST is not set", file=sys.stderr)
+        print("error=usage", file=stderr)
+        print("SWARMCRACKER_HOST is not set", file=stderr)
         return 1
 
+    # The constructor validates the host and reads the CA and token files, so a
+    # refused host or an unreadable file is a usage error, not a request failure.
+    # It has to be caught here: outside this block it would escape as a traceback.
     try:
-        with Client(
+        client = Client(
             host,
             ca=os.environ.get("SWARMCRACKER_CA") or None,
             token_file=os.environ.get("SWARMCRACKER_TOKEN_FILE") or None,
-        ) as client:
+        )
+    except (ValueError, OSError):
+        print("error=usage", file=stderr)
+        return 1
+
+    try:
+        with client:
             version = client.version()
             print(f"version={version['serverVersion']}")
             print("capabilities=" + ",".join(sorted(version.get("capabilities") or [])))
@@ -87,19 +99,14 @@ def main() -> int:
                 print(f"exec.exit={exit_code}")
                 print(f"exec.stdout={stdout.decode('utf-8', 'replace').strip()}")
     except ApiError as error:
-        print(f"error={error.code}", file=sys.stderr)
-        return 1
-    except ValueError:
-        # A host the client refuses (plain http to a non-loopback address, both
-        # a token and a token_file, ...) is a usage error, not a server failure.
-        print("error=usage", file=sys.stderr)
+        print(f"error={error.code}", file=stderr)
         return 1
 
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())
 ```
 
 ## Node
@@ -135,13 +142,17 @@ async function main() {
     return 1;
   }
 
-  const client = new Client({
-    host,
-    ca: process.env.SWARMCRACKER_CA || undefined,
-    tokenFile: process.env.SWARMCRACKER_TOKEN_FILE || undefined,
-  });
-
+  let client;
   try {
+    // The constructor validates the host and reads the CA and token files, so a
+    // refused host or an unreadable file must be caught here too: outside this
+    // block it would escape as an unhandled rejection and a stack trace.
+    client = new Client({
+      host,
+      ca: process.env.SWARMCRACKER_CA || undefined,
+      tokenFile: process.env.SWARMCRACKER_TOKEN_FILE || undefined,
+    });
+
     const version = await client.version();
     console.log(`version=${version.serverVersion}`);
     console.log(`capabilities=${[...(version.capabilities ?? [])].sort().join(',')}`);
@@ -179,7 +190,7 @@ async function main() {
     }
     throw error;
   } finally {
-    client.close();
+    client?.close();
   }
 
   return 0;
@@ -188,6 +199,36 @@ async function main() {
 process.exitCode = await main();
 ```
 
+## Go
+
+There is no separate Go package to install: `pkg/client` is the Go SDK and lives
+in this module, so anything that builds against the repository can use it:
+
+```go
+import "github.com/restuhaqza/swarmcracker/pkg/client"
+
+c, err := client.New(client.Config{
+	Endpoint:  "https://manager:4244", // empty selects the local Unix socket
+	CAFile:    "/path/to/ca.crt",      // required when Endpoint is set
+	TokenFile: "/path/to/token",
+})
+if err != nil {
+	return err
+}
+defer c.Close()
+```
+
+`Config` also takes `Token` (which wins over `TokenFile`), `ServerName`,
+`Timeout`, `StateDir`/`CertDir` and `SocketPath`; `client.DefaultConfig()`
+fills the local defaults from the environment the CLI uses. The methods are
+`ListServices`, `GetService`, `CreateService`, `UpdateService`, `DeleteService`,
+`RollbackService`, `ListTasks`, `GetTask`, `ListServiceTasks`, `ExecTask`,
+`WatchEvents`, `ListNodes`/`GetNode`/`UpdateNode`, `ListNetworks`/`GetNetwork`/
+`CreateNetwork`/`DeleteNetwork`, `ListConfigs`/`GetConfig`/`CreateConfig`/
+`UpdateConfig`/`DeleteConfig`, `ListSecrets`/`GetSecret`/`CreateSecret`/
+`UpdateSecret`/`DeleteSecret` and `ClusterID` — every one takes a
+`context.Context` and returns the generated `pkg/api/v1` types.
+
 ## Run them in CI
 
 `make examples` runs `test/examples/run.sh`, which:
@@ -195,7 +236,14 @@ process.exitCode = await main();
 1. builds `test/examples/mockserver`, a loopback-only fixture that speaks the v1
    envelope, headers and NDJSON exec frames and performs no authentication;
 2. runs both programs with `SWARMCRACKER_HOST` pointed at it, then again with
-   `SWARMCRACKER_TASK=t1`, and compares the exact output lines.
+   `SWARMCRACKER_TASK=t1`, and compares the exact output lines;
+3. reruns the exec path against a fixture started with `-exit-code 3`: a failed
+   guest command still prints `exec.exit=3` and the program still exits 0;
+4. checks the error contract: an unreadable `SWARMCRACKER_CA` and a non-loopback
+   `http://` host each print exactly one `error=usage` line on stderr and exit
+   1, with no traceback;
+5. diffs the two snippets on this page against the example files, so the page
+   cannot drift from the code.
 
 The `examples` job in `.github/workflows/ci.yml` runs that script and then builds
 `Dockerfile.cli`, so a broken snippet or a broken client-only image fails the PR.

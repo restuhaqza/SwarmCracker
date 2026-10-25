@@ -17,6 +17,7 @@ on:
       - 'tools/sdkgen/**'
       - 'api/openapi.yaml'
       - 'Dockerfile.cli'
+      - '.dockerignore'
       - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
   pull_request:

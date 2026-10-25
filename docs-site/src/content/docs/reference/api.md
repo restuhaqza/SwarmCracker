@@ -333,7 +333,8 @@ caller never picks a host. A manager with no broker wired answers those routes
 schema, header and error code; this section is the operator's guide to it.
 
 Runnable `Client` programs for Python (`sdk/python`) and Node (`sdk/node`) are in
-[SDK examples](/guides/sdk-examples/); Go callers use `pkg/client`.
+[SDK examples](/guides/sdk-examples/); Go callers use
+[`pkg/client`](/guides/sdk-examples/#go).
 
 Only the manager that initialized the cluster serves the API in phase 1: the
 daemon starts both listeners when its configuration carries no join address
