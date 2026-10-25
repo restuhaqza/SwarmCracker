@@ -52,6 +52,9 @@ package broker
 //
 // A nil store keeps the operation registered but answers a typed 501: the public
 // layer already gates snapshots on the capability, so this is defence in depth.
+// A typed-nil store counts as nil. The method is checked first, so a method the
+// operation does not implement is 405 with Allow even while snapshots are
+// disabled; only GET, POST and DELETE can answer 501.
 
 import (
 	"bytes"
@@ -64,6 +67,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -140,22 +144,47 @@ type snapshotHandler struct {
 }
 
 // NewSnapshotHandler builds the snapshots operation. A nil store keeps the route
-// and answers 501 not_implemented with details.capability "snapshots".
+// and answers 501 not_implemented with details.capability "snapshots". A typed
+// nil (for example a (*snapshot.Manager)(nil) stored in the interface) is the
+// same as nil: the store implements nothing, and calling it would panic.
 func NewSnapshotHandler(cfg SnapshotHandlerConfig) Handler {
+	if snapshotStoreDisabled(cfg.Store) {
+		cfg.Store = nil
+	}
 	h := &snapshotHandler{cfg: cfg, restoring: make(map[string]struct{})}
 	return h.serve
 }
 
-// serve dispatches one snapshot request by method and query.
+// snapshotStoreDisabled reports whether store implements nothing. A typed-nil
+// interface value is not == nil, so the interface comparison alone would let a
+// nil *snapshot.Manager reach a method call and panic; the kind check covers it.
+func snapshotStoreDisabled(store SnapshotStore) bool {
+	if store == nil {
+		return true
+	}
+	value := reflect.ValueOf(store)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+// serve dispatches one snapshot request by method and query. The method check
+// runs before the store gate: a method the operation does not implement is 405
+// with Allow even when snapshots are disabled, and 501 is reserved for the
+// methods the operation really serves.
 func (h *snapshotHandler) serve(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request) {
-	if h.cfg.Store == nil {
-		writeSnapshotDisabled(w)
+	if !snapshotMethodAllowed(r.Method) {
+		w.Header().Set("Allow", operationSpecs[snapshotOperation].allow())
+		writeTypedError(w, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
+			"method %s is not allowed on a snapshot", r.Method).
+			WithDetails(map[string]any{"reason": "method_not_allowed"}))
 		return
 	}
-	if !snapshotMethodAllowed(r.Method) {
-		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost+", "+http.MethodDelete)
-		writeError(w, http.StatusMethodNotAllowed, output.CodeInvalid,
-			"method %s is not allowed on a snapshot", r.Method)
+	if snapshotStoreDisabled(h.cfg.Store) {
+		writeSnapshotDisabled(w)
 		return
 	}
 	if err := validateSnapshotQuery(r); err != nil {
@@ -177,9 +206,11 @@ func (h *snapshotHandler) serve(ctx context.Context, task Task, w http.ResponseW
 	}
 }
 
-// snapshotMethodAllowed reports whether the handler serves method.
+// snapshotMethodAllowed reports whether the handler serves method. The method
+// set lives in operationSpecs so the server's 405 check and the handler cannot
+// disagree about it.
 func snapshotMethodAllowed(method string) bool {
-	return method == http.MethodGet || method == http.MethodPost || method == http.MethodDelete
+	return operationSpecs[snapshotOperation].allows(method)
 }
 
 // validateSnapshotQuery enforces the small query grammar: `restore` belongs to a

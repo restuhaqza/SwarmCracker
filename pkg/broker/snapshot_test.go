@@ -671,6 +671,41 @@ func TestSnapshotHandlerDisabledStoreIs501(t *testing.T) {
 	}
 }
 
+// TestSnapshotHandlerTypedNilStoreIs501 pins the other shape of "no store": a
+// typed-nil *snapshot.Manager in the interface is not == nil, and calling it
+// would panic. It must answer the same 501 as a nil store.
+func TestSnapshotHandlerTypedNilStoreIs501(t *testing.T) {
+	var typedNil *snapshot.Manager
+
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			var rec *httptest.ResponseRecorder
+			require.NotPanics(t, func() {
+				rec = serveSnapshot(t, typedNil, snapshotTask(), method,
+					"/v1/tasks/task-1/snapshots", "")
+			})
+
+			require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
+			doc := decodeSnapshotError(t, rec)
+			require.Equal(t, string(output.CodeNotImplemented), doc.Error.Code)
+			require.Equal(t, "snapshots", doc.Error.Details["capability"])
+		})
+	}
+}
+
+// TestSnapshotHandlerDisabledStoreWrongMethodIs405 pins the precedence: a method
+// the operation does not implement is 405 with Allow, even while the store is
+// disabled. 501 belongs to the methods the operation really serves.
+func TestSnapshotHandlerDisabledStoreWrongMethodIs405(t *testing.T) {
+	rec := serveSnapshot(t, nil, snapshotTask(), http.MethodPut, "/v1/tasks/task-1/snapshots", "")
+
+	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+	require.Equal(t, "GET, POST, DELETE", rec.Header().Get("Allow"))
+	doc := decodeSnapshotError(t, rec)
+	require.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	require.Equal(t, "method_not_allowed", doc.Error.Details["reason"])
+}
+
 // TestSnapshotHandlerMalformedQueryIs400 pins the query rules: only the
 // `restore` and `id` parameters exist, once each, and each method owns its own.
 func TestSnapshotHandlerMalformedQueryIs400(t *testing.T) {

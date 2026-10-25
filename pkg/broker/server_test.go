@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 )
 
 // fakeTaskSource is a TaskSource with the answer and the failure under test.
@@ -160,6 +161,36 @@ func TestServerUnknownOpIsNotImplemented(t *testing.T) {
 	doc := decodeErrorDocument(t, rec.Body)
 	require.Equal(t, string(codeNotImplemented), doc.Error.Code)
 	require.False(t, doc.Error.Retryable)
+}
+
+// TestServerWrongMethodIs405Before501 pins the precedence the node contract
+// needs: a method the operation does not implement is 405 with Allow, even when
+// the operation's handler is absent (its capability is disabled). Only the
+// operation's real method can reach the 501.
+func TestServerWrongMethodIs405Before501(t *testing.T) {
+	srv := newRouteServer(t, &fakeTaskSource{task: Task{ID: "task-1"}, found: true})
+
+	// exec is POST only. No handler is registered: the capability is disabled.
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/tasks/task-1/exec", nil))
+
+	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+	require.Equal(t, http.MethodPost, rec.Header().Get("Allow"))
+	doc := decodeErrorDocument(t, rec.Body)
+	require.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	require.Equal(t, "method_not_allowed", doc.Error.Details["reason"])
+
+	// The real method still answers 501 while the operation is disabled.
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/tasks/task-1/exec", nil))
+	require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
+	require.Equal(t, string(codeNotImplemented), decodeErrorDocument(t, rec.Body).Error.Code)
+
+	// files serves GET and PUT: DELETE is 405 with both methods advertised.
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/v1/tasks/task-1/files", nil))
+	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+	require.Equal(t, http.MethodGet+", "+http.MethodPut, rec.Header().Get("Allow"))
 }
 
 func TestServerMalformedPathsAreNotFound(t *testing.T) {

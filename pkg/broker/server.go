@@ -167,6 +167,39 @@ func (s *Server) Addr() string {
 	return s.addr
 }
 
+// operationSpec is the method set of one broker operation. It is static: the
+// node contract defines the methods, and a handler cannot widen them. Knowing
+// them lets the server answer 405 for a wrong method even when the operation
+// itself is disabled, and reserve 501 for the method the operation really
+// implements.
+type operationSpec struct {
+	methods []string
+}
+
+// allow renders the spec's methods for the Allow header, in declaration order.
+func (s operationSpec) allow() string { return strings.Join(s.methods, ", ") }
+
+// allows reports whether the operation implements method.
+func (s operationSpec) allows(method string) bool {
+	for _, have := range s.methods {
+		if have == method {
+			return true
+		}
+	}
+	return false
+}
+
+// operationSpecs is the registry of known operations and the methods each one
+// implements. An operation missing here is unknown: an unregistered one is 501
+// for every method, because there is no method set to enforce.
+var operationSpecs = map[string]operationSpec{
+	"exec":      {methods: []string{http.MethodPost}},
+	"logs":      {methods: []string{http.MethodGet}},
+	"files":     {methods: []string{http.MethodGet, http.MethodPut}},
+	"health":    {methods: []string{http.MethodGet}},
+	"snapshots": {methods: []string{http.MethodGet, http.MethodPost, http.MethodDelete}},
+}
+
 // route resolves the task, then dispatches to the registered operation.
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	taskID, op, ok := splitTaskPath(r.URL.Path)
@@ -182,6 +215,17 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	}
 	if !found {
 		writeError(w, http.StatusNotFound, codeNotFound, "task %q not found on this node", taskID)
+		return
+	}
+
+	// A wrong method is a request the operation cannot implement, not a missing
+	// capability: it is 405 with Allow whether or not a handler is registered.
+	// Only the operation's real method can reach the 501 below.
+	if spec, known := operationSpecs[op]; known && !spec.allows(r.Method) {
+		w.Header().Set("Allow", spec.allow())
+		writeTypedError(w, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
+			"method %s is not allowed on operation %q", r.Method, op).
+			WithDetails(map[string]any{"reason": "method_not_allowed"}))
 		return
 	}
 
