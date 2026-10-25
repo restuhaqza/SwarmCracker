@@ -94,6 +94,48 @@ type Summary struct {
 	// asserts must be absent. It is a declared skip: the mock leg allows it and
 	// fails on any other.
 	Gated int
+	// Skips names every skipped case and why. The counts above say how many
+	// cases did not run; this says which ones and what would let them run, which
+	// is what a lab run has to report instead of quietly passing on fewer cases.
+	Skips []Skip
+}
+
+// The reasons a case is skipped. A lab run is strict about them: a skip it can
+// avoid is a failure, because a green run that executed half the fixtures proves
+// nothing about the contract.
+const (
+	// SkipMockOnly is a case that asserts fixture data only the mock guarantees.
+	// No setting turns it on against a live manager: it is the one skip a lab
+	// run is allowed to report and pass.
+	SkipMockOnly = "mock-only"
+	// SkipCapability is a case the target's /v1/version gates out.
+	SkipCapability = "capability"
+	// SkipMutation is a mutating case the run did not allow.
+	SkipMutation = "mutation"
+	// SkipToken is a case whose role has no token in this environment.
+	SkipToken = "token"
+	// SkipVariable is a case that needs a variable the environment did not
+	// supply, such as the task id a stream or snapshot case runs against.
+	SkipVariable = "variable"
+)
+
+// Skip is one case that did not run. Case is the subtest path, so a failure can
+// name the exact fixture case.
+type Skip struct {
+	Case string
+	Kind string
+	// Detail names what is missing: the capability, the role or the variable.
+	Detail string
+}
+
+// recordSkip counts one skipped case and keeps it, so the policy that reads the
+// summary can name it afterwards. t.Skip unwinds the subtest, so this must be
+// called before it.
+func (s *Summary) recordSkip(t *testing.T, kind, detail string) {
+	t.Helper()
+
+	s.Skipped++
+	s.Skips = append(s.Skips, Skip{Case: t.Name(), Kind: kind, Detail: detail})
 }
 
 // Run loads every *.json fixture in dir and executes all cases as subtests
@@ -200,12 +242,13 @@ func suffixedValues(values map[string]string, suffix string) map[string]string {
 	return resolved
 }
 
-// gatedSkipReason reports why a capability gate skips this case, or "" when the
-// case may run. An environment that declared no capability set is not gated: the
-// runner trusts the fixture, which is what the runner's own tests rely on.
-func (e Env) gatedSkipReason(c Case) string {
+// gatedSkipReason reports why a capability gate skips this case, plus the
+// capability list that gated it, or empty strings when the case may run. An
+// environment that declared no capability set is not gated: the runner trusts the
+// fixture, which is what the runner's own tests rely on.
+func (e Env) gatedSkipReason(c Case) (reason, detail string) {
 	if e.Capabilities == nil {
-		return ""
+		return "", ""
 	}
 
 	advertised := make(map[string]bool, len(e.Capabilities))
@@ -221,7 +264,7 @@ func (e Env) gatedSkipReason(c Case) string {
 	}
 	if len(missing) > 0 {
 		return fmt.Sprintf("this environment does not advertise %s; run it against a manager that enables the capability",
-			strings.Join(missing, ", "))
+			strings.Join(missing, ", ")), strings.Join(missing, " and ")
 	}
 
 	present := make([]string, 0, len(c.AbsentCapabilities))
@@ -232,9 +275,9 @@ func (e Env) gatedSkipReason(c Case) string {
 	}
 	if len(present) > 0 {
 		return fmt.Sprintf("this environment advertises %s, so the disabled-capability case does not apply",
-			strings.Join(present, ", "))
+			strings.Join(present, ", ")), strings.Join(present, " and ")
 	}
-	return ""
+	return "", ""
 }
 
 // capture stores the response values a later case in the same file references,
@@ -273,25 +316,25 @@ func runCase(t *testing.T, env Env, c Case, vars map[string]string, summary *Sum
 
 	c = resolveRunTokens(c, env.RunSuffix)
 
-	switch gate := env.gatedSkipReason(c); {
+	switch gate, detail := env.gatedSkipReason(c); {
 	case env.Lab && c.MockOnly:
-		summary.Skipped++
+		summary.recordSkip(t, SkipMockOnly, "")
 		t.Skip("mock-only case: it asserts fixture data a live cluster need not contain")
 	case gate != "":
 		// A capability gate is a declared skip: the target was asked and said no.
-		// The lab leg reports it, and the mock leg allows it (and fails on any
-		// skip that is not declared this way).
-		summary.Skipped++
+		// The lab leg reports it (and, strict by default, fails on it), and the
+		// mock leg allows it and fails on any other.
+		summary.recordSkip(t, SkipCapability, detail)
 		summary.Gated++
 		t.Skip(gate)
 	case c.Mutating && !env.AllowMutation:
-		summary.Skipped++
+		summary.recordSkip(t, SkipMutation, "")
 		t.Skip("mutating case: set CONFORMANCE_ALLOW_MUTATION=1 to run it")
 	}
 
 	token := strings.TrimSpace(env.Tokens[c.Request.Role])
 	if token == "" {
-		summary.Skipped++
+		summary.recordSkip(t, SkipToken, c.Request.Role)
 		t.Skipf("no %s token configured for this environment; skipping", c.Request.Role)
 	}
 
@@ -310,7 +353,7 @@ func runCase(t *testing.T, env Env, c Case, vars map[string]string, summary *Sum
 	req, err := newRequest(ctx, env, c.Request, token, vars)
 	if err != nil {
 		if env.Lab && errors.Is(err, errUnsetVar) {
-			summary.Skipped++
+			summary.recordSkip(t, SkipVariable, missingVariable(err))
 			t.Skipf("%v; the environment did not supply it", err)
 		}
 		t.Fatalf("%s: build request: %v", c.Name, err)
@@ -386,6 +429,33 @@ func repeatMismatch(first, again *result) string {
 // run turns it into a skip, like a missing role token: the cluster, not the
 // runner, is what lacks the value.
 var errUnsetVar = errors.New("variable not set")
+
+// unsetVarError names the $variable that was not supplied, so a skip can say
+// which one is missing instead of only that something was.
+type unsetVarError struct {
+	name string
+	// where is the request component the reference appeared in, for the message.
+	where string
+}
+
+func (e *unsetVarError) Error() string {
+	if e.where == "" {
+		return fmt.Sprintf("%v: $%s must come from an earlier response or the environment", errUnsetVar, e.name)
+	}
+	return fmt.Sprintf("%v: $%s in the %s must come from an earlier response or the environment", errUnsetVar, e.name, e.where)
+}
+
+func (e *unsetVarError) Unwrap() error { return errUnsetVar }
+
+// missingVariable names the variable an error reports as unset, or "" when the
+// error is about something else.
+func missingVariable(err error) string {
+	var unset *unsetVarError
+	if errors.As(err, &unset) {
+		return unset.name
+	}
+	return ""
+}
 
 // newRequest builds one authenticated request. Only the fixture's own path,
 // query and headers can reach the message a failure prints; the token never
@@ -478,7 +548,7 @@ func resolveVars(value string, vars map[string]string) (string, error) {
 	}
 	resolved, ok := vars[name]
 	if !ok {
-		return "", fmt.Errorf("%w: $%s must come from an earlier response or the environment", errUnsetVar, name)
+		return "", &unsetVarError{name: name}
 	}
 	return resolved, nil
 }
@@ -510,7 +580,7 @@ func resolvePath(path string, vars map[string]string) (string, error) {
 		name := rest[:end]
 		resolved, ok := vars[name]
 		if !ok {
-			return "", fmt.Errorf("%w: $%s in the request path must come from an earlier response or the environment", errUnsetVar, name)
+			return "", &unsetVarError{name: name, where: "request path"}
 		}
 		out.WriteString(resolved)
 		path = rest[end:]
