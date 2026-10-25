@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -129,6 +130,98 @@ func TestRemoteListServicesEmptyIsEmptySlice(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, services)
 	assert.Empty(t, services)
+}
+
+// TestRemoteListTasksHealthPartial207 proves a 207 page is a document, not a
+// transport error: the tasks the manager could read are returned, and the
+// partial flag travels with them.
+func TestRemoteListTasksHealthPartial207(t *testing.T) {
+	queries := make(chan url.Values, 1)
+	c := newTestRemote(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+		queries <- r.URL.Query()
+		if r.URL.Path != "/v1/tasks" {
+			t.Errorf("path = %q, want /v1/tasks", r.URL.Path)
+		}
+		doc := v1.NewTaskList([]v1.Task{
+			{ID: "task-1", Health: &v1.TaskHealth{Status: "healthy"}},
+		})
+		doc.Partial = []v1.Partial{{
+			NodeID:   "node-2",
+			NodeName: "worker-2",
+			Error:    v1.Error{Code: string(output.CodeUnavailable), Message: "no answer"},
+		}}
+		writeTestDocument(w, http.StatusMultiStatus, doc)
+	})
+
+	doc, partial, err := c.ListTasksHealth(context.Background())
+	require.NoError(t, err)
+	assert.True(t, partial)
+	require.Len(t, doc.Items, 1)
+	require.NotNil(t, doc.Items[0].Health)
+	assert.Equal(t, "healthy", doc.Items[0].Health.Status)
+	require.Len(t, doc.Partial, 1)
+	assert.Equal(t, "worker-2", doc.Partial[0].NodeName)
+	assert.Nil(t, doc.Next)
+	assert.Equal(t, "true", (<-queries).Get("health"))
+}
+
+// TestRemoteListTasksHealthFollowsPages combines the pages and keeps the partial
+// flag of the page that reported one. Only a 207 is partial; a 200 page is not.
+func TestRemoteListTasksHealthFollowsPages(t *testing.T) {
+	next := "page-2"
+	cursors := make(chan string, 4)
+	c := newTestRemote(t, Config{}, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("health"); got != "true" {
+			t.Errorf("health = %q, want true", got)
+		}
+		cursor := r.URL.Query().Get("cursor")
+		cursors <- cursor
+		switch cursor {
+		case "":
+			doc := v1.NewTaskList([]v1.Task{{ID: "task-1"}})
+			doc.Next = &next
+			writeTestDocument(w, http.StatusOK, doc)
+		case "page-2":
+			doc := v1.NewTaskList([]v1.Task{{ID: "task-2"}})
+			doc.Partial = []v1.Partial{{NodeID: "node-2"}}
+			writeTestDocument(w, http.StatusMultiStatus, doc)
+		default:
+			t.Errorf("unexpected cursor %q", cursor)
+			writeTestDocument(w, http.StatusOK, v1.NewTaskList(nil))
+		}
+	})
+
+	doc, partial, err := c.ListTasksHealth(context.Background())
+	require.NoError(t, err)
+	assert.True(t, partial)
+	require.Len(t, doc.Items, 2)
+	assert.Equal(t, []string{"task-1", "task-2"}, []string{doc.Items[0].ID, doc.Items[1].ID})
+	require.Len(t, doc.Partial, 1)
+	assert.Equal(t, "node-2", doc.Partial[0].NodeID)
+	// The pages are consumed here, so the document has no cursor of its own.
+	assert.Nil(t, doc.Next)
+	assert.Equal(t, "", <-cursors)
+	assert.Equal(t, "page-2", <-cursors)
+}
+
+// TestRemoteListTasksHealthServerErrorIsTyped keeps the existing mapping for any
+// non-2xx answer other than 207.
+func TestRemoteListTasksHealthServerErrorIsTyped(t *testing.T) {
+	c := newTestRemote(t, Config{}, func(w http.ResponseWriter, _ *http.Request) {
+		writeTestDocument(w, http.StatusServiceUnavailable, v1.NewErrorDocument(v1.Error{
+			Code:    string(output.CodeUnavailable),
+			Message: "node broker is down",
+		}))
+	})
+
+	doc, partial, err := c.ListTasksHealth(context.Background())
+	require.Error(t, err)
+	assert.False(t, partial)
+	assert.Empty(t, doc.Items)
+
+	typed := codeOf(t, err)
+	assert.Equal(t, output.CodeUnavailable, typed.Code)
+	assert.Equal(t, "node broker is down", typed.Message)
 }
 
 func TestRemoteListServiceTasksPath(t *testing.T) {

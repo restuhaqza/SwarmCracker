@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,6 +43,20 @@ func TestConfigWithDefaults(t *testing.T) {
 	cfg = Config{CertDir: "/tmp/certs", Timeout: time.Second}.withDefaults()
 	assert.Equal(t, "/tmp/certs", cfg.CertDir)
 	assert.Equal(t, time.Second, cfg.Timeout)
+}
+
+// TestListTasksHealthRequiresRemote pins the capability boundary: live health is
+// a manager fan-out, so the local control-socket client refuses it instead of
+// returning an unenriched page that looks complete.
+func TestListTasksHealthRequiresRemote(t *testing.T) {
+	doc, partial, err := (&Client{}).ListTasksHealth(context.Background())
+	require.Error(t, err)
+	assert.False(t, partial)
+	assert.Empty(t, doc.Items)
+
+	typed := codeOf(t, err)
+	assert.Equal(t, output.CodeUsage, typed.Code)
+	assert.Contains(t, typed.Message, "--host")
 }
 
 func TestNewAndClose(t *testing.T) {

@@ -383,6 +383,62 @@ func (r *remoteClient) listTasks(ctx context.Context) ([]v1.Task, error) {
 	})
 }
 
+// listTasksHealth returns every page of tasks with ?health=true, accumulating
+// the items, warnings and partials of each page. A 207 page is a normal
+// TaskList document, not an error, so `do` already returns it; this method only
+// records the partial flag. `next` stays nil because the pages are consumed
+// here, exactly like the unenriched list.
+func (r *remoteClient) listTasksHealth(ctx context.Context) (v1.TaskList, bool, error) {
+	doc := v1.NewTaskList(nil)
+	partial := false
+	cursor := ""
+	seen := make(map[string]struct{})
+
+	for page := 0; ; page++ {
+		if page >= maxListPages {
+			return v1.TaskList{}, false, output.NewErrorf(output.CodeInternal,
+				"list v1/tasks did not terminate after %d pages", maxListPages)
+		}
+
+		query := url.Values{}
+		query.Set("health", "true")
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+
+		resp, err := r.do(ctx, remoteRequest{
+			method:   http.MethodGet,
+			segments: []string{"v1", "tasks"},
+			query:    query,
+		})
+		if err != nil {
+			return v1.TaskList{}, false, err
+		}
+
+		var pageDoc v1.TaskList
+		if err := decodeJSON("v1/tasks", resp.body, &pageDoc); err != nil {
+			return v1.TaskList{}, false, err
+		}
+		if resp.status == http.StatusMultiStatus {
+			partial = true
+		}
+
+		doc.Items = append(doc.Items, pageDoc.Items...)
+		doc.Partial = append(doc.Partial, pageDoc.Partial...)
+		doc.Warnings = append(doc.Warnings, pageDoc.Warnings...)
+
+		if pageDoc.Next == nil || *pageDoc.Next == "" {
+			return doc, partial, nil
+		}
+		if _, repeated := seen[*pageDoc.Next]; repeated {
+			return v1.TaskList{}, false, output.NewErrorf(output.CodeInternal,
+				"list v1/tasks repeated cursor %q", *pageDoc.Next)
+		}
+		seen[*pageDoc.Next] = struct{}{}
+		cursor = *pageDoc.Next
+	}
+}
+
 // listServiceTasks returns every page of one service's tasks.
 func (r *remoteClient) listServiceTasks(ctx context.Context, serviceID string) ([]v1.Task, error) {
 	return paginate(r, ctx, []string{"v1", "services", serviceID, "tasks"}, func(doc *v1.TaskList) ([]v1.Task, *string) {
