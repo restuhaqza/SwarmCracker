@@ -650,7 +650,12 @@ cluster's mutual TLS identity, never the caller's bearer token.
   `http.NewResponseController(w).EnableFullDuplex()` before it reads the body, so
   the route requires an HTTP/1.1 connection and **does not work over HTTP/2**.
   Browsers and h2-only clients (`curl --http2`, a fetch/XHR client) are not
-  supported clients for it; the `swarmcracker` CLI (`vm attach -H`) is. It
+  supported clients for it; the `swarmcracker` CLI (`vm attach -H`) is. That is
+  the CLI mapping: `swarmcracker -H … vm attach <task>` uses this route, while
+  `swarmcracker vm attach <task>` without `-H` dials the node's console Unix
+  socket under `--socket-dir` and never contacts the manager. Ctrl-P Ctrl-Q
+  detaches in both modes: the remote session closes the request body and cancels
+  the request, which leaves the VM running. It
   requires `tasks:exec` and the same task selectors as exec, and the task must be
   running with its console socket present: otherwise `404 not_found` with
   `details.reason: "console_unavailable"`; a console that exists but cannot be
@@ -967,15 +972,20 @@ remote reads above is refused the same way. It never silently falls back to the
 local cluster. Without `--host` the same commands read the local socket, so a
 cluster member needs no flags.
 
-Two mutations are remote-capable too: `vm exec` streams from the task's node, and
-`vm snapshot stop-restored` sends the DELETE to the node that holds the restored
-VM (`-H` is the only way to reach it from another machine).
+Three mutations are remote-capable too: `vm exec` streams from the task's node,
+`vm attach` carries the interactive console over `POST /v1/tasks/{id}/attach`
+(the same relay, `tasks:exec`), and `vm snapshot stop-restored` sends the DELETE
+to the node that holds the restored VM (`-H` is the only way to reach it from
+another machine). Without `-H`, `vm attach` keeps using the node-local console
+socket under `--socket-dir`.
 
 ```bash
 swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
   --token-file reader.token service ls
 swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
   --token-file reader.token service ls -o json
+swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
+  --token-file runner.token vm attach web-1     # Ctrl-P Ctrl-Q detaches
 ```
 
 `reader.token` holds the raw secret (surrounding whitespace is trimmed).

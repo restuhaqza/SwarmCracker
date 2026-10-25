@@ -601,11 +601,28 @@ cannot satisfy leaves **no VM and no cgroup** behind. See
 when the flags are omitted), and a declared size is honoured **exactly** — no
 512 MiB floor — so `--memory 256` boots a 256 MiB VM.
 
-`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix. Detach with **Ctrl-P Ctrl-Q**. `vm exec` flags: `--socket-dir` (default `/var/run/firecracker`), `-i`/`--interactive`, `-t`/`--tty`, `-e`/`--env` (`K=V`, repeatable), `-w`/`--workdir`, `--exit-code` (`guest`, the default, passes the guest status through; `api` maps any non-zero guest exit to `8`; a signal stays `128+signal`); everything after `--` is the guest command, and `-i` without `-t` only emits a warning. `vm cp` flags: `--socket-dir`, `--mode` (host→guest destination mode, default `0644`); exactly one argument carries the `<vm>:` prefix and only regular files are supported.
+`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix, and the global `-H` switches the session to the manager's API (see below). Detach with **Ctrl-P Ctrl-Q**. `vm exec` flags: `--socket-dir` (default `/var/run/firecracker`), `-i`/`--interactive`, `-t`/`--tty`, `-e`/`--env` (`K=V`, repeatable), `-w`/`--workdir`, `--exit-code` (`guest`, the default, passes the guest status through; `api` maps any non-zero guest exit to `8`; a signal stays `128+signal`); everything after `--` is the guest command, and `-i` without `-t` only emits a warning. `vm cp` flags: `--socket-dir`, `--mode` (host→guest destination mode, default `0644`); exactly one argument carries the `<vm>:` prefix and only regular files are supported.
 
 `vm exec` and `vm cp` reach a guest agent over Firecracker's vsock device (no extra host port is opened). The channel is a trusted control path — a host-local process can run commands in the guest **as root** — so access is limited to the daemon-owned socket directory, like `vm attach`. See [Guest Access](/guides/guest-access/) for usage, the guest agent, and limitations.
 
 `vm exec -H https://manager:4244` (with `--ca` and `--token-file`) uses the manager's API (`POST /v1/tasks/{id}/exec`) instead of the local socket, so a CI runner needs only an API token and the cluster CA. That path requires the node broker on each node (`swarmd-firecracker --broker-listen`, default `0.0.0.0:4245`); a manager without a wired broker answers `501 not_implemented`. Interactive `-t` is not implemented over the API and returns the same typed 501.
+
+`vm attach -H https://manager:4244` (with `--ca` and `--token-file`) streams the
+serial console over the manager's API (`POST /v1/tasks/{id}/attach`) instead of
+dialing the node's Unix socket, so an operator can reach a task's console from
+any machine with the cluster CA and a token holding `tasks:exec`. The session is
+one full-duplex HTTP/1.1 request: the chunked request body is your stdin and the
+chunked response body is the console, both raw `application/octet-stream` and
+flushed as bytes arrive. Ctrl-P Ctrl-Q detaches by closing the request body and
+cancelling the request — the VM keeps running and the command exits `0`; the
+console reaching EOF ends the session cleanly too. The terminal is put into raw
+mode only when stdin is a terminal (a pipe or redirected stdin is forwarded
+as-is). This path needs the same node broker as `vm exec`: without it the
+manager answers `501 not_implemented` with `details.capability: "attach"`, and a
+task that is not running or has no console answers `404 not_found` with
+`details.reason: "console_unavailable"`. Because it relies on HTTP/1.1 full
+duplex, the route does not work over HTTP/2. Without `-H`, `vm attach` is
+unchanged and uses `--socket-dir` on the node that hosts the task.
 
 **`vm snapshot stop-restored <task>`** stops the VM a snapshot restore started. A restore runs outside SwarmKit, so `vm stop` cannot reach it. Locally the command reads `<socket-dir>/<task>-restored.sock` (default `/var/run/firecracker`), resolves the Firecracker PID, sends SIGTERM, waits up to ten seconds, then SIGKILLs it and removes the socket; `<task>` may be an exact ID or any unique prefix. With `-H` it sends `DELETE /v1/tasks/{id}/restored` to the manager, which relays the stop to the node that holds the restored VM; the route needs the node's experimental snapshot capability and answers `404 not_found` with `details.reason: "no_restored_vm"` when nothing is tracked there.
 
