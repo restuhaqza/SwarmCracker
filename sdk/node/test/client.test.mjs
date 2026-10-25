@@ -411,6 +411,10 @@ async function route(state, req, res, { entry, url }) {
       sendJson(res, 404, errorDocument('not_found', 'no such directory'));
       return true;
     }
+    if (guestPath === '/flaky' && bump(state, 'files:flaky') === 1) {
+      sendJson(res, 503, errorDocument('unavailable', 'try later', { retryable: true }));
+      return true;
+    }
     sendEmpty(res, 204);
     return true;
   }
@@ -1467,6 +1471,28 @@ test('a POST with an idempotency key is retried', async () => {
       assert.equal(sent.length, 3);
       assert.deepEqual(delays, [500, 1000]);
       assert.ok(sent.every((entry) => entry.headers['idempotency-key'] === 'create-1'));
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('filesPut is retried with the whole body', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      assert.equal(await client.tasks.filesPut('t1', '/flaky', FILE_BYTES, { mode: '0644' }), null);
+
+      const sent = attempts(state, '/v1/tasks/t1/files');
+      assert.equal(sent.length, 2);
+      assert.deepEqual(delays, [500]);
+      // The whole body is rebuilt for every attempt, not a consumed stream.
+      for (const request of sent) {
+        assert.equal(request.method, 'PUT');
+        assert.deepEqual(request.rawBody, FILE_BYTES);
+        assert.equal(request.headers['content-length'], String(FILE_BYTES.length));
+        assert.deepEqual(request.query, { path: ['/flaky'], mode: ['0644'] });
+      }
     } finally {
       client.close();
     }

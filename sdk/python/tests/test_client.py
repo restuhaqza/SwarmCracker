@@ -442,6 +442,9 @@ class Handler(BaseHTTPRequestHandler):
             if guest_path == "/missing":
                 self._json(404, error_document("not_found", "no such directory"))
                 return True
+            if guest_path == "/flaky" and self._count("files:flaky") == 1:
+                self._json(503, error_document("unavailable", "try later", retryable=True))
+                return True
             self._send(204, b"", V1_MEDIA_TYPE)
             return True
         return False
@@ -1181,6 +1184,25 @@ class RetryTest(unittest.TestCase):
                 for request in self.attempts("/v1/services")
             )
         )
+
+    def test_files_put_is_retried_with_the_whole_body(self):
+        client = self.retrying(retries=1)
+        self.assertIsNone(
+            client.tasks.files_put("t1", "/flaky", FILE_BYTES, mode="0644")
+        )
+
+        sent = self.attempts("/v1/tasks/t1/files")
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(self.delays, [0.5])
+        # The whole body is resent, not a consumed stream: both attempts carry
+        # the exact original bytes and their own Content-Length.
+        for request in sent:
+            self.assertEqual(request["method"], "PUT")
+            self.assertEqual(request["body"], FILE_BYTES)
+            self.assertEqual(
+                request["headers"]["content-length"], str(len(FILE_BYTES))
+            )
+            self.assertEqual(request["query"], {"path": ["/flaky"], "mode": ["0644"]})
 
     def test_a_non_positive_retry_after_falls_back_to_the_backoff(self):
         client = self.retrying(retries=1)
