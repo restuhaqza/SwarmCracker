@@ -656,6 +656,7 @@ export class ExecStream {
   #options;
   #exitCode = null;
   #response = null;
+  #closed = false;
 
   constructor(client, reference, command, options = {}) {
     this.#client = client;
@@ -674,7 +675,7 @@ export class ExecStream {
 
   async *[Symbol.asyncIterator]() {
     this.#exitCode = null;
-    if (this.#options.signal?.aborted) {
+    if (this.#closed || this.#options.signal?.aborted) {
       return;
     }
 
@@ -718,15 +719,31 @@ export class ExecStream {
           throw new ApiError(code, `the exec stream reported an error: ${code}`, { status });
         }
         if (frame.type === 'exit') {
-          this.#exitCode = frame.exitCode === undefined || frame.exitCode === null ? 0 : Number(frame.exitCode);
+          const raw = frame.exitCode;
+          if (raw === undefined || raw === null) {
+            this.#exitCode = 0;
+          } else {
+            const code = Number(raw);
+            if (!Number.isInteger(code)) {
+              throw new ApiError(
+                'internal',
+                'the exec stream carried an exit frame with a malformed exit code',
+                { status },
+              );
+            }
+            this.#exitCode = code;
+          }
         }
         yield frame;
       }
     } catch (error) {
-      if (signal?.aborted) {
+      if (this.#closed || signal?.aborted) {
         return;
       }
-      throw error;
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw transportFailure(error);
     } finally {
       signal?.removeEventListener('abort', stop);
       if (this.#response === response) {
@@ -736,8 +753,9 @@ export class ExecStream {
     }
   }
 
-  /** Stop the stream and release the connection. */
+  /** Stop the stream and release the connection; iteration then ends without throwing. */
   close() {
+    this.#closed = true;
     this.#response?.destroy();
     this.#response = null;
   }
@@ -754,6 +772,7 @@ export class LogStream {
   #reference;
   #options;
   #response = null;
+  #closed = false;
 
   constructor(client, reference, options = {}) {
     this.#client = client;
@@ -763,7 +782,7 @@ export class LogStream {
 
   async *[Symbol.asyncIterator]() {
     const { follow, tail, since, signal } = this.#options;
-    if (signal?.aborted) {
+    if (this.#closed || signal?.aborted) {
       return;
     }
     const query = {
@@ -793,10 +812,13 @@ export class LogStream {
         yield frame;
       }
     } catch (error) {
-      if (signal?.aborted) {
+      if (this.#closed || signal?.aborted) {
         return;
       }
-      throw error;
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw transportFailure(error);
     } finally {
       signal?.removeEventListener('abort', stop);
       if (this.#response === response) {
@@ -806,8 +828,9 @@ export class LogStream {
     }
   }
 
-  /** Stop the stream and release the connection. */
+  /** Stop the stream and release the connection; iteration then ends without throwing. */
   close() {
+    this.#closed = true;
     this.#response?.destroy();
     this.#response = null;
   }
@@ -824,6 +847,7 @@ export class EventStream {
   #client;
   #options;
   #response = null;
+  #closed = false;
 
   constructor(client, options = {}) {
     this.#client = client;
@@ -832,7 +856,7 @@ export class EventStream {
 
   async *[Symbol.asyncIterator]() {
     const { types, since, signal } = this.#options;
-    if (signal?.aborted) {
+    if (this.#closed || signal?.aborted) {
       return;
     }
     const query = {};
@@ -902,10 +926,13 @@ export class EventStream {
         }
       }
     } catch (error) {
-      if (signal?.aborted) {
+      if (this.#closed || signal?.aborted) {
         return;
       }
-      throw error;
+      if (error instanceof ApiError) {
+        throw error;
+      }
+      throw transportFailure(error);
     } finally {
       signal?.removeEventListener('abort', stop);
       if (this.#response === response) {
@@ -915,8 +942,9 @@ export class EventStream {
     }
   }
 
-  /** Stop the stream and release the connection. */
+  /** Stop the stream and release the connection; iteration then ends without throwing. */
   close() {
+    this.#closed = true;
     this.#response?.destroy();
     this.#response = null;
   }

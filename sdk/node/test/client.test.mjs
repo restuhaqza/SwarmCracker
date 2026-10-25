@@ -130,6 +130,52 @@ function writeFrames(res, frames) {
   res.end();
 }
 
+// A stream that keeps producing after the client stops reading, so break and
+// close() land mid-stream. The client destroys the socket, so a stray write or
+// the end of the response must not crash the fixture.
+async function writeSlowFrames(res, contentType, first, second, last) {
+  res.on('error', () => {});
+  startStream(res, contentType);
+  res.write(`${JSON.stringify(first)}\n`);
+  await delay(300);
+  res.write(`${JSON.stringify(second)}\n`);
+  res.end(`${JSON.stringify(last)}\n`);
+}
+
+// One exec frame split mid-JSON across three writes, with a three-byte UTF-8
+// character whose bytes straddle the two chunk boundaries, then an exit frame.
+async function writeSplitExecStream(res) {
+  res.on('error', () => {});
+  startStream(res, NDJSON_MEDIA_TYPE);
+  const stdout = {
+    type: 'stdout',
+    data: Buffer.from('héllo ✓ wörld\n', 'utf8').toString('base64'),
+    note: 'π–✓',
+  };
+  const bytes = Buffer.from(
+    `${JSON.stringify(stdout)}\n${JSON.stringify({ type: 'exit', exitCode: 0 })}\n`,
+    'utf8',
+  );
+  // '✓' is three bytes; cut after its first and second byte, so no single chunk
+  // holds the whole character.
+  const index = bytes.indexOf(Buffer.from('✓', 'utf8'));
+  assert.notEqual(index, -1, 'the fixture lost its multi-byte marker');
+  const chunks = [bytes.subarray(0, index + 1), bytes.subarray(index + 1, index + 2), bytes.subarray(index + 2)];
+  for (const chunk of chunks) {
+    res.write(chunk);
+    await delay(10);
+  }
+  res.end();
+}
+
+// Drop the TCP connection after one frame, the mid-stream transport failure.
+function dropStream(res, contentType, first) {
+  res.on('error', () => {});
+  startStream(res, contentType);
+  res.write(`${JSON.stringify(first)}\n`);
+  setTimeout(() => res.destroy(), 30);
+}
+
 function execFrames(reference) {
   if (reference === 't2') {
     return [{ type: 'stdout', data: Buffer.from('partial\n').toString('base64') }];
@@ -253,6 +299,32 @@ async function route(state, req, res, { entry, url }) {
       sendJson(res, 415, errorDocument('invalid', 'unsupported media type'));
       return true;
     }
+    if (reference === 't8') {
+      await writeSplitExecStream(res);
+      return true;
+    }
+    if (reference === 't9') {
+      await writeSlowFrames(
+        res,
+        NDJSON_MEDIA_TYPE,
+        { type: 'stdout', data: Buffer.from('first\n').toString('base64') },
+        { type: 'stdout', data: Buffer.from('second\n').toString('base64') },
+        { type: 'exit', exitCode: 0 },
+      );
+      return true;
+    }
+    if (reference === 't10') {
+      dropStream(res, NDJSON_MEDIA_TYPE, {
+        type: 'stdout',
+        data: Buffer.from('before the drop\n').toString('base64'),
+      });
+      return true;
+    }
+    if (reference === 't11') {
+      startStream(res, NDJSON_MEDIA_TYPE);
+      writeFrames(res, [{ type: 'exit', exitCode: 'not-a-number' }]);
+      return true;
+    }
     startStream(res, NDJSON_MEDIA_TYPE);
     writeFrames(res, execFrames(reference));
     return true;
@@ -287,6 +359,21 @@ async function route(state, req, res, { entry, url }) {
   }
   if (method === 'GET' && path === '/v1/events') {
     startStream(res, SSE_MEDIA_TYPE);
+    if (url.searchParams.get('types') === 'slow') {
+      res.on('error', () => {});
+      res.write('event: ready\ndata: {"type":"ready"}\n\n');
+      res.write(`id: 9\nevent: service.created\ndata: ${JSON.stringify(event('9', 'service.created', 's1'))}\n\n`);
+      await delay(300);
+      res.end('event: end\ndata: {}\n\n');
+      return true;
+    }
+    if (url.searchParams.get('types') === 'drop') {
+      res.on('error', () => {});
+      res.write('event: ready\ndata: {"type":"ready"}\n\n');
+      res.write(`id: 9\nevent: service.created\ndata: ${JSON.stringify(event('9', 'service.created', 's1'))}\n\n`);
+      setTimeout(() => res.destroy(), 30);
+      return true;
+    }
     if (url.searchParams.get('types') === 'error') {
       res.write('event: ready\ndata: {}\n\n');
       res.write(`event: error\ndata: ${JSON.stringify(errorDocument('unavailable', 'the broker is down', { retryable: true }))}\n\n`);
@@ -569,6 +656,100 @@ test('a frame with invalid base64 is internal', async () => {
   });
 });
 
+test('a malformed exit code is internal', async () => {
+  await withManager(async ({ client }) => {
+    const run = client.tasks.exec('t11', ['sh']);
+    await assert.rejects(
+      async () => {
+        for await (const frame of run) {
+          assert.fail(`unexpected frame ${frame.type}`);
+        }
+      },
+      (error) => error instanceof ApiError && error.code === 'internal' && /exit code/.test(error.message),
+    );
+  });
+});
+
+test('an exec frame split across chunks decodes intact', async () => {
+  await withManager(async ({ client }) => {
+    const run = client.tasks.exec('t8', ['sh', '-c', 'printf héllo']);
+    const frames = [];
+    for await (const frame of run) {
+      frames.push(frame);
+    }
+
+    assert.deepEqual(frames.map((frame) => frame.type), ['stdout', 'exit']);
+    assert.deepEqual(Buffer.from(frames[0].data).toString('utf8'), 'héllo ✓ wörld\n');
+    // The multi-byte text outside `data` is intact too: its bytes straddled the
+    // chunk boundaries of the NDJSON stream.
+    assert.equal(frames[0].note, 'π–✓');
+    assert.equal(run.exitCode, 0);
+  });
+});
+
+test('breaking out of an exec stream releases it without throwing', async () => {
+  await withManager(async ({ client }) => {
+    const run = client.tasks.exec('t9', ['sh', '-c', 'slow']);
+    const frames = [];
+    for await (const frame of run) {
+      frames.push(frame);
+      break;
+    }
+    run.close();
+    assert.deepEqual(frames.map((frame) => frame.type), ['stdout']);
+  });
+});
+
+test('close() inside the loop ends an exec stream without throwing', async () => {
+  await withManager(async ({ client }) => {
+    const run = client.tasks.exec('t9', ['sh', '-c', 'slow']);
+    const frames = [];
+    for await (const frame of run) {
+      frames.push(frame);
+      run.close();
+    }
+    assert.deepEqual(frames.map((frame) => frame.type), ['stdout']);
+  });
+});
+
+test('a timer calling close() ends an exec stream without throwing', async () => {
+  await withManager(async ({ client }) => {
+    const run = client.tasks.exec('t9', ['sh', '-c', 'slow']);
+    const timer = setTimeout(() => run.close(), 30);
+    try {
+      await assert.doesNotReject(async () => {
+        for await (const frame of run) {
+          assert.equal(frame.type, 'stdout');
+        }
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+});
+
+test('a mid-stream transport failure is an unreachable ApiError', async () => {
+  await withManager(async ({ client }) => {
+    const run = client.tasks.exec('t10', ['sh', '-c', 'drop']);
+    const frames = [];
+    await assert.rejects(
+      async () => {
+        for await (const frame of run) {
+          frames.push(frame);
+        }
+      },
+      (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.code, 'unreachable');
+        assert.equal(error.status, 0);
+        assert.doesNotMatch(String(error), new RegExp(TOKEN));
+        return true;
+      },
+    );
+    assert.deepEqual(frames.map((frame) => frame.type), ['stdout']);
+  });
+});
+
 // -- logs -------------------------------------------------------------------
 
 test('logs decode data and keep time and stream', async () => {
@@ -610,6 +791,18 @@ test('a stream outliving the connect deadline is not cut', async () => {
     } finally {
       client.close();
     }
+  });
+});
+
+test('close() inside the loop ends a log stream without throwing', async () => {
+  await withManager(async ({ client }) => {
+    const stream = client.tasks.logs('t2', { follow: true });
+    const frames = [];
+    for await (const frame of stream) {
+      frames.push(frame);
+      stream.close();
+    }
+    assert.deepEqual(frames.map((frame) => frame.type), ['log']);
   });
 });
 
@@ -682,6 +875,37 @@ test('a pre-aborted signal opens no stream', async () => {
       assert.fail(`unexpected event ${item.type}`);
     }
     assert.equal(state.requests.length, 0);
+  });
+});
+
+test('a timer calling close() ends an event stream without throwing', async () => {
+  await withManager(async ({ client }) => {
+    const stream = client.events.watch({ types: ['slow'] });
+    const timer = setTimeout(() => stream.close(), 30);
+    try {
+      await assert.doesNotReject(async () => {
+        for await (const item of stream) {
+          assert.equal(item.type, 'service.created');
+        }
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+});
+
+test('a dropped event stream is an unreachable ApiError', async () => {
+  await withManager(async ({ client }) => {
+    const events = [];
+    await assert.rejects(
+      async () => {
+        for await (const item of client.events.watch({ types: ['drop'] })) {
+          events.push(item);
+        }
+      },
+      (error) => error instanceof ApiError && error.code === 'unreachable' && error.status === 0,
+    );
+    assert.deepEqual(events.map((item) => item.cursor), ['9']);
   });
 });
 

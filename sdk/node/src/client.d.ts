@@ -93,7 +93,7 @@ export interface LogFrame {
 
 /** An async iterable stream that releases its connection when finished. */
 export interface Frames<T> extends AsyncIterable<T> {
-  /** Stop the stream and release the connection. */
+  /** Stop the stream and release the connection. Iteration then ends. */
   close(): void;
 }
 

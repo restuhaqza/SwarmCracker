@@ -115,7 +115,8 @@ for await (const event of client.events.watch({ types: ['service', 'task'], sinc
 `events.watch` sends `Last-Event-ID: <since>` when `since` is given, skips the
 `ready` frame, stops at `event: end` and rejects with `ApiError` for an
 `event: error` frame. Breaking out of any stream (or calling `close()`) releases
-the connection.
+the connection and ends iteration without throwing. A transport failure after
+the headers arrived rejects with `ApiError` code `unreachable` and status `0`.
 
 ## Timeouts and cancellation
 

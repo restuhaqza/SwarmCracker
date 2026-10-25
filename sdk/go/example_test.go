@@ -65,7 +65,12 @@ func Example_configurationError() {
 	})
 
 	var failure *output.Error
-	fmt.Println(errors.As(err, &failure))
+	matched := errors.As(err, &failure)
+	if !matched {
+		fmt.Println("client.New did not return a typed configuration error:", err)
+		return
+	}
+	fmt.Println(matched)
 	fmt.Println(failure.Code)
 
 	// Output:
