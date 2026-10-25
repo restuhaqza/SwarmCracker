@@ -238,8 +238,10 @@ def _http_error(exc: urllib.error.HTTPError) -> ApiError:
 def _retry_after_seconds(value: str | None) -> float | None:
     """Decode a Retry-After header: delta-seconds or an HTTP date.
 
-    Returns the wait in seconds, or None when the header is absent or cannot be
-    decoded (the caller then falls back to its own backoff).
+    Returns the wait in seconds, or None when the header is absent, cannot be
+    decoded, or names a moment that is not in the future (a zero or negative
+    hint). None makes the caller fall back to its own exponential backoff, as
+    documented; a non-positive hint must not collapse into an instant retry.
     """
     if value is None:
         return None
@@ -247,9 +249,11 @@ def _retry_after_seconds(value: str | None) -> float | None:
     if text == "":
         return None
     try:
-        return max(0.0, float(text))
+        seconds = float(text)
     except ValueError:
         pass
+    else:
+        return seconds if seconds > 0 else None
     try:
         when = email.utils.parsedate_to_datetime(text)
     except (TypeError, ValueError):
@@ -258,7 +262,8 @@ def _retry_after_seconds(value: str | None) -> float | None:
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
+    remaining = (when - datetime.now(timezone.utc)).total_seconds()
+    return remaining if remaining > 0 else None
 
 
 def _idempotent(method: str, headers: Mapping[str, str]) -> bool:
@@ -628,9 +633,11 @@ class Client:
 
     ``retries`` is the number of extra attempts for an idempotent request that
     fails with ``429`` or ``5xx``; 0 (the default) never retries. The wait is
-    ``Retry-After`` when the server sends one (seconds or an HTTP date, capped at
-    ``retry_max_wait``), otherwise ``retry_backoff`` doubled per attempt.
-    ``sleep`` is the function used for that wait; tests inject a fake one.
+    ``Retry-After`` when the server sends a usable one (seconds or an HTTP date,
+    capped at ``retry_max_wait``), otherwise ``retry_backoff`` doubled per
+    attempt. A hint of zero, a negative one or an undecodable one counts as
+    absent and falls back to the backoff. ``sleep`` is the function used for that
+    wait; tests inject a fake one.
 
     The client is safe for sequential reuse and is not thread safe.
     """

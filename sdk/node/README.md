@@ -209,9 +209,10 @@ A stream (`exec`, `logs`, `events`) is never retried, and neither is a `POST`
 without an idempotency key. Transport failures are not retried either.
 
 The wait before a retry is the response's `Retry-After` header — delta-seconds
-or an HTTP date — capped at `retryMaxWaitMs` (default 30 s). With no such header
-it is `retryBackoffMs` (default 0.5 s) doubled on each attempt, also capped. The
-raw header stays available as `ApiError.retryAfter`.
+or an HTTP date — capped at `retryMaxWaitMs` (default 30 s). A hint that is zero,
+negative or undecodable is treated as absent. With no usable header it is
+`retryBackoffMs` (default 0.5 s) doubled on each attempt, also capped. The raw
+header stays available as `ApiError.retryAfter`.
 
 `retryBackoffMs`, `retryMaxWaitMs` and `sleep` (the wait function) are
 constructor options; `sleep` exists so tests can inject a fake one.

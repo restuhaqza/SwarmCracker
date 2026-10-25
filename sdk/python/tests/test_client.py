@@ -369,6 +369,18 @@ class Handler(BaseHTTPRequestHandler):
                 return True
             self._json(200, {"schemaVersion": 1, "kind": "VersionInfo", "serverVersion": "v0.11.0"})
             return True
+        if path == "/v1/retry/after-hint" and method == "GET":
+            # The hint comes from the test, so one route covers a negative, a
+            # zero and a garbage Retry-After value.
+            if self._count(path) == 1:
+                self._json(
+                    429,
+                    error_document("rate_limited", "slow down", retryable=True),
+                    headers={"Retry-After": self.server.retry_hint},
+                )
+                return True
+            self._json(200, {"schemaVersion": 1, "kind": "VersionInfo", "serverVersion": "v0.11.0"})
+            return True
         if path == "/v1/retry/bad-request" and method == "GET":
             self._count(path)
             self._json(400, error_document("invalid", "no"))
@@ -593,6 +605,7 @@ class ClientTest(unittest.TestCase):
         self.server.requests = []
         self.server.counters = {}
         self.server.redirect_to = ""
+        self.server.retry_hint = "7"
         self.thread = threading.Thread(
             target=self.server.serve_forever,
             kwargs={"poll_interval": 0.01},
@@ -1058,6 +1071,7 @@ class RetryTest(unittest.TestCase):
         self.server.requests = []
         self.server.counters = {}
         self.server.redirect_to = ""
+        self.server.retry_hint = "7"
         self.thread = threading.Thread(
             target=self.server.serve_forever,
             kwargs={"poll_interval": 0.01},
@@ -1167,6 +1181,25 @@ class RetryTest(unittest.TestCase):
                 for request in self.attempts("/v1/services")
             )
         )
+
+    def test_a_non_positive_retry_after_falls_back_to_the_backoff(self):
+        client = self.retrying(retries=1)
+        for hint in ("-5", "0"):
+            with self.subTest(hint=hint):
+                self.server.retry_hint = hint
+                self.server.requests.clear()
+                self.server.counters.clear()
+                self.delays.clear()
+                client._request("GET", "/v1/retry/after-hint")
+                self.assertEqual(len(self.attempts("/v1/retry/after-hint")), 2)
+                self.assertEqual(self.delays, [0.5])
+
+    def test_an_undecodable_retry_after_falls_back_to_the_backoff(self):
+        client = self.retrying(retries=1)
+        self.server.retry_hint = "soon"
+        client._request("GET", "/v1/retry/after-hint")
+        self.assertEqual(len(self.attempts("/v1/retry/after-hint")), 2)
+        self.assertEqual(self.delays, [0.5])
 
     def test_a_stream_is_never_retried(self):
         client = self.retrying(retries=2)

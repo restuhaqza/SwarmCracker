@@ -230,8 +230,9 @@ function httpFailure(status, headers, raw) {
 
 /**
  * Decode a Retry-After header into milliseconds: delta-seconds or an HTTP date.
- * Returns null when the header is absent or cannot be decoded, so the caller
- * falls back to its own backoff.
+ * Returns null when the header is absent, cannot be decoded, or names a moment
+ * that is not in the future (a zero or negative hint), so the caller falls back
+ * to its own backoff rather than retrying instantly.
  */
 function retryAfterMs(value) {
   if (value === null || value === undefined) {
@@ -241,14 +242,18 @@ function retryAfterMs(value) {
   if (text === '') {
     return null;
   }
-  if (/^\d+(\.\d+)?$/.test(text)) {
-    return Math.max(0, Number(text) * 1000);
+  // Match a signed number explicitly: Date.parse would otherwise read "-5" or
+  // "0" as a year, which is not a delta-seconds hint at all.
+  if (/^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/.test(text)) {
+    const seconds = Number(text);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
   }
   const when = Date.parse(text);
   if (Number.isNaN(when)) {
     return null;
   }
-  return Math.max(0, when - Date.now());
+  const remaining = when - Date.now();
+  return remaining > 0 ? remaining : null;
 }
 
 /**
@@ -377,9 +382,10 @@ function sseEvent(payload, status) {
  *
  * `retries` is the number of extra attempts for an idempotent request that fails
  * with `429` or `5xx`; 0 (the default) never retries. The wait is `Retry-After`
- * when the server sends one (seconds or an HTTP date, capped at
- * `retryMaxWaitMs`), otherwise `retryBackoffMs` doubled per attempt. `sleep` is
- * the wait function; tests inject a fake one.
+ * when the server sends a usable one (seconds or an HTTP date, capped at
+ * `retryMaxWaitMs`), otherwise `retryBackoffMs` doubled per attempt. A hint of
+ * zero, a negative one or an undecodable one counts as absent and falls back to
+ * the backoff. `sleep` is the wait function; tests inject a fake one.
  *
  * The client is safe for sequential reuse and is not concurrency safe.
  */

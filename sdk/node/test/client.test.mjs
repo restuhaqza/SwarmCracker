@@ -406,7 +406,8 @@ async function route(state, req, res, { entry, url }) {
       sendJson(res, 415, errorDocument('invalid', 'unsupported media type'));
       return true;
     }
-    if (url.searchParams.get('path') === '/missing') {
+    const guestPath = url.searchParams.get('path');
+    if (guestPath === '/missing') {
       sendJson(res, 404, errorDocument('not_found', 'no such directory'));
       return true;
     }
@@ -501,6 +502,18 @@ async function route(state, req, res, { entry, url }) {
     sendJson(res, 200, { schemaVersion: 1, kind: 'VersionInfo', serverVersion: 'v0.11.0' });
     return true;
   }
+  if (method === 'GET' && path === '/v1/retry/after-hint') {
+    // The hint comes from the test, so one route covers a negative, a zero and a
+    // garbage Retry-After value.
+    if (bump(state, path) === 1) {
+      sendJson(res, 429, errorDocument('rate_limited', 'slow down', { retryable: true }), {
+        'Retry-After': state.retryHint,
+      });
+      return true;
+    }
+    sendJson(res, 200, { schemaVersion: 1, kind: 'VersionInfo', serverVersion: 'v0.11.0' });
+    return true;
+  }
   if (method === 'GET' && path === '/v1/retry/bad-request') {
     bump(state, path);
     sendJson(res, 400, errorDocument('invalid', 'no'));
@@ -555,7 +568,7 @@ async function route(state, req, res, { entry, url }) {
 }
 
 async function withManager(run) {
-  const state = { requests: [], redirectTo: '', counters: {} };
+  const state = { requests: [], redirectTo: '', counters: {}, retryHint: '7' };
   const server = createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
@@ -1454,6 +1467,41 @@ test('a POST with an idempotency key is retried', async () => {
       assert.equal(sent.length, 3);
       assert.deepEqual(delays, [500, 1000]);
       assert.ok(sent.every((entry) => entry.headers['idempotency-key'] === 'create-1'));
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('a non-positive Retry-After falls back to the backoff', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      for (const hint of ['-5', '0']) {
+        state.retryHint = hint;
+        state.requests.length = 0;
+        state.counters = {};
+        delays.length = 0;
+
+        await client._request('GET', '/v1/retry/after-hint');
+
+        assert.equal(attempts(state, '/v1/retry/after-hint').length, 2, `hint ${hint}`);
+        assert.deepEqual(delays, [500], `hint ${hint}`);
+      }
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('an undecodable Retry-After falls back to the backoff', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      state.retryHint = 'soon';
+      await client._request('GET', '/v1/retry/after-hint');
+      assert.equal(attempts(state, '/v1/retry/after-hint').length, 2);
+      assert.deepEqual(delays, [500]);
     } finally {
       client.close();
     }
