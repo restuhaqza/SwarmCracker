@@ -109,7 +109,7 @@ func (s *Server) serveSnapshotList(w http.ResponseWriter, r *http.Request, ref s
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, ref)
+	task, resource, ok := s.resolveSnapshotTask(w, r, ref, snapshotAuditAction)
 	if !ok {
 		return
 	}
@@ -150,7 +150,7 @@ func (s *Server) createTaskSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, ref)
+	task, resource, ok := s.resolveSnapshotTask(w, r, ref, snapshotAuditAction)
 	if !ok {
 		return
 	}
@@ -193,7 +193,7 @@ func (s *Server) serveSnapshotRestore(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, ref)
+	task, resource, ok := s.resolveSnapshotTask(w, r, ref, snapshotAuditAction)
 	if !ok {
 		return
 	}
@@ -227,7 +227,7 @@ func (s *Server) stopTaskRestored(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, r.PathValue("id"))
+	task, resource, ok := s.resolveSnapshotTask(w, r, r.PathValue("id"), restoredAuditAction)
 	if !ok {
 		return
 	}
@@ -261,7 +261,7 @@ func (s *Server) serveSnapshotDelete(w http.ResponseWriter, r *http.Request, ref
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, ref)
+	task, resource, ok := s.resolveSnapshotTask(w, r, ref, snapshotAuditAction)
 	if !ok {
 		return
 	}
@@ -277,12 +277,17 @@ func (s *Server) serveSnapshotDelete(w http.ResponseWriter, r *http.Request, ref
 }
 
 // resolveSnapshotTask resolves the caller's reference, enforces the task
-// selectors and returns the task and its audit resource. A failure is already
-// written and audited as an error.
-func (s *Server) resolveSnapshotTask(w http.ResponseWriter, r *http.Request, ref string) (v1.Task, v1.AuditResource, bool) {
+// selectors and returns the task and its audit resource. action is the audit
+// action a failure is recorded under, so a resolve failure is attributed to the
+// route the caller used (task.snapshot for a snapshot route,
+// task.restored.stop for a stop). A failure is already written and audited as an
+// error.
+func (s *Server) resolveSnapshotTask(
+	w http.ResponseWriter, r *http.Request, ref, action string,
+) (v1.Task, v1.AuditResource, bool) {
 	task, err := s.cfg.Client.GetTask(r.Context(), ref)
 	if err != nil {
-		s.recordSnapshotAudit(r, auditResourceForRef(ref), "error")
+		_ = s.recordAudit(r, action, auditResourceForRef(ref), "error")
 		s.writeError(w, r, err)
 		return v1.Task{}, v1.AuditResource{}, false
 	}
@@ -290,14 +295,14 @@ func (s *Server) resolveSnapshotTask(w http.ResponseWriter, r *http.Request, ref
 
 	labels, err := s.taskServiceLabels(r.Context(), task)
 	if err != nil {
-		s.recordSnapshotAudit(r, resource, "error")
+		_ = s.recordAudit(r, action, resource, "error")
 		s.writeError(w, r, err)
 		return v1.Task{}, v1.AuditResource{}, false
 	}
 
 	identity, _ := IdentityFrom(r.Context())
 	if err := identity.AuthorizeTask(task.ServiceID, task.ID, labels); err != nil {
-		s.recordSnapshotAudit(r, resource, "error")
+		_ = s.recordAudit(r, action, resource, "error")
 		s.writeError(w, r, err)
 		return v1.Task{}, v1.AuditResource{}, false
 	}
