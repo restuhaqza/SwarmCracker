@@ -66,6 +66,26 @@ func (s *Server) attachTask(w http.ResponseWriter, r *http.Request) {
 	// can name it.
 	r.Header.Set(requestIDHeader, requestIDFrom(r))
 
+	// Exactly one record per authorized attempt, written from a deferred
+	// function so it also runs when the relay aborts the connection. The
+	// response copy in httputil.ReverseProxy panics http.ErrAbortHandler when
+	// the caller disconnects mid-stream (Ctrl-C, a dropped tunnel); recording
+	// here instead of at each return makes that abort one error record rather
+	// than none. Any other panic is a real bug and is recorded, then re-panicked.
+	result := "error"
+	defer func() {
+		p := recover()
+		if p != nil {
+			result = "error"
+			s.recordAttachAudit(r, resource, result)
+			if p != http.ErrAbortHandler {
+				panic(p)
+			}
+			return
+		}
+		s.recordAttachAudit(r, resource, result)
+	}()
+
 	// Wrap the writer so the relayed status is observable: Proxy reports only a
 	// resolve failure, so a node 4xx/5xx would otherwise be audited as success.
 	recorder := &relayStatusRecorder{ResponseWriter: w}
@@ -79,8 +99,8 @@ func (s *Server) attachTask(w http.ResponseWriter, r *http.Request) {
 
 	if err := s.cfg.Broker.Proxy(r.Context(), recorder, r, task.ID, attachOperation); err != nil {
 		// A resolve failure happens before anything is written, so it is still
-		// safe to answer with a typed document.
-		s.recordAttachAudit(r, resource, "error")
+		// safe to answer with a typed document. The deferred audit records the
+		// failure.
 		s.writeError(w, r, err)
 		return
 	}
@@ -88,12 +108,9 @@ func (s *Server) attachTask(w http.ResponseWriter, r *http.Request) {
 	// The session was served only when the node accepted the attach. A relayed
 	// 404 (the task has no console), 501 or 503 means no console was reached; a
 	// broker that wrote nothing served nothing.
-	if status := recorder.Status(); status == 0 || status >= http.StatusBadRequest {
-		s.recordAttachAudit(r, resource, "error")
-		return
+	if status := recorder.Status(); status != 0 && status < http.StatusBadRequest {
+		result = "ok"
 	}
-
-	s.recordAttachAudit(r, resource, "ok")
 }
 
 // recordAttachAudit writes one task.attach record. It never carries console

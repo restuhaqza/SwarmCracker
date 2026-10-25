@@ -2,7 +2,9 @@ package apihttp
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -306,6 +308,103 @@ func TestAttachKeepsFullDuplexThroughTheHandler(t *testing.T) {
 	require.NoError(t, stdinW.Close())
 	_, err = io.ReadAll(resp.Body)
 	require.NoError(t, err)
+}
+
+// TestAttachClientAbortMidStreamIsAuditedOnce pins the abort path. The response
+// copy in httputil.ReverseProxy panics http.ErrAbortHandler when its write to the
+// caller fails, which is exactly what a Ctrl-C or a dropped tunnel produces. The
+// handler must swallow that abort and still leave exactly one task.attach record
+// naming the resolved task: the request was authorized and the console was
+// reached, so a zero-record abort would hide the attempt from the audit log.
+func TestAttachClientAbortMidStreamIsAuditedOnce(t *testing.T) {
+	fc := &execFakeClient{fakeClient: &fakeClient{}}
+	fc.task = v1.Task{ID: "task-abort", ServiceID: "svc-1", Name: "web.1"}
+
+	writeFailed := make(chan struct{})
+	broker := &fakeBroker{respond: func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "boot")
+		_ = http.NewResponseController(w).Flush()
+
+		// Keep the console talking until the caller is gone, then abort exactly
+		// as the relay does when its response copy fails. The deadline is a hang
+		// guard, not the assertion: the write error is the trigger.
+		chunk := []byte("console output, still typing on the client\r\n")
+		expired := time.After(10 * time.Second)
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-expired:
+				return
+			case <-ticker.C:
+				_, writeErr := w.Write(chunk)
+				flushErr := http.NewResponseController(w).Flush()
+				if writeErr != nil || flushErr != nil {
+					close(writeFailed)
+					panic(http.ErrAbortHandler)
+				}
+			}
+		}
+	}}
+	api := newExecTestAPI(t, fc, broker)
+
+	srv := httptest.NewServer(api.handler)
+	t.Cleanup(srv.Close)
+
+	conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	// A body the client never finishes: the caller is still "typing" when it
+	// hangs up, which is what makes this a mid-stream abort.
+	_, err = fmt.Fprintf(conn, "POST /v1/tasks/web-1/attach HTTP/1.1\r\n"+
+		"Host: %s\r\n"+
+		"Authorization: Bearer %s\r\n"+
+		"Content-Type: application/octet-stream\r\n"+
+		"Content-Length: 1024\r\n\r\n"+
+		"sta",
+		srv.Listener.Addr().String(), api.admin)
+	require.NoError(t, err)
+
+	// Wait for the session to start before hanging up.
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(10*time.Second)))
+	buf := make([]byte, 1024)
+	seen := make([]byte, 0, 4096)
+	for !strings.Contains(string(seen), "boot") {
+		n, readErr := conn.Read(buf)
+		require.NoError(t, readErr, "the session never started")
+		seen = append(seen, buf[:n]...)
+	}
+
+	// Hang up mid-stream. Linger 0 sends a reset, so the next write from the
+	// server cannot be absorbed by a socket buffer.
+	tcp, ok := conn.(*net.TCPConn)
+	require.True(t, ok)
+	require.NoError(t, tcp.SetLinger(0))
+	require.NoError(t, conn.Close())
+
+	select {
+	case <-writeFailed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the response copy never noticed the aborted caller")
+	}
+
+	// One record, written by the deferred audit after the panic is recovered.
+	require.Eventually(t, func() bool {
+		records, _, listErr := api.audit.List(10, "")
+		return listErr == nil && len(records) == 1
+	}, 5*time.Second, 5*time.Millisecond,
+		"an aborted session must leave exactly one audit record")
+
+	records, _, err := api.audit.List(10, "")
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, "task.attach", records[0].Action)
+	assert.Equal(t, "error", records[0].Result, "an aborted session is not a completed one")
+	assert.Equal(t, "task-abort", records[0].Resource.ID, "the audit names the resolved task")
+	assert.Equal(t, "web.1", records[0].Resource.Name)
 }
 
 // TestVersionAdvertisesAttach pins that the version document and the route table
