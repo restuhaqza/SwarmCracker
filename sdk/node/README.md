@@ -7,7 +7,7 @@ generated from [`api/openapi.yaml`](../../api/openapi.yaml).
   `node:fs`).
 - **ESM only.** `sdk/node/package.json` sets `"type": "module"`.
 - **No business logic.** The client is a transport wrapper: no caching, no
-  retries, no request parallelism, no hidden state.
+  hidden state. Retries are opt-in and default to zero.
 - **Not concurrency safe.** It is safe to reuse one client for sequential
   requests.
 
@@ -65,6 +65,15 @@ client.tasks.get(ref, { health }) -> Promise<TaskDocument>
 client.tasks.exec(ref, command, { env, workdir, signal }) -> ExecStream
 client.tasks.logs(ref, { follow, tail, since, signal }) -> LogStream
 
+client.tasks.filesGet(ref, path) -> Promise<Uint8Array>
+client.tasks.filesPut(ref, path, data, { mode }) -> Promise<null>
+
+client.tasks.snapshotsList({ task, limit, cursor }) -> Promise<SnapshotList>
+client.tasks.snapshotsCreate(ref, { vcpus, memoryMB }) -> Promise<SnapshotDocument>
+client.tasks.snapshotsRestore(ref, snapshot) -> Promise<SnapshotDocument>
+client.tasks.snapshotsDelete(ref, snapshot) -> Promise<null>
+client.tasks.snapshotsStopRestored(ref) -> Promise<null>
+
 client.events.watch({ types, since, signal }) -> EventStream
 ```
 
@@ -75,6 +84,35 @@ parameters. `health: true` is sent as `health=true`. `ifMatch` is required by
 
 The returned values are the generated interfaces from `types.d.ts`, so an editor
 completes their fields.
+
+## Files and snapshots
+
+`filesGet` resolves with the file's bytes (a `Buffer`, which is a `Uint8Array`)
+and declares `Uint8Array` so the SDK keeps needing no `@types/node`; `filesPut`
+sends `data` verbatim as `Content-Type: application/octet-stream` and resolves
+with `null` on the 204. `mode` is an octal string between `0000` and `0777`. The
+task must be running and the path absolute: both are enforced by the server and
+reject with `ApiError`.
+
+```js
+const payload = await client.tasks.filesGet('5f3a1b2c9d', '/etc/hostname');
+await client.tasks.filesPut('5f3a1b2c9d', '/tmp/hello', Buffer.from('hi\n'), { mode: '0644' });
+```
+
+The snapshot routes are experimental: a manager that has not enabled them
+answers `501 not_implemented` with `details.capability` `"snapshots"`.
+`snapshotsList`, `snapshotsRestore` and `snapshotsDelete` use the flat
+`/v1/snapshots` routes, so the task is a query parameter; `task` is required by
+the API and omitting it is a typed `400 invalid`. `snapshotsCreate` and
+`snapshotsStopRestored` are task-scoped.
+
+```js
+const page = await client.tasks.snapshotsList({ task: '5f3a1b2c9d' });
+const snapshot = await client.tasks.snapshotsCreate('5f3a1b2c9d', { vcpus: 2, memoryMB: 512 });
+await client.tasks.snapshotsRestore('5f3a1b2c9d', snapshot.id);
+await client.tasks.snapshotsStopRestored('5f3a1b2c9d');
+await client.tasks.snapshotsDelete('5f3a1b2c9d', snapshot.id);
+```
 
 ## Streaming
 
@@ -150,6 +188,7 @@ try {
 | `status` | The HTTP status; `0` for a transport failure |
 | `requestId` | The `X-Request-Id` (also repeated by the error document) |
 | `retryable` | Whether the server says a retry can succeed |
+| `retryAfter` | The raw `Retry-After` header of the response, when the server sent one; otherwise `null` |
 | `details` | Typed failure context, or `null` |
 
 A configuration mistake (an unreadable token or CA file) throws `ApiError` with
@@ -158,10 +197,24 @@ The bearer token is never included in an error or a message.
 
 ### Retries
 
-The client does not retry automatically — a deliberate divergence from contract
-§13.5. Retry idempotent calls yourself (`GET`, and a `POST` carrying an
-`Idempotency-Key`) on `429` or `5xx`, and honour `Retry-After` when the response
-sets it. Never retry a stream or a `POST` without an idempotency key.
+Retries are opt-in: `new Client({ ..., retries: N })` with `N = 0` (the default)
+keeps the v1 semantics of exactly one attempt. With `N > 0` the client makes at
+most `N` extra attempts, and **only** for an idempotent request:
+
+- `GET`, `DELETE` and the files `PUT` (whose whole body is resent);
+- a `POST` that carries an `Idempotency-Key`;
+- a response of `429` or `5xx`.
+
+A stream (`exec`, `logs`, `events`) is never retried, and neither is a `POST`
+without an idempotency key. Transport failures are not retried either.
+
+The wait before a retry is the response's `Retry-After` header — delta-seconds
+or an HTTP date — capped at `retryMaxWaitMs` (default 30 s). With no such header
+it is `retryBackoffMs` (default 0.5 s) doubled on each attempt, also capped. The
+raw header stays available as `ApiError.retryAfter`.
+
+`retryBackoffMs`, `retryMaxWaitMs` and `sleep` (the wait function) are
+constructor options; `sleep` exists so tests can inject a fake one.
 
 ## Wire details
 
@@ -191,8 +244,6 @@ declarations assume TypeScript lib `es2018` or later (for `AsyncIterable`).
 
 ## Not in this round
 
-The files and snapshot routes are not exposed yet (the Python SDK omits them for
-the same reason). Also out of scope: retries, pagination helpers, request
-timeouts per call, a `.ts` source build, and a published npm package.
-`tasks.list({ label })` is forwarded as specified but the current manager does
-not filter the task list by label.
+Pagination helpers, request timeouts per call, a `.ts` source build, and a
+published npm package. `tasks.list({ label })` is forwarded as specified but the
+current manager does not filter the task list by label.
