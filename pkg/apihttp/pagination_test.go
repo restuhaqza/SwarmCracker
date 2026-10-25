@@ -44,16 +44,50 @@ func TestParseLimit(t *testing.T) {
 }
 
 func TestCursorRoundTrip(t *testing.T) {
-	encoded := encodeCursor("2026-01-02T00:00:00Z", "svc-42")
+	encoded := encodeCursor("fingerprint", "2026-01-02T00:00:00Z", "svc-42")
 	cur, err := decodeCursor(encoded)
 	require.NoError(t, err)
 	assert.Equal(t, "2026-01-02T00:00:00Z", cur.createdAt)
 	assert.Equal(t, "svc-42", cur.id)
+	assert.Equal(t, "fingerprint", cur.fingerprint)
 
 	// Cursors are opaque but must survive a URL query round trip.
 	assert.NotContains(t, encoded, "+")
 	assert.NotContains(t, encoded, "/")
 	assert.NotContains(t, encoded, "=")
+}
+
+func TestDecodeCursorWithoutFingerprintIsALegacyCursor(t *testing.T) {
+	legacy := base64.RawURLEncoding.EncodeToString([]byte("2026-01-02T00:00:00Z\x00svc-42"))
+
+	cur, err := decodeCursor(legacy)
+	require.NoError(t, err, "a legacy cursor is well formed, it just belongs to no bound query")
+	assert.Empty(t, cur.fingerprint)
+
+	_, _, err = paginate([]pageItem{{"2026-01-02T00:00:00Z", "svc-43"}}, 10, legacy, "fingerprint", pageKey)
+	require.Error(t, err)
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodeInvalid, typed.Code)
+	assert.Equal(t, "cursor_mismatch", typed.Details["reason"])
+}
+
+func TestPaginateRejectsACursorFromAnotherQuery(t *testing.T) {
+	items := []pageItem{
+		{"2026-01-01T00:00:00Z", "a"},
+		{"2026-01-02T00:00:00Z", "b"},
+	}
+
+	_, next, err := paginate(items, 1, "", "tasks", pageKey)
+	require.NoError(t, err)
+	require.NotNil(t, next)
+
+	_, _, err = paginate(items, 1, *next, "services", pageKey)
+	require.Error(t, err)
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodeInvalid, typed.Code)
+	assert.Equal(t, "cursor_mismatch", typed.Details["reason"])
 }
 
 func TestDecodeCursorMalformed(t *testing.T) {
@@ -85,27 +119,27 @@ func TestPaginate(t *testing.T) {
 		{"2026-01-02T00:00:00Z", "c"},
 	}
 
-	page, next, err := paginate(items, 2, "", pageKey)
+	page, next, err := paginate(items, 2, "", "query", pageKey)
 	require.NoError(t, err)
 	require.Len(t, page, 2)
 	assert.Equal(t, "a", page[0].id)
 	require.NotNil(t, next)
 
-	page2, next2, err := paginate(items, 2, *next, pageKey)
+	page2, next2, err := paginate(items, 2, *next, "query", pageKey)
 	require.NoError(t, err)
 	require.Len(t, page2, 1)
 	assert.Equal(t, "c", page2[0].id)
 	assert.Nil(t, next2)
 
 	// Everything fits in one page: no cursor.
-	page3, next3, err := paginate(items, 100, "", pageKey)
+	page3, next3, err := paginate(items, 100, "", "query", pageKey)
 	require.NoError(t, err)
 	require.Len(t, page3, 3)
 	assert.Nil(t, next3)
 
 	// A cursor past the end returns an empty page and no next.
-	last := encodeCursor("2026-01-03T00:00:00Z", "z")
-	page4, next4, err := paginate(items, 2, last, pageKey)
+	last := encodeCursor("query", "2026-01-03T00:00:00Z", "z")
+	page4, next4, err := paginate(items, 2, last, "query", pageKey)
 	require.NoError(t, err)
 	assert.Empty(t, page4)
 	assert.Nil(t, next4)
@@ -118,12 +152,12 @@ func TestPaginateSameTimestampUsesIDTiebreak(t *testing.T) {
 		{"2026-01-01T00:00:00Z", "c"},
 	}
 
-	page, next, err := paginate(items, 1, "", pageKey)
+	page, next, err := paginate(items, 1, "", "query", pageKey)
 	require.NoError(t, err)
 	require.Len(t, page, 1)
 	require.NotNil(t, next)
 
-	page2, _, err := paginate(items, 1, *next, pageKey)
+	page2, _, err := paginate(items, 1, *next, "query", pageKey)
 	require.NoError(t, err)
 	require.Len(t, page2, 1)
 	assert.Equal(t, "b", page2[0].id)
@@ -145,7 +179,7 @@ func TestPaginateFractionalSecondsAcrossPageBoundary(t *testing.T) {
 	for pages := 0; ; pages++ {
 		require.Less(t, pages, 10, "pagination did not terminate")
 
-		page, next, err := paginate(items, 1, cursor, pageKey)
+		page, next, err := paginate(items, 1, cursor, "query", pageKey)
 		require.NoError(t, err)
 		for _, item := range page {
 			seen = append(seen, item.id)
@@ -175,7 +209,7 @@ func TestAfterCursorComparesInstants(t *testing.T) {
 }
 
 func TestPaginateRejectsBadCursor(t *testing.T) {
-	_, _, err := paginate([]pageItem{}, 10, "%%%", pageKey)
+	_, _, err := paginate([]pageItem{}, 10, "%%%", "query", pageKey)
 	require.Error(t, err)
 	var typed *output.Error
 	require.ErrorAs(t, err, &typed)

@@ -293,7 +293,7 @@ func (s *AuditStore) List(limit int, cursor string) ([]v1.AuditRecord, *string, 
 		return sorted[i].RequestID < sorted[j].RequestID
 	})
 
-	return paginate(sorted, limit, cursor, func(rec v1.AuditRecord) (string, string) {
+	return paginate(sorted, limit, cursor, auditCursorScope, func(rec v1.AuditRecord) (string, string) {
 		return rec.At, rec.RequestID
 	})
 }

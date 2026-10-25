@@ -5,6 +5,7 @@ package apihttp
 
 import (
 	"net/http"
+	"sort"
 	"strings"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -46,7 +47,7 @@ func (s *Server) listServices(w http.ResponseWriter, r *http.Request) {
 
 	page, next, err := paginateRequest(r, items, func(v v1.Service) (string, string) {
 		return v.CreatedAt, v.ID
-	})
+	}, labelFilterValues(r)...)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -79,7 +80,7 @@ func (s *Server) listServiceTasks(w http.ResponseWriter, r *http.Request) {
 
 	page, next, err := paginateRequest(r, items, func(v v1.Task) (string, string) {
 		return v.CreatedAt, v.ID
-	})
+	}, r.PathValue("id"))
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -184,7 +185,7 @@ func (s *Server) listNodes(w http.ResponseWriter, r *http.Request) {
 
 	page, next, err := paginateRequest(r, items, func(v v1.Node) (string, string) {
 		return v.CreatedAt, v.ID
-	})
+	}, labelFilterValues(r)...)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -224,7 +225,7 @@ func (s *Server) listNetworks(w http.ResponseWriter, r *http.Request) {
 
 	page, next, err := paginateRequest(r, items, func(v v1.Network) (string, string) {
 		return v.CreatedAt, v.ID
-	})
+	}, labelFilterValues(r)...)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -264,7 +265,7 @@ func (s *Server) listConfigs(w http.ResponseWriter, r *http.Request) {
 
 	page, next, err := paginateRequest(r, items, func(v v1.Config) (string, string) {
 		return v.CreatedAt, v.ID
-	})
+	}, labelFilterValues(r)...)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -320,7 +321,7 @@ func (s *Server) listSecrets(w http.ResponseWriter, r *http.Request) {
 
 	page, next, err := paginateRequest(r, items, func(v v1.Secret) (string, string) {
 		return v.CreatedAt, v.ID
-	})
+	}, labelFilterValues(r)...)
 	if err != nil {
 		s.writeError(w, r, err)
 		return
@@ -347,6 +348,15 @@ type labelSelector struct {
 	key      string
 	value    string
 	hasValue bool
+}
+
+// labelFilterValues returns the request's label selectors in canonical order.
+// A cursor is bound to the effective filter, not to the order the caller typed
+// its selectors in: the same logical query must page with the same cursor.
+func labelFilterValues(r *http.Request) []string {
+	values := append([]string(nil), r.URL.Query()["label"]...)
+	sort.Strings(values)
+	return values
 }
 
 // filterByLabels applies every selector (logical AND). An unknown key or value

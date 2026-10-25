@@ -5,7 +5,9 @@
 package apihttp
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -21,15 +23,24 @@ const (
 	// maxLimit is the hard page-size ceiling; larger values are invalid.
 	maxLimit = 1000
 
-	// cursorSeparator joins the two cursor components. NUL cannot appear in an
-	// RFC 3339 timestamp or in a resource ID, so the split is unambiguous.
+	// cursorSeparator joins the cursor components. NUL cannot appear in an
+	// RFC 3339 timestamp, a resource ID or a fingerprint, so the split is
+	// unambiguous.
 	cursorSeparator = "\x00"
+
+	// auditCursorScope is the fingerprint the manager-local audit log binds its
+	// cursors to. Audit records are not read through the paginated route table,
+	// so the store names its own scope. It is not a route fingerprint: a cursor
+	// from any public list is rejected by AuditStore.List and vice versa.
+	auditCursorScope = "audit"
 )
 
-// pageCursor is the position of the last item of a returned page.
+// pageCursor is the position of the last item of a returned page. Fingerprint
+// binds the cursor to the query that produced it.
 type pageCursor struct {
-	createdAt string
-	id        string
+	createdAt   string
+	id          string
+	fingerprint string
 }
 
 // parseLimit validates the limit query parameter. An absent parameter means the
@@ -51,14 +62,20 @@ func parseLimit(query url.Values) (int, error) {
 	return limit, nil
 }
 
-// encodeCursor renders createdAt and id as an opaque URL-safe cursor.
-func encodeCursor(createdAt, id string) string {
-	return base64.RawURLEncoding.EncodeToString([]byte(createdAt + cursorSeparator + id))
+// encodeCursor renders the query fingerprint, createdAt and id as an opaque
+// URL-safe cursor.
+func encodeCursor(fingerprint, createdAt, id string) string {
+	return base64.RawURLEncoding.EncodeToString(
+		[]byte(createdAt + cursorSeparator + id + cursorSeparator + fingerprint))
 }
 
 // decodeCursor parses a cursor produced by encodeCursor. Both raw and padded
 // base64url are accepted so a client that round-trips the value through a
 // generic base64 decoder still works; anything else is invalid.
+//
+// A cursor without a fingerprint decodes with an empty one. That is a legacy
+// (pre-binding) cursor: it is well formed, but no query claims it, so paginate
+// rejects it as a mismatch rather than as malformed input.
 func decodeCursor(raw string) (pageCursor, error) {
 	data, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
@@ -68,11 +85,15 @@ func decodeCursor(raw string) (pageCursor, error) {
 		return pageCursor{}, invalidCursor(raw)
 	}
 
-	createdAt, id, found := strings.Cut(string(data), cursorSeparator)
-	if !found || id == "" {
+	createdAt, rest, found := strings.Cut(string(data), cursorSeparator)
+	if !found {
 		return pageCursor{}, invalidCursor(raw)
 	}
-	return pageCursor{createdAt: createdAt, id: id}, nil
+	id, fingerprint, _ := strings.Cut(rest, cursorSeparator)
+	if id == "" {
+		return pageCursor{}, invalidCursor(raw)
+	}
+	return pageCursor{createdAt: createdAt, id: id, fingerprint: fingerprint}, nil
 }
 
 func invalidCursor(raw string) error {
@@ -80,15 +101,53 @@ func invalidCursor(raw string) error {
 		WithDetails(map[string]any{"cursor": raw})
 }
 
+// cursorMismatch is the 400 for a cursor issued for a different route or filter.
+// The raw value is not echoed: a cursor is a position, not caller input worth
+// repeating back in an error document.
+func cursorMismatch() error {
+	return output.NewError(output.CodeInvalid,
+		"cursor was issued for a different query").
+		WithDetails(map[string]any{"reason": "cursor_mismatch"})
+}
+
+// requestFingerprint binds a cursor to the route that produced it and to the
+// effective filter values that selected its items. The route comes from the
+// matched ServeMux pattern (so it is the declared route, not a caller-supplied
+// path); filters are the values the handler actually applied, in a canonical
+// order. limit and cursor are deliberately absent: a caller may change the page
+// size between pages without invalidating its position.
+func requestFingerprint(r *http.Request, filters []string) string {
+	route := r.Pattern
+	if route == "" {
+		// A handler invoked outside the mux (a unit test, a future embedder)
+		// still gets a stable binding: the method and path identify the query.
+		route = r.Method + " " + r.URL.Path
+	}
+
+	hash := sha256.New()
+	hash.Write([]byte(route))
+	for _, filter := range filters {
+		hash.Write([]byte(cursorSeparator))
+		hash.Write([]byte(filter))
+	}
+	return hex.EncodeToString(hash.Sum(nil))[:16]
+}
+
 // paginate returns at most limit items starting after rawCursor and the cursor
 // of the last returned item when more items remain. An empty rawCursor starts at
-// the beginning.
-func paginate[T any](items []T, limit int, rawCursor string, key func(T) (string, string)) ([]T, *string, error) {
+// the beginning. A cursor whose fingerprint differs from the current query -
+// including a legacy cursor that carries none - is a cursor_mismatch.
+func paginate[T any](
+	items []T, limit int, rawCursor, fingerprint string, key func(T) (string, string),
+) ([]T, *string, error) {
 	start := 0
 	if rawCursor != "" {
 		cursor, err := decodeCursor(rawCursor)
 		if err != nil {
 			return nil, nil, err
+		}
+		if cursor.fingerprint != fingerprint {
+			return nil, nil, cursorMismatch()
 		}
 		for start < len(items) {
 			createdAt, id := key(items[start])
@@ -110,7 +169,7 @@ func paginate[T any](items []T, limit int, rawCursor string, key func(T) (string
 	}
 
 	createdAt, id := key(items[end-1])
-	next := encodeCursor(createdAt, id)
+	next := encodeCursor(fingerprint, createdAt, id)
 	return page, &next, nil
 }
 
@@ -139,12 +198,17 @@ func compareCreatedAt(a, b string) int {
 }
 
 // paginateRequest applies the limit and cursor query parameters to items.
-func paginateRequest[T any](r *http.Request, items []T, key func(T) (string, string)) ([]T, *string, error) {
+// filters are the filter values the handler applied to items (label selectors, a
+// path reference, a resolved task ID): they bind the cursor to the query that
+// produced it, so a cursor cannot page a different result set.
+func paginateRequest[T any](
+	r *http.Request, items []T, key func(T) (string, string), filters ...string,
+) ([]T, *string, error) {
 	query := r.URL.Query()
 
 	limit, err := parseLimit(query)
 	if err != nil {
 		return nil, nil, err
 	}
-	return paginate(items, limit, query.Get("cursor"), key)
+	return paginate(items, limit, query.Get("cursor"), requestFingerprint(r, filters), key)
 }
