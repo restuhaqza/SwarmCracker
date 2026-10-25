@@ -57,6 +57,10 @@ type apiRuntime struct {
 	// routes are served by the same broker manager, so the transport must be
 	// wired too; apihttp gates on both.
 	snapshotsEnabled bool
+	// snapshotTimeout bounds one manager-side snapshot request. Create copies the
+	// task disk, so the daemon default is five minutes; zero leaves the broker's
+	// own default in place.
+	snapshotTimeout time.Duration
 }
 
 // startAPIForNode starts the programmatic API when config describes a manager.
@@ -135,7 +139,7 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	// would trust.
 	var apiBroker apihttp.Broker
 	var snapshotBroker apihttp.SnapshotBroker
-	if mgr, brokerErr := newBrokerManager(stateDir, c, c); brokerErr != nil {
+	if mgr, brokerErr := newBrokerManager(stateDir, c, c, cfg.snapshotTimeout); brokerErr != nil {
 		log.G(ctx).WithError(brokerErr).Warn("Programmatic API: exec disabled (node broker manager unavailable)")
 	} else {
 		apiBroker = mgr
@@ -237,7 +241,9 @@ func apiCertHosts(tcpAddr string) []string {
 // the manager's cluster identity and never a public bearer token. The public
 // error hook is apihttp.WriteError, which is the only writer that knows the
 // caller's request ID and the v1 media type.
-func newBrokerManager(stateDir string, tasks broker.TaskReader, nodes broker.NodeReader) (*broker.Manager, error) {
+func newBrokerManager(
+	stateDir string, tasks broker.TaskReader, nodes broker.NodeReader, snapshotTimeout time.Duration,
+) (*broker.Manager, error) {
 	cert, caPool, err := loadIngressTLS(stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("node broker: %w", err)
@@ -251,10 +257,11 @@ func newBrokerManager(stateDir string, tasks broker.TaskReader, nodes broker.Nod
 	}
 
 	return broker.NewManager(broker.ManagerConfig{
-		Tasks:         tasks,
-		Nodes:         nodes,
-		Client:        &http.Client{Transport: transport},
-		ErrorWriter:   apihttp.WriteError,
-		RequestIDFrom: apihttp.RequestIDFromContext,
+		Tasks:           tasks,
+		Nodes:           nodes,
+		Client:          &http.Client{Transport: transport},
+		SnapshotTimeout: snapshotTimeout,
+		ErrorWriter:     apihttp.WriteError,
+		RequestIDFrom:   apihttp.RequestIDFromContext,
 	})
 }

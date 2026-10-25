@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
+	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/test/testhelpers"
 	"github.com/stretchr/testify/require"
@@ -36,6 +37,16 @@ func TestBrokerRuntimeFrom_SnapshotFlags(t *testing.T) {
 func TestAPIRuntimeFrom_SnapshotsEnabled(t *testing.T) {
 	require.False(t, runAPIFlags(t).snapshotsEnabled)
 	require.True(t, runAPIFlags(t, "--snapshots-enable").snapshotsEnabled)
+}
+
+// TestAPIRuntimeFrom_SnapshotTimeout pins the flag that bounds one relayed
+// snapshot request: five minutes by default, because create copies the whole task
+// disk, and an explicit duration wins.
+func TestAPIRuntimeFrom_SnapshotTimeout(t *testing.T) {
+	require.Equal(t, broker.DefaultSnapshotTimeout, runAPIFlags(t).snapshotTimeout)
+	require.Equal(t, 5*time.Minute, runAPIFlags(t).snapshotTimeout,
+		"a create copies a multi-GB disk; seconds would time it out")
+	require.Equal(t, 90*time.Second, runAPIFlags(t, "--snapshot-timeout", "90s").snapshotTimeout)
 }
 
 // TestStartBroker_DisabledSnapshotsIs501 proves the snapshots operation is
@@ -66,6 +77,79 @@ func TestStartBroker_DisabledSnapshotsIs501(t *testing.T) {
 	require.Equal(t, v1.KindError, doc.Kind)
 	require.Equal(t, "snapshots", doc.Error.Details["capability"])
 	require.Equal(t, "snapshots_disabled", doc.Error.Details["reason"])
+}
+
+// TestStartBroker_RestoredOperationIsRegistered proves the daemon registers the
+// restored-VM stop operation next to snapshots: a disabled capability answers the
+// typed 501 rather than the server's unregistered-operation answer, and a wrong
+// method is 405.
+func TestStartBroker_RestoredOperationIsRegistered(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	cfg := brokerRuntime{listenAddr: "127.0.0.1:0", socketDir: socketDir, logDir: t.TempDir()}
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequest(http.MethodDelete, "https://"+srv.Addr()+"/v1/tasks/task-1/restored", nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+	var doc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
+	require.Equal(t, "snapshots", doc.Error.Details["capability"])
+
+	respGet, err := client.Get("https://" + srv.Addr() + "/v1/tasks/task-1/restored")
+	require.NoError(t, err)
+	defer respGet.Body.Close()
+	require.Equal(t, http.StatusMethodNotAllowed, respGet.StatusCode)
+	require.Contains(t, respGet.Header.Get("Allow"), http.MethodDelete)
+}
+
+// TestStartBroker_RestoredSharesTheSnapshotStore proves the enabled daemon hands
+// both operations the same store: the enabled node's restored route reaches the
+// real manager, which tracks no VM yet and answers no_restored_vm (404), instead
+// of the disabled 501.
+func TestStartBroker_RestoredSharesTheSnapshotStore(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	cfg := brokerRuntime{
+		listenAddr:       "127.0.0.1:0",
+		socketDir:        socketDir,
+		logDir:           t.TempDir(),
+		snapshotsEnabled: true,
+		snapshotDir:      t.TempDir(),
+	}
+	srv, active, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+	require.True(t, active)
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequest(http.MethodDelete, "https://"+srv.Addr()+"/v1/tasks/task-1/restored", nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+	var doc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
+	require.Equal(t, "no_restored_vm", doc.Error.Details["reason"])
 }
 
 // TestStartBroker_EnabledSnapshotsListsMetadata proves the enabled daemon builds
