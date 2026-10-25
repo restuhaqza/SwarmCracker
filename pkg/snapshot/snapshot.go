@@ -662,8 +662,9 @@ func (m *Manager) RestoreFromSnapshot(
 		}
 	}
 
-	// When the snapshot recorded a rootfs path, ensure the restored VM's block
-	// device has a disk to point at.
+	// Give the restored VM's block device the disk it expects: a snapshot that
+	// owns a copy writes it over the recorded path, a legacy one needs the
+	// original still in place.
 	if err := ensureRestoredDisk(ctx, info); err != nil {
 		return err
 	}
@@ -753,28 +754,41 @@ func (m *Manager) RestoreFromSnapshot(
 	return nil
 }
 
-// ensureRestoredDisk makes sure the VM the restore is about to start has a disk
-// for its block device. A snapshot that owns a copy puts it back after the
-// executor removed the original; one without a copy needs the original in place,
-// exactly as before disk copies existed.
+// ensureRestoredDisk gives the VM the restore is about to start the disk its
+// block device points at.
+//
+// A snapshot that owns a copy always writes that copy to the recorded path, even
+// when a file is already there. Nothing removes a restored VM's disk when it
+// stops, so after one restore the path holds the previous VM's writes: reusing it
+// would pair this snapshot's memory image with a disk it never saw, and the guest
+// could flush stale page-cache data over it. The bytes are copied to a temporary
+// file beside the target and renamed over it, so a failure leaves the previous
+// disk untouched.
+//
+// A snapshot with no copy predates disk copies and keeps the old rule: the
+// original disk has to still exist, because there is nothing to restore it from.
 func ensureRestoredDisk(ctx context.Context, info *SnapshotInfo) error {
 	if info.RootfsPath == "" {
-		return nil
-	}
-
-	_, rootfsErr := os.Stat(info.RootfsPath)
-	if rootfsErr == nil {
-		return nil
+		if info.DiskPath == "" {
+			// Neither recorded: a snapshot of a VM the executor did not own a
+			// disk for. There is nothing to materialise and nothing to check.
+			return nil
+		}
+		return fmt.Errorf("%w: snapshot holds a disk copy at %s but records no path to restore it to",
+			ErrSnapshotIncomplete, info.DiskPath)
 	}
 
 	if info.DiskPath == "" {
-		return fmt.Errorf("%w: snapshot rootfs not found at %s: %v", ErrSnapshotIncomplete, info.RootfsPath, rootfsErr)
+		if _, rootfsErr := os.Stat(info.RootfsPath); rootfsErr != nil {
+			return fmt.Errorf("%w: snapshot rootfs not found at %s: %v", ErrSnapshotIncomplete, info.RootfsPath, rootfsErr)
+		}
+		return nil
 	}
+
 	if _, copyErr := os.Stat(info.DiskPath); copyErr != nil {
-		return fmt.Errorf("%w: snapshot disk copy %s not found and the task disk %s is gone: %v",
-			ErrSnapshotIncomplete, info.DiskPath, info.RootfsPath, copyErr)
+		return fmt.Errorf("%w: snapshot disk copy %s not found: %v", ErrSnapshotIncomplete, info.DiskPath, copyErr)
 	}
-	if err := copyFile(ctx, info.DiskPath, info.RootfsPath); err != nil {
+	if err := replaceFile(ctx, info.DiskPath, info.RootfsPath); err != nil {
 		return fmt.Errorf("failed to restore task disk from snapshot: %w", err)
 	}
 

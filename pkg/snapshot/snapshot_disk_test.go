@@ -264,9 +264,73 @@ func TestRestoreFromSnapshotCopiesTheDiskBack(t *testing.T) {
 	assert.True(t, bytes.Equal(content, restored), "the task disk must come back byte-identical")
 }
 
-// TestRestoreFromSnapshotKeepsAnExistingTaskDisk pins the other side: a disk that
-// is still there is the live VM disk and is never overwritten by the copy.
-func TestRestoreFromSnapshotKeepsAnExistingTaskDisk(t *testing.T) {
+// TestRestoreFromSnapshotReplacesTheDiskALaterRestoreLeft pins why a restore may
+// not trust an existing task disk: stopping a restored VM leaves its disk behind
+// (nothing removes it), so a second restore of the same snapshot must put the
+// snapshot's bytes back. Otherwise the snapshot's memory image would run against
+// a disk it never saw, and the guest could flush stale page cache over newer data.
+func TestRestoreFromSnapshotReplacesTheDiskALaterRestoreLeft(t *testing.T) {
+	root := t.TempDir()
+	snapshotDir := filepath.Join(root, "snapshots")
+	mgr, err := NewManager(SnapshotConfig{SnapshotDir: snapshotDir})
+	require.NoError(t, err)
+
+	content := testDiskContent()
+	id := "snap-0123456789abcdef"
+	dir := filepath.Join(snapshotDir, id)
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	statePath := filepath.Join(dir, "vm.state")
+	memoryPath := filepath.Join(dir, "vm.mem")
+	diskPath := filepath.Join(dir, diskFileName)
+	require.NoError(t, os.WriteFile(statePath, []byte("state"), 0o600))
+	require.NoError(t, os.WriteFile(memoryPath, []byte("memory"), 0o600))
+	require.NoError(t, os.WriteFile(diskPath, content, 0o600))
+
+	sum, err := sha256File(statePath)
+	require.NoError(t, err)
+
+	// The disk the first restored VM left behind: same path, other bytes.
+	rootfsPath := filepath.Join(root, "rootfs", "tasks", "task-1.ext4")
+	require.NoError(t, os.MkdirAll(filepath.Dir(rootfsPath), 0o755))
+	require.NoError(t, os.WriteFile(rootfsPath, []byte("written by the first restored VM"), 0o600))
+
+	info := &SnapshotInfo{
+		ID:         id,
+		TaskID:     "task-1",
+		StatePath:  statePath,
+		MemoryPath: memoryPath,
+		DiskPath:   diskPath,
+		RootfsPath: rootfsPath,
+		Checksum:   sum,
+	}
+
+	// The disk step runs before the VMM starts, so hiding the binary proves the
+	// replacement happened without needing a real Firecracker.
+	t.Setenv("PATH", t.TempDir())
+
+	err = mgr.RestoreFromSnapshot(context.Background(), info, filepath.Join(root, "run", "fc.sock"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "firecracker binary not found")
+
+	restored, err := os.ReadFile(rootfsPath)
+	require.NoError(t, err)
+	assert.Len(t, restored, len(content))
+	assert.True(t, bytes.Equal(content, restored),
+		"a second restore must put the snapshot's disk bytes back")
+
+	// The copy is staged beside the target and renamed over it, so nothing is
+	// left behind at the task disk's path.
+	entries, err := os.ReadDir(filepath.Dir(rootfsPath))
+	require.NoError(t, err)
+	require.Len(t, entries, 1)
+	assert.Equal(t, filepath.Base(rootfsPath), entries[0].Name())
+}
+
+// TestRestoreFromSnapshotKeepsALegacyTaskDisk pins the rule for a snapshot taken
+// before disk copies existed: it has nothing to restore from, so the original
+// task disk must still be there and is left exactly as it is.
+func TestRestoreFromSnapshotKeepsALegacyTaskDisk(t *testing.T) {
 	root := t.TempDir()
 	mgr, err := NewManager(SnapshotConfig{SnapshotDir: filepath.Join(root, "snapshots")})
 	require.NoError(t, err)
@@ -277,10 +341,8 @@ func TestRestoreFromSnapshotKeepsAnExistingTaskDisk(t *testing.T) {
 
 	statePath := filepath.Join(dir, "vm.state")
 	memoryPath := filepath.Join(dir, "vm.mem")
-	diskPath := filepath.Join(dir, diskFileName)
 	require.NoError(t, os.WriteFile(statePath, []byte("state"), 0o600))
 	require.NoError(t, os.WriteFile(memoryPath, []byte("memory"), 0o600))
-	require.NoError(t, os.WriteFile(diskPath, []byte("snapshot disk"), 0o600))
 
 	sum, err := sha256File(statePath)
 	require.NoError(t, err)
@@ -293,7 +355,6 @@ func TestRestoreFromSnapshotKeepsAnExistingTaskDisk(t *testing.T) {
 		TaskID:     "task-1",
 		StatePath:  statePath,
 		MemoryPath: memoryPath,
-		DiskPath:   diskPath,
 		RootfsPath: rootfsPath,
 		Checksum:   sum,
 	}
@@ -306,7 +367,21 @@ func TestRestoreFromSnapshotKeepsAnExistingTaskDisk(t *testing.T) {
 
 	kept, err := os.ReadFile(rootfsPath)
 	require.NoError(t, err)
-	assert.Equal(t, "live disk", string(kept), "an existing task disk must not be replaced")
+	assert.Equal(t, "live disk", string(kept), "a legacy snapshot has no copy to replace the disk with")
+}
+
+// TestEnsureRestoredDiskRefusesACopyWithoutATarget pins the last incomplete
+// shape: the snapshot holds disk bytes but records no path, so there is nowhere
+// to put them. Starting the VM would boot with a missing block device.
+func TestEnsureRestoredDiskRefusesACopyWithoutATarget(t *testing.T) {
+	err := ensureRestoredDisk(context.Background(), &SnapshotInfo{
+		ID:       "snap-0123456789abcdef",
+		DiskPath: filepath.Join(t.TempDir(), diskFileName),
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSnapshotIncomplete)
+	assert.Contains(t, err.Error(), "no path to restore it to")
 }
 
 // TestRestoreFromSnapshotIncompleteWithoutDiskCopy pins that a snapshot whose

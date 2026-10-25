@@ -79,6 +79,43 @@ func copyFile(ctx context.Context, src, dst string) (retErr error) {
 	return nil
 }
 
+// replaceFile materialises src at dst in one visible step: the bytes go into a
+// temporary file in dst's directory, are flushed by copyFile, and are renamed
+// over dst. A restore therefore never runs a VM against a half-written disk, and
+// a failed copy leaves whatever was at dst untouched.
+//
+// dst is replaced even when it already exists. A task disk left behind by an
+// earlier restored VM is not the disk this snapshot's memory image describes, and
+// reusing it would let the guest flush one VM's page cache over the other's data.
+func replaceFile(ctx context.Context, src, dst string) error {
+	dir := filepath.Dir(dst)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create destination directory: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, filepath.Base(dst)+".restore-*")
+	if err != nil {
+		return fmt.Errorf("create temporary file: %w", err)
+	}
+	tmpPath := tmp.Name()
+	// copyFile writes its own destination file, so this handle only reserves a
+	// unique path; close it before the copy reopens the same name.
+	if closeErr := tmp.Close(); closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close temporary file: %w", closeErr)
+	}
+
+	if err := copyFile(ctx, src, tmpPath); err != nil {
+		_ = os.Remove(tmpPath) // copyFile already removes it; this is belt and braces
+		return err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("publish restored disk: %w", err)
+	}
+	return nil
+}
+
 // copyAll copies every byte including holes. It is what a platform without
 // reflink or extent reporting uses, and the last fallback on Linux.
 func copyAll(ctx context.Context, dst, src *os.File) error {
