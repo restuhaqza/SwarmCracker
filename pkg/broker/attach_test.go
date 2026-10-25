@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -185,6 +186,142 @@ func TestAttachIsPostOnly(t *testing.T) {
 	require.Equal(t, http.StatusMethodNotAllowed, rec.Code)
 	require.Equal(t, http.MethodPost, rec.Header().Get("Allow"))
 	require.Equal(t, "method_not_allowed", decodeErrorDocument(t, rec.Body).Error.Details["reason"])
+}
+
+// TestAttachConsoleCloseEndsStdinCopy pins the exit of the stdin copy goroutine.
+//
+// The session is console-driven: when the console closes, the handler closes the
+// connection and returns even though the caller may still be typing, so a
+// caller that never ends its stdin cannot hold the response open. The copy
+// goroutine then has to end when the server closes the request body after the
+// handler returns. The fake console connection reports the half-close that copy
+// performs on its way out, so the assertion is the goroutine's own signal
+// rather than a sleep or a goroutine count.
+func TestAttachConsoleCloseEndsStdinCopy(t *testing.T) {
+	dir := shortTempDir(t)
+	src := attachTaskSource(t, dir, "task-1")
+	lis := listenConsole(t, src.task.ConsolePath)
+
+	halfClosed := make(chan struct{})
+	var halfOnce sync.Once
+	dial := func(path string) (net.Conn, error) {
+		conn, err := DialConsole(path)
+		if err != nil {
+			return nil, err
+		}
+		return &observedConsoleConn{
+			Conn:         conn,
+			onCloseWrite: func() { halfOnce.Do(func() { close(halfClosed) }) },
+		}, nil
+	}
+
+	go func() {
+		conn, err := lis.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		// The guest says goodbye and ends its output side while the caller is
+		// still typing.
+		_, _ = conn.Write([]byte("bye"))
+		halfCloseWrite(conn)
+	}()
+
+	srv := newRouteServer(t, src)
+	require.NoError(t, srv.Handle("attach", NewAttachHandler(dial)))
+
+	body := newBlockingBody(t)
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-1/attach", body)
+	rec := httptest.NewRecorder()
+
+	handlerDone := make(chan struct{})
+	go func() {
+		defer close(handlerDone)
+		srv.Handler().ServeHTTP(rec, req)
+	}()
+
+	// The relay is live: the stdin copy is parked inside the caller's body.
+	select {
+	case <-body.reading:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stdin copy never started reading the request body")
+	}
+
+	// The handler must not wait for stdin: the console ended the session.
+	select {
+	case <-handlerDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the handler waited for the caller's stdin instead of ending with the console")
+	}
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.Equal(t, "bye", rec.Body.String(), "the console output is still delivered")
+
+	// Still parked: returning must not be confused with the copy having exited.
+	select {
+	case <-halfClosed:
+		t.Fatal("the stdin copy exited while the request body was still open")
+	default:
+	}
+
+	// net/http closes the request body once a handler returns; doing it here
+	// mirrors that and must end the copy goroutine.
+	require.NoError(t, body.Close())
+
+	select {
+	case <-halfClosed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the stdin copy outlived the closed request body")
+	}
+}
+
+// observedConsoleConn is a console connection that reports the half-close the
+// stdin copy performs when it exits.
+type observedConsoleConn struct {
+	net.Conn
+	onCloseWrite func()
+	once         sync.Once
+}
+
+// CloseWrite reports the copy's exit and half-closes the console as usual.
+func (c *observedConsoleConn) CloseWrite() error {
+	c.once.Do(c.onCloseWrite)
+	if cw, ok := c.Conn.(closeWriter); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
+// blockingBody is a request body that delivers nothing until it is closed: the
+// caller is still typing for the whole session. reading closes on the first
+// Read, so a test can prove the relay actually reached the body.
+type blockingBody struct {
+	reading chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func newBlockingBody(t *testing.T) *blockingBody {
+	t.Helper()
+	return &blockingBody{reading: make(chan struct{}), closed: make(chan struct{})}
+}
+
+// Read blocks until the body is closed, then reports EOF.
+func (b *blockingBody) Read([]byte) (int, error) {
+	select {
+	case <-b.reading:
+	default:
+		close(b.reading)
+	}
+	<-b.closed
+	return 0, io.EOF
+}
+
+// Close releases a blocked Read.
+func (b *blockingBody) Close() error {
+	b.once.Do(func() { close(b.closed) })
+	return nil
 }
 
 // TestManagerProxyRelaysAttachFullDuplex is the streaming proof for the whole
