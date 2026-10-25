@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"text/tabwriter"
 	"time"
 
@@ -427,16 +426,13 @@ Example:
 
 // --- Helpers ---
 
-// snapshotIDPattern is the shape `vm snapshot create` writes: snap- plus 16
-// lowercase hex characters.
-var snapshotIDPattern = regexp.MustCompile(`^snap-[0-9a-f]{16}$`)
-
 // validateSnapshotIDArg rejects a snapshot ID that is not one safe path segment
-// before any configuration is loaded or any directory is joined. A CLI usage
-// mistake is CodeUsage, which exits 2; the package refuses the same shapes with
-// ErrInvalidSnapshotID as defence in depth.
+// before any configuration is loaded or any directory is joined. The shape is
+// snapshot.ValidSnapshotID, the same rule the package enforces, so the CLI and
+// the store cannot drift. A CLI usage mistake is CodeUsage, which exits 2; the
+// package refuses the same shapes with ErrInvalidSnapshotID as defence in depth.
 func validateSnapshotIDArg(id string) error {
-	if snapshotIDPattern.MatchString(id) {
+	if snapshot.ValidSnapshotID(id) {
 		return nil
 	}
 	return output.NewErrorf(output.CodeUsage,

@@ -655,6 +655,27 @@ func TestSnapshotHandlerDeleteMissingIs404(t *testing.T) {
 	require.Empty(t, store.deleted, "a snapshot the node does not know must not be deleted")
 }
 
+// TestSnapshotHandlerInvalidSnapshotIDIs400 pins the client-error mapping on the
+// delete path: an ID the store refuses as permanently malformed is a 400, not the
+// retryable 503 that an unclassified node failure gets.
+func TestSnapshotHandlerInvalidSnapshotIDIs400(t *testing.T) {
+	const id = "snap-0123456789abcdef"
+	store := &fakeSnapshotStore{
+		list:      []*snapshot.SnapshotInfo{testSnapshotInfo(id, "task-1", time.Now().UTC())},
+		deleteErr: fmt.Errorf("%w: %q", snapshot.ErrInvalidSnapshotID, "../victim"),
+	}
+
+	rec := serveSnapshot(t, store, snapshotTask(), http.MethodDelete,
+		"/v1/tasks/task-1/snapshots?id="+id, "")
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	doc := decodeSnapshotError(t, rec)
+	require.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	require.Equal(t, "invalid_snapshot_id", doc.Error.Details["reason"])
+	require.False(t, doc.Error.Retryable, "a permanently invalid ID is not retryable")
+	requireNoSnapshotLeak(t, rec.Body.String())
+}
+
 // TestSnapshotHandlerDisabledStoreIs501 pins the defence-in-depth gate: a nil
 // store keeps the route but implements nothing.
 func TestSnapshotHandlerDisabledStoreIs501(t *testing.T) {
@@ -792,6 +813,13 @@ func TestSnapshotHandlerClassifiesStoreErrors(t *testing.T) {
 		wantCode   output.Code
 		wantReason string
 	}{
+		{
+			name:       "invalid snapshot id",
+			storeErr:   fmt.Errorf("%w: %q", snapshot.ErrInvalidSnapshotID, "../victim"),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   output.CodeInvalid,
+			wantReason: "invalid_snapshot_id",
+		},
 		{
 			name:       "not found",
 			storeErr:   fmt.Errorf("%w: snap-1", snapshot.ErrNotFound),

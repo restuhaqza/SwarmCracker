@@ -60,8 +60,11 @@ var (
 // so only an ID this package could have written is accepted here.
 var snapshotIDPattern = regexp.MustCompile(`^snap-[0-9a-f]{16}$`)
 
-// validSnapshotID reports whether id is a well-formed snapshot ID.
-func validSnapshotID(id string) bool {
+// ValidSnapshotID reports whether id is a well-formed snapshot ID: exactly the
+// shape generateSnapshotID writes, one safe path segment. It is the single
+// validator for the package and for callers that reject an ID before any
+// filesystem join (the CLI does, so a usage error never loads configuration).
+func ValidSnapshotID(id string) bool {
 	return snapshotIDPattern.MatchString(id)
 }
 
@@ -450,7 +453,7 @@ func (m *Manager) listSnapshotsUnlocked(filter SnapshotFilter) ([]*SnapshotInfo,
 // and "..", "/" or a Windows-style separator would address something outside
 // the snapshot root.
 func (m *Manager) DeleteSnapshot(_ context.Context, snapshotID string) error {
-	if !validSnapshotID(snapshotID) {
+	if !ValidSnapshotID(snapshotID) {
 		return fmt.Errorf("%w: %q", ErrInvalidSnapshotID, snapshotID)
 	}
 
@@ -535,7 +538,7 @@ func (m *Manager) enforceMaxSnapshots(serviceID string) {
 		// A metadata file is node-local data, but it is still the input to a
 		// RemoveAll below: an ID that is not one safe directory name must never
 		// reach the join, even when the file was written by other software.
-		if !validSnapshotID(snap.ID) {
+		if !ValidSnapshotID(snap.ID) {
 			log.Warn().Str("snapshot_id", snap.ID).Msg("Skipping snapshot with an invalid ID")
 			continue
 		}

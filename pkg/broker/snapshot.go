@@ -693,6 +693,12 @@ func mapSnapshotStoreError(action string, err error) (int, *output.Error) {
 	}
 
 	switch {
+	case errors.Is(err, snapshot.ErrInvalidSnapshotID):
+		// A permanently malformed ID is a client mistake, not a transient node
+		// failure: retrying the same request can never succeed.
+		return http.StatusBadRequest, output.NewError(output.CodeInvalid,
+			"the snapshot ID is not valid").
+			WithDetails(map[string]any{"reason": "invalid_snapshot_id"})
 	case errors.Is(err, snapshot.ErrNotFound):
 		return http.StatusNotFound, output.NewError(output.CodeNotFound,
 			"the snapshot is not available on this node").
