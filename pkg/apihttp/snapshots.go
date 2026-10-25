@@ -23,11 +23,7 @@
 package apihttp
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -119,7 +115,7 @@ func (s *Server) serveSnapshotList(w http.ResponseWriter, r *http.Request, ref s
 
 	page, next, err := paginateRequest(r, items, func(item v1.Snapshot) (string, string) {
 		return item.CreatedAt, item.ID
-	})
+	}, task.ID)
 	if err != nil {
 		s.recordSnapshotAudit(r, resource, "error")
 		s.writeError(w, r, err)
@@ -284,42 +280,14 @@ func (s *Server) resolveSnapshotTask(w http.ResponseWriter, r *http.Request, ref
 func (s *Server) validateSnapshotCreateBody(w http.ResponseWriter, r *http.Request) (v1.SnapshotCreateRequest, int, error) {
 	var request v1.SnapshotCreateRequest
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxSnapshotBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	present, status, err := readOptionalJSONBody(w, r, maxSnapshotBodyBytes, MediaType, &request)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			return request, http.StatusRequestEntityTooLarge,
-				output.NewErrorf(output.CodeInvalid, "the request body exceeds %d bytes", maxSnapshotBodyBytes).
-					WithDetails(map[string]any{
-						"reason": "payload_too_large",
-						"limit":  maxSnapshotBodyBytes,
-					})
-		}
-		return request, http.StatusBadRequest,
-			output.NewErrorf(output.CodeInvalid, "read request body: %v", err)
+		return request, status, err
 	}
-	if len(bytes.TrimSpace(body)) == 0 {
+	if !present {
 		return request, 0, nil
 	}
 
-	if status, err := requireContentType(r, MediaType); err != nil {
-		return request, status, err
-	}
-
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		return request, http.StatusBadRequest,
-			output.NewError(output.CodeInvalid,
-				"invalid JSON body: the snapshot request has unknown or malformed fields").
-				WithDetails(map[string]any{"reason": "invalid_body"})
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return request, http.StatusBadRequest, output.NewError(output.CodeInvalid,
-			"the request body must contain exactly one JSON object")
-	}
 	if request.VCPUs < 0 {
 		return request, http.StatusBadRequest,
 			output.NewError(output.CodeInvalid, "vcpus must be zero or positive").
