@@ -1520,7 +1520,10 @@ paths:
         application/vnd.swarmcracker.v1+json and is limited to 64 KiB (413,
         details.reason "payload_too_large"). Unknown fields are 400 invalid. The
         task must be running: a completed or crashed task has no Firecracker API
-        socket and is 404 not_found with details.reason "task_not_running".
+        socket and is 404 not_found with details.reason "task_not_running". If
+        SwarmKit still reports the task as running but the VM's API socket has
+        disappeared by the time the node snapshots it, the answer is 409 conflict
+        with details.reason "vm_socket_missing".
         pkg/snapshot's metadata.json is the source of truth; there is no
         manager-side index. The attempt is audited as task.snapshot. A snapshot's
         memory and state paths never cross the wire: only rootfsPath is published.
@@ -1657,11 +1660,17 @@ paths:
         new VM on the node's socket directory, so a finished task's snapshot can
         be restored. Restores are serialized per task; a concurrent restore for
         the same task is 409 conflict with details.reason "restore_in_progress".
-        A crash during restore, or a process left by an earlier daemon lifetime,
-        can leave an untracked Firecracker process behind. The response is the
-        Snapshot document, not the restored task. Selectors are enforced as for
-        exec and the attempt is audited as task.snapshot. A snapshot the node does
-        not hold for the task is 404 not_found with details.reason
+        Every restore reuses the same restored socket on the node, so a restored
+        VM that is still answering there is never replaced: a restore that finds
+        it live is 409 conflict with details.reason "restore_already_running". A
+        stale socket file is cleaned up and the restore proceeds. A node with no
+        snapshot socket directory answers 503 with details.reason
+        "socket_dir_unconfigured". Residual risk: a crash during restore, or a
+        process left by an earlier daemon lifetime whose socket no longer answers,
+        can still leave an untracked Firecracker process behind. The response is
+        the Snapshot document, not the restored task. Selectors are enforced as
+        for exec and the attempt is audited as task.snapshot. A snapshot the node
+        does not hold for the task is 404 not_found with details.reason
         "snapshot_not_found"; a snapshot whose files are incomplete is 409 with
         details.reason "snapshot_incomplete". A restore that exceeds its 30 s
         deadline is 504 with code timeout.
@@ -1843,8 +1852,14 @@ paths:
         task does not need to be running: restore starts a new VM on the node's
         socket directory. Restores are serialized per task; a concurrent restore
         for the same task is 409 conflict with details.reason
-        "restore_in_progress". A crash during restore, or a process left by an
-        earlier daemon lifetime, can leave an untracked Firecracker process
+        "restore_in_progress". Every restore reuses the same restored socket on
+        the node, so a restored VM that is still answering there is never
+        replaced: a restore that finds it live is 409 conflict with details.reason
+        "restore_already_running"; a stale socket file is cleaned up and the
+        restore proceeds. A node with no snapshot socket directory answers 503
+        with details.reason "socket_dir_unconfigured". Residual risk: a crash
+        during restore, or a process left by an earlier daemon lifetime whose
+        socket no longer answers, can still leave an untracked Firecracker process
         behind. A snapshot the node does not hold is 404 with details.reason
         "snapshot_not_found"; a snapshot whose files are incomplete is 409 with
         details.reason "snapshot_incomplete". A restore that exceeds its 30 s
@@ -3166,7 +3181,9 @@ components:
           type: string
           description: >
             Absolute rootfs path to record for the snapshot. A relative path or
-            one containing a `..` segment is 400 invalid.
+            one containing a `..` segment is 400 invalid. Redundant separators, a
+            trailing slash and `.` segments all name the same absolute directory
+            and are accepted.
 
     ExecRequest:
       type: object

@@ -326,19 +326,20 @@ func (s *Server) validateSnapshotCreateBody(w http.ResponseWriter, r *http.Reque
 	if request.RootfsPath != "" && !validSnapshotRootfsPath(request.RootfsPath) {
 		return request, http.StatusBadRequest,
 			output.NewError(output.CodeInvalid,
-				"rootfsPath must be an absolute, cleaned path without a .. segment").
+				"rootfsPath must be an absolute path without a .. segment").
 				WithDetails(map[string]any{"parameter": "rootfsPath"})
 	}
 	return request, 0, nil
 }
 
-// validSnapshotRootfsPath accepts an absolute path in its cleaned form with no
-// parent segment. The node records the path in the snapshot metadata, so a
-// traversal or relative value must never leave the public layer.
+// validSnapshotRootfsPath accepts any absolute path that cannot leave its
+// directory. The path is recorded in the node's snapshot metadata, so only two
+// things are unsafe: a relative path, which depends on the daemon's working
+// directory, and a .. segment, which traverses upwards. Redundant separators, a
+// trailing slash and . segments all name the same absolute directory and are
+// accepted: the schema says only relative and .. are invalid, so a caller that
+// concatenates a path is not punished for it.
 func validSnapshotRootfsPath(raw string) bool {
-	if !filepath.IsAbs(raw) || filepath.Clean(raw) != raw || raw == "/" {
-		return false
-	}
 	if strings.ContainsAny(raw, "\x00\n\r") {
 		return false
 	}
@@ -347,7 +348,11 @@ func validSnapshotRootfsPath(raw string) bool {
 			return false
 		}
 	}
-	return true
+	// The schema's rule is about the target the path names, so normalize the way
+	// the OS would: the cleaned value must still be absolute and must name
+	// something below the filesystem root.
+	cleaned := filepath.Clean(raw)
+	return filepath.IsAbs(cleaned) && cleaned != "/"
 }
 
 // writeSnapshotMissingTask is the 400 for a flat form with no ?task=. No audit

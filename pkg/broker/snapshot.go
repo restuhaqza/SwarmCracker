@@ -21,11 +21,28 @@ package broker
 // Restore is experimental. It starts a Firecracker process outside SwarmKit's
 // task lifecycle, so a restored VM may outlive the task it came from; the
 // manager's TrackRestoredProcess is the only bookkeeping pkg/snapshot keeps.
-// Restores for one task are serialized inside this handler so two requests in the
-// same daemon cannot race for the same restored socket. A process started by a
-// previous daemon lifetime is NOT covered by that lock: a crash during restore
-// can leave an untracked Firecracker process behind. That residual risk is
-// documented in the public OpenAPI description as well.
+//
+// Every restore for one task reuses <socketDir>/<taskID>-restored.sock, and
+// pkg/snapshot unlinks that path before it starts the new process. Two guards
+// protect the VM that owns it:
+//
+//   - Restores for one task are serialized inside this handler, so two requests
+//     in the same daemon cannot race for the same socket.
+//   - Before restoring, the handler probes the restored socket with
+//     runtime.IsVMSocketAlive. A live Firecracker API socket means a previous
+//     restore is still running; replacing it would orphan that process, so the
+//     request is 409 conflict with details.reason "restore_already_running". A
+//     stale socket file (process gone) is not alive and still proceeds:
+//     pkg/snapshot removes it. Nothing is probed when neither a handler socket
+//     directory nor the task's own socket directory is known: that restore would
+//     write a CWD-relative socket, so it is 503 unavailable with
+//     details.reason "socket_dir_unconfigured".
+//
+// Residual risk: a process started by a previous daemon lifetime is only caught
+// while its API socket answers. A crash before the socket is created, or a
+// restored VM whose socket was removed out of band, can still leave an untracked
+// Firecracker process behind. That residual risk is documented in the public
+// OpenAPI description as well.
 //
 // A nil store keeps the operation registered but answers a typed 501: the public
 // layer already gates snapshots on the capability, so this is defence in depth.
@@ -47,6 +64,7 @@ import (
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 )
 
@@ -66,6 +84,11 @@ const (
 	// maxSnapshotScopeBytes bounds one service/node query value. Real IDs are far
 	// shorter; the cap only stops a caller from pushing a path-sized value through.
 	maxSnapshotScopeBytes = 256
+
+	// restoreSocketProbeTimeout bounds the liveness probe of a restored VM's API
+	// socket. A live Firecracker answers a machine-config request in microseconds;
+	// the timeout only covers a wedged process.
+	restoreSocketProbeTimeout = 500 * time.Millisecond
 )
 
 // SnapshotStore is the narrow view of *snapshot.Manager the handler needs. Tests
@@ -326,7 +349,8 @@ func (h *snapshotHandler) serveCreate(ctx context.Context, task Task, w http.Res
 // serveRestore restores one of the task's snapshots into a fresh Firecracker
 // process on <SocketDir>/<taskID>-restored.sock. It does not require a live task:
 // the VM a snapshot came from may already be finished. Restores for one task are
-// serialized so two requests cannot race for the same socket.
+// serialized, and a restored VM that is still answering on that socket is never
+// replaced: pkg/snapshot would unlink the socket and orphan the process.
 func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotID string, w http.ResponseWriter) {
 	if !h.acquireRestore(task.ID) {
 		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
@@ -335,6 +359,14 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 		return
 	}
 	defer h.releaseRestore(task.ID)
+
+	socketPath, configured := h.restoredSocketPath(task)
+	if !configured {
+		writeTypedError(w, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
+			"this node has no snapshot socket directory to restore task %q", task.ID).
+			WithDetails(map[string]any{"reason": "socket_dir_unconfigured"}))
+		return
+	}
 
 	info, found, err := findTaskSnapshot(h.cfg.Store, task.ID, snapshotID)
 	if err != nil {
@@ -346,7 +378,17 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 		return
 	}
 
-	if err := h.cfg.Store.RestoreFromSnapshot(ctx, info, h.restoredSocketPath(task)); err != nil {
+	// A live API socket belongs to a restored VM that is still running. Reusing
+	// the path would unlink that socket and leave its process untracked, so the
+	// request conflicts instead. A stale file is not alive and still proceeds.
+	if runtime.IsVMSocketAlive(socketPath, restoreSocketProbeTimeout) {
+		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
+			"a restored VM for task %q is already running on this node", task.ID).
+			WithDetails(map[string]any{"reason": "restore_already_running"}))
+		return
+	}
+
+	if err := h.cfg.Store.RestoreFromSnapshot(ctx, info, socketPath); err != nil {
 		writeSnapshotStoreError(w, "restore", err)
 		return
 	}
@@ -355,13 +397,18 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 }
 
 // restoredSocketPath is the restored VM's API socket. The configured directory is
-// independent of the task's own socket, so a finished task can still restore.
-func (h *snapshotHandler) restoredSocketPath(task Task) string {
+// independent of the task's own socket, so a finished task can still restore. The
+// boolean is false when neither is known: a CWD-relative socket would make the
+// restored VM depend on the daemon's working directory.
+func (h *snapshotHandler) restoredSocketPath(task Task) (string, bool) {
 	dir := h.cfg.SocketDir
 	if dir == "" {
+		if task.SocketPath == "" {
+			return "", false
+		}
 		dir = filepath.Dir(task.SocketPath)
 	}
-	return filepath.Join(dir, task.ID+"-restored.sock")
+	return filepath.Join(dir, task.ID+"-restored.sock"), true
 }
 
 // acquireRestore reserves the task's restore slot. False means another restore
@@ -468,7 +515,9 @@ func decodeSnapshotCreateRequest(w http.ResponseWriter, r *http.Request) (v1.Sna
 
 // validRootfsPath rejects a relative path and one that tries to leave its
 // directory. The path is node-local data recorded in the snapshot metadata, so an
-// unvalidated value would persist a traversal path.
+// unvalidated value would persist a traversal path. Redundant separators, a
+// trailing slash and . segments are not traversal: they name the same absolute
+// directory and are accepted, exactly like the public layer's rule.
 func validRootfsPath(raw string) bool {
 	if !filepath.IsAbs(raw) || strings.ContainsAny(raw, "\x00\n\r") {
 		return false
@@ -575,10 +624,12 @@ func mapSnapshotStoreError(action string, err error) (int, *output.Error) {
 			WithDetails(map[string]any{"reason": "snapshot_not_found"})
 	case errors.Is(err, snapshot.ErrSocketMissing):
 		// The task's Firecracker socket vanished between the source snapshot of
-		// tasks and this call, so there is no VM left to snapshot.
+		// tasks and this call: the task looked running to SwarmKit but has no VM
+		// left to snapshot. Distinct from the create precheck's task_not_running,
+		// which is a 404 about the task; this is a 409 about the node's view.
 		return http.StatusConflict, output.NewError(output.CodeConflict,
 			"the task's VM is no longer running on this node").
-			WithDetails(map[string]any{"reason": "task_not_running"})
+			WithDetails(map[string]any{"reason": "vm_socket_missing"})
 	case errors.Is(err, snapshot.ErrSnapshotIncomplete):
 		return http.StatusConflict, output.NewError(output.CodeConflict,
 			"the snapshot is incomplete on this node").

@@ -355,7 +355,6 @@ func TestSnapshotsCreateBodyRules(t *testing.T) {
 	for _, rootfs := range []string{
 		"relative/rootfs",
 		"/var/lib/firecracker/rootfs/../escape",
-		"/var/lib/firecracker/rootfs/.",
 		"/",
 	} {
 		rec = api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
@@ -368,6 +367,29 @@ func TestSnapshotsCreateBodyRules(t *testing.T) {
 	rec = api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
 		withSnapshotToken(api.admin), withSnapshotBody(oversized))
 	require.Equal(t, http.StatusRequestEntityTooLarge, rec.Code, rec.Body.String())
+}
+
+// TestSnapshotsCreateBodyAcceptsUncleanAbsoluteRootfs pins the schema's rule: only
+// a relative path or a .. segment is invalid. A redundant trailing slash, a
+// doubled separator or a . segment all name the same absolute directory and are
+// accepted, so a caller that builds the path by concatenation is not punished.
+func TestSnapshotsCreateBodyAcceptsUncleanAbsoluteRootfs(t *testing.T) {
+	for _, rootfs := range []string{
+		"/var/lib/firecracker/rootfs/task-1/",
+		"/var/lib//firecracker/rootfs/task-1",
+		"/var/lib/firecracker/./rootfs/task-1",
+	} {
+		t.Run(rootfs, func(t *testing.T) {
+			broker := &fakeSnapshotBroker{create: v1.Snapshot{ID: "snap-1"}}
+			api := newSnapshotTestAPI(t, nil, broker, nil)
+
+			rec := api.do(t, http.MethodPost, "/v1/tasks/web-1/snapshots",
+				withSnapshotToken(api.admin), withSnapshotBody(`{"rootfsPath": "`+rootfs+`"}`))
+
+			require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+			assert.Equal(t, rootfs, broker.gotRequest.RootfsPath)
+		})
+	}
 }
 
 // TestSnapshotsCreateBodyReachesTheTransport pins I1: every validated field,

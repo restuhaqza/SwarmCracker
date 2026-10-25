@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -229,6 +231,25 @@ func TestSnapshotHandlerCreateUsesTheTaskSocket(t *testing.T) {
 		}, store.gotCreate)
 	})
 
+	t.Run("unclean absolute rootfs is accepted", func(t *testing.T) {
+		// The schema says only a relative path or a .. segment is invalid. The
+		// public layer now normalizes instead of rejecting; the node must agree, or
+		// an accepted create would fail here.
+		for _, rootfs := range []string{
+			"/var/lib/firecracker/rootfs/task-1/",
+			"/var/lib//firecracker/rootfs/task-1",
+			"/var/lib/firecracker/./rootfs/task-1",
+		} {
+			store := &fakeSnapshotStore{createInfo: testSnapshotInfo("snap-1", "task-1", time.Now().UTC())}
+
+			rec := serveSnapshot(t, store, snapshotTask(), http.MethodPost, "/v1/tasks/task-1/snapshots",
+				`{"rootfsPath": "`+rootfs+`"}`)
+
+			require.Equal(t, http.StatusCreated, rec.Code, "%s: %s", rootfs, rec.Body.String())
+			require.Equal(t, rootfs, store.gotCreate.RootfsPath)
+		}
+	})
+
 	t.Run("service and node metadata", func(t *testing.T) {
 		store := &fakeSnapshotStore{createInfo: testSnapshotInfo("snap-1", "task-1", time.Now().UTC())}
 
@@ -365,6 +386,128 @@ func TestSnapshotHandlerRestoreLogOnlyTaskUsesSocketDir(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Equal(t, filepath.Join(socketDir, "task-1-restored.sock"), store.gotRestoreSock)
+}
+
+// shortSocketDir returns a short temporary directory: a Unix socket path is
+// limited to roughly 104 bytes on macOS, which t.TempDir() can exceed there.
+func shortSocketDir(t *testing.T) string {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "sc-brk-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
+}
+
+// serveRestoredVM answers a Firecracker machine-config probe on socketPath, so
+// runtime.IsVMSocketAlive reports an already restored VM.
+func serveRestoredVM(t *testing.T, socketPath string) {
+	t.Helper()
+
+	listener, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = srv.Serve(listener) }()
+
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = listener.Close()
+	})
+}
+
+// TestSnapshotHandlerRestoreRejectsALiveRestoredSocket pins I4: every restore
+// reuses <taskID>-restored.sock and pkg/snapshot unlinks it before it starts the
+// new process. A restored VM that is still running therefore owns that socket, so
+// a second (non-concurrent) restore must not replace it: 409 conflict, and the
+// store is never asked to restore.
+func TestSnapshotHandlerRestoreRejectsALiveRestoredSocket(t *testing.T) {
+	dir := shortSocketDir(t)
+	serveRestoredVM(t, filepath.Join(dir, "task-1-restored.sock"))
+
+	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
+	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
+	logOnly := Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"}
+
+	rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: dir},
+		logOnly, http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
+
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	doc := decodeSnapshotError(t, rec)
+	require.Equal(t, string(output.CodeConflict), doc.Error.Code)
+	require.Equal(t, "restore_already_running", doc.Error.Details["reason"])
+	require.Nil(t, store.gotRestoreInfo, "a live restored VM must not be replaced")
+	requireNoSnapshotLeak(t, rec.Body.String())
+}
+
+// TestSnapshotHandlerRestoreStaleSocketProceeds pins the other half of I4: a
+// socket file whose process is gone is not a running VM. pkg/snapshot removes it,
+// so the restore must go ahead instead of failing the liveness guard.
+func TestSnapshotHandlerRestoreStaleSocketProceeds(t *testing.T) {
+	cases := []struct {
+		name  string
+		stale func(t *testing.T, path string)
+	}{
+		{
+			name: "socket file with no listener",
+			stale: func(t *testing.T, path string) {
+				t.Helper()
+				listener, err := net.Listen("unix", path)
+				require.NoError(t, err)
+				// Keep the file behind so it looks like a crashed VM's socket.
+				listener.(*net.UnixListener).SetUnlinkOnClose(false)
+				require.NoError(t, listener.Close())
+			},
+		},
+		{
+			name: "plain file",
+			stale: func(t *testing.T, path string) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(path, nil, 0o600))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := shortSocketDir(t)
+			stalePath := filepath.Join(dir, "task-1-restored.sock")
+			tc.stale(t, stalePath)
+
+			info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
+			store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
+			logOnly := Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"}
+
+			rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: dir},
+				logOnly, http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
+
+			require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+			require.Same(t, info, store.gotRestoreInfo)
+			require.Equal(t, stalePath, store.gotRestoreSock)
+		})
+	}
+}
+
+// TestSnapshotHandlerRestoreWithoutSocketDirIs503 pins the no-directory case: a
+// finished task has no socket path of its own, and an unconfigured handler has no
+// socket directory, so the restored socket would be CWD-relative. That is a node
+// misconfiguration, answered before any store call.
+func TestSnapshotHandlerRestoreWithoutSocketDirIs503(t *testing.T) {
+	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
+	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
+	logOnly := Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"}
+
+	rec := serveSnapshot(t, store, logOnly, http.MethodPost,
+		"/v1/tasks/task-1/snapshots?restore=snap-1", "")
+
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	doc := decodeSnapshotError(t, rec)
+	require.Equal(t, string(output.CodeUnavailable), doc.Error.Code)
+	require.Equal(t, "socket_dir_unconfigured", doc.Error.Details["reason"])
+	require.Zero(t, store.gotFilter, "the store must not be consulted")
+	require.Nil(t, store.gotRestoreInfo)
+	requireNoSnapshotLeak(t, rec.Body.String())
 }
 
 // TestSnapshotHandlerRestoreIsSerializedPerTask pins the in-process restore lock:
@@ -563,7 +706,7 @@ func TestSnapshotHandlerClassifiesStoreErrors(t *testing.T) {
 			storeErr:   fmt.Errorf("%w: /var/run/firecracker/task-1.sock", snapshot.ErrSocketMissing),
 			wantStatus: http.StatusConflict,
 			wantCode:   output.CodeConflict,
-			wantReason: "task_not_running",
+			wantReason: "vm_socket_missing",
 		},
 		{
 			name:       "snapshot incomplete",

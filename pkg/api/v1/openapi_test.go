@@ -1583,4 +1583,23 @@ func TestOpenAPISnapshotContract(t *testing.T) {
 		assert.Equal(t, "query", task.In)
 		assert.True(t, task.Required, "a flat snapshot route requires ?task=")
 	}
+
+	// Restore is experimental and reuses one socket per task, so the contract must
+	// name both the live-socket guard and the residual untracked-process risk.
+	for name, operation := range map[string]*openapi3.Operation{
+		"task-scoped restore": doc.Paths.Find("/v1/tasks/{id}/snapshots/{sid}/restore").Post,
+		"flat restore":        doc.Paths.Find("/v1/snapshots/{id}/restore").Post,
+	} {
+		assert.Containsf(t, operation.Description, "restore_already_running",
+			"%s must document the live-socket guard", name)
+		assert.Containsf(t, operation.Description, "untracked",
+			"%s must state the residual untracked-process risk", name)
+		assert.Containsf(t, operation.Description, "socket_dir_unconfigured",
+			"%s must document the unconfigured socket directory", name)
+	}
+
+	// The two create-time failures are distinct: a task SwarmKit knows is not
+	// running is 404, a socket that disappeared under the node is 409.
+	assert.Contains(t, create.Description, "task_not_running")
+	assert.Contains(t, create.Description, "vm_socket_missing")
 }
