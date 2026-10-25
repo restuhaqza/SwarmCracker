@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/restuhaqza/swarmcracker/pkg/console"
 )
 
 func TestSocketDirSourceLookupFindsRunningTask(t *testing.T) {
@@ -204,6 +206,8 @@ func TestSocketDirSourceDerivesConsolePath(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.Equal(t, filepath.Join(dir, "task-1.console.sock"), task.ConsolePath)
+	require.Equal(t, console.SocketPath(dir, "task-1"), task.ConsolePath,
+		"the derived path must be the one pkg/console listens on")
 	require.NoFileExists(t, task.ConsolePath, "the path is derived, not probed")
 
 	require.NoError(t, os.WriteFile(filepath.Join(logDir, "task-2.log"), []byte("boom\n"), 0o600))
