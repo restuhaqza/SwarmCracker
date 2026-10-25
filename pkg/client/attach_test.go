@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -268,8 +270,8 @@ func TestAttachTaskDetachEndsCleanlyAndStopsSending(t *testing.T) {
 }
 
 // TestAttachTransportIsHTTP11Only pins the protocol guard: the console session
-// must never negotiate HTTP/2, which cannot carry it, and it must have no
-// whole-request timeout.
+// must never negotiate HTTP/2, which cannot carry it, must not follow a
+// redirect, and must have no whole-request timeout.
 func TestAttachTransportIsHTTP11Only(t *testing.T) {
 	c := newTestRemote(t, Config{Token: "s3cret"}, func(http.ResponseWriter, *http.Request) {})
 
@@ -279,6 +281,86 @@ func TestAttachTransportIsHTTP11Only(t *testing.T) {
 	assert.NotNil(t, transport.TLSNextProto, "a non-nil empty map is the documented HTTP/2 opt-out")
 	assert.Empty(t, transport.TLSNextProto)
 	assert.Zero(t, c.remote.attach.Timeout, "the session is bounded by its context, not a client timeout")
+	require.NotNil(t, c.remote.attach.CheckRedirect, "attach must refuse redirects")
+	assert.ErrorIs(t, c.remote.attach.CheckRedirect(nil, nil), http.ErrUseLastResponse)
+}
+
+// TestAttachTaskDoesNotFollowRedirect pins the redirect rule: a 3xx comes back
+// through the normal non-2xx error mapping, so an HTML error page never lands
+// on the terminal, and the bearer token is never replayed to the redirect
+// target (a same-host https->http hop would send it in the clear).
+func TestAttachTaskDoesNotFollowRedirect(t *testing.T) {
+	var targetHits atomic.Int32
+	targetHeaders := make(chan http.Header, 1)
+
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+		select {
+		case targetHeaders <- r.Header.Clone():
+		default:
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(target.Close)
+
+	initialAuth := make(chan string, 1)
+	c := newAttachTestServer(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		initialAuth <- r.Header.Get("Authorization")
+		w.Header().Set("Location", target.URL+"/v1/tasks/web-1/attach")
+		w.WriteHeader(http.StatusFound)
+	})
+
+	out := newConsoleSink()
+	err := c.AttachTask(context.Background(), "web-1", strings.NewReader(""), out)
+	require.Error(t, err)
+
+	// A redirect is not a typed server document, so the status mapping applies.
+	typed := codeOf(t, err)
+	assert.Equal(t, output.CodeInternal, typed.Code)
+	assert.Contains(t, typed.Message, "302")
+
+	// The token really was on the first request, so the negative check below is
+	// meaningful: if the client followed the redirect, it would be sent again.
+	assert.Equal(t, "Bearer s3cret", <-initialAuth)
+
+	assert.Empty(t, out.String(), "a redirect body must never reach the console")
+
+	select {
+	case header := <-targetHeaders:
+		t.Fatalf("the redirect target was contacted with Authorization %q", header.Get("Authorization"))
+	case <-time.After(300 * time.Millisecond):
+	}
+	assert.Zero(t, targetHits.Load(), "no request may follow the redirect")
+}
+
+// TestAttachTaskRejectsNonConsoleContentType pins the 2xx media-type guard: an
+// HTML page from a proxy or a wrong route is a protocol error, not console
+// output, so nothing is written to stdout.
+func TestAttachTaskRejectsNonConsoleContentType(t *testing.T) {
+	c := newAttachTestServer(t, nil, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "<html>proxy error</html>")
+	})
+
+	out := newConsoleSink()
+	err := c.AttachTask(context.Background(), "web-1", strings.NewReader(""), out)
+	require.Error(t, err)
+	assert.Equal(t, output.CodeInternal, codeOf(t, err).Code)
+	assert.Empty(t, out.String(), "a non-console body must never be written to the terminal")
+}
+
+// TestCheckConsoleContentType pins the accept rule: the attach media type (with
+// or without parameters) and an absent header are console bytes; anything else
+// is a protocol error.
+func TestCheckConsoleContentType(t *testing.T) {
+	require.NoError(t, checkConsoleContentType(""))
+	require.NoError(t, checkConsoleContentType(octetStreamMediaType))
+	require.NoError(t, checkConsoleContentType(octetStreamMediaType+"; charset=binary"))
+
+	for _, raw := range []string{"text/html", "text/html; charset=utf-8", "application/json", ";;;"} {
+		assert.Error(t, checkConsoleContentType(raw), "want a protocol error for %q", raw)
+	}
 }
 
 // TestAttachTaskRequiresRemoteEndpoint pins the remote-only rule.

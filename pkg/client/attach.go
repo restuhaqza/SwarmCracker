@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 
@@ -106,12 +107,39 @@ func (r *remoteClient) attachTask(ctx context.Context, ref string, stdin io.Read
 			resp.StatusCode, resp.Status, errorBody)
 	}
 
+	// A 2xx that is not raw console bytes means the session never started: a
+	// proxy, a captive portal or a wrong route answered instead of the manager.
+	// Copying that body to stdout would print an HTML page as if it were
+	// console output, so it is a protocol error and nothing is written.
+	if err := checkConsoleContentType(resp.Header.Get("Content-Type")); err != nil {
+		return err
+	}
+
 	err = copyConsole(stdout, resp.Body)
 	if err != nil && detached(detach) {
 		// The detach cancelled the request mid-read; that is a normal end.
 		return nil
 	}
 	return err
+}
+
+// checkConsoleContentType accepts only the attach media type. An absent header
+// is tolerated (a minimal server may omit it); anything else is a protocol
+// violation, which is a server-side bug, not a transport failure.
+func checkConsoleContentType(raw string) error {
+	if raw == "" {
+		return nil
+	}
+	mediaType, _, err := mime.ParseMediaType(raw)
+	if err != nil {
+		return output.NewErrorf(output.CodeInternal,
+			"attach: malformed server Content-Type %q: %v", raw, err)
+	}
+	if mediaType != octetStreamMediaType {
+		return output.NewErrorf(output.CodeInternal,
+			"attach: server answered Content-Type %q, want %s", mediaType, octetStreamMediaType)
+	}
+	return nil
 }
 
 // detached reports whether the filter saw the detach sequence. A nil filter

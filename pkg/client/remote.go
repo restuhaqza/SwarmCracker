@@ -43,7 +43,8 @@ type remoteClient struct {
 	// attach is the no-timeout client for the attach console. It never
 	// negotiates HTTP/2: the session needs HTTP/1.1 full duplex, so a manager
 	// that later advertises h2 must not silently switch it to a protocol that
-	// cannot carry both directions at once.
+	// cannot carry both directions at once. It also never follows a redirect;
+	// see newRemote.
 	attach *http.Client
 }
 
@@ -100,7 +101,18 @@ func newRemote(cfg Config) (*Client, error) {
 		token:   token,
 		http:    &http.Client{Timeout: timeout, Transport: transport},
 		stream:  &http.Client{Transport: transport},
-		attach:  &http.Client{Transport: consoleTransport},
+		attach: &http.Client{
+			Transport: consoleTransport,
+			// A redirect is never part of the attach protocol. Following one
+			// would turn the full-duplex POST into a GET whose body (an HTML
+			// error page, typically) would be copied to the terminal as
+			// console output, and a same-host https->http hop would replay the
+			// bearer token in the clear. Returning the response leaves it to
+			// the normal non-2xx error mapping instead.
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
 	}}, nil
 }
 
