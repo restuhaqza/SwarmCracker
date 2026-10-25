@@ -1,0 +1,163 @@
+# Accepted-name fixture for tools/sdkgen.
+#
+# These names are legal in both generated languages even though several of them
+# look reserved, so the validator must *not* refuse them: `interface`, `implements`,
+# `let`, `package`, `private`, `protected`, `public` and `static` are only
+# reserved in strict-mode binding positions, which the emitters never produce
+# (they emit `interface` and `type`, never `class`, `let` or `const`).
+#
+# TestAcceptedFixtureTypeChecksWithPinnedTSC generates this document into a
+# temporary directory and compiles the result with the pinned tsc, so the
+# aggressive-but-legal end of the rule is proven by the compiler rather than
+# asserted from memory. Property names are exercised just as aggressively: a
+# reserved word is a legal interface member and not a Python keyword, so
+# `delete`, `default`, `function` and `new` must survive verbatim.
+openapi: 3.1.0
+info:
+  title: accepted names
+  version: 0.0.0
+components:
+  schemas:
+    interface:
+      type: object
+      required: [id]
+      properties:
+        id: {type: string}
+        delete: {type: string}
+        default: {type: string}
+        function: {type: string}
+        new: {type: string}
+        type: {type: string}
+        object: {type: string}
+        Any: {type: string}
+        Literal: {type: string}
+    implements:
+      type: object
+      properties:
+        id: {type: string}
+    let:
+      type: object
+      properties:
+        id: {type: string}
+    package:
+      type: object
+      properties:
+        id: {type: string}
+    private:
+      type: object
+      properties:
+        id: {type: string}
+    protected:
+      type: object
+      properties:
+        id: {type: string}
+    public:
+      type: object
+      properties:
+        id: {type: string}
+    static:
+      type: object
+      properties:
+        id: {type: string}
+    get:
+      type: object
+      properties:
+        id: {type: string}
+    set:
+      type: object
+      properties:
+        id: {type: string}
+    readonly:
+      type: object
+      properties:
+        id: {type: string}
+    keyof:
+      type: object
+      properties:
+        id: {type: string}
+    infer:
+      type: object
+      properties:
+        id: {type: string}
+    declare:
+      type: object
+      properties:
+        id: {type: string}
+    namespace:
+      type: object
+      properties:
+        id: {type: string}
+    unique:
+      type: object
+      properties:
+        id: {type: string}
+    intrinsic:
+      type: object
+      properties:
+        id: {type: string}
+    out:
+      type: object
+      properties:
+        id: {type: string}
+    constructor:
+      type: object
+      properties:
+        id: {type: string}
+    Object:
+      type: object
+      properties:
+        id: {type: string}
+    String:
+      type: object
+      properties:
+        id: {type: string}
+    Number:
+      type: object
+      properties:
+        id: {type: string}
+    Promise:
+      type: object
+      properties:
+        id: {type: string}
+    Date:
+      type: object
+      properties:
+        id: {type: string}
+    JSON:
+      type: object
+      properties:
+        id: {type: string}
+    Error:
+      type: object
+      properties:
+        id: {type: string}
+    Function:
+      type: object
+      properties:
+        id: {type: string}
+    schema_version:
+      type: object
+      properties:
+        id: {type: string}
+    _private:
+      type: object
+      properties:
+        id: {type: string}
+    x1:
+      type: object
+      properties:
+        id: {type: string}
+    camelCase:
+      type: object
+      properties:
+        id: {type: string}
+    # Aliases are exercised too: `export type <name> = ...` has its own rules,
+    # and `Map` makes the module use the TypeScript lib type Record.
+    module:
+      type: string
+    Map:
+      type: object
+      additionalProperties: {type: string}
+    Array:
+      type: array
+      items: {type: string}

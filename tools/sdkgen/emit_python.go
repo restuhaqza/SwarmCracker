@@ -7,6 +7,22 @@ import (
 	"strings"
 )
 
+// pyTypingImportNames is the exact `typing` import of the generated module, in
+// the order it is emitted. tools/sdkgen refuses a schema with one of these names
+// (identifiers.go reads this slice), so a declaration can never shadow the
+// import and quietly change the meaning of every annotation.
+var pyTypingImportNames = []string{"Any", "Literal", "NotRequired", "TypedDict", "Union"}
+
+// pyFutureImportNames is the `__future__` import of the generated module. A
+// future import also binds each feature name at module level, so these names are
+// refused as schema names for the same reason.
+var pyFutureImportNames = []string{"annotations"}
+
+// pyBuiltinTypeNames are the builtins pyBaseType names in its annotations. A
+// schema with one of these names shadows the builtin before the annotations are
+// resolved, so the module would still import but describe the wrong types.
+var pyBuiltinTypeNames = []string{"bool", "dict", "float", "int", "list", "str"}
+
 // GeneratePython renders the Python model file.
 func GeneratePython(spec *Spec) ([]byte, error) {
 	classes := make([]*Schema, 0, len(spec.Schemas))
@@ -34,8 +50,8 @@ func GeneratePython(spec *Spec) ([]byte, error) {
 
 	var body strings.Builder
 	body.WriteString("# " + generatedHeader + "\n")
-	body.WriteString("from __future__ import annotations\n\n")
-	body.WriteString("from typing import Any, Literal, NotRequired, TypedDict, Union\n")
+	body.WriteString("from __future__ import " + strings.Join(pyFutureImportNames, ", ") + "\n\n")
+	body.WriteString("from typing import " + strings.Join(pyTypingImportNames, ", ") + "\n")
 	if text := joinDeclarations(classDecls, aliasDecls); text != "" {
 		body.WriteString("\n")
 		body.WriteString(text)

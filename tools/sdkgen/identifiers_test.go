@@ -3,13 +3,17 @@ package main
 import (
 	"bytes"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
-// TestIsPortableIdentifier pins the documented rule the emitters rely on:
-// an ASCII letter or underscore followed by letters, digits or underscores, and
-// not a Python keyword.
+// TestIsPortableIdentifier pins the documented *property* rule the emitters rely
+// on: an ASCII letter or underscore followed by letters, digits or underscores,
+// and not a Python keyword.
 func TestIsPortableIdentifier(t *testing.T) {
 	valid := []string{"id", "updatedAt", "_private", "x1", "A", "schema_version", "bx2"}
 	for _, name := range valid {
@@ -73,11 +77,13 @@ func TestParseRejectsNonIdentifierPropertyName(t *testing.T) {
 	}
 }
 
-// TestParseRejectsNonIdentifierSchemaName covers the other half of the rule: a
-// component name becomes a class, interface or alias name, so it is held to the
-// same standard, plus the TypeScript reserved words that cannot be a declaration
-// name at all.
-func TestParseRejectsNonIdentifierSchemaName(t *testing.T) {
+// TestParseRejectsHostileSchemaName covers the declaration-position half of the
+// rule: a component name becomes a class, interface or alias name in both
+// languages, so it is held to the property rule plus the names that are legal
+// only as *members* (`delete`), the names tsc refuses as a declaration
+// (`string`), the lib type the emitter relies on (`Record`) and every name the
+// generated Python module binds at module level (`Any`, `dict`, `annotations`).
+func TestParseRejectsHostileSchemaName(t *testing.T) {
 	cases := []struct {
 		name   string
 		schema string
@@ -85,12 +91,21 @@ func TestParseRejectsNonIdentifierSchemaName(t *testing.T) {
 	}{
 		{name: "hyphen", schema: "Bad-Name", reason: "is not a portable identifier"},
 		{name: "python keyword", schema: "class", reason: "is a Python keyword"},
-		{name: "typescript reserved", schema: "interface", reason: "TypeScript reserved word"},
-		{name: "typescript reserved delete", schema: "delete", reason: "TypeScript reserved word"},
+		{name: "typescript keyword", schema: "delete", reason: "TypeScript keyword or type name"},
+		{name: "typescript keyword new", schema: "new", reason: "TypeScript keyword or type name"},
+		{name: "typescript type name", schema: "string", reason: "TypeScript keyword or type name"},
+		{name: "typescript type name undefined", schema: "undefined", reason: "TypeScript keyword or type name"},
+		{name: "typescript type name object", schema: "object", reason: "TypeScript keyword or type name"},
+		{name: "typescript alias-only word", schema: "as", reason: "is a Python keyword"},
+		{name: "typescript lib type", schema: "Record", reason: "TypeScript lib type Record"},
+		{name: "python typing import", schema: "Any", reason: "imports from typing"},
+		{name: "python typing TypedDict", schema: "TypedDict", reason: "imports from typing"},
+		{name: "python future import", schema: "annotations", reason: "imports from __future__"},
+		{name: "python builtin", schema: "dict", reason: "Python builtin"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			src := specWith("    " + tc.schema + ":\n      type: object\n      properties:\n        id: {type: string}\n")
+			src := specWith(schemaSpec(tc.schema))
 			_, err := Parse([]byte(src), "test.yaml")
 			if err == nil {
 				t.Fatalf("Parse() accepted schema name %q", tc.schema)
@@ -108,19 +123,81 @@ func TestParseRejectsNonIdentifierSchemaName(t *testing.T) {
 	}
 }
 
+// TestSchemaNameProblemRefusesEveryBlocklistedName keeps the checks and the
+// lists from drifting apart: every name in every blocklist must be refused, and
+// a list emptied by accident must not leave the test vacuous.
+func TestSchemaNameProblemRefusesEveryBlocklistedName(t *testing.T) {
+	groups := map[string]map[string]bool{
+		"typescript declaration": typescriptDeclarationBlocklist,
+		"typescript module":      typescriptModuleVocabulary,
+		"python typing":          pythonTypingNames,
+		"python future":          pythonFutureNames,
+		"python builtin":         pythonBuiltinNames,
+	}
+	order := []string{"typescript declaration", "typescript module", "python typing", "python future", "python builtin"}
+	for _, group := range order {
+		names := groups[group]
+		if len(names) == 0 {
+			t.Fatalf("%s blocklist is empty", group)
+		}
+		for name := range names {
+			if problem := schemaNameProblem(name); problem == "" {
+				t.Errorf("schemaNameProblem(%q) = \"\", want a refusal (%s blocklist)", name, group)
+			}
+		}
+	}
+	if len(typescriptKeywordBlocklist) < 30 || len(typescriptTypeNameBlocklist) < 10 {
+		t.Errorf("blocklists shrank unexpectedly: %d keywords, %d type names",
+			len(typescriptKeywordBlocklist), len(typescriptTypeNameBlocklist))
+	}
+}
+
+// TestSchemaNameProblemAcceptsBorderlineNames guards the other direction: words
+// that look reserved but are legal declaration names in both languages must
+// still be accepted, or the rule becomes a gratuitous restriction. The same set
+// is generated into testdata/accepted.yaml and compiled by the pinned tsc in
+// TestAcceptedFixtureTypeChecksWithPinnedTSC.
+func TestSchemaNameProblemAcceptsBorderlineNames(t *testing.T) {
+	accepted := []string{
+		// Reserved only in strict-mode binding positions, which the emitters
+		// never produce: tsc accepts every one of these as an interface and as a
+		// type alias name.
+		"interface", "implements", "let", "package", "private", "protected",
+		"public", "static",
+		// Contextual TypeScript words.
+		"get", "set", "type", "of", "readonly", "keyof", "infer", "declare",
+		"module", "namespace", "unique", "intrinsic", "out", "constructor",
+		// Lib and global constructor names the generated module never uses.
+		"Object", "String", "Number", "Promise", "Date", "JSON", "Error", "Function",
+		// Ordinary forms.
+		"schema_version", "_private", "x1", "camelCase",
+	}
+	for _, name := range accepted {
+		if problem := schemaNameProblem(name); problem != "" {
+			t.Errorf("schemaNameProblem(%q) = %q, want accepted", name, problem)
+		}
+	}
+}
+
 // TestParseAcceptsTypeScriptReservedWordsAsProperties documents the deliberate
 // asymmetry: a reserved word is a legal interface member, so it is only refused
 // when the name is in declaration position.
 func TestParseAcceptsTypeScriptReservedWordsAsProperties(t *testing.T) {
 	src := specWith("    Thing:\n      type: object\n      properties:\n" +
-		"        delete: {type: string}\n        default: {type: string}\n")
+		"        delete: {type: string}\n        default: {type: string}\n" +
+		"        function: {type: string}\n        new: {type: string}\n")
 	spec := mustParse(t, src)
 
 	typescript, err := GenerateTypeScript(spec)
 	if err != nil {
 		t.Fatalf("GenerateTypeScript() error = %v", err)
 	}
-	for _, member := range []string{"  delete?: string;", "  default?: string;"} {
+	for _, member := range []string{
+		"  delete?: string;",
+		"  default?: string;",
+		"  function?: string;",
+		"  new?: string;",
+	} {
 		if !strings.Contains(string(typescript), member) {
 			t.Errorf("TypeScript output is missing %q\n%s", member, typescript)
 		}
@@ -155,6 +232,34 @@ func TestParseAcceptsEveryIdentifierFormTheEmittersCanRender(t *testing.T) {
 	}
 }
 
+// TestEmittedPythonImportsCannotBeShadowed derives the rule from the real
+// output instead of from the lists: whatever name the generated module imports,
+// a schema may not declare it. A hardcoded import added to the emitter therefore
+// fails here until the blocklist covers it.
+func TestEmittedPythonImportsCannotBeShadowed(t *testing.T) {
+	python, err := GeneratePython(mustParse(t, smallSpec))
+	if err != nil {
+		t.Fatalf("GeneratePython() error = %v", err)
+	}
+	imported := 0
+	for _, line := range strings.Split(string(python), "\n") {
+		module, names, ok := strings.Cut(line, " import ")
+		if !ok || !strings.HasPrefix(module, "from ") {
+			continue
+		}
+		for _, name := range strings.Split(names, ", ") {
+			imported++
+			if problem := schemaNameProblem(name); problem == "" {
+				t.Errorf("the generated module imports %q, but a schema with that "+
+					"name is accepted and would shadow the import", name)
+			}
+		}
+	}
+	if imported < 6 {
+		t.Fatalf("found only %d imported names in the generated module; the check would be vacuous", imported)
+	}
+}
+
 // TestRunFailsOnNonIdentifierProperty covers the CLI contract: exit 1, the
 // property is named on stderr, and no output file is written, so a stale-by-rule
 // spec can never leave an invalid model behind.
@@ -176,21 +281,84 @@ func TestRunFailsOnNonIdentifierProperty(t *testing.T) {
 	}
 }
 
-// TestCommittedSpecIsIdentifierClean is the reproduction of the whole item: the
-// normative spec must never introduce a name the generator would refuse, or
-// `make sdk-check` breaks on a spec-only pull request.
-func TestCommittedSpecIsIdentifierClean(t *testing.T) {
+// TestHostileFixtureIsRejectedByTheGenerator is the end-to-end reproduction of
+// the finding this file exists for: testdata/hostile.yaml holds names that are
+// legal OpenAPI names and legal identifiers, so the earlier rule accepted them
+// all, and the generated modules did not compile (or, worse, compiled against a
+// shadowed import). The document must now be refused, name by name, before a
+// single byte is written.
+func TestHostileFixtureIsRejectedByTheGenerator(t *testing.T) {
+	names := fixtureSchemaNames(t, "testdata/hostile.yaml")
+	if len(names) < 20 {
+		t.Fatalf("hostile fixture only declares %d schemas; coverage shrank: %v", len(names), names)
+	}
+	for _, name := range names {
+		if problem := schemaNameProblem(name); problem == "" {
+			t.Errorf("schemaNameProblem(%q) = \"\", want a refusal", name)
+		}
+	}
+
+	in := newGenerateIn(t)
+	writeFile(t, in.spec, readFile(t, "testdata/hostile.yaml"))
+	var stdout, stderr bytes.Buffer
+	if code := run(in.args(), &stdout, &stderr); code != 1 {
+		t.Fatalf("run() = %d, want 1 (stderr: %s)", code, stderr.String())
+	}
+	message := stderr.String()
+	if !strings.Contains(message, "#/components/schemas/") {
+		t.Errorf("stderr does not carry the JSON path: %s", message)
+	}
+	if !strings.Contains(message, "schema name") {
+		t.Errorf("stderr does not explain what was refused: %s", message)
+	}
+	for _, path := range []string{in.pythonPath, in.tsPath} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("run() wrote %s for a spec it refused", path)
+		}
+	}
+}
+
+// TestIdentifierValidationRejectsHostileNamesAndAcceptsTheCommittedSpec replaces
+// the earlier check that only asserted "the committed spec is clean" by calling
+// the helper it was supposed to be testing. It now proves both directions of the
+// rule: every hostile name in testdata/hostile.yaml is refused through the real
+// parse path (with its JSON path), and the normative api/openapi.yaml is
+// accepted name by name.
+func TestIdentifierValidationRejectsHostileNamesAndAcceptsTheCommittedSpec(t *testing.T) {
+	hostile := fixtureSchemaNames(t, "testdata/hostile.yaml")
+	if len(hostile) == 0 {
+		t.Fatal("hostile fixture declares no schemas")
+	}
+	for _, name := range hostile {
+		t.Run("rejects/"+name, func(t *testing.T) {
+			src := specWith(schemaSpec(name))
+			_, err := Parse([]byte(src), "testdata/hostile.yaml")
+			if err == nil {
+				t.Fatalf("Parse() accepted schema name %q", name)
+			}
+			if !strings.Contains(err.Error(), `"`+name+`"`) {
+				t.Errorf("error does not quote the schema name: %s", err)
+			}
+			if !strings.Contains(err.Error(), "#/components/schemas/"+name) {
+				t.Errorf("error does not carry the JSON path: %s", err)
+			}
+		})
+	}
+
 	src, err := os.ReadFile(realSpecPath)
 	if err != nil {
 		t.Fatalf("read spec: %v", err)
 	}
-	spec, err := Parse(src, "api/openapi.yaml")
+	spec, err := Parse(src, realSpecPath)
 	if err != nil {
-		t.Fatalf("Parse(%s) error = %v", realSpecPath, err)
+		t.Fatalf("Parse(%s) error = %v; the committed spec must stay clean", realSpecPath, err)
+	}
+	if len(spec.Schemas) < 10 {
+		t.Fatalf("committed spec resolved only %d schemas; the check would be vacuous", len(spec.Schemas))
 	}
 	for _, schema := range spec.Schemas {
-		if !isPortableIdentifier(schema.Name) {
-			t.Errorf("schema %q is not a portable identifier", schema.Name)
+		if problem := schemaNameProblem(schema.Name); problem != "" {
+			t.Errorf("committed schema %q is refused: %s", schema.Name, problem)
 		}
 		for _, property := range schema.Type.Properties {
 			if !isPortableIdentifier(property.Name) {
@@ -207,4 +375,29 @@ func quoteYAMLKey(name string) string {
 		return name
 	}
 	return `"` + name + `"`
+}
+
+// schemaSpec renders one throwaway schema declaration. Fixture names are plain
+// ASCII identifiers, so a bare YAML key is unambiguous.
+func schemaSpec(name string) string {
+	return "    " + name + ":\n      type: object\n      properties:\n        id: {type: string}\n"
+}
+
+// fixtureSchemaNames returns the sorted components.schemas names of a fixture.
+func fixtureSchemaNames(t *testing.T, path string) []string {
+	t.Helper()
+	var doc struct {
+		Components struct {
+			Schemas map[string]any `yaml:"schemas"`
+		} `yaml:"components"`
+	}
+	if err := yaml.Unmarshal([]byte(readFile(t, filepath.Clean(path))), &doc); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	names := make([]string, 0, len(doc.Components.Schemas))
+	for name := range doc.Components.Schemas {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
