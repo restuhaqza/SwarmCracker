@@ -64,6 +64,26 @@
       }
     },
     {
+      "name": "the write that just ran is in the audit log",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/audit",
+        "query": {"limit": "5"},
+        "role": "admin"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "AuditList",
+        "requestIdInBody": false,
+        "jsonPaths": {
+          "items.*.action": "service.delete",
+          "items.*.resource.name": "conformance-ws"
+        },
+        "absentKeysAnywhere": ["data"]
+      }
+    },
+    {
       "name": "create a config",
       "mutating": true,
       "request": {
@@ -116,7 +136,7 @@
         "kind": "Secret",
         "requestIdInBody": false,
         "jsonPaths": {"name": "conformance-secret"},
-        "absentKeys": ["data"]
+        "absentKeysAnywhere": ["data"]
       }
     },
     {
@@ -125,6 +145,46 @@
       "request": {
         "method": "DELETE",
         "path": "/v1/secrets/conformance-secret",
+        "role": "admin",
+        "headers": {"If-Match": "$etag"}
+      },
+      "expect": {
+        "status": 204
+      }
+    },
+    {
+      "name": "a repeated create with an Idempotency-Key replays the first document",
+      "mutating": true,
+      "request": {
+        "method": "POST",
+        "path": "/v1/services",
+        "role": "admin",
+        "headers": {"Idempotency-Key": "conformance-idem-service"},
+        "body": {
+          "name": "conformance-idem",
+          "labels": {"suite": "conformance"},
+          "spec": {
+            "mode": "replicated",
+            "replicas": 1,
+            "task": {"image": "nginx:alpine"}
+          }
+        }
+      },
+      "expect": {
+        "status": 201,
+        "kind": "Service",
+        "requestIdInBody": false,
+        "jsonPaths": {"name": "conformance-idem"},
+        "absentKeysAnywhere": ["registryAuth"]
+      },
+      "repeat": {"times": 2, "sameBody": true}
+    },
+    {
+      "name": "delete the replayed service",
+      "mutating": true,
+      "request": {
+        "method": "DELETE",
+        "path": "/v1/services/conformance-idem",
         "role": "admin",
         "headers": {"If-Match": "$etag"}
       },

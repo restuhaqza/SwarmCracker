@@ -68,8 +68,20 @@ type Case struct {
 	Expect   Expect  `json:"expect"`
 	// Follow follows one next cursor when Expect.NextPresent is true.
 	Follow *Follow `json:"follow,omitempty"`
+	// Repeat sends the same request more than once. It is how a fixture proves
+	// an Idempotency-Key: with SameBody, the second response must be the first.
+	Repeat *Repeat `json:"repeat,omitempty"`
 	// Stream reads an SSE or NDJSON response instead of a JSON document.
 	Stream *Stream `json:"stream,omitempty"`
+}
+
+// Repeat turns one case into several identical requests.
+type Repeat struct {
+	// Times is how many times the request is sent in total (at least two).
+	Times int `json:"times,omitempty"`
+	// SameBody asserts every repeat returned the primary response's body and
+	// status, which is how a replay proves it did not run a second write.
+	SameBody bool `json:"sameBody,omitempty"`
 }
 
 // Request is one HTTP request. The runner supplies the bearer token for Role.
@@ -106,11 +118,15 @@ type Expect struct {
 	// Headers are exact-match assertions on the response.
 	Headers map[string]string `json:"headers,omitempty"`
 	// JSONPaths are dot paths with numeric array indexes, compared as strings.
+	// A "*" segment matches any array element, so "items.*.action" asserts that
+	// at least one item carries the action.
 	JSONPaths map[string]string `json:"jsonPaths,omitempty"`
 	// AbsentKeys are dot paths that must not exist in the body.
 	AbsentKeys []string `json:"absentKeys,omitempty"`
-	// StreamFrames is an accepted alias for Stream.Frames.
-	StreamFrames int `json:"streamFrames,omitempty"`
+	// AbsentKeysAnywhere are key names that must not appear at any depth. Use it
+	// for a payload the DTO can never name: a dotted path would silently pass
+	// once its parent object is absent.
+	AbsentKeysAnywhere []string `json:"absentKeysAnywhere,omitempty"`
 }
 
 // Follow is the one extra request that walks a next cursor.
@@ -120,23 +136,15 @@ type Follow struct {
 	Expect Expect            `json:"expect"`
 }
 
-// Stream describes a streaming response: how many data frames it must carry
-// and, optionally, the type of its last frame.
+// Frames is the number of data frames a stream case waits for: reading stops as
+// soon as that many have arrived. LastType names the frame that must end the
+// stream (exit for exec, eof for logs); when set, reading also stops there, so a
+// live stream that keeps emitting is not read to the deadline.
+//
+// A stream case carries one of these instead of an expectation document.
 type Stream struct {
 	Frames   int    `json:"frames,omitempty"`
 	LastType string `json:"lastType,omitempty"`
-}
-
-// expectedFrames is the frame count the case asserts, honouring the
-// expect.streamFrames alias.
-func (c Case) expectedFrames() int {
-	if c.Stream == nil {
-		return 0
-	}
-	if c.Expect.StreamFrames > 0 {
-		return c.Expect.StreamFrames
-	}
-	return c.Stream.Frames
 }
 
 // Load reads every *.json file in dir, sorted by name, and validates it.
@@ -227,6 +235,19 @@ func (f Fixture) Validate() error {
 	return nil
 }
 
+// forbiddenHeaders are the header names a fixture may not set. The runner owns
+// the credential (Authorization) and the transport owns message framing
+// (Connection, Transfer-Encoding, Upgrade); a fixture that sets either would test
+// the HTTP stack, not the API.
+var forbiddenHeaders = map[string]bool{
+	"authorization":       true,
+	"cookie":              true,
+	"proxy-authorization": true,
+	"connection":          true,
+	"transfer-encoding":   true,
+	"upgrade":             true,
+}
+
 // validate checks one case. The stream and follow blocks relax the
 // "exactly one expectation kind" rule for reasons the error text names.
 func (c Case) validate() error {
@@ -242,6 +263,22 @@ func (c Case) validate() error {
 	if !strings.HasPrefix(c.Request.Path, "/v1/") {
 		return fmt.Errorf("request path %q must be an absolute path under /v1/", c.Request.Path)
 	}
+	for name := range c.Request.Headers {
+		if forbiddenHeaders[strings.ToLower(strings.TrimSpace(name))] {
+			return fmt.Errorf("request header %q may not be set by a fixture", name)
+		}
+	}
+	for _, key := range c.Expect.AbsentKeysAnywhere {
+		if strings.TrimSpace(key) == "" {
+			return errors.New("absentKeysAnywhere entries must be non-empty key names")
+		}
+	}
+
+	for name := range c.Request.Headers {
+		if forbiddenHeaders[strings.ToLower(strings.TrimSpace(name))] {
+			return fmt.Errorf("request header %q may not be set by a fixture", name)
+		}
+	}
 
 	strict := c.Stream == nil
 	if err := validateExpect(c.Expect, strict, "expect"); err != nil {
@@ -249,14 +286,28 @@ func (c Case) validate() error {
 	}
 
 	if c.Stream != nil {
-		if c.expectedFrames() <= 0 {
+		if c.Stream.Frames <= 0 {
 			return errors.New("stream needs a positive frames count")
+		}
+	}
+	if c.Repeat != nil {
+		if c.Stream != nil {
+			return errors.New("repeat applies to a JSON document, not a stream")
+		}
+		if c.Repeat.Times < 2 {
+			return errors.New("repeat needs times of at least 2")
 		}
 	}
 
 	if c.Follow != nil {
 		if !strings.HasPrefix(c.Follow.Path, "/v1/") {
 			return fmt.Errorf("follow path %q must be an absolute path under /v1/", c.Follow.Path)
+		}
+		// A follow only exists to walk a cursor the primary response must have
+		// returned. Without nextPresent: true the runner would either skip the
+		// follow silently or follow a cursor the case never asserted.
+		if c.Expect.NextPresent == nil || !*c.Expect.NextPresent {
+			return errors.New("follow needs expect.nextPresent: true")
 		}
 		if err := validateExpect(c.Follow.Expect, false, "follow expect"); err != nil {
 			return err
@@ -270,6 +321,11 @@ func (c Case) validate() error {
 func validateExpect(e Expect, strict bool, where string) error {
 	if e.Status < 100 || e.Status > 599 {
 		return fmt.Errorf("%s status must be a 3-digit HTTP status", where)
+	}
+	for _, key := range e.AbsentKeysAnywhere {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("%s: absentKeysAnywhere entries must be non-empty key names", where)
+		}
 	}
 	hasKind := e.Kind != ""
 	hasCode := e.ErrorCode != ""

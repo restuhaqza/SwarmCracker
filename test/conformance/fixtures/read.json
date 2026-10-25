@@ -32,7 +32,7 @@
         "status": 200,
         "kind": "ServiceList",
         "requestIdInBody": false,
-        "absentKeys": ["items.0.spec.task.registryAuth"]
+        "absentKeysAnywhere": ["registryAuth"]
       }
     },
     {
@@ -81,7 +81,7 @@
           "spec.mode": "replicated",
           "spec.task.image": "nginx:alpine"
         },
-        "absentKeys": ["spec.task.registryAuth"]
+        "absentKeysAnywhere": ["registryAuth"]
       }
     },
     {
@@ -89,7 +89,7 @@
       "mockOnly": true,
       "request": {
         "method": "GET",
-        "path": "/v1/services/svc-1",
+        "path": "/v1/services/svc-web",
         "role": "reader"
       },
       "expect": {
@@ -97,6 +97,23 @@
         "kind": "Service",
         "jsonPaths": {
           "name": "web"
+        }
+      }
+    },
+    {
+      "name": "an ambiguous id prefix is rejected with its candidates",
+      "mockOnly": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/services/svc-",
+        "role": "reader"
+      },
+      "expect": {
+        "status": 400,
+        "errorCode": "ambiguous",
+        "jsonPaths": {
+          "error.details.candidates.0.name": "web",
+          "error.details.candidates.1.name": "api"
         }
       }
     },
@@ -171,7 +188,7 @@
         "status": 200,
         "kind": "ConfigList",
         "requestIdInBody": false,
-        "absentKeys": ["items.0.data"]
+        "absentKeysAnywhere": ["data"]
       }
     },
     {
@@ -203,7 +220,22 @@
         "status": 200,
         "kind": "SecretList",
         "requestIdInBody": false,
-        "absentKeys": ["items.0.data"]
+        "absentKeysAnywhere": ["data"]
+      }
+    },
+    {
+      "name": "audit list is readable by an admin",
+      "request": {
+        "method": "GET",
+        "path": "/v1/audit",
+        "query": {"limit": "5"},
+        "role": "admin"
+      },
+      "expect": {
+        "status": 200,
+        "kind": "AuditList",
+        "requestIdInBody": false,
+        "absentKeysAnywhere": ["data"]
       }
     },
     {

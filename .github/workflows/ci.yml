@@ -151,6 +151,10 @@ jobs:
   # One declarative fixture set, executed against the real apihttp handler with
   # an in-memory backend on loopback TLS. The identical fixtures run against a
   # live manager in the scheduled conformance-lab workflow.
+  #
+  # The whole package runs, not only TestConformanceMock: the loader/runner unit
+  # tests and TestLabSkipPolicy guard the suite itself (a fixture that silently
+  # stops running, a skip rule that stops skipping), so they belong on every PR.
   conformance:
     runs-on: ubuntu-latest
     permissions:
@@ -162,8 +166,8 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: API conformance fixtures
-        run: make conformance
+      - name: API conformance suite
+        run: go test ./test/conformance -count=1
 
   build:
     runs-on: ubuntu-latest

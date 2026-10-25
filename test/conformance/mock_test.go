@@ -8,6 +8,7 @@ package conformance
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -28,19 +29,41 @@ const (
 	mockGRPCVersion   = "v1"
 	mockNodeA         = "node-a"
 	mockNodeB         = "node-b"
+	// mockTaskID is the task the stream fixtures exec into. The runner receives
+	// it as $task, the same variable the lab run reads from CONFORMANCE_TASK_ID.
+	mockTaskID = "task-a"
+	// mockMinRefPrefix mirrors pkg/client's minimum ID prefix: shorter than this
+	// is invalid, never a prefix match.
+	mockMinRefPrefix = 4
 )
 
+// expectedMockCases is the number of fixture cases the mock leg must execute. A
+// case that silently stops running (a stricter skip policy, a lost file, a typo
+// in a case name that a filter no longer matches) is a regression the mock leg
+// must fail on, so the count is pinned here and bumped with every new case.
+const expectedMockCases = 34
+
 // TestConformanceMock executes every fixture against the real handler with an
-// in-memory backend. Mutations always run: this backend is thrown away.
+// in-memory backend. Mutations always run: this backend is thrown away. No case
+// may skip here: a skip is either a broken fixture or a policy that no longer
+// fits the mock, and both must be visible.
 func TestConformanceMock(t *testing.T) {
 	harness := newMockHarness(t)
 
-	Run(t, Env{
+	summary := Run(t, Env{
 		BaseURL:       harness.server.URL,
 		Client:        harness.server.Client(),
 		Tokens:        harness.tokens,
+		Vars:          map[string]string{"task": mockTaskID},
 		AllowMutation: true,
 	}, "fixtures")
+
+	if summary.Skipped != 0 {
+		t.Fatalf("%d of %d mock cases were skipped; the mock run must execute every case", summary.Skipped, summary.Cases)
+	}
+	if summary.Cases != expectedMockCases {
+		t.Fatalf("%d cases ran, want %d; bump expectedMockCases with the fixture change", summary.Cases, expectedMockCases)
+	}
 }
 
 // mockHarness is the real handler, a real token store and a TLS listener.
@@ -62,10 +85,10 @@ func newMockHarness(t *testing.T) *mockHarness {
 	if err != nil {
 		t.Fatalf("mint reader token: %v", err)
 	}
-	// A runner must carry a selector. task-a is the only task the exec fixture
-	// uses, so the selector names exactly that task.
+	// A runner must carry a selector. mockTaskID is the only task the exec
+	// fixture uses, so the selector names exactly that task.
 	runner, _, err := store.CreateWithOptions("conformance-runner", apihttp.RoleRunner,
-		apihttp.TokenOptions{TaskSelectors: &apihttp.TaskSelectors{TaskIDs: []string{"task-a"}}})
+		apihttp.TokenOptions{TaskSelectors: &apihttp.TaskSelectors{TaskIDs: []string{mockTaskID}}})
 	if err != nil {
 		t.Fatalf("mint runner token: %v", err)
 	}
@@ -74,10 +97,17 @@ func newMockHarness(t *testing.T) *mockHarness {
 		t.Fatalf("mint admin token: %v", err)
 	}
 
+	audit, err := apihttp.OpenAuditStore(filepath.Join(t.TempDir(), "audit.jsonl"), 0)
+	if err != nil {
+		t.Fatalf("open audit store: %v", err)
+	}
+
 	srv, err := apihttp.New(apihttp.Config{
 		Client:           backend,
 		Broker:           backend,
 		Tokens:           store,
+		Audit:            audit,
+		Idempotency:      apihttp.NewIdempotencyStore(0),
 		ServerVersion:    mockServerVersion,
 		GRPCVersion:      mockGRPCVersion,
 		RateLimit:        apihttp.NewRateLimiter(1e9, 1e9),
@@ -113,8 +143,6 @@ type mockBackend struct {
 	configs  []v1.Config
 	secrets  []v1.Secret
 
-	secretPayloads map[string]string
-
 	nextID int
 	now    time.Time
 }
@@ -124,7 +152,7 @@ func newMockBackend() *mockBackend {
 
 	return &mockBackend{
 		services: []v1.Service{{
-			ID:        "svc-1",
+			ID:        "svc-web-1",
 			Name:      "web",
 			Revision:  "1",
 			CreatedAt: "2026-01-01T00:00:00Z",
@@ -136,7 +164,7 @@ func newMockBackend() *mockBackend {
 			},
 			Status: v1.ServiceStatus{DesiredTasks: 1, RunningTasks: 1, Converged: true},
 		}, {
-			ID:        "svc-2",
+			ID:        "svc-api-2",
 			Name:      "api",
 			Revision:  "1",
 			CreatedAt: "2026-01-02T00:00:00Z",
@@ -148,8 +176,8 @@ func newMockBackend() *mockBackend {
 			Status: v1.ServiceStatus{DesiredTasks: 1, RunningTasks: 1, Converged: true},
 		}},
 		tasks: []v1.Task{{
-			ID:           "task-a",
-			ServiceID:    "svc-1",
+			ID:           mockTaskID,
+			ServiceID:    "svc-web-1",
 			ServiceName:  "web",
 			NodeID:       mockNodeA,
 			NodeName:     "manager-a",
@@ -160,7 +188,7 @@ func newMockBackend() *mockBackend {
 			Image:        "nginx:alpine",
 		}, {
 			ID:           "task-b",
-			ServiceID:    "svc-2",
+			ServiceID:    "svc-api-2",
 			ServiceName:  "api",
 			NodeID:       mockNodeB,
 			NodeName:     "worker-b",
@@ -201,9 +229,8 @@ func newMockBackend() *mockBackend {
 			Revision:  "1",
 			CreatedAt: "2026-01-01T00:00:00Z",
 		}},
-		secretPayloads: map[string]string{"sec-1": "c2VjcmV0"},
-		nextID:         100,
-		now:            time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
+		nextID: 100,
+		now:    time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
 	}
 }
 
@@ -221,7 +248,8 @@ func (b *mockBackend) timestamp() string {
 }
 
 // findIndex resolves a reference the way pkg/client does: exact ID, exact name,
-// then a unique ID prefix. Ambiguous prefixes are invalid, not a guess.
+// then a unique ID prefix of at least mockMinRefPrefix characters. Ambiguous
+// prefixes are invalid, not a guess, and name their candidates.
 func findIndex[T any](items []T, kind, ref string, id, name func(T) string) (int, error) {
 	for i, item := range items {
 		if id(item) == ref {
@@ -232,21 +260,36 @@ func findIndex[T any](items []T, kind, ref string, id, name func(T) string) (int
 		}
 	}
 
+	if len(ref) < mockMinRefPrefix {
+		return -1, output.NewErrorf(output.CodeInvalid,
+			"%s reference %q is too short: use an exact id or name, or at least %d characters of an id",
+			kind, ref, mockMinRefPrefix)
+	}
+
 	match := -1
+	candidates := make([]map[string]string, 0, 2)
 	for i, item := range items {
 		if !strings.HasPrefix(id(item), ref) {
 			continue
 		}
-		if match >= 0 {
-			return -1, output.NewErrorf(output.CodeAmbiguous,
-				"%s reference %q matches more than one object", kind, ref)
-		}
 		match = i
+		candidate := map[string]string{"id": id(item)}
+		if name != nil {
+			candidate["name"] = name(item)
+		}
+		candidates = append(candidates, candidate)
 	}
-	if match >= 0 {
+
+	switch {
+	case match < 0:
+		return -1, output.NewErrorf(output.CodeNotFound, "%s %q not found", kind, ref)
+	case len(candidates) > 1:
+		return -1, output.NewErrorf(output.CodeAmbiguous,
+			"%s reference %q matches %d %ss", kind, ref, len(candidates), kind).
+			WithDetails(map[string]any{"candidates": candidates})
+	default:
 		return match, nil
 	}
-	return -1, output.NewErrorf(output.CodeNotFound, "%s %q not found", kind, ref)
 }
 
 func nameExists(kind, name string) error {
@@ -654,7 +697,6 @@ func (b *mockBackend) CreateSecret(_ context.Context, write v1.SecretWrite, _ v1
 		secret.Driver = write.Driver.Name
 	}
 	b.secrets = append(b.secrets, secret)
-	b.secretPayloads[secret.ID] = write.Data
 	return secret, nil
 }
 
@@ -702,7 +744,6 @@ func (b *mockBackend) DeleteSecret(_ context.Context, ref string, opts v1.WriteO
 	}
 
 	b.secrets = append(b.secrets[:index], b.secrets[index+1:]...)
-	delete(b.secretPayloads, current.ID)
 	return current, nil
 }
 
@@ -785,9 +826,9 @@ func (b *mockBackend) UpdateNode(_ context.Context, ref string, patch []byte, op
 func (b *mockBackend) WatchEvents(context.Context, v1.EventOptions) (<-chan v1.Event, <-chan error, error) {
 	events := make(chan v1.Event, 2)
 	events <- v1.NewEvent("1", "2026-01-03T00:00:00Z", "service.created",
-		v1.EventResource{Kind: v1.KindService, ID: "svc-1", Name: "web"}, "1")
+		v1.EventResource{Kind: v1.KindService, ID: "svc-web-1", Name: "web"}, "1")
 	events <- v1.NewEvent("2", "2026-01-03T00:01:00Z", "service.updated",
-		v1.EventResource{Kind: v1.KindService, ID: "svc-1", Name: "web"}, "2")
+		v1.EventResource{Kind: v1.KindService, ID: "svc-web-1", Name: "web"}, "2")
 	close(events)
 
 	// errs must stay open: a closed error channel is also ready to receive, and
@@ -836,4 +877,62 @@ func writeFrames(w http.ResponseWriter, frames ...any) error {
 		}
 	}
 	return nil
+}
+
+// TestFindIndexResolvesReferences pins the resolution order the fixture set
+// depends on: exact ID, exact name, then a unique prefix of at least four
+// characters. An ambiguous prefix names its candidates instead of guessing.
+func TestFindIndexResolvesReferences(t *testing.T) {
+	services := []v1.Service{
+		{ID: "svc-web-1", Name: "web"},
+		{ID: "svc-api-2", Name: "api"},
+	}
+	id := func(s v1.Service) string { return s.ID }
+	name := func(s v1.Service) string { return s.Name }
+
+	tests := []struct {
+		name       string
+		ref        string
+		want       int
+		code       output.Code
+		candidates []string
+	}{
+		{name: "exact id", ref: "svc-api-2", want: 1},
+		{name: "exact name", ref: "web", want: 0},
+		{name: "unique id prefix", ref: "svc-web", want: 0},
+		{name: "ambiguous id prefix", ref: "svc-", want: -1, code: output.CodeAmbiguous,
+			candidates: []string{"web", "api"}},
+		{name: "prefix shorter than four characters", ref: "svc", want: -1, code: output.CodeInvalid},
+		{name: "unknown reference", ref: "nope", want: -1, code: output.CodeNotFound},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			index, err := findIndex(services, "service", tc.ref, id, name)
+			if tc.code == "" {
+				if err != nil || index != tc.want {
+					t.Fatalf("findIndex(%q) = %d, %v; want %d", tc.ref, index, err, tc.want)
+				}
+				return
+			}
+
+			var typed *output.Error
+			if !errors.As(err, &typed) || typed.Code != tc.code {
+				t.Fatalf("findIndex(%q) = %v; want code %q", tc.ref, err, tc.code)
+			}
+			if tc.candidates == nil {
+				return
+			}
+
+			got, ok := typed.Details["candidates"].([]map[string]string)
+			if !ok || len(got) != len(tc.candidates) {
+				t.Fatalf("candidates = %#v, want %d with names %v", typed.Details["candidates"], len(tc.candidates), tc.candidates)
+			}
+			for i, want := range tc.candidates {
+				if got[i]["name"] != want {
+					t.Fatalf("candidate %d name = %q, want %q", i, got[i]["name"], want)
+				}
+			}
+		})
+	}
 }

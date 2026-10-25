@@ -17,6 +17,7 @@ const (
 	envReaderToken   = "CONFORMANCE_READER_TOKEN"
 	envRunnerToken   = "CONFORMANCE_RUNNER_TOKEN"
 	envAdminToken    = "CONFORMANCE_ADMIN_TOKEN"
+	envTaskID        = "CONFORMANCE_TASK_ID"
 	envAllowMutation = "CONFORMANCE_ALLOW_MUTATION"
 )
 
@@ -43,6 +44,15 @@ func TestConformanceLab(t *testing.T) {
 		tokens[role] = token
 	}
 
+	// A task-scoped stream (exec, logs) needs a task id that exists on this
+	// cluster. It is not a token and not a secret: the operator names one.
+	vars := map[string]string{}
+	if task := strings.TrimSpace(os.Getenv(envTaskID)); task != "" {
+		vars["task"] = task
+	} else {
+		t.Logf("%s is not set; task-scoped stream cases will skip", envTaskID)
+	}
+
 	client := &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
@@ -56,6 +66,7 @@ func TestConformanceLab(t *testing.T) {
 		BaseURL:       host,
 		Client:        client,
 		Tokens:        tokens,
+		Vars:          vars,
 		Lab:           true,
 		AllowMutation: os.Getenv(envAllowMutation) == "1",
 	}, "fixtures")

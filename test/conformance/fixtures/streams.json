@@ -4,7 +4,6 @@
   "cases": [
     {
       "name": "events arrive as SSE frames",
-      "mockOnly": true,
       "request": {
         "method": "GET",
         "path": "/v1/events",
@@ -18,11 +17,10 @@
       "stream": {"frames": 2}
     },
     {
-      "name": "exec streams stdout then exit",
-      "mockOnly": true,
+      "name": "exec streams frames and ends with exit",
       "request": {
         "method": "POST",
-        "path": "/v1/tasks/task-a/exec",
+        "path": "/v1/tasks/$task/exec",
         "role": "runner",
         "body": {"command": ["echo", "hello"]}
       },
@@ -33,11 +31,10 @@
       "stream": {"frames": 2, "lastType": "exit"}
     },
     {
-      "name": "logs stream one line then eof",
-      "mockOnly": true,
+      "name": "logs stream frames and end with eof",
       "request": {
         "method": "GET",
-        "path": "/v1/tasks/task-a/logs",
+        "path": "/v1/tasks/$task/logs",
         "query": {"tail": "10"},
         "role": "reader"
       },

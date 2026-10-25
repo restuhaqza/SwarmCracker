@@ -11,10 +11,12 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // The wire constants the runner asserts. They are duplicated from pkg/apihttp
@@ -39,6 +41,9 @@ const (
 	// stays open until the caller disconnects, so the runner stops reading
 	// instead of waiting for the server to end it.
 	streamDeadline = 2 * time.Second
+	// requestTimeout bounds one non-stream request, so a dead manager fails
+	// pointedly instead of hanging until the test binary's own timeout.
+	requestTimeout = 10 * time.Second
 	// failureBodyLimit is how much of a failing response body is reported.
 	failureBodyLimit = 2 << 10
 )
@@ -51,6 +56,10 @@ type Env struct {
 	// Tokens maps a fixture role (reader, runner, admin) to its bearer secret.
 	// A missing role skips only the cases that need it.
 	Tokens map[string]string
+	// Vars seeds the per-file variables a fixture can reference. It is how a
+	// task-scoped stream gets its id without hard-coding cluster data: the mock
+	// sets task, the lab run reads CONFORMANCE_TASK_ID.
+	Vars map[string]string
 	// Lab marks a run against a real manager: mock-only cases are skipped and a
 	// mutation needs AllowMutation.
 	Lab bool
@@ -59,10 +68,19 @@ type Env struct {
 	AllowMutation bool
 }
 
+// Summary reports what one Run did. A suite that silently ran fewer cases than
+// it defines is a regression, so the mock leg asserts these counts.
+type Summary struct {
+	// Cases is how many fixture cases were loaded and attempted.
+	Cases int
+	// Skipped is how many of them were skipped, for any reason.
+	Skipped int
+}
+
 // Run loads every *.json fixture in dir and executes all cases as subtests
 // named "<file>/<case>". A malformed or unknown-version fixture is fatal: a
 // suite that silently runs fewer cases is worse than one that fails.
-func Run(t *testing.T, env Env, dir string) {
+func Run(t *testing.T, env Env, dir string) Summary {
 	t.Helper()
 
 	fixtures, err := Load(dir)
@@ -70,19 +88,34 @@ func Run(t *testing.T, env Env, dir string) {
 		t.Fatalf("conformance: %v", err)
 	}
 
+	summary := Summary{}
 	for _, fixture := range fixtures {
 		t.Run(fixtureSlug(fixture.Source), func(t *testing.T) {
-			// vars is the file's sequential scope: a later case can use the
-			// ETag an earlier one returned ($etag). Subtests run in order, so a
-			// plain map is enough and needs no lock.
-			vars := make(map[string]string)
+			// vars is the file's sequential scope: the environment seeds it, and
+			// a later case can use the ETag an earlier one returned ($etag).
+			// Subtests run in order, so a plain map is enough and needs no lock.
+			vars := seedVars(env)
 			for _, c := range fixture.Cases {
 				t.Run(c.Name, func(t *testing.T) {
-					runCase(t, env, c, vars)
+					summary.Cases++
+					runCase(t, env, c, vars, &summary)
 				})
 			}
 		})
 	}
+	return summary
+}
+
+// seedVars copies the environment's variables into a fixture's scope, so a file
+// cannot leak an ETag into the next one.
+func seedVars(env Env) map[string]string {
+	vars := make(map[string]string, len(env.Vars)+1)
+	for name, value := range env.Vars {
+		if strings.TrimSpace(value) != "" {
+			vars[name] = value
+		}
+	}
+	return vars
 }
 
 // fixtureSlug is the subtest name a fixture file contributes.
@@ -90,20 +123,24 @@ func fixtureSlug(source string) string {
 	return strings.TrimSuffix(filepath.Base(source), ".json")
 }
 
-// runCase executes one case: skip policy, token lookup, request, assertions and
-// the optional cursor follow.
-func runCase(t *testing.T, env Env, c Case, vars map[string]string) {
+// runCase executes one case: skip policy, token lookup, request, assertions, the
+// optional repeat and the optional cursor follow. Every skip is counted before
+// t.Skip unwinds the subtest.
+func runCase(t *testing.T, env Env, c Case, vars map[string]string, summary *Summary) {
 	t.Helper()
 
 	switch {
 	case env.Lab && c.MockOnly:
+		summary.Skipped++
 		t.Skip("mock-only case: it asserts fixture data a live cluster need not contain")
 	case c.Mutating && !env.AllowMutation:
+		summary.Skipped++
 		t.Skip("mutating case: set CONFORMANCE_ALLOW_MUTATION=1 to run it")
 	}
 
 	token := strings.TrimSpace(env.Tokens[c.Request.Role])
 	if token == "" {
+		summary.Skipped++
 		t.Skipf("no %s token configured for this environment; skipping", c.Request.Role)
 	}
 
@@ -112,34 +149,94 @@ func runCase(t *testing.T, env Env, c Case, vars map[string]string) {
 		client = http.DefaultClient
 	}
 
-	ctx := t.Context()
+	timeout := requestTimeout
 	if c.Stream != nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, streamDeadline)
-		defer cancel()
+		timeout = streamDeadline
 	}
+	ctx, cancel := context.WithTimeout(t.Context(), timeout)
+	defer cancel()
 
 	req, err := newRequest(ctx, env, c.Request, token, vars)
 	if err != nil {
+		if env.Lab && errors.Is(err, errUnsetVar) {
+			summary.Skipped++
+			t.Skipf("%v; the environment did not supply it", err)
+		}
 		t.Fatalf("%s: build request: %v", c.Name, err)
 	}
 
-	res := send(t, client, req, c.Stream != nil)
-	assertCase(t, c, res)
+	res := send(t, client, req, c.Stream)
+	assertCase(t, c, res, env.Lab)
 
-	if c.Follow != nil {
+	if c.Repeat != nil {
+		runRepeat(t, env, client, c, token, vars, res)
+	}
+
+	// A follow is the brief's contract: only a case that asserted nextPresent
+	// walks the cursor. Validation already requires the flag, so this gate is a
+	// second line of defence.
+	if c.Follow != nil && c.Expect.NextPresent != nil && *c.Expect.NextPresent {
 		runFollow(t, env, client, c, token, vars, res)
 	}
+
+	// A repeat's last response carries the same ETag as the first; keeping the
+	// first is what a later case expects anyway.
 	if res.etag != "" {
 		vars["etag"] = res.etag
 	}
 }
 
+// runRepeat sends the same request again and, when the fixture says so, proves
+// the response document is byte-identical to the first one. With an
+// Idempotency-Key that is the whole assertion: a second create would return a
+// new resource with a new revision.
+func runRepeat(t *testing.T, env Env, client *http.Client, c Case, token string, vars map[string]string, first *result) {
+	t.Helper()
+
+	for attempt := 1; attempt < c.Repeat.Times; attempt++ {
+		ctx, cancel := context.WithTimeout(t.Context(), requestTimeout)
+		req, err := newRequest(ctx, env, c.Request, token, vars)
+		if err != nil {
+			cancel()
+			first.failf(t, c.Name, "build repeat %d: %v", attempt+1, err)
+		}
+		again := send(t, client, req, c.Stream)
+		cancel()
+
+		if !c.Repeat.SameBody {
+			continue
+		}
+		if mismatch := repeatMismatch(first, again); mismatch != "" {
+			first.failf(t, c.Name, "repeat %d returned %s", attempt+1, mismatch)
+		}
+	}
+}
+
+// repeatMismatch reports how a repeated response differs from the first one, or
+// "" when it is the same status and document. It is the assertion an
+// Idempotency-Key replay has to satisfy: the middleware stores the first body
+// and status, so a second create that produced a new revision is caught here.
+func repeatMismatch(first, again *result) string {
+	if again.status != first.status {
+		return fmt.Sprintf("status %d, want the first response's %d", again.status, first.status)
+	}
+	if !bytes.Equal(again.body, first.body) {
+		return fmt.Sprintf("a different document:\nfirst: %s\nagain: %s",
+			truncateBody(first.body), truncateBody(again.body))
+	}
+	return ""
+}
+
+// errUnsetVar marks a $name reference the environment did not provide. The lab
+// run turns it into a skip, like a missing role token: the cluster, not the
+// runner, is what lacks the value.
+var errUnsetVar = errors.New("variable not set")
+
 // newRequest builds one authenticated request. Only the fixture's own path,
 // query and headers can reach the message a failure prints; the token never
 // leaves the Authorization header.
 func newRequest(ctx context.Context, env Env, spec Request, token string, vars map[string]string) (*http.Request, error) {
-	path, err := resolveVars(spec.Path, vars)
+	path, err := resolvePath(spec.Path, vars)
 	if err != nil {
 		return nil, err
 	}
@@ -222,9 +319,49 @@ func resolveVars(value string, vars map[string]string) (string, error) {
 	}
 	resolved, ok := vars[name]
 	if !ok {
-		return "", fmt.Errorf("$%s is not set; it must come from an earlier response", name)
+		return "", fmt.Errorf("%w: $%s must come from an earlier response or the environment", errUnsetVar, name)
 	}
 	return resolved, nil
+}
+
+// resolvePath substitutes every $name reference inside a request path. A path is
+// a template ("/v1/tasks/$task/exec") because a task id is one segment, not the
+// whole value.
+func resolvePath(path string, vars map[string]string) (string, error) {
+	var out strings.Builder
+	for {
+		at := strings.IndexByte(path, '$')
+		if at < 0 {
+			out.WriteString(path)
+			return out.String(), nil
+		}
+		out.WriteString(path[:at])
+
+		rest := path[at+1:]
+		end := 0
+		for end < len(rest) && isVariableByte(rest[end]) {
+			end++
+		}
+		if end == 0 {
+			out.WriteByte('$')
+			path = rest
+			continue
+		}
+
+		name := rest[:end]
+		resolved, ok := vars[name]
+		if !ok {
+			return "", fmt.Errorf("%w: $%s in the request path must come from an earlier response or the environment", errUnsetVar, name)
+		}
+		out.WriteString(resolved)
+		path = rest[end:]
+	}
+}
+
+// isVariableByte reports whether b may appear in a variable name. Names are
+// ASCII identifiers, so a path segment such as "$5.00" is literal text.
+func isVariableByte(b byte) bool {
+	return b == '_' || (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // isVariableName reports whether name is a bare identifier. Anything else after
@@ -252,16 +389,25 @@ type result struct {
 	method string
 	url    string
 
-	stream       bool
-	streamFrames int
-	lastType     string
-	streamErr    error
+	stream    bool
+	frames    int
+	controls  int
+	lastType  string
+	streamErr error
+}
+
+// streamRead is what one streaming response yielded before the reader stopped.
+type streamRead struct {
+	frames   int
+	controls int
+	lastType string
+	err      error
 }
 
 // send performs the request and reads either the whole body or the stream. A
 // stream that outlives the deadline is not an error here: the frame assertions
 // report what was actually observed.
-func send(t *testing.T, client *http.Client, req *http.Request, streaming bool) *result {
+func send(t *testing.T, client *http.Client, req *http.Request, stream *Stream) *result {
 	t.Helper()
 
 	resp, err := client.Do(req)
@@ -278,9 +424,13 @@ func send(t *testing.T, client *http.Client, req *http.Request, streaming bool) 
 		url:    req.URL.String(),
 	}
 
-	if streaming {
+	if stream != nil {
+		read := readStream(resp.Body, stream.Frames, stream.LastType)
 		res.stream = true
-		res.streamFrames, res.lastType, res.streamErr = readStream(resp.Body)
+		res.frames = read.frames
+		res.controls = read.controls
+		res.lastType = read.lastType
+		res.streamErr = read.err
 		return res
 	}
 
@@ -293,25 +443,36 @@ func send(t *testing.T, client *http.Client, req *http.Request, streaming bool) 
 }
 
 // readStream counts SSE data lines and NDJSON lines, ignoring the ready and
-// ping control frames. It stops at EOF or at the request deadline.
-func readStream(body io.Reader) (frames int, lastType string, err error) {
+// ping control frames. It returns as soon as it has seen want data frames, a
+// frame of the terminal type, EOF or the request deadline: a live follow stream
+// never ends on its own, so the runner stops reading rather than waiting for the
+// server to close it.
+func readStream(body io.Reader, want int, terminal string) streamRead {
+	var read streamRead
+
 	reader := bufio.NewReader(body)
 	for {
 		line, readErr := reader.ReadString('\n')
 		if payload, ok := streamPayload(strings.TrimRight(line, "\r\n")); ok {
 			typ := frameType(payload)
 			if typ != "" {
-				lastType = typ
+				read.lastType = typ
 			}
-			if typ != readyFrame && typ != pingFrame {
-				frames++
+			if typ == readyFrame || typ == pingFrame {
+				read.controls++
+			} else {
+				read.frames++
 			}
 		}
+
+		if read.frames >= want || (terminal != "" && read.lastType == terminal) {
+			return read
+		}
 		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				return frames, lastType, nil
+			if !errors.Is(readErr, io.EOF) {
+				read.err = readErr
 			}
-			return frames, lastType, readErr
+			return read
 		}
 	}
 }
@@ -346,7 +507,7 @@ func frameType(payload string) string {
 
 // assertCase checks status, headers, document or stream, in that order: the
 // first failing fact is the one a reader needs.
-func assertCase(t *testing.T, c Case, res *result) {
+func assertCase(t *testing.T, c Case, res *result, lab bool) {
 	t.Helper()
 
 	if got := res.header.Get(apiVersionHeader); got != APIVersion {
@@ -366,7 +527,7 @@ func assertCase(t *testing.T, c Case, res *result) {
 	}
 
 	if c.Stream != nil {
-		assertStream(t, c, res)
+		assertStream(t, c, res, lab)
 		return
 	}
 
@@ -389,8 +550,16 @@ func assertJSONContentType(t *testing.T, label string, res *result) {
 	}
 }
 
-// assertStream checks the stream media type, frame count and last frame type.
-func assertStream(t *testing.T, c Case, res *result) {
+// assertStream checks the stream media type, the frame count and the terminal
+// frame.
+//
+// The mock is deterministic, so it asserts the exact count. A live manager is
+// not: an exec command or a log tail may carry more frames than the fixture
+// names, and a quiet cluster emits no event at all, only the ready control
+// frame. In lab mode the terminal frame is the assertion, extra frames are
+// allowed, and control-only is accepted for an event stream that opened
+// correctly.
+func assertStream(t *testing.T, c Case, res *result, lab bool) {
 	t.Helper()
 
 	switch got := res.header.Get("Content-Type"); got {
@@ -399,12 +568,30 @@ func assertStream(t *testing.T, c Case, res *result) {
 		res.failf(t, c.Name, "want an SSE or NDJSON content type, got %q", got)
 	}
 
-	if want := c.expectedFrames(); res.streamFrames != want {
-		res.failf(t, c.Name, "want %d data frames, got %d (last type %q)", want, res.streamFrames, res.lastType)
-	}
 	if want := c.Stream.LastType; want != "" && res.lastType != want {
-		res.failf(t, c.Name, "want the last frame type %q, got %q", want, res.lastType)
+		res.failf(t, c.Name, "want a final %q frame, got %q after %d data frames", want, res.lastType, res.frames)
 	}
+
+	if !lab {
+		if want := c.Stream.Frames; res.frames != want {
+			res.failf(t, c.Name, "want %d data frames, got %d (last type %q)", want, res.frames, res.lastType)
+		}
+		return
+	}
+
+	if c.Stream.LastType != "" {
+		// The terminal frame matched above, which is the whole assertion.
+		return
+	}
+	if res.frames >= c.Stream.Frames {
+		return
+	}
+	if res.frames == 0 && res.controls > 0 {
+		t.Logf("the live stream carried only control frames (a quiet cluster); the mock leg proves frame content")
+		return
+	}
+
+	res.failf(t, c.Name, "want at least %d data frames, got %d (last type %q)", c.Stream.Frames, res.frames, res.lastType)
 }
 
 // assertDocument checks the JSON envelope. An expectation with an errorCode
@@ -474,17 +661,22 @@ func assertDocumentFacts(t *testing.T, label string, expect Expect, res *result,
 		}
 	}
 	for path, want := range expect.JSONPaths {
-		got, ok := lookupPath(document, path)
-		if !ok {
+		values := lookupValues(document, path)
+		if len(values) == 0 {
 			res.failf(t, label, "%s is missing; want %q", path, want)
 		}
-		if got != want {
-			res.failf(t, label, "%s: want %q, got %q", path, want, got)
+		if !slices.Contains(values, want) {
+			res.failf(t, label, "%s: want %q, got %q", path, want, values)
 		}
 	}
 	for _, path := range expect.AbsentKeys {
 		if _, present := lookupPath(document, path); present {
 			res.failf(t, label, "%s must not be present", path)
+		}
+	}
+	for _, key := range expect.AbsentKeysAnywhere {
+		if containsKey(document, key) {
+			res.failf(t, label, "a %q key must not appear at any depth", key)
 		}
 	}
 }
@@ -526,8 +718,13 @@ func runFollow(t *testing.T, env Env, client *http.Client, c Case, token string,
 	followCase.Expect = c.Follow.Expect
 	followCase.Stream = nil
 	followCase.Follow = nil
+	followCase.Repeat = nil
 
-	assertCase(t, followCase, send(t, client, req, false))
+	followCtx, cancel := context.WithTimeout(t.Context(), requestTimeout)
+	defer cancel()
+	req = req.WithContext(followCtx)
+
+	assertCase(t, followCase, send(t, client, req, nil), env.Lab)
 }
 
 // decodeDocument decodes one response with numbers preserved, so an integer
@@ -554,28 +751,80 @@ func lookupItems(document any) ([]any, bool) {
 }
 
 // lookupPath resolves one dot path with numeric array indexes and renders the
-// value as the string a fixture writes.
+// value as the string a fixture writes. It returns the first match, which is
+// what the envelope assertions want.
 func lookupPath(document any, path string) (string, bool) {
-	current := document
-	for _, segment := range strings.Split(path, ".") {
-		switch node := current.(type) {
-		case map[string]any:
-			next, ok := node[segment]
-			if !ok {
-				return "", false
+	values := lookupValues(document, path)
+	if len(values) == 0 {
+		return "", false
+	}
+	return values[0], true
+}
+
+// lookupValues resolves a dot path to every value it matches. A "*" segment
+// matches every array element, so "items.*.action" answers "which actions does
+// this page carry?"; a jsonPaths assertion with a wildcard therefore means "at
+// least one item has this value", which is how a fixture asserts an entry exists
+// without pinning its position.
+func lookupValues(document any, path string) []string {
+	values := make([]string, 0, 1)
+	collectValues(document, strings.Split(path, "."), &values)
+	return values
+}
+
+func collectValues(current any, segments []string, values *[]string) {
+	if len(segments) == 0 {
+		if rendered, ok := renderValue(current); ok {
+			*values = append(*values, rendered)
+		}
+		return
+	}
+
+	segment, rest := segments[0], segments[1:]
+	switch node := current.(type) {
+	case map[string]any:
+		next, ok := node[segment]
+		if !ok {
+			return
+		}
+		collectValues(next, rest, values)
+	case []any:
+		if segment == "*" {
+			for _, item := range node {
+				collectValues(item, rest, values)
 			}
-			current = next
-		case []any:
-			index, err := strconv.Atoi(segment)
-			if err != nil || index < 0 || index >= len(node) {
-				return "", false
+			return
+		}
+		index, err := strconv.Atoi(segment)
+		if err != nil || index < 0 || index >= len(node) {
+			return
+		}
+		collectValues(node[index], rest, values)
+	}
+}
+
+// containsKey reports whether key appears as an object key at any depth. It is
+// the scan an absentKeys dot path cannot make: a path whose parent is missing
+// passes without ever looking at the payload.
+func containsKey(document any, key string) bool {
+	switch node := document.(type) {
+	case map[string]any:
+		if _, ok := node[key]; ok {
+			return true
+		}
+		for _, value := range node {
+			if containsKey(value, key) {
+				return true
 			}
-			current = node[index]
-		default:
-			return "", false
+		}
+	case []any:
+		for _, value := range node {
+			if containsKey(value, key) {
+				return true
+			}
 		}
 	}
-	return renderValue(current)
+	return false
 }
 
 // renderValue renders one scalar for comparison. A container is present but has
@@ -607,13 +856,14 @@ func (r *result) failf(t *testing.T, label, format string, args ...any) {
 		message += fmt.Sprintf("\nstream error: %v", r.streamErr)
 	}
 	if r.stream {
-		message += fmt.Sprintf("\nstream: %d frames, last type %q", r.streamFrames, r.lastType)
+		message += fmt.Sprintf("\nstream: %d data frames, %d control frames, last type %q", r.frames, r.controls, r.lastType)
 	}
 	t.Fatalf("%s: %s\nrequest: %s %s\nstatus: %d\nbody: %s",
 		label, message, r.method, r.url, r.status, truncateBody(r.body))
 }
 
 // truncateBody bounds a reported body so one huge document cannot drown the log.
+// The cut lands on a UTF-8 boundary, so the report is never invalid text.
 func truncateBody(body []byte) string {
 	text := strings.TrimSpace(string(body))
 	if text == "" {
@@ -622,5 +872,10 @@ func truncateBody(body []byte) string {
 	if len(text) <= failureBodyLimit {
 		return text
 	}
-	return text[:failureBodyLimit] + "...(truncated)"
+
+	cut := failureBodyLimit
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "...(truncated)"
 }

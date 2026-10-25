@@ -138,6 +138,23 @@ func TestLoadRejectsUnknownJSONKeys(t *testing.T) {
 	}
 }
 
+// TestLoadRejectsTheRemovedStreamFramesAlias pins the removal of the alias: the
+// fixture format keeps one frame count, stream.frames.
+func TestLoadRejectsTheRemovedStreamFramesAlias(t *testing.T) {
+	_, err := loadOne(t, `{
+		"schemaVersion": 1,
+		"name": "streams",
+		"cases": [{
+			"name": "events",
+			"request": {"method": "GET", "path": "/v1/events", "role": "reader"},
+			"expect": {"status": 200, "streamFrames": 2}
+		}]
+	}`)
+	if err == nil || !strings.Contains(err.Error(), "streamFrames") {
+		t.Fatalf("expect.streamFrames was removed; want the loader to reject it, got %v", err)
+	}
+}
+
 func TestLoadRejectsTrailingDocuments(t *testing.T) {
 	_, err := loadOne(t, `{"schemaVersion": 1, "name": "a", "cases": []} {"schemaVersion": 1}`)
 	if err == nil {
@@ -238,12 +255,56 @@ func TestValidateRejectsBadFixtures(t *testing.T) {
 		{
 			name: "follow with two expectation kinds",
 			f: base(func(f *Fixture) {
+				f.Cases[0].Expect.NextPresent = boolPtr(true)
 				f.Cases[0].Follow = &Follow{
 					Path:   "/v1/services",
 					Expect: Expect{Status: 200, Kind: "ServiceList", ErrorCode: "invalid"},
 				}
 			}),
 			want: "exactly one",
+		},
+		{
+			name: "follow without nextPresent",
+			f: base(func(f *Fixture) {
+				f.Cases[0].Follow = &Follow{
+					Path:   "/v1/services",
+					Expect: Expect{Status: 200, Kind: "ServiceList"},
+				}
+			}),
+			want: "nextPresent",
+		},
+		{
+			name: "follow with nextPresent false",
+			f: base(func(f *Fixture) {
+				f.Cases[0].Expect.NextPresent = boolPtr(false)
+				f.Cases[0].Follow = &Follow{
+					Path:   "/v1/services",
+					Expect: Expect{Status: 200, Kind: "ServiceList"},
+				}
+			}),
+			want: "nextPresent",
+		},
+		{
+			name: "repeat with one run",
+			f: base(func(f *Fixture) {
+				f.Cases[0].Repeat = &Repeat{Times: 1, SameBody: true}
+			}),
+			want: "repeat",
+		},
+		{
+			name: "repeat on a stream",
+			f: base(func(f *Fixture) {
+				f.Cases[0].Stream = &Stream{Frames: 2}
+				f.Cases[0].Repeat = &Repeat{Times: 2, SameBody: true}
+			}),
+			want: "repeat",
+		},
+		{
+			name: "empty absent key anywhere",
+			f: base(func(f *Fixture) {
+				f.Cases[0].Expect.AbsentKeysAnywhere = []string{" "}
+			}),
+			want: "absentKeysAnywhere",
 		},
 		{
 			name: "stream without frames",
@@ -286,6 +347,77 @@ func TestValidateAcceptsADocumentless204(t *testing.T) {
 	}
 	if err := f.Validate(); err != nil {
 		t.Fatalf("a 204 carries no document and needs no kind: %v", err)
+	}
+}
+
+func boolPtr(value bool) *bool { return &value }
+
+// TestValidateRejectsForbiddenHeaders keeps the runner the only owner of the
+// credential and of the message framing: a fixture may not set either.
+func TestValidateRejectsForbiddenHeaders(t *testing.T) {
+	headers := []string{
+		"Authorization", "authorization", "Cookie", "Proxy-Authorization",
+		"Connection", "Transfer-Encoding", "Upgrade",
+	}
+
+	for _, header := range headers {
+		t.Run(header, func(t *testing.T) {
+			f := Fixture{
+				SchemaVersion: SchemaVersion,
+				Name:          "read",
+				Cases: []Case{{
+					Name: "ok",
+					Request: Request{
+						Method:  "GET",
+						Path:    "/v1/version",
+						Role:    "reader",
+						Headers: map[string]string{header: "x"},
+					},
+					Expect: Expect{Status: 200, Kind: "VersionInfo"},
+				}},
+			}
+			err := f.Validate()
+			if err == nil || !strings.Contains(err.Error(), header) {
+				t.Fatalf("want %q rejected, got %v", header, err)
+			}
+		})
+	}
+}
+
+// TestLoadReadsRepeatAndAbsentKeysAnywhere keeps the two new assertions in the
+// declarative format rather than in a Go-only helper.
+func TestLoadReadsRepeatAndAbsentKeysAnywhere(t *testing.T) {
+	fixtures, err := loadOne(t, `{
+		"schemaVersion": 1,
+		"name": "write",
+		"cases": [{
+			"name": "idempotent create",
+			"mutating": true,
+			"request": {
+				"method": "POST",
+				"path": "/v1/services",
+				"role": "admin",
+				"headers": {"Idempotency-Key": "case-1"},
+				"body": {"name": "x", "spec": {"task": {"image": "nginx:alpine"}}}
+			},
+			"expect": {
+				"status": 201,
+				"kind": "Service",
+				"absentKeysAnywhere": ["registryAuth"]
+			},
+			"repeat": {"times": 2, "sameBody": true}
+		}]
+	}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	c := fixtures[0].Cases[0]
+	if c.Repeat == nil || c.Repeat.Times != 2 || !c.Repeat.SameBody {
+		t.Errorf("repeat = %+v", c.Repeat)
+	}
+	if len(c.Expect.AbsentKeysAnywhere) != 1 || c.Expect.AbsentKeysAnywhere[0] != "registryAuth" {
+		t.Errorf("absentKeysAnywhere = %v", c.Expect.AbsentKeysAnywhere)
 	}
 }
 
