@@ -126,6 +126,8 @@ func TestMergeVMsEmpty(t *testing.T) {
 	assert.Empty(t, MergeVMs(nil, nil))
 }
 
+// TestFirecrackerTaskID pins the argv parser, including the restored socket a
+// snapshot restore starts.
 func TestFirecrackerTaskID(t *testing.T) {
 	cmdline := "/usr/local/bin/firecracker\x00--api-sock\x00/var/run/firecracker/t.sock\x00--id\x00task-1\x00"
 	id, ok := firecrackerTaskID(cmdline)
@@ -143,6 +145,37 @@ func TestFirecrackerTaskID(t *testing.T) {
 	// Console sockets must not be mistaken for API sockets.
 	_, ok = firecrackerTaskID("/usr/local/bin/firecracker\x00--api-sock\x00/var/run/firecracker/x.console.sock\x00")
 	assert.False(t, ok, "console socket is not an API socket")
+
+	// A restored VM's socket keeps its -restored suffix, which is the ID the CLI
+	// resolves and the daemon's stop path tracks.
+	id, ok = firecrackerTaskID("/usr/local/bin/firecracker\x00--api-sock\x00/var/run/firecracker/5f3a1b2c9d00-restored.sock\x00")
+	assert.True(t, ok)
+	assert.Equal(t, "5f3a1b2c9d00-restored", id)
+}
+
+// TestFindFirecrackerPIDByRestoredSocket pins the lookup the local stop uses: the
+// process behind <task>-restored.sock is found from its own --api-sock argument,
+// with the suffix intact, on a host with no matching --id.
+func TestFindFirecrackerPIDByRestoredSocket(t *testing.T) {
+	previous := processCmdlines
+	processCmdlines = func() map[int]string {
+		return map[int]string{
+			4242: "/usr/local/bin/firecracker\x00--api-sock\x00/var/run/firecracker/5f3a1b2c9d00-restored.sock\x00",
+			1717: "/usr/local/bin/firecracker\x00--api-sock\x00/var/run/firecracker/task-live.sock\x00",
+			99:   "/bin/sleep\x0030\x00",
+		}
+	}
+	t.Cleanup(func() { processCmdlines = previous })
+
+	assert.Equal(t, 4242,
+		FindFirecrackerPIDBySocket("/var/run/firecracker/5f3a1b2c9d00-restored.sock"))
+	assert.Equal(t, 1717,
+		FindFirecrackerPIDBySocket("/var/run/firecracker/task-live.sock"))
+	assert.Zero(t,
+		FindFirecrackerPIDBySocket("/var/run/firecracker/not-restored.sock"),
+		"an unknown socket resolves to no PID")
+	assert.Equal(t, "5f3a1b2c9d00-restored",
+		TaskIDFromSocketPath("/var/run/firecracker/5f3a1b2c9d00-restored.sock"))
 }
 
 func TestTaskIDFromSocketPath(t *testing.T) {

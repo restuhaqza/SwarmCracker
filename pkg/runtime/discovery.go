@@ -142,16 +142,20 @@ func MergeVMs(states []*VMState, running []RunningVM) []*VMState {
 	return result
 }
 
-// FindFirecrackerPIDs returns a map of task ID to host PID for the Firecracker
-// processes on this host. On systems without /proc (e.g. macOS) it returns an
-// empty map.
-func FindFirecrackerPIDs() map[string]int {
-	result := make(map[string]int)
+// processCmdlines returns the argv of every process on this host, keyed by PID.
+// It is a variable so a test can supply a real firecracker argv without procfs
+// (which does not exist on macOS); production reads /proc.
+var processCmdlines = readProcCmdlines
+
+// readProcCmdlines reads /proc/<pid>/cmdline for every numeric entry under
+// /proc. A host without procfs yields an empty map.
+func readProcCmdlines() map[int]string {
+	cmdlines := make(map[int]string)
 
 	const procDir = "/proc"
 	entries, err := os.ReadDir(procDir)
 	if err != nil {
-		return result
+		return cmdlines
 	}
 
 	for _, entry := range entries {
@@ -166,7 +170,28 @@ func FindFirecrackerPIDs() map[string]int {
 		if err != nil {
 			continue
 		}
-		if id, ok := firecrackerTaskID(string(data)); ok {
+		cmdlines[pid] = string(data)
+	}
+
+	return cmdlines
+}
+
+// FindFirecrackerPIDs returns a map of task ID to host PID for the Firecracker
+// processes on this host. On systems without /proc (e.g. macOS) it returns an
+// empty map.
+func FindFirecrackerPIDs() map[string]int {
+	result := make(map[string]int)
+
+	cmdlines := processCmdlines()
+	pids := make([]int, 0, len(cmdlines))
+	for pid := range cmdlines {
+		pids = append(pids, pid)
+	}
+	// A stable order keeps duplicate IDs deterministic: the lowest PID wins.
+	sort.Ints(pids)
+
+	for _, pid := range pids {
+		if id, ok := firecrackerTaskID(cmdlines[pid]); ok {
 			if _, dup := result[id]; !dup {
 				result[id] = pid
 			}
