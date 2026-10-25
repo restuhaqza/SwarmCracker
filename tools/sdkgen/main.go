@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 )
 
 // Default locations of the spec and the two committed generated files, relative
@@ -107,18 +106,4 @@ func checkTargets(targets []target, stderr io.Writer) int {
 		}
 	}
 	return code
-}
-
-// writeTargets creates the parent directories and writes every generated file.
-func writeTargets(targets []target) error {
-	for _, item := range targets {
-		if err := os.MkdirAll(filepath.Dir(item.path), 0o755); err != nil {
-			return fmt.Errorf("create %s: %w", filepath.Dir(item.path), err)
-		}
-		//nolint:gosec // G306: generated sources are world-readable by design.
-		if err := os.WriteFile(item.path, item.data, 0o644); err != nil {
-			return fmt.Errorf("write %s: %w", item.path, err)
-		}
-	}
-	return nil
 }
