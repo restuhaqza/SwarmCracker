@@ -10,8 +10,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -45,13 +47,14 @@ var mockConsoleBytes = []byte("console ready\n")
 // case that silently stops running (a stricter skip policy, a lost file, a typo
 // in a case name that a filter no longer matches) is a regression the mock leg
 // must fail on, so the count is pinned here and bumped with every new case.
-const expectedMockCases = 45
+const expectedMockCases = 49
 
 // expectedMockGatedCases is how many of those cases are skipped because the mock
 // does not advertise the capability they require. The mock is the shipped
 // default — snapshots are off, so every snapshot case is a declared gate, not a
-// silent loss. Any other skip is a failure.
-const expectedMockGatedCases = 3
+// silent loss. Any other skip is a failure. The files round-trip is not gated:
+// the mock broker serves the file route, so those cases have to run.
+const expectedMockGatedCases = 5
 
 // TestConformanceMock executes every fixture against the real handler with an
 // in-memory backend. Mutations always run: this backend is thrown away. The only
@@ -162,6 +165,11 @@ type mockBackend struct {
 	configs  []v1.Config
 	secrets  []v1.Secret
 
+	// files is the guest filesystem the file routes read and write, keyed by the
+	// cleaned path the caller named. It is what makes the raw round-trip real:
+	// the PUT bytes are stored and a later GET has to return them unchanged.
+	files map[string][]byte
+
 	nextID int
 	now    time.Time
 }
@@ -248,6 +256,7 @@ func newMockBackend() *mockBackend {
 			Revision:  "1",
 			CreatedAt: "2026-01-01T00:00:00Z",
 		}},
+		files:  make(map[string][]byte),
 		nextID: 100,
 		now:    time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC),
 	}
@@ -856,10 +865,12 @@ func (b *mockBackend) WatchEvents(context.Context, v1.EventOptions) (<-chan v1.E
 	return events, errs, nil
 }
 
-// Broker: Proxy serves a finite exec, log or attach stream.
+// Broker: Proxy serves a finite exec, log, file or attach stream.
 
-func (b *mockBackend) Proxy(_ context.Context, w http.ResponseWriter, _ *http.Request, _ string, op string) error {
+func (b *mockBackend) Proxy(_ context.Context, w http.ResponseWriter, r *http.Request, _ string, op string) error {
 	switch op {
+	case "files":
+		return b.serveFile(w, r)
 	case "exec":
 		w.Header().Set("Content-Type", ndjsonMediaType)
 		w.WriteHeader(http.StatusOK)
@@ -881,6 +892,39 @@ func (b *mockBackend) Proxy(_ context.Context, w http.ResponseWriter, _ *http.Re
 		return output.NewErrorf(output.CodeNotImplemented,
 			"the conformance mock has no %q node operation", op)
 	}
+}
+
+// serveFile is the node half of the raw file round-trip: a PUT stores the bytes
+// it receives, a GET returns those exact bytes, and a path the guest does not
+// have is a typed not_found the manager forwards unchanged.
+func (b *mockBackend) serveFile(w http.ResponseWriter, r *http.Request) error {
+	target := path.Clean(r.URL.Query().Get("path"))
+
+	if r.Method == http.MethodPut {
+		// Read before taking the lock: the upload is the caller's body, not
+		// backend state, and a slow upload must not hold the cluster.
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return output.NewErrorf(output.CodeInvalid, "read the upload: %v", err)
+		}
+		b.mu.Lock()
+		b.files[target] = body
+		b.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+		return nil
+	}
+
+	b.mu.Lock()
+	content, ok := b.files[target]
+	b.mu.Unlock()
+
+	if !ok {
+		return output.NewErrorf(output.CodeNotFound, "file %q not found on the guest", target)
+	}
+	w.Header().Set("Content-Type", octetStreamMediaType)
+	w.WriteHeader(http.StatusOK)
+	_, err := w.Write(content)
+	return err
 }
 
 // Health reports a healthy task for node A and a typed failure for node B, which

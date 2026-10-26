@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	cryptorand "crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -494,11 +495,14 @@ func newRequest(ctx context.Context, env Env, spec Request, token string, vars m
 		u.RawQuery = query.Encode()
 	}
 
-	body, err := requestBody(spec.Body)
+	body, err := requestBody(spec)
 	if err != nil {
 		return nil, err
 	}
-	if body != nil && env.RunSuffix != "" {
+	// The run token is a JSON name marker. Raw bytes are sent exactly as the
+	// fixture encoded them, so rewriting them would make "exact bytes" mean
+	// something else.
+	if body != nil && spec.BodyBase64 == "" && env.RunSuffix != "" {
 		body = bytes.ReplaceAll(body, []byte(RunToken), []byte(env.RunSuffix))
 	}
 	var reader io.Reader
@@ -519,7 +523,13 @@ func newRequest(ctx context.Context, env Env, spec Request, token string, vars m
 
 	if body != nil || spec.ContentType != "" {
 		contentType := spec.ContentType
-		if contentType == "" {
+		switch {
+		case contentType != "":
+		case spec.BodyBase64 != "":
+			// A raw body defaults to bytes: the file upload refuses anything but
+			// application/octet-stream.
+			contentType = octetStreamMediaType
+		default:
 			contentType = MediaType
 		}
 		req.Header.Set("Content-Type", contentType)
@@ -536,10 +546,19 @@ func newRequest(ctx context.Context, env Env, spec Request, token string, vars m
 	return req, nil
 }
 
-// requestBody renders a fixture body. null and an absent body both mean "send
-// no body", which is what a GET or a DELETE needs.
-func requestBody(raw json.RawMessage) ([]byte, error) {
-	trimmed := bytes.TrimSpace(raw)
+// requestBody renders a fixture body. bodyBase64 is decoded to the exact bytes
+// the route receives; otherwise the JSON text of body is sent. null and an
+// absent body both mean "send no body", which is what a GET or a DELETE needs.
+func requestBody(spec Request) ([]byte, error) {
+	if spec.BodyBase64 != "" {
+		body, err := base64.StdEncoding.DecodeString(spec.BodyBase64)
+		if err != nil {
+			return nil, fmt.Errorf("request.bodyBase64: %w", err)
+		}
+		return body, nil
+	}
+
+	trimmed := bytes.TrimSpace(spec.Body)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, nil
 	}
@@ -817,6 +836,14 @@ func assertCase(t *testing.T, c Case, res *result, lab bool) {
 		return
 	}
 
+	// A raw response carries opaque bytes: its media type and length are the
+	// fixture's to assert (expect.headers, expect.bodyBase64, expect.bodyLength),
+	// and there is no JSON envelope to check.
+	if c.Expect.BodyBase64 != "" || c.Expect.BodyLength != nil {
+		assertRawBody(t, c, res)
+		return
+	}
+
 	if res.status == http.StatusNoContent || res.status == http.StatusNotModified {
 		if len(bytes.TrimSpace(res.body)) != 0 {
 			res.failf(t, c.Name, "a %d must carry no body", res.status)
@@ -826,6 +853,61 @@ func assertCase(t *testing.T, c Case, res *result, lab bool) {
 
 	assertJSONContentType(t, c.Name, res)
 	assertDocument(t, c.Name, c.Expect, res)
+}
+
+// assertRawBody checks an opaque response body (a file download): the bytes must
+// match the fixture exactly, and a short body fails as truncated instead of as a
+// different value.
+func assertRawBody(t *testing.T, c Case, res *result) {
+	t.Helper()
+	if problem := rawBodyProblem(c.Expect, res); problem != "" {
+		res.failf(t, c.Name, "%s", problem)
+	}
+}
+
+// rawBodyProblem is the raw-body assertion as a value, so a test can pin both
+// outcomes — the exact bytes and a truncated body — without failing the binary.
+//
+// A declared bodyLength is checked first: it is the failure a relay that stops
+// copying produces, and reporting it as a length difference names the bug. A
+// body that stops short of the expected bytes is reported as truncation for the
+// same reason.
+func rawBodyProblem(expect Expect, res *result) string {
+	if expect.BodyLength != nil && len(res.body) != *expect.BodyLength {
+		return fmt.Sprintf("want %d body bytes, got %d", *expect.BodyLength, len(res.body))
+	}
+	if expect.BodyBase64 == "" {
+		return ""
+	}
+
+	want, err := base64.StdEncoding.DecodeString(expect.BodyBase64)
+	if err != nil {
+		// The loader rejects this; a hand-built fixture can still reach here.
+		return fmt.Sprintf("bodyBase64 is not valid base64: %v", err)
+	}
+	if bytes.Equal(res.body, want) {
+		return ""
+	}
+	if bytes.HasPrefix(want, res.body) {
+		return fmt.Sprintf("the body is truncated: got %d of %d bytes", len(res.body), len(want))
+	}
+	return fmt.Sprintf("want %d exact bytes, got %d; first difference at byte %d",
+		len(want), len(res.body), firstDifference(res.body, want))
+}
+
+// firstDifference returns the index of the first byte two bodies disagree on, or
+// the length of the shorter one when one is a prefix of the other.
+func firstDifference(got, want []byte) int {
+	limit := len(got)
+	if len(want) < limit {
+		limit = len(want)
+	}
+	for i := 0; i < limit; i++ {
+		if got[i] != want[i] {
+			return i
+		}
+	}
+	return limit
 }
 
 // assertJSONContentType requires the v1 media type on every JSON response.
@@ -1272,11 +1354,16 @@ func (r *result) failf(t *testing.T, label, format string, args ...any) {
 }
 
 // truncateBody bounds a reported body so one huge document cannot drown the log.
-// The cut lands on a UTF-8 boundary, so the report is never invalid text.
+// The cut lands on a UTF-8 boundary, so the report is never invalid text. A body
+// that is not text at all — a file download, a console relay — is rendered as a
+// quoted Go string instead: the bytes stay exact and a failure log stays readable.
 func truncateBody(body []byte) string {
 	text := strings.TrimSpace(string(body))
 	if text == "" {
 		return "<empty>"
+	}
+	if !utf8.ValidString(text) {
+		return truncateQuoted(text)
 	}
 	if len(text) <= failureBodyLimit {
 		return text
@@ -1287,4 +1374,15 @@ func truncateBody(body []byte) string {
 		cut--
 	}
 	return text[:cut] + "...(truncated)"
+}
+
+// truncateQuoted renders a non-text body as a quoted string. It cuts to a quarter
+// of the limit first, because one byte can become four characters (\xff), so a
+// short body stays short and a huge one is cut before it is escaped.
+func truncateQuoted(text string) string {
+	limit := failureBodyLimit / 4
+	if len(text) <= limit {
+		return strconv.Quote(text)
+	}
+	return strconv.Quote(text[:limit]) + "...(truncated)"
 }

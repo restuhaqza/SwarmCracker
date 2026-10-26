@@ -211,6 +211,37 @@
       "capture": {"snapshot": "id"}
     },
     {
+      "name": "a restore of a running task is refused",
+      "mutating": true,
+      "requiresCapabilities": ["snapshots"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/tasks/$task/snapshots/$snapshot/restore",
+        "role": "admin"
+      },
+      "expect": {
+        "status": 409,
+        "errorCode": "conflict",
+        "jsonPaths": {"error.details.reason": "restore_task_running"}
+      }
+    },
+    {
+      "name": "the flat restore alias refuses a running task too",
+      "mutating": true,
+      "requiresCapabilities": ["snapshots"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/snapshots/$snapshot/restore",
+        "query": {"task": "$task"},
+        "role": "admin"
+      },
+      "expect": {
+        "status": 409,
+        "errorCode": "conflict",
+        "jsonPaths": {"error.details.reason": "restore_task_running"}
+      }
+    },
+    {
       "name": "delete the snapshot it created",
       "mutating": true,
       "requiresCapabilities": ["snapshots"],
@@ -222,6 +253,37 @@
       },
       "expect": {
         "status": 204
+      }
+    },
+    {
+      "name": "upload a file as raw bytes",
+      "mutating": true,
+      "request": {
+        "method": "PUT",
+        "path": "/v1/tasks/$task/files",
+        "query": {"path": "/tmp/conformance-file-{{run}}"},
+        "role": "admin",
+        "bodyBase64": "Y29uZm9ybWFuY2UgZmlsZQoAAf8="
+      },
+      "expect": {
+        "status": 204
+      }
+    },
+    {
+      "name": "download the file byte for byte",
+      "mutating": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/tasks/$task/files",
+        "query": {"path": "/tmp/conformance-file-{{run}}"},
+        "role": "admin",
+        "accept": "application/octet-stream"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {"Content-Type": "application/octet-stream"},
+        "bodyBase64": "Y29uZm9ybWFuY2UgZmlsZQoAAf8=",
+        "bodyLength": 20
       }
     }
   ]

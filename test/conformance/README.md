@@ -82,7 +82,9 @@ the document expectation with `stream: {"frames": 2, "lastType": "exit"}` (a
 deterministic framed stream), `stream: {"untilType": "eof", "minFrames": 1,
 "maxFrames": 200}` (a framed stream whose length the server chooses) or
 `stream: {"bytes": 14}` (a raw console); it carries no `kind`, no
-`requestIdInBody` and no `follow`.
+`requestIdInBody` and no `follow`. A **raw** case replaces the document with
+`request.bodyBase64` and `expect.bodyBase64`/`expect.bodyLength`; it carries no
+`kind`, no `errorCode` and no `stream`.
 
 ### Rules
 
@@ -124,6 +126,20 @@ deterministic framed stream), `stream: {"untilType": "eof", "minFrames": 1,
 - `request.body` is a JSON value. `null` or an absent body sends no body. A body
   is sent as the v1 media type unless `request.contentType` overrides it (a
   PATCH uses `application/merge-patch+json`).
+- `request.bodyBase64` is a raw request body, for a route that carries opaque
+  bytes instead of a document (the file upload): the value is the base64 of the
+  exact bytes, and it is **mutually exclusive with `request.body`**. It is sent
+  as `application/octet-stream` unless `request.contentType` overrides it. The
+  run token is not substituted inside raw bytes: they are what the fixture
+  encoded, so an upload cannot be rewritten on the way out.
+- `expect.bodyBase64` asserts the response body is exactly those bytes;
+  `expect.bodyLength` asserts its exact length. Both are only valid on a raw
+  response, so a case that sets either may not set `kind`, `errorCode`, `stream`
+  or any document assertion (`jsonPaths`, `presentKeys`, `items`, …) — the loader
+  rejects the combination instead of leaving the field unchecked. A truncated or
+  altered body fails, and the failure says which: `bodyLength` reports the
+  observed length, and a body that is a prefix of the expected bytes is reported
+  as truncation.
 - `request.accept` defaults to the v1 media type.
 - A fixture may not set `Authorization`, `Cookie`, `Proxy-Authorization`,
   `Connection`, `Transfer-Encoding` or `Upgrade`: the runner owns the credential
@@ -240,8 +256,10 @@ The backend is mutex-guarded, so the suite is clean under `-race`. It advertises
 the capability set the shipped default handler advertises (`read`, `write`,
 `events`, plus the broker's `exec`, `logs`, `files`, `health`, `attach`), and the
 mock leg reads that list from `/v1/version` rather than hard-coding it: snapshots
-are off, so the three snapshot cases in `write.json` and `errors.json` are the
-only gated skips.
+are off, so the four snapshot cases in `write.json` and the one in `errors.json`
+are the only gated skips. The broker also serves the file route from an
+in-memory guest filesystem, so the raw file round-trip in `write.json` runs in
+the mock leg instead of being gated.
 
 ## The lab leg
 
@@ -287,14 +305,21 @@ one started with `--snapshots-enable`:
   `capture` of the id and a `DELETE` that cleans it up) and `errors.json` asserts
   `DELETE /v1/tasks/{id}/restored` → `404 no_restored_vm`, both
   `requiresCapabilities: ["snapshots"]`. They skip against a default manager.
+- While that snapshot exists, `write.json` proves the running-task guard on both
+  route forms: `POST /v1/tasks/{id}/snapshots/{sid}/restore` and the flat
+  `POST /v1/snapshots/{sid}/restore?task={id}` both answer `409 conflict` with
+  `error.details.reason: "restore_task_running"`. A live VM owns its rootfs, so a
+  second VM on the same file would corrupt both; asserting both forms means the
+  guard cannot be lost on one of them.
 
 Because a snapshot copies the per-task disk, the node records the copy as
 `disk_path` in its own metadata and adds it to `sizeBytes`; that path is not part
 of the wire DTO, so the case asserts the snapshot document and a positive total
 size instead of inventing a field. `CONFORMANCE_TASK_ID` must name a **running**
-task for the create (a VM is snapshotted live) and a task with **no restored VM**
-for the `no_restored_vm` case; a task that does have one answers `204` and the
-case would report it.
+task for the create (a VM is snapshotted live) and for the restore guard (a
+running task is what makes the restore a `409`), and a task with **no restored
+VM** for the `no_restored_vm` case; a task that does have one answers `204` and
+the case would report it.
 
 `make conformance-lab` skips cleanly (exit 0) when `CONFORMANCE_HOST` or
 `CONFORMANCE_READER_TOKEN` is missing. It refuses a non-`https://` host: the run

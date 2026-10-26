@@ -337,6 +337,176 @@ func TestValidateRejectsBadFixtures(t *testing.T) {
 	}
 }
 
+// TestLoadReadsRawBodies keeps the raw file round-trip in the declarative
+// format: a base64 request body in, a base64 response body plus an exact length
+// out, so an SDK can send and check bytes that JSON cannot carry.
+func TestLoadReadsRawBodies(t *testing.T) {
+	fixtures, err := loadOne(t, `{
+		"schemaVersion": 1,
+		"name": "write",
+		"cases": [
+			{
+				"name": "upload bytes",
+				"mutating": true,
+				"request": {"method": "PUT", "path": "/v1/tasks/t/files", "role": "admin",
+					"bodyBase64": "AAH/"},
+				"expect": {"status": 204}
+			},
+			{
+				"name": "download bytes",
+				"request": {"method": "GET", "path": "/v1/tasks/t/files", "role": "admin"},
+				"expect": {"status": 200, "bodyBase64": "AAH/", "bodyLength": 3}
+			}
+		]
+	}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	upload := fixtures[0].Cases[0]
+	if upload.Request.BodyBase64 != "AAH/" {
+		t.Errorf("request.bodyBase64 = %q", upload.Request.BodyBase64)
+	}
+	if len(upload.Request.Body) != 0 {
+		t.Errorf("request.body = %s, want no JSON body", upload.Request.Body)
+	}
+
+	download := fixtures[0].Cases[1]
+	if download.Expect.BodyBase64 != "AAH/" {
+		t.Errorf("expect.bodyBase64 = %q", download.Expect.BodyBase64)
+	}
+	if download.Expect.BodyLength == nil || *download.Expect.BodyLength != 3 {
+		t.Errorf("expect.bodyLength = %v", download.Expect.BodyLength)
+	}
+}
+
+// TestValidateRejectsContradictoryRawBodies is the raw-body rule in one table.
+// Every combination in which the fields would be silently half-checked is
+// refused, and the loader names the case so the offending fixture is obvious.
+func TestValidateRejectsContradictoryRawBodies(t *testing.T) {
+	base := func(c Case) Fixture {
+		return Fixture{SchemaVersion: SchemaVersion, Name: "write", Cases: []Case{c}}
+	}
+	ok := Case{
+		Name:    "raw file",
+		Request: Request{Method: "PUT", Path: "/v1/tasks/t/files", Role: "admin"},
+		Expect:  Expect{Status: 204},
+	}
+
+	tests := []struct {
+		name  string
+		setup func(*Case)
+		want  string
+	}{
+		{
+			name: "a JSON body and a raw body",
+			setup: func(c *Case) {
+				c.Request.Body = []byte(`{"name":"x"}`)
+				c.Request.BodyBase64 = "eA=="
+				c.Expect.Status = 204
+			},
+			want: "mutually exclusive",
+		},
+		{
+			name: "a body declared null and a raw body",
+			setup: func(c *Case) {
+				c.Request.Body = []byte("null")
+				c.Request.BodyBase64 = "eA=="
+				c.Expect.Status = 204
+			},
+			want: "mutually exclusive",
+		},
+		{
+			name: "invalid base64 in the request",
+			setup: func(c *Case) {
+				c.Request.BodyBase64 = "not base64!"
+				c.Expect.Status = 204
+			},
+			want: "not valid base64",
+		},
+		{
+			name: "a raw body assertion on a stream case",
+			setup: func(c *Case) {
+				c.Stream = &Stream{Frames: 2}
+				c.Expect = Expect{Status: 200, BodyBase64: "eA=="}
+			},
+			want: "raw response",
+		},
+		{
+			name: "a raw body assertion on a follow",
+			setup: func(c *Case) {
+				c.Expect.NextPresent = boolPtr(true)
+				c.Follow = &Follow{
+					Path:   "/v1/services",
+					Expect: Expect{Status: 200, BodyLength: intPtr(3)},
+				}
+			},
+			want: "follow",
+		},
+		{
+			name: "a raw body assertion with a document kind",
+			setup: func(c *Case) {
+				c.Expect = Expect{Status: 200, Kind: "Snapshot", BodyBase64: "eA=="}
+			},
+			want: "kind and errorCode must be empty",
+		},
+		{
+			name: "a raw body assertion with an error code",
+			setup: func(c *Case) {
+				c.Expect = Expect{Status: 409, ErrorCode: "conflict", BodyLength: intPtr(3)}
+			},
+			want: "kind and errorCode must be empty",
+		},
+		{
+			name: "a raw body assertion with a document assertion",
+			setup: func(c *Case) {
+				c.Expect = Expect{Status: 200, BodyBase64: "eA==", JSONPaths: map[string]string{"kind": "Snapshot"}}
+			},
+			want: "only assertions a raw response supports",
+		},
+		{
+			name: "invalid base64 in the expectation",
+			setup: func(c *Case) {
+				c.Expect = Expect{Status: 200, BodyBase64: "eA"}
+			},
+			want: "not valid base64",
+		},
+		{
+			name: "a negative body length",
+			setup: func(c *Case) {
+				c.Expect = Expect{Status: 200, BodyLength: intPtr(-1)}
+			},
+			want: "must not be negative",
+		},
+		{
+			name: "a raw body assertion on a documentless status",
+			setup: func(c *Case) {
+				c.Expect = Expect{Status: 204, BodyLength: intPtr(0)}
+			},
+			want: "carries no body",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := ok
+			tc.setup(&c)
+			err := base(c).Validate()
+			if err == nil {
+				t.Fatalf("want an error containing %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not contain %q", err, tc.want)
+			}
+			// A validation error has to name the case: a fixture directory is
+			// large, and "expect: ..." alone does not say which one is wrong.
+			if !strings.Contains(err.Error(), c.Name) {
+				t.Fatalf("error %q does not name the case %q", err, c.Name)
+			}
+		})
+	}
+}
+
 func TestValidateAcceptsADocumentless204(t *testing.T) {
 	f := Fixture{
 		SchemaVersion: SchemaVersion,
@@ -353,6 +523,8 @@ func TestValidateAcceptsADocumentless204(t *testing.T) {
 }
 
 func boolPtr(value bool) *bool { return &value }
+
+func intPtr(value int) *int { return &value }
 
 // TestValidateRejectsForbiddenHeaders keeps the runner the only owner of the
 // credential and of the message framing: a fixture may not set either.
