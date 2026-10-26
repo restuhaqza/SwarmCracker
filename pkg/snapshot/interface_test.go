@@ -9,7 +9,7 @@ import (
 
 func TestSnapshotInfo_JSONRoundTrip(t *testing.T) {
 	info := &SnapshotInfo{
-		ID:         "snap-123",
+		ID:         "snap-9ef823231b0cef6d",
 		TaskID:     "task-456",
 		ServiceID:  "svc-789",
 		NodeID:     "node-001",
@@ -42,7 +42,7 @@ func TestSnapshotFilter_Matches(t *testing.T) {
 	now := time.Now().UTC()
 
 	info := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		TaskID:    "task-1",
 		ServiceID: "svc-1",
 		NodeID:    "node-1",
@@ -110,22 +110,22 @@ func TestSnapshotConfig_Default_Interface(t *testing.T) {
 
 func TestGenerateSnapshotID_Interface(t *testing.T) {
 	// Test that generateSnapshotID returns a valid ID
-	id := generateSnapshotID("task-123")
+	id := generateSnapshotID()
 
 	if id == "" {
 		t.Error("generateSnapshotID should return non-empty string")
 	}
 
-	// Different inputs should produce different IDs
-	id2 := generateSnapshotID("task-different")
+	// Consecutive calls must produce different IDs, even in the same clock tick.
+	id2 := generateSnapshotID()
 	if id == id2 {
-		t.Error("Different inputs should produce different IDs")
+		t.Error("Consecutive calls should produce different IDs")
 	}
 }
 
 func TestMatchesFilter_EmptyFilter(t *testing.T) {
 	info := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		CreatedAt: time.Now().UTC(),
 	}
 
@@ -139,7 +139,7 @@ func TestMatchesFilter_EmptyFilter(t *testing.T) {
 func TestMatchesFilter_AllFields_Interface(t *testing.T) {
 	now := time.Now().UTC()
 	info := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		TaskID:    "task-1",
 		ServiceID: "svc-1",
 		NodeID:    "node-1",
@@ -162,7 +162,7 @@ func TestMatchesFilter_AllFields_Interface(t *testing.T) {
 func TestMatchesFilter_PartialMatch(t *testing.T) {
 	now := time.Now().UTC()
 	info := &SnapshotInfo{
-		ID:        "snap-1",
+		ID:        "snap-9f2460b56367bc4e",
 		TaskID:    "task-1",
 		ServiceID: "svc-2", // Different
 		CreatedAt: now,

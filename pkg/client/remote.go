@@ -40,6 +40,23 @@ type remoteClient struct {
 	// stream is the no-timeout client for SSE/NDJSON. http.Client.Timeout
 	// bounds the whole response body, which would cut a watch stream.
 	stream *http.Client
+	// attach is the no-timeout client for the attach console. It never
+	// negotiates HTTP/2: the session needs HTTP/1.1 full duplex, so a manager
+	// that later advertises h2 must not silently switch it to a protocol that
+	// cannot carry both directions at once. It also never follows a redirect;
+	// see refuseRedirect.
+	attach *http.Client
+}
+
+// refuseRedirect is the CheckRedirect policy of every remote client. The manager
+// API never legitimately redirects, so a 3xx is a misconfiguration or an
+// attacker in the path, and Go's default (follow up to 10 hops) is wrong in both
+// cases: a same-host https->http hop would replay the bearer token in the clear,
+// and the followed response would be a body the document or stream decoder
+// cannot read. Returning ErrUseLastResponse hands the 3xx back so the normal
+// non-2xx error mapping reports it like any other failure.
+func refuseRedirect(*http.Request, []*http.Request) error {
+	return http.ErrUseLastResponse
 }
 
 // newRemote builds the remote backend. Every failure here is a configuration
@@ -81,21 +98,50 @@ func newRemote(cfg Config) (*Client, error) {
 		ExpectContinueTimeout: time.Second,
 	}
 
+	// The HTTP/1.1-only console client. A clone keeps one dialer and one TLS
+	// configuration for the whole remote client; only the protocol negotiation
+	// differs.
+	consoleTransport := transport.Clone()
+	consoleTransport.ForceAttemptHTTP2 = false
+	// A non-nil (empty) TLSNextProto is the documented way to disable HTTP/2 on
+	// a transport, even if ForceAttemptHTTP2 is ever turned back on.
+	consoleTransport.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+
 	return &Client{remote: &remoteClient{
 		baseURL: base,
 		token:   token,
-		http:    &http.Client{Timeout: timeout, Transport: transport},
-		stream:  &http.Client{Transport: transport},
+		http: &http.Client{
+			Timeout:       timeout,
+			Transport:     transport,
+			CheckRedirect: refuseRedirect,
+		},
+		stream: &http.Client{
+			Transport:     transport,
+			CheckRedirect: refuseRedirect,
+		},
+		attach: &http.Client{
+			Transport: consoleTransport,
+			// The full-duplex POST must not be followed: the hop would turn it
+			// into a GET whose body (an HTML error page, typically) would be
+			// copied to the terminal as console output. See refuseRedirect for
+			// the token and error-mapping reasons shared with the other two.
+			CheckRedirect: refuseRedirect,
+		},
 	}}, nil
 }
 
 // close releases idle keep-alive connections. The client stays usable: a later
 // request simply dials again.
 func (r *remoteClient) close() {
-	if r == nil || r.http == nil {
+	if r == nil {
 		return
 	}
-	r.http.CloseIdleConnections()
+	if r.http != nil {
+		r.http.CloseIdleConnections()
+	}
+	if r.attach != nil {
+		r.attach.CloseIdleConnections()
+	}
 }
 
 // parseEndpoint accepts only an https URL with a host. Plain HTTP over TCP is
@@ -381,6 +427,89 @@ func (r *remoteClient) listTasks(ctx context.Context) ([]v1.Task, error) {
 	return paginate(r, ctx, []string{"v1", "tasks"}, func(doc *v1.TaskList) ([]v1.Task, *string) {
 		return doc.Items, doc.Next
 	})
+}
+
+// listTasksHealth returns every page of tasks with ?health=true, accumulating
+// the items, warnings and partials of each page. A 207 page is a normal
+// TaskList document, not an error, so `do` already returns it; this method only
+// records the partial flag. `next` stays nil because the pages are consumed
+// here, exactly like the unenriched list.
+//
+// Partials are folded by node: the manager emits one per page per failed node,
+// so a node that owns tasks on two pages arrives twice. The aggregated document
+// names it once.
+func (r *remoteClient) listTasksHealth(ctx context.Context) (v1.TaskList, bool, error) {
+	doc := v1.NewTaskList(nil)
+	partial := false
+	cursor := ""
+	seen := make(map[string]struct{})
+	partialIndex := make(map[string]int)
+
+	for page := 0; ; page++ {
+		if page >= maxListPages {
+			return v1.TaskList{}, false, output.NewErrorf(output.CodeInternal,
+				"list v1/tasks did not terminate after %d pages", maxListPages)
+		}
+
+		query := url.Values{}
+		query.Set("health", "true")
+		if cursor != "" {
+			query.Set("cursor", cursor)
+		}
+
+		resp, err := r.do(ctx, remoteRequest{
+			method:   http.MethodGet,
+			segments: []string{"v1", "tasks"},
+			query:    query,
+		})
+		if err != nil {
+			return v1.TaskList{}, false, err
+		}
+
+		var pageDoc v1.TaskList
+		if err := decodeJSON("v1/tasks", resp.body, &pageDoc); err != nil {
+			return v1.TaskList{}, false, err
+		}
+		if resp.status == http.StatusMultiStatus {
+			partial = true
+		}
+
+		doc.Items = append(doc.Items, pageDoc.Items...)
+		for _, entry := range pageDoc.Partial {
+			mergePartial(&doc.Partial, partialIndex, entry)
+		}
+		doc.Warnings = append(doc.Warnings, pageDoc.Warnings...)
+
+		if pageDoc.Next == nil || *pageDoc.Next == "" {
+			return doc, partial, nil
+		}
+		if _, repeated := seen[*pageDoc.Next]; repeated {
+			return v1.TaskList{}, false, output.NewErrorf(output.CodeInternal,
+				"list v1/tasks repeated cursor %q", *pageDoc.Next)
+		}
+		seen[*pageDoc.Next] = struct{}{}
+		cursor = *pageDoc.Next
+	}
+}
+
+// mergePartial appends one page's partial, or folds it into the entry already
+// recorded for that node: the manager emits one partial per page per failed
+// node, so a node hosting tasks on several pages would otherwise repeat. The
+// first entry wins; a later page may carry the node name the first one lacked,
+// which is backfilled so the single entry stays usable — the same rule
+// pkg/apihttp/health.go applies inside one page. A partial without a node ID
+// names nothing, so it cannot be folded and is always kept.
+func mergePartial(dst *[]v1.Partial, index map[string]int, entry v1.Partial) {
+	if entry.NodeID != "" {
+		if at, dup := index[entry.NodeID]; dup {
+			if (*dst)[at].NodeName == "" {
+				(*dst)[at].NodeName = entry.NodeName
+			}
+			return
+		}
+		index[entry.NodeID] = len(*dst)
+	}
+	*dst = append(*dst, entry)
 }
 
 // listServiceTasks returns every page of one service's tasks.

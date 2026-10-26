@@ -2,8 +2,10 @@ package apihttp
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -315,4 +317,39 @@ func TestForbiddenScopeDetails(t *testing.T) {
 	require.ErrorAs(t, err, &typed)
 	assert.Equal(t, "audit:read", typed.Details["requiredScope"])
 	assert.NotContains(t, typed.Message, "audit:read", "the message must stay human, the detail is the contract")
+}
+
+// TestTaskScopedRoutesDenyWithoutIdentity pins deny-by-default at the route
+// boundary for the task-scoped operations: a request with no token is 401, and a
+// token that lacks the operation's scope is 403 before any handler runs. The
+// handlers never see a zero identity, because the boundary refuses it first.
+func TestTaskScopedRoutesDenyWithoutIdentity(t *testing.T) {
+	api := newTestAPI(t, &fakeClient{
+		task: v1.Task{ID: "task-1", ServiceID: "svc-1", NodeID: "node-1"},
+	})
+
+	cases := []struct {
+		name   string
+		method string
+		target string
+	}{
+		{"exec", http.MethodPost, "/v1/tasks/task-1/exec"},
+		{"files", http.MethodGet, "/v1/tasks/task-1/files?path=/etc/hostname"},
+		{"snapshots", http.MethodGet, "/v1/tasks/task-1/snapshots"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name+" without a token", func(t *testing.T) {
+			rec := api.do(t, tc.method, tc.target)
+			require.Equal(t, http.StatusUnauthorized, rec.Code, rec.Body.String())
+			assert.Equal(t, string(output.CodeUnauthenticated), decodeError(t, rec).Error.Code)
+		})
+		t.Run(tc.name+" without the scope", func(t *testing.T) {
+			// The suite's default token is a reader: it has no exec, files or
+			// snapshots scope.
+			rec := api.do(t, tc.method, tc.target, withToken(api.token))
+			require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+			assert.Equal(t, string(output.CodeForbidden), decodeError(t, rec).Error.Code)
+		})
+	}
 }

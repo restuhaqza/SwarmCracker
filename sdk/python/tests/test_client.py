@@ -7,10 +7,12 @@ needs no network and no third-party package.
 from __future__ import annotations
 
 import base64
+import email.utils
 import json
 import socket
 import tempfile
 import threading
+import time
 import unittest
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -20,6 +22,7 @@ from swarmcracker import ApiError, Client
 from swarmcracker.client import (
     API_VERSION_HEADER,
     NDJSON_MEDIA_TYPE,
+    OCTET_STREAM_MEDIA_TYPE,
     SSE_MEDIA_TYPE,
     V1_MEDIA_TYPE,
 )
@@ -52,6 +55,22 @@ TASK = {
     "state": "running",
     "desiredState": "running",
 }
+
+SNAPSHOT = {
+    "id": "snap-abc",
+    "taskId": "t1",
+    "createdAt": "2026-10-25T10:00:00Z",
+    "sizeBytes": 1024,
+    "memoryMB": 256,
+    "vcpuCount": 2,
+    "rootfsPath": "/var/lib/firecracker/rootfs/t1.ext4",
+}
+
+SNAPSHOT_DOCUMENT = dict(SNAPSHOT, schemaVersion=1, kind="Snapshot")
+
+#: The bytes the file routes serve: one NUL and one non-UTF-8 byte prove the
+#: client never decodes the body as text.
+FILE_BYTES = b"hello file\x00\xff\n"
 
 
 #: Exec streams that violate the frame contract, keyed by route.
@@ -107,6 +126,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self):
         self._dispatch("PATCH")
 
+    def do_PUT(self):
+        self._dispatch("PUT")
+
     def do_DELETE(self):
         self._dispatch("DELETE")
 
@@ -133,7 +155,17 @@ class Handler(BaseHTTPRequestHandler):
     def _read_body(self):
         length = int(self.headers.get("Content-Length") or 0)
         raw = self.rfile.read(length) if length else b""
-        return json.loads(raw) if raw else None
+        if not raw:
+            return None
+        content_type = self.headers.get("Content-Type") or ""
+        if content_type == V1_MEDIA_TYPE or content_type.endswith("+json"):
+            return json.loads(raw)
+        return raw
+
+    def _count(self, key):
+        """Increment and return the per-route attempt counter of this server."""
+        self.server.counters[key] = self.server.counters.get(key, 0) + 1
+        return self.server.counters[key]
 
     def _route(self, method, path, record):
         if method == "GET" and path == "/v1/version":
@@ -156,7 +188,15 @@ class Handler(BaseHTTPRequestHandler):
             if record["headers"].get("content-type") != V1_MEDIA_TYPE:
                 self._json(415, error_document("invalid", "unsupported media type"))
                 return True
-            document = dict(SERVICE, id="s2", name=record["body"]["name"])
+            name = (record["body"] or {}).get("name")
+            if name == "flaky-no-key":
+                self._json(503, error_document("unavailable", "try later", retryable=True))
+                return True
+            if name == "flaky" and record["headers"].get("idempotency-key"):
+                if self._count("services:flaky") <= 2:
+                    self._json(503, error_document("unavailable", "try later", retryable=True))
+                    return True
+            document = dict(SERVICE, id="s2", name=name)
             self._json(201, document)
             return True
         if path.startswith("/v1/services/"):
@@ -239,10 +279,117 @@ class Handler(BaseHTTPRequestHandler):
                 + b"\n",
             )
             return True
+        if path.startswith("/v1/tasks/t1/files"):
+            return self._file_route(method, path, record)
+        if path == "/v1/snapshots" and method == "GET":
+            task = record["query"].get("task", [None])[0]
+            if task is None:
+                self._json(
+                    400,
+                    error_document(
+                        "invalid",
+                        "task is required",
+                        details={"parameter": "task"},
+                    ),
+                )
+                return True
+            self._json(
+                200,
+                {
+                    "schemaVersion": 1,
+                    "kind": "SnapshotList",
+                    "items": [SNAPSHOT],
+                    "next": None,
+                },
+            )
+            return True
+        if path == "/v1/snapshots/snap-abc/restore" and method == "POST":
+            if record["query"].get("task") != ["t1"]:
+                self._json(400, error_document("invalid", "task is required"))
+                return True
+            self._json(200, SNAPSHOT_DOCUMENT)
+            return True
+        if path == "/v1/snapshots/snap-abc" and method == "DELETE":
+            if record["query"].get("task") != ["t1"]:
+                self._json(400, error_document("invalid", "task is required"))
+                return True
+            self._send(204, b"", V1_MEDIA_TYPE)
+            return True
+        if path == "/v1/tasks/t1/restored" and method == "DELETE":
+            self._send(204, b"", V1_MEDIA_TYPE)
+            return True
+        if path == "/v1/tasks/t1/snapshots" and method == "POST":
+            body = record["body"] or {}
+            document = dict(SNAPSHOT_DOCUMENT)
+            if "vcpus" in body:
+                document["vcpuCount"] = body["vcpus"]
+            if "memoryMB" in body:
+                document["memoryMB"] = body["memoryMB"]
+            self._json(201, document)
+            return True
+        if path == "/v1/retry/twice" and method == "GET":
+            if self._count(path) <= 2:
+                self._json(503, error_document("unavailable", "try later", retryable=True))
+                return True
+            self._json(200, {"schemaVersion": 1, "kind": "VersionInfo", "serverVersion": "v0.11.0"})
+            return True
+        if path == "/v1/retry/always" and method == "GET":
+            self._count(path)
+            self._json(503, error_document("unavailable", "try later", retryable=True))
+            return True
+        if path == "/v1/retry/after-seconds" and method == "GET":
+            if self._count(path) == 1:
+                self._json(
+                    429,
+                    error_document("rate_limited", "slow down", retryable=True),
+                    headers={"Retry-After": "7"},
+                )
+                return True
+            self._json(200, {"schemaVersion": 1, "kind": "VersionInfo", "serverVersion": "v0.11.0"})
+            return True
+        if path == "/v1/retry/after-date" and method == "GET":
+            if self._count(path) == 1:
+                self._json(
+                    503,
+                    error_document("unavailable", "try later", retryable=True),
+                    headers={
+                        "Retry-After": email.utils.formatdate(time.time() + 3, usegmt=True)
+                    },
+                )
+                return True
+            self._json(200, {"schemaVersion": 1, "kind": "VersionInfo", "serverVersion": "v0.11.0"})
+            return True
+        if path == "/v1/retry/capped" and method == "GET":
+            if self._count(path) == 1:
+                self._json(
+                    429,
+                    error_document("rate_limited", "slow down", retryable=True),
+                    headers={"Retry-After": "600"},
+                )
+                return True
+            self._json(200, {"schemaVersion": 1, "kind": "VersionInfo", "serverVersion": "v0.11.0"})
+            return True
+        if path == "/v1/retry/after-hint" and method == "GET":
+            # The hint comes from the test, so one route covers a negative, a
+            # zero and a garbage Retry-After value.
+            if self._count(path) == 1:
+                self._json(
+                    429,
+                    error_document("rate_limited", "slow down", retryable=True),
+                    headers={"Retry-After": self.server.retry_hint},
+                )
+                return True
+            self._json(200, {"schemaVersion": 1, "kind": "VersionInfo", "serverVersion": "v0.11.0"})
+            return True
+        if path == "/v1/retry/bad-request" and method == "GET":
+            self._count(path)
+            self._json(400, error_document("invalid", "no"))
+            return True
         if method == "GET" and path == "/v1/events":
             # The test server reports a typed failure when the subscription asks
             # for the reserved, test-only type "error", and a transport failure
-            # when it asks for "drop".
+            # when it asks for "drop". "flaky" fails once with a retryable 503:
+            # a stream must not replay it even when retries are enabled.
             if record["query"].get("types") == ["error"]:
                 self._sse_error_stream()
             elif record["query"].get("types") == ["drop"]:
@@ -252,6 +399,8 @@ class Handler(BaseHTTPRequestHandler):
                     + json.dumps(event("7", "service.created", "s1")).encode("utf-8")
                     + b"\n\n",
                 )
+            elif record["query"].get("types") == ["flaky"] and self._count("events:flaky") == 1:
+                self._json(503, error_document("unavailable", "try later", retryable=True))
             else:
                 self._sse_stream()
             return True
@@ -273,9 +422,39 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
+    def _file_route(self, method, path, record):
+        guest_path = record["query"].get("path", [""])[0]
+        if method == "GET":
+            if guest_path == "/missing":
+                self._json(404, error_document("not_found", "no such file"))
+                return True
+            if guest_path == "/truncated":
+                # Content-Length promises more than the body carries: the client
+                # must map the short read to ApiError("unreachable").
+                self._truncated_file(FILE_BYTES)
+                return True
+            self._send(200, FILE_BYTES, OCTET_STREAM_MEDIA_TYPE)
+            return True
+        if method == "PUT":
+            if record["headers"].get("content-type") != OCTET_STREAM_MEDIA_TYPE:
+                self._json(415, error_document("invalid", "unsupported media type"))
+                return True
+            if guest_path == "/missing":
+                self._json(404, error_document("not_found", "no such directory"))
+                return True
+            if guest_path == "/flaky" and self._count("files:flaky") == 1:
+                self._json(503, error_document("unavailable", "try later", retryable=True))
+                return True
+            self._send(204, b"", V1_MEDIA_TYPE)
+            return True
+        return False
+
     def _service_route(self, method, path, record):
         reference = urllib.parse.unquote(path[len("/v1/services/"):])
         if method == "GET":
+            if reference == "truncated-json":
+                self._truncated_json(json.dumps(dict(SERVICE, id=reference)).encode("utf-8"))
+                return True
             self._json(200, dict(SERVICE, id=reference))
             return True
         if method == "PATCH":
@@ -297,15 +476,17 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- responses ----------------------------------------------------------
 
-    def _json(self, status, document):
-        self._send(status, json.dumps(document).encode("utf-8"), V1_MEDIA_TYPE)
+    def _json(self, status, document, headers=None):
+        self._send(status, json.dumps(document).encode("utf-8"), V1_MEDIA_TYPE, headers)
 
-    def _send(self, status, body, content_type):
+    def _send(self, status, body, content_type, headers=None):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header(API_VERSION_HEADER, "1")
         self.send_header("X-Request-Id", REQUEST_ID)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         if body:
             self.wfile.write(body)
@@ -387,6 +568,40 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
         self.close_connection = True
 
+    def _truncated_file(self, body):
+        """Answer 200 with a Content-Length larger than the bytes written.
+
+        The buffered reader raises http.client.IncompleteRead; a file read must
+        map that to ApiError("unreachable") exactly like a stream failure.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", OCTET_STREAM_MEDIA_TYPE)
+        self.send_header("Content-Length", str(len(body) + 32))
+        self.send_header(API_VERSION_HEADER, "1")
+        self.send_header("X-Request-Id", REQUEST_ID)
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.close_connection = True
+
+
+    def _truncated_json(self, body):
+        """Answer 200 with a JSON Content-Type but a body shorter than declared.
+
+        The buffered reader raises http.client.IncompleteRead from read(); a JSON
+        decode must map that to ApiError("unreachable") rather than letting the
+        raw http.client exception escape.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", V1_MEDIA_TYPE)
+        self.send_header("Content-Length", str(len(body) + 32))
+        self.send_header(API_VERSION_HEADER, "1")
+        self.send_header("X-Request-Id", REQUEST_ID)
+        self.end_headers()
+        self.wfile.write(body)
+        self.wfile.flush()
+        self.close_connection = True
+
 
 class SinkHandler(BaseHTTPRequestHandler):
     """Records any request that reaches it: a redirect must not."""
@@ -412,7 +627,9 @@ class ClientTest(unittest.TestCase):
     def setUp(self):
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.requests = []
+        self.server.counters = {}
         self.server.redirect_to = ""
+        self.server.retry_hint = "7"
         self.thread = threading.Thread(
             target=self.server.serve_forever,
             kwargs={"poll_interval": 0.01},
@@ -532,6 +749,101 @@ class ClientTest(unittest.TestCase):
         self.client.tasks.get("t1", health=False)
         request = self.last_request("GET", "/v1/tasks/t1")
         self.assertEqual(request["query"], {"health": ["false"]})
+
+    # -- files --------------------------------------------------------------
+
+    def test_files_get_returns_raw_bytes_and_sends_the_path(self):
+        self.assertEqual(self.client.tasks.files_get("t1", "/etc/hosts"), FILE_BYTES)
+
+        request = self.last_request("GET", "/v1/tasks/t1/files")
+        self.assertEqual(request["query"], {"path": ["/etc/hosts"]})
+        self.assertEqual(request["headers"]["accept"], OCTET_STREAM_MEDIA_TYPE)
+
+    def test_files_get_maps_a_typed_failure(self):
+        with self.assertRaises(ApiError) as caught:
+            self.client.tasks.files_get("t1", "/missing")
+        self.assertEqual(caught.exception.code, "not_found")
+        self.assertEqual(caught.exception.status, 404)
+        self.assertEqual(caught.exception.request_id, REQUEST_ID)
+        self.assertNotIn(TOKEN, str(caught.exception))
+
+    def test_files_get_maps_a_truncated_body_to_unreachable(self):
+        with self.assertRaises(ApiError) as caught:
+            self.client.tasks.files_get("t1", "/truncated")
+        error = caught.exception
+        self.assertEqual(error.code, "unreachable")
+        self.assertEqual(error.status, 0)
+        self.assertIn("body", error.message)
+        self.assertNotIn(TOKEN, str(error))
+
+    def test_files_put_sends_raw_bytes_content_type_and_mode(self):
+        self.assertIsNone(
+            self.client.tasks.files_put("t1", "/tmp/payload", FILE_BYTES, mode="0600")
+        )
+
+        request = self.last_request("PUT", "/v1/tasks/t1/files")
+        self.assertEqual(request["headers"]["content-type"], OCTET_STREAM_MEDIA_TYPE)
+        self.assertEqual(request["query"], {"path": ["/tmp/payload"], "mode": ["0600"]})
+        self.assertEqual(request["body"], FILE_BYTES)
+
+    def test_files_put_omits_mode_and_accepts_an_empty_file(self):
+        self.assertIsNone(self.client.tasks.files_put("t1", "/tmp/empty", b""))
+        request = self.last_request("PUT", "/v1/tasks/t1/files")
+        self.assertEqual(request["query"], {"path": ["/tmp/empty"]})
+        self.assertIsNone(request["body"])
+        self.assertEqual(request["headers"]["content-type"], OCTET_STREAM_MEDIA_TYPE)
+
+    def test_files_put_rejects_a_non_bytes_body(self):
+        with self.assertRaises(TypeError):
+            self.client.tasks.files_put("t1", "/tmp/text", "not bytes")
+
+    # -- snapshots ----------------------------------------------------------
+
+    def test_snapshots_list_sends_the_task_and_pagination(self):
+        page = self.client.tasks.snapshots_list("t1", limit=10, cursor="c1")
+        self.assertEqual(page["kind"], "SnapshotList")
+        self.assertEqual(page["items"][0]["id"], "snap-abc")
+
+        request = self.last_request("GET", "/v1/snapshots")
+        self.assertEqual(request["query"], {"task": ["t1"], "limit": ["10"], "cursor": ["c1"]})
+
+    def test_snapshots_list_without_a_task_is_a_typed_invalid(self):
+        with self.assertRaises(ApiError) as caught:
+            self.client.tasks.snapshots_list()
+        self.assertEqual(caught.exception.code, "invalid")
+        self.assertEqual(caught.exception.details, {"parameter": "task"})
+        request = self.last_request("GET", "/v1/snapshots")
+        self.assertEqual(request["raw_query"], "")
+
+    def test_snapshots_create_sends_the_optional_resources(self):
+        document = self.client.tasks.snapshots_create("t1", vcpus=2, memory_mb=256)
+        self.assertEqual(document["kind"], "Snapshot")
+
+        request = self.last_request("POST", "/v1/tasks/t1/snapshots")
+        self.assertEqual(request["headers"]["content-type"], V1_MEDIA_TYPE)
+        self.assertEqual(request["body"], {"vcpus": 2, "memoryMB": 256})
+
+    def test_snapshots_create_without_resources_sends_no_body(self):
+        self.client.tasks.snapshots_create("t1")
+        request = self.last_request("POST", "/v1/tasks/t1/snapshots")
+        self.assertIsNone(request["body"])
+        self.assertNotIn("content-type", request["headers"])
+
+    def test_snapshots_restore_uses_the_flat_route_with_the_task(self):
+        document = self.client.tasks.snapshots_restore("t1", "snap-abc")
+        self.assertEqual(document["id"], "snap-abc")
+        request = self.last_request("POST", "/v1/snapshots/snap-abc/restore")
+        self.assertEqual(request["query"], {"task": ["t1"]})
+
+    def test_snapshots_delete_uses_the_flat_route_with_the_task(self):
+        self.assertIsNone(self.client.tasks.snapshots_delete("t1", "snap-abc"))
+        request = self.last_request("DELETE", "/v1/snapshots/snap-abc")
+        self.assertEqual(request["query"], {"task": ["t1"]})
+
+    def test_snapshots_stop_restored_deletes_the_restored_vm(self):
+        self.assertIsNone(self.client.tasks.snapshots_stop_restored("t1"))
+        request = self.last_request("DELETE", "/v1/tasks/t1/restored")
+        self.assertEqual(request["raw_query"], "")
 
     # -- exec ---------------------------------------------------------------
 
@@ -703,6 +1015,15 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(caught.exception.status, 500)
         self.assertEqual(caught.exception.request_id, REQUEST_ID)
 
+    def test_a_truncated_json_body_is_unreachable(self):
+        with self.assertRaises(ApiError) as caught:
+            self.client.services.get("truncated-json")
+        error = caught.exception
+        self.assertEqual(error.code, "unreachable")
+        self.assertEqual(error.status, 0)
+        self.assertIn("body", error.message)
+        self.assertNotIn(TOKEN, str(error))
+
     def test_redirects_are_refused_so_the_token_is_never_replayed(self):
         sink = ThreadingHTTPServer(("127.0.0.1", 0), SinkHandler)
         sink.requests = []
@@ -773,6 +1094,189 @@ class ClientTest(unittest.TestCase):
         self.assertEqual(caught.exception.code, "unauthenticated")
         request = self.last_request("GET", "/v1/version")
         self.assertNotIn("authorization", request["headers"])
+
+
+class RetryTest(unittest.TestCase):
+    """Opt-in retries against the same loopback fixture, with a fake sleep."""
+
+    def setUp(self):
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.requests = []
+        self.server.counters = {}
+        self.server.redirect_to = ""
+        self.server.retry_hint = "7"
+        self.thread = threading.Thread(
+            target=self.server.serve_forever,
+            kwargs={"poll_interval": 0.01},
+            daemon=True,
+        )
+        self.thread.start()
+        self.host = f"http://127.0.0.1:{self.server.server_address[1]}"
+        self.delays = []
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=5)
+
+    def retrying(self, retries=2, **kwargs):
+        client = Client(
+            self.host,
+            token=TOKEN,
+            retries=retries,
+            retry_backoff=0.5,
+            sleep=self.delays.append,
+            **kwargs,
+        )
+        self.addCleanup(client.close)
+        return client
+
+    def attempts(self, path):
+        return [request for request in self.server.requests if request["path"] == path]
+
+    def test_zero_retries_is_the_default(self):
+        client = Client(self.host, token=TOKEN)
+        self.addCleanup(client.close)
+        with self.assertRaises(ApiError) as caught:
+            client._request("GET", "/v1/retry/twice")
+        self.assertEqual(caught.exception.status, 503)
+        self.assertEqual(len(self.attempts("/v1/retry/twice")), 1)
+        self.assertEqual(self.delays, [])
+
+    def test_retries_retry_5xx_until_success_with_exponential_backoff(self):
+        client = self.retrying(retries=2)
+        document = client._request("GET", "/v1/retry/twice")
+        self.assertEqual(document["serverVersion"], "v0.11.0")
+        self.assertEqual(len(self.attempts("/v1/retry/twice")), 3)
+        self.assertEqual(self.delays, [0.5, 1.0])
+
+    def test_retry_after_seconds_is_honoured(self):
+        client = self.retrying(retries=1)
+        client._request("GET", "/v1/retry/after-seconds")
+        self.assertEqual(len(self.attempts("/v1/retry/after-seconds")), 2)
+        self.assertEqual(self.delays, [7.0])
+
+    def test_retry_after_http_date_is_honoured(self):
+        client = self.retrying(retries=1)
+        client._request("GET", "/v1/retry/after-date")
+        self.assertEqual(len(self.attempts("/v1/retry/after-date")), 2)
+        self.assertEqual(len(self.delays), 1)
+        self.assertGreater(self.delays[0], 1.0)
+        self.assertLessEqual(self.delays[0], 3.0)
+
+    def test_retry_after_is_capped_by_retry_max_wait(self):
+        client = self.retrying(retries=1, retry_max_wait=5.0)
+        client._request("GET", "/v1/retry/capped")
+        self.assertEqual(self.delays, [5.0])
+
+    def test_a_retry_budget_exhausts_into_the_last_error(self):
+        client = self.retrying(retries=1)
+        with self.assertRaises(ApiError) as caught:
+            client._request("GET", "/v1/retry/always")
+        self.assertEqual(caught.exception.status, 503)
+        self.assertEqual(caught.exception.code, "unavailable")
+        self.assertEqual(len(self.attempts("/v1/retry/always")), 2)
+        self.assertEqual(len(self.delays), 1)
+
+    def test_a_4xx_is_never_retried(self):
+        client = self.retrying(retries=2)
+        with self.assertRaises(ApiError) as caught:
+            client._request("GET", "/v1/retry/bad-request")
+        self.assertEqual(caught.exception.status, 400)
+        self.assertEqual(len(self.attempts("/v1/retry/bad-request")), 1)
+        self.assertEqual(self.delays, [])
+
+    def test_a_post_without_an_idempotency_key_is_never_retried(self):
+        client = self.retrying(retries=2)
+        body = {
+            "name": "flaky-no-key",
+            "spec": {"mode": "replicated", "replicas": 1, "task": {"image": "api:1"}},
+        }
+        with self.assertRaises(ApiError) as caught:
+            client.services.create(body)
+        self.assertEqual(caught.exception.status, 503)
+        self.assertEqual(len(self.attempts("/v1/services")), 1)
+        self.assertEqual(self.delays, [])
+
+    def test_a_post_with_an_idempotency_key_is_retried(self):
+        client = self.retrying(retries=2)
+        body = {
+            "name": "flaky",
+            "spec": {"mode": "replicated", "replicas": 1, "task": {"image": "api:1"}},
+        }
+        document = client.services.create(body, idempotency_key="create-1")
+        self.assertEqual(document["name"], "flaky")
+        self.assertEqual(len(self.attempts("/v1/services")), 3)
+        self.assertEqual(self.delays, [0.5, 1.0])
+        self.assertTrue(
+            all(
+                request["headers"]["idempotency-key"] == "create-1"
+                for request in self.attempts("/v1/services")
+            )
+        )
+
+    def test_files_put_is_retried_with_the_whole_body(self):
+        client = self.retrying(retries=1)
+        self.assertIsNone(
+            client.tasks.files_put("t1", "/flaky", FILE_BYTES, mode="0644")
+        )
+
+        sent = self.attempts("/v1/tasks/t1/files")
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(self.delays, [0.5])
+        # The whole body is resent, not a consumed stream: both attempts carry
+        # the exact original bytes and their own Content-Length.
+        for request in sent:
+            self.assertEqual(request["method"], "PUT")
+            self.assertEqual(request["body"], FILE_BYTES)
+            self.assertEqual(
+                request["headers"]["content-length"], str(len(FILE_BYTES))
+            )
+            self.assertEqual(request["query"], {"path": ["/flaky"], "mode": ["0644"]})
+
+    def test_a_non_positive_retry_after_falls_back_to_the_backoff(self):
+        client = self.retrying(retries=1)
+        for hint in ("-5", "0"):
+            with self.subTest(hint=hint):
+                self.server.retry_hint = hint
+                self.server.requests.clear()
+                self.server.counters.clear()
+                self.delays.clear()
+                client._request("GET", "/v1/retry/after-hint")
+                self.assertEqual(len(self.attempts("/v1/retry/after-hint")), 2)
+                self.assertEqual(self.delays, [0.5])
+
+    def test_an_undecodable_retry_after_falls_back_to_the_backoff(self):
+        client = self.retrying(retries=1)
+        self.server.retry_hint = "soon"
+        client._request("GET", "/v1/retry/after-hint")
+        self.assertEqual(len(self.attempts("/v1/retry/after-hint")), 2)
+        self.assertEqual(self.delays, [0.5])
+
+    def test_a_stream_is_never_retried(self):
+        client = self.retrying(retries=2)
+        with self.assertRaises(ApiError) as caught:
+            for _ in client.events.watch(types=["flaky"]):
+                pass
+        self.assertEqual(caught.exception.status, 503)
+        self.assertEqual(len(self.attempts("/v1/events")), 1)
+        self.assertEqual(self.delays, [])
+
+    def test_retry_after_is_exposed_on_the_error(self):
+        client = self.retrying(retries=0)
+        with self.assertRaises(ApiError) as caught:
+            client._request("GET", "/v1/retry/after-seconds")
+        self.assertEqual(caught.exception.retry_after, "7")
+
+    def test_retry_configuration_is_validated(self):
+        with self.assertRaises(ValueError):
+            Client(self.host, token=TOKEN, retries=-1)
+        with self.assertRaises(ValueError):
+            Client(self.host, token=TOKEN, retry_backoff=-1)
+        with self.assertRaises(ValueError):
+            Client(self.host, token=TOKEN, retry_max_wait=-1)
+        with self.assertRaises(TypeError):
+            Client(self.host, token=TOKEN, sleep="later")
 
 
 class GeneratedTypesTest(unittest.TestCase):

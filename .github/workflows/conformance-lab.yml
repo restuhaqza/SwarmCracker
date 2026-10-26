@@ -4,6 +4,11 @@ name: API conformance (lab)
 # runs against the in-process mock, executed against a real manager. It is a
 # schedule plus a manual trigger, never a push gate: a lab outage must not block
 # a merge, and this run must never mutate the cluster unless explicitly allowed.
+#
+# The leg is strict: a case that did not run (no task id, mutation not allowed,
+# capability not advertised) fails the run unless CONFORMANCE_ALLOW_SKIPS=1. Only
+# the weekly, always-mutation-disabled schedule sets that opt-out; a manual
+# dispatch leaves it unset and therefore has to exercise the cases.
 
 on:
   schedule:
@@ -73,10 +78,20 @@ jobs:
           CONFORMANCE_READER_TOKEN: ${{ secrets.CONFORMANCE_READER_TOKEN }}
           CONFORMANCE_RUNNER_TOKEN: ${{ secrets.CONFORMANCE_RUNNER_TOKEN }}
           CONFORMANCE_ADMIN_TOKEN: ${{ secrets.CONFORMANCE_ADMIN_TOKEN }}
-          # A task id is not a secret: it is the cluster object the exec/logs
-          # stream cases run against. Unset, those three cases skip.
+          # A task id is not a secret: it is the cluster object the exec/logs/
+          # attach and snapshot cases run against. Unset, those cases skip — and
+          # a skip fails the run unless CONFORMANCE_ALLOW_SKIPS says otherwise.
+          # CONFORMANCE_HOST must be an https:// URL.
           CONFORMANCE_TASK_ID: ${{ vars.CONFORMANCE_TASK_ID }}
           CONFORMANCE_ALLOW_MUTATION: ${{ (github.event_name == 'workflow_dispatch' && inputs.allow_mutation) && '1' || '0' }}
+          # Strict by default: any case that did not run fails the lab leg, so a
+          # green run means every gated case was actually exercised.
+          # CONFORMANCE_ALLOW_SKIPS is set for the weekly schedule only, which
+          # never mutates the cluster and therefore always skips the mutating
+          # cases by policy. A workflow_dispatch leaves it empty and so runs
+          # strictly: dispatch with allow_mutation enabled to exercise the whole
+          # fixture set, and treat any remaining skip as a finding.
+          CONFORMANCE_ALLOW_SKIPS: ${{ github.event_name == 'schedule' && '1' || '' }}
         run: make conformance-lab
 
       - name: Remove the lab CA

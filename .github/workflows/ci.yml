@@ -146,6 +146,22 @@ jobs:
       - name: Generator drift check
         run: make sdk-check
 
+      - name: Node SDK dependencies
+        run: npm ci
+        working-directory: sdk/node
+
+      - name: Node SDK declaration typecheck
+        run: make sdk-typecheck
+
+      # The published client must stay dependency-free at runtime. The check is a
+      # block scalar on purpose: `: ` inside a plain YAML scalar is a mapping
+      # indicator, which makes the whole workflow unparseable and GitHub starts no
+      # jobs at all.
+      - name: Node SDK runtime stays dependency-free
+        run: |
+          set -euo pipefail
+          node -e "process.exit(Object.keys(require('./sdk/node/package.json').dependencies ?? {}).length ? 1 : 0)"
+
       - name: SDK test suites
         run: make sdk-test
 
@@ -227,9 +243,9 @@ jobs:
           path: benchmark.txt
 
   # The documentation's executable contract: both SDK examples run against the
-  # loopback fixture (no cluster, no token, no secret) and the client-only image
-  # is built and executed, so a stale snippet or a root/shell regression in
-  # Dockerfile.cli fails the PR.
+  # loopback fixture (no cluster, no token, no secret) and both images are built
+  # and executed, so a stale snippet, a root/shell regression in Dockerfile.cli
+  # or an unexecutable daemon binary in Dockerfile fails the PR.
   examples:
     runs-on: ubuntu-latest
     permissions:
@@ -260,3 +276,16 @@ jobs:
 
       - name: Run the CLI image
         run: docker run --rm swarmcracker-cli:ci version
+
+      # The daemon image regressed twice without anyone noticing: a same-named
+      # file in the context shadowed make's file target so nothing was built,
+      # and a PIE binary cannot exec under distroless/static. Both failures only
+      # show up at `docker run`, so the image is built and executed here. The
+      # empty ./swarmd-firecracker reproduces the shadowing condition.
+      - name: Build the daemon image
+        run: |
+          : > swarmd-firecracker
+          docker build -f Dockerfile -t swarmcracker-daemon:ci .
+
+      - name: Run the daemon image
+        run: docker run --rm swarmcracker-daemon:ci --version

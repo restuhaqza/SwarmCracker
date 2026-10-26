@@ -100,22 +100,26 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		return nil, false, nil, err
 	}
 
-	// The node serves exec, logs, files, health and the experimental snapshots
-	// operation. Exec and files dial the task's guest agent over the vsock muxer;
-	// logs read the console file the executor wrote; health reads the per-task
-	// sidecar the executor publishes; snapshots use the node-local pkg/snapshot
-	// store. The public route has already resolved the reference and enforced the
-	// caller's selectors.
-	snapshotOp, snapshotsActive := snapshotHandler(ctx, cfg)
+	// The node serves exec, logs, files, health, attach and the experimental
+	// snapshots operation. Exec and files dial the task's guest agent over the
+	// vsock muxer; logs read the console file the executor wrote; health reads the
+	// per-task sidecar the executor publishes; attach relays the interactive
+	// console Unix socket in both directions; snapshots use the node-local
+	// pkg/snapshot store, and restored stops the VM a restore started from that
+	// same store. The public route has already resolved the reference and
+	// enforced the caller's selectors.
+	snapshotOp, restoredOp, snapshotsActive := snapshotHandlers(ctx, cfg)
 	handlers := []struct {
 		op string
 		h  broker.Handler
 	}{
 		{"exec", broker.NewExecHandler(broker.DialAgent)},
+		{"attach", broker.NewAttachHandler(broker.DialConsole)},
 		{"logs", broker.NewLogsHandler()},
 		{"files", broker.NewFilesHandler(broker.DialAgent)},
 		{"health", broker.NewHealthHandler()},
 		{"snapshots", snapshotOp},
+		{"restored", restoredOp},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {
@@ -149,16 +153,22 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	return srv, snapshotsActive, stop, nil
 }
 
-// snapshotHandler builds the experimental snapshots operation and reports whether
-// its store is usable. Disabled means a registered handler with no store, which
-// answers a typed 501 — the route still exists. A manager construction failure is
-// logged and degrades to the same disabled handler: a bad snapshot directory must
-// not stop the broker, because exec, logs, files and health do not depend on it.
-// The boolean is what the daemon passes to the API runtime, so /v1/version never
-// advertises a store that does not exist.
-func snapshotHandler(ctx context.Context, cfg brokerRuntime) (broker.Handler, bool) {
+// snapshotHandlers builds the experimental snapshots and restored-VM operations
+// and reports whether their store is usable. Both handlers share one store
+// instance: the restored process handle lives in the manager that restored the
+// VM, so a second store would answer no_restored_vm for this node's own restores.
+// Disabled means registered handlers with no store, which answer a typed 501 —
+// the routes still exist. A manager construction failure is logged and degrades
+// to the same disabled handlers: a bad snapshot directory must not stop the
+// broker, because exec, logs, files and health do not depend on it. The boolean
+// is what the daemon passes to the API runtime, so /v1/version never advertises a
+// store that does not exist.
+func snapshotHandlers(
+	ctx context.Context, cfg brokerRuntime,
+) (snapshots, restored broker.Handler, active bool) {
 	if !cfg.snapshotsEnabled {
-		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}), false
+		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}),
+			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), false
 	}
 
 	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{
@@ -169,12 +179,15 @@ func snapshotHandler(ctx context.Context, cfg brokerRuntime) (broker.Handler, bo
 	})
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Node broker: snapshots disabled (snapshot store unavailable)")
-		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}), false
+		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}),
+			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), false
 	}
-	return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{
+
+	handlerCfg := broker.SnapshotHandlerConfig{
 		Store:     mgr,
 		SocketDir: cfg.socketDir,
 		MaxAge:    168 * time.Hour,
 		RootfsDir: cfg.rootfsDir,
-	}), true
+	}
+	return broker.NewSnapshotHandler(handlerCfg), broker.NewRestoredHandler(handlerCfg), true
 }

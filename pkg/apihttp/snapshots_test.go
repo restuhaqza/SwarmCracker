@@ -30,6 +30,7 @@ type fakeSnapshotBroker struct {
 	createErr  error
 	restoreErr error
 	deleteErr  error
+	stopErr    error
 
 	// createBlock keeps CreateSnapshot blocked until the request context ends;
 	// the test uses it to exercise a real deadline.
@@ -40,6 +41,8 @@ type fakeSnapshotBroker struct {
 	gotRequest  v1.SnapshotCreateRequest
 	gotID       string
 	gotDeadline bool
+	stopCalls   int
+	stoppedTask v1.Task
 }
 
 func (f *fakeSnapshotBroker) CreateSnapshot(ctx context.Context, task v1.Task, req v1.SnapshotCreateRequest) (v1.Snapshot, error) {
@@ -67,6 +70,13 @@ func (f *fakeSnapshotBroker) DeleteSnapshot(ctx context.Context, task v1.Task, s
 	f.record(ctx, task)
 	f.gotID = snapshotID
 	return f.deleteErr
+}
+
+func (f *fakeSnapshotBroker) StopRestored(ctx context.Context, task v1.Task) error {
+	f.record(ctx, task)
+	f.stopCalls++
+	f.stoppedTask = task
+	return f.stopErr
 }
 
 func (f *fakeSnapshotBroker) record(ctx context.Context, task v1.Task) {
@@ -138,6 +148,7 @@ func TestSnapshotsDisabledIs501(t *testing.T) {
 				{http.MethodPost, "/v1/tasks/web-1/snapshots"},
 				{http.MethodPost, "/v1/tasks/web-1/snapshots/snap-1/restore"},
 				{http.MethodDelete, "/v1/tasks/web-1/snapshots/snap-1"},
+				{http.MethodDelete, "/v1/tasks/web-1/restored"},
 				{http.MethodGet, "/v1/snapshots?task=web-1"},
 				{http.MethodPost, "/v1/snapshots/snap-1/restore?task=web-1"},
 				{http.MethodDelete, "/v1/snapshots/snap-1?task=web-1"},

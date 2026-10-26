@@ -139,7 +139,7 @@ func TestCreateSnapshotStagingDir(t *testing.T) {
 
 		// Simulate what CreateSnapshot does after successful API call
 		taskID := "task-1"
-		snapshotID := generateSnapshotID(taskID)
+		snapshotID := generateSnapshotID()
 		snapshotDir := filepath.Join(tmpDir, snapshotID)
 
 		err := os.MkdirAll(snapshotDir, 0755)
@@ -237,7 +237,7 @@ func TestListSnapshotsWithMissingFiles(t *testing.T) {
 		require.NoError(t, err)
 
 		// Create a directory without metadata
-		emptyDir := filepath.Join(tmpDir, "snap-invalid")
+		emptyDir := filepath.Join(tmpDir, "snap-19462bd41b5b0e10")
 		err = os.MkdirAll(emptyDir, 0755)
 		require.NoError(t, err)
 
@@ -254,20 +254,20 @@ func TestListSnapshotsWithMissingFiles(t *testing.T) {
 
 		// Create valid snapshot
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-valid",
+			ID:        "snap-8c5d30ff5b94ada4",
 			TaskID:    "task-1",
 			CreatedAt: time.Now().UTC(),
 		})
 
 		// Create invalid directories
-		os.MkdirAll(filepath.Join(tmpDir, "snap-no-metadata"), 0755)
+		os.MkdirAll(filepath.Join(tmpDir, "snap-76fea4be2051275f"), 0755)
 		os.WriteFile(filepath.Join(tmpDir, "not-a-dir.txt"), []byte("test"), 0644)
 
 		// List should only return the valid snapshot
 		snapshots, err := mgr.ListSnapshots(SnapshotFilter{})
 		require.NoError(t, err)
 		assert.Len(t, snapshots, 1)
-		assert.Equal(t, "snap-valid", snapshots[0].ID)
+		assert.Equal(t, "snap-8c5d30ff5b94ada4", snapshots[0].ID)
 	})
 }
 
@@ -310,7 +310,7 @@ func TestEnforceMaxSnapshotsEdgeCases(t *testing.T) {
 		require.NoError(t, err)
 
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-1",
+			ID:        "snap-9f2460b56367bc4e",
 			ServiceID: "nginx",
 			CreatedAt: time.Now().UTC(),
 		})
@@ -335,32 +335,32 @@ func TestEnforceMaxSnapshotsEdgeCases(t *testing.T) {
 
 		// Create snapshots for multiple services
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-nginx-1",
+			ID:        "snap-15935626f2848dd8",
 			ServiceID: "nginx",
 			CreatedAt: time.Now().UTC().Add(-3 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-nginx-2",
+			ID:        "snap-92ae174aeaa3ee82",
 			ServiceID: "nginx",
 			CreatedAt: time.Now().UTC().Add(-2 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-nginx-3",
+			ID:        "snap-8582f38a56e1221b",
 			ServiceID: "nginx",
 			CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-redis-1",
+			ID:        "snap-35f8867b9a47cae2",
 			ServiceID: "redis",
 			CreatedAt: time.Now().UTC().Add(-3 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-redis-2",
+			ID:        "snap-267eae8f064fc8bd",
 			ServiceID: "redis",
 			CreatedAt: time.Now().UTC().Add(-2 * time.Hour),
 		})
 		createTestSnapshot(t, tmpDir, &SnapshotInfo{
-			ID:        "snap-redis-3",
+			ID:        "snap-53fa705fb593471c",
 			ServiceID: "redis",
 			CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
 		})
@@ -385,36 +385,33 @@ func TestEnforceMaxSnapshotsEdgeCases(t *testing.T) {
 // TestGenerateSnapshotIDProperties tests properties of generateSnapshotID.
 func TestGenerateSnapshotIDProperties(t *testing.T) {
 	t.Run("ID format is correct", func(t *testing.T) {
-		id := generateSnapshotID("task-123")
+		id := generateSnapshotID()
 		assert.True(t, strings.HasPrefix(id, "snap-"))
 		// Total length: "snap-" (5) + 16 hex chars = 21
 		assert.Len(t, id, 21)
 	})
 
-	t.Run("IDs are unique for same task ID", func(t *testing.T) {
+	t.Run("IDs are unique without a clock tick between calls", func(t *testing.T) {
 		ids := make(map[string]bool)
 		for i := 0; i < 100; i++ {
-			id := generateSnapshotID("task-1")
+			id := generateSnapshotID()
 			assert.False(t, ids[id], "ID should be unique: %s", id)
 			ids[id] = true
 		}
 		assert.Len(t, ids, 100, "all IDs should be unique")
 	})
 
-	t.Run("IDs are unique for different task IDs", func(t *testing.T) {
-		id1 := generateSnapshotID("task-1")
-		id2 := generateSnapshotID("task-2")
+	t.Run("consecutive IDs differ", func(t *testing.T) {
+		id1 := generateSnapshotID()
+		id2 := generateSnapshotID()
 
 		assert.NotEqual(t, id1, id2)
 	})
 
-	t.Run("ID includes taskID influence", func(t *testing.T) {
-		// Same task ID should produce IDs that share some similarity pattern
-		// (though they won't be identical due to timestamp)
-		id1 := generateSnapshotID("task-abc")
-		time.Sleep(time.Millisecond) // Ensure different timestamp
-		id2 := generateSnapshotID("task-abc")
-		id3 := generateSnapshotID("task-def")
+	t.Run("IDs are random, not sequenced", func(t *testing.T) {
+		id1 := generateSnapshotID()
+		id2 := generateSnapshotID()
+		id3 := generateSnapshotID()
 
 		// All IDs should be different
 		assert.NotEqual(t, id1, id2)
@@ -427,27 +424,19 @@ func TestGenerateSnapshotIDProperties(t *testing.T) {
 		assert.True(t, strings.HasPrefix(id3, "snap-"))
 	})
 
-	t.Run("handles special characters in task ID", func(t *testing.T) {
-		specialTaskIDs := []string{
-			"task-with-dashes",
-			"task_with_underscores",
-			"task.with.dots",
-			"task/with/slashes",
-			"task:with:colons",
+	t.Run("every ID is one safe path segment", func(t *testing.T) {
+		// The ID is a directory name, so it must never carry a separator whatever
+		// the caller's task ID looks like.
+		ids := make([]string, 16)
+		for i := range ids {
+			ids[i] = generateSnapshotID()
 		}
 
-		ids := make([]string, len(specialTaskIDs))
-		for i, taskID := range specialTaskIDs {
-			ids[i] = generateSnapshotID(taskID)
-			assert.True(t, strings.HasPrefix(ids[i], "snap-"), "Should handle special chars: %s", taskID)
-		}
-
-		// All IDs should be valid and unique
 		seen := make(map[string]bool)
 		for _, id := range ids {
 			assert.False(t, seen[id], "ID should be unique")
 			seen[id] = true
-			assert.Len(t, id, 21)
+			assert.True(t, ValidSnapshotID(id), id)
 		}
 	})
 }

@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -94,7 +95,7 @@ func TestLoadMetadataResolvesRelativePaths(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	info := &SnapshotInfo{
-		ID:         "snap-test123",
+		ID:         "snap-e4d5c5c37450953b",
 		TaskID:     "task-1",
 		CreatedAt:  time.Now().UTC(),
 		MemoryPath: "vm.mem",   // relative
@@ -120,7 +121,7 @@ func TestLoadMetadataNonexistent(t *testing.T) {
 
 func TestMetadataJSONRoundtrip(t *testing.T) {
 	info := &SnapshotInfo{
-		ID:        "snap-test",
+		ID:        "snap-825b9a610b6fba70",
 		TaskID:    "task-1",
 		ServiceID: "web",
 		CreatedAt: time.Now().UTC().Truncate(time.Millisecond),
@@ -255,7 +256,7 @@ func TestListSnapshots(t *testing.T) {
 
 	// Create test snapshots directly
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-0001",
+		ID:        "snap-46c1fba8949bae65",
 		TaskID:    "task-1",
 		ServiceID: "nginx",
 		NodeID:    "worker-1",
@@ -263,7 +264,7 @@ func TestListSnapshots(t *testing.T) {
 		SizeBytes: 100,
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-0002",
+		ID:        "snap-076888ef4c18be7d",
 		TaskID:    "task-2",
 		ServiceID: "nginx",
 		NodeID:    "worker-1",
@@ -271,7 +272,7 @@ func TestListSnapshots(t *testing.T) {
 		SizeBytes: 200,
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID:        "snap-0003",
+		ID:        "snap-a1ff45c56ffdb5ac",
 		TaskID:    "task-3",
 		ServiceID: "redis",
 		NodeID:    "worker-2",
@@ -293,13 +294,13 @@ func TestListSnapshots(t *testing.T) {
 	snapshots, err = mgr.ListSnapshots(SnapshotFilter{TaskID: "task-1"})
 	require.NoError(t, err)
 	assert.Len(t, snapshots, 1)
-	assert.Equal(t, "snap-0001", snapshots[0].ID)
+	assert.Equal(t, "snap-46c1fba8949bae65", snapshots[0].ID)
 
 	// Filter by node
 	snapshots, err = mgr.ListSnapshots(SnapshotFilter{NodeID: "worker-2"})
 	require.NoError(t, err)
 	assert.Len(t, snapshots, 1)
-	assert.Equal(t, "snap-0003", snapshots[0].ID)
+	assert.Equal(t, "snap-a1ff45c56ffdb5ac", snapshots[0].ID)
 }
 
 func TestListSnapshotsSortedNewestFirst(t *testing.T) {
@@ -308,21 +309,21 @@ func TestListSnapshotsSortedNewestFirst(t *testing.T) {
 	require.NoError(t, err)
 
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-old", CreatedAt: time.Now().UTC().Add(-3 * time.Hour),
+		ID: "snap-620e78288084ad19", CreatedAt: time.Now().UTC().Add(-3 * time.Hour),
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-new", CreatedAt: time.Now().UTC(),
+		ID: "snap-0357b8bb2aea9846", CreatedAt: time.Now().UTC(),
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-mid", CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
+		ID: "snap-a790293f36646633", CreatedAt: time.Now().UTC().Add(-1 * time.Hour),
 	})
 
 	snapshots, err := mgr.ListSnapshots(SnapshotFilter{})
 	require.NoError(t, err)
 	require.Len(t, snapshots, 3)
-	assert.Equal(t, "snap-new", snapshots[0].ID)
-	assert.Equal(t, "snap-mid", snapshots[1].ID)
-	assert.Equal(t, "snap-old", snapshots[2].ID)
+	assert.Equal(t, "snap-0357b8bb2aea9846", snapshots[0].ID)
+	assert.Equal(t, "snap-a790293f36646633", snapshots[1].ID)
+	assert.Equal(t, "snap-620e78288084ad19", snapshots[2].ID)
 }
 
 func TestDeleteSnapshot(t *testing.T) {
@@ -330,16 +331,16 @@ func TestDeleteSnapshot(t *testing.T) {
 	mgr, err := NewManager(SnapshotConfig{SnapshotDir: tmpDir})
 	require.NoError(t, err)
 
-	createTestSnapshot(t, tmpDir, &SnapshotInfo{ID: "snap-del"})
+	createTestSnapshot(t, tmpDir, &SnapshotInfo{ID: "snap-ca45709e53516a3d"})
 
-	err = mgr.DeleteSnapshot(context.Background(), "snap-del")
+	err = mgr.DeleteSnapshot(context.Background(), "snap-ca45709e53516a3d")
 	require.NoError(t, err)
 
-	_, err = os.Stat(filepath.Join(tmpDir, "snap-del"))
+	_, err = os.Stat(filepath.Join(tmpDir, "snap-ca45709e53516a3d"))
 	assert.True(t, os.IsNotExist(err))
 
 	// Delete again should fail
-	err = mgr.DeleteSnapshot(context.Background(), "snap-del")
+	err = mgr.DeleteSnapshot(context.Background(), "snap-ca45709e53516a3d")
 	assert.Error(t, err)
 }
 
@@ -348,7 +349,7 @@ func TestDeleteSnapshotNotFound(t *testing.T) {
 	mgr, err := NewManager(SnapshotConfig{SnapshotDir: tmpDir})
 	require.NoError(t, err)
 
-	err = mgr.DeleteSnapshot(context.Background(), "snap-nonexistent")
+	err = mgr.DeleteSnapshot(context.Background(), "snap-b7801bb532b1b1f7")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "not found")
 }
@@ -363,13 +364,13 @@ func TestCleanupOldSnapshots(t *testing.T) {
 
 	// Create old and new snapshots
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-old1", CreatedAt: time.Now().UTC().Add(-48 * time.Hour), SizeBytes: 100,
+		ID: "snap-ebc907fefa4cfb80", CreatedAt: time.Now().UTC().Add(-48 * time.Hour), SizeBytes: 100,
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-old2", CreatedAt: time.Now().UTC().Add(-25 * time.Hour), SizeBytes: 200,
+		ID: "snap-42c3425e7d28ace7", CreatedAt: time.Now().UTC().Add(-25 * time.Hour), SizeBytes: 200,
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-new", CreatedAt: time.Now().UTC().Add(-1 * time.Hour), SizeBytes: 300,
+		ID: "snap-0357b8bb2aea9846", CreatedAt: time.Now().UTC().Add(-1 * time.Hour), SizeBytes: 300,
 	})
 
 	removed, freed, err := mgr.CleanupOldSnapshots(context.Background(), 24*time.Hour)
@@ -381,7 +382,7 @@ func TestCleanupOldSnapshots(t *testing.T) {
 	snapshots, err := mgr.ListSnapshots(SnapshotFilter{})
 	require.NoError(t, err)
 	assert.Len(t, snapshots, 1)
-	assert.Equal(t, "snap-new", snapshots[0].ID)
+	assert.Equal(t, "snap-0357b8bb2aea9846", snapshots[0].ID)
 }
 
 func TestCleanupOldSnapshotsUsesConfigDefault(t *testing.T) {
@@ -393,10 +394,10 @@ func TestCleanupOldSnapshotsUsesConfigDefault(t *testing.T) {
 	require.NoError(t, err)
 
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-old", CreatedAt: time.Now().UTC().Add(-2 * time.Hour), SizeBytes: 500,
+		ID: "snap-620e78288084ad19", CreatedAt: time.Now().UTC().Add(-2 * time.Hour), SizeBytes: 500,
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-new", CreatedAt: time.Now().UTC().Add(-30 * time.Minute), SizeBytes: 100,
+		ID: "snap-0357b8bb2aea9846", CreatedAt: time.Now().UTC().Add(-30 * time.Minute), SizeBytes: 100,
 	})
 
 	// Pass 0 to use config default
@@ -416,17 +417,17 @@ func TestEnforceMaxSnapshots(t *testing.T) {
 
 	// Create 3 snapshots for the same service
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-1", ServiceID: "nginx", CreatedAt: time.Now().UTC().Add(-3 * time.Hour), SizeBytes: 100,
+		ID: "snap-9f2460b56367bc4e", ServiceID: "nginx", CreatedAt: time.Now().UTC().Add(-3 * time.Hour), SizeBytes: 100,
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-2", ServiceID: "nginx", CreatedAt: time.Now().UTC().Add(-2 * time.Hour), SizeBytes: 200,
+		ID: "snap-a5962db575d43297", ServiceID: "nginx", CreatedAt: time.Now().UTC().Add(-2 * time.Hour), SizeBytes: 200,
 	})
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-3", ServiceID: "nginx", CreatedAt: time.Now().UTC().Add(-1 * time.Hour), SizeBytes: 300,
+		ID: "snap-2c26640759cebfd3", ServiceID: "nginx", CreatedAt: time.Now().UTC().Add(-1 * time.Hour), SizeBytes: 300,
 	})
 	// Different service should not be affected
 	createTestSnapshot(t, tmpDir, &SnapshotInfo{
-		ID: "snap-4", ServiceID: "redis", CreatedAt: time.Now().UTC().Add(-1 * time.Hour), SizeBytes: 400,
+		ID: "snap-cd45bf46df2cac79", ServiceID: "redis", CreatedAt: time.Now().UTC().Add(-1 * time.Hour), SizeBytes: 400,
 	})
 
 	// Trigger enforcement
@@ -442,8 +443,8 @@ func TestEnforceMaxSnapshots(t *testing.T) {
 	nginxSnaps, err := mgr.ListSnapshots(SnapshotFilter{ServiceID: "nginx"})
 	require.NoError(t, err)
 	assert.Len(t, nginxSnaps, 2)
-	assert.Equal(t, "snap-3", nginxSnaps[0].ID)
-	assert.Equal(t, "snap-2", nginxSnaps[1].ID)
+	assert.Equal(t, "snap-2c26640759cebfd3", nginxSnaps[0].ID)
+	assert.Equal(t, "snap-a5962db575d43297", nginxSnaps[1].ID)
 }
 
 func TestSHA256File(t *testing.T) {
@@ -467,20 +468,37 @@ func TestSHA256FileNonexistent(t *testing.T) {
 }
 
 func TestGenerateSnapshotID(t *testing.T) {
-	id1 := generateSnapshotID("task-1")
-	id2 := generateSnapshotID("task-1")
-	id3 := generateSnapshotID("task-2")
+	// IDs must not depend on clock granularity: consecutive calls in the same
+	// nanosecond used to produce the same ID.
+	seen := make(map[string]struct{}, 4096)
+	for i := 0; i < 4096; i++ {
+		id := generateSnapshotID()
 
-	// IDs should start with "snap-"
-	assert.True(t, strings.HasPrefix(id1, "snap-"))
-	assert.True(t, strings.HasPrefix(id2, "snap-"))
-	assert.True(t, strings.HasPrefix(id3, "snap-"))
+		assert.Regexp(t, `^snap-[0-9a-f]{16}$`, id)
+		_, duplicate := seen[id]
+		require.False(t, duplicate, "duplicate snapshot ID %q on call %d", id, i)
+		seen[id] = struct{}{}
+	}
+}
 
-	// Same task ID with different timestamps should produce different IDs
-	assert.NotEqual(t, id1, id2)
+// TestGenerateSnapshotIDFallback pins the no-randomness path: when the source
+// fails, IDs still come out in the accepted shape and stay unique in-process.
+func TestGenerateSnapshotIDFallback(t *testing.T) {
+	original := snapshotIDSource
+	t.Cleanup(func() { snapshotIDSource = original })
+	snapshotIDSource = func([]byte) (int, error) {
+		return 0, errors.New("no entropy")
+	}
 
-	// Different task IDs should produce different IDs
-	assert.NotEqual(t, id1, id3)
+	seen := make(map[string]struct{}, 1024)
+	for i := 0; i < 1024; i++ {
+		id := generateSnapshotID()
+
+		assert.Regexp(t, `^snap-[0-9a-f]{16}$`, id)
+		_, duplicate := seen[id]
+		require.False(t, duplicate, "duplicate fallback snapshot ID %q on call %d", id, i)
+		seen[id] = struct{}{}
+	}
 }
 
 func TestFileSize(t *testing.T) {

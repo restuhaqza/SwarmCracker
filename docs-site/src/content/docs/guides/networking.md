@@ -390,7 +390,8 @@ nodes.
 A manager computes the authoritative routing table and serves it to the other
 nodes over mutual TLS (port `4243` by default); every node then programs its own
 load balancing. The mesh is enabled by default and can be tuned on the daemon
-with `--ingress-mesh` and `--ingress-port`.
+with `--ingress-mesh` and `--ingress-port`. That channel is cluster-internal and
+not an API: see [Internal (Private) Endpoints](/reference/internal-endpoints/).
 
 ### Host mode
 

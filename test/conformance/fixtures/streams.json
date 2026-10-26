@@ -31,7 +31,7 @@
       "stream": {"frames": 2, "lastType": "exit"}
     },
     {
-      "name": "logs stream frames and end with eof",
+      "name": "logs stream ends with eof after its lines",
       "request": {
         "method": "GET",
         "path": "/v1/tasks/$task/logs",
@@ -42,7 +42,21 @@
         "status": 200,
         "headers": {"Content-Type": "application/x-ndjson"}
       },
-      "stream": {"frames": 2, "lastType": "eof"}
+      "stream": {"untilType": "eof", "minFrames": 1, "maxFrames": 200}
+    },
+    {
+      "name": "attach relays the console as raw bytes",
+      "requiresCapabilities": ["attach"],
+      "request": {
+        "method": "POST",
+        "path": "/v1/tasks/$task/attach",
+        "role": "runner"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {"Content-Type": "application/octet-stream"}
+      },
+      "stream": {"bytes": 14}
     }
   ]
 }

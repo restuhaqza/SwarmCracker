@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/restuhaqza/swarmcracker/pkg/console"
 )
 
 func TestSocketDirSourceLookupFindsRunningTask(t *testing.T) {
@@ -17,7 +19,10 @@ func TestSocketDirSourceLookupFindsRunningTask(t *testing.T) {
 	task, ok, err := SocketDirSource{Dir: dir}.Lookup(context.Background(), "task-1")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, Task{ID: "task-1", SocketPath: socketPath, Running: true}, task)
+	require.Equal(t, Task{
+		ID: "task-1", SocketPath: socketPath, Running: true,
+		ConsolePath: filepath.Join(dir, "task-1.console.sock"),
+	}, task)
 }
 
 // TestSocketDirSourceLookupFindsExitedTaskByLog pins that a task whose VM is
@@ -112,7 +117,10 @@ func TestSocketDirSourceLiveProbeKeepsTheTaskRunning(t *testing.T) {
 	task, ok, err := src.Lookup(context.Background(), "task-1")
 	require.NoError(t, err)
 	require.True(t, ok)
-	require.Equal(t, Task{ID: "task-1", SocketPath: socketPath, Running: true}, task)
+	require.Equal(t, Task{
+		ID: "task-1", SocketPath: socketPath, Running: true,
+		ConsolePath: filepath.Join(dir, "task-1.console.sock"),
+	}, task)
 }
 
 func TestSocketDirSourceLookupMissingTask(t *testing.T) {
@@ -184,6 +192,30 @@ func TestSocketDirSourceLogPathIsIndependentOfTheFile(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	require.NoFileExists(t, task.LogPath)
+}
+
+// TestSocketDirSourceDerivesConsolePath pins the interactive console socket a
+// running task carries: <socketDir>/<taskID>.console.sock, the path pkg/console
+// listens on. A log-only task has none, because a stopped VM has no console.
+func TestSocketDirSourceDerivesConsolePath(t *testing.T) {
+	dir := t.TempDir()
+	logDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "task-1.sock"), nil, 0o600))
+
+	task, ok, err := SocketDirSource{Dir: dir, LogDir: logDir}.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, filepath.Join(dir, "task-1.console.sock"), task.ConsolePath)
+	require.Equal(t, console.SocketPath(dir, "task-1"), task.ConsolePath,
+		"the derived path must be the one pkg/console listens on")
+	require.NoFileExists(t, task.ConsolePath, "the path is derived, not probed")
+
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "task-2.log"), []byte("boom\n"), 0o600))
+	exited, ok, err := SocketDirSource{Dir: dir, LogDir: logDir}.Lookup(context.Background(), "task-2")
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Empty(t, exited.ConsolePath, "a log-only task has no console to attach to")
+	require.False(t, exited.consoleAvailable())
 }
 
 func TestTaskVsockPath(t *testing.T) {

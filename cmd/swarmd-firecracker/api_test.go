@@ -202,7 +202,7 @@ func TestStartAPI_ServesVersionAndStops(t *testing.T) {
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
 	require.Equal(t, Version, doc.ServerVersion)
 	require.Equal(t, apiversion.Current, doc.GRPCProtocolVersion)
-	require.Equal(t, []string{"read", "write", "events", "exec", "logs", "files", "health"}, doc.Capabilities,
+	require.Equal(t, []string{"read", "write", "events", "exec", "logs", "files", "health", "attach"}, doc.Capabilities,
 		"the node certificates are present, so the broker manager and health are wired")
 	// The stub control socket is unreachable, so there is no cluster ID yet;
 	// the version probe must answer anyway.
@@ -375,13 +375,13 @@ func (fakeBrokerSources) GetNode(context.Context, string) (v1.Node, error) {
 // built from the node's cluster identity and is optional when the material is
 // unavailable (the API still serves, exec answers 501).
 func TestNewBrokerManager_RequiresClusterTLS(t *testing.T) {
-	_, err := newBrokerManager(t.TempDir(), fakeBrokerSources{}, fakeBrokerSources{})
+	_, err := newBrokerManager(t.TempDir(), fakeBrokerSources{}, fakeBrokerSources{}, 0)
 	require.Error(t, err, "without certificate material there is no broker manager")
 
 	stateDir := testhelpers.ShortTempDir(t)
 	seedNodeCertificates(t, stateDir)
 
-	mgr, err := newBrokerManager(stateDir, fakeBrokerSources{}, fakeBrokerSources{})
+	mgr, err := newBrokerManager(stateDir, fakeBrokerSources{}, fakeBrokerSources{}, 0)
 	require.NoError(t, err)
 	require.NotNil(t, mgr)
 }

@@ -26,7 +26,7 @@ func TestRestoreFromSnapshot_MissingRootfs(t *testing.T) {
 	require.NoError(t, err)
 
 	info := &SnapshotInfo{
-		ID:         "snap-x",
+		ID:         "snap-25a90a2d78c369c9",
 		TaskID:     "task-1",
 		StatePath:  statePath,
 		MemoryPath: memPath,

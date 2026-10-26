@@ -37,29 +37,48 @@ const (
 	mockMinRefPrefix = 4
 )
 
+// mockConsoleBytes is what the mock node writes on an attach session: the
+// fixture reads exactly this many bytes (14).
+var mockConsoleBytes = []byte("console ready\n")
+
 // expectedMockCases is the number of fixture cases the mock leg must execute. A
 // case that silently stops running (a stricter skip policy, a lost file, a typo
 // in a case name that a filter no longer matches) is a regression the mock leg
 // must fail on, so the count is pinned here and bumped with every new case.
-const expectedMockCases = 41
+const expectedMockCases = 45
+
+// expectedMockGatedCases is how many of those cases are skipped because the mock
+// does not advertise the capability they require. The mock is the shipped
+// default — snapshots are off, so every snapshot case is a declared gate, not a
+// silent loss. Any other skip is a failure.
+const expectedMockGatedCases = 3
 
 // TestConformanceMock executes every fixture against the real handler with an
-// in-memory backend. Mutations always run: this backend is thrown away. No case
-// may skip here: a skip is either a broken fixture or a policy that no longer
-// fits the mock, and both must be visible.
+// in-memory backend. Mutations always run: this backend is thrown away. The only
+// allowed skip is a declared capability gate: every other skip is either a broken
+// fixture or a policy that no longer fits the mock, and both must be visible.
 func TestConformanceMock(t *testing.T) {
 	harness := newMockHarness(t)
+
+	info := fetchVersion(t, harness.server.Client(), harness.server.URL, harness.tokens["reader"])
+	t.Logf("mock handler: %s", describeCapabilities(info))
 
 	summary := Run(t, Env{
 		BaseURL:       harness.server.URL,
 		Client:        harness.server.Client(),
 		Tokens:        harness.tokens,
 		Vars:          map[string]string{"task": mockTaskID},
+		Capabilities:  info.Capabilities,
 		AllowMutation: true,
 	}, "fixtures")
 
-	if summary.Skipped != 0 {
-		t.Fatalf("%d of %d mock cases were skipped; the mock run must execute every case", summary.Skipped, summary.Cases)
+	if unexpected := summary.Skipped - summary.Gated; unexpected != 0 {
+		t.Fatalf("%d of %d mock cases were skipped without a capability gate; the mock run executes every case it can",
+			unexpected, summary.Cases)
+	}
+	if summary.Gated != expectedMockGatedCases {
+		t.Fatalf("%d cases were capability-gated, want %d; bump expectedMockGatedCases with the fixture change",
+			summary.Gated, expectedMockGatedCases)
 	}
 	if summary.Cases != expectedMockCases {
 		t.Fatalf("%d cases ran, want %d; bump expectedMockCases with the fixture change", summary.Cases, expectedMockCases)
@@ -837,7 +856,7 @@ func (b *mockBackend) WatchEvents(context.Context, v1.EventOptions) (<-chan v1.E
 	return events, errs, nil
 }
 
-// Broker: Proxy serves a finite exec or log stream.
+// Broker: Proxy serves a finite exec, log or attach stream.
 
 func (b *mockBackend) Proxy(_ context.Context, w http.ResponseWriter, _ *http.Request, _ string, op string) error {
 	switch op {
@@ -851,6 +870,13 @@ func (b *mockBackend) Proxy(_ context.Context, w http.ResponseWriter, _ *http.Re
 		return writeFrames(w,
 			v1.LogDataFrame(time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC), []byte("hello\n")),
 			v1.LogEOFFrame())
+	case "attach":
+		// The console relay is raw bytes, not frames: the fixture reads exactly
+		// this many.
+		w.Header().Set("Content-Type", octetStreamMediaType)
+		w.WriteHeader(http.StatusOK)
+		_, err := w.Write(mockConsoleBytes)
+		return err
 	default:
 		return output.NewErrorf(output.CodeNotImplemented,
 			"the conformance mock has no %q node operation", op)

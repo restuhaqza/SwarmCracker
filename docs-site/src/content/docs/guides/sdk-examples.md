@@ -30,7 +30,8 @@ the Go SDK, which is part of this module. See [Go](#go).
 `sdk/python` contains the `swarmcracker` package: Python 3.11+, standard library
 only, one `Client` with `services`, `tasks` and `events` attributes. A manager
 with a wired node broker also advertises `exec`, which is what the optional task
-section uses.
+section uses. Retries are opt-in (`retries=0` by default) and confined to
+idempotent requests; see [Files, snapshots and retries](#files-snapshots-and-retries).
 
 ```python
 #!/usr/bin/env python3
@@ -199,6 +200,58 @@ async function main() {
 process.exitCode = await main();
 ```
 
+## Files, snapshots and retries
+
+Both clients wrap the raw file routes and the experimental snapshot routes; the
+command-line examples above do not exercise them, so these snippets are runnable
+but not diffed. `files_get`/`filesGet` returns the file's bytes (not an envelope),
+`files_put`/`filesPut` sends the whole body, and `mode` is an octal string. The
+snapshot helpers use the flat `/v1/snapshots` routes for list/restore/delete, so
+the task travels as a query parameter and is required; create and stop-restored
+are task-scoped. Snapshots need `--snapshots-enable` on the manager daemon that
+serves the API — and on the node whose VM is snapshotted, since the request is
+relayed to it: until then every route answers `501 not_implemented` with
+`details.capability: "snapshots"`.
+
+`retries` is the number of *extra* attempts for an idempotent request (`GET`,
+`DELETE`, and the files `PUT`, whose whole body is resent) that fails with `429`
+or `5xx`. The wait is the response's `Retry-After` when it is usable, otherwise
+exponential backoff, capped by `retry_max_wait` (Python) / `retryMaxWaitMs`
+(Node). `0` — the default — never retries, so nothing changes unless you ask for
+it.
+
+```py
+# Python: files and snapshots need a task that is running.
+client = Client(host, ca=ca, token_file=token_file, retries=3)
+
+client.tasks.files_put(task, "/tmp/hello", b"hello\n", mode="0644")
+print(client.tasks.files_get(task, "/tmp/hello").decode())   # hello
+
+snapshot = client.tasks.snapshots_create(task, vcpus=2, memory_mb=512)
+for item in client.tasks.snapshots_list(task)["items"]:
+    print(item["id"], item["sizeBytes"])   # sizeBytes = memory + state + disk copy
+client.tasks.snapshots_stop_restored(task)
+client.tasks.snapshots_delete(task, snapshot["id"])
+```
+
+```js
+// Node: the same calls, promise-based; retries are off unless set.
+const client = new Client({ host, ca, tokenFile, retries: 3 });
+
+await client.tasks.filesPut(task, '/tmp/hello', Buffer.from('hello\n'), { mode: '0644' });
+console.log((await client.tasks.filesGet(task, '/tmp/hello')).toString()); // hello
+
+const snapshot = await client.tasks.snapshotsCreate(task, { vcpus: 2, memoryMB: 512 });
+for (const item of (await client.tasks.snapshotsList({ task })).items) {
+  console.log(item.id, item.sizeBytes); // sizeBytes = memory + state + disk copy
+}
+await client.tasks.snapshotsStopRestored(task);
+await client.tasks.snapshotsDelete(task, snapshot.id);
+```
+
+On a `files_get`/`filesGet` body that ends before its declared length both clients
+raise a typed transport error (`unreachable`) instead of returning a short file.
+
 ## Go
 
 There is no separate Go package to install: `pkg/client` is the Go SDK and lives
@@ -222,12 +275,15 @@ defer c.Close()
 `Timeout`, `StateDir`/`CertDir` and `SocketPath`; `client.DefaultConfig()`
 fills the local defaults from the environment the CLI uses. The methods are
 `ListServices`, `GetService`, `CreateService`, `UpdateService`, `DeleteService`,
-`RollbackService`, `ListTasks`, `GetTask`, `ListServiceTasks`, `ExecTask`,
-`WatchEvents`, `ListNodes`/`GetNode`/`UpdateNode`, `ListNetworks`/`GetNetwork`/
+`RollbackService`, `ListTasks`, `ListTasksHealth`, `GetTask`,
+`ListServiceTasks`, `ExecTask`, `AttachTask`, `WatchEvents`,
+`ListNodes`/`GetNode`/`UpdateNode`, `ListNetworks`/`GetNetwork`/
 `CreateNetwork`/`DeleteNetwork`, `ListConfigs`/`GetConfig`/`CreateConfig`/
 `UpdateConfig`/`DeleteConfig`, `ListSecrets`/`GetSecret`/`CreateSecret`/
 `UpdateSecret`/`DeleteSecret` and `ClusterID` — every one takes a
-`context.Context` and returns the generated `pkg/api/v1` types.
+`context.Context` and returns the generated `pkg/api/v1` types. Snapshot
+create/restore stay in the CLI (`cmd/swarmcracker`), not in `pkg/client`; the
+Go client does expose the restored-VM stop as `StopRestoredTask`.
 
 ## Run them in CI
 
@@ -258,12 +314,11 @@ takes the same two files as read-only mounts.
 
 ## What the examples do not cover
 
-- **File transfer** — `GET`/`PUT /v1/tasks/{id}/files` use raw
-  `application/octet-stream`, not the JSON envelope, so neither SDK wraps it.
-- **Snapshots** — the experimental snapshot routes are not wrapped by the
-  Python or Node client yet. Call them directly over HTTP (they are ordinary v1
-  documents) or generate from `api/openapi.yaml`; see the
-  [snapshots guide](/guides/snapshots/#http-api-experimental).
+- **Attach** — `POST /v1/tasks/{id}/attach` is one full-duplex HTTP/1.1 stream
+  (stdin in, console out), which neither SDK models: a promise/async-iterator
+  client is the wrong shape for a request body that stays open. Use the CLI
+  (`swarmcracker -H … vm attach <task>`) or a raw HTTP/1.1 client; see the
+  [API reference](/reference/api/#task-exec-attach-logs-files-and-health).
 - **Browser clients** — the Node client needs a CA from the filesystem and a
   trusted token store, so it is a server-side client. A browser build would need
   a different trust story; the repository does not ship one.

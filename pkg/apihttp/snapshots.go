@@ -4,6 +4,7 @@
 //	GET    /v1/tasks/{ref}/snapshots
 //	POST   /v1/tasks/{ref}/snapshots/{id}/restore
 //	DELETE /v1/tasks/{ref}/snapshots/{id}
+//	DELETE /v1/tasks/{ref}/restored
 //	GET    /v1/snapshots?task={ref}
 //	POST   /v1/snapshots/{id}/restore?task={ref}
 //	DELETE /v1/snapshots/{id}?task={ref}
@@ -23,11 +24,7 @@
 package apihttp
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -42,18 +39,25 @@ const (
 	snapshotCapability = "snapshots"
 	// snapshotAuditAction is the audit action recorded for every attempt.
 	snapshotAuditAction = "task.snapshot"
+	// restoredAuditAction is the audit action recorded for every stop-restored
+	// attempt. It is separate from snapshotAuditAction because it stops a VM the
+	// snapshot surface started, not the snapshot store itself.
+	restoredAuditAction = "task.restored.stop"
 	// maxSnapshotBodyBytes bounds one optional create body.
 	maxSnapshotBodyBytes = 64 << 10
 )
 
 // SnapshotBroker is the manager's snapshot transport. It is a second optional
-// interface rather than four more methods on Broker, so exec, logs, files and
+// interface rather than five more methods on Broker, so exec, logs, files and
 // health fakes stay untouched.
 type SnapshotBroker interface {
 	CreateSnapshot(ctx context.Context, task v1.Task, req v1.SnapshotCreateRequest) (v1.Snapshot, error)
 	ListTaskSnapshots(ctx context.Context, task v1.Task) ([]v1.Snapshot, error)
 	RestoreSnapshot(ctx context.Context, task v1.Task, snapshotID string) (v1.Snapshot, error)
 	DeleteSnapshot(ctx context.Context, task v1.Task, snapshotID string) error
+	// StopRestored stops the restored VM a previous restore started for the task
+	// on its node. A task the node does not track is the typed not-found error.
+	StopRestored(ctx context.Context, task v1.Task) error
 }
 
 // snapshotsAvailable is the single snapshot predicate. The route gate and the
@@ -105,7 +109,7 @@ func (s *Server) serveSnapshotList(w http.ResponseWriter, r *http.Request, ref s
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, ref)
+	task, resource, ok := s.resolveSnapshotTask(w, r, ref, snapshotAuditAction)
 	if !ok {
 		return
 	}
@@ -119,7 +123,7 @@ func (s *Server) serveSnapshotList(w http.ResponseWriter, r *http.Request, ref s
 
 	page, next, err := paginateRequest(r, items, func(item v1.Snapshot) (string, string) {
 		return item.CreatedAt, item.ID
-	})
+	}, task.ID)
 	if err != nil {
 		s.recordSnapshotAudit(r, resource, "error")
 		s.writeError(w, r, err)
@@ -146,7 +150,7 @@ func (s *Server) createTaskSnapshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, ref)
+	task, resource, ok := s.resolveSnapshotTask(w, r, ref, snapshotAuditAction)
 	if !ok {
 		return
 	}
@@ -189,7 +193,7 @@ func (s *Server) serveSnapshotRestore(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, ref)
+	task, resource, ok := s.resolveSnapshotTask(w, r, ref, snapshotAuditAction)
 	if !ok {
 		return
 	}
@@ -213,6 +217,31 @@ func (s *Server) deleteTaskSnapshot(w http.ResponseWriter, r *http.Request) {
 	s.serveSnapshotDelete(w, r, r.PathValue("id"), r.PathValue("sid"), false)
 }
 
+// stopTaskRestored serves DELETE /v1/tasks/{ref}/restored: it stops the
+// Firecracker process a snapshot restore started for the task. The task is
+// resolved first — the route is task-scoped and the caller's selectors apply —
+// then the node that ran the task stops the VM it tracks. A node that tracks no
+// restored VM answers 404 not_found with details.reason "no_restored_vm".
+func (s *Server) stopTaskRestored(w http.ResponseWriter, r *http.Request) {
+	if !s.requireSnapshots(w, r) {
+		return
+	}
+
+	task, resource, ok := s.resolveSnapshotTask(w, r, r.PathValue("id"), restoredAuditAction)
+	if !ok {
+		return
+	}
+
+	if err := s.cfg.Snapshots.StopRestored(r.Context(), task); err != nil {
+		s.recordRestoredAudit(r, resource, "error")
+		s.writeError(w, r, err)
+		return
+	}
+
+	s.recordRestoredAudit(r, resource, "ok")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // deleteSnapshot serves DELETE /v1/snapshots/{id}?task={ref}.
 func (s *Server) deleteSnapshot(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSnapshots(w, r) {
@@ -232,7 +261,7 @@ func (s *Server) serveSnapshotDelete(w http.ResponseWriter, r *http.Request, ref
 		return
 	}
 
-	task, resource, ok := s.resolveSnapshotTask(w, r, ref)
+	task, resource, ok := s.resolveSnapshotTask(w, r, ref, snapshotAuditAction)
 	if !ok {
 		return
 	}
@@ -248,12 +277,17 @@ func (s *Server) serveSnapshotDelete(w http.ResponseWriter, r *http.Request, ref
 }
 
 // resolveSnapshotTask resolves the caller's reference, enforces the task
-// selectors and returns the task and its audit resource. A failure is already
-// written and audited as an error.
-func (s *Server) resolveSnapshotTask(w http.ResponseWriter, r *http.Request, ref string) (v1.Task, v1.AuditResource, bool) {
+// selectors and returns the task and its audit resource. action is the audit
+// action a failure is recorded under, so a resolve failure is attributed to the
+// route the caller used (task.snapshot for a snapshot route,
+// task.restored.stop for a stop). A failure is already written and audited as an
+// error.
+func (s *Server) resolveSnapshotTask(
+	w http.ResponseWriter, r *http.Request, ref, action string,
+) (v1.Task, v1.AuditResource, bool) {
 	task, err := s.cfg.Client.GetTask(r.Context(), ref)
 	if err != nil {
-		s.recordSnapshotAudit(r, auditResourceForRef(ref), "error")
+		_ = s.recordAudit(r, action, auditResourceForRef(ref), "error")
 		s.writeError(w, r, err)
 		return v1.Task{}, v1.AuditResource{}, false
 	}
@@ -261,14 +295,14 @@ func (s *Server) resolveSnapshotTask(w http.ResponseWriter, r *http.Request, ref
 
 	labels, err := s.taskServiceLabels(r.Context(), task)
 	if err != nil {
-		s.recordSnapshotAudit(r, resource, "error")
+		_ = s.recordAudit(r, action, resource, "error")
 		s.writeError(w, r, err)
 		return v1.Task{}, v1.AuditResource{}, false
 	}
 
 	identity, _ := IdentityFrom(r.Context())
 	if err := identity.AuthorizeTask(task.ServiceID, task.ID, labels); err != nil {
-		s.recordSnapshotAudit(r, resource, "error")
+		_ = s.recordAudit(r, action, resource, "error")
 		s.writeError(w, r, err)
 		return v1.Task{}, v1.AuditResource{}, false
 	}
@@ -284,42 +318,14 @@ func (s *Server) resolveSnapshotTask(w http.ResponseWriter, r *http.Request, ref
 func (s *Server) validateSnapshotCreateBody(w http.ResponseWriter, r *http.Request) (v1.SnapshotCreateRequest, int, error) {
 	var request v1.SnapshotCreateRequest
 
-	r.Body = http.MaxBytesReader(w, r.Body, maxSnapshotBodyBytes)
-	body, err := io.ReadAll(r.Body)
+	present, status, err := readOptionalJSONBody(w, r, maxSnapshotBodyBytes, MediaType, &request)
 	if err != nil {
-		var tooLarge *http.MaxBytesError
-		if errors.As(err, &tooLarge) {
-			return request, http.StatusRequestEntityTooLarge,
-				output.NewErrorf(output.CodeInvalid, "the request body exceeds %d bytes", maxSnapshotBodyBytes).
-					WithDetails(map[string]any{
-						"reason": "payload_too_large",
-						"limit":  maxSnapshotBodyBytes,
-					})
-		}
-		return request, http.StatusBadRequest,
-			output.NewErrorf(output.CodeInvalid, "read request body: %v", err)
+		return request, status, err
 	}
-	if len(bytes.TrimSpace(body)) == 0 {
+	if !present {
 		return request, 0, nil
 	}
 
-	if status, err := requireContentType(r, MediaType); err != nil {
-		return request, status, err
-	}
-
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
-		return request, http.StatusBadRequest,
-			output.NewError(output.CodeInvalid,
-				"invalid JSON body: the snapshot request has unknown or malformed fields").
-				WithDetails(map[string]any{"reason": "invalid_body"})
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return request, http.StatusBadRequest, output.NewError(output.CodeInvalid,
-			"the request body must contain exactly one JSON object")
-	}
 	if request.VCPUs < 0 {
 		return request, http.StatusBadRequest,
 			output.NewError(output.CodeInvalid, "vcpus must be zero or positive").
@@ -382,4 +388,10 @@ func (s *Server) writeSnapshotInvalidID(w http.ResponseWriter, r *http.Request, 
 // a snapshot path, checksum or file size is never recorded.
 func (s *Server) recordSnapshotAudit(r *http.Request, resource v1.AuditResource, result string) {
 	_ = s.recordAudit(r, snapshotAuditAction, resource, result)
+}
+
+// recordRestoredAudit writes one task.restored.stop record, again naming only the
+// task.
+func (s *Server) recordRestoredAudit(r *http.Request, resource v1.AuditResource, result string) {
+	_ = s.recordAudit(r, restoredAuditAction, resource, result)
 }

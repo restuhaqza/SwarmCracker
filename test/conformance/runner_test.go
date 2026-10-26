@@ -3,9 +3,11 @@ package conformance
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -145,7 +147,7 @@ func TestReadStreamStopsAtTheTargetFrameCount(t *testing.T) {
 	}
 
 	done := make(chan streamRead, 1)
-	go func() { done <- readStream(blockingAfter(body), 2, "") }()
+	go func() { done <- readStream(blockingAfter(body), Stream{Frames: 2}) }()
 
 	select {
 	case got := <-done:
@@ -167,7 +169,7 @@ func TestReadStreamStopsAtTheTerminalFrame(t *testing.T) {
 	body := `{"type":"stdout","data":"aGVsbG8="}` + "\n" + `{"type":"exit","exitCode":0}` + "\n"
 
 	done := make(chan streamRead, 1)
-	go func() { done <- readStream(blockingAfter(body), 5, "exit") }()
+	go func() { done <- readStream(blockingAfter(body), Stream{Frames: 5, LastType: "exit"}) }()
 
 	select {
 	case got := <-done:
@@ -182,7 +184,129 @@ func TestReadStreamStopsAtTheTerminalFrame(t *testing.T) {
 	}
 }
 
-// TestAssertStreamAcceptsAQuietLabCluster pins the lab tolerance: a live event
+// logStreamBody builds an NDJSON console log: count log frames, then the eof
+// frame when eof is true. A real console log has as many lines as the guest
+// printed, which is what the fixture must not pin.
+func logStreamBody(count int, eof bool) string {
+	var body strings.Builder
+	for i := 0; i < count; i++ {
+		body.WriteString(`{"type":"log","stream":"stdout","data":"YQ=="}`)
+		body.WriteString("\n")
+	}
+	if eof {
+		body.WriteString(`{"type":"eof"}`)
+		body.WriteString("\n")
+	}
+	return body.String()
+}
+
+// TestReadStreamReadsAVariableLogToItsTerminalFrame is the first real lab run's
+// finding: the task's console carried two log frames plus eof, so the fixture's
+// pinned `frames: 2` stopped before the terminal frame and failed a correct
+// server. untilType reads every line and stops at eof, not at a count.
+func TestReadStreamReadsAVariableLogToItsTerminalFrame(t *testing.T) {
+	spec := Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 20}
+
+	done := make(chan streamRead, 1)
+	go func() { done <- readStream(blockingAfter(logStreamBody(5, true)), spec) }()
+
+	select {
+	case got := <-done:
+		if got.lastType != "eof" {
+			t.Fatalf("last type = %q, want eof after every log line", got.lastType)
+		}
+		if got.payload != 5 {
+			t.Fatalf("payload frames = %d, want the five lines before eof", got.payload)
+		}
+		passed := &result{stream: true, lastType: got.lastType, payload: got.payload}
+		if err := spec.boundedProblem(passed); err != nil {
+			t.Fatalf("a variable-length log must satisfy the bounded stream: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a bounded read waited for a live stream to end instead of stopping at eof")
+	}
+}
+
+// TestBoundedStreamFailsWithoutItsTerminalFrame pins the other half of the shape:
+// a stream that keeps emitting and never sends eof stops at the cap and fails,
+// instead of passing on whatever frames happened to arrive.
+func TestBoundedStreamFailsWithoutItsTerminalFrame(t *testing.T) {
+	spec := Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 6}
+
+	done := make(chan streamRead, 1)
+	go func() { done <- readStream(blockingAfter(logStreamBody(20, false)), spec) }()
+
+	var got streamRead
+	select {
+	case got = <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("a bounded read must stop at its frame cap instead of waiting for an eof that never comes")
+	}
+	if got.frames != spec.MaxFrames {
+		t.Fatalf("frames = %d, want the cap %d", got.frames, spec.MaxFrames)
+	}
+
+	err := spec.boundedProblem(&result{stream: true, lastType: got.lastType, payload: got.payload})
+	if err == nil {
+		t.Fatal("a stream without its terminal frame must fail")
+	}
+	if !strings.Contains(err.Error(), `"eof"`) {
+		t.Fatalf("the failure must name the missing terminal frame, got %v", err)
+	}
+}
+
+// TestBoundedStreamNeedsAPayloadFrame keeps minFrames honest: an eof on a stream
+// that carried no line is not a log tail.
+func TestBoundedStreamNeedsAPayloadFrame(t *testing.T) {
+	spec := Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 5}
+	got := readStream(strings.NewReader(logStreamBody(0, true)), spec)
+
+	if got.lastType != "eof" {
+		t.Fatalf("last type = %q, want eof", got.lastType)
+	}
+	err := spec.boundedProblem(&result{stream: true, lastType: got.lastType, payload: got.payload})
+	if err == nil {
+		t.Fatal("eof alone must not satisfy minFrames")
+	}
+	if !strings.Contains(err.Error(), "at least 1 payload frames") {
+		t.Fatalf("the failure must name the missing payload frames, got %v", err)
+	}
+}
+
+// TestPinnedFrameCountStopsBeforeEof is why the logs fixture moved to untilType:
+// read with the old `frames: 2` spec, a two-line console log stops on the second
+// line, so lastType is "log" and the `lastType: "eof"` assertion cannot hold. The
+// mock's one-line log hid this; the first real task did not.
+func TestPinnedFrameCountStopsBeforeEof(t *testing.T) {
+	read := readStream(strings.NewReader(logStreamBody(2, true)), Stream{Frames: 2, LastType: "eof"})
+
+	if read.lastType != "log" {
+		t.Fatalf("last type = %q, want the second log line (the old fixture's failure)", read.lastType)
+	}
+	if read.frames != 2 {
+		t.Fatalf("frames = %d, want the pinned 2", read.frames)
+	}
+}
+
+// TestAssertStreamAcceptsAVariableLogLength pins the fixture fix at the
+// assertion level, in both legs: two log frames then eof pass with untilType,
+// where the old `frames: 2` + `lastType: eof` fixture failed on that server.
+func TestAssertStreamAcceptsAVariableLogLength(t *testing.T) {
+	c := Case{Name: "logs", Stream: &Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 20}}
+
+	for _, lab := range []bool{false, true} {
+		res := &result{
+			status:   http.StatusOK,
+			header:   http.Header{"Content-Type": []string{ndjsonMediaType}},
+			stream:   true,
+			frames:   3,
+			payload:  2,
+			lastType: "eof",
+		}
+		assertStream(t, c, res, lab)
+	}
+}
+
 // stream on a cluster that changed nothing sends the ready frame and no data,
 // and that must not fail the run. The mock leg is where frame content is proven.
 func TestAssertStreamAcceptsAQuietLabCluster(t *testing.T) {
@@ -297,13 +421,18 @@ func TestLabRunSkipsACaseWithoutItsVariable(t *testing.T) {
 // same key and body must replay the first document, byte for byte.
 func TestRunRepeatsARequestAndComparesDocuments(t *testing.T) {
 	var requests int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests++
+		var body struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+
 		w.Header().Set("X-SwarmCracker-Api-Version", "1")
 		w.Header().Set("X-Request-Id", "req_test")
 		w.Header().Set("Content-Type", MediaType)
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"kind":"Service","name":"stable","revision":"1"}`))
+		_, _ = w.Write([]byte(`{"kind":"Service","name":"` + body.Name + `","revision":"1"}`))
 	}))
 	t.Cleanup(server.Close)
 
@@ -315,9 +444,9 @@ func TestRunRepeatsARequestAndComparesDocuments(t *testing.T) {
 			"name": "idempotent create",
 			"mutating": true,
 			"request": {"method": "POST", "path": "/v1/services", "role": "admin",
-				"headers": {"Idempotency-Key": "case-1"},
-				"body": {"name": "stable"}},
-			"expect": {"status": 201, "kind": "Service", "jsonPaths": {"name": "stable"}},
+				"headers": {"Idempotency-Key": "case-1-{{run}}"},
+				"body": {"name": "stable-{{run}}"}},
+			"expect": {"status": 201, "kind": "Service", "jsonPaths": {"name": "stable-{{run}}"}},
 			"repeat": {"times": 2, "sameBody": true}
 		}]
 	}`)
@@ -327,6 +456,7 @@ func TestRunRepeatsARequestAndComparesDocuments(t *testing.T) {
 		Client:        server.Client(),
 		Tokens:        map[string]string{"admin": "test-token"},
 		AllowMutation: true,
+		RunSuffix:     "20260101T000000Z-abcdef01",
 	}, dir)
 
 	if requests != 2 {
@@ -428,6 +558,284 @@ func TestRunExecutesFixtures(t *testing.T) {
 func TestRunRejectsAnEmptyFixtureDirectory(t *testing.T) {
 	if _, err := Load(t.TempDir()); err == nil {
 		t.Fatal("an empty fixture directory must fail loudly, not run zero cases")
+	}
+}
+
+// TestRunGatesOnTheAdvertisedCapabilities is the gate contract in one table: a
+// required capability that is missing skips, one that is present runs, and a case
+// that asserts a capability must be absent skips when the target has it.
+func TestRunGatesOnTheAdvertisedCapabilities(t *testing.T) {
+	var served []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		served = append(served, r.URL.Path)
+		w.Header().Set("X-SwarmCracker-Api-Version", "1")
+		w.Header().Set("X-Request-Id", "req_test")
+		w.Header().Set("Content-Type", MediaType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"kind":"VersionInfo"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeFixture(t, dir, "gates.json", `{
+		"schemaVersion": 1,
+		"name": "gates",
+		"cases": [
+			{
+				"name": "needs snapshots",
+				"requiresCapabilities": ["snapshots"],
+				"request": {"method": "GET", "path": "/v1/needs", "role": "reader"},
+				"expect": {"status": 200, "kind": "VersionInfo"}
+			},
+			{
+				"name": "needs read",
+				"requiresCapabilities": ["read"],
+				"request": {"method": "GET", "path": "/v1/has", "role": "reader"},
+				"expect": {"status": 200, "kind": "VersionInfo"}
+			},
+			{
+				"name": "needs attach",
+				"requiresCapabilities": ["attach"],
+				"request": {"method": "GET", "path": "/v1/attach", "role": "reader"},
+				"expect": {"status": 200, "kind": "VersionInfo"}
+			},
+			{
+				"name": "asserts snapshots disabled",
+				"absentCapabilities": ["snapshots"],
+				"request": {"method": "GET", "path": "/v1/disabled", "role": "reader"},
+				"expect": {"status": 200, "kind": "VersionInfo"}
+			}
+		]
+	}`)
+
+	summary := Run(t, Env{
+		BaseURL:      server.URL,
+		Client:       server.Client(),
+		Tokens:       map[string]string{"reader": "test-token"},
+		Capabilities: []string{"read", "snapshots"},
+	}, dir)
+
+	if summary.Cases != 4 || summary.Skipped != 2 || summary.Gated != 2 {
+		t.Fatalf("summary = %+v, want 4 cases and 2 gated skips", summary)
+	}
+	if len(served) != 2 || served[0] != "/v1/needs" || served[1] != "/v1/has" {
+		t.Fatalf("requests = %v, want only the two advertised cases to reach the server", served)
+	}
+}
+
+// TestRunAppliesTheRunSuffix is the collision guard: the token reaches the path,
+// the body, the header and the expectation compared against the response, so two
+// runs cannot create the same object or replay the same key.
+func TestRunAppliesTheRunSuffix(t *testing.T) {
+	var name, key, path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		key = r.Header.Get("Idempotency-Key")
+
+		var body struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		name = body.Name
+
+		w.Header().Set("X-SwarmCracker-Api-Version", "1")
+		w.Header().Set("X-Request-Id", "req_test")
+		w.Header().Set("Content-Type", MediaType)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"kind":"Service","name":"` + body.Name + `"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeFixture(t, dir, "write.json", `{
+		"schemaVersion": 1,
+		"name": "write",
+		"cases": [{
+			"name": "create",
+			"mutating": true,
+			"request": {
+				"method": "POST", "path": "/v1/services/conformance-ws-{{run}}", "role": "admin",
+				"headers": {"Idempotency-Key": "conformance-idem-{{run}}"},
+				"body": {"name": "conformance-ws-{{run}}"}
+			},
+			"expect": {"status": 201, "kind": "Service", "jsonPaths": {"name": "conformance-ws-{{run}}"}}
+		}]
+	}`)
+
+	summary := Run(t, Env{
+		BaseURL:       server.URL,
+		Client:        server.Client(),
+		Tokens:        map[string]string{"admin": "test-token"},
+		AllowMutation: true,
+		RunSuffix:     "20260101T000000Z-abcdef01",
+	}, dir)
+
+	if summary.Cases != 1 || summary.Skipped != 0 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if want := "conformance-ws-20260101T000000Z-abcdef01"; name != want {
+		t.Fatalf("body name = %q, want %q", name, want)
+	}
+	if want := "conformance-idem-20260101T000000Z-abcdef01"; key != want {
+		t.Fatalf("Idempotency-Key = %q, want %q", key, want)
+	}
+	if want := "/v1/services/conformance-ws-20260101T000000Z-abcdef01"; path != want {
+		t.Fatalf("path = %q, want %q", path, want)
+	}
+}
+
+// TestRunCapturesAResponseValue proves a capture is a real variable: the id a
+// create returned names the request that cleans it up, with no pinned server id.
+func TestRunCapturesAResponseValue(t *testing.T) {
+	var cleaned string
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /v1/services", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-SwarmCracker-Api-Version", "1")
+		w.Header().Set("X-Request-Id", "req_test")
+		w.Header().Set("Content-Type", MediaType)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"kind":"Service","id":"svc-42","name":"x"}`))
+	})
+	mux.HandleFunc("DELETE /v1/services/{id}", func(w http.ResponseWriter, r *http.Request) {
+		cleaned = r.PathValue("id")
+		w.Header().Set("X-SwarmCracker-Api-Version", "1")
+		w.Header().Set("X-Request-Id", "req_test")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeFixture(t, dir, "write.json", `{
+		"schemaVersion": 1,
+		"name": "write",
+		"cases": [
+			{
+				"name": "create",
+				"mutating": true,
+				"request": {"method": "POST", "path": "/v1/services", "role": "admin",
+					"body": {"name": "conformance-ws-{{run}}"}},
+				"expect": {"status": 201, "kind": "Service"},
+				"capture": {"service": "id"}
+			},
+			{
+				"name": "delete",
+				"mutating": true,
+				"request": {"method": "DELETE", "path": "/v1/services/$service", "role": "admin"},
+				"expect": {"status": 204}
+			}
+		]
+	}`)
+
+	Run(t, Env{
+		BaseURL:       server.URL,
+		Client:        server.Client(),
+		Tokens:        map[string]string{"admin": "test-token"},
+		AllowMutation: true,
+	}, dir)
+
+	if cleaned != "svc-42" {
+		t.Fatalf("the delete used %q, want the captured id", cleaned)
+	}
+}
+
+// TestRequestIDEchoMismatch pins both branches of requestIdInBody: a true case
+// needs the echo at its path and it must be this request's id; a false case needs
+// the path absent.
+func TestRequestIDEchoMismatch(t *testing.T) {
+	document := decodeBody(t, `{
+		"kind": "TaskList",
+		"partial": [{"error": {"code": "unavailable", "requestId": "req_test"}}]
+	}`)
+
+	tests := []struct {
+		name    string
+		expect  Expect
+		header  string
+		wantErr bool
+	}{
+		{name: "top-level true is absent", expect: Expect{RequestIDInBody: boolPtr(true)}, header: "req_test", wantErr: true},
+		{name: "nested true", expect: Expect{RequestIDInBody: boolPtr(true), RequestIDPath: "partial.0.error.requestId"}, header: "req_test"},
+		{name: "nested true, another request", expect: Expect{RequestIDInBody: boolPtr(true), RequestIDPath: "partial.0.error.requestId"}, header: "req_other", wantErr: true},
+		{name: "nested false", expect: Expect{RequestIDInBody: boolPtr(false), RequestIDPath: "partial.0.error.requestId"}, header: "req_test", wantErr: true},
+		{name: "top-level false", expect: Expect{RequestIDInBody: boolPtr(false)}, header: "req_test"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := requestIDEchoMismatch(document, tc.expect, tc.header)
+			if (got != "") != tc.wantErr {
+				t.Fatalf("mismatch = %q, want an error: %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestMinimumMismatch pins minValues: an integer at or above the floor passes, and
+// a missing, non-numeric or smaller value is a mismatch with a readable reason.
+func TestMinimumMismatch(t *testing.T) {
+	document := decodeBody(t, `{"sizeBytes": 4096, "ratio": 1.5, "label": "big"}`)
+
+	tests := []struct {
+		path    string
+		want    int64
+		wantErr bool
+	}{
+		{path: "sizeBytes", want: 1},
+		{path: "sizeBytes", want: 4096},
+		{path: "sizeBytes", want: 4097, wantErr: true},
+		{path: "missing", want: 1, wantErr: true},
+		{path: "ratio", want: 1, wantErr: true},
+		{path: "label", want: 1, wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%s>=%d", tc.path, tc.want), func(t *testing.T) {
+			got := minimumMismatch(document, tc.path, tc.want)
+			if (got != "") != tc.wantErr {
+				t.Fatalf("mismatch = %q, want an error: %v", got, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestAssertStreamAcceptsASilentLabConsole is the raw-stream counterpart of the
+// quiet-cluster rule: a live guest that prints nothing before the deadline must
+// not fail a run whose 200 and media type already prove the relay reached it.
+func TestAssertStreamAcceptsASilentLabConsole(t *testing.T) {
+	c := Case{Name: "attach", Stream: &Stream{Bytes: 14}}
+	res := &result{
+		status:   http.StatusOK,
+		header:   http.Header{"Content-Type": []string{octetStreamMediaType}},
+		stream:   true,
+		raw:      true,
+		rawBytes: 0,
+	}
+
+	assertStream(t, c, res, true)
+}
+
+// runSuffixPattern is the shape newRunSuffix promises: a UTC timestamp, a dash and
+// eight hex characters.
+var runSuffixPattern = regexp.MustCompile(`^\d{8}T\d{6}Z-[0-9a-f]{8}$`)
+
+// TestNewRunSuffixIsUnique proves the suffix has the shape the fixtures rely on
+// and that no two runs in one process share it.
+func TestNewRunSuffixIsUnique(t *testing.T) {
+	seen := make(map[string]bool, 512)
+	for i := 0; i < 512; i++ {
+		suffix, err := newRunSuffix()
+		if err != nil {
+			t.Fatalf("newRunSuffix: %v", err)
+		}
+		if !runSuffixPattern.MatchString(suffix) {
+			t.Fatalf("suffix %q does not look like a timestamp plus a nonce", suffix)
+		}
+		if seen[suffix] {
+			t.Fatalf("suffix %q repeated; two runs could collide", suffix)
+		}
+		seen[suffix] = true
 	}
 }
 

@@ -17,6 +17,10 @@ const vmSocketSuffix = ".sock"
 // stderr into this one file.
 const consoleLogSuffix = ".log"
 
+// consoleSocketSuffix is the interactive console socket suffix pkg/console
+// creates for a running VM: <socketDir>/<taskID>.console.sock.
+const consoleSocketSuffix = ".console.sock"
+
 // Task is one local microVM the node broker can route to.
 type Task struct {
 	ID         string
@@ -24,12 +28,18 @@ type Task struct {
 	// Running reports whether the task's microVM was alive when the task was
 	// resolved: true when its Firecracker API socket exists. A task that has
 	// exited still keeps its console log, so it resolves with Running false and
-	// no SocketPath; logs remain readable, exec and files do not.
+	// no SocketPath or ConsolePath; logs remain readable, exec, files and attach
+	// do not.
 	Running bool
 	// LogPath is the task's Firecracker console log, e.g.
 	// /var/run/swarmcracker/<id>.log. It is empty when the source has no log
 	// directory; the log handler then answers not_found rather than guessing.
 	LogPath string
+	// ConsolePath is the task's interactive console Unix socket, e.g.
+	// /var/run/firecracker/<id>.console.sock. It is derived for a running task
+	// and stays empty for a log-only one: a stopped VM has no console to attach
+	// to, and the attach handler owns the not-found answer.
+	ConsolePath string
 }
 
 // VsockPath returns the Firecracker vsock muxer path for the task:
@@ -49,6 +59,13 @@ func (t Task) VsockPath() string {
 // would be wrong twice over.
 func (t Task) guestAvailable() bool {
 	return t.Running && t.VsockPath() != ""
+}
+
+// consoleAvailable reports whether the task has a console to attach to. Only a
+// running task keeps one: a stopped task's console socket is removed when the
+// console server closes, so the attach handler answers not_found like exec does.
+func (t Task) consoleAvailable() bool {
+	return t.Running && t.ConsolePath != ""
 }
 
 // stillRunning reports whether the task's microVM is still alive. The console
@@ -73,13 +90,13 @@ type TaskSource interface {
 	Lookup(ctx context.Context, taskID string) (Task, bool, error)
 }
 
-// SocketDirSource resolves <dir>/<taskID>.sock and, when LogDir is set,
-// <logDir>/<taskID>.log. When the socket is gone but the log file remains, the
-// task still resolves as a log-only task, so a completed task's console output
-// is reachable through the API. It rejects empty IDs and any ID containing a
-// path separator or a dot: task IDs come from an untrusted URL path, and
-// without that check ".." (or "a/../../b") would address a file outside the
-// socket directory.
+// SocketDirSource resolves <dir>/<taskID>.sock, <dir>/<taskID>.console.sock for
+// a running task and, when LogDir is set, <logDir>/<taskID>.log. When the socket
+// is gone but the log file remains, the task still resolves as a log-only task,
+// so a completed task's console output is reachable through the API. It rejects
+// empty IDs and any ID containing a path separator or a dot: task IDs come from
+// an untrusted URL path, and without that check ".." (or "a/../../b") would
+// address a file outside the socket directory.
 type SocketDirSource struct {
 	Dir string
 	// LogDir holds the per-task console logs. Empty leaves Task.LogPath empty:
@@ -121,7 +138,8 @@ func (s SocketDirSource) Lookup(_ context.Context, taskID string) (Task, bool, e
 				// Derived, not probed: a task resolves while its console log is
 				// still being created, and the log handler owns the not-found
 				// answer.
-				LogPath: s.logPath(taskID),
+				LogPath:     s.logPath(taskID),
+				ConsolePath: s.consolePath(taskID),
 			}, true, nil
 		}
 		// The file is a leftover from a VMM that is no longer alive. Fall
@@ -161,6 +179,16 @@ func (s SocketDirSource) logPath(taskID string) string {
 		return ""
 	}
 	return filepath.Join(s.LogDir, taskID+consoleLogSuffix)
+}
+
+// consolePath derives a running task's console socket path. It never probes the
+// file: a console that has not been created yet is the attach handler's
+// not-found answer, not a lookup failure.
+func (s SocketDirSource) consolePath(taskID string) string {
+	if s.Dir == "" {
+		return ""
+	}
+	return filepath.Join(s.Dir, taskID+consoleSocketSuffix)
 }
 
 // validateTaskID rejects the shapes that could escape the socket directory.

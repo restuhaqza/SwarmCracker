@@ -17,15 +17,10 @@ import (
 // defaultConsoleSocketDir mirrors the daemon's default --socket-dir.
 const defaultConsoleSocketDir = "/var/run/firecracker"
 
-// detachPrefix and detachSuffix form the Ctrl-P Ctrl-Q detach sequence, which
-// is intercepted locally instead of being forwarded to the guest.
-const (
-	detachPrefix = 0x10 // Ctrl-P
-	detachSuffix = 0x11 // Ctrl-Q
-)
-
-// errDetach signals that the user asked to detach from the console.
-var errDetach = errors.New("console detached")
+// errDetach signals that the user asked to detach from the console. It is the
+// shared filter's sentinel, so the local socket path and the remote API path
+// agree on the byte sequence.
+var errDetach = console.ErrDetached
 
 // newVMAttachCommand creates the VM attach command.
 func newVMAttachCommand() *cobra.Command {
@@ -41,15 +36,36 @@ shown by "swarmcracker task ls"). The console is the same channel Firecracker
 uses for guest kernel and ttyS0 output, so for an image whose command is an
 interactive shell this gives you a shell inside the microVM.
 
+Without --host the console is reached over the node's Unix socket, which
+requires running on the node that hosts the task. With --host the session goes
+through the manager's API (POST /v1/tasks/{id}/attach) as one full-duplex HTTP
+request carrying raw bytes both ways, so a machine with an API token and the
+cluster CA needs no node access. That path requires the tasks:exec scope and the
+node broker; a manager without a wired broker answers 501 not_implemented, and a
+task that is not running (or has no console) answers 404 not_found with
+details.reason "console_unavailable".
+
 Press Ctrl-P Ctrl-Q to detach; the VM keeps running.`,
 		Example: `  swarmcracker task ls
   swarmcracker vm attach 5f3a1b2c9d
-  swarmcracker vm attach --socket-dir /var/run/firecracker ubuntu`,
+  swarmcracker vm attach --socket-dir /var/run/firecracker ubuntu
+  swarmcracker -H https://manager:4244 --ca ca.crt --token-file token vm attach web-1`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --host selects the public API. Without it the command stays on the
+			// local console socket, byte for byte as before.
+			if apiHost != "" {
+				c, err := newContractClient()
+				if err != nil {
+					return err
+				}
+				defer func() { _ = c.Close() }()
+				return attachToRemoteVM(cmd.Context(), c, args[0],
+					cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
+			}
 			return attachToVM(cmd.Context(), socketDir, args[0], os.Stdin, os.Stdout)
 		},
 	}
@@ -57,6 +73,38 @@ Press Ctrl-P Ctrl-Q to detach; the VM keeps running.`,
 	cmd.Flags().StringVar(&socketDir, "socket-dir", defaultConsoleSocketDir, "Directory containing microVM console sockets")
 
 	return cmd
+}
+
+// remoteAttacher is the remote API path `vm attach` uses with --host.
+// *client.Client implements it; tests substitute a fake.
+type remoteAttacher interface {
+	AttachTask(ctx context.Context, ref string, stdin io.Reader, stdout io.Writer) error
+}
+
+// attachToRemoteVM streams the task console through the public API. The
+// terminal handling matches the local path — raw mode when stdin is a terminal,
+// Ctrl-P Ctrl-Q to leave, nothing else interpreted locally — only the channel
+// differs.
+func attachToRemoteVM(ctx context.Context, remote remoteAttacher, ref string, in io.Reader, out, errOut io.Writer) error {
+	restore, raw := rawModeFor(in)
+	defer restore()
+
+	if raw {
+		fmt.Fprintf(errOut, "Attached to %s (Ctrl-P Ctrl-Q to detach)\r\n", ref)
+	}
+
+	return remote.AttachTask(ctx, ref, in, out)
+}
+
+// rawModeFor puts a terminal stdin into raw mode for the session. A pipe or a
+// redirected file is left untouched, and the caller must not assume raw mode
+// was applied.
+func rawModeFor(in io.Reader) (restore func(), ok bool) {
+	f, isFile := in.(*os.File)
+	if !isFile {
+		return func() {}, false
+	}
+	return makeRaw(int(f.Fd()))
 }
 
 // attachToVM connects to a VM console and proxies bytes between the local
@@ -153,49 +201,8 @@ func resolveLiveVMTaskID(socketDir, ref string) (string, error) {
 }
 
 // pumpStdin forwards local input to the guest, intercepting the Ctrl-P Ctrl-Q
-// detach sequence. The prefix may straddle two reads, so one pending byte of
-// state is carried between reads.
+// detach sequence through the filter shared with the remote API path.
 func pumpStdin(r io.Reader, w io.Writer) error {
-	buf := make([]byte, 1024)
-	pendingCtrlP := false
-
-	for {
-		n, err := r.Read(buf)
-		if n > 0 {
-			out := make([]byte, 0, n+1)
-			for i := 0; i < n; i++ {
-				b := buf[i]
-				if pendingCtrlP {
-					pendingCtrlP = false
-					if b == detachSuffix {
-						// Flush bytes read before the detach sequence so they
-						// are not lost when we stop forwarding input.
-						if len(out) > 0 {
-							if _, werr := w.Write(out); werr != nil {
-								return werr
-							}
-						}
-						return errDetach
-					}
-					out = append(out, detachPrefix)
-				}
-				if b == detachPrefix {
-					pendingCtrlP = true
-					continue
-				}
-				out = append(out, b)
-			}
-			if len(out) > 0 {
-				if _, werr := w.Write(out); werr != nil {
-					return werr
-				}
-			}
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-	}
+	_, err := io.Copy(w, console.NewDetachReader(r))
+	return err
 }

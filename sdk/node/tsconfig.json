@@ -1,0 +1,21 @@
+{
+  // Type-checks the SDK's declarations only. The runtime is plain .mjs, nothing
+  // is emitted, and neither @types/node nor the DOM lib is needed: client.d.ts
+  // declares the few platform types it uses structurally.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "strict": true,
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": false,
+    "types": []
+  },
+  "include": ["src/**/*.d.ts"]
+}

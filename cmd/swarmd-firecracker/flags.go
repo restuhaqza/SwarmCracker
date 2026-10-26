@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
+	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/urfave/cli/v2"
@@ -303,6 +304,12 @@ func newAppFlags() []cli.Flag {
 			Usage: "Directory holding VM snapshots",
 			Value: config.DefaultSnapshotDir,
 		},
+		&cli.DurationFlag{
+			Name: "snapshot-timeout",
+			Usage: "Deadline for one snapshot request relayed to a node; create copies the task " +
+				"disk, so this is minutes rather than seconds",
+			Value: broker.DefaultSnapshotTimeout,
+		},
 	}
 }
 
@@ -324,6 +331,9 @@ func apiRuntimeFrom(ctx *cli.Context) apiRuntime {
 		// Snapshots are node-local, but the manager advertises the capability it
 		// serves, so the API runtime needs the same switch the broker reads.
 		snapshotsEnabled: ctx.Bool("snapshots-enable"),
+		// The manager-side deadline for one relayed snapshot request. Create
+		// copies a whole task disk, so the default is minutes.
+		snapshotTimeout: ctx.Duration("snapshot-timeout"),
 	}
 }
 

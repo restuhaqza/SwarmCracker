@@ -4,10 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -33,6 +36,9 @@ const (
 
 	eventStreamMediaType = "text/event-stream"
 	ndjsonMediaType      = "application/x-ndjson"
+	// octetStreamMediaType is the raw console relay's media type: attach is the
+	// one route that does not answer a JSON document or a framed stream.
+	octetStreamMediaType = "application/octet-stream"
 
 	readyFrame = "ready"
 	pingFrame  = "ping"
@@ -60,6 +66,14 @@ type Env struct {
 	// task-scoped stream gets its id without hard-coding cluster data: the mock
 	// sets task, the lab run reads CONFORMANCE_TASK_ID.
 	Vars map[string]string
+	// Capabilities is the capability set the target advertises in
+	// GET /v1/version. A gated case compares against it. Nil means "not gated":
+	// every case runs, which is what a runner unit test wants.
+	Capabilities []string
+	// RunSuffix replaces every RunToken in a request path, query, header or body.
+	// Run fills it with a per-run value; an Env built by hand may leave it empty,
+	// and then the token is sent literally.
+	RunSuffix string
 	// Lab marks a run against a real manager: mock-only cases are skipped and a
 	// mutation needs AllowMutation.
 	Lab bool
@@ -75,6 +89,60 @@ type Summary struct {
 	Cases int
 	// Skipped is how many of them were skipped, for any reason.
 	Skipped int
+	// Gated is how many of them were skipped because the target does not
+	// advertise a capability the case requires, or advertises one the case
+	// asserts must be absent. It is a declared skip: the mock leg allows it and
+	// fails on any other.
+	Gated int
+	// Skips names every skipped case and why. The counts above say how many
+	// cases did not run; this says which ones and what would let them run, which
+	// is what a lab run has to report instead of quietly passing on fewer cases.
+	Skips []Skip
+}
+
+// The reasons a case is skipped. A lab run is strict about them: a skip it can
+// avoid is a failure, because a green run that executed half the fixtures proves
+// nothing about the contract.
+const (
+	// SkipMockOnly is a case that asserts fixture data only the mock guarantees.
+	// No setting turns it on against a live manager: it is the one skip a lab
+	// run is allowed to report and pass.
+	SkipMockOnly = "mock-only"
+	// SkipCapability is a case the target's /v1/version gates out because it
+	// lacks a capability the case requires.
+	SkipCapability = "capability"
+	// SkipAbsentCapability is a case the target's capability set turns off by
+	// having the capability: it asserts the documented disabled behaviour (a
+	// 501), so it is the opposite-mode twin of SkipCapability. No setting makes a
+	// snapshots-enabled manager answer it, which is why a lab run may report it
+	// and still pass — like a mock-only skip.
+	SkipAbsentCapability = "absent-capability"
+	// SkipMutation is a mutating case the run did not allow.
+	SkipMutation = "mutation"
+	// SkipToken is a case whose role has no token in this environment.
+	SkipToken = "token"
+	// SkipVariable is a case that needs a variable the environment did not
+	// supply, such as the task id a stream or snapshot case runs against.
+	SkipVariable = "variable"
+)
+
+// Skip is one case that did not run. Case is the subtest path, so a failure can
+// name the exact fixture case.
+type Skip struct {
+	Case string
+	Kind string
+	// Detail names what is missing: the capability, the role or the variable.
+	Detail string
+}
+
+// recordSkip counts one skipped case and keeps it, so the policy that reads the
+// summary can name it afterwards. t.Skip unwinds the subtest, so this must be
+// called before it.
+func (s *Summary) recordSkip(t *testing.T, kind, detail string) {
+	t.Helper()
+
+	s.Skipped++
+	s.Skips = append(s.Skips, Skip{Case: t.Name(), Kind: kind, Detail: detail})
 }
 
 // Run loads every *.json fixture in dir and executes all cases as subtests
@@ -87,6 +155,17 @@ func Run(t *testing.T, env Env, dir string) Summary {
 	if err != nil {
 		t.Fatalf("conformance: %v", err)
 	}
+
+	if env.RunSuffix == "" {
+		suffix, suffixErr := newRunSuffix()
+		if suffixErr != nil {
+			t.Fatalf("conformance: build a per-run suffix: %v", suffixErr)
+		}
+		env.RunSuffix = suffix
+	}
+	// The suffix is not a secret, and naming it in the log is what makes a
+	// fixture failure reproducible: the created object names carry it.
+	t.Logf("run suffix %q", env.RunSuffix)
 
 	summary := Summary{}
 	for _, fixture := range fixtures {
@@ -118,6 +197,122 @@ func seedVars(env Env) map[string]string {
 	return vars
 }
 
+// newRunSuffix builds the per-run marker a mutating fixture's names and keys
+// carry: a UTC timestamp plus random characters. The timestamp makes a failure
+// easy to place in a log; the randomness is what keeps two runs that start in the
+// same second apart, which a timestamp alone cannot promise.
+func newRunSuffix() (string, error) {
+	var nonce [4]byte
+	if _, err := cryptorand.Read(nonce[:]); err != nil {
+		return "", err
+	}
+	return time.Now().UTC().Format("20060102T150405Z") + "-" + hex.EncodeToString(nonce[:]), nil
+}
+
+// applyRunSuffix replaces every run token in one request component. A path, a
+// body and a header all carry names, so all three go through it.
+func applyRunSuffix(value, suffix string) string {
+	if suffix == "" {
+		return value
+	}
+	return strings.ReplaceAll(value, RunToken, suffix)
+}
+
+// resolveRunTokens rewrites the values a response is compared against, so a
+// fixture writes a name once and both the request and the expectation carry the
+// per-run suffix. It copies the maps it touches: a fixture's expectations are
+// shared by every leg that loaded them.
+func resolveRunTokens(c Case, suffix string) Case {
+	if suffix == "" {
+		return c
+	}
+
+	c.Expect.JSONPaths = suffixedValues(c.Expect.JSONPaths, suffix)
+	c.Expect.Headers = suffixedValues(c.Expect.Headers, suffix)
+	if c.Follow != nil {
+		c.Follow.Expect.JSONPaths = suffixedValues(c.Follow.Expect.JSONPaths, suffix)
+		c.Follow.Expect.Headers = suffixedValues(c.Follow.Expect.Headers, suffix)
+	}
+	return c
+}
+
+// suffixedValues returns a copy of values with the run token replaced in every
+// value, or nil when there is nothing to rewrite.
+func suffixedValues(values map[string]string, suffix string) map[string]string {
+	if len(values) == 0 {
+		return values
+	}
+	resolved := make(map[string]string, len(values))
+	for key, value := range values {
+		resolved[key] = applyRunSuffix(value, suffix)
+	}
+	return resolved
+}
+
+// gatedSkipReason reports why a capability gate skips this case, plus the
+// capability list that gated it and the skip kind, or empty strings when the case
+// may run. The kind separates the two directions: a missing required capability
+// is a precondition the operator can supply, while an advertised absent
+// capability means the case is asserted in its opposite mode and does not apply.
+// An environment that declared no capability set is not gated: the runner trusts
+// the fixture, which is what the runner's own tests rely on.
+func (e Env) gatedSkipReason(c Case) (reason, detail, kind string) {
+	if e.Capabilities == nil {
+		return "", "", ""
+	}
+
+	advertised := make(map[string]bool, len(e.Capabilities))
+	for _, name := range e.Capabilities {
+		advertised[strings.TrimSpace(name)] = true
+	}
+
+	missing := make([]string, 0, len(c.RequiresCapabilities))
+	for _, name := range c.RequiresCapabilities {
+		if !advertised[name] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Sprintf("this environment does not advertise %s; run it against a manager that enables the capability",
+			strings.Join(missing, ", ")), strings.Join(missing, " and "), SkipCapability
+	}
+
+	present := make([]string, 0, len(c.AbsentCapabilities))
+	for _, name := range c.AbsentCapabilities {
+		if advertised[name] {
+			present = append(present, name)
+		}
+	}
+	if len(present) > 0 {
+		return fmt.Sprintf("this environment advertises %s, so the disabled-capability case does not apply",
+			strings.Join(present, ", ")), strings.Join(present, " and "), SkipAbsentCapability
+	}
+	return "", "", ""
+}
+
+// capture stores the response values a later case in the same file references,
+// so a server-generated id reaches the request that cleans it up. A missing path
+// fails the case: a capture that silently stored nothing would make the next
+// request name a literal "$alias".
+func capture(t *testing.T, c Case, res *result, vars map[string]string) {
+	t.Helper()
+	if len(c.Capture) == 0 || res.stream {
+		return
+	}
+
+	document, err := decodeDocument(res.body)
+	if err != nil {
+		res.failf(t, c.Name, "capture needs a JSON body: %v", err)
+	}
+	for alias, path := range c.Capture {
+		value, present := lookupPath(document, path)
+		if !present || value == "" || value == "null" {
+			res.failf(t, c.Name, "capture %q: %s is missing", alias, path)
+		}
+		vars[alias] = value
+	}
+}
+
 // fixtureSlug is the subtest name a fixture file contributes.
 func fixtureSlug(source string) string {
 	return strings.TrimSuffix(filepath.Base(source), ".json")
@@ -129,18 +324,28 @@ func fixtureSlug(source string) string {
 func runCase(t *testing.T, env Env, c Case, vars map[string]string, summary *Summary) {
 	t.Helper()
 
+	c = resolveRunTokens(c, env.RunSuffix)
+
+	gate, detail, kind := env.gatedSkipReason(c)
 	switch {
 	case env.Lab && c.MockOnly:
-		summary.Skipped++
+		summary.recordSkip(t, SkipMockOnly, "")
 		t.Skip("mock-only case: it asserts fixture data a live cluster need not contain")
+	case gate != "":
+		// A capability gate is a declared skip: the target was asked and said no.
+		// The lab leg reports it (and, strict by default, fails on a required
+		// one) and the mock leg allows it and fails on any other.
+		summary.recordSkip(t, kind, detail)
+		summary.Gated++
+		t.Skip(gate)
 	case c.Mutating && !env.AllowMutation:
-		summary.Skipped++
+		summary.recordSkip(t, SkipMutation, "")
 		t.Skip("mutating case: set CONFORMANCE_ALLOW_MUTATION=1 to run it")
 	}
 
 	token := strings.TrimSpace(env.Tokens[c.Request.Role])
 	if token == "" {
-		summary.Skipped++
+		summary.recordSkip(t, SkipToken, c.Request.Role)
 		t.Skipf("no %s token configured for this environment; skipping", c.Request.Role)
 	}
 
@@ -159,7 +364,7 @@ func runCase(t *testing.T, env Env, c Case, vars map[string]string, summary *Sum
 	req, err := newRequest(ctx, env, c.Request, token, vars)
 	if err != nil {
 		if env.Lab && errors.Is(err, errUnsetVar) {
-			summary.Skipped++
+			summary.recordSkip(t, SkipVariable, missingVariable(err))
 			t.Skipf("%v; the environment did not supply it", err)
 		}
 		t.Fatalf("%s: build request: %v", c.Name, err)
@@ -171,6 +376,10 @@ func runCase(t *testing.T, env Env, c Case, vars map[string]string, summary *Sum
 	if c.Repeat != nil {
 		runRepeat(t, env, client, c, token, vars, res)
 	}
+
+	// capture runs before the ETag is recorded: a case may store the id it just
+	// created and let a later DELETE name it.
+	capture(t, c, res, vars)
 
 	// A follow is the brief's contract: only a case that asserted nextPresent
 	// walks the cursor. Validation already requires the flag, so this gate is a
@@ -232,6 +441,33 @@ func repeatMismatch(first, again *result) string {
 // runner, is what lacks the value.
 var errUnsetVar = errors.New("variable not set")
 
+// unsetVarError names the $variable that was not supplied, so a skip can say
+// which one is missing instead of only that something was.
+type unsetVarError struct {
+	name string
+	// where is the request component the reference appeared in, for the message.
+	where string
+}
+
+func (e *unsetVarError) Error() string {
+	if e.where == "" {
+		return fmt.Sprintf("%v: $%s must come from an earlier response or the environment", errUnsetVar, e.name)
+	}
+	return fmt.Sprintf("%v: $%s in the %s must come from an earlier response or the environment", errUnsetVar, e.name, e.where)
+}
+
+func (e *unsetVarError) Unwrap() error { return errUnsetVar }
+
+// missingVariable names the variable an error reports as unset, or "" when the
+// error is about something else.
+func missingVariable(err error) string {
+	var unset *unsetVarError
+	if errors.As(err, &unset) {
+		return unset.name
+	}
+	return ""
+}
+
 // newRequest builds one authenticated request. Only the fixture's own path,
 // query and headers can reach the message a failure prints; the token never
 // leaves the Authorization header.
@@ -240,6 +476,7 @@ func newRequest(ctx context.Context, env Env, spec Request, token string, vars m
 	if err != nil {
 		return nil, err
 	}
+	path = applyRunSuffix(path, env.RunSuffix)
 
 	u, err := url.Parse(strings.TrimRight(env.BaseURL, "/") + path)
 	if err != nil {
@@ -252,7 +489,7 @@ func newRequest(ctx context.Context, env Env, spec Request, token string, vars m
 			if resolveErr != nil {
 				return nil, fmt.Errorf("query %s: %w", key, resolveErr)
 			}
-			query.Set(key, resolved)
+			query.Set(key, applyRunSuffix(resolved, env.RunSuffix))
 		}
 		u.RawQuery = query.Encode()
 	}
@@ -260,6 +497,9 @@ func newRequest(ctx context.Context, env Env, spec Request, token string, vars m
 	body, err := requestBody(spec.Body)
 	if err != nil {
 		return nil, err
+	}
+	if body != nil && env.RunSuffix != "" {
+		body = bytes.ReplaceAll(body, []byte(RunToken), []byte(env.RunSuffix))
 	}
 	var reader io.Reader
 	if body != nil {
@@ -291,7 +531,7 @@ func newRequest(ctx context.Context, env Env, spec Request, token string, vars m
 		if resolveErr != nil {
 			return nil, fmt.Errorf("header %s: %w", name, resolveErr)
 		}
-		req.Header.Set(name, resolved)
+		req.Header.Set(name, applyRunSuffix(resolved, env.RunSuffix))
 	}
 	return req, nil
 }
@@ -319,7 +559,7 @@ func resolveVars(value string, vars map[string]string) (string, error) {
 	}
 	resolved, ok := vars[name]
 	if !ok {
-		return "", fmt.Errorf("%w: $%s must come from an earlier response or the environment", errUnsetVar, name)
+		return "", &unsetVarError{name: name}
 	}
 	return resolved, nil
 }
@@ -351,7 +591,7 @@ func resolvePath(path string, vars map[string]string) (string, error) {
 		name := rest[:end]
 		resolved, ok := vars[name]
 		if !ok {
-			return "", fmt.Errorf("%w: $%s in the request path must come from an earlier response or the environment", errUnsetVar, name)
+			return "", &unsetVarError{name: name, where: "request path"}
 		}
 		out.WriteString(resolved)
 		path = rest[end:]
@@ -390,8 +630,11 @@ type result struct {
 	url    string
 
 	stream    bool
+	raw       bool
 	frames    int
+	payload   int
 	controls  int
+	rawBytes  int
 	lastType  string
 	streamErr error
 }
@@ -399,7 +642,9 @@ type result struct {
 // streamRead is what one streaming response yielded before the reader stopped.
 type streamRead struct {
 	frames   int
+	payload  int
 	controls int
+	rawBytes int
 	lastType string
 	err      error
 }
@@ -425,9 +670,17 @@ func send(t *testing.T, client *http.Client, req *http.Request, stream *Stream) 
 	}
 
 	if stream != nil {
-		read := readStream(resp.Body, stream.Frames, stream.LastType)
 		res.stream = true
+		if stream.Bytes > 0 {
+			read := readRawStream(resp.Body, stream.Bytes)
+			res.raw = true
+			res.rawBytes = read.rawBytes
+			res.streamErr = read.err
+			return res
+		}
+		read := readStream(resp.Body, *stream)
 		res.frames = read.frames
+		res.payload = read.payload
 		res.controls = read.controls
 		res.lastType = read.lastType
 		res.streamErr = read.err
@@ -443,12 +696,21 @@ func send(t *testing.T, client *http.Client, req *http.Request, stream *Stream) 
 }
 
 // readStream counts SSE data lines and NDJSON lines, ignoring the ready and
-// ping control frames. It returns as soon as it has seen want data frames, a
-// frame of the terminal type, EOF or the request deadline: a live follow stream
-// never ends on its own, so the runner stops reading rather than waiting for the
-// server to close it.
-func readStream(body io.Reader, want int, terminal string) streamRead {
+// ping control frames. It returns as soon as it has seen the number of frames the
+// case asks for, a frame of the terminal type, the bounded read's frame cap, EOF
+// or the request deadline: a live follow stream never ends on its own, so the
+// runner stops reading rather than waiting for the server to close it.
+//
+// A bounded read (untilType) also counts the payload frames before the terminal
+// one, which is the floor a log case asserts: the terminal frame itself is the end
+// marker, not a line.
+func readStream(body io.Reader, spec Stream) streamRead {
 	var read streamRead
+
+	terminal := spec.LastType
+	if spec.bounded() {
+		terminal = spec.UntilType
+	}
 
 	reader := bufio.NewReader(body)
 	for {
@@ -458,14 +720,22 @@ func readStream(body io.Reader, want int, terminal string) streamRead {
 			if typ != "" {
 				read.lastType = typ
 			}
-			if typ == readyFrame || typ == pingFrame {
+			switch {
+			case typ == readyFrame || typ == pingFrame:
 				read.controls++
-			} else {
+			case typ != "" && typ == terminal:
 				read.frames++
+			default:
+				read.frames++
+				read.payload++
 			}
 		}
 
-		if read.frames >= want || (terminal != "" && read.lastType == terminal) {
+		if spec.bounded() {
+			if read.lastType == spec.UntilType || read.frames >= spec.MaxFrames {
+				return read
+			}
+		} else if read.frames >= spec.Frames || (spec.LastType != "" && read.lastType == spec.LastType) {
 			return read
 		}
 		if readErr != nil {
@@ -475,6 +745,22 @@ func readStream(body io.Reader, want int, terminal string) streamRead {
 			return read
 		}
 	}
+}
+
+// readRawStream reads a raw console stream: exactly want bytes, or however many
+// arrived before the request deadline. It is attach's counterpart to readStream:
+// application/octet-stream carries no frames to count, and a live console may stay
+// open and silent, so stopping at the count is what ends the read.
+func readRawStream(body io.Reader, want int) streamRead {
+	var read streamRead
+
+	buf := make([]byte, want)
+	n, err := io.ReadFull(body, buf)
+	read.rawBytes = n
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		read.err = err
+	}
+	return read
 }
 
 // streamPayload extracts one frame payload. SSE frames arrive as "data: ..."
@@ -550,8 +836,9 @@ func assertJSONContentType(t *testing.T, label string, res *result) {
 	}
 }
 
-// assertStream checks the stream media type, the frame count and the terminal
-// frame.
+// assertStream checks the stream media type and then the shape's assertion: an
+// exact frame count, a bounded read to a named terminal frame, or a raw byte
+// count.
 //
 // The mock is deterministic, so it asserts the exact count. A live manager is
 // not: an exec command or a log tail may carry more frames than the fixture
@@ -562,10 +849,20 @@ func assertJSONContentType(t *testing.T, label string, res *result) {
 func assertStream(t *testing.T, c Case, res *result, lab bool) {
 	t.Helper()
 
+	if c.Stream.Bytes > 0 {
+		assertRawStream(t, c, res, lab)
+		return
+	}
+
 	switch got := res.header.Get("Content-Type"); got {
 	case eventStreamMediaType, ndjsonMediaType:
 	default:
 		res.failf(t, c.Name, "want an SSE or NDJSON content type, got %q", got)
+	}
+
+	if c.Stream.bounded() {
+		assertBoundedStream(t, c, res)
+		return
 	}
 
 	if want := c.Stream.LastType; want != "" && res.lastType != want {
@@ -594,6 +891,58 @@ func assertStream(t *testing.T, c Case, res *result, lab bool) {
 	res.failf(t, c.Name, "want at least %d data frames, got %d (last type %q)", c.Stream.Frames, res.frames, res.lastType)
 }
 
+// assertBoundedStream checks a stream read to a named terminal frame. It behaves
+// the same in both legs: "read until eof, and prove the tail carried a line" is
+// true of the mock and of a real console, and the frame count is the server's to
+// choose either way.
+func assertBoundedStream(t *testing.T, c Case, res *result) {
+	t.Helper()
+	if err := c.Stream.boundedProblem(res); err != nil {
+		res.failf(t, c.Name, "%v", err)
+	}
+}
+
+// boundedProblem is a bounded stream's assertion as a value, so a test can pin
+// both outcomes — the terminal frame arrived with enough payload, and the
+// terminal frame never arrived — without failing the test binary.
+func (s Stream) boundedProblem(res *result) error {
+	if res.lastType != s.UntilType {
+		return fmt.Errorf("want a final %q frame, got %q after %d payload frames (cap %d frames)",
+			s.UntilType, res.lastType, res.payload, s.MaxFrames)
+	}
+	if res.payload < s.MinFrames {
+		return fmt.Errorf("want at least %d payload frames before %q, got %d",
+			s.MinFrames, s.UntilType, res.payload)
+	}
+	return nil
+}
+
+// assertRawStream checks a raw console relay (attach): the response is
+// application/octet-stream and carries console bytes.
+//
+// The mock writes a known console line, so it asserts the exact byte count. A
+// live guest may print nothing before the caller hangs up — a getty that is idle,
+// or a console whose output the caller is not entitled to see — so the lab leg
+// accepts a silent console: the 200 and the media type already prove the session
+// reached the node, and the mock proves the bytes.
+func assertRawStream(t *testing.T, c Case, res *result, lab bool) {
+	t.Helper()
+
+	if got := res.header.Get("Content-Type"); got != octetStreamMediaType {
+		res.failf(t, c.Name, "want Content-Type %q, got %q", octetStreamMediaType, got)
+	}
+
+	if !lab {
+		if res.rawBytes != c.Stream.Bytes {
+			res.failf(t, c.Name, "want %d console bytes, got %d", c.Stream.Bytes, res.rawBytes)
+		}
+		return
+	}
+	if res.rawBytes == 0 {
+		t.Logf("the live console sent no bytes before the deadline; the mock leg proves the relay copies console output")
+	}
+}
+
 // assertDocument checks the JSON envelope. An expectation with an errorCode
 // describes an error document; everything else describes a success document.
 func assertDocument(t *testing.T, label string, expect Expect, res *result) {
@@ -614,11 +963,37 @@ func assertDocument(t *testing.T, label string, expect Expect, res *result) {
 		res.failf(t, label, "want kind %q, got %q", expect.Kind, kind)
 	}
 	if expect.RequestIDInBody != nil {
-		if _, present := lookupPath(document, "requestId"); present != *expect.RequestIDInBody {
-			res.failf(t, label, "requestId in body: want present=%v", *expect.RequestIDInBody)
+		if mismatch := requestIDEchoMismatch(document, expect, res.header.Get(requestIDHeader)); mismatch != "" {
+			res.failf(t, label, "%s", mismatch)
 		}
 	}
 	assertDocumentFacts(t, label, expect, res, document)
+}
+
+// requestIDEchoMismatch reports how the document disagrees with
+// requestIdInBody/requestIdPath, or "" when it agrees. A true expectation is
+// checked twice: the path exists, and it carries this request's ID — a document
+// that echoed someone else's request would be worse than one that echoed none.
+func requestIDEchoMismatch(document any, expect Expect, requestID string) string {
+	path := expect.RequestIDPath
+	if path == "" {
+		path = "requestId"
+	}
+
+	value, present := lookupPath(document, path)
+	if present != *expect.RequestIDInBody {
+		return fmt.Sprintf("%s in body: want present=%v", path, *expect.RequestIDInBody)
+	}
+	if !*expect.RequestIDInBody {
+		return ""
+	}
+	if strings.TrimSpace(requestID) == "" {
+		return fmt.Sprintf("%s must echo %s, but the response carried none", path, requestIDHeader)
+	}
+	if value != requestID {
+		return fmt.Sprintf("%s must echo %s %q, got %q", path, requestIDHeader, requestID, value)
+	}
+	return ""
 }
 
 // assertErrorDocument checks the error envelope and the request ID echo.
@@ -669,6 +1044,16 @@ func assertDocumentFacts(t *testing.T, label string, expect Expect, res *result,
 			res.failf(t, label, "%s: want %q, got %q", path, want, values)
 		}
 	}
+	for _, path := range expect.PresentKeys {
+		if _, present := lookupPath(document, path); !present {
+			res.failf(t, label, "%s must be present", path)
+		}
+	}
+	for _, path := range slices.Sorted(maps.Keys(expect.MinValues)) {
+		if mismatch := minimumMismatch(document, path, expect.MinValues[path]); mismatch != "" {
+			res.failf(t, label, "%s", mismatch)
+		}
+	}
 	for _, path := range expect.AbsentKeys {
 		if _, present := lookupPath(document, path); present {
 			res.failf(t, label, "%s must not be present", path)
@@ -679,6 +1064,25 @@ func assertDocumentFacts(t *testing.T, label string, expect Expect, res *result,
 			res.failf(t, label, "a %q key must not appear at any depth", key)
 		}
 	}
+}
+
+// minimumMismatch reports why the value at path is not an integer at least want,
+// or "" when it is. The comparison is on the exact JSON text, so a float is
+// rejected instead of silently rounded.
+func minimumMismatch(document any, path string, want int64) string {
+	value, present := lookupPath(document, path)
+	if !present {
+		return fmt.Sprintf("%s is missing; want an integer of at least %d", path, want)
+	}
+
+	got, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return fmt.Sprintf("%s: want an integer of at least %d, got %s", path, want, value)
+	}
+	if got < want {
+		return fmt.Sprintf("%s: want at least %d, got %d", path, want, got)
+	}
+	return ""
 }
 
 // runFollow walks one next cursor. It reuses the primary case's role, token and
@@ -856,7 +1260,12 @@ func (r *result) failf(t *testing.T, label, format string, args ...any) {
 		message += fmt.Sprintf("\nstream error: %v", r.streamErr)
 	}
 	if r.stream {
-		message += fmt.Sprintf("\nstream: %d data frames, %d control frames, last type %q", r.frames, r.controls, r.lastType)
+		if r.raw {
+			message += fmt.Sprintf("\nstream: %d console bytes", r.rawBytes)
+		} else {
+			message += fmt.Sprintf("\nstream: %d frames (%d payload), %d control frames, last type %q",
+				r.frames, r.payload, r.controls, r.lastType)
+		}
 	}
 	t.Fatalf("%s: %s\nrequest: %s %s\nstatus: %d\nbody: %s",
 		label, message, r.method, r.url, r.status, truncateBody(r.body))

@@ -1,0 +1,114 @@
+# Hostile-name fixture for tools/sdkgen.
+#
+# Every schema name below is a *legal* OpenAPI component name and a plain ASCII
+# identifier, so the old "portable identifier" rule accepted all of them — and
+# the generated modules were invalid or silently wrong:
+#
+#   string, number, object, any, unknown, never, undefined, symbol, bigint,
+#   boolean   -> tsc refuses the declaration itself (TS2427 / TS2457)
+#   Any, Literal, Union, NotRequired, TypedDict, annotations
+#             -> shadow the names the generated Python module imports
+#   str, int, float, bool, list, dict
+#             -> shadow the builtins its annotations use
+#   Record    -> shadows the TypeScript lib type its map types use (TS2315)
+#
+# The generator must refuse this document and write nothing
+# (TestHostileFixtureIsRejectedByTheGenerator). Never point `make sdk-gen` here.
+openapi: 3.1.0
+info:
+  title: hostile names
+  version: 0.0.0
+components:
+  schemas:
+    string:
+      type: object
+      properties:
+        id: {type: string}
+    number:
+      type: object
+      properties:
+        id: {type: string}
+    object:
+      type: object
+      properties:
+        id: {type: string}
+    any:
+      type: object
+      properties:
+        id: {type: string}
+    unknown:
+      type: object
+      properties:
+        id: {type: string}
+    never:
+      type: object
+      properties:
+        id: {type: string}
+    undefined:
+      type: object
+      properties:
+        id: {type: string}
+    symbol:
+      type: object
+      properties:
+        id: {type: string}
+    bigint:
+      type: object
+      properties:
+        id: {type: string}
+    boolean:
+      type: object
+      properties:
+        id: {type: string}
+    Any:
+      type: object
+      properties:
+        id: {type: string}
+    Literal:
+      type: object
+      properties:
+        id: {type: string}
+    Union:
+      type: object
+      properties:
+        id: {type: string}
+    NotRequired:
+      type: object
+      properties:
+        id: {type: string}
+    TypedDict:
+      type: object
+      properties:
+        id: {type: string}
+    annotations:
+      type: object
+      properties:
+        id: {type: string}
+    Record:
+      type: object
+      properties:
+        id: {type: string}
+    str:
+      type: object
+      properties:
+        id: {type: string}
+    int:
+      type: object
+      properties:
+        id: {type: string}
+    float:
+      type: object
+      properties:
+        id: {type: string}
+    bool:
+      type: object
+      properties:
+        id: {type: string}
+    list:
+      type: object
+      properties:
+        id: {type: string}
+    dict:
+      type: object
+      properties:
+        id: {type: string}

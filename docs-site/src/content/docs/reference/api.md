@@ -20,6 +20,16 @@ The gRPC section is the *internal* protocol: it is not a supported integration
 point and its messages may change with SwarmKit. The HTTP API is the public,
 documented contract.
 
+### Private endpoints
+
+The daemons also listen on ports that are **not** part of the v1 contract and
+are not documented here: `:4243` (`/v1/ingress`, `/v1/ingress/report`), the
+SwarmKit remote API on `:4242`, the node broker on `:4245`, and each node's
+health/metrics server on `:8080`. They are cluster-internal or loopback-only and
+may change in any minor release — do not build on them. See
+[Internal (Private) Endpoints](/reference/internal-endpoints/) for the purpose,
+the authentication and the exact wording of that promise.
+
 SwarmCracker uses **SwarmKit's gRPC API** via the `github.com/moby/swarmkit/v2/api` package, extended with a custom **API versioning protocol** (`pkg/apiversion`).
 
 ```
@@ -227,6 +237,10 @@ The daemon exposes a **local HTTP health endpoint** for monitoring:
 The handler returns HTTP `200` when every check passes and HTTP `503`
 otherwise.
 
+This server is a **private** loopback endpoint, not part of the v1 contract; it
+is documented in [Internal (Private) Endpoints](/reference/internal-endpoints/)
+together with what it exposes and why the bind address is the only boundary.
+
 ### Response
 
 ```json
@@ -324,10 +338,10 @@ single documents — on two listeners:
 The read surface is phase 1 and **writes** are phase 2: services (create, patch,
 delete, rollback) and configs, secrets, networks and nodes (create, patch,
 delete). They require the resource's `:write` scope. Phase 3 adds task exec,
-log streaming, file transfer and live `?health` enrichment; the manager relays
-them to the node that runs the task through an internal mTLS broker, so the
-caller never picks a host. A manager with no broker wired answers those routes
-`501 not_implemented` with `details.capability`.
+the interactive console, log streaming, file transfer and live `?health`
+enrichment; the manager relays them to the node that runs the task through an
+internal mTLS broker, so the caller never picks a host. A manager with no broker
+wired answers those routes `501 not_implemented` with `details.capability`.
 
 `api/openapi.yaml` in the repository is the normative contract for every route,
 schema, header and error code; this section is the operator's guide to it.
@@ -361,6 +375,7 @@ phase-2 writes below.
 | GET | `/v1/tasks` | `TaskList` (`?health=true` enriches each task) |
 | GET | `/v1/tasks/{id}` | `TaskDocument` (`?health=true` enriches the task) |
 | POST | `/v1/tasks/{id}/exec` | NDJSON `ExecFrame` stream (non-interactive; requires `tasks:exec`) |
+| POST | `/v1/tasks/{id}/attach` | full-duplex raw console stream (`tasks:exec`) |
 | GET | `/v1/tasks/{id}/logs` | NDJSON `LogFrame` stream (`tail`, `since`, `follow`; requires `tasks:logs`) |
 | GET | `/v1/tasks/{id}/files` | raw file bytes (requires `tasks:files`) |
 | PUT | `/v1/tasks/{id}/files` | `204` (raw upload, `mode`; requires `tasks:files`) |
@@ -368,6 +383,7 @@ phase-2 writes below.
 | GET | `/v1/tasks/{id}/snapshots` | `SnapshotList` (experimental) |
 | POST | `/v1/tasks/{id}/snapshots/{sid}/restore` | `SnapshotDocument` (experimental) |
 | DELETE | `/v1/tasks/{id}/snapshots/{sid}` | `204` (experimental) |
+| DELETE | `/v1/tasks/{id}/restored` | `204` (experimental; stops the VM a restore started) |
 | GET | `/v1/snapshots?task={id}` | `SnapshotList` (flat address; `task` required) |
 | POST | `/v1/snapshots/{sid}/restore?task={id}` | `SnapshotDocument` (flat address) |
 | DELETE | `/v1/snapshots/{sid}?task={id}` | `204` (flat address) |
@@ -399,8 +415,8 @@ value is `400 invalid`.
 
 `GET /v1/version` reports `capabilities: ["read", "write", "events"]` on a
 manager without a node broker. A manager with a wired broker also advertises
-`exec`, `logs`, `files` and `health`, and every advertised operation has a
-route. When the operator passes `--snapshots-enable`, a manager whose snapshot
+`exec`, `logs`, `files`, `health` and `attach`, and every advertised operation has
+a route. When the operator passes `--snapshots-enable`, a manager whose snapshot
 transport is wired also advertises `snapshots` (experimental; see the
 [snapshots guide](/guides/snapshots/#http-api-experimental)). The advertisement
 and the route gate use the same condition, so `snapshots` appears exactly when
@@ -408,8 +424,21 @@ the snapshot routes stop answering `501`. A client that feature-detects the
 surface sees exactly what the server serves; the phase-2 write routes above are
 covered by `write`.
 
-Lists accept `limit` and `cursor`; services, nodes, networks, configs and secrets
-also accept `label`. Every response carries `X-SwarmCracker-Api-Version: 1` and
+Every list accepts `limit` and `cursor`; `GET /v1/services/<id>/tasks` accepts only
+those two. Services, nodes, networks, configs and secrets also accept `label` and
+filter by it. `GET /v1/tasks` accepts `label` too, but only for compatibility with
+the SDKs, which document forwarding a selector on every list — the task list is
+**not** filtered by it and the value is not parsed, so it changes neither `items`
+nor the cursor binding. Every route declares the query parameters it implements
+(the operation in `api/openapi.yaml` is the per-route list), and a name outside
+that route's set is `400 invalid` with `details.parameter` — a typo fails loudly
+instead of silently changing the request. A cursor is bound to the route and to
+the filter values that produced the page (the `label` selectors on the routes that
+filter, the `task` reference on the flat snapshot routes), so reusing it on a
+different query is `400 invalid` with `details.reason: "cursor_mismatch"`; `limit`
+may change between pages.
+
+Every response carries `X-SwarmCracker-Api-Version: 1` and
 `X-Request-Id`. A read answers `If-None-Match` with `304`. A list `ETag` is the
 hash of the response body; a single-resource `ETag` is the quoted SwarmKit
 revision (`"17"`), which is exactly the value a later `PATCH` expects in
@@ -619,13 +648,13 @@ with a `ready` frame and then emits one event per change:
 - The stream requires `events:read`. The actor and changed-path fields are
   gateway-observed/optional in this phase; they are omitted when unavailable.
 
-### Task exec, logs, files and health
+### Task exec, attach, logs, files and health
 
-These four capabilities are relayed by the manager to the node that runs the
+These five capabilities are relayed by the manager to the node that runs the
 task. They require a wired node broker (`--broker-listen`, default
 `0.0.0.0:4245` on `swarmd-firecracker`); when it is absent the routes answer
-`501 not_implemented` with `details.capability` (`exec`, `logs`, `files` or
-`health`) and `/v1/version` does not advertise them. The relay uses the
+`501 not_implemented` with `details.capability` (`exec`, `attach`, `logs`, `files`
+or `health`) and `/v1/version` does not advertise them. The relay uses the
 cluster's mutual TLS identity, never the caller's bearer token.
 
 - **Exec** — `POST /v1/tasks/{id}/exec` takes an `ExecRequest` and streams
@@ -633,7 +662,32 @@ cluster's mutual TLS identity, never the caller's bearer token.
   frame; a non-zero guest status is still a successful API call. `tty: true`
   (and therefore `stdin: true`) is `501 not_implemented` with
   `details.reason: "tty_not_supported"`; local `vm exec -it` is unaffected. The
-  task must be running (404 otherwise). Audited as `task.exec`.
+  task must be running (404 otherwise). Audited as `task.exec`. For an
+  interactive session use attach below: exec over the API does not carry a TTY
+  in v1, and a browser or a plain HTTP client cannot drive a terminal either.
+- **Attach** — `POST /v1/tasks/{id}/attach` is the interactive console (R18): one
+  HTTP/1.1 request, full duplex. The chunked request body is your stdin and the
+  chunked response body is the guest console, both flushed as bytes arrive, so a
+  prompt can reach you before you have finished typing. The response is raw
+  `application/octet-stream`, not NDJSON and not the v1 envelope. Close the
+  request body to send the guest an EOF; the session ends when the console
+  closes or you disconnect. There is no WebSocket and no second connection, and
+  the route takes no query parameter (`?tty=` is `400 invalid`). The transport is
+  HTTP/1.1 full duplex only: the server calls
+  `http.NewResponseController(w).EnableFullDuplex()` before it reads the body, so
+  the route requires an HTTP/1.1 connection and **does not work over HTTP/2**.
+  Browsers and h2-only clients (`curl --http2`, a fetch/XHR client) are not
+  supported clients for it; the `swarmcracker` CLI (`vm attach -H`) is. That is
+  the CLI mapping: `swarmcracker -H … vm attach <task>` uses this route, while
+  `swarmcracker vm attach <task>` without `-H` dials the node's console Unix
+  socket under `--socket-dir` and never contacts the manager. Ctrl-P Ctrl-Q
+  detaches in both modes: the remote session closes the request body and cancels
+  the request, which leaves the VM running. It
+  requires `tasks:exec` and the same task selectors as exec, and the task must be
+  running with its console socket present: otherwise `404 not_found` with
+  `details.reason: "console_unavailable"`; a console that exists but cannot be
+  dialed is `503 unavailable` with the same reason and `retryable: true`.
+  Audited as `task.attach`.
 - **Logs** — `GET /v1/tasks/{id}/logs` streams the Firecracker console as NDJSON
   `LogFrame` objects. `tail` defaults to 200 (max 10000), `since` is RFC3339 and
   `follow` keeps the stream open. A non-following stream always ends with `eof`.
@@ -657,7 +711,7 @@ cluster's mutual TLS identity, never the caller's bearer token.
 
 Snapshots are **disabled by default** and enabled per node with
 `--snapshots-enable` (plus the node broker they are relayed through). While they
-are off, all seven snapshot routes answer `501 not_implemented` with
+are off, every snapshot route answers `501 not_implemented` with
 `details.capability: "snapshots"`, before the task is resolved and before
 anything is audited.
 
@@ -666,16 +720,32 @@ anything is audited.
   require `?task={id}`: a snapshot lives on one node, and the flat path alone
   does not name a task to resolve that node through.
 - **Create** snapshots a running task's VM on its node and may pause it briefly.
-  The manager's default deadline is 30 s; a create that exceeds it is `504` with
-  code `timeout`. A task that is not running is `404` with
-  `details.reason: "task_not_running"`.
+  It also copies the task disk, so the manager's default deadline is **5
+  minutes** (`--snapshot-timeout`); a create that exceeds it is `504` with code
+  `timeout`. The copy is part of the snapshot: its path lives only in the node's
+  `metadata.json` (recorded as `disk_path`) and never crosses the wire, while
+  `sizeBytes` counts the memory image, the state file and the disk copy. A task
+  that is not running is `404` with `details.reason: "task_not_running"`.
 - **Restore** is refused for a task that is still running: `409 conflict` with
   `details.reason: "restore_task_running"`. The live VM owns its rootfs and a
   restored second VM on the same file would corrupt both. Restoring the snapshot
-  of an exited task is the supported case.
+  of an exited task is the supported case; restore writes the snapshot's disk copy
+  to the recorded `rootfsPath` first, replacing whatever is there (a stopped
+  restored VM leaves its disk behind, and its writes do not belong to this
+  snapshot's memory image). A snapshot whose copy is missing and whose task disk
+  is gone too is `409 conflict` with `details.reason: "snapshot_incomplete"`.
+- **A malformed snapshot id is a client error.** `{sid}` must be one safe path
+  segment shaped like `snap-…`; anything else is `400 invalid` with
+  `details.reason: "invalid_snapshot_id"`, on the task-scoped and the flat forms
+  alike.
 - **Restore can outlive SwarmKit.** It starts a Firecracker process outside
-  SwarmKit's task tracker, so the restored VM is not scheduler-managed. If it is
-  not stopped through the node, an operator must stop it manually.
+  SwarmKit's task tracker, so the restored VM is not scheduler-managed.
+  `DELETE /v1/tasks/{id}/restored` stops it on the node that started it: SIGTERM,
+  up to ten seconds of grace, SIGKILL, then the restored socket is removed. A
+  node that tracks no restored VM for the task — never restored there, already
+  stopped, or restored by an earlier daemon lifetime — answers `404 not_found`
+  with `details.reason: "no_restored_vm"`. The route takes no body or query and
+  is audited as `task.restored.stop`.
 
 See the [snapshots guide](/guides/snapshots/#http-api-experimental) for the CLI
 workflow, the file layout and the known limitations; `api/openapi.yaml` has the
@@ -770,23 +840,24 @@ curl --cacert <state-dir>/api/tls.crt \
 An audit path that cannot be opened fails API startup rather than deferring the
 error to the first write.
 
-Every node also serves the internal broker that backs exec, logs, files and
-health:
+Every node also serves the internal broker that backs exec, attach, logs, files
+and health:
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--broker-listen` | `0.0.0.0:4245` | mTLS listen address for the node broker; empty disables it |
 | `--snapshots-enable` | `false` | enable the experimental snapshot capability on this node |
 | `--snapshot-dir` | `/var/lib/firecracker/snapshots` | pkg/snapshot root (`<id>/metadata.json` is the source of truth) |
+| `--snapshot-timeout` | `5m` | deadline for one snapshot request relayed to a node; create copies the whole task disk |
 
 The manager always dials the fixed broker port `4245` and ignores any port in a
 node's advertised address — the address is reduced to its host and `4245` is
 joined back on. A manager and its nodes must therefore agree on `4245`;
 advertising `node:9999` at registration does not move the broker. A node
 without a broker still serves the read API, but the manager's relay to it
-fails: exec, logs and files answer `503 unavailable`, a single-task health read
-answers `503 unavailable`, and a health-enriched task list answers `207 partial`
-with that node in `partial`.
+fails: exec, attach, logs and files answer `503 unavailable`, a single-task
+health read answers `503 unavailable`, and a health-enriched task list answers
+`207 partial` with that node in `partial`.
 
 These flags belong to `swarmd-firecracker`. Defaults follow `--state-dir`, so
 moving the state directory moves the socket, certificate and token store with it.
@@ -916,8 +987,8 @@ answers `501 not_implemented` with `details.capability: "audit"`.
 Phase 2 has started: service writes are audited today. Config, secret, network
 and node writes will add `config.create`, `config.update`, `config.delete`,
 `secret.create`, `secret.update`, `secret.delete`, `network.create`,
-`network.delete` and `node.update`, and phase 3 adds `task.exec`, `task.files`
-and `task.snapshot`.
+`network.delete` and `node.update`, and phase 3 adds `task.exec`, `task.attach`,
+`task.files`, `task.snapshot` and `task.restored.stop`.
 
 ### Remote CLI reads
 
@@ -938,11 +1009,20 @@ remote reads above is refused the same way. It never silently falls back to the
 local cluster. Without `--host` the same commands read the local socket, so a
 cluster member needs no flags.
 
+Three mutations are remote-capable too: `vm exec` streams from the task's node,
+`vm attach` carries the interactive console over `POST /v1/tasks/{id}/attach`
+(the same relay, `tasks:exec`), and `vm snapshot stop-restored` sends the DELETE
+to the node that holds the restored VM (`-H` is the only way to reach it from
+another machine). Without `-H`, `vm attach` keeps using the node-local console
+socket under `--socket-dir`.
+
 ```bash
 swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
   --token-file reader.token service ls
 swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
   --token-file reader.token service ls -o json
+swarmcracker -H https://mgr:4244 --ca <state-dir>/api/tls.crt \
+  --token-file runner.token vm attach web-1     # Ctrl-P Ctrl-Q detaches
 ```
 
 `reader.token` holds the raw secret (surrounding whitespace is trimmed).
@@ -958,12 +1038,20 @@ output is available on every remote read listed above.
 A failed request answers with the `ErrorDocument` envelope — `schemaVersion`,
 `kind: Error` and `error {code, message, requestId, retryable, details}` — and
 the same `requestId` appears in the `X-Request-Id` response header. Codes are
-stable; messages are not. The authoritative list of wire codes is the `Error`
+stable; messages are not. `details` is typed context, and four shapes are worth
+matching on: `details.parameter` names an unknown query parameter (`400
+invalid`), `details.cursor` carries the value of a cursor this server did not
+issue (malformed or truncated, `400 invalid`, with no `reason`),
+`details.reason: "cursor_mismatch"` means a well-formed cursor came from a
+different route or filter (`400 invalid`, and the value is not echoed back), and
+`details.reason: "invalid_snapshot_id"` means the snapshot id is not one safe
+path segment (`400 invalid`). The authoritative list of wire codes is the `Error`
 schema in `api/openapi.yaml`. The CLI maps its stable codes to process exit
 statuses in `pkg/output` (`usage`/`invalid`/`unsupported_version` → `2`,
 `not_found`/`ambiguous` → `3`, `conflict` → `4`, `unauthenticated`/`forbidden` →
 `5`, `rate_limited`/`unavailable`/`timeout`/`unreachable` → `6`, `partial` →
-`7`, anything else → `1`).
+`7`, anything else → `1`). Exit `7` is the `task ls --health` partial result:
+the page printed, but at least one node could not be read.
 
 ### Rate limits
 
@@ -978,6 +1066,7 @@ different budget. An event stream counts as one request, not one per event.
 
 ## See Also
 
+- [Internal (Private) Endpoints](/reference/internal-endpoints/)
 - [SwarmKit Integration Architecture](/architecture/swarmkit/)
 - [API Versioning Package](https://github.com/restuhaqza/SwarmCracker/tree/main/pkg/apiversion)
 - [SwarmKit API Docs](https://pkg.go.dev/github.com/moby/swarmkit/v2/api)

@@ -17,6 +17,7 @@ import (
 	"github.com/moby/swarmkit/v2/api"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/apiversion"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -439,6 +440,22 @@ func (c *Client) ListTasks(ctx context.Context) ([]v1.Task, error) {
 		return c.remote.listTasks(ctx)
 	}
 	return c.listTasks(ctx, &api.ListTasksRequest{})
+}
+
+// ListTasksHealth returns every task with the live health its node publishes,
+// and whether the manager reported any page as partial (HTTP 207).
+//
+// A partial page is not an error: the document was returned, so the caller
+// prints it and maps the partial flag to exit 7 afterwards. Health is a manager
+// capability (the fan-out runs on the manager, through the node broker), so a
+// local control-socket client cannot serve it and returns a usage error instead
+// of reporting an unenriched page as complete.
+func (c *Client) ListTasksHealth(ctx context.Context) (v1.TaskList, bool, error) {
+	if c.remote == nil {
+		return v1.TaskList{}, false, output.NewError(output.CodeUsage,
+			"live task health requires the manager API: configure an endpoint with --host")
+	}
+	return c.remote.listTasksHealth(ctx)
 }
 
 // ListServiceTasks returns one service's tasks, ordered by creation time then

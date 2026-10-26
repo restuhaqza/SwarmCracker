@@ -7,6 +7,10 @@ package broker
 //	POST   /v1/tasks/{taskID}/snapshots?restore=<id>
 //	DELETE /v1/tasks/{taskID}/snapshots?id=<id>
 //
+// and the restored-VM stop operation:
+//
+//	DELETE /v1/tasks/{taskID}/restored
+//
 // A snapshot is node-local: pkg/snapshot writes <snapshotDir>/<id>/metadata.json
 // and that directory is the source of truth. The node therefore answers from its
 // own store, filtered to the task the manager resolved; there is no manager-side
@@ -22,9 +26,10 @@ package broker
 //
 // Restore is experimental. It starts a Firecracker process outside SwarmKit's
 // task lifecycle, so a restored VM may outlive the task it came from; the
-// manager's TrackRestoredProcess is the only bookkeeping pkg/snapshot keeps. A
-// task that is still running is refused (409 restore_task_running): its rootfs
-// is in use, and restoring a second VM over that file would corrupt both.
+// store's restored-VM map (process plus socket, see pkg/snapshot) is the only
+// bookkeeping. A task that is still running is refused (409 restore_task_running):
+// its rootfs is in use, and restoring a second VM over that file would corrupt
+// both.
 //
 // Every restore for one task reuses <socketDir>/<taskID>-restored.sock, and
 // pkg/snapshot unlinks that path before it starts the new process. Three guards
@@ -50,8 +55,16 @@ package broker
 // Firecracker process behind. That residual risk is documented in the public
 // OpenAPI description as well.
 //
+// The stop path owns nothing on the filesystem here: StopRestored signals the
+// tracked process, drops its entry and unlinks the socket it recorded, all under
+// a per-task lock shared with restore. The handler only relays the outcome, so it
+// can never unlink a socket a concurrent restore just created.
+//
 // A nil store keeps the operation registered but answers a typed 501: the public
 // layer already gates snapshots on the capability, so this is defence in depth.
+// A typed-nil store counts as nil. The method is checked first, so a method the
+// operation does not implement is 405 with Allow even while snapshots are
+// disabled; only GET, POST and DELETE can answer 501.
 
 import (
 	"bytes"
@@ -64,6 +77,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -83,10 +97,11 @@ const (
 	// short; the cap only stops a hostile caller from exhausting memory.
 	snapshotBodyLimit = 64 << 10
 
-	// defaultSnapshotTimeout bounds one manager-side snapshot request. Create and
-	// restore copy a whole VM memory image, so this is well above a health probe;
-	// ManagerConfig.SnapshotTimeout overrides it.
-	defaultSnapshotTimeout = 30 * time.Second
+	// DefaultSnapshotTimeout bounds one manager-side snapshot request. Create and
+	// restore copy a whole VM memory image, and create also copies the task disk
+	// (a snapshot is a self-contained restore point), so the default is minutes
+	// rather than seconds. ManagerConfig.SnapshotTimeout overrides it.
+	DefaultSnapshotTimeout = 5 * time.Minute
 
 	// maxSnapshotScopeBytes bounds one service/node query value. Real IDs are far
 	// shorter; the cap only stops a caller from pushing a path-sized value through.
@@ -107,6 +122,9 @@ type SnapshotStore interface {
 	RestoreFromSnapshot(ctx context.Context, info *snapshot.SnapshotInfo, socketPath string) error
 	DeleteSnapshot(ctx context.Context, snapshotID string) error
 	CleanupOldSnapshots(ctx context.Context, maxAge time.Duration) (int, int64, error)
+	// StopRestored stops the restored VM the store tracks for taskID. It answers
+	// snapshot.ErrNoRestoredVM when this node tracks none.
+	StopRestored(taskID string) error
 }
 
 // SnapshotHandlerConfig configures the snapshots operation.
@@ -130,6 +148,9 @@ type SnapshotHandlerConfig struct {
 	RootfsDir string
 }
 
+// restoredOperation is the broker operation name for stopping a restored VM.
+const restoredOperation = "restored"
+
 // snapshotHandler holds the per-task restore lock. The lock lives in the handler
 // instance, so two requests that reach the same daemon share it.
 type snapshotHandler struct {
@@ -140,22 +161,116 @@ type snapshotHandler struct {
 }
 
 // NewSnapshotHandler builds the snapshots operation. A nil store keeps the route
-// and answers 501 not_implemented with details.capability "snapshots".
+// and answers 501 not_implemented with details.capability "snapshots". A typed
+// nil (for example a (*snapshot.Manager)(nil) stored in the interface) is the
+// same as nil: the store implements nothing, and calling it would panic.
 func NewSnapshotHandler(cfg SnapshotHandlerConfig) Handler {
+	if snapshotStoreDisabled(cfg.Store) {
+		cfg.Store = nil
+	}
 	h := &snapshotHandler{cfg: cfg, restoring: make(map[string]struct{})}
 	return h.serve
 }
 
-// serve dispatches one snapshot request by method and query.
-func (h *snapshotHandler) serve(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request) {
-	if h.cfg.Store == nil {
+// restoredHandler serves DELETE /v1/tasks/{taskID}/restored: it stops the
+// Firecracker process a previous restore started for the task and removes the
+// socket that process owned.
+type restoredHandler struct {
+	cfg SnapshotHandlerConfig
+}
+
+// NewRestoredHandler builds the restored-VM stop operation. It takes the same
+// configuration as the snapshots operation and must share its store: only the
+// manager that restored the VM holds the process handle, so a second store would
+// answer no_restored_vm for its own restores. A nil (or typed-nil) store keeps
+// the route registered and answers the same typed 501 as the snapshots
+// operation.
+func NewRestoredHandler(cfg SnapshotHandlerConfig) Handler {
+	if snapshotStoreDisabled(cfg.Store) {
+		cfg.Store = nil
+	}
+	h := &restoredHandler{cfg: cfg}
+	return h.serve
+}
+
+// serve dispatches the one method the operation implements. The method check
+// runs before the store gate, exactly like the snapshots operation: a wrong
+// method is 405 with Allow even while snapshots are disabled, and only DELETE
+// can answer 501.
+func (h *restoredHandler) serve(_ context.Context, task Task, w http.ResponseWriter, r *http.Request) {
+	if !operationSpecs[restoredOperation].allows(r.Method) {
+		w.Header().Set("Allow", operationSpecs[restoredOperation].allow())
+		writeTypedError(w, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
+			"method %s is not allowed on a restored VM", r.Method).
+			WithDetails(map[string]any{"reason": "method_not_allowed"}))
+		return
+	}
+	if snapshotStoreDisabled(h.cfg.Store) {
 		writeSnapshotDisabled(w)
 		return
 	}
+	for key := range r.URL.Query() {
+		writeTypedError(w, http.StatusBadRequest, invalidSnapshotParameter(key,
+			"is not accepted on a stop-restored"))
+		return
+	}
+
+	if err := h.cfg.Store.StopRestored(task.ID); err != nil {
+		if errors.Is(err, snapshot.ErrNoRestoredVM) {
+			writeRestoredNotFound(w, task.ID)
+			return
+		}
+		writeSnapshotStoreError(w, "stop-restored", err)
+		return
+	}
+
+	// No socket cleanup here: the store owns the socket and unlinks it inside
+	// StopRestored, under the per-task lock that serializes restore and stop.
+	// Doing it here too would race a concurrent restore that had just recreated
+	// the path.
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeRestoredNotFound is the 404 for a task whose restored VM this node does
+// not track: never restored here, already stopped, or restored by an earlier
+// daemon lifetime.
+func writeRestoredNotFound(w http.ResponseWriter, taskID string) {
+	writeTypedError(w, http.StatusNotFound, output.NewErrorf(output.CodeNotFound,
+		"task %q has no restored VM on this node", taskID).
+		WithDetails(map[string]any{"reason": "no_restored_vm"}))
+}
+
+// snapshotStoreDisabled reports whether store implements nothing. A typed-nil
+// interface value is not == nil, so the interface comparison alone would let a
+// nil *snapshot.Manager reach a method call and panic; the kind check covers it.
+func snapshotStoreDisabled(store SnapshotStore) bool {
+	if store == nil {
+		return true
+	}
+	value := reflect.ValueOf(store)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+// serve dispatches one snapshot request by method and query. The method check
+// runs before the store gate: a method the operation does not implement is 405
+// with Allow even when snapshots are disabled, and 501 is reserved for the
+// methods the operation really serves.
+func (h *snapshotHandler) serve(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request) {
 	if !snapshotMethodAllowed(r.Method) {
-		w.Header().Set("Allow", http.MethodGet+", "+http.MethodPost+", "+http.MethodDelete)
-		writeError(w, http.StatusMethodNotAllowed, output.CodeInvalid,
-			"method %s is not allowed on a snapshot", r.Method)
+		w.Header().Set("Allow", operationSpecs[snapshotOperation].allow())
+		writeTypedError(w, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
+			"method %s is not allowed on a snapshot", r.Method).
+			WithDetails(map[string]any{"reason": "method_not_allowed"}))
+		return
+	}
+	if snapshotStoreDisabled(h.cfg.Store) {
+		writeSnapshotDisabled(w)
 		return
 	}
 	if err := validateSnapshotQuery(r); err != nil {
@@ -177,9 +292,11 @@ func (h *snapshotHandler) serve(ctx context.Context, task Task, w http.ResponseW
 	}
 }
 
-// snapshotMethodAllowed reports whether the handler serves method.
+// snapshotMethodAllowed reports whether the handler serves method. The method
+// set lives in operationSpecs so the server's 405 check and the handler cannot
+// disagree about it.
 func snapshotMethodAllowed(method string) bool {
-	return method == http.MethodGet || method == http.MethodPost || method == http.MethodDelete
+	return operationSpecs[snapshotOperation].allows(method)
 }
 
 // validateSnapshotQuery enforces the small query grammar: `restore` belongs to a
@@ -390,7 +507,7 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 	}
 	defer h.releaseRestore(task.ID)
 
-	socketPath, configured := h.restoredSocketPath(task)
+	socketPath, configured := restoredSocketPath(h.cfg, task)
 	if !configured {
 		writeTypedError(w, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
 			"this node has no snapshot socket directory to restore task %q", task.ID).
@@ -443,8 +560,8 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 // independent of the task's own socket, so a finished task can still restore. The
 // boolean is false when neither is known: a CWD-relative socket would make the
 // restored VM depend on the daemon's working directory.
-func (h *snapshotHandler) restoredSocketPath(task Task) (string, bool) {
-	dir := h.cfg.SocketDir
+func restoredSocketPath(cfg SnapshotHandlerConfig, task Task) (string, bool) {
+	dir := cfg.SocketDir
 	if dir == "" {
 		if task.SocketPath == "" {
 			return "", false
@@ -662,6 +779,12 @@ func mapSnapshotStoreError(action string, err error) (int, *output.Error) {
 	}
 
 	switch {
+	case errors.Is(err, snapshot.ErrInvalidSnapshotID):
+		// A permanently malformed ID is a client mistake, not a transient node
+		// failure: retrying the same request can never succeed.
+		return http.StatusBadRequest, output.NewError(output.CodeInvalid,
+			"the snapshot ID is not valid").
+			WithDetails(map[string]any{"reason": "invalid_snapshot_id"})
 	case errors.Is(err, snapshot.ErrNotFound):
 		return http.StatusNotFound, output.NewError(output.CodeNotFound,
 			"the snapshot is not available on this node").

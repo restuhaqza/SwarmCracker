@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -103,8 +105,9 @@ type Broker interface {
 type Config struct {
 	Client Client
 	Tokens *TokenStore
-	// Broker relays task-scoped operations (exec today) to the node that runs
-	// the task. A nil broker leaves those routes answering 501.
+	// Broker relays task-scoped operations (exec, logs, files, health, attach)
+	// to the node that runs the task. A nil broker leaves those routes answering
+	// 501.
 	Broker Broker
 	// Snapshots is the manager-side transport for the experimental snapshot
 	// surface. It is deliberately a second, optional interface so the exec,
@@ -197,7 +200,7 @@ func New(cfg Config) (*Server, error) {
 // brokerCapabilities are the operations only a configured Broker can serve.
 // They are the single list New unions into the advertisement, so the version
 // document cannot promise less than the routes reach.
-var brokerCapabilities = []string{"exec", "logs", "files", "health"}
+var brokerCapabilities = []string{"exec", "logs", "files", "health", "attach"}
 
 // withBrokerCapabilities returns capabilities plus every operation the wired
 // transports serve, preserving the caller's order and appending the missing ones
@@ -260,88 +263,114 @@ func (s *Server) routes() {
 	s.handleRoutes("/v1/version", read(ScopeClusterRead, s.getVersion))
 
 	s.handleRoutes("/v1/services",
-		read(ScopeServicesRead, s.listServices),
-		write(http.MethodPost, ScopeServicesWrite, s.createService),
+		accepts(read(ScopeServicesRead, s.listServices), "limit", "cursor", "label"),
+		accepts(write(http.MethodPost, ScopeServicesWrite, s.createService), "dryRun", "wait", "timeoutMs"),
 	)
 	s.handleRoutes("/v1/services/{id}",
 		read(ScopeServicesRead, s.getService),
-		write(http.MethodPatch, ScopeServicesWrite, s.updateService),
-		write(http.MethodDelete, ScopeServicesWrite, s.deleteService),
+		accepts(write(http.MethodPatch, ScopeServicesWrite, s.updateService), "dryRun", "wait", "timeoutMs"),
+		// wait and timeoutMs are recognised so the handler can answer its
+		// specific "only supported on services" 400 rather than an unknown
+		// parameter.
+		accepts(write(http.MethodDelete, ScopeServicesWrite, s.deleteService),
+			"dryRun", "wait", "timeoutMs", "ignoreMissing"),
 	)
-	s.handleRoutes("/v1/services/{id}/tasks", read(ScopeTasksRead, s.listServiceTasks))
+	s.handleRoutes("/v1/services/{id}/tasks",
+		accepts(read(ScopeTasksRead, s.listServiceTasks), "limit", "cursor"))
 	s.handleRoutes("/v1/services/{id}/rollback",
-		write(http.MethodPost, ScopeServicesWrite, s.rollbackService))
+		accepts(write(http.MethodPost, ScopeServicesWrite, s.rollbackService), "dryRun", "wait", "timeoutMs"))
 
-	s.handleRoutes("/v1/tasks", read(ScopeTasksRead, s.listTasks))
-	s.handleRoutes("/v1/tasks/{id}", read(ScopeTasksRead, s.getTask))
+	// label is declared on the task list because both v1 SDKs document
+	// forwarding it; the manager does not filter tasks by label (the SDK
+	// READMEs record that divergence), so the value is accepted and ignored,
+	// exactly as before.
+	s.handleRoutes("/v1/tasks",
+		accepts(read(ScopeTasksRead, s.listTasks), "limit", "cursor", "health", "label"))
+	s.handleRoutes("/v1/tasks/{id}", accepts(read(ScopeTasksRead, s.getTask), "health"))
 	// Exec is a stream, not a JSON document: it must not pass through the
 	// Idempotency-Key middleware, which buffers a response to replay it.
 	s.handleRoutes("/v1/tasks/{id}/exec",
 		streamPost(ScopeTasksExec, s.execTask))
+	// Attach is one full-duplex stream in raw bytes: the request body is the
+	// caller's stdin and the response body the guest console. Like exec it
+	// bypasses the Idempotency-Key middleware, and it accepts no query parameter
+	// (a `?tty=` typo is a 400, because the transport already carries a TTY).
+	s.handleRoutes("/v1/tasks/{id}/attach",
+		streamPost(ScopeTasksExec, s.attachTask))
 	// Logs are an NDJSON stream and files are raw bytes. Neither is a JSON
 	// document, and a PUT must not be buffered by the Idempotency-Key
 	// middleware, so only POST ever takes that path.
-	s.handleRoutes("/v1/tasks/{id}/logs", read(ScopeTasksLogs, s.taskLogs))
+	s.handleRoutes("/v1/tasks/{id}/logs",
+		accepts(read(ScopeTasksLogs, s.taskLogs), "tail", "since", "follow"))
 	s.handleRoutes("/v1/tasks/{id}/files",
-		read(ScopeTasksFiles, s.getTaskFile),
-		write(http.MethodPut, ScopeTasksFiles, s.putTaskFile),
+		accepts(read(ScopeTasksFiles, s.getTaskFile), "path"),
+		accepts(write(http.MethodPut, ScopeTasksFiles, s.putTaskFile), "path", "mode"),
 	)
 	// Snapshots are experimental and capability-gated. The task-scoped forms are
 	// the primary path; the flat /v1/snapshots forms require ?task= because a
 	// snapshot lives on one node.
 	s.handleRoutes("/v1/tasks/{id}/snapshots",
-		read(ScopeTasksSnapshots, s.listTaskSnapshots),
+		accepts(read(ScopeTasksSnapshots, s.listTaskSnapshots), "limit", "cursor"),
 		write(http.MethodPost, ScopeTasksSnapshots, s.createTaskSnapshot),
 	)
 	s.handleRoutes("/v1/tasks/{id}/snapshots/{sid}/restore",
 		write(http.MethodPost, ScopeTasksSnapshots, s.restoreTaskSnapshot))
 	s.handleRoutes("/v1/tasks/{id}/snapshots/{sid}",
 		write(http.MethodDelete, ScopeTasksSnapshots, s.deleteTaskSnapshot))
-	s.handleRoutes("/v1/snapshots", read(ScopeTasksSnapshots, s.listSnapshots))
+	// A restored VM starts outside SwarmKit's task lifecycle, so stopping it is
+	// its own route rather than a task stop.
+	s.handleRoutes("/v1/tasks/{id}/restored",
+		write(http.MethodDelete, ScopeTasksSnapshots, s.stopTaskRestored))
+	s.handleRoutes("/v1/snapshots",
+		accepts(read(ScopeTasksSnapshots, s.listSnapshots), "task", "limit", "cursor"))
 	s.handleRoutes("/v1/snapshots/{id}/restore",
-		write(http.MethodPost, ScopeTasksSnapshots, s.restoreSnapshot))
+		accepts(write(http.MethodPost, ScopeTasksSnapshots, s.restoreSnapshot), "task"))
 	s.handleRoutes("/v1/snapshots/{id}",
-		write(http.MethodDelete, ScopeTasksSnapshots, s.deleteSnapshot))
+		accepts(write(http.MethodDelete, ScopeTasksSnapshots, s.deleteSnapshot), "task"))
 
 	s.handleRoutes("/v1/nodes",
-		read(ScopeNodesRead, s.listNodes),
+		accepts(read(ScopeNodesRead, s.listNodes), "limit", "cursor", "label"),
 	)
 	s.handleRoutes("/v1/nodes/{id}",
 		read(ScopeNodesRead, s.getNode),
-		write(http.MethodPatch, ScopeNodesWrite, s.updateNode),
+		accepts(write(http.MethodPatch, ScopeNodesWrite, s.updateNode), "dryRun", "wait", "timeoutMs"),
 	)
 
 	s.handleRoutes("/v1/networks",
-		read(ScopeNetworksRead, s.listNetworks),
-		write(http.MethodPost, ScopeNetworksWrite, s.createNetwork),
+		accepts(read(ScopeNetworksRead, s.listNetworks), "limit", "cursor", "label"),
+		accepts(write(http.MethodPost, ScopeNetworksWrite, s.createNetwork), "dryRun", "wait", "timeoutMs"),
 	)
 	s.handleRoutes("/v1/networks/{id}",
 		read(ScopeNetworksRead, s.getNetwork),
-		write(http.MethodDelete, ScopeNetworksWrite, s.deleteNetwork),
+		accepts(write(http.MethodDelete, ScopeNetworksWrite, s.deleteNetwork),
+			"dryRun", "wait", "timeoutMs", "ignoreMissing"),
 	)
 
 	s.handleRoutes("/v1/configs",
-		read(ScopeConfigsRead, s.listConfigs),
-		write(http.MethodPost, ScopeConfigsWrite, s.createConfig),
+		accepts(read(ScopeConfigsRead, s.listConfigs), "limit", "cursor", "label"),
+		accepts(write(http.MethodPost, ScopeConfigsWrite, s.createConfig), "dryRun", "wait", "timeoutMs"),
 	)
 	s.handleRoutes("/v1/configs/{id}",
 		read(ScopeConfigsRead, s.getConfig),
-		write(http.MethodPatch, ScopeConfigsWrite, s.updateConfig),
-		write(http.MethodDelete, ScopeConfigsWrite, s.deleteConfig),
+		accepts(write(http.MethodPatch, ScopeConfigsWrite, s.updateConfig), "dryRun", "wait", "timeoutMs"),
+		accepts(write(http.MethodDelete, ScopeConfigsWrite, s.deleteConfig),
+			"dryRun", "wait", "timeoutMs", "ignoreMissing"),
 	)
 
 	s.handleRoutes("/v1/secrets",
-		read(ScopeSecretsRead, s.listSecrets),
-		write(http.MethodPost, ScopeSecretsWrite, s.createSecret),
+		accepts(read(ScopeSecretsRead, s.listSecrets), "limit", "cursor", "label"),
+		accepts(write(http.MethodPost, ScopeSecretsWrite, s.createSecret), "dryRun", "wait", "timeoutMs"),
 	)
 	s.handleRoutes("/v1/secrets/{id}",
 		read(ScopeSecretsRead, s.getSecret),
-		write(http.MethodPatch, ScopeSecretsWrite, s.updateSecret),
-		write(http.MethodDelete, ScopeSecretsWrite, s.deleteSecret),
+		accepts(write(http.MethodPatch, ScopeSecretsWrite, s.updateSecret), "dryRun", "wait", "timeoutMs"),
+		accepts(write(http.MethodDelete, ScopeSecretsWrite, s.deleteSecret),
+			"dryRun", "wait", "timeoutMs", "ignoreMissing"),
 	)
 
-	s.handleRoutes("/v1/audit", read(ScopeAuditRead, s.listAudit))
-	s.handleRoutes("/v1/events", read(ScopeEventsRead, s.watchEvents))
+	s.handleRoutes("/v1/audit", accepts(read(ScopeAuditRead, s.listAudit), "limit", "cursor"))
+	s.handleRoutes("/v1/events",
+		accepts(read(ScopeEventsRead, s.watchEvents), "types", "since", "include", "label"))
 
 	// Every path is owned by this package: an unknown one is a typed 404, never
 	// ServeMux's plain-text "404 page not found".
@@ -356,6 +385,10 @@ type route struct {
 	// streaming marks a route whose response is a stream. It opts out of the
 	// Idempotency-Key middleware, which buffers a whole response to replay it.
 	streaming bool
+	// query names the query parameters this method accepts. Every other name is
+	// a 400 invalid: a parameter a route does not read must never be silently
+	// ignored, because that turns a typo into a different request.
+	query []string
 }
 
 // read registers a GET route.
@@ -376,6 +409,13 @@ func streamPost(scope Scope, h http.HandlerFunc) route {
 	return route{method: http.MethodPost, scope: scope, handle: h, streaming: true}
 }
 
+// accepts declares the query parameter names a route implements. A route with a
+// nil list accepts no query parameter at all.
+func accepts(rt route, names ...string) route {
+	rt.query = names
+	return rt
+}
+
 // handleRoutes registers every method of one path plus the typed method
 // rejection for the rest.
 //
@@ -393,6 +433,13 @@ func (s *Server) handleRoutes(pattern string, routes ...route) {
 			// unauthorized request never reserves a key.
 			handler = s.idempotent(handler)
 		}
+		// The query check wraps the finished handler, so it runs before the
+		// Idempotency-Key middleware: a request the route cannot interpret
+		// must neither create nor spend a key, otherwise the 400 for a typo
+		// would be stored and replayed for a corrected retry with the same
+		// key. Authentication (in wrap) and requireScope still run first, so
+		// an unauthorized caller never learns a route's parameter set.
+		handler = s.checkQueryNames(rt.query, handler)
 		s.mux.HandleFunc(rt.method+" "+pattern, s.requireScope(rt.scope, handler))
 		methods = append(methods, rt.method)
 	}
@@ -400,6 +447,43 @@ func (s *Server) handleRoutes(pattern string, routes ...route) {
 	allow := strings.Join(methods, ", ")
 	s.mux.HandleFunc(http.MethodHead+" "+pattern, s.methodNotAllowed(allow))
 	s.mux.HandleFunc(pattern, s.methodNotAllowed(allow))
+}
+
+// checkQueryNames rejects a query parameter the route does not declare. The
+// answer is the stable invalid code with details.parameter naming the offending
+// name, so an SDK can tell a typo from a value error. When several names are
+// unknown the lexicographically first is reported, so the answer is
+// deterministic regardless of map iteration order.
+func (s *Server) checkQueryNames(declared []string, h http.HandlerFunc) http.HandlerFunc {
+	allowed := make(map[string]struct{}, len(declared))
+	for _, name := range declared {
+		allowed[name] = struct{}{}
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if name, ok := firstUnknownQueryName(r.URL.Query(), allowed); ok {
+			s.writeError(w, r, output.NewErrorf(output.CodeInvalid,
+				"unknown query parameter %q", name).
+				WithDetails(map[string]any{"parameter": name}))
+			return
+		}
+		h(w, r)
+	}
+}
+
+// firstUnknownQueryName returns the first undeclared parameter in sorted order.
+func firstUnknownQueryName(query url.Values, allowed map[string]struct{}) (string, bool) {
+	var unknown []string
+	for name := range query {
+		if _, ok := allowed[name]; !ok {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) == 0 {
+		return "", false
+	}
+	sort.Strings(unknown)
+	return unknown[0], true
 }
 
 // requireScope is the per-route authorization check. It reads the Identity the
@@ -704,6 +788,59 @@ func encodeJSON(value any) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+// readOptionalJSONBody reads one optional, size-capped, strict JSON object body.
+//
+// It is the one decoder for a route whose body may be absent: the snapshot
+// create body is the only one today, and duplicating the read, the empty-body
+// rule, the media type and the single-value check would let the copies drift.
+// An absent or whitespace-only body is valid and needs no content type; a
+// present body must declare contentType and must decode as exactly one JSON
+// object with no unknown fields.
+//
+// The returned status is the HTTP status for a failure the error taxonomy cannot
+// infer (400/413/415); present reports whether the caller sent a body.
+func readOptionalJSONBody(
+	w http.ResponseWriter, r *http.Request, limit int64, contentType string, out any,
+) (present bool, status int, err error) {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	body, readErr := io.ReadAll(r.Body)
+	if readErr != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(readErr, &tooLarge) {
+			return false, http.StatusRequestEntityTooLarge,
+				output.NewErrorf(output.CodeInvalid, "the request body exceeds %d bytes", limit).
+					WithDetails(map[string]any{
+						"reason": "payload_too_large",
+						"limit":  limit,
+					})
+		}
+		return false, http.StatusBadRequest,
+			output.NewErrorf(output.CodeInvalid, "read request body: %v", readErr)
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return false, 0, nil
+	}
+
+	if status, err := requireContentType(r, contentType); err != nil {
+		return true, status, err
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return true, http.StatusBadRequest,
+			output.NewError(output.CodeInvalid,
+				"invalid JSON body: the snapshot request has unknown or malformed fields").
+				WithDetails(map[string]any{"reason": "invalid_body"})
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return true, http.StatusBadRequest, output.NewError(output.CodeInvalid,
+			"the request body must contain exactly one JSON object")
+	}
+	return true, 0, nil
 }
 
 // typedError normalizes any failure to the stable taxonomy. A *output.Error is

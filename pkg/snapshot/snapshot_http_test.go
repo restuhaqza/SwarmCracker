@@ -36,6 +36,12 @@ func TestCreateSnapshot_UnixSocketSuccess(t *testing.T) {
 
 	socketPath := testSocketPath(t, "fc.sock")
 
+	// A real disk is required now: a snapshot owns a copy of it, so a create for
+	// a VM whose disk is gone is a failure rather than a snapshot that cannot be
+	// restored later.
+	rootfsPath := filepath.Join(t.TempDir(), "task-1.ext4")
+	require.NoError(t, os.WriteFile(rootfsPath, []byte("disk image"), 0o640))
+
 	pauseCalled := false
 	createCalled := false
 
@@ -88,7 +94,7 @@ func TestCreateSnapshot_UnixSocketSuccess(t *testing.T) {
 			NodeID:     "worker-1",
 			VCPUCount:  2,
 			MemoryMB:   1024,
-			RootfsPath: "/path/to/rootfs.ext4",
+			RootfsPath: rootfsPath,
 		},
 	)
 
@@ -99,18 +105,21 @@ func TestCreateSnapshot_UnixSocketSuccess(t *testing.T) {
 	assert.True(t, createCalled)
 	assert.FileExists(t, info.StatePath)
 	assert.FileExists(t, info.MemoryPath)
+	assert.Equal(t, filepath.Join(tmpDir, info.ID, diskFileName), info.DiskPath)
+	assert.FileExists(t, info.DiskPath)
 }
 
-// TestCallSnapshotCreateResumesWhenTheParentContextIsCanceled pins that a
-// canceled create cannot leave the VM paused forever. The manager's 30 s
-// deadline fires while Firecracker is writing the snapshot, so the request
-// context is already done when the deferred resume runs; the resume must use a
-// fresh context anyway. The error the caller sees is still the cancellation.
-func TestCallSnapshotCreateResumesWhenTheParentContextIsCanceled(t *testing.T) {
+// TestCreateSnapshotResumesWhenTheParentContextIsCanceled pins that a canceled
+// create cannot leave the VM paused forever. The manager's 30 s deadline fires
+// while Firecracker is writing the snapshot, so the request context is already
+// done when the deferred resume runs; the resume must use a fresh context
+// anyway. The error the caller sees is still the cancellation.
+func TestCreateSnapshotResumesWhenTheParentContextIsCanceled(t *testing.T) {
 	tmpDir := t.TempDir()
 	socketPath := testSocketPath(t, "fc.sock")
-	statePath := filepath.Join(tmpDir, "vm.state")
-	memoryPath := filepath.Join(tmpDir, "vm.mem")
+
+	mgr, err := NewManager(SnapshotConfig{SnapshotDir: filepath.Join(tmpDir, "snapshots")})
+	require.NoError(t, err)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -160,7 +169,7 @@ func TestCallSnapshotCreateResumesWhenTheParentContextIsCanceled(t *testing.T) {
 		return err == nil
 	}, 2*time.Second, 100*time.Millisecond)
 
-	err = callSnapshotCreate(ctx, socketPath, statePath, memoryPath)
+	_, err = mgr.CreateSnapshot(ctx, "task-1", socketPath, CreateOptions{})
 	require.Error(t, err, "a canceled create must not report success")
 	require.ErrorIs(t, err, context.Canceled, "the caller sees the cancellation, not a silent success")
 
@@ -175,14 +184,13 @@ func TestCallSnapshotCreateResumesWhenTheParentContextIsCanceled(t *testing.T) {
 	assert.Equal(t, []string{"Paused", "Resumed"}, states)
 }
 
-// TestCallSnapshotCreate_Success tests callSnapshotCreate with real Unix socket
-func TestCallSnapshotCreate_Success(t *testing.T) {
+// TestPutSnapshotCreate_Success tests putSnapshotCreate with real Unix socket
+func TestPutSnapshotCreate_Success(t *testing.T) {
 	tmpDir := t.TempDir()
 	socketPath := testSocketPath(t, "fc.sock")
 	statePath := filepath.Join(tmpDir, "vm.state")
 	memoryPath := filepath.Join(tmpDir, "vm.mem")
 
-	pauseCalled := false
 	createCalled := false
 
 	listener, err := net.Listen("unix", socketPath)
@@ -191,7 +199,6 @@ func TestCallSnapshotCreate_Success(t *testing.T) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/vm", func(w http.ResponseWriter, r *http.Request) {
-		pauseCalled = true
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/snapshot/create", func(w http.ResponseWriter, r *http.Request) {
@@ -214,25 +221,22 @@ func TestCallSnapshotCreate_Success(t *testing.T) {
 		return err == nil
 	}, 2*time.Second, 100*time.Millisecond)
 
-	err = callSnapshotCreate(context.Background(), socketPath, statePath, memoryPath)
+	err = putSnapshotCreate(context.Background(), socketPath, statePath, memoryPath)
 	require.NoError(t, err)
-	assert.True(t, pauseCalled)
 	assert.True(t, createCalled)
 }
 
-// TestCallSnapshotCreate_PauseError tests callSnapshotCreate pause error
-func TestCallSnapshotCreate_PauseError(t *testing.T) {
-	tmpDir := t.TempDir()
+// TestPauseForSnapshot_PauseError tests that a VM that refuses to pause fails the
+// create with a pause error, so no snapshot work starts.
+func TestPauseForSnapshot_PauseError(t *testing.T) {
 	socketPath := testSocketPath(t, "fc.sock")
-	statePath := filepath.Join(tmpDir, "vm.state")
-	memoryPath := filepath.Join(tmpDir, "vm.mem")
 
 	listener, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
 	defer listener.Close()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/vm", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/vm", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte("pause failed"))
 	})
@@ -248,13 +252,13 @@ func TestCallSnapshotCreate_PauseError(t *testing.T) {
 		return err == nil
 	}, 2*time.Second, 100*time.Millisecond)
 
-	err = callSnapshotCreate(context.Background(), socketPath, statePath, memoryPath)
+	_, err = pauseForSnapshot(context.Background(), socketPath)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to pause VM")
 }
 
-// TestCallSnapshotCreate_SnapshotError tests callSnapshotCreate snapshot error
-func TestCallSnapshotCreate_SnapshotError(t *testing.T) {
+// TestPutSnapshotCreate_SnapshotError tests putSnapshotCreate snapshot error
+func TestPutSnapshotCreate_SnapshotError(t *testing.T) {
 	tmpDir := t.TempDir()
 	socketPath := testSocketPath(t, "fc.sock")
 	statePath := filepath.Join(tmpDir, "vm.state")
@@ -284,7 +288,7 @@ func TestCallSnapshotCreate_SnapshotError(t *testing.T) {
 		return err == nil
 	}, 2*time.Second, 100*time.Millisecond)
 
-	err = callSnapshotCreate(context.Background(), socketPath, statePath, memoryPath)
+	err = putSnapshotCreate(context.Background(), socketPath, statePath, memoryPath)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected status")
 }

@@ -455,6 +455,14 @@ Press **Ctrl-P Ctrl-Q** to detach; the VM keeps running. The console socket is
 owned by the daemon (`root`, mode `0600`), so run the command as root or with
 `sudo`.
 
+From another machine, add the global `-H`, `--ca` and `--token-file` flags:
+`swarmcracker -H https://manager:4244 --ca ca.crt --token-file runner.token vm
+attach <task>` streams the same console through the manager's API
+(`POST /v1/tasks/{id}/attach`, scope `tasks:exec`), so no node access or root is
+needed. Ctrl-P Ctrl-Q still detaches and leaves the VM running. That path needs
+the node broker and an HTTP/1.1 connection; see the [API
+reference](/reference/api/#task-exec-attach-logs-files-and-health).
+
 > **Note:** console attach is available for VMs managed by the daemon (service
 > tasks). VMs started in the foreground by `swarmcracker vm create` are not
 > attachable, because the CLI process that owns their console exits with the VM.

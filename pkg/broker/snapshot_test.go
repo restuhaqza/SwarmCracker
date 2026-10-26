@@ -51,6 +51,9 @@ type fakeSnapshotStore struct {
 	cleanupCalls   int
 	gotCleanupAge  time.Duration
 	cleanupRemoved int
+
+	stopRestoredErr error
+	stoppedRestored []string
 }
 
 func (f *fakeSnapshotStore) CreateSnapshot(
@@ -96,6 +99,11 @@ func (f *fakeSnapshotStore) CleanupOldSnapshots(_ context.Context, maxAge time.D
 		return 0, 0, f.cleanupErr
 	}
 	return f.cleanupRemoved, 0, nil
+}
+
+func (f *fakeSnapshotStore) StopRestored(taskID string) error {
+	f.stoppedRestored = append(f.stoppedRestored, taskID)
+	return f.stopRestoredErr
 }
 
 // snapshotTask is the running task every node-handler test serves.
@@ -655,6 +663,27 @@ func TestSnapshotHandlerDeleteMissingIs404(t *testing.T) {
 	require.Empty(t, store.deleted, "a snapshot the node does not know must not be deleted")
 }
 
+// TestSnapshotHandlerInvalidSnapshotIDIs400 pins the client-error mapping on the
+// delete path: an ID the store refuses as permanently malformed is a 400, not the
+// retryable 503 that an unclassified node failure gets.
+func TestSnapshotHandlerInvalidSnapshotIDIs400(t *testing.T) {
+	const id = "snap-0123456789abcdef"
+	store := &fakeSnapshotStore{
+		list:      []*snapshot.SnapshotInfo{testSnapshotInfo(id, "task-1", time.Now().UTC())},
+		deleteErr: fmt.Errorf("%w: %q", snapshot.ErrInvalidSnapshotID, "../victim"),
+	}
+
+	rec := serveSnapshot(t, store, snapshotTask(), http.MethodDelete,
+		"/v1/tasks/task-1/snapshots?id="+id, "")
+
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	doc := decodeSnapshotError(t, rec)
+	require.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	require.Equal(t, "invalid_snapshot_id", doc.Error.Details["reason"])
+	require.False(t, doc.Error.Retryable, "a permanently invalid ID is not retryable")
+	requireNoSnapshotLeak(t, rec.Body.String())
+}
+
 // TestSnapshotHandlerDisabledStoreIs501 pins the defence-in-depth gate: a nil
 // store keeps the route but implements nothing.
 func TestSnapshotHandlerDisabledStoreIs501(t *testing.T) {
@@ -669,6 +698,41 @@ func TestSnapshotHandlerDisabledStoreIs501(t *testing.T) {
 			require.Equal(t, "snapshots_disabled", doc.Error.Details["reason"])
 		})
 	}
+}
+
+// TestSnapshotHandlerTypedNilStoreIs501 pins the other shape of "no store": a
+// typed-nil *snapshot.Manager in the interface is not == nil, and calling it
+// would panic. It must answer the same 501 as a nil store.
+func TestSnapshotHandlerTypedNilStoreIs501(t *testing.T) {
+	var typedNil *snapshot.Manager
+
+	for _, method := range []string{http.MethodGet, http.MethodPost, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			var rec *httptest.ResponseRecorder
+			require.NotPanics(t, func() {
+				rec = serveSnapshot(t, typedNil, snapshotTask(), method,
+					"/v1/tasks/task-1/snapshots", "")
+			})
+
+			require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
+			doc := decodeSnapshotError(t, rec)
+			require.Equal(t, string(output.CodeNotImplemented), doc.Error.Code)
+			require.Equal(t, "snapshots", doc.Error.Details["capability"])
+		})
+	}
+}
+
+// TestSnapshotHandlerDisabledStoreWrongMethodIs405 pins the precedence: a method
+// the operation does not implement is 405 with Allow, even while the store is
+// disabled. 501 belongs to the methods the operation really serves.
+func TestSnapshotHandlerDisabledStoreWrongMethodIs405(t *testing.T) {
+	rec := serveSnapshot(t, nil, snapshotTask(), http.MethodPut, "/v1/tasks/task-1/snapshots", "")
+
+	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+	require.Equal(t, "GET, POST, DELETE", rec.Header().Get("Allow"))
+	doc := decodeSnapshotError(t, rec)
+	require.Equal(t, string(output.CodeInvalid), doc.Error.Code)
+	require.Equal(t, "method_not_allowed", doc.Error.Details["reason"])
 }
 
 // TestSnapshotHandlerMalformedQueryIs400 pins the query rules: only the
@@ -757,6 +821,13 @@ func TestSnapshotHandlerClassifiesStoreErrors(t *testing.T) {
 		wantCode   output.Code
 		wantReason string
 	}{
+		{
+			name:       "invalid snapshot id",
+			storeErr:   fmt.Errorf("%w: %q", snapshot.ErrInvalidSnapshotID, "../victim"),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   output.CodeInvalid,
+			wantReason: "invalid_snapshot_id",
+		},
 		{
 			name:       "not found",
 			storeErr:   fmt.Errorf("%w: snap-1", snapshot.ErrNotFound),
@@ -1203,4 +1274,70 @@ func TestManagerSnapshotRejectsAMalformedID(t *testing.T) {
 		require.ErrorAs(t, err, &typed, "id %q must be rejected", id)
 		require.Equal(t, output.CodeInvalid, typed.Code)
 	}
+}
+
+// TestManagerStopRestoredSendsDelete pins the manager-side stop: DELETE on the
+// node's `restored` operation with no query and no body, and a 204 back.
+func TestManagerStopRestoredSendsDelete(t *testing.T) {
+	pki := newTestPKI(t)
+
+	var gotMethod, gotPath, gotQuery string
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"restored": func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+			gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	err := snapshotTestManager(t, pki, baseURL, 0, nil).
+		StopRestored(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	require.NoError(t, err)
+	require.Equal(t, http.MethodDelete, gotMethod)
+	require.Equal(t, "/v1/tasks/task-1/restored", gotPath)
+	require.Empty(t, gotQuery)
+}
+
+// TestManagerStopRestoredRelaysNoRestoredVM pins the documented 404: a node with
+// nothing to stop is a typed not-found, not a generic node failure.
+func TestManagerStopRestoredRelaysNoRestoredVM(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"restored": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			writeTypedError(w, http.StatusNotFound, output.NewError(output.CodeNotFound,
+				"task has no restored VM on this node").
+				WithDetails(map[string]any{"reason": "no_restored_vm"}))
+		},
+	})
+
+	err := snapshotTestManager(t, pki, baseURL, 0, nil).
+		StopRestored(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, output.CodeNotFound, typed.Code)
+	require.Equal(t, "no_restored_vm", typed.Details["reason"])
+}
+
+// TestManagerStopRestoredRejectsANon204Success pins the status: only 204 means a
+// stop happened.
+func TestManagerStopRestoredRejectsANon204Success(t *testing.T) {
+	pki := newTestPKI(t)
+
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		"restored": func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		},
+	})
+
+	err := snapshotTestManager(t, pki, baseURL, 0, nil).
+		StopRestored(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	require.Equal(t, output.CodeInternal, typed.Code)
 }

@@ -1,6 +1,7 @@
 package conformance
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,7 +46,6 @@ func TestLoadReadsTheDeclarativeShape(t *testing.T) {
 				"kind": "ServiceList",
 				"items": 1,
 				"nextPresent": true,
-				"requestIdInBody": false,
 				"headers": {"X-SwarmCracker-Api-Version": "1"},
 				"jsonPaths": {"items.0.name": "web"},
 				"absentKeys": ["registryAuth"]
@@ -104,8 +104,10 @@ func TestLoadReadsTheDeclarativeShape(t *testing.T) {
 	if c.Expect.NextPresent == nil || !*c.Expect.NextPresent {
 		t.Errorf("nextPresent = %v", c.Expect.NextPresent)
 	}
-	if c.Expect.RequestIDInBody == nil || *c.Expect.RequestIDInBody {
-		t.Errorf("requestIdInBody = %v", c.Expect.RequestIDInBody)
+	// A stream case reads a documentless body, so the document-only flags must be
+	// absent; TestLoadReadsTheNewAssertions covers the echo and its path.
+	if c.Expect.RequestIDInBody != nil || c.Expect.RequestIDPath != "" {
+		t.Errorf("requestIdInBody = %v, requestIdPath = %q", c.Expect.RequestIDInBody, c.Expect.RequestIDPath)
 	}
 	if c.Expect.JSONPaths["items.0.name"] != "web" {
 		t.Errorf("jsonPaths = %v", c.Expect.JSONPaths)
@@ -397,8 +399,8 @@ func TestLoadReadsRepeatAndAbsentKeysAnywhere(t *testing.T) {
 				"method": "POST",
 				"path": "/v1/services",
 				"role": "admin",
-				"headers": {"Idempotency-Key": "case-1"},
-				"body": {"name": "x", "spec": {"task": {"image": "nginx:alpine"}}}
+				"headers": {"Idempotency-Key": "case-1-{{run}}"},
+				"body": {"name": "x-{{run}}", "spec": {"task": {"image": "nginx:alpine"}}}
 			},
 			"expect": {
 				"status": 201,
@@ -442,5 +444,284 @@ func TestShippedFixturesLoad(t *testing.T) {
 	}
 	if cases < 20 {
 		t.Errorf("shipped fixtures define %d cases; want at least 20", cases)
+	}
+}
+
+// TestValidateRequiresTheRunToken proves the per-run rule: a mutating create name
+// and a mutating Idempotency-Key are what a second run would collide on, so both
+// must carry the token the runner replaces.
+func TestValidateRequiresTheRunToken(t *testing.T) {
+	create := func(name, key string) Fixture {
+		headers := map[string]string{}
+		if key != "" {
+			headers["Idempotency-Key"] = key
+		}
+		return Fixture{
+			SchemaVersion: SchemaVersion,
+			Name:          "write",
+			Cases: []Case{{
+				Name:     "create",
+				Mutating: true,
+				Request: Request{
+					Method:  "POST",
+					Path:    "/v1/services",
+					Role:    "admin",
+					Headers: headers,
+					Body:    []byte(`{"name":"` + name + `"}`),
+				},
+				Expect: Expect{Status: 201, Kind: "Service"},
+			}},
+		}
+	}
+
+	if err := create("conformance-ws-"+RunToken, "").Validate(); err != nil {
+		t.Fatalf("a name with the run token must validate: %v", err)
+	}
+	if err := create("conformance-ws", "").Validate(); err == nil ||
+		!strings.Contains(err.Error(), RunToken) {
+		t.Fatalf("a literal mutating name must be rejected, got %v", err)
+	}
+	if err := create("conformance-ws-"+RunToken, "conformance-idem").Validate(); err == nil ||
+		!strings.Contains(err.Error(), "Idempotency-Key") {
+		t.Fatalf("a literal mutating Idempotency-Key must be rejected, got %v", err)
+	}
+	if err := create("conformance-ws-"+RunToken, "conformance-idem-"+RunToken).Validate(); err != nil {
+		t.Fatalf("a suffixed Idempotency-Key must validate: %v", err)
+	}
+}
+
+// TestLoadRejectsADuplicateCreateName is the cross-file half of the run rule: one
+// run cannot create the same name twice, so the loader must find the collision
+// before any request is sent.
+func TestLoadRejectsADuplicateCreateName(t *testing.T) {
+	dir := t.TempDir()
+	body := `{
+		"schemaVersion": 1,
+		"name": "%s",
+		"cases": [{
+			"name": "create",
+			"mutating": true,
+			"request": {"method": "POST", "path": "/v1/services", "role": "admin",
+				"body": {"name": "conformance-shared-%s"}},
+			"expect": {"status": 201, "kind": "Service"}
+		}]
+	}`
+	writeFixture(t, dir, "a.json", fmt.Sprintf(body, "a", RunToken))
+	writeFixture(t, dir, "b.json", fmt.Sprintf(body, "b", RunToken))
+
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), "created twice") {
+		t.Fatalf("want the duplicate name reported, got %v", err)
+	}
+}
+
+// TestValidateRejectsBadCapabilityGates keeps the gate deterministic: a case that
+// both requires and forbids one capability could never run on any target.
+func TestValidateRejectsBadCapabilityGates(t *testing.T) {
+	base := func(c *Case) Fixture {
+		return Fixture{SchemaVersion: SchemaVersion, Name: "read", Cases: []Case{*c}}
+	}
+	ok := Case{
+		Name:    "gated",
+		Request: Request{Method: "GET", Path: "/v1/version", Role: "reader"},
+		Expect:  Expect{Status: 200, Kind: "VersionInfo"},
+	}
+
+	both := ok
+	both.RequiresCapabilities = []string{"snapshots"}
+	both.AbsentCapabilities = []string{"snapshots"}
+	if err := base(&both).Validate(); err == nil || !strings.Contains(err.Error(), "both required and absent") {
+		t.Fatalf("want the contradiction reported, got %v", err)
+	}
+
+	blank := ok
+	blank.RequiresCapabilities = []string{" "}
+	if err := base(&blank).Validate(); err == nil || !strings.Contains(err.Error(), "requiresCapabilities") {
+		t.Fatalf("want a blank capability rejected, got %v", err)
+	}
+}
+
+// TestValidateRejectsBadCaptures keeps a capture from naming a variable the
+// runner owns or a name no path can reference.
+func TestValidateRejectsBadCaptures(t *testing.T) {
+	for _, tc := range []struct{ alias, want string }{
+		{alias: "etag", want: "shadows"},
+		{alias: "bad-alias", want: "not a variable name"},
+		{alias: "snapshot", want: "non-empty dot path"},
+	} {
+		c := Case{
+			Name:    "capture",
+			Request: Request{Method: "POST", Path: "/v1/services", Role: "admin"},
+			Expect:  Expect{Status: 201, Kind: "Service"},
+			Capture: map[string]string{tc.alias: "id"},
+		}
+		if tc.alias == "snapshot" {
+			c.Capture[tc.alias] = " "
+		}
+		f := Fixture{SchemaVersion: SchemaVersion, Name: "write", Cases: []Case{c}}
+		if err := f.Validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("capture %q: want %q, got %v", tc.alias, tc.want, err)
+		}
+	}
+}
+
+// streamFixture wraps one stream shape in an otherwise valid stream case, so a
+// validation test only has to name the shape under test.
+func streamFixture(s Stream) Fixture {
+	return Fixture{SchemaVersion: SchemaVersion, Name: "streams", Cases: []Case{{
+		Name:    "attach",
+		Request: Request{Method: "POST", Path: "/v1/tasks/t/attach", Role: "runner"},
+		Expect:  Expect{Status: 200},
+		Stream:  &s,
+	}}}
+}
+
+// TestValidateRejectsAnAmbiguousStream pins the two stream shapes: a framed
+// stream counts frames, a raw stream reads bytes, and a case picks one.
+func TestValidateRejectsAnAmbiguousStream(t *testing.T) {
+	stream := streamFixture
+
+	if err := stream(Stream{Bytes: 4}).Validate(); err != nil {
+		t.Fatalf("a bytes-only stream must validate: %v", err)
+	}
+	if err := stream(Stream{Bytes: 4, Frames: 2}).Validate(); err == nil ||
+		!strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("want the mixed stream rejected, got %v", err)
+	}
+	if err := stream(Stream{}).Validate(); err == nil || !strings.Contains(err.Error(), "stream") {
+		t.Fatalf("want a shapeless stream rejected, got %v", err)
+	}
+
+	echoing := stream(Stream{Frames: 2})
+	echoing.Cases[0].Expect.RequestIDInBody = boolPtr(true)
+	if err := echoing.Validate(); err == nil || !strings.Contains(err.Error(), "not a stream") {
+		t.Fatalf("want requestIdInBody on a stream rejected, got %v", err)
+	}
+}
+
+// TestValidateBoundedStreamShape pins the untilType shape: a bounded read needs a
+// floor and a cap so it can neither pass on an empty stream nor hang on a server
+// that never sends the terminal frame, and it replaces the pinned count instead
+// of adding to it.
+func TestValidateBoundedStreamShape(t *testing.T) {
+	if err := streamFixture(Stream{UntilType: "eof", MinFrames: 1, MaxFrames: 200}).Validate(); err != nil {
+		t.Fatalf("a bounded stream must validate: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		stream Stream
+		want   string
+	}{
+		{name: "no floor", stream: Stream{UntilType: "eof", MaxFrames: 200}, want: "minFrames"},
+		{name: "no cap", stream: Stream{UntilType: "eof", MinFrames: 1}, want: "maxFrames"},
+		{name: "cap at the floor", stream: Stream{UntilType: "eof", MinFrames: 4, MaxFrames: 4}, want: "must exceed"},
+		{name: "count and terminal", stream: Stream{Frames: 2, UntilType: "eof", MinFrames: 1, MaxFrames: 9}, want: "exactly one"},
+		{name: "lastType and untilType", stream: Stream{LastType: "eof", UntilType: "eof", MinFrames: 1, MaxFrames: 9}, want: "name one"},
+		{name: "bounds on an exact stream", stream: Stream{Frames: 2, MinFrames: 1, MaxFrames: 9}, want: "require untilType"},
+		{name: "bounds on a raw stream", stream: Stream{Bytes: 4, MinFrames: 1}, want: "not a raw one"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := streamFixture(tc.stream).Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+// TestValidateRejectsAContradictoryExpectation covers the three new expectation
+// rules that would otherwise be silently ignored.
+func TestValidateRejectsAContradictoryExpectation(t *testing.T) {
+	base := func(expect Expect) Fixture {
+		return Fixture{SchemaVersion: SchemaVersion, Name: "read", Cases: []Case{{
+			Name:    "case",
+			Request: Request{Method: "GET", Path: "/v1/version", Role: "reader"},
+			Expect:  expect,
+		}}}
+	}
+
+	errorWithEcho := Expect{Status: 404, ErrorCode: "not_found", RequestIDInBody: boolPtr(false)}
+	if err := base(errorWithEcho).Validate(); err == nil || !strings.Contains(err.Error(), "success document") {
+		t.Fatalf("want requestIdInBody on an error case rejected, got %v", err)
+	}
+
+	pathWithoutFlag := Expect{Status: 200, Kind: "VersionInfo", RequestIDPath: "requestId"}
+	if err := base(pathWithoutFlag).Validate(); err == nil || !strings.Contains(err.Error(), "requestIdPath") {
+		t.Fatalf("want requestIdPath without the flag rejected, got %v", err)
+	}
+
+	both := Expect{Status: 200, Kind: "VersionInfo", PresentKeys: []string{"id"}, AbsentKeys: []string{"id"}}
+	if err := base(both).Validate(); err == nil || !strings.Contains(err.Error(), "presentKeys") {
+		t.Fatalf("want a path in both lists rejected, got %v", err)
+	}
+}
+
+// TestLoadReadsTheNewAssertions keeps the capability gates, the capture, the
+// presence rules and the raw stream in the declarative format rather than in a
+// Go-only helper.
+func TestLoadReadsTheNewAssertions(t *testing.T) {
+	fixtures, err := loadOne(t, `{
+		"schemaVersion": 1,
+		"name": "write",
+		"cases": [
+			{
+				"name": "snapshot",
+				"mutating": true,
+				"requiresCapabilities": ["snapshots"],
+				"absentCapabilities": ["attach"],
+				"request": {"method": "POST", "path": "/v1/tasks/t/snapshots", "role": "admin"},
+				"expect": {"status": 201, "kind": "Snapshot",
+					"requestIdInBody": true, "requestIdPath": "partial.0.error.requestId",
+					"presentKeys": ["id", "rootfsPath"], "minValues": {"sizeBytes": 1}},
+				"capture": {"snapshot": "id"}
+			},
+			{
+				"name": "attach",
+				"requiresCapabilities": ["attach"],
+				"request": {"method": "POST", "path": "/v1/tasks/t/attach", "role": "runner"},
+				"expect": {"status": 200},
+				"stream": {"bytes": 14}
+			},
+			{
+				"name": "logs",
+				"requiresCapabilities": ["logs"],
+				"request": {"method": "GET", "path": "/v1/tasks/t/logs", "role": "reader"},
+				"expect": {"status": 200},
+				"stream": {"untilType": "eof", "minFrames": 1, "maxFrames": 200}
+			}
+		]
+	}`)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	first := fixtures[0].Cases[0]
+	if len(first.RequiresCapabilities) != 1 || first.RequiresCapabilities[0] != "snapshots" {
+		t.Errorf("requiresCapabilities = %v", first.RequiresCapabilities)
+	}
+	if len(first.AbsentCapabilities) != 1 || first.AbsentCapabilities[0] != "attach" {
+		t.Errorf("absentCapabilities = %v", first.AbsentCapabilities)
+	}
+	if first.Expect.RequestIDInBody == nil || !*first.Expect.RequestIDInBody {
+		t.Errorf("requestIdInBody = %v", first.Expect.RequestIDInBody)
+	}
+	if first.Expect.RequestIDPath != "partial.0.error.requestId" {
+		t.Errorf("requestIdPath = %q", first.Expect.RequestIDPath)
+	}
+	if len(first.Expect.PresentKeys) != 2 || first.Expect.MinValues["sizeBytes"] != 1 {
+		t.Errorf("presentKeys = %v, minValues = %v", first.Expect.PresentKeys, first.Expect.MinValues)
+	}
+	if first.Capture["snapshot"] != "id" {
+		t.Errorf("capture = %v", first.Capture)
+	}
+	if second := fixtures[0].Cases[1]; second.Stream == nil || second.Stream.Bytes != 14 {
+		t.Errorf("stream = %+v", fixtures[0].Cases[1].Stream)
+	}
+	bounded := fixtures[0].Cases[2].Stream
+	if bounded == nil || bounded.UntilType != "eof" || bounded.MinFrames != 1 || bounded.MaxFrames != 200 {
+		t.Errorf("bounded stream = %+v", bounded)
 	}
 }

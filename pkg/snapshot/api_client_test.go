@@ -36,7 +36,7 @@ func TestSaveMetadata_ErrorPaths(t *testing.T) {
 		defer os.Chmod(roDir, 0755) // Cleanup
 
 		info := &SnapshotInfo{
-			ID:        "snap-test",
+			ID:        "snap-825b9a610b6fba70",
 			TaskID:    "task-1",
 			CreatedAt: time.Now().UTC(),
 		}
@@ -47,7 +47,7 @@ func TestSaveMetadata_ErrorPaths(t *testing.T) {
 
 	t.Run("non-existent directory", func(t *testing.T) {
 		info := &SnapshotInfo{
-			ID:        "snap-test",
+			ID:        "snap-825b9a610b6fba70",
 			TaskID:    "task-1",
 			CreatedAt: time.Now().UTC(),
 		}

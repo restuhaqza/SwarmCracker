@@ -851,3 +851,30 @@ func TestManagerHealthUsesTheNodeAddressRule(t *testing.T) {
 	require.NotNil(t, health)
 	require.Equal(t, "healthy", health.Status)
 }
+
+// TestManagerSnapshotTimeoutDefault pins the default deadline. Create copies the
+// whole task disk now, so a 30 s default would time out a 10 GiB disk on a
+// filesystem without reflinks; five minutes is the documented value.
+func TestManagerSnapshotTimeoutDefault(t *testing.T) {
+	mgr := newTestManager(t,
+		&stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+		&stubNodeReader{node: v1.Node{ID: "node-1", Address: "192.168.1.10"}},
+		0,
+		&http.Client{},
+	)
+	require.Equal(t, 5*time.Minute, mgr.snapshotTimeout)
+	require.Equal(t, DefaultSnapshotTimeout, mgr.snapshotTimeout)
+}
+
+// TestManagerSnapshotTimeoutExplicit proves ManagerConfig.SnapshotTimeout wins
+// over the default, so a daemon flag can raise or lower it.
+func TestManagerSnapshotTimeoutExplicit(t *testing.T) {
+	mgr, err := NewManager(ManagerConfig{
+		Tasks:           &stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+		Nodes:           &stubNodeReader{node: v1.Node{ID: "node-1", Address: "192.168.1.10"}},
+		Client:          &http.Client{},
+		SnapshotTimeout: 90 * time.Second,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 90*time.Second, mgr.snapshotTimeout)
+}

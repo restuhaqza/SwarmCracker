@@ -88,7 +88,7 @@ export interface Error {
   message: string;
   requestId?: string;
   retryable: boolean;
-  /** Typed failure context. When details.fields is present it maps an offending path to a reason. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
+  /** Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
   details?: Record<string, unknown>;
 }
 
@@ -303,7 +303,7 @@ export interface PartialError {
   message: string;
   requestId: string;
   retryable: boolean;
-  /** Typed failure context. When details.fields is present it maps an offending path to a reason. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
+  /** Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
   details?: Record<string, unknown>;
 }
 
@@ -463,16 +463,18 @@ export interface ServiceWrite {
   spec: ServiceSpecWrite;
 }
 
-/** One VM snapshot. Only `rootfsPath` is published: the memory and state files are node-local and never cross the wire. `memoryMB` is camel-cased to match the contract even though the engine's internal field is MemoryMB. Every field except `id` is optional, so a node that recorded less metadata still produces a valid document. */
+/** One VM snapshot. Only `rootfsPath` is published: the memory and state files are node-local and never cross the wire, and so is the snapshot's own copy of the task disk. The copy path is recorded in the node's metadata.json (as disk_path), which is the only record of a snapshot and is never a wire field. `sizeBytes` is the total footprint on the node: the memory image, the state file and the disk copy, so it is approximately memoryMB plus the task disk size. `memoryMB` is camel-cased to match the contract even though the engine's internal field is MemoryMB. Every field except `id` is optional, so a node that recorded less metadata still produces a valid document. */
 export interface Snapshot {
   id: string;
   taskId?: string;
   serviceId?: string;
   nodeId?: string;
   createdAt?: string;
+  /** Total bytes the snapshot occupies on its node: memory image, state file and the disk copy. */
   sizeBytes?: number;
   memoryMB?: number;
   vcpuCount?: number;
+  /** The absolute task rootfs path the snapshot was taken from. Restore puts the snapshot's disk copy back at this path when the task disk is gone. */
   rootfsPath?: string;
   checksum?: string;
 }
@@ -493,9 +495,11 @@ export interface SnapshotDocument {
   serviceId?: string;
   nodeId?: string;
   createdAt?: string;
+  /** Total bytes the snapshot occupies on its node: memory image, state file and the disk copy. */
   sizeBytes?: number;
   memoryMB?: number;
   vcpuCount?: number;
+  /** The absolute task rootfs path the snapshot was taken from. Restore puts the snapshot's disk copy back at this path when the task disk is gone. */
   rootfsPath?: string;
   checksum?: string;
   schemaVersion: 1;
@@ -651,6 +655,7 @@ export interface VersionInfo {
   serverVersion: string;
   grpcProtocolVersion: string;
   clusterId?: string;
+  /** Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. A capability that is advertised is served; the version document never promises a route that answers 501. */
   capabilities: string[];
 }
 

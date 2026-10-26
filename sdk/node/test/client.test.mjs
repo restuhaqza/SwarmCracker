@@ -16,6 +16,7 @@ import {
   Client,
   MERGE_PATCH_MEDIA_TYPE,
   NDJSON_MEDIA_TYPE,
+  OCTET_STREAM_MEDIA_TYPE,
   SSE_MEDIA_TYPE,
   V1_MEDIA_TYPE,
 } from '../src/index.mjs';
@@ -73,6 +74,21 @@ function event(cursor, type, resourceId) {
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const SNAPSHOT = {
+  id: 'snap-abc',
+  taskId: 't1',
+  createdAt: '2026-10-25T10:00:00Z',
+  sizeBytes: 1024,
+  memoryMB: 256,
+  vcpuCount: 2,
+  rootfsPath: '/var/lib/firecracker/rootfs/t1.ext4',
+};
+
+const SNAPSHOT_DOCUMENT = { ...SNAPSHOT, schemaVersion: 1, kind: 'Snapshot' };
+
+// One NUL and one non-UTF-8 byte prove the client never decodes the body.
+const FILE_BYTES = Buffer.from('hello file\u0000\u00ff\n', 'latin1');
+
 // -- test manager -----------------------------------------------------------
 
 function record(state, req, rawBody) {
@@ -81,6 +97,8 @@ function record(state, req, rawBody) {
   for (const [key, value] of url.searchParams) {
     (query[key] ??= []).push(value);
   }
+  const contentType = req.headers['content-type'] ?? '';
+  const isJson = contentType.startsWith(V1_MEDIA_TYPE) || contentType.endsWith('+json');
   const entry = {
     method: req.method,
     path: url.pathname,
@@ -88,16 +106,36 @@ function record(state, req, rawBody) {
     query,
     headers: req.headers,
     rawBody,
-    body: rawBody ? JSON.parse(rawBody) : null,
+    body: rawBody.length > 0 && isJson ? JSON.parse(rawBody.toString('utf8')) : null,
   };
   state.requests.push(entry);
   return { entry, url };
 }
 
-function sendJson(res, status, document) {
+function bump(state, key) {
+  state.counters[key] = (state.counters[key] ?? 0) + 1;
+  return state.counters[key];
+}
+
+function sendJson(res, status, document, extraHeaders = {}) {
   const body = Buffer.from(JSON.stringify(document), 'utf8');
   res.writeHead(status, {
     'Content-Type': V1_MEDIA_TYPE,
+    'Content-Length': String(body.length),
+    [API_VERSION_HEADER]: '1',
+    'X-Request-Id': REQUEST_ID,
+    ...extraHeaders,
+  });
+  res.end(body);
+}
+
+function sendText(res, status, text, contentType) {
+  sendBytes(res, status, Buffer.from(text, 'utf8'), contentType);
+}
+
+function sendBytes(res, status, body, contentType) {
+  res.writeHead(status, {
+    'Content-Type': contentType,
     'Content-Length': String(body.length),
     [API_VERSION_HEADER]: '1',
     'X-Request-Id': REQUEST_ID,
@@ -105,14 +143,12 @@ function sendJson(res, status, document) {
   res.end(body);
 }
 
-function sendText(res, status, text, contentType) {
-  const body = Buffer.from(text, 'utf8');
+function sendEmpty(res, status) {
   res.writeHead(status, {
-    'Content-Type': contentType,
-    'Content-Length': String(body.length),
+    [API_VERSION_HEADER]: '1',
     'X-Request-Id': REQUEST_ID,
   });
-  res.end(body);
+  res.end();
 }
 
 function startStream(res, contentType) {
@@ -226,7 +262,18 @@ async function route(state, req, res, { entry, url }) {
       sendJson(res, 415, errorDocument('invalid', 'unsupported media type'));
       return true;
     }
-    sendJson(res, 201, { ...SERVICE, id: 's2', name: entry.body.name });
+    const name = entry.body?.name;
+    if (name === 'flaky-no-key') {
+      sendJson(res, 503, errorDocument('unavailable', 'try later', { retryable: true }));
+      return true;
+    }
+    if (name === 'flaky' && entry.headers['idempotency-key']) {
+      if (bump(state, 'services:flaky') <= 2) {
+        sendJson(res, 503, errorDocument('unavailable', 'try later', { retryable: true }));
+        return true;
+      }
+    }
+    sendJson(res, 201, { ...SERVICE, id: 's2', name });
     return true;
   }
   if (path.startsWith('/v1/services/')) {
@@ -345,6 +392,137 @@ async function route(state, req, res, { entry, url }) {
     ]);
     return true;
   }
+  if (method === 'GET' && path === '/v1/tasks/t1/files') {
+    const guestPath = url.searchParams.get('path') ?? '';
+    if (guestPath === '/missing') {
+      sendJson(res, 404, errorDocument('not_found', 'no such file'));
+      return true;
+    }
+    sendBytes(res, 200, FILE_BYTES, OCTET_STREAM_MEDIA_TYPE);
+    return true;
+  }
+  if (method === 'PUT' && path === '/v1/tasks/t1/files') {
+    if (entry.headers['content-type'] !== OCTET_STREAM_MEDIA_TYPE) {
+      sendJson(res, 415, errorDocument('invalid', 'unsupported media type'));
+      return true;
+    }
+    const guestPath = url.searchParams.get('path');
+    if (guestPath === '/missing') {
+      sendJson(res, 404, errorDocument('not_found', 'no such directory'));
+      return true;
+    }
+    if (guestPath === '/flaky' && bump(state, 'files:flaky') === 1) {
+      sendJson(res, 503, errorDocument('unavailable', 'try later', { retryable: true }));
+      return true;
+    }
+    sendEmpty(res, 204);
+    return true;
+  }
+  if (method === 'GET' && path === '/v1/snapshots') {
+    if (!url.searchParams.has('task')) {
+      sendJson(res, 400, errorDocument('invalid', 'task is required', { details: { parameter: 'task' } }));
+      return true;
+    }
+    sendJson(res, 200, {
+      schemaVersion: 1,
+      kind: 'SnapshotList',
+      items: [SNAPSHOT],
+      next: null,
+    });
+    return true;
+  }
+  if (method === 'POST' && path === '/v1/tasks/t1/snapshots') {
+    const body = entry.body ?? {};
+    const document = { ...SNAPSHOT_DOCUMENT };
+    if (body.vcpus !== undefined) {
+      document.vcpuCount = body.vcpus;
+    }
+    if (body.memoryMB !== undefined) {
+      document.memoryMB = body.memoryMB;
+    }
+    sendJson(res, 201, document);
+    return true;
+  }
+  if (method === 'POST' && path === '/v1/snapshots/snap-abc/restore') {
+    if (url.searchParams.get('task') !== 't1') {
+      sendJson(res, 400, errorDocument('invalid', 'task is required'));
+      return true;
+    }
+    sendJson(res, 200, SNAPSHOT_DOCUMENT);
+    return true;
+  }
+  if (method === 'DELETE' && path === '/v1/snapshots/snap-abc') {
+    if (url.searchParams.get('task') !== 't1') {
+      sendJson(res, 400, errorDocument('invalid', 'task is required'));
+      return true;
+    }
+    sendEmpty(res, 204);
+    return true;
+  }
+  if (method === 'DELETE' && path === '/v1/tasks/t1/restored') {
+    sendEmpty(res, 204);
+    return true;
+  }
+  if (method === 'GET' && path === '/v1/retry/twice') {
+    if (bump(state, path) <= 2) {
+      sendJson(res, 503, errorDocument('unavailable', 'try later', { retryable: true }));
+      return true;
+    }
+    sendJson(res, 200, { schemaVersion: 1, kind: 'VersionInfo', serverVersion: 'v0.11.0' });
+    return true;
+  }
+  if (method === 'GET' && path === '/v1/retry/always') {
+    bump(state, path);
+    sendJson(res, 503, errorDocument('unavailable', 'try later', { retryable: true }));
+    return true;
+  }
+  if (method === 'GET' && path === '/v1/retry/after-seconds') {
+    if (bump(state, path) === 1) {
+      sendJson(res, 429, errorDocument('rate_limited', 'slow down', { retryable: true }), {
+        'Retry-After': '7',
+      });
+      return true;
+    }
+    sendJson(res, 200, { schemaVersion: 1, kind: 'VersionInfo', serverVersion: 'v0.11.0' });
+    return true;
+  }
+  if (method === 'GET' && path === '/v1/retry/after-date') {
+    if (bump(state, path) === 1) {
+      sendJson(res, 503, errorDocument('unavailable', 'try later', { retryable: true }), {
+        'Retry-After': new Date(Date.now() + 3000).toUTCString(),
+      });
+      return true;
+    }
+    sendJson(res, 200, { schemaVersion: 1, kind: 'VersionInfo', serverVersion: 'v0.11.0' });
+    return true;
+  }
+  if (method === 'GET' && path === '/v1/retry/capped') {
+    if (bump(state, path) === 1) {
+      sendJson(res, 429, errorDocument('rate_limited', 'slow down', { retryable: true }), {
+        'Retry-After': '600',
+      });
+      return true;
+    }
+    sendJson(res, 200, { schemaVersion: 1, kind: 'VersionInfo', serverVersion: 'v0.11.0' });
+    return true;
+  }
+  if (method === 'GET' && path === '/v1/retry/after-hint') {
+    // The hint comes from the test, so one route covers a negative, a zero and a
+    // garbage Retry-After value.
+    if (bump(state, path) === 1) {
+      sendJson(res, 429, errorDocument('rate_limited', 'slow down', { retryable: true }), {
+        'Retry-After': state.retryHint,
+      });
+      return true;
+    }
+    sendJson(res, 200, { schemaVersion: 1, kind: 'VersionInfo', serverVersion: 'v0.11.0' });
+    return true;
+  }
+  if (method === 'GET' && path === '/v1/retry/bad-request') {
+    bump(state, path);
+    sendJson(res, 400, errorDocument('invalid', 'no'));
+    return true;
+  }
   if (method === 'GET' && path === '/v1/tasks/t2/logs') {
     // A stream that outlives the connect deadline must not be cut.
     startStream(res, NDJSON_MEDIA_TYPE);
@@ -355,6 +533,11 @@ async function route(state, req, res, { entry, url }) {
     return true;
   }
   if (method === 'GET' && path === '/v1/events') {
+    if (url.searchParams.get('types') === 'flaky' && bump(state, 'events:flaky') === 1) {
+      // A retryable 503 before any event: a stream must not replay it.
+      sendJson(res, 503, errorDocument('unavailable', 'try later', { retryable: true }));
+      return true;
+    }
     startStream(res, SSE_MEDIA_TYPE);
     if (url.searchParams.get('types') === 'slow') {
       res.on('error', () => {});
@@ -389,12 +572,12 @@ async function route(state, req, res, { entry, url }) {
 }
 
 async function withManager(run) {
-  const state = { requests: [], redirectTo: '' };
+  const state = { requests: [], redirectTo: '', counters: {}, retryHint: '7' };
   const server = createServer((req, res) => {
     const chunks = [];
     req.on('data', (chunk) => chunks.push(chunk));
     req.on('end', async () => {
-      const rawBody = Buffer.concat(chunks).toString('utf8');
+      const rawBody = Buffer.concat(chunks);
       const parsed = record(state, req, rawBody);
       if (req.headers.authorization !== `Bearer ${TOKEN}`) {
         sendJson(res, 401, errorDocument('unauthenticated', 'missing bearer token'));
@@ -560,6 +743,131 @@ test('tasks.get sends health=false', async () => {
   await withManager(async ({ client, lastRequest }) => {
     await client.tasks.get('t1', { health: false });
     assert.deepEqual(lastRequest('GET', '/v1/tasks/t1').query, { health: ['false'] });
+  });
+});
+
+// -- files ------------------------------------------------------------------
+
+test('filesGet returns the raw bytes and sends the path', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    const data = await client.tasks.filesGet('t1', '/etc/hosts');
+    assert.ok(data instanceof Uint8Array);
+    assert.deepEqual(Buffer.from(data), FILE_BYTES);
+
+    const request = lastRequest('GET', '/v1/tasks/t1/files');
+    assert.deepEqual(request.query, { path: ['/etc/hosts'] });
+    assert.equal(request.headers.accept, OCTET_STREAM_MEDIA_TYPE);
+  });
+});
+
+test('filesGet maps a typed failure', async () => {
+  await withManager(async ({ client }) => {
+    await assert.rejects(client.tasks.filesGet('t1', '/missing'), (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.code, 'not_found');
+      assert.equal(error.status, 404);
+      assert.equal(error.requestId, REQUEST_ID);
+      assert.doesNotMatch(String(error), new RegExp(TOKEN));
+      return true;
+    });
+  });
+});
+
+test('filesPut sends raw bytes, the content type and the mode', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    assert.equal(await client.tasks.filesPut('t1', '/tmp/payload', FILE_BYTES, { mode: '0600' }), null);
+
+    const request = lastRequest('PUT', '/v1/tasks/t1/files');
+    assert.equal(request.headers['content-type'], OCTET_STREAM_MEDIA_TYPE);
+    assert.deepEqual(request.query, { path: ['/tmp/payload'], mode: ['0600'] });
+    assert.deepEqual(request.rawBody, FILE_BYTES);
+  });
+});
+
+test('filesPut omits the mode and accepts an empty file', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    assert.equal(await client.tasks.filesPut('t1', '/tmp/empty', new Uint8Array(0)), null);
+    const request = lastRequest('PUT', '/v1/tasks/t1/files');
+    assert.deepEqual(request.query, { path: ['/tmp/empty'] });
+    assert.equal(request.rawBody.length, 0);
+    assert.equal(request.headers['content-type'], OCTET_STREAM_MEDIA_TYPE);
+  });
+});
+
+test('filesPut rejects a non-bytes body', async () => {
+  await withManager(async ({ client }) => {
+    await assert.rejects(client.tasks.filesPut('t1', '/tmp/text', 'not bytes'), TypeError);
+  });
+});
+
+// -- snapshots --------------------------------------------------------------
+
+test('snapshotsList sends the task and pagination', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    const page = await client.tasks.snapshotsList({ task: 't1', limit: 10, cursor: 'c1' });
+    assert.equal(page.kind, 'SnapshotList');
+    assert.equal(page.items[0].id, 'snap-abc');
+    assert.deepEqual(lastRequest('GET', '/v1/snapshots').query, {
+      task: ['t1'],
+      limit: ['10'],
+      cursor: ['c1'],
+    });
+  });
+});
+
+test('snapshotsList without a task is a typed invalid', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    await assert.rejects(client.tasks.snapshotsList(), (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.code, 'invalid');
+      assert.deepEqual(error.details, { parameter: 'task' });
+      return true;
+    });
+    assert.equal(lastRequest('GET', '/v1/snapshots').rawQuery, '');
+  });
+});
+
+test('snapshotsCreate sends the optional resources', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    const document = await client.tasks.snapshotsCreate('t1', { vcpus: 2, memoryMB: 256 });
+    assert.equal(document.kind, 'Snapshot');
+
+    const request = lastRequest('POST', '/v1/tasks/t1/snapshots');
+    assert.equal(request.headers['content-type'], V1_MEDIA_TYPE);
+    assert.deepEqual(request.body, { vcpus: 2, memoryMB: 256 });
+  });
+});
+
+test('snapshotsCreate without resources sends no body', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    await client.tasks.snapshotsCreate('t1');
+    const request = lastRequest('POST', '/v1/tasks/t1/snapshots');
+    assert.equal(request.body, null);
+    assert.equal(request.headers['content-type'], undefined);
+  });
+});
+
+test('snapshotsRestore uses the flat route with the task', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    const document = await client.tasks.snapshotsRestore('t1', 'snap-abc');
+    assert.equal(document.id, 'snap-abc');
+    assert.deepEqual(lastRequest('POST', '/v1/snapshots/snap-abc/restore').query, {
+      task: ['t1'],
+    });
+  });
+});
+
+test('snapshotsDelete uses the flat route with the task', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    assert.equal(await client.tasks.snapshotsDelete('t1', 'snap-abc'), null);
+    assert.deepEqual(lastRequest('DELETE', '/v1/snapshots/snap-abc').query, { task: ['t1'] });
+  });
+});
+
+test('snapshotsStopRestored deletes the restored VM', async () => {
+  await withManager(async ({ client, lastRequest }) => {
+    assert.equal(await client.tasks.snapshotsStopRestored('t1'), null);
+    assert.equal(lastRequest('DELETE', '/v1/tasks/t1/restored').rawQuery, '');
   });
 });
 
@@ -1006,6 +1314,271 @@ test('a request that outlives the deadline is unreachable', async () => {
       client.close();
     }
   });
+});
+
+// -- retries ----------------------------------------------------------------
+
+function attempts(state, path) {
+  return state.requests.filter((entry) => entry.path === path);
+}
+
+function retryingClient(host, options = {}) {
+  const delays = [];
+  const client = new Client({
+    host,
+    token: TOKEN,
+    retries: 2,
+    sleep: async (ms) => {
+      delays.push(ms);
+    },
+    ...options,
+  });
+  return { client, delays };
+}
+
+test('retries default to zero', async () => {
+  await withManager(async ({ client, state }) => {
+    await assert.rejects(client._request('GET', '/v1/retry/twice'), (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.status, 503);
+      return true;
+    });
+    assert.equal(attempts(state, '/v1/retry/twice').length, 1);
+  });
+});
+
+test('retries retry 5xx until success with exponential backoff', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 2 });
+    try {
+      const document = await client._request('GET', '/v1/retry/twice');
+      assert.equal(document.serverVersion, 'v0.11.0');
+      assert.equal(attempts(state, '/v1/retry/twice').length, 3);
+      assert.deepEqual(delays, [500, 1000]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('Retry-After seconds is honoured', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      await client._request('GET', '/v1/retry/after-seconds');
+      assert.equal(attempts(state, '/v1/retry/after-seconds').length, 2);
+      assert.deepEqual(delays, [7000]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('Retry-After HTTP date is honoured', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      await client._request('GET', '/v1/retry/after-date');
+      assert.equal(attempts(state, '/v1/retry/after-date').length, 2);
+      assert.equal(delays.length, 1);
+      assert.ok(delays[0] > 1000, `delay ${delays[0]}ms`);
+      assert.ok(delays[0] <= 3000, `delay ${delays[0]}ms`);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('Retry-After is capped by retryMaxWaitMs', async () => {
+  await withManager(async ({ host }) => {
+    const { client, delays } = retryingClient(host, { retries: 1, retryMaxWaitMs: 5000 });
+    try {
+      await client._request('GET', '/v1/retry/capped');
+      assert.deepEqual(delays, [5000]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('a retry budget exhausts into the last error', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      await assert.rejects(client._request('GET', '/v1/retry/always'), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 503);
+        assert.equal(error.code, 'unavailable');
+        return true;
+      });
+      assert.equal(attempts(state, '/v1/retry/always').length, 2);
+      assert.equal(delays.length, 1);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('a 4xx is never retried', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 2 });
+    try {
+      await assert.rejects(client._request('GET', '/v1/retry/bad-request'), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 400);
+        return true;
+      });
+      assert.equal(attempts(state, '/v1/retry/bad-request').length, 1);
+      assert.deepEqual(delays, []);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('a POST without an idempotency key is never retried', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 2 });
+    try {
+      const body = {
+        name: 'flaky-no-key',
+        spec: { mode: 'replicated', replicas: 1, task: { image: 'api:1' } },
+      };
+      await assert.rejects(client.services.create(body), (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 503);
+        return true;
+      });
+      assert.equal(attempts(state, '/v1/services').length, 1);
+      assert.deepEqual(delays, []);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('a POST with an idempotency key is retried', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 2 });
+    try {
+      const body = {
+        name: 'flaky',
+        spec: { mode: 'replicated', replicas: 1, task: { image: 'api:1' } },
+      };
+      const document = await client.services.create(body, { idempotencyKey: 'create-1' });
+      assert.equal(document.name, 'flaky');
+      const sent = attempts(state, '/v1/services');
+      assert.equal(sent.length, 3);
+      assert.deepEqual(delays, [500, 1000]);
+      assert.ok(sent.every((entry) => entry.headers['idempotency-key'] === 'create-1'));
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('filesPut is retried with the whole body', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      assert.equal(await client.tasks.filesPut('t1', '/flaky', FILE_BYTES, { mode: '0644' }), null);
+
+      const sent = attempts(state, '/v1/tasks/t1/files');
+      assert.equal(sent.length, 2);
+      assert.deepEqual(delays, [500]);
+      // The whole body is rebuilt for every attempt, not a consumed stream.
+      for (const request of sent) {
+        assert.equal(request.method, 'PUT');
+        assert.deepEqual(request.rawBody, FILE_BYTES);
+        assert.equal(request.headers['content-length'], String(FILE_BYTES.length));
+        assert.deepEqual(request.query, { path: ['/flaky'], mode: ['0644'] });
+      }
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('a non-positive Retry-After falls back to the backoff', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      for (const hint of ['-5', '0']) {
+        state.retryHint = hint;
+        state.requests.length = 0;
+        state.counters = {};
+        delays.length = 0;
+
+        await client._request('GET', '/v1/retry/after-hint');
+
+        assert.equal(attempts(state, '/v1/retry/after-hint').length, 2, `hint ${hint}`);
+        assert.deepEqual(delays, [500], `hint ${hint}`);
+      }
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('an undecodable Retry-After falls back to the backoff', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 1 });
+    try {
+      state.retryHint = 'soon';
+      await client._request('GET', '/v1/retry/after-hint');
+      assert.equal(attempts(state, '/v1/retry/after-hint').length, 2);
+      assert.deepEqual(delays, [500]);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('a stream is never retried', async () => {
+  await withManager(async ({ host, state }) => {
+    const { client, delays } = retryingClient(host, { retries: 2 });
+    try {
+      await assert.rejects(
+        async () => {
+          for await (const item of client.events.watch({ types: ['flaky'] })) {
+            assert.fail(`unexpected event ${item.type}`);
+          }
+        },
+        (error) => {
+          assert.ok(error instanceof ApiError);
+          assert.equal(error.status, 503);
+          return true;
+        },
+      );
+      assert.equal(attempts(state, '/v1/events').length, 1);
+      assert.deepEqual(delays, []);
+    } finally {
+      client.close();
+    }
+  });
+});
+
+test('retryAfter is exposed on the error', async () => {
+  await withManager(async ({ client }) => {
+    await assert.rejects(client._request('GET', '/v1/retry/after-seconds'), (error) => {
+      assert.ok(error instanceof ApiError);
+      assert.equal(error.retryAfter, '7');
+      return true;
+    });
+  });
+});
+
+test('retry configuration is validated', () => {
+  assert.throws(() => new Client({ host: 'https://mgr.example.com:4244', retries: -1 }), TypeError);
+  assert.throws(
+    () => new Client({ host: 'https://mgr.example.com:4244', retryBackoffMs: -1 }),
+    TypeError,
+  );
+  assert.throws(
+    () => new Client({ host: 'https://mgr.example.com:4244', retryMaxWaitMs: -1 }),
+    TypeError,
+  );
+  assert.throws(() => new Client({ host: 'https://mgr.example.com:4244', sleep: 'later' }), TypeError);
 });
 
 // -- configuration ----------------------------------------------------------

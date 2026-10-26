@@ -11,6 +11,8 @@ import type {
   ServiceList,
   ServicePatch,
   ServiceWrite,
+  SnapshotDocument,
+  SnapshotList,
   TaskDocument,
   TaskList,
   VersionInfo,
@@ -24,10 +26,18 @@ export declare const MERGE_PATCH_MEDIA_TYPE: 'application/merge-patch+json';
 export declare const NDJSON_MEDIA_TYPE: 'application/x-ndjson';
 /** The media type of the event stream. */
 export declare const SSE_MEDIA_TYPE: 'text/event-stream';
+/** The media type of a raw file read or write (GET/PUT /v1/tasks/{id}/files). */
+export declare const OCTET_STREAM_MEDIA_TYPE: 'application/octet-stream';
 /** The API version this client speaks, sent on every request. */
 export declare const API_VERSION: '1';
 export declare const API_VERSION_HEADER: 'X-SwarmCracker-Api-Version';
 export declare const REQUEST_ID_HEADER: 'X-Request-Id';
+/** The response header carrying how long to wait before retrying. */
+export declare const RETRY_AFTER_HEADER: 'Retry-After';
+/** The wait before the first retry when the server sends no Retry-After. */
+export declare const DEFAULT_RETRY_BACKOFF_MS: 500;
+/** The longest a retry ever waits, whatever Retry-After or the backoff asks for. */
+export declare const DEFAULT_RETRY_MAX_WAIT_MS: 30000;
 /** The frame types of an exec stream. */
 export declare const EXEC_FRAME_TYPES: ReadonlySet<ExecFrameType>;
 /** Hosts for which plain http is accepted. */
@@ -38,6 +48,8 @@ export interface ApiErrorInit {
   status?: number;
   requestId?: string | null;
   retryable?: boolean;
+  /** The raw `Retry-After` header of the failure, when the server sent one. */
+  retryAfter?: string | null;
   details?: Record<string, unknown> | null;
 }
 
@@ -57,6 +69,8 @@ export declare class ApiError extends Error {
   readonly requestId: string | null;
   /** Whether the server says a retry can succeed. */
   readonly retryable: boolean;
+  /** The raw `Retry-After` header of the failure, when the server sent one. */
+  readonly retryAfter: string | null;
   /** Typed failure context, or null. */
   readonly details: Record<string, unknown> | null;
   constructor(code: string, message: string, init?: ApiErrorInit);
@@ -141,6 +155,14 @@ export interface ClientOptions {
   tokenFile?: string;
   /** Request deadline in milliseconds. Defaults to 30000. */
   timeoutMs?: number;
+  /** Extra attempts for an idempotent request that failed with 429 or 5xx. Defaults to 0. */
+  retries?: number;
+  /** The wait before the first retry in milliseconds. Defaults to 500. */
+  retryBackoffMs?: number;
+  /** The cap on any single wait in milliseconds. Defaults to 30000. */
+  retryMaxWaitMs?: number;
+  /** The wait function. Injected by tests; defaults to `setTimeout`. */
+  sleep?: (milliseconds: number) => void | Promise<void>;
 }
 
 export interface ListOptions {
@@ -198,6 +220,28 @@ export interface WatchOptions {
   signal?: AbortSignalLike;
 }
 
+export interface FilesPutOptions {
+  /** Octal file mode between `0000` and `0777`; the server default is `0644`. */
+  mode?: string;
+}
+
+export interface SnapshotListOptions {
+  /**
+   * Required by the API. Optional here only so the flat route can be called
+   * without rebuilding the task path; omitting it is a 400 invalid.
+   */
+  task?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface SnapshotCreateOptions {
+  /** vCPUs to record for the snapshot. */
+  vcpus?: number;
+  /** Memory in MiB to record for the snapshot. */
+  memoryMB?: number;
+}
+
 /** The `/v1/services` routes. */
 export declare class Services {
   list(options?: ListOptions): Promise<ServiceList>;
@@ -208,12 +252,31 @@ export declare class Services {
   private constructor();
 }
 
-/** The `/v1/tasks` routes and the exec/log streams. */
+/** The `/v1/tasks` routes, the exec/log streams, files and snapshots. */
 export declare class Tasks {
   list(options?: TaskListOptions): Promise<TaskList>;
   get(reference: string, options?: { health?: boolean }): Promise<TaskDocument>;
   exec(reference: string, command: readonly string[], options?: ExecOptions): ExecStream;
   logs(reference: string, options?: LogsOptions): LogStream;
+  /** GET /v1/tasks/{ref}/files: the file's raw bytes (a Buffer at runtime). */
+  filesGet(reference: string, path: string): Promise<Uint8Array>;
+  /** PUT /v1/tasks/{ref}/files: write raw bytes; resolves with null on 204. */
+  filesPut(
+    reference: string,
+    path: string,
+    data: Uint8Array,
+    options?: FilesPutOptions,
+  ): Promise<null>;
+  /** GET /v1/snapshots: one page of a task's snapshots. */
+  snapshotsList(options?: SnapshotListOptions): Promise<SnapshotList>;
+  /** POST /v1/tasks/{ref}/snapshots: snapshot the task's VM. */
+  snapshotsCreate(reference: string, options?: SnapshotCreateOptions): Promise<SnapshotDocument>;
+  /** POST /v1/snapshots/{sid}/restore: restore one of a task's snapshots. */
+  snapshotsRestore(reference: string, snapshot: string): Promise<SnapshotDocument>;
+  /** DELETE /v1/snapshots/{sid}: delete one of a task's snapshots. */
+  snapshotsDelete(reference: string, snapshot: string): Promise<null>;
+  /** DELETE /v1/tasks/{ref}/restored: stop the task's restored VM. */
+  snapshotsStopRestored(reference: string): Promise<null>;
   private constructor();
 }
 

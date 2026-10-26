@@ -62,8 +62,10 @@ api-check:
 # can be pointed at against the real apihttp handler with an in-memory backend on
 # loopback TLS: no cluster, no root, no Firecracker. `conformance-lab` runs the
 # identical fixtures against a live manager; it skips cleanly when
-# CONFORMANCE_HOST/CONFORMANCE_READER_TOKEN are not set and mutates nothing
-# unless CONFORMANCE_ALLOW_MUTATION=1. See test/conformance/README.md.
+# CONFORMANCE_HOST/CONFORMANCE_READER_TOKEN are not set, refuses a
+# non-https:// host (the run carries bearer tokens), and mutates nothing unless
+# CONFORMANCE_ALLOW_MUTATION=1. Once it starts it is strict: a case that did not
+# run fails it unless CONFORMANCE_ALLOW_SKIPS=1. See test/conformance/README.md.
 conformance:
 	$(GO) test ./test/conformance -run TestConformanceMock -count=1
 
@@ -90,6 +92,21 @@ sdk-test-node:
 	node --test sdk/node/test/*.test.mjs
 
 sdk-test: sdk-test-python sdk-test-node
+
+# Type-check the Node declarations with the pinned TypeScript compiler, the only
+# devDependency of sdk/node. `npm ci` must run first (CI installs from the
+# committed lockfile in its own step); the runtime package keeps zero
+# dependencies, so `npm ci --omit=dev` installs nothing and the client stays
+# importable with the Node standard library alone. The second step regenerates
+# tools/sdkgen/testdata/accepted.yaml into a temp dir and type-checks it, and
+# re-proves that every name the generator refuses as a TypeScript declaration is
+# refused by this compiler too. That Go step skips with an actionable message
+# when node_modules is absent, so `go test ./tools/sdkgen` and `make sdk-check`
+# still run on a bare checkout; this target itself needs `npm ci` first, and the
+# sdk CI job installs before calling it, so the gates never skip there.
+sdk-typecheck:
+	cd sdk/node && npm run typecheck
+	$(GO) test -v ./tools/sdkgen -run 'TestPinnedTSC|TestAcceptedFixtureTypeChecks' -count=1
 
 # Run unit tests only
 test-unit:
@@ -224,7 +241,11 @@ test-quick:
 # Create docker image
 docker-image:
 	@echo "Building Docker image..."
-	docker build -t swarmcracker:$(VERSION) .
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg GIT_COMMIT=$(GIT_COMMIT) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-t swarmcracker:$(VERSION) .
 
 # Run with hot reload (development)
 dev:
@@ -286,7 +307,7 @@ tag:
 	@echo "Tag $(TAG) created. Push with:"
 	@echo "  git push origin $(TAG)"
 
-.PHONY: all swarmcracker install test test-quick test-all api-check sdk-gen sdk-check sdk-test sdk-test-python sdk-test-node integration-test e2e-test testinfra lint fmt clean examples cli-image release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
+.PHONY: all swarmcracker install test test-quick test-all api-check sdk-gen sdk-check sdk-test sdk-test-python sdk-test-node sdk-typecheck integration-test e2e-test testinfra lint fmt clean examples cli-image release tag docs race deps docker-image dev install-tools mocks lab lab-down help binaries
 
 # Download embedded static binaries for VM rootfs injection
 .PHONY: binaries

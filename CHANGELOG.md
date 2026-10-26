@@ -48,10 +48,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Client-boundary guard** — a test now rejects new `api.ControlClient` imports
   in `cmd/swarmcracker` and `pkg/api`, with an explicit allowlist for the legacy
   paths still being migrated.
+- **API v1 closure (issue #102)** — the remaining contract items, shipped as one
+  campaign:
+  - **Live health over the API** — `task ls --health` reads
+    `GET /v1/tasks?health=true` through the manager (so it needs
+    `-H`/`--host`), prints exactly one merged `TaskList`, and maps a `207`
+    partial page to exit status `7`: the page printed, at least one node was
+    unreadable.
+  - **Interactive attach over the API** — `POST /v1/tasks/{id}/attach` (R18) is
+    one HTTP/1.1 full-duplex request: the chunked body is stdin, the chunked
+    response is the console, and the broker relays it to the node that runs the
+    task. `swarmcracker -H … vm attach <task>` streams it with Ctrl-P Ctrl-Q
+    detach; the local socket path is unchanged. New `attach` capability,
+    audited once as `task.attach`.
+  - **Snapshots are real restore points** — create copies the task disk
+    (reflink, else a sparse copy) while the VM stays paused, so memory and disk
+    describe the same instant; restore always writes that copy over the recorded
+    rootfs path, replacing whatever is there (a stopped restored VM leaves its
+    disk behind, and its writes do not belong to this snapshot's memory image).
+    A restore of a task that is still running is refused, over the API and from
+    the local CLI. A restored VM is stopped explicitly with
+    `DELETE /v1/tasks/{id}/restored` or `vm snapshot stop-restored`. Snapshot
+    requests the manager relays to a node default to a five-minute deadline
+    (`swarmd-firecracker --snapshot-timeout`), and local
+    `vm snapshot create` / `restore` take the same five-minute `--timeout`
+    instead of a fixed 60-second context.
+  - **Query hardening** — each route declares the query parameters it
+    implements; an unknown name is `400 invalid` with `details.parameter` instead
+    of being silently ignored, and a list cursor is bound to the route and filter
+    that produced it (`400 invalid`, `details.reason: "cursor_mismatch"`
+    otherwise).
+  - **SDK parity** — the Python and Node clients now cover files and the
+    experimental snapshot routes, retries are opt-in (honouring `Retry-After`,
+    resending an idempotent body exactly), and the generated types are gated by
+    a pinned TypeScript compiler over a hostile/accepted fixture.
+  - **Internal ingress declared private** — `:4243` (`/v1/ingress`,
+    `/v1/ingress/report`) joins `:4242` and `:4245` as an explicitly private,
+    unsupported listener (R19/G7). All three bind all interfaces with cluster
+    mutual TLS as the only boundary. `:8080` (health and metrics) is in the same
+    unsupported set but a different shape: loopback only (`127.0.0.1:8080` by
+    default, `--health-addr`) and **no authentication**, so the bind address is
+    the boundary.
+  - **Daemon image fixed** — `Dockerfile` builds without `make` or a shadowed
+    package, produces a static non-PIE daemon, and CI builds and runs it.
+  - **Conformance hardened and run for real** — fixtures carry per-run
+    identities, the lab target must be `https://`, and a gated case that skips
+    fails the run unless `CONFORMANCE_ALLOW_SKIPS=1`. A real run against the lab
+    manager (`v0.12.0-lab2`) passed 34 executed subtests; it also found and fixed
+    a Firecracker API keep-alive leak that broke a second snapshot create.
 
 ### Changed
 - `volume export -o` is now `volume export -O` / `--output-file`; the global
   `-o` / `--output` flag is reserved for machine output formats.
+- Snapshot operations now have a default deadline (`--snapshot-timeout 5m` on
+  `swarmd-firecracker`), so a create relayed through the manager API is no longer
+  unbounded; a request past it is `504 timeout` and the node still resumes the VM.
+  The local `vm snapshot create` / `restore` commands keep their own 60-second
+  context and are unaffected.
+- The `:4243` ingress endpoints and the node broker are documented as private:
+  they are not part of the v1 contract and may change in any minor release.
+
+### Fixed
+- `Dockerfile` no longer depends on `make` at build time or on a package that
+  shadowed the daemon binary; the image builds and runs in CI.
+- Snapshot create no longer leaks keep-alive connections to the Firecracker API
+  socket, which made a second create fail `503 Too many open connections` and
+  left the VM paused.
+- The API now refuses a redirect in the document, stream and attach clients
+  instead of following it (a redirected request could replay the bearer token
+  and return HTML as console or file bytes).
 
 ---
 

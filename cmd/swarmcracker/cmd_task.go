@@ -55,6 +55,7 @@ func newTaskListCommand() *cobra.Command {
 		serviceID  string
 		healthPort int
 		noHealth   bool
+		health     bool
 	)
 
 	cmd := &cobra.Command{
@@ -67,15 +68,17 @@ shows the daemon's live healthcheck state, read from the node owning each task;
 a task the owning node has not published health for falls back to the
 health-gated task state, and a node that cannot be reached shows "-".
 
-Use -o json or -o name for the v1 envelope; phase 0 omits live health from
-those modes.`,
+Use -o json or -o name for the v1 envelope. Those modes omit live health unless
+--health is given, which reads it through the manager API (-H/--host) and exits
+7 when the manager reports only a partial page.`,
 		Aliases: []string{"list"},
 		Example: `  swarmcracker task ls
   swarmcracker task ls -o json
   swarmcracker task ls -o name
   swarmcracker task ls --format json          # legacy shape
   swarmcracker task ls --filter "node=123abc..."
-  swarmcracker task ls --all`,
+  swarmcracker task ls --all
+  swarmcracker -H https://manager:4244 task ls --health`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -83,14 +86,33 @@ those modes.`,
 			if outputFormat != "" && cmd.Flags().Changed("format") {
 				return output.NewError(output.CodeUsage, "use either --output or --format, not both")
 			}
+			if health {
+				if err := validateTaskHealthFlags(cmd, noHealth); err != nil {
+					return err
+				}
+				switch output.Format(outputFormat) {
+				case "", output.FormatTable:
+					return listTasksWithHealth(outputFormat, filter, quiet, noTrunc, node, serviceID)
+				case output.FormatJSON, output.FormatName:
+					if quiet {
+						if output.Format(outputFormat) == output.FormatName {
+							return output.NewError(output.CodeUsage, "do not combine -o name with --quiet")
+						}
+						return output.NewError(output.CodeUsage, "use -o name instead of --quiet")
+					}
+					return listTasksWithHealth(outputFormat, filter, quiet, noTrunc, node, serviceID)
+				default:
+					return output.NewErrorf(output.CodeUsage, "unsupported output format %q for task ls", outputFormat)
+				}
+			}
 			if outputFormat == "" || output.Format(outputFormat) == output.FormatTable {
 				return listTasks(format, filter, quiet, all, noTrunc, node, serviceID,
 					clusterHealthOptions{Port: healthPort, Disabled: noHealth})
 			}
 			switch output.Format(outputFormat) {
 			case output.FormatJSON, output.FormatName:
-				// The contract path has no live-health lookup: phase 0 emits
-				// the local read model only.
+				// The contract path has no live-health lookup unless --health
+				// was given; it emits the local read model only.
 				if quiet {
 					if output.Format(outputFormat) == output.FormatName {
 						return output.NewError(output.CodeUsage, "do not combine -o name with --quiet")
@@ -116,6 +138,7 @@ those modes.`,
 	cmd.Flags().StringVar(&serviceID, "service", "", "Filter by service ID (or name with -o json/name)")
 	cmd.Flags().IntVar(&healthPort, "health-port", defaultHealthPort, "Port of each node's health server, used to fetch live health")
 	cmd.Flags().BoolVar(&noHealth, "no-health", false, "Skip the live-health lookup; derive HEALTH from the task state only")
+	cmd.Flags().BoolVar(&health, "health", false, "Read live health through the manager API (-H/--host); exit 7 on a partial page")
 
 	return cmd
 }
@@ -278,6 +301,188 @@ func listTasksContractWithClient(ctx context.Context, l taskLister, w io.Writer,
 	default:
 		return output.NewErrorf(output.CodeUsage, "unsupported output format %q for task ls", format)
 	}
+}
+
+// taskHealthLister is the narrow client surface the --health path needs. It
+// matches *client.Client, so the command can be tested without certificates or
+// a live manager.
+type taskHealthLister interface {
+	ListTasksHealth(context.Context) (v1.TaskList, bool, error)
+}
+
+// validateTaskHealthFlags rejects the combinations that would otherwise read
+// health twice, or not at all, before a client is built.
+func validateTaskHealthFlags(cmd *cobra.Command, noHealth bool) error {
+	if cmd.Flags().Changed("format") {
+		return output.NewError(output.CodeUsage,
+			"--health reads health through the manager API: it cannot be combined with the legacy --format")
+	}
+	if noHealth {
+		return output.NewError(output.CodeUsage, "--health and --no-health are mutually exclusive")
+	}
+	if cmd.Flags().Changed("health-port") {
+		return output.NewError(output.CodeUsage,
+			"--health reads health through the manager API: --health-port is not used")
+	}
+	if apiHost == "" {
+		return output.NewError(output.CodeUsage,
+			"--health requires the manager API: add --host, or drop --health for the local health reads "+
+				"(--health-port or --no-health)")
+	}
+	return nil
+}
+
+// listTasksWithHealth is the `task ls --health` path: it reads live health from
+// the manager API, prints the page, then reports a partial page as exit 7.
+func listTasksWithHealth(format, filter string, quiet, noTrunc bool, node, serviceID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if output.Format(format) == "" {
+		format = string(output.FormatTable)
+	}
+
+	c, err := newContractClient()
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+
+	return listTasksWithHealthClient(ctx, c, os.Stdout, format, filter, quiet, noTrunc, node, serviceID)
+}
+
+// listTasksWithHealthClient is the body of `task ls --health` with the client
+// injected. The page is printed first and the partial is returned afterwards:
+// the caller must still see the tasks the manager could read, and the returned
+// error is what makes the process exit 7.
+func listTasksWithHealthClient(ctx context.Context, l taskHealthLister, w io.Writer, format, filter string, quiet, noTrunc bool, node, serviceID string) error {
+	doc, partial, err := l.ListTasksHealth(ctx)
+	if err != nil {
+		return contractError(err)
+	}
+	doc.Items = filterV1Tasks(doc.Items, filter, node, serviceID, true)
+
+	switch output.Format(format) {
+	case output.FormatJSON:
+		if err := output.WriteJSON(w, doc); err != nil {
+			return err
+		}
+	case output.FormatName:
+		for _, task := range doc.Items {
+			fmt.Fprintln(w, task.ID)
+		}
+	case output.FormatTable:
+		switch {
+		case quiet:
+			for _, task := range doc.Items {
+				fmt.Fprintln(w, task.ID)
+			}
+		case len(doc.Items) == 0:
+			fmt.Fprintln(w, "No tasks found")
+		default:
+			writeTasksHealthTable(w, doc.Items, noTrunc)
+		}
+	default:
+		return output.NewErrorf(output.CodeUsage, "unsupported output format %q for task ls", format)
+	}
+
+	if !partial {
+		return nil
+	}
+	return partialTasksError(doc.Partial)
+}
+
+// writeTasksHealthTable renders the legacy table's columns from a v1 page. The
+// HEALTH value is the API's live observation, not the derived state.
+func writeTasksHealthTable(w io.Writer, tasks []v1.Task, noTrunc bool) {
+	header := fmt.Sprintf("%-20s %-20s %-12s %-12s %-12s %s %s", "ID", "SERVICE", "STATUS", "HEALTH", "NODE", "IMAGE", "ERROR")
+	fmt.Fprintln(w, header)
+	fmt.Fprintln(w, strings.Repeat("-", len(header)))
+
+	for _, task := range tasks {
+		nodeID := task.NodeID
+		if !noTrunc && len(nodeID) > 12 {
+			nodeID = nodeID[:12]
+		}
+		svcID := task.ServiceID
+		if !noTrunc && len(svcID) > 12 {
+			svcID = svcID[:12]
+		}
+		row := fmt.Sprintf("%-20s %-20s %-12s %-12s %-12s %s",
+			task.ID, svcID, strings.ToUpper(task.State), taskHealthAPIDisplay(task), nodeID, task.Image)
+		if reason := truncateMiddle(strings.Join(strings.Fields(task.Error), " "), taskErrorReasonWidth); reason != "" {
+			row += " " + reason
+		}
+		fmt.Fprintln(w, row)
+	}
+	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
+}
+
+// taskHealthAPIDisplay is the HEALTH cell of the API page: the node's live
+// observation, or "-" when the task publishes none (or its node did not answer).
+func taskHealthAPIDisplay(task v1.Task) string {
+	if task.Health == nil || task.Health.Status == "" {
+		return "-"
+	}
+	return task.Health.Status
+}
+
+// partialTasksError is the typed error a partial page produces: its message
+// names every node that did not answer, so table and name modes still explain
+// the exit status on stderr. JSON mode renders it as the Error document.
+//
+// Only json/ndjson emits that document; `-o name` (and table) deliberately print
+// prose here, because main owns error rendering and emits Error documents only
+// for the JSON output formats. Changing that would alter every command's stderr
+// bytes, so the prose is the repo convention and the exit code (7) is identical
+// across modes.
+//
+// Nodes are counted once: a partial list that repeats a node (a server or an
+// older aggregator can) must not read "2 node(s) did not answer: worker-2,
+// worker-2". The first entry wins and a missing node name is backfilled from a
+// later one, matching how the client folds pages.
+func partialTasksError(partials []v1.Partial) error {
+	folded := make([]v1.Partial, 0, len(partials))
+	index := make(map[string]int, len(partials))
+	for _, partial := range partials {
+		if identity := partialNodeIdentity(partial); identity != "" {
+			if at, dup := index[identity]; dup {
+				if folded[at].NodeName == "" {
+					folded[at].NodeName = partial.NodeName
+				}
+				continue
+			}
+			index[identity] = len(folded)
+		}
+		folded = append(folded, partial)
+	}
+
+	names := make([]string, 0, len(folded))
+	for _, partial := range folded {
+		name := partial.NodeName
+		if name == "" {
+			name = partial.NodeID
+		}
+		if name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return output.NewError(output.CodePartial,
+			"health is partial: the manager could not read health for part of the page")
+	}
+	return output.NewErrorf(output.CodePartial,
+		"health is partial: %d node(s) did not answer: %s", len(names), strings.Join(names, ", "))
+}
+
+// partialNodeIdentity is the key a partial folds by: its node ID, or the name
+// when the document carries only that. An entry with neither names no node, so
+// it keeps its own place instead of collapsing into another anonymous entry.
+func partialNodeIdentity(partial v1.Partial) string {
+	if partial.NodeID != "" {
+		return partial.NodeID
+	}
+	return partial.NodeName
 }
 
 // filterV1Tasks mirrors the legacy filterTasks, with two contract-safe

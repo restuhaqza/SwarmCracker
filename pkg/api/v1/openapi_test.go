@@ -564,7 +564,9 @@ func TestOpenAPICommonResponseHeaders(t *testing.T) {
 
 // TestOpenAPIListParameters pins the exact query surface of every list path.
 // Phase 1 only implements limit, cursor and label, so an added-but-unserved
-// parameter (state, role, hostname, …) must fail the contract test.
+// parameter (state, role, hostname, …) must fail the contract test. `/v1/tasks`
+// also declares `label`: the route accepts it (the v1 SDKs forward it) but does
+// not filter on it, which its parameter description states.
 func TestOpenAPIListParameters(t *testing.T) {
 	doc := loadOpenAPI(t)
 
@@ -574,7 +576,7 @@ func TestOpenAPIListParameters(t *testing.T) {
 	}{
 		{"/v1/services", []string{"limit", "cursor", "label"}},
 		{"/v1/services/{id}/tasks", []string{"id", "limit", "cursor"}},
-		{"/v1/tasks", []string{"limit", "cursor", "health"}},
+		{"/v1/tasks", []string{"limit", "cursor", "health", "label"}},
 		{"/v1/nodes", []string{"label", "limit", "cursor"}},
 		{"/v1/networks", []string{"limit", "cursor", "label"}},
 		{"/v1/configs", []string{"limit", "cursor", "label"}},
@@ -699,6 +701,68 @@ func TestOpenAPIExec(t *testing.T) {
 		require.Containsf(t, frameSchema, key, "ExecFrame.%s missing", key)
 	}
 	require.NotContains(t, frameSchema, "exit_code", "exec keys are camelCase")
+}
+
+// TestOpenAPIAttach pins the interactive console route. It is the only
+// full-duplex route in the file: the request body is stdin and the response body
+// is the console, so both directions are raw bytes and neither is a document.
+func TestOpenAPIAttach(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	item := doc.Paths.Find("/v1/tasks/{id}/attach")
+	require.NotNil(t, item, "attach path missing")
+	require.NotNil(t, item.Post, "attach POST operation missing")
+	op := item.Post
+
+	require.Contains(t, op.Description, "tasks:exec", "the operation must name its scope")
+	require.Contains(t, op.Description, "full duplex", "the transport ruling must be documented")
+	require.Contains(t, op.Description, "console_unavailable",
+		"the no-console reason must be documented")
+	require.Contains(t, op.Description, "task.attach", "the audit action must be documented")
+	require.Contains(t, op.Description, "must be running",
+		"attach must state that it needs a live task")
+	require.Contains(t, op.Description, "selectors", "attach must state the selector rule")
+
+	id := findParameter(t, op.Parameters, "id")
+	require.True(t, id.Required)
+	require.True(t, id.Schema.Value.Type.Is("string"))
+	require.Len(t, op.Parameters, 1, "attach takes no query parameter")
+
+	// The transport is one request: a body that is not required (a read-only
+	// attach) and a raw-byte response.
+	require.NotNil(t, op.RequestBody)
+	require.NotNil(t, op.RequestBody.Value)
+	require.False(t, op.RequestBody.Value.Required, "an empty stdin is a valid attach")
+	stdin := op.RequestBody.Value.Content.Get("application/octet-stream")
+	require.NotNil(t, stdin, "the request body must be application/octet-stream")
+	require.Equal(t, "binary", stdin.Schema.Value.Format)
+
+	ok := op.Responses.Value("200")
+	require.NotNil(t, ok, "attach 200 response missing")
+	console := ok.Value.Content.Get("application/octet-stream")
+	require.NotNil(t, console, "the console stream must be application/octet-stream")
+	require.Equal(t, "binary", console.Schema.Value.Format)
+
+	notFound := op.Responses.Value("404")
+	require.NotNil(t, notFound, "attach 404 response missing")
+	require.Contains(t, *notFound.Value.Description, "console_unavailable",
+		"the 404 must name the reason a running task cannot be attached to")
+
+	for _, status := range []string{"400", "401", "403", "404", "429", "501", "503"} {
+		response := op.Responses.Value(status)
+		require.NotNilf(t, response, "attach %s response missing", status)
+		require.NotNilf(t, response.Value, "attach %s response unresolved", status)
+		require.NotNilf(t, response.Value.Content.Get(v1MediaType),
+			"attach %s must be declared in %s", status, v1MediaType)
+	}
+
+	// The capability the 501 names is the one the version document advertises.
+	version := doc.Components.Schemas["VersionInfo"]
+	require.NotNil(t, version)
+	capabilities := version.Value.Properties["capabilities"]
+	require.NotNil(t, capabilities)
+	require.Contains(t, capabilities.Value.Description, "attach",
+		"the capability list must name attach")
 }
 
 // TestOpenAPILogsAndFiles pins the two remaining task-scoped routes. Logs are
@@ -1507,7 +1571,7 @@ func TestOpenAPIHealth(t *testing.T) {
 		"the status enum must match runtime.VMHealth states")
 }
 
-// TestOpenAPISnapshotContract pins the experimental snapshot surface: the seven
+// TestOpenAPISnapshotContract pins the experimental snapshot surface: the eight
 // paths, the 501 on every operation, the flat forms' required task parameter and
 // a Snapshot schema that matches the Go tags exactly.
 func TestOpenAPISnapshotContract(t *testing.T) {
@@ -1560,6 +1624,7 @@ func TestOpenAPISnapshotContract(t *testing.T) {
 		"/v1/tasks/{id}/snapshots get":     doc.Paths.Find("/v1/tasks/{id}/snapshots").Get,
 		"/v1/tasks/{id}/snapshots/restore": doc.Paths.Find("/v1/tasks/{id}/snapshots/{sid}/restore").Post,
 		"/v1/tasks/{id}/snapshots/delete":  doc.Paths.Find("/v1/tasks/{id}/snapshots/{sid}").Delete,
+		"/v1/tasks/{id}/restored":          doc.Paths.Find("/v1/tasks/{id}/restored").Delete,
 		"/v1/snapshots":                    doc.Paths.Find("/v1/snapshots").Get,
 		"/v1/snapshots/restore":            doc.Paths.Find("/v1/snapshots/{id}/restore").Post,
 		"/v1/snapshots/delete":             doc.Paths.Find("/v1/snapshots/{id}").Delete,
@@ -1602,4 +1667,15 @@ func TestOpenAPISnapshotContract(t *testing.T) {
 	// running is 404, a socket that disappeared under the node is 409.
 	assert.Contains(t, create.Description, "task_not_running")
 	assert.Contains(t, create.Description, "vm_socket_missing")
+
+	// Stopping a restored VM is its own documented contract: 204, the
+	// no_restored_vm reason, a 405 for any other method and the audit action.
+	stop := doc.Paths.Find("/v1/tasks/{id}/restored").Delete
+	require.NotNil(t, stop)
+	assert.Contains(t, stop.Description, "no_restored_vm")
+	assert.Contains(t, stop.Description, "task.restored.stop")
+	assert.Contains(t, stop.Description, "SIGTERM")
+	require.NotNil(t, stop.Responses.Status(204))
+	require.NotNil(t, stop.Responses.Status(404))
+	require.NotNil(t, stop.Responses.Status(405))
 }

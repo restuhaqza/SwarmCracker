@@ -485,9 +485,9 @@ func TestVersionCapabilitiesFollowTheBroker(t *testing.T) {
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.Equal(t,
-		[]string{"read", "write", "events", "exec", "logs", "files", "health"},
+		[]string{"read", "write", "events", "exec", "logs", "files", "health", "attach"},
 		info.Capabilities,
-		"a wired broker advertises exec, logs, files and health")
+		"a wired broker advertises exec, attach, logs, files and health")
 
 	withoutBroker := newTestAPI(t, nil)
 	rec = withoutBroker.do(t, http.MethodGet, "/v1/version", withToken(withoutBroker.token))
@@ -496,7 +496,7 @@ func TestVersionCapabilitiesFollowTheBroker(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
 	assert.NotContains(t, info.Capabilities, "health",
 		"without a broker there is no health route to promise")
-	for _, capability := range []string{"exec", "logs", "files"} {
+	for _, capability := range []string{"exec", "logs", "files", "attach"} {
 		assert.NotContains(t, info.Capabilities, capability,
 			"without a broker the version document must not promise %s", capability)
 	}
@@ -518,7 +518,7 @@ func TestVersionCapabilitiesKeepNarrowingButNotBrokerOperations(t *testing.T) {
 
 	var info v1.VersionInfo
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &info))
-	assert.Equal(t, []string{"read", "exec", "logs", "files", "health"}, info.Capabilities,
+	assert.Equal(t, []string{"read", "exec", "logs", "files", "health", "attach"}, info.Capabilities,
 		"the caller's order survives; the broker operations cannot be denied")
 }
 

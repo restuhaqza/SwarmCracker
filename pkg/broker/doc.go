@@ -1,6 +1,7 @@
 // Package broker is the internal manager-to-node transport for the
-// programmatic API. It carries the operations that need to run on the node that
-// hosts a task (exec, logs, files, health) between a manager and that node.
+// programmatic API. It carries the /v1/tasks/{taskID}/{op} operations that need
+// to run on the node that hosts a task (exec, attach, logs, files, health)
+// between a manager and that node.
 //
 // The broker is not a public surface. It is served over the cluster's mutual
 // TLS identity, on port 4245 by default, and a node broker never receives a
@@ -33,13 +34,15 @@
 //
 // # Operations
 //
-// Exec (non-interactive only), logs and files are served. Logs read the task's
-// Firecracker console file, so they need no guest agent and remain available
-// after the task exits; files travel through the guest agent over the vsock
-// muxer. Exec and files therefore need a running task, and a log-only task (the
-// VM is gone, the console file is not) answers a typed 404 for them. Interactive
-// TTY over the API is a WebSocket follow-up, so a tty request is a typed 501
-// with details.reason "tty_not_supported".
+// Exec (non-interactive only), attach, logs and files are served. Logs read the
+// task's Firecracker console file, so they need no guest agent and remain
+// available after the task exits; files travel through the guest agent over the
+// vsock muxer; attach relays the task's interactive console Unix socket in both
+// directions on one full-duplex HTTP/1.1 request. Exec, files and attach
+// therefore need a running task, and a log-only task (the VM is gone, the console
+// file is not) answers a typed 404 for them. Interactive TTY over exec is a
+// follow-up, so a tty request is a typed 501 with details.reason
+// "tty_not_supported"; the console is attach's job instead.
 //
 // # Trust
 //
