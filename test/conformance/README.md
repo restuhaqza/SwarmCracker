@@ -256,10 +256,10 @@ The backend is mutex-guarded, so the suite is clean under `-race`. It advertises
 the capability set the shipped default handler advertises (`read`, `write`,
 `events`, plus the broker's `exec`, `logs`, `files`, `health`, `attach`), and the
 mock leg reads that list from `/v1/version` rather than hard-coding it: snapshots
-are off, so the three snapshot cases in `write.json` and `errors.json` are the
-only gated skips. The broker also serves the file route from an in-memory guest
-filesystem, so the raw file round-trip in `write.json` runs in the mock leg
-instead of being gated.
+are off, so the four snapshot cases in `write.json` and the one in `errors.json`
+are the only gated skips. The broker also serves the file route from an
+in-memory guest filesystem, so the raw file round-trip in `write.json` runs in
+the mock leg instead of being gated.
 
 ## The lab leg
 
@@ -305,14 +305,21 @@ one started with `--snapshots-enable`:
   `capture` of the id and a `DELETE` that cleans it up) and `errors.json` asserts
   `DELETE /v1/tasks/{id}/restored` → `404 no_restored_vm`, both
   `requiresCapabilities: ["snapshots"]`. They skip against a default manager.
+- While that snapshot exists, `write.json` proves the running-task guard on both
+  route forms: `POST /v1/tasks/{id}/snapshots/{sid}/restore` and the flat
+  `POST /v1/snapshots/{sid}/restore?task={id}` both answer `409 conflict` with
+  `error.details.reason: "restore_task_running"`. A live VM owns its rootfs, so a
+  second VM on the same file would corrupt both; asserting both forms means the
+  guard cannot be lost on one of them.
 
 Because a snapshot copies the per-task disk, the node records the copy as
 `disk_path` in its own metadata and adds it to `sizeBytes`; that path is not part
 of the wire DTO, so the case asserts the snapshot document and a positive total
 size instead of inventing a field. `CONFORMANCE_TASK_ID` must name a **running**
-task for the create (a VM is snapshotted live) and a task with **no restored VM**
-for the `no_restored_vm` case; a task that does have one answers `204` and the
-case would report it.
+task for the create (a VM is snapshotted live) and for the restore guard (a
+running task is what makes the restore a `409`), and a task with **no restored
+VM** for the `no_restored_vm` case; a task that does have one answers `204` and
+the case would report it.
 
 `make conformance-lab` skips cleanly (exit 0) when `CONFORMANCE_HOST` or
 `CONFORMANCE_READER_TOKEN` is missing. It refuses a non-`https://` host: the run

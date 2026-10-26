@@ -47,14 +47,14 @@ var mockConsoleBytes = []byte("console ready\n")
 // case that silently stops running (a stricter skip policy, a lost file, a typo
 // in a case name that a filter no longer matches) is a regression the mock leg
 // must fail on, so the count is pinned here and bumped with every new case.
-const expectedMockCases = 47
+const expectedMockCases = 49
 
 // expectedMockGatedCases is how many of those cases are skipped because the mock
 // does not advertise the capability they require. The mock is the shipped
 // default — snapshots are off, so every snapshot case is a declared gate, not a
 // silent loss. Any other skip is a failure. The files round-trip is not gated:
 // the mock broker serves the file route, so those cases have to run.
-const expectedMockGatedCases = 3
+const expectedMockGatedCases = 5
 
 // TestConformanceMock executes every fixture against the real handler with an
 // in-memory backend. Mutations always run: this backend is thrown away. The only
