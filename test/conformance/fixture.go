@@ -10,6 +10,7 @@ package conformance
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -124,22 +125,40 @@ type Request struct {
 	Headers map[string]string `json:"headers,omitempty"`
 	// Body is a JSON value. null or an absent body sends no request body.
 	Body json.RawMessage `json:"body,omitempty"`
-	// ContentType overrides the default v1 media type a body is sent with. A
-	// PATCH uses application/merge-patch+json.
+	// BodyBase64 is a raw request body, for the routes that carry opaque bytes
+	// instead of a document (the file upload). It is mutually exclusive with
+	// Body, and an empty string means "no raw body" — a raw upload of zero bytes
+	// is a body no route needs.
+	BodyBase64 string `json:"bodyBase64,omitempty"`
+	// ContentType overrides the default media type a body is sent with. A JSON
+	// body defaults to the v1 media type (a PATCH uses
+	// application/merge-patch+json) and a raw body defaults to
+	// application/octet-stream.
 	ContentType string `json:"contentType,omitempty"`
 	// Accept overrides the default Accept header.
 	Accept string `json:"accept,omitempty"`
 }
 
 // Expect is the assertion set for one response. Exactly one of Kind and
-// ErrorCode is set, except for a documentless status (204/304) and for a
-// streamed response, which carries frames instead of a document.
+// ErrorCode is set, except for a documentless status (204/304), for a streamed
+// response, which carries frames instead of a document, and for a raw response,
+// which carries BodyBase64 and BodyLength instead.
 type Expect struct {
 	Status      int    `json:"status"`
 	Kind        string `json:"kind,omitempty"`
 	ErrorCode   string `json:"errorCode,omitempty"`
 	Items       *int   `json:"items,omitempty"`
 	NextPresent *bool  `json:"nextPresent,omitempty"`
+	// BodyBase64 is the exact expected body of a raw response (a file download):
+	// an opaque byte string, decoded and compared byte for byte. It is only
+	// valid without kind, errorCode and stream. An empty string means "no raw
+	// assertion"; a body of zero bytes is BodyLength: 0.
+	BodyBase64 string `json:"bodyBase64,omitempty"`
+	// BodyLength is the exact expected length of a raw response body. It is the
+	// assertion for a size the fixture does not want to spell out in bytes, and
+	// a truncated body fails on it. Only valid with a raw response, like
+	// BodyBase64.
+	BodyLength *int `json:"bodyLength,omitempty"`
 	// RequestIDInBody asserts the presence (true) or absence (false) of the
 	// request ID echo at RequestIDPath in a success document. An error document
 	// always echoes the request ID in error.requestId and does not use this flag.
@@ -416,6 +435,9 @@ func (c Case) validate() error {
 			return fmt.Errorf("request header %q may not be set by a fixture", name)
 		}
 	}
+	if err := c.validateRawRequest(); err != nil {
+		return err
+	}
 	for _, key := range c.Expect.AbsentKeysAnywhere {
 		if strings.TrimSpace(key) == "" {
 			return errors.New("absentKeysAnywhere entries must be non-empty key names")
@@ -560,8 +582,25 @@ func (c Case) validateCapture() error {
 	return nil
 }
 
+// validateRawRequest checks the raw request body: it is bytes, not a JSON value,
+// so a case may not declare both, and a base64 typo is a fixture bug the loader
+// must catch before any request is sent.
+func (c Case) validateRawRequest() error {
+	if c.Request.BodyBase64 == "" {
+		return nil
+	}
+	if len(c.Request.Body) > 0 {
+		return errors.New("request.body and request.bodyBase64 are mutually exclusive: a raw body is sent as bytes, not as a JSON value")
+	}
+	if _, err := base64.StdEncoding.DecodeString(c.Request.BodyBase64); err != nil {
+		return fmt.Errorf("request.bodyBase64 is not valid base64: %w", err)
+	}
+	return nil
+}
+
 // validateExpect checks one expectation block. strict requires exactly one of
-// kind and errorCode; a follow block and a stream may omit both.
+// kind and errorCode, or a raw body assertion in their place; a follow block and
+// a stream may omit both.
 func validateExpect(e Expect, strict bool, where string) error {
 	if e.Status < 100 || e.Status > 599 {
 		return fmt.Errorf("%s status must be a 3-digit HTTP status", where)
@@ -583,6 +622,37 @@ func validateExpect(e Expect, strict bool, where string) error {
 	}
 
 	documentless := e.Status == http.StatusNoContent || e.Status == http.StatusNotModified
+
+	raw := e.BodyBase64 != "" || e.BodyLength != nil
+	if raw {
+		// A raw response is opaque bytes. There is no document to look a kind,
+		// a path or a key up in, and a stream or a follow counts frames or
+		// asserts a document instead, so every combination in which these fields
+		// would be half-checked is refused here.
+		if !strict {
+			return fmt.Errorf("%s: bodyBase64 and bodyLength describe a raw response, while a stream asserts frames and a follow asserts a document", where)
+		}
+		if hasKind || hasCode {
+			return fmt.Errorf("%s: a raw response carries no document, so kind and errorCode must be empty", where)
+		}
+		if documentless {
+			return fmt.Errorf("%s: a %d carries no body, so bodyBase64 and bodyLength must be empty", where, e.Status)
+		}
+		if e.Items != nil || e.NextPresent != nil || e.RequestIDInBody != nil || e.RequestIDPath != "" ||
+			len(e.JSONPaths) > 0 || len(e.PresentKeys) > 0 || len(e.MinValues) > 0 ||
+			len(e.AbsentKeys) > 0 || len(e.AbsentKeysAnywhere) > 0 {
+			return fmt.Errorf("%s: bodyBase64 and bodyLength are the only assertions a raw response supports; a document assertion cannot be checked against bytes", where)
+		}
+		if e.BodyLength != nil && *e.BodyLength < 0 {
+			return fmt.Errorf("%s: bodyLength must not be negative", where)
+		}
+		if e.BodyBase64 != "" {
+			if _, err := base64.StdEncoding.DecodeString(e.BodyBase64); err != nil {
+				return fmt.Errorf("%s: bodyBase64 is not valid base64: %w", where, err)
+			}
+		}
+	}
+
 	switch {
 	case documentless && (hasKind || hasCode):
 		return fmt.Errorf("%s: a %d carries no document, so kind and errorCode must be empty", where, e.Status)
@@ -590,8 +660,8 @@ func validateExpect(e Expect, strict bool, where string) error {
 		return nil
 	case hasKind && hasCode:
 		return fmt.Errorf("%s: exactly one of kind or errorCode must be set", where)
-	case strict && !hasKind && !hasCode:
-		return fmt.Errorf("%s: exactly one of kind or errorCode must be set", where)
+	case strict && !raw && !hasKind && !hasCode:
+		return fmt.Errorf("%s: exactly one of kind, errorCode or a raw body assertion must be set", where)
 	}
 	return nil
 }

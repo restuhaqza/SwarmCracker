@@ -223,6 +223,37 @@
       "expect": {
         "status": 204
       }
+    },
+    {
+      "name": "upload a file as raw bytes",
+      "mutating": true,
+      "request": {
+        "method": "PUT",
+        "path": "/v1/tasks/$task/files",
+        "query": {"path": "/tmp/conformance-file-{{run}}"},
+        "role": "admin",
+        "bodyBase64": "Y29uZm9ybWFuY2UgZmlsZQoAAf8="
+      },
+      "expect": {
+        "status": 204
+      }
+    },
+    {
+      "name": "download the file byte for byte",
+      "mutating": true,
+      "request": {
+        "method": "GET",
+        "path": "/v1/tasks/$task/files",
+        "query": {"path": "/tmp/conformance-file-{{run}}"},
+        "role": "admin",
+        "accept": "application/octet-stream"
+      },
+      "expect": {
+        "status": 200,
+        "headers": {"Content-Type": "application/octet-stream"},
+        "bodyBase64": "Y29uZm9ybWFuY2UgZmlsZQoAAf8=",
+        "bodyLength": 20
+      }
     }
   ]
 }

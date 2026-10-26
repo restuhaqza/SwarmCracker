@@ -1,6 +1,8 @@
 package conformance
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -499,6 +501,32 @@ func TestTruncateBodyKeepsValidUTF8(t *testing.T) {
 	}
 }
 
+// TestTruncateBodyQuotesABinaryBody pins the report for a raw response: a file
+// body is not text, so it is rendered as a quoted string instead of turning the
+// failure log into a binary blob.
+func TestTruncateBodyQuotesABinaryBody(t *testing.T) {
+	body := []byte("conformance file\n\x00\x01\xff")
+	got := truncateBody(body)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateBody returned invalid UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, `"`) || !strings.Contains(got, `\xff`) {
+		t.Fatalf("want a quoted rendering with the last byte escaped, got %q", got)
+	}
+
+	huge := []byte(strings.Repeat("\xff", failureBodyLimit))
+	got = truncateBody(huge)
+	if !utf8.ValidString(got) {
+		t.Fatalf("a huge binary body must still be reported as text: %q", got)
+	}
+	if !strings.HasSuffix(got, "...(truncated)") {
+		t.Fatalf("want a truncation marker, got %q", got[len(got)-32:])
+	}
+	if len(got) > failureBodyLimit+len("...(truncated)")+2 {
+		t.Fatalf("quoted body is %d bytes, want at most %d", len(got), failureBodyLimit+len("...(truncated)")+2)
+	}
+}
+
 // TestRunExecutesFixtures is the runner's own contract test: a real in-process
 // HTTP server, one fixture file, and every assertion path the mock suite uses
 // (status, kind, paths, absence, pagination and a follow request).
@@ -553,6 +581,117 @@ func TestRunExecutesFixtures(t *testing.T) {
 		Client:  server.Client(),
 		Tokens:  map[string]string{"reader": "test-token"},
 	}, dir)
+}
+
+// TestRunSendsAndAssertsRawBodies runs the file round-trip in a fixture: the PUT
+// body is the decoded bytes with the octet-stream default content type, and the
+// GET assertion compares the response to the same bytes exactly.
+func TestRunSendsAndAssertsRawBodies(t *testing.T) {
+	payload := []byte("conformance file\n\x00\x01\xff")
+	encoded := base64.StdEncoding.EncodeToString(payload)
+
+	var gotContentType string
+	var gotBody []byte
+
+	mux := http.NewServeMux()
+	writeHeaders := func(w http.ResponseWriter) {
+		w.Header().Set(apiVersionHeader, APIVersion)
+		w.Header().Set(requestIDHeader, "req_test")
+	}
+	mux.HandleFunc("PUT /v1/tasks/task-a/files", func(w http.ResponseWriter, r *http.Request) {
+		gotContentType = r.Header.Get("Content-Type")
+		gotBody, _ = io.ReadAll(r.Body)
+		writeHeaders(w)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /v1/tasks/task-a/files", func(w http.ResponseWriter, _ *http.Request) {
+		writeHeaders(w)
+		w.Header().Set("Content-Type", octetStreamMediaType)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	dir := t.TempDir()
+	writeFixture(t, dir, "write.json", fmt.Sprintf(`{
+		"schemaVersion": 1,
+		"name": "write",
+		"cases": [
+			{
+				"name": "upload",
+				"mutating": true,
+				"request": {"method": "PUT", "path": "/v1/tasks/task-a/files", "role": "admin",
+					"bodyBase64": "%[1]s"},
+				"expect": {"status": 204}
+			},
+			{
+				"name": "download",
+				"request": {"method": "GET", "path": "/v1/tasks/task-a/files", "role": "admin",
+					"accept": "application/octet-stream"},
+				"expect": {"status": 200, "bodyBase64": "%[1]s", "bodyLength": %[2]d}
+			}
+		]
+	}`, encoded, len(payload)))
+
+	summary := Run(t, Env{
+		BaseURL:       server.URL,
+		Client:        server.Client(),
+		Tokens:        map[string]string{"admin": "test-token"},
+		AllowMutation: true,
+	}, dir)
+
+	if summary.Skipped != 0 {
+		t.Fatalf("summary = %+v, want no skips", summary)
+	}
+	if gotContentType != octetStreamMediaType {
+		t.Fatalf("a raw body must default to %q, got %q", octetStreamMediaType, gotContentType)
+	}
+	if !bytes.Equal(gotBody, payload) {
+		t.Fatalf("the server received %q, want the exact upload bytes %q", gotBody, payload)
+	}
+}
+
+// TestRawBodyProblemFailsOnATruncatedOrDifferentBody pins the raw assertion as a
+// value: exact bytes pass, and a short or altered body fails with the reason a
+// reader needs instead of a silent pass.
+func TestRawBodyProblemFailsOnATruncatedOrDifferentBody(t *testing.T) {
+	want := []byte("hello world")
+	encoded := base64.StdEncoding.EncodeToString(want)
+
+	tests := []struct {
+		name   string
+		expect Expect
+		body   []byte
+		want   string
+	}{
+		{name: "exact bytes", expect: Expect{BodyBase64: encoded}, body: want},
+		{name: "exact with a length", expect: Expect{BodyBase64: encoded, BodyLength: intPtr(len(want))}, body: want},
+		{name: "truncated", expect: Expect{BodyBase64: encoded}, body: want[:5], want: "truncated"},
+		{name: "truncated and a declared length", expect: Expect{BodyBase64: encoded, BodyLength: intPtr(len(want))},
+			body: want[:5], want: "want 11 body bytes, got 5"},
+		{name: "different", expect: Expect{BodyBase64: encoded}, body: []byte("hello worlD"), want: "first difference at byte 10"},
+		{name: "longer", expect: Expect{BodyBase64: encoded}, body: append(append([]byte(nil), want...), '!'),
+			want: "first difference at byte 11"},
+		{name: "a length only", expect: Expect{BodyLength: intPtr(3)}, body: want, want: "want 3 body bytes, got 11"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			res := &result{body: tc.body}
+			got := rawBodyProblem(tc.expect, res)
+			if tc.want == "" {
+				if got != "" {
+					t.Fatalf("rawBodyProblem = %q, want no problem", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("rawBodyProblem = %q, want it to name %q", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestRunRejectsAnEmptyFixtureDirectory(t *testing.T) {

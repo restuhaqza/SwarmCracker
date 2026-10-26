@@ -82,7 +82,9 @@ the document expectation with `stream: {"frames": 2, "lastType": "exit"}` (a
 deterministic framed stream), `stream: {"untilType": "eof", "minFrames": 1,
 "maxFrames": 200}` (a framed stream whose length the server chooses) or
 `stream: {"bytes": 14}` (a raw console); it carries no `kind`, no
-`requestIdInBody` and no `follow`.
+`requestIdInBody` and no `follow`. A **raw** case replaces the document with
+`request.bodyBase64` and `expect.bodyBase64`/`expect.bodyLength`; it carries no
+`kind`, no `errorCode` and no `stream`.
 
 ### Rules
 
@@ -124,6 +126,20 @@ deterministic framed stream), `stream: {"untilType": "eof", "minFrames": 1,
 - `request.body` is a JSON value. `null` or an absent body sends no body. A body
   is sent as the v1 media type unless `request.contentType` overrides it (a
   PATCH uses `application/merge-patch+json`).
+- `request.bodyBase64` is a raw request body, for a route that carries opaque
+  bytes instead of a document (the file upload): the value is the base64 of the
+  exact bytes, and it is **mutually exclusive with `request.body`**. It is sent
+  as `application/octet-stream` unless `request.contentType` overrides it. The
+  run token is not substituted inside raw bytes: they are what the fixture
+  encoded, so an upload cannot be rewritten on the way out.
+- `expect.bodyBase64` asserts the response body is exactly those bytes;
+  `expect.bodyLength` asserts its exact length. Both are only valid on a raw
+  response, so a case that sets either may not set `kind`, `errorCode`, `stream`
+  or any document assertion (`jsonPaths`, `presentKeys`, `items`, …) — the loader
+  rejects the combination instead of leaving the field unchecked. A truncated or
+  altered body fails, and the failure says which: `bodyLength` reports the
+  observed length, and a body that is a prefix of the expected bytes is reported
+  as truncation.
 - `request.accept` defaults to the v1 media type.
 - A fixture may not set `Authorization`, `Cookie`, `Proxy-Authorization`,
   `Connection`, `Transfer-Encoding` or `Upgrade`: the runner owns the credential
@@ -241,7 +257,9 @@ the capability set the shipped default handler advertises (`read`, `write`,
 `events`, plus the broker's `exec`, `logs`, `files`, `health`, `attach`), and the
 mock leg reads that list from `/v1/version` rather than hard-coding it: snapshots
 are off, so the three snapshot cases in `write.json` and `errors.json` are the
-only gated skips.
+only gated skips. The broker also serves the file route from an in-memory guest
+filesystem, so the raw file round-trip in `write.json` runs in the mock leg
+instead of being gated.
 
 ## The lab leg
 
