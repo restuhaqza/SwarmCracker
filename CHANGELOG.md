@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-26
+
 ### Added
 - **API contract foundation** — `pkg/api/v1` wire types, `pkg/output` envelope/
   error/exit-code writer, `pkg/client` as the single SwarmKit dialing and
@@ -394,7 +396,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/restuhaqza/SwarmCracker/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.2...v0.10.0
 [0.9.2]: https://github.com/restuhaqza/SwarmCracker/compare/v0.9.1...v0.9.2

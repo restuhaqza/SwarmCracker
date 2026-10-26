@@ -134,7 +134,7 @@ sudo cp build/swarmcracker-agent /usr/local/bin/
 
 ```bash
 swarmcracker version
-# SwarmCracker v0.11.0
+# SwarmCracker v0.12.0
 #   Build Time: <RFC3339 timestamp>
 #   Git Commit: <short SHA>
 #   Go Version: go1.26.x (linux/amd64)
