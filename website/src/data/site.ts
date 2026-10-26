@@ -75,7 +75,7 @@ export const site = {
   description:
     'Firecracker microVMs with SwarmKit orchestration — Docker Swarm UX with hardware-isolated VMs.',
   canonical: 'https://swarmcracker.com/',
-  version: 'v0.11.0',
+  version: 'v0.12.0',
   ogImage: 'https://swarmcracker.com/og-image.png',
   ogImageAlt:
     'SwarmCracker — Firecracker microVMs for SwarmKit, hardware-isolated containers with Docker Swarm UX.',
@@ -282,6 +282,11 @@ export const docsCards: DocsCard[] = [
     title: 'CLI Reference',
     body: 'Complete reference for every swarmcracker command, flag, and subcommand.',
     href: 'https://docs.swarmcracker.com/reference/cli/',
+  },
+  {
+    title: 'Programmatic API',
+    body: 'A stable HTTP/JSON API v1 with bearer tokens, streaming exec and logs, interactive attach, files, and experimental snapshots — plus dependency-free Python and Node SDKs.',
+    href: 'https://docs.swarmcracker.com/reference/api/',
   },
   {
     title: 'Networking',
