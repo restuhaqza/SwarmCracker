@@ -1250,11 +1250,17 @@ func (nm *NetworkManager) setupDHCP(ctx context.Context) error {
 	// --dhcp-option=6: set DNS (use gateway as DNS proxy)
 	// --addn-hosts: service-name records the reconciler rewrites and reloads
 	//   with SIGHUP, so a guest can resolve service names through this bridge.
+	// --domain-needed: a service name is a single label ("web", not
+	//   "web.example.com"). Without this flag dnsmasq forwards its AAAA query to
+	//   the host resolver, whose SERVFAIL fails the whole lookup even though the
+	//   A record is answered locally (busybox wget then reports "bad address").
+	//   FQDNs still resolve upstream, and single-label names are never leaked.
 	args := []string{
 		"--interface", nm.config.BridgeName,
 		"--bind-interfaces",
 		"--listen-address", gatewayIP.String(),
 		"--except-interface=lo",
+		"--domain-needed",
 		"--dhcp-range", fmt.Sprintf("%s,%s,12h", startIP.String(), endIP.String()),
 		"--dhcp-option", fmt.Sprintf("3,%s", gatewayIP.String()),
 		"--dhcp-option", fmt.Sprintf("6,%s", gatewayIP.String()),

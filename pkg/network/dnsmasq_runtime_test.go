@@ -397,3 +397,30 @@ func TestSetupDHCP_NamesTheDropUserAndGroup(t *testing.T) {
 	assert.Contains(t, started, "--user=nobody")
 	assert.Contains(t, started, "--group=nogroup")
 }
+
+// TestSetupDHCP_StartsWithDomainNeeded verifies dnsmasq is told not to forward
+// plain names. A service name is a single label ("web"), and without
+// --domain-needed dnsmasq forwards its AAAA query upstream; the upstream
+// SERVFAIL then fails the whole lookup even though the A record is local, which
+// shows up in a guest as "bad address".
+func TestSetupDHCP_StartsWithDomainNeeded(t *testing.T) {
+	state := newMockState()
+	restore := setupMocksForTest(state)
+	defer restore()
+
+	nm := runtimeTestManager(t)
+	require.NoError(t, nm.setupDHCP(context.Background()))
+
+	state.mu.Lock()
+	calls := append([]string(nil), state.calls...)
+	state.mu.Unlock()
+
+	var started string
+	for _, c := range calls {
+		if strings.HasPrefix(c, "dnsmasq --interface") {
+			started = c
+		}
+	}
+	require.NotEmpty(t, started, "dnsmasq must have been started; calls=%v", calls)
+	assert.Contains(t, started, "--domain-needed")
+}
