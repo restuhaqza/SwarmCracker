@@ -617,8 +617,16 @@ cmd_three_tier() {
   info "check: the published port answers on every node"
   for j in $(seq 1 "$n"); do
     ip="$(node_ip "$j")"
-    code="$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' "http://$ip:$port/" 2>/dev/null)"
-    printf '  node%s (%s):%s -> %s\n' "$j" "$ip" "$port" "$code"
+    code=""
+    # The ingest rules are programmed by a reconciler shortly after the tasks
+    # become RUNNING, so retry instead of failing the whole run on the first
+    # connection refused (a failed curl must not abort under set -e either).
+    for _ in $(seq 1 12); do
+      code="$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' "http://$ip:$port/" 2>/dev/null || true)"
+      [ "$code" = "200" ] && break
+      sleep 5
+    done
+    printf '  node%s (%s):%s -> %s\n' "$j" "$ip" "$port" "${code:-no-response}"
     [ "$code" = "200" ] || rc=1
   done
 
