@@ -630,17 +630,21 @@ cmd_three_tier() {
     [ "$code" = "200" ] || rc=1
   done
 
-  info "check: a web guest resolves 'api' by name and reaches it (no IP lookup)"
+  info "check: a web guest resolves the api service by name and reaches it (no IP lookup)"
   if ! read -r host task < <(find_local_task "$web"); then
     die "could not find a web task running on a lab node"
   fi
-  out="$(node_ssh "$host" "swarmcracker vm exec $task -- wget -q -O- http://api" 2>&1)" || rc=1
-  if printf '%s' "$out" | grep -qi 'nginx'; then
-    printf '  web task on node%s -> http://api -> nginx page (%s bytes)\n' "$host" "${#out}"
-  else
-    printf '  web task on node%s -> http://api -> FAILED: %s\n' "$host" "$out"
-    rc=1
-  fi
+  # The service name and its tasks.<name> alias are both part of the DNS
+  # contract; the lab prefixes names to stay collision-free across runs.
+  for _name in "$api" "tasks.$api"; do
+    out="$(node_ssh "$host" "swarmcracker vm exec $task -- wget -q -O- http://$_name" 2>&1)" || rc=1
+    if printf '%s' "$out" | grep -qi 'nginx'; then
+      printf '  web task on node%s -> http://%s -> nginx page (%s bytes)\n' "$host" "$_name" "${#out}"
+    else
+      printf '  web task on node%s -> http://%s -> FAILED: %s\n' "$host" "$_name" "$out"
+      rc=1
+    fi
+  done
 
   info "check: the secret exists inside the db guest with mode 0400 and the right value"
   if ! read -r host task < <(find_local_task "$db"); then
