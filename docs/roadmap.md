@@ -1,7 +1,7 @@
 # SwarmCracker Roadmap
 
 - **Status:** Active
-- **Last updated:** 2026-10-08
+- **Last updated:** 2026-10-27
 - **Owner:** Restu Muzakir
 - **Tracking epic:** [#40](https://github.com/restuhaqza/SwarmCracker/issues/40)
 
@@ -23,7 +23,48 @@ golden images (`recipes/*.yaml`), volume drivers (dir/block/quota), jailer,
 Prometheus metrics, `vm attach` console, node drain/activate, secret/config
 *injection* into the guest, and a sysvinit/systemd-aware boot path.
 
+## Delivery status (2026-10-27)
+
+Tier 1 is delivered and released in `v0.12.0`:
+
+| # | Status | Where it lives |
+|---|--------|----------------|
+| #35 `--publish` | Done | `pkg/types/ports.go`, `pkg/network` publish/unpublish, `Controller.PortStatus` |
+| #36 ingress mesh + VIP | Done | `pkg/ingress/` (controller, LB, DNS), `cmd/swarmd-firecracker/ingress.go`, `--publish-mode` |
+| #37 `service create` parity | Done, one gap | flags in `cmd_service_spec.go`; `service ls` now has a `MODE` column; exec-only flags are rejected, not ignored |
+| #38 secrets & configs | Done | `cmd_secret.go`, `cmd_config.go`, `pkg/swarmkit/{secrets,configs}` |
+| #39 healthchecks + gated rollout | Done | `pkg/healthcheck/`, `Start()` gate, health monitor, `service ps` `HEALTH` column |
+| #42 service DNS | Done | `pkg/ingress` DNS records + node-local dnsmasq |
+| #43 `vm exec` / `vm cp` | Done | `pkg/agent/`, `cmd_vm_exec.go`, `cmd_vm_cp.go` |
+| #44 registry auth UX | Done | `--with-registry-auth` end to end |
+| #47 resource QoS | Done | balloon, cpuset, hugepages, NUMA placement |
+| #48 overlay networks | Done | `network create/rm`, per-network bridges and VXLAN |
+| #45 observability depth | **Open** | #88, #89, #91 |
+| #46 live migration | **Open** | — |
+| #49 autoscaling / placement | **Open** | — |
+
+Automated e2e on a real cluster lives in `test-automation/multinode/cluster-lab.sh`:
+`ingress` covers #35/#36 (fan-out, failover, UDP, cleanup) and `three-tier`
+covers the epic's acceptance test (published port, secret in the guest, health
+gating, service-name DNS, `--command/--args`).
+
+Known, documented deviations:
+
+- A published port requires an explicit host port; ephemeral allocation is not
+  supported (`reference/cli.md`).
+- An ingress VIP is reachable on manager and worker nodes through the node-local
+  routing table, but the implementation is L4 only and has no sticky sessions
+  (`guides/networking.md`).
+- SwarmKit's `ContainerStatus` has no health field, so health travels through the
+  node-local VM metadata sidecar and gating happens by holding `Start()` until
+  the check passes.
+- Images that preserve their own sysvinit/systemd do not use the OCI init
+  wrapper, so `--command`/`--args` cannot override their workload.
+
 ## The gap
+
+> Historical: this is the 2026-10-08 audit that motivated the roadmap. See
+> Delivery status above for what has since landed.
 
 An audit of `pkg/` and `cmd/` found several table-stakes capabilities missing or
 only half-built. Evidence (non-test code):

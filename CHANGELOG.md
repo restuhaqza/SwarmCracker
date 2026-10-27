@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **`service ls` shows the service mode** — the table gains a `MODE` column
+  (`replicated` / `global`), so a global service is visible without inferring it
+  from the `REPLICAS` cell.
+
+### Fixed
+- **`service create --command` / `--args` are applied** — the daemon translator
+  never carried the command to the guest, so every service task ran the image's
+  own entrypoint while `service inspect` showed the override (issue #97). Each
+  argv element now travels as a base64 `sc.argv=` kernel argument and the init
+  wrapper execs it in place of the baked OCI command, keeping spaces, quotes and
+  empty arguments intact. The guest-override marker is bumped, so cached rootfs
+  images rebuild with the new wrapper. Values the kernel command line cannot
+  carry (line breaks, NUL) and the `--golden` combination are rejected at create
+  time with a clear error instead of being dropped.
+
 ## [0.12.0] - 2026-10-26
 
 ### Added
