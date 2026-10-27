@@ -279,7 +279,7 @@ With --golden, the service boots a prebuilt golden image (see
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
-		RunE: func(cmd *cobra.Command, args []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			if image != "" && golden != "" {
 				return fmt.Errorf("--image and --golden are mutually exclusive")
 			}
@@ -1674,7 +1674,16 @@ func listServiceTasksContractWithClient(ctx context.Context, l serviceTaskLister
 	}
 }
 
+// serviceCreateHook, when non-nil, receives the options `service create`
+// assembled from its flags instead of dialing the cluster. Tests use it to
+// prove a flag reaches the spec; production leaves it nil.
+var serviceCreateHook func(opts serviceCreateOptions) error
+
 func createService(opts serviceCreateOptions) error {
+	if serviceCreateHook != nil {
+		return serviceCreateHook(opts)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

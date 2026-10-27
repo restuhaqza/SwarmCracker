@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -93,4 +94,31 @@ func TestBuildServiceSpec_RejectsUncarryableArgv(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.flag)
 		})
 	}
+}
+
+// TestServiceCreateCommandPassesArgsFlag guards the flag-to-option path. The
+// command's RunE parameter used to be named `args`, shadowing the --args flag
+// variable, so every `service create --args ...` stored nothing.
+func TestServiceCreateCommandPassesArgsFlag(t *testing.T) {
+	var got serviceCreateOptions
+	serviceCreateHook = func(opts serviceCreateOptions) error {
+		got = opts
+		return nil
+	}
+	t.Cleanup(func() { serviceCreateHook = nil })
+
+	cmd := newServiceCreateCommand()
+	cmd.SetArgs([]string{
+		"--name", "job",
+		"--image", "alpine",
+		"--command=/bin/sh",
+		"--args=-c",
+		"--args=sleep 3600",
+	})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, []string{"/bin/sh"}, got.command)
+	assert.Equal(t, []string{"-c", "sleep 3600"}, got.args)
 }
