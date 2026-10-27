@@ -28,15 +28,38 @@ func TestNetworkBridgeName(t *testing.T) {
 }
 
 func TestManagedHelpers(t *testing.T) {
-	assert.False(t, managed(nil))
-	assert.False(t, managed(&types.Network{Spec: types.NetworkSpec{}}))
-	assert.True(t, managed(&types.Network{Spec: types.NetworkSpec{Subnet: "10.10.0.0/24"}}))
+	nm := &NetworkManager{config: types.NetworkConfig{Subnet: "192.168.127.0/24"}}
 
-	assert.False(t, hasManagedAttachment(nil))
-	assert.False(t, hasManagedAttachment([]types.NetworkAttachment{{Network: types.Network{}}}))
-	assert.True(t, hasManagedAttachment([]types.NetworkAttachment{
+	assert.False(t, nm.managed(nil))
+	assert.False(t, nm.managed(&types.Network{Spec: types.NetworkSpec{}}))
+	assert.True(t, nm.managed(&types.Network{Spec: types.NetworkSpec{Subnet: "10.10.0.0/24"}}))
+
+	// The ingress network is carved from the flat L2 subnet by design. Giving
+	// it a second bridge on that range puts two gateways on one subnet and
+	// makes the published ports unreachable, so it stays on the node bridge.
+	assert.False(t, nm.managed(&types.Network{Spec: types.NetworkSpec{Name: "ingress", Subnet: "192.168.127.0/24"}}))
+	assert.False(t, nm.managed(&types.Network{Spec: types.NetworkSpec{Subnet: "192.168.127.0/24"}}))
+	assert.True(t, nm.managed(&types.Network{Spec: types.NetworkSpec{Subnet: "192.168.127.0/25"}}))
+
+	assert.False(t, nm.hasManagedAttachment(nil))
+	assert.False(t, nm.hasManagedAttachment([]types.NetworkAttachment{{Network: types.Network{}}}))
+	assert.True(t, nm.hasManagedAttachment([]types.NetworkAttachment{
 		{Network: types.Network{Spec: types.NetworkSpec{Subnet: "10.10.0.0/24"}}},
 	}))
+	assert.False(t, nm.hasManagedAttachment([]types.NetworkAttachment{
+		{Network: types.Network{Spec: types.NetworkSpec{Subnet: "192.168.127.0/24"}}},
+	}))
+
+	// Without a configured flat subnet the previous behaviour is preserved.
+	plain := &NetworkManager{}
+	assert.True(t, plain.managed(&types.Network{Spec: types.NetworkSpec{Subnet: "192.168.127.0/24"}}))
+}
+
+func TestSameSubnet(t *testing.T) {
+	assert.True(t, sameSubnet("192.168.127.0/24", "192.168.127.0/24"))
+	assert.True(t, sameSubnet("192.168.127.1/24", "192.168.127.0/24"), "host bits are ignored")
+	assert.False(t, sameSubnet("192.168.127.0/24", "192.168.127.0/25"))
+	assert.False(t, sameSubnet("nonsense", "192.168.127.0/24"))
 }
 
 func newManagedTestManager() *NetworkManager {
@@ -293,4 +316,33 @@ func TestPrepareManagedNetworks_MixedAttachment(t *testing.T) {
 		}
 	}
 	assert.True(t, foundDefault, "the non-managed attachment should use the default bridge")
+}
+
+// TestAttachmentBridgeName pins where a TAP lands. A network on the flat L2
+// subnet (the ingress network) must use the node bridge even though the CNI
+// provider recorded a per-network bridge for it; a network with its own subnet
+// keeps its bridge.
+func TestAttachmentBridgeName(t *testing.T) {
+	nm := &NetworkManager{config: types.NetworkConfig{BridgeName: "swarm-br0", Subnet: "192.168.127.0/24"}}
+
+	assert.Equal(t, "swarm-br0", nm.attachmentBridgeName(nil))
+	assert.Equal(t, "swarm-br0", nm.attachmentBridgeName(&types.Network{
+		Spec: types.NetworkSpec{
+			Name:         "ingress",
+			Subnet:       "192.168.127.0/24",
+			DriverConfig: &types.DriverConfig{Bridge: &types.BridgeConfig{Name: "br-ingress"}},
+		},
+	}), "the ingress network is carved from the flat L2 and must not split it")
+
+	assert.Equal(t, "br-backend", nm.attachmentBridgeName(&types.Network{
+		Spec: types.NetworkSpec{
+			Subnet:       "10.10.0.0/24",
+			DriverConfig: &types.DriverConfig{Bridge: &types.BridgeConfig{Name: "br-backend"}},
+		},
+	}))
+
+	assert.Equal(t, "br-abcdefgh1234", nm.attachmentBridgeName(&types.Network{
+		ID:   "abcdefgh12345678",
+		Spec: types.NetworkSpec{Driver: "overlay", Subnet: "10.20.0.0/24"},
+	}))
 }

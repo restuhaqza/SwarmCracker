@@ -51,20 +51,81 @@ func networkBridgeName(network *types.Network) string {
 }
 
 // managed reports whether the attachment targets a user-defined network (one
-// with its own allocated subnet), as opposed to the default bridge.
-func managed(network *types.Network) bool {
-	return network != nil && strings.TrimSpace(network.Spec.Subnet) != ""
+// with its own allocated subnet), as opposed to the node's flat L2 bridge.
+//
+// A network whose subnet is the flat L2 subnet is not user-defined in the sense
+// that matters here. The ingress network is carved from --subnet by design, so
+// materializing a second bridge on that range would put two gateways on one
+// subnet, split the flat segment and make the published ports unreachable. Such
+// attachments stay on the node's bridge, where their SwarmKit-assigned address
+// is already reachable cluster-wide.
+func (nm *NetworkManager) managed(network *types.Network) bool {
+	if network == nil {
+		return false
+	}
+	subnet := strings.TrimSpace(network.Spec.Subnet)
+	if subnet == "" {
+		return false
+	}
+	if flat := strings.TrimSpace(nm.config.Subnet); flat != "" && sameSubnet(subnet, flat) {
+		return false
+	}
+	return true
 }
 
 // hasManagedAttachment reports whether any attachment targets a user-defined
 // network.
-func hasManagedAttachment(networks []types.NetworkAttachment) bool {
+func (nm *NetworkManager) hasManagedAttachment(networks []types.NetworkAttachment) bool {
 	for i := range networks {
-		if managed(&networks[i].Network) {
+		if nm.managed(&networks[i].Network) {
 			return true
 		}
 	}
 	return false
+}
+
+// attachmentBridgeName returns the bridge a task's TAP for this attachment
+// joins. A network whose subnet is the flat L2 subnet (the ingress network is
+// carved from --subnet by design) always uses the node's bridge: honoring its
+// recorded per-network bridge would put two gateways on the same range and
+// split the flat segment, leaving published ports unreachable.
+func (nm *NetworkManager) attachmentBridgeName(network *types.Network) string {
+	if network == nil {
+		return nm.config.BridgeName
+	}
+	if flat := strings.TrimSpace(nm.config.Subnet); flat != "" && sameSubnet(network.Spec.Subnet, flat) {
+		return nm.config.BridgeName
+	}
+	if network.Spec.DriverConfig != nil &&
+		network.Spec.DriverConfig.Bridge != nil &&
+		network.Spec.DriverConfig.Bridge.Name != "" {
+		return network.Spec.DriverConfig.Bridge.Name
+	}
+	// For overlay networks, Docker Swarm typically creates a bridge named
+	// "br-<network-id-prefix>"; try that.
+	if network.Spec.Driver == "overlay" && len(network.ID) >= 12 {
+		name := "br-" + network.ID[:12]
+		log.Info().
+			Str("network_id", network.ID).
+			Str("derived_bridge", name).
+			Msg("Detected overlay network, using derived bridge name")
+		return name
+	}
+	return nm.config.BridgeName
+}
+
+// sameSubnet reports whether two CIDRs name the same network, regardless of how
+// the host bits are written.
+func sameSubnet(a, b string) bool {
+	_, an, err := net.ParseCIDR(strings.TrimSpace(a))
+	if err != nil {
+		return false
+	}
+	_, bn, err := net.ParseCIDR(strings.TrimSpace(b))
+	if err != nil {
+		return false
+	}
+	return an.String() == bn.String()
 }
 
 // ensureBridgeNamed creates a bridge device if it does not already exist and
@@ -528,7 +589,7 @@ func (nm *NetworkManager) prepareManagedNetworks(ctx context.Context, task *type
 	for i := range task.Networks {
 		attachment := &task.Networks[i]
 
-		if !managed(&attachment.Network) {
+		if !nm.managed(&attachment.Network) {
 			// Mixed attachment: fall back to the default bridge for this one.
 			tap, err := nm.createTapDevice(ctx, *attachment, i, task.ID)
 			if err != nil {

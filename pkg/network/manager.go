@@ -614,7 +614,7 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 	// default bridge at it. Tasks on a user-defined network are excluded: their
 	// bridge has its own gateway and no resolver, so the image's own resolver
 	// is a better answer than an address that answers nothing.
-	if !hasManagedAttachment(task.Networks) && nm.dnsmasqServing() {
+	if !nm.hasManagedAttachment(task.Networks) && nm.dnsmasqServing() {
 		if gw := nm.bridgeGatewayIP(); gw != "" {
 			if task.Annotations == nil {
 				task.Annotations = make(map[string]string, 1)
@@ -625,7 +625,7 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 
 	// User-defined networks are materialized locally (their own bridge + VXLAN),
 	// so they bypass the CNI path entirely.
-	if hasManagedAttachment(task.Networks) {
+	if nm.hasManagedAttachment(task.Networks) {
 		return nm.prepareManagedNetworks(ctx, task)
 	}
 
@@ -724,6 +724,9 @@ func (nm *NetworkManager) PrepareNetwork(ctx context.Context, task *types.Task) 
 // SwarmKit-assigned address falls inside the configured bridge subnet. When it
 // does, no overlay setup is needed: the guest boots directly on the shared L2
 // bridge and is reachable cluster-wide.
+// attachmentsOnBridgeSubnet reports whether every SwarmKit-assigned address is
+// inside the flat L2 bridge subnet, i.e. the guest is already reachable
+// cluster-wide and needs no CNI plumbing.
 func (nm *NetworkManager) attachmentsOnBridgeSubnet(networks []types.NetworkAttachment) bool {
 	if nm.config.Subnet == "" {
 		return false
@@ -2065,25 +2068,7 @@ func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.Net
 	}
 
 	// Add to bridge
-	bridgeName := nm.config.BridgeName
-
-	// Override with specific bridge if configured
-	if network.Network.Spec.DriverConfig != nil &&
-		network.Network.Spec.DriverConfig.Bridge != nil &&
-		network.Network.Spec.DriverConfig.Bridge.Name != "" {
-		bridgeName = network.Network.Spec.DriverConfig.Bridge.Name
-	} else if network.Network.Spec.Driver == "overlay" {
-		// For overlay networks, Docker Swarm typically creates a bridge named "br-<network-id-prefix>"
-		// We attempt to attach to that bridge.
-		if len(network.Network.ID) >= 12 {
-			bridgeName = "br-" + network.Network.ID[:12]
-		}
-
-		log.Info().
-			Str("network_id", network.Network.ID).
-			Str("derived_bridge", bridgeName).
-			Msg("Detected overlay network, using derived bridge name")
-	}
+	bridgeName := nm.attachmentBridgeName(&network.Network)
 
 	// Ensure bridge exists (especially for overlay, it should already be there)
 	if err := execCommand("ip", "link", "show", bridgeName).Run(); err != nil {
