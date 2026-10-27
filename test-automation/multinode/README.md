@@ -51,6 +51,7 @@ sudo test-automation/multinode/cluster-lab.sh provision
 sudo test-automation/multinode/cluster-lab.sh cluster
 sudo test-automation/multinode/cluster-lab.sh test
 sudo test-automation/multinode/cluster-lab.sh ingress
+sudo test-automation/multinode/cluster-lab.sh three-tier
 
 # Inspect / enter / tear down
 sudo test-automation/multinode/cluster-lab.sh status
@@ -68,6 +69,16 @@ to a single replica keeps every node serving (failover), that UDP datagrams are
 DNAT'd on every node (rule counters advance), and that removing the services
 clears the rules everywhere. It needs `curl` and, for the UDP check, `nc` on the
 host.
+
+`three-tier` is the roadmap epic's acceptance test: it deploys `web` (published
+on the ingress mesh), `api` and `db` (with a secret and a `--command` whose arg
+contains a space), waits for every replica to be healthchecked into `RUNNING`,
+then asserts that (1) the published port answers on every node, (2) a `web`
+guest resolves `api` **by service name** and gets its page, (3) the secret exists
+inside the `db` guest at the requested path with mode `0400`, (4) PID 1 runs the
+overridden command, and (5) a task whose healthcheck never passes never reaches
+`RUNNING`. It needs `curl` on the host and leaves the three services running for
+inspection.
 
 ## Configuration
 

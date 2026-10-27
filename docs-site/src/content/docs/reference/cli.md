@@ -266,6 +266,14 @@ a kernel, the container-execution flags `--user`, `--cap-add`, `--cap-drop` and
 create time instead of accepting and silently ignoring them. `--hostname` and
 `--dns` are also rejected with `--golden`, whose images boot their own init.
 
+`--command` / `--args` replace the image's OCI entrypoint for the service's
+tasks. The values travel to the guest as per-task kernel arguments and are
+decoded by the init wrapper, so spaces, quotes and non-ASCII bytes inside an
+argument survive intact. A value containing a line break or NUL is rejected at
+create time: the kernel command line cannot carry it, and silently changing the
+argument would be worse than failing. Both flags are rejected with `--golden`
+for the same reason as `--hostname`/`--dns`.
+
 `--publish 8080:80` exposes port `80` inside the microVM. Multiple mappings are
 allowed (`-p 8080:80 -p 53:53/udp`); `tcp` is the default protocol. The host port
 is required (ephemeral allocation is not supported yet).

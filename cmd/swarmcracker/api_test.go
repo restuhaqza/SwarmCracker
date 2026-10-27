@@ -207,10 +207,10 @@ func TestRemoteServiceListTable(t *testing.T) {
 	require.NoError(t, listServicesTableWithClient(context.Background(), c, &buf, "", false))
 
 	want := strings.Join([]string{
-		"ID                   NAME                 REPLICAS   PORTS                    IMAGE",
-		strings.Repeat("-", 100),
-		"svc-01234567         web                  3          8080:80/tcp              nginx:alpine",
-		"svc-89abcdef         db                   global     -                        postgres:16",
+		"ID                   NAME                 REPLICAS   MODE         PORTS                    IMAGE",
+		strings.Repeat("-", 112),
+		"svc-01234567         web                  3          replicated   8080:80/tcp              nginx:alpine",
+		"svc-89abcdef         db                   global     global       -                        postgres:16",
 		"",
 		"Total: 2 service(s)",
 		"",

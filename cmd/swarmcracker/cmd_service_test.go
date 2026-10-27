@@ -1349,3 +1349,36 @@ func TestUpdateServiceBalloon_ReservationOnlyMemory(t *testing.T) {
 		assert.Equal(t, "512", client.updatedSpec.Annotations.Labels[types.BalloonLabel])
 	})
 }
+
+// TestServiceListLocalTableShowsMode verifies the local `service ls` table
+// carries a MODE column, so a replicated service is distinguishable from a
+// global one without reading the REPLICAS cell.
+func TestServiceListLocalTableShowsMode(t *testing.T) {
+	client := &fakeServiceTaskClient{services: []*api.Service{
+		{
+			ID: "svc-1",
+			Spec: api.ServiceSpec{
+				Annotations: api.Annotations{Name: "web"},
+				Mode: &api.ServiceSpec_Replicated{
+					Replicated: &api.ReplicatedService{Replicas: 3},
+				},
+			},
+		},
+		{
+			ID: "svc-2",
+			Spec: api.ServiceSpec{
+				Annotations: api.Annotations{Name: "db"},
+				Mode:        &api.ServiceSpec_Global{Global: &api.GlobalService{}},
+			},
+		},
+	}}
+
+	var buf bytes.Buffer
+	require.NoError(t, listServicesWithClient(context.Background(), client, &buf, "table", "", false))
+
+	out := buf.String()
+	assert.Contains(t, out, "MODE")
+	assert.Regexp(t, `web\s+3\s+replicated`, out)
+	assert.Regexp(t, `db\s+global\s+global`, out,
+		"a global service keeps its REPLICAS cell and reports its mode")
+}

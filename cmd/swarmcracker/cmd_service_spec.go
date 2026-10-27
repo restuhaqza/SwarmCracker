@@ -256,6 +256,18 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 	if svcLabels[types.GoldenLabel] != "" && (hostname != "" || len(dns) > 0) {
 		return nil, fmt.Errorf("--hostname/--dns are not supported with --golden: golden images boot their own init and do not use the OCI init wrapper")
 	}
+	if svcLabels[types.GoldenLabel] != "" && (len(o.command) > 0 || len(o.args) > 0) {
+		return nil, fmt.Errorf("--command/--args are not supported with --golden: golden images boot their own init and do not use the OCI init wrapper")
+	}
+
+	// The command and args travel to the guest on the kernel command line, so
+	// values it cannot carry are rejected here instead of being altered at boot.
+	if err := types.ValidateArgv("--command", o.command); err != nil {
+		return nil, err
+	}
+	if err := types.ValidateArgv("--args", o.args); err != nil {
+		return nil, err
+	}
 
 	// Parse published ports. The mapping travels to the executor as a service
 	// label (SwarmKit copies service labels onto each task) and is also

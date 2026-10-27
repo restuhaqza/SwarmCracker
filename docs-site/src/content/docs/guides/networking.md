@@ -366,8 +366,8 @@ and, for ingress services, the service VIP:
 
 ```console
 $ swarmcracker service ls
-ID                   NAME                 REPLICAS   PORTS             IMAGE
-web                  web                  3          8080:80/tcp       nginx:alpine
+ID                   NAME                 REPLICAS   MODE         PORTS             IMAGE
+web                  web                  3          replicated   8080:80/tcp       nginx:alpine
 ```
 
 ### Ingress mode

@@ -893,7 +893,7 @@ func listServicesTableWithClient(ctx context.Context, l serviceLister, w io.Writ
 	writeServiceTableHeader(w)
 	for _, svc := range services {
 		writeServiceTableRow(w, svc.ID, svc.Name, formatV1ServiceReplicas(svc),
-			formatV1ServicePorts(svc), svc.Spec.Task.Image)
+			formatServiceMode(svc.Spec.Mode), formatV1ServicePorts(svc), svc.Spec.Task.Image)
 	}
 	writeServiceTableTotal(w, len(services))
 
@@ -902,21 +902,22 @@ func listServicesTableWithClient(ctx context.Context, l serviceLister, w io.Writ
 
 // serviceTableLayout is the one definition of the frozen `service ls` table:
 // the local and remote lists both render through it.
-const serviceTableLayout = "%-20s %-20s %-10s %-24s %s\n"
+const serviceTableLayout = "%-20s %-20s %-10s %-12s %-24s %s\n"
 
 // writeServiceTableHeader writes the column header and its rule.
 func writeServiceTableHeader(w io.Writer) {
-	fmt.Fprintf(w, serviceTableLayout, "ID", "NAME", "REPLICAS", "PORTS", "IMAGE")
-	fmt.Fprintln(w, strings.Repeat("-", 100))
+	fmt.Fprintf(w, serviceTableLayout, "ID", "NAME", "REPLICAS", "MODE", "PORTS", "IMAGE")
+	fmt.Fprintln(w, strings.Repeat("-", 112))
 }
 
 // writeServiceTableRow renders one service row, truncating the ID to the
-// shared 12-character width. replicas, ports and image are already formatted.
-func writeServiceTableRow(w io.Writer, id, name, replicas, ports, image string) {
+// shared 12-character width. replicas, mode, ports and image are already
+// formatted.
+func writeServiceTableRow(w io.Writer, id, name, replicas, mode, ports, image string) {
 	if len(id) > 12 {
 		id = id[:12]
 	}
-	fmt.Fprintf(w, serviceTableLayout, id, name, replicas, ports, image)
+	fmt.Fprintf(w, serviceTableLayout, id, name, replicas, mode, ports, image)
 }
 
 // writeServiceTableTotal writes the trailing count line.
@@ -937,6 +938,15 @@ func formatV1ServiceReplicas(svc v1.Service) string {
 		return "0"
 	}
 	return "global"
+}
+
+// formatServiceMode renders a service mode for the `service ls` MODE column.
+// An empty mode is replicated: that is the default a server omits.
+func formatServiceMode(mode string) string {
+	if strings.EqualFold(mode, "global") {
+		return "global"
+	}
+	return "replicated"
 }
 
 // formatV1ServicePorts renders the contract ports as "host:target/proto", the
@@ -1012,7 +1022,11 @@ func listServicesWithClient(ctx context.Context, client legacy.ControlClient, w 
 		if svc.Spec.Task.GetContainer() != nil {
 			image = svc.Spec.Task.GetContainer().Image
 		}
-		writeServiceTableRow(w, svc.ID, name, replicas, formatServicePorts(svc), image)
+		mode := "replicated"
+		if svc.Spec.GetGlobal() != nil {
+			mode = "global"
+		}
+		writeServiceTableRow(w, svc.ID, name, replicas, mode, formatServicePorts(svc), image)
 	}
 	writeServiceTableTotal(w, len(services))
 
