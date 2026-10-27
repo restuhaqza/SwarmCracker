@@ -891,7 +891,7 @@ func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 // override handling. The version is recorded next to the built rootfs; any
 // cached rootfs built by an older guest image is rebuilt so the change is never
 // silently missing from a booted VM.
-const guestOverrideVersion = "5"
+const guestOverrideVersion = "6"
 
 // guestOverrideReady reports whether the rootfs was built by the current guest
 // image. A missing marker, or any value other than guestOverrideVersion, means

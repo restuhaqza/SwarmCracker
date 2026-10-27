@@ -120,6 +120,33 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	lines = append(lines, "fi")
 	lines = append(lines, "")
 
+	// Per-task argv override (--command/--args). The image rootfs is shared by
+	// every task on the node, so the wrapper baked here runs the image's OCI
+	// command; a task that overrides it sends one base64-encoded sc.argv=
+	// element per argv element (see types.EncodeArgvBootArgs). Decoding each
+	// element into its own positional parameter keeps spaces, quotes and
+	// non-ASCII bytes intact. A missing base64 applet is fatal rather than a
+	// silent fallback to the image command.
+	lines = append(lines, "# Per-task argv override (--command/--args) from the kernel command line")
+	lines = append(lines, "_SC_ARGV=$(tr ' ' '\\n' < /proc/cmdline 2>/dev/null | grep '^sc.argv=' | cut -d= -f2-)")
+	lines = append(lines, "_SC_ARGV_SET=0")
+	lines = append(lines, "if [ -n \"$_SC_ARGV\" ]; then")
+	lines = append(lines, "    if ! command -v base64 >/dev/null 2>&1; then")
+	lines = append(lines, "        echo \"sc-init: --command/--args need the base64 applet, which this image lacks\" >&2")
+	lines = append(lines, "        exit 127")
+	lines = append(lines, "    fi")
+	lines = append(lines, "    set --")
+	lines = append(lines, "    for _sc_tok in $_SC_ARGV; do")
+	lines = append(lines, "        _sc_arg=$(printf '%s' \"$_sc_tok\" | base64 -d 2>/dev/null) || {")
+	lines = append(lines, "            echo \"sc-init: could not decode a sc.argv override\" >&2")
+	lines = append(lines, "            exit 127")
+	lines = append(lines, "        }")
+	lines = append(lines, "        set -- \"$@\" \"${_sc_arg#x}\"")
+	lines = append(lines, "    done")
+	lines = append(lines, "    _SC_ARGV_SET=1")
+	lines = append(lines, "fi")
+	lines = append(lines, "")
+
 	// Environment variables
 	if info != nil && len(info.Env) > 0 {
 		lines = append(lines, "# Environment")
@@ -200,6 +227,9 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 
 	execLine := fmt.Sprintf("exec %s %s %s -- %s", userCmd, tiniCmd, tiniArgs, cmdStr)
 	lines = append(lines, "# Execute")
+	lines = append(lines, "if [ \"$_SC_ARGV_SET\" = \"1\" ]; then")
+	lines = append(lines, fmt.Sprintf("    exec %s %s %s -- \"$@\"", userCmd, tiniCmd, tiniArgs))
+	lines = append(lines, "fi")
 	lines = append(lines, execLine)
 
 	return strings.Join(lines, "\n")

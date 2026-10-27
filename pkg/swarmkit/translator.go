@@ -89,6 +89,15 @@ func (t *taskTranslatorImpl) Translate(task *types.Task) (interface{}, error) {
 		return nil, err
 	}
 
+	// A service written through the API can carry a command the CLI would have
+	// rejected. Validate it here too, so a value the kernel command line cannot
+	// carry fails the task instead of being silently altered at boot.
+	if container, err := task.Spec.GetContainer(); err == nil {
+		if err := types.ValidateArgv("container command", taskArgv(container)); err != nil {
+			return nil, err
+		}
+	}
+
 	// Build boot args with network config if available
 	bootArgs := t.buildBootArgs(task)
 
@@ -163,8 +172,23 @@ func (t *taskTranslatorImpl) buildBootArgs(task *types.Task) string {
 	args = append(args, netArgs...)
 	if container, err := task.Spec.GetContainer(); err == nil {
 		args = append(args, guestOverrideBootArgs(container, task)...)
+		args = append(args, types.EncodeArgvBootArgs(taskArgv(container))...)
 	}
 	return strings.Join(args, " ")
+}
+
+// taskArgv returns the command line a task overrides the image's OCI
+// entrypoint with: the command followed by its args, exactly as SwarmKit stores
+// them. Nil means "run the image's own command", which the init wrapper keeps
+// doing when no sc.argv= boot argument is present.
+func taskArgv(container *types.Container) []string {
+	if container == nil || len(container.Command)+len(container.Args) == 0 {
+		return nil
+	}
+	argv := make([]string, 0, len(container.Command)+len(container.Args))
+	argv = append(argv, container.Command...)
+	argv = append(argv, container.Args...)
+	return argv
 }
 
 // guestOverrideBootArgs returns kernel boot arguments that the guest init

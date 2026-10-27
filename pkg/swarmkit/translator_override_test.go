@@ -1,6 +1,7 @@
 package swarmkit
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -63,6 +64,53 @@ func TestTaskTranslatorImpl_MultipleNetworks(t *testing.T) {
 	assert.Equal(t, "eth1", ifaces[1]["iface_id"])
 }
 
+func TestTaskTranslatorImpl_ArgvOverride(t *testing.T) {
+	tr, err := NewTaskTranslator("/kernel", "10.0.0.1")
+	require.NoError(t, err)
+	impl := tr.(*taskTranslatorImpl)
+
+	decodeArgv := func(bootArgs string) []string {
+		var argv []string
+		for _, field := range strings.Fields(bootArgs) {
+			if !strings.HasPrefix(field, types.ArgvBootArgPrefix) {
+				continue
+			}
+			arg, decErr := types.DecodeArgvBootArg(field)
+			require.NoError(t, decErr)
+			argv = append(argv, arg)
+		}
+		return argv
+	}
+
+	t.Run("command and args", func(t *testing.T) {
+		task := &types.Task{
+			ID: "t1",
+			Spec: types.TaskSpec{Runtime: &types.Container{
+				Command: []string{"/bin/sh"},
+				Args:    []string{"-c", "echo hello world"},
+			}},
+		}
+		got := impl.buildBootArgs(task)
+		assert.Equal(t, []string{"/bin/sh", "-c", "echo hello world"}, decodeArgv(got))
+	})
+
+	t.Run("args only", func(t *testing.T) {
+		task := &types.Task{
+			ID:   "t2",
+			Spec: types.TaskSpec{Runtime: &types.Container{Args: []string{"--verbose"}}},
+		}
+		got := impl.buildBootArgs(task)
+		assert.Equal(t, []string{"--verbose"}, decodeArgv(got))
+	})
+
+	t.Run("none", func(t *testing.T) {
+		task := &types.Task{ID: "t3", Spec: types.TaskSpec{Runtime: &types.Container{}}}
+		got := impl.buildBootArgs(task)
+		assert.NotContains(t, got, types.ArgvBootArgPrefix,
+			"a task without a command must keep the image's OCI command")
+	})
+}
+
 func TestTaskTranslatorImpl_GuestOverrides(t *testing.T) {
 	tr, err := NewTaskTranslator("/kernel", "10.0.0.1")
 	require.NoError(t, err)
@@ -108,4 +156,20 @@ func TestTaskTranslatorImpl_GuestOverrides(t *testing.T) {
 		assert.Contains(t, got, "sc.dns=1.1.1.1")
 		assert.NotContains(t, got, "192.168.127.1")
 	})
+}
+
+// TestTaskTranslatorImpl_RejectsUncarryableArgv verifies a command that the
+// kernel command line cannot carry (here a line break) fails the task instead
+// of being silently altered by the init wrapper. The CLI rejects it too; this
+// covers services written through the API.
+func TestTaskTranslatorImpl_RejectsUncarryableArgv(t *testing.T) {
+	tr, err := NewTaskTranslator("/kernel", "10.0.0.1")
+	require.NoError(t, err)
+
+	_, err = tr.Translate(&types.Task{
+		ID:   "t1",
+		Spec: types.TaskSpec{Runtime: &types.Container{Command: []string{"line\nbreak"}}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "container command")
 }
