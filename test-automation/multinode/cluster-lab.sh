@@ -18,6 +18,7 @@
 #   cluster            Init the manager and join the workers (VXLAN enabled)
 #   test               Deploy a replicated service and test cross-host traffic
 #   ingress            E2E the ingress routing mesh (fan-out, failover, UDP, cleanup)
+  three-tier         E2E a web + api + db app: publish, secrets, health, service DNS
 #   status             Show cluster nodes, services and microVMs
 #   ssh <n>            Open a shell on node <n>
 #   destroy            Destroy the VMs and the seed server
@@ -56,6 +57,7 @@ LAB_SUBNET="${LAB_SUBNET:-192.168.127.0/24}"
 LAB_BRIDGE="${LAB_BRIDGE:-swarm-br0}"
 LAB_SERVICE="${LAB_SERVICE:-lab-web}"
 LAB_IMAGE_OCI="${LAB_IMAGE_OCI:-nginx:alpine}"
+LAB_DB_IMAGE="${LAB_DB_IMAGE:-alpine:3.20}"
 
 SSH_BASE=(-i "$LAB_SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
 VM_SSH_BASE=(-i "$LAB_SSH_KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -o ConnectTimeout=8)
@@ -535,6 +537,135 @@ cmd_ingress() {
 }
 
 ###############################################################################
+# three-tier e2e: web + api + db
+###############################################################################
+
+# cmd_three_tier exercises the acceptance test this roadmap epic is defined by:
+# a fresh three-tier app deployed with published ports, a secret, healthchecked
+# starts and service-name DNS, with no manual IP lookups. It also covers #97
+# (--command/--args) by giving the db task a command with a space in it, and it
+# proves a failing healthcheck keeps a task out of RUNNING (the mechanism a
+# health-gated rolling update relies on).
+cmd_three_tier() {
+  need_root
+  [ -n "$(node_ip 1 || true)" ] || die "no nodes found; run: $0 create"
+  local n="$LAB_NODES"
+  local prefix="${LAB_THREE_TIER_PREFIX:-sc3t}"
+  local web="${prefix}-web" api="${prefix}-api" db="${prefix}-db"
+  local gate="${prefix}-gate"
+  local secret="${prefix}-db-pass"
+  local port="${LAB_THREE_TIER_PORT:-18080}"
+  local db_pass="s3cr3t-$$"
+  local rc=0 j i host task out ip code
+
+  wait_running() { # <service> <count>
+    local j r
+    for j in $(seq 1 60); do
+      r="$(node_ssh 1 "swarmcracker service ps $1 2>/dev/null | grep -c RUNNING" || true)"
+      [ "${r:-0}" -ge "$2" ] && return 0
+      sleep 5
+    done
+    return 1
+  }
+
+  # find_local_task prints "<node> <task-id>" for a task of <service> that runs
+  # on a node of this lab, so `vm exec` can use its local vsock.
+  find_local_task() { # <service>
+    local svc="$1" j id
+    for j in $(seq 1 "$n"); do
+      for id in $(node_ssh 1 "swarmcracker service ps $svc -q 2>/dev/null" || true); do
+        [ -n "$id" ] || continue
+        if node_ssh "$j" "swarmcracker vm list 2>/dev/null" | awk '{print $1}' | grep -qx -- "$id"; then
+          printf '%s %s\n' "$j" "$id"
+          return 0
+        fi
+      done
+    done
+    return 1
+  }
+
+  info "three-tier e2e: $web (ingress + DNS) -> $api (healthchecked) -> $db (secret + --command)"
+  node_ssh 1 "swarmcracker service rm $web --force >/dev/null 2>&1 || true"
+  node_ssh 1 "swarmcracker service rm $api --force >/dev/null 2>&1 || true"
+  node_ssh 1 "swarmcracker service rm $db --force >/dev/null 2>&1 || true"
+  node_ssh 1 "swarmcracker service rm $gate --force >/dev/null 2>&1 || true"
+  node_ssh 1 "swarmcracker secret rm $secret >/dev/null 2>&1 || true"
+
+  info "secret: creating $secret on the manager"
+  node_ssh 1 "printf '%s' '$db_pass' > /tmp/$secret && swarmcracker secret create $secret /tmp/$secret >/dev/null && rm -f /tmp/$secret"
+
+  info "db: alpine, secret at /run/secrets/$secret, --command with a space in an arg"
+  node_ssh 1 "swarmcracker service create --name $db --image $LAB_DB_IMAGE \
+    --secret src=$secret,target=/run/secrets/$secret \
+    --command=/bin/sh --args=-c --args='sleep 3600' \
+    --health-cmd 'test -s /run/secrets/$secret' \
+    --health-interval 2s --health-timeout 2s --health-retries 3 --health-start-period 5s" >/dev/null
+  wait_running "$db" 1 || die "db never became RUNNING (secret, command or healthcheck failed)"
+
+  info "api: healthchecked, no published port"
+  node_ssh 1 "swarmcracker service create --name $api --image $LAB_IMAGE_OCI --replicas $n \
+    --health-cmd 'wget -q -O /dev/null http://127.0.0.1/' \
+    --health-interval 2s --health-timeout 2s --health-retries 3 --health-start-period 5s" >/dev/null
+  wait_running "$api" "$n" || { node_ssh 1 "swarmcracker service ps $api"; die "api replicas did not become healthy"; }
+
+  info "web: $n replicas published on :$port via ingress"
+  node_ssh 1 "swarmcracker service create --name $web --image $LAB_IMAGE_OCI --replicas $n --publish $port:80 \
+    --health-cmd 'wget -q -O /dev/null http://127.0.0.1/' \
+    --health-interval 2s --health-timeout 2s --health-retries 3 --health-start-period 5s" >/dev/null
+  wait_running "$web" "$n" || { node_ssh 1 "swarmcracker service ps $web"; die "web replicas did not become healthy"; }
+
+  info "check: the published port answers on every node"
+  for j in $(seq 1 "$n"); do
+    ip="$(node_ip "$j")"
+    code="$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' "http://$ip:$port/" 2>/dev/null)"
+    printf '  node%s (%s):%s -> %s\n' "$j" "$ip" "$port" "$code"
+    [ "$code" = "200" ] || rc=1
+  done
+
+  info "check: a web guest resolves 'api' by name and reaches it (no IP lookup)"
+  if ! read -r host task < <(find_local_task "$web"); then
+    die "could not find a web task running on a lab node"
+  fi
+  out="$(node_ssh "$host" "swarmcracker vm exec $task -- wget -q -O- http://api" 2>&1)" || rc=1
+  if printf '%s' "$out" | grep -qi 'nginx'; then
+    printf '  web task on node%s -> http://api -> nginx page (%s bytes)\n' "$host" "${#out}"
+  else
+    printf '  web task on node%s -> http://api -> FAILED: %s\n' "$host" "$out"
+    rc=1
+  fi
+
+  info "check: the secret exists inside the db guest with mode 0400 and the right value"
+  if ! read -r host task < <(find_local_task "$db"); then
+    die "could not find a db task running on a lab node"
+  fi
+  out="$(node_ssh "$host" "swarmcracker vm exec $task -- sh -c 'ls -l /run/secrets/$secret; cat /run/secrets/$secret'" 2>&1)" || rc=1
+  printf '%s\n' "$out" | sed 's/^/  /'
+  printf '%s' "$out" | grep -q -- '-r--------' || { printf '  secret mode is not 0400\n'; rc=1; }
+  printf '%s' "$out" | grep -q -- "$db_pass" || { printf '  secret content does not match\n'; rc=1; }
+
+  info "check: the db task runs the requested command (--command/--args), not the image entrypoint"
+  out="$(node_ssh "$host" "swarmcracker vm exec $task -- cat /proc/1/cmdline" 2>/dev/null | tr '\0' ' ')" || rc=1
+  printf '  pid 1: %s\n' "$out"
+  printf '%s' "$out" | grep -q 'sleep 3600' || { printf '  the command override did not take effect\n'; rc=1; }
+
+  info "check: a failing healthcheck keeps a task out of RUNNING"
+  node_ssh 1 "swarmcracker service create --name $gate --image $LAB_IMAGE_OCI --replicas 1 \
+    --health-cmd 'test -f /run/never-healthy' \
+    --health-interval 2s --health-timeout 2s --health-retries 2 --health-start-period 1s" >/dev/null
+  sleep 20
+  out="$(node_ssh 1 "swarmcracker service ps $gate --no-health 2>/dev/null" || true)"
+  printf '%s\n' "$out" | sed 's/^/  /'
+  if printf '%s' "$out" | grep -q RUNNING; then
+    printf '  gate task reached RUNNING despite a failing check\n'
+    rc=1
+  fi
+  node_ssh 1 "swarmcracker service rm $gate --force >/dev/null 2>&1 || true"
+
+  [ "$rc" = 0 ] || die "three-tier e2e failed"
+  info "three-tier e2e passed (left running: $web, $api, $db; secret: $secret)"
+}
+
+###############################################################################
 # dispatch
 ###############################################################################
 usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -547,6 +678,7 @@ case "${1:-}" in
   cluster)    cmd_cluster ;;
   test)       cmd_test ;;
   ingress)    cmd_ingress ;;
+  three-tier) cmd_three_tier ;;
   status)     cmd_status ;;
   ssh)        shift; cmd_ssh "${1:-1}" ;;
   destroy|down) cmd_destroy ;;
