@@ -59,6 +59,10 @@ sudo test-automation/multinode/cluster-lab.sh ssh 2
 sudo test-automation/multinode/cluster-lab.sh destroy
 ```
 
+`cluster` is safe to re-run: it deinitializes an existing manager (purging its
+state and removing the bridge it created) before initializing a new cluster, so
+`up` and `cluster` no longer need a manual `cluster deinit` first.
+
 `test` deploys one replica of `nginx:alpine` per node and prints a
 from-node → to-node matrix of `ping` and `HTTP` results. A healthy cluster shows
 `ping=OK http=200` for **remote** microVMs, not just the local one.

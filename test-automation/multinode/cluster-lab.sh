@@ -348,6 +348,10 @@ cmd_cluster() {
   }
 
   info "initializing manager on node 1 (${ips[0]})"
+  # Re-clustering must be idempotent: an existing manager leaves a systemd unit
+  # that makes `cluster init` refuse. Deinit first (and clean the bridge/VXLAN
+  # it created); a node without a manager is a no-op.
+  node_ssh 1 "swarmcracker cluster deinit --purge --cleanup-network --force >/dev/null 2>&1 || true"
   node_ssh 1 "modprobe kvm_intel nested=1 || true; modprobe tun; modprobe br_netfilter; systemctl stop swarmcracker-manager 2>/dev/null; rm -rf /var/lib/swarmkit; swarmcracker cluster init --advertise-addr ${ips[0]}:4242 --bridge-ip $(node_bridge_ip 1) --subnet $LAB_SUBNET --vxlan-enabled --vxlan-peers $(peers_for "${ips[0]}") --enable-cni" >/dev/null 2>&1 \
     || die "cluster init failed on node 1"
 
