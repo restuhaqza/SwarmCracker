@@ -18,7 +18,7 @@
 #   cluster            Init the manager and join the workers (VXLAN enabled)
 #   test               Deploy a replicated service and test cross-host traffic
 #   ingress            E2E the ingress routing mesh (fan-out, failover, UDP, cleanup)
-  three-tier         E2E a web + api + db app: publish, secrets, health, service DNS
+#   three-tier         E2E a web + api + db app: publish, secrets, health, service DNS
 #   status             Show cluster nodes, services and microVMs
 #   ssh <n>            Open a shell on node <n>
 #   destroy            Destroy the VMs and the seed server
