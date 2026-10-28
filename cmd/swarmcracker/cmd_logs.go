@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/spf13/cobra"
 )
@@ -39,18 +41,24 @@ This command shows the serial-console and VMM output for a microVM. It works for
 VMs created with 'swarmcracker vm create -d' and for service tasks managed by the
 daemon (the daemon mirrors each VM's console to <log-dir>/<task-id>.log).
 
+Without --host the local console file is read. With --host the request goes to the
+manager's API, which relays it to the node that owns the task, so a task on
+another node is readable too. The API serves at most 10000 lines per request,
+which is what --tail -1 (the default) asks for.
+
 Example:
   swarmcracker vm logs nginx-1
   swarmcracker vm logs --follow nginx-1
   swarmcracker vm logs --tail 100 nginx-1
   swarmcracker vm logs --since 1h nginx-1
-  swarmcracker vm logs --since 2026-01-02T15:04:05 nginx-1`,
+  swarmcracker vm logs --since 2026-01-02T15:04:05 nginx-1
+  swarmcracker -H https://manager:4244 --ca ca.crt --token-file token vm logs --tail 50 5f3a1b2c9d`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLogs(args[0])
+			return runLogs(cmd.Context(), args[0])
 		},
 	}
 
@@ -61,8 +69,13 @@ Example:
 	return cmd
 }
 
-// runLogs executes the logs command
-func runLogs(vmID string) error {
+// runLogs executes the logs command. --host selects the manager API (the
+// cross-node path); without it the node-local console file is read.
+func runLogs(ctx context.Context, vmID string) error {
+	if apiHost != "" {
+		return runRemoteLogs(ctx, vmID)
+	}
+
 	stateMgr, err := runtime.NewStateManager("")
 	if err != nil {
 		return fmt.Errorf("failed to create state manager: %w", err)
@@ -82,6 +95,43 @@ func runLogs(vmID string) error {
 		return followLogs(logPath, logsTail, sinceTime)
 	}
 	return displayLogs(logPath, logsTail, sinceTime)
+}
+
+// runRemoteLogs reads one task's console log through the public API, which the
+// manager relays to the node that owns the task. That is what makes a task on
+// another node readable from any machine holding a token.
+func runRemoteLogs(ctx context.Context, vmID string) error {
+	opts, err := remoteLogsOptions(logsTail, logsSince, logsFollow)
+	if err != nil {
+		return err
+	}
+
+	c, err := newContractClient()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+
+	if logsFollow {
+		// A following stream ends when the caller interrupts it; the local path
+		// installs the same handler for the same reason.
+		var stop context.CancelFunc
+		ctx, stop = signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+	}
+
+	return c.LogsTask(ctx, vmID, opts, os.Stdout)
+}
+
+// remoteLogsOptions converts the command's flags into a remote request. --since
+// accepts the same shapes locally and remotely; the API needs an absolute
+// timestamp, so a duration is resolved against the current time here.
+func remoteLogsOptions(tail int, since string, follow bool) (client.LogsOptions, error) {
+	sinceTime, err := parseSince(since)
+	if err != nil {
+		return client.LogsOptions{}, fmt.Errorf("invalid --since value: %w", err)
+	}
+	return client.LogsOptions{Tail: tail, Since: sinceTime, Follow: follow}, nil
 }
 
 // resolveLogPath finds the log file for a VM. It prefers the path recorded in

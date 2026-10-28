@@ -43,6 +43,7 @@ Services are replicated sets of VMs that can be scaled and updated.`,
 	cmd.AddCommand(newServiceUpdateCommand())
 	cmd.AddCommand(newServiceScaleCommand())
 	cmd.AddCommand(newServiceRemoveCommand())
+	cmd.AddCommand(newServiceLogsCommand())
 
 	return cmd
 }

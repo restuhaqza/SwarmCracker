@@ -3,6 +3,7 @@ package swarmkit
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rs/zerolog"
@@ -59,4 +60,50 @@ func TestVMMManagerCloseConsoleClosesLogFile(t *testing.T) {
 	vmm.closeConsole("task-2")
 	_, err = f.WriteString("x")
 	assert.Error(t, err, "closeConsole should close the log file")
+}
+
+// TestVMMManagerOpenLogFileAppendsOnRestart pins the retention rule inside one
+// task: a restart keeps the earlier console output and records a boundary, so a
+// crash investigation never loses the evidence that came before it.
+func TestVMMManagerOpenLogFileAppendsOnRestart(t *testing.T) {
+	dir := t.TempDir()
+	vmm := &VMMManager{logDir: dir, logger: zerolog.Nop()}
+
+	first, err := vmm.openLogFile("task-restart")
+	require.NoError(t, err)
+	_, err = first.WriteString("first run output\n")
+	require.NoError(t, err)
+	vmm.closeLogFile("task-restart")
+
+	second, err := vmm.openLogFile("task-restart")
+	require.NoError(t, err)
+	_, err = second.WriteString("second run output\n")
+	require.NoError(t, err)
+	vmm.closeLogFile("task-restart")
+
+	data, err := os.ReadFile(filepath.Join(dir, "task-restart.log"))
+	require.NoError(t, err)
+	text := string(data)
+
+	assert.Contains(t, text, "first run output", "a restart must not truncate earlier output")
+	assert.Contains(t, text, "second run output")
+	assert.Contains(t, text, "console restarted at", "a restart must be marked, not silent")
+	assert.Less(t, strings.Index(text, "first run output"), strings.Index(text, "second run output"),
+		"output stays in the order it happened")
+}
+
+// TestVMMManagerOpenLogFileNoMarkerOnFirstBoot pins that an empty log gets no
+// boundary line: a first boot has nothing to separate.
+func TestVMMManagerOpenLogFileNoMarkerOnFirstBoot(t *testing.T) {
+	dir := t.TempDir()
+	vmm := &VMMManager{logDir: dir, logger: zerolog.Nop()}
+
+	f, err := vmm.openLogFile("task-fresh")
+	require.NoError(t, err)
+	require.NotNil(t, f)
+	vmm.closeLogFile("task-fresh")
+
+	data, err := os.ReadFile(filepath.Join(dir, "task-fresh.log"))
+	require.NoError(t, err)
+	assert.Empty(t, string(data))
 }

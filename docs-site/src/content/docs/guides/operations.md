@@ -444,7 +444,7 @@ referenced the unpopulated series above were removed rather than left inert. See
 | Log | Path | Rotation |
 |-----|------|----------|
 | swarmd-firecracker (daemon) | `/var/log/swarmcracker/daemon.log` | systemd journal |
-| VM console logs | `<state-dir>/<vm-id>.log` (`/var/run/swarmcracker` as root) | Truncated on VM start |
+| VM console logs | `<state-dir>/<vm-id>.log` (`/var/run/swarmcracker` as root) | Appended across restarts; deleted with the task |
 | dnsmasq (DHCP) | `/var/lib/swarmcracker/dnsmasq/dnsmasq-<bridge>.log` | Manual |
 | Firecracker stderr | captured by daemon | — |
 
@@ -465,6 +465,59 @@ console to `<state-dir>/<vm-id>.log`, so `swarmcracker vm logs` works for either
 The CLI state directory is `/var/run/swarmcracker` when running as root and
 `~/.swarmcracker` otherwise.
 
+#### Reading logs across nodes
+
+A console log is a file on the node that ran the VM, so `vm logs <task-id>` reads
+it directly and needs no cluster access — that is the single-node path and it
+still works with no API, no collector and no extra configuration.
+
+For a task on **another** node, add `--host`: the manager answers the request and
+relays it to the node that owns the task, over the same mTLS broker it uses for
+`vm exec`.
+
+```bash
+# One task, wherever it runs
+swarmcracker -H https://manager:4244 --ca ca.crt --token-file token vm logs --tail 50 5f3a1b2c9d
+
+# Every task of a service, merged into one stream
+swarmcracker -H https://manager:4244 --ca ca.crt --token-file token service logs web
+
+# Same, following
+swarmcracker -H https://manager:4244 --ca ca.crt --token-file token service logs -f web
+```
+
+`service logs` prefixes every line with a short task ID, because merged output
+without attribution is unreadable once a service has more than one replica, and
+interleaves streams as they arrive rather than sorting by time — the console log
+carries no per-line timestamp. A replica that has not written anything yet is
+skipped rather than failing the command, so asking during a rollout still works.
+It requires `--host` by construction: only the manager can reach every node's
+files.
+
+There is no central log store to operate. The aggregation is a query-time fan-out
+from the manager, so a node that is down makes its own tasks' logs unreadable
+while the rest keep working, and no shipping agent, buffer or disk quota has to be
+sized.
+
+#### Retention
+
+Console logs follow the task's lifetime:
+
+- A VM **restart under the same task ID** appends to the existing file and writes
+  a `=== swarmcracker: console restarted at ... (earlier output kept) ===` line,
+  so the output before a crash is never lost and a restart is never silent.
+- A task that **exits or crashes** keeps its log; that is what a post-mortem
+  reads.
+- A task SwarmKit **removes** (a scale-down, a rolling update past the history
+  limit, `service rm`) takes its log with it, so a long-lived node does not
+  accumulate orphans.
+- `--since` and `--tail` bound what you read, not what is stored. `--tail -1` asks
+  the API for the node's maximum of 10000 lines per task.
+
+A file left behind by a crash of the daemon itself is not tracked by any of this;
+prune those by age, for example
+`find /var/run/swarmcracker -name '*.log' -mtime +7 -delete`.
+
 **View logs:**
 ```bash
 # Daemon logs
@@ -476,6 +529,9 @@ swarmcracker vm logs --follow <vm-id>
 # Logs for each task in a service (find the task IDs first)
 swarmcracker service ps <service-name>
 swarmcracker vm logs --follow <task-id>
+
+# Every task of a service, merged, from any machine with an API token
+swarmcracker -H https://manager:4244 --ca ca.crt --token-file token service logs -f <service-name>
 
 # dnsmasq DHCP logs
 tail -f /var/lib/swarmcracker/dnsmasq/dnsmasq-<bridge>.log

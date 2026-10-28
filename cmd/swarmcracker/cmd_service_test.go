@@ -160,14 +160,14 @@ func TestNewServiceCommand(t *testing.T) {
 
 	// Check subcommands exist
 	subcommands := cmd.Commands()
-	assert.Equal(t, 7, len(subcommands))
+	assert.Equal(t, 8, len(subcommands))
 
 	// Verify expected subcommand names exist (order may vary)
 	foundSubcmds := make(map[string]bool)
 	for _, subcmd := range subcommands {
 		foundSubcmds[subcmd.Name()] = true
 	}
-	expectedSubcmds := []string{"ls", "inspect", "ps", "create", "update", "scale", "rm"}
+	expectedSubcmds := []string{"ls", "inspect", "ps", "create", "update", "scale", "rm", "logs"}
 	for _, expected := range expectedSubcmds {
 		assert.True(t, foundSubcmds[expected], "Expected subcommand '%s' not found", expected)
 	}

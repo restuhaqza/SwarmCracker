@@ -1515,6 +1515,17 @@ func (c *Controller) Remove(ctx context.Context) error {
 		c.logger.Warn().Err(err).Str("path", socketPath).Msg("Failed to remove socket file")
 	}
 
+	// Remove the console log with the task. Retention is the task's lifetime:
+	// a task that merely exited keeps its log for post-mortem reading, and one
+	// SwarmKit removes takes its log with it, so the directory does not grow
+	// without bound on a long-lived node.
+	if c.config.LogDir != "" {
+		logPath := filepath.Join(c.config.LogDir, task.ID+".log")
+		if err := os.Remove(logPath); err != nil && !os.IsNotExist(err) {
+			c.logger.Warn().Err(err).Str("path", logPath).Msg("Failed to remove console log")
+		}
+	}
+
 	c.started = false
 	c.prepared = false
 

@@ -721,8 +721,15 @@ func (v *VMMManager) closeConsole(taskID string) {
 	v.closeLogFile(taskID)
 }
 
-// openLogFile opens (truncating) the console log file for a task. It returns
-// (nil, nil) when file logging is disabled (no log directory configured).
+// openLogFile opens the console log file for a task, appending to any existing
+// content. It returns (nil, nil) when file logging is disabled (no log directory
+// configured).
+//
+// A task can run twice under one ID (a health-driven restart, or a VM restarted
+// after a crash), and its earlier console output is the evidence the next
+// investigation needs, so the file is never truncated. A marker line records
+// where a new run begins, so the log cannot read as one continuous boot and a
+// restart is never silent.
 func (v *VMMManager) openLogFile(taskID string) (*os.File, error) {
 	if v.logDir == "" {
 		return nil, nil
@@ -730,9 +737,17 @@ func (v *VMMManager) openLogFile(taskID string) (*os.File, error) {
 	if err := os.MkdirAll(v.logDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create log directory %s: %w", v.logDir, err)
 	}
-	f, err := os.OpenFile(filepath.Join(v.logDir, taskID+".log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	path := filepath.Join(v.logDir, taskID+".log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+
+	// Only a file that already has output needs a boundary. Writing the marker
+	// is best effort: a failure must not fail the VM start over a log nicety.
+	if info, statErr := f.Stat(); statErr == nil && info.Size() > 0 {
+		_, _ = fmt.Fprintf(f, "\n=== swarmcracker: console restarted at %s (earlier output kept) ===\n",
+			time.Now().UTC().Format(time.RFC3339))
 	}
 	return f, nil
 }
