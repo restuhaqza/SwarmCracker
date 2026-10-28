@@ -63,6 +63,11 @@ sudo test-automation/multinode/cluster-lab.sh destroy
 state and removing the bridge it created) before initializing a new cluster, so
 `up` and `cluster` no longer need a manual `cluster deinit` first.
 
+`provision` seeds each guest with the host's cached rootfs images (to skip a
+rebuild) **and their guest-version markers**: the daemon only trusts a cached
+image whose marker matches its own guest build, so seeding an image without its
+marker can leave a stale one looking current.
+
 `test` deploys one replica of `nginx:alpine` per node and prints a
 from-node → to-node matrix of `ping` and `HTTP` results. A healthy cluster shows
 `ping=OK http=200` for **remote** microVMs, not just the local one.

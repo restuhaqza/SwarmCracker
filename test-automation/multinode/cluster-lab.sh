@@ -308,16 +308,35 @@ push_assets() {
     rsync -a --sparse -e "ssh ${VM_SSH_BASE[*]}" /usr/local/bin/firecracker "root@$ip":/usr/local/bin/
   rsync -a --sparse -e "ssh ${VM_SSH_BASE[*]}" /usr/share/firecracker/vmlinux "root@$ip":/usr/share/firecracker/vmlinux
 
-  # Base rootfs + any golden images (best effort)
+  # Base rootfs + any golden images (best effort).
+  #
+  # A rootfs is seeded with its guest-version marker, because the daemon trusts a
+  # cached image whose marker matches its own guest build. Copying the image
+  # alone leaves whatever marker the guest already had, so a stale image can look
+  # current and the guest then runs an old init wrapper (no sc.argv support, so
+  # --command/--args is silently dropped). A marker the seed did not provide is
+  # removed for the same reason.
   shopt -s nullglob
   local extra=()
+  local markerless=""
   local f
-  for f in /var/lib/firecracker/rootfs/*.ext4; do extra+=("$f"); done
+  for f in /var/lib/firecracker/rootfs/*.ext4; do
+    extra+=("$f")
+    if [ -f "$f.guest-version" ]; then
+      extra+=("$f.guest-version")
+    else
+      markerless="$markerless $f.guest-version"
+    fi
+  done
   for f in /var/lib/firecracker/golden/*; do extra+=("$f"); done
   shopt -u nullglob
   if [ "${#extra[@]}" -gt 0 ]; then
     rsync -a --sparse -e "ssh ${VM_SSH_BASE[*]}" --relative "${extra[@]}" "root@$ip":/ 2>/dev/null || \
       warn "some rootfs/golden assets could not be copied to $ip"
+  fi
+  if [ -n "$markerless" ]; then
+    # shellcheck disable=SC2086 # a space-separated path list, built above
+    "${sshc[@]}" "root@$ip" "rm -f$markerless" 2>/dev/null || true
   fi
 
   "${sshc[@]}" "root@$ip" "chmod +x /usr/local/bin/swarmcracker /usr/local/bin/swarmd-firecracker /usr/local/bin/swarmcracker-agent /usr/local/bin/swarmctl /usr/local/bin/firecracker /usr/local/bin/jailer /opt/cni/bin/swarmcracker-cni 2>/dev/null; firecracker --version | head -1"

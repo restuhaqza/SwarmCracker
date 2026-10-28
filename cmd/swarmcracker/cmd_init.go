@@ -407,8 +407,10 @@ ProtectHome=true
 PrivateTmp=true
 # Runtime dirs live on tmpfs (/run) and are cleared on boot. Create them before
 # systemd builds the mount namespace; otherwise ReadWritePaths fails to bind and
-# the service exits with status=226/NAMESPACE after every reboot.
-RuntimeDirectory={{base .SocketDir}} swarmkit
+# the service exits with status=226/NAMESPACE after every reboot. swarmcracker is
+# the daemon's default log directory (per-task console logs): under
+# ProtectSystem=strict it is the only way those files can be written.
+RuntimeDirectory={{base .SocketDir}} swarmkit swarmcracker
 RuntimeDirectoryPreserve=yes
 ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
 
