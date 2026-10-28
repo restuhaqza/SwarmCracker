@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Per-task resource metrics from inside the guest** — the daemon asks the guest
+  agent for the VM's own `/proc` counters every 15 seconds and publishes
+  `swarmcracker_vm_cpu_seconds`, `vm_memory_bytes`, `vm_net_rx_bytes` and
+  `vm_net_tx_bytes` with `instance`/`task_id`/`service` labels (issue #88). These
+  four series existed but had no writer, so per-VM CPU, memory and network use
+  could only be guessed from the Firecracker process. A failed sample publishes
+  nothing rather than a zero, and teardown deletes the task's series.
+
 ### Changed
 - **`service ls` shows the service mode** — the table gains a `MODE` column
   (`replicated` / `global`), so a global service is visible without inferring it

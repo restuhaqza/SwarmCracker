@@ -32,7 +32,7 @@ const (
 
 // Request is a single operation sent from the host to the guest agent.
 type Request struct {
-	Op      string   `json:"op"` // hello|exec|put|get
+	Op      string   `json:"op"` // hello|exec|put|get|metrics
 	Version string   `json:"version,omitempty"`
 	Command []string `json:"command,omitempty"`
 	TTY     bool     `json:"tty,omitempty"`
@@ -44,7 +44,7 @@ type Request struct {
 
 // Message is a single frame sent from the guest agent back to the host.
 type Message struct {
-	Type    string `json:"type"` // hello|stdout|stderr|exit|file|ok|error
+	Type    string `json:"type"` // hello|stdout|stderr|exit|file|ok|error|metrics
 	Version string `json:"version,omitempty"`
 	Data    []byte `json:"data,omitempty"`
 	Code    *int   `json:"code,omitempty"`
@@ -52,6 +52,8 @@ type Message struct {
 	// signal. A normal exit omits it.
 	Signal *int   `json:"signal,omitempty"`
 	Error  string `json:"error,omitempty"`
+	// Metrics is set on the reply to a metrics request.
+	Metrics *GuestMetrics `json:"metrics,omitempty"`
 }
 
 // WriteFrame marshals v as JSON and writes it to w prefixed by a 4-byte

@@ -667,6 +667,14 @@ type Controller struct {
 	// publishHealth can label the health gauge without taking c.mu or reading
 	// c.task, which Update may reassign.
 	healthService string
+	// Guest-metrics poller state. Like healthMu, metricsMu exists so the poller
+	// never takes c.mu (teardown holds it) and so a stop can join the goroutine
+	// without racing a start. metricsTaskID is the label set captured at boot.
+	metricsMu     sync.Mutex
+	metricsCancel context.CancelFunc
+	metricsWG     sync.WaitGroup
+	metricsTaskID string
+
 	// healthStopped is set once a teardown begins and cleared when a VM is
 	// (re)started. Teardown deletes the metadata sidecar, and the health gate
 	// publishes without c.mu, so without this flag a gate probe racing a stop
@@ -903,6 +911,10 @@ func (c *Controller) Start(ctx context.Context) error {
 	if err := c.startVM(ctx); err != nil {
 		return err
 	}
+	// Sample guest resource use for the lifetime of the VM. It starts here
+	// rather than after health gating so the series exist during a long start
+	// period, and it applies to every task, healthchecked or not.
+	c.startMetricsMonitor()
 	// Health gating runs after startVM releases c.mu, so a concurrent
 	// Shutdown/Terminate/Remove is never stalled for the whole start period.
 	if err := c.awaitHealthy(ctx); err != nil {
@@ -1325,6 +1337,9 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 	// Stop watching for health regressions before stopping the VM: the monitor
 	// also drives a stop, and this call joins it so nothing races teardown.
 	c.stopHealthMonitor()
+	// Stop sampling guest metrics and drop the task's resource series: the VM
+	// is about to go away, so its last sample describes nothing.
+	c.stopMetricsMonitor()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1384,6 +1399,7 @@ func (c *Controller) Terminate(ctx context.Context) error {
 
 	// Stop and join the health monitor before stopping the VM (idempotent).
 	c.stopHealthMonitor()
+	c.stopMetricsMonitor()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1432,6 +1448,7 @@ func (c *Controller) Remove(ctx context.Context) error {
 	// Stop and join the health monitor before tearing resources down
 	// (idempotent).
 	c.stopHealthMonitor()
+	c.stopMetricsMonitor()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1628,6 +1645,7 @@ func (c *Controller) Close() error {
 	// Stop and join the health monitor (idempotent; also done by the other
 	// teardown paths).
 	c.stopHealthMonitor()
+	c.stopMetricsMonitor()
 
 	return nil
 }

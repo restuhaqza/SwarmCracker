@@ -329,6 +329,10 @@ swarmctl metrics <task-id>
 | `swarmcracker_vm_crashes_total` | `instance`, `service`, `reason` | VMs that failed after reaching running |
 | `swarmcracker_vm_health` | `instance`, `service`, `state` | One-hot live healthcheck state |
 | `swarmcracker_vm_balloon_mib` | `instance`, `task_id`, `service` | Configured memory-balloon target, in MiB |
+| `swarmcracker_vm_cpu_seconds` | `instance`, `task_id`, `service` | Cumulative busy CPU time inside the guest, in seconds |
+| `swarmcracker_vm_memory_bytes` | `instance`, `task_id`, `service` | Memory in use inside the guest (MemTotal − MemAvailable) |
+| `swarmcracker_vm_net_rx_bytes` | `instance`, `task_id`, `service` | Cumulative bytes received on the guest's non-loopback interfaces |
+| `swarmcracker_vm_net_tx_bytes` | `instance`, `task_id`, `service` | Cumulative bytes sent on the guest's non-loopback interfaces |
 | `swarmcracker_disk_usage_bytes` | `instance`, `path` | Bytes used on a SwarmCracker directory |
 | `swarmcracker_disk_total_bytes` | `instance`, `path` | Capacity of that filesystem |
 
@@ -374,13 +378,57 @@ task emits no series and a VM created directly with `vm create --balloon-mib`
 emits no series at all; removing or scaling down a task leaves its last reported
 value in place until the node is restarted.
 
+#### Per-task resource usage
+
+The four `vm_cpu_seconds`, `vm_memory_bytes`, `vm_net_rx_bytes` and
+`vm_net_tx_bytes` series describe what the **workload inside the VM** used, not
+what the Firecracker process on the host used. The daemon asks the guest agent for
+the VM's own `/proc` counters every **15 seconds** and records the answer, so a
+busy guest and a busy VMM are distinguishable and a task can be attributed to a
+service.
+
+All four are cumulative, so read them with `rate()` or `increase()`:
+
+```promql
+# CPU cores used by a service, averaged over 5 minutes
+sum by (service) (rate(swarmcracker_vm_cpu_seconds[5m]))
+
+# Network throughput per task
+sum by (task_id) (rate(swarmcracker_vm_net_rx_bytes[5m]))
+```
+
+What each one means:
+
+- **CPU** is the guest's busy time — `user + nice + system + irq + softirq +
+  steal` from `/proc/stat`, excluding idle and iowait. `guest`/`guest_nice` are
+  not added again, because the kernel already counts them in `user`/`nice`.
+- **Memory** is `MemTotal − MemAvailable`, the kernel's own estimate of what a new
+  workload could claim. That is memory *in use*, not the VM's configured size, so
+  it moves with the workload and with the balloon.
+- **Network** sums every interface except loopback: traffic between two processes
+  in the same guest never leaves the VM, and counting it would report network use
+  the guest did not have.
+
+Two behaviours are deliberate:
+
+- **A failed sample writes nothing.** If the guest agent cannot answer (a VM still
+  booting, or an image whose agent predates this feature), no series is published
+  for that tick. A zero would be indistinguishable from an idle guest and would
+  pin a busy task's series at 0. The poller logs a warning once per outage rather
+  than every tick, and recovers on the next successful sample — the counters are
+  cumulative, so a missed interval costs only that interval.
+- **Teardown deletes the series.** A scaled-down or removed task leaves no stale
+  row, so a per-service sum never includes a VM that no longer exists.
+
+Worst-case staleness is one poll interval (15 s), and a `rate()` window shorter
+than two intervals has too few samples to be meaningful — use `[1m]` or longer.
+Nested virtualization does not change these readings: they come from the guest's
+own kernel, which is what the workload sees.
+
 **Declared but not populated.** The following series are registered so an
 operator sees the intended shape, but no code path writes them — do not read them
 as current values:
 
-- `swarmcracker_vm_cpu_seconds`, `swarmcracker_vm_memory_bytes`,
-  `swarmcracker_vm_net_rx_bytes`, `swarmcracker_vm_net_tx_bytes` — per-VM
-  resource usage.
 - `swarmcracker_vxlan_peers`, `swarmcracker_vxlan_expected_peers` — overlay peer
   counts.
 - `swarmcracker_manager_health`, `swarmcracker_raft_health` — manager/Raft health.
@@ -720,9 +768,10 @@ If you lose 2 of 3 managers:
    top -b -n1 | head -20
    vmstat 1 5
    ```
-   The per-VM `swarmcracker_vm_cpu_seconds` series is declared but not populated,
-   so it cannot be used to attribute slowness to a single VM; measure on the host
-   or inside the guest instead.
+   Attribute load with the per-task series: `swarmcracker_vm_cpu_seconds` tells you
+   which VM is burning CPU (read it with `rate()`; it is sampled from the guest
+   every 15 s), and `swarmcracker_vm_memory_bytes` tells you whether it is the
+   workload or the host that is under pressure.
 
 2. **Check memory pressure:**
    ```bash

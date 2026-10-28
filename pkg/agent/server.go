@@ -88,6 +88,8 @@ func (s *server) dispatch(req *Request) error {
 		return s.handlePut(req)
 	case "get":
 		return s.handleGet(req)
+	case "metrics":
+		return s.handleMetrics()
 	default:
 		return s.writeError("unknown op %q", req.Op)
 	}
@@ -98,6 +100,17 @@ func (s *server) handleHello(req *Request) error {
 		return s.writeError("agent version mismatch: client %s, guest %s", req.Version, Version)
 	}
 	return s.write(Message{Type: "hello", Version: Version})
+}
+
+// handleMetrics samples the guest's own /proc and replies with one metrics
+// frame. A read failure is reported as an error frame rather than a zeroed
+// sample, so the host can leave the series unset instead of publishing 0.
+func (s *server) handleMetrics() error {
+	m, err := ReadGuestMetrics(procRoot)
+	if err != nil {
+		return s.writeError("metrics: %v", err)
+	}
+	return s.write(Message{Type: "metrics", Metrics: &m})
 }
 
 // handlePut receives a stream of file frames and writes them to req.Path.

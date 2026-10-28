@@ -351,6 +351,39 @@ func exitResult(msg Message) (ExecResult, error) {
 	return ExecResult{ExitCode: *msg.Code}, nil
 }
 
+// Metrics samples the guest's resource use through the agent's metrics op.
+//
+// The series it feeds are cumulative, so a single failed sample loses one
+// interval rather than corrupting the value; the caller is expected to retry on
+// the next tick and to treat an error as "no data", not as zeros.
+func (c *Client) Metrics(ctx context.Context) (GuestMetrics, error) {
+	if c.consumed {
+		return GuestMetrics{}, errConsumed
+	}
+	stop := c.watchContext(ctx)
+	defer stop()
+
+	if err := c.write(Request{Op: "metrics"}); err != nil {
+		return GuestMetrics{}, fmt.Errorf("metrics: send request: %w", err)
+	}
+
+	var msg Message
+	if _, err := ReadFrame(c.conn, &msg); err != nil {
+		return GuestMetrics{}, fmt.Errorf("metrics: read frame: %w", err)
+	}
+	switch msg.Type {
+	case "metrics":
+		if msg.Metrics == nil {
+			return GuestMetrics{}, fmt.Errorf("metrics: reply carried no sample")
+		}
+		return *msg.Metrics, nil
+	case "error":
+		return GuestMetrics{}, fmt.Errorf("metrics: %s", msg.Error)
+	default:
+		return GuestMetrics{}, fmt.Errorf("metrics: unexpected message type %q", msg.Type)
+	}
+}
+
 // CopyTo streams src to guestPath with the given mode (0644 when mode is 0).
 func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mode uint32) error {
 	if c.consumed {

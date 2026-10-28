@@ -155,8 +155,7 @@ var DiskTotalBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
 // Type: Gauge
 // Labels: instance, task_id, service
 //
-// Unlike the other per-VM series below, this one has a real writer: it is set
-// from the task's balloon annotation when a VM is booted (see
+// It is set from the task's balloon annotation when a VM is booted (see
 // RecordVMBalloon). A VM without a configured balloon emits no series, because
 // an unset gauge carrying no signal would be worse than no series at all.
 var VMBalloonMB = promauto.NewGaugeVec(prometheus.GaugeOpts{
@@ -165,13 +164,24 @@ var VMBalloonMB = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Help:      "Configured memory-balloon target for a microVM, in MiB.",
 }, []string{"instance", "task_id", "service"})
 
+// The four series below are written by the guest-metrics poller: the daemon asks
+// the guest agent for the VM's own /proc counters every
+// pkg/swarmkit.MetricsPollInterval and records the answer (see
+// RecordVMTaskMetrics). They describe what the workload inside the VM used, not
+// what the Firecracker process on the host used, so a busy guest and a busy VMM
+// are distinguishable.
+//
+// All four are cumulative, so they are read with rate()/increase(); a task that
+// is torn down has its series deleted (ClearVMTaskMetrics), so a scaled-down
+// service leaves no stale row behind.
+
 // VMCPU tracks CPU usage per VM.
 // Type: Gauge
 // Labels: instance, task_id, service
 var VMCPU = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: namespace,
 	Name:      "vm_cpu_seconds",
-	Help:      "CPU time consumed by a VM in seconds.",
+	Help:      "Cumulative busy CPU time consumed inside the guest, in seconds.",
 }, []string{"instance", "task_id", "service"})
 
 // VMMemory tracks memory usage per VM.
@@ -180,7 +190,7 @@ var VMCPU = promauto.NewGaugeVec(prometheus.GaugeOpts{
 var VMMemory = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: namespace,
 	Name:      "vm_memory_bytes",
-	Help:      "RSS memory used by a VM in bytes.",
+	Help:      "Memory in use inside the guest, in bytes (MemTotal - MemAvailable).",
 }, []string{"instance", "task_id", "service"})
 
 // VMNetRx tracks network bytes received per VM.
@@ -189,7 +199,7 @@ var VMMemory = promauto.NewGaugeVec(prometheus.GaugeOpts{
 var VMNetRx = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: namespace,
 	Name:      "vm_net_rx_bytes",
-	Help:      "Total network bytes received by a VM.",
+	Help:      "Cumulative bytes received on the guest's non-loopback interfaces.",
 }, []string{"instance", "task_id", "service"})
 
 // VMNetTx tracks network bytes transmitted per VM.
@@ -198,7 +208,7 @@ var VMNetRx = promauto.NewGaugeVec(prometheus.GaugeOpts{
 var VMNetTx = promauto.NewGaugeVec(prometheus.GaugeOpts{
 	Namespace: namespace,
 	Name:      "vm_net_tx_bytes",
-	Help:      "Total network bytes transmitted by a VM.",
+	Help:      "Cumulative bytes transmitted on the guest's non-loopback interfaces.",
 }, []string{"instance", "task_id", "service"})
 
 // ── Convenience Helpers ───────────────────────────────────────────
@@ -282,6 +292,32 @@ func RecordVMBootDuration(instance, service string, durationSeconds float64) {
 // a VM without one gets no series, so the metric always carries signal.
 func RecordVMBalloon(instance, taskID, service string, mib float64) {
 	VMBalloonMB.WithLabelValues(instance, taskID, service).Set(mib)
+}
+
+// RecordVMTaskMetrics publishes one guest sample for a task: the four per-VM
+// resource series, all keyed by the same instance/task_id/service labels.
+//
+// The caller must pass a sample the guest actually reported. A failed poll is
+// not a zero sample, and writing zeros would pin a busy VM at 0 and look like an
+// idle one.
+func RecordVMTaskMetrics(instance, taskID, service string, cpuSeconds float64, memoryBytes, netRxBytes, netTxBytes uint64) {
+	VMCPU.WithLabelValues(instance, taskID, service).Set(cpuSeconds)
+	VMMemory.WithLabelValues(instance, taskID, service).Set(float64(memoryBytes))
+	VMNetRx.WithLabelValues(instance, taskID, service).Set(float64(netRxBytes))
+	VMNetTx.WithLabelValues(instance, taskID, service).Set(float64(netTxBytes))
+}
+
+// ClearVMTaskMetrics removes every per-VM resource series for a task.
+//
+// It is called when a VM is torn down: the guest is gone, so its last sample
+// describes nothing, and a left-behind series would keep a scaled-down service
+// on a dashboard and in any per-task sum.
+func ClearVMTaskMetrics(instance, taskID string) {
+	match := prometheus.Labels{"instance": instance, "task_id": taskID}
+	VMCPU.DeletePartialMatch(match)
+	VMMemory.DeletePartialMatch(match)
+	VMNetRx.DeletePartialMatch(match)
+	VMNetTx.DeletePartialMatch(match)
 }
 
 // RecordDiskUsage publishes used and total bytes for one path. Callers must
