@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParseSince(t *testing.T) {
@@ -255,5 +258,32 @@ func TestTailStreamAppendsAndStops(t *testing.T) {
 	}
 	if !strings.Contains(sb.String(), "Stopped following logs") {
 		t.Errorf("expected stop notice, got %q", sb.String())
+	}
+}
+
+// TestServiceLogs_RequiresHost pins the transport rule at the CLI boundary: a
+// service's replicas live on different nodes, so aggregating them without the
+// manager's API would silently show only this node's slice.
+func TestServiceLogs_RequiresHost(t *testing.T) {
+	prev := apiHost
+	apiHost = ""
+	t.Cleanup(func() { apiHost = prev })
+
+	cmd := newServiceLogsCommand()
+	cmd.SetArgs([]string{"web"})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "require --host")
+}
+
+// TestServiceLogs_HasLogFlags keeps the per-task bounds visible in the command's
+// surface: merged output is only usable if each stream can be bounded.
+func TestServiceLogs_HasLogFlags(t *testing.T) {
+	cmd := newServiceLogsCommand()
+	for _, name := range []string{"follow", "tail", "since"} {
+		assert.NotNil(t, cmd.Flags().Lookup(name), "service logs must accept --%s", name)
 	}
 }

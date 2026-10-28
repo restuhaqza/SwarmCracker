@@ -97,6 +97,11 @@ var remoteCapablePaths = map[string]struct{}{
 	// vm attach carries the interactive console over the same relay, so an
 	// operator can reach a task's console from any machine with a token.
 	"swarmcracker vm attach": {},
+	// logs are files on the node that ran the VM, so -H (which the manager relays
+	// to that node) is what makes another node's task readable. service logs is
+	// the aggregated form and requires -H by construction.
+	"swarmcracker vm logs":      {},
+	"swarmcracker service logs": {},
 	// vm snapshot stop-restored is a manager-relayed mutation: only the node that
 	// started the restored VM holds its process, so -H is the only way to reach it
 	// from another machine.

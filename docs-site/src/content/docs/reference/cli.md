@@ -403,6 +403,15 @@ rejected instead of being silently dropped. See
 
 `service ls` / `service ps` flags: `--filter`, `--format`, `--quiet` / `-q`, and `--no-trunc`, `--health-port`, `--no-health` for `ps`.
 
+`service logs <service>` streams the console logs of every task of a service in
+one interleaved stream, each line prefixed with a short task ID. Flags:
+`--follow` / `-f`, `--since`, `--tail` (per task; `-1` means as much as the node
+serves, capped at 10000 lines). It requires the global `-H` / `--host`, because
+only the manager can reach every node's console file; for one task on the local
+node use `vm logs <task-id>`. A replica that has not written anything yet is
+skipped rather than failing the command. See
+[Operations § Reading logs across nodes](/guides/operations/#reading-logs-across-nodes).
+
 `service ls` also accepts the global `-o` / `--output` flag. `-o json` emits the
 v1 `ServiceList` envelope (`schemaVersion`, `kind`, `items`, `next`) and `-o name`
 emits one ID per line; `--format json` remains the frozen legacy shape. On a
@@ -624,7 +633,7 @@ cannot satisfy leaves **no VM and no cgroup** behind. See
 when the flags are omitted), and a declared size is honoured **exactly** — no
 512 MiB floor — so `--memory 256` boots a 256 MiB VM.
 
-`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix, and the global `-H` switches the session to the manager's API (see below). Detach with **Ctrl-P Ctrl-Q**. `vm exec` flags: `--socket-dir` (default `/var/run/firecracker`), `-i`/`--interactive`, `-t`/`--tty`, `-e`/`--env` (`K=V`, repeatable), `-w`/`--workdir`, `--exit-code` (`guest`, the default, passes the guest status through; `api` maps any non-zero guest exit to `8`; a signal stays `128+signal`); everything after `--` is the guest command, and `-i` without `-t` only emits a warning. `vm cp` flags: `--socket-dir`, `--mode` (host→guest destination mode, default `0644`); exactly one argument carries the `<vm>:` prefix and only regular files are supported.
+`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. Without `-H` it reads the local console file; with `-H` it reads the task through the manager API, which relays to the node that owns it, so a task on another node is readable too (the API serves at most 10000 lines per request, which is what `--tail -1` asks for). `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix, and the global `-H` switches the session to the manager's API (see below). Detach with **Ctrl-P Ctrl-Q**. `vm exec` flags: `--socket-dir` (default `/var/run/firecracker`), `-i`/`--interactive`, `-t`/`--tty`, `-e`/`--env` (`K=V`, repeatable), `-w`/`--workdir`, `--exit-code` (`guest`, the default, passes the guest status through; `api` maps any non-zero guest exit to `8`; a signal stays `128+signal`); everything after `--` is the guest command, and `-i` without `-t` only emits a warning. `vm cp` flags: `--socket-dir`, `--mode` (host→guest destination mode, default `0644`); exactly one argument carries the `<vm>:` prefix and only regular files are supported.
 
 `vm exec` and `vm cp` reach a guest agent over Firecracker's vsock device (no extra host port is opened). The channel is a trusted control path — a host-local process can run commands in the guest **as root** — so access is limited to the daemon-owned socket directory, like `vm attach`. See [Guest Access](/guides/guest-access/) for usage, the guest agent, and limitations.
 

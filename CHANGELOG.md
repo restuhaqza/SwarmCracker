@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Cross-node logs: `vm logs --host` and `service logs`** — a task's console log
+  can now be read from any machine holding an API token: `-H` sends the request to
+  the manager, which relays it to the node that owns the task, and the new
+  `service logs <service>` merges every replica's output into one interleaved
+  stream with a short task-ID prefix (issue #89). Aggregation is a query-time
+  fan-out, not a collector, so a single-node install keeps reading files directly
+  and needs no extra component.
 - **Per-task resource metrics from inside the guest** — the daemon asks the guest
   agent for the VM's own `/proc` counters every 15 seconds and publishes
   `swarmcracker_vm_cpu_seconds`, `vm_memory_bytes`, `vm_net_rx_bytes` and
@@ -22,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the `REPLICAS` cell.
 
 ### Fixed
+- **A VM restart no longer erases the console log** — the per-task log was opened
+  with `O_TRUNC`, so a restart under the same task ID silently threw away the
+  output that a post-mortem needs. It now appends and writes a
+  `console restarted at ...` boundary line, and a task SwarmKit removes takes its
+  log with it, so retention follows the task's lifetime instead of growing
+  without bound.
 - **`service create --command` / `--args` are applied** — the daemon translator
   never carried the command to the guest, so every service task ran the image's
   own entrypoint while `service inspect` showed the override (issue #97). Each
