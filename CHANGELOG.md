@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the `REPLICAS` cell.
 
 ### Fixed
+- **Console logs are written on a systemd-managed node** — the shipped units run
+  with `ProtectSystem=strict` and only made `/run/firecracker` and
+  `/run/swarmkit` writable, not `/run/swarmcracker`, the daemon's default log
+  directory. Every console log therefore failed to open and `vm logs` had nothing
+  to read; the unit templates now create that runtime directory too.
 - **A VM restart no longer erases the console log** — the per-task log was opened
   with `O_TRUNC`, so a restart under the same task ID silently threw away the
   output that a post-mortem needs. It now appends and writes a
