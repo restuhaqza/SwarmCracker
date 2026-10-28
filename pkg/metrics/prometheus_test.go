@@ -215,3 +215,54 @@ func TestMetricsAreRegistered(t *testing.T) {
 		prometheus.DefaultRegisterer.MustRegister(m)
 	}
 }
+
+// TestRecordVMTaskMetrics pins that one guest sample lands on all four declared
+// per-VM series, under the same label set — no parallel naming scheme.
+func TestRecordVMTaskMetrics(t *testing.T) {
+	RecordVMTaskMetrics("guest-instance", "task-g1", "web", 12.5, 64<<20, 1234, 5678)
+
+	labels := []string{"guest-instance", "task-g1", "web"}
+	assert.Equal(t, 12.5, testutil.ToFloat64(VMCPU.WithLabelValues(labels...)))
+	assert.Equal(t, float64(64<<20), testutil.ToFloat64(VMMemory.WithLabelValues(labels...)))
+	assert.Equal(t, 1234.0, testutil.ToFloat64(VMNetRx.WithLabelValues(labels...)))
+	assert.Equal(t, 5678.0, testutil.ToFloat64(VMNetTx.WithLabelValues(labels...)))
+
+	// A later sample replaces the previous one: these are gauges carrying the
+	// latest cumulative reading, not counters to be summed.
+	RecordVMTaskMetrics("guest-instance", "task-g1", "web", 20, 64<<20, 2000, 6000)
+	assert.Equal(t, 20.0, testutil.ToFloat64(VMCPU.WithLabelValues(labels...)))
+	assert.Equal(t, 2000.0, testutil.ToFloat64(VMNetRx.WithLabelValues(labels...)))
+}
+
+// TestClearVMTaskMetrics pins that teardown removes the four series for that
+// task and leaves another task's series alone.
+func TestClearVMTaskMetrics(t *testing.T) {
+	RecordVMTaskMetrics("clear-instance", "task-gone", "web", 1, 2, 3, 4)
+	RecordVMTaskMetrics("clear-instance", "task-stays", "api", 5, 6, 7, 8)
+
+	before := map[string]int{
+		"swarmcracker_vm_cpu_seconds":  metricSampleCount(t, "swarmcracker_vm_cpu_seconds", map[string]string{"instance": "clear-instance", "task_id": "task-gone"}),
+		"swarmcracker_vm_memory_bytes": metricSampleCount(t, "swarmcracker_vm_memory_bytes", map[string]string{"instance": "clear-instance", "task_id": "task-gone"}),
+		"swarmcracker_vm_net_rx_bytes": metricSampleCount(t, "swarmcracker_vm_net_rx_bytes", map[string]string{"instance": "clear-instance", "task_id": "task-gone"}),
+		"swarmcracker_vm_net_tx_bytes": metricSampleCount(t, "swarmcracker_vm_net_tx_bytes", map[string]string{"instance": "clear-instance", "task_id": "task-gone"}),
+	}
+	for name, count := range before {
+		require.Equal(t, 1, count, "%s must exist before the clear", name)
+	}
+
+	ClearVMTaskMetrics("clear-instance", "task-gone")
+
+	for _, name := range []string{
+		"swarmcracker_vm_cpu_seconds",
+		"swarmcracker_vm_memory_bytes",
+		"swarmcracker_vm_net_rx_bytes",
+		"swarmcracker_vm_net_tx_bytes",
+	} {
+		assert.Zero(t, metricSampleCount(t, name, map[string]string{"instance": "clear-instance", "task_id": "task-gone"}),
+			"%s must be deleted", name)
+		assert.Equal(t, 1, metricSampleCount(t, name, map[string]string{"instance": "clear-instance", "task_id": "task-stays"}),
+			"%s for another task must survive", name)
+	}
+
+	ClearVMTaskMetrics("clear-instance", "task-stays")
+}
