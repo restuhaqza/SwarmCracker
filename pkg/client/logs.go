@@ -204,15 +204,7 @@ func (r *remoteClient) logsTask(ctx context.Context, ref string, opts LogsOption
 		buf = append(buf, '\n')
 		_, _ = out.Write(buf)
 	}
-	if err := pumpLogStream(ctx, resp.Body, emit); err != nil {
-		return err
-	}
-	// A follow stream ends when the caller cancels; that is a clean stop, not a
-	// truncated stream.
-	if opts.Follow && ctx.Err() != nil {
-		return nil
-	}
-	return nil
+	return pumpLogStream(ctx, resp.Body, emit)
 }
 
 // pumpLogStream decodes NDJSON log frames and hands each complete line to emit.
@@ -252,16 +244,17 @@ func pumpLogStream(ctx context.Context, body io.Reader, emit func([]byte)) error
 			return output.NewErrorf(output.CodeInternal, "unexpected log frame type %q", frame.Type)
 		}
 	}
-	if err := sc.Err(); err != nil {
-		if ctx.Err() != nil {
-			// A cancelled follow closes the body; that is the caller stopping,
-			// not a broken stream.
-			return nil
+	readErr := sc.Err()
+	if readErr == nil {
+		if len(partial) > 0 {
+			emit(partial)
 		}
-		return output.NewErrorf(output.CodeUnavailable, "read log stream: %v", err)
+		return nil
 	}
-	if len(partial) > 0 {
-		emit(partial)
+	// A cancelled follow closes the body: that is the caller stopping, not a
+	// broken stream. Only a read that failed for another reason is reported.
+	if ctx.Err() == nil {
+		return output.NewErrorf(output.CodeUnavailable, "read log stream: %v", readErr)
 	}
 	return nil
 }
