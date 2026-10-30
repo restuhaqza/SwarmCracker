@@ -554,8 +554,9 @@ func TestAutoscaleReplicasBounds(t *testing.T) {
 		})
 
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--replicas 50", "the error must name the value")
+		assert.Contains(t, err.Error(), "replicas 50", "the error must name the value")
 		assert.Contains(t, err.Error(), "min=2, max=10", "the error must name the bounds")
+		assert.Contains(t, err.Error(), "--autoscale", "the error must point at the policy")
 	})
 
 	t.Run("create below min is rejected", func(t *testing.T) {
@@ -565,7 +566,7 @@ func TestAutoscaleReplicasBounds(t *testing.T) {
 		})
 
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--replicas 1")
+		assert.Contains(t, err.Error(), "replicas 1")
 		assert.Contains(t, err.Error(), "min=2, max=10")
 	})
 
@@ -603,7 +604,7 @@ func TestAutoscaleReplicasBounds(t *testing.T) {
 		})
 
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--replicas 50")
+		assert.Contains(t, err.Error(), "replicas 50")
 	})
 
 	t.Run("create without an explicit --replicas is not bounded", func(t *testing.T) {
@@ -626,8 +627,10 @@ func TestAutoscaleReplicasBounds(t *testing.T) {
 		})
 
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "--replicas 50")
+		assert.Contains(t, err.Error(), "replicas 50")
 		assert.Contains(t, err.Error(), "min=2, max=10")
+		assert.NotContains(t, err.Error(), "--replicas",
+			"the create and update paths share the neutral wording")
 		assert.Zero(t, client.updateCalls, "an out-of-bounds count must not be stored")
 	})
 
@@ -648,6 +651,51 @@ func TestAutoscaleReplicasBounds(t *testing.T) {
 		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
 			replicas: 0, replicasSet: true,
 		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		assert.Equal(t, uint64(0), client.updatedSpec.GetReplicated().Replicas)
+		assert.Equal(t, existing, client.updatedSpec.Annotations.Labels,
+			"a pause must not touch the policy")
+	})
+}
+
+// TestAutoscaleServiceScaleBounds covers `service scale`, the entry point an
+// operator reaches for once a policy already exists. It shares the update path's
+// bounds check but has no --replicas flag, so the refusal must name the count
+// and the bounds and point at the policy instead of at a flag this command does
+// not have. Scale to 0 stays the pause; a count within the bounds is applied.
+func TestAutoscaleServiceScaleBounds(t *testing.T) {
+	existing := autoscaleLabels("2", "10", "cpu", "70", "1m0s", "5m0s")
+
+	t.Run("scale within the bounds is applied", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(existing, false, 4)}
+
+		require.NoError(t, scaleServiceWithClient(context.Background(), client, "web", 5))
+
+		require.Equal(t, 1, client.updateCalls)
+		assert.Equal(t, uint64(5), client.updatedSpec.GetReplicated().Replicas)
+		assert.Equal(t, existing, client.updatedSpec.Annotations.Labels,
+			"a scale must not touch the policy")
+	})
+
+	t.Run("scale below min is refused without naming --replicas", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(existing, false, 4)}
+
+		err := scaleServiceWithClient(context.Background(), client, "web", 1)
+
+		require.Error(t, err, "an explicit count below min contradicts the policy")
+		assert.Contains(t, err.Error(), "replicas 1", "the error must name the count")
+		assert.Contains(t, err.Error(), "min=2, max=10", "the error must name the bounds")
+		assert.Contains(t, err.Error(), "--autoscale", "the error must point at the policy")
+		assert.NotContains(t, err.Error(), "--replicas",
+			"service scale has no --replicas flag, so the refusal must not name one")
+		assert.Zero(t, client.updateCalls, "a refused scale must not be stored")
+	})
+
+	t.Run("scale to 0 still pauses", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(existing, false, 4)}
+
+		require.NoError(t, scaleServiceWithClient(context.Background(), client, "web", 0))
 
 		require.Equal(t, 1, client.updateCalls)
 		assert.Equal(t, uint64(0), client.updatedSpec.GetReplicated().Replicas)

@@ -2406,8 +2406,30 @@ func scaleService(serviceID, replicasStr string) error {
 		return fmt.Errorf("invalid replica count %q: must be a non-negative integer", replicasStr)
 	}
 
-	// Scale always applies the value, including 0 (scale to zero).
-	return updateService(serviceID, serviceUpdateOptions{replicas: replicas, replicasSet: true})
+	// The count is validated before dialing, so a malformed request never needs
+	// a running daemon to be reported.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, conn, err := getSwarmClientForService()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	return scaleServiceWithClient(ctx, client, serviceID, replicas)
+}
+
+// scaleServiceWithClient applies an explicit replica count through the same
+// update path as `service update --replicas`, so the autoscale bounds check
+// protects both entry points. It takes the stored replica count as an integer:
+// `service scale` is an explicit request, so unlike the --replicas flag (whose
+// default is 1) it always counts as "set", including 0 (scale to zero).
+func scaleServiceWithClient(ctx context.Context, client legacy.ControlClient, serviceID string, replicas uint64) error {
+	return updateServiceWithClient(ctx, client, serviceID, serviceUpdateOptions{
+		replicas:    replicas,
+		replicasSet: true,
+	})
 }
 
 func removeService(serviceID string, force bool) error {

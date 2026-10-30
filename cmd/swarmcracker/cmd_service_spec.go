@@ -710,11 +710,12 @@ func autoscaleGlobalModeError() error {
 }
 
 // autoscaleReplicasOutOfBounds reports an explicit replica count that the
-// policy cannot hold, naming both the value and the bounds. It also names the
-// one value that is deliberately allowed outside them, so a pause is not
-// mistaken for the mistake the error is about.
+// policy cannot hold, naming both the count and the bounds. It is reachable from
+// `service update --replicas` and from `service scale`, so it names no flag for
+// the count and points at the policy instead: the same sentence has to be true
+// whichever command the operator typed, and `service scale` has no --replicas.
 func autoscaleReplicasOutOfBounds(replicas uint64, policy types.AutoscalePolicy) error {
-	return fmt.Errorf("--replicas %d is outside the autoscale bounds min=%d, max=%d: choose a count within the bounds, or --replicas 0 to pause the service",
+	return fmt.Errorf("replicas %d is outside the autoscale bounds min=%d, max=%d; change the policy with --autoscale or pick a count within it",
 		replicas, policy.Min, policy.Max)
 }
 
