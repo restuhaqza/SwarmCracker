@@ -181,6 +181,7 @@ Service (replicated microVM) management.
 | `--golden` | — | Boot a prebuilt golden image (e.g. `ubuntu-24.04-docker@1.0.0`) |
 | `--with-registry-auth` | `false` | Send the manager's credentials for `--image` to the nodes (resolved at create time; see [Registry authentication](#registry-authentication)) |
 | `--replicas` | `1` | Number of replicas |
+| `--autoscale` | — | Keep the replica count between bounds by scaling on guest CPU: `min=2,max=10,metric=cpu,target=70[,cooldown-up=60s][,cooldown-down=5m]` (see [Autoscaling](/guides/operations/#autoscaling)) |
 | `--cpu` | — | CPU cores (e.g. `1.5`); sizes the microVM (see below) |
 | `--memory` | — | Memory size (e.g. `512M`, `1G`); sizes the microVM, honoured exactly (see below) |
 | `--balloon-mib` | — | Memory-balloon target in MiB (positive integer, less than the memory the VM will boot with; see [Memory Balloon](/guides/advanced/#memory-balloon)) |
@@ -363,7 +364,7 @@ invalid value is **rejected** (`--health-retries 0`, `--health-interval 0s`), as
 is any `--health-*` flag supplied without `--health-cmd`; no flag is silently
 ignored.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--cpuset` (tri-state: omit to preserve the current pin, a cpulist to set it, an empty value to remove it), `--hugepages` (tri-state: omit to preserve the current request, `--hugepages` to set it, `--hugepages=false` to remove it), `--numa-node` (tri-state: omit to preserve the current binding, a nodelist to set it, an empty value to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--autoscale`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--cpuset` (tri-state: omit to preserve the current pin, a cpulist to set it, an empty value to remove it), `--hugepages` (tri-state: omit to preserve the current request, `--hugepages` to set it, `--hugepages=false` to remove it), `--numa-node` (tri-state: omit to preserve the current binding, a nodelist to set it, an empty value to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
@@ -377,6 +378,35 @@ updated task will carry — the `--memory-limit` given on the same command, else
 the limit already on the service (and the 512 MiB default when it declares none)
 — and sets the `swarmcracker.balloon` label, so the change takes effect on the
 task SwarmKit starts next (the device cannot be reconfigured in place).
+
+`--autoscale` gives a service a policy the manager keeps its replica count
+inside: the count stays in the service spec, and the manager rewrites it between
+`min` and `max` as load changes. The value is
+`min=<n>,max=<n>,metric=cpu,target=<percent>`, with the optional
+`cooldown-up=<dur>` and `cooldown-down=<dur>`; keys may be given in any order.
+`min` is at least 1, `max` at least `min`, `target` is a percentage of one vCPU
+above 0 and at most 100 (`target=70` is 0.70 of a vCPU per replica), and `cpu` is
+the only metric in this release. The cooldowns default to `60s` and `300s`. The
+policy is stored as the six `swarmcracker.autoscale.*` service labels (`min`,
+`max`, `metric`, `target`, `cooldown_up`, `cooldown_down`), so it survives an
+update that does not mention it and `service inspect` prints it back. A policy
+declared purely through `--label` on `service create` is validated exactly like
+the flag, and a `--label` that disagrees with `--autoscale` is refused rather
+than resolved silently. A label under `swarmcracker.autoscale.` that is not one
+of those six keys is refused at create/update rather than ignored, so a
+misspelled key cannot leave a service that looks configured and never scales.
+
+Two combinations are refused instead of stored and ignored: a policy on a
+`--mode global` service (a global service runs one task per node and has no
+replica count to scale), and an explicit replica count outside the policy — on
+`service create --replicas`, `service update --replicas` and `service scale`
+alike, with the error naming `min` and `max`. `--replicas 0` and `service scale
+<service> 0` are the deliberate exception: zero means the service is paused, and
+the loop neither aligns nor scales it. On `service update`, `--autoscale` is
+tri-state: omit it to preserve the stored policy, give one to replace it, pass
+`--autoscale ""` to remove every autoscale label. See
+[Autoscaling](/guides/operations/#autoscaling) for the sampling cadence, the
+hysteresis rules and the metrics.
 
 `--cpuset` on `service update` is **tri-state**: omitting it leaves the service's
 current pin untouched, a cpulist replaces it (canonicalised, as above), and an
@@ -460,6 +490,41 @@ place, or one the constraint or volume enforcer rejected — always carries an
 `Err`, which is what the column shows. The table truncates a long reason at 40
 characters; `task inspect` (or `--format json`) prints it in full. The column is
 appended **after** `IMAGE`, so every existing column keeps its position.
+
+When **no** task of a service is placed because the scheduler refused the
+placement, the table is followed by one diagnostic line. When the task error
+carries the constraint filter's own explanation, the line names the
+constraint(s) and the labels the cluster actually reports:
+
+```
+no task is running: constraint "node.labels.disk==ssd" matches no node (available node labels: disk=hdd, hostname=sc-lab-node1, rack=r1, role=manager, role=worker)
+```
+
+SwarmKit's own reason is generic ("scheduling constraints not satisfied on 2
+nodes") and truncated in the column, so this line is what tells an operator that
+`disk=ssd` is missing rather than that the node count is wrong. Every constraint
+on the service is named (the command cannot tell which of several failed),
+`hostname` and `role` are included because `node.hostname` and `node.role` are
+constraints too, and values are deduplicated and sorted.
+
+A constraint is never blamed without evidence. SwarmKit joins *every* failing
+filter into one error, so a service that carries a constraint can still be
+refused because the nodes are full. When the error does not carry the constraint
+filter's explanation, the line quotes the scheduler and lists the declared
+constraints as declared, not as the cause:
+
+```
+no task is running: scheduler reported "no suitable node (insufficient resources on 1 node)"; declared constraints "node.labels.disk==ssd" may not be the cause (available node labels: disk=hdd, hostname=sc-lab-node1, rack=r1, role=manager, role=worker)
+```
+
+The line is a diagnostic only: it changes no exit code, it is printed only in
+table mode, and it appears only when no task is placed (no task is `ASSIGNED`,
+`ACCEPTED`, `PREPARING`, `READY`, `STARTING` or `RUNNING`) **and** at least one
+`NEW`/`PENDING` task carries a scheduler error. Terminal rows do not suppress it,
+so a service scaled to 0, re-constrained and scaled up again is diagnosed even
+though its old `SHUTDOWN` rows are still listed. `task ls` prints the same line,
+naming the constraints of every service in the listing; `task ls --health` does
+not, because that table is built from the API's task list alone.
 
 ##### Registry authentication
 

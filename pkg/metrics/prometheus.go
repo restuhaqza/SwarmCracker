@@ -9,6 +9,8 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
@@ -297,6 +299,11 @@ func RecordVMBalloon(instance, taskID, service string, mib float64) {
 // RecordVMTaskMetrics publishes one guest sample for a task: the four per-VM
 // resource series, all keyed by the same instance/task_id/service labels.
 //
+// It also caches the reading as the task's last sample, stamped with the time of
+// this call (UTC), so a caller that cannot scrape Prometheus can still ask for
+// it (see LastTaskSample). The gauges are written first, so the cache lock is
+// never held while the Prometheus client takes its own.
+//
 // The caller must pass a sample the guest actually reported. A failed poll is
 // not a zero sample, and writing zeros would pin a busy VM at 0 and look like an
 // idle one.
@@ -305,19 +312,38 @@ func RecordVMTaskMetrics(instance, taskID, service string, cpuSeconds float64, m
 	VMMemory.WithLabelValues(instance, taskID, service).Set(float64(memoryBytes))
 	VMNetRx.WithLabelValues(instance, taskID, service).Set(float64(netRxBytes))
 	VMNetTx.WithLabelValues(instance, taskID, service).Set(float64(netTxBytes))
+
+	storeTaskSample(TaskSample{
+		TaskID:      taskID,
+		Service:     service,
+		CPUSeconds:  cpuSeconds,
+		MemoryBytes: memoryBytes,
+		NetRxBytes:  netRxBytes,
+		NetTxBytes:  netTxBytes,
+		ObservedAt:  time.Now().UTC(),
+	})
 }
 
-// ClearVMTaskMetrics removes every per-VM resource series for a task.
+// ClearVMTaskMetrics removes every per-VM resource series for a task, and its
+// cached sample with them.
 //
 // It is called when a VM is torn down: the guest is gone, so its last sample
 // describes nothing, and a left-behind series would keep a scaled-down service
-// on a dashboard and in any per-task sum.
+// on a dashboard and in any per-task sum. The cached sample is dropped for the
+// same reason: an autoscaler asking a node about a removed task must be told
+// there is no sample, not served its final reading forever.
+//
+// The cache is keyed by task ID alone, so the cached sample is deleted by taskID
+// and the instance argument is ignored for it: a task runs on exactly one node,
+// and the instance label only disambiguates the Prometheus series.
 func ClearVMTaskMetrics(instance, taskID string) {
 	match := prometheus.Labels{"instance": instance, "task_id": taskID}
 	VMCPU.DeletePartialMatch(match)
 	VMMemory.DeletePartialMatch(match)
 	VMNetRx.DeletePartialMatch(match)
 	VMNetTx.DeletePartialMatch(match)
+
+	deleteTaskSample(taskID)
 }
 
 // RecordDiskUsage publishes used and total bytes for one path. Callers must
@@ -327,4 +353,56 @@ func ClearVMTaskMetrics(instance, taskID string) {
 func RecordDiskUsage(instance, path string, usedBytes, totalBytes uint64) {
 	DiskUsageBytes.WithLabelValues(instance, path).Set(float64(usedBytes))
 	DiskTotalBytes.WithLabelValues(instance, path).Set(float64(totalBytes))
+}
+
+// ── Autoscaling Metrics ───────────────────────────────────────────
+
+// ServiceReplicas is the replica count the manager's autoscaler last decided for
+// an autoscaled service.
+// Type: Gauge
+// Labels: service (the service ID, matching the per-VM series)
+//
+// It is written on every decision, changed or not, so a dashboard shows the
+// count the manager believes the service runs without waiting for a scale event.
+// A service without an autoscale policy gets no series: there is no decision to
+// report.
+var ServiceReplicas = promauto.NewGaugeVec(prometheus.GaugeOpts{
+	Namespace: namespace,
+	Name:      "service_replicas",
+	Help:      "Replica count the autoscaler last decided for an autoscaled service.",
+}, []string{"service"})
+
+// ServiceScaleEvents counts the load-driven replica changes the autoscaler
+// applied.
+// Type: CounterVec
+// Labels: service (the service ID), direction (up, down)
+//
+// Only a scale that Decided a change and whose patch succeeded is counted.
+// Bringing a service back inside a policy it drifted out of (the "initial
+// alignment") is not a scale event: it describes policy drift, not load.
+var ServiceScaleEvents = promauto.NewCounterVec(prometheus.CounterOpts{
+	Namespace: namespace,
+	Name:      "service_scale_events_total",
+	Help:      "Total number of load-driven replica changes applied by the autoscaler.",
+}, []string{"service", "direction"})
+
+// RecordServiceReplicas publishes the replica count an autoscaler decided for a
+// service, whether or not the decision changed it.
+func RecordServiceReplicas(service string, replicas int) {
+	ServiceReplicas.WithLabelValues(service).Set(float64(replicas))
+}
+
+// RecordServiceScaleEvent counts one applied replica change in direction ("up"
+// or "down").
+func RecordServiceScaleEvent(service, direction string) {
+	ServiceScaleEvents.WithLabelValues(service, direction).Inc()
+}
+
+// DeleteServiceReplicas removes the current-count series for a service that no
+// longer autoscales — deleted, or with its policy removed. A gauge is a live
+// reading, so leaving it behind would keep a service on a dashboard at the count
+// it happened to have when autoscaling stopped. The scale-event counter is not
+// touched: what happened is history.
+func DeleteServiceReplicas(service string) {
+	ServiceReplicas.DeleteLabelValues(service)
 }

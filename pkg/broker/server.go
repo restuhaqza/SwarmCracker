@@ -198,6 +198,7 @@ var operationSpecs = map[string]operationSpec{
 	"logs":      {methods: []string{http.MethodGet}},
 	"files":     {methods: []string{http.MethodGet, http.MethodPut}},
 	"health":    {methods: []string{http.MethodGet}},
+	"metrics":   {methods: []string{http.MethodGet}},
 	"snapshots": {methods: []string{http.MethodGet, http.MethodPost, http.MethodDelete}},
 	// restored stops the process a snapshot restore started for one task. It is
 	// a DELETE because it removes that VM, and it takes no body and no query.
@@ -284,6 +285,24 @@ func writeTypedError(w http.ResponseWriter, status int, typed *output.Error) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
 	//nolint:gosec // G705: body is a JSON document served as application/json.
+	_, _ = w.Write(body)
+}
+
+// serveTaskDocument answers one per-task read with a 200 and the v1 media type.
+// noun names what was read ("health", "metrics") so the one failure message
+// stays stable per operation while the encoding and headers live in one place.
+func serveTaskDocument(w http.ResponseWriter, taskID, noun string, doc any) {
+	body, err := encodeDocument(doc)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, output.CodeInternal,
+			"task %q %s could not be encoded", taskID, noun)
+		return
+	}
+
+	w.Header().Set("Content-Type", publicMediaType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	//nolint:gosec // G705: the body is a JSON document served as the v1 media type.
 	_, _ = w.Write(body)
 }
 

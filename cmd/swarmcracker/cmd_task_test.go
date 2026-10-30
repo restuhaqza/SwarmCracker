@@ -24,11 +24,21 @@ import (
 // exercised without a cluster.
 type fakeTaskClient struct {
 	api.ControlClient
-	tasks []*api.Task
+	tasks    []*api.Task
+	services []*api.Service
+	nodes    []*api.Node
 }
 
 func (f *fakeTaskClient) ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error) {
 	return &api.ListTasksResponse{Tasks: f.tasks}, nil
+}
+
+func (f *fakeTaskClient) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
+	return &api.ListServicesResponse{Services: f.services}, nil
+}
+
+func (f *fakeTaskClient) ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error) {
+	return &api.ListNodesResponse{Nodes: f.nodes}, nil
 }
 
 func (f *fakeTaskClient) GetTask(_ context.Context, req *api.GetTaskRequest, _ ...grpc.CallOption) (*api.GetTaskResponse, error) {

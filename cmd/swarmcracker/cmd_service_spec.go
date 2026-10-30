@@ -58,6 +58,17 @@ type serviceCreateOptions struct {
 	numaNode    string
 	numaNodeSet bool
 
+	// autoscale is --autoscale: the replica bounds and target the manager loop
+	// keeps the service between, stored as the swarmcracker.autoscale.* service
+	// labels. An empty value is no policy at all; clearing one is an update.
+	autoscale string
+
+	// replicasSet records whether --replicas was given at all. The flag
+	// defaults to 1, so only an explicit count is reconciled with a policy's
+	// bounds: a create that never mentioned replicas must not be rejected just
+	// because min is higher than the default.
+	replicasSet bool
+
 	// withRegistryAuth is --with-registry-auth (#44). registryAuth holds the
 	// resolved base64 X-Registry-Auth payload for the image; createService fills
 	// it in (resolving it is I/O), so this mapping function stays pure.
@@ -253,6 +264,81 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		svcLabels[types.NumaLabel] = value
 	}
 
+	// An autoscale policy travels as the six swarmcracker.autoscale.* service
+	// labels, which the manager loop reads. Validate it here so a malformed
+	// policy fails before any RPC, and store the canonical labels so what the
+	// CLI reports and what the loop reads never differ. An empty value is no
+	// request at all on create (clearing belongs to `service update`).
+	if strings.TrimSpace(o.autoscale) != "" {
+		policy, err := types.ParseAutoscaleFlag(o.autoscale)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --autoscale: %w", err)
+		}
+		// --label is the lower-level way to declare the same policy, so it is
+		// accepted only when it agrees. The check is semantic: the labels the
+		// user supplied replace the flag's on top of an otherwise complete set,
+		// then the whole set is parsed, so "70" and "70.0" name the same target
+		// while a value no policy could hold is a conflict rather than an
+		// override. A partial label set is fine here — the flag fills it in,
+		// and the merged six labels are what gets stored.
+		if hasAutoscaleLabels(svcLabels) {
+			merged := policy.Labels()
+			for _, key := range types.AutoscaleLabelKeys() {
+				if value, ok := svcLabels[key]; ok {
+					merged[key] = value
+				}
+			}
+			declared, err := types.AutoscaleFromLabels(merged)
+			if err != nil {
+				return nil, fmt.Errorf("--autoscale %q conflicts with the autoscale labels already set via --label (%s): %w",
+					o.autoscale, describeAutoscaleLabels(svcLabels), err)
+			}
+			if declared == nil || *declared != policy {
+				return nil, fmt.Errorf("--autoscale %q conflicts with the autoscale labels already set via --label (%s)",
+					o.autoscale, describeAutoscaleLabels(svcLabels))
+			}
+		}
+		if svcLabels == nil {
+			svcLabels = make(map[string]string)
+		}
+		for key, value := range policy.Labels() {
+			svcLabels[key] = value
+		}
+	}
+
+	// --label is the lower-level way to declare the same policy (the daemon
+	// reads the same six keys), so the merged set is validated here, once, for
+	// both paths: a policy declared purely through --label must be as complete
+	// and readable as one the flag built, or a half-written set the flag would
+	// reject would be stored and only the manager loop would notice.
+	var autoscalePolicy *types.AutoscalePolicy
+	if hasAutoscaleLabels(svcLabels) {
+		policy, err := types.AutoscaleFromLabels(svcLabels)
+		if err != nil {
+			return nil, fmt.Errorf("invalid autoscale labels: %w", err)
+		}
+		autoscalePolicy = policy
+	}
+
+	// A global service runs one task per node and ignores the replica count, so
+	// a policy on it can never be honoured. Reject the combination outright
+	// rather than storing labels the manager loop would have to ignore (while
+	// `service inspect` reported them as configured). The update path rejects
+	// it in both directions too; see updateServiceWithClient.
+	if autoscalePolicy != nil && mode == modeGlobal {
+		return nil, autoscaleGlobalModeError()
+	}
+
+	// An explicit --replicas must agree with the policy: storing a service
+	// outside its own bounds would leave the manager loop either to "correct"
+	// the count on its first pass or to never reach min. --replicas 0 is the
+	// deliberate exception — it means "paused", and the loop treats zero as an
+	// explicit stop — so nothing is clamped.
+	if autoscalePolicy != nil && o.replicasSet && o.replicas > 0 &&
+		(o.replicas < uint64(autoscalePolicy.Min) || o.replicas > uint64(autoscalePolicy.Max)) {
+		return nil, autoscaleReplicasOutOfBounds(o.replicas, *autoscalePolicy)
+	}
+
 	if svcLabels[types.GoldenLabel] != "" && (hostname != "" || len(dns) > 0) {
 		return nil, fmt.Errorf("--hostname/--dns are not supported with --golden: golden images boot their own init and do not use the OCI init wrapper")
 	}
@@ -434,6 +520,12 @@ type serviceUpdateOptions struct {
 	numaNode     string
 	numaNodeSet  bool
 
+	// autoscale/autoscaleSet are --autoscale on `service update`, tri-state
+	// like --cpuset: absent preserves the declared policy, a value replaces it,
+	// and an explicit empty value clears every autoscale label.
+	autoscale    string
+	autoscaleSet bool
+
 	networks    []string
 	networksSet bool
 
@@ -606,6 +698,55 @@ func canonicalCPUSet(flag, value string) (string, error) {
 // --numa-node.
 func canonicalCpuset(value string) (string, error) {
 	return canonicalCPUSet("--cpuset", value)
+}
+
+// autoscaleGlobalModeError is the one sentence every autoscale/global clash
+// reports, whichever direction it was reached from (create with --mode global,
+// update --mode global on a service carrying a policy, update --autoscale on a
+// global service). One wording means the CLI never tells two stories about the
+// same combination, and it says why rather than only that it is refused.
+func autoscaleGlobalModeError() error {
+	return fmt.Errorf("autoscaling cannot be used with --mode global: a global service runs one task per node and ignores replicas, so an autoscale policy cannot apply")
+}
+
+// autoscaleReplicasOutOfBounds reports an explicit replica count that the
+// policy cannot hold, naming both the count and the bounds. It is reachable from
+// `service update --replicas` and from `service scale`, so it names no flag for
+// the count and points at the policy instead: the same sentence has to be true
+// whichever command the operator typed, and `service scale` has no --replicas.
+func autoscaleReplicasOutOfBounds(replicas uint64, policy types.AutoscalePolicy) error {
+	return fmt.Errorf("replicas %d is outside the autoscale bounds min=%d, max=%d; change the policy with --autoscale or pick a count within it",
+		replicas, policy.Min, policy.Max)
+}
+
+// hasAutoscaleLabels reports whether any autoscale label is present, so a
+// conflict check runs for a half-written policy too instead of only for a
+// complete one that AutoscaleFromLabels would accept.
+//
+// The test is the namespace, not the six known keys: a misspelled key like
+// `...autoscale.minn` is a policy the operator meant to declare, and skipping
+// validation for it would store a service that looks configured and never
+// scales — the same asymmetry AutoscaleFromLabels closes for the loop.
+func hasAutoscaleLabels(labels map[string]string) bool {
+	for key := range labels {
+		if strings.HasPrefix(key, types.AutoscaleLabelPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeAutoscaleLabels renders the autoscale labels a caller supplied via
+// --label, in the label table's order, for a conflict error that names both
+// the flag value and what it disagrees with.
+func describeAutoscaleLabels(labels map[string]string) string {
+	parts := make([]string, 0, len(types.AutoscaleLabelKeys()))
+	for _, key := range types.AutoscaleLabelKeys() {
+		if value, ok := labels[key]; ok {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func buildPlacement(constraints, prefs []string) (*api.Placement, error) {

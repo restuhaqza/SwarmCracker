@@ -472,14 +472,37 @@ type fakeServiceTaskClient struct {
 	api.ControlClient
 	services []*api.Service
 	tasks    []*api.Task
+	nodes    []*api.Node
+
+	// listServicesErr is returned by every ListServices call *after the first*.
+	// The first call resolves the service reference, so this lets a test fail
+	// the unschedulable note's own read without failing the command before the
+	// table exists.
+	listServicesErr error
+	// listNodesErr is returned by every ListNodes call. `service ps` only reads
+	// nodes for the note (the health fan-out is disabled unless a node address
+	// is set), so it fails just that read.
+	listNodesErr     error
+	listServiceCalls int
 }
 
 func (f *fakeServiceTaskClient) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
+	f.listServiceCalls++
+	if f.listServicesErr != nil && f.listServiceCalls > 1 {
+		return nil, f.listServicesErr
+	}
 	return &api.ListServicesResponse{Services: f.services}, nil
 }
 
 func (f *fakeServiceTaskClient) ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error) {
 	return &api.ListTasksResponse{Tasks: f.tasks}, nil
+}
+
+func (f *fakeServiceTaskClient) ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error) {
+	if f.listNodesErr != nil {
+		return nil, f.listNodesErr
+	}
+	return &api.ListNodesResponse{Nodes: f.nodes}, nil
 }
 
 // TestListServiceTasksHealthColumn verifies `service ps` renders a HEALTH

@@ -266,3 +266,41 @@ func TestClearVMTaskMetrics(t *testing.T) {
 
 	ClearVMTaskMetrics("clear-instance", "task-stays")
 }
+
+func TestAutoscalerServiceReplicasIsSetOnEveryDecision(t *testing.T) {
+	RecordServiceReplicas("scale-gauge-svc", 3)
+	assert.Equal(t, float64(3), testutil.ToFloat64(ServiceReplicas.WithLabelValues("scale-gauge-svc")))
+
+	// A hold reports the same count; a later decision overwrites the gauge
+	// rather than accumulating, which is what makes it a "current count".
+	RecordServiceReplicas("scale-gauge-svc", 4)
+	assert.Equal(t, float64(4), testutil.ToFloat64(ServiceReplicas.WithLabelValues("scale-gauge-svc")))
+}
+
+func TestAutoscalerServiceScaleEventsCountsByDirection(t *testing.T) {
+	upBefore := testutil.ToFloat64(ServiceScaleEvents.WithLabelValues("scale-counter-svc", "up"))
+	downBefore := testutil.ToFloat64(ServiceScaleEvents.WithLabelValues("scale-counter-svc", "down"))
+
+	RecordServiceScaleEvent("scale-counter-svc", "up")
+
+	assert.Equal(t, upBefore+1, testutil.ToFloat64(ServiceScaleEvents.WithLabelValues("scale-counter-svc", "up")))
+	assert.Equal(t, downBefore, testutil.ToFloat64(ServiceScaleEvents.WithLabelValues("scale-counter-svc", "down")),
+		"a scale-up must not move the scale-down counter")
+
+	RecordServiceScaleEvent("scale-counter-svc", "down")
+
+	assert.Equal(t, downBefore+1, testutil.ToFloat64(ServiceScaleEvents.WithLabelValues("scale-counter-svc", "down")))
+}
+
+func TestAutoscalerDeleteServiceReplicasRemovesOnlyTheGauge(t *testing.T) {
+	RecordServiceReplicas("scale-delete-svc", 2)
+	RecordServiceScaleEvent("scale-delete-svc", "up")
+	require.Equal(t, 1, metricSampleCount(t, "swarmcracker_service_replicas", map[string]string{"service": "scale-delete-svc"}))
+
+	DeleteServiceReplicas("scale-delete-svc")
+
+	assert.Zero(t, metricSampleCount(t, "swarmcracker_service_replicas", map[string]string{"service": "scale-delete-svc"}),
+		"the live reading goes with the service")
+	assert.Equal(t, 1, metricSampleCount(t, "swarmcracker_service_scale_events_total", map[string]string{"service": "scale-delete-svc"}),
+		"the counter is history and survives")
+}

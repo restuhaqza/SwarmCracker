@@ -213,6 +213,7 @@ func newServiceCreateCommand() *cobra.Command {
 		cpuset      string
 		hugepages   bool
 		numaNode    string
+		autoscale   string
 		golden      string
 		publish     []string
 		publishMode string
@@ -272,11 +273,15 @@ The service will be scheduled on available nodes and can be scaled
 and updated as needed.
 
 With --golden, the service boots a prebuilt golden image (see
-'swarmcracker image build') instead of building a rootfs from an OCI image.`,
+'swarmcracker image build') instead of building a rootfs from an OCI image.
+
+With --autoscale, the service's replica count is kept between the policy's
+bounds by the manager (for example --autoscale min=2,max=10,metric=cpu,target=70).`,
 		Example: `  swarmcracker service create --name myapp --image nginx:latest --replicas 3
   swarmcracker service create --name api --image myimage:v1 --cpu 2 --memory 512M
   swarmcracker service create --name worker --image busybox --command /bin/sh --args "-c,echo hello"
-  swarmcracker service create --name web --golden ubuntu-24.04-docker@1.0.0 --replicas 2`,
+  swarmcracker service create --name web --golden ubuntu-24.04-docker@1.0.0 --replicas 2
+  swarmcracker service create --name web --image nginx:latest --autoscale min=2,max=10,metric=cpu,target=70`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -310,6 +315,7 @@ With --golden, the service boots a prebuilt golden image (see
 				image:              image,
 				withRegistryAuth:   withRegistryAuth,
 				replicas:           replicas,
+				replicasSet:        cmd.Flags().Changed("replicas"),
 				cpu:                cpu,
 				memory:             memory,
 				disk:               disk,
@@ -321,6 +327,7 @@ With --golden, the service boots a prebuilt golden image (see
 				hugepagesSet:       cmd.Flags().Changed("hugepages"),
 				numaNode:           numaNode,
 				numaNodeSet:        cmd.Flags().Changed("numa-node"),
+				autoscale:          autoscale,
 				env:                env,
 				command:            command,
 				args:               args,
@@ -377,6 +384,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online")
 	cmd.Flags().BoolVar(&hugepages, "hugepages", false, "Back the VM's guest memory with 2M huge pages; the host must have a sufficiently large hugepage pool")
 	cmd.Flags().StringVar(&numaNode, "numa-node", "", "Bind the VM's memory to these host NUMA nodes (Linux cpulist: 0, 0-1); the host must have those nodes online")
+	cmd.Flags().StringVar(&autoscale, "autoscale", "", "Keep the replica count between min and max by scaling on guest CPU (min=2,max=10,metric=cpu,target=70[,cooldown-up=60s][,cooldown-down=5m])")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", nil, "Environment variables (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&command, "command", nil, "Override default container command")
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
@@ -434,6 +442,7 @@ func newServiceUpdateCommand() *cobra.Command {
 		cpuset      string
 		hugepages   bool
 		numaNode    string
+		autoscale   string
 		image       string
 		env         []string
 		envRemove   []string
@@ -492,10 +501,13 @@ func newServiceUpdateCommand() *cobra.Command {
 		Long: `Update an existing service's configuration.
 
 Supports updating replicas, resource limits, image, environment variables,
-placement, restart policy, update/rollback configuration and mode.`,
+placement, restart policy, update/rollback configuration, the autoscale
+policy and mode. Pass an empty --autoscale to remove the policy.`,
 		Example: `  swarmcracker service update my-service --replicas 5
   swarmcracker service update my-service --constraint node.hostname==worker1
   swarmcracker service update my-service --update-order start-first --replicas 4
+  swarmcracker service update my-service --autoscale min=2,max=10,metric=cpu,target=70
+  swarmcracker service update my-service --autoscale ""
   swarmcracker service update my-service --rollback`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
@@ -529,6 +541,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 				hugepagesSet:        anyFlagChanged(cmd, "hugepages"),
 				numaNode:            numaNode,
 				numaNodeSet:         anyFlagChanged(cmd, "numa-node"),
+				autoscale:           autoscale,
+				autoscaleSet:        anyFlagChanged(cmd, "autoscale"),
 				mounts:              mounts,
 				volumes:             volumes,
 				mountsSet:           anyFlagChanged(cmd, "mount", "volume"),
@@ -588,6 +602,7 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online, and an empty value removes the pin")
 	cmd.Flags().BoolVar(&hugepages, "hugepages", false, "Back the VM's guest memory with 2M huge pages; the host must have a sufficiently large hugepage pool, and --hugepages=false removes the request")
 	cmd.Flags().StringVar(&numaNode, "numa-node", "", "Bind the VM's memory to these host NUMA nodes (Linux cpulist: 0, 0-1); the host must have those nodes online, and an empty value removes the binding")
+	cmd.Flags().StringVar(&autoscale, "autoscale", "", "Keep the replica count between min and max by scaling on guest CPU (min=2,max=10,metric=cpu,target=70[,cooldown-up=60s][,cooldown-down=5m]); an empty value removes the policy")
 	cmd.Flags().StringVar(&image, "image", "", "New container image")
 	cmd.Flags().StringArrayVar(&env, "env-add", nil, "Add environment variable (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&envRemove, "env-rm", nil, "Remove environment variable")
@@ -641,7 +656,11 @@ func newServiceScaleCommand() *cobra.Command {
 		Short: "Scale a service",
 		Long: `Scale a service to the specified number of replicas.
 
-This is a convenience command that updates the replica count.`,
+This is a convenience command that updates the replica count. A service that
+carries an autoscale policy refuses a count outside the policy's min/max, so
+either pick a count within the bounds or change the policy with --autoscale.
+Zero is the exception: it pauses the service, and the autoscaler leaves a paused
+service alone.`,
 		Example: `  swarmcracker service scale my-service 5
   swarmcracker service scale my-service 0`,
 		Args: cobra.ExactArgs(2),
@@ -1503,6 +1522,15 @@ func writeServiceText(w io.Writer, svc *api.Service) {
 			}
 		}
 	}
+	if policy, err := types.AutoscaleFromLabels(svc.Spec.Annotations.Labels); err != nil {
+		fmt.Fprintf(w, "Autoscale: invalid (%v)\n", err)
+	} else if policy != nil {
+		fmt.Fprintf(w, "Autoscale:\n")
+		fmt.Fprintf(w, "  metric: %s\n", policy.Metric)
+		fmt.Fprintf(w, "  target: %g%% of one vCPU\n", policy.Target)
+		fmt.Fprintf(w, "  replicas: %d-%d\n", policy.Min, policy.Max)
+		fmt.Fprintf(w, "  cooldown: up %s, down %s\n", policy.CooldownUp, policy.CooldownDown)
+	}
 	if rp := svc.Spec.Task.Restart; rp != nil {
 		fmt.Fprintf(w, "Restart Policy: %s", restartConditionString(rp.Condition))
 		if rp.MaxAttempts > 0 {
@@ -1621,6 +1649,8 @@ func listServiceTasksWithClient(ctx context.Context, client legacy.ControlClient
 		fmt.Fprintln(w, row)
 	}
 	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
+
+	writeUnschedulableNote(ctx, client, w, tasks)
 
 	return nil
 }
@@ -1797,14 +1827,15 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 // every rejected flag is named in the one error.
 //
 // The list covers every flag that takes effect on the normal update path:
-// replicas, the CPU/memory limits, the balloon, cpuset/hugepages/NUMA, image,
-// env, ports, mounts, networks, secrets, configs, hostname/DNS, the
-// healthcheck, placement, restart, the update/rollback configuration, mode,
-// force and the registry credential. A flag not listed here is not read by the
-// update path either (--user/--cap-add/--cap-drop/--read-only are rejected by
-// validateUnsupportedExecFlags, which runs first, so they never reach a
-// rollback). Keep this list in step with the options struct: any new mutating
-// flag that is not added here is silently dropped by --rollback.
+// replicas, the CPU/memory limits, the balloon, cpuset/hugepages/NUMA, the
+// autoscale policy, image, env, ports, mounts, networks, secrets, configs,
+// hostname/DNS, the healthcheck, placement, restart, the update/rollback
+// configuration, mode, force and the registry credential. A flag not listed
+// here is not read by the update path either (--user/--cap-add/--cap-drop/
+// --read-only are rejected by validateUnsupportedExecFlags, which runs first,
+// so they never reach a rollback). Keep this list in step with the options
+// struct: any new mutating flag that is not added here is silently dropped by
+// --rollback.
 func rejectRollbackFlagConflicts(opts serviceUpdateOptions) error {
 	if !opts.rollbackAction {
 		return nil
@@ -1823,6 +1854,7 @@ func rejectRollbackFlagConflicts(opts serviceUpdateOptions) error {
 	add(opts.cpusetSet, "--cpuset")
 	add(opts.hugepagesSet, "--hugepages")
 	add(opts.numaNodeSet, "--numa-node")
+	add(opts.autoscaleSet, "--autoscale")
 	add(opts.image != "", "--image")
 	add(len(opts.env) > 0, "--env-add")
 	add(len(opts.envRemove) > 0, "--env-rm")
@@ -1913,6 +1945,23 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 		numaNodeValue = value
 	}
 
+	// --autoscale is parsed before any RPC too: absent preserves the service's
+	// declared policy (copied with the spec below), an explicit empty value
+	// clears it, and a value replaces the whole label set. Parsing here means a
+	// malformed policy never reaches the lookup.
+	var (
+		autoscaleLabels map[string]string
+		autoscalePolicy *types.AutoscalePolicy
+	)
+	if opts.autoscaleSet && strings.TrimSpace(opts.autoscale) != "" {
+		policy, err := types.ParseAutoscaleFlag(opts.autoscale)
+		if err != nil {
+			return fmt.Errorf("invalid --autoscale: %w", err)
+		}
+		autoscalePolicy = &policy
+		autoscaleLabels = policy.Labels()
+	}
+
 	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
 	serviceID, err := legacy.ResolveServiceRef(ctx, client, serviceID)
 	if err != nil {
@@ -1930,6 +1979,58 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 			return fmt.Errorf("service %q has no previous spec to roll back to", svc.Spec.Annotations.Name)
 		}
 		return applyServiceSpec(ctx, client, svc, svc.PreviousSpec.Copy())
+	}
+
+	spec := svc.Spec.Copy()
+
+	// Resolve the mode the update leaves the service in. SwarmKit does not
+	// allow a mode change on update (rejected below), but an explicit --mode is
+	// still the mode the operator asked for, and it is what the autoscale check
+	// below must consider: "--mode global" on a service that carries a policy
+	// is the same invalid combination as declaring a policy on a global
+	// service.
+	resultingMode := modeReplicated
+	if spec.GetGlobal() != nil {
+		resultingMode = modeGlobal
+	}
+	if opts.modeSet {
+		requested, err := normalizeServiceMode(opts.mode)
+		if err != nil {
+			return err
+		}
+		resultingMode = requested
+	}
+
+	// The policy the update leaves on the service: the flag's (parsed above and
+	// canonical), or the one already stored when the flag is absent. A stored
+	// policy that cannot be read stays a read-time concern (`service inspect`
+	// reports it as invalid), so it does not block an unrelated update; it just
+	// cannot be enforced here.
+	resultingPolicy := autoscalePolicy
+	if !opts.autoscaleSet {
+		if stored, err := types.AutoscaleFromLabels(spec.Annotations.Labels); err == nil {
+			resultingPolicy = stored
+		}
+	}
+
+	// Reject autoscale on a global service in both directions, rather than
+	// storing a policy the manager loop would have to ignore. An explicit empty
+	// --autoscale is a clear, not a declaration, so it stays available as the
+	// way out of a service that already carries a policy it cannot honour.
+	//
+	// The lookup above is a read and mutates nothing, so rejecting here (ahead
+	// of the golden check and the credential resolution below) means the
+	// clearest error wins: an invalid combination is never reported as a
+	// missing registry credential.
+	if (opts.modeSet || opts.autoscaleSet) && resultingPolicy != nil && resultingMode == modeGlobal {
+		return autoscaleGlobalModeError()
+	}
+
+	// An explicit --replicas must agree with the policy, exactly as on create.
+	// --replicas 0 stays valid: it means "paused", not "scale to the floor".
+	if resultingPolicy != nil && opts.replicasSet && opts.replicas > 0 &&
+		(opts.replicas < uint64(resultingPolicy.Min) || opts.replicas > uint64(resultingPolicy.Max)) {
+		return autoscaleReplicasOutOfBounds(opts.replicas, *resultingPolicy)
 	}
 
 	// --with-registry-auth on a golden service would be stored but never
@@ -1964,8 +2065,6 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 	if err != nil {
 		return fmt.Errorf("invalid memory value: %w", err)
 	}
-
-	spec := svc.Spec.Copy()
 
 	// --balloon-mib is tri-state: an absent flag preserves the service's current
 	// label (copied above), a positive value sets it, and an explicit 0 removes
@@ -2011,6 +2110,23 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 	// the binding, otherwise the canonical nodelist replaces it.
 	if opts.numaNodeSet {
 		setOrDeleteLabel(spec, types.NumaLabel, numaNodeValue, opts.numaNode != "")
+	}
+
+	// --autoscale is tri-state too: absent leaves the copied policy untouched,
+	// an explicit empty value removes every autoscale label (both halves of a
+	// half-written policy too, so a clear always leaves a clean service), and a
+	// value replaces the whole set — a stale cooldown must not survive a
+	// changed policy.
+	if opts.autoscaleSet {
+		if len(autoscaleLabels) == 0 {
+			for _, key := range types.AutoscaleLabelKeys() {
+				delete(spec.Annotations.Labels, key)
+			}
+		} else {
+			for key, value := range autoscaleLabels {
+				setOrDeleteLabel(spec, key, value, true)
+			}
+		}
 	}
 
 	// Apply the --with-registry-auth decision (#44): an absent flag preserves
@@ -2151,16 +2267,12 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 	// change on update, so reject a real change with a clear error instead of
 	// forwarding it and surfacing an opaque RPC failure.
 	if opts.modeSet {
-		mode, err := normalizeServiceMode(opts.mode)
-		if err != nil {
-			return err
-		}
 		current := modeReplicated
 		if spec.GetGlobal() != nil {
 			current = modeGlobal
 		}
-		if mode != current {
-			return fmt.Errorf("changing the service mode (%s -> %s) is not supported; recreate the service", current, mode)
+		if resultingMode != current {
+			return fmt.Errorf("changing the service mode (%s -> %s) is not supported; recreate the service", current, resultingMode)
 		}
 	}
 
@@ -2300,8 +2412,30 @@ func scaleService(serviceID, replicasStr string) error {
 		return fmt.Errorf("invalid replica count %q: must be a non-negative integer", replicasStr)
 	}
 
-	// Scale always applies the value, including 0 (scale to zero).
-	return updateService(serviceID, serviceUpdateOptions{replicas: replicas, replicasSet: true})
+	// The count is validated before dialing, so a malformed request never needs
+	// a running daemon to be reported.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, conn, err := getSwarmClientForService()
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	return scaleServiceWithClient(ctx, client, serviceID, replicas)
+}
+
+// scaleServiceWithClient applies an explicit replica count through the same
+// update path as `service update --replicas`, so the autoscale bounds check
+// protects both entry points. It takes the stored replica count as an integer:
+// `service scale` is an explicit request, so unlike the --replicas flag (whose
+// default is 1) it always counts as "set", including 0 (scale to zero).
+func scaleServiceWithClient(ctx context.Context, client legacy.ControlClient, serviceID string, replicas uint64) error {
+	return updateServiceWithClient(ctx, client, serviceID, serviceUpdateOptions{
+		replicas:    replicas,
+		replicasSet: true,
+	})
 }
 
 func removeService(serviceID string, force bool) error {

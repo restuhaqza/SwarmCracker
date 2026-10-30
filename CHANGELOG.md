@@ -31,6 +31,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   four series existed but had no writer, so per-VM CPU, memory and network use
   could only be guessed from the Firecracker process. A failed sample publishes
   nothing rather than a zero, and teardown deletes the task's series.
+- **Service autoscaling on guest CPU** — `service create|update --autoscale
+  min=2,max=10,metric=cpu,target=70[,cooldown-up=60s][,cooldown-down=5m]` keeps a
+  service's replica count between two bounds by scaling on the CPU its workload
+  burns inside its own microVM (issue #49). The policy is stored as six
+  `swarmcracker.autoscale.*` service labels, so it survives an update that does
+  not mention it and `service inspect` prints it back; `--autoscale ""` clears
+  it. The manager's leader samples every running replica every 30 seconds,
+  converts successive cumulative guest readings into cores per replica, and
+  moves the count by one at a time: up on the first sample above
+  `target × 1.1`, down only after two consecutive samples below
+  `target × 0.9` and its cooldown, never outside `[min,max]` or below 1. A
+  service at 0 replicas counts as paused and is left alone. On the manager,
+  `swarmcracker_service_replicas` reports the count the last decision settled on
+  and `swarmcracker_service_scale_events_total` counts the changes actually
+  applied.
+- **`service ps` and `task ls` explain a refused placement** — the `ERROR` column
+  carries SwarmKit's verdict, which is generic ("scheduling constraints not
+  satisfied on 2 nodes") and truncated at 40 characters, so an operator had to
+  guess which constraint key was missing. When no task of the listing is placed,
+  the table is now followed by one diagnostic line. It names the constraint only
+  when the task error carries the constraint filter's own explanation; otherwise
+  it quotes the scheduler verbatim and lists the declared constraints as declared
+  rather than as the cause, because SwarmKit joins every failing filter into one
+  error and a constraint's presence is not evidence that it failed. The line is a
+  diagnostic, not an error: no exit code changes, it prints in table mode only,
+  terminal rows do not suppress it, and `task ls --health` does not print it.
 
 ### Changed
 - **`service ls` shows the service mode** — the table gains a `MODE` column
@@ -38,6 +64,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the `REPLICAS` cell.
 
 ### Fixed
+- **An out-of-bounds replica count is refused, not stored** — an *explicit*
+  `service create --replicas`, `service update --replicas` or `service scale`
+  now rejects a count outside the service's autoscale `min`/`max` and names both
+  bounds, instead of storing a service the manager loop would have to correct on
+  its first pass. A `--replicas`-less create is not an explicit count, so it
+  still stores the default 1 and the first pass aligns it to `min`.
+  `--replicas 0` and `service scale <service> 0` stay valid: zero means paused,
+  so nothing is clamped.
 - **Console logs are written on a systemd-managed node** — the shipped units run
   with `ProtectSystem=strict` and only made `/run/firecracker` and
   `/run/swarmkit` writable, not `/run/swarmcracker`, the daemon's default log

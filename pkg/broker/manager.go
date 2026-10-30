@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -48,9 +49,9 @@ const (
 	// much smaller error-body limit.
 	maxRelayedDocumentBytes = 8 << 20
 
-	// defaultHealthTimeout bounds one health fetch when ManagerConfig names no
-	// deadline. It is short on purpose: health is best-effort enrichment and a
-	// list page fans out to several nodes.
+	// defaultHealthTimeout bounds one health fetch or metrics read when
+	// ManagerConfig names no deadline. It is short on purpose: both are
+	// best-effort, per-task enrichment and a list page fans out to several nodes.
 	defaultHealthTimeout = 2 * time.Second
 )
 
@@ -75,9 +76,9 @@ type ManagerConfig struct {
 	Nodes  NodeReader
 	Port   int          // default 4245
 	Client *http.Client // required; transport must carry the cluster mTLS config
-	// HealthTimeout bounds one health fetch. Zero means defaultHealthTimeout.
-	// It is per request so a node that stops answering cannot hold a list
-	// fan-out open.
+	// HealthTimeout bounds one small per-task read on one node: a health fetch or
+	// a metrics read. Zero means defaultHealthTimeout. It is per request so a node
+	// that stops answering cannot hold a list fan-out open.
 	HealthTimeout time.Duration
 	// SnapshotTimeout bounds one snapshot operation (list, create, restore,
 	// stop-restored or delete). Zero means DefaultSnapshotTimeout. Create and
@@ -377,7 +378,7 @@ func (m *Manager) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, err
 
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return nil, healthTransportError(ctx, route.Node.ID, err)
+		return nil, transportError(ctx, route.Node.ID, "health", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -385,28 +386,63 @@ func (m *Manager) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, err
 	case http.StatusNoContent, http.StatusNotFound:
 		return nil, nil
 	case http.StatusOK:
-		return decodeNodeHealth(resp.Body, route.Node.ID)
+		// Decode into a value, not a *v1.TaskHealth: a "null" body succeeds with a
+		// nil document, and a pointer predicate would then dereference nil.
+		health, err := decodeNodeDocument(resp.Body, route.Node.ID, "health",
+			func(health v1.TaskHealth) bool { return health.Status != "" })
+		if err != nil {
+			return nil, err
+		}
+		return &health, nil
 	default:
-		return nil, decodeNodeHealthError(resp.Body, resp.StatusCode, route.Node.ID)
+		return nil, decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "health")
 	}
 }
 
-// decodeNodeHealth reads one health document. A node that breaks the wire
-// contract is an internal failure rather than a half-filled TaskHealth.
-func decodeNodeHealth(body io.Reader, nodeID string) (*v1.TaskHealth, error) {
-	var health v1.TaskHealth
+// decodeNodeDocument reads one task document a node returned, shared by every
+// per-task read. A node that breaks the wire contract is an internal failure
+// rather than a half-filled document; complete reports whether the decoded value
+// can stand in for a reading (zero is a valid sample, so "non-empty" is not a
+// safe rule for every document).
+//
+// Callers decode into a value type, never a pointer: a JSON "null" decodes
+// successfully into a nil pointer, and a panic here would escape through the
+// reader goroutine pkg/apihttp starts without a recover. isNilDocument keeps that
+// mistake from turning into a daemon crash even if a later caller forgets.
+func decodeNodeDocument[T any](body io.Reader, nodeID, noun string, complete func(T) bool) (T, error) {
+	var doc T
 	decoder := json.NewDecoder(io.LimitReader(body, maxRelayedErrorBytes))
-	if err := decoder.Decode(&health); err != nil || health.Status == "" {
-		return nil, output.NewErrorf(output.CodeInternal,
-			"node %q returned an unreadable health document", nodeID)
+	if err := decoder.Decode(&doc); err != nil || isNilDocument(doc) || !complete(doc) {
+		var zero T
+		return zero, output.NewErrorf(output.CodeInternal,
+			"node %q returned an unreadable %s document", nodeID, noun).
+			WithDetails(map[string]any{"nodeId": nodeID})
 	}
-	return &health, nil
+	return doc, nil
 }
 
-// decodeNodeHealthError relays a node error document. Its code, message and
-// retry hint are the contract, so they are preserved; a body that is not a v1
+// isNilDocument reports whether a decoded document is nil. An interface, map,
+// slice, func, channel or pointer decodes a JSON "null" as nil without an error,
+// so a completeness predicate for such a type would dereference nil.
+func isNilDocument[T any](doc T) bool {
+	value := reflect.ValueOf(doc)
+	if !value.IsValid() {
+		return true
+	}
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
+}
+
+// decodeNodeError relays a node error document. Its code, message and retry hint
+// are the contract, so they are preserved verbatim; a body that is not a v1
 // error document becomes a stable unavailable failure that names no address.
-func decodeNodeHealthError(body io.Reader, status int, nodeID string) error {
+// noun names the operation ("health", "metrics") for that fallback wording.
+func decodeNodeError(body io.Reader, status int, nodeID, noun string) error {
 	data, err := io.ReadAll(io.LimitReader(body, maxRelayedErrorBytes))
 	if err == nil {
 		var doc v1.ErrorDocument
@@ -418,21 +454,67 @@ func decodeNodeHealthError(body io.Reader, status int, nodeID string) error {
 			return typed
 		}
 	}
-	return output.NewErrorf(codeUnavailable, "node %q health is unavailable (status %d)",
-		nodeID, status)
+	return output.NewErrorf(codeUnavailable, "node %q %s unavailable (status %d)",
+		nodeID, noun, status)
 }
 
-// healthTransportError maps a failed dial or a deadline to a retryable failure.
-// The underlying error can name an internal address, so it never reaches the
-// message. A node that cannot be reached is unavailable: "unreachable" is
-// client-synthesized and never appears in a server document.
-func healthTransportError(ctx context.Context, nodeID string, err error) *output.Error {
+// transportError maps a failed dial or a deadline to a retryable failure, shared
+// by every per-task read. The underlying error can name an internal address, so
+// it never reaches the message. A node that cannot be reached is unavailable:
+// "unreachable" is client-synthesized and never appears in a server document.
+// noun names the operation ("health", "metrics").
+func transportError(ctx context.Context, nodeID, noun string, err error) *output.Error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-		return output.NewErrorf(output.CodeTimeout, "node %q health check timed out", nodeID).
+		return output.NewErrorf(output.CodeTimeout, "node %q %s read timed out", nodeID, noun).
 			WithDetails(map[string]any{"nodeId": nodeID})
 	}
 	return output.NewErrorf(codeUnavailable, "node %q broker is unavailable", nodeID).
 		WithDetails(map[string]any{"nodeId": nodeID})
+}
+
+// Metrics fetches one task's last in-guest CPU/memory sample from the node that
+// hosts it. The node answers from the reading its own poller cached, so the
+// manager neither scrapes Prometheus nor dials the guest.
+//
+// A node 404 is returned as its typed not_found error rather than as an absent
+// value: "no_sample" and "task_not_running" are different answers to an
+// autoscaler ("skip this replica" versus "this replica is gone"), so the code
+// and details travel to the caller to branch on.
+func (m *Manager) Metrics(ctx context.Context, task v1.Task) (v1.TaskMetrics, error) {
+	route, err := m.routeFor(ctx, task, MetricsOperation)
+	if err != nil {
+		return v1.TaskMetrics{}, err
+	}
+
+	// The health deadline applies: a metrics read is the same shape of work — one
+	// small request to one node — and a caller fans it out the same way.
+	callCtx, cancel := context.WithTimeout(ctx, m.healthTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(callCtx, http.MethodGet, route.URL.String(), nil)
+	if err != nil {
+		return v1.TaskMetrics{}, output.NewErrorf(output.CodeInternal,
+			"build node %q metrics request", route.Node.ID)
+	}
+	if m.requestIDFrom != nil {
+		if id := m.requestIDFrom(ctx); id != "" {
+			req.Header.Set(requestIDHeader, id)
+		}
+	}
+
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return v1.TaskMetrics{}, transportError(ctx, route.Node.ID, "metrics", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return v1.TaskMetrics{}, decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "metrics")
+	}
+	// Zero is a valid reading for an idle guest, so an empty document cannot
+	// stand in for one.
+	return decodeNodeDocument(resp.Body, route.Node.ID, "metrics",
+		func(sample v1.TaskMetrics) bool { return sample.TaskID != "" })
 }
 
 // --- snapshots ---

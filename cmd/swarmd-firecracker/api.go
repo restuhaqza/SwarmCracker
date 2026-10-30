@@ -86,6 +86,11 @@ func startAPIForNode(ctx context.Context, cfg apiRuntime, config *node.Config) (
 // discovered later by a client or by the shutdown path.
 func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenControlAPI string) (func(), error) {
 	if !cfg.enabled {
+		// Autoscaling is wired with the API (it needs the manager's node broker
+		// to read samples), so disabling the API disables it too. Say so: an
+		// operator who turned the API off for an unrelated reason must not have
+		// to guess why nothing scaled.
+		log.G(ctx).Warn("Autoscaling is off: it is wired with the programmatic API, and --api-disabled is set")
 		return func() {}, nil
 	}
 
@@ -133,18 +138,9 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	// apihttp.New advertises exec, logs, files and health from this same value,
 	// so the version document cannot deny a route the broker enables.
 	//
-	// Snapshots reuse the same manager and are advertised only when the operator
-	// enabled them. A nil interface must be left nil: assigning a nil
-	// *broker.Manager would produce a non-nil interface that the capability check
-	// would trust.
-	var apiBroker apihttp.Broker
-	var snapshotBroker apihttp.SnapshotBroker
-	if mgr, brokerErr := newBrokerManager(stateDir, c, c, cfg.snapshotTimeout); brokerErr != nil {
-		log.G(ctx).WithError(brokerErr).Warn("Programmatic API: exec disabled (node broker manager unavailable)")
-	} else {
-		apiBroker = mgr
-		snapshotBroker = mgr
-	}
+	// Snapshots and autoscaling reuse the same manager, which is why all three
+	// shapes come back from one call.
+	apiBroker, snapshotBroker, autoscaleBroker := managerBrokers(ctx, stateDir, c, cfg.snapshotTimeout)
 
 	srv, err := apihttp.New(apihttp.Config{
 		Client:           c,
@@ -193,6 +189,14 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	done := make(chan error, 1)
 	go func() { done <- listeners.Serve(runCtx) }()
 
+	// Autoscaling runs on managers only, which is where this function runs. It
+	// shares the API's run context, so stopping the API stops the loop, and it
+	// reuses the control client the API already dialled rather than opening a
+	// second connection to itself. The hostname is this node's own, resolved
+	// once at startup: it is what the leadership gate matches the swarm leader
+	// against.
+	startManagerAutoscaler(runCtx, autoscaleBroker, c, c, c, hostname)
+
 	var once sync.Once
 	stop := func() {
 		once.Do(func() {
@@ -232,6 +236,30 @@ func apiCertHosts(tcpAddr string) []string {
 		return nil
 	}
 	return []string{host}
+}
+
+// managerBrokers builds the node broker once and returns it in the three shapes
+// the public API and the autoscaler need: the exec/logs/health relay, the
+// snapshot broker and the metrics reader.
+//
+// A manager whose cluster TLS material is unavailable keeps serving reads; exec,
+// snapshots and autoscaling are simply off, advertised as unavailable rather
+// than failing startup. The interfaces are returned separately rather than as
+// one value because a nil *broker.Manager assigned to an interface is non-nil,
+// and the capability check would trust it.
+func managerBrokers(
+	ctx context.Context, stateDir string, c *client.Client, snapshotTimeout time.Duration,
+) (apihttp.Broker, apihttp.SnapshotBroker, *broker.Manager) {
+	mgr, err := newBrokerManager(stateDir, c, c, snapshotTimeout)
+	if err != nil {
+		// One construction feeds three features: exec/logs/health relay,
+		// snapshots and autoscaling. Saying only "exec" would leave an operator
+		// wondering why snapshots and scaling silently do nothing.
+		log.G(ctx).WithError(err).Warn("Programmatic API: the node broker manager is unavailable; " +
+			"exec, snapshots and autoscaling are disabled")
+		return nil, nil, nil
+	}
+	return mgr, mgr, mgr
 }
 
 // newBrokerManager builds the manager side of the node broker: the transport

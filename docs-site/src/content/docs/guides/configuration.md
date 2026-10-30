@@ -23,6 +23,10 @@ The security jailer is **not** a top-level section. Configure it under
 `executor.enable_jailer` plus `executor.jailer` (`uid`, `gid`,
 `chroot_base_dir`, `netns`) — see [executor.jailer](#executorjailer).
 
+Autoscaling has no configuration keys: the policy is declared per service with
+`service create|update --autoscale` and stored as service labels, so it is not
+part of this file — see [Autoscaling](/guides/operations/#autoscaling).
+
 ---
 
 ## executor

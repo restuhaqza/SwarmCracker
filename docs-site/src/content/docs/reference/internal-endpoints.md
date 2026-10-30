@@ -27,7 +27,7 @@ support commitment for these listeners. The supported, versioned surface is the
 | `4243` | manager | `GET /v1/ingress` | Serve the ingress routing table to the other nodes | **All interfaces** (`0.0.0.0`); TLS with **cluster mutual TLS** (node certificate required) |
 | `4243` | every node (manager: itself, workers: toward the manager) | `POST /v1/ingress/report` | Accept a node's report of the guest addresses it runs | **All interfaces** (`0.0.0.0`); TLS with **cluster mutual TLS**; node identity comes from the client certificate |
 | `4242` | every node | SwarmKit remote API (gRPC) | Raft replication between managers, agent registration and control-API traffic | TLS with **cluster mutual TLS**; a joining node also presents the **join token** |
-| `4245` | every node | Node broker (mTLS HTTP) | Relay `exec`, `attach`, `logs`, `files` and `health` from the manager to the node that runs the task | TLS with **cluster mutual TLS**; the manager's node certificate, never a caller's bearer token |
+| `4245` | every node | Node broker (mTLS HTTP) | Relay `exec`, `attach`, `logs`, `files`, `health` and `metrics` from the manager to the node that runs the task | TLS with **cluster mutual TLS**; the manager's node certificate, never a caller's bearer token |
 | `8080` | every node | Health and metrics HTTP | `GET /healthz`, `GET /metrics`, `GET /v1/tasks/health` | **Loopback only** (`127.0.0.1:8080` by default), **no authentication** — the bind address is the boundary |
 
 The defaults above are what a stock `swarmd-firecracker` uses. Each has a flag;
@@ -119,8 +119,9 @@ programmatic access; use the CLI for cluster lifecycle.
 
 **Purpose.** The node broker is how the manager relays task-scoped operations to
 the node that actually runs the task: exec, attach, log streaming, file
-transfer and per-task health. The manager always dials the fixed port `4245` and
-ignores any port in a node's advertised address, so both sides must agree on it.
+transfer, per-task health and per-task metrics. The manager always dials the
+fixed port `4245` and ignores any port in a node's advertised address, so both
+sides must agree on it.
 
 **Transport and authentication.** TLS with the **cluster's mutual-TLS identity**.
 The manager presents its node certificate; the caller's bearer token is never
@@ -134,6 +135,9 @@ envelope. Their paths, their payloads and the fixed port may change in any
 minor. Do not dial a node broker directly: the supported way to reach these
 capabilities is `/v1/tasks/{id}/exec`, `/attach`, `/logs`, `/files` and
 `?health=true` on the [v1 API](/reference/api/#task-exec-attach-logs-files-and-health).
+The `metrics` operation is the exception: only the manager reads it, to obtain
+the last in-guest CPU/memory sample of one task, and it has **no public v1
+route**.
 
 ## `:8080` — node health and metrics
 
