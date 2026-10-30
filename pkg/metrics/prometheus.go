@@ -9,6 +9,8 @@
 package metrics
 
 import (
+	"time"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
@@ -297,6 +299,11 @@ func RecordVMBalloon(instance, taskID, service string, mib float64) {
 // RecordVMTaskMetrics publishes one guest sample for a task: the four per-VM
 // resource series, all keyed by the same instance/task_id/service labels.
 //
+// It also caches the reading as the task's last sample, stamped with the time of
+// this call (UTC), so a caller that cannot scrape Prometheus can still ask for
+// it (see LastTaskSample). The gauges are written first, so the cache lock is
+// never held while the Prometheus client takes its own.
+//
 // The caller must pass a sample the guest actually reported. A failed poll is
 // not a zero sample, and writing zeros would pin a busy VM at 0 and look like an
 // idle one.
@@ -305,19 +312,34 @@ func RecordVMTaskMetrics(instance, taskID, service string, cpuSeconds float64, m
 	VMMemory.WithLabelValues(instance, taskID, service).Set(float64(memoryBytes))
 	VMNetRx.WithLabelValues(instance, taskID, service).Set(float64(netRxBytes))
 	VMNetTx.WithLabelValues(instance, taskID, service).Set(float64(netTxBytes))
+
+	storeTaskSample(TaskSample{
+		TaskID:      taskID,
+		Service:     service,
+		CPUSeconds:  cpuSeconds,
+		MemoryBytes: memoryBytes,
+		NetRxBytes:  netRxBytes,
+		NetTxBytes:  netTxBytes,
+		ObservedAt:  time.Now().UTC(),
+	})
 }
 
-// ClearVMTaskMetrics removes every per-VM resource series for a task.
+// ClearVMTaskMetrics removes every per-VM resource series for a task, and its
+// cached sample with them.
 //
 // It is called when a VM is torn down: the guest is gone, so its last sample
 // describes nothing, and a left-behind series would keep a scaled-down service
-// on a dashboard and in any per-task sum.
+// on a dashboard and in any per-task sum. The cached sample is dropped for the
+// same reason: an autoscaler asking a node about a removed task must be told
+// there is no sample, not served its final reading forever.
 func ClearVMTaskMetrics(instance, taskID string) {
 	match := prometheus.Labels{"instance": instance, "task_id": taskID}
 	VMCPU.DeletePartialMatch(match)
 	VMMemory.DeletePartialMatch(match)
 	VMNetRx.DeletePartialMatch(match)
 	VMNetTx.DeletePartialMatch(match)
+
+	deleteTaskSample(taskID)
 }
 
 // RecordDiskUsage publishes used and total bytes for one path. Callers must
