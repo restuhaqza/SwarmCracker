@@ -86,6 +86,11 @@ func startAPIForNode(ctx context.Context, cfg apiRuntime, config *node.Config) (
 // discovered later by a client or by the shutdown path.
 func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenControlAPI string) (func(), error) {
 	if !cfg.enabled {
+		// Autoscaling is wired with the API (it needs the manager's node broker
+		// to read samples), so disabling the API disables it too. Say so: an
+		// operator who turned the API off for an unrelated reason must not have
+		// to guess why nothing scaled.
+		log.G(ctx).Warn("Autoscaling is off: it is wired with the programmatic API, and --api-disabled is set")
 		return func() {}, nil
 	}
 
@@ -187,8 +192,10 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	// Autoscaling runs on managers only, which is where this function runs. It
 	// shares the API's run context, so stopping the API stops the loop, and it
 	// reuses the control client the API already dialled rather than opening a
-	// second connection to itself.
-	startManagerAutoscaler(runCtx, autoscaleBroker, c, c, c)
+	// second connection to itself. The hostname is this node's own, resolved
+	// once at startup: it is what the leadership gate matches the swarm leader
+	// against.
+	startManagerAutoscaler(runCtx, autoscaleBroker, c, c, c, hostname)
 
 	var once sync.Once
 	stop := func() {

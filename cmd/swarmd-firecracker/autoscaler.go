@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/moby/swarmkit/v2/log"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/autoscaler"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
+	"github.com/restuhaqza/swarmcracker/pkg/ingress"
 	"github.com/restuhaqza/swarmcracker/pkg/metrics"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -42,6 +44,14 @@ type taskMetricsSource interface {
 	Metrics(ctx context.Context, task v1.Task) (v1.TaskMetrics, error)
 }
 
+// nodeLister is the cluster view the leadership gate reads. It is optional: the
+// loop discovers it on the lister it is handed, because *client.Client answers
+// both ListServices and ListNodes, and a caller that can only list services
+// simply reaches no verdict and acts (see mayReconcile).
+type nodeLister interface {
+	ListNodes(ctx context.Context) ([]v1.Node, error)
+}
+
 // autoscalerLoop samples every policy-carrying service and applies the decision
 // the pure engine returns.
 //
@@ -63,6 +73,16 @@ type autoscalerLoop struct {
 	// now is the clock Decide reasons against. It is a field so a test can
 	// replay ticks, cooldowns and sample windows without sleeping.
 	now func() time.Time
+	// nodes is the cluster view the leadership gate resolves the leader from.
+	// It is nil when the lister cannot list nodes, which is why the gate fails
+	// open rather than treating "unknown" as "not the leader".
+	nodes nodeLister
+	// self is this daemon's node hostname, set once at construction. The gate
+	// compares it with the leader's hostname.
+	self string
+	// gateNotice records that the fail-open reason has been logged, so a cluster
+	// that cannot name a leader notes it once instead of every interval.
+	gateNotice bool
 
 	// states is the engine's memory, keyed by service ID.
 	states map[string]autoscaler.State
@@ -82,13 +102,19 @@ type cpuReading struct {
 
 // newAutoscalerLoop builds a loop over the given sources. It starts nothing: the
 // caller runs it (see startAutoscaler) or calls pass directly.
+//
+// Both identity facts the leadership gate needs are resolved here, once: the node
+// list from the lister itself when it can provide one, and this process's
+// hostname from the OS, which is the name the daemon's own node config uses when
+// --hostname is not set.
 func newAutoscalerLoop(
 	services serviceLister, tasks taskLister, source taskMetricsSource, apply scaleApplier, now func() time.Time,
+	opts ...autoscalerOption,
 ) *autoscalerLoop {
 	if now == nil {
 		now = time.Now
 	}
-	return &autoscalerLoop{
+	loop := &autoscalerLoop{
 		services:  services,
 		tasks:     tasks,
 		source:    source,
@@ -98,6 +124,31 @@ func newAutoscalerLoop(
 		readings:  make(map[string]map[string]cpuReading),
 		published: make(map[string]struct{}),
 	}
+	if nodes, ok := services.(nodeLister); ok {
+		loop.nodes = nodes
+	}
+	if name, err := os.Hostname(); err == nil {
+		loop.self = name
+	}
+	for _, opt := range opts {
+		opt(loop)
+	}
+	return loop
+}
+
+// autoscalerOption refines identity at construction. Options rather than
+// arguments because every one of them has a working default: the loop can name
+// itself and reach the node list on its own.
+type autoscalerOption func(*autoscalerLoop)
+
+// withNodeName tells the leadership gate which node this process is, using the
+// hostname the daemon already resolved (--hostname wins over os.Hostname()).
+func withNodeName(name string) autoscalerOption {
+	return func(l *autoscalerLoop) {
+		if name != "" {
+			l.self = name
+		}
+	}
 }
 
 // startAutoscaler runs the manager-side reconcile loop until ctx is cancelled.
@@ -105,9 +156,11 @@ func newAutoscalerLoop(
 // It is manager-only and opt-in per service: a worker has no cluster view, and a
 // service without a policy is never even listed to its tasks. interval <= 0 uses
 // defaultAutoscalerInterval; a nil dependency disables the loop instead of
-// panicking on the first tick.
+// panicking on the first tick. Options are identity refinements only, so existing
+// callers keep the defaults.
 func startAutoscaler(
-	ctx context.Context, list serviceLister, tasks taskLister, source taskMetricsSource, apply scaleApplier, interval time.Duration,
+	ctx context.Context, list serviceLister, tasks taskLister, source taskMetricsSource, apply scaleApplier,
+	interval time.Duration, opts ...autoscalerOption,
 ) {
 	if list == nil || tasks == nil || source == nil || apply == nil {
 		log.G(ctx).Warn("Autoscaler disabled: a required manager dependency is unavailable")
@@ -117,22 +170,29 @@ func startAutoscaler(
 		interval = defaultAutoscalerInterval
 	}
 
-	loop := newAutoscalerLoop(list, tasks, source, apply, time.Now)
+	loop := newAutoscalerLoop(list, tasks, source, apply, time.Now, opts...)
 	log.G(ctx).Infof("Autoscaler: reconciling autoscaled services every %s", interval)
 	go loop.run(ctx, interval)
 }
 
 // startManagerAutoscaler starts the loop when the manager has the node broker
-// that reads samples. A nil broker means newBrokerManager failed, which is
-// already reported as "exec disabled"; autoscaling stays off for the same
-// reason rather than ticking every interval with nothing to read.
+// that reads samples.
+//
+// A nil broker means newBrokerManager failed — no cluster TLS material, or the
+// programmatic API (which builds it) is off. Autoscaling is then off too, and the
+// warn says so: inheriting a switch silently is how an operator ends up wondering
+// why nothing scaled.
 func startManagerAutoscaler(
 	ctx context.Context, source *broker.Manager, list serviceLister, tasks taskLister, apply scaleApplier,
+	nodeName string,
 ) {
 	if source == nil {
+		log.G(ctx).Warn("Autoscaling is off: the node broker manager is unavailable, so there is no " +
+			"sample source (it is built with the programmatic API, which --api-disabled and missing " +
+			"cluster TLS material both turn off)")
 		return
 	}
-	startAutoscaler(ctx, list, tasks, source, apply, defaultAutoscalerInterval)
+	startAutoscaler(ctx, list, tasks, source, apply, defaultAutoscalerInterval, withNodeName(nodeName))
 }
 
 // run ticks the loop until ctx is cancelled. The first pass happens one interval
@@ -154,6 +214,10 @@ func (l *autoscalerLoop) run(ctx context.Context, interval time.Duration) {
 // pass reconciles every service once. A failed list is a failed pass — the next
 // tick retries — because without the service list there is nothing to reconcile.
 func (l *autoscalerLoop) pass(ctx context.Context) {
+	if !l.mayReconcile(ctx) {
+		return
+	}
+
 	now := l.now()
 	services, err := l.services.ListServices(ctx)
 	if err != nil {
@@ -168,6 +232,70 @@ func (l *autoscalerLoop) pass(ctx context.Context) {
 		}
 	}
 	l.forget(live)
+}
+
+// mayReconcile reports whether this manager is the one that should decide this
+// pass.
+//
+// Every manager runs the loop, so on a multi-manager swarm a pass on every one of
+// them would sample the same replicas and patch the same service: one write wins,
+// the others log a warning, and each manager arms its own cooldown — so the
+// managers can disagree about when the next change is allowed. Only the raft
+// leader acts; the others return without even listing services.
+//
+// The gate fails open. A cluster whose node list names no leader, a node list this
+// manager cannot read, and a daemon that does not know its own hostname all mean
+// "no verdict", and the safe answer to no verdict is to keep autoscaling: a
+// manager set that cannot report its builder info must not silently stop scaling
+// the whole cluster. The reason is logged once, at debug, because it repeats every
+// interval.
+func (l *autoscalerLoop) mayReconcile(ctx context.Context) bool {
+	if l.nodes == nil {
+		l.noteNoVerdict(ctx, "the control client cannot list nodes")
+		return true
+	}
+	nodes, err := l.nodes.ListNodes(ctx)
+	if err != nil {
+		l.noteNoVerdict(ctx, fmt.Sprintf("the node list failed: %v", err))
+		return true
+	}
+
+	var leader *v1.Node
+	for i := range nodes {
+		if manager := nodes[i].Manager; manager != nil && manager.Leader {
+			leader = &nodes[i]
+			break
+		}
+	}
+	switch {
+	case leader == nil:
+		l.noteNoVerdict(ctx, "no node reports itself as the swarm leader")
+		return true
+	case leader.Hostname == "":
+		l.noteNoVerdict(ctx, "the swarm leader has no hostname")
+		return true
+	case l.self == "":
+		l.noteNoVerdict(ctx, "this daemon's hostname is unknown")
+		return true
+	}
+
+	if leader.Hostname != l.self {
+		log.G(ctx).Debugf(
+			"Autoscaler: %s is the swarm leader and this node is %s; skipping this pass", leader.Hostname, l.self)
+		return false
+	}
+	return true
+}
+
+// noteNoVerdict logs a failed-open gate decision the first time it happens. Once
+// is enough: the same missing cluster fact repeats every interval, and a debug
+// line per tick would bury the passes that did run.
+func (l *autoscalerLoop) noteNoVerdict(ctx context.Context, reason string) {
+	if l.gateNotice {
+		return
+	}
+	l.gateNotice = true
+	log.G(ctx).Debugf("Autoscaler: cannot tell whether this node is the swarm leader (%s); reconciling anyway", reason)
 }
 
 // forget drops the memory of services that no longer autoscale — deleted, or
@@ -247,7 +375,7 @@ func (l *autoscalerLoop) reconcile(ctx context.Context, svc v1.Service, now time
 			return true
 		}
 		l.publish(svc.ID, target)
-		log.G(ctx).Warnf("Autoscaler: aligned service %s from %d to %d replicas (policy bounds changed); not counted as a scale event",
+		log.G(ctx).Warnf("Autoscaler: aligned service %s from %d to %d replicas to fit its policy; not counted as a scale event",
 			svc.ID, replicas, target)
 		return true
 	}
@@ -272,9 +400,12 @@ func (l *autoscalerLoop) reconcile(ctx context.Context, svc v1.Service, now time
 	decision, next := autoscaler.Decide(*policy,
 		autoscaler.Observation{Replicas: replicas, Cores: round.cores, SampledAt: round.sampledAt},
 		l.states[svc.ID], now)
-	l.states[svc.ID] = next
 
 	if decision.Direction == autoscaler.DirectionNone {
+		// A hold is the whole outcome, so its state is committed at once: the
+		// hysteresis count it carries is the evidence the next tick builds on,
+		// and a hold applies no change that could fail.
+		l.states[svc.ID] = next
 		// A hold reports the observed count unchanged. Publishing it here is
 		// what keeps the gauge a current count rather than a last-changed one.
 		l.publish(svc.ID, decision.Replicas)
@@ -282,6 +413,12 @@ func (l *autoscalerLoop) reconcile(ctx context.Context, svc v1.Service, now time
 		return true
 	}
 
+	// A change is only real once the patch lands. The new state — the cooldown
+	// this change arms and the reset hysteresis — is committed after the write,
+	// never before: a rejected patch (a conflict, a control-socket blip) that
+	// armed the cooldown would cost a whole cooldown of no scaling, and would
+	// have thrown away the evidence for a change that never happened.
+	//
 	// The patch is the decision exactly as the engine returned it: the engine
 	// moves by one and owns the bounds and cooldown rules, so the loop never
 	// adjusts the number.
@@ -290,6 +427,7 @@ func (l *autoscalerLoop) reconcile(ctx context.Context, svc v1.Service, now time
 			"Autoscaler: cannot scale service %s to %d replicas: %s", svc.ID, decision.Replicas, decision.Reason)
 		return true
 	}
+	l.states[svc.ID] = next
 	l.publish(svc.ID, decision.Replicas)
 	metrics.RecordServiceScaleEvent(svc.ID, string(decision.Direction))
 	log.G(ctx).Infof("Autoscaler: service %s %s: %d replicas (%s)",
@@ -367,6 +505,14 @@ func (l *autoscalerLoop) sample(ctx context.Context, serviceID string) sampleRou
 	var round sampleRound
 	seen := make(map[string]struct{}, len(tasks))
 	for _, task := range tasks {
+		// Only a running replica burns the service's CPU. A task that is
+		// shutting down, failed or complete is history: sampling it would keep
+		// a request per dead task per interval, forever, and its frozen counter
+		// would poison the average with a stale rate. A stopped task is not
+		// remembered (see the prune below), so it costs nothing at all.
+		if task.State != ingress.TaskStateRunning {
+			continue
+		}
 		// A task with no ID or no node has nothing to ask; the broker would
 		// answer "not assigned", which is not a sample.
 		if task.ID == "" || task.NodeID == "" {
@@ -374,7 +520,7 @@ func (l *autoscalerLoop) sample(ctx context.Context, serviceID string) sampleRou
 		}
 		seen[task.ID] = struct{}{}
 
-		sample, err := l.source.Metrics(ctx, task)
+		reading, err := l.source.Metrics(ctx, task)
 		if err != nil {
 			if isNoSample(err) {
 				round.noSample++
@@ -386,7 +532,7 @@ func (l *autoscalerLoop) sample(ctx context.Context, serviceID string) sampleRou
 			}
 			continue
 		}
-		if sample.ObservedAt.IsZero() {
+		if reading.ObservedAt.IsZero() {
 			// A reading with no timestamp gives no window. Remembering it would
 			// poison the baseline, so it is dropped and the replica waits for a
 			// stamped sample.
@@ -399,15 +545,15 @@ func (l *autoscalerLoop) sample(ctx context.Context, serviceID string) sampleRou
 		}
 
 		previous, hadPrevious := readings[task.ID]
-		readings[task.ID] = cpuReading{Seconds: sample.CPUSeconds, At: sample.ObservedAt}
+		readings[task.ID] = cpuReading{Seconds: reading.CPUSeconds, At: reading.ObservedAt}
 
-		if sample.ObservedAt.After(round.sampledAt) {
-			round.sampledAt = sample.ObservedAt
+		if reading.ObservedAt.After(round.sampledAt) {
+			round.sampledAt = reading.ObservedAt
 		}
 		if !hadPrevious {
 			continue
 		}
-		window := sample.ObservedAt.Sub(previous.At).Seconds()
+		window := reading.ObservedAt.Sub(previous.At).Seconds()
 		if window <= 0 {
 			continue
 		}
@@ -415,11 +561,12 @@ func (l *autoscalerLoop) sample(ctx context.Context, serviceID string) sampleRou
 		// guest) is passed through rather than hidden: Decide treats a negative
 		// reading as no data and holds the whole round, which is the honest
 		// answer to a broken probe.
-		round.cores = append(round.cores, (sample.CPUSeconds-previous.Seconds)/window)
+		round.cores = append(round.cores, (reading.CPUSeconds-previous.Seconds)/window)
 	}
 
-	// A task that is gone must not keep a baseline: it contributes to no round,
-	// and the map would otherwise grow with every replica ever replaced.
+	// A task that is gone or no longer running must not keep a baseline: it
+	// contributes to no round, and the map would otherwise grow with every
+	// replica ever replaced.
 	for taskID := range readings {
 		if _, ok := seen[taskID]; !ok {
 			delete(readings, taskID)

@@ -10,6 +10,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/autoscaler"
 	"github.com/restuhaqza/swarmcracker/pkg/metrics"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -66,6 +67,22 @@ type countingServiceLister struct {
 func (f *countingServiceLister) ListServices(context.Context) ([]v1.Service, error) {
 	f.calls.Add(1)
 	return nil, errors.New("control socket unavailable")
+}
+
+// fakeClusterLister is a control client that can also list nodes, which is what
+// the daemon's *client.Client is: the loop discovers the leadership gate from
+// the lister it is given. Embedding the fake service lister keeps the service
+// calls observable through the same value.
+type fakeClusterLister struct {
+	*fakeServiceLister
+	nodes     []v1.Node
+	nodeErr   error
+	nodeCalls int
+}
+
+func (f *fakeClusterLister) ListNodes(context.Context) ([]v1.Node, error) {
+	f.nodeCalls++
+	return f.nodes, f.nodeErr
 }
 
 type fakeTaskLister struct {
@@ -132,7 +149,10 @@ type autoscaleFixture struct {
 	tasks    *fakeTaskLister
 	applier  *fakeScaleApplier
 	source   *fakeMetricsSource
-	clock    time.Time
+	// cluster is set by withNodes: the same loop, built over a lister that can
+	// also answer ListNodes.
+	cluster *fakeClusterLister
+	clock   time.Time
 }
 
 func newAutoscaleFixture(services ...v1.Service) *autoscaleFixture {
@@ -145,6 +165,17 @@ func newAutoscaleFixture(services ...v1.Service) *autoscaleFixture {
 	}
 	f.loop = newAutoscalerLoop(f.services, f.tasks, f.source, f.applier, func() time.Time { return f.clock })
 	return f
+}
+
+// withNodes rebuilds the fixture's loop over a control client that can list
+// nodes, as a manager's *client.Client can, and tells it which hostname this
+// process answers to. The loop is rebuilt rather than patched so the production
+// construction path — a lister that satisfies both interfaces — is what the gate
+// tests exercise.
+func (f *autoscaleFixture) withNodes(self string, nodes ...v1.Node) {
+	f.cluster = &fakeClusterLister{fakeServiceLister: f.services, nodes: nodes}
+	f.loop = newAutoscalerLoop(f.cluster, f.tasks, f.source, f.applier, func() time.Time { return f.clock })
+	f.loop.self = self
 }
 
 // tick runs one reconcile pass at the fixture's clock.
@@ -326,6 +357,32 @@ func TestAutoscalerNoRatesMeansNoDecision(t *testing.T) {
 	assert.False(t, hasReplicaSeries(t, "svc-blind"), "no decision means no gauge series")
 }
 
+// ── only running replicas are sampled ────────────────────────────
+
+func TestAutoscalerStoppedTaskIsNeverQueriedAndPruned(t *testing.T) {
+	policy := testPolicy(t, "min=1,max=5,metric=cpu,target=50")
+	svc := testService(t, "svc-stopped", 2, policy)
+	f := newAutoscaleFixture(svc)
+	f.seed("svc-stopped", "task-1")
+
+	f.sample("task-1", 10, autoscaleBase)
+	f.tick()
+	require.NotEmpty(t, f.loop.readings["svc-stopped"], "the running replica left a baseline")
+	require.Equal(t, []string{"task-1"}, f.source.queried)
+
+	// The replacement has not started yet: the old task is shutting down, and
+	// asking its node for a sample would be a request that cannot answer.
+	f.tasks.byService["svc-stopped"] = []v1.Task{
+		{ID: "task-1", ServiceID: "svc-stopped", NodeID: "node-1", State: "shutdown"},
+	}
+	f.clock = autoscaleBase.Add(30 * time.Second)
+	f.tick()
+
+	assert.Len(t, f.source.queried, 1, "a task that is not running must cost zero broker requests")
+	assert.Empty(t, f.loop.readings["svc-stopped"], "the baseline of a stopped task is pruned with it")
+	assert.Empty(t, f.applier.patches, "a service with no running replica has no data to decide on")
+}
+
 // ── failures never stop the pass ──────────────────────────────────
 
 func TestAutoscalerNonPositiveWindowContributesNothing(t *testing.T) {
@@ -350,15 +407,31 @@ func TestAutoscalerCounterResetIsNoData(t *testing.T) {
 	f := newAutoscaleFixture(svc)
 	f.seed("svc-reset", "task-1")
 
-	// A guest that rebooted reports a smaller cumulative counter. The negative
-	// rate must never read as "idle": the engine holds the round as no data.
+	// A guest that rebooted reports a smaller cumulative counter, so the rate is
+	// negative. Read as "0% busy" that would be a cold sample, and two cold
+	// samples in a row scale a service down — so the test drives two negative
+	// windows. One would prove nothing: a single cold sample cannot scale down
+	// whatever the round is called.
 	f.sample("task-1", 500, autoscaleBase)
 	f.tick()
-	f.sample("task-1", 2, autoscaleBase.Add(30*time.Second))
-	f.tick()
 
-	assert.Empty(t, f.applier.patches, "a counter reset must not scale a service")
-	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-reset", "down")))
+	for tick, cold := range []struct {
+		at  time.Time
+		cpu float64
+	}{
+		{autoscaleBase.Add(30 * time.Second), 2},
+		{autoscaleBase.Add(60 * time.Second), 1},
+	} {
+		f.sample("task-1", cold.cpu, cold.at)
+		f.clock = cold.at
+		f.tick()
+		assert.Empty(t, f.applier.patches, "tick %d: a counter reset must not scale a service", tick+1)
+	}
+
+	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-reset", "down")),
+		"two negative windows misread as 0% busy would have patched down")
+	assert.Equal(t, autoscaler.State{}, f.loop.states["svc-reset"],
+		"no data must not advance the engine state: a cold-sample count or a cooldown would show here")
 }
 
 func TestAutoscalerListErrorDoesNotStopTheLoop(t *testing.T) {
@@ -439,6 +512,148 @@ func TestAutoscalerPatchFailureIsNotCounted(t *testing.T) {
 	require.Len(t, f.applier.patches, 1, "the loop tried the patch")
 	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-reject", "up")),
 		"a rejected patch is not a scale event")
+}
+
+// A failed patch must not arm the cooldown of the change it attempted to make:
+// otherwise one rejected write (a conflict, a control-socket blip) costs a whole
+// interval of no scaling, and the service waits out a cooldown for a change that
+// never happened.
+func TestAutoscalerFailedScaleUpArmsNoCooldown(t *testing.T) {
+	policy := testPolicy(t, "min=1,max=5,metric=cpu,target=50")
+	svc := testService(t, "svc-retry-up", 2, policy)
+	f := newAutoscaleFixture(svc)
+	f.seed("svc-retry-up", "task-1")
+
+	f.sample("task-1", 10, autoscaleBase)
+	f.tick()
+
+	f.clock = autoscaleBase.Add(30 * time.Second)
+	f.rate("task-1", 0.9, f.clock)
+	f.applier.err = output.NewError(output.CodeConflict, "revision moved")
+	f.tick()
+	require.Len(t, f.applier.patches, 1, "the hot tick tried to scale up")
+	assert.Equal(t, autoscaler.State{}, f.loop.states["svc-retry-up"],
+		"a rejected patch leaves the previous state untouched: no cooldown, no hysteresis")
+
+	// 10s later, well inside the 60s scale-up cooldown the patch would have
+	// armed, the still-hot service is patched again.
+	f.applier.err = nil
+	f.clock = autoscaleBase.Add(40 * time.Second)
+	f.rate("task-1", 0.9, f.clock)
+	f.tick()
+
+	require.Len(t, f.applier.patches, 2, "a failed patch must not burn the scale-up cooldown")
+	assert.JSONEq(t, `{"spec":{"replicas":3}}`, f.applier.patches[1].patch)
+	assert.Equal(t, float64(1), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-retry-up", "up")))
+}
+
+func TestAutoscalerFailedScaleDownArmsNoCooldown(t *testing.T) {
+	policy := testPolicy(t, "min=1,max=5,metric=cpu,target=50")
+	svc := testService(t, "svc-retry-down", 3, policy)
+	f := newAutoscaleFixture(svc)
+	f.seed("svc-retry-down", "task-1")
+
+	f.sample("task-1", 10, autoscaleBase)
+	f.tick()
+
+	// Two cold samples satisfy the hysteresis; the second one's patch is
+	// rejected.
+	f.clock = autoscaleBase.Add(30 * time.Second)
+	f.rate("task-1", 0.05, f.clock)
+	f.tick()
+	f.clock = autoscaleBase.Add(60 * time.Second)
+	f.rate("task-1", 0.05, f.clock)
+	f.applier.err = output.NewError(output.CodeConflict, "revision moved")
+	f.tick()
+
+	require.Len(t, f.applier.patches, 1, "the second cold sample tried to scale down")
+	assert.Equal(t, autoscaler.State{BelowTarget: 1}, f.loop.states["svc-retry-down"],
+		"a rejected patch must not reset the hysteresis or arm the scale-down cooldown")
+
+	// 10s later, inside the 300s scale-down cooldown, the evidence still stands.
+	f.applier.err = nil
+	f.clock = autoscaleBase.Add(70 * time.Second)
+	f.rate("task-1", 0.05, f.clock)
+	f.tick()
+
+	require.Len(t, f.applier.patches, 2, "a failed patch must not burn the scale-down cooldown")
+	assert.JSONEq(t, `{"spec":{"replicas":2}}`, f.applier.patches[1].patch)
+	assert.Equal(t, float64(1), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-retry-down", "down")))
+}
+
+// ── leadership gate ──────────────────────────────────────────────
+
+func TestAutoscalerSkipsPassWhenAnotherNodeIsLeader(t *testing.T) {
+	policy := testPolicy(t, "min=1,max=5,metric=cpu,target=50")
+	svc := testService(t, "svc-follower", 2, policy)
+	f := newAutoscaleFixture(svc)
+	f.seed("svc-follower", "task-1")
+	f.withNodes("node-follower",
+		v1.Node{ID: "node-1", Hostname: "node-leader", Manager: &v1.NodeManager{Leader: true, Reachable: true}},
+		v1.Node{ID: "node-2", Hostname: "node-follower", Manager: &v1.NodeManager{Reachable: true}},
+	)
+
+	f.tick()
+
+	assert.Zero(t, f.services.calls, "a follower must not even list the services")
+	assert.Empty(t, f.tasks.queried, "a follower must not sample")
+	assert.Empty(t, f.applier.patches, "only the leader may patch a service")
+}
+
+func TestAutoscalerActsWhenThisNodeIsLeader(t *testing.T) {
+	policy := testPolicy(t, "min=1,max=5,metric=cpu,target=50")
+	svc := testService(t, "svc-leader", 2, policy)
+	f := newAutoscaleFixture(svc)
+	f.seed("svc-leader", "task-1")
+	f.withNodes("node-leader",
+		v1.Node{ID: "node-1", Hostname: "node-follower", Manager: &v1.NodeManager{Reachable: true}},
+		v1.Node{ID: "node-2", Hostname: "node-leader", Manager: &v1.NodeManager{Leader: true, Reachable: true}},
+	)
+
+	f.sample("task-1", 10, autoscaleBase)
+	f.tick()
+	f.clock = autoscaleBase.Add(30 * time.Second)
+	f.rate("task-1", 0.9, f.clock)
+	f.tick()
+
+	require.Len(t, f.applier.patches, 1, "the leader decides and applies the scale")
+	assert.JSONEq(t, `{"spec":{"replicas":3}}`, f.applier.patches[0].patch)
+}
+
+// Fail open: a cluster whose node list names no leader (a manager still forming
+// its raft, or a read model without manager status) must keep autoscaling rather
+// than go quiet.
+func TestAutoscalerActsWhenNoNodeIsLeader(t *testing.T) {
+	policy := testPolicy(t, "min=1,max=5,metric=cpu,target=50")
+	svc := testService(t, "svc-noleader", 2, policy)
+	f := newAutoscaleFixture(svc)
+	f.seed("svc-noleader", "task-1")
+	f.withNodes("node-1",
+		v1.Node{ID: "node-1", Hostname: "node-1", Manager: &v1.NodeManager{Reachable: true}},
+	)
+
+	f.sample("task-1", 10, autoscaleBase)
+	f.tick()
+	f.clock = autoscaleBase.Add(30 * time.Second)
+	f.rate("task-1", 0.9, f.clock)
+	f.tick()
+
+	assert.Equal(t, 2, f.services.calls, "an unresolvable leader must not stop the loop")
+	require.Len(t, f.applier.patches, 1, "an unresolvable leader must not stop a decision")
+}
+
+// Fail open: a node list that cannot be read (the cluster is still forming, or
+// this manager cannot read nodes) must not silently disable autoscaling.
+func TestAutoscalerActsWhenNodeListFails(t *testing.T) {
+	policy := testPolicy(t, "min=1,max=5,metric=cpu,target=50")
+	svc := testService(t, "svc-nodeerr", 2, policy)
+	f := newAutoscaleFixture(svc)
+	f.withNodes("node-1")
+	f.cluster.nodeErr = errors.New("node store unavailable")
+
+	f.tick()
+
+	assert.Equal(t, 1, f.services.calls, "a failed node list must not stop the pass")
 }
 
 // ── initial alignment ─────────────────────────────────────────────
