@@ -245,6 +245,17 @@ func TestTaskVsockPath(t *testing.T) {
 			task: Task{SocketPath: "/var/run/firecracker/task-1.sock"},
 			want: "",
 		},
+		{
+			// A migration moves a VM whose Firecracker state names the source
+			// task's muxer, so the derived <id>.vsock belongs to no process.
+			name: "a restored task answers on its recorded muxer",
+			task: Task{
+				ID:                "new-task",
+				SocketPath:        "/var/run/firecracker/new-task.sock",
+				restoredVsockPath: "/var/run/firecracker/source-task.vsock",
+			},
+			want: "/var/run/firecracker/source-task.vsock",
+		},
 	}
 
 	for _, tc := range cases {

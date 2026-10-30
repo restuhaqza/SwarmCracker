@@ -415,6 +415,12 @@ func newStartController(t *testing.T, vsockUDS string, hc *api.HealthConfig) *Co
 	// with "directory not empty" — the flake this helper used to cause under a
 	// full-suite run.
 	t.Cleanup(ctrl.stopHealthMonitor)
+	// The guest-metrics poller outlives Start for the same reason, and it reads
+	// package-level MetricsPollInterval on every tick. A later metrics test rewrites
+	// that interval, so a leaked poller is a data race the -race suite reports
+	// against whichever test happens to run next. Joining it here is the teardown a
+	// stopped task does.
+	t.Cleanup(ctrl.stopMetricsMonitor)
 	return ctrl
 }
 

@@ -124,6 +124,36 @@ func TestController_HealthMonitor_StopsUnhealthyVM(t *testing.T) {
 	assert.Contains(t, ctrl.healthcheckFailure(), "boom")
 }
 
+// TestController_HealthMonitor_StopsARestoredUnhealthyVM pins the other stop path
+// SwarmKit drives: a health verdict. A restored task's VM is not the VMM manager's,
+// so the monitor must stop it through the record — a ForceStop would kill nothing
+// and leave the unhealthy VM serving.
+func TestController_HealthMonitor_StopsARestoredUnhealthyVM(t *testing.T) {
+	_, uds := startFakeVsockMuxer(t)
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "echo boom 1>&2; exit 3"},
+		Interval: gogotypes.DurationProto(10 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(2 * time.Second),
+		Retries:  3,
+	}
+	vmm := newForceStopRecorder()
+	store := &fakeRestoredStore{record: restoredTestRecord("task-hc-monitor", "source-task"), found: true}
+	stopper := &fakeRestoredStopper{}
+
+	ctrl := newMonitorController(t, uds, hc, vmm)
+	ctrl.restored = store
+	ctrl.restoredStopper = stopper
+	t.Cleanup(ctrl.stopHealthMonitor)
+
+	ctrl.startHealthMonitor()
+	waitForMonitor(t, ctrl)
+
+	assert.Equal(t, []string{"task-hc-monitor"}, stopper.stopped,
+		"the health verdict stops the VM the record names")
+	assert.Equal(t, []string{"task-hc-monitor"}, store.deletes)
+	assert.Equal(t, 0, vmm.count(), "the VMM manager tracks no process for a restored task")
+}
+
 // TestController_HealthMonitor_HealthyKeepsPolling asserts a healthy task is
 // never stopped, no matter how many probes pass.
 func TestController_HealthMonitor_HealthyKeepsPolling(t *testing.T) {

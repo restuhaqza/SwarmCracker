@@ -570,6 +570,137 @@ func TestBrokerRuntimeFrom_MigrationStagingDir(t *testing.T) {
 		runBrokerFlags(t, "--migration-staging-dir", "/srv/staging").migrationStagingDir)
 }
 
+// TestStartBroker_ResolvesARestoredTaskFromItsRecord proves the daemon's resolver
+// honours a restored instance end to end: exec reaches the guest agent on the vsock
+// muxer the record names — the source task's — and nothing exists at the paths
+// derived from the new task's ID.
+func TestStartBroker_ResolvesARestoredTaskFromItsRecord(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	vmDir := t.TempDir()
+
+	// The restored VM: its API socket and its muxer live under the names the
+	// source task gave them.
+	recordSocket := filepath.Join(vmDir, "new-task.sock")
+	require.NoError(t, os.WriteFile(recordSocket, nil, 0o600))
+
+	recordVsock := runtime.VsockPath(vmDir, "source-task")
+	ln, err := net.Listen("unix", recordVsock)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go fakeVsockAgent(t, ln, "hello from the migrated guest\n", 0)
+
+	registry, err := runtime.NewRestoredRegistry(filepath.Join(stateDir, runtime.RestoredInstanceDirName))
+	require.NoError(t, err)
+	require.NoError(t, registry.Put(runtime.RestoredInstance{
+		TaskID:     "new-task",
+		VMID:       "source-task",
+		ArtifactID: "mig-0123456789abcdef",
+		SocketPath: recordSocket,
+		TapName:    runtime.TapName("source-task", 0),
+		VsockPath:  recordVsock,
+		DiskPath:   filepath.Join(vmDir, "source-task.ext4"),
+		CreatedAt:  time.Now().UTC(),
+	}))
+
+	cfg := brokerRuntime{
+		listenAddr: "127.0.0.1:0",
+		socketDir:  socketDir,
+		logDir:     logDir,
+		restored:   registry,
+	}
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Post("https://"+srv.Addr()+"/v1/tasks/new-task/exec",
+		"application/json", strings.NewReader(`{"command":["echo","hi"]}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"exec must reach the guest of the VM the record names")
+
+	decoder := json.NewDecoder(resp.Body)
+	var stdout []byte
+	for {
+		var frame v1.ExecFrame
+		if err := decoder.Decode(&frame); err == io.EOF {
+			break
+		} else {
+			require.NoError(t, err)
+		}
+		if frame.Type == v1.FrameStdout {
+			stdout = frame.Data
+		}
+	}
+	require.Equal(t, "hello from the migrated guest\n", string(stdout))
+
+	require.NoFileExists(t, filepath.Join(socketDir, "new-task.sock"),
+		"the derived socket belongs to no process, so the record is what resolved the task")
+	require.NoFileExists(t, runtime.VsockPath(socketDir, "new-task"))
+}
+
+// TestStartBroker_ARestoredTaskWhoseSocketIsGoneIsNotRunning proves the stale
+// record end to end: the task still resolves — its console log is readable — but it
+// is not running, and a live socket at the path derived from its ID is never
+// addressed. After a SwarmKit ID reuse that path can hold another task's VM, which
+// is the VM this answer refuses to reach.
+func TestStartBroker_ARestoredTaskWhoseSocketIsGoneIsNotRunning(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	vmDir := t.TempDir()
+
+	// The trap: a live socket where the derivation would look.
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "new-task.sock"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "new-task.log"), []byte("migrated\n"), 0o600))
+
+	registry, err := runtime.NewRestoredRegistry(filepath.Join(stateDir, runtime.RestoredInstanceDirName))
+	require.NoError(t, err)
+	require.NoError(t, registry.Put(runtime.RestoredInstance{
+		TaskID:     "new-task",
+		VMID:       "source-task",
+		ArtifactID: "mig-0123456789abcdef",
+		// The record's socket is gone: this VM is not on this node any more.
+		SocketPath: filepath.Join(vmDir, "new-task.sock"),
+		TapName:    runtime.TapName("source-task", 0),
+		VsockPath:  runtime.VsockPath(vmDir, "source-task"),
+		DiskPath:   filepath.Join(vmDir, "source-task.ext4"),
+		CreatedAt:  time.Now().UTC(),
+	}))
+
+	cfg := brokerRuntime{
+		listenAddr: "127.0.0.1:0",
+		socketDir:  socketDir,
+		logDir:     logDir,
+		restored:   registry,
+	}
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/new-task/logs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"the new task's console log stays readable after its VM exited")
+
+	filesResp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/new-task/files?path=/etc/hostname")
+	require.NoError(t, err)
+	defer filesResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, filesResp.StatusCode,
+		"files must not fall back to the socket at the derived path")
+}
+
 // TestStartBroker_MigrationOperationsAreRegistered proves the daemon registers the
 // four migration operations. The transport runs on a node that never enabled
 // snapshots (file, stage and discard move bytes an export elsewhere produced), the

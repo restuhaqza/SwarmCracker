@@ -115,8 +115,16 @@ func (c *Controller) monitorHealth(
 				Str("command", cmd).
 				Str("output", output).
 				Msg("Task became unhealthy; stopping VM so SwarmKit reschedules it")
-			if err := c.vmmMgr.ForceStop(ctx, c.convertTask()); err != nil {
-				c.logger.Error().Err(err).Msg("Failed to stop unhealthy VM")
+			// A VM this node restored from a migration belongs to pkg/snapshot, not
+			// the VMM manager (see Controller.Shutdown), so the record decides how it
+			// is stopped: ForceStop would kill nothing and leave the unhealthy VM
+			// serving, which is the one thing a health verdict exists to prevent.
+			if restored, err := c.stopRestoredVM(); err != nil {
+				c.logger.Error().Err(err).Msg("Failed to stop unhealthy restored VM")
+			} else if !restored {
+				if err := c.vmmMgr.ForceStop(ctx, c.convertTask()); err != nil {
+					c.logger.Error().Err(err).Msg("Failed to stop unhealthy VM")
+				}
 			}
 			return
 		default:

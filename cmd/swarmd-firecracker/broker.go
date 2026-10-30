@@ -36,6 +36,12 @@ type brokerRuntime struct {
 	// disabled by default: the handler is still registered, so a manager gets a
 	// typed 501 instead of the server's unregistered-operation answer.
 	snapshotsEnabled bool
+	// snapshotManager is the node's snapshot store, built once by the daemon for
+	// every run (see newSnapshotManager) and shared by its two consumers: the
+	// broker's experimental snapshot and restored routes, and the executor, which
+	// needs it to stop a VM restored from a migration artifact. Nil means the store
+	// could not be built.
+	snapshotManager *snapshot.Manager
 	// snapshotDir is the pkg/snapshot root. pkg/snapshot writes
 	// <snapshotDir>/<id>/metadata.json and that directory is the source of truth.
 	snapshotDir string
@@ -56,9 +62,10 @@ type brokerRuntime struct {
 	// restored is the node's store of restored-instance records: tasks started
 	// from a migration artifact run a VM whose TAP device, vsock muxer and disk
 	// belong to the source task, and only this record says so. It is built before
-	// startNode (see openDaemonState) because opening it can fail. Nothing else
-	// holds it today: the import handler and the resolver (T2/T4) are its
-	// consumers, and this field is where they will take it from.
+	// startNode (see openDaemonState) because opening it can fail. The broker's task
+	// resolver is its consumer here: exec, logs, files, attach, health and metrics
+	// all resolve through it, and the executor's teardown takes the same store
+	// through SetRestoredInstances.
 	// Nil means this node keeps no records, which is only true in tests.
 	restored *scruntime.RestoredRegistry
 }
@@ -127,6 +134,7 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 // returns (nil, false, no-op, nil); a certificate or bind failure is returned
 // rather than swallowed, so a misconfigured node fails loudly instead of silently
 // refusing manager traffic.
+
 // taskSocketAlive reports whether a Firecracker API socket still belongs to a
 // live VMM. The process table is the signal rather than an API probe: during
 // startup the socket exists before the API answers, and treating that window
@@ -134,6 +142,31 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 // socket file behind, which is the case this probe exists to catch.
 func taskSocketAlive(socketPath string) bool {
 	return scruntime.FindFirecrackerPIDBySocket(socketPath) > 0
+}
+
+// newSnapshotManager builds the node's snapshot store.
+//
+// It is called for every daemon run, not only when --snapshots-enable is set:
+// stopping a task that was restored from a migration artifact needs the manager
+// that started its Firecracker process, and that is not the experimental public
+// snapshot API. Only the public routes stay behind the flag; the store itself is
+// shared. A construction failure is logged and degrades to nil — a bad snapshot
+// directory must not stop the broker or the agent from starting, and both
+// consumers already answer "unavailable" for a nil store — so this returns no
+// error.
+func newSnapshotManager(ctx context.Context, cfg brokerRuntime) *snapshot.Manager {
+	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{
+		Enabled:      true,
+		SnapshotDir:  cfg.snapshotDir,
+		MaxSnapshots: 3,
+		MaxAge:       168 * time.Hour,
+	})
+	if err != nil {
+		log.G(ctx).WithError(err).Warn(
+			"Snapshot store unavailable: the experimental snapshot API stays disabled and a VM restored from a migration cannot be stopped on this node")
+		return nil
+	}
+	return mgr
 }
 
 func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*broker.Server, bool, func(), error) {
@@ -147,14 +180,24 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		return nil, false, nil, fmt.Errorf("node broker: %w", err)
 	}
 
+	tasks := broker.SocketDirSource{
+		Dir:       cfg.socketDir,
+		LogDir:    cfg.logDir,
+		IsRunning: cfg.taskAlive,
+	}
+	// A task restored from a migration artifact runs a VM whose host-side names
+	// (TAP device, vsock muxer, disk) belong to the source task, so the broker
+	// resolves it from its record instead of deriving a path from its ID. The field
+	// is an interface: assigning a nil registry would make it non-nil and every
+	// lookup would fail, so it is set only when the daemon opened the store.
+	if cfg.restored != nil {
+		tasks.Restored = cfg.restored
+	}
+
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Addr:      cfg.listenAddr,
 		TLSConfig: serverTLSConfig(cert, caPool),
-		Tasks: broker.SocketDirSource{
-			Dir:       cfg.socketDir,
-			LogDir:    cfg.logDir,
-			IsRunning: cfg.taskAlive,
-		},
+		Tasks:     tasks,
 	})
 	if err != nil {
 		return nil, false, nil, err
@@ -167,12 +210,14 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	// in-guest sample the daemon's poller cached; attach relays the interactive
 	// console Unix socket in both directions; snapshots use the node-local
 	// pkg/snapshot store, and restored stops the VM a restore started from that
-	// same store. The migration operations produce an artifact from a running task,
+	// same manager instance — the one the executor also holds, so the two cannot
+	// disagree about which processes this node owns. The migration operations
+	// produce an artifact from a running task,
 	// stream one of its files, stage one the target will restore, and discard one
 	// when it is no longer needed; they share the snapshot store export snapshots
 	// through and one migration root for the bytes. The public route has already
 	// resolved the reference and enforced the caller's selectors.
-	snapshotOp, restoredOp, store, snapshotsActive := snapshotHandlers(ctx, cfg)
+	snapshotOp, restoredOp, store, snapshotsActive := snapshotHandlers(cfg)
 	migrationCfg := broker.MigrationHandlerConfig{
 		Store:       store,
 		ArtifactDir: cfg.migrationStagingDir,
@@ -229,42 +274,31 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 
 // snapshotHandlers builds the experimental snapshots and restored-VM operations
 // and reports the store they share, plus whether it is usable. Both handlers take
-// one store instance: the restored process handle lives in the manager that
+// one store instance — the one the daemon built and handed to the executor as well
+// (newSnapshotManager): the restored process handle lives in the manager that
 // restored the VM, so a second store would answer no_restored_vm for this node's
-// own restores. The store is returned as well because the migration operations
+// own restores, and the executor's stop would reach a process the broker's route
+// could not. The store is returned as well because the migration operations
 // snapshot through it and move the files it publishes; a nil store means the
 // migration export answers its typed 501 while file and stage keep working.
 // Disabled means registered handlers with no store, which answer a typed 501 —
-// the routes still exist. A manager construction failure is logged and degrades
-// to the same disabled handlers: a bad snapshot directory must not stop the
-// broker, because exec, logs, files and health do not depend on it. The boolean
-// is what the daemon passes to the API runtime, so /v1/version never advertises a
-// store that does not exist.
+// the routes still exist, so a caller gets the capability detail rather than the
+// server's unregistered-operation answer. The boolean is what the daemon passes to
+// the API runtime, so /v1/version never advertises a store that does not exist:
+// the flag and a usable store are both required.
 func snapshotHandlers(
-	ctx context.Context, cfg brokerRuntime,
+	cfg brokerRuntime,
 ) (snapshots, restored broker.Handler, store broker.SnapshotStore, active bool) {
-	if !cfg.snapshotsEnabled {
-		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}),
-			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), nil, false
-	}
-
-	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{
-		Enabled:      true,
-		SnapshotDir:  cfg.snapshotDir,
-		MaxSnapshots: 3,
-		MaxAge:       168 * time.Hour,
-	})
-	if err != nil {
-		log.G(ctx).WithError(err).Warn("Node broker: snapshots disabled (snapshot store unavailable)")
+	if !cfg.snapshotsEnabled || cfg.snapshotManager == nil {
 		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}),
 			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), nil, false
 	}
 
 	handlerCfg := broker.SnapshotHandlerConfig{
-		Store:     mgr,
+		Store:     cfg.snapshotManager,
 		SocketDir: cfg.socketDir,
 		MaxAge:    168 * time.Hour,
 		RootfsDir: cfg.rootfsDir,
 	}
-	return broker.NewSnapshotHandler(handlerCfg), broker.NewRestoredHandler(handlerCfg), mgr, true
+	return broker.NewSnapshotHandler(handlerCfg), broker.NewRestoredHandler(handlerCfg), cfg.snapshotManager, true
 }

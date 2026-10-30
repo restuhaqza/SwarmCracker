@@ -18,6 +18,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/health"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 	"github.com/urfave/cli/v2"
 )
@@ -50,6 +51,22 @@ func openDaemonState(ctx *cli.Context) (string, *runtime.RestoredRegistry, error
 		return "", nil, fmt.Errorf("failed to open the restored-instance record store: %w", err)
 	}
 	return stateDir, restored, nil
+}
+
+// wireRestoredInstances gives the executor the node's restored-instance records and
+// the snapshot manager that owns the Firecracker processes they name.
+//
+// Both are needed to end a task that was restored from a migration artifact: the
+// record says which VM the task runs, and only the manager that started that VM can
+// stop it. A nil manager (its construction failed, and that was already logged) is
+// passed as a nil interface, never as a typed nil: a typed nil would not be "no
+// stopper" but an interface value that panics when called.
+func wireRestoredInstances(executor *swarmkit.Executor, store *runtime.RestoredRegistry, mgr *snapshot.Manager) {
+	var stopper swarmkit.RestoredVMStopper
+	if mgr != nil {
+		stopper = mgr
+	}
+	executor.SetRestoredInstances(store, stopper)
 }
 
 func runAgent(ctx *cli.Context) error {
@@ -278,6 +295,12 @@ func runAgent(ctx *cli.Context) error {
 	// Start node
 	brk := brokerRuntimeFrom(ctx)
 	brk.restored = restored
+	// The snapshot store is built for every daemon, not only under
+	// --snapshots-enable: its manager owns the process of a VM restored from a
+	// migration, so both the executor's stop and the broker's routes need the same
+	// instance. Only the public snapshot routes stay gated by the flag.
+	brk.snapshotManager = newSnapshotManager(context.Background(), brk)
+	wireRestoredInstances(fcExecutor, restored, brk.snapshotManager)
 	if err := startNode(nodeConfig, fcExecutor, ingressCfg, apiRuntimeFrom(ctx), brk); err != nil {
 		return fmt.Errorf("failed to start node: %w", err)
 	}
