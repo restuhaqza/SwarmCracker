@@ -332,6 +332,10 @@ func RecordVMTaskMetrics(instance, taskID, service string, cpuSeconds float64, m
 // on a dashboard and in any per-task sum. The cached sample is dropped for the
 // same reason: an autoscaler asking a node about a removed task must be told
 // there is no sample, not served its final reading forever.
+//
+// The cache is keyed by task ID alone, so the cached sample is deleted by taskID
+// and the instance argument is ignored for it: a task runs on exactly one node,
+// and the instance label only disambiguates the Prometheus series.
 func ClearVMTaskMetrics(instance, taskID string) {
 	match := prometheus.Labels{"instance": instance, "task_id": taskID}
 	VMCPU.DeletePartialMatch(match)

@@ -100,10 +100,11 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		return nil, false, nil, err
 	}
 
-	// The node serves exec, logs, files, health, attach and the experimental
-	// snapshots operation. Exec and files dial the task's guest agent over the
-	// vsock muxer; logs read the console file the executor wrote; health reads the
-	// per-task sidecar the executor publishes; attach relays the interactive
+	// The node serves exec, logs, files, health, metrics, attach and the
+	// experimental snapshots operation. Exec and files dial the task's guest agent
+	// over the vsock muxer; logs read the console file the executor wrote; health
+	// reads the per-task sidecar the executor publishes; metrics reads the last
+	// in-guest sample the daemon's poller cached; attach relays the interactive
 	// console Unix socket in both directions; snapshots use the node-local
 	// pkg/snapshot store, and restored stops the VM a restore started from that
 	// same store. The public route has already resolved the reference and
@@ -118,6 +119,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{"logs", broker.NewLogsHandler()},
 		{"files", broker.NewFilesHandler(broker.DialAgent)},
 		{"health", broker.NewHealthHandler()},
+		{"metrics", broker.NewMetricsHandler()},
 		{"snapshots", snapshotOp},
 		{"restored", restoredOp},
 	}

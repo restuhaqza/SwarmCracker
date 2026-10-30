@@ -26,6 +26,7 @@ const (
 	KindSecretList   = "SecretList"
 	KindSnapshot     = "Snapshot"
 	KindSnapshotList = "SnapshotList"
+	KindTaskMetrics  = "TaskMetrics"
 	KindCluster      = "Cluster"
 	KindEvent        = "Event"
 	KindAuditEntry   = "AuditEntry"

@@ -1,7 +1,7 @@
 // Package broker is the internal manager-to-node transport for the
 // programmatic API. It carries the /v1/tasks/{taskID}/{op} operations that need
-// to run on the node that hosts a task (exec, attach, logs, files, health)
-// between a manager and that node.
+// to run on the node that hosts a task (exec, attach, logs, files, health,
+// metrics) between a manager and that node.
 //
 // The broker is not a public surface. It is served over the cluster's mutual
 // TLS identity, on port 4245 by default, and a node broker never receives a
@@ -43,6 +43,13 @@
 // file is not) answers a typed 404 for them. Interactive TTY over exec is a
 // follow-up, so a tty request is a typed 501 with details.reason
 // "tty_not_supported"; the console is attach's job instead.
+//
+// Health and metrics answer from node-local observations rather than from a
+// dialed guest: health reads the per-task sidecar the executor publishes, and
+// metrics reads the last in-guest sample the daemon's poller cached. Both are
+// bounded, best-effort reads a manager fans out per task, so a task with no
+// observation yet is a typed 404 with a details.reason that says which answer it
+// is, never a fabricated zero.
 //
 // # Trust
 //

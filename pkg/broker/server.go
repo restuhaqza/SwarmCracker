@@ -198,6 +198,7 @@ var operationSpecs = map[string]operationSpec{
 	"logs":      {methods: []string{http.MethodGet}},
 	"files":     {methods: []string{http.MethodGet, http.MethodPut}},
 	"health":    {methods: []string{http.MethodGet}},
+	"metrics":   {methods: []string{http.MethodGet}},
 	"snapshots": {methods: []string{http.MethodGet, http.MethodPost, http.MethodDelete}},
 	// restored stops the process a snapshot restore started for one task. It is
 	// a DELETE because it removes that VM, and it takes no body and no query.

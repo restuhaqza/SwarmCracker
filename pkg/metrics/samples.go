@@ -13,14 +13,15 @@ import (
 // RecordVMTaskMetrics and empties it from ClearVMTaskMetrics; anything else
 // reads it through LastTaskSample.
 //
-// All byte counts and the CPU figure are cumulative, exactly as the guest
+// The CPU figure and the byte counters are cumulative, exactly as the guest
 // reported them, so a caller compares two samples rather than trusting the
-// absolute value.
+// absolute value. MemoryBytes is the exception: it is a gauge, the memory in use
+// at the instant of the sample, so its absolute value is the reading.
 type TaskSample struct {
 	TaskID      string
 	Service     string
 	CPUSeconds  float64 // cumulative since boot
-	MemoryBytes uint64  // in use
+	MemoryBytes uint64  // in use (gauge, not cumulative)
 	NetRxBytes  uint64
 	NetTxBytes  uint64
 	ObservedAt  time.Time // UTC, when the daemon recorded the reading
