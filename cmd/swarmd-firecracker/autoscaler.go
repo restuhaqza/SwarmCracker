@@ -369,7 +369,7 @@ func (l *autoscalerLoop) reconcile(ctx context.Context, svc v1.Service, now time
 	// touch the engine's state, so the first real decision still reasons from a
 	// clean cooldown and hysteresis.
 	if target, outside := alignmentTarget(replicas, *policy); outside {
-		if err := l.scale(ctx, svc.ID, target); err != nil {
+		if err := l.scale(ctx, svc, target); err != nil {
 			log.G(ctx).WithError(err).Warnf(
 				"Autoscaler: cannot align service %s from %d to %d replicas", svc.ID, replicas, target)
 			return true
@@ -422,7 +422,7 @@ func (l *autoscalerLoop) reconcile(ctx context.Context, svc v1.Service, now time
 	// The patch is the decision exactly as the engine returned it: the engine
 	// moves by one and owns the bounds and cooldown rules, so the loop never
 	// adjusts the number.
-	if err := l.scale(ctx, svc.ID, decision.Replicas); err != nil {
+	if err := l.scale(ctx, svc, decision.Replicas); err != nil {
 		log.G(ctx).WithError(err).Warnf(
 			"Autoscaler: cannot scale service %s to %d replicas: %s", svc.ID, decision.Replicas, decision.Reason)
 		return true
@@ -458,9 +458,18 @@ func alignmentTarget(replicas int, policy types.AutoscalePolicy) (int, bool) {
 }
 
 // scale applies one replica count through the control API.
-func (l *autoscalerLoop) scale(ctx context.Context, serviceID string, replicas int) error {
+//
+// The write is conditional on the revision of the service the decision was made
+// from (svc, as this pass listed it), because the local client path refuses an
+// unconditional service write: it requires an If-Match precondition and answers
+// "precondition_required" without one. Passing this pass's revision makes the
+// patch a compare-and-swap — a pass that lost the race to another writer gets a
+// conflict instead of overwriting a change it never saw, and the next pass
+// retries from a fresh list. The revision is deliberately not cached and not
+// retried here: one pass, one attempt, and the list is the only source of truth.
+func (l *autoscalerLoop) scale(ctx context.Context, svc v1.Service, replicas int) error {
 	patch := []byte(fmt.Sprintf(`{"spec":{"replicas":%d}}`, replicas))
-	_, err := l.apply.UpdateService(ctx, serviceID, patch, v1.WriteOptions{})
+	_, err := l.apply.UpdateService(ctx, svc.ID, patch, v1.WriteOptions{IfMatch: svc.Revision})
 	return err
 }
 

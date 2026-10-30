@@ -32,16 +32,23 @@ func testPolicy(t *testing.T, spec string) types.AutoscalePolicy {
 	return p
 }
 
+// testServiceRevision is the SwarmKit version the fixtures' services report, as
+// the list the loop decides from would. Every patch must carry it: the local
+// client refuses a service write with no If-Match precondition, which is exactly
+// the bug this value pins.
+const testServiceRevision = "7"
+
 // testService is a replicated service carrying a policy's labels. Its name is
 // deliberately not its ID: the series are labelled with the ID the rest of the
 // metrics use, so a test that reads the name would fail.
 func testService(t *testing.T, id string, replicas int64, policy types.AutoscalePolicy) v1.Service {
 	t.Helper()
 	return v1.Service{
-		ID:     id,
-		Name:   id + "-name",
-		Labels: policy.Labels(),
-		Spec:   v1.ServiceSpec{Mode: "replicated", Replicas: &replicas},
+		ID:       id,
+		Name:     id + "-name",
+		Revision: testServiceRevision,
+		Labels:   policy.Labels(),
+		Spec:     v1.ServiceSpec{Mode: "replicated", Replicas: &replicas},
 	}
 }
 
@@ -109,6 +116,11 @@ type appliedPatch struct {
 	opts  v1.WriteOptions
 }
 
+// fakeScaleApplier records every patch and answers it the way the local client
+// does: a service write with no If-Match is refused before it reaches SwarmKit
+// (see pkg/client's requireIfMatch). Modelling the refusal here — rather than
+// only asserting the options in a test — means any path that forgets to carry the
+// revision fails every test that expects a scale, not just the one that looks.
 type fakeScaleApplier struct {
 	patches []appliedPatch
 	err     error
@@ -116,10 +128,13 @@ type fakeScaleApplier struct {
 
 func (f *fakeScaleApplier) UpdateService(_ context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Service, error) {
 	f.patches = append(f.patches, appliedPatch{ref: ref, patch: string(patch), opts: opts})
+	if opts.IfMatch == "" {
+		return v1.Service{}, output.PreconditionRequired()
+	}
 	if f.err != nil {
 		return v1.Service{}, f.err
 	}
-	return v1.Service{ID: ref}, nil
+	return v1.Service{ID: ref, Revision: opts.IfMatch}, nil
 }
 
 type fakeMetricsSource struct {
@@ -261,7 +276,8 @@ func TestAutoscalerHotServiceScalesUpOnce(t *testing.T) {
 	require.Len(t, f.applier.patches, 1, "a hot service is patched exactly once")
 	assert.Equal(t, "svc-hot", f.applier.patches[0].ref, "the patch names the service by ID")
 	assert.JSONEq(t, `{"spec":{"replicas":3}}`, f.applier.patches[0].patch)
-	assert.Empty(t, f.applier.patches[0].opts, "a scale is an unconditional write")
+	assert.Equal(t, v1.WriteOptions{IfMatch: testServiceRevision}, f.applier.patches[0].opts,
+		"a scale is conditional on the revision the decision was made from: the client refuses an unconditional service write")
 	assert.Equal(t, eventsBefore+1, testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-hot", "up")))
 	assert.Equal(t, float64(3), testutil.ToFloat64(metrics.ServiceReplicas.WithLabelValues("svc-hot")))
 
@@ -301,6 +317,8 @@ func TestAutoscalerColdServiceNeedsTwoIntervals(t *testing.T) {
 
 	require.Len(t, f.applier.patches, 1)
 	assert.JSONEq(t, `{"spec":{"replicas":2}}`, f.applier.patches[0].patch)
+	assert.Equal(t, v1.WriteOptions{IfMatch: testServiceRevision}, f.applier.patches[0].opts,
+		"a scale-down is conditional on the revision too")
 	assert.Equal(t, float64(1), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-cold", "down")))
 	assert.Equal(t, float64(2), testutil.ToFloat64(metrics.ServiceReplicas.WithLabelValues("svc-cold")))
 }
@@ -518,6 +536,11 @@ func TestAutoscalerPatchFailureIsNotCounted(t *testing.T) {
 // otherwise one rejected write (a conflict, a control-socket blip) costs a whole
 // interval of no scaling, and the service waits out a cooldown for a change that
 // never happened.
+//
+// It also drives the conflict path end to end, because that is the path a lost
+// race takes: the patch carries the revision of the list this pass decided from,
+// a newer revision on the service is answered with conflict, nothing is armed,
+// and the next pass re-patches from the revision a fresh list reports.
 func TestAutoscalerFailedScaleUpArmsNoCooldown(t *testing.T) {
 	policy := testPolicy(t, "min=1,max=5,metric=cpu,target=50")
 	svc := testService(t, "svc-retry-up", 2, policy)
@@ -529,14 +552,21 @@ func TestAutoscalerFailedScaleUpArmsNoCooldown(t *testing.T) {
 
 	f.clock = autoscaleBase.Add(30 * time.Second)
 	f.rate("task-1", 0.9, f.clock)
-	f.applier.err = output.NewError(output.CodeConflict, "revision moved")
+	f.applier.err = output.PreconditionFailed(testServiceRevision, "8")
 	f.tick()
 	require.Len(t, f.applier.patches, 1, "the hot tick tried to scale up")
+	assert.Equal(t, v1.WriteOptions{IfMatch: testServiceRevision}, f.applier.patches[0].opts,
+		"the patch of a lost race carried the revision the decision was made from")
 	assert.Equal(t, autoscaler.State{}, f.loop.states["svc-retry-up"],
 		"a rejected patch leaves the previous state untouched: no cooldown, no hysteresis")
+	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-retry-up", "up")),
+		"a conflict is not a scale event")
 
 	// 10s later, well inside the 60s scale-up cooldown the patch would have
-	// armed, the still-hot service is patched again.
+	// armed, the still-hot service is patched again — with the revision the new
+	// list reports, not the one the failed pass cached. This is why the loop
+	// needs no retry: the next pass is the retry.
+	f.services.services[0].Revision = "8"
 	f.applier.err = nil
 	f.clock = autoscaleBase.Add(40 * time.Second)
 	f.rate("task-1", 0.9, f.clock)
@@ -544,6 +574,8 @@ func TestAutoscalerFailedScaleUpArmsNoCooldown(t *testing.T) {
 
 	require.Len(t, f.applier.patches, 2, "a failed patch must not burn the scale-up cooldown")
 	assert.JSONEq(t, `{"spec":{"replicas":3}}`, f.applier.patches[1].patch)
+	assert.Equal(t, v1.WriteOptions{IfMatch: "8"}, f.applier.patches[1].opts,
+		"the retry's precondition is the current revision, read from the fresh list")
 	assert.Equal(t, float64(1), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-retry-up", "up")))
 }
 
@@ -667,6 +699,8 @@ func TestAutoscalerAlignsCountBelowMinimum(t *testing.T) {
 
 	require.Len(t, f.applier.patches, 1, "a count below the minimum is aligned on the first pass")
 	assert.JSONEq(t, `{"spec":{"replicas":2}}`, f.applier.patches[0].patch)
+	assert.Equal(t, v1.WriteOptions{IfMatch: testServiceRevision}, f.applier.patches[0].opts,
+		"alignment goes through the same write as a decision, so it carries the revision too")
 	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-below", "up")),
 		"alignment is not a load-driven scale event")
 	assert.Equal(t, float64(2), testutil.ToFloat64(metrics.ServiceReplicas.WithLabelValues("svc-below")))
@@ -681,6 +715,8 @@ func TestAutoscalerAlignsCountAboveMaximum(t *testing.T) {
 
 	require.Len(t, f.applier.patches, 1)
 	assert.JSONEq(t, `{"spec":{"replicas":5}}`, f.applier.patches[0].patch)
+	assert.Equal(t, v1.WriteOptions{IfMatch: testServiceRevision}, f.applier.patches[0].opts,
+		"an out-of-bounds count above the maximum is aligned with the revision as well")
 	assert.Equal(t, float64(0), testutil.ToFloat64(metrics.ServiceScaleEvents.WithLabelValues("svc-above", "down")))
 }
 
