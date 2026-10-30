@@ -22,6 +22,36 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
+// restoredStore opens the node's restored-instance record store under the
+// daemon's state directory. The directory comes from --state-dir, the same value
+// the SwarmKit node and the cluster certificates use, so the records sit beside
+// the node's other state and a daemon restart finds them without configuration.
+func restoredStore(stateDir string) (*runtime.RestoredRegistry, error) {
+	dir := runtime.RestoredInstanceDir(stateDir)
+	if dir == "" {
+		return nil, fmt.Errorf("a state directory is required to keep restored-instance records: pass --state-dir")
+	}
+	return runtime.NewRestoredRegistry(dir)
+}
+
+// openDaemonState creates the daemon's state directory and opens the node-local
+// record stores that live under it. Both failures are fatal to startup: a node
+// that cannot write its state directory cannot join a cluster, and a node that
+// cannot keep a restored-instance record could restore a VM it would later fail
+// to resolve.
+func openDaemonState(ctx *cli.Context) (string, *runtime.RestoredRegistry, error) {
+	stateDir := ctx.String("state-dir")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		return "", nil, fmt.Errorf("failed to create state directory: %w", err)
+	}
+
+	restored, err := restoredStore(stateDir)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to open the restored-instance record store: %w", err)
+	}
+	return stateDir, restored, nil
+}
+
 func runAgent(ctx *cli.Context) error {
 	// Setup logging
 	setupLogging(ctx)
@@ -36,10 +66,11 @@ func runAgent(ctx *cli.Context) error {
 		}
 	}
 
-	// Create state directory
-	stateDir := ctx.String("state-dir")
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		return fmt.Errorf("failed to create state directory: %w", err)
+	// Create the state directory and open the node-local record stores that live
+	// under it.
+	stateDir, restored, err := openDaemonState(ctx)
+	if err != nil {
+		return err
 	}
 
 	// Ensure default config exists (auto-generate on first run)
@@ -245,7 +276,9 @@ func runAgent(ctx *cli.Context) error {
 	}
 
 	// Start node
-	if err := startNode(nodeConfig, fcExecutor, ingressCfg, apiRuntimeFrom(ctx), brokerRuntimeFrom(ctx)); err != nil {
+	brk := brokerRuntimeFrom(ctx)
+	brk.restored = restored
+	if err := startNode(nodeConfig, fcExecutor, ingressCfg, apiRuntimeFrom(ctx), brk); err != nil {
 		return fmt.Errorf("failed to start node: %w", err)
 	}
 

@@ -60,6 +60,49 @@ func TestBrokerRuntimeFrom_EmptyListenDisables(t *testing.T) {
 	require.Empty(t, cfg.listenAddr, "an empty --broker-listen disables the broker")
 }
 
+// TestRestoredStoreFollowsStateDir pins where the daemon keeps the
+// restored-instance records: under the same --state-dir as the rest of the
+// node's state, and a second open (a daemon restart) resolves what the first
+// process wrote.
+func TestRestoredStoreFollowsStateDir(t *testing.T) {
+	stateDir := t.TempDir()
+	socketDir := "/var/run/firecracker"
+	record := runtime.RestoredInstance{
+		TaskID:     "new-task",
+		VMID:       "source-task",
+		ArtifactID: "mig-0123456789abcdef",
+		SocketPath: filepath.Join(socketDir, "new-task.sock"),
+		TapName:    runtime.TapName("source-task", 0),
+		VsockPath:  runtime.VsockPath(socketDir, "source-task"),
+		DiskPath:   filepath.Join("/var/lib/swarmcracker/tasks", "source-task.ext4"),
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	first, err := restoredStore(stateDir)
+	require.NoError(t, err)
+	require.NoError(t, first.Put(record))
+
+	info, err := os.Stat(filepath.Join(stateDir, runtime.RestoredInstanceDirName))
+	require.NoError(t, err)
+	require.True(t, info.IsDir(), "the records live in their own subdirectory of --state-dir")
+
+	second, err := restoredStore(stateDir)
+	require.NoError(t, err)
+
+	got, found, err := second.Get(record.TaskID)
+	require.NoError(t, err)
+	require.True(t, found, "a restarted daemon must find the record the previous process wrote")
+	require.Equal(t, record.VMID, got.VMID)
+	require.Equal(t, record.VsockPath, got.VsockPath)
+}
+
+func TestRestoredStoreNeedsStateDir(t *testing.T) {
+	reg, err := restoredStore("")
+	require.Error(t, err)
+	require.Nil(t, reg)
+	require.Contains(t, err.Error(), "state-dir")
+}
+
 func TestBrokerRuntimeFrom_Overrides(t *testing.T) {
 	cfg := runBrokerFlags(t,
 		"--broker-listen", "127.0.0.1:5252",
