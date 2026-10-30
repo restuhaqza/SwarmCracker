@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +13,7 @@ import (
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -294,7 +294,7 @@ func execLocal(ctx context.Context, ref string, opts vmExecOptions) (execOutcome
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	client, err := agent.Dial(dialCtx, filepath.Join(opts.socketDir, taskID+".vsock"), agent.DefaultPort)
+	client, err := agent.Dial(dialCtx, scruntime.VsockPath(opts.socketDir, taskID), agent.DefaultPort)
 	if err != nil {
 		return execOutcome{}, err
 	}

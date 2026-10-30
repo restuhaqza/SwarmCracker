@@ -1159,13 +1159,11 @@ type Action struct {
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 }
 
-// vsockUDSPath derives the Firecracker vsock Unix-socket path from the API
-// socket path: <dir>/<id>.sock becomes <dir>/<id>.vsock. The host reaches the
-// guest agent by dialing that muxer socket itself and sending "CONNECT <port>"
-// (see pkg/agent.Dial); "<uds_path>_<port>" is only used for guest-initiated
-// connections.
+// vsockUDSPath returns the Firecracker vsock muxer path that belongs to an API
+// socket path. The rule lives in runtime.VsockPathFromSocket; this name only
+// keeps the VMM's vocabulary ("the UDS path of the vsock device").
 func vsockUDSPath(socketPath string) string {
-	return strings.TrimSuffix(socketPath, ".sock") + ".vsock"
+	return scruntime.VsockPathFromSocket(socketPath)
 }
 
 // createFirecrackerHTTPClient creates an HTTP client that communicates via Unix socket

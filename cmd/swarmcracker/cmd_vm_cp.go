@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -110,7 +111,7 @@ func copyFileToOrFromVM(ctx context.Context, socketDir, arg1, arg2 string, mode 
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	client, err := agent.Dial(dialCtx, filepath.Join(socketDir, taskID+".vsock"), agent.DefaultPort)
+	client, err := agent.Dial(dialCtx, scruntime.VsockPath(socketDir, taskID), agent.DefaultPort)
 	if err != nil {
 		return err
 	}

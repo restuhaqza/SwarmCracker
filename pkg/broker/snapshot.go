@@ -536,11 +536,14 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 	}
 
 	// The snapshot records the VM's vsock device with its host-side path
-	// <socketDir>/<taskID>.vsock. A VMM that crashed leaves that file behind,
-	// and the restored Firecracker cannot bind it again (EADDRINUSE), so clear
-	// it first. The task is not running here (the guard above returned), so no
-	// live backend owns the path.
-	vsockPath := filepath.Join(filepath.Dir(socketPath), task.ID+".vsock")
+	// beside the API socket (<socketDir>/<taskID>.vsock). A VMM that crashed
+	// leaves that file behind, and the restored Firecracker cannot bind it
+	// again (EADDRINUSE), so clear it first. The task is not running here (the
+	// guard above returned), so no live backend owns the path. The path is the
+	// one runtime.VsockPath derives for the task, not the restored socket's own
+	// name: the identity belongs to the snapshot, whose directory the restored
+	// socket shares.
+	vsockPath := runtime.VsockPath(filepath.Dir(socketPath), task.ID)
 	if err := os.Remove(vsockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		writeTypedError(w, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
 			"cannot clear the stale vsock path for task %q", task.ID).

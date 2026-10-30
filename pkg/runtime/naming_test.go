@@ -1,23 +1,15 @@
 package runtime
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-// tapNameReference is the documented rule written out independently of TapName,
-// so a test that compares against it fails if the implementation drifts:
-// tap-<sha256(taskID)[:8]>-<index>, hex encoded.
-func tapNameReference(taskID string, index int) string {
-	sum := sha256.Sum256([]byte(taskID))
-	return fmt.Sprintf("tap-%s-%d", hex.EncodeToString(sum[:])[:8], index)
-}
-
+// TestTapName pins the name against literal strings. The literals are the rule:
+// tap-<first 8 hex of sha256(taskID)>-<index>. They are written out rather than
+// recomputed here, because a test that re-implements the expression it checks
+// proves only that the expression equals itself.
 func TestTapName(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -49,15 +41,23 @@ func TestTapName(t *testing.T) {
 			index:  2,
 			want:   "tap-7afaa346-2",
 		},
+		{
+			name:   "a real SwarmKit 25-character task ID",
+			taskID: "abcdefghijklmnopqrstuvwxy",
+			index:  0,
+			want:   "tap-69b98054-0",
+		},
+		{
+			name:   "two-digit index stays inside the kernel limit",
+			taskID: "abc",
+			index:  10,
+			want:   "tap-ba7816bf-10",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := TapName(tc.taskID, tc.index)
-
-			require.Equal(t, tc.want, got)
-			assert.Equal(t, tapNameReference(tc.taskID, tc.index), got,
-				"TapName must implement the documented sha256 rule")
+			assert.Equal(t, tc.want, TapName(tc.taskID, tc.index))
 		})
 	}
 }
@@ -73,6 +73,7 @@ func TestTapNameFitsLinuxInterfaceNameLimit(t *testing.T) {
 	}
 }
 
+// TestVsockPath pins the identity rule against literal strings.
 func TestVsockPath(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -111,11 +112,50 @@ func TestVsockPath(t *testing.T) {
 	}
 }
 
-// TestVsockPathAgreesWithBrokerRule pins the rule the broker used before it
-// delegated here: <dir of the API socket>/<task ID>.vsock.
-func TestVsockPathAgreesWithBrokerRule(t *testing.T) {
-	const socketPath = "/var/run/firecracker/task-1.sock"
+// TestVsockPathFromSocket pins the socket-shaped form of the same rule: the
+// vsock muxer sits beside the API socket and differs from it only in the
+// extension.
+func TestVsockPathFromSocket(t *testing.T) {
+	cases := []struct {
+		name       string
+		socketPath string
+		want       string
+	}{
+		{
+			name:       "default socket directory",
+			socketPath: "/var/run/firecracker/task-1.sock",
+			want:       "/var/run/firecracker/task-1.vsock",
+		},
+		{
+			name:       "jailer-style nested socket directory",
+			socketPath: "/srv/jail/abc/root/run/abc.sock",
+			want:       "/srv/jail/abc/root/run/abc.vsock",
+		},
+		{
+			name:       "restored VM socket keeps its own suffix",
+			socketPath: "/var/run/firecracker/task-1-restored.sock",
+			want:       "/var/run/firecracker/task-1-restored.vsock",
+		},
+		{
+			name:       "relative socket path stays relative",
+			socketPath: "task-1.sock",
+			want:       "task-1.vsock",
+		},
+		{
+			name:       "a path without the socket suffix only gains the vsock one",
+			socketPath: "/var/run/firecracker/task-1",
+			want:       "/var/run/firecracker/task-1.vsock",
+		},
+		{
+			name:       "no socket path means no vsock path",
+			socketPath: "",
+			want:       "",
+		},
+	}
 
-	assert.Equal(t, socketPath[:len(socketPath)-len(".sock")]+".vsock",
-		VsockPath("/var/run/firecracker", "task-1"))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, VsockPathFromSocket(tc.socketPath))
+		})
+	}
 }
