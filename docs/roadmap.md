@@ -47,8 +47,8 @@ Automated e2e on a real cluster lives in `test-automation/multinode/cluster-lab.
 covers the epic's acceptance test (published port, secret in the guest, health
 gating, service-name DNS, `--command/--args`).
 
-Merged on `main` and listed under `[Unreleased]` in `CHANGELOG.md`, so not in any
-tagged release yet:
+Delivered and listed under `[Unreleased]` in `CHANGELOG.md`, so not in any tagged
+release yet:
 
 | # | Status | Where it lives |
 |---|--------|----------------|

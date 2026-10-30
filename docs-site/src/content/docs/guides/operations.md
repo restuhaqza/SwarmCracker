@@ -659,10 +659,13 @@ reference](/reference/api/#task-exec-attach-logs-files-and-health).
 To run a command or copy a file instead of driving the console, use
 [`swarmcracker vm exec` and `swarmcracker vm cp`](/guides/guest-access/).
 
-**Log levels:** Set via `--log-level` flag or `logging.level` in config.yaml.
-Available: `debug`, `info`, `warn`, `error`.
+**Logging:** the daemon has one switch, `--debug`; there is no `--log-level`
+flag on `swarmd-firecracker` (that flag belongs to the `swarmcracker` CLI).
+Without it the daemon logs at `info`; the `logging.level` key in `config.yaml`
+is parsed but does not change the daemon's level.
 
-Set to `debug` for troubleshooting (verbose, includes token operations at debug level only):
+With `--debug` the daemon also logs the diagnostic detail referenced on this
+page, for example an autoscaler pass that holds and the reason it held:
 ```bash
 swarmd-firecracker --debug
 ```
@@ -682,7 +685,8 @@ grammar and the `node update --label-add` workflow that makes a
 ### When nothing can be placed
 
 The `ERROR` column holds the scheduler's verdict, which is generic and truncated
-at 40 characters, so when no task of the listing is placed the command adds one
+at 40 characters, so when no task of the listing is placed **and** at least one
+unplaced `NEW`/`PENDING` task carries a scheduler error, the command adds one
 line after the table:
 
 ```text
@@ -694,6 +698,10 @@ filter's own explanation; otherwise it quotes the scheduler and lists the
 declared constraints as possibly not the cause. Both message shapes, and why the
 distinction matters, are in the
 [CLI reference](/reference/cli/#swarmcracker-service).
+
+Nothing placed but no error either — a task the scheduler has not looked at yet
+— is not a refusal: the listing prints no line at all, because there is no
+verdict to report.
 
 ---
 
@@ -769,7 +777,8 @@ not limited to, these:
   node that could not be read — contributes nothing. If no replica contributes,
   the pass decides nothing: that is "nothing measured", not "0% busy", so a
   failed probe can never scale a service down on its own. Nothing is published
-  either, so the gauge keeps its previous value (see
+  either, so the gauge keeps whatever it last published — and has no series at
+  all if it never published one (see
   [Watching it](#watching-it)).
 - **A pause.** A service at 0 replicas is left alone; restarting a paused
   service is an explicit action.
@@ -846,16 +855,26 @@ target, and both sides carry the service ID, so one query lines them up:
 sum by (service) (rate(swarmcracker_vm_cpu_seconds[5m])) / swarmcracker_service_replicas
 ```
 
-If a service's `swarmcracker_service_replicas` is flat while its
-`vm_cpu_seconds` rate sits well above or below the target, read it one of two
-ways. Either the loop is holding — the gauge is current and the debug log says
-why — or the pass never reached a decision, most often because no replica had two
-samples yet (a fresh deployment, or a manager that has just restarted and is
-rebuilding its baselines); then the gauge is the last count the loop published,
-not the count it would settle on now. The gauge is deleted when a service stops
-autoscaling — the service is deleted, or its policy is removed — so a stale count
-never lingers for a service that no longer has a policy; the counter is history
-and stays.
+If a service's replica count does not track its load — the gauge is flat, or
+absent — while its `vm_cpu_seconds` rate sits well above or below the target,
+read it one of two ways. Either the loop is holding — the gauge is current and
+the debug log says why — or the pass never reached a decision because no replica
+had two samples yet. Which of those you see depends on whether anything was ever
+published for that service:
+
+- In a live manager, a series that was published before and whose later passes
+  measured nothing (a replica that has not been running long enough to give two
+  samples) keeps the last count the loop published: flat, but stale, not the
+  count it would settle on now.
+- After a manager restart, and for a service that was only just deployed,
+  nothing has been published at all. The gauge is an in-process value created
+  when the manager started, so the series is **absent** — the query returns no
+  sample rather than a flat number. An empty result means "no decision yet",
+  and is not a zero.
+
+The gauge is deleted when a service stops autoscaling — the service is deleted,
+or its policy is removed — so a stale count never lingers for a service that no
+longer has a policy; the counter is history and stays.
 
 ### Pausing a service
 
