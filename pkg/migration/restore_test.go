@@ -68,7 +68,58 @@ func (f *fakeRestorer) RestoreFromSnapshot(_ context.Context, info *snapshot.Sna
 func (f *fakeRestorer) StopRestored(taskID string) error {
 	f.stopCalls++
 	f.stopTask = taskID
+	*f.events = append(*f.events, "stop "+taskID)
 	return f.stopErrs
+}
+
+// leakyRestorer is a restorer that starts the process and then reports an error:
+// the shape the interface forbids it to leave behind, and the one the undo has to
+// clean up without being told that anything started.
+type leakyRestorer struct {
+	*fakeRestorer
+	startErr error
+}
+
+func (r *leakyRestorer) RestoreFromSnapshot(_ context.Context, info *snapshot.SnapshotInfo, socketPath string) error {
+	r.info, r.socket = info, socketPath
+	r.calls++
+	r.started = true
+	*r.events = append(*r.events, "restore")
+	return r.startErr
+}
+
+// recordingStore is a restored-instance store whose failures are scripted and
+// whose every call is written to the harness's event log. It exists because the
+// undo's record delete leaves nothing on disk to observe — a failed restore never
+// wrote a record — so order can only be asserted through the seam. A record that
+// already exists is planted in the real registry instead, because that is the
+// behaviour the refusal depends on.
+type recordingStore struct {
+	events    *[]string
+	getErr    error
+	putErr    error
+	deleteErr error
+
+	deleted []string
+}
+
+func (s *recordingStore) Get(taskID string) (scruntime.RestoredInstance, bool, error) {
+	*s.events = append(*s.events, "record-get "+taskID)
+	if s.getErr != nil {
+		return scruntime.RestoredInstance{}, false, s.getErr
+	}
+	return scruntime.RestoredInstance{}, false, nil
+}
+
+func (s *recordingStore) Put(instance scruntime.RestoredInstance) error {
+	*s.events = append(*s.events, "record-put "+instance.TaskID)
+	return s.putErr
+}
+
+func (s *recordingStore) Delete(taskID string) error {
+	s.deleted = append(s.deleted, taskID)
+	*s.events = append(*s.events, "record-delete "+taskID)
+	return s.deleteErr
 }
 
 // fakeDialer is the guest-agent dialler. failures is how many dials fail before
@@ -131,8 +182,10 @@ type restoreHarness struct {
 	dialer   *fakeDialer
 	guest    *fakeExecutor
 
-	registry    *scruntime.RestoredRegistry
-	registryDir string
+	registry *scruntime.RestoredRegistry
+	// store is what deps() wires as the registry: the node's real registry
+	// unless a test substitutes one whose calls it can see.
+	store RestoredInstanceStore
 
 	tapCreated []string
 	tapUps     []string
@@ -164,10 +217,10 @@ func newRestoreHarness(t *testing.T) *restoreHarness {
 	require.NoError(t, err)
 
 	h := &restoreHarness{
-		t:           t,
-		clock:       &restoreClock{at: restoreAt},
-		registry:    registry,
-		registryDir: registryDir,
+		t:        t,
+		clock:    &restoreClock{at: restoreAt},
+		registry: registry,
+		store:    registry,
 	}
 	h.restorer = &fakeRestorer{events: &h.events}
 	h.guest = &fakeExecutor{events: &h.events}
@@ -207,11 +260,12 @@ func (h *restoreHarness) deps() RestoreDeps {
 			return h.tapUpErr
 		},
 		TapDelete: func(name string) error {
+			h.events = append(h.events, "tap-delete "+name)
 			h.tapDeleted = append(h.tapDeleted, name)
 			return nil
 		},
 		Agent:    h.dialer,
-		Registry: h.registry,
+		Registry: h.store,
 		Now:      h.clock.Now,
 	}
 }
@@ -245,7 +299,7 @@ func (h *restoreHarness) assertArtifactIntact() {
 	h.t.Helper()
 
 	for _, entry := range stagedFiles(h.input.Artifact) {
-		assert.FileExists(h.t, filepath.Join(h.input.Dir, entry.file.Name))
+		assert.FileExists(h.t, filepath.Join(strings.TrimSpace(h.input.Dir), entry.file.Name))
 	}
 }
 
@@ -279,6 +333,34 @@ func TestRestoreTrimsTheAddressesItGivesTheGuest(t *testing.T) {
 		{"ip", "addr", "add", "192.168.127.37/24", "dev", "eth0"},
 		{"ip", "route", "replace", "default", "via", "192.168.127.2"},
 	}, h.guest.executed)
+}
+
+// TestRestoreTrimsThePathsItUses pins that the directories the restore hands to
+// the filesystem are the values it validated: a trailing space passes IsAbs (the
+// leading byte is still "/") and then addresses a directory nobody created, so the
+// failure would land inside the staged-file check or inside Firecracker.
+func TestRestoreTrimsThePathsItUses(t *testing.T) {
+	h := newRestoreHarness(t)
+	h.input.Dir += "  "
+	h.input.SocketDir = "\t" + h.input.SocketDir + "\n"
+	artifact := h.input.Artifact
+	wantDir := strings.TrimSpace(h.input.Dir)
+	wantSocketDir := strings.TrimSpace(h.input.SocketDir)
+
+	instance, err := h.restore(context.Background())
+	require.NoError(t, err)
+
+	require.NotNil(t, h.restorer.info)
+	assert.Equal(t, filepath.Join(wantDir, artifact.StateFile.Name), h.restorer.info.StatePath, "the staged path is built from the trimmed dir")
+	assert.Equal(t, filepath.Join(wantDir, artifact.MemoryFile.Name), h.restorer.info.MemoryPath)
+	assert.Equal(t, filepath.Join(wantDir, artifact.DiskFile.Name), h.restorer.info.DiskPath)
+	assert.Equal(t, filepath.Join(wantSocketDir, h.input.TaskID+scruntime.VMSocketSuffix), instance.SocketPath,
+		"the API socket goes in the trimmed socket dir")
+
+	record, found := h.record()
+	require.True(t, found)
+	assert.Equal(t, instance, record)
+	h.assertArtifactIntact()
 }
 
 // TestRestoreStartsTheArtifactAsTheNewTask is the happy path: the effects happen
@@ -347,6 +429,55 @@ func TestRestoreStartsTheArtifactAsTheNewTask(t *testing.T) {
 	assert.Empty(t, h.tapDeleted)
 	assert.Equal(t, 1, h.guest.closed, "the restore closes its guest connection")
 	h.assertArtifactIntact()
+}
+
+// TestRestoreRefusesATaskThatAlreadyRunsAVM pins I1: a task that already has a
+// restored record must be refused before any effect. Continuing would materialise
+// the artifact's disk over the file the live VM is running from, and the failed
+// attempt's undo would delete the record of a VM that kept running.
+func TestRestoreRefusesATaskThatAlreadyRunsAVM(t *testing.T) {
+	h := newRestoreHarness(t)
+	planted := scruntime.RestoredInstance{
+		TaskID:     h.input.TaskID,
+		VMID:       h.input.Artifact.SourceTaskID,
+		ArtifactID: "mig-0123456789abcdef",
+		SocketPath: filepath.Join(h.input.SocketDir, h.input.TaskID+scruntime.VMSocketSuffix),
+		TapName:    h.input.Artifact.TapName,
+		VsockPath:  h.input.Artifact.VsockPath,
+		DiskPath:   h.input.Artifact.DiskPath,
+		CreatedAt:  restoreAt,
+	}
+	require.NoError(t, h.registry.Put(planted))
+
+	_, err := h.restore(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already runs a restored VM")
+	assert.Contains(t, err.Error(), "discarded first")
+
+	assert.Empty(t, h.tapCreated, "no TAP device is created")
+	assert.Zero(t, h.restorer.calls, "the restorer is never called")
+	assert.Zero(t, h.dialer.attempts, "the guest is never dialled")
+
+	record, found := h.record()
+	require.True(t, found, "the refusal does not delete the live VM's record")
+	assert.Equal(t, planted, record)
+	h.assertArtifactIntact()
+}
+
+// TestRestoreRefusesWhenTheExistingRecordCannotBeRead pins that the check fails
+// closed: a record that cannot be read is not evidence that the task is free, and
+// guessing wrong destroys a running VM.
+func TestRestoreRefusesWhenTheExistingRecordCannotBeRead(t *testing.T) {
+	h := newRestoreHarness(t)
+	h.store = &recordingStore{events: &h.events, getErr: errors.New("permission denied")}
+
+	_, err := h.restore(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot tell whether the task already runs one")
+	assert.Contains(t, err.Error(), "permission denied")
+
+	assert.Empty(t, h.tapCreated)
+	assert.Zero(t, h.restorer.calls)
 }
 
 // TestRestoreRefusesBeforeAnyEffect pins the checks that must run before the first
@@ -423,6 +554,28 @@ func TestRestoreRefusesBeforeAnyEffect(t *testing.T) {
 			name:       "task id has a dot",
 			mutate:     func(_ *testing.T, in *RestoreInput) { in.TaskID = "target.task" },
 			wantPhrase: "taskId",
+		},
+		{
+			// The artifact is internally consistent — the TAP name and the vsock
+			// path are the ones this source task ID derives — so only the source
+			// task ID rule can refuse it. Without that rule the restore would run
+			// to the last step and fail inside the registry with the VM already up.
+			name: "source task id has a dot",
+			mutate: func(_ *testing.T, in *RestoreInput) {
+				in.Artifact.SourceTaskID = "source.task"
+				in.Artifact.TapName = scruntime.TapName(in.Artifact.SourceTaskID, 0)
+				in.Artifact.VsockPath = scruntime.VsockPath("/var/run/firecracker", in.Artifact.SourceTaskID)
+			},
+			wantPhrase: "sourceTaskId",
+		},
+		{
+			name: "source task id has a separator",
+			mutate: func(_ *testing.T, in *RestoreInput) {
+				in.Artifact.SourceTaskID = "source/task"
+				in.Artifact.TapName = scruntime.TapName(in.Artifact.SourceTaskID, 0)
+				in.Artifact.VsockPath = scruntime.VsockPath("/var/run/firecracker", in.Artifact.SourceTaskID)
+			},
+			wantPhrase: "sourceTaskId",
 		},
 		{
 			name:       "guest cidr has no prefix length",
@@ -545,90 +698,87 @@ func TestRestoreRefusesUnwiredDeps(t *testing.T) {
 }
 
 // TestRestoreUndoesAFailedRestore pins the rollback: whatever the failure, the
-// device is removed, the VM a load started is stopped, no record survives, and the
-// artifact stays where it is so the move can be retried.
+// device is removed, the VM the load may have started is stopped, no record
+// survives, and the artifact stays where it is so the move can be retried.
 func TestRestoreUndoesAFailedRestore(t *testing.T) {
 	cases := []struct {
-		name          string
-		setup         func(h *restoreHarness)
-		wantStep      string
-		wantVMStopped bool
-		wantTapGone   bool
+		name     string
+		setup    func(t *testing.T, h *restoreHarness, deps *RestoreDeps)
+		wantStep string
 		// wantTapUp is true for a failure at or after the bring-up: the device
 		// came up and is then removed, which is still the correct rollback.
 		wantTapUp bool
 	}{
 		{
-			name:          "the snapshot cannot be loaded",
-			setup:         func(h *restoreHarness) { h.restorer.err = errors.New("firecracker: load failed") },
-			wantStep:      stepRestoreSnapshot,
-			wantVMStopped: false,
-			wantTapGone:   true,
-		},
-		{
-			name:          "the TAP cannot be created",
-			setup:         func(h *restoreHarness) { h.tapCreateErr = errors.New("operation not permitted") },
-			wantStep:      stepCreateTap,
-			wantVMStopped: false,
-			wantTapGone:   false,
-		},
-		{
-			name:          "the guest cannot be re-addressed",
-			setup:         func(h *restoreHarness) { h.guest.failAt = 2 },
-			wantStep:      stepReaddressGuest,
-			wantVMStopped: true,
-			wantTapGone:   true,
-		},
-		{
-			name:          "the guest reports a status and no error",
-			setup:         func(h *restoreHarness) { h.guest.exitAt = 3 },
-			wantStep:      stepReaddressGuest,
-			wantVMStopped: true,
-			wantTapGone:   true,
-		},
-		{
-			name:          "the TAP cannot be brought up",
-			setup:         func(h *restoreHarness) { h.tapUpErr = errors.New("operation not permitted") },
-			wantStep:      stepTapUp,
-			wantVMStopped: true,
-			wantTapGone:   true,
-			wantTapUp:     true,
-		},
-		{
-			name: "the record cannot be written",
-			setup: func(h *restoreHarness) {
-				// A directory where the registry renames its record: the write
-				// fails however privileged the test runs, which a mode bit would
-				// not achieve under root.
-				require.NoError(h.t, os.Mkdir(filepath.Join(h.registryDir, h.input.TaskID+".json"), 0o700))
+			name: "the snapshot cannot be loaded",
+			setup: func(_ *testing.T, h *restoreHarness, _ *RestoreDeps) {
+				h.restorer.err = errors.New("firecracker: load failed")
 			},
-			wantStep:      stepRecordInstance,
-			wantVMStopped: true,
-			wantTapGone:   true,
-			wantTapUp:     true,
+			wantStep: stepRestoreSnapshot,
+		},
+		{
+			name: "the TAP cannot be created",
+			setup: func(_ *testing.T, h *restoreHarness, _ *RestoreDeps) {
+				h.tapCreateErr = errors.New("operation not permitted")
+			},
+			wantStep: stepCreateTap,
+		},
+		{
+			name: "the guest cannot be re-addressed",
+			setup: func(_ *testing.T, h *restoreHarness, _ *RestoreDeps) {
+				h.guest.failAt = 2
+			},
+			wantStep: stepReaddressGuest,
+		},
+		{
+			name: "the guest reports a status and no error",
+			setup: func(_ *testing.T, h *restoreHarness, _ *RestoreDeps) {
+				h.guest.exitAt = 3
+			},
+			wantStep: stepReaddressGuest,
+		},
+		{
+			name: "the TAP cannot be brought up",
+			setup: func(_ *testing.T, h *restoreHarness, _ *RestoreDeps) {
+				h.tapUpErr = errors.New("operation not permitted")
+			},
+			wantStep:  stepTapUp,
+			wantTapUp: true,
+		},
+		{
+			// The store refuses the write, which a real registry can only be made
+			// to do with a device failure — and a directory planted at the record
+			// path is no longer usable here: step 1 now reads that path, so it
+			// would refuse the restore before any effect instead.
+			name: "the record cannot be written",
+			setup: func(_ *testing.T, h *restoreHarness, deps *RestoreDeps) {
+				deps.Registry = &recordingStore{events: &h.events, putErr: errors.New("no space left on device")}
+			},
+			wantStep:  stepRecordInstance,
+			wantTapUp: true,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newRestoreHarness(t)
-			tc.setup(h)
+			deps := h.deps()
+			tc.setup(t, h, &deps)
 
-			_, err := h.restore(context.Background())
+			_, err := Restore(context.Background(), h.input, deps)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantStep)
 
-			if tc.wantVMStopped {
-				assert.Equal(t, 1, h.restorer.stopCalls, "the VM the restore started is stopped")
-				assert.Equal(t, h.input.TaskID, h.restorer.stopTask, "the VM is tracked by the task it runs as")
-			} else {
-				assert.Zero(t, h.restorer.stopCalls, "no VM was started, so none is stopped")
-			}
+			// The stop is attempted on every failure, not only when the load
+			// returned nil: a restorer that started a process and then errored
+			// leaves one behind, and only it can take that process down.
+			assert.Equal(t, 1, h.restorer.stopCalls, "the stop is unconditional; a missing process is not a failure")
+			assert.Equal(t, h.input.TaskID, h.restorer.stopTask, "the VM is tracked by the task it runs as")
 
-			if tc.wantTapGone {
-				assert.Equal(t, []string{h.input.Artifact.TapName}, h.tapDeleted, "the TAP device is removed")
-			} else {
+			if tc.wantStep == stepCreateTap {
 				assert.Empty(t, h.tapDeleted, "a TAP that was never created is not removed")
+			} else {
+				assert.Equal(t, []string{h.input.Artifact.TapName}, h.tapDeleted, "the TAP device is removed")
 			}
 			if tc.wantTapUp {
 				assert.Equal(t, []string{h.input.Artifact.TapName}, h.tapUps)
@@ -639,6 +789,56 @@ func TestRestoreUndoesAFailedRestore(t *testing.T) {
 			h.assertArtifactIntact()
 		})
 	}
+}
+
+// TestRestoreStopsTheVMARestorerLeakedOnError pins I2: the undo must not infer
+// from the load's return value that no process exists. A restorer that starts
+// Firecracker and then errors owes a process, and the stop is the only thing that
+// can take it down — otherwise it keeps running with its TAP deleted underneath.
+func TestRestoreStopsTheVMARestorerLeakedOnError(t *testing.T) {
+	h := newRestoreHarness(t)
+	leaky := &leakyRestorer{
+		fakeRestorer: h.restorer,
+		startErr:     errors.New("firecracker: cannot bind the vsock muxer"),
+	}
+	deps := h.deps()
+	deps.Snapshot = leaky
+
+	_, err := Restore(context.Background(), h.input, deps)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), stepRestoreSnapshot)
+
+	assert.Equal(t, 1, leaky.stopCalls, "the stop is attempted even though the load reported an error")
+	assert.Equal(t, h.input.TaskID, leaky.stopTask)
+	assert.Equal(t, []string{h.input.Artifact.TapName}, h.tapDeleted)
+	assert.NotContains(t, err.Error(), stepUndo, "a stop that succeeded is not reported as a cleanup failure")
+}
+
+// TestRestoreUndoOrder pins the order of the rollback: the VM goes first (so
+// nothing keeps writing to the disk the record names), then the device it used,
+// then the record that describes it. The record delete leaves nothing on disk to
+// observe, so the store is substituted and every call is traced.
+func TestRestoreUndoOrder(t *testing.T) {
+	h := newRestoreHarness(t)
+	store := &recordingStore{events: &h.events}
+	h.store = store
+	h.guest.failAt = 1
+
+	_, err := h.restore(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), stepReaddressGuest)
+
+	assert.Equal(t, []string{
+		"record-get " + h.input.TaskID,
+		"tap-create " + h.input.Artifact.TapName + " " + h.input.Bridge,
+		"restore",
+		"dial " + h.input.Artifact.VsockPath,
+		"exec ip addr flush dev eth0",
+		"stop " + h.input.TaskID,
+		"tap-delete " + h.input.Artifact.TapName,
+		"record-delete " + h.input.TaskID,
+	}, h.events, "the undo stops the VM, then removes the device, then the record")
+	assert.Equal(t, []string{h.input.TaskID}, store.deleted)
 }
 
 // TestRestoreFailsWithinTheGuestAgentDeadline pins the bounded wait: an agent that
@@ -753,21 +953,28 @@ func (r restorerWithoutStop) RestoreFromSnapshot(ctx context.Context, info *snap
 
 // TestRestoreUndoReportsFailures pins that cleanup failures are reported next to
 // the failure that caused them: a device left behind is something an operator has
-// to know. A stop that finds no restored VM, or a record that is already gone, is
-// not a failure: the undo wanted exactly that.
+// to know, and a cleanup failure must not be allowed to mask the step that failed.
+// A stop that finds no restored VM, or a record that is already gone, is not a
+// failure: the undo wanted exactly that.
 func TestRestoreUndoReportsFailures(t *testing.T) {
+	errRecordDelete := errors.New("the record directory is locked")
+
 	cases := []struct {
 		name       string
 		setup      func(t *testing.T, h *restoreHarness, deps *RestoreDeps)
 		wantPhrase string
-		wantUndo   bool
+		// wantAlso is the step that failed, which the joined cleanup error must
+		// not hide.
+		wantAlso string
+		wantUndo bool
 	}{
 		{
 			name: "the TAP device cannot be removed",
 			setup: func(_ *testing.T, _ *restoreHarness, deps *RestoreDeps) {
 				deps.TapDelete = func(string) error { return errors.New("device is busy") }
 			},
-			wantPhrase: "device is busy",
+			wantPhrase: "delete the TAP device",
+			wantAlso:   stepReaddressGuest,
 			wantUndo:   true,
 		},
 		{
@@ -776,18 +983,16 @@ func TestRestoreUndoReportsFailures(t *testing.T) {
 				h.restorer.stopErrs = errors.New("process is gone and its state is unknown")
 			},
 			wantPhrase: "stop the restored VM",
+			wantAlso:   stepReaddressGuest,
 			wantUndo:   true,
 		},
 		{
 			name: "the record cannot be deleted",
-			setup: func(t *testing.T, h *restoreHarness, _ *RestoreDeps) {
-				t.Helper()
-				// A non-empty directory at the record path: os.Remove cannot remove
-				// it, so the delete fails however privileged the test runs.
-				path := filepath.Join(h.registryDir, h.input.TaskID+".json")
-				require.NoError(t, os.MkdirAll(filepath.Join(path, "held"), 0o700))
+			setup: func(_ *testing.T, h *restoreHarness, deps *RestoreDeps) {
+				deps.Registry = &recordingStore{events: &h.events, deleteErr: errRecordDelete}
 			},
 			wantPhrase: "delete the restored-instance record",
+			wantAlso:   stepReaddressGuest,
 			wantUndo:   true,
 		},
 		{
@@ -811,6 +1016,9 @@ func TestRestoreUndoReportsFailures(t *testing.T) {
 			_, err := Restore(context.Background(), h.input, deps)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.wantPhrase)
+			if tc.wantAlso != "" {
+				assert.Contains(t, err.Error(), tc.wantAlso, "the step that failed is still named")
+			}
 			if tc.wantUndo {
 				assert.Contains(t, err.Error(), stepUndo)
 			} else {
@@ -818,6 +1026,33 @@ func TestRestoreUndoReportsFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRestoreUndoJoinsEveryFailure pins that the undo reports all three cleanup
+// failures at once, in the order it attempted them: an operator debugging a
+// half-torn-down restore needs the list, not the first item of it.
+func TestRestoreUndoJoinsEveryFailure(t *testing.T) {
+	h := newRestoreHarness(t)
+	h.guest.failAt = 1
+	h.restorer.stopErrs = errors.New("process is gone and its state is unknown")
+
+	deps := h.deps()
+	deps.TapDelete = func(string) error { return errors.New("device is busy") }
+	deps.Registry = &recordingStore{events: &h.events, deleteErr: errors.New("the record directory is locked")}
+
+	_, err := Restore(context.Background(), h.input, deps)
+	require.Error(t, err)
+
+	message := err.Error()
+	stop := strings.Index(message, "stop the restored VM")
+	tap := strings.Index(message, "delete the TAP device")
+	record := strings.Index(message, "delete the restored-instance record")
+	require.GreaterOrEqual(t, stop, 0, "the failed stop is reported: %s", message)
+	require.GreaterOrEqual(t, tap, 0, "the failed delete is reported: %s", message)
+	require.GreaterOrEqual(t, record, 0, "the failed record delete is reported: %s", message)
+	assert.Less(t, stop, tap, "the VM is stopped before its device is removed")
+	assert.Less(t, tap, record, "the record goes last")
+	assert.Contains(t, message, stepReaddressGuest, "the step that failed is not masked")
 }
 
 // TestDialAgentRefusesACancelledContext pins the adapter's error path without a

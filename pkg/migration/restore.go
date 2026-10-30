@@ -9,7 +9,8 @@ package migration
 // records before the load, and the guest resumes with its old addresses, so it
 // must be re-addressed before anything may reach it. In order:
 //
-//	1. validate the request and verify the staged bytes against the manifest
+//	1. validate the request (a task that already runs a restored VM is refused),
+//	   then verify the staged bytes against the manifest
 //	2. create the TAP device under the recorded name, attached but down
 //	3. load the snapshot (which materialises the disk and resumes the guest)
 //	4. wait for the guest agent behind the recorded vsock muxer
@@ -123,6 +124,13 @@ type RestoreInput struct {
 // SnapshotRestorer loads a snapshot into a fresh VM: it materialises
 // info.RootfsPath from info.DiskPath and resumes the guest. *snapshot.Manager
 // implements it, so production needs no adapter.
+//
+// Obligation on an error: it must not leave a process behind. A load that starts
+// Firecracker and then fails — a state file it refuses halfway, a muxer it cannot
+// bind — must take that process down itself before it returns, because the
+// restore cannot tell from the error whether anything was started. The undo calls
+// StopRestored anyway (a missing process is success), which is the second net;
+// this sentence is the contract the first one holds the restorer to.
 type SnapshotRestorer interface {
 	RestoreFromSnapshot(ctx context.Context, info *snapshot.SnapshotInfo, socketPath string) error
 }
@@ -136,13 +144,29 @@ type RestoredVMStopper interface {
 	StopRestored(taskID string) error
 }
 
+// RestoredInstanceStore is the node's store of restored-instance records, as a
+// restore uses it: read in step 1 (this task must not already run a VM), written
+// in step 8, and deleted by the undo. *runtime.RestoredRegistry is the production
+// implementation and the assertion below keeps its three signatures honest.
+//
+// It is an interface rather than the concrete registry because the undo's record
+// delete leaves nothing behind to observe: the restore only writes a record at
+// its last step, so a failed restore has nothing on disk to remove. The seam is
+// what lets a test see that delete, and that it comes last.
+type RestoredInstanceStore interface {
+	Get(taskID string) (scruntime.RestoredInstance, bool, error)
+	Put(instance scruntime.RestoredInstance) error
+	Delete(taskID string) error
+}
+
 // The production restorer is pkg/snapshot's manager: it starts the Firecracker
 // process, so it is also the thing that can stop it again. The assertions fail the
 // build if either method's signature drifts, which is the only way the two
 // packages can disagree without a test noticing at wiring time.
 var (
-	_ SnapshotRestorer  = (*snapshot.Manager)(nil)
-	_ RestoredVMStopper = (*snapshot.Manager)(nil)
+	_ SnapshotRestorer      = (*snapshot.Manager)(nil)
+	_ RestoredVMStopper     = (*snapshot.Manager)(nil)
+	_ RestoredInstanceStore = (*scruntime.RestoredRegistry)(nil)
 )
 
 // Executor is the guest agent a restore drives: one command, argv only. There is
@@ -176,8 +200,10 @@ type RestoreDeps struct {
 	TapDelete func(name string) error
 	// Agent dials the guest agent behind the artifact's vsock muxer.
 	Agent AgentDialer
-	// Registry stores the record that maps the new task to the VM it runs.
-	Registry *scruntime.RestoredRegistry
+	// Registry stores the records that map a new task to the VM it runs. It is
+	// read before anything is created (a task that already runs a restored VM
+	// must be refused) and written at the end.
+	Registry RestoredInstanceStore
 	// Now is the clock the record's CreatedAt and the guest-agent deadline are
 	// measured with. Nil selects time.Now; a test substitutes a fixed one.
 	Now func() time.Time
@@ -190,19 +216,27 @@ type RestoreDeps struct {
 // artifact's three files. On success the guest is running, re-addressed, attached
 // to the bridge, and resolvable through the restored-instance registry.
 //
-// On failure it undoes what it did, in reverse order: the VM it started is
-// stopped, the TAP device is removed, and any record for the task is deleted. The
-// artifact itself is left on disk, so a retry (or an operator) can use it again:
-// the bytes are the expensive part and they are not this node's to discard.
+// A task that already runs a restored VM is refused before any effect: the
+// artifact's disk would be materialised over the file that VM is running from.
+//
+// On failure it undoes what it did, in reverse order: the VM the load may have
+// started is stopped, the TAP device is removed, and any record for the task is
+// deleted. The artifact itself is left on disk, so a retry (or an operator) can
+// use it again: the bytes are the expensive part and they are not this node's to
+// discard.
 func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance scruntime.RestoredInstance, err error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
 	}
-	// The addresses reach ip(8) as argv values, so they are trimmed here: a
-	// value with surrounding whitespace parses after trimming, and would then
-	// reach the guest untrimmed if the raw request were used.
+	// Every value the restore hands to something else is trimmed once here, so
+	// validation and use cannot disagree about it: an address reaches ip(8) as
+	// argv, a dir and a socket dir reach the filesystem as a path. A trailing
+	// space still starts with "/", so IsAbs accepts the path and the untrimmed
+	// value would then name a directory nobody created.
 	in.GuestCIDR = strings.TrimSpace(in.GuestCIDR)
 	in.Gateway = strings.TrimSpace(in.Gateway)
+	in.Dir = strings.TrimSpace(in.Dir)
+	in.SocketDir = strings.TrimSpace(in.SocketDir)
 	if err = validateRestoreInput(in, deps); err != nil {
 		return scruntime.RestoredInstance{}, restoreStep(in.TaskID, stepValidate, err)
 	}
@@ -231,10 +265,13 @@ func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance s
 	// The API socket belongs to the new task: it is created when Firecracker
 	// starts, so it is the one host-side name the snapshot does not record.
 	socketPath := filepath.Join(in.SocketDir, in.TaskID+scruntime.VMSocketSuffix)
+	// Recorded before the call, not after it: a restorer that starts the process
+	// and then fails leaves something to stop, and the undo is not allowed to
+	// infer from a nil return that there is nothing behind it.
+	effects.restorerCalled = true
 	if err = deps.Snapshot.RestoreFromSnapshot(ctx, restorationInfo(in), socketPath); err != nil {
 		return scruntime.RestoredInstance{}, restoreStep(in.TaskID, stepRestoreSnapshot, err)
 	}
-	effects.vmStarted = true
 
 	guest, err := waitForGuestAgent(ctx, deps, artifact.VsockPath)
 	if err != nil {
@@ -277,14 +314,16 @@ func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance s
 // restoreEffects is what a failed restore has to undo, in the order it was done.
 type restoreEffects struct {
 	tapCreated bool
-	vmStarted  bool
+	// restorerCalled is set before the snapshot is loaded, so a load that starts
+	// the process and then fails still owes a stop.
+	restorerCalled bool
 	// complete is set only when the restore returned successfully; anything
 	// short of that leaves effects for undoRestore.
 	complete bool
 }
 
-// undoRestore reverses a failed restore: the VM it started, the TAP device it
-// created, and the record for the task (in case an earlier attempt left one).
+// undoRestore reverses a failed restore: the VM the load may have started, the TAP
+// device it created, and the record for the task.
 //
 // Every operation is best effort and every failure is reported, not ignored: the
 // caller already has the step that failed, and a silent cleanup failure would
@@ -293,19 +332,20 @@ type restoreEffects struct {
 func undoRestore(in RestoreInput, deps RestoreDeps, effects restoreEffects) error {
 	var problems []error
 
-	if effects.vmStarted {
-		stopper, ok := deps.Snapshot.(RestoredVMStopper)
-		switch {
-		case !ok:
-			problems = append(problems, errors.New(
-				"the snapshot restorer cannot stop the VM it started, so it may still be running"))
-		default:
-			// ErrNoRestoredVM means the load had already taken the process down
-			// itself: the VM is gone, which is what the undo wanted.
-			if err := stopper.StopRestored(in.TaskID); err != nil && !errors.Is(err, snapshot.ErrNoRestoredVM) {
-				problems = append(problems, fmt.Errorf("stop the restored VM: %w", err))
-			}
+	// The stop is attempted whenever the restorer can stop, and it is not gated
+	// on the load having returned nil: a restorer that starts Firecracker and
+	// then fails owes a process that only it can take down. A process that never
+	// started is not a failure — ErrNoRestoredVM means the VM is already gone,
+	// which is what the undo wanted.
+	if stopper, ok := deps.Snapshot.(RestoredVMStopper); ok {
+		if err := stopper.StopRestored(in.TaskID); err != nil && !errors.Is(err, snapshot.ErrNoRestoredVM) {
+			problems = append(problems, fmt.Errorf("stop the restored VM: %w", err))
 		}
+	} else if effects.restorerCalled {
+		// Nothing was asked to load, so nothing can be running: only a restorer
+		// that was actually invoked can have leaked a VM the undo cannot reach.
+		problems = append(problems, errors.New(
+			"the snapshot restorer cannot stop the VM it started, so it may still be running"))
 	}
 
 	if effects.tapCreated {
@@ -314,9 +354,11 @@ func undoRestore(in RestoreInput, deps RestoreDeps, effects restoreEffects) erro
 		}
 	}
 
-	// Deleting is idempotent (a missing record is success), so it runs even when
-	// this attempt never wrote one: a retried restore must not leave a record
-	// from the attempt before it claiming a VM this one did not finish starting.
+	// Only a record this attempt wrote can be here: step 1 refused a task that
+	// already had one, and the record is written last, so this delete is a no-op
+	// on every path that reaches it today. It stays unconditional anyway —
+	// deleting is idempotent (a missing record is success) and a step reordered
+	// later must not be able to leave a record claiming a VM that is gone.
 	if err := deps.Registry.Delete(in.TaskID); err != nil {
 		problems = append(problems, fmt.Errorf("delete the restored-instance record: %w", err))
 	}
@@ -346,7 +388,9 @@ func restoreStep(taskID, step string, cause error) error {
 
 // validateRestoreInput refuses a request before anything is created. Everything
 // here is cheap and local: an address is parsed, a name is checked against the
-// kernel's rules, and the artifact is asked to validate itself.
+// kernel's rules, and the artifact is asked to validate itself. The input's
+// strings have already been trimmed by Restore, so what is checked here is
+// exactly what will be used.
 func validateRestoreInput(in RestoreInput, deps RestoreDeps) error {
 	if err := requireRestoreDeps(deps); err != nil {
 		return err
@@ -356,13 +400,21 @@ func validateRestoreInput(in RestoreInput, deps RestoreDeps) error {
 	}
 
 	switch {
-	case strings.TrimSpace(in.Dir) == "":
+	case in.Dir == "":
 		return errors.New("dir is empty: want the absolute directory holding the artifact's staged files")
 	case !filepath.IsAbs(in.Dir):
 		return fmt.Errorf("dir %q is relative: want the absolute directory holding the artifact's staged files", in.Dir)
 	}
 	if err := scruntime.CheckTaskID(in.TaskID); err != nil {
 		return fmt.Errorf("taskId %q: %w", in.TaskID, err)
+	}
+
+	// The artifact's source task ID names the TAP device, the vsock muxer and the
+	// disk path the target recreates, and the record's VM ID, which the registry
+	// validates with this same rule. Asking here rather than at step 8 keeps a
+	// manifest that cannot produce a record from starting a VM first.
+	if err := scruntime.CheckTaskID(in.Artifact.SourceTaskID); err != nil {
+		return fmt.Errorf("sourceTaskId %q: %w", in.Artifact.SourceTaskID, err)
 	}
 
 	// A restore without the disk copy would load a memory image against a
@@ -406,12 +458,34 @@ func validateRestoreInput(in RestoreInput, deps RestoreDeps) error {
 	}
 
 	switch {
-	case strings.TrimSpace(in.SocketDir) == "":
+	case in.SocketDir == "":
 		return errors.New("socketDir is empty: want the absolute directory the restored VM's API socket goes in")
 	case !filepath.IsAbs(in.SocketDir):
 		return fmt.Errorf("socketDir %q is relative: want the absolute directory the restored VM's API socket goes in", in.SocketDir)
 	}
-	return nil
+
+	// Last, because it is the only check that reads state rather than the
+	// request: a task that already runs a restored VM must not be restored
+	// again. The second attempt would load the artifact's disk over the file the
+	// live VM is running from and take its record, leaving one process nobody
+	// can resolve. Discarding the task's VM is the caller's job, not a rollback.
+	return requireNoRestoredVM(deps.Registry, in.TaskID)
+}
+
+// requireNoRestoredVM refuses a restore for a task that already runs a restored
+// VM, and refuses too when it cannot tell: a record that cannot be read is not
+// evidence that the task is free, and guessing wrong here destroys a live VM.
+func requireNoRestoredVM(registry RestoredInstanceStore, taskID string) error {
+	existing, found, err := registry.Get(taskID)
+	switch {
+	case err != nil:
+		return fmt.Errorf("task %q cannot be restored: the record of a restored VM could not be read, so this restore cannot tell whether the task already runs one: %w", taskID, err)
+	case !found:
+		return nil
+	default:
+		return fmt.Errorf("task %q already runs a restored VM (VM %q, restored at %s): that VM must be discarded first — stopped, and its record deleted",
+			taskID, existing.VMID, existing.CreatedAt.UTC().Format(time.RFC3339Nano))
+	}
 }
 
 // requireRestoreDeps refuses a wiring that cannot finish a restore. It runs
