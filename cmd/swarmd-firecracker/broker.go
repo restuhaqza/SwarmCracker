@@ -155,12 +155,16 @@ func taskSocketAlive(socketPath string) bool {
 // consumers already answer "unavailable" for a nil store — so this returns no
 // error.
 func newSnapshotManager(ctx context.Context, cfg brokerRuntime) *snapshot.Manager {
-	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{
-		Enabled:      true,
-		SnapshotDir:  cfg.snapshotDir,
-		MaxSnapshots: 3,
-		MaxAge:       168 * time.Hour,
-	})
+	// The daemon's store is the package's defaults with two overrides: it is
+	// enabled (the manager is the node's, not the public API's) and it lives at
+	// --snapshot-dir. Retention is deliberately not restated here: the defaults are
+	// what a node without a snapshot policy gets, and repeating them in this
+	// constructor is how the two drift apart.
+	snapshotCfg := snapshot.DefaultSnapshotConfig()
+	snapshotCfg.Enabled = true
+	snapshotCfg.SnapshotDir = cfg.snapshotDir
+
+	mgr, err := snapshot.NewManager(snapshotCfg)
 	if err != nil {
 		log.G(ctx).WithError(err).Warn(
 			"Snapshot store unavailable: the experimental snapshot API stays disabled and a VM restored from a migration cannot be stopped on this node")
@@ -180,19 +184,21 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		return nil, false, nil, fmt.Errorf("node broker: %w", err)
 	}
 
-	tasks := broker.SocketDirSource{
-		Dir:       cfg.socketDir,
-		LogDir:    cfg.logDir,
-		IsRunning: cfg.taskAlive,
-	}
 	// A task restored from a migration artifact runs a VM whose host-side names
 	// (TAP device, vsock muxer, disk) belong to the source task, so the broker
-	// resolves it from its record instead of deriving a path from its ID. The field
-	// is an interface: assigning a nil registry would make it non-nil and every
-	// lookup would fail, so it is set only when the daemon opened the store.
+	// resolves it from its record instead of deriving a path from its ID. The
+	// source is built through the constructor rather than as a literal because it
+	// also latches the one warning a stale record produces: resolution runs for
+	// every exec, logs and health request.
+	//
+	// The field is an interface: assigning a nil registry would make it non-nil and
+	// every lookup would fail, so it is converted only when the daemon opened the
+	// store.
+	var restored broker.RestoredInstanceSource
 	if cfg.restored != nil {
-		tasks.Restored = cfg.restored
+		restored = cfg.restored
 	}
+	tasks := broker.NewSocketDirSource(cfg.socketDir, cfg.logDir, cfg.taskAlive, restored)
 
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Addr:      cfg.listenAddr,
@@ -299,6 +305,10 @@ func snapshotHandlers(
 		SocketDir: cfg.socketDir,
 		MaxAge:    168 * time.Hour,
 		RootfsDir: cfg.rootfsDir,
+		// The stop route deletes the record once the VM is gone, under the same
+		// rule as the executor's teardown. Without it a stopped VM would stay
+		// resolvable for as long as its record lived.
+		Records: cfg.restored,
 	}
 	return broker.NewSnapshotHandler(handlerCfg), broker.NewRestoredHandler(handlerCfg), cfg.snapshotManager, true
 }

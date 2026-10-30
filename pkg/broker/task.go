@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/rs/zerolog/log"
 
@@ -53,6 +54,28 @@ type Task struct {
 	// would be re-deriving host-side identity from the task ID, which is the
 	// assumption a restored task breaks.
 	restoredVsockPath string
+	// restoredVMID is the task whose VM this task runs, i.e. the task whose
+	// Firecracker state names the TAP device, the vsock muxer and the disk. It is
+	// empty for a task this node booted itself, whose identity is its own ID.
+	restoredVMID string
+	// restoredDiskPath is the disk the restored VM's state file names. An export
+	// must copy that file: <RootfsDir>/tasks/<this task's ID>.ext4 belongs to no
+	// VM on a restored task, and a restore would load a state file naming a disk
+	// whose bytes the artifact does not carry.
+	restoredDiskPath string
+}
+
+// sourceVMIdentity answers what an export of this task has to name: the task whose
+// ID the VM's host-side devices are derived from, the directory a vsock path for
+// that ID is derived in, and the disk the state file records. For a task this node
+// booted itself every answer is derived from the task, which is the rule the export
+// has always applied; a restored task's VM belongs to the source task, so its
+// record answers instead.
+func (t Task) sourceVMIdentity(rootfsDir string) (vmID, socketDir, diskPath string) {
+	if t.restoredVMID != "" {
+		return t.restoredVMID, filepath.Dir(t.restoredVsockPath), t.restoredDiskPath
+	}
+	return t.ID, filepath.Dir(t.SocketPath), filepath.Join(rootfsDir, "tasks", t.ID+".ext4")
 }
 
 // VsockPath returns the Firecracker vsock muxer path for the task: the recorded
@@ -149,6 +172,60 @@ type SocketDirSource struct {
 	// it would answer every lookup with an error. The daemon assigns this field
 	// only once the registry was opened.
 	Restored RestoredInstanceSource
+
+	// staleWarned latches the one warning a stale restored-instance record
+	// produces, so a task whose VM is gone is reported once rather than on every
+	// exec, logs and health request that resolves it. A source built as a literal
+	// has nowhere to keep it and warns on every lookup; NewSocketDirSource is the
+	// construction the daemon uses.
+	staleWarned *staleRecordWarnings
+}
+
+// staleRecordWarnings is a set of the restored-instance records that have already
+// been reported stale, keyed by the record's identity: its task and the socket it
+// named. It is a pointer because SocketDirSource is a value copied per lookup, and
+// small because a lookup is one map access.
+type staleRecordWarnings struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+// first reports whether this is the first time the record is seen stale, and
+// remembers it.
+func (w *staleRecordWarnings) first(taskID, socketPath string) bool {
+	key := taskID + "\x00" + socketPath
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if _, seen := w.seen[key]; seen {
+		return false
+	}
+	if w.seen == nil {
+		w.seen = make(map[string]struct{})
+	}
+	w.seen[key] = struct{}{}
+	return true
+}
+
+// NewSocketDirSource builds the task source the daemon uses: the directories its
+// sockets and logs live in, the probe that decides whether an existing socket
+// belongs to a live VMM, and the node's restored-instance store.
+//
+// It differs from a struct literal in one way, which is why it exists: it latches
+// the one warning a stale restored-instance record produces. Resolution runs for
+// every exec, logs, files and health request, and a record whose VM is gone would
+// otherwise repeat the same warning for as long as the record lives.
+//
+// restored is an interface; a nil *runtime.RestoredRegistry must reach it as a nil
+// interface, which the caller does by assigning only when its registry is non-nil.
+func NewSocketDirSource(dir, logDir string, isRunning func(socketPath string) bool, restored RestoredInstanceSource) SocketDirSource {
+	return SocketDirSource{
+		Dir:         dir,
+		LogDir:      logDir,
+		IsRunning:   isRunning,
+		Restored:    restored,
+		staleWarned: &staleRecordWarnings{},
+	}
 }
 
 // Lookup returns the task whose API socket exists in the configured directory,
@@ -243,11 +320,13 @@ func (s SocketDirSource) restoredTask(taskID string) (Task, bool, bool, error) {
 	if running, err := s.recordedSocketAlive(record.SocketPath); err != nil {
 		return Task{}, false, true, fmt.Errorf("resolve the restored instance of task %q: %w", taskID, err)
 	} else if !running {
-		log.Warn().
-			Str("task_id", taskID).
-			Str("socket", record.SocketPath).
-			Str("vm_id", record.VMID).
-			Msg("A restored-instance record names an API socket that is gone; reporting the task as not running and keeping the record for inspection")
+		if s.staleWarned == nil || s.staleWarned.first(taskID, record.SocketPath) {
+			log.Warn().
+				Str("task_id", taskID).
+				Str("socket", record.SocketPath).
+				Str("vm_id", record.VMID).
+				Msg("A restored-instance record names an API socket that is gone; reporting the task as not running and keeping the record for inspection")
+		}
 		return Task{ID: taskID, LogPath: s.logPath(taskID)}, true, true, nil
 	}
 
@@ -261,6 +340,11 @@ func (s SocketDirSource) restoredTask(taskID string) (Task, bool, bool, error) {
 		LogPath:           s.logPath(taskID),
 		ConsolePath:       s.consolePath(taskID),
 		restoredVsockPath: record.VsockPath,
+		// The VM's host-side identity belongs to the source task, so an export of
+		// this task has to name that task's devices and copy the disk its state
+		// file records.
+		restoredVMID:     record.VMID,
+		restoredDiskPath: record.DiskPath,
 	}, true, true, nil
 }
 

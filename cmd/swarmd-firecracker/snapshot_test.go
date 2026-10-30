@@ -12,6 +12,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/test/testhelpers"
 	"github.com/stretchr/testify/require"
 
@@ -166,6 +167,52 @@ func TestStartBroker_RestoredOperationIsRegistered(t *testing.T) {
 	defer respGet.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, respGet.StatusCode)
 	require.Contains(t, respGet.Header.Get("Allow"), http.MethodDelete)
+}
+
+// TestStartBroker_RestoredStopForgetsTheRecord proves the daemon's stop route uses
+// the same rule as the executor's teardown: the store tracks no process and the
+// recorded socket is gone, so the stop succeeds and the record goes with it. Left
+// behind, the record would keep claiming this node runs a VM that does not exist.
+func TestStartBroker_RestoredStopForgetsTheRecord(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+
+	registry, err := runtime.NewRestoredRegistry(filepath.Join(stateDir, runtime.RestoredInstanceDirName))
+	require.NoError(t, err)
+	gone := t.TempDir()
+	require.NoError(t, registry.Put(runtime.RestoredInstance{
+		TaskID:     "task-1",
+		VMID:       "source-task",
+		ArtifactID: "mig-0123456789abcdef",
+		// No listener ever answers here: the VM this record named is gone.
+		SocketPath: filepath.Join(gone, "task-1.sock"),
+		TapName:    runtime.TapName("source-task", 0),
+		VsockPath:  runtime.VsockPath(gone, "source-task"),
+		DiskPath:   filepath.Join(gone, "source-task.ext4"),
+		CreatedAt:  time.Now().UTC(),
+	}))
+
+	cfg := enabledSnapshotRuntime(t, t.TempDir(), socketDir, t.TempDir())
+	cfg.restored = registry
+	srv, active, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+	require.True(t, active)
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequest(http.MethodDelete, "https://"+srv.Addr()+"/v1/tasks/task-1/restored", nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode, "a VM that is gone is a successful stop")
+
+	_, found, err := registry.Get("task-1")
+	require.NoError(t, err)
+	require.False(t, found, "the stop must forget the record it acted on")
 }
 
 // TestStartBroker_RestoredSharesTheSnapshotStore proves the enabled daemon hands

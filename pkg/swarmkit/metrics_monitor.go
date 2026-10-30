@@ -57,7 +57,7 @@ func (c *Controller) startMetricsMonitor() {
 	c.metricsWG.Add(1)
 	c.metricsMu.Unlock()
 
-	udsPath := vsockUDSPath(c.socketPath)
+	udsPath := c.guestVsockPath()
 	go func() {
 		defer c.metricsWG.Done()
 		c.monitorMetrics(ctx, udsPath, task.ID, service)

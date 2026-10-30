@@ -3,6 +3,7 @@ package swarmkit
 import (
 	"context"
 	"errors"
+	"net"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -11,6 +12,7 @@ import (
 
 	gogotypes "github.com/gogo/protobuf/types"
 	"github.com/moby/swarmkit/v2/api"
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -152,6 +154,66 @@ func TestController_HealthMonitor_StopsARestoredUnhealthyVM(t *testing.T) {
 		"the health verdict stops the VM the record names")
 	assert.Equal(t, []string{"task-hc-monitor"}, store.deletes)
 	assert.Equal(t, 0, vmm.count(), "the VMM manager tracks no process for a restored task")
+}
+
+// TestController_HealthMonitor_HealthyRestoredVMIsNotStopped pins the bug this
+// path would otherwise carry into a migration: a restored task's VM answers on the
+// muxer its record names, so a monitor that dialled a path derived from the new task
+// ID would fail every probe and force-stop a healthy migrated VM seconds after it
+// started.
+//
+// The derivation points at a guest that answers the handshake and then refuses every
+// command, so a monitor that ignored the record fails fast and stops the VM inside
+// this test's window instead of hanging on a dial.
+func TestController_HealthMonitor_HealthyRestoredVMIsNotStopped(t *testing.T) {
+	_, recordedUDS := startFakeVsockMuxer(t)
+	wrongUDS := filepath.Join(shortHealthcheckDir(t), "derived.vsock")
+	startCannedGuestAt(t, wrongUDS)
+
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "true"},
+		Interval: gogotypes.DurationProto(10 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(2 * time.Second),
+		Retries:  3,
+	}
+	vmm := newForceStopRecorder()
+	ctrl := newMonitorController(t, wrongUDS, hc, vmm)
+
+	record := restoredTestRecord("task-hc-monitor", "source-task")
+	record.VsockPath = recordedUDS
+	store := &fakeRestoredStore{record: record, found: true}
+	stopper := &fakeRestoredStopper{}
+	ctrl.restored = store
+	ctrl.restoredStopper = stopper
+	ctrl.resolveGuestVsockPath()
+	t.Cleanup(ctrl.stopHealthMonitor)
+
+	ctrl.startHealthMonitor()
+	time.Sleep(150 * time.Millisecond)
+
+	assert.Equal(t, recordedUDS, ctrl.guestVsockPath(), "the monitor dials the recorded muxer")
+	assert.Empty(t, stopper.stopped, "a healthy restored VM must never be stopped")
+	assert.Empty(t, store.deletes)
+	assert.Equal(t, 0, vmm.count())
+	assert.Empty(t, ctrl.healthcheckFailure())
+}
+
+// startCannedGuestAt publishes the canned guest (hello and metrics only, every
+// other op an error frame) on a given vsock muxer path: a guest that answers a
+// probe with a failure at once, which makes "the probe went to the wrong path"
+// observable in milliseconds instead of after agent.Dial's retry window.
+func startCannedGuestAt(t *testing.T, udsPath string) {
+	t.Helper()
+
+	ln, err := net.Listen("unix", udsPath)
+	require.NoError(t, err)
+
+	g := &cannedGuest{ln: ln, sample: &agent.GuestMetrics{}, stop: make(chan struct{})}
+	go g.serve()
+	t.Cleanup(func() {
+		close(g.stop)
+		_ = ln.Close()
+	})
 }
 
 // TestController_HealthMonitor_HealthyKeepsPolling asserts a healthy task is

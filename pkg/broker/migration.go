@@ -194,10 +194,12 @@ type MigrationHandlerConfig struct {
 	// copy.
 	ArtifactDir string
 	// RootfsDir is the executor's rootfs directory. A Firecracker snapshot records
-	// the VM's block-device path but not the disk contents, so export records
-	// <RootfsDir>/tasks/<taskID>.ext4 as the task disk to copy, the same rule the
-	// snapshot create operation applies. Empty refuses an export: an artifact
-	// without a disk would restore a guest with no filesystem.
+	// the VM's block-device path but not the disk contents, so export records the
+	// disk to copy: <RootfsDir>/tasks/<taskID>.ext4 for a task this node booted,
+	// or the disk a restored task's record names (that VM's state file resolves
+	// it, so its own per-task disk belongs to no VM). The same rule the snapshot
+	// create operation applies. Empty refuses an export: an artifact without a disk
+	// would restore a guest with no filesystem.
 	RootfsDir string
 }
 
@@ -291,10 +293,18 @@ func (h *migrationExportHandler) serve(ctx context.Context, task Task, w http.Re
 		return
 	}
 
+	// The VM's identity decides three things: which disk to copy, and which task's
+	// names the artifact writes for the TAP device and the vsock muxer. A task
+	// this node booted answers with its own ID and its own per-task disk; a task
+	// restored from a migration runs a VM whose Firecracker state names the source
+	// task's devices and disk, so exporting it must describe that VM — anything
+	// else would publish an artifact naming devices nobody owns.
+	vmID, socketDir, diskPath := task.sourceVMIdentity(h.cfg.RootfsDir)
+
 	info, err := h.cfg.Store.CreateSnapshot(ctx, task.ID, task.SocketPath, snapshot.CreateOptions{
 		ServiceID:  scope.service,
 		NodeID:     scope.node,
-		RootfsPath: filepath.Join(h.cfg.RootfsDir, "tasks", task.ID+".ext4"),
+		RootfsPath: diskPath,
 	})
 	if err != nil {
 		// pkg/snapshot failures name absolute paths and sockets; the shared
@@ -309,7 +319,14 @@ func (h *migrationExportHandler) serve(ctx context.Context, task Task, w http.Re
 		return
 	}
 
-	artifact, err := migration.ArtifactFromSnapshot(info, filepath.Dir(task.SocketPath), 0)
+	// The store names the snapshot after the task it was asked about, which is the
+	// right owner for the dump. The artifact describes the VM inside it, whose
+	// sourceTaskId names the devices the state file resolves, so the snapshot is
+	// described under the VM's ID. A copy keeps the store's metadata intact.
+	described := *info
+	described.TaskID = vmID
+
+	artifact, err := migration.ArtifactFromSnapshot(&described, socketDir, 0)
 	if err != nil {
 		// pkg/migration names the file it could not describe; only the
 		// classification crosses the wire.

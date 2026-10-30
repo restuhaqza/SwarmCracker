@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/http"
 	"path/filepath"
 	"testing"
 
@@ -70,6 +72,24 @@ func restoredTestRecord(taskID, sourceID string) scruntime.RestoredInstance {
 		VsockPath:  scruntime.VsockPath(socketDir, sourceID),
 		DiskPath:   "/var/lib/swarmcracker/tasks/" + sourceID + ".ext4",
 	}
+}
+
+// startFakeAPISocket publishes a Unix socket that answers Firecracker's liveness
+// probe, which is what a restored VM's API socket looks like while its process
+// runs. The directory is short because a Unix socket path is capped at ~104 bytes.
+func startFakeAPISocket(t *testing.T) string {
+	t.Helper()
+
+	dir := shortHealthcheckDir(t)
+	socketPath := filepath.Join(dir, "restored.sock")
+	ln, err := net.Listen("unix", socketPath)
+	require.NoError(t, err)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})}
+	go func() { _ = srv.Serve(ln) }()
+	t.Cleanup(func() { _ = srv.Close() })
+	return socketPath
 }
 
 // teardownFixture is one controller wired to a counting VMM manager, so a test can
@@ -319,4 +339,128 @@ func TestProductionRestoredDependencies(t *testing.T) {
 		_ RestoredInstanceStore = (*fakeRestoredStore)(nil)
 		_ RestoredVMStopper     = (*fakeRestoredStopper)(nil)
 	)
+}
+
+// TestTeardownKeepsTheRecordWhenThisDaemonLostTheProcess pins the one case where
+// "no such restored VM" is not the end: the store's process table lives in memory,
+// so a daemon restart makes every restored VM look untracked while it keeps
+// serving. A recorded socket that still answers is the evidence the daemon lost,
+// so the record — the only pointer to a live Firecracker — survives and the error
+// says the VM must be stopped by hand.
+func TestTeardownKeepsTheRecordWhenThisDaemonLostTheProcess(t *testing.T) {
+	for _, call := range teardownCalls {
+		t.Run(call.name, func(t *testing.T) {
+			record := restoredTestRecord("new-task", "source-task")
+			record.SocketPath = startFakeAPISocket(t)
+			store := &fakeRestoredStore{record: record, found: true}
+			stopper := &fakeRestoredStopper{err: snapshot.ErrNoRestoredVM}
+			fixture := newTeardownFixture(t, store, stopper, true)
+
+			err := call.call(fixture.ctrl)
+			require.Error(t, err)
+			require.ErrorIs(t, err, snapshot.ErrRestoredVMUntracked)
+			require.ErrorContains(t, err, "restarted")
+			require.ErrorContains(t, err, "must be stopped manually")
+			require.Empty(t, store.deletes,
+				"the record is the only pointer to a VM this daemon cannot signal")
+		})
+	}
+}
+
+// TestTeardownReportsARecordItCannotDelete pins the last step of a stop: the VM is
+// gone and only the record cleanup failed, which the caller must hear — a silent
+// success would leave a record that says a VM exists forever.
+func TestTeardownReportsARecordItCannotDelete(t *testing.T) {
+	for _, call := range teardownCalls {
+		t.Run(call.name, func(t *testing.T) {
+			store := &fakeRestoredStore{
+				record:    restoredTestRecord("new-task", "source-task"),
+				found:     true,
+				deleteErr: errors.New("read-only file system"),
+			}
+			fixture := newTeardownFixture(t, store, &fakeRestoredStopper{}, true)
+
+			err := call.call(fixture.ctrl)
+			require.Error(t, err)
+			require.ErrorContains(t, err, `"new-task"`)
+			require.ErrorContains(t, err, "could not be deleted")
+			require.Equal(t, []string{"new-task"}, store.deletes)
+		})
+	}
+}
+
+// TestTeardownTwiceIsIdempotent pins that a second teardown is a no-op: SwarmKit
+// can deliver a shutdown after the task was already removed, and a path that
+// re-reported a stopped VM (or re-signalled a PID) would fail a task that ended
+// cleanly.
+func TestTeardownTwiceIsIdempotent(t *testing.T) {
+	store := &fakeRestoredStore{record: restoredTestRecord("new-task", "source-task"), found: true}
+	stopper := &fakeRestoredStopper{}
+	fixture := newTeardownFixture(t, store, stopper, true)
+
+	require.NoError(t, fixture.ctrl.Shutdown(context.Background()))
+	require.NoError(t, fixture.ctrl.Shutdown(context.Background()),
+		"a teardown that already stopped the VM reports nothing to do")
+
+	require.Equal(t, []string{"new-task"}, stopper.stopped, "the VM is signalled once")
+	require.Equal(t, []string{"new-task"}, store.deletes, "the record is deleted once")
+	require.Zero(t, fixture.vmmStops,
+		"the VMM manager never booted a restored task's VM, so it is never asked to stop it")
+}
+
+// TestControllerGuestVsockPath pins the one path every in-executor probe dials: the
+// muxer the task's restored record names when it has one, and the derived path
+// otherwise. The probes cannot use the derivation on a restored task — the VM's
+// state file names the source task's muxer, so <socketDir>/<newTaskID>.vsock belongs
+// to nothing and every probe would fail against a perfectly healthy VM.
+func TestControllerGuestVsockPath(t *testing.T) {
+	socketDir := t.TempDir()
+
+	cases := []struct {
+		name    string
+		store   *fakeRestoredStore
+		want    string
+		derived string
+	}{
+		{
+			name:    "a task this executor booted keeps the derivation",
+			derived: scruntime.VsockPath(socketDir, "new-task"),
+		},
+		{
+			name:    "no record answers the derivation",
+			store:   &fakeRestoredStore{},
+			derived: scruntime.VsockPath(socketDir, "new-task"),
+		},
+		{
+			name:    "a restored task answers its record's muxer",
+			store:   &fakeRestoredStore{record: restoredTestRecord("new-task", "source-task"), found: true},
+			want:    scruntime.VsockPath("/var/run/firecracker", "source-task"),
+			derived: scruntime.VsockPath(socketDir, "new-task"),
+		},
+		{
+			name:    "an unreadable record falls back to the derivation",
+			store:   &fakeRestoredStore{getErr: errors.New("restored-instance record is corrupt")},
+			derived: scruntime.VsockPath(socketDir, "new-task"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newTeardownFixture(t, tc.store, nil, true)
+			fixture.ctrl.config.SocketDir = socketDir
+			fixture.ctrl.socketPath = filepath.Join(socketDir, "new-task"+scruntime.VMSocketSuffix)
+
+			fixture.ctrl.resolveGuestVsockPath()
+
+			want := tc.want
+			if want == "" {
+				want = tc.derived
+			}
+			require.Equal(t, want, fixture.ctrl.guestVsockPath())
+			if tc.want != "" {
+				require.NotEqual(t, tc.derived, fixture.ctrl.guestVsockPath(),
+					"the derived muxer belongs to no process on a restored task")
+			}
+		})
+	}
 }

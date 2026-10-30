@@ -7,7 +7,6 @@ package swarmkit
 import (
 	"bufio"
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -741,6 +740,14 @@ type Controller struct {
 	socketPath string
 	logger     zerolog.Logger
 
+	// guestVsock is the vsock muxer this task's guest agent answers on. It is
+	// resolved once per VM start (resolveGuestVsockPath) and read by every
+	// in-executor probe: a task restored from a migration runs a VM whose
+	// Firecracker state names the source task's muxer, so the path derived from
+	// this task's ID belongs to no process and every probe would fail against a
+	// healthy VM — which the health monitor turns into a force-stop.
+	guestVsock string
+
 	// tracer opens control-plane spans. It is never nil: NewController falls
 	// back to a no-op tracer, so call sites need no branch and a disabled
 	// trace costs one interface call.
@@ -994,6 +1001,11 @@ func (c *Controller) Start(ctx context.Context) (err error) {
 	if err := c.startVM(ctx); err != nil {
 		return err
 	}
+	// The VM may not be this executor's: a task started from a migration artifact
+	// runs a VM whose Firecracker state names the source task's vsock muxer. Resolve
+	// the muxer once, before any probe goroutine exists, so the metrics poller, the
+	// health gate and the health monitor all dial the VM this task actually runs.
+	c.resolveGuestVsockPath()
 	// Sample guest resource use for the lifetime of the VM. It starts here
 	// rather than after health gating so the series exist during a long start
 	// period, and it applies to every task, healthchecked or not.
@@ -1419,17 +1431,50 @@ func (c *Controller) Wait(ctx context.Context) (err error) {
 	return nil
 }
 
+// resolveGuestVsockPath records the muxer this task's guest agent answers on: the
+// one a restored task's record names, or the path derived from the task's own API
+// socket. Start calls it once per VM start, before any probe goroutine exists, so
+// the field has one writer and every probe reads one answer.
+func (c *Controller) resolveGuestVsockPath() {
+	c.guestVsock = vsockUDSPath(c.socketPath)
+	if c.restored == nil || c.task == nil {
+		return
+	}
+
+	record, found, err := c.restored.Get(c.task.ID)
+	switch {
+	case err != nil:
+		// The record names no VM this executor may guess at. The derivation is the
+		// best answer left — it is the VM this executor would have booted itself —
+		// and a restored VM in this state is already unresolvable (the broker
+		// refuses the task for the same reason), so the warning is the signal.
+		c.logger.Warn().Err(err).
+			Msg("The restored-instance record of this task cannot be read; probing the muxer derived from its task ID")
+	case found && record.VsockPath != "":
+		c.guestVsock = record.VsockPath
+	}
+}
+
+// guestVsockPath returns the muxer every in-executor probe dials. A controller that
+// never resolved one — a stop before Start, or a test fixture — answers the
+// derivation, which is exact for every task this executor booted.
+func (c *Controller) guestVsockPath() string {
+	if c.guestVsock != "" {
+		return c.guestVsock
+	}
+	return vsockUDSPath(c.socketPath)
+}
+
 // stopRestoredVM stops the microVM this task inherited from a migration and
 // forgets the record that named it. handled is false when the node keeps no record
 // for the task — the answer for every task this executor booted itself — so the
 // caller runs today's VMM-manager teardown unchanged.
 //
-// The record is the only pointer to a restored task's process, so it is deleted
-// only once the VM is confirmed gone: a stop that failed may have left it running,
-// and dropping the record would make it unreachable. A stopper that reports
-// snapshot.ErrNoRestoredVM tracks no process for the task — it exited, or an earlier
-// stop won — which is the end state the caller asked for, so the record is stale
-// and goes.
+// The stop itself is pkg/snapshot's rule (snapshot.StopAndForgetRestoredVM), shared
+// with the node broker's stop route so the two cannot disagree about whether a
+// record survives: the record is deleted only once the VM is confirmed gone, and it
+// is kept when the VM may still be running — including the case where this daemon
+// restarted and lost the process table while the VM kept serving.
 func (c *Controller) stopRestoredVM() (handled bool, err error) {
 	if c.restored == nil {
 		return false, nil
@@ -1437,7 +1482,7 @@ func (c *Controller) stopRestoredVM() (handled bool, err error) {
 
 	taskID := c.task.ID
 
-	_, found, err := c.restored.Get(taskID)
+	record, found, err := c.restored.Get(taskID)
 	switch {
 	case err != nil:
 		// An unusable record names no VM this executor may act on, and deleting it
@@ -1456,18 +1501,9 @@ func (c *Controller) stopRestoredVM() (handled bool, err error) {
 			"task %q runs a restored VM, but this executor was given no way to stop it; the record is kept", taskID)
 	}
 
-	if stopErr := c.restoredStopper.StopRestored(taskID); stopErr != nil {
-		if !errors.Is(stopErr, snapshot.ErrNoRestoredVM) {
-			return true, fmt.Errorf(
-				"task %q: the restored VM was not stopped, so its record is kept for a retry: %w", taskID, stopErr)
-		}
-		c.logger.Debug().Str("task_id", taskID).
-			Msg("The restored VM of this task is already gone; forgetting its record")
-	}
-
-	if delErr := c.restored.Delete(taskID); delErr != nil {
-		return true, fmt.Errorf(
-			"task %q: the restored VM is stopped but its record could not be deleted: %w", taskID, delErr)
+	if err := snapshot.StopAndForgetRestoredVM(c.restoredStopper, c.restored, record); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to stop the restored VM")
+		return true, err
 	}
 
 	c.logger.Info().Str("task_id", taskID).

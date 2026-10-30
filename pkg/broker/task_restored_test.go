@@ -21,15 +21,28 @@ import (
 // it. It answers one record and remembers what it was asked, so a test can prove
 // the store is consulted (and not consulted for an ID that never reaches it).
 type fakeRestoredSource struct {
-	record scruntime.RestoredInstance
-	found  bool
-	err    error
-	asked  []string
+	record    scruntime.RestoredInstance
+	found     bool
+	err       error
+	deleteErr error
+	asked     []string
+	deletes   []string
 }
 
 func (f *fakeRestoredSource) Get(taskID string) (scruntime.RestoredInstance, bool, error) {
 	f.asked = append(f.asked, taskID)
 	return f.record, f.found, f.err
+}
+
+// Delete is the other half of the store the node's stop paths use: the record goes
+// once the VM it names is confirmed gone.
+func (f *fakeRestoredSource) Delete(taskID string) error {
+	f.deletes = append(f.deletes, taskID)
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.found = false
+	return nil
 }
 
 // restoredRecord builds the record a node writes for a task it started from a
@@ -407,6 +420,96 @@ func TestLookupRestoredTaskKeepsTheLogPathPerTask(t *testing.T) {
 	require.Equal(t, filepath.Join(socketDir, "new-task.console.sock"), task.ConsolePath)
 	require.Equal(t, scruntime.VsockPath(vmDir, "source-task"), task.VsockPath())
 	require.Contains(t, task.VsockPath(), "source-task")
+}
+
+// TestLookupWarnsOncePerStaleRecord pins the latch: a record whose VM is gone is
+// reported to the operator once, not on every exec, logs and health request that
+// resolves the task. The daemon's source is the one that keeps the latch; a
+// literal source has nowhere to hold it, which is why the constructor exists.
+func TestLookupWarnsOncePerStaleRecord(t *testing.T) {
+	warnings := captureWarnings(t)
+
+	socketDir := t.TempDir()
+	vmDir := t.TempDir()
+	record := restoredRecord(t, filepath.Join(vmDir, "task-1.sock"), "task-1", "source-task")
+	src := NewSocketDirSource(socketDir, "", nil, &fakeRestoredSource{record: record, found: true})
+
+	for range 3 {
+		task, ok, err := src.Lookup(context.Background(), "task-1")
+		require.NoError(t, err)
+		require.True(t, ok)
+		require.False(t, task.Running, "the record's VM is gone")
+	}
+
+	require.Equal(t, 1, len(logLines(warnings)),
+		"three lookups of one stale record warn once: %s", warnings.String())
+	require.Contains(t, warnings.String(), `"level":"warn"`)
+	require.Contains(t, warnings.String(), `"task_id":"task-1"`)
+}
+
+// TestLookupWarnsAgainForANewRecord pins the latch's key: it is the record, not
+// the task. A task that is restored again — a retried import writes a new record
+// naming a new socket — is a new fact and deserves its own warning.
+func TestLookupWarnsAgainForANewRecord(t *testing.T) {
+	warnings := captureWarnings(t)
+
+	socketDir := t.TempDir()
+	vmDir := t.TempDir()
+	store := &fakeRestoredSource{found: true}
+	store.record = restoredRecord(t, filepath.Join(vmDir, "task-1.sock"), "task-1", "source-task")
+	src := NewSocketDirSource(socketDir, "", nil, store)
+
+	_, _, err := src.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.Equal(t, 1, len(logLines(warnings)))
+
+	// The retried import wrote a record naming a different socket.
+	store.record = restoredRecord(t, filepath.Join(vmDir, "task-1-retry.sock"), "task-1", "source-task")
+	_, _, err = src.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.Equal(t, 2, len(logLines(warnings)),
+		"a record naming a new socket is a new fact: %s", warnings.String())
+}
+
+// TestLookupRestoredTaskNamesTheVMsOwnDevice pins what an export of a restored
+// task needs: the identity of the VM, not of the task that inherited it. The disk
+// is the one the VM's state file records — <RootfsDir>/tasks/<newTaskID>.ext4
+// belongs to no VM — and the ID is the source task's, whose hash names the TAP
+// device and whose socket directory names the vsock muxer.
+func TestLookupRestoredTaskNamesTheVMsOwnDevice(t *testing.T) {
+	socketDir := t.TempDir()
+	vmDir := t.TempDir()
+
+	recordSocket := filepath.Join(vmDir, "new-task.sock")
+	require.NoError(t, os.WriteFile(recordSocket, nil, 0o600))
+	record := restoredRecord(t, recordSocket, "new-task", "source-task")
+
+	task, ok, err := SocketDirSource{
+		Dir:      socketDir,
+		Restored: &fakeRestoredSource{record: record, found: true},
+	}.Lookup(context.Background(), "new-task")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	vmID, vsockDir, diskPath := task.sourceVMIdentity("/var/lib/firecracker/rootfs")
+	require.Equal(t, "source-task", vmID)
+	require.Equal(t, vmDir, vsockDir,
+		"the muxer is derived in the directory the record's path is in")
+	require.Equal(t, record.DiskPath, diskPath,
+		"the disk to copy is the one the restored VM's state file names")
+	require.NotEqual(t, filepath.Join("/var/lib/firecracker/rootfs", "tasks", "new-task.ext4"), diskPath,
+		"the new task's per-task disk belongs to no VM on a restored task")
+}
+
+// TestSourceVMIdentityOfAPlainTaskIsTheDerivation pins the unchanged half: a task
+// this node booted is its own VM, so an export names it and its per-task disk.
+func TestSourceVMIdentityOfAPlainTaskIsTheDerivation(t *testing.T) {
+	task := Task{ID: "task-1", SocketPath: "/var/run/firecracker/task-1.sock", Running: true}
+
+	vmID, vsockDir, diskPath := task.sourceVMIdentity("/var/lib/firecracker/rootfs")
+	require.Equal(t, "task-1", vmID)
+	require.Equal(t, "/var/run/firecracker", vsockDir)
+	require.Equal(t, "/var/lib/firecracker/rootfs/tasks/task-1.ext4", diskPath)
 }
 
 // logLines returns the non-empty lines a captured logger wrote.

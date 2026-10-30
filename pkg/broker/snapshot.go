@@ -146,6 +146,18 @@ type SnapshotHandlerConfig struct {
 	// snapshot_incomplete instead of starting a VMM that cannot open its disk.
 	// Empty leaves the field unset.
 	RootfsDir string
+	// Records is the node's restored-instance store: the record that says which
+	// VM a task started from a migration artifact runs.
+	//
+	// The restored-VM stop uses it under the same rule as the executor's teardown
+	// (snapshot.StopAndForgetRestoredVM): the record is deleted once the VM is
+	// confirmed gone, kept when it may still be running, and kept — with a 409 —
+	// when this daemon no longer tracks the process while the recorded socket
+	// still answers. Without it a stopped VM stays resolvable forever, because the
+	// record would mean "the task this node restored" with no VM behind it. Nil is
+	// the node that keeps no records: the stop then relays the store's answer
+	// alone, exactly as it did before records existed.
+	Records snapshot.RestoredRecordStore
 }
 
 // restoredOperation is the broker operation name for stopping a restored VM.
@@ -215,21 +227,72 @@ func (h *restoredHandler) serve(_ context.Context, task Task, w http.ResponseWri
 		return
 	}
 
-	if err := h.cfg.Store.StopRestored(task.ID); err != nil {
-		if errors.Is(err, snapshot.ErrNoRestoredVM) {
-			writeRestoredNotFound(w, task.ID)
-			return
-		}
-		writeSnapshotStoreError(w, "stop-restored", err)
+	h.stopRestored(task, w)
+}
+
+// stopRestored stops the VM a previous restore started for the task and forgets
+// the record that named it. It writes the answer, because each outcome has its own
+// status and document.
+//
+// When the node keeps a record for the task, the stop follows the executor's rule
+// (snapshot.StopAndForgetRestoredVM): one rule, one answer, whether SwarmKit or an
+// operator asks. Otherwise the store is relayed exactly as before — a task restored
+// through the experimental snapshots operation has no record, because nothing wrote
+// one for it.
+func (h *restoredHandler) stopRestored(task Task, w http.ResponseWriter) {
+	record, found, err := h.restoredRecord(task.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, output.CodeInternal,
+			"task %q: the restored-instance record could not be read on this node", task.ID)
 		return
 	}
 
-	// No socket cleanup here: the store owns the socket and unlinks it inside
-	// StopRestored, under the per-task lock that serializes restore and stop.
-	// Doing it here too would race a concurrent restore that had just recreated
-	// the path.
+	if found {
+		h.stopRecordedVM(task.ID, record, w)
+		return
+	}
 
-	w.WriteHeader(http.StatusNoContent)
+	// No record: relay the store alone. No socket cleanup here either: the store
+	// owns the socket and unlinks it inside StopRestored, under the per-task lock
+	// that serializes restore and stop. Doing it here too would race a concurrent
+	// restore that had just recreated the path.
+	switch err := h.cfg.Store.StopRestored(task.ID); {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, snapshot.ErrNoRestoredVM):
+		writeRestoredNotFound(w, task.ID)
+	default:
+		writeSnapshotStoreError(w, "stop-restored", err)
+	}
+}
+
+// stopRecordedVM stops the VM the record names under the shared rule and writes
+// the answer that rule's outcome deserves.
+func (h *restoredHandler) stopRecordedVM(
+	taskID string, record runtime.RestoredInstance, w http.ResponseWriter,
+) {
+	switch err := snapshot.StopAndForgetRestoredVM(h.cfg.Store, h.cfg.Records, record); {
+	case err == nil:
+		w.WriteHeader(http.StatusNoContent)
+	case errors.Is(err, snapshot.ErrRestoredVMUntracked):
+		// The VM is alive and this daemon lost its process handle with the restart
+		// that built this handler. Nothing here can signal it, so the honest answer
+		// is that an operator must, and the record stays as the pointer to it.
+		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
+			"task %q: this daemon no longer tracks the restored VM's process (it restarted) and the VM is still running; stop it manually, then delete its record", taskID).
+			WithDetails(map[string]any{"reason": "restored_vm_untracked"}))
+	default:
+		writeSnapshotStoreError(w, "stop-restored", err)
+	}
+}
+
+// restoredRecord reads the record for one task, answering found=false for a node
+// that keeps no records at all.
+func (h *restoredHandler) restoredRecord(taskID string) (runtime.RestoredInstance, bool, error) {
+	if interfaceDisabled(h.cfg.Records) {
+		return runtime.RestoredInstance{}, false, nil
+	}
+	return h.cfg.Records.Get(taskID)
 }
 
 // writeRestoredNotFound is the 404 for a task whose restored VM this node does
@@ -245,10 +308,17 @@ func writeRestoredNotFound(w http.ResponseWriter, taskID string) {
 // interface value is not == nil, so the interface comparison alone would let a
 // nil *snapshot.Manager reach a method call and panic; the kind check covers it.
 func snapshotStoreDisabled(store SnapshotStore) bool {
-	if store == nil {
+	return interfaceDisabled(store)
+}
+
+// interfaceDisabled reports whether v is nil or a typed-nil pointer stored in an
+// interface: the two shapes of "no implementation" a field of an interface type
+// can hold. The kind check is what catches the second.
+func interfaceDisabled(v any) bool {
+	if v == nil {
 		return true
 	}
-	value := reflect.ValueOf(store)
+	value := reflect.ValueOf(v)
 	switch value.Kind() {
 	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return value.IsNil()

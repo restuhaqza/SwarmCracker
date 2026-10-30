@@ -191,11 +191,17 @@ func seedBrokerCertificates(t *testing.T, stateDir string) (tls.Certificate, *x5
 	}, pool
 }
 
-// brokerTestClient dials with the cluster certificate and verifies the node
-// chain against the cluster CA.
+// brokerTestClient dials with the cluster certificate and verifies the node chain
+// against the cluster CA. It carries the manager's identity, not the daemon's, and
+// opens a connection per request.
+//
+// The timeout is generous on purpose. A handler that has to reach a guest waits out
+// agent.Dial's 5s retry window before it answers "unavailable", so a 5s client
+// timeout made the register-only tests a race between the dial window and the
+// client — the same test passing and failing on identical code.
 func brokerTestClient(cert tls.Certificate, pool *x509.CertPool) *http.Client {
 	return &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
 			TLSClientConfig: &tls.Config{

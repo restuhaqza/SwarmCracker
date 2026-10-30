@@ -25,6 +25,7 @@ import (
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/migration"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 )
 
@@ -184,6 +185,63 @@ func TestMigrationExportRejectsANonRunningTask(t *testing.T) {
 	}
 }
 
+// TestMigrationExportOfARestoredTaskNamesTheVMItRuns pins the case the derivation
+// cannot answer: the task was started from an artifact, so the VM inside it is the
+// source task's. Its Firecracker state names that task's TAP device and vsock muxer
+// and the disk it recorded, so the artifact must describe that VM — an artifact
+// derived from the new task's ID would name devices nobody owns and copy a disk
+// that does not exist.
+func TestMigrationExportOfARestoredTaskNamesTheVMItRuns(t *testing.T) {
+	node := newMigrationNode(t)
+	store := node.store
+
+	// A task this node restored: SwarmKit's new task ID, the source VM's devices.
+	vmDir := t.TempDir()
+	socketDir := t.TempDir()
+	recordSocket := filepath.Join(vmDir, "new-task.sock")
+	require.NoError(t, os.WriteFile(recordSocket, nil, 0o600))
+	record := restoredRecord(t, recordSocket, "new-task", "source-task")
+
+	task, ok, err := SocketDirSource{
+		Dir:      socketDir,
+		Restored: &fakeRestoredSource{record: record, found: true},
+	}.Lookup(context.Background(), "new-task")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	// What pkg/snapshot answers: the snapshot is named after the task it was asked
+	// about, and it copied the disk the export named.
+	info := seedSnapshot(t, node.snapshotRoot)
+	info.TaskID = "new-task"
+	info.RootfsPath = record.DiskPath
+	store.createInfo = info
+
+	rec := serveMigration(t, NewMigrationExportHandler(node.cfg), task, http.MethodPost,
+		"/v1/tasks/new-task/migration/export?node=node-1", nil)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	var doc MigrationExportDocument
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	artifact := doc.Artifact
+	require.NoError(t, artifact.Validate(), "an exported manifest must be complete")
+
+	require.Equal(t, "new-task", store.gotTaskID,
+		"the dump is the new task's own snapshot")
+	require.Equal(t, recordSocket, store.gotSocket,
+		"the API socket belongs to the new task, so it is the one snapshotted")
+	require.Equal(t, record.DiskPath, store.gotCreate.RootfsPath,
+		"the disk to copy is the one the restored VM's state file names")
+
+	require.Equal(t, "source-task", artifact.SourceTaskID,
+		"the artifact names the task whose devices the state file records")
+	require.Equal(t, record.TapName, artifact.TapName,
+		"the TAP device is the source task's, not the new task's")
+	require.Equal(t, record.VsockPath, artifact.VsockPath,
+		"the muxer is the source task's, in the directory the record names")
+	require.Equal(t, record.DiskPath, artifact.DiskPath,
+		"the disk the artifact describes is the one it copies")
+}
+
 // TestMigrationExportDescribesTheFilesItPublished pins the export contract end to
 // end: the snapshot is taken on the task's own socket, the manifest's entries match
 // the bytes behind the artifact directory, and the directory is named by the
@@ -210,6 +268,8 @@ func TestMigrationExportDescribesTheFilesItPublished(t *testing.T) {
 	require.Equal(t, "svc-1", artifact.ServiceID)
 	require.Equal(t, "/var/run/firecracker/task-1.vsock", artifact.VsockPath)
 	require.Equal(t, "/var/lib/firecracker/rootfs/tasks/task-1.ext4", artifact.DiskPath)
+	require.Equal(t, scruntime.TapName("task-1", 0), artifact.TapName,
+		"a task this node booted names its own devices")
 	require.Equal(t, filepath.Join(node.cfg.ArtifactDir, artifact.ID), doc.Dir)
 	require.True(t, doc.Linked, "the default install links the files rather than copying them")
 
