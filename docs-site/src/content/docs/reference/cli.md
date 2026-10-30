@@ -181,6 +181,7 @@ Service (replicated microVM) management.
 | `--golden` | — | Boot a prebuilt golden image (e.g. `ubuntu-24.04-docker@1.0.0`) |
 | `--with-registry-auth` | `false` | Send the manager's credentials for `--image` to the nodes (resolved at create time; see [Registry authentication](#registry-authentication)) |
 | `--replicas` | `1` | Number of replicas |
+| `--autoscale` | — | Keep the replica count between bounds by scaling on guest CPU: `min=2,max=10,metric=cpu,target=70[,cooldown-up=60s][,cooldown-down=5m]` (see [Autoscaling](/guides/operations/#autoscaling)) |
 | `--cpu` | — | CPU cores (e.g. `1.5`); sizes the microVM (see below) |
 | `--memory` | — | Memory size (e.g. `512M`, `1G`); sizes the microVM, honoured exactly (see below) |
 | `--balloon-mib` | — | Memory-balloon target in MiB (positive integer, less than the memory the VM will boot with; see [Memory Balloon](/guides/advanced/#memory-balloon)) |
@@ -363,7 +364,7 @@ invalid value is **rejected** (`--health-retries 0`, `--health-interval 0s`), as
 is any `--health-*` flag supplied without `--health-cmd`; no flag is silently
 ignored.
 
-**`service update` flags:** `--image`, `--replicas`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--cpuset` (tri-state: omit to preserve the current pin, a cpulist to set it, an empty value to remove it), `--hugepages` (tri-state: omit to preserve the current request, `--hugepages` to set it, `--hugepages=false` to remove it), `--numa-node` (tri-state: omit to preserve the current binding, a nodelist to set it, an empty value to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
+**`service update` flags:** `--image`, `--replicas`, `--autoscale`, `--cpu-limit`, `--memory-limit`, `--balloon-mib` (tri-state: omit to preserve the current target, a MiB value to set it, `0` to remove it), `--cpuset` (tri-state: omit to preserve the current pin, a cpulist to set it, an empty value to remove it), `--hugepages` (tri-state: omit to preserve the current request, `--hugepages` to set it, `--hugepages=false` to remove it), `--numa-node` (tri-state: omit to preserve the current binding, a nodelist to set it, an empty value to remove it), `--env-add`, `--env-rm`, `--publish-mode`, `--mount`, `--volume` / `-v` (replace the mounts), `--network`, `--secret`, `--config`, `--hostname`, `--dns`, `--health-*` (replace the healthcheck; `--health-cmd` is required), `--with-registry-auth` (set, or with `=false` clear, the pull credential — see [Registry authentication](#registry-authentication)), `--rollback`, `--force` / `-f`, and the scheduling/lifecycle flags from `service create` (`--mode`, `--constraint`, `--placement-pref`, `--restart-*`, `--update-*`, `--rollback-*`). The rejected execution flags (`--user`, `--cap-add`, `--cap-drop`, `--read-only`) are also accepted here so they fail with the same clear error. `--mode` is accepted but a **change** is rejected (SwarmKit does not allow it); recreate the service to change its mode.
 
 `--replicas` on `service update` applies only when the flag is present: passing
 `--replicas 0` scales to zero, while omitting it leaves the replica count
@@ -377,6 +378,32 @@ updated task will carry — the `--memory-limit` given on the same command, else
 the limit already on the service (and the 512 MiB default when it declares none)
 — and sets the `swarmcracker.balloon` label, so the change takes effect on the
 task SwarmKit starts next (the device cannot be reconfigured in place).
+
+`--autoscale` replaces the fixed replica count with a policy the manager keeps
+between two bounds. The value is
+`min=<n>,max=<n>,metric=cpu,target=<percent>`, with the optional
+`cooldown-up=<dur>` and `cooldown-down=<dur>`; keys may be given in any order.
+`min` is at least 1, `max` at least `min`, `target` is a percentage of one vCPU
+above 0 and at most 100 (`target=70` is 0.70 of a vCPU per replica), and `cpu` is
+the only metric in this release. The cooldowns default to `60s` and `300s`. The
+policy is stored as the six `swarmcracker.autoscale.*` service labels (`min`,
+`max`, `metric`, `target`, `cooldown_up`, `cooldown_down`), so it survives an
+update that does not mention it and `service inspect` prints it back. A policy
+declared purely through `--label` on `service create` is validated exactly like
+the flag, and a `--label` that disagrees with `--autoscale` is refused rather
+than resolved silently.
+
+Two combinations are refused instead of stored and ignored: a policy on a
+`--mode global` service (a global service runs one task per node and has no
+replica count to scale), and an explicit replica count outside the policy — on
+`service create --replicas`, `service update --replicas` and `service scale`
+alike, with the error naming `min` and `max`. `--replicas 0` and `service scale
+<service> 0` are the deliberate exception: zero means the service is paused, and
+the loop neither aligns nor scales it. On `service update`, `--autoscale` is
+tri-state: omit it to preserve the stored policy, give one to replace it, pass
+`--autoscale ""` to remove every autoscale label. See
+[Autoscaling](/guides/operations/#autoscaling) for the sampling cadence, the
+hysteresis rules and the metrics.
 
 `--cpuset` on `service update` is **tri-state**: omitting it leaves the service's
 current pin untouched, a cpulist replaces it (canonicalised, as above), and an

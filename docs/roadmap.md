@@ -1,7 +1,7 @@
 # SwarmCracker Roadmap
 
 - **Status:** Active
-- **Last updated:** 2026-10-27
+- **Last updated:** 2026-10-30
 - **Owner:** Restu Muzakir
 - **Tracking epic:** [#40](https://github.com/restuhaqza/SwarmCracker/issues/40)
 
@@ -23,7 +23,7 @@ golden images (`recipes/*.yaml`), volume drivers (dir/block/quota), jailer,
 Prometheus metrics, `vm attach` console, node drain/activate, secret/config
 *injection* into the guest, and a sysvinit/systemd-aware boot path.
 
-## Delivery status (2026-10-27)
+## Delivery status (2026-10-30)
 
 Tier 1 is delivered and released in `v0.12.0`:
 
@@ -41,7 +41,7 @@ Tier 1 is delivered and released in `v0.12.0`:
 | #48 overlay networks | Done | `network create/rm`, per-network bridges and VXLAN |
 | #45 observability depth | **Done** | #88 in-guest per-task metrics, #89 cross-node logs, #91 optional OTel tracing |
 | #46 live migration | **Open** | — |
-| #49 autoscaling / placement | **Open** | — |
+| #49 autoscaling / placement | **Done** | `--autoscale` policy labels (`pkg/types/autoscale.go`), decision engine (`pkg/autoscaler`), manager loop (`cmd/swarmd-firecracker/autoscaler.go`), unschedulable-placement diagnostics (`cmd/swarmcracker/unschedulable.go`) |
 
 Automated e2e on a real cluster lives in `test-automation/multinode/cluster-lab.sh`:
 `ingress` covers #35/#36 (fan-out, failover, UDP, cleanup) and `three-tier`

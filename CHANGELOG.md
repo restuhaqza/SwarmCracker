@@ -31,13 +31,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   four series existed but had no writer, so per-VM CPU, memory and network use
   could only be guessed from the Firecracker process. A failed sample publishes
   nothing rather than a zero, and teardown deletes the task's series.
+- **Service autoscaling on guest CPU** — `service create|update --autoscale
+  min=2,max=10,metric=cpu,target=70[,cooldown-up=60s][,cooldown-down=5m]` keeps a
+  service's replica count between two bounds by scaling on the CPU its workload
+  burns inside its own microVM (issue #49). The policy is stored as six
+  `swarmcracker.autoscale.*` service labels, so it survives an update that does
+  not mention it and `service inspect` prints it back; `--autoscale ""` clears
+  it. The manager's leader samples every running replica every 30 seconds,
+  converts successive cumulative guest readings into cores per replica, and
+  moves the count by one at a time: up on the first sample above
+  `target × 1.1`, down only after two consecutive samples below
+  `target × 0.9` and its cooldown, never outside `[min,max]` or below 1. A
+  service at 0 replicas counts as paused and is left alone. On the manager,
+  `swarmcracker_service_replicas` reports the count the last decision settled on
+  and `swarmcracker_service_scale_events_total` counts the changes actually
+  applied.
 
 ### Changed
 - **`service ls` shows the service mode** — the table gains a `MODE` column
   (`replicated` / `global`), so a global service is visible without inferring it
   from the `REPLICAS` cell.
+- **`service ps` and `task ls` explain a refused placement** — the `ERROR`
+  column carries SwarmKit's verdict, which is generic ("scheduling constraints
+  not satisfied on 2 nodes") and truncated at 40 characters, so an operator had
+  to guess which constraint key was missing. When no task of the listing is
+  placed, the table is now followed by one line naming the service's constraints
+  and the node labels the cluster actually reports. It is a diagnostic, not an
+  error: no exit code changes, it prints in table mode only, and `task ls
+  --health` does not print it.
 
 ### Fixed
+- **A constraint is named only with evidence** — the placement diagnostic above
+  could have blamed the service's constraint whenever one existed, so a service
+  refused because the nodes were full would be reported as the constraint's
+  fault: SwarmKit joins every failing filter into one error, and a constraint's
+  presence is not evidence that it failed. The constraint is named only when the
+  task error carries the constraint filter's own explanation; otherwise the note
+  quotes the scheduler verbatim and lists the declared constraints as declared.
+  Terminal rows no longer suppress the note either: `service ps` lists every
+  state, so a `SHUTDOWN` row from before a scale-down would make an unplaceable
+  service look placed.
+- **An out-of-bounds replica count is refused, not stored** — `service create
+  --replicas`, `service update --replicas` and `service scale` now reject a count
+  outside the service's autoscale `min`/`max` and name both bounds, instead of
+  storing a service the manager loop would have to correct on its first pass.
+  `--replicas 0` and `service scale <service> 0` stay valid: zero means paused,
+  so nothing is clamped.
 - **Console logs are written on a systemd-managed node** — the shipped units run
   with `ProtectSystem=strict` and only made `/run/firecracker` and
   `/run/swarmkit` writable, not `/run/swarmcracker`, the daemon's default log
