@@ -15,10 +15,11 @@ import (
 // feature is on.
 func startTracing(ctx *cli.Context) (*tracing.Provider, error) {
 	provider, err := tracing.New(context.Background(), tracing.Config{
-		Enabled:     ctx.Bool("tracing-enabled"),
-		Endpoint:    ctx.String("tracing-endpoint"),
-		ServiceName: ctx.String("tracing-service-name"),
-		SampleRatio: ctx.Float64("tracing-sample-ratio"),
+		Enabled:        ctx.Bool("tracing-enabled"),
+		Endpoint:       ctx.String("tracing-endpoint"),
+		ServiceName:    ctx.String("tracing-service-name"),
+		ServiceVersion: Version,
+		SampleRatio:    ctx.Float64("tracing-sample-ratio"),
 	})
 	if err != nil {
 		return nil, err

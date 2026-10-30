@@ -471,13 +471,20 @@ it exporting nothing.
 
 | Span | Covers |
 |------|--------|
-| `task.prepare` | Turning the task into a bootable VM definition |
-| `├─ image.prepare` | OCI pull and rootfs build — usually the longest step |
-| `task.start` | Translation, port publishing and the VM boot |
-| `├─ task.translate` | Building the Firecracker config from the task |
-| `task.wait` | The task's running lifetime — this span is as long as the VM lives |
-| `task.shutdown` / `task.terminate` | Graceful stop / forced stop |
-| `task.remove` | Resource teardown |
+| `task.lifecycle` | The whole task, from the first prepare to teardown — the trace's root |
+| `├─ task.prepare` | Turning the task into a bootable VM definition |
+| `│  └─ image.prepare` | OCI pull and rootfs build — usually the longest step |
+| `├─ task.start` | Translation, port publishing and the VM boot |
+| `│  └─ task.translate` | Building the Firecracker config from the task |
+| `├─ task.wait` | The task's running lifetime — this span is as long as the VM lives |
+| `├─ task.shutdown` / `task.terminate` | Graceful stop / forced stop |
+| `└─ task.remove` | Resource teardown |
+
+One task is **one trace**, even though SwarmKit calls `Prepare`, `Start`, `Wait`
+and the teardown separately with a fresh context each time: the root span is
+opened on the first phase and the rest parent to it, while the work still runs
+under the caller's own context so its cancellation is never lost. Searching a
+collector for `task.id` therefore shows the entire life of one task.
 
 Every span carries `task.id`, `service.id`, `node.id`, `node.hostname` and
 `image.ref` when the task has them. A span whose operation returned an error is

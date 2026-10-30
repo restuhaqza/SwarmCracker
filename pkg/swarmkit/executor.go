@@ -704,6 +704,13 @@ type Controller struct {
 	// captured once at construction so opening a span never reads c.task, which
 	// Update may reassign and which a teardown holds c.mu for.
 	spanAttrs []types.Attribute
+	// rootCtx/rootEnd hold the task's root span. spanMu guards them and is never
+	// taken while c.mu is held and never held while calling into the tracer's
+	// Start for a child, so a span can neither deadlock a teardown nor duplicate
+	// the root.
+	spanMu  sync.Mutex
+	rootCtx context.Context
+	rootEnd types.EndSpan
 
 	// OnRemove is called when the controller is removed from the executor
 	OnRemove func()
@@ -978,7 +985,7 @@ func (c *Controller) startVM(ctx context.Context) error {
 
 	// Translate to VM config. The translator takes no context, so its span is a
 	// leaf of task.start rather than a parent of anything.
-	_, endTranslate := c.startSpan(ctx, SpanTaskTranslate)
+	_, endTranslate := c.startChild(ctx, SpanTaskTranslate)
 	vmConfig, err := c.trans.Translate(task)
 	endTranslate(err)
 	if err != nil {
@@ -1365,7 +1372,10 @@ func (c *Controller) Shutdown(ctx context.Context) (err error) {
 	// The stop itself is bounded by its own timeout context rather than this
 	// one, so no child span is opened under it.
 	_, endSpan := c.startSpan(ctx, SpanTaskShutdown)
-	defer func() { endSpan(err) }()
+	defer func() {
+		endSpan(err)
+		c.finishLifecycle(err)
+	}()
 
 	c.logger.Info().Msg("Shutting down task gracefully")
 
@@ -1431,7 +1441,10 @@ func (c *Controller) Shutdown(ctx context.Context) (err error) {
 // Terminate forcefully terminates the task.
 func (c *Controller) Terminate(ctx context.Context) (err error) {
 	ctx, endSpan := c.startSpan(ctx, SpanTaskTerminate)
-	defer func() { endSpan(err) }()
+	defer func() {
+		endSpan(err)
+		c.finishLifecycle(err)
+	}()
 
 	c.logger.Info().Msg("Forcefully terminating task")
 
@@ -1482,7 +1495,10 @@ func (c *Controller) Terminate(ctx context.Context) (err error) {
 // Remove removes all task resources.
 func (c *Controller) Remove(ctx context.Context) (err error) {
 	ctx, endSpan := c.startSpan(ctx, SpanTaskRemove)
-	defer func() { endSpan(err) }()
+	defer func() {
+		endSpan(err)
+		c.finishLifecycle(err)
+	}()
 
 	c.logger.Info().Msg("Removing task resources")
 
@@ -1698,6 +1714,11 @@ func (c *Controller) Close() error {
 	// teardown paths).
 	c.stopHealthMonitor()
 	c.stopMetricsMonitor()
+
+	// A task still tracked when the executor shuts down never reaches Remove:
+	// end its root span so the trace is exported instead of dropped with the
+	// process.
+	c.finishLifecycle(nil)
 
 	return nil
 }

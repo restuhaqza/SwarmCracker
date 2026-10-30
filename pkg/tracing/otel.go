@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"os"
 
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"go.opentelemetry.io/otel/attribute"
@@ -18,10 +19,11 @@ const instrumentationName = "github.com/restuhaqza/swarmcracker/pkg/tracing"
 
 // providerOptions is the resolved form of Config that newTracerProvider needs.
 type providerOptions struct {
-	endpoint    string
-	insecure    bool
-	serviceName string
-	ratio       float64
+	endpoint       string
+	insecure       bool
+	serviceName    string
+	serviceVersion string
+	ratio          float64
 }
 
 // provider is the slice of the SDK the rest of this package uses, so a test can
@@ -44,7 +46,7 @@ var newTracerProvider = func(ctx context.Context, opts providerOptions) (provide
 
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithBatcher(exporter),
-		sdktrace.WithResource(newResource(opts.serviceName)),
+		sdktrace.WithResource(newResource(opts.serviceName, opts.serviceVersion)),
 		// ParentBased keeps a caller's sampling decision when a trace crosses a
 		// process boundary, and applies the node's ratio to traces that start
 		// here.
@@ -68,17 +70,27 @@ var newExporter = func(ctx context.Context, opts providerOptions) (sdktrace.Span
 }
 
 // newResource describes this node to the collector.
-func newResource(serviceName string) *resource.Resource {
-	return resource.NewSchemaless(
+func newResource(serviceName, serviceVersion string) *resource.Resource {
+	attrs := []attribute.KeyValue{
 		attribute.String("service.name", serviceName),
-		attribute.String("service.version", version()),
+		// The hostname is what distinguishes two nodes exporting to one
+		// collector; without it their spans are indistinguishable.
 		attribute.String("service.instance.id", hostname()),
-	)
+	}
+	if serviceVersion != "" {
+		attrs = append(attrs, attribute.String("service.version", serviceVersion))
+	}
+	return resource.NewSchemaless(attrs...)
 }
 
-// version is a package variable so a test can pin it. The daemon's own version
-// string lives in package main, which this package must not import.
-var version = func() string { return "" }
+// hostname is a package variable so a test can pin the instance id.
+var hostname = func() string {
+	name, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return name
+}
 
 // otelTracer adapts the OpenTelemetry tracer to types.Tracer.
 type otelTracer struct {
@@ -88,12 +100,26 @@ type otelTracer struct {
 // Start implements types.Tracer.
 func (o otelTracer) Start(ctx context.Context, name string, attrs ...types.Attribute) (context.Context, types.EndSpan) {
 	ctx, span := o.tracer.Start(ctx, name, oteltrace.WithAttributes(toOTelAttributes(attrs)...))
+	return ctx, endSpan(span)
+}
 
-	return ctx, func(err error) {
+// StartNested implements types.Tracer: the span parents to parent's span while
+// the returned context still comes from ctx, so the caller's cancellation and
+// values survive.
+func (o otelTracer) StartNested(ctx, parent context.Context, name string, attrs ...types.Attribute) (context.Context, types.EndSpan) {
+	if p := oteltrace.SpanFromContext(parent); p.SpanContext().IsValid() {
+		ctx = oteltrace.ContextWithSpan(ctx, p)
+	}
+	return o.Start(ctx, name, attrs...)
+}
+
+// endSpan turns span completion into the caller's EndSpan.
+func endSpan(span oteltrace.Span) types.EndSpan {
+	return func(err error) {
 		if err != nil {
-			// RecordError keeps the stack-free error event; SetStatus is what
+			// RecordError keeps the message as an error event; SetStatus is what
 			// makes the span show as failed in a trace view. Both are wanted:
-			// one carries the message, the other the verdict.
+			// one carries the detail, the other the verdict.
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}

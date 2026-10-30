@@ -12,12 +12,28 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// recordedSpan is one span a test tracer saw, including how it ended.
+// recordedSpan is one span a test tracer saw, including how it ended and what it
+// hung under.
 type recordedSpan struct {
-	name  string
-	attrs []types.Attribute
-	err   error
-	ended bool
+	id     int
+	name   string
+	attrs  []types.Attribute
+	parent int
+	err    error
+	ended  bool
+}
+
+// spanCtxKey carries a test span the way the SDK carries a real one, so the fake
+// reproduces parenting instead of approximating it.
+type spanCtxKey struct{}
+
+func contextWithSpan(ctx context.Context, span *recordedSpan) context.Context {
+	return context.WithValue(ctx, spanCtxKey{}, span)
+}
+
+func spanFromContext(ctx context.Context) *recordedSpan {
+	span, _ := ctx.Value(spanCtxKey{}).(*recordedSpan)
+	return span
 }
 
 // recordingTracer captures spans instead of exporting them, so a test can assert
@@ -27,14 +43,31 @@ type recordingTracer struct {
 	spans []*recordedSpan
 }
 
-func (r *recordingTracer) Start(ctx context.Context, name string, attrs ...types.Attribute) (context.Context, types.EndSpan) {
-	span := &recordedSpan{name: name, attrs: attrs}
-
+func (r *recordingTracer) newSpan(name string, attrs []types.Attribute, parent *recordedSpan) *recordedSpan {
 	r.mu.Lock()
-	r.spans = append(r.spans, span)
-	r.mu.Unlock()
+	defer r.mu.Unlock()
 
-	return ctx, func(err error) {
+	span := &recordedSpan{id: len(r.spans) + 1, name: name, attrs: attrs}
+	if parent != nil {
+		span.parent = parent.id
+	}
+	r.spans = append(r.spans, span)
+	return span
+}
+
+func (r *recordingTracer) Start(ctx context.Context, name string, attrs ...types.Attribute) (context.Context, types.EndSpan) {
+	span := r.newSpan(name, attrs, spanFromContext(ctx))
+	return contextWithSpan(ctx, span), func(err error) {
+		span.err = err
+		span.ended = true
+	}
+}
+
+// StartNested mirrors the real adapter: the parent comes from parent, the
+// returned context keeps ctx's values.
+func (r *recordingTracer) StartNested(ctx, parent context.Context, name string, attrs ...types.Attribute) (context.Context, types.EndSpan) {
+	span := r.newSpan(name, attrs, spanFromContext(parent))
+	return contextWithSpan(ctx, span), func(err error) {
 		span.err = err
 		span.ended = true
 	}
@@ -75,6 +108,19 @@ func (r *recordingTracer) find(t *testing.T, name string) *recordedSpan {
 	return found
 }
 
+// parentOf returns the parent of the named span, or nil.
+func (r *recordingTracer) parentOf(t *testing.T, name string) *recordedSpan {
+	t.Helper()
+
+	span := r.find(t, name)
+	if span.parent == 0 {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.spans[span.parent-1]
+}
+
 func (r *recordingTracer) namesLocked() []string {
 	out := make([]string, 0, len(r.spans))
 	for _, span := range r.spans {
@@ -102,15 +148,17 @@ func newTracingController(tracer types.Tracer, task *api.Task) *Controller {
 		imagePrep:  &mockImagePrepSuccess{},
 		networkMgr: &mockNetworkManagerFull{},
 		vmmMgr:     &mockVMMManagerSuccess{},
+		trans:      &MockTaskTranslator{},
 		tracer:     tracer,
 	}
 	ctrl.spanAttrs = taskSpanAttributes(ctrl.convertTask(), ctrl.config.Hostname)
 	return ctrl
 }
 
-// TestPrepareTracesAnImageChildSpan pins the shape of a prepare: the operation
-// span wraps the image step, so a slow boot can be attributed to a pull.
-func TestPrepareTracesAnImageChildSpan(t *testing.T) {
+// TestPrepareTracesUnderOneRoot pins the shape of a task's trace: a root span,
+// the operation under it, and the image step under that — so "what took the
+// time" is answerable from one tree.
+func TestPrepareTracesUnderOneRoot(t *testing.T) {
 	tracer := &recordingTracer{}
 	task := &api.Task{
 		ID:        "task-prepare-trace",
@@ -124,7 +172,13 @@ func TestPrepareTracesAnImageChildSpan(t *testing.T) {
 
 	require.NoError(t, ctrl.Prepare(context.Background()))
 
-	assert.Equal(t, []string{SpanTaskPrepare, SpanImagePrepare}, tracer.names())
+	assert.Equal(t, []string{SpanTaskLifecycle, SpanTaskPrepare, SpanImagePrepare}, tracer.names())
+
+	assert.Nil(t, tracer.parentOf(t, SpanTaskLifecycle), "the root has no parent")
+	require.NotNil(t, tracer.parentOf(t, SpanTaskPrepare))
+	assert.Equal(t, SpanTaskLifecycle, tracer.parentOf(t, SpanTaskPrepare).name)
+	require.NotNil(t, tracer.parentOf(t, SpanImagePrepare))
+	assert.Equal(t, SpanTaskPrepare, tracer.parentOf(t, SpanImagePrepare).name)
 
 	prepare := tracer.find(t, SpanTaskPrepare)
 	assert.True(t, prepare.ended, "Prepare returned, so its span must be ended")
@@ -133,6 +187,35 @@ func TestPrepareTracesAnImageChildSpan(t *testing.T) {
 	assert.Equal(t, "svc-1", prepare.attr("service.id"))
 	assert.Equal(t, "node-1", prepare.attr("node.id"))
 	assert.Equal(t, "nginx:latest", prepare.attr("image.ref"))
+}
+
+// TestEveryPhaseSharesOneRoot covers the reason the root exists: SwarmKit calls
+// Prepare, Start and Wait with a fresh context each time, so without it the trace
+// view would show unrelated traces for one task.
+func TestEveryPhaseSharesOneRoot(t *testing.T) {
+	tracer := &recordingTracer{}
+	ctrl := newTracingController(tracer, &api.Task{ID: "task-phases"})
+
+	require.NoError(t, ctrl.Prepare(context.Background()))
+	require.NoError(t, ctrl.Start(context.Background()))
+	require.NoError(t, ctrl.Wait(context.Background()))
+	require.NoError(t, ctrl.Remove(context.Background()))
+
+	root := tracer.find(t, SpanTaskLifecycle)
+	for _, name := range []string{SpanTaskPrepare, SpanTaskStart, SpanTaskWait, SpanTaskRemove, SpanTaskTranslate, SpanImagePrepare} {
+		parent := tracer.parentOf(t, name)
+		require.NotNilf(t, parent, "span %q has no parent", name)
+
+		// Walk to the top: everything must end at the single root.
+		for parent.name != SpanTaskLifecycle {
+			next := tracer.parentOf(t, parent.name)
+			require.NotNilf(t, next, "span %q is not attached to the root", parent.name)
+			parent = next
+		}
+		assert.Equal(t, root.id, parent.id)
+	}
+
+	assert.True(t, tracer.find(t, SpanTaskLifecycle).ended, "Remove ends the task's root span")
 }
 
 // TestPrepareSpanRecordsTheFailure pins that a failed operation is exported as
@@ -167,21 +250,61 @@ func TestWaitSpanCoversTheTaskLifetime(t *testing.T) {
 	assert.Equal(t, "task-wait", wait.attr("task.id"))
 }
 
+// TestStartNestedKeepsTheCallerContext pins why the interface has two methods:
+// the span parents to the task's root, but the work still runs under the context
+// the caller passed, so SwarmKit's cancellation is not lost.
+func TestStartNestedKeepsTheCallerContext(t *testing.T) {
+	tracer := &recordingTracer{}
+	ctrl := newTracingController(tracer, &api.Task{ID: "task-ctx"})
+
+	// The root exists already, as it does for any task past its first phase.
+	ctrl.rootCtx, ctrl.rootEnd = tracer.Start(context.Background(), SpanTaskLifecycle)
+	root := tracer.find(t, SpanTaskLifecycle)
+
+	type key struct{}
+	callerCtx, cancel := context.WithCancel(context.WithValue(context.Background(), key{}, "kept"))
+	cancel()
+
+	ctx, end := ctrl.startSpan(callerCtx, SpanTaskStart)
+	defer end(nil)
+
+	assert.Equal(t, "kept", ctx.Value(key{}), "the caller's values must survive")
+	assert.ErrorIs(t, ctx.Err(), context.Canceled, "the caller's cancellation must survive")
+	assert.Equal(t, root.id, tracer.find(t, SpanTaskStart).parent)
+}
+
+// TestFinishLifecycleIsIdempotent covers the paths that overlap: Shutdown,
+// Terminate, Remove and Close can all observe the same task ending.
+func TestFinishLifecycleIsIdempotent(t *testing.T) {
+	tracer := &recordingTracer{}
+	ctrl := newTracingController(tracer, &api.Task{ID: "task-once"})
+
+	ctrl.rootSpan(context.Background())
+	require.NotPanics(t, func() {
+		ctrl.finishLifecycle(nil)
+		ctrl.finishLifecycle(errors.New("again"))
+		ctrl.finishLifecycle(nil)
+	})
+	assert.Len(t, tracer.spans, 1)
+}
+
 // TestStartSpanWithoutTracerDoesNotPanic covers every controller that is built
 // without tracing — the default, and the way the existing unit tests construct
 // one. Span helpers must cost nothing and never panic.
 func TestStartSpanWithoutTracerDoesNotPanic(t *testing.T) {
 	ctrl := &Controller{task: &api.Task{ID: "task-notrace"}}
 
-	var (
-		ctx context.Context
-		end types.EndSpan
-	)
 	require.NotPanics(t, func() {
-		ctx, end = ctrl.startSpan(context.Background(), SpanTaskStart)
+		ctx, end := ctrl.startSpan(context.Background(), SpanTaskStart)
 		end(nil)
+		assert.NotNil(t, ctx)
+
+		_, endChild := ctrl.startChild(context.Background(), SpanImagePrepare)
+		endChild(nil)
+
+		ctrl.finishLifecycle(nil)
 	})
-	assert.NotNil(t, ctx)
+	assert.Nil(t, ctrl.rootCtx, "a controller without a tracer must not build a root span")
 }
 
 // TestTaskSpanAttributesOmitsEmptyValues pins that absent attributes are left

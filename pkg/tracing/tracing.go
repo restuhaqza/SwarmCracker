@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -51,6 +50,8 @@ type Config struct {
 	// ServiceName is the resource's service.name. Empty means
 	// DefaultServiceName.
 	ServiceName string
+	// ServiceVersion is the resource's service.version, omitted when empty.
+	ServiceVersion string
 	// SampleRatio is the fraction of traces to export, in (0, 1]. Zero (unset)
 	// means DefaultSampleRatio.
 	SampleRatio float64
@@ -96,10 +97,11 @@ func New(ctx context.Context, cfg Config) (*Provider, error) {
 	}
 
 	provider, err := newTracerProvider(ctx, providerOptions{
-		endpoint:    endpoint,
-		insecure:    insecure,
-		serviceName: name,
-		ratio:       ratio,
+		endpoint:       endpoint,
+		insecure:       insecure,
+		serviceName:    name,
+		serviceVersion: cfg.ServiceVersion,
+		ratio:          ratio,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("tracing: %w", err)
@@ -165,14 +167,4 @@ func parseEndpoint(raw string) (hostport string, insecure bool, err error) {
 		return "", false, fmt.Errorf("tracing endpoint %q must be a base URL: the path /v1/traces is appended", raw)
 	}
 	return u.Host, insecure, nil
-}
-
-// hostname is a package variable so a test can pin the resource's
-// service.instance.id.
-var hostname = func() string {
-	name, err := os.Hostname()
-	if err != nil {
-		return "unknown"
-	}
-	return name
 }
