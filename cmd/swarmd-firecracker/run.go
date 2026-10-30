@@ -49,10 +49,19 @@ func runAgent(ctx *cli.Context) error {
 		log.G(context.Background()).Infof("Default config created at %s", config.GetDefaultConfigPath())
 	}
 
+	// Optional OpenTelemetry tracing, off by default: with it disabled no
+	// exporter exists and nothing is dialled.
+	tracerProvider, err := startTracing(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to configure tracing: %w", err)
+	}
+	defer shutdownTracing(tracerProvider)
+
 	// Create SwarmCracker executor
 	natEnabled := ctx.Bool("nat-enabled")
 	executorConfig := &swarmkit.Config{
 		FirecrackerPath: "firecracker",
+		Tracer:          tracerProvider.Tracer(),
 		KernelPath:      ctx.String("kernel-path"),
 		RootfsDir:       ctx.String("rootfs-dir"),
 		GoldenDir:       ctx.String("golden-dir"),

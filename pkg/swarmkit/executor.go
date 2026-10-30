@@ -141,6 +141,11 @@ type Config struct {
 	// Consul service discovery
 	ConsulEnabled bool   `yaml:"consul_enabled"`
 	ConsulAddress string `yaml:"consul_address"`
+
+	// Tracer opens spans for task-lifecycle operations. Nil disables tracing,
+	// which is the default and costs nothing: every call site goes through a
+	// no-op tracer.
+	Tracer types.Tracer `yaml:"-"`
 }
 
 // NewExecutor creates a new SwarmKit executor backed by SwarmCracker.
@@ -691,6 +696,22 @@ type Controller struct {
 	socketPath string
 	logger     zerolog.Logger
 
+	// tracer opens control-plane spans. It is never nil: NewController falls
+	// back to a no-op tracer, so call sites need no branch and a disabled
+	// trace costs one interface call.
+	tracer types.Tracer
+	// spanAttrs are the attributes every span of this task carries. They are
+	// captured once at construction so opening a span never reads c.task, which
+	// Update may reassign and which a teardown holds c.mu for.
+	spanAttrs []types.Attribute
+	// rootCtx/rootEnd hold the task's root span. spanMu guards them and is never
+	// taken while c.mu is held and never held while calling into the tracer's
+	// Start for a child, so a span can neither deadlock a teardown nor duplicate
+	// the root.
+	spanMu  sync.Mutex
+	rootCtx context.Context
+	rootEnd types.EndSpan
+
 	// OnRemove is called when the controller is removed from the executor
 	OnRemove func()
 }
@@ -710,7 +731,7 @@ func NewController(
 		return nil, fmt.Errorf("failed to create translator: %w", err)
 	}
 
-	return &Controller{
+	ctrl := &Controller{
 		task:       task,
 		config:     config,
 		imagePrep:  imagePrep,
@@ -719,9 +740,13 @@ func NewController(
 		secretMgr:  secretMgr,
 		vmmMgr:     vmmMgr,
 		trans:      trans,
+		tracer:     config.Tracer,
 		socketPath: filepath.Join(config.SocketDir, task.ID+".sock"),
 		logger:     log.With().Str("task_id", task.ID).Logger(),
-	}, nil
+	}
+	ctrl.spanAttrs = taskSpanAttributes(ctrl.convertTask(), config.Hostname)
+
+	return ctrl, nil
 }
 
 // Update updates the task definition.
@@ -747,7 +772,10 @@ func (c *Controller) Update(ctx context.Context, t *api.Task) error {
 }
 
 // Prepare prepares the task for execution.
-func (c *Controller) Prepare(ctx context.Context) error {
+func (c *Controller) Prepare(ctx context.Context) (err error) {
+	ctx, endSpan := c.startSpan(ctx, SpanTaskPrepare)
+	defer func() { endSpan(err) }()
+
 	c.logger.Info().Msg("Preparing task")
 
 	c.mu.Lock()
@@ -766,7 +794,7 @@ func (c *Controller) Prepare(ctx context.Context) error {
 		if err := c.applyGoldenImage(ctx, task, ref); err != nil {
 			return fmt.Errorf("golden image: %w", err)
 		}
-	} else if err := c.imagePrep.Prepare(ctx, task); err != nil {
+	} else if err := c.prepareImage(ctx, task); err != nil {
 		return fmt.Errorf("image preparation failed: %w", err)
 	}
 
@@ -905,7 +933,10 @@ func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref
 // the check passes. SwarmKit's agent transitions a task to RUNNING the moment
 // Start returns, so holding Start until healthy is what makes
 // `--update-order start-first` wait for real health.
-func (c *Controller) Start(ctx context.Context) error {
+func (c *Controller) Start(ctx context.Context) (err error) {
+	ctx, endSpan := c.startSpan(ctx, SpanTaskStart)
+	defer func() { endSpan(err) }()
+
 	c.logger.Info().Msg("Starting task")
 
 	if err := c.startVM(ctx); err != nil {
@@ -952,8 +983,11 @@ func (c *Controller) startVM(ctx context.Context) error {
 		Int("networks_in_internal_task", len(task.Networks)).
 		Msg("Start: task.Networks count")
 
-	// Translate to VM config
+	// Translate to VM config. The translator takes no context, so its span is a
+	// leaf of task.start rather than a parent of anything.
+	_, endTranslate := c.startChild(ctx, SpanTaskTranslate)
 	vmConfig, err := c.trans.Translate(task)
+	endTranslate(err)
 	if err != nil {
 		return fmt.Errorf("translation failed: %w", err)
 	}
@@ -1263,7 +1297,10 @@ func (c *Controller) recordTerminalStop() {
 // ("finished"); any error makes it fatal (FAILED). So a nil return here means
 // the VM went away on its own and the task completed, and that clean end still
 // needs its single terminal record.
-func (c *Controller) Wait(ctx context.Context) error {
+func (c *Controller) Wait(ctx context.Context) (err error) {
+	ctx, endSpan := c.startSpan(ctx, SpanTaskWait)
+	defer func() { endSpan(err) }()
+
 	c.logger.Debug().Msg("Waiting for task")
 
 	task := c.convertTask()
@@ -1331,7 +1368,15 @@ func (c *Controller) Wait(ctx context.Context) error {
 }
 
 // Shutdown gracefully shuts down the task.
-func (c *Controller) Shutdown(ctx context.Context) error {
+func (c *Controller) Shutdown(ctx context.Context) (err error) {
+	// The stop itself is bounded by its own timeout context rather than this
+	// one, so no child span is opened under it.
+	_, endSpan := c.startSpan(ctx, SpanTaskShutdown)
+	defer func() {
+		endSpan(err)
+		c.finishLifecycle(err)
+	}()
+
 	c.logger.Info().Msg("Shutting down task gracefully")
 
 	// Stop watching for health regressions before stopping the VM: the monitor
@@ -1394,7 +1439,13 @@ func (c *Controller) Shutdown(ctx context.Context) error {
 }
 
 // Terminate forcefully terminates the task.
-func (c *Controller) Terminate(ctx context.Context) error {
+func (c *Controller) Terminate(ctx context.Context) (err error) {
+	ctx, endSpan := c.startSpan(ctx, SpanTaskTerminate)
+	defer func() {
+		endSpan(err)
+		c.finishLifecycle(err)
+	}()
+
 	c.logger.Info().Msg("Forcefully terminating task")
 
 	// Stop and join the health monitor before stopping the VM (idempotent).
@@ -1442,7 +1493,13 @@ func (c *Controller) Terminate(ctx context.Context) error {
 }
 
 // Remove removes all task resources.
-func (c *Controller) Remove(ctx context.Context) error {
+func (c *Controller) Remove(ctx context.Context) (err error) {
+	ctx, endSpan := c.startSpan(ctx, SpanTaskRemove)
+	defer func() {
+		endSpan(err)
+		c.finishLifecycle(err)
+	}()
+
 	c.logger.Info().Msg("Removing task resources")
 
 	// Stop and join the health monitor before tearing resources down
@@ -1657,6 +1714,11 @@ func (c *Controller) Close() error {
 	// teardown paths).
 	c.stopHealthMonitor()
 	c.stopMetricsMonitor()
+
+	// A task still tracked when the executor shuts down never reaches Remove:
+	// end its root span so the trace is exported instead of dropped with the
+	// process.
+	c.finishLifecycle(nil)
 
 	return nil
 }

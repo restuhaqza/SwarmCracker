@@ -7,6 +7,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
+	"github.com/restuhaqza/swarmcracker/pkg/tracing"
 	"github.com/urfave/cli/v2"
 )
 
@@ -309,6 +310,29 @@ func newAppFlags() []cli.Flag {
 			Usage: "Deadline for one snapshot request relayed to a node; create copies the task " +
 				"disk, so this is minutes rather than seconds",
 			Value: broker.DefaultSnapshotTimeout,
+		},
+		// Optional OpenTelemetry tracing (off by default). With it off, no
+		// exporter is constructed and nothing is dialled.
+		&cli.BoolFlag{
+			Name: "tracing-enabled",
+			Usage: "Export OpenTelemetry traces for task-lifecycle operations " +
+				"(off by default; requires --tracing-endpoint)",
+			Value: false,
+		},
+		&cli.StringFlag{
+			Name: "tracing-endpoint",
+			Usage: "OTLP/HTTP collector base URL used when tracing is enabled, " +
+				"e.g. http://127.0.0.1:4318 (the /v1/traces path is appended)",
+		},
+		&cli.StringFlag{
+			Name:  "tracing-service-name",
+			Usage: "service.name reported with exported traces",
+			Value: tracing.DefaultServiceName,
+		},
+		&cli.Float64Flag{
+			Name:  "tracing-sample-ratio",
+			Usage: "Fraction of traces to export, in (0, 1]; the default exports all of them",
+			Value: tracing.DefaultSampleRatio,
 		},
 	}
 }
