@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -385,8 +386,14 @@ func (m *Manager) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, err
 	case http.StatusNoContent, http.StatusNotFound:
 		return nil, nil
 	case http.StatusOK:
-		return decodeNodeDocument(resp.Body, route.Node.ID, "health",
-			func(health *v1.TaskHealth) bool { return health.Status != "" })
+		// Decode into a value, not a *v1.TaskHealth: a "null" body succeeds with a
+		// nil document, and a pointer predicate would then dereference nil.
+		health, err := decodeNodeDocument(resp.Body, route.Node.ID, "health",
+			func(health v1.TaskHealth) bool { return health.Status != "" })
+		if err != nil {
+			return nil, err
+		}
+		return &health, nil
 	default:
 		return nil, decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "health")
 	}
@@ -397,16 +404,38 @@ func (m *Manager) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, err
 // rather than a half-filled document; complete reports whether the decoded value
 // can stand in for a reading (zero is a valid sample, so "non-empty" is not a
 // safe rule for every document).
+//
+// Callers decode into a value type, never a pointer: a JSON "null" decodes
+// successfully into a nil pointer, and a panic here would escape through the
+// reader goroutine pkg/apihttp starts without a recover. isNilDocument keeps that
+// mistake from turning into a daemon crash even if a later caller forgets.
 func decodeNodeDocument[T any](body io.Reader, nodeID, noun string, complete func(T) bool) (T, error) {
 	var doc T
 	decoder := json.NewDecoder(io.LimitReader(body, maxRelayedErrorBytes))
-	if err := decoder.Decode(&doc); err != nil || !complete(doc) {
+	if err := decoder.Decode(&doc); err != nil || isNilDocument(doc) || !complete(doc) {
 		var zero T
 		return zero, output.NewErrorf(output.CodeInternal,
 			"node %q returned an unreadable %s document", nodeID, noun).
 			WithDetails(map[string]any{"nodeId": nodeID})
 	}
 	return doc, nil
+}
+
+// isNilDocument reports whether a decoded document is nil. An interface, map,
+// slice, func, channel or pointer decodes a JSON "null" as nil without an error,
+// so a completeness predicate for such a type would dereference nil.
+func isNilDocument[T any](doc T) bool {
+	value := reflect.ValueOf(doc)
+	if !value.IsValid() {
+		return true
+	}
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map,
+		reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 // decodeNodeError relays a node error document. Its code, message and retry hint

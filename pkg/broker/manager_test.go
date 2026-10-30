@@ -768,6 +768,64 @@ func TestNodeReadErrorWordingIsShared(t *testing.T) {
 	}
 }
 
+// TestNodeReadNullDocumentIsAnInternalError pins the fix-round-1 regression: the
+// shared decoder was instantiated with a pointer type for health, so a node
+// answering 200 with a JSON "null" decoded into a nil document and the
+// completeness predicate dereferenced it. That panic fires in the reader
+// goroutine pkg/apihttp starts without a recover, so it stopped the daemon
+// instead of marking one page partial. A "null" body breaks the wire contract and
+// must read back as the same typed internal failure as any other unreadable
+// document, for both nouns.
+func TestNodeReadNullDocumentIsAnInternalError(t *testing.T) {
+	pki := newTestPKI(t)
+
+	reads := map[string]func(*Manager) error{
+		"health": func(mgr *Manager) error {
+			health, err := mgr.Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+			require.Nil(t, health, "an unreadable document must not stand in for a reading")
+			return err
+		},
+		"metrics": func(mgr *Manager) error {
+			sample, err := mgr.Metrics(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+			require.Empty(t, sample.TaskID, "an unreadable document must not stand in for a sample")
+			return err
+		},
+	}
+
+	for noun, read := range reads {
+		t.Run(noun, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("a 200 null body panicked instead of returning a typed error: %v", r)
+				}
+			}()
+
+			src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+			_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+				"health":         replyWithDocument(http.StatusOK, "null"),
+				MetricsOperation: replyWithDocument(http.StatusOK, "null"),
+			})
+
+			err := read(healthTestManager(t, pki, baseURL, 0, nil))
+
+			var typed *output.Error
+			require.ErrorAs(t, err, &typed)
+			require.Equal(t, output.CodeInternal, typed.Code)
+			require.Equal(t, "node-1", typed.Details["nodeId"])
+		})
+	}
+}
+
+// replyWithDocument is a broker handler that answers with one raw body, so a
+// manager test can hand the decoder a document the wire contract forbids.
+func replyWithDocument(status int, body string) Handler {
+	return func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", publicMediaType)
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}
+}
+
 // TestManagerHealthUnreachableNodeIsTyped proves a transport failure is a
 // retryable, stable message that names no internal address. The code is
 // unavailable: unreachable belongs to the client's own failed dial.
