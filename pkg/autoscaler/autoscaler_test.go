@@ -142,6 +142,44 @@ func TestDecide(t *testing.T) {
 			wantState: State{LastChange: t0, LastDirection: DirectionDown},
 		},
 		{
+			// The counter is not capped at two, so the reason can say how long
+			// the service has actually been cold: the fourth sample scales down
+			// "for 3 samples", not "for 2".
+			name:   "a third cold sample scales down and the reason counts it",
+			policy: cpuPolicy(),
+			obs:    Observation{Replicas: 4, Cores: cold},
+			state:  settled(2),
+			want: Decision{
+				Replicas:  3,
+				Direction: DirectionDown,
+				Reason:    "scaled down: 0.43 cores under target 0.70 for 3 samples",
+			},
+			wantState: State{LastChange: t0, LastDirection: DirectionDown},
+		},
+		{
+			// ... and it keeps counting while a cooldown blocks the decision, so
+			// the evidence is a real consecutive-sample count rather than a
+			// saturated flag.
+			name:   "the below-target counter keeps counting past two",
+			policy: cpuPolicy(),
+			obs:    Observation{Replicas: 4, Cores: cold},
+			state: State{
+				LastChange:    t0.Add(-10 * time.Second),
+				LastDirection: DirectionDown,
+				BelowTarget:   4,
+			},
+			want: Decision{
+				Replicas:  4,
+				Direction: DirectionNone,
+				Reason:    "waiting out the 300s scale-down cooldown",
+			},
+			wantState: State{
+				LastChange:    t0.Add(-10 * time.Second),
+				LastDirection: DirectionDown,
+				BelowTarget:   5,
+			},
+		},
+		{
 			name:   "hot inside the scale-up cooldown holds",
 			policy: cpuPolicy(),
 			obs:    Observation{Replicas: 3, Cores: hot},
@@ -160,7 +198,7 @@ func TestDecide(t *testing.T) {
 			},
 		},
 		{
-			// Hot but already at the ceiling: the clamp wins over the load, and
+			// Hot but already at the ceiling: the bound wins over the load, and
 			// the reason says which bound stopped it.
 			name:   "hot at the maximum holds",
 			policy: cpuPolicy(),
@@ -256,10 +294,12 @@ func TestDecide(t *testing.T) {
 			wantState: settled(2),
 		},
 		{
-			// A count above the ceiling is not a load decision: it is corrected
-			// immediately, even though this sample is hot, so the policy bounds
-			// are never left behind by a policy update.
-			name:   "a count above the maximum is clamped down",
+			// A count above the ceiling is not a load decision, and correcting
+			// it is not this engine's job: it holds, names the bound it
+			// violates, and leaves the state alone so no cooldown is stamped for
+			// an alignment the caller never asked for. The hot sample does not
+			// turn it into a scale-up either.
+			name:   "a count above the maximum holds instead of correcting",
 			policy: cpuPolicy(),
 			obs: Observation{
 				Replicas: 12,
@@ -267,28 +307,45 @@ func TestDecide(t *testing.T) {
 			},
 			state: settled(1),
 			want: Decision{
-				Replicas:  10,
-				Direction: DirectionDown,
-				Reason:    "clamped down to the maximum 10 (was 12)",
+				Replicas:  12,
+				Direction: DirectionNone,
+				Reason:    "holding: 12 is above the maximum 10",
 			},
-			wantState: State{LastChange: t0, LastDirection: DirectionDown},
+			wantState: settled(1),
 		},
 		{
-			// The mirror image: a count below the floor is raised to the floor,
-			// whatever the sample says. This is how a service created with the
-			// default `--replicas 1` reaches `min=2` on the first pass.
-			name:   "a count below the minimum is clamped up",
+			// The mirror image: a count below the floor holds and names the
+			// minimum. Task 5's initial alignment is what raises it, not a tick.
+			name:   "a count below the minimum holds instead of correcting",
 			policy: cpuPolicy(),
 			obs:    Observation{Replicas: 1, Cores: idle},
 			state:  settled(0),
 			want: Decision{
-				Replicas:  2,
-				Direction: DirectionUp,
-				Reason:    "clamped up to the minimum 2 (was 1)",
+				Replicas:  1,
+				Direction: DirectionNone,
+				Reason:    "holding: 1 is below the minimum 2",
 			},
-			wantState: State{LastChange: t0, LastDirection: DirectionUp},
+			wantState: settled(0),
 		},
 		{
+			// 0 replicas is the operator's pause, not a count to be raised: the
+			// engine never restarts a paused service, and the tick leaves the
+			// state exactly as it found it.
+			name:   "a paused service is held and never restarted",
+			policy: cpuPolicy(),
+			obs:    Observation{Replicas: 0, Cores: hot},
+			state:  settled(1),
+			want: Decision{
+				Replicas:  0,
+				Direction: DirectionNone,
+				Reason:    "holding: 0 replicas means the service is paused",
+			},
+			wantState: settled(1),
+		},
+		{
+			// A no-data tick decides nothing, so it must not move the state
+			// either — not even the hysteresis counter, which still describes
+			// the last round that was actually measured.
 			name:   "no readings is no data",
 			policy: cpuPolicy(),
 			obs:    Observation{Replicas: 4},
@@ -298,7 +355,22 @@ func TestDecide(t *testing.T) {
 				Direction: DirectionNone,
 				Reason:    "no replicas reporting",
 			},
-			wantState: settled(0),
+			wantState: settled(2),
+		},
+		{
+			// No data is checked first, before the bounds: with nothing measured
+			// there is nothing to decide, so a drifted count is reported as
+			// "no replicas reporting" and the state survives untouched.
+			name:   "no readings with an out-of-range count is still no data",
+			policy: cpuPolicy(),
+			obs:    Observation{Replicas: 42},
+			state:  settled(2),
+			want: Decision{
+				Replicas:  42,
+				Direction: DirectionNone,
+				Reason:    "no replicas reporting",
+			},
+			wantState: settled(2),
 		},
 		{
 			name:   "a NaN reading is no data",
@@ -310,7 +382,7 @@ func TestDecide(t *testing.T) {
 				Direction: DirectionNone,
 				Reason:    "no data: ignoring an invalid cpu reading",
 			},
-			wantState: settled(0),
+			wantState: settled(1),
 		},
 		{
 			name:   "a negative reading is no data",
@@ -322,7 +394,7 @@ func TestDecide(t *testing.T) {
 				Direction: DirectionNone,
 				Reason:    "no data: ignoring an invalid cpu reading",
 			},
-			wantState: settled(0),
+			wantState: settled(1),
 		},
 		{
 			name:   "an infinite reading is no data",
@@ -465,6 +537,21 @@ func TestDecide(t *testing.T) {
 			wantState: settled(0),
 		},
 		{
+			// target is a percentage, so 150 cannot be compared against: 150% of
+			// a core is not a band any reading can be checked against. The
+			// parser rejects it; this is the last line of defence.
+			name:   "a target above one hundred holds",
+			policy: policyTarget(150),
+			obs:    Observation{Replicas: 4, Cores: hot},
+			state:  settled(0),
+			want: Decision{
+				Replicas:  4,
+				Direction: DirectionNone,
+				Reason:    "invalid policy: target is not a usable percentage",
+			},
+			wantState: settled(0),
+		},
+		{
 			// min is documented as >= 1, but Decide is the last line of defence
 			// and must never hand back zero replicas.
 			name:   "a minimum below one is treated as one",
@@ -479,19 +566,20 @@ func TestDecide(t *testing.T) {
 			wantState: settled(2),
 		},
 		{
-			// The bounds hold even when the rest of the policy is unusable:
-			// correcting a drifted count needs no sample, so it is not deferred
-			// to a policy the operator has to fix first.
-			name:   "an unusable target still corrects a count above the maximum",
+			// The count is examined before the target, so an operator whose
+			// replica count drifted reads which bound it violated, not the policy
+			// bug behind it. Both are holds either way: nothing is written and no
+			// cooldown is stamped.
+			name:   "an out-of-range count holds even with an unusable target",
 			policy: policyTarget(0),
 			obs:    Observation{Replicas: 12, Cores: idle},
 			state:  settled(1),
 			want: Decision{
-				Replicas:  10,
-				Direction: DirectionDown,
-				Reason:    "clamped down to the maximum 10 (was 12)",
+				Replicas:  12,
+				Direction: DirectionNone,
+				Reason:    "holding: 12 is above the maximum 10",
 			},
-			wantState: State{LastChange: t0, LastDirection: DirectionDown},
+			wantState: settled(1),
 		},
 		{
 			// The cooldown is "at least CooldownUp between two scale-ups", so
@@ -512,17 +600,18 @@ func TestDecide(t *testing.T) {
 		},
 		{
 			// A policy whose max is below its min still yields a usable range
-			// instead of an unsatisfiable one.
+			// instead of an unsatisfiable one — and a count outside it holds,
+			// naming the collapsed bound rather than being moved to it.
 			name:   "a maximum below the minimum is treated as the minimum",
 			policy: policyBounds(5, 2),
 			obs:    Observation{Replicas: 4, Cores: idle},
 			state:  settled(0),
 			want: Decision{
-				Replicas:  5,
-				Direction: DirectionUp,
-				Reason:    "clamped up to the minimum 5 (was 4)",
+				Replicas:  4,
+				Direction: DirectionNone,
+				Reason:    "holding: 4 is below the minimum 5",
 			},
-			wantState: State{LastChange: t0, LastDirection: DirectionUp},
+			wantState: settled(0),
 		},
 	}
 
@@ -562,6 +651,14 @@ func TestAverageCores(t *testing.T) {
 		{name: "positive infinity poisons the round", cores: []float64{math.Inf(1)}, ok: false},
 		{name: "negative infinity poisons the round", cores: []float64{math.Inf(-1)}, ok: false},
 		{name: "a negative reading poisons the round", cores: []float64{0.5, -0.001}, ok: false},
+		// Every input can be finite while the sum is not: two readings near
+		// math.MaxFloat64 overflow to +Inf, and an infinite mean must be
+		// rejected here rather than sail through to the band comparison.
+		{
+			name:  "an overflowing sum poisons the round",
+			cores: []float64{math.MaxFloat64, math.MaxFloat64},
+			ok:    false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -576,11 +673,12 @@ func TestAverageCores(t *testing.T) {
 }
 
 // TestDecideProperty is the property test: whatever policy, observation and
-// state the engine is handed, the replica count it returns is inside the
-// policy's bounds (and never below 1), the direction agrees with the count it
-// reports, the reason is a lowercase sentence fragment, and no input makes it
-// panic. The bounds are recomputed here from the policy rather than read from
-// the package, so a bug in the clamp cannot hide behind the same helper.
+// state the engine is handed, the replica count it returns is either the observed
+// count (a hold) or that count moved by exactly one replica in the reported
+// direction, both stay inside the policy's bounds whenever the count moves, the
+// reason is a lowercase sentence fragment, and no input makes it panic. The
+// bounds are recomputed here from the policy rather than read from the package,
+// so a bug in the bounds helper cannot hide behind itself.
 func TestDecideProperty(t *testing.T) {
 	rng := rand.New(rand.NewSource(20260701))
 
@@ -588,9 +686,10 @@ func TestDecideProperty(t *testing.T) {
 	directions := map[Direction]bool{DirectionNone: true, DirectionUp: true, DirectionDown: true}
 
 	for i := 0; i < 2000; i++ {
-		// target is sometimes unusable on purpose: an out-of-range count must
-		// still be clamped in that case, so the invalid-target path belongs in
-		// the property too.
+		// target is sometimes unusable on purpose: an out-of-range count holds
+		// whether or not the target is usable, so the ordering of the bounds and
+		// the invalid-target check belongs in the property too. The 0.5..120
+		// range also feeds the (0, 100] upper bound the table pins at 150.
 		target := 0.5 + rng.Float64()*120 // sometimes outside (0,100]
 		switch rng.Intn(8) {
 		case 0:
@@ -650,10 +749,15 @@ func TestDecideProperty(t *testing.T) {
 			decision, next = Decide(policy, obs, state, t0)
 		}, "case %d: policy %+v obs %+v state %+v", i, policy, obs, state)
 
-		assert.GreaterOrEqual(t, decision.Replicas, floor,
-			"case %d: %+v must not scale below max(1, min)", i, decision)
-		assert.LessOrEqual(t, decision.Replicas, ceiling,
-			"case %d: %+v must not scale above max", i, decision)
+		// A decision never moves the count by more than one replica: any larger
+		// correction is the caller's explicit "initial alignment" step, not a
+		// load decision, and never carries a cooldown stamped by this engine.
+		step := decision.Replicas - obs.Replicas
+		if step < 0 {
+			step = -step
+		}
+		assert.LessOrEqual(t, step, 1,
+			"case %d: %+v must move the count from %d by at most one", i, decision, obs.Replicas)
 		assert.True(t, directions[decision.Direction],
 			"case %d: unexpected direction %q", i, decision.Direction)
 		assert.NotEmpty(t, decision.Reason, "case %d: every decision needs a reason", i)
@@ -663,7 +767,7 @@ func TestDecideProperty(t *testing.T) {
 			"case %d: %q must not end with a period", i, decision.Reason)
 
 		// The direction must describe the count that was reported, so a caller
-		// can trust "up means more replicas than the observation".
+		// can trust "up means one more replica than the observation".
 		switch decision.Direction {
 		case DirectionNone:
 			assert.Equal(t, obs.Replicas, decision.Replicas,
@@ -675,19 +779,50 @@ func TestDecideProperty(t *testing.T) {
 			assert.GreaterOrEqual(t, next.BelowTarget, 0,
 				"case %d: the below-target counter is a count, never negative", i)
 		case DirectionUp:
-			assert.Greater(t, decision.Replicas, obs.Replicas, "case %d: up must add a replica", i)
+			assert.Equal(t, obs.Replicas+1, decision.Replicas, "case %d: up must add one replica", i)
+			assert.GreaterOrEqual(t, decision.Replicas, floor,
+				"case %d: %+v must not scale below max(1, min)", i, decision)
+			assert.LessOrEqual(t, decision.Replicas, ceiling,
+				"case %d: %+v must not scale above max", i, decision)
 			assert.Equal(t, t0, next.LastChange, "case %d: a change records its time", i)
 			assert.Equal(t, DirectionUp, next.LastDirection, "case %d: a change records its direction", i)
 			assert.Zero(t, next.BelowTarget, "case %d: a change restarts the hysteresis", i)
 		case DirectionDown:
-			assert.Less(t, decision.Replicas, obs.Replicas, "case %d: down must remove a replica", i)
+			assert.Equal(t, obs.Replicas-1, decision.Replicas, "case %d: down must remove one replica", i)
+			assert.GreaterOrEqual(t, decision.Replicas, floor,
+				"case %d: %+v must not scale below max(1, min)", i, decision)
+			assert.LessOrEqual(t, decision.Replicas, ceiling,
+				"case %d: %+v must not scale above max", i, decision)
 			assert.Equal(t, t0, next.LastChange, "case %d: a change records its time", i)
 			assert.Equal(t, DirectionDown, next.LastDirection, "case %d: a change records its direction", i)
 			assert.Zero(t, next.BelowTarget, "case %d: a change restarts the hysteresis", i)
+		}
+
+		// The no-data, paused and out-of-range holds decide nothing at all, so
+		// they must hand the state back exactly as it arrived.
+		if decision.Direction == DirectionNone && undecidable(obs, floor, ceiling) {
+			assert.Equal(t, state, next,
+				"case %d: %q must not touch the state", i, decision.Reason)
 		}
 
 		again, againState := Decide(policy, obs, state, t0)
 		assert.Equal(t, decision, again, "case %d: Decide must be deterministic", i)
 		assert.Equal(t, next, againState, "case %d: Decide must be pure", i)
 	}
+}
+
+// undecidable reports whether the observation leaves Decide nothing to decide:
+// no usable readings, a paused service (0 replicas), or a count outside the
+// policy's bounds. Those ticks must return the state untouched, which is what
+// makes "the engine never stamps a cooldown it did not earn" checkable here.
+func undecidable(obs Observation, floor, ceiling int) bool {
+	if len(obs.Cores) == 0 || obs.Replicas == 0 || obs.Replicas < floor || obs.Replicas > ceiling {
+		return true
+	}
+	for _, reading := range obs.Cores {
+		if math.IsNaN(reading) || math.IsInf(reading, 0) || reading < 0 {
+			return true
+		}
+	}
+	return false
 }

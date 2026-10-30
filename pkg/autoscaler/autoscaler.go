@@ -85,16 +85,19 @@ type State struct {
 	LastDirection Direction
 
 	// BelowTarget counts consecutive samples strictly below the lower band. It
-	// is what makes scale-down need two samples instead of one, and it saturates
-	// at scaleDownSamples: the counter only answers "have we seen enough yet",
-	// so there is no reason to let it grow without bound.
+	// is what makes scale-down need two samples instead of one, and it counts
+	// every cold sample — including the ones a cooldown holds back — so the
+	// reason can say how long the service has been cold and stays truthful.
 	BelowTarget int
 }
 
 // Decision is the outcome of one tick.
 type Decision struct {
-	// Replicas is the replica count the service should run. It is always within
-	// [max(1, policy.Min), max(max(1, policy.Min), policy.Max)].
+	// Replicas is the replica count the service should run. A hold reports the
+	// observed count unchanged; a change reports it moved by exactly one in
+	// Direction. An out-of-range observed count is therefore echoed, not
+	// corrected: bringing it back inside the policy is the caller's explicit
+	// "initial alignment" step, never a load decision.
 	Replicas int
 
 	// Direction is DirectionNone when Replicas equals the observed count, so a
@@ -109,18 +112,22 @@ type Decision struct {
 
 // Decide turns one round of samples into a replica count.
 //
-// The rules, in the order they are applied:
+// The rules, in the order they are applied. The first four are "nothing to
+// decide" ticks: they hold, and they return State exactly as it arrived, so a
+// pause, a broken scrape or a count that drifted outside the policy cannot arm a
+// cooldown or reset the hysteresis evidence.
 //
-//   - An observed count outside [max(1, min), max] is corrected immediately,
-//     even inside a cooldown, even when the sample points the other way and even
-//     when the rest of the policy is unusable: a count outside the declared
-//     bounds is policy drift, not load, and the bounds must hold on every tick.
-//   - A policy whose target is not a usable percentage then holds, leaving the
-//     state exactly as it arrived: scaling on a target that cannot be compared
-//     against is guessing.
-//   - No data (no readings, or a negative/non-finite reading) holds, and forgets
-//     the hysteresis evidence, which described a service that is no longer
-//     visible.
+//   - No data — no readings at all, or a negative/non-finite reading — holds.
+//     This is checked first, before the count and the bounds: with nothing
+//     measured there is nothing to decide, whatever the count says.
+//   - A count of 0 replicas is the operator's pause. Decide never restarts a
+//     paused service: un-pausing is an explicit action.
+//   - An observed count outside [max(1, min), max] holds and names the bound it
+//     violates. It is not corrected here: Decide only ever moves the count by
+//     one, and an "initial alignment" is the caller's own step.
+//   - A policy whose target is not a usable percentage (outside (0, 100], or
+//     NaN/±Inf) holds: scaling on a target that cannot be compared against is
+//     guessing.
 //   - A running cooldown for the last direction blocks every change, including a
 //     flip in the opposite direction. A sample still updates the below-target
 //     counter while it waits, so the cooldown delays a scale-down rather than
@@ -135,42 +142,50 @@ type Decision struct {
 // Any change resets BelowTarget, records `now` as LastChange and the direction in
 // LastDirection.
 func Decide(p types.AutoscalePolicy, obs Observation, st State, now time.Time) (Decision, State) {
-	floor, ceiling := bounds(p)
-
-	if obs.Replicas > ceiling {
-		return changed(ceiling, DirectionDown, fmt.Sprintf("clamped down to the maximum %d (was %d)", ceiling, obs.Replicas), now)
-	}
-	if obs.Replicas < floor {
-		return changed(floor, DirectionUp, fmt.Sprintf("clamped up to the minimum %d (was %d)", floor, obs.Replicas), now)
-	}
-
-	// target is in cores per replica: a policy target of 70 means 0.70 cores.
-	target := p.Target / 100
-	if math.IsNaN(target) || math.IsInf(target, 0) || target <= 0 {
-		return hold(obs.Replicas, "invalid policy: target is not a usable percentage", st)
-	}
-
+	// No data comes first: neither the count nor the policy can be acted on
+	// without a measurement, and forgetting the hysteresis here would be a lie.
 	if len(obs.Cores) == 0 {
-		st.BelowTarget = 0
 		return hold(obs.Replicas, "no replicas reporting", st)
 	}
 
 	avg, ok := averageCores(obs.Cores)
 	if !ok {
-		st.BelowTarget = 0
 		return hold(obs.Replicas, "no data: ignoring an invalid cpu reading", st)
+	}
+
+	// 0 replicas is the operator's pause, not a count to be raised: the engine
+	// has no way to tell "paused on purpose" from "scaled to nothing", so it
+	// must assume the former and leave the service alone.
+	if obs.Replicas == 0 {
+		return hold(obs.Replicas, "holding: 0 replicas means the service is paused", st)
+	}
+
+	// An out-of-range count is a hold, not a correction: only the caller knows
+	// whether it wants the count aligned to a policy it just changed.
+	floor, ceiling := bounds(p)
+	if obs.Replicas > ceiling {
+		return hold(obs.Replicas, fmt.Sprintf("holding: %d is above the maximum %d", obs.Replicas, ceiling), st)
+	}
+	if obs.Replicas < floor {
+		return hold(obs.Replicas, fmt.Sprintf("holding: %d is below the minimum %d", obs.Replicas, floor), st)
+	}
+
+	// target is in cores per replica: a policy target of 70 means 0.70 cores.
+	// Anything outside (0, 100] cannot be compared against, so it is a policy bug
+	// and not a load signal (the parser rejects it; this is the last defence).
+	target := p.Target / 100
+	if math.IsNaN(target) || math.IsInf(target, 0) || target <= 0 || target > 1 {
+		return hold(obs.Replicas, "invalid policy: target is not a usable percentage", st)
 	}
 
 	hot := avg > target*(1+bandFraction)
 	cold := avg < target*(1-bandFraction)
 
-	// The counter moves on every sample, in or out of a cooldown, so a scale-down
-	// is decided on consecutive observations rather than on the tick the cooldown
-	// happens to expire.
+	// The counter moves on every cold sample, in or out of a cooldown, so a
+	// scale-down is decided on consecutive observations rather than on the tick
+	// the cooldown happens to expire — and the reason can quote the real run.
 	if cold {
-		if st.BelowTarget < scaleDownSamples {
-			st.BelowTarget++
-		}
+		st.BelowTarget++
 	} else {
 		st.BelowTarget = 0
 	}
@@ -205,7 +220,7 @@ func Decide(p types.AutoscalePolicy, obs Observation, st State, now time.Time) (
 	}
 }
 
-// bounds returns the replica range a decision may land in. min is documented as
+// bounds returns the replica range a change may land in. min is documented as
 // at least 1, but Decide is the last line of defence before a patch reaches the
 // service, so a malformed policy is narrowed instead of trusted: the floor is
 // never below 1 and the range is never empty.
@@ -222,9 +237,12 @@ func bounds(p types.AutoscalePolicy) (floor, ceiling int) {
 }
 
 // averageCores reduces the readings to the mean cores per replica, and reports
-// false when any reading is unusable. One bad reading poisons the whole round:
-// averaging around it would let a failed probe, which typically reports 0 or NaN,
-// drag the service into a scale-down.
+// false when any reading is unusable, or when the readings are individually
+// fine but their sum is not. One bad reading poisons the whole round: averaging
+// around it would let a failed probe, which typically reports 0 or NaN, drag the
+// service into a scale-down. The sum is checked as well because a set of finite
+// readings can still overflow to +Inf, which would read as an infinitely hot
+// service.
 func averageCores(cores []float64) (float64, bool) {
 	if len(cores) == 0 {
 		return 0, false
@@ -235,6 +253,9 @@ func averageCores(cores []float64) (float64, bool) {
 			return 0, false
 		}
 		sum += reading
+	}
+	if math.IsInf(sum, 0) {
+		return 0, false
 	}
 	return sum / float64(len(cores)), true
 }
@@ -264,8 +285,10 @@ func cooldownFor(st State, now time.Time, p types.AutoscalePolicy) (time.Duratio
 	return 0, false
 }
 
-// changed builds a decision that moves the count, with the state a change
-// implies: the cooldown clock starts now and the hysteresis restarts.
+// changed builds a decision that moves the count by exactly one replica, with the
+// state a change implies: the cooldown clock starts now and the hysteresis
+// restarts. Every caller passes obs.Replicas ± 1, which is what makes
+// DirectionUp/DirectionDown mean "one more"/"one fewer" without qualification.
 func changed(replicas int, direction Direction, reason string, now time.Time) (Decision, State) {
 	return Decision{Replicas: replicas, Direction: direction, Reason: reason},
 		State{LastChange: now, LastDirection: direction}
