@@ -10,21 +10,27 @@ import (
 	"testing"
 	"time"
 
-	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
+// artifactCreatedAt is the export instant of the fixture manifest. It is fixed
+// so the JSON pins below are stable; the builder's own clock is checked
+// separately, against the wall clock.
+var artifactCreatedAt = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+
 func validArtifact() Artifact {
 	return Artifact{
-		SchemaVersion: SchemaVersion,
+		SchemaVersion: v1.SchemaVersion,
 		Kind:          ArtifactKind,
 		ID:            "mig-0123456789abcdef",
 		SourceTaskID:  "task-1",
 		SourceNodeID:  "node-1",
 		ServiceID:     "service-1",
-		CreatedAt:     time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
+		CreatedAt:     artifactCreatedAt,
+		SnapshotAt:    artifactCreatedAt.Add(-time.Minute),
 		TapName:       "tap-7afaa346-0",
 		VsockPath:     "/var/run/firecracker/task-1.vsock",
 		DiskPath:      "/var/lib/firecracker/rootfs/tasks/task-1.ext4",
@@ -35,10 +41,7 @@ func validArtifact() Artifact {
 }
 
 func TestArtifactValidateAcceptsValidArtifact(t *testing.T) {
-	artifact := validArtifact()
-
-	require.NoError(t, artifact.Validate())
-	assert.Equal(t, validArtifact(), artifact, "Validate must not normalise the manifest in place")
+	require.NoError(t, validArtifact().Validate())
 }
 
 func TestArtifactValidateRejectsBadFields(t *testing.T) {
@@ -100,14 +103,19 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 			wantPhrase: "sourceNodeId is empty",
 		},
 		{
-			name:       "service ID missing",
-			mutate:     func(a *Artifact) { a.ServiceID = "" },
-			wantPhrase: "serviceId is empty",
-		},
-		{
 			name:       "creation time missing",
 			mutate:     func(a *Artifact) { a.CreatedAt = time.Time{} },
 			wantPhrase: "createdAt is zero",
+		},
+		{
+			name:       "snapshot time missing",
+			mutate:     func(a *Artifact) { a.SnapshotAt = time.Time{} },
+			wantPhrase: "snapshotAt is zero",
+		},
+		{
+			name:       "snapshot taken after the export that describes it",
+			mutate:     func(a *Artifact) { a.SnapshotAt = artifactCreatedAt.Add(time.Second) },
+			wantPhrase: "is after createdAt",
 		},
 		{
 			name:       "tap name missing",
@@ -123,6 +131,26 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 			name:       "tap name is a path",
 			mutate:     func(a *Artifact) { a.TapName = "tap-7afaa346-0/x" },
 			wantPhrase: "is not a valid interface name",
+		},
+		{
+			name:       "tap name is not the shared shape",
+			mutate:     func(a *Artifact) { a.TapName = "tap7afaa3460" },
+			wantPhrase: `tapName "tap7afaa3460" is not a TAP device name`,
+		},
+		{
+			name:       "tap name has an uppercase digest",
+			mutate:     func(a *Artifact) { a.TapName = "tap-7AFAA346-0" },
+			wantPhrase: "is not a TAP device name",
+		},
+		{
+			name:       "tap name has no interface index",
+			mutate:     func(a *Artifact) { a.TapName = "tap-7afaa346" },
+			wantPhrase: "is not a TAP device name",
+		},
+		{
+			name:       "tap name belongs to another task",
+			mutate:     func(a *Artifact) { a.TapName = "tap-deadbeef-0" },
+			wantPhrase: `tapName "tap-deadbeef-0" does not belong to task "task-1"`,
 		},
 		{
 			name:       "vsock path missing",
@@ -160,6 +188,11 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 			wantPhrase: "stateFile.size is 0",
 		},
 		{
+			name:       "state file above the size ceiling",
+			mutate:     func(a *Artifact) { a.StateFile.Size = maxFileSize + 1 },
+			wantPhrase: "stateFile.size is 68719476737: want at most 68719476736 bytes",
+		},
+		{
 			name:       "memory file checksum is short",
 			mutate:     func(a *Artifact) { a.MemoryFile.SHA256 = strings.Repeat("b", 63) },
 			wantPhrase: "memoryFile.sha256 is 63 characters",
@@ -175,6 +208,11 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 			wantPhrase: "memoryFile.sha256 is not 64 lowercase hex characters",
 		},
 		{
+			name:       "memory file above the size ceiling",
+			mutate:     func(a *Artifact) { a.MemoryFile.Size = maxFileSize + 1 },
+			wantPhrase: "memoryFile.size is 68719476737",
+		},
+		{
 			name:       "disk file checksum missing",
 			mutate:     func(a *Artifact) { a.DiskFile.SHA256 = "" },
 			wantPhrase: "diskFile.sha256 is empty",
@@ -183,6 +221,11 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 			name:       "disk file size negative",
 			mutate:     func(a *Artifact) { a.DiskFile.Size = -1 },
 			wantPhrase: "diskFile.size is -1",
+		},
+		{
+			name:       "disk file present but undescribed",
+			mutate:     func(a *Artifact) { a.DiskFile = File{Name: "rootfs.ext4"} },
+			wantPhrase: "diskFile.size is 0",
 		},
 	}
 
@@ -211,8 +254,28 @@ func TestArtifactValidateAcceptsPathAndNameEdgeCases(t *testing.T) {
 			mutate: func(a *Artifact) { a.TapName = "tap-7afaa346-99" }, // 15 characters
 		},
 		{
+			name:   "any interface index of the source task",
+			mutate: func(a *Artifact) { a.TapName = "tap-7afaa346-2" },
+		},
+		{
 			name:   "single-file name with a dot",
 			mutate: func(a *Artifact) { a.StateFile.Name = "vm.state.v1" },
+		},
+		{
+			name:   "snapshot and export at the same instant",
+			mutate: func(a *Artifact) { a.SnapshotAt = a.CreatedAt },
+		},
+		{
+			name:   "a file exactly at the size ceiling",
+			mutate: func(a *Artifact) { a.MemoryFile.Size = maxFileSize },
+		},
+		{
+			name:   "no service ID, because the snapshot recorded none",
+			mutate: func(a *Artifact) { a.ServiceID = "" },
+		},
+		{
+			name:   "no disk copy, because the snapshot shipped none",
+			mutate: func(a *Artifact) { a.DiskFile = File{} },
 		},
 	}
 
@@ -261,7 +324,7 @@ func TestArtifactJSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &keys))
 	for _, key := range []string{
 		"schemaVersion", "kind", "id", "sourceTaskId", "sourceNodeId", "serviceId",
-		"createdAt", "tapName", "vsockPath", "diskPath",
+		"createdAt", "snapshotAt", "tapName", "vsockPath", "diskPath",
 		"stateFile", "memoryFile", "diskFile",
 	} {
 		assert.Contains(t, keys, key)
@@ -271,6 +334,53 @@ func TestArtifactJSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &decoded))
 	assert.Equal(t, original, decoded)
 	require.NoError(t, decoded.Validate())
+}
+
+// TestArtifactJSONOmitsAbsentOptionalFields is the DTO constraint made
+// measurable: a field that can legitimately be absent must not be forced onto
+// the wire as a zero value, so an older or simpler producer stays compatible.
+func TestArtifactJSONOmitsAbsentOptionalFields(t *testing.T) {
+	artifact := validArtifact()
+	artifact.ServiceID = ""
+	artifact.DiskFile = File{}
+	require.NoError(t, artifact.Validate())
+
+	data, err := json.Marshal(artifact)
+	require.NoError(t, err)
+
+	var keys map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &keys))
+	assert.NotContains(t, keys, "serviceId")
+	assert.NotContains(t, keys, "diskFile")
+
+	for _, key := range []string{"schemaVersion", "kind", "id", "sourceTaskId", "snapshotAt", "stateFile"} {
+		assert.Contains(t, keys, key, "%s is not optional and must always be on the wire", key)
+	}
+}
+
+// TestArtifactJSONOmitsAnUnsetSnapshotTime proves the omission reaches a
+// struct-typed field. encoding/json never omits a struct with omitempty, so the
+// time fields carry omitzero; this test is what would catch a regression to a
+// tag that only looks like it omits.
+func TestArtifactJSONOmitsAnUnsetSnapshotTime(t *testing.T) {
+	artifact := validArtifact()
+	artifact.SnapshotAt = time.Time{}
+
+	data, err := json.Marshal(artifact)
+	require.NoError(t, err)
+
+	var keys map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &keys))
+	assert.NotContains(t, keys, "snapshotAt", "an unset instant must not appear as a zero timestamp")
+
+	var decoded Artifact
+	require.NoError(t, json.Unmarshal(data, &decoded))
+	assert.True(t, decoded.SnapshotAt.IsZero())
+
+	err = decoded.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "snapshotAt is zero",
+		"an absent instant is refused on the way in, not quietly read as a real time")
 }
 
 // writeTempFile writes content under dir and returns its absolute path.
@@ -291,6 +401,7 @@ func sha256Hex(content string) string {
 // pkg/snapshot publishes: vm.state, vm.mem and the disk copy.
 type snapshotFixture struct {
 	info       *snapshot.SnapshotInfo
+	snapshotAt time.Time
 	stateBytes string
 	memBytes   string
 	diskBytes  string
@@ -301,6 +412,9 @@ func newSnapshotFixture(t *testing.T) snapshotFixture {
 
 	dir := t.TempDir()
 	f := snapshotFixture{
+		// The snapshot was taken before the export that describes it, which is
+		// the only order a real export can see.
+		snapshotAt: time.Now().UTC().Add(-time.Minute),
 		stateBytes: "{}",
 		memBytes:   strings.Repeat("memory", 128),
 		diskBytes:  strings.Repeat("disk", 256),
@@ -315,7 +429,7 @@ func newSnapshotFixture(t *testing.T) snapshotFixture {
 		TaskID:     "task-1",
 		ServiceID:  "service-1",
 		NodeID:     "node-1",
-		CreatedAt:  time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
+		CreatedAt:  f.snapshotAt,
 		MemoryPath: memoryPath,
 		StatePath:  statePath,
 		SizeBytes:  int64(len(f.stateBytes) + len(f.memBytes) + len(f.diskBytes)),
@@ -329,16 +443,26 @@ func newSnapshotFixture(t *testing.T) snapshotFixture {
 func TestArtifactFromSnapshot(t *testing.T) {
 	fixture := newSnapshotFixture(t)
 
+	beforeExport := time.Now().UTC()
 	artifact, err := ArtifactFromSnapshot(fixture.info, "/var/run/firecracker", 0)
 	require.NoError(t, err)
 
 	assert.True(t, ValidArtifactID(artifact.ID), "id %q is not mig-<16 hex>", artifact.ID)
-	assert.Equal(t, SchemaVersion, artifact.SchemaVersion)
+	assert.Equal(t, v1.SchemaVersion, artifact.SchemaVersion,
+		"the artifact follows the v1 envelope's schema major")
 	assert.Equal(t, ArtifactKind, artifact.Kind)
 	assert.Equal(t, "task-1", artifact.SourceTaskID)
 	assert.Equal(t, "node-1", artifact.SourceNodeID)
 	assert.Equal(t, "service-1", artifact.ServiceID)
-	assert.Equal(t, fixture.info.CreatedAt, artifact.CreatedAt)
+
+	// Two instants, not one: the guest resumes from the dump, while the
+	// artifact's own age (and any TTL over it) starts at the export.
+	assert.WithinDuration(t, fixture.snapshotAt, artifact.SnapshotAt, time.Millisecond,
+		"snapshotAt must be the instant the dump was taken")
+	assert.False(t, artifact.CreatedAt.Before(beforeExport),
+		"createdAt must be the export time, not the dump time")
+	assert.False(t, artifact.CreatedAt.After(time.Now().UTC()),
+		"createdAt must not be in the future")
 
 	// The source VM's host-side identity, not the new task's.
 	assert.Equal(t, "/var/lib/firecracker/rootfs/tasks/task-1.ext4", artifact.DiskPath,
@@ -354,21 +478,62 @@ func TestArtifactFromSnapshot(t *testing.T) {
 	require.NoError(t, artifact.Validate(), "a manifest the builder produces must validate")
 }
 
-// TestArtifactFromSnapshotUsesProductionNamingRules pins the TAP name and vsock
-// path against the helpers the running node uses: a manifest that disagreed
-// with them would restore a VM whose recorded devices do not exist.
-func TestArtifactFromSnapshotUsesProductionNamingRules(t *testing.T) {
-	fixture := newSnapshotFixture(t)
+// TestArtifactFromSnapshotWritesLiteralHostIdentity pins the two host-side
+// names to literal strings. They are the names Firecracker recorded inside the
+// state file, so a manifest that disagreed with them restores a VM whose
+// devices do not exist. The literals are the rule; recomputing the rule here
+// would only prove the expression equals itself.
+func TestArtifactFromSnapshotWritesLiteralHostIdentity(t *testing.T) {
+	cases := []struct {
+		name      string
+		socketDir string
+		tapIndex  int
+		wantTap   string
+		wantVsock string
+	}{
+		{
+			name:      "first interface in the default socket directory",
+			socketDir: "/var/run/firecracker",
+			tapIndex:  0,
+			wantTap:   "tap-7afaa346-0",
+			wantVsock: "/var/run/firecracker/task-1.vsock",
+		},
+		{
+			name:      "second interface of the same task",
+			socketDir: "/var/run/firecracker",
+			tapIndex:  1,
+			wantTap:   "tap-7afaa346-1",
+			wantVsock: "/var/run/firecracker/task-1.vsock",
+		},
+		{
+			name:      "a two-digit interface index",
+			socketDir: "/var/run/firecracker",
+			tapIndex:  12,
+			wantTap:   "tap-7afaa346-12",
+			wantVsock: "/var/run/firecracker/task-1.vsock",
+		},
+		{
+			name:      "a jailer-style nested socket directory",
+			socketDir: "/srv/jail/task-1/root/run",
+			tapIndex:  0,
+			wantTap:   "tap-7afaa346-0",
+			wantVsock: "/srv/jail/task-1/root/run/task-1.vsock",
+		},
+	}
 
-	artifact, err := ArtifactFromSnapshot(fixture.info, "/var/run/firecracker", 1)
-	require.NoError(t, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newSnapshotFixture(t)
 
-	assert.Equal(t, scruntime.TapName("task-1", 1), artifact.TapName)
-	assert.Equal(t, "tap-7afaa346-1", artifact.TapName,
-		"tap-<sha256(taskId)[:8]>-<index>, the rule pkg/network and pkg/translator use")
-	assert.Equal(t, scruntime.VsockPath("/var/run/firecracker", "task-1"), artifact.VsockPath)
-	assert.Equal(t, "/var/run/firecracker/task-1.vsock", artifact.VsockPath,
-		"<socketDir>/<taskId>.vsock, the rule pkg/broker.Task.VsockPath uses")
+			artifact, err := ArtifactFromSnapshot(fixture.info, tc.socketDir, tc.tapIndex)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.wantTap, artifact.TapName,
+				"tap-<first 8 hex of sha256(sourceTaskId)>-<index>")
+			assert.Equal(t, tc.wantVsock, artifact.VsockPath,
+				"<socketDir>/<sourceTaskId>.vsock")
+		})
+	}
 }
 
 func TestArtifactFromSnapshotRejects(t *testing.T) {
@@ -393,7 +558,26 @@ func TestArtifactFromSnapshotRejects(t *testing.T) {
 
 		_, err := ArtifactFromSnapshot(fixture.info, "", 0)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "socket directory is empty")
+		assert.Contains(t, err.Error(), "socketDir is empty")
+	})
+
+	t.Run("relative socket directory", func(t *testing.T) {
+		fixture := newSnapshotFixture(t)
+
+		_, err := ArtifactFromSnapshot(fixture.info, "var/run/firecracker", 0)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidArtifact)
+		assert.Contains(t, err.Error(), `socketDir "var/run/firecracker" is relative`,
+			"the argument that was wrong is socketDir, not the path derived from it")
+	})
+
+	t.Run("negative tap index", func(t *testing.T) {
+		fixture := newSnapshotFixture(t)
+
+		_, err := ArtifactFromSnapshot(fixture.info, "/var/run/firecracker", -1)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidArtifact)
+		assert.Contains(t, err.Error(), "tapIndex is -1")
 	})
 
 	t.Run("no disk copy", func(t *testing.T) {
@@ -433,6 +617,22 @@ func TestArtifactFromSnapshotRejects(t *testing.T) {
 		assert.Contains(t, err.Error(), "is not a regular file")
 	})
 
+	t.Run("memory file above the size ceiling", func(t *testing.T) {
+		fixture := newSnapshotFixture(t)
+
+		// A sparse file: the size is a stat, not bytes on disk, so this costs
+		// nothing and proves the ceiling is checked before the file is hashed.
+		oversized := filepath.Join(t.TempDir(), "vm.mem")
+		require.NoError(t, os.WriteFile(oversized, nil, 0o600))
+		require.NoError(t, os.Truncate(oversized, maxFileSize+1))
+		fixture.info.MemoryPath = oversized
+
+		_, err := ArtifactFromSnapshot(fixture.info, "/var/run/firecracker", 0)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidArtifact)
+		assert.Contains(t, err.Error(), "68719476737 bytes: want at most 68719476736 bytes")
+	})
+
 	t.Run("snapshot without a recorded disk path", func(t *testing.T) {
 		fixture := newSnapshotFixture(t)
 		fixture.info.RootfsPath = ""
@@ -451,13 +651,14 @@ func TestArtifactFromSnapshotRejects(t *testing.T) {
 		assert.Contains(t, err.Error(), "does not match the snapshot metadata")
 	})
 
-	t.Run("snapshot without a service ID", func(t *testing.T) {
+	t.Run("snapshot timestamped in the future", func(t *testing.T) {
 		fixture := newSnapshotFixture(t)
-		fixture.info.ServiceID = ""
+		fixture.info.CreatedAt = time.Now().UTC().Add(time.Hour)
 
 		_, err := ArtifactFromSnapshot(fixture.info, "/var/run/firecracker", 0)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "serviceId is empty")
+		assert.ErrorIs(t, err, ErrInvalidArtifact)
+		assert.Contains(t, err.Error(), "is after createdAt")
 	})
 }
 

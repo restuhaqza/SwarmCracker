@@ -21,16 +21,16 @@ import (
 	"strings"
 	"time"
 
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 )
 
 const (
-	// SchemaVersion is the artifact schema major. It only moves on a breaking
-	// change to the manifest; adding a field does not change it.
-	SchemaVersion = 1
-
-	// ArtifactKind is the document kind of a migration artifact.
+	// ArtifactKind is the document kind of a migration artifact. It is
+	// deliberately not a pkg/api/v1 kind: the artifact is an internal
+	// manager↔node document, so its kind lives with the document, not with the
+	// public contract.
 	ArtifactKind = "MigrationArtifact"
 )
 
@@ -46,6 +46,19 @@ const (
 
 	// interfaceNameLimit is the kernel's IFNAMSIZ minus the terminating NUL.
 	interfaceNameLimit = 15
+
+	// tapNamePrefixLength is the part of a TAP name that identifies its task:
+	// "tap-", eight hex characters of the task-ID digest, and the "-" that
+	// introduces the interface index. The index itself is not checked, because
+	// the manifest does not carry it.
+	tapNamePrefixLength = len("tap-") + 8 + 1
+
+	// maxFileSize is the largest file one artifact may describe: 64 GiB. It is
+	// a ceiling on what the transfer will accept, not a guess at the largest
+	// guest: it caps how much a single node can be made to read, hash, ship and
+	// write for one migration, so a nonsense size in a manifest is refused
+	// before it becomes an allocation.
+	maxFileSize int64 = 64 << 30
 )
 
 // ErrInvalidArtifact classifies every rejection from this package, so a caller
@@ -62,6 +75,10 @@ var (
 	// sha256HexPattern is the shape this package writes and accepts: lowercase
 	// hex, no "sha256:" prefix, matching pkg/snapshot's checksums.
 	sha256HexPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+	// tapNamePattern is the shape runtime.TapName produces:
+	// tap-<8 lowercase hex characters>-<index>.
+	tapNamePattern = regexp.MustCompile(`^tap-[0-9a-f]{8}-[0-9]+$`)
 )
 
 // ValidArtifactID reports whether id is a well-formed artifact ID: one safe
@@ -82,6 +99,17 @@ type File struct {
 // Artifact is the manifest of one migration: what moves, and the host-side
 // identity of the VM that produced it.
 //
+// It is an internal DTO between the manager and a node, not a public v1
+// document. It travels only over the mTLS manager↔node relay, never on a
+// public route, which is why it may carry node-local paths: the target needs
+// them to recreate the TAP device, the vsock muxer and the disk the snapshot
+// state file recorded. A public route that ever needs to describe an artifact
+// starts with a pkg/api/v1 wrapper built from this type rather than serving it.
+//
+// It follows the v1 envelope conventions where they exist (schemaVersion from
+// v1.SchemaVersion, a kind, and optional fields omitted when absent), so the
+// two document families read the same way.
+//
 // Host-side identity comes from the snapshot, not from the new task:
 // Firecracker's state file records the TAP device name, the vsock UDS path and
 // the block-device path of the source VM, and a load only succeeds if those
@@ -99,13 +127,23 @@ type Artifact struct {
 	SourceTaskID string `json:"sourceTaskId"`
 	// SourceNodeID is the node the snapshot was taken on.
 	SourceNodeID string `json:"sourceNodeId"`
-	// ServiceID is the service whose single replica moves. A placement
-	// constraint applies to every task of a service, so only a single-replica
-	// service can be moved this way.
-	ServiceID string `json:"serviceId"`
-	// CreatedAt is when the dump was taken: the instant the guest resumes
-	// from. Writes the source accepted after it are not carried over.
+	// ServiceID is the service whose single replica moves, when the snapshot
+	// recorded one. A placement constraint applies to every task of a service,
+	// so only a single-replica service can be moved this way; a snapshot with
+	// no service (a VM started outside SwarmKit) leaves the field out.
+	ServiceID string `json:"serviceId,omitempty"`
+	// CreatedAt is when the export produced this manifest: the artifact's own
+	// creation instant, and therefore the instant any TTL over the artifact
+	// counts from. It is not the dump instant; see SnapshotAt.
 	CreatedAt time.Time `json:"createdAt"`
+	// SnapshotAt is when the dump was taken: the instant the guest resumes
+	// from. Writes the source accepted after it are not carried over. It is
+	// never after CreatedAt, which is what keeps a TTL from being measured
+	// from the dump instead of from the artifact.
+	//
+	// omitzero, not omitempty: encoding/json never omits a struct with
+	// omitempty, so the tag would look right and do nothing.
+	SnapshotAt time.Time `json:"snapshotAt,omitzero"`
 
 	// TapName is the TAP device name the snapshot recorded. The target creates
 	// the device under this name, keeps it down while Firecracker loads, and
@@ -120,14 +158,20 @@ type Artifact struct {
 	// state file resolves the drive by the recorded path.
 	DiskPath string `json:"diskPath"`
 
-	// StateFile is the Firecracker VM state, MemoryFile the guest memory image
-	// and DiskFile the snapshot-owned disk copy.
+	// StateFile is the Firecracker VM state and MemoryFile the guest memory
+	// image; both are always described.
 	StateFile  File `json:"stateFile"`
 	MemoryFile File `json:"memoryFile"`
-	DiskFile   File `json:"diskFile"`
+	// DiskFile is the snapshot-owned disk copy. A snapshot that shipped no disk
+	// copy leaves it out entirely; when it is present it must be described in
+	// full. A restore cannot use an artifact without it (the guest's
+	// filesystem would not move), which the target checks, not this type.
+	//
+	// omitzero for the reason given on SnapshotAt.
+	DiskFile File `json:"diskFile,omitzero"`
 }
 
-// Validate reports whether the manifest is complete enough to restore from. It
+// Validate reports whether the manifest is complete enough to travel. It
 // returns the first problem, in field order, as a sentence that names the field
 // and the valid form; every rejection wraps ErrInvalidArtifact.
 //
@@ -135,8 +179,20 @@ type Artifact struct {
 // against the checksums after the transfer, because a manifest validated on the
 // source says nothing about what arrived.
 func (a Artifact) Validate() error {
-	if a.SchemaVersion != SchemaVersion {
-		return invalidf("schemaVersion is %d: want %d, the schema this build reads and writes", a.SchemaVersion, SchemaVersion)
+	if err := a.validateEnvelope(); err != nil {
+		return err
+	}
+	if err := a.validateHostIdentity(); err != nil {
+		return err
+	}
+	return a.validateFiles()
+}
+
+// validateEnvelope checks the document's own fields: what it is, which artifact
+// it is, and whether its two instants agree.
+func (a Artifact) validateEnvelope() error {
+	if a.SchemaVersion != v1.SchemaVersion {
+		return invalidf("schemaVersion is %d: want %d, the schema this build reads and writes", a.SchemaVersion, v1.SchemaVersion)
 	}
 	if a.Kind == "" {
 		return invalidf("kind is empty: want %q", ArtifactKind)
@@ -156,17 +212,35 @@ func (a Artifact) Validate() error {
 	if a.SourceNodeID == "" {
 		return invalidf("sourceNodeId is empty: want the node the snapshot was taken on")
 	}
-	if a.ServiceID == "" {
-		return invalidf("serviceId is empty: want the single-replica service being moved")
-	}
 	if a.CreatedAt.IsZero() {
-		return invalidf("createdAt is zero: want the instant the dump was taken, which is when the guest resumes from")
+		return invalidf("createdAt is zero: want when the export produced this manifest, which is what a TTL over the artifact counts from")
 	}
+	if a.SnapshotAt.IsZero() {
+		return invalidf("snapshotAt is zero: want the instant the dump was taken, which is when the guest resumes from")
+	}
+	if a.SnapshotAt.After(a.CreatedAt) {
+		return invalidf("snapshotAt %s is after createdAt %s: want the dump instant, which cannot follow the export that describes it",
+			a.SnapshotAt.Format(time.RFC3339Nano), a.CreatedAt.Format(time.RFC3339Nano))
+	}
+	return nil
+}
+
+// validateHostIdentity checks the three names the target must recreate. The TAP
+// name is checked against the one naming rule in pkg/runtime rather than
+// against its own copy of it.
+func (a Artifact) validateHostIdentity() error {
 	if a.TapName == "" {
 		return invalidf("tapName is empty: want the TAP device name the snapshot recorded and the target recreates")
 	}
 	if problem := interfaceNameProblem(a.TapName); problem != "" {
 		return invalidf("tapName %q is not a valid interface name: %s", a.TapName, problem)
+	}
+	if !tapNamePattern.MatchString(a.TapName) {
+		return invalidf("tapName %q is not a TAP device name: want tap-<8 lowercase hex characters of sha256(sourceTaskId)>-<interface index>, the name the node's network manager creates", a.TapName)
+	}
+	if want := tapNameTaskPrefix(a.SourceTaskID); a.TapName[:tapNamePrefixLength] != want {
+		return invalidf("tapName %q does not belong to task %q: want the prefix %q, the first 8 hex characters of the task ID's SHA-256, because the snapshot recorded this task's device",
+			a.TapName, a.SourceTaskID, want)
 	}
 	if a.VsockPath == "" {
 		return invalidf("vsockPath is empty: want the absolute vsock muxer path the snapshot recorded, <socketDir>/<sourceTaskId>.vsock")
@@ -180,22 +254,40 @@ func (a Artifact) Validate() error {
 	if !filepath.IsAbs(a.DiskPath) {
 		return invalidf("diskPath %q is relative: want the absolute path the snapshot state file records", a.DiskPath)
 	}
+	return nil
+}
 
+// validateFiles checks the descriptions of the bytes that move.
+func (a Artifact) validateFiles() error {
 	files := []struct {
 		field string
 		file  File
+		// optional files may be absent altogether; a partially described
+		// optional file is still rejected, because half a description cannot
+		// be verified.
+		optional bool
 	}{
-		{"stateFile", a.StateFile},
-		{"memoryFile", a.MemoryFile},
-		{"diskFile", a.DiskFile},
+		{"stateFile", a.StateFile, false},
+		{"memoryFile", a.MemoryFile, false},
+		{"diskFile", a.DiskFile, true},
 	}
 	for _, f := range files {
+		if f.optional && f.file == (File{}) {
+			continue
+		}
 		if err := validateFile(f.field, f.file); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// tapNameTaskPrefix returns the part of a TAP device name that identifies its
+// task: "tap-<8 hex characters>-". It is derived from the one naming rule in
+// pkg/runtime, so a change there cannot leave this check behind.
+func tapNameTaskPrefix(taskID string) string {
+	return scruntime.TapName(taskID, 0)[:tapNamePrefixLength]
 }
 
 // validateFile checks one moving file's description.
@@ -209,6 +301,9 @@ func validateFile(field string, f File) error {
 	if f.Size <= 0 {
 		return invalidf("%s.size is %d: want the positive byte count of the file that moves", field, f.Size)
 	}
+	if f.Size > maxFileSize {
+		return invalidf("%s.size is %d: want at most %d bytes (64 GiB), the largest file a migration carries", field, f.Size, maxFileSize)
+	}
 	switch {
 	case f.SHA256 == "":
 		return invalidf("%s.sha256 is empty: want 64 lowercase hex characters", field)
@@ -221,9 +316,8 @@ func validateFile(field string, f File) error {
 }
 
 // interfaceNameProblem returns why name is not a usable Linux interface name, or
-// "" when it is. Only the kernel's limits are checked; the naming rule itself
-// belongs to the VM that wrote the snapshot, and the restore recreates whatever
-// name it recorded.
+// "" when it is. Only the kernel's limits are checked here; the shape of a TAP
+// name is checked against the naming rule separately.
 func interfaceNameProblem(name string) string {
 	if len(name) > interfaceNameLimit {
 		return fmt.Sprintf("it is %d characters and Linux allows at most %d", len(name), interfaceNameLimit)
@@ -251,8 +345,10 @@ func invalidf(format string, args ...any) error {
 // knows them, and neither can be recovered from the snapshot metadata.
 //
 // The three files are read here: the manifest describes the bytes that move, so
-// this is where their sizes and digests come from. It returns a manifest that
-// passes Validate, or an error.
+// this is where their sizes and digests come from. CreatedAt is the export
+// instant (now) and SnapshotAt is the snapshot's own instant, so a TTL over the
+// artifact is not measured from the dump. It returns a manifest that passes
+// Validate, or an error.
 func ArtifactFromSnapshot(info *snapshot.SnapshotInfo, socketDir string, tapIndex int) (Artifact, error) {
 	if info == nil {
 		return Artifact{}, invalidf("source snapshot is missing: want a completed snapshot to describe")
@@ -261,7 +357,13 @@ func ArtifactFromSnapshot(info *snapshot.SnapshotInfo, socketDir string, tapInde
 		return Artifact{}, invalidf("source snapshot has no task ID: want the task the VM ran as, because its ID names the TAP device, the vsock path and the disk")
 	}
 	if socketDir == "" {
-		return Artifact{}, invalidf("socket directory is empty: want the directory holding the source task's Firecracker socket, so the vsock path can be derived as <socketDir>/<sourceTaskId>.vsock")
+		return Artifact{}, invalidf("socketDir is empty: want the absolute directory holding the source task's Firecracker socket, so the vsock path can be derived as <socketDir>/<sourceTaskId>.vsock")
+	}
+	if !filepath.IsAbs(socketDir) {
+		return Artifact{}, invalidf("socketDir %q is relative: want the absolute directory holding the source task's Firecracker socket", socketDir)
+	}
+	if tapIndex < 0 {
+		return Artifact{}, invalidf("tapIndex is %d: want the zero-based index of a network interface of the source VM", tapIndex)
 	}
 	switch {
 	case info.StatePath == "":
@@ -297,13 +399,14 @@ func ArtifactFromSnapshot(info *snapshot.SnapshotInfo, socketDir string, tapInde
 	}
 
 	artifact := Artifact{
-		SchemaVersion: SchemaVersion,
+		SchemaVersion: v1.SchemaVersion,
 		Kind:          ArtifactKind,
 		ID:            id,
 		SourceTaskID:  info.TaskID,
 		SourceNodeID:  info.NodeID,
 		ServiceID:     info.ServiceID,
-		CreatedAt:     info.CreatedAt,
+		CreatedAt:     time.Now().UTC(),
+		SnapshotAt:    info.CreatedAt,
 		TapName:       scruntime.TapName(info.TaskID, tapIndex),
 		VsockPath:     scruntime.VsockPath(socketDir, info.TaskID),
 		DiskPath:      info.RootfsPath,
@@ -328,6 +431,11 @@ func describeFile(label, path string) (File, error) {
 	}
 	if !stat.Mode().IsRegular() {
 		return File{}, invalidf("snapshot %s %s is not a regular file: want the file snapshot/create wrote", label, path)
+	}
+	// Checked before the file is read: the ceiling exists so a nonsense size
+	// is refused instead of hashed, shipped and written.
+	if stat.Size() > maxFileSize {
+		return File{}, invalidf("snapshot %s %s is %d bytes: want at most %d bytes (64 GiB), the largest file a migration carries", label, path, stat.Size(), maxFileSize)
 	}
 
 	sum, err := hashFile(path)
