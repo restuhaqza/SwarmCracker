@@ -252,7 +252,11 @@ func managerBrokers(
 ) (apihttp.Broker, apihttp.SnapshotBroker, *broker.Manager) {
 	mgr, err := newBrokerManager(stateDir, c, c, snapshotTimeout)
 	if err != nil {
-		log.G(ctx).WithError(err).Warn("Programmatic API: exec disabled (node broker manager unavailable)")
+		// One construction feeds three features: exec/logs/health relay,
+		// snapshots and autoscaling. Saying only "exec" would leave an operator
+		// wondering why snapshots and scaling silently do nothing.
+		log.G(ctx).WithError(err).Warn("Programmatic API: the node broker manager is unavailable; " +
+			"exec, snapshots and autoscaling are disabled")
 		return nil, nil, nil
 	}
 	return mgr, mgr, mgr

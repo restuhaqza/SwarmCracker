@@ -722,9 +722,14 @@ func autoscaleReplicasOutOfBounds(replicas uint64, policy types.AutoscalePolicy)
 // hasAutoscaleLabels reports whether any autoscale label is present, so a
 // conflict check runs for a half-written policy too instead of only for a
 // complete one that AutoscaleFromLabels would accept.
+//
+// The test is the namespace, not the six known keys: a misspelled key like
+// `...autoscale.minn` is a policy the operator meant to declare, and skipping
+// validation for it would store a service that looks configured and never
+// scales — the same asymmetry AutoscaleFromLabels closes for the loop.
 func hasAutoscaleLabels(labels map[string]string) bool {
-	for _, key := range types.AutoscaleLabelKeys() {
-		if _, ok := labels[key]; ok {
+	for key := range labels {
+		if strings.HasPrefix(key, types.AutoscaleLabelPrefix) {
 			return true
 		}
 	}

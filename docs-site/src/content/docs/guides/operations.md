@@ -730,6 +730,9 @@ swarmcracker service create --name web --image nginx:alpine --replicas 2 \
 
 The service starts at 2 replicas — inside its own bounds, so the first pass
 measures it instead of realigning it — aiming at 70 % of one vCPU per replica.
+Omitting `--replicas` is not an error: the service is stored at the default `1`
+and the first pass aligns it to `min` (see
+[Alignment](#alignment-when-a-count-is-outside-the-policy)).
 
 The flag grammar, the six `swarmcracker.autoscale.*` labels the policy is stored
 as, the cooldown defaults, the tri-state `service update` behaviour and the
@@ -746,7 +749,9 @@ agent every 15 seconds, so the manager reads a sample at most one poll interval
 old without scraping Prometheus or dialling the guest. Two readings of the same
 replica become cores per replica: the change in that replica's cumulative guest
 CPU seconds divided by the wall time between the two samples. The mean across the
-replicas is compared with the target:
+**contributing** replicas is compared with the target — a replica that produced
+no rate contributes nothing to it, so a replica still booting cannot drag the
+mean down:
 
 | Mean cores per replica | Result |
 |------------------------|--------|
@@ -812,8 +817,12 @@ it held, for example `holding: 0.62 cores is within the band around target 0.70`
 ### Alignment when a count is outside the policy
 
 A service can be outside its own policy: it ran at 5 replicas and the policy was
-later tightened to `min=2,max=3`, or the labels were set by hand. The loop moves
-such a service to the nearest bound once and logs the alignment:
+later tightened to `min=2,max=3`, the labels were set by hand, or it was created
+with `--autoscale` and no `--replicas` — in that last case the stored count is
+the default `1`, even when the policy's `min` is higher, because no explicit
+count was given and `--replicas` is the only flag that sets one. The loop moves
+such a service to the nearest bound on the manager's first pass and logs the
+alignment:
 
 ```text
 Autoscaler: aligned service <id> from 5 to 3 replicas to fit its policy; not counted as a scale event

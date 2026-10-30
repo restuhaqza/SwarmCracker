@@ -3,6 +3,7 @@ package types
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -13,22 +14,28 @@ import (
 // `service update` that does not touch it and is readable with `service
 // inspect`. The manager loop that acts on the policy reads exactly these keys.
 const (
+	// AutoscaleLabelPrefix is the namespace every autoscale label lives in. It
+	// is a constant of its own because it is also the typo boundary: a label
+	// under this prefix that is not one of the six below is a policy the loop
+	// cannot read, and saying so beats treating a misspelled policy as "no
+	// policy" on a service that looks configured.
+	AutoscaleLabelPrefix = "swarmcracker.autoscale."
 	// AutoscaleMinLabel is the lower replica bound, e.g. "2".
-	AutoscaleMinLabel = "swarmcracker.autoscale.min"
+	AutoscaleMinLabel = AutoscaleLabelPrefix + "min"
 	// AutoscaleMaxLabel is the upper replica bound, e.g. "10".
-	AutoscaleMaxLabel = "swarmcracker.autoscale.max"
+	AutoscaleMaxLabel = AutoscaleLabelPrefix + "max"
 	// AutoscaleMetricLabel names the metric to scale on; "cpu" is the only
 	// metric in this cut.
-	AutoscaleMetricLabel = "swarmcracker.autoscale.metric"
+	AutoscaleMetricLabel = AutoscaleLabelPrefix + "metric"
 	// AutoscaleTargetLabel is the target as a percentage of one vCPU, e.g.
 	// "70". It is strictly greater than 0 and at most 100.
-	AutoscaleTargetLabel = "swarmcracker.autoscale.target"
+	AutoscaleTargetLabel = AutoscaleLabelPrefix + "target"
 	// AutoscaleCooldownUpLabel is the minimum time between two scale-ups, e.g.
 	// "60s". Optional; absent means DefaultAutoscaleCooldownUp.
-	AutoscaleCooldownUpLabel = "swarmcracker.autoscale.cooldown_up"
+	AutoscaleCooldownUpLabel = AutoscaleLabelPrefix + "cooldown_up"
 	// AutoscaleCooldownDownLabel is the minimum time between two scale-downs,
 	// e.g. "5m". Optional; absent means DefaultAutoscaleCooldownDown.
-	AutoscaleCooldownDownLabel = "swarmcracker.autoscale.cooldown_down"
+	AutoscaleCooldownDownLabel = AutoscaleLabelPrefix + "cooldown_down"
 )
 
 const (
@@ -102,6 +109,42 @@ func AutoscaleLabelKeys() []string {
 		keys = append(keys, spec.label)
 	}
 	return keys
+}
+
+// unknownAutoscaleLabels returns the labels under AutoscaleLabelPrefix that are
+// not part of the policy grammar, sorted so the same typo always produces the
+// same error (map order is not stable, and an error that reorders between passes
+// reads like a moving target).
+func unknownAutoscaleLabels(labels map[string]string) []string {
+	var unknown []string
+	for key := range labels {
+		if !strings.HasPrefix(key, AutoscaleLabelPrefix) || isAutoscaleLabel(key) {
+			continue
+		}
+		unknown = append(unknown, key)
+	}
+	sort.Strings(unknown)
+	return unknown
+}
+
+// isAutoscaleLabel reports whether key is one of the six stored policy labels.
+func isAutoscaleLabel(key string) bool {
+	for _, spec := range autoscaleLabelSpecs {
+		if spec.label == key {
+			return true
+		}
+	}
+	return false
+}
+
+// quoteAutoscaleKeys renders label keys one per quoted item, so an error naming
+// two typos cannot read as one long key.
+func quoteAutoscaleKeys(keys []string) string {
+	quoted := make([]string, 0, len(keys))
+	for _, key := range keys {
+		quoted = append(quoted, strconv.Quote(key))
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // autoscaleFlagForm is the valid --autoscale form, quoted in errors so a
@@ -191,7 +234,25 @@ func ParseAutoscaleFlag(value string) (AutoscalePolicy, error) {
 // service declares none. A service carrying only some of the required labels is
 // an error naming the missing ones: a half-written policy must not silently
 // leave autoscaling off while `service inspect` shows it as configured.
+//
+// A label under AutoscaleLabelPrefix that is not one of the six known keys is an
+// error too, naming every offending key and the valid set. The flag grammar
+// rejects an unknown key, so the label form must: otherwise a typo like
+// `...autoscale.minn` leaves a service that looks configured and never scales,
+// with nothing said about why.
 func AutoscaleFromLabels(labels map[string]string) (*AutoscalePolicy, error) {
+	if unknown := unknownAutoscaleLabels(labels); len(unknown) > 0 {
+		// The check comes first: a typo key is not a value error, and reporting
+		// it ahead of "missing min" explains the real problem instead of the
+		// symptom (the misspelled key never contributed a value at all).
+		noun := "label"
+		if len(unknown) > 1 {
+			noun = "labels"
+		}
+		return nil, fmt.Errorf("unknown autoscale %s %s (valid labels: %s)",
+			noun, quoteAutoscaleKeys(unknown), strings.Join(AutoscaleLabelKeys(), ", "))
+	}
+
 	values := make(map[string]string, len(autoscaleLabelSpecs))
 	for _, spec := range autoscaleLabelSpecs {
 		if raw, ok := labels[spec.label]; ok {

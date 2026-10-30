@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/moby/swarmkit/v2/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -14,6 +17,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/metrics"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -473,6 +477,67 @@ func TestAutoscalerRunLoopSurvivesListErrors(t *testing.T) {
 
 	require.Eventually(t, func() bool { return lister.calls.Load() >= 2 }, 2*time.Second, 5*time.Millisecond,
 		"the loop must keep reconciling after a failed list")
+}
+
+// panickingServiceLister panics on its first list and answers normally after
+// that. A panic in the pass is what a nil dereference or a bad type assertion on
+// one service's data would produce, and it is reachable from a goroutine that
+// belongs to the manager daemon — so the loop, not the process, must absorb it.
+type panickingServiceLister struct {
+	calls atomic.Int64
+}
+
+func (f *panickingServiceLister) ListServices(context.Context) ([]v1.Service, error) {
+	if f.calls.Add(1) == 1 {
+		panic("boom: a broken service list")
+	}
+	return nil, errors.New("control socket unavailable")
+}
+
+// lockedBuffer is a log destination a test goroutine reads while the loop
+// goroutine writes. bytes.Buffer alone is not safe under -race.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestAutoscalerRunLoopSurvivesAPanic pins the doc claim that the pass "never
+// panics on a service": the panic is one bad service's data, not a reason to
+// take the manager down with it. The loop must log it (with a stack, so the
+// cause is findable in the daemon's log) and reconcile again on the next tick.
+func TestAutoscalerRunLoopSurvivesAPanic(t *testing.T) {
+	logs := &lockedBuffer{}
+	logger := logrus.New()
+	logger.SetOutput(logs)
+	logger.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true, DisableColors: true})
+	// The loop logs through the context's logger, so a test logger here is what
+	// startAutoscaler's goroutine writes to.
+	ctx := log.WithLogger(context.Background(), logrus.NewEntry(logger))
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	lister := &panickingServiceLister{}
+	startAutoscaler(ctx, lister, &fakeTaskLister{}, &fakeMetricsSource{}, &fakeScaleApplier{}, 5*time.Millisecond)
+
+	require.Eventually(t, func() bool { return lister.calls.Load() >= 3 }, 2*time.Second, 5*time.Millisecond,
+		"the loop must keep ticking after a pass panics")
+
+	text := logs.String()
+	assert.Contains(t, text, "panicked", "a recovered panic must be logged, not swallowed")
+	assert.Contains(t, text, "boom: a broken service list", "the log must carry the panic value")
+	assert.Contains(t, text, "goroutine ", "the log must carry the stack, so the panic site is findable")
 }
 
 func TestAutoscalerTaskListErrorSkipsOnlyThatService(t *testing.T) {

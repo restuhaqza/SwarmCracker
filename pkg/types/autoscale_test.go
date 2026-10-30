@@ -410,3 +410,76 @@ func TestAutoscaleFromLabels(t *testing.T) {
 		})
 	}
 }
+
+// TestAutoscaleFromLabelsUnknownKey closes the gap between the two ways a
+// policy is declared: the flag grammar rejects an unknown key, so the labels
+// must too. A typo like "minn" otherwise leaves a service that looks configured
+// in `service inspect` and never scales, with nothing said about why.
+func TestAutoscaleFromLabelsUnknownKey(t *testing.T) {
+	// A typo key alongside a complete, otherwise-valid policy: this is the shape
+	// an operator produces by mistyping one label of a working policy, and it is
+	// the one that must not be read as "configured and fine".
+	t.Run("typo key beside a complete policy", func(t *testing.T) {
+		got, err := AutoscaleFromLabels(map[string]string{
+			AutoscaleMinLabel:             "2",
+			AutoscaleMaxLabel:             "10",
+			AutoscaleMetricLabel:          "cpu",
+			AutoscaleTargetLabel:          "70",
+			"swarmcracker.autoscale.minn": "2",
+		})
+		require.Error(t, err, "an unknown autoscale label must not be ignored")
+		assert.Nil(t, got)
+		assert.Contains(t, err.Error(), "swarmcracker.autoscale.minn",
+			"the error must name the offending key, so the typo is findable")
+		assert.Contains(t, err.Error(), "unknown autoscale label")
+		for _, key := range AutoscaleLabelKeys() {
+			assert.Contains(t, err.Error(), key, "the error must name the valid label set")
+		}
+	})
+
+	// A typo key on its own declares nothing the loop can read. Returning nil
+	// would report "no policy" for a service that plainly means to have one.
+	t.Run("typo key alone", func(t *testing.T) {
+		got, err := AutoscaleFromLabels(map[string]string{
+			"swarmcracker.autoscale.targett": "70",
+		})
+		require.Error(t, err)
+		assert.Nil(t, got)
+		assert.Contains(t, err.Error(), "swarmcracker.autoscale.targett")
+	})
+
+	// Every unknown key is named at once, so a policy with two typos is one
+	// round trip to fix rather than two.
+	t.Run("every unknown key is named", func(t *testing.T) {
+		got, err := AutoscaleFromLabels(map[string]string{
+			"swarmcracker.autoscale.minn": "2",
+			"swarmcracker.autoscale.maxx": "10",
+		})
+		require.Error(t, err)
+		assert.Nil(t, got)
+		assert.Contains(t, err.Error(), "swarmcracker.autoscale.minn")
+		assert.Contains(t, err.Error(), "swarmcracker.autoscale.maxx")
+	})
+
+	// The control cases: the six known keys stay accepted, and a service with no
+	// autoscale labels at all is still "no policy" rather than an error.
+	t.Run("every known key is accepted", func(t *testing.T) {
+		got, err := AutoscaleFromLabels(map[string]string{
+			AutoscaleMinLabel:          "1",
+			AutoscaleMaxLabel:          "3",
+			AutoscaleMetricLabel:       "cpu",
+			AutoscaleTargetLabel:       "60",
+			AutoscaleCooldownUpLabel:   "30s",
+			AutoscaleCooldownDownLabel: "2m",
+			"com.example.team":         "platform",
+		})
+		require.NoError(t, err)
+		require.NotNil(t, got)
+	})
+
+	t.Run("no autoscale labels at all", func(t *testing.T) {
+		got, err := AutoscaleFromLabels(map[string]string{"com.example.team": "platform"})
+		require.NoError(t, err)
+		assert.Nil(t, got, "a service without autoscale labels has no policy")
+	})
+}

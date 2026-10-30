@@ -392,7 +392,9 @@ policy is stored as the six `swarmcracker.autoscale.*` service labels (`min`,
 update that does not mention it and `service inspect` prints it back. A policy
 declared purely through `--label` on `service create` is validated exactly like
 the flag, and a `--label` that disagrees with `--autoscale` is refused rather
-than resolved silently.
+than resolved silently. A label under `swarmcracker.autoscale.` that is not one
+of those six keys is refused at create/update rather than ignored, so a
+misspelled key cannot leave a service that looks configured and never scales.
 
 Two combinations are refused instead of stored and ignored: a policy on a
 `--mode global` service (a global service runs one task per node and has no

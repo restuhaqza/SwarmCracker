@@ -109,6 +109,16 @@ func TestAutoscaleFlagRegistered(t *testing.T) {
 	}
 }
 
+// TestServiceScaleHelpMentionsAutoscaleBounds pins the warning that `service
+// scale` is validated against a stored policy's bounds: the command refuses a
+// count the policy cannot hold, so --help must say so rather than leave the
+// operator to discover it as an error after the fact.
+func TestServiceScaleHelpMentionsAutoscaleBounds(t *testing.T) {
+	cmd := newServiceScaleCommand()
+	assert.Contains(t, cmd.Long, "autoscale policy", "service scale --help must mention the autoscale bounds check")
+	assert.Contains(t, cmd.Long, "min/max", "the help must name the bounds it is checked against")
+}
+
 // autoscaleLabels returns the six labels a policy is stored as, in the form
 // the CLI is expected to write them.
 func autoscaleLabels(min, max, metric, target, up, down string) map[string]string {
@@ -536,6 +546,26 @@ func TestAutoscaleLabelOnlyPolicyIsValidated(t *testing.T) {
 		require.Error(t, err, "a value no policy could hold must not be stored by --label alone")
 		assert.Contains(t, err.Error(), types.AutoscaleMinLabel)
 		assert.Contains(t, err.Error(), ">= 1")
+	})
+
+	// The flag grammar rejects an unknown key, so the label form must too. A
+	// misspelled key used to be skipped, which stored a service that looked
+	// configured and silently never scaled.
+	t.Run("a misspelled label key is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 2,
+			labels: []string{
+				types.AutoscaleMinLabel + "=2",
+				types.AutoscaleMaxLabel + "=10",
+				types.AutoscaleMetricLabel + "=cpu",
+				types.AutoscaleTargetLabel + "=70",
+				types.AutoscaleLabelPrefix + "minn=2",
+			},
+		})
+
+		require.Error(t, err, "a typo key must be refused, not stored as a policy that never applies")
+		assert.Contains(t, err.Error(), types.AutoscaleLabelPrefix+"minn", "the error must name the offending key")
+		assert.Contains(t, err.Error(), "unknown autoscale label")
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/moby/swarmkit/v2/log"
@@ -62,9 +63,12 @@ type nodeLister interface {
 // manager restart only costs one interval of sampling — no decision depends on
 // history the cluster itself keeps.
 //
-// A pass never returns an error and never panics on a service: one service's
+// A pass never returns an error and never panics out of the loop: one service's
 // failure is logged and the pass moves on, because a loop that stopped at the
-// first unreadable service would stop autoscaling the whole cluster.
+// first unreadable service would stop autoscaling the whole cluster. A panic in
+// one pass is a bug in the data or in this file, so it is recovered, logged with
+// its stack and the next tick still runs (see tick) — the manager daemon keeps
+// its other work instead of dying with the autoscaler's goroutine.
 type autoscalerLoop struct {
 	services serviceLister
 	tasks    taskLister
@@ -206,9 +210,28 @@ func (l *autoscalerLoop) run(ctx context.Context, interval time.Duration) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			l.pass(ctx)
+			l.tick(ctx)
 		}
 	}
+}
+
+// tick runs one pass with the panic contained at the tick boundary, not the
+// process boundary.
+//
+// An unrecovered panic in this goroutine takes the whole manager daemon down:
+// autoscaling one service would be able to stop every other service's scheduling
+// because of one malformed reading or one bad assertion. Recovering here keeps
+// the failure where it happened — the log names the panic and its stack — and
+// the next tick reconciles from scratch, because a pass keeps no partial state
+// (state is committed only after a rule is met or a patch lands).
+func (l *autoscalerLoop) tick(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.G(ctx).Errorf("Autoscaler: pass panicked and was recovered (autoscaling resumes on the next tick): %v\n%s",
+				r, debug.Stack())
+		}
+	}()
+	l.pass(ctx)
 }
 
 // pass reconciles every service once. A failed list is a failed pass — the next

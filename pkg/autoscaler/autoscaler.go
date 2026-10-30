@@ -56,10 +56,14 @@ type Observation struct {
 	// last read it from the service spec.
 	Replicas int
 
-	// Cores holds one reading per running replica, already reduced to cores per
-	// replica by the caller: CPU-seconds burned during the sampling window
-	// divided by the window's wall-seconds. It is sentinel-free, so a reading of
-	// 0.70 means 0.70 of one vCPU. A reading that is negative or not finite is
+	// Cores holds one reading per contributing replica, already reduced to cores
+	// per replica by the caller: CPU-seconds burned during the sampling window
+	// divided by the window's wall-seconds. Only replicas that produced a rate
+	// contribute — a replica with no previous sample (still booting, a guest
+	// whose agent predates the metrics operation, a node that could not be read)
+	// contributes nothing, so the mean Decide takes is over the contributing
+	// subset, not over every running replica. It is sentinel-free, so a reading
+	// of 0.70 means 0.70 of one vCPU. A reading that is negative or not finite is
 	// treated as "no data" rather than as an extreme value, because a broken
 	// probe must never be able to scale a service on its own.
 	Cores []float64

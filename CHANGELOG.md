@@ -64,10 +64,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the `REPLICAS` cell.
 
 ### Fixed
-- **An out-of-bounds replica count is refused, not stored** — `service create
-  --replicas`, `service update --replicas` and `service scale` now reject a count
-  outside the service's autoscale `min`/`max` and name both bounds, instead of
-  storing a service the manager loop would have to correct on its first pass.
+- **An out-of-bounds replica count is refused, not stored** — an *explicit*
+  `service create --replicas`, `service update --replicas` or `service scale`
+  now rejects a count outside the service's autoscale `min`/`max` and names both
+  bounds, instead of storing a service the manager loop would have to correct on
+  its first pass. A `--replicas`-less create is not an explicit count, so it
+  still stores the default 1 and the first pass aligns it to `min`.
   `--replicas 0` and `service scale <service> 0` stay valid: zero means paused,
   so nothing is clamped.
 - **Console logs are written on a systemd-managed node** — the shipped units run
