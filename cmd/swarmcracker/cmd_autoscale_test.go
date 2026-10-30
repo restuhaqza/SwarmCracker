@@ -45,6 +45,38 @@ func TestAutoscaleCommandWiring(t *testing.T) {
 		assert.True(t, anyFlagChanged(cmd, "autoscale"),
 			"an explicit empty --autoscale must count as a request to clear the policy")
 	})
+
+	// The replica bound check only applies to an explicit --replicas (the
+	// flag's default is 1, and a policy-min of 2 must not silently reject a
+	// create that never mentioned replicas), so the "given at all" bit has to
+	// reach the options struct.
+	t.Run("create records whether --replicas was given", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			args []string
+			want bool
+		}{
+			{"explicit", []string{"--name", "web", "--image", "nginx", "--replicas", "5"}, true},
+			{"absent", []string{"--name", "web", "--image", "nginx"}, false},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				var got serviceCreateOptions
+				serviceCreateHook = func(opts serviceCreateOptions) error {
+					got = opts
+					return nil
+				}
+				t.Cleanup(func() { serviceCreateHook = nil })
+
+				cmd := newServiceCreateCommand()
+				cmd.SetArgs(tc.args)
+				cmd.SetOut(io.Discard)
+				cmd.SetErr(io.Discard)
+
+				require.NoError(t, cmd.Execute())
+				assert.Equal(t, tc.want, got.replicasSet, "replicasSet must follow Flags().Changed(\"replicas\")")
+			})
+		}
+	})
 }
 
 // TestAutoscaleFlagRegistered verifies --autoscale exists on both commands that
@@ -220,6 +252,21 @@ func serviceWithAutoscale(labels map[string]string) *api.Service {
 	}
 }
 
+// serviceWithAutoscaleMode is serviceWithAutoscale with an explicit mode, so a
+// test can express "already global" (replicas are meaningless there) or a
+// replicated service sitting at a particular count.
+func serviceWithAutoscaleMode(labels map[string]string, global bool, replicas uint64) *api.Service {
+	svc := serviceWithAutoscale(labels)
+	if global {
+		svc.Spec.Mode = &api.ServiceSpec_Global{Global: &api.GlobalService{}}
+	} else {
+		svc.Spec.Mode = &api.ServiceSpec_Replicated{
+			Replicated: &api.ReplicatedService{Replicas: replicas},
+		}
+	}
+	return svc
+}
+
 // TestAutoscaleUpdate_TriState verifies --autoscale on `service update`:
 // absent preserves the declared policy, a value replaces it, an explicit empty
 // value removes all six labels (clearing it), and a malformed value fails
@@ -340,5 +387,305 @@ func TestServiceInspectAutoscale(t *testing.T) {
 		assert.Contains(t, out, "Autoscale: invalid")
 		assert.Contains(t, out, types.AutoscaleMetricLabel,
 			"the invalid policy must say which labels are missing")
+	})
+}
+
+// autoscaleTestPolicy is a complete, valid flag-form policy used by the tests
+// below; the bounds it declares are min=2, max=10.
+const autoscaleTestPolicy = "min=2,max=10,metric=cpu,target=70"
+
+// TestAutoscaleGlobalModeRejected verifies the combination is refused in every
+// direction: a global service runs one task per node and ignores the replica
+// count, so a policy on it could never be honoured. Silently storing the labels
+// (and `service inspect` then showing them as configured) would be a promise
+// the manager loop cannot keep.
+func TestAutoscaleGlobalModeRejected(t *testing.T) {
+	existing := autoscaleLabels("2", "10", "cpu", "70", "1m0s", "5m0s")
+
+	t.Run("create with --mode global and --autoscale is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 2, replicasSet: true,
+			mode: modeGlobal, autoscale: autoscaleTestPolicy,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "global", "the error must name the mode")
+		assert.Contains(t, err.Error(), "replicas", "the error must explain that global ignores replicas")
+		assert.Contains(t, err.Error(), "autoscal", "the error must name autoscaling as what cannot apply")
+	})
+
+	t.Run("create with --mode global and a label-declared policy is rejected", func(t *testing.T) {
+		// --label is the lower-level way to declare the same policy, so it must
+		// not be a way around the rejection.
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", mode: modeGlobal,
+			labels: []string{
+				types.AutoscaleMinLabel + "=2",
+				types.AutoscaleMaxLabel + "=10",
+				types.AutoscaleMetricLabel + "=cpu",
+				types.AutoscaleTargetLabel + "=70",
+			},
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "global")
+	})
+
+	t.Run("create with --mode global and no policy is allowed", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", mode: modeGlobal,
+		})
+
+		require.NoError(t, err)
+		assert.NotNil(t, spec.GetGlobal())
+	})
+
+	t.Run("update --mode global on a service with a policy is rejected", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(existing, false, 2)}
+
+		err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			mode: modeGlobal, modeSet: true,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "global")
+		assert.Contains(t, err.Error(), "replicas")
+		assert.Contains(t, err.Error(), "autoscal")
+		assert.Zero(t, client.updateCalls, "a rejected combination must not be submitted")
+	})
+
+	t.Run("update --autoscale on a global service is rejected", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(nil, true, 0)}
+
+		err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			autoscale: autoscaleTestPolicy, autoscaleSet: true,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "global")
+		assert.Contains(t, err.Error(), "autoscal")
+		assert.Zero(t, client.updateCalls, "a rejected combination must not be submitted")
+	})
+
+	t.Run("clearing the policy on a global service stays possible", func(t *testing.T) {
+		// An explicit empty value is a clear, not a declaration: it is the way
+		// out of a service that already carries a policy it cannot honour.
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(existing, true, 0)}
+
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			autoscale: "", autoscaleSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		for _, key := range types.AutoscaleLabelKeys() {
+			_, ok := client.updatedSpec.Annotations.Labels[key]
+			assert.False(t, ok, "clearing must remove %s", key)
+		}
+	})
+}
+
+// TestAutoscaleLabelOnlyPolicyIsValidated verifies the label block is validated
+// too: the six labels are the stored form, so a policy declared only through
+// --label must be as complete and readable as one the flag builds. Otherwise
+// `--label swarmcracker.autoscale.min=0` would store a policy the flag rejects.
+func TestAutoscaleLabelOnlyPolicyIsValidated(t *testing.T) {
+	complete := []string{
+		types.AutoscaleMinLabel + "=2",
+		types.AutoscaleMaxLabel + "=10",
+		types.AutoscaleMetricLabel + "=cpu",
+		types.AutoscaleTargetLabel + "=70",
+	}
+
+	t.Run("a complete label-declared policy is accepted", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 2, labels: complete,
+		})
+
+		require.NoError(t, err, "a complete policy declared purely through --label must keep working")
+		policy, err := types.AutoscaleFromLabels(spec.Annotations.Labels)
+		require.NoError(t, err)
+		require.NotNil(t, policy)
+		assert.Equal(t, 2, policy.Min)
+		assert.Equal(t, 10, policy.Max)
+		assert.Equal(t, types.AutoscaleMetricCPU, policy.Metric)
+		assert.Equal(t, 70.0, policy.Target)
+	})
+
+	t.Run("an incomplete label-declared policy is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 2,
+			labels: []string{types.AutoscaleMinLabel + "=2"},
+		})
+
+		require.Error(t, err, "a half-written policy must not be stored by --label alone")
+		assert.Contains(t, err.Error(), "autoscal")
+		assert.Contains(t, err.Error(), types.AutoscaleMaxLabel, "the error must name a missing label")
+	})
+
+	t.Run("an unreadable label-declared policy is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 2,
+			labels: []string{
+				types.AutoscaleMinLabel + "=0",
+				types.AutoscaleMaxLabel + "=10",
+				types.AutoscaleMetricLabel + "=cpu",
+				types.AutoscaleTargetLabel + "=70",
+			},
+		})
+
+		require.Error(t, err, "a value no policy could hold must not be stored by --label alone")
+		assert.Contains(t, err.Error(), types.AutoscaleMinLabel)
+		assert.Contains(t, err.Error(), ">= 1")
+	})
+}
+
+// TestAutoscaleReplicasBounds verifies an explicit --replicas is reconciled
+// with the policy's [min,max]: storing a service outside its own bounds would
+// leave the manager loop either to "correct" the count on its first pass or to
+// never reach min. --replicas 0 is the deliberate exception (it means
+// "paused"), and a create that never mentioned replicas is not second-guessed.
+func TestAutoscaleReplicasBounds(t *testing.T) {
+	existing := autoscaleLabels("2", "10", "cpu", "70", "1m0s", "5m0s")
+
+	t.Run("create above max is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 50, replicasSet: true,
+			autoscale: autoscaleTestPolicy,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--replicas 50", "the error must name the value")
+		assert.Contains(t, err.Error(), "min=2, max=10", "the error must name the bounds")
+	})
+
+	t.Run("create below min is rejected", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1, replicasSet: true,
+			autoscale: autoscaleTestPolicy,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--replicas 1")
+		assert.Contains(t, err.Error(), "min=2, max=10")
+	})
+
+	t.Run("create within the bounds is accepted", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 5, replicasSet: true,
+			autoscale: autoscaleTestPolicy,
+		})
+
+		require.NoError(t, err)
+		require.NotNil(t, spec.GetReplicated())
+		assert.Equal(t, uint64(5), spec.GetReplicated().Replicas)
+	})
+
+	t.Run("create with --replicas 0 is accepted as paused", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 0, replicasSet: true,
+			autoscale: autoscaleTestPolicy,
+		})
+
+		require.NoError(t, err, "--replicas 0 means paused, not scale to the floor")
+		require.NotNil(t, spec.GetReplicated())
+		assert.Equal(t, uint64(0), spec.GetReplicated().Replicas)
+	})
+
+	t.Run("create with a label-declared policy is checked too", func(t *testing.T) {
+		_, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 50, replicasSet: true,
+			labels: []string{
+				types.AutoscaleMinLabel + "=2",
+				types.AutoscaleMaxLabel + "=10",
+				types.AutoscaleMetricLabel + "=cpu",
+				types.AutoscaleTargetLabel + "=70",
+			},
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--replicas 50")
+	})
+
+	t.Run("create without an explicit --replicas is not bounded", func(t *testing.T) {
+		// The flag defaults to 1: rejecting a create that never mentioned
+		// replicas would be surprising, and the policy's min still wins on the
+		// manager loop's first pass.
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1, autoscale: autoscaleTestPolicy,
+		})
+
+		require.NoError(t, err)
+		assert.Equal(t, uint64(1), spec.GetReplicated().Replicas)
+	})
+
+	t.Run("update above max is rejected", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(existing, false, 5)}
+
+		err := updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			replicas: 50, replicasSet: true,
+		})
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "--replicas 50")
+		assert.Contains(t, err.Error(), "min=2, max=10")
+		assert.Zero(t, client.updateCalls, "an out-of-bounds count must not be stored")
+	})
+
+	t.Run("update within the bounds is accepted", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(existing, false, 5)}
+
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			replicas: 8, replicasSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		assert.Equal(t, uint64(8), client.updatedSpec.GetReplicated().Replicas)
+	})
+
+	t.Run("update with --replicas 0 is accepted as paused", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{service: serviceWithAutoscaleMode(existing, false, 5)}
+
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			replicas: 0, replicasSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		assert.Equal(t, uint64(0), client.updatedSpec.GetReplicated().Replicas)
+		assert.Equal(t, existing, client.updatedSpec.Annotations.Labels,
+			"a pause must not touch the policy")
+	})
+}
+
+// TestAutoscaleWhitespaceBehavesLikeEmpty verifies a whitespace-only
+// --autoscale is the same request as "": on create it declares no policy, on
+// update it clears the declared one. A value of " " must not reach the parser,
+// which would reject it as an empty policy and make the two spellings differ.
+func TestAutoscaleWhitespaceBehavesLikeEmpty(t *testing.T) {
+	t.Run("create adds no label", func(t *testing.T) {
+		spec, err := buildServiceSpec(serviceCreateOptions{
+			name: "web", image: "nginx", replicas: 1, autoscale: "  \t ",
+		})
+
+		require.NoError(t, err)
+		for _, key := range types.AutoscaleLabelKeys() {
+			_, ok := spec.Annotations.Labels[key]
+			assert.False(t, ok, "a whitespace-only --autoscale on create must not add %s", key)
+		}
+	})
+
+	t.Run("update clears the policy", func(t *testing.T) {
+		client := &fakeServiceUpdateClient{
+			service: serviceWithAutoscaleMode(autoscaleLabels("2", "10", "cpu", "70", "1m0s", "5m0s"), false, 5),
+		}
+
+		require.NoError(t, updateServiceWithClient(context.Background(), client, "web", serviceUpdateOptions{
+			autoscale: "   ", autoscaleSet: true,
+		}))
+
+		require.Equal(t, 1, client.updateCalls)
+		for _, key := range types.AutoscaleLabelKeys() {
+			_, ok := client.updatedSpec.Annotations.Labels[key]
+			assert.False(t, ok, "a whitespace-only --autoscale must clear %s", key)
+		}
 	})
 }

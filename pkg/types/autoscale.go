@@ -165,9 +165,9 @@ func ParseAutoscaleFlag(value string) (AutoscalePolicy, error) {
 		}
 		key = strings.TrimSpace(key)
 		raw = strings.TrimSpace(raw)
-		if _, dup := values[key]; dup {
-			return AutoscalePolicy{}, fmt.Errorf("duplicate autoscale key %q", key)
-		}
+		// The key must be known before it can be a duplicate: reporting a
+		// repeated typo as "duplicate" would send the operator looking for a
+		// key that does not exist.
 		if !isAutoscaleKey(key) {
 			return AutoscalePolicy{}, fmt.Errorf(
 				"unknown autoscale key %q (want %s)", key,
@@ -175,6 +175,11 @@ func ParseAutoscaleFlag(value string) (AutoscalePolicy, error) {
 					autoscaleKeyMin, autoscaleKeyMax, autoscaleKeyMetric,
 					autoscaleKeyTarget, autoscaleKeyCooldownUp, autoscaleKeyCooldownDown,
 				}, ", "))
+		}
+		if _, dup := values[key]; dup {
+			return AutoscalePolicy{}, fmt.Errorf(
+				"duplicate autoscale key %q (want each key at most once, e.g. %s)",
+				key, autoscaleFlagForm)
 		}
 		values[key] = raw
 	}

@@ -159,14 +159,24 @@ func TestAutoscaleParseFlag(t *testing.T) {
 			want: []string{`unknown autoscale key "cooldown"`, "cooldown-up", "cooldown-down"},
 		},
 		{
+			// The key has to be recognised before it can be a duplicate, or a
+			// repeated typo is reported as "duplicate" and sends the operator
+			// looking for a key that does not exist.
+			name: "repeated unknown key stays unknown",
+			in:   "min=2,max=10,metric=cpu,target=70,cooldown=5m,cooldown=6m",
+			want: []string{`unknown autoscale key "cooldown"`, "cooldown-up", "cooldown-down"},
+		},
+		{
 			name: "component without a value",
 			in:   "min=2,max=10,metric=cpu,target=70,oops",
 			want: []string{`invalid autoscale component "oops"`, "key=value"},
 		},
 		{
+			// Like every other flag-form error, the duplicate reports the valid
+			// form so the operator can see what a well-formed value looks like.
 			name: "duplicate key",
 			in:   "min=2,min=3,max=10,metric=cpu,target=70",
-			want: []string{`duplicate autoscale key "min"`},
+			want: []string{`duplicate autoscale key "min"`, "at most once", "min=<n>", "target=<percent>"},
 		},
 	}
 

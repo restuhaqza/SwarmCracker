@@ -315,6 +315,7 @@ bounds by the manager (for example --autoscale min=2,max=10,metric=cpu,target=70
 				image:              image,
 				withRegistryAuth:   withRegistryAuth,
 				replicas:           replicas,
+				replicasSet:        cmd.Flags().Changed("replicas"),
 				cpu:                cpu,
 				memory:             memory,
 				disk:               disk,
@@ -1942,12 +1943,16 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 	// declared policy (copied with the spec below), an explicit empty value
 	// clears it, and a value replaces the whole label set. Parsing here means a
 	// malformed policy never reaches the lookup.
-	var autoscaleLabels map[string]string
+	var (
+		autoscaleLabels map[string]string
+		autoscalePolicy *types.AutoscalePolicy
+	)
 	if opts.autoscaleSet && strings.TrimSpace(opts.autoscale) != "" {
 		policy, err := types.ParseAutoscaleFlag(opts.autoscale)
 		if err != nil {
 			return fmt.Errorf("invalid --autoscale: %w", err)
 		}
+		autoscalePolicy = &policy
 		autoscaleLabels = policy.Labels()
 	}
 
@@ -1968,6 +1973,58 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 			return fmt.Errorf("service %q has no previous spec to roll back to", svc.Spec.Annotations.Name)
 		}
 		return applyServiceSpec(ctx, client, svc, svc.PreviousSpec.Copy())
+	}
+
+	spec := svc.Spec.Copy()
+
+	// Resolve the mode the update leaves the service in. SwarmKit does not
+	// allow a mode change on update (rejected below), but an explicit --mode is
+	// still the mode the operator asked for, and it is what the autoscale check
+	// below must consider: "--mode global" on a service that carries a policy
+	// is the same invalid combination as declaring a policy on a global
+	// service.
+	resultingMode := modeReplicated
+	if spec.GetGlobal() != nil {
+		resultingMode = modeGlobal
+	}
+	if opts.modeSet {
+		requested, err := normalizeServiceMode(opts.mode)
+		if err != nil {
+			return err
+		}
+		resultingMode = requested
+	}
+
+	// The policy the update leaves on the service: the flag's (parsed above and
+	// canonical), or the one already stored when the flag is absent. A stored
+	// policy that cannot be read stays a read-time concern (`service inspect`
+	// reports it as invalid), so it does not block an unrelated update; it just
+	// cannot be enforced here.
+	resultingPolicy := autoscalePolicy
+	if !opts.autoscaleSet {
+		if stored, err := types.AutoscaleFromLabels(spec.Annotations.Labels); err == nil {
+			resultingPolicy = stored
+		}
+	}
+
+	// Reject autoscale on a global service in both directions, rather than
+	// storing a policy the manager loop would have to ignore. An explicit empty
+	// --autoscale is a clear, not a declaration, so it stays available as the
+	// way out of a service that already carries a policy it cannot honour.
+	//
+	// The lookup above is a read and mutates nothing, so rejecting here (ahead
+	// of the golden check and the credential resolution below) means the
+	// clearest error wins: an invalid combination is never reported as a
+	// missing registry credential.
+	if (opts.modeSet || opts.autoscaleSet) && resultingPolicy != nil && resultingMode == modeGlobal {
+		return autoscaleGlobalModeError()
+	}
+
+	// An explicit --replicas must agree with the policy, exactly as on create.
+	// --replicas 0 stays valid: it means "paused", not "scale to the floor".
+	if resultingPolicy != nil && opts.replicasSet && opts.replicas > 0 &&
+		(opts.replicas < uint64(resultingPolicy.Min) || opts.replicas > uint64(resultingPolicy.Max)) {
+		return autoscaleReplicasOutOfBounds(opts.replicas, *resultingPolicy)
 	}
 
 	// --with-registry-auth on a golden service would be stored but never
@@ -2002,8 +2059,6 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 	if err != nil {
 		return fmt.Errorf("invalid memory value: %w", err)
 	}
-
-	spec := svc.Spec.Copy()
 
 	// --balloon-mib is tri-state: an absent flag preserves the service's current
 	// label (copied above), a positive value sets it, and an explicit 0 removes
@@ -2206,16 +2261,12 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 	// change on update, so reject a real change with a clear error instead of
 	// forwarding it and surfacing an opaque RPC failure.
 	if opts.modeSet {
-		mode, err := normalizeServiceMode(opts.mode)
-		if err != nil {
-			return err
-		}
 		current := modeReplicated
 		if spec.GetGlobal() != nil {
 			current = modeGlobal
 		}
-		if mode != current {
-			return fmt.Errorf("changing the service mode (%s -> %s) is not supported; recreate the service", current, mode)
+		if resultingMode != current {
+			return fmt.Errorf("changing the service mode (%s -> %s) is not supported; recreate the service", current, resultingMode)
 		}
 	}
 
