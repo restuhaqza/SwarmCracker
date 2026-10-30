@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -2014,11 +2014,9 @@ func (nm *NetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
 
 // createTapDevice creates a TAP device for a network attachment.
 func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.NetworkAttachment, index int, taskID string) (*TapDevice, error) {
-	// Generate TAP name: tap-<hash[:8]>-<index>
-	// Must match logic in translator
-	hash := sha256.Sum256([]byte(taskID))
-	hashStr := hex.EncodeToString(hash[:])
-	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
+	// The name is shared with the translators and with a migration restore, so
+	// the rule lives in one place (pkg/runtime).
+	tapName := scruntime.TapName(taskID, index)
 
 	// Allocate IP address for this TAP
 	// Priority: SwarmKit-provided IP > Local allocation

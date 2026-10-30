@@ -3,7 +3,6 @@ package swarmkit
 
 import (
 	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
@@ -360,17 +360,14 @@ func resolveBalloon(task *types.Task, memSizeMib int) (*types.BalloonConfig, err
 func (t *taskTranslatorImpl) buildNetworkInterfaces(task *types.Task) []map[string]interface{} {
 	interfaces := make([]map[string]interface{}, 0, len(task.Networks))
 
-	// Generate TAP name hash (must match network manager logic)
-	hash := sha256.Sum256([]byte(task.ID))
-	hashStr := hex.EncodeToString(hash[:])
-
+	// The TAP name must match the device the network manager creates and the one
+	// a migration restore recreates, so the rule lives in pkg/runtime.
 	for i := range task.Networks {
 		ifaceID := fmt.Sprintf("eth%d", i)
-		tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], i)
 
 		iface := map[string]interface{}{
 			"iface_id":      ifaceID,
-			"host_dev_name": tapName,
+			"host_dev_name": scruntime.TapName(task.ID, i),
 			"guest_mac":     generateMAC(task.ID, i),
 		}
 

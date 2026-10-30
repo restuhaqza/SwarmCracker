@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -606,6 +607,38 @@ func TestNetworkManager_createTapDevice_NilDriverConfig(t *testing.T) {
 func assertTapName(t *testing.T, name string, index int) {
 	t.Helper()
 	assert.Regexp(t, fmt.Sprintf(`^tap-[0-9a-f]{8}-%d$`, index), name)
+}
+
+// TestCreateTapDeviceNameIsTheSharedRule pins the exact name for a known task.
+// A formula re-inlined in the network manager, in a translator or in a migration
+// restore would restore a VM whose recorded TAP device does not exist, so the
+// literal comes from the shared rule in pkg/runtime and not from a local hash.
+func TestCreateTapDeviceNameIsTheSharedRule(t *testing.T) {
+	stubExec(t) // never create a real device
+
+	nm := NewNetworkManager(types.NetworkConfig{BridgeName: "br0"}).(*NetworkManager)
+	network := types.NetworkAttachment{
+		Network: types.Network{
+			ID: "network-1",
+			Spec: types.NetworkSpec{
+				DriverConfig: &types.DriverConfig{
+					Bridge: &types.BridgeConfig{Name: "br0"},
+				},
+			},
+		},
+		Addresses: []string{"192.168.1.10/24"},
+	}
+
+	tap, err := nm.createTapDevice(context.Background(), network, 0, "test-task")
+	if err != nil {
+		t.Skipf("createTapDevice failed (expected without root): %v", err)
+	}
+	require.NotNil(t, tap)
+
+	assert.Equal(t, "tap-0a76cd9b-0", tap.Name,
+		"tap-<sha256(taskID)[:8]>-<index> for taskID test-task, index 0")
+	assert.Equal(t, scruntime.TapName("test-task", 0), tap.Name,
+		"the device name must be the shared rule in pkg/runtime")
 }
 
 // TestNetworkManager_createTapDevice_InterfaceName tests interface naming

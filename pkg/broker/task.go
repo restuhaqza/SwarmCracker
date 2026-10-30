@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
 
 // vmSocketSuffix is the Firecracker API socket suffix the executor uses for a
@@ -50,7 +52,7 @@ func (t Task) VsockPath() string {
 	if t.SocketPath == "" || t.ID == "" {
 		return ""
 	}
-	return filepath.Join(filepath.Dir(t.SocketPath), t.ID+".vsock")
+	return scruntime.VsockPath(filepath.Dir(t.SocketPath), t.ID)
 }
 
 // guestAvailable reports whether the task has a live VM whose guest agent can
