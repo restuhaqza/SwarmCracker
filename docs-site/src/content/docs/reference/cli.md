@@ -73,6 +73,7 @@ Cluster lifecycle management.
 | `--kernel` | `/usr/share/firecracker/vmlinux` | Firecracker kernel |
 | `--rootfs-dir` | `/var/lib/firecracker/rootfs` | Rootfs directory |
 | `--socket-dir` | `/var/run/firecracker` | Firecracker socket directory |
+| `--snapshot-dir` | `/var/lib/firecracker/snapshots` | Snapshot directory (also added to the unit's writable paths) |
 | `--vcpus` | `1` | Default vCPUs per microVM |
 | `--memory` | `512` | Default memory (MB) per microVM |
 | `--bridge-name` | `swarm-br0` | VM bridge name |
@@ -95,6 +96,7 @@ Cluster lifecycle management.
 | `--manager` / `-m` | `false` | Join as a manager (needs a manager token) |
 | `--enable-cni` | `true` | Enable the CNI network provider |
 | `--state-dir` | `/var/lib/swarmkit` | Cluster state directory |
+| `--snapshot-dir` | `/var/lib/firecracker/snapshots` | Snapshot directory (passed to the unit and added to its writable paths) |
 | `--vxlan-enabled` / `--vxlan-peers` | — | VXLAN overlay options |
 
 **`cluster leave` flags:** `--purge`, `--force`, `--keep-network`, `--state-dir`, `--bridge-name`, `--config-dir`

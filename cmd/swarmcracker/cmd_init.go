@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
@@ -23,6 +25,7 @@ type initConfig struct {
 	KernelPath    string
 	RootfsDir     string
 	SocketDir     string
+	SnapshotDir   string
 	VCPUs         int
 	Memory        int
 	BridgeName    string
@@ -81,6 +84,7 @@ Examples:
 	cmd.Flags().StringVar(&cfg.KernelPath, "kernel", "/usr/share/firecracker/vmlinux", "Path to Firecracker kernel")
 	cmd.Flags().StringVar(&cfg.RootfsDir, "rootfs-dir", "/var/lib/firecracker/rootfs", "Directory for container rootfs")
 	cmd.Flags().StringVar(&cfg.SocketDir, "socket-dir", "/var/run/firecracker", "Directory for Firecracker sockets")
+	cmd.Flags().StringVar(&cfg.SnapshotDir, "snapshot-dir", config.DefaultSnapshotDir, "Directory holding VM snapshots")
 	cmd.Flags().IntVar(&cfg.VCPUs, "vcpus", 1, "Default vCPUs per microVM")
 	cmd.Flags().IntVar(&cfg.Memory, "memory", 512, "Default memory (MB) per microVM")
 
@@ -286,12 +290,16 @@ func detectAdvertiseAddress() (string, error) {
 	return "", fmt.Errorf("no IP addresses found")
 }
 
-func createDirectories(cfg *initConfig) error {
-	dirs := []string{
+// initDirectories lists the directories cluster init creates before the unit
+// starts. The snapshot dir is here so the first snapshot does not race the
+// daemon's own MkdirAll.
+func initDirectories(cfg *initConfig) []string {
+	return []string{
 		cfg.StateDir,
 		cfg.ConfigDir,
 		cfg.RootfsDir,
 		cfg.SocketDir,
+		cfg.SnapshotDir,
 		"/var/run/swarmkit",       // Required for systemd ProtectSystem=strict
 		"/var/cache/swarmcracker", // Image layer cache
 		"/var/lib/swarmcracker",   // Volumes, secrets, configs
@@ -299,8 +307,10 @@ func createDirectories(cfg *initConfig) error {
 		"/opt/cni/bin",            // CNI plugin binaries
 		"/var/lib/cni",            // CNI IPAM state
 	}
+}
 
-	for _, dir := range dirs {
+func createDirectories(cfg *initConfig) error {
+	for _, dir := range initDirectories(cfg) {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
 		}
@@ -360,8 +370,30 @@ logging:
 	}
 	log.Debug().Str("path", configPath).Msg("Manager config written")
 
-	// Generate systemd service file
-	serviceTemplate := `[Unit]
+	unit, err := renderManagerService(cfg)
+	if err != nil {
+		return err
+	}
+
+	servicePath := "/etc/systemd/system/swarmcracker-manager.service"
+	if err := os.WriteFile(servicePath, unit, 0644); err != nil {
+		return fmt.Errorf("failed to write service file: %w", err)
+	}
+	log.Debug().Str("path", servicePath).Msg("Systemd service file written")
+
+	// Reload systemd
+	log.Info().Msg("Reloading systemd daemon...")
+	cmd := exec.Command("systemctl", "daemon-reload")
+	if err := cmd.Run(); err != nil {
+		log.Warn().Err(err).Msg("Failed to reload systemd daemon (may need manual reload)")
+	}
+
+	return nil
+}
+
+// managerServiceTemplate is the manager unit written to
+// /etc/systemd/system/swarmcracker-manager.service.
+const managerServiceTemplate = `[Unit]
 Description=SwarmCracker Manager
 Documentation=https://github.com/restuhaqza/SwarmCracker
 After=network.target docker.service
@@ -378,6 +410,7 @@ ExecStart=/usr/local/bin/swarmd-firecracker \
   --kernel-path {{.KernelPath}} \
   --rootfs-dir {{.RootfsDir}} \
   --socket-dir {{.SocketDir}} \
+  --snapshot-dir {{.SnapshotDir}} \
   --default-vcpus {{.VCPUs}} \
   --default-memory {{.Memory}} \
   --bridge-name {{.BridgeName}} \
@@ -412,37 +445,57 @@ PrivateTmp=true
 # ProtectSystem=strict it is the only way those files can be written.
 RuntimeDirectory={{base .SocketDir}} swarmkit swarmcracker
 RuntimeDirectoryPreserve=yes
-ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
+# Firecracker is a child of the daemon and inherits this mount namespace, so the
+# snapshot directories must be writable here or snapshot create fails with EROFS.
+# snapshotPaths keeps the CLI's default snapshot dir writable in addition to the
+# configured one (a node-local "vm snapshot create" uses the CLI config), and
+# collapses them when they are equal. The "-" prefix makes systemd ignore a
+# missing path instead of failing the unit with status=226/NAMESPACE (see the
+# RuntimeDirectory note above).
+ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} {{snapshotPaths .SnapshotDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
 
 [Install]
 WantedBy=multi-user.target
 `
 
-	tmpl, err := template.New("service").Funcs(template.FuncMap{"base": filepath.Base}).Parse(serviceTemplate)
+// serviceTemplateFuncs returns the functions both unit templates use, so the
+// manager and worker units cannot render the same path differently.
+func serviceTemplateFuncs() template.FuncMap {
+	return template.FuncMap{
+		"base":          filepath.Base,
+		"snapshotPaths": snapshotWritePaths,
+	}
+}
+
+// snapshotWritePaths renders the ReadWritePaths entries for the snapshot
+// directories: the configured --snapshot-dir (the node service's directory, used
+// by API/broker-created snapshots) and config.DefaultSnapshotDir, which is where
+// a node-local `vm snapshot create` writes unless the CLI config overrides
+// `snapshot.snapshot_dir`. Keeping both means a custom --snapshot-dir cannot
+// un-whitelist the default and turn a working node into an EROFS node; when the
+// two are equal only one entry is emitted.
+func snapshotWritePaths(snapshotDir string) string {
+	paths := []string{"-" + snapshotDir}
+	if snapshotDir != config.DefaultSnapshotDir {
+		paths = append(paths, "-"+config.DefaultSnapshotDir)
+	}
+	return strings.Join(paths, " ")
+}
+
+// renderManagerService renders the manager systemd unit. It is separate from the
+// writer so the unit can be asserted on in a test without touching /etc.
+func renderManagerService(cfg *initConfig) ([]byte, error) {
+	tmpl, err := template.New("service").Funcs(serviceTemplateFuncs()).Parse(managerServiceTemplate)
 	if err != nil {
-		return fmt.Errorf("failed to parse service template: %w", err)
+		return nil, fmt.Errorf("failed to parse manager service template: %w", err)
 	}
 
-	servicePath := "/etc/systemd/system/swarmcracker-manager.service"
-	serviceFile, err := os.Create(servicePath)
-	if err != nil {
-		return fmt.Errorf("failed to create service file: %w", err)
-	}
-	defer serviceFile.Close()
-
-	if err := tmpl.Execute(serviceFile, cfg); err != nil {
-		return fmt.Errorf("failed to write service file: %w", err)
-	}
-	log.Debug().Str("path", servicePath).Msg("Systemd service file written")
-
-	// Reload systemd
-	log.Info().Msg("Reloading systemd daemon...")
-	cmd := exec.Command("systemctl", "daemon-reload")
-	if err := cmd.Run(); err != nil {
-		log.Warn().Err(err).Msg("Failed to reload systemd daemon (may need manual reload)")
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, cfg); err != nil {
+		return nil, fmt.Errorf("failed to render manager service file: %w", err)
 	}
 
-	return nil
+	return buf.Bytes(), nil
 }
 
 func startManagerService(cfg *initConfig) error {

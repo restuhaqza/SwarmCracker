@@ -256,6 +256,18 @@ sweep removes a reserved `snap-*` directory that has no `metadata.json`: that is
 a SIGKILL between reserving the ID and publishing the finished snapshot, not a
 snapshot. A real snapshot always has metadata, so it is never swept.
 
+### Daemon-managed tasks and the snapshot directory
+
+A node-local `vm snapshot create` writes the memory and state files into the
+**CLI's** configured `snapshot.snapshot_dir` (default
+`/var/lib/firecracker/snapshots`), whereas snapshots created through the HTTP API
+with `--snapshots-enable` use the node service's `--snapshot-dir`. `cluster init`
+and `cluster join` set that service directory with `--snapshot-dir`, and the
+generated unit makes both it and the default writable through `ReadWritePaths` —
+the units run with `ProtectSystem=strict`, and Firecracker inherits the daemon's
+mount namespace, so a directory missing from that list fails the create with
+`Read-only file system`.
+
 ---
 
 ## Workflow Examples
