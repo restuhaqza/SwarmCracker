@@ -672,31 +672,27 @@ swarmd-firecracker --debug
 ## Placement
 
 `--constraint` and `--placement-pref` are SwarmKit's own scheduling inputs, not
-a SwarmCracker extension: the scheduler evaluates `node.hostname`, `node.role`,
-`node.labels.*` and the spread preferences before it assigns a task. The flag
-grammar, the `node update --label-add` workflow that makes a
-`node.labels.<key>` constraint satisfiable, and the preference form are
-documented in [`service create`](/reference/cli/#swarmcracker-service) and
+a SwarmCracker extension, so the scheduler evaluates them against
+`node.hostname`, `node.role`, `node.labels.*` and the spread preferences; the
+grammar and the `node update --label-add` workflow that makes a
+`node.labels.<key>` constraint satisfiable are in
+[`service create`](/reference/cli/#swarmcracker-service) and
 [Architecture Constraints](/guides/advanced/#architecture-constraints).
 
 ### When nothing can be placed
 
-A refused placement appears as `NEW`/`PENDING` tasks whose `ERROR` column holds
-the scheduler's verdict. That verdict is deliberately generic — "scheduling
-constraints not satisfied on 2 nodes" — and the column truncates it at 40
-characters, so the command adds one line after the table when **no** task of the
-listing is placed and at least one unplaced task carries a scheduler error:
+The `ERROR` column holds the scheduler's verdict, which is generic and truncated
+at 40 characters, so when no task of the listing is placed the command adds one
+line after the table:
 
 ```text
 no task is running: constraint "node.labels.disk==ssd" matches no node (available node labels: disk=hdd, hostname=sc-lab-node1, role=manager, role=worker)
 ```
 
-The constraint is named only when the scheduler's error carries the constraint
-filter's own explanation. SwarmKit joins every failing filter into one error, so
-a resource refusal on a constrained service is quoted verbatim with the declared
-constraints marked as "may not be the cause" instead. The line is a diagnostic:
-it changes no exit code, prints in table mode only, and `task ls --health` does
-not print it. The two message shapes are in the
+That line names the constraint only when the task error carries the constraint
+filter's own explanation; otherwise it quotes the scheduler and lists the
+declared constraints as possibly not the cause. Both message shapes, and why the
+distinction matters, are in the
 [CLI reference](/reference/cli/#swarmcracker-service).
 
 ---
@@ -720,43 +716,29 @@ a warning naming that reason at startup.
 ### Declaring a policy
 
 ```bash
-swarmcracker service create --name web --image nginx:alpine \
+swarmcracker service create --name web --image nginx:alpine --replicas 2 \
     --autoscale min=2,max=10,metric=cpu,target=70
 ```
 
-The value is `min=<n>,max=<n>,metric=cpu,target=<percent>`, plus the optional
-`cooldown-up=<dur>` and `cooldown-down=<dur>`; keys may be given in any order.
-`min` is at least 1, `max` at least `min`, and `target` is a percentage of one
-vCPU above 0 and at most 100 — `target=70` means each replica should sit around
-0.70 of a vCPU. `cpu` is the only metric in this release, and any other value is
-rejected rather than ignored. A malformed policy fails at the command that made
-it, naming the offending key and the valid form, never later in the loop.
+The service starts at 2 replicas — inside its own bounds, so the first pass
+measures it instead of realigning it — aiming at 70 % of one vCPU per replica.
 
-The policy is stored as six service labels, which is what the manager loop reads
-and what `service inspect` prints back:
-
-| Label | Example | Meaning |
-|-------|---------|---------|
-| `swarmcracker.autoscale.min` | `2` | Lower replica bound |
-| `swarmcracker.autoscale.max` | `10` | Upper replica bound |
-| `swarmcracker.autoscale.metric` | `cpu` | Metric to scale on |
-| `swarmcracker.autoscale.target` | `70` | Target percentage of one vCPU |
-| `swarmcracker.autoscale.cooldown_up` | `1m0s` | Minimum gap between two scale-ups |
-| `swarmcracker.autoscale.cooldown_down` | `5m0s` | Minimum gap between two scale-downs |
-
-`service update --autoscale <policy>` replaces the whole label set, so a stale
-cooldown cannot survive a changed policy, and `--autoscale ""` removes it;
-omitting the flag leaves the policy alone.
+The flag grammar, the six `swarmcracker.autoscale.*` labels the policy is stored
+as, the cooldown defaults, the tri-state `service update` behaviour and the
+combinations that are refused are in the
+[CLI reference](/reference/cli/#swarmcracker-service). This page describes what
+the manager does with a stored policy.
 
 ### What the loop does
 
-Every 30 seconds the leader lists the services that carry a policy and reads,
-for every **running** replica, the last sample its node recorded — the node's
-poller asks the guest agent every 15 seconds, so the manager reads a sample at
-most one poll interval old without scraping Prometheus or dialling the guest.
-Two readings of the same replica become cores per replica: the change in that
-replica's cumulative guest CPU seconds divided by the wall time between the two
-samples. The mean across the replicas is compared with the target:
+Every 30 seconds the leader lists every service and reconciles the ones whose
+labels parse into a policy. For each of those, it reads, for every **running**
+replica, the last sample its node recorded — the node's poller asks the guest
+agent every 15 seconds, so the manager reads a sample at most one poll interval
+old without scraping Prometheus or dialling the guest. Two readings of the same
+replica become cores per replica: the change in that replica's cumulative guest
+CPU seconds divided by the wall time between the two samples. The mean across the
+replicas is compared with the target:
 
 | Mean cores per replica | Result |
 |------------------------|--------|
@@ -779,20 +761,44 @@ discarding the evidence for it. The defaults are `60s` after a scale-up and
 `300s` after a scale-down; a cooldown of `0s` means "never wait in this
 direction".
 
-Three situations hold instead of guessing:
+A pass can also end without a load-driven change — in ways that include, but are
+not limited to, these:
 
 - **No data.** A replica that has not produced two samples over a positive
   window — still booting, a guest whose agent predates the metrics operation, a
   node that could not be read — contributes nothing. If no replica contributes,
   the pass decides nothing: that is "nothing measured", not "0% busy", so a
-  failed probe can never scale a service down on its own.
+  failed probe can never scale a service down on its own. Nothing is published
+  either, so the gauge keeps its previous value (see
+  [Watching it](#watching-it)).
 - **A pause.** A service at 0 replicas is left alone; restarting a paused
   service is an explicit action.
 - **A count outside the policy.** The loop aligns it (see below) instead of
   treating it as a load signal.
+- **A patch that did not land.** When the control API rejects the scale —
+  `Autoscaler: cannot scale service ...`, or `cannot align service ...` for an
+  alignment — the loop logs it and commits nothing: the cooldown is not armed and
+  the hysteresis is not reset, so a change that never happened costs one interval,
+  not a whole cooldown.
+- **An unreplicated service.** A `--mode global` service whose autoscale labels
+  were set by hand has no replica count to move; the loop notes it at debug and
+  skips it.
 
-At `--log-level debug` each pass logs the count and the reason it held, for
-example `holding: 0.62 cores is within the band around target 0.70`.
+Cooldowns, the below-target counters and the per-replica CPU baselines live only
+in the running loop's memory. A restarted manager — or a leader change to another
+manager — starts without them: its next pass records a baseline and takes no load
+decision, and its first scale-down still needs two fresh samples.
+
+A policy typed on the command line or as `--label` is validated before the
+service is stored, so a malformed one fails at the command that made it, naming
+the offending key and the valid form. The loop re-validates what it reads: a
+stored label set that does not parse — written through the API, or by a tool that
+did not validate it — makes it log `Autoscaler: service <id> declares an invalid
+autoscale policy; skipping it`, with the parser's reason, on every pass, and that
+service is never scaled until the labels are fixed.
+
+With the daemon's `--debug` flag, a pass that holds logs the count and the reason
+it held, for example `holding: 0.62 cores is within the band around target 0.70`.
 
 ### Alignment when a count is outside the policy
 
@@ -832,15 +838,24 @@ swarmcracker_service_replicas
 sum by (service, direction) (increase(swarmcracker_service_scale_events_total[1h]))
 ```
 
-The per-task CPU series give the other half of the picture: divide
-`sum by (service) (rate(swarmcracker_vm_cpu_seconds[5m]))` by the replica count
-and you have roughly the figure the loop compared with the target.
+The per-task CPU series give the other half of the picture: the per-service rate
+divided by the replica count is roughly the figure the loop compared with the
+target, and both sides carry the service ID, so one query lines them up:
+
+```promql
+sum by (service) (rate(swarmcracker_vm_cpu_seconds[5m])) / swarmcracker_service_replicas
+```
 
 If a service's `swarmcracker_service_replicas` is flat while its
-`vm_cpu_seconds` rate sits well above or below the target, the loop is holding:
-the gauge says what it decided, and the manager's debug log says why. The gauge
-is deleted when a service stops autoscaling — deleted, or with its policy
-removed — so a stale count never lingers; the counter is history and stays.
+`vm_cpu_seconds` rate sits well above or below the target, read it one of two
+ways. Either the loop is holding — the gauge is current and the debug log says
+why — or the pass never reached a decision, most often because no replica had two
+samples yet (a fresh deployment, or a manager that has just restarted and is
+rebuilding its baselines); then the gauge is the last count the loop published,
+not the count it would settle on now. The gauge is deleted when a service stops
+autoscaling — the service is deleted, or its policy is removed — so a stale count
+never lingers for a service that no longer has a policy; the counter is history
+and stays.
 
 ### Pausing a service
 

@@ -46,31 +46,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `swarmcracker_service_replicas` reports the count the last decision settled on
   and `swarmcracker_service_scale_events_total` counts the changes actually
   applied.
+- **`service ps` and `task ls` explain a refused placement** — the `ERROR` column
+  carries SwarmKit's verdict, which is generic ("scheduling constraints not
+  satisfied on 2 nodes") and truncated at 40 characters, so an operator had to
+  guess which constraint key was missing. When no task of the listing is placed,
+  the table is now followed by one diagnostic line. It names the constraint only
+  when the task error carries the constraint filter's own explanation; otherwise
+  it quotes the scheduler verbatim and lists the declared constraints as declared
+  rather than as the cause, because SwarmKit joins every failing filter into one
+  error and a constraint's presence is not evidence that it failed. The line is a
+  diagnostic, not an error: no exit code changes, it prints in table mode only,
+  terminal rows do not suppress it, and `task ls --health` does not print it.
 
 ### Changed
 - **`service ls` shows the service mode** — the table gains a `MODE` column
   (`replicated` / `global`), so a global service is visible without inferring it
   from the `REPLICAS` cell.
-- **`service ps` and `task ls` explain a refused placement** — the `ERROR`
-  column carries SwarmKit's verdict, which is generic ("scheduling constraints
-  not satisfied on 2 nodes") and truncated at 40 characters, so an operator had
-  to guess which constraint key was missing. When no task of the listing is
-  placed, the table is now followed by one line naming the service's constraints
-  and the node labels the cluster actually reports. It is a diagnostic, not an
-  error: no exit code changes, it prints in table mode only, and `task ls
-  --health` does not print it.
 
 ### Fixed
-- **A constraint is named only with evidence** — the placement diagnostic above
-  could have blamed the service's constraint whenever one existed, so a service
-  refused because the nodes were full would be reported as the constraint's
-  fault: SwarmKit joins every failing filter into one error, and a constraint's
-  presence is not evidence that it failed. The constraint is named only when the
-  task error carries the constraint filter's own explanation; otherwise the note
-  quotes the scheduler verbatim and lists the declared constraints as declared.
-  Terminal rows no longer suppress the note either: `service ps` lists every
-  state, so a `SHUTDOWN` row from before a scale-down would make an unplaceable
-  service look placed.
 - **An out-of-bounds replica count is refused, not stored** — `service create
   --replicas`, `service update --replicas` and `service scale` now reject a count
   outside the service's autoscale `min`/`max` and name both bounds, instead of

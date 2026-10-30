@@ -25,7 +25,7 @@ Prometheus metrics, `vm attach` console, node drain/activate, secret/config
 
 ## Delivery status (2026-10-30)
 
-Tier 1 is delivered and released in `v0.12.0`:
+Tier 1 status (`v0.12.0` is the latest tagged release):
 
 | # | Status | Where it lives |
 |---|--------|----------------|
@@ -41,12 +41,18 @@ Tier 1 is delivered and released in `v0.12.0`:
 | #48 overlay networks | Done | `network create/rm`, per-network bridges and VXLAN |
 | #45 observability depth | **Done** | #88 in-guest per-task metrics, #89 cross-node logs, #91 optional OTel tracing |
 | #46 live migration | **Open** | — |
-| #49 autoscaling / placement | **Done** | `--autoscale` policy labels (`pkg/types/autoscale.go`), decision engine (`pkg/autoscaler`), manager loop (`cmd/swarmd-firecracker/autoscaler.go`), unschedulable-placement diagnostics (`cmd/swarmcracker/unschedulable.go`) |
 
 Automated e2e on a real cluster lives in `test-automation/multinode/cluster-lab.sh`:
 `ingress` covers #35/#36 (fan-out, failover, UDP, cleanup) and `three-tier`
 covers the epic's acceptance test (published port, secret in the guest, health
 gating, service-name DNS, `--command/--args`).
+
+Merged on `main` and listed under `[Unreleased]` in `CHANGELOG.md`, so not in any
+tagged release yet:
+
+| # | Status | Where it lives |
+|---|--------|----------------|
+| #49 autoscaling / placement | **Done, unreleased** | `--autoscale` policy labels (`pkg/types/autoscale.go`), decision engine (`pkg/autoscaler`), manager loop (`cmd/swarmd-firecracker/autoscaler.go`), unschedulable-placement diagnostics (`cmd/swarmcracker/unschedulable.go`) |
 
 Known, documented deviations:
 

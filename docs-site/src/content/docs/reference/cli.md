@@ -379,8 +379,9 @@ the limit already on the service (and the 512 MiB default when it declares none)
 — and sets the `swarmcracker.balloon` label, so the change takes effect on the
 task SwarmKit starts next (the device cannot be reconfigured in place).
 
-`--autoscale` replaces the fixed replica count with a policy the manager keeps
-between two bounds. The value is
+`--autoscale` gives a service a policy the manager keeps its replica count
+inside: the count stays in the service spec, and the manager rewrites it between
+`min` and `max` as load changes. The value is
 `min=<n>,max=<n>,metric=cpu,target=<percent>`, with the optional
 `cooldown-up=<dur>` and `cooldown-down=<dur>`; keys may be given in any order.
 `min` is at least 1, `max` at least `min`, `target` is a percentage of one vCPU
