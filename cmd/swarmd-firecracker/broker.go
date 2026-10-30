@@ -41,36 +41,46 @@ type brokerRuntime struct {
 	taskAlive func(socketPath string) bool
 	// restored is the node's store of restored-instance records: tasks started
 	// from a migration artifact run a VM whose TAP device, vsock muxer and disk
-	// belong to the source task, and only this record says so. It is built
-	// before startNode (see openDaemonState) because opening it can fail, and
-	// the same instance is shared with anything else that must read the records.
+	// belong to the source task, and only this record says so. It is built before
+	// startNode (see openDaemonState) because opening it can fail. Nothing else
+	// holds it today: the import handler and the resolver (T2/T4) are its
+	// consumers, and this field is where they will take it from.
 	// Nil means this node keeps no records, which is only true in tests.
 	restored *scruntime.RestoredRegistry
 }
 
-// logRestoredInstances reports the restored instances this node believes it
-// hosts, once, when the broker comes up. It is the daemon's startup view of the
-// record store: after a restart an operator can tell whether the node still maps
-// a migrated task to its VM. A record whose VM is gone is not pruned here —
-// resolution owns that answer, because deleting a record that a still-starting
-// VM is about to use would break the restore it describes.
+// logRestoredInstances reports the restored instances this node has recorded,
+// once, when the broker comes up. It is the daemon's startup view of the record
+// store: after a restart an operator can tell whether the node still maps a
+// migrated task to its VM. The wording says "recorded", not "running": the
+// record is what the node wrote, and whether the VM behind it is alive is a
+// question only resolution can answer.
+//
+// A record that cannot be used is reported by path and left alone: List skips it
+// so one bad file cannot hide the rest, and deleting it would destroy the only
+// evidence of what the node believes. A record whose VM is gone is not pruned
+// either — resolution owns that answer, because deleting a record that a
+// still-starting VM is about to use would break the restore it describes.
 func logRestoredInstances(ctx context.Context, restored *scruntime.RestoredRegistry) {
 	if restored == nil {
 		return
 	}
 
-	records, err := restored.List()
+	records, skipped, err := restored.List()
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Restored instances: cannot read the record store")
 		return
+	}
+	for _, path := range skipped {
+		log.G(ctx).Warnf("Restored instance record %s is unreadable and is ignored, not deleted: inspect it, then remove it if the VM is gone", path)
 	}
 	if len(records) == 0 {
 		return
 	}
 
-	log.G(ctx).Infof("Restored instances: %d task(s) run a restored VM", len(records))
+	log.G(ctx).Infof("Restored instances: %d task(s) recorded", len(records))
 	for _, record := range records {
-		log.G(ctx).Debugf("restored instance: task %s runs the VM of %s (artifact %s)",
+		log.G(ctx).Debugf("restored instance: task %s has the VM of %s recorded (artifact %s)",
 			record.TaskID, record.VMID, record.ArtifactID)
 	}
 }

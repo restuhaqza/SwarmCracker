@@ -39,6 +39,12 @@ const RestoredInstanceDirName = "restored-instances"
 // ID is the file name because a lookup is by task ID and nothing else.
 const restoredRecordSuffix = ".json"
 
+// restoredProbePattern names the throwaway file NewRestoredRegistry writes to
+// prove the record directory accepts one. The leading dot and the ".probe"
+// element keep it out of the ".json" record glob even if a crash leaves one
+// behind, and the name says what wrote it.
+const restoredProbePattern = ".restored-instances-writable.probe-*"
+
 // RestoredInstance is the node-local record of one task started from a migration
 // artifact. It is an internal record, not a public document: it holds node-local
 // paths and never leaves the node, so it has no v1 envelope.
@@ -98,12 +104,18 @@ type RestoredRegistry struct {
 	dir string
 }
 
-// NewRestoredRegistry opens (creating when needed) a record directory. The
-// directory is 0700 and the records inside it are 0600: they name host paths and
-// say which VMs a node is running, which is not world-readable information. A
-// daemon that cannot create its record directory is a daemon that could restore
-// a VM it would later fail to resolve, so the error is returned rather than
-// swallowed.
+// NewRestoredRegistry opens (creating when needed) a record directory and proves
+// it can be written to. The directory is 0700 and the records inside it are
+// 0600: they name host paths and say which VMs a node is running, which is not
+// world-readable information. A daemon that cannot create its record directory
+// is a daemon that could restore a VM it would later fail to resolve, so the
+// error is returned rather than swallowed.
+//
+// Creating the directory is not enough to know that: MkdirAll succeeds on an
+// existing directory whatever its mode or mount (a read-only remount, a full
+// filesystem), and Put runs at the very end of an import, after the VM is
+// already running. So the directory is probed with a real write here, while the
+// daemon can still refuse to start.
 func NewRestoredRegistry(dir string) (*RestoredRegistry, error) {
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("restored-instance registry: a directory is required")
@@ -112,7 +124,34 @@ func NewRestoredRegistry(dir string) (*RestoredRegistry, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("restored-instance registry: create %s: %w", dir, err)
 	}
+	if err := probeWritable(dir); err != nil {
+		return nil, err
+	}
 	return &RestoredRegistry{dir: dir}, nil
+}
+
+// probeWritable proves the record directory accepts a new file right now: it
+// creates a clearly named temp file and removes it. A directory that cannot do
+// that cannot keep the record of a restored VM, and a node that cannot keep the
+// record must not start believing it can.
+func probeWritable(dir string) error {
+	return probeWritableWith(dir, os.CreateTemp, os.Remove)
+}
+
+// probeWritableWith is probeWritable with its two filesystem steps injected, so
+// a test running as root — where a 0500 directory is still writable — can prove
+// both failures are reported.
+func probeWritableWith(dir string, createTemp func(string, string) (*os.File, error), remove func(string) error) error {
+	probe, err := createTemp(dir, restoredProbePattern)
+	if err != nil {
+		return fmt.Errorf("restored-instance registry: %s is not writable: %w", dir, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	if err := remove(name); err != nil {
+		return fmt.Errorf("restored-instance registry: %s is not writable: remove the probe file %s: %w", dir, name, err)
+	}
+	return nil
 }
 
 // Put writes the record for one restored task, replacing any record already
@@ -169,10 +208,11 @@ func (r *RestoredRegistry) Put(instance RestoredInstance) error {
 }
 
 // Get returns the record for a task. found is false for a task this node never
-// restored; a record that exists but cannot be decoded is an error, and the file
-// is left in place so a human can read what the node believes. The caller
-// decides what to log: the broker treats a corrupt record as "this task does not
-// resolve here" and a startup reconciliation warns.
+// restored; a record that exists but cannot be used — it does not decode, it
+// names another task, or it fails the same rule Put applies — is an error, and
+// the file is left in place so a human can read what the node believes. The
+// caller decides what to log: the broker treats an unusable record as "this task
+// does not resolve here" and a startup reconciliation warns.
 func (r *RestoredRegistry) Get(taskID string) (RestoredInstance, bool, error) {
 	if err := r.usable(); err != nil {
 		return RestoredInstance{}, false, err
@@ -199,6 +239,14 @@ func (r *RestoredRegistry) Get(taskID string) (RestoredInstance, bool, error) {
 		return RestoredInstance{}, false, fmt.Errorf(
 			"restored-instance record %s belongs to task %q, not %q", path, instance.TaskID, taskID)
 	}
+	// Decoding is not evidence of a usable record: a hand-edited file, or one
+	// written by another version, can decode and still describe no VM. Resolving
+	// it would hand exec, logs and stop empty or foreign paths, so it is refused
+	// by the same rule Put uses — and the file stays, like a corrupt one.
+	if err := instance.validate(); err != nil {
+		return RestoredInstance{}, false, fmt.Errorf(
+			"restored-instance record %s is not valid: %w (left in place for inspection)", path, err)
+	}
 	return instance, true, nil
 }
 
@@ -214,42 +262,65 @@ func (r *RestoredRegistry) Delete(taskID string) error {
 		return err
 	}
 
-	if err := os.Remove(r.path(taskID)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("restored-instance record for task %q: delete %s: %w", taskID, r.path(taskID), err)
+	path := r.path(taskID)
+	err := os.Remove(path)
+	switch {
+	case err == nil:
+		// Put flushes the directory after its rename so the entry survives a
+		// crash; a removal needs the same flush. Without it a crash can bring
+		// back the record of a VM that is gone, and the next teardown would
+		// report work that is already done.
+		syncDir(r.dir)
+		return nil
+	case errors.Is(err, fs.ErrNotExist):
+		return nil
+	default:
+		return fmt.Errorf("restored-instance record for task %q: delete %s: %w", taskID, path, err)
 	}
-	return nil
 }
 
-// List returns every record, sorted by task ID so a startup reconciliation is
-// deterministic. A record that cannot be decoded is skipped rather than failing
-// the listing — one corrupt file must not hide the node's other restored VMs;
-// Get on that task still reports the error, and the file stays for inspection.
-// Only a directory-level failure (an unreadable record directory) is an error.
-func (r *RestoredRegistry) List() ([]RestoredInstance, error) {
+// List returns every usable record sorted by task ID, plus the paths of the
+// records it could not use, so a startup reconciliation is deterministic and
+// complete. An unusable record (undecodable, another task's, or failing Put's
+// rule) is skipped rather than failing the listing: one bad file must not hide
+// the node's other restored VMs. The paths are what the daemon warns about once,
+// and it warns without deleting them — the file is the only evidence a human
+// has of what the node believes. Only a directory-level failure (an unreadable
+// record directory) is an error.
+func (r *RestoredRegistry) List() ([]RestoredInstance, []string, error) {
 	if err := r.usable(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	entries, err := os.ReadDir(r.dir)
 	if err != nil {
-		return nil, fmt.Errorf("restored-instance registry: read %s: %w", r.dir, err)
+		return nil, nil, fmt.Errorf("restored-instance registry: read %s: %w", r.dir, err)
 	}
 
 	out := make([]RestoredInstance, 0, len(entries))
+	var skipped []string
 	for _, entry := range entries {
 		name := entry.Name()
 		if entry.IsDir() || !strings.HasSuffix(name, restoredRecordSuffix) {
 			continue
 		}
+		// The entry's own path, not one derived from a task ID: a file name
+		// that is not a valid task ID is exactly one of the cases reported here.
+		path := filepath.Join(r.dir, name)
 		instance, found, err := r.Get(strings.TrimSuffix(name, restoredRecordSuffix))
-		if err != nil || !found {
+		if err != nil {
+			skipped = append(skipped, path)
+			continue
+		}
+		if !found {
 			continue
 		}
 		out = append(out, instance)
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].TaskID < out[j].TaskID })
-	return out, nil
+	sort.Strings(skipped)
+	return out, skipped, nil
 }
 
 // path is the record file for a task. Callers validate the task ID first: it
@@ -299,8 +370,14 @@ func (i RestoredInstance) validate() error {
 	case strings.TrimSpace(i.TapName) == "":
 		return errors.New("tapName is empty: a restored record must name the TAP device the snapshot recorded")
 	case !tapNameBelongsTo(i.TapName, i.VMID):
-		return fmt.Errorf("tapName %q is not a device of task %q: want %s (the name recorded in the snapshot)",
-			i.TapName, i.VMID, TapName(i.VMID, 0))
+		// Report the index that was parsed: a record may carry any interface
+		// index, so a valid non-zero one must not be told the name ends in 0.
+		if idx, ok := tapNameIndex(i.TapName); ok {
+			return fmt.Errorf("tapName %q is not a device of task %q: want %s, the name recorded in the snapshot",
+				i.TapName, i.VMID, TapName(i.VMID, idx))
+		}
+		return fmt.Errorf("tapName %q is not a device of task %q: want a TAP name of the form <digest>-<interface index> recorded in the snapshot",
+			i.TapName, i.VMID)
 	}
 
 	switch {
@@ -350,26 +427,34 @@ func tapNameIndex(name string) (int, bool) {
 	return idx, true
 }
 
-// taskIDProblem refuses an ID that cannot name a record file. It mirrors the
-// broker's task-ID rule: a task ID becomes a path element here, so a separator
-// or a dot (the building block of "..") must not get through.
+// taskIDProblem refuses an ID that cannot name a record file, naming the field
+// that is wrong. The rule is CheckTaskID — the same rule the broker applies to
+// an untrusted URL path — so only the sentence differs between the two callers.
 func taskIDProblem(field, id string) error {
+	err := CheckTaskID(id)
 	switch {
-	case id == "":
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrTaskIDEmpty):
 		return fmt.Errorf("%s is empty: want a SwarmKit task ID", field)
-	case strings.ContainsAny(id, `/\`):
+	case errors.Is(err, ErrTaskIDPathSeparator):
 		return fmt.Errorf("%s %q must not contain a path separator: a task ID is alphanumeric", field, id)
-	case strings.Contains(id, "."):
+	case errors.Is(err, ErrTaskIDDot):
 		return fmt.Errorf("%s %q must not contain a dot: a task ID is alphanumeric", field, id)
+	default:
+		return err
 	}
-	return nil
 }
 
-// syncDir flushes a directory after a record was renamed into it, so the entry
-// survives a crash. It is best effort: the record itself is already complete at
-// this point, and a filesystem that cannot sync a directory (or a data race with
-// another process removing it) must not turn a successful Put into an error.
-func syncDir(dir string) {
+// syncDir flushes a directory after an entry in it changed (Put's rename,
+// Delete's removal), so the entry survives a crash. It is best effort: the
+// record itself is already complete at this point, and a filesystem that cannot
+// sync a directory (or a data race with another process removing it) must not
+// turn a successful change into an error.
+//
+// It is a variable so a test can prove both Put and Delete call it: a directory
+// fsync is not otherwise observable from a unit test.
+var syncDir = func(dir string) {
 	d, err := os.Open(dir)
 	if err != nil {
 		return

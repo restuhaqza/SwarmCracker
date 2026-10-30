@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -102,6 +103,77 @@ func TestNewRestoredRegistry(t *testing.T) {
 		assert.Nil(t, reg)
 		assert.Contains(t, err.Error(), path)
 	})
+
+	// Opening a directory is not the same as being able to write a record into
+	// it: MkdirAll succeeds on an existing directory whatever its mode, and Put
+	// is the last step of an import. A node that could not write the record must
+	// refuse to start, or it runs a VM that nothing can resolve after a restart.
+	t.Run("a read-only directory is refused", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "records")
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		require.NoError(t, os.Chmod(dir, 0o500))
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+		reg, err := NewRestoredRegistry(dir)
+		if err == nil {
+			if os.Geteuid() == 0 {
+				// Root ignores the directory mode, so this assertion cannot be
+				// made to fail here. The injected-create subtest below covers
+				// the same branch.
+				t.Skip("running as root: a 0500 directory is still writable, so the probe cannot fail")
+			}
+			t.Fatalf("opening %s with no write permission reported no error", dir)
+		}
+		assert.Nil(t, reg)
+		assert.Contains(t, err.Error(), dir, "the error must name the directory that cannot hold records")
+		assert.Contains(t, err.Error(), "not writable")
+	})
+
+	t.Run("the probe leaves no file behind", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "records")
+		_, err := NewRestoredRegistry(dir)
+		require.NoError(t, err)
+
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, entries, "the write probe is cleaned up, so opening leaves no residue a human must explain")
+	})
+
+	t.Run("a failing probe create is reported with the directory", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "records")
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		denied := errors.New("permission denied")
+
+		var probed string
+		err := probeWritableWith(dir,
+			func(gotDir, _ string) (*os.File, error) {
+				probed = gotDir
+				return nil, denied
+			},
+			func(string) error { t.Fatal("nothing was created, so nothing must be removed"); return nil },
+		)
+		require.Error(t, err)
+		assert.Equal(t, dir, probed, "the probe must try the record directory itself, not a temporary one")
+		assert.ErrorIs(t, err, denied)
+		assert.Contains(t, err.Error(), dir)
+		assert.Contains(t, err.Error(), "not writable")
+	})
+
+	t.Run("a probe that cannot be removed is reported", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "records")
+		require.NoError(t, os.MkdirAll(dir, 0o700))
+		probe := filepath.Join(dir, ".restored-instances-writable.probe-1")
+		removeErr := errors.New("device or resource busy")
+
+		err := probeWritableWith(dir,
+			func(string, string) (*os.File, error) { return os.Create(probe) },
+			func(string) error { return removeErr },
+		)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, removeErr)
+		assert.Contains(t, err.Error(), dir)
+		assert.Contains(t, err.Error(), probe)
+	})
 }
 
 func TestRestoredRegistryPutGetDelete(t *testing.T) {
@@ -170,9 +242,10 @@ func TestRestoredRegistryPutOverwrites(t *testing.T) {
 	assert.Equal(t, second.ArtifactID, got.ArtifactID)
 	assert.Equal(t, second.TapName, got.TapName)
 
-	all, err := reg.List()
+	all, skipped, err := reg.List()
 	require.NoError(t, err)
 	assert.Len(t, all, 1, "a second Put must replace the record, not add one")
+	assert.Empty(t, skipped)
 }
 
 // TestRestoredRegistryRestart proves the records outlive the daemon process: a
@@ -191,17 +264,19 @@ func TestRestoredRegistryRestart(t *testing.T) {
 	require.True(t, found, "a restarted daemon must still resolve a running restored VM")
 	assert.Equal(t, want, got)
 
-	all, err := second.List()
+	all, skipped, err := second.List()
 	require.NoError(t, err)
 	assert.Equal(t, []RestoredInstance{want}, all)
+	assert.Empty(t, skipped)
 }
 
 func TestRestoredRegistryList(t *testing.T) {
 	reg, _ := newTestRegistry(t)
 
-	empty, err := reg.List()
+	empty, skipped, err := reg.List()
 	require.NoError(t, err)
 	assert.Empty(t, empty)
+	assert.Empty(t, skipped)
 
 	// Written out of order so the sort is observable.
 	for _, taskID := range []string{"task-c", "task-a", "task-b"} {
@@ -211,9 +286,10 @@ func TestRestoredRegistryList(t *testing.T) {
 		require.NoError(t, reg.Put(rec))
 	}
 
-	all, err := reg.List()
+	all, skipped, err := reg.List()
 	require.NoError(t, err)
 	require.Len(t, all, 3)
+	assert.Empty(t, skipped)
 
 	ids := make([]string, 0, len(all))
 	for _, rec := range all {
@@ -415,10 +491,11 @@ func TestRestoredRegistryCorruptRecord(t *testing.T) {
 			_, statErr := os.Stat(path)
 			assert.NoError(t, statErr, "a corrupt record is left in place for inspection")
 
-			all, listErr := reg.List()
+			all, skipped, listErr := reg.List()
 			require.NoError(t, listErr)
 			require.Len(t, all, 1, "one corrupt record must not hide the healthy ones")
 			assert.Equal(t, good.TaskID, all[0].TaskID)
+			assert.Equal(t, []string{path}, skipped, "the caller is told which record was ignored")
 
 			// Deleting the corrupt record still works: it is a file, not data
 			// the registry needs to decode.
@@ -492,7 +569,7 @@ func TestRestoredRegistryConcurrentAccess(t *testing.T) {
 				errs <- err
 				return
 			}
-			if _, err := reg.List(); err != nil {
+			if _, _, err := reg.List(); err != nil {
 				errs <- err
 				return
 			}
@@ -508,9 +585,10 @@ func TestRestoredRegistryConcurrentAccess(t *testing.T) {
 		assert.NoError(t, err)
 	}
 
-	all, err := reg.List()
+	all, skipped, err := reg.List()
 	require.NoError(t, err)
 	assert.Empty(t, all, "every task deleted its own record")
+	assert.Empty(t, skipped, "a task that deleted its record leaves nothing behind")
 }
 
 func TestRestoredRegistryZeroValueIsRefused(t *testing.T) {
@@ -537,9 +615,10 @@ func TestRestoredRegistryZeroValueIsRefused(t *testing.T) {
 
 			require.Error(t, tc.reg.Delete("new-task"))
 
-			records, err := tc.reg.List()
+			records, skipped, err := tc.reg.List()
 			require.Error(t, err)
 			assert.Empty(t, records)
+			assert.Empty(t, skipped)
 		})
 	}
 }
@@ -559,7 +638,7 @@ func TestRestoredRegistryVanishedDirectory(t *testing.T) {
 
 	require.NoError(t, reg.Delete("new-task"))
 
-	_, err = reg.List()
+	_, _, err = reg.List()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "restored-instance registry")
 }
@@ -582,4 +661,90 @@ func TestRestoredInstanceJSON(t *testing.T) {
 	assert.Equal(t, []string{
 		"artifactId", "createdAt", "diskPath", "socketPath", "tapName", "taskId", "vmId", "vsockPath",
 	}, keys, "the on-disk record's keys are the contract a restarted daemon reads")
+}
+
+// TestRestoredRegistryListReportsSkipped pins that a record List cannot use is
+// named, not silently dropped: the daemon warns about it once at startup, and
+// nothing is deleted, because the file is the only evidence a human has.
+func TestRestoredRegistryListReportsSkipped(t *testing.T) {
+	reg, dir := newTestRegistry(t)
+	good := restoredFixture(t, "/var/run/firecracker")
+	require.NoError(t, reg.Put(good))
+
+	// Two ways a record is unusable: it does not decode at all, and it decodes
+	// but would never have passed Put.
+	corrupt := filepath.Join(dir, "broken-a.json")
+	require.NoError(t, os.WriteFile(corrupt, []byte("{not json"), 0o600))
+	unusable := filepath.Join(dir, "broken-b.json")
+	require.NoError(t, os.WriteFile(unusable, []byte(`{"taskId":"broken-b"}`), 0o600))
+
+	all, skipped, err := reg.List()
+	require.NoError(t, err)
+	require.Len(t, all, 1, "one unusable record must not hide the healthy ones")
+	assert.Equal(t, good.TaskID, all[0].TaskID)
+	assert.Equal(t, []string{corrupt, unusable}, skipped,
+		"the skipped paths are reported, in a deterministic order")
+
+	for _, path := range skipped {
+		_, statErr := os.Stat(path)
+		assert.NoError(t, statErr, "%s is ignored, not deleted", path)
+	}
+}
+
+// TestRestoredRegistryGetRejectsUnusableRecord pins that Get applies the rule
+// Put applies. A record that decodes and names the right task but describes no
+// usable VM must not resolve: empty paths would send exec, logs and stop to
+// names that mean nothing.
+func TestRestoredRegistryGetRejectsUnusableRecord(t *testing.T) {
+	reg, dir := newTestRegistry(t)
+	path := filepath.Join(dir, "broken-task.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"taskId":"broken-task"}`), 0o600))
+
+	got, found, err := reg.Get("broken-task")
+	require.Error(t, err)
+	assert.False(t, found)
+	assert.Equal(t, RestoredInstance{}, got, "a refused record must not leak a half-filled struct")
+	assert.Contains(t, err.Error(), "not valid")
+	assert.Contains(t, err.Error(), "vmId is empty")
+	assert.Contains(t, err.Error(), path)
+
+	_, statErr := os.Stat(path)
+	assert.NoError(t, statErr, "a refused record is left in place for inspection")
+}
+
+// TestRestoredRegistryDeleteSyncsDirectory pins that Delete flushes the record
+// directory the way Put does: without it a crash can bring back the record of a
+// VM that is gone, and the next lookup would report a stop as already done.
+func TestRestoredRegistryDeleteSyncsDirectory(t *testing.T) {
+	reg, dir := newTestRegistry(t)
+	rec := restoredFixture(t, "/var/run/firecracker")
+	require.NoError(t, reg.Put(rec))
+
+	original := syncDir
+	t.Cleanup(func() { syncDir = original })
+	var synced []string
+	syncDir = func(d string) { synced = append(synced, d) }
+
+	require.NoError(t, reg.Delete(rec.TaskID))
+	assert.Equal(t, []string{dir}, synced, "Delete flushes the directory after removing the record")
+
+	// A record that was already gone changed no entry, so there is nothing to
+	// flush and a repeated teardown stays cheap.
+	require.NoError(t, reg.Delete(rec.TaskID))
+	assert.Len(t, synced, 1)
+}
+
+// TestRestoredRegistryTapRejectionReportsTheParsedIndex pins the message a
+// record's author reads: a TAP name that carries a real, non-zero interface
+// index must be told the name for that index, not for index 0.
+func TestRestoredRegistryTapRejectionReportsTheParsedIndex(t *testing.T) {
+	reg, _ := newTestRegistry(t)
+	rec := restoredFixture(t, "/var/run/firecracker")
+	rec.TapName = TapName("other-task", 2)
+
+	err := reg.Put(rec)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), TapName(rec.VMID, 2),
+		"the expected name must keep the index that was parsed: %v", err)
+	assert.NotContains(t, err.Error(), TapName(rec.VMID, 0))
 }

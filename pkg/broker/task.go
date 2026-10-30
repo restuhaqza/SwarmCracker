@@ -2,10 +2,10 @@ package broker
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
@@ -193,17 +193,24 @@ func (s SocketDirSource) consolePath(taskID string) string {
 	return filepath.Join(s.Dir, taskID+consoleSocketSuffix)
 }
 
-// validateTaskID rejects the shapes that could escape the socket directory.
+// validateTaskID rejects the shapes that could escape the socket directory. The
+// rule itself is runtime.CheckTaskID, shared with the node's restored-instance
+// registry; only the sentence is the broker's, because this one is read by
+// whoever typed the request URL.
 func validateTaskID(taskID string) error {
+	err := scruntime.CheckTaskID(taskID)
 	switch {
-	case taskID == "":
-		return fmt.Errorf("task ID must not be empty")
-	case strings.ContainsAny(taskID, `/\`):
+	case err == nil:
+		return nil
+	case errors.Is(err, scruntime.ErrTaskIDEmpty):
+		return errors.New("task ID must not be empty")
+	case errors.Is(err, scruntime.ErrTaskIDPathSeparator):
 		return fmt.Errorf("task ID %q must not contain a path separator", taskID)
-	case strings.Contains(taskID, "."):
+	case errors.Is(err, scruntime.ErrTaskIDDot):
 		// SwarmKit task IDs are alphanumeric. A dot buys nothing and is the
 		// building block of "." and "..", so refuse it outright.
 		return fmt.Errorf("task ID %q must not contain a dot", taskID)
+	default:
+		return err
 	}
-	return nil
 }
