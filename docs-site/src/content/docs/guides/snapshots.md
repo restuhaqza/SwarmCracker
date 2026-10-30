@@ -258,13 +258,15 @@ snapshot. A real snapshot always has metadata, so it is never swept.
 
 ### Daemon-managed tasks and the snapshot directory
 
-For a task started by the node service (a service replica), the memory image and
-disk copy are written by that service into its `--snapshot-dir`, which
-`cluster init` and `cluster join` both pass to the unit **and** add to its
-`ReadWritePaths` — the units run with `ProtectSystem=strict`, and Firecracker
-inherits the daemon's mount namespace, so a directory missing from that list
-fails the create with `Read-only file system`. `--snapshot-dir` on `cluster init`
-or `cluster join` overrides it (default `/var/lib/firecracker/snapshots`).
+A node-local `vm snapshot create` writes the memory and state files into the
+**CLI's** configured `snapshot.snapshot_dir` (default
+`/var/lib/firecracker/snapshots`), whereas snapshots created through the HTTP API
+with `--snapshots-enable` use the node service's `--snapshot-dir`. `cluster init`
+and `cluster join` set that service directory with `--snapshot-dir`, and the
+generated unit makes both it and the default writable through `ReadWritePaths` —
+the units run with `ProtectSystem=strict`, and Firecracker inherits the daemon's
+mount namespace, so a directory missing from that list fails the create with
+`Read-only file system`.
 
 ---
 

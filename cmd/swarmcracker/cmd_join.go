@@ -484,10 +484,13 @@ PrivateTmp=true
 RuntimeDirectory={{base .SocketDir}} swarmkit swarmcracker
 RuntimeDirectoryPreserve=yes
 # Firecracker is a child of the daemon and inherits this mount namespace, so the
-# snapshot directory must be writable here or snapshot create fails with EROFS.
-# The "-" prefix makes systemd ignore a missing path instead of failing the unit
-# with status=226/NAMESPACE (see the RuntimeDirectory note above).
-ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} -{{.SnapshotDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
+# snapshot directories must be writable here or snapshot create fails with EROFS.
+# snapshotPaths keeps the CLI's default snapshot dir writable in addition to the
+# configured one (a node-local "vm snapshot create" uses the CLI config), and
+# collapses them when they are equal. The "-" prefix makes systemd ignore a
+# missing path instead of failing the unit with status=226/NAMESPACE (see the
+# RuntimeDirectory note above).
+ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} {{snapshotPaths .SnapshotDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
 
 [Install]
 WantedBy=multi-user.target
@@ -497,7 +500,7 @@ WantedBy=multi-user.target
 // separate from the writer so the unit can be asserted on in a test without
 // touching /etc.
 func renderWorkerService(cfg *joinConfig) ([]byte, error) {
-	tmpl, err := template.New("service").Funcs(template.FuncMap{"base": filepath.Base}).Parse(workerServiceTemplate)
+	tmpl, err := template.New("service").Funcs(serviceTemplateFuncs()).Parse(workerServiceTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse worker service template: %w", err)
 	}

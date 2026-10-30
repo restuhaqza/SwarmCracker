@@ -446,19 +446,46 @@ PrivateTmp=true
 RuntimeDirectory={{base .SocketDir}} swarmkit swarmcracker
 RuntimeDirectoryPreserve=yes
 # Firecracker is a child of the daemon and inherits this mount namespace, so the
-# snapshot directory must be writable here or snapshot create fails with EROFS.
-# The "-" prefix makes systemd ignore a missing path instead of failing the unit
-# with status=226/NAMESPACE (see the RuntimeDirectory note above).
-ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} -{{.SnapshotDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
+# snapshot directories must be writable here or snapshot create fails with EROFS.
+# snapshotPaths keeps the CLI's default snapshot dir writable in addition to the
+# configured one (a node-local "vm snapshot create" uses the CLI config), and
+# collapses them when they are equal. The "-" prefix makes systemd ignore a
+# missing path instead of failing the unit with status=226/NAMESPACE (see the
+# RuntimeDirectory note above).
+ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} {{snapshotPaths .SnapshotDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
 
 [Install]
 WantedBy=multi-user.target
 `
 
+// serviceTemplateFuncs returns the functions both unit templates use, so the
+// manager and worker units cannot render the same path differently.
+func serviceTemplateFuncs() template.FuncMap {
+	return template.FuncMap{
+		"base":          filepath.Base,
+		"snapshotPaths": snapshotWritePaths,
+	}
+}
+
+// snapshotWritePaths renders the ReadWritePaths entries for the snapshot
+// directories: the configured --snapshot-dir (the node service's directory, used
+// by API/broker-created snapshots) and config.DefaultSnapshotDir, which is where
+// a node-local `vm snapshot create` writes unless the CLI config overrides
+// `snapshot.snapshot_dir`. Keeping both means a custom --snapshot-dir cannot
+// un-whitelist the default and turn a working node into an EROFS node; when the
+// two are equal only one entry is emitted.
+func snapshotWritePaths(snapshotDir string) string {
+	paths := []string{"-" + snapshotDir}
+	if snapshotDir != config.DefaultSnapshotDir {
+		paths = append(paths, "-"+config.DefaultSnapshotDir)
+	}
+	return strings.Join(paths, " ")
+}
+
 // renderManagerService renders the manager systemd unit. It is separate from the
 // writer so the unit can be asserted on in a test without touching /etc.
 func renderManagerService(cfg *initConfig) ([]byte, error) {
-	tmpl, err := template.New("service").Funcs(template.FuncMap{"base": filepath.Base}).Parse(managerServiceTemplate)
+	tmpl, err := template.New("service").Funcs(serviceTemplateFuncs()).Parse(managerServiceTemplate)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse manager service template: %w", err)
 	}

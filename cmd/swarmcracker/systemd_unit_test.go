@@ -156,6 +156,85 @@ func TestRenderWorkerServiceAllowsSnapshotDirWrites(t *testing.T) {
 		"existing writable paths must survive")
 }
 
+// countPath returns how many times entry appears in paths, so a test can tell a
+// duplicated ReadWritePaths entry from a single one.
+func countPath(paths []string, entry string) int {
+	count := 0
+	for _, p := range paths {
+		if p == entry {
+			count++
+		}
+	}
+	return count
+}
+
+// TestRenderManagerServiceKeepsDefaultSnapshotDirWritable is the regression test
+// for a custom --snapshot-dir un-whitelisting the default path: node-local
+// `vm snapshot create` writes into the CLI's snapshot.snapshot_dir, which
+// defaults to config.DefaultSnapshotDir, so that path must stay in
+// ReadWritePaths even when the daemon is pointed elsewhere.
+func TestRenderManagerServiceKeepsDefaultSnapshotDirWritable(t *testing.T) {
+	unit, err := renderManagerService(newTestInitConfig())
+	require.NoError(t, err)
+
+	paths := readWritePaths(t, string(unit))
+	assert.Contains(t, paths, "-"+config.DefaultSnapshotDir,
+		"the CLI's default snapshot dir must stay writable when --snapshot-dir is custom")
+	assert.Contains(t, paths, "-"+testSnapshotDir,
+		"the configured snapshot dir must be writable")
+	assert.Equal(t, 1, countPath(paths, "-"+config.DefaultSnapshotDir),
+		"the default snapshot dir must appear exactly once")
+}
+
+// TestRenderManagerServiceDeduplicatesDefaultSnapshotDir guards the default
+// case: when --snapshot-dir is left alone the unit must not list the same path
+// twice.
+func TestRenderManagerServiceDeduplicatesDefaultSnapshotDir(t *testing.T) {
+	cfg := newTestInitConfig()
+	cfg.SnapshotDir = config.DefaultSnapshotDir
+
+	unit, err := renderManagerService(cfg)
+	require.NoError(t, err)
+
+	paths := readWritePaths(t, string(unit))
+	assert.Equal(t, 1, countPath(paths, "-"+config.DefaultSnapshotDir),
+		"the snapshot dir must be listed once when it equals the default")
+}
+
+// TestRenderWorkerServiceKeepsDefaultSnapshotDirWritable is the worker half of
+// the custom-directory check.
+func TestRenderWorkerServiceKeepsDefaultSnapshotDirWritable(t *testing.T) {
+	for _, isManager := range []bool{true, false} {
+		cfg := newTestJoinConfig()
+		cfg.IsManager = isManager
+
+		unit, err := renderWorkerService(cfg)
+		require.NoError(t, err)
+
+		paths := readWritePaths(t, string(unit))
+		assert.Contains(t, paths, "-"+config.DefaultSnapshotDir,
+			"the CLI's default snapshot dir must stay writable when --snapshot-dir is custom (isManager=%v)", isManager)
+		assert.Contains(t, paths, "-"+testSnapshotDir,
+			"the configured snapshot dir must be writable (isManager=%v)", isManager)
+		assert.Equal(t, 1, countPath(paths, "-"+config.DefaultSnapshotDir),
+			"the default snapshot dir must appear exactly once (isManager=%v)", isManager)
+	}
+}
+
+// TestRenderWorkerServiceDeduplicatesDefaultSnapshotDir is the worker half of
+// the deduplication check.
+func TestRenderWorkerServiceDeduplicatesDefaultSnapshotDir(t *testing.T) {
+	cfg := newTestJoinConfig()
+	cfg.SnapshotDir = config.DefaultSnapshotDir
+
+	unit, err := renderWorkerService(cfg)
+	require.NoError(t, err)
+
+	paths := readWritePaths(t, string(unit))
+	assert.Equal(t, 1, countPath(paths, "-"+config.DefaultSnapshotDir),
+		"the snapshot dir must be listed once when it equals the default")
+}
+
 // TestInitCommandSnapshotDirFlag pins the flag and its default so the unit and
 // the config cannot drift from the daemon's own default.
 func TestInitCommandSnapshotDirFlag(t *testing.T) {

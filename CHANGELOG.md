@@ -72,7 +72,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cluster init` and `cluster join` now take `--snapshot-dir` (default
   `/var/lib/firecracker/snapshots`), pass it to the daemon, pre-create it, and
   list it in `ReadWritePaths` with the `-` prefix so a missing directory cannot
-  fail the unit with `status=226/NAMESPACE`. Because the template is now rendered
+  fail the unit with `status=226/NAMESPACE`. The default directory stays in that
+  list next to the configured one: a node-local `vm snapshot create` writes into
+  the CLI config's `snapshot.snapshot_dir`, not the service's `--snapshot-dir`
+  (the directory that `--snapshots-enable` API snapshots use), so dropping it
+  would swap one EROFS for another. Because the template is now rendered
   by a testable helper, the regression is covered by unit tests rather than only
   on a node.
 - **An out-of-bounds replica count is refused, not stored** — an *explicit*
