@@ -658,7 +658,9 @@ func newServiceScaleCommand() *cobra.Command {
 
 This is a convenience command that updates the replica count. A service that
 carries an autoscale policy refuses a count outside the policy's min/max, so
-either pick a count within the bounds or change the policy with --autoscale.`,
+either pick a count within the bounds or change the policy with --autoscale.
+Zero is the exception: it pauses the service, and the autoscaler leaves a paused
+service alone.`,
 		Example: `  swarmcracker service scale my-service 5
   swarmcracker service scale my-service 0`,
 		Args: cobra.ExactArgs(2),
