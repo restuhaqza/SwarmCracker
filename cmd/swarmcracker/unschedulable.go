@@ -18,56 +18,105 @@ import (
 // SwarmKit's scheduler records why it could not place a task in Status.Err, and
 // the ERROR column prints it, but its own verdict is deliberately generic: the
 // constraint filter explains an unsatisfiable constraint as "scheduling
-// constraints not satisfied on N node(s)" (manager/scheduler/filter.go, Explain)
-// and never names the constraint or the labels the cluster reports. An operator
-// who wrote `--constraint node.labels.disk==ssd` therefore needs the service
-// spec and the node labels to see that no node has disk=ssd.
+// constraints not satisfied on N node(s)" (manager/scheduler/filter.go:246-251,
+// Explain) and never names the constraint or the labels the cluster reports. An
+// operator who wrote `--constraint node.labels.disk==ssd` therefore needs the
+// service spec and the node labels to see that no node has disk=ssd.
 //
 // The note below is that second read. It is a diagnostic, never an error: it is
 // printed after the table, it changes no exit code, and a listing that cannot
 // assemble it prints nothing.
 
+// constraintFilterExplanation is the phrase the constraint filter contributes to
+// the scheduler's verdict. The scheduler joins the explanation of *every* failing
+// filter with "; " (manager/scheduler/pipeline.go:84-103), so a task refused for
+// resources carries "insufficient resources on N node(s)" while a task refused by
+// a constraint carries this phrase. The note claims a constraint is the cause only
+// when the task error contains it: the presence of a constraint on the service is
+// not evidence that the constraint is what failed.
+const constraintFilterExplanation = "scheduling constraints not satisfied"
+
 // taskUnplaced reports whether a task is still waiting for the scheduler. NEW
-// and PENDING are the only states with no placement decision behind them; every
-// later state means a node was found, whether or not the workload then worked.
+// and PENDING are the only states with no placement decision behind them.
 func taskUnplaced(task *api.Task) bool {
+	if task == nil {
+		return false
+	}
 	return task.Status.State == api.TaskStateNew || task.Status.State == api.TaskStatePending
 }
 
-// placementRefused reports whether a whole task listing is evidence that the
-// scheduler refused the placement: every task is still unplaced, and at least
-// one carries the scheduler's Status.Err. Requiring the error keeps a task that
-// was created a moment ago (NEW, not looked at yet) from producing a verdict.
-func placementRefused(tasks []*api.Task) bool {
-	if len(tasks) == 0 {
+// taskPlaced reports whether a node was found for the task, so the scheduler did
+// not refuse it: everything from ASSIGNED to RUNNING. Terminal states are
+// deliberately excluded — `service ps` lists every state, so a service that ran
+// before (SHUTDOWN/FAILED rows) and cannot be placed now has terminal rows next
+// to the new PENDING ones, and that history must not hide the diagnosis.
+func taskPlaced(task *api.Task) bool {
+	if task == nil {
 		return false
 	}
+	switch task.Status.State {
+	case api.TaskStateAssigned,
+		api.TaskStateAccepted,
+		api.TaskStatePreparing,
+		api.TaskStateReady,
+		api.TaskStateStarting,
+		api.TaskStateRunning:
+		return true
+	}
+	return false
+}
+
+// placementRefused reports whether a whole task listing is evidence that the
+// scheduler refused the placement: no task is placed (nothing from ASSIGNED to
+// RUNNING), and at least one NEW/PENDING task carries the scheduler's Status.Err.
+// Requiring the error keeps a task that was created a moment ago (NEW, not looked
+// at yet) from producing a verdict the scheduler never made.
+func placementRefused(tasks []*api.Task) bool {
 	refused := false
 	for _, task := range tasks {
-		if !taskUnplaced(task) {
+		if taskPlaced(task) {
 			return false
 		}
-		if task.Status.Err != "" {
+		if taskUnplaced(task) && task.Status.Err != "" {
 			refused = true
 		}
 	}
 	return refused
 }
 
+// refusedReason is the scheduler's verdict to quote: the first unplaced task that
+// carries one, with runs of whitespace collapsed so a multi-line error stays on
+// one line. Terminal rows are skipped — their error explains why they stopped,
+// not why the new tasks cannot start.
+func refusedReason(tasks []*api.Task) string {
+	for _, task := range tasks {
+		if taskUnplaced(task) && task.Status.Err != "" {
+			return strings.Join(strings.Fields(task.Status.Err), " ")
+		}
+	}
+	return ""
+}
+
 // pendingConstraints returns the placement constraints of the services the
 // tasks belong to, deduplicated and sorted. A listing can span services
 // (`task ls` does), so the caller gets them all rather than a guess at which one
-// was refused: the scheduler rejected every constraint at once and nothing here
+// was refused: the scheduler evaluated every constraint at once and nothing here
 // can tell which of them failed.
 func pendingConstraints(tasks []*api.Task, services []*api.Service) []string {
 	wanted := make(map[string]struct{}, len(tasks))
 	for _, task := range tasks {
+		if task == nil {
+			continue
+		}
 		wanted[task.ServiceID] = struct{}{}
 	}
 
 	seen := make(map[string]struct{})
 	constraints := make([]string, 0, len(wanted))
 	for _, service := range services {
+		if service == nil {
+			continue
+		}
 		if _, ok := wanted[service.ID]; !ok {
 			continue
 		}
@@ -124,20 +173,19 @@ func availableNodeLabels(nodes []*api.Node) []string {
 }
 
 // unschedulableNote is the trailing diagnostic for a refused placement, or ""
-// when there is nothing to explain (no constraint to name). Every constraint is
-// named, because the command cannot know which of several failed.
-func unschedulableNote(constraints, labels []string) string {
-	if len(constraints) == 0 {
+// when there is no evidence to report.
+//
+// The constraint branch is only taken when reason carries the constraint filter's
+// own explanation: a task refused because the nodes were full does not make the
+// service's constraint the culprit, and claiming so would send an operator to
+// change a constraint that was never evaluated. With no such evidence the note
+// quotes the scheduler verbatim and lists the declared constraints as declared,
+// not as the cause. Every constraint is named, because the command cannot know
+// which of several failed.
+func unschedulableNote(reason string, constraints, labels []string) string {
+	reason = strings.Join(strings.Fields(reason), " ")
+	if reason == "" {
 		return ""
-	}
-
-	noun, verb := "constraint", "matches"
-	if len(constraints) > 1 {
-		noun, verb = "constraints", "match"
-	}
-	quoted := make([]string, len(constraints))
-	for i, constraint := range constraints {
-		quoted[i] = fmt.Sprintf("%q", constraint)
 	}
 
 	available := "none"
@@ -145,8 +193,29 @@ func unschedulableNote(constraints, labels []string) string {
 		available = strings.Join(labels, ", ")
 	}
 
-	return fmt.Sprintf("no task is running: %s %s %s no node (available node labels: %s)",
-		noun, strings.Join(quoted, "; "), verb, available)
+	if len(constraints) > 0 && strings.Contains(reason, constraintFilterExplanation) {
+		noun, verb := "constraint", "matches"
+		if len(constraints) > 1 {
+			noun, verb = "constraints", "match"
+		}
+		return fmt.Sprintf("no task is running: %s %s %s no node (available node labels: %s)",
+			noun, strings.Join(quoteAll(constraints), "; "), verb, available)
+	}
+
+	if len(constraints) == 0 {
+		return fmt.Sprintf("no task is running: scheduler reported %q (the service declares no placement constraints)", reason)
+	}
+	return fmt.Sprintf("no task is running: scheduler reported %q; declared constraints %s may not be the cause (available node labels: %s)",
+		reason, strings.Join(quoteAll(constraints), "; "), available)
+}
+
+// quoteAll renders each value in double quotes, for the note's lists.
+func quoteAll(values []string) []string {
+	quoted := make([]string, len(values))
+	for i, value := range values {
+		quoted[i] = fmt.Sprintf("%q", value)
+	}
+	return quoted
 }
 
 // writeUnschedulableNote prints the diagnostic after the task table. It writes
@@ -170,6 +239,7 @@ func writeUnschedulableNote(ctx context.Context, client legacy.ControlClient, w 
 	}
 
 	note := unschedulableNote(
+		refusedReason(tasks),
 		pendingConstraints(tasks, services.Services),
 		availableNodeLabels(nodes.Nodes),
 	)

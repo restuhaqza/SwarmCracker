@@ -461,9 +461,10 @@ place, or one the constraint or volume enforcer rejected — always carries an
 characters; `task inspect` (or `--format json`) prints it in full. The column is
 appended **after** `IMAGE`, so every existing column keeps its position.
 
-When **no** task of a service is running because the scheduler refused the
-placement, the table is followed by one diagnostic line that names the
-constraint(s) that matched no node and the labels the cluster actually reports:
+When **no** task of a service is placed because the scheduler refused the
+placement, the table is followed by one diagnostic line. When the task error
+carries the constraint filter's own explanation, the line names the
+constraint(s) and the labels the cluster actually reports:
 
 ```
 no task is running: constraint "node.labels.disk==ssd" matches no node (available node labels: disk=hdd, hostname=sc-lab-node1, rack=r1, role=manager, role=worker)
@@ -474,11 +475,26 @@ nodes") and truncated in the column, so this line is what tells an operator that
 `disk=ssd` is missing rather than that the node count is wrong. Every constraint
 on the service is named (the command cannot tell which of several failed),
 `hostname` and `role` are included because `node.hostname` and `node.role` are
-constraints too, and values are deduplicated and sorted. The line is a
-diagnostic only: it changes no exit code, it is printed only in table mode, and
-it appears only when every task is still `NEW`/`PENDING` with a scheduler error —
-a service with one running task keeps the table it had. `task ls` prints the
-same line, naming the constraints of every service in the listing.
+constraints too, and values are deduplicated and sorted.
+
+A constraint is never blamed without evidence. SwarmKit joins *every* failing
+filter into one error, so a service that carries a constraint can still be
+refused because the nodes are full. When the error does not carry the constraint
+filter's explanation, the line quotes the scheduler and lists the declared
+constraints as declared, not as the cause:
+
+```
+no task is running: scheduler reported "no suitable node (insufficient resources on 1 node)"; declared constraints "node.labels.disk==ssd" may not be the cause (available node labels: disk=hdd, hostname=sc-lab-node1, rack=r1, role=manager, role=worker)
+```
+
+The line is a diagnostic only: it changes no exit code, it is printed only in
+table mode, and it appears only when no task is placed (no task is `ASSIGNED`,
+`ACCEPTED`, `PREPARING`, `READY`, `STARTING` or `RUNNING`) **and** at least one
+`NEW`/`PENDING` task carries a scheduler error. Terminal rows do not suppress it,
+so a service scaled to 0, re-constrained and scaled up again is diagnosed even
+though its old `SHUTDOWN` rows are still listed. `task ls` prints the same line,
+naming the constraints of every service in the listing; `task ls --health` does
+not, because that table is built from the API's task list alone.
 
 ##### Registry authentication
 
