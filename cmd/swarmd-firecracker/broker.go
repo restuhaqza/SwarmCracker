@@ -18,10 +18,11 @@ import (
 // node's advertised address, so both sides must agree on 4245.
 const defaultBrokerListen = "0.0.0.0:4245"
 
-// defaultMigrationStagingDir is where a node stages a migration artifact it
-// received: <dir>/<artifactID>/<name>. It sits beside the snapshot root and the
-// task rootfs root, on the same filesystem, so materialising a received disk is a
-// local operation rather than a cross-device copy.
+// defaultMigrationStagingDir is the node's migration root: <dir>/<artifactID>/,
+// published by an export and written by a stage, served by file and removed by
+// discard. It sits beside the snapshot root and the task rootfs root, on the same
+// filesystem, so publishing an artifact costs links rather than a second copy of a
+// memory image and materialising a received disk is a local operation.
 const defaultMigrationStagingDir = "/var/lib/firecracker/migrations"
 
 // brokerRuntime holds the daemon's node broker settings.
@@ -175,7 +176,6 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	migrationCfg := broker.MigrationHandlerConfig{
 		Store:       store,
 		ArtifactDir: cfg.migrationStagingDir,
-		StagingDir:  cfg.migrationStagingDir,
 		RootfsDir:   cfg.rootfsDir,
 	}
 	handlers := []struct {

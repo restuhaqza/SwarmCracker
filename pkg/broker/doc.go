@@ -21,10 +21,14 @@
 // migration/discard - is spelled as two path segments
 // (/v1/tasks/{taskID}/migration/export); any other extra segment is a malformed
 // path. A malformed path or an unknown task is a 404; a known task with an
-// unregistered operation is a 501. The one exception is migration/discard: its
-// subject is an artifact, and it exists for the moment a finished migration has
-// removed the task that exported one, so it is dispatched with the path's task ID
-// even when that task no longer resolves.
+// unregistered operation is a 501.
+//
+// The migration operations other than export are artifact-scoped: an artifact is
+// addressed by its own ID, it outlives the task that produced it, and SwarmKit
+// replaces that task as part of the move. The server therefore does not resolve the
+// task in their path - file, stage and discard answer for a task this node does not
+// have, under any task ID - and a handler is given no task. export keeps the
+// task-scoped contract, because it snapshots the task it names.
 //
 // Failures the broker generates itself are v1 Error documents, so a manager
 // handler can relay them without translating: not_found (404), not_implemented

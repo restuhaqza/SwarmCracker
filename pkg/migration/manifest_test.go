@@ -27,6 +27,7 @@ func validArtifact() Artifact {
 		SchemaVersion: v1.SchemaVersion,
 		Kind:          ArtifactKind,
 		ID:            "mig-0123456789abcdef",
+		SnapshotID:    "snap-0123456789abcdef",
 		SourceTaskID:  "task-1",
 		SourceNodeID:  "node-1",
 		ServiceID:     "service-1",
@@ -100,6 +101,21 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 			name:       "id is not hex",
 			mutate:     func(a *Artifact) { a.ID = "mig-0123456789abcdeZ" },
 			wantPhrase: "is not a migration artifact ID",
+		},
+		{
+			name:       "snapshot ID missing",
+			mutate:     func(a *Artifact) { a.SnapshotID = "" },
+			wantPhrase: "snapshotId is empty",
+		},
+		{
+			name:       "snapshot ID is another document's ID",
+			mutate:     func(a *Artifact) { a.SnapshotID = "mig-0123456789abcdef" },
+			wantPhrase: `snapshotId "mig-0123456789abcdef" is not a snapshot ID`,
+		},
+		{
+			name:       "snapshot ID is not hex",
+			mutate:     func(a *Artifact) { a.SnapshotID = "snap-0123456789abcdeZ" },
+			wantPhrase: "is not a snapshot ID",
 		},
 		{
 			name:       "source task ID missing",
@@ -189,7 +205,22 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 		{
 			name:       "state file name is a path",
 			mutate:     func(a *Artifact) { a.StateFile.Name = "snap-1/vm.state" },
-			wantPhrase: `stateFile.name "snap-1/vm.state" is a path`,
+			wantPhrase: `stateFile.name "snap-1/vm.state" is not a file name`,
+		},
+		{
+			name:       "state file name carries a control character",
+			mutate:     func(a *Artifact) { a.StateFile.Name = "vm.state\n" },
+			wantPhrase: "control character",
+		},
+		{
+			name:       "state file name is the parent directory",
+			mutate:     func(a *Artifact) { a.StateFile.Name = ".." },
+			wantPhrase: "is not a file name",
+		},
+		{
+			name:       "state file name is longer than the kernel allows",
+			mutate:     func(a *Artifact) { a.StateFile.Name = strings.Repeat("n", 256) },
+			wantPhrase: "at most 255",
 		},
 		{
 			name:       "state file is empty",
@@ -297,6 +328,52 @@ func TestArtifactValidateAcceptsPathAndNameEdgeCases(t *testing.T) {
 	}
 }
 
+// TestValidFileName pins the one bare-file-name rule. The broker stages and serves
+// a file by this name, and the manifest describes one; the two used to hold their
+// own copies of the rule, which had already drifted (the manifest accepted a name
+// with a newline that the broker refused). The table is the rule: both call sites
+// defer to ValidFileName, so there is one place to change and one place to check.
+func TestValidFileName(t *testing.T) {
+	cases := []struct {
+		name string
+		// wantProblem is a phrase of the rejection; empty means the name is valid.
+		wantProblem string
+	}{
+		{name: "vm.state"},
+		{name: "rootfs.ext4"},
+		{name: "a"},
+		{name: "vm.state.v1"},
+		{name: "-leading-dash"},
+		{name: "a name with a space"},
+		{name: strings.Repeat("n", 255)},
+		{name: "", wantProblem: "empty"},
+		{name: ".", wantProblem: "is not a file name"},
+		{name: "..", wantProblem: "is not a file name"},
+		{name: "snap-1/vm.state", wantProblem: "separator"},
+		{name: "/vm.state", wantProblem: "separator"},
+		{name: "vm.state/", wantProblem: "separator"},
+		{name: `snap-1\vm.state`, wantProblem: "separator"},
+		{name: "vm.state\n", wantProblem: "control character"},
+		{name: "vm.state\r", wantProblem: "control character"},
+		{name: "vm\x00.state", wantProblem: "control character"},
+		{name: "vm\tstate", wantProblem: "control character"},
+		{name: "vm\x7f.state", wantProblem: "control character"},
+		{name: strings.Repeat("n", 256), wantProblem: "at most 255"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidFileName(tc.name)
+			if tc.wantProblem == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantProblem)
+		})
+	}
+}
+
 func TestValidArtifactID(t *testing.T) {
 	cases := []struct {
 		id   string
@@ -333,7 +410,7 @@ func TestArtifactJSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &keys))
 	for _, key := range []string{
 		"schemaVersion", "kind", "id", "sourceTaskId", "sourceNodeId", "serviceId",
-		"createdAt", "snapshotAt", "tapName", "vsockPath", "diskPath",
+		"createdAt", "snapshotAt", "snapshotId", "tapName", "vsockPath", "diskPath",
 		"stateFile", "memoryFile", "diskFile",
 	} {
 		assert.Contains(t, keys, key)
@@ -460,6 +537,8 @@ func TestArtifactFromSnapshot(t *testing.T) {
 	assert.Equal(t, v1.SchemaVersion, artifact.SchemaVersion,
 		"the artifact follows the v1 envelope's schema major")
 	assert.Equal(t, ArtifactKind, artifact.Kind)
+	assert.Equal(t, "snap-0123456789abcdef", artifact.SnapshotID,
+		"snapshotId must name the dump the artifact was made from, so discard deletes exactly that one")
 	assert.Equal(t, "task-1", artifact.SourceTaskID)
 	assert.Equal(t, "node-1", artifact.SourceNodeID)
 	assert.Equal(t, "service-1", artifact.ServiceID)
@@ -560,6 +639,17 @@ func TestArtifactFromSnapshotRejects(t *testing.T) {
 		_, err := ArtifactFromSnapshot(fixture.info, "/var/run/firecracker", 0)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "source snapshot has no task ID")
+	})
+
+	t.Run("no snapshot ID", func(t *testing.T) {
+		fixture := newSnapshotFixture(t)
+		fixture.info.ID = ""
+
+		_, err := ArtifactFromSnapshot(fixture.info, "/var/run/firecracker", 0)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrInvalidArtifact)
+		assert.Contains(t, err.Error(), "is not a snapshot ID",
+			"an artifact must name the dump it was made from, so discard can delete exactly that one")
 	})
 
 	t.Run("no socket directory", func(t *testing.T) {

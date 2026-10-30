@@ -41,6 +41,10 @@ const (
 // Handler is one operation (exec, logs, files, health) for one task. It
 // receives the resolved task and the original request, including method,
 // query, headers and body.
+//
+// An artifact-scoped operation (file, stage, discard: see operationSpec) receives
+// a zero Task, because its subject is the migration artifact it names rather than
+// the task in the path.
 type Handler func(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request)
 
 // ServerConfig configures a node broker.
@@ -174,6 +178,13 @@ func (s *Server) Addr() string {
 // implements.
 type operationSpec struct {
 	methods []string
+	// artifactScoped marks an operation whose subject is a migration artifact
+	// rather than the task in the path. The server does not resolve the task for
+	// one, and the handler is given no task at all: an artifact outlives the task
+	// that produced it, and the operations that move or remove one are answered
+	// from the artifact ID they carry. export is not artifact-scoped, because it
+	// snapshots the task it names.
+	artifactScoped bool
 }
 
 // allow renders the spec's methods for the Allow header, in declaration order.
@@ -210,13 +221,23 @@ var operationSpecs = map[string]operationSpec{
 	// The migration operations move one artifact: export produces it on the
 	// source, file streams one of its files, stage receives one on the target, and
 	// discard removes it (with the snapshot behind it) when nobody needs it.
+	// export is task-scoped, because it snapshots the task it names. The other
+	// three are artifact-scoped: they answer from the artifact ID in the query,
+	// and they must keep working once SwarmKit has replaced the task, or for a
+	// task this node never ran.
 	MigrationExportOperation:  {methods: []string{http.MethodPost}},
-	MigrationFileOperation:    {methods: []string{http.MethodGet}},
-	MigrationStageOperation:   {methods: []string{http.MethodPut}},
-	MigrationDiscardOperation: {methods: []string{http.MethodDelete}},
+	MigrationFileOperation:    {methods: []string{http.MethodGet}, artifactScoped: true},
+	MigrationStageOperation:   {methods: []string{http.MethodPut}, artifactScoped: true},
+	MigrationDiscardOperation: {methods: []string{http.MethodDelete}, artifactScoped: true},
 }
 
 // route resolves the task, then dispatches to the registered operation.
+//
+// Only an operation that acts on a task resolves one. An artifact-scoped
+// operation (file, stage, discard) is answered from the artifact it names: the
+// task in the path is part of the one route shape every node operation has, and
+// it is not looked up, because the task a migration is moving does not exist on
+// either node at the moment the artifact is moved or removed.
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	taskID, op, ok := splitTaskPath(r.URL.Path)
 	if !ok {
@@ -224,28 +245,26 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, found, err := s.tasks.Lookup(r.Context(), taskID)
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, codeUnavailable, "resolve task %q: %v", taskID, err)
-		return
-	}
-	if !found {
-		// discard's subject is the artifact, not the task: it exists for the
-		// moment a finished migration has removed the task that exported the
-		// artifact, so a gone task still reaches the handler (which never reads
-		// it). Every other operation answers the unknown-task 404.
-		if op == MigrationDiscardOperation {
-			task = Task{ID: taskID}
-		} else {
+	spec := operationSpecs[op]
+
+	var task Task
+	if !spec.artifactScoped {
+		resolved, found, err := s.tasks.Lookup(r.Context(), taskID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, codeUnavailable, "resolve task %q: %v", taskID, err)
+			return
+		}
+		if !found {
 			writeError(w, http.StatusNotFound, codeNotFound, "task %q not found on this node", taskID)
 			return
 		}
+		task = resolved
 	}
 
 	// A wrong method is a request the operation cannot implement, not a missing
 	// capability: it is 405 with Allow whether or not a handler is registered.
 	// Only the operation's real method can reach the 501 below.
-	if spec, known := operationSpecs[op]; known && !spec.allows(r.Method) {
+	if _, known := operationSpecs[op]; known && !spec.allows(r.Method) {
 		w.Header().Set("Allow", spec.allow())
 		writeTypedError(w, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
 			"method %s is not allowed on operation %q", r.Method, op).

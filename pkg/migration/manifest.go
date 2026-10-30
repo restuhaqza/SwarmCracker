@@ -44,6 +44,11 @@ const (
 	// sha256HexLength is the length of a hex-encoded SHA-256 digest.
 	sha256HexLength = 64
 
+	// maxFileNameBytes is the kernel's NAME_MAX. A file name is one directory
+	// entry, and a longer one cannot be created on the node that must stage it,
+	// so the rule refuses what the transfer could not have produced.
+	maxFileNameBytes = 255
+
 	// interfaceNameLimit is the kernel's IFNAMSIZ minus the terminating NUL.
 	interfaceNameLimit = 15
 
@@ -92,6 +97,50 @@ func ValidArtifactID(id string) bool {
 	return artifactIDPattern.MatchString(id)
 }
 
+// ValidFileName reports whether name is one bare file name: the rule for an
+// artifact file wherever it is named, in the manifest that describes it and in the
+// routes that serve and stage it.
+//
+// It is the single copy of the rule on purpose. The manifest and the node's
+// transport each used to hold one, and the two had already disagreed: the broker
+// refused a newline and an over-long name that the manifest accepted, so a
+// manifest could describe a file the transport would never move. The union is
+// what applies, because both failures are real: a separator (or "." / "..") would
+// address something other than this directory's entry, a control character would
+// end up in a header or a log line, and a name past NAME_MAX cannot exist on the
+// node that stages it.
+//
+// The rejection is a sentence that says what is wrong with this name, so both
+// call sites can put it in front of their own caller.
+func ValidFileName(name string) error {
+	switch {
+	case name == "":
+		return errors.New("it is empty")
+	case name == "." || name == "..":
+		return fmt.Errorf("%q is not a file name", name)
+	case len(name) > maxFileNameBytes:
+		return fmt.Errorf("it is %d bytes and a file name may be at most %d", len(name), maxFileNameBytes)
+	case strings.ContainsAny(name, `/\`):
+		return errors.New("a file name has no path separator")
+	case containsControlByte(name):
+		return errors.New("a file name has no control character")
+	case name != filepath.Base(name):
+		return errors.New("a file name is one directory entry")
+	}
+	return nil
+}
+
+// containsControlByte reports whether s holds a C0 or DEL byte: a name that does
+// would be truncated, escaped or hidden wherever it is printed.
+func containsControlByte(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
 // File describes one file that moves: its name on the wire, its size and its
 // SHA-256 digest. The name is a bare file name because the transfer route
 // addresses a file by name (POST /v1/migrations/{id}/files/{name}).
@@ -125,6 +174,14 @@ type Artifact struct {
 
 	// ID is this artifact's identity: mig-<16 lowercase hex characters>.
 	ID string `json:"id"`
+
+	// SnapshotID is the snapshot record the artifact's files were published
+	// from, on the source node: snap-<16 lowercase hex characters>. It travels
+	// so the node that discards the artifact deletes exactly that dump, rather
+	// than guessing which snapshot behind the task the artifact came from (a
+	// task may have been dumped more than once, and the second dump is not this
+	// artifact's).
+	SnapshotID string `json:"snapshotId"`
 
 	// SourceTaskID is the task the VM ran as on the source node. It is the
 	// name the snapshot recorded, so it stays the VM's identity after the move
@@ -210,6 +267,12 @@ func (a Artifact) validateEnvelope() error {
 	}
 	if !ValidArtifactID(a.ID) {
 		return invalidf("id %q is not a migration artifact ID: want %s followed by 16 lowercase hex characters", a.ID, artifactIDPrefix)
+	}
+	if a.SnapshotID == "" {
+		return invalidf("snapshotId is empty: want the snapshot the artifact was published from, so discarding it deletes exactly that dump")
+	}
+	if !snapshot.ValidSnapshotID(a.SnapshotID) {
+		return invalidf("snapshotId %q is not a snapshot ID: want snap- followed by 16 lowercase hex characters", a.SnapshotID)
 	}
 	if a.SourceTaskID == "" {
 		return invalidf("sourceTaskId is empty: want the task the snapshot was taken from, because its ID names the TAP device, the vsock path and the disk")
@@ -300,8 +363,8 @@ func validateFile(field string, f File) error {
 	if f.Name == "" {
 		return invalidf("%s.name is empty: want the bare name of the file that moves", field)
 	}
-	if f.Name != filepath.Base(f.Name) || f.Name == "." || f.Name == ".." || strings.ContainsAny(f.Name, `/\`) {
-		return invalidf("%s.name %q is a path: want a bare file name, because the transfer route addresses a file by name", field, f.Name)
+	if err := ValidFileName(f.Name); err != nil {
+		return invalidf("%s.name %q is not a file name: %v", field, f.Name, err)
 	}
 	if f.Size <= 0 {
 		return invalidf("%s.size is %d: want the positive byte count of the file that moves", field, f.Size)
@@ -361,6 +424,9 @@ func ArtifactFromSnapshot(info *snapshot.SnapshotInfo, socketDir string, tapInde
 	if info.TaskID == "" {
 		return Artifact{}, invalidf("source snapshot has no task ID: want the task the VM ran as, because its ID names the TAP device, the vsock path and the disk")
 	}
+	if !snapshot.ValidSnapshotID(info.ID) {
+		return Artifact{}, invalidf("source snapshot ID %q is not a snapshot ID: want snap- followed by 16 lowercase hex characters, because the artifact names the dump it was published from", info.ID)
+	}
 	if socketDir == "" {
 		return Artifact{}, invalidf("socketDir is empty: want the absolute directory holding the source task's Firecracker socket, so the vsock path can be derived as <socketDir>/<sourceTaskId>.vsock")
 	}
@@ -407,6 +473,7 @@ func ArtifactFromSnapshot(info *snapshot.SnapshotInfo, socketDir string, tapInde
 		SchemaVersion: v1.SchemaVersion,
 		Kind:          ArtifactKind,
 		ID:            id,
+		SnapshotID:    info.ID,
 		SourceTaskID:  info.TaskID,
 		SourceNodeID:  info.NodeID,
 		ServiceID:     info.ServiceID,
