@@ -358,6 +358,16 @@ func tapNameTaskPrefix(taskID string) string {
 	return scruntime.TapName(taskID, 0)[:tapNamePrefixLength]
 }
 
+// Validate reports whether the description is complete enough to move: a bare
+// file name, a positive size within MaxFileSize, and a hex-encoded SHA-256. It is
+// the one rule for one file's description, used by the manifest's own field
+// checks and by the transport that has to verify those bytes on the way in and on
+// the way out; field names in the manifest's rejections come from
+// validateFiles, which labels the field it is checking.
+func (f File) Validate() error {
+	return validateFile("file", f)
+}
+
 // validateFile checks one moving file's description.
 func validateFile(field string, f File) error {
 	if f.Name == "" {

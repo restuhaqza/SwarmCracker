@@ -90,6 +90,14 @@ type ManagerConfig struct {
 	// so the deadline is generous; it exists so a node that stops answering
 	// cannot hold a public request open.
 	SnapshotTimeout time.Duration
+	// MigrationTimeout bounds one migration transfer: an export, a file read, a
+	// stage or a discard. Zero means DefaultMigrationTimeout. It is separate from
+	// SnapshotTimeout because a transfer is bounded by the link rather than by
+	// the disk: an artifact may carry 64 GiB (migration.MaxFileSize), which the
+	// snapshot deadline would cut off on anything but a fast network. The deadline
+	// still exists so a node that stops answering mid-stream cannot pin a
+	// migration open forever.
+	MigrationTimeout time.Duration
 	// ErrorWriter renders a transport failure as the caller's error envelope.
 	// The public handler passes apihttp.WriteError so a public caller gets the
 	// v1 media type and its request ID; nil keeps the internal v1 default.
@@ -103,15 +111,16 @@ type ManagerConfig struct {
 
 // Manager resolves a task to its node and proxies a caller's request there.
 type Manager struct {
-	tasks           TaskReader
-	nodes           NodeReader
-	port            int
-	client          *http.Client
-	transport       http.RoundTripper
-	healthTimeout   time.Duration
-	snapshotTimeout time.Duration
-	errorWriter     func(w http.ResponseWriter, r *http.Request, err error)
-	requestIDFrom   func(ctx context.Context) string
+	tasks            TaskReader
+	nodes            NodeReader
+	port             int
+	client           *http.Client
+	transport        http.RoundTripper
+	healthTimeout    time.Duration
+	snapshotTimeout  time.Duration
+	migrationTimeout time.Duration
+	errorWriter      func(w http.ResponseWriter, r *http.Request, err error)
+	requestIDFrom    func(ctx context.Context) string
 }
 
 // Route is one resolved task-to-node destination inside the cluster.
@@ -158,16 +167,22 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		snapshotTimeout = DefaultSnapshotTimeout
 	}
 
+	migrationTimeout := cfg.MigrationTimeout
+	if migrationTimeout <= 0 {
+		migrationTimeout = DefaultMigrationTimeout
+	}
+
 	return &Manager{
-		tasks:           cfg.Tasks,
-		nodes:           cfg.Nodes,
-		port:            port,
-		client:          cfg.Client,
-		transport:       transport,
-		healthTimeout:   healthTimeout,
-		snapshotTimeout: snapshotTimeout,
-		errorWriter:     cfg.ErrorWriter,
-		requestIDFrom:   cfg.RequestIDFrom,
+		tasks:            cfg.Tasks,
+		nodes:            cfg.Nodes,
+		port:             port,
+		client:           cfg.Client,
+		transport:        transport,
+		healthTimeout:    healthTimeout,
+		snapshotTimeout:  snapshotTimeout,
+		migrationTimeout: migrationTimeout,
+		errorWriter:      cfg.ErrorWriter,
+		requestIDFrom:    cfg.RequestIDFrom,
 	}, nil
 }
 
@@ -199,7 +214,36 @@ func (m *Manager) routeFor(ctx context.Context, task v1.Task, op string) (Route,
 		return Route{}, output.NewErrorf(output.CodeUnavailable, "task %q is not assigned to a node", task.ID)
 	}
 
-	node, err := m.nodes.GetNode(ctx, task.NodeID)
+	route, err := m.routeForNode(ctx, task.NodeID, task.ID, op)
+	if err != nil {
+		return Route{}, err
+	}
+	route.Task = task
+	return route, nil
+}
+
+// routeForNode maps a node ID and a placeholder task ID to the node broker URL.
+// It is the node-scoped form of routeFor, for the operations that must address a
+// node which has no task of its own: a migration moves an artifact onto the
+// target before SwarmKit has created the task that will restore it, so the
+// manager cannot resolve that node from a task.
+//
+// The URL has the one shape every node operation has - /v1/tasks/{id}/{op} - and
+// the placeholder is only that segment. The migration operations other than export
+// are artifact-scoped and never read it; export, which does read a task, always
+// passes the real task.
+func (m *Manager) routeForNode(ctx context.Context, nodeID, taskID, op string) (Route, error) {
+	if !operationPattern.MatchString(op) {
+		return Route{}, output.NewErrorf(output.CodeInvalid, "unsupported broker operation %q", op)
+	}
+	if taskID == "" {
+		return Route{}, output.NewError(output.CodeInvalid, "task ID must not be empty")
+	}
+	if nodeID == "" {
+		return Route{}, output.NewError(output.CodeInvalid, "node ID must not be empty")
+	}
+
+	node, err := m.nodes.GetNode(ctx, nodeID)
 	if err != nil {
 		return Route{}, err
 	}
@@ -221,11 +265,11 @@ func (m *Manager) routeFor(ctx context.Context, task v1.Task, op string) (Route,
 	target := &url.URL{
 		Scheme:  brokerScheme,
 		Host:    net.JoinHostPort(host, strconv.Itoa(m.port)),
-		Path:    tasksPrefix + task.ID + "/" + op,
-		RawPath: tasksPrefix + url.PathEscape(task.ID) + "/" + escapeOperation(op),
+		Path:    tasksPrefix + taskID + "/" + op,
+		RawPath: tasksPrefix + url.PathEscape(taskID) + "/" + escapeOperation(op),
 	}
 
-	return Route{Task: task, Node: node, URL: target}, nil
+	return Route{Node: node, URL: target}, nil
 }
 
 // escapeOperation escapes an operation name segment by segment, keeping the one
@@ -676,25 +720,57 @@ func (m *Manager) callSnapshot(
 		return nil, Route{}, err
 	}
 
-	callCtx, cancel := context.WithTimeout(ctx, m.snapshotTimeout)
+	var reader io.Reader
+	length := int64(-1)
+	contentType := ""
+	if body != nil {
+		reader = bytes.NewReader(body)
+		length = int64(len(body))
+		contentType = publicMediaType
+	}
+
+	resp, err := m.doNodeRequest(ctx, route, method, query, reader, length, contentType, m.snapshotTimeout, "snapshot")
+	if err != nil {
+		return nil, route, err
+	}
+	return resp, route, nil
+}
+
+// doNodeRequest performs one manager-built request to one node under timeout: a
+// whole-VM operation in either direction is the same shape of work, whether it
+// moves a snapshot's metadata or streams a memory image, so the one transport
+// error mapping is shared. The deadline is the caller's because a snapshot
+// operation and a migration transfer are bounded by different things - a disk
+// copy and a network link - and the same generous number would be wrong for one
+// of them.
+//
+// body may be nil. length is the body's byte count; a negative value leaves it to
+// the transport and is what a request without a body uses. contentType is set only
+// when one is given. The returned body owns the deadline: closing it releases the
+// context, so a caller must always close it. noun names the operation in the two
+// failure messages ("snapshot", "migration export").
+func (m *Manager) doNodeRequest(
+	ctx context.Context, route Route, method string, query url.Values,
+	body io.Reader, length int64, contentType string, timeout time.Duration, noun string,
+) (*http.Response, error) {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
 
 	target := *route.URL
 	if len(query) > 0 {
 		target.RawQuery = query.Encode()
 	}
 
-	var reader io.Reader
-	if body != nil {
-		reader = bytes.NewReader(body)
-	}
-	req, err := http.NewRequestWithContext(callCtx, method, target.String(), reader)
+	req, err := http.NewRequestWithContext(callCtx, method, target.String(), body)
 	if err != nil {
 		cancel()
-		return nil, route, output.NewErrorf(output.CodeInternal,
-			"build node %q snapshot request", route.Node.ID)
+		return nil, output.NewErrorf(output.CodeInternal,
+			"build node %q %s request", route.Node.ID, noun)
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", publicMediaType)
+	if length >= 0 {
+		req.ContentLength = length
+	}
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	if m.requestIDFrom != nil {
 		if id := m.requestIDFrom(ctx); id != "" {
@@ -705,10 +781,10 @@ func (m *Manager) callSnapshot(
 	resp, err := m.client.Do(req)
 	if err != nil {
 		cancel()
-		return nil, route, snapshotTransportError(ctx, route.Node.ID, err)
+		return nil, snapshotTransportError(ctx, route.Node.ID, err)
 	}
 	resp.Body = &snapshotResponseBody{ReadCloser: resp.Body, cancel: cancel}
-	return resp, route, nil
+	return resp, nil
 }
 
 // snapshotResponseBody releases the per-request deadline when the body closes.
