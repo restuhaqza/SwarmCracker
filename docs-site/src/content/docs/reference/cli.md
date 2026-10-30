@@ -461,6 +461,25 @@ place, or one the constraint or volume enforcer rejected — always carries an
 characters; `task inspect` (or `--format json`) prints it in full. The column is
 appended **after** `IMAGE`, so every existing column keeps its position.
 
+When **no** task of a service is running because the scheduler refused the
+placement, the table is followed by one diagnostic line that names the
+constraint(s) that matched no node and the labels the cluster actually reports:
+
+```
+no task is running: constraint "node.labels.disk==ssd" matches no node (available node labels: disk=hdd, hostname=sc-lab-node1, rack=r1, role=manager, role=worker)
+```
+
+SwarmKit's own reason is generic ("scheduling constraints not satisfied on 2
+nodes") and truncated in the column, so this line is what tells an operator that
+`disk=ssd` is missing rather than that the node count is wrong. Every constraint
+on the service is named (the command cannot tell which of several failed),
+`hostname` and `role` are included because `node.hostname` and `node.role` are
+constraints too, and values are deduplicated and sorted. The line is a
+diagnostic only: it changes no exit code, it is printed only in table mode, and
+it appears only when every task is still `NEW`/`PENDING` with a scheduler error —
+a service with one running task keeps the table it had. `task ls` prints the
+same line, naming the constraints of every service in the listing.
+
 ##### Registry authentication
 
 `--with-registry-auth` makes the **CLI** resolve credentials for the service's

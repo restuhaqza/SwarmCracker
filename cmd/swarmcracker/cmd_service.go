@@ -1646,6 +1646,8 @@ func listServiceTasksWithClient(ctx context.Context, client legacy.ControlClient
 	}
 	fmt.Fprintf(w, "\nTotal: %d task(s)\n", len(tasks))
 
+	writeUnschedulableNote(ctx, client, w, tasks)
+
 	return nil
 }
 

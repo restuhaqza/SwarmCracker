@@ -472,6 +472,7 @@ type fakeServiceTaskClient struct {
 	api.ControlClient
 	services []*api.Service
 	tasks    []*api.Task
+	nodes    []*api.Node
 }
 
 func (f *fakeServiceTaskClient) ListServices(context.Context, *api.ListServicesRequest, ...grpc.CallOption) (*api.ListServicesResponse, error) {
@@ -480,6 +481,10 @@ func (f *fakeServiceTaskClient) ListServices(context.Context, *api.ListServicesR
 
 func (f *fakeServiceTaskClient) ListTasks(context.Context, *api.ListTasksRequest, ...grpc.CallOption) (*api.ListTasksResponse, error) {
 	return &api.ListTasksResponse{Tasks: f.tasks}, nil
+}
+
+func (f *fakeServiceTaskClient) ListNodes(context.Context, *api.ListNodesRequest, ...grpc.CallOption) (*api.ListNodesResponse, error) {
+	return &api.ListNodesResponse{Nodes: f.nodes}, nil
 }
 
 // TestListServiceTasksHealthColumn verifies `service ps` renders a HEALTH
