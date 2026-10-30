@@ -16,7 +16,10 @@
 //
 // {taskID} is a full task ID, never a name or a prefix; the manager resolves
 // user input before proxying. {op} is one of the lowercase operation names a
-// later phase registers on the node. A malformed path or an unknown task is a
+// later phase registers on the node. An operation whose name carries one
+// namespace segment - migration/export, migration/file, migration/stage - is
+// spelled as two path segments (/v1/tasks/{taskID}/migration/export); any other
+// extra segment is a malformed path. A malformed path or an unknown task is a
 // 404; a known task with an unregistered operation is a 501.
 //
 // Failures the broker generates itself are v1 Error documents, so a manager

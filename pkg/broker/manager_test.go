@@ -138,6 +138,20 @@ func TestManagerResolve(t *testing.T) {
 			wantCode: output.CodeInvalid,
 		},
 		{
+			name:    "namespaced migration operation",
+			task:    v1.Task{ID: "task-1", NodeID: "node-1"},
+			node:    v1.Node{ID: "node-1", Address: "192.168.1.10"},
+			op:      MigrationExportOperation,
+			wantURL: "https://192.168.1.10:4245/v1/tasks/task-1/migration/export",
+		},
+		{
+			name:     "two namespace separators",
+			task:     v1.Task{ID: "task-1", NodeID: "node-1"},
+			node:     v1.Node{ID: "node-1", Address: "192.168.1.10"},
+			op:       "migration/export/extra",
+			wantCode: output.CodeInvalid,
+		},
+		{
 			name:     "operation with a path separator",
 			task:     v1.Task{ID: "task-1", NodeID: "node-1"},
 			node:     v1.Node{ID: "node-1", Address: "192.168.1.10"},
@@ -321,6 +335,39 @@ func TestManagerProxyForwardsWithoutUserCredentials(t *testing.T) {
 	require.Equal(t, "kept", got.keep)
 	require.Empty(t, got.auth, "the node broker must never see a public or proxy credential")
 	require.Empty(t, got.cookie, "the node broker must never see the caller's cookies")
+}
+
+// TestManagerProxyReachesANamespacedOperation pins the wire shape of a migration
+// operation end to end: the manager sends migration/export as two path segments
+// (not one segment with an escaped slash), and the node's route dispatches it to
+// the registered handler.
+func TestManagerProxyReachesANamespacedOperation(t *testing.T) {
+	pki := newTestPKI(t)
+
+	var gotPath, gotMethod string
+	src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+	_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+		MigrationExportOperation: func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+			gotPath, gotMethod = r.URL.Path, r.Method
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	host, port := brokerTarget(t, baseURL)
+	mgr := newTestManager(t,
+		&stubTaskReader{task: v1.Task{ID: "task-1", NodeID: "node-1"}},
+		&stubNodeReader{node: v1.Node{ID: "node-1", Address: host}},
+		port,
+		pki.httpClient(),
+	)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/tasks/task-1/export?node=node-1", nil)
+	rec := httptest.NewRecorder()
+	require.NoError(t, mgr.Proxy(context.Background(), rec, req, "task-1", MigrationExportOperation))
+
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	require.Equal(t, http.MethodPost, gotMethod)
+	require.Equal(t, "/v1/tasks/task-1/migration/export", gotPath)
 }
 
 func TestManagerProxyUnreachableNodeIs503(t *testing.T) {

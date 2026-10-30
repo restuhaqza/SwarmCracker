@@ -192,6 +192,10 @@ func (s operationSpec) allows(method string) bool {
 // operationSpecs is the registry of known operations and the methods each one
 // implements. An operation missing here is unknown: an unregistered one is 501
 // for every method, because there is no method set to enforce.
+//
+// A name may carry one namespace segment (migration/export): the route spells it
+// as two path segments, and splitTaskPath only joins them when the joined name is
+// registered here, so an extra segment can never smuggle a different operation.
 var operationSpecs = map[string]operationSpec{
 	"exec":      {methods: []string{http.MethodPost}},
 	"attach":    {methods: []string{http.MethodPost}},
@@ -203,6 +207,11 @@ var operationSpecs = map[string]operationSpec{
 	// restored stops the process a snapshot restore started for one task. It is
 	// a DELETE because it removes that VM, and it takes no body and no query.
 	"restored": {methods: []string{http.MethodDelete}},
+	// The migration operations move one artifact: export produces it on the
+	// source, file streams one of its files, stage receives one on the target.
+	MigrationExportOperation: {methods: []string{http.MethodPost}},
+	MigrationFileOperation:   {methods: []string{http.MethodGet}},
+	MigrationStageOperation:  {methods: []string{http.MethodPut}},
 }
 
 // route resolves the task, then dispatches to the registered operation.
@@ -251,19 +260,34 @@ func (s *Server) handlerFor(op string) (Handler, bool) {
 	return h, ok
 }
 
-// splitTaskPath parses /v1/tasks/{taskID}/{op}. Anything else - a wrong
-// prefix, a missing segment, an empty segment, extra segments - is malformed
-// and reported as not found.
+// splitTaskPath parses /v1/tasks/{taskID}/{op}, where {op} is one operation name
+// and therefore one or, for a namespaced operation such as migration/export, two
+// path segments. Anything else - a wrong prefix, a missing segment, an empty
+// segment, extra segments - is malformed and reported as not found.
+//
+// The namespaced form is resolved against operationSpecs rather than by splitting
+// on the first segment: "/v1/tasks/t/exec/extra" stays a malformed path, because
+// no operation is named "exec/extra", and a future two-word operation is a
+// registry entry plus a handler rather than another special case here.
 func splitTaskPath(path string) (taskID, op string, ok bool) {
 	rest, found := strings.CutPrefix(path, tasksPrefix)
 	if !found {
 		return "", "", false
 	}
 	parts := strings.Split(rest, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+
+	switch {
+	case len(parts) == 2 && parts[0] != "" && parts[1] != "":
+		return parts[0], parts[1], true
+	case len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != "":
+		op = parts[1] + "/" + parts[2]
+		if _, known := operationSpecs[op]; !known {
+			return "", "", false
+		}
+		return parts[0], op, true
+	default:
 		return "", "", false
 	}
-	return parts[0], parts[1], true
 }
 
 // writeError writes one v1 error document, shared by the node server and the

@@ -56,8 +56,12 @@ const (
 )
 
 // operationPattern is the shape of an operation segment. Anything else (an
-// uppercase or path-like value) is rejected before it can reach a URL.
-var operationPattern = regexp.MustCompile(`^[a-z]+$`)
+// uppercase or path-like value) is rejected before it can reach a URL. One
+// namespace separator is allowed because the migration operations are named
+// migration/export, migration/file and migration/stage; the node spells the same
+// names as two path segments, and the escaped form the manager sends decodes back
+// to them.
+var operationPattern = regexp.MustCompile(`^[a-z]+(/[a-z]+)?$`)
 
 // TaskReader reads one task. It is a narrow view of the manager's task store,
 // deliberately independent of SwarmKit control types.
@@ -210,15 +214,28 @@ func (m *Manager) routeFor(ctx context.Context, task v1.Task, op string) (Route,
 
 	// Path and RawPath are set together: Path is the decoded form, RawPath the
 	// escaped hint, so a task ID that carries a delimiter still round-trips as
-	// one segment instead of changing the route shape.
+	// one segment instead of changing the route shape. The operation is escaped
+	// per segment, so a namespaced name keeps its separator: the node reads
+	// migration/export as two path segments, and an escaped slash would reach it
+	// as one.
 	target := &url.URL{
 		Scheme:  brokerScheme,
 		Host:    net.JoinHostPort(host, strconv.Itoa(m.port)),
 		Path:    tasksPrefix + task.ID + "/" + op,
-		RawPath: tasksPrefix + url.PathEscape(task.ID) + "/" + url.PathEscape(op),
+		RawPath: tasksPrefix + url.PathEscape(task.ID) + "/" + escapeOperation(op),
 	}
 
 	return Route{Task: task, Node: node, URL: target}, nil
+}
+
+// escapeOperation escapes an operation name segment by segment, keeping the one
+// namespace separator operationPattern allows.
+func escapeOperation(op string) string {
+	segments := strings.Split(op, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return strings.Join(segments, "/")
 }
 
 // Proxy resolves and reverse-proxies the caller's request to the node broker.

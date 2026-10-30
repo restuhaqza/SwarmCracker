@@ -18,6 +18,12 @@ import (
 // node's advertised address, so both sides must agree on 4245.
 const defaultBrokerListen = "0.0.0.0:4245"
 
+// defaultMigrationStagingDir is where a node stages a migration artifact it
+// received: <dir>/<artifactID>/<name>. It sits beside the snapshot root and the
+// task rootfs root, on the same filesystem, so materialising a received disk is a
+// local operation rather than a cross-device copy.
+const defaultMigrationStagingDir = "/var/lib/firecracker/migrations"
+
 // brokerRuntime holds the daemon's node broker settings.
 type brokerRuntime struct {
 	listenAddr string
@@ -32,6 +38,10 @@ type brokerRuntime struct {
 	// snapshotDir is the pkg/snapshot root. pkg/snapshot writes
 	// <snapshotDir>/<id>/metadata.json and that directory is the source of truth.
 	snapshotDir string
+	// migrationStagingDir is where a received migration artifact is staged:
+	// <migrationStagingDir>/<artifactID>/<name>. The restore reads it from there,
+	// so it must be on the same filesystem as the task disks it materialises.
+	migrationStagingDir string
 	// rootfsDir is the executor's rootfs directory, recorded on a snapshot so
 	// restore can tell a missing task disk from a corrupt snapshot.
 	rootfsDir string
@@ -90,13 +100,14 @@ func logRestoredInstances(ctx context.Context, restored *scruntime.RestoredRegis
 // manager traffic.
 func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 	return brokerRuntime{
-		listenAddr:       ctx.String("broker-listen"),
-		socketDir:        ctx.String("socket-dir"),
-		logDir:           scruntime.DefaultLogDir(),
-		snapshotsEnabled: ctx.Bool("snapshots-enable"),
-		snapshotDir:      ctx.String("snapshot-dir"),
-		rootfsDir:        ctx.String("rootfs-dir"),
-		taskAlive:        taskSocketAlive,
+		listenAddr:          ctx.String("broker-listen"),
+		socketDir:           ctx.String("socket-dir"),
+		logDir:              scruntime.DefaultLogDir(),
+		snapshotsEnabled:    ctx.Bool("snapshots-enable"),
+		snapshotDir:         ctx.String("snapshot-dir"),
+		migrationStagingDir: ctx.String("migration-staging-dir"),
+		rootfsDir:           ctx.String("rootfs-dir"),
+		taskAlive:           taskSocketAlive,
 	}
 }
 
@@ -152,9 +163,17 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	// in-guest sample the daemon's poller cached; attach relays the interactive
 	// console Unix socket in both directions; snapshots use the node-local
 	// pkg/snapshot store, and restored stops the VM a restore started from that
-	// same store. The public route has already resolved the reference and
-	// enforced the caller's selectors.
-	snapshotOp, restoredOp, snapshotsActive := snapshotHandlers(ctx, cfg)
+	// same store. The migration operations produce an artifact from a running task,
+	// stream one of its files and stage one the target will restore; they share the
+	// snapshot store export snapshots through. The public route has already
+	// resolved the reference and enforced the caller's selectors.
+	snapshotOp, restoredOp, store, snapshotsActive := snapshotHandlers(ctx, cfg)
+	migrationCfg := broker.MigrationHandlerConfig{
+		Store:       store,
+		SnapshotDir: cfg.snapshotDir,
+		StagingDir:  cfg.migrationStagingDir,
+		RootfsDir:   cfg.rootfsDir,
+	}
 	handlers := []struct {
 		op string
 		h  broker.Handler
@@ -167,6 +186,9 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{"metrics", broker.NewMetricsHandler()},
 		{"snapshots", snapshotOp},
 		{"restored", restoredOp},
+		{broker.MigrationExportOperation, broker.NewMigrationExportHandler(migrationCfg)},
+		{broker.MigrationFileOperation, broker.NewMigrationFileHandler(migrationCfg)},
+		{broker.MigrationStageOperation, broker.NewMigrationStageHandler(migrationCfg)},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {
@@ -201,9 +223,12 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 }
 
 // snapshotHandlers builds the experimental snapshots and restored-VM operations
-// and reports whether their store is usable. Both handlers share one store
-// instance: the restored process handle lives in the manager that restored the
-// VM, so a second store would answer no_restored_vm for this node's own restores.
+// and reports the store they share, plus whether it is usable. Both handlers take
+// one store instance: the restored process handle lives in the manager that
+// restored the VM, so a second store would answer no_restored_vm for this node's
+// own restores. The store is returned as well because the migration operations
+// snapshot through it and move the files it publishes; a nil store means the
+// migration export answers its typed 501 while file and stage keep working.
 // Disabled means registered handlers with no store, which answer a typed 501 —
 // the routes still exist. A manager construction failure is logged and degrades
 // to the same disabled handlers: a bad snapshot directory must not stop the
@@ -212,10 +237,10 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 // store that does not exist.
 func snapshotHandlers(
 	ctx context.Context, cfg brokerRuntime,
-) (snapshots, restored broker.Handler, active bool) {
+) (snapshots, restored broker.Handler, store broker.SnapshotStore, active bool) {
 	if !cfg.snapshotsEnabled {
 		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}),
-			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), false
+			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), nil, false
 	}
 
 	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{
@@ -227,7 +252,7 @@ func snapshotHandlers(
 	if err != nil {
 		log.G(ctx).WithError(err).Warn("Node broker: snapshots disabled (snapshot store unavailable)")
 		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}),
-			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), false
+			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), nil, false
 	}
 
 	handlerCfg := broker.SnapshotHandlerConfig{
@@ -236,5 +261,5 @@ func snapshotHandlers(
 		MaxAge:    168 * time.Hour,
 		RootfsDir: cfg.rootfsDir,
 	}
-	return broker.NewSnapshotHandler(handlerCfg), broker.NewRestoredHandler(handlerCfg), true
+	return broker.NewSnapshotHandler(handlerCfg), broker.NewRestoredHandler(handlerCfg), mgr, true
 }
