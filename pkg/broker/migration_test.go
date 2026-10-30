@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -91,17 +92,51 @@ func seedSnapshot(t *testing.T, root string) *snapshot.SnapshotInfo {
 	}
 }
 
-// migrationConfig is a fully configured node: one snapshot root, one staging root,
-// and the executor's rootfs directory.
+// migrationConfig is a fully configured node: an artifact root that is not the
+// snapshot root (they are separate flags on a real node), a staging root, and the
+// executor's rootfs directory.
 func migrationConfig(t *testing.T, store SnapshotStore) MigrationHandlerConfig {
 	t.Helper()
 
 	return MigrationHandlerConfig{
 		Store:       store,
-		SnapshotDir: t.TempDir(),
+		ArtifactDir: t.TempDir(),
 		StagingDir:  t.TempDir(),
 		RootfsDir:   "/var/lib/firecracker/rootfs",
 	}
+}
+
+// migrationNode is one test node with its two roots apart: the snapshot store's
+// directory, which pkg/snapshot owns, and the artifact root, which the broker
+// publishes into. Keeping them separate is what proves the artifact's files are
+// hard links and that the store's own housekeeping cannot reach them.
+type migrationNode struct {
+	cfg          MigrationHandlerConfig
+	snapshotRoot string
+	store        *fakeSnapshotStore
+}
+
+// newMigrationNode builds one node and seeds the snapshot its store would publish.
+func newMigrationNode(t *testing.T) migrationNode {
+	t.Helper()
+
+	store := &fakeSnapshotStore{}
+	node := migrationNode{cfg: migrationConfig(t, store), snapshotRoot: t.TempDir(), store: store}
+	node.store.createInfo = seedSnapshot(t, node.snapshotRoot)
+	return node
+}
+
+// export runs one successful export on the node.
+func (n migrationNode) export(t *testing.T) MigrationExportDocument {
+	t.Helper()
+
+	rec := serveMigration(t, NewMigrationExportHandler(n.cfg), snapshotTask(), http.MethodPost,
+		"/v1/tasks/task-1/migration/export?service=svc-1&node=node-1", nil)
+	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+
+	var doc MigrationExportDocument
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	return doc
 }
 
 // exportFixture runs one successful export and returns its document with the
@@ -109,17 +144,8 @@ func migrationConfig(t *testing.T, store SnapshotStore) MigrationHandlerConfig {
 func exportFixture(t *testing.T) (MigrationHandlerConfig, MigrationExportDocument) {
 	t.Helper()
 
-	store := &fakeSnapshotStore{}
-	cfg := migrationConfig(t, store)
-	store.createInfo = seedSnapshot(t, cfg.SnapshotDir)
-
-	rec := serveMigration(t, NewMigrationExportHandler(cfg), snapshotTask(), http.MethodPost,
-		"/v1/tasks/task-1/migration/export?service=svc-1&node=node-1", nil)
-	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
-
-	var doc MigrationExportDocument
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
-	return cfg, doc
+	node := newMigrationNode(t)
+	return node.cfg, node.export(t)
 }
 
 // TestMigrationExportRejectsANonRunningTask pins the first check: a task whose VM
@@ -161,28 +187,27 @@ func TestMigrationExportRejectsANonRunningTask(t *testing.T) {
 // the bytes behind the artifact directory, and the directory is named by the
 // artifact, not by the snapshot.
 func TestMigrationExportDescribesTheFilesItPublished(t *testing.T) {
-	store := &fakeSnapshotStore{}
-	cfg := migrationConfig(t, store)
-	store.createInfo = seedSnapshot(t, cfg.SnapshotDir)
+	node := newMigrationNode(t)
+	store := node.store
 
-	rec := serveMigration(t, NewMigrationExportHandler(cfg), snapshotTask(), http.MethodPost,
+	rec := serveMigration(t, NewMigrationExportHandler(node.cfg), snapshotTask(), http.MethodPost,
 		"/v1/tasks/task-1/migration/export?service=svc-1&node=node-1", nil)
 	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
 	require.Equal(t, publicMediaType, rec.Header().Get("Content-Type"))
 
 	var doc MigrationExportDocument
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	artifact := doc.Artifact
 	require.Equal(t, v1.SchemaVersion, doc.SchemaVersion)
 	require.Equal(t, migrationExportKind, doc.Kind)
-
-	artifact := doc.Artifact
 	require.NoError(t, artifact.Validate(), "an exported manifest must be complete")
 	require.Equal(t, "task-1", artifact.SourceTaskID)
 	require.Equal(t, "node-1", artifact.SourceNodeID)
 	require.Equal(t, "svc-1", artifact.ServiceID)
 	require.Equal(t, "/var/run/firecracker/task-1.vsock", artifact.VsockPath)
 	require.Equal(t, "/var/lib/firecracker/rootfs/tasks/task-1.ext4", artifact.DiskPath)
-	require.Equal(t, filepath.Join(cfg.SnapshotDir, artifact.ID), doc.Dir)
+	require.Equal(t, filepath.Join(node.cfg.ArtifactDir, artifact.ID), doc.Dir)
+	require.True(t, doc.Linked, "the default install links the files rather than copying them")
 
 	// The snapshot is taken on the resolved task's own socket, and the disk it
 	// copies is the executor's per-task disk: the manifest's diskPath and the
@@ -204,10 +229,17 @@ func TestMigrationExportDescribesTheFilesItPublished(t *testing.T) {
 		require.Equal(t, file.SHA256, hex.EncodeToString(sum[:]), file.Name)
 	}
 
-	// The manifest is node-local metadata in the snapshot directory: written there
-	// (so the snapshot store's directory is the only place the artifact lives) and
-	// never one of the files that move.
-	manifest, err := os.ReadFile(filepath.Join(filepath.Dir(store.createInfo.StatePath), migrationArtifactDocumentName))
+	// The artifact is a real directory of its own, not a link into the store: the
+	// store's retention sweeps a directory it owns, and a link would dangle the
+	// moment a snapshot was cleaned up.
+	info, statErr := os.Lstat(doc.Dir)
+	require.NoError(t, statErr)
+	require.True(t, info.IsDir(), "the artifact directory must be a directory")
+	require.Zero(t, info.Mode()&os.ModeSymlink, "the artifact directory must not be a link")
+
+	// The manifest is node-local metadata inside the artifact directory: it
+	// describes the files, and it is never one of the files that move.
+	manifest, err := os.ReadFile(filepath.Join(doc.Dir, migrationArtifactDocumentName))
 	require.NoError(t, err)
 	var stored migration.Artifact
 	require.NoError(t, json.Unmarshal(manifest, &stored))
@@ -215,12 +247,17 @@ func TestMigrationExportDescribesTheFilesItPublished(t *testing.T) {
 	_, isServable := artifactFile(artifact, migrationArtifactDocumentName)
 	require.False(t, isServable, "the manifest is not one of the artifact's files")
 
-	// The snapshot store still holds a complete record: the artifact directory is a
-	// link to it, so DeleteSnapshot frees the bytes the transfer reads.
-	info, statErr := os.Stat(doc.Dir)
-	require.NoError(t, statErr)
-	require.True(t, info.IsDir(), "the artifact directory resolves to the snapshot directory")
-	require.FileExists(t, filepath.Join(cfg.SnapshotDir, "snap-0123456789abcdef", "vm.state"))
+	// One copy of the bytes: each published file is the snapshot's own inode.
+	for _, name := range artifactFileNames(artifact) {
+		published, err := os.Stat(filepath.Join(doc.Dir, name))
+		require.NoError(t, err, name)
+		source, err := os.Stat(filepath.Join(node.snapshotRoot, store.createInfo.ID, name))
+		require.NoError(t, err, name)
+		require.True(t, os.SameFile(published, source), "%s must be a hard link to the snapshot's file", name)
+	}
+
+	// The store still holds a complete record of its own.
+	require.FileExists(t, filepath.Join(node.snapshotRoot, "snap-0123456789abcdef", "vm.state"))
 }
 
 // TestMigrationExportRefusesBeforeTouchingTheTask pins the configuration and query
@@ -250,16 +287,16 @@ func TestMigrationExportRefusesBeforeTouchingTheTask(t *testing.T) {
 			wantDetail: "migrations_disabled",
 		},
 		{
-			name:  "no snapshot directory",
+			name:  "no artifact directory",
 			store: &fakeSnapshotStore{},
 			cfg: func(c *MigrationHandlerConfig) {
-				c.SnapshotDir = ""
+				c.ArtifactDir = ""
 			},
 			method:     http.MethodPost,
 			target:     "/v1/tasks/task-1/migration/export?node=node-1",
 			wantStatus: http.StatusServiceUnavailable,
 			wantCode:   output.CodeUnavailable,
-			wantDetail: "snapshot_dir_unconfigured",
+			wantDetail: "artifact_dir_unconfigured",
 		},
 		{
 			name:  "no rootfs directory",
@@ -340,7 +377,7 @@ func TestMigrationExportRefusesBeforeTouchingTheTask(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := MigrationHandlerConfig{
 				Store:       tc.store,
-				SnapshotDir: t.TempDir(),
+				ArtifactDir: t.TempDir(),
 				StagingDir:  t.TempDir(),
 				RootfsDir:   "/var/lib/firecracker/rootfs",
 			}
@@ -365,27 +402,83 @@ func TestMigrationExportRefusesBeforeTouchingTheTask(t *testing.T) {
 	}
 }
 
-// TestMigrationExportPrunesSpentArtifacts pins the one piece of housekeeping the
-// export owns: a link whose snapshot is gone is not an artifact, and leaving it
-// behind would accumulate one dead entry per completed migration.
-func TestMigrationExportPrunesSpentArtifacts(t *testing.T) {
-	store := &fakeSnapshotStore{}
-	cfg := migrationConfig(t, store)
-	store.createInfo = seedSnapshot(t, cfg.SnapshotDir)
+// TestMigrationArtifactOutlivesItsSnapshot pins what a real artifact directory
+// buys: the snapshot store's own housekeeping — a restart, a leftover sweep, a
+// delete — cannot reach the artifact, and a hard link keeps the bytes alive after
+// the snapshot directory is gone. A symlink would dangle at that first delete.
+func TestMigrationArtifactOutlivesItsSnapshot(t *testing.T) {
+	node := newMigrationNode(t)
+	doc := node.export(t)
+	artifact := doc.Artifact
 
-	spent := filepath.Join(cfg.SnapshotDir, "mig-0000000000000001")
-	require.NoError(t, os.Symlink(filepath.Join(cfg.SnapshotDir, "snap-gone"), spent))
+	// A store restart over the same directory sweeps leftovers; the artifact is
+	// not one, because it is a directory of its own outside the snapshot root.
+	store, err := snapshot.NewManager(snapshot.SnapshotConfig{
+		Enabled:      true,
+		SnapshotDir:  node.snapshotRoot,
+		MaxSnapshots: 3,
+		MaxAge:       168 * time.Hour,
+	})
+	require.NoError(t, err)
 
-	rec := serveMigration(t, NewMigrationExportHandler(cfg), snapshotTask(), http.MethodPost,
-		"/v1/tasks/task-1/migration/export?node=node-1", nil)
-	require.Equal(t, http.StatusCreated, rec.Code, rec.Body.String())
+	for _, file := range artifactFiles(artifact) {
+		require.FileExists(t, filepath.Join(node.cfg.ArtifactDir, artifact.ID, file.Name), file.Name)
+	}
 
-	_, err := os.Lstat(spent)
-	require.ErrorIs(t, err, os.ErrNotExist, "a link whose snapshot is gone must be removed")
+	// Deleting the snapshot removes the store's record. The artifact's files are
+	// the same inodes, so they survive, and the transfer still completes.
+	require.NoError(t, store.DeleteSnapshot(context.Background(), node.store.createInfo.ID))
+	require.NoDirExists(t, filepath.Join(node.snapshotRoot, node.store.createInfo.ID))
 
-	var doc MigrationExportDocument
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
-	require.FileExists(t, filepath.Join(doc.Dir, "vm.state"), "the exported artifact must survive the prune")
+	for _, file := range artifactFiles(artifact) {
+		body, readErr := os.ReadFile(filepath.Join(node.cfg.ArtifactDir, artifact.ID, file.Name))
+		require.NoError(t, readErr, file.Name)
+		require.Equal(t, file.Size, int64(len(body)), file.Name)
+		sum := sha256.Sum256(body)
+		require.Equal(t, file.SHA256, hex.EncodeToString(sum[:]), file.Name)
+	}
+
+	rec := serveMigration(t, NewMigrationFileHandler(node.cfg), snapshotTask(), http.MethodGet,
+		"/v1/tasks/task-1/migration/file?artifactId="+artifact.ID+"&name="+artifact.StateFile.Name, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, artifact.StateFile.SHA256, rec.Header().Get(checksumHeader))
+}
+
+// TestMigrationExportCopiesWhenItCannotLink pins the fallback: a snapshot root on
+// another filesystem cannot be linked into the artifact root, so the export copies
+// the bytes and says so instead of publishing a directory it cannot fill.
+func TestMigrationExportCopiesWhenItCannotLink(t *testing.T) {
+	linkArtifactFile = func(source, target string) error {
+		return &os.LinkError{Op: "link", Old: source, New: target, Err: errors.New("cross-device link")}
+	}
+	t.Cleanup(func() { linkArtifactFile = os.Link })
+
+	node := newMigrationNode(t)
+	doc := node.export(t)
+
+	require.False(t, doc.Linked, "an export that had to copy must say so")
+	require.NotEqual(t, doc.Artifact.DiskFile, migration.File{})
+
+	for _, file := range artifactFiles(doc.Artifact) {
+		published, err := os.Stat(filepath.Join(doc.Dir, file.Name))
+		require.NoError(t, err, file.Name)
+		require.True(t, published.Mode().IsRegular(), file.Name)
+		source, err := os.Stat(filepath.Join(node.snapshotRoot, node.store.createInfo.ID, file.Name))
+		require.NoError(t, err, file.Name)
+		require.False(t, os.SameFile(published, source), "%s must be a copy, not a link", file.Name)
+
+		body, err := os.ReadFile(filepath.Join(doc.Dir, file.Name))
+		require.NoError(t, err, file.Name)
+		sum := sha256.Sum256(body)
+		require.Equal(t, file.SHA256, hex.EncodeToString(sum[:]), file.Name)
+		require.Equal(t, file.Size, int64(len(body)), file.Name)
+	}
+
+	// A copied artifact serves exactly like a linked one.
+	rec := serveMigration(t, NewMigrationFileHandler(node.cfg), snapshotTask(), http.MethodGet,
+		"/v1/tasks/task-1/migration/file?artifactId="+doc.Artifact.ID+"&name="+doc.Artifact.MemoryFile.Name, nil)
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+	require.Equal(t, doc.Artifact.MemoryFile.Size, int64(rec.Body.Len()))
 }
 
 // TestMigrationFileServesTheDeclaredBytes pins the download contract: the bytes are
@@ -527,7 +620,7 @@ func TestMigrationFileRefusesWhatIsNotAnArtifactFile(t *testing.T) {
 func TestMigrationFileRefusesAFileThatChangedAfterTheExport(t *testing.T) {
 	cfg, doc := exportFixture(t)
 
-	path := filepath.Join(cfg.SnapshotDir, doc.Artifact.ID, doc.Artifact.MemoryFile.Name)
+	path := filepath.Join(cfg.ArtifactDir, doc.Artifact.ID, doc.Artifact.MemoryFile.Name)
 	require.NoError(t, os.Truncate(path, doc.Artifact.MemoryFile.Size-1))
 
 	rec := serveMigration(t, NewMigrationFileHandler(cfg), snapshotTask(), http.MethodGet,
@@ -536,24 +629,59 @@ func TestMigrationFileRefusesAFileThatChangedAfterTheExport(t *testing.T) {
 	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
 	doc2 := decodeMigrationError(t, rec)
 	require.Equal(t, "artifact_changed", doc2.Error.Details["reason"])
+}
 
-	// An artifact whose snapshot was cleaned up is gone, not corrupt: the same 404
-	// a never-exported ID answers.
-	require.NoError(t, os.RemoveAll(filepath.Join(cfg.SnapshotDir, "snap-0123456789abcdef")))
-	rec = serveMigration(t, NewMigrationFileHandler(cfg), snapshotTask(), http.MethodGet,
-		"/v1/tasks/task-1/migration/file?artifactId="+doc.Artifact.ID+"&name="+doc.Artifact.StateFile.Name, nil)
-	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
-	require.Equal(t, "artifact_not_available", decodeMigrationError(t, rec).Error.Details["reason"])
+// TestMigrationFileServesOnlyARealArtifactDirectory pins the resolution rule: an
+// artifact is a real directory this node published. A symbolic link or a plain file
+// under the artifact root answers the same 404 a missing artifact does, so nothing
+// outside the root can answer for one.
+func TestMigrationFileServesOnlyARealArtifactDirectory(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, cfg MigrationHandlerConfig)
+	}{
+		{
+			name: "symbolic link",
+			setup: func(t *testing.T, cfg MigrationHandlerConfig) {
+				t.Helper()
+				elsewhere := t.TempDir()
+				require.NoError(t, os.WriteFile(filepath.Join(elsewhere, "vm.state"), []byte("x"), 0o600))
+				require.NoError(t, os.Symlink(elsewhere, filepath.Join(cfg.ArtifactDir, "mig-0123456789abcdef")))
+			},
+		},
+		{
+			name: "regular file",
+			setup: func(t *testing.T, cfg MigrationHandlerConfig) {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(cfg.ArtifactDir, "mig-0123456789abcdef"),
+					[]byte("not an artifact"), 0o600))
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := MigrationHandlerConfig{ArtifactDir: t.TempDir()}
+			tc.setup(t, cfg)
+
+			rec := serveMigration(t, NewMigrationFileHandler(cfg), snapshotTask(), http.MethodGet,
+				"/v1/tasks/task-1/migration/file?artifactId=mig-0123456789abcdef&name=vm.state", nil)
+
+			require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+			require.Equal(t, "artifact_not_available", decodeMigrationError(t, rec).Error.Details["reason"])
+		})
+	}
 }
 
 // TestMigrationExportRefusesASnapshotItCannotDescribe pins the answer for a
 // snapshot that is not a complete artifact: the failure is the node's, and the
-// pkg/migration rejection (which names absolute paths) never reaches the wire.
+// pkg/migration rejection (which names absolute paths) never reaches the wire. The
+// dump it could not describe is discarded rather than left for retention.
 func TestMigrationExportRefusesASnapshotItCannotDescribe(t *testing.T) {
 	store := &fakeSnapshotStore{}
 	cfg := migrationConfig(t, store)
 
-	info := seedSnapshot(t, cfg.SnapshotDir)
+	info := seedSnapshot(t, t.TempDir())
 	info.DiskPath = "" // a snapshot with no disk copy cannot move a filesystem
 	store.createInfo = info
 
@@ -561,24 +689,33 @@ func TestMigrationExportRefusesASnapshotItCannotDescribe(t *testing.T) {
 		"/v1/tasks/task-1/migration/export?node=node-1", nil)
 
 	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
-	require.NotContains(t, rec.Body.String(), cfg.SnapshotDir,
+	require.NotContains(t, rec.Body.String(), cfg.ArtifactDir,
 		"a pkg/migration rejection names paths; only the classification may leave the node")
+	require.Equal(t, []string{info.ID}, store.deleted,
+		"an export that cannot describe its dump must discard it")
 }
 
 // TestMigrationExportReportsAPublishFailure pins the last step: a node whose
-// artifact root cannot hold the link cannot publish the artifact, even though the
-// snapshot itself was taken.
+// artifact root cannot hold the directory cannot publish the artifact, even though
+// the snapshot itself was taken — and the dump it cannot publish is discarded.
 func TestMigrationExportReportsAPublishFailure(t *testing.T) {
 	store := &fakeSnapshotStore{}
 	cfg := migrationConfig(t, store)
 	store.createInfo = seedSnapshot(t, t.TempDir())
-	cfg.SnapshotDir = filepath.Join(t.TempDir(), "missing-root")
+
+	// A regular file where the root should be: MkdirAll cannot create below it.
+	blocked := filepath.Join(t.TempDir(), "blocked")
+	require.NoError(t, os.WriteFile(blocked, []byte("x"), 0o600))
+	cfg.ArtifactDir = filepath.Join(blocked, "root")
 
 	rec := serveMigration(t, NewMigrationExportHandler(cfg), snapshotTask(), http.MethodPost,
 		"/v1/tasks/task-1/migration/export?node=node-1", nil)
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
 	require.Equal(t, string(output.CodeUnavailable), decodeMigrationError(t, rec).Error.Code)
+	require.Equal(t, []string{store.createInfo.ID}, store.deleted,
+		"an export that cannot publish must discard the dump it made")
+	require.NoDirExists(t, filepath.Join(cfg.ArtifactDir, "mig-0123456789abcdef"))
 }
 
 // TestMigrationFileRefusesAManifestItCannotUse pins the two manifest failures: a
@@ -587,7 +724,7 @@ func TestMigrationExportReportsAPublishFailure(t *testing.T) {
 func TestMigrationFileRefusesAManifestItCannotUse(t *testing.T) {
 	t.Run("invalid manifest", func(t *testing.T) {
 		cfg, doc := exportFixture(t)
-		manifest := filepath.Join(cfg.SnapshotDir, doc.Artifact.ID, migrationArtifactDocumentName)
+		manifest := filepath.Join(cfg.ArtifactDir, doc.Artifact.ID, migrationArtifactDocumentName)
 		require.NoError(t, os.WriteFile(manifest, []byte("{ not a manifest"), 0o600))
 
 		rec := serveMigration(t, NewMigrationFileHandler(cfg), snapshotTask(), http.MethodGet,
@@ -599,7 +736,7 @@ func TestMigrationFileRefusesAManifestItCannotUse(t *testing.T) {
 
 	t.Run("manifest is not a file", func(t *testing.T) {
 		cfg, doc := exportFixture(t)
-		manifest := filepath.Join(cfg.SnapshotDir, doc.Artifact.ID, migrationArtifactDocumentName)
+		manifest := filepath.Join(cfg.ArtifactDir, doc.Artifact.ID, migrationArtifactDocumentName)
 		require.NoError(t, os.Remove(manifest))
 		require.NoError(t, os.Mkdir(manifest, 0o755))
 
@@ -611,14 +748,14 @@ func TestMigrationFileRefusesAManifestItCannotUse(t *testing.T) {
 	})
 }
 
-// TestMigrationFileNeedsASnapshotRoot pins the one configuration the file
+// TestMigrationFileNeedsAnArtifactRoot pins the one configuration the file
 // operation cannot work without.
-func TestMigrationFileNeedsASnapshotRoot(t *testing.T) {
+func TestMigrationFileNeedsAnArtifactRoot(t *testing.T) {
 	rec := serveMigration(t, NewMigrationFileHandler(MigrationHandlerConfig{}), snapshotTask(),
 		http.MethodGet, "/v1/tasks/task-1/migration/file?artifactId=mig-0123456789abcdef&name=vm.state", nil)
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
-	require.Equal(t, "snapshot_dir_unconfigured", decodeMigrationError(t, rec).Error.Details["reason"])
+	require.Equal(t, "artifact_dir_unconfigured", decodeMigrationError(t, rec).Error.Details["reason"])
 }
 
 // TestMigrationStagePublishesOnlyVerifiedBytes pins the upload contract: a matching
@@ -771,7 +908,7 @@ func TestMigrationStageRefusesBadRequests(t *testing.T) {
 		},
 		{
 			name:       "size above the ceiling",
-			target:     "/v1/tasks/task-2/migration/stage?artifactId=" + artifactID + "&name=vm.state&size=" + strconv.FormatInt(maxArtifactFileBytes+1, 10) + "&sha256=" + digest,
+			target:     "/v1/tasks/task-2/migration/stage?artifactId=" + artifactID + "&name=vm.state&size=" + strconv.FormatInt(migration.MaxFileSize+1, 10) + "&sha256=" + digest,
 			wantStatus: http.StatusBadRequest,
 		},
 		{
@@ -830,6 +967,226 @@ func TestMigrationStageRefusesAnotherMethod(t *testing.T) {
 	require.Equal(t, http.MethodPut, rec.Header().Get("Allow"))
 }
 
+// TestMigrationDiscardRemovesTheArtifactAndItsSnapshot pins the delete path a
+// rollback and a completed migration both need: the artifact directory goes, the
+// snapshot the files were linked from goes with it, and a second discard is a
+// success rather than a 404.
+func TestMigrationDiscardRemovesTheArtifactAndItsSnapshot(t *testing.T) {
+	node := newMigrationNode(t)
+	doc := node.export(t)
+	// The store is the one that would list the snapshot the artifact links to.
+	node.store.list = []*snapshot.SnapshotInfo{node.store.createInfo}
+
+	handler := NewMigrationDiscardHandler(node.cfg)
+	target := "/v1/tasks/task-1/migration/discard?artifactId=" + doc.Artifact.ID
+
+	rec := serveMigration(t, handler, snapshotTask(), http.MethodDelete, target, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	require.NoDirExists(t, doc.Dir, "the artifact directory must be removed")
+	require.Equal(t, []string{node.store.createInfo.ID}, node.store.deleted,
+		"the snapshot the artifact was made from must be removed with it")
+	require.Equal(t, "task-1", node.store.gotFilter.TaskID,
+		"the snapshot is looked up inside the exporting task's own set")
+
+	// Idempotent: the artifact is already gone, so this is a success.
+	rec = serveMigration(t, handler, snapshotTask(), http.MethodDelete, target, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	require.Len(t, node.store.deleted, 1, "a second discard must not delete a snapshot twice")
+
+	// An artifact this node never held is a success too: the caller's cleanup
+	// already happened.
+	rec = serveMigration(t, handler, snapshotTask(), http.MethodDelete,
+		"/v1/tasks/task-1/migration/discard?artifactId=mig-0000000000000000", nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}
+
+// TestMigrationDiscardRemovesAStagedArtifact pins the target side: an artifact that
+// arrived through stage is removed without a snapshot store, because there is no
+// snapshot behind it.
+func TestMigrationDiscardRemovesAStagedArtifact(t *testing.T) {
+	cfg := MigrationHandlerConfig{StagingDir: t.TempDir()}
+
+	const artifactID = "mig-0123456789abcdef"
+	require.NoError(t, os.MkdirAll(filepath.Join(cfg.StagingDir, artifactID), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(cfg.StagingDir, artifactID, "vm.state"),
+		[]byte("VMSTATE: the bytes that arrived\n"), 0o600))
+
+	rec := serveMigration(t, NewMigrationDiscardHandler(cfg), Task{ID: "task-2"}, http.MethodDelete,
+		"/v1/tasks/task-2/migration/discard?artifactId="+artifactID, nil)
+
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	require.NoDirExists(t, filepath.Join(cfg.StagingDir, artifactID))
+}
+
+// TestMigrationDiscardReportsAFailedSnapshotDelete pins the order: the snapshot is
+// removed before the artifact directory, so a failed delete leaves the artifact in
+// place for a retry instead of leaking a snapshot nobody can name any more.
+func TestMigrationDiscardReportsAFailedSnapshotDelete(t *testing.T) {
+	node := newMigrationNode(t)
+	doc := node.export(t)
+	node.store.list = []*snapshot.SnapshotInfo{node.store.createInfo}
+	node.store.deleteErr = snapshot.ErrNotFound
+
+	handler := NewMigrationDiscardHandler(node.cfg)
+	target := "/v1/tasks/task-1/migration/discard?artifactId=" + doc.Artifact.ID
+
+	rec := serveMigration(t, handler, snapshotTask(), http.MethodDelete, target, nil)
+
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	require.Equal(t, "snapshot_not_found", decodeMigrationError(t, rec).Error.Details["reason"])
+	require.DirExists(t, doc.Dir, "a failed snapshot delete must leave the artifact for a retry")
+
+	node.store.deleteErr = nil
+	rec = serveMigration(t, handler, snapshotTask(), http.MethodDelete, target, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	require.NoDirExists(t, doc.Dir)
+}
+
+// TestMigrationDiscardRefusesBadRequests pins the query grammar and the method set:
+// a refused discard removes nothing.
+func TestMigrationDiscardRefusesBadRequests(t *testing.T) {
+	withRoots := func(cfg *MigrationHandlerConfig) {
+		cfg.ArtifactDir = t.TempDir()
+		cfg.StagingDir = t.TempDir()
+	}
+
+	cases := []struct {
+		name       string
+		cfg        func(*MigrationHandlerConfig)
+		method     string
+		target     string
+		body       []byte
+		wantStatus int
+		wantReason string
+	}{
+		{
+			name:       "no directory",
+			cfg:        func(cfg *MigrationHandlerConfig) { cfg.ArtifactDir, cfg.StagingDir = "", "" },
+			method:     http.MethodDelete,
+			target:     "/v1/tasks/task-1/migration/discard?artifactId=mig-0123456789abcdef",
+			wantStatus: http.StatusServiceUnavailable,
+			wantReason: "artifact_dir_unconfigured",
+		},
+		{
+			name:       "missing artifact ID",
+			cfg:        withRoots,
+			method:     http.MethodDelete,
+			target:     "/v1/tasks/task-1/migration/discard",
+			wantStatus: http.StatusBadRequest,
+			wantReason: "invalid_artifact_id",
+		},
+		{
+			name:       "traversal artifact ID",
+			cfg:        withRoots,
+			method:     http.MethodDelete,
+			target:     "/v1/tasks/task-1/migration/discard?artifactId=..%2F..%2Fetc",
+			wantStatus: http.StatusBadRequest,
+			wantReason: "invalid_artifact_id",
+		},
+		{
+			name:       "repeated artifact ID",
+			cfg:        withRoots,
+			method:     http.MethodDelete,
+			target:     "/v1/tasks/task-1/migration/discard?artifactId=mig-0123456789abcdef&artifactId=mig-0123456789abcdee",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unknown parameter",
+			cfg:        withRoots,
+			method:     http.MethodDelete,
+			target:     "/v1/tasks/task-1/migration/discard?artifactId=mig-0123456789abcdef&force=1",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unexpected body",
+			cfg:        withRoots,
+			method:     http.MethodDelete,
+			target:     "/v1/tasks/task-1/migration/discard?artifactId=mig-0123456789abcdef",
+			body:       []byte(`{"artifactId":"mig-0123456789abcdef"}`),
+			wantStatus: http.StatusBadRequest,
+			wantReason: "unexpected_body",
+		},
+		{
+			name:       "wrong method",
+			cfg:        withRoots,
+			method:     http.MethodGet,
+			target:     "/v1/tasks/task-1/migration/discard?artifactId=mig-0123456789abcdef",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantReason: "method_not_allowed",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := MigrationHandlerConfig{Store: &fakeSnapshotStore{}}
+			tc.cfg(&cfg)
+			store, _ := cfg.Store.(*fakeSnapshotStore)
+
+			rec := serveMigration(t, NewMigrationDiscardHandler(cfg), snapshotTask(), tc.method, tc.target, tc.body)
+
+			require.Equal(t, tc.wantStatus, rec.Code, rec.Body.String())
+			if tc.wantReason != "" {
+				require.Equal(t, tc.wantReason, decodeMigrationError(t, rec).Error.Details["reason"])
+			}
+			require.Empty(t, store.deleted, "a refused discard must not delete a snapshot")
+			if tc.wantStatus == http.StatusMethodNotAllowed {
+				require.Equal(t, http.MethodDelete, rec.Header().Get("Allow"))
+			}
+		})
+	}
+}
+
+// TestMigrationStageRefusesADirectoryThatIsNotOne pins the staging side of the
+// resolution rule: the artifact directory stage writes into must be a real
+// directory of its own. A link there would move a staged name outside the staging
+// root, and a plain file cannot hold one.
+func TestMigrationStageRefusesADirectoryThatIsNotOne(t *testing.T) {
+	const artifactID = "mig-0123456789abcdef"
+	target := "/v1/tasks/task-2/migration/stage?artifactId=" + artifactID +
+		"&name=vm.state&size=1&sha256=" + strings.Repeat("a", sha256HexChars)
+
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, stagingDir string) string
+	}{
+		{
+			name: "symbolic link",
+			setup: func(t *testing.T, stagingDir string) string {
+				t.Helper()
+				elsewhere := t.TempDir()
+				require.NoError(t, os.Symlink(elsewhere, filepath.Join(stagingDir, artifactID)))
+				return elsewhere
+			},
+		},
+		{
+			name: "regular file",
+			setup: func(t *testing.T, stagingDir string) string {
+				t.Helper()
+				require.NoError(t, os.WriteFile(filepath.Join(stagingDir, artifactID), []byte("x"), 0o600))
+				return ""
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stagingDir := t.TempDir()
+			elsewhere := tc.setup(t, stagingDir)
+
+			rec := serveMigration(t, NewMigrationStageHandler(MigrationHandlerConfig{StagingDir: stagingDir}),
+				Task{ID: "task-2"}, http.MethodPut, target, []byte("x"))
+
+			require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+			require.Equal(t, "artifact_dir_unsafe", decodeMigrationError(t, rec).Error.Details["reason"])
+			if elsewhere != "" {
+				entries, err := os.ReadDir(elsewhere)
+				require.NoError(t, err)
+				require.Empty(t, entries, "a refused stage must not write through the link")
+			}
+		})
+	}
+}
+
 // TestServerRoutesMigrationOperations pins the wire shape the manager will call:
 // a namespaced operation is two path segments, the registry enforces its method,
 // and anything else under the namespace stays a malformed path.
@@ -839,6 +1196,8 @@ func TestServerRoutesMigrationOperations(t *testing.T) {
 	require.NoError(t, srv.Handle(MigrationExportOperation, NewMigrationExportHandler(MigrationHandlerConfig{})))
 	require.NoError(t, srv.Handle(MigrationFileOperation, NewMigrationFileHandler(cfg)))
 	require.NoError(t, srv.Handle(MigrationStageOperation, NewMigrationStageHandler(MigrationHandlerConfig{StagingDir: t.TempDir()})))
+	require.NoError(t, srv.Handle(MigrationDiscardOperation, NewMigrationDiscardHandler(
+		MigrationHandlerConfig{ArtifactDir: t.TempDir()})))
 
 	// The file operation is reached through the two-segment path, and answers from
 	// the artifact the export published.
@@ -856,12 +1215,25 @@ func TestServerRoutesMigrationOperations(t *testing.T) {
 	require.Equal(t, http.StatusNotImplemented, rec.Code, rec.Body.String())
 	require.Equal(t, "migrations", decodeMigrationError(t, rec).Error.Details["capability"])
 
+	// The discard operation is reached, and answers its own contract: an artifact
+	// this node does not hold is already discarded.
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodDelete,
+		"/v1/tasks/task-1/migration/discard?artifactId=mig-0123456789abcdef", nil))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
 	// A wrong method is 405 from the registry, with the operation's own method set.
 	rec = httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
 		"/v1/tasks/task-1/migration/export", nil))
 	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
 	require.Equal(t, http.MethodPost, rec.Header().Get("Allow"))
+
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+		"/v1/tasks/task-1/migration/discard?artifactId=mig-0123456789abcdef", nil))
+	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
+	require.Equal(t, http.MethodDelete, rec.Header().Get("Allow"))
 
 	// An unregistered action under the namespace is a malformed path, not a 501.
 	for _, path := range []string{
@@ -874,6 +1246,27 @@ func TestServerRoutesMigrationOperations(t *testing.T) {
 		require.Equal(t, http.StatusNotFound, rec.Code, path)
 		require.Equal(t, string(codeNotFound), decodeMigrationError(t, rec).Error.Code, path)
 	}
+}
+
+// TestServerRoutesDiscardForAGoneTask pins the one routing exception the artifact
+// lifecycle needs: after a completed migration the exporting task no longer exists,
+// and its artifact is still the thing to delete. Every other operation keeps the
+// unknown-task contract.
+func TestServerRoutesDiscardForAGoneTask(t *testing.T) {
+	cfg := MigrationHandlerConfig{ArtifactDir: t.TempDir()}
+	srv := newRouteServer(t, &fakeTaskSource{found: false})
+	require.NoError(t, srv.Handle(MigrationDiscardOperation, NewMigrationDiscardHandler(cfg)))
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodDelete,
+		"/v1/tasks/task-gone/migration/discard?artifactId=mig-0123456789abcdef", nil))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	// The contract for every other operation is unchanged.
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/v1/tasks/task-gone/logs", nil))
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
 }
 
 // requireNoPartials fails when a staging directory still holds a temporary file.

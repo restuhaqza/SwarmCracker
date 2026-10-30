@@ -571,10 +571,10 @@ func TestBrokerRuntimeFrom_MigrationStagingDir(t *testing.T) {
 }
 
 // TestStartBroker_MigrationOperationsAreRegistered proves the daemon registers the
-// three migration operations. The transport runs on a node that never enabled
-// snapshots (file and stage move bytes an export elsewhere produced), the export
-// answers the typed 501 that names the capability its store provides, and a wrong
-// method is 405 from the registry rather than the handler.
+// four migration operations. The transport runs on a node that never enabled
+// snapshots (file, stage and discard move bytes an export elsewhere produced), the
+// export answers the typed 501 that names the capability its store provides, and a
+// wrong method is 405 from the registry rather than the handler.
 func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
 	stateDir := t.TempDir()
 	clientCert, pool := seedBrokerCertificates(t, stateDir)
@@ -635,4 +635,20 @@ func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
 	var stageDoc v1.ErrorDocument
 	require.NoError(t, json.NewDecoder(stageResp.Body).Decode(&stageDoc))
 	require.Equal(t, "invalid_file_name", stageDoc.Error.Details["reason"])
+
+	// Discard is registered and works on a node without a store: an artifact it
+	// does not hold is already discarded, which is what a rollback needs.
+	discardReq, err := http.NewRequest(http.MethodDelete,
+		base+"/discard?artifactId=mig-0123456789abcdef", nil)
+	require.NoError(t, err)
+	discardResp, err := client.Do(discardReq)
+	require.NoError(t, err)
+	defer discardResp.Body.Close()
+	require.Equal(t, http.StatusNoContent, discardResp.StatusCode)
+
+	postDiscard, err := client.Post(base+"/discard?artifactId=mig-0123456789abcdef", "application/json", nil)
+	require.NoError(t, err)
+	defer postDiscard.Body.Close()
+	require.Equal(t, http.StatusMethodNotAllowed, postDiscard.StatusCode)
+	require.Equal(t, http.MethodDelete, postDiscard.Header.Get("Allow"))
 }

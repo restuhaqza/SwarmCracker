@@ -208,10 +208,12 @@ var operationSpecs = map[string]operationSpec{
 	// a DELETE because it removes that VM, and it takes no body and no query.
 	"restored": {methods: []string{http.MethodDelete}},
 	// The migration operations move one artifact: export produces it on the
-	// source, file streams one of its files, stage receives one on the target.
-	MigrationExportOperation: {methods: []string{http.MethodPost}},
-	MigrationFileOperation:   {methods: []string{http.MethodGet}},
-	MigrationStageOperation:  {methods: []string{http.MethodPut}},
+	// source, file streams one of its files, stage receives one on the target, and
+	// discard removes it (with the snapshot behind it) when nobody needs it.
+	MigrationExportOperation:  {methods: []string{http.MethodPost}},
+	MigrationFileOperation:    {methods: []string{http.MethodGet}},
+	MigrationStageOperation:   {methods: []string{http.MethodPut}},
+	MigrationDiscardOperation: {methods: []string{http.MethodDelete}},
 }
 
 // route resolves the task, then dispatches to the registered operation.
@@ -228,8 +230,16 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !found {
-		writeError(w, http.StatusNotFound, codeNotFound, "task %q not found on this node", taskID)
-		return
+		// discard's subject is the artifact, not the task: it exists for the
+		// moment a finished migration has removed the task that exported the
+		// artifact, so a gone task still reaches the handler (which never reads
+		// it). Every other operation answers the unknown-task 404.
+		if op == MigrationDiscardOperation {
+			task = Task{ID: taskID}
+		} else {
+			writeError(w, http.StatusNotFound, codeNotFound, "task %q not found on this node", taskID)
+			return
+		}
 	}
 
 	// A wrong method is a request the operation cannot implement, not a missing

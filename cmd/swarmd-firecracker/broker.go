@@ -38,9 +38,12 @@ type brokerRuntime struct {
 	// snapshotDir is the pkg/snapshot root. pkg/snapshot writes
 	// <snapshotDir>/<id>/metadata.json and that directory is the source of truth.
 	snapshotDir string
-	// migrationStagingDir is where a received migration artifact is staged:
-	// <migrationStagingDir>/<artifactID>/<name>. The restore reads it from there,
-	// so it must be on the same filesystem as the task disks it materialises.
+	// migrationStagingDir is the node's migration root, <root>/<artifactID>/:
+	// export publishes an artifact there (the manifest plus hard links to the
+	// snapshot's files, or copies when the root is on another filesystem), stage
+	// receives one there, file serves it, and discard removes it. It sits beside
+	// the snapshot and rootfs roots, on the same filesystem, so publishing an
+	// artifact costs links rather than a second copy of a memory image.
 	migrationStagingDir string
 	// rootfsDir is the executor's rootfs directory, recorded on a snapshot so
 	// restore can tell a missing task disk from a corrupt snapshot.
@@ -164,13 +167,14 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	// console Unix socket in both directions; snapshots use the node-local
 	// pkg/snapshot store, and restored stops the VM a restore started from that
 	// same store. The migration operations produce an artifact from a running task,
-	// stream one of its files and stage one the target will restore; they share the
-	// snapshot store export snapshots through. The public route has already
+	// stream one of its files, stage one the target will restore, and discard one
+	// when it is no longer needed; they share the snapshot store export snapshots
+	// through and one migration root for the bytes. The public route has already
 	// resolved the reference and enforced the caller's selectors.
 	snapshotOp, restoredOp, store, snapshotsActive := snapshotHandlers(ctx, cfg)
 	migrationCfg := broker.MigrationHandlerConfig{
 		Store:       store,
-		SnapshotDir: cfg.snapshotDir,
+		ArtifactDir: cfg.migrationStagingDir,
 		StagingDir:  cfg.migrationStagingDir,
 		RootfsDir:   cfg.rootfsDir,
 	}
@@ -189,6 +193,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{broker.MigrationExportOperation, broker.NewMigrationExportHandler(migrationCfg)},
 		{broker.MigrationFileOperation, broker.NewMigrationFileHandler(migrationCfg)},
 		{broker.MigrationStageOperation, broker.NewMigrationStageHandler(migrationCfg)},
+		{broker.MigrationDiscardOperation, broker.NewMigrationDiscardHandler(migrationCfg)},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {

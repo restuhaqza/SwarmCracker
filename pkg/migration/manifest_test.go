@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +43,14 @@ func validArtifact() Artifact {
 
 func TestArtifactValidateAcceptsValidArtifact(t *testing.T) {
 	require.NoError(t, validArtifact().Validate())
+}
+
+// TestMaxFileSizeIsTheCeiling pins the one number two packages enforce: a manifest
+// may not describe a file larger than this, and the transport may not accept a
+// body larger than this. Changing it is a migration-format decision, not a tweak.
+func TestMaxFileSizeIsTheCeiling(t *testing.T) {
+	assert.Equal(t, int64(64<<30), MaxFileSize)
+	assert.Equal(t, "68719476736", strconv.FormatInt(MaxFileSize, 10))
 }
 
 func TestArtifactValidateRejectsBadFields(t *testing.T) {
@@ -189,7 +198,7 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 		},
 		{
 			name:       "state file above the size ceiling",
-			mutate:     func(a *Artifact) { a.StateFile.Size = maxFileSize + 1 },
+			mutate:     func(a *Artifact) { a.StateFile.Size = MaxFileSize + 1 },
 			wantPhrase: "stateFile.size is 68719476737: want at most 68719476736 bytes",
 		},
 		{
@@ -209,7 +218,7 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 		},
 		{
 			name:       "memory file above the size ceiling",
-			mutate:     func(a *Artifact) { a.MemoryFile.Size = maxFileSize + 1 },
+			mutate:     func(a *Artifact) { a.MemoryFile.Size = MaxFileSize + 1 },
 			wantPhrase: "memoryFile.size is 68719476737",
 		},
 		{
@@ -267,7 +276,7 @@ func TestArtifactValidateAcceptsPathAndNameEdgeCases(t *testing.T) {
 		},
 		{
 			name:   "a file exactly at the size ceiling",
-			mutate: func(a *Artifact) { a.MemoryFile.Size = maxFileSize },
+			mutate: func(a *Artifact) { a.MemoryFile.Size = MaxFileSize },
 		},
 		{
 			name:   "no service ID, because the snapshot recorded none",
@@ -624,7 +633,7 @@ func TestArtifactFromSnapshotRejects(t *testing.T) {
 		// nothing and proves the ceiling is checked before the file is hashed.
 		oversized := filepath.Join(t.TempDir(), "vm.mem")
 		require.NoError(t, os.WriteFile(oversized, nil, 0o600))
-		require.NoError(t, os.Truncate(oversized, maxFileSize+1))
+		require.NoError(t, os.Truncate(oversized, MaxFileSize+1))
 		fixture.info.MemoryPath = oversized
 
 		_, err := ArtifactFromSnapshot(fixture.info, "/var/run/firecracker", 0)

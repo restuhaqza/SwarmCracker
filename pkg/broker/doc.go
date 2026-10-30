@@ -17,10 +17,14 @@
 // {taskID} is a full task ID, never a name or a prefix; the manager resolves
 // user input before proxying. {op} is one of the lowercase operation names a
 // later phase registers on the node. An operation whose name carries one
-// namespace segment - migration/export, migration/file, migration/stage - is
-// spelled as two path segments (/v1/tasks/{taskID}/migration/export); any other
-// extra segment is a malformed path. A malformed path or an unknown task is a
-// 404; a known task with an unregistered operation is a 501.
+// namespace segment - migration/export, migration/file, migration/stage,
+// migration/discard - is spelled as two path segments
+// (/v1/tasks/{taskID}/migration/export); any other extra segment is a malformed
+// path. A malformed path or an unknown task is a 404; a known task with an
+// unregistered operation is a 501. The one exception is migration/discard: its
+// subject is an artifact, and it exists for the moment a finished migration has
+// removed the task that exported one, so it is dispatched with the path's task ID
+// even when that task no longer resolves.
 //
 // Failures the broker generates itself are v1 Error documents, so a manager
 // handler can relay them without translating: not_found (404), not_implemented

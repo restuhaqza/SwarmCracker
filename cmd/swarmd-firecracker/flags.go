@@ -307,8 +307,9 @@ func newAppFlags() []cli.Flag {
 		},
 		&cli.StringFlag{
 			Name: "migration-staging-dir",
-			Usage: "Directory where a received migration artifact is staged before the restore " +
-				"reads it; it must be on the same filesystem as --rootfs-dir",
+			Usage: "Directory holding this node's migration artifacts: a published export and a " +
+				"received artifact both live at <dir>/<artifactID>/; it must be on the same " +
+				"filesystem as --snapshot-dir and --rootfs-dir",
 			Value: defaultMigrationStagingDir,
 		},
 		&cli.DurationFlag{

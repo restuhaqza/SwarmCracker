@@ -1,12 +1,13 @@
 package broker
 
 // This file owns the node-side artifact transport of a live migration: producing
-// an artifact from a running task, serving one of its files, and staging a file
-// a restore will use.
+// an artifact from a running task, serving one of its files, staging a file a
+// restore will use, and discarding an artifact when it is no longer needed.
 //
-//	POST /v1/tasks/{taskID}/migration/export
-//	GET  /v1/tasks/{taskID}/migration/file?artifactId=<id>&name=<file>
-//	PUT  /v1/tasks/{taskID}/migration/stage?artifactId=<id>&name=<file>&size=<n>&sha256=<hex>
+//	POST   /v1/tasks/{taskID}/migration/export
+//	GET    /v1/tasks/{taskID}/migration/file?artifactId=<id>&name=<file>
+//	PUT    /v1/tasks/{taskID}/migration/stage?artifactId=<id>&name=<file>&size=<n>&sha256=<hex>
+//	DELETE /v1/tasks/{taskID}/migration/discard?artifactId=<id>
 //
 // The restore itself is not here: loading the artifact into a new task creates the
 // TAP device, loads the snapshot and re-addresses the guest, and that has its own
@@ -15,43 +16,53 @@ package broker
 // # One artifact, one directory
 //
 // An artifact is addressed by its own ID, so the files that move live in
-// <root>/<artifactID>/ on both sides of the move: the source publishes the
-// directory, the target stages into it, and a name inside it is one bare file
-// name the manifest describes. The directory is not part of the artifact: it is
-// where a node keeps the bytes, and no other node may assume it.
+// <artifact root>/<artifactID>/ on both sides of the move: the source publishes the
+// directory, the target stages into it, and a name inside it is one bare file name
+// the manifest describes. The directory is not part of the artifact: it is where a
+// node keeps the bytes, and no other node may assume it.
 //
-// The source does not copy the bytes. pkg/snapshot's create already paused the
-// task, dumped the state and the memory image, copied the disk and published the
-// result as one directory, so export writes the manifest (artifact.json) into
-// that directory and publishes <snapshotDir>/<artifactID> as a symbolic link to
-// it. The consequences are deliberate:
+// The directory is real, and it holds the manifest (artifact.json) plus the
+// artifact's files. The snapshot store keeps its own directory for the same bytes,
+// and the two are joined by hard links: the artifact root sits on the same
+// filesystem as the snapshot root in the default install (--migration-staging-dir
+// beside --snapshot-dir), so publishing an artifact costs directory entries rather
+// than a second copy of a multi-GB memory image. When the two roots are not on one
+// filesystem the link is refused by the kernel and the file is copied instead, and
+// the export document says which happened (Linked).
 //
-//   - One copy of a multi-GB memory image, not two. A link costs a directory
-//     entry, not the bytes it points at.
-//   - The snapshot store keeps a complete, restorable record whose files are the
-//     ones on the wire, so snapshot.Manager.DeleteSnapshot (or its retention
-//     sweep) frees the artifact's bytes with the snapshot. Export removes links
-//     whose target is already gone, so spent artifacts do not accumulate.
-//   - A link that outlives its snapshot answers the same typed 404 a missing
-//     artifact does, and a transfer that starts after cleanup fails as one
-//     transfer rather than as a corrupt restore, because the target verifies
-//     every checksum it is given.
+// The consequences are deliberate:
+//
+//   - The artifact is not a link to the snapshot. A symbolic link would dangle the
+//     moment the store cleaned its snapshot up, and a symlinked directory has its
+//     own semantics for rename and removal, which is the wrong shape for both the
+//     transfer and the cleanup.
+//   - The store's housekeeping cannot reach the artifact: an artifact directory is
+//     not a snapshot name, so a manager restart's leftover sweep and the retention
+//     policy ignore it, and deleting the snapshot leaves the artifact's inodes (and
+//     therefore its bytes) alive until it is discarded.
+//   - Discarding is therefore the only thing that frees an artifact's bytes, and
+//     migration/discard is that operation: it removes the directory and the
+//     snapshot behind it. Nothing waits for retention any more.
 //
 // Export requires the node's snapshot store, so it is available where snapshots
 // are (--snapshots-enable). Without a store the operation stays registered and
-// answers a typed 501, exactly like the snapshots operation.
+// answers a typed 501, exactly like the snapshots operation. file, stage and
+// discard keep working without one: they move and remove bytes an export already
+// produced.
 //
 // # Trust
 //
 // Both file operations take an artifact ID and a file name from the request. The
 // ID must be one safe path segment in the shape pkg/migration generates, and the
 // name must be one bare file name; both are checked before any join, so neither
-// can address anything outside the directory it names.
+// can address anything outside the directory it names. The directory itself must be
+// a real directory: a symbolic link or a plain file under the artifact root answers
+// the same 404 a missing artifact does, so nothing outside the root can answer for
+// an artifact.
 //
 // On the source the manifest is the whitelist: the artifact directory also holds
-// node-local metadata (the manifest itself, the snapshot's own metadata.json) and
-// only the files the manifest describes may leave the node. The route is
-// task-scoped, and it serves the artifact that task exported; an artifact
+// the manifest itself, and only the files it describes may leave the node. The
+// route is task-scoped, and it serves the artifact that task exported; an artifact
 // belonging to another task is a conflict, not a file.
 //
 // On the target the name is not checked against a manifest, because the manifest
@@ -60,6 +71,11 @@ package broker
 // SHA-256 matched the request: a restore either finds a complete artifact or
 // none. Restaging the same bytes succeeds (the checksum matches again) and a
 // differing body replaces nothing (the check happens before the rename).
+//
+// Discard is keyed by the artifact, not by the task: after a completed migration
+// the task that exported the artifact is gone, and its artifact is still the thing
+// to delete. It is idempotent, because a rollback and a success path may both run
+// it.
 
 import (
 	"context"
@@ -89,6 +105,10 @@ const (
 	// MigrationStageOperation stores one file of an artifact on the node that
 	// will restore it.
 	MigrationStageOperation = "migration/stage"
+	// MigrationDiscardOperation removes an artifact and the snapshot it was made
+	// from, so an artifact's bytes are freed as soon as nobody needs them
+	// instead of waiting for the snapshot store's retention.
+	MigrationDiscardOperation = "migration/discard"
 
 	// migrationExportKind is the document kind migration/export answers. Like the
 	// artifact itself it is an internal manager↔node document, so its kind lives
@@ -105,12 +125,14 @@ const (
 	// verified.
 	checksumHeader = "X-Checksum-Sha256"
 
-	// maxArtifactFileBytes is the largest file one transfer accepts: 64 GiB. It
-	// mirrors pkg/migration's ceiling, which is where the number is defined (a
-	// manifest's entry cannot exceed it, so a declared size above it is either a
-	// lie or a file no manifest could describe). The copy here is the second line
-	// of defence: it bounds the read before a manifest is available.
-	maxArtifactFileBytes int64 = 64 << 30
+	// artifactDirectoryMode is the mode of an artifact directory: the daemon owns
+	// it, and the files inside it carry their own (0600 for guest bytes) mode.
+	artifactDirectoryMode = 0o755
+
+	// artifactFileMode is the mode of an artifact file this node copies. A memory
+	// image may hold guest secrets, so a copy is never group- or world-readable;
+	// a hard link keeps the mode pkg/snapshot already gave the file.
+	artifactFileMode = 0o600
 
 	// maxArtifactNameBytes is the kernel's NAME_MAX: a file name is one directory
 	// entry, and a longer one cannot be created on the node that must stage it.
@@ -125,24 +147,30 @@ const (
 	sha256HexChars = 64
 )
 
+// linkArtifactFile is os.Link, and a test seam: a hard link is what publishing an
+// artifact uses, and the only way to exercise the copy fallback hermetically is to
+// make the kernel's answer injectable.
+var linkArtifactFile = os.Link
+
 // errManifestTooLarge marks a manifest longer than maxArtifactDocumentBytes. It
 // is a distinct failure from an unreadable file: the file exists, and it is not a
 // manifest this build wrote.
 var errManifestTooLarge = errors.New("artifact manifest is too large")
 
-// MigrationHandlerConfig configures the migration transport operations. The three
+// MigrationHandlerConfig configures the migration transport operations. The
 // operations share one configuration because they describe one artifact layout.
 type MigrationHandlerConfig struct {
-	// Store is the node-local snapshot store export snapshots through. Nil (or a
-	// typed nil) keeps the operations registered and answers export a typed 501: a
-	// node without a snapshot store cannot produce an artifact. file and stage do
-	// not need it: they move bytes an export already produced.
+	// Store is the node-local snapshot store export snapshots through, and the
+	// one discard removes the snapshot from. Nil (or a typed nil) keeps the
+	// operations registered and answers export a typed 501: a node without a
+	// snapshot store cannot produce an artifact. file, stage and discard do not
+	// need it: they move and remove bytes an export already produced.
 	Store SnapshotStore
-	// SnapshotDir is the root that holds artifacts on this node. Export publishes
-	// <SnapshotDir>/<artifactID> there and file resolves an artifact from it. It is
-	// the snapshot store's own directory, because the artifact's bytes are the
-	// snapshot's files.
-	SnapshotDir string
+	// ArtifactDir is the root that holds the artifacts this node publishes:
+	// <ArtifactDir>/<artifactID> is a real directory holding artifact.json and the
+	// artifact's files. It sits on the same filesystem as the snapshot root, so a
+	// published file is a hard link to the snapshot's rather than a copy.
+	ArtifactDir string
 	// StagingDir is the root that holds artifacts received on this node: stage
 	// writes <StagingDir>/<artifactID>/<name>, which is where the restore looks.
 	StagingDir string
@@ -160,10 +188,15 @@ type MigrationExportDocument struct {
 	SchemaVersion int                `json:"schemaVersion"`
 	Kind          string             `json:"kind"`
 	Artifact      migration.Artifact `json:"artifact"`
-	// Dir is the directory that holds the files, <SnapshotDir>/<artifactID>. It is
+	// Dir is the directory that holds the files, <ArtifactDir>/<artifactID>. It is
 	// not part of the artifact: a target stages into its own root, and the two
 	// nodes need not agree on a path.
 	Dir string `json:"dir"`
+	// Linked reports whether the artifact's files are hard links to the snapshot's
+	// (true, the normal case) or copies (false: the two roots are on different
+	// filesystems, so the export paid for the bytes twice). It is an observation
+	// about this node, not part of the artifact, so it stays out of the manifest.
+	Linked bool `json:"linked"`
 }
 
 // NewMigrationExportHandler builds the export operation.
@@ -188,15 +221,29 @@ func NewMigrationStageHandler(cfg MigrationHandlerConfig) Handler {
 	return h.serve
 }
 
+// NewMigrationDiscardHandler builds the discard operation. It needs no store to
+// remove bytes; when one is configured it also deletes the snapshot behind them.
+func NewMigrationDiscardHandler(cfg MigrationHandlerConfig) Handler {
+	if snapshotStoreDisabled(cfg.Store) {
+		cfg.Store = nil
+	}
+	h := &migrationDiscardHandler{cfg: cfg}
+	return h.serve
+}
+
 // migrationExportHandler serves POST /v1/tasks/{taskID}/migration/export.
 type migrationExportHandler struct {
 	cfg MigrationHandlerConfig
 }
 
 // serve exports the resolved task: snapshot it through the node's store, describe
-// the result, and publish the directory the manifest names. The task keeps
-// running: the store resumes the VM before it returns, so the transfer happens
-// while the source still serves.
+// the result, and publish a directory of its own holding the manifest and the
+// files it describes. The task keeps running: the store resumes the VM before it
+// returns, so the transfer happens while the source still serves.
+//
+// A failure after the store returned discards the dump it produced. The caller
+// never receives an artifact ID it could discard itself, so an export that cannot
+// finish must not leave bytes behind for the store's retention to find.
 func (h *migrationExportHandler) serve(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request) {
 	if !operationSpecs[MigrationExportOperation].allows(r.Method) {
 		writeOperationMethodNotAllowed(w, MigrationExportOperation, r.Method)
@@ -220,7 +267,7 @@ func (h *migrationExportHandler) serve(ctx context.Context, task Task, w http.Re
 		writeSnapshotTaskNotRunning(w, task.ID)
 		return
 	}
-	if bodyErr := requireEmptyBody(w, r); bodyErr != nil {
+	if bodyErr := requireEmptyBody(w, r, MigrationExportOperation); bodyErr != nil {
 		writeTypedError(w, http.StatusBadRequest, bodyErr)
 		return
 	}
@@ -247,34 +294,48 @@ func (h *migrationExportHandler) serve(ctx context.Context, task Task, w http.Re
 	if err != nil {
 		// pkg/migration names the file it could not describe; only the
 		// classification crosses the wire.
+		discardSnapshot(ctx, h.cfg.Store, info.ID)
 		writeError(w, http.StatusInternalServerError, output.CodeInternal,
 			"task %q could not be described as a migration artifact", task.ID)
 		return
 	}
 
-	// The snapshot directory pkg/snapshot published holds the bytes; the artifact
-	// directory named by the artifact's own ID points at it.
-	snapshotDir := filepath.Dir(info.StatePath)
-	if err := publishArtifact(h.cfg.SnapshotDir, snapshotDir, artifact); err != nil {
+	sources := artifactFileSources(artifact, info)
+	linked, err := publishArtifact(h.cfg.ArtifactDir, artifact, sources)
+	if err != nil {
+		discardSnapshot(ctx, h.cfg.Store, info.ID)
 		writeError(w, http.StatusServiceUnavailable, output.CodeUnavailable,
 			"task %q artifact could not be published on this node", task.ID)
 		return
 	}
 
-	writeMigrationDocument(w, http.StatusCreated, MigrationExportDocument{
+	doc := MigrationExportDocument{
 		SchemaVersion: v1.SchemaVersion,
 		Kind:          migrationExportKind,
 		Artifact:      artifact,
-		Dir:           filepath.Join(h.cfg.SnapshotDir, artifact.ID),
-	})
+		Dir:           filepath.Join(h.cfg.ArtifactDir, artifact.ID),
+		Linked:        linked,
+	}
+	body, encodeErr := encodeDocument(doc)
+	if encodeErr != nil {
+		// The artifact was published a moment ago and the caller will never learn
+		// its ID, so the request cleans up after itself.
+		_ = os.RemoveAll(doc.Dir)
+		discardSnapshot(ctx, h.cfg.Store, info.ID)
+		writeError(w, http.StatusInternalServerError, output.CodeInternal,
+			"the migration document could not be encoded")
+		return
+	}
+
+	writeDocument(w, http.StatusCreated, body)
 }
 
 // configProblem reports why this node cannot export at all, or nil. The template
 // values are checked once, before the task is touched: a node without a rootfs
 // directory would pause a task only to fail after the disk copy.
 func (h *migrationExportHandler) configProblem() (int, *output.Error) {
-	if h.cfg.SnapshotDir == "" {
-		return http.StatusServiceUnavailable, directoryNotConfigured("snapshot", "publish an artifact")
+	if h.cfg.ArtifactDir == "" {
+		return http.StatusServiceUnavailable, directoryNotConfigured("artifact", "publish an artifact")
 	}
 	if h.cfg.RootfsDir == "" {
 		return http.StatusServiceUnavailable, directoryNotConfigured("rootfs", "export a task disk")
@@ -320,18 +381,112 @@ func parseExportQuery(r *http.Request) (migrationScope, *output.Error) {
 	return scope, nil
 }
 
-// publishArtifact makes the artifact addressable by its own ID: the manifest goes
-// into the snapshot directory pkg/snapshot published, and <root>/<artifactID>
-// becomes a link to that directory. The manifest is written first, so a reader
-// never sees a link without the description of what it holds.
-func publishArtifact(root, snapshotDir string, artifact migration.Artifact) error {
-	pruneSpentArtifacts(root)
+// artifactFileSource is one file the export publishes: the name the manifest gives
+// it on the wire, and the snapshot-owned file it comes from.
+type artifactFileSource struct {
+	name string
+	path string
+}
 
-	if err := writeArtifactDocument(snapshotDir, artifact); err != nil {
+// artifactFileSources pairs the manifest's entries with the snapshot files they
+// describe, in field order. It takes the paths from the snapshot rather than
+// joining the manifest's names under the snapshot directory: the manifest is what
+// travels, and the export links the files it just described.
+func artifactFileSources(artifact migration.Artifact, info *snapshot.SnapshotInfo) []artifactFileSource {
+	sources := []artifactFileSource{
+		{artifact.StateFile.Name, info.StatePath},
+		{artifact.MemoryFile.Name, info.MemoryPath},
+	}
+	if artifact.DiskFile != (migration.File{}) {
+		sources = append(sources, artifactFileSource{artifact.DiskFile.Name, info.DiskPath})
+	}
+	return sources
+}
+
+// publishArtifact makes the artifact a directory of its own: <root>/<artifactID>
+// holding each described file (a hard link to the snapshot's, or a copy when the
+// kernel refuses the link) and, last, the manifest. It reports whether the files
+// are links.
+//
+// The directory is removed if any step fails, so a caller never sees an artifact
+// directory without its complete manifest: a restore reads the manifest to decide
+// whether an artifact is complete.
+func publishArtifact(root string, artifact migration.Artifact, sources []artifactFileSource) (bool, error) {
+	if err := os.MkdirAll(root, artifactDirectoryMode); err != nil {
+		return false, err
+	}
+	dir := filepath.Join(root, artifact.ID)
+	if err := os.Mkdir(dir, artifactDirectoryMode); err != nil {
+		return false, err
+	}
+	published := false
+	defer func() {
+		if !published {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+
+	linked := true
+	for _, source := range sources {
+		fileLinked, err := publishArtifactFile(source.path, filepath.Join(dir, source.name))
+		if err != nil {
+			return false, err
+		}
+		linked = linked && fileLinked
+	}
+
+	if err := writeArtifactDocument(dir, artifact); err != nil {
+		return false, err
+	}
+	published = true
+	return linked, nil
+}
+
+// publishArtifactFile puts one artifact file in place: a hard link when the kernel
+// allows it, because the snapshot directory and the artifact root share a
+// filesystem in the default install and a link costs one directory entry rather
+// than a second copy of a multi-GB image, and a copy when it does not.
+func publishArtifactFile(source, target string) (bool, error) {
+	if err := linkArtifactFile(source, target); err == nil {
+		return true, nil
+	}
+	if err := copyArtifactFile(source, target); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// copyArtifactFile writes a private copy of source at target. It is the fallback
+// path: slower and it doubles the bytes, but the artifact is the same one. The
+// copy is 0600 because the bytes may be a guest's memory image.
+func copyArtifactFile(source, target string) error {
+	//nolint:gosec // G304: the path is a file of the snapshot this node just took.
+	in, err := os.Open(source)
+	if err != nil {
 		return err
 	}
-	link := filepath.Join(root, artifact.ID)
-	if err := os.Symlink(snapshotDir, link); err != nil {
+	defer func() { _ = in.Close() }()
+
+	//nolint:gosec // G304: target is this node's artifact root plus a manifest name.
+	out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, artifactFileMode)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		_ = os.Remove(target)
+		return err
+	}
+	// Durable before it is addressable: the directory is published as one unit,
+	// so a rename must never expose a name whose bytes are not on disk.
+	if err := out.Sync(); err != nil {
+		_ = out.Close()
+		_ = os.Remove(target)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(target)
 		return err
 	}
 	return nil
@@ -345,7 +500,7 @@ func writeArtifactDocument(dir string, artifact migration.Artifact) error {
 		return err
 	}
 
-	//nolint:gosec // G304: the directory is the snapshot this node just published.
+	//nolint:gosec // G304: the directory is the artifact this node just published.
 	tmp, err := os.CreateTemp(dir, "."+migrationArtifactDocumentName+".tmp-")
 	if err != nil {
 		return err
@@ -370,29 +525,6 @@ func writeArtifactDocument(dir string, artifact migration.Artifact) error {
 	return os.Rename(tmpPath, filepath.Join(dir, migrationArtifactDocumentName))
 }
 
-// pruneSpentArtifacts removes artifact links whose snapshot is gone, so an
-// exported artifact does not outlive its bytes as a dangling directory entry.
-// Only a link this package named (an artifact ID) whose target no longer resolves
-// is removed: an error other than "not there" leaves the entry alone, and a link
-// that still resolves is a live artifact. Best effort: a failed prune must not
-// fail the export, exactly like the snapshot store's opportunistic retention.
-func pruneSpentArtifacts(root string) {
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return
-	}
-	for _, entry := range entries {
-		if entry.Type()&os.ModeSymlink == 0 || !migration.ValidArtifactID(entry.Name()) {
-			continue
-		}
-		path := filepath.Join(root, entry.Name())
-		if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
-			continue
-		}
-		_ = os.Remove(path)
-	}
-}
-
 // migrationFileHandler serves GET /v1/tasks/{taskID}/migration/file.
 type migrationFileHandler struct {
 	cfg MigrationHandlerConfig
@@ -406,8 +538,8 @@ func (h *migrationFileHandler) serve(_ context.Context, task Task, w http.Respon
 		writeOperationMethodNotAllowed(w, MigrationFileOperation, r.Method)
 		return
 	}
-	if h.cfg.SnapshotDir == "" {
-		writeTypedError(w, http.StatusServiceUnavailable, directoryNotConfigured("snapshot", "serve an artifact"))
+	if h.cfg.ArtifactDir == "" {
+		writeTypedError(w, http.StatusServiceUnavailable, directoryNotConfigured("artifact", "serve an artifact"))
 		return
 	}
 
@@ -417,7 +549,11 @@ func (h *migrationFileHandler) serve(_ context.Context, task Task, w http.Respon
 		return
 	}
 
-	dir := filepath.Join(h.cfg.SnapshotDir, request.artifactID)
+	dir, status, problem := existingArtifactDir(h.cfg.ArtifactDir, request.artifactID)
+	if problem != nil {
+		writeTypedError(w, status, problem)
+		return
+	}
 	artifact, status, problem := readArtifactDocument(dir)
 	if problem != nil {
 		writeTypedError(w, status, problem)
@@ -427,7 +563,7 @@ func (h *migrationFileHandler) serve(_ context.Context, task Task, w http.Respon
 	// another task's, the same rule the snapshots operation applies to its list.
 	if artifact.SourceTaskID != task.ID {
 		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
-			"artifact %s belongs to task %q, not %q", artifact.ID, artifact.SourceTaskID, task.ID).
+			"artifact %s is not an export of task %q", artifact.ID, task.ID).
 			WithDetails(map[string]any{"reason": "artifact_task_mismatch"}))
 		return
 	}
@@ -438,6 +574,25 @@ func (h *migrationFileHandler) serve(_ context.Context, task Task, w http.Respon
 		return
 	}
 	serveArtifactFile(w, dir, entry)
+}
+
+// existingArtifactDir resolves one artifact's own directory under root, and reports
+// the typed answer when it is not one. Only a real directory is an artifact: a
+// symbolic link, a plain file and a missing entry answer the same 404, because an
+// artifact this node publishes is a directory that holds its files, and following a
+// link would let an entry outside the root answer for an artifact.
+func existingArtifactDir(root, artifactID string) (string, int, *output.Error) {
+	dir := filepath.Join(root, artifactID)
+	info, err := os.Lstat(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return dir, http.StatusNotFound, artifactNotAvailable()
+	case err != nil:
+		return dir, http.StatusServiceUnavailable, artifactUnreadable()
+	case !info.IsDir() || info.Mode()&os.ModeSymlink != 0:
+		return dir, http.StatusNotFound, artifactNotAvailable()
+	}
+	return dir, 0, nil
 }
 
 // artifactFileRequest is the file operation's query: which artifact, which file.
@@ -626,10 +781,8 @@ func (h *migrationStageHandler) serve(_ context.Context, _ Task, w http.Response
 	}
 
 	dir := filepath.Join(h.cfg.StagingDir, request.artifactID)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		writeTypedError(w, http.StatusServiceUnavailable,
-			output.NewError(output.CodeUnavailable, "the staging directory is not writable on this node").
-				WithDetails(map[string]any{"reason": "staging_unavailable"}))
+	if status, problem := ensureStagingDir(dir); problem != nil {
+		writeTypedError(w, status, problem)
 		return
 	}
 
@@ -640,6 +793,25 @@ func (h *migrationStageHandler) serve(_ context.Context, _ Task, w http.Response
 
 	w.Header().Set(checksumHeader, request.sha256)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ensureStagingDir creates the artifact directory a stage writes into, and refuses
+// one that exists as anything but a real directory: a symbolic link planted there
+// would move a staged name outside the staging root, and a file is not an artifact
+// directory either.
+func ensureStagingDir(dir string) (int, *output.Error) {
+	if info, err := os.Lstat(dir); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return http.StatusConflict, artifactDirectoryUnsafe()
+		}
+		return 0, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return http.StatusServiceUnavailable, stagingUnavailable()
+	}
+	if err := os.MkdirAll(dir, artifactDirectoryMode); err != nil {
+		return http.StatusServiceUnavailable, stagingUnavailable()
+	}
+	return 0, nil
 }
 
 // parseStageQuery enforces the stage operation's query grammar: artifactId, name,
@@ -679,9 +851,9 @@ func parseStageQuery(r *http.Request) (artifactStageRequest, *output.Error) {
 		return request, invalidMigrationParameter("size",
 			"must be the positive byte count of the file being staged")
 	}
-	if size > maxArtifactFileBytes {
+	if size > migration.MaxFileSize {
 		return request, invalidMigrationParameter("size",
-			"must be at most "+strconv.FormatInt(maxArtifactFileBytes, 10)+" bytes, the largest file a migration carries")
+			"must be at most "+strconv.FormatInt(migration.MaxFileSize, 10)+" bytes, the largest file a migration carries")
 	}
 	request.size = size
 
@@ -701,9 +873,7 @@ func stageInto(w http.ResponseWriter, r *http.Request, dir string, request artif
 	// file from writing the same partial file.
 	tmp, err := os.CreateTemp(dir, ".partial-*")
 	if err != nil {
-		return http.StatusServiceUnavailable, output.NewError(output.CodeUnavailable,
-			"the staging directory is not writable on this node").
-			WithDetails(map[string]any{"reason": "staging_unavailable"})
+		return http.StatusServiceUnavailable, stagingUnavailable()
 	}
 	tmpPath := tmp.Name()
 
@@ -763,6 +933,180 @@ func stageInto(w http.ResponseWriter, r *http.Request, dir string, request artif
 	}
 	published = true
 	return 0, nil
+}
+
+// migrationDiscardHandler serves DELETE /v1/tasks/{taskID}/migration/discard.
+type migrationDiscardHandler struct {
+	cfg MigrationHandlerConfig
+}
+
+// artifactDiscardRequest is the discard operation's query: which artifact.
+type artifactDiscardRequest struct {
+	artifactID string
+}
+
+// serve discards one artifact: its directory on this node, and the snapshot its
+// files were linked from. The operation is idempotent, because a rollback and a
+// completed migration may both run it, and it is keyed by the artifact rather than
+// by the task, because the task that exported it may already be gone.
+func (h *migrationDiscardHandler) serve(ctx context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+	if !operationSpecs[MigrationDiscardOperation].allows(r.Method) {
+		writeOperationMethodNotAllowed(w, MigrationDiscardOperation, r.Method)
+		return
+	}
+	if h.cfg.ArtifactDir == "" && h.cfg.StagingDir == "" {
+		writeTypedError(w, http.StatusServiceUnavailable, directoryNotConfigured("artifact", "discard an artifact"))
+		return
+	}
+
+	request, queryErr := parseDiscardQuery(r)
+	if queryErr != nil {
+		writeTypedError(w, http.StatusBadRequest, queryErr)
+		return
+	}
+	if bodyErr := requireEmptyBody(w, r, MigrationDiscardOperation); bodyErr != nil {
+		writeTypedError(w, http.StatusBadRequest, bodyErr)
+		return
+	}
+
+	if status, problem := discardArtifact(ctx, h.cfg, request.artifactID); problem != nil {
+		writeTypedError(w, status, problem)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// parseDiscardQuery enforces the discard operation's query grammar: artifactId,
+// once, required.
+func parseDiscardQuery(r *http.Request) (artifactDiscardRequest, *output.Error) {
+	var request artifactDiscardRequest
+
+	query := r.URL.Query()
+	for key, values := range query {
+		switch key {
+		case "artifactId":
+		default:
+			return request, invalidMigrationParameter(key, "is not a migration discard parameter")
+		}
+		if len(values) != 1 {
+			return request, invalidMigrationParameter(key, "must be set exactly once")
+		}
+	}
+
+	request.artifactID = query.Get("artifactId")
+	if !migration.ValidArtifactID(request.artifactID) {
+		return request, invalidArtifactID("artifactId", request.artifactID)
+	}
+	return request, nil
+}
+
+// discardArtifact removes one artifact and the snapshot behind it. An artifact this
+// node does not hold is already discarded, so the operation succeeds: a rollback
+// may run twice, and may run on a node where the export never finished.
+//
+// The snapshot is deleted before the directory, so a failed delete leaves the
+// artifact in place for a retry: removing the directory first would make the
+// snapshot unreachable-by-name and leak it until retention ran.
+func discardArtifact(ctx context.Context, cfg MigrationHandlerConfig, artifactID string) (int, *output.Error) {
+	// The manifest names the snapshot the files came from. An artifact without a
+	// readable one — never published, already gone, or not a real directory of its
+	// own — is still removed: it cannot be restored, and its bytes either belong to
+	// no snapshot or wait for the store's retention.
+	var artifact migration.Artifact
+	artifactDir := ""
+	haveManifest := false
+	if cfg.ArtifactDir != "" {
+		dir, _, problem := existingArtifactDir(cfg.ArtifactDir, artifactID)
+		if problem == nil {
+			artifactDir = dir
+			if described, _, readProblem := readArtifactDocument(dir); readProblem == nil {
+				artifact, haveManifest = described, true
+			}
+		}
+	}
+
+	if haveManifest && cfg.Store != nil {
+		if status, problem := deleteArtifactSnapshot(ctx, cfg.Store, artifactDir, artifact); problem != nil {
+			return status, problem
+		}
+	}
+
+	// Both roots are cleared: on the source the artifact was published, and on the
+	// target the same ID may have been staged. Removing a path that is not there is
+	// a success, which is what makes the operation idempotent.
+	for _, root := range []string{cfg.ArtifactDir, cfg.StagingDir} {
+		if root == "" {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(root, artifactID)); err != nil {
+			return http.StatusServiceUnavailable, output.NewError(output.CodeUnavailable,
+				"the artifact could not be removed from this node").
+				WithDetails(map[string]any{"reason": "artifact_unremovable"})
+		}
+	}
+	return 0, nil
+}
+
+// deleteArtifactSnapshot deletes the snapshot an artifact was made from. The
+// artifact's files are hard links to the snapshot's, so the store's record is the
+// only thing that still names them: the files are recognised by sharing an inode
+// with the artifact's state file and, for an artifact that had to be copied, by the
+// state digest the snapshot recorded.
+func deleteArtifactSnapshot(
+	ctx context.Context, store SnapshotStore, artifactDir string, artifact migration.Artifact,
+) (int, *output.Error) {
+	infos, err := store.ListSnapshots(snapshot.SnapshotFilter{TaskID: artifact.SourceTaskID})
+	if err != nil {
+		return mapSnapshotStoreError("list", err)
+	}
+
+	for _, id := range snapshotsBehindArtifact(filepath.Join(artifactDir, artifact.StateFile.Name), artifact, infos) {
+		if err := store.DeleteSnapshot(ctx, id); err != nil {
+			return mapSnapshotStoreError("delete", err)
+		}
+	}
+	return 0, nil
+}
+
+// snapshotsBehindArtifact lists the snapshot records that describe the same dump as
+// the artifact: the snapshot whose state file is the very inode the artifact's state
+// file links to, or, when the artifact was copied across a filesystem boundary, the
+// snapshot whose recorded checksum is the artifact's state digest. Both rules are
+// sound because a snapshot's checksum is the SHA-256 of its state file.
+func snapshotsBehindArtifact(
+	statePath string, artifact migration.Artifact, infos []*snapshot.SnapshotInfo,
+) []string {
+	stateInfo, stateErr := os.Stat(statePath)
+
+	var byInode, byChecksum []string
+	for _, info := range infos {
+		if info == nil || info.TaskID != artifact.SourceTaskID {
+			continue
+		}
+		if stateErr == nil && info.StatePath != "" {
+			if recorded, err := os.Stat(info.StatePath); err == nil && os.SameFile(stateInfo, recorded) {
+				byInode = append(byInode, info.ID)
+				continue
+			}
+		}
+		if info.Checksum != "" && strings.EqualFold(info.Checksum, artifact.StateFile.SHA256) {
+			byChecksum = append(byChecksum, info.ID)
+		}
+	}
+	if len(byInode) > 0 {
+		return byInode
+	}
+	return byChecksum
+}
+
+// discardSnapshot removes the dump a failed export left behind. The caller never
+// received an artifact ID, so nothing else can ever discard it. Best effort: the
+// request already answers an error, and a failed cleanup must not replace it.
+func discardSnapshot(ctx context.Context, store SnapshotStore, snapshotID string) {
+	if snapshotID == "" || snapshotStoreDisabled(store) {
+		return
+	}
+	_ = store.DeleteSnapshot(ctx, snapshotID)
 }
 
 // validArtifactFileName reports whether name is one bare file name a caller may
@@ -870,6 +1214,21 @@ func artifactInvalid() *output.Error {
 		WithDetails(map[string]any{"reason": "artifact_invalid"})
 }
 
+// artifactDirectoryUnsafe is the typed 409 for a path under the staging root that
+// is not a real directory: a link there would move a staged name outside the root.
+func artifactDirectoryUnsafe() *output.Error {
+	return output.NewError(output.CodeConflict,
+		"the artifact directory on this node is not a directory of its own").
+		WithDetails(map[string]any{"reason": "artifact_dir_unsafe"})
+}
+
+// stagingUnavailable is the typed 503 for a staging root this node cannot write.
+func stagingUnavailable() *output.Error {
+	return output.NewError(output.CodeUnavailable,
+		"the staging directory is not writable on this node").
+		WithDetails(map[string]any{"reason": "staging_unavailable"})
+}
+
 // writeMigrationDisabled is the 501 for a node with no snapshot store.
 func writeMigrationDisabled(w http.ResponseWriter) {
 	writeTypedError(w, http.StatusNotImplemented, output.NewError(output.CodeNotImplemented,
@@ -887,16 +1246,11 @@ func writeOperationMethodNotAllowed(w http.ResponseWriter, operation, method str
 		WithDetails(map[string]any{"reason": "method_not_allowed"}))
 }
 
-// writeMigrationDocument writes one migration document with the internal broker
-// media type.
-func writeMigrationDocument(w http.ResponseWriter, status int, doc MigrationExportDocument) {
-	body, err := encodeDocument(doc)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, output.CodeInternal,
-			"the migration document could not be encoded")
-		return
-	}
-
+// writeDocument writes one already-encoded internal document with the broker media
+// type. Encoding before the body is written is what lets a handler publish an
+// artifact and its answer as one unit: a document that cannot be encoded is a
+// failure it can still undo.
+func writeDocument(w http.ResponseWriter, status int, body []byte) {
 	w.Header().Set("Content-Type", publicMediaType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(status)
@@ -907,15 +1261,15 @@ func writeMigrationDocument(w http.ResponseWriter, status int, doc MigrationExpo
 // requireEmptyBody refuses a body on an operation that takes none. A handler that
 // silently ignored one would accept a caller's mistake and act on a different
 // request than the caller sent.
-func requireEmptyBody(w http.ResponseWriter, r *http.Request) *output.Error {
+func requireEmptyBody(w http.ResponseWriter, r *http.Request, operation string) *output.Error {
 	// A chunked body declares no length; a zero-byte cap is enough to tell an
 	// empty body from a present one without buffering it.
 	r.Body = http.MaxBytesReader(w, r.Body, 0)
 	if _, err := io.Copy(io.Discard, r.Body); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return output.NewError(output.CodeInvalid,
-				"migration/export takes no body: the task is named in the path").
+			return output.NewErrorf(output.CodeInvalid,
+				"%s takes no body: the artifact is named in the path and the query", operation).
 				WithDetails(map[string]any{"reason": "unexpected_body"})
 		}
 		return output.NewError(output.CodeInvalid, "the request body could not be read").

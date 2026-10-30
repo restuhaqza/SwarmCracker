@@ -53,12 +53,17 @@ const (
 	// the manifest does not carry it.
 	tapNamePrefixLength = len("tap-") + 8 + 1
 
-	// maxFileSize is the largest file one artifact may describe: 64 GiB. It is
+	// MaxFileSize is the largest file one artifact may describe: 64 GiB. It is
 	// a ceiling on what the transfer will accept, not a guess at the largest
 	// guest: it caps how much a single node can be made to read, hash, ship and
 	// write for one migration, so a nonsense size in a manifest is refused
 	// before it becomes an allocation.
-	maxFileSize int64 = 64 << 30
+	//
+	// It is exported because the transport needs the same number twice: this
+	// package refuses a manifest that describes a larger file, and the broker's
+	// stage operation must bound a body before any manifest exists on the target.
+	// One constant, two enforcement points, so the two can never drift.
+	MaxFileSize int64 = 64 << 30
 )
 
 // ErrInvalidArtifact classifies every rejection from this package, so a caller
@@ -301,8 +306,8 @@ func validateFile(field string, f File) error {
 	if f.Size <= 0 {
 		return invalidf("%s.size is %d: want the positive byte count of the file that moves", field, f.Size)
 	}
-	if f.Size > maxFileSize {
-		return invalidf("%s.size is %d: want at most %d bytes (64 GiB), the largest file a migration carries", field, f.Size, maxFileSize)
+	if f.Size > MaxFileSize {
+		return invalidf("%s.size is %d: want at most %d bytes (64 GiB), the largest file a migration carries", field, f.Size, MaxFileSize)
 	}
 	switch {
 	case f.SHA256 == "":
@@ -434,8 +439,8 @@ func describeFile(label, path string) (File, error) {
 	}
 	// Checked before the file is read: the ceiling exists so a nonsense size
 	// is refused instead of hashed, shipped and written.
-	if stat.Size() > maxFileSize {
-		return File{}, invalidf("snapshot %s %s is %d bytes: want at most %d bytes (64 GiB), the largest file a migration carries", label, path, stat.Size(), maxFileSize)
+	if stat.Size() > MaxFileSize {
+		return File{}, invalidf("snapshot %s %s is %d bytes: want at most %d bytes (64 GiB), the largest file a migration carries", label, path, stat.Size(), MaxFileSize)
 	}
 
 	sum, err := hashFile(path)
