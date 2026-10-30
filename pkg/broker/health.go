@@ -57,18 +57,7 @@ func serveHealth(task Task, w http.ResponseWriter) {
 		return
 	}
 
-	body, err := encodeDocument(health)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, output.CodeInternal,
-			"task %q health could not be encoded", task.ID)
-		return
-	}
-
-	w.Header().Set("Content-Type", publicMediaType)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-	//nolint:gosec // G705: the body is a JSON document served as the v1 media type.
-	_, _ = w.Write(body)
+	serveTaskDocument(w, task.ID, "health", health)
 }
 
 // readTaskHealth reads the task's published health. It returns the response

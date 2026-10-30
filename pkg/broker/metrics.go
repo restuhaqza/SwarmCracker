@@ -54,18 +54,7 @@ func serveMetrics(task Task, w http.ResponseWriter) {
 		return
 	}
 
-	body, err := encodeDocument(sample)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, output.CodeInternal,
-			"task %q metrics could not be encoded", task.ID)
-		return
-	}
-
-	w.Header().Set("Content-Type", publicMediaType)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-	//nolint:gosec // G705: the body is a JSON document served as the v1 media type.
-	_, _ = w.Write(body)
+	serveTaskDocument(w, task.ID, "metrics", sample)
 }
 
 // readTaskMetrics reads the task's last sample. It returns the response status it

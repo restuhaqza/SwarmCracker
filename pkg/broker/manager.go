@@ -377,7 +377,7 @@ func (m *Manager) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, err
 
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return nil, healthTransportError(ctx, route.Node.ID, err)
+		return nil, transportError(ctx, route.Node.ID, "health", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -385,39 +385,35 @@ func (m *Manager) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, err
 	case http.StatusNoContent, http.StatusNotFound:
 		return nil, nil
 	case http.StatusOK:
-		return decodeNodeHealth(resp.Body, route.Node.ID)
+		return decodeNodeDocument(resp.Body, route.Node.ID, "health",
+			func(health *v1.TaskHealth) bool { return health.Status != "" })
 	default:
-		return nil, decodeNodeHealthError(resp.Body, resp.StatusCode, route.Node.ID)
+		return nil, decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "health")
 	}
 }
 
-// decodeNodeHealth reads one health document. A node that breaks the wire
-// contract is an internal failure rather than a half-filled TaskHealth.
-func decodeNodeHealth(body io.Reader, nodeID string) (*v1.TaskHealth, error) {
-	var health v1.TaskHealth
+// decodeNodeDocument reads one task document a node returned, shared by every
+// per-task read. A node that breaks the wire contract is an internal failure
+// rather than a half-filled document; complete reports whether the decoded value
+// can stand in for a reading (zero is a valid sample, so "non-empty" is not a
+// safe rule for every document).
+func decodeNodeDocument[T any](body io.Reader, nodeID, noun string, complete func(T) bool) (T, error) {
+	var doc T
 	decoder := json.NewDecoder(io.LimitReader(body, maxRelayedErrorBytes))
-	if err := decoder.Decode(&health); err != nil || health.Status == "" {
-		return nil, output.NewErrorf(output.CodeInternal,
-			"node %q returned an unreadable health document", nodeID)
+	if err := decoder.Decode(&doc); err != nil || !complete(doc) {
+		var zero T
+		return zero, output.NewErrorf(output.CodeInternal,
+			"node %q returned an unreadable %s document", nodeID, noun).
+			WithDetails(map[string]any{"nodeId": nodeID})
 	}
-	return &health, nil
+	return doc, nil
 }
 
-// decodeNodeHealthError relays a node error document. Its code, message and
-// retry hint are the contract, so they are preserved; a body that is not a v1
+// decodeNodeError relays a node error document. Its code, message and retry hint
+// are the contract, so they are preserved verbatim; a body that is not a v1
 // error document becomes a stable unavailable failure that names no address.
-func decodeNodeHealthError(body io.Reader, status int, nodeID string) error {
-	if typed, ok := relayedNodeError(body); ok {
-		return typed
-	}
-	return output.NewErrorf(codeUnavailable, "node %q health is unavailable (status %d)",
-		nodeID, status)
-}
-
-// relayedNodeError parses a node's v1 error document. It reports false for a body
-// that is not one, so each operation keeps its own stable fallback wording and
-// only the decoding is shared.
-func relayedNodeError(body io.Reader) (*output.Error, bool) {
+// noun names the operation ("health", "metrics") for that fallback wording.
+func decodeNodeError(body io.Reader, status int, nodeID, noun string) error {
 	data, err := io.ReadAll(io.LimitReader(body, maxRelayedErrorBytes))
 	if err == nil {
 		var doc v1.ErrorDocument
@@ -426,19 +422,21 @@ func relayedNodeError(body io.Reader) (*output.Error, bool) {
 			typed := output.NewError(output.Code(doc.Error.Code), doc.Error.Message)
 			typed.Retryable = doc.Error.Retryable
 			typed.Details = doc.Error.Details
-			return typed, true
+			return typed
 		}
 	}
-	return nil, false
+	return output.NewErrorf(codeUnavailable, "node %q %s unavailable (status %d)",
+		nodeID, noun, status)
 }
 
-// healthTransportError maps a failed dial or a deadline to a retryable failure.
-// The underlying error can name an internal address, so it never reaches the
-// message. A node that cannot be reached is unavailable: "unreachable" is
-// client-synthesized and never appears in a server document.
-func healthTransportError(ctx context.Context, nodeID string, err error) *output.Error {
+// transportError maps a failed dial or a deadline to a retryable failure, shared
+// by every per-task read. The underlying error can name an internal address, so
+// it never reaches the message. A node that cannot be reached is unavailable:
+// "unreachable" is client-synthesized and never appears in a server document.
+// noun names the operation ("health", "metrics").
+func transportError(ctx context.Context, nodeID, noun string, err error) *output.Error {
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-		return output.NewErrorf(output.CodeTimeout, "node %q health check timed out", nodeID).
+		return output.NewErrorf(output.CodeTimeout, "node %q %s read timed out", nodeID, noun).
 			WithDetails(map[string]any{"nodeId": nodeID})
 	}
 	return output.NewErrorf(codeUnavailable, "node %q broker is unavailable", nodeID).
@@ -477,50 +475,17 @@ func (m *Manager) Metrics(ctx context.Context, task v1.Task) (v1.TaskMetrics, er
 
 	resp, err := m.client.Do(req)
 	if err != nil {
-		return v1.TaskMetrics{}, metricsTransportError(ctx, route.Node.ID, err)
+		return v1.TaskMetrics{}, transportError(ctx, route.Node.ID, "metrics", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return v1.TaskMetrics{}, decodeNodeMetricsError(resp.Body, resp.StatusCode, route.Node.ID)
+		return v1.TaskMetrics{}, decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "metrics")
 	}
-	return decodeNodeMetrics(resp.Body, route.Node.ID)
-}
-
-// decodeNodeMetrics reads one metrics document. A node that breaks the wire
-// contract is an internal failure rather than a half-filled TaskMetrics: zero is
-// a valid reading, so an empty document cannot stand in for one.
-func decodeNodeMetrics(body io.Reader, nodeID string) (v1.TaskMetrics, error) {
-	var sample v1.TaskMetrics
-	decoder := json.NewDecoder(io.LimitReader(body, maxRelayedErrorBytes))
-	if err := decoder.Decode(&sample); err != nil || sample.TaskID == "" {
-		return v1.TaskMetrics{}, output.NewErrorf(output.CodeInternal,
-			"node %q returned an unreadable metrics document", nodeID).
-			WithDetails(map[string]any{"nodeId": nodeID})
-	}
-	return sample, nil
-}
-
-// decodeNodeMetricsError relays a node error document, so a 404 keeps its reason
-// ("no_sample" or "task_not_running") for the caller to branch on. A body that is
-// not a v1 error document becomes a stable unavailable failure naming no address.
-func decodeNodeMetricsError(body io.Reader, status int, nodeID string) error {
-	if typed, ok := relayedNodeError(body); ok {
-		return typed
-	}
-	return output.NewErrorf(codeUnavailable, "node %q metrics are unavailable (status %d)",
-		nodeID, status)
-}
-
-// metricsTransportError maps a failed dial or a deadline to a retryable failure,
-// naming no internal address, exactly as a health read does.
-func metricsTransportError(ctx context.Context, nodeID string, err error) *output.Error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-		return output.NewErrorf(output.CodeTimeout, "node %q metrics read timed out", nodeID).
-			WithDetails(map[string]any{"nodeId": nodeID})
-	}
-	return output.NewErrorf(codeUnavailable, "node %q broker is unavailable", nodeID).
-		WithDetails(map[string]any{"nodeId": nodeID})
+	// Zero is a valid reading for an idle guest, so an empty document cannot
+	// stand in for one.
+	return decodeNodeDocument(resp.Body, route.Node.ID, "metrics",
+		func(sample v1.TaskMetrics) bool { return sample.TaskID != "" })
 }
 
 // --- snapshots ---

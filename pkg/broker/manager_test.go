@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -694,6 +695,77 @@ func TestManagerHealthRelaysANodeError(t *testing.T) {
 	require.Equal(t, output.CodeUnavailable, typed.Code)
 	require.Equal(t, "health sidecar is unavailable", typed.Message)
 	require.True(t, typed.Retryable)
+}
+
+// TestNodeReadErrorWordingIsShared pins the sentences the two per-task reads now
+// share. One decoder serves both, so the only difference between a health
+// failure and a metrics failure is the operation's noun; without this test a
+// later edit could let the wording drift apart again.
+func TestNodeReadErrorWordingIsShared(t *testing.T) {
+	pki := newTestPKI(t)
+
+	reads := map[string]func(*Manager) error{
+		"health": func(mgr *Manager) error {
+			_, err := mgr.Health(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+			return err
+		},
+		"metrics": func(mgr *Manager) error {
+			_, err := mgr.Metrics(context.Background(), v1.Task{ID: "task-1", NodeID: "node-1"})
+			return err
+		},
+	}
+
+	cases := []struct {
+		name       string
+		status     int
+		body       string
+		code       output.Code
+		message    string
+		wantNodeID bool
+	}{
+		{
+			name:       "an unreadable document is internal and names the node",
+			status:     http.StatusOK,
+			body:       `{"taskId":`,
+			code:       output.CodeInternal,
+			message:    `node "node-1" returned an unreadable %s document`,
+			wantNodeID: true,
+		},
+		{
+			name:    "a body that is not an error document is unavailable",
+			status:  http.StatusInternalServerError,
+			body:    "boom",
+			code:    output.CodeUnavailable,
+			message: `node "node-1" %s unavailable (status 500)`,
+		},
+	}
+
+	for noun, read := range reads {
+		for _, tc := range cases {
+			t.Run(noun+" "+tc.name, func(t *testing.T) {
+				reply := func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+					w.WriteHeader(tc.status)
+					_, _ = io.WriteString(w, tc.body)
+				}
+				src := &fakeTaskSource{task: Task{ID: "task-1"}, found: true}
+				_, baseURL := startTestBroker(t, pki, src, map[string]Handler{
+					"health":         reply,
+					MetricsOperation: reply,
+				})
+
+				err := read(healthTestManager(t, pki, baseURL, 0, nil))
+
+				var typed *output.Error
+				require.ErrorAs(t, err, &typed)
+				require.Equal(t, tc.code, typed.Code)
+				require.Equal(t, fmt.Sprintf(tc.message, noun), typed.Message)
+				if tc.wantNodeID {
+					require.Equal(t, "node-1", typed.Details["nodeId"],
+						"an unreadable document names the node it came from")
+				}
+			})
+		}
+	}
 }
 
 // TestManagerHealthUnreachableNodeIsTyped proves a transport failure is a
