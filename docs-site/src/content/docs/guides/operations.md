@@ -437,6 +437,82 @@ The default alert rules read only series that are written today; the rules that
 referenced the unpopulated series above were removed rather than left inert. See
 [Alerting](/guides/alerting/) for the rule set and a verification recipe.
 
+### Tracing
+
+Metrics answer "how much" and logs answer "what was printed". Tracing answers
+"where the time went" for one task: a single trace shows the image pull, the VM
+boot, the running lifetime and the teardown as one timeline.
+
+Tracing is **off by default**. With it off the daemon constructs no exporter and
+dials nothing, so a stock install is byte-for-byte the same as before the feature
+existed. Turn it on per node:
+
+```bash
+swarmd-firecracker \
+  --tracing-enabled \
+  --tracing-endpoint http://127.0.0.1:4318
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--tracing-enabled` | `false` | Build the exporter at all |
+| `--tracing-endpoint` | — | OTLP/HTTP base URL of a collector; `/v1/traces` is appended |
+| `--tracing-service-name` | `swarmd-firecracker` | `service.name` on every exported span |
+| `--tracing-sample-ratio` | `1` | Fraction of traces to export, in `(0, 1]` |
+
+The transport is **OTLP/HTTP**. `http://` exports in the clear, which is what a
+collector on localhost, a sidecar or a private lab network wants; `https://`
+verifies the collector's certificate against the system roots. A path in the
+endpoint (`http://host:4318/v1/traces`) is rejected at startup rather than
+silently ignored, and an unparseable endpoint fails the daemon instead of leaving
+it exporting nothing.
+
+#### What one task looks like
+
+| Span | Covers |
+|------|--------|
+| `task.prepare` | Turning the task into a bootable VM definition |
+| `├─ image.prepare` | OCI pull and rootfs build — usually the longest step |
+| `task.start` | Translation, port publishing and the VM boot |
+| `├─ task.translate` | Building the Firecracker config from the task |
+| `task.wait` | The task's running lifetime — this span is as long as the VM lives |
+| `task.shutdown` / `task.terminate` | Graceful stop / forced stop |
+| `task.remove` | Resource teardown |
+
+Every span carries `task.id`, `service.id`, `node.id`, `node.hostname` and
+`image.ref` when the task has them. A span whose operation returned an error is
+exported with an error status and the message, so a failed `task.prepare` is
+visible as a failure rather than as a fast success.
+
+#### Seeing a trace
+
+Any OTLP/HTTP collector works. A single container is enough to look at one:
+
+```bash
+docker run --rm -p 16686:16686 -p 4318:4318 \
+  jaegertracing/all-in-one:latest \
+  --set receivers.otlp.protocols.http.endpoint=0.0.0.0:4318
+```
+
+Start the daemon with `--tracing-enabled --tracing-endpoint http://127.0.0.1:4318`,
+run one service, then open `http://localhost:16686` and search for the
+`swarmd-firecracker` service. `--tracing-sample-ratio 0.1` makes a busy node
+export a tenth of its traces instead.
+
+#### Limitations
+
+- **Spans are per node.** A task's trace is produced entirely by the node running
+  it. Operations the manager relays over the API (exec, logs, snapshot, cross-node
+  calls) do **not** yet propagate a trace context, so a request that crosses nodes
+  appears as two unrelated traces. Propagating `traceparent` over the broker is a
+  separate change.
+- **Buffered export.** Spans are batched and flushed on exit (bounded to 5 s) or
+  when the batch fills. A `kill -9` of the daemon loses the spans still in the
+  buffer.
+- **No metrics or log pipeline.** This is traces only; metrics stay on the
+  Prometheus endpoint and logs stay on the node's console files (see
+  [Reading logs across nodes](#reading-logs-across-nodes)).
+
 ### Logging
 
 **Log locations:**

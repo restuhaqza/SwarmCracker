@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Optional OpenTelemetry tracing** — `swarmd-firecracker --tracing-enabled
+  --tracing-endpoint http://collector:4318` exports one OTLP/HTTP trace per task
+  covering image preparation, VM boot, the running lifetime and teardown, with
+  `task.id`, `service.id`, `node.id` and `image.ref` attributes (issue #91). It is
+  off by default: a disabled node constructs no exporter and dials nothing. The
+  executor only ever sees a two-method interface, so the OpenTelemetry SDK stays
+  behind one seam and disabling tracing removes it without touching a call site.
+  Spans are per node — cross-node propagation over the manager's API is not
+  implemented yet — and metrics/logs are unchanged.
 - **Cross-node logs: `vm logs --host` and `service logs`** — a task's console log
   can now be read from any machine holding an API token: `-H` sends the request to
   the manager, which relays it to the node that owns the task, and the new

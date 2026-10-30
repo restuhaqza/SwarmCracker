@@ -39,7 +39,7 @@ Tier 1 is delivered and released in `v0.12.0`:
 | #44 registry auth UX | Done | `--with-registry-auth` end to end |
 | #47 resource QoS | Done | balloon, cpuset, hugepages, NUMA placement |
 | #48 overlay networks | Done | `network create/rm`, per-network bridges and VXLAN |
-| #45 observability depth | **Partially done** | #88 (in-guest per-task metrics) and #89 (cross-node logs) done; #91 tracing open |
+| #45 observability depth | **Done** | #88 in-guest per-task metrics, #89 cross-node logs, #91 optional OTel tracing |
 | #46 live migration | **Open** | — |
 | #49 autoscaling / placement | **Open** | — |
 
