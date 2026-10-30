@@ -1591,3 +1591,25 @@ func artifactFileNames(artifact migration.Artifact) []string {
 	}
 	return names
 }
+
+// A stage that is killed between creating its temporary and publishing it leaves
+// a partial file in the migration root. The temporary's name carries the artifact
+// ID so the artifact's own discard sweeps it, without touching another artifact's
+// partial file.
+func TestMigrationDiscardSweepsCrashedStagePartials(t *testing.T) {
+	node := newMigrationNode(t)
+	doc := node.export(t)
+
+	own := filepath.Join(node.cfg.ArtifactDir, partialPrefix+doc.Artifact.ID+"-crashed")
+	other := filepath.Join(node.cfg.ArtifactDir, partialPrefix+"mig-0000000000000000-crashed")
+	require.NoError(t, os.WriteFile(own, []byte("partial"), artifactFileMode))
+	require.NoError(t, os.WriteFile(other, []byte("partial"), artifactFileMode))
+
+	handler := NewMigrationDiscardHandler(node.cfg)
+	target := "/v1/tasks/task-1/migration/discard?artifactId=" + doc.Artifact.ID
+	rec := serveMigration(t, handler, Task{}, http.MethodDelete, target, nil)
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	require.NoFileExists(t, own, "a crashed stage's partial belongs to this artifact")
+	require.FileExists(t, other, "another artifact's partial file is not ours to remove")
+}

@@ -149,6 +149,11 @@ const (
 	// manifest is written 0600 for the same reason.
 	artifactFileMode = 0o600
 
+	// partialPrefix starts the name of a stage temporary in the migration root.
+	// It carries the artifact ID so discard can remove what a crash mid-stage
+	// left behind; it never ends in .json, so it is never mistaken for a record.
+	partialPrefix = ".partial-"
+
 	// maxArtifactDocumentBytes bounds the manifest this node reads back. The
 	// document is a page at most; the cap stops a file planted in the artifact
 	// directory from making the handler buffer an arbitrary size.
@@ -898,9 +903,11 @@ func stageArtifact(
 		return http.StatusServiceUnavailable, stagingUnavailable()
 	}
 	// The temporary lives beside the artifact directory rather than inside it: the
-	// directory is what a refused stage must not create. A random name keeps a
-	// concurrent stage of the same file from writing the same partial file.
-	tmp, err := os.CreateTemp(root, ".partial-*")
+	// directory is what a refused stage must not create. Its name carries the
+	// artifact ID so discard can sweep what a crash mid-stage left behind; the
+	// random suffix keeps a concurrent stage of the same file from sharing a
+	// partial file.
+	tmp, err := os.CreateTemp(root, partialPrefix+request.artifactID+"-*")
 	if err != nil {
 		return http.StatusServiceUnavailable, stagingUnavailable()
 	}
@@ -1063,6 +1070,14 @@ func discardArtifact(ctx context.Context, cfg MigrationHandlerConfig, artifactID
 		return http.StatusServiceUnavailable, output.NewError(output.CodeUnavailable,
 			"the artifact could not be removed from this node").
 			WithDetails(map[string]any{"reason": "artifact_unremovable"})
+	}
+	// A stage that crashed before publishing leaves a partial file beside the
+	// artifact directory; its name carries the artifact ID precisely so this
+	// discard can remove it. Failing to remove one is not worth failing the
+	// discard: the artifact itself is gone.
+	partials, _ := filepath.Glob(filepath.Join(cfg.ArtifactDir, partialPrefix+artifactID+"-*"))
+	for _, partial := range partials {
+		_ = os.Remove(partial)
 	}
 	return 0, nil
 }
