@@ -58,6 +58,11 @@ type serviceCreateOptions struct {
 	numaNode    string
 	numaNodeSet bool
 
+	// autoscale is --autoscale: the replica bounds and target the manager loop
+	// keeps the service between, stored as the swarmcracker.autoscale.* service
+	// labels. An empty value is no policy at all; clearing one is an update.
+	autoscale string
+
 	// withRegistryAuth is --with-registry-auth (#44). registryAuth holds the
 	// resolved base64 X-Registry-Auth payload for the image; createService fills
 	// it in (resolving it is I/O), so this mapping function stays pure.
@@ -253,6 +258,48 @@ func buildServiceSpec(o serviceCreateOptions) (*api.ServiceSpec, error) {
 		svcLabels[types.NumaLabel] = value
 	}
 
+	// An autoscale policy travels as the six swarmcracker.autoscale.* service
+	// labels, which the manager loop reads. Validate it here so a malformed
+	// policy fails before any RPC, and store the canonical labels so what the
+	// CLI reports and what the loop reads never differ. An empty value is no
+	// request at all on create (clearing belongs to `service update`).
+	if strings.TrimSpace(o.autoscale) != "" {
+		policy, err := types.ParseAutoscaleFlag(o.autoscale)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --autoscale: %w", err)
+		}
+		// --label is the lower-level way to declare the same policy, so it is
+		// accepted only when it agrees. The check is semantic: the labels the
+		// user supplied replace the flag's on top of an otherwise complete set,
+		// then the whole set is parsed, so "70" and "70.0" name the same target
+		// while a value no policy could hold is a conflict rather than an
+		// override. A partial label set is fine here — the flag fills it in,
+		// and the merged six labels are what gets stored.
+		if hasAutoscaleLabels(svcLabels) {
+			merged := policy.Labels()
+			for _, key := range types.AutoscaleLabelKeys() {
+				if value, ok := svcLabels[key]; ok {
+					merged[key] = value
+				}
+			}
+			declared, err := types.AutoscaleFromLabels(merged)
+			if err != nil {
+				return nil, fmt.Errorf("--autoscale %q conflicts with the autoscale labels already set via --label (%s): %w",
+					o.autoscale, describeAutoscaleLabels(svcLabels), err)
+			}
+			if declared == nil || *declared != policy {
+				return nil, fmt.Errorf("--autoscale %q conflicts with the autoscale labels already set via --label (%s)",
+					o.autoscale, describeAutoscaleLabels(svcLabels))
+			}
+		}
+		if svcLabels == nil {
+			svcLabels = make(map[string]string)
+		}
+		for key, value := range policy.Labels() {
+			svcLabels[key] = value
+		}
+	}
+
 	if svcLabels[types.GoldenLabel] != "" && (hostname != "" || len(dns) > 0) {
 		return nil, fmt.Errorf("--hostname/--dns are not supported with --golden: golden images boot their own init and do not use the OCI init wrapper")
 	}
@@ -434,6 +481,12 @@ type serviceUpdateOptions struct {
 	numaNode     string
 	numaNodeSet  bool
 
+	// autoscale/autoscaleSet are --autoscale on `service update`, tri-state
+	// like --cpuset: absent preserves the declared policy, a value replaces it,
+	// and an explicit empty value clears every autoscale label.
+	autoscale    string
+	autoscaleSet bool
+
 	networks    []string
 	networksSet bool
 
@@ -606,6 +659,31 @@ func canonicalCPUSet(flag, value string) (string, error) {
 // --numa-node.
 func canonicalCpuset(value string) (string, error) {
 	return canonicalCPUSet("--cpuset", value)
+}
+
+// hasAutoscaleLabels reports whether any autoscale label is present, so a
+// conflict check runs for a half-written policy too instead of only for a
+// complete one that AutoscaleFromLabels would accept.
+func hasAutoscaleLabels(labels map[string]string) bool {
+	for _, key := range types.AutoscaleLabelKeys() {
+		if _, ok := labels[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// describeAutoscaleLabels renders the autoscale labels a caller supplied via
+// --label, in the label table's order, for a conflict error that names both
+// the flag value and what it disagrees with.
+func describeAutoscaleLabels(labels map[string]string) string {
+	parts := make([]string, 0, len(types.AutoscaleLabelKeys()))
+	for _, key := range types.AutoscaleLabelKeys() {
+		if value, ok := labels[key]; ok {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 func buildPlacement(constraints, prefs []string) (*api.Placement, error) {

@@ -213,6 +213,7 @@ func newServiceCreateCommand() *cobra.Command {
 		cpuset      string
 		hugepages   bool
 		numaNode    string
+		autoscale   string
 		golden      string
 		publish     []string
 		publishMode string
@@ -272,11 +273,15 @@ The service will be scheduled on available nodes and can be scaled
 and updated as needed.
 
 With --golden, the service boots a prebuilt golden image (see
-'swarmcracker image build') instead of building a rootfs from an OCI image.`,
+'swarmcracker image build') instead of building a rootfs from an OCI image.
+
+With --autoscale, the service's replica count is kept between the policy's
+bounds by the manager (for example --autoscale min=2,max=10,metric=cpu,target=70).`,
 		Example: `  swarmcracker service create --name myapp --image nginx:latest --replicas 3
   swarmcracker service create --name api --image myimage:v1 --cpu 2 --memory 512M
   swarmcracker service create --name worker --image busybox --command /bin/sh --args "-c,echo hello"
-  swarmcracker service create --name web --golden ubuntu-24.04-docker@1.0.0 --replicas 2`,
+  swarmcracker service create --name web --golden ubuntu-24.04-docker@1.0.0 --replicas 2
+  swarmcracker service create --name web --image nginx:latest --autoscale min=2,max=10,metric=cpu,target=70`,
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)
 		},
@@ -321,6 +326,7 @@ With --golden, the service boots a prebuilt golden image (see
 				hugepagesSet:       cmd.Flags().Changed("hugepages"),
 				numaNode:           numaNode,
 				numaNodeSet:        cmd.Flags().Changed("numa-node"),
+				autoscale:          autoscale,
 				env:                env,
 				command:            command,
 				args:               args,
@@ -377,6 +383,7 @@ With --golden, the service boots a prebuilt golden image (see
 	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online")
 	cmd.Flags().BoolVar(&hugepages, "hugepages", false, "Back the VM's guest memory with 2M huge pages; the host must have a sufficiently large hugepage pool")
 	cmd.Flags().StringVar(&numaNode, "numa-node", "", "Bind the VM's memory to these host NUMA nodes (Linux cpulist: 0, 0-1); the host must have those nodes online")
+	cmd.Flags().StringVar(&autoscale, "autoscale", "", "Keep the replica count between min and max by scaling on guest CPU (min=2,max=10,metric=cpu,target=70[,cooldown-up=60s][,cooldown-down=5m])")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", nil, "Environment variables (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&command, "command", nil, "Override default container command")
 	cmd.Flags().StringArrayVar(&args, "args", nil, "Container arguments")
@@ -434,6 +441,7 @@ func newServiceUpdateCommand() *cobra.Command {
 		cpuset      string
 		hugepages   bool
 		numaNode    string
+		autoscale   string
 		image       string
 		env         []string
 		envRemove   []string
@@ -492,10 +500,13 @@ func newServiceUpdateCommand() *cobra.Command {
 		Long: `Update an existing service's configuration.
 
 Supports updating replicas, resource limits, image, environment variables,
-placement, restart policy, update/rollback configuration and mode.`,
+placement, restart policy, update/rollback configuration, the autoscale
+policy and mode. Pass an empty --autoscale to remove the policy.`,
 		Example: `  swarmcracker service update my-service --replicas 5
   swarmcracker service update my-service --constraint node.hostname==worker1
   swarmcracker service update my-service --update-order start-first --replicas 4
+  swarmcracker service update my-service --autoscale min=2,max=10,metric=cpu,target=70
+  swarmcracker service update my-service --autoscale ""
   swarmcracker service update my-service --rollback`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
@@ -529,6 +540,8 @@ placement, restart policy, update/rollback configuration and mode.`,
 				hugepagesSet:        anyFlagChanged(cmd, "hugepages"),
 				numaNode:            numaNode,
 				numaNodeSet:         anyFlagChanged(cmd, "numa-node"),
+				autoscale:           autoscale,
+				autoscaleSet:        anyFlagChanged(cmd, "autoscale"),
 				mounts:              mounts,
 				volumes:             volumes,
 				mountsSet:           anyFlagChanged(cmd, "mount", "volume"),
@@ -588,6 +601,7 @@ placement, restart policy, update/rollback configuration and mode.`,
 	cmd.Flags().StringVar(&cpuset, "cpuset", "", "Pin the VM to these host CPUs (Linux cpulist: 0, 0-3, 0-3,8); the host must have those CPUs online, and an empty value removes the pin")
 	cmd.Flags().BoolVar(&hugepages, "hugepages", false, "Back the VM's guest memory with 2M huge pages; the host must have a sufficiently large hugepage pool, and --hugepages=false removes the request")
 	cmd.Flags().StringVar(&numaNode, "numa-node", "", "Bind the VM's memory to these host NUMA nodes (Linux cpulist: 0, 0-1); the host must have those nodes online, and an empty value removes the binding")
+	cmd.Flags().StringVar(&autoscale, "autoscale", "", "Keep the replica count between min and max by scaling on guest CPU (min=2,max=10,metric=cpu,target=70[,cooldown-up=60s][,cooldown-down=5m]); an empty value removes the policy")
 	cmd.Flags().StringVar(&image, "image", "", "New container image")
 	cmd.Flags().StringArrayVar(&env, "env-add", nil, "Add environment variable (e.g., KEY=value)")
 	cmd.Flags().StringArrayVar(&envRemove, "env-rm", nil, "Remove environment variable")
@@ -1503,6 +1517,15 @@ func writeServiceText(w io.Writer, svc *api.Service) {
 			}
 		}
 	}
+	if policy, err := types.AutoscaleFromLabels(svc.Spec.Annotations.Labels); err != nil {
+		fmt.Fprintf(w, "Autoscale: invalid (%v)\n", err)
+	} else if policy != nil {
+		fmt.Fprintf(w, "Autoscale:\n")
+		fmt.Fprintf(w, "  metric: %s\n", policy.Metric)
+		fmt.Fprintf(w, "  target: %g%% of one vCPU\n", policy.Target)
+		fmt.Fprintf(w, "  replicas: %d-%d\n", policy.Min, policy.Max)
+		fmt.Fprintf(w, "  cooldown: up %s, down %s\n", policy.CooldownUp, policy.CooldownDown)
+	}
 	if rp := svc.Spec.Task.Restart; rp != nil {
 		fmt.Fprintf(w, "Restart Policy: %s", restartConditionString(rp.Condition))
 		if rp.MaxAttempts > 0 {
@@ -1797,14 +1820,15 @@ func updateService(serviceID string, opts serviceUpdateOptions) error {
 // every rejected flag is named in the one error.
 //
 // The list covers every flag that takes effect on the normal update path:
-// replicas, the CPU/memory limits, the balloon, cpuset/hugepages/NUMA, image,
-// env, ports, mounts, networks, secrets, configs, hostname/DNS, the
-// healthcheck, placement, restart, the update/rollback configuration, mode,
-// force and the registry credential. A flag not listed here is not read by the
-// update path either (--user/--cap-add/--cap-drop/--read-only are rejected by
-// validateUnsupportedExecFlags, which runs first, so they never reach a
-// rollback). Keep this list in step with the options struct: any new mutating
-// flag that is not added here is silently dropped by --rollback.
+// replicas, the CPU/memory limits, the balloon, cpuset/hugepages/NUMA, the
+// autoscale policy, image, env, ports, mounts, networks, secrets, configs,
+// hostname/DNS, the healthcheck, placement, restart, the update/rollback
+// configuration, mode, force and the registry credential. A flag not listed
+// here is not read by the update path either (--user/--cap-add/--cap-drop/
+// --read-only are rejected by validateUnsupportedExecFlags, which runs first,
+// so they never reach a rollback). Keep this list in step with the options
+// struct: any new mutating flag that is not added here is silently dropped by
+// --rollback.
 func rejectRollbackFlagConflicts(opts serviceUpdateOptions) error {
 	if !opts.rollbackAction {
 		return nil
@@ -1823,6 +1847,7 @@ func rejectRollbackFlagConflicts(opts serviceUpdateOptions) error {
 	add(opts.cpusetSet, "--cpuset")
 	add(opts.hugepagesSet, "--hugepages")
 	add(opts.numaNodeSet, "--numa-node")
+	add(opts.autoscaleSet, "--autoscale")
 	add(opts.image != "", "--image")
 	add(len(opts.env) > 0, "--env-add")
 	add(len(opts.envRemove) > 0, "--env-rm")
@@ -1911,6 +1936,19 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 			return err
 		}
 		numaNodeValue = value
+	}
+
+	// --autoscale is parsed before any RPC too: absent preserves the service's
+	// declared policy (copied with the spec below), an explicit empty value
+	// clears it, and a value replaces the whole label set. Parsing here means a
+	// malformed policy never reaches the lookup.
+	var autoscaleLabels map[string]string
+	if opts.autoscaleSet && strings.TrimSpace(opts.autoscale) != "" {
+		policy, err := types.ParseAutoscaleFlag(opts.autoscale)
+		if err != nil {
+			return fmt.Errorf("invalid --autoscale: %w", err)
+		}
+		autoscaleLabels = policy.Labels()
 	}
 
 	// Resolve the reference (full ID, unique ID prefix, or name) and fetch it.
@@ -2011,6 +2049,23 @@ func updateServiceWithClient(ctx context.Context, client legacy.ControlClient, s
 	// the binding, otherwise the canonical nodelist replaces it.
 	if opts.numaNodeSet {
 		setOrDeleteLabel(spec, types.NumaLabel, numaNodeValue, opts.numaNode != "")
+	}
+
+	// --autoscale is tri-state too: absent leaves the copied policy untouched,
+	// an explicit empty value removes every autoscale label (both halves of a
+	// half-written policy too, so a clear always leaves a clean service), and a
+	// value replaces the whole set — a stale cooldown must not survive a
+	// changed policy.
+	if opts.autoscaleSet {
+		if len(autoscaleLabels) == 0 {
+			for _, key := range types.AutoscaleLabelKeys() {
+				delete(spec.Annotations.Labels, key)
+			}
+		} else {
+			for key, value := range autoscaleLabels {
+				setOrDeleteLabel(spec, key, value, true)
+			}
+		}
 	}
 
 	// Apply the --with-registry-auth decision (#44): an absent flag preserves
