@@ -27,9 +27,13 @@ package apihttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
+	"runtime/debug"
 	"time"
+
+	"github.com/rs/zerolog/log"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
@@ -82,6 +86,11 @@ type healthFetch struct {
 	err    error
 }
 
+// errHealthPanicked settles the task whose fetch panicked. Only its non-nil-ness
+// reaches the page: a partial's message is fixed text, so the panic value never
+// travels further than the log.
+var errHealthPanicked = errors.New("health fetch panicked")
+
 // tasksWithHealth copies the page and attaches the health of every task it can
 // reach, returning the partials for the nodes it cannot. Results land at their
 // task's index, so enrichment can never reorder a page.
@@ -113,6 +122,27 @@ func (s *Server) tasksWithHealth(ctx context.Context, tasks []v1.Task) ([]v1.Tas
 		}
 		pending++
 		go func(i int) {
+			// A panic in this goroutine is fatal to the whole manager: it is
+			// not a handler goroutine, so net/http contains nothing here.
+			// Recover at the top, before the slot select, so a panic anywhere
+			// in the fetch — including one that happens after queueing for a
+			// worker slot — costs one node's health instead of the daemon.
+			//
+			// The recovered fetch still deposits a result: the collector waits
+			// for exactly `pending` results, so a panic that settled nothing
+			// would hold the page open until the budget expired.
+			defer func() {
+				if r := recover(); r != nil {
+					log.Error().
+						Str("task_id", enriched[i].ID).
+						Str("node_id", enriched[i].NodeID).
+						Interface("panic", r).
+						Str("stack", string(debug.Stack())).
+						Msg("health fan-out: fetch panicked and was recovered; its node becomes a partial")
+					results <- healthFetch{index: i, err: errHealthPanicked}
+				}
+			}()
+
 			// Waiting for a worker slot counts against the page budget: a
 			// queue of slow fetches must not outlive it.
 			select {
