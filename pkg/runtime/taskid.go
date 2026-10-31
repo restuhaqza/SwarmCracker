@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -39,4 +40,24 @@ func CheckTaskID(id string) error {
 		return ErrTaskIDDot
 	}
 	return nil
+}
+
+// idProblem words CheckTaskID's refusal for one field of a node-local record.
+// kind is the noun the field's ID names ("task", "service"): SwarmKit gives both
+// the same shape, and the record that holds one needs to say which field is wrong
+// in that field's own terms. Callers match the sentinels rather than the text.
+func idProblem(field, kind, id string) error {
+	err := CheckTaskID(id)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, ErrTaskIDEmpty):
+		return fmt.Errorf("%s is empty: want a SwarmKit %s ID", field, kind)
+	case errors.Is(err, ErrTaskIDPathSeparator):
+		return fmt.Errorf("%s %q must not contain a path separator: a %s ID is alphanumeric", field, id, kind)
+	case errors.Is(err, ErrTaskIDDot):
+		return fmt.Errorf("%s %q must not contain a dot: a %s ID is alphanumeric", field, id, kind)
+	default:
+		return err
+	}
 }

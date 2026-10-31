@@ -1,13 +1,16 @@
 package broker
 
-// This file owns the manager side of a live migration's file transfer: the four
-// calls that move one artifact from the node that produced it to the node that
-// will restore it, over the existing mTLS relay.
+// This file owns the manager side of a live migration's file transfer: the calls
+// that move one artifact from the node that produced it to the node that will
+// restore it, over the existing mTLS relay, and the directive that tells the target
+// to restore it.
 //
 //	export  source -> manager   a dump, described as an artifact
 //	file    source -> manager   one file of that artifact, streamed
 //	stage   manager -> target   the same file, streamed
 //	discard either node         the artifact, and the dump behind it
+//	prepare manager -> target   the target's directive: the next task of a service
+//	                            that starts there restores that artifact
 //
 // There is no public route for any of this, and no new port or certificate: the
 // manager initiates every transfer, so the artifact never has to be reachable
@@ -35,13 +38,16 @@ package broker
 // corrupt spool cannot become a corrupt guest.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,6 +55,7 @@ import (
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/migration"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
 
 // migrationRelayChunkBytes is the buffer one relayed file uses, in either
@@ -56,6 +63,13 @@ import (
 // bound this transport promises: a 64 GiB memory image crosses the manager in
 // 32 KiB pieces, whatever the size of the image.
 const migrationRelayChunkBytes = 32 << 10
+
+// migrationPrepareRouteTask is the task segment of the prepare route. The route
+// shape is the one every node operation has, and prepare is artifact-scoped, so the
+// node never resolves this segment: the task that will restore the artifact does not
+// exist yet - SwarmKit creates it when the service is replaced - and this placeholder
+// is not an ID anyone looks up.
+const migrationPrepareRouteTask = "pending-restore"
 
 // DefaultMigrationTimeout bounds one migration call - an export, a file read, a
 // stage or a discard - when ManagerConfig names no deadline. It is six times the
@@ -341,6 +355,66 @@ func (m *Manager) Discard(ctx context.Context, nodeID string, task v1.Task, arti
 			WithDetails(map[string]any{"nodeId": route.Node.ID})
 	}
 	return decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "migration discard")
+}
+
+// Prepare records the target node's pending-restore directive: the next task of
+// serviceID to start there restores artifactID from dir, which is the staging
+// directory the manager wrote that artifact's files into on that node. It is called
+// before SwarmKit creates the task, which is why nothing here names one and why the
+// route carries a placeholder instead.
+//
+// The node validates dir against its own migration root, which the manager does not
+// know, and answers a typed 400 when a directive would point anywhere else. The
+// checks here are the ones that need no node: the IDs must be the shapes the node
+// accepts, and the directory must be absolute. A rejected prepare is a request the
+// node refuses, so the manager never reports a restore as arranged.
+func (m *Manager) Prepare(ctx context.Context, nodeID, serviceID, artifactID, dir string) error {
+	if err := scruntime.CheckTaskID(serviceID); err != nil {
+		return invalidServiceID(serviceID)
+	}
+	if !migration.ValidArtifactID(artifactID) {
+		return invalidArtifactID("artifactId", artifactID)
+	}
+	if !filepath.IsAbs(dir) {
+		return invalidRestoreDir(dir, "invalid_dir",
+			"must be the absolute staging directory <migration root>/<artifactID> of the artifact on the target node")
+	}
+
+	body, err := json.Marshal(migrationPrepareRequest{
+		ServiceID:  serviceID,
+		ArtifactID: artifactID,
+		Dir:        dir,
+	})
+	if err != nil {
+		return output.NewErrorf(output.CodeInternal,
+			"the pending-restore directive for service %q could not be encoded", serviceID).
+			WithDetails(map[string]any{"serviceId": serviceID, "reason": "directive_unencodable"})
+	}
+
+	route, err := m.routeForNode(ctx, nodeID, migrationPrepareRouteTask, MigrationPrepareOperation)
+	if err != nil {
+		return err
+	}
+
+	resp, err := m.doNodeRequest(ctx, route, http.MethodPost, nil, bytes.NewReader(body),
+		int64(len(body)), migrationPrepareMediaType, m.migrationTimeout, "migration prepare")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch {
+	case resp.StatusCode == http.StatusNoContent:
+		return nil
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		// Only the 204 contract is a recorded directive: a 2xx that is not one did
+		// not record anything here.
+		return output.NewErrorf(output.CodeInternal,
+			"node %q returned status %d for a migration prepare", route.Node.ID, resp.StatusCode).
+			WithDetails(map[string]any{"nodeId": route.Node.ID})
+	default:
+		return decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "migration prepare")
+	}
 }
 
 // artifactEntry resolves the manifest entry a transfer names. The name is checked

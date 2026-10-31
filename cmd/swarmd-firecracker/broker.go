@@ -219,15 +219,29 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	// same manager instance — the one the executor also holds, so the two cannot
 	// disagree about which processes this node owns. The migration operations
 	// produce an artifact from a running task,
-	// stream one of its files, stage one the target will restore, and discard one
-	// when it is no longer needed; they share the snapshot store export snapshots
-	// through and one migration root for the bytes. The public route has already
-	// resolved the reference and enforced the caller's selectors.
+	// stream one of its files, stage one the target will restore, discard one
+	// when it is no longer needed, and record the directive that tells this node
+	// which artifact the next task of a service restores here; they share the
+	// snapshot store export snapshots through and the one migration root for the
+	// bytes. The public route has already resolved the reference and enforced the
+	// caller's selectors.
 	snapshotOp, restoredOp, store, snapshotsActive := snapshotHandlers(cfg)
+	// A migration's target is told what to restore before the task that restores it
+	// exists, so the directive lives under the daemon's state directory, beside the
+	// restored instances the same node writes: the manager prepares it once the
+	// artifact is staged, SwarmKit creates the task later, and the executor consumes
+	// it at task start. Opening the store can fail, and a node that cannot keep a
+	// directive must not answer a prepare as though it had, so the failure stops the
+	// broker rather than leaving a route that lies.
+	pending, err := scruntime.NewPendingRestores(scruntime.PendingRestoreDir(stateDir))
+	if err != nil {
+		return nil, false, nil, fmt.Errorf("node broker: %w", err)
+	}
 	migrationCfg := broker.MigrationHandlerConfig{
 		Store:       store,
 		ArtifactDir: cfg.migrationStagingDir,
 		RootfsDir:   cfg.rootfsDir,
+		Pending:     pending,
 	}
 	handlers := []struct {
 		op string
@@ -245,6 +259,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{broker.MigrationFileOperation, broker.NewMigrationFileHandler(migrationCfg)},
 		{broker.MigrationStageOperation, broker.NewMigrationStageHandler(migrationCfg)},
 		{broker.MigrationDiscardOperation, broker.NewMigrationDiscardHandler(migrationCfg)},
+		{broker.MigrationPrepareOperation, broker.NewMigrationPrepareHandler(migrationCfg)},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {

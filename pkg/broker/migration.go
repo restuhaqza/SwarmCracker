@@ -2,12 +2,14 @@ package broker
 
 // This file owns the node-side artifact transport of a live migration: producing
 // an artifact from a running task, serving one of its files, staging a file a
-// restore will use, and discarding an artifact when it is no longer needed.
+// restore will use, discarding an artifact when it is no longer needed, and
+// recording the directive that tells the node to restore one.
 //
 //	POST   /v1/tasks/{taskID}/migration/export
 //	GET    /v1/tasks/{taskID}/migration/file?artifactId=<id>&name=<file>
 //	PUT    /v1/tasks/{taskID}/migration/stage?artifactId=<id>&name=<file>&size=<n>&sha256=<hex>
 //	DELETE /v1/tasks/{taskID}/migration/discard?artifactId=<id>
+//	POST   /v1/tasks/{taskID}/migration/prepare
 //
 // The restore itself is not here: loading the artifact into a new task creates the
 // TAP device, loads the snapshot and re-addresses the guest, and that has its own
@@ -18,9 +20,10 @@ package broker
 // An artifact is addressed by its own ID. The route still names a task - it is one
 // path shape for every node operation - but only export uses it: export snapshots
 // the task it names, so the server resolves that task and a task this node does not
-// have is a 404. file, stage and discard never read the task, because the artifact
-// outlives it: SwarmKit replaces the task as part of the move, and a stage on the
-// target happens for a task the target has never run.
+// have is a 404. file, stage, discard and prepare never read the task, because the
+// artifact (and the directive that restores it) outlives it: SwarmKit replaces the
+// task as part of the move, and a prepare or a stage on the target happens for a
+// task the target has never run.
 //
 // # One artifact, one directory
 //
@@ -102,11 +105,14 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/migration"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -122,6 +128,11 @@ const (
 	// from, so an artifact's bytes are freed as soon as nobody needs them
 	// instead of waiting for the snapshot store's retention.
 	MigrationDiscardOperation = "migration/discard"
+	// MigrationPrepareOperation records the directive that tells this node to
+	// restore an artifact into the next task of a service that starts here. It is
+	// a POST because it produces one, and it names the task slot in the route
+	// without reading it: the task it describes does not exist yet.
+	MigrationPrepareOperation = "migration/prepare"
 
 	// migrationExportKind is the document kind migration/export answers. Like the
 	// artifact itself it is an internal manager↔node document, so its kind lives
@@ -161,6 +172,17 @@ const (
 
 	// sha256HexChars is the length of a hex-encoded SHA-256 digest.
 	sha256HexChars = 64
+
+	// migrationPrepareDocumentBytes bounds the body migration/prepare accepts. The
+	// document is three short strings and a path; the cap stops a caller from
+	// making the handler buffer an arbitrary body for a request that cannot be
+	// about anything larger.
+	migrationPrepareDocumentBytes = 8 << 10
+
+	// migrationPrepareMediaType is the media type of the prepare body. It is plain
+	// JSON rather than the v1 document type: the directive is three fields, not a
+	// versioned document the public contract describes.
+	migrationPrepareMediaType = "application/json"
 )
 
 // linkArtifactFile is os.Link, and a test seam: a hard link is what publishing an
@@ -201,6 +223,15 @@ type MigrationHandlerConfig struct {
 	// create operation applies. Empty refuses an export: an artifact without a disk
 	// would restore a guest with no filesystem.
 	RootfsDir string
+	// Pending is the node's store of pending-restore directives: the prepare
+	// operation records "the next task of this service to start here restores this
+	// artifact" before SwarmKit has created that task, and the executor consumes it
+	// once at task start. ArtifactDir is still needed beside it, because a directive
+	// names the staging directory under that root and prepare refuses one that does
+	// not resolve to <ArtifactDir>/<artifactID>. A nil store (a daemon that could
+	// not open it) answers prepare a typed 503: the node cannot keep the directive,
+	// so it must not tell the manager it did.
+	Pending *scruntime.PendingRestores
 }
 
 // MigrationExportDocument is the document migration/export answers: the manifest
@@ -249,6 +280,14 @@ func NewMigrationDiscardHandler(cfg MigrationHandlerConfig) Handler {
 		cfg.Store = nil
 	}
 	h := &migrationDiscardHandler{cfg: cfg}
+	return h.serve
+}
+
+// NewMigrationPrepareHandler builds the prepare operation. It needs the node's
+// directive store and its migration root, and no snapshot store: it records where
+// an already-staged artifact lives, and the restore that reads it is the executor's.
+func NewMigrationPrepareHandler(cfg MigrationHandlerConfig) Handler {
+	h := &migrationPrepareHandler{cfg: cfg}
 	return h.serve
 }
 
@@ -1134,6 +1173,185 @@ func discardSnapshot(ctx context.Context, store SnapshotStore, snapshotID string
 		return
 	}
 	_ = store.DeleteSnapshot(ctx, snapshotID)
+}
+
+// migrationPrepareHandler serves POST /v1/tasks/{taskID}/migration/prepare.
+type migrationPrepareHandler struct {
+	cfg MigrationHandlerConfig
+}
+
+// migrationPrepareRequest is the document prepare takes: the service whose next
+// task on this node restores, the artifact it restores, and the directory the
+// manager staged that artifact's files into here. All three are required.
+type migrationPrepareRequest struct {
+	ServiceID  string `json:"serviceId"`
+	ArtifactID string `json:"artifactId"`
+	Dir        string `json:"dir"`
+}
+
+// serve records the directive that tells this node to restore an artifact into the
+// next task of a service that starts here. The task does not exist yet - SwarmKit
+// creates it when the service is replaced - which is why the directive is keyed by
+// service and why the task segment of the route is never resolved.
+//
+// The request is validated before anything is written, and the directive is then
+// written by the node's store, whose Put replaces an earlier directive for the same
+// service: the manager retries a prepare it never saw the answer to, and the retry
+// describes the same migration.
+func (h *migrationPrepareHandler) serve(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+	if !operationSpecs[MigrationPrepareOperation].allows(r.Method) {
+		writeOperationMethodNotAllowed(w, MigrationPrepareOperation, r.Method)
+		return
+	}
+	if h.cfg.ArtifactDir == "" {
+		writeTypedError(w, http.StatusServiceUnavailable, directoryNotConfigured("migration", "record a pending restore"))
+		return
+	}
+	if h.cfg.Pending == nil {
+		writeTypedError(w, http.StatusServiceUnavailable, pendingRestoreUnavailable())
+		return
+	}
+
+	request, bodyErr := decodePrepareRequest(w, r)
+	if bodyErr != nil {
+		writeTypedError(w, http.StatusBadRequest, bodyErr)
+		return
+	}
+	if problem := prepareProblem(h.cfg.ArtifactDir, request); problem != nil {
+		writeTypedError(w, http.StatusBadRequest, problem)
+		return
+	}
+
+	record := scruntime.PendingRestore{
+		ServiceID:  request.ServiceID,
+		ArtifactID: request.ArtifactID,
+		Dir:        request.Dir,
+		// The node stamps the instant it recorded the directive, not the manager:
+		// the TTL is about how long this node has been holding it, and a manager
+		// whose clock is wrong must not be able to keep a directive alive.
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := h.cfg.Pending.Put(record); err != nil {
+		// pkg/runtime names the directory and the file it could not write; only the
+		// classification crosses the wire.
+		writeTypedError(w, http.StatusServiceUnavailable, pendingRestoreNotRecorded())
+		return
+	}
+
+	// One line, and it says the retry semantics out loud: a second prepare for the
+	// same service is a replace, not a queue of restores.
+	log.Info().
+		Str("serviceId", record.ServiceID).
+		Str("artifactId", record.ArtifactID).
+		Str("dir", record.Dir).
+		Msg("Prepared a pending restore for the service: its next task here restores this artifact (replaces any earlier directive for the service)")
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// decodePrepareRequest reads the prepare document, bounded and strict. A field this
+// build does not know is refused rather than ignored: a caller sending a directive
+// this node would not honour must be told, not quietly answered 204.
+func decodePrepareRequest(w http.ResponseWriter, r *http.Request) (migrationPrepareRequest, *output.Error) {
+	var request migrationPrepareRequest
+
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, migrationPrepareDocumentBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			return request, invalidPrepareBody("the request body is larger than a pending-restore directive")
+		}
+		return request, invalidPrepareBody("the request body is not a pending-restore directive: want serviceId, artifactId and dir")
+	}
+	// The body is one document. A second value after it is a caller mistake that a
+	// decoder reading only the first would silently ignore - and the ignored part
+	// could be the fields the caller meant.
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return request, invalidPrepareBody("the request body carries more than one document")
+	}
+	return request, nil
+}
+
+// prepareProblem refuses a directive this node could not act on. The service must
+// be an ID shape, the artifact must be one pkg/migration generates, and the
+// directory must be the staging directory of that artifact under this node's
+// migration root: the manager stages the files there, and a directive that pointed
+// anywhere else would restore something else - or nothing - into the new task.
+func prepareProblem(root string, request migrationPrepareRequest) *output.Error {
+	if err := scruntime.CheckTaskID(request.ServiceID); err != nil {
+		return invalidServiceID(request.ServiceID)
+	}
+	if !migration.ValidArtifactID(request.ArtifactID) {
+		return invalidArtifactID("artifactId", request.ArtifactID)
+	}
+	return stagingDirProblem(root, request.ArtifactID, request.Dir)
+}
+
+// stagingDirProblem checks that dir is the staging directory of artifactID under
+// root. Both sides are made absolute before they are compared, so the check is
+// about where a path resolves rather than how it is spelled: a trailing separator or
+// a ".." that climbs back into the same directory is the same directory, while a
+// relative path, another artifact's directory and anything outside the root are not.
+func stagingDirProblem(root, artifactID, dir string) *output.Error {
+	switch {
+	case strings.TrimSpace(dir) == "":
+		return invalidRestoreDir(dir, "invalid_dir",
+			"is required: it is the directory on this node that holds the staged artifact")
+	case !filepath.IsAbs(dir):
+		return invalidRestoreDir(dir, "invalid_dir",
+			"must be the absolute staging directory <migration root>/<artifactID> of the artifact on this node")
+	}
+
+	want, wantErr := filepath.Abs(filepath.Join(root, artifactID))
+	got, gotErr := filepath.Abs(dir)
+	if wantErr != nil || gotErr != nil || got != want {
+		// Neither path is echoed: the root is this node's configuration, and a
+		// caller that sent the wrong directory knows what it sent.
+		return invalidRestoreDir(dir, "dir_outside_migration_root",
+			"is not the staging directory of artifact "+artifactID+" under this node's migration root")
+	}
+	return nil
+}
+
+// invalidServiceID is the typed 400 for a service ID that is not one safe path
+// element. SwarmKit gives services and tasks the same shape, so the rule is the
+// task ID rule the node already applies to every ID that becomes a file name.
+func invalidServiceID(value string) *output.Error {
+	return output.NewErrorf(output.CodeInvalid,
+		"serviceId %q is not a SwarmKit service ID: want one safe path segment, with no separator and no dot", value).
+		WithDetails(map[string]any{"parameter": "serviceId", "reason": "invalid_service_id"})
+}
+
+// invalidRestoreDir is the typed 400 for a directory the node cannot stage an
+// artifact into or restore one from.
+func invalidRestoreDir(dir, reason, problem string) *output.Error {
+	return output.NewErrorf(output.CodeInvalid, "dir %q %s", dir, problem).
+		WithDetails(map[string]any{"parameter": "dir", "reason": reason, "dir": dir})
+}
+
+// invalidPrepareBody is the typed 400 for a body that is not the prepare document.
+func invalidPrepareBody(problem string) *output.Error {
+	return output.NewError(output.CodeInvalid, problem).
+		WithDetails(map[string]any{"reason": "body_unreadable"})
+}
+
+// pendingRestoreUnavailable is the typed 503 for a node whose directive store was
+// never opened. Recording a prepare it cannot keep would tell the manager a restore
+// is arranged when nothing is.
+func pendingRestoreUnavailable() *output.Error {
+	return output.NewError(output.CodeUnavailable,
+		"this node cannot keep a pending-restore directive").
+		WithDetails(map[string]any{"reason": "pending_restore_unavailable"})
+}
+
+// pendingRestoreNotRecorded is the typed 503 for a directive the store refused to
+// write: the node's state directory would not take it, so the restore is not
+// arranged and the manager must not proceed.
+func pendingRestoreNotRecorded() *output.Error {
+	return output.NewError(output.CodeUnavailable,
+		"the pending restore could not be recorded on this node").
+		WithDetails(map[string]any{"reason": "pending_restore_unrecorded"})
 }
 
 // validSHA256Hex reports whether value is a hex-encoded SHA-256 digest in the

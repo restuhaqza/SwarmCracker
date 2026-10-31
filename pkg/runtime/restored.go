@@ -142,14 +142,26 @@ func probeWritable(dir string) error {
 // a test running as root — where a 0500 directory is still writable — can prove
 // both failures are reported.
 func probeWritableWith(dir string, createTemp func(string, string) (*os.File, error), remove func(string) error) error {
-	probe, err := createTemp(dir, restoredProbePattern)
+	return probeWritableAs("restored-instance registry", restoredProbePattern, dir, createTemp, remove)
+}
+
+// probeWritableAs is the write probe with the registry's name and probe pattern as
+// arguments, so each node-local record store reports its own directory failing
+// rather than another store's. A probe file is named after the store that wrote it
+// and never ends in a record suffix, so a crash mid-probe leaves something a human
+// can identify.
+func probeWritableAs(
+	label, pattern, dir string,
+	createTemp func(string, string) (*os.File, error), remove func(string) error,
+) error {
+	probe, err := createTemp(dir, pattern)
 	if err != nil {
-		return fmt.Errorf("restored-instance registry: %s is not writable: %w", dir, err)
+		return fmt.Errorf("%s: %s is not writable: %w", label, dir, err)
 	}
 	name := probe.Name()
 	_ = probe.Close()
 	if err := remove(name); err != nil {
-		return fmt.Errorf("restored-instance registry: %s is not writable: remove the probe file %s: %w", dir, name, err)
+		return fmt.Errorf("%s: %s is not writable: remove the probe file %s: %w", label, dir, name, err)
 	}
 	return nil
 }
@@ -431,19 +443,7 @@ func tapNameIndex(name string) (int, bool) {
 // that is wrong. The rule is CheckTaskID — the same rule the broker applies to
 // an untrusted URL path — so only the sentence differs between the two callers.
 func taskIDProblem(field, id string) error {
-	err := CheckTaskID(id)
-	switch {
-	case err == nil:
-		return nil
-	case errors.Is(err, ErrTaskIDEmpty):
-		return fmt.Errorf("%s is empty: want a SwarmKit task ID", field)
-	case errors.Is(err, ErrTaskIDPathSeparator):
-		return fmt.Errorf("%s %q must not contain a path separator: a task ID is alphanumeric", field, id)
-	case errors.Is(err, ErrTaskIDDot):
-		return fmt.Errorf("%s %q must not contain a dot: a task ID is alphanumeric", field, id)
-	default:
-		return err
-	}
+	return idProblem(field, "task", id)
 }
 
 // syncDir flushes a directory after an entry in it changed (Put's rename,
