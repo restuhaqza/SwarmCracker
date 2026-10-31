@@ -139,6 +139,9 @@ func (s *Server) tasksWithHealth(ctx context.Context, tasks []v1.Task) ([]v1.Tas
 						Interface("panic", r).
 						Str("stack", string(debug.Stack())).
 						Msg("health fan-out: fetch panicked and was recovered; its node becomes a partial")
+					// Last statement of the goroutine: a second deposit would
+					// over-count `collected`, so collection could end early and
+					// leave a task with neither health nor a partial.
 					results <- healthFetch{index: i, err: errHealthPanicked}
 				}
 			}()

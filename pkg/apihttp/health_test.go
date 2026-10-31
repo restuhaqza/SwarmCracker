@@ -654,66 +654,124 @@ func TestListTasksHealthPanicIsContained(t *testing.T) {
 	require.Contains(t, logged, "broker assertion blew up", "the log carries the panic value")
 	require.Contains(t, logged, "goroutine",
 		"the log carries the recovered panic's stack: %q", logged)
-	require.Contains(t, logged, "tasksWithHealth",
-		"the stack points at the fan-out, not at an unrelated site: %q", logged)
+	// A frame from the panic site, not the `created by ... tasksWithHealth`
+	// trailer, which every goroutine of the fan-out would satisfy. Go 1.27
+	// prints the panic frame as `panic(...)`, not `runtime.gopanic`, so the
+	// fetch frame is the stable proof.
+	require.Contains(t, logged, "fetchTaskHealth",
+		"the stack's frames lead through the fetch that panicked: %q", logged)
 }
 
 // TestListTasksHealthPanicInAQueuedFetchIsContained proves the same recover also
 // covers a fetch that panicked after it had queued for a worker slot. The defer
 // is installed at the top of the goroutine, before the semaphore select, so there
 // is no point between "goroutine started" and "result deposited" that escapes it.
-// Every slot is held until all of them are in flight, so the panicking task — one
-// past the fan-out limit — has to queue before it can run.
+//
+// Which goroutine wins one of the first ten slots is the scheduler's choice, so
+// queueing cannot be forced from outside the fan-out: a panicking fetch that
+// merely sits late in the page still ran in the first wave in 82 of 100 runs
+// here (199 of 200 in the review's probe). Instead the fetch proves the premise
+// itself — it only panics once every slot was already held — and the test retries
+// until one attempt genuinely queues, failing outright if none does. The
+// assertions below therefore only ever run against a panic behind the semaphore.
 func TestListTasksHealthPanicInAQueuedFetchIsContained(t *testing.T) {
-	const budget = 2 * time.Second
-
-	api := newExecTestAPIWithConfig(t, nil, nil, func(cfg *Config) {
-		cfg.HealthPageBudget = budget
-	})
-	for i := range healthFanoutLimit {
-		api.client.tasks = append(api.client.tasks,
-			taskAt(fmt.Sprintf("task-%02d", i), "node-1", fmt.Sprintf("2026-10-24T10:%02d:00Z", i)))
-	}
-	api.client.tasks = append(api.client.tasks,
-		taskAt("task-panic", "node-2", "2026-10-24T11:00:00Z"))
+	const (
+		budget = 2 * time.Second
+		// A panicking fetch that wins a first-wave slot is discarded as an
+		// attempt that proves nothing. Measured on this host: 1 to 10 attempts
+		// before one queues, so 100 is a wide margin against a loaded machine
+		// (and a run that never queues fails in well under the test timeout).
+		attempts = 100
+	)
 
 	logs := captureHealthLogs(t)
 
-	var holding sync.WaitGroup
-	holding.Add(healthFanoutLimit)
-	released := make(chan struct{})
-	var once sync.Once
-	release := func() { once.Do(func() { close(released) }) }
-	t.Cleanup(release)
-	go func() {
-		holding.Wait()
-		release()
-	}()
+	var (
+		rec     *httptest.ResponseRecorder
+		doc     v1.TaskList
+		broker  *fakeBroker
+		elapsed time.Duration
+		tries   int
+	)
 
-	api.broker.healthFn = func(_ context.Context, task v1.Task) (*v1.TaskHealth, error) {
-		if task.ID == "task-panic" {
-			panic("panicked after queueing for a worker slot")
+	for ; tries < attempts && rec == nil; tries++ {
+		api := newExecTestAPIWithConfig(t, nil, nil, func(cfg *Config) {
+			cfg.HealthPageBudget = budget
+		})
+		for i := range healthFanoutLimit {
+			api.client.tasks = append(api.client.tasks,
+				taskAt(fmt.Sprintf("task-%02d", i), "node-1", fmt.Sprintf("2026-10-24T10:%02d:00Z", i)))
 		}
-		holding.Done()
-		<-released
-		return healthyTaskHealth("healthy"), nil
+		api.client.tasks = append(api.client.tasks,
+			taskAt("task-panic", "node-2", "2026-10-24T11:00:00Z"))
+
+		// allInFlight closes only once every slot is held, and a slot can only
+		// free after `release`, which happens after that close — so a panicking
+		// fetch that observes the close ran behind the semaphore.
+		allInFlight := make(chan struct{})
+		var holding sync.WaitGroup
+		holding.Add(healthFanoutLimit)
+		released := make(chan struct{})
+		var once sync.Once
+		release := func() { once.Do(func() { close(released) }) }
+		go func() {
+			holding.Wait()
+			close(allInFlight)
+			release()
+		}()
+
+		var queued atomic.Bool
+		api.broker.healthFn = func(_ context.Context, task v1.Task) (*v1.TaskHealth, error) {
+			if task.ID == "task-panic" {
+				select {
+				case <-allInFlight:
+					queued.Store(true)
+					panic("panicked after queueing for a worker slot")
+				default:
+					// A free slot: this goroutine was not behind the semaphore,
+					// so answering normally is the only honest outcome. The
+					// test discards the attempt and tries the ordering again.
+					return healthyTaskHealth("healthy"), nil
+				}
+			}
+			holding.Done()
+			<-released
+			return healthyTaskHealth("healthy"), nil
+		}
+
+		started := time.Now()
+		attempt := getTasksWithHealth(t, api, "/v1/tasks?health=true")
+		elapsed = time.Since(started)
+		release()
+		if queued.Load() {
+			rec = attempt
+			doc = decodeTaskList(t, attempt)
+			broker = api.broker
+		}
 	}
 
-	started := time.Now()
-	rec := getTasksWithHealth(t, api, "/v1/tasks?health=true")
-	require.Less(t, time.Since(started), budget,
+	require.NotNil(t, rec, "the panicking fetch never queued on the fan-out "+
+		"semaphore in %d attempts, so this test would prove nothing beyond a panic "+
+		"in a fetch", tries)
+
+	require.Less(t, elapsed, budget,
 		"a panic behind the fan-out limit still settles its task")
 
 	require.Equal(t, http.StatusMultiStatus, rec.Code)
-	doc := decodeTaskList(t, rec)
 	require.Len(t, doc.Items, healthFanoutLimit+1)
-	for i := range healthFanoutLimit {
+	for i := range doc.Items {
+		if doc.Items[i].ID == "task-panic" {
+			require.Nil(t, doc.Items[i].Health, "the panicking fetch kept no health")
+			continue
+		}
 		require.NotNil(t, doc.Items[i].Health, "the slot holders keep their health")
 	}
-	require.Nil(t, doc.Items[healthFanoutLimit].Health)
 	require.Len(t, doc.Partial, 1)
 	require.Equal(t, "node-2", doc.Partial[0].NodeID)
-	require.Equal(t, healthFanoutLimit+1, api.broker.healthCalls,
+	broker.healthMu.Lock()
+	healthCalls := broker.healthCalls
+	broker.healthMu.Unlock()
+	require.Equal(t, healthFanoutLimit+1, healthCalls,
 		"every placed task is still fetched")
 	require.Contains(t, logs.String(), "task-panic")
 }
