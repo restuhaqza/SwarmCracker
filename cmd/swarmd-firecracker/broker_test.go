@@ -25,6 +25,7 @@ import (
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v2"
 )
@@ -836,4 +837,18 @@ func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
 	var noArtifactDoc v1.ErrorDocument
 	require.NoError(t, json.NewDecoder(noArtifactResp.Body).Decode(&noArtifactDoc))
 	require.Equal(t, "invalid_artifact_id", noArtifactDoc.Error.Details["reason"])
+}
+
+// The migration export path uses the node's snapshot manager, which exists whether
+// or not the experimental public snapshot API is enabled. A node that never turned
+// the API on must still be able to move a task off itself.
+func TestSnapshotStoreIsAvailableWithoutThePublicSnapshotAPI(t *testing.T) {
+	config := snapshot.DefaultSnapshotConfig()
+	config.SnapshotDir = t.TempDir()
+	manager, err := snapshot.NewManager(config)
+	require.NoError(t, err)
+
+	_, _, store, active := snapshotHandlers(brokerRuntime{snapshotManager: manager})
+	require.False(t, active, "the public snapshot API must stay gated")
+	require.NotNil(t, store, "migration exports through the same store")
 }

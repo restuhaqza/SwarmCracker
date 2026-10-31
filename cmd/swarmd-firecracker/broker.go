@@ -353,9 +353,17 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 func snapshotHandlers(
 	cfg brokerRuntime,
 ) (snapshots, restored broker.Handler, store broker.SnapshotStore, active bool) {
-	if !cfg.snapshotsEnabled || cfg.snapshotManager == nil {
+	// The store is the node's snapshot manager, whether or not the experimental
+	// public snapshot API is enabled: live migration exports through it, and a node
+	// with the API off must still be able to move a task off itself. The two
+	// handlers stay gated below - only the capability the flag controls is.
+	if cfg.snapshotManager == nil {
 		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}),
 			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), nil, false
+	}
+	if !cfg.snapshotsEnabled {
+		return broker.NewSnapshotHandler(broker.SnapshotHandlerConfig{}),
+			broker.NewRestoredHandler(broker.SnapshotHandlerConfig{}), cfg.snapshotManager, false
 	}
 
 	handlerCfg := broker.SnapshotHandlerConfig{
