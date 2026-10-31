@@ -100,18 +100,22 @@ all three replicas boot, (2) the manager's
 read from the manager's `--health-addr` over ssh, for this service's own series
 and as a sum over every service, (3) writing `/tmp/stop` inside every replica
 brings the count back to 1 and moves the `down` counter, and (4) a manual
-`service scale 0` stays at 0 for 95 s (more than two 30 s autoscaler passes)
-with neither counter moving. Then it removes the service.
+`service scale 0` stays at 0 for 90 s (three 30 s autoscaler passes) with this
+service's own counter unmoved. Then it removes the service. A counter that cannot
+be read — a dead `/metrics`, an empty body, or a body without the metric family —
+stops the run with the address in the message instead of reading as "0 events",
+so the paused check cannot pass on nothing.
 
 Its runtime is the daemon's, not the script's: the loop reconciles every 30 s, a
 scale-up reacts on the first hot sample, a scale-down needs two consecutive cold
 samples plus the 60 s cooldown, and a scale moves one replica at a time — so
-3 → 1 is two events. Expect **about six minutes** on a healthy cluster
-(`LAB_AUTOSCALE_UP_DEADLINE`/`LAB_AUTOSCALE_DOWN_DEADLINE`, 240 s and 210 s,
-bound the two halves; a run that hits both is failing anyway). The workload
-burns one guest's CPU in a shell loop with a 50 ms sleep between bursts, which
-measures ~75 % of one vCPU and leaves the guest agent — and `vm exec` — a
-scheduling window.
+3 → 1 is two events. Expect **about 5 1/2 to 6 minutes** on a healthy cluster; the
+budgets (`LAB_AUTOSCALE_UP_DEADLINE`/`LAB_AUTOSCALE_DOWN_DEADLINE`, 150 s each,
+plus 45 s for the three guests to boot, 45 s to reach 0 and the 90 s pause window)
+add up to 8 minutes, so even a run that passes on every deadline fits one sitting.
+The workload burns one guest's CPU in a shell loop with a 50 ms sleep between
+bursts, which measures ~75 % of one vCPU and leaves the guest agent — and
+`vm exec` — a scheduling window.
 
 ## Configuration
 
@@ -132,7 +136,7 @@ ones:
 | `LAB_IMAGE_OCI` | `nginx:alpine` | image used by `test` |
 | `LAB_AUTOSCALE_PREFIX` | `scas` | service name the `autoscale` scenario drives |
 | `LAB_AUTOSCALE_HEALTH_ADDR` | `127.0.0.1:8080` | the manager's `--health-addr`, read from inside node 1 |
-| `LAB_AUTOSCALE_UP_DEADLINE` / `LAB_AUTOSCALE_DOWN_DEADLINE` | `240` / `210` | seconds each half of `autoscale` may take |
+| `LAB_AUTOSCALE_UP_DEADLINE` / `LAB_AUTOSCALE_DOWN_DEADLINE` | `150` / `150` | seconds each half of `autoscale` may take |
 
 Example with 3 nodes and a custom overlay subnet:
 

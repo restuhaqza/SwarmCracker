@@ -726,7 +726,10 @@ cmd_three_tier() {
 # because the first is only a baseline), a scale-down needs two consecutive cold
 # samples, and the policy's cooldowns (30s up, 60s down) gate the next change.
 # A scale moves one replica, so 3 -> 1 is two events and takes about two and a
-# half minutes; the whole scenario takes roughly six.
+# half minutes. The budgets are sized to the mechanism with margin and add up to
+# 8 minutes (150 up + 45 running + 150 down + 45 to zero + 90 paused), so even a
+# run that passes on every deadline -- typically 5 1/2 to 6 minutes -- fits the
+# "all scenarios" pass.
 cmd_autoscale() {
   need_root
   [ -n "$(node_ip 1 || true)" ] || die "no nodes found; run: $0 create"
@@ -737,13 +740,20 @@ cmd_autoscale() {
   local health="${LAB_AUTOSCALE_HEALTH_ADDR:-127.0.0.1:8080}"
   local amin=1 amax=3 atarget=40
   local cooldown_up=30s cooldown_down=60s
-  local up_deadline="${LAB_AUTOSCALE_UP_DEADLINE:-240}"
-  local down_deadline="${LAB_AUTOSCALE_DOWN_DEADLINE:-210}"
-  local pause_window=95
+  # The up budget covers two autoscaler passes (a replica's first sample is only
+  # a baseline) plus the third guest's boot; the down budget covers two cold
+  # samples, the 60s down cooldown and two more cold samples. Both are the
+  # mechanism's own numbers plus ~40s, not round numbers.
+  local up_deadline="${LAB_AUTOSCALE_UP_DEADLINE:-150}"
+  local down_deadline="${LAB_AUTOSCALE_DOWN_DEADLINE:-150}"
+  local run_deadline=45 zero_deadline=45 pause_window=90
   local rc=0
-  local svc_id="" up_before="" down_before="" up_after="" down_after=""
-  local up_paused="" down_paused="" up_for_service="" down_for_service=""
-  local ok host task touched expected i cur stayed
+  local svc_id="" up_before="" down_before="" down_before_stop=""
+  local up_after="" down_after="" up_for_service="" down_for_service=""
+  local up_paused="" down_paused="" up_paused_after="" down_paused_after=""
+  local scrape_value="" scrape_error="" read_events_value=""
+  local stop_done="" stop_touched=0 stop_expected=0 stop_missed=""
+  local ok host task i cur stayed leftover scale_ok
 
   # The workload burns the guest's CPU until /tmp/stop exists and then idles in
   # `sleep`, keeping the task alive and cold. Two properties matter:
@@ -779,16 +789,73 @@ cmd_autoscale() {
     node_ssh 1 "swarmcracker service ps $1 2>/dev/null | grep -c RUNNING || true" 2>/dev/null || true
   }
 
-  # scale_events sums swarmcracker_service_scale_events_total for one direction,
-  # optionally narrowed to one service ID. awk always prints a number, so a
-  # series the manager has not created yet reads as 0 rather than as an error.
-  scale_events() { # <up|down> [service-id]
-    node_ssh 1 "curl -s --max-time 5 http://$health/metrics" 2>/dev/null \
-      | awk -v dir="$1" -v id="${2:-}" '
-          index($1, "swarmcracker_service_scale_events_total{") == 1 &&
-            index($1, "direction=\"" dir "\"") > 0 &&
-            (id == "" || index($1, "service=\"" id "\"") > 0) { total += $2 }
-          END { printf "%.0f\n", total + 0 }'
+  # scrape_events reads swarmcracker_service_scale_events_total off the
+  # manager's /metrics and sums it for one direction, optionally narrowed to one
+  # service ID. It sets scrape_value, or returns 1 with the reason in
+  # scrape_error so the caller can stop with a message (read_events).
+  #
+  # The reading is strict on purpose. This function used to be
+  # `curl -s ... | awk ... total + 0`, which reported "0 events" for a manager
+  # that was not answering at all -- and since the paused check is a *negative*
+  # assertion ("nothing moved"), a dead endpoint passed it, because 0 -> 0 looks
+  # exactly like "no events". So a failed scrape, an empty body, and a body that
+  # is not this daemon's exposition are all hard errors.
+  #
+  # Two things are a legitimate 0 and keep the `+ 0`:
+  #
+  #   - the family is there but has no series for this service: a service that
+  #     never scaled has no series yet (a CounterVec only renders the label
+  #     combinations it has seen);
+  #   - passed `baseline`, the family itself may be missing: a CounterVec with
+  #     no children renders nothing at all, so a manager that has never recorded
+  #     a scale event publishes no such family (measured: an empty
+  #     prometheus.NewCounterVec produces an empty exposition, one Inc()
+  #     produces the family). Without that the pre-create baseline could not be
+  #     read on a fresh lab. Only the baseline is read that way; every later read
+  #     is strict, so a manager that goes away between the baseline and an
+  #     assertion still stops the run instead of passing it as 0 -> 0.
+  scrape_events() { # <up|down> [service-id] [baseline]
+    local dir="$1" id="${2:-}" allow_missing_family="${3:-}" body
+    scrape_value="" scrape_error=""
+    if ! body="$(node_ssh 1 "curl -sf --max-time 5 http://$health/metrics" 2>/dev/null)"; then
+      scrape_error="curl could not read http://$health/metrics on node 1 (is the manager running, and is --health-addr $health?)"
+      return 1
+    fi
+    if [ -z "$body" ]; then
+      scrape_error="http://$health/metrics on node 1 answered with an empty body"
+      return 1
+    fi
+    if ! printf '%s\n' "$body" | grep -q '^swarmcracker_manager_health'; then
+      scrape_error="http://$health/metrics on node 1 is not the manager's metrics exposition (no swarmcracker_* families)"
+      return 1
+    fi
+    if ! printf '%s\n' "$body" | grep -q '^swarmcracker_service_scale_events_total{'; then
+      if [ "$allow_missing_family" = baseline ]; then
+        scrape_value=0
+        return 0
+      fi
+      scrape_error="http://$health/metrics on node 1 has no swarmcracker_service_scale_events_total family"
+      return 1
+    fi
+    scrape_value="$(printf '%s\n' "$body" | awk -v dir="$dir" -v id="$id" '
+        index($1, "swarmcracker_service_scale_events_total{") == 1 &&
+          index($1, "direction=\"" dir "\"") > 0 &&
+          (id == "" || index($1, "service=\"" id "\"") > 0) { total += $2 }
+        END { printf "%.0f\n", total + 0 }')"
+    if [ -z "$scrape_value" ]; then
+      scrape_error="the $dir counter could not be summed out of http://$health/metrics on node 1"
+      return 1
+    fi
+  }
+
+  # read_events is scrape_events with the hard stop: a counter that could not be
+  # read is unknown, never 0, and a bare assignment under `set -e` would abort the
+  # run with no message at all.
+  read_events() { # <up|down> [service-id] [baseline]; sets read_events_value
+    if ! scrape_events "$@"; then
+      die "cannot read the $1 scale-event counter: $scrape_error"
+    fi
+    read_events_value="$scrape_value"
   }
 
   # wait_replicas polls the manager until it reports <count> replicas, printing
@@ -835,6 +902,51 @@ cmd_autoscale() {
     done
   }
 
+  # try_stop writes /tmp/stop in every replica it can find on a lab node and
+  # appends the task IDs it succeeded in to stop_done.
+  try_stop() {
+    local host task
+    while read -r host task; do
+      [ -n "$task" ] || continue
+      case " $stop_done " in *" $task "*) continue ;; esac
+      if node_ssh "$host" "swarmcracker vm exec $task -- sh -c 'touch /tmp/stop && test -f /tmp/stop'" >/dev/null </dev/null 2>&1; then
+        stop_done="$stop_done $task"
+      fi
+    done < <(task_hosts)
+  }
+
+  # stop_replicas writes /tmp/stop in every replica of the service and sets:
+  #   stop_touched   replicas the write succeeded in
+  #   stop_expected  replicas the manager reports RUNNING
+  #   stop_missed    the RUNNING task IDs that never got the file
+  #
+  # Every replica must get the file, not just one: the autoscaler averages over
+  # the replicas that report samples, so a single replica still burning keeps the
+  # average above the scale-in band while the others are cold -- the scale-in
+  # check would then fail (or, worse, "pass" on another service's events) with
+  # one guest left hot. It re-enumerates once before giving up, because a replica
+  # can be replaced between the enumeration and the write: `vm exec` against the
+  # dead task fails, and the replacement is a different task that needs its own
+  # file.
+  stop_replicas() {
+    local host task missed
+    stop_done="" stop_touched=0 stop_expected=0 stop_missed=""
+    try_stop
+    stop_expected="$(running_replicas "$svc")"
+    stop_touched="$(printf '%s\n' "$stop_done" | wc -w | tr -d '[:space:]')"
+    if [ "$stop_touched" -lt "${stop_expected:-0}" ]; then
+      try_stop
+      stop_expected="$(running_replicas "$svc")"
+      stop_touched="$(printf '%s\n' "$stop_done" | wc -w | tr -d '[:space:]')"
+    fi
+    missed=""
+    while read -r host task; do
+      [ -n "$task" ] || continue
+      case " $stop_done " in *" $task "*) ;; *) missed="$missed $task" ;; esac
+    done < <(task_hosts)
+    stop_missed="${missed# }"
+  }
+
   # check reports one assertion. A failure is not fatal until the end, so a run
   # tells the operator everything that went wrong instead of the first thing.
   check() { # <0 when the check passed> <what the check proves>
@@ -851,11 +963,16 @@ cmd_autoscale() {
   }
 
   # dump_autoscaler is the evidence a timed-out check needs: the replica view,
-  # the counters and the manager's own decisions, all from the manager.
+  # the counters and the manager's own decisions, all from the manager. The
+  # counters are read softly here -- the run is already failing, and a second
+  # hard stop would replace the dump with a die.
   dump_autoscaler() {
+    local up='?' down='?'
     printf '  service ps:\n'
     node_ssh 1 "swarmcracker service ps $svc 2>/dev/null" 2>/dev/null | sed 's/^/    /' || true
-    printf '  scale events so far: up=%s down=%s\n' "$(scale_events up)" "$(scale_events down)"
+    if scrape_events up; then up="$scrape_value"; fi
+    if scrape_events down; then down="$scrape_value"; fi
+    printf '  scale events so far: up=%s down=%s\n' "$up" "$down"
     printf '  manager autoscaler log (last 20 lines):\n'
     node_ssh 1 "journalctl -u swarmcracker-manager -o cat --no-pager 2>/dev/null | grep -i autoscal | tail -20" 2>/dev/null \
       | sed 's/^/    /' || true
@@ -871,19 +988,29 @@ cmd_autoscale() {
   cleanup
   # Wait for its microVMs to be gone as well, not just its service entry: they
   # would keep the host's vCPUs busy and make this run's replicas look colder
-  # than they are.
-  for _ in $(seq 1 24); do
+  # than they are. This only warns when it expires -- the run is still correct,
+  # its first CPU samples are just skewed by whatever is still burning.
+  leftover=1
+  for i in $(seq 1 24); do
     cur="$(running_replicas "$svc")"
-    if [ "${cur:-0}" = 0 ]; then break; fi
+    if [ "${cur:-0}" = 0 ]; then leftover=0; break; fi
+    if [ "$i" = 1 ]; then
+      info "waiting up to 120s for the old $svc microVMs to exit, so their load does not skew this run's CPU samples"
+    fi
     sleep 5
   done
+  if [ "$leftover" != 0 ]; then
+    warn "old $svc tasks are still RUNNING after 120s; the first CPU samples of this run may read colder than they are"
+  fi
 
   info "scale-event counters before: the manager's $health/metrics on node 1"
-  if ! node_ssh 1 "curl -sf --max-time 5 http://$health/metrics >/dev/null" 2>/dev/null; then
-    die "no metrics from $health on node 1 (is the manager running, and is --health-addr $health?)"
-  fi
-  up_before="$(scale_events up)"
-  down_before="$(scale_events down)"
+  # The baseline is the only read that tolerates a missing metric family: before
+  # the first scale event ever, the manager publishes none (see scrape_events),
+  # and the sum over every service is then genuinely 0.
+  read_events up "" baseline
+  up_before="$read_events_value"
+  read_events down "" baseline
+  down_before="$read_events_value"
   printf '  up=%s down=%s (summed over every service)\n' "$up_before" "$down_before"
 
   info "deploying $svc: $amin replica of $image, burning CPU until /tmp/stop exists"
@@ -903,11 +1030,13 @@ cmd_autoscale() {
   if [ "$(spec_replicas "$svc")" = "$amax" ]; then ok=0; fi
   check "$ok" "replica count reached max=$amax on the autoscaler's own decision"
   ok=1
-  if wait_running "$amax" 120; then ok=0; fi
+  if wait_running "$amax" "$run_deadline"; then ok=0; fi
   check "$ok" "all $amax replicas are RUNNING (the guests the scale-up added booted)"
 
-  up_after="$(scale_events up)"
-  up_for_service="$(scale_events up "$svc_id")"
+  read_events up
+  up_after="$read_events_value"
+  read_events up "$svc_id"
+  up_for_service="$read_events_value"
   ok=1
   if [ "${up_after:-0}" -gt "${up_before:-0}" ]; then ok=0; fi
   check "$ok" "scale_events_total{direction=\"up\"} increased: ${up_before} -> ${up_after}"
@@ -916,21 +1045,22 @@ cmd_autoscale() {
   check "$ok" "this service's own 'up' series (label service=\"$svc_id\") is ${up_for_service}"
 
   info "check 2: stopping the load -- /tmp/stop in every replica"
-  for i in 1 2 3; do
-    touched=0
-    while read -r host task; do
-      if node_ssh "$host" "swarmcracker vm exec $task -- sh -c 'touch /tmp/stop && test -f /tmp/stop'" >/dev/null 2>&1; then
-        touched=$((touched + 1))
-      fi
-    done < <(task_hosts)
-    expected="$(running_replicas "$svc")"
-    if [ "${touched:-0}" -gt 0 ] && [ "${touched:-0}" -ge "${expected:-0}" ]; then break; fi
-    sleep 3
-  done
-  printf '  stopped %s of %s RUNNING replica(s)\n' "$touched" "${expected:-0}"
-  if [ "${touched:-0}" = 0 ]; then
+  # The down baseline is taken here, immediately before the writes, so the event
+  # that check 3 measures can only be this scenario's: anything that scaled
+  # between the create and now is not counted as ours.
+  read_events down
+  down_before_stop="$read_events_value"
+  stop_replicas
+  printf '  stopped %s of %s RUNNING replica(s)\n' "$stop_touched" "${stop_expected:-0}"
+  ok=1
+  if [ -z "$stop_missed" ] && [ "${stop_touched:-0}" -ge "${stop_expected:-0}" ]; then ok=0; fi
+  check "$ok" "every replica got /tmp/stop (${stop_touched} of ${stop_expected:-0}; missed: ${stop_missed:-none})"
+  if [ "$ok" != 0 ]; then
     dump_autoscaler
-    die "could not write /tmp/stop in any replica, so the load never stops"
+    if [ "${stop_touched:-0}" = 0 ]; then
+      die "could not write /tmp/stop in any replica, so the load never stops"
+    fi
+    warn "a replica without /tmp/stop keeps burning, so the scale-in checks below may measure the wrong thing"
   fi
 
   info "check 3: the count returns to min=$amin (deadline ${down_deadline}s)"
@@ -942,25 +1072,38 @@ cmd_autoscale() {
   if [ "$(spec_replicas "$svc")" = "$amin" ]; then ok=0; fi
   check "$ok" "replica count returned to min=$amin once the load stopped"
 
-  down_after="$(scale_events down)"
-  down_for_service="$(scale_events down "$svc_id")"
+  read_events down
+  down_after="$read_events_value"
+  read_events down "$svc_id"
+  down_for_service="$read_events_value"
   ok=1
-  if [ "${down_after:-0}" -gt "${down_before:-0}" ]; then ok=0; fi
-  check "$ok" "scale_events_total{direction=\"down\"} increased: ${down_before} -> ${down_after}"
+  if [ "${down_after:-0}" -gt "${down_before_stop:-0}" ]; then ok=0; fi
+  check "$ok" "scale_events_total{direction=\"down\"} increased since the load stopped: ${down_before_stop} -> ${down_after}"
   ok=1
   if [ "${down_for_service:-0}" -ge 1 ]; then ok=0; fi
   check "$ok" "this service's own 'down' series (label service=\"$svc_id\") is ${down_for_service}"
 
   info "check 4: a manual 'service scale 0' is a pause the autoscaler does not undo"
-  node_ssh 1 "swarmcracker service scale $svc 0" >/dev/null
-  if ! wait_replicas 0 120 "$svc"; then
+  scale_ok=1
+  if node_ssh 1 "swarmcracker service scale $svc 0" >/dev/null 2>&1; then scale_ok=0; fi
+  check "$scale_ok" "'service scale $svc 0' was accepted by the manager"
+  if [ "$scale_ok" != 0 ]; then
+    dump_autoscaler
+    die "the manager refused 'service scale $svc 0', so the pause cannot be tested"
+  fi
+  if ! wait_replicas 0 "$zero_deadline" "$svc"; then
     dump_autoscaler
     die "the service did not reach 0 replicas"
   fi
-  up_paused="$(scale_events up)"
-  down_paused="$(scale_events down)"
-  printf '  at 0 replicas: up=%s down=%s; watching for %ss (more than two 30s passes)\n' \
-    "$up_paused" "$down_paused" "$pause_window"
+  # The paused window is read from this service's own series, with the same ID
+  # used by the checks above: summing over every service would make another
+  # autoscaled service in the lab fail the paused assertion spuriously.
+  read_events up "$svc_id"
+  up_paused="$read_events_value"
+  read_events down "$svc_id"
+  down_paused="$read_events_value"
+  printf '  at 0 replicas: up=%s down=%s (service=%s); watching for %ss (more than two 30s passes)\n' \
+    "$up_paused" "$down_paused" "$svc_id" "$pause_window"
   stayed=0
   for i in $(seq 1 $((pause_window / 5))); do
     sleep 5
@@ -974,13 +1117,15 @@ cmd_autoscale() {
   ok=1
   if [ "$stayed" = 0 ]; then ok=0; fi
   check "$ok" "the count stayed 0 for ${pause_window}s"
-  up_after="$(scale_events up)"
-  down_after="$(scale_events down)"
+  read_events up "$svc_id"
+  up_paused_after="$read_events_value"
+  read_events down "$svc_id"
+  down_paused_after="$read_events_value"
   # `ok` is 1 only when a counter moved: a paused service must emit no events,
   # so "moved" is the failure here, unlike the checks above.
   ok=0
-  if [ "${up_after:-0}" -gt "${up_paused:-0}" ] || [ "${down_after:-0}" -gt "${down_paused:-0}" ]; then ok=1; fi
-  check "$ok" "neither counter moved while paused: up ${up_paused} -> ${up_after}, down ${down_paused} -> ${down_after}"
+  if [ "${up_paused_after:-0}" -gt "${up_paused:-0}" ] || [ "${down_paused_after:-0}" -gt "${down_paused:-0}" ]; then ok=1; fi
+  check "$ok" "this service emitted no scale event while paused: up ${up_paused} -> ${up_paused_after}, down ${down_paused} -> ${down_paused_after}"
 
   info "the manager's decisions for $svc"
   node_ssh 1 "journalctl -u swarmcracker-manager -o cat --no-pager 2>/dev/null | grep -F -- 'service $svc_id' | tail -10" 2>/dev/null \
