@@ -10,7 +10,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 // The restored-instance record maps a task SwarmKit started from a migration
@@ -260,6 +263,95 @@ func (r *RestoredRegistry) Get(taskID string) (RestoredInstance, bool, error) {
 			"restored-instance record %s is not valid: %w (left in place for inspection)", path, err)
 	}
 	return instance, true, nil
+}
+
+// RestoredVsockPath returns the vsock muxer recorded for a task that was started
+// from a migration artifact. ok is false when there is no record, when the record
+// cannot be read or does not validate, and when stateDir is empty; the caller then
+// derives the path as before. It never writes, never creates the directory and
+// never deletes a record: a reader must not mutate what it inspects.
+//
+// It is the CLI's counterpart to the node broker's resolver: a migrated VM keeps
+// the source task's muxer inside its Firecracker state, so the path cannot be
+// derived from the new task's ID. The broker reaches the record through a
+// RestoredRegistry it opened at startup; a CLI on the node cannot, because
+// NewRestoredRegistry creates and write-probes the record directory, and a
+// non-root caller of `vm exec` has neither the right nor the need to do that. So
+// the file is read directly, and every way of not having a usable answer is the
+// same answer: no record, and the derived path applies.
+//
+// A record that exists but cannot be used is reported once at warn, naming its
+// path, and left in place: deleting it here would destroy the only evidence a
+// human has of what the node believes, and that is the daemon's job (its startup
+// reconciliation), not a reader's.
+func RestoredVsockPath(stateDir, taskID string) (vsockPath string, ok bool) {
+	dir := RestoredInstanceDir(stateDir)
+	if dir == "" {
+		return "", false
+	}
+	// The ID names the file, so the shape that could escape the directory is
+	// refused by the one rule that owns it rather than by a copy here.
+	if err := CheckTaskID(taskID); err != nil {
+		return "", false
+	}
+
+	path := filepath.Join(dir, taskID+restoredRecordSuffix)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		// No record is the ordinary case: a task this node booted itself was
+		// never restored, and nothing about it is worth a warning.
+		if !errors.Is(err, fs.ErrNotExist) {
+			warnRestoredRecordIgnored(path, err)
+		}
+		return "", false
+	}
+
+	var instance RestoredInstance
+	if err := json.Unmarshal(data, &instance); err != nil {
+		warnRestoredRecordIgnored(path, fmt.Errorf("it does not decode: %w", err))
+		return "", false
+	}
+	if instance.TaskID != taskID {
+		warnRestoredRecordIgnored(path, fmt.Errorf("it belongs to task %q", instance.TaskID))
+		return "", false
+	}
+	// Decoding is not evidence of a usable record, so the record is held to the
+	// same rule Put enforces — a hand-edited or foreign-version file can decode
+	// and still describe no VM.
+	if err := instance.validate(); err != nil {
+		warnRestoredRecordIgnored(path, err)
+		return "", false
+	}
+	return instance.VsockPath, true
+}
+
+// restoredReadWarned is the set of records RestoredVsockPath has already reported
+// as unusable, keyed by path. A record is one file, so a second lookup of the
+// same task in one process adds nothing; the latch keeps a caller that resolves
+// in a loop from repeating the same sentence.
+var restoredReadWarned = struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}{}
+
+// warnRestoredRecordIgnored reports a record the resolver refused and says what
+// happens next, once per path.
+func warnRestoredRecordIgnored(path string, reason error) {
+	restoredReadWarned.mu.Lock()
+	if _, seen := restoredReadWarned.seen[path]; seen {
+		restoredReadWarned.mu.Unlock()
+		return
+	}
+	if restoredReadWarned.seen == nil {
+		restoredReadWarned.seen = make(map[string]struct{})
+	}
+	restoredReadWarned.seen[path] = struct{}{}
+	restoredReadWarned.mu.Unlock()
+
+	log.Warn().
+		Str("record", path).
+		Err(reason).
+		Msg("Ignoring a restored-instance record that cannot be used: the task's vsock muxer is derived from its task ID, and the record is left in place for inspection")
 }
 
 // Delete removes a task's record. A missing record is success: the task's stop

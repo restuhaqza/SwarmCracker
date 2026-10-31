@@ -36,6 +36,15 @@ type fakeVM struct {
 // hello exchange, which lets a test observe or script individual frames.
 func startFakeVM(t *testing.T, taskID string, script func(net.Conn)) *fakeVM {
 	t.Helper()
+	return startFakeVMWithVsock(t, taskID, taskID, script)
+}
+
+// startFakeVMWithVsock is startFakeVM for a VM whose vsock muxer belongs to
+// another task, which is what a task started from a migration artifact runs: the
+// API socket is the new task's, while Firecracker kept the source task's muxer
+// inside the state file it loaded.
+func startFakeVMWithVsock(t *testing.T, taskID, vsockTaskID string, script func(net.Conn)) *fakeVM {
+	t.Helper()
 	dir := shortSocketDir(t)
 
 	// Firecracker API socket: runtime.DiscoverRunningVMs probes
@@ -51,7 +60,7 @@ func startFakeVM(t *testing.T, taskID string, script func(net.Conn)) *fakeVM {
 	// Firecracker vsock Unix-socket muxer: agent.Dial dials the uds_path itself,
 	// then sends "CONNECT <port>" and accepts the arbitrary host-side port
 	// Firecracker assigns.
-	vsockPath := filepath.Join(dir, taskID+".vsock")
+	vsockPath := filepath.Join(dir, vsockTaskID+".vsock")
 	vsockLn, err := net.Listen("unix", vsockPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = vsockLn.Close() })

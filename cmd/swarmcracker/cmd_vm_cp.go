@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
-	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -23,6 +22,7 @@ var errCopyDirectory = errors.New("copying directories is not supported yet")
 func newVMCpCommand() *cobra.Command {
 	var (
 		socketDir string
+		stateDir  string
 		modeStr   string
 	)
 
@@ -41,6 +41,11 @@ direction:
 shown by "swarmcracker task ls"). Only regular files are supported; copying
 directories is not supported yet.
 
+A task that was moved to this node by "vm migrate" runs a VM that still answers
+on the source task's vsock muxer, so the copy reads the node's restored-instance
+record (--state-dir, default $SWARM_STATE_DIR or /var/lib/swarmkit) instead of
+deriving a path from the task ID.
+
 The first ":" in an argument selects the direction, so a local path may not
 contain a colon.`,
 		Example: `  swarmcracker vm cp ./config.yaml 5f3a1b2c9d:/etc/app/config.yaml
@@ -57,11 +62,13 @@ contain a colon.`,
 			if err != nil {
 				return err
 			}
-			return copyFileToOrFromVM(cmd.Context(), socketDir, args[0], args[1], mode)
+			return copyFileToOrFromVM(cmd.Context(), socketDir, stateDir, args[0], args[1], mode)
 		},
 	}
 
 	cmd.Flags().StringVar(&socketDir, "socket-dir", defaultConsoleSocketDir, "Directory containing microVM vsock sockets")
+	cmd.Flags().StringVar(&stateDir, "state-dir", defaultLocalStateDir(),
+		"Node state directory holding the restored-instance records of migrated tasks")
 	cmd.Flags().StringVar(&modeStr, "mode", "0644", "File mode for host-to-guest copies (octal)")
 
 	return cmd
@@ -88,8 +95,12 @@ func splitCopyArg(arg string) (ref, guestPath string, ok bool) {
 }
 
 // copyFileToOrFromVM copies one regular file between the host and a guest. The
-// direction is chosen by which argument carries the "<vm>:" prefix.
-func copyFileToOrFromVM(ctx context.Context, socketDir, arg1, arg2 string, mode uint32) error {
+// direction is chosen by which argument carries the "<vm>:" prefix. stateDir is
+// the node state directory the restored-instance records live in: it decides
+// which muxer a task started from a migration artifact is dialed on, and an
+// empty value derives the path from the task ID, as a task this node booted
+// itself always does.
+func copyFileToOrFromVM(ctx context.Context, socketDir, stateDir, arg1, arg2 string, mode uint32) error {
 	srcRef, srcGuestPath, srcIsGuest := splitCopyArg(arg1)
 	dstRef, dstGuestPath, dstIsGuest := splitCopyArg(arg2)
 	if srcIsGuest == dstIsGuest {
@@ -111,7 +122,9 @@ func copyFileToOrFromVM(ctx context.Context, socketDir, arg1, arg2 string, mode 
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	client, err := agent.Dial(dialCtx, scruntime.VsockPath(socketDir, taskID), agent.DefaultPort)
+	// Like execLocal: a restored task's VM answers on the muxer the node's
+	// restored-instance record names, not on one derived from this task's ID.
+	client, err := agent.Dial(dialCtx, localVsockPath(socketDir, stateDir, taskID), agent.DefaultPort)
 	if err != nil {
 		return err
 	}
