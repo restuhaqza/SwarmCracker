@@ -100,19 +100,29 @@ all three replicas boot, (2) the manager's
 read from the manager's `--health-addr` over ssh, for this service's own series
 and as a sum over every service, (3) writing `/tmp/stop` inside every replica
 brings the count back to 1 and moves the `down` counter, and (4) a manual
-`service scale 0` stays at 0 for 90 s (three 30 s autoscaler passes) with this
-service's own counter unmoved. Then it removes the service. A counter that cannot
-be read — a dead `/metrics`, an empty body, or a body without the metric family —
-stops the run with the address in the message instead of reading as "0 events",
-so the paused check cannot pass on nothing.
+`service scale 0` stays at 0 for 95 s (three 30 s autoscaler passes) with this
+service's own counter unmoved. Then it removes the service.
+
+Both counter assertions poll (5 s apart, 45 s) instead of trusting one scrape,
+because the event is emitted asynchronously and a node doing image prep can
+answer `/metrics` with a body that stops short of the scale-event family. A
+reading that is not the manager's complete exposition — curl failed, the body is
+empty, it has no `swarmcracker_` lines, or it never reaches the last family
+(`swarmcracker_vxlan_peers`) — is retried, never read as "0 events"; only a
+deadline turns it into a failure, and the message carries curl's exit status, the
+body's size, its `swarmcracker_` line count and whether the exposition was
+complete. The pause window counts only readable reads, and fewer than two of them
+is a `FAIL`, so neither assertion can pass on nothing.
 
 Its runtime is the daemon's, not the script's: the loop reconciles every 30 s, a
 scale-up reacts on the first hot sample, a scale-down needs two consecutive cold
 samples plus the 60 s cooldown, and a scale moves one replica at a time — so
-3 → 1 is two events. Expect **about 5 1/2 to 6 minutes** on a healthy cluster; the
+3 → 1 is two events. Expect **about 6 minutes** on a healthy cluster. The
 budgets (`LAB_AUTOSCALE_UP_DEADLINE`/`LAB_AUTOSCALE_DOWN_DEADLINE`, 150 s each,
-plus 45 s for the three guests to boot, 45 s to reach 0 and the 90 s pause window)
-add up to 8 minutes, so even a run that passes on every deadline fits one sitting.
+plus 45 s for the three guests to boot, 45 s for each counter poll, 45 s to reach
+0 and the 95 s pause window) add up to 620 s, but a passing run does not sit on
+the counter budgets: the event is emitted before the count reaches its target,
+so the first poll answers.
 The workload burns one guest's CPU in a shell loop with a 50 ms sleep between
 bursts, which measures ~75 % of one vCPU and leaves the guest agent — and
 `vm exec` — a scheduling window.
@@ -137,6 +147,8 @@ ones:
 | `LAB_AUTOSCALE_PREFIX` | `scas` | service name the `autoscale` scenario drives |
 | `LAB_AUTOSCALE_HEALTH_ADDR` | `127.0.0.1:8080` | the manager's `--health-addr`, read from inside node 1 |
 | `LAB_AUTOSCALE_UP_DEADLINE` / `LAB_AUTOSCALE_DOWN_DEADLINE` | `150` / `150` | seconds each half of `autoscale` may take |
+| `LAB_AUTOSCALE_EVENT_DEADLINE` | `45` | seconds each counter poll waits for a scale event to appear |
+| `LAB_AUTOSCALE_READ_DEADLINE` | `20` | seconds a single counter read retries before it is fatal |
 
 Example with 3 nodes and a custom overlay subnet:
 
