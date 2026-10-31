@@ -15,7 +15,11 @@ import (
 // that a node running many microVMs spends no meaningful time in the guest
 // agent.
 //
-// It is a variable so tests can shorten it; the daemon never changes it.
+// It is a variable so tests can shorten it; the daemon never changes it. A
+// poller samples it once, when it starts, rather than on every tick: the value a
+// running poller uses is then fixed for its lifetime, so a test that restores
+// the default cannot race a poller that a previous test left running (the race
+// detector reported exactly that pair).
 var MetricsPollInterval = 15 * time.Second
 
 // metricsProbeTimeout bounds one sample: dial, hello and the metrics reply. The
@@ -54,19 +58,23 @@ func (c *Controller) startMetricsMonitor() {
 	if task.ServiceID != "" {
 		service = task.ServiceID
 	}
+	// Sample the interval here, in the caller's goroutine, and hand the value to
+	// the poller: a per-tick read of the package variable races any test that
+	// shortens or restores it while an earlier poller is still winding down.
+	interval := MetricsPollInterval
 	c.metricsWG.Add(1)
 	c.metricsMu.Unlock()
 
 	udsPath := c.guestVsockPath()
 	go func() {
 		defer c.metricsWG.Done()
-		c.monitorMetrics(ctx, udsPath, task.ID, service)
+		c.monitorMetrics(ctx, udsPath, task.ID, service, interval)
 	}()
 }
 
 // monitorMetrics samples the guest until ctx is cancelled. It never takes c.mu,
 // for the same reason the health monitor does not: teardown holds that lock.
-func (c *Controller) monitorMetrics(ctx context.Context, udsPath, taskID, service string) {
+func (c *Controller) monitorMetrics(ctx context.Context, udsPath, taskID, service string, interval time.Duration) {
 	// The first sample is immediate so a series exists as soon as the VM is
 	// running, rather than one interval later.
 	timer := time.NewTimer(0)
@@ -104,7 +112,7 @@ func (c *Controller) monitorMetrics(ctx context.Context, udsPath, taskID, servic
 			)
 		}
 
-		timer.Reset(MetricsPollInterval)
+		timer.Reset(interval)
 	}
 }
 
