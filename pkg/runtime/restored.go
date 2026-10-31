@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/rs/zerolog/log"
@@ -213,7 +212,7 @@ func (r *RestoredRegistry) Put(instance RestoredInstance) error {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("restored-instance record for task %q: close %s: %w", instance.TaskID, tmpName, err)
 	}
-	if err := os.Rename(tmpName, r.path(instance.TaskID)); err != nil {
+	if err := os.Rename(tmpName, restoredRecordPath(r.dir, instance.TaskID)); err != nil {
 		_ = os.Remove(tmpName)
 		return fmt.Errorf("restored-instance record for task %q: rename into place: %w", instance.TaskID, err)
 	}
@@ -236,13 +235,31 @@ func (r *RestoredRegistry) Get(taskID string) (RestoredInstance, bool, error) {
 		return RestoredInstance{}, false, err
 	}
 
-	path := r.path(taskID)
+	return readRestoredRecord(r.dir, taskID)
+}
+
+// readRestoredRecord reads one record in dir and holds it to the rule Put
+// enforces. found is false when the file is not there, which is the ordinary "this
+// task was never restored here" answer; an error means the file is there and
+// cannot be used — it cannot be read, it does not decode, it names another task,
+// or it describes no VM — and the file is left in place. Callers validate the task
+// ID first: it becomes a file name.
+//
+// It is the one read sequence behind the registry's Get and the CLI's
+// RestoredVsockPath. The two differ only in what they do with the answer (Get
+// returns the record; RestoredVsockPath takes the muxer out of it and words a
+// warning), and a second copy of these steps is exactly the drift taskid.go warns
+// about: the copy that drifts is the one that resolves a record the node cannot
+// use.
+func readRestoredRecord(dir, taskID string) (RestoredInstance, bool, error) {
+	path := restoredRecordPath(dir, taskID)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return RestoredInstance{}, false, nil
 		}
-		return RestoredInstance{}, false, fmt.Errorf("restored-instance record for task %q: read %s: %w", taskID, path, err)
+		return RestoredInstance{}, false, unreadableRecordError{fmt.Errorf(
+			"restored-instance record for task %q: read %s: %w", taskID, path, err)}
 	}
 
 	var instance RestoredInstance
@@ -265,6 +282,23 @@ func (r *RestoredRegistry) Get(taskID string) (RestoredInstance, bool, error) {
 	return instance, true, nil
 }
 
+// unreadableRecordError marks a failure to read the record file, as opposed to a
+// failure to use what it holds. It prints the read error unchanged, so Get's
+// wording stays what its callers log, and it answers errors.Is for
+// errRecordUnreadable — the one fact a caller needs to word a warning for the
+// cause an operator has to fix (the file's mode, the disk) instead of telling them
+// the node's record is wrong.
+type unreadableRecordError struct{ err error }
+
+func (e unreadableRecordError) Error() string { return e.err.Error() }
+
+func (e unreadableRecordError) Unwrap() error { return e.err }
+
+func (e unreadableRecordError) Is(target error) bool { return target == errRecordUnreadable }
+
+// errRecordUnreadable is what unreadableRecordError reports through errors.Is.
+var errRecordUnreadable = errors.New("the restored-instance record cannot be read")
+
 // RestoredVsockPath returns the vsock muxer recorded for a task that was started
 // from a migration artifact. ok is false when there is no record, when the record
 // cannot be read or does not validate, and when stateDir is empty; the caller then
@@ -280,78 +314,58 @@ func (r *RestoredRegistry) Get(taskID string) (RestoredInstance, bool, error) {
 // the file is read directly, and every way of not having a usable answer is the
 // same answer: no record, and the derived path applies.
 //
-// A record that exists but cannot be used is reported once at warn, naming its
-// path, and left in place: deleting it here would destroy the only evidence a
-// human has of what the node believes, and that is the daemon's job (its startup
-// reconciliation), not a reader's.
+// A record that exists but cannot be used is reported at warn, naming its path
+// and the cause, and is left in place: deleting it here would destroy the only
+// evidence a human has of what the node believes, and that is the daemon's job
+// (its startup reconciliation), not a reader's. The warning is emitted on every
+// call rather than latched: the local CLI does at most one lookup per process, so
+// a per-process map in a library would only ever silence a caller that resolves in
+// a loop — a shape this helper does not have — and it would grow without bound.
 func RestoredVsockPath(stateDir, taskID string) (vsockPath string, ok bool) {
 	dir := RestoredInstanceDir(stateDir)
 	if dir == "" {
 		return "", false
 	}
 	// The ID names the file, so the shape that could escape the directory is
-	// refused by the one rule that owns it rather than by a copy here.
+	// refused by the one rule that owns it rather than by a copy here — and it is
+	// refused before the path is built, so no read ever leaves the record
+	// directory.
 	if err := CheckTaskID(taskID); err != nil {
 		return "", false
 	}
 
-	path := filepath.Join(dir, taskID+restoredRecordSuffix)
-	data, err := os.ReadFile(path)
+	instance, found, err := readRestoredRecord(dir, taskID)
 	if err != nil {
-		// No record is the ordinary case: a task this node booted itself was
-		// never restored, and nothing about it is worth a warning.
-		if !errors.Is(err, fs.ErrNotExist) {
-			warnRestoredRecordIgnored(path, err)
-		}
+		warnRestoredRecordIgnored(restoredRecordPath(dir, taskID), unusableRecordCause(err), err)
 		return "", false
 	}
-
-	var instance RestoredInstance
-	if err := json.Unmarshal(data, &instance); err != nil {
-		warnRestoredRecordIgnored(path, fmt.Errorf("it does not decode: %w", err))
-		return "", false
-	}
-	if instance.TaskID != taskID {
-		warnRestoredRecordIgnored(path, fmt.Errorf("it belongs to task %q", instance.TaskID))
-		return "", false
-	}
-	// Decoding is not evidence of a usable record, so the record is held to the
-	// same rule Put enforces — a hand-edited or foreign-version file can decode
-	// and still describe no VM.
-	if err := instance.validate(); err != nil {
-		warnRestoredRecordIgnored(path, err)
+	// No record is the ordinary case: a task this node booted itself was never
+	// restored, and nothing about it is worth a warning.
+	if !found {
 		return "", false
 	}
 	return instance.VsockPath, true
 }
 
-// restoredReadWarned is the set of records RestoredVsockPath has already reported
-// as unusable, keyed by path. A record is one file, so a second lookup of the
-// same task in one process adds nothing; the latch keeps a caller that resolves
-// in a loop from repeating the same sentence.
-var restoredReadWarned = struct {
-	mu   sync.Mutex
-	seen map[string]struct{}
-}{}
-
-// warnRestoredRecordIgnored reports a record the resolver refused and says what
-// happens next, once per path.
-func warnRestoredRecordIgnored(path string, reason error) {
-	restoredReadWarned.mu.Lock()
-	if _, seen := restoredReadWarned.seen[path]; seen {
-		restoredReadWarned.mu.Unlock()
-		return
+// unusableRecordCause names, in one phrase, which half of the read failed: whether
+// the file could be read at all, or whether it was read and is not a record this
+// node wrote. The two need different fixes, so the warning must not claim one when
+// it is the other.
+func unusableRecordCause(err error) string {
+	if errors.Is(err, errRecordUnreadable) {
+		return "cannot be read"
 	}
-	if restoredReadWarned.seen == nil {
-		restoredReadWarned.seen = make(map[string]struct{})
-	}
-	restoredReadWarned.seen[path] = struct{}{}
-	restoredReadWarned.mu.Unlock()
+	return "is not a usable record"
+}
 
+// warnRestoredRecordIgnored reports a record the resolver refused and what happens
+// next: the caller falls back to the muxer its task ID derives, and the file stays
+// where a human can read it.
+func warnRestoredRecordIgnored(path, cause string, reason error) {
 	log.Warn().
 		Str("record", path).
 		Err(reason).
-		Msg("Ignoring a restored-instance record that cannot be used: the task's vsock muxer is derived from its task ID, and the record is left in place for inspection")
+		Msgf("Ignoring a restored-instance record that %s: the vsock muxer falls back to the path derived from the task ID, and the record is left in place for inspection", cause)
 }
 
 // Delete removes a task's record. A missing record is success: the task's stop
@@ -366,7 +380,7 @@ func (r *RestoredRegistry) Delete(taskID string) error {
 		return err
 	}
 
-	path := r.path(taskID)
+	path := restoredRecordPath(r.dir, taskID)
 	err := os.Remove(path)
 	switch {
 	case err == nil:
@@ -427,10 +441,11 @@ func (r *RestoredRegistry) List() ([]RestoredInstance, []string, error) {
 	return out, skipped, nil
 }
 
-// path is the record file for a task. Callers validate the task ID first: it
-// becomes a file name, so a separator or a dot would escape the directory.
-func (r *RestoredRegistry) path(taskID string) string {
-	return filepath.Join(r.dir, taskID+restoredRecordSuffix)
+// restoredRecordPath is the record file for a task: <dir>/<taskId>.json. Callers
+// validate the task ID first: it becomes a file name, so a separator or a dot
+// would escape the directory.
+func restoredRecordPath(dir, taskID string) string {
+	return filepath.Join(dir, taskID+restoredRecordSuffix)
 }
 
 // usable reports whether the registry was built by NewRestoredRegistry. A

@@ -6,11 +6,17 @@ import (
 )
 
 // defaultLocalStateDir is the node state directory the local commands read when
-// --state-dir is not given: $SWARM_STATE_DIR when set, otherwise the daemon's
-// default (/var/lib/swarmkit, the same value `cluster init`/`join` write into the
-// unit). It is client.DefaultConfig().StateDir — the resolution the API token
-// store already uses to find daemon state — so one environment variable moves
-// every command that reads what the daemon wrote.
+// --state-dir is not given: $SWARM_STATE_DIR when it is set, otherwise
+// /var/lib/swarmkit, which is the daemon's own default (cmd/swarmd-firecracker)
+// and the value `cluster init`/`join` write into the unit.
+//
+// The two agree only while neither is overridden: the daemon takes its state
+// directory from its own --state-dir and does not read $SWARM_STATE_DIR, so a
+// daemon started with a different --state-dir needs the matching --state-dir (or
+// the variable) on these commands, or their record lookups read a directory the
+// daemon never wrote. It is client.DefaultConfig().StateDir — the resolution the
+// API token store already uses to find daemon state — so one environment variable
+// moves every command that reads what the daemon wrote.
 func defaultLocalStateDir() string {
 	return client.DefaultConfig().StateDir
 }
