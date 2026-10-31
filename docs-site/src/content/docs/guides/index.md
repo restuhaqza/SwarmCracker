@@ -16,6 +16,7 @@ Practical guides for using SwarmCracker.
 | [Guest Access](/guides/guest-access/) | `vm exec`, `vm cp` over vsock |
 | [Security](/guides/security/) | Jailer, cgroups, isolation |
 | [Snapshots](/guides/snapshots/) | VM state persistence |
+| [Live Migration](/guides/migration/) | Move a running microVM to another node |
 | [Operations](/guides/operations/) | Health checks, metrics, troubleshooting |
 | [Alerting](/guides/alerting/) | Prometheus rules, the sink, verification |
 | [Advanced](advanced.md) | Rolling updates, multi-arch |

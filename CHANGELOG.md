@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Live migration: `swarmcracker vm migrate <task> --to <node>`** — moves a
+  running microVM to another node as a SwarmKit replacement carrying a snapshot
+  artifact (issue #46). The source pauses once to dump the VM and copy its disk,
+  resumes, and keeps serving while the artifact crosses the manager's spool to
+  the target; the target recreates the TAP device, vsock muxer and disk path its
+  state file records, loads the guest, re-addresses it to the replacement task's
+  IP before the TAP comes up, reprograms the task's published ports and lets the
+  replacement report running. The command prints the manager's report: one line
+  per phase with its duration, the downtime the manager measured at a
+  one-second poll, and an outcome. `pending` is a report rather than an error —
+  no replacement reported running within the two-minute verify deadline, the
+  artifact and the target's directive are kept, and SwarmKit's retry restores
+  them until the directive expires. One replica per service, a target with the
+  same CPU model and Firecracker version, and no volumes moved: the guest's
+  memory, disk and uptime cross, its named and bind-mounted volumes do not.
+- **`POST /v1/migrations`** — the manager route `vm migrate` posts, with a new
+  public `Migration` document: the artifact that carried the VM, the phases it
+  ran, the measured `downtimeMs` and the outcome. The call is synchronous and
+  bounded by three minutes plus up to a minute of cleanup; there is no status
+  route because the answer is the report. Failures are typed with the failing
+  phase in `details.phase`, and the attempt is audited as `task.migrate`.
+- **A moved guest is re-annealed on every node** — a restored VM keeps its MAC,
+  so each node's bridge still pointed that MAC at the source node's tunnel and
+  each neighbour table still expected it there. After a successful move the
+  manager asks every node, the target included, to delete the guest's neighbour
+  and forwarding entries for its IPv4 addresses, so the next frame re-learns it
+  on the node that runs it. The spike measured about 16 seconds of
+  unreachability from a peer without that step and under 400 ms once the stale
+  entry was removed.
 - **Optional OpenTelemetry tracing** — `swarmd-firecracker --tracing-enabled
   --tracing-endpoint http://collector:4318` exports one OTLP/HTTP trace per task
   covering image preparation, VM boot, the running lifetime and teardown, with
@@ -59,6 +88,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   terminal rows do not suppress it, and `task ls --health` does not print it.
 
 ### Changed
+- **A migration runs only on the swarm's raft leader, and only for an admin
+  token** — `POST /v1/migrations` needs the new `migrations:write` scope, which
+  only the `admin` role carries, and a manager that is not the leader refuses the
+  call with `503 unavailable`, `details.reason: "not_leader"` and
+  `details.leader` naming the node to retry against, because two managers running
+  the same move would prepare the target's directive twice and unpin each other's
+  placement. A cluster that cannot report who its leader is does not block the
+  move. Scopes are fixed when a token is minted, so an admin token minted before
+  this release keeps its old list and answers `403 forbidden` with
+  `details.requiredScope: "migrations:write"` until it is reminted.
 - **`service ls` shows the service mode** — the table gains a `MODE` column
   (`replicated` / `global`), so a global service is visible without inferring it
   from the `REPLICAS` cell.
