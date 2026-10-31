@@ -425,9 +425,11 @@ paths:
         is 201 whatever its outcome: outcome "moved" carries the measured
         downtimeMs, and outcome "pending" means the service was replaced but no
         replacement reported running before the verify deadline - the target keeps
-        the directive and the bytes it staged, and the replaced service's retry
-        restores from that copy. The source node's export is deleted as soon as the
-        service update has landed, whatever the outcome. A failure that left nothing behind is a typed error document with
+        the directive and the bytes it staged. A retry of that replacement restores
+        from that copy when it runs on the target; the manager restores the service's
+        placement, so a retry scheduled elsewhere boots a fresh VM. The source node's
+        export is deleted as soon as the service update has landed, whatever the
+        outcome. A failure that left nothing behind is a typed error document with
         the phase that failed in details.phase. There is no status route: the call
         is the report. The attempt is audited as task.migrate.
       parameters:

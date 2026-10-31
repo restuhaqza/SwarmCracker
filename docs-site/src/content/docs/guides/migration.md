@@ -215,12 +215,21 @@ when it did not within the verify deadline.
 ## When the answer is `pending`
 
 `pending` means the service was replaced but the manager did not see the
-replacement report running within its two-minute verify deadline. Nothing
-failed: the service update landed, the target keeps the directive it recorded,
-and the artifact is still staged there. SwarmKit's own retry of the replacement
-restores from that artifact, so a slow start finishes on its own - unless the
-retry is scheduled on another node, because the manager restores the placement on
-every landed outcome; a retry that lands elsewhere boots a fresh VM.
+replacement report running within its two-minute verify deadline. Nothing is
+known to have failed: the service update landed, the target keeps the directive it
+recorded, and the artifact is still staged there.
+
+A slow start finishes on its own: the same task keeps trying on the target and its
+next attempt finds the directive and restores. A replacement that **fails** rather
+than merely being slow is different, and this is the sharp edge of `pending`: the
+manager restores the service's placement on every landed outcome, so SwarmKit is
+free to schedule the retry on any node — including the source. A retry that lands
+elsewhere boots a fresh VM, and the staged copy on the target then sits unused
+until its directive expires. Both have been observed on the lab: one retry of a
+`pending` move restored (the guest's counter continued 44 → 60) and another was
+scheduled back onto the source and booted cold. If the workload must keep its
+state, move it again with `vm migrate` once the target is healthy, or pin the
+service to the target while the retry runs.
 
 What the retry reads is the **target's** staged copy: the bytes the move staged
 there, named by the manifest that was written beside them. The source's export is
