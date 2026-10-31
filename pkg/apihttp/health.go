@@ -121,44 +121,9 @@ func (s *Server) tasksWithHealth(ctx context.Context, tasks []v1.Task) ([]v1.Tas
 			continue // an unplaced task has no node to ask
 		}
 		pending++
-		go func(i int) {
-			// A panic in this goroutine is fatal to the whole manager: it is
-			// not a handler goroutine, so net/http contains nothing here.
-			// Recover at the top, before the slot select, so a panic anywhere
-			// in the fetch — including one that happens after queueing for a
-			// worker slot — costs one node's health instead of the daemon.
-			//
-			// The recovered fetch still deposits a result: the collector waits
-			// for exactly `pending` results, so a panic that settled nothing
-			// would hold the page open until the budget expired.
-			defer func() {
-				if r := recover(); r != nil {
-					log.Error().
-						Str("task_id", enriched[i].ID).
-						Str("node_id", enriched[i].NodeID).
-						Interface("panic", r).
-						Str("stack", string(debug.Stack())).
-						Msg("health fan-out: fetch panicked and was recovered; its node becomes a partial")
-					// Last statement of the goroutine: a second deposit would
-					// over-count `collected`, so collection could end early and
-					// leave a task with neither health nor a partial.
-					results <- healthFetch{index: i, err: errHealthPanicked}
-				}
-			}()
-
-			// Waiting for a worker slot counts against the page budget: a
-			// queue of slow fetches must not outlive it.
-			select {
-			case sem <- struct{}{}:
-			case <-pageCtx.Done():
-				results <- healthFetch{index: i, err: pageCtx.Err()}
-				return
-			}
-			defer func() { <-sem }()
-
-			health, err := s.fetchTaskHealth(pageCtx, enriched[i])
-			results <- healthFetch{index: i, health: health, err: err}
-		}(i)
+		// fetchHealthInto owns the recover: a panic in this goroutine is not a
+		// handler panic, so net/http contains nothing here.
+		go s.fetchHealthInto(pageCtx, sem, results, enriched[i], i)
 	}
 
 	errs := make([]error, len(enriched))
@@ -200,6 +165,58 @@ collect:
 	}
 
 	return enriched, healthPartials(ctx, enriched, errs)
+}
+
+// fetchHealthInto is the body of one fan-out goroutine: it queues for a worker
+// slot under the page budget, fetches one task's health and deposits exactly one
+// healthFetch at that task's index.
+//
+// A panic here is fatal to the whole manager: this is not a handler goroutine, so
+// net/http contains nothing. Recover at the top, before the slot select, so a
+// panic anywhere in the fetch — including one that happens only after queueing
+// for a worker slot — costs one node's health instead of the daemon. The recovered
+// fetch still deposits a result: the collector waits for exactly `pending`
+// results, so a panic that settled nothing would hold the page open until the
+// budget expired.
+//
+// It is a method rather than an inline closure so the production path is the
+// tested path: with the semaphore already full, a test can make the queue and the
+// panic deterministic instead of racing the scheduler for one of the first
+// healthFanoutLimit slots.
+func (s *Server) fetchHealthInto(
+	pageCtx context.Context,
+	sem chan struct{},
+	results chan<- healthFetch,
+	task v1.Task,
+	i int,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().
+				Str("task_id", task.ID).
+				Str("node_id", task.NodeID).
+				Interface("panic", r).
+				Str("stack", string(debug.Stack())).
+				Msg("health fan-out: fetch panicked and was recovered; its node becomes a partial")
+			// Last statement of the goroutine: a second deposit would
+			// over-count `collected`, so collection could end early and
+			// leave a task with neither health nor a partial.
+			results <- healthFetch{index: i, err: errHealthPanicked}
+		}
+	}()
+
+	// Waiting for a worker slot counts against the page budget: a queue of slow
+	// fetches must not outlive it.
+	select {
+	case sem <- struct{}{}:
+	case <-pageCtx.Done():
+		results <- healthFetch{index: i, err: pageCtx.Err()}
+		return
+	}
+	defer func() { <-sem }()
+
+	health, err := s.fetchTaskHealth(pageCtx, task)
+	results <- healthFetch{index: i, health: health, err: err}
 }
 
 // taskWithHealth attaches one task's health. A broker failure is returned to the
