@@ -15,6 +15,15 @@ import (
 // interface-name limit.
 const tapNameDigestPrefix = 8
 
+// interfaceNameLimit is the kernel's IFNAMSIZ minus the terminating NUL: the
+// longest interface name that can be created.
+const interfaceNameLimit = 15
+
+// vxlanInterfaceDigestPrefix is how many hex characters of the bridge digest a
+// shortened VXLAN interface name carries, so the fallback name still fits in
+// interfaceNameLimit ("vx-" plus 12 characters).
+const vxlanInterfaceDigestPrefix = 12
+
 // vsockSuffix is the extension of a task's vsock muxer socket, beside the API
 // socket's ".sock". The suffix is spelled here once: the executor, both VMM
 // managers and the node's restore path all resolve the muxer through VsockPath
@@ -35,6 +44,42 @@ const vsockSuffix = ".vsock"
 func TapName(taskID string, index int) string {
 	sum := sha256.Sum256([]byte(taskID))
 	return fmt.Sprintf("tap-%s-%d", hex.EncodeToString(sum[:])[:tapNameDigestPrefix], index)
+}
+
+// GuestMAC returns the MAC address of one network interface of a task's guest:
+//
+//	AA:FC:<b0>:<b1>:<b2>:<b3>
+//
+// where b0..b3 are the first four bytes of sha256("<taskID>/<index>"). The
+// address is locally administered unicast (the AA:FC prefix), so it cannot
+// collide with a vendor-registered MAC on the segment the microVMs share.
+//
+// It has to be a pure function of (taskID, index) for the same reason TapName
+// does: the guest's address is fixed when the VM boots and lives inside the
+// guest, so a migrating VM keeps the address the source task's interface had.
+// The network manager's re-anneal (and anything else that has to name the
+// guest's L2 identity without asking the guest) derives it here rather than
+// reading it from a device: the host-side TAP device's MAC is not the guest's.
+func GuestMAC(taskID string, index int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", taskID, index)))
+	return fmt.Sprintf("AA:FC:%02X:%02X:%02X:%02X", sum[0], sum[1], sum[2], sum[3])
+}
+
+// VXLANInterfaceName returns the overlay interface name for a bridge:
+// "<bridge>-vxlan" when it fits in the kernel's interface-name limit, and
+// "vx-<first 12 hex characters of sha256(bridge)>" when it does not.
+//
+// The fallback exists so a long bridge name (br-backend, say) does not silently
+// produce a name the kernel refuses. It lives here rather than in pkg/network
+// because a node's re-anneal has to name the overlay interface too, and that
+// code path is not Linux-only.
+func VXLANInterfaceName(bridge string) string {
+	name := bridge + "-vxlan"
+	if len(name) <= interfaceNameLimit {
+		return name
+	}
+	sum := sha256.Sum256([]byte(bridge))
+	return "vx-" + hex.EncodeToString(sum[:])[:vxlanInterfaceDigestPrefix]
 }
 
 // VsockPath returns the Firecracker vsock muxer path for a task:

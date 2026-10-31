@@ -13,7 +13,8 @@ package main
 //	prepare   the target records the directive that makes its next task restore
 //	replace   the service gets a placement constraint pinning it to the target
 //	verify    wait for a task of that service on the target to report running
-//	cleanup   restore the placement, discard the artifact, drop the spool entry
+//	cleanup   restore the placement, make the target's peers forget the moved
+//	          guest, discard the artifact, drop the spool entry
 //
 // The manager is the only party both nodes can reach, so it is the relay, and it
 // is a control plane, so it never holds a whole file: pkg/migration's spool is a
@@ -46,6 +47,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +58,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/migration"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
 
 const (
@@ -162,6 +165,10 @@ type migrationBroker interface {
 	// directive is keyed by service, and another manager may have prepared the
 	// service since.
 	Unprepare(ctx context.Context, nodeID, serviceID, artifactID string) error
+	// Reanneal makes one peer forget the moved guest, so its next frame re-learns
+	// the guest's MAC on the target. It is best effort: a peer that fails is
+	// logged, never a reason to report the move as anything but moved.
+	Reanneal(ctx context.Context, nodeID, ip, mac string) error
 }
 
 // migrationCoordinator runs one migration at a time per service. Its fields are
@@ -736,6 +743,13 @@ func (c *migrationCoordinator) keepAfterReplace(ctx context.Context, plan migrat
 // could not be done is summarised in the phase's message - the failure's code and
 // reason, never its text, which names this node's or a peer's paths - and logged in
 // full here.
+//
+// A moved guest is also re-annealed here: every peer except the target forgets the
+// guest's neighbour and FDB entries, so its next frame re-learns the MAC on the
+// node that now runs it. It runs before the artifact is discarded (a retry may
+// still need the bytes if the answer is lost) and after the placement is restored,
+// and it shares this step's one-minute budget so the caller's wait keeps the bound
+// the route documents.
 func (c *migrationCoordinator) cleanup(
 	ctx context.Context, plan migrationPlan, state *migrationState, outcome string,
 ) string {
@@ -750,6 +764,10 @@ func (c *migrationCoordinator) cleanup(
 		}
 	}
 	if outcome == v1.MigrationOutcomeMoved {
+		// The guest is up on the target, so every other node must forget where it
+		// used to be. A peer that fails is logged and does not join problems: the
+		// move happened, and reachability recovers on the next ARP either way.
+		c.reannealPeers(cleanupCtx, plan, state)
 		// The replacement consumed the directive when it started, and the target
 		// has the bytes. The source's artifact is the only thing left, and it is
 		// also the retry's - a restore that fails after this call reads the staged
@@ -764,6 +782,69 @@ func (c *migrationCoordinator) cleanup(
 		problems = append(problems, "remove the spool entry: "+publicFailure(err))
 	}
 	return strings.Join(problems, "; ")
+}
+
+// reannealPeers tells every node except the target to forget the guest the move
+// just relocated.
+//
+// A moved guest keeps its MAC (it is the same VM, restored from its own memory
+// image), so a peer's bridge still has an FDB entry pointing the guest's MAC at
+// the old node's VTEP, and its neighbour table still has the guest's address
+// behind that MAC. Both age out eventually; until they do, every frame for the
+// guest crosses the overlay to the node that no longer has it. Deleting the two
+// entries makes the peer ask again, and the answer now comes from the target.
+//
+// The guest's address is the one the old task was allocated (its first network
+// attachment), and its MAC is derived from the artifact's source task - the VM's
+// own identity, which the snapshot recorded and the guest keeps. Nothing is read
+// from a device: the host-side TAP's MAC is not the guest's.
+//
+// The target is skipped (it is the one node that has just learned the guest), and
+// every failure is logged per node. A cluster that cannot list its nodes is
+// logged once and the migration still answers moved.
+func (c *migrationCoordinator) reannealPeers(ctx context.Context, plan migrationPlan, state *migrationState) {
+	ip := guestAddress(plan.task)
+	if ip == "" {
+		log.G(ctx).Debug("Migration: the moved task carries no address, so its peers have no guest to forget")
+		return
+	}
+	mac := scruntime.GuestMAC(state.artifact.SourceTaskID, 0)
+
+	nodes, err := c.client.ListNodes(ctx)
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("Migration: the node list failed, so the moved guest's peers were not re-annealed")
+		return
+	}
+
+	for _, node := range nodes {
+		if node.ID == plan.target.ID {
+			continue
+		}
+		if err := c.broker.Reanneal(ctx, node.ID, ip, mac); err != nil {
+			log.G(ctx).WithError(err).Warnf(
+				"Migration: node %q could not forget the moved guest %s (%s); it recovers on its next ARP",
+				node.ID, ip, mac)
+		}
+	}
+}
+
+// guestAddress returns the address a task's guest holds, without its prefix
+// length: the first address of the task's first attachment, which is the address
+// the guest was given and the one its peers cached. It returns "" for a task the
+// cluster reports no address for, which is what keeps a re-anneal from sending an
+// empty address to every peer.
+func guestAddress(task v1.Task) string {
+	if len(task.Addresses) == 0 {
+		return ""
+	}
+	address := strings.TrimSpace(task.Addresses[0])
+	if host, _, found := strings.Cut(address, "/"); found {
+		address = host
+	}
+	if net.ParseIP(address) == nil {
+		return ""
+	}
+	return address
 }
 
 // abandon undoes what the flow did before the service update landed: the target's

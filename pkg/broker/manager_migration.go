@@ -46,11 +46,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/migration"
@@ -63,6 +65,12 @@ import (
 // bound this transport promises: a 64 GiB memory image crosses the manager in
 // 32 KiB pieces, whatever the size of the image.
 const migrationRelayChunkBytes = 32 << 10
+
+// migrationReannealTimeout bounds one node's re-anneal call. The operation runs
+// three iproute2 commands and answers 204; seconds are generous for that, and the
+// manager is inside the answer it owes its own caller, so a peer that cannot
+// forget a guest quickly must not hold the report.
+const migrationReannealTimeout = 10 * time.Second
 
 // migrationDirectiveRouteTask is the task segment of the directive routes (prepare
 // and unprepare). The route shape is the one every node operation has, and both are
@@ -465,8 +473,74 @@ func (m *Manager) Unprepare(ctx context.Context, nodeID, serviceID, artifactID s
 	return decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "migration unprepare")
 }
 
-// artifactEntry resolves the manifest entry a transfer names. The name is checked
-// against the manifest rather than passed through: a name the artifact does not
+// Reanneal makes one node forget what it knew about a guest that has moved: the
+// neighbour entry for the guest's address and the bridge FDB entry for its MAC,
+// after which its next frame re-learns the MAC on the node that now runs it.
+//
+// It is the one node call a migration makes *after* the move, and it is best
+// effort by contract: the guest is up on its target, and a peer that kept a stale
+// entry recovers on its own next ARP. So a failure is the caller's to log per
+// node, never a reason to report the move as failed - and it is reported here as
+// an error rather than swallowed, because "which peers did not re-anneal" is the
+// only useful thing to say about it.
+//
+// The node is named rather than resolved from a task because the migration's
+// guest no longer belongs to the task that moved: it runs under a new task, and
+// the placeholder segment of the route is not looked up (reanneal is
+// artifact-scoped, like prepare).
+//
+// ip and mac are checked here as well as on the node: a malformed value would be
+// refused by every peer in turn, and the manager knows the shapes.
+func (m *Manager) Reanneal(ctx context.Context, nodeID, ip, mac string) error {
+	if net.ParseIP(strings.TrimSpace(ip)) == nil {
+		return output.NewErrorf(output.CodeInvalid, "ip %q is not an IP address", ip).
+			WithDetails(map[string]any{"parameter": "ip"})
+	}
+	hardware, err := net.ParseMAC(strings.TrimSpace(mac))
+	if err != nil || len(hardware) != 6 {
+		return output.NewErrorf(output.CodeInvalid, "mac %q is not a 48-bit MAC address", mac).
+			WithDetails(map[string]any{"parameter": "mac"})
+	}
+
+	body, err := json.Marshal(migrationReannealRequest{
+		IP:  strings.TrimSpace(ip),
+		MAC: hardware.String(),
+	})
+	if err != nil {
+		return output.NewErrorf(output.CodeInternal,
+			"the re-anneal request for node %q could not be encoded", nodeID).
+			WithDetails(map[string]any{"nodeId": nodeID, "reason": "request_unencodable"})
+	}
+
+	route, err := m.routeForNode(ctx, nodeID, migrationDirectiveRouteTask, MigrationReannealOperation)
+	if err != nil {
+		return err
+	}
+
+	// A re-anneal runs three iproute2 commands. It is bounded by the re-anneal
+	// deadline rather than the transfer one: a peer that cannot forget a guest in
+	// seconds is not going to forget it, and the manager is inside the answer it
+	// owes its caller.
+	resp, err := m.doNodeRequest(ctx, route, http.MethodPost, nil, bytes.NewReader(body),
+		int64(len(body)), migrationPrepareMediaType, migrationReannealTimeout, "migration reanneal")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch {
+	case resp.StatusCode == http.StatusNoContent:
+		return nil
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return output.NewErrorf(output.CodeInternal,
+			"node %q returned status %d for a migration reanneal", route.Node.ID, resp.StatusCode).
+			WithDetails(map[string]any{"nodeId": route.Node.ID})
+	default:
+		return decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "migration reanneal")
+	}
+}
+
+// artifactEntry resolves the manifest entry a transfer names. The name is checked// against the manifest rather than passed through: a name the artifact does not
 // describe is not a file this migration may move, whichever node asks.
 func artifactEntry(artifact migration.Artifact, name string) (migration.File, error) {
 	if !migration.ValidArtifactID(artifact.ID) {

@@ -234,6 +234,10 @@ var operationSpecs = map[string]operationSpec{
 	MigrationDiscardOperation:   {methods: []string{http.MethodDelete}, artifactScoped: true},
 	MigrationPrepareOperation:   {methods: []string{http.MethodPost}, artifactScoped: true},
 	MigrationUnprepareOperation: {methods: []string{http.MethodDelete}, artifactScoped: true},
+	// reanneal makes a peer forget a guest that has moved. It names the guest, not
+	// the task - the guest runs under another task now - so the task in the route is
+	// only the shape every node operation has.
+	MigrationReannealOperation: {methods: []string{http.MethodPost}, artifactScoped: true},
 }
 
 // route resolves the task, then dispatches to the registered operation.

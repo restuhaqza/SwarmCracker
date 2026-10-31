@@ -106,6 +106,9 @@ var remoteCapablePaths = map[string]struct{}{
 	// started the restored VM holds its process, so -H is the only way to reach it
 	// from another machine.
 	"swarmcracker vm snapshot stop-restored": {},
+	// vm migrate is the first remote-only mutation: the move is one manager call
+	// (POST /v1/migrations), and no local control socket serves it.
+	"swarmcracker vm migrate": {},
 }
 
 // commandAllowsRemote reports whether cmd may run when --host is set. The
@@ -141,7 +144,7 @@ func guardRemoteHost(cmd *cobra.Command, _ []string) error {
 	return output.NewErrorf(output.CodeUsage,
 		"--host is not supported by %q: this command only reads the local cluster; "+
 			"remote operations are available on service/task/node/config/secret/network ls|inspect|ps, "+
-			"vm exec, vm attach and vm snapshot stop-restored (with -o json or -o name where it applies)", cmd.CommandPath())
+			"vm exec, vm attach, vm migrate and vm snapshot stop-restored (with -o json or -o name where it applies)", cmd.CommandPath())
 }
 
 // newAPICommand groups the programmatic-API operator commands.

@@ -2,7 +2,6 @@
 package swarmkit
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"net"
 	"os"
@@ -387,9 +386,11 @@ func (t *taskTranslatorImpl) buildNetworkInterfaces(task *types.Task) []map[stri
 // bridge FDB to flap between the local TAP and the VXLAN peer, which breaks
 // cross-host traffic. Hashing the task ID together with the interface index
 // keeps MACs globally unique, deterministic, and stable across restarts.
+//
+// The rule itself is runtime.GuestMAC: a migration's re-anneal has to name this
+// same address on a peer, and one copy is what keeps the two from drifting.
 func generateMAC(taskID string, index int) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s/%d", taskID, index)))
-	return fmt.Sprintf("AA:FC:%02X:%02X:%02X:%02X", sum[0], sum[1], sum[2], sum[3])
+	return scruntime.GuestMAC(taskID, index)
 }
 
 // getRootfsPath returns the rootfs path for a task.

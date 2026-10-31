@@ -225,6 +225,10 @@ type remoteRequest struct {
 	body        []byte
 	contentType string
 	headers     map[string]string
+	// timeout overrides the client's own request deadline for this call. Zero
+	// keeps http.Client.Timeout; a migration sets it because one call runs a
+	// whole move, which is minutes rather than the seconds a read takes.
+	timeout time.Duration
 }
 
 // remoteResponse is the status, headers and body of one successful call.
@@ -272,7 +276,7 @@ func (r *remoteClient) do(ctx context.Context, call remoteRequest) (*remoteRespo
 		req.Header.Set("Authorization", "Bearer "+r.token)
 	}
 
-	resp, err := r.http.Do(req)
+	resp, err := r.clientFor(call).Do(req)
 	if err != nil {
 		return nil, transportError(call.method+" "+path, err)
 	}
@@ -293,6 +297,19 @@ func (r *remoteClient) do(ctx context.Context, call remoteRequest) (*remoteRespo
 	}
 
 	return &remoteResponse{status: resp.StatusCode, header: resp.Header, body: responseBody}, nil
+}
+
+// clientFor returns the http.Client one call runs with. A call that carries its
+// own deadline gets a shallow copy of the client with that deadline: the
+// transport and the redirect policy are shared, so a long call reuses the
+// connection pool and the same TLS configuration.
+func (r *remoteClient) clientFor(call remoteRequest) *http.Client {
+	if call.timeout <= 0 {
+		return r.http
+	}
+	perCall := *r.http
+	perCall.Timeout = call.timeout
+	return &perCall
 }
 
 // get performs one GET and returns its body.

@@ -11,6 +11,7 @@ package broker
 //	DELETE /v1/tasks/{taskID}/migration/discard?artifactId=<id>
 //	POST   /v1/tasks/{taskID}/migration/prepare
 //	DELETE /v1/tasks/{taskID}/migration/unprepare?serviceId=<id>&artifactId=<id>
+//	POST   /v1/tasks/{taskID}/migration/reanneal
 //
 // The restore itself is not here: loading the artifact into a new task creates the
 // TAP device, loads the snapshot and re-addresses the guest, and that has its own
@@ -100,8 +101,10 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -145,6 +148,17 @@ const (
 	// rather than a removal. Two managers can migrate one service, and the manager
 	// that lost the race must not delete the winner's directive.
 	MigrationUnprepareOperation = "migration/unprepare"
+	// MigrationReannealOperation makes a node forget what it knew about a guest
+	// that has moved: the neighbour entry for its address and the bridge FDB entry
+	// for its MAC. It is a POST because it performs an action on this node rather
+	// than describing one, and it names the task slot in the route without reading
+	// it: after a move the guest runs under another task, and every peer is told
+	// about the guest, not about the task.
+	//
+	// It is best effort by contract: the guest is already up on its new node, and a
+	// peer that kept a stale entry recovers on its own next ARP. A peer that cannot
+	// run the commands answers an error the manager logs and moves on from.
+	MigrationReannealOperation = "migration/reanneal"
 
 	// migrationExportKind is the document kind migration/export answers. Like the
 	// artifact itself it is an internal manager↔node document, so its kind lives
@@ -194,6 +208,12 @@ const (
 	// JSON rather than the v1 document type: the directive is two fields, not a
 	// versioned document the public contract describes.
 	migrationPrepareMediaType = "application/json"
+
+	// migrationReannealDocumentBytes bounds the body migration/reanneal accepts.
+	// The document is two short strings; the cap stops a caller from making the
+	// handler buffer an arbitrary body for a request that cannot be about anything
+	// larger.
+	migrationReannealDocumentBytes = 8 << 10
 )
 
 // linkArtifactFile is os.Link, and a test seam: a hard link is what publishing an
@@ -245,6 +265,17 @@ type MigrationHandlerConfig struct {
 	// and unprepare a typed 503: the node cannot keep the directive, so it must not
 	// tell the manager it did.
 	Pending *scruntime.PendingRestores
+	// BridgeName is the node's L2 bridge, the device the re-anneal deletes a
+	// guest's neighbour and FDB entries from. Empty keeps reanneal registered and
+	// answering a typed 503: a node that was never told which bridge carries the
+	// flat segment cannot forget anything about a guest on it.
+	BridgeName string
+	// VXLANPeers is the overlay peer list this node floods to. After the re-anneal
+	// deletes a moved guest's entries, the operation re-adds the all-zero flood
+	// entry for each peer that lost it, so the next frame for that guest still
+	// reaches every node. Empty means this node runs no overlay, and the re-anneal
+	// is then only the two deletes.
+	VXLANPeers []string
 }
 
 // MigrationExportDocument is the document migration/export answers: the manifest
@@ -308,6 +339,14 @@ func NewMigrationPrepareHandler(cfg MigrationHandlerConfig) Handler {
 // directive store: removing a directive names no artifact bytes and touches none.
 func NewMigrationUnprepareHandler(cfg MigrationHandlerConfig) Handler {
 	h := &migrationUnprepareHandler{cfg: cfg}
+	return h.serve
+}
+
+// NewMigrationReannealHandler builds the re-anneal operation. It needs this node's
+// bridge and, when it runs an overlay, its peer list: the commands it runs act on
+// this node's own devices, and no request may name them.
+func NewMigrationReannealHandler(cfg MigrationHandlerConfig) Handler {
+	h := &migrationReannealHandler{cfg: cfg}
 	return h.serve
 }
 
@@ -1397,6 +1436,202 @@ func (h *migrationUnprepareHandler) serve(_ context.Context, _ Task, w http.Resp
 		Msg("Removed the pending restore for the service: its next task here starts cold")
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// migrationReannealRequest is the document reanneal takes: the guest's address and
+// its MAC. Nothing here names a bridge, a TAP device or a peer: those are this
+// node's own configuration, and a request that named them could make a node act
+// on a device that is not its L2 segment.
+type migrationReannealRequest struct {
+	IP  string `json:"ip"`
+	MAC string `json:"mac"`
+}
+
+// runNodeNetworkCommand runs one iproute2 command on this node and returns its
+// combined output. It is a variable so a test can record the exact commands a
+// re-anneal issues and script a node's answers, which is the only way to pin
+// them without CAP_NET_ADMIN.
+var runNodeNetworkCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).CombinedOutput()
+}
+
+// migrationReannealHandler serves POST /v1/tasks/{taskID}/migration/reanneal.
+type migrationReannealHandler struct {
+	cfg MigrationHandlerConfig
+}
+
+// serve makes this node forget what it knew about one guest that has moved.
+//
+// The route is artifact-scoped and the task in the path is never read: after a
+// move the guest runs under another task, and every peer is told about the guest
+// (its address and MAC), not about the task that used to own it.
+//
+// The three steps are ordered by what a failure costs. Deleting the neighbour
+// entry means this node's next frame to the guest asks L2 again; deleting the
+// FDB entry means the bridge stops sending the guest's frames to the old node's
+// VTEP; re-adding the flood entry means the ARP that follows reaches every node,
+// including the one the guest is now on. The first two are best effort for an
+// absent entry - a peer that never learned the guest has nothing to forget - and
+// the third is idempotent: an entry that is already there is not an error.
+func (h *migrationReannealHandler) serve(ctx context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+	if !operationSpecs[MigrationReannealOperation].allows(r.Method) {
+		writeOperationMethodNotAllowed(w, MigrationReannealOperation, r.Method)
+		return
+	}
+	if h.cfg.BridgeName == "" {
+		writeTypedError(w, http.StatusServiceUnavailable, reannealNotConfigured())
+		return
+	}
+
+	request, bodyErr := decodeReannealRequest(w, r)
+	if bodyErr != nil {
+		writeTypedError(w, http.StatusBadRequest, bodyErr)
+		return
+	}
+
+	if problem := reannealGuest(ctx, h.cfg, request); problem != nil {
+		writeTypedError(w, http.StatusServiceUnavailable, problem)
+		return
+	}
+
+	log.Info().
+		Str("ip", request.IP).
+		Str("mac", request.MAC).
+		Str("bridge", h.cfg.BridgeName).
+		Msg("Re-annealed a moved guest: this node forgot its neighbour and FDB entries and keeps flooding its overlay peers")
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// decodeReannealRequest reads the re-anneal document, bounded and strict. Both
+// fields are required: an address without a MAC would leave the stale FDB entry,
+// and a MAC without an address would leave the stale neighbour entry.
+func decodeReannealRequest(w http.ResponseWriter, r *http.Request) (migrationReannealRequest, *output.Error) {
+	var request migrationReannealRequest
+
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, migrationReannealDocumentBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		return request, invalidReannealBody("the request body is not a re-anneal document: want ip and mac")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return request, invalidReannealBody("the request body carries more than one document")
+	}
+
+	if net.ParseIP(strings.TrimSpace(request.IP)) == nil {
+		return request, output.NewErrorf(output.CodeInvalid,
+			"ip %q is not an IP address: want the guest address this node cached", request.IP).
+			WithDetails(map[string]any{"parameter": "ip", "reason": "invalid_ip"})
+	}
+	hardware, err := net.ParseMAC(strings.TrimSpace(request.MAC))
+	if err != nil || len(hardware) != 6 {
+		return request, output.NewErrorf(output.CodeInvalid,
+			"mac %q is not a 48-bit MAC address: want the guest's address, as aa:bb:cc:dd:ee:ff", request.MAC).
+			WithDetails(map[string]any{"parameter": "mac", "reason": "invalid_mac"})
+	}
+
+	request.IP = strings.TrimSpace(request.IP)
+	request.MAC = hardware.String()
+	return request, nil
+}
+
+// reannealGuest runs the three steps on this node. The two deletes tolerate an
+// absent entry, because forgetting something twice is still forgetting it; any
+// other failure is reported, because a node that cannot say the stale entry is
+// gone has not re-annealed and the manager must be able to log which peer did
+// not.
+func reannealGuest(ctx context.Context, cfg MigrationHandlerConfig, request migrationReannealRequest) *output.Error {
+	forgets := [][]string{
+		{"neigh", "del", request.IP, "dev", cfg.BridgeName},
+		{"fdb", "del", request.MAC, "dev", cfg.BridgeName},
+	}
+	for _, forget := range forgets {
+		name := "ip"
+		if forget[0] == "fdb" {
+			name = "bridge"
+		}
+		output, err := runNodeNetworkCommand(ctx, name, forget...)
+		if err == nil || reannealEntryAbsent(string(output)) {
+			continue
+		}
+		log.Warn().
+			Err(err).
+			Str("command", name+" "+strings.Join(forget, " ")).
+			Str("output", strings.TrimSpace(string(output))).
+			Msg("Re-anneal could not remove a stale entry")
+		return reannealFailed()
+	}
+
+	if len(cfg.VXLANPeers) == 0 {
+		return nil
+	}
+	// The flood entry maps the all-zero MAC to every peer's VTEP: it is what makes
+	// an ARP for a guest nobody has learned yet reach the node that now holds it.
+	// 'append' allows one destination per peer under the same key, and a repeated
+	// append of an entry that exists is answered as a duplicate, which is success.
+	vxlan := scruntime.VXLANInterfaceName(cfg.BridgeName)
+	for _, peer := range cfg.VXLANPeers {
+		output, err := runNodeNetworkCommand(ctx, "bridge", "fdb", "append",
+			"00:00:00:00:00:00", "dev", vxlan, "dst", peer, "self", "permanent")
+		if err == nil || reannealEntryExists(string(output)) {
+			continue
+		}
+		log.Warn().
+			Err(err).
+			Str("vxlan", vxlan).
+			Str("peer", peer).
+			Str("output", strings.TrimSpace(string(output))).
+			Msg("Re-anneal could not re-add the overlay flood entry for a peer")
+		return reannealFailed()
+	}
+	return nil
+}
+
+// reannealEntryAbsent reports whether a failed delete failed because there was
+// nothing to delete. iproute2 answers "RTNETLINK answers: No such file or
+// directory" for a missing neighbour or FDB entry, and older builds say the same
+// thing in words.
+//
+// "Cannot find device" is deliberately not in this list: a bridge that does not
+// exist is this node's misconfiguration, not an entry that was already gone.
+func reannealEntryAbsent(output string) bool {
+	lowered := strings.ToLower(output)
+	for _, absent := range []string{"no such file", "no such process", "not found", "does not exist"} {
+		if strings.Contains(lowered, absent) {
+			return true
+		}
+	}
+	return false
+}
+
+// reannealEntryExists reports whether adding a flood entry found it already
+// there, which is the one answer that makes the append idempotent.
+func reannealEntryExists(output string) bool {
+	return strings.Contains(strings.ToLower(output), "exists")
+}
+
+// reannealNotConfigured is the typed 503 for a node that was never given the
+// bridge its guests live on: it has nothing to forget them from.
+func reannealNotConfigured() *output.Error {
+	return output.NewError(output.CodeUnavailable,
+		"this node has no bridge configured, so it cannot re-anneal a moved guest").
+		WithDetails(map[string]any{"reason": "bridge_unconfigured"})
+}
+
+// reannealFailed is the typed 503 for a node whose iproute2 command failed for a
+// reason other than the entry already being gone. The command's own output stays
+// in the log: it names this node's devices.
+func reannealFailed() *output.Error {
+	return output.NewError(output.CodeUnavailable,
+		"this node could not forget the moved guest").
+		WithDetails(map[string]any{"reason": "reanneal_failed"})
+}
+
+// invalidReannealBody is the typed 400 for a body that is not the re-anneal
+// document.
+func invalidReannealBody(problem string) *output.Error {
+	return output.NewError(output.CodeInvalid, problem).
+		WithDetails(map[string]any{"reason": "body_unreadable"})
 }
 
 // unprepareRequest is the unprepare query: the service whose directive is removed and

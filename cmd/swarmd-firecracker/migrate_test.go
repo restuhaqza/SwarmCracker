@@ -244,6 +244,7 @@ type fakeMigrationBroker struct {
 	discardErr   error
 	prepareErr   error
 	unprepareErr error
+	reannealErr  error
 
 	// exportGate, when non-nil, holds Export until it is closed: the concurrency
 	// test uses it to keep one migration inside the flow.
@@ -259,6 +260,7 @@ type fakeMigrationBroker struct {
 	discards   []string
 	prepares   []string
 	unprepares []string
+	reanneals  []string
 }
 
 func (f *fakeMigrationBroker) Export(ctx context.Context, sourceNode string, task v1.Task) (broker.MigrationExportDocument, error) {
@@ -357,6 +359,16 @@ func (f *fakeMigrationBroker) Unprepare(_ context.Context, nodeID, serviceID, ar
 	f.unprepares = append(f.unprepares, serviceID)
 	f.mu.Unlock()
 	return f.unprepareErr
+}
+
+// Reanneal records one peer's re-anneal, in call order with everything else: the
+// point of the call is that it happens after the move and on the right nodes.
+func (f *fakeMigrationBroker) Reanneal(_ context.Context, nodeID, ip, mac string) error {
+	f.log.add("reanneal:%s:%s:%s", nodeID, ip, mac)
+	f.mu.Lock()
+	f.reanneals = append(f.reanneals, nodeID+" "+ip+" "+mac)
+	f.mu.Unlock()
+	return f.reannealErr
 }
 
 // migrationHarness is one coordinator plus the two fakes and the real spool.
@@ -1067,6 +1079,117 @@ func TestMigrateCleanupFailureDoesNotFailAMovedMigration(t *testing.T) {
 	assert.Equal(t, v1.MigrationPhaseOK, cleanup.Result)
 	assert.Contains(t, cleanup.Message, "discard the artifact",
 		"a cleanup that could not finish is reported, not turned into an error")
+}
+
+// TestMigrateReannealsEveryPeerButTheTarget pins the L2 half of a move: after the
+// guest runs on the target, every other node is told to forget it - the source
+// included, because its bridge learned the MAC too - and the target is not, because
+// it is the node that just learned the guest.
+func TestMigrateReannealsEveryPeerButTheTarget(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.task.Addresses = []string{"10.0.1.7/24"}
+	h.client.nodes = []v1.Node{
+		{ID: "node-a", Hostname: "worker-a"},
+		{ID: "node-b", Hostname: "worker-b"},
+		{ID: "node-c", Hostname: "worker-c"},
+	}
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
+
+	// The MAC is the guest's, derived from the VM's own identity - the artifact's
+	// source task - not from the host-side TAP device.
+	guestMAC := scruntime.GuestMAC("web-1", 0)
+	assert.Equal(t, []string{
+		"node-a 10.0.1.7 " + guestMAC,
+		"node-c 10.0.1.7 " + guestMAC,
+	}, h.broker.reanneals, "every node except the target is re-annealed")
+
+	calls := h.log.snapshot()
+	at := indexOfCall(calls, "reanneal:node-a:10.0.1.7:"+guestMAC)
+	require.NotEqual(t, -1, at, "the source is re-annealed: %v", calls)
+	assert.Less(t, indexOfCall(calls, "nodes"), at, "the peer list is read before the first peer")
+	assert.Greater(t, at, indexOfCall(calls, "update:svc-1"),
+		"the peers are only told once the replacement is the service's task")
+	assert.Less(t, at, indexOfCall(calls, "discard:node-a:"+migrationTestArtifactID),
+		"the peers are re-annealed while the source still holds the artifact")
+}
+
+// TestMigrateReannealFailureKeepsTheMovedOutcome pins the best-effort rule: a peer
+// that cannot forget the guest is logged, and the migration still reports moved,
+// because the guest is up on its target and reachability recovers on the next ARP.
+func TestMigrateReannealFailureKeepsTheMovedOutcome(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.task.Addresses = []string{"10.0.1.7/24"}
+	h.client.nodes = []v1.Node{{ID: "node-a"}, {ID: "node-b"}, {ID: "node-c"}}
+	h.broker.reannealErr = output.NewError(output.CodeUnavailable,
+		"this node could not forget the moved guest").
+		WithDetails(map[string]any{"reason": "reanneal_failed"})
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
+	assert.Len(t, h.broker.reanneals, 2, "a failing peer does not stop the next one")
+
+	var cleanup v1.MigrationPhase
+	for _, phase := range doc.Phases {
+		if phase.Name == v1.MigrationPhaseCleanup {
+			cleanup = phase
+		}
+	}
+	assert.Equal(t, v1.MigrationPhaseOK, cleanup.Result)
+	assert.NotContains(t, cleanup.Message, "re-anneal",
+		"the report is about the move; a peer's stale entry is not a cleanup step that failed")
+}
+
+// TestMigrateSkipsTheReannealWithoutAGuestAddress pins the one case a re-anneal
+// cannot happen: a task the cluster reports no address for has no guest a peer
+// could have cached, so the node list is not even read.
+func TestMigrateSkipsTheReannealWithoutAGuestAddress(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.nodes = []v1.Node{{ID: "node-a"}, {ID: "node-b"}}
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
+	assert.Empty(t, h.broker.reanneals)
+	assert.Equal(t, -1, indexOfCall(h.log.snapshot(), "nodes"),
+		"a task with no address needs no peer list")
+}
+
+// TestGuestAddress pins what a re-anneal sends as the guest's address: the task's
+// first allocated address without its prefix length, and nothing at all for a task
+// the cluster cannot say an address for.
+func TestGuestAddress(t *testing.T) {
+	cases := []struct {
+		name      string
+		addresses []string
+		want      string
+	}{
+		{name: "prefix stripped", addresses: []string{"10.0.1.7/24"}, want: "10.0.1.7"},
+		{name: "bare address", addresses: []string{"10.0.1.7"}, want: "10.0.1.7"},
+		{name: "first attachment wins", addresses: []string{"10.0.1.7/24", "10.0.2.7/24"}, want: "10.0.1.7"},
+		{name: "no address", addresses: nil, want: ""},
+		{name: "not an address", addresses: []string{"not-an-ip"}, want: ""},
+		{name: "empty", addresses: []string{""}, want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, guestAddress(v1.Task{Addresses: tc.addresses}))
+		})
+	}
+}
+
+// indexOfCall returns the position of one logged call, or -1.
+func indexOfCall(calls []string, want string) int {
+	for i, call := range calls {
+		if call == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // TestRestorePlacementRetriesOnceOnAConflict pins the cleanup's one retry: the

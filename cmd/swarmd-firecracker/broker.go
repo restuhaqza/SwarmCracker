@@ -52,6 +52,12 @@ type brokerRuntime struct {
 	// the snapshot and rootfs roots, on the same filesystem, so publishing an
 	// artifact costs links rather than a second copy of a memory image.
 	migrationStagingDir string
+	// bridgeName and vxlanPeers are what the re-anneal operation acts on: the
+	// bridge a peer forgets a moved guest from, and the overlay peers whose flood
+	// entries it re-adds. They are this node's own configuration, so neither is
+	// ever named by a request.
+	bridgeName string
+	vxlanPeers []string
 	// rootfsDir is the executor's rootfs directory, recorded on a snapshot so
 	// restore can tell a missing task disk from a corrupt snapshot.
 	rootfsDir string
@@ -124,6 +130,8 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 		snapshotDir:         ctx.String("snapshot-dir"),
 		migrationStagingDir: ctx.String("migration-staging-dir"),
 		rootfsDir:           ctx.String("rootfs-dir"),
+		bridgeName:          ctx.String("bridge-name"),
+		vxlanPeers:          parseCommaSeparated(ctx.String("vxlan-peers")),
 		taskAlive:           taskSocketAlive,
 	}
 }
@@ -256,6 +264,10 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		ArtifactDir: cfg.migrationStagingDir,
 		RootfsDir:   cfg.rootfsDir,
 		Pending:     pending,
+		// The re-anneal acts on this node's own L2 segment, so it is given this
+		// node's bridge and peers rather than reading them from a request.
+		BridgeName: cfg.bridgeName,
+		VXLANPeers: cfg.vxlanPeers,
 	}
 	handlers := []struct {
 		op string
@@ -275,6 +287,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{broker.MigrationDiscardOperation, broker.NewMigrationDiscardHandler(migrationCfg)},
 		{broker.MigrationPrepareOperation, broker.NewMigrationPrepareHandler(migrationCfg)},
 		{broker.MigrationUnprepareOperation, broker.NewMigrationUnprepareHandler(migrationCfg)},
+		{broker.MigrationReannealOperation, broker.NewMigrationReannealHandler(migrationCfg)},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {

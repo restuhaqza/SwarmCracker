@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -156,6 +157,56 @@ func TestVsockPathFromSocket(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, VsockPathFromSocket(tc.socketPath))
+		})
+	}
+}
+
+// TestGuestMAC pins the guest's address against literal strings for the same
+// reason TestTapName does: the literals are the rule, and a re-anneal on a peer
+// has to derive exactly the address the guest was booted with.
+func TestGuestMAC(t *testing.T) {
+	cases := []struct {
+		name   string
+		taskID string
+		index  int
+		want   string
+	}{
+		{name: "first interface of a task", taskID: "test-task", index: 0, want: "AA:FC:09:B6:4B:7B"},
+		{name: "second interface of the same task", taskID: "task-1", index: 1, want: "AA:FC:71:21:5F:10"},
+		{name: "another task", taskID: "abc", index: 0, want: "AA:FC:15:D0:AD:2C"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, GuestMAC(tc.taskID, tc.index))
+		})
+	}
+
+	assert.NotEqual(t, GuestMAC("task-1", 0), GuestMAC("task-2", 0),
+		"two tasks never share an address on the one L2 segment they share")
+	assert.NotEqual(t, GuestMAC("task-1", 0), GuestMAC("task-1", 1),
+		"two interfaces of one task never share an address")
+	assert.True(t, strings.HasPrefix(GuestMAC("task-1", 0), "AA:FC:"),
+		"the address is locally administered, so it cannot collide with a vendor's")
+}
+
+// TestVXLANInterfaceName pins both halves of the overlay name rule: the
+// conventional name when the kernel has room for it, and the shortened, digest
+// derived one when it does not.
+func TestVXLANInterfaceName(t *testing.T) {
+	cases := []struct {
+		bridge string
+		want   string
+	}{
+		{bridge: "swarm-br0", want: "swarm-br0-vxlan"},
+		{bridge: "br-backend", want: "vx-2f97707e6e91"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.bridge, func(t *testing.T) {
+			got := VXLANInterfaceName(tc.bridge)
+			assert.Equal(t, tc.want, got)
+			assert.LessOrEqual(t, len(got), 15, "an interface name is at most IFNAMSIZ-1 bytes")
 		})
 	}
 }
