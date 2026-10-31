@@ -1086,7 +1086,9 @@ func TestMigrateVerifyFailureKeepsTheRetryAndReportsThePhase(t *testing.T) {
 	assert.Equal(t, "replacement_failed", typed.Details["reason"])
 
 	require.Len(t, h.client.updates, 2, "the placement is restored")
-	assert.Empty(t, h.broker.discards, "the artifact is the retry's")
+	require.Len(t, h.broker.discards, 1,
+		"the source's export goes once the update landed: the retry reads the target's copy")
+	assert.Equal(t, migrationTestArtifactID, h.broker.discards[0])
 	assert.Empty(t, h.broker.unprepares, "the directive is the retry's")
 }
 

@@ -731,8 +731,12 @@ const (
 )
 
 // keepAfterReplace is the failure rule for a verify that ended before a running
-// replacement: the directive and the artifact are what the retry restores from,
-// so they stay; the placement this call changed is restored.
+// replacement: the target's staged artifact and the directive are what the retry
+// restores from, so they stay, and the placement this call changed is restored.
+//
+// The source's export goes as soon as the update has landed, for the reason
+// cleanup gives: the retry reads the TARGET's staged copy, so keeping the source's
+// only leaks a memory image per attempt.
 func (c *migrationCoordinator) keepAfterReplace(ctx context.Context, plan migrationPlan, state *migrationState) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.cleanupTimeout)
 	defer cancel()
@@ -740,6 +744,10 @@ func (c *migrationCoordinator) keepAfterReplace(ctx context.Context, plan migrat
 	if state.placement {
 		if err := c.restorePlacement(cleanupCtx, plan, state); err != nil {
 			log.G(ctx).WithError(err).Warn("Migration: could not restore the service placement after a failed verify")
+		}
+		if err := c.broker.Discard(cleanupCtx, plan.task.NodeID, plan.task, state.artifact); err != nil {
+			log.G(ctx).WithError(err).
+				Warn("Migration: could not discard the source's export after a failed verify")
 		}
 	}
 	if err := c.spool.Remove(state.artifact.ID); err != nil {
