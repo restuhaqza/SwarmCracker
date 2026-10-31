@@ -364,9 +364,14 @@ func TestPendingRestoresTakeRefusesAnExpiredDirective(t *testing.T) {
 	stale.CreatedAt = time.Now().UTC().Add(-DefaultPendingRestoreTTL - time.Minute)
 	require.NoError(t, store.Put(stale))
 
-	_, found, err := store.Take(stale.ServiceID, root)
+	ignored, found, err := store.Take(stale.ServiceID, root)
 	require.NoError(t, err)
 	assert.False(t, found, "a directive past its TTL must not restore anything")
+	// The record travels with the not-found answer so the caller that ignored it can say
+	// which service and artifact it ignored. found is the only answer to act on.
+	assert.Equal(t, stale.ServiceID, ignored.ServiceID, "an expired directive is reported, not silently dropped")
+	assert.Equal(t, stale.ArtifactID, ignored.ArtifactID)
+	assert.Equal(t, stale.CreatedAt, ignored.CreatedAt)
 
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)

@@ -35,22 +35,40 @@ func restoredStore(stateDir string) (*runtime.RestoredRegistry, error) {
 	return runtime.NewRestoredRegistry(dir)
 }
 
-// openDaemonState creates the daemon's state directory and opens the node-local
-// record stores that live under it. Both failures are fatal to startup: a node
-// that cannot write its state directory cannot join a cluster, and a node that
-// cannot keep a restored-instance record could restore a VM it would later fail
-// to resolve.
-func openDaemonState(ctx *cli.Context) (string, *runtime.RestoredRegistry, error) {
+// pendingRestores opens the node's pending-restore directive store under the daemon's
+// state directory: <state-dir>/pending-restores, one directive per service. The
+// directory comes from --state-dir for the same reason the restored-instance records
+// do — a directive written by the process that accepted a prepare must be visible to
+// the executor that consumes it, and a daemon restart must find what it wrote.
+func pendingRestores(stateDir string) (*runtime.PendingRestores, error) {
+	dir := runtime.PendingRestoreDir(stateDir)
+	if dir == "" {
+		return nil, fmt.Errorf("a state directory is required to keep pending-restore directives: pass --state-dir")
+	}
+	return runtime.NewPendingRestores(dir)
+}
+
+// openDaemonState creates the daemon's state directory and opens the node-local record
+// stores that live under it. Every failure is fatal to startup: a node that cannot
+// write its state directory cannot join a cluster, a node that cannot keep a
+// restored-instance record could restore a VM it would later fail to resolve, and a node
+// that cannot keep a pending-restore directive must not answer a prepare as though it had.
+func openDaemonState(ctx *cli.Context) (string, *runtime.RestoredRegistry, *runtime.PendingRestores, error) {
 	stateDir := ctx.String("state-dir")
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		return "", nil, fmt.Errorf("failed to create state directory: %w", err)
+		return "", nil, nil, fmt.Errorf("failed to create state directory: %w", err)
 	}
 
 	restored, err := restoredStore(stateDir)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed to open the restored-instance record store: %w", err)
+		return "", nil, nil, fmt.Errorf("failed to open the restored-instance record store: %w", err)
 	}
-	return stateDir, restored, nil
+
+	pending, err := pendingRestores(stateDir)
+	if err != nil {
+		return "", nil, nil, fmt.Errorf("failed to open the pending-restore directive store: %w", err)
+	}
+	return stateDir, restored, pending, nil
 }
 
 // wireRestoredInstances gives the executor the node's restored-instance records and
@@ -69,6 +87,33 @@ func wireRestoredInstances(executor *swarmkit.Executor, store *runtime.RestoredR
 	executor.SetRestoredInstances(store, stopper)
 }
 
+// wireMigrationRestores gives the executor what a task start needs to restore the
+// artifact a directive names instead of booting a fresh VM: the directive store the
+// broker's prepare route also writes, the node's migration root, and the snapshot
+// manager that loads the artifact and owns the process it starts.
+//
+// The store is the same instance the broker holds, and the manager is the same instance
+// the executor's teardown stops restored VMs through: a second copy of either would make
+// the task start and the task's own stop disagree about which process and which
+// directive they are looking at. A node whose snapshot store could not be built (mgr is
+// nil) gets no wiring at all: it consumes no directive, so its tasks boot cold rather
+// than claiming an artifact it cannot load.
+func wireMigrationRestores(
+	executor *swarmkit.Executor,
+	pending *runtime.PendingRestores,
+	cfg brokerRuntime,
+	mgr *snapshot.Manager,
+) {
+	if executor == nil || pending == nil || mgr == nil {
+		return
+	}
+	executor.SetMigrationRestores(swarmkit.MigrationRestoreConfig{
+		Pending:  pending,
+		Root:     cfg.migrationStagingDir,
+		Restorer: swarmkit.NewArtifactRestorer(mgr),
+	})
+}
+
 func runAgent(ctx *cli.Context) error {
 	// Setup logging
 	setupLogging(ctx)
@@ -85,7 +130,7 @@ func runAgent(ctx *cli.Context) error {
 
 	// Create the state directory and open the node-local record stores that live
 	// under it.
-	stateDir, restored, err := openDaemonState(ctx)
+	stateDir, restored, pending, err := openDaemonState(ctx)
 	if err != nil {
 		return err
 	}
@@ -295,12 +340,20 @@ func runAgent(ctx *cli.Context) error {
 	// Start node
 	brk := brokerRuntimeFrom(ctx)
 	brk.restored = restored
+	// The directive store is opened once for the daemon: the broker's prepare route
+	// writes it and the executor's task start consumes it, so both must address the
+	// same directory.
+	brk.pending = pending
 	// The snapshot store is built for every daemon, not only under
 	// --snapshots-enable: its manager owns the process of a VM restored from a
 	// migration, so both the executor's stop and the broker's routes need the same
 	// instance. Only the public snapshot routes stay gated by the flag.
 	brk.snapshotManager = newSnapshotManager(context.Background(), brk)
 	wireRestoredInstances(fcExecutor, restored, brk.snapshotManager)
+	// A task whose service the manager prepared a directive for restores the staged
+	// artifact instead of booting, through the same manager and the same state
+	// directory the rest of the node uses.
+	wireMigrationRestores(fcExecutor, pending, brk, brk.snapshotManager)
 	if err := startNode(nodeConfig, fcExecutor, ingressCfg, apiRuntimeFrom(ctx), brk); err != nil {
 		return fmt.Errorf("failed to start node: %w", err)
 	}

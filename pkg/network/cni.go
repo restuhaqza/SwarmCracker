@@ -28,9 +28,44 @@ func CreateTAPDevice(name, bridge string) (*TAPDevice, error) {
 
 // CreateTAPDeviceWithExecutor creates a TAP device using injectable executor.
 func CreateTAPDeviceWithExecutor(name, bridge string, executor TAPExecutor) (*TAPDevice, error) {
+	return createTAPDeviceWithExecutor(name, bridge, true, executor)
+}
+
+// CreateTAPDeviceDown creates a TAP device attached to the bridge and leaves it
+// DOWN. It is the creator a restore uses.
+//
+// A VM restored from a snapshot resumes with the source node's address already
+// configured on its guest interface, so an interface that is up before the guest
+// is re-addressed would put a stale address on this node's bridge — the one
+// instant two nodes could answer for the service. The caller brings the device up
+// (BringTAPUp) once the guest has its new address.
+//
+// It is the same code as CreateTAPDevice with the bring-up step left out; there is
+// one `ip tuntap add` in this package, not two.
+func CreateTAPDeviceDown(name, bridge string) error {
+	return CreateTAPDeviceDownWithExecutor(name, bridge, NewDefaultTAPExecutor())
+}
+
+// CreateTAPDeviceDownWithExecutor is CreateTAPDeviceDown with an injectable
+// executor, so the "created but not up" contract can be asserted without root.
+func CreateTAPDeviceDownWithExecutor(name, bridge string, executor TAPExecutor) error {
+	_, err := createTAPDeviceWithExecutor(name, bridge, false, executor)
+	return err
+}
+
+// createTAPDeviceWithExecutor is the one TAP creation sequence: remove any leftover
+// device, add the TAP, optionally bring it up, and attach it to the bridge. The
+// device's MAC is read last because it only exists once the device does.
+//
+// up is a parameter rather than a second function because the order of the steps is
+// what a boot and a restore disagree about, and nothing else: a boot wants the
+// interface up before the guest starts, a restore wants it down until the guest has
+// been re-addressed.
+func createTAPDeviceWithExecutor(name, bridge string, up bool, executor TAPExecutor) (*TAPDevice, error) {
 	log.Info().
 		Str("tap", name).
 		Str("bridge", bridge).
+		Bool("up", up).
 		Msg("Creating TAP device")
 
 	// Ensure clean state by removing existing device if any
@@ -45,14 +80,18 @@ func CreateTAPDeviceWithExecutor(name, bridge string, executor TAPExecutor) (*TA
 		return nil, fmt.Errorf("failed to create TAP device %s: %w", name, err)
 	}
 
-	// Bring TAP up
-	upCmd := executor.Command("ip", "link", "set", name, "up")
-	if err := executor.Run(upCmd); err != nil {
-		cleanupCmd := executor.Command("ip", "link", "delete", name)
-		if cerr := executor.Run(cleanupCmd); cerr != nil {
-			log.Debug().Err(cerr).Msg("Cleanup TAP delete failed after bring-up error")
+	// Bring TAP up, unless the caller asked for a device that stays down. A boot
+	// has nothing to configure in the guest, so it brings the interface up before
+	// the VM starts; a restore brings it up only after the guest is re-addressed.
+	if up {
+		upCmd := executor.Command("ip", "link", "set", name, "up")
+		if err := executor.Run(upCmd); err != nil {
+			cleanupCmd := executor.Command("ip", "link", "delete", name)
+			if cerr := executor.Run(cleanupCmd); cerr != nil {
+				log.Debug().Err(cerr).Msg("Cleanup TAP delete failed after bring-up error")
+			}
+			return nil, fmt.Errorf("failed to bring TAP up: %w", err)
 		}
-		return nil, fmt.Errorf("failed to bring TAP up: %w", err)
 	}
 
 	// Connect to bridge
@@ -79,6 +118,48 @@ func CreateTAPDeviceWithExecutor(name, bridge string, executor TAPExecutor) (*TA
 		MAC:    mac,
 		Bridge: bridge,
 	}, nil
+}
+
+// BringTAPUp brings an existing TAP device up. It is the second half of the
+// restore's two-step TAP lifecycle: the device is created down, the guest is
+// re-addressed, then the device is brought up.
+func BringTAPUp(name string) error {
+	return BringTAPUpWithExecutor(name, NewDefaultTAPExecutor())
+}
+
+// BringTAPUpWithExecutor is BringTAPUp with an injectable executor.
+func BringTAPUpWithExecutor(name string, executor TAPExecutor) error {
+	if err := executor.Run(executor.Command("ip", "link", "set", name, "up")); err != nil {
+		return fmt.Errorf("failed to bring TAP %s up: %w", name, err)
+	}
+	return nil
+}
+
+// RemoveTAPDevice removes a TAP device and treats one that is already gone as
+// success.
+//
+// Unlike DeleteTAPDevice it is idempotent, which is what a restore's undo needs: a
+// restore that failed after creating the device removes it, and a restore that
+// failed before that has nothing to remove — and must not report a cleanup failure
+// for a device that never existed.
+func RemoveTAPDevice(name string) error {
+	return RemoveTAPDeviceWithExecutor(name, NewDefaultTAPExecutor())
+}
+
+// RemoveTAPDeviceWithExecutor is RemoveTAPDevice with an injectable executor.
+func RemoveTAPDeviceWithExecutor(name string, executor TAPExecutor) error {
+	// A device that no longer exists is what removal wanted. The existence check is
+	// the answer: `ip link delete` fails for a missing device with the same kind of
+	// error a permissions or driver failure produces, so only a probe can tell them
+	// apart.
+	stillThere := func() bool {
+		return executor.Run(executor.Command("ip", "link", "show", name)) == nil
+	}
+	if deleteErr := DeleteTAPDeviceWithExecutor(name, executor); deleteErr != nil && stillThere() {
+		return deleteErr
+	}
+	log.Debug().Str("tap", name).Msg("TAP device is removed or was already gone")
+	return nil
 }
 
 // DeleteTAPDevice removes a TAP device.

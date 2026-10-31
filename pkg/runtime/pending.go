@@ -209,8 +209,10 @@ func (p *PendingRestores) Put(record PendingRestore) error {
 
 // Take consumes the directive waiting for a service, if any. found is false for a
 // service nothing was prepared for, and for a directive past DefaultPendingRestoreTTL
-// - which is deleted rather than returned, because a migration whose transfer took
-// longer than the TTL has been abandoned or retried.
+// - which is deleted rather than returned for action, because a migration whose
+// transfer took longer than the TTL has been abandoned or retried. An expired
+// directive is still returned *with* found == false, so the caller can say which
+// service it ignored; a caller that sees found == false must not act on the record.
 //
 // root is this node's migration root. The record's directory is re-derived from it
 // and checked again here, at the instant the directive is acted on, not only when it
@@ -267,7 +269,11 @@ func (p *PendingRestores) Take(serviceID, root string) (PendingRestore, bool, er
 				"pending-restore directive for service %q: remove the expired claim %s: %w", serviceID, claim, removeErr)
 		}
 		syncDir(p.dir)
-		return none, false, nil
+		// The record is returned with found == false, not the zero value: nothing may
+		// act on it (the artifact is not this task's to restore), but a caller that
+		// wants to say why a task booted cold can name the service, the artifact and
+		// the age it ignored. found is the only answer to act on.
+		return record, false, nil
 	}
 	if err == nil {
 		err = record.stagedDirProblem(root)

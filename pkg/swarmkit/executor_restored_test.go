@@ -25,9 +25,11 @@ type fakeRestoredStore struct {
 	record    scruntime.RestoredInstance
 	found     bool
 	getErr    error
+	putErr    error
 	deleteErr error
 
 	gets    []string
+	puts    []scruntime.RestoredInstance
 	deletes []string
 }
 
@@ -45,6 +47,17 @@ func (f *fakeRestoredStore) Delete(taskID string) error {
 		return f.deleteErr
 	}
 	f.found = false
+	return nil
+}
+
+// Put is the write half a restore uses: the record it stores is the one a teardown —
+// and every probe that resolves the task's muxer — reads back.
+func (f *fakeRestoredStore) Put(instance scruntime.RestoredInstance) error {
+	f.puts = append(f.puts, instance)
+	if f.putErr != nil {
+		return f.putErr
+	}
+	f.record, f.found = instance, true
 	return nil
 }
 

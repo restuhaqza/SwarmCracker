@@ -68,6 +68,12 @@ type brokerRuntime struct {
 	// through SetRestoredInstances.
 	// Nil means this node keeps no records, which is only true in tests.
 	restored *scruntime.RestoredRegistry
+	// pending is the node's store of pending-restore directives: the manager's prepare
+	// route writes one per service here, and the executor consumes it when SwarmKit
+	// starts that service's next task. The daemon opens it once (openDaemonState) so
+	// the writer and the consumer are the same directory; nil means startBroker opens
+	// its own, which is what a caller that only exercises the broker routes gets.
+	pending *scruntime.PendingRestores
 }
 
 // logRestoredInstances reports the restored instances this node has recorded,
@@ -233,9 +239,17 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	// it at task start. Opening the store can fail, and a node that cannot keep a
 	// directive must not answer a prepare as though it had, so the failure stops the
 	// broker rather than leaving a route that lies.
-	pending, err := scruntime.NewPendingRestores(scruntime.PendingRestoreDir(stateDir))
-	if err != nil {
-		return nil, false, nil, fmt.Errorf("node broker: %w", err)
+	//
+	// The daemon opens the store before the broker (openDaemonState) and hands it over,
+	// because the executor's task start consumes the same directives; opening a second
+	// one here is only for a caller that runs the broker on its own.
+	pending := cfg.pending
+	if pending == nil {
+		opened, err := scruntime.NewPendingRestores(scruntime.PendingRestoreDir(stateDir))
+		if err != nil {
+			return nil, false, nil, fmt.Errorf("node broker: %w", err)
+		}
+		pending = opened
 	}
 	migrationCfg := broker.MigrationHandlerConfig{
 		Store:       store,

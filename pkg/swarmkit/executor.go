@@ -63,6 +63,14 @@ type Executor struct {
 	// executorMu, which Controller already holds when it reads them.
 	restoredStore   RestoredInstanceStore
 	restoredStopper RestoredVMStopper
+
+	// migration is the node's migration state as a task start uses it: the directive
+	// store the manager prepared into, the migration root, and the restorer that
+	// starts a staged artifact as a task's VM. Set once, before the agent starts,
+	// through SetMigrationRestores; nil means this node restores nothing and every
+	// task boots a fresh VM. Guarded by executorMu, which Controller already holds
+	// when it reads it.
+	migration *MigrationRestoreConfig
 }
 
 // NetworkManager returns the executor's network manager. The daemon uses it to
@@ -599,6 +607,11 @@ func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 	ctrl.restored = e.restoredStore
 	ctrl.restoredStopper = e.restoredStopper
 
+	// A task whose service the manager prepared a directive for restores the staged
+	// artifact instead of booting. The controller reads the same store the broker's
+	// prepare route writes, so the directive is visible here without a copy.
+	ctrl.migration = e.migration
+
 	// Set up deregistration callback to remove controller from map when removed
 	ctrl.OnRemove = func() {
 		e.executorMu.Lock()
@@ -669,6 +682,24 @@ func (e *Executor) SetRestoredInstances(store RestoredInstanceStore, stopper Res
 	e.executorMu.Lock()
 	e.restoredStore = store
 	e.restoredStopper = stopper
+	e.executorMu.Unlock()
+}
+
+// SetMigrationRestores gives the executor what a task start needs to restore a staged
+// artifact instead of booting: the node's pending-restore directives, its migration
+// root, and the restorer that loads an artifact as a task's VM.
+//
+// The daemon calls it once at startup, before any task arrives, with the directive
+// store the node broker also opens: a directive the manager prepared is only visible to
+// the task that claims it if both read one directory. The config is copied, and a
+// caller that passes none (or one without a store) keeps today's behaviour for every
+// task — each one boots its own VM.
+func (e *Executor) SetMigrationRestores(cfg MigrationRestoreConfig) {
+	if e == nil {
+		return
+	}
+	e.executorMu.Lock()
+	e.migration = &cfg
 	e.executorMu.Unlock()
 }
 
@@ -773,6 +804,20 @@ type Controller struct {
 	// falls back to the VMM manager.
 	restored        RestoredInstanceStore
 	restoredStopper RestoredVMStopper
+
+	// migration is the node's migration state as this task's start uses it (see
+	// Executor.SetMigrationRestores). Nil means this node restores nothing: the start
+	// path is exactly the boot it always was.
+	migration *MigrationRestoreConfig
+
+	// inheritedSocket is the API socket of the VM this task runs when that VM came
+	// from a migration artifact rather than from this executor's boot. Empty for every
+	// task this executor booted.
+	//
+	// It is guarded by terminalMu, which already owns "one terminal event per VM
+	// life": a VM this executor never counted as started must not have its end counted
+	// either, and Wait reads this answer without c.mu.
+	inheritedSocket string
 }
 
 // NewController creates a new task controller.
@@ -998,8 +1043,26 @@ func (c *Controller) Start(ctx context.Context) (err error) {
 
 	c.logger.Info().Msg("Starting task")
 
-	if err := c.startVM(ctx); err != nil {
-		return err
+	// A node the manager told, before this task existed, that its next task of this
+	// service restores a staged artifact restores it instead of booting one. No
+	// directive — the ordinary case — is one store lookup and then exactly the boot
+	// below.
+	//
+	// A controller can be started twice (the task manager repeating itself, an update
+	// path). A task whose VM came from an artifact already has one, so neither the
+	// lookup nor the boot is repeated; a booted task's startVM answers the same
+	// question itself. Without this guard a second start would claim a second
+	// directive and restore a second VM beside the first.
+	if c.inheritedVMSocket() == "" {
+		inherited, err := c.startFromArtifact(ctx)
+		if err != nil {
+			return err
+		}
+		if !inherited {
+			if err := c.startVM(ctx); err != nil {
+				return err
+			}
+		}
 	}
 	// The VM may not be this executor's: a task started from a migration artifact
 	// runs a VM whose Firecracker state names the source task's vsock muxer. Resolve
@@ -1324,7 +1387,27 @@ func (c *Controller) resetTerminal() {
 	c.terminalMu.Lock()
 	c.terminalClaimed = false
 	c.terminalKind = ""
+	// A (re)start through startVM boots this node's own VM, so the previous life - a
+	// VM restored from a migration artifact - is not what this controller runs now.
+	c.inheritedSocket = ""
 	c.terminalMu.Unlock()
+}
+
+// markInheritedVM records that this task's VM came from a migration artifact: this
+// executor started no process for it and counted no start, so its end is not recorded
+// either. The socket is the handle the VM can be observed through.
+func (c *Controller) markInheritedVM(socketPath string) {
+	c.terminalMu.Lock()
+	c.inheritedSocket = socketPath
+	c.terminalMu.Unlock()
+}
+
+// inheritedVMSocket returns the API socket of the VM this task inherited from a
+// migration, or "" for a VM this executor booted.
+func (c *Controller) inheritedVMSocket() string {
+	c.terminalMu.Lock()
+	defer c.terminalMu.Unlock()
+	return c.inheritedSocket
 }
 
 // recordTerminalCrash records the VM's single terminal event as a crash with
@@ -1369,6 +1452,18 @@ func (c *Controller) Wait(ctx context.Context) (err error) {
 
 	task := c.convertTask()
 	service := serviceName(task)
+
+	// A VM restored from a migration artifact is not the VMM manager's: pkg/snapshot
+	// started it and reaps it, so the manager can neither wait for it nor say how it
+	// exited. Waiting on the recorded API socket is the same question asked of the
+	// process that exists, and it is what keeps a moved task from being failed the
+	// instant SwarmKit starts waiting. Nothing is recorded for it: this executor never
+	// counted its start (the boot-duration and vms_running increments live in startVM,
+	// which a restore replaces), so counting its end would move a counter this task
+	// never moved.
+	if socket := c.inheritedVMSocket(); socket != "" {
+		return c.waitInheritedVM(ctx, socket)
+	}
 
 	status, err := c.vmmMgr.Wait(ctx, task)
 
@@ -1429,6 +1524,53 @@ func (c *Controller) Wait(ctx context.Context) (err error) {
 	// reaching this stop.
 	c.recordTerminalStop()
 	return nil
+}
+
+// waitInheritedVM blocks until the VM this task inherited from a migration is gone.
+//
+// The process belongs to pkg/snapshot, which reaps it, so there is no exit status to
+// report and no way for this executor to observe one: the recorded API socket losing
+// its Firecracker process is the end it can see, and it answers the same nil a clean
+// exit does. A cancelled wait is SwarmKit servicing a new desired state, and the
+// teardown that follows owns the VM.
+func (c *Controller) waitInheritedVM(ctx context.Context, socketPath string) error {
+	for {
+		if !restoredVMAlive(socketPath) {
+			c.logger.Info().Str("socket", socketPath).
+				Msg("The VM this task inherited from a migration is gone")
+			return nil
+		}
+		if err := restoredVMExitWait(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+// restoredVMAlive reports whether the Firecracker process behind a restored VM's API
+// socket is still running. It is a variable because it is the one effect in the wait a
+// test cannot produce: a host without procfs answers "not running", and so does a VM
+// that exited.
+var restoredVMAlive = func(socketPath string) bool {
+	if socketPath == "" {
+		return false
+	}
+	return scruntime.FindFirecrackerPIDBySocket(socketPath) > 0
+}
+
+// restoredVMWaitPoll paces the probe above. It is a variable so a test that proves the
+// wait honours its context does not spend a second doing it.
+var restoredVMWaitPoll = time.Second
+
+// restoredVMExitWait pauses between two probes and returns early when the context ends.
+func restoredVMExitWait(ctx context.Context) error {
+	timer := time.NewTimer(restoredVMWaitPoll)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // resolveGuestVsockPath records the muxer this task's guest agent answers on: the

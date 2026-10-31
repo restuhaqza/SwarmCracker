@@ -676,6 +676,25 @@ func DialAgent(ctx context.Context, vsockPath string) (Executor, error) {
 	return &agentExecutor{client: client}, nil
 }
 
+// AgentDialerFunc adapts a plain function to AgentDialer, so the production dialer
+// (DialAgent) can be handed to a restore without a named type at every call site.
+// It is the seam the executor's wiring uses: the executor passes the package's own
+// dialer, and a test passes a function that answers a fake guest.
+type AgentDialerFunc func(ctx context.Context, vsockPath string) (Executor, error)
+
+// Dial calls f. A nil function is an error rather than a panic: a restore with no
+// dialer is a wiring mistake the restore reports like any other missing effect.
+func (f AgentDialerFunc) Dial(ctx context.Context, vsockPath string) (Executor, error) {
+	if f == nil {
+		return nil, errors.New("agent dialer is nil: want a function that dials the guest agent behind a vsock muxer")
+	}
+	return f(ctx, vsockPath)
+}
+
+// ProductionDialer is the AgentDialer the executor wires: the package's real guest
+// agent client, as an AgentDialer.
+var ProductionDialer AgentDialer = AgentDialerFunc(DialAgent)
+
 // guestAgent is the part of *agent.Client the adapter uses. It is an interface so
 // the adapter's own behaviour — capturing stderr, refusing an empty command,
 // passing an exit status through — can be tested without a socket or a guest.

@@ -634,10 +634,37 @@ func (m *Manager) reserveSnapshotDir() (id string, dir string, err error) {
 // load the snapshot's state and memory via the /snapshot/load API, which also
 // restores device config and resumes the VM. Modern Firecracker has no
 // `--snapshot` CLI flag, so the state is applied purely through the API.
+//
+// The restored VM's console is not written anywhere; RestoreFromSnapshotWithLog
+// is the variant a task restore uses, because a task's console has to outlive the
+// VM for `vm logs` to read it. This wrapper keeps every existing caller unchanged.
 func (m *Manager) RestoreFromSnapshot(
 	ctx context.Context,
 	info *SnapshotInfo,
 	socketPath string,
+) error {
+	return m.RestoreFromSnapshotWithLog(ctx, info, socketPath, "")
+}
+
+// RestoreFromSnapshotWithLog is RestoreFromSnapshot with the console log path the
+// snapshot's task would have had.
+//
+// consolePath is where the restored VM's serial console is written, the same
+// `<logDir>/<taskID>.log` file a booted VM writes, so a task that was moved is
+// readable with `vm logs` like any other task on this node. An empty path keeps
+// the console detached, which is what a snapshot restored outside a task (the
+// experimental API, a test) wants.
+//
+// The console file is opened before Firecracker starts and closed when its process
+// exits, which is the process's lifetime rather than this call's: the VM outlives
+// the restore. A console path that cannot be opened fails the restore before any
+// process exists, because a moved task whose logs answer 404 is the failure this
+// option exists to prevent.
+func (m *Manager) RestoreFromSnapshotWithLog(
+	ctx context.Context,
+	info *SnapshotInfo,
+	socketPath string,
+	consolePath string,
 ) error {
 	if info == nil {
 		return fmt.Errorf("snapshot info is required")
@@ -693,22 +720,11 @@ func (m *Manager) RestoreFromSnapshot(
 		return fmt.Errorf("firecracker binary not found in PATH: %w", err)
 	}
 
-	cmd := exec.Command(fcBinary, "--api-sock", socketPath)
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start firecracker for restore: %w", err)
+	cmd, err := startRestoredFirecracker(fcBinary, socketPath, consolePath)
+	if err != nil {
+		return err
 	}
 	proc := cmd.Process
-
-	// The daemon owns this process, so it reaps it: without a Wait every stop or
-	// failed load would leave a zombie under the daemon. Wait is also what marks
-	// the *os.Process done, which makes the stop path's Signal report
-	// os.ErrProcessDone — the "already stopped" answer it treats as success.
-	go func() {
-		if waitErr := cmd.Wait(); waitErr != nil {
-			log.Debug().Err(waitErr).Int("pid", proc.Pid).
-				Msg("Restored firecracker process exited")
-		}
-	}()
 
 	// Track the restored VM process and the socket it owns, so a later stop can
 	// reach both under this task's lock.
@@ -752,6 +768,79 @@ func (m *Manager) RestoreFromSnapshot(
 		Msg("VM restored from snapshot successfully")
 
 	return nil
+}
+
+// startRestoredFirecracker starts the Firecracker process a restore loads into, with the
+// task's console log attached. The caller tracks and reaps the process.
+//
+// The console file is opened before the start, because Firecracker writes the guest's
+// ttyS0 to its stdout from the first byte and a file opened after the fact would miss the
+// output `vm logs` is read for. It is closed when the process exits, not when this
+// returns: the VM outlives the restore. A console path that cannot be opened fails here,
+// before a process exists, so the caller is told the task would have had no logs.
+//
+// The daemon owns the process, so it reaps it: without a Wait every stop or failed load
+// would leave a zombie under the daemon. Wait is also what marks the *os.Process done,
+// which makes the stop path's Signal report os.ErrProcessDone — the "already stopped"
+// answer it treats as success.
+func startRestoredFirecracker(fcBinary, socketPath, consolePath string) (*exec.Cmd, error) {
+	console, err := openRestoredConsole(consolePath)
+	if err != nil {
+		return nil, err
+	}
+
+	cmd := exec.Command(fcBinary, "--api-sock", socketPath)
+	if console != nil {
+		cmd.Stdout = console
+	}
+	if err := cmd.Start(); err != nil {
+		if console != nil {
+			_ = console.Close()
+		}
+		return nil, fmt.Errorf("failed to start firecracker for restore: %w", err)
+	}
+
+	proc := cmd.Process
+	go func() {
+		if waitErr := cmd.Wait(); waitErr != nil {
+			log.Debug().Err(waitErr).Int("pid", proc.Pid).
+				Msg("Restored firecracker process exited")
+		}
+		// Closing here is what keeps a since-restored VM's log file from being held
+		// open for the life of the daemon.
+		if console != nil {
+			_ = console.Close()
+		}
+	}()
+	return cmd, nil
+}
+
+// openRestoredConsole opens the console log file a restored VM writes to, in the
+// same shape the boot path uses (VMMManager.openLogFile): append, 0644, and a
+// boundary marker when the file already has output so a task restored twice does
+// not look like one continuous run.
+//
+// An empty path returns (nil, nil): the console is simply not captured. A path that
+// cannot be created is an error, not a warning — the caller asked for the task's
+// logs and silently getting none is the 404 this option exists to prevent.
+func openRestoredConsole(path string) (*os.File, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("failed to create the console log directory for %s: %w", path, err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open the console log %s: %w", path, err)
+	}
+	// Only a file that already has output needs a boundary. Writing the marker is
+	// best effort: a failure must not fail the restore over a log nicety.
+	if info, statErr := f.Stat(); statErr == nil && info.Size() > 0 {
+		_, _ = fmt.Fprintf(f, "\n=== swarmcracker: console restarted at %s (earlier output kept) ===\n",
+			time.Now().UTC().Format(time.RFC3339))
+	}
+	return f, nil
 }
 
 // ensureRestoredDisk gives the VM the restore is about to start the disk its

@@ -1207,3 +1207,38 @@ func TestAgentExecutorClose(t *testing.T) {
 	require.NoError(t, closer.Close())
 	assert.Equal(t, 1, guest.closed)
 }
+
+// TestAgentDialerFuncIsTheProductionSeam pins the adapter the executor's wiring uses:
+// a function with the dialer's shape becomes an AgentDialer without a named type per
+// call site, and it carries the function's answer through unchanged.
+func TestAgentDialerFuncIsTheProductionSeam(t *testing.T) {
+	var dialed []string
+	guest := &fakeExecutor{}
+
+	var dialer AgentDialer = AgentDialerFunc(func(_ context.Context, vsockPath string) (Executor, error) {
+		dialed = append(dialed, vsockPath)
+		return guest, nil
+	})
+
+	got, err := dialer.Dial(context.Background(), "/var/run/firecracker/task-1.vsock")
+	require.NoError(t, err)
+	assert.Same(t, guest, got)
+	assert.Equal(t, []string{"/var/run/firecracker/task-1.vsock"}, dialed)
+}
+
+// TestAgentDialerFuncReportsANilFunction pins the wiring mistake: a nil dialer is an
+// error the restore reports, not a panic halfway through a load.
+func TestAgentDialerFuncReportsANilFunction(t *testing.T) {
+	var dialer AgentDialerFunc
+
+	_, err := dialer.Dial(context.Background(), "/var/run/firecracker/task-1.vsock")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nil")
+}
+
+// TestProductionDialerIsConfigured pins that the executor hands the restore the
+// package's real dialer: an empty interface value here would be a restore that cannot
+// reach its guest.
+func TestProductionDialerIsConfigured(t *testing.T) {
+	require.NotNil(t, ProductionDialer)
+}

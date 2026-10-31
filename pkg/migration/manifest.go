@@ -12,6 +12,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -32,6 +34,17 @@ const (
 	// manager↔node document, so its kind lives with the document, not with the
 	// public contract.
 	ArtifactKind = "MigrationArtifact"
+
+	// ArtifactDocumentName is the file in a staged artifact directory that holds
+	// the manifest. The directory is <migration root>/<artifactID>, and the files
+	// the manifest describes sit beside it, so the name is the whole index: there
+	// is no artifact without this file, and a directory without it is not one.
+	ArtifactDocumentName = "artifact.json"
+
+	// maxArtifactDocumentBytes bounds the manifest this package will read. A
+	// manifest describes three files and their digests; it is kilobytes, and a
+	// larger file is either not a manifest or one written to exhaust a reader.
+	maxArtifactDocumentBytes = 1 << 20
 )
 
 const (
@@ -427,6 +440,55 @@ func interfaceNameProblem(name string) string {
 // invalidf builds a rejection that carries ErrInvalidArtifact.
 func invalidf(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvalidArtifact, fmt.Sprintf(format, args...))
+}
+
+// ReadArtifact reads and validates the manifest of the artifact staged in dir.
+//
+// It is the reader a node's executor uses at task start: a pending-restore
+// directive names, not describes, the staging directory, so the manifest is the
+// only thing that says what the bytes there are and where the host-side names come
+// from.
+//
+// The file is opened without following a symbolic link and bounded in size. The
+// directory is written by a transfer from another node, and a link planted there
+// would hand this reader whatever it points at — a manifest of another artifact,
+// or one outside the migration root entirely — under a path the node believes it
+// staged itself. A missing manifest stays a missing-file error (the caller can
+// tell "not staged" from "corrupt"); anything that is present but unusable is an
+// ErrInvalidArtifact.
+func ReadArtifact(dir string) (Artifact, error) {
+	var artifact Artifact
+
+	if strings.TrimSpace(dir) == "" {
+		return artifact, errors.New("artifact directory is empty: want the absolute directory holding artifact.json and the files it describes")
+	}
+	if !filepath.IsAbs(dir) {
+		return artifact, fmt.Errorf("artifact directory %q is relative: want the absolute directory holding artifact.json and the files it describes", dir)
+	}
+
+	path := filepath.Join(dir, ArtifactDocumentName)
+	//nolint:gosec // G304: the directory is this node's migration root plus an artifact ID, and the file name is fixed.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return artifact, fmt.Errorf("read the artifact manifest %s: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	body, err := io.ReadAll(io.LimitReader(f, maxArtifactDocumentBytes+1))
+	if err != nil {
+		return artifact, fmt.Errorf("read the artifact manifest %s: %w", path, err)
+	}
+	if int64(len(body)) > maxArtifactDocumentBytes {
+		return Artifact{}, invalidf("artifact manifest %s is larger than %d bytes: a manifest describes three files, so this is not one", path, maxArtifactDocumentBytes)
+	}
+
+	if err := json.Unmarshal(body, &artifact); err != nil {
+		return Artifact{}, invalidf("artifact manifest %s does not decode: %v", path, err)
+	}
+	if err := artifact.Validate(); err != nil {
+		return Artifact{}, fmt.Errorf("artifact manifest %s: %w", path, err)
+	}
+	return artifact, nil
 }
 
 // ArtifactFromSnapshot describes a completed snapshot as a migration artifact.
