@@ -788,4 +788,37 @@ func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
 	defer postDiscard.Body.Close()
 	require.Equal(t, http.StatusMethodNotAllowed, postDiscard.StatusCode)
 	require.Equal(t, http.MethodDelete, postDiscard.Header.Get("Allow"))
+
+	// Prepare is registered, and the directive's directory is the node's own: an
+	// artifact this node never staged is a 404, not a directive pointing at a path
+	// the manager guessed.
+	prepareResp, err := client.Post(base+"/prepare", "application/json",
+		strings.NewReader(`{"serviceId":"svc-1","artifactId":"mig-0123456789abcdef"}`))
+	require.NoError(t, err)
+	defer prepareResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, prepareResp.StatusCode)
+	var prepareDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(prepareResp.Body).Decode(&prepareDoc))
+	require.Equal(t, "artifact_not_available", prepareDoc.Error.Details["reason"])
+
+	// Unprepare is registered and idempotent: nothing was prepared for the service,
+	// and the cleanup an abandoned migration makes is a success either way.
+	unprepareReq, err := http.NewRequest(http.MethodDelete, base+"/unprepare?serviceId=svc-1", nil)
+	require.NoError(t, err)
+	unprepareResp, err := client.Do(unprepareReq)
+	require.NoError(t, err)
+	defer unprepareResp.Body.Close()
+	require.Equal(t, http.StatusNoContent, unprepareResp.StatusCode)
+
+	// A service ID that cannot name a record file is the caller's mistake, and a 400
+	// rather than the 503 the filesystem's ENAMETOOLONG would produce further down.
+	badUnprepareReq, err := http.NewRequest(http.MethodDelete, base+"/unprepare?serviceId="+strings.Repeat("s", 4096), nil)
+	require.NoError(t, err)
+	badUnprepareResp, err := client.Do(badUnprepareReq)
+	require.NoError(t, err)
+	defer badUnprepareResp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, badUnprepareResp.StatusCode)
+	var badUnprepareDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(badUnprepareResp.Body).Decode(&badUnprepareDoc))
+	require.Equal(t, "invalid_service_id", badUnprepareDoc.Error.Details["reason"])
 }

@@ -11,6 +11,7 @@ package broker
 //	discard either node         the artifact, and the dump behind it
 //	prepare manager -> target   the target's directive: the next task of a service
 //	                            that starts there restores that artifact
+//	unprepare manager -> target the directive again, when the migration is abandoned
 //
 // There is no public route for any of this, and no new port or certificate: the
 // manager initiates every transfer, so the artifact never has to be reachable
@@ -47,7 +48,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,12 +64,13 @@ import (
 // 32 KiB pieces, whatever the size of the image.
 const migrationRelayChunkBytes = 32 << 10
 
-// migrationPrepareRouteTask is the task segment of the prepare route. The route
-// shape is the one every node operation has, and prepare is artifact-scoped, so the
-// node never resolves this segment: the task that will restore the artifact does not
-// exist yet - SwarmKit creates it when the service is replaced - and this placeholder
-// is not an ID anyone looks up.
-const migrationPrepareRouteTask = "pending-restore"
+// migrationDirectiveRouteTask is the task segment of the directive routes (prepare
+// and unprepare). The route shape is the one every node operation has, and both are
+// artifact-scoped, so the node never resolves this segment: the task that will restore
+// the artifact does not exist yet - SwarmKit creates it when the service is replaced -
+// and a migration that is abandoned may never have created one. This placeholder is
+// not an ID anyone looks up.
+const migrationDirectiveRouteTask = "pending-restore"
 
 // DefaultMigrationTimeout bounds one migration call - an export, a file read, a
 // stage or a discard - when ManagerConfig names no deadline. It is six times the
@@ -358,32 +359,31 @@ func (m *Manager) Discard(ctx context.Context, nodeID string, task v1.Task, arti
 }
 
 // Prepare records the target node's pending-restore directive: the next task of
-// serviceID to start there restores artifactID from dir, which is the staging
-// directory the manager wrote that artifact's files into on that node. It is called
-// before SwarmKit creates the task, which is why nothing here names one and why the
-// route carries a placeholder instead.
+// serviceID to start there restores artifactID, whose files the manager has already
+// staged in that node's own migration root. It is called before SwarmKit creates the
+// task, which is why nothing here names one and why the route carries a placeholder
+// instead.
 //
-// The node validates dir against its own migration root, which the manager does not
-// know, and answers a typed 400 when a directive would point anywhere else. The
-// checks here are the ones that need no node: the IDs must be the shapes the node
-// accepts, and the directory must be absolute. A rejected prepare is a request the
-// node refuses, so the manager never reports a restore as arranged.
-func (m *Manager) Prepare(ctx context.Context, nodeID, serviceID, artifactID, dir string) error {
+// The directory is not in the request: each node has its own migration root, so only
+// the node can say where the artifact's files are. It derives
+// <migration root>/<artifactID> and answers a typed 404 when that is not a real
+// directory it holds - a prepare for an artifact that was never staged here is not a
+// restore the manager may believe is arranged.
+//
+// The checks here are the ones that need no node: the IDs must be the shapes the node
+// accepts. A rejected prepare is a request the node refuses, so the manager never
+// reports a restore as arranged.
+func (m *Manager) Prepare(ctx context.Context, nodeID, serviceID, artifactID string) error {
 	if err := scruntime.CheckTaskID(serviceID); err != nil {
 		return invalidServiceID(serviceID)
 	}
 	if !migration.ValidArtifactID(artifactID) {
 		return invalidArtifactID("artifactId", artifactID)
 	}
-	if !filepath.IsAbs(dir) {
-		return invalidRestoreDir(dir, "invalid_dir",
-			"must be the absolute staging directory <migration root>/<artifactID> of the artifact on the target node")
-	}
 
 	body, err := json.Marshal(migrationPrepareRequest{
 		ServiceID:  serviceID,
 		ArtifactID: artifactID,
-		Dir:        dir,
 	})
 	if err != nil {
 		return output.NewErrorf(output.CodeInternal,
@@ -391,7 +391,7 @@ func (m *Manager) Prepare(ctx context.Context, nodeID, serviceID, artifactID, di
 			WithDetails(map[string]any{"serviceId": serviceID, "reason": "directive_unencodable"})
 	}
 
-	route, err := m.routeForNode(ctx, nodeID, migrationPrepareRouteTask, MigrationPrepareOperation)
+	route, err := m.routeForNode(ctx, nodeID, migrationDirectiveRouteTask, MigrationPrepareOperation)
 	if err != nil {
 		return err
 	}
@@ -415,6 +415,44 @@ func (m *Manager) Prepare(ctx context.Context, nodeID, serviceID, artifactID, di
 	default:
 		return decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "migration prepare")
 	}
+}
+
+// Unprepare removes the target node's pending-restore directive for a service. It is
+// how an abandoned migration cleans up after itself: the artifact is being discarded,
+// so a directive that still named it would leave the service's next task here trying
+// to restore something that is gone.
+//
+// The node answers 204 whether or not it held a directive - a rollback may run twice,
+// and may run where the prepare never arrived - so a retried cleanup succeeds.
+func (m *Manager) Unprepare(ctx context.Context, nodeID, serviceID string) error {
+	if err := scruntime.CheckTaskID(serviceID); err != nil {
+		return invalidServiceID(serviceID)
+	}
+
+	route, err := m.routeForNode(ctx, nodeID, migrationDirectiveRouteTask, MigrationUnprepareOperation)
+	if err != nil {
+		return err
+	}
+
+	resp, err := m.doNodeRequest(ctx, route, http.MethodDelete,
+		url.Values{"serviceId": {serviceID}}, nil, -1, "",
+		m.migrationTimeout, "migration unprepare")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		// The operation promises a 204: a 2xx that is not one did not confirm the
+		// removal, and the caller must not believe the directive is gone.
+		return output.NewErrorf(output.CodeInternal,
+			"node %q returned status %d for a migration unprepare", route.Node.ID, resp.StatusCode).
+			WithDetails(map[string]any{"nodeId": route.Node.ID})
+	}
+	return decodeNodeError(resp.Body, resp.StatusCode, route.Node.ID, "migration unprepare")
 }
 
 // artifactEntry resolves the manifest entry a transfer names. The name is checked

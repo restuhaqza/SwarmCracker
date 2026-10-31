@@ -14,7 +14,8 @@ package runtime
 // names the staging directory the manager wrote the artifact's files into
 // (<migration root>/<artifactID> on this node) and the executor reads the manifest
 // from there, once. The directory is node-local state, like every other path a
-// record here holds, so the record never leaves the node.
+// record here holds, so the record never leaves the node - and it is the node, not
+// the manager, that derives it, because each node has its own migration root.
 
 import (
 	"encoding/json"
@@ -26,6 +27,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -63,6 +66,12 @@ const (
 	pendingProbePattern = ".pending-restores-writable.probe-*"
 )
 
+// linkPendingRecord is os.Link, and a test seam: a refused record is put back by hard
+// linking its claim onto the directive's name, which is how the put-back refuses to
+// replace a directive written in the meantime. The only way to exercise that moment
+// hermetically is to make the link injectable.
+var linkPendingRecord = os.Link
+
 // PendingRestore is the node-local directive the manager prepares on the target of
 // a migration. It is an internal record, not a public document: it names a
 // node-local directory and never leaves the node, so it has no v1 envelope.
@@ -74,15 +83,20 @@ type PendingRestore struct {
 	// ArtifactID is the artifact the claiming task restores. The executor records
 	// it on the restored instance, so a running VM can be traced to its snapshot.
 	ArtifactID string `json:"artifactId"`
-	// Dir is the staging directory the manager wrote the artifact's files into on
-	// this node: <migration root>/<artifactID>. It is absolute and node-local, and
-	// the executor reads artifact.json and the files it describes from it. The
-	// manager derives it from this node's migration root, so the record carries the
-	// path instead of a rule that would have to guess the root.
+	// Dir is the staging directory the artifact's files were written into on this
+	// node: <migration root>/<artifactID>. It is absolute and node-local, and the
+	// executor reads artifact.json and the files it describes from it. The node
+	// derives it from its own migration root when it records the directive, and
+	// checks it again when the directive is consumed: the manager cannot name a path
+	// on a node it does not run, and a path that was right at prepare time can be a
+	// symlink or gone by the time a task starts.
 	Dir string `json:"dir"`
-	// CreatedAt is when the directive was prepared. It is set by the caller (the
-	// broker's prepare, or the manager on the node's behalf), not by the registry,
-	// so a retried prepare does not silently move the age of a directive.
+	// CreatedAt is when the directive was prepared, and the store never rewrites it:
+	// the caller that records the directive stamps it (the broker's prepare, with the
+	// instant the node recorded it), and a caller that has to Put a directive back -
+	// a restore whose import failed after Take consumed it - puts the same instant
+	// back. A registry that stamped "now" on every write would hand that retry a
+	// second TTL, and the TTL is what stops an abandoned migration restoring later.
 	CreatedAt time.Time `json:"createdAt"`
 }
 
@@ -193,21 +207,37 @@ func (p *PendingRestores) Put(record PendingRestore) error {
 // - which is deleted rather than returned, because a migration whose transfer took
 // longer than the TTL has been abandoned or retried.
 //
+// root is this node's migration root. The record's directory is re-derived from it
+// and checked again here, at the instant the directive is acted on, not only when it
+// was written: a directive written before the root moved, or one naming a path that
+// has since become a symbolic link or disappeared, is refused with a sentence naming
+// the field rather than followed.
+//
 // The claim is what makes Take atomic: the directive is renamed to a name only this
 // caller knows before it is read, so of two tasks starting at the same instant
 // exactly one renames it and the other answers not-found. Renaming first also means
 // a directive is consumed at most once even if this process dies mid-read.
 //
-// A record that cannot be used - it does not decode, it names another service, or
-// it fails the same rule Put applies - is an error, and the file is put back so a
-// human can read what the node believes; List reports it by path. The caller
-// decides what to log: the executor treats an unusable directive as "nothing to
-// restore" and starts the task cold, and a startup reconciliation warns.
-func (p *PendingRestores) Take(serviceID string) (PendingRestore, bool, error) {
+// Take is destructive on purpose: the caller gets the record and the file is gone, so
+// no second task can restore the same artifact. A caller whose import fails after the
+// take keeps the returned record and Puts it back with the same CreatedAt - the store
+// never re-stamps the age, so the retry does not win a second TTL.
+//
+// A record that cannot be used - it does not decode, it names another service, it
+// fails the same rule Put applies, or its directory is not one this node may restore
+// from - is an error, and the file is put back so a human can read what the node
+// believes; List reports it by path. The caller decides what to log: the executor
+// treats an unusable directive as "nothing to restore" and starts the task cold, and
+// a startup reconciliation warns.
+func (p *PendingRestores) Take(serviceID, root string) (PendingRestore, bool, error) {
 	var none PendingRestore
 
 	if err := p.usable(); err != nil {
 		return none, false, err
+	}
+	if strings.TrimSpace(root) == "" {
+		return none, false, errors.New(
+			"pending-restore registry: the migration root is required: a directive's directory is checked against it")
 	}
 	if err := idProblem("serviceId", "service", serviceID); err != nil {
 		return none, false, err
@@ -223,12 +253,25 @@ func (p *PendingRestores) Take(serviceID string) (PendingRestore, bool, error) {
 	}
 
 	record, err := readPendingDirective(claim, path, serviceID)
+	if err == nil && expired(record, time.Now()) {
+		// Expiry is judged before the directory: an artifact that was already
+		// discarded belongs to an abandoned migration, so the directive is simply
+		// old and is dropped, not reported as broken.
+		if removeErr := os.Remove(claim); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			return none, false, fmt.Errorf(
+				"pending-restore directive for service %q: remove the expired claim %s: %w", serviceID, claim, removeErr)
+		}
+		syncDir(p.dir)
+		return none, false, nil
+	}
+	if err == nil {
+		err = record.stagedDirProblem(root)
+	}
 	if err != nil {
 		// Put it back: a record this build cannot use is evidence of what the node
-		// believes, not something a failed take may destroy. A rename that fails
-		// leaves the claim on disk, which is still the same bytes under a name a
-		// human can find.
-		if restoreErr := os.Rename(claim, path); restoreErr != nil {
+		// believes, not something a failed take may destroy. If a newer directive has
+		// appeared in the meantime, that one wins and this record is dropped.
+		if restoreErr := p.restoreRefusedClaim(claim, path); restoreErr != nil {
 			return none, false, fmt.Errorf("%w (the directive could not be moved back from %s: %w)",
 				err, claim, restoreErr)
 		}
@@ -242,10 +285,43 @@ func (p *PendingRestores) Take(serviceID string) (PendingRestore, bool, error) {
 	}
 	syncDir(p.dir)
 
-	if expired(record, time.Now()) {
-		return none, false, nil
-	}
 	return record, true, nil
+}
+
+// restoreRefusedClaim puts a refused record back under its directive's name, but only
+// if no directive has appeared there since the claim was taken. A prepare may land
+// while Take is reading, and renaming the refused record onto the name would replace
+// the directive the manager just wrote with the one this take decided it could not
+// use.
+//
+// The check is the write: os.Link refuses to replace an existing name, so a link that
+// succeeds is a put-back into a directory where the directive is still absent, and a
+// link that answers EEXIST is the newer directive having won. In that case the claim
+// is dropped - it holds the record that lost, and it has already been reported - and
+// the win is logged, because a task starting now will restore what the manager last
+// said rather than what this take read.
+func (p *PendingRestores) restoreRefusedClaim(claim, path string) error {
+	err := linkPendingRecord(claim, path)
+	switch {
+	case err == nil:
+		if removeErr := os.Remove(claim); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			return fmt.Errorf("unlink the claim %s after putting the directive back: %w", claim, removeErr)
+		}
+		syncDir(p.dir)
+		return nil
+	case errors.Is(err, fs.ErrExist):
+		if removeErr := os.Remove(claim); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			return fmt.Errorf("unlink the claim %s a newer directive superseded: %w", claim, removeErr)
+		}
+		syncDir(p.dir)
+		log.Warn().
+			Str("directive", path).
+			Str("claim", claim).
+			Msg("A pending-restore directive was prepared while a refused one was being read: the newer directive won and the refused record was dropped")
+		return nil
+	default:
+		return err
+	}
 }
 
 // Delete removes a service's directive. A missing directive is success: a rollback,
@@ -458,6 +534,32 @@ func (p *PendingRestores) path(serviceID string) string {
 func (p *PendingRestores) usable() error {
 	if p == nil || strings.TrimSpace(p.dir) == "" {
 		return errors.New("pending-restore registry: use NewPendingRestores")
+	}
+	return nil
+}
+
+// stagedDirProblem reports why a directive's directory is not one this node may
+// restore from. The record names <migration root>/<artifactID>, and the check is made
+// again when the directive is consumed, not only when it was written: the node's root
+// can be reconfigured between a prepare and the task it was prepared for, and the path
+// can be replaced by a symbolic link or removed in between. A record that fails names
+// its own field, so the log line says which part of the directive is wrong.
+func (r PendingRestore) stagedDirProblem(root string) error {
+	if want := filepath.Join(root, r.ArtifactID); r.Dir != want {
+		return fmt.Errorf("dir %q is not this node's staging directory for artifact %s: "+
+			"a directive names <migration root>/<artifactID>, and this root does not produce that path",
+			r.Dir, r.ArtifactID)
+	}
+
+	info, err := os.Lstat(r.Dir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return fmt.Errorf("dir %q is gone: the staged artifact %s is no longer on this node", r.Dir, r.ArtifactID)
+	case err != nil:
+		return fmt.Errorf("dir %q could not be checked: %w", r.Dir, err)
+	case info.Mode()&os.ModeSymlink != 0 || !info.IsDir():
+		return fmt.Errorf("dir %q is not a real directory: a symbolic link or a non-directory is not a staged artifact",
+			r.Dir)
 	}
 	return nil
 }

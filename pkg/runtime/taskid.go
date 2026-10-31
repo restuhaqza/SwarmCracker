@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // A task ID becomes a path element: <socketDir>/<taskID>.sock,
@@ -25,11 +26,29 @@ var (
 	// ErrTaskIDDot is returned for an ID containing ".", the building block of
 	// "." and "..".
 	ErrTaskIDDot = errors.New("task ID contains a dot")
+	// ErrTaskIDWhitespace is returned for an ID with a space, tab or newline in
+	// it. SwarmKit IDs are alphanumeric: a blank in one is a caller mistake -
+	// usually a name where an ID belongs - and it would reach a log line and a
+	// file name as an invisible difference.
+	ErrTaskIDWhitespace = errors.New("task ID contains whitespace")
+	// ErrTaskIDTooLong is returned for an ID past MaxIDLength. The ID becomes a
+	// file name, so the bound is what keeps a caller mistake a refusal instead of
+	// the filesystem's ENAMETOOLONG, which would read as the node's failure.
+	ErrTaskIDTooLong = errors.New("task ID is too long")
 )
 
+// MaxIDLength is the longest ID an operation accepts. It is a bound rather than a
+// shape: SwarmKit IDs are 25 characters, and the files this rule protects name an
+// entry as <id>.json, <id>.sock or <id>.log, so 128 leaves the whole filename well
+// inside the kernel's NAME_MAX while never refusing a real ID. Without it a long
+// enough ID is a 503 from the filesystem on write and a 500 on read, for a request
+// that was the caller's mistake.
+const MaxIDLength = 128
+
 // CheckTaskID reports whether id can name a file inside a directory: it must be
-// present and a single path element. SwarmKit task IDs are alphanumeric, so a
-// separator or a dot buys nothing and is refused outright.
+// present, a single path element, and short enough to be one. SwarmKit task IDs are
+// alphanumeric, so a separator, a dot or a blank buys nothing and is refused
+// outright.
 func CheckTaskID(id string) error {
 	switch {
 	case id == "":
@@ -38,6 +57,10 @@ func CheckTaskID(id string) error {
 		return ErrTaskIDPathSeparator
 	case strings.Contains(id, "."):
 		return ErrTaskIDDot
+	case strings.IndexFunc(id, unicode.IsSpace) >= 0:
+		return ErrTaskIDWhitespace
+	case len(id) > MaxIDLength:
+		return ErrTaskIDTooLong
 	}
 	return nil
 }
@@ -57,6 +80,11 @@ func idProblem(field, kind, id string) error {
 		return fmt.Errorf("%s %q must not contain a path separator: a %s ID is alphanumeric", field, id, kind)
 	case errors.Is(err, ErrTaskIDDot):
 		return fmt.Errorf("%s %q must not contain a dot: a %s ID is alphanumeric", field, id, kind)
+	case errors.Is(err, ErrTaskIDWhitespace):
+		return fmt.Errorf("%s %q must not contain whitespace: a %s ID is alphanumeric", field, id, kind)
+	case errors.Is(err, ErrTaskIDTooLong):
+		return fmt.Errorf("%s is %d characters long: want at most %d, since it names a file",
+			field, len(id), MaxIDLength)
 	default:
 		return err
 	}

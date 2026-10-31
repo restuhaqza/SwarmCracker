@@ -221,16 +221,19 @@ var operationSpecs = map[string]operationSpec{
 	// The migration operations move one artifact, and prepare says which artifact
 	// the next task of a service restores here: export produces it on the source,
 	// file streams one of its files, stage receives one on the target, discard
-	// removes it (with the snapshot behind it) when nobody needs it, and prepare
-	// records the target's directive to restore it. export is task-scoped, because
-	// it snapshots the task it names. The other four are artifact-scoped: they
-	// answer from the artifact and service IDs they carry, and they must keep
-	// working once SwarmKit has replaced the task, or for a task this node never ran.
-	MigrationExportOperation:  {methods: []string{http.MethodPost}},
-	MigrationFileOperation:    {methods: []string{http.MethodGet}, artifactScoped: true},
-	MigrationStageOperation:   {methods: []string{http.MethodPut}, artifactScoped: true},
-	MigrationDiscardOperation: {methods: []string{http.MethodDelete}, artifactScoped: true},
-	MigrationPrepareOperation: {methods: []string{http.MethodPost}, artifactScoped: true},
+	// removes it (with the snapshot behind it) when nobody needs it, prepare records
+	// the target's directive to restore it, and unprepare removes that directive when
+	// the migration is abandoned. export is task-scoped, because it snapshots the
+	// task it names. The other five are artifact-scoped: they answer from the
+	// artifact and service IDs they carry, and they must keep working once SwarmKit
+	// has replaced the task, or for a task this node never ran - the tasks a
+	// migration prepares for and abandons need not exist at all.
+	MigrationExportOperation:    {methods: []string{http.MethodPost}},
+	MigrationFileOperation:      {methods: []string{http.MethodGet}, artifactScoped: true},
+	MigrationStageOperation:     {methods: []string{http.MethodPut}, artifactScoped: true},
+	MigrationDiscardOperation:   {methods: []string{http.MethodDelete}, artifactScoped: true},
+	MigrationPrepareOperation:   {methods: []string{http.MethodPost}, artifactScoped: true},
+	MigrationUnprepareOperation: {methods: []string{http.MethodDelete}, artifactScoped: true},
 }
 
 // route resolves the task, then dispatches to the registered operation.

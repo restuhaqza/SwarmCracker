@@ -220,9 +220,9 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	// disagree about which processes this node owns. The migration operations
 	// produce an artifact from a running task,
 	// stream one of its files, stage one the target will restore, discard one
-	// when it is no longer needed, and record the directive that tells this node
-	// which artifact the next task of a service restores here; they share the
-	// snapshot store export snapshots through and the one migration root for the
+	// when it is no longer needed, and record (or remove) the directive that tells
+	// this node which artifact the next task of a service restores here; they share
+	// the snapshot store export snapshots through and the one migration root for the
 	// bytes. The public route has already resolved the reference and enforced the
 	// caller's selectors.
 	snapshotOp, restoredOp, store, snapshotsActive := snapshotHandlers(cfg)
@@ -260,6 +260,7 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		{broker.MigrationStageOperation, broker.NewMigrationStageHandler(migrationCfg)},
 		{broker.MigrationDiscardOperation, broker.NewMigrationDiscardHandler(migrationCfg)},
 		{broker.MigrationPrepareOperation, broker.NewMigrationPrepareHandler(migrationCfg)},
+		{broker.MigrationUnprepareOperation, broker.NewMigrationUnprepareHandler(migrationCfg)},
 	}
 	for _, entry := range handlers {
 		if err := srv.Handle(entry.op, entry.h); err != nil {
