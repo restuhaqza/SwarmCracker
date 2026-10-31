@@ -16,8 +16,26 @@
 //
 // {taskID} is a full task ID, never a name or a prefix; the manager resolves
 // user input before proxying. {op} is one of the lowercase operation names a
-// later phase registers on the node. A malformed path or an unknown task is a
-// 404; a known task with an unregistered operation is a 501.
+// later phase registers on the node. An operation whose name carries one
+// namespace segment - migration/export, migration/file, migration/stage,
+// migration/discard - is spelled as two path segments
+// (/v1/tasks/{taskID}/migration/export); any other extra segment is a malformed
+// path. A malformed path or an unknown task is a 404; a known task with an
+// unregistered operation is a 501.
+//
+// The migration operations other than export are artifact-scoped: an artifact is
+// addressed by its own ID, it outlives the task that produced it, and SwarmKit
+// replaces that task as part of the move. The server therefore does not resolve the
+// task in their path - file, stage and discard answer for a task this node does not
+// have, under any task ID - and a handler is given no task. export keeps the
+// task-scoped contract, because it snapshots the task it names.
+//
+// A migration is also the one case where the manager addresses a node directly
+// instead of resolving it from a task (Manager.routeForNode): the target has no
+// task yet - SwarmKit creates it when the service is replaced - so there is nothing
+// to resolve. The manager initiates every transfer, so the artifact moves source
+// node -> manager -> target node and there is no public route for it: a client
+// asks for a migration, never for a file of one.
 //
 // Failures the broker generates itself are v1 Error documents, so a manager
 // handler can relay them without translating: not_found (404), not_implemented

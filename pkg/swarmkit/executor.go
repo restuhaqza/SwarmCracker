@@ -30,6 +30,7 @@ import (
 	swarmcrackermetrics "github.com/restuhaqza/swarmcracker/pkg/metrics"
 	"github.com/restuhaqza/swarmcracker/pkg/network"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	configstore "github.com/restuhaqza/swarmcracker/pkg/swarmkit/configs"
 	secretstore "github.com/restuhaqza/swarmcracker/pkg/swarmkit/secrets"
@@ -54,6 +55,22 @@ type Executor struct {
 	cleanupDone   chan struct{}
 	networkKeys   []*api.EncryptionKey // VXLAN network encryption keys (set via SetNetworkBootstrapKeys; used when VXLAN encryption is enabled)
 	cleanupMu     sync.Mutex
+
+	// The node's restored-instance records and the manager that owns the
+	// Firecracker process of a VM restored from a migration artifact. Both are set
+	// once, before the agent starts, through SetRestoredInstances; nil means this
+	// node restored no VMs and every task's teardown is today's. Guarded by
+	// executorMu, which Controller already holds when it reads them.
+	restoredStore   RestoredInstanceStore
+	restoredStopper RestoredVMStopper
+
+	// migration is the node's migration state as a task start uses it: the directive
+	// store the manager prepared into, the migration root, and the restorer that
+	// starts a staged artifact as a task's VM. Set once, before the agent starts,
+	// through SetMigrationRestores; nil means this node restores nothing and every
+	// task boots a fresh VM. Guarded by executorMu, which Controller already holds
+	// when it reads it.
+	migration *MigrationRestoreConfig
 }
 
 // NetworkManager returns the executor's network manager. The daemon uses it to
@@ -584,6 +601,17 @@ func (e *Executor) Controller(t *api.Task) (swarmkit_exec.Controller, error) {
 	ctrl.secrets = e.secrets
 	ctrl.configs = e.configs
 
+	// A VM restored from a migration artifact was started by pkg/snapshot, not by
+	// this executor, so the controller is given the record that maps its task to
+	// that process and the manager that can stop it.
+	ctrl.restored = e.restoredStore
+	ctrl.restoredStopper = e.restoredStopper
+
+	// A task whose service the manager prepared a directive for restores the staged
+	// artifact instead of booting. The controller reads the same store the broker's
+	// prepare route writes, so the directive is visible here without a copy.
+	ctrl.migration = e.migration
+
 	// Set up deregistration callback to remove controller from map when removed
 	ctrl.OnRemove = func() {
 		e.executorMu.Lock()
@@ -628,6 +656,53 @@ type NetworkKeySetter interface {
 	SetEncryptionKeys(keys []*api.EncryptionKey) error
 }
 
+// The production implementations of the restored-instance dependencies. The
+// assertions fail the build if either signature drifts, which is the only way
+// pkg/runtime, pkg/snapshot and this package could disagree without a test
+// noticing it at wiring time.
+var (
+	_ RestoredInstanceStore = (*scruntime.RestoredRegistry)(nil)
+	_ RestoredVMStopper     = (*snapshot.Manager)(nil)
+)
+
+// SetRestoredInstances gives the executor the node's restored-instance records and
+// the manager that owns the Firecracker processes they name.
+//
+// A task SwarmKit started from a migration artifact runs a VM whose host-side
+// devices belong to the source task, and pkg/snapshot started that VM, so the
+// executor's own VMM manager tracks no process for it. Without this wiring a stop
+// would kill nothing while the real VM kept serving, so the daemon calls it once at
+// startup, before any task arrives. Either argument may be nil (a node whose
+// snapshot store could not be built), and a nil store keeps today's behaviour for
+// every task.
+func (e *Executor) SetRestoredInstances(store RestoredInstanceStore, stopper RestoredVMStopper) {
+	if e == nil {
+		return
+	}
+	e.executorMu.Lock()
+	e.restoredStore = store
+	e.restoredStopper = stopper
+	e.executorMu.Unlock()
+}
+
+// SetMigrationRestores gives the executor what a task start needs to restore a staged
+// artifact instead of booting: the node's pending-restore directives, its migration
+// root, and the restorer that loads an artifact as a task's VM.
+//
+// The daemon calls it once at startup, before any task arrives, with the directive
+// store the node broker also opens: a directive the manager prepared is only visible to
+// the task that claims it if both read one directory. The config is copied, and a
+// caller that passes none (or one without a store) keeps today's behaviour for every
+// task — each one boots its own VM.
+func (e *Executor) SetMigrationRestores(cfg MigrationRestoreConfig) {
+	if e == nil {
+		return
+	}
+	e.executorMu.Lock()
+	e.migration = &cfg
+	e.executorMu.Unlock()
+}
+
 // Controller implements SwarmKit's controller interface for a single task.
 type Controller struct {
 	task       *api.Task
@@ -643,7 +718,14 @@ type Controller struct {
 	mu         sync.Mutex
 	prepared   bool
 	started    bool
-	startTime  time.Time // tracks when Start was called, used for boot duration metric
+	// preparedForRestore records that Prepare skipped the work only a boot needs — the
+	// image pull (or the golden copy) and the TAP device — because a pending-restore
+	// directive was waiting for this task's service. Start reads it: if the directive
+	// is gone by then, there is no VM to boot, so the task fails with a sentence that
+	// says the artifact is no longer available instead of booting a VM with no rootfs
+	// and no TAP.
+	preparedForRestore bool
+	startTime          time.Time // tracks when Start was called, used for boot duration metric
 
 	// Terminal classification. Exactly one terminal event (a stop or a crash)
 	// is recorded per VM lifetime, even though Wait, Shutdown, Terminate,
@@ -696,6 +778,14 @@ type Controller struct {
 	socketPath string
 	logger     zerolog.Logger
 
+	// guestVsock is the vsock muxer this task's guest agent answers on. It is
+	// resolved once per VM start (resolveGuestVsockPath) and read by every
+	// in-executor probe: a task restored from a migration runs a VM whose
+	// Firecracker state names the source task's muxer, so the path derived from
+	// this task's ID belongs to no process and every probe would fail against a
+	// healthy VM — which the health monitor turns into a force-stop.
+	guestVsock string
+
 	// tracer opens control-plane spans. It is never nil: NewController falls
 	// back to a no-op tracer, so call sites need no branch and a disabled
 	// trace costs one interface call.
@@ -714,6 +804,47 @@ type Controller struct {
 
 	// OnRemove is called when the controller is removed from the executor
 	OnRemove func()
+
+	// restored / restoredStopper are the node's record of the VM this task
+	// inherited from a migration and the manager that owns that VM's process. Both
+	// nil for every task the executor booted itself, which is where a teardown
+	// falls back to the VMM manager.
+	restored        RestoredInstanceStore
+	restoredStopper RestoredVMStopper
+
+	// migration is the node's migration state as this task's start uses it (see
+	// Executor.SetMigrationRestores). Nil means this node restores nothing: the start
+	// path is exactly the boot it always was.
+	migration *MigrationRestoreConfig
+
+	// The restore this controller may have in flight: a VM that is being loaded
+	// from an artifact but is not yet in the record store. It runs outside c.mu (a
+	// load plus a guest-agent wait can take half a minute, and holding c.mu would
+	// stall the very teardown it has to observe), so a teardown that looked only at
+	// c.mu and at the store would see neither while a VM is coming up — and would
+	// answer "nothing to shut down" half a second before a restored VM started
+	// running behind a task SwarmKit had already replaced. See
+	// executor_restore_lifecycle.go.
+	restoreMu      sync.Mutex
+	restoring      bool
+	restoreStopped bool
+	restoreDone    chan struct{}
+	restoreCancel  context.CancelFunc
+
+	// restoredLeftovers deletes the host-side names a stopped restored VM leaves:
+	// its TAP device and the disk the restore materialised. Nil fields select the
+	// production implementations (pkg/network's remover and os.Remove); a test
+	// substitutes recorders.
+	restoredLeftovers RestoredLeftovers
+
+	// inheritedSocket is the API socket of the VM this task runs when that VM came
+	// from a migration artifact rather than from this executor's boot. Empty for every
+	// task this executor booted.
+	//
+	// It is guarded by terminalMu, which already owns "one terminal event per VM
+	// life": a VM this executor never counted as started must not have its end counted
+	// either, and Wait reads this answer without c.mu.
+	inheritedSocket string
 }
 
 // NewController creates a new task controller.
@@ -788,19 +919,37 @@ func (c *Controller) Prepare(ctx context.Context) (err error) {
 	// Convert SwarmKit task to internal type
 	task := c.convertTask()
 
-	// A service may boot a prebuilt golden image instead of building a rootfs
-	// from an OCI image (label "swarmcracker.golden").
-	if ref := strings.TrimSpace(c.task.ServiceAnnotations.Labels[types.GoldenLabel]); ref != "" {
-		if err := c.applyGoldenImage(ctx, task, ref); err != nil {
-			return fmt.Errorf("golden image: %w", err)
-		}
-	} else if err := c.prepareImage(ctx, task); err != nil {
-		return fmt.Errorf("image preparation failed: %w", err)
+	// A task whose service the manager staged an artifact for will be restored, not
+	// booted: its root filesystem and its TAP device already exist inside the
+	// artifact. Preparing them anyway would pull an image this node never runs — and
+	// fail the task on a target that cannot pull it, for a VM that will never boot —
+	// and leave a second TAP device standing with no guest behind it.
+	//
+	// A directive this build cannot use fails the task here, before any of that work,
+	// and is left in place for the retry: booting cold beside a source VM that is
+	// still running is the one outcome a migration must never produce.
+	pending, err := c.pendingRestoreFor(task)
+	if err != nil {
+		return err
 	}
+	// Start reads this: a task prepared for a restore, whose directive is gone by the
+	// time it starts, has no image and no TAP to boot with (see startFromArtifact).
+	c.preparedForRestore = pending
+	if !pending {
+		// A service may boot a prebuilt golden image instead of building a rootfs
+		// from an OCI image (label "swarmcracker.golden").
+		if ref := strings.TrimSpace(c.task.ServiceAnnotations.Labels[types.GoldenLabel]); ref != "" {
+			if err := c.applyGoldenImage(ctx, task, ref); err != nil {
+				return fmt.Errorf("golden image: %w", err)
+			}
+		} else if err := c.prepareImage(ctx, task); err != nil {
+			return fmt.Errorf("image preparation failed: %w", err)
+		}
 
-	// Prepare network (modifies task.Networks - must be done before storing internalTask)
-	if err := c.networkMgr.PrepareNetwork(ctx, task); err != nil {
-		return fmt.Errorf("network preparation failed: %w", err)
+		// Prepare network (modifies task.Networks - must be done before storing internalTask)
+		if err := c.networkMgr.PrepareNetwork(ctx, task); err != nil {
+			return fmt.Errorf("network preparation failed: %w", err)
+		}
 	}
 
 	// Debug: Log network count before storing
@@ -939,9 +1088,32 @@ func (c *Controller) Start(ctx context.Context) (err error) {
 
 	c.logger.Info().Msg("Starting task")
 
-	if err := c.startVM(ctx); err != nil {
-		return err
+	// A node the manager told, before this task existed, that its next task of this
+	// service restores a staged artifact restores it instead of booting one. No
+	// directive — the ordinary case — is one store lookup and then exactly the boot
+	// below.
+	//
+	// A controller can be started twice (the task manager repeating itself, an update
+	// path). A task whose VM came from an artifact already has one, so neither the
+	// lookup nor the boot is repeated; a booted task's startVM answers the same
+	// question itself. Without this guard a second start would claim a second
+	// directive and restore a second VM beside the first.
+	if c.inheritedVMSocket() == "" {
+		inherited, err := c.startFromArtifact(ctx)
+		if err != nil {
+			return err
+		}
+		if !inherited {
+			if err := c.startVM(ctx); err != nil {
+				return err
+			}
+		}
 	}
+	// The VM may not be this executor's: a task started from a migration artifact
+	// runs a VM whose Firecracker state names the source task's vsock muxer. Resolve
+	// the muxer once, before any probe goroutine exists, so the metrics poller, the
+	// health gate and the health monitor all dial the VM this task actually runs.
+	c.resolveGuestVsockPath()
 	// Sample guest resource use for the lifetime of the VM. It starts here
 	// rather than after health gating so the series exist during a long start
 	// period, and it applies to every task, healthchecked or not.
@@ -1260,7 +1432,27 @@ func (c *Controller) resetTerminal() {
 	c.terminalMu.Lock()
 	c.terminalClaimed = false
 	c.terminalKind = ""
+	// A (re)start through startVM boots this node's own VM, so the previous life - a
+	// VM restored from a migration artifact - is not what this controller runs now.
+	c.inheritedSocket = ""
 	c.terminalMu.Unlock()
+}
+
+// markInheritedVM records that this task's VM came from a migration artifact: this
+// executor started no process for it and counted no start, so its end is not recorded
+// either. The socket is the handle the VM can be observed through.
+func (c *Controller) markInheritedVM(socketPath string) {
+	c.terminalMu.Lock()
+	c.inheritedSocket = socketPath
+	c.terminalMu.Unlock()
+}
+
+// inheritedVMSocket returns the API socket of the VM this task inherited from a
+// migration, or "" for a VM this executor booted.
+func (c *Controller) inheritedVMSocket() string {
+	c.terminalMu.Lock()
+	defer c.terminalMu.Unlock()
+	return c.inheritedSocket
 }
 
 // recordTerminalCrash records the VM's single terminal event as a crash with
@@ -1305,6 +1497,33 @@ func (c *Controller) Wait(ctx context.Context) (err error) {
 
 	task := c.convertTask()
 	service := serviceName(task)
+
+	// A VM restored from a migration artifact is not the VMM manager's: pkg/snapshot
+	// started it and reaps it, so the manager can neither wait for it nor say how it
+	// exited. Waiting on the recorded API socket is the same question asked of the
+	// process that exists, and it is what keeps a moved task from being failed the
+	// instant SwarmKit starts waiting. Nothing is recorded for it: this executor never
+	// counted its start (the boot-duration and vms_running increments live in startVM,
+	// which a restore replaces), so counting its end would move a counter this task
+	// never moved.
+	if socket := c.inheritedVMSocket(); socket != "" {
+		waitErr := c.waitInheritedVM(ctx, socket)
+		// A cancelled wait is not an exit (see below): the teardown that cancelled it
+		// owns the VM, and reporting a reason here would race it.
+		if ctx.Err() != nil {
+			return waitErr
+		}
+		// A migrated VM killed by its healthcheck is the one way this executor learns
+		// why the guest went away: the process belongs to pkg/snapshot, which reaps it,
+		// so there is no exit status to read. Reporting the plain nil the wait observed
+		// would turn "the monitor force-stopped it for failing its check" into COMPLETE
+		// with no reason, which is the opposite of what happened. Nothing is recorded:
+		// this executor never counted the start, so it counts no end either.
+		if reason := c.healthcheckFailure(); reason != "" {
+			return fmt.Errorf("healthcheck failed: %s", reason)
+		}
+		return waitErr
+	}
 
 	status, err := c.vmmMgr.Wait(ctx, task)
 
@@ -1367,6 +1586,159 @@ func (c *Controller) Wait(ctx context.Context) (err error) {
 	return nil
 }
 
+// waitInheritedVM blocks until the VM this task inherited from a migration is gone.
+//
+// The process belongs to pkg/snapshot, which reaps it, so there is no exit status to
+// report and no way for this executor to observe one: the recorded API socket losing
+// its Firecracker process is the end it can see, and it answers the same nil a clean
+// exit does. A cancelled wait is SwarmKit servicing a new desired state, and the
+// teardown that follows owns the VM.
+func (c *Controller) waitInheritedVM(ctx context.Context, socketPath string) error {
+	for {
+		if !restoredVMAlive(socketPath) {
+			c.logger.Info().Str("socket", socketPath).
+				Msg("The VM this task inherited from a migration is gone")
+			return nil
+		}
+		if err := restoredVMExitWait(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+// restoredVMAlive reports whether the Firecracker process behind a restored VM's API
+// socket is still running. It is a variable because it is the one effect in the wait a
+// test cannot produce: a host without procfs answers "not running", and so does a VM
+// that exited.
+var restoredVMAlive = func(socketPath string) bool {
+	if socketPath == "" {
+		return false
+	}
+	return scruntime.FindFirecrackerPIDBySocket(socketPath) > 0
+}
+
+// restoredVMWaitPoll paces the probe above. It is a variable so a test that proves the
+// wait honours its context does not spend a second doing it.
+var restoredVMWaitPoll = time.Second
+
+// restoredVMExitWait pauses between two probes and returns early when the context ends.
+func restoredVMExitWait(ctx context.Context) error {
+	timer := time.NewTimer(restoredVMWaitPoll)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// resolveGuestVsockPath records the muxer this task's guest agent answers on: the
+// one a restored task's record names, or the path derived from the task's own API
+// socket. Start calls it once per VM start, before any probe goroutine exists, so
+// the field has one writer and every probe reads one answer.
+func (c *Controller) resolveGuestVsockPath() {
+	c.guestVsock = vsockUDSPath(c.socketPath)
+	if c.restored == nil || c.task == nil {
+		return
+	}
+
+	record, found, err := c.restored.Get(c.task.ID)
+	switch {
+	case err != nil:
+		// The record names no VM this executor may guess at. The derivation is the
+		// best answer left — it is the VM this executor would have booted itself —
+		// and a restored VM in this state is already unresolvable (the broker
+		// refuses the task for the same reason), so the warning is the signal.
+		c.logger.Warn().Err(err).
+			Msg("The restored-instance record of this task cannot be read; probing the muxer derived from its task ID")
+	case found && record.VsockPath != "":
+		c.guestVsock = record.VsockPath
+	}
+}
+
+// guestVsockPath returns the muxer every in-executor probe dials. A controller that
+// never resolved one — a stop before Start, or a test fixture — answers the
+// derivation, which is exact for every task this executor booted.
+func (c *Controller) guestVsockPath() string {
+	if c.guestVsock != "" {
+		return c.guestVsock
+	}
+	return vsockUDSPath(c.socketPath)
+}
+
+// stopRestoredVM stops the microVM this task inherited from a migration and
+// forgets the record that named it, along with the two host-side names it left. handled
+// is false when the node keeps no record for the task — the answer for every task this
+// executor booted itself — so the caller runs today's VMM-manager teardown unchanged.
+//
+// A restore that is still running is the case this cannot answer from the record: the
+// record is written by the restore's last step, so it does not exist yet while the VM
+// already does. The teardown therefore marks the task stopped and waits for the restore
+// to finish, which leaves exactly two outcomes — the restore aborted and left nothing, or
+// it completed and its record is here to be read. There is no instant in which a VM can
+// appear after this returns.
+//
+// The stop itself is pkg/snapshot's rule (snapshot.StopAndForgetRestoredVM), shared
+// with the node broker's stop route so the two cannot disagree about whether a
+// record survives: the record is deleted only once the VM is confirmed gone, and it
+// is kept when the VM may still be running — including the case where this daemon
+// restarted and lost the process table while the VM kept serving.
+func (c *Controller) stopRestoredVM() (handled bool, err error) {
+	if c.restored == nil {
+		return false, nil
+	}
+
+	taskID := c.task.ID
+
+	if c.awaitRestoreStop() {
+		c.logger.Info().Str("task_id", taskID).
+			Msg("A restore was in flight for this task; waited for it to finish before stopping the VM")
+	}
+
+	record, found, err := c.restored.Get(taskID)
+	switch {
+	case err != nil:
+		// An unusable record names no VM this executor may act on, and deleting it
+		// would destroy the only evidence of what the node believes. Today's
+		// teardown still runs: the VMM manager is keyed by this task's own ID, so it
+		// cannot reach another task's VM.
+		c.logger.Warn().Err(err).
+			Msg("The restored-instance record of this task cannot be read; keeping it and using the VMM manager")
+		return false, nil
+	case !found:
+		return false, nil
+	}
+
+	if c.restoredStopper == nil {
+		return true, fmt.Errorf(
+			"task %q runs a restored VM, but this executor was given no way to stop it; the record is kept", taskID)
+	}
+
+	stopErr := snapshot.StopAndForgetRestoredVM(c.restoredStopper, c.restored, record)
+	if stopErr != nil {
+		// Whoever has to clean this up needs the whole bill, not the first line: the
+		// record is only the pointer, and the two resources it names — the TAP device
+		// and the disk — are deleted only after it is gone, so a stop that fails (a
+		// record delete that keeps failing included) holds them as well.
+		err := fmt.Errorf(
+			"%w; the TAP device %s and the disk %s are held with it, so teardown deletes neither",
+			stopErr, record.TapName, record.DiskPath)
+		c.logger.Error().Err(err).Msg("Failed to stop the restored VM")
+		return true, err
+	}
+
+	// The VM is gone and the record is forgotten, so the two names the record held are
+	// all that is left of it. They are this executor's to delete: the VMM manager never
+	// created either (the TAP is the source task's, the disk is at the source's path),
+	// and nothing else on the node is keyed to them.
+	c.removeRestoredLeftovers(taskID, record.TapName, record.DiskPath)
+
+	c.logger.Info().Str("task_id", taskID).
+		Msg("Stopped the VM this task inherited from a migration")
+	return true, nil
+}
+
 // Shutdown gracefully shuts down the task.
 func (c *Controller) Shutdown(ctx context.Context) (err error) {
 	// The stop itself is bounded by its own timeout context rather than this
@@ -1389,31 +1761,43 @@ func (c *Controller) Shutdown(ctx context.Context) (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if !c.started {
+	task := c.convertTask()
+
+	// A VM this node restored from a migration artifact is not the VMM manager's:
+	// pkg/snapshot started it and holds the process. The record, not c.started, is
+	// the evidence it exists, so it is stopped first and through that manager.
+	restored, err := c.stopRestoredVM()
+	if err != nil {
+		c.logger.Error().Err(err).Msg("Failed to stop the restored VM")
+		return err
+	}
+
+	if !c.started && !restored {
 		c.logger.Debug().Msg("Task not started, nothing to shut down")
 		return nil
 	}
-
-	task := c.convertTask()
 
 	// Claim the terminal classification before stopping: the desired state
 	// asked for this stop, so it must be recorded as a stop even if a concurrent
 	// Wait observes the same exit. If another path owns the record already (the
 	// VM crashed on its own), the stop still happens but is not counted again —
-	// that double count is what drove vms_running negative.
-	claimed := c.claimTerminal(terminalStopped)
+	// that double count is what drove vms_running negative. A restored task was
+	// never counted as started here, so its stop is not recorded either.
+	claimed := c.started && c.claimTerminal(terminalStopped)
 
 	// Create a shutdown context with 30 second timeout
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Attempt graceful shutdown via VMM manager
-	if err := c.vmmMgr.Stop(shutdownCtx, task); err != nil {
-		c.logger.Error().Err(err).Msg("Graceful shutdown failed")
-		if claimed {
-			c.releaseTerminal(terminalStopped)
+	if !restored {
+		// Attempt graceful shutdown via VMM manager
+		if err := c.vmmMgr.Stop(shutdownCtx, task); err != nil {
+			c.logger.Error().Err(err).Msg("Graceful shutdown failed")
+			if claimed {
+				c.releaseTerminal(terminalStopped)
+			}
+			return fmt.Errorf("failed to shutdown VM: %w", err)
 		}
-		return fmt.Errorf("failed to shutdown VM: %w", err)
 	}
 
 	// Cleanup network after VM stops
@@ -1455,26 +1839,37 @@ func (c *Controller) Terminate(ctx context.Context) (err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if !c.started {
+	task := c.convertTask()
+
+	// A restored task's VM belongs to pkg/snapshot, not the VMM manager (see
+	// Shutdown): stop it through the record first.
+	restored, err := c.stopRestoredVM()
+	if err != nil {
+		c.logger.Error().Err(err).Msg("Failed to stop the restored VM")
+		return err
+	}
+
+	if !c.started && !restored {
 		c.logger.Debug().Msg("Task not started, nothing to terminate")
 		return nil
 	}
 
-	task := c.convertTask()
-
 	// Terminate is an unconditional stop of the target, not a crash: it is
 	// dispatched by the agent/operator side, not by the VM exiting. Claiming
 	// before the stop makes a concurrent Wait's observation of the exit a no-op
-	// and keeps the record single.
-	claimed := c.claimTerminal(terminalStopped)
+	// and keeps the record single. A restored task was never counted as started
+	// here, so its stop is not recorded either.
+	claimed := c.started && c.claimTerminal(terminalStopped)
 
 	// Force kill immediately without grace period
-	if err := c.vmmMgr.Stop(ctx, task); err != nil {
-		c.logger.Error().Err(err).Msg("Force terminate failed")
-		if claimed {
-			c.releaseTerminal(terminalStopped)
+	if !restored {
+		if err := c.vmmMgr.Stop(ctx, task); err != nil {
+			c.logger.Error().Err(err).Msg("Force terminate failed")
+			if claimed {
+				c.releaseTerminal(terminalStopped)
+			}
+			return fmt.Errorf("failed to force terminate VM: %w", err)
 		}
-		return fmt.Errorf("failed to force terminate VM: %w", err)
 	}
 
 	// Release host-side port forwarding (idempotent; also done by Remove).
@@ -1511,6 +1906,15 @@ func (c *Controller) Remove(ctx context.Context) (err error) {
 	defer c.mu.Unlock()
 
 	task := c.convertTask()
+
+	// A restored task's VM is not the VMM manager's, so it is stopped — and its
+	// record deleted — before any other resource is released. A failure here means
+	// the VM may still be running: the record stays (see stopRestoredVM) and Remove
+	// reports it rather than declaring the task gone around a live VM.
+	if _, err := c.stopRestoredVM(); err != nil {
+		c.logger.Error().Err(err).Msg("Failed to stop the restored VM")
+		return err
+	}
 
 	// Remove host-side port forwarding before the TAP device and IP are
 	// released, so a re-scheduled task can rebind the same host port.

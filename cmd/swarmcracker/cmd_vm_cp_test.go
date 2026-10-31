@@ -15,11 +15,13 @@ func TestVMCpCommandStructure(t *testing.T) {
 	cmd := newVMCpCommand()
 	require.Equal(t, "cp", cmd.Name())
 
-	for _, name := range []string{"socket-dir", "mode"} {
+	for _, name := range []string{"socket-dir", "state-dir", "mode"} {
 		assert.NotNilf(t, cmd.Flags().Lookup(name), "flag %q not found", name)
 	}
 	assert.Equal(t, "0644", cmd.Flags().Lookup("mode").DefValue)
 	assert.Equal(t, defaultConsoleSocketDir, cmd.Flags().Lookup("socket-dir").DefValue)
+	assert.Equal(t, defaultLocalStateDir(), cmd.Flags().Lookup("state-dir").DefValue,
+		"--state-dir starts at the directory the daemon writes to")
 
 	require.NotNil(t, cmd.Args)
 	assert.NoError(t, cmd.Args(cmd, []string{"a", "b"}))
@@ -63,11 +65,11 @@ func TestSplitCopyArg(t *testing.T) {
 }
 
 func TestVMCpRejectsBothOrNeitherPrefixed(t *testing.T) {
-	err := copyFileToOrFromVM(context.Background(), "/nonexistent", "a:/x", "b:/y", 0o644)
+	err := copyFileToOrFromVM(context.Background(), "/nonexistent", "", "a:/x", "b:/y", 0o644)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exactly one")
 
-	err = copyFileToOrFromVM(context.Background(), "/nonexistent", "/x", "/y", 0o644)
+	err = copyFileToOrFromVM(context.Background(), "/nonexistent", "", "/x", "/y", 0o644)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exactly one")
 }
@@ -79,7 +81,7 @@ func TestVMCpHostToGuest(t *testing.T) {
 	require.NoError(t, os.WriteFile(local, []byte("upload payload"), 0o644))
 
 	guest := filepath.Join(t.TempDir(), "guest.txt")
-	require.NoError(t, copyFileToOrFromVM(context.Background(), vm.SocketDir, local, "vm-cp-up:"+guest, 0o600))
+	require.NoError(t, copyFileToOrFromVM(context.Background(), vm.SocketDir, "", local, "vm-cp-up:"+guest, 0o600))
 
 	got, err := os.ReadFile(guest)
 	require.NoError(t, err)
@@ -97,7 +99,7 @@ func TestVMCpGuestToHost(t *testing.T) {
 	require.NoError(t, os.WriteFile(guest, []byte("download payload"), 0o644))
 
 	local := filepath.Join(t.TempDir(), "local.txt")
-	require.NoError(t, copyFileToOrFromVM(context.Background(), vm.SocketDir, "vm-cp-down:"+guest, local, 0o644))
+	require.NoError(t, copyFileToOrFromVM(context.Background(), vm.SocketDir, "", "vm-cp-down:"+guest, local, 0o644))
 
 	got, err := os.ReadFile(local)
 	require.NoError(t, err)
@@ -107,7 +109,7 @@ func TestVMCpGuestToHost(t *testing.T) {
 func TestVMCpRejectsDirectorySource(t *testing.T) {
 	vm := startFakeVM(t, "vm-cp-dir", nil)
 
-	err := copyFileToOrFromVM(context.Background(), vm.SocketDir, t.TempDir(), "vm-cp-dir:/tmp/dest", 0o644)
+	err := copyFileToOrFromVM(context.Background(), vm.SocketDir, "", t.TempDir(), "vm-cp-dir:/tmp/dest", 0o644)
 	require.ErrorIs(t, err, errCopyDirectory)
 }
 
@@ -117,7 +119,7 @@ func TestVMCpRejectsDirectoryDestination(t *testing.T) {
 	guest := filepath.Join(t.TempDir(), "guest.txt")
 	require.NoError(t, os.WriteFile(guest, []byte("data"), 0o644))
 
-	err := copyFileToOrFromVM(context.Background(), vm.SocketDir, "vm-cp-dirdst:"+guest, t.TempDir(), 0o644)
+	err := copyFileToOrFromVM(context.Background(), vm.SocketDir, "", "vm-cp-dirdst:"+guest, t.TempDir(), 0o644)
 	require.ErrorIs(t, err, errCopyDirectory)
 }
 
@@ -133,7 +135,7 @@ func TestVMCpGuestToHostMissingGuestFileKeepsDestination(t *testing.T) {
 	local := filepath.Join(dir, "local.txt")
 	require.NoError(t, os.WriteFile(local, []byte("precious"), 0o644))
 
-	err := copyFileToOrFromVM(context.Background(), vm.SocketDir, "vm-cp-miss:"+missing, local, 0o644)
+	err := copyFileToOrFromVM(context.Background(), vm.SocketDir, "", "vm-cp-miss:"+missing, local, 0o644)
 	require.Error(t, err)
 
 	got, rerr := os.ReadFile(local)

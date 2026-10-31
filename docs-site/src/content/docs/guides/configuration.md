@@ -27,6 +27,10 @@ Autoscaling has no configuration keys: the policy is declared per service with
 `service create|update --autoscale` and stored as service labels, so it is not
 part of this file — see [Autoscaling](/guides/operations/#autoscaling).
 
+Live migration has no configuration keys either: a move is a per-command
+operation (`vm migrate`, which needs `-H`), and nothing about it is set in this
+file — see [Live Migration](/guides/migration/).
+
 ---
 
 ## executor

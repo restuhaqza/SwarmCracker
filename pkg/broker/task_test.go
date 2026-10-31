@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/restuhaqza/swarmcracker/pkg/console"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
 
 func TestSocketDirSourceLookupFindsRunningTask(t *testing.T) {
@@ -244,11 +245,58 @@ func TestTaskVsockPath(t *testing.T) {
 			task: Task{SocketPath: "/var/run/firecracker/task-1.sock"},
 			want: "",
 		},
+		{
+			// A migration moves a VM whose Firecracker state names the source
+			// task's muxer, so the derived <id>.vsock belongs to no process.
+			name: "a restored task answers on its recorded muxer",
+			task: Task{
+				ID:                "new-task",
+				SocketPath:        "/var/run/firecracker/new-task.sock",
+				restoredVsockPath: "/var/run/firecracker/source-task.vsock",
+			},
+			want: "/var/run/firecracker/source-task.vsock",
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			require.Equal(t, tc.want, tc.task.VsockPath())
+		})
+	}
+}
+
+// TestValidateTaskIDKeepsItsSentences pins the broker's user-facing wording
+// while the rule itself lives in pkg/runtime: delegating the rule must not
+// change what an operator reads.
+func TestValidateTaskIDKeepsItsSentences(t *testing.T) {
+	require.NoError(t, validateTaskID("task-1"), "a task ID that names one path element is accepted")
+
+	cases := []struct {
+		id   string
+		want string
+	}{
+		{id: "", want: "task ID must not be empty"},
+		{id: "a/b", want: `task ID "a/b" must not contain a path separator`},
+		{id: "a.b", want: `task ID "a.b" must not contain a dot`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			require.EqualError(t, validateTaskID(tc.id), tc.want)
+		})
+	}
+}
+
+// TestValidateTaskIDAgreesWithTheSharedRule proves the broker and the
+// restored-instance registry cannot drift: every ID one refuses, the other
+// refuses too, because there is one rule and two sentences.
+func TestValidateTaskIDAgreesWithTheSharedRule(t *testing.T) {
+	for _, id := range []string{"", ".", "..", "../x", "a/b", `a\b`, "a.b", "..%2F", "task-1", "0a76cd9b1c2d"} {
+		t.Run(id, func(t *testing.T) {
+			brokerErr := validateTaskID(id)
+			sharedErr := scruntime.CheckTaskID(id)
+			require.Equal(t, sharedErr != nil, brokerErr != nil,
+				"the broker and the shared rule must refuse the same IDs")
 		})
 	}
 }

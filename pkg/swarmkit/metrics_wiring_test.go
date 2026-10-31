@@ -459,6 +459,54 @@ func TestController_CancelledWaitRecordsNothing(t *testing.T) {
 		"the cancelled wait plus the stop must net exactly one decrement")
 }
 
+// TestController_HealthMonitorDoesNotCountARestoredVMsStop pins the metric guard on
+// the health path: a restored VM was never counted as started by this executor, so
+// recording its force-stop as a crash decrements vms_running for a VM that was never
+// added. The stop itself must still happen — only the counting changes.
+func TestController_HealthMonitorDoesNotCountARestoredVMsStop(t *testing.T) {
+	instance := "wiring-health-restored"
+	service := "svc-health-restored"
+
+	_, uds := startFakeVsockMuxer(t)
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "echo boom 1>&2; exit 3"},
+		Interval: gogotypes.DurationProto(10 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(2 * time.Second),
+		Retries:  3,
+	}
+	vmm := newForceStopRecorder()
+	ctrl := newMonitorController(t, uds, hc, vmm)
+	ctrl.config.Hostname = instance
+	ctrl.healthService = service
+
+	record := restoredTestRecord("task-hc-monitor", "source-task")
+	record.VsockPath = uds
+	store := &fakeRestoredStore{record: record, found: true}
+	stopper := &fakeRestoredStopper{}
+	ctrl.restored = store
+	ctrl.restoredStopper = stopper
+	// A restored VM is running before this executor's own start ever ran, so the
+	// executor never counted it: c.started stays false, exactly as production
+	// leaves it.
+	require.False(t, ctrl.started)
+	t.Cleanup(ctrl.stopHealthMonitor)
+
+	runningBefore := testutil.ToFloat64(swarmcrackermetrics.VMsRunning)
+	crashBefore := testutil.ToFloat64(
+		swarmcrackermetrics.VMCrashes.WithLabelValues(instance, service, "unhealthy"))
+
+	ctrl.startHealthMonitor()
+	waitForMonitor(t, ctrl)
+
+	assert.Equal(t, []string{"task-hc-monitor"}, stopper.stopped,
+		"the unhealthy restored VM is still stopped")
+	assert.Equal(t, runningBefore, testutil.ToFloat64(swarmcrackermetrics.VMsRunning),
+		"vms_running must not drop for a VM this executor never counted")
+	assert.Equal(t, crashBefore, testutil.ToFloat64(
+		swarmcrackermetrics.VMCrashes.WithLabelValues(instance, service, "unhealthy")),
+		"a VM that was never counted has no crash to record either")
+}
+
 // TestController_HealthMonitorForceStopRecordsUnhealthyCrash drives the real
 // health monitor (through the same fake vsock muxer the monitor tests use) and
 // asserts the force-stop records the crash at the source, with reason
@@ -478,6 +526,9 @@ func TestController_HealthMonitorForceStopRecordsUnhealthyCrash(t *testing.T) {
 	vmm := newForceStopRecorder()
 	ctrl := newMonitorController(t, uds, hc, vmm)
 	ctrl.config.Hostname = instance
+	// The VM this monitor watches was booted by this executor, so it is counted as
+	// running: that is the state whose crash the force-stop must record.
+	ctrl.started = true
 	// The service label comes from the same capture the health gauge uses.
 	ctrl.writeVMMetadata(ctrl.internalTask)
 	service := serviceName(ctrl.internalTask)

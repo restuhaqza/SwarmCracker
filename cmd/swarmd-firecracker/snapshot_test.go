@@ -12,6 +12,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/apihttp"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/test/testhelpers"
 	"github.com/stretchr/testify/require"
 
@@ -25,6 +26,59 @@ func TestBrokerRuntimeFrom_SnapshotDefaults(t *testing.T) {
 
 	require.False(t, cfg.snapshotsEnabled, "snapshots are experimental and disabled by default")
 	require.Equal(t, config.DefaultSnapshotDir, cfg.snapshotDir)
+}
+
+// enabledSnapshotRuntime assembles the broker runtime the way run.go does for a
+// node whose snapshot surface is on: the daemon's own flag derivation, then the
+// store newSnapshotManager builds. The daemon hands that one instance to both
+// consumers, so a test that builds it here serves the same store startBroker gets.
+//
+// taskAlive is cleared because the daemon's probe asks the process table for a
+// Firecracker PID, and a test has no VMM: the stat-only behaviour is what the
+// other broker tests exercise.
+func enabledSnapshotRuntime(t *testing.T, snapshotDir, socketDir, logDir string) brokerRuntime {
+	t.Helper()
+
+	cfg := runBrokerFlags(t, "--snapshots-enable", "--snapshot-dir", snapshotDir)
+	cfg.listenAddr = "127.0.0.1:0"
+	cfg.socketDir = socketDir
+	cfg.logDir = logDir
+	cfg.taskAlive = nil
+	cfg.snapshotManager = newSnapshotManager(context.Background(), cfg)
+	return cfg
+}
+
+// TestNewSnapshotManagerBuildsWithoutTheFlag pins the binding addendum: the node's
+// snapshot store is built for every daemon, not only under --snapshots-enable,
+// because stopping a task restored from a migration needs the manager that started
+// its VM. The public snapshot surface stays behind the flag.
+func TestNewSnapshotManagerBuildsWithoutTheFlag(t *testing.T) {
+	snapshotDir := t.TempDir()
+	cfg := runBrokerFlags(t, "--snapshot-dir", snapshotDir)
+	require.False(t, cfg.snapshotsEnabled)
+	require.Nil(t, cfg.snapshotManager, "the flag derivation does not construct the store")
+
+	require.NotNil(t, newSnapshotManager(context.Background(), cfg),
+		"a restored VM must be stoppable on a node that never enabled the experimental API")
+
+	info, err := os.Stat(snapshotDir)
+	require.NoError(t, err, "the store is rooted at --snapshot-dir")
+	require.True(t, info.IsDir())
+
+	_, _, store, active := snapshotHandlers(cfg)
+	require.False(t, active, "the public snapshot surface stays behind its flag")
+	require.Nil(t, store)
+}
+
+// TestNewSnapshotManagerReportsAFailedStore pins the degraded case: a directory
+// that cannot be created leaves the node without a store, and the failure is
+// returned as nil rather than stopping the daemon.
+func TestNewSnapshotManagerReportsAFailedStore(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "not-a-dir")
+	require.NoError(t, os.WriteFile(notADir, nil, 0o600))
+
+	cfg := runBrokerFlags(t, "--snapshot-dir", filepath.Join(notADir, "snapshots"))
+	require.Nil(t, newSnapshotManager(context.Background(), cfg))
 }
 
 func TestBrokerRuntimeFrom_SnapshotFlags(t *testing.T) {
@@ -115,6 +169,52 @@ func TestStartBroker_RestoredOperationIsRegistered(t *testing.T) {
 	require.Contains(t, respGet.Header.Get("Allow"), http.MethodDelete)
 }
 
+// TestStartBroker_RestoredStopForgetsTheRecord proves the daemon's stop route uses
+// the same rule as the executor's teardown: the store tracks no process and the
+// recorded socket is gone, so the stop succeeds and the record goes with it. Left
+// behind, the record would keep claiming this node runs a VM that does not exist.
+func TestStartBroker_RestoredStopForgetsTheRecord(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+
+	registry, err := runtime.NewRestoredRegistry(filepath.Join(stateDir, runtime.RestoredInstanceDirName))
+	require.NoError(t, err)
+	gone := t.TempDir()
+	require.NoError(t, registry.Put(runtime.RestoredInstance{
+		TaskID:     "task-1",
+		VMID:       "source-task",
+		ArtifactID: "mig-0123456789abcdef",
+		// No listener ever answers here: the VM this record named is gone.
+		SocketPath: filepath.Join(gone, "task-1.sock"),
+		TapName:    runtime.TapName("source-task", 0),
+		VsockPath:  runtime.VsockPath(gone, "source-task"),
+		DiskPath:   filepath.Join(gone, "source-task.ext4"),
+		CreatedAt:  time.Now().UTC(),
+	}))
+
+	cfg := enabledSnapshotRuntime(t, t.TempDir(), socketDir, t.TempDir())
+	cfg.restored = registry
+	srv, active, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+	require.True(t, active)
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	req, err := http.NewRequest(http.MethodDelete, "https://"+srv.Addr()+"/v1/tasks/task-1/restored", nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode, "a VM that is gone is a successful stop")
+
+	_, found, err := registry.Get("task-1")
+	require.NoError(t, err)
+	require.False(t, found, "the stop must forget the record it acted on")
+}
+
 // TestStartBroker_RestoredSharesTheSnapshotStore proves the enabled daemon hands
 // both operations the same store: the enabled node's restored route reaches the
 // real manager, which tracks no VM yet and answers no_restored_vm (404), instead
@@ -125,13 +225,7 @@ func TestStartBroker_RestoredSharesTheSnapshotStore(t *testing.T) {
 	socketDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
 
-	cfg := brokerRuntime{
-		listenAddr:       "127.0.0.1:0",
-		socketDir:        socketDir,
-		logDir:           t.TempDir(),
-		snapshotsEnabled: true,
-		snapshotDir:      t.TempDir(),
-	}
+	cfg := enabledSnapshotRuntime(t, t.TempDir(), socketDir, t.TempDir())
 	srv, active, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
@@ -177,13 +271,7 @@ func TestStartBroker_EnabledSnapshotsListsMetadata(t *testing.T) {
   "checksum": "deadbeef"
 }`)
 
-	cfg := brokerRuntime{
-		listenAddr:       "127.0.0.1:0",
-		socketDir:        socketDir,
-		logDir:           t.TempDir(),
-		snapshotsEnabled: true,
-		snapshotDir:      snapshotDir,
-	}
+	cfg := enabledSnapshotRuntime(t, snapshotDir, socketDir, t.TempDir())
 	srv, snapshotsActive, stop, err := startBroker(context.Background(), cfg, stateDir)
 	require.NoError(t, err)
 	defer stop()
@@ -266,13 +354,13 @@ func TestStartAPI_OmitsSnapshotsWhenStoreFails(t *testing.T) {
 	socketDir := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
 
-	_, snapshotsActive, stopBroker, err := startBroker(context.Background(), brokerRuntime{
-		listenAddr:       "127.0.0.1:0",
-		socketDir:        socketDir,
-		logDir:           t.TempDir(),
-		snapshotsEnabled: true,
-		snapshotDir:      badSnapshotDir,
-	}, brokerStateDir)
+	// The daemon builds the store on every run, and its failure is what leaves the
+	// capability off: the runtime is assembled the same way run.go assembles it.
+	cfg := enabledSnapshotRuntime(t, badSnapshotDir, socketDir, t.TempDir())
+	require.Nil(t, cfg.snapshotManager,
+		"a snapshot directory that cannot be created leaves the daemon without a store")
+
+	_, snapshotsActive, stopBroker, err := startBroker(context.Background(), cfg, brokerStateDir)
 	require.NoError(t, err, "the broker must still start when the snapshot store fails")
 	defer stopBroker()
 	require.False(t, snapshotsActive, "a store that failed to build must not report active")

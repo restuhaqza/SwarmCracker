@@ -41,6 +41,10 @@ const (
 // Handler is one operation (exec, logs, files, health) for one task. It
 // receives the resolved task and the original request, including method,
 // query, headers and body.
+//
+// An artifact-scoped operation (file, stage, discard: see operationSpec) receives
+// a zero Task, because its subject is the migration artifact it names rather than
+// the task in the path.
 type Handler func(ctx context.Context, task Task, w http.ResponseWriter, r *http.Request)
 
 // ServerConfig configures a node broker.
@@ -174,6 +178,13 @@ func (s *Server) Addr() string {
 // implements.
 type operationSpec struct {
 	methods []string
+	// artifactScoped marks an operation whose subject is a migration artifact
+	// rather than the task in the path. The server does not resolve the task for
+	// one, and the handler is given no task at all: an artifact outlives the task
+	// that produced it, and the operations that move or remove one are answered
+	// from the artifact ID they carry. export is not artifact-scoped, because it
+	// snapshots the task it names.
+	artifactScoped bool
 }
 
 // allow renders the spec's methods for the Allow header, in declaration order.
@@ -192,6 +203,10 @@ func (s operationSpec) allows(method string) bool {
 // operationSpecs is the registry of known operations and the methods each one
 // implements. An operation missing here is unknown: an unregistered one is 501
 // for every method, because there is no method set to enforce.
+//
+// A name may carry one namespace segment (migration/export): the route spells it
+// as two path segments, and splitTaskPath only joins them when the joined name is
+// registered here, so an extra segment can never smuggle a different operation.
 var operationSpecs = map[string]operationSpec{
 	"exec":      {methods: []string{http.MethodPost}},
 	"attach":    {methods: []string{http.MethodPost}},
@@ -203,9 +218,36 @@ var operationSpecs = map[string]operationSpec{
 	// restored stops the process a snapshot restore started for one task. It is
 	// a DELETE because it removes that VM, and it takes no body and no query.
 	"restored": {methods: []string{http.MethodDelete}},
+	// The migration operations move one artifact, and prepare says which artifact
+	// the next task of a service restores here: export produces it on the source,
+	// file streams one of its files, stage receives one on the target, discard
+	// removes it (with the snapshot behind it) when nobody needs it, prepare records
+	// the target's directive to restore it, and unprepare removes that directive when
+	// the migration is abandoned. export is task-scoped, because it snapshots the
+	// task it names. The other six are artifact-scoped: they answer from the
+	// artifact, service and network IDs they carry, and they must keep working once
+	// SwarmKit has replaced the task, or for a task this node never ran - the tasks a
+	// migration prepares for and abandons need not exist at all.
+	MigrationExportOperation:    {methods: []string{http.MethodPost}},
+	MigrationFileOperation:      {methods: []string{http.MethodGet}, artifactScoped: true},
+	MigrationStageOperation:     {methods: []string{http.MethodPut}, artifactScoped: true},
+	MigrationDiscardOperation:   {methods: []string{http.MethodDelete}, artifactScoped: true},
+	MigrationPrepareOperation:   {methods: []string{http.MethodPost}, artifactScoped: true},
+	MigrationUnprepareOperation: {methods: []string{http.MethodDelete}, artifactScoped: true},
+	// reanneal makes a peer forget a guest that has moved. It names the guest, not
+	// the task - the guest runs under another task now - so the task in the route is
+	// only the shape every node operation has.
+	MigrationReannealOperation: {methods: []string{http.MethodPost}, artifactScoped: true},
 }
 
 // route resolves the task, then dispatches to the registered operation.
+//
+// Only an operation that acts on a task resolves one. An artifact-scoped
+// operation (file, stage, discard, prepare, unprepare, reanneal) is answered from
+// the IDs it names: the task in the path is part of the one route shape every node
+// operation has, and it is not looked up, because the task a migration is moving does
+// not exist on either node at the moment the artifact is moved, removed, or prepared
+// for.
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	taskID, op, ok := splitTaskPath(r.URL.Path)
 	if !ok {
@@ -213,20 +255,26 @@ func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	task, found, err := s.tasks.Lookup(r.Context(), taskID)
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, codeUnavailable, "resolve task %q: %v", taskID, err)
-		return
-	}
-	if !found {
-		writeError(w, http.StatusNotFound, codeNotFound, "task %q not found on this node", taskID)
-		return
+	spec := operationSpecs[op]
+
+	var task Task
+	if !spec.artifactScoped {
+		resolved, found, err := s.tasks.Lookup(r.Context(), taskID)
+		if err != nil {
+			writeError(w, http.StatusServiceUnavailable, codeUnavailable, "resolve task %q: %v", taskID, err)
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, codeNotFound, "task %q not found on this node", taskID)
+			return
+		}
+		task = resolved
 	}
 
 	// A wrong method is a request the operation cannot implement, not a missing
 	// capability: it is 405 with Allow whether or not a handler is registered.
 	// Only the operation's real method can reach the 501 below.
-	if spec, known := operationSpecs[op]; known && !spec.allows(r.Method) {
+	if _, known := operationSpecs[op]; known && !spec.allows(r.Method) {
 		w.Header().Set("Allow", spec.allow())
 		writeTypedError(w, http.StatusMethodNotAllowed, output.NewErrorf(output.CodeInvalid,
 			"method %s is not allowed on operation %q", r.Method, op).
@@ -251,19 +299,34 @@ func (s *Server) handlerFor(op string) (Handler, bool) {
 	return h, ok
 }
 
-// splitTaskPath parses /v1/tasks/{taskID}/{op}. Anything else - a wrong
-// prefix, a missing segment, an empty segment, extra segments - is malformed
-// and reported as not found.
+// splitTaskPath parses /v1/tasks/{taskID}/{op}, where {op} is one operation name
+// and therefore one or, for a namespaced operation such as migration/export, two
+// path segments. Anything else - a wrong prefix, a missing segment, an empty
+// segment, extra segments - is malformed and reported as not found.
+//
+// The namespaced form is resolved against operationSpecs rather than by splitting
+// on the first segment: "/v1/tasks/t/exec/extra" stays a malformed path, because
+// no operation is named "exec/extra", and a future two-word operation is a
+// registry entry plus a handler rather than another special case here.
 func splitTaskPath(path string) (taskID, op string, ok bool) {
 	rest, found := strings.CutPrefix(path, tasksPrefix)
 	if !found {
 		return "", "", false
 	}
 	parts := strings.Split(rest, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+
+	switch {
+	case len(parts) == 2 && parts[0] != "" && parts[1] != "":
+		return parts[0], parts[1], true
+	case len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] != "":
+		op = parts[1] + "/" + parts[2]
+		if _, known := operationSpecs[op]; !known {
+			return "", "", false
+		}
+		return parts[0], op, true
+	default:
 		return "", "", false
 	}
-	return parts[0], parts[1], true
 }
 
 // writeError writes one v1 error document, shared by the node server and the

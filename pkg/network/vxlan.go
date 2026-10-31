@@ -4,8 +4,6 @@ package network
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"net"
 	"os"
@@ -15,6 +13,7 @@ import (
 
 	"os/exec"
 
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/rs/zerolog/log"
 	"github.com/vishvananda/netlink"
 )
@@ -101,17 +100,11 @@ func NewVXLANManager(bridgeName string, vxlanID int, overlayIP string, peerStore
 	}
 }
 
-// vxlanName returns the interface name for this overlay. The conventional
-// "<bridge>-vxlan" name is used when it fits in IFNAMSIZ (15 bytes); otherwise a
-// deterministic short name derived from the bridge is used, so a long bridge
-// name (e.g. "br-backend") does not silently fail to create the interface.
+// vxlanName returns the interface name for this overlay. The rule lives in
+// pkg/runtime (VXLANInterfaceName) because a node's migration re-anneal has to
+// name the same interface without being Linux-only.
 func (v *VXLANManager) vxlanName() string {
-	name := v.BridgeName + "-vxlan"
-	if len(name) <= 15 {
-		return name
-	}
-	sum := sha256.Sum256([]byte(v.BridgeName))
-	return "vx-" + hex.EncodeToString(sum[:])[:12] // "vx-" + 12 = 15 bytes
+	return scruntime.VXLANInterfaceName(v.BridgeName)
 }
 
 func (v *VXLANManager) SetupVXLAN(physInterface, localIP string) error {

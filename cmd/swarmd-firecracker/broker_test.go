@@ -25,6 +25,7 @@ import (
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/stretchr/testify/require"
 	"github.com/urfave/cli/v2"
 )
@@ -58,6 +59,49 @@ func TestBrokerRuntimeFrom_EmptyListenDisables(t *testing.T) {
 	cfg := runBrokerFlags(t, "--broker-listen", "")
 
 	require.Empty(t, cfg.listenAddr, "an empty --broker-listen disables the broker")
+}
+
+// TestRestoredStoreFollowsStateDir pins where the daemon keeps the
+// restored-instance records: under the same --state-dir as the rest of the
+// node's state, and a second open (a daemon restart) resolves what the first
+// process wrote.
+func TestRestoredStoreFollowsStateDir(t *testing.T) {
+	stateDir := t.TempDir()
+	socketDir := "/var/run/firecracker"
+	record := runtime.RestoredInstance{
+		TaskID:     "new-task",
+		VMID:       "source-task",
+		ArtifactID: "mig-0123456789abcdef",
+		SocketPath: filepath.Join(socketDir, "new-task.sock"),
+		TapName:    runtime.TapName("source-task", 0),
+		VsockPath:  runtime.VsockPath(socketDir, "source-task"),
+		DiskPath:   filepath.Join("/var/lib/swarmcracker/tasks", "source-task.ext4"),
+		CreatedAt:  time.Now().UTC(),
+	}
+
+	first, err := restoredStore(stateDir)
+	require.NoError(t, err)
+	require.NoError(t, first.Put(record))
+
+	info, err := os.Stat(filepath.Join(stateDir, runtime.RestoredInstanceDirName))
+	require.NoError(t, err)
+	require.True(t, info.IsDir(), "the records live in their own subdirectory of --state-dir")
+
+	second, err := restoredStore(stateDir)
+	require.NoError(t, err)
+
+	got, found, err := second.Get(record.TaskID)
+	require.NoError(t, err)
+	require.True(t, found, "a restarted daemon must find the record the previous process wrote")
+	require.Equal(t, record.VMID, got.VMID)
+	require.Equal(t, record.VsockPath, got.VsockPath)
+}
+
+func TestRestoredStoreNeedsStateDir(t *testing.T) {
+	reg, err := restoredStore("")
+	require.Error(t, err)
+	require.Nil(t, reg)
+	require.Contains(t, err.Error(), "state-dir")
 }
 
 func TestBrokerRuntimeFrom_Overrides(t *testing.T) {
@@ -148,11 +192,17 @@ func seedBrokerCertificates(t *testing.T, stateDir string) (tls.Certificate, *x5
 	}, pool
 }
 
-// brokerTestClient dials with the cluster certificate and verifies the node
-// chain against the cluster CA.
+// brokerTestClient dials with the cluster certificate and verifies the node chain
+// against the cluster CA. It carries the manager's identity, not the daemon's, and
+// opens a connection per request.
+//
+// The timeout is generous on purpose. A handler that has to reach a guest waits out
+// agent.Dial's 5s retry window before it answers "unavailable", so a 5s client
+// timeout made the register-only tests a race between the dial window and the
+// client — the same test passing and failing on identical code.
 func brokerTestClient(cert tls.Certificate, pool *x509.CertPool) *http.Client {
 	return &http.Client{
-		Timeout: 5 * time.Second,
+		Timeout: 15 * time.Second,
 		Transport: &http.Transport{
 			DisableKeepAlives: true,
 			TLSClientConfig: &tls.Config{
@@ -516,4 +566,291 @@ func TestStartBroker_HealthWithoutSidecarIs204(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+}
+
+// TestBrokerRuntimeFrom_MigrationStagingDir pins the directory a received artifact
+// is staged into: a dedicated root beside the snapshot and rootfs roots, on the
+// same filesystem, so materialising a received disk is a local operation.
+func TestBrokerRuntimeFrom_MigrationStagingDir(t *testing.T) {
+	require.Equal(t, "/var/lib/firecracker/migrations", runBrokerFlags(t).migrationStagingDir)
+	require.Equal(t, "/srv/staging",
+		runBrokerFlags(t, "--migration-staging-dir", "/srv/staging").migrationStagingDir)
+}
+
+// TestStartBroker_ResolvesARestoredTaskFromItsRecord proves the daemon's resolver
+// honours a restored instance end to end: exec reaches the guest agent on the vsock
+// muxer the record names — the source task's — and nothing exists at the paths
+// derived from the new task's ID.
+func TestStartBroker_ResolvesARestoredTaskFromItsRecord(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	vmDir := t.TempDir()
+
+	// The restored VM: its API socket and its muxer live under the names the
+	// source task gave them.
+	recordSocket := filepath.Join(vmDir, "new-task.sock")
+	require.NoError(t, os.WriteFile(recordSocket, nil, 0o600))
+
+	recordVsock := runtime.VsockPath(vmDir, "source-task")
+	ln, err := net.Listen("unix", recordVsock)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+	go fakeVsockAgent(t, ln, "hello from the migrated guest\n", 0)
+
+	registry, err := runtime.NewRestoredRegistry(filepath.Join(stateDir, runtime.RestoredInstanceDirName))
+	require.NoError(t, err)
+	require.NoError(t, registry.Put(runtime.RestoredInstance{
+		TaskID:     "new-task",
+		VMID:       "source-task",
+		ArtifactID: "mig-0123456789abcdef",
+		SocketPath: recordSocket,
+		TapName:    runtime.TapName("source-task", 0),
+		VsockPath:  recordVsock,
+		DiskPath:   filepath.Join(vmDir, "source-task.ext4"),
+		CreatedAt:  time.Now().UTC(),
+	}))
+
+	cfg := brokerRuntime{
+		listenAddr: "127.0.0.1:0",
+		socketDir:  socketDir,
+		logDir:     logDir,
+		restored:   registry,
+	}
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Post("https://"+srv.Addr()+"/v1/tasks/new-task/exec",
+		"application/json", strings.NewReader(`{"command":["echo","hi"]}`))
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"exec must reach the guest of the VM the record names")
+
+	decoder := json.NewDecoder(resp.Body)
+	var stdout []byte
+	for {
+		var frame v1.ExecFrame
+		if err := decoder.Decode(&frame); err == io.EOF {
+			break
+		} else {
+			require.NoError(t, err)
+		}
+		if frame.Type == v1.FrameStdout {
+			stdout = frame.Data
+		}
+	}
+	require.Equal(t, "hello from the migrated guest\n", string(stdout))
+
+	require.NoFileExists(t, filepath.Join(socketDir, "new-task.sock"),
+		"the derived socket belongs to no process, so the record is what resolved the task")
+	require.NoFileExists(t, runtime.VsockPath(socketDir, "new-task"))
+}
+
+// TestStartBroker_ARestoredTaskWhoseSocketIsGoneIsNotRunning proves the stale
+// record end to end: the task still resolves — its console log is readable — but it
+// is not running, and a live socket at the path derived from its ID is never
+// addressed. After a SwarmKit ID reuse that path can hold another task's VM, which
+// is the VM this answer refuses to reach.
+func TestStartBroker_ARestoredTaskWhoseSocketIsGoneIsNotRunning(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	logDir := t.TempDir()
+	vmDir := t.TempDir()
+
+	// The trap: a live socket where the derivation would look.
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "new-task.sock"), nil, 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(logDir, "new-task.log"), []byte("migrated\n"), 0o600))
+
+	registry, err := runtime.NewRestoredRegistry(filepath.Join(stateDir, runtime.RestoredInstanceDirName))
+	require.NoError(t, err)
+	require.NoError(t, registry.Put(runtime.RestoredInstance{
+		TaskID:     "new-task",
+		VMID:       "source-task",
+		ArtifactID: "mig-0123456789abcdef",
+		// The record's socket is gone: this VM is not on this node any more.
+		SocketPath: filepath.Join(vmDir, "new-task.sock"),
+		TapName:    runtime.TapName("source-task", 0),
+		VsockPath:  runtime.VsockPath(vmDir, "source-task"),
+		DiskPath:   filepath.Join(vmDir, "source-task.ext4"),
+		CreatedAt:  time.Now().UTC(),
+	}))
+
+	cfg := brokerRuntime{
+		listenAddr: "127.0.0.1:0",
+		socketDir:  socketDir,
+		logDir:     logDir,
+		restored:   registry,
+	}
+	srv, _, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/new-task/logs")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusOK, resp.StatusCode,
+		"the new task's console log stays readable after its VM exited")
+
+	filesResp, err := client.Get("https://" + srv.Addr() + "/v1/tasks/new-task/files?path=/etc/hostname")
+	require.NoError(t, err)
+	defer filesResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, filesResp.StatusCode,
+		"files must not fall back to the socket at the derived path")
+}
+
+// TestStartBroker_MigrationOperationsAreRegistered proves the daemon registers the
+// four migration operations. The transport runs on a node that never enabled
+// snapshots (file, stage and discard move bytes an export elsewhere produced), the
+// export answers the typed 501 that names the capability its store provides, and a
+// wrong method is 405 from the registry rather than the handler.
+func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
+	stateDir := t.TempDir()
+	clientCert, pool := seedBrokerCertificates(t, stateDir)
+	socketDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(socketDir, "task-1.sock"), nil, 0o600))
+
+	cfg := brokerRuntime{
+		listenAddr:          "127.0.0.1:0",
+		socketDir:           socketDir,
+		logDir:              t.TempDir(),
+		snapshotDir:         t.TempDir(),
+		migrationStagingDir: t.TempDir(),
+	}
+	srv, active, stop, err := startBroker(context.Background(), cfg, stateDir)
+	require.NoError(t, err)
+	defer stop()
+	require.False(t, active, "the transport does not make the snapshot capability active")
+
+	client := brokerTestClient(clientCert, pool)
+	defer client.CloseIdleConnections()
+
+	base := "https://" + srv.Addr() + "/v1/tasks/task-1/migration"
+
+	// Export needs the snapshot store: without it the answer names the capability
+	// instead of pretending the operation does not exist.
+	resp, err := client.Post(base+"/export?node=node-1", "application/json", nil)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNotImplemented, resp.StatusCode)
+	var doc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&doc))
+	require.Equal(t, "migrations", doc.Error.Details["capability"])
+	require.Equal(t, "migrations_disabled", doc.Error.Details["reason"])
+
+	getResp, err := client.Get(base + "/export")
+	require.NoError(t, err)
+	defer getResp.Body.Close()
+	require.Equal(t, http.StatusMethodNotAllowed, getResp.StatusCode)
+	require.Equal(t, http.MethodPost, getResp.Header.Get("Allow"))
+
+	// The transport operations are registered and answer their own refusals: an
+	// artifact this node never exported is a 404, and a traversal name is a 400.
+	fileResp, err := client.Get(base + "/file?artifactId=mig-0123456789abcdef&name=vm.state")
+	require.NoError(t, err)
+	defer fileResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, fileResp.StatusCode)
+	var fileDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(fileResp.Body).Decode(&fileDoc))
+	require.Equal(t, "artifact_not_available", fileDoc.Error.Details["reason"])
+
+	stageReq, err := http.NewRequest(http.MethodPut,
+		base+"/stage?artifactId=mig-0123456789abcdef&name=..%2Fetc&size=1&sha256="+strings.Repeat("a", 64), nil)
+	require.NoError(t, err)
+	stageResp, err := client.Do(stageReq)
+	require.NoError(t, err)
+	defer stageResp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, stageResp.StatusCode)
+	var stageDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(stageResp.Body).Decode(&stageDoc))
+	require.Equal(t, "invalid_file_name", stageDoc.Error.Details["reason"])
+
+	// Discard is registered and works on a node without a store: an artifact it
+	// does not hold is already discarded, which is what a rollback needs.
+	discardReq, err := http.NewRequest(http.MethodDelete,
+		base+"/discard?artifactId=mig-0123456789abcdef", nil)
+	require.NoError(t, err)
+	discardResp, err := client.Do(discardReq)
+	require.NoError(t, err)
+	defer discardResp.Body.Close()
+	require.Equal(t, http.StatusNoContent, discardResp.StatusCode)
+
+	postDiscard, err := client.Post(base+"/discard?artifactId=mig-0123456789abcdef", "application/json", nil)
+	require.NoError(t, err)
+	defer postDiscard.Body.Close()
+	require.Equal(t, http.StatusMethodNotAllowed, postDiscard.StatusCode)
+	require.Equal(t, http.MethodDelete, postDiscard.Header.Get("Allow"))
+
+	// Prepare is registered, and the directive's directory is the node's own: an
+	// artifact this node never staged is a 404, not a directive pointing at a path
+	// the manager guessed. The request carries the manifest the target would write
+	// as artifact.json, so the refusal is about the missing directory and not about
+	// an unreadable body.
+	prepareResp, err := client.Post(base+"/prepare", "application/json",
+		strings.NewReader(prepareRequestFor(t, "svc-1", "mig-0123456789abcdef")))
+	require.NoError(t, err)
+	defer prepareResp.Body.Close()
+	require.Equal(t, http.StatusNotFound, prepareResp.StatusCode)
+	var prepareDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(prepareResp.Body).Decode(&prepareDoc))
+	require.Equal(t, "artifact_not_available", prepareDoc.Error.Details["reason"])
+
+	// Unprepare is registered and idempotent: nothing was prepared for the service,
+	// and the cleanup an abandoned migration makes is a success either way. The
+	// artifact is named so the removal cannot delete another migration's directive.
+	unprepareReq, err := http.NewRequest(http.MethodDelete,
+		base+"/unprepare?serviceId=svc-1&artifactId=mig-0123456789abcdef", nil)
+	require.NoError(t, err)
+	unprepareResp, err := client.Do(unprepareReq)
+	require.NoError(t, err)
+	defer unprepareResp.Body.Close()
+	require.Equal(t, http.StatusNoContent, unprepareResp.StatusCode)
+
+	// A service ID that cannot name a record file is the caller's mistake, and a 400
+	// rather than the 503 the filesystem's ENAMETOOLONG would produce further down.
+	badUnprepareReq, err := http.NewRequest(http.MethodDelete,
+		base+"/unprepare?serviceId="+strings.Repeat("s", 4096)+"&artifactId=mig-0123456789abcdef", nil)
+	require.NoError(t, err)
+	badUnprepareResp, err := client.Do(badUnprepareReq)
+	require.NoError(t, err)
+	defer badUnprepareResp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, badUnprepareResp.StatusCode)
+	var badUnprepareDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(badUnprepareResp.Body).Decode(&badUnprepareDoc))
+	require.Equal(t, "invalid_service_id", badUnprepareDoc.Error.Details["reason"])
+
+	// The artifact is required: a removal that did not say which directive it owns
+	// could delete the directive another manager is about to consume.
+	noArtifactReq, err := http.NewRequest(http.MethodDelete, base+"/unprepare?serviceId=svc-1", nil)
+	require.NoError(t, err)
+	noArtifactResp, err := client.Do(noArtifactReq)
+	require.NoError(t, err)
+	defer noArtifactResp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, noArtifactResp.StatusCode)
+	var noArtifactDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(noArtifactResp.Body).Decode(&noArtifactDoc))
+	require.Equal(t, "invalid_artifact_id", noArtifactDoc.Error.Details["reason"])
+}
+
+// The migration export path uses the node's snapshot manager, which exists whether
+// or not the experimental public snapshot API is enabled. A node that never turned
+// the API on must still be able to move a task off itself.
+func TestSnapshotStoreIsAvailableWithoutThePublicSnapshotAPI(t *testing.T) {
+	config := snapshot.DefaultSnapshotConfig()
+	config.SnapshotDir = t.TempDir()
+	manager, err := snapshot.NewManager(config)
+	require.NoError(t, err)
+
+	_, _, store, active := snapshotHandlers(brokerRuntime{snapshotManager: manager})
+	require.False(t, active, "the public snapshot API must stay gated")
+	require.NotNil(t, store, "migration exports through the same store")
 }

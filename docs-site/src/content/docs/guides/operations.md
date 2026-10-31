@@ -908,6 +908,35 @@ Autoscale:
 
 ---
 
+## Live Migration
+
+`swarmcracker vm migrate <task> --to <node>` moves a running microVM to another
+node of the cluster. It is a SwarmKit replacement carrying a snapshot artifact:
+the guest resumes from the instant of the dump, the source keeps serving while
+the bytes cross the network, and the report measures the downtime the manager
+observed. The move needs a `replicated` service with exactly one replica, a
+target with the same CPU model and Firecracker version, and a manager API
+endpoint (`-H`). A follower refuses the call with `503` naming the leader. What
+a move keeps, the writes it can lose while the artifact is in transit, and what
+to do about a `pending` or failed move are in the
+[Live Migration guide](/guides/migration/).
+
+The route is admin-only: it requires `migrations:write`, which only the `admin`
+role carries. Scopes are fixed when a token is minted, so an admin token minted
+before this feature existed keeps its old scope list and answers `403
+forbidden` with `details.requiredScope: "migrations:write"`. Mint a new admin
+token on the manager: `api token create` edits the manager's local token store
+and never contacts the API, so a token minted anywhere else lands in the wrong
+file.
+
+```bash
+# On the manager.
+swarmcracker api token create --name migration --role admin \
+  --expires-at 2027-01-01T00:00:00Z
+```
+
+---
+
 ## Common Troubleshooting
 
 ### VM Won't Start

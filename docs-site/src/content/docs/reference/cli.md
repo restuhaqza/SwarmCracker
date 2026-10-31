@@ -31,15 +31,19 @@ The main CLI for cluster management, service deployment, and VM operations.
 | `--version` | `-v` | — | Print version information |
 | `--help` | `-h` | — | Help for any command |
 
-`-H` / `--host` is accepted only by the commands that implement a remote read:
+`-H` / `--host` is accepted only by the commands that have a manager-API path:
 `service ls|inspect|ps` (with `-o json`, or `-o name` on the list forms; a remote
 table exists only for `service ls`), `task ls`, `node ls`, `config ls`,
-`secret ls`, `network ls`, `vm exec`, `vm attach` and
-`vm snapshot stop-restored`. Every other command refuses `-H` with a `usage`
-error (exit `2`) rather than silently reading the local cluster. That includes
-the other `inspect` forms (`task`, `node`, `config`, `secret`, `network`) and the
-other `vm snapshot` subcommands: they are local-only until they grow a contract
-path.
+`secret ls`, `network ls`, `service logs`, `vm logs`, `vm exec`, `vm attach`,
+`vm migrate` and `vm snapshot stop-restored`. Every other command refuses `-H`
+with a `usage` error (exit `2`) rather than silently reading the local cluster.
+That includes the other `inspect` forms (`task`, `node`, `config`, `secret`,
+`network`), which reject the flag inside the command, and the other
+`vm snapshot` subcommands: they are local-only until they grow a contract path.
+(`swarmcracker`, `help`, `version` and the `api token` commands read no cluster,
+so the flag does nothing there.) Two commands *require* it: `vm migrate`, because
+a move crosses hosts, and `service logs`, because a service's replicas run on
+different nodes — both refuse to run without `-H`, `--ca` and a token.
 
 ### Commands
 
@@ -653,6 +657,7 @@ Direct Firecracker microVM management.
 | `exec <vm> -- <cmd...>` | Run a command inside a running microVM |
 | `cp <src> <vm>:<dst>` | Copy a file between the host and a running microVM |
 | `logs <vm-id>` | View VM logs |
+| `migrate <task> --to <node>` | Move a running microVM to another node (requires `-H`) |
 | `stop <vm-id>` | Stop a microVM |
 | `snapshot` | Manage VM snapshots (`create`, `restore`, `stop-restored`, `list`, `delete`, `cleanup`). `restore` boots a VM from a snapshot and registers it (manage it with `vm stop` / `vm list`); `stop-restored <task>` stops the VM a restore started (SIGTERM, then SIGKILL after 10 s, socket removed), locally or through the manager with `-H` |
 | `status <vm-id>` | Show detailed VM status |
@@ -700,9 +705,40 @@ cannot satisfy leaves **no VM and no cgroup** behind. See
 when the flags are omitted), and a declared size is honoured **exactly** — no
 512 MiB floor — so `--memory 256` boots a 256 MiB VM.
 
-`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. Without `-H` it reads the local console file; with `-H` it reads the task through the manager API, which relays to the node that owns it, so a task on another node is readable too (the API serves at most 10000 lines per request, which is what `--tail -1` asks for). `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix, and the global `-H` switches the session to the manager's API (see below). Detach with **Ctrl-P Ctrl-Q**. `vm exec` flags: `--socket-dir` (default `/var/run/firecracker`), `-i`/`--interactive`, `-t`/`--tty`, `-e`/`--env` (`K=V`, repeatable), `-w`/`--workdir`, `--exit-code` (`guest`, the default, passes the guest status through; `api` maps any non-zero guest exit to `8`; a signal stays `128+signal`); everything after `--` is the guest command, and `-i` without `-t` only emits a warning. `vm cp` flags: `--socket-dir`, `--mode` (host→guest destination mode, default `0644`); exactly one argument carries the `<vm>:` prefix and only regular files are supported.
+`vm list` (alias `vm ls`) flags: `--all`, `--format` (`table` or `json`; any other value is rejected), `--socket-dir`. `vm logs` flags: `--follow` / `-f`, `--since` (a duration like `1h`/`30m` or an RFC3339/date timestamp), `--tail`. Without `-H` it reads the local console file; with `-H` it reads the task through the manager API, which relays to the node that owns it, so a task on another node is readable too (the API serves at most 10000 lines per request, which is what `--tail -1` asks for). `vm stop` flags: `--force` / `-f`, `--timeout`. `vm attach` flags: `--socket-dir` (default `/var/run/firecracker`); `<vm>` is a task ID or any unique prefix, and the global `-H` switches the session to the manager's API (see below). Detach with **Ctrl-P Ctrl-Q**. `vm exec` flags: `--socket-dir` (default `/var/run/firecracker`), `--state-dir` (the daemon's state directory holding restored-instance records; default `$SWARM_STATE_DIR` or `/var/lib/swarmkit`), `-i`/`--interactive`, `-t`/`--tty`, `-e`/`--env` (`K=V`, repeatable), `-w`/`--workdir`, `--exit-code` (`guest`, the default, passes the guest status through; `api` maps any non-zero guest exit to `8`; a signal stays `128+signal`); everything after `--` is the guest command, and `-i` without `-t` only emits a warning. `vm cp` flags: `--socket-dir`, `--state-dir` (same default), `--mode` (host→guest destination mode, default `0644`); exactly one argument carries the `<vm>:` prefix and only regular files are supported.
+
+**`vm migrate` flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--to` | (required) | Target node: a node ID, a hostname, or a unique prefix of a node ID (at least four characters) |
+| `--timeout` | `5m` | Deadline for the whole move, including the manager's cleanup |
+
+`vm migrate <task>` moves one running microVM to another node as a SwarmKit
+replacement carrying a snapshot artifact. `<task>` is a task ID or a unique
+prefix of at least four characters; the command resolves both references against
+the cluster's own lists and posts the resolved IDs, because the route takes an
+exact task ID. It requires `-H` (plus `--ca` and a token
+holding `migrations:write`, which only `admin` carries) and posts one synchronous
+request to the manager, which answers the report the command prints: one line per
+phase, the measured downtime and the outcome. The call is bounded by three
+minutes plus up to a minute of cleanup, so keep `--timeout` above four minutes.
+The command refuses, before posting, a task that is not running, a task with no
+service, a service that is not `replicated`, a service with a replica count other
+than one, and a target that is the task's own node; the manager refuses the same
+cases again, plus a target that is not ready and active. `pending` is a report,
+not an error: the service was replaced and SwarmKit's retry restores from the
+target's staged artifact until the target's directive expires. See [Live Migration](/guides/migration/)
+for what a move keeps, the consistency window, and what to do about a pending or
+failed move.
 
 `vm exec` and `vm cp` reach a guest agent over Firecracker's vsock device (no extra host port is opened). The channel is a trusted control path — a host-local process can run commands in the guest **as root** — so access is limited to the daemon-owned socket directory, like `vm attach`. See [Guest Access](/guides/guest-access/) for usage, the guest agent, and limitations.
+
+A task SwarmKit started from a migration artifact runs a VM whose Firecracker state still names the **source** task's vsock muxer, so `<socket-dir>/<task>.vsock` does not exist for it. Both commands therefore look for the node's restored-instance record at `<state-dir>/restored-instances/<task>.json` and dial the muxer it names; a task this node booted itself has no record and dials the derived path exactly as before. The record is only read — a `vm` command never creates, changes or deletes one — and a record that names a muxer which is gone is dialed anyway, so the error names the VM's true state instead of a socket that belongs to nobody the caller asked about.
+
+`--state-dir` defaults to `$SWARM_STATE_DIR` when it is set, otherwise `/var/lib/swarmkit`. The daemon reads neither that variable nor this flag: it uses its own `--state-dir`, so a daemon started with a non-default one needs the matching `--state-dir` (or the variable) on `vm exec`/`vm cp`, or their lookups read a directory it never wrote.
+
+The record takes precedence over the derived path on **both** the local path and the node broker behind `vm exec -H`, but the two are not the same resolver and are not interchangeable: the broker refuses a task whose record it cannot use, and reports one whose recorded VM has exited as a task that is not running, whereas the local path warns and falls back to the muxer derived from the task ID when a record cannot be read or does not validate. Locally the record is also consulted only after the task's own API socket has resolved as live, so a task this node cannot see fails at that step instead.
 
 `vm exec -H https://manager:4244` (with `--ca` and `--token-file`) uses the manager's API (`POST /v1/tasks/{id}/exec`) instead of the local socket, so a CI runner needs only an API token and the cluster CA. That path requires the node broker on each node (`swarmd-firecracker --broker-listen`, default `0.0.0.0:4245`); a manager without a wired broker answers `501 not_implemented`. Interactive `-t` is not implemented over the API and returns the same typed 501.
 

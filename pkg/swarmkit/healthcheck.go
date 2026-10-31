@@ -195,7 +195,7 @@ func (c *Controller) awaitHealthy(ctx context.Context) error {
 
 	tracker := healthcheck.NewTracker(h, c.startTime)
 	interval := healthcheckProbeInterval(h)
-	udsPath := vsockUDSPath(c.socketPath)
+	udsPath := c.guestVsockPath()
 	cmd := strings.Join(argv, " ")
 
 	// Publish the starting state before the first probe so a node-local

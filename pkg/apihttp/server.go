@@ -120,6 +120,11 @@ type Config struct {
 	// not_implemented with details.capability "snapshots", before the task is
 	// resolved or audited.
 	SnapshotsEnabled bool
+	// Migrations is the manager-side live-migration transport. A nil transport
+	// leaves POST /v1/migrations answering 501 and keeps the capability out of the
+	// version document; the daemon wires it only when it has both a node broker
+	// (the relay) and a spool (the bytes in transit).
+	Migrations MigrationBroker
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore
@@ -177,6 +182,7 @@ func New(cfg Config) (*Server, error) {
 		cfg.Capabilities = withoutCapability(cfg.Capabilities, snapshotCapability)
 	}
 	cfg.Capabilities = withBrokerCapabilities(cfg.Capabilities, cfg.Broker != nil, snapshotsAdvertised)
+	cfg.Capabilities = withOptionalCapability(cfg.Capabilities, migrationCapability, migrationsAvailable(cfg))
 	if cfg.EventHeartbeat <= 0 {
 		cfg.EventHeartbeat = defaultEventHeartbeat
 	}
@@ -251,6 +257,21 @@ func withoutCapability(capabilities []string, name string) []string {
 	return kept
 }
 
+// withOptionalCapability advertises name exactly when enabled, and strips it from
+// a caller-supplied list when it is not. It is the one rule behind both halves, so
+// a wired transport and the version document cannot disagree.
+func withOptionalCapability(capabilities []string, name string, enabled bool) []string {
+	if !enabled {
+		return withoutCapability(capabilities, name)
+	}
+	for _, capability := range capabilities {
+		if capability == name {
+			return capabilities
+		}
+	}
+	return append(capabilities, name)
+}
+
 // routes registers every route with the method it serves and the scope it
 // requires.
 //
@@ -279,6 +300,12 @@ func (s *Server) routes() {
 		accepts(read(ScopeTasksRead, s.listServiceTasks), "limit", "cursor"))
 	s.handleRoutes("/v1/services/{id}/rollback",
 		accepts(write(http.MethodPost, ScopeServicesWrite, s.rollbackService), "dryRun", "wait", "timeoutMs"))
+
+	// A migration moves one service's single replica to another node: it replaces
+	// the service's task and relays a guest's memory image, so it is admin only.
+	// There is no GET: the call is synchronous and its answer is the report.
+	s.handleRoutes("/v1/migrations",
+		write(http.MethodPost, ScopeMigrationsWrite, s.createMigration))
 
 	// label is declared on the task list because both v1 SDKs document
 	// forwarding it; the manager does not filter tasks by label (the SDK

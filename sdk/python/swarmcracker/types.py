@@ -81,7 +81,7 @@ class Error(TypedDict):
     message: str
     requestId: NotRequired[str]
     retryable: bool
-    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
+    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), "no_restored_vm", or "migration_in_flight" (another migration of the same service is already running). A migration failure also carries details.phase, the step that failed. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
     details: NotRequired[dict[str, Any]]
 
 class ErrorDocument(TypedDict):
@@ -149,6 +149,35 @@ class LogFrame(TypedDict):
     time: NotRequired[str]
     # Base64-encoded raw console bytes. Set on log frames only.
     data: NotRequired[str]  # base64
+
+class Migration(TypedDict):
+    """The report of one migration. `id` is the artifact the source exported - a migration has no identity beyond the artifact that carries the VM - and `downtimeMs` is measured from the instant the old task was observed gone (or, if it was never observed gone, from the instant the service update returned) to the first instant a replacement reported running on the target. It is zero for an outcome that never saw a running replacement, because an unmeasured downtime is not zero seconds."""
+    schemaVersion: Literal[1]
+    kind: Literal["Migration"]
+    id: str
+    taskId: str
+    serviceId: NotRequired[str]
+    sourceNode: str
+    targetNode: str
+    phases: list[MigrationPhase]
+    downtimeMs: int
+    outcome: Literal["moved", "pending"]
+
+class MigrationPhase(TypedDict):
+    """One step of a migration report. `result` is "ok" for a phase that finished, "error" for the phase that failed (the request then answers a typed error document with details.phase), and "pending" for a verify that ran out of time while the replacement was still starting."""
+    name: Literal["validate", "export", "relay", "prepare", "replace", "verify", "cleanup"]
+    startedAt: str
+    finishedAt: NotRequired[str]
+    result: Literal["ok", "error", "pending"]
+    # Why a non-ok phase ended that way, or which best-effort cleanup step did not complete. It is a step name plus the failure's stable code and details reason (for example "discard the artifact on the source: unavailable (artifact_unremovable)"), never the failure's text: that text is written by this node or a peer and names node-local paths.
+    message: NotRequired[str]
+
+class MigrationRequest(TypedDict):
+    """The body of POST /v1/migrations: the task to move and the node to move it to. `taskId` is an exact task ID, not a reference the manager resolves, so a prefix or a name is 404 not_found. `targetNode` is a reference the manager resolves (exact id, hostname, or a unique id prefix of at least four characters). Both are required, and unknown fields are rejected."""
+    # The exact ID of the task whose VM moves; a prefix or a name is 404. It must be running and belong to a replicated service with exactly one replica.
+    taskId: str
+    # The node to move the task to. Accepts an exact node id, an exact hostname, or a unique id prefix of at least four characters; a prefix that matches more than one node is 400 ambiguous with details.candidates. It must not be the node the task already runs on, and it must be ready and active.
+    targetNode: str
 
 class Mount(TypedDict):
     # v1 writes accept every SwarmKit mount type. `bind` references a host path and requires the admin role (contract §5.3): an operator token is refused with 403 forbidden and details.requiredRole "admin". `npipe` and `cluster` are additive extensions to the contract's volume/bind/tmpfs set.
@@ -274,7 +303,7 @@ class PartialError(TypedDict):
     message: str
     requestId: str
     retryable: bool
-    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
+    # Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), "no_restored_vm", or "migration_in_flight" (another migration of the same service is already running). A migration failure also carries details.phase, the step that failed. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason.
     details: NotRequired[dict[str, Any]]
 
 class Placement(TypedDict):
@@ -595,7 +624,7 @@ class VersionInfo(TypedDict):
     serverVersion: str
     grpcProtocolVersion: str
     clusterId: NotRequired[str]
-    # Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. A capability that is advertised is served; the version document never promises a route that answers 501.
+    # Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. migrations is advertised only when the manager has both a node broker and its migration spool, because a migration is relayed and spooled. A capability that is advertised is served; the version document never promises a route that answers 501.
     capabilities: list[str]
 
 class Warning(TypedDict):

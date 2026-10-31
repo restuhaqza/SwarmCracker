@@ -305,6 +305,13 @@ func newAppFlags() []cli.Flag {
 			Usage: "Directory holding VM snapshots",
 			Value: config.DefaultSnapshotDir,
 		},
+		&cli.StringFlag{
+			Name: "migration-staging-dir",
+			Usage: "Directory holding this node's migration artifacts: a published export and a " +
+				"received artifact both live at <dir>/<artifactID>/; it must be on the same " +
+				"filesystem as --snapshot-dir and --rootfs-dir",
+			Value: defaultMigrationStagingDir,
+		},
 		&cli.DurationFlag{
 			Name: "snapshot-timeout",
 			Usage: "Deadline for one snapshot request relayed to a node; create copies the task " +

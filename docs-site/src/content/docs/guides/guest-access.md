@@ -57,6 +57,7 @@ Everything after `--` is passed to the guest unchanged.
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--socket-dir` | — | `/var/run/firecracker` | Directory containing microVM vsock sockets |
+| `--state-dir` | — | `$SWARM_STATE_DIR` or `/var/lib/swarmkit` | The daemon's state directory; it holds the restored-instance record that names a migrated task's vsock muxer |
 | `--interactive` | `-i` | `false` | Keep stdin open (requires `-t`) |
 | `--tty` | `-t` | `false` | Allocate a pseudo-terminal in the guest |
 | `--env` | `-e` | — | Set an environment variable in the guest (repeatable, `K=V`) |
@@ -93,6 +94,7 @@ swarmcracker vm cp <vm>:<src> <dst>
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--socket-dir` | `/var/run/firecracker` | Directory containing microVM vsock sockets |
+| `--state-dir` | `$SWARM_STATE_DIR` or `/var/lib/swarmkit` | The daemon's state directory; a migrated task's muxer is read from its restored-instance record there |
 | `--mode` | `0644` | File mode for host-to-guest copies (octal) |
 
 ```bash
@@ -146,6 +148,12 @@ daemon's:
 - The VM was started with the jailer (not supported yet — see above).
 - `--socket-dir` does not match the daemon's `--socket-dir`; both default to
   `/var/run/firecracker`.
+- The task was moved here by `vm migrate`. Its VM answers on the **source**
+  task's muxer, so the path is read from
+  `<state-dir>/restored-instances/<task>.json`; if the file is missing, or
+  `--state-dir` does not match the daemon's, the command falls back to
+  `<task>.vsock` and reports exactly this error. See
+  [Live Migration](/guides/migration/).
 
 ### The agent does not respond
 

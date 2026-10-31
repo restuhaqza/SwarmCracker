@@ -336,12 +336,13 @@ single documents — on two listeners:
 | **Unix socket** | `<state-dir>/api.sock` (default `/var/lib/swarmkit/api.sock`) | none — the socket's file mode is the credential |
 
 The read surface is phase 1 and **writes** are phase 2: services (create, patch,
-delete, rollback) and configs, secrets, networks and nodes (create, patch,
-delete). They require the resource's `:write` scope. Phase 3 adds task exec,
-the interactive console, log streaming, file transfer and live `?health`
-enrichment; the manager relays them to the node that runs the task through an
-internal mTLS broker, so the caller never picks a host. A manager with no broker
-wired answers those routes `501 not_implemented` with `details.capability`.
+delete, rollback), configs, secrets, networks and nodes (create, patch, delete),
+plus the live-migration write below. They require the resource's `:write` scope.
+The task-scoped operations — exec, the interactive console, log streaming, file
+transfer, snapshots and live `?health` enrichment — are shipped too: the manager
+relays them to the node that runs the task through an internal mTLS broker, so
+the caller never picks a host. A manager with no broker wired answers those
+routes `501 not_implemented` with `details.capability`.
 
 `api/openapi.yaml` in the repository is the normative contract for every route,
 schema, header and error code; this section is the operator's guide to it.
@@ -360,7 +361,7 @@ the Unix socket while disabling the TCP listener.
 ### Routes
 
 Reads are `GET`; services, configs, secrets, networks and nodes also accept the
-phase-2 writes below.
+phase-2 writes below, and `POST /v1/migrations` is the move write.
 
 | Method | Route | Returns |
 |--------|-------|---------|
@@ -387,6 +388,7 @@ phase-2 writes below.
 | GET | `/v1/snapshots?task={id}` | `SnapshotList` (flat address; `task` required) |
 | POST | `/v1/snapshots/{sid}/restore?task={id}` | `SnapshotDocument` (flat address) |
 | DELETE | `/v1/snapshots/{sid}?task={id}` | `204` (flat address) |
+| POST | `/v1/migrations` | `Migration` (moves a running task's VM to another node; requires `migrations:write`, admin only) |
 | GET | `/v1/events` | SSE or NDJSON `Event` stream (requires `events:read`) |
 | GET | `/v1/nodes` | `NodeList` |
 | GET | `/v1/nodes/{id}` | `NodeDocument` |
@@ -420,7 +422,9 @@ a route. When the operator passes `--snapshots-enable`, a manager whose snapshot
 transport is wired also advertises `snapshots` (experimental; see the
 [snapshots guide](/guides/snapshots/#http-api-experimental)). The advertisement
 and the route gate use the same condition, so `snapshots` appears exactly when
-the snapshot routes stop answering `501`. A client that feature-detects the
+the snapshot routes stop answering `501`. A manager with a wired broker and a
+migration spool also advertises `migrations`, and `POST /v1/migrations` answers
+`501` exactly when it is absent. A client that feature-detects the
 surface sees exactly what the server serves; the phase-2 write routes above are
 covered by `write`.
 
@@ -751,15 +755,95 @@ See the [snapshots guide](/guides/snapshots/#http-api-experimental) for the CLI
 workflow, the file layout and the known limitations; `api/openapi.yaml` has the
 normative schema and every error code.
 
+### Migrations
+
+`POST /v1/migrations` moves one running task's microVM to another node. It is
+the only migration route: there is no list, no status document and no cancel,
+because the call is synchronous and its answer is the whole story of one move.
+The work is a SwarmKit replacement carrying a snapshot artifact — the source
+exports the task, the manager relays the artifact through its spool, the target
+records what its next task restores, the service is pinned to the target and
+updated, and the replacement loads the artifact there. The caller waits for the
+whole sequence: three minutes for the move plus up to one minute of cleanup the
+manager performs before answering.
+
+The route requires `migrations:write`, which only the `admin` role holds; a
+token that lacks it is `403 forbidden` with `details.requiredScope`. Scopes are
+fixed at mint time, so an admin token minted before `migrations:write` existed
+keeps its old list and must be reminted. Only the swarm's raft leader runs a
+migration: any other manager answers `503 unavailable` with `details.reason:
+"not_leader"` and `details.leader` naming the node to retry against, because two
+managers running the same move would prepare the same service twice and unpin
+each other's placement. A manager that cannot tell who the leader is runs the
+move rather than refusing.
+
+The body is a `MigrationRequest`:
+
+```json
+{ "taskId": "5f3a1b2c9d4e5f60718293a4b5c6d7e8", "targetNode": "worker-2" }
+```
+
+Both fields are required and unknown fields are rejected. `taskId` is an **exact
+task ID**: the manager reads the task by that ID and resolves nothing, so a
+shortened ID is `404 not_found`. `targetNode` is a reference the manager does
+resolve — an exact node ID, an exact hostname, or a unique ID prefix of at least
+four characters. The source is not a field: it is the node the task already runs
+on.
+
+The answer is `201` whatever the outcome, because the request did run a
+migration. The document is a `Migration`:
+
+| Field | Meaning |
+|-------|---------|
+| `id` | The artifact the source exported (`mig-…`). A migration has no identity beyond the artifact that carries the VM. |
+| `taskId`, `serviceId` | The task that was replaced and the service it belonged to. |
+| `sourceNode`, `targetNode` | Where the VM ran and where it moved. |
+| `phases` | One entry per step (`validate`, `export`, `relay`, `prepare`, `replace`, `verify`, `cleanup`) with `startedAt`, `finishedAt`, `result` (`ok`, `error`, `pending`) and, for a non-ok result, a `message` naming the stable code and reason. |
+| `downtimeMs` | Measured by the manager from the instant the old task was observed gone (or the service update's return, if it was never observed gone) to the first instant a replacement reported running on the target, at a one-second poll. `0` means no running replacement was seen, not zero downtime. |
+| `outcome` | `moved` or `pending`. |
+
+`pending` is not a failure: the service was replaced but no replacement had
+reported running before the two-minute verify deadline. The target keeps the
+directive naming the artifact and the staged bytes, and the replaced service's
+retry restores from them until the directive expires after ten minutes; a retry
+after that boots a fresh VM. A failure that left nothing behind is a typed error
+document whose `details.phase` names the failing step.
+
+Typed failures:
+
+| Status | Code / reason | When |
+|--------|---------------|------|
+| `400` | `invalid` | A blank `taskId` or `targetNode` (`details.fields`), a task that is not running, a service that is not replicated (`details.reason: "service_mode"`) or has a replica count other than one (`"replicas"`), a target equal to the source, a target that is not ready and active (`"node_not_schedulable"`), or a target string shorter than four characters that is neither an exact node ID nor a hostname. |
+| `400` | `ambiguous` | `targetNode` is a node ID prefix that matches more than one node; `details.candidates` lists each match's `id` and `name`. |
+| `403` | `forbidden` | The token does not hold `migrations:write` (`details.requiredScope`). |
+| `404` | `not_found` | The task ID names no task (a prefix is not resolved), or the target reference matches nothing. |
+| `409` | `conflict` | A migration of the same service is already in flight (`details.reason: "migration_in_flight"`). |
+| `501` | `not_implemented` | This manager has no migration transport (`details.capability: "migrations"`). |
+| `503` | `unavailable` | Another node is the leader (`details.reason: "not_leader"`, `details.leader`), or the replacement failed outright after the service update (`"replacement_failed"`). |
+| `504` | `timeout` | A node call, or the whole move, exceeded its deadline; `details.phase` names the step. |
+
+A failure inside the move carries `details.phase` naming the step; an error the
+API layer raises before the move starts (a blank field, an unsupported media
+type) does not. Every attempt that reaches the move is audited as `task.migrate`
+today — one record naming the task, never an artifact or a path, with
+`result: "ok"` for a 201 and `result: "error"` for a typed failure; a request
+rejected before the move is not audited, and a replay does not append a second
+record. `Idempotency-Key` applies here as it does on the other POST routes: the
+first answer is stored, and a retry with the same key and body returns it with
+`Idempotency-Replayed: true` instead of moving the task twice.
+The CLI workflow, the consistency window and the operator's reading of a
+`pending` report are in the [migration guide](/guides/migration/).
+
 ### Idempotency, wait and dry run
 
 Three opt-in modifiers sit on top of the writes. Without them the phase-2
 behaviour is unchanged.
 
 **`Idempotency-Key`** (POST only: service, config, secret and network create,
-plus rollback). The key is trimmed and scoped to the token, the method and the
-path, so two callers never collide. A retry with the same key and the same body
-returns the original status, headers and body plus `Idempotency-Replayed: true`;
+plus rollback and live migration). The key is trimmed and scoped to the token,
+the method and the path, so two callers never collide. A retry with the same key
+and the same body returns the original status, headers and body plus
+`Idempotency-Replayed: true`;
 the first response never carries that header, and the replay carries the
 *retrying* request's `X-Request-Id` (a replayed error document is re-rendered
 with that same current `requestId`). The same key with a different body is
@@ -911,7 +995,7 @@ scopes at mint time, and `--scope` can only narrow a role, never add to it.
 | `reader` | `services:read`, `tasks:read`, `tasks:logs`, `nodes:read`, `networks:read`, `configs:read`, `secrets:read`, `events:read`, `cluster:read` | dashboards, monitoring, read-only CI |
 | `runner` | reader + `tasks:exec`, `tasks:files`, `tasks:snapshots` | CI that builds or tests inside VMs |
 | `operator` | runner + `services:write`, `networks:write`, `configs:write`, `configs:read-values`, `secrets:write` | deploys |
-| `admin` | everything, including `nodes:write`, `tokens:admin`, `audit:read` | cluster administration |
+| `admin` | everything, including `nodes:write`, `migrations:write`, `tokens:admin`, `audit:read` | cluster administration |
 
 Every route names the scope it needs: `/v1/version` is `cluster:read`,
 `/v1/services/{id}/tasks` is `tasks:read`, `/v1/audit` is `audit:read`, and the
@@ -920,7 +1004,7 @@ local administrator (`type: "local"`, role `admin`) because its file mode is the
 credential.
 
 A token may also carry **task selectors**, which restrict which tasks it can
-`exec`, transfer files to or snapshot (phase 3). Selectors do not narrow the read
+`exec`, transfer files to or snapshot. Selectors do not narrow the read
 routes: a runner still lists every task its `tasks:read` scope covers.
 
 ```bash
@@ -960,10 +1044,14 @@ means a full or read-only audit file stops recording without an error in the API
 response; watch the manager's log and the file itself.
 
 The service writes above record `service.create`, `service.update`,
-`service.delete` and `service.rollback`. A failed write records `result: "error"`
-with the reference or attempted name; a successful delete records the document
-as it was before removal. Config, secret, network and node writes (phase 2) will
-add their own actions.
+`service.delete` and `service.rollback`; the config, secret, network and node
+writes record `config.create`, `config.update`, `config.delete`,
+`secret.create`, `secret.update`, `secret.delete`, `network.create`,
+`network.delete` and `node.update`; the relayed task operations record
+`task.exec`, `task.attach`, `task.files`, `task.snapshot` and
+`task.restored.stop`; and a migration attempt records `task.migrate`. A failed
+write records `result: "error"` with the reference or attempted name; a
+successful delete records the document as it was before removal.
 
 ```bash
 # Needs an admin token: audit:read is admin-only. There is no CLI subcommand for
@@ -983,12 +1071,6 @@ forwarded header, and absent for a Unix-socket request. A write that used
 `precondition: "revision"`, so an unconditional update is visible in the log.
 Secret and config values are never recorded. A manager without an audit log
 answers `501 not_implemented` with `details.capability: "audit"`.
-
-Phase 2 has started: service writes are audited today. Config, secret, network
-and node writes will add `config.create`, `config.update`, `config.delete`,
-`secret.create`, `secret.update`, `secret.delete`, `network.create`,
-`network.delete` and `node.update`, and phase 3 adds `task.exec`, `task.attach`,
-`task.files`, `task.snapshot` and `task.restored.stop`.
 
 ### Remote CLI reads
 

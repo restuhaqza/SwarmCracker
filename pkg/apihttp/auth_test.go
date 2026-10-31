@@ -13,7 +13,7 @@ import (
 
 func TestRoleScopes(t *testing.T) {
 	all := []Scope{
-		ScopeServicesRead, ScopeServicesWrite,
+		ScopeServicesRead, ScopeServicesWrite, ScopeMigrationsWrite,
 		ScopeTasksRead, ScopeTasksExec, ScopeTasksFiles, ScopeTasksLogs, ScopeTasksSnapshots,
 		ScopeNodesRead, ScopeNodesWrite,
 		ScopeNetworksRead, ScopeNetworksWrite,
@@ -81,7 +81,7 @@ func TestAdminHoldsEveryScope(t *testing.T) {
 	// The role table is the source of truth for the taxonomy: every documented
 	// scope must be reachable through admin.
 	for _, scope := range []Scope{
-		ScopeServicesRead, ScopeServicesWrite, ScopeTasksRead, ScopeTasksExec,
+		ScopeServicesRead, ScopeServicesWrite, ScopeMigrationsWrite, ScopeTasksRead, ScopeTasksExec,
 		ScopeTasksFiles, ScopeTasksLogs, ScopeTasksSnapshots, ScopeNodesRead,
 		ScopeNodesWrite, ScopeNetworksRead, ScopeNetworksWrite, ScopeConfigsRead,
 		ScopeConfigsReadValues, ScopeConfigsWrite, ScopeSecretsRead, ScopeSecretsWrite,
@@ -93,7 +93,7 @@ func TestAdminHoldsEveryScope(t *testing.T) {
 
 func TestKnownScope(t *testing.T) {
 	for _, scope := range []string{
-		"services:read", "services:write", "tasks:read", "tasks:exec", "tasks:files",
+		"services:read", "services:write", "migrations:write", "tasks:read", "tasks:exec", "tasks:files",
 		"tasks:logs", "tasks:snapshots", "nodes:read", "nodes:write", "networks:read",
 		"networks:write", "configs:read", "configs:read-values", "configs:write",
 		"secrets:read", "secrets:write", "events:read", "cluster:read", "tokens:admin",

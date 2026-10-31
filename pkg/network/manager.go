@@ -5,7 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/moby/swarmkit/v2/api"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -2012,13 +2013,41 @@ func (nm *NetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
 	log.Debug().Msg("Node discovery provider configured")
 }
 
+// GuestAddressForTask returns the CIDR and gateway a task is given on this
+// node's flat bridge when it has no SwarmKit network attachment: the same two
+// values the boot path would have handed the guest's kernel command line.
+//
+// A restored guest must be given the address its task was allocated, and for a
+// task without an attachment that allocation is this node's static allocator
+// (createTapDevice's fallback). The address is deterministic for a task ID, so a
+// retried restore gets the same one.
+func (nm *NetworkManager) GuestAddressForTask(taskID string) (cidr, gateway string, err error) {
+	if nm.ipAllocator == nil || nm.config.IPMode != "static" {
+		return "", "", fmt.Errorf(
+			"this node does not allocate static guest addresses (ip mode %q): a restored guest needs the address its task was allocated",
+			nm.config.IPMode)
+	}
+	ip, err := nm.ipAllocator.Allocate(taskID)
+	if err != nil {
+		return "", "", err
+	}
+	_, subnet, err := net.ParseCIDR(nm.config.Subnet)
+	if err != nil {
+		return "", "", fmt.Errorf("the node's subnet %q is not a CIDR: %w", nm.config.Subnet, err)
+	}
+	ones, _ := subnet.Mask.Size()
+	gw := strings.Split(nm.config.BridgeIP, "/")[0]
+	if gw == "" {
+		return "", "", errors.New("the node has no bridge address: a restored guest needs a default gateway")
+	}
+	return fmt.Sprintf("%s/%d", ip, ones), gw, nil
+}
+
 // createTapDevice creates a TAP device for a network attachment.
 func (nm *NetworkManager) createTapDevice(ctx context.Context, network types.NetworkAttachment, index int, taskID string) (*TapDevice, error) {
-	// Generate TAP name: tap-<hash[:8]>-<index>
-	// Must match logic in translator
-	hash := sha256.Sum256([]byte(taskID))
-	hashStr := hex.EncodeToString(hash[:])
-	tapName := fmt.Sprintf("tap-%s-%d", hashStr[:8], index)
+	// The name is shared with the translators and with a migration restore, so
+	// the rule lives in one place (pkg/runtime).
+	tapName := scruntime.TapName(taskID, index)
 
 	// Allocate IP address for this TAP
 	// Priority: SwarmKit-provided IP > Local allocation

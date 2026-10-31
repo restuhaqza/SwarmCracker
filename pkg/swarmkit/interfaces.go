@@ -7,6 +7,7 @@ import (
 	"context"
 	"os/exec"
 
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
@@ -60,3 +61,23 @@ type SecretManagerInterface interface {
 	InjectSecrets(ctx context.Context, taskID string, secrets []types.SecretRef, rootfsPath string) error
 	InjectConfigs(ctx context.Context, taskID string, configs []types.ConfigRef, rootfsPath string) error
 }
+
+// RestoredInstanceStore is the node's map from a task to the microVM it inherited
+// from a migration, as a teardown uses it: read to find which VM the task runs,
+// deleted once that VM is confirmed gone.
+//
+// A task SwarmKit started from a migration artifact runs a VM whose Firecracker
+// state names the source task's TAP device, vsock muxer and disk, so the record is
+// the only thing that says which process belongs to it. The contract — including
+// what a stop does with the record — is pkg/snapshot's RestoredRecordStore, which
+// implements the one stop rule this executor and the node broker share;
+// *runtime.RestoredRegistry is the production implementation.
+type RestoredInstanceStore = snapshot.RestoredRecordStore
+
+// RestoredVMStopper stops the Firecracker process a restore started. That process
+// is not the executor's — pkg/snapshot started it and holds the handle — so only
+// the manager that owns it can signal it. *snapshot.Manager is the production
+// implementation, and it answers snapshot.ErrNoRestoredVM for a task it tracks no
+// process for, which snapshot.StopAndForgetRestoredVM reads as "look at the socket
+// before believing the VM is gone".
+type RestoredVMStopper = snapshot.RestoredStopper

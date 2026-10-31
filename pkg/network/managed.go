@@ -31,6 +31,13 @@ type managedNetwork struct {
 	vxlanID   int
 	vxlanMgr  *VXLANManager
 	allocator *IPAllocator
+	// network is the SwarmKit view this bridge was materialised from. It is kept
+	// because a caller outside this package has to re-derive a node-local answer
+	// from it - the migration re-anneal asks which bridge a moved guest's
+	// attachment is on, with the same AttachmentBridgeName call the restore path
+	// makes - and re-deriving that from the ID alone would guess at the subnet and
+	// the driver.
+	network *types.Network
 }
 
 // networkBridgeName returns the bridge device name for a network: the name the
@@ -85,16 +92,52 @@ func (nm *NetworkManager) hasManagedAttachment(networks []types.NetworkAttachmen
 }
 
 // attachmentBridgeName returns the bridge a task's TAP for this attachment
-// joins. A network whose subnet is the flat L2 subnet (the ingress network is
-// carved from --subnet by design) always uses the node's bridge: honoring its
-// recorded per-network bridge would put two gateways on the same range and
-// split the flat segment, leaving published ports unreachable.
+// joins, as AttachmentBridgeName derives it from this manager's configuration.
 func (nm *NetworkManager) attachmentBridgeName(network *types.Network) string {
-	if network == nil {
-		return nm.config.BridgeName
+	return AttachmentBridgeName(network, nm.config)
+}
+
+// NetworkByID returns the SwarmKit view of a user-defined network this node has
+// materialised, and whether it has one. It is the lookup a caller outside this
+// package needs to answer a node-local question about a network from its ID: the
+// migration re-anneal uses it to derive the bridge a moved guest's attachment is
+// on, through AttachmentBridgeName, exactly as the boot and restore paths do.
+//
+// false means this node has no bridge for that network - the flat segment, the
+// ingress network (which is carved from the flat subnet by design), or a
+// user-defined network no local task uses. None of those has a stale entry here,
+// because this node never carried the guest on it.
+func (nm *NetworkManager) NetworkByID(networkID string) (*types.Network, bool) {
+	if networkID == "" {
+		return nil, false
 	}
-	if flat := strings.TrimSpace(nm.config.Subnet); flat != "" && sameSubnet(network.Spec.Subnet, flat) {
-		return nm.config.BridgeName
+	nm.mu.RLock()
+	defer nm.mu.RUnlock()
+	managed := nm.managedNetworks[networkID]
+	if managed == nil || managed.network == nil {
+		return nil, false
+	}
+	return managed.network, true
+}
+
+// AttachmentBridgeName is the bridge a task's TAP for one attachment joins, derived
+// from the node's network configuration. A network whose subnet is the flat L2 subnet
+// (the ingress network is carved from --subnet by design) always uses the node's
+// bridge: honoring its recorded per-network bridge would put two gateways on the same
+// range and split the flat segment, leaving published ports unreachable.
+//
+// It is exported because it is the one derivation of that answer, and a task restored
+// from a migration artifact has to attach its TAP to the same L2 segment a boot would
+// have chosen — while the restore path never runs the code that prepares a task's
+// networks (pkg/network creates no TAP for it). A second copy of this rule in the
+// restore path is how a migrated task on a user-defined network would end up on the
+// default bridge with a foreign address.
+func AttachmentBridgeName(network *types.Network, config types.NetworkConfig) string {
+	if network == nil {
+		return config.BridgeName
+	}
+	if flat := strings.TrimSpace(config.Subnet); flat != "" && sameSubnet(network.Spec.Subnet, flat) {
+		return config.BridgeName
 	}
 	if network.Spec.DriverConfig != nil &&
 		network.Spec.DriverConfig.Bridge != nil &&
@@ -111,7 +154,7 @@ func (nm *NetworkManager) attachmentBridgeName(network *types.Network) string {
 			Msg("Detected overlay network, using derived bridge name")
 		return name
 	}
-	return nm.config.BridgeName
+	return config.BridgeName
 }
 
 // sameSubnet reports whether two CIDRs name the same network, regardless of how
@@ -547,6 +590,7 @@ func (nm *NetworkManager) ensureManagedNetwork(ctx context.Context, network *typ
 		vxlanID:   network.Spec.VXLANID,
 		vxlanMgr:  vxm,
 		allocator: alloc,
+		network:   network,
 	}
 
 	nm.mu.Lock()

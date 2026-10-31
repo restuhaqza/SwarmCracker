@@ -415,6 +415,12 @@ func newStartController(t *testing.T, vsockUDS string, hc *api.HealthConfig) *Co
 	// with "directory not empty" — the flake this helper used to cause under a
 	// full-suite run.
 	t.Cleanup(ctrl.stopHealthMonitor)
+	// The guest-metrics poller outlives Start for the same reason, and it reads
+	// package-level MetricsPollInterval on every tick. A later metrics test rewrites
+	// that interval, so a leaked poller is a data race the -race suite reports
+	// against whichever test happens to run next. Joining it here is the teardown a
+	// stopped task does.
+	t.Cleanup(ctrl.stopMetricsMonitor)
 	return ctrl
 }
 
@@ -454,6 +460,32 @@ func TestController_Start_HealthyFirstProbe(t *testing.T) {
 	ctrl := newStartController(t, uds, hc)
 
 	require.NoError(t, ctrl.Start(context.Background()))
+}
+
+// TestController_Start_ProbesTheRestoredMuxer pins the wiring: the health gate and
+// the metrics poller that Start launches must dial the muxer a restored task's
+// record names, not the one derived from its own ID. The derivation points at a
+// guest that refuses every command, so a controller that ignored the record could
+// not become healthy.
+func TestController_Start_ProbesTheRestoredMuxer(t *testing.T) {
+	_, recordedUDS := startFakeVsockMuxer(t)
+	wrongUDS := filepath.Join(shortHealthcheckDir(t), "derived.vsock")
+	startCannedGuestAt(t, wrongUDS)
+	hc := &api.HealthConfig{
+		Test:     []string{"CMD-SHELL", "true"},
+		Interval: gogotypes.DurationProto(10 * time.Millisecond),
+		Timeout:  gogotypes.DurationProto(2 * time.Second),
+		Retries:  3,
+	}
+	ctrl := newStartController(t, wrongUDS, hc)
+
+	record := restoredTestRecord("task-hc-start", "source-task")
+	record.VsockPath = recordedUDS
+	ctrl.restored = &fakeRestoredStore{record: record, found: true}
+
+	require.NoError(t, ctrl.Start(context.Background()),
+		"a restored task's probes must reach the VM its record names")
+	require.Equal(t, recordedUDS, ctrl.guestVsockPath())
 }
 
 // TestController_Start_UnhealthyAfterRetries asserts that after Retries

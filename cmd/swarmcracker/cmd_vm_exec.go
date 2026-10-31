@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -105,7 +104,13 @@ type remoteExecer interface {
 // vmExecOptions are the inputs to execInVM. They are kept separate from the
 // cobra command so the behaviour can be exercised directly in tests.
 type vmExecOptions struct {
+	// socketDir holds the task's vsock muxers; stateDir is the node state
+	// directory the restored-instance records live in and decides which muxer a
+	// task started from a migration artifact is dialed on. An empty stateDir
+	// derives the path from the task ID, i.e. the behaviour for every task this
+	// node booted itself.
 	socketDir string
+	stateDir  string
 	command   []string
 	env       []string
 	workdir   string
@@ -127,6 +132,7 @@ type vmExecOptions struct {
 func newVMExecCommand() *cobra.Command {
 	var (
 		socketDir   string
+		stateDir    string
 		interactive bool
 		tty         bool
 		env         []string
@@ -144,9 +150,12 @@ shown by "swarmcracker task ls"). Everything after "--" is the command and its
 arguments, passed to the guest unchanged.
 
 Without --host the command runs over the local guest-agent vsock socket, which
-requires running on the node that hosts the task. With --host it goes through the
-manager's API (POST /v1/tasks/{id}/exec), so a CI runner needs only an API token
-and the cluster CA.
+requires running on the node that hosts the task. A task that was moved to this
+node by "vm migrate" runs a VM that still answers on the source task's muxer, so
+the local path reads the node's restored-instance record (--state-dir, default
+$SWARM_STATE_DIR or /var/lib/swarmkit) instead of deriving a path from the task
+ID. With --host it goes through the manager's API (POST /v1/tasks/{id}/exec), so
+a CI runner needs only an API token and the cluster CA.
 
 Stdin is forwarded to the guest only with -t: the guest agent allocates a
 pseudo-terminal for the command and the local terminal is put into raw mode for
@@ -201,6 +210,7 @@ stays 128+signal in both modes.`,
 
 			return execInVM(cmd.Context(), args[0], vmExecOptions{
 				socketDir: socketDir,
+				stateDir:  stateDir,
 				command:   args[1:],
 				env:       env,
 				workdir:   workdir,
@@ -216,6 +226,8 @@ stays 128+signal in both modes.`,
 	}
 
 	cmd.Flags().StringVar(&socketDir, "socket-dir", defaultConsoleSocketDir, "Directory containing microVM vsock sockets")
+	cmd.Flags().StringVar(&stateDir, "state-dir", defaultLocalStateDir(),
+		"Node state directory holding the restored-instance records of migrated tasks")
 	cmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "Keep stdin open (requires -t)")
 	cmd.Flags().BoolVarP(&tty, "tty", "t", false, "Allocate a pseudo-terminal in the guest")
 	cmd.Flags().StringArrayVarP(&env, "env", "e", nil, "Set an environment variable in the guest (repeatable, K=V)")
@@ -294,7 +306,10 @@ func execLocal(ctx context.Context, ref string, opts vmExecOptions) (execOutcome
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	client, err := agent.Dial(dialCtx, filepath.Join(opts.socketDir, taskID+".vsock"), agent.DefaultPort)
+	// A task started from a migration artifact answers on the muxer its
+	// restored-instance record names, which belongs to the source task's VM;
+	// every other task derives it from its own ID.
+	client, err := agent.Dial(dialCtx, localVsockPath(opts.socketDir, opts.stateDir, taskID), agent.DefaultPort)
 	if err != nil {
 		return execOutcome{}, err
 	}

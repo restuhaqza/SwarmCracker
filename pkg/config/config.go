@@ -66,6 +66,12 @@ func (d Duration) String() string {
 // DefaultSnapshotDir is the default directory used to store VM snapshots.
 const DefaultSnapshotDir = "/var/lib/firecracker/snapshots"
 
+// DefaultMigrationDir is the default root of a node's live-migration artifacts
+// (a published export and a received artifact both live under <dir>/<artifactID>).
+// It must be on the same filesystem as the snapshot and rootfs directories, and
+// the systemd unit must allow writes to it (see the generated unit's ReadWritePaths).
+const DefaultMigrationDir = "/var/lib/firecracker/migrations"
+
 // Config is the top-level configuration structure.
 type Config struct {
 	// Version is the config schema version. Incremented when the format changes.

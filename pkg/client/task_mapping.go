@@ -56,6 +56,25 @@ func taskAddresses(networks []*api.NetworkAttachment) []string {
 	return out
 }
 
+// taskAttachments keeps the pairing taskAddresses throws away: the network each
+// address belongs to, in attachment order. An attachment with no resolved network
+// is skipped: without its ID no node can name the bridge the guest was on, so there
+// is nothing to say about it.
+func taskAttachments(task *api.Task) []TaskAttachment {
+	out := make([]TaskAttachment, 0, len(task.Networks))
+	for _, network := range task.Networks {
+		if network == nil || network.Network == nil || network.Network.ID == "" {
+			continue
+		}
+		out = append(out, TaskAttachment{
+			NetworkID: network.Network.ID,
+			Network:   network.Network.Spec.Annotations.Name,
+			Addresses: append([]string(nil), network.Addresses...),
+		})
+	}
+	return out
+}
+
 // taskPorts prefers the ports the agent actually allocated, falling back to
 // the task's endpoint ports before the task has run. Published and Mode are
 // service-level facts and are never set on a task port.

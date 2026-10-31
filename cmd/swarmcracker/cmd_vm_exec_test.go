@@ -24,7 +24,7 @@ func TestVMExecCommandStructure(t *testing.T) {
 	cmd := newVMExecCommand()
 	require.Equal(t, "exec", cmd.Name())
 
-	for _, name := range []string{"socket-dir", "interactive", "tty", "env", "workdir"} {
+	for _, name := range []string{"socket-dir", "state-dir", "interactive", "tty", "env", "workdir"} {
 		assert.NotNilf(t, cmd.Flags().Lookup(name), "flag %q not found", name)
 	}
 	assert.Equal(t, "i", cmd.Flags().Lookup("interactive").Shorthand)
@@ -32,6 +32,8 @@ func TestVMExecCommandStructure(t *testing.T) {
 	assert.Equal(t, "e", cmd.Flags().Lookup("env").Shorthand)
 	assert.Equal(t, "w", cmd.Flags().Lookup("workdir").Shorthand)
 	assert.Equal(t, defaultConsoleSocketDir, cmd.Flags().Lookup("socket-dir").DefValue)
+	assert.Equal(t, defaultLocalStateDir(), cmd.Flags().Lookup("state-dir").DefValue,
+		"--state-dir starts at the directory the daemon writes to")
 
 	require.NotNil(t, cmd.Args)
 	assert.NoError(t, cmd.Args(cmd, []string{"vm1"}))

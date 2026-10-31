@@ -391,6 +391,104 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/migrations:
+    post:
+      operationId: createMigration
+      summary: Move one service task's VM to another node
+      description: >
+        Requires migrations:write, which only the admin role holds: a migration
+        replaces a service's task and relays a guest's memory image between hosts.
+        The call is synchronous and bounded by three minutes, plus up to one minute of
+        cleanup outside that deadline (the manager performs it before answering, so a
+        client timeout shorter than four minutes can drop a response for a move the
+        manager still completes). Only the swarm's raft leader runs
+        a migration: a request served by any other manager answers 503 unavailable with
+        details.reason "not_leader" and details.leader naming the node to retry against,
+        because two managers running the same move would prepare the target's directive
+        twice and unpin each other's placement. A manager that cannot tell from the node
+        list which node is the leader runs the migration anyway - refusing every move
+        on a cluster that cannot report its leader would be worse than a race the
+        service update itself detects.
+        The manager validates the task, exports it on the node it runs on, relays the
+        artifact's files one at a time through its own spool, records the target's
+        pending-restore directive, pins the service to the target, waits for a
+        replacement to report running, then restores the service's placement and
+        discards the artifact.
+        The body is a MigrationRequest: both fields are required and unknown fields
+        are rejected. A task that is not running, a service that is not replicated
+        with exactly one replica, a target that is the task's own node, and a target
+        that is not ready and active are all 400 invalid, resolved before anything is
+        exported. A second migration of the same service while one is in flight is
+        409 conflict with details.reason "migration_in_flight".
+        A manager with no migration transport answers 501 not_implemented with
+        details.capability "migrations". The answer to a migration the manager ran
+        is 201 whatever its outcome: outcome "moved" carries the measured
+        downtimeMs, and outcome "pending" means the service was replaced but no
+        replacement reported running before the verify deadline - the target keeps
+        the directive and the bytes it staged. A retry of that replacement restores
+        from that copy when it runs on the target; the manager restores the service's
+        placement, so a retry scheduled elsewhere boots a fresh VM. The source node's
+        export is deleted as soon as the service update has landed, whatever the
+        outcome. A failure that left nothing behind is a typed error document with
+        the phase that failed in details.phase. There is no status route: the call
+        is the report. The attempt is audited as task.migrate.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/MigrationRequest" }
+      responses:
+        "201":
+          description: >
+            The migration report: the artifact that carried the VM, the phases it
+            ran, the measured downtime and how the move ended.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/Migration" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "504":
+          description: >
+            A node call or the whole migration exceeded its deadline: code
+            timeout, retryable true, with details.phase naming the step.
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/services/{id}/tasks:
     get:
       operationId: listServiceTasks
@@ -3542,6 +3640,89 @@ components:
             trailing slash and `.` segments all name the same absolute directory
             and are accepted.
 
+    MigrationRequest:
+      type: object
+      description: >
+        The body of POST /v1/migrations: the task to move and the node to move it
+        to. `taskId` is an exact task ID, not a reference the manager resolves, so a
+        prefix or a name is 404 not_found. `targetNode` is a reference the manager
+        resolves (exact id, hostname, or a unique id prefix of at least four
+        characters). Both are required, and unknown fields are rejected.
+      additionalProperties: false
+      required: [taskId, targetNode]
+      properties:
+        taskId:
+          type: string
+          description: >
+            The exact ID of the task whose VM moves; a prefix or a name is 404. It must
+            be running and belong to a replicated service with exactly one replica.
+        targetNode:
+          type: string
+          description: >
+            The node to move the task to. Accepts an exact node id, an exact hostname,
+            or a unique id prefix of at least four characters; a prefix that matches
+            more than one node is 400 ambiguous with details.candidates. It must not
+            be the node the task already runs on, and it must be ready and active.
+
+    MigrationPhase:
+      type: object
+      description: >
+        One step of a migration report. `result` is "ok" for a phase that finished,
+        "error" for the phase that failed (the request then answers a typed error
+        document with details.phase), and "pending" for a verify that ran out of
+        time while the replacement was still starting.
+      additionalProperties: false
+      required: [name, startedAt, result]
+      properties:
+        name:
+          type: string
+          enum: [validate, export, relay, prepare, replace, verify, cleanup]
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time }
+        result:
+          type: string
+          enum: [ok, error, pending]
+        message:
+          type: string
+          description: >
+            Why a non-ok phase ended that way, or which best-effort cleanup step did
+            not complete. It is a step name plus the failure's stable code and details
+            reason (for example "discard the artifact on the source: unavailable
+            (artifact_unremovable)"), never the failure's text: that text is written by
+            this node or a peer and names node-local paths.
+
+    Migration:
+      type: object
+      description: >
+        The report of one migration. `id` is the artifact the source exported - a
+        migration has no identity beyond the artifact that carries the VM - and
+        `downtimeMs` is measured from the instant the old task was observed gone
+        (or, if it was never observed gone, from the instant the service update
+        returned) to the first instant a replacement reported running on the target.
+        It is zero for an outcome that never saw a running replacement, because an
+        unmeasured downtime is not zero seconds.
+      additionalProperties: false
+      required:
+        [schemaVersion, kind, id, taskId, sourceNode, targetNode, phases, downtimeMs, outcome]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [Migration] }
+        id: { type: string, pattern: "^mig-[0-9a-f]{16}$" }
+        taskId: { type: string }
+        serviceId: { type: string }
+        sourceNode: { type: string }
+        targetNode: { type: string }
+        phases:
+          type: array
+          items: { $ref: "#/components/schemas/MigrationPhase" }
+        downtimeMs:
+          type: integer
+          format: int64
+          minimum: 0
+        outcome:
+          type: string
+          enum: [moved, pending]
+
     ExecRequest:
       type: object
       required: [command]
@@ -3778,9 +3959,11 @@ components:
             a specific rejection, for example "cursor_mismatch" (a cursor from a
             different route or filter — the value is not echoed back),
             "invalid_snapshot_id" (a snapshot id that is not one safe path
-            segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid`
-            and put `method_not_allowed`, `payload_too_large` or
-            `unsupported_media_type` in details.reason.
+            segment), "no_restored_vm", or "migration_in_flight" (another
+            migration of the same service is already running). A migration
+            failure also carries details.phase, the step that failed. 405, 413 and
+            415 keep code `invalid` and put `method_not_allowed`,
+            `payload_too_large` or `unsupported_media_type` in details.reason.
 
     VersionInfo:
       type: object
@@ -3803,7 +3986,9 @@ components:
             logs, files, health and attach are advertised only when the manager
             has a node broker wired, because they are relayed to the node that
             runs the task. snapshots is advertised only when the experimental
-            snapshot surface is enabled. A capability that is advertised is
+            snapshot surface is enabled. migrations is advertised only when the
+            manager has both a node broker and its migration spool, because a
+            migration is relayed and spooled. A capability that is advertised is
             served; the version document never promises a route that answers 501.
 
     AuditActor:

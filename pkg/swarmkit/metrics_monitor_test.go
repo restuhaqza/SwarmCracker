@@ -153,6 +153,36 @@ func TestController_MetricsMonitor_RecordsGuestSample(t *testing.T) {
 		testutil.ToFloat64(swarmcrackermetrics.VMMemory.WithLabelValues(instance, "task-hc-monitor", "task-hc-monitor")))
 }
 
+// TestController_MetricsMonitor_DialsTheRestoredMuxer pins the third in-executor
+// dialer: the metrics poller must sample the guest on the muxer a restored task's
+// record names, or every series of a migrated VM stays unset forever while the VM
+// serves normally.
+func TestController_MetricsMonitor_DialsTheRestoredMuxer(t *testing.T) {
+	shortMetricsInterval(t)
+	_, recordedUDS := startCannedGuest(t, &agent.GuestMetrics{
+		CPUSeconds:  1.5,
+		MemoryBytes: 64 << 20,
+		NetRxBytes:  10,
+		NetTxBytes:  20,
+	})
+	// The derivation points at nothing, so a poller that ignored the record could
+	// never publish a sample.
+	derivedUDS := filepath.Join(shortHealthcheckDir(t), "derived.vsock")
+	ctrl := newMonitorController(t, derivedUDS, nil, &MockVMMManager{})
+	t.Cleanup(ctrl.stopMetricsMonitor)
+
+	record := restoredTestRecord("task-hc-monitor", "source-task")
+	record.VsockPath = recordedUDS
+	ctrl.restored = &fakeRestoredStore{record: record, found: true}
+	ctrl.resolveGuestVsockPath()
+
+	ctrl.startMetricsMonitor()
+
+	require.Eventually(t, func() bool {
+		return taskSeriesCount(t, "swarmcracker_vm_cpu_seconds", "test-host", "task-hc-monitor") == 1
+	}, 3*time.Second, 10*time.Millisecond, "the sample must come from the recorded muxer")
+}
+
 // TestController_MetricsMonitor_ClearsOnStop pins that teardown deletes the
 // series: a scaled-down service must not leave a stale row behind.
 func TestController_MetricsMonitor_ClearsOnStop(t *testing.T) {

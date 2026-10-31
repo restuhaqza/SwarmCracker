@@ -13,12 +13,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
@@ -501,13 +501,11 @@ func (vm *VMMManager) configureVM(ctx context.Context, socketPath string, config
 	return nil
 }
 
-// vsockUDSPath derives the Firecracker vsock Unix-socket path from the API
-// socket path: <dir>/<id>.sock becomes <dir>/<id>.vsock. The host reaches the
-// guest agent by dialing that muxer socket itself and sending "CONNECT <port>"
-// (see pkg/agent.Dial); "<uds_path>_<port>" is only used for guest-initiated
-// connections.
+// vsockUDSPath returns the Firecracker vsock muxer path that belongs to an API
+// socket path. The rule lives in runtime.VsockPathFromSocket; this name only
+// keeps the VMM's vocabulary ("the UDS path of the vsock device").
 func vsockUDSPath(socketPath string) string {
-	return strings.TrimSuffix(socketPath, ".sock") + ".vsock"
+	return scruntime.VsockPathFromSocket(socketPath)
 }
 
 // Stop stops a running VM with graceful shutdown.

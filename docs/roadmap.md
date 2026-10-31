@@ -1,7 +1,7 @@
 # SwarmCracker Roadmap
 
 - **Status:** Active
-- **Last updated:** 2026-10-30
+- **Last updated:** 2026-10-31
 - **Owner:** Restu Muzakir
 - **Tracking epic:** [#40](https://github.com/restuhaqza/SwarmCracker/issues/40)
 
@@ -21,9 +21,11 @@ Swarm. This roadmap closes that gap before adding differentiation.
 Per-VM kernel isolation, SwarmKit executor, cross-node VXLAN, snapshot/restore,
 golden images (`recipes/*.yaml`), volume drivers (dir/block/quota), jailer,
 Prometheus metrics, `vm attach` console, node drain/activate, secret/config
-*injection* into the guest, and a sysvinit/systemd-aware boot path.
+*injection* into the guest, and a sysvinit/systemd-aware boot path. Live
+migration (`vm migrate`) is built but unreleased, so it is in the delivery table
+below rather than in this list.
 
-## Delivery status (2026-10-30)
+## Delivery status (2026-10-31)
 
 Tier 1 status (`v0.12.0` is the latest tagged release):
 
@@ -40,7 +42,7 @@ Tier 1 status (`v0.12.0` is the latest tagged release):
 | #47 resource QoS | Done | balloon, cpuset, hugepages, NUMA placement |
 | #48 overlay networks | Done | `network create/rm`, per-network bridges and VXLAN |
 | #45 observability depth | **Done** | #88 in-guest per-task metrics, #89 cross-node logs, #91 optional OTel tracing |
-| #46 live migration | **Open** | — |
+| #46 live migration | **Done, unreleased** | `vm migrate` + `POST /v1/migrations` (see the unreleased table below) |
 
 Automated e2e on a real cluster lives in `test-automation/multinode/cluster-lab.sh`:
 `ingress` covers #35/#36 (fan-out, failover, UDP, cleanup) and `three-tier`
@@ -53,11 +55,28 @@ release yet:
 | # | Status | Where it lives |
 |---|--------|----------------|
 | #49 autoscaling / placement | **Done, unreleased** | `--autoscale` policy labels (`pkg/types/autoscale.go`), decision engine (`pkg/autoscaler`), manager loop (`cmd/swarmd-firecracker/autoscaler.go`), unschedulable-placement diagnostics (`cmd/swarmcracker/unschedulable.go`) |
+| #46 live migration | **Done, unreleased** | `vm migrate` + `POST /v1/migrations`: a SwarmKit replacement carrying a snapshot artifact, one replica per service |
+
+#46's numbers, so far as they are measured: the spike put the naive path — source
+paused across the dump, the transfer and the load — at **≈13 s** of guest-visible
+downtime for a 512 MiB guest with a 100 MiB disk, dominated by the memory
+transfer (8–10 s). The shipped move is not that path: the source resumes after
+the dump and keeps serving while the artifact crosses, so for a guest of that
+size ≈13 s is an upper bound rather than the feature's cost, and each move
+reports the downtime the manager itself observed (`downtimeMs`, one-second
+poll). The re-anneal after the move exists because the spike measured
+**15.9–16.4 s** of peer unreachability without it and **<400 ms** once the stale
+neighbour/FDB entry was flushed. The sub-second target (dirty-page tracking,
+iterative diff snapshots, UFFD resume) is **slice 12 and is not built**; no
+figure from that path is claimed here.
 
 Known, documented deviations:
 
 - A published port requires an explicit host port; ephemeral allocation is not
   supported (`reference/cli.md`).
+- Live migration moves one replica of a `replicated` service; volumes and every
+  network attachment after the first stay behind, and the target must match the
+  source's CPU model and Firecracker version (`guides/migration.md`).
 - An ingress VIP is reachable on manager and worker nodes through the node-local
   routing table, but the implementation is L4 only and has no sticky sessions
   (`guides/networking.md`).
@@ -115,7 +134,7 @@ The architectural decision behind #35/#36 is recorded in
 
 | # | Feature |
 |---|---------|
-| [#46](https://github.com/restuhaqza/SwarmCracker/issues/46) | Live migration of running microVMs across nodes (Firecracker snapshot + UFFD) — the standout feature versus firecracker-containerd |
+| [#46](https://github.com/restuhaqza/SwarmCracker/issues/46) | Live migration of running microVMs across nodes — **slice 11 delivered** (one replica of a `replicated` service moves to another node, and the source keeps serving through the transfer); slice 12 (dirty-page tracking, iterative diffs, UFFD resume, sub-second) — the standout feature versus firecracker-containerd |
 | [#47](https://github.com/restuhaqza/SwarmCracker/issues/47) | Resource QoS — memory balloon, CPU pinning/NUMA, hugepages, cgroup v2 |
 | [#48](https://github.com/restuhaqza/SwarmCracker/issues/48) | User-defined overlay networks and segmentation (`network create/rm`, service → network attach) |
 | [#49](https://github.com/restuhaqza/SwarmCracker/issues/49) | Autoscaling and placement intelligence |

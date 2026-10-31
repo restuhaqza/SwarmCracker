@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -119,7 +118,8 @@ func TestConfigureVM_ConfiguresVsockDevice(t *testing.T) {
 
 	udsPath, ok := payload["uds_path"].(string)
 	require.True(t, ok, "PUT /vsock must carry a uds_path")
-	assert.Equal(t, strings.TrimSuffix(socketPath, ".sock")+".vsock", udsPath)
+	assert.Equal(t, filepath.Join(tmpDir, "task-vsock.vsock"), udsPath,
+		"the muxer sits beside the API socket with the vsock extension")
 	assert.True(t, filepath.IsAbs(udsPath), "uds_path must be absolute")
 }
 

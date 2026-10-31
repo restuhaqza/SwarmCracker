@@ -57,7 +57,7 @@ func (c *Controller) startHealthMonitor() {
 		start = time.Now()
 	}
 	interval := healthcheckProbeInterval(h)
-	udsPath := vsockUDSPath(c.socketPath)
+	udsPath := c.guestVsockPath()
 	cmd := strings.Join(argv, " ")
 
 	go func() {
@@ -110,13 +110,28 @@ func (c *Controller) monitorHealth(
 			// terminal classification: record the crash here, before the kill,
 			// so the failure signal survives even if the wait that observes the
 			// exit is cancelled by a concurrent desired-state update.
-			c.recordTerminalCrash(c.healthServiceName(), "unhealthy")
+			//
+			// Only a VM this executor counted as started has a terminal event to
+			// record. A restored task's VM is running before this executor's own
+			// start ran and was never counted, so recording its stop would drive
+			// vms_running negative — the same guard Shutdown and Terminate apply.
+			if c.started {
+				c.recordTerminalCrash(c.healthServiceName(), "unhealthy")
+			}
 			c.logger.Warn().
 				Str("command", cmd).
 				Str("output", output).
 				Msg("Task became unhealthy; stopping VM so SwarmKit reschedules it")
-			if err := c.vmmMgr.ForceStop(ctx, c.convertTask()); err != nil {
-				c.logger.Error().Err(err).Msg("Failed to stop unhealthy VM")
+			// A VM this node restored from a migration belongs to pkg/snapshot, not
+			// the VMM manager (see Controller.Shutdown), so the record decides how it
+			// is stopped: ForceStop would kill nothing and leave the unhealthy VM
+			// serving, which is the one thing a health verdict exists to prevent.
+			if restored, err := c.stopRestoredVM(); err != nil {
+				c.logger.Error().Err(err).Msg("Failed to stop unhealthy restored VM")
+			} else if !restored {
+				if err := c.vmmMgr.ForceStop(ctx, c.convertTask()); err != nil {
+					c.logger.Error().Err(err).Msg("Failed to stop unhealthy VM")
+				}
 			}
 			return
 		default:
