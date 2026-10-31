@@ -718,7 +718,14 @@ type Controller struct {
 	mu         sync.Mutex
 	prepared   bool
 	started    bool
-	startTime  time.Time // tracks when Start was called, used for boot duration metric
+	// preparedForRestore records that Prepare skipped the work only a boot needs — the
+	// image pull (or the golden copy) and the TAP device — because a pending-restore
+	// directive was waiting for this task's service. Start reads it: if the directive
+	// is gone by then, there is no VM to boot, so the task fails with a sentence that
+	// says the artifact is no longer available instead of booting a VM with no rootfs
+	// and no TAP.
+	preparedForRestore bool
+	startTime          time.Time // tracks when Start was called, used for boot duration metric
 
 	// Terminal classification. Exactly one terminal event (a stop or a crash)
 	// is recorded per VM lifetime, even though Wait, Shutdown, Terminate,
@@ -925,6 +932,9 @@ func (c *Controller) Prepare(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
+	// Start reads this: a task prepared for a restore, whose directive is gone by the
+	// time it starts, has no image and no TAP to boot with (see startFromArtifact).
+	c.preparedForRestore = pending
 	if !pending {
 		// A service may boot a prebuilt golden image instead of building a rootfs
 		// from an OCI image (label "swarmcracker.golden").
@@ -1705,7 +1715,15 @@ func (c *Controller) stopRestoredVM() (handled bool, err error) {
 			"task %q runs a restored VM, but this executor was given no way to stop it; the record is kept", taskID)
 	}
 
-	if err := snapshot.StopAndForgetRestoredVM(c.restoredStopper, c.restored, record); err != nil {
+	stopErr := snapshot.StopAndForgetRestoredVM(c.restoredStopper, c.restored, record)
+	if stopErr != nil {
+		// Whoever has to clean this up needs the whole bill, not the first line: the
+		// record is only the pointer, and the two resources it names — the TAP device
+		// and the disk — are deleted only after it is gone, so a stop that fails (a
+		// record delete that keeps failing included) holds them as well.
+		err := fmt.Errorf(
+			"%w; the TAP device %s and the disk %s are held with it, so teardown deletes neither",
+			stopErr, record.TapName, record.DiskPath)
 		c.logger.Error().Err(err).Msg("Failed to stop the restored VM")
 		return true, err
 	}

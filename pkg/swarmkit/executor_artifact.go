@@ -167,6 +167,12 @@ var (
 // The prepared task is read once under the lock and everything below works from that
 // copy: the restore can take seconds, and holding c.mu for it would stall the teardown
 // SwarmKit may be sending at the same time.
+//
+// The directive is peeked before it is taken, because Prepare has already acted on it:
+// a directive that was there when the task was prepared and is gone now means this task
+// has no prepared image and no TAP device, so a boot is not an option — the task fails
+// and SwarmKit's retry prepares from scratch. Booting is the answer only when the peek
+// found nothing, which is the task this executor always started.
 func (c *Controller) startFromArtifact(ctx context.Context) (restored bool, err error) {
 	cfg := c.migration
 	if cfg == nil || cfg.Pending == nil {
@@ -174,7 +180,7 @@ func (c *Controller) startFromArtifact(ctx context.Context) (restored bool, err 
 	}
 
 	c.mu.Lock()
-	prepared, started, task := c.prepared, c.started, c.internalTask
+	prepared, started, task, preparedForRestore := c.prepared, c.started, c.internalTask, c.preparedForRestore
 	c.mu.Unlock()
 
 	// Only a prepared task that has not started may claim a directive: consuming one
@@ -189,32 +195,81 @@ func (c *Controller) startFromArtifact(ctx context.Context) (restored bool, err 
 		return false, nil
 	}
 
+	peeked, present, err := cfg.Pending.Peek(serviceID, cfg.Root)
+	if err != nil {
+		// A directive this build cannot answer for is not a licence to boot: the
+		// source node's VM is still running, so a cold boot here would put two VMs
+		// behind one service. The store keeps the record, and the task fails so
+		// SwarmKit retries it - an operator can repair it in between.
+		return false, fmt.Errorf(
+			"task %q: the pending-restore directive for service %q cannot be used, so the staged artifact cannot be restored: %w",
+			task.ID, serviceID, err)
+	}
+	if present {
+		return c.claimPreparedArtifact(ctx, cfg, task, serviceID, peeked.ArtifactID)
+	}
+
+	return c.startAfterEmptyPeek(ctx, cfg, task, serviceID, preparedForRestore)
+}
+
+// claimPreparedArtifact takes the directive the peek promised and restores it. A take
+// that finds nothing (the directive expired or a sibling task of the service claimed it
+// between the two reads) or that fails is not a cold boot: the VM this task would boot
+// was never prepared, so the only honest answer is to fail the task and let the retry
+// prepare a fresh one.
+func (c *Controller) claimPreparedArtifact(
+	ctx context.Context, cfg *MigrationRestoreConfig, task *types.Task, serviceID, artifactID string,
+) (bool, error) {
 	directive, found, err := cfg.Pending.Take(serviceID, cfg.Root)
 	switch {
 	case err != nil:
-		// A directive this build cannot use is not a licence to boot: the source
-		// node's VM is still running, so a cold boot here would put two VMs behind
-		// one service. The store put the directive back, and the task fails so that
-		// SwarmKit retries it - the retry reads the same directive, and an operator
-		// can repair it in between.
+		return false, artifactUnavailable(task.ID, serviceID, artifactID, err)
+	case !found:
+		return false, artifactUnavailable(task.ID, serviceID, artifactID, nil)
+	}
+	return c.restoreFromDirective(ctx, cfg, task, directive)
+}
+
+// startAfterEmptyPeek is the start of a task whose service had nothing prepared when
+// Start looked: the ordinary case, and the one that must stay byte-identical to the boot
+// this executor always performed. The take still runs — it is the lookup the hot path has
+// always made, and a directive that landed between the peek and the take is this task's
+// to restore rather than something to boot beside.
+//
+// preparedForRestore is the one exception: if Prepare skipped the image pull and the TAP
+// device because a directive was waiting, then a directive that is gone now leaves this
+// task with nothing to boot, so it fails with the sentence SwarmKit's retry can act on.
+func (c *Controller) startAfterEmptyPeek(
+	ctx context.Context, cfg *MigrationRestoreConfig, task *types.Task, serviceID string, preparedForRestore bool,
+) (bool, error) {
+	directive, found, err := cfg.Pending.Take(serviceID, cfg.Root)
+	switch {
+	case err != nil:
+		if preparedForRestore {
+			return false, artifactUnavailable(task.ID, serviceID, directive.ArtifactID, err)
+		}
 		return false, fmt.Errorf(
 			"task %q: the pending-restore directive for service %q cannot be used, so the staged artifact cannot be restored: %w",
 			task.ID, serviceID, err)
 	case !found:
 		if directive.Expired {
-			// The one unusable directive that boots cold, because the store has
-			// already deleted it: a migration whose artifact expired is abandoned,
-			// and an operator has to be able to see that it happened.
-			c.logger.Warn().
-				Str("service_id", serviceID).
-				Str("artifact_id", directive.ArtifactID).
-				Time("created_at", directive.CreatedAt).
-				Str("ttl", scruntime.DefaultPendingRestoreTTL.String()).
-				Msg("Ignoring a pending-restore directive older than its TTL; starting a fresh VM")
+			c.warnExpiredDirective(serviceID, directive)
+		}
+		if preparedForRestore {
+			// Prepare pulled no image and created no TAP for this task, because the
+			// directive said a restore would supply both. It is gone, so there is no
+			// VM to boot.
+			return false, artifactUnavailable(task.ID, serviceID, directive.ArtifactID, nil)
 		}
 		return false, nil
 	}
+	return c.restoreFromDirective(ctx, cfg, task, directive)
+}
 
+// restoreFromDirective restores the consumed directive's artifact as this task's VM.
+func (c *Controller) restoreFromDirective(
+	ctx context.Context, cfg *MigrationRestoreConfig, task *types.Task, directive scruntime.PendingRestore,
+) (bool, error) {
 	// The restore is published before anything is created, so a teardown that arrives
 	// during it can see it and wait for it (executor_restore_lifecycle.go). A teardown
 	// that already arrived refuses the restore here: the VM must not be loaded for a
@@ -232,6 +287,40 @@ func (c *Controller) startFromArtifact(ctx context.Context) (restored bool, err 
 		return false, c.keepDirective(cfg, directive, err)
 	}
 	return true, nil
+}
+
+// warnExpiredDirective says that a directive was dropped for its age, naming what was
+// ignored: a migration whose artifact expired is abandoned, and an operator has to be
+// able to see that it happened.
+func (c *Controller) warnExpiredDirective(serviceID string, directive scruntime.PendingRestore) {
+	c.logger.Warn().
+		Str("service_id", serviceID).
+		Str("artifact_id", directive.ArtifactID).
+		Time("created_at", directive.CreatedAt).
+		Str("ttl", scruntime.DefaultPendingRestoreTTL.String()).
+		Msg("Ignoring a pending-restore directive older than its TTL; starting a fresh VM")
+}
+
+// artifactUnavailable is the failure a start reports when the artifact Prepare prepared
+// this task for is no longer its to claim. Booting is the one answer that must not be
+// given: Prepare skipped the image pull and the TAP device for a VM that was to come from
+// the artifact, so a boot now fails with a missing rootfs or TAP and tells nobody why.
+//
+// SwarmKit's retry is the way out, and the sentence says so: with no directive left to
+// peek, Prepare does the full preparation and the task boots a fresh VM.
+func artifactUnavailable(taskID, serviceID, artifactID string, cause error) error {
+	prepared := fmt.Sprintf("the prepared artifact for service %q", serviceID)
+	if artifactID != "" {
+		prepared = fmt.Sprintf("the prepared artifact %s for service %q", artifactID, serviceID)
+	}
+
+	sentence := fmt.Sprintf(
+		"task %q: the pending-restore directive cannot be used, so %s is no longer available to this task; the retry starts a fresh VM",
+		taskID, prepared)
+	if cause != nil {
+		return fmt.Errorf("%s: %w", sentence, cause)
+	}
+	return errors.New(sentence)
 }
 
 // pendingRestoreFor reports whether a usable directive is waiting for this task's
