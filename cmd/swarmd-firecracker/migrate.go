@@ -747,19 +747,34 @@ func (c *migrationCoordinator) keepAfterReplace(ctx context.Context, plan migrat
 	}
 }
 
-// cleanup is the success path's last step. Restoring the placement and discarding
-// the artifact are best effort: the migration already moved, and a cleanup that
-// failed must not turn a moved service into an error the caller would retry. What
-// could not be done is summarised in the phase's message - the failure's code and
-// reason, never its text, which names this node's or a peer's paths - and logged in
-// full here.
+// cleanup is the success path's last step. Restoring the placement, discarding the
+// source's export and removing the spool entry are best effort: the migration
+// already landed, and a cleanup that failed must not turn a moved service into an
+// error the caller would retry. What could not be done is summarised in the phase's
+// message - the failure's code and reason, never its text, which names this node's
+// or a peer's paths - and logged in full here.
+//
+// What the cleanup undoes is decided by whether the update landed, not by the
+// outcome. state.placement is exactly that: it is set once the service carries the
+// pinned constraint, including the committed-but-unacknowledged case. The source's
+// export goes as soon as the update has landed, because from that instant the retry
+// is the replacement's own restore and it reads the TARGET's staged artifact - the
+// bytes prepare staged there, named by the manifest prepare wrote beside them - not
+// the source's directory. Keeping the export "for the retry" leaked it: on the lab a
+// pending move left 600 MB of guest memory per attempt on the source node, 1.8 GB
+// after three, while every retry restored from the target and none read them. A
+// move that never landed keeps the export, which is then the only copy - the abandon
+// path owns that case and discards it itself.
 //
 // A moved guest is also re-annealed here: every node - the target included, because
 // it still holds the stale port entry - forgets the guest's neighbour and FDB
-// entries, so its next frame re-learns the MAC on the node that now runs it. It
-// runs before the artifact is discarded (a retry may still need the bytes if the
-// answer is lost) and after the placement is restored, and it shares this step's
-// one-minute budget so the caller's wait keeps the bound the route documents.
+// entries, so its next frame re-learns the MAC on the node that now runs it. A
+// pending move re-anneals nothing: where the old task never went away the guest is
+// still on the source, and stripping the entries that point there would only add to
+// the outage; where it did, there is no running guest on the target to learn yet. The
+// re-anneal runs before the export is discarded (a retry may still need its bytes if
+// this call's answer is lost) and after the placement is restored, and it shares this
+// step's one-minute budget so the caller's wait keeps the bound the route documents.
 func (c *migrationCoordinator) cleanup(
 	ctx context.Context, plan migrationPlan, state *migrationState, outcome string,
 ) string {
@@ -767,23 +782,24 @@ func (c *migrationCoordinator) cleanup(
 	defer cancel()
 
 	var problems []string
+	// Everything below is this call's to undo only because the update landed: the
+	// replacement is that service's task and the target holds the retry's copy. A
+	// move that never landed has none of it - and its export, the only copy, was
+	// already discarded by abandon.
 	if state.placement {
 		if err := c.restorePlacement(cleanupCtx, plan, state); err != nil {
 			log.G(ctx).WithError(err).Warn("Migration: cleanup could not restore the service placement")
 			problems = append(problems, "restore the service placement: "+publicFailure(err))
 		}
-	}
-	if outcome == v1.MigrationOutcomeMoved {
-		// The guest is up on the target, so every node must forget where it used to
-		// be - the target included, because its overlay port still maps the guest's
-		// MAC to the source's VTEP. A node that fails is logged and does not join
-		// problems: the move happened, and reachability recovers on the next ARP
-		// either way.
-		c.reannealPeers(cleanupCtx, plan, state)
-		// The replacement consumed the directive when it started, and the target
-		// has the bytes. The source's artifact is the only thing left, and it is
-		// also the retry's - a restore that fails after this call reads the staged
-		// copy, not this one, so the source's copy is no longer needed.
+		if outcome == v1.MigrationOutcomeMoved {
+			// The guest is up on the target, so every node must forget where it used
+			// to be - the target included, because its overlay port still maps the
+			// guest's MAC to the source's VTEP. A node that fails is logged and does
+			// not join problems: the move happened, and reachability recovers on the
+			// next ARP either way. It runs before the export is discarded, because a
+			// retry may still need those bytes if this call's answer is lost.
+			c.reannealPeers(cleanupCtx, plan, state)
+		}
 		if err := c.broker.Discard(cleanupCtx, plan.task.NodeID, plan.task, state.artifact); err != nil {
 			log.G(ctx).WithError(err).Warn("Migration: cleanup could not discard the artifact on the source")
 			problems = append(problems, "discard the artifact on the source: "+publicFailure(err))

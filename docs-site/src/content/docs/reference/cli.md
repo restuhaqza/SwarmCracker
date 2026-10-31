@@ -727,8 +727,8 @@ The command refuses, before posting, a task that is not running, a task with no
 service, a service that is not `replicated`, a service with a replica count other
 than one, and a target that is the task's own node; the manager refuses the same
 cases again, plus a target that is not ready and active. `pending` is a report,
-not an error: the service was replaced and SwarmKit's retry restores the artifact
-until the target's directive expires. See [Live Migration](/guides/migration/)
+not an error: the service was replaced and SwarmKit's retry restores from the
+target's staged artifact until the target's directive expires. See [Live Migration](/guides/migration/)
 for what a move keeps, the consistency window, and what to do about a pending or
 failed move.
 

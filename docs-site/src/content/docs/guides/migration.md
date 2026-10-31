@@ -34,8 +34,10 @@ One request drives the whole move, in this order:
    replacement there.
 6. **verify** — the manager waits for a task of that service on the target to
    report running, and measures the gap.
-7. **cleanup** — the placement is restored, every node is told to forget the
-   guest's old network location, and the source's artifact is discarded.
+7. **cleanup** — the placement is restored, a `moved` guest's peers are told to
+   forget its old network location, and the source's export is discarded. The
+   export goes whenever the update landed — `pending` included — because the
+   retry reads the target's staged copy.
 
 The call is synchronous. It is bounded by three minutes, plus up to one minute
 of cleanup the manager performs before it answers, so a client deadline shorter
@@ -218,6 +220,13 @@ failed: the service update landed, the target keeps the directive it recorded,
 and the artifact is still staged there. SwarmKit's own retry of the replacement
 restores from that artifact, so a slow start finishes on its own.
 
+What the retry reads is the **target's** staged copy: the bytes the move staged
+there, named by the manifest that was written beside them. The source's export is
+not part of it, so the manager discards the source's export as soon as the service
+update has landed — a `pending` move included. A `pending` move therefore leaves
+nothing on the source node; the only copy that survives is the one on the target
+that the retry may still consume, and the directive that expires below.
+
 A `pending` move also skips the re-anneal: the manager only re-anneals when the
 outcome is `moved`. So the guest that eventually starts keeps its old network
 location in every node's bridge and neighbour table, and its peers can be
@@ -238,7 +247,8 @@ workload comes back, without the state the move was carrying.
 
 There is no command that cancels a migration. The staged copies on the target
 stay where they are; the directive's ten minutes decide whether a retry still
-uses them, and the replacement itself is SwarmKit's to finish.
+uses them, and the replacement itself is SwarmKit's to finish. The source's export
+is already gone: it is discarded as soon as the update lands, whatever the outcome.
 
 ## When a move fails
 
@@ -252,9 +262,9 @@ step that failed, so you know whether anything was replaced:
   spool entry and restores any placement it changed, then answers the error. The
   move can be retried.
 - **After the update landed** (verify) the service already points at the target.
-  The manager restores the placement but keeps the target's directive and the
-  artifact, because they are what the retry restores from; a replacement that
-  failed outright answers `503 unavailable` with `details.reason:
+  The manager restores the placement and keeps the target's directive and the
+  staged artifact, because they are the copy the retry restores from; a
+  replacement that failed outright answers `503 unavailable` with `details.reason:
   "replacement_failed"`.
 
 The split is whether the update landed, not which step failed: a `replace` that
@@ -276,9 +286,11 @@ on the target, plus the directive that names them, are kept so the replacement's
 retry restores the same VM state instead of booting a cold one.
 
 That rollback has an end. The directive expires ten minutes after it was
-prepared; a retry after that boots a fresh VM. A successful move deletes the
-artifact on the source and the staged copy is removed by the restore that
-consumed it, so nothing is kept after a move completes.
+prepared; a retry after that boots a fresh VM. A move whose service update landed
+— `moved`, and `pending` too — deletes the artifact on the source as part of its
+cleanup, because the retry reads the target's staged copy and never the source's;
+that staged copy is removed by the restore that consumed it, so nothing is kept
+after a move lands.
 
 To put the workload back on the source node, move it there with another
 `vm migrate` once the source node is healthy again. That is a new move with its

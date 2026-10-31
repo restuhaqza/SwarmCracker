@@ -967,7 +967,12 @@ func TestMigrateCleanupMessageCarriesNoNodePath(t *testing.T) {
 		"the summary is the classification, not the text")
 }
 
-func TestMigrateVerifyTimeoutKeepsTheRetryAndRestoresPlacement(t *testing.T) {
+// TestMigrateVerifyTimeoutDiscardsTheSourceExport pins the leak the lab found: a
+// service update that landed is not undone by the verify's deadline, so the source's
+// export is no longer the retry's copy - the target's staged artifact is, and
+// prepare left the manifest beside it. Keeping the export "for the retry" left 600 MB
+// per attempt on the source node forever; three attempts left 1.8 GB.
+func TestMigrateVerifyTimeoutDiscardsTheSourceExport(t *testing.T) {
 	h := newMigrationHarness(t)
 	h.coordinator.verifyTimeout = 20 * time.Millisecond
 	h.coordinator.pollInterval = time.Millisecond
@@ -975,6 +980,12 @@ func TestMigrateVerifyTimeoutKeepsTheRetryAndRestoresPlacement(t *testing.T) {
 	h.client.taskSteps = [][]v1.Task{
 		{{ID: "web-1", ServiceID: "svc-1", NodeID: "node-a", State: "running"}},
 	}
+	// A guest and a node list the re-anneal would fan out over, so "no re-anneal"
+	// below is the pending outcome's decision rather than an empty attachment list.
+	h.client.attachments = []client.TaskAttachment{{
+		NetworkID: "net-flat", Addresses: []string{"10.0.1.7/24"},
+	}}
+	h.client.nodes = []v1.Node{{ID: "node-a"}, {ID: "node-b"}}
 
 	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
 	require.NoError(t, err)
@@ -982,23 +993,60 @@ func TestMigrateVerifyTimeoutKeepsTheRetryAndRestoresPlacement(t *testing.T) {
 	assert.Equal(t, v1.MigrationOutcomePending, doc.Outcome)
 	assert.Zero(t, doc.DowntimeMs, "an unmeasured downtime is not zero seconds")
 
-	var verify v1.MigrationPhase
+	var verify, cleanup v1.MigrationPhase
 	for _, phase := range doc.Phases {
-		if phase.Name == v1.MigrationPhaseVerify {
+		switch phase.Name {
+		case v1.MigrationPhaseVerify:
 			verify = phase
+		case v1.MigrationPhaseCleanup:
+			cleanup = phase
 		}
 	}
 	require.Equal(t, v1.MigrationPhaseVerify, verify.Name)
 	assert.Equal(t, v1.MigrationPhasePending, verify.Result)
 	assert.Equal(t, reasonOldTaskRunning, verify.Message)
 
-	// The placement is restored, but the artifact and the directive stay: the
-	// replaced service's retry restores from them.
+	// The discard is a cleanup step that succeeded, so the phase says so with no
+	// problem to report.
+	require.Equal(t, v1.MigrationPhaseCleanup, cleanup.Name)
+	assert.Equal(t, v1.MigrationPhaseOK, cleanup.Result)
+	assert.Empty(t, cleanup.Message)
+
+	// The placement is restored and the source's export goes, because the update
+	// landed. The target keeps the directive and the bytes: those are what the
+	// replacement's own retry restores from.
 	require.Len(t, h.client.updates, 2)
 	assert.Equal(t, []string{"node.labels.zone==a"}, h.client.updates[1].constraints)
-	assert.Empty(t, h.broker.discards)
-	assert.Empty(t, h.broker.unprepares)
+	assert.Equal(t, []string{migrationTestArtifactID}, h.broker.discards,
+		"the source's export is discarded once the update landed, whatever the outcome")
+	assert.Equal(t, []string{"svc-1/" + migrationTestArtifactID}, h.broker.prepares, "the target recorded the directive")
+	assert.Empty(t, h.broker.unprepares, "the directive is kept for the replacement's retry")
+	assert.Empty(t, h.broker.reanneals, "a pending move re-anneals nothing: the guest may not be up on the target")
 	requireSpoolEmpty(t, h, "the spool holds nothing once every file has crossed")
+}
+
+// TestMigrateFailureBeforeTheUpdateDiscardsTheExportOnce pins the other half of the
+// rule: a failure before the update landed is the abandon's, and the cleanup never
+// runs, so the export - the only copy - is discarded exactly once. The count is the
+// assertion, not the absence of an error: a second discard would mean the cleanup
+// treated an artifact the abandon had already given up on as its own, and a zero
+// would mean the export leaked.
+func TestMigrateFailureBeforeTheUpdateDiscardsTheExportOnce(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.broker.prepareErr = output.NewError(output.CodeUnavailable, "the target node is unreachable")
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, v1.MigrationPhasePrepare, typed.Details["phase"])
+
+	assert.Empty(t, h.client.updates, "the update never landed")
+	require.Len(t, h.broker.discards, 1, "the export is discarded once, by the abandon")
+	assert.Equal(t, migrationTestArtifactID, h.broker.discards[0])
+	assert.Equal(t, 1, countCalls(h.log.snapshot(), "discard:node-a:"+migrationTestArtifactID),
+		"no second discard follows the abandon's")
+	requireSpoolEmpty(t, h)
 }
 
 func TestMigrateVerifyReportsAReplacementThatNeverRuns(t *testing.T) {
@@ -1292,6 +1340,19 @@ func TestGuestTargets(t *testing.T) {
 			assert.Equal(t, tc.want, guestTargets(tc.attachments, "web-1"))
 		})
 	}
+}
+
+// countCalls reports how many times the log holds one exact call: the failures
+// whose cleanup must not repeat a node-side delete assert the count, not just that
+// the delete happened.
+func countCalls(calls []string, want string) int {
+	count := 0
+	for _, call := range calls {
+		if call == want {
+			count++
+		}
+	}
+	return count
 }
 
 // indexOfCall returns the position of one logged call, or -1.
