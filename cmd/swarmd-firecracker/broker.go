@@ -10,6 +10,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/urfave/cli/v2"
 )
 
@@ -58,6 +59,15 @@ type brokerRuntime struct {
 	// ever named by a request.
 	bridgeName string
 	vxlanPeers []string
+	// subnet is this node's flat L2 subnet. The re-anneal gives it to
+	// network.AttachmentBridgeName so a network carved from the flat segment (the
+	// ingress network is, by design) keeps its attachments on bridgeName.
+	subnet string
+	// networkByID resolves a network ID to the network this node has materialised,
+	// which is how the re-anneal derives the bridge a moved guest's attachment was
+	// on. Nil means only bridgeName is derivable, which is right for the flat
+	// segment and wrong for a user-defined network.
+	networkByID func(networkID string) (*types.Network, bool)
 	// rootfsDir is the executor's rootfs directory, recorded on a snapshot so
 	// restore can tell a missing task disk from a corrupt snapshot.
 	rootfsDir string
@@ -131,6 +141,7 @@ func brokerRuntimeFrom(ctx *cli.Context) brokerRuntime {
 		migrationStagingDir: ctx.String("migration-staging-dir"),
 		rootfsDir:           ctx.String("rootfs-dir"),
 		bridgeName:          ctx.String("bridge-name"),
+		subnet:              ctx.String("subnet"),
 		vxlanPeers:          parseCommaSeparated(ctx.String("vxlan-peers")),
 		taskAlive:           taskSocketAlive,
 	}
@@ -265,9 +276,13 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 		RootfsDir:   cfg.rootfsDir,
 		Pending:     pending,
 		// The re-anneal acts on this node's own L2 segment, so it is given this
-		// node's bridge and peers rather than reading them from a request.
-		BridgeName: cfg.bridgeName,
-		VXLANPeers: cfg.vxlanPeers,
+		// node's bridge and peers rather than reading them from a request. A guest
+		// on a user-defined network was never on that bridge, so the network lookup
+		// and the flat subnet are what let the node derive the right device.
+		BridgeName:  cfg.bridgeName,
+		Subnet:      cfg.subnet,
+		NetworkByID: cfg.networkByID,
+		VXLANPeers:  cfg.vxlanPeers,
 	}
 	handlers := []struct {
 		op string

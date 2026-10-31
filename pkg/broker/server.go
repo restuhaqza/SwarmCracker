@@ -224,9 +224,9 @@ var operationSpecs = map[string]operationSpec{
 	// removes it (with the snapshot behind it) when nobody needs it, prepare records
 	// the target's directive to restore it, and unprepare removes that directive when
 	// the migration is abandoned. export is task-scoped, because it snapshots the
-	// task it names. The other five are artifact-scoped: they answer from the
-	// artifact and service IDs they carry, and they must keep working once SwarmKit
-	// has replaced the task, or for a task this node never ran - the tasks a
+	// task it names. The other six are artifact-scoped: they answer from the
+	// artifact, service and network IDs they carry, and they must keep working once
+	// SwarmKit has replaced the task, or for a task this node never ran - the tasks a
 	// migration prepares for and abandons need not exist at all.
 	MigrationExportOperation:    {methods: []string{http.MethodPost}},
 	MigrationFileOperation:      {methods: []string{http.MethodGet}, artifactScoped: true},
@@ -243,10 +243,11 @@ var operationSpecs = map[string]operationSpec{
 // route resolves the task, then dispatches to the registered operation.
 //
 // Only an operation that acts on a task resolves one. An artifact-scoped
-// operation (file, stage, discard, prepare, unprepare) is answered from the IDs it
-// names: the task in the path is part of the one route shape every node operation
-// has, and it is not looked up, because the task a migration is moving does not exist
-// on either node at the moment the artifact is moved, removed, or prepared for.
+// operation (file, stage, discard, prepare, unprepare, reanneal) is answered from
+// the IDs it names: the task in the path is part of the one route shape every node
+// operation has, and it is not looked up, because the task a migration is moving does
+// not exist on either node at the moment the artifact is moved, removed, or prepared
+// for.
 func (s *Server) route(w http.ResponseWriter, r *http.Request) {
 	taskID, op, ok := splitTaskPath(r.URL.Path)
 	if !ok {

@@ -17,11 +17,32 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/cni"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/health"
+	"github.com/restuhaqza/swarmcracker/pkg/network"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/urfave/cli/v2"
 )
+
+// networkByIDFrom is the re-anneal's view of this node's networks: the lookup that
+// turns an attachment's network ID into the network this node materialised for it,
+// so the operation can derive the bridge with the same call the restore path makes.
+//
+// A node without a network manager (a test, a daemon whose manager failed to build)
+// returns nil, and the re-anneal then has only the node's own bridge: that is right
+// for the flat segment and honest for a user network, whose stale entry a node that
+// cannot name the bridge must not pretend to have removed.
+func networkByIDFrom(executor *swarmkit.Executor) func(string) (*types.Network, bool) {
+	if executor == nil {
+		return nil
+	}
+	manager, ok := executor.NetworkManager().(*network.NetworkManager)
+	if !ok || manager == nil {
+		return nil
+	}
+	return manager.NetworkByID
+}
 
 // restoredStore opens the node's restored-instance record store under the
 // daemon's state directory. The directory comes from --state-dir, the same value
@@ -349,6 +370,11 @@ func runAgent(ctx *cli.Context) error {
 	// migration, so both the executor's stop and the broker's routes need the same
 	// instance. Only the public snapshot routes stay gated by the flag.
 	brk.snapshotManager = newSnapshotManager(context.Background(), brk)
+	// The re-anneal derives the bridge a moved guest's attachment was on from the
+	// network this node materialised for it, through the node's own network manager:
+	// a peer that never materialised that network has no bridge (and no stale entry)
+	// on it, and one that did answers with the device its TAP actually joined.
+	brk.networkByID = networkByIDFrom(fcExecutor)
 	wireRestoredInstances(fcExecutor, restored, brk.snapshotManager)
 	// A task whose service the manager prepared a directive for restores the staged
 	// artifact instead of booting, through the same manager and the same state

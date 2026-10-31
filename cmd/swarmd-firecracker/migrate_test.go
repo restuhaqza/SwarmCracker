@@ -22,6 +22,7 @@ import (
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/broker"
+	"github.com/restuhaqza/swarmcracker/pkg/client"
 	"github.com/restuhaqza/swarmcracker/pkg/migration"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
@@ -77,11 +78,16 @@ type fakeMigrationClient struct {
 	nodes    []v1.Node
 	nodesErr error
 
-	taskErr    error
-	serviceErr error
-	nodeErr    error
-	tasksErr   error
-	updateErr  error
+	taskErr        error
+	serviceErr     error
+	nodeErr        error
+	tasksErr       error
+	updateErr      error
+	attachmentsErr error
+
+	// attachments is what TaskAttachments answers: one entry per network attachment,
+	// in attachment order.
+	attachments []client.TaskAttachment
 
 	// taskSteps scripts ListServiceTasks: each call consumes one entry, and the
 	// last entry repeats. Nil serves serviceTasks unchanged.
@@ -109,6 +115,19 @@ func (f *fakeMigrationClient) GetTask(_ context.Context, ref string) (v1.Task, e
 		return v1.Task{}, f.taskErr
 	}
 	return f.task, nil
+}
+
+// TaskAttachments is the per-attachment view of the task's addresses: which
+// network each one was allocated on. The re-anneal needs it because a guest on a
+// user-defined network was never on the node's flat bridge.
+func (f *fakeMigrationClient) TaskAttachments(_ context.Context, taskID string) ([]client.TaskAttachment, error) {
+	f.log.add("attachments:%s", taskID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.attachmentsErr != nil {
+		return nil, f.attachmentsErr
+	}
+	return append([]client.TaskAttachment(nil), f.attachments...), nil
 }
 
 func (f *fakeMigrationClient) GetService(_ context.Context, ref string) (v1.Service, error) {
@@ -361,12 +380,13 @@ func (f *fakeMigrationBroker) Unprepare(_ context.Context, nodeID, serviceID, ar
 	return f.unprepareErr
 }
 
-// Reanneal records one peer's re-anneal, in call order with everything else: the
-// point of the call is that it happens after the move and on the right nodes.
-func (f *fakeMigrationBroker) Reanneal(_ context.Context, nodeID, ip, mac string) error {
-	f.log.add("reanneal:%s:%s:%s", nodeID, ip, mac)
+// Reanneal records one node's re-anneal of one attachment, in call order with
+// everything else: the point of the call is that it happens after the move, on every
+// node, and with the network the address belongs to.
+func (f *fakeMigrationBroker) Reanneal(_ context.Context, nodeID, networkID, ip, mac string) error {
+	f.log.add("reanneal:%s:%s:%s:%s", nodeID, networkID, ip, mac)
 	f.mu.Lock()
-	f.reanneals = append(f.reanneals, nodeID+" "+ip+" "+mac)
+	f.reanneals = append(f.reanneals, nodeID+" "+networkID+" "+ip+" "+mac)
 	f.mu.Unlock()
 	return f.reannealErr
 }
@@ -526,6 +546,9 @@ func TestMigrateHappyPath(t *testing.T) {
 		"tasks:svc-1",
 		"service:svc-1",
 		"update:svc-1",
+		// The cleanup reads the moved task's attachments before it can name a bridge;
+		// this harness gives it none, so no node is called.
+		"attachments:web-1",
 		"discard:node-a:" + migrationTestArtifactID,
 	}, h.log.snapshot())
 
@@ -1081,13 +1104,15 @@ func TestMigrateCleanupFailureDoesNotFailAMovedMigration(t *testing.T) {
 		"a cleanup that could not finish is reported, not turned into an error")
 }
 
-// TestMigrateReannealsEveryPeerButTheTarget pins the L2 half of a move: after the
-// guest runs on the target, every other node is told to forget it - the source
-// included, because its bridge learned the MAC too - and the target is not, because
-// it is the node that just learned the guest.
-func TestMigrateReannealsEveryPeerButTheTarget(t *testing.T) {
+// TestMigrateReannealsEveryNode pins the L2 half of a move: after the guest runs on
+// the target, every node is told to forget it - the source included, because its
+// bridge learned the MAC too, and the target included, because its overlay port still
+// maps the guest's MAC to the source's VTEP.
+func TestMigrateReannealsEveryNode(t *testing.T) {
 	h := newMigrationHarness(t)
-	h.client.task.Addresses = []string{"10.0.1.7/24"}
+	h.client.attachments = []client.TaskAttachment{{
+		NetworkID: "net-flat", Network: "ingress", Addresses: []string{"10.0.1.7/24"},
+	}}
 	h.client.nodes = []v1.Node{
 		{ID: "node-a", Hostname: "worker-a"},
 		{ID: "node-b", Hostname: "worker-b"},
@@ -1102,35 +1127,64 @@ func TestMigrateReannealsEveryPeerButTheTarget(t *testing.T) {
 	// source task - not from the host-side TAP device.
 	guestMAC := scruntime.GuestMAC("web-1", 0)
 	assert.Equal(t, []string{
-		"node-a 10.0.1.7 " + guestMAC,
-		"node-c 10.0.1.7 " + guestMAC,
-	}, h.broker.reanneals, "every node except the target is re-annealed")
+		"node-a net-flat 10.0.1.7 " + guestMAC,
+		"node-b net-flat 10.0.1.7 " + guestMAC,
+		"node-c net-flat 10.0.1.7 " + guestMAC,
+	}, h.broker.reanneals, "every node is re-annealed, the target because it holds the stale port entry")
 
 	calls := h.log.snapshot()
-	at := indexOfCall(calls, "reanneal:node-a:10.0.1.7:"+guestMAC)
+	at := indexOfCall(calls, "reanneal:node-a:net-flat:10.0.1.7:"+guestMAC)
 	require.NotEqual(t, -1, at, "the source is re-annealed: %v", calls)
-	assert.Less(t, indexOfCall(calls, "nodes"), at, "the peer list is read before the first peer")
+	assert.Less(t, indexOfCall(calls, "nodes"), at, "the node list is read before the first node")
 	assert.Greater(t, at, indexOfCall(calls, "update:svc-1"),
-		"the peers are only told once the replacement is the service's task")
+		"the nodes are only told once the replacement is the service's task")
 	assert.Less(t, at, indexOfCall(calls, "discard:node-a:"+migrationTestArtifactID),
-		"the peers are re-annealed while the source still holds the artifact")
+		"the nodes are re-annealed while the source still holds the artifact")
 }
 
-// TestMigrateReannealFailureKeepsTheMovedOutcome pins the best-effort rule: a peer
+// TestMigrateReannealsEveryAttachmentAddress pins the per-attachment fan-out: a guest
+// with two networks holds one address on each, and each is forgotten on the bridge of
+// its own network - one request per attachment address, with the MAC of that
+// attachment's interface index.
+func TestMigrateReannealsEveryAttachmentAddress(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.attachments = []client.TaskAttachment{
+		{NetworkID: "net-flat", Addresses: []string{"10.0.1.7/24"}},
+		{NetworkID: "net-user-1234", Addresses: []string{"10.77.0.9/24", "fd00::9/64"}},
+	}
+	h.client.nodes = []v1.Node{{ID: "node-a"}, {ID: "node-b"}}
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
+
+	first := scruntime.GuestMAC("web-1", 0)
+	second := scruntime.GuestMAC("web-1", 1)
+	assert.Equal(t, []string{
+		"node-a net-flat 10.0.1.7 " + first,
+		"node-a net-user-1234 10.77.0.9 " + second,
+		"node-b net-flat 10.0.1.7 " + first,
+		"node-b net-user-1234 10.77.0.9 " + second,
+	}, h.broker.reanneals, "one request per IPv4 attachment address, on every node")
+}
+
+// TestMigrateReannealFailureKeepsTheMovedOutcome pins the best-effort rule: a node
 // that cannot forget the guest is logged, and the migration still reports moved,
 // because the guest is up on its target and reachability recovers on the next ARP.
 func TestMigrateReannealFailureKeepsTheMovedOutcome(t *testing.T) {
 	h := newMigrationHarness(t)
-	h.client.task.Addresses = []string{"10.0.1.7/24"}
+	h.client.attachments = []client.TaskAttachment{{
+		NetworkID: "net-flat", Addresses: []string{"10.0.1.7/24"},
+	}}
 	h.client.nodes = []v1.Node{{ID: "node-a"}, {ID: "node-b"}, {ID: "node-c"}}
-	h.broker.reannealErr = output.NewError(output.CodeUnavailable,
+	h.broker.reannealErr = output.NewError(output.CodeInternal,
 		"this node could not forget the moved guest").
 		WithDetails(map[string]any{"reason": "reanneal_failed"})
 
 	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
 	require.NoError(t, err)
 	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
-	assert.Len(t, h.broker.reanneals, 2, "a failing peer does not stop the next one")
+	assert.Len(t, h.broker.reanneals, 3, "a failing node does not stop the next one")
 
 	var cleanup v1.MigrationPhase
 	for _, phase := range doc.Phases {
@@ -1140,13 +1194,13 @@ func TestMigrateReannealFailureKeepsTheMovedOutcome(t *testing.T) {
 	}
 	assert.Equal(t, v1.MigrationPhaseOK, cleanup.Result)
 	assert.NotContains(t, cleanup.Message, "re-anneal",
-		"the report is about the move; a peer's stale entry is not a cleanup step that failed")
+		"the report is about the move; a node's stale entry is not a cleanup step that failed")
 }
 
-// TestMigrateSkipsTheReannealWithoutAGuestAddress pins the one case a re-anneal
-// cannot happen: a task the cluster reports no address for has no guest a peer
-// could have cached, so the node list is not even read.
-func TestMigrateSkipsTheReannealWithoutAGuestAddress(t *testing.T) {
+// TestMigrateSkipsTheReannealWithoutAnAttachment pins the case a re-anneal cannot
+// happen: a task the cluster reports no attachment for has no address a node could
+// have cached, so the node list is not even read.
+func TestMigrateSkipsTheReannealWithoutAnAttachment(t *testing.T) {
 	h := newMigrationHarness(t)
 	h.client.nodes = []v1.Node{{ID: "node-a"}, {ID: "node-b"}}
 
@@ -1155,29 +1209,81 @@ func TestMigrateSkipsTheReannealWithoutAGuestAddress(t *testing.T) {
 	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
 	assert.Empty(t, h.broker.reanneals)
 	assert.Equal(t, -1, indexOfCall(h.log.snapshot(), "nodes"),
-		"a task with no address needs no peer list")
+		"a task with no attachment needs no node list")
 }
 
-// TestGuestAddress pins what a re-anneal sends as the guest's address: the task's
-// first allocated address without its prefix length, and nothing at all for a task
-// the cluster cannot say an address for.
-func TestGuestAddress(t *testing.T) {
+// TestMigrateSkipsTheReannealWhenTheAttachmentsCannotBeRead pins the honest answer to
+// a read failure: without the network ID there is no bridge to name, and guessing the
+// node's own bridge is exactly the failure this operation exists to avoid - so no node
+// is called and the migration still answers moved.
+func TestMigrateSkipsTheReannealWhenTheAttachmentsCannotBeRead(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.attachmentsErr = output.NewError(output.CodeUnavailable, "the control socket is gone")
+	h.client.nodes = []v1.Node{{ID: "node-a"}, {ID: "node-b"}}
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
+	assert.Empty(t, h.broker.reanneals, "a guest with no known attachment is not forgotten on a guessed bridge")
+}
+
+// TestGuestTargets pins what a re-anneal sends: one target per IPv4 address of every
+// attachment, with the attachment's network (never a device) and the MAC of that
+// interface index. An IPv6 address is skipped - a re-anneal deletes IPv4 neighbour and
+// FDB state - and so is an attachment the cluster did not resolve a network for.
+func TestGuestTargets(t *testing.T) {
+	first := scruntime.GuestMAC("web-1", 0)
+	second := scruntime.GuestMAC("web-1", 1)
+
 	cases := []struct {
-		name      string
-		addresses []string
-		want      string
+		name        string
+		attachments []client.TaskAttachment
+		want        []reannealTarget
 	}{
-		{name: "prefix stripped", addresses: []string{"10.0.1.7/24"}, want: "10.0.1.7"},
-		{name: "bare address", addresses: []string{"10.0.1.7"}, want: "10.0.1.7"},
-		{name: "first attachment wins", addresses: []string{"10.0.1.7/24", "10.0.2.7/24"}, want: "10.0.1.7"},
-		{name: "no address", addresses: nil, want: ""},
-		{name: "not an address", addresses: []string{"not-an-ip"}, want: ""},
-		{name: "empty", addresses: []string{""}, want: ""},
+		{
+			name:        "prefix stripped",
+			attachments: []client.TaskAttachment{{NetworkID: "net-1", Addresses: []string{"10.0.1.7/24"}}},
+			want:        []reannealTarget{{networkID: "net-1", ip: "10.0.1.7", mac: first}},
+		},
+		{
+			name:        "bare address",
+			attachments: []client.TaskAttachment{{NetworkID: "net-1", Addresses: []string{"10.0.1.7"}}},
+			want:        []reannealTarget{{networkID: "net-1", ip: "10.0.1.7", mac: first}},
+		},
+		{
+			name: "every attachment, in order, with its own MAC",
+			attachments: []client.TaskAttachment{
+				{NetworkID: "net-1", Addresses: []string{"10.0.1.7/24"}},
+				{NetworkID: "net-2", Addresses: []string{"10.0.2.7/24"}},
+			},
+			want: []reannealTarget{
+				{networkID: "net-1", ip: "10.0.1.7", mac: first},
+				{networkID: "net-2", ip: "10.0.2.7", mac: second},
+			},
+		},
+		{
+			name: "ipv6 and unparsable addresses are skipped",
+			attachments: []client.TaskAttachment{{
+				NetworkID: "net-1",
+				Addresses: []string{"fd00::7/64", "not-an-ip", "10.0.1.7/24"},
+			}},
+			want: []reannealTarget{{networkID: "net-1", ip: "10.0.1.7", mac: first}},
+		},
+		{
+			name:        "an unresolved network is skipped",
+			attachments: []client.TaskAttachment{{Addresses: []string{"10.0.1.7/24"}}},
+			want:        nil,
+		},
+		{
+			name:        "no attachment",
+			attachments: nil,
+			want:        nil,
+		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, guestAddress(v1.Task{Addresses: tc.addresses}))
+			assert.Equal(t, tc.want, guestTargets(tc.attachments, "web-1"))
 		})
 	}
 }

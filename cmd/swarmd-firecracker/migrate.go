@@ -13,8 +13,8 @@ package main
 //	prepare   the target records the directive that makes its next task restore
 //	replace   the service gets a placement constraint pinning it to the target
 //	verify    wait for a task of that service on the target to report running
-//	cleanup   restore the placement, make the target's peers forget the moved
-//	          guest, discard the artifact, drop the spool entry
+//	cleanup   restore the placement, make every node forget the moved guest,
+//	          discard the artifact, drop the spool entry
 //
 // The manager is the only party both nodes can reach, so it is the relay, and it
 // is a control plane, so it never holds a whole file: pkg/migration's spool is a
@@ -139,9 +139,10 @@ var migrationTaskStatesGone = map[string]struct{}{
 }
 
 // migrationClient is the slice of *client.Client this file reads and writes: a
-// task and its service, the target node, the service's tasks while verifying, the
-// one service update that pins and unpins the placement, and the node list the
-// leadership gate reads.
+// task and its service, the task's network attachments (which addresses sit on
+// which network, for the re-anneal), the target node, the service's tasks while
+// verifying, the one service update that pins and unpins the placement, and the
+// node list the leadership gate reads.
 type migrationClient interface {
 	GetTask(ctx context.Context, ref string) (v1.Task, error)
 	GetService(ctx context.Context, ref string) (v1.Service, error)
@@ -149,6 +150,10 @@ type migrationClient interface {
 	GetNode(ctx context.Context, ref string) (v1.Node, error)
 	ListNodes(ctx context.Context) ([]v1.Node, error)
 	UpdateService(ctx context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Service, error)
+	// TaskAttachments pairs a task's addresses with the network each was allocated
+	// on. The v1 task document flattens that pairing, and a re-anneal without it
+	// would delete on a bridge the guest never used.
+	TaskAttachments(ctx context.Context, taskID string) ([]client.TaskAttachment, error)
 }
 
 // migrationBroker is the broker manager's migration transport, as this file uses
@@ -165,10 +170,12 @@ type migrationBroker interface {
 	// directive is keyed by service, and another manager may have prepared the
 	// service since.
 	Unprepare(ctx context.Context, nodeID, serviceID, artifactID string) error
-	// Reanneal makes one peer forget the moved guest, so its next frame re-learns
-	// the guest's MAC on the target. It is best effort: a peer that fails is
-	// logged, never a reason to report the move as anything but moved.
-	Reanneal(ctx context.Context, nodeID, ip, mac string) error
+	// Reanneal makes one node forget the moved guest on one attachment, so its next
+	// frame re-learns the guest's MAC on the target. networkID names the attachment
+	// rather than a device: the node derives the bridge that network is on. It is
+	// best effort: a peer that fails is logged, never a reason to report the move as
+	// anything but moved.
+	Reanneal(ctx context.Context, nodeID, networkID, ip, mac string) error
 }
 
 // migrationCoordinator runs one migration at a time per service. Its fields are
@@ -744,12 +751,12 @@ func (c *migrationCoordinator) keepAfterReplace(ctx context.Context, plan migrat
 // reason, never its text, which names this node's or a peer's paths - and logged in
 // full here.
 //
-// A moved guest is also re-annealed here: every peer except the target forgets the
-// guest's neighbour and FDB entries, so its next frame re-learns the MAC on the
-// node that now runs it. It runs before the artifact is discarded (a retry may
-// still need the bytes if the answer is lost) and after the placement is restored,
-// and it shares this step's one-minute budget so the caller's wait keeps the bound
-// the route documents.
+// A moved guest is also re-annealed here: every node - the target included, because
+// it still holds the stale port entry - forgets the guest's neighbour and FDB
+// entries, so its next frame re-learns the MAC on the node that now runs it. It
+// runs before the artifact is discarded (a retry may still need the bytes if the
+// answer is lost) and after the placement is restored, and it shares this step's
+// one-minute budget so the caller's wait keeps the bound the route documents.
 func (c *migrationCoordinator) cleanup(
 	ctx context.Context, plan migrationPlan, state *migrationState, outcome string,
 ) string {
@@ -764,9 +771,11 @@ func (c *migrationCoordinator) cleanup(
 		}
 	}
 	if outcome == v1.MigrationOutcomeMoved {
-		// The guest is up on the target, so every other node must forget where it
-		// used to be. A peer that fails is logged and does not join problems: the
-		// move happened, and reachability recovers on the next ARP either way.
+		// The guest is up on the target, so every node must forget where it used to
+		// be - the target included, because its overlay port still maps the guest's
+		// MAC to the source's VTEP. A node that fails is logged and does not join
+		// problems: the move happened, and reachability recovers on the next ARP
+		// either way.
 		c.reannealPeers(cleanupCtx, plan, state)
 		// The replacement consumed the directive when it started, and the target
 		// has the bytes. The source's artifact is the only thing left, and it is
@@ -784,31 +793,46 @@ func (c *migrationCoordinator) cleanup(
 	return strings.Join(problems, "; ")
 }
 
-// reannealPeers tells every node except the target to forget the guest the move
-// just relocated.
+// reannealPeers tells every node to forget the guest the move just relocated.
 //
 // A moved guest keeps its MAC (it is the same VM, restored from its own memory
-// image), so a peer's bridge still has an FDB entry pointing the guest's MAC at
-// the old node's VTEP, and its neighbour table still has the guest's address
-// behind that MAC. Both age out eventually; until they do, every frame for the
-// guest crosses the overlay to the node that no longer has it. Deleting the two
-// entries makes the peer ask again, and the answer now comes from the target.
+// image), so a node's bridge still has an FDB entry pointing the guest's MAC at the
+// old node's VTEP, and its neighbour table still has the guest's address behind that
+// MAC. Both age out eventually; until they do, every frame for the guest crosses the
+// overlay to the node that no longer has it. Deleting the entries makes the node ask
+// again, and the answer now comes from the target.
 //
-// The guest's address is the one the old task was allocated (its first network
-// attachment), and its MAC is derived from the artifact's source task - the VM's
-// own identity, which the snapshot recorded and the guest keeps. Nothing is read
-// from a device: the host-side TAP's MAC is not the guest's.
+// The target is included, not skipped: it is the node holding the stale port entry
+// this operation exists for - its bridge learned the guest's MAC on the overlay port
+// before the VM arrived and still points that entry at the source's VTEP, so only
+// deleting it there makes the target's own bridge send the guest's frames to its
+// local TAP.
 //
-// The target is skipped (it is the one node that has just learned the guest), and
-// every failure is logged per node. A cluster that cannot list its nodes is
-// logged once and the migration still answers moved.
+// One request per IPv4 address - not one request carrying a list - because the
+// attachment is what decides the bridge and the address is what decides the neighbour
+// entry: one request per (attachment, address) keeps the two together, and a node that
+// fails one still forgets the others.
+//
+// The guest's address comes from the old task's attachments and its MAC from the
+// artifact's source task - the VM's own identity, which the snapshot recorded and
+// the guest keeps, per interface index. Nothing is read from a device: the
+// host-side TAP's MAC is not the guest's.
+//
+// Every failure is logged per node and attachment. A cluster that cannot list its
+// nodes, or a task whose attachments cannot be read, is logged once and the
+// migration still answers moved: the guest is up, and reachability recovers on the
+// next ARP either way.
 func (c *migrationCoordinator) reannealPeers(ctx context.Context, plan migrationPlan, state *migrationState) {
-	ip := guestAddress(plan.task)
-	if ip == "" {
-		log.G(ctx).Debug("Migration: the moved task carries no address, so its peers have no guest to forget")
+	targets, err := c.reannealTargets(ctx, plan.task, state.artifact.SourceTaskID)
+	if err != nil {
+		log.G(ctx).WithError(err).Warn(
+			"Migration: the moved task's network attachments could not be read, so no node was told to forget the guest")
 		return
 	}
-	mac := scruntime.GuestMAC(state.artifact.SourceTaskID, 0)
+	if len(targets) == 0 {
+		log.G(ctx).Debug("Migration: the moved task carries no IPv4 attachment, so no node has a guest to forget")
+		return
+	}
 
 	nodes, err := c.client.ListNodes(ctx)
 	if err != nil {
@@ -817,34 +841,78 @@ func (c *migrationCoordinator) reannealPeers(ctx context.Context, plan migration
 	}
 
 	for _, node := range nodes {
-		if node.ID == plan.target.ID {
-			continue
-		}
-		if err := c.broker.Reanneal(ctx, node.ID, ip, mac); err != nil {
-			log.G(ctx).WithError(err).Warnf(
-				"Migration: node %q could not forget the moved guest %s (%s); it recovers on its next ARP",
-				node.ID, ip, mac)
+		for _, target := range targets {
+			if err := c.broker.Reanneal(ctx, node.ID, target.networkID, target.ip, target.mac); err != nil {
+				log.G(ctx).WithError(err).Warnf(
+					"Migration: node %q could not forget the moved guest %s (%s) on network %s; it recovers on its next ARP",
+					node.ID, target.ip, target.mac, target.networkID)
+			}
 		}
 	}
 }
 
-// guestAddress returns the address a task's guest holds, without its prefix
-// length: the first address of the task's first attachment, which is the address
-// the guest was given and the one its peers cached. It returns "" for a task the
-// cluster reports no address for, which is what keeps a re-anneal from sending an
-// empty address to every peer.
-func guestAddress(task v1.Task) string {
-	if len(task.Addresses) == 0 {
+// reannealTarget is one address of a moved guest, on the attachment that carried it.
+type reannealTarget struct {
+	// networkID is the attachment's network, which is what each node turns into the
+	// bridge the guest was on.
+	networkID string
+	ip        string
+	mac       string
+}
+
+// reannealTargets reads the task's attachments and returns one target per IPv4
+// address, in attachment order. It reports the read's error rather than guessing:
+// without a network ID there is no bridge to forget, and deleting on the node's own
+// bridge instead is the failure this operation exists to avoid.
+func (c *migrationCoordinator) reannealTargets(
+	ctx context.Context, task v1.Task, sourceTaskID string,
+) ([]reannealTarget, error) {
+	attachments, err := c.client.TaskAttachments(ctx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	return guestTargets(attachments, sourceTaskID), nil
+}
+
+// guestTargets is the pure half: which addresses a moved guest holds and the MAC
+// each one's interface has. The MAC's index is the attachment index, because that
+// is the interface index the VM was configured with (runtime.GuestMAC is the same
+// rule the boot path uses).
+func guestTargets(attachments []client.TaskAttachment, sourceTaskID string) []reannealTarget {
+	var targets []reannealTarget
+	for index, attachment := range attachments {
+		if strings.TrimSpace(attachment.NetworkID) == "" {
+			continue
+		}
+		mac := scruntime.GuestMAC(sourceTaskID, index)
+		for _, address := range attachment.Addresses {
+			ip := ipv4Host(address)
+			if ip == "" {
+				continue
+			}
+			targets = append(targets, reannealTarget{
+				networkID: strings.TrimSpace(attachment.NetworkID),
+				ip:        ip,
+				mac:       mac,
+			})
+		}
+	}
+	return targets
+}
+
+// ipv4Host returns the bare address of one allocated CIDR, or "" when it is not an
+// IPv4 one. A re-anneal deletes IPv4 neighbour and FDB state; an IPv6 attachment
+// has no entry there, so it is skipped rather than sent as a value every node would
+// refuse.
+func ipv4Host(address string) string {
+	host, _, found := strings.Cut(strings.TrimSpace(address), "/")
+	if !found {
+		host = strings.TrimSpace(address)
+	}
+	if host == "" || net.ParseIP(host) == nil || strings.Contains(host, ":") {
 		return ""
 	}
-	address := strings.TrimSpace(task.Addresses[0])
-	if host, _, found := strings.Cut(address, "/"); found {
-		address = host
-	}
-	if net.ParseIP(address) == nil {
-		return ""
-	}
-	return address
+	return host
 }
 
 // abandon undoes what the flow did before the service update landed: the target's

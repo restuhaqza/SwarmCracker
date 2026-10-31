@@ -1,10 +1,11 @@
 package broker
 
 // The re-anneal is the only migration operation that runs commands on a node, so
-// its tests are about the exact commands and the two answers that are not
-// failures: an entry that was already gone, and a flood entry that already
-// exists. Everything else - the bridge, the overlay interface name, the peers -
-// is this node's own configuration, and no test lets a request name it.
+// its tests are about the exact commands and the answers that are not failures: an
+// entry that was already gone, a flood entry that already exists, and a node that
+// runs no overlay at all. Everything else - the bridge, the overlay interface name,
+// the peers - is this node's own configuration or derived from the attachment's
+// network ID, and no test lets a request name a device.
 
 import (
 	"context"
@@ -18,6 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 )
 
 // nodeCommand is one iproute2 command a re-anneal ran.
@@ -63,18 +65,28 @@ func recordNodeCommands(
 }
 
 // reannealBody is the document the manager sends.
-func reannealBody(t *testing.T, ip, mac string) []byte {
+func reannealBody(t *testing.T, networkID, ip, mac string) []byte {
 	t.Helper()
-	body, err := json.Marshal(migrationReannealRequest{IP: ip, MAC: mac})
+	body, err := json.Marshal(migrationReannealRequest{NetworkID: networkID, IP: ip, MAC: mac})
 	require.NoError(t, err)
 	return body
 }
 
-// TestReannealForgetsTheGuestAndKeepsTheFlood pins the three steps and the device
-// each names: the neighbour and FDB entries on the bridge this node runs the
-// guest on, then the all-zero flood entry per peer on the overlay interface the
-// bridge derives.
-func TestReannealForgetsTheGuestAndKeepsTheFlood(t *testing.T) {
+// reannealCommands renders what ran, for a whole-slice assertion.
+func reannealCommands(calls *[]nodeCommand) []string {
+	got := make([]string, 0, len(*calls))
+	for _, call := range *calls {
+		got = append(got, call.String())
+	}
+	return got
+}
+
+// TestReannealForgetsTheGuestOnTheOverlayPort pins the steps and the device each
+// names: the neighbour entry and the guest's MAC on the *overlay port* (a bridge FDB
+// entry belongs to the port that learned it, so naming the bridge device would
+// delete the bridge's own entry and leave the one pointing at the old node), the
+// bridge's own entry as an extra, then the all-zero flood entry per peer.
+func TestReannealForgetsTheGuestOnTheOverlayPort(t *testing.T) {
 	calls := recordNodeCommands(t, nil)
 
 	handler := NewMigrationReannealHandler(MigrationHandlerConfig{
@@ -84,29 +96,121 @@ func TestReannealForgetsTheGuestAndKeepsTheFlood(t *testing.T) {
 
 	rec := serveMigration(t, handler, Task{}, http.MethodPost,
 		"/v1/tasks/pending-restore/migration/reanneal",
-		reannealBody(t, "10.0.1.7", "AA:FC:11:22:33:44"))
+		reannealBody(t, "net-flat", "10.0.1.7", "AA:FC:11:22:33:44"))
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
 	want := []string{
 		"ip neigh del 10.0.1.7 dev swarm-br0",
+		// The entry that black-holed the guest: its MAC on the overlay port.
+		"bridge fdb del aa:fc:11:22:33:44 dev swarm-br0-vxlan",
 		// The MAC is normalized: the manager sends back what the node accepted,
 		// and the bridge FDB is keyed by the lowercase form.
 		"bridge fdb del aa:fc:11:22:33:44 dev swarm-br0",
 		"bridge fdb append 00:00:00:00:00:00 dev swarm-br0-vxlan dst 192.168.56.12 self permanent",
 		"bridge fdb append 00:00:00:00:00:00 dev swarm-br0-vxlan dst 192.168.56.13 self permanent",
 	}
-	got := make([]string, 0, len(*calls))
-	for _, call := range *calls {
-		got = append(got, call.String())
-	}
-	assert.Equal(t, want, got)
+	assert.Equal(t, want, reannealCommands(calls))
 }
 
-// TestReannealTreatsAMissingEntryAsSuccess pins the rule the brief asks for: a
-// peer that never learned the guest has nothing to forget, so iproute2's "no such
-// file or directory" is the same answer as a successful delete - and the flood
-// entries are still re-added, because that is the half that makes the next ARP
-// reach the new node.
+// TestReannealUsesTheAttachmentNetworksBridge pins the C2 rule: a guest attached to
+// a user-defined network was never on the node's flat bridge, so the request's
+// network ID is resolved here and the bridge is derived by the same call the restore
+// path makes (pkg/network's AttachmentBridgeName). Every command then names that
+// bridge, including its overlay interface.
+func TestReannealUsesTheAttachmentNetworksBridge(t *testing.T) {
+	calls := recordNodeCommands(t, nil)
+
+	// A user-defined overlay network: AttachmentBridgeName derives "br-<id[:12]>",
+	// and the overlay interface of a 15-byte bridge name is the kernel-safe digest
+	// form (a 15-byte name plus "-vxlan" exceeds IFNAMSIZ).
+	userNetwork := &types.Network{
+		ID:   "net-0123456789abcdef",
+		Spec: types.NetworkSpec{Driver: "overlay", Subnet: "10.77.0.0/24"},
+	}
+	handler := NewMigrationReannealHandler(MigrationHandlerConfig{
+		BridgeName: "swarm-br0",
+		Subnet:     "10.0.1.0/24",
+		NetworkByID: func(networkID string) (*types.Network, bool) {
+			if networkID == userNetwork.ID {
+				return userNetwork, true
+			}
+			return nil, false
+		},
+	})
+
+	rec := serveMigration(t, handler, Task{}, http.MethodPost,
+		"/v1/tasks/pending-restore/migration/reanneal",
+		reannealBody(t, userNetwork.ID, "10.77.0.9", "aa:fc:11:22:33:44"))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	assert.Equal(t, []string{
+		"ip neigh del 10.77.0.9 dev br-net-01234567",
+		"bridge fdb del aa:fc:11:22:33:44 dev vx-82a4b27136fd",
+		"bridge fdb del aa:fc:11:22:33:44 dev br-net-01234567",
+	}, reannealCommands(calls), "the attachment's network decides the device, not --bridge-name")
+}
+
+// TestReannealUsesANetworkRecordedBridge pins the other half of the derivation: a
+// network whose driver config names its bridge is forgotten from that bridge, which
+// is where its TAPs actually joined.
+func TestReannealUsesANetworkRecordedBridge(t *testing.T) {
+	calls := recordNodeCommands(t, nil)
+
+	handler := NewMigrationReannealHandler(MigrationHandlerConfig{
+		BridgeName: "swarm-br0",
+		NetworkByID: func(string) (*types.Network, bool) {
+			return &types.Network{
+				ID: "net-backend",
+				Spec: types.NetworkSpec{
+					Driver:       "bridge",
+					Subnet:       "10.88.0.0/24",
+					DriverConfig: &types.DriverConfig{Bridge: &types.BridgeConfig{Name: "br-user"}},
+				},
+			}, true
+		},
+	})
+
+	rec := serveMigration(t, handler, Task{}, http.MethodPost,
+		"/v1/tasks/pending-restore/migration/reanneal",
+		reannealBody(t, "net-backend", "10.88.0.4", "aa:fc:11:22:33:44"))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+
+	assert.Equal(t, []string{
+		"ip neigh del 10.88.0.4 dev br-user",
+		"bridge fdb del aa:fc:11:22:33:44 dev br-user-vxlan",
+		"bridge fdb del aa:fc:11:22:33:44 dev br-user",
+	}, reannealCommands(calls))
+}
+
+// TestReannealKeepsTheFlatBridgeForANetworkOfTheFlatSubnet pins the exception: the
+// ingress network is carved from --subnet by design, so its attachments stayed on
+// the node's bridge and a re-anneal must not invent a second device for them.
+func TestReannealKeepsTheFlatBridgeForANetworkOfTheFlatSubnet(t *testing.T) {
+	calls := recordNodeCommands(t, nil)
+
+	handler := NewMigrationReannealHandler(MigrationHandlerConfig{
+		BridgeName: "swarm-br0",
+		Subnet:     "10.0.1.0/24",
+		NetworkByID: func(string) (*types.Network, bool) {
+			return &types.Network{
+				ID:   "net-ingress-0123456789",
+				Spec: types.NetworkSpec{Driver: "overlay", Subnet: "10.0.1.0/24"},
+			}, true
+		},
+	})
+
+	rec := serveMigration(t, handler, Task{}, http.MethodPost,
+		"/v1/tasks/pending-restore/migration/reanneal",
+		reannealBody(t, "net-ingress-0123456789", "10.0.1.7", "aa:fc:11:22:33:44"))
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	assert.Equal(t, "ip neigh del 10.0.1.7 dev swarm-br0", (*calls)[0].String())
+}
+
+// TestReannealTreatsAMissingEntryAsSuccess pins the rule the brief asks for: a peer
+// that never learned the guest has nothing to forget, so iproute2's "no such file or
+// directory" is the same answer as a successful delete - and the flood entries are
+// still re-added, because that is the half that makes the next ARP reach the new
+// node.
 func TestReannealTreatsAMissingEntryAsSuccess(t *testing.T) {
 	recordNodeCommands(t, func(cmd nodeCommand) ([]byte, error) {
 		if cmd.args[0] == "fdb" && cmd.args[1] == "append" {
@@ -122,8 +226,57 @@ func TestReannealTreatsAMissingEntryAsSuccess(t *testing.T) {
 
 	rec := serveMigration(t, handler, Task{}, http.MethodPost,
 		"/v1/tasks/pending-restore/migration/reanneal",
-		reannealBody(t, "10.0.1.7", "aa:fc:11:22:33:44"))
+		reannealBody(t, "net-flat", "10.0.1.7", "aa:fc:11:22:33:44"))
 	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}
+
+// TestReannealTreatsAnAlreadyGoneNeighbourAsSuccess pins iproute2's second answer
+// for an absent entry: a neighbour that is already gone is "No such process".
+func TestReannealTreatsAnAlreadyGoneNeighbourAsSuccess(t *testing.T) {
+	recordNodeCommands(t, func(cmd nodeCommand) ([]byte, error) {
+		if cmd.args[0] == "neigh" {
+			return []byte("RTNETLINK answers: No such process"), fmt.Errorf("exit status 2")
+		}
+		return nil, nil
+	})
+
+	handler := NewMigrationReannealHandler(MigrationHandlerConfig{BridgeName: "swarm-br0"})
+	rec := serveMigration(t, handler, Task{}, http.MethodPost,
+		"/v1/tasks/pending-restore/migration/reanneal",
+		reannealBody(t, "net-flat", "10.0.1.7", "aa:fc:11:22:33:44"))
+	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}
+
+// TestReannealDoesNotReadAnyOtherWordAsAbsent pins the narrowed rule: only
+// iproute2's two answers for an entry that is not there are success. "not found" and
+// "does not exist" also appear in answers about devices and sysctls, and a node that
+// read one of those as absent would report an entry gone that it never touched.
+func TestReannealDoesNotReadAnyOtherWordAsAbsent(t *testing.T) {
+	for _, answer := range []string{
+		"RTNETLINK answers: No such device",
+		"Object \"fdb\" is unknown, try \"bridge help\".",
+		"entry not found",
+		"the bridge does not exist",
+	} {
+		t.Run(answer, func(t *testing.T) {
+			recordNodeCommands(t, func(cmd nodeCommand) ([]byte, error) {
+				if cmd.args[0] == "neigh" {
+					return []byte(answer), fmt.Errorf("exit status 2")
+				}
+				return nil, nil
+			})
+
+			handler := NewMigrationReannealHandler(MigrationHandlerConfig{BridgeName: "swarm-br0"})
+			rec := serveMigration(t, handler, Task{}, http.MethodPost,
+				"/v1/tasks/pending-restore/migration/reanneal",
+				reannealBody(t, "net-flat", "10.0.1.7", "aa:fc:11:22:33:44"))
+
+			require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
+			doc := decodeMigrationError(t, rec)
+			assert.Equal(t, string(output.CodeInternal), doc.Error.Code)
+			assert.Equal(t, "reanneal_failed", doc.Error.Details["reason"])
+		})
+	}
 }
 
 // TestReannealTreatsAnExistingFloodEntryAsSuccess pins idempotence: the flood
@@ -143,13 +296,57 @@ func TestReannealTreatsAnExistingFloodEntryAsSuccess(t *testing.T) {
 
 	rec := serveMigration(t, handler, Task{}, http.MethodPost,
 		"/v1/tasks/pending-restore/migration/reanneal",
-		reannealBody(t, "10.0.1.7", "aa:fc:11:22:33:44"))
+		reannealBody(t, "net-flat", "10.0.1.7", "aa:fc:11:22:33:44"))
 	assert.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 }
 
-// TestReannealReportsANodeThatCannotForget pins the one failure that is reported:
-// a bridge that is not there is this node's misconfiguration, not an entry that
-// was already gone, so the manager is told which peer did not re-anneal.
+// TestReannealToleratesANodeWithoutAnOverlay pins the one device answer that is not
+// an absent entry and is still not a failure: a node that runs no overlay has no
+// overlay interface at all, so it holds no port entry to forget either.
+func TestReannealToleratesANodeWithoutAnOverlay(t *testing.T) {
+	calls := recordNodeCommands(t, func(cmd nodeCommand) ([]byte, error) {
+		if cmd.name == "bridge" && cmd.args[1] == "del" && cmd.args[4] == "swarm-br0-vxlan" {
+			return []byte(`Cannot find device "swarm-br0-vxlan"`), fmt.Errorf("exit status 1")
+		}
+		return nil, nil
+	})
+
+	handler := NewMigrationReannealHandler(MigrationHandlerConfig{BridgeName: "swarm-br0"})
+	rec := serveMigration(t, handler, Task{}, http.MethodPost,
+		"/v1/tasks/pending-restore/migration/reanneal",
+		reannealBody(t, "net-flat", "10.0.1.7", "aa:fc:11:22:33:44"))
+
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	assert.Len(t, *calls, 3, "the neighbour delete, the overlay delete and the extra")
+}
+
+// TestReannealLeavesTheBridgesOwnEntryAlone pins the extra's status: the bridge's
+// own entry is not the one that carried the guest, so a node that cannot delete it
+// has still re-annealed and says so.
+func TestReannealLeavesTheBridgesOwnEntryAlone(t *testing.T) {
+	calls := recordNodeCommands(t, func(cmd nodeCommand) ([]byte, error) {
+		if cmd.name == "bridge" && cmd.args[1] == "del" && cmd.args[4] == "swarm-br0" {
+			return []byte(`Cannot find device "swarm-br0"`), fmt.Errorf("exit status 1")
+		}
+		return nil, nil
+	})
+
+	handler := NewMigrationReannealHandler(MigrationHandlerConfig{
+		BridgeName: "swarm-br0",
+		VXLANPeers: []string{"192.168.56.12"},
+	})
+	rec := serveMigration(t, handler, Task{}, http.MethodPost,
+		"/v1/tasks/pending-restore/migration/reanneal",
+		reannealBody(t, "net-flat", "10.0.1.7", "aa:fc:11:22:33:44"))
+
+	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+	assert.Len(t, *calls, 4, "the flood entry was still re-added")
+}
+
+// TestReannealReportsANodeThatCannotForget pins the one failure that is reported: a
+// bridge that is not there is this node's misconfiguration, not an entry that was
+// already gone, so the manager is told which node did not re-anneal - as an internal
+// failure, because the same command would fail the same way and nothing retries it.
 func TestReannealReportsANodeThatCannotForget(t *testing.T) {
 	calls := recordNodeCommands(t, func(nodeCommand) ([]byte, error) {
 		return []byte(`Cannot find device "swarm-br0"`), fmt.Errorf("exit status 1")
@@ -158,11 +355,11 @@ func TestReannealReportsANodeThatCannotForget(t *testing.T) {
 	handler := NewMigrationReannealHandler(MigrationHandlerConfig{BridgeName: "swarm-br0"})
 	rec := serveMigration(t, handler, Task{}, http.MethodPost,
 		"/v1/tasks/pending-restore/migration/reanneal",
-		reannealBody(t, "10.0.1.7", "aa:fc:11:22:33:44"))
+		reannealBody(t, "net-flat", "10.0.1.7", "aa:fc:11:22:33:44"))
 
-	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	require.Equal(t, http.StatusInternalServerError, rec.Code, rec.Body.String())
 	doc := decodeMigrationError(t, rec)
-	assert.Equal(t, string(output.CodeUnavailable), doc.Error.Code)
+	assert.Equal(t, string(output.CodeInternal), doc.Error.Code)
 	assert.Equal(t, "reanneal_failed", doc.Error.Details["reason"])
 	assert.Len(t, *calls, 1, "the first failed delete stops the rest")
 }
@@ -175,31 +372,34 @@ func TestReannealSkipsTheOverlayWithoutPeers(t *testing.T) {
 	handler := NewMigrationReannealHandler(MigrationHandlerConfig{BridgeName: "swarm-br0"})
 	rec := serveMigration(t, handler, Task{}, http.MethodPost,
 		"/v1/tasks/pending-restore/migration/reanneal",
-		reannealBody(t, "10.0.1.7", "aa:fc:11:22:33:44"))
+		reannealBody(t, "net-flat", "10.0.1.7", "aa:fc:11:22:33:44"))
 
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
-	assert.Len(t, *calls, 2, "the two deletes, and no overlay command")
+	assert.Len(t, *calls, 3, "the neighbour delete, the overlay delete and the extra, and no flood append")
 }
 
-// TestReannealRefusesABadRequest pins the body rules: the document carries the two
-// values the node cannot infer, and anything else - a missing field, an address
-// that is not one, a MAC that is not 48 bits, a field this build does not know -
-// is refused before a command runs.
+// TestReannealRefusesABadRequest pins the body rules: the document carries the three
+// values the node cannot infer, and anything else - a missing field, an address that
+// is not one, a MAC that is not 48 bits, a network ID that is a path, a field this
+// build does not know - is refused before a command runs.
 func TestReannealRefusesABadRequest(t *testing.T) {
 	cases := []struct {
 		name  string
 		body  string
 		param string
 	}{
-		{name: "no body", body: `{}`, param: "ip"},
-		{name: "no mac", body: `{"ip":"10.0.1.7"}`, param: "mac"},
-		{name: "no ip", body: `{"mac":"aa:fc:11:22:33:44"}`, param: "ip"},
-		{name: "not an ip", body: `{"ip":"ten","mac":"aa:fc:11:22:33:44"}`, param: "ip"},
-		{name: "not a 48-bit mac", body: `{"ip":"10.0.1.7","mac":"aa:fc:11:22:33"}`, param: "mac"},
-		{name: "not a mac", body: `{"ip":"10.0.1.7","mac":"nope"}`, param: "mac"},
-		{name: "unknown field", body: `{"ip":"10.0.1.7","mac":"aa:fc:11:22:33:44","bridge":"br0"}`},
+		{name: "no body", body: `{}`, param: "networkId"},
+		{name: "no network", body: `{"ip":"10.0.1.7","mac":"aa:fc:11:22:33:44"}`, param: "networkId"},
+		{name: "a network path", body: `{"networkId":"net/1","ip":"10.0.1.7","mac":"aa:fc:11:22:33:44"}`, param: "networkId"},
+		{name: "a relative network", body: `{"networkId":"..","ip":"10.0.1.7","mac":"aa:fc:11:22:33:44"}`, param: "networkId"},
+		{name: "no mac", body: `{"networkId":"net-1","ip":"10.0.1.7"}`, param: "mac"},
+		{name: "no ip", body: `{"networkId":"net-1","mac":"aa:fc:11:22:33:44"}`, param: "ip"},
+		{name: "not an ip", body: `{"networkId":"net-1","ip":"ten","mac":"aa:fc:11:22:33:44"}`, param: "ip"},
+		{name: "not a 48-bit mac", body: `{"networkId":"net-1","ip":"10.0.1.7","mac":"aa:fc:11:22:33"}`, param: "mac"},
+		{name: "not a mac", body: `{"networkId":"net-1","ip":"10.0.1.7","mac":"nope"}`, param: "mac"},
+		{name: "unknown field", body: `{"networkId":"net-1","ip":"10.0.1.7","mac":"aa:fc:11:22:33:44","bridge":"br0"}`},
 		{name: "not json", body: `[]`},
-		{name: "two documents", body: `{"ip":"10.0.1.7","mac":"aa:fc:11:22:33:44"}{}`},
+		{name: "two documents", body: `{"networkId":"net-1","ip":"10.0.1.7","mac":"aa:fc:11:22:33:44"}{}`},
 	}
 
 	for _, tc := range cases {
@@ -229,7 +429,7 @@ func TestReannealNeedsABridge(t *testing.T) {
 	handler := NewMigrationReannealHandler(MigrationHandlerConfig{})
 	rec := serveMigration(t, handler, Task{}, http.MethodPost,
 		"/v1/tasks/pending-restore/migration/reanneal",
-		reannealBody(t, "10.0.1.7", "aa:fc:11:22:33:44"))
+		reannealBody(t, "net-1", "10.0.1.7", "aa:fc:11:22:33:44"))
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
 	doc := decodeMigrationError(t, rec)
@@ -258,9 +458,32 @@ func TestReannealIsArtifactScoped(t *testing.T) {
 	assert.True(t, spec.allows(http.MethodPost))
 }
 
+// TestMigrationArtifactScopedOperationsAreCounted pins the roster the server's own
+// comment describes: export is the only task-scoped migration operation, and the
+// other six answer from the IDs they carry.
+func TestMigrationArtifactScopedOperationsAreCounted(t *testing.T) {
+	migration := []string{
+		MigrationExportOperation,
+		MigrationFileOperation,
+		MigrationStageOperation,
+		MigrationDiscardOperation,
+		MigrationPrepareOperation,
+		MigrationUnprepareOperation,
+		MigrationReannealOperation,
+	}
+	scoped := 0
+	for _, operation := range migration {
+		if operationSpecs[operation].artifactScoped {
+			scoped++
+		}
+	}
+	assert.Equal(t, 6, scoped, "six migration operations are artifact-scoped")
+	assert.Len(t, migration, 7, "seven migration operations are registered")
+}
+
 // TestManagerReannealSendsTheGuestToThePeer pins the manager side: the node, the
-// guest and the MAC cross as one POST to the placeholder route, and the node's
-// typed refusal is the caller's error.
+// attachment's network, the guest and the MAC cross as one POST to the placeholder
+// route, and the node's typed refusal is the caller's error.
 func TestManagerReannealSendsTheGuestToThePeer(t *testing.T) {
 	pki := newTestPKI(t)
 
@@ -278,17 +501,19 @@ func TestManagerReannealSendsTheGuestToThePeer(t *testing.T) {
 	})
 
 	mgr := newMigrationTestManager(t, pki, baseURL, 0)
-	require.NoError(t, mgr.Reanneal(context.Background(), "node-2", "10.0.1.7", "AA:FC:11:22:33:44"))
+	require.NoError(t, mgr.Reanneal(context.Background(), "node-2", "net-user-1", "10.0.1.7", "AA:FC:11:22:33:44"))
 
 	assert.Equal(t, http.MethodPost, gotMethod)
 	assert.Equal(t, "/v1/tasks/"+migrationDirectiveRouteTask+"/"+MigrationReannealOperation, gotPath)
 	assert.Equal(t, migrationPrepareMediaType, gotContentType)
+	assert.Equal(t, "net-user-1", gotBody.NetworkID)
 	assert.Equal(t, "10.0.1.7", gotBody.IP)
 	assert.Equal(t, "aa:fc:11:22:33:44", gotBody.MAC, "the node accepts the MAC in one form")
 }
 
-// TestManagerReannealRefusesWhatIsNotAGuest pins the two shapes the manager can
-// check before it dials a peer, so a malformed value is not refused eight times.
+// TestManagerReannealRefusesWhatIsNotAGuest pins the three shapes the manager can
+// check before it dials a node, so a malformed value is not refused by every node in
+// turn.
 func TestManagerReannealRefusesWhatIsNotAGuest(t *testing.T) {
 	pki := newTestPKI(t)
 	var called bool
@@ -299,11 +524,13 @@ func TestManagerReannealRefusesWhatIsNotAGuest(t *testing.T) {
 	})
 	mgr := newMigrationTestManager(t, pki, baseURL, 0)
 
-	for _, tc := range []struct{ ip, mac string }{
-		{ip: "ten", mac: "aa:fc:11:22:33:44"},
-		{ip: "10.0.1.7", mac: "aa:fc:11:22:33"},
+	for _, tc := range []struct{ network, ip, mac string }{
+		{network: "", ip: "10.0.1.7", mac: "aa:fc:11:22:33:44"},
+		{network: "net/1", ip: "10.0.1.7", mac: "aa:fc:11:22:33:44"},
+		{network: "net-1", ip: "ten", mac: "aa:fc:11:22:33:44"},
+		{network: "net-1", ip: "10.0.1.7", mac: "aa:fc:11:22:33"},
 	} {
-		err := mgr.Reanneal(context.Background(), "node-2", tc.ip, tc.mac)
+		err := mgr.Reanneal(context.Background(), "node-2", tc.network, tc.ip, tc.mac)
 		var typed *output.Error
 		require.ErrorAs(t, err, &typed)
 		assert.Equal(t, output.CodeInvalid, typed.Code)

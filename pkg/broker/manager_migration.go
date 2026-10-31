@@ -474,8 +474,9 @@ func (m *Manager) Unprepare(ctx context.Context, nodeID, serviceID, artifactID s
 }
 
 // Reanneal makes one node forget what it knew about a guest that has moved: the
-// neighbour entry for the guest's address and the bridge FDB entry for its MAC,
-// after which its next frame re-learns the MAC on the node that now runs it.
+// neighbour entry for the guest's address, the bridge FDB entry that pointed its
+// MAC at the old node, after which its next frame re-learns the MAC on the node
+// that now runs it.
 //
 // It is the one node call a migration makes *after* the move, and it is best
 // effort by contract: the guest is up on its target, and a peer that kept a stale
@@ -489,9 +490,19 @@ func (m *Manager) Unprepare(ctx context.Context, nodeID, serviceID, artifactID s
 // the placeholder segment of the route is not looked up (reanneal is
 // artifact-scoped, like prepare).
 //
-// ip and mac are checked here as well as on the node: a malformed value would be
-// refused by every peer in turn, and the manager knows the shapes.
-func (m *Manager) Reanneal(ctx context.Context, nodeID, ip, mac string) error {
+// networkID names the guest's attachment, not a device: the node derives the
+// bridge that network is materialised on from its own configuration, because a
+// guest on a user-defined network never stood on the node's flat bridge and a
+// manager that sent one bridge name would make every peer forget nothing.
+//
+// The three values are checked here as well as on the node: a malformed one would
+// be refused by every peer in turn, and the manager knows the shapes.
+func (m *Manager) Reanneal(ctx context.Context, nodeID, networkID, ip, mac string) error {
+	if !reannealValidNetworkID(strings.TrimSpace(networkID)) {
+		return output.NewErrorf(output.CodeInvalid,
+			"networkId %q is not a network ID", networkID).
+			WithDetails(map[string]any{"parameter": "networkId"})
+	}
 	if net.ParseIP(strings.TrimSpace(ip)) == nil {
 		return output.NewErrorf(output.CodeInvalid, "ip %q is not an IP address", ip).
 			WithDetails(map[string]any{"parameter": "ip"})
@@ -503,8 +514,9 @@ func (m *Manager) Reanneal(ctx context.Context, nodeID, ip, mac string) error {
 	}
 
 	body, err := json.Marshal(migrationReannealRequest{
-		IP:  strings.TrimSpace(ip),
-		MAC: hardware.String(),
+		NetworkID: strings.TrimSpace(networkID),
+		IP:        strings.TrimSpace(ip),
+		MAC:       hardware.String(),
 	})
 	if err != nil {
 		return output.NewErrorf(output.CodeInternal,
@@ -540,7 +552,8 @@ func (m *Manager) Reanneal(ctx context.Context, nodeID, ip, mac string) error {
 	}
 }
 
-// artifactEntry resolves the manifest entry a transfer names. The name is checked// against the manifest rather than passed through: a name the artifact does not
+// artifactEntry resolves the manifest entry a transfer names. The name is checked
+// against the manifest rather than passed through: a name the artifact does not
 // describe is not a file this migration may move, whichever node asks.
 func artifactEntry(artifact migration.Artifact, name string) (migration.File, error) {
 	if !migration.ValidArtifactID(artifact.ID) {

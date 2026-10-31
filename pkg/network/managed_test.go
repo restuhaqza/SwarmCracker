@@ -346,3 +346,36 @@ func TestAttachmentBridgeName(t *testing.T) {
 		Spec: types.NetworkSpec{Driver: "overlay", Subnet: "10.20.0.0/24"},
 	}))
 }
+
+// TestNetworkByID pins the lookup the migration re-anneal uses: a network this node
+// materialised is answered with the SwarmKit view it was built from, so the caller can
+// derive the bridge with the same AttachmentBridgeName call the boot and restore paths
+// make. A network this node has not materialised answers false - it has no bridge for
+// it, and therefore no stale entry on one.
+func TestNetworkByID(t *testing.T) {
+	backend := &types.Network{
+		ID:   "net-backend1234",
+		Spec: types.NetworkSpec{Driver: "overlay", Subnet: "10.10.0.0/24"},
+	}
+	nm := &NetworkManager{
+		config: types.NetworkConfig{BridgeName: "swarm-br0", Subnet: "192.168.127.0/24"},
+		managedNetworks: map[string]*managedNetwork{
+			"net-backend1234": {id: "net-backend1234", bridge: "sc-net-back", network: backend},
+		},
+	}
+
+	got, ok := nm.NetworkByID("net-backend1234")
+	require.True(t, ok)
+	assert.Same(t, backend, got)
+
+	_, ok = nm.NetworkByID("net-never-seen")
+	assert.False(t, ok, "a network this node never materialised has no bridge here")
+
+	_, ok = nm.NetworkByID("")
+	assert.False(t, ok)
+
+	// And the entry it returns is what derives the device: the overlay rule names the
+	// bridge the network's attachments were on, not the node's flat bridge.
+	assert.Equal(t, "br-net-backend1",
+		AttachmentBridgeName(got, nm.config), "the overlay rule uses the first 12 characters of the ID")
+}

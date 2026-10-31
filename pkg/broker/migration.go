@@ -22,10 +22,10 @@ package broker
 // An artifact is addressed by its own ID. The route still names a task - it is one
 // path shape for every node operation - but only export uses it: export snapshots
 // the task it names, so the server resolves that task and a task this node does not
-// have is a 404. file, stage, discard and prepare never read the task, because the
-// artifact (and the directive that restores it) outlives it: SwarmKit replaces the
-// task as part of the move, and a prepare or a stage on the target happens for a
-// task the target has never run.
+// have is a 404. file, stage, discard, prepare, unprepare and reanneal never read
+// the task, because the artifact (and the directive that restores it) outlives it:
+// SwarmKit replaces the task as part of the move, and a prepare, a stage or a
+// re-anneal on the target happens for a task the target has never run.
 //
 // # One artifact, one directory
 //
@@ -113,9 +113,11 @@ import (
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/migration"
+	"github.com/restuhaqza/swarmcracker/pkg/network"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
+	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
 )
 
@@ -149,11 +151,12 @@ const (
 	// that lost the race must not delete the winner's directive.
 	MigrationUnprepareOperation = "migration/unprepare"
 	// MigrationReannealOperation makes a node forget what it knew about a guest
-	// that has moved: the neighbour entry for its address and the bridge FDB entry
-	// for its MAC. It is a POST because it performs an action on this node rather
-	// than describing one, and it names the task slot in the route without reading
-	// it: after a move the guest runs under another task, and every peer is told
-	// about the guest, not about the task.
+	// that has moved: the neighbour entry for its address and the FDB entry for its
+	// MAC on the overlay port, on the bridge its attachment's network is
+	// materialised on. It is a POST because it performs an action on this node
+	// rather than describing one, and it names the task slot in the route without
+	// reading it: after a move the guest runs under another task, and every peer is
+	// told about the guest, not about the task.
 	//
 	// It is best effort by contract: the guest is already up on its new node, and a
 	// peer that kept a stale entry recovers on its own next ARP. A peer that cannot
@@ -269,7 +272,26 @@ type MigrationHandlerConfig struct {
 	// guest's neighbour and FDB entries from. Empty keeps reanneal registered and
 	// answering a typed 503: a node that was never told which bridge carries the
 	// flat segment cannot forget anything about a guest on it.
+	//
+	// It is only the bridge of the flat segment. A task attached to a user-defined
+	// network ran on that network's own bridge, so the re-anneal derives the bridge
+	// from the attachment's network ID through NetworkByID and pkg/network's
+	// AttachmentBridgeName, exactly as the restore path picks the bridge a restored
+	// task's TAP joins. Deleting on this node's flat bridge instead would forget
+	// nothing, because the guest was never on it.
 	BridgeName string
+	// Subnet is the node's flat L2 subnet (--subnet). AttachmentBridgeName uses it
+	// to recognise a network carved from the flat segment - the ingress network is,
+	// by design - and keep its attachments on BridgeName rather than on a second
+	// gateway for the same range. Empty means the node was never given one.
+	Subnet string
+	// NetworkByID resolves a network ID to the network as this node knows it, so a
+	// user-defined network's attachment is forgotten from the bridge that network
+	// is materialised on here. The node answers nil for a network it has not
+	// materialised (the flat segment, and a user network no local task uses), and
+	// AttachmentBridgeName then answers BridgeName: a node with no bridge for that
+	// network has no stale entry on it either.
+	NetworkByID func(networkID string) (*types.Network, bool)
 	// VXLANPeers is the overlay peer list this node floods to. After the re-anneal
 	// deletes a moved guest's entries, the operation re-adds the all-zero flood
 	// entry for each peer that lost it, so the next frame for that guest still
@@ -1438,13 +1460,22 @@ func (h *migrationUnprepareHandler) serve(_ context.Context, _ Task, w http.Resp
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// migrationReannealRequest is the document reanneal takes: the guest's address and
-// its MAC. Nothing here names a bridge, a TAP device or a peer: those are this
-// node's own configuration, and a request that named them could make a node act
-// on a device that is not its L2 segment.
+// migrationReannealRequest is the document reanneal takes: which attachment of the
+// guest is meant (its network ID), the guest's address on that attachment and the
+// guest's MAC.
+//
+// The network ID is the one attachment fact a request has to carry, because the
+// bridge is a node-local decision: a guest on a user-defined network lived on that
+// network's bridge, not on the node's flat bridge, and only the receiving node can
+// say which device that is (see MigrationHandlerConfig.NetworkByID). It is
+// validated as an opaque ID and never read as a device name. Nothing here names a
+// bridge, a TAP device or a peer: those are this node's own configuration, and a
+// request that named them could make a node act on a link that is not its L2
+// segment.
 type migrationReannealRequest struct {
-	IP  string `json:"ip"`
-	MAC string `json:"mac"`
+	NetworkID string `json:"networkId"`
+	IP        string `json:"ip"`
+	MAC       string `json:"mac"`
 }
 
 // runNodeNetworkCommand runs one iproute2 command on this node and returns its
@@ -1464,15 +1495,16 @@ type migrationReannealHandler struct {
 //
 // The route is artifact-scoped and the task in the path is never read: after a
 // move the guest runs under another task, and every peer is told about the guest
-// (its address and MAC), not about the task that used to own it.
+// (its attachment, its address and MAC), not about the task that used to own it.
 //
-// The three steps are ordered by what a failure costs. Deleting the neighbour
-// entry means this node's next frame to the guest asks L2 again; deleting the
-// FDB entry means the bridge stops sending the guest's frames to the old node's
-// VTEP; re-adding the flood entry means the ARP that follows reaches every node,
-// including the one the guest is now on. The first two are best effort for an
-// absent entry - a peer that never learned the guest has nothing to forget - and
-// the third is idempotent: an entry that is already there is not an error.
+// The steps are ordered by what a failure costs. Deleting the neighbour entry
+// means this node's next frame to the guest asks L2 again; deleting the FDB entry
+// means the bridge stops sending the guest's frames to the old node's VTEP;
+// re-adding the flood entry means the ARP that follows reaches every node,
+// including the one the guest is now on. The neighbour and port-entry deletes are
+// best effort for an entry that was never there - a peer that never learned the
+// guest has nothing to forget - and the flood append is idempotent: an entry that
+// is already there is not an error.
 func (h *migrationReannealHandler) serve(ctx context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
 	if !operationSpecs[MigrationReannealOperation].allows(r.Method) {
 		writeOperationMethodNotAllowed(w, MigrationReannealOperation, r.Method)
@@ -1489,35 +1521,50 @@ func (h *migrationReannealHandler) serve(ctx context.Context, _ Task, w http.Res
 		return
 	}
 
-	if problem := reannealGuest(ctx, h.cfg, request); problem != nil {
-		writeTypedError(w, http.StatusServiceUnavailable, problem)
+	// The device this node acts on is resolved once, from the attachment's network
+	// and this node's own configuration: no part of it comes from the request.
+	bridge := reannealBridge(h.cfg, request.NetworkID)
+
+	if problem := reannealGuest(ctx, h.cfg, request, bridge); problem != nil {
+		// A command that failed on this node is this node's internal problem, not a
+		// "try again later": the same iproute2 call would fail the same way, so
+		// nothing retries it and the manager logs the peer and moves on.
+		writeTypedError(w, http.StatusInternalServerError, problem)
 		return
 	}
 
 	log.Info().
+		Str("networkId", request.NetworkID).
 		Str("ip", request.IP).
 		Str("mac", request.MAC).
-		Str("bridge", h.cfg.BridgeName).
+		Str("bridge", bridge).
 		Msg("Re-annealed a moved guest: this node forgot its neighbour and FDB entries and keeps flooding its overlay peers")
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// decodeReannealRequest reads the re-anneal document, bounded and strict. Both
-// fields are required: an address without a MAC would leave the stale FDB entry,
-// and a MAC without an address would leave the stale neighbour entry.
+// decodeReannealRequest reads the re-anneal document, bounded and strict. Every
+// field is required: an address without a MAC would leave the stale FDB entry, a
+// MAC without an address would leave the stale neighbour entry, and neither
+// without a network ID would forget the wrong bridge.
 func decodeReannealRequest(w http.ResponseWriter, r *http.Request) (migrationReannealRequest, *output.Error) {
 	var request migrationReannealRequest
 
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, migrationReannealDocumentBytes))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&request); err != nil {
-		return request, invalidReannealBody("the request body is not a re-anneal document: want ip and mac")
+		return request, invalidReannealBody("the request body is not a re-anneal document: want networkId, ip and mac")
 	}
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return request, invalidReannealBody("the request body carries more than one document")
 	}
 
+	request.NetworkID = strings.TrimSpace(request.NetworkID)
+	if !reannealValidNetworkID(request.NetworkID) {
+		return request, output.NewErrorf(output.CodeInvalid,
+			"networkId %q is not a network ID: want the attachment's network, as an opaque SwarmKit ID", request.NetworkID).
+			WithDetails(map[string]any{"parameter": "networkId", "reason": "invalid_network_id"})
+	}
 	if net.ParseIP(strings.TrimSpace(request.IP)) == nil {
 		return request, output.NewErrorf(output.CodeInvalid,
 			"ip %q is not an IP address: want the guest address this node cached", request.IP).
@@ -1535,32 +1582,64 @@ func decodeReannealRequest(w http.ResponseWriter, r *http.Request) (migrationRea
 	return request, nil
 }
 
-// reannealGuest runs the three steps on this node. The two deletes tolerate an
+// reannealValidNetworkID reports whether a network ID is an opaque SwarmKit ID: a
+// non-empty value that is not a path, carries no whitespace or control character
+// and is bounded, so it is safe to log, compare and answer a request with - and so
+// it cannot be mistaken for a device name or a path by anything downstream.
+func reannealValidNetworkID(value string) bool {
+	if value == "" || len(value) > maxSnapshotScopeBytes {
+		return false
+	}
+	if value == "." || value == ".." {
+		return false
+	}
+	return !strings.ContainsAny(value, "/\\\x00\n\r \t")
+}
+
+// reannealBridge is the bridge this node carries one attachment on: the bridge the
+// network is materialised on here, derived by the same call the restore path makes
+// for the TAP a restored task joins (pkg/network's AttachmentBridgeName).
+//
+// The lookup answers nil for a network this node has not materialised, and for a
+// network carved from the flat segment, and AttachmentBridgeName then answers this
+// node's own bridge: that is exactly right for both, because neither was ever on
+// another device.
+func reannealBridge(cfg MigrationHandlerConfig, networkID string) string {
+	var attached *types.Network
+	if networkID != "" && cfg.NetworkByID != nil {
+		attached, _ = cfg.NetworkByID(networkID)
+	}
+	return network.AttachmentBridgeName(attached, types.NetworkConfig{
+		BridgeName: cfg.BridgeName,
+		Subnet:     cfg.Subnet,
+	})
+}
+
+// reannealGuest runs this node's steps. The two deletes that matter tolerate an
 // absent entry, because forgetting something twice is still forgetting it; any
 // other failure is reported, because a node that cannot say the stale entry is
-// gone has not re-annealed and the manager must be able to log which peer did
-// not.
-func reannealGuest(ctx context.Context, cfg MigrationHandlerConfig, request migrationReannealRequest) *output.Error {
-	forgets := [][]string{
-		{"neigh", "del", request.IP, "dev", cfg.BridgeName},
-		{"fdb", "del", request.MAC, "dev", cfg.BridgeName},
-	}
-	for _, forget := range forgets {
-		name := "ip"
-		if forget[0] == "fdb" {
-			name = "bridge"
-		}
-		output, err := runNodeNetworkCommand(ctx, name, forget...)
-		if err == nil || reannealEntryAbsent(string(output)) {
-			continue
-		}
-		log.Warn().
-			Err(err).
-			Str("command", name+" "+strings.Join(forget, " ")).
-			Str("output", strings.TrimSpace(string(output))).
-			Msg("Re-anneal could not remove a stale entry")
+// gone has not re-annealed and the manager must be able to log which peer did not.
+func reannealGuest(
+	ctx context.Context, cfg MigrationHandlerConfig, request migrationReannealRequest, bridge string,
+) *output.Error {
+	// The guest's frames stopped following the MAC when the port entry pointed at
+	// the old node's VTEP, so the entry to delete is the one *of the overlay port*:
+	// a bridge FDB entry belongs to the port that learned it, and naming the bridge
+	// device addresses the bridge's own (self) entry, which is not the one that
+	// carries the guest.
+	vxlan := scruntime.VXLANInterfaceName(bridge)
+
+	if !reannealForget(ctx, "ip", "neigh", "del", request.IP, "dev", bridge) {
 		return reannealFailed()
 	}
+	if !reannealForgetOverlay(ctx, request.MAC, vxlan) {
+		return reannealFailed()
+	}
+	// The bridge's own entry is kept as a best-effort extra: a guest whose MAC the
+	// bridge learned locally (a TAP on this node, a frame the bridge flooded to its
+	// own ports) leaves one there too. It is not the entry that black-holes the
+	// guest, so a failure here is logged and the re-anneal carries on.
+	reannealForgetExtra(ctx, "bridge", "fdb", "del", request.MAC, "dev", bridge)
 
 	if len(cfg.VXLANPeers) == 0 {
 		return nil
@@ -1569,7 +1648,6 @@ func reannealGuest(ctx context.Context, cfg MigrationHandlerConfig, request migr
 	// an ARP for a guest nobody has learned yet reach the node that now holds it.
 	// 'append' allows one destination per peer under the same key, and a repeated
 	// append of an entry that exists is answered as a duplicate, which is success.
-	vxlan := scruntime.VXLANInterfaceName(cfg.BridgeName)
 	for _, peer := range cfg.VXLANPeers {
 		output, err := runNodeNetworkCommand(ctx, "bridge", "fdb", "append",
 			"00:00:00:00:00:00", "dev", vxlan, "dst", peer, "self", "permanent")
@@ -1587,21 +1665,79 @@ func reannealGuest(ctx context.Context, cfg MigrationHandlerConfig, request migr
 	return nil
 }
 
+// reannealForget runs one delete and reports whether the entry is gone: a
+// successful delete, or iproute2's answer for an entry that was not there. Any
+// other failure is this node's and stops the re-anneal.
+func reannealForget(ctx context.Context, name string, args ...string) bool {
+	output, err := runNodeNetworkCommand(ctx, name, args...)
+	if err == nil || reannealEntryAbsent(string(output)) {
+		return true
+	}
+	log.Warn().
+		Err(err).
+		Str("command", name+" "+strings.Join(args, " ")).
+		Str("output", strings.TrimSpace(string(output))).
+		Msg("Re-anneal could not remove a stale entry")
+	return false
+}
+
+// reannealForgetOverlay deletes the guest's MAC on the overlay port. It answers
+// the two absent-entry results reannealForget does, and one more: a node that runs
+// no overlay has no overlay interface at all, and a node with no overlay port
+// holds no entry of that port to forget.
+func reannealForgetOverlay(ctx context.Context, mac, vxlan string) bool {
+	output, err := runNodeNetworkCommand(ctx, "bridge", "fdb", "del", mac, "dev", vxlan)
+	if err == nil || reannealEntryAbsent(string(output)) {
+		return true
+	}
+	if reannealOverlayAbsent(string(output), vxlan) {
+		log.Debug().
+			Str("vxlan", vxlan).
+			Msg("Re-anneal found no overlay interface on this node, so there is no port entry to forget")
+		return true
+	}
+	log.Warn().
+		Err(err).
+		Str("command", "bridge fdb del "+mac+" dev "+vxlan).
+		Str("output", strings.TrimSpace(string(output))).
+		Msg("Re-anneal could not remove the guest's overlay FDB entry")
+	return false
+}
+
+// reannealForgetExtra runs the delete whose failure the caller never reports.
+func reannealForgetExtra(ctx context.Context, name string, args ...string) {
+	output, err := runNodeNetworkCommand(ctx, name, args...)
+	if err == nil || reannealEntryAbsent(string(output)) {
+		return
+	}
+	log.Debug().
+		Err(err).
+		Str("command", name+" "+strings.Join(args, " ")).
+		Str("output", strings.TrimSpace(string(output))).
+		Msg("Re-anneal left the bridge's own entry alone; it is not the entry that carried the guest")
+}
+
 // reannealEntryAbsent reports whether a failed delete failed because there was
-// nothing to delete. iproute2 answers "RTNETLINK answers: No such file or
-// directory" for a missing neighbour or FDB entry, and older builds say the same
-// thing in words.
-//
-// "Cannot find device" is deliberately not in this list: a bridge that does not
-// exist is this node's misconfiguration, not an entry that was already gone.
+// nothing to delete. iproute2's two answers for that are "RTNETLINK answers: No
+// such file or directory" (a neighbour or FDB entry that does not exist) and
+// "RTNETLINK answers: No such process" (a neighbour already gone). Those two, and
+// only those two: "not found" and "does not exist" also appear in answers about
+// devices and sysctls, and a node that read one of those as success would report
+// an entry gone that it never touched.
 func reannealEntryAbsent(output string) bool {
 	lowered := strings.ToLower(output)
-	for _, absent := range []string{"no such file", "no such process", "not found", "does not exist"} {
-		if strings.Contains(lowered, absent) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(lowered, "no such file or directory") ||
+		strings.Contains(lowered, "no such process")
+}
+
+// reannealOverlayAbsent reports whether the overlay interface a delete names is not
+// on this node at all. This is not an absent entry and is never read as one: it is
+// the answer a cluster without an overlay gives for the device, and it only ever
+// excuses the overlay delete, which is the only command that names that device.
+func reannealOverlayAbsent(output, vxlan string) bool {
+	lowered := strings.ToLower(output)
+	return strings.Contains(lowered, "cannot find device") &&
+		strings.Contains(lowered, strings.ToLower(vxlan))
 }
 
 // reannealEntryExists reports whether adding a flood entry found it already
@@ -1618,11 +1754,12 @@ func reannealNotConfigured() *output.Error {
 		WithDetails(map[string]any{"reason": "bridge_unconfigured"})
 }
 
-// reannealFailed is the typed 503 for a node whose iproute2 command failed for a
-// reason other than the entry already being gone. The command's own output stays
-// in the log: it names this node's devices.
+// reannealFailed is the typed 500 for a node whose iproute2 command failed for a
+// reason other than the entry already being gone: this node's own networking is
+// what is wrong, so it is internal, not "try again later". The command's own
+// output stays in the log: it names this node's devices.
 func reannealFailed() *output.Error {
-	return output.NewError(output.CodeUnavailable,
+	return output.NewError(output.CodeInternal,
 		"this node could not forget the moved guest").
 		WithDetails(map[string]any{"reason": "reanneal_failed"})
 }
