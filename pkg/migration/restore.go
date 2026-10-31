@@ -204,6 +204,18 @@ type RestoreDeps struct {
 	// read before anything is created (a task that already runs a restored VM
 	// must be refused) and written at the end.
 	Registry RestoredInstanceStore
+	// Checkpoint, when set, is asked between the restore's steps whether the task
+	// this VM is for has been stopped. A non-nil error aborts the restore, which
+	// then unwinds everything it did — the VM, the TAP device and the record — so a
+	// teardown that arrives during a load leaves no VM running behind a task
+	// SwarmKit has already replaced. Nil never aborts.
+	//
+	// It runs after every step long enough for a stop to arrive: before anything is
+	// created, after the load, after the guest is re-addressed, after the TAP is
+	// brought up, and after the record is written. The last one is what makes the
+	// window between "a VM exists" and "this node can resolve it" impossible to
+	// straddle.
+	Checkpoint func() error
 	// Now is the clock the record's CreatedAt and the guest-agent deadline are
 	// measured with. Nil selects time.Now; a test substitutes a fixed one.
 	Now func() time.Time
@@ -224,6 +236,11 @@ type RestoreDeps struct {
 // deleted. The artifact itself is left on disk, so a retry (or an operator) can
 // use it again: the bytes are the expensive part and they are not this node's to
 // discard.
+//
+// A caller that has to be able to cancel a restore in flight — the executor, whose
+// task can be stopped while the load runs — does it through deps.Checkpoint: the
+// abort takes this same undo path, so a stopped task leaves no VM, no device and no
+// record behind.
 func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance scruntime.RestoredInstance, err error) {
 	if deps.Now == nil {
 		deps.Now = time.Now
@@ -257,6 +274,12 @@ func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance s
 	}()
 
 	artifact := in.Artifact
+	// The first checkpoint is before anything exists: a task that was stopped
+	// between Prepare and this call must not create a TAP device or start a
+	// process nobody will ever look at.
+	if err = checkpointRestore(in, deps); err != nil {
+		return scruntime.RestoredInstance{}, err
+	}
 	if err = deps.TapCreate(artifact.TapName, in.Bridge); err != nil {
 		return scruntime.RestoredInstance{}, restoreStep(in.TaskID, stepCreateTap, err)
 	}
@@ -272,6 +295,11 @@ func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance s
 	if err = deps.Snapshot.RestoreFromSnapshot(ctx, restorationInfo(in), socketPath); err != nil {
 		return scruntime.RestoredInstance{}, restoreStep(in.TaskID, stepRestoreSnapshot, err)
 	}
+	// The load is the longest step, and the guest is already running: a stop that
+	// arrived while it ran is the case this checkpoint exists for.
+	if err = checkpointRestore(in, deps); err != nil {
+		return scruntime.RestoredInstance{}, err
+	}
 
 	guest, err := waitForGuestAgent(ctx, deps, artifact.VsockPath)
 	if err != nil {
@@ -285,9 +313,17 @@ func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance s
 	if err = readdressGuest(ctx, guest, in.GuestCIDR, in.Gateway); err != nil {
 		return scruntime.RestoredInstance{}, restoreStep(in.TaskID, stepReaddressGuest, err)
 	}
+	// The guest now answers on this node's address: a stop from here on would
+	// leave that address reachable from a task SwarmKit has replaced.
+	if err = checkpointRestore(in, deps); err != nil {
+		return scruntime.RestoredInstance{}, err
+	}
 
 	if err = deps.TapUp(artifact.TapName); err != nil {
 		return scruntime.RestoredInstance{}, restoreStep(in.TaskID, stepTapUp, err)
+	}
+	if err = checkpointRestore(in, deps); err != nil {
+		return scruntime.RestoredInstance{}, err
 	}
 
 	instance = scruntime.RestoredInstance{
@@ -305,6 +341,13 @@ func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance s
 		// nothing could resolve the task to it, so a stop would kill nothing and
 		// exec would dial a path nobody owns. The VM is undone below.
 		return scruntime.RestoredInstance{}, restoreStep(in.TaskID, stepRecordInstance, err)
+	}
+	// The record is written, so the VM is now resolvable — and the task may have
+	// been stopped in the instant before that. Checking here means an abort still
+	// unwinds the whole restore instead of publishing a VM for a task that will
+	// never run it; the undo deletes the record it just wrote.
+	if err = checkpointRestore(in, deps); err != nil {
+		return scruntime.RestoredInstance{}, err
 	}
 
 	effects.complete = true
@@ -378,8 +421,22 @@ const (
 	stepReaddressGuest    = "re-address the guest"
 	stepTapUp             = "bring the TAP device up"
 	stepRecordInstance    = "record the restored instance"
+	stepAborted           = "abort the restore of a task that was stopped"
 	stepUndo              = "undo the failed restore"
 )
+
+// checkpointRestore asks the caller whether the task this VM is for has been stopped,
+// and names the abort when it has. It runs between steps, so what a stop unwinds is
+// exactly what the restore had created at that moment — and nothing else.
+func checkpointRestore(in RestoreInput, deps RestoreDeps) error {
+	if deps.Checkpoint == nil {
+		return nil
+	}
+	if err := deps.Checkpoint(); err != nil {
+		return restoreStep(in.TaskID, stepAborted, err)
+	}
+	return nil
+}
 
 // restoreStep wraps a failure with the task and the step it stopped at.
 func restoreStep(taskID, step string, cause error) error {

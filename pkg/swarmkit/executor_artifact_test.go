@@ -59,11 +59,14 @@ type fakePendingStore struct {
 	directive scruntime.PendingRestore
 	found     bool
 	takeErr   error
+	peekErr   error
 	putErr    error
 
-	takes []string
-	roots []string
-	puts  []scruntime.PendingRestore
+	takes     []string
+	roots     []string
+	peeks     []string
+	peekRoots []string
+	puts      []scruntime.PendingRestore
 }
 
 func (f *fakePendingStore) Take(serviceID, root string) (scruntime.PendingRestore, bool, error) {
@@ -77,6 +80,16 @@ func (f *fakePendingStore) Take(serviceID, root string) (scruntime.PendingRestor
 	// same service must find nothing waiting.
 	f.found = false
 	return record, found, nil
+}
+
+// Peek answers what Take would, without consuming: it is what Prepare asks.
+func (f *fakePendingStore) Peek(serviceID, root string) (scruntime.PendingRestore, bool, error) {
+	f.peeks = append(f.peeks, serviceID)
+	f.peekRoots = append(f.peekRoots, root)
+	if f.peekErr != nil {
+		return scruntime.PendingRestore{}, false, f.peekErr
+	}
+	return f.directive, f.found, nil
 }
 
 func (f *fakePendingStore) Put(record scruntime.PendingRestore) error {
@@ -565,14 +578,19 @@ func TestStartConsumesADirectiveOnce(t *testing.T) {
 	assert.Contains(t, second.calls.list(), "vmm.Start", "it boots its own VM instead")
 }
 
-// TestStartBootsColdWhenTheDirectiveIsUnusable pins the three ways a lookup can fail
-// without being this task's problem: an expired directive (returned with found == false),
-// a store error, and a directive for another service. Each boots, and none restores.
-func TestStartBootsColdWhenTheDirectiveIsUnusable(t *testing.T) {
+// TestStartHandlesAnUnusableDirective pins the three answers a lookup can give: an
+// expired directive (returned with found == false and Expired set) boots cold because the
+// store has deleted it, a directive this build cannot use fails the task and is left for the
+// retry, and a task that belongs to no service looks nothing up at all.
+func TestStartHandlesAnUnusableDirective(t *testing.T) {
 	t.Run("an expired directive is ignored", func(t *testing.T) {
 		fixture := newArtifactStartFixture(t, artifactStartOptions{withMigration: true, directivePending: true})
 		expired := fixture.directive
 		expired.CreatedAt = time.Now().UTC().Add(-2 * scruntime.DefaultPendingRestoreTTL)
+		// The store's answer for a directive past its TTL: the record comes back with
+		// found == false and Expired set, so the caller knows which directive it
+		// ignored rather than guessing from a zero instant.
+		expired.Expired = true
 		fixture.pending.directive, fixture.pending.found = expired, false
 
 		require.NoError(t, fixture.ctrl.Start(context.Background()))
@@ -590,14 +608,19 @@ func TestStartBootsColdWhenTheDirectiveIsUnusable(t *testing.T) {
 		assert.Equal(t, 1, strings.Count(logged, "older than its TTL"), "one line, not one per retry")
 	})
 
-	t.Run("a store error is not a restore", func(t *testing.T) {
+	t.Run("a store error fails the task and keeps the directive", func(t *testing.T) {
 		fixture := newArtifactStartFixture(t, artifactStartOptions{withMigration: true, directivePending: true})
 		fixture.pending.takeErr = errors.New("the directive is corrupt")
 
-		require.NoError(t, fixture.ctrl.Start(context.Background()))
+		err := fixture.ctrl.Start(context.Background())
+		require.Error(t, err, "an unusable directive is not a licence to boot a second VM")
+		assert.ErrorContains(t, err, "the directive is corrupt")
 
-		assert.Contains(t, fixture.calls.list(), "vmm.Start")
+		assert.NotContains(t, fixture.calls.list(), "vmm.Start",
+			"the source node's VM is still running: a cold boot here would be a second one")
 		assert.Empty(t, fixture.restorer.infos)
+		assert.Empty(t, fixture.pending.puts,
+			"the store already put the record back, so the retry finds the same directive")
 	})
 
 	t.Run("a task with no service looks nothing up", func(t *testing.T) {
@@ -756,6 +779,17 @@ func TestRestoredGuestAddressFollowsTheBootPath(t *testing.T) {
 			subnet:      "10.10.0.0/16",
 			bridgeIP:    "192.168.127.1/24",
 			wantCIDR:    "10.10.0.9/16",
+			wantGateway: "192.168.127.1",
+		},
+		{
+			// The boot path hands the kernel the network's netmask and strips any
+			// prefix the attachment address carries (networkBootArgs). A restored guest
+			// must come up on the same broadcast domain the booted one would have.
+			name:        "the network's prefix wins over the address's",
+			addresses:   []string{"10.10.9.7/16"},
+			subnet:      "10.10.0.0/24",
+			bridgeIP:    "192.168.127.1/24",
+			wantCIDR:    "10.10.9.7/24",
 			wantGateway: "192.168.127.1",
 		},
 		{

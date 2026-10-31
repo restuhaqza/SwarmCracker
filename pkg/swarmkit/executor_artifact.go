@@ -51,9 +51,15 @@ import (
 type PendingRestoreStore interface {
 	// Take claims and removes the directive waiting for serviceID. found is false
 	// when nothing was prepared for it, and also when the directive is past its TTL —
-	// in which case the record is still returned, so the caller can log which
-	// directive it ignored.
+	// in which case the record is still returned and marked Expired, so the caller
+	// can log which directive it ignored. Any error is a directive this build cannot
+	// use: the store has put it back, and the task fails rather than booting a
+	// second VM beside the one the source node still runs.
 	Take(serviceID, root string) (scruntime.PendingRestore, bool, error)
+	// Peek answers the same question without consuming the directive, so a task's
+	// Prepare can skip the work only a boot needs (an image pull, a TAP device) for a
+	// task whose VM will come from an artifact.
+	Peek(serviceID, root string) (scruntime.PendingRestore, bool, error)
 	// Put records a directive, keeping the CreatedAt it carries. A restore that
 	// consumed one and then failed puts the same record back, so SwarmKit's retry
 	// restores rather than booting: the TTL is measured from the prepare, not from
@@ -186,16 +192,19 @@ func (c *Controller) startFromArtifact(ctx context.Context) (restored bool, err 
 	directive, found, err := cfg.Pending.Take(serviceID, cfg.Root)
 	switch {
 	case err != nil:
-		// An unusable directive is not this task's to restore — the store put it back
-		// for a human to read — so the task boots. One warning is the whole report.
-		c.logger.Warn().Err(err).Str("service_id", serviceID).
-			Msg("A pending-restore directive for this service cannot be used; starting a fresh VM")
-		return false, nil
+		// A directive this build cannot use is not a licence to boot: the source
+		// node's VM is still running, so a cold boot here would put two VMs behind
+		// one service. The store put the directive back, and the task fails so that
+		// SwarmKit retries it - the retry reads the same directive, and an operator
+		// can repair it in between.
+		return false, fmt.Errorf(
+			"task %q: the pending-restore directive for service %q cannot be used, so the staged artifact cannot be restored: %w",
+			task.ID, serviceID, err)
 	case !found:
-		if !directive.CreatedAt.IsZero() {
-			// The store consumed and deleted a directive past its TTL. Booting cold is
-			// the documented outcome for an abandoned migration, and an operator has to
-			// be able to see that it happened.
+		if directive.Expired {
+			// The one unusable directive that boots cold, because the store has
+			// already deleted it: a migration whose artifact expired is abandoned,
+			// and an operator has to be able to see that it happened.
 			c.logger.Warn().
 				Str("service_id", serviceID).
 				Str("artifact_id", directive.ArtifactID).
@@ -206,13 +215,43 @@ func (c *Controller) startFromArtifact(ctx context.Context) (restored bool, err 
 		return false, nil
 	}
 
-	if err := c.restoreArtifact(ctx, cfg, task, directive); err != nil {
+	// The restore is published before anything is created, so a teardown that arrives
+	// during it can see it and wait for it (executor_restore_lifecycle.go). A teardown
+	// that already arrived refuses the restore here: the VM must not be loaded for a
+	// task SwarmKit has stopped, and the directive goes back for the replacement.
+	restoreCtx, err := c.beginRestore(ctx)
+	if err != nil {
+		return false, c.keepDirective(cfg, directive, err)
+	}
+	defer c.endRestore()
+
+	if err := c.restoreArtifact(restoreCtx, cfg, task, directive); err != nil {
 		// The directive goes back before the error is returned: a retry of this task
 		// must restore the artifact again, not boot a second VM beside the one the
 		// source node is still running.
 		return false, c.keepDirective(cfg, directive, err)
 	}
 	return true, nil
+}
+
+// pendingRestoreFor reports whether a usable directive is waiting for this task's
+// service: the answer Prepare uses to skip the work only a boot needs. It does not
+// consume the directive — Take is what does that at start — and it asks the same
+// question Take would, so an expired directive is not a reason to skip an image pull
+// and an unusable one fails the task instead of booting beside a live source VM.
+func (c *Controller) pendingRestoreFor(task *types.Task) (bool, error) {
+	cfg := c.migration
+	if cfg == nil || cfg.Pending == nil || task == nil || task.ServiceID == "" {
+		return false, nil
+	}
+
+	_, found, err := cfg.Pending.Peek(task.ServiceID, cfg.Root)
+	if err != nil {
+		return false, fmt.Errorf(
+			"task %q: the pending-restore directive for service %q cannot be used, so this task cannot be prepared: %w",
+			task.ID, task.ServiceID, err)
+	}
+	return found, nil
 }
 
 // restoreArtifact performs the restore a directive describes, and drops the staged
@@ -253,7 +292,25 @@ func (c *Controller) restoreArtifact(
 	if err != nil {
 		return fmt.Errorf("task %q: restore artifact %s: %w", task.ID, directive.ArtifactID, err)
 	}
+	// A restored guest has one interface (see restoredGuestAddress): every attachment
+	// after the first is dropped, and a silently dropped network is how a service
+	// loses reachability only after it moves. Say it once, at the restore.
+	if len(task.Networks) > 1 {
+		dropped := make([]string, 0, len(task.Networks)-1)
+		for _, attachment := range task.Networks[1:] {
+			dropped = append(dropped, networkLabel(attachment))
+		}
+		c.logger.Warn().Str("task_id", task.ID).Strs("dropped_networks", dropped).
+			Msg("The restored guest keeps only its first network attachment; the others are not attached to the VM this product gives a task")
+	}
+	// The TAP keeps the source task's name — the state file resolves it — but it must
+	// join the bridge a boot would have chosen for this task's attachment. That is
+	// pkg/network's derivation, not Config.BridgeName: a user-defined network has its
+	// own bridge, and putting a migrated guest's address on the default one would leave
+	// it on the wrong L2 segment.
+	bridge := c.restoredBridge(task)
 
+	deps := c.restoreDeps(cfg)
 	instance, err := migration.Restore(ctx, migration.RestoreInput{
 		Artifact:  artifact,
 		Dir:       directive.Dir,
@@ -262,9 +319,9 @@ func (c *Controller) restoreArtifact(
 		Gateway:   gateway,
 		// The TAP keeps the source task's name — the state file resolves it — but the
 		// bridge is this node's, and the socket is the new task's.
-		Bridge:    c.config.BridgeName,
+		Bridge:    bridge,
 		SocketDir: c.config.SocketDir,
-	}, c.restoreDeps(cfg))
+	}, deps)
 	if err != nil {
 		return fmt.Errorf("task %q: %w", task.ID, err)
 	}
@@ -273,6 +330,28 @@ func (c *Controller) restoreArtifact(
 	// describing a task with no network, so the metadata is published exactly as a boot
 	// would have published it. It is best-effort there and here.
 	c.writeVMMetadata(task)
+
+	// Host-side port forwarding is part of the task's identity, and a restored task
+	// skipped the only code that programs it (startVM). Without this a migrated task
+	// whose service publishes ports would come up with dead ports and no error at all:
+	// the guest answers, the rules point nowhere. Publishing after the restore, not
+	// before, is what makes the rules point at the address the guest was just given.
+	if err := c.publishPorts(task); err != nil {
+		// The VM is running and its ports are not, so this task cannot serve. Failing
+		// it without taking the VM down would leave a guest nobody can reach and a
+		// directive that is already consumed; the unwind is the same three effects
+		// migration.Restore's undo performs, and the directive goes back below.
+		//
+		// The rules are swept too: a publish that failed halfway may have programmed
+		// some of them, and they point at a VM that is about to stop existing.
+		c.unpublishPorts(task.ID)
+		unwindErr := c.discardRestoredVM(task.ID, instance, deps)
+		if unwindErr != nil {
+			return fmt.Errorf("task %q: %w (and the restored VM could not be fully unwound: %w)",
+				task.ID, err, unwindErr)
+		}
+		return fmt.Errorf("task %q: %w", task.ID, err)
+	}
 
 	// The bytes were this node's only until the guest ran: a copy left behind would
 	// shadow the source's cleanup and hold a memory image nothing will restore.
@@ -290,6 +369,7 @@ func (c *Controller) restoreArtifact(
 		Str("vm_id", instance.VMID).
 		Str("socket", instance.SocketPath).
 		Str("tap", instance.TapName).
+		Str("bridge", bridge).
 		Str("guest_cidr", guestCIDR).
 		Str("gateway", gateway).
 		Msg("Started the task from a migration artifact")
@@ -341,13 +421,33 @@ func (c *Controller) restoreDeps(cfg *MigrationRestoreConfig) migration.RestoreD
 	}
 
 	return migration.RestoreDeps{
-		Snapshot:  consoleRestorer{restorer: cfg.Restorer, logDir: c.config.LogDir},
-		TapCreate: tap.Create,
-		TapUp:     tap.Up,
-		TapDelete: tap.Delete,
-		Agent:     agent,
-		Registry:  c.restoredRecords(),
+		Snapshot:   consoleRestorer{restorer: cfg.Restorer, logDir: c.config.LogDir},
+		TapCreate:  tap.Create,
+		TapUp:      tap.Up,
+		TapDelete:  tap.Delete,
+		Agent:      agent,
+		Registry:   c.restoredRecords(),
+		Checkpoint: c.restoreCheckpoint,
 	}
+}
+
+// restoredBridge is the bridge a restored task's TAP joins: the one the boot path
+// derives for its first attachment (pkg/network's AttachmentBridgeName), so a moved
+// task lands on the same L2 segment it came from, including the dedicated bridge of a
+// user-defined network.
+//
+// The derivation can name a bridge this node has not materialised — the restore skips
+// PrepareNetwork, which is what creates a user network's bridge — and that is the
+// honest outcome: creating the TAP fails with the bridge named, which is a failed
+// restore an operator can read, rather than a running guest on the wrong segment.
+func (c *Controller) restoredBridge(task *types.Task) string {
+	if task == nil || len(task.Networks) == 0 {
+		return c.config.BridgeName
+	}
+	return network.AttachmentBridgeName(&task.Networks[0].Network, types.NetworkConfig{
+		BridgeName: c.config.BridgeName,
+		Subnet:     c.config.Subnet,
+	})
 }
 
 // restoredRecords is the node's restored-instance store as a restore writes it. It is
@@ -436,24 +536,21 @@ func restoredGuestAddress(task *types.Task, bridgeIP string) (cidr, gateway stri
 }
 
 // guestAddressPrefix turns one attachment address into the CIDR the guest interface is
-// given. An address that carries its prefix length is used as it is; a bare address
-// takes the prefix of the network's subnet, and /24 when the network names none — the
-// same default the boot path's netmask falls back to.
+// given. The prefix length is the boot path's (taskTranslatorImpl.networkBootArgs): the
+// network's subnet mask, and /24 when the network names no subnet this build can parse.
+// The address's own prefix is not consulted, because the boot path does not consult it
+// either — a guest that came up as 10.10.9.7/16 and resumed as 10.10.9.7/24 would answer
+// on a different broadcast domain than the one the service is reachable on.
 func guestAddressPrefix(address, subnet string) (string, error) {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		return "", errors.New("the task's network attachment names an empty address")
 	}
 
-	if strings.Contains(address, "/") {
-		prefix, err := netip.ParsePrefix(address)
-		if err != nil {
-			return "", fmt.Errorf("task address %q is not an address prefix: want an IPv4 address and prefix length, for example 192.168.127.37/24: %w", address, err)
-		}
-		if !prefix.Addr().Is4() {
-			return "", fmt.Errorf("task address %q is not IPv4: the guest interface this product gives a task is IPv4", address)
-		}
-		return prefix.String(), nil
+	// The boot path strips the prefix and keeps the host address; the prefix it hands
+	// the kernel comes from the subnet below.
+	if i := strings.Index(address, "/"); i > 0 {
+		address = address[:i]
 	}
 
 	ip, err := netip.ParseAddr(address)

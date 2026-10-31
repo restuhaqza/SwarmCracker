@@ -85,16 +85,29 @@ func (nm *NetworkManager) hasManagedAttachment(networks []types.NetworkAttachmen
 }
 
 // attachmentBridgeName returns the bridge a task's TAP for this attachment
-// joins. A network whose subnet is the flat L2 subnet (the ingress network is
-// carved from --subnet by design) always uses the node's bridge: honoring its
-// recorded per-network bridge would put two gateways on the same range and
-// split the flat segment, leaving published ports unreachable.
+// joins, as AttachmentBridgeName derives it from this manager's configuration.
 func (nm *NetworkManager) attachmentBridgeName(network *types.Network) string {
+	return AttachmentBridgeName(network, nm.config)
+}
+
+// AttachmentBridgeName is the bridge a task's TAP for one attachment joins, derived
+// from the node's network configuration. A network whose subnet is the flat L2 subnet
+// (the ingress network is carved from --subnet by design) always uses the node's
+// bridge: honoring its recorded per-network bridge would put two gateways on the same
+// range and split the flat segment, leaving published ports unreachable.
+//
+// It is exported because it is the one derivation of that answer, and a task restored
+// from a migration artifact has to attach its TAP to the same L2 segment a boot would
+// have chosen — while the restore path never runs the code that prepares a task's
+// networks (pkg/network creates no TAP for it). A second copy of this rule in the
+// restore path is how a migrated task on a user-defined network would end up on the
+// default bridge with a foreign address.
+func AttachmentBridgeName(network *types.Network, config types.NetworkConfig) string {
 	if network == nil {
-		return nm.config.BridgeName
+		return config.BridgeName
 	}
-	if flat := strings.TrimSpace(nm.config.Subnet); flat != "" && sameSubnet(network.Spec.Subnet, flat) {
-		return nm.config.BridgeName
+	if flat := strings.TrimSpace(config.Subnet); flat != "" && sameSubnet(network.Spec.Subnet, flat) {
+		return config.BridgeName
 	}
 	if network.Spec.DriverConfig != nil &&
 		network.Spec.DriverConfig.Bridge != nil &&
@@ -111,7 +124,7 @@ func (nm *NetworkManager) attachmentBridgeName(network *types.Network) string {
 			Msg("Detected overlay network, using derived bridge name")
 		return name
 	}
-	return nm.config.BridgeName
+	return config.BridgeName
 }
 
 // sameSubnet reports whether two CIDRs name the same network, regardless of how

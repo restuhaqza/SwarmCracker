@@ -103,6 +103,17 @@ type PendingRestore struct {
 	// back. A registry that stamped "now" on every write would hand that retry a
 	// second TTL, and the TTL is what stops an abandoned migration restoring later.
 	CreatedAt time.Time `json:"createdAt"`
+	// Expired reports that this record did not restore anything because it was past
+	// its TTL: Take deletes such a directive and hands the record back with
+	// found == false only so the caller can say what it ignored. It is never
+	// written to disk (it describes one lookup, not the record), which is why it is
+	// excluded from the encoding.
+	//
+	// It is an explicit answer rather than "CreatedAt is zero", because the zero
+	// instant means "this store recorded nothing", and a caller that confused the
+	// two would report a broken record as an expired migration - or worse, treat an
+	// expired one as usable.
+	Expired bool `json:"-"`
 }
 
 // PendingRestoreDir returns the directive directory inside a node state directory.
@@ -233,8 +244,9 @@ func (p *PendingRestores) Put(record PendingRestore) error {
 // A record that cannot be used - it does not decode, it names another service, it
 // fails the same rule Put applies, or its directory is not one this node may restore
 // from - is an error, and the file is put back so a human can read what the node
-// believes; List reports it by path. The caller decides what to log: the executor
-// treats an unusable directive as "nothing to restore" and starts the task cold, and
+// believes; List reports it by path. The caller decides what to do about it: the
+// executor fails the task and leaves the directive for the retry, because booting
+// cold would start a second VM beside the one the source node is still running, and
 // a startup reconciliation warns.
 func (p *PendingRestores) Take(serviceID, root string) (PendingRestore, bool, error) {
 	var none PendingRestore
@@ -272,7 +284,9 @@ func (p *PendingRestores) Take(serviceID, root string) (PendingRestore, bool, er
 		// The record is returned with found == false, not the zero value: nothing may
 		// act on it (the artifact is not this task's to restore), but a caller that
 		// wants to say why a task booted cold can name the service, the artifact and
-		// the age it ignored. found is the only answer to act on.
+		// the age it ignored. found is the only answer to act on, and Expired is the
+		// explicit reason it is false.
+		record.Expired = true
 		return record, false, nil
 	}
 	if err == nil {
@@ -296,6 +310,51 @@ func (p *PendingRestores) Take(serviceID, root string) (PendingRestore, bool, er
 	}
 	syncDir(p.dir)
 
+	return record, true, nil
+}
+
+// Peek reports the directive waiting for a service without consuming it. It is what a
+// task's Prepare asks before it does the work a boot needs: an image pull and a TAP
+// device are wasted on a task whose VM will come from an artifact, and an image this
+// node cannot pull must not fail a restore that never needed it.
+//
+// The answer is deliberately the same one Take would give right now: found is false for
+// a service nothing was prepared for and for a directive past its TTL (which Peek does
+// not delete; Take does), so a peek never promises a restore Take would refuse. An
+// unusable record is an error, exactly as it is for Take - the caller fails the task
+// rather than booting a second VM beside the one the source node still runs.
+//
+// It is a read: no claim, no rename, no delete. Two tasks of one service may both see
+// the directive here; Take is what makes exactly one of them consume it.
+func (p *PendingRestores) Peek(serviceID, root string) (PendingRestore, bool, error) {
+	var none PendingRestore
+
+	if err := p.usable(); err != nil {
+		return none, false, err
+	}
+	if strings.TrimSpace(root) == "" {
+		return none, false, errors.New(
+			"pending-restore registry: the migration root is required: a directive's directory is checked against it")
+	}
+	if err := idProblem("serviceId", "service", serviceID); err != nil {
+		return none, false, err
+	}
+
+	path := p.path(serviceID)
+	record, err := readPendingDirective(path, path, serviceID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return none, false, nil
+		}
+		return none, false, err
+	}
+	if expired(record, time.Now()) {
+		record.Expired = true
+		return record, false, nil
+	}
+	if err := record.stagedDirProblem(root); err != nil {
+		return none, false, err
+	}
 	return record, true, nil
 }
 

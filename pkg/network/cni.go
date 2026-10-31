@@ -43,8 +43,14 @@ func CreateTAPDeviceWithExecutor(name, bridge string, executor TAPExecutor) (*TA
 // It is the same code as CreateTAPDevice with the bring-up step left out; there is
 // one `ip tuntap add` in this package, not two.
 func CreateTAPDeviceDown(name, bridge string) error {
-	return CreateTAPDeviceDownWithExecutor(name, bridge, NewDefaultTAPExecutor())
+	return CreateTAPDeviceDownWithExecutor(name, bridge, newTAPExecutor())
 }
+
+// newTAPExecutor is the executor CreateTAPDeviceDown uses. It is a variable only so a
+// test can prove the production wrapper is the down variant: a wrapper that drifted to
+// the boot variant would still pass every WithExecutor test, and would bring a restored
+// guest's interface up before the restore re-addressed it.
+var newTAPExecutor = func() TAPExecutor { return NewDefaultTAPExecutor() }
 
 // CreateTAPDeviceDownWithExecutor is CreateTAPDeviceDown with an injectable
 // executor, so the "created but not up" contract can be asserted without root.
