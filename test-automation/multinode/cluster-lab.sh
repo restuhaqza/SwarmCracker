@@ -599,7 +599,13 @@ cmd_three_tier() {
     for j in $(seq 1 "$n"); do
       for id in $(node_ssh 1 "swarmcracker service ps $svc -q 2>/dev/null" || true); do
         [ -n "$id" ] || continue
-        if node_ssh "$j" "swarmcracker vm list 2>/dev/null" | awk '{print $1}' | grep -qx -- "$id"; then
+        # One awk, not `awk | grep -qx`: grep -q exits on the match and SIGPIPEs
+        # awk, and `pipefail` then reports a present task as "not on this node"
+        # for any `vm list` output large enough to fill a pipe buffer. awk reads
+        # to EOF and sets its own exit status. `$1 == id` is the whole-field test
+        # `grep -qx` made.
+        if node_ssh "$j" "swarmcracker vm list 2>/dev/null" \
+            | awk -v id="$id" '$1 == id { found = 1 } END { exit !found }'; then
           printf '%s %s\n' "$j" "$id"
           return 0
         fi
@@ -658,16 +664,31 @@ cmd_three_tier() {
   if ! read -r host task < <(find_local_task "$web"); then
     die "could not find a web task running on a lab node"
   fi
+  # Every "does this output contain this string" test below is a shell `case`
+  # pattern, never `printf ... | grep -q`. grep -q exits at its first match, the
+  # printf is then killed by SIGPIPE (141) and `pipefail` makes the whole
+  # pipeline non-zero -- so a *present* string reads as absent. It is
+  # size-dependent: under one pipe buffer (~64KB) the producer finishes before
+  # grep exits and nothing happens, above it the test fails whenever the match is
+  # not in the last chunk. These bodies are tiny, so it is latent here, but it is
+  # the same defect cmd_autoscale's scrape_events hit for real on a 215KB
+  # exposition. A pattern match has no producer to signal, so it cannot do this.
+  #
   # The service name and its tasks.<name> alias are both part of the DNS
   # contract; the lab prefixes names to stay collision-free across runs.
   for _name in "$api" "tasks.$api"; do
     out="$(node_ssh "$host" "swarmcracker vm exec $task -- wget -q -O- http://$_name" 2>&1)" || rc=1
-    if printf '%s' "$out" | grep -qi 'nginx'; then
-      printf '  web task on node%s -> http://%s -> nginx page (%s bytes)\n' "$host" "$_name" "${#out}"
-    else
-      printf '  web task on node%s -> http://%s -> FAILED: %s\n' "$host" "$_name" "$out"
-      rc=1
-    fi
+    # [Nn][Gg]... is `grep -i`'s case-insensitivity without a pipeline (this host
+    # runs bash 3.2, which has no ${var,,}).
+    case "$out" in
+      *[Nn][Gg][Ii][Nn][Xx]*)
+        printf '  web task on node%s -> http://%s -> nginx page (%s bytes)\n' "$host" "$_name" "${#out}"
+        ;;
+      *)
+        printf '  web task on node%s -> http://%s -> FAILED: %s\n' "$host" "$_name" "$out"
+        rc=1
+        ;;
+    esac
   done
 
   info "check: the secret exists inside the db guest with mode 0400 and the right value"
@@ -676,13 +697,13 @@ cmd_three_tier() {
   fi
   out="$(node_ssh "$host" "swarmcracker vm exec $task -- sh -c 'ls -l /run/secrets/$secret; cat /run/secrets/$secret'" 2>&1)" || rc=1
   printf '%s\n' "$out" | sed 's/^/  /'
-  printf '%s' "$out" | grep -q -- '-r--------' || { printf '  secret mode is not 0400\n'; rc=1; }
-  printf '%s' "$out" | grep -q -- "$db_pass" || { printf '  secret content does not match\n'; rc=1; }
+  case "$out" in *'-r--------'*) ;; *) printf '  secret mode is not 0400\n'; rc=1 ;; esac
+  case "$out" in *"$db_pass"*) ;; *) printf '  secret content does not match\n'; rc=1 ;; esac
 
   info "check: the db task runs the requested command (--command/--args), not the image entrypoint"
   out="$(node_ssh "$host" "swarmcracker vm exec $task -- cat /proc/1/cmdline" 2>/dev/null | tr '\0' ' ')" || rc=1
   printf '  pid 1: %s\n' "$out"
-  printf '%s' "$out" | grep -q 'sleep 3600' || { printf '  the command override did not take effect\n'; rc=1; }
+  case "$out" in *'sleep 3600'*) ;; *) printf '  the command override did not take effect\n'; rc=1 ;; esac
 
   info "check: a failing healthcheck keeps a task out of RUNNING"
   node_ssh 1 "swarmcracker service create --name $gate --image $LAB_IMAGE_OCI --replicas 1 \
@@ -691,10 +712,12 @@ cmd_three_tier() {
   sleep 20
   out="$(node_ssh 1 "swarmcracker service ps $gate --no-health 2>/dev/null" || true)"
   printf '%s\n' "$out" | sed 's/^/  /'
-  if printf '%s' "$out" | grep -q RUNNING; then
-    printf '  gate task reached RUNNING despite a failing check\n'
-    rc=1
-  fi
+  case "$out" in
+    *RUNNING*)
+      printf '  gate task reached RUNNING despite a failing check\n'
+      rc=1
+      ;;
+  esac
   node_ssh 1 "swarmcracker service rm $gate --force >/dev/null 2>&1 || true"
 
   [ "$rc" = 0 ] || die "three-tier e2e failed"
