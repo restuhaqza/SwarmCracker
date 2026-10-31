@@ -105,6 +105,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from the `REPLICAS` cell.
 
 ### Fixed
+- **A panic in a node's health read can no longer kill the manager** — the API's
+  health fan-out starts one goroutine per placed task, and a panic there is not a
+  handler panic: `net/http` contains only the handler's, so it took the daemon
+  down. Each fetch now recovers, logs the panic with its stack and reports that
+  node as a partial (unavailable, retryable, `details.nodeId`), which is the same
+  answer a node that cannot be reached produces. The single-task health read has
+  no such goroutine and was never affected.
+- **`TaskMetrics.service` is documented as what it holds** — a service ID, or the
+  task ID when the task has no service. It was never a name; the document said
+  nothing, so a consumer could read an opaque ID as one.
 - **Snapshots of a daemon-managed task work on a systemd-managed node** —
   `vm snapshot create` on a service replica failed with `Read-only file system`
   even though the pause succeeded. The units run with `ProtectSystem=strict` and
