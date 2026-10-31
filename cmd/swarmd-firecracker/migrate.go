@@ -59,10 +59,21 @@ import (
 )
 
 const (
-	// migrationOverallTimeout bounds one Migrate call, cleanup included. It is
-	// also the bound on every node call the relay makes: the broker's own
-	// transfer deadline (broker.DefaultMigrationTimeout, half an hour) is longer
-	// than a whole migration may take, so the call's context is the binding one.
+	// migrationOverallTimeout bounds one Migrate call: every node call the relay
+	// makes inherits it, and it is the binding deadline for the whole flow.
+	//
+	// It is deliberately shorter than the broker's own transfer allowance
+	// (broker.DefaultMigrationTimeout, half an hour). That allowance is what one
+	// file transfer may take on a node's side; this slice only offers a move whose
+	// artifact is small enough to cross inside a synchronous request, so the call
+	// bound - not the node's allowance - is the one that can be met. A larger guest
+	// needs a longer call bound (a job the caller polls, which this slice does not
+	// offer), and raising this constant alone would only turn a useful 504 into a
+	// request that holds a connection for half an hour.
+	//
+	// Cleanup is not inside that budget: it runs detached, bounded by
+	// migrationCleanupTimeout, so the worst case a caller waits is three minutes plus
+	// up to one minute of detached cleanup, which is not time the caller can see.
 	migrationOverallTimeout = 3 * time.Minute
 
 	// migrationVerifyTimeout bounds the wait for a replacement to report running.
@@ -123,13 +134,15 @@ var migrationTaskStatesGone = map[string]struct{}{
 }
 
 // migrationClient is the slice of *client.Client this file reads and writes: a
-// task and its service, the target node, the service's tasks while verifying, and
-// the one service update that pins and unpins the placement.
+// task and its service, the target node, the service's tasks while verifying, the
+// one service update that pins and unpins the placement, and the node list the
+// leadership gate reads.
 type migrationClient interface {
 	GetTask(ctx context.Context, ref string) (v1.Task, error)
 	GetService(ctx context.Context, ref string) (v1.Service, error)
 	ListServiceTasks(ctx context.Context, ref string) ([]v1.Task, error)
 	GetNode(ctx context.Context, ref string) (v1.Node, error)
+	ListNodes(ctx context.Context) ([]v1.Node, error)
 	UpdateService(ctx context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Service, error)
 }
 
@@ -143,7 +156,10 @@ type migrationBroker interface {
 	Stage(ctx context.Context, nodeID string, task v1.Task, artifact migration.Artifact, name string, size int64, sha256Hex string, r io.Reader) error
 	Discard(ctx context.Context, nodeID string, task v1.Task, artifact migration.Artifact) error
 	Prepare(ctx context.Context, nodeID, serviceID, artifactID string) error
-	Unprepare(ctx context.Context, nodeID, serviceID string) error
+	// Unprepare removes a directive only while it names artifactID: the node's
+	// directive is keyed by service, and another manager may have prepared the
+	// service since.
+	Unprepare(ctx context.Context, nodeID, serviceID, artifactID string) error
 }
 
 // migrationCoordinator runs one migration at a time per service. Its fields are
@@ -153,6 +169,9 @@ type migrationCoordinator struct {
 	client migrationClient
 	broker migrationBroker
 	spool  *migration.Store
+	// self is this daemon's node hostname. It is what the leadership gate compares
+	// the swarm leader's hostname against, exactly like the autoscaler's.
+	self string
 
 	now            func() time.Time
 	overallTimeout time.Duration
@@ -160,18 +179,23 @@ type migrationCoordinator struct {
 	cleanupTimeout time.Duration
 	pollInterval   time.Duration
 
-	mu       sync.Mutex
-	inFlight map[string]struct{}
+	mu sync.Mutex
+	// gateNotice records that the fail-open decision has been logged once. It
+	// repeats only while the cluster cannot say who the leader is.
+	gateNotice bool
+	inFlight   map[string]struct{}
 }
 
 // newMigrationCoordinator builds the coordinator with the production defaults. A
 // nil broker or spool would panic on the first migration, so the daemon resolves
-// both before it wires this: see managerMigrations.
-func newMigrationCoordinator(client migrationClient, nodes migrationBroker, spool *migration.Store) *migrationCoordinator {
+// both before it wires this: see managerMigrations. self is this node's hostname,
+// used only by the leadership gate, and an empty one makes the gate fail open.
+func newMigrationCoordinator(client migrationClient, nodes migrationBroker, spool *migration.Store, self string) *migrationCoordinator {
 	return &migrationCoordinator{
 		client:         client,
 		broker:         nodes,
 		spool:          spool,
+		self:           self,
 		now:            time.Now,
 		overallTimeout: migrationOverallTimeout,
 		verifyTimeout:  migrationVerifyTimeout,
@@ -183,16 +207,26 @@ func newMigrationCoordinator(client migrationClient, nodes migrationBroker, spoo
 
 // Migrate moves one task's VM to another node and reports what it did.
 //
-// The call is synchronous and bounded: the whole flow, cleanup included, runs
-// inside migrationOverallTimeout, and a verify that outlives its own (shorter)
-// deadline answers a pending migration rather than an error. Every failure is a
-// typed error whose details.phase names the step that failed; the migration
-// itself is only a document when the service update landed.
+// The call is synchronous and bounded: the flow runs inside migrationOverallTimeout,
+// and a verify that outlives its own (shorter) deadline answers a pending migration
+// rather than an error. Cleanup is detached from that budget - it runs with its own
+// one-minute bound after the answer is composed - so the caller waits at most three
+// minutes, plus whatever the manager's detached cleanup takes, which the caller never
+// sees. Every failure is a typed error whose details.phase names the step that
+// failed; the migration itself is only a document when the service update landed.
+//
+// Only the swarm's raft leader may run a migration: the service update, the target's
+// directive and the source's artifact are one operation, and two managers running it
+// would prepare the same service twice and unpin each other. A request served by a
+// follower is refused with a retry-at-the-leader unavailable, and a cluster that
+// cannot say who the leader is fails open (see leaderProblem).
 func (c *migrationCoordinator) Migrate(ctx context.Context, taskRef, targetNode string) (v1.Migration, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.overallTimeout)
 	defer cancel()
 
-	run := &migrationRun{now: c.now}
+	// The instant the migration starts is what dates a replacement: a task of this
+	// service on the target that predates it belongs to an earlier attempt.
+	run := &migrationRun{now: c.now, startedAt: c.now()}
 
 	plan, err := c.validate(ctx, run, taskRef, targetNode)
 	if err != nil {
@@ -223,65 +257,77 @@ type migrationPlan struct {
 // must undo. It is also the record of the artifact, so no path has to re-derive
 // an ID.
 type migrationState struct {
-	artifact  migration.Artifact
+	artifact migration.Artifact
+	// exported and placement are what the cleanup must undo: an artifact on the
+	// source, and a placement this call changed.
 	exported  bool
-	prepared  bool
 	pinned    []string
 	placement bool
 }
 
-// validate runs the preflight: a running task of a single-replica replicated
-// service, a different ready and active target, and no migration of the same
-// service already running. It resolves the target before it takes the in-flight
-// slot, so a refused service never blocks the map.
+// validate runs the preflight: this manager is the leader, a running task of a
+// single-replica replicated service, a different ready and active target, and no
+// migration of the same service already running. It resolves the target before it
+// takes the in-flight slot, so a refused service never blocks the map.
 func (c *migrationCoordinator) validate(
 	ctx context.Context, run *migrationRun, taskRef, targetNodeRef string,
 ) (migrationPlan, error) {
 	var plan migrationPlan
 
-	if strings.TrimSpace(targetNodeRef) == "" {
-		return plan, invalidMigrationField("targetNode", "must not be empty")
+	// The gate comes first: a follower must not export, prepare or replace
+	// anything, because the rest of the flow would then be competing with the
+	// leader's own migration of the same service. It is inside the validate phase
+	// because it is a preflight answer about the request, not a step of the move.
+	finish := run.start(v1.MigrationPhaseValidate)
+
+	if err := c.leaderProblem(ctx); err != nil {
+		finish(v1.MigrationPhaseError, publicFailure(err))
+		return plan, err
 	}
 
-	finish := run.start(v1.MigrationPhaseValidate)
+	if strings.TrimSpace(targetNodeRef) == "" {
+		err := invalidMigrationField("targetNode", "must not be empty")
+		finish(v1.MigrationPhaseError, publicFailure(err))
+		return plan, err
+	}
 
 	task, err := c.client.GetTask(ctx, taskRef)
 	if err != nil {
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 	if task.State != migrationTaskStateRunning {
 		err := output.NewErrorf(output.CodeInvalid,
 			"task %q is %s: a live migration moves a running task", task.ID, task.State).
 			WithDetails(map[string]any{"fields": map[string]any{"taskId": "must name a running task"}, "state": task.State})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 	if task.NodeID == "" {
 		err := output.NewErrorf(output.CodeInvalid,
 			"task %q names no node: a live migration moves a task that is scheduled", task.ID).
 			WithDetails(map[string]any{"fields": map[string]any{"taskId": "must name a scheduled task"}})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 	if task.ServiceID == "" {
 		err := output.NewErrorf(output.CodeInvalid,
 			"task %q belongs to no service: a live migration replaces a service's task", task.ID).
 			WithDetails(map[string]any{"fields": map[string]any{"taskId": "must name a service task"}})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 
 	service, err := c.client.GetService(ctx, task.ServiceID)
 	if err != nil {
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 	if service.Spec.Mode != migrationServiceModeReplicated {
 		err := output.NewErrorf(output.CodeInvalid,
 			"service %q is %s: a live migration pins a single replica to one node", service.ID, service.Spec.Mode).
 			WithDetails(map[string]any{"reason": "service_mode", "serviceId": service.ID})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 	if service.Spec.Replicas == nil || *service.Spec.Replicas != 1 {
@@ -292,7 +338,7 @@ func (c *migrationCoordinator) validate(
 		err := output.NewErrorf(output.CodeInvalid,
 			"service %q has %d replicas: a live migration moves a service with exactly one", service.ID, replicas).
 			WithDetails(map[string]any{"reason": "replicas", "serviceId": service.ID, "replicas": replicas})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 
@@ -300,20 +346,20 @@ func (c *migrationCoordinator) validate(
 		err := output.NewErrorf(output.CodeInvalid,
 			"target node %q is the node the task already runs on", task.NodeID).
 			WithDetails(map[string]any{"fields": map[string]any{"targetNode": "must name another node"}, "nodeId": task.NodeID})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 
 	node, err := c.client.GetNode(ctx, targetNodeRef)
 	if err != nil {
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 	if node.ID == task.NodeID {
 		err := output.NewErrorf(output.CodeInvalid,
 			"target node %q is the node the task already runs on", node.ID).
 			WithDetails(map[string]any{"fields": map[string]any{"targetNode": "must name another node"}, "nodeId": node.ID})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 	if node.State != migrationNodeStateReady || node.Availability != migrationNodeAvailabilityActive {
@@ -321,7 +367,7 @@ func (c *migrationCoordinator) validate(
 			"target node %q is %s/%s: a live migration needs a ready, active node", node.ID, node.State, node.Availability).
 			WithDetails(map[string]any{"reason": "node_not_schedulable", "nodeId": node.ID,
 				"state": node.State, "availability": node.Availability})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 
@@ -329,7 +375,7 @@ func (c *migrationCoordinator) validate(
 		err := output.NewErrorf(output.CodeConflict,
 			"a migration of service %q is already in flight", service.ID).
 			WithDetails(map[string]any{"reason": "migration_in_flight", "serviceId": service.ID})
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return plan, err
 	}
 
@@ -341,6 +387,72 @@ func (c *migrationCoordinator) validate(
 	}
 	finish(v1.MigrationPhaseOK, "")
 	return plan, nil
+}
+
+// leaderProblem reports nil when this manager may run the migration, and a typed
+// unavailable when another node is the swarm's raft leader.
+//
+// Every manager runs the API, so a call that arrives at a follower would export on
+// the source, stage on the target and update the service through SwarmKit while the
+// leader - or the follower that won the last election - does the same: both prepare
+// the same service (the node keeps one directive, so the later prepare replaces the
+// earlier) and both pin and unpin the placement, and the loser's cleanup deletes the
+// winner's directive while the winner still answers "moved". Only the leader acts.
+//
+// The gate fails open, exactly like the autoscaler's: a cluster that reports no
+// leader, a node list this manager cannot read and a daemon that does not know its own
+// hostname all mean "no verdict", and the answer to no verdict is to run the
+// migration rather than to refuse every move on a manager set that cannot report who
+// is in charge. The reason is logged once, at debug, because it repeats per call.
+func (c *migrationCoordinator) leaderProblem(ctx context.Context) error {
+	if c.self == "" {
+		c.noteNoVerdict(ctx, "this daemon's hostname is unknown")
+		return nil
+	}
+
+	nodes, err := c.client.ListNodes(ctx)
+	if err != nil {
+		c.noteNoVerdict(ctx, "the node list failed: "+publicFailure(err))
+		return nil
+	}
+
+	var leader *v1.Node
+	for i := range nodes {
+		if manager := nodes[i].Manager; manager != nil && manager.Leader {
+			leader = &nodes[i]
+			break
+		}
+	}
+	switch {
+	case leader == nil:
+		c.noteNoVerdict(ctx, "no node reports itself as the swarm leader")
+		return nil
+	case leader.Hostname == "":
+		c.noteNoVerdict(ctx, "the swarm leader has no hostname")
+		return nil
+	}
+
+	if leader.Hostname == c.self {
+		return nil
+	}
+
+	return output.NewErrorf(output.CodeUnavailable,
+		"node %q is the swarm leader, not this manager: retry the migration there", leader.Hostname).
+		WithDetails(map[string]any{"reason": "not_leader", "leader": leader.Hostname})
+}
+
+// noteNoVerdict logs a failed-open gate decision the first time it happens. Once is
+// enough: the same missing cluster fact repeats on every call, and a debug line per
+// migration would bury the ones that ran.
+func (c *migrationCoordinator) noteNoVerdict(ctx context.Context, reason string) {
+	c.mu.Lock()
+	noticed := c.gateNotice
+	c.gateNotice = true
+	c.mu.Unlock()
+	if noticed {
+		return
+	}
+	log.G(ctx).Debugf("Migration: cannot tell whether this node is the swarm leader (%s); migrating anyway", reason)
 }
 
 // run walks export through cleanup. It returns the outcome and the measured
@@ -358,7 +470,7 @@ func (c *migrationCoordinator) run(
 		err = doc.Artifact.Validate()
 	}
 	if err != nil {
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return "", 0, c.abandon(ctx, plan, state, v1.MigrationPhaseExport, err)
 	}
 	state.artifact = doc.Artifact
@@ -368,7 +480,7 @@ func (c *migrationCoordinator) run(
 	finish = run.start(v1.MigrationPhaseRelay)
 	for _, file := range artifactFiles(state.artifact) {
 		if err := c.relayFile(ctx, plan, state.artifact, file); err != nil {
-			finish(v1.MigrationPhaseError, err.Error())
+			finish(v1.MigrationPhaseError, publicFailure(err))
 			return "", 0, c.abandon(ctx, plan, state, v1.MigrationPhaseRelay, err)
 		}
 	}
@@ -376,23 +488,25 @@ func (c *migrationCoordinator) run(
 
 	finish = run.start(v1.MigrationPhasePrepare)
 	if err := c.broker.Prepare(ctx, plan.target.ID, plan.service.ID, state.artifact.ID); err != nil {
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
+		// A prepare whose answer was lost may have landed anyway: the node records
+		// the directive before it answers. abandon removes it, and the removal is
+		// artifact-scoped, so it can only remove this migration's directive.
 		return "", 0, c.abandon(ctx, plan, state, v1.MigrationPhasePrepare, err)
 	}
-	state.prepared = true
 	finish(v1.MigrationPhaseOK, "")
 
 	finish = run.start(v1.MigrationPhaseReplace)
 	if _, err := c.replace(ctx, plan, state); err != nil {
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		return "", 0, c.abandon(ctx, plan, state, v1.MigrationPhaseReplace, err)
 	}
 	finish(v1.MigrationPhaseOK, "")
 
 	finish = run.start(v1.MigrationPhaseVerify)
-	outcome, downtime, reason, err := c.verify(ctx, plan)
+	outcome, downtime, reason, err := c.verify(ctx, run.startedAt, plan)
 	if err != nil {
-		finish(v1.MigrationPhaseError, err.Error())
+		finish(v1.MigrationPhaseError, publicFailure(err))
 		// The update landed, so the directive and the artifact are the retry's:
 		// keep them and only restore the placement this call changed.
 		c.keepAfterReplace(ctx, plan, state)
@@ -471,6 +585,16 @@ func (c *migrationCoordinator) relayFile(
 // start the new one. The revision is the snapshot validate took, so a service
 // that changed while the artifact was in transit refuses this update instead of
 // having its new spec silently overwritten: that race is an error, not a retry.
+//
+// A failed update is not proof that nothing happened. SwarmKit commits the update
+// and then the answer travels back through the control socket and the client, and an
+// answer lost on that path - a deadline, a closed connection, a manager that was
+// leader when it wrote and lost the election after - leaves a service that is already
+// pinned. Treating that as "never landed" would restore the placement under a
+// replacement that is starting, delete the target's directive and discard the
+// artifact: a service with a task on the way and nothing to restore. So a failure
+// reads the service back, and constraints that are exactly the list this call wrote
+// mean the update landed and only the answer was lost.
 func (c *migrationCoordinator) replace(
 	ctx context.Context, plan migrationPlan, state *migrationState,
 ) (v1.Service, error) {
@@ -485,11 +609,34 @@ func (c *migrationCoordinator) replace(
 
 	service, err := c.client.UpdateService(ctx, plan.service.ID, patch, v1.WriteOptions{IfMatch: plan.service.Revision})
 	if err != nil {
-		return v1.Service{}, err
+		current, landed, readErr := c.readPinned(ctx, plan, pinned)
+		if readErr != nil || !landed {
+			if readErr != nil {
+				log.G(ctx).WithError(readErr).
+					Debug("Migration: could not read the service back after a failed update")
+			}
+			return v1.Service{}, err
+		}
+		log.G(ctx).WithError(err).
+			Warn("Migration: the service update's answer was lost, but the update landed: keeping the placement, the directive and the artifact")
+		service = current
 	}
 	state.pinned = pinned
 	state.placement = true
 	return service, nil
+}
+
+// readPinned reports whether the service already carries exactly the constraints the
+// failed update would have written, and returns the service it read. It is the one
+// read that can tell a committed-but-unacknowledged update from a refused one.
+func (c *migrationCoordinator) readPinned(
+	ctx context.Context, plan migrationPlan, pinned []string,
+) (v1.Service, bool, error) {
+	current, err := c.client.GetService(ctx, plan.service.ID)
+	if err != nil {
+		return v1.Service{}, false, err
+	}
+	return current, constraintsEqual(constraintsOf(current), pinned), nil
 }
 
 // verify waits for the replacement to report running on the target. It observes
@@ -497,12 +644,15 @@ func (c *migrationCoordinator) replace(
 // report carries, and a target that never loses the old task is a different
 // reason from a replacement that never starts.
 //
+// startedAt is when this migration began: only a task of this service on the target
+// that was created after it can be this call's replacement (see observeReplacement).
+//
 // A deadline is pending, not an error: the service was replaced, the directive
 // and the artifact are the retry's, and the answer says how far it got. A failed
 // replacement or an unreadable task list is an error, because waiting longer
 // cannot fix either.
 func (c *migrationCoordinator) verify(
-	ctx context.Context, plan migrationPlan,
+	ctx context.Context, startedAt time.Time, plan migrationPlan,
 ) (outcome string, downtime time.Duration, reason string, err error) {
 	deadlineCtx, cancel := context.WithTimeout(ctx, c.verifyTimeout)
 	defer cancel()
@@ -517,7 +667,7 @@ func (c *migrationCoordinator) verify(
 			return "", 0, "", listErr
 		}
 
-		observed := observeReplacement(tasks, plan.task.ID, plan.target.ID, updateReturned)
+		observed := observeReplacement(tasks, plan.service.ID, plan.task.ID, plan.target.ID, startedAt)
 		now := c.now()
 		if observed.oldGone {
 			oldGoneSeen = true
@@ -581,7 +731,9 @@ func (c *migrationCoordinator) keepAfterReplace(ctx context.Context, plan migrat
 // cleanup is the success path's last step. Restoring the placement and discarding
 // the artifact are best effort: the migration already moved, and a cleanup that
 // failed must not turn a moved service into an error the caller would retry. What
-// could not be done is reported in the phase's message.
+// could not be done is summarised in the phase's message - the failure's code and
+// reason, never its text, which names this node's or a peer's paths - and logged in
+// full here.
 func (c *migrationCoordinator) cleanup(
 	ctx context.Context, plan migrationPlan, state *migrationState, outcome string,
 ) string {
@@ -591,7 +743,8 @@ func (c *migrationCoordinator) cleanup(
 	var problems []string
 	if state.placement {
 		if err := c.restorePlacement(cleanupCtx, plan, state); err != nil {
-			problems = append(problems, "restore the service placement: "+err.Error())
+			log.G(ctx).WithError(err).Warn("Migration: cleanup could not restore the service placement")
+			problems = append(problems, "restore the service placement: "+publicFailure(err))
 		}
 	}
 	if outcome == v1.MigrationOutcomeMoved {
@@ -600,11 +753,13 @@ func (c *migrationCoordinator) cleanup(
 		// also the retry's - a restore that fails after this call reads the staged
 		// copy, not this one, so the source's copy is no longer needed.
 		if err := c.broker.Discard(cleanupCtx, plan.task.NodeID, plan.task, state.artifact); err != nil {
-			problems = append(problems, "discard the artifact on the source: "+err.Error())
+			log.G(ctx).WithError(err).Warn("Migration: cleanup could not discard the artifact on the source")
+			problems = append(problems, "discard the artifact on the source: "+publicFailure(err))
 		}
 	}
 	if err := c.spool.Remove(state.artifact.ID); err != nil {
-		problems = append(problems, "remove the spool entry: "+err.Error())
+		log.G(ctx).WithError(err).Warn("Migration: cleanup could not remove the spool entry")
+		problems = append(problems, "remove the spool entry: "+publicFailure(err))
 	}
 	return strings.Join(problems, "; ")
 }
@@ -614,18 +769,20 @@ func (c *migrationCoordinator) cleanup(
 // source's artifact, the spool entry and the placement if it was changed. Each
 // step is best effort - the first failure is the caller's error, and a cleanup
 // that fails again is logged, never substituted.
+//
+// The directive removal runs whenever an artifact exists, not only when a prepare was
+// acknowledged. A prepare whose answer was lost may have been recorded on the node
+// anyway, and leaving it behind would make the service's next task restore an artifact
+// this call is about to discard. The removal names the artifact, so it can only remove
+// this migration's directive: one that another migration prepared is left alone (and
+// logged, not reported), because it is that migration's to keep.
 func (c *migrationCoordinator) abandon(
 	ctx context.Context, plan migrationPlan, state *migrationState, phase string, cause error,
 ) error {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.cleanupTimeout)
 	defer cancel()
 
-	if state.prepared {
-		if err := c.broker.Unprepare(cleanupCtx, plan.target.ID, plan.service.ID); err != nil {
-			log.G(ctx).WithError(err).Warn("Migration: could not remove the target's directive after abandoning the migration")
-		}
-		state.prepared = false
-	}
+	c.unprepare(cleanupCtx, ctx, plan, state)
 	if state.exported {
 		if err := c.broker.Discard(cleanupCtx, plan.task.NodeID, plan.task, state.artifact); err != nil {
 			log.G(ctx).WithError(err).Warn("Migration: could not discard the source's artifact after abandoning the migration")
@@ -643,6 +800,31 @@ func (c *migrationCoordinator) abandon(
 	}
 
 	return migrationPhaseError(phase, cause)
+}
+
+// unprepare removes the target's directive for this migration's artifact, if this
+// migration produced one. logCtx is the caller's context (it may already be
+// cancelled): the removal runs on cleanupCtx, and only the log line is bound to the
+// request.
+func (c *migrationCoordinator) unprepare(
+	cleanupCtx, logCtx context.Context, plan migrationPlan, state *migrationState,
+) {
+	if state.artifact.ID == "" {
+		// Nothing was exported, so nothing can have been prepared for it.
+		return
+	}
+	err := c.broker.Unprepare(cleanupCtx, plan.target.ID, plan.service.ID, state.artifact.ID)
+	switch {
+	case err == nil:
+		return
+	case isDirectiveReplaced(err):
+		// A newer migration owns the service's directive. Leaving it is the whole
+		// point of naming the artifact: deleting it would abandon a move that is
+		// still happening.
+		log.G(logCtx).Debug("Migration: the target's directive now belongs to a newer migration; leaving it in place")
+	default:
+		log.G(logCtx).WithError(err).Warn("Migration: could not remove the target's directive after abandoning the migration")
+	}
 }
 
 // restorePlacement puts the service's placement back. It only acts while the
@@ -764,6 +946,13 @@ func invalidMigrationField(field, reason string) error {
 // migrationPhaseError names the phase a failure happened in without discarding
 // the failure's own classification: a timeout stays a timeout, a conflict stays a
 // conflict, and the caller gets the phase in details.phase.
+//
+// A cause that carries no classification of its own is classified here, and the
+// answer is what the caller retries on: a context deadline or a cancellation is a
+// timeout (the call was bounded, and running it again is the remedy), and anything
+// else is internal. An untyped cause becomes neither a 500 with a peer's text in it
+// nor a message that names a node-local path: the text stays in the log, and the
+// document says only what kind of failure it was.
 func migrationPhaseError(phase string, cause error) error {
 	var typed *output.Error
 	if errors.As(cause, &typed) {
@@ -776,8 +965,53 @@ func migrationPhaseError(phase string, cause error) error {
 		copied.Details = details
 		return &copied
 	}
-	return output.NewErrorf(output.CodeInternal, "migration %s failed: %v", phase, cause).
-		WithDetails(map[string]any{"phase": phase})
+
+	code := migrationCauseCode(cause)
+	reason := "phase_failed"
+	message := "migration " + phase + " failed"
+	switch code {
+	case output.CodeTimeout:
+		reason = "phase_timeout"
+		message = "migration " + phase + " did not finish before its deadline"
+		if errors.Is(cause, context.Canceled) && !errors.Is(cause, context.DeadlineExceeded) {
+			reason = "phase_cancelled"
+			message = "migration " + phase + " was cancelled before it finished"
+		}
+	}
+	return output.NewError(code, message).
+		WithDetails(map[string]any{"phase": phase, "reason": reason})
+}
+
+// migrationCauseCode classifies a cause that carries no classification of its own.
+// A bounded call that ran out of time, and one the caller cancelled, are both a
+// timeout: the work may be retried, and a 500 would suggest the manager is broken.
+func migrationCauseCode(cause error) output.Code {
+	switch {
+	case errors.Is(cause, context.DeadlineExceeded), errors.Is(cause, context.Canceled):
+		return output.CodeTimeout
+	default:
+		return output.CodeInternal
+	}
+}
+
+// publicFailure is how a public document names a failure: its stable code and, when
+// it has one, its stable reason. It never carries the failure's text. That text is
+// written by this node or a peer - pkg/snapshot names absolute state files,
+// pkg/runtime names the directive it could not remove, a broker error names the
+// socket it dialled - and none of that belongs in a report a caller may store. The
+// text is logged at the point of failure instead.
+func publicFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	var typed *output.Error
+	if !errors.As(err, &typed) {
+		return string(migrationCauseCode(err))
+	}
+	if reason, ok := typed.Details["reason"].(string); ok && reason != "" {
+		return fmt.Sprintf("%s (%s)", typed.Code, reason)
+	}
+	return string(typed.Code)
 }
 
 // isConflict reports whether err is a lost race: SwarmKit's revision conflict is
@@ -785,6 +1019,14 @@ func migrationPhaseError(phase string, cause error) error {
 func isConflict(err error) bool {
 	var typed *output.Error
 	return errors.As(err, &typed) && typed.Code == output.CodeConflict
+}
+
+// isDirectiveReplaced reports whether the target left a directive in place because a
+// newer migration prepared the service. It is not a failure of this migration's
+// cleanup: there is nothing left of this call's to remove.
+func isDirectiveReplaced(err error) bool {
+	var typed *output.Error
+	return errors.As(err, &typed) && typed.Details["reason"] == "directive_replaced"
 }
 
 // beginInFlight reserves a service's migration slot. It is false when another
@@ -819,23 +1061,36 @@ type migrationObservation struct {
 	failed      bool
 }
 
-// observeReplacement reads one task list. A replacement is a task of the service
-// on the target, other than the one being moved, that is running - not merely
-// created: SwarmKit reports a task it has only scheduled as new or pending, and a
-// migration is not done until the guest answers.
+// observeReplacement reads one task list. A replacement has to clear four bars: it
+// belongs to the service being moved, it is assigned to the target, its ID is not the
+// old task's, and it was created at or after since - the instant this migration
+// started. The last one is what makes a retry honest: a service can already have a
+// running task on this target from an earlier attempt (or from an earlier migration
+// that moved it back), and reporting that task as the replacement would call a move
+// finished before SwarmKit has created anything.
+//
+// The field used is CreatedAt, parsed from the task document. Slot would distinguish
+// an earlier attempt of the same service here too, but it is only unique per service
+// and a task restored from a snapshot keeps the slot it was replaced at; CreatedAt is
+// the instant SwarmKit created *this* task, which is the question being asked. A task
+// this build cannot date is never believed: waiting until the deadline is the honest
+// answer for one.
+//
+// The replacement must also be running, not merely created: SwarmKit reports a task
+// it has only scheduled as new or pending, and a migration is not done until the guest
+// answers.
 //
 // The old task is gone when it is no longer listed or when it is listed in a state
 // that no longer runs the workload (see migrationTaskStatesGone): SwarmKit keeps a
 // stopped task in the list for its retention window, so its absence is not the
 // signal.
 //
-// A failed task only counts when it was created at or after since, the instant the
-// service update returned: a service that already has a failed task on this target
-// from an earlier attempt has not just failed again, and a retry of a migration
-// must not be refused because the previous one is still in the task list. A task
-// without a parsable createdAt is never believed to be the new failure either:
-// waiting until the deadline is the honest answer for a task this call cannot date.
-func observeReplacement(tasks []v1.Task, oldTaskID, targetNodeID string, since time.Time) migrationObservation {
+// A failed task counts only under the same four bars: a service that already has a
+// failed task on this target from an earlier attempt has not just failed again, and a
+// retry of a migration must not be refused because the previous one is still listed.
+func observeReplacement(
+	tasks []v1.Task, serviceID, oldTaskID, targetNodeID string, since time.Time,
+) migrationObservation {
 	observation := migrationObservation{oldGone: true}
 
 	for i := range tasks {
@@ -846,12 +1101,12 @@ func observeReplacement(tasks []v1.Task, oldTaskID, targetNodeID string, since t
 			}
 			continue
 		}
-		if task.NodeID != targetNodeID {
+		if task.NodeID != targetNodeID || task.ServiceID != serviceID {
 			continue
 		}
 		switch task.State {
 		case migrationTaskStateRunning:
-			if observation.replacement == nil {
+			if created := taskCreatedAt(*task); observation.replacement == nil && !created.IsZero() && !created.Before(since) {
 				observation.replacement = task
 			}
 		case migrationTaskStateFailed:
@@ -887,8 +1142,13 @@ func taskCreatedAt(task v1.Task) time.Time {
 // pending migration finds the bytes the first call spooled. The store is returned
 // so the caller can schedule its sweep; the transport may be nil while the store
 // is not, and then the sweep still runs.
+//
+// self is this node's own hostname - the name the daemon resolved at startup, which
+// --hostname overrides. It is not part of the transport: it is what the leadership
+// gate compares the swarm leader against, so one manager cannot run a migration that
+// another is already running.
 func managerMigrations(
-	ctx context.Context, stateDir string, c *client.Client, nodes *broker.Manager,
+	ctx context.Context, stateDir string, c *client.Client, nodes *broker.Manager, self string,
 ) (*migrationCoordinator, *migration.Store) {
 	spool, err := migration.NewStore(migration.StoreConfig{Root: migration.SpoolRoot(stateDir)})
 	if err != nil {
@@ -899,7 +1159,7 @@ func managerMigrations(
 		log.G(ctx).Warn("Live migration is off: the node broker manager is unavailable, and there is no relay")
 		return nil, spool
 	}
-	return newMigrationCoordinator(c, nodes, spool), spool
+	return newMigrationCoordinator(c, nodes, spool, self), spool
 }
 
 // startMigrationSpoolSweeper removes spool entries nobody is holding: the ones a
@@ -948,8 +1208,12 @@ func sweepMigrationSpool(ctx context.Context, spool *migration.Store) {
 // migrationRun records the phases as they happen. The zero-value clock is never
 // used: newMigrationCoordinator always sets now.
 type migrationRun struct {
-	now    func() time.Time
-	phases []v1.MigrationPhase
+	now func() time.Time
+	// startedAt is the instant the migration began, before the first phase. It dates
+	// the replacement a verify may accept: a task created before it is not this
+	// call's.
+	startedAt time.Time
+	phases    []v1.MigrationPhase
 }
 
 // start appends a phase and returns the function that finishes it. Every phase is

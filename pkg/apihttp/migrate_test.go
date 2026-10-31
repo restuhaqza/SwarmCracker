@@ -168,19 +168,56 @@ func TestCreateMigrationAnswers201WithTheReport(t *testing.T) {
 	assert.Equal(t, v1.MigrationPhaseValidate, doc.Phases[0].Name)
 }
 
+// TestCreateMigrationCarriesTheTransportFailure pins the failure contract: the
+// manager's typed error is the answer, with the phase it names, whatever the code.
 func TestCreateMigrationCarriesTheTransportFailure(t *testing.T) {
-	transport := &fakeMigrationTransport{
-		err: output.NewError(output.CodeConflict, "the service changed while the artifact was in transit").
-			WithDetails(map[string]any{"phase": v1.MigrationPhaseReplace}),
+	cases := []struct {
+		name   string
+		err    error
+		status int
+	}{
+		{
+			name: "a lost update race",
+			err: output.NewError(output.CodeConflict, "the service changed while the artifact was in transit").
+				WithDetails(map[string]any{"phase": v1.MigrationPhaseReplace}),
+			status: http.StatusConflict,
+		},
+		{
+			name: "a follower refusing the move",
+			err: output.NewError(output.CodeUnavailable,
+				`node "manager-1" is the swarm leader, not this manager: retry the migration there`).
+				WithDetails(map[string]any{
+					"reason": "not_leader", "leader": "manager-1", "phase": v1.MigrationPhaseValidate,
+				}),
+			status: http.StatusServiceUnavailable,
+		},
+		{
+			name: "a bounded call that ran out of time",
+			err: output.NewError(output.CodeTimeout, "migration relay did not finish before its deadline").
+				WithDetails(map[string]any{"reason": "phase_timeout", "phase": v1.MigrationPhaseRelay}),
+			status: http.StatusGatewayTimeout,
+		},
 	}
-	api := newMigrationTestAPI(t, transport, nil)
 
-	rec := postMigration(t, api, api.admin, `{"taskId":"task-1","targetNode":"node-b"}`)
-	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			api := newMigrationTestAPI(t, &fakeMigrationTransport{err: tc.err}, nil)
 
-	doc := decodeErrorBody(t, rec)
-	assert.Equal(t, string(output.CodeConflict), doc.Error.Code)
-	assert.Equal(t, v1.MigrationPhaseReplace, doc.Error.Details["phase"])
+			rec := postMigration(t, api, api.admin, `{"taskId":"task-1","targetNode":"node-b"}`)
+			require.Equal(t, tc.status, rec.Code, rec.Body.String())
+
+			doc := decodeErrorBody(t, rec)
+			var typed *output.Error
+			require.ErrorAs(t, tc.err, &typed)
+			assert.Equal(t, string(typed.Code), doc.Error.Code)
+			assert.Equal(t, typed.Details["phase"], doc.Error.Details["phase"],
+				"the failing phase crosses the wire")
+			if leader, ok := typed.Details["leader"]; ok {
+				assert.Equal(t, leader, doc.Error.Details["leader"],
+					"a follower names the node to retry against")
+			}
+		})
+	}
 }
 
 // TestVersionAdvertisesMigrationOnlyWhenWired pins the capability rule the version

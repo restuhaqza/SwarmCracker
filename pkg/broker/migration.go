@@ -10,6 +10,7 @@ package broker
 //	PUT    /v1/tasks/{taskID}/migration/stage?artifactId=<id>&name=<file>&size=<n>&sha256=<hex>
 //	DELETE /v1/tasks/{taskID}/migration/discard?artifactId=<id>
 //	POST   /v1/tasks/{taskID}/migration/prepare
+//	DELETE /v1/tasks/{taskID}/migration/unprepare?serviceId=<id>&artifactId=<id>
 //
 // The restore itself is not here: loading the artifact into a new task creates the
 // TAP device, loads the snapshot and re-addresses the guest, and that has its own
@@ -138,6 +139,11 @@ const (
 	// already been discarded. It is a DELETE because it removes one, and it names the
 	// task slot in the route without reading it for the same reason prepare does:
 	// the task a migration was preparing for may never exist.
+	//
+	// It is artifact-scoped in the strict sense: the query names the artifact whose
+	// directive the caller owns, and a directive naming another artifact is a 409
+	// rather than a removal. Two managers can migrate one service, and the manager
+	// that lost the race must not delete the winner's directive.
 	MigrationUnprepareOperation = "migration/unprepare"
 
 	// migrationExportKind is the document kind migration/export answers. Like the
@@ -299,7 +305,7 @@ func NewMigrationPrepareHandler(cfg MigrationHandlerConfig) Handler {
 }
 
 // NewMigrationUnprepareHandler builds the unprepare operation. It needs only the
-// directive store: removing a directive names no artifact and touches no bytes.
+// directive store: removing a directive names no artifact bytes and touches none.
 func NewMigrationUnprepareHandler(cfg MigrationHandlerConfig) Handler {
 	h := &migrationUnprepareHandler{cfg: cfg}
 	return h.serve
@@ -1320,9 +1326,16 @@ type migrationUnprepareHandler struct {
 	cfg MigrationHandlerConfig
 }
 
-// serve removes the directive prepared for a service. It is the operation an
-// abandoned migration needs: the manager has discarded the artifact, so a directive
-// that still named it would make the service's next task here restore nothing.
+// serve removes the directive prepared for a service, but only when it names the
+// artifact the caller says it owns. It is the operation an abandoned migration needs:
+// the manager has discarded the artifact, so a directive that still named it would
+// make the service's next task here restore nothing.
+//
+// The artifact is part of the request because two managers can migrate one service
+// (a leadership change mid-call, say). Each prepares its own directive, which
+// replaces the other's; the one that then abandons must not delete the directive the
+// winner is about to consume. So a mismatch is a 409 directive_replaced and the
+// directive stays, rather than a 204 that silently removed someone else's restore.
 //
 // It is idempotent - a rollback may run twice, and may run on a node where the
 // prepare never arrived - so a service with no directive is the same 204. The store
@@ -1337,13 +1350,17 @@ func (h *migrationUnprepareHandler) serve(_ context.Context, _ Task, w http.Resp
 		return
 	}
 
-	serviceID, queryErr := parseUnprepareQuery(r)
+	request, queryErr := parseUnprepareQuery(r)
 	if queryErr != nil {
 		writeTypedError(w, http.StatusBadRequest, queryErr)
 		return
 	}
-	if err := scruntime.CheckTaskID(serviceID); err != nil {
-		writeTypedError(w, http.StatusBadRequest, invalidServiceID(serviceID))
+	if err := scruntime.CheckTaskID(request.serviceID); err != nil {
+		writeTypedError(w, http.StatusBadRequest, invalidServiceID(request.serviceID))
+		return
+	}
+	if !migration.ValidArtifactID(request.artifactID) {
+		writeTypedError(w, http.StatusBadRequest, invalidArtifactID("artifactId", request.artifactID))
 		return
 	}
 	if bodyErr := requireEmptyBody(w, r, MigrationUnprepareOperation); bodyErr != nil {
@@ -1351,38 +1368,72 @@ func (h *migrationUnprepareHandler) serve(_ context.Context, _ Task, w http.Resp
 		return
 	}
 
-	if err := h.cfg.Pending.Delete(serviceID); err != nil {
-		// The text stays here: pkg/runtime names the file it could not remove, and
-		// that is this node's own path.
+	if err := h.cfg.Pending.DeleteArtifact(request.serviceID, request.artifactID); err != nil {
+		if errors.Is(err, scruntime.ErrDirectiveReplaced) {
+			// The text stays here: it names the artifact the service now waits for,
+			// which is another migration's business.
+			log.Info().
+				Err(err).
+				Str("serviceId", request.serviceID).
+				Str("artifactId", request.artifactID).
+				Msg("A pending restore was left in place: a newer directive for this service names another artifact")
+			writeTypedError(w, http.StatusConflict, directiveReplaced(request.serviceID))
+			return
+		}
+		// pkg/runtime names the file it could not remove, and that is this node's
+		// own path.
 		log.Error().
 			Err(err).
-			Str("serviceId", serviceID).
+			Str("serviceId", request.serviceID).
+			Str("artifactId", request.artifactID).
 			Msg("A pending restore could not be removed on this node")
 		writeTypedError(w, http.StatusServiceUnavailable, pendingRestoreNotCleared())
 		return
 	}
 
 	log.Info().
-		Str("serviceId", serviceID).
+		Str("serviceId", request.serviceID).
+		Str("artifactId", request.artifactID).
 		Msg("Removed the pending restore for the service: its next task here starts cold")
 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// parseUnprepareQuery enforces the unprepare query grammar: serviceId, once, and
-// nothing else. The service is in the query rather than the body because the
-// operation removes a record and sends no document.
-func parseUnprepareQuery(r *http.Request) (string, *output.Error) {
+// unprepareRequest is the unprepare query: the service whose directive is removed and
+// the artifact the caller owns.
+type unprepareRequest struct {
+	serviceID  string
+	artifactID string
+}
+
+// parseUnprepareQuery enforces the unprepare query grammar: serviceId and artifactId,
+// once each, and nothing else. The pair is in the query rather than the body because
+// the operation removes a record and sends no document.
+func parseUnprepareQuery(r *http.Request) (unprepareRequest, *output.Error) {
+	var request unprepareRequest
+
 	query := r.URL.Query()
 	for key, values := range query {
-		if key != "serviceId" {
-			return "", invalidMigrationParameter(key, "is not a migration unprepare parameter: want serviceId")
+		switch key {
+		case "serviceId", "artifactId":
+		default:
+			return request, invalidMigrationParameter(key, "is not a migration unprepare parameter: want serviceId and artifactId")
 		}
 		if len(values) != 1 {
-			return "", invalidMigrationParameter(key, "must be set exactly once")
+			return request, invalidMigrationParameter(key, "must be set exactly once")
 		}
 	}
-	return query.Get("serviceId"), nil
+	request.serviceID, request.artifactID = query.Get("serviceId"), query.Get("artifactId")
+	return request, nil
+}
+
+// directiveReplaced is the typed 409 for a directive another migration owns. It is a
+// conflict rather than a success because the caller asked to remove a restore it does
+// not own: the node still holds one, and pretending otherwise would hide the winner.
+func directiveReplaced(serviceID string) *output.Error {
+	return output.NewError(output.CodeConflict,
+		"this node waits for a newer migration's artifact for this service: the directive names another artifact").
+		WithDetails(map[string]any{"reason": "directive_replaced", "serviceId": serviceID})
 }
 
 // invalidServiceID is the typed 400 for a service ID that is not one safe path

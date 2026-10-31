@@ -9,6 +9,11 @@
 // deadline answers pending, and the manager's own retry (the replaced service) is
 // what finishes it.
 //
+// The call is bounded by three minutes plus up to one minute of cleanup the manager
+// runs detached from the answer. A manager that is not the swarm's raft leader refuses
+// the call with a typed unavailable (503) naming the leader: the move is one operation
+// and two managers running it would fight over the same directive and placement.
+//
 // The handler is deliberately thin: gate the capability, decode the one body,
 // hand the request to the manager-side transport, audit the attempt. Every
 // decision about which task may move and where lives in the daemon's

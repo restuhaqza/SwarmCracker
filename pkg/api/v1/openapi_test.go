@@ -1698,6 +1698,10 @@ func TestOpenAPIMigrationSurface(t *testing.T) {
 	assert.Contains(t, op.Description, "details.phase", "the failing phase is contract")
 	assert.Contains(t, op.Description, "pending", "the pending outcome is contract")
 	assert.Contains(t, op.Description, "task.migrate", "the audit action is documented")
+	assert.Contains(t, op.Description, "not_leader", "the follower refusal is contract")
+	assert.Contains(t, op.Description, "one minute of", "the detached cleanup bound is documented")
+	assert.NotContains(t, op.Description, "cleanup included",
+		"cleanup runs detached with its own bound, so it is not inside the call's")
 	assert.Empty(t, op.Security, "a migration must inherit the global bearer requirement")
 
 	require.NotNil(t, op.RequestBody)

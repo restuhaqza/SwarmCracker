@@ -395,19 +395,83 @@ func TestPendingRestoresTakeRefusesAnExpiredDirective(t *testing.T) {
 	assert.True(t, found)
 }
 
-func TestPendingRestoresDelete(t *testing.T) {
-	store, _ := newTestPendingRestores(t)
+// TestPendingRestoresDeleteArtifact is ruling I1(b): the removal is artifact-scoped,
+// because two managers can migrate the same service and the loser's cleanup must not
+// delete the winner's directive while the winner still reports "moved".
+func TestPendingRestoresDeleteArtifact(t *testing.T) {
+	store, dir := newTestPendingRestores(t)
 	root := newPendingStaging(t)
 	require.NoError(t, store.Put(pendingFixture(root)))
 
-	require.NoError(t, store.Delete("svc-1"))
-	_, found, err := store.Take("svc-1", root)
-	require.NoError(t, err)
-	assert.False(t, found)
+	// Another artifact's removal is refused and leaves the directive alone.
+	err := store.DeleteArtifact("svc-1", "mig-fedcba9876543210")
+	require.ErrorIs(t, err, ErrDirectiveReplaced)
+	assert.Contains(t, err.Error(), pendingTestArtifact, "the refusal says which artifact the service waits for")
+	assert.FileExists(t, filepath.Join(dir, "svc-1"+pendingRecordSuffix),
+		"a mismatched removal is not a silent success: the directive stays")
 
-	// Idempotent: a rollback and an abandoned migration may both discard the
-	// directive, and neither may fail because the other ran first.
-	require.NoError(t, store.Delete("svc-1"))
+	// The owner's removal wins.
+	require.NoError(t, store.DeleteArtifact("svc-1", pendingTestArtifact))
+	require.NoFileExists(t, filepath.Join(dir, "svc-1"+pendingRecordSuffix))
+
+	// Idempotent: there is no directive left, and that is the answer the retried
+	// cleanup needs.
+	require.NoError(t, store.DeleteArtifact("svc-1", pendingTestArtifact))
+	require.NoError(t, store.DeleteArtifact("never-prepared", pendingTestArtifact))
+
+	// An artifact ID is required: the whole point is that the caller says which
+	// directive it owns.
+	require.Error(t, store.DeleteArtifact("svc-1", ""))
+}
+
+// TestPendingRestoresDeleteArtifactLeavesACorruptRecordGone pins the one exception:
+// a record this build cannot decode names no artifact and can restore nothing, so it
+// goes with the claim instead of wedging a cleanup.
+func TestPendingRestoresDeleteArtifactLeavesACorruptRecordGone(t *testing.T) {
+	store, dir := newTestPendingRestores(t)
+	path := filepath.Join(dir, "svc-1"+pendingRecordSuffix)
+	require.NoError(t, os.WriteFile(path, []byte("{not a directive"), 0o600))
+
+	require.NoError(t, store.DeleteArtifact("svc-1", pendingTestArtifact))
+	require.NoFileExists(t, path)
+}
+
+// TestPendingRestoresDeleteArtifactDoesNotClobberANewerDirective pins the interleaving
+// the claim exists for: a prepare lands while the removal is deciding, so the claimed
+// record is dropped rather than linked back over the newer directive.
+func TestPendingRestoresDeleteArtifactDoesNotClobberANewerDirective(t *testing.T) {
+	store, dir := newTestPendingRestores(t)
+	root := newPendingStaging(t)
+	require.NoError(t, store.Put(pendingFixture(root)))
+
+	newer := pendingFixture(root)
+	newer.ArtifactID = "mig-fedcba9876543210"
+	newer.Dir = stageArtifact(t, root, newer.ArtifactID)
+	newerBody, err := json.Marshal(newer)
+	require.NoError(t, err)
+
+	path := filepath.Join(dir, "svc-1"+pendingRecordSuffix)
+	original := linkPendingRecord
+	interleaved := false
+	linkPendingRecord = func(oldname, newname string) error {
+		if !interleaved {
+			interleaved = true
+			require.NoError(t, os.WriteFile(path, newerBody, 0o600))
+		}
+		return original(oldname, newname)
+	}
+	t.Cleanup(func() { linkPendingRecord = original })
+
+	// The removal asks for an artifact the claimed directive does not name, so the
+	// refusal path (the put-back) is the one under test.
+	require.ErrorIs(t, store.DeleteArtifact("svc-1", "mig-0000000000000000"), ErrDirectiveReplaced)
+	assert.True(t, interleaved, "the test must have written a newer directive during the removal")
+
+	data, readErr := os.ReadFile(path)
+	require.NoError(t, readErr)
+	var got PendingRestore
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.Equal(t, newer.ArtifactID, got.ArtifactID, "the newer directive is what the node keeps")
 }
 
 func TestPendingRestoresTakeMissing(t *testing.T) {
@@ -439,8 +503,9 @@ func TestPendingRestoresCorruptRecord(t *testing.T) {
 	require.NoError(t, listErr)
 	assert.Equal(t, []string{path}, skipped)
 
-	// Delete does not decode, so a bad file cannot wedge a rollback's cleanup.
-	require.NoError(t, store.Delete("svc-1"))
+	// DeleteArtifact cannot decode it either, and removes it with its claim, so a bad
+	// file cannot wedge a rollback's cleanup.
+	require.NoError(t, store.DeleteArtifact("svc-1", pendingTestArtifact))
 	require.NoFileExists(t, path)
 }
 
@@ -712,7 +777,7 @@ func TestPendingRestoresZeroValueIsRefused(t *testing.T) {
 	require.Error(t, zero.Put(pendingFixture(newPendingStaging(t))))
 	_, _, err := zero.Take("svc-1", t.TempDir())
 	require.Error(t, err)
-	require.Error(t, zero.Delete("svc-1"))
+	require.Error(t, zero.DeleteArtifact("svc-1", pendingTestArtifact))
 	_, _, err = zero.List()
 	require.Error(t, err)
 	_, err = zero.Sweep(time.Minute)

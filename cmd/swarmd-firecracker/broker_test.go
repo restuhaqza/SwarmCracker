@@ -802,8 +802,10 @@ func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
 	require.Equal(t, "artifact_not_available", prepareDoc.Error.Details["reason"])
 
 	// Unprepare is registered and idempotent: nothing was prepared for the service,
-	// and the cleanup an abandoned migration makes is a success either way.
-	unprepareReq, err := http.NewRequest(http.MethodDelete, base+"/unprepare?serviceId=svc-1", nil)
+	// and the cleanup an abandoned migration makes is a success either way. The
+	// artifact is named so the removal cannot delete another migration's directive.
+	unprepareReq, err := http.NewRequest(http.MethodDelete,
+		base+"/unprepare?serviceId=svc-1&artifactId=mig-0123456789abcdef", nil)
 	require.NoError(t, err)
 	unprepareResp, err := client.Do(unprepareReq)
 	require.NoError(t, err)
@@ -812,7 +814,8 @@ func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
 
 	// A service ID that cannot name a record file is the caller's mistake, and a 400
 	// rather than the 503 the filesystem's ENAMETOOLONG would produce further down.
-	badUnprepareReq, err := http.NewRequest(http.MethodDelete, base+"/unprepare?serviceId="+strings.Repeat("s", 4096), nil)
+	badUnprepareReq, err := http.NewRequest(http.MethodDelete,
+		base+"/unprepare?serviceId="+strings.Repeat("s", 4096)+"&artifactId=mig-0123456789abcdef", nil)
 	require.NoError(t, err)
 	badUnprepareResp, err := client.Do(badUnprepareReq)
 	require.NoError(t, err)
@@ -821,4 +824,16 @@ func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
 	var badUnprepareDoc v1.ErrorDocument
 	require.NoError(t, json.NewDecoder(badUnprepareResp.Body).Decode(&badUnprepareDoc))
 	require.Equal(t, "invalid_service_id", badUnprepareDoc.Error.Details["reason"])
+
+	// The artifact is required: a removal that did not say which directive it owns
+	// could delete the directive another manager is about to consume.
+	noArtifactReq, err := http.NewRequest(http.MethodDelete, base+"/unprepare?serviceId=svc-1", nil)
+	require.NoError(t, err)
+	noArtifactResp, err := client.Do(noArtifactReq)
+	require.NoError(t, err)
+	defer noArtifactResp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, noArtifactResp.StatusCode)
+	var noArtifactDoc v1.ErrorDocument
+	require.NoError(t, json.NewDecoder(noArtifactResp.Body).Decode(&noArtifactDoc))
+	require.Equal(t, "invalid_artifact_id", noArtifactDoc.Error.Details["reason"])
 }

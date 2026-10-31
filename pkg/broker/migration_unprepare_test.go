@@ -38,6 +38,12 @@ func unprepareFixture(t *testing.T, serviceIDs ...string) (MigrationHandlerConfi
 	return cfg, store, root
 }
 
+// unprepareQuery is the well-formed query for the fixture's directive: the service
+// and the artifact the caller says it owns.
+func unprepareQuery(serviceID string) string {
+	return "?serviceId=" + url.QueryEscape(serviceID) + "&artifactId=" + prepareTestArtifact
+}
+
 // serveUnprepare drives the unprepare handler directly, with the empty task an
 // artifact-scoped operation is given.
 func serveUnprepare(
@@ -60,7 +66,7 @@ func serveUnprepare(
 func TestMigrationUnprepareRemovesTheDirective(t *testing.T) {
 	cfg, store, _ := unprepareFixture(t, "svc-1", "svc-2")
 
-	rec := serveUnprepare(t, cfg, http.MethodDelete, "?serviceId=svc-1", nil)
+	rec := serveUnprepare(t, cfg, http.MethodDelete, unprepareQuery("svc-1"), nil)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 	assert.Empty(t, rec.Body.String(), "unprepare answers 204 with no body")
 
@@ -71,12 +77,33 @@ func TestMigrationUnprepareRemovesTheDirective(t *testing.T) {
 	assert.Equal(t, "svc-2", all[0].ServiceID)
 
 	// Idempotent: a rollback may run twice, and the second run has nothing to remove.
-	rec = serveUnprepare(t, cfg, http.MethodDelete, "?serviceId=svc-1", nil)
+	rec = serveUnprepare(t, cfg, http.MethodDelete, unprepareQuery("svc-1"), nil)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 
 	// A service nothing was ever prepared for is the same answer again.
-	rec = serveUnprepare(t, cfg, http.MethodDelete, "?serviceId=never-prepared", nil)
+	rec = serveUnprepare(t, cfg, http.MethodDelete, unprepareQuery("never-prepared"), nil)
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
+}
+
+// TestMigrationUnprepareRefusesAnotherArtifactsDirective is ruling I1(b): the node keeps
+// one directive per service, so the manager that loses a leadership race must not
+// delete the winner's. A removal that names another artifact is a 409, and the
+// directive stays for the migration that prepared it.
+func TestMigrationUnprepareRefusesAnotherArtifactsDirective(t *testing.T) {
+	cfg, store, _ := unprepareFixture(t, "svc-1")
+
+	query := "?serviceId=svc-1&artifactId=mig-fedcba9876543210"
+	rec := serveUnprepare(t, cfg, http.MethodDelete, query, nil)
+
+	require.Equal(t, http.StatusConflict, rec.Code, rec.Body.String())
+	doc := decodeMigrationError(t, rec)
+	assert.Equal(t, string(output.CodeConflict), doc.Error.Code)
+	assert.Equal(t, "directive_replaced", doc.Error.Details["reason"])
+
+	all, _, err := store.List()
+	require.NoError(t, err)
+	require.Len(t, all, 1, "the winner's directive is untouched")
+	assert.Equal(t, prepareTestArtifact, all[0].ArtifactID)
 }
 
 // TestMigrationUnprepareRefusesBadRequests pins the query grammar: serviceId once, and
@@ -122,19 +149,35 @@ func TestMigrationUnprepareRefusesBadRequests(t *testing.T) {
 		},
 		{
 			name:    "a parameter this operation does not take",
-			query:   "?serviceId=svc-1&artifactId=" + prepareTestArtifact,
-			param:   "artifactId",
-			wantSub: "artifactId",
+			query:   "?serviceId=svc-1&artifactId=" + prepareTestArtifact + "&force=true",
+			param:   "force",
+			wantSub: "force",
 		},
 		{
 			name:    "serviceId set twice",
-			query:   "?serviceId=svc-1&serviceId=svc-2",
+			query:   "?serviceId=svc-1&serviceId=svc-2&artifactId=" + prepareTestArtifact,
 			param:   "serviceId",
 			wantSub: "serviceId",
 		},
 		{
-			name:   "a body on an operation that takes none",
+			name:   "no artifactId",
 			query:  "?serviceId=svc-1",
+			reason: "invalid_artifact_id", param: "artifactId", wantSub: "artifactId",
+		},
+		{
+			name:   "an artifact ID that is not one this build generates",
+			query:  "?serviceId=svc-1&artifactId=" + url.QueryEscape("../etc/passwd"),
+			reason: "invalid_artifact_id", param: "artifactId", wantSub: "artifactId",
+		},
+		{
+			name:    "artifactId set twice",
+			query:   "?serviceId=svc-1&artifactId=" + prepareTestArtifact + "&artifactId=mig-fedcba9876543210",
+			param:   "artifactId",
+			wantSub: "artifactId",
+		},
+		{
+			name:   "a body on an operation that takes none",
+			query:  "?serviceId=svc-1&artifactId=" + prepareTestArtifact,
 			body:   []byte(`{"serviceId":"svc-1"}`),
 			reason: "unexpected_body", wantSub: "takes no body",
 		},
@@ -170,7 +213,7 @@ func TestMigrationUnprepareRefusesBadRequests(t *testing.T) {
 func TestMigrationUnprepareRefusesAnotherMethod(t *testing.T) {
 	cfg, store, _ := unprepareFixture(t, "svc-1")
 
-	rec := serveUnprepare(t, cfg, http.MethodPost, "?serviceId=svc-1", nil)
+	rec := serveUnprepare(t, cfg, http.MethodPost, unprepareQuery("svc-1"), nil)
 	require.Equal(t, http.StatusMethodNotAllowed, rec.Code, rec.Body.String())
 	assert.Equal(t, http.MethodDelete, rec.Header().Get("Allow"))
 
@@ -185,7 +228,7 @@ func TestMigrationUnprepareNeedsTheDirectiveStore(t *testing.T) {
 	cfg, _, _ := unprepareFixture(t)
 	cfg.Pending = nil
 
-	rec := serveUnprepare(t, cfg, http.MethodDelete, "?serviceId=svc-1", nil)
+	rec := serveUnprepare(t, cfg, http.MethodDelete, unprepareQuery("svc-1"), nil)
 
 	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
 	doc := decodeMigrationError(t, rec)
@@ -204,7 +247,7 @@ func TestServerRoutesUnprepareWithoutATask(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodDelete,
-		"/v1/tasks/task-gone/migration/unprepare?serviceId=svc-1", nil))
+		"/v1/tasks/task-gone/migration/unprepare"+unprepareQuery("svc-1"), nil))
 	require.Equal(t, http.StatusNoContent, rec.Code, rec.Body.String())
 	require.Empty(t, src.gotID, "an artifact-scoped operation must not resolve the task in its path")
 
@@ -237,16 +280,17 @@ func TestManagerUnprepareAsksTheTargetNode(t *testing.T) {
 	})
 
 	mgr := newMigrationTestManager(t, pki, baseURL, 0)
-	require.NoError(t, mgr.Unprepare(context.Background(), "node-2", "svc-1"))
+	require.NoError(t, mgr.Unprepare(context.Background(), "node-2", "svc-1", prepareTestArtifact))
 
 	assert.Equal(t, http.MethodDelete, got.method)
 	assert.Equal(t, "/v1/tasks/"+migrationDirectiveRouteTask+"/migration/unprepare", got.path)
-	assert.Equal(t, "serviceId=svc-1", got.query)
+	assert.Equal(t, "artifactId="+prepareTestArtifact+"&serviceId=svc-1", got.query)
 	assert.Empty(t, got.body, "unprepare names the service in the query and sends no document")
 }
 
-// TestManagerUnprepareRefusesWhatItCannotSend pins the local refusal: a service ID that
-// cannot name a record file never becomes a request.
+// TestManagerUnprepareRefusesWhatItCannotSend pins the local refusal: an ID that cannot
+// name a record file, or an artifact ID that is not one this build generates, never
+// becomes a request.
 func TestManagerUnprepareRefusesWhatItCannotSend(t *testing.T) {
 	pki := newTestPKI(t)
 
@@ -259,13 +303,24 @@ func TestManagerUnprepareRefusesWhatItCannotSend(t *testing.T) {
 	mgr := newMigrationTestManager(t, pki, baseURL, 0)
 
 	for _, serviceID := range []string{"", "svc.1", "svc/1", "svc 1", strings.Repeat("s", scruntime.MaxIDLength+1)} {
-		t.Run(serviceID, func(t *testing.T) {
-			err := mgr.Unprepare(context.Background(), "node-2", serviceID)
+		t.Run("service "+serviceID, func(t *testing.T) {
+			err := mgr.Unprepare(context.Background(), "node-2", serviceID, prepareTestArtifact)
 
 			var typed *output.Error
 			require.ErrorAs(t, err, &typed)
 			assert.Equal(t, output.CodeInvalid, typed.Code, typed.Message)
 			assert.False(t, called.Load(), "a service this build cannot name never becomes a request")
+		})
+	}
+	for _, artifactID := range []string{"", "mig-123", "../mig-0123456789abcdef", "mig-0123456789ABCDEF"} {
+		t.Run("artifact "+artifactID, func(t *testing.T) {
+			err := mgr.Unprepare(context.Background(), "node-2", "svc-1", artifactID)
+
+			var typed *output.Error
+			require.ErrorAs(t, err, &typed)
+			assert.Equal(t, output.CodeInvalid, typed.Code, typed.Message)
+			assert.Equal(t, "invalid_artifact_id", typed.Details["reason"], typed.Message)
+			assert.False(t, called.Load(), "an artifact this build cannot name never becomes a request")
 		})
 	}
 }
@@ -340,7 +395,7 @@ func TestManagerUnprepareMapsTheNodesAnswer(t *testing.T) {
 			})
 
 			mgr := newMigrationTestManager(t, pki, baseURL, 0)
-			err := mgr.Unprepare(context.Background(), "node-2", "svc-1")
+			err := mgr.Unprepare(context.Background(), "node-2", "svc-1", prepareTestArtifact)
 			if tc.wantCode == "" {
 				require.NoError(t, err)
 				return

@@ -398,8 +398,17 @@ paths:
       description: >
         Requires migrations:write, which only the admin role holds: a migration
         replaces a service's task and relays a guest's memory image between hosts.
-        The call is synchronous and bounded (three minutes, cleanup included). The
-        manager validates the task, exports it on the node it runs on, relays the
+        The call is synchronous and bounded by three minutes, plus up to one minute of
+        detached cleanup (the manager finishes the cleanup after it has composed the
+        answer, so the caller does not wait for it). Only the swarm's raft leader runs
+        a migration: a request served by any other manager answers 503 unavailable with
+        details.reason "not_leader" and details.leader naming the node to retry against,
+        because two managers running the same move would prepare the target's directive
+        twice and unpin each other's placement. A manager that cannot tell from the node
+        list which node is the leader runs the migration anyway - refusing every move
+        on a cluster that cannot report its leader would be worse than a race the
+        service update itself detects.
+        The manager validates the task, exports it on the node it runs on, relays the
         artifact's files one at a time through its own spool, records the target's
         pending-restore directive, pins the service to the target, waits for a
         replacement to report running, then restores the service's placement and
@@ -3667,7 +3676,10 @@ components:
           type: string
           description: >
             Why a non-ok phase ended that way, or which best-effort cleanup step did
-            not complete. It never carries a node-local path.
+            not complete. It is a step name plus the failure's stable code and details
+            reason (for example "discard the artifact on the source: unavailable
+            (artifact_unremovable)"), never the failure's text: that text is written by
+            this node or a peer and names node-local paths.
 
     Migration:
       type: object

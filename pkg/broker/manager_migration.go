@@ -417,16 +417,26 @@ func (m *Manager) Prepare(ctx context.Context, nodeID, serviceID, artifactID str
 	}
 }
 
-// Unprepare removes the target node's pending-restore directive for a service. It is
-// how an abandoned migration cleans up after itself: the artifact is being discarded,
-// so a directive that still named it would leave the service's next task here trying
-// to restore something that is gone.
+// Unprepare removes the target node's pending-restore directive for a service, but
+// only while it names artifactID. It is how an abandoned migration cleans up after
+// itself: the artifact is being discarded, so a directive that still named it would
+// leave the service's next task here trying to restore something that is gone.
+//
+// The artifact is part of the call because two managers can migrate one service: the
+// node keeps one directive per service, the later prepare replaces the earlier one,
+// and the manager that abandons afterwards must not delete the directive the winner
+// is about to consume. A node that answers 409 directive_replaced still holds another
+// migration's directive, and the caller learns that rather than being told the
+// service is clear.
 //
 // The node answers 204 whether or not it held a directive - a rollback may run twice,
 // and may run where the prepare never arrived - so a retried cleanup succeeds.
-func (m *Manager) Unprepare(ctx context.Context, nodeID, serviceID string) error {
+func (m *Manager) Unprepare(ctx context.Context, nodeID, serviceID, artifactID string) error {
 	if err := scruntime.CheckTaskID(serviceID); err != nil {
 		return invalidServiceID(serviceID)
+	}
+	if !migration.ValidArtifactID(artifactID) {
+		return invalidArtifactID("artifactId", artifactID)
 	}
 
 	route, err := m.routeForNode(ctx, nodeID, migrationDirectiveRouteTask, MigrationUnprepareOperation)
@@ -435,7 +445,7 @@ func (m *Manager) Unprepare(ctx context.Context, nodeID, serviceID string) error
 	}
 
 	resp, err := m.doNodeRequest(ctx, route, http.MethodDelete,
-		url.Values{"serviceId": {serviceID}}, nil, -1, "",
+		url.Values{"serviceId": {serviceID}, "artifactId": {artifactID}}, nil, -1, "",
 		m.migrationTimeout, "migration unprepare")
 	if err != nil {
 		return err

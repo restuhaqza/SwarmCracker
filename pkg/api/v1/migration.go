@@ -72,7 +72,9 @@ type MigrationPhase struct {
 	FinishedAt string `json:"finishedAt,omitempty"`
 	Result     string `json:"result"`
 	// Message explains a non-ok result, or names a best-effort cleanup step that
-	// did not complete. It never carries a node-local path.
+	// did not complete. It is a step name plus the failure's stable code and reason,
+	// never the failure's text: that text is written by this node or a peer and
+	// names node-local paths, which this document may not carry.
 	Message string `json:"message,omitempty"`
 }
 

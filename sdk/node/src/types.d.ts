@@ -185,7 +185,7 @@ export interface MigrationPhase {
   startedAt: string;
   finishedAt?: string;
   result: "ok" | "error" | "pending";
-  /** Why a non-ok phase ended that way, or which best-effort cleanup step did not complete. It never carries a node-local path. */
+  /** Why a non-ok phase ended that way, or which best-effort cleanup step did not complete. It is a step name plus the failure's stable code and details reason (for example "discard the artifact on the source: unavailable (artifact_unremovable)"), never the failure's text: that text is written by this node or a peer and names node-local paths. */
   message?: string;
 }
 

@@ -146,7 +146,7 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	// answering 501 instead of failing startup. The nil check is explicit: a nil
 	// *migrationCoordinator assigned to the interface would be non-nil, and the
 	// capability check would trust it.
-	migrations, migrationSpool := managerMigrations(ctx, stateDir, c, autoscaleBroker)
+	migrations, migrationSpool := managerMigrations(ctx, stateDir, c, autoscaleBroker, hostname)
 	var migrationBroker apihttp.MigrationBroker
 	if migrations != nil {
 		migrationBroker = migrations

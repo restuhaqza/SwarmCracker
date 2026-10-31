@@ -66,6 +66,11 @@ const (
 	pendingProbePattern = ".pending-restores-writable.probe-*"
 )
 
+// ErrDirectiveReplaced reports that the directive waiting for a service names another
+// artifact than the caller asked to remove: a newer migration has prepared the
+// service since, and its directive is not the caller's to delete.
+var ErrDirectiveReplaced = errors.New("pending-restore directive names another artifact")
+
 // linkPendingRecord is os.Link, and a test seam: a refused record is put back by hard
 // linking its claim onto the directive's name, which is how the put-back refuses to
 // replace a directive written in the meantime. The only way to exercise that moment
@@ -288,11 +293,11 @@ func (p *PendingRestores) Take(serviceID, root string) (PendingRestore, bool, er
 	return record, true, nil
 }
 
-// restoreRefusedClaim puts a refused record back under its directive's name, but only
+// restoreRefusedClaim puts a claimed record back under its directive's name, but only
 // if no directive has appeared there since the claim was taken. A prepare may land
-// while Take is reading, and renaming the refused record onto the name would replace
-// the directive the manager just wrote with the one this take decided it could not
-// use.
+// while a Take is reading or a DeleteArtifact is deciding, and renaming the claimed
+// record onto the name would replace the directive the manager just wrote with the
+// one this caller decided not to use.
 //
 // The check is the write: os.Link refuses to replace an existing name, so a link that
 // succeeds is a put-back into a directory where the directive is still absent, and a
@@ -317,39 +322,73 @@ func (p *PendingRestores) restoreRefusedClaim(claim, path string) error {
 		log.Warn().
 			Str("directive", path).
 			Str("claim", claim).
-			Msg("A pending-restore directive was prepared while a refused one was being read: the newer directive won and the refused record was dropped")
+			Msg("A pending-restore directive was written while a claimed one was being read or removed: the newer directive won and the claimed record was dropped")
 		return nil
 	default:
 		return err
 	}
 }
 
-// Delete removes a service's directive. A missing directive is success: a rollback,
-// an abandoned migration and a retried cleanup all run it, and none of them may
-// fail because another ran first. A corrupt record is removed without being
-// decoded, so a bad file cannot wedge a cleanup.
-func (p *PendingRestores) Delete(serviceID string) error {
+// DeleteArtifact removes a service's directive only when it names artifactID: the
+// directive is claimed, read, and either removed (the caller owns it) or put back
+// (a newer migration owns it) with ErrDirectiveReplaced. It is the operation an
+// abandoned migration needs now that two managers can migrate the same service: a
+// removal keyed by service alone would delete the winner's directive while it is
+// still answering "moved", and the service's next task would start cold.
+//
+// A missing directive is success, exactly like Delete: a rollback, an abandoned
+// migration and a retried cleanup all run it. A corrupt record names no artifact and
+// can restore nothing, so it goes too - a bad file must not wedge a cleanup.
+//
+// The claim is what makes the comparison and the removal one step: rotating the
+// directive to a name of this caller's own means a prepare that lands in between
+// writes a fresh directive that this removal no longer sees, and the put-back
+// refuses to replace it.
+func (p *PendingRestores) DeleteArtifact(serviceID, artifactID string) error {
 	if err := p.usable(); err != nil {
 		return err
 	}
 	if err := idProblem("serviceId", "service", serviceID); err != nil {
 		return err
 	}
+	if strings.TrimSpace(artifactID) == "" {
+		return fmt.Errorf("pending-restore directive for service %q: artifactId is empty: "+
+			"a removal must name the artifact whose directive it removes", serviceID)
+	}
 
 	path := p.path(serviceID)
-	err := os.Remove(path)
-	switch {
-	case err == nil:
-		// Put flushes the directory after its rename so the entry survives a crash;
-		// a removal needs the same flush, or a crash can bring back a directive the
-		// manager has already abandoned.
+	claim, err := p.claim(serviceID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+
+	removeClaim := func() error {
+		if removeErr := os.Remove(claim); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
+			return fmt.Errorf("pending-restore directive for service %q: remove the claim %s: %w",
+				serviceID, claim, removeErr)
+		}
 		syncDir(p.dir)
 		return nil
-	case errors.Is(err, fs.ErrNotExist):
-		return nil
-	default:
-		return fmt.Errorf("pending-restore directive for service %q: delete %s: %w", serviceID, path, err)
 	}
+
+	record, readErr := readPendingDirective(claim, path, serviceID)
+	if readErr != nil {
+		// A record this build cannot use is not a directive any task can claim, so
+		// it is removed with its claim rather than reported as another artifact's.
+		return removeClaim()
+	}
+	if record.ArtifactID != artifactID {
+		if restoreErr := p.restoreRefusedClaim(claim, path); restoreErr != nil {
+			return fmt.Errorf("%w: service %q waits for artifact %s, not %s (the directive could not be moved back from %s: %w)",
+				ErrDirectiveReplaced, serviceID, record.ArtifactID, artifactID, claim, restoreErr)
+		}
+		return fmt.Errorf("%w: service %q waits for artifact %s, not %s",
+			ErrDirectiveReplaced, serviceID, record.ArtifactID, artifactID)
+	}
+	return removeClaim()
 }
 
 // List returns every directive that decodes and validates, sorted by service ID,
