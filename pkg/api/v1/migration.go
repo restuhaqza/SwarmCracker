@@ -54,10 +54,12 @@ const (
 // MigrationRequest is the body of POST /v1/migrations: the task to move and the
 // node to move it to.
 //
-// The task is a reference a manager resolves (exact ID, unique ID prefix or
-// unique name); the node is resolved the same way. Nothing here names the source:
-// the task's own node is the source, which is what keeps a caller from exporting
-// through a node that never ran the task.
+// The task is an exact task ID: the manager reads it with a GetTask by that ID
+// and resolves nothing, so a shortened ID is a 404. The node is a reference the
+// manager does resolve - an exact ID, an exact hostname, or a unique ID prefix of
+// at least four characters. Nothing here names the source: the task's own node is
+// the source, which is what keeps a caller from exporting through a node that
+// never ran the task.
 type MigrationRequest struct {
 	TaskID     string `json:"taskId"`
 	TargetNode string `json:"targetNode"`

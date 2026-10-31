@@ -34,13 +34,16 @@ The main CLI for cluster management, service deployment, and VM operations.
 `-H` / `--host` is accepted only by the commands that have a manager-API path:
 `service ls|inspect|ps` (with `-o json`, or `-o name` on the list forms; a remote
 table exists only for `service ls`), `task ls`, `node ls`, `config ls`,
-`secret ls`, `network ls`, `vm exec`, `vm attach`, `vm migrate` and
-`vm snapshot stop-restored`. Every other command refuses `-H` with a `usage`
-error (exit `2`) rather than silently reading the local cluster. That includes
-the other `inspect` forms (`task`, `node`, `config`, `secret`, `network`) and the
-other `vm snapshot` subcommands: they are local-only until they grow a contract
-path. `vm migrate` is the one command that *requires* it: a move crosses hosts,
-so the command refuses to run without `-H`, `--ca` and a token.
+`secret ls`, `network ls`, `service logs`, `vm logs`, `vm exec`, `vm attach`,
+`vm migrate` and `vm snapshot stop-restored`. Every other command refuses `-H`
+with a `usage` error (exit `2`) rather than silently reading the local cluster.
+That includes the other `inspect` forms (`task`, `node`, `config`, `secret`,
+`network`), which reject the flag inside the command, and the other
+`vm snapshot` subcommands: they are local-only until they grow a contract path.
+(`swarmcracker`, `help`, `version` and the `api token` commands read no cluster,
+so the flag does nothing there.) Two commands *require* it: `vm migrate`, because
+a move crosses hosts, and `service logs`, because a service's replicas run on
+different nodes — both refuse to run without `-H`, `--ca` and a token.
 
 ### Commands
 
@@ -713,7 +716,9 @@ when the flags are omitted), and a declared size is honoured **exactly** — no
 
 `vm migrate <task>` moves one running microVM to another node as a SwarmKit
 replacement carrying a snapshot artifact. `<task>` is a task ID or a unique
-prefix of at least four characters. It requires `-H` (plus `--ca` and a token
+prefix of at least four characters; the command resolves both references against
+the cluster's own lists and posts the resolved IDs, because the route takes an
+exact task ID. It requires `-H` (plus `--ca` and a token
 holding `migrations:write`, which only `admin` carries) and posts one synchronous
 request to the manager, which answers the report the command prints: one line per
 phase, the measured downtime and the outcome. The call is bounded by three

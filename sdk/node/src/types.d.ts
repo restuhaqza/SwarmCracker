@@ -189,11 +189,11 @@ export interface MigrationPhase {
   message?: string;
 }
 
-/** The body of POST /v1/migrations: the task to move and the node to move it to. Both are references the manager resolves (exact id, unique id prefix or unique name); both are required, and unknown fields are rejected. */
+/** The body of POST /v1/migrations: the task to move and the node to move it to. `taskId` is an exact task ID, not a reference the manager resolves, so a prefix or a name is 404 not_found. `targetNode` is a reference the manager resolves (exact id, hostname, or a unique id prefix of at least four characters). Both are required, and unknown fields are rejected. */
 export interface MigrationRequest {
-  /** The task whose VM moves. It must be running and belong to a replicated service with exactly one replica. */
+  /** The exact ID of the task whose VM moves; a prefix or a name is 404. It must be running and belong to a replicated service with exactly one replica. */
   taskId: string;
-  /** The node to move the task to. It must not be the node the task already runs on, and it must be ready and active. */
+  /** The node to move the task to. Accepts an exact node id, an exact hostname, or a unique id prefix of at least four characters; a prefix that matches more than one node is 400 ambiguous with details.candidates. It must not be the node the task already runs on, and it must be ready and active. */
   targetNode: string;
 }
 

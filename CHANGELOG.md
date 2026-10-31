@@ -12,17 +12,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   running microVM to another node as a SwarmKit replacement carrying a snapshot
   artifact (issue #46). The source pauses once to dump the VM and copy its disk,
   resumes, and keeps serving while the artifact crosses the manager's spool to
-  the target; the target recreates the TAP device, vsock muxer and disk path its
-  state file records, loads the guest, re-addresses it to the replacement task's
-  IP before the TAP comes up, reprograms the task's published ports and lets the
-  replacement report running. The command prints the manager's report: one line
-  per phase with its duration, the downtime the manager measured at a
-  one-second poll, and an outcome. `pending` is a report rather than an error —
-  no replacement reported running within the two-minute verify deadline, the
-  artifact and the target's directive are kept, and SwarmKit's retry restores
-  them until the directive expires. One replica per service, a target with the
-  same CPU model and Firecracker version, and no volumes moved: the guest's
-  memory, disk and uptime cross, its named and bind-mounted volumes do not.
+  the target; the target recreates the TAP device its state file records, the
+  load itself recreates the vsock socket and materialises the disk at the
+  recorded paths, and the guest is then re-addressed to the replacement task's
+  IP before the TAP comes up. The replacement reprograms the task's published
+  ports and lets the replacement report running. The command prints the manager's
+  report: one line per phase with its duration, the downtime the manager
+  measured at a one-second poll, and an outcome. `pending` is a report rather
+  than an error — no replacement reported running within the two-minute verify
+  deadline, the artifact and the target's directive are kept, and SwarmKit's
+  retry restores them until the directive expires. One replica per service, a
+  target with the same CPU model and Firecracker version, and no volumes moved:
+  the guest's memory, disk and uptime cross, its named and bind-mounted volumes
+  do not.
 - **`POST /v1/migrations`** — the manager route `vm migrate` posts, with a new
   public `Migration` document: the artifact that carried the VM, the phases it
   ran, the measured `downtimeMs` and the outcome. The call is synchronous and

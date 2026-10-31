@@ -336,12 +336,13 @@ single documents — on two listeners:
 | **Unix socket** | `<state-dir>/api.sock` (default `/var/lib/swarmkit/api.sock`) | none — the socket's file mode is the credential |
 
 The read surface is phase 1 and **writes** are phase 2: services (create, patch,
-delete, rollback) and configs, secrets, networks and nodes (create, patch,
-delete). They require the resource's `:write` scope. Phase 3 adds task exec,
-the interactive console, log streaming, file transfer and live `?health`
-enrichment; the manager relays them to the node that runs the task through an
-internal mTLS broker, so the caller never picks a host. A manager with no broker
-wired answers those routes `501 not_implemented` with `details.capability`.
+delete, rollback), configs, secrets, networks and nodes (create, patch, delete),
+plus the live-migration write below. They require the resource's `:write` scope.
+The task-scoped operations — exec, the interactive console, log streaming, file
+transfer, snapshots and live `?health` enrichment — are shipped too: the manager
+relays them to the node that runs the task through an internal mTLS broker, so
+the caller never picks a host. A manager with no broker wired answers those
+routes `501 not_implemented` with `details.capability`.
 
 `api/openapi.yaml` in the repository is the normative contract for every route,
 schema, header and error code; this section is the operator's guide to it.
@@ -779,12 +780,15 @@ move rather than refusing.
 The body is a `MigrationRequest`:
 
 ```json
-{ "taskId": "5f3a1b2c9d", "targetNode": "worker-2" }
+{ "taskId": "5f3a1b2c9d4e5f60718293a4b5c6d7e8", "targetNode": "worker-2" }
 ```
 
-Both fields are required and unknown fields are rejected; each is a reference
-the manager resolves — an exact id, a unique id prefix, or (for a node) a
-hostname. The source is not a field: it is the node the task already runs on.
+Both fields are required and unknown fields are rejected. `taskId` is an **exact
+task ID**: the manager reads the task by that ID and resolves nothing, so a
+shortened ID is `404 not_found`. `targetNode` is a reference the manager does
+resolve — an exact node ID, an exact hostname, or a unique ID prefix of at least
+four characters. The source is not a field: it is the node the task already runs
+on.
 
 The answer is `201` whatever the outcome, because the request did run a
 migration. The document is a `Migration`:
@@ -809,9 +813,10 @@ Typed failures:
 
 | Status | Code / reason | When |
 |--------|---------------|------|
-| `400` | `invalid` | A blank `taskId` or `targetNode` (`details.fields`), a task that is not running, a service that is not replicated (`details.reason: "service_mode"`) or has a replica count other than one (`"replicas"`), a target equal to the source, or a target that is not ready and active (`"node_not_schedulable"`). |
+| `400` | `invalid` | A blank `taskId` or `targetNode` (`details.fields`), a task that is not running, a service that is not replicated (`details.reason: "service_mode"`) or has a replica count other than one (`"replicas"`), a target equal to the source, a target that is not ready and active (`"node_not_schedulable"`), or a target string shorter than four characters that is neither an exact node ID nor a hostname. |
+| `400` | `ambiguous` | `targetNode` is a node ID prefix that matches more than one node; `details.candidates` lists each match's `id` and `name`. |
 | `403` | `forbidden` | The token does not hold `migrations:write` (`details.requiredScope`). |
-| `404` | `not_found` | The task or target reference matches nothing. |
+| `404` | `not_found` | The task ID names no task (a prefix is not resolved), or the target reference matches nothing. |
 | `409` | `conflict` | A migration of the same service is already in flight (`details.reason: "migration_in_flight"`). |
 | `501` | `not_implemented` | This manager has no migration transport (`details.capability: "migrations"`). |
 | `503` | `unavailable` | Another node is the leader (`details.reason: "not_leader"`, `details.leader`), or the replacement failed outright after the service update (`"replacement_failed"`). |
@@ -819,10 +824,13 @@ Typed failures:
 
 A failure inside the move carries `details.phase` naming the step; an error the
 API layer raises before the move starts (a blank field, an unsupported media
-type) does not. The attempt is audited as `task.migrate`, naming the task and
-never an artifact or a path; a failed attempt is recorded with
-`result: "error"`. `Idempotency-Key` applies as it does to the other POST
-routes, so a replay returns the stored report instead of moving the task twice.
+type) does not. Every attempt that reaches the move is audited as `task.migrate`
+today — one record naming the task, never an artifact or a path, with
+`result: "ok"` for a 201 and `result: "error"` for a typed failure; a request
+rejected before the move is not audited, and a replay does not append a second
+record. `Idempotency-Key` applies here as it does on the other POST routes: the
+first answer is stored, and a retry with the same key and body returns it with
+`Idempotency-Replayed: true` instead of moving the task twice.
 The CLI workflow, the consistency window and the operator's reading of a
 `pending` report are in the [migration guide](/guides/migration/).
 
@@ -832,9 +840,10 @@ Three opt-in modifiers sit on top of the writes. Without them the phase-2
 behaviour is unchanged.
 
 **`Idempotency-Key`** (POST only: service, config, secret and network create,
-plus rollback). The key is trimmed and scoped to the token, the method and the
-path, so two callers never collide. A retry with the same key and the same body
-returns the original status, headers and body plus `Idempotency-Replayed: true`;
+plus rollback and live migration). The key is trimmed and scoped to the token,
+the method and the path, so two callers never collide. A retry with the same key
+and the same body returns the original status, headers and body plus
+`Idempotency-Replayed: true`;
 the first response never carries that header, and the replay carries the
 *retrying* request's `X-Request-Id` (a replayed error document is re-rendered
 with that same current `requestId`). The same key with a different body is
@@ -995,7 +1004,7 @@ local administrator (`type: "local"`, role `admin`) because its file mode is the
 credential.
 
 A token may also carry **task selectors**, which restrict which tasks it can
-`exec`, transfer files to or snapshot (phase 3). Selectors do not narrow the read
+`exec`, transfer files to or snapshot. Selectors do not narrow the read
 routes: a runner still lists every task its `tasks:read` scope covers.
 
 ```bash
@@ -1035,10 +1044,14 @@ means a full or read-only audit file stops recording without an error in the API
 response; watch the manager's log and the file itself.
 
 The service writes above record `service.create`, `service.update`,
-`service.delete` and `service.rollback`. A failed write records `result: "error"`
-with the reference or attempted name; a successful delete records the document
-as it was before removal. Config, secret, network and node writes (phase 2) will
-add their own actions.
+`service.delete` and `service.rollback`; the config, secret, network and node
+writes record `config.create`, `config.update`, `config.delete`,
+`secret.create`, `secret.update`, `secret.delete`, `network.create`,
+`network.delete` and `node.update`; the relayed task operations record
+`task.exec`, `task.attach`, `task.files`, `task.snapshot` and
+`task.restored.stop`; and a migration attempt records `task.migrate`. A failed
+write records `result: "error"` with the reference or attempted name; a
+successful delete records the document as it was before removal.
 
 ```bash
 # Needs an admin token: audit:read is admin-only. There is no CLI subcommand for
@@ -1058,12 +1071,6 @@ forwarded header, and absent for a Unix-socket request. A write that used
 `precondition: "revision"`, so an unconditional update is visible in the log.
 Secret and config values are never recorded. A manager without an audit log
 answers `501 not_implemented` with `details.capability: "audit"`.
-
-Phase 2 has started: service writes are audited today. Config, secret, network
-and node writes will add `config.create`, `config.update`, `config.delete`,
-`secret.create`, `secret.update`, `secret.delete`, `network.create`,
-`network.delete` and `node.update`, and phase 3 adds `task.exec`, `task.attach`,
-`task.files`, `task.snapshot`, `task.restored.stop` and `task.migrate`.
 
 ### Remote CLI reads
 

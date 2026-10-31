@@ -19,11 +19,11 @@ Swarm. This roadmap closes that gap before adding differentiation.
 ## Where we are today (strengths to keep)
 
 Per-VM kernel isolation, SwarmKit executor, cross-node VXLAN, snapshot/restore,
-live migration (`vm migrate`: a single-replica cold move that keeps the source
-serving while the artifact crosses), golden images (`recipes/*.yaml`), volume
-drivers (dir/block/quota), jailer, Prometheus metrics, `vm attach` console, node
-drain/activate, secret/config *injection* into the guest, and a
-sysvinit/systemd-aware boot path.
+golden images (`recipes/*.yaml`), volume drivers (dir/block/quota), jailer,
+Prometheus metrics, `vm attach` console, node drain/activate, secret/config
+*injection* into the guest, and a sysvinit/systemd-aware boot path. Live
+migration (`vm migrate`) is built but unreleased, so it is in the delivery table
+below rather than in this list.
 
 ## Delivery status (2026-10-31)
 
@@ -134,7 +134,7 @@ The architectural decision behind #35/#36 is recorded in
 
 | # | Feature |
 |---|---------|
-| [#46](https://github.com/restuhaqza/SwarmCracker/issues/46) | Live migration of running microVMs across nodes — **slice 11 delivered** (single-replica cold move that keeps the source serving through the transfer); slice 12 (dirty-page tracking, iterative diffs, UFFD resume, sub-second) — the standout feature versus firecracker-containerd |
+| [#46](https://github.com/restuhaqza/SwarmCracker/issues/46) | Live migration of running microVMs across nodes — **slice 11 delivered** (one replica of a `replicated` service moves to another node, and the source keeps serving through the transfer); slice 12 (dirty-page tracking, iterative diffs, UFFD resume, sub-second) — the standout feature versus firecracker-containerd |
 | [#47](https://github.com/restuhaqza/SwarmCracker/issues/47) | Resource QoS — memory balloon, CPU pinning/NUMA, hugepages, cgroup v2 |
 | [#48](https://github.com/restuhaqza/SwarmCracker/issues/48) | User-defined overlay networks and segmentation (`network create/rm`, service → network attach) |
 | [#49](https://github.com/restuhaqza/SwarmCracker/issues/49) | Autoscaling and placement intelligence |

@@ -925,9 +925,12 @@ The route is admin-only: it requires `migrations:write`, which only the `admin`
 role carries. Scopes are fixed when a token is minted, so an admin token minted
 before this feature existed keeps its old scope list and answers `403
 forbidden` with `details.requiredScope: "migrations:write"`. Mint a new admin
-token for migration work:
+token on the manager: `api token create` edits the manager's local token store
+and never contacts the API, so a token minted anywhere else lands in the wrong
+file.
 
 ```bash
+# On the manager.
 swarmcracker api token create --name migration --role admin \
   --expires-at 2027-01-01T00:00:00Z
 ```

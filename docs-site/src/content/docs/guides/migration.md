@@ -51,11 +51,12 @@ the [API reference](/reference/api/#migrations).
   restart.
 - **The guest's host-side identity, as the snapshot recorded it.** Firecracker's
   state file names the TAP device, the vsock muxer socket and the block-device
-  path of the source VM. The target creates that TAP device and materialises the
-  disk at that path before the load, and Firecracker rebinds the muxer at its
-  recorded path as it loads. The API socket and the console log are the
-  exception: they are chosen when Firecracker starts, so they belong to the new
-  task.
+  path of the source VM. The target creates that TAP device before the load,
+  because the state file resolves the interface by name; the disk copy is
+  materialised at the recorded path by the load itself, and Firecracker
+  recreates the muxer socket there as it loads. The API socket and the console
+  log are the exception: they are chosen when Firecracker starts, so they belong
+  to the new task.
 - **The guest's MAC address, and a new IP address.** The VM is the same VM, so
   its interface MAC is the one in its memory image; the guest is re-addressed to
   the address the replacement task's IPAM allocation gave it. The TAP stays down
@@ -101,10 +102,12 @@ target.
 
 The window runs from the dump to the moment the replacement starts, so its
 length is the transfer time plus the scheduling delay of the replacement:
-seconds on a healthy cluster with a fast link, and bounded by the manager's
-three-minute call bound if it is slow. If the workload cannot lose writes in
-that window, quiesce its writers before the move, or drain it and accept a
-restart instead.
+seconds on a healthy cluster with a fast link. A move that answers `moved` ended
+inside the manager's three-minute call bound, so its window is bounded by that
+too; a move that answers `pending` was answered before the replacement started,
+and nothing in the call bounds the window after it. If the workload cannot lose
+writes in that window, quiesce its writers before the move, or drain it and
+accept a restart instead.
 
 ## Requirements
 
@@ -149,9 +152,11 @@ swarmcracker -H https://manager:4244 --ca ca.crt --token-file admin.token \
 ```
 
 `<task>` is a task ID or a unique prefix of at least four characters. `--to`
-takes a node ID, a hostname, or a unique prefix of a node ID. A prefix that
-matches more than one node is refused with the candidates listed, and a typo is
-refused with the nodes the cluster has.
+takes a node ID, a hostname, or a unique prefix of a node ID. The command
+resolves both against the cluster's own lists and posts the resolved IDs, since
+the route takes an exact task ID. A prefix that matches more than one node is
+refused with the candidates listed, and a typo is refused with the nodes the
+cluster has.
 
 A successful move prints the report the manager returned:
 
@@ -159,18 +164,21 @@ A successful move prints the report the manager returned:
 Migration mig-4f2a9c1e7b3d5a62
   task      5f3a1b2c9d4e5f60718293a4b5c6d7e8
   service   svc-0123456789abcdef
-  from      node-1
-  to        node-2
-  validate  ok           12ms
-  export    ok           2.9s
-  relay     ok            11.2s
-  prepare   ok            38ms
-  replace   ok            1.4s
-  verify    ok            2.1s
-  cleanup   ok            3.4s
+  from      k3m9p2q7r4s6t8v0w1x5y7z2a
+  to        d8e2f5g9h1j3k6m0n4p7q2r5s
+  validate  ok          12ms
+  export    ok          2.9s
+  relay     ok         11.2s
+  prepare   ok          38ms
+  replace   ok          1.4s
+  verify    ok          2.1s
+  cleanup   ok          3.4s
   downtime  1.2s
   outcome   moved
 ```
+
+`from` and `to` are node IDs, not hostnames: the `--to worker-2` above resolved
+to the second ID.
 
 ## Reading the report
 
@@ -184,8 +192,12 @@ if it was never observed gone, from the instant the service update returned) to
 the first instant a replacement reported running on the target. The manager
 polls once a second, so the figure is accurate to about a second. It does not
 include the transfer, because the source is serving during it. `not measured` is
-printed when no replacement was ever seen running: an unmeasured downtime is not
-zero seconds.
+printed when the report carries no downtime at all: either no replacement was
+ever seen running — an unmeasured downtime is not zero seconds — or the
+replacement was first seen running in the same one-second poll as the old task's
+disappearance, where the gap is zero at the resolution the manager measures at.
+A fast move can therefore print `not measured` for a downtime shorter than the
+poll.
 
 No number is quoted here for the shipped command, because the transfer cost
 depends on the guest's memory size and the link. The spike behind this feature
@@ -205,6 +217,12 @@ replacement report running within its two-minute verify deadline. Nothing
 failed: the service update landed, the target keeps the directive it recorded,
 and the artifact is still staged there. SwarmKit's own retry of the replacement
 restores from that artifact, so a slow start finishes on its own.
+
+A `pending` move also skips the re-anneal: the manager only re-anneals when the
+outcome is `moved`. So the guest that eventually starts keeps its old network
+location in every node's bridge and neighbour table, and its peers can be
+unable to reach it until those entries age out — about 16 seconds in the spike
+— even though the guest itself is up.
 
 What to do: read the verify line's message first. `replacement_not_running` means
 the old task went away and the target has not reported the replacement running;
@@ -227,20 +245,26 @@ uses them, and the replacement itself is SwarmKit's to finish.
 A failure the manager reports is a typed error whose `details.phase` names the
 step that failed, so you know whether anything was replaced:
 
-- **Before `replace`** (validate, export, relay, prepare) the service was never
-  touched. The manager removes the target's directive, discards the source's
-  artifact, drops the spool entry and restores any placement it changed, then
-  answers the error. The task keeps running where it was, and the move can be
-  retried.
-- **After `replace`** the service already points at the target. The manager
-  restores the placement but keeps the target's directive and the artifact,
-  because they are what the retry restores from; a replacement that failed
-  outright answers `503 unavailable` with `details.reason:
+- **Before the update landed** (validate, export, relay, prepare, and a
+  `replace` whose update the service refused) nothing was replaced: the service
+  still points at the old task, which keeps running where it was. The manager
+  removes the target's directive, discards the source's artifact, drops the
+  spool entry and restores any placement it changed, then answers the error. The
+  move can be retried.
+- **After the update landed** (verify) the service already points at the target.
+  The manager restores the placement but keeps the target's directive and the
+  artifact, because they are what the retry restores from; a replacement that
+  failed outright answers `503 unavailable` with `details.reason:
   "replacement_failed"`.
 
-The command exits with the error's status code (`2` invalid, `4` conflict, `6`
-unavailable or timeout, `1` not implemented), so a script can tell a refused
-request from a failed move.
+The split is whether the update landed, not which step failed: a `replace` that
+answers an error is the first case, because before the manager reports that
+error it reads the service back, and an update that landed with its answer lost
+is treated as having landed.
+
+The command exits with the error's status code (`2` invalid, `3` not found, `4`
+conflict, `5` forbidden, `6` unavailable or timeout, `1` not implemented), so a
+script can tell a refused request from a failed move.
 
 ## Rollback: the artifact, not the source VM
 
@@ -278,7 +302,8 @@ the node that now runs the guest.
 The re-anneal is best effort. A node that cannot be reached is logged and does
 not turn a completed move into a failure; reachability there recovers on the
 next ARP, on the order of the stale entry's lifetime. A guest with no IPv4
-attachment has nothing to re-anneal and the step is skipped.
+attachment has nothing to re-anneal and the step is skipped. A move that ends
+`pending` does not re-anneal at all, as noted above.
 
 ## Limitations to plan around
 
