@@ -165,7 +165,10 @@ type migrationBroker interface {
 	File(ctx context.Context, nodeID string, task v1.Task, artifact migration.Artifact, name string, w io.Writer) (int64, error)
 	Stage(ctx context.Context, nodeID string, task v1.Task, artifact migration.Artifact, name string, size int64, sha256Hex string, r io.Reader) error
 	Discard(ctx context.Context, nodeID string, task v1.Task, artifact migration.Artifact) error
-	Prepare(ctx context.Context, nodeID, serviceID, artifactID string) error
+	// Prepare records the target's directive and carries the artifact's manifest with
+	// it: the restore that claims the directive reads artifact.json from the staged
+	// directory, and the bytes alone do not say what they are.
+	Prepare(ctx context.Context, nodeID, serviceID string, artifact migration.Artifact) error
 	// Unprepare removes a directive only while it names artifactID: the node's
 	// directive is keyed by service, and another manager may have prepared the
 	// service since.
@@ -503,7 +506,7 @@ func (c *migrationCoordinator) run(
 	finish(v1.MigrationPhaseOK, "")
 
 	finish = run.start(v1.MigrationPhasePrepare)
-	if err := c.broker.Prepare(ctx, plan.target.ID, plan.service.ID, state.artifact.ID); err != nil {
+	if err := c.broker.Prepare(ctx, plan.target.ID, plan.service.ID, state.artifact); err != nil {
 		finish(v1.MigrationPhaseError, publicFailure(err))
 		// A prepare whose answer was lost may have landed anyway: the node records
 		// the directive before it answers. abandon removes it, and the removal is

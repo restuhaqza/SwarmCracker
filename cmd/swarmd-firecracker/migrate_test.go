@@ -280,6 +280,9 @@ type fakeMigrationBroker struct {
 	prepares   []string
 	unprepares []string
 	reanneals  []string
+	// prepared is the manifest the last Prepare carried: the target writes it as
+	// artifact.json, so it must be the artifact this migration exported.
+	prepared migration.Artifact
 }
 
 func (f *fakeMigrationBroker) Export(ctx context.Context, sourceNode string, task v1.Task) (broker.MigrationExportDocument, error) {
@@ -364,10 +367,11 @@ func (f *fakeMigrationBroker) Discard(_ context.Context, nodeID string, _ v1.Tas
 	return f.discardErr
 }
 
-func (f *fakeMigrationBroker) Prepare(_ context.Context, nodeID, serviceID, artifactID string) error {
-	f.log.add("prepare:%s:%s:%s", nodeID, serviceID, artifactID)
+func (f *fakeMigrationBroker) Prepare(_ context.Context, nodeID, serviceID string, artifact migration.Artifact) error {
+	f.log.add("prepare:%s:%s:%s", nodeID, serviceID, artifact.ID)
 	f.mu.Lock()
-	f.prepares = append(f.prepares, serviceID+"/"+artifactID)
+	f.prepares = append(f.prepares, serviceID+"/"+artifact.ID)
+	f.prepared = artifact
 	f.mu.Unlock()
 	return f.prepareErr
 }
@@ -566,6 +570,8 @@ func TestMigrateHappyPath(t *testing.T) {
 	assert.Equal(t, []string{migrationTestArtifactID}, h.broker.discards)
 	assert.Empty(t, h.broker.unprepares, "a replacement that ran consumed the directive")
 	assert.Empty(t, h.broker.prepares[1:], "one migration records one directive")
+	assert.Equal(t, h.artifact, h.broker.prepared,
+		"the prepare carries the exported manifest: the target writes it as artifact.json for the restore")
 
 	assert.Equal(t, v1.KindMigration, doc.Kind)
 	assert.Equal(t, v1.SchemaVersion, doc.SchemaVersion)

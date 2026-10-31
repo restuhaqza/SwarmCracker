@@ -87,6 +87,11 @@ package broker
 // none. Restaging the same bytes succeeds (the checksum matches again) and a
 // differing body replaces nothing (the check happens before the rename).
 //
+// The target's manifest arrives with the directive: prepare carries the artifact
+// document, validates it, and writes it into the staged directory as artifact.json
+// before it records anything. So the bytes are a restore's input and the manifest is
+// its instructions, and neither can arrive without the other being accounted for.
+//
 // Discard is keyed by the artifact, not by the task: after a completed migration
 // the task that exported the artifact is gone, and its artifact is still the thing
 // to delete. It is idempotent, because a rollback and a success path may both run
@@ -135,9 +140,10 @@ const (
 	// instead of waiting for the snapshot store's retention.
 	MigrationDiscardOperation = "migration/discard"
 	// MigrationPrepareOperation records the directive that tells this node to
-	// restore an artifact into the next task of a service that starts here. It is
-	// a POST because it produces one, and it names the task slot in the route
-	// without reading it: the task it describes does not exist yet.
+	// restore an artifact into the next task of a service that starts here, and
+	// writes the artifact's manifest into the staged directory so the restore has
+	// something to read. It is a POST because it produces one, and it names the task
+	// slot in the route without reading it: the task it describes does not exist yet.
 	MigrationPrepareOperation = "migration/prepare"
 	// MigrationUnprepareOperation removes that directive again, so an abandoned
 	// migration does not leave a service's next task restoring an artifact that has
@@ -169,8 +175,10 @@ const (
 	migrationExportKind = "MigrationExport"
 
 	// migrationArtifactDocumentName is the manifest's file name inside an artifact
-	// directory. The source writes it; it is node-local metadata, never one of the
-	// files that move, and the target refuses to stage a file under that name.
+	// directory. The source writes it during export; it is node-local metadata, never
+	// one of the files that move, and the target refuses to stage a file under that
+	// name. A target's own copy is written by prepare, from the artifact document the
+	// directive carries, because a restore reads this file at task start.
 	migrationArtifactDocumentName = "artifact.json"
 
 	// checksumHeader carries the SHA-256 of one transferred file in both
@@ -203,8 +211,9 @@ const (
 	sha256HexChars = 64
 
 	// migrationPrepareDocumentBytes bounds the body migration/prepare accepts. The
-	// document is two short strings; the cap stops a caller from making the handler
-	// buffer an arbitrary body for a request that cannot be about anything larger.
+	// document is a directive and one artifact manifest: two short strings and a page
+	// of fields, so the cap is generous for it and still stops a caller from making
+	// the handler buffer an arbitrary body.
 	migrationPrepareDocumentBytes = 8 << 10
 
 	// migrationPrepareMediaType is the media type of the prepare body. It is plain
@@ -241,13 +250,13 @@ type MigrationHandlerConfig struct {
 	// ArtifactDir is the node's migration root, the one directory a migration
 	// uses in either direction: <ArtifactDir>/<artifactID> is a real directory
 	// holding artifact.json and the artifact's files. Export publishes into it on
-	// the source, stage writes into it on the target, file serves from it, and
-	// discard removes it. It is one root rather than a published root plus a
-	// received one because a node is both: the same cluster moves an artifact off
-	// this node today and onto it tomorrow, and an artifact is addressed by its
-	// own ID in either direction. It sits on the same filesystem as the snapshot
-	// root, so a published file is a hard link to the snapshot's rather than a
-	// copy.
+	// the source, stage writes into it on the target, prepare writes the manifest a
+	// restore reads into it, file serves from it, and discard removes it. It is one
+	// root rather than a published root plus a received one because a node is both:
+	// the same cluster moves an artifact off this node today and onto it tomorrow,
+	// and an artifact is addressed by its own ID in either direction. It sits on the
+	// same filesystem as the snapshot root, so a published file is a hard link to the
+	// snapshot's rather than a copy.
 	ArtifactDir string
 	// RootfsDir is the executor's rootfs directory. A Firecracker snapshot records
 	// the VM's block-device path but not the disk contents, so export records the
@@ -661,6 +670,24 @@ func copyArtifactFile(source, target string) error {
 // 0600 like the bytes it describes: it names the guest's disk, its vsock socket
 // and its TAP device, and nothing outside the daemon has business reading it.
 func writeArtifactDocument(dir string, artifact migration.Artifact) error {
+	return writeArtifactDocumentFile(dir, artifact, false)
+}
+
+// writeArtifactDocumentDurable is the same write with the temporary fsynced before
+// it is renamed.
+//
+// It is the write for a manifest that must outlive the answer it was written for:
+// prepare publishes artifact.json and then records a directive in a second file, and
+// a crash between the two - or a power loss after both - must not leave a manifest
+// whose bytes the disk never kept. Export needs no such promise: its manifest arrives
+// with the files it describes, in the same answer, and a node that crashed mid-export
+// left an artifact the caller never learned about.
+func writeArtifactDocumentDurable(dir string, artifact migration.Artifact) error {
+	return writeArtifactDocumentFile(dir, artifact, true)
+}
+
+// writeArtifactDocumentFile writes the manifest and reports whether it is durable.
+func writeArtifactDocumentFile(dir string, artifact migration.Artifact, durable bool) error {
 	body, err := encodeDocument(artifact)
 	if err != nil {
 		return err
@@ -679,6 +706,12 @@ func writeArtifactDocument(dir string, artifact migration.Artifact) error {
 	if _, err := tmp.Write(body); err != nil {
 		_ = tmp.Close()
 		return err
+	}
+	if durable {
+		if err := tmp.Sync(); err != nil {
+			_ = tmp.Close()
+			return err
+		}
 	}
 	if err := tmp.Close(); err != nil {
 		return err
@@ -1262,12 +1295,20 @@ type migrationPrepareHandler struct {
 }
 
 // migrationPrepareRequest is the document prepare takes: the service whose next
-// task on this node restores, and the artifact it restores. Nothing else - the
-// directory is this node's to derive, <migration root>/<artifactID>, because each
-// node has its own root and the manager does not run here.
+// task on this node restores, the artifact the directive names, and the artifact's
+// own manifest. Nothing else - the directory is this node's to derive,
+// <migration root>/<artifactID>, because each node has its own root and the manager
+// does not run here.
+//
+// The manifest is part of the directive because it is the only description of the
+// bytes the target holds. It travels as a document rather than as a staged file, and
+// prepare writes it into the artifact directory as artifact.json: that file is what
+// a restore reads at task start, so a target that received the three files alone
+// would hold an artifact it cannot use.
 type migrationPrepareRequest struct {
-	ServiceID  string `json:"serviceId"`
-	ArtifactID string `json:"artifactId"`
+	ServiceID  string             `json:"serviceId"`
+	ArtifactID string             `json:"artifactId"`
+	Artifact   migration.Artifact `json:"artifact"`
 }
 
 // serve records the directive that tells this node to restore an artifact into the
@@ -1275,10 +1316,14 @@ type migrationPrepareRequest struct {
 // creates it when the service is replaced - which is why the directive is keyed by
 // service and why the task segment of the route is never resolved.
 //
-// The request is validated before anything is written, and the directive is then
-// written by the node's store, whose Put replaces an earlier directive for the same
-// service: the manager retries a prepare it never saw the answer to, and the retry
-// describes the same migration.
+// The request is validated before anything is written, then the manifest is written
+// into the artifact directory, and only then is the directive recorded by the node's
+// store, whose Put replaces an earlier directive for the same service: the manager
+// retries a prepare it never saw the answer to, and the retry describes the same
+// migration. A manifest that cannot be written leaves no directive behind - the
+// directive is a promise that a task starting here will find an artifact, and a
+// restore that read an empty directory would fail on a node that had said it was
+// ready.
 func (h *migrationPrepareHandler) serve(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
 	if !operationSpecs[MigrationPrepareOperation].allows(r.Method) {
 		writeOperationMethodNotAllowed(w, MigrationPrepareOperation, r.Method)
@@ -1300,6 +1345,10 @@ func (h *migrationPrepareHandler) serve(_ context.Context, _ Task, w http.Respon
 	}
 	dir, status, problem := prepareDirProblem(h.cfg.ArtifactDir, request)
 	if problem != nil {
+		writeTypedError(w, status, problem)
+		return
+	}
+	if status, problem := writePrepareManifest(dir, request.Artifact); problem != nil {
 		writeTypedError(w, status, problem)
 		return
 	}
@@ -1363,11 +1412,13 @@ func decodePrepareRequest(w http.ResponseWriter, r *http.Request) (migrationPrep
 }
 
 // prepareDirProblem validates a prepare and returns the staging directory this node
-// derives for it. The service must be an ID shape and the artifact must be one
-// pkg/migration generates; then the artifact must actually be staged here, as a real
-// directory under this node's migration root. The directory is never taken from the
-// request: only this node knows its root, and a directive that named a path the
-// manager guessed would restore something else - or nothing - into the new task.
+// derives for it. The service must be an ID shape, the artifact must be one
+// pkg/migration generates, the manifest must be one this build can restore, and the
+// document's ID must be the directive's. Then the artifact must actually be staged
+// here, as a real directory under this node's migration root. The directory is never
+// taken from the request: only this node knows its root, and a directive that named a
+// path the manager guessed would restore something else - or nothing - into the new
+// task.
 //
 // existingArtifactDir is the rule for "a staged artifact this node holds", shared with
 // file and discard: a symbolic link and a plain file answer 404 rather than being
@@ -1379,7 +1430,64 @@ func prepareDirProblem(root string, request migrationPrepareRequest) (string, in
 	if !migration.ValidArtifactID(request.ArtifactID) {
 		return "", http.StatusBadRequest, invalidArtifactID("artifactId", request.ArtifactID)
 	}
+	if problem := prepareArtifactProblem(request); problem != nil {
+		return "", http.StatusBadRequest, problem
+	}
 	return existingArtifactDir(root, request.ArtifactID)
+}
+
+// prepareArtifactProblem checks the manifest the request carries: it must be one this
+// build restores, it must name the artifact the directive names, and it must name the
+// task whose restore it describes.
+//
+// Validate's own text stays here. It names the caller's paths and devices, and the
+// classification is what crosses the wire - the same rule the manager applies to a
+// node's export answer.
+func prepareArtifactProblem(request migrationPrepareRequest) *output.Error {
+	if err := request.Artifact.Validate(); err != nil {
+		// The field and the value stay here, where a human can read why: the caller
+		// is told the classification, not a sentence describing its own document.
+		log.Debug().
+			Err(err).
+			Str("artifactId", request.ArtifactID).
+			Msg("A migration manifest in a prepare was refused")
+		return invalidPrepareArtifact()
+	}
+	if request.Artifact.ID != request.ArtifactID {
+		return prepareArtifactMismatch(request.Artifact.ID, request.ArtifactID)
+	}
+	// Validate rejects an empty one; it is asked again here because this is the field
+	// that says which task's restore the manifest describes, and the rest of the
+	// validation must not be the only thing standing between a directive and a
+	// manifest naming no task at all.
+	if request.Artifact.RequestedTaskID == "" {
+		return invalidPrepareArtifact()
+	}
+	return nil
+}
+
+// writePrepareManifest publishes the artifact's manifest as artifact.json inside the
+// staging directory the directive will name. It is written before the directive is
+// recorded: a restore reads this file at task start, so a directive recorded against a
+// directory without one would be a promise the node cannot keep.
+//
+// The write is durable as well as atomic. A staged manifest outlives the answer - the
+// three files arrived by earlier requests - so it is fsynced before its name is
+// published, and a crash after the answer cannot leave an artifact.json whose bytes
+// the disk did not keep. The mode is 0600: the manifest names the guest's TAP device,
+// its vsock muxer and its disk.
+func writePrepareManifest(dir string, artifact migration.Artifact) (int, *output.Error) {
+	if err := writeArtifactDocumentDurable(dir, artifact); err != nil {
+		// The path is this node's own root; the text stays here, where a human can
+		// read why, and only the classification crosses the wire.
+		log.Error().
+			Err(err).
+			Str("dir", dir).
+			Str("artifactId", artifact.ID).
+			Msg("A migration manifest could not be written on this node")
+		return http.StatusServiceUnavailable, manifestNotRecorded()
+	}
+	return 0, nil
 }
 
 // migrationUnprepareHandler serves DELETE /v1/tasks/{taskID}/migration/unprepare.
@@ -1832,6 +1940,39 @@ func pendingRestoreNotCleared() *output.Error {
 func invalidPrepareBody(problem string) *output.Error {
 	return output.NewError(output.CodeInvalid, problem).
 		WithDetails(map[string]any{"reason": "body_unreadable"})
+}
+
+// invalidPrepareArtifact is the typed 400 for a prepare whose manifest is not one
+// this build can restore. The validation text stays on the node: it names the
+// caller's own paths and devices, and the classification is what crosses the wire.
+func invalidPrepareArtifact() *output.Error {
+	return output.NewError(output.CodeInvalid,
+		"the request's artifact is not a migration manifest this node can restore").
+		WithDetails(map[string]any{"parameter": "artifact", "reason": "artifact_invalid"})
+}
+
+// prepareArtifactMismatch is the typed 400 for a prepare whose directive and whose
+// manifest name different artifacts. Both values travel: the point of the refusal is
+// which two halves disagree.
+func prepareArtifactMismatch(named, directive string) *output.Error {
+	return output.NewErrorf(output.CodeInvalid,
+		"the request's artifact names %q, but the directive prepares %q: want the manifest of the artifact it names",
+		named, directive).
+		WithDetails(map[string]any{
+			"parameter":  "artifact",
+			"reason":     "artifact_mismatch",
+			"artifactId": directive,
+		})
+}
+
+// manifestNotRecorded is the typed 503 for a prepare whose manifest could not be
+// written into the artifact directory. Nothing is recorded either: the directive says
+// a task starting here finds an artifact, and a restore that read a directory without
+// artifact.json would fail on a node that had answered as though it were ready.
+func manifestNotRecorded() *output.Error {
+	return output.NewError(output.CodeUnavailable,
+		"the artifact manifest could not be written on this node").
+		WithDetails(map[string]any{"reason": "manifest_unrecorded"})
 }
 
 // pendingRestoreUnavailable is the typed 503 for a node whose directive store was

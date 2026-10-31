@@ -23,11 +23,31 @@ import (
 	"github.com/urfave/cli/v2"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/migration"
 	"github.com/restuhaqza/swarmcracker/pkg/output"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 )
+
+// prepareRequestFor is the prepare body a manager sends: the service, the artifact
+// the directive names, and the artifact's manifest - the document the target writes
+// as artifact.json for the restore it is promising.
+func prepareRequestFor(t *testing.T, serviceID, artifactID string) string {
+	t.Helper()
+
+	artifact := newMigrationTestArtifact(t, "task-1", serviceID, "node-1", migrationPayloads())
+	artifact.ID = artifactID
+	require.NoError(t, artifact.Validate())
+
+	body, err := json.Marshal(struct {
+		ServiceID  string             `json:"serviceId"`
+		ArtifactID string             `json:"artifactId"`
+		Artifact   migration.Artifact `json:"artifact"`
+	}{serviceID, artifactID, artifact})
+	require.NoError(t, err)
+	return string(body)
+}
 
 // TestPendingRestoresLiveUnderTheStateDirectory pins where the directive lives: beside
 // the restored-instance records, under the directory the daemon already owns, so a
@@ -129,7 +149,7 @@ func TestStartBrokerUsesTheDaemonsDirectiveStore(t *testing.T) {
 	client := brokerTestClient(clientCert, pool)
 	defer client.CloseIdleConnections()
 
-	body := `{"serviceId":"service-1","artifactId":"` + artifactID + `"}`
+	body := prepareRequestFor(t, "service-1", artifactID)
 	req, err := http.NewRequest(http.MethodPost,
 		"https://"+srv.Addr()+"/v1/tasks/migrating/migration/prepare", strings.NewReader(body))
 	require.NoError(t, err)
@@ -143,6 +163,8 @@ func TestStartBrokerUsesTheDaemonsDirectiveStore(t *testing.T) {
 		"the directive must land in the store the executor was given")
 	assert.NoFileExists(t, filepath.Join(stateDir, scruntime.PendingRestoreDirName, "service-1.json"),
 		"the broker must not open a store of its own beside the daemon's")
+	assert.FileExists(t, filepath.Join(artifactRoot, artifactID, "artifact.json"),
+		"the manifest the restored task reads must be in the directory the directive names")
 }
 
 // TestWireMigrationRestoresDegradesToBooting pins the two wiring states a node can be in:
@@ -183,7 +205,7 @@ func TestMigrationPrepareOperationIsRegistered(t *testing.T) {
 
 	// An unknown artifact is a typed refusal, not the server's unregistered-operation
 	// answer: the route exists and validates what it was sent.
-	body := `{"serviceId":"service-1","artifactId":"mig-0123456789abcdef"}`
+	body := prepareRequestFor(t, "service-1", "mig-0123456789abcdef")
 	req, err := http.NewRequest(http.MethodPost,
 		"https://"+srv.Addr()+"/v1/tasks/migrating/migration/prepare", strings.NewReader(body))
 	require.NoError(t, err)

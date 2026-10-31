@@ -10,7 +10,9 @@ package broker
 //	stage   manager -> target   the same file, streamed
 //	discard either node         the artifact, and the dump behind it
 //	prepare manager -> target   the target's directive: the next task of a service
-//	                            that starts there restores that artifact
+//	                            that starts there restores that artifact, and the
+//	                            artifact's manifest, which the target writes into the
+//	                            staged directory for that restore to read
 //	unprepare manager -> target the directive again, when the migration is abandoned
 //
 // There is no public route for any of this, and no new port or certificate: the
@@ -367,10 +369,16 @@ func (m *Manager) Discard(ctx context.Context, nodeID string, task v1.Task, arti
 }
 
 // Prepare records the target node's pending-restore directive: the next task of
-// serviceID to start there restores artifactID, whose files the manager has already
+// serviceID to start there restores artifact, whose files the manager has already
 // staged in that node's own migration root. It is called before SwarmKit creates the
 // task, which is why nothing here names one and why the route carries a placeholder
 // instead.
+//
+// The manifest travels in the body. The three files a transfer moves are the bytes,
+// and the artifact document is what says what they are - a restore reads it as
+// artifact.json at task start - so the target cannot restore an artifact it was never
+// given a description of. It is the same document export answered with, validated
+// there, and the node validates it again before it writes it.
 //
 // The directory is not in the request: each node has its own migration root, so only
 // the node can say where the artifact's files are. It derives
@@ -381,17 +389,18 @@ func (m *Manager) Discard(ctx context.Context, nodeID string, task v1.Task, arti
 // The checks here are the ones that need no node: the IDs must be the shapes the node
 // accepts. A rejected prepare is a request the node refuses, so the manager never
 // reports a restore as arranged.
-func (m *Manager) Prepare(ctx context.Context, nodeID, serviceID, artifactID string) error {
+func (m *Manager) Prepare(ctx context.Context, nodeID, serviceID string, artifact migration.Artifact) error {
 	if err := scruntime.CheckTaskID(serviceID); err != nil {
 		return invalidServiceID(serviceID)
 	}
-	if !migration.ValidArtifactID(artifactID) {
-		return invalidArtifactID("artifactId", artifactID)
+	if !migration.ValidArtifactID(artifact.ID) {
+		return invalidArtifactID("artifactId", artifact.ID)
 	}
 
 	body, err := json.Marshal(migrationPrepareRequest{
 		ServiceID:  serviceID,
-		ArtifactID: artifactID,
+		ArtifactID: artifact.ID,
+		Artifact:   artifact,
 	})
 	if err != nil {
 		return output.NewErrorf(output.CodeInternal,

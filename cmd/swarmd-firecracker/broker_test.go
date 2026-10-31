@@ -792,9 +792,11 @@ func TestStartBroker_MigrationOperationsAreRegistered(t *testing.T) {
 
 	// Prepare is registered, and the directive's directory is the node's own: an
 	// artifact this node never staged is a 404, not a directive pointing at a path
-	// the manager guessed.
+	// the manager guessed. The request carries the manifest the target would write
+	// as artifact.json, so the refusal is about the missing directory and not about
+	// an unreadable body.
 	prepareResp, err := client.Post(base+"/prepare", "application/json",
-		strings.NewReader(`{"serviceId":"svc-1","artifactId":"mig-0123456789abcdef"}`))
+		strings.NewReader(prepareRequestFor(t, "svc-1", "mig-0123456789abcdef")))
 	require.NoError(t, err)
 	defer prepareResp.Body.Close()
 	require.Equal(t, http.StatusNotFound, prepareResp.StatusCode)
