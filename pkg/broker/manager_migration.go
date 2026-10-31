@@ -140,13 +140,19 @@ func (m *Manager) Export(ctx context.Context, sourceNode string, task v1.Task) (
 }
 
 // artifactDescribesRequest checks the manifest's own identity against the task the
-// export named. The three fields are the same question asked of three things: this
-// is a dump of that task, taken on that node, for that service's single replica.
+// export named: the requested task, the source node and the service whose single
+// replica moves.
+//
+// It compares RequestedTaskID, not SourceTaskID. SourceTaskID is the VM's identity
+// - it names the TAP device, the vsock muxer and the disk the target recreates -
+// and a VM restored from an earlier migration keeps it while running under a new
+// task ID. Comparing it would refuse a chain's second hop (A→B, then B→C), where
+// the export names B and the VM still describes A.
 func artifactDescribesRequest(artifact migration.Artifact, task v1.Task, sourceNode, nodeID string) error {
 	if got := artifact.SourceNodeID; got != sourceNode {
 		return artifactNamesAnother(nodeID, "source node", sourceNode, got)
 	}
-	if got := artifact.SourceTaskID; got != task.ID {
+	if got := artifact.RequestedTaskID; got != task.ID {
 		return artifactNamesAnother(nodeID, "task", task.ID, got)
 	}
 	if got := artifact.ServiceID; got != task.ServiceID {

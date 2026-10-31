@@ -234,6 +234,8 @@ func TestMigrationExportOfARestoredTaskNamesTheVMItRuns(t *testing.T) {
 
 	require.Equal(t, "source-task", artifact.SourceTaskID,
 		"the artifact names the task whose devices the state file records")
+	require.Equal(t, "new-task", artifact.RequestedTaskID,
+		"the export was requested about this node's task, which is what the manager checks its own request against")
 	require.Equal(t, record.TapName, artifact.TapName,
 		"the TAP device is the source task's, not the new task's")
 	require.Equal(t, record.VsockPath, artifact.VsockPath,
@@ -262,6 +264,8 @@ func TestMigrationExportDescribesTheFilesItPublished(t *testing.T) {
 	require.Equal(t, migrationExportKind, doc.Kind)
 	require.NoError(t, artifact.Validate(), "an exported manifest must be complete")
 	require.Equal(t, "task-1", artifact.SourceTaskID)
+	require.Equal(t, "task-1", artifact.RequestedTaskID,
+		"a task this node booted is both the request and the VM it runs")
 	require.Equal(t, store.createInfo.ID, artifact.SnapshotID,
 		"the manifest names the dump it was made from, so discard deletes exactly that one")
 	require.Equal(t, "node-1", artifact.SourceNodeID)

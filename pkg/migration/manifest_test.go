@@ -24,21 +24,22 @@ var artifactCreatedAt = time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
 
 func validArtifact() Artifact {
 	return Artifact{
-		SchemaVersion: v1.SchemaVersion,
-		Kind:          ArtifactKind,
-		ID:            "mig-0123456789abcdef",
-		SnapshotID:    "snap-0123456789abcdef",
-		SourceTaskID:  "task-1",
-		SourceNodeID:  "node-1",
-		ServiceID:     "service-1",
-		CreatedAt:     artifactCreatedAt,
-		SnapshotAt:    artifactCreatedAt.Add(-time.Minute),
-		TapName:       "tap-7afaa346-0",
-		VsockPath:     "/var/run/firecracker/task-1.vsock",
-		DiskPath:      "/var/lib/firecracker/rootfs/tasks/task-1.ext4",
-		StateFile:     File{Name: "vm.state", Size: 15360, SHA256: strings.Repeat("a", 64)},
-		MemoryFile:    File{Name: "vm.mem", Size: 536870912, SHA256: strings.Repeat("b", 64)},
-		DiskFile:      File{Name: "rootfs.ext4", Size: 1073741824, SHA256: strings.Repeat("c", 64)},
+		SchemaVersion:   v1.SchemaVersion,
+		Kind:            ArtifactKind,
+		ID:              "mig-0123456789abcdef",
+		SnapshotID:      "snap-0123456789abcdef",
+		SourceTaskID:    "task-1",
+		RequestedTaskID: "task-1",
+		SourceNodeID:    "node-1",
+		ServiceID:       "service-1",
+		CreatedAt:       artifactCreatedAt,
+		SnapshotAt:      artifactCreatedAt.Add(-time.Minute),
+		TapName:         "tap-7afaa346-0",
+		VsockPath:       "/var/run/firecracker/task-1.vsock",
+		DiskPath:        "/var/lib/firecracker/rootfs/tasks/task-1.ext4",
+		StateFile:       File{Name: "vm.state", Size: 15360, SHA256: strings.Repeat("a", 64)},
+		MemoryFile:      File{Name: "vm.mem", Size: 536870912, SHA256: strings.Repeat("b", 64)},
+		DiskFile:        File{Name: "rootfs.ext4", Size: 1073741824, SHA256: strings.Repeat("c", 64)},
 	}
 }
 
@@ -121,6 +122,21 @@ func TestArtifactValidateRejectsBadFields(t *testing.T) {
 			name:       "source task ID missing",
 			mutate:     func(a *Artifact) { a.SourceTaskID = "" },
 			wantPhrase: "sourceTaskId is empty",
+		},
+		{
+			name:       "requested task ID missing",
+			mutate:     func(a *Artifact) { a.RequestedTaskID = "" },
+			wantPhrase: "requestedTaskId is empty",
+		},
+		{
+			name:       "requested task ID contains a path separator",
+			mutate:     func(a *Artifact) { a.RequestedTaskID = "source/task" },
+			wantPhrase: "requestedTaskId \"source/task\" is not a task ID: task ID contains a path separator",
+		},
+		{
+			name:       "requested task ID contains a dot",
+			mutate:     func(a *Artifact) { a.RequestedTaskID = "task.1" },
+			wantPhrase: "requestedTaskId \"task.1\" is not a task ID: task ID contains a dot",
 		},
 		{
 			name:       "source node ID missing",
@@ -410,8 +426,8 @@ func TestArtifactJSONRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(data, &keys))
 	for _, key := range []string{
 		"schemaVersion", "kind", "id", "sourceTaskId", "sourceNodeId", "serviceId",
-		"createdAt", "snapshotAt", "snapshotId", "tapName", "vsockPath", "diskPath",
-		"stateFile", "memoryFile", "diskFile",
+		"requestedTaskId", "createdAt", "snapshotAt", "snapshotId", "tapName",
+		"vsockPath", "diskPath", "stateFile", "memoryFile", "diskFile",
 	} {
 		assert.Contains(t, keys, key)
 	}
@@ -439,7 +455,7 @@ func TestArtifactJSONOmitsAbsentOptionalFields(t *testing.T) {
 	assert.NotContains(t, keys, "serviceId")
 	assert.NotContains(t, keys, "diskFile")
 
-	for _, key := range []string{"schemaVersion", "kind", "id", "sourceTaskId", "snapshotAt", "stateFile"} {
+	for _, key := range []string{"schemaVersion", "kind", "id", "sourceTaskId", "requestedTaskId", "snapshotAt", "stateFile"} {
 		assert.Contains(t, keys, key, "%s is not optional and must always be on the wire", key)
 	}
 }
@@ -540,6 +556,8 @@ func TestArtifactFromSnapshot(t *testing.T) {
 	assert.Equal(t, "snap-0123456789abcdef", artifact.SnapshotID,
 		"snapshotId must name the dump the artifact was made from, so discard deletes exactly that one")
 	assert.Equal(t, "task-1", artifact.SourceTaskID)
+	assert.Equal(t, "task-1", artifact.RequestedTaskID,
+		"the snapshot was taken for the task the export named, and this VM is that task")
 	assert.Equal(t, "node-1", artifact.SourceNodeID)
 	assert.Equal(t, "service-1", artifact.ServiceID)
 
@@ -564,6 +582,47 @@ func TestArtifactFromSnapshot(t *testing.T) {
 	assert.Equal(t, diskFile, artifact.DiskFile)
 
 	require.NoError(t, artifact.Validate(), "a manifest the builder produces must validate")
+}
+
+// TestArtifactRequestedForSeparatesTheTwoIdentities pins the shape a re-export
+// needs. A task this node restored from an earlier migration runs a VM whose
+// Firecracker state records the *source* task's devices, so the artifact keeps
+// that identity while the task the export was asked about is recorded as well:
+// the manager checks its own request against the latter, the target recreates the
+// names of the former.
+func TestArtifactRequestedForSeparatesTheTwoIdentities(t *testing.T) {
+	artifact := validArtifact()
+
+	requested, err := artifact.RequestedFor("task-2")
+	require.NoError(t, err)
+
+	assert.Equal(t, "task-2", requested.RequestedTaskID,
+		"requestedTaskId is the task the export was asked about")
+	assert.Equal(t, "task-1", requested.SourceTaskID,
+		"sourceTaskId stays the VM's identity, because it names the TAP device, the vsock path and the disk")
+	assert.Equal(t, artifact.TapName, requested.TapName, "the host-side names do not move with the request")
+	assert.Equal(t, artifact.VsockPath, requested.VsockPath)
+	assert.Equal(t, artifact.DiskPath, requested.DiskPath)
+	assert.Equal(t, artifact.ID, requested.ID)
+	require.NoError(t, requested.Validate(), "a re-requested artifact must still validate")
+}
+
+// TestArtifactRequestedForRefusesATaskIDThatCannotBeOne applies the one task-ID
+// rule rather than a second copy of it: the ID travels to a caller that has to
+// match it against its own task, so an empty or path-shaped one is a mistake.
+func TestArtifactRequestedForRefusesATaskIDThatCannotBeOne(t *testing.T) {
+	for _, tc := range []struct{ name, id string }{
+		{"empty", ""},
+		{"a path separator", "source/task"},
+		{"a dot", "task.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requested, err := validArtifact().RequestedFor(tc.id)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrInvalidArtifact)
+			assert.Equal(t, Artifact{}, requested, "a refused manifest hands the caller nothing to publish")
+		})
+	}
 }
 
 // TestArtifactFromSnapshotWritesLiteralHostIdentity pins the two host-side

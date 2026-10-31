@@ -81,20 +81,21 @@ func migrationArtifactFixture(t *testing.T, state, memory, disk []byte) migratio
 	t.Helper()
 
 	artifact := migration.Artifact{
-		SchemaVersion: v1.SchemaVersion,
-		Kind:          migration.ArtifactKind,
-		ID:            "mig-0123456789abcdef",
-		SnapshotID:    "snap-0123456789abcdef",
-		SourceTaskID:  migrationTestTask,
-		SourceNodeID:  "node-1",
-		ServiceID:     "svc-1",
-		CreatedAt:     time.Now().UTC(),
-		SnapshotAt:    time.Now().UTC().Add(-time.Minute),
-		TapName:       scruntime.TapName(migrationTestTask, 0),
-		VsockPath:     "/var/run/firecracker/" + migrationTestTask + ".vsock",
-		DiskPath:      "/var/lib/firecracker/rootfs/tasks/" + migrationTestTask + ".ext4",
-		StateFile:     migrationTestFile("vm.state", state),
-		MemoryFile:    migrationTestFile("vm.mem", memory),
+		SchemaVersion:   v1.SchemaVersion,
+		Kind:            migration.ArtifactKind,
+		ID:              "mig-0123456789abcdef",
+		SnapshotID:      "snap-0123456789abcdef",
+		SourceTaskID:    migrationTestTask,
+		RequestedTaskID: migrationTestTask,
+		SourceNodeID:    "node-1",
+		ServiceID:       "svc-1",
+		CreatedAt:       time.Now().UTC(),
+		SnapshotAt:      time.Now().UTC().Add(-time.Minute),
+		TapName:         scruntime.TapName(migrationTestTask, 0),
+		VsockPath:       "/var/run/firecracker/" + migrationTestTask + ".vsock",
+		DiskPath:        "/var/lib/firecracker/rootfs/tasks/" + migrationTestTask + ".ext4",
+		StateFile:       migrationTestFile("vm.state", state),
+		MemoryFile:      migrationTestFile("vm.mem", memory),
 	}
 	if disk != nil {
 		artifact.DiskFile = migrationTestFile("rootfs.ext4", disk)
@@ -255,11 +256,10 @@ func TestManagerExportRefusesAnArtifactThatIsNotThisRequest(t *testing.T) {
 		{
 			name: "another task",
 			mutate: func(a *migration.Artifact) {
-				a.SourceTaskID = "task-2"
-				// A node that dumped another task describes that task's devices
-				// consistently, so the manifest validates and only the identity
-				// check can catch it.
-				a.TapName = scruntime.TapName("task-2", 0)
+				// The requested task is the identity the manager's own request is
+				// checked against, so an answer about another one is refused here
+				// even though the manifest validates.
+				a.RequestedTaskID = "task-2"
 			},
 			code:   output.CodeInternal,
 			reason: "artifact_mismatch",
@@ -341,6 +341,54 @@ func TestManagerExportRefusesAnArtifactThatIsNotThisRequest(t *testing.T) {
 				"a refused export hands the caller nothing to spool")
 		})
 	}
+}
+
+// TestManagerExportAcceptsTheSecondHopOfAChain pins the two identities apart. A
+// task this node restored from an earlier migration runs a VM whose Firecracker
+// state records the *source* task's TAP device, vsock muxer and disk, so the
+// artifact it answers with names that source task while the export was requested
+// about this node's task. Refusing that would fail every second hop (A→B, then
+// B→C); the manager therefore checks the requested task, not the VM's identity.
+func TestManagerExportAcceptsTheSecondHopOfAChain(t *testing.T) {
+	pki := newTestPKI(t)
+	artifact := migrationArtifactFixture(t, []byte("state"), migrationTestBody(64, 1), nil)
+
+	// The VM this node restored: its devices are task-0's, and the task SwarmKit
+	// started for it is migrationTestTask.
+	const sourceVM = "task-0"
+	artifact.SourceTaskID = sourceVM
+	artifact.TapName = scruntime.TapName(sourceVM, 0)
+	artifact.VsockPath = "/var/run/firecracker/" + sourceVM + ".vsock"
+	artifact.DiskPath = "/var/lib/firecracker/rootfs/tasks/" + sourceVM + ".ext4"
+	require.NoError(t, artifact.Validate(), "a re-export describes its own VM consistently")
+
+	_, baseURL := startTestBroker(t, pki,
+		&fakeTaskSource{task: Task{ID: migrationTestTask}, found: true},
+		map[string]Handler{
+			MigrationExportOperation: func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+				body, err := encodeDocument(MigrationExportDocument{
+					SchemaVersion: v1.SchemaVersion,
+					Kind:          migrationExportKind,
+					Artifact:      artifact,
+					Dir:           "/var/lib/firecracker/migrations/" + artifact.ID,
+					Linked:        true,
+				})
+				require.NoError(t, err)
+				w.Header().Set("Content-Type", publicMediaType)
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write(body)
+			},
+		})
+
+	mgr := newMigrationTestManager(t, pki, baseURL, 0)
+	doc, err := mgr.Export(context.Background(), "node-1", v1.Task{
+		ID: migrationTestTask, NodeID: "node-1", ServiceID: "svc-1",
+	})
+	require.NoError(t, err, "the second hop of a chain is not another task's artifact")
+	assert.Equal(t, migrationTestTask, doc.Artifact.RequestedTaskID,
+		"the artifact answers the task the export named")
+	assert.Equal(t, sourceVM, doc.Artifact.SourceTaskID,
+		"the VM's identity still travels, because the target recreates its devices")
 }
 
 // TestManagerFileStreamsTheArtifactFile pins the happy path: a GET on the file

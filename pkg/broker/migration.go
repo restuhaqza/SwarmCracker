@@ -327,6 +327,14 @@ func (h *migrationExportHandler) serve(ctx context.Context, task Task, w http.Re
 	described.TaskID = vmID
 
 	artifact, err := migration.ArtifactFromSnapshot(&described, socketDir, 0)
+	if err == nil {
+		// Two identities travel. The artifact above describes the VM in the dump,
+		// whose state file records the source task's devices; the export was
+		// requested about task.ID, which is what the manager checks its own
+		// request against. They differ when this node restored the VM from an
+		// earlier migration, which is a chain's second hop and not a mistake.
+		artifact, err = artifact.RequestedFor(task.ID)
+	}
 	if err != nil {
 		// pkg/migration names the file it could not describe; only the
 		// classification crosses the wire.

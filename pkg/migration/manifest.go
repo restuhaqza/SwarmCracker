@@ -185,8 +185,17 @@ type Artifact struct {
 
 	// SourceTaskID is the task the VM ran as on the source node. It is the
 	// name the snapshot recorded, so it stays the VM's identity after the move
-	// even though SwarmKit starts the workload under a new task ID.
+	// even though SwarmKit starts the workload under a new task ID. Every
+	// host-side name in this manifest — the TAP device, the vsock muxer, the
+	// disk — belongs to the task named here.
 	SourceTaskID string `json:"sourceTaskId"`
+	// RequestedTaskID is the task the export was requested about. It is the
+	// identity a caller checks its own request against, and it is not always
+	// SourceTaskID: a task this node restored from an earlier migration runs a
+	// VM whose state file still records the devices of the task it was restored
+	// from. So the second hop of a chain (A→B, then B→C) answers about B while
+	// naming A's devices, and only this field says B.
+	RequestedTaskID string `json:"requestedTaskId"`
 	// SourceNodeID is the node the snapshot was taken on.
 	SourceNodeID string `json:"sourceNodeId"`
 	// ServiceID is the service whose single replica moves, when the snapshot
@@ -276,6 +285,15 @@ func (a Artifact) validateEnvelope() error {
 	}
 	if a.SourceTaskID == "" {
 		return invalidf("sourceTaskId is empty: want the task the snapshot was taken from, because its ID names the TAP device, the vsock path and the disk")
+	}
+	if a.RequestedTaskID == "" {
+		return invalidf("requestedTaskId is empty: want the task the export was requested about, which is what a caller checks its own request against")
+	}
+	// The same rule a task ID must pass to name a file, asked rather than
+	// re-derived: this field arrives from a node and is compared with a task ID
+	// the manager holds.
+	if err := scruntime.CheckTaskID(a.RequestedTaskID); err != nil {
+		return invalidf("requestedTaskId %q is not a task ID: %s", a.RequestedTaskID, err)
 	}
 	if a.SourceNodeID == "" {
 		return invalidf("sourceNodeId is empty: want the node the snapshot was taken on")
@@ -427,6 +445,11 @@ func invalidf(format string, args ...any) error {
 // instant (now) and SnapshotAt is the snapshot's own instant, so a TTL over the
 // artifact is not measured from the dump. It returns a manifest that passes
 // Validate, or an error.
+//
+// RequestedTaskID is the snapshot's own task, because a snapshot is created for
+// the task it was asked about. A caller describing a VM whose identity is another
+// task's — a task this node restored from an earlier migration — re-requests the
+// manifest with RequestedFor, which is what keeps the two identities apart.
 func ArtifactFromSnapshot(info *snapshot.SnapshotInfo, socketDir string, tapIndex int) (Artifact, error) {
 	if info == nil {
 		return Artifact{}, invalidf("source snapshot is missing: want a completed snapshot to describe")
@@ -480,26 +503,47 @@ func ArtifactFromSnapshot(info *snapshot.SnapshotInfo, socketDir string, tapInde
 	}
 
 	artifact := Artifact{
-		SchemaVersion: v1.SchemaVersion,
-		Kind:          ArtifactKind,
-		ID:            id,
-		SnapshotID:    info.ID,
-		SourceTaskID:  info.TaskID,
-		SourceNodeID:  info.NodeID,
-		ServiceID:     info.ServiceID,
-		CreatedAt:     time.Now().UTC(),
-		SnapshotAt:    info.CreatedAt,
-		TapName:       scruntime.TapName(info.TaskID, tapIndex),
-		VsockPath:     scruntime.VsockPath(socketDir, info.TaskID),
-		DiskPath:      info.RootfsPath,
-		StateFile:     stateFile,
-		MemoryFile:    memoryFile,
-		DiskFile:      diskFile,
+		SchemaVersion:   v1.SchemaVersion,
+		Kind:            ArtifactKind,
+		ID:              id,
+		SnapshotID:      info.ID,
+		SourceTaskID:    info.TaskID,
+		RequestedTaskID: info.TaskID,
+		SourceNodeID:    info.NodeID,
+		ServiceID:       info.ServiceID,
+		CreatedAt:       time.Now().UTC(),
+		SnapshotAt:      info.CreatedAt,
+		TapName:         scruntime.TapName(info.TaskID, tapIndex),
+		VsockPath:       scruntime.VsockPath(socketDir, info.TaskID),
+		DiskPath:        info.RootfsPath,
+		StateFile:       stateFile,
+		MemoryFile:      memoryFile,
+		DiskFile:        diskFile,
 	}
 	if err := artifact.Validate(); err != nil {
 		return Artifact{}, err
 	}
 	return artifact, nil
+}
+
+// RequestedFor returns a copy of the artifact that answers an export of taskID.
+//
+// An export has two identities and this is where they part. The manifest
+// describes the VM inside the dump, whose host-side names the snapshot recorded;
+// the export itself was requested about a task, which is the identity the caller
+// compares its own request against. The two differ exactly when the exported VM
+// was restored from an earlier migration: this node then runs the guest under a
+// new task ID while the snapshot still names the source task's TAP device, vsock
+// muxer and disk.
+//
+// The copy is validated again rather than assumed, because requestedTaskId is one
+// of the fields a reader checks.
+func (a Artifact) RequestedFor(taskID string) (Artifact, error) {
+	a.RequestedTaskID = taskID
+	if err := a.Validate(); err != nil {
+		return Artifact{}, err
+	}
+	return a, nil
 }
 
 // describeFile gives one file's wire description: its base name, its size and
