@@ -36,6 +36,7 @@ type Scope string
 const (
 	ScopeServicesRead      Scope = "services:read"
 	ScopeServicesWrite     Scope = "services:write"
+	ScopeMigrationsWrite   Scope = "migrations:write"
 	ScopeTasksRead         Scope = "tasks:read"
 	ScopeTasksExec         Scope = "tasks:exec"
 	ScopeTasksFiles        Scope = "tasks:files"
@@ -78,7 +79,10 @@ var operatorScopes = concatScopes(runnerScopes,
 	ScopeConfigsReadValues, ScopeSecretsWrite)
 
 var adminScopes = concatScopes(operatorScopes,
-	ScopeNodesWrite, ScopeTokensAdmin, ScopeAuditRead)
+	ScopeNodesWrite, ScopeTokensAdmin, ScopeAuditRead,
+	// A migration replaces a service's task and moves a guest's memory image
+	// between hosts, so it outranks a deploy: admin only.
+	ScopeMigrationsWrite)
 
 // roleScopes is the role → scope expansion table.
 var roleScopes = map[string][]Scope{

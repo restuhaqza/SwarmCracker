@@ -141,12 +141,23 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	// Snapshots and autoscaling reuse the same manager, which is why all three
 	// shapes come back from one call.
 	apiBroker, snapshotBroker, autoscaleBroker := managerBrokers(ctx, stateDir, c, cfg.snapshotTimeout)
+	// Live migration needs the same broker (it relays the artifact) and a spool
+	// on the manager's own state directory. Missing either leaves the route
+	// answering 501 instead of failing startup. The nil check is explicit: a nil
+	// *migrationCoordinator assigned to the interface would be non-nil, and the
+	// capability check would trust it.
+	migrations, migrationSpool := managerMigrations(ctx, stateDir, c, autoscaleBroker)
+	var migrationBroker apihttp.MigrationBroker
+	if migrations != nil {
+		migrationBroker = migrations
+	}
 
 	srv, err := apihttp.New(apihttp.Config{
 		Client:           c,
 		Broker:           apiBroker,
 		Snapshots:        snapshotBroker,
 		SnapshotsEnabled: cfg.snapshotsEnabled,
+		Migrations:       migrationBroker,
 		Tokens:           store,
 		Audit:            audit,
 		CertDir:          cfg.certDir,
@@ -196,6 +207,12 @@ func startAPI(ctx context.Context, cfg apiRuntime, stateDir, hostname, listenCon
 	// once at startup: it is what the leadership gate matches the swarm leader
 	// against.
 	startManagerAutoscaler(runCtx, autoscaleBroker, c, c, c, hostname)
+
+	// The spool outlives a failed migration by design (a pending restore is
+	// retried from it), so a manager that stopped without cleaning up leaves
+	// entries only the sweep will find. It runs once at startup and then on the
+	// same run context as the listeners, so stopping the API stops it.
+	startMigrationSpoolSweeper(runCtx, migrationSpool)
 
 	var once sync.Once
 	stop := func() {
@@ -256,7 +273,7 @@ func managerBrokers(
 		// snapshots and autoscaling. Saying only "exec" would leave an operator
 		// wondering why snapshots and scaling silently do nothing.
 		log.G(ctx).WithError(err).Warn("Programmatic API: the node broker manager is unavailable; " +
-			"exec, snapshots and autoscaling are disabled")
+			"exec, snapshots, autoscaling and live migration are disabled")
 		return nil, nil, nil
 	}
 	return mgr, mgr, mgr

@@ -1,0 +1,925 @@
+package main
+
+// The tests in this file drive the whole migration flow against fakes, and the
+// spool for real: the manager's side of the move is a sequence of calls and a
+// hand-off of bytes, so the two things worth pinning are the order of the calls
+// (which hop happened before which) and what every failure leaves behind.
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
+	"testing"
+	"time"
+
+	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
+	"github.com/restuhaqza/swarmcracker/pkg/broker"
+	"github.com/restuhaqza/swarmcracker/pkg/migration"
+	"github.com/restuhaqza/swarmcracker/pkg/output"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// migrationTestArtifactID is a well-formed artifact ID.
+const migrationTestArtifactID = "mig-0123456789abcdef"
+
+// migrationCallLog is one ordered log of both fakes, because the point of the
+// flow is the order across them: export before file, file before stage, stage
+// before prepare, update after prepare.
+type migrationCallLog struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (l *migrationCallLog) add(format string, args ...any) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = append(l.calls, fmt.Sprintf(format, args...))
+}
+
+func (l *migrationCallLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.calls...)
+}
+
+// migrationUpdate is one recorded service update: the patch and the precondition,
+// so the test can assert the pinned constraint and the revision it was pinned
+// against.
+type migrationUpdate struct {
+	ref         string
+	constraints []string
+	ifMatch     string
+}
+
+// fakeMigrationClient is the control plane the coordinator reads and writes.
+type fakeMigrationClient struct {
+	log *migrationCallLog
+
+	mu      sync.Mutex
+	task    v1.Task
+	service v1.Service
+	node    v1.Node
+
+	taskErr    error
+	serviceErr error
+	nodeErr    error
+	tasksErr   error
+	updateErr  error
+
+	// taskSteps scripts ListServiceTasks: each call consumes one entry, and the
+	// last entry repeats. Nil serves serviceTasks unchanged.
+	taskSteps [][]v1.Task
+	stepIndex int
+
+	updates []migrationUpdate
+	// updateErrs is a queue of scripted results: each service update consumes one
+	// entry, falling back to updateErr when the queue is empty.
+	updateErrs []error
+	// revision is the fake's service revision; an update increments it.
+	revision int
+}
+
+func (f *fakeMigrationClient) GetTask(_ context.Context, ref string) (v1.Task, error) {
+	f.log.add("task:%s", ref)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.taskErr != nil {
+		return v1.Task{}, f.taskErr
+	}
+	return f.task, nil
+}
+
+func (f *fakeMigrationClient) GetService(_ context.Context, ref string) (v1.Service, error) {
+	f.log.add("service:%s", ref)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.serviceErr != nil {
+		return v1.Service{}, f.serviceErr
+	}
+	return f.snapshotService(), nil
+}
+
+func (f *fakeMigrationClient) ListServiceTasks(_ context.Context, ref string) ([]v1.Task, error) {
+	f.log.add("tasks:%s", ref)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.tasksErr != nil {
+		return nil, f.tasksErr
+	}
+	if len(f.taskSteps) == 0 {
+		return nil, nil
+	}
+	index := f.stepIndex
+	if index >= len(f.taskSteps) {
+		index = len(f.taskSteps) - 1
+	}
+	f.stepIndex++
+	return f.taskSteps[index], nil
+}
+
+func (f *fakeMigrationClient) GetNode(_ context.Context, ref string) (v1.Node, error) {
+	f.log.add("node:%s", ref)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.nodeErr != nil {
+		return v1.Node{}, f.nodeErr
+	}
+	return f.node, nil
+}
+
+func (f *fakeMigrationClient) UpdateService(_ context.Context, ref string, patch []byte, opts v1.WriteOptions) (v1.Service, error) {
+	f.log.add("update:%s", ref)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	constraints, err := placementConstraintsInPatch(patch)
+	if err != nil {
+		return v1.Service{}, err
+	}
+	f.updates = append(f.updates, migrationUpdate{ref: ref, constraints: constraints, ifMatch: opts.IfMatch})
+
+	err = f.updateErr
+	if len(f.updateErrs) > 0 {
+		err = f.updateErrs[0]
+		f.updateErrs = f.updateErrs[1:]
+	}
+	if err != nil {
+		return v1.Service{}, err
+	}
+
+	if len(constraints) == 0 {
+		f.service.Spec.Placement = nil
+	} else {
+		f.service.Spec.Placement = &v1.Placement{Constraints: append([]string(nil), constraints...)}
+	}
+	f.revision++
+	f.service.Revision = strconv.Itoa(f.revision)
+	return f.snapshotService(), nil
+}
+
+// snapshotService copies the service so a caller cannot mutate the fake's state.
+func (f *fakeMigrationClient) snapshotService() v1.Service {
+	service := f.service
+	if service.Spec.Placement != nil {
+		placement := *service.Spec.Placement
+		placement.Constraints = append([]string(nil), service.Spec.Placement.Constraints...)
+		service.Spec.Placement = &placement
+	}
+	return service
+}
+
+// placementConstraintsInPatch reads the constraints a merge patch names. It is
+// deliberately strict: the test fails on a patch that does not carry the one
+// subtree the flow is allowed to write.
+func placementConstraintsInPatch(patch []byte) ([]string, error) {
+	var decoded struct {
+		Spec struct {
+			Placement *struct {
+				Constraints []string `json:"constraints"`
+			} `json:"placement"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(patch, &decoded); err != nil {
+		return nil, fmt.Errorf("the service patch is not JSON: %w", err)
+	}
+	if decoded.Spec.Placement == nil {
+		return nil, errors.New("the service patch names no placement")
+	}
+	return decoded.Spec.Placement.Constraints, nil
+}
+
+// fakeMigrationBroker is the broker manager's migration transport.
+type fakeMigrationBroker struct {
+	log *migrationCallLog
+
+	mu       sync.Mutex
+	artifact migration.Artifact
+	payloads map[string][]byte
+
+	exportErr    error
+	fileErr      error
+	stageErrName string
+	stageErr     error
+	discardErr   error
+	prepareErr   error
+	unprepareErr error
+
+	// exportGate, when non-nil, holds Export until it is closed: the concurrency
+	// test uses it to keep one migration inside the flow.
+	exportGate chan struct{}
+	entered    chan struct{}
+	enterOnce  sync.Once
+
+	discards   []string
+	prepares   []string
+	unprepares []string
+}
+
+func (f *fakeMigrationBroker) Export(ctx context.Context, sourceNode string, task v1.Task) (broker.MigrationExportDocument, error) {
+	f.log.add("export:%s:%s", sourceNode, task.ID)
+	if f.entered != nil {
+		f.enterOnce.Do(func() { close(f.entered) })
+	}
+	if f.exportGate != nil {
+		select {
+		case <-f.exportGate:
+		case <-ctx.Done():
+			return broker.MigrationExportDocument{}, ctx.Err()
+		}
+	}
+	if f.exportErr != nil {
+		return broker.MigrationExportDocument{}, f.exportErr
+	}
+	return broker.MigrationExportDocument{
+		SchemaVersion: v1.SchemaVersion,
+		Kind:          "MigrationArtifact",
+		Artifact:      f.artifact,
+		Dir:           "/var/lib/migration/" + f.artifact.ID,
+	}, nil
+}
+
+func (f *fakeMigrationBroker) File(
+	_ context.Context, nodeID string, _ v1.Task, _ migration.Artifact, name string, w io.Writer,
+) (int64, error) {
+	f.log.add("file:%s:%s", nodeID, name)
+	if f.fileErr != nil {
+		return 0, f.fileErr
+	}
+	f.mu.Lock()
+	payload, ok := f.payloads[name]
+	f.mu.Unlock()
+	if !ok {
+		return 0, fmt.Errorf("fake broker has no payload for %q", name)
+	}
+	written, err := w.Write(payload)
+	return int64(written), err
+}
+
+func (f *fakeMigrationBroker) Stage(
+	_ context.Context, nodeID string, _ v1.Task, artifact migration.Artifact,
+	name string, size int64, sha256Hex string, r io.Reader,
+) error {
+	f.log.add("stage:%s:%s", nodeID, name)
+	if f.stageErr != nil && f.stageErrName == name {
+		return f.stageErr
+	}
+
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	if int64(len(body)) != size {
+		return fmt.Errorf("staged %q as %d bytes: want %d", name, len(body), size)
+	}
+	sum := sha256.Sum256(body)
+	if got := hex.EncodeToString(sum[:]); got != sha256Hex {
+		return fmt.Errorf("staged %q with SHA-256 %s: want %s", name, got, sha256Hex)
+	}
+	if f.payloads != nil && string(body) != string(f.payloads[name]) {
+		return fmt.Errorf("staged %q with bytes the source never served", name)
+	}
+	return nil
+}
+
+func (f *fakeMigrationBroker) Discard(_ context.Context, nodeID string, _ v1.Task, artifact migration.Artifact) error {
+	f.log.add("discard:%s:%s", nodeID, artifact.ID)
+	f.mu.Lock()
+	f.discards = append(f.discards, artifact.ID)
+	f.mu.Unlock()
+	return f.discardErr
+}
+
+func (f *fakeMigrationBroker) Prepare(_ context.Context, nodeID, serviceID, artifactID string) error {
+	f.log.add("prepare:%s:%s:%s", nodeID, serviceID, artifactID)
+	f.mu.Lock()
+	f.prepares = append(f.prepares, serviceID+"/"+artifactID)
+	f.mu.Unlock()
+	return f.prepareErr
+}
+
+func (f *fakeMigrationBroker) Unprepare(_ context.Context, nodeID, serviceID string) error {
+	f.log.add("unprepare:%s:%s", nodeID, serviceID)
+	f.mu.Lock()
+	f.unprepares = append(f.unprepares, serviceID)
+	f.mu.Unlock()
+	return f.unprepareErr
+}
+
+// migrationHarness is one coordinator plus the two fakes and the real spool.
+type migrationHarness struct {
+	coordinator *migrationCoordinator
+	client      *fakeMigrationClient
+	broker      *fakeMigrationBroker
+	spool       *migration.Store
+	log         *migrationCallLog
+	artifact    migration.Artifact
+}
+
+// migrationPayloads is the three files the fake artifact describes, with bytes
+// that differ per file so a mixed-up relay fails its digest check.
+func migrationPayloads() map[string][]byte {
+	return map[string][]byte{
+		"state.bin":  []byte("state: the VM's device model and memory map\n"),
+		"memory.bin": []byte("memory: the guest's pages, standing in for 512 MiB\n"),
+		"disk.ext4":  []byte("disk: the guest's filesystem, standing in for 1 GiB\n"),
+	}
+}
+
+// newMigrationTestArtifact describes the payloads as a valid artifact for task
+// taskID on node nodeID in service serviceID.
+func newMigrationTestArtifact(t *testing.T, taskID, serviceID, nodeID string, payloads map[string][]byte) migration.Artifact {
+	t.Helper()
+
+	file := func(name string) migration.File {
+		body := payloads[name]
+		sum := sha256.Sum256(body)
+		return migration.File{Name: name, Size: int64(len(body)), SHA256: hex.EncodeToString(sum[:])}
+	}
+
+	created := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	return migration.Artifact{
+		SchemaVersion:   v1.SchemaVersion,
+		Kind:            migration.ArtifactKind,
+		ID:              migrationTestArtifactID,
+		SnapshotID:      "snap-0123456789abcdef",
+		SourceTaskID:    taskID,
+		RequestedTaskID: taskID,
+		SourceNodeID:    nodeID,
+		ServiceID:       serviceID,
+		CreatedAt:       created,
+		SnapshotAt:      created.Add(-time.Minute),
+		TapName:         scruntime.TapName(taskID, 0),
+		VsockPath:       filepath.Join("/var/run/firecracker", taskID+".vsock"),
+		DiskPath:        filepath.Join("/var/lib/firecracker/rootfs/tasks", taskID+".ext4"),
+		StateFile:       file("state.bin"),
+		MemoryFile:      file("memory.bin"),
+		DiskFile:        file("disk.ext4"),
+	}
+}
+
+// newMigrationHarness builds the flow with short deadlines and a service whose
+// task runs on node-a with one replica and one existing constraint.
+func newMigrationHarness(t *testing.T) *migrationHarness {
+	t.Helper()
+
+	spool, err := migration.NewStore(migration.StoreConfig{Root: filepath.Join(t.TempDir(), "spool")})
+	require.NoError(t, err)
+
+	callLog := &migrationCallLog{}
+	payloads := migrationPayloads()
+	artifact := newMigrationTestArtifact(t, "web-1", "svc-1", "node-a", payloads)
+
+	replicas := int64(1)
+	client := &fakeMigrationClient{
+		log: callLog,
+		task: v1.Task{
+			ID: "web-1", ServiceID: "svc-1", ServiceName: "web", NodeID: "node-a",
+			State: "running", DesiredState: "running",
+		},
+		service: v1.Service{
+			ID: "svc-1", Name: "web", Revision: "7",
+			Spec: v1.ServiceSpec{
+				Mode:      "replicated",
+				Replicas:  &replicas,
+				Placement: &v1.Placement{Constraints: []string{"node.labels.zone==a"}},
+			},
+		},
+		node:     v1.Node{ID: "node-b", State: "ready", Availability: "active"},
+		revision: 7,
+	}
+	// The default script: the old task is still there, then it is stopped (still
+	// listed), then a replacement reports running on the target.
+	client.taskSteps = [][]v1.Task{
+		{{ID: "web-1", ServiceID: "svc-1", NodeID: "node-a", State: "running"}},
+		{{ID: "web-1", ServiceID: "svc-1", NodeID: "node-a", State: "shutdown"}},
+		{{ID: "web-2", ServiceID: "svc-1", NodeID: "node-b", State: "running"}},
+	}
+
+	nodes := &fakeMigrationBroker{log: callLog, artifact: artifact, payloads: payloads}
+
+	coordinator := newMigrationCoordinator(client, nodes, spool)
+	coordinator.now = time.Now
+	coordinator.overallTimeout = 5 * time.Second
+	coordinator.verifyTimeout = 2 * time.Second
+	coordinator.cleanupTimeout = 2 * time.Second
+	coordinator.pollInterval = time.Millisecond
+
+	return &migrationHarness{
+		coordinator: coordinator, client: client, broker: nodes,
+		spool: spool, log: callLog, artifact: artifact,
+	}
+}
+
+func TestMigrateHappyPath(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.coordinator.now = (&steppingClock{
+		at:   time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC),
+		step: 10 * time.Millisecond,
+	}).Now
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+
+	// The call order is the contract: the target is only prepared once its bytes
+	// arrived, the service is only replaced once the directive is recorded, and
+	// the artifact is only discarded once a replacement is running.
+	assert.Equal(t, []string{
+		"task:web-1",
+		"service:svc-1",
+		"node:node-b",
+		"export:node-a:web-1",
+		"file:node-a:state.bin",
+		"stage:node-b:state.bin",
+		"file:node-a:memory.bin",
+		"stage:node-b:memory.bin",
+		"file:node-a:disk.ext4",
+		"stage:node-b:disk.ext4",
+		"prepare:node-b:svc-1:" + migrationTestArtifactID,
+		"update:svc-1",
+		"tasks:svc-1",
+		"tasks:svc-1",
+		"tasks:svc-1",
+		"service:svc-1",
+		"update:svc-1",
+		"discard:node-a:" + migrationTestArtifactID,
+	}, h.log.snapshot())
+
+	require.Len(t, h.client.updates, 2)
+	assert.Equal(t,
+		[]string{"node.labels.zone==a", "node.id==node-b"},
+		h.client.updates[0].constraints)
+	assert.Equal(t, "7", h.client.updates[0].ifMatch,
+		"the pin is applied against the revision validate read")
+	assert.Equal(t, []string{"node.labels.zone==a"}, h.client.updates[1].constraints,
+		"cleanup restores the original constraints")
+	assert.Equal(t, "8", h.client.updates[1].ifMatch,
+		"cleanup reads the revision the pin produced")
+
+	assert.Equal(t, []string{migrationTestArtifactID}, h.broker.discards)
+	assert.Empty(t, h.broker.unprepares, "a replacement that ran consumed the directive")
+	assert.Empty(t, h.broker.prepares[1:], "one migration records one directive")
+
+	assert.Equal(t, v1.KindMigration, doc.Kind)
+	assert.Equal(t, v1.SchemaVersion, doc.SchemaVersion)
+	assert.Equal(t, migrationTestArtifactID, doc.ID, "the migration is its artifact")
+	assert.Equal(t, "web-1", doc.TaskID)
+	assert.Equal(t, "svc-1", doc.ServiceID)
+	assert.Equal(t, "node-a", doc.SourceNode)
+	assert.Equal(t, "node-b", doc.TargetNode)
+	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
+	assert.Greater(t, doc.DowntimeMs, int64(0), "downtime is measured, not assumed")
+
+	var names []string
+	for _, phase := range doc.Phases {
+		names = append(names, phase.Name)
+		assert.Equal(t, v1.MigrationPhaseOK, phase.Result, phase.Name)
+		assert.NotEmpty(t, phase.StartedAt, phase.Name)
+		assert.NotEmpty(t, phase.FinishedAt, phase.Name)
+	}
+	assert.Equal(t, []string{
+		v1.MigrationPhaseValidate, v1.MigrationPhaseExport, v1.MigrationPhaseRelay,
+		v1.MigrationPhasePrepare, v1.MigrationPhaseReplace, v1.MigrationPhaseVerify,
+		v1.MigrationPhaseCleanup,
+	}, names)
+
+	requireSpoolEmpty(t, h)
+}
+
+func TestMigrateRefusesTwoReplicasBeforeAnyNodeCall(t *testing.T) {
+	h := newMigrationHarness(t)
+	replicas := int64(2)
+	h.client.service.Spec.Replicas = &replicas
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, output.CodeInvalid, typed.Code)
+	assert.Equal(t, "replicas", typed.Details["reason"])
+	assert.Equal(t, []string{"task:web-1", "service:svc-1"}, h.log.snapshot(),
+		"a two-replica service is refused before the target is resolved")
+	requireSpoolEmpty(t, h)
+}
+
+func TestMigrateRefusesTheCurrentNode(t *testing.T) {
+	h := newMigrationHarness(t)
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-a")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, output.CodeInvalid, typed.Code)
+	assert.Equal(t, "node-a", typed.Details["nodeId"])
+	assert.Equal(t, []string{"task:web-1", "service:svc-1"}, h.log.snapshot())
+}
+
+func TestMigrateRefusesATaskThatIsNotRunning(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.task.State = "failed"
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, output.CodeInvalid, typed.Code)
+	assert.Equal(t, []string{"task:web-1"}, h.log.snapshot())
+}
+
+func TestMigrateRefusesATargetThatIsNotSchedulable(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.node.State = "down"
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, "node_not_schedulable", typed.Details["reason"])
+	assert.Empty(t, h.broker.prepares)
+	assert.Empty(t, h.client.updates)
+}
+
+func TestMigrateExportFailureDiscardsNothingItNeverHad(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.broker.exportErr = output.NewError(output.CodeUnavailable, "the source node is unreachable")
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, output.CodeUnavailable, typed.Code)
+	assert.Equal(t, v1.MigrationPhaseExport, typed.Details["phase"])
+
+	assert.Empty(t, h.client.updates, "nothing is replaced when the export fails")
+	assert.Empty(t, h.broker.prepares, "no directive is recorded")
+	assert.Empty(t, h.broker.discards, "no artifact was produced, so there is none to discard")
+	requireSpoolEmpty(t, h)
+
+	// The in-flight slot is released: a later migration of the same service runs.
+	h.broker.exportErr = nil
+	_, err = h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+}
+
+func TestMigrateRefusesAnArtifactForAnotherTask(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.broker.artifact.RequestedTaskID = "other-task"
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, v1.MigrationPhaseExport, typed.Details["phase"])
+	assert.Equal(t, "artifact_mismatch", typed.Details["reason"])
+	assert.Empty(t, h.broker.discards, "an artifact describing another task is not this migration's to delete")
+	assert.Empty(t, h.client.updates)
+}
+
+func TestMigrateStageFailureDiscardsTheArtifact(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.broker.stageErrName = "memory.bin"
+	h.broker.stageErr = output.NewError(output.CodeUnavailable, "the target node refused the file")
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, v1.MigrationPhaseRelay, typed.Details["phase"])
+
+	assert.Empty(t, h.client.updates, "the service is never replaced")
+	assert.Empty(t, h.broker.prepares, "the directive is recorded only after every file arrived")
+	assert.Empty(t, h.broker.unprepares, "there was no directive to remove")
+	assert.Equal(t, []string{migrationTestArtifactID}, h.broker.discards,
+		"the artifact the export produced is discarded")
+	requireSpoolEmpty(t, h)
+}
+
+func TestMigrateRejectedUpdateAbandonsTheMigration(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.updateErr = output.NewError(output.CodeConflict, "the service changed while the artifact was in transit")
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, output.CodeConflict, typed.Code)
+	assert.Equal(t, v1.MigrationPhaseReplace, typed.Details["phase"])
+
+	require.Len(t, h.client.updates, 1, "the rejected update is the only one: the placement never changed")
+	assert.Equal(t, []string{"node.labels.zone==a", "node.id==node-b"}, h.client.updates[0].constraints)
+	assert.Equal(t, []string{"svc-1"}, h.broker.unprepares, "the directive is removed with the artifact")
+	assert.Equal(t, []string{migrationTestArtifactID}, h.broker.discards)
+	requireSpoolEmpty(t, h)
+}
+
+func TestMigrateVerifyTimeoutKeepsTheRetryAndRestoresPlacement(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.coordinator.verifyTimeout = 20 * time.Millisecond
+	h.coordinator.pollInterval = time.Millisecond
+	// The old task never disappears.
+	h.client.taskSteps = [][]v1.Task{
+		{{ID: "web-1", ServiceID: "svc-1", NodeID: "node-a", State: "running"}},
+	}
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+
+	assert.Equal(t, v1.MigrationOutcomePending, doc.Outcome)
+	assert.Zero(t, doc.DowntimeMs, "an unmeasured downtime is not zero seconds")
+
+	var verify v1.MigrationPhase
+	for _, phase := range doc.Phases {
+		if phase.Name == v1.MigrationPhaseVerify {
+			verify = phase
+		}
+	}
+	require.Equal(t, v1.MigrationPhaseVerify, verify.Name)
+	assert.Equal(t, v1.MigrationPhasePending, verify.Result)
+	assert.Equal(t, reasonOldTaskRunning, verify.Message)
+
+	// The placement is restored, but the artifact and the directive stay: the
+	// replaced service's retry restores from them.
+	require.Len(t, h.client.updates, 2)
+	assert.Equal(t, []string{"node.labels.zone==a"}, h.client.updates[1].constraints)
+	assert.Empty(t, h.broker.discards)
+	assert.Empty(t, h.broker.unprepares)
+	requireSpoolEmpty(t, h, "the spool holds nothing once every file has crossed")
+}
+
+func TestMigrateVerifyReportsAReplacementThatNeverRuns(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.coordinator.verifyTimeout = 20 * time.Millisecond
+	h.coordinator.pollInterval = time.Millisecond
+	h.client.taskSteps = [][]v1.Task{
+		{},
+	}
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+
+	assert.Equal(t, v1.MigrationOutcomePending, doc.Outcome)
+	for _, phase := range doc.Phases {
+		if phase.Name == v1.MigrationPhaseVerify {
+			assert.Equal(t, reasonReplacementNotRunning, phase.Message)
+		}
+	}
+}
+
+func TestMigrateVerifyFailureKeepsTheRetryAndReportsThePhase(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.taskSteps = [][]v1.Task{
+		{{
+			ID: "web-2", ServiceID: "svc-1", NodeID: "node-b", State: "failed",
+			// The failure the update caused: created after the update returned.
+			CreatedAt: time.Now().UTC().Add(time.Minute).Format(time.RFC3339Nano),
+		}},
+	}
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, v1.MigrationPhaseVerify, typed.Details["phase"])
+	assert.Equal(t, "replacement_failed", typed.Details["reason"])
+
+	require.Len(t, h.client.updates, 2, "the placement is restored")
+	assert.Empty(t, h.broker.discards, "the artifact is the retry's")
+	assert.Empty(t, h.broker.unprepares, "the directive is the retry's")
+}
+
+// TestMigrateVerifyIgnoresAnEarlierFailedTask pins the filter a retried migration
+// needs: a failed task the service already had on the target is not this call's
+// failure, so the verify keeps waiting instead of refusing a retry.
+func TestMigrateVerifyIgnoresAnEarlierFailedTask(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.coordinator.verifyTimeout = 20 * time.Millisecond
+	h.coordinator.pollInterval = time.Millisecond
+	h.client.taskSteps = [][]v1.Task{
+		{{
+			ID: "web-0", ServiceID: "svc-1", NodeID: "node-b", State: "failed",
+			CreatedAt: "2026-01-01T00:00:00Z",
+		}},
+	}
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+	assert.Equal(t, v1.MigrationOutcomePending, doc.Outcome)
+}
+
+func TestMigrateAllowsOneMigrationPerService(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.broker.exportGate = make(chan struct{})
+	h.broker.entered = make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+		done <- err
+	}()
+
+	select {
+	case <-h.broker.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the first migration never reached the export")
+	}
+
+	_, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.Error(t, err)
+	typed := requireTypedMigrationError(t, err)
+	assert.Equal(t, output.CodeConflict, typed.Code)
+	assert.Equal(t, "migration_in_flight", typed.Details["reason"])
+	assert.Equal(t, v1.MigrationPhaseValidate, typed.Details["phase"])
+
+	close(h.broker.exportGate)
+	require.NoError(t, <-done)
+
+	assert.Zero(t, h.coordinator.migrationCount(), "the slot is released on exit")
+}
+
+func TestMigrateCleanupFailureDoesNotFailAMovedMigration(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.broker.discardErr = output.NewError(output.CodeUnavailable, "the source node is unreachable")
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
+
+	var cleanup v1.MigrationPhase
+	for _, phase := range doc.Phases {
+		if phase.Name == v1.MigrationPhaseCleanup {
+			cleanup = phase
+		}
+	}
+	assert.Equal(t, v1.MigrationPhaseOK, cleanup.Result)
+	assert.Contains(t, cleanup.Message, "discard the artifact",
+		"a cleanup that could not finish is reported, not turned into an error")
+}
+
+// TestRestorePlacementRetriesOnceOnAConflict pins the cleanup's one retry: the
+// revision read a moment earlier can be stale, and a conflict is re-read rather
+// than reported.
+func TestRestorePlacementRetriesOnceOnAConflict(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.updateErrs = []error{
+		nil, // the pin
+		output.NewError(output.CodeConflict, "the service changed between the read and the update"),
+		nil, // the retry after a fresh read
+	}
+
+	doc, err := h.coordinator.Migrate(context.Background(), "web-1", "node-b")
+	require.NoError(t, err)
+	assert.Equal(t, v1.MigrationOutcomeMoved, doc.Outcome)
+
+	require.Len(t, h.client.updates, 3, "the pin, the conflicted restore and its retry")
+	assert.Equal(t, []string{"node.labels.zone==a"}, h.client.updates[2].constraints)
+}
+
+// TestRestorePlacementLeavesAPlacementSomeoneElseChanged pins the ownership rule:
+// cleanup only undoes the constraint this migration wrote. A service whose
+// placement is someone else's decision keeps it.
+func TestRestorePlacementLeavesAPlacementSomeoneElseChanged(t *testing.T) {
+	h := newMigrationHarness(t)
+	h.client.service.Spec.Placement = &v1.Placement{Constraints: []string{"node.id==node-c"}}
+
+	plan := migrationPlan{service: v1.Service{ID: "svc-1"}, constraints: []string{"node.labels.zone==a"}}
+	state := &migrationState{pinned: []string{"node.labels.zone==a", "node.id==node-b"}}
+
+	require.NoError(t, h.coordinator.restorePlacement(context.Background(), plan, state))
+	assert.Empty(t, h.client.updates, "another writer's placement is not this migration's to undo")
+}
+
+// TestMigrationSpoolSweeperReclaimsAnAbandonedEntry pins the one backstop a crash
+// leaves to: an entry nobody is holding, older than the TTL, is removed by the
+// sweep the manager runs at startup.
+func TestMigrationSpoolSweeperReclaimsAnAbandonedEntry(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "spool")
+	spool, err := migration.NewStore(migration.StoreConfig{Root: root, TTL: 5 * time.Millisecond})
+	require.NoError(t, err)
+
+	dir := filepath.Join(root, migrationTestArtifactID)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "state.bin"), []byte("abandoned"), 0o600))
+	time.Sleep(10 * time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	startMigrationSpoolSweeper(ctx, spool)
+
+	require.Eventually(t, func() bool {
+		_, statErr := os.Stat(dir)
+		return errors.Is(statErr, os.ErrNotExist)
+	}, 2*time.Second, 5*time.Millisecond, "the startup sweep must reclaim an expired entry")
+}
+
+// TestMigrationSpoolSweeperWithoutASpoolIsANoop pins that a manager with no spool
+// (a relative state directory, say) starts no goroutine and does not panic.
+func TestMigrationSpoolSweeperWithoutASpoolIsANoop(t *testing.T) {
+	startMigrationSpoolSweeper(context.Background(), nil)
+}
+
+// TestObserveReplacement pins the three readings the verify makes of one task
+// list: whether the old task still runs, which task is a replacement, and which
+// failure belongs to this migration.
+func TestObserveReplacement(t *testing.T) {
+	since := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	later := since.Add(time.Second).Format(time.RFC3339Nano)
+	earlier := since.Add(-time.Hour).Format(time.RFC3339Nano)
+
+	old := v1.Task{ID: "web-1", ServiceID: "svc-1", NodeID: "node-a", State: "running"}
+	running := v1.Task{ID: "web-2", ServiceID: "svc-1", NodeID: "node-b", State: "running"}
+
+	t.Run("old task still running", func(t *testing.T) {
+		observed := observeReplacement([]v1.Task{old, running}, old.ID, "node-b", since)
+		assert.False(t, observed.oldGone, "a running old task has not stopped")
+		require.NotNil(t, observed.replacement)
+		assert.Equal(t, running.ID, observed.replacement.ID)
+	})
+
+	t.Run("old task stopped but still listed", func(t *testing.T) {
+		stopped := old
+		stopped.State = "shutdown"
+		observed := observeReplacement([]v1.Task{stopped, running}, old.ID, "node-b", since)
+		assert.True(t, observed.oldGone, "a stopped task no longer runs the workload")
+	})
+
+	t.Run("a replacement has to be running and on the target", func(t *testing.T) {
+		starting := v1.Task{ID: "web-2", ServiceID: "svc-1", NodeID: "node-b", State: "starting"}
+		elsewhere := v1.Task{ID: "web-3", ServiceID: "svc-1", NodeID: "node-c", State: "running"}
+		observed := observeReplacement([]v1.Task{starting, elsewhere}, old.ID, "node-b", since)
+		assert.Nil(t, observed.replacement)
+	})
+
+	t.Run("a failure before the update is another migration's", func(t *testing.T) {
+		stale := v1.Task{ID: "web-0", ServiceID: "svc-1", NodeID: "node-b", State: "failed", CreatedAt: earlier}
+		observed := observeReplacement([]v1.Task{stale}, old.ID, "node-b", since)
+		assert.False(t, observed.failed)
+	})
+
+	t.Run("a failure after the update is this migration's", func(t *testing.T) {
+		fresh := v1.Task{ID: "web-2", ServiceID: "svc-1", NodeID: "node-b", State: "failed", CreatedAt: later}
+		observed := observeReplacement([]v1.Task{fresh}, old.ID, "node-b", since)
+		assert.True(t, observed.failed)
+	})
+
+	t.Run("an undated failure is not believed", func(t *testing.T) {
+		undated := v1.Task{ID: "web-2", ServiceID: "svc-1", NodeID: "node-b", State: "failed"}
+		observed := observeReplacement([]v1.Task{undated}, old.ID, "node-b", since)
+		assert.False(t, observed.failed)
+	})
+}
+
+// steppingClock advances by a fixed step on every read, so a test can prove a
+// duration was measured rather than assert a wall-clock race.
+type steppingClock struct {
+	mu   sync.Mutex
+	at   time.Time
+	step time.Duration
+}
+
+func (c *steppingClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	at := c.at
+	c.at = c.at.Add(c.step)
+	return at
+}
+
+// migrationCount reads the in-flight map. The coordinator is safe for concurrent
+// use, so the test takes the same lock.
+func (c *migrationCoordinator) migrationCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.inFlight)
+}
+
+// requireTypedMigrationError unwraps the typed error every failure path answers.
+func requireTypedMigrationError(t *testing.T, err error) *output.Error {
+	t.Helper()
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	return typed
+}
+
+// requireSpoolEmpty asserts the spool holds no entry, which is every path's
+// promise: the spool is a hand-off buffer, never a store.
+func requireSpoolEmpty(t *testing.T, h *migrationHarness, message ...string) {
+	t.Helper()
+
+	entries, err := os.ReadDir(h.spool.Root())
+	if errors.Is(err, os.ErrNotExist) {
+		return
+	}
+	require.NoError(t, err)
+	if len(entries) != 0 {
+		t.Fatalf("the spool still holds %v: %v", entries, message)
+	}
+}

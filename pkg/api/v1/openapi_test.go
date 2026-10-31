@@ -1679,3 +1679,90 @@ func TestOpenAPISnapshotContract(t *testing.T) {
 	require.NotNil(t, stop.Responses.Status(404))
 	require.NotNil(t, stop.Responses.Status(405))
 }
+
+// TestOpenAPIMigrationSurface pins the live-migration route and its document. The
+// call is synchronous and its answer is the report, so the contract has to say
+// what 201 means for both outcomes, which failure statuses a manager may answer,
+// and that the failing phase travels in details.phase.
+func TestOpenAPIMigrationSurface(t *testing.T) {
+	doc := loadOpenAPI(t)
+
+	item := doc.Paths.Find("/v1/migrations")
+	require.NotNil(t, item, "/v1/migrations path missing")
+	require.NotNil(t, item.Post, "POST /v1/migrations missing")
+	assert.Nil(t, item.Get, "there is no status route: the call is the report")
+
+	op := item.Post
+	assert.Contains(t, op.Description, "migrations:write", "the operation must name its scope")
+	assert.Contains(t, op.Description, "admin", "the operation must say who holds the scope")
+	assert.Contains(t, op.Description, "details.phase", "the failing phase is contract")
+	assert.Contains(t, op.Description, "pending", "the pending outcome is contract")
+	assert.Contains(t, op.Description, "task.migrate", "the audit action is documented")
+	assert.Empty(t, op.Security, "a migration must inherit the global bearer requirement")
+
+	require.NotNil(t, op.RequestBody)
+	require.True(t, op.RequestBody.Value.Required)
+	request := op.RequestBody.Value.Content.Get(v1MediaType)
+	require.NotNilf(t, request, "the migration body must be %s", v1MediaType)
+	require.Equal(t, "#/components/schemas/MigrationRequest", request.Schema.Ref)
+
+	requireTypedResponseFor(t, op, "201", "Migration")
+	for _, status := range []string{
+		"400", "401", "403", "404", "409", "413", "415", "429", "501", "503", "504",
+	} {
+		requireTypedResponseFor(t, op, status, "ErrorDocument")
+	}
+
+	validateAgainst(t, doc, "MigrationRequest", map[string]any{
+		"taskId": "task-1", "targetNode": "node-b",
+	})
+	// Both fields are required: the manager cannot infer either one.
+	require.Contains(t, doc.Components.Schemas["MigrationRequest"].Value.Required, "taskId")
+	require.Contains(t, doc.Components.Schemas["MigrationRequest"].Value.Required, "targetNode")
+
+	phases := []MigrationPhase{
+		{Name: MigrationPhaseValidate, StartedAt: "2026-10-31T12:00:00Z", FinishedAt: "2026-10-31T12:00:00.010Z", Result: MigrationPhaseOK},
+		{Name: MigrationPhaseVerify, StartedAt: "2026-10-31T12:01:00Z", Result: MigrationPhasePending, Message: "replacement_not_running"},
+	}
+	for _, phase := range phases {
+		data, err := json.Marshal(phase)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		validateAgainst(t, doc, "MigrationPhase", generic)
+	}
+
+	for _, outcome := range []string{MigrationOutcomeMoved, MigrationOutcomePending} {
+		value := Migration{
+			SchemaVersion: SchemaVersion,
+			Kind:          KindMigration,
+			ID:            "mig-0123456789abcdef",
+			TaskID:        "task-1",
+			ServiceID:     "svc-1",
+			SourceNode:    "node-a",
+			TargetNode:    "node-b",
+			Phases:        phases,
+			DowntimeMs:    1234,
+			Outcome:       outcome,
+		}
+		data, err := json.Marshal(value)
+		require.NoError(t, err)
+		var generic any
+		require.NoError(t, json.Unmarshal(data, &generic))
+		validateAgainst(t, doc, "Migration", generic)
+	}
+
+	properties := doc.Components.Schemas["Migration"].Value.Properties
+	for _, key := range []string{
+		"schemaVersion", "kind", "id", "taskId", "serviceId", "sourceNode",
+		"targetNode", "phases", "downtimeMs", "outcome",
+	} {
+		assert.Containsf(t, properties, key, "Migration.%s missing", key)
+	}
+	assert.NotContains(t, properties, "downtime_ms", "migration keys are camelCase")
+
+	capabilities := doc.Components.Schemas["VersionInfo"].Value.Properties["capabilities"]
+	require.NotNil(t, capabilities)
+	assert.Contains(t, capabilities.Value.Description, "migrations",
+		"the capability list must name migrations")
+}

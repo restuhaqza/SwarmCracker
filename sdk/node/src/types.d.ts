@@ -88,7 +88,7 @@ export interface Error {
   message: string;
   requestId?: string;
   retryable: boolean;
-  /** Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
+  /** Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), "no_restored_vm", or "migration_in_flight" (another migration of the same service is already running). A migration failure also carries details.phase, the step that failed. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
   details?: Record<string, unknown>;
 }
 
@@ -163,6 +163,38 @@ export interface LogFrame {
   time?: string;
   /** base64: Base64-encoded raw console bytes. Set on log frames only. */
   data?: string;
+}
+
+/** The report of one migration. `id` is the artifact the source exported - a migration has no identity beyond the artifact that carries the VM - and `downtimeMs` is measured from the instant the old task was observed gone (or, if it was never observed gone, from the instant the service update returned) to the first instant a replacement reported running on the target. It is zero for an outcome that never saw a running replacement, because an unmeasured downtime is not zero seconds. */
+export interface Migration {
+  schemaVersion: 1;
+  kind: "Migration";
+  id: string;
+  taskId: string;
+  serviceId?: string;
+  sourceNode: string;
+  targetNode: string;
+  phases: MigrationPhase[];
+  downtimeMs: number;
+  outcome: "moved" | "pending";
+}
+
+/** One step of a migration report. `result` is "ok" for a phase that finished, "error" for the phase that failed (the request then answers a typed error document with details.phase), and "pending" for a verify that ran out of time while the replacement was still starting. */
+export interface MigrationPhase {
+  name: "validate" | "export" | "relay" | "prepare" | "replace" | "verify" | "cleanup";
+  startedAt: string;
+  finishedAt?: string;
+  result: "ok" | "error" | "pending";
+  /** Why a non-ok phase ended that way, or which best-effort cleanup step did not complete. It never carries a node-local path. */
+  message?: string;
+}
+
+/** The body of POST /v1/migrations: the task to move and the node to move it to. Both are references the manager resolves (exact id, unique id prefix or unique name); both are required, and unknown fields are rejected. */
+export interface MigrationRequest {
+  /** The task whose VM moves. It must be running and belong to a replicated service with exactly one replica. */
+  taskId: string;
+  /** The node to move the task to. It must not be the node the task already runs on, and it must be ready and active. */
+  targetNode: string;
 }
 
 export interface Mount {
@@ -303,7 +335,7 @@ export interface PartialError {
   message: string;
   requestId: string;
   retryable: boolean;
-  /** Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), or "no_restored_vm". 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
+  /** Typed failure context. When details.fields is present it maps an offending path to a reason. details.parameter names an unknown query parameter. details.cursor carries the value of a cursor this server did not issue (a malformed or truncated cursor). details.reason names a specific rejection, for example "cursor_mismatch" (a cursor from a different route or filter — the value is not echoed back), "invalid_snapshot_id" (a snapshot id that is not one safe path segment), "no_restored_vm", or "migration_in_flight" (another migration of the same service is already running). A migration failure also carries details.phase, the step that failed. 405, 413 and 415 keep code `invalid` and put `method_not_allowed`, `payload_too_large` or `unsupported_media_type` in details.reason. */
   details?: Record<string, unknown>;
 }
 
@@ -655,7 +687,7 @@ export interface VersionInfo {
   serverVersion: string;
   grpcProtocolVersion: string;
   clusterId?: string;
-  /** Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. A capability that is advertised is served; the version document never promises a route that answers 501. */
+  /** Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. migrations is advertised only when the manager has both a node broker and its migration spool, because a migration is relayed and spooled. A capability that is advertised is served; the version document never promises a route that answers 501. */
   capabilities: string[];
 }
 
