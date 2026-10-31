@@ -27,6 +27,7 @@ type joinConfig struct {
 	RootfsDir     string
 	SocketDir     string
 	SnapshotDir   string
+	MigrationDir  string
 	VCPUs         int
 	Memory        int
 	BridgeName    string
@@ -97,6 +98,7 @@ Examples:
 	cmd.Flags().StringVar(&cfg.RootfsDir, "rootfs-dir", "/var/lib/firecracker/rootfs", "Directory for container rootfs")
 	cmd.Flags().StringVar(&cfg.SocketDir, "socket-dir", "/var/run/firecracker", "Directory for Firecracker sockets")
 	cmd.Flags().StringVar(&cfg.SnapshotDir, "snapshot-dir", config.DefaultSnapshotDir, "Directory holding VM snapshots")
+	cmd.Flags().StringVar(&cfg.MigrationDir, "migration-staging-dir", config.DefaultMigrationDir, "Directory holding live-migration artifacts")
 	cmd.Flags().IntVar(&cfg.VCPUs, "vcpus", 1, "Default vCPUs per microVM")
 	cmd.Flags().IntVar(&cfg.Memory, "memory", 512, "Default memory (MB) per microVM")
 
@@ -329,6 +331,7 @@ func workerDirectories(cfg *joinConfig) []string {
 		cfg.RootfsDir,
 		cfg.SocketDir,
 		cfg.SnapshotDir,
+		cfg.MigrationDir,
 		"/var/run/swarmkit",       // Required for systemd ProtectSystem=strict
 		"/var/cache/swarmcracker", // Image layer cache
 		"/var/lib/swarmcracker",   // Volumes, secrets, configs
@@ -449,6 +452,7 @@ ExecStart=/usr/local/bin/swarmd-firecracker \
   --rootfs-dir {{.RootfsDir}} \
   --socket-dir {{.SocketDir}} \
   --snapshot-dir {{.SnapshotDir}} \
+  --migration-staging-dir {{.MigrationDir}} \
   --default-vcpus {{.VCPUs}} \
   --default-memory {{.Memory}} \
   --bridge-name {{.BridgeName}} \
@@ -490,7 +494,7 @@ RuntimeDirectoryPreserve=yes
 # collapses them when they are equal. The "-" prefix makes systemd ignore a
 # missing path instead of failing the unit with status=226/NAMESPACE (see the
 # RuntimeDirectory note above).
-ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} {{snapshotPaths .SnapshotDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
+ReadWritePaths={{.StateDir}} {{.RootfsDir}} {{.SocketDir}} {{snapshotPaths .SnapshotDir}} {{migrationPaths .MigrationDir}} /var/run/swarmkit /var/cache/swarmcracker /var/lib/swarmcracker /etc/cni/net.d /opt/cni/bin /var/lib/cni
 
 [Install]
 WantedBy=multi-user.target

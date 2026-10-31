@@ -15,6 +15,9 @@ import (
 // would still pass a test that used the default.
 const testSnapshotDir = "/srv/swarmcracker-test/snapshots"
 
+// testMigrationDir is deliberately not the default, for the same reason.
+const testMigrationDir = "/srv/swarmcracker-test/migrations"
+
 // newTestInitConfig returns an initConfig with every field set to something
 // non-empty, so the rendered unit never depends on zero values.
 func newTestInitConfig() *initConfig {
@@ -28,6 +31,7 @@ func newTestInitConfig() *initConfig {
 		RootfsDir:     "/var/lib/firecracker/rootfs",
 		SocketDir:     "/var/run/firecracker",
 		SnapshotDir:   testSnapshotDir,
+		MigrationDir:  testMigrationDir,
 		VCPUs:         2,
 		Memory:        1024,
 		BridgeName:    "swarm-br0",
@@ -49,6 +53,7 @@ func newTestJoinConfig() *joinConfig {
 		RootfsDir:     "/var/lib/firecracker/rootfs",
 		SocketDir:     "/var/run/firecracker",
 		SnapshotDir:   testSnapshotDir,
+		MigrationDir:  testMigrationDir,
 		VCPUs:         2,
 		Memory:        1024,
 		BridgeName:    "swarm-br0",
@@ -110,6 +115,8 @@ func TestRenderManagerServicePassesSnapshotDir(t *testing.T) {
 	exec := execStartLine(t, string(unit))
 	assert.Contains(t, exec, "--snapshot-dir "+testSnapshotDir,
 		"manager unit must pass --snapshot-dir to the daemon")
+	assert.Contains(t, exec, "--migration-staging-dir "+testMigrationDir,
+		"manager unit must pass --migration-staging-dir to the daemon")
 }
 
 // TestRenderManagerServiceAllowsSnapshotDirWrites is the regression test for
@@ -121,6 +128,8 @@ func TestRenderManagerServiceAllowsSnapshotDirWrites(t *testing.T) {
 	require.NoError(t, err)
 
 	paths := readWritePaths(t, string(unit))
+	assert.Contains(t, paths, "-"+testMigrationDir,
+		"manager unit must allow writes to the migration root")
 	assert.Contains(t, paths, "-"+testSnapshotDir,
 		"manager unit must allow writes to the snapshot dir (with the - prefix)")
 	assert.Contains(t, paths, "/var/lib/firecracker/rootfs",
@@ -140,6 +149,8 @@ func TestRenderWorkerServicePassesSnapshotDir(t *testing.T) {
 		exec := execStartLine(t, string(unit))
 		assert.Contains(t, exec, "--snapshot-dir "+testSnapshotDir,
 			"worker unit must pass --snapshot-dir to the daemon (isManager=%v)", isManager)
+		assert.Contains(t, exec, "--migration-staging-dir "+testMigrationDir,
+			"worker unit must pass --migration-staging-dir to the daemon (isManager=%v)", isManager)
 	}
 }
 
@@ -214,6 +225,8 @@ func TestRenderWorkerServiceKeepsDefaultSnapshotDirWritable(t *testing.T) {
 		paths := readWritePaths(t, string(unit))
 		assert.Contains(t, paths, "-"+config.DefaultSnapshotDir,
 			"the CLI's default snapshot dir must stay writable when --snapshot-dir is custom (isManager=%v)", isManager)
+		assert.Contains(t, paths, "-"+testMigrationDir,
+			"worker unit must allow writes to the migration root (isManager=%v)", isManager)
 		assert.Contains(t, paths, "-"+testSnapshotDir,
 			"the configured snapshot dir must be writable (isManager=%v)", isManager)
 		assert.Equal(t, 1, countPath(paths, "-"+config.DefaultSnapshotDir),
