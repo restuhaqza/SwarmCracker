@@ -103,26 +103,41 @@ brings the count back to 1 and moves the `down` counter, and (4) a manual
 `service scale 0` stays at 0 for 95 s (three 30 s autoscaler passes) with this
 service's own counter unmoved. Then it removes the service.
 
-Both counter assertions poll (5 s apart, 45 s) instead of trusting one scrape,
-because the event is emitted asynchronously and a node doing image prep can
-answer `/metrics` with a body that stops short of the scale-event family. A
-reading that is not the manager's complete exposition — curl failed, the body is
-empty, it has no `swarmcracker_` lines, or it never reaches the last family
-(`swarmcracker_vxlan_peers`) — is retried, never read as "0 events"; only a
-deadline turns it into a failure, and the message carries curl's exit status, the
-body's size, its `swarmcracker_` line count and whether the exposition was
-complete. The pause window counts only readable reads, and fewer than two of them
-is a `FAIL`, so neither assertion can pass on nothing.
+Both counter assertions poll instead of trusting one scrape, because the event is
+emitted asynchronously, right after the replica patch. A single read is retried
+every 2 s for `LAB_AUTOSCALE_READ_DEADLINE` (20 s) when it is not the manager's
+complete exposition — curl failed, the body is empty, it has no `swarmcracker_`
+lines, or it never reaches the last family (`swarmcracker_vxlan_peers`), which is
+how a cut-off body is told from a quiet manager — and **also** when the
+exposition is complete but has no scale-event family yet (a `CounterVec` with no
+children renders nothing at all; that case is read as `0` only for the
+pre-create baseline). The assertion then keeps polling every 5 s for up to
+`LAB_AUTOSCALE_EVENT_DEADLINE` (45 s) until the counter has crossed its baseline.
+No reading is ever read as "0 events"; only a deadline turns it into a failure,
+and the message carries curl's exit status, the body's size, its `swarmcracker_`
+line count and whether the exposition was complete. A slow run therefore looks
+like a run of
+
+```
+  5s  up: unreadable, retrying: http://127.0.0.1:8080/metrics on node 1 ...
+ 10s  up: sum=2 (want 1) this service=2 (want 1)
+```
+
+lines before the `PASS`, and it can sit there for up to 45 s per counter without
+being broken. The pause window counts only readable reads, and fewer than two of
+them is a `FAIL`, so neither assertion can pass on nothing.
 
 Its runtime is the daemon's, not the script's: the loop reconciles every 30 s, a
 scale-up reacts on the first hot sample, a scale-down needs two consecutive cold
 samples plus the 60 s cooldown, and a scale moves one replica at a time — so
 3 → 1 is two events. Expect **about 6 minutes** on a healthy cluster. The
-budgets (`LAB_AUTOSCALE_UP_DEADLINE`/`LAB_AUTOSCALE_DOWN_DEADLINE`, 150 s each,
-plus 45 s for the three guests to boot, 45 s for each counter poll, 45 s to reach
-0 and the 95 s pause window) add up to 620 s, but a passing run does not sit on
-the counter budgets: the event is emitted before the count reaches its target,
-so the first poll answers.
+passing-path budgets — 150 s for the count to reach 3 plus 45 s for those guests
+to boot, 45 s for the `up` poll, 150 s back to 1 plus 45 s for the `down` poll,
+45 s to reach 0 and the 95 s pause window — add up to **575 s (9.6 min)**, which
+is the ceiling and not the expected runtime: a passing run does not sit on the
+counter budgets, because the event is emitted before the count reaches its
+target, so the first poll answers. A re-run that first has to wait out an earlier
+run's microVMs (up to 120 s) can take ~11.6 min in the worst case.
 The workload burns one guest's CPU in a shell loop with a 50 ms sleep between
 bursts, which measures ~75 % of one vCPU and leaves the guest agent — and
 `vm exec` — a scheduling window.

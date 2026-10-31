@@ -728,15 +728,18 @@ cmd_three_tier() {
 # A scale moves one replica, so 3 -> 1 is two events and takes about two and a
 # half minutes.
 #
-# Every budget is the mechanism's own numbers plus margin, and the worst case
-# adds up to 620s: 150 for the count to reach max, 45 for the guests to boot, 45
-# for the up event to show, 150 back to min, 45 + 45 for the down event and its
-# guests, 45 to reach 0, 95 paused. That ceiling is not the expected runtime: the
-# counter polls normally answer on the first read (the event is emitted as the
-# patch is applied, before the count reaches its target), so a passing run is
-# about 6 minutes, and a run that sits on both counter deadlines is failing
-# anyway. On a slow host raise LAB_AUTOSCALE_EVENT_DEADLINE before the count
-# deadlines: the counter is the noisy measurement, the count is not.
+# Every budget is the mechanism's own numbers plus margin. The passing-path
+# budgets add up to 575s: 150 for the count to reach max, 45 for its guests to
+# boot, 45 for the up event to show, 150 back to min, 45 for the down event, 45
+# to reach 0, 95 paused (a scale-in needs no second guests budget: it removes
+# guests, it does not boot them). 575s is 9.6 minutes, and that is the ceiling,
+# not the runtime: the counter polls normally answer on the first read (the event
+# is emitted as the patch is applied, before the count reaches its target), so a
+# passing run is about 6 minutes, and a run that sits on several deadlines is
+# failing anyway. A re-run that first has to wait out an earlier run's microVMs
+# can add up to 120s of leftover wait on top (~11.6 minutes in the worst case).
+# On a slow host raise LAB_AUTOSCALE_EVENT_DEADLINE before the count deadlines:
+# the counter is the noisy measurement, the count is not.
 cmd_autoscale() {
   need_root
   [ -n "$(node_ip 1 || true)" ] || die "no nodes found; run: $0 create"
@@ -755,10 +758,10 @@ cmd_autoscale() {
   local down_deadline="${LAB_AUTOSCALE_DOWN_DEADLINE:-150}"
   local run_deadline=45 zero_deadline=45 pause_window=95
   # The counter is never trusted from one scrape. The autoscaler emits its event
-  # asynchronously right after the patch, and a node in the middle of image prep
-  # can answer /metrics with a body that stops short of the scale-event family
-  # (four live runs read exactly that). Both are races, and neither is a value:
-  # the assertions poll, and an unreadable read is retried, never read as 0.
+  # asynchronously right after the patch, so a scrape can land before it exists,
+  # and a scrape can come back unreadable in the ways scrape_events names. Both
+  # are races, and neither is a value: the assertions poll, and an unreadable
+  # read is retried, never read as 0.
   local event_deadline="${LAB_AUTOSCALE_EVENT_DEADLINE:-45}"
   local event_interval=5 read_deadline="${LAB_AUTOSCALE_READ_DEADLINE:-20}"
   local rc=0
@@ -826,9 +829,8 @@ cmd_autoscale() {
   #   - the body stops short of swarmcracker_vxlan_peers, the family a complete
   #     exposition publishes last (families are sorted by name, and of this
   #     package's names vxlan_peers sorts after vms_*, vxlan_expected_peers and
-  #     everything else). This is the failure the live lab kept producing: a
-  #     200KB exposition, curl exit 0, 83 swarmcracker_ lines, and no
-  #     scale-event family -- a complete-looking body cut off before it.
+  #     everything else), so the body is a partial exposition whatever else it
+  #     carries.
   #
   # Two things are a legitimate 0 and keep the `+ 0`:
   #
@@ -845,17 +847,34 @@ cmd_autoscale() {
   #     assertion still stops the run instead of passing it as 0 -> 0.
   scrape_events() { # <up|down> [service-id] [baseline]
     local dir="$1" id="${2:-}" allow_missing_family="${3:-}" body="" crc=0
-    local bytes=0 families=0 complete=no first=""
+    local bytes=0 families=0 complete=no has_family=no first=""
     scrape_value="" scrape_error="" scrape_evidence=""
     # --max-time 20, not 5: a 200KB exposition on a node doing disk copies can
     # legitimately take longer than 5s, and a client timeout looks exactly like
     # a broken endpoint from here.
     body="$(node_ssh 1 "curl -sf --max-time 20 http://$health/metrics" 2>/dev/null)" || crc=$?
+    # Every "does the body contain this line" test below is a shell pattern
+    # match, never `printf ... | grep -q`. grep -q exits at its first match, the
+    # producer is then killed by SIGPIPE (141), and `pipefail` makes the whole
+    # pipeline non-zero -- so a *present* line reads as absent. It is
+    # size-dependent: under one pipe buffer (~64KB) the producer finishes before
+    # grep exits and nothing happens, above it the test fails whenever the match
+    # is not in the last chunk. That is exactly what the four failed live runs
+    # were: a 215-221KB exposition that contains the scale-event family, read as
+    # "the family is missing". A pattern match has no producer to signal, so it
+    # cannot report that.
+    case $'\n'"$body" in *$'\n'swarmcracker_vxlan_peers*) complete=yes ;; esac
     if [ -n "$body" ]; then
+      # wc -c and grep -c read to EOF, so neither can SIGPIPE the producer; the
+      # `|| true` covers the status 1 that grep -c returns for a zero count.
       bytes="$(printf '%s' "$body" | wc -c | tr -d '[:space:]')"
       families="$(printf '%s\n' "$body" | grep -c '^swarmcracker_' || true)"
-      if printf '%s\n' "$body" | grep -q '^swarmcracker_vxlan_peers'; then complete=yes; fi
-      first="$(printf '%s\n' "$body" | head -1 | cut -c1-120)"
+      # The first line, again without a pipeline: `printf | head -1 | cut` is the
+      # same trap (`head` exits, printf gets SIGPIPE, and an assignment whose
+      # command substitution fails aborts the run under `set -e`, with 141 and no
+      # message at all).
+      first="${body%%$'\n'*}"
+      first="${first:0:120}"
     fi
     # Everything a re-run needs to classify this failure without a lab: the
     # client's exit status, how much arrived, how much of it was ours, and
@@ -877,7 +896,8 @@ cmd_autoscale() {
       scrape_error="http://$health/metrics on node 1 returned a truncated exposition ($scrape_evidence)"
       return 1
     fi
-    if ! printf '%s\n' "$body" | grep -q '^swarmcracker_service_scale_events_total{'; then
+    case $'\n'"$body" in *$'\n'swarmcracker_service_scale_events_total\{*) has_family=yes ;; esac
+    if [ "$has_family" != yes ]; then
       if [ "$allow_missing_family" = baseline ]; then
         scrape_value=0
         return 0
@@ -1011,7 +1031,12 @@ cmd_autoscale() {
     for j in $(seq 1 "$n"); do
       for id in $(node_ssh 1 "swarmcracker service ps $svc -q 2>/dev/null" 2>/dev/null || true); do
         [ -n "$id" ] || continue
-        if node_ssh "$j" "swarmcracker vm list 2>/dev/null" 2>/dev/null | awk '{print $1}' | grep -qx -- "$id"; then
+        # One awk, not `awk | grep -qx`: grep -q exits on the match and SIGPIPEs
+        # awk, and `pipefail` then reports "not on this node" for a task that is
+        # -- the same trap as the grep -q tests in scrape_events. awk reads to
+        # EOF and sets its own exit status.
+        if node_ssh "$j" "swarmcracker vm list 2>/dev/null" 2>/dev/null \
+            | awk -v id="$id" '$1 == id { found = 1 } END { exit !found }'; then
           printf '%s %s\n' "$j" "$id"
         fi
       done
