@@ -832,7 +832,7 @@ func TestRestoredGuestAddressFollowsTheBootPath(t *testing.T) {
 				Addresses: tc.addresses,
 			}}}
 
-			cidr, gateway, err := restoredGuestAddress(task, tc.bridgeIP)
+			cidr, gateway, err := restoredGuestAddress(task, tc.bridgeIP, nil)
 			if tc.wantErr != "" {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), tc.wantErr)

@@ -377,7 +377,11 @@ func (c *Controller) restoreArtifact(
 		return fail("the staged artifact was exported from service %q, not %q", artifact.ServiceID, task.ServiceID)
 	}
 
-	guestCIDR, gateway, err := restoredGuestAddress(task, c.config.BridgeIP)
+	var allocate func() (string, string, error)
+	if nm, ok := c.networkMgr.(*network.NetworkManager); ok {
+		allocate = func() (string, string, error) { return nm.GuestAddressForTask(task.ID) }
+	}
+	guestCIDR, gateway, err := restoredGuestAddress(task, c.config.BridgeIP, allocate)
 	if err != nil {
 		return fmt.Errorf("task %q: restore artifact %s: %w", task.ID, directive.ArtifactID, err)
 	}
@@ -598,8 +602,18 @@ func vmConsolePath(logDir, taskID string) string {
 // the one interface this product gives a VM and the one the restore re-addresses, and
 // the boot path hands eth0 the first attachment's first address. Taking an address from
 // another attachment would put the guest on a network under a name it never used.
-func restoredGuestAddress(task *types.Task, bridgeIP string) (cidr, gateway string, err error) {
-	if task == nil || len(task.Networks) == 0 {
+func restoredGuestAddress(task *types.Task, bridgeIP string, allocate func() (string, string, error)) (cidr, gateway string, err error) {
+	if task == nil {
+		return "", "", errors.New("the task is nil: a restored guest must be given the address its task was allocated")
+	}
+	if len(task.Networks) == 0 {
+		// A service without a SwarmKit network attachment runs on this node's flat
+		// bridge and is addressed by the node's own allocator (createTapDevice's
+		// fallback). The restore must give the guest that same address; the caller
+		// supplies the allocator because only the network manager owns it.
+		if allocate != nil {
+			return allocate()
+		}
 		return "", "", errors.New("the task has no network attachment: a restored guest must be given the address its task was allocated")
 	}
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -2010,6 +2011,36 @@ func (nm *NetworkManager) SetNodeDiscovery(discovery types.NodeDiscovery) {
 	nm.nodeDiscovery = discovery
 	nm.mu.Unlock()
 	log.Debug().Msg("Node discovery provider configured")
+}
+
+// GuestAddressForTask returns the CIDR and gateway a task is given on this
+// node's flat bridge when it has no SwarmKit network attachment: the same two
+// values the boot path would have handed the guest's kernel command line.
+//
+// A restored guest must be given the address its task was allocated, and for a
+// task without an attachment that allocation is this node's static allocator
+// (createTapDevice's fallback). The address is deterministic for a task ID, so a
+// retried restore gets the same one.
+func (nm *NetworkManager) GuestAddressForTask(taskID string) (cidr, gateway string, err error) {
+	if nm.ipAllocator == nil || nm.config.IPMode != "static" {
+		return "", "", fmt.Errorf(
+			"this node does not allocate static guest addresses (ip mode %q): a restored guest needs the address its task was allocated",
+			nm.config.IPMode)
+	}
+	ip, err := nm.ipAllocator.Allocate(taskID)
+	if err != nil {
+		return "", "", err
+	}
+	_, subnet, err := net.ParseCIDR(nm.config.Subnet)
+	if err != nil {
+		return "", "", fmt.Errorf("the node's subnet %q is not a CIDR: %w", nm.config.Subnet, err)
+	}
+	ones, _ := subnet.Mask.Size()
+	gw := strings.Split(nm.config.BridgeIP, "/")[0]
+	if gw == "" {
+		return "", "", errors.New("the node has no bridge address: a restored guest needs a default gateway")
+	}
+	return fmt.Sprintf("%s/%d", ip, ones), gw, nil
 }
 
 // createTapDevice creates a TAP device for a network attachment.
