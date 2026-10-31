@@ -115,7 +115,18 @@ func TestNewStoreDefaults(t *testing.T) {
 
 	assert.Equal(t, root, store.Root())
 	assert.Equal(t, DefaultSpoolTTL, store.TTL())
-	assert.Equal(t, 10*time.Minute, store.TTL())
+}
+
+// TestSpoolTTLOutlastsATransfer pins the one relationship the two durations have:
+// an artifact the manager is still allowed to be moving must never be swept, so
+// the resting window is the transfer deadline plus a margin rather than a second
+// number that happens to be shorter.
+func TestSpoolTTLOutlastsATransfer(t *testing.T) {
+	assert.Equal(t, 30*time.Minute, DefaultTransferDeadline)
+	assert.Greater(t, DefaultSpoolTTL, DefaultTransferDeadline,
+		"the spool TTL must outlast the transfer a relay is allowed to take")
+	assert.GreaterOrEqual(t, DefaultSpoolTTL, DefaultTransferDeadline+time.Minute,
+		"and it must leave room after the transfer, not merely tie it")
 }
 
 // TestSpoolRootFollowsTheStateDirectory pins the one rule for where the spool
@@ -520,6 +531,105 @@ func TestStoreSweepSkipsAHeldWriter(t *testing.T) {
 
 	_, err = os.Stat(dir)
 	assert.NoError(t, err, "the artifact being written is not swept")
+}
+
+// TestStoreSweepSkipsAHeldWritersTemporary pins the other half of that race: the
+// writer's bytes live in a temporary beside the directory, so a sweep that only
+// checked the directory would unlink the file under a transfer that is still
+// running - and the writer's Close would then rename an anonymous inode and fail.
+// The transfer must survive to publish.
+func TestStoreSweepSkipsAHeldWritersTemporary(t *testing.T) {
+	store, now := newTestStore(t, time.Minute)
+	body := spoolBody(32, 16)
+	file := spoolFile("vm.mem", body)
+
+	writer, err := store.Writer(spoolArtifactID, file)
+	require.NoError(t, err)
+	defer func() { _ = writer.Abort() }()
+
+	// Half the transfer is on disk, and the sweep is run "after" the TTL has
+	// passed for both the directory and the temporary.
+	_, err = writer.Write(body[:16])
+	require.NoError(t, err)
+
+	stale := now.Add(-time.Hour)
+	dir := filepath.Join(store.Root(), spoolArtifactID)
+	require.NoError(t, os.Chtimes(writer.tmpPath, stale, stale))
+	require.NoError(t, os.Chtimes(dir, stale, stale))
+
+	removed, err := store.Sweep()
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+
+	_, err = os.Stat(writer.tmpPath)
+	require.NoError(t, err, "the temporary of a writer that holds the slot is not swept")
+
+	// The point of keeping it: the transfer finishes and publishes exactly the
+	// file the artifact describes.
+	_, err = writer.Write(body[16:])
+	require.NoError(t, err)
+	require.NoError(t, writer.Close())
+
+	reader, err := store.Open(spoolArtifactID, file)
+	require.NoError(t, err)
+	got, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	assert.Equal(t, body, got, "a swept-mid-transfer file is still this artifact's file")
+}
+
+// TestStoreSweepSkipsAnArtifactBeingRead pins the read side of the same rule: a
+// Stage that is streaming a spooled file for longer than the TTL must not have
+// its directory removed underneath it, and the moment the reader closes the
+// artifact is sweepable again.
+func TestStoreSweepSkipsAnArtifactBeingRead(t *testing.T) {
+	store, now := newTestStore(t, time.Minute)
+	body := spoolBody(64, 17)
+	file := spoolFile("vm.mem", body)
+	writeSpoolFile(t, store, spoolArtifactID, file, body)
+
+	reader, err := store.Open(spoolArtifactID, file)
+	require.NoError(t, err)
+
+	dir := filepath.Join(store.Root(), spoolArtifactID)
+	stale := now.Add(-time.Hour)
+	require.NoError(t, os.Chtimes(dir, stale, stale))
+
+	removed, err := store.Sweep()
+	require.NoError(t, err)
+	assert.Equal(t, 0, removed)
+	_, err = os.Stat(dir)
+	assert.NoError(t, err, "the artifact being staged is not swept")
+
+	got, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	require.NoError(t, reader.Close())
+	assert.Equal(t, body, got, "the reader still serves the file it opened")
+
+	removed, err = store.Sweep()
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed, "once the reader is closed the artifact is stale like any other")
+	_, err = os.Stat(dir)
+	assert.True(t, errors.Is(err, os.ErrNotExist))
+}
+
+// TestStoreSweepStillReachesAnUnheldTemporary pins the other side of the partial
+// rule: a temporary no writer holds is swept when it is stale, so the check that
+// protects a live transfer does not turn the spool into a leak.
+func TestStoreSweepStillReachesAnUnheldTemporary(t *testing.T) {
+	store, now := newTestStore(t, time.Minute)
+	require.NoError(t, os.MkdirAll(store.Root(), 0o700))
+
+	partial := filepath.Join(store.Root(), spoolPartialPrefix+spoolArtifactID+"-crash")
+	require.NoError(t, os.WriteFile(partial, []byte("half"), 0o600))
+	stale := now.Add(-time.Hour)
+	require.NoError(t, os.Chtimes(partial, stale, stale))
+
+	removed, err := store.Sweep()
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+	_, err = os.Stat(partial)
+	assert.True(t, errors.Is(err, os.ErrNotExist))
 }
 
 // TestStoreSweepsAnAbsentRoot pins the first-run case: a manager that has never

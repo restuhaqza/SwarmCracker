@@ -43,7 +43,8 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"time"
+	"strings"
+	"sync"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
 	"github.com/restuhaqza/swarmcracker/pkg/migration"
@@ -63,7 +64,11 @@ const migrationRelayChunkBytes = 32 << 10
 // this window. The deadline is still a bound: it exists so a node that stops
 // answering mid-stream cannot pin a migration open for ever, and a caller that
 // knows its artifacts are smaller can lower it.
-const DefaultMigrationTimeout = 30 * time.Minute
+//
+// It is the transfer deadline pkg/migration names, not a second opinion about it:
+// the manager's spool must outlive a transfer (migration.DefaultSpoolTTL is
+// derived from it), so the one number lives where the two are ordered.
+const DefaultMigrationTimeout = migration.DefaultTransferDeadline
 
 // Export asks the source node to dump one task and returns the artifact it
 // describes. The task keeps running: the node resumes the VM before it answers,
@@ -123,11 +128,31 @@ func (m *Manager) Export(ctx context.Context, sourceNode string, task v1.Task) (
 	if err := doc.Artifact.Validate(); err != nil {
 		return none, unreadableArtifact(route.Node.ID, "does not validate")
 	}
-	if doc.Artifact.SourceNodeID != sourceNode {
-		return none, unreadableArtifact(route.Node.ID, "names another source node")
+	// The manifest is the target's instructions for replacing *this* task in
+	// *this* service. A node that answers for another task - or names another
+	// service - would have its artifact staged as this service's replacement, so
+	// the answer is refused here, before the caller spools a byte.
+	if err := artifactDescribesRequest(doc.Artifact, task, sourceNode, route.Node.ID); err != nil {
+		return none, err
 	}
 
 	return doc, nil
+}
+
+// artifactDescribesRequest checks the manifest's own identity against the task the
+// export named. The three fields are the same question asked of three things: this
+// is a dump of that task, taken on that node, for that service's single replica.
+func artifactDescribesRequest(artifact migration.Artifact, task v1.Task, sourceNode, nodeID string) error {
+	if got := artifact.SourceNodeID; got != sourceNode {
+		return artifactNamesAnother(nodeID, "source node", sourceNode, got)
+	}
+	if got := artifact.SourceTaskID; got != task.ID {
+		return artifactNamesAnother(nodeID, "task", task.ID, got)
+	}
+	if got := artifact.ServiceID; got != task.ServiceID {
+		return artifactNamesAnother(nodeID, "service", task.ServiceID, got)
+	}
+	return nil
 }
 
 // File streams one file of an artifact from the node that holds it into w, and
@@ -172,8 +197,9 @@ func (m *Manager) File(
 
 	// The node announces what it is serving before it serves it. Either answer
 	// that is not the manifest's means these are not the bytes the artifact
-	// describes, so the stream is refused before it is read.
-	if got := resp.Header.Get(checksumHeader); got != "" && got != entry.SHA256 {
+	// describes, so the stream is refused before it is read. Digest comparison is
+	// case-insensitive: hex is hex in either case.
+	if got := resp.Header.Get(checksumHeader); got != "" && !strings.EqualFold(got, entry.SHA256) {
 		return 0, streamMismatch(route.Node.ID, entry.Name, "checksum_mismatch",
 			"node %q serves file %q with SHA-256 %s: the artifact declares %s",
 			route.Node.ID, entry.Name, got, entry.SHA256)
@@ -244,10 +270,15 @@ func (m *Manager) Stage(
 	// The request owns the body it is given and closes it when it is done; r
 	// belongs to the caller, who opened it (the spool's reader) and closes it, so
 	// the transport is handed a body it cannot close.
-	resp, err := m.doNodeRequest(ctx, route, http.MethodPut, query, io.NopCloser(r), size, octetStream,
+	//
+	// The body is wrapped so a reader that fails on the way out can be blamed on
+	// the source: the transport reports a broken request, and without the wrapper
+	// that reads like a node that stopped answering.
+	source := &stageSource{r: r, want: size}
+	resp, err := m.doNodeRequest(ctx, route, http.MethodPut, query, io.NopCloser(source), size, octetStream,
 		m.migrationTimeout, "migration stage")
 	if err != nil {
-		return err
+		return stageSourceFailure(source, name, route.Node.ID, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -256,7 +287,7 @@ func (m *Manager) Stage(
 		// The node echoes the digest it verified; a node that answers 204 without
 		// it still verified the body against the query above, so this is a check
 		// of the answer, not of the transfer.
-		if got := resp.Header.Get(checksumHeader); got != "" && got != sha256Hex {
+		if got := resp.Header.Get(checksumHeader); got != "" && !strings.EqualFold(got, sha256Hex) {
 			return streamMismatch(route.Node.ID, name, "checksum_mismatch",
 				"node %q staged file %q as SHA-256 %s: the stage declared %s",
 				route.Node.ID, name, got, sha256Hex)
@@ -390,6 +421,92 @@ func relayTransportError(ctx context.Context, nodeID string, err error) *output.
 	}
 	return output.NewErrorf(codeUnavailable, "node %q migration transfer failed", nodeID).
 		WithDetails(map[string]any{"nodeId": nodeID})
+}
+
+// artifactNamesAnother is the typed internal failure for a node that answers with a
+// manifest describing something other than what the export asked about. Both values
+// travel in the message and in the details: the point of the refusal is which two
+// sides disagree.
+func artifactNamesAnother(nodeID, field, want, got string) *output.Error {
+	return output.NewErrorf(output.CodeInternal,
+		"node %q returned a migration artifact that names another %s: %q, but the export named %q",
+		nodeID, field, got, want).
+		WithDetails(map[string]any{
+			"nodeId": nodeID, "reason": "artifact_mismatch",
+			"field": field, "want": want, "got": got,
+		})
+}
+
+// stageSource is the reader a Stage hands the transport. It remembers the first
+// failure of the caller's reader, because the transport can only report it as a
+// broken request - which is indistinguishable from a node that stopped answering.
+//
+// Reads happen on the transport's writing goroutine, so the record is guarded: the
+// caller reads it after Do returns.
+type stageSource struct {
+	r    io.Reader
+	want int64
+	read int64
+
+	mu  sync.Mutex
+	err error
+}
+
+// Read passes the next slice through and records what the source did.
+func (s *stageSource) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+
+	s.mu.Lock()
+	s.read += int64(n)
+	if err != nil && s.err == nil {
+		switch {
+		case !errors.Is(err, io.EOF):
+			s.err = err
+		case s.read < s.want:
+			// A source shorter than the manifest is this side's failure too: the
+			// transport reports it as a body shorter than its length, which would
+			// otherwise read like a node that hung up.
+			s.err = io.ErrUnexpectedEOF
+		}
+	}
+	s.mu.Unlock()
+
+	return n, err
+}
+
+// failure returns the source's own failure, or nil when the reader behaved.
+func (s *stageSource) failure() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.err
+}
+
+// stageSourceFailure answers a stage whose request failed. A source that failed is
+// the manager's failure and keeps its own classification; anything else is the
+// transport's, and the transport's mapping is what the caller already knows.
+func stageSourceFailure(source *stageSource, name, nodeID string, err error) error {
+	if srcErr := source.failure(); srcErr != nil {
+		return unreadableSource(name, nodeID, srcErr)
+	}
+	return err
+}
+
+// unreadableSource is the typed failure for a stage whose own bytes could not be
+// read. A classified failure (the spool refusing a file whose digest is not the
+// manifest's) crosses verbatim, so "the spool is wrong" and "the node is down"
+// never read the same way. An unclassified one is internal, not unavailable: the
+// caller handed the transport a reader that failed, and answering with the node's
+// code would blame the wrong end of the link. It names the file and the node for
+// correlation only - the error text can name a path on the manager, so it stays
+// here.
+func unreadableSource(name, nodeID string, err error) error {
+	var typed *output.Error
+	if errors.As(err, &typed) {
+		return typed
+	}
+	return output.NewErrorf(output.CodeInternal,
+		"file %q could not be read to stage it: node %q was never sent the file", name, nodeID).
+		WithDetails(map[string]any{"nodeId": nodeID, "name": name, "reason": "source_unreadable"})
 }
 
 // unreadableArtifact is the typed internal failure for a node that answers an

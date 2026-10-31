@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -210,50 +211,96 @@ func TestManagerExportRefusesAnotherNodesTask(t *testing.T) {
 	assert.False(t, called.Load(), "a task on another node must not be exported through this one")
 }
 
-// TestManagerExportRefusesAnArtifactThatDoesNotValidate pins the last check before
-// a migration starts: the manifest is what every later transfer is verified
-// against, so a node that answers one this build cannot use is an internal
-// failure, not a document to act on.
-func TestManagerExportRefusesAnArtifactThatDoesNotValidate(t *testing.T) {
+// TestManagerExportRefusesAnArtifactThatIsNotThisRequest pins the checks between
+// decoding the node's answer and handing the artifact on. The manifest is the
+// target's instructions for replacing this task in this service, so one describing
+// another task, service or node is refused here - before anything is spooled -
+// rather than being staged as this service's replacement.
+func TestManagerExportRefusesAnArtifactThatIsNotThisRequest(t *testing.T) {
 	pki := newTestPKI(t)
 	artifact := migrationArtifactFixture(t, []byte("state"), migrationTestBody(64, 1), nil)
-	artifact.TapName = "not-a-tap"
 
 	cases := []struct {
 		name string
-		doc  MigrationExportDocument
-		why  string
+		// kind overrides the document kind; empty is the export's own.
+		kind string
+		// mutate changes the artifact the node answers with.
+		mutate func(*migration.Artifact)
+		code   output.Code
+		reason string
+		field  string
+		want   string
+		got    string
+		why    string
 	}{
 		{
-			name: "invalid manifest",
-			doc: MigrationExportDocument{
-				SchemaVersion: v1.SchemaVersion, Kind: migrationExportKind, Artifact: artifact,
-			},
-			why: "does not validate",
+			name:   "manifest does not validate",
+			mutate: func(a *migration.Artifact) { a.TapName = "not-a-tap" },
+			code:   output.CodeInternal,
+			reason: "artifact_invalid",
+			why:    "does not validate",
 		},
 		{
 			name: "another source node",
-			doc: MigrationExportDocument{
-				SchemaVersion: v1.SchemaVersion, Kind: migrationExportKind,
-				Artifact: migrationArtifactFixture(t, []byte("s"), migrationTestBody(64, 1), nil),
+			mutate: func(a *migration.Artifact) {
+				a.SourceNodeID = "node-9"
 			},
-			why: "names another source node",
+			code:   output.CodeInternal,
+			reason: "artifact_mismatch",
+			field:  "source node",
+			want:   "node-1",
+			got:    "node-9",
+			why:    "names another source node",
 		},
 		{
-			name: "another document kind",
-			doc: MigrationExportDocument{
-				SchemaVersion: v1.SchemaVersion, Kind: "SomethingElse",
-				Artifact: migrationArtifactFixture(t, []byte("s"), migrationTestBody(64, 1), nil),
+			name: "another task",
+			mutate: func(a *migration.Artifact) {
+				a.SourceTaskID = "task-2"
+				// A node that dumped another task describes that task's devices
+				// consistently, so the manifest validates and only the identity
+				// check can catch it.
+				a.TapName = scruntime.TapName("task-2", 0)
 			},
-			why: "unreadable",
+			code:   output.CodeInternal,
+			reason: "artifact_mismatch",
+			field:  "task",
+			want:   migrationTestTask,
+			got:    "task-2",
+			why:    "names another task",
+		},
+		{
+			name: "another service",
+			mutate: func(a *migration.Artifact) {
+				a.ServiceID = "svc-2"
+			},
+			code:   output.CodeInternal,
+			reason: "artifact_mismatch",
+			field:  "service",
+			want:   "svc-1",
+			got:    "svc-2",
+			why:    "names another service",
+		},
+		{
+			name:   "another document kind",
+			kind:   "SomethingElse",
+			mutate: func(*migration.Artifact) {},
+			code:   output.CodeInternal,
+			why:    "unreadable",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			doc := tc.doc
-			if tc.name == "another source node" {
-				doc.Artifact.SourceNodeID = "node-9"
+			doc := MigrationExportDocument{
+				SchemaVersion: v1.SchemaVersion,
+				Kind:          migrationExportKind,
+				Artifact:      artifact,
+				Dir:           "/var/lib/firecracker/migrations/" + artifact.ID,
+				Linked:        true,
+			}
+			tc.mutate(&doc.Artifact)
+			if tc.kind != "" {
+				doc.Kind = tc.kind
 			}
 
 			src := &fakeTaskSource{task: Task{ID: migrationTestTask}, found: true}
@@ -268,13 +315,30 @@ func TestManagerExportRefusesAnArtifactThatDoesNotValidate(t *testing.T) {
 			})
 
 			mgr := newMigrationTestManager(t, pki, baseURL, 0)
-			_, err := mgr.Export(context.Background(), "node-1", v1.Task{ID: migrationTestTask, NodeID: "node-1"})
+			got, err := mgr.Export(context.Background(), "node-1", v1.Task{
+				ID: migrationTestTask, NodeID: "node-1", ServiceID: "svc-1",
+			})
 
 			var typed *output.Error
 			require.ErrorAs(t, err, &typed)
-			assert.Equal(t, output.CodeInternal, typed.Code)
+			assert.Equal(t, tc.code, typed.Code, typed.Message)
 			assert.Equal(t, "node-1", typed.Details["nodeId"])
 			assert.Contains(t, typed.Message, tc.why)
+
+			if tc.reason != "" {
+				assert.Equal(t, tc.reason, typed.Details["reason"], typed.Message)
+			}
+			if tc.field != "" {
+				// A mismatch names both sides: the refusal is only actionable if
+				// it says which two values disagree.
+				assert.Equal(t, tc.field, typed.Details["field"])
+				assert.Equal(t, tc.want, typed.Details["want"])
+				assert.Equal(t, tc.got, typed.Details["got"])
+				assert.Contains(t, typed.Message, tc.want, "the error names what was asked for")
+				assert.Contains(t, typed.Message, tc.got, "and what the node answered")
+			}
+			assert.Equal(t, MigrationExportDocument{}, got,
+				"a refused export hands the caller nothing to spool")
 		})
 	}
 }
@@ -611,6 +675,144 @@ func TestManagerStageSendsTheArtifactAndTheManifestQuery(t *testing.T) {
 	}
 }
 
+// TestManagerChecksumsAreCaseInsensitive pins the digest comparison: a hex digest
+// is the same value in either case, and a node that announces an upper-case one is
+// describing the file the manifest does, not another file.
+func TestManagerChecksumsAreCaseInsensitive(t *testing.T) {
+	pki := newTestPKI(t)
+	body := migrationTestBody(1024, 18)
+	artifact := migrationArtifactFixture(t, []byte("state"), body, nil)
+	entry := migrationTestEntry(t, artifact, "vm.mem")
+	upper := strings.ToUpper(entry.SHA256)
+	require.NotEqual(t, entry.SHA256, upper)
+
+	_, baseURL := startTestBroker(t, pki, &fakeTaskSource{}, map[string]Handler{
+		MigrationFileOperation: func(_ context.Context, _ Task, w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Length", strconv.FormatInt(entry.Size, 10))
+			w.Header().Set(checksumHeader, upper)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(body)
+		},
+		MigrationStageOperation: func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+			_, _ = io.Copy(io.Discard, r.Body)
+			// The node echoes the digest it verified, in the case it prefers.
+			w.Header().Set(checksumHeader, upper)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+
+	mgr := newMigrationTestManager(t, pki, baseURL, 0)
+
+	var got bytes.Buffer
+	n, err := mgr.File(context.Background(), "node-1", v1.Task{ID: migrationTestTask}, artifact, "vm.mem", &got)
+	require.NoError(t, err, "an upper-case announcement is the same digest")
+	assert.Equal(t, entry.Size, n)
+	assert.Equal(t, body, got.Bytes())
+
+	require.NoError(t, mgr.Stage(context.Background(), "node-2", v1.Task{ID: "next-task"},
+		artifact, "vm.mem", entry.Size, entry.SHA256, bytes.NewReader(body)),
+		"an upper-case echo is the digest the stage sent")
+}
+
+// sourceFailureReader serves its prefix and then fails: the reader a Stage is
+// handed when the hop between the spool and the wire breaks after the transfer has
+// started.
+type sourceFailureReader struct {
+	prefix []byte
+	err    error
+}
+
+func (r *sourceFailureReader) Read(p []byte) (int, error) {
+	if len(r.prefix) > 0 {
+		n := copy(p, r.prefix)
+		r.prefix = r.prefix[n:]
+		return n, nil
+	}
+	return 0, r.err
+}
+
+// TestManagerStageReportsItsOwnSourceFailure pins who is blamed when a stage dies
+// while reading its own bytes: the reader, not the target node. The spool checks a
+// file's digest at EOF and a disk can refuse a read, and neither is a node that
+// stopped answering - so the failure keeps the spool's own classification when it
+// has one, and never becomes "node unavailable".
+func TestManagerStageReportsItsOwnSourceFailure(t *testing.T) {
+	pki := newTestPKI(t)
+	body := migrationTestBody(256, 19)
+	artifact := migrationArtifactFixture(t, []byte("state"), body, nil)
+	entry := migrationTestEntry(t, artifact, "vm.mem")
+
+	// The error the spool's reader returns at EOF when the bytes are not the
+	// digest the manifest describes.
+	spoolErr := output.NewErrorf(output.CodeConflict, "spool file %q has SHA-256 %s: the artifact declares %s",
+		"vm.mem", strings.Repeat("0", 64), entry.SHA256).
+		WithDetails(map[string]any{"reason": "checksum_mismatch", "name": "vm.mem"})
+
+	// An error no layer classified: the message names a path the manager keeps to
+	// itself, so it must not be relayed.
+	rawErr := errors.New("read /var/lib/swarmcracker/migration-spool/mig-0123456789abcdef/vm.mem: input/output error")
+
+	cases := []struct {
+		name     string
+		err      error
+		code     output.Code
+		reason   string
+		wantSame bool
+	}{
+		{
+			name:     "the spool refuses the file at EOF",
+			err:      spoolErr,
+			code:     output.CodeConflict,
+			reason:   "checksum_mismatch",
+			wantSame: true,
+		},
+		{
+			name:   "an unclassified read error",
+			err:    rawErr,
+			code:   output.CodeInternal,
+			reason: "source_unreadable",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, baseURL := startTestBroker(t, pki, &fakeTaskSource{}, map[string]Handler{
+				MigrationStageOperation: func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+					_, _ = io.Copy(io.Discard, r.Body)
+					w.WriteHeader(http.StatusNoContent)
+				},
+			})
+
+			mgr := newMigrationTestManager(t, pki, baseURL, 0)
+			reader := &sourceFailureReader{prefix: body[:len(body)-1], err: tc.err}
+			err := mgr.Stage(context.Background(), "node-2", v1.Task{ID: "next-task"},
+				artifact, "vm.mem", entry.Size, entry.SHA256, reader)
+
+			var typed *output.Error
+			require.ErrorAs(t, err, &typed)
+			assert.Equal(t, tc.code, typed.Code, typed.Message)
+			assert.Equal(t, tc.reason, typed.Details["reason"], typed.Message)
+
+			// The point of the ruling: a source that failed is never reported as
+			// the target node being unavailable.
+			assert.NotEqual(t, codeUnavailable, typed.Code, "a failed source is not a node that is down")
+			assert.NotEqual(t, output.CodeTimeout, typed.Code)
+			assert.NotContains(t, typed.Message, "migration-spool", "the manager's paths stay off the wire")
+			assert.NotContains(t, typed.Message, "/var/lib")
+			assert.Equal(t, "vm.mem", typed.Details["name"])
+
+			if tc.wantSame {
+				assert.Same(t, spoolErr, typed, "a spool error keeps its own classification")
+				assert.Nil(t, typed.Details["nodeId"],
+					"a relayed classification is not rewritten with manager-side detail")
+			} else {
+				assert.Equal(t, "node-2", typed.Details["nodeId"],
+					"the node is named for correlation, not blamed")
+			}
+		})
+	}
+}
+
 // TestManagerStageRefusesParametersTheManifestDoesNotDescribe pins the redundant
 // pair: size and digest are passed explicitly because they are the node's query,
 // and they are checked against the manifest rather than trusted, so a caller
@@ -758,6 +960,10 @@ func TestManagerMigrationCallsTimeOut(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				stall(w, r)
 			},
+			MigrationStageOperation: func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+				_, _ = io.Copy(io.Discard, r.Body)
+				stall(w, r)
+			},
 		})
 
 	host, port := brokerTarget(t, baseURL)
@@ -783,6 +989,13 @@ func TestManagerMigrationCallsTimeOut(t *testing.T) {
 	_, err = mgr.File(context.Background(), "node-1", v1.Task{ID: migrationTestTask}, artifact, "vm.mem", io.Discard)
 	require.ErrorAs(t, err, &typed)
 	assert.Equal(t, output.CodeTimeout, typed.Code)
+
+	// A stage whose own reader behaved keeps the transport's answer: the wrapper
+	// that blames a failed source must not swallow a node that stopped answering.
+	err = mgr.Stage(context.Background(), "node-1", v1.Task{ID: "next-task"},
+		artifact, "vm.mem", entry.Size, entry.SHA256, bytes.NewReader(migrationTestBody(64, 10)))
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodeTimeout, typed.Code, "a stalled node is still a timeout")
 }
 
 // TestManagerMigrationTimeoutHasItsOwnDefault pins the two deadlines: a Manager

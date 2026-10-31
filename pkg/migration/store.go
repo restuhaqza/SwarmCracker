@@ -27,10 +27,11 @@ package migration
 //
 // As with the node's restored-instance records, nothing is cached in memory: a
 // Writer publishes by rename, a reader opens by name, and Remove removes the
-// directory. The one piece of in-memory state is the reservation of a slot while
-// a Writer is open, so two concurrent writes for one artifact cannot both believe
-// they own it; that state dies with the process, and Sweep is what removes what a
-// crash left behind.
+// directory. The only in-memory state is what "in use" means: the reservation of a
+// slot while a Writer is open, so two concurrent writes for one artifact cannot
+// both believe they own it, and a count of open readers, so a Stage that outlasts
+// the TTL is not removed underneath itself. That state dies with the process, and
+// Sweep is what removes what a crash left behind.
 //
 // # The spool is not a store
 //
@@ -63,11 +64,35 @@ const (
 	// directory rather than a pattern over the daemon's state.
 	SpoolDirName = "migration-spool"
 
+	// DefaultTransferDeadline is how long one artifact transfer may take: the
+	// manager's relay bounds each of its four node calls with it, and
+	// broker.DefaultMigrationTimeout is this value.
+	//
+	// It is stated here, beside the spool TTL, because the two are ordered by a
+	// rule rather than chosen independently: an artifact the manager is still
+	// allowed to be moving must never be swept, so the resting window below is
+	// derived from this deadline.
+	DefaultTransferDeadline = 30 * time.Minute
+
 	// DefaultSpoolTTL is how long an artifact may rest in the spool untouched
 	// before Sweep removes it. It is the migration's own rollback window: a
 	// restore that keeps failing is retried against the same artifact, and after
 	// this long a retry boots the workload fresh instead.
-	DefaultSpoolTTL = 10 * time.Minute
+	//
+	// The relationship: it is strictly longer than DefaultTransferDeadline. A
+	// file being written or read is protected by its reservation (see Sweep), but
+	// an artifact waiting between two files of the same transfer is not, so the
+	// window must outlast a whole transfer plus the caller's steps around it -
+	// otherwise a sweep could delete an artifact whose bytes the manager has been
+	// given 30 minutes to move.
+	DefaultSpoolTTL = DefaultTransferDeadline + spoolTTLMargin
+
+	// spoolTTLMargin is the room DefaultSpoolTTL leaves beyond a transfer
+	// deadline: the caller's own steps between files (spool one, hand it over,
+	// remove it, spool the next) and a retry of the hand-off. It is a margin on
+	// the deadline, not a second TTL, so shortening the deadline shortens the
+	// window and the ordering above cannot be lost.
+	spoolTTLMargin = 10 * time.Minute
 
 	// spoolDirectoryMode is the mode of the spool root and of an artifact's
 	// directory: an artifact carries a guest's memory image, so nobody but the
@@ -118,11 +143,18 @@ type Store struct {
 	ttl  time.Duration
 	now  func() time.Time
 
-	// mu guards held, the in-process reservation of each artifact's one slot.
-	// The filesystem is the durable state; this map is what makes the one-file
-	// rule hold between two writers that both looked at an empty directory.
-	mu   sync.Mutex
+	// mu guards the two pieces of in-process state below. The filesystem is the
+	// durable state; these are what make "in use" a fact between two callers that
+	// both looked at an empty directory, and what keep a sweep off a transfer the
+	// filesystem alone cannot show.
+	mu sync.Mutex
+	// held is the writer's reservation of each artifact's one slot: artifact ID
+	// to the name of the file its writer is filling.
 	held map[string]string
+	// readers counts the open readers per artifact. A Stage may stream a file for
+	// longer than the TTL, and unlinking the directory underneath it would leave
+	// the caller reading an inode the spool no longer names.
+	readers map[string]int
 }
 
 // NewStore validates the configuration. The root is not created here: a manager
@@ -149,7 +181,13 @@ func NewStore(cfg StoreConfig) (*Store, error) {
 		now = time.Now
 	}
 
-	return &Store{root: root, ttl: ttl, now: now, held: make(map[string]string)}, nil
+	return &Store{
+		root:    root,
+		ttl:     ttl,
+		now:     now,
+		held:    make(map[string]string),
+		readers: make(map[string]int),
+	}, nil
 }
 
 // Root returns the spool directory.
@@ -404,23 +442,38 @@ func (s *Store) Open(artifactID string, file File) (*SpoolReader, error) {
 		return nil, spoolFileSizeMismatch(file.Name, stat.Size(), file.Size)
 	}
 
+	// A reader reserves the artifact until it is closed: a Stage streaming a file
+	// can outlast the TTL, and a sweep that removed the directory under it would
+	// leave the caller reading a file the spool no longer names. A caller that
+	// abandons a reader without closing it keeps the artifact unsweepable until
+	// the process restarts, the same trade-off a Writer's reservation makes.
+	s.mu.Lock()
+	s.readers[artifactID]++
+	s.mu.Unlock()
+
 	return &SpoolReader{
-		f:      f,
-		src:    io.LimitReader(f, file.Size),
-		digest: sha256.New(),
-		file:   file,
+		store:    s,
+		artifact: artifactID,
+		f:        f,
+		src:      io.LimitReader(f, file.Size),
+		digest:   sha256.New(),
+		file:     file,
 	}, nil
 }
 
 // SpoolReader streams one spooled file and verifies it as it goes. It implements
 // io.ReadCloser.
 type SpoolReader struct {
+	store    *Store
+	artifact string
+
 	f      *os.File
 	src    io.Reader
 	digest hash.Hash
 	file   File
 	read   int64
 	err    error
+	closed bool
 }
 
 // Read streams the next slice of the file. The digest is checked when the stream
@@ -463,10 +516,16 @@ func (r *SpoolReader) verify() error {
 	return nil
 }
 
-// Close closes the underlying file. It does not remove it: the spool entry is
-// removed by Remove, once the target has the bytes.
+// Close closes the underlying file and releases the artifact's read
+// reservation, which is what makes it sweepable again. It does not remove the
+// file: the spool entry is removed by Remove, once the target has the bytes.
 func (r *SpoolReader) Close() error {
-	return r.f.Close()
+	err := r.f.Close()
+	if !r.closed {
+		r.closed = true
+		r.store.releaseReader(r.artifact)
+	}
+	return err
 }
 
 // Remove deletes everything the spool holds for one artifact: its directory and
@@ -474,9 +533,11 @@ func (r *SpoolReader) Close() error {
 // does not hold is a success, which is what lets a success path, a failure path
 // and a rollback all run it.
 //
-// It is not synchronised with a writer: removing an artifact that is still being
-// written is how a cancelled transfer is abandoned, and the writer then fails when
-// it closes rather than publishing a file into a directory that is gone.
+// It is not synchronised with a writer or a reader: removing an artifact that is
+// still being written is how a cancelled transfer is abandoned, and the writer
+// then fails when it closes rather than publishing a file into a directory that is
+// gone. A reader that is open keeps its file descriptor, so it can finish reading
+// what it opened, but the artifact is no longer in the spool.
 func (s *Store) Remove(artifactID string) error {
 	if !ValidArtifactID(artifactID) {
 		return spoolInvalidArtifactID(artifactID)
@@ -485,7 +546,13 @@ func (s *Store) Remove(artifactID string) error {
 	if err := os.RemoveAll(filepath.Join(s.root, artifactID)); err != nil {
 		return spoolUnavailable("remove a spooled artifact")
 	}
-	partials, _ := filepath.Glob(filepath.Join(s.root, spoolPartialPrefix+artifactID+"-*"))
+	partials, err := filepath.Glob(filepath.Join(s.root, spoolPartialPrefix+artifactID+"-*"))
+	if err != nil {
+		// The pattern is built from a validated artifact ID, so this is not a
+		// caller's input: surfacing it is the only way to learn that a temporary
+		// was left behind, and leaving it silently would contradict "removed".
+		return spoolUnavailable("find a spool file to remove")
+	}
 	for _, partial := range partials {
 		_ = os.Remove(partial)
 	}
@@ -495,8 +562,11 @@ func (s *Store) Remove(artifactID string) error {
 // Sweep removes every artifact older than the TTL, and every temporary a crashed
 // write left behind. It returns how many entries it removed. An entry is aged by
 // its own modification time - a directory's changes when a file is published into
-// it - so an artifact that is being written right now is not swept: a transfer
-// longer than the TTL is exactly what the reservation check protects.
+// it - so an entry that is being used right now is not swept: a transfer longer
+// than the TTL is exactly what the reservation check protects, in both
+// directions. A writer holds the artifact's slot, a reader counts as one open
+// reader, and a temporary carries its artifact's ID so it is held by the same
+// reservation as the directory beside it.
 //
 // One failure does not stop the sweep: the entries after it still go, and the
 // first failure is returned so a caller can log that the spool may still hold
@@ -520,7 +590,7 @@ func (s *Store) Sweep() (int, error) {
 
 		switch {
 		case ValidArtifactID(name):
-			if s.isHeld(name) || !s.expired(path, now) {
+			if s.isBusy(name) || !s.expired(path, now) {
 				continue
 			}
 			if err := os.RemoveAll(path); err != nil {
@@ -531,6 +601,14 @@ func (s *Store) Sweep() (int, error) {
 			}
 			removed++
 		case strings.HasPrefix(name, spoolPartialPrefix):
+			// A temporary carries the artifact ID it was created for, so the
+			// reservation that protects the artifact's directory protects the
+			// inode being written too: unlinking it would leave the writer's
+			// Close renaming a file no name reaches, and the transfer would fail
+			// after its bytes had already crossed.
+			if id, ok := partialArtifactID(name); ok && s.isBusy(id) {
+				continue
+			}
 			if !s.expired(path, now) {
 				continue
 			}
@@ -550,12 +628,47 @@ func (s *Store) Sweep() (int, error) {
 	return removed, firstErr
 }
 
-// isHeld reports whether a writer currently owns the artifact's slot.
-func (s *Store) isHeld(artifactID string) bool {
+// isBusy reports whether the artifact is in use: a writer holds its slot, or a
+// reader is open. Sweep is the only caller, and it needs both answers for the
+// same reason - the bytes of an artifact that is being transferred are worth
+// keeping until the caller is done with them.
+func (s *Store) isBusy(artifactID string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.held[artifactID]
-	return ok
+	if _, held := s.held[artifactID]; held {
+		return true
+	}
+	return s.readers[artifactID] > 0
+}
+
+// releaseReader drops one open reader of the artifact. Readers are counted rather
+// than named: two concurrent reads of one file are one reason to keep it, and the
+// count is what keeps the last Close honest.
+func (s *Store) releaseReader(artifactID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.readers[artifactID] <= 1 {
+		delete(s.readers, artifactID)
+		return
+	}
+	s.readers[artifactID]--
+}
+
+// partialArtifactID returns the artifact a spool temporary belongs to. The name is
+// the one openWriter creates: spoolPartialPrefix, the artifact ID, then the "-<random>"
+// os.CreateTemp appends, so the ID is the fixed-width part between them.
+func partialArtifactID(name string) (string, bool) {
+	const idLength = len(artifactIDPrefix) + 2*artifactIDBytes
+
+	if len(name) <= len(spoolPartialPrefix)+idLength+1 || !strings.HasPrefix(name, spoolPartialPrefix) {
+		return "", false
+	}
+	rest := name[len(spoolPartialPrefix):]
+	id := rest[:idLength]
+	if rest[idLength] != '-' || !ValidArtifactID(id) {
+		return "", false
+	}
+	return id, true
 }
 
 // expired reports whether path was last modified at least one TTL ago. A path
