@@ -399,8 +399,9 @@ paths:
         Requires migrations:write, which only the admin role holds: a migration
         replaces a service's task and relays a guest's memory image between hosts.
         The call is synchronous and bounded by three minutes, plus up to one minute of
-        detached cleanup (the manager finishes the cleanup after it has composed the
-        answer, so the caller does not wait for it). Only the swarm's raft leader runs
+        cleanup outside that deadline (the manager performs it before answering, so a
+        client timeout shorter than four minutes can drop a response for a move the
+        manager still completes). Only the swarm's raft leader runs
         a migration: a request served by any other manager answers 503 unavailable with
         details.reason "not_leader" and details.leader naming the node to retry against,
         because two managers running the same move would prepare the target's directive

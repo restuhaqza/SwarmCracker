@@ -9,8 +9,10 @@
 // deadline answers pending, and the manager's own retry (the replaced service) is
 // what finishes it.
 //
-// The call is bounded by three minutes plus up to one minute of cleanup the manager
-// runs detached from the answer. A manager that is not the swarm's raft leader refuses
+// The call is bounded by three minutes, plus up to one minute of cleanup the
+// manager performs before answering: the caller waits for that minute too, so a
+// client timeout shorter than four minutes can drop a response for a move the
+// manager still completes. A manager that is not the swarm's raft leader refuses
 // the call with a typed unavailable (503) naming the leader: the move is one operation
 // and two managers running it would fight over the same directive and placement.
 //

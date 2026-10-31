@@ -73,7 +73,9 @@ const (
 	//
 	// Cleanup is not inside that budget: it runs detached, bounded by
 	// migrationCleanupTimeout, so the worst case a caller waits is three minutes plus
-	// up to one minute of detached cleanup, which is not time the caller can see.
+	// up to one minute of cleanup outside that deadline, which the caller does wait
+	// for: a client timeout shorter than four minutes can drop a response for a move
+	// this manager still completes.
 	migrationOverallTimeout = 3 * time.Minute
 
 	// migrationVerifyTimeout bounds the wait for a replacement to report running.
