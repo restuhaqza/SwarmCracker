@@ -52,6 +52,7 @@ sudo test-automation/multinode/cluster-lab.sh cluster
 sudo test-automation/multinode/cluster-lab.sh test
 sudo test-automation/multinode/cluster-lab.sh ingress
 sudo test-automation/multinode/cluster-lab.sh three-tier
+sudo test-automation/multinode/cluster-lab.sh autoscale
 
 # Inspect / enter / tear down
 sudo test-automation/multinode/cluster-lab.sh status
@@ -89,6 +90,29 @@ overridden command, and (5) a task whose healthcheck never passes never reaches
 `RUNNING`. It needs `curl` on the host and leaves the three services running for
 inspection.
 
+`autoscale` is the reproducible form of the autoscaling acceptance test, which
+used to be a recorded manual run: it deploys one replica of `alpine:3.20` whose
+workload burns CPU until `/tmp/stop` exists, under
+`--autoscale min=1,max=3,metric=cpu,target=40,cooldown-up=30s,cooldown-down=60s`,
+and asserts that (1) the count reaches 3 on the autoscaler's own decision and
+all three replicas boot, (2) the manager's
+`swarmcracker_service_scale_events_total{direction="up"}` counter increased —
+read from the manager's `--health-addr` over ssh, for this service's own series
+and as a sum over every service, (3) writing `/tmp/stop` inside every replica
+brings the count back to 1 and moves the `down` counter, and (4) a manual
+`service scale 0` stays at 0 for 95 s (more than two 30 s autoscaler passes)
+with neither counter moving. Then it removes the service.
+
+Its runtime is the daemon's, not the script's: the loop reconciles every 30 s, a
+scale-up reacts on the first hot sample, a scale-down needs two consecutive cold
+samples plus the 60 s cooldown, and a scale moves one replica at a time — so
+3 → 1 is two events. Expect **about six minutes** on a healthy cluster
+(`LAB_AUTOSCALE_UP_DEADLINE`/`LAB_AUTOSCALE_DOWN_DEADLINE`, 240 s and 210 s,
+bound the two halves; a run that hits both is failing anyway). The workload
+burns one guest's CPU in a shell loop with a 50 ms sleep between bursts, which
+measures ~75 % of one vCPU and leaves the guest agent — and `vm exec` — a
+scheduling window.
+
 ## Configuration
 
 All settings are environment variables (defaults in the script header). Common
@@ -106,6 +130,9 @@ ones:
 | `LAB_SUBNET` | `192.168.127.0/24` | microVM overlay subnet (must be `/24`) |
 | `LAB_BRIDGE` | `swarm-br0` | microVM bridge name |
 | `LAB_IMAGE_OCI` | `nginx:alpine` | image used by `test` |
+| `LAB_AUTOSCALE_PREFIX` | `scas` | service name the `autoscale` scenario drives |
+| `LAB_AUTOSCALE_HEALTH_ADDR` | `127.0.0.1:8080` | the manager's `--health-addr`, read from inside node 1 |
+| `LAB_AUTOSCALE_UP_DEADLINE` / `LAB_AUTOSCALE_DOWN_DEADLINE` | `240` / `210` | seconds each half of `autoscale` may take |
 
 Example with 3 nodes and a custom overlay subnet:
 

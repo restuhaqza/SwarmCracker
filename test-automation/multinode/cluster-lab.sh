@@ -19,6 +19,7 @@
 #   test               Deploy a replicated service and test cross-host traffic
 #   ingress            E2E the ingress routing mesh (fan-out, failover, UDP, cleanup)
 #   three-tier         E2E a web + api + db app: publish, secrets, health, service DNS
+#   autoscale          E2E the autoscaler: scale up on CPU, scale in, and a paused service
 #   status             Show cluster nodes, services and microVMs
 #   ssh <n>            Open a shell on node <n>
 #   destroy            Destroy the VMs and the seed server
@@ -701,9 +702,302 @@ cmd_three_tier() {
 }
 
 ###############################################################################
+# autoscale e2e: CPU-driven scale-up, scale-in and a paused service
+###############################################################################
+
+# cmd_autoscale is the reproducible form of #49's autoscaling acceptance test,
+# which until now only existed as a recorded manual run: a CPU-bound service
+# must reach its maximum on its own, come back to its minimum when the load
+# stops, and stay at zero after an operator scales it to zero.
+#
+# Every change is measured twice — the replica count the manager reports
+# (`service ls`) and the manager's own counter,
+# swarmcracker_service_scale_events_total{direction="up"|"down"}, read from the
+# daemon's --health-addr on the manager — because the count alone cannot tell a
+# load-driven scale from an operator's write, and the manual run this replaces
+# was read from that counter.
+#
+# The series' `service` label is the service ID, not its name, so the scenario
+# resolves the ID after create and reports both that service's own series and
+# the sum over every service.
+#
+# The timing is the daemon's, not this script's: the loop reconciles every 30s,
+# a scale-up reacts on the first hot sample (the second one a replica reports,
+# because the first is only a baseline), a scale-down needs two consecutive cold
+# samples, and the policy's cooldowns (30s up, 60s down) gate the next change.
+# A scale moves one replica, so 3 -> 1 is two events and takes about two and a
+# half minutes; the whole scenario takes roughly six.
+cmd_autoscale() {
+  need_root
+  [ -n "$(node_ip 1 || true)" ] || die "no nodes found; run: $0 create"
+
+  local n="$LAB_NODES"
+  local svc="${LAB_AUTOSCALE_PREFIX:-scas}"
+  local image="${LAB_AUTOSCALE_IMAGE:-$LAB_DB_IMAGE}"
+  local health="${LAB_AUTOSCALE_HEALTH_ADDR:-127.0.0.1:8080}"
+  local amin=1 amax=3 atarget=40
+  local cooldown_up=30s cooldown_down=60s
+  local up_deadline="${LAB_AUTOSCALE_UP_DEADLINE:-240}"
+  local down_deadline="${LAB_AUTOSCALE_DOWN_DEADLINE:-210}"
+  local pause_window=95
+  local rc=0
+  local svc_id="" up_before="" down_before="" up_after="" down_after=""
+  local up_paused="" down_paused="" up_for_service="" down_for_service=""
+  local ok host task touched expected i cur stayed
+
+  # The workload burns the guest's CPU until /tmp/stop exists and then idles in
+  # `sleep`, keeping the task alive and cold. Two properties matter:
+  #
+  #   - it must be hot with room to spare. The arithmetic burst is a shell
+  #     builtin loop (no fork per iteration) followed by a 50ms sleep, which
+  #     measured ~75% of one vCPU in alpine:3.20 here and stays over the 44%
+  #     "hot" band (target 40 plus the 10% band) on a faster or slower guest.
+  #   - it must yield. A bare `while :; do :; done` would still be sampled — the
+  #     guest agent gets fair CPU — but every `vm exec` and every metrics poll
+  #     would wait behind it, and the stop signal would only be noticed when the
+  #     scheduler felt like it. The sleep gives the agent a window every burst.
+  #
+  # shellcheck disable=SC2016  # the guest expands these, not this script
+  local burn='i=0; while [ ! -f /tmp/stop ]; do while [ "$i" -lt 100000 ]; do i=$((i+1)); done; i=0; sleep 0.05; done; exec sleep 3600'
+
+  # service_id prints a service's full ID, which is what the scale-event series
+  # is labelled with.
+  service_id() { # <name>
+    node_ssh 1 "swarmcracker service ls -q --filter name=$1 2>/dev/null" 2>/dev/null \
+      | head -1 || true
+  }
+
+  # spec_replicas prints the replica count the manager reports, or nothing when
+  # the service is gone.
+  spec_replicas() { # <name>
+    node_ssh 1 "swarmcracker service ls --filter name=$1 2>/dev/null" 2>/dev/null \
+      | awk -v name="$1" '$2 == name { print $3; exit }' || true
+  }
+
+  # running_replicas counts the service's RUNNING tasks.
+  running_replicas() { # <name>
+    node_ssh 1 "swarmcracker service ps $1 2>/dev/null | grep -c RUNNING || true" 2>/dev/null || true
+  }
+
+  # scale_events sums swarmcracker_service_scale_events_total for one direction,
+  # optionally narrowed to one service ID. awk always prints a number, so a
+  # series the manager has not created yet reads as 0 rather than as an error.
+  scale_events() { # <up|down> [service-id]
+    node_ssh 1 "curl -s --max-time 5 http://$health/metrics" 2>/dev/null \
+      | awk -v dir="$1" -v id="${2:-}" '
+          index($1, "swarmcracker_service_scale_events_total{") == 1 &&
+            index($1, "direction=\"" dir "\"") > 0 &&
+            (id == "" || index($1, "service=\"" id "\"") > 0) { total += $2 }
+          END { printf "%.0f\n", total + 0 }'
+  }
+
+  # wait_replicas polls the manager until it reports <count> replicas, printing
+  # every change. It returns 1 when the deadline passes.
+  wait_replicas() { # <count> <budget-seconds> <label>
+    local want="$1" budget="$2" label="$3" spent=0 cur last=""
+    while [ "$spent" -lt "$budget" ]; do
+      cur="$(spec_replicas "$svc")"
+      if [ "$cur" != "$last" ]; then
+        printf '  %3ss  %s: replicas=%s\n' "$spent" "$label" "${cur:-gone}"
+        last="$cur"
+      fi
+      if [ "$cur" = "$want" ]; then return 0; fi
+      sleep 5
+      spent=$((spent + 5))
+    done
+    return 1
+  }
+
+  # wait_running polls until <count> replicas are RUNNING, so an assertion about
+  # the count is not satisfied by replicas that were only requested.
+  wait_running() { # <count> <budget-seconds>
+    local want="$1" budget="$2" spent=0 r
+    while [ "$spent" -lt "$budget" ]; do
+      r="$(running_replicas "$svc")"
+      if [ "${r:-0}" -ge "$want" ]; then return 0; fi
+      sleep 5
+      spent=$((spent + 5))
+    done
+    return 1
+  }
+
+  # task_hosts prints "<node> <task>" for every task of the service that has a
+  # VM on a lab node, so `vm exec` can use that node's local vsock.
+  task_hosts() {
+    local j id
+    for j in $(seq 1 "$n"); do
+      for id in $(node_ssh 1 "swarmcracker service ps $svc -q 2>/dev/null" 2>/dev/null || true); do
+        [ -n "$id" ] || continue
+        if node_ssh "$j" "swarmcracker vm list 2>/dev/null" 2>/dev/null | awk '{print $1}' | grep -qx -- "$id"; then
+          printf '%s %s\n' "$j" "$id"
+        fi
+      done
+    done
+  }
+
+  # check reports one assertion. A failure is not fatal until the end, so a run
+  # tells the operator everything that went wrong instead of the first thing.
+  check() { # <0 when the check passed> <what the check proves>
+    if [ "$1" = 0 ]; then
+      printf '  PASS %s\n' "$2"
+    else
+      printf '  FAIL %s\n' "$2"
+      rc=1
+    fi
+  }
+
+  cleanup() {
+    node_ssh 1 "swarmcracker service rm $svc --force >/dev/null 2>&1 || true" 2>/dev/null || true
+  }
+
+  # dump_autoscaler is the evidence a timed-out check needs: the replica view,
+  # the counters and the manager's own decisions, all from the manager.
+  dump_autoscaler() {
+    printf '  service ps:\n'
+    node_ssh 1 "swarmcracker service ps $svc 2>/dev/null" 2>/dev/null | sed 's/^/    /' || true
+    printf '  scale events so far: up=%s down=%s\n' "$(scale_events up)" "$(scale_events down)"
+    printf '  manager autoscaler log (last 20 lines):\n'
+    node_ssh 1 "journalctl -u swarmcracker-manager -o cat --no-pager 2>/dev/null | grep -i autoscal | tail -20" 2>/dev/null \
+      | sed 's/^/    /' || true
+  }
+
+  # Cleanup runs on every exit path, including a failing assertion: a leftover
+  # hot service would keep burning a host's CPUs and skew the next run.
+  trap cleanup EXIT
+
+  info "autoscale e2e: $svc --autoscale min=$amin,max=$amax,metric=cpu,target=$atarget,cooldown-up=$cooldown_up,cooldown-down=$cooldown_down"
+
+  info "cleanup: removing a leftover $svc from an earlier run"
+  cleanup
+  # Wait for its microVMs to be gone as well, not just its service entry: they
+  # would keep the host's vCPUs busy and make this run's replicas look colder
+  # than they are.
+  for _ in $(seq 1 24); do
+    cur="$(running_replicas "$svc")"
+    if [ "${cur:-0}" = 0 ]; then break; fi
+    sleep 5
+  done
+
+  info "scale-event counters before: the manager's $health/metrics on node 1"
+  if ! node_ssh 1 "curl -sf --max-time 5 http://$health/metrics >/dev/null" 2>/dev/null; then
+    die "no metrics from $health on node 1 (is the manager running, and is --health-addr $health?)"
+  fi
+  up_before="$(scale_events up)"
+  down_before="$(scale_events down)"
+  printf '  up=%s down=%s (summed over every service)\n' "$up_before" "$down_before"
+
+  info "deploying $svc: $amin replica of $image, burning CPU until /tmp/stop exists"
+  node_ssh 1 "swarmcracker service create --name $svc --image $image --replicas $amin \
+    --autoscale min=$amin,max=$amax,metric=cpu,target=$atarget,cooldown-up=$cooldown_up,cooldown-down=$cooldown_down \
+    --command=/bin/sh --args=-c --args='$burn'" >/dev/null
+  svc_id="$(service_id "$svc")"
+  [ -n "$svc_id" ] || die "the service was created but the manager does not list $svc"
+  printf '  service ID: %s\n' "$svc_id"
+
+  info "check 1: CPU load drives the count to max=$amax (deadline ${up_deadline}s)"
+  if ! wait_replicas "$amax" "$up_deadline" "$svc"; then
+    dump_autoscaler
+    die "the autoscaler did not reach $amax replicas within ${up_deadline}s"
+  fi
+  ok=1
+  if [ "$(spec_replicas "$svc")" = "$amax" ]; then ok=0; fi
+  check "$ok" "replica count reached max=$amax on the autoscaler's own decision"
+  ok=1
+  if wait_running "$amax" 120; then ok=0; fi
+  check "$ok" "all $amax replicas are RUNNING (the guests the scale-up added booted)"
+
+  up_after="$(scale_events up)"
+  up_for_service="$(scale_events up "$svc_id")"
+  ok=1
+  if [ "${up_after:-0}" -gt "${up_before:-0}" ]; then ok=0; fi
+  check "$ok" "scale_events_total{direction=\"up\"} increased: ${up_before} -> ${up_after}"
+  ok=1
+  if [ "${up_for_service:-0}" -ge 1 ]; then ok=0; fi
+  check "$ok" "this service's own 'up' series (label service=\"$svc_id\") is ${up_for_service}"
+
+  info "check 2: stopping the load -- /tmp/stop in every replica"
+  for i in 1 2 3; do
+    touched=0
+    while read -r host task; do
+      if node_ssh "$host" "swarmcracker vm exec $task -- sh -c 'touch /tmp/stop && test -f /tmp/stop'" >/dev/null 2>&1; then
+        touched=$((touched + 1))
+      fi
+    done < <(task_hosts)
+    expected="$(running_replicas "$svc")"
+    if [ "${touched:-0}" -gt 0 ] && [ "${touched:-0}" -ge "${expected:-0}" ]; then break; fi
+    sleep 3
+  done
+  printf '  stopped %s of %s RUNNING replica(s)\n' "$touched" "${expected:-0}"
+  if [ "${touched:-0}" = 0 ]; then
+    dump_autoscaler
+    die "could not write /tmp/stop in any replica, so the load never stops"
+  fi
+
+  info "check 3: the count returns to min=$amin (deadline ${down_deadline}s)"
+  if ! wait_replicas "$amin" "$down_deadline" "$svc"; then
+    dump_autoscaler
+    die "the autoscaler did not scale back to $amin replicas within ${down_deadline}s"
+  fi
+  ok=1
+  if [ "$(spec_replicas "$svc")" = "$amin" ]; then ok=0; fi
+  check "$ok" "replica count returned to min=$amin once the load stopped"
+
+  down_after="$(scale_events down)"
+  down_for_service="$(scale_events down "$svc_id")"
+  ok=1
+  if [ "${down_after:-0}" -gt "${down_before:-0}" ]; then ok=0; fi
+  check "$ok" "scale_events_total{direction=\"down\"} increased: ${down_before} -> ${down_after}"
+  ok=1
+  if [ "${down_for_service:-0}" -ge 1 ]; then ok=0; fi
+  check "$ok" "this service's own 'down' series (label service=\"$svc_id\") is ${down_for_service}"
+
+  info "check 4: a manual 'service scale 0' is a pause the autoscaler does not undo"
+  node_ssh 1 "swarmcracker service scale $svc 0" >/dev/null
+  if ! wait_replicas 0 120 "$svc"; then
+    dump_autoscaler
+    die "the service did not reach 0 replicas"
+  fi
+  up_paused="$(scale_events up)"
+  down_paused="$(scale_events down)"
+  printf '  at 0 replicas: up=%s down=%s; watching for %ss (more than two 30s passes)\n' \
+    "$up_paused" "$down_paused" "$pause_window"
+  stayed=0
+  for i in $(seq 1 $((pause_window / 5))); do
+    sleep 5
+    cur="$(spec_replicas "$svc")"
+    if [ "${cur:-gone}" != 0 ]; then
+      printf '  the count left 0 after %ss: replicas=%s\n' "$((i * 5))" "${cur:-gone}"
+      stayed=1
+      break
+    fi
+  done
+  ok=1
+  if [ "$stayed" = 0 ]; then ok=0; fi
+  check "$ok" "the count stayed 0 for ${pause_window}s"
+  up_after="$(scale_events up)"
+  down_after="$(scale_events down)"
+  # `ok` is 1 only when a counter moved: a paused service must emit no events,
+  # so "moved" is the failure here, unlike the checks above.
+  ok=0
+  if [ "${up_after:-0}" -gt "${up_paused:-0}" ] || [ "${down_after:-0}" -gt "${down_paused:-0}" ]; then ok=1; fi
+  check "$ok" "neither counter moved while paused: up ${up_paused} -> ${up_after}, down ${down_paused} -> ${down_after}"
+
+  info "the manager's decisions for $svc"
+  node_ssh 1 "journalctl -u swarmcracker-manager -o cat --no-pager 2>/dev/null | grep -F -- 'service $svc_id' | tail -10" 2>/dev/null \
+    | sed 's/^/  /' || true
+
+  info "cleanup: removing $svc"
+  cleanup
+  trap - EXIT
+
+  [ "$rc" = 0 ] || die "autoscale e2e failed"
+  info "autoscale e2e passed: 1 -> $amax replicas under CPU load, back to $amin when the load stopped, and 0 stayed 0"
+}
+
+###############################################################################
 # dispatch
 ###############################################################################
-usage() { sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,/^set -euo pipefail$/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
 
 case "${1:-}" in
   build)      cmd_build ;;
@@ -714,6 +1008,7 @@ case "${1:-}" in
   test)       cmd_test ;;
   ingress)    cmd_ingress ;;
   three-tier) cmd_three_tier ;;
+  autoscale)  cmd_autoscale ;;
   status)     cmd_status ;;
   ssh)        shift; cmd_ssh "${1:-1}" ;;
   destroy|down) cmd_destroy ;;
