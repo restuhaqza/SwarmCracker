@@ -52,6 +52,7 @@ sudo test-automation/multinode/cluster-lab.sh cluster
 sudo test-automation/multinode/cluster-lab.sh test
 sudo test-automation/multinode/cluster-lab.sh ingress
 sudo test-automation/multinode/cluster-lab.sh three-tier
+sudo test-automation/multinode/cluster-lab.sh autoscale
 
 # Inspect / enter / tear down
 sudo test-automation/multinode/cluster-lab.sh status
@@ -89,6 +90,58 @@ overridden command, and (5) a task whose healthcheck never passes never reaches
 `RUNNING`. It needs `curl` on the host and leaves the three services running for
 inspection.
 
+`autoscale` is the reproducible form of the autoscaling acceptance test, which
+used to be a recorded manual run: it deploys one replica of `alpine:3.20` whose
+workload burns CPU until `/tmp/stop` exists, under
+`--autoscale min=1,max=3,metric=cpu,target=40,cooldown-up=30s,cooldown-down=60s`,
+and asserts that (1) the count reaches 3 on the autoscaler's own decision and
+all three replicas boot, (2) the manager's
+`swarmcracker_service_scale_events_total{direction="up"}` counter increased —
+read from the manager's `--health-addr` over ssh, for this service's own series
+and as a sum over every service, (3) writing `/tmp/stop` inside every replica
+brings the count back to 1 and moves the `down` counter, and (4) a manual
+`service scale 0` stays at 0 for 95 s (three 30 s autoscaler passes) with this
+service's own counter unmoved. Then it removes the service.
+
+Both counter assertions poll instead of trusting one scrape, because the event is
+emitted asynchronously, right after the replica patch. A single read is retried
+every 2 s for `LAB_AUTOSCALE_READ_DEADLINE` (20 s) when it is not the manager's
+complete exposition — curl failed, the body is empty, it has no `swarmcracker_`
+lines, or it never reaches the last family (`swarmcracker_vxlan_peers`), which is
+how a cut-off body is told from a quiet manager — and **also** when the
+exposition is complete but has no scale-event family yet (a `CounterVec` with no
+children renders nothing at all; that case is read as `0` only for the
+pre-create baseline). The assertion then keeps polling every 5 s for up to
+`LAB_AUTOSCALE_EVENT_DEADLINE` (45 s) until the counter has crossed its baseline.
+No reading is ever read as "0 events"; only a deadline turns it into a failure,
+and the message carries curl's exit status, the body's size, its `swarmcracker_`
+line count and whether the exposition was complete. A slow run therefore looks
+like a run of
+
+```
+  5s  up: unreadable, retrying: http://127.0.0.1:8080/metrics on node 1 ...
+ 10s  up: sum=2 (want 1) this service=2 (want 1)
+```
+
+lines before the `PASS`, and it can sit there for up to 45 s per counter without
+being broken. The pause window counts only readable reads, and fewer than two of
+them is a `FAIL`, so neither assertion can pass on nothing.
+
+Its runtime is the daemon's, not the script's: the loop reconciles every 30 s, a
+scale-up reacts on the first hot sample, a scale-down needs two consecutive cold
+samples plus the 60 s cooldown, and a scale moves one replica at a time — so
+3 → 1 is two events. Expect **about 6 minutes** on a healthy cluster. The
+passing-path budgets — 150 s for the count to reach 3 plus 45 s for those guests
+to boot, 45 s for the `up` poll, 150 s back to 1 plus 45 s for the `down` poll,
+45 s to reach 0 and the 95 s pause window — add up to **575 s (9.6 min)**, which
+is the ceiling and not the expected runtime: a passing run does not sit on the
+counter budgets, because the event is emitted before the count reaches its
+target, so the first poll answers. A re-run that first has to wait out an earlier
+run's microVMs (up to 120 s) can take ~11.6 min in the worst case.
+The workload burns one guest's CPU in a shell loop with a 50 ms sleep between
+bursts, which measures ~75 % of one vCPU and leaves the guest agent — and
+`vm exec` — a scheduling window.
+
 ## Configuration
 
 All settings are environment variables (defaults in the script header). Common
@@ -106,6 +159,11 @@ ones:
 | `LAB_SUBNET` | `192.168.127.0/24` | microVM overlay subnet (must be `/24`) |
 | `LAB_BRIDGE` | `swarm-br0` | microVM bridge name |
 | `LAB_IMAGE_OCI` | `nginx:alpine` | image used by `test` |
+| `LAB_AUTOSCALE_PREFIX` | `scas` | service name the `autoscale` scenario drives |
+| `LAB_AUTOSCALE_HEALTH_ADDR` | `127.0.0.1:8080` | the manager's `--health-addr`, read from inside node 1 |
+| `LAB_AUTOSCALE_UP_DEADLINE` / `LAB_AUTOSCALE_DOWN_DEADLINE` | `150` / `150` | seconds each half of `autoscale` may take |
+| `LAB_AUTOSCALE_EVENT_DEADLINE` | `45` | seconds each counter poll waits for a scale event to appear |
+| `LAB_AUTOSCALE_READ_DEADLINE` | `20` | seconds a single counter read retries before it is fatal |
 
 Example with 3 nodes and a custom overlay subnet:
 

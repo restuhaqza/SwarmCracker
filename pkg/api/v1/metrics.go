@@ -14,15 +14,20 @@ import "time"
 // autoscaler, so its fields are the numbers that decision needs and nothing the
 // guest's own agent shape exposes.
 type TaskMetrics struct {
-	SchemaVersion int       `json:"schemaVersion"`
-	Kind          string    `json:"kind"`
-	TaskID        string    `json:"taskId"`
-	Service       string    `json:"service,omitempty"`
-	CPUSeconds    float64   `json:"cpuSeconds"`
-	MemoryBytes   uint64    `json:"memoryBytes"`
-	NetRxBytes    uint64    `json:"netRxBytes"`
-	NetTxBytes    uint64    `json:"netTxBytes"`
-	ObservedAt    time.Time `json:"observedAt"`
+	SchemaVersion int    `json:"schemaVersion"`
+	Kind          string `json:"kind"`
+	TaskID        string `json:"taskId"`
+	// Service is the attribution label the node publishes for the sample: the
+	// task's service ID, or the task ID when the task belongs to no service
+	// (pkg/swarmkit's metrics monitor makes that substitution). It is an opaque
+	// identifier, never a service name, so a consumer must not render or match
+	// it as one.
+	Service     string    `json:"service,omitempty"`
+	CPUSeconds  float64   `json:"cpuSeconds"`
+	MemoryBytes uint64    `json:"memoryBytes"`
+	NetRxBytes  uint64    `json:"netRxBytes"`
+	NetTxBytes  uint64    `json:"netTxBytes"`
+	ObservedAt  time.Time `json:"observedAt"`
 }
 
 // NewTaskMetrics wraps a sample in the v1 envelope.

@@ -1,18 +1,22 @@
 package apihttp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -587,4 +591,161 @@ func TestListTasksHealthPartialMessageIsStable(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), "connect: connection refused")
 	require.True(t, strings.HasPrefix(doc.Partial[0].Error.Message, "health is unavailable"),
 		"the partial message is fixed text: %q", doc.Partial[0].Error.Message)
+}
+
+// captureHealthLogs redirects the package logger for one test and returns the
+// buffer. The fan-out logs one line per recovered panic, and nothing else in
+// this package logs, so every line here is that line.
+func captureHealthLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+
+	var buf bytes.Buffer
+	previous := log.Logger
+	log.Logger = zerolog.New(&buf)
+	t.Cleanup(func() { log.Logger = previous })
+	return &buf
+}
+
+// TestListTasksHealthPanicIsContained proves a panicking health read cannot take
+// the manager down. The fan-out goroutine is not a handler goroutine, so net/http
+// contains nothing here: the recover has to live inside the goroutine. The
+// recovered fetch must still settle its task, because the collector waits for
+// exactly `pending` results — without one it would hold the page open until the
+// budget expired.
+func TestListTasksHealthPanicIsContained(t *testing.T) {
+	api := newExecTestAPI(t, nil, nil)
+	api.client.tasks = []v1.Task{
+		taskAt("task-1", "node-1", "2026-10-24T10:00:00Z"),
+		taskAt("task-2", "node-2", "2026-10-24T10:01:00Z"),
+	}
+	logs := captureHealthLogs(t)
+	api.broker.healthFn = func(_ context.Context, task v1.Task) (*v1.TaskHealth, error) {
+		if task.ID == "task-2" {
+			panic("broker assertion blew up")
+		}
+		return healthyTaskHealth("healthy"), nil
+	}
+
+	started := time.Now()
+	rec := getTasksWithHealth(t, api, "/v1/tasks?health=true")
+	elapsed := time.Since(started)
+
+	require.Less(t, elapsed, time.Second,
+		"a recovered panic must settle its task instead of waiting out the page budget")
+	require.Equal(t, http.StatusMultiStatus, rec.Code)
+
+	doc := decodeTaskList(t, rec)
+	require.Len(t, doc.Items, 2, "the whole page is still returned")
+	require.NotNil(t, doc.Items[0].Health, "a healthy node keeps its health")
+	require.Equal(t, "healthy", doc.Items[0].Health.Status)
+	require.Nil(t, doc.Items[1].Health)
+
+	require.Len(t, doc.Partial, 1, "the panicking node is a partial, like a failed fetch")
+	partial := doc.Partial[0]
+	require.Equal(t, "node-2", partial.NodeID)
+	require.Equal(t, string(output.CodeUnavailable), partial.Error.Code)
+	require.True(t, partial.Error.Retryable)
+	require.Equal(t, "node-2", partial.Error.Details["nodeId"])
+	require.NotContains(t, rec.Body.String(), "broker assertion blew up",
+		"the panic value belongs in the log, never on the wire")
+
+	logged := logs.String()
+	require.Contains(t, logged, "task-2", "the log names the task that panicked")
+	require.Contains(t, logged, "node-2", "the log names its node")
+	require.Contains(t, logged, "broker assertion blew up", "the log carries the panic value")
+	require.Contains(t, logged, "goroutine",
+		"the log carries the recovered panic's stack: %q", logged)
+	// A frame from the panic site, not the `created by ... tasksWithHealth`
+	// trailer, which every goroutine of the fan-out would satisfy. Go 1.27
+	// prints the panic frame as `panic(...)`, not `runtime.gopanic`, so the
+	// fetch frame is the stable proof.
+	require.Contains(t, logged, "fetchTaskHealth",
+		"the stack's frames lead through the fetch that panicked: %q", logged)
+}
+
+// TestHealthFanoutGoroutineContainsAPanicBehindTheSemaphore proves the same
+// recover also covers a fetch that panicked after it had queued for a worker
+// slot. The defer is installed at the top of the fan-out body, before the
+// semaphore select, so there is no point between "goroutine started" and "result
+// deposited" that escapes it.
+//
+// Which goroutine wins one of the first healthFanoutLimit slots is the
+// scheduler's choice, so a page-level test cannot force a queue without retrying
+// and hoping (the round-1 shape: 82 of 100 page reads never queued at all). The
+// premise is made deterministic instead by calling the goroutine's body — the
+// production path — with its semaphore already full: the only way to the fetch is
+// the slot select, and the only way past it is this test handing over the slot it
+// holds. Every run therefore panics once, behind the semaphore, and every
+// assertion below observes that one panic.
+func TestHealthFanoutGoroutineContainsAPanicBehindTheSemaphore(t *testing.T) {
+	// The page budget the daemon runs this body under: the queued fetch must
+	// settle well inside it, exactly as the page-level test requires of a page.
+	const budget = 2 * time.Second
+
+	api := newExecTestAPI(t, nil, nil)
+	logs := captureHealthLogs(t)
+	api.broker.healthFn = func(context.Context, v1.Task) (*v1.TaskHealth, error) {
+		panic("panicked after queueing for a worker slot")
+	}
+
+	pageCtx, cancel := context.WithTimeout(context.Background(), budget)
+	defer cancel()
+
+	// One slot, already taken: the fan-out body cannot reach its fetch until this
+	// test leaves the select.
+	sem := make(chan struct{}, 1)
+	sem <- struct{}{}
+	results := make(chan healthFetch, 1)
+
+	task := taskAt("task-panic", "node-2", "2026-10-24T11:00:00Z")
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		api.srv.fetchHealthInto(pageCtx, sem, results, task, 2)
+	}()
+
+	// Prove the fetch queued before letting it run, rather than assuming an
+	// interleaving: with the only slot held here, a body inside fetchHealthInto
+	// can be nowhere but the slot select.
+	stack := make([]byte, 1<<20)
+	require.Eventually(t, func() bool {
+		n := runtime.Stack(stack, true)
+		return bytes.Contains(stack[:n], []byte("fetchHealthInto"))
+	}, 5*time.Second, time.Millisecond,
+		"the fan-out goroutine never reached the worker-slot select, so this test "+
+			"would prove nothing about a queued fetch")
+
+	api.broker.healthMu.Lock()
+	fetchesWhileQueued := api.broker.healthCalls
+	api.broker.healthMu.Unlock()
+	require.Zero(t, fetchesWhileQueued,
+		"a queued fetch cannot have reached the broker while its slot is held")
+
+	<-sem // hand the slot over; the queued fetch now runs and panics
+
+	fetch := <-results
+	require.ErrorIs(t, fetch.err, errHealthPanicked,
+		"a recovered panic settles the task instead of leaving it unanswered")
+	require.Nil(t, fetch.health)
+	require.Equal(t, 2, fetch.index, "the settlement lands at the task's index")
+
+	<-done
+	require.Zero(t, len(sem), "the panicking fetch released the slot it took")
+	select {
+	case <-sem:
+		t.Fatal("the fan-out body released a slot it never took")
+	default:
+	}
+
+	api.broker.healthMu.Lock()
+	fetches := api.broker.healthCalls
+	api.broker.healthMu.Unlock()
+	require.Equal(t, 1, fetches, "the fetch is made exactly once")
+
+	logged := logs.String()
+	require.Contains(t, logged, "task-panic", "the log names the task that panicked")
+	require.Contains(t, logged, "node-2", "the log names its node")
+	require.Contains(t, logged, "panicked after queueing for a worker slot")
+	require.Contains(t, logged, "fetchTaskHealth",
+		"the stack's frames lead through the fetch that panicked: %q", logged)
 }
