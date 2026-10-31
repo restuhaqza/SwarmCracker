@@ -331,6 +331,16 @@ func newArtifactStartFixture(t *testing.T, opts artifactStartOptions) *artifactS
 		restored:     fixture.store,
 	}
 
+	// A start leaves two pollers running until the controller is torn down, and
+	// this fixture never is: the test ends with the VM still "running". Join them
+	// on cleanup, because an outliving poller reads MetricsPollInterval while the
+	// next test writes it (shortMetricsInterval), which is a data race the CI race
+	// detector reports as a failure of whichever test happens to run next.
+	t.Cleanup(func() {
+		fixture.ctrl.stopHealthMonitor()
+		fixture.ctrl.stopMetricsMonitor()
+	})
+
 	if opts.withMigration {
 		fixture.pending = &fakePendingStore{}
 		if opts.directivePending {
