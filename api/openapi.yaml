@@ -424,9 +424,10 @@ paths:
         details.capability "migrations". The answer to a migration the manager ran
         is 201 whatever its outcome: outcome "moved" carries the measured
         downtimeMs, and outcome "pending" means the service was replaced but no
-        replacement reported running before the verify deadline - the artifact and
-        the target's directive are kept, and the replaced service's retry restores
-        from them. A failure that left nothing behind is a typed error document with
+        replacement reported running before the verify deadline - the target keeps
+        the directive and the bytes it staged, and the replaced service's retry
+        restores from that copy. The source node's export is deleted as soon as the
+        service update has landed, whatever the outcome. A failure that left nothing behind is a typed error document with
         the phase that failed in details.phase. There is no status route: the call
         is the report. The attempt is audited as task.migrate.
       parameters:

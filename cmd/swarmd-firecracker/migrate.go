@@ -14,7 +14,7 @@ package main
 //	replace   the service gets a placement constraint pinning it to the target
 //	verify    wait for a task of that service on the target to report running
 //	cleanup   restore the placement, make every node forget the moved guest,
-//	          discard the artifact, drop the spool entry
+//	          discard the source's export, drop the spool entry
 //
 // The manager is the only party both nodes can reach, so it is the relay, and it
 // is a control plane, so it never holds a whole file: pkg/migration's spool is a
@@ -26,12 +26,13 @@ package main
 // still be undone completely, so a failure cleans up: the target's directive (if
 // one was recorded), the source's artifact (if one was exported), the spool entry
 // and the placement (if it was changed). After it, SwarmKit owns the retry: the
-// executioner on the target consumes the directive and restores from the staged
-// artifact, and a retry that outlives this call must still find both. So a
-// failure in verify keeps the directive and the artifact, restores the placement
-// and reports the phase - and a replacement that simply took longer than the
-// deadline is reported as pending rather than as a failure, because nothing
-// failed: it is still happening.
+// executioner on the target consumes the directive and restores from the bytes
+// staged there, and a retry that outlives this call must still find both. So a
+// failure in verify keeps the target's directive and staged copy, restores the
+// placement and reports the phase - and a replacement that simply took longer
+// than the deadline is reported as pending rather than as a failure, because
+// nothing failed: it is still happening. The source's export is not the retry's
+// input on any landed outcome, so it goes as soon as the update has landed.
 //
 // # One migration per service
 //
@@ -526,8 +527,10 @@ func (c *migrationCoordinator) run(
 	outcome, downtime, reason, err := c.verify(ctx, run.startedAt, plan)
 	if err != nil {
 		finish(v1.MigrationPhaseError, publicFailure(err))
-		// The update landed, so the directive and the artifact are the retry's:
-		// keep them and only restore the placement this call changed.
+		// The update landed, so the target's directive and its staged bytes are the
+		// retry's: keep them, restore the placement this call changed, and discard
+		// the source's export (see cleanup for why the source's copy is never the
+		// retry's input).
 		c.keepAfterReplace(ctx, plan, state)
 		return "", 0, migrationPhaseError(v1.MigrationPhaseVerify, err)
 	}

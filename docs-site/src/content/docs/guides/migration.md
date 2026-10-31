@@ -218,7 +218,9 @@ when it did not within the verify deadline.
 replacement report running within its two-minute verify deadline. Nothing
 failed: the service update landed, the target keeps the directive it recorded,
 and the artifact is still staged there. SwarmKit's own retry of the replacement
-restores from that artifact, so a slow start finishes on its own.
+restores from that artifact, so a slow start finishes on its own - unless the
+retry is scheduled on another node, because the manager restores the placement on
+every landed outcome; a retry that lands elsewhere boots a fresh VM.
 
 What the retry reads is the **target's** staged copy: the bytes the move staged
 there, named by the manifest that was written beside them. The source's export is
@@ -263,9 +265,10 @@ step that failed, so you know whether anything was replaced:
   move can be retried.
 - **After the update landed** (verify) the service already points at the target.
   The manager restores the placement and keeps the target's directive and the
-  staged artifact, because they are the copy the retry restores from; a
-  replacement that failed outright answers `503 unavailable` with `details.reason:
-  "replacement_failed"`.
+  bytes staged there, because they are the copy a retry restores from; the
+  source's export is discarded, exactly as a successful move discards it. A
+  replacement that failed outright answers `503 unavailable` with
+  `details.reason: "replacement_failed"`.
 
 The split is whether the update landed, not which step failed: a `replace` that
 answers an error is the first case, because before the manager reports that
@@ -287,10 +290,10 @@ retry restores the same VM state instead of booting a cold one.
 
 That rollback has an end. The directive expires ten minutes after it was
 prepared; a retry after that boots a fresh VM. A move whose service update landed
-— `moved`, and `pending` too — deletes the artifact on the source as part of its
-cleanup, because the retry reads the target's staged copy and never the source's;
-that staged copy is removed by the restore that consumed it, so nothing is kept
-after a move lands.
+— `moved`, a `pending` move, and a verify that failed after the update — deletes
+the artifact on the source as part of its cleanup, because the retry reads the
+target's staged copy and never the source's; that staged copy is removed by the
+restore that consumed it, so nothing is kept after a move lands.
 
 To put the workload back on the source node, move it there with another
 `vm migrate` once the source node is healthy again. That is a new move with its

@@ -1019,6 +1019,8 @@ func TestMigrateVerifyTimeoutDiscardsTheSourceExport(t *testing.T) {
 	assert.Equal(t, []string{"node.labels.zone==a"}, h.client.updates[1].constraints)
 	assert.Equal(t, []string{migrationTestArtifactID}, h.broker.discards,
 		"the source's export is discarded once the update landed, whatever the outcome")
+	assert.Equal(t, 1, countCalls(h.log.snapshot(), "discard:node-a:"+migrationTestArtifactID),
+		"the discard addresses the source node, never the target")
 	assert.Equal(t, []string{"svc-1/" + migrationTestArtifactID}, h.broker.prepares, "the target recorded the directive")
 	assert.Empty(t, h.broker.unprepares, "the directive is kept for the replacement's retry")
 	assert.Empty(t, h.broker.reanneals, "a pending move re-anneals nothing: the guest may not be up on the target")
@@ -1068,7 +1070,7 @@ func TestMigrateVerifyReportsAReplacementThatNeverRuns(t *testing.T) {
 	}
 }
 
-func TestMigrateVerifyFailureKeepsTheRetryAndReportsThePhase(t *testing.T) {
+func TestMigrateVerifyFailureDiscardsTheSourceExportAndKeepsTheRetry(t *testing.T) {
 	h := newMigrationHarness(t)
 	h.client.taskSteps = [][]v1.Task{
 		{{
@@ -1089,6 +1091,8 @@ func TestMigrateVerifyFailureKeepsTheRetryAndReportsThePhase(t *testing.T) {
 	require.Len(t, h.broker.discards, 1,
 		"the source's export goes once the update landed: the retry reads the target's copy")
 	assert.Equal(t, migrationTestArtifactID, h.broker.discards[0])
+	assert.Equal(t, 1, countCalls(h.log.snapshot(), "discard:node-a:"+migrationTestArtifactID),
+		"the discard addresses the source node")
 	assert.Empty(t, h.broker.unprepares, "the directive is the retry's")
 }
 
