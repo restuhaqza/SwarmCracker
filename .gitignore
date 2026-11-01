@@ -167,3 +167,6 @@ website/.wrangler/
 
 # Spec-driven development workspace (local, not committed)
 .sdd/
+
+# Local design-review artifacts (screenshots, decision files)
+/.impeccable/
