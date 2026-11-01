@@ -75,7 +75,7 @@ export const site = {
   description:
     'Firecracker microVMs with SwarmKit orchestration — Docker Swarm UX with hardware-isolated VMs.',
   canonical: 'https://swarmcracker.com/',
-  version: 'v0.12.0',
+  version: 'v0.13.0',
   ogImage: 'https://swarmcracker.com/og-image.png',
   ogImageAlt:
     'SwarmCracker — Firecracker microVMs for SwarmKit, hardware-isolated containers with Docker Swarm UX.',

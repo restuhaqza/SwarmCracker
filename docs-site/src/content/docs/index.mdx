@@ -70,6 +70,8 @@ swarmcracker CLI ──gRPC──▶ swarmd-firecracker (manager)
   <LinkCard title="Resource QoS" href="/guides/advanced/#cpu-pinning-and-cgroup-limits" description="Memory balloon, cgroup limits, CPU pinning, hugepages, and NUMA placement." />
   <LinkCard title="Alerting" href="/guides/alerting/" description="Crash-loop and health signals, the shipped rules, and the Alertmanager sink." />
   <LinkCard title="Disaster recovery" href="/guides/disaster-recovery/" description="Back up and restore manager state." />
+  <LinkCard title="Live migration" href="/guides/migration/" description="Move a running microVM to another node, with the measured downtime and its limits." />
+  <LinkCard title="Autoscaling" href="/guides/operations/#autoscaling" description="Scale a service on the CPU its workload burns inside its own VM." />
   <LinkCard title="Programmatic API" href="/reference/api/" description="HTTP/JSON API v1: tokens, reads, writes, exec, logs, files, attach, and snapshots." />
   <LinkCard title="SDKs & examples" href="/guides/sdk-examples/" description="Dependency-free Python and Node clients, plus runnable examples." />
 </CardGrid>
@@ -78,7 +80,7 @@ swarmcracker CLI ──gRPC──▶ swarmd-firecracker (manager)
 
 | Component | Version |
 |-----------|---------|
-| SwarmCracker | v0.12.0 |
+| SwarmCracker | v0.13.0 |
 | Firecracker | v1.15.1 |
 | SwarmKit | v2.1.1 |
 | Go | 1.26 |
