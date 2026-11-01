@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -99,14 +100,18 @@ func TestMountRootfs_TempDirError(t *testing.T) {
 }
 func createTestExt4Image(t *testing.T, path string, sizeMB int) {
 	t.Helper()
-	// Create sparse file
+
+	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
+		t.Skip("mkfs.ext4 not available")
+	}
+
 	file, err := os.Create(path)
 	require.NoError(t, err)
-	err = file.Truncate(int64(sizeMB) * 1024 * 1024)
-	require.NoError(t, err)
-	file.Close()
+	require.NoError(t, file.Truncate(int64(sizeMB)*1024*1024))
+	require.NoError(t, file.Close())
 
-	// Format as ext4 (requires root)
-	// exec.Command("mkfs.ext4", "-F", "-q", path).Run()
-	// For non-root tests, we skip this
+	out, err := exec.Command("mkfs.ext4", "-F", "-q", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("mkfs.ext4 %s failed: %s: %v", path, out, err)
+	}
 }

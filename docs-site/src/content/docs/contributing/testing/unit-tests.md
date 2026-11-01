@@ -561,6 +561,16 @@ Rules:
   that was true two refactors ago is invisible while the test cannot reach that
   line; it surfaces the moment privileges let it.
 
+Run both paths before a release:
+
+```bash
+go test -short ./pkg/...   # unprivileged, as CI runs it
+sudo go test ./pkg/...     # privileged, as the lab host runs it
+```
+
+The two runs must agree. A test that only passes unprivileged is a host
+dependency, not a test.
+
 ---
 
 ## Mocking Strategy

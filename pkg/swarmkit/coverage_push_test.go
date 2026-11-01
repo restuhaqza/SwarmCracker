@@ -217,9 +217,16 @@ func TestCleanupOrphanedVMs_Push_SigkillFallback(t *testing.T) {
 
 // TestStartDirect_Push_SocketDirError tests socket directory creation error
 func TestStartDirect_Push_SocketDirError(t *testing.T) {
+	// A regular file where the socket directory should be fails for every user,
+	// including root; a bare /nonexistent path is created by root instead.
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(blocker, []byte("x"), 0644); err != nil {
+		t.Fatalf("write blocker: %v", err)
+	}
+
 	vmm := &VMMManager{
 		firecrackerPath: "firecracker",
-		socketDir:       "/nonexistent/path/that/cannot/be/created",
+		socketDir:       filepath.Join(blocker, "sockets"),
 		processes:       make(map[string]*exec.Cmd),
 		logger:          zerolog.Nop(),
 	}

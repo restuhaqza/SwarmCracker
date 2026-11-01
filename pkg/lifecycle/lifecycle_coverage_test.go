@@ -2,6 +2,7 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -135,13 +136,14 @@ func TestForceKillVM_AlreadyStoppedProcess(t *testing.T) {
 		"forceKillVM should handle stopped process")
 }
 
-// TestForceKillVM_SignalFailure tests forceKillVM when signal fails
+// TestForceKillVM_SignalFailure tests forceKillVM when signal fails. The signal
+// is injected: as root, killing PID 1 succeeds, so the host cannot produce the
+// failure this test is about.
 func TestForceKillVM_SignalFailure(t *testing.T) {
 	vmMgr := &VMMManager{
 		vms: make(map[string]*VMInstance),
 	}
 
-	// PID 1 is init, which we can't kill
 	vmInstance := &VMInstance{
 		ID:         "test-vm-init",
 		PID:        1,
@@ -149,9 +151,17 @@ func TestForceKillVM_SignalFailure(t *testing.T) {
 		SocketPath: "/tmp/test-sock-init.sock",
 	}
 
-	// Should error - can't kill init
+	orig := killProcess
+	killProcess = func(*os.Process) error {
+		return errors.New("kill: operation not permitted")
+	}
+	t.Cleanup(func() { killProcess = orig })
+
 	err := vmMgr.forceKillVM(vmInstance)
-	assert.Error(t, err, "forceKillVM should fail for PID 1")
+	assert.Error(t, err, "forceKillVM should surface a failed signal")
+
+	// A failed kill is not terminal: the VM must not be reported stopped.
+	assert.Equal(t, VMStateRunning, vmInstance.GetState())
 }
 
 // TestGracefulShutdown_VariousGracePeriods tests gracefulShutdown with different grace periods

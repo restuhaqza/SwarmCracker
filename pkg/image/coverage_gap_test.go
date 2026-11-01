@@ -394,12 +394,13 @@ func TestHandleBindMount_StatError(t *testing.T) {
 	ip := &ImagePreparer{config: &PreparerConfig{}}
 
 	tmpDir := t.TempDir()
-	// Source file is a directory path without execute permission
-	sourceDir := filepath.Join(t.TempDir(), "noperm")
-	require.NoError(t, os.MkdirAll(sourceDir, 0000))
+	// A regular file where the source's parent should be: stat returns ENOTDIR
+	// for every user, including root, which bypasses 0000 directories.
+	blocker := filepath.Join(tmpDir, "not-a-dir")
+	require.NoError(t, os.WriteFile(blocker, []byte("x"), 0644))
 
 	mount := &types.Mount{
-		Source: filepath.Join(sourceDir, "inaccessible"),
+		Source: filepath.Join(blocker, "inaccessible"),
 		Target: "/test",
 	}
 

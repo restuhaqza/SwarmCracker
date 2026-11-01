@@ -27,13 +27,13 @@ func TestNewUnixClient(t *testing.T) {
 	})
 }
 func TestSaveMetadata_ErrorPaths(t *testing.T) {
-	t.Run("permission denied", func(t *testing.T) {
+	t.Run("parent is not a directory", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Create read-only directory
-		roDir := filepath.Join(tmpDir, "readonly")
-		require.NoError(t, os.MkdirAll(roDir, 0444))
-		defer os.Chmod(roDir, 0755) // Cleanup
+		// A regular file where a directory is expected fails for every user,
+		// including root, unlike a 0444 directory.
+		parent := filepath.Join(tmpDir, "not-a-dir")
+		require.NoError(t, os.WriteFile(parent, []byte("x"), 0644))
 
 		info := &SnapshotInfo{
 			ID:        "snap-825b9a610b6fba70",
@@ -41,7 +41,7 @@ func TestSaveMetadata_ErrorPaths(t *testing.T) {
 			CreatedAt: time.Now().UTC(),
 		}
 
-		err := saveMetadata(roDir, info)
+		err := saveMetadata(parent, info)
 		assert.Error(t, err)
 	})
 
@@ -52,7 +52,8 @@ func TestSaveMetadata_ErrorPaths(t *testing.T) {
 			CreatedAt: time.Now().UTC(),
 		}
 
-		err := saveMetadata("/nonexistent/path/to/dir", info)
+		missing := filepath.Join(t.TempDir(), "missing")
+		err := saveMetadata(missing, info)
 		assert.Error(t, err)
 	})
 }

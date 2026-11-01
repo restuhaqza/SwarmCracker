@@ -175,6 +175,15 @@ type CreateOptions struct {
 	Metadata   map[string]string
 }
 
+// mkdirTemp, renameDir and removeAll are seams for the failure paths of create
+// and delete. Root ignores the directory permission bits a test would otherwise
+// rely on, so the tests inject the failure here instead of chmod-ing a directory.
+var (
+	mkdirTemp = os.MkdirTemp
+	renameDir = os.Rename
+	removeAll = os.RemoveAll
+)
+
 // Manager manages VM snapshot lifecycle.
 type Manager struct {
 	config SnapshotConfig
@@ -455,7 +464,7 @@ func (m *Manager) CreateSnapshot(
 	}
 
 	// Create a staging directory for the snapshot
-	stagingDir, err := os.MkdirTemp(m.config.SnapshotDir, stagingPrefix)
+	stagingDir, err := mkdirTemp(m.config.SnapshotDir, stagingPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create staging directory: %w", err)
 	}
@@ -603,7 +612,7 @@ func (m *Manager) publishSnapshot(stagingDir, snapshotDir string) error {
 	if err := os.Remove(snapshotDir); err != nil {
 		return fmt.Errorf("failed to prepare snapshot directory: %w", err)
 	}
-	if err := os.Rename(stagingDir, snapshotDir); err != nil {
+	if err := renameDir(stagingDir, snapshotDir); err != nil {
 		return fmt.Errorf("failed to publish snapshot directory: %w", err)
 	}
 	return nil
@@ -955,7 +964,7 @@ func (m *Manager) DeleteSnapshot(_ context.Context, snapshotID string) error {
 
 	log.Info().Str("snapshot_id", snapshotID).Msg("Deleting snapshot")
 
-	if err := os.RemoveAll(snapshotDir); err != nil {
+	if err := removeAll(snapshotDir); err != nil {
 		return fmt.Errorf("failed to delete snapshot: %w", err)
 	}
 

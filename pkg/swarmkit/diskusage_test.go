@@ -2,7 +2,6 @@ package swarmkit
 
 import (
 	"path/filepath"
-	"syscall"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -65,25 +64,20 @@ func TestSampleDiskUsagePublishesOnlyExistingPaths(t *testing.T) {
 	instance := "disk-sampler-existing"
 	missing := filepath.Join(dir, "does-not-exist")
 
-	var stat syscall.Statfs_t
-	require.NoError(t, syscall.Statfs(dir, &stat))
-	blockSize := uint64(stat.Bsize)
-	wantTotal := stat.Blocks * blockSize
-	var wantUsed uint64
-	if stat.Blocks > stat.Bfree {
-		wantUsed = (stat.Blocks - stat.Bfree) * blockSize
-	}
-
+	// Sample first, then assert invariants. Free blocks change while the test
+	// runs (other packages in `go test ./...` write to the same filesystem), so
+	// comparing exact byte counts sampled twice is inherently racy.
 	sampleDiskUsage(instance, []diskPath{
 		{label: "rootfs", path: dir},
 		{label: "snapshots", path: missing},
 	})
 
-	// The existing path carries the statfs bytes for both series.
-	assert.Equal(t, float64(wantUsed),
-		testutil.ToFloat64(swarmcrackermetrics.DiskUsageBytes.WithLabelValues(instance, "rootfs")))
-	assert.Equal(t, float64(wantTotal),
-		testutil.ToFloat64(swarmcrackermetrics.DiskTotalBytes.WithLabelValues(instance, "rootfs")))
+	used := testutil.ToFloat64(swarmcrackermetrics.DiskUsageBytes.WithLabelValues(instance, "rootfs"))
+	total := testutil.ToFloat64(swarmcrackermetrics.DiskTotalBytes.WithLabelValues(instance, "rootfs"))
+
+	assert.Greater(t, total, float64(0), "existing path must publish its total size")
+	assert.GreaterOrEqual(t, used, float64(0), "usage cannot be negative")
+	assert.LessOrEqual(t, used, total, "usage cannot exceed the filesystem size")
 
 	// The missing path emits nothing at all, not a zero series.
 	assert.Equal(t, 0, countSamples(t, "swarmcracker_disk_usage_bytes",

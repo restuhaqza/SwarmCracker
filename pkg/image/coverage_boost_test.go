@@ -275,8 +275,9 @@ func TestPrepare_ImageScenarios(t *testing.T) {
 				}
 			} else {
 				if !tt.wantErr && rootfsPath != "" {
-					// For cached rootfs, check annotation
-					assert.Equal(t, rootfsPath, tt.task.Annotations["rootfs"])
+					// A task always boots its own copy, so the annotation names
+					// the per-task path rather than the shared cache entry.
+					assert.Equal(t, TaskRootfsPath(tt.config.RootfsDir, tt.task.ID), tt.task.Annotations["rootfs"])
 				}
 			}
 		})

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,23 +10,56 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
+
+// withHome points both HOME and NewStateManager's state directory at home for
+// the duration of the test. The assertions then reach the same verdict whether
+// the suite runs as root (where the real default is /var/run/swarmcracker) or
+// as an unprivileged user (~/.swarmcracker).
+func withHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".swarmcracker")
+	orig := stateDir
+	stateDir = func() (string, error) { return dir, nil }
+	t.Cleanup(func() { stateDir = orig })
+}
+
+// TestStateDirFor covers both branches of the state-directory choice without
+// requiring the test to run under a particular uid.
+func TestStateDirFor(t *testing.T) {
+	home := func() (string, error) { return "/home/tester", nil }
+
+	dir, err := stateDirFor(0, home)
+	assert.NoError(t, err)
+	assert.Equal(t, "/var/run/swarmcracker", dir)
+
+	dir, err = stateDirFor(1000, home)
+	assert.NoError(t, err)
+	assert.Equal(t, "/home/tester/.swarmcracker", dir)
+
+	dir, err = stateDirFor(1000, func() (string, error) { return "", errors.New("no home") })
+	assert.Error(t, err)
+	assert.Empty(t, dir)
+}
 
 // TestStateManagerCreationEdgeCases tests edge cases in StateManager creation.
 func TestStateManagerCreationEdgeCases(t *testing.T) {
 	t.Run("new state manager as root", func(t *testing.T) {
-		// We can't actually test as root in unit tests
-		// but we can verify the path would be correct
-		// by checking the non-root path thoroughly
+		// The directory the manager resolves is injected, so this exercises the
+		// creation path itself rather than the host's default location.
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
+		stateDirPath := filepath.Join(tempHome, ".swarmcracker")
 
 		sm, err := NewStateManager("/ignored")
 		if err != nil {
 			t.Fatalf("NewStateManager failed: %v", err)
 		}
 
-		expectedPath := filepath.Join(tempHome, ".swarmcracker", "state.json")
+		expectedPath := filepath.Join(stateDirPath, "state.json")
 		if sm.stateFile != expectedPath {
 			t.Errorf("Expected stateFile %s, got %s", expectedPath, sm.stateFile)
 		}
@@ -38,7 +72,7 @@ func TestStateManagerCreationEdgeCases(t *testing.T) {
 
 	t.Run("new state manager creates state directory", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		sm, err := NewStateManager("/ignored")
 		if err != nil {
@@ -63,11 +97,11 @@ func TestStateManagerCreationEdgeCases(t *testing.T) {
 
 	t.Run("new state manager with existing directory", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		// Create the state directory beforehand
-		stateDir := filepath.Join(tempHome, ".swarmcracker")
-		if err := os.MkdirAll(stateDir, 0700); err != nil {
+		stateDirPath := filepath.Join(tempHome, ".swarmcracker")
+		if err := os.MkdirAll(stateDirPath, 0700); err != nil {
 			t.Fatalf("Failed to create state directory: %v", err)
 		}
 
@@ -77,8 +111,8 @@ func TestStateManagerCreationEdgeCases(t *testing.T) {
 		}
 
 		// Should use existing directory
-		if filepath.Dir(sm.stateFile) != stateDir {
-			t.Errorf("Expected to use existing directory %s, got %s", stateDir, filepath.Dir(sm.stateFile))
+		if filepath.Dir(sm.stateFile) != stateDirPath {
+			t.Errorf("Expected to use existing directory %s, got %s", stateDirPath, filepath.Dir(sm.stateFile))
 		}
 	})
 
@@ -502,7 +536,7 @@ func TestRemoveEdgeCases(t *testing.T) {
 func TestPersistenceRecoveryEdgeCases(t *testing.T) {
 	t.Run("recover from empty state file", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		// Create an empty state file
 		stateDir := filepath.Join(tempHome, ".swarmcracker")
@@ -529,7 +563,7 @@ func TestPersistenceRecoveryEdgeCases(t *testing.T) {
 
 	t.Run("recover from corrupt JSON", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		// Create a state file with corrupt JSON
 		stateDir := filepath.Join(tempHome, ".swarmcracker")
@@ -555,7 +589,7 @@ func TestPersistenceRecoveryEdgeCases(t *testing.T) {
 
 	t.Run("recover from valid JSON with multiple states", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		// Create a state file with multiple VMs
 		stateDir := filepath.Join(tempHome, ".swarmcracker")
@@ -626,7 +660,7 @@ func TestPersistenceRecoveryEdgeCases(t *testing.T) {
 
 	t.Run("persistence survives Add operation", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		// Create first manager and add state
 		sm1, err := NewStateManager("/ignored")
@@ -667,7 +701,7 @@ func TestPersistenceRecoveryEdgeCases(t *testing.T) {
 
 	t.Run("persistence survives UpdateStatus operation", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		sm1, _ := NewStateManager("/ignored")
 		sm1.Add(&VMState{ID: "vm-status-persist", Image: "test"})
@@ -683,7 +717,7 @@ func TestPersistenceRecoveryEdgeCases(t *testing.T) {
 
 	t.Run("persistence survives UpdateError operation", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		sm1, _ := NewStateManager("/ignored")
 		sm1.Add(&VMState{ID: "vm-error-persist", Image: "test"})
@@ -702,7 +736,7 @@ func TestPersistenceRecoveryEdgeCases(t *testing.T) {
 
 	t.Run("persistence survives Remove operation", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		sm1, _ := NewStateManager("/ignored")
 		sm1.Add(&VMState{ID: "vm-remove-persist", Image: "test"})
@@ -742,7 +776,7 @@ func TestSaveErrorHandling(t *testing.T) {
 
 	t.Run("atomic save with temporary file", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		sm, _ := NewStateManager("/ignored")
 
@@ -771,7 +805,7 @@ func TestSaveErrorHandling(t *testing.T) {
 func TestLoadExplicitly(t *testing.T) {
 	t.Run("load explicitly called", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		sm, _ := NewStateManager("/ignored")
 
@@ -799,7 +833,7 @@ func TestLoadExplicitly(t *testing.T) {
 
 	t.Run("load replaces in-memory state", func(t *testing.T) {
 		tempHome := t.TempDir()
-		t.Setenv("HOME", tempHome)
+		withHome(t, tempHome)
 
 		// Create initial state file
 		stateDir := filepath.Join(tempHome, ".swarmcracker")
@@ -1065,7 +1099,7 @@ func TestStateWithAllFields(t *testing.T) {
 // TestGetStateFileAndLogDir tests utility methods.
 func TestGetStateFileAndLogDir(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	withHome(t, tempHome)
 
 	sm, _ := NewStateManager("/ignored")
 
@@ -1078,7 +1112,7 @@ func TestGetStateFileAndLogDir(t *testing.T) {
 // TestMultipleStateManagers tests multiple StateManagers with same state file.
 func TestMultipleStateManagers(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	withHome(t, tempHome)
 
 	// Create two StateManagers pointing to same state file
 	sm1, err := NewStateManager("/ignored")
