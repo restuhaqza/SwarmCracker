@@ -57,14 +57,25 @@ type StateManager struct {
 	stateFile string
 }
 
+// stateDir is the seam NewStateManager resolves its directory through. Tests
+// replace it so a state file lands in a temp dir; the assertions then reach the
+// same verdict whether the suite runs as root or as an unprivileged user.
+var stateDir = defaultStateDir
+
 // defaultStateDir returns the directory that holds SwarmCracker's state file
 // and per-VM console logs. Root uses /var/run/swarmcracker; other users use
 // ~/.swarmcracker.
 func defaultStateDir() (string, error) {
-	if os.Geteuid() == 0 {
+	return stateDirFor(os.Geteuid(), os.UserHomeDir)
+}
+
+// stateDirFor is the pure branch behind defaultStateDir. It is separate so the
+// root and unprivileged paths can both be asserted without changing euid.
+func stateDirFor(euid int, homeFunc func() (string, error)) (string, error) {
+	if euid == 0 {
 		return "/var/run/swarmcracker", nil
 	}
-	homeDir, err := os.UserHomeDir()
+	homeDir, err := homeFunc()
 	if err != nil {
 		return "", fmt.Errorf("failed to determine home directory: %w", err)
 	}
@@ -85,7 +96,7 @@ func DefaultLogDir() string {
 // NewStateManager creates a new state manager.
 func NewStateManager(_ string) (*StateManager, error) {
 	// Determine state file location
-	stateDirPath, err := defaultStateDir()
+	stateDirPath, err := stateDir()
 	if err != nil {
 		return nil, err
 	}

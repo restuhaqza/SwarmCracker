@@ -151,7 +151,8 @@ func TestImagePreparer_extractOCIImage_ErrorPaths(t *testing.T) {
 		{
 			name:     "invalid dest path",
 			imageRef: "nginx:latest",
-			destPath: "/invalid/nonexistent/path",
+			// A regular file cannot be a destination parent, for root either.
+			destPath: "/proc/self/status/extract",
 			wantErr:  true,
 		},
 		// "image with special characters" case removed — it triggers real HTTP
@@ -203,18 +204,16 @@ func TestImagePreparer_createExt4Image_WriteProtectedOutput(t *testing.T) {
 	err := os.WriteFile(testFile, []byte("test"), 0644)
 	require.NoError(t, err)
 
-	// Create a read-only output directory
-	readOnlyDir := t.TempDir()
-	err = os.Chmod(readOnlyDir, 0444)
+	// Create a non-directory output parent: this fails for root too, unlike a
+	// 0444 directory.
+	blocker := filepath.Join(t.TempDir(), "not-a-dir")
+	err = os.WriteFile(blocker, []byte("x"), 0644)
 	require.NoError(t, err)
-	outputPath := filepath.Join(readOnlyDir, "output.ext4")
+	outputPath := filepath.Join(blocker, "output.ext4")
 
 	err = ip.createExt4Image(sourceDir, outputPath)
 	// Should fail when trying to write
 	assert.Error(t, err)
-
-	// Cleanup: restore permissions for temp dir cleanup
-	os.Chmod(readOnlyDir, 0755)
 }
 
 func TestImagePreparer_createExt4Image_SmallDirectory(t *testing.T) {

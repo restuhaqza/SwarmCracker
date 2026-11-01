@@ -443,7 +443,7 @@ func TestCreateExt4Image_ExecErrorPaths(t *testing.T) {
 		{
 			name:        "invalid_output_path",
 			sourceDir:   t.TempDir(),
-			outputPath:  "/root/invalid.img", // No permission
+			outputPath:  "/proc/self/status/invalid.img", // parent is a regular file
 			expectError: true,
 			description: "Invalid output path should fail",
 		},

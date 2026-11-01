@@ -2577,7 +2577,9 @@ func TestExtractWithDockerCLI_EdgeCases(t *testing.T) {
 		{
 			name:     "invalid_dest_path",
 			imageRef: "alpine:latest",
-			destPath: "/nonexistent/path",
+			// /proc/self/status is a regular file, so the parent of this path is
+			// not a directory for every user, root included.
+			destPath: "/proc/self/status/extract",
 			wantErr:  true,
 		},
 		{

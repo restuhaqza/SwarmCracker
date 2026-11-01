@@ -14,7 +14,7 @@ import (
 func TestNewStateManager(t *testing.T) {
 	// Set a temporary HOME directory to avoid messing with the actual user's state
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	withHome(t, tempHome)
 
 	sm, err := NewStateManager("/ignored/path")
 	if err != nil {
@@ -200,7 +200,7 @@ func TestGet(t *testing.T) {
 // TestList tests listing all VM states.
 func TestList(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	withHome(t, tempHome)
 
 	sm, err := NewStateManager(t.TempDir())
 	if err != nil {
@@ -257,7 +257,7 @@ func TestList(t *testing.T) {
 
 	t.Run("list empty manager", func(t *testing.T) {
 		tempHome2 := t.TempDir()
-		t.Setenv("HOME", tempHome2)
+		withHome(t, tempHome2)
 
 		sm2, err := NewStateManager(t.TempDir())
 		if err != nil {
@@ -408,7 +408,7 @@ func TestRemove(t *testing.T) {
 // TestPersistence tests that state persists across StateManager instances.
 func TestPersistence(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	withHome(t, tempHome)
 
 	// Create first state manager and add a state
 	sm1, err := NewStateManager("/ignored")
@@ -473,7 +473,7 @@ func TestPersistence(t *testing.T) {
 // TestLoad tests loading state from disk.
 func TestLoad(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	withHome(t, tempHome)
 
 	t.Run("load from non-existent file", func(t *testing.T) {
 		sm, err := NewStateManager("/ignored")
@@ -646,7 +646,7 @@ func TestConcurrentAccess(t *testing.T) {
 }
 func TestGetLogDir(t *testing.T) {
 	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
+	withHome(t, tempHome)
 
 	sm, err := NewStateManager("/ignored")
 	if err != nil {

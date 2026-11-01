@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -17,20 +18,23 @@ import (
 
 // TestCreateSnapshot_StagingDirFailure tests failure when staging directory creation fails.
 func TestCreateSnapshot_StagingDirFailure(t *testing.T) {
-	// Create a read-only snapshot directory to trigger failure
 	tmpDir := t.TempDir()
 	snapshotDir := filepath.Join(tmpDir, "snapshots")
 	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
-
-	// Make directory read-only
-	require.NoError(t, os.Chmod(snapshotDir, 0444))
-	defer os.Chmod(snapshotDir, 0755) // Cleanup
 
 	mgr, err := NewManager(SnapshotConfig{SnapshotDir: snapshotDir})
 	require.NoError(t, err)
 
 	socketPath := filepath.Join(tmpDir, "test.sock")
 	require.NoError(t, os.WriteFile(socketPath, []byte("dummy"), 0644))
+
+	// The staging directory is created through a seam: a 0444 parent does not
+	// stop root, so the failure is injected instead of chmod-ed.
+	orig := mkdirTemp
+	mkdirTemp = func(string, string) (string, error) {
+		return "", errors.New("permission denied")
+	}
+	t.Cleanup(func() { mkdirTemp = orig })
 
 	_, err = mgr.CreateSnapshot(
 		context.Background(),
@@ -78,32 +82,32 @@ func TestCreateSnapshot_SnapshotDirFailure(t *testing.T) {
 	// by verifying the error handling works
 }
 
-// TestCreateSnapshot_FileMoveFailure tests failure when moving files fails.
-func TestCreateSnapshot_FileMoveFailure(t *testing.T) {
+// TestCreateSnapshot_PublishRenameFailure tests that a failed publish is
+// reported and leaves the staging directory unpublished. The rename is
+// injected: a read-only destination does not stop root.
+func TestCreateSnapshot_PublishRenameFailure(t *testing.T) {
 	tmpDir := t.TempDir()
-	_, err := NewManager(SnapshotConfig{SnapshotDir: tmpDir})
+	mgr, err := NewManager(SnapshotConfig{SnapshotDir: tmpDir})
 	require.NoError(t, err)
 
-	socketPath := filepath.Join(tmpDir, "test.sock")
-	require.NoError(t, os.WriteFile(socketPath, []byte("dummy"), 0644))
-
-	// Create staging and snapshot directories
 	stagingDir := filepath.Join(tmpDir, "snapshot-staging-test")
 	snapshotDir := filepath.Join(tmpDir, "snap-825b9a610b6fba70")
 	require.NoError(t, os.MkdirAll(stagingDir, 0755))
-	require.NoError(t, os.MkdirAll(snapshotDir, 0444)) // Read-only
+	require.NoError(t, os.MkdirAll(snapshotDir, 0755))
 
-	statePath := filepath.Join(stagingDir, "vm.state")
-	memoryPath := filepath.Join(stagingDir, "vm.mem")
-	require.NoError(t, os.WriteFile(statePath, []byte("state"), 0644))
-	require.NoError(t, os.WriteFile(memoryPath, []byte("memory"), 0644))
+	orig := renameDir
+	renameDir = func(string, string) error {
+		return errors.New("rename failed")
+	}
+	t.Cleanup(func() { renameDir = orig })
 
-	// Try to move files to read-only directory
-	err = os.Rename(statePath, filepath.Join(snapshotDir, "vm.state"))
+	err = mgr.publishSnapshot(stagingDir, snapshotDir)
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to publish snapshot directory")
 
-	// Cleanup
-	os.Chmod(snapshotDir, 0755)
+	// The staging directory must still exist: nothing was published.
+	_, statErr := os.Stat(stagingDir)
+	assert.NoError(t, statErr)
 }
 
 // TestCreateSnapshot_FileStatFailure tests failure when stating files fails.
@@ -147,22 +151,21 @@ func TestCreateSnapshot_ChecksumFailure(t *testing.T) {
 func TestCreateSnapshot_MetadataSaveFailure(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Try to save metadata to non-existent directory
+	// Try to save metadata to a directory that does not exist
 	testInfo := &SnapshotInfo{
 		ID:        "snap-825b9a610b6fba70",
 		TaskID:    "task-1",
 		CreatedAt: time.Now().UTC(),
 	}
 
-	err := saveMetadata("/nonexistent/dir", testInfo)
+	err := saveMetadata(filepath.Join(tmpDir, "missing"), testInfo)
 	assert.Error(t, err)
 
-	// Try to save to read-only directory
-	roDir := filepath.Join(tmpDir, "readonly")
-	require.NoError(t, os.MkdirAll(roDir, 0444))
-	defer os.Chmod(roDir, 0755)
+	// Try to save where the parent is a regular file: this fails for root too.
+	parent := filepath.Join(tmpDir, "not-a-dir")
+	require.NoError(t, os.WriteFile(parent, []byte("x"), 0644))
 
-	err = saveMetadata(roDir, testInfo)
+	err = saveMetadata(parent, testInfo)
 	assert.Error(t, err)
 }
 
@@ -386,6 +389,11 @@ func TestCleanupOldSnapshots_DeleteError(t *testing.T) {
 	os.Chmod(oldSnap, 0444)
 	defer os.Chmod(oldSnap, 0755)
 
+	// Root can delete a read-only directory, so the failure is injected.
+	orig := removeAll
+	removeAll = func(string) error { return errors.New("permission denied") }
+	t.Cleanup(func() { removeAll = orig })
+
 	// Cleanup should fail to delete but continue
 	removed, freed, err := mgr.CleanupOldSnapshots(context.Background(), 24*time.Hour)
 	// Should not error, just skip the non-deletable snapshot
@@ -527,11 +535,10 @@ func TestContextTimeout(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// TestSaveMetadata_JSONError tests error when JSON marshaling fails.
-func TestSaveMetadata_JSONError(t *testing.T) {
+// TestSaveMetadata_WriteError tests error when writing the metadata file fails.
+func TestSaveMetadata_WriteError(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create info with valid data
 	info := &SnapshotInfo{
 		ID: "test",
 		Metadata: map[string]string{
@@ -539,12 +546,11 @@ func TestSaveMetadata_JSONError(t *testing.T) {
 		},
 	}
 
-	// Create read-only directory to trigger write error
-	roDir := filepath.Join(tmpDir, "readonly")
-	require.NoError(t, os.MkdirAll(roDir, 0444))
-	defer os.Chmod(roDir, 0755)
+	// A regular file where the directory should be fails for every user.
+	parent := filepath.Join(tmpDir, "not-a-dir")
+	require.NoError(t, os.WriteFile(parent, []byte("x"), 0644))
 
-	err := saveMetadata(roDir, info)
+	err := saveMetadata(parent, info)
 	assert.Error(t, err)
 }
 
@@ -1201,8 +1207,8 @@ func TestCreateSnapshot_AllValidationErrors(t *testing.T) {
 		{
 			name:       "empty task ID",
 			taskID:     "",
-			socketPath: "/tmp/test.sock",
-			wantErr:    false, // No validation on empty taskID
+			socketPath: "existing", // resolved to a per-test path in the loop
+			wantErr:    false,      // No validation on empty taskID
 		},
 		{
 			name:        "empty socket path",
@@ -1214,7 +1220,7 @@ func TestCreateSnapshot_AllValidationErrors(t *testing.T) {
 		{
 			name:        "non-existent socket",
 			taskID:      "task-1",
-			socketPath:  "/nonexistent/test.sock",
+			socketPath:  "missing", // resolved to a per-test path in the loop
 			wantErr:     true,
 			errContains: "socket not found",
 		},
@@ -1226,15 +1232,21 @@ func TestCreateSnapshot_AllValidationErrors(t *testing.T) {
 			mgr, err := NewManager(SnapshotConfig{SnapshotDir: tmpDir})
 			require.NoError(t, err)
 
-			// Create socket if it should exist
-			if tt.socketPath != "/nonexistent/test.sock" && tt.socketPath != "" {
-				require.NoError(t, os.WriteFile(tt.socketPath, []byte("dummy"), 0644))
+			// Every socket path is per-test: a fixed /tmp path belongs to
+			// whichever user ran the suite first.
+			socketPath := tt.socketPath
+			switch socketPath {
+			case "existing":
+				socketPath = filepath.Join(tmpDir, "test.sock")
+				require.NoError(t, os.WriteFile(socketPath, []byte("dummy"), 0644))
+			case "missing":
+				socketPath = filepath.Join(tmpDir, "missing.sock")
 			}
 
 			_, err = mgr.CreateSnapshot(
 				context.Background(),
 				tt.taskID,
-				tt.socketPath,
+				socketPath,
 				CreateOptions{
 					ServiceID:  "nginx",
 					NodeID:     "worker-1",

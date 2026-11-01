@@ -596,10 +596,16 @@ func TestBlockDriver_Import(t *testing.T) {
 
 	ctx := context.Background()
 	volName := "test-vol"
-	sizeMB := 50
+	sizeMB := 10
 
-	// Prepare test data (small ext4 image would be ideal, but we'll test with any data)
-	testData := make([]byte, 1024*1024) // 1 MB
+	// Import verifies the result with e2fsck, so the input must be a real
+	// filesystem image, not arbitrary bytes.
+	srcPath := filepath.Join(tmpDir, "source.ext4")
+	createTestExt4Image(t, srcPath, sizeMB)
+	testData, err := os.ReadFile(srcPath)
+	if err != nil {
+		t.Fatalf("read source image: %v", err)
+	}
 
 	// Test Import
 	reader := bytes.NewReader(testData)
@@ -726,7 +732,10 @@ func TestClearDirectory_Empty(t *testing.T) {
 }
 
 func TestClearDirectory_NonExistent(t *testing.T) {
-	err := clearDirectory("/nonexistent/path")
+	// A path under a temp dir is missing on every host; a hard-coded one can be
+	// created by an earlier root run and make this test pass for the wrong reason.
+	missing := filepath.Join(t.TempDir(), "missing")
+	err := clearDirectory(missing)
 	if err == nil {
 		t.Error("expected error for nonexistent directory")
 	}

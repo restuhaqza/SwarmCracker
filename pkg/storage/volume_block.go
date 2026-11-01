@@ -72,8 +72,12 @@ func (d *BlockDriver) Create(ctx context.Context, name string, opts CreateOption
 		return "", fmt.Errorf("volume name cannot be empty")
 	}
 
+	if opts.SizeMB < 0 {
+		return "", fmt.Errorf("volume size cannot be negative: %d MB", opts.SizeMB)
+	}
+
 	sizeMB := opts.SizeMB
-	if sizeMB <= 0 {
+	if sizeMB == 0 {
 		sizeMB = 1024 // default 1 GB
 	}
 

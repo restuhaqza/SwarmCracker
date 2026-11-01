@@ -23,6 +23,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// killProcess is the seam forceKillVM sends its signal through. Root can signal
+// PID 1, so a test cannot rely on the host refusing the kill to reach the error
+// path; it swaps this instead.
+var killProcess = func(process *os.Process) error { return process.Kill() }
+
 // VMMManager manages Firecracker VM lifecycle.
 type VMMManager struct {
 	config        *ManagerConfig
@@ -844,7 +849,7 @@ func (vm *VMMManager) forceKillVM(vmInstance *VMInstance) error {
 		return err
 	}
 
-	if err := process.Kill(); err != nil {
+	if err := killProcess(process); err != nil {
 		// The process exiting on its own between the grace-period check and the
 		// kill is still a successful (terminal) kill. Any other error is a real
 		// failure and leaves the state untouched.

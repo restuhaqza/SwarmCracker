@@ -392,38 +392,52 @@ func TestHandleMounts_Low(t *testing.T) {
 	}
 }
 
-// TestHandleVolumeMount_Low tests handleVolumeMount method
+// TestHandleVolumeMount_Low tests handleVolumeMount method. A preparer without a
+// volume manager must refuse the mount rather than panicking, which is the
+// branch this unit covers; a real manager needs a root mount, so it belongs to
+// the storage and integration suites.
 func TestHandleVolumeMount_Low(t *testing.T) {
 	ip := NewImagePreparer(&PreparerConfig{RootfsDir: t.TempDir()}).(*ImagePreparer)
+	ip.volumeManager = nil
+
 	ctx := context.Background()
 	task := &types.Task{ID: "test-task", Annotations: make(map[string]string)}
 	mountDir := t.TempDir()
 
 	mount := &types.Mount{Source: "volume:test", Target: "/data", ReadOnly: false}
 	err := ip.handleVolumeMount(ctx, task, mountDir, mount)
-	assert.Error(t, err) // volumeManager.GetVolume will fail
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "volume support is not available")
 }
 
 // TestHandleBindMount_Low tests handleBindMount method
 func TestHandleBindMount_Low(t *testing.T) {
 	tests := []struct {
 		name    string
-		mount   types.Mount
+		mount   func(*testing.T) types.Mount
 		wantErr bool
 	}{
 		{
-			name:    "bind_mount_nonexistent_source",
-			mount:   types.Mount{Source: "/nonexistent/path", Target: "/data", ReadOnly: false},
+			name: "bind_mount_nonexistent_source",
+			mount: func(t *testing.T) types.Mount {
+				// A temp-relative absent path, not a fixed one an earlier root
+				// run may have created.
+				return types.Mount{Source: absentPath(t), Target: "/data", ReadOnly: false}
+			},
 			wantErr: false, // Nonexistent source is skipped
 		},
 		{
-			name:    "bind_mount_empty_source",
-			mount:   types.Mount{Source: "", Target: "/data", ReadOnly: false},
+			name: "bind_mount_empty_source",
+			mount: func(*testing.T) types.Mount {
+				return types.Mount{Source: "", Target: "/data", ReadOnly: false}
+			},
 			wantErr: false, // Empty source is skipped
 		},
 		{
-			name:    "bind_mount_empty_target",
-			mount:   types.Mount{Source: filepath.Join(t.TempDir(), "source"), Target: "", ReadOnly: false},
+			name: "bind_mount_empty_target",
+			mount: func(t *testing.T) types.Mount {
+				return types.Mount{Source: filepath.Join(t.TempDir(), "source"), Target: "", ReadOnly: false}
+			},
 			wantErr: false,
 		},
 	}
@@ -432,8 +446,9 @@ func TestHandleBindMount_Low(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			ip := NewImagePreparer(&PreparerConfig{RootfsDir: t.TempDir()}).(*ImagePreparer)
 			mountDir := t.TempDir()
+			mount := tt.mount(t)
 
-			err := ip.handleBindMount(mountDir, &tt.mount)
+			err := ip.handleBindMount(mountDir, &mount)
 
 			if tt.wantErr {
 				assert.Error(t, err)
