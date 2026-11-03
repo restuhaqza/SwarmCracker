@@ -206,6 +206,10 @@ func runAgent(ctx *cli.Context) error {
 		ParentCgroup:    ctx.String("parent-cgroup"),
 		CgroupVersion:   ctx.String("cgroup-version"),
 		EnableCgroups:   ctx.Bool("enable-cgroups"),
+		// Guest-agent token authentication. Off by default so existing nodes
+		// and images keep working; when on it is all-or-nothing (see
+		// pkg/agent).
+		AgentRequireToken: ctx.Bool(config.AgentRequireTokenFlag),
 	}
 
 	fcExecutor, err := swarmkit.NewExecutor(executorConfig)

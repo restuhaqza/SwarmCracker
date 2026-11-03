@@ -147,8 +147,9 @@ func TestInjectIntoDir_PreserveInitWritesAgent(t *testing.T) {
 
 // TestGuestOverrideVersionPinned pins the guest override version so a wrapper
 // change that needs a rootfs rebuild cannot silently reuse a stale cache.
+// Bump both this and guestOverrideVersion when the guest image changes.
 func TestGuestOverrideVersionPinned(t *testing.T) {
-	assert.Equal(t, "7", guestOverrideVersion)
+	assert.Equal(t, "8", guestOverrideVersion)
 }
 
 // TestInjectAgentBinary_MkdirError verifies a failure to create /sbin surfaces

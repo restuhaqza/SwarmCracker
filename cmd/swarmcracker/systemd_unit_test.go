@@ -279,3 +279,30 @@ func TestInitDirectoriesIncludeSnapshotDir(t *testing.T) {
 func TestWorkerDirectoriesIncludeSnapshotDir(t *testing.T) {
 	assert.Contains(t, workerDirectories(newTestJoinConfig()), testSnapshotDir)
 }
+
+// TestRenderServicePropagatesAgentRequireToken proves the node's guest-agent
+// token setting reaches the daemon unit, on both the manager and worker paths:
+// a unit that dropped it would boot every VM unauthenticated while the operator
+// believed the switch was on.
+func TestRenderServicePropagatesAgentRequireToken(t *testing.T) {
+	init := newTestInitConfig()
+	init.AgentRequireToken = true
+	managerUnit, err := renderManagerService(init)
+	require.NoError(t, err)
+	assert.Contains(t, string(managerUnit), "--"+config.AgentRequireTokenFlag,
+		"the manager unit must pass the daemon's own token flag when enabled")
+
+	join := newTestJoinConfig()
+	join.AgentRequireToken = true
+	workerUnit, err := renderWorkerService(join)
+	require.NoError(t, err)
+	assert.Contains(t, string(workerUnit), "--"+config.AgentRequireTokenFlag,
+		"the worker unit must pass the daemon's own token flag when enabled")
+
+	// A node that turns it off must not get the flag: the template renders it
+	// only when enabled, which is what lets an existing unit keep its old
+	// unauthenticated behaviour.
+	offUnit, err := renderManagerService(newTestInitConfig())
+	require.NoError(t, err)
+	assert.NotContains(t, string(offUnit), "--"+config.AgentRequireTokenFlag)
+}

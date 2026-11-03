@@ -78,6 +78,11 @@ func newAppFlags() []cli.Flag {
 			Usage: "Directory for Firecracker sockets",
 			Value: "/var/run/firecracker",
 		},
+		&cli.BoolFlag{
+			Name:  config.AgentRequireTokenFlag,
+			Usage: "Mint a per-boot token for every microVM's guest agent and require it in hello",
+			Value: false,
+		},
 		&cli.IntFlag{
 			Name:  "default-vcpus",
 			Usage: "Default VCPUs per microVM",

@@ -22,6 +22,7 @@ import (
 	swarmkit_exec "github.com/moby/swarmkit/v2/agent/exec"
 	"github.com/moby/swarmkit/v2/api"
 	swarmkit_log "github.com/moby/swarmkit/v2/log"
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	configpkg "github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/console"
 	"github.com/restuhaqza/swarmcracker/pkg/discovery"
@@ -159,6 +160,12 @@ type Config struct {
 	ConsulEnabled bool   `yaml:"consul_enabled"`
 	ConsulAddress string `yaml:"consul_address"`
 
+	// AgentRequireToken makes every microVM this executor boots authenticate
+	// its guest agent with a per-boot token (see pkg/agent). It is off by
+	// default; when on, a task whose rootfs cannot be provisioned fails instead
+	// of booting an unauthenticated agent.
+	AgentRequireToken bool `yaml:"agent_require_token"`
+
 	// Tracer opens spans for task-lifecycle operations. Nil disables tracing,
 	// which is the default and costs nothing: every call site goes through a
 	// no-op tracer.
@@ -217,7 +224,9 @@ func NewExecutor(config *Config) (*Executor, error) {
 
 	// Create image preparer
 	imageCfg := &image.PreparerConfig{
-		RootfsDir: config.RootfsDir,
+		RootfsDir:         config.RootfsDir,
+		SocketDir:         config.SocketDir,
+		AgentRequireToken: config.AgentRequireToken,
 	}
 	imagePrep := image.NewImagePreparer(imageCfg)
 
@@ -1070,6 +1079,19 @@ func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref
 			task.Annotations[types.AnnotationBootArgs] = strings.Join(md.Init.BootArgs, " ")
 		}
 	}
+
+	// The golden path skips the image preparer, so it provisions the guest
+	// agent token here — into the task's own copy, which was just materialized,
+	// never the shared artifact.
+	if c.config.AgentRequireToken {
+		if task.Annotations[types.AnnotationRootfsEphemeral] != "true" {
+			return fmt.Errorf("agent.require_token is set but the golden rootfs is not a private per-task copy")
+		}
+		if err := agent.ProvisionForBoot(ctx, rootfs, vsockUDSPath(c.socketPath)); err != nil {
+			return fmt.Errorf("provision guest agent token: %w", err)
+		}
+	}
+
 	c.logger.Info().
 		Str("golden", art.Ref).
 		Str("template", art.Path).

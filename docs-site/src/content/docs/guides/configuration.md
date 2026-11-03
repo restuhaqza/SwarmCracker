@@ -17,6 +17,7 @@ logging:    # Log output configuration
 images:     # Accepted but not implemented (see below)
 metrics:    # Accepted but not implemented (see below)
 snapshot:   # Snapshot management
+agent:      # Guest-agent authentication
 ```
 
 The security jailer is **not** a top-level section. Configure it under
@@ -449,6 +450,45 @@ Compress snapshots to reduce disk usage at the cost of slower create/restore.
 
 ---
 
+## agent
+
+### agent.require_token
+
+| Property | Value |
+|----------|-------|
+| **Type** | `bool` |
+| **Default** | `true` in a config written by this build; `false` when the key is absent |
+| **Required** | No |
+
+Require a per-boot token for the guest agent that serves `vm exec` and
+`vm cp` over vsock. The node mints a 256-bit token, writes it into the task's
+private rootfs copy at `/etc/swarmcracker/agent-token` (root-owned, mode `0400`),
+and keeps its own copy at `<socket-dir>/<task-id>.agent-token` (mode `0600`).
+The agent then refuses every operation until `hello` carries the token, and
+closes the connection without a reply when it does not.
+
+This closes the guest-local path from a non-root workload process to the
+root-run agent: the token is readable only by root, so a non-root process cannot
+use the agent to run commands as root.
+
+**New installations are authenticated by default.** `swarmcracker init`,
+`swarmcracker join`, `swarmcracker setup config`, and a config file created on
+first start all write `require_token: true`. A configuration that *omits* the
+key keeps the old behaviour (`false`), so upgrading a node whose guests still run
+an older agent does not start refusing their connections; add the key
+explicitly to turn it on.
+
+The switch is **all-or-nothing per node**. A task whose rootfs cannot be
+provisioned — a shared image instead of a private per-task copy, a missing
+`debugfs`/`e2fsprogs`, an unwritable socket directory — fails instead of booting
+with an unauthenticated agent. Enabling it on a node whose images were built
+with an older guest agent makes those VMs unreachable (the host refuses the
+unauthenticated reply) rather than silently unauthenticated; rebuild the images
+first. The daemon flag is `--agent-require-token`; `init`/`join` pass it by
+default and render it into the unit only when enabled.
+
+---
+
 ## cgroup v2 host requirements
 
 SwarmCracker applies per-task **cgroup v2** limits outside the YAML config: there
@@ -776,6 +816,9 @@ snapshot:
   max_age: 168h
   auto_snapshot: true
   compress: true
+
+agent:
+  require_token: true
 ```
 
 ---

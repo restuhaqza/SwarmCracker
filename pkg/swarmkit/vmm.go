@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/console"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
@@ -792,6 +793,13 @@ func (v *VMMManager) cleanupVMSockets(taskID string) {
 	// the VM is running, so drop it with the sockets.
 	if err := scruntime.RemoveVMMetadata(v.socketDir, taskID); err != nil {
 		v.logger.Warn().Err(err).Str("task_id", taskID).Msg("Failed to remove VM metadata")
+	}
+
+	// The guest-agent token is a credential for this VM's lifetime only. Its
+	// guest-side copy dies with the rootfs; the host-side copy must not outlive
+	// the muxer it authenticates.
+	if err := agent.RemoveTokenFile(scruntime.VsockPath(v.socketDir, taskID)); err != nil {
+		v.logger.Warn().Err(err).Str("task_id", taskID).Msg("Failed to remove guest agent token")
 	}
 }
 

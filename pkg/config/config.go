@@ -84,6 +84,7 @@ type Config struct {
 	Images   ImagesConfig   `yaml:"images"`
 	Metrics  MetricsConfig  `yaml:"metrics"`
 	Snapshot SnapshotConfig `yaml:"snapshot"`
+	Agent    AgentConfig    `yaml:"agent"`
 
 	// Legacy fields for backward compatibility
 	KernelPath      string       `yaml:"kernel_path"`
@@ -188,6 +189,49 @@ type SnapshotConfig struct {
 	Compress     bool     `yaml:"compress"`
 }
 
+// AgentConfig holds guest-agent configuration.
+type AgentConfig struct {
+	// RequireToken makes the node mint a per-boot token for every microVM,
+	// write it into the task's private rootfs at a root-owned 0400 path, and
+	// require it in the agent's hello. It closes the guest-local path from a
+	// non-root workload process to the root-run agent over vsock.
+	//
+	// A config written by this build (NewDefaultConfig, `swarmcracker init|join`,
+	// `swarmcracker setup config`) sets it true, so a fresh installation is
+	// authenticated by default. A config that omits the key keeps the zero value
+	// (false): LoadConfig never applies the new-install default, so an upgrade
+	// does not start requiring tokens for guests whose agent predates them.
+	//
+	// When on it is all-or-nothing: a task whose rootfs cannot be provisioned (a
+	// shared image, a missing e2fsprogs, an unwritable socket directory) fails
+	// instead of booting with an unauthenticated agent.
+	RequireToken bool `yaml:"require_token"`
+}
+
+// AgentRequireTokenFlag is the daemon flag that turns AgentConfig.RequireToken
+// on for service tasks, and the flag the generated systemd units pass. The flag
+// and the YAML key are two surfaces of one switch: the daemon reads flags, the
+// CLI reads the config file, and `swarmcracker init|join` render the flag into
+// the unit. Keeping the name in one place is what stops a unit from passing a
+// flag the daemon does not register — a drift that would silently leave every
+// VM unauthenticated.
+const AgentRequireTokenFlag = "agent-require-token"
+
+// NewDefaultConfig returns the configuration a fresh installation starts from:
+// the built-in defaults plus per-boot guest-agent token authentication, which
+// new nodes are expected to run with.
+//
+// LoadConfig deliberately does not call this. A configuration file that omits
+// agent.require_token keeps the key's zero value (false), so upgrading a node
+// whose guests still run an older agent does not start refusing their
+// connections. Only a config this build writes gets the new-install default.
+func NewDefaultConfig() *Config {
+	cfg := &Config{}
+	cfg.SetDefaults()
+	cfg.Agent.RequireToken = true
+	return cfg
+}
+
 // LoadConfig loads configuration from a YAML file.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -249,8 +293,7 @@ func EnsureDefaultConfig() (bool, error) {
 		return false, nil // already exists
 	}
 
-	cfg := &Config{}
-	cfg.SetDefaults()
+	cfg := NewDefaultConfig()
 
 	if err := cfg.Save(path); err != nil {
 		return false, fmt.Errorf("failed to create default config at %s: %w", path, err)

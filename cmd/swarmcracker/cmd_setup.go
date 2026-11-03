@@ -739,8 +739,7 @@ func runSetupConfig() error {
 	fmt.Println("╚══════════════════════════════════════════════════════════╝")
 	fmt.Println()
 
-	cfg := &config.Config{}
-	cfg.SetDefaults()
+	cfg := config.NewDefaultConfig()
 
 	// Apply values from flags. The flags carry the documented defaults, so
 	// these assignments also fill in anything SetDefaults left empty (notably

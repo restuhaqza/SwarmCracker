@@ -66,7 +66,25 @@ type ExecOptions struct {
 // cycle is retried for up to dialRetryWindow before Dial gives up. After a
 // successful CONNECT the protocol hello is exchanged and a version mismatch
 // fails clearly.
+//
+// When the node provisioned a per-boot token for this VM, its host-side copy
+// sits next to the muxer (see TokenFilePath) and is presented in hello. A guest
+// that rejects it closes the connection, which Dial reports as
+// ErrTokenRejected; a guest that ignores it is refused as ErrTokenUnsupported
+// rather than accepted unauthenticated. A VM with no token file dials exactly
+// as before.
 func Dial(ctx context.Context, udsPath string, port uint32) (*Client, error) {
+	token, _, err := ReadTokenFile(TokenFilePath(udsPath))
+	if err != nil {
+		return nil, err
+	}
+	return DialWithToken(ctx, udsPath, port, token)
+}
+
+// DialWithToken is Dial with an explicit token. An empty token is an
+// unauthenticated dial, which only works against a guest booted without token
+// authentication.
+func DialWithToken(ctx context.Context, udsPath string, port uint32, token string) (*Client, error) {
 	conn, err := connectVsock(ctx, udsPath, port)
 	if err != nil {
 		return nil, err
@@ -78,7 +96,7 @@ func Dial(ctx context.Context, udsPath string, port uint32) (*Client, error) {
 	}
 
 	c := &Client{conn: conn}
-	if err := c.write(Request{Op: "hello", Version: Version}); err != nil {
+	if err := c.write(Request{Op: "hello", Version: Version, Token: token}); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("send hello: %w", err)
 	}
@@ -86,6 +104,19 @@ func Dial(ctx context.Context, udsPath string, port uint32) (*Client, error) {
 	var msg Message
 	if _, err := ReadFrame(conn, &msg); err != nil {
 		_ = conn.Close()
+		// The guest deliberately sends no frame when it rejects a token, so a
+		// connection that dies here right after a token-bearing hello is the
+		// only observable form of that rejection.
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			if token != "" {
+				return nil, fmt.Errorf("%w: %v", ErrTokenRejected, err)
+			}
+			// The muxer accepted the connection and hello was written, so a
+			// guest that hung up here is either requiring a token this node has
+			// none for, or has no agent behind the port. Name both instead of
+			// surfacing a bare EOF.
+			return nil, fmt.Errorf("read hello reply: %w (the guest may require a token this node has none for, or its agent stopped)", err)
+		}
 		return nil, fmt.Errorf("read hello reply: %w", err)
 	}
 	if msg.Type == "error" {
@@ -99,6 +130,18 @@ func Dial(ctx context.Context, udsPath string, port uint32) (*Client, error) {
 	if msg.Version != Version {
 		_ = conn.Close()
 		return nil, fmt.Errorf("agent version mismatch: client %s, guest %s", Version, msg.Version)
+	}
+	if token != "" && !msg.TokenOK {
+		// The guest answered hello without acknowledging the token. It is an
+		// agent that predates token authentication (or a template baked with
+		// one); the node meant to authenticate this VM, so refusing is the only
+		// safe answer.
+		_ = conn.Close()
+		return nil, ErrTokenUnsupported
+	}
+	if token == "" && msg.AuthRequired {
+		_ = conn.Close()
+		return nil, ErrTokenRequired
 	}
 	return c, nil
 }

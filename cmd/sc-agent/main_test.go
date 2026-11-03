@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -23,8 +25,39 @@ func TestParseFlagsDefaults(t *testing.T) {
 	if opts.port != agent.DefaultPort {
 		t.Errorf("default port = %d, want %d", opts.port, agent.DefaultPort)
 	}
+	if opts.tokenFile != agent.TokenPath {
+		t.Errorf("default token file = %q, want %q", opts.tokenFile, agent.TokenPath)
+	}
 	if opts.version {
 		t.Errorf("default version = true, want false")
+	}
+}
+
+func TestParseFlagsTokenFile(t *testing.T) {
+	opts, err := parseFlags([]string{"-token-file", "/run/token"}, io.Discard)
+	if err != nil {
+		t.Fatalf("parseFlags(-token-file) error = %v", err)
+	}
+	if opts.tokenFile != "/run/token" {
+		t.Errorf("token file = %q, want /run/token", opts.tokenFile)
+	}
+}
+
+// TestRunRefusesAnInsecureTokenFile proves the agent fails closed instead of
+// serving unauthenticated when the node provisioned a token the workload could
+// read. It exits before Listen, so no vsock device is needed.
+func TestRunRefusesAnInsecureTokenFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent-token")
+	if err := os.WriteFile(path, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"-token-file", path}, &stdout, &stderr); code != 1 {
+		t.Fatalf("run with a world-readable token file exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "token authentication") {
+		t.Fatalf("stderr = %q, want a token authentication error", stderr.String())
 	}
 }
 
@@ -112,7 +145,7 @@ func TestServeHandlesConnection(t *testing.T) {
 	}}
 
 	done := make(chan int, 1)
-	go func() { done <- serve(l) }()
+	go func() { done <- serve(l, nil) }()
 
 	if err := agent.WriteFrame(client, agent.Request{Op: "hello", Version: agent.Version}); err != nil {
 		t.Fatalf("write hello: %v", err)
@@ -150,7 +183,7 @@ func TestServeRetriesTransientAcceptError(t *testing.T) {
 	}}
 
 	done := make(chan int, 1)
-	go func() { done <- serve(l) }()
+	go func() { done <- serve(l, nil) }()
 
 	select {
 	case code := <-done:

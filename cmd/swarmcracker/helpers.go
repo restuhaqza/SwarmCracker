@@ -88,6 +88,9 @@ func createExecutor(cfg *config.Config) (*executor.FirecrackerExecutor, error) {
 		SocketDir:       execConfig.SocketDir,
 		DefaultVCPUs:    execConfig.DefaultVCPUs,
 		DefaultMemoryMB: execConfig.DefaultMemoryMB,
+		// The CLI boots the same images the daemon does, so it honours the same
+		// guest-agent token setting.
+		AgentRequireToken: cfg.Agent.RequireToken,
 	}
 
 	translatorConfig := &translator.Config{

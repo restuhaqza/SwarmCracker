@@ -14,6 +14,11 @@ import (
 // ServeConn must stop serving. It is not reported to the caller as an error.
 var errEndConn = errors.New("agent: request ended the connection")
 
+// ErrUnauthorized is returned by ServeConnAuth when a connection did not prove
+// this boot's token. The guest sends no frame before dropping the connection,
+// so a peer cannot tell a missing token from a wrong one.
+var ErrUnauthorized = errors.New("agent: unauthenticated connection")
+
 // ServeConn serves the guest-agent protocol over rw. Requests are handled one
 // at a time, in order, until the peer closes the connection, a protocol error
 // occurs, or a request ends the session. A clean disconnect returns nil.
@@ -26,10 +31,26 @@ var errEndConn = errors.New("agent: request ended the connection")
 // The caller is responsible for the connection lifetime; ServeConn does not
 // close rw.
 func ServeConn(rw io.ReadWriteCloser) error {
+	return serveConn(rw, nil)
+}
+
+// ServeConnAuth is ServeConn with per-boot token authentication. When auth is
+// non-nil every connection must authenticate with a hello carrying this boot's
+// token before any other operation is served, and a missing or wrong token ends
+// the connection with ErrUnauthorized and no reply frame — the guest never says
+// why it hung up, so a peer cannot use the answer to probe.
+//
+// A nil auth serves the connection exactly like ServeConn, which is what a VM
+// booted without token authentication gets.
+func ServeConnAuth(rw io.ReadWriteCloser, auth *TokenAuthenticator) error {
+	return serveConn(rw, auth)
+}
+
+func serveConn(rw io.ReadWriteCloser, auth *TokenAuthenticator) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s := &server{rw: rw, ctx: ctx, cancel: cancel}
+	s := &server{rw: rw, ctx: ctx, cancel: cancel, auth: auth}
 	for {
 		var req Request
 		if _, err := ReadFrame(rw, &req); err != nil {
@@ -54,6 +75,12 @@ type server struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	mu     sync.Mutex
+
+	// auth is nil for a VM booted without token authentication. authed is set
+	// once a hello proved the token; while auth is non-nil and authed is false,
+	// every operation except hello is refused before it can touch the guest.
+	auth   *TokenAuthenticator
+	authed bool
 }
 
 // write sends a single frame, serialised against other writers.
@@ -70,6 +97,14 @@ func (s *server) writeError(format string, args ...any) error {
 }
 
 func (s *server) dispatch(req *Request) error {
+	// A VM booted with token authentication refuses every operation until a
+	// hello proved the token, and refuses it before it can read a path or start
+	// a process. The connection is dropped without a frame so a peer cannot
+	// learn whether the token was missing or wrong.
+	if s.auth != nil && !s.authed && req.Op != "hello" {
+		return ErrUnauthorized
+	}
+
 	switch req.Op {
 	case "hello":
 		return s.handleHello(req)
@@ -96,6 +131,18 @@ func (s *server) dispatch(req *Request) error {
 }
 
 func (s *server) handleHello(req *Request) error {
+	if s.auth != nil {
+		// Verify before the version check: an unauthenticated peer must not be
+		// able to tell a version mismatch from a rejected token.
+		if !s.auth.Verify(req.Token) {
+			return ErrUnauthorized
+		}
+		s.authed = true
+		if req.Version != Version {
+			return s.writeError("agent version mismatch: client %s, guest %s", req.Version, Version)
+		}
+		return s.write(Message{Type: "hello", Version: Version, AuthRequired: true, TokenOK: true})
+	}
 	if req.Version != Version {
 		return s.writeError("agent version mismatch: client %s, guest %s", req.Version, Version)
 	}
