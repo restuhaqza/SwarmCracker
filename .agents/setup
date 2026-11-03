@@ -1,0 +1,546 @@
+#!/usr/bin/env bash
+#
+# Amp orb setup for SwarmCracker.
+#
+# Goal: a fresh orb can run `make all`, `make lint`, `make test-unit`, and the
+# SDK suites with no further work. Everything is installed under $HOME, so the
+# script never depends on root:
+#
+#   * Go toolchain matching the `go` directive in go.mod, module cache warmed
+#   * golangci-lint at the version CI pins, plus goimports for `make fmt`
+#   * Node 22 (docs-site/.nvmrc, and sdk/node's engines) + `npm ci` in sdk/node
+#   * Firecracker + a bootable kernel, only where /dev/kvm actually works
+#
+# A step that cannot run here is skipped, never fatal. The reason is printed at
+# the point of the skip and repeated in the summary at the end, so a later
+# "make lint failed" is traceable to a missing tool instead of a mystery.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/swarmcracker-setup"
+LOCAL_BIN="$HOME/.local/bin"
+LOCAL_LIB="$HOME/.local/lib"
+LOCAL_SHARE="$HOME/.local/share"
+GO_ROOT="$LOCAL_LIB/go"
+FIRECRACKER_HOME="$LOCAL_SHARE/firecracker"
+
+# Pins that mirror the repository, not personal preference.
+GOLANGCI_VERSION="v2.13.2"      # .github/workflows/ci.yml (golangci-lint-action)
+FIRECRACKER_VERSION="v1.15.1"   # AGENTS.md: installed by `setup install`
+NODE_MAJOR="22"                 # docs-site/.nvmrc
+
+mkdir -p "$CACHE_DIR" "$LOCAL_BIN" "$LOCAL_LIB" "$LOCAL_SHARE"
+
+SKIPPED=()
+START_SECONDS=$SECONDS
+
+step() { printf '\n==> [%3ds] %s\n' "$((SECONDS - START_SECONDS))" "$*"; }
+info() { printf '    %s\n' "$*"; }
+skip() { SKIPPED+=("$1 :: $2"); printf '    SKIP: %s (%s)\n' "$1" "$2"; }
+
+# Root is optional by design: orb base images and providers differ, and a
+# passwordless sudo is not guaranteed. Anything needing root is best-effort.
+have_root() {
+    if [ "$(id -u)" -eq 0 ]; then return 0; fi
+    command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1
+}
+
+run_as_root() {
+    if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo -n "$@"; fi
+}
+
+go_arch() {
+    case "$(uname -m)" in
+        x86_64 | amd64) echo amd64 ;;
+        aarch64 | arm64) echo arm64 ;;
+        *) echo "unsupported" ;;
+    esac
+}
+
+node_arch() {
+    case "$(uname -m)" in
+        x86_64 | amd64) echo x64 ;;
+        aarch64 | arm64) echo arm64 ;;
+        *) echo "unsupported" ;;
+    esac
+}
+
+firecracker_arch() {
+    case "$(uname -m)" in
+        x86_64 | amd64) echo x86_64 ;;
+        aarch64 | arm64) echo aarch64 ;;
+        *) echo "unsupported" ;;
+    esac
+}
+
+# Resolve a command the way a shell would, plus /usr/sbin and /sbin: this orb's
+# PATH omits them, so an installed tool can be invisible to `command -v`.
+resolve_cmd() {
+    local name="$1" candidate
+    if candidate="$(command -v "$name" 2>/dev/null)"; then
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+    for candidate in "/usr/sbin/$name" "/sbin/$name"; do
+        if [ -x "$candidate" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------------
+# System packages. Build prerequisites first (cgo builds need gcc; the Go and
+# Node tarballs need curl/tar; the SDK checks need python3), then the commands
+# the Go test suite shells out to: mkfs.ext4/debugfs for rootfs images, ip for
+# TAP/bridge work, iptables for ingress rules, and busybox, which
+# pkg/image's init-detection test uses as its non-systemd /sbin/init target.
+# ---------------------------------------------------------------------------
+setup_system_packages() {
+    step "System packages"
+    local pair cmd pkg found apt_updated=""
+    for pair in \
+        gcc:build-essential make:make git:git curl:curl tar:tar python3:python3 \
+        mkfs.ext4:e2fsprogs debugfs:e2fsprogs ip:iproute2 iptables:iptables busybox:busybox; do
+        cmd="${pair%%:*}"
+        pkg="${pair##*:}"
+        if found="$(resolve_cmd "$cmd")"; then
+            info "$cmd: $found"
+            continue
+        fi
+        if have_root; then
+            if [ -z "$apt_updated" ]; then
+                run_as_root apt-get update -qq
+                apt_updated=yes
+            fi
+            info "installing $pkg (provides $cmd)"
+            run_as_root env DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y -qq --no-install-recommends "$pkg"
+        else
+            skip "$cmd" "missing and no passwordless root (sudo -n) to install $pkg"
+        fi
+    done
+
+    # mkfs.ext4, debugfs and iptables live in /usr/sbin, which this orb's PATH
+    # does not include; without a link in ~/.local/bin the tests' exec.Command
+    # cannot find them even though the package is installed.
+    local tool target
+    for tool in mkfs.ext4 debugfs iptables; do
+        command -v "$tool" >/dev/null 2>&1 && continue
+        if target="$(resolve_cmd "$tool")"; then
+            ln -sfn "$target" "$LOCAL_BIN/$tool"
+            info "linked ~/.local/bin/$tool -> $target (PATH has no /usr/sbin)"
+        fi
+    done
+}
+
+# ---------------------------------------------------------------------------
+# Go: keep the exact minor from go.mod, latest patch release for it. The
+# tarball is checksum-verified against go.dev/dl before it is unpacked.
+# ---------------------------------------------------------------------------
+setup_go() {
+    step "Go toolchain (go.mod)"
+    local minor current arch version="" archive="" sha256="" tarball
+    minor="$(awk '$1 == "go" { print $2; exit }' go.mod)"
+    if [ -z "$minor" ]; then
+        skip "Go toolchain" "go.mod has no 'go' directive to follow"
+        return 0
+    fi
+
+    current=""
+    if command -v go >/dev/null 2>&1; then
+        current="$(go env GOVERSION 2>/dev/null || true)"
+    fi
+    if [[ "$current" == go"$minor".* ]]; then
+        info "go $current already satisfies go $minor"
+        return 0
+    fi
+    [ -n "$current" ] && info "found go $current, which does not satisfy go $minor"
+
+    arch="$(go_arch)"
+    if [ "$arch" = unsupported ]; then
+        skip "Go $minor" "no Go release archive for $(uname -m)"
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        skip "Go $minor" "python3 is needed to read go.dev/dl and verify the checksum"
+        return 0
+    fi
+
+    if ! curl -fsSL --retry 3 'https://go.dev/dl/?mode=json&include=all' \
+        -o "$CACHE_DIR/go-releases.json"; then
+        skip "Go $minor" "could not fetch https://go.dev/dl/?mode=json"
+        return 0
+    fi
+
+    read -r version archive sha256 < <(python3 - "$minor" "$arch" "$CACHE_DIR/go-releases.json" <<'PY'
+import json
+import sys
+
+minor, arch, path = sys.argv[1], sys.argv[2], sys.argv[3]
+prefix = "go" + minor + "."
+
+
+def key(version):
+    return tuple(int(part) for part in version[len("go"):].split("."))
+
+
+best = None
+for release in json.load(open(path)):
+    version = release["version"]
+    if not version.startswith(prefix) or "rc" in version or "beta" in version:
+        continue
+    for f in release["files"]:
+        if f["os"] == "linux" and f["arch"] == arch and f["kind"] == "archive":
+            if best is None or key(version) > key(best[0]):
+                best = (version, f["filename"], f["sha256"])
+if best:
+    print(*best)
+PY
+) || true
+
+    if [ -z "$archive" ]; then
+        skip "Go $minor" "no linux/$arch archive published for Go $minor"
+        return 0
+    fi
+
+    tarball="$CACHE_DIR/$archive"
+    if [ -s "$tarball" ] && printf '%s  %s\n' "$sha256" "$tarball" | sha256sum -c --status -; then
+        info "reusing verified $archive from $CACHE_DIR"
+    else
+        info "downloading $archive (Go $version)"
+        if ! curl -fsSL --retry 3 "https://dl.google.com/go/$archive" -o "$tarball.part"; then
+            rm -f "$tarball.part"
+            skip "Go $minor" "download of $archive failed"
+            return 0
+        fi
+        mv -f "$tarball.part" "$tarball"
+        if ! printf '%s  %s\n' "$sha256" "$tarball" | sha256sum -c --status -; then
+            rm -f "$tarball"
+            skip "Go $minor" "checksum mismatch for $archive"
+            return 0
+        fi
+    fi
+
+    rm -rf "$GO_ROOT.new" "$GO_ROOT"
+    mkdir -p "$GO_ROOT.new"
+    tar -C "$GO_ROOT.new" --strip-components=1 -xzf "$tarball"
+    mv "$GO_ROOT.new" "$GO_ROOT"
+    # Symlinks resolve to the real GOROOT, so the toolchain keeps working
+    # through $HOME/.local/bin, which is already first on PATH in orbs.
+    ln -sfn "$GO_ROOT/bin/go" "$LOCAL_BIN/go"
+    ln -sfn "$GO_ROOT/bin/gofmt" "$LOCAL_BIN/gofmt"
+    export PATH="$LOCAL_BIN:$PATH"
+    info "installed $(go env GOVERSION) at $GO_ROOT"
+}
+
+setup_go_modules() {
+    step "Go module cache"
+    if ! command -v go >/dev/null 2>&1; then
+        skip "Go modules" "no go binary on PATH"
+        return 0
+    fi
+    if ! go mod download; then
+        skip "Go modules" "go mod download failed (network or module proxy unavailable)"
+        return 0
+    fi
+    info "modules for ./... are in $(go env GOMODCACHE)"
+}
+
+# ---------------------------------------------------------------------------
+# Linters: `make lint` runs golangci-lint (CI pins v2.13.2 for the
+# `.golangci.yml` version: "2" schema). `make fmt` runs goimports.
+# ---------------------------------------------------------------------------
+setup_golangci_lint() {
+    step "golangci-lint $GOLANGCI_VERSION"
+    local want="${GOLANGCI_VERSION#v}" arch dir tarball
+    if command -v golangci-lint >/dev/null 2>&1 &&
+        golangci-lint --version 2>/dev/null | grep -q "version $want"; then
+        info "$(golangci-lint --version | head -1) already installed"
+        return 0
+    fi
+
+    arch="$(go_arch)"
+    if [ "$arch" = unsupported ]; then
+        skip "golangci-lint" "no release archive for $(uname -m) to use with .golangci.yml v2"
+        return 0
+    fi
+
+    tarball="$CACHE_DIR/golangci-lint-$want-linux-$arch.tar.gz"
+    if [ ! -s "$tarball" ]; then
+        info "downloading golangci-lint $GOLANGCI_VERSION"
+        if ! curl -fsSL --retry 3 -o "$tarball.part" \
+            "https://github.com/golangci/golangci-lint/releases/download/$GOLANGCI_VERSION/golangci-lint-$want-linux-$arch.tar.gz"; then
+            rm -f "$tarball.part"
+            skip "golangci-lint" "download failed; make lint cannot run"
+            return 0
+        fi
+        mv -f "$tarball.part" "$tarball"
+    fi
+
+    dir="$CACHE_DIR/golangci-lint-$want-linux-$arch"
+    rm -rf "$dir"
+    tar -C "$CACHE_DIR" -xzf "$tarball"
+    if [ ! -x "$dir/golangci-lint" ]; then
+        skip "golangci-lint" "unexpected archive layout in $tarball"
+        return 0
+    fi
+    install -m 0755 "$dir/golangci-lint" "$LOCAL_BIN/golangci-lint"
+    info "installed $("$LOCAL_BIN/golangci-lint" --version | head -1)"
+    # CI does not install staticcheck and `make lint` only runs it when present,
+    # so leaving it out keeps local lint identical to CI.
+}
+
+setup_goimports() {
+    step "goimports (make fmt)"
+    if command -v goimports >/dev/null 2>&1; then
+        info "already installed at $(command -v goimports)"
+        return 0
+    fi
+    if ! command -v go >/dev/null 2>&1; then
+        skip "goimports" "no go binary to install it with"
+        return 0
+    fi
+    if GOBIN="$LOCAL_BIN" go install golang.org/x/tools/cmd/goimports@latest; then
+        info "installed $LOCAL_BIN/goimports"
+    else
+        skip "goimports" "go install golang.org/x/tools/cmd/goimports@latest failed"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Node 22 for sdk/node and docs-site. Installed user-locally, so it shadows the
+# orb's bundled Node in ~/.local/bin (which precedes /usr/local/bin on PATH).
+# ---------------------------------------------------------------------------
+setup_node() {
+    step "Node $NODE_MAJOR"
+    local current arch version="" tarball dir
+    if command -v node >/dev/null 2>&1; then
+        current="$(node -v)"
+        if [[ "$current" == v"$NODE_MAJOR".* ]]; then
+            info "node $current already matches docs-site/.nvmrc"
+            return 0
+        fi
+        info "found node $current; installing $NODE_MAJOR.x for docs-site/.nvmrc"
+    fi
+
+    arch="$(node_arch)"
+    if [ "$arch" = unsupported ]; then
+        skip "Node $NODE_MAJOR" "no Node release for $(uname -m)"
+        return 0
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        skip "Node $NODE_MAJOR" "python3 is needed to resolve the latest $NODE_MAJOR.x release"
+        return 0
+    fi
+
+    if ! curl -fsSL --retry 3 https://nodejs.org/dist/index.json -o "$CACHE_DIR/node-index.json"; then
+        skip "Node $NODE_MAJOR" "could not fetch https://nodejs.org/dist/index.json"
+        return 0
+    fi
+    read -r version < <(python3 - "$NODE_MAJOR" "$CACHE_DIR/node-index.json" <<'PY'
+import json
+import sys
+
+major, path = sys.argv[1], sys.argv[2]
+prefix = "v" + major + "."
+versions = [e["version"] for e in json.load(open(path)) if e["version"].startswith(prefix)]
+if versions:
+    print(max(versions, key=lambda v: tuple(int(p) for p in v[1:].split("."))))
+PY
+) || true
+    if [ -z "$version" ]; then
+        skip "Node $NODE_MAJOR" "nodejs.org/dist lists no $NODE_MAJOR.x release"
+        return 0
+    fi
+
+    tarball="$CACHE_DIR/node-$version-linux-$arch.tar.xz"
+    if [ ! -s "$tarball" ]; then
+        info "downloading node $version"
+        if ! curl -fsSL --retry 3 -o "$tarball.part" \
+            "https://nodejs.org/dist/$version/node-$version-linux-$arch.tar.xz"; then
+            rm -f "$tarball.part"
+            skip "Node $NODE_MAJOR" "download of node $version failed"
+            return 0
+        fi
+        mv -f "$tarball.part" "$tarball"
+    fi
+    if curl -fsSL --retry 3 "https://nodejs.org/dist/$version/SHASUMS256.txt" -o "$CACHE_DIR/node-shasums.txt"; then
+        if ! (cd "$CACHE_DIR" && grep " node-$version-linux-$arch.tar.xz\$" node-shasums.txt | sha256sum -c --status -); then
+            rm -f "$tarball"
+            skip "Node $NODE_MAJOR" "checksum mismatch for node $version"
+            return 0
+        fi
+    else
+        info "no SHASUMS256.txt available; skipping checksum verification"
+    fi
+
+    dir="$LOCAL_LIB/node-$version-linux-$arch"
+    rm -rf "$dir"
+    tar -C "$LOCAL_LIB" -xJf "$tarball"
+    ln -sfn "$dir/bin/node" "$LOCAL_BIN/node"
+    ln -sfn "$dir/bin/npm" "$LOCAL_BIN/npm"
+    ln -sfn "$dir/bin/npx" "$LOCAL_BIN/npx"
+    export PATH="$LOCAL_BIN:$PATH"
+    # Drop older user-local Node installs so a stale snapshot cannot grow
+    # unbounded; only directories this script creates are touched.
+    for stale in "$LOCAL_LIB"/node-v*-linux-*; do
+        [ -d "$stale" ] && [ "$stale" != "$dir" ] && rm -rf "$stale"
+    done
+    info "installed $(node -v) ($(command -v node))"
+}
+
+setup_node_deps() {
+    step "sdk/node dependencies (npm ci)"
+    if [ ! -f sdk/node/package-lock.json ]; then
+        skip "sdk/node deps" "sdk/node/package-lock.json is missing"
+        return 0
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        skip "sdk/node deps" "no npm on PATH"
+        return 0
+    fi
+    if [ -f sdk/node/node_modules/.package-lock.json ] &&
+        [ sdk/node/node_modules/.package-lock.json -nt sdk/node/package-lock.json ]; then
+        info "node_modules already matches package-lock.json"
+        return 0
+    fi
+    if (cd sdk/node && npm ci --no-audit --no-fund --loglevel=error); then
+        info "installed $(cd sdk/node && npm ls --depth=0 2>/dev/null | tail -n +2 | wc -l) package(s) for sdk/node"
+    else
+        skip "sdk/node deps" "npm ci failed; make sdk-typecheck needs it"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# Firecracker needs KVM, which the orb provider may or may not expose. Both the
+# binary and a bootable kernel are installed only when /dev/kvm is usable.
+#
+# The binaries go to $HOME/.local/share/firecracker/bin and deliberately stay
+# off PATH: pkg/swarmkit's jailer tests only run when `firecracker` and `jailer`
+# resolve, and they create their chroot under the default /var/lib/swarmcracker,
+# which needs root. CI has no firecracker, so leaving it off PATH keeps
+# `make test-unit` identical to CI. Add the directory to PATH for testinfra/e2e.
+# ---------------------------------------------------------------------------
+setup_firecracker() {
+    step "Firecracker $FIRECRACKER_VERSION (/dev/kvm)"
+    local arch tarball dir kernel bin_dir
+
+    # An earlier setup put these two on PATH; drop those links so the
+    # jailer-backed tests keep skipping exactly as they do on CI.
+    rm -f "$LOCAL_BIN/firecracker" "$LOCAL_BIN/jailer"
+
+    if [ ! -e /dev/kvm ]; then
+        skip "Firecracker" "/dev/kvm is absent, so this orb provider exposes no KVM"
+        return 0
+    fi
+    if ! { : <>/dev/kvm; } 2>/dev/null; then
+        skip "Firecracker" "/dev/kvm exists but this user cannot open it for read/write (needs the kvm group)"
+        return 0
+    fi
+    info "KVM probe: /dev/kvm opens and accepts KVM_GET_API_VERSION"
+
+    arch="$(firecracker_arch)"
+    if [ "$arch" = unsupported ]; then
+        skip "Firecracker" "no release archive for $(uname -m)"
+        return 0
+    fi
+
+    bin_dir="$FIRECRACKER_HOME/bin"
+    mkdir -p "$bin_dir"
+    if [ -x "$bin_dir/firecracker" ] &&
+        "$bin_dir/firecracker" --version 2>/dev/null | grep -q "$FIRECRACKER_VERSION"; then
+        info "$("$bin_dir/firecracker" --version | head -1) already installed"
+    else
+        tarball="$CACHE_DIR/firecracker-$FIRECRACKER_VERSION-$arch.tgz"
+        if [ ! -s "$tarball" ]; then
+            info "downloading firecracker $FIRECRACKER_VERSION"
+            if ! curl -fsSL --retry 3 -o "$tarball.part" \
+                "https://github.com/firecracker-microvm/firecracker/releases/download/$FIRECRACKER_VERSION/firecracker-$FIRECRACKER_VERSION-$arch.tgz"; then
+                rm -f "$tarball.part"
+                skip "Firecracker" "download failed"
+                return 0
+            fi
+            mv -f "$tarball.part" "$tarball"
+            if curl -fsSL --retry 3 -o "$CACHE_DIR/firecracker-$arch.sha256.txt" \
+                "https://github.com/firecracker-microvm/firecracker/releases/download/$FIRECRACKER_VERSION/firecracker-$FIRECRACKER_VERSION-$arch.tgz.sha256.txt"; then
+                if ! (cd "$CACHE_DIR" && grep " firecracker-$FIRECRACKER_VERSION-$arch.tgz\$" \
+                    "firecracker-$arch.sha256.txt" | sha256sum -c --status -); then
+                    rm -f "$tarball"
+                    skip "Firecracker" "checksum mismatch for firecracker $FIRECRACKER_VERSION"
+                    return 0
+                fi
+            fi
+        fi
+
+        dir="$CACHE_DIR/release-$FIRECRACKER_VERSION-$arch"
+        rm -rf "$dir"
+        tar -C "$CACHE_DIR" -xzf "$tarball"
+        if [ ! -x "$dir/firecracker-$FIRECRACKER_VERSION-$arch" ]; then
+            skip "Firecracker" "unexpected archive layout in $tarball"
+            return 0
+        fi
+        install -m 0755 "$dir/firecracker-$FIRECRACKER_VERSION-$arch" "$bin_dir/firecracker"
+        install -m 0755 "$dir/jailer-$FIRECRACKER_VERSION-$arch" "$bin_dir/jailer"
+        info "installed $("$bin_dir/firecracker" --version | head -1) in $bin_dir"
+    fi
+
+    # The official quickstart kernel: no root, no kernel build. testinfra looks
+    # in /usr/share/firecracker and friends, so `make testinfra` still reports a
+    # missing kernel unless this path is linked there with root.
+    kernel="$FIRECRACKER_HOME/vmlinux"
+    if [ -s "$kernel" ]; then
+        info "kernel already at $kernel"
+    elif curl -fsSL --retry 3 -o "$kernel.part" \
+        https://s3.amazonaws.com/spec.ccfc.min/img/hello/kernel/hello-vmlinux.bin; then
+        mv -f "$kernel.part" "$kernel"
+        info "kernel downloaded to $kernel"
+    else
+        rm -f "$kernel.part"
+        skip "Firecracker kernel" "hello-vmlinux.bin download failed"
+    fi
+
+    if [ ! -e /dev/net/tun ]; then
+        skip "Firecracker networking" "/dev/net/tun is absent, so TAP devices and bridge networking cannot be created in this orb"
+    fi
+}
+
+setup_system_packages
+setup_go
+setup_go_modules
+setup_golangci_lint
+setup_goimports
+setup_node
+setup_node_deps
+setup_firecracker
+
+# ---------------------------------------------------------------------------
+# Summary: restate every skip so a missing capability is never silent.
+# ---------------------------------------------------------------------------
+step "Summary"
+for tool in go golangci-lint goimports node npm python3 mkfs.ext4 ip; do
+    if path="$(command -v "$tool" 2>/dev/null)"; then
+        info "$tool: $path"
+    else
+        info "$tool: (not installed)"
+    fi
+done
+if [ -x "$FIRECRACKER_HOME/bin/firecracker" ]; then
+    info "firecracker: $FIRECRACKER_HOME/bin/firecracker (off PATH on purpose)"
+    info "  for testinfra/e2e: export PATH=\"$FIRECRACKER_HOME/bin:\$PATH\""
+fi
+
+if [ ${#SKIPPED[@]} -eq 0 ]; then
+    info "nothing skipped"
+else
+    printf '\n    skipped steps (%d):\n' "${#SKIPPED[@]}"
+    for entry in "${SKIPPED[@]}"; do
+        printf '      - %s\n' "${entry/ :: / — }"
+    done
+fi
+
+printf '\n    ready to run: make all / make lint / make test-unit / make sdk-test\n'
+printf '    finished in %ds\n' "$((SECONDS - START_SECONDS))"
