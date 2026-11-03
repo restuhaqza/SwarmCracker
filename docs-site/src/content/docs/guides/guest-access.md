@@ -94,6 +94,11 @@ Order the upgrade so the gap is short and never mistaken for a bug:
    without a healthcheck keeps serving traffic and needs an explicit restart to
    regain exec.
 
+`swarmcracker doctor` reports the tasks whose guest agent is behind, under
+**Running VMs → Guest agent protocol**. That check is the way to find them: a
+task with no healthcheck never fails on its own, so nothing else would say that a
+VM is still being served by an agent this host refuses.
+
 ## `vm exec`
 
 Runs a command inside a running microVM and returns the guest's exit code,
