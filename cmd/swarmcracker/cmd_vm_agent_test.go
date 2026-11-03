@@ -106,7 +106,9 @@ func serveFakeVMConn(conn net.Conn, script func(net.Conn)) {
 	if _, err := agent.ReadFrame(conn, &req); err != nil {
 		return
 	}
-	if err := agent.WriteFrame(conn, agent.Message{Type: "hello", Version: agent.Version}); err != nil {
+	hello := agent.HelloReply(agent.Capabilities())
+	hello.ID = req.ID
+	if err := agent.WriteFrame(conn, hello); err != nil {
 		return
 	}
 	script(conn)

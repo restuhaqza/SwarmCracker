@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -86,9 +87,16 @@ func (w messageWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+// deadlineExceeded reports whether the request being served ran out of its
+// budget. The command context kills the process, so the wait returns an error
+// either way; this distinguishes "the guest killed it" from "it failed".
+func (s *server) deadlineExceeded() bool {
+	return errors.Is(s.reqCtx.Err(), context.DeadlineExceeded)
+}
+
 // runNonTTY runs the command with separate stdout and stderr streams.
 func (s *server) runNonTTY(req *Request) error {
-	cmd := exec.CommandContext(s.ctx, req.Command[0], req.Command[1:]...) //nolint:gosec // G204: executing guest commands is this package's purpose
+	cmd := exec.CommandContext(s.reqCtx, req.Command[0], req.Command[1:]...) //nolint:gosec // G204: executing guest commands is this package's purpose
 	cmd.Env = commandEnv(req.Env)
 	cmd.Dir = req.WorkDir
 	cmd.Stdout = messageWriter{s: s, typ: "stdout"}
@@ -98,8 +106,12 @@ func (s *server) runNonTTY(req *Request) error {
 		return s.writeError("exec: start %s: %v", req.Command[0], err)
 	}
 	// Wait also waits for the goroutines os/exec spawns to copy output into the
-	// writers above, so every output frame precedes the exit frame.
-	return s.write(exitMessage(cmd.Wait()))
+	// writers above, so every output frame precedes the terminal frame.
+	waitErr := cmd.Wait()
+	if s.deadlineExceeded() {
+		return s.writeFailure(CodeDeadlineExceeded, "exec: deadline exceeded")
+	}
+	return s.write(exitMessage(waitErr))
 }
 
 // runTTY runs the command attached to a pseudo-terminal. A TTY merges stderr
@@ -111,7 +123,7 @@ func (s *server) runTTY(req *Request) error {
 	}
 	defer func() { _ = master.Close() }()
 
-	cmd := exec.CommandContext(s.ctx, req.Command[0], req.Command[1:]...) //nolint:gosec // G204: executing guest commands is this package's purpose
+	cmd := exec.CommandContext(s.reqCtx, req.Command[0], req.Command[1:]...) //nolint:gosec // G204: executing guest commands is this package's purpose
 	cmd.Env = commandEnv(req.Env)
 	cmd.Dir = req.WorkDir
 	cmd.Stdin = slave
@@ -142,7 +154,11 @@ func (s *server) runTTY(req *Request) error {
 	}
 
 	streamFrames(s, master, "stdout")
-	return s.write(exitMessage(cmd.Wait()))
+	waitErr := cmd.Wait()
+	if s.deadlineExceeded() {
+		return s.writeFailure(CodeDeadlineExceeded, "exec: deadline exceeded")
+	}
+	return s.write(exitMessage(waitErr))
 }
 
 // streamFrames copies r to the client as frames of the given type until EOF or

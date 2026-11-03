@@ -45,6 +45,12 @@ type fakeProxy struct {
 	helloVer  string
 	helloType string
 	helloErr  string
+	// helloErrCode is the typed code a scripted hello error carries. Empty
+	// models a pre-v2 agent, which sends a bare message.
+	helloErrCode ErrorCode
+	// serveCaps narrows the capability set the guest advertises. Nil advertises
+	// everything this build implements.
+	serveCaps []string
 	badOK     bool
 	raw       func(net.Conn)
 	// handler, when set, handles the connection after the muxer handshake
@@ -63,6 +69,21 @@ type fakeProxy struct {
 
 type proxyOption func(*fakeProxy)
 
+// caps is the capability set this proxy's guest advertises.
+func (p *fakeProxy) caps() []string {
+	if p.serveCaps != nil {
+		return p.serveCaps
+	}
+	return Capabilities()
+}
+
+// helloReply builds the v2 handshake reply this proxy answers with.
+func (p *fakeProxy) helloReply(req Request) Message {
+	msg := HelloReply(p.caps())
+	msg.ID = req.ID
+	return msg
+}
+
 func startProxy(t *testing.T, port uint32, opts ...proxyOption) (*fakeProxy, string) {
 	t.Helper()
 	p := &fakeProxy{t: t, port: port, okPort: assignedHostPort, helloVer: Version}
@@ -78,6 +99,25 @@ func startRawProxy(t *testing.T, port uint32, raw func(net.Conn)) (*fakeProxy, s
 	t.Helper()
 	p := &fakeProxy{t: t, port: port, okPort: assignedHostPort, helloVer: Version, raw: raw}
 	return p.listen(t, port)
+}
+
+// testClient wraps a connection that is already speaking to ServeConn with the
+// capability set Dial would have negotiated, for tests that drive the server
+// directly over a pipe instead of through the proxy.
+func testClient(conn net.Conn) *Client {
+	caps := make(map[string]bool, len(capabilities))
+	for _, op := range capabilities {
+		caps[op] = true
+	}
+	return &Client{
+		conn: conn,
+		hello: Hello{
+			Version:  Version,
+			Versions: []string{Version},
+			Caps:     Capabilities(),
+		},
+		caps: caps,
+	}
 }
 
 func (p *fakeProxy) listen(t *testing.T, port uint32) (*fakeProxy, string) {
@@ -132,19 +172,21 @@ func (p *fakeProxy) handle(conn net.Conn) {
 	}
 
 	if p.helloVer != Version || p.helloType != "" || p.helloErr != "" {
+		// A scripted reply deliberately answers outside the v2 contract, so
+		// the tests can prove how the host refuses an agent it cannot use.
 		var req Request
 		if _, err := ReadFrame(conn, &req); err != nil {
 			return
 		}
 		if p.helloErr != "" {
-			_ = WriteFrame(conn, Message{Type: "error", Error: p.helloErr})
+			_ = WriteFrame(conn, Message{Type: "error", ID: req.ID, ErrorCode: p.helloErrCode, Error: p.helloErr})
 			return
 		}
 		typ := p.helloType
 		if typ == "" {
 			typ = "hello"
 		}
-		_ = WriteFrame(conn, Message{Type: typ, Version: p.helloVer})
+		_ = WriteFrame(conn, Message{Type: typ, ID: req.ID, Version: p.helloVer})
 		return
 	}
 
@@ -154,7 +196,7 @@ func (p *fakeProxy) handle(conn net.Conn) {
 		if _, err := ReadFrame(conn, &req); err != nil {
 			return
 		}
-		_ = WriteFrame(conn, Message{Type: "hello", Version: Version})
+		_ = WriteFrame(conn, p.helloReply(req))
 		p.raw(conn)
 		return
 	}
@@ -162,7 +204,7 @@ func (p *fakeProxy) handle(conn net.Conn) {
 		p.handler(conn)
 		return
 	}
-	_ = ServeConn(conn)
+	_ = serveConn(conn, p.caps(), nil)
 }
 
 // withServe bridges the proxy to a custom handler after the handshake.
@@ -237,7 +279,7 @@ func TestClientExecStatusReportsSignal(t *testing.T) {
 		_, _ = ReadFrame(conn, &req)
 		signal := 9
 		code := 137
-		_ = WriteFrame(conn, Message{Type: "exit", Code: &code, Signal: &signal})
+		_ = WriteFrame(conn, Message{Type: "exit", ID: req.ID, Code: &code, Signal: &signal})
 	})
 	c, err := Dial(context.Background(), uds, DefaultPort)
 	require.NoError(t, err)
@@ -274,7 +316,7 @@ func TestClientExecStatusBareSignalFrame(t *testing.T) {
 		var req Request
 		_, _ = ReadFrame(conn, &req)
 		signal := 15
-		_ = WriteFrame(conn, Message{Type: "exit", Signal: &signal})
+		_ = WriteFrame(conn, Message{Type: "exit", ID: req.ID, Signal: &signal})
 	})
 	c, err := Dial(context.Background(), uds, DefaultPort)
 	require.NoError(t, err)
@@ -405,12 +447,32 @@ func TestClientCopyFromEmptyPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "empty guest path")
 }
 
-func TestClientDialVersionMismatch(t *testing.T) {
-	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) { p.helloVer = "2" })
+// TestClientDialRejectsLegacyAgent proves a pre-v2 agent is refused at the
+// handshake with a typed error instead of being used. v1 advertises no
+// capabilities, so a host that accepted it could not tell which operations the
+// agent can serve.
+func TestClientDialRejectsLegacyAgent(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) { p.helloVer = VersionLegacy })
 
 	_, err := Dial(context.Background(), uds, DefaultPort)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent version mismatch: client "+Version+", guest 2")
+	assert.Equal(t, CodeProtocolUnsupported, CodeOf(err))
+	assert.Contains(t, err.Error(), VersionLegacy)
+	assert.Contains(t, err.Error(), "rebuild", "the failure must name the fix, not only the mismatch")
+}
+
+// TestClientDialRejectsLegacyErrorFrame covers the frame a real v1 agent sends
+// when a v2 host greets it: it compares the version string, fails, and answers
+// with a bare error frame carrying no code.
+func TestClientDialRejectsLegacyErrorFrame(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) {
+		p.helloErr = "agent version mismatch: client " + Version + ", guest " + VersionLegacy
+	})
+
+	_, err := Dial(context.Background(), uds, DefaultPort)
+	require.Error(t, err)
+	assert.Equal(t, CodeProtocolUnsupported, CodeOf(err))
+	assert.Contains(t, err.Error(), "agent version mismatch")
 }
 
 // retryDialCtx bounds a Dial that is expected to fail, so the retry window does
@@ -510,22 +572,140 @@ func TestClientDialUnexpectedHelloType(t *testing.T) {
 
 	_, err := Dial(context.Background(), uds, DefaultPort)
 	require.Error(t, err)
+	assert.Equal(t, CodeProtocolUnsupported, CodeOf(err))
 	assert.Contains(t, err.Error(), "unexpected hello reply type")
 }
 
+// TestClientDialHelloError keeps a guest's own typed code intact, so the caller
+// sees why the handshake failed rather than a rewritten message.
 func TestClientDialHelloError(t *testing.T) {
-	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) { p.helloErr = "agent version mismatch: client 1, guest 9" })
+	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) {
+		p.helloErr = "agent protocol unsupported: client speaks 3, guest speaks 2"
+		p.helloErrCode = CodeProtocolUnsupported
+	})
 
 	_, err := Dial(context.Background(), uds, DefaultPort)
 	require.Error(t, err)
-	assert.EqualError(t, err, "agent version mismatch: client 1, guest 9")
+	assert.Equal(t, CodeProtocolUnsupported, CodeOf(err))
+	assert.EqualError(t, err, "agent_protocol_unsupported: hello: agent protocol unsupported: client speaks 3, guest speaks 2; "+outdatedAgentHint)
+}
+
+// TestClientHandshakeReportsGuestIdentity proves Dial keeps what hello reported,
+// so a host can log which agent it is driving and decide what it may ask for.
+func TestClientHandshakeReportsGuestIdentity(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) {
+		p.serveCaps = []string{CapHello, CapExec}
+	})
+
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	h := c.Hello()
+	assert.Equal(t, Version, h.Version)
+	assert.Equal(t, []string{Version}, h.Versions)
+	assert.Equal(t, []string{CapHello, CapExec}, h.Caps)
+	assert.Equal(t, AgentVersion, h.AgentVersion)
+	assert.Equal(t, BuildID, h.BuildID)
+	assert.Equal(t, BootID(), h.BootID)
+	assert.True(t, h.Supports(CapExec))
+	assert.False(t, h.Supports(CapGet))
+}
+
+// TestClientRefusesUnadvertisedOp proves the host never issues an operation the
+// agent did not advertise. The call fails with a typed error before any frame is
+// written, which is why the connection is still usable for the next exec.
+func TestClientRefusesUnadvertisedOp(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) {
+		p.serveCaps = []string{CapHello, CapExec}
+	})
+
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	err = c.CopyTo(context.Background(), "/guest/f", strings.NewReader("x"), 0)
+	assert.Equal(t, CodeUnsupportedOp, CodeOf(err))
+	err = c.CopyFrom(context.Background(), "/guest/f", io.Discard)
+	assert.Equal(t, CodeUnsupportedOp, CodeOf(err))
+	_, err = c.Metrics(context.Background())
+	assert.Equal(t, CodeUnsupportedOp, CodeOf(err))
+
+	// Nothing was written for the refused operations, so the stream is in step.
+	code, err := c.Exec(context.Background(), []string{"sh", "-c", "exit 7"}, ExecOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, 7, code)
+}
+
+// TestClientRequestCarriesIDAndDeadline pins the request fields a host must
+// send: an id the guest echoes and the caller's remaining budget.
+func TestClientRequestCarriesIDAndDeadline(t *testing.T) {
+	received := make(chan Request, 1)
+	_, uds := startRawProxy(t, DefaultPort, func(conn net.Conn) {
+		var req Request
+		_, _ = ReadFrame(conn, &req)
+		received <- req
+		code := 0
+		_ = WriteFrame(conn, Message{Type: "exit", ID: req.ID, Code: &code})
+	})
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = c.ExecStatus(ctx, []string{"true"}, ExecOptions{})
+	require.NoError(t, err)
+
+	req := <-received
+	assert.NotEmpty(t, req.ID)
+	assert.Positive(t, req.DeadlineMs)
+	assert.LessOrEqual(t, req.DeadlineMs, int64(5000), "the budget must not exceed the caller's deadline")
+}
+
+// TestClientRejectsMismatchedReplyID proves a frame belonging to another request
+// cannot be attributed to this one: the connection is reported as desynchronised
+// instead of returning another operation's result.
+func TestClientRejectsMismatchedReplyID(t *testing.T) {
+	_, uds := startRawProxy(t, DefaultPort, func(conn net.Conn) {
+		var req Request
+		_, _ = ReadFrame(conn, &req)
+		code := 0
+		_ = WriteFrame(conn, Message{Type: "exit", ID: "not-" + req.ID, Code: &code})
+	})
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	_, err = c.Exec(context.Background(), []string{"true"}, ExecOptions{})
+	require.Error(t, err)
+	assert.Equal(t, CodeProtocolError, CodeOf(err))
+}
+
+// TestClientExecDeadlineIsTyped proves a command that outlives the caller's
+// budget is reported as a deadline failure, not as a signal or a plain read
+// error, so a caller can tell a timeout from a command that failed.
+func TestClientExecDeadlineIsTyped(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort)
+	c, err := Dial(context.Background(), uds, DefaultPort)
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = c.Exec(ctx, []string{"sleep", "30"}, ExecOptions{})
+	require.Error(t, err)
+	assert.Equal(t, CodeDeadlineExceeded, CodeOf(err))
+	assert.Less(t, time.Since(start), 10*time.Second, "the guest must kill the command at the deadline")
 }
 
 func TestClientExecExitFrameMissingCode(t *testing.T) {
 	_, uds := startRawProxy(t, DefaultPort, func(conn net.Conn) {
 		var req Request
 		_, _ = ReadFrame(conn, &req)
-		_ = WriteFrame(conn, Message{Type: "exit"})
+		_ = WriteFrame(conn, Message{Type: "exit", ID: req.ID})
 	})
 	c, err := Dial(context.Background(), uds, DefaultPort)
 	require.NoError(t, err)
@@ -540,7 +720,7 @@ func TestClientExecUnexpectedMessageType(t *testing.T) {
 	_, uds := startRawProxy(t, DefaultPort, func(conn net.Conn) {
 		var req Request
 		_, _ = ReadFrame(conn, &req)
-		_ = WriteFrame(conn, Message{Type: "hello", Version: Version})
+		_ = WriteFrame(conn, Message{Type: "hello", ID: req.ID, Version: Version})
 	})
 	c, err := Dial(context.Background(), uds, DefaultPort)
 	require.NoError(t, err)
@@ -594,7 +774,7 @@ func TestClientCopyToUnexpectedReply(t *testing.T) {
 		// Consume the terminal empty file frame, then reply with the wrong type.
 		var msg Message
 		_, _ = ReadFrame(conn, &msg)
-		_ = WriteFrame(conn, Message{Type: "hello", Version: Version})
+		_ = WriteFrame(conn, Message{Type: "hello", ID: req.ID, Version: Version})
 	})
 	c, err := Dial(context.Background(), uds, DefaultPort)
 	require.NoError(t, err)
@@ -623,7 +803,7 @@ func TestClientCopyFromUnexpectedMessageType(t *testing.T) {
 	_, uds := startRawProxy(t, DefaultPort, func(conn net.Conn) {
 		var req Request
 		_, _ = ReadFrame(conn, &req)
-		_ = WriteFrame(conn, Message{Type: "stdout", Data: []byte("nope")})
+		_ = WriteFrame(conn, Message{Type: "stdout", ID: req.ID, Data: []byte("nope")})
 	})
 	c, err := Dial(context.Background(), uds, DefaultPort)
 	require.NoError(t, err)

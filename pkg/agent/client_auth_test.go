@@ -69,11 +69,45 @@ func TestDialRejectsAWrongToken(t *testing.T) {
 }
 
 // TestDialRejectsALegacyGuestWhenATokenIsProvisioned proves the node never
-// silently accepts an agent that ignored the token: an old agent is refused.
+// silently accepts an agent that cannot answer a v2 hello: a pre-v2 guest is
+// refused as an unsupported protocol, which is the same code the doctor check
+// reports as an outdated image.
 func TestDialRejectsALegacyGuestWhenATokenIsProvisioned(t *testing.T) {
-	// A guest that answers hello without acknowledging token authentication is
-	// what an agent built before this feature looks like.
-	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) { p.helloType = "hello" })
+	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) { p.helloVer = VersionLegacy })
+	publishHostToken(t, uds, "boot-token")
+
+	_, err := Dial(context.Background(), uds, DefaultPort)
+	require.Error(t, err)
+	assert.Equal(t, CodeProtocolUnsupported, CodeOf(err))
+}
+
+// TestDialWithTokenRejectsALegacyGuest keeps the typed refusal on the explicit
+// token path. A pre-v2 agent answers a v2 hello with a bare error frame, so the
+// caller must see agent_protocol_unsupported whether it dialled with a token or
+// without one — a raw string here would make the doctor check call an outdated
+// guest "silent".
+func TestDialWithTokenRejectsALegacyGuest(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort, func(p *fakeProxy) {
+		p.helloErr = "agent version mismatch: client " + Version + ", guest " + VersionLegacy
+	})
+
+	_, err := DialWithToken(context.Background(), uds, DefaultPort, "boot-token")
+	require.Error(t, err)
+	assert.Equal(t, CodeProtocolUnsupported, CodeOf(err))
+}
+
+// TestDialRejectsAV2GuestThatIgnoresTheToken covers the other half: an agent
+// that answers a v2 hello without acknowledging the token speaks a protocol
+// this host understands, so the failure is named as the token problem it is
+// rather than as an outdated image.
+func TestDialRejectsAV2GuestThatIgnoresTheToken(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort, withServe(func(conn net.Conn) {
+		var req Request
+		_, _ = ReadFrame(conn, &req)
+		reply := HelloReply(Capabilities())
+		reply.ID = req.ID
+		_ = WriteFrame(conn, reply)
+	}))
 	publishHostToken(t, uds, "boot-token")
 
 	_, err := Dial(context.Background(), uds, DefaultPort)
@@ -136,13 +170,16 @@ func TestDialTokenFileIsPerMuxer(t *testing.T) {
 }
 
 // TestDialWithoutATokenIsRefusedByAGuestThatAnnouncesAuth covers the reply shape
-// a future or third-party agent may use: it answers hello but says a token is
+// of an agent that authenticates: it answers a full v2 hello but says a token is
 // required, so the host refuses instead of continuing unauthenticated.
 func TestDialWithoutATokenIsRefusedByAGuestThatAnnouncesAuth(t *testing.T) {
 	_, uds := startProxy(t, DefaultPort, withServe(func(conn net.Conn) {
 		var req Request
 		_, _ = ReadFrame(conn, &req)
-		_ = WriteFrame(conn, Message{Type: "hello", Version: Version, AuthRequired: true})
+		reply := HelloReply(Capabilities())
+		reply.ID = req.ID
+		reply.AuthRequired = true
+		_ = WriteFrame(conn, reply)
 	}))
 
 	_, err := Dial(context.Background(), uds, DefaultPort)

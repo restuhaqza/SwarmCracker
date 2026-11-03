@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -130,6 +131,10 @@ func TestBuilder_Build_HappyPath(t *testing.T) {
 	assert.Equal(t, res.SHA256, md.SHA256)
 	assert.Equal(t, int64(5*1<<30), md.RootMinSizeBytes)
 	assert.Equal(t, "guest-runtime-6.1", md.KernelProfile)
+	// The template records the agent it carries, so a host can refuse one it
+	// cannot drive instead of guessing from the artifact's age.
+	assert.Equal(t, MinimumAgentProtocol, md.Agent.Protocol)
+	assert.Equal(t, agent.AgentVersion, md.Agent.Version)
 }
 
 func TestBuilder_Build_InvalidRecipe_DoesNotBuild(t *testing.T) {

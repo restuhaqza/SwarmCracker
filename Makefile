@@ -332,7 +332,12 @@ AGENT_SOURCES := $(wildcard cmd/sc-agent/*.go) $(wildcard pkg/agent/*.go) go.mod
 pkg/image/binaries/sc-agent-amd64: $(AGENT_SOURCES)
 	@echo "Building sc-agent-static-amd64..."
 	@mkdir -p pkg/image/binaries
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -ldflags "-s -w" -o $@ ./cmd/sc-agent
+	# The agent reports its version and build in every hello, so a host can log
+	# which agent it is driving; both are injected here rather than defaulted so
+	# a released image never claims to be a working-tree build.
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath \
+		-ldflags "-s -w -X github.com/restuhaqza/swarmcracker/pkg/agent.AgentVersion=$(VERSION) -X github.com/restuhaqza/swarmcracker/pkg/agent.BuildID=$(GIT_COMMIT)" \
+		-o $@ ./cmd/sc-agent
 
 # Multi-node development lab (creates nested VMs on this KVM host)
 lab:

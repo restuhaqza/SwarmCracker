@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"gopkg.in/yaml.v3"
 )
@@ -86,6 +87,7 @@ type Spec struct {
 	Arch      []string      `yaml:"arch,omitempty" json:"arch,omitempty"`
 	Source    Source        `yaml:"source" json:"source"`
 	Init      Init          `yaml:"init,omitempty" json:"init,omitempty"`
+	Agent     AgentPin      `yaml:"agent,omitempty" json:"agent,omitempty"` // guest agent pin; defaults to this build's agent
 	Kernel    Kernel        `yaml:"kernel" json:"kernel"`
 	Runtime   Runtime       `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	Disk      Disk          `yaml:"disk,omitempty" json:"disk,omitempty"`
@@ -209,6 +211,7 @@ func (r *Recipe) Validate() error {
 	r.validateSource(add)
 	r.validateBuild(add)
 	r.validateInit(add)
+	r.validateAgent(add)
 	r.validateRuntime(add)
 	r.validateDisk(add)
 
@@ -229,6 +232,14 @@ func (r *Recipe) applyDefaults() {
 	}
 	if r.Spec.Runtime.Name == "" {
 		r.Spec.Runtime.Name = RuntimeNone
+	}
+	// Every template records the agent it was built with, so the host can refuse
+	// one it cannot drive instead of guessing from the artifact's age.
+	if r.Spec.Agent.Protocol == "" {
+		r.Spec.Agent.Protocol = MinimumAgentProtocol
+	}
+	if r.Spec.Agent.Version == "" {
+		r.Spec.Agent.Version = agent.AgentVersion
 	}
 	if r.Spec.Build == "" {
 		// Single-workload images (injected tini) are assembled by the preparer.
@@ -304,6 +315,15 @@ func (r *Recipe) validateInit(add func(string, ...any)) {
 	case InitSystemd, InitOpenRC, InitSysvinit, InitCustom, InitTini:
 	default:
 		add("init.system %q is not supported", r.Spec.Init.System)
+	}
+}
+
+// validateAgent refuses a recipe that pins a guest agent protocol below this
+// build's minimum: the template would boot an agent that cannot serve the
+// operations the host relies on, and there is no fallback for a missing one.
+func (r *Recipe) validateAgent(add func(string, ...any)) {
+	if err := CheckAgentPin(r.Metadata.Name, r.Spec.Agent); err != nil {
+		add("%v", err)
 	}
 }
 

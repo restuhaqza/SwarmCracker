@@ -444,7 +444,9 @@ func fakeVsockAgent(t *testing.T, ln net.Listener, stdout string, code int) {
 	if _, err := agent.ReadFrame(reader, &hello); err != nil {
 		return
 	}
-	if err := agent.WriteFrame(conn, agent.Message{Type: "hello", Version: agent.Version}); err != nil {
+	helloReply := agent.HelloReply(agent.Capabilities())
+	helloReply.ID = hello.ID
+	if err := agent.WriteFrame(conn, helloReply); err != nil {
 		return
 	}
 
@@ -452,10 +454,10 @@ func fakeVsockAgent(t *testing.T, ln net.Listener, stdout string, code int) {
 	if _, err := agent.ReadFrame(reader, &req); err != nil {
 		return
 	}
-	if err := agent.WriteFrame(conn, agent.Message{Type: "stdout", Data: []byte(stdout)}); err != nil {
+	if err := agent.WriteFrame(conn, agent.Message{Type: "stdout", ID: req.ID, Data: []byte(stdout)}); err != nil {
 		return
 	}
-	_ = agent.WriteFrame(conn, agent.Message{Type: "exit", Code: &code})
+	_ = agent.WriteFrame(conn, agent.Message{Type: "exit", ID: req.ID, Code: &code})
 }
 
 // TestStartBroker_ExecStreamsFromTheGuest proves the node registers the exec

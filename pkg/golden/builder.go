@@ -92,6 +92,7 @@ type ArtifactMetadata struct {
 	Arch             []string  `json:"arch"`
 	Source           Source    `json:"source"`
 	Init             Init      `json:"init"`
+	Agent            AgentPin  `json:"agent"`
 	KernelProfile    string    `json:"kernelProfile"`
 	Runtime          Runtime   `json:"runtime"`
 	RootMinSizeBytes int64     `json:"rootMinSizeBytes"`
@@ -195,6 +196,7 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 		Arch:             r.Spec.Arch,
 		Source:           r.Spec.Source,
 		Init:             r.Spec.Init,
+		Agent:            r.Spec.Agent,
 		KernelProfile:    r.Spec.Kernel.Profile,
 		Runtime:          r.Spec.Runtime,
 		RootMinSizeBytes: minSize,

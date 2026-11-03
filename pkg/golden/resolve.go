@@ -76,6 +76,13 @@ func Resolve(storeDir, ref string) (*Artifact, error) {
 		return nil, fmt.Errorf("golden: artifact %s for %s@%s is empty", artifactPath, md.Name, md.Version)
 	}
 
+	// Refuse a template this host cannot drive rather than booting an agent that
+	// cannot advertise an operation the host relies on. This is the only path to
+	// a template, so there is no way around the check.
+	if err := CheckAgentPin(md.Name+"@"+md.Version, md.Agent); err != nil {
+		return nil, err
+	}
+
 	return &Artifact{
 		Ref:      md.Name + "@" + md.Version,
 		Name:     md.Name,

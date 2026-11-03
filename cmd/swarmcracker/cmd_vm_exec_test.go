@@ -376,7 +376,7 @@ func TestVMExecForwardsCommandEnvAndWorkdir(t *testing.T) {
 		_, _ = agent.ReadFrame(conn, &req)
 		reqs <- req
 		code := 0
-		_ = agent.WriteFrame(conn, agent.Message{Type: "exit", Code: &code})
+		_ = agent.WriteFrame(conn, agent.Message{Type: "exit", ID: req.ID, Code: &code})
 	})
 
 	err := execInVM(context.Background(), "vm-req", vmExecOptions{
@@ -407,7 +407,7 @@ func TestVMExecTTYForwardsStdin(t *testing.T) {
 		_, _ = io.ReadFull(conn, buf)
 		got <- buf
 		code := 0
-		_ = agent.WriteFrame(conn, agent.Message{Type: "exit", Code: &code})
+		_ = agent.WriteFrame(conn, agent.Message{Type: "exit", ID: req.ID, Code: &code})
 	})
 
 	err := execInVM(context.Background(), "vm-tty", vmExecOptions{
