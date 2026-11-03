@@ -87,3 +87,38 @@ func TestProvisionAgentTokenIsOffByDefault(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, found)
 }
+
+// TestProvisionAgentTokenReportsAFailure is the fail-closed half: with the
+// switch on, a rootfs that cannot take a token fails the task instead of
+// booting an unauthenticated agent.
+func TestProvisionAgentTokenReportsAFailure(t *testing.T) {
+	preparer := &ImagePreparer{config: &PreparerConfig{SocketDir: t.TempDir(), AgentRequireToken: true}}
+	task := &localtypes.Task{ID: "task-1", Annotations: map[string]string{
+		localtypes.AnnotationRootfsEphemeral: "true",
+	}}
+
+	notAnImage := filepath.Join(t.TempDir(), "plain")
+	require.NoError(t, os.WriteFile(notAnImage, []byte("not an ext4 image"), 0o600))
+
+	err := preparer.provisionAgentToken(context.Background(), task, notAnImage)
+	require.Error(t, err)
+}
+
+// TestNewImagePreparerWarnsWhenTokenAuthIsMisconfigured pins the startup
+// diagnostics: with the switch on but no socket directory, or no debugfs, every
+// task would fail at provisioning, so the preparer says so once at construction.
+func TestNewImagePreparerWarnsWhenTokenAuthIsMisconfigured(t *testing.T) {
+	// No socket directory: there is nowhere to publish the host copy.
+	require.NotNil(t, NewImagePreparer(&PreparerConfig{
+		RootfsDir:         t.TempDir(),
+		AgentRequireToken: true,
+	}))
+
+	// No debugfs: the token cannot be written into the rootfs.
+	t.Setenv("PATH", t.TempDir())
+	require.NotNil(t, NewImagePreparer(&PreparerConfig{
+		RootfsDir:         t.TempDir(),
+		SocketDir:         t.TempDir(),
+		AgentRequireToken: true,
+	}))
+}

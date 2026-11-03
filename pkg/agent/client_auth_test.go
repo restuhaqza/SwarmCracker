@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -132,4 +133,38 @@ func TestDialTokenFileIsPerMuxer(t *testing.T) {
 
 	_, err := Dial(context.Background(), uds, DefaultPort)
 	require.Error(t, err, "another VM's token file must not be picked up")
+}
+
+// TestDialWithoutATokenIsRefusedByAGuestThatAnnouncesAuth covers the reply shape
+// a future or third-party agent may use: it answers hello but says a token is
+// required, so the host refuses instead of continuing unauthenticated.
+func TestDialWithoutATokenIsRefusedByAGuestThatAnnouncesAuth(t *testing.T) {
+	_, uds := startProxy(t, DefaultPort, withServe(func(conn net.Conn) {
+		var req Request
+		_, _ = ReadFrame(conn, &req)
+		_ = WriteFrame(conn, Message{Type: "hello", Version: Version, AuthRequired: true})
+	}))
+
+	_, err := Dial(context.Background(), uds, DefaultPort)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrTokenRequired)
+}
+
+// TestDialWithTokenHonoursTheContextDeadline covers the deadline branch of the
+// handshake: a bounded dial must still authenticate, and must clear the deadline
+// afterwards so the session is not cut short.
+func TestDialWithTokenHonoursTheContextDeadline(t *testing.T) {
+	_, uds := authenticatedProxy(t, "boot-token")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, err := DialWithToken(ctx, uds, DefaultPort, "boot-token")
+	require.NoError(t, err)
+	defer func() { _ = c.Close() }()
+
+	var stdout bytes.Buffer
+	code, err := c.Exec(context.Background(), []string{"sh", "-c", "echo ok"}, ExecOptions{Stdout: &stdout})
+	require.NoError(t, err)
+	assert.Equal(t, 0, code)
+	assert.Equal(t, "ok\n", stdout.String(), "the deadline must not leak into the session")
 }

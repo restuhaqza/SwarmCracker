@@ -11,7 +11,9 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/golden"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/test/mocks"
+	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,4 +119,53 @@ func TestControllerPrepare_GoldenService_WithoutTokenLeavesNoCredential(t *testi
 
 	_, err = agent.ReadTokenFromRootfs(context.Background(), image.TaskRootfsPath(rootfsDir, task.ID))
 	assert.ErrorIs(t, err, agent.ErrNoToken)
+}
+
+// TestControllerPrepare_GoldenService_FailsWhenTheTokenCannotBeProvisioned is
+// the fail-closed half of the golden path: with the switch on, a template whose
+// copy cannot take a token fails the task rather than booting an
+// unauthenticated agent.
+func TestControllerPrepare_GoldenService_FailsWhenTheTokenCannotBeProvisioned(t *testing.T) {
+	// writeGoldenStore's artifact is a plain file, not an ext4 image, so token
+	// provisioning cannot write into it.
+	goldenDir, _ := writeGoldenStore(t, "plain", "1.0.0", "", nil)
+	rootfsDir := t.TempDir()
+	socketDir := t.TempDir()
+
+	task := goldenServiceTask("task-golden", "plain@1.0.0")
+	ctrl := &Controller{
+		task: task,
+		config: &Config{
+			GoldenDir:         goldenDir,
+			RootfsDir:         rootfsDir,
+			SocketDir:         socketDir,
+			AgentRequireToken: true,
+		},
+		imagePrep:  &recordingImagePreparer{},
+		networkMgr: mocks.NewMockNetworkManager(),
+		socketPath: filepath.Join(socketDir, task.ID+".sock"),
+		logger:     log.With().Str("task_id", task.ID).Logger(),
+	}
+
+	err := ctrl.Prepare(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "guest agent token")
+}
+
+// TestCleanupVMSocketsRemovesTheAgentToken pins teardown: the host copy is a
+// credential for one VM's lifetime and must not outlive its muxer.
+func TestCleanupVMSocketsRemovesTheAgentToken(t *testing.T) {
+	dir := t.TempDir()
+	v := &VMMManager{socketDir: dir, logger: zerolog.Nop()}
+	vsock := scruntime.VsockPath(dir, "task-1")
+	require.NoError(t, agent.WriteTokenFile(agent.TokenFilePath(vsock), "secret"))
+
+	v.cleanupVMSockets("task-1")
+
+	_, found, err := agent.ReadTokenFile(agent.TokenFilePath(vsock))
+	require.NoError(t, err)
+	assert.False(t, found)
+
+	// A task that never had a token cleans up without an error.
+	v.cleanupVMSockets("task-2")
 }

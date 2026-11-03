@@ -487,8 +487,9 @@ unauthenticated reply) rather than silently unauthenticated; rebuild the images
 first. The daemon flag is `--agent-require-token`; `init`/`join` pass it by
 default and render it into the unit only when enabled.
 
-**Which setting applies.** The key and the daemon flag are read by different
-processes, so neither overrides the other:
+**A unit without the flag leaves service tasks unauthenticated, even when the
+config says `true`.** The daemon reads only its flags; `vm create` reads only the
+config file. There is no precedence to apply because no reader sees both.
 
 | VM booted by | Reads | Does not read |
 |---|---|---|
@@ -496,11 +497,11 @@ processes, so neither overrides the other:
 | the CLI (`vm create`) | `agent.require_token` | `--agent-require-token` |
 
 The daemon never loads the YAML config file (it creates one on first start, but
-only as a convenience for the CLI). `swarmcracker init` and `join` render the key
-and the flag from one value, so a node they generate agrees with itself. If you
-edit one artifact afterwards, only that process changes: removing the flag from
-the unit turns auth off for service tasks even though the config still says
-`true`, and setting the key to `false` affects only `vm create`.
+only as a convenience for the CLI). This includes units generated before this
+release: an old unit that does not pass `--agent-require-token` leaves its
+service tasks unauthenticated regardless of `agent.require_token`. Regenerate the
+unit (`swarmcracker init`/`join`, or add the flag by hand) to turn auth on for
+them. The reverse also holds: `vm create` ignores the unit flag.
 
 ---
 

@@ -1081,12 +1081,9 @@ func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref
 	}
 
 	// The golden path skips the image preparer, so it provisions the guest
-	// agent token here — into the task's own copy, which was just materialized,
-	// never the shared artifact.
+	// agent token here — into the task's own copy, which was just materialized
+	// above, never the shared artifact.
 	if c.config.AgentRequireToken {
-		if task.Annotations[types.AnnotationRootfsEphemeral] != "true" {
-			return fmt.Errorf("agent.require_token is set but the golden rootfs is not a private per-task copy")
-		}
 		if err := agent.ProvisionForBoot(ctx, rootfs, vsockUDSPath(c.socketPath)); err != nil {
 			return fmt.Errorf("provision guest agent token: %w", err)
 		}

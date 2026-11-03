@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -611,4 +613,26 @@ func TestVMMManager_GracePeriod(t *testing.T) {
 			assert.Equal(t, tt.gracePeriod, vmi.GracePeriodSec)
 		})
 	}
+}
+
+// TestVMMManager_RemoveRemovesTheAgentToken pins teardown on the CLI path: the
+// host copy of a VM's guest-agent token must not outlive the muxer it
+// authenticates.
+func TestVMMManager_RemoveRemovesTheAgentToken(t *testing.T) {
+	socketDir := t.TempDir()
+	vmm := NewVMMManager(&ManagerConfig{SocketDir: socketDir}).(*VMMManager)
+
+	task := &types.Task{ID: "test-vm-token"}
+	vsock := scruntime.VsockPath(socketDir, task.ID)
+	require.NoError(t, agent.WriteTokenFile(agent.TokenFilePath(vsock), "secret"))
+
+	vmm.mu.Lock()
+	vmm.vms[task.ID] = &VMInstance{ID: task.ID, state: VMStateStopped}
+	vmm.mu.Unlock()
+
+	require.NoError(t, vmm.Remove(context.Background(), task))
+
+	_, found, err := agent.ReadTokenFile(agent.TokenFilePath(vsock))
+	require.NoError(t, err)
+	assert.False(t, found)
 }

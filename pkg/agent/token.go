@@ -26,6 +26,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const (
@@ -71,13 +72,20 @@ var ErrTokenRequired = errors.New("agent: guest agent requires a token but the h
 var (
 	debugfsCommand = exec.CommandContext
 	e2fsckCommand  = exec.CommandContext
+	// randomRead is the entropy seam. NewToken uses it so the "entropy source
+	// failed" path is reachable in a test; production reads crypto/rand.
+	randomRead = rand.Read
+	// currentEUID is the seam the root-ownership check reads. The guest agent
+	// runs as root; tests replace it so both the root and non-root branch can be
+	// exercised on one host.
+	currentEUID = os.Geteuid
 )
 
 // NewToken mints a per-boot agent token: 32 bytes from crypto/rand, hex encoded
 // so it survives being written to a file and compared as text.
 func NewToken() (string, error) {
 	buf := make([]byte, tokenBytes)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := randomRead(buf); err != nil {
 		return "", fmt.Errorf("mint agent token: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
@@ -110,25 +118,17 @@ func WriteTokenFile(path, token string) error {
 		return fmt.Errorf("agent: create token directory %s: %w", dir, err)
 	}
 
-	f, err := os.CreateTemp(dir, ".agent-token-*")
-	if err != nil {
-		return fmt.Errorf("agent: create token file: %w", err)
+	// Stage under a unique name and rename, so a reader never sees a partial
+	// token. The name is unique per write; a concurrent provision of the same
+	// task has its own file and the last rename wins, exactly as a lock would
+	// order them.
+	tmp := filepath.Join(dir, fmt.Sprintf(".agent-token-%d", time.Now().UnixNano()))
+	if err := os.WriteFile(tmp, []byte(token), 0o600); err != nil {
+		return fmt.Errorf("agent: write token file: %w", err)
 	}
-	tmp := f.Name()
 	// Best effort: a no-op once the rename below succeeds.
 	defer func() { _ = os.Remove(tmp) }()
 
-	if err := f.Chmod(0o600); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("agent: set token file mode: %w", err)
-	}
-	if _, err := f.WriteString(token); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("agent: write token file: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("agent: close token file: %w", err)
-	}
 	if err := os.Rename(tmp, path); err != nil {
 		return fmt.Errorf("agent: install token file %s: %w", path, err)
 	}
@@ -228,7 +228,7 @@ func readValidatedToken(path string) (string, error) {
 	// The agent runs as root, so a token owned by anyone else is not the
 	// node's. The check is skipped off-root so the unit tests can run as an
 	// ordinary user.
-	if os.Geteuid() == 0 && info.Sys() != nil {
+	if currentEUID() == 0 && info.Sys() != nil {
 		if uid, ok := fileUID(info); ok && uid != 0 {
 			return "", fmt.Errorf("agent: token file %s is owned by uid %d: want root", path, uid)
 		}
@@ -345,6 +345,14 @@ func ReadTokenFromRootfs(ctx context.Context, rootfsPath string) (string, error)
 	if err != nil {
 		return "", fmt.Errorf("agent: read token from %s: %w: %s", rootfsPath, err, strings.TrimSpace(stderr.String()))
 	}
+	// debugfs exits 0 even when it could not open the filesystem, so its own
+	// error text has to be checked before empty output is read as "no token".
+	// A broken image is a failure, not a tokenless one: treating it as the
+	// latter would let a restore proceed unauthenticated.
+	if text := stderr.String(); strings.Contains(text, "Filesystem not open") ||
+		strings.Contains(text, "while trying to open") {
+		return "", fmt.Errorf("agent: read token from %s: %s", rootfsPath, strings.TrimSpace(text))
+	}
 	if strings.Contains(stderr.String(), "File not found") || strings.Contains(stderr.String(), "No such file") {
 		return "", ErrNoToken
 	}
@@ -399,13 +407,11 @@ func ancestorDirs(dir string) []string {
 	if dir == "" || dir == "/" || dir == "." {
 		return nil
 	}
+	// filepath.Clean removes empty elements, so every part is a real name.
 	parts := strings.Split(strings.TrimPrefix(filepath.Clean(dir), "/"), "/")
 	dirs := make([]string, 0, len(parts))
 	current := ""
 	for _, part := range parts {
-		if part == "" {
-			continue
-		}
 		current += "/" + part
 		dirs = append(dirs, current)
 	}
