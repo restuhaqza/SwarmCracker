@@ -38,6 +38,9 @@ func newTestInitConfig() *initConfig {
 		Subnet:        "192.168.127.0/24",
 		BridgeIP:      "192.168.127.1/24",
 		EnableCNI:     true,
+		// Mirrors the command's flag default: a new installation authenticates
+		// its guests.
+		AgentRequireToken: true,
 	}
 }
 
@@ -61,6 +64,8 @@ func newTestJoinConfig() *joinConfig {
 		BridgeIP:      "192.168.127.1/24",
 		AdvertiseAddr: "10.0.0.2:4242",
 		EnableCNI:     true,
+		// Mirrors the command's flag default.
+		AgentRequireToken: true,
 	}
 }
 
@@ -302,7 +307,9 @@ func TestRenderServicePropagatesAgentRequireToken(t *testing.T) {
 	// A node that turns it off must not get the flag: the template renders it
 	// only when enabled, which is what lets an existing unit keep its old
 	// unauthenticated behaviour.
-	offUnit, err := renderManagerService(newTestInitConfig())
+	off := newTestInitConfig()
+	off.AgentRequireToken = false
+	offUnit, err := renderManagerService(off)
 	require.NoError(t, err)
 	assert.NotContains(t, string(offUnit), "--"+config.AgentRequireTokenFlag)
 }

@@ -138,6 +138,12 @@ behaviour (`false`), so an upgrade does not start refusing guests whose agent
 predates token support. Add the key (or start the daemon with
 `--agent-require-token`) to turn it on.
 
+The key and the daemon flag are read by different processes and do not override
+each other: service tasks follow `--agent-require-token` in the unit, while
+`vm create` follows `agent.require_token` in the config file. `init`/`join`
+write both from one value, so a generated node agrees with itself; editing one
+artifact afterwards changes only the process that reads it.
+
 For each boot the node then:
 
 1. mints a 256-bit token,

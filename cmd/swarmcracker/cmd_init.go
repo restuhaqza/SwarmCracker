@@ -332,9 +332,11 @@ func createDirectories(cfg *initConfig) error {
 // renderManagerConfig renders the config file `init` writes. It is separate from
 // the writer so the generated file can be asserted on without touching /etc.
 //
-// agent.require_token is written true: this file is a new installation, and a
-// fresh node authenticates its guests. A config that omits the key keeps
-// yesterday's behaviour (false), which is what makes an upgrade safe.
+// agent.require_token is written from the command's own token setting, which
+// defaults to true for a new installation. The unit is rendered from the same
+// field, so the config file and the unit a node is given never disagree. A
+// config that omits the key keeps yesterday's behaviour (false), which is what
+// makes an upgrade safe.
 func renderManagerConfig(cfg *initConfig) string {
 	return fmt.Sprintf(`# SwarmCracker Manager Configuration
 # Generated: %s
@@ -364,7 +366,7 @@ logging:
 agent:
   # Authenticate the guest agent (vm exec / vm cp over vsock) with a per-boot
   # token. On for new installations; remove or set false to opt out.
-  require_token: true
+  require_token: %v
 `,
 		time.Now().Format(time.RFC3339),
 		cfg.AdvertiseAddr,
@@ -381,6 +383,7 @@ agent:
 		cfg.VXLANEnabled,
 		cfg.VXLANPeers,
 		map[bool]string{true: "debug", false: "info"}[cfg.Debug],
+		cfg.AgentRequireToken,
 	)
 }
 
