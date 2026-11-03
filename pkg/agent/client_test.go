@@ -63,6 +63,14 @@ type fakeProxy struct {
 	// without replying, so the client must retry.
 	dropsRemaining atomic.Int32
 
+	// serveDone closes when the accept loop has stopped, and wg tracks the
+	// connection handlers. Together they let cleanup wait for the guest to
+	// finish before a test's temporary directory is removed: a handler may
+	// still be writing a put's temporary file there, and removing the directory
+	// underneath it fails the test with "directory not empty".
+	serveDone chan struct{}
+	wg        sync.WaitGroup
+
 	mu        sync.Mutex
 	handshake string
 }
@@ -126,9 +134,17 @@ func (p *fakeProxy) listen(t *testing.T, port uint32) (*fakeProxy, string) {
 	ln, err := net.Listen("unix", udsPath)
 	require.NoError(t, err)
 	p.ln = ln
-	t.Cleanup(func() { _ = ln.Close() })
+	p.serveDone = make(chan struct{})
+	t.Cleanup(func() {
+		_ = ln.Close()
+		<-p.serveDone
+		p.wg.Wait()
+	})
 
-	go p.serve()
+	go func() {
+		defer close(p.serveDone)
+		p.serve()
+	}()
 	return p, udsPath
 }
 
@@ -138,7 +154,13 @@ func (p *fakeProxy) serve() {
 		if err != nil {
 			return
 		}
-		go p.handle(conn)
+		// Counted here, in the only goroutine that starts handlers, so a
+		// cleanup that has already seen the accept loop exit can wait safely.
+		p.wg.Add(1)
+		go func() {
+			defer p.wg.Done()
+			p.handle(conn)
+		}()
 	}
 }
 
@@ -744,12 +766,17 @@ func TestClientExecStdoutWriteError(t *testing.T) {
 }
 
 func TestClientCopyToSourceError(t *testing.T) {
+	// The guest creates its put temporary file inside this directory, and the
+	// client abandons the transfer without telling it, so the directory must
+	// outlive the connection: cleanups run newest-first, and the proxy's join
+	// runs before this removal.
+	dst := t.TempDir()
 	_, uds := startProxy(t, DefaultPort)
 	c, err := Dial(context.Background(), uds, DefaultPort)
 	require.NoError(t, err)
 	defer func() { _ = c.Close() }()
 
-	err = c.CopyTo(context.Background(), filepath.Join(t.TempDir(), "f"), errReader{err: errors.New("source broke")}, 0)
+	err = c.CopyTo(context.Background(), filepath.Join(dst, "f"), errReader{err: errors.New("source broke")}, 0)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "read source")
 }
