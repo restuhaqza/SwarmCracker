@@ -75,6 +75,8 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 	// copy inside its jail, never to the file this test was handed.
 	disk := filepath.Join(scratch, "rootfs.ext4")
 	require.NoError(t, copySparse(rootfs, disk))
+	diskBefore, err := os.Stat(disk)
+	require.NoError(t, err)
 
 	launcher := snapshot.JailedLauncher{
 		ChrootBaseDir:    filepath.Join(scratch, "jails"),
@@ -144,6 +146,14 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 	savedMem := hardlink(t, memPath, filepath.Join(scratch, "vm.mem"))
 	savedDisk := hardlink(t, liveDisk, filepath.Join(scratch, "vm.rootfs.ext4"))
 
+	// Staging is a copy, so the guest wrote to the disk inside its jail and not to the
+	// file this test booted from. That is exactly why a jail-aware CreateSnapshot has
+	// to read the chroot's disk (SBX-022) rather than the path the caller passed.
+	diskAfter, err := os.Stat(disk)
+	require.NoError(t, err)
+	assert.True(t, diskBefore.ModTime().Equal(diskAfter.ModTime()),
+		"the guest must not write the caller's disk: the jail runs on its own copy")
+
 	srcPID := jailPID(t, launcher, srcID)
 	tStop := time.Now()
 	require.NoError(t, src.Stop(ctx))
@@ -189,10 +199,10 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 	t.Logf("restore: %s to a resumed guest as uid %d; uptime %.2fs -> %.2fs",
 		restoredTook.Round(time.Millisecond), restoreUID, beforeUptime, afterUptime)
 
+	// The uid comes from the process itself, not from the launcher's bookkeeping.
 	restoredUID := jailUID(t, launcher, restID)
 	assert.Equal(t, restoreUID, restoredUID, "the restored VMM runs as the uid it was asked for")
 	assert.NotEqual(t, srcUID, restoredUID, "the two instances never share a uid")
-	assert.NotEqual(t, echoUID(t, jailPID(t, launcher, restID)), srcUID)
 
 	restPID := jailPID(t, launcher, restID)
 	tRestStop := time.Now()
