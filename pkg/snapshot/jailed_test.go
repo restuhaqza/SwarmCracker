@@ -54,7 +54,30 @@ type fakeJail struct {
 	resumes []jailedResume
 	boots   []LaunchRequest
 
+	// owned records every "give this path to this uid" the launcher asked for, and
+	// ownErr is what that request answers.
+	owned  []jailOwnership
+	ownErr error
+
 	argvPath string
+}
+
+// jailOwnership is one staged path and the uid and gid it was handed to.
+type jailOwnership struct {
+	path string
+	uid  int
+	gid  int
+}
+
+// uidOf is the uid the launcher asked for the staged file that ends in suffix, or 0
+// when it asked for none.
+func (f *fakeJail) uidOf(suffix string) int {
+	for _, own := range f.owned {
+		if strings.HasSuffix(own.path, suffix) {
+			return own.uid
+		}
+	}
+	return 0
 }
 
 // install replaces the launcher's seams for one test and restores them afterwards.
@@ -65,12 +88,19 @@ func (f *fakeJail) install(t *testing.T) {
 	previousLoad := jailedLoadCheckpoint
 	previousResume := jailedResumeGuest
 	previousBoot := jailedBootGuest
+	previousOwn := jailOwn
 	t.Cleanup(func() {
 		jailedWaitForAPI = previousWait
 		jailedLoadCheckpoint = previousLoad
 		jailedResumeGuest = previousResume
 		jailedBootGuest = previousBoot
+		jailOwn = previousOwn
 	})
+
+	jailOwn = func(path string, uid, gid int) error {
+		f.owned = append(f.owned, jailOwnership{path: path, uid: uid, gid: gid})
+		return f.ownErr
+	}
 
 	jailedWaitForAPI = func(socketPath string, timeout time.Duration) error {
 		f.waited = append(f.waited, socketPath)
@@ -217,27 +247,15 @@ func needJailedRestoreRequest(t *testing.T, l JailedLauncher) LaunchRequest {
 	}
 }
 
-// requireJailHost skips a test that cannot place files inside a jail here.
-func requireJailHost(t *testing.T) {
+// requireJailPlatform skips a test on a platform without the jailer. Nothing else is
+// skipped: the launcher's ownership step is a seam, so staging, the jailer argv, a
+// fake jailer process and the whole teardown run for any user — which is what CI is.
+func requireJailPlatform(t *testing.T) {
 	t.Helper()
 
 	if goruntime.GOOS != "linux" {
 		t.Skip("the jailer is Linux-only")
 	}
-	if os.Geteuid() != 0 {
-		t.Skip("placing files inside a jail needs root (chown to the jail uid)")
-	}
-}
-
-// ownerUID is the uid a file's inode is owned by.
-func ownerUID(t *testing.T, path string) int {
-	t.Helper()
-
-	info, err := os.Stat(path)
-	require.NoError(t, err)
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	require.True(t, ok, "no inode metadata for %s", path)
-	return int(stat.Uid)
 }
 
 // TestJailedLauncherStagesTheCheckpointInsideTheJail pins what a restore puts in the
@@ -245,7 +263,7 @@ func ownerUID(t *testing.T, path string) int {
 // paths, owned by the jail uid, the API socket at its host path, and /snapshot/load
 // naming the chroot paths — never the host paths the caller passed.
 func TestJailedLauncherStagesTheCheckpointInsideTheJail(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -273,9 +291,12 @@ func TestJailedLauncherStagesTheCheckpointInsideTheJail(t *testing.T) {
 		"the kernel is read once and must not be writable")
 	assert.Equal(t, os.FileMode(0o600), modeOf(t, filepath.Join(jailRoot, "drives", "rootfs.ext4")))
 
-	launchedUID := ownerUID(t, filepath.Join(jailRoot, "drives", "rootfs.ext4"))
-	assert.Equal(t, 3000, launchedUID, "the staged disk belongs to the instance's uid, not to root")
-	assert.Equal(t, launchedUID, ownerUID(t, filepath.Join(jailRoot, "snapshot", "vm.mem")))
+	assert.Equal(t, 3000, fake.uidOf(filepath.Join("drives", "rootfs.ext4")),
+		"the staged disk is handed to the instance's uid, not to root")
+	assert.Equal(t, 3000, fake.uidOf(filepath.Join("snapshot", "vm.mem")))
+	assert.Equal(t, 3000, fake.uidOf(filepath.Join("kernel", "vmlinux")))
+	assert.Equal(t, 3000, fake.uidOf(filepath.Join("snapshot")),
+		"the directory holding the checkpoint is the instance's too")
 	assert.Equal(t, os.FileMode(0o700), modeOf(t, filepath.Join(jailRoot, "snapshot")),
 		"only the instance may traverse the directory that holds its checkpoint")
 
@@ -300,7 +321,7 @@ func TestJailedLauncherStagesTheCheckpointInsideTheJail(t *testing.T) {
 // stages only the kernel and the disk, asks Firecracker to boot them at their chroot
 // paths, and reports no checkpoint images.
 func TestJailedLauncherColdBootsInsideTheJail(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -458,7 +479,7 @@ func TestJailedLauncherFailsOnAPathRuleItsOwn(t *testing.T) {
 // that matter most — a lease kept after cleanup would exhaust the range, and a uid
 // released before cleanup would let a second instance join a live one.
 func TestJailedLauncherStopReleasesEverythingItHeld(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -475,8 +496,9 @@ func TestJailedLauncherStopReleasesEverythingItHeld(t *testing.T) {
 	other, err := launcher.Start(context.Background(), second)
 	require.NoError(t, err)
 
-	firstUID := ownerUID(t, filepath.Join(launcher.JailRoot(first.InstanceID), "root", "drives", "rootfs.ext4"))
-	secondUID := ownerUID(t, filepath.Join(launcher.JailRoot(second.InstanceID), "root", "drives", "rootfs.ext4"))
+	firstUID := fake.uidOf(filepath.Join(first.InstanceID, "root", "drives", "rootfs.ext4"))
+	secondUID := fake.uidOf(filepath.Join(second.InstanceID, "root", "drives", "rootfs.ext4"))
+	require.NotZero(t, firstUID)
 	assert.NotEqual(t, firstUID, secondUID, "two live instances must not share a uid")
 
 	pid := pidFromFake(t, fake, first.InstanceID)
@@ -496,14 +518,13 @@ func TestJailedLauncherStopReleasesEverythingItHeld(t *testing.T) {
 	launcher.JailerPath = fake.jailerScript(t, launcher, first.InstanceID)
 	relaunched, err := launcher.Start(context.Background(), first)
 	require.NoError(t, err, "the same id may be launched again after its teardown")
-	assert.Equal(t, firstUID,
-		ownerUID(t, filepath.Join(launcher.JailRoot(first.InstanceID), "root", "drives", "rootfs.ext4")),
+	assert.Equal(t, firstUID, fake.uidOf(filepath.Join(first.InstanceID, "root", "drives", "rootfs.ext4")),
 		"cleanup finished, so the uid may be reused")
 
 	// A stale handle must not touch the instance that now owns the id.
 	require.NoError(t, launched.Stop(context.Background()))
 	assert.FileExists(t, relaunched.APISocket, "a retried stop must not remove a newer instance's socket")
-	assert.Equal(t, secondUID, ownerUID(t, filepath.Join(launcher.JailRoot(second.InstanceID), "root", "drives", "rootfs.ext4")))
+	assert.Equal(t, secondUID, fake.uidOf(filepath.Join(second.InstanceID, "root", "drives", "rootfs.ext4")))
 
 	require.NoError(t, other.Stop(context.Background()))
 	require.NoError(t, relaunched.Stop(context.Background()))
@@ -514,7 +535,7 @@ func TestJailedLauncherStopReleasesEverythingItHeld(t *testing.T) {
 // has to end the process, remove the socket, cgroup and jail, and release the uid —
 // and the next launch under the same ID must not inherit the failure.
 func TestJailedLauncherFailedStartLeavesNothingBehind(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -547,7 +568,7 @@ func TestJailedLauncherFailedStartLeavesNothingBehind(t *testing.T) {
 // directory safe to remove: a jail whose VMM is still running is not a leftover, and
 // launching over it would delete a live instance's chroot.
 func TestJailedLauncherRefusesToLaunchOverALiveID(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -571,7 +592,7 @@ func TestJailedLauncherRefusesToLaunchOverALiveID(t *testing.T) {
 // path: a VMM that died on its own leaves a socket, a cgroup and a jail behind, and
 // a stop after that is a cleanup, not an error.
 func TestJailedLauncherStopsAnInstanceWhoseVMMAlreadyExited(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -785,7 +806,7 @@ func TestJailedLauncherRefusesToStageAMissingFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			requireJailHost(t)
+			requireJailPlatform(t)
 
 			launcher, fake := jailedTestLauncher(t)
 			fake.install(t)
@@ -807,7 +828,7 @@ func TestJailedLauncherRefusesToStageAMissingFile(t *testing.T) {
 // input: the path exists, so it is not "missing", but it is not a file either. The
 // copy refuses it rather than streaming a directory into the jail.
 func TestJailedLauncherRefusesADirectoryAsAnImage(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -868,7 +889,7 @@ func TestJailedLauncherRefusesAJailItCannotInspect(t *testing.T) {
 // is an error and not "no pid, so the jail is stale": deleting this jail could delete a
 // live instance's disk.
 func TestJailedLauncherRefusesAJailWhosePIDFileIsUnreadable(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -889,7 +910,7 @@ func TestJailedLauncherRefusesAJailWhosePIDFileIsUnreadable(t *testing.T) {
 // a VMM that died is a leftover, and the next launch under the same id takes it over
 // instead of failing on the leftover's socket and /dev entries.
 func TestJailedLauncherReplacesAJailWhoseVMMIsGone(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -935,7 +956,7 @@ func TestJailedLauncherRefusesACgroupThatStillHasProcesses(t *testing.T) {
 // there, but the kernel cannot execute it. Nothing is left behind, because Start
 // returns no handle for it.
 func TestJailedLauncherReportsAnUnstartableJailer(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -956,7 +977,7 @@ func TestJailedLauncherReportsAnUnstartableJailer(t *testing.T) {
 // requirement: a caller that asked for logs and cannot have them is told, rather than
 // getting an instance whose output nobody can read.
 func TestJailedLauncherReportsAnUnopenableConsole(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -976,7 +997,7 @@ func TestJailedLauncherReportsAnUnopenableConsole(t *testing.T) {
 // checkpoint loaded but the guest never ran, so the instance is not launched and its
 // jail is torn down.
 func TestJailedLauncherReportsAFailedResume(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -994,7 +1015,7 @@ func TestJailedLauncherReportsAFailedResume(t *testing.T) {
 
 // TestJailedLauncherReportsAFailedColdBoot is the same for the template path.
 func TestJailedLauncherReportsAFailedColdBoot(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -1023,7 +1044,7 @@ func TestJailedLauncherReportsAFailedColdBoot(t *testing.T) {
 // the only handles to a VM that is still running, and the uid must stay leased. The
 // retry, once the process is gone, then finishes the job.
 func TestJailedLauncherKeepsItsHandlesWhileTheVMWillNotDie(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -1071,7 +1092,7 @@ func TestJailedLauncherKeepsItsHandlesWhileTheVMWillNotDie(t *testing.T) {
 // why: its log is inside the jail, which the teardown deletes, so it is copied out
 // first.
 func TestJailedLauncherKeepsTheVMMsLog(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -1097,7 +1118,7 @@ func TestJailedLauncherKeepsTheVMMsLog(t *testing.T) {
 // removal that failed is reported once, and a retry does not touch the paths again —
 // they may belong to a newer instance by then.
 func TestJailedLauncherReportsASocketItCannotRemove(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -1124,7 +1145,7 @@ func TestJailedLauncherReportsASocketItCannotRemove(t *testing.T) {
 // has not released yet becomes removable a moment later, and the teardown waits rather
 // than leaking one directory per instance.
 func TestJailedLauncherWaitsOutACgroupBeforeGivingUp(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -1150,7 +1171,7 @@ func TestJailedLauncherWaitsOutACgroupBeforeGivingUp(t *testing.T) {
 // of the launch: if the socket cannot be created the guest would have no input, so the
 // launch fails before the VMM starts and stages nothing.
 func TestJailedLauncherReportsAnUncreatableConsoleSocket(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -1172,7 +1193,7 @@ func TestJailedLauncherReportsAnUncreatableConsoleSocket(t *testing.T) {
 // launch fails and its own teardown also fails, the caller must be told what stopped the
 // launch, not what the cleanup tripped over. The teardown's complaint goes to the log.
 func TestJailedLauncherReportsTheFailureThatStoppedIt(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -1209,7 +1230,7 @@ func TestJailedLauncherReportsTheFailureThatStoppedIt(t *testing.T) {
 // cgroup that still has something in it is reported after the settle window, while the
 // instance itself is still taken down (the process is gone, so the uid is free).
 func TestJailedLauncherReportsACgroupItCannotRemove(t *testing.T) {
-	requireJailHost(t)
+	requireJailPlatform(t)
 
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
@@ -1231,4 +1252,60 @@ func TestJailedLauncherReportsACgroupItCannotRemove(t *testing.T) {
 
 	require.NoError(t, os.RemoveAll(cgroupDir))
 	require.NoError(t, launched.Stop(context.Background()), "the retry has nothing left to do")
+}
+
+// TestJailedLauncherRefusesAFileItCannotHandOver pins the last step of staging as a
+// failure a caller can see: a file the jail uid does not own is a file the VMM cannot
+// open, so the launch stops instead of starting a VMM that will fail on its own disk.
+// The ownership seam is what makes this reachable without root.
+func TestJailedLauncherRefusesAFileItCannotHandOver(t *testing.T) {
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	fake.ownErr = syscall.EPERM
+	req := needJailedRestoreRequest(t, launcher)
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "give")
+	assert.Contains(t, err.Error(), "to uid 3000")
+	assert.Empty(t, fake.waited, "nothing may be spawned while the files are not the instance's")
+	assert.NoDirExists(t, launcher.JailRoot(req.InstanceID))
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherRefusesAReadFailureOnTheJailPIDFile pins the other way the pid file
+// can be unusable: it is not a file. Reading it cannot answer "is this jail live", and
+// the jail is left for an operator rather than deleted.
+func TestJailedLauncherRefusesAReadFailureOnTheJailPIDFile(t *testing.T) {
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	pidFile := filepath.Join(launcher.JailRoot(req.InstanceID), "root", "firecracker.pid")
+	require.NoError(t, os.MkdirAll(pidFile, 0o700))
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read the jail's pid file")
+	assert.DirExists(t, pidFile)
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherClosesTheConsoleWhenTheJailerWillNotStart pins that the console
+// socket does not outlive a launch that never produced a VMM: a socket nobody serves
+// would answer attach with a guest that does not exist.
+func TestJailedLauncherClosesTheConsoleWhenTheJailerWillNotStart(t *testing.T) {
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	broken := filepath.Join(fake.dir, "jailer-broken")
+	require.NoError(t, os.WriteFile(broken, []byte("#!/nonexistent/interpreter\n"), 0o755))
+	launcher.JailerPath = broken
+	launcher.ConsoleSocketDir = filepath.Join(fake.dir, "console")
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start jailer")
+	assert.NoFileExists(t, filepath.Join(launcher.ConsoleSocketDir, req.InstanceID+".console.sock"))
 }

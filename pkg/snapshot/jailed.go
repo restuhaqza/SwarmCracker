@@ -116,7 +116,13 @@ const (
 // staged files and their ownership, the jailer argv, the uid lease, and the teardown.
 // Production never replaces them.
 var (
-	jailedLookPath       = exec.LookPath
+	jailedLookPath = exec.LookPath
+	// jailOwn gives a staged file to the instance's uid. It is a seam for the same
+	// reason the API calls are: a unit test cannot chown to another uid without root,
+	// and CI runs unprivileged with no jailer, so a test records the ownership the
+	// launcher asks for instead of applying it. Production never replaces it, and the
+	// KVM integration test still proves the real ownership against /proc.
+	jailOwn              = os.Chown
 	jailedWaitForAPI     = waitForSocket
 	jailedLoadCheckpoint = loadJailedCheckpoint
 	jailedResumeGuest    = resumeJailedGuest
@@ -685,7 +691,7 @@ func (j *jailedInstance) place(ctx context.Context, file jailedFile) error {
 	if err := os.Chmod(dest, file.mode); err != nil {
 		return fmt.Errorf("mode %s in the jail: %w", file.dest, err)
 	}
-	if err := os.Chown(dest, j.uid, j.gid); err != nil {
+	if err := jailOwn(dest, j.uid, j.gid); err != nil {
 		return fmt.Errorf("give %s in the jail to uid %d: %w", file.dest, j.uid, err)
 	}
 	return nil
@@ -704,7 +710,7 @@ func (j *jailedInstance) mkdir(chrootDir string) error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return fmt.Errorf("mode %s in the jail: %w", chrootDir, err)
 	}
-	if err := os.Chown(dir, j.uid, j.gid); err != nil {
+	if err := jailOwn(dir, j.uid, j.gid); err != nil {
 		return fmt.Errorf("give %s in the jail to uid %d: %w", chrootDir, j.uid, err)
 	}
 	return nil
