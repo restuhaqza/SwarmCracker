@@ -212,7 +212,8 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 	// From here on there is a leased uid and possibly a staged jail, and Start
 	// returns no handle for a failed launch, so every step that fails has to undo its
 	// own work through the same teardown Stop uses.
-	if err := j.prepare(ctx); err != nil {
+	diskCopy, err := j.prepare(ctx)
+	if err != nil {
 		return Launched{}, j.fail(err)
 	}
 	if err := j.spawn(); err != nil {
@@ -230,6 +231,7 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		Str("mode", string(req.Mode)).
 		Int("jail_uid", j.uid).
 		Str("jail_root", j.jailRoot).
+		Str("disk_copy", string(diskCopy)).
 		Str("socket", j.hostSocket).
 		Msg("Instance launched in a jail")
 
@@ -242,6 +244,7 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		// device configuration supplies it.
 		VsockPath:   "",
 		ConsolePath: j.consolePath,
+		DiskCopy:    diskCopy,
 		Stop:        j.stop,
 	}
 	if req.Mode != ModeCold {
@@ -567,13 +570,14 @@ func netnsPath(netns string) string {
 	return filepath.Join("/var/run/netns", netns)
 }
 
-// prepare makes the jail empty and stages the files the instance opens.
-func (j *jailedInstance) prepare(ctx context.Context) error {
+// prepare makes the jail empty and stages the files the instance opens, reporting
+// how the instance's disk was copied.
+func (j *jailedInstance) prepare(ctx context.Context) (CopyMode, error) {
 	if err := j.clearStaleJail(); err != nil {
-		return err
+		return CopyNone, err
 	}
 	if err := j.clearStaleCgroup(); err != nil {
-		return err
+		return CopyNone, err
 	}
 
 	// From here the tree at jailRoot is this launch's: the stale one is gone, so a
@@ -657,11 +661,12 @@ func (j *jailedInstance) cgroupPath() string {
 }
 
 // stage copies the instance's kernel, disk and checkpoint images into the jail,
-// creating the directories they live in and giving them to the jail uid.
+// creating the directories they live in and giving them to the jail uid. It reports
+// how the disk — the one file every instance pays for — was copied.
 //
 // The modes are the ones the VMM needs and nothing more: the kernel is read once, so
 // it is not writable, and everything else is the jail uid's alone.
-func (j *jailedInstance) stage(ctx context.Context) error {
+func (j *jailedInstance) stage(ctx context.Context) (CopyMode, error) {
 	files := []jailedFile{
 		{src: j.kernelSource, dest: jailedKernelPath, mode: 0o500},
 		{src: j.rootfsSource, dest: jailedRootfsPath, mode: 0o600},
@@ -684,16 +689,21 @@ func (j *jailedInstance) stage(ctx context.Context) error {
 	}
 	for _, dir := range dirs {
 		if err := j.mkdir(dir); err != nil {
-			return err
+			return CopyNone, err
 		}
 	}
 
+	diskCopy := CopyNone
 	for _, file := range files {
-		if err := j.place(ctx, file); err != nil {
-			return err
+		mode, err := j.place(ctx, file)
+		if err != nil {
+			return CopyNone, err
+		}
+		if file.dest == jailedRootfsPath {
+			diskCopy = mode
 		}
 	}
-	return nil
+	return diskCopy, nil
 }
 
 // jailedFile is one file a launch stages: where the caller's copy is, where the
@@ -704,22 +714,37 @@ type jailedFile struct {
 	mode os.FileMode
 }
 
-// place copies one source file to its chroot path and hands it to the jail uid.
-func (j *jailedInstance) place(ctx context.Context, file jailedFile) error {
+// place copies one source file to its chroot path, hands it to the jail uid, and
+// reports how the copy was made.
+//
+// The destination is a file of the instance's own — never the caller's, and never
+// another instance's — and a filesystem that cannot reflink makes that cost the
+// source's size. That is worth saying out loud once per instance, at the moment it
+// happens, rather than as a node that quietly runs out of disk: the warning below is
+// the visibility SBX-023 asks for.
+func (j *jailedInstance) place(ctx context.Context, file jailedFile) (CopyMode, error) {
 	dest := chrootPath(j.chroot, file.dest)
 
-	if err := copyFile(ctx, file.src, dest); err != nil {
-		return fmt.Errorf("stage %s at %s: %w", file.src, file.dest, err)
+	mode, err := copyFile(ctx, file.src, dest)
+	if err != nil {
+		return CopyNone, fmt.Errorf("stage %s at %s: %w", file.src, file.dest, err)
+	}
+	if file.dest == jailedRootfsPath && mode != CopyReflink {
+		log.Warn().
+			Str("instance_id", j.instanceID).
+			Str("source", file.src).
+			Str("copy", string(mode)).
+			Msg("The instance's disk is a copy, not a reflink: this filesystem cannot share extents, so every instance costs the disk's data in space")
 	}
 	// copyFile keeps the source's permission bits; the jail's files are the jail
 	// uid's, with only the access the VMM needs.
 	if err := os.Chmod(dest, file.mode); err != nil {
-		return fmt.Errorf("mode %s in the jail: %w", file.dest, err)
+		return CopyNone, fmt.Errorf("mode %s in the jail: %w", file.dest, err)
 	}
 	if err := jailOwn(dest, j.uid, j.gid); err != nil {
-		return fmt.Errorf("give %s in the jail to uid %d: %w", file.dest, j.uid, err)
+		return CopyNone, fmt.Errorf("give %s in the jail to uid %d: %w", file.dest, j.uid, err)
 	}
-	return nil
+	return mode, nil
 }
 
 // mkdir creates one directory inside the jail, owned by the jail uid and closed to

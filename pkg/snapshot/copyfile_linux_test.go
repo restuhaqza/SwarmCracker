@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 // TestCopyDataExtentsKeepsHoles exercises the fallback that runs on a Linux
@@ -103,10 +104,55 @@ func TestCopyFileRemovesADestinationThatCannotBeWritten(t *testing.T) {
 	dst := filepath.Join(dir, "copy.ext4")
 	require.NoError(t, os.Symlink(devFull, dst))
 
-	err := copyFile(context.Background(), src, dst)
+	_, err := copyFile(context.Background(), src, dst)
 	require.Error(t, err)
 
 	_, statErr := os.Stat(dst)
 	assert.True(t, os.IsNotExist(statErr), "a destination that cannot be written must be removed")
 	require.FileExists(t, devFull, "the copy must never remove the device it was pointed at")
+}
+
+// TestCopyFileReportsHowItCopied pins that the mechanism is reported rather than
+// left to be guessed: on a filesystem that can reflink the copy says so, and on one
+// that cannot it names the copy that costs disk instead of passing for a cheap one.
+// The expectation comes from a reflink this test makes itself, not from copyFile.
+func TestCopyFileReportsHowItCopied(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "task.ext4")
+	dst := filepath.Join(dir, "copy.ext4")
+	content := testDiskContent()
+	require.NoError(t, os.WriteFile(src, content, 0o600))
+
+	mode, err := copyFile(context.Background(), src, dst)
+	require.NoError(t, err)
+	require.NotEqual(t, CopyNone, mode, "a copy must say how it was made")
+
+	copied, err := os.ReadFile(dst)
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(content, copied))
+
+	if filesystemReflinks(t, dir) {
+		assert.Equal(t, CopyReflink, mode, "a filesystem that can reflink must be used for one")
+		return
+	}
+	assert.Contains(t, []CopyMode{CopySparse, CopyFull}, mode,
+		"without reflink the copy is a real one, and it must say which")
+}
+
+// filesystemReflinks reports whether dir's filesystem supports FICLONE. It asks the
+// filesystem directly, so the expectation in TestCopyFileReportsHowItCopied does not
+// come from the code it checks.
+func filesystemReflinks(t *testing.T, dir string) bool {
+	t.Helper()
+
+	src, err := os.OpenFile(filepath.Join(dir, "probe-src"), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	defer src.Close()
+	require.NoError(t, src.Truncate(4096))
+
+	dst, err := os.OpenFile(filepath.Join(dir, "probe-dst"), os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
+	require.NoError(t, err)
+	defer dst.Close()
+
+	return unix.IoctlSetInt(int(dst.Fd()), unix.FICLONE, int(src.Fd())) == nil
 }
