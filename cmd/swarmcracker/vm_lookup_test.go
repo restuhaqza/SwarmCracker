@@ -29,7 +29,7 @@ func TestEnrichVMs_ReadsDaemonMetadata(t *testing.T) {
 	}
 
 	vm := &runtime.VMState{ID: "svc-task-1", Status: "running"}
-	enrichVMs([]*runtime.VMState{vm})
+	enrichVMs([]*runtime.VMState{vm}, nil)
 
 	if vm.NetworkID != "net-1" {
 		t.Errorf("NetworkID = %q, want %q", vm.NetworkID, "net-1")
@@ -63,7 +63,7 @@ func TestEnrichVMs_ExistingIPWins(t *testing.T) {
 		NetworkID:   "network-1",
 		IPAddresses: []string{"10.0.0.2/24"},
 	}
-	enrichVMs([]*runtime.VMState{vm})
+	enrichVMs([]*runtime.VMState{vm}, nil)
 
 	if len(vm.IPAddresses) != 1 || vm.IPAddresses[0] != "10.0.0.2/24" {
 		t.Errorf("existing IP should win, got %v", vm.IPAddresses)

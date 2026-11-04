@@ -9,7 +9,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
-	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -65,17 +64,10 @@ func runList() error {
 		fmt.Printf("Reconciled %d stale VM state(s)\n", reconciledCount)
 	}
 
-	// Discover VMs started by the daemon for services/tasks. Those live in
-	// SwarmKit, not in the CLI state file, so they would otherwise be invisible.
-	running, err := runtime.DiscoverRunningVMs(vmSocketDir)
-	if err != nil {
-		log.Warn().Err(err).Str("socket_dir", vmSocketDir).Msg("Failed to discover running VMs")
-	}
-
-	// Merge state entries with discovered VMs (state wins on conflict), then
-	// enrich the discovered ones with PID/image/service metadata.
-	vms := runtime.MergeVMs(stateMgr.List(), running)
-	enrichVMs(vms)
+	// Merge the CLI state file, the node's instance registry and the VMs the
+	// socket scan finds (see mergedVMs), then enrich them with PID, image,
+	// service and the daemon's runtime metadata.
+	vms := mergedVMs(stateMgr)
 
 	// Filter VMs based on --all flag
 	var filteredVMs []*runtime.VMState
@@ -103,10 +95,12 @@ func outputTable(vms []*runtime.VMState) error {
 		return nil
 	}
 
-	// Print header
-	fmt.Printf("%-20s %-12s %-10s %-14s %-25s %-8s %-12s\n",
-		"ID", "STATUS", "HEALTH", "SERVICE", "IMAGE", "PID", "STARTED")
-	fmt.Println(strings.Repeat("-", 107))
+	// Print header. SOURCE is part of the table on purpose: a VM the node's
+	// registry describes and one found only by its socket are different facts,
+	// and the second is the fallback that is going away.
+	fmt.Printf("%-20s %-12s %-9s %-10s %-14s %-25s %-8s %-12s\n",
+		"ID", "STATUS", "SOURCE", "HEALTH", "SERVICE", "IMAGE", "PID", "STARTED")
+	fmt.Println(strings.Repeat("-", 116))
 
 	// Print each VM
 	for _, vm := range vms {
@@ -121,9 +115,10 @@ func outputTable(vms []*runtime.VMState) error {
 		}
 
 		// Print row
-		fmt.Printf("%-20s %-12s %-10s %-14s %-25s %-8s %-12s\n",
+		fmt.Printf("%-20s %-12s %-9s %-10s %-14s %-25s %-8s %-12s\n",
 			vm.ID,
 			formatStatus(vm.Status),
+			formatSource(vm.Source),
 			formatHealthColumn(vm.Health),
 			service,
 			image,
@@ -177,6 +172,21 @@ func formatStatus(status string) string {
 		return "Error   " + "✗"
 	default:
 		return status
+	}
+}
+
+// formatSource renders the SOURCE column: which source named this VM's host
+// paths. "registry" is the record the node wrote; "derived" is the socket-name
+// fallback for a VM started before records existed. A row that knows neither (a
+// state entry nobody looked up) says so rather than guessing.
+func formatSource(source string) string {
+	switch source {
+	case runtime.VMSourceRegistry, runtime.VMSourceDerived:
+		return source
+	case "":
+		return "-"
+	default:
+		return source
 	}
 }
 

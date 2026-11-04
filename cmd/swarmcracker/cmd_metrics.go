@@ -108,12 +108,7 @@ func collectAndDisplay(collector *metrics.Collector, stateMgr *runtime.StateMana
 	// Merge CLI-managed VMs with VMs discovered on the host. Service/daemon
 	// tasks live in SwarmKit, not the CLI state file, so without discovery they
 	// would be invisible here.
-	running, derr := runtime.DiscoverRunningVMs(vmSocketDir)
-	if derr != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to discover running VMs: %v\n", derr)
-	}
-	vms := runtime.MergeVMs(stateMgr.List(), running)
-	enrichVMs(vms)
+	vms := mergedVMs(stateMgr)
 
 	// Filter by task ID if specified
 	var targetVMs []*runtime.VMState
