@@ -4,10 +4,11 @@ package broker
 // the internal broker.
 //
 // Health has no new source of truth. The executor already publishes every task's
-// live healthcheck state in the sidecar it writes next to the VM socket
-// (<socketDir>/<taskID>.net.json), so the node handler reads that file. The
-// manager therefore never dials a node's loopback health endpoint and needs no
-// second credential or port.
+// live healthcheck state in a sidecar it writes beside the VM socket, and the
+// node's instance record names that file (Instance.Metadata), so the handler asks
+// the record where it is instead of rebuilding the name. The manager therefore
+// never dials a node's loopback health endpoint and needs no second credential or
+// port.
 //
 // The two "no health" answers are deliberately distinct:
 //   - 204: the task declares no healthcheck, or the daemon has not probed yet.
@@ -23,7 +24,6 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	v1 "github.com/restuhaqza/swarmcracker/pkg/api/v1"
@@ -64,20 +64,23 @@ func serveHealth(task Task, w http.ResponseWriter) {
 // status it maps to: 200 with a document, 204 for "nothing published", or 404
 // for a task with no VM.
 func readTaskHealth(task Task) (*v1.TaskHealth, int, *output.Error) {
-	if task.ID == "" || task.SocketPath == "" {
-		// Log-only or exited: the sidecar lives next to the VM socket, so there
-		// is no directory to read and no health to serve.
+	// The sidecar's path comes from the task, i.e. from the node's record when it
+	// has one: the daemon that publishes the file is the only thing that knows
+	// where it is, and a VM whose sidecar is not named after its ID cannot have
+	// that path rebuilt here. An empty path means there is no VM to publish
+	// anything for (log-only, or already exited).
+	metadataPath := task.metadataPath()
+	if metadataPath == "" {
 		return nil, http.StatusNotFound, output.NewErrorf(output.CodeNotFound,
 			"task %q has no health", task.ID)
 	}
 
-	dir := filepath.Dir(task.SocketPath)
-	metadata, ok := scruntime.ReadVMMetadata(dir, task.ID)
+	metadata, ok := scruntime.ReadVMMetadataFile(metadataPath)
 	if !ok {
-		// ReadVMMetadata folds "missing" and "unreadable" into one answer. A node
-		// must tell them apart: a malformed or absent sidecar is 204, while an
+		// Reading folds "missing" and "unreadable" into one answer. A node must
+		// tell them apart: a malformed or absent sidecar is 204, while an
 		// unreadable one is a retryable failure.
-		if err := sidecarReadError(dir, task.ID); err != nil {
+		if err := sidecarReadError(metadataPath); err != nil {
 			return nil, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
 				"task %q health is unavailable", task.ID)
 		}
@@ -95,10 +98,10 @@ func readTaskHealth(task Task) (*v1.TaskHealth, int, *output.Error) {
 // sidecarReadError reports whether the task's sidecar exists but cannot be read.
 // An absent file is not an error; a readable-but-malformed one is not either
 // (the runtime reader degrades it to "no health yet" on purpose).
-func sidecarReadError(dir, taskID string) error {
-	//nolint:gosec // G304: dir comes from the task source's socket path and the
-	// task ID was validated by SocketDirSource before the handler ran.
-	_, err := os.ReadFile(filepath.Join(dir, taskID+scruntime.VMMetadataSuffix))
+func sidecarReadError(metadataPath string) error {
+	//nolint:gosec // G304: the path comes from the task source's record (or its
+	// socket path), not from the request.
+	_, err := os.ReadFile(metadataPath)
 	if err == nil || errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}

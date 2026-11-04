@@ -119,8 +119,21 @@ func ReadVMMetadata(dir, taskID string) (*VMMetadata, bool) {
 	if strings.TrimSpace(dir) == "" || strings.TrimSpace(taskID) == "" {
 		return nil, false
 	}
+	return ReadVMMetadataFile(metadataPath(dir, taskID))
+}
 
-	data, err := os.ReadFile(metadataPath(dir, taskID))
+// ReadVMMetadataFile reads the runtime metadata at an explicit path. It is the
+// reader for a caller that was told where the sidecar is — the node's instance
+// record names it — rather than deriving the name from a directory and a task
+// ID. Like ReadVMMetadata it returns (nil, false) when the file is missing or
+// malformed, so "no metadata" never fails a request.
+func ReadVMMetadataFile(path string) (*VMMetadata, bool) {
+	if strings.TrimSpace(path) == "" {
+		return nil, false
+	}
+
+	//nolint:gosec // G304: the path is the caller's record of where the sidecar is.
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, false
 	}

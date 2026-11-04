@@ -25,6 +25,7 @@ func instanceFixture(id string, pid int) Instance {
 		APISocket: "/var/run/firecracker/" + id + ".sock",
 		VsockPath: "/var/run/firecracker/" + id + ".vsock",
 		Console:   "/var/log/firecracker/" + id + ".console.sock",
+		Metadata:  "/var/run/firecracker/" + id + ".net.json",
 		NetNS:     "/var/run/netns/sbx_" + id,
 		TAP:       "tap-0a1b2c3d-0",
 		GuestIP:   "10.62.0.2",
@@ -60,6 +61,7 @@ func TestInstanceValidate(t *testing.T) {
 				i.OwnerID = "service-9"
 				i.VsockPath = ""
 				i.Console = ""
+				i.Metadata = ""
 				i.NetNS = ""
 				i.TAP = ""
 				i.GuestIP = ""
@@ -85,6 +87,7 @@ func TestInstanceValidate(t *testing.T) {
 		{name: "a relative api socket", mutate: func(i *Instance) { i.APISocket = "run/vm.sock" }, want: "apiSocket"},
 		{name: "a relative vsock path", mutate: func(i *Instance) { i.VsockPath = "run/vm.vsock" }, want: "vsockPath"},
 		{name: "a relative console", mutate: func(i *Instance) { i.Console = "vm.console.sock" }, want: "console"},
+		{name: "a relative metadata path", mutate: func(i *Instance) { i.Metadata = "vm.net.json" }, want: "metadata"},
 		{name: "a relative netns", mutate: func(i *Instance) { i.NetNS = "sbx_1" }, want: "netns"},
 		{name: "a negative jail uid", mutate: func(i *Instance) { i.JailUID = -1 }, want: "jailUid"},
 		{name: "no boot time", mutate: func(i *Instance) { i.Booted = time.Time{} }, want: "booted is zero"},

@@ -190,3 +190,49 @@ func TestHealthHandlerReadErrorIs503(t *testing.T) {
 	require.NotContains(t, rec.Body.String(), scruntime.VMMetadataSuffix,
 		"the node must not leak its metadata file name")
 }
+
+// TestHealthReadsTheSidecarTheRecordNames pins SBX-013 for health: the sidecar's
+// path comes from the node's instance record, so a VM whose metadata file is not
+// named after its task ID — a sandbox, a pooled VM, a VM whose sidecar the daemon
+// put somewhere else — is still read. The socket directory holds no sidecar at
+// all, which is what makes the test fail if the handler rebuilds the name.
+func TestHealthReadsTheSidecarTheRecordNames(t *testing.T) {
+	socketDir := t.TempDir()
+	metadataDir := t.TempDir()
+
+	publishHealth(t, metadataDir, "sandbox-1", &scruntime.VMHealth{
+		State:     scruntime.HealthHealthy,
+		Command:   "test -f /ready",
+		UpdatedAt: time.Now(),
+	})
+
+	task := Task{
+		ID:           "sandbox-1",
+		SocketPath:   filepath.Join(socketDir, "sandbox-1.sock"),
+		Running:      true,
+		MetadataPath: filepath.Join(metadataDir, "sandbox-1"+scruntime.VMMetadataSuffix),
+	}
+
+	rec := serveHealthRequest(task)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var got v1.TaskHealth
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, scruntime.HealthHealthy, got.Status)
+	require.Equal(t, "test -f /ready", got.Command)
+}
+
+// TestHealthFallsBackToTheSidecarBesideTheSocket is the other half of the rule: a
+// task with no record has no path to be told, so the derivation still answers —
+// the one-release fallback, unchanged.
+func TestHealthFallsBackToTheSidecarBesideTheSocket(t *testing.T) {
+	dir := t.TempDir()
+	publishHealth(t, dir, "task-1", &scruntime.VMHealth{State: scruntime.HealthFailing})
+
+	rec := serveHealthRequest(runningTask(dir))
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	var got v1.TaskHealth
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+	require.Equal(t, scruntime.HealthFailing, got.Status)
+}

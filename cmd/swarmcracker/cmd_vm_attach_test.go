@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -79,8 +82,64 @@ func TestVMAttachWithoutHostStaysLocal(t *testing.T) {
 
 	err = cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no running VMs found under "+dir)
+	assert.Contains(t, err.Error(), "no VM console found under "+dir)
 	assert.Contains(t, err.Error(), filepath.Base(dir))
+}
+
+// TestVMAttachResolvesARecordedConsole pins the registry path end to end: with an
+// empty socket directory and a record that names the console socket, `vm attach`
+// dials the recorded path. The console server here is a bare listener, because
+// what is under test is which socket the command reached — not the guest.
+func TestVMAttachResolvesARecordedConsole(t *testing.T) {
+	resetAPIFlags(t)
+
+	socketDir := t.TempDir()
+	consoleDir := t.TempDir()
+	consolePath := filepath.Join(consoleDir, "sbx-1.console.sock")
+
+	listener, err := net.Listen("unix", consolePath)
+	require.NoError(t, err)
+	defer func() { _ = listener.Close() }()
+
+	stateDir := t.TempDir()
+	t.Setenv("SWARM_STATE_DIR", stateDir)
+	store, err := vminstance.NewStore(vminstance.Config{Dir: vminstance.Dir(stateDir)})
+	require.NoError(t, err)
+	require.NoError(t, store.Put(vminstance.Instance{
+		ID:        "sbx-1",
+		Kind:      vminstance.KindTask,
+		PID:       os.Getpid(),
+		APISocket: filepath.Join(socketDir, "sbx-1.sock"),
+		Console:   consolePath,
+		Booted:    time.Now().UTC(),
+	}))
+
+	// The console answers one line and closes, so the session ends by itself.
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		_, _ = conn.Write([]byte("hello from the recorded console\n"))
+		_ = conn.Close()
+	}()
+
+	// attachToVM owns stdin and stdout (a terminal in production), so the test
+	// hands it files: an empty stdin that reaches EOF at once, and a file to read
+	// the console's bytes back from.
+	in, err := os.Open(os.DevNull)
+	require.NoError(t, err)
+	defer func() { _ = in.Close() }()
+
+	out, err := os.CreateTemp(t.TempDir(), "console-")
+	require.NoError(t, err)
+	defer func() { _ = out.Close() }()
+
+	require.NoError(t, attachToVM(context.Background(), socketDir, "sbx-", in, out))
+
+	written, err := os.ReadFile(out.Name())
+	require.NoError(t, err)
+	assert.Equal(t, "hello from the recorded console\n", string(written))
 }
 
 // TestVMAttachIsRemoteCapable proves --host is deliberately allowed for

@@ -225,6 +225,29 @@ func restoredVMID(target *snapshot.SnapshotInfo, socketPath string) string {
 	return target.TaskID
 }
 
+// restoreTaskVM is the one call the restore command makes into pkg/snapshot. It is
+// a variable only so a test can prove which console path the command hands the
+// restore; production never replaces it.
+//
+// The console path is the reason this seam exists at all: a restore that is given
+// none starts Firecracker with its serial output detached, so the restored VM has
+// no logs to read and `vm logs` answers not-found for a VM that is running.
+var restoreTaskVM = func(
+	ctx context.Context, mgr *snapshot.Manager, target *snapshot.SnapshotInfo,
+	socketPath, consolePath string,
+) error {
+	return mgr.RestoreFromSnapshotWithLog(ctx, target, socketPath, consolePath)
+}
+
+// restoreConsolePath is where a CLI restore captures the restored VM's serial
+// console: <logDir>/<vm id>.log, the file `vm logs` reads and the same shape the
+// daemon's restore uses (pkg/swarmkit's vmConsolePath). It is computed here, once,
+// and handed to both the restore and the state entry that follows it, so the file
+// the VM writes and the file `vm logs` opens cannot disagree.
+func restoreConsolePath(logDir, vmID string) string {
+	return filepath.Join(logDir, vmID+".log")
+}
+
 func newSnapshotRestoreCommand() *cobra.Command {
 	var (
 		socketPath string
@@ -315,19 +338,36 @@ Example:
 				}
 			}
 
-			ctx, cancel := snapshotOperationContext(timeout)
-			defer cancel()
-
-			if err := mgr.RestoreFromSnapshot(ctx, target, socketPath); err != nil {
-				return fmt.Errorf("failed to restore snapshot: %w", err)
-			}
-
 			// Register the restored VM so it can be listed, stopped, and have
 			// its logs viewed like any other CLI-managed VM. Its identity is the
 			// task's: the socket's name is that task's ID, and `--socket` only
 			// decides where that ID's socket lives.
 			restoredID := restoredVMID(target, socketPath)
-			if stateMgr, smErr := runtime.NewStateManager(""); smErr == nil {
+
+			// The VM's console is captured from its first byte, so the path is
+			// decided before the process exists: a console opened after the fact
+			// would miss the boot output `vm logs` is read for. A state manager
+			// that cannot be opened still leaves a log directory (the default one),
+			// because losing the console over a state-file problem would be the
+			// bug this path fixes.
+			stateMgr, stateErr := runtime.NewStateManager("")
+			if stateErr != nil {
+				log.Warn().Err(stateErr).Msg("Failed to open the VM state file; the restore continues and only its console is kept")
+			}
+			logDir := runtime.DefaultLogDir()
+			if stateMgr != nil {
+				logDir = stateMgr.GetLogDir()
+			}
+			consolePath := restoreConsolePath(logDir, restoredID)
+
+			ctx, cancel := snapshotOperationContext(timeout)
+			defer cancel()
+
+			if err := restoreTaskVM(ctx, mgr, target, socketPath, consolePath); err != nil {
+				return fmt.Errorf("failed to restore snapshot: %w", err)
+			}
+
+			if stateMgr != nil {
 				pid := runtime.FindFirecrackerPID(restoredID)
 				if pid == 0 {
 					pid = runtime.FindFirecrackerPIDBySocket(socketPath)
@@ -338,7 +378,7 @@ Example:
 					SocketPath: socketPath,
 					Status:     "running",
 					Image:      "snapshot:" + target.ID,
-					LogPath:    filepath.Join(stateMgr.GetLogDir(), restoredID+".log"),
+					LogPath:    consolePath,
 				}); addErr != nil {
 					log.Warn().Err(addErr).Msg("Failed to register restored VM state")
 				}
@@ -348,6 +388,7 @@ Example:
 			fmt.Printf("  Snapshot: %s\n", target.ID)
 			fmt.Printf("  VM ID:    %s\n", restoredID)
 			fmt.Printf("  Socket:   %s\n", socketPath)
+			fmt.Printf("  Console:  %s\n", consolePath)
 
 			return nil
 		},

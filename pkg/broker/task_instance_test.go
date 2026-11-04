@@ -11,6 +11,8 @@ package broker
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -323,4 +325,38 @@ func TestLookupAnswersFromTheRegistryWhenNoDerivedSocketExists(t *testing.T) {
 	_, statErr := os.Stat(scruntime.SocketPath(socketDir, "task-1"))
 	require.ErrorIs(t, statErr, os.ErrNotExist, "the filename derivation has nothing to answer with")
 	assert.Contains(t, logs.String(), "Resolved the task from the instance registry")
+}
+
+// TestRecordWithoutAMuxerHasNoGuest pins what a record is authoritative about
+// when it leaves a field out (SBX-013): a VM whose record names no vsock muxer has
+// no guest agent, so exec and files answer not_found instead of dialing a path
+// derived from the task ID. The derived file exists here on purpose — a stale
+// muxer beside a task's socket is exactly what the derivation would dial.
+func TestRecordWithoutAMuxerHasNoGuest(t *testing.T) {
+	socketDir := t.TempDir()
+
+	record := instanceRecord(t, "task-1")
+	record.VsockPath = ""
+	touchSockets(t, record)
+
+	derived := scruntime.VsockPath(socketDir, record.ID)
+	require.NoError(t, os.WriteFile(derived, nil, 0o600))
+
+	source := NewSocketDirSource(socketDir, "", nil, &fakeInstanceSource{instance: record, found: true}, nil)
+	task, found, err := source.Lookup(context.Background(), record.ID)
+	require.NoError(t, err)
+	require.True(t, found)
+
+	assert.Empty(t, task.VsockPath(), "the record named no muxer, so there is nothing to dial")
+	assert.False(t, task.guestAvailable())
+
+	// The handler refuses before any dial: the dialer would record the path it was
+	// handed, and it must not be handed one at all.
+	dial := &fakeDialer{guest: &fakeGuest{}}
+	handler := NewExecHandler(dial.dial)
+	rec := httptest.NewRecorder()
+	handler(context.Background(), task, rec, execRequest(t, `{"command":["true"]}`))
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Empty(t, dial.gotPath, "exec must not derive a muxer the record does not name")
 }

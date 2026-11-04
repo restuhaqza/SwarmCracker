@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -345,4 +346,64 @@ func fakeSnapshotAPISocket(t *testing.T) string {
 	})
 
 	return socketPath
+}
+
+// TestRestoreCapturesTheConsole pins #160: the CLI restore hands pkg/snapshot a
+// console path, so the restored VM's serial output is written to the file `vm
+// logs` reads — the same console a daemon-started task captures. The restore
+// itself needs KVM, so the test stops it at the seam, after the console path has
+// been decided and before any process exists.
+func TestRestoreCapturesTheConsole(t *testing.T) {
+	dir := t.TempDir()
+	snapshotDir := filepath.Join(dir, "snapshots")
+	socketDir := filepath.Join(dir, "run")
+
+	const snapshotID = "snap-0123456789abcdef"
+	const taskID = "task-console"
+
+	snapshotPath := filepath.Join(snapshotDir, snapshotID)
+	require.NoError(t, os.MkdirAll(snapshotPath, 0o755))
+	metadata := fmt.Sprintf(`{"id":%q,"task_id":%q,"created_at":"2026-11-04T10:00:00Z"}`, snapshotID, taskID)
+	require.NoError(t, os.WriteFile(filepath.Join(snapshotPath, "metadata.json"), []byte(metadata), 0o600))
+
+	configPath := filepath.Join(dir, "config.yaml")
+	body := "version: 1\nsnapshot:\n  enabled: false\n  snapshot_dir: " + snapshotDir +
+		"\nexecutor:\n  socket_dir: " + socketDir + "\n"
+	require.NoError(t, os.WriteFile(configPath, []byte(body), 0o600))
+
+	previousConfig := cfgFile
+	cfgFile = configPath
+	t.Cleanup(func() { cfgFile = previousConfig })
+
+	previousAlive := taskVMSocketAlive
+	taskVMSocketAlive = func(string, time.Duration) bool { return false }
+	t.Cleanup(func() { taskVMSocketAlive = previousAlive })
+
+	stop := errors.New("stop before firecracker starts")
+	var gotConsole string
+	previousRestore := restoreTaskVM
+	restoreTaskVM = func(
+		_ context.Context, _ *snapshot.Manager, _ *snapshot.SnapshotInfo,
+		_, consolePath string,
+	) error {
+		gotConsole = consolePath
+		return stop
+	}
+	t.Cleanup(func() { restoreTaskVM = previousRestore })
+
+	cmd := newSnapshotRestoreCommand()
+	err := cmd.RunE(cmd, []string{snapshotID})
+	require.ErrorIs(t, err, stop)
+
+	require.NotEmpty(t, gotConsole,
+		"a restore with no console path starts the VM with its output detached (#160)")
+	assert.Equal(t, taskID+".log", filepath.Base(gotConsole),
+		"the console is the file `vm logs` reads for this VM")
+}
+
+// TestRestoreConsolePath pins the one rule the restore and the state entry share:
+// the console is <log dir>/<vm id>.log, so the file the VM writes and the file
+// `vm logs` opens cannot disagree.
+func TestRestoreConsolePath(t *testing.T) {
+	assert.Equal(t, "/var/log/swarmcracker/task-1.log", restoreConsolePath("/var/log/swarmcracker", "task-1"))
 }
