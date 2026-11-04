@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/config"
+	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/rs/zerolog/log"
 )
 
@@ -39,7 +41,15 @@ type BuilderOptions struct {
 	Extractor Extractor
 	Runner    Runner
 	Ext4      Ext4Builder
-	Now       func() time.Time
+	// Prober boots the finished artifact and negotiates the guest agent
+	// handshake. It defaults to the real Firecracker prober, so every artifact
+	// is proven bootable with a reachable agent before it is recorded.
+	Prober BootProber
+	// KernelProfiles maps a recipe kernel profile to a vmlinux path, the same
+	// mapping the executor uses to boot a golden task. Nil means the built-in
+	// registry.
+	KernelProfiles map[string]string
+	Now            func() time.Time
 }
 
 // Builder turns recipes into sealed artifacts.
@@ -66,6 +76,12 @@ func NewBuilder(opts BuilderOptions) (*Builder, error) {
 	}
 	if opts.Ext4 == nil {
 		opts.Ext4 = NewExt4Creator()
+	}
+	if opts.Prober == nil {
+		opts.Prober = NewFirecrackerProber()
+	}
+	if opts.KernelProfiles == nil {
+		opts.KernelProfiles = config.DefaultKernelProfiles()
 	}
 	return &Builder{opts: opts}, nil
 }
@@ -155,18 +171,8 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 		return nil, fmt.Errorf("golden: extract %s: %w", r.Spec.Source.Ref, err)
 	}
 
-	if script := strings.TrimSpace(r.Spec.Provision); script != "" {
-		if err := b.opts.Runner.Run(ctx, rootfsDir, script); err != nil {
-			return nil, fmt.Errorf("golden: provision %s: %w", r.Metadata.Name, err)
-		}
-	}
-	for i, seal := range r.Spec.Seal {
-		if strings.TrimSpace(seal) == "" {
-			continue
-		}
-		if err := b.opts.Runner.Run(ctx, rootfsDir, seal); err != nil {
-			return nil, fmt.Errorf("golden: seal[%d] %s: %w", i, r.Metadata.Name, err)
-		}
+	if err := b.populate(ctx, r, rootfsDir); err != nil {
+		return nil, err
 	}
 
 	minSize, err := r.RootMinSizeBytes()
@@ -176,6 +182,17 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 
 	if err := b.opts.Ext4.Build(ctx, rootfsDir, artifactPath, minSize); err != nil {
 		return nil, fmt.Errorf("golden: build rootfs for %s: %w", r.Metadata.Name, err)
+	}
+
+	// Boot the sealed artifact and hold its guest agent to the v2 handshake.
+	// Everything above proves the files are in the rootfs; only this proves the
+	// init system starts the agent and that it answers with the protocol and
+	// capabilities the template pins. A failed probe leaves no artifact behind,
+	// so a later resolve cannot pick up a template that was never proven.
+	pin, err := b.verifyFirstBoot(ctx, r, artifactPath)
+	if err != nil {
+		_ = os.Remove(artifactPath)
+		return nil, err
 	}
 
 	info, err := os.Stat(artifactPath)
@@ -196,7 +213,7 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 		Arch:             r.Spec.Arch,
 		Source:           r.Spec.Source,
 		Init:             r.Spec.Init,
-		Agent:            r.Spec.Agent,
+		Agent:            pin,
 		KernelProfile:    r.Spec.Kernel.Profile,
 		Runtime:          r.Spec.Runtime,
 		RootMinSizeBytes: minSize,
@@ -224,6 +241,42 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 		SizeBytes:    info.Size(),
 		SHA256:       sum,
 	}, nil
+}
+
+// populate runs the recipe's provisioning, installs the guest agent, applies
+// the seal steps, and verifies the agent survived them. The agent goes in after
+// provisioning (which may replace /sbin or the init system's directories) and
+// before sealing, so a seal script sees the finished image; the verification
+// runs last, because a seal step can still remove the unit or its runlevel link.
+func (b *Builder) populate(ctx context.Context, r *Recipe, rootfsDir string) error {
+	if script := strings.TrimSpace(r.Spec.Provision); script != "" {
+		if err := b.opts.Runner.Run(ctx, rootfsDir, script); err != nil {
+			return fmt.Errorf("golden: provision %s: %w", r.Metadata.Name, err)
+		}
+	}
+
+	if err := installAgent(rootfsDir, r.Spec.Init.System, image.AgentBinary()); err != nil {
+		return fmt.Errorf("golden: install guest agent for %s: %w", r.Metadata.Name, err)
+	}
+	if r.Spec.Init.System == InitSysvinit {
+		if err := b.opts.Runner.Run(ctx, rootfsDir, sysvStartparScript); err != nil {
+			return fmt.Errorf("golden: register guest agent with sysvinit in %s: %w", r.Metadata.Name, err)
+		}
+	}
+
+	for i, seal := range r.Spec.Seal {
+		if strings.TrimSpace(seal) == "" {
+			continue
+		}
+		if err := b.opts.Runner.Run(ctx, rootfsDir, seal); err != nil {
+			return fmt.Errorf("golden: seal[%d] %s: %w", i, r.Metadata.Name, err)
+		}
+	}
+
+	if err := verifyAgentInstalled(rootfsDir, r.Spec.Init.System); err != nil {
+		return fmt.Errorf("golden: %s would boot without a usable guest agent: %w", r.Metadata.Name, err)
+	}
+	return nil
 }
 
 // reuse returns a result when the artifact and metadata already match digest.

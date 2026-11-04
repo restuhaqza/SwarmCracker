@@ -69,6 +69,47 @@ Verified on the node: the Ubuntu 24.04 golden VM reached multi-user with
 `dockerd 29.1.3` listening on `/run/docker.sock`, and `vm list` shows it as
 `golden:ubuntu-24.04-docker@1.0.0`.
 
+## Guest agent and first-boot verification
+
+Every golden image carries the guest agent at `/sbin/sc-agent`, built from
+`cmd/sc-agent` (`make binaries` refreshes the embedded copy). A template without
+it cannot serve `exec`, file copy, health or prepare, so the build refuses to
+produce one.
+
+The builder installs the binary after the provision script and enables it for
+the recipe's init system:
+
+| `init.system` | Service file | Enabled by |
+|---|---|---|
+| `systemd` | `/etc/systemd/system/sc-agent.service` | link in `multi-user.target.wants` |
+| `openrc` | `/etc/init.d/sc-agent` | link in `/etc/runlevels/default` |
+| `sysvinit` | `/etc/init.d/sc-agent` | links in `/etc/rc2.d` and `/etc/rc3.d`, then `insserv` so startpar's `.depend.start` lists the service |
+
+The agent never carries a token: the node writes the per-task token into the
+task's private rootfs during preparation, and a token baked into a shared
+template would be both useless and a leak.
+
+A build fails, leaving no artifact behind, when:
+
+1. `/sbin/sc-agent` is missing, not executable, or not an ELF binary after the
+   seal steps,
+2. the init system would not start it (unit or link removed, wrong link target,
+   or a Debian sysvinit image whose `.depend.start` does not list `sc-agent`),
+3. the sealed artifact is booted under Firecracker and its agent does not answer
+   the v2 `hello` with the pinned protocol and the `hello`, `exec`, `put`, `get`
+   and `metrics` capabilities.
+
+The probe boots a scratch copy of the artifact with the recipe's kernel profile
+and boot args, so the sealed file keeps its checksum. Its result is what the
+metadata records: `spec.agent.protocol` and `spec.agent.version` are the values
+the guest reported, and a recipe that pins a different version fails the build.
+
+**Templates built before this change have no agent and must be rebuilt.** The
+recipe digest includes a builder revision (`golden.BuilderRevision`), so
+`image build --force` (or a plain `image build` after this change) rebuilds
+rather than reusing an old artifact; templates already in a store can only be
+fixed by rebuilding them.
+
 ## 1. Problem statement
 
 Today SwarmCracker turns **one OCI image into one microVM that runs exactly one

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Golden images carry the guest agent** — `image build` installs
+  `/sbin/sc-agent` (the v2 agent embedded from `cmd/sc-agent`) and enables it for
+  the recipe's init system: a systemd unit wired into
+  `multi-user.target.wants`, an OpenRC service in `/etc/runlevels/default`, or a
+  SysV script linked into `rc2.d`/`rc3.d` and registered with `insserv` so
+  startpar starts it on Debian-family guests. The build verifies the wiring after
+  the seal steps, then boots a scratch copy of the artifact under Firecracker and
+  refuses to record a template whose agent does not answer the v2 `hello` with
+  the pinned protocol and the full capability set; a failed probe leaves no
+  artifact behind. The sidecar's `spec.agent` now records the protocol and
+  version the guest actually reported. No token is written: the node still writes
+  the per-task token into the task's private rootfs. The recipe digest includes a
+  builder revision, so templates built before this change are rebuilt rather than
+  reused, and templates already in a store must be rebuilt manually.
 - **Guest agent protocol v2** — `hello` now answers with the protocol versions
   it speaks, the operations it advertises, its release version, its build id and
   a `bootId`, instead of comparing one version string. The host keeps that

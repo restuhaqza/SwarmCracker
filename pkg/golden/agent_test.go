@@ -51,7 +51,8 @@ func TestRecipe_DefaultsPinCurrentAgent(t *testing.T) {
 	require.NoError(t, r.Validate())
 
 	assert.Equal(t, MinimumAgentProtocol, r.Spec.Agent.Protocol)
-	assert.Equal(t, agent.AgentVersion, r.Spec.Agent.Version)
+	assert.Empty(t, r.Spec.Agent.Version,
+		"the agent version is recorded from the booted agent, not assumed by the recipe")
 }
 
 // TestRecipe_RefusesOlderAgentPin proves a recipe cannot build a template the

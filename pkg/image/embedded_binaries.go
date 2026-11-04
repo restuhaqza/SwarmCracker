@@ -14,3 +14,7 @@ var busyboxBinary []byte
 
 //go:embed binaries/sc-agent-amd64
 var agentBinary []byte
+
+// AgentBinary returns a copy of the embedded guest agent binary for callers
+// that install it into an image themselves, such as the golden image builder.
+func AgentBinary() []byte { return append([]byte(nil), agentBinary...) }

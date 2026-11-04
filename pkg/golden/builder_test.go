@@ -60,12 +60,45 @@ func (f *fakeExt4) Build(_ context.Context, _ string, outputPath string, _ int64
 	return os.WriteFile(outputPath, []byte("fake-ext4-content"), 0644)
 }
 
+// fakeProber stands in for the first boot. Its default hello is what a healthy
+// v2 agent answers, so a test only states the disagreement it cares about.
+type fakeProber struct {
+	calls   *[]string
+	hello   agent.Hello
+	err     error
+	targets *[]BootTarget
+}
+
+func (f *fakeProber) Probe(_ context.Context, target BootTarget) (agent.Hello, error) {
+	*f.calls = append(*f.calls, "probe")
+	if f.targets != nil {
+		*f.targets = append(*f.targets, target)
+	}
+	if f.err != nil {
+		return agent.Hello{}, f.err
+	}
+	return f.hello, nil
+}
+
+// healthyHello is the handshake a correctly built template produces.
+func healthyHello() agent.Hello {
+	return agent.Hello{
+		Version:      agent.Version,
+		Versions:     []string{agent.Version},
+		Caps:         agent.Capabilities(),
+		AgentVersion: agent.AgentVersion,
+		BuildID:      "test-build",
+		BootID:       "test-boot",
+	}
+}
+
 type harness struct {
 	calls   []string
 	scripts []string
 	extract *fakeExtractor
 	runner  *fakeRunner
 	ext4    *fakeExt4
+	prober  *fakeProber
 	outDir  string
 	builder *Builder
 }
@@ -76,6 +109,7 @@ func newHarness(t *testing.T, force bool) *harness {
 	h.extract = &fakeExtractor{calls: &h.calls, markFile: true}
 	h.runner = &fakeRunner{calls: &h.calls, scripts: &h.scripts}
 	h.ext4 = &fakeExt4{calls: &h.calls}
+	h.prober = &fakeProber{calls: &h.calls, hello: healthyHello()}
 	b, err := NewBuilder(BuilderOptions{
 		WorkDir:   t.TempDir(),
 		OutputDir: h.outDir,
@@ -83,7 +117,11 @@ func newHarness(t *testing.T, force bool) *harness {
 		Extractor: h.extract,
 		Runner:    h.runner,
 		Ext4:      h.ext4,
-		Now:       func() time.Time { return time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC) },
+		Prober:    h.prober,
+		KernelProfiles: map[string]string{
+			"guest-runtime-6.1": "/usr/share/firecracker/vmlinux-runtime",
+		},
+		Now: func() time.Time { return time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC) },
 	})
 	require.NoError(t, err)
 	h.builder = b
@@ -115,12 +153,13 @@ func TestBuilder_Build_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, res.SHA256)
 	assert.Greater(t, res.SizeBytes, int64(0))
 
-	// Order: extract, provision, seal, ext4.
-	require.Len(t, h.calls, 4)
+	// Order: extract, provision, seal, ext4, first-boot probe.
+	require.Len(t, h.calls, 5)
 	assert.Equal(t, "extract:docker.io/library/ubuntu:24.04", h.calls[0])
 	assert.Equal(t, "run", h.calls[1])
 	assert.Equal(t, "run", h.calls[2])
 	assert.Equal(t, "ext4", h.calls[3])
+	assert.Equal(t, "probe", h.calls[4], "the artifact must be booted before it is recorded")
 	assert.Contains(t, h.scripts[0], "apt-get update")
 	assert.Contains(t, h.scripts[1], "machine-id")
 
@@ -135,6 +174,23 @@ func TestBuilder_Build_HappyPath(t *testing.T) {
 	// cannot drive instead of guessing from the artifact's age.
 	assert.Equal(t, MinimumAgentProtocol, md.Agent.Protocol)
 	assert.Equal(t, agent.AgentVersion, md.Agent.Version)
+}
+
+// TestBuilder_Build_ProbesTheSealedArtifact pins what the first boot is asked
+// to prove: it boots the built ext4 with the recipe's kernel profile, init
+// system and boot arguments, not some other combination.
+func TestBuilder_Build_ProbesTheSealedArtifact(t *testing.T) {
+	h := newHarness(t, false)
+	var targets []BootTarget
+	h.prober.targets = &targets
+
+	res, err := h.builder.Build(context.Background(), mustRecipe(t, validRecipeYAML))
+	require.NoError(t, err)
+	require.Len(t, targets, 1)
+	assert.Equal(t, res.ArtifactPath, targets[0].ArtifactPath)
+	assert.Equal(t, "/usr/share/firecracker/vmlinux-runtime", targets[0].KernelPath)
+	assert.Equal(t, InitSystemd, targets[0].InitSystem)
+	assert.Equal(t, []string{"systemd.unified_cgroup_hierarchy=1"}, targets[0].BootArgs)
 }
 
 func TestBuilder_Build_InvalidRecipe_DoesNotBuild(t *testing.T) {
@@ -186,6 +242,7 @@ func TestBuilder_Build_SkipsWhenUpToDate(t *testing.T) {
 		Extractor: &fakeExtractor{calls: &calls, err: errors.New("must not be called")},
 		Runner:    &fakeRunner{calls: &calls, scripts: &[]string{}, err: errors.New("must not be called")},
 		Ext4:      &fakeExt4{calls: &calls, err: errors.New("must not be called")},
+		Prober:    &fakeProber{calls: &calls, err: errors.New("must not be called")},
 	})
 	require.NoError(t, err)
 
@@ -216,6 +273,7 @@ func TestBuilder_Build_ForceRebuilds(t *testing.T) {
 		Extractor: h.extract,
 		Runner:    h.runner,
 		Ext4:      h.ext4,
+		Prober:    h.prober,
 	})
 	require.NoError(t, err)
 	_, err = fb.Build(context.Background(), r)

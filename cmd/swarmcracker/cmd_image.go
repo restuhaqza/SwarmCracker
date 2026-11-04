@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/golden"
 	"github.com/spf13/cobra"
 )
@@ -42,7 +43,13 @@ func newImageBuildCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "build <recipe.yaml>",
 		Short: "Build a golden image from a recipe",
-		Args:  cobra.ExactArgs(1),
+		Long: `Build a golden image from a recipe.
+
+The artifact is booted under Firecracker before it is recorded, so the build
+must run on a host with KVM and the firecracker binary. The guest agent is
+installed and enabled for the recipe's init system, and the build fails if the
+booted agent does not answer the v2 handshake.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runImageBuild(cmd, args[0], outputDir, force)
 		},
@@ -58,9 +65,18 @@ func runImageBuild(cmd *cobra.Command, recipePath, outputDir string, force bool)
 		return err
 	}
 
+	profiles := config.DefaultKernelProfiles()
+	if kernelPath != "" {
+		// The global --kernel override applies to the first-boot verification
+		// too, so a host that keeps its kernel elsewhere can still prove the
+		// template it builds.
+		profiles[recipe.Spec.Kernel.Profile] = kernelPath
+	}
+
 	builder, err := golden.NewBuilder(golden.BuilderOptions{
-		OutputDir: outputDir,
-		Force:     force,
+		OutputDir:      outputDir,
+		Force:          force,
+		KernelProfiles: profiles,
 	})
 	if err != nil {
 		return err
