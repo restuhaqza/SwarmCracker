@@ -51,6 +51,15 @@ const (
 // Launched.MemPath, because those are what /snapshot/load is told. So one request
 // describes one instance to either launcher; where the instance sees its files is
 // the launcher's decision, not the caller's.
+//
+// One consequence of that is the caller's to own: a checkpoint taken inside a jail
+// names its block device inside that jail (/drives/rootfs.ext4), so only a launcher
+// that builds such a chroot for the instance can serve it — JailedLauncher. Handed
+// to a launcher that starts Firecracker outside a chroot, the state file resolves
+// that name against the node's own root and Firecracker fails to open it: loud and
+// immediate, but the choice was the caller's. Manager.RestoreFromSnapshot refuses
+// such a checkpoint (ErrJailedSnapshot) for this reason; a caller that assembles
+// this request itself — a daemon wiring its own launcher — owns the same decision.
 type LaunchRequest struct {
 	// InstanceID names the instance. The launcher derives its per-instance host
 	// paths from it (<...>/<InstanceID>.sock), so it must be one safe path
