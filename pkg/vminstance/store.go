@@ -131,7 +131,20 @@ func (s *Store) Put(inst Instance) error {
 	if !s.alive(inst.PID) {
 		return fmt.Errorf("instance record for %q: process %d is not running: a record must never resolve to a dead process", inst.ID, inst.PID)
 	}
+	if err := s.write(inst); err != nil {
+		// Name the directory. A full or unwritable registry is a different
+		// problem from a bad record, and the caller's next step differs: free
+		// space or fix the mode, not change the VM.
+		return fmt.Errorf("instance registry %s: %w", s.dir, err)
+	}
+	return nil
+}
 
+// write publishes one already-validated record: encoded, written to a unique
+// temporary in the registry directory, fsynced, renamed into place, and the
+// directory fsynced. A failure publishes nothing — the previous record, if any,
+// is what stays.
+func (s *Store) write(inst Instance) error {
 	data, err := json.MarshalIndent(inst, "", "  ")
 	if err != nil {
 		return fmt.Errorf("instance record for %q: encode: %w", inst.ID, err)

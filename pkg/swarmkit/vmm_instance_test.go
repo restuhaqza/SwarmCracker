@@ -182,7 +182,9 @@ func TestStartFailsWhenTheRegistryCannotTakeTheRecord(t *testing.T) {
 	task := &types.Task{ID: "task-cold-refused", ServiceID: "svc-1", NodeID: "node-1"}
 	err = manager.Start(context.Background(), task, startRecordConfig(t))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "record the identity")
+	assert.Contains(t, err.Error(), "refusing to start VM")
+	assert.Contains(t, err.Error(), "instance registry could not record it")
+	assert.Contains(t, err.Error(), "permission denied", "the cause is carried through, not swallowed")
 
 	time.Sleep(50 * time.Millisecond)
 	_, statErr := os.Stat(scruntime.SocketPath(socketDir, task.ID))

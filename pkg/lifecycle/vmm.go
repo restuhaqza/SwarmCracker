@@ -1035,7 +1035,9 @@ func (vm *VMMManager) recordStarted(task *types.Task, socketPath string, pid int
 		Booted:    time.Now().UTC(),
 	}
 	if err := vm.instances.Put(record); err != nil {
-		return vminstance.Instance{}, fmt.Errorf("record the identity of VM %q before it boots: %w", task.ID, err)
+		return vminstance.Instance{}, fmt.Errorf(
+			"refusing to start VM %q: the instance registry could not record it (state directory full or not writable?): %w",
+			task.ID, err)
 	}
 	return record, nil
 }

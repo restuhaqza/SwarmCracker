@@ -230,3 +230,26 @@ func TestStartKeepsItsRecordWhenTheVMCannotBeConfigured(t *testing.T) {
 	require.True(t, found, "a VM whose configuration failed must still have a record")
 	assert.False(t, record.Ready)
 }
+
+// refusingRecorder is a registry that rejects every write: the shape of a full
+// disk or a directory that lost its permissions.
+type refusingRecorder struct{}
+
+func (refusingRecorder) Put(vminstance.Instance) error { return os.ErrPermission }
+
+// TestStartIsRefusedWhenTheRegistryCannotTakeTheRecord pins the CLI-side
+// consequence and its wording: the VM does not run, and the error says the
+// registry could not record it — not that Firecracker failed.
+func TestStartIsRefusedWhenTheRegistryCannotTakeTheRecord(t *testing.T) {
+	fakeFirecracker(t)
+	socketDir := shortVMDir(t)
+
+	vm := NewVMMManager(&ManagerConfig{SocketDir: socketDir, Instances: refusingRecorder{}}).(*VMMManager)
+	task := &types.Task{ID: "task-cli-refused", ServiceID: "service-cli", NodeID: "node-local"}
+
+	err := vm.Start(context.Background(), task, startRecordConfig(t))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to start VM")
+	assert.Contains(t, err.Error(), "instance registry could not record it")
+	assert.Contains(t, err.Error(), "permission denied")
+}
