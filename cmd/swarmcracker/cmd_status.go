@@ -249,18 +249,27 @@ func collapseOutput(s string) string {
 	return collapsed[:cut] + "..."
 }
 
-// formatDuration formats a duration into human-readable form
+// formatDuration formats a duration into human-readable form: the standard
+// duration string followed by its parts in brackets, e.g.
+// "33m7s ([33m 7s])".
+//
+// The arithmetic runs on a copy. An earlier version subtracted each unit from the
+// duration it was formatting, so the `d.String()` it printed had already been
+// reduced to the seconds remainder and `vm status` read "7s ([33m 7s])" for a VM
+// up 33 minutes.
 func formatDuration(d time.Duration) string {
-	d = d.Round(time.Second)
-	days := d / (24 * time.Hour)
-	d -= days * 24 * time.Hour
-	hours := d / time.Hour
-	d -= hours * time.Hour
-	minutes := d / time.Minute
-	d -= minutes * time.Minute
-	seconds := d / time.Second
+	rounded := d.Round(time.Second)
 
-	parts := []string{}
+	remaining := rounded
+	days := remaining / (24 * time.Hour)
+	remaining -= days * 24 * time.Hour
+	hours := remaining / time.Hour
+	remaining -= hours * time.Hour
+	minutes := remaining / time.Minute
+	remaining -= minutes * time.Minute
+	seconds := remaining / time.Second
+
+	parts := make([]string, 0, 4)
 	if days > 0 {
 		parts = append(parts, fmt.Sprintf("%dd", days))
 	}
@@ -274,7 +283,7 @@ func formatDuration(d time.Duration) string {
 		parts = append(parts, fmt.Sprintf("%ds", seconds))
 	}
 
-	return fmt.Sprintf("%s (%s)", d.String(), fmt.Sprintf("%v", parts))
+	return fmt.Sprintf("%s ([%s])", rounded, strings.Join(parts, " "))
 }
 
 // queryFirecrackerAPI queries the Firecracker API for live VM state
