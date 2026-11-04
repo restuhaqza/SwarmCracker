@@ -247,6 +247,18 @@ func needJailedRestoreRequest(t *testing.T, l JailedLauncher) LaunchRequest {
 	}
 }
 
+// requireJailHost skips a test that needs root: placing files inside a chroot as
+// another uid, which is what a real staging does and what a seam cannot stand in for
+// when the assertion is about the filesystem itself.
+func requireJailHost(t *testing.T) {
+	t.Helper()
+
+	requireJailPlatform(t)
+	if os.Geteuid() != 0 {
+		t.Skip("building a chroot for another uid needs root")
+	}
+}
+
 // requireJailPlatform skips a test on a platform without the jailer. Nothing else is
 // skipped: the launcher's ownership step is a seam, so staging, the jailer argv, a
 // fake jailer process and the whole teardown run for any user — which is what CI is.
@@ -847,6 +859,8 @@ func TestJailedLauncherRefusesADirectoryAsAnImage(t *testing.T) {
 // through Start on a host where the launcher owns its base directory, and the step
 // that fails is what a caller's error message has to name.
 func TestJailedInstanceRefusesAChrootItCannotBuild(t *testing.T) {
+	requireJailHost(t)
+
 	launcher, fake := jailedTestLauncher(t)
 	fake.install(t)
 	req := needJailedRestoreRequest(t, launcher)
@@ -1308,4 +1322,59 @@ func TestJailedLauncherClosesTheConsoleWhenTheJailerWillNotStart(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "start jailer")
 	assert.NoFileExists(t, filepath.Join(launcher.ConsoleSocketDir, req.InstanceID+".console.sock"))
+}
+
+// TestJailedLauncherLeavesNothingBehindWhenStagingFails is the invariant every failed
+// launch owes its caller, and it is deliberately not gated on root: whichever staging
+// step fails first is an environment detail, but "no process, socket, cgroup, jail or
+// uid lease left behind" holds on every host. Without it, a production staging failure
+// could leak a jail nobody has a handle to.
+func TestJailedLauncherLeavesNothingBehindWhenStagingFails(t *testing.T) {
+	tests := []struct {
+		name string
+		// fail breaks the launch, the way a caller or the host can.
+		fail func(*fakeJail, *LaunchRequest)
+	}{
+		{
+			name: "the kernel is gone",
+			fail: func(_ *fakeJail, r *LaunchRequest) {
+				r.Kernel = filepath.Join(t.TempDir(), "gone")
+			},
+		},
+		{
+			name: "an image is not a file",
+			fail: func(_ *fakeJail, r *LaunchRequest) {
+				r.Rootfs = t.TempDir()
+			},
+		},
+		{
+			name: "the file cannot be given to the jail uid",
+			fail: func(f *fakeJail, _ *LaunchRequest) {
+				f.ownErr = syscall.EPERM
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			launcher, fake := jailedTestLauncher(t)
+			fake.install(t)
+			req := needJailedRestoreRequest(t, launcher)
+			tt.fail(fake, &req)
+			launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+			_, err := launcher.Start(context.Background(), req)
+			require.Error(t, err, "a launch that cannot stage must not report an instance")
+
+			assert.Empty(t, fake.waited, "no VMM may be spawned for a launch that never staged")
+			assert.NoFileExists(t, fake.pidPath(req.InstanceID), "no process of this launch may exist")
+			assert.NoDirExists(t, launcher.JailRoot(req.InstanceID), "the jail must be removed")
+			assert.NoFileExists(t,
+				filepath.Join(launcher.JailRoot(req.InstanceID), "root", "run", "firecracker", req.InstanceID+".sock"),
+				"no API socket may be left behind")
+			assert.NoDirExists(t, filepath.Join(launcher.cgroupRoot, launcher.ParentCgroup, req.InstanceID),
+				"no cgroup may be left behind")
+			assert.False(t, launcher.UIDs.Leased(3000), "and the uid must be free for the next instance")
+		})
+	}
 }
