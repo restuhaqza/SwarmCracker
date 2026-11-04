@@ -83,7 +83,7 @@ func TestCopyFileStopsWhenTheContextIsAlreadyCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := copyFile(ctx, src, dst)
+	_, err := copyFile(ctx, src, dst)
 	require.ErrorIs(t, err, context.Canceled)
 
 	_, statErr := os.Stat(dst)
@@ -103,7 +103,7 @@ func TestCopyFileLeavesNothingWhenTheDestinationCannotBeCreated(t *testing.T) {
 	require.NoError(t, os.WriteFile(blocked, []byte("not a directory"), 0o600))
 	dst := filepath.Join(blocked, "copy.ext4")
 
-	err := copyFile(context.Background(), src, dst)
+	_, err := copyFile(context.Background(), src, dst)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create destination directory")
 
@@ -114,4 +114,46 @@ func TestCopyFileLeavesNothingWhenTheDestinationCannotBeCreated(t *testing.T) {
 	assert.Error(t, statErr)
 	assert.True(t, os.IsNotExist(statErr) || errors.Is(statErr, syscall.ENOTDIR),
 		"no partial destination may exist after a failed copy: %v", statErr)
+}
+
+// TestCopyFileRefusesADestinationThatIsItsSource pins the rule that makes a copy a
+// copy: an instance or a snapshot gets its own file, and the disk it was copied from
+// is never opened for writing. Truncating it would destroy the checkpoint's recorded
+// disk — or, for a launch, the disk another instance is already running on.
+func TestCopyFileRefusesADestinationThatIsItsSource(t *testing.T) {
+	content := testDiskContent()
+
+	cases := map[string]func(t *testing.T, src string) string{
+		"the same path": func(_ *testing.T, src string) string {
+			return src
+		},
+		"a hard link": func(t *testing.T, src string) string {
+			link := filepath.Join(t.TempDir(), "link.ext4")
+			require.NoError(t, os.Link(src, link))
+			return link
+		},
+		"a symlink": func(t *testing.T, src string) string {
+			link := filepath.Join(t.TempDir(), "link.ext4")
+			require.NoError(t, os.Symlink(src, link))
+			return link
+		},
+	}
+
+	for name, destination := range cases {
+		t.Run(name, func(t *testing.T) {
+			src := filepath.Join(t.TempDir(), "task.ext4")
+			require.NoError(t, os.WriteFile(src, content, 0o600))
+			dst := destination(t, src)
+
+			mode, err := copyFile(context.Background(), src, dst)
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrSharedDisk)
+			assert.Equal(t, CopyNone, mode)
+
+			// The point of refusing: the source still holds every byte.
+			after, err := os.ReadFile(src)
+			require.NoError(t, err)
+			assert.True(t, bytes.Equal(content, after), "the source must be untouched")
+		})
+	}
 }

@@ -111,7 +111,8 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 
 	kernelRelease := srcGuest.run("uname -r")
 	beforeUptime := srcGuest.uptime(t)
-	t.Logf("boot: %s to a console socket, guest kernel %q, uptime %.2fs", booted.Round(time.Millisecond), kernelRelease, beforeUptime)
+	t.Logf("boot: %s to a console socket, guest kernel %q, uptime %.2fs, disk copied by %s",
+		booted.Round(time.Millisecond), kernelRelease, beforeUptime, src.DiskCopy)
 
 	srcUID := jailUID(t, launcher, srcID)
 	require.GreaterOrEqual(t, srcUID, jailedTestUIDBase, "the source VM runs as a uid from the configured range")
@@ -223,6 +224,9 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 		assert.Equal(t, "/snapshot/vm.mem", restored.MemPath)
 		assert.Equal(t, "Running", apiState(t, restored.APISocket), "a resumed guest is running, not merely loaded")
 
+		assert.NotEqual(t, snapshot.CopyNone, restored.DiskCopy,
+			"the launcher reports how the instance got its own copy of the disk")
+
 		restoredDisk, statErr := os.Stat(filepath.Join(launcher.JailRoot(run.id), "root", "drives", "rootfs.ext4"))
 		require.NoError(t, statErr)
 		assert.False(t, os.SameFile(restoredDisk, diskCopy),
@@ -252,9 +256,10 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 		assert.Equal(t, instance.uid, restoredUID, "the restored VMM runs as the uid it was asked for")
 		assert.NotEqual(t, srcUID, restoredUID, "the source and a restored instance never share a uid")
 
-		t.Logf("restore %s: %s as uid %d, disk %d B inode %d; uptime %.2fs -> %.2fs",
+		t.Logf("restore %s: %s as uid %d, disk %d B inode %d copied by %s; uptime %.2fs -> %.2fs",
 			instance.id, instance.took.Round(time.Millisecond), instance.uid,
-			instance.disk.Size(), inodeOf(instance.disk), beforeUptime, afterUptime)
+			instance.disk.Size(), inodeOf(instance.disk), instance.launched.DiskCopy,
+			beforeUptime, afterUptime)
 	}
 
 	// The checkpoint they restored from still holds what it recorded: the same bytes,
