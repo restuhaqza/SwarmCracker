@@ -23,6 +23,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -54,7 +55,12 @@ type VMMManager struct {
 	// logDir, when non-empty, is where each VM's console output is mirrored as
 	// <logDir>/<task-id>.log so `swarmcracker vm logs <task-id>` can read it.
 	logDir string
-	logger zerolog.Logger
+	// instances, when set, is the node's registry of running VMs. Every cold
+	// start publishes its record before it waits for the VM, so a start that
+	// never completes still leaves the paths a teardown needs. Nil means this
+	// caller keeps no registry and resolution falls back to the derivation.
+	instances vminstance.Recorder
+	logger    zerolog.Logger
 }
 
 // processWait tracks a single Wait call per task so that concurrent
@@ -80,6 +86,9 @@ type VMMManagerConfig struct {
 	CgroupVersion   string
 	EnableCgroups   bool
 	ResourceLimits  jailer.ResourceLimits
+	// Instances is the node's VM registry. When set, every cold start writes the
+	// VM's record before the VM is reachable, and marks it ready once it is.
+	Instances vminstance.Recorder
 }
 
 // toInt converts an interface{} value to int, handling both int and float64.
@@ -148,6 +157,7 @@ func NewVMMManagerWithConfig(cfg *VMMManagerConfig) (*VMMManager, error) {
 		consoles:        make(map[string]*console.Server),
 		logFiles:        make(map[string]*os.File),
 		logDir:          cfg.LogDir,
+		instances:       cfg.Instances,
 		logger:          log.With().Str("component", "vmm-manager").Logger(),
 	}
 
@@ -349,6 +359,20 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 		return err
 	}
 
+	// Publish the VM's host-side identity before anything waits on the guest. A
+	// start that never completes still leaves the record a teardown needs, and a
+	// caller can resolve the VM while it is still booting; Ready flips once the
+	// API has configured it.
+	record, err := v.recordStarted(task, socketPath, cmd.Process.Pid, 0)
+	if err != nil {
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			log.Warn().Err(killErr).Msg("Failed to kill process after record error")
+		}
+		v.closeConsole(task.ID)
+		socketCleanupNeeded = true
+		return err
+	}
+
 	// Wait for socket to be created
 	if err := v.waitForSocket(ctx, socketPath, 10*time.Second); err != nil {
 		if killErr := cmd.Process.Kill(); killErr != nil {
@@ -368,6 +392,8 @@ func (v *VMMManager) startDirect(ctx context.Context, task *types.Task, config i
 		socketCleanupNeeded = true
 		return fmt.Errorf("failed to configure VM: %w", err)
 	}
+
+	v.markReady(record)
 
 	v.logger.Info().
 		Str("task_id", task.ID).
@@ -504,6 +530,20 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 	v.processes[task.ID] = wrapperCmd
 	v.processMutex.Unlock()
 
+	// Publish the VM's identity before it is configured, for the same reason the
+	// direct path does: a jailed start that fails later still leaves the record.
+	jailUID := 0
+	if v.jailerConfig != nil {
+		jailUID = v.jailerConfig.UID
+	}
+	record, err := v.recordStarted(task, process.SocketPath, process.Pid, jailUID)
+	if err != nil {
+		if stopErr := v.jailer.Stop(ctx, task.ID); stopErr != nil {
+			v.logger.Warn().Err(stopErr).Msg("Failed to stop jailer after record error")
+		}
+		return err
+	}
+
 	// Configure VM via API with chroot-relative paths
 	jailerConfig := jailerVMConfig(cfg, machineConfig, bootSource)
 
@@ -514,6 +554,8 @@ func (v *VMMManager) startWithJailer(ctx context.Context, task *types.Task, conf
 		}
 		return fmt.Errorf("failed to configure VM: %w", err)
 	}
+
+	v.markReady(record)
 
 	v.logger.Info().
 		Str("task_id", task.ID).
@@ -1260,4 +1302,54 @@ func (v *VMMManager) RemoveProcess(taskID string) {
 	v.processMutex.Unlock()
 	v.closeConsole(taskID)
 	v.logger.Debug().Str("task_id", taskID).Msg("Process removed from tracking")
+}
+
+// recordStarted publishes the host-side identity of a VM that is starting.
+//
+// It runs before anything waits on the guest: the paths are true the moment the
+// process exists, so a VM that is still booting can be resolved, and a start that
+// fails later still leaves the record a teardown needs. A registry that cannot
+// take the record fails the start: this node keeps a registry, so a VM it cannot
+// record is a VM it could not resolve after a restart.
+func (v *VMMManager) recordStarted(task *types.Task, socketPath string, pid, jailUID int) (vminstance.Instance, error) {
+	if v.instances == nil {
+		return vminstance.Instance{}, nil
+	}
+
+	record := vminstance.Instance{
+		ID:        task.ID,
+		Kind:      vminstance.KindTask,
+		OwnerID:   task.ServiceID,
+		NodeID:    task.NodeID,
+		PID:       pid,
+		APISocket: socketPath,
+		// The muxer and the interactive console sit beside the API socket, by the
+		// same rules the executor, the CLI and `vm attach` already use. The TAP
+		// device and the guest's address belong to the network attachment, which
+		// this manager does not create, so they stay empty rather than guessed.
+		VsockPath: scruntime.VsockPathFromSocket(socketPath),
+		Console:   filepath.Join(v.socketDir, task.ID+scruntime.ConsoleSocketSuffix),
+		JailUID:   jailUID,
+		Booted:    time.Now().UTC(),
+	}
+	if err := v.instances.Put(record); err != nil {
+		return vminstance.Instance{}, fmt.Errorf(
+			"refusing to start VM %q: the instance registry could not record it (state directory full or not writable?): %w",
+			task.ID, err)
+	}
+	return record, nil
+}
+
+// markReady records that the VM answered its API and is running. It cannot fail
+// the start: the VM is already up and reachable, and a record left at Ready=false
+// is worth less than a VM killed for a metadata write.
+func (v *VMMManager) markReady(record vminstance.Instance) {
+	if v.instances == nil || record.ID == "" {
+		return
+	}
+	record.Ready = true
+	if err := v.instances.Put(record); err != nil {
+		v.logger.Warn().Err(err).Str("task_id", record.ID).
+			Msg("Could not mark the VM's instance record ready; it stays recorded as still booting")
+	}
 }

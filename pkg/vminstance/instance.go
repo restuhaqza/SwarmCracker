@@ -131,6 +131,18 @@ type Instance struct {
 	Ready bool `json:"ready,omitempty"`
 }
 
+// Recorder is the write side of the registry: what a path that starts a VM
+// needs to publish its identity. *Store is the production implementation; the
+// interface lets a VMM manager be tested without a directory and lets a caller
+// that cannot keep a registry (a `vm create` as a non-root user) run without one.
+//
+// A nil Recorder means "this caller keeps no registry": nothing is written and
+// resolution falls back to the filename derivation, which is the behaviour every
+// node had before the registry existed.
+type Recorder interface {
+	Put(Instance) error
+}
+
 // validate refuses a record the registry could not serve. The rules are the
 // ones a reader depends on: an ID that names a file inside the registry, a kind
 // a reader can act on, a process to watch, and absolute host paths — a relative

@@ -114,6 +114,36 @@ func openDaemonState(ctx *cli.Context) (string, *runtime.RestoredRegistry, *runt
 	return stateDir, restored, pending, instances, nil
 }
 
+// logInstanceRegistry reports what the node's instance registry held when it was
+// opened. It is the startup view of the store SBX-011 writes and the broker reads:
+// "stale" means a record whose VMM is gone, and it is reported by path and left in
+// place for the teardown that still has to free its netns, TAP device and disk.
+// An unusable record is reported too, and is also left alone: the file is the
+// only evidence of what the node believes.
+func logInstanceRegistry(ctx context.Context, store *vminstance.Store) {
+	if store == nil {
+		return
+	}
+
+	report, err := store.Recover()
+	if err != nil {
+		log.G(ctx).WithError(err).Warn("Instance registry: the load-time scan could not finish")
+	}
+	for _, stale := range report.Stale {
+		log.G(ctx).Warnf("Instance record %s names a VM whose process %d is gone; the record is kept so its netns, TAP device and disk can be torn down",
+			stale.ID, stale.PID)
+	}
+	for _, path := range report.Skipped {
+		log.G(ctx).Warnf("Instance record %s is unreadable and is ignored, not deleted: inspect it, then remove it if the VM is gone", path)
+	}
+	if report.Temporaries > 0 {
+		log.G(ctx).Infof("Instance registry: removed %d half-written record(s) a crash left behind", report.Temporaries)
+	}
+	if len(report.Stale) == 0 && len(report.Skipped) == 0 {
+		log.G(ctx).Debug("Instance registry opened with no stale records")
+	}
+}
+
 // wireRestoredInstances gives the executor the node's restored-instance records and
 // the snapshot manager that owns the Firecracker processes they name.
 //
@@ -190,6 +220,12 @@ func runAgent(ctx *cli.Context) error {
 		return err
 	}
 
+	// Report what a previous daemon life left in the registry. Recover removes the
+	// half-written records a crash left and reports the stale ones; it never
+	// deletes a stale record, because that record is the only handle to the netns,
+	// TAP device and disk of a VM that died outside a stop path.
+	logInstanceRegistry(context.Background(), instances)
+
 	// Ensure default config exists (auto-generate on first run)
 	if created, err := config.EnsureDefaultConfig(); err != nil {
 		log.G(context.Background()).Warnf("Failed to create default config: %v (continuing with CLI flags)", err)
@@ -231,6 +267,10 @@ func runAgent(ctx *cli.Context) error {
 		// Consul service discovery
 		Debug:    ctx.Bool("debug"),
 		StateDir: stateDir,
+		// The registry every cold start writes to, opened once at startup: the
+		// manager publishes a record before the VM boots and the broker resolves
+		// through the same store.
+		Instances: instances,
 		// Jailer configuration
 		EnableJailer:    ctx.Bool("enable-jailer"),
 		JailerPath:      ctx.String("jailer-path"),
