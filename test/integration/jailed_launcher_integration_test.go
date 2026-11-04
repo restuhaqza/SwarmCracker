@@ -39,6 +39,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -117,38 +118,60 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 	require.Less(t, srcUID, jailedTestUIDBase+7, "and one with room for the restore's uid above it")
 	assertJailCgroup(t, launcher, srcID)
 
-	// Snapshot through the API, naming the chroot paths: this is what a jail-aware
-	// CreateSnapshot will do for real (SBX-022), and the point here is that the
-	// checkpoint it writes records paths that another jail can honour.
+	// The snapshot goes through the manager rather than through the API by hand,
+	// because what has to hold is CreateSnapshot's behaviour (SBX-022): it names the
+	// jail's paths, so the checkpoint records names another jail can honour, and it
+	// copies the disk the guest has been writing — the chroot's — rather than the
+	// pre-boot file this test staged from.
+	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{SnapshotDir: filepath.Join(scratch, "snapshots")})
+	require.NoError(t, err)
+
+	liveDisk := filepath.Join(launcher.JailRoot(srcID), "root", "drives", "rootfs.ext4")
+	liveBefore, err := os.Stat(liveDisk)
+	require.NoError(t, err)
+
 	tSnap := time.Now()
-	requireStatus(t, src.APISocket, http.MethodPatch, "/vm", map[string]string{"state": "Paused"}, http.StatusNoContent)
-	requireStatus(t, src.APISocket, http.MethodPut, "/snapshot/create", map[string]string{
-		"snapshot_type": "Full",
-		"snapshot_path": "/snapshot/vm.state",
-		"mem_file_path": "/snapshot/vm.mem",
-	}, http.StatusNoContent)
+	info, err := mgr.CreateSnapshot(ctx, srcID, src.APISocket, snapshot.CreateOptions{
+		ServiceID:  "jailed",
+		NodeID:     "the-root",
+		VCPUCount:  2,
+		MemoryMB:   512,
+		RootfsPath: disk,
+		JailRoot:   launcher.JailRoot(srcID),
+	})
+	require.NoError(t, err, "a jailed VM's snapshot must be creatable through the manager")
 	snapTook := time.Since(tSnap)
 
-	srcJail := filepath.Join(launcher.JailRoot(srcID), "root")
-	statePath := filepath.Join(srcJail, "snapshot", "vm.state")
-	memPath := filepath.Join(srcJail, "snapshot", "vm.mem")
-	liveDisk := filepath.Join(srcJail, "drives", "rootfs.ext4")
-	stateInfo, err := os.Stat(statePath)
+	assert.True(t, info.Jailed, "the snapshot records that its paths belong to a jail")
+	assert.Equal(t, "/drives/rootfs.ext4", info.RootfsPath,
+		"the checkpoint records the chroot path, which is what makes it portable")
+
+	stateInfo, err := os.Stat(info.StatePath)
 	require.NoError(t, err)
-	memInfo, err := os.Stat(memPath)
+	memInfo, err := os.Stat(info.MemoryPath)
+	require.NoError(t, err)
+	diskCopy, err := os.Stat(info.DiskPath)
 	require.NoError(t, err)
 	require.Equal(t, int64(512<<20), memInfo.Size(), "a 512 MiB guest writes a 512 MiB memory image")
-	t.Logf("snapshot: %s, vm.state %d B, vm.mem %d B", snapTook.Round(time.Millisecond), stateInfo.Size(), memInfo.Size())
+	assert.Equal(t, liveBefore.Size(), diskCopy.Size(), "the snapshot owns a copy of the live disk")
+	assert.False(t, os.SameFile(liveBefore, diskCopy), "the snapshot's disk is its own file, not the jail's")
+	t.Logf("snapshot: %s, vm.state %d B, vm.mem %d B, disk %d B",
+		snapTook.Round(time.Millisecond), stateInfo.Size(), memInfo.Size(), diskCopy.Size())
 
-	// Keep the checkpoint and the live disk after the jail is removed. Hard links cost
-	// nothing and survive the teardown; a different filesystem falls back to a copy.
-	savedState := hardlink(t, statePath, filepath.Join(scratch, "vm.state"))
-	savedMem := hardlink(t, memPath, filepath.Join(scratch, "vm.mem"))
-	savedDisk := hardlink(t, liveDisk, filepath.Join(scratch, "vm.rootfs.ext4"))
+	// The same checkpoint offered to the direct restore is refused, and refused before
+	// anything starts: a VMM outside a chroot cannot open the disk the checkpoint
+	// names. This is the fail-closed half of the pair the jailed restores below are
+	// the other half of.
+	directSocket := filepath.Join(scratch, "direct.sock")
+	directErr := mgr.RestoreFromSnapshot(ctx, info, directSocket)
+	require.Error(t, directErr, "a jailed checkpoint must not restore outside a jail")
+	assert.ErrorIs(t, directErr, snapshot.ErrJailedSnapshot, "the refusal is typed")
+	assert.Contains(t, directErr.Error(), "jailed launcher", "and it names the way out")
+	assert.NoFileExists(t, directSocket, "nothing may be started for a refused restore")
+	t.Logf("direct restore of the jailed checkpoint refused with: %v", directErr)
 
 	// Staging is a copy, so the guest wrote to the disk inside its jail and not to the
-	// file this test booted from. That is exactly why a jail-aware CreateSnapshot has
-	// to read the chroot's disk (SBX-022) rather than the path the caller passed.
+	// file this test was handed.
 	diskAfter, err := os.Stat(disk)
 	require.NoError(t, err)
 	assert.True(t, diskBefore.ModTime().Equal(diskAfter.ModTime()),
@@ -159,57 +182,100 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 	require.NoError(t, src.Stop(ctx))
 	stopped := time.Since(tStop)
 	assertJailGone(t, launcher, srcID, srcPID, src.APISocket)
+	assertParentCgroupGone(t, launcher)
 	assert.False(t, uids.Leased(srcUID), "a stopped instance's uid must be free again")
 	t.Logf("stop: %s, source jail, socket and cgroup removed", stopped.Round(time.Millisecond))
 
-	// The restore runs as a different uid, named explicitly: a checkpoint restored into
-	// the uid that produced it would not prove the jail moved with the state. Naming it
-	// is the launcher's to reserve — reserving it here as well would refuse the launch.
-	restoreUID := srcUID + 1
+	// Two restores, each as a different uid, both from the snapshot's own disk copy:
+	// one restore proves the checkpoint loads outside the jail it was taken in, two
+	// prove each instance ends up with a backing file of its own (SBX-023). Both run
+	// at once, because an inode number reused after a teardown is the same number and
+	// not the same file: the two disks can only be compared while both exist.
+	restores := []struct {
+		id  string
+		uid int
+	}{{id: "rest-a", uid: srcUID + 1}, {id: "rest-b", uid: srcUID + 2}}
 
-	restID := "rest"
-	tRestore := time.Now()
-	restored, err := launcher.Start(ctx, snapshot.LaunchRequest{
-		InstanceID: restID,
-		Mode:       snapshot.ModeRestore,
-		Kernel:     kernel,
-		Rootfs:     savedDisk,
-		State:      savedState,
-		Mem:        savedMem,
-		JailUID:    restoreUID,
-	})
-	require.NoError(t, err, "a checkpoint taken in one jail must load in another")
-	t.Cleanup(func() { _ = restored.Stop(context.Background()) })
-	restoredTook := time.Since(tRestore)
+	type restoredInstance struct {
+		id       string
+		uid      int
+		launched snapshot.Launched
+		disk     os.FileInfo
+		took     time.Duration
+	}
 
-	assert.Equal(t, "/snapshot/vm.state", restored.StatePath, "the caller is told the path /snapshot/load was given")
-	assert.Equal(t, "/snapshot/vm.mem", restored.MemPath)
-	assert.Equal(t, "Running", apiState(t, restored.APISocket), "a resumed guest is running, not merely loaded")
+	instances := make([]restoredInstance, 0, len(restores))
+	for _, run := range restores {
+		tRestore := time.Now()
+		restored, startErr := launcher.Start(ctx, snapshot.LaunchRequest{
+			InstanceID: run.id,
+			Mode:       snapshot.ModeRestore,
+			Kernel:     kernel,
+			Rootfs:     info.DiskPath,
+			State:      info.StatePath,
+			Mem:        info.MemoryPath,
+			JailUID:    run.uid,
+		})
+		require.NoError(t, startErr, "a checkpoint taken in one jail must load in another")
+		t.Cleanup(func() { _ = restored.Stop(context.Background()) })
 
-	// The proof that matters: the guest answers, and it is the same boot continuing.
-	restGuest := attachGuest(t, restored, launcher, restID)
-	token := fmt.Sprintf("JAILED-RESTORE-%d", time.Now().UnixNano())
-	assert.Contains(t, restGuest.run("echo "+token), token, "a command must run in the restored guest")
-	afterUptime := restGuest.uptime(t)
-	restoredConsole := restGuest.transcript()
-	assert.NotContains(t, restoredConsole, "Linux version",
-		"the restored console must carry no kernel boot banner: the guest resumed rather than booted")
-	assert.GreaterOrEqual(t, afterUptime, beforeUptime,
-		"guest uptime must continue across a restore (it was %.2fs before the snapshot)", beforeUptime)
-	t.Logf("restore: %s to a resumed guest as uid %d; uptime %.2fs -> %.2fs",
-		restoredTook.Round(time.Millisecond), restoreUID, beforeUptime, afterUptime)
+		assert.Equal(t, "/snapshot/vm.state", restored.StatePath, "the caller is told the path /snapshot/load was given")
+		assert.Equal(t, "/snapshot/vm.mem", restored.MemPath)
+		assert.Equal(t, "Running", apiState(t, restored.APISocket), "a resumed guest is running, not merely loaded")
 
-	// The uid comes from the process itself, not from the launcher's bookkeeping.
-	restoredUID := jailUID(t, launcher, restID)
-	assert.Equal(t, restoreUID, restoredUID, "the restored VMM runs as the uid it was asked for")
-	assert.NotEqual(t, srcUID, restoredUID, "the two instances never share a uid")
+		restoredDisk, statErr := os.Stat(filepath.Join(launcher.JailRoot(run.id), "root", "drives", "rootfs.ext4"))
+		require.NoError(t, statErr)
+		assert.False(t, os.SameFile(restoredDisk, diskCopy),
+			"a restored instance must write its own disk, never the snapshot's copy")
 
-	restPID := jailPID(t, launcher, restID)
-	tRestStop := time.Now()
-	require.NoError(t, restored.Stop(ctx))
-	t.Logf("stop: %s, restored jail, socket and cgroup removed", time.Since(tRestStop).Round(time.Millisecond))
-	assertJailGone(t, launcher, restID, restPID, restored.APISocket)
-	assert.False(t, uids.Leased(restoreUID), "the restored instance's uid is free after its teardown")
+		instances = append(instances, restoredInstance{
+			id: run.id, uid: run.uid, launched: restored, disk: restoredDisk, took: time.Since(tRestore),
+		})
+	}
+
+	require.Len(t, instances, 2)
+	assert.False(t, os.SameFile(instances[0].disk, instances[1].disk),
+		"two instances must never share one backing file, even though both came from one snapshot")
+	assert.Equal(t, instances[0].disk.Size(), instances[1].disk.Size())
+
+	for _, instance := range instances {
+		restGuest := attachGuest(t, instance.launched, launcher, instance.id)
+		token := fmt.Sprintf("JAILED-RESTORE-%s-%d", instance.id, time.Now().UnixNano())
+		assert.Contains(t, restGuest.run("echo "+token), token, "a command must run in the restored guest")
+		afterUptime := restGuest.uptime(t)
+		assert.NotContains(t, restGuest.transcript(), "Linux version",
+			"the restored console must carry no kernel boot banner: the guest resumed rather than booted")
+		assert.GreaterOrEqual(t, afterUptime, beforeUptime,
+			"guest uptime must continue across a restore (it was %.2fs before the snapshot)", beforeUptime)
+
+		restoredUID := jailUID(t, launcher, instance.id)
+		assert.Equal(t, instance.uid, restoredUID, "the restored VMM runs as the uid it was asked for")
+		assert.NotEqual(t, srcUID, restoredUID, "the source and a restored instance never share a uid")
+
+		t.Logf("restore %s: %s as uid %d, disk %d B inode %d; uptime %.2fs -> %.2fs",
+			instance.id, instance.took.Round(time.Millisecond), instance.uid,
+			instance.disk.Size(), inodeOf(instance.disk), beforeUptime, afterUptime)
+	}
+
+	// The checkpoint they restored from still holds what it recorded: the same bytes,
+	// under the same name, after two instances have been built from it.
+	diskCopyAfter, err := os.Stat(info.DiskPath)
+	require.NoError(t, err)
+	assert.True(t, diskCopy.ModTime().Equal(diskCopyAfter.ModTime()),
+		"restoring a snapshot must not write the disk copy it restores from")
+	assert.Equal(t, "/drives/rootfs.ext4", info.RootfsPath, "the recorded path never changes")
+	assert.True(t, os.SameFile(diskCopy, diskCopyAfter), "and neither must it be replaced")
+
+	for _, instance := range instances {
+		restPID := jailPID(t, launcher, instance.id)
+		tRestStop := time.Now()
+		require.NoError(t, instance.launched.Stop(ctx))
+		assertJailGone(t, launcher, instance.id, restPID, instance.launched.APISocket)
+		assert.False(t, uids.Leased(instance.uid), "a restored instance's uid is free after its teardown")
+		t.Logf("stop %s: %s, jail, socket and cgroup removed",
+			instance.id, time.Since(tRestStop).Round(time.Millisecond))
+	}
+	assertParentCgroupGone(t, launcher)
 
 	// And the range is reused in order: the next launch takes the lowest free uid.
 	nextLease, err := uids.Allocate()
@@ -405,17 +471,13 @@ func copySparse(src, dst string) error {
 	return nil
 }
 
-// hardlink materialises src at dst without copying it, falling back to a copy when the
-// two are on different filesystems. The link survives the jail's removal, which is what
-// keeps a checkpoint usable after its source instance is stopped.
-func hardlink(t *testing.T, src, dst string) string {
-	t.Helper()
-
-	if err := os.Link(src, dst); err != nil {
-		require.NoError(t, copySparse(src, dst), "keep %s after the jail is removed", src)
+// inodeOf reports the inode a file has on its filesystem, so a log line can name the
+// file two instances were proved not to share.
+func inodeOf(info os.FileInfo) uint64 {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
+		return stat.Ino
 	}
-	require.FileExists(t, dst)
-	return dst
+	return 0
 }
 
 // jailPID reads the pid of the VMM one instance's jail holds.
@@ -483,8 +545,16 @@ func assertJailGone(t *testing.T, launcher snapshot.JailedLauncher, instanceID s
 	assert.NoDirExists(t, launcher.JailRoot(instanceID), "the jail directory must not outlive the instance")
 	assert.NoDirExists(t, filepath.Join("/sys/fs/cgroup", launcher.ParentCgroup, instanceID),
 		"the instance cgroup must be removed")
+}
+
+// assertParentCgroupGone proves the last teardown removed the cgroup the jailer
+// creates the instances' own under. It is checked on its own because the parent is
+// shared: it belongs to no instance and outlives every instance but the last.
+func assertParentCgroupGone(t *testing.T, launcher snapshot.JailedLauncher) {
+	t.Helper()
+
 	assert.NoDirExists(t, filepath.Join("/sys/fs/cgroup", launcher.ParentCgroup),
-		"the parent cgroup the jailer created for it must not be left behind either")
+		"the parent cgroup the jailer created must not be left behind once no instance is running")
 }
 
 // processRunning reports whether pid is a live (not zombie) process.
