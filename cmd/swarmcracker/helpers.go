@@ -14,6 +14,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/network"
 	"github.com/restuhaqza/swarmcracker/pkg/translator"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -80,6 +81,20 @@ func createExecutor(cfg *config.Config) (*executor.FirecrackerExecutor, error) {
 		DefaultVCPUs:    execConfig.DefaultVCPUs,
 		DefaultMemoryMB: execConfig.DefaultMemoryMB,
 		EnableJailer:    execConfig.EnableJailer,
+	}
+
+	// The CLI keeps the same registry the daemon does, under the node state
+	// directory, so a VM started here is resolvable by its ID without deriving its
+	// paths from the socket name. A directory this user cannot write is not an
+	// error: the VM then runs without a record and resolution falls back to the
+	// derivation, which is what every node did before the registry existed.
+	if dir := vminstance.Dir(defaultLocalStateDir()); dir != "" {
+		if store, storeErr := vminstance.NewStore(vminstance.Config{Dir: dir}); storeErr != nil {
+			log.Warn().Err(storeErr).
+				Msg("Could not open the instance registry; this VM will be resolved from its socket name")
+		} else {
+			vmmConfig.Instances = store
+		}
 	}
 
 	imageConfig := &image.PreparerConfig{

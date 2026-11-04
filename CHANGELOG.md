@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **Every cold start records the VM in the instance registry** — the daemon's VMM
+  manager and `vm create` both write `<state-dir>/vminstances/<id>.json` before
+  anything waits on the guest, so a VM that is still booting can be resolved and a
+  boot that fails still leaves the paths a teardown needs; the record flips to
+  `ready` once the VM answered its API. A start that cannot write its record fails
+  rather than running a VM the node could not resolve, and `vm create` only wires
+  a registry when the state directory is usable. The broker already resolves
+  through this store first (SBX-012), so a node's own VMs now take that path
+  instead of the filename derivation, which stays for VMs started before records
+  existed. At startup the daemon reports records whose process is gone and removes
+  only half-written temporaries: a stale record is the only handle to its VM's
+  netns, TAP device and disk, so it is left for the teardown. Restore and fork do
+  not write records yet — that is a separate ticket.
 - **A restored VM is the task's VM, not a second identity** — `vm snapshot
   restore` and the node's restore route now start Firecracker at the task's own
   API socket, `<socket-dir>/<task-id>.sock`, instead of minting

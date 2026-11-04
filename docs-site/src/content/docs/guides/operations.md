@@ -986,6 +986,16 @@ swarmcracker api token create --name migration --role admin \
    swarmcracker doctor  # Check memory/CPU available
    ```
 
+8. **Instance registry writable?** Every cold start writes a record to
+   `<state-dir>/vminstances/<id>.json` before the VM is reachable; a start that
+   cannot write one fails instead of running a VM the node could not resolve.
+   ```bash
+   ls -la /var/lib/swarmkit/vminstances/
+   ```
+   After a restart the daemon reports records whose process is gone and **keeps
+   them**: the record is the only handle to that VM's netns, TAP device and disk.
+   Do not delete one until those are gone.
+
 ### VM Crashes / Exits Immediately
 
 **Symptoms:** VM starts then stops within seconds.

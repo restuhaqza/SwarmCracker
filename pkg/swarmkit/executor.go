@@ -36,6 +36,7 @@ import (
 	configstore "github.com/restuhaqza/swarmcracker/pkg/swarmkit/configs"
 	secretstore "github.com/restuhaqza/swarmcracker/pkg/swarmkit/secrets"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 )
@@ -144,6 +145,12 @@ type Config struct {
 	ParentCgroup    string `yaml:"parent_cgroup"`
 	CgroupVersion   string `yaml:"cgroup_version"`
 	EnableCgroups   bool   `yaml:"enable_cgroups"`
+
+	// Instances is the node's registry of running VMs (pkg/vminstance). When set,
+	// every cold start writes the VM's record before the VM is reachable; nil
+	// means this caller keeps no registry and resolution falls back to the
+	// filename derivation.
+	Instances vminstance.Recorder
 
 	Hostname      string `yaml:"hostname"`
 	JoinAddr      string `yaml:"join_addr"`
@@ -322,6 +329,7 @@ func NewExecutor(config *Config) (*Executor, error) {
 			ParentCgroup:    config.ParentCgroup,
 			CgroupVersion:   config.CgroupVersion,
 			EnableCgroups:   config.EnableCgroups,
+			Instances:       config.Instances,
 		}
 		vmmMgr, err = NewVMMManagerWithConfig(vmmCfg)
 		if err != nil {
@@ -338,6 +346,7 @@ func NewExecutor(config *Config) (*Executor, error) {
 			// carries the service's CPU/memory/cpuset. Without this the setting
 			// (on by default) would only ever reach jailed VMs.
 			EnableCgroups: config.EnableCgroups,
+			Instances:     config.Instances,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create VMM manager: %w", err)

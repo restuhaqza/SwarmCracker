@@ -401,6 +401,16 @@ func (s SocketDirSource) recordedInstance(taskID string) (Task, bool, bool, erro
 	if err := s.addRestoredProvenance(&task); err != nil {
 		return Task{}, false, true, err
 	}
+
+	// The registry answered: say so, because "resolved" and "resolved from the
+	// record" are different facts, and the second is the one a node that writes
+	// records is meant to rely on.
+	log.Debug().
+		Str("task_id", taskID).
+		Str("socket", instance.APISocket).
+		Str("kind", instance.Kind).
+		Msg("Resolved the task from the instance registry")
+
 	return task, true, true, nil
 }
 

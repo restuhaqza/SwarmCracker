@@ -21,6 +21,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 	"github.com/rs/zerolog/log"
 )
 
@@ -49,6 +50,11 @@ type VMMManager struct {
 	// pre-flight check. Empty means the production default; tests point it at a
 	// fixture.
 	hugepagesPoolPath string
+	// instances, when set, is the node's registry of running VMs. A cold start
+	// publishes its record before it waits for the VM. Nil means this caller keeps
+	// no registry (an unprivileged `vm create`), and resolution falls back to the
+	// filename derivation.
+	instances vminstance.Recorder
 }
 
 // SetConsoleWriter redirects the serial console of VMs started from now on to
@@ -80,6 +86,9 @@ type ManagerConfig struct {
 	DefaultVCPUs    int
 	DefaultMemoryMB int
 	EnableJailer    bool
+	// Instances is the node's VM registry. When set, `vm create` publishes the
+	// VM's record before it is reachable and marks it ready once it is.
+	Instances vminstance.Recorder
 }
 
 // VMInstance represents a running Firecracker VM.
@@ -176,6 +185,7 @@ func NewVMMManager(config interface{}) types.VMMManager {
 		config:    cfg,
 		vms:       make(map[string]*VMInstance),
 		socketDir: cfg.SocketDir,
+		instances: cfg.Instances,
 	}
 }
 
@@ -275,6 +285,15 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 		}
 	}()
 
+	// Publish the VM's identity before anything waits on the guest: the paths are
+	// true the moment the process exists, and a start that never completes still
+	// leaves the record a teardown needs.
+	record, err := vm.recordStarted(task, socketPath, cmd.Process.Pid)
+	if err != nil {
+		startErr = err
+		return startErr
+	}
+
 	// Wait for API server to be ready
 	if err := waitForAPIServer(socketPath, 10*time.Second); err != nil {
 		startErr = fmt.Errorf("firecracker API server not ready: %w", err)
@@ -320,6 +339,8 @@ func (vm *VMMManager) Start(ctx context.Context, task *types.Task, config interf
 
 	// Clear the error since we succeeded
 	startErr = nil
+
+	vm.markReady(record)
 
 	// Extract init system info from task annotations if available
 	initSystem := "none"
@@ -984,4 +1005,51 @@ func (vm *VMMManager) Snapshot(ctx context.Context, task *types.Task, opts inter
 func (vm *VMMManager) Restore(ctx context.Context, task *types.Task, snap interface{}) error {
 	log.Warn().Str("task_id", task.ID).Msg("Restore not implemented in VMMManager; use pkg/snapshot.Manager directly")
 	return fmt.Errorf("restore not implemented: use pkg/snapshot.Manager")
+}
+
+// recordStarted publishes the host-side identity of a VM that is starting, before
+// anything waits on the guest. A start that fails later keeps its record: it is
+// the only handle to the paths the failed process left behind.
+//
+// A registry that cannot take the record fails the start. `vm create` only wires
+// one when the node's state directory is usable, so this is the same rule the
+// daemon applies: a caller that keeps a registry does not run a VM it cannot
+// record.
+func (vm *VMMManager) recordStarted(task *types.Task, socketPath string, pid int) (vminstance.Instance, error) {
+	if vm.instances == nil {
+		return vminstance.Instance{}, nil
+	}
+
+	record := vminstance.Instance{
+		ID:        task.ID,
+		Kind:      vminstance.KindTask,
+		OwnerID:   task.ServiceID,
+		NodeID:    task.NodeID,
+		PID:       pid,
+		APISocket: socketPath,
+		// The muxer sits beside the API socket by the same rule the VMM's own
+		// vsock configuration uses. A `vm create` VM has no console socket — the
+		// CLI owns its console — so Console stays empty rather than naming one
+		// nobody serves.
+		VsockPath: scruntime.VsockPathFromSocket(socketPath),
+		Booted:    time.Now().UTC(),
+	}
+	if err := vm.instances.Put(record); err != nil {
+		return vminstance.Instance{}, fmt.Errorf("record the identity of VM %q before it boots: %w", task.ID, err)
+	}
+	return record, nil
+}
+
+// markReady records that the VM answered its API and is running. It cannot fail the
+// start: the VM is up and reachable, and a record left at Ready=false is worth less
+// than a VM killed for a metadata write.
+func (vm *VMMManager) markReady(record vminstance.Instance) {
+	if vm.instances == nil || record.ID == "" {
+		return
+	}
+	record.Ready = true
+	if err := vm.instances.Put(record); err != nil {
+		log.Warn().Err(err).Str("task_id", record.ID).
+			Msg("Could not mark the VM's instance record ready; it stays recorded as still booting")
+	}
 }

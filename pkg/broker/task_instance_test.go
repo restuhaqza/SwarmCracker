@@ -301,3 +301,26 @@ func TestLookupInstanceRecordWithoutAMuxerUsesTheMigrationRecord(t *testing.T) {
 	_, vmSocketDir, _ := task.sourceVMIdentity("/var/lib/sc/rootfs")
 	assert.Equal(t, filepath.Dir(restored.VsockPath), vmSocketDir)
 }
+
+// TestLookupAnswersFromTheRegistryWhenNoDerivedSocketExists pins what SBX-011
+// buys the broker: the record alone is enough. The socket directory holds nothing
+// named after the task, so the answer can only have come from the registry — and
+// the debug line says so, which is what an operator checks on a node where both
+// paths could have answered.
+func TestLookupAnswersFromTheRegistryWhenNoDerivedSocketExists(t *testing.T) {
+	logs := captureWarnings(t)
+
+	socketDir := t.TempDir()
+	record := instanceRecord(t, "task-1")
+	touchSockets(t, record)
+
+	src := SocketDirSource{Dir: socketDir, Instances: &fakeInstanceSource{instance: record, found: true}}
+	task, ok, err := src.Lookup(context.Background(), "task-1")
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	assert.Equal(t, record.APISocket, task.SocketPath)
+	_, statErr := os.Stat(scruntime.SocketPath(socketDir, "task-1"))
+	require.ErrorIs(t, statErr, os.ErrNotExist, "the filename derivation has nothing to answer with")
+	assert.Contains(t, logs.String(), "Resolved the task from the instance registry")
+}
