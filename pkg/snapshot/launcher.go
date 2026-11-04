@@ -122,6 +122,13 @@ type Launched struct {
 	StatePath string
 	MemPath   string
 
+	// DiskCopy is how the instance was given its own disk: a reflink shares the
+	// source's blocks, so the instance costs no data until it writes, and any other
+	// mode is a copy that costs the disk's size. It is reported because a
+	// filesystem without reflink support is otherwise invisible — the instances
+	// simply get expensive — and it is empty for a launcher that staged no disk.
+	DiskCopy CopyMode
+
 	// Stop ends the instance. It is the only handle the launcher returns for the
 	// process, so a caller that never calls it leaks the VM. It is idempotent:
 	// stopping an instance whose process already exited is success, which is what

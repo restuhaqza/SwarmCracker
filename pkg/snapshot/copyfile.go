@@ -2,6 +2,7 @@ package snapshot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,45 +18,76 @@ const diskFileName = "rootfs.ext4"
 // unit of cancellation latency, not a buffer-size tuning knob.
 const copyChunkSize = 1 << 20
 
+// CopyMode is how a copy produced its destination. It is reported rather than
+// assumed because the difference is disk: a filesystem that can reflink shares the
+// source's blocks, and one that cannot writes every byte again. A node planning
+// its capacity, or an operator whose instances suddenly cost their images' size,
+// has to be able to see which one happened.
+type CopyMode string
+
+const (
+	// CopyNone is the zero value: no copy was made, because it failed or was never
+	// asked for.
+	CopyNone CopyMode = ""
+	// CopyReflink means the destination shares the source's blocks (FICLONE) and
+	// diverges only as one side is written, so the copy costs no data.
+	CopyReflink CopyMode = "reflink"
+	// CopySparse means the data extents were written out and the holes kept, which
+	// is what a filesystem without reflink gives a disk image.
+	CopySparse CopyMode = "sparse"
+	// CopyFull means every byte, holes included, was written.
+	CopyFull CopyMode = "full"
+)
+
 // copyDiskFile is the seam a test uses to observe when the task disk is copied
 // relative to the VM's pause/resume pair. Production never replaces it.
 var copyDiskFile = copyFile
 
 // copyFile copies src to dst, creating dst's parent directories and keeping the
-// source's permission bits. The copy is flushed before it returns.
+// source's permission bits. The copy is flushed before it returns, and the mode it
+// took is reported: a reflink shares the source's blocks, a sparse copy keeps the
+// holes, and a full copy writes every byte.
 //
 // The copy is chunked and holds no lock, but it does stop when ctx is cancelled:
 // a request that gave up must not keep a node busy copying for minutes. A
 // destination left half-written by a failure or a cancellation is removed, so a
 // caller that sees an error can assume no destination file exists. The platform
-// files choose the mechanism (see copyFileData): a reflink where the filesystem
-// supports one, a sparse copy on Linux, and a plain byte copy everywhere else.
-func copyFile(ctx context.Context, src, dst string) (retErr error) {
+// files choose the mechanism (see copyFileData).
+//
+// A destination that is the source file itself is refused before anything is
+// opened: the copy exists so that two instances, or a snapshot and its source, each
+// own their own file, and opening the source as the destination would truncate the
+// very disk it was asked to copy.
+func copyFile(ctx context.Context, src, dst string) (mode CopyMode, retErr error) {
 	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("copy %s: %w", src, err)
+		return CopyNone, fmt.Errorf("copy %s: %w", src, err)
 	}
 
 	srcFile, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("open source: %w", err)
+		return CopyNone, fmt.Errorf("open source: %w", err)
 	}
 	defer srcFile.Close()
 
 	info, err := srcFile.Stat()
 	if err != nil {
-		return fmt.Errorf("stat source: %w", err)
+		return CopyNone, fmt.Errorf("stat source: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("source %s is not a regular file", src)
+		return CopyNone, fmt.Errorf("source %s is not a regular file", src)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("create destination directory: %w", err)
+		return CopyNone, fmt.Errorf("create destination directory: %w", err)
+	}
+
+	if err := refuseSharedDestination(info, src, dst); err != nil {
+		return CopyNone, err
 	}
 
 	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
 	if err != nil {
-		return fmt.Errorf("create destination: %w", err)
+		return CopyNone, fmt.Errorf("create destination: %w", err)
 	}
 
 	defer func() {
@@ -66,16 +98,43 @@ func copyFile(ctx context.Context, src, dst string) (retErr error) {
 			// A partially copied disk must never be mistaken for a snapshot file
 			// or for a task disk.
 			_ = os.Remove(dst)
+			mode = CopyNone
 		}
 	}()
 
-	if err := copyFileData(ctx, dstFile, srcFile); err != nil {
-		return fmt.Errorf("copy data: %w", err)
+	if mode, retErr = copyFileData(ctx, dstFile, srcFile); retErr != nil {
+		return CopyNone, fmt.Errorf("copy data: %w", retErr)
 	}
-	if err := dstFile.Sync(); err != nil {
-		return fmt.Errorf("fsync destination: %w", err)
+	if retErr = dstFile.Sync(); retErr != nil {
+		return CopyNone, fmt.Errorf("fsync destination: %w", retErr)
 	}
 
+	// The copy wrote a file of its own. A destination that still shares the
+	// source's inode after the copy would be one disk under two names, and the
+	// guest's writes to one would corrupt the other, so nothing is published under
+	// a name that turns out to be the source.
+	if err := refuseSharedDestination(info, src, dst); err != nil {
+		return CopyNone, err
+	}
+
+	return mode, nil
+}
+
+// refuseSharedDestination reports ErrSharedDisk when dst already exists and is the
+// file info describes, following symlinks. A destination that does not exist is
+// not the source: creating one is what a copy does.
+func refuseSharedDestination(info os.FileInfo, src, dst string) error {
+	dstInfo, err := os.Stat(dst)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat destination %s: %w", dst, err)
+	}
+	if os.SameFile(info, dstInfo) {
+		return fmt.Errorf("%w: %s and %s are one file, and a copy must never overwrite the disk it copies",
+			ErrSharedDisk, src, dst)
+	}
 	return nil
 }
 
@@ -105,7 +164,9 @@ func replaceFile(ctx context.Context, src, dst string) error {
 		return fmt.Errorf("close temporary file: %w", closeErr)
 	}
 
-	if err := copyFile(ctx, src, tmpPath); err != nil {
+	// The mode a restore's copy took is the launcher's to report when it stages an
+	// instance's disk; this path only needs the bytes.
+	if _, err := copyFile(ctx, src, tmpPath); err != nil {
 		_ = os.Remove(tmpPath) // copyFile already removes it; this is belt and braces
 		return err
 	}

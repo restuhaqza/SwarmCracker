@@ -183,7 +183,7 @@ func TestCreateSnapshotCopiesTheDiskWhileTheVMIsPaused(t *testing.T) {
 
 	var pausedDuringCopy bool
 	var visibleBeforePublish []string
-	copyDiskFile = func(ctx context.Context, src, dst string) error {
+	copyDiskFile = func(ctx context.Context, src, dst string) (CopyMode, error) {
 		pausedDuringCopy = timeline.isPaused()
 		timeline.record(eventCopy, timeline.isPaused())
 
@@ -233,10 +233,10 @@ func TestCreateSnapshotAbortedCopyLeavesNoSnapshotAndResumes(t *testing.T) {
 	t.Cleanup(func() { copyDiskFile = original })
 
 	interrupted := errors.New("disk copy interrupted")
-	copyDiskFile = func(_ context.Context, _, dst string) error {
+	copyDiskFile = func(_ context.Context, _, dst string) (CopyMode, error) {
 		require.NoError(t, os.WriteFile(dst, content[:len(content)/2], 0o600))
 		cancel()
-		return interrupted
+		return CopyNone, interrupted
 	}
 
 	_, err = mgr.CreateSnapshot(ctx, "task-1", socketPath, CreateOptions{RootfsPath: rootfsPath})
