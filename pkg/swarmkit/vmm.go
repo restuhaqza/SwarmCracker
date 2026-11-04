@@ -59,7 +59,7 @@ type VMMManager struct {
 	// start publishes its record before it waits for the VM, so a start that
 	// never completes still leaves the paths a teardown needs. Nil means this
 	// caller keeps no registry and resolution falls back to the derivation.
-	instances vminstance.Recorder
+	instances vminstance.Registry
 	logger    zerolog.Logger
 }
 
@@ -88,7 +88,7 @@ type VMMManagerConfig struct {
 	ResourceLimits  jailer.ResourceLimits
 	// Instances is the node's VM registry. When set, every cold start writes the
 	// VM's record before the VM is reachable, and marks it ready once it is.
-	Instances vminstance.Recorder
+	Instances vminstance.Registry
 }
 
 // toInt converts an interface{} value to int, handling both int and float64.
@@ -866,6 +866,11 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 		// The cgroup must not outlive the VM, on either start path, even when
 		// the process bookkeeping is already gone.
 		v.removeVMCgroup(task.ID)
+		// A VM with no process bookkeeping owns nothing. If its record describes a
+		// VM that is already gone — a start that failed before this manager
+		// tracked it, or a daemon life that ended — the record is the only handle
+		// to its netns, TAP device and disk, so the stop is what frees them.
+		v.releaseInstance(task.ID)
 		return fmt.Errorf("task not found")
 	}
 
@@ -901,6 +906,10 @@ func (v *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 
 	v.forgetProcess(task.ID)
 	v.cleanupVMSockets(task.ID)
+	// The VM's record is deleted only now: the process is gone, its sockets and
+	// sidecar are gone, and the record's netns, TAP device and disk go with it. A
+	// stopped VM must not leave a record that resolves to nothing.
+	v.releaseInstance(task.ID)
 	v.logger.Info().Str("task_id", task.ID).Msg("Firecracker VM stopped")
 
 	return nil
@@ -935,6 +944,7 @@ func (v *VMMManager) ForceStop(ctx context.Context, task *types.Task) error {
 
 	v.forgetProcess(task.ID)
 	v.cleanupVMSockets(task.ID)
+	v.releaseInstance(task.ID)
 	v.logger.Info().Str("task_id", task.ID).Msg("Firecracker VM force stopped")
 
 	return nil
@@ -1136,6 +1146,7 @@ func (v *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 
 	v.forgetProcess(task.ID)
 	v.cleanupVMSockets(task.ID)
+	v.releaseInstance(task.ID)
 
 	return nil
 }
@@ -1333,8 +1344,13 @@ func (v *VMMManager) recordStarted(task *types.Task, socketPath string, pid, jai
 		// in a sidecar it writes beside the API socket. The record names that file
 		// so a reader asks where it is instead of rebuilding the name.
 		Metadata: filepath.Join(v.socketDir, task.ID+scruntime.VMMetadataSuffix),
-		JailUID:  jailUID,
-		Booted:   time.Now().UTC(),
+		// The disk the VM owns outright, if any: the per-task rootfs copy the
+		// executor marks ephemeral. It is the one file a teardown can free from the
+		// record alone, and the only one it may delete — an image cache or a golden
+		// artifact is shared with every VM that boots from it.
+		Disk:    task.EphemeralRootfs(),
+		JailUID: jailUID,
+		Booted:  time.Now().UTC(),
 	}
 	if err := v.instances.Put(record); err != nil {
 		return vminstance.Instance{}, fmt.Errorf(
@@ -1342,6 +1358,29 @@ func (v *VMMManager) recordStarted(task *types.Task, socketPath string, pid, jai
 			task.ID, err)
 	}
 	return record, nil
+}
+
+// releaseInstance tears down what the VM's record names — the TAP device, the
+// netns and the disk — and deletes the record, so a stopped VM leaves neither a
+// record nor the resources behind it. It is best effort: the VM is already gone, so
+// a failure is a leak to report, and the record is kept (vminstance.Teardown keeps
+// it) so a retry has the same handle.
+//
+// It is safe on every stop path, including a task this manager never tracked: a
+// record that still names a live process is refused by the teardown, because a VM
+// this manager cannot stop must not have its devices freed out from under it.
+func (v *VMMManager) releaseInstance(taskID string) {
+	if v.instances == nil {
+		return
+	}
+	found, err := vminstance.Teardown(v.instances, taskID, vminstance.Leftovers{})
+	switch {
+	case err != nil:
+		v.logger.Warn().Err(err).Str("task_id", taskID).
+			Msg("Could not release everything the instance record names; the record is kept for a retry")
+	case found:
+		v.logger.Debug().Str("task_id", taskID).Msg("Released the VM's instance record")
+	}
 }
 
 // markReady records that the VM answered its API and is running. It cannot fail

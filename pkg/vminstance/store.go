@@ -213,6 +213,26 @@ func (s *Store) Get(id string) (Instance, bool, error) {
 	return inst, true, nil
 }
 
+// Peek returns the record for an instance without asking whether its VM is still
+// running. It is the read a teardown needs: a record whose process is gone is
+// exactly the handle to the resources that still have to be freed — its netns, TAP
+// device and disk — so the caller about to free them must be able to see it. found
+// is false for an ID this node never recorded; a record that cannot be used at all
+// is an error, and the file is left in place.
+//
+// Every other reader uses Get, which refuses a dead record: a record exists to be
+// dialled, and handing a caller a socket nobody listens on would make a dead VM
+// look alive. This is the one caller for which a dead VM is the subject.
+func (s *Store) Peek(id string) (Instance, bool, error) {
+	if err := s.usable(); err != nil {
+		return Instance{}, false, err
+	}
+	if err := instanceIDProblem(id); err != nil {
+		return Instance{}, false, err
+	}
+	return s.read(id)
+}
+
 // List returns every live instance sorted by ID, plus the paths of the records
 // it could not use, so a listing is deterministic and complete. A record whose
 // process is gone is not listed — it must not resolve — and is not reported as

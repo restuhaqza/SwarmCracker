@@ -994,7 +994,11 @@ swarmcracker api token create --name migration --role admin \
    ```
    After a restart the daemon reports records whose process is gone and **keeps
    them**: the record is the only handle to that VM's netns, TAP device and disk.
-   Do not delete one until those are gone.
+   Do not delete one until those are gone — stopping the VM (or removing the
+   task) is what frees them and then deletes the record. A start that fails after
+   its record is written leaves the record for exactly that teardown; the startup
+   pass never deletes one, because doing so would erase the only pointer to what
+   the failed VM left behind.
 
    The record is also where a reader is told where a VM's paths are, instead of
    rebuilding them from a task ID: the console socket (`vm attach`), the guest

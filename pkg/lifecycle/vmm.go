@@ -54,7 +54,7 @@ type VMMManager struct {
 	// publishes its record before it waits for the VM. Nil means this caller keeps
 	// no registry (an unprivileged `vm create`), and resolution falls back to the
 	// filename derivation.
-	instances vminstance.Recorder
+	instances vminstance.Registry
 }
 
 // SetConsoleWriter redirects the serial console of VMs started from now on to
@@ -88,7 +88,7 @@ type ManagerConfig struct {
 	EnableJailer    bool
 	// Instances is the node's VM registry. When set, `vm create` publishes the
 	// VM's record before it is reachable and marks it ready once it is.
-	Instances vminstance.Recorder
+	Instances vminstance.Registry
 }
 
 // VMInstance represents a running Firecracker VM.
@@ -576,6 +576,11 @@ func (vm *VMMManager) Stop(ctx context.Context, task *types.Task) error {
 	// A cgroup must not outlive its VM; this is a no-op when the VM never had one.
 	vm.removeCgroup(task.ID)
 
+	// The record goes with the VM: the process is gone, so the netns, TAP device
+	// and disk it names are garbage, and a stopped VM must not leave a record that
+	// resolves to nothing.
+	vm.releaseInstance(task.ID)
+
 	return stopErr
 }
 
@@ -825,6 +830,11 @@ func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 
 	vmInstance, exists := vm.vms[task.ID]
 	if !exists {
+		// A start that failed after it published its record leaves no VM entry,
+		// but it does leave the record — the only handle to the netns, TAP device
+		// and disk the failed process left behind. Removing a VM this manager does
+		// not track is therefore a teardown, not a no-op.
+		vm.releaseInstance(task.ID)
 		return nil
 	}
 
@@ -863,6 +873,8 @@ func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 
 	// A cgroup must not outlive its VM; this is a no-op when the VM never had one.
 	vm.removeCgroup(task.ID)
+
+	vm.releaseInstance(task.ID)
 
 	log.Info().
 		Str("task_id", task.ID).
@@ -1032,7 +1044,11 @@ func (vm *VMMManager) recordStarted(task *types.Task, socketPath string, pid int
 		// CLI owns its console — so Console stays empty rather than naming one
 		// nobody serves.
 		VsockPath: scruntime.VsockPathFromSocket(socketPath),
-		Booted:    time.Now().UTC(),
+		// The disk this VM owns outright, if any: the per-task rootfs copy the
+		// executor marks ephemeral. It is what a teardown can free from the record
+		// alone, and the only file it may delete.
+		Disk:   task.EphemeralRootfs(),
+		Booted: time.Now().UTC(),
 	}
 	if err := vm.instances.Put(record); err != nil {
 		return vminstance.Instance{}, fmt.Errorf(
@@ -1040,6 +1056,24 @@ func (vm *VMMManager) recordStarted(task *types.Task, socketPath string, pid int
 			task.ID, err)
 	}
 	return record, nil
+}
+
+// releaseInstance tears down what the VM's record names — the TAP device, the netns
+// and the disk — and deletes the record. It is best effort: the VM is already gone,
+// so a failure is a leak to report, and the record is kept so a retry has the same
+// handle.
+func (vm *VMMManager) releaseInstance(taskID string) {
+	if vm.instances == nil {
+		return
+	}
+	found, err := vminstance.Teardown(vm.instances, taskID, vminstance.Leftovers{})
+	switch {
+	case err != nil:
+		log.Warn().Err(err).Str("task_id", taskID).
+			Msg("Could not release everything the instance record names; the record is kept for a retry")
+	case found:
+		log.Debug().Str("task_id", taskID).Msg("Released the VM's instance record")
+	}
 }
 
 // markReady records that the VM answered its API and is running. It cannot fail the

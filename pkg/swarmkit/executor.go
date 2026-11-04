@@ -150,7 +150,7 @@ type Config struct {
 	// every cold start writes the VM's record before the VM is reachable; nil
 	// means this caller keeps no registry and resolution falls back to the
 	// filename derivation.
-	Instances vminstance.Recorder
+	Instances vminstance.Registry
 
 	Hostname      string `yaml:"hostname"`
 	JoinAddr      string `yaml:"join_addr"`

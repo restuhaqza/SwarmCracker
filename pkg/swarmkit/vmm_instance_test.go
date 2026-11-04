@@ -200,3 +200,191 @@ type refusingRecorder struct{}
 func (refusingRecorder) Put(vminstance.Instance) error {
 	return os.ErrPermission
 }
+
+// The reads answer "no record": the start fails before one exists, so a teardown
+// has nothing to find.
+func (refusingRecorder) Get(string) (vminstance.Instance, bool, error) {
+	return vminstance.Instance{}, false, nil
+}
+
+func (refusingRecorder) Peek(string) (vminstance.Instance, bool, error) {
+	return vminstance.Instance{}, false, nil
+}
+
+func (refusingRecorder) Delete(string) error { return nil }
+
+// staleStore is a registry whose records can be made to describe VMs that are
+// gone. The record must be written while its process is "alive" (Put refuses a
+// dead one), and the flip is what a killed process, or a daemon life that ended,
+// looks like to a teardown.
+func staleStore(t *testing.T) (*vminstance.Store, func()) {
+	t.Helper()
+
+	alive := true
+	store, err := vminstance.NewStore(vminstance.Config{
+		Dir:   vminstance.Dir(t.TempDir()),
+		Alive: func(int) bool { return alive },
+	})
+	require.NoError(t, err)
+	return store, func() { alive = false }
+}
+
+// putStaleRecord writes a record for a VM that owns a disk, then makes it stale.
+func putStaleRecord(t *testing.T, store *vminstance.Store, markGone func(), id, socketDir string) string {
+	t.Helper()
+
+	disk := filepath.Join(t.TempDir(), id+".ext4")
+	require.NoError(t, os.WriteFile(disk, []byte("rootfs"), 0o600))
+	require.NoError(t, store.Put(vminstance.Instance{
+		ID:        id,
+		Kind:      vminstance.KindTask,
+		PID:       os.Getpid(),
+		APISocket: scruntime.SocketPath(socketDir, id),
+		Disk:      disk,
+		Booted:    time.Now().UTC(),
+	}))
+	markGone()
+	return disk
+}
+
+// TestStopTearsDownTheRecordOfAVMThatIsGone pins the cleanup half of SBX-015 for
+// the case the record exists for: the manager never tracked this VM — a start that
+// failed before it was tracked, or a daemon life that ended — so there is no
+// process to signal, but the record is the only handle to the disk the VM left
+// behind, and the stop is what frees it.
+func TestStopTearsDownTheRecordOfAVMThatIsGone(t *testing.T) {
+	socketDir := shortVMDir(t)
+	store, markGone := staleStore(t)
+	disk := putStaleRecord(t, store, markGone, "task-gone", socketDir)
+
+	manager, err := NewVMMManagerWithConfig(&VMMManagerConfig{
+		FirecrackerPath: sleepyFirecracker(t),
+		SocketDir:       socketDir,
+		Instances:       store,
+	})
+	require.NoError(t, err)
+
+	err = manager.Stop(context.Background(), &types.Task{ID: "task-gone"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "task not found", "an untracked task is still reported as untracked")
+
+	_, found, peekErr := store.Peek("task-gone")
+	require.NoError(t, peekErr)
+	assert.False(t, found, "a stopped VM must not leave a record")
+
+	_, statErr := os.Stat(disk)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the disk the record named is freed")
+}
+
+// TestStopLeavesTheRecordOfALiveVMItCannotStop is the guard on the same path: a
+// record that still names a running process belongs to a VM this manager cannot
+// stop, so its devices must not be freed out from under it and its record must
+// stay.
+func TestStopLeavesTheRecordOfALiveVMItCannotStop(t *testing.T) {
+	socketDir := shortVMDir(t)
+	store := recordingStore(t)
+
+	disk := filepath.Join(t.TempDir(), "task-live.ext4")
+	require.NoError(t, os.WriteFile(disk, []byte("rootfs"), 0o600))
+	require.NoError(t, store.Put(vminstance.Instance{
+		ID:        "task-live",
+		Kind:      vminstance.KindTask,
+		PID:       os.Getpid(),
+		APISocket: scruntime.SocketPath(socketDir, "task-live"),
+		Disk:      disk,
+		Booted:    time.Now().UTC(),
+	}))
+
+	manager, err := NewVMMManagerWithConfig(&VMMManagerConfig{
+		FirecrackerPath: sleepyFirecracker(t),
+		SocketDir:       socketDir,
+		Instances:       store,
+	})
+	require.NoError(t, err)
+
+	require.Error(t, manager.Stop(context.Background(), &types.Task{ID: "task-live"}))
+
+	_, found, peekErr := store.Peek("task-live")
+	require.NoError(t, peekErr)
+	assert.True(t, found, "a live VM's record must survive a stop this manager cannot perform")
+
+	_, statErr := os.Stat(disk)
+	assert.NoError(t, statErr, "a live VM's disk must not be deleted")
+}
+
+// TestRemoveTearsDownAStaleRecord pins the terminal path: Remove frees what the
+// record names and deletes it, even when the manager holds no process for the task
+// (the state a failed boot leaves).
+func TestRemoveTearsDownAStaleRecord(t *testing.T) {
+	socketDir := shortVMDir(t)
+	store, markGone := staleStore(t)
+	disk := putStaleRecord(t, store, markGone, "task-failed", socketDir)
+
+	manager, err := NewVMMManagerWithConfig(&VMMManagerConfig{
+		FirecrackerPath: sleepyFirecracker(t),
+		SocketDir:       socketDir,
+		Instances:       store,
+	})
+	require.NoError(t, err)
+
+	require.NoError(t, manager.Remove(context.Background(), &types.Task{ID: "task-failed"}))
+
+	_, found, peekErr := store.Peek("task-failed")
+	require.NoError(t, peekErr)
+	assert.False(t, found)
+
+	_, statErr := os.Stat(disk)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
+
+// TestRecordStartedNamesOnlyTheDiskTheVMOwns pins which disk a record may carry:
+// the per-task copy the executor marks ephemeral, never a shared image cache or a
+// golden artifact — a teardown that deleted one of those would break every other
+// VM booting from it.
+func TestRecordStartedNamesOnlyTheDiskTheVMOwns(t *testing.T) {
+	socketDir := shortVMDir(t)
+	store := recordingStore(t)
+	manager, err := NewVMMManagerWithConfig(&VMMManagerConfig{
+		FirecrackerPath: sleepyFirecracker(t),
+		SocketDir:       socketDir,
+		Instances:       store,
+	})
+	require.NoError(t, err)
+
+	cases := []struct {
+		name        string
+		annotations map[string]string
+		want        string
+	}{
+		{
+			name: "an ephemeral per-task copy",
+			annotations: map[string]string{
+				types.AnnotationRootfs:          "/var/lib/firecracker/tasks/task-1.ext4",
+				types.AnnotationRootfsEphemeral: "true",
+			},
+			want: "/var/lib/firecracker/tasks/task-1.ext4",
+		},
+		{
+			name:        "a shared image cache",
+			annotations: map[string]string{types.AnnotationRootfs: "/var/cache/swarmcracker/image.ext4"},
+			want:        "",
+		},
+		{
+			name: "an ephemeral copy the task does not name",
+			annotations: map[string]string{
+				types.AnnotationRootfsEphemeral: "true",
+			},
+			want: "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := &types.Task{ID: "task-disk", Annotations: tc.annotations}
+
+			record, err := manager.recordStarted(task, scruntime.SocketPath(socketDir, task.ID), os.Getpid(), 0)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, record.Disk)
+		})
+	}
+}
