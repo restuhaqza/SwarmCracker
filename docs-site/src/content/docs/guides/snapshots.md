@@ -85,6 +85,12 @@ existed — a restore needs the original disk in place.
 API resolve. A restored VM is the task's VM, not a second VM beside it: it answers
 on the task's vsock muxer, and it is listed and stopped under the task's ID.
 
+`restore` also captures the VM's serial console from its first byte, in
+`<log-dir>/<task-id>.log` — the same file `vm logs <task-id>` reads and the one the
+daemon's restore writes. The path is printed when the restore finishes
+(`Console:`), and it is recorded as the restored VM's log in the CLI state, so a
+restored VM's boot output is readable exactly like a booted task's.
+
 Which command stops a restored VM depends on who restored it. A VM restored by
 this CLI is registered under the task ID, so `vm stop <task>` ends it. A VM
 restored through the node — the API route, or a restore from an earlier daemon

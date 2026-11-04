@@ -110,15 +110,33 @@ func rawModeFor(in io.Reader) (restore func(), ok bool) {
 // attachToVM connects to a VM console and proxies bytes between the local
 // terminal and the guest until the console closes or the user detaches.
 func attachToVM(ctx context.Context, socketDir, ref string, in, out *os.File) error {
-	taskID, err := resolveLiveVMTaskID(socketDir, ref)
+	// The console path comes from the node's registry when it has a record for
+	// the VM, so a VM whose console is not a function of its ID — pooled,
+	// sandboxed, restored or forked — resolves without a guess. The directory
+	// scan stays as the one-release fallback for a VM started before records
+	// existed.
+	resolver := console.Resolver{SocketDir: socketDir, Instances: vmInstances()}
+
+	resolved, err := resolver.Resolve(ref)
 	if err != nil {
 		return err
+	}
+	taskID := resolved.ID
+
+	// A recorded VM is live by its record: the registry refuses a record whose
+	// VMM process is gone. A VM with no record is a legacy one, and its console
+	// socket file can outlive its VMM, so the API socket stays the liveness
+	// check it has always been.
+	if !resolved.Recorded {
+		if _, err := resolveLiveVMTaskID(socketDir, taskID); err != nil {
+			return err
+		}
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	conn, _, err := console.Dial(dialCtx, socketDir, taskID)
+	conn, _, err := resolver.Dial(dialCtx, taskID)
 	if err != nil {
 		return err
 	}

@@ -244,3 +244,49 @@ func TestVMMetadata_HealthOmittedWhenNil(t *testing.T) {
 		t.Errorf("metadata without health emitted a health key: %s", data)
 	}
 }
+
+// TestReadVMMetadataFile pins the reader a caller uses when it was told where the
+// sidecar is (the node's instance record names it, SBX-013) instead of deriving
+// the name from a directory and a task ID: the path is read as given, and a
+// missing or malformed file is still "no metadata", never an error.
+func TestReadVMMetadataFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteVMMetadata(dir, &VMMetadata{
+		ID:          "sbx-1",
+		NetworkID:   "net-1",
+		IPAddresses: []string{"10.62.0.2/24"},
+	}); err != nil {
+		t.Fatalf("WriteVMMetadata: %v", err)
+	}
+
+	// The writer produced <dir>/sbx-1.net.json. Renaming it proves the reader uses
+	// the path it is given rather than rebuilding the name.
+	written := filepath.Join(dir, "sbx-1"+VMMetadataSuffix)
+	renamed := filepath.Join(dir, "runtime.json")
+	if err := os.Rename(written, renamed); err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+
+	md, ok := ReadVMMetadataFile(renamed)
+	if !ok {
+		t.Fatal("ReadVMMetadataFile did not read the path it was given")
+	}
+	if md.ID != "sbx-1" || md.NetworkID != "net-1" || len(md.IPAddresses) != 1 {
+		t.Errorf("decoded %+v, want the sidecar at %s", md, renamed)
+	}
+
+	if _, ok := ReadVMMetadataFile(filepath.Join(dir, "absent.json")); ok {
+		t.Error("a missing sidecar must be no metadata")
+	}
+
+	if err := os.WriteFile(renamed, []byte("{"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, ok := ReadVMMetadataFile(renamed); ok {
+		t.Error("a malformed sidecar must be no metadata, not an error")
+	}
+
+	if _, ok := ReadVMMetadataFile(""); ok {
+		t.Error("an empty path must be no metadata")
+	}
+}

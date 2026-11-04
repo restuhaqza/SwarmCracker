@@ -108,6 +108,13 @@ type Instance struct {
 	// Console is the host path of the guest's console. It is empty for a VM
 	// started without one.
 	Console string `json:"console,omitempty"`
+	// Metadata is the host path of the runtime metadata the daemon publishes for
+	// this VM: the sidecar that carries the guest's addresses and the live
+	// healthcheck verdict (see runtime.VMMetadata). It is a path the reader needs
+	// and cannot derive from the instance ID — the sidecar is named by whoever
+	// writes it — so the record states it. It is empty for a VM nobody publishes
+	// metadata for, which is every VM that is not a daemon-managed task.
+	Metadata string `json:"metadata,omitempty"`
 	// NetNS is the network namespace the VM is isolated in. It is empty for a
 	// VM on the shared bridge.
 	NetNS string `json:"netns,omitempty"`
@@ -171,6 +178,7 @@ func (i Instance) validate() error {
 	for _, field := range []struct{ name, value string }{
 		{"vsockPath", i.VsockPath},
 		{"console", i.Console},
+		{"metadata", i.Metadata},
 		{"netns", i.NetNS},
 	} {
 		if err := hostPathProblem(field.name, field.value, false); err != nil {

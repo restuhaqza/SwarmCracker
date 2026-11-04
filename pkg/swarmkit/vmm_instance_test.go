@@ -107,6 +107,8 @@ func TestStartRecordsTheInstanceBeforeItWaitsForTheGuest(t *testing.T) {
 	assert.Equal(t, scruntime.SocketPath(socketDir, task.ID), record.APISocket)
 	assert.Equal(t, scruntime.VsockPath(socketDir, task.ID), record.VsockPath)
 	assert.Equal(t, filepath.Join(socketDir, task.ID+scruntime.ConsoleSocketSuffix), record.Console)
+	assert.Equal(t, filepath.Join(socketDir, task.ID+scruntime.VMMetadataSuffix), record.Metadata,
+		"the record names the sidecar the executor publishes, so health asks instead of rebuilding the name")
 	assert.Positive(t, record.PID)
 	assert.False(t, record.Ready, "the VM never answered, so it is still booting")
 }

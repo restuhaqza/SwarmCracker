@@ -1329,8 +1329,12 @@ func (v *VMMManager) recordStarted(task *types.Task, socketPath string, pid, jai
 		// this manager does not create, so they stay empty rather than guessed.
 		VsockPath: scruntime.VsockPathFromSocket(socketPath),
 		Console:   filepath.Join(v.socketDir, task.ID+scruntime.ConsoleSocketSuffix),
-		JailUID:   jailUID,
-		Booted:    time.Now().UTC(),
+		// The executor publishes the task's addresses and live healthcheck state
+		// in a sidecar it writes beside the API socket. The record names that file
+		// so a reader asks where it is instead of rebuilding the name.
+		Metadata: filepath.Join(v.socketDir, task.ID+scruntime.VMMetadataSuffix),
+		JailUID:  jailUID,
+		Booted:   time.Now().UTC(),
 	}
 	if err := v.instances.Put(record); err != nil {
 		return vminstance.Instance{}, fmt.Errorf(

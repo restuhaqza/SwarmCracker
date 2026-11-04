@@ -2,7 +2,10 @@ package main
 
 import (
 	"github.com/restuhaqza/swarmcracker/pkg/client"
+	"github.com/restuhaqza/swarmcracker/pkg/console"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
+	"github.com/rs/zerolog/log"
 )
 
 // defaultLocalStateDir is the node state directory the local commands read when
@@ -19,6 +22,31 @@ import (
 // moves every command that reads what the daemon wrote.
 func defaultLocalStateDir() string {
 	return client.DefaultConfig().StateDir
+}
+
+// vmInstances opens the node's instance registry (pkg/vminstance) under the CLI's
+// state directory: the same store `vm create` writes and the daemon keeps, so a
+// local command resolves the VMs the node recorded instead of deriving their
+// paths from an ID.
+//
+// It returns nil when the directory cannot be opened — an unprivileged run on a
+// node whose state directory belongs to the daemon — because "no registry" is a
+// state every reader handles: resolution falls back to the derivation, which is
+// what every node did before records existed. A typed-nil *vminstance.Store would
+// not do: it is a non-nil interface whose every call fails, so the failure is
+// logged here and nil is returned.
+func vmInstances() console.InstanceSource {
+	dir := vminstance.Dir(defaultLocalStateDir())
+	if dir == "" {
+		return nil
+	}
+	store, err := vminstance.NewStore(vminstance.Config{Dir: dir})
+	if err != nil {
+		log.Warn().Err(err).
+			Msg("Could not open the instance registry; resolving VMs from their socket names")
+		return nil
+	}
+	return store
 }
 
 // localVsockPath answers which vsock muxer a task's VM listens on.

@@ -996,6 +996,13 @@ swarmcracker api token create --name migration --role admin \
    them**: the record is the only handle to that VM's netns, TAP device and disk.
    Do not delete one until those are gone.
 
+   The record is also where a reader is told where a VM's paths are, instead of
+   rebuilding them from a task ID: the console socket (`vm attach`), the guest
+   agent's vsock muxer (`exec`, file transfer) and the runtime sidecar that
+   carries the guest's addresses and live healthcheck verdict (health, `vm
+   status`). A VM with no record still resolves by the one-release derivation,
+   so a task started before the registry existed keeps working.
+
 ### VM Crashes / Exits Immediately
 
 **Symptoms:** VM starts then stops within seconds.

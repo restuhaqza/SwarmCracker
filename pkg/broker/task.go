@@ -37,15 +37,22 @@ type Task struct {
 	// /var/run/swarmcracker/<id>.log. It is empty when the source has no log
 	// directory; the log handler then answers not_found rather than guessing.
 	LogPath string
-	// ConsolePath is the task's interactive console Unix socket, e.g.
-	// /var/run/firecracker/<id>.console.sock. It is derived for a running task
-	// and stays empty for a log-only one: a stopped VM has no console to attach
-	// to, and the attach handler owns the not-found answer.
+	// ConsolePath is the task's interactive console Unix socket: the path the
+	// node's registry names for the VM, or — for a VM with no record — the derived
+	// /var/run/firecracker/<id>.console.sock. It stays empty for a log-only task
+	// and for a record that says the VM has no console: a stopped VM has no console
+	// to attach to, and the attach handler owns the not-found answer.
 	ConsolePath string
 	// NetNS is the network namespace the VM is isolated in, as the node's
 	// registry records it. It is empty for a VM on the shared bridge and for a
 	// task resolved from the filename derivation, which has no record to ask.
 	NetNS string
+	// MetadataPath is the runtime metadata sidecar the daemon publishes for the
+	// VM — the guest's addresses and its live healthcheck verdict — as the node's
+	// registry records it. It is empty for a task with no record, and for a
+	// record that names none; the health handler then derives the path beside the
+	// API socket, which is the one-release fallback.
+	MetadataPath string
 
 	// recordedVsockPath is the muxer a task's VM answers on when a node-local
 	// record names it: the registry for any VM it knows, or the restored-instance
@@ -65,6 +72,13 @@ type Task struct {
 	// VM on a restored task, and a restore would load a state file naming a disk
 	// whose bytes the artifact does not carry.
 	restoredDiskPath string
+	// recordedIdentity reports whether a node-local record named this task's VM,
+	// i.e. whether the resolver answered from the registry or from a
+	// restored-instance record rather than from the derivation. It is what makes
+	// a record authoritative about the paths it leaves out: a recorded VM with no
+	// muxer has no guest agent, and deriving <socketDir>/<id>.vsock for it would
+	// dial a socket nobody bound.
+	recordedIdentity bool
 }
 
 // sourceVMIdentity answers what an export of this task has to name: the task whose
@@ -85,9 +99,16 @@ func (t Task) sourceVMIdentity(rootfsDir string) (vmID, socketDir, diskPath stri
 // <socketDir>/<id>.vsock. It returns "" when the task has no socket path or no
 // ID, so a caller can distinguish "no VM" from a path that happens to live in the
 // current directory.
+//
+// A record is authoritative about what it leaves out: a VM it describes with no
+// muxer has no guest agent, so there is nothing to dial and no path to derive.
+// The derivation is only for a VM the node never recorded.
 func (t Task) VsockPath() string {
 	if t.recordedVsockPath != "" {
 		return t.recordedVsockPath
+	}
+	if t.recordedIdentity {
+		return ""
 	}
 	if t.SocketPath == "" || t.ID == "" {
 		return ""
@@ -108,6 +129,21 @@ func (t Task) guestAvailable() bool {
 // console server closes, so the attach handler answers not_found like exec does.
 func (t Task) consoleAvailable() bool {
 	return t.Running && t.ConsolePath != ""
+}
+
+// metadataPath is the runtime metadata sidecar this VM's addresses and health are
+// published in: the path the node's record names, or — for a VM the node never
+// recorded, and for a record written before the field existed — the one derived
+// beside the API socket. It returns "" when there is no VM to publish anything
+// for, so the health handler can tell "no sidecar" from "no VM".
+func (t Task) metadataPath() string {
+	if t.MetadataPath != "" {
+		return t.MetadataPath
+	}
+	if t.SocketPath == "" || t.ID == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(t.SocketPath), t.ID+scruntime.VMMetadataSuffix)
 }
 
 // stillRunning reports whether the task's microVM is still alive. The console
@@ -390,14 +426,10 @@ func (s SocketDirSource) recordedInstance(taskID string) (Task, bool, bool, erro
 		LogPath:           s.logPath(taskID),
 		ConsolePath:       instance.Console,
 		NetNS:             instance.NetNS,
+		MetadataPath:      instance.Metadata,
 		recordedVsockPath: instance.VsockPath,
+		recordedIdentity:  true,
 	}
-	if task.ConsolePath == "" {
-		// A record written before the console field existed names none, so the
-		// derivation is its fallback — the same one-release rule as the paths.
-		task.ConsolePath = s.consolePath(taskID)
-	}
-
 	if err := s.addRestoredProvenance(&task); err != nil {
 		return Task{}, false, true, err
 	}
@@ -487,6 +519,7 @@ func (s SocketDirSource) restoredTask(taskID string) (Task, bool, bool, error) {
 		LogPath:           s.logPath(taskID),
 		ConsolePath:       s.consolePath(taskID),
 		recordedVsockPath: record.VsockPath,
+		recordedIdentity:  true,
 		// The VM's host-side identity belongs to the source task, so an export of
 		// this task has to name that task's devices and copy the disk its state
 		// file records.
