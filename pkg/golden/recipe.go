@@ -17,7 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"gopkg.in/yaml.v3"
 )
@@ -233,13 +232,12 @@ func (r *Recipe) applyDefaults() {
 	if r.Spec.Runtime.Name == "" {
 		r.Spec.Runtime.Name = RuntimeNone
 	}
-	// Every template records the agent it was built with, so the host can refuse
-	// one it cannot drive instead of guessing from the artifact's age.
+	// Every template records the agent protocol it was built for, so the host
+	// can refuse one it cannot drive instead of guessing from the artifact's
+	// age. The agent version is not defaulted: only the booted agent can say
+	// which build it is, so the builder records what the guest reports.
 	if r.Spec.Agent.Protocol == "" {
 		r.Spec.Agent.Protocol = MinimumAgentProtocol
-	}
-	if r.Spec.Agent.Version == "" {
-		r.Spec.Agent.Version = agent.AgentVersion
 	}
 	if r.Spec.Build == "" {
 		// Single-workload images (injected tini) are assembled by the preparer.
@@ -356,14 +354,23 @@ func (r *Recipe) validateDisk(add func(string, ...any)) {
 	}
 }
 
+// BuilderRevision identifies the build pipeline that produces an artifact. It
+// is part of the recipe digest so a template built by an older pipeline is
+// never reused as up to date: revision 2 is the first that installs and
+// verifies the guest agent, so every artifact from revision 1 must be rebuilt
+// rather than silently served to a sandbox that cannot reach an agent.
+const BuilderRevision = 2
+
 // Digest returns a stable content hash of the artifact identity (name, version,
-// and build spec). Cosmetic metadata such as the description is excluded.
+// build pipeline revision, and build spec). Cosmetic metadata such as the
+// description is excluded.
 func (r *Recipe) Digest() string {
 	payload := struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
+		Builder int    `json:"builder"`
 		Spec    Spec   `json:"spec"`
-	}{r.Metadata.Name, r.Metadata.Version, r.Spec}
+	}{r.Metadata.Name, r.Metadata.Version, BuilderRevision, r.Spec}
 
 	data, err := json.Marshal(payload)
 	if err != nil {
