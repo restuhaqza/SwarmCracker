@@ -659,7 +659,7 @@ Direct Firecracker microVM management.
 | `logs <vm-id>` | View VM logs |
 | `migrate <task> --to <node>` | Move a running microVM to another node (requires `-H`) |
 | `stop <vm-id>` | Stop a microVM |
-| `snapshot` | Manage VM snapshots (`create`, `restore`, `stop-restored`, `list`, `delete`, `cleanup`). `restore` boots a VM from a snapshot and registers it (manage it with `vm stop` / `vm list`); `stop-restored <task>` stops the VM a restore started (SIGTERM, then SIGKILL after 10 s, socket removed), locally or through the manager with `-H` |
+| `snapshot` | Manage VM snapshots (`create`, `restore`, `stop-restored`, `list`, `delete`, `cleanup`). `restore` boots the task's VM from its snapshot and registers it under the task ID (manage it with `vm stop` / `vm list`); `stop-restored <task>` is **deprecated** — it stops the task's VM behind `<task>.sock` (SIGTERM, then SIGKILL after 10 s, socket removed), locally or through the manager with `-H` |
 | `status <vm-id>` | Show detailed VM status |
 
 **`vm create` flags:**
@@ -759,7 +759,7 @@ task that is not running or has no console answers `404 not_found` with
 duplex, the route does not work over HTTP/2. Without `-H`, `vm attach` is
 unchanged and uses `--socket-dir` on the node that hosts the task.
 
-**`vm snapshot stop-restored <task>`** stops the VM a snapshot restore started. A restore runs outside SwarmKit, so `vm stop` cannot reach it. Locally the command reads the task's `<socket-dir>/<task>.sock` (default `/var/run/firecracker`), which is where a restore starts the task's VM, resolves the Firecracker PID, sends SIGTERM, waits up to ten seconds, then SIGKILLs it and removes the socket; `<task>` may be an exact ID or any unique prefix. With `-H` it sends `DELETE /v1/tasks/{id}/restored` to the manager, which relays the stop to the node that holds the restored VM; the route needs the node's experimental snapshot capability and answers `404 not_found` with `details.reason: "no_restored_vm"` when nothing is tracked there.
+**`vm snapshot stop-restored <task>`** is deprecated: a restore now starts the task's own VM at the task's own socket, so `vm stop <task>` is the replacement for a VM this CLI restored (it is registered under the task ID). A VM restored through the node has no local state entry and `vm stop` refuses it as SwarmKit-managed, so `-H` on this command is still the way to stop that one. The command still reads the task's `<socket-dir>/<task>.sock` (default `/var/run/firecracker`), which is where a restore starts the task's VM, resolves the Firecracker PID, sends SIGTERM, waits up to ten seconds, then SIGKILLs it and removes the socket; `<task>` may be an exact ID or any unique prefix. With `-H` it sends `DELETE /v1/tasks/{id}/restored` to the manager, which relays the stop to the node that holds the restored VM; the route needs the node's experimental snapshot capability and answers `404 not_found` with `details.reason: "no_restored_vm"` when nothing is tracked there.
 
 `vm snapshot create`, `restore`, `list`, `delete` and `cleanup` are **local** commands: they talk to the node's Firecracker API socket or the snapshot directory directly, so they do not accept `-H` (only `stop-restored` does). `create` and `restore` also copy the whole task disk, so each takes a `--timeout` (default `5m`) that bounds the entire operation — snapshot plus copy. A deadline that fires there is an ordinary error, never `504`.
 

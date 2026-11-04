@@ -31,7 +31,6 @@ enabling fast restore (faster than cold boot) and future live migration.
 Example:
   swarmcracker vm snapshot create <task-id>
   swarmcracker vm snapshot restore <snapshot-id>
-  swarmcracker vm snapshot stop-restored <task-id>
   swarmcracker vm snapshot list
   swarmcracker vm snapshot delete <snapshot-id>
   swarmcracker vm snapshot cleanup`,
@@ -373,24 +372,33 @@ func newSnapshotStopRestoredCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "stop-restored <task>",
-		Short: "Stop the VM a snapshot restore started",
-		Long: `Stop the restored microVM a snapshot restore started for a task.
+		Short: "Stop the VM a snapshot restore started (deprecated)",
+		Deprecated: "a restored VM is the task's VM: use 'swarmcracker vm stop <task>' for a VM this CLI " +
+			"restored; a VM restored through the node still needs this command with -H",
+		Long: `Stop the microVM a snapshot restore started for a task.
 
-A VM started by a restore runs outside SwarmKit's task lifecycle, so "task rm"
-or a service update does not touch it. On the node that restored it, this command
-sends SIGTERM to the Firecracker process behind the task's own API socket
-(<socket-dir>/<task>.sock), waits up to ten seconds, then sends SIGKILL, and
-removes the socket. A restore puts the task's VM back under the task's identity,
-so that socket is the one "vm exec" and the node broker already resolve.
+Deprecated: a restore now starts the VM of the task itself, at the task's own API
+socket (<socket-dir>/<task>.sock), so the restored VM *is* the task's VM and no
+longer has an identity of its own. Which command stops it depends on who
+restored it:
+
+  swarmcracker vm stop <task>
+      A VM this CLI restored. The restore registers it under the task ID, so
+      "vm stop" finds its state and ends it.
+
+  swarmcracker vm snapshot stop-restored -H ...
+      A VM restored through the node: the API route, or a restore done by an
+      earlier daemon lifetime. "vm stop" reads this CLI's local state, finds no
+      entry for it, and refuses the VM as SwarmKit-managed, so it cannot end
+      this one.
+
+This command itself still works locally — SIGTERM to the process behind the
+task's own socket, a ten-second grace, SIGKILL, socket removed — and with -H it
+is the only caller of the node's DELETE /v1/tasks/{id}/restored route.
 
 <task> is a task ID or any unique prefix of one. With -H the manager asks the
-node that holds the restored VM through the API instead, which needs the
-experimental snapshot capability on that node.
-
-Example:
-  swarmcracker vm snapshot stop-restored 5f3a1b2c9d
-  swarmcracker vm snapshot stop-restored --socket-dir /run/fc task-123
-  swarmcracker -H https://mgr:4244 --ca ca.pem vm snapshot stop-restored task-123`,
+node that holds the VM through the API instead, which needs the experimental
+snapshot capability on that node.`,
 		Args: cobra.ExactArgs(1),
 		PreRun: func(cmd *cobra.Command, args []string) {
 			setupLogging(logLevel)

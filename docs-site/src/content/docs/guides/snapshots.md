@@ -59,7 +59,7 @@ swarmcracker vm snapshot list --node <node-id>
 # Restore a VM from a snapshot
 swarmcracker vm snapshot restore <snapshot-id>
 
-# Stop the VM a restore started (SIGTERM, then SIGKILL after 10 s)
+# Stop the VM of a restored task (deprecated: prefer `vm stop <task-id>`)
 swarmcracker vm snapshot stop-restored <task-id>
 
 # Delete a snapshot
@@ -85,12 +85,16 @@ existed — a restore needs the original disk in place.
 API resolve. A restored VM is the task's VM, not a second VM beside it: it answers
 on the task's vsock muxer, and it is listed and stopped under the task's ID.
 
-`stop-restored` stops the VM a restore started. On the node it reads
-`<socket-dir>/<task>.sock` (default `/var/run/firecracker`), resolves the
-Firecracker PID from the process table, sends SIGTERM, waits up to ten seconds,
-sends SIGKILL if the process is still there, and removes the socket. `<task>` may
-be a task ID or a unique prefix of one. With `-H` the command asks the manager
-instead, which relays the pass to the node that holds the restored VM.
+Which command stops a restored VM depends on who restored it. A VM restored by
+this CLI is registered under the task ID, so `vm stop <task>` ends it. A VM
+restored through the node — the API route, or a restore from an earlier daemon
+lifetime — has no local state entry, and `vm stop` refuses it as SwarmKit-managed;
+`vm snapshot stop-restored -H` remains the way to stop it. That command is
+**deprecated** and no longer listed in `vm snapshot --help`: locally it still
+stops the process behind `<socket-dir>/<task>.sock` (default
+`/var/run/firecracker`) with SIGTERM, a ten-second grace, then SIGKILL, and
+removes the socket, and with `-H` it relays `DELETE /v1/tasks/{id}/restored` to
+the node that holds the VM.
 
 ```bash
 # Local: on the node that restored the VM
