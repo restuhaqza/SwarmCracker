@@ -45,6 +45,20 @@ type Task struct {
 	Annotations map[string]string
 }
 
+// EphemeralRootfs returns the disk this task's VM owns outright: the per-task
+// rootfs copy the executor marks as ephemeral. It returns "" for a disk the task
+// shares with other VMs — an image cache, a golden artifact — because deleting one
+// of those when the VM goes would break every other VM that boots from it.
+//
+// It is the rule a teardown needs, kept on the task because both VMM managers and
+// the executor have to agree on which files are a VM's to free.
+func (t *Task) EphemeralRootfs() string {
+	if t == nil || t.Annotations[AnnotationRootfsEphemeral] != "true" {
+		return ""
+	}
+	return t.Annotations[AnnotationRootfs]
+}
+
 // TaskSpec defines the task specification.
 type TaskSpec struct {
 	Runtime     interface{} // *Container (use GetContainer() for safe access)

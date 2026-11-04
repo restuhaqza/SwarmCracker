@@ -120,6 +120,12 @@ type Instance struct {
 	NetNS string `json:"netns,omitempty"`
 	// TAP is the host-side TAP device the VM's first interface is attached to.
 	TAP string `json:"tap,omitempty"`
+	// Disk is the disk the VM boots from, when the VM owns it outright: the
+	// per-task rootfs copy a teardown may delete. It is empty for a VM booting a
+	// disk it shares — an image cache, a golden artifact — because freeing one of
+	// those would break every other VM that boots from it, and for a VM whose disk
+	// the node does not manage.
+	Disk string `json:"disk,omitempty"`
 	// GuestIP is the guest's address. It is empty when the VM has no network.
 	GuestIP string `json:"guestIp,omitempty"`
 	// MAC is the guest's L2 address. A restored VM keeps the address recorded
@@ -148,6 +154,26 @@ type Instance struct {
 // node had before the registry existed.
 type Recorder interface {
 	Put(Instance) error
+}
+
+// Registry is the registry as a path that starts and ends a VM reads it: Put when
+// the VM exists, Get and Peek when its teardown runs, and Delete once its
+// resources are free.
+//
+// The two reads are both needed, and they answer different questions. Get refuses
+// a record whose process is gone — a record exists to be dialled — so a teardown
+// uses it to ask "is this VM still running?" and refuses to free a live VM's
+// resources. Peek reads the record without that filter, because the record of a VM
+// that is already gone is exactly the handle to the netns, TAP device and disk
+// that still have to be freed.
+//
+// *Store is the production implementation. A nil Registry means the caller keeps
+// no registry, and every write and teardown is skipped.
+type Registry interface {
+	Recorder
+	Get(id string) (Instance, bool, error)
+	Peek(id string) (Instance, bool, error)
+	Delete(id string) error
 }
 
 // validate refuses a record the registry could not serve. The rules are the
@@ -180,6 +206,7 @@ func (i Instance) validate() error {
 		{"console", i.Console},
 		{"metadata", i.Metadata},
 		{"netns", i.NetNS},
+		{"disk", i.Disk},
 	} {
 		if err := hostPathProblem(field.name, field.value, false); err != nil {
 			return err

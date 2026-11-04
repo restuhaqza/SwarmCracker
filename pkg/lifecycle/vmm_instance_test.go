@@ -237,6 +237,18 @@ type refusingRecorder struct{}
 
 func (refusingRecorder) Put(vminstance.Instance) error { return os.ErrPermission }
 
+// The reads answer "no record": the start fails before one exists, so a teardown
+// has nothing to find.
+func (refusingRecorder) Get(string) (vminstance.Instance, bool, error) {
+	return vminstance.Instance{}, false, nil
+}
+
+func (refusingRecorder) Peek(string) (vminstance.Instance, bool, error) {
+	return vminstance.Instance{}, false, nil
+}
+
+func (refusingRecorder) Delete(string) error { return nil }
+
 // TestStartIsRefusedWhenTheRegistryCannotTakeTheRecord pins the CLI-side
 // consequence and its wording: the VM does not run, and the error says the
 // registry could not record it — not that Firecracker failed.
@@ -252,4 +264,43 @@ func TestStartIsRefusedWhenTheRegistryCannotTakeTheRecord(t *testing.T) {
 	assert.Contains(t, err.Error(), "refusing to start VM")
 	assert.Contains(t, err.Error(), "instance registry could not record it")
 	assert.Contains(t, err.Error(), "permission denied")
+}
+
+// TestRemoveTearsDownAFailedStartsRecord pins the cleanup half of SBX-015 for the
+// CLI: a start that failed after it published its record leaves no VM entry, and
+// Remove used to return without looking. The record is the only handle to the disk
+// and devices the failed process left behind, so removing an untracked VM is a
+// teardown.
+func TestRemoveTearsDownAFailedStartsRecord(t *testing.T) {
+	socketDir := shortVMDir(t)
+
+	alive := true
+	store, err := vminstance.NewStore(vminstance.Config{
+		Dir:   vminstance.Dir(t.TempDir()),
+		Alive: func(int) bool { return alive },
+	})
+	require.NoError(t, err)
+
+	disk := filepath.Join(t.TempDir(), "task-failed.ext4")
+	require.NoError(t, os.WriteFile(disk, []byte("rootfs"), 0o600))
+	require.NoError(t, store.Put(vminstance.Instance{
+		ID:        "task-failed",
+		Kind:      vminstance.KindTask,
+		PID:       os.Getpid(),
+		APISocket: scruntime.SocketPath(socketDir, "task-failed"),
+		Disk:      disk,
+		Booted:    time.Now().UTC(),
+	}))
+	alive = false // the failed start killed its process
+
+	vm := NewVMMManager(&ManagerConfig{SocketDir: socketDir, Instances: store}).(*VMMManager)
+
+	require.NoError(t, vm.Remove(context.Background(), &types.Task{ID: "task-failed"}))
+
+	_, found, peekErr := store.Peek("task-failed")
+	require.NoError(t, peekErr)
+	assert.False(t, found, "the failed start's record is deleted once its resources are free")
+
+	_, statErr := os.Stat(disk)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "the disk the record named is freed")
 }
