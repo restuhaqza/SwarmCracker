@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -302,4 +303,70 @@ spec:
 func TestNewBuilder_RequiresOutputDir(t *testing.T) {
 	_, err := NewBuilder(BuilderOptions{OutputDir: ""})
 	assert.Error(t, err)
+}
+
+// sysvRecipeYAML is a golden recipe that boots sysvinit, whose enablement needs
+// the image's own insserv pass in addition to the runlevel links.
+const sysvRecipeYAML = `
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: debian-12-sysv
+  version: 1.0.0
+spec:
+  arch: [amd64]
+  source:
+    type: oci
+    ref: docker.io/library/debian:12
+  init:
+    system: sysvinit
+  kernel:
+    profile: guest-runtime-6.1
+  runtime:
+    name: none
+  disk:
+    rootMinSize: 2GiB
+  seal:
+    - rm -rf /var/lib/apt/lists/*
+`
+
+// TestBuilder_SysvRegistersStartOrder proves a sysvinit build runs the image's
+// insserv before the seal steps: Debian's startpar only starts services listed
+// in /etc/init.d/.depend.start, so the runlevel links alone are not enough.
+func TestBuilder_SysvRegistersStartOrder(t *testing.T) {
+	h := newHarness(t, false)
+
+	res, err := h.builder.Build(context.Background(), mustRecipe(t, sysvRecipeYAML))
+	require.NoError(t, err)
+
+	require.Len(t, h.scripts, 2, "insserv runs after install and before the seal step")
+	assert.Contains(t, h.scripts[0], "insserv -f sc-agent")
+	assert.Equal(t, "rm -rf /var/lib/apt/lists/*", strings.TrimSpace(h.scripts[1]))
+
+	md, err := ReadMetadata(res.MetadataPath)
+	require.NoError(t, err)
+	assert.Equal(t, InitSysvinit, md.Init.System)
+}
+
+// TestBuilder_SystemdDoesNotRunInsserv keeps the sysvinit step scoped: a
+// systemd build must not invoke another init system's tooling.
+func TestBuilder_SystemdDoesNotRunInsserv(t *testing.T) {
+	h := newHarness(t, false)
+
+	_, err := h.builder.Build(context.Background(), mustRecipe(t, validRecipeYAML))
+	require.NoError(t, err)
+	for _, script := range h.scripts {
+		assert.NotContains(t, script, "insserv")
+	}
+}
+
+// TestNewBuilder_DefaultsToARealProbe proves a caller that injects nothing
+// still gets the first-boot proof: the default prober is the Firecracker one
+// and the default kernel registry resolves the recipes' profile.
+func TestNewBuilder_DefaultsToARealProbe(t *testing.T) {
+	b, err := NewBuilder(BuilderOptions{OutputDir: t.TempDir()})
+	require.NoError(t, err)
+
+	assert.NotNil(t, b.opts.Prober)
+	assert.Contains(t, b.opts.KernelProfiles, "guest-runtime-6.1")
 }

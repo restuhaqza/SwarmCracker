@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +52,34 @@ type FirecrackerProber struct {
 	// enough for a full OS guest to reach multi-user.
 	VCPUs     int64
 	MemoryMiB int64
+
+	// launch starts the VM and dial connects to its agent. They are seams, not
+	// configuration: nil means the real Firecracker process and the real vsock
+	// dial, so the failure paths (start failure, early exit, timeout, dial
+	// refused) can be exercised without KVM.
+	launch vmLauncher
+	dial   helloDialer
 }
+
+// vmProcess is a VM the prober started. done reports the exit error exactly
+// once, and kill terminates it.
+type vmProcess interface {
+	done() <-chan error
+	kill()
+}
+
+// vmLauncher starts a VM from a full Firecracker argv and sends its console
+// output to output.
+type vmLauncher func(ctx context.Context, argv []string, output io.Writer) (vmProcess, error)
+
+// helloClient is the part of agent.Client the prober uses.
+type helloClient interface {
+	Hello() agent.Hello
+	Close() error
+}
+
+// helloDialer connects to a guest agent over a Firecracker vsock muxer.
+type helloDialer func(ctx context.Context, udsPath string, port uint32) (helloClient, error)
 
 // NewFirecrackerProber returns a prober with the default budget and VM size.
 func NewFirecrackerProber() *FirecrackerProber { return &FirecrackerProber{} }
@@ -61,6 +89,20 @@ func (p *FirecrackerProber) binary() string {
 		return p.Binary
 	}
 	return "firecracker"
+}
+
+func (p *FirecrackerProber) launcher() vmLauncher {
+	if p.launch != nil {
+		return p.launch
+	}
+	return startFirecracker
+}
+
+func (p *FirecrackerProber) dialer() helloDialer {
+	if p.dial != nil {
+		return p.dial
+	}
+	return dialAgent
 }
 
 func (p *FirecrackerProber) timeout() time.Duration {
@@ -170,18 +212,14 @@ func (p *FirecrackerProber) Probe(ctx context.Context, target BootTarget) (agent
 	}
 	defer func() { _ = logFile.Close() }()
 
-	cmd := exec.CommandContext(ctx, p.binary(), "--api-sock", apiSock, "--config-file", configPath) //nolint:gosec // binary is operator-configured
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	if err := cmd.Start(); err != nil {
+	proc, err := p.launcher()(ctx, probeArgv(p.binary(), apiSock, configPath), logFile)
+	if err != nil {
 		return agent.Hello{}, fmt.Errorf("golden: start %s: %w", p.binary(), err)
 	}
-	waited := make(chan error, 1)
-	go func() { waited <- cmd.Wait() }()
 	defer func() {
-		_ = cmd.Process.Kill()
+		proc.kill()
 		select {
-		case <-waited:
+		case <-proc.done():
 		case <-time.After(5 * time.Second):
 		}
 	}()
@@ -189,7 +227,7 @@ func (p *FirecrackerProber) Probe(ctx context.Context, target BootTarget) (agent
 	deadline := time.Now().Add(p.timeout())
 	for {
 		attemptCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		client, dialErr := agent.DialWithToken(attemptCtx, uds, agent.DefaultPort, "")
+		client, dialErr := p.dialer()(attemptCtx, uds, agent.DefaultPort)
 		cancel()
 		if dialErr == nil {
 			hello := client.Hello()
@@ -198,7 +236,7 @@ func (p *FirecrackerProber) Probe(ctx context.Context, target BootTarget) (agent
 		}
 
 		select {
-		case waitErr := <-waited:
+		case waitErr := <-proc.done():
 			return agent.Hello{}, fmt.Errorf("firecracker exited before the guest agent answered: %v\n%s",
 				waitErr, probeLogTail(logPath))
 		default:
@@ -216,6 +254,51 @@ func (p *FirecrackerProber) Probe(ctx context.Context, target BootTarget) (agent
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+}
+
+// probeArgv is the Firecracker command line the probe runs.
+func probeArgv(binary, apiSock, configPath string) []string {
+	return []string{binary, "--api-sock", apiSock, "--config-file", configPath}
+}
+
+// startFirecracker is the real vmLauncher.
+func startFirecracker(ctx context.Context, argv []string, output io.Writer) (vmProcess, error) {
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // binary is operator-configured
+	cmd.Stdout = output
+	cmd.Stderr = output
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	proc := &firecrackerProcess{cmd: cmd, waited: make(chan error, 1)}
+	go func() { proc.waited <- cmd.Wait() }()
+	return proc, nil
+}
+
+// firecrackerProcess is the real vmProcess: an exec.Cmd whose exit is delivered
+// on a buffered channel, so the prober can notice an early exit without
+// blocking and the cleanup can still drain it.
+type firecrackerProcess struct {
+	cmd    *exec.Cmd
+	waited chan error
+}
+
+func (p *firecrackerProcess) done() <-chan error { return p.waited }
+
+func (p *firecrackerProcess) kill() {
+	if p.cmd.Process != nil {
+		_ = p.cmd.Process.Kill()
+	}
+}
+
+// dialAgent connects to the guest agent behind a Firecracker vsock muxer. It
+// presents no token: a template is probed before the node ever provisions one,
+// so a hello here is exactly what an unprepared guest answers.
+func dialAgent(ctx context.Context, udsPath string, port uint32) (helloClient, error) {
+	client, err := agent.DialWithToken(ctx, udsPath, port, "")
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 // verifyFirstBoot boots the finished artifact and holds its guest agent to the
