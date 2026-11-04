@@ -11,11 +11,8 @@ import (
 	"github.com/rs/zerolog/log"
 
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
-
-// vmSocketSuffix is the Firecracker API socket suffix the executor uses for a
-// task (see pkg/runtime: <socketDir>/<taskID>.sock).
-const vmSocketSuffix = ".sock"
 
 // consoleLogSuffix is the console log suffix the executor uses for a task (see
 // pkg/runtime: <logDir>/<taskID>.log). The Firecracker console merges stdout and
@@ -45,15 +42,20 @@ type Task struct {
 	// and stays empty for a log-only one: a stopped VM has no console to attach
 	// to, and the attach handler owns the not-found answer.
 	ConsolePath string
+	// NetNS is the network namespace the VM is isolated in, as the node's
+	// registry records it. It is empty for a VM on the shared bridge and for a
+	// task resolved from the filename derivation, which has no record to ask.
+	NetNS string
 
-	// restoredVsockPath is the muxer a restored task's VM answers on, set by the
-	// resolver from the task's restored-instance record. A migration moves a VM
-	// whose Firecracker state names the source task's muxer, so the path cannot
-	// be derived from this task's ID; it is kept private because only the
-	// resolver may say which VM a task runs — a caller that filled it in by hand
-	// would be re-deriving host-side identity from the task ID, which is the
-	// assumption a restored task breaks.
-	restoredVsockPath string
+	// recordedVsockPath is the muxer a task's VM answers on when a node-local
+	// record names it: the registry for any VM it knows, or the restored-instance
+	// record for a task started from a migration artifact. A restored VM's
+	// Firecracker state names the source task's muxer, so that path cannot be
+	// derived from this task's ID. It is kept private because only the resolver
+	// may say which VM a task runs — a caller that filled it in by hand would be
+	// re-deriving host-side identity from the task ID, which is the assumption a
+	// restored task breaks.
+	recordedVsockPath string
 	// restoredVMID is the task whose VM this task runs, i.e. the task whose
 	// Firecracker state names the TAP device, the vsock muxer and the disk. It is
 	// empty for a task this node booted itself, whose identity is its own ID.
@@ -73,19 +75,19 @@ type Task struct {
 // record answers instead.
 func (t Task) sourceVMIdentity(rootfsDir string) (vmID, socketDir, diskPath string) {
 	if t.restoredVMID != "" {
-		return t.restoredVMID, filepath.Dir(t.restoredVsockPath), t.restoredDiskPath
+		return t.restoredVMID, filepath.Dir(t.recordedVsockPath), t.restoredDiskPath
 	}
 	return t.ID, filepath.Dir(t.SocketPath), filepath.Join(rootfsDir, "tasks", t.ID+".ext4")
 }
 
-// VsockPath returns the Firecracker vsock muxer path for the task: the recorded
-// muxer for a restored task, otherwise <socketDir>/<id>.sock ->
+// VsockPath returns the Firecracker vsock muxer path for the task: the muxer a
+// node-local record names when there is one, otherwise <socketDir>/<id>.sock ->
 // <socketDir>/<id>.vsock. It returns "" when the task has no socket path or no
 // ID, so a caller can distinguish "no VM" from a path that happens to live in the
 // current directory.
 func (t Task) VsockPath() string {
-	if t.restoredVsockPath != "" {
-		return t.restoredVsockPath
+	if t.recordedVsockPath != "" {
+		return t.recordedVsockPath
 	}
 	if t.SocketPath == "" || t.ID == "" {
 		return ""
@@ -130,6 +132,21 @@ type TaskSource interface {
 	Lookup(ctx context.Context, taskID string) (Task, bool, error)
 }
 
+// InstanceSource is the node's registry of the microVMs it is running
+// (pkg/vminstance), as the resolver reads it. It is the source of path truth:
+// one record per running VM says where its API socket, vsock muxer, console and
+// netns are, so a VM whose paths are not a function of a task ID resolves
+// without a guess.
+//
+// Its Get contract is the store's: an ID this node never recorded is
+// (zero, false, nil), a record whose process is gone is (zero, false, nil) too
+// — a dead VM must not resolve — and a record that exists but cannot be used is
+// (zero, false, err). *vminstance.Store is the production implementation; the
+// interface keeps the resolver testable without a filesystem.
+type InstanceSource interface {
+	Get(id string) (vminstance.Instance, bool, error)
+}
+
 // RestoredInstanceSource is the node's map from a task to the microVM it
 // inherited from a migration. *runtime.RestoredRegistry is the production
 // implementation; the interface keeps the resolver testable without a filesystem.
@@ -141,13 +158,14 @@ type RestoredInstanceSource interface {
 	Get(taskID string) (scruntime.RestoredInstance, bool, error)
 }
 
-// SocketDirSource resolves <dir>/<taskID>.sock, <dir>/<taskID>.console.sock for
-// a running task and, when LogDir is set, <logDir>/<taskID>.log. When the socket
-// is gone but the log file remains, the task still resolves as a log-only task,
-// so a completed task's console output is reachable through the API. It rejects
-// empty IDs and any ID containing a path separator or a dot: task IDs come from
-// an untrusted URL path, and without that check ".." (or "a/../../b") would
-// address a file outside the socket directory.
+// SocketDirSource resolves a task from the node's registry first and, for a VM
+// the registry does not know, from <dir>/<taskID>.sock, <dir>/<taskID>.console.sock
+// and, when LogDir is set, <logDir>/<taskID>.log. When the socket is gone but the
+// log file remains, the task still resolves as a log-only task, so a completed
+// task's console output is reachable through the API. It rejects empty IDs and any
+// ID containing a path separator or a dot: task IDs come from an untrusted URL
+// path, and without that check ".." (or "a/../../b") would address a file outside
+// the socket directory.
 type SocketDirSource struct {
 	Dir string
 	// LogDir holds the per-task console logs. Empty leaves Task.LogPath empty:
@@ -161,6 +179,17 @@ type SocketDirSource struct {
 	// task that no longer exists. Nil keeps the stat-only behaviour tests and
 	// embedders rely on; the daemon wires a process probe.
 	IsRunning func(socketPath string) bool
+	// Instances, when set, is the node's VM registry: the first thing a lookup
+	// asks. A record answers the socket, the vsock muxer, the console and the
+	// netns of the VM this task runs, which is the only way to resolve a VM whose
+	// paths a task ID cannot derive (a pooled, sandboxed, restored or forked VM).
+	// A task with no record falls through to Restored and then to the derivation
+	// below — the one-release fallback for VMs started before records existed.
+	//
+	// A typed-nil store (*vminstance.Store)(nil) is not the same as nil: it would
+	// answer every lookup with an error. The daemon assigns this field only once
+	// the registry was opened.
+	Instances InstanceSource
 	// Restored, when set, is the node's store of restored-instance records: a
 	// task SwarmKit started from a migration artifact runs a VM whose TAP device,
 	// vsock muxer and disk belong to the source task, so its host-side identity
@@ -209,28 +238,38 @@ func (w *staleRecordWarnings) first(taskID, socketPath string) bool {
 
 // NewSocketDirSource builds the task source the daemon uses: the directories its
 // sockets and logs live in, the probe that decides whether an existing socket
-// belongs to a live VMM, and the node's restored-instance store.
+// belongs to a live VMM, the node's VM registry and the node's restored-instance
+// store.
 //
 // It differs from a struct literal in one way, which is why it exists: it latches
-// the one warning a stale restored-instance record produces. Resolution runs for
-// every exec, logs, files and health request, and a record whose VM is gone would
-// otherwise repeat the same warning for as long as the record lives.
+// the one warning a stale record produces. Resolution runs for every exec, logs,
+// files and health request, and a record whose VM is gone would otherwise repeat
+// the same warning for as long as the record lives.
 //
-// restored is an interface; a nil *runtime.RestoredRegistry must reach it as a nil
-// interface, which the caller does by assigning only when its registry is non-nil.
-func NewSocketDirSource(dir, logDir string, isRunning func(socketPath string) bool, restored RestoredInstanceSource) SocketDirSource {
+// Both stores are interfaces; a nil *vminstance.Store or *runtime.RestoredRegistry
+// must reach them as a nil interface, which the caller does by assigning only
+// when the store is non-nil.
+func NewSocketDirSource(
+	dir, logDir string,
+	isRunning func(socketPath string) bool,
+	instances InstanceSource,
+	restored RestoredInstanceSource,
+) SocketDirSource {
 	return SocketDirSource{
 		Dir:         dir,
 		LogDir:      logDir,
 		IsRunning:   isRunning,
+		Instances:   instances,
 		Restored:    restored,
 		staleWarned: &staleRecordWarnings{},
 	}
 }
 
-// Lookup returns the task whose API socket exists in the configured directory,
-// or, once the VM has exited, the log-only task its console log still describes.
-// A task with a restored-instance record is answered from that record instead.
+// Lookup returns the task the node knows for taskID: first from its VM registry,
+// then from the restored-instance record a migrated task has, and finally — for
+// a VM started before either record existed — from the API socket in the
+// configured directory. A running task has a live socket; once its VM has
+// exited, the log-only task its console log still describes is returned.
 func (s SocketDirSource) Lookup(_ context.Context, taskID string) (Task, bool, error) {
 	if s.Dir == "" {
 		return Task{}, false, fmt.Errorf("broker: socket directory must not be empty")
@@ -239,8 +278,20 @@ func (s SocketDirSource) Lookup(_ context.Context, taskID string) (Task, bool, e
 		return Task{}, false, err
 	}
 
+	// The registry answers before anything is derived or read from an older
+	// record: it is the node's own statement of where this VM is, and a VM whose
+	// paths a task ID cannot derive (pooled, sandboxed, restored, forked)
+	// resolves only through it.
+	if s.Instances != nil {
+		recorded, found, handled, err := s.recordedInstance(taskID)
+		if handled {
+			return recorded, found, err
+		}
+	}
+
 	// A restored task is resolved from its record before anything is derived: the
-	// record is the only thing that says which VM this task runs.
+	// record is the only thing that says which VM this task runs. It is the
+	// fallback for a migrated task whose VM predates the registry.
 	if s.Restored != nil {
 		restored, found, handled, err := s.restoredTask(taskID)
 		if handled {
@@ -248,7 +299,7 @@ func (s SocketDirSource) Lookup(_ context.Context, taskID string) (Task, bool, e
 		}
 	}
 
-	socketPath := filepath.Join(s.Dir, taskID+vmSocketSuffix)
+	socketPath := scruntime.SocketPath(s.Dir, taskID)
 	info, err := os.Stat(socketPath)
 	switch {
 	case err == nil:
@@ -296,6 +347,92 @@ func (s SocketDirSource) Lookup(_ context.Context, taskID string) (Task, bool, e
 	return Task{ID: taskID, LogPath: logPath}, true, nil
 }
 
+// recordedInstance answers a task from the node's VM registry. handled is false
+// only when the registry holds no record for the task, which is what makes the
+// caller fall through to the restored-instance record and the derivation
+// unchanged.
+//
+// The record's answer wins over the derivation, including when the recorded
+// socket is gone: the registry said which VM this task runs, and a socket derived
+// from the task ID belongs to whatever VM happens to sit at that path, if any. A
+// record whose VM is gone therefore resolves as a log-only task — the console log
+// is the task's own and outlives its VM — and the one warning says why the task is
+// not running.
+func (s SocketDirSource) recordedInstance(taskID string) (Task, bool, bool, error) {
+	instance, found, err := s.Instances.Get(taskID)
+	if err != nil {
+		return Task{}, false, true, fmt.Errorf("resolve the instance record of task %q: %w", taskID, err)
+	}
+	if !found {
+		return Task{}, false, false, nil
+	}
+
+	if running, err := s.recordedSocketAlive(instance.APISocket); err != nil {
+		return Task{}, false, true, fmt.Errorf("resolve the instance record of task %q: %w", taskID, err)
+	} else if !running {
+		if s.staleWarned == nil || s.staleWarned.first(taskID, instance.APISocket) {
+			log.Warn().
+				Str("task_id", taskID).
+				Str("socket", instance.APISocket).
+				Str("kind", instance.Kind).
+				Msg("An instance record names an API socket that is gone; reporting the task as not running and keeping the record for inspection")
+		}
+		return Task{ID: taskID, LogPath: s.logPath(taskID)}, true, true, nil
+	}
+
+	task := Task{
+		ID:         taskID,
+		SocketPath: instance.APISocket,
+		Running:    true,
+		// The console log is derived from the task ID even here: the record names
+		// the console socket, while the log file's directory is the daemon's
+		// configuration and not a fact about the VM.
+		LogPath:           s.logPath(taskID),
+		ConsolePath:       instance.Console,
+		NetNS:             instance.NetNS,
+		recordedVsockPath: instance.VsockPath,
+	}
+	if task.ConsolePath == "" {
+		// A record written before the console field existed names none, so the
+		// derivation is its fallback — the same one-release rule as the paths.
+		task.ConsolePath = s.consolePath(taskID)
+	}
+
+	if err := s.addRestoredProvenance(&task); err != nil {
+		return Task{}, false, true, err
+	}
+	return task, true, true, nil
+}
+
+// addRestoredProvenance fills the migration metadata an export needs — which VM
+// this task inherited and the disk its Firecracker state names — from the node's
+// restored-instance record. The registry owns the paths; only the record says
+// which source VM they belong to, so the record is read for that one fact and its
+// paths are ignored. Reading it is not optional: a task this node restored must
+// not export under its own ID, which would name a disk and devices the artifact
+// does not carry.
+func (s SocketDirSource) addRestoredProvenance(task *Task) error {
+	if s.Restored == nil {
+		return nil
+	}
+	record, found, err := s.Restored.Get(task.ID)
+	if err != nil {
+		return fmt.Errorf("resolve the restored instance of task %q: %w", task.ID, err)
+	}
+	if found {
+		task.restoredVMID = record.VMID
+		task.restoredDiskPath = record.DiskPath
+		if task.recordedVsockPath == "" {
+			// The registry names no muxer — a record written before the field
+			// existed, or a VM whose agent had not started. The migration record is
+			// then the only place the source task's muxer is written down, and an
+			// export derives the source's device directory from it.
+			task.recordedVsockPath = record.VsockPath
+		}
+	}
+	return nil
+}
+
 // restoredTask answers a task from its restored-instance record. handled is false
 // only when the node has no record for the task, which is what makes the caller
 // fall through to the derived paths unchanged.
@@ -339,7 +476,7 @@ func (s SocketDirSource) restoredTask(taskID string) (Task, bool, bool, error) {
 		// snapshot.
 		LogPath:           s.logPath(taskID),
 		ConsolePath:       s.consolePath(taskID),
-		restoredVsockPath: record.VsockPath,
+		recordedVsockPath: record.VsockPath,
 		// The VM's host-side identity belongs to the source task, so an export of
 		// this task has to name that task's devices and copy the disk its state
 		// file records.

@@ -1960,13 +1960,16 @@ paths:
         per-task disk (<rootfs-dir>/tasks/<taskID>.ext4) still exists: Firecracker
         snapshots capture memory and device state, not disk bytes, so a cleaned-up
         task answers 409 conflict with details.reason "snapshot_incomplete". The
-        restore starts a new VM on the node's socket directory. Restores are
+        restore starts a new VM at the task's own API socket on the node's socket
+        directory, so the restored VM keeps the task's identity: exec, files,
+        attach and logs resolve it by the same task ID. Restores are
         serialized per task; a concurrent restore for
         the same task is 409 conflict with details.reason "restore_in_progress".
-        Every restore reuses the same restored socket on the node, so a restored
-        VM that is still answering there is never replaced: a restore that finds
+        Every restore starts at that same task socket, so a VM that is still
+        answering there is never replaced: a restore that finds
         it live is 409 conflict with details.reason "restore_already_running". A
-        stale socket file is cleaned up and the restore proceeds. A node with no
+        stale socket file, and the task's stale vsock muxer, are cleaned up and the
+        restore proceeds. A node with no
         snapshot socket directory answers 503 with details.reason
         "socket_dir_unconfigured". Residual risk: a crash during restore, or a
         process left by an earlier daemon lifetime whose socket no longer answers,
@@ -2248,13 +2251,15 @@ paths:
         disk (<rootfs-dir>/tasks/<taskID>.ext4) was cleaned up answers 409
         conflict with details.reason "snapshot_incomplete" before a VMM starts.
         An exited task whose disk still exists can be restored: restore starts a
-        new VM on the node's socket directory.
+        new VM at the task's own API socket on the node's socket directory, so the
+        restored VM is resolved by that task ID.
         Restores are serialized per task; a concurrent restore
         for the same task is 409 conflict with details.reason
-        "restore_in_progress". Every restore reuses the same restored socket on
-        the node, so a restored VM that is still answering there is never
+        "restore_in_progress". Every restore starts at that same task socket, so a
+        VM that is still answering there is never
         replaced: a restore that finds it live is 409 conflict with details.reason
-        "restore_already_running"; a stale socket file is cleaned up and the
+        "restore_already_running"; a stale socket file, and the task's stale vsock
+        muxer, are cleaned up and the
         restore proceeds. A node with no snapshot socket directory answers 503
         with details.reason "socket_dir_unconfigured". Residual risk: a crash
         during restore, or a process left by an earlier daemon lifetime whose

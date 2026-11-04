@@ -432,7 +432,7 @@ func TestLookupWarnsOncePerStaleRecord(t *testing.T) {
 	socketDir := t.TempDir()
 	vmDir := t.TempDir()
 	record := restoredRecord(t, filepath.Join(vmDir, "task-1.sock"), "task-1", "source-task")
-	src := NewSocketDirSource(socketDir, "", nil, &fakeRestoredSource{record: record, found: true})
+	src := NewSocketDirSource(socketDir, "", nil, nil, &fakeRestoredSource{record: record, found: true})
 
 	for range 3 {
 		task, ok, err := src.Lookup(context.Background(), "task-1")
@@ -457,7 +457,7 @@ func TestLookupWarnsAgainForANewRecord(t *testing.T) {
 	vmDir := t.TempDir()
 	store := &fakeRestoredSource{found: true}
 	store.record = restoredRecord(t, filepath.Join(vmDir, "task-1.sock"), "task-1", "source-task")
-	src := NewSocketDirSource(socketDir, "", nil, store)
+	src := NewSocketDirSource(socketDir, "", nil, nil, store)
 
 	_, _, err := src.Lookup(context.Background(), "task-1")
 	require.NoError(t, err)

@@ -13,14 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// restoredSocketDir seeds a socket directory with one <task>-restored.sock file
-// per task name and returns it.
+// restoredSocketDir seeds a socket directory with one <task>.sock file per task
+// name and returns it. A restore starts the task's VM at the task's own socket,
+// so that is where a local stop looks.
 func restoredSocketDir(t *testing.T, tasks ...string) string {
 	t.Helper()
 
 	dir := t.TempDir()
 	for _, task := range tasks {
-		socket := filepath.Join(dir, task+"-restored.sock")
+		socket := filepath.Join(dir, task+".sock")
 		require.NoError(t, os.WriteFile(socket, nil, 0o600))
 	}
 	return dir
@@ -40,7 +41,7 @@ func withRestoredPID(t *testing.T, pid int) {
 // whole job on a real process: SIGTERM ends it, and the stale socket is removed.
 func TestStopRestoredVMKillsTheProcessAndRemovesTheSocket(t *testing.T) {
 	socketDir := restoredSocketDir(t, "task-1")
-	socketPath := filepath.Join(socketDir, "task-1-restored.sock")
+	socketPath := filepath.Join(socketDir, "task-1.sock")
 
 	cmd := exec.Command("sleep", "30")
 	require.NoError(t, cmd.Start())
@@ -81,14 +82,14 @@ func TestStopRestoredVMResolvesAUniquePrefix(t *testing.T) {
 		id, socket, err := resolveRestoredSocket(dir, "deadbeef0000")
 		require.NoError(t, err)
 		assert.Equal(t, "deadbeef0000", id)
-		assert.Equal(t, filepath.Join(dir, "deadbeef0000-restored.sock"), socket)
+		assert.Equal(t, filepath.Join(dir, "deadbeef0000.sock"), socket)
 	})
 
 	t.Run("unique prefix", func(t *testing.T) {
 		id, socket, err := resolveRestoredSocket(dir, "dead")
 		require.NoError(t, err)
 		assert.Equal(t, "deadbeef0000", id)
-		assert.Equal(t, filepath.Join(dir, "deadbeef0000-restored.sock"), socket)
+		assert.Equal(t, filepath.Join(dir, "deadbeef0000.sock"), socket)
 	})
 
 	t.Run("ambiguous prefix", func(t *testing.T) {

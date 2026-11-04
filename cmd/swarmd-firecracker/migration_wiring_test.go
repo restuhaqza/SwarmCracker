@@ -28,6 +28,7 @@ import (
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 // prepareRequestFor is the prepare body a manager sends: the service, the artifact
@@ -97,12 +98,13 @@ func TestOpenDaemonStateOpensBothStores(t *testing.T) {
 	var got string
 	var restored *scruntime.RestoredRegistry
 	var pending *scruntime.PendingRestores
+	var instances *vminstance.Store
 	var err error
 
 	app := cli.NewApp()
 	app.Flags = newAppFlags()
 	app.Action = func(c *cli.Context) error {
-		got, restored, pending, err = openDaemonState(c)
+		got, restored, pending, instances, err = openDaemonState(c)
 		return nil
 	}
 	require.NoError(t, app.Run([]string{"swarmd-firecracker", "--state-dir", stateDir}))
@@ -110,9 +112,11 @@ func TestOpenDaemonStateOpensBothStores(t *testing.T) {
 	require.Equal(t, stateDir, got)
 	require.NotNil(t, restored)
 	require.NotNil(t, pending)
+	require.NotNil(t, instances)
 
 	assert.DirExists(t, filepath.Join(stateDir, scruntime.RestoredInstanceDirName))
 	assert.DirExists(t, filepath.Join(stateDir, scruntime.PendingRestoreDirName))
+	assert.DirExists(t, vminstance.Dir(stateDir))
 }
 
 // TestStartBrokerUsesTheDaemonsDirectiveStore pins the sharing the executor depends on:

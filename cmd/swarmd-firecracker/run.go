@@ -22,6 +22,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/restuhaqza/swarmcracker/pkg/swarmkit"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 	"github.com/urfave/cli/v2"
 )
 
@@ -69,27 +70,48 @@ func pendingRestores(stateDir string) (*runtime.PendingRestores, error) {
 	return runtime.NewPendingRestores(dir)
 }
 
+// instanceRegistry opens the node's registry of the microVMs it is running, under
+// the daemon's state directory. It is the node's source of path truth: the broker
+// asks it before deriving a socket from a task ID, so a VM whose paths are not a
+// filename (pooled, sandboxed, restored, forked) can still be resolved.
+//
+// Opening it can fail, and that is fatal at startup for the same reason the
+// restored-instance store is: a registry a node cannot write is a registry whose
+// VMs the node would later fail to resolve.
+func instanceRegistry(stateDir string) (*vminstance.Store, error) {
+	dir := vminstance.Dir(stateDir)
+	if dir == "" {
+		return nil, fmt.Errorf("a state directory is required to keep the instance registry: pass --state-dir")
+	}
+	return vminstance.NewStore(vminstance.Config{Dir: dir})
+}
+
 // openDaemonState creates the daemon's state directory and opens the node-local record
 // stores that live under it. Every failure is fatal to startup: a node that cannot
 // write its state directory cannot join a cluster, a node that cannot keep a
 // restored-instance record could restore a VM it would later fail to resolve, and a node
 // that cannot keep a pending-restore directive must not answer a prepare as though it had.
-func openDaemonState(ctx *cli.Context) (string, *runtime.RestoredRegistry, *runtime.PendingRestores, error) {
+func openDaemonState(ctx *cli.Context) (string, *runtime.RestoredRegistry, *runtime.PendingRestores, *vminstance.Store, error) {
 	stateDir := ctx.String("state-dir")
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
-		return "", nil, nil, fmt.Errorf("failed to create state directory: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("failed to create state directory: %w", err)
 	}
 
 	restored, err := restoredStore(stateDir)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to open the restored-instance record store: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("failed to open the restored-instance record store: %w", err)
+	}
+
+	instances, err := instanceRegistry(stateDir)
+	if err != nil {
+		return "", nil, nil, nil, fmt.Errorf("failed to open the instance registry: %w", err)
 	}
 
 	pending, err := pendingRestores(stateDir)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("failed to open the pending-restore directive store: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("failed to open the pending-restore directive store: %w", err)
 	}
-	return stateDir, restored, pending, nil
+	return stateDir, restored, pending, instances, nil
 }
 
 // wireRestoredInstances gives the executor the node's restored-instance records and
@@ -163,7 +185,7 @@ func runAgent(ctx *cli.Context) error {
 
 	// Create the state directory and open the node-local record stores that live
 	// under it.
-	stateDir, restored, pending, err := openDaemonState(ctx)
+	stateDir, restored, pending, instances, err := openDaemonState(ctx)
 	if err != nil {
 		return err
 	}
@@ -377,6 +399,9 @@ func runAgent(ctx *cli.Context) error {
 	// Start node
 	brk := brokerRuntimeFrom(ctx)
 	brk.restored = restored
+	// The instance registry is the broker's source of path truth: a lookup asks it
+	// before deriving a socket from the task ID (see pkg/broker.SocketDirSource).
+	brk.instances = instances
 	// The directive store is opened once for the daemon: the broker's prepare route
 	// writes it and the executor's task start consumes it, so both must address the
 	// same directory.

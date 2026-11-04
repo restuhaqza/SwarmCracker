@@ -252,7 +252,7 @@ func TestTaskVsockPath(t *testing.T) {
 			task: Task{
 				ID:                "new-task",
 				SocketPath:        "/var/run/firecracker/new-task.sock",
-				restoredVsockPath: "/var/run/firecracker/source-task.vsock",
+				recordedVsockPath: "/var/run/firecracker/source-task.vsock",
 			},
 			want: "/var/run/firecracker/source-task.vsock",
 		},

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
-	"strings"
 )
 
 // tapNameDigestPrefix is how many hex characters of the task-ID digest name a
@@ -25,9 +24,9 @@ const interfaceNameLimit = 15
 const vxlanInterfaceDigestPrefix = 12
 
 // vsockSuffix is the extension of a task's vsock muxer socket, beside the API
-// socket's ".sock". The suffix is spelled here once: the executor, both VMM
-// managers and the node's restore path all resolve the muxer through VsockPath
-// or VsockPathFromSocket.
+// socket's VMSocketSuffix. The suffix is spelled here once: the executor, both
+// VMM managers and the node's restore path all resolve the muxer through
+// VsockPath or VsockPathFromSocket.
 const vsockSuffix = ".vsock"
 
 // TapName returns the TAP device name for one network interface of a task:
@@ -82,6 +81,24 @@ func VXLANInterfaceName(bridge string) string {
 	return "vx-" + hex.EncodeToString(sum[:])[:vxlanInterfaceDigestPrefix]
 }
 
+// SocketPath returns the Firecracker API socket path for a task:
+//
+//	<socketDir>/<taskID>.sock
+//
+// It is the counterpart of VsockPath and exists for the same reason: the node
+// broker, the CLI's restore and the executor all have to agree on where a task's
+// VM answers, and a task ID must map to exactly one API socket. In particular a
+// restore starts the VM at the socket of the task whose snapshot it loads, so a
+// restored VM is the task's VM rather than a second identity beside it. It
+// returns "" when either input is empty, so a caller can tell "no socket" from a
+// path that happens to point at the current directory.
+func SocketPath(socketDir, taskID string) string {
+	if socketDir == "" || taskID == "" {
+		return ""
+	}
+	return filepath.Join(socketDir, taskID+VMSocketSuffix)
+}
+
 // VsockPath returns the Firecracker vsock muxer path for a task:
 //
 //	<socketDir>/<taskID>.vsock
@@ -97,18 +114,22 @@ func VsockPath(socketDir, taskID string) string {
 	return filepath.Join(socketDir, taskID+vsockSuffix)
 }
 
-// VsockPathFromSocket returns the vsock muxer path of a VM described by its API
-// socket path: <socketDir>/<taskID>.sock becomes <socketDir>/<taskID>.vsock.
+// VsockPathFromSocket returns the vsock muxer path of the VM described by its
+// API socket path: <socketDir>/<taskID>.sock becomes <socketDir>/<taskID>.vsock.
 //
 // It exists for callers that hold a socket path rather than the (socketDir,
 // taskID) pair — the VMM managers configuring the vsock device, the node
 // clearing a stale muxer socket before a restore — so they share the one rule
 // with the executor instead of trimming ".sock" and appending their own suffix.
-// A path without the socket suffix only gains the vsock one, and "" stays ""
-// (no socket, no vsock).
+//
+// The socket names its task and nothing else (TaskIDFromSocketPath), and the
+// task names its muxer (VsockPath): one socket per task, one muxer per task, and
+// no second identity to strip. So "" stays "" (no socket, no vsock), a path
+// without the socket suffix only gains the vsock one, and a console socket —
+// which is not an API socket — has no muxer at all.
 func VsockPathFromSocket(socketPath string) string {
 	if socketPath == "" {
 		return ""
 	}
-	return VsockPath(filepath.Dir(socketPath), strings.TrimSuffix(filepath.Base(socketPath), VMSocketSuffix))
+	return VsockPath(filepath.Dir(socketPath), TaskIDFromSocketPath(socketPath))
 }

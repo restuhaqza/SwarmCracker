@@ -39,6 +39,9 @@ type fakeSnapshotStore struct {
 	restoreErr     error
 	gotRestoreInfo *snapshot.SnapshotInfo
 	gotRestoreSock string
+	// onRestore, when set, runs where the real store starts Firecracker: a test
+	// uses it to make the API socket the restore was given appear on disk.
+	onRestore func(socketPath string)
 	// restoreStarted, when non-nil, is closed as soon as a restore enters the
 	// store; restoreRelease, when non-nil, blocks it until the test allows it.
 	restoreStarted chan struct{}
@@ -78,6 +81,9 @@ func (f *fakeSnapshotStore) RestoreFromSnapshot(
 	_ context.Context, info *snapshot.SnapshotInfo, socketPath string,
 ) error {
 	f.gotRestoreInfo, f.gotRestoreSock = info, socketPath
+	if f.onRestore != nil {
+		f.onRestore(socketPath)
+	}
 	if f.restoreStarted != nil {
 		close(f.restoreStarted)
 	}
@@ -380,7 +386,7 @@ func TestSnapshotHandlerCreatePrunesOldSnapshots(t *testing.T) {
 	})
 }
 
-func TestSnapshotHandlerRestoreUsesTheRestoredSocket(t *testing.T) {
+func TestSnapshotHandlerRestoreUsesTheTaskSocket(t *testing.T) {
 	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
 	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
 	socketDir := shortSocketDir(t)
@@ -391,7 +397,8 @@ func TestSnapshotHandlerRestoreUsesTheRestoredSocket(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 	require.Same(t, info, store.gotRestoreInfo)
-	require.Equal(t, filepath.Join(socketDir, "task-1-restored.sock"), store.gotRestoreSock)
+	require.Equal(t, filepath.Join(socketDir, "task-1.sock"), store.gotRestoreSock,
+		"a restore loads the task's snapshot back into the task's own VM, at the task's own socket")
 
 	var doc v1.SnapshotDocument
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
@@ -411,27 +418,7 @@ func TestSnapshotHandlerRestoreLogOnlyTaskUsesSocketDir(t *testing.T) {
 		logOnly, http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
 
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	require.Equal(t, filepath.Join(socketDir, "task-1-restored.sock"), store.gotRestoreSock)
-}
-
-// TestSnapshotHandlerRestoreClearsStaleVsock pins the crash-recovery detail the
-// real smoke found: the snapshot references <socketDir>/<taskID>.vsock, and a
-// dead VMM leaves that file behind. Without removing it Firecracker fails with
-// EADDRINUSE, so the handler clears it before starting the restored VM.
-func TestSnapshotHandlerRestoreClearsStaleVsock(t *testing.T) {
-	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
-	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
-	socketDir := shortSocketDir(t)
-	vsockPath := filepath.Join(socketDir, "task-1.vsock")
-	require.NoError(t, os.WriteFile(vsockPath, nil, 0o600))
-
-	rec := serveSnapshotWithConfig(t, SnapshotHandlerConfig{Store: store, SocketDir: socketDir},
-		Task{ID: "task-1", LogPath: "/var/run/swarmcracker/task-1.log"},
-		http.MethodPost, "/v1/tasks/task-1/snapshots?restore=snap-1", "")
-
-	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
-	_, err := os.Stat(vsockPath)
-	require.ErrorIs(t, err, os.ErrNotExist, "the stale vsock path must be cleared before the restore")
+	require.Equal(t, filepath.Join(socketDir, "task-1.sock"), store.gotRestoreSock)
 }
 
 // TestSnapshotHandlerRestoreRejectsARunningTask pins that a restore may only
@@ -486,13 +473,14 @@ func serveRestoredVM(t *testing.T, socketPath string) {
 }
 
 // TestSnapshotHandlerRestoreRejectsALiveRestoredSocket pins I4: every restore
-// reuses <taskID>-restored.sock and pkg/snapshot unlinks it before it starts the
-// new process. A restored VM that is still running therefore owns that socket, so
-// a second (non-concurrent) restore must not replace it: 409 conflict, and the
-// store is never asked to restore.
+// starts at the task's own socket and pkg/snapshot unlinks it before it starts the
+// new process. A VM that is still running therefore owns that socket — the broker
+// would only have seen a log-only task, which is exactly the case a careless
+// restore corrupts — so a second (non-concurrent) restore must not replace it: 409
+// conflict, and the store is never asked to restore.
 func TestSnapshotHandlerRestoreRejectsALiveRestoredSocket(t *testing.T) {
 	dir := shortSocketDir(t)
-	serveRestoredVM(t, filepath.Join(dir, "task-1-restored.sock"))
+	serveRestoredVM(t, filepath.Join(dir, "task-1.sock"))
 
 	info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())
 	store := &fakeSnapshotStore{list: []*snapshot.SnapshotInfo{info}}
@@ -540,7 +528,7 @@ func TestSnapshotHandlerRestoreStaleSocketProceeds(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := shortSocketDir(t)
-			stalePath := filepath.Join(dir, "task-1-restored.sock")
+			stalePath := filepath.Join(dir, "task-1.sock")
 			tc.stale(t, stalePath)
 
 			info := testSnapshotInfo("snap-1", "task-1", time.Now().UTC())

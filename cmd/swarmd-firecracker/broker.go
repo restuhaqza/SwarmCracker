@@ -11,6 +11,7 @@ import (
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 	"github.com/urfave/cli/v2"
 )
 
@@ -84,6 +85,13 @@ type brokerRuntime struct {
 	// through SetRestoredInstances.
 	// Nil means this node keeps no records, which is only true in tests.
 	restored *scruntime.RestoredRegistry
+	// instances is the node's registry of the microVMs it is running
+	// (pkg/vminstance): the source of path truth the broker resolves through
+	// before it derives anything from a task ID. It is opened before startNode
+	// (see openDaemonState) because opening it can fail. Nil means this node
+	// keeps no registry, which is only true in tests: every lookup then falls
+	// back to the derivation, exactly as before the registry existed.
+	instances *vminstance.Store
 	// pending is the node's store of pending-restore directives: the manager's prepare
 	// route writes one per service here, and the executor consumes it when SwarmKit
 	// starts that service's next task. The daemon opens it once (openDaemonState) so
@@ -223,7 +231,13 @@ func startBroker(ctx context.Context, cfg brokerRuntime, stateDir string) (*brok
 	if cfg.restored != nil {
 		restored = cfg.restored
 	}
-	tasks := broker.NewSocketDirSource(cfg.socketDir, cfg.logDir, cfg.taskAlive, restored)
+	// The registry is the resolver's first source of path truth, so it is wired
+	// the same way: nil in the field, nil in the interface.
+	var instances broker.InstanceSource
+	if cfg.instances != nil {
+		instances = cfg.instances
+	}
+	tasks := broker.NewSocketDirSource(cfg.socketDir, cfg.logDir, cfg.taskAlive, instances, restored)
 
 	srv, err := broker.NewServer(broker.ServerConfig{
 		Addr:      cfg.listenAddr,

@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/config"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/rs/zerolog/log"
 )
 
@@ -718,8 +719,25 @@ func (m *Manager) RestoreFromSnapshotWithLog(
 		Str("socket", socketPath).
 		Msg("Restoring VM from snapshot")
 
-	// Clean up existing socket
+	// Clean up the two host-side paths a previous VMM leaves beside this one.
+	//
+	// The API socket is the path this restore is about to bind. The muxer is the
+	// one a restore of the task's own snapshot binds, <socketDir>/<taskID>.vsock
+	// (runtime.VsockPath): a VMM that crashed leaves that file behind, and the
+	// restored Firecracker cannot bind it again — the restore fails with EADDRINUSE
+	// before the guest ever resumes (#159). The task's own VM is not running: both
+	// callers refuse that before reaching here, so no live backend owns either path.
+	// Removing them here rather than in each caller is what keeps the local CLI's
+	// restore and the node broker's from disagreeing about it.
+	//
+	// A restore that loads another task's VM — a migration — names the source's
+	// muxer inside the checkpoint, so this removal is a no-op for it and that path
+	// owns the file.
 	os.Remove(socketPath)
+	staleVsock := runtime.VsockPath(filepath.Dir(socketPath), info.TaskID)
+	if err := os.Remove(staleVsock); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("clear the stale vsock muxer %s: %w", staleVsock, err)
+	}
 
 	// Start a fresh Firecracker process. The snapshot state (including block
 	// devices and kernel) is applied through the API below; do NOT pass a
