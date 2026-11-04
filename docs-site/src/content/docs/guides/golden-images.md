@@ -228,6 +228,10 @@ spec:
     profile: guest-runtime-6.1 # selects the vmlinux variant
     mustBoot: true
 
+  agent:                       # the guest agent the template pins
+    protocol: "2"              # protocol the embedded sc-agent speaks
+    version: "v0.13.0"         # its release version
+
   runtime:                     # the container runtime installed *inside*
     name: docker               # docker | containerd | podman | none
     version: "27.5"
@@ -273,6 +277,15 @@ spec:
 
 Fields are intentionally close to the existing config vocabulary so the Go
 implementation can reuse `ImagesConfig`/`ExecutorConfig` validation.
+
+`spec.agent` is recorded in the artifact's metadata sidecar as `agentProtocol`
+and `agentVersion`, and it is a compatibility floor rather than documentation: a
+host refuses a template whose pinned protocol is below the minimum it speaks,
+with the typed error `template_incompatible`, and refuses a template with no pin
+at all for the same reason. That removes the alternative of booting an image and
+discovering mid-operation that its guest agent cannot serve what the host needs —
+the image either carries an agent that advertises the operation or it cannot be
+used. Leaving `spec.agent` out pins the agent the builder ships.
 
 ### 4.3 Recipe catalogue
 

@@ -31,7 +31,7 @@ func TestClient_Metrics_RoundTrip(t *testing.T) {
 	withProcFixture(t)
 
 	conn, _ := newPipePair(t)
-	c := &Client{conn: conn}
+	c := testClient(conn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -50,7 +50,7 @@ func TestClient_Metrics_LeavesClientUsable(t *testing.T) {
 	withProcFixture(t)
 
 	conn, _ := newPipePair(t)
-	c := &Client{conn: conn}
+	c := testClient(conn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -71,7 +71,7 @@ func TestClient_Metrics_ReadFailureIsAnError(t *testing.T) {
 	t.Cleanup(func() { procRoot = orig })
 
 	conn, _ := newPipePair(t)
-	c := &Client{conn: conn}
+	c := testClient(conn)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

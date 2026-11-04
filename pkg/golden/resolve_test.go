@@ -26,6 +26,7 @@ func writeGolden(t *testing.T, dir, name, version string) string {
 		SizeBytes:    3,
 		SHA256:       "abc",
 		Init:         Init{System: InitSystemd, BootArgs: []string{"systemd.unified_cgroup_hierarchy=1"}},
+		Agent:        AgentPin{Protocol: MinimumAgentProtocol, Version: "test"},
 	}
 	require.NoError(t, writeMetadataAtomic(filepath.Join(dir, base+".json"), md))
 	return artifact

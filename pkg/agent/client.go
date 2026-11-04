@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,6 +39,14 @@ type Client struct {
 	// operation fails fast instead of reading a closed connection or risking a
 	// protocol desync.
 	consumed bool
+
+	// hello is what the guest reported during the handshake.
+	hello Hello
+	// caps is hello.Caps as a set, so an operation the guest did not advertise
+	// is refused before a single frame is written.
+	caps map[string]bool
+	// nextID numbers this connection's requests.
+	nextID atomic.Uint64
 }
 
 // errConsumed is returned when a Client is used after a TTY exec.
@@ -64,8 +74,10 @@ type ExecOptions struct {
 // Because Firecracker drops the connection when nothing is listening on the
 // guest port yet (the guest agent may still be starting), the dial + CONNECT
 // cycle is retried for up to dialRetryWindow before Dial gives up. After a
-// successful CONNECT the protocol hello is exchanged and a version mismatch
-// fails clearly.
+// successful CONNECT the v2 hello is negotiated, and an agent that cannot meet
+// the contract — including every pre-v2 agent — is refused with
+// CodeProtocolUnsupported rather than used with fewer capabilities than the
+// caller asked for.
 //
 // When the node provisioned a per-boot token for this VM, its host-side copy
 // sits next to the muxer (see TokenFilePath) and is presented in hello. A guest
@@ -96,54 +108,212 @@ func DialWithToken(ctx context.Context, udsPath string, port uint32, token strin
 	}
 
 	c := &Client{conn: conn}
-	if err := c.write(Request{Op: "hello", Version: Version, Token: token}); err != nil {
+	hello, err := c.handshake(ctx, token)
+	if err != nil {
 		_ = conn.Close()
-		return nil, fmt.Errorf("send hello: %w", err)
+		return nil, err
+	}
+	c.hello = hello
+	c.caps = make(map[string]bool, len(hello.Caps))
+	for _, op := range hello.Caps {
+		c.caps[op] = true
+	}
+	return c, nil
+}
+
+// Hello returns what the guest reported during the handshake: the protocol
+// versions it speaks, the operations it advertises, and its version, build and
+// boot identity.
+func (c *Client) Hello() Hello {
+	h := c.hello
+	h.Versions = append([]string(nil), c.hello.Versions...)
+	h.Caps = append([]string(nil), c.hello.Caps...)
+	return h
+}
+
+// handshake performs the v2 negotiation and holds the reply to the contract.
+// Anything that does not describe a v2 agent — an error frame from a pre-v2
+// guest, a reply that does not list this protocol version, or a missing boot
+// identity — is refused, so an older agent fails here instead of failing an
+// operation later or being used with a capability it never had.
+//
+// It is the only place a hello is built, so both entry points — Dial, which
+// reads the token file next to the muxer, and DialWithToken, for a caller that
+// carries a token explicitly — negotiate and authenticate identically. The token
+// rides in the hello request; an empty one means an unauthenticated dial.
+func (c *Client) handshake(ctx context.Context, token string) (Hello, error) {
+	req := Request{Op: CapHello, Version: Version, Token: token}
+	if err := c.begin(ctx, &req); err != nil {
+		return Hello{}, err
+	}
+	if err := c.write(req); err != nil {
+		return Hello{}, fmt.Errorf("send hello: %w", err)
 	}
 
 	var msg Message
-	if _, err := ReadFrame(conn, &msg); err != nil {
-		_ = conn.Close()
+	if _, err := ReadFrame(c.conn, &msg); err != nil {
 		// The guest deliberately sends no frame when it rejects a token, so a
 		// connection that dies here right after a token-bearing hello is the
 		// only observable form of that rejection.
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			if token != "" {
-				return nil, fmt.Errorf("%w: %v", ErrTokenRejected, err)
+				return Hello{}, fmt.Errorf("%w: %v", ErrTokenRejected, err)
 			}
 			// The muxer accepted the connection and hello was written, so a
 			// guest that hung up here is either requiring a token this node has
 			// none for, or has no agent behind the port. Name both instead of
 			// surfacing a bare EOF.
-			return nil, fmt.Errorf("read hello reply: %w (the guest may require a token this node has none for, or its agent stopped)", err)
+			return Hello{}, fmt.Errorf("read hello reply: %w (the guest may require a token this node has none for, or its agent stopped)", err)
 		}
-		return nil, fmt.Errorf("read hello reply: %w", err)
+		return Hello{}, fmt.Errorf("read hello reply: %w", err)
 	}
 	if msg.Type == "error" {
-		_ = conn.Close()
-		return nil, errors.New(msg.Error)
+		return Hello{}, helloFailure(msg)
 	}
 	if msg.Type != "hello" {
-		_ = conn.Close()
-		return nil, fmt.Errorf("unexpected hello reply type %q", msg.Type)
+		return Hello{}, &Error{
+			Code:    CodeProtocolUnsupported,
+			Message: fmt.Sprintf("unexpected hello reply type %q", msg.Type),
+		}
 	}
-	if msg.Version != Version {
-		_ = conn.Close()
-		return nil, fmt.Errorf("agent version mismatch: client %s, guest %s", Version, msg.Version)
+	if msg.Version != Version || !slices.Contains(msg.Versions, Version) || msg.BootID == "" {
+		return Hello{}, &Error{
+			Code: CodeProtocolUnsupported,
+			Message: fmt.Sprintf(
+				"guest reports protocol %q (versions %v) and boot id %q; this host speaks %s; %s",
+				msg.Version, msg.Versions, msg.BootID, Version, outdatedAgentHint),
+		}
 	}
 	if token != "" && !msg.TokenOK {
 		// The guest answered hello without acknowledging the token. It is an
 		// agent that predates token authentication (or a template baked with
 		// one); the node meant to authenticate this VM, so refusing is the only
 		// safe answer.
-		_ = conn.Close()
-		return nil, ErrTokenUnsupported
+		return Hello{}, ErrTokenUnsupported
 	}
 	if token == "" && msg.AuthRequired {
-		_ = conn.Close()
-		return nil, ErrTokenRequired
+		return Hello{}, ErrTokenRequired
 	}
-	return c, nil
+	if msg.ID != req.ID {
+		return Hello{}, &Error{
+			Code:    CodeProtocolError,
+			Message: fmt.Sprintf("hello reply id %q does not match request id %q", msg.ID, req.ID),
+		}
+	}
+	return Hello{
+		Version:      Version,
+		Versions:     append([]string(nil), msg.Versions...),
+		Caps:         append([]string(nil), msg.Caps...),
+		AgentVersion: msg.AgentVersion,
+		BuildID:      msg.BuildID,
+		BootID:       msg.BootID,
+	}, nil
+}
+
+// outdatedAgentHint is appended to a protocol-unsupported failure so the symptom
+// arrives with the fix beside it. The agent is baked into the guest image, so an
+// upgraded host keeps meeting the old agent in running guests until the image is
+// rebuilt or the task is restarted; without this, an operator reads a bare
+// version mismatch and reasonably suspects a bug.
+const outdatedAgentHint = "the guest image predates this host; rebuild it or restart the task to inject the current agent"
+
+// helloFailure turns the hello reply's error frame into a typed error. A pre-v2
+// agent rejects the v2 version string with a bare error frame, so a frame that
+// carries no code is exactly the "agent too old" case.
+func helloFailure(msg Message) error {
+	code := msg.ErrorCode
+	if code == "" {
+		code = CodeProtocolUnsupported
+	}
+	message := "hello: " + msg.Error
+	if code == CodeProtocolUnsupported {
+		message += "; " + outdatedAgentHint
+	}
+	return &Error{Code: code, Message: message}
+}
+
+// begin stamps a request with its id and the caller's remaining budget.
+//
+// The budget crosses the wire as a relative duration, never as an absolute
+// instant: the guest's wall clock can be wrong after a restore while its
+// monotonic timer is fine, so only elapsed time is meaningful across the
+// boundary.
+func (c *Client) begin(ctx context.Context, req *Request) error {
+	req.ID = strconv.FormatUint(c.nextID.Add(1), 10)
+	d, ok := ctx.Deadline()
+	if !ok {
+		return nil
+	}
+	remaining := time.Until(d)
+	if remaining <= 0 {
+		return &Error{
+			Code:    CodeDeadlineExceeded,
+			Message: fmt.Sprintf("%s: context deadline already passed", req.Op),
+		}
+	}
+	// A sub-millisecond budget would round to 0, which the guest reads as "no
+	// deadline", so it is raised to the smallest budget the wire can carry.
+	req.DeadlineMs = max(int64(remaining/time.Millisecond), 1)
+	return nil
+}
+
+// requireCap refuses an operation this guest did not advertise, before any frame
+// is written. There is no fallback: an operation the agent cannot serve is an
+// error, never a silent substitution with one it can.
+func (c *Client) requireCap(op string) error {
+	if c.caps[op] {
+		return nil
+	}
+	return &Error{
+		Code: CodeUnsupportedOp,
+		Message: fmt.Sprintf("guest agent does not advertise op %q (caps: %s)",
+			op, strings.Join(c.hello.Caps, ",")),
+	}
+}
+
+// readReply reads one frame and holds the guest to the id it echoed, so a frame
+// left over from an abandoned request can never be attributed to this one.
+// stream selects the streaming frame bound.
+func (c *Client) readReply(id string, stream bool) (Message, error) {
+	var msg Message
+	var err error
+	if stream {
+		_, err = ReadStreamFrame(c.conn, &msg)
+	} else {
+		_, err = ReadFrame(c.conn, &msg)
+	}
+	if err != nil {
+		return Message{}, err
+	}
+	if msg.ID != id {
+		return Message{}, &Error{
+			Code:    CodeProtocolError,
+			Message: fmt.Sprintf("reply id %q does not match request id %q", msg.ID, id),
+		}
+	}
+	return msg, nil
+}
+
+// frameError converts an error frame into a typed error. A frame without a code
+// came from a peer that cannot type its failures, which is a guest-side fault
+// rather than a caller mistake.
+func frameError(op string, msg Message) error {
+	code := msg.ErrorCode
+	if code == "" {
+		code = CodeInternal
+	}
+	return &Error{Code: code, Message: op + ": " + msg.Error}
+}
+
+// readError labels a failed read. A caller deadline that expired while waiting is
+// reported as a typed deadline failure: the guest kills the operation at the same
+// moment the host stops waiting, so whichever side notices first, the caller
+// sees the same code.
+func readError(ctx context.Context, op string, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return &Error{Code: CodeDeadlineExceeded, Message: op + ": deadline exceeded"}
+	}
+	return fmt.Errorf("%s: read frame: %w", op, err)
 }
 
 // connectVsock dials the Firecracker vsock muxer at udsPath and performs the
@@ -334,10 +504,16 @@ func (c *Client) ExecStatus(ctx context.Context, cmd []string, opts ExecOptions)
 	if opts.Stdin != nil && !opts.TTY {
 		return ExecResult{}, fmt.Errorf("stdin forwarding requires a TTY")
 	}
+	if err := c.requireCap(CapExec); err != nil {
+		return ExecResult{}, err
+	}
 	stop := c.watchContext(ctx)
 	defer stop()
 
-	req := Request{Op: "exec", Command: cmd, TTY: opts.TTY, Env: opts.Env, WorkDir: opts.WorkDir}
+	req := Request{Op: CapExec, Command: cmd, TTY: opts.TTY, Env: opts.Env, WorkDir: opts.WorkDir}
+	if err := c.begin(ctx, &req); err != nil {
+		return ExecResult{}, err
+	}
 	if err := c.write(req); err != nil {
 		return ExecResult{}, fmt.Errorf("exec: send request: %w", err)
 	}
@@ -353,9 +529,9 @@ func (c *Client) ExecStatus(ctx context.Context, cmd []string, opts ExecOptions)
 	}
 
 	for {
-		var msg Message
-		if _, err := ReadFrame(c.conn, &msg); err != nil {
-			return ExecResult{}, fmt.Errorf("exec: read frame: %w", err)
+		msg, err := c.readReply(req.ID, true)
+		if err != nil {
+			return ExecResult{}, readError(ctx, "exec", err)
 		}
 		switch msg.Type {
 		case "stdout":
@@ -373,7 +549,7 @@ func (c *Client) ExecStatus(ctx context.Context, cmd []string, opts ExecOptions)
 		case "exit":
 			return exitResult(msg)
 		case "error":
-			return ExecResult{}, fmt.Errorf("exec: %s", msg.Error)
+			return ExecResult{}, frameError("exec", msg)
 		default:
 			return ExecResult{}, fmt.Errorf("exec: unexpected message type %q", msg.Type)
 		}
@@ -403,16 +579,23 @@ func (c *Client) Metrics(ctx context.Context) (GuestMetrics, error) {
 	if c.consumed {
 		return GuestMetrics{}, errConsumed
 	}
+	if err := c.requireCap(CapMetrics); err != nil {
+		return GuestMetrics{}, err
+	}
 	stop := c.watchContext(ctx)
 	defer stop()
 
-	if err := c.write(Request{Op: "metrics"}); err != nil {
+	req := Request{Op: CapMetrics}
+	if err := c.begin(ctx, &req); err != nil {
+		return GuestMetrics{}, err
+	}
+	if err := c.write(req); err != nil {
 		return GuestMetrics{}, fmt.Errorf("metrics: send request: %w", err)
 	}
 
-	var msg Message
-	if _, err := ReadFrame(c.conn, &msg); err != nil {
-		return GuestMetrics{}, fmt.Errorf("metrics: read frame: %w", err)
+	msg, err := c.readReply(req.ID, false)
+	if err != nil {
+		return GuestMetrics{}, readError(ctx, "metrics", err)
 	}
 	switch msg.Type {
 	case "metrics":
@@ -421,7 +604,7 @@ func (c *Client) Metrics(ctx context.Context) (GuestMetrics, error) {
 		}
 		return *msg.Metrics, nil
 	case "error":
-		return GuestMetrics{}, fmt.Errorf("metrics: %s", msg.Error)
+		return GuestMetrics{}, frameError("metrics", msg)
 	default:
 		return GuestMetrics{}, fmt.Errorf("metrics: unexpected message type %q", msg.Type)
 	}
@@ -435,10 +618,17 @@ func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mo
 	if guestPath == "" {
 		return fmt.Errorf("copy: empty guest path")
 	}
+	if err := c.requireCap(CapPut); err != nil {
+		return err
+	}
 	stop := c.watchContext(ctx)
 	defer stop()
 
-	if err := c.write(Request{Op: "put", Path: guestPath, Mode: mode}); err != nil {
+	req := Request{Op: CapPut, Path: guestPath, Mode: mode}
+	if err := c.begin(ctx, &req); err != nil {
+		return err
+	}
+	if err := c.write(req); err != nil {
 		return fmt.Errorf("copy: send put request: %w", err)
 	}
 
@@ -461,15 +651,15 @@ func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mo
 		return fmt.Errorf("copy: send end-of-file frame: %w", err)
 	}
 
-	var msg Message
-	if _, err := ReadFrame(c.conn, &msg); err != nil {
-		return fmt.Errorf("copy: read reply: %w", err)
+	msg, err := c.readReply(req.ID, false)
+	if err != nil {
+		return readError(ctx, "copy", err)
 	}
 	switch msg.Type {
 	case "ok":
 		return nil
 	case "error":
-		return fmt.Errorf("copy: %s", msg.Error)
+		return frameError("copy", msg)
 	default:
 		return fmt.Errorf("copy: unexpected reply type %q", msg.Type)
 	}
@@ -486,14 +676,21 @@ func (c *Client) CopyFrom(ctx context.Context, guestPath string, dst io.Writer) 
 	stop := c.watchContext(ctx)
 	defer stop()
 
-	if err := c.write(Request{Op: "get", Path: guestPath}); err != nil {
+	if err := c.requireCap(CapGet); err != nil {
+		return err
+	}
+	req := Request{Op: CapGet, Path: guestPath}
+	if err := c.begin(ctx, &req); err != nil {
+		return err
+	}
+	if err := c.write(req); err != nil {
 		return fmt.Errorf("copy: send get request: %w", err)
 	}
 
 	for {
-		var msg Message
-		if _, err := ReadFrame(c.conn, &msg); err != nil {
-			return fmt.Errorf("copy: read frame: %w", err)
+		msg, err := c.readReply(req.ID, true)
+		if err != nil {
+			return readError(ctx, "copy", err)
 		}
 		switch msg.Type {
 		case "file":
@@ -506,7 +703,7 @@ func (c *Client) CopyFrom(ctx context.Context, guestPath string, dst io.Writer) 
 				}
 			}
 		case "error":
-			return fmt.Errorf("copy: %s", msg.Error)
+			return frameError("copy", msg)
 		default:
 			return fmt.Errorf("copy: unexpected message type %q", msg.Type)
 		}

@@ -38,9 +38,66 @@ host-to-guest direction: that `<socket>_<port>` path is created only for
 *guest-initiated* connections. The traffic never leaves the host — **no host
 network port is opened** and there is no listening TCP socket in the guest.
 
-The client checks the agent's protocol version during the handshake on connect
-and **fails clearly on a mismatch**, rather than mis-parsing a reply from an
-older or newer agent.
+The handshake is what makes the connection safe to build on. The agent speaks
+protocol **v2**, and its `hello` reply names the protocol versions it speaks, the
+operations it advertises, and its agent version, build and boot identity. The
+host keeps that capability list and **refuses to send an operation the agent did
+not advertise**, with a typed error — `unsupported_op` — instead of failing
+halfway or quietly doing something narrower. An agent older than v2 fails the
+handshake with `agent_protocol_unsupported`, so an image that predates an
+operation can never be used as if it had it.
+
+Every request carries an `id` and a `deadlineMs` budget. The agent echoes the id
+on every frame it answers with, so a reply can never be attributed to the wrong
+request, and it honours the budget: when it runs out, a running command is killed
+and the caller sees `deadline_exceeded` rather than a bare exit code. Failures
+carry a stable code (`unsupported_op`, `deadline_exceeded`,
+`agent_protocol_unsupported`, `invalid_request`, `protocol_error`, `internal`);
+the message beside a code is for humans and may change.
+
+Frames stay capped at 1 MiB for control traffic. Streaming frames — command
+output and file payloads — have their own, larger bound, so raising a stream
+limit can never widen what a control frame is allowed to allocate.
+
+`hello` also reports a `bootId`, minted when the agent starts. A host compares it
+across reconnects: a different value means the guest is not the instance its
+previous session described, so that session is dropped instead of applied to a
+stranger. The agent can also rotate the identity on demand, which is how a resume
+from a snapshot marks the guest as a new instance — memory survives a restore, so
+only an explicit rotation can distinguish the resumed guest from the one the
+snapshot was taken from.
+
+### Upgrading a node
+
+The agent is baked into the guest image, so a freshly upgraded node temporarily
+runs a newer host than some of its guests. That case is refused, not tolerated:
+there is no configuration that lowers the host's protocol floor, and `hello`
+fails with `agent_protocol_unsupported` when the guest predates it. The rejection
+is deliberate — a v1 agent advertises no capabilities, so accepting it would mean
+guessing which operations it has, which is the silent fallback this protocol
+exists to remove.
+
+Order the upgrade so the gap is short and never mistaken for a bug:
+
+1. **Build and publish new templates first**, with `spec.agent` pinned to the
+   protocol the new host speaks. A template below that minimum — or one built
+   without a pin — is refused with `template_incompatible` when it is resolved,
+   so a golden-based task cannot start from the old template at all.
+2. **Then upgrade the daemon.** OCI-image tasks prepared from now on are rebuilt
+   (the guest override version changed), so they boot the current agent.
+3. **VMs already running keep the agent they booted with.** A host upgrade does
+   not touch a running guest. `vm exec`, `vm cp`, the API exec route and guest
+   health checks fail with `agent_protocol_unsupported`; guest metrics stay unset
+   and are logged once, without restarting anything. A task that declares a
+   healthcheck restarts by itself: the failing probe force-stops the VM, SwarmKit
+   reschedules it, and the rebuilt rootfs carries the current agent. A task
+   without a healthcheck keeps serving traffic and needs an explicit restart to
+   regain exec.
+
+`swarmcracker doctor` reports the tasks whose guest agent is behind, under
+**Running VMs → Guest agent protocol**. That check is the way to find them: a
+task with no healthcheck never fails on its own, so nothing else would say that a
+VM is still being served by an agent this host refuses.
 
 ## `vm exec`
 

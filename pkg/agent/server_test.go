@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -18,9 +19,16 @@ import (
 // the server end. The client end is closed on cleanup, which unblocks ServeConn.
 func newPipePair(t *testing.T) (net.Conn, <-chan error) {
 	t.Helper()
+	return newCappedPipePair(t, Capabilities())
+}
+
+// newCappedPipePair is newPipePair with a narrowed capability set, so a test can
+// prove how the agent answers an operation it never advertised.
+func newCappedPipePair(t *testing.T, caps []string) (net.Conn, <-chan error) {
+	t.Helper()
 	client, server := net.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- ServeConn(server) }()
+	go func() { done <- serveConn(server, caps, nil) }()
 	t.Cleanup(func() {
 		_ = client.Close()
 		select {
@@ -64,23 +72,36 @@ func runExec(t *testing.T, conn net.Conn, req Request) (stdout, stderr string, c
 	}
 }
 
+// TestServeConnHello pins the v2 handshake: the reply names the protocol the
+// guest speaks, the operations it advertises, and the agent build and boot
+// identity, and it echoes the request id.
 func TestServeConnHello(t *testing.T) {
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: Version}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "hello", ID: "7", Version: Version}))
 
 	msg := readMessage(t, conn)
 	assert.Equal(t, "hello", msg.Type)
+	assert.Equal(t, "7", msg.ID)
 	assert.Equal(t, Version, msg.Version)
+	assert.Equal(t, []string{Version}, msg.Versions)
+	assert.Equal(t, Capabilities(), msg.Caps)
+	assert.Equal(t, AgentVersion, msg.AgentVersion)
+	assert.Equal(t, BuildID, msg.BuildID)
+	assert.Equal(t, BootID(), msg.BootID)
+	assert.NotEmpty(t, msg.BootID)
 }
 
+// TestServeConnHelloVersionMismatch proves a peer speaking another protocol is
+// refused with the typed code the host maps to an unusable agent.
 func TestServeConnHelloVersionMismatch(t *testing.T) {
 	conn, _ := newPipePair(t)
-	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: "2"}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: VersionLegacy}))
 
 	msg := readMessage(t, conn)
 	assert.Equal(t, "error", msg.Type)
-	assert.Contains(t, msg.Error, "agent version mismatch")
-	assert.Contains(t, msg.Error, "client 2, guest "+Version)
+	assert.Equal(t, CodeProtocolUnsupported, msg.ErrorCode)
+	assert.Contains(t, msg.Error, "agent protocol unsupported")
+	assert.Contains(t, msg.Error, "client speaks "+VersionLegacy)
 }
 
 func TestServeConnExecStreamsOutputAndExit(t *testing.T) {
@@ -284,13 +305,134 @@ func TestServeConnGetEmptyPath(t *testing.T) {
 	assert.Contains(t, msg.Error, "empty path")
 }
 
+// TestServeConnUnknownOp covers an op no version of this agent serves.
 func TestServeConnUnknownOp(t *testing.T) {
 	conn, _ := newPipePair(t)
 	require.NoError(t, WriteFrame(conn, Request{Op: "frobnicate"}))
 
 	msg := readMessage(t, conn)
 	assert.Equal(t, "error", msg.Type)
-	assert.Contains(t, msg.Error, "unknown op")
+	assert.Equal(t, CodeUnsupportedOp, msg.ErrorCode)
+	assert.Contains(t, msg.Error, "not advertised")
+}
+
+// TestServeConnRefusesUnadvertisedOp proves the advertised set is the contract:
+// an op the agent implements but does not advertise is refused, never served.
+// That is what stops a host from depending on an operation the agent did not
+// promise.
+func TestServeConnRefusesUnadvertisedOp(t *testing.T) {
+	conn, _ := newCappedPipePair(t, []string{CapHello, CapExec})
+
+	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: Version}))
+	hello := readMessage(t, conn)
+	require.Equal(t, "hello", hello.Type)
+	assert.Equal(t, []string{CapHello, CapExec}, hello.Caps)
+
+	require.NoError(t, WriteFrame(conn, Request{Op: CapGet, Path: "/etc/hostname"}))
+	msg := readMessage(t, conn)
+	assert.Equal(t, "error", msg.Type)
+	assert.Equal(t, CodeUnsupportedOp, msg.ErrorCode)
+	assert.Contains(t, msg.Error, CapGet)
+
+	// The connection stays usable for what was advertised.
+	_, _, code := runExec(t, conn, Request{Op: CapExec, Command: []string{"sh", "-c", "exit 5"}})
+	assert.Equal(t, 5, code)
+}
+
+// TestServeConnEchoesRequestID proves every frame of a response carries the id
+// of the request that produced it, including the streamed ones.
+func TestServeConnEchoesRequestID(t *testing.T) {
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: CapExec, ID: "req-42", Command: []string{"sh", "-c", "echo out"}}))
+
+	sawStdout := false
+	for {
+		msg := readMessage(t, conn)
+		assert.Equal(t, "req-42", msg.ID, "frame type %q", msg.Type)
+		switch msg.Type {
+		case "stdout":
+			sawStdout = true
+		case "exit":
+			require.True(t, sawStdout, "the command should have produced output")
+			return
+		}
+	}
+}
+
+// TestServeConnRefusesSpentDeadline proves a request whose budget was already
+// spent is refused before anything runs, so the guest does not spend work the
+// host has stopped waiting for.
+func TestServeConnRefusesSpentDeadline(t *testing.T) {
+	conn, _ := newPipePair(t)
+	cmd := []string{"sh", "-c", "echo ran"}
+	require.NoError(t, WriteFrame(conn, Request{Op: CapExec, DeadlineMs: -1, Command: cmd}))
+
+	msg := readMessage(t, conn)
+	assert.Equal(t, "error", msg.Type, "the command must not run, so no stdout frame may arrive first")
+	assert.Equal(t, CodeDeadlineExceeded, msg.ErrorCode)
+	assert.Contains(t, msg.Error, "deadline")
+}
+
+// TestServeConnExecDeadlineKillsCommand proves a positive budget bounds the
+// operation itself: the guest kills the command and reports the typed failure
+// instead of letting it finish.
+func TestServeConnExecDeadlineKillsCommand(t *testing.T) {
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: CapExec, DeadlineMs: 100, Command: []string{"sleep", "30"}}))
+
+	start := time.Now()
+	msg := readMessage(t, conn)
+	assert.Equal(t, "error", msg.Type)
+	assert.Equal(t, CodeDeadlineExceeded, msg.ErrorCode)
+	assert.Less(t, time.Since(start), 10*time.Second, "the command must be killed at its deadline")
+}
+
+// TestServeConnClampsHugeDeadline proves a hostile budget cannot overflow the
+// duration conversion and turn into an immediately expired request.
+func TestServeConnClampsHugeDeadline(t *testing.T) {
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{
+		Op:         CapExec,
+		DeadlineMs: math.MaxInt64,
+		Command:    []string{"sh", "-c", "echo ran"},
+	}))
+
+	var stdout bytes.Buffer
+	for {
+		msg := readMessage(t, conn)
+		switch msg.Type {
+		case "stdout":
+			stdout.Write(msg.Data)
+		case "exit":
+			assert.Equal(t, 0, *msg.Code)
+			assert.Equal(t, "ran\n", stdout.String())
+			return
+		case "error":
+			t.Fatalf("a huge budget must not expire the request: %s", msg.Error)
+		}
+	}
+}
+
+// TestServeConnHelloReportsRotatedBootID proves the boot identity the host uses
+// to recognise a new guest instance is republished after a rotation, which is how
+// a restore invalidates the sessions from before it.
+func TestServeConnHelloReportsRotatedBootID(t *testing.T) {
+	before := BootID()
+	t.Cleanup(func() {
+		bootMu.Lock()
+		bootID = before
+		bootMu.Unlock()
+	})
+
+	conn, _ := newPipePair(t)
+	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: Version}))
+	assert.Equal(t, before, readMessage(t, conn).BootID)
+
+	rotated := RotateBootID()
+	require.NotEqual(t, before, rotated)
+
+	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: Version}))
+	assert.Equal(t, rotated, readMessage(t, conn).BootID)
 }
 
 func TestServeConnHandlesMultipleRequests(t *testing.T) {

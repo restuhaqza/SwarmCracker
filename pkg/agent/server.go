@@ -7,7 +7,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
+	"time"
 )
 
 // errEndConn is an internal signal that a request ended the framed session and
@@ -18,6 +21,10 @@ var errEndConn = errors.New("agent: request ended the connection")
 // this boot's token. The guest sends no frame before dropping the connection,
 // so a peer cannot tell a missing token from a wrong one.
 var ErrUnauthorized = errors.New("agent: unauthenticated connection")
+
+// maxDeadlineMs bounds a peer-supplied budget (24 hours). It only exists so the
+// conversion to time.Duration cannot overflow on a hostile value.
+const maxDeadlineMs = int64(24 * time.Hour / time.Millisecond)
 
 // ServeConn serves the guest-agent protocol over rw. Requests are handled one
 // at a time, in order, until the peer closes the connection, a protocol error
@@ -31,7 +38,7 @@ var ErrUnauthorized = errors.New("agent: unauthenticated connection")
 // The caller is responsible for the connection lifetime; ServeConn does not
 // close rw.
 func ServeConn(rw io.ReadWriteCloser) error {
-	return serveConn(rw, nil)
+	return serveConn(rw, Capabilities(), nil)
 }
 
 // ServeConnAuth is ServeConn with per-boot token authentication. When auth is
@@ -43,14 +50,18 @@ func ServeConn(rw io.ReadWriteCloser) error {
 // A nil auth serves the connection exactly like ServeConn, which is what a VM
 // booted without token authentication gets.
 func ServeConnAuth(rw io.ReadWriteCloser, auth *TokenAuthenticator) error {
-	return serveConn(rw, auth)
+	return serveConn(rw, Capabilities(), auth)
 }
 
-func serveConn(rw io.ReadWriteCloser, auth *TokenAuthenticator) error {
+// serveConn serves the protocol advertising caps, and requiring auth when it is
+// non-nil. ServeConn passes the capability set this build implements; tests
+// narrow it to prove that an operation outside the advertised set is refused,
+// and the gates themselves are the same code path either way.
+func serveConn(rw io.ReadWriteCloser, caps []string, auth *TokenAuthenticator) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s := &server{rw: rw, ctx: ctx, cancel: cancel, auth: auth}
+	s := &server{rw: rw, ctx: ctx, cancel: cancel, caps: caps, auth: auth}
 	for {
 		var req Request
 		if _, err := ReadFrame(rw, &req); err != nil {
@@ -81,19 +92,64 @@ type server struct {
 	// every operation except hello is refused before it can touch the guest.
 	auth   *TokenAuthenticator
 	authed bool
+
+	// caps is the closed set of operations this connection advertises.
+	caps []string
+	// id is the id of the request being served, stamped on every frame it
+	// produces.
+	id string
+	// reqCtx bounds the request being served: ctx when it carried no deadline,
+	// or a child context that expires when it does.
+	reqCtx context.Context
 }
 
-// write sends a single frame, serialised against other writers.
+// write sends a single frame, serialised against other writers and stamped with
+// the id of the request being served.
 func (s *server) write(v any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if msg, ok := v.(Message); ok {
+		if msg.ID == "" {
+			msg.ID = s.id
+		}
+		v = msg
+	}
 	return WriteFrame(s.rw, v)
 }
 
 // writeError reports a request failure to the client as an error frame. The
 // connection stays usable, so a nil return is intentional.
 func (s *server) writeError(format string, args ...any) error {
-	return s.write(Message{Type: "error", Error: fmt.Sprintf(format, args...)})
+	return s.writeFailure(CodeInternal, format, args...)
+}
+
+// writeFailure reports a typed failure to the client. The code is the contract;
+// the formatted message is for humans.
+func (s *server) writeFailure(code ErrorCode, format string, args ...any) error {
+	return s.write(Message{Type: "error", ErrorCode: code, Error: fmt.Sprintf(format, args...)})
+}
+
+// requestContext bounds one request. A positive budget caps the handler; a
+// negative budget means the caller's deadline had already passed when the frame
+// was sent, so the returned context is already done and the request is refused
+// without being carried out. Zero means no deadline.
+func requestContext(parent context.Context, deadlineMs int64) (context.Context, context.CancelFunc) {
+	switch {
+	case deadlineMs > 0:
+		// A peer-supplied budget is clamped before it becomes a duration: a
+		// value near the int64 limit would otherwise overflow into a negative
+		// duration and expire the request immediately.
+		if deadlineMs > maxDeadlineMs {
+			deadlineMs = maxDeadlineMs
+		}
+		return context.WithTimeout(parent, time.Duration(deadlineMs)*time.Millisecond)
+	case deadlineMs < 0:
+		ctx, cancel := context.WithCancel(parent)
+		cancel()
+		return ctx, func() {}
+	default:
+		return context.WithCancel(parent)
+	}
 }
 
 func (s *server) dispatch(req *Request) error {
@@ -105,10 +161,26 @@ func (s *server) dispatch(req *Request) error {
 		return ErrUnauthorized
 	}
 
+	s.id = req.ID
+	ctx, cancel := requestContext(s.ctx, req.DeadlineMs)
+	defer cancel()
+	s.reqCtx = ctx
+
+	// The advertised set is the contract. An op outside it is refused with a
+	// typed error instead of being attempted or approximated, so a host can
+	// never mistake a missing operation for a successful one.
+	if !slices.Contains(s.caps, req.Op) {
+		return s.writeFailure(CodeUnsupportedOp,
+			"op %q is not advertised by this agent (caps: %s)", req.Op, strings.Join(s.caps, ","))
+	}
+	if ctx.Err() != nil {
+		return s.writeFailure(CodeDeadlineExceeded, "%s: deadline was already spent when the request arrived", req.Op)
+	}
+
 	switch req.Op {
-	case "hello":
+	case CapHello:
 		return s.handleHello(req)
-	case "exec":
+	case CapExec:
 		if err := s.handleExec(req); err != nil {
 			return err
 		}
@@ -119,14 +191,16 @@ func (s *server) dispatch(req *Request) error {
 			return errEndConn
 		}
 		return nil
-	case "put":
+	case CapPut:
 		return s.handlePut(req)
-	case "get":
+	case CapGet:
 		return s.handleGet(req)
-	case "metrics":
+	case CapMetrics:
 		return s.handleMetrics()
 	default:
-		return s.writeError("unknown op %q", req.Op)
+		// Unreachable through the gate above; kept so an op added to this
+		// switch without being advertised is still refused, not attempted.
+		return s.writeFailure(CodeUnsupportedOp, "op %q has no handler", req.Op)
 	}
 }
 
@@ -138,15 +212,29 @@ func (s *server) handleHello(req *Request) error {
 			return ErrUnauthorized
 		}
 		s.authed = true
-		if req.Version != Version {
-			return s.writeError("agent version mismatch: client %s, guest %s", req.Version, Version)
-		}
-		return s.write(Message{Type: "hello", Version: Version, AuthRequired: true, TokenOK: true})
 	}
 	if req.Version != Version {
-		return s.writeError("agent version mismatch: client %s, guest %s", req.Version, Version)
+		// A pre-v2 agent answers a v2 hello with an error frame of its own,
+		// which the host maps to CodeProtocolUnsupported. Answering with the
+		// same code keeps both directions honest about what happened.
+		return s.writeFailure(CodeProtocolUnsupported,
+			"agent protocol unsupported: client speaks %s, guest speaks %s", req.Version, Version)
 	}
-	return s.write(Message{Type: "hello", Version: Version})
+	reply := s.helloReply()
+	if s.auth != nil {
+		// The greeting stays single-sourced: authentication only adds these two
+		// flags, so a token-protected agent describes itself exactly like one
+		// that is not.
+		reply.AuthRequired = true
+		reply.TokenOK = true
+	}
+	return s.write(reply)
+}
+
+// helloReply is the payload of a successful hello: what this agent speaks and
+// what it can do, for the capability set this connection advertises.
+func (s *server) helloReply() Message {
+	return HelloReply(s.caps)
 }
 
 // handleMetrics samples the guest's own /proc and replies with one metrics
@@ -168,7 +256,7 @@ func (s *server) handleMetrics() error {
 // file is removed on every error path.
 func (s *server) handlePut(req *Request) error {
 	if req.Path == "" {
-		return s.writeError("put: empty path")
+		return s.writeFailure(CodeInvalidRequest, "put: empty path")
 	}
 	if dir := filepath.Dir(req.Path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -190,8 +278,14 @@ func (s *server) handlePut(req *Request) error {
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	for {
+		if s.reqCtx.Err() != nil {
+			_ = f.Close()
+			return s.writeFailure(CodeDeadlineExceeded, "put: deadline exceeded before the transfer finished")
+		}
 		var msg Message
-		if _, err := ReadFrame(s.rw, &msg); err != nil {
+		// A put payload is a stream, so it is bounded by the stream limit
+		// rather than the smaller control-frame cap.
+		if _, err := ReadStreamFrame(s.rw, &msg); err != nil {
 			_ = f.Close()
 			return fmt.Errorf("put: read data frame: %w", err)
 		}
@@ -224,7 +318,7 @@ func (s *server) handlePut(req *Request) error {
 // empty file frame.
 func (s *server) handleGet(req *Request) error {
 	if req.Path == "" {
-		return s.writeError("get: empty path")
+		return s.writeFailure(CodeInvalidRequest, "get: empty path")
 	}
 	f, err := os.Open(req.Path)
 	if err != nil {
@@ -234,6 +328,9 @@ func (s *server) handleGet(req *Request) error {
 
 	buf := make([]byte, fileChunkSize)
 	for {
+		if s.reqCtx.Err() != nil {
+			return s.writeFailure(CodeDeadlineExceeded, "get: deadline exceeded before the transfer finished")
+		}
 		n, err := f.Read(buf)
 		if n > 0 {
 			if werr := s.write(Message{Type: "file", Data: buf[:n]}); werr != nil {

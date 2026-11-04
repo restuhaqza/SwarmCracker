@@ -44,6 +44,9 @@ func writeRealGoldenStore(t *testing.T, name, version string) (dir, template str
 		Name:       name,
 		Version:    version,
 		Artifact:   filepath.Base(template),
+		// Every template this tree builds pins the agent it carries, and a
+		// template without that pin is refused when it is resolved.
+		Agent: golden.AgentPin{Protocol: golden.MinimumAgentProtocol, Version: "test"},
 	}
 	data, err := json.Marshal(md)
 	require.NoError(t, err)

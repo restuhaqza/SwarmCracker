@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,8 +11,11 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/spf13/cobra"
 )
 
@@ -156,6 +161,7 @@ func runDoctor(cfg *doctorConfig) error {
 	report.Checks = append(report.Checks,
 		dc("Firecracker processes", "vms", checkDoctorFCProcs, cfg),
 		dc("VM state files", "vms", checkDoctorVMStates, cfg),
+		dc("Guest agent protocol", "vms", checkDoctorAgentProtocol, cfg),
 	)
 
 	// Summarize
@@ -758,6 +764,165 @@ func checkDoctorVMStates() DoctorCheck {
 	}
 	c.Message = "no VM state files found"
 	return c
+}
+
+// ── Guest agent ──
+
+const (
+	// doctorStateDir is where the daemon records the state a migrated task's
+	// vsock muxer is found through.
+	doctorStateDir = "/var/lib/swarmkit"
+	// doctorAgentProbeTimeout bounds one guest handshake. Dial keeps retrying
+	// while nothing answers on the vsock port — a guest still booting, or one
+	// with no agent at all — so this is what stops a single silent VM from
+	// stalling the whole check.
+	doctorAgentProbeTimeout = 2 * time.Second
+	// doctorAgentProbeLimit bounds how many guests are asked at once.
+	doctorAgentProbeLimit = 8
+	// doctorAgentIDLimit bounds how many task IDs fit in one doctor message.
+	doctorAgentIDLimit = 5
+)
+
+// agentProbe is one running guest's answer to "which protocol do you speak?".
+type agentProbe struct {
+	taskID string
+	err    error // nil when the guest completed the v2 handshake
+}
+
+// checkDoctorAgentProtocol asks every running VM what its guest agent speaks and
+// reports the ones that predate this host.
+//
+// It exists because nothing else makes this visible. A task without a
+// healthcheck keeps serving traffic after a host upgrade while its guest agent
+// is still the old one: no probe fails, nothing turns red, and the first symptom
+// is somebody's failed `vm exec`. The check dials instead of reading cached
+// state, because a running guest is the only authority on what it speaks.
+func checkDoctorAgentProtocol() DoctorCheck {
+	return doctorAgentProtocolCheck(vmSocketDirDefault, doctorStateDir)
+}
+
+// doctorAgentProtocolCheck is checkDoctorAgentProtocol with its directories
+// passed in, so a test can point it at an in-process VM.
+func doctorAgentProtocolCheck(socketDir, stateDir string) DoctorCheck {
+	vms, err := scruntime.DiscoverRunningVMs(socketDir)
+	if err != nil {
+		return DoctorCheck{Status: "skip", Message: fmt.Sprintf("cannot scan %s: %v", socketDir, err)}
+	}
+
+	taskIDs := make([]string, 0, len(vms))
+	for _, vm := range vms {
+		taskIDs = append(taskIDs, vm.ID)
+	}
+	return summarizeAgentProbes(probeAgentProtocols(socketDir, stateDir, taskIDs), socketDir)
+}
+
+// probeAgentProtocols dials each task's guest agent under its own short budget.
+// The fan-out is bounded so a node with many VMs does not open a connection to
+// every guest at once.
+func probeAgentProtocols(socketDir, stateDir string, taskIDs []string) []agentProbe {
+	probes := make([]agentProbe, len(taskIDs))
+	sem := make(chan struct{}, doctorAgentProbeLimit)
+
+	var wg sync.WaitGroup
+	for i, taskID := range taskIDs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), doctorAgentProbeTimeout)
+			defer cancel()
+
+			client, err := agent.Dial(ctx, localVsockPath(socketDir, stateDir, taskID), agent.DefaultPort)
+			if err != nil {
+				probes[i] = agentProbe{taskID: taskID, err: err}
+				return
+			}
+			_ = client.Close()
+			probes[i] = agentProbe{taskID: taskID}
+		}()
+	}
+	wg.Wait()
+
+	return probes
+}
+
+// summarizeAgentProbes turns probe outcomes into the doctor verdict. A guest
+// that answered with an older protocol is the finding; one that answered nothing
+// at all is counted but never presented as an upgrade problem, because a guest
+// that is still booting is not an outdated image.
+func summarizeAgentProbes(probes []agentProbe, socketDir string) DoctorCheck {
+	if len(probes) == 0 {
+		return DoctorCheck{Status: "skip", Message: fmt.Sprintf("no running VMs under %s", socketDir)}
+	}
+
+	var outdated, unauthenticated []string
+	unreachable := 0
+	for _, p := range probes {
+		switch {
+		case p.err == nil:
+			// The guest completed the v2 handshake: it speaks what this host
+			// speaks.
+		case agent.CodeOf(p.err) == agent.CodeProtocolUnsupported,
+			errors.Is(p.err, agent.ErrTokenUnsupported):
+			// ErrTokenUnsupported is an agent that answers hello but predates
+			// token support, which is also older than this host's minimum.
+			outdated = append(outdated, p.taskID)
+		case errors.Is(p.err, agent.ErrTokenRequired),
+			errors.Is(p.err, agent.ErrTokenRejected):
+			// The guest is current; this node could not prove who it is. It has
+			// its own bucket because the fix is the token, not the image, and
+			// folding it into "did not answer" would send an operator to the
+			// wrong problem.
+			unauthenticated = append(unauthenticated, p.taskID)
+		default:
+			unreachable++
+		}
+	}
+
+	c := DoctorCheck{Status: "ok"}
+	c.Message = fmt.Sprintf("%d of %d running guest(s) speak protocol %s",
+		len(probes)-len(outdated)-len(unauthenticated)-unreachable, len(probes), agent.Version)
+	if unreachable > 0 {
+		c.Message += fmt.Sprintf("; %d did not answer", unreachable)
+	}
+
+	oldAgent := fmt.Sprintf("%d speak an older agent protocol: %s",
+		len(outdated), joinLimit(outdated, doctorAgentIDLimit))
+	noAuth := fmt.Sprintf("%d could not be authenticated: %s",
+		len(unauthenticated), joinLimit(unauthenticated, doctorAgentIDLimit))
+
+	switch {
+	case len(outdated) > 0 && len(unauthenticated) > 0:
+		c.Status = "warning"
+		c.Message = fmt.Sprintf("%d of %d running guest(s) need attention: %s; %s",
+			len(outdated)+len(unauthenticated), len(probes), oldAgent, noAuth)
+		c.FixHint = "restart them to inject the current agent; if the rest still cannot authenticate, " +
+			"the host token file next to their muxer is missing or stale"
+	case len(outdated) > 0:
+		c.Status = "warning"
+		c.Message = fmt.Sprintf("%d of %d running guest(s) speak an older agent protocol: %s",
+			len(outdated), len(probes), joinLimit(outdated, doctorAgentIDLimit))
+		c.Detail = "those tasks need to be restarted before exec, file copy and guest health checks work again"
+		c.FixHint = "restart those tasks to inject the current agent — a guest healthcheck detects this on its own"
+	case len(unauthenticated) > 0:
+		c.Status = "warning"
+		c.Message = fmt.Sprintf("%d of %d running guest(s) could not be authenticated by this node: %s",
+			len(unauthenticated), len(probes), joinLimit(unauthenticated, doctorAgentIDLimit))
+		c.Detail = "the guest answered, so its agent is current; this node has no token for it or the guest rejected it"
+		c.FixHint = "check the host token file next to each muxer (<socket-dir>/<task-id>.agent-token); " +
+			"a restart re-provisions it"
+	}
+	return c
+}
+
+// joinLimit joins at most max IDs and summarises the rest.
+func joinLimit(ids []string, max int) string {
+	if len(ids) <= max {
+		return strings.Join(ids, ", ")
+	}
+	return fmt.Sprintf("%s and %d more", strings.Join(ids[:max], ", "), len(ids)-max)
 }
 
 // ── Helpers ──

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Guest agent protocol v2** — `hello` now answers with the protocol versions
+  it speaks, the operations it advertises, its release version, its build id and
+  a `bootId`, instead of comparing one version string. The host keeps that
+  capability list and refuses an operation the agent did not advertise with a
+  typed `unsupported_op` error, so a new operation can never be skipped silently;
+  an agent older than v2 fails the handshake with `agent_protocol_unsupported`
+  and is never used with fewer capabilities than the caller asked for. Requests
+  carry an `id` and a `deadlineMs` budget, the agent echoes the id on every frame
+  it answers with, and a command that outlives its budget is killed and reported
+  as `deadline_exceeded` rather than as a signal exit. Failures carry stable
+  codes, with the message kept for humans. Control frames stay capped at 1 MiB;
+  streaming frames get their own larger bound. `bootId` is minted when the agent
+  starts and can be rotated on demand, so the restore path can mark a resumed
+  guest as a new instance and a host can tell that a session from before the
+  restore describes a different guest. Golden recipes
+  pin `spec.agent` (`protocol`, `version`), the sidecar records it as
+  `agentProtocol`/`agentVersion`, and a template pinned below the host's minimum
+  — or unpinned entirely — is refused with `template_incompatible` when it is
+  resolved. The embedded `pkg/image/binaries/sc-agent-amd64` is rebuilt so images
+  carry the v2 agent.
+
+### Breaking
+- **A v2 host refuses a v1 guest, unconditionally.** The agent is baked into the
+  guest image, so a node upgraded ahead of its images loses `exec`, `vm cp`, the
+  API exec route and guest health checks for VMs that are already running: the
+  failure is immediate on the next dial, not at the next boot, and it is typed
+  `agent_protocol_unsupported` rather than silent. New tasks are fine once their
+  rootfs is rebuilt (the guest override version changed), and a template pinned
+  below the host's minimum is refused with `template_incompatible`. A task with a
+  healthcheck restarts itself and heals; a task without one needs an explicit
+  restart. There is no configuration that lowers the floor — v1 advertises no
+  capabilities, so accepting it would reintroduce the guessing this protocol
+  removes. Build and publish new templates before upgrading the daemon; the order
+  is written down in `guides/guest-access`.
+
 ## [0.13.0] - 2026-11-01
 
 ### Added

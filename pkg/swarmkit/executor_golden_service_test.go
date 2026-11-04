@@ -50,6 +50,7 @@ func writeGoldenStore(t *testing.T, name, version, kernelProfile string, bootArg
 		KernelProfile: kernelProfile,
 		Init:          golden.Init{BootArgs: bootArgs},
 		Artifact:      filepath.Base(rootfsPath),
+		Agent:         golden.AgentPin{Protocol: golden.MinimumAgentProtocol, Version: "test"},
 	}
 	data, err := json.Marshal(md)
 	require.NoError(t, err)

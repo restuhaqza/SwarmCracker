@@ -78,21 +78,23 @@ func (g *cannedGuest) handle(conn net.Conn) {
 		}
 		switch req.Op {
 		case "hello":
-			if err := agent.WriteFrame(conn, agent.Message{Type: "hello", Version: agent.Version}); err != nil {
+			hello := agent.HelloReply(agent.Capabilities())
+			hello.ID = req.ID
+			if err := agent.WriteFrame(conn, hello); err != nil {
 				return
 			}
 		case "metrics":
 			var msg agent.Message
 			if g.sample == nil {
-				msg = agent.Message{Type: "error", Error: "metrics: read cpu seconds: not a procfs"}
+				msg = agent.Message{Type: "error", ID: req.ID, ErrorCode: agent.CodeInternal, Error: "metrics: read cpu seconds: not a procfs"}
 			} else {
-				msg = agent.Message{Type: "metrics", Metrics: g.sample}
+				msg = agent.Message{Type: "metrics", ID: req.ID, Metrics: g.sample}
 			}
 			if err := agent.WriteFrame(conn, msg); err != nil {
 				return
 			}
 		default:
-			_ = agent.WriteFrame(conn, agent.Message{Type: "error", Error: "unknown op " + req.Op})
+			_ = agent.WriteFrame(conn, agent.Message{Type: "error", ID: req.ID, ErrorCode: agent.CodeUnsupportedOp, Error: "unknown op " + req.Op})
 			return
 		}
 	}

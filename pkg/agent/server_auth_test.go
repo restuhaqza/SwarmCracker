@@ -159,18 +159,20 @@ func TestServeConnAuthRotatedTokenTakesEffect(t *testing.T) {
 }
 
 // TestServeConnAuthVersionMismatchAfterAuthentication keeps the old diagnostic
-// for a peer that did prove the token: it may learn the protocol version.
+// for a peer that did prove the token: it may learn the protocol version. An
+// unauthenticated peer never reaches this frame — it is dropped instead.
 func TestServeConnAuthVersionMismatchAfterAuthentication(t *testing.T) {
 	path := writeTokenFile(t, t.TempDir(), "boot-token")
 	auth, err := LoadAuthenticator(path)
 	require.NoError(t, err)
 
 	conn, _ := newAuthPipePair(t, auth)
-	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: "2", Token: "boot-token"}))
+	require.NoError(t, WriteFrame(conn, Request{Op: "hello", Version: VersionLegacy, Token: "boot-token"}))
 
 	msg := readMessage(t, conn)
 	assert.Equal(t, "error", msg.Type)
-	assert.Contains(t, msg.Error, "agent version mismatch")
+	assert.Equal(t, CodeProtocolUnsupported, msg.ErrorCode)
+	assert.Contains(t, msg.Error, "client speaks "+VersionLegacy)
 }
 
 // TestServeConnWithoutAuthIsUnchanged pins the additive half: a VM booted with

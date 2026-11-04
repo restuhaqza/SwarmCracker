@@ -29,6 +29,7 @@ func writeArtifact(t *testing.T, dir, name, version string) {
 		Artifact:      base + ".ext4",
 		SizeBytes:     1024,
 		SHA256:        "deadbeef",
+		Agent:         golden.AgentPin{Protocol: golden.MinimumAgentProtocol, Version: "test"},
 	}
 	data, err := json.MarshalIndent(md, "", "  ")
 	require.NoError(t, err)
