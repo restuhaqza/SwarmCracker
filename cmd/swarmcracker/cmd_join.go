@@ -40,6 +40,9 @@ type joinConfig struct {
 	Debug         bool
 	Worker        bool
 	IsManager     bool
+	// AgentRequireToken enables per-boot guest-agent token authentication on
+	// the daemon this unit starts (see agent.require_token).
+	AgentRequireToken bool
 }
 
 func newJoinCommand() *cobra.Command {
@@ -113,6 +116,7 @@ Examples:
 
 	// CNI network provider (required for SwarmKit task network allocation)
 	cmd.Flags().BoolVar(&cfg.EnableCNI, "enable-cni", true, "Enable CNI network provider (requires CNI plugins in /opt/cni/bin)")
+	cmd.Flags().BoolVar(&cfg.AgentRequireToken, config.AgentRequireTokenFlag, true, "Require a per-boot token for the guest agent on this node (new installs default to on)")
 
 	// Debug
 	cmd.Flags().BoolVar(&cfg.Debug, "debug", false, "Enable debug logging")
@@ -352,9 +356,16 @@ func createWorkerDirectories(cfg *joinConfig) error {
 	return nil
 }
 
-func generateWorkerConfigFiles(cfg *joinConfig) error {
-	// Generate worker config
-	workerConfig := fmt.Sprintf(`# SwarmCracker Worker Configuration
+// renderWorkerConfig renders the config file `join` writes. It is separate from
+// the writer so the generated file can be asserted on without touching /etc.
+//
+// agent.require_token is written from the command's own token setting, which
+// defaults to true for a new installation. The unit is rendered from the same
+// field, so the config file and the unit a node is given never disagree. A
+// config that omits the key keeps yesterday's behaviour (false), which is what
+// makes an upgrade safe.
+func renderWorkerConfig(cfg *joinConfig) string {
+	return fmt.Sprintf(`# SwarmCracker Worker Configuration
 # Generated: %s
 
 worker:
@@ -379,6 +390,11 @@ network:
 
 logging:
   level: %s
+
+agent:
+  # Authenticate the guest agent (vm exec / vm cp over vsock) with a per-boot
+  # token. On for new installations; remove or set false to opt out.
+  require_token: %v
 `,
 		time.Now().Format(time.RFC3339),
 		cfg.ManagerAddr,
@@ -396,7 +412,12 @@ logging:
 		cfg.VXLANEnabled,
 		cfg.VXLANPeers,
 		map[bool]string{true: "debug", false: "info"}[cfg.Debug],
+		cfg.AgentRequireToken,
 	)
+}
+
+func generateWorkerConfigFiles(cfg *joinConfig) error {
+	workerConfig := renderWorkerConfig(cfg)
 
 	configPath := filepath.Join(cfg.ConfigDir, "worker-config.yaml")
 	if err := os.WriteFile(configPath, []byte(workerConfig), 0600); err != nil {
@@ -467,6 +488,9 @@ ExecStart=/usr/local/bin/swarmd-firecracker \
   {{- end}}
   {{- if .Debug}}
   --debug \
+  {{- end}}
+  {{- if .AgentRequireToken}}
+  --{{agentRequireTokenFlag}} \
   {{- end}}
   --heartbeat-tick 1 \
   --election-tick 10

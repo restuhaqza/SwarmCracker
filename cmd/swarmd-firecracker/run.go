@@ -135,6 +135,18 @@ func wireMigrationRestores(
 	})
 }
 
+// agentRequireToken reports the daemon's guest-agent token decision.
+//
+// The daemon reads settings from flags only — it never loads the YAML config
+// file (it does create one on first start, but only as a convenience for the
+// CLI). So for service tasks this flag is the single source: a config file that
+// says require_token: true cannot turn auth on here, and one that says false
+// cannot turn it off. `swarmcracker init|join` render this flag from the same
+// value they write into the config, so a generated node agrees with itself.
+func agentRequireToken(ctx *cli.Context) bool {
+	return ctx.Bool(config.AgentRequireTokenFlag)
+}
+
 func runAgent(ctx *cli.Context) error {
 	// Setup logging
 	setupLogging(ctx)
@@ -206,6 +218,10 @@ func runAgent(ctx *cli.Context) error {
 		ParentCgroup:    ctx.String("parent-cgroup"),
 		CgroupVersion:   ctx.String("cgroup-version"),
 		EnableCgroups:   ctx.Bool("enable-cgroups"),
+		// Guest-agent token authentication. Off by default so existing nodes
+		// and images keep working; when on it is all-or-nothing (see
+		// pkg/agent).
+		AgentRequireToken: agentRequireToken(ctx),
 	}
 
 	fcExecutor, err := swarmkit.NewExecutor(executorConfig)

@@ -457,3 +457,45 @@ network:
 		_, _ = LoadConfig(configPath)
 	}
 }
+
+// TestLoadConfig_AgentRequireToken pins the guest-agent token switch: off when
+// the section is absent (every existing config), on only when asked for.
+func TestLoadConfig_AgentRequireToken(t *testing.T) {
+	base := `
+kernel_path: "/usr/share/firecracker/vmlinux"
+rootfs_dir: "/var/lib/firecracker/rootfs"
+`
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{name: "absent defaults to off", content: base, want: false},
+		{name: "enabled", content: base + "agent:\n  require_token: true\n", want: true},
+		{name: "explicitly disabled", content: base + "agent:\n  require_token: false\n", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(tt.content), 0o600))
+
+			cfg, err := LoadConfig(path)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.Agent.RequireToken)
+		})
+	}
+}
+
+// TestNewDefaultConfigRequiresToken pins the new-install default: a config this
+// build writes authenticates its guests, while SetDefaults on its own must not
+// change what an absent key means.
+func TestNewDefaultConfigRequiresToken(t *testing.T) {
+	cfg := NewDefaultConfig()
+	assert.True(t, cfg.Agent.RequireToken, "a config written by this build must require the guest-agent token")
+
+	bare := &Config{}
+	bare.SetDefaults()
+	assert.False(t, bare.Agent.RequireToken,
+		"SetDefaults must not turn on a key the file did not carry; an upgrade must not start requiring tokens")
+}

@@ -37,6 +37,9 @@ type initConfig struct {
 	EnableCNI     bool
 	Debug         bool
 	Force         bool
+	// AgentRequireToken enables per-boot guest-agent token authentication on
+	// the daemon this unit starts (see agent.require_token).
+	AgentRequireToken bool
 }
 
 func newInitCommand() *cobra.Command {
@@ -107,6 +110,9 @@ Examples:
 
 	// Force
 	cmd.Flags().BoolVar(&cfg.Force, "force", false, "Force init even if manager already exists")
+
+	// Guest-agent authentication
+	cmd.Flags().BoolVar(&cfg.AgentRequireToken, config.AgentRequireTokenFlag, true, "Require a per-boot token for the guest agent on this node (new installs default to on)")
 
 	return cmd
 }
@@ -323,9 +329,16 @@ func createDirectories(cfg *initConfig) error {
 	return nil
 }
 
-func generateConfigFiles(cfg *initConfig) error {
-	// Generate manager config
-	managerConfig := fmt.Sprintf(`# SwarmCracker Manager Configuration
+// renderManagerConfig renders the config file `init` writes. It is separate from
+// the writer so the generated file can be asserted on without touching /etc.
+//
+// agent.require_token is written from the command's own token setting, which
+// defaults to true for a new installation. The unit is rendered from the same
+// field, so the config file and the unit a node is given never disagree. A
+// config that omits the key keeps yesterday's behaviour (false), which is what
+// makes an upgrade safe.
+func renderManagerConfig(cfg *initConfig) string {
+	return fmt.Sprintf(`# SwarmCracker Manager Configuration
 # Generated: %s
 
 manager:
@@ -349,6 +362,11 @@ network:
 
 logging:
   level: %s
+
+agent:
+  # Authenticate the guest agent (vm exec / vm cp over vsock) with a per-boot
+  # token. On for new installations; remove or set false to opt out.
+  require_token: %v
 `,
 		time.Now().Format(time.RFC3339),
 		cfg.AdvertiseAddr,
@@ -365,7 +383,12 @@ logging:
 		cfg.VXLANEnabled,
 		cfg.VXLANPeers,
 		map[bool]string{true: "debug", false: "info"}[cfg.Debug],
+		cfg.AgentRequireToken,
 	)
+}
+
+func generateConfigFiles(cfg *initConfig) error {
+	managerConfig := renderManagerConfig(cfg)
 
 	configPath := filepath.Join(cfg.ConfigDir, "manager-config.yaml")
 	if err := os.WriteFile(configPath, []byte(managerConfig), 0600); err != nil {
@@ -430,6 +453,9 @@ ExecStart=/usr/local/bin/swarmd-firecracker \
   {{- if .Debug}}
   --debug \
   {{- end}}
+  {{- if .AgentRequireToken}}
+  --{{agentRequireTokenFlag}} \
+  {{- end}}
   --heartbeat-tick 1 \
   --election-tick 10
 Restart=on-failure
@@ -469,6 +495,9 @@ func serviceTemplateFuncs() template.FuncMap {
 		"base":           filepath.Base,
 		"snapshotPaths":  snapshotWritePaths,
 		"migrationPaths": migrationWritePaths,
+		// The unit passes the same flag name the daemon registers; see
+		// config.AgentRequireTokenFlag.
+		"agentRequireTokenFlag": func() string { return config.AgentRequireTokenFlag },
 	}
 }
 

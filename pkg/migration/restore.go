@@ -49,6 +49,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
+	"github.com/rs/zerolog/log"
 )
 
 const (
@@ -299,6 +300,13 @@ func Restore(ctx context.Context, in RestoreInput, deps RestoreDeps) (instance s
 	// arrived while it ran is the case this checkpoint exists for.
 	if err = checkpointRestore(in, deps); err != nil {
 		return scruntime.RestoredInstance{}, err
+	}
+
+	// A resumed guest keeps the agent token baked into its disk: it never
+	// re-reads a token the target might mint. Publish that one for the host
+	// before dialing, or token-authenticated restores could never reach it.
+	if err = adoptAgentToken(ctx, artifact.DiskPath, artifact.VsockPath); err != nil {
+		return scruntime.RestoredInstance{}, restoreStep(in.TaskID, stepGuestAgent, err)
 	}
 
 	guest, err := waitForGuestAgent(ctx, deps, artifact.VsockPath)
@@ -638,6 +646,30 @@ func restorationInfo(in RestoreInput) *snapshot.SnapshotInfo {
 		DiskPath:   filepath.Join(in.Dir, artifact.DiskFile.Name),
 		Checksum:   artifact.StateFile.SHA256,
 	}
+}
+
+// adoptAgentToken publishes the token a restored VM's guest already holds. The
+// resumed guest does not re-read a token minted on the target — its disk and
+// memory are the source's — so the target must adopt the one in the disk it
+// materialised. A disk with no token is a VM booted without token
+// authentication: nothing to publish, and the dial proceeds as before. A read
+// that fails for another reason is only a warning, because a host without the
+// ext4 tools must still be able to restore a legacy VM; the dial then fails
+// with the guest's own verdict.
+func adoptAgentToken(ctx context.Context, diskPath, vsockPath string) error {
+	token, err := agent.ReadTokenFromRootfs(ctx, diskPath)
+	if errors.Is(err, agent.ErrNoToken) {
+		return nil
+	}
+	if err != nil {
+		log.Warn().Err(err).Str("disk", diskPath).
+			Msg("Could not read the restored VM's agent token; dialing without one")
+		return nil
+	}
+	if err := agent.WriteTokenFile(agent.TokenFilePath(vsockPath), token); err != nil {
+		return err
+	}
+	return nil
 }
 
 // waitForGuestAgent dials the guest agent behind the restored VM's vsock muxer

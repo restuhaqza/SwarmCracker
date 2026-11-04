@@ -119,6 +119,63 @@ would with `vm attach`. This is a trusted control path, not a tenant-facing
 interface — see [Security & Jailer](/guides/security/) for the host isolation
 model.
 
+## Guest-side authentication
+
+The host is not the only place that can reach port 52. A guest kernel that
+exposes `vsock_loopback` lets a workload process inside the VM connect to
+`127.0.0.1:52` — or rather its vsock equivalent — and ask the root-run agent to
+`exec` a command. To close that path the node requires a per-boot token:
+
+```yaml
+agent:
+  require_token: true
+```
+
+New installations get this automatically: `swarmcracker init`, `swarmcracker
+join`, `swarmcracker setup config`, and a config file created on first start all
+write `require_token: true`. A configuration that *omits* the key keeps the old
+behaviour (`false`), so an upgrade does not start refusing guests whose agent
+predates token support. Add the key (or start the daemon with
+`--agent-require-token`) to turn it on.
+
+The key and the daemon flag are read by different processes, and a unit without
+the flag leaves service tasks unauthenticated even when the config says `true`:
+the daemon reads only `--agent-require-token`, while `vm create` reads only
+`agent.require_token`. That includes units generated before this release, so
+regenerate the unit (or add the flag) to turn auth on for service tasks.
+`init`/`join` write both from one value, so a node they generate agrees with
+itself.
+
+For each boot the node then:
+
+1. mints a 256-bit token,
+2. writes it into the task's **private** rootfs copy at
+   `/etc/swarmcracker/agent-token`, root-owned with mode `0400` (never
+   `/proc/cmdline`, which every guest process can read),
+3. keeps its own copy at `<socket-dir>/<task-id>.agent-token` with mode `0600`,
+   and
+4. requires it in the agent's `hello`.
+
+A connection without the token, or with another VM's token, is closed without a
+reply. The host reports that as an authentication failure; the guest never says
+which check failed. Because each boot gets its own token, one VM's token cannot
+be used against another.
+
+The switch is all-or-nothing per node: a task whose rootfs cannot be provisioned
+fails instead of booting with an unauthenticated agent. Rebuild your images
+before enabling it — an image built with an older `sc-agent` ignores the token,
+and the host then refuses it (`guest agent does not support token
+authentication`) rather than silently accepting it. Cached OCI rootfs images are
+rebuilt automatically when the guest agent changes; golden templates must be
+rebuilt by hand.
+
+**Migration:** a restored VM keeps the token baked into its disk, because a
+resumed guest never re-reads a token the target mints. The target adopts that
+token from the restored disk, so `vm migrate` keeps working with tokens enabled
+as long as the source VM was itself token-authenticated. Rotating a token on a
+running VM arrives with the `prepare` operation; until then a VM keeps the token
+it booted with.
+
 ## Limitations
 
 1. **Files only for `vm cp`.** Directories are not supported yet; copying a

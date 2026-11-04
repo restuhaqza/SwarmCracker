@@ -64,6 +64,7 @@ func TestEnsureDefaultConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, cfg.Version)
 	assert.NotEmpty(t, cfg.Network.BridgeName)
+	assert.True(t, cfg.Agent.RequireToken, "a config created on first start must require the guest-agent token")
 
 	// Second call should be a no-op because the file already exists.
 	created, err = EnsureDefaultConfig()

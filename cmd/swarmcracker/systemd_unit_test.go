@@ -38,6 +38,9 @@ func newTestInitConfig() *initConfig {
 		Subnet:        "192.168.127.0/24",
 		BridgeIP:      "192.168.127.1/24",
 		EnableCNI:     true,
+		// Mirrors the command's flag default: a new installation authenticates
+		// its guests.
+		AgentRequireToken: true,
 	}
 }
 
@@ -61,6 +64,8 @@ func newTestJoinConfig() *joinConfig {
 		BridgeIP:      "192.168.127.1/24",
 		AdvertiseAddr: "10.0.0.2:4242",
 		EnableCNI:     true,
+		// Mirrors the command's flag default.
+		AgentRequireToken: true,
 	}
 }
 
@@ -278,4 +283,33 @@ func TestInitDirectoriesIncludeSnapshotDir(t *testing.T) {
 // check. join uses 0700 for its directories, so only membership is asserted.
 func TestWorkerDirectoriesIncludeSnapshotDir(t *testing.T) {
 	assert.Contains(t, workerDirectories(newTestJoinConfig()), testSnapshotDir)
+}
+
+// TestRenderServicePropagatesAgentRequireToken proves the node's guest-agent
+// token setting reaches the daemon unit, on both the manager and worker paths:
+// a unit that dropped it would boot every VM unauthenticated while the operator
+// believed the switch was on.
+func TestRenderServicePropagatesAgentRequireToken(t *testing.T) {
+	init := newTestInitConfig()
+	init.AgentRequireToken = true
+	managerUnit, err := renderManagerService(init)
+	require.NoError(t, err)
+	assert.Contains(t, string(managerUnit), "--"+config.AgentRequireTokenFlag,
+		"the manager unit must pass the daemon's own token flag when enabled")
+
+	join := newTestJoinConfig()
+	join.AgentRequireToken = true
+	workerUnit, err := renderWorkerService(join)
+	require.NoError(t, err)
+	assert.Contains(t, string(workerUnit), "--"+config.AgentRequireTokenFlag,
+		"the worker unit must pass the daemon's own token flag when enabled")
+
+	// A node that turns it off must not get the flag: the template renders it
+	// only when enabled, which is what lets an existing unit keep its old
+	// unauthenticated behaviour.
+	off := newTestInitConfig()
+	off.AgentRequireToken = false
+	offUnit, err := renderManagerService(off)
+	require.NoError(t, err)
+	assert.NotContains(t, string(offUnit), "--"+config.AgentRequireTokenFlag)
 }

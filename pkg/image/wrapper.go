@@ -194,7 +194,7 @@ func generateWrapperScript(info *OCIImageInfo, gracePeriod int) string {
 	lines = append(lines, "if [ -x /sbin/sc-agent ]; then")
 	lines = append(lines, "    _sc_i=0")
 	lines = append(lines, "    while [ ! -e /dev/vsock ] && [ \"$_sc_i\" -lt 50 ]; do sleep 0.1; _sc_i=$((_sc_i + 1)); done")
-	lines = append(lines, fmt.Sprintf("    /sbin/sc-agent -port %d >/tmp/sc-agent.log 2>&1 &", agent.DefaultPort))
+	lines = append(lines, fmt.Sprintf("    /sbin/sc-agent -port %d -token-file %s >/tmp/sc-agent.log 2>&1 &", agent.DefaultPort, agent.TokenPath))
 	lines = append(lines, "fi")
 	lines = append(lines, "")
 

@@ -19,6 +19,8 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/storage"
 	localtypes "github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/rs/zerolog/log"
@@ -45,6 +47,13 @@ type PreparerConfig struct {
 	InitGracePeriod int           `yaml:"init_grace_period"`  // Grace period in seconds
 	MaxImageAgeDays int           `yaml:"max_image_age_days"` // Maximum age of rootfs images before cleanup (default 7)
 	RegistryAuth    *RegistryAuth `yaml:"registry_auth"`      // Registry authentication configuration
+
+	// AgentRequireToken makes Prepare mint a per-boot token for the task and
+	// write it into the task's private rootfs copy (see pkg/agent). The host's
+	// copy is published under SocketDir, next to the VM's vsock muxer, so every
+	// dialer that resolves the muxer finds the token too. SocketDir is required
+	// when this is set.
+	AgentRequireToken bool
 }
 
 // NewImagePreparer creates a new ImagePreparer.
@@ -75,6 +84,19 @@ func NewImagePreparer(config interface{}) localtypes.ImagePreparer {
 	// Best-effort: a non-root process may not be able to create the default
 	// path; the preparer will surface a clearer error when it actually needs it.
 	_ = os.MkdirAll(cfg.RootfsDir, 0755)
+
+	// Token provisioning writes into the ext4 image with debugfs. Say so at
+	// startup rather than failing every task one at a time: with
+	// agent.require_token on, a task that cannot be provisioned is refused, so a
+	// missing tool is a node-wide outage, not a per-task hiccup.
+	if cfg.AgentRequireToken {
+		if _, err := exec.LookPath("debugfs"); err != nil {
+			log.Warn().Msg("agent.require_token is set but debugfs is not installed (e2fsprogs); every task will fail to provision its guest-agent token")
+		}
+		if cfg.SocketDir == "" {
+			log.Warn().Msg("agent.require_token is set but no socket directory is configured; every task will fail to provision its guest-agent token")
+		}
+	}
 
 	// Create init injector
 	initConfig := &InitSystemConfig{
@@ -201,6 +223,14 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 		return fmt.Errorf("failed to create per-task rootfs: %w", err)
 	}
 	task.Annotations[localtypes.AnnotationRootfsEphemeral] = "true"
+
+	// Authenticate this boot's guest agent. The token goes into the private
+	// copy that was just made, never the shared image cache, so no two VMs ever
+	// share a credential.
+	if err := ip.provisionAgentToken(ctx, task, taskRootfs); err != nil {
+		return fmt.Errorf("failed to provision guest agent token: %w", err)
+	}
+
 	if ip.volumeManager != nil && len(container.Mounts) > 0 {
 		log.Info().
 			Str("task_id", task.ID).
@@ -227,6 +257,36 @@ func (ip *ImagePreparer) Prepare(ctx context.Context, task *localtypes.Task) err
 		Str("rootfs", taskRootfs).
 		Msg("Image preparation completed")
 
+	return nil
+}
+
+// provisionAgentToken mints this boot's guest-agent token into the task's
+// private rootfs copy and publishes the host's copy next to the VM's vsock
+// muxer, where every dialer resolves it.
+//
+// It refuses a rootfs that is not the task's own copy: a token written into a
+// shared image cache or a golden artifact would give every VM built from it the
+// same credential, which is exactly the cross-tenant case token auth exists to
+// rule out. Prepare always provisions the copy it just made, so a refusal here
+// means a future caller wired it wrong.
+func (ip *ImagePreparer) provisionAgentToken(ctx context.Context, task *localtypes.Task, rootfsPath string) error {
+	if !ip.config.AgentRequireToken {
+		return nil
+	}
+	if task.Annotations[localtypes.AnnotationRootfsEphemeral] != "true" {
+		return fmt.Errorf("agent.require_token is set but the rootfs is not a private per-task copy")
+	}
+	vsockPath := scruntime.VsockPath(ip.config.SocketDir, task.ID)
+	if vsockPath == "" {
+		return fmt.Errorf("agent.require_token is set but no socket directory is configured")
+	}
+	if err := agent.ProvisionForBoot(ctx, rootfsPath, vsockPath); err != nil {
+		return err
+	}
+	log.Info().
+		Str("task_id", task.ID).
+		Str("token_file", agent.TokenFilePath(vsockPath)).
+		Msg("Provisioned guest agent token")
 	return nil
 }
 
@@ -891,7 +951,7 @@ func (ip *ImagePreparer) unmountExt4(mountDir string) error {
 // override handling. The version is recorded next to the built rootfs; any
 // cached rootfs built by an older guest image is rebuilt so the change is never
 // silently missing from a booted VM.
-const guestOverrideVersion = "7"
+const guestOverrideVersion = "8"
 
 // guestOverrideReady reports whether the rootfs was built by the current guest
 // image. A missing marker, or any value other than guestOverrideVersion, means

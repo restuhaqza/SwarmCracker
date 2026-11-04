@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -827,6 +828,13 @@ func (vm *VMMManager) Remove(ctx context.Context, task *types.Task) error {
 		if err := os.Remove(vmInstance.SocketPath); err != nil {
 			log.Warn().Err(err).Msg("Failed to remove VM socket file")
 		}
+	}
+
+	// The guest-agent token authenticates this VM's muxer and must not outlive
+	// it. Its guest-side copy lives in the per-task rootfs, which teardown
+	// removes separately.
+	if err := agent.RemoveTokenFile(scruntime.VsockPath(vm.socketDir, task.ID)); err != nil {
+		log.Warn().Err(err).Str("task_id", task.ID).Msg("Failed to remove guest agent token")
 	}
 
 	// Remove from map

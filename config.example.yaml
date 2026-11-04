@@ -71,3 +71,14 @@ snapshot:
   max_age: "168h"          # 7 days
   auto_snapshot: false     # Auto-snapshot on VM start
   compress: false
+
+agent:
+  # Require a per-boot token for the guest agent (vm exec / vm cp over vsock).
+  # The node writes the token into the task's private rootfs at a root-owned
+  # 0400 path and the agent refuses any operation without it, which closes the
+  # guest-local path from a non-root workload to the root-run agent.
+  # On for new installations. A config that omits this key keeps the old
+  # behaviour (off), so upgrading does not break guests whose agent predates it.
+  # All-or-nothing when on: a task whose rootfs cannot be provisioned fails
+  # instead of booting unauthenticated. Rebuild images/templates before enabling.
+  require_token: true

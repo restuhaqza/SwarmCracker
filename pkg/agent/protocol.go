@@ -32,8 +32,12 @@ const (
 
 // Request is a single operation sent from the host to the guest agent.
 type Request struct {
-	Op      string   `json:"op"` // hello|exec|put|get|metrics
-	Version string   `json:"version,omitempty"`
+	Op      string `json:"op"` // hello|exec|put|get|metrics
+	Version string `json:"version,omitempty"`
+	// Token is the per-boot credential the node provisioned into this guest's
+	// rootfs. It is carried only by hello; a guest agent with a token configured
+	// closes the connection without a frame when it is missing or wrong.
+	Token   string   `json:"token,omitempty"`
 	Command []string `json:"command,omitempty"`
 	TTY     bool     `json:"tty,omitempty"`
 	Env     []string `json:"env,omitempty"`
@@ -46,6 +50,14 @@ type Request struct {
 type Message struct {
 	Type    string `json:"type"` // hello|stdout|stderr|exit|file|ok|error|metrics
 	Version string `json:"version,omitempty"`
+	// AuthRequired reports that this agent verifies a per-boot token. It is set
+	// only on a hello reply, and omitted by an agent that predates token
+	// authentication, so an old reply stays byte-identical.
+	AuthRequired bool `json:"auth_required,omitempty"`
+	// TokenOK reports that the token in the hello request matched this boot's
+	// token. A rejected token gets no frame at all, so a hello reply without
+	// this field means the agent ignored the token.
+	TokenOK bool   `json:"token_ok,omitempty"`
 	Data    []byte `json:"data,omitempty"`
 	Code    *int   `json:"code,omitempty"`
 	// Signal is set on an exit frame when the guest process was terminated by a

@@ -47,6 +47,10 @@ type fakeProxy struct {
 	helloErr  string
 	badOK     bool
 	raw       func(net.Conn)
+	// handler, when set, handles the connection after the muxer handshake
+	// and hello. It is how a test bridges to ServeConnAuth instead of the
+	// unauthenticated ServeConn.
+	handler func(net.Conn)
 
 	// dropsRemaining models Firecracker dropping the host connection because
 	// nothing is listening on the guest port yet: each dropped accept closes
@@ -154,7 +158,16 @@ func (p *fakeProxy) handle(conn net.Conn) {
 		p.raw(conn)
 		return
 	}
+	if p.handler != nil {
+		p.handler(conn)
+		return
+	}
 	_ = ServeConn(conn)
+}
+
+// withServe bridges the proxy to a custom handler after the handshake.
+func withServe(handler func(net.Conn)) proxyOption {
+	return func(p *fakeProxy) { p.handler = handler }
 }
 
 func (p *fakeProxy) handshakeLine() string {

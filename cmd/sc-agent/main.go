@@ -45,6 +45,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	log.Logger = zerolog.New(stderr).With().Timestamp().Logger()
 
+	// Token authentication is driven by the token file the node writes into
+	// this boot's rootfs. Its absence is today's unauthenticated behaviour; its
+	// presence means only a peer holding the token may use the agent. A file
+	// that exists but is unreadable or too permissive fails startup: serving
+	// unauthenticated would silently undo the node's decision to require auth.
+	auth, err := agent.LoadAuthenticator(opts.tokenFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "sc-agent: token authentication: %v\n", err)
+		return 1
+	}
+
 	ln, err := Listen(opts.port)
 	if err != nil {
 		fmt.Fprintf(stderr, "sc-agent: %v\n", err)
@@ -52,14 +63,18 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = ln.Close() }()
 
-	log.Info().Uint32("port", opts.port).Msg("sc-agent listening on vsock")
-	return serve(ln)
+	log.Info().
+		Uint32("port", opts.port).
+		Bool("token_auth", auth != nil).
+		Msg("sc-agent listening on vsock")
+	return serve(ln, auth)
 }
 
 // options holds the parsed command-line options.
 type options struct {
-	port    uint32
-	version bool
+	port      uint32
+	tokenFile string
+	version   bool
 }
 
 // parseFlags parses sc-agent's flags. A parse failure has already been reported
@@ -68,6 +83,8 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 	fs := flag.NewFlagSet("sc-agent", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	port := fs.Uint("port", uint(agent.DefaultPort), "AF_VSOCK port to listen on")
+	tokenFile := fs.String("token-file", agent.TokenPath,
+		"root-owned file holding this boot's agent token; when it exists, hello must carry the token")
 	version := fs.Bool("version", false, "print the agent protocol version and exit")
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
@@ -77,13 +94,13 @@ func parseFlags(args []string, stderr io.Writer) (options, error) {
 		return options{}, fmt.Errorf("port %d out of range", *port)
 	}
 	// Safe: *port is bounded by the check above.
-	return options{port: uint32(*port), version: *version}, nil //nolint:gosec // G115: range-checked
+	return options{port: uint32(*port), tokenFile: *tokenFile, version: *version}, nil //nolint:gosec // G115: range-checked
 }
 
-// serve accepts connections until ln is closed, handing each to agent.ServeConn
-// in its own goroutine. A transient Accept error is logged and retried; serve
-// returns 0 only once the listener is closed.
-func serve(ln net.Listener) int {
+// serve accepts connections until ln is closed, handing each to
+// agent.ServeConnAuth in its own goroutine. A transient Accept error is logged
+// and retried; serve returns 0 only once the listener is closed.
+func serve(ln net.Listener, auth *agent.TokenAuthenticator) int {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -94,14 +111,21 @@ func serve(ln net.Listener) int {
 			time.Sleep(acceptErrorBackoff)
 			continue
 		}
-		go handleConn(conn)
+		go handleConn(conn, auth)
 	}
 }
 
-// handleConn serves a single guest connection and closes it afterwards.
-func handleConn(conn net.Conn) {
+// handleConn serves a single guest connection and closes it afterwards. A
+// connection that fails authentication is logged without the peer's address and
+// without any detail beyond the verdict: the guest never tells the peer why it
+// hung up, and the daemon-side log should not become that oracle either.
+func handleConn(conn net.Conn, auth *agent.TokenAuthenticator) {
 	defer func() { _ = conn.Close() }()
-	if err := agent.ServeConn(conn); err != nil {
+	if err := agent.ServeConnAuth(conn, auth); err != nil {
+		if errors.Is(err, agent.ErrUnauthorized) {
+			log.Warn().Msg("rejected unauthenticated agent connection")
+			return
+		}
 		remote := ""
 		if addr := conn.RemoteAddr(); addr != nil {
 			remote = addr.String()
