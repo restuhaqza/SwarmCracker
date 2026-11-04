@@ -207,7 +207,7 @@ func discardDirectVMM(proc *os.Process, socketPath string) {
 // The process is stopped with the package's window — SIGTERM, a bounded wait, then
 // SIGKILL — which is what a stop of a restored VM does today.
 func stopDirect(ctx context.Context, proc *os.Process, socketPath string) error {
-	if err := stopDirectProcess(ctx, proc); err != nil {
+	if err := stopLaunchProcess(ctx, proc); err != nil {
 		// The process may still be alive, so the socket stays: it is still the
 		// address of a running VM, and removing it would make the VM unreachable.
 		return err
@@ -220,15 +220,18 @@ func stopDirect(ctx context.Context, proc *os.Process, socketPath string) error 
 	return nil
 }
 
-// stopDirectProcess terminates one directly launched process: SIGTERM, a bounded
-// wait for it to exit, then SIGKILL. A process that already exited is success,
-// because the caller asked for the end state.
+// stopLaunchProcess terminates one launched VMM: SIGTERM, a bounded wait for it to
+// exit, then SIGKILL. A process that already exited is success, because the caller
+// asked for the end state.
+//
+// Both launchers stop through it, so a jailed instance and a directly started one
+// end with the same signals and the same grace window.
 //
 // The graceful window is the stop context's deadline when that is sooner than the
 // package's window, and is skipped entirely when the context is already done: a
 // caller that has run out of time needs the process killed, not another ten
 // seconds of waiting.
-func stopDirectProcess(ctx context.Context, proc *os.Process) error {
+func stopLaunchProcess(ctx context.Context, proc *os.Process) error {
 	if proc == nil {
 		return nil
 	}
@@ -247,7 +250,7 @@ func stopDirectProcess(ctx context.Context, proc *os.Process) error {
 		return fmt.Errorf("signal SIGTERM: %w", err)
 	}
 
-	if waitForDirectExit(ctx, proc.Pid, grace) {
+	if waitForLaunchExit(ctx, proc.Pid, grace) {
 		return nil
 	}
 
@@ -260,10 +263,10 @@ func stopDirectProcess(ctx context.Context, proc *os.Process) error {
 	return nil
 }
 
-// waitForDirectExit polls until the process is gone, the graceful window closes,
+// waitForLaunchExit polls until the process is gone, the graceful window closes,
 // or the caller gives up, reporting whether it exited in time. Reporting false is
 // what makes the caller escalate to SIGKILL.
-func waitForDirectExit(ctx context.Context, pid int, grace time.Duration) bool {
+func waitForLaunchExit(ctx context.Context, pid int, grace time.Duration) bool {
 	deadline := time.Now().Add(grace)
 	for {
 		if !processAlive(pid) {
