@@ -507,9 +507,13 @@ func (l JailedLauncher) cgroupLimits() []string {
 	return limits
 }
 
-// resolveJailedBinary turns a configured (or default) binary name into an absolute
-// path that exists. The jailer needs an absolute exec file — it copies that file
-// into the jail — so a name found on $PATH is resolved once, here.
+// resolveJailedBinary turns a configured (or default) binary name into the absolute
+// path the jailer needs: it copies the exec file into the jail, so a path relative to
+// the launcher's working directory would name a file inside the chroot instead.
+//
+// LookPath is the whole check. It answers with an absolute path (since Go 1.19 a
+// relative hit is its own error), refuses a missing binary and one this process cannot
+// execute, which is the answer a launch needs before it stages anything.
 func resolveJailedBinary(configured, fallback string) (string, error) {
 	name := configured
 	if name == "" {
@@ -518,15 +522,6 @@ func resolveJailedBinary(configured, fallback string) (string, error) {
 	resolved, err := jailedLookPath(name)
 	if err != nil {
 		return "", fmt.Errorf("%s binary not found: %w", fallback, err)
-	}
-	if !filepath.IsAbs(resolved) {
-		resolved, err = filepath.Abs(resolved)
-		if err != nil {
-			return "", fmt.Errorf("resolve %s binary %q: %w", fallback, resolved, err)
-		}
-	}
-	if _, err := os.Stat(resolved); err != nil {
-		return "", fmt.Errorf("%s binary %s: %w", fallback, resolved, err)
 	}
 	return resolved, nil
 }
@@ -600,9 +595,11 @@ func (j *jailedInstance) jailPID() (int, error) {
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(body)))
 	if err != nil {
-		// An unreadable pid is not a running instance: the jail is unusable either
-		// way, and treating it as stale is what lets the next launch proceed.
-		return 0, nil
+		// Refusing is the safe answer, not "no pid, so it is stale": a jail whose pid
+		// file cannot be read may belong to a live instance, and deleting it would take
+		// that instance's disk and socket with it. An operator can remove the jail once
+		// they know nothing is running in it.
+		return 0, fmt.Errorf("parse the jail's pid file %s (%q): %w", path, strings.TrimSpace(string(body)), err)
 	}
 	return pid, nil
 }
@@ -649,7 +646,8 @@ func (j *jailedInstance) stage(ctx context.Context) error {
 	// directory is made even for a cold boot: a jailed instance is the one a
 	// checkpoint is taken *of*, and Firecracker will not create the directory
 	// /snapshot/create writes the images into.
-	dirs := []string{jailedRunDir, path.Dir(jailedStatePath)}
+	dirs := make([]string, 0, 2+len(files))
+	dirs = append(dirs, jailedRunDir, path.Dir(jailedStatePath))
 	for _, file := range files {
 		dirs = append(dirs, path.Dir(file.dest))
 	}

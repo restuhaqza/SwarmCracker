@@ -358,3 +358,44 @@ func TestReleasingAnUnknownUIDIsANoop(t *testing.T) {
 	var unleased *Lease
 	unleased.Release()
 }
+
+// TestReserveFailsClosedWithoutAProcessTable is Reserve's half of the same rule:
+// naming a uid does not excuse the allocator from checking whether a live process owns
+// it, and not being able to tell is an error, not a pass.
+func TestReserveFailsClosedWithoutAProcessTable(t *testing.T) {
+	alloc := newAllocator(t, 2810, 2)
+	alloc.procRoot = filepath.Join(t.TempDir(), "no-such-proc")
+
+	_, err := alloc.Reserve(2810)
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrNoFreeUID)
+	assert.Contains(t, err.Error(), "read the process table")
+	assert.False(t, alloc.Leased(2810), "a refused reservation must not take the uid")
+}
+
+// TestNewUIDAllocatorAcceptsTheLastUIDOfTheSpace pins the boundary the range check is
+// written against: a range whose last uid is the highest allowed one is valid, so a
+// node configured there is not refused for being exactly at the limit.
+func TestNewUIDAllocatorAcceptsTheLastUIDOfTheSpace(t *testing.T) {
+	alloc, err := NewUIDAllocator(maxJailUID, 1)
+	require.NoError(t, err)
+	alloc.procRoot = fakeProc(t, nil)
+
+	lease, err := alloc.Allocate()
+	require.NoError(t, err)
+	assert.Equal(t, maxJailUID, lease.UID())
+}
+
+// TestProcUIDsIgnoresAStatusWithoutAUidLine pins the parser against a process whose
+// status carries no Uid line: it contributes no uid, and that is not an error, because
+// one odd process must not stop the node from allocating.
+func TestProcUIDsIgnoresAStatusWithoutAUidLine(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "7"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "7", "status"),
+		[]byte("Name:\tkthreadd\nState:\tS\n"), 0o644))
+
+	uids, err := procUIDs(root)
+	require.NoError(t, err)
+	assert.Empty(t, uids)
+}

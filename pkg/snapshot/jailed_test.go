@@ -13,10 +13,16 @@ package snapshot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -404,6 +410,15 @@ func TestJailedLauncherRefusesAnUnusableRequest(t *testing.T) {
 		{name: "no memory image", mutate: func(_ *JailedLauncher, r *LaunchRequest) { r.Mem = "" }, want: "both checkpoint images"},
 		{name: "cold without a size", mutate: func(_ *JailedLauncher, r *LaunchRequest) { r.Mode = ModeCold; r.State, r.Mem = "", "" }, want: "needs a size"},
 		{name: "uid outside the range", mutate: func(_ *JailedLauncher, r *LaunchRequest) { r.JailUID = 4000 }, want: "outside the configured range"},
+		{name: "no firecracker binary", mutate: func(l *JailedLauncher, _ *LaunchRequest) {
+			l.FirecrackerPath = filepath.Join(t.TempDir(), "missing")
+		}, want: "firecracker binary not found"},
+		{name: "no jailer binary", mutate: func(l *JailedLauncher, _ *LaunchRequest) {
+			l.JailerPath = filepath.Join(t.TempDir(), "missing")
+		}, want: "jailer binary not found"},
+		{name: "console socket path too long", mutate: func(l *JailedLauncher, _ *LaunchRequest) {
+			l.ConsoleSocketDir = filepath.Join(t.TempDir(), strings.Repeat("c", 90))
+		}, want: "a unix socket address holds"},
 	}
 
 	for _, tt := range tests {
@@ -622,4 +637,598 @@ func modeOf(t *testing.T, path string) os.FileMode {
 	info, err := os.Stat(path)
 	require.NoError(t, err)
 	return info.Mode().Perm()
+}
+
+// apiCall is one request a fake Firecracker API received.
+type apiCall struct {
+	method string
+	path   string
+	body   map[string]interface{}
+}
+
+// fakeAPI is a Firecracker API socket a test can read. The real putFirecrackerAPI
+// and patchFirecrackerAPI talk to it over a unix socket, so the payloads a jailed
+// launch sends are pinned here without a VMM: what a checkpoint load tells
+// Firecracker, in which order, and with which status handled as failure.
+type fakeAPI struct {
+	t      *testing.T
+	socket string
+	status int
+	calls  []apiCall
+}
+
+// newFakeAPI starts a socket and returns it. It is closed when the test ends.
+func newFakeAPI(t *testing.T) *fakeAPI {
+	t.Helper()
+
+	dir := t.TempDir()
+	api := &fakeAPI{t: t, socket: filepath.Join(dir, "api.sock"), status: http.StatusNoContent}
+
+	listener, err := net.Listen("unix", api.socket)
+	require.NoError(t, err)
+
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		var decoded map[string]interface{}
+		if len(body) > 0 {
+			require.NoError(t, json.Unmarshal(body, &decoded))
+		}
+		api.calls = append(api.calls, apiCall{method: r.Method, path: r.URL.Path, body: decoded})
+		w.WriteHeader(api.status)
+	})}
+
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(func() {
+		_ = server.Close()
+		_ = listener.Close()
+	})
+
+	return api
+}
+
+// TestBootJailedGuestSendsTheTemplateConfiguration pins what a cold jailed boot asks
+// Firecracker for. The paths are the checkpoint contract: a guest booted from
+// /kernel/vmlinux and /drives/rootfs.ext4 is a guest whose snapshot restores in any
+// other jail, which is the whole reason the paths are fixed.
+func TestBootJailedGuestSendsTheTemplateConfiguration(t *testing.T) {
+	api := newFakeAPI(t)
+
+	require.NoError(t, bootJailedGuest(context.Background(), api.socket,
+		LaunchRequest{VCPUs: 2, MemoryMB: 256}))
+
+	require.Len(t, api.calls, 4, "a cold boot is boot source, drive, machine config, then start")
+	assert.Equal(t, apiCall{method: http.MethodPut, path: "/boot-source", body: map[string]interface{}{
+		"kernel_image_path": "/kernel/vmlinux",
+		"boot_args":         jailedBootArgs,
+	}}, api.calls[0])
+	assert.Equal(t, apiCall{method: http.MethodPut, path: "/drives/rootfs", body: map[string]interface{}{
+		"drive_id":       "rootfs",
+		"path_on_host":   "/drives/rootfs.ext4",
+		"is_root_device": true,
+		"is_read_only":   false,
+	}}, api.calls[1])
+	assert.Equal(t, apiCall{method: http.MethodPut, path: "/machine-config", body: map[string]interface{}{
+		"vcpu_count":        float64(2),
+		"mem_size_mib":      float64(256),
+		"smt":               false,
+		"track_dirty_pages": false,
+	}}, api.calls[2])
+	assert.Equal(t, apiCall{method: http.MethodPut, path: "/actions", body: map[string]interface{}{
+		"action_type": "InstanceStart",
+	}}, api.calls[3])
+}
+
+// TestLoadJailedCheckpointLeavesTheGuestStopped pins the load: the chroot paths, a
+// File memory backend named explicitly, and resume_vm=false. The false is the point
+// of the two-call resume — a load that resumed the guest itself would leave no window
+// for a per-instance drive or MMDS before the guest runs.
+func TestLoadJailedCheckpointLeavesTheGuestStopped(t *testing.T) {
+	api := newFakeAPI(t)
+
+	require.NoError(t, loadJailedCheckpoint(context.Background(), api.socket,
+		"/snapshot/vm.state", "/snapshot/vm.mem"))
+
+	require.Len(t, api.calls, 1)
+	assert.Equal(t, http.MethodPut, api.calls[0].method)
+	assert.Equal(t, "/snapshot/load", api.calls[0].path)
+	assert.Equal(t, map[string]interface{}{
+		"snapshot_path": "/snapshot/vm.state",
+		"mem_backend": map[string]interface{}{
+			"backend_path": "/snapshot/vm.mem",
+			"backend_type": "File",
+		},
+		"resume_vm": false,
+	}, api.calls[0].body)
+}
+
+// TestResumeJailedGuestPatchesTheVMState pins the call that actually runs a loaded
+// guest. InstanceStart is not it: Firecracker refuses that after a snapshot is loaded.
+func TestResumeJailedGuestPatchesTheVMState(t *testing.T) {
+	api := newFakeAPI(t)
+
+	require.NoError(t, resumeJailedGuest(context.Background(), api.socket))
+
+	require.Len(t, api.calls, 1)
+	assert.Equal(t, apiCall{method: http.MethodPatch, path: "/vm",
+		body: map[string]interface{}{"state": "Resumed"}}, api.calls[0])
+}
+
+// TestJailedAPIFailuresAreReported pins that a VMM answering anything but success
+// fails the step that asked: a launch must not report an instance as running because
+// a request was sent, only because it was accepted.
+func TestJailedAPIFailuresAreReported(t *testing.T) {
+	api := newFakeAPI(t)
+	api.status = http.StatusBadRequest
+
+	ctx := context.Background()
+	require.Error(t, bootJailedGuest(ctx, api.socket, LaunchRequest{VCPUs: 1, MemoryMB: 128}))
+	require.Error(t, loadJailedCheckpoint(ctx, api.socket, jailedStatePath, jailedMemPath))
+	require.Error(t, resumeJailedGuest(ctx, api.socket))
+}
+
+// TestJailedLauncherRefusesToStageAMissingFile pins the first failure a caller can
+// cause: the kernel, disk or a checkpoint image is gone. Each is refused before the
+// VMM starts, and the launch leaves no jail and no uid behind.
+func TestJailedLauncherRefusesToStageAMissingFile(t *testing.T) {
+	tests := []struct {
+		name   string
+		remove func(*LaunchRequest)
+		want   string
+	}{
+		{name: "kernel", remove: func(r *LaunchRequest) { r.Kernel = filepath.Join(t.TempDir(), "gone") }, want: "at /kernel/vmlinux"},
+		{name: "disk", remove: func(r *LaunchRequest) { r.Rootfs = filepath.Join(t.TempDir(), "gone") }, want: "at /drives/rootfs.ext4"},
+		{name: "state", remove: func(r *LaunchRequest) { r.State = filepath.Join(t.TempDir(), "gone") }, want: "at /snapshot/vm.state"},
+		{name: "memory", remove: func(r *LaunchRequest) { r.Mem = filepath.Join(t.TempDir(), "gone") }, want: "at /snapshot/vm.mem"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requireJailHost(t)
+
+			launcher, fake := jailedTestLauncher(t)
+			fake.install(t)
+			req := needJailedRestoreRequest(t, launcher)
+			launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+			tt.remove(&req)
+
+			_, err := launcher.Start(context.Background(), req)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want, "the error names the chroot path the file was for")
+			assert.Empty(t, fake.waited, "nothing may be spawned without the files the instance needs")
+			assert.NoDirExists(t, launcher.JailRoot(req.InstanceID), "a failed staging must not leave a jail")
+			assert.False(t, launcher.UIDs.Leased(3000), "a failed staging must give its uid back")
+		})
+	}
+}
+
+// TestJailedLauncherRefusesADirectoryAsAnImage pins the second shape of unusable
+// input: the path exists, so it is not "missing", but it is not a file either. The
+// copy refuses it rather than streaming a directory into the jail.
+func TestJailedLauncherRefusesADirectoryAsAnImage(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+	req.Rootfs = t.TempDir()
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a regular file")
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedInstanceRefusesAChrootItCannotBuild pins the staging directory failure.
+// It is white-box on purpose: a chroot that cannot be created is not reachable
+// through Start on a host where the launcher owns its base directory, and the step
+// that fails is what a caller's error message has to name.
+func TestJailedInstanceRefusesAChrootItCannotBuild(t *testing.T) {
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	j, err := launcher.newJailed(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { j.lease.Release() })
+
+	// A file where the jail's kernel directory has to go: MkdirAll cannot make a
+	// directory under a non-directory, which is the "the chroot cannot be built"
+	// failure in its cleanest form.
+	require.NoError(t, os.MkdirAll(j.chroot, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(j.chroot, "kernel"), nil, 0o600))
+
+	err = j.stage(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create /kernel in the jail")
+}
+
+// TestJailedLauncherRefusesAJailItCannotInspect pins the stale-jail check's other
+// shape: the path exists but cannot even be inspected, so the launcher cannot tell a
+// leftover from a live instance and refuses rather than guess.
+func TestJailedLauncherRefusesAJailItCannotInspect(t *testing.T) {
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	// A file where the jailer's per-binary directory goes: every jail path under it
+	// answers ENOTDIR, which is not "no jail here".
+	require.NoError(t, os.MkdirAll(launcher.ChrootBaseDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(launcher.ChrootBaseDir, launcher.execFileName()), nil, 0o600))
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inspect the jail")
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherRefusesAJailWhosePIDFileIsUnreadable pins why an unparseable pid
+// is an error and not "no pid, so the jail is stale": deleting this jail could delete a
+// live instance's disk.
+func TestJailedLauncherRefusesAJailWhosePIDFileIsUnreadable(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	pidFile := filepath.Join(launcher.JailRoot(req.InstanceID), "root", "firecracker.pid")
+	require.NoError(t, os.MkdirAll(filepath.Dir(pidFile), 0o700))
+	require.NoError(t, os.WriteFile(pidFile, []byte("not-a-pid\n"), 0o600))
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse the jail's pid file")
+	assert.FileExists(t, pidFile, "a jail the launcher refuses must be left for an operator")
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherReplacesAJailWhoseVMMIsGone pins the recovery path: a jail left by
+// a VMM that died is a leftover, and the next launch under the same id takes it over
+// instead of failing on the leftover's socket and /dev entries.
+func TestJailedLauncherReplacesAJailWhoseVMMIsGone(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	// A pid no process has: this one, from a child that has already exited.
+	dead := exec.Command("true")
+	require.NoError(t, dead.Run())
+	deadPID := dead.Process.Pid
+
+	pidFile := filepath.Join(launcher.JailRoot(req.InstanceID), "root", "firecracker.pid")
+	require.NoError(t, os.MkdirAll(filepath.Dir(pidFile), 0o700))
+	require.NoError(t, os.WriteFile(pidFile, []byte(strconv.Itoa(deadPID)+"\n"), 0o600))
+	stale := filepath.Join(launcher.JailRoot(req.InstanceID), "root", "stale-file")
+	require.NoError(t, os.WriteFile(stale, []byte("left behind"), 0o600))
+
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = launched.Stop(context.Background()) })
+
+	assert.NoFileExists(t, stale, "the previous jail must be gone, not merged with this one")
+}
+
+// TestJailedLauncherRefusesACgroupThatStillHasProcesses pins the saw-off between "a
+// leftover cgroup" and "a live instance's cgroup": only an empty one may be removed,
+// because removing a populated one would move a running VMM.
+func TestJailedLauncherRefusesACgroupThatStillHasProcesses(t *testing.T) {
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	occupied := filepath.Join(launcher.cgroupRoot, launcher.ParentCgroup, req.InstanceID, "child")
+	require.NoError(t, os.MkdirAll(occupied, 0o755))
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "a previous instance left behind")
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherReportsAnUnstartableJailer pins the spawn failure: the jailer is
+// there, but the kernel cannot execute it. Nothing is left behind, because Start
+// returns no handle for it.
+func TestJailedLauncherReportsAnUnstartableJailer(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	broken := filepath.Join(fake.dir, "jailer-broken")
+	require.NoError(t, os.WriteFile(broken, []byte("#!/nonexistent/interpreter\n"), 0o755))
+	launcher.JailerPath = broken
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start jailer")
+	assert.NoDirExists(t, launcher.JailRoot(req.InstanceID))
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherReportsAnUnopenableConsole pins the console as a launch
+// requirement: a caller that asked for logs and cannot have them is told, rather than
+// getting an instance whose output nobody can read.
+func TestJailedLauncherReportsAnUnopenableConsole(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	notADirectory := filepath.Join(fake.dir, "logs-is-a-file")
+	require.NoError(t, os.WriteFile(notADirectory, nil, 0o600))
+	launcher.LogDir = notADirectory
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "console")
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherReportsAFailedResume pins the last step of a restore: the
+// checkpoint loaded but the guest never ran, so the instance is not launched and its
+// jail is torn down.
+func TestJailedLauncherReportsAFailedResume(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	fake.resumeErr = assert.AnError
+
+	req := needJailedRestoreRequest(t, launcher)
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resume the guest")
+	assert.NoDirExists(t, launcher.JailRoot(req.InstanceID))
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherReportsAFailedColdBoot is the same for the template path.
+func TestJailedLauncherReportsAFailedColdBoot(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	fake.bootErr = assert.AnError
+
+	kernel, rootfs, _, _ := jailedSources(t)
+	req := LaunchRequest{
+		InstanceID: "sbx-template",
+		Mode:       ModeCold,
+		Kernel:     kernel,
+		Rootfs:     rootfs,
+		VCPUs:      1,
+		MemoryMB:   128,
+	}
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "boot the instance in its jail")
+	assert.NoDirExists(t, launcher.JailRoot(req.InstanceID))
+	assert.False(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherKeepsItsHandlesWhileTheVMWillNotDie pins the one teardown that
+// must not clean up: if the process cannot be stopped, the socket, cgroup and jail are
+// the only handles to a VM that is still running, and the uid must stay leased. The
+// retry, once the process is gone, then finishes the job.
+func TestJailedLauncherKeepsItsHandlesWhileTheVMWillNotDie(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	j, err := launcher.newJailed(req)
+	require.NoError(t, err)
+	require.NoError(t, j.prepare(context.Background()))
+	require.NoError(t, j.spawn())
+	require.NoError(t, jailedWaitForAPI(j.hostSocket, time.Second))
+
+	pid := pidFromFake(t, fake, req.InstanceID)
+	t.Cleanup(func() {
+		proc, err := os.FindProcess(pid)
+		if err == nil {
+			_ = proc.Kill()
+		}
+		// A failed assertion here must not leave a jail on the host.
+		_ = os.RemoveAll(j.jailRoot)
+	})
+
+	previous := signalProcess
+	signalProcess = func(*os.Process, syscall.Signal) error { return syscall.EPERM }
+	t.Cleanup(func() { signalProcess = previous })
+
+	err = j.stop(context.Background())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, syscall.EPERM)
+	assert.DirExists(t, j.jailRoot, "a VM that is still running keeps its jail")
+	assert.True(t, launcher.UIDs.Leased(j.uid), "and it keeps its uid")
+
+	signalProcess = previous
+	proc, err := os.FindProcess(pid)
+	require.NoError(t, err)
+	require.NoError(t, proc.Kill())
+	waitForProcessGone(t, pid)
+
+	require.NoError(t, j.stop(context.Background()), "the retry finishes the teardown")
+	assert.NoDirExists(t, j.jailRoot)
+	assert.False(t, launcher.UIDs.Leased(j.uid))
+}
+
+// TestJailedLauncherKeepsTheVMMsLog pins where a VMM that died inside the fence says
+// why: its log is inside the jail, which the teardown deletes, so it is copied out
+// first.
+func TestJailedLauncherKeepsTheVMMsLog(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	vmmLog := filepath.Join(launcher.JailRoot(req.InstanceID), "root", "firecracker.log")
+	require.NoError(t, os.WriteFile(vmmLog, []byte("guest panicked\n"), 0o600))
+
+	require.NoError(t, launched.Stop(context.Background()))
+
+	kept := filepath.Join(launcher.LogDir, req.InstanceID+".firecracker.log")
+	body, err := os.ReadFile(kept)
+	require.NoError(t, err, "the VMM log must survive the jail")
+	assert.Contains(t, string(body), "guest panicked")
+}
+
+// TestJailedLauncherReportsASocketItCannotRemove pins the teardown's error path: the
+// instance is gone and the uid is free (so the caller is not blocked on a uid), but the
+// removal that failed is reported once, and a retry does not touch the paths again —
+// they may belong to a newer instance by then.
+func TestJailedLauncherReportsASocketItCannotRemove(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	// A directory where the socket is: os.Remove cannot take a non-empty one.
+	require.NoError(t, os.Remove(launched.APISocket))
+	require.NoError(t, os.MkdirAll(filepath.Join(launched.APISocket, "child"), 0o700))
+
+	err = launched.Stop(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "instance socket")
+	assert.NoDirExists(t, launcher.JailRoot(req.InstanceID), "the jail goes even when one removal fails")
+	assert.False(t, launcher.UIDs.Leased(3000), "and the uid is free: nothing of the instance is running")
+
+	require.NoError(t, launched.Stop(context.Background()), "a retried stop must not fail on work already done")
+}
+
+// TestJailedLauncherWaitsOutACgroupBeforeGivingUp pins the settle: a cgroup the kernel
+// has not released yet becomes removable a moment later, and the teardown waits rather
+// than leaking one directory per instance.
+func TestJailedLauncherWaitsOutACgroupBeforeGivingUp(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	cgroupDir := filepath.Join(launcher.cgroupRoot, launcher.ParentCgroup, req.InstanceID)
+	require.DirExists(t, cgroupDir)
+
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		_ = os.Remove(cgroupDir)
+	}()
+
+	require.NoError(t, launched.Stop(context.Background()))
+	assert.NoDirExists(t, cgroupDir)
+}
+
+// TestJailedLauncherReportsAnUncreatableConsoleSocket pins the console socket as part
+// of the launch: if the socket cannot be created the guest would have no input, so the
+// launch fails before the VMM starts and stages nothing.
+func TestJailedLauncherReportsAnUncreatableConsoleSocket(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+
+	// A file where the console socket directory has to go.
+	inTheWay := filepath.Join(fake.dir, "console-is-a-file")
+	require.NoError(t, os.WriteFile(inTheWay, nil, 0o600))
+	launcher.ConsoleSocketDir = inTheWay
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create the instance console")
+	assert.False(t, launcher.UIDs.Leased(3000), "nothing started, so the uid goes back")
+}
+
+// TestJailedLauncherReportsTheFailureThatStoppedIt pins fail's precedence: when a
+// launch fails and its own teardown also fails, the caller must be told what stopped the
+// launch, not what the cleanup tripped over. The teardown's complaint goes to the log.
+func TestJailedLauncherReportsTheFailureThatStoppedIt(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	fake.loadErr = assert.AnError
+	req := needJailedRestoreRequest(t, launcher)
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	previous := signalProcess
+	signalProcess = func(*os.Process, syscall.Signal) error { return syscall.EPERM }
+	t.Cleanup(func() { signalProcess = previous })
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "load the checkpoint into the jail",
+		"the launch failure is what the caller sees")
+
+	// The VMM the broken signal left behind is this test's to clean up.
+	t.Cleanup(func() { _ = os.RemoveAll(launcher.JailRoot(req.InstanceID)) })
+	pid := pidFromFake(t, fake, req.InstanceID)
+	proc, err := os.FindProcess(pid)
+	require.NoError(t, err)
+	require.NoError(t, proc.Kill())
+	waitForProcessGone(t, pid)
+
+	// The uid stays leased: while the VMM might still be alive, handing its uid to a
+	// second instance is the one thing the allocator must not do. A daemon restart
+	// reclaims it through the process table, which is why that check exists.
+	signalProcess = previous
+	require.NoError(t, os.RemoveAll(launcher.JailRoot(req.InstanceID)))
+	assert.True(t, launcher.UIDs.Leased(3000))
+}
+
+// TestJailedLauncherReportsACgroupItCannotRemove pins the other teardown error: a
+// cgroup that still has something in it is reported after the settle window, while the
+// instance itself is still taken down (the process is gone, so the uid is free).
+func TestJailedLauncherReportsACgroupItCannotRemove(t *testing.T) {
+	requireJailHost(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	req := needJailedRestoreRequest(t, launcher)
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	cgroupDir := filepath.Join(launcher.cgroupRoot, launcher.ParentCgroup, req.InstanceID)
+	require.NoError(t, os.MkdirAll(filepath.Join(cgroupDir, "child"), 0o755))
+	t.Cleanup(func() { _ = os.RemoveAll(cgroupDir) })
+
+	err = launched.Stop(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "instance cgroup")
+	assert.NoDirExists(t, launcher.JailRoot(req.InstanceID))
+	assert.False(t, launcher.UIDs.Leased(3000))
+
+	require.NoError(t, os.RemoveAll(cgroupDir))
+	require.NoError(t, launched.Stop(context.Background()), "the retry has nothing left to do")
 }
