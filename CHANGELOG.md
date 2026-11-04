@@ -21,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clears the task's stale vsock muxer before starting, which is the `EADDRINUSE`
   the CLI path hit when a crashed VMM left the file behind. `vm snapshot
   stop-restored` now resolves the task's `<task>.sock` **and is deprecated**: a
-  restored VM is the task's VM, so `vm stop <task>` is the replacement. The
-  command still works for existing scripts — it prints the deprecation notice
-  before it acts — and stays the only caller of
-  `DELETE /v1/tasks/{id}/restored` from `-H`, but it is no longer listed in
+  restored VM is the task's VM, so `vm stop <task>` replaces it for a VM this CLI
+  restored. A VM restored through the node has no local state entry, and `vm stop`
+  refuses it as SwarmKit-managed, so `-H` on this command is still the way to stop
+  that one. The command still works for existing scripts — it prints the
+  deprecation notice, naming both cases, before it acts — and stays the only
+  caller of `DELETE /v1/tasks/{id}/restored`, but it is no longer listed in
   `vm snapshot --help`.
 - **The node broker resolves VMs through the instance registry** — a lookup asks
   `pkg/vminstance` first and takes the record's API socket, vsock muxer, console
