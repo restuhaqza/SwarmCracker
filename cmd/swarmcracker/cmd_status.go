@@ -52,12 +52,18 @@ func runStatus(vmID string) error {
 	// Get VM state
 	vmState, err := stateMgr.Get(vmID)
 	if err != nil {
-		// Not a CLI-managed VM. Fall back to a VM discovered on the host (for
-		// example a service task started by the daemon).
+		// Not a CLI-managed VM. Fall back to a VM the node knows (for example a
+		// service task started by the daemon): the instance registry first, then
+		// the socket scan.
 		vmState, err = resolveRunningVM(vmID)
 		if err != nil {
 			return fmt.Errorf("VM not found: %s", vmID)
 		}
+	} else if vmState.Source == "" {
+		// A state entry is the CLI's own note, not a record. Say which source can
+		// actually describe this VM's host paths, so the view never implies a
+		// record it did not read.
+		vmState.Source = vmSource(vmID)
 	}
 
 	// Print VM information
@@ -73,6 +79,36 @@ func runStatus(vmID string) error {
 	return nil
 }
 
+// vmSource says how a VM's host paths were established, for the view that reads
+// the CLI's own state: the node's registry when it has a live record for the VM,
+// otherwise the socket-name fallback. A registry that cannot be read is the
+// fallback too, never an error — `vm status` on a VM the state file knows must
+// not fail because the daemon's directory is not readable by this user.
+func vmSource(id string) string {
+	store := vmInstanceStore()
+	if store == nil {
+		return runtime.VMSourceDerived
+	}
+	if _, found, err := store.Get(id); err == nil && found {
+		return runtime.VMSourceRegistry
+	}
+	return runtime.VMSourceDerived
+}
+
+// formatSourceDetail explains the SOURCE line of `vm status`. The difference is
+// the point: one is the node's own statement of where the VM is, the other a name
+// derived from a task ID that is going away once every VM has a record.
+func formatSourceDetail(source string) string {
+	switch source {
+	case runtime.VMSourceRegistry:
+		return "registry (instance record)"
+	case runtime.VMSourceDerived:
+		return "derived (socket name, no record)"
+	default:
+		return formatSource(source)
+	}
+}
+
 // printVMStatus prints formatted VM status information
 func printVMStatus(vm *runtime.VMState) {
 	fmt.Println("=" + strings.Repeat("=", 78))
@@ -82,6 +118,7 @@ func printVMStatus(vm *runtime.VMState) {
 	// Status section
 	fmt.Println("\n[Status]")
 	fmt.Printf("  State:        %s\n", formatStatusDetailed(vm.Status))
+	fmt.Printf("  Source:       %s\n", formatSourceDetail(vm.Source))
 	fmt.Printf("  PID:          %d\n", vm.PID)
 	fmt.Printf("  Started:      %s\n", vm.StartTime.Format("2006-01-02 15:04:05"))
 	fmt.Printf("  Uptime:       %s\n", formatDuration(time.Since(vm.StartTime)))

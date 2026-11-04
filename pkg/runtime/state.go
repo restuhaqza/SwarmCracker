@@ -45,10 +45,31 @@ type VMState struct {
 	// directly with `vm create` (no daemon, so nothing probes them).
 	Health *VMHealth `json:"health,omitempty"`
 
+	// Source says how this VM's host paths were established, so a reader can tell
+	// a VM the node's registry describes from one that is only a socket file:
+	// VMSourceRegistry for a VM read from the node's instance registry,
+	// VMSourceDerived for one found by its API socket — the one-release path that
+	// exists for VMs started before records did. It is empty when nothing has
+	// answered yet (a state entry nobody looked up), and a reader that shows it
+	// must show that difference rather than hide it.
+	Source string `json:"source,omitempty"`
+
 	// Error tracking
 	LastError string    `json:"last_error,omitempty"`
 	ErrorTime time.Time `json:"error_time,omitempty"`
 }
+
+// The values VMState.Source can carry. They are the two ways a local command can
+// learn a VM's host paths, and they are deliberately visible: a VM the node's
+// registry describes resolves without a guess, while one found by its socket is
+// the fallback that will disappear once every VM has a record.
+const (
+	// VMSourceRegistry means the node's instance registry named the VM.
+	VMSourceRegistry = "registry"
+	// VMSourceDerived means the VM was found by its API socket (or only in the
+	// CLI's own state), i.e. it has no record to ask.
+	VMSourceDerived = "derived"
+)
 
 // StateManager manages VM state persistence.
 type StateManager struct {

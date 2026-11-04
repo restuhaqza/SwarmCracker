@@ -65,7 +65,7 @@ func TestEnrichVMs_ReadsLiveHealth(t *testing.T) {
 	}
 
 	vm := &runtime.VMState{ID: "svc-task-h", Status: "running"}
-	enrichVMs([]*runtime.VMState{vm})
+	enrichVMs([]*runtime.VMState{vm}, nil)
 
 	if vm.Health == nil {
 		t.Fatal("Health = nil, want the daemon's live observation")
@@ -104,7 +104,7 @@ func TestEnrichVMs_ExistingHealthWins(t *testing.T) {
 		Status: "running",
 		Health: &runtime.VMHealth{State: runtime.HealthHealthy},
 	}
-	enrichVMs([]*runtime.VMState{vm})
+	enrichVMs([]*runtime.VMState{vm}, nil)
 
 	if vm.Health.State != runtime.HealthHealthy {
 		t.Errorf("existing health should win, got %q", vm.Health.State)

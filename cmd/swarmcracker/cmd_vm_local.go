@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/restuhaqza/swarmcracker/pkg/client"
-	"github.com/restuhaqza/swarmcracker/pkg/console"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 	"github.com/rs/zerolog/log"
@@ -24,7 +23,7 @@ func defaultLocalStateDir() string {
 	return client.DefaultConfig().StateDir
 }
 
-// vmInstances opens the node's instance registry (pkg/vminstance) under the CLI's
+// vmInstanceStore opens the node's instance registry (pkg/vminstance) under the CLI's
 // state directory: the same store `vm create` writes and the daemon keeps, so a
 // local command resolves the VMs the node recorded instead of deriving their
 // paths from an ID.
@@ -35,7 +34,7 @@ func defaultLocalStateDir() string {
 // what every node did before records existed. A typed-nil *vminstance.Store would
 // not do: it is a non-nil interface whose every call fails, so the failure is
 // logged here and nil is returned.
-func vmInstances() console.InstanceSource {
+func vmInstanceStore() *vminstance.Store {
 	dir := vminstance.Dir(defaultLocalStateDir())
 	if dir == "" {
 		return nil

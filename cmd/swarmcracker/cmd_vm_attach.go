@@ -115,7 +115,10 @@ func attachToVM(ctx context.Context, socketDir, ref string, in, out *os.File) er
 	// sandboxed, restored or forked — resolves without a guess. The directory
 	// scan stays as the one-release fallback for a VM started before records
 	// existed.
-	resolver := console.Resolver{SocketDir: socketDir, Instances: vmInstances()}
+	resolver := console.Resolver{SocketDir: socketDir}
+	if store := vmInstanceStore(); store != nil {
+		resolver.Instances = store
+	}
 
 	resolved, err := resolver.Resolve(ref)
 	if err != nil {
