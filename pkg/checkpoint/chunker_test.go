@@ -37,7 +37,7 @@ func TestWriteReadRoundTrip(t *testing.T) {
 			id := "ckpt-0123456789abcdef"
 			src := body(tc.size, 3)
 
-			m, err := Write(ctx, store, id, testPin, bytes.NewReader(src))
+			m, err := Write(ctx, store, id, testPin, bytes.NewReader(testState), bytes.NewReader(src))
 			require.NoError(t, err)
 
 			assert.Equal(t, FormatVersion, m.FormatVersion)
@@ -45,6 +45,8 @@ func TestWriteReadRoundTrip(t *testing.T) {
 			assert.Equal(t, ChunkSize, m.ChunkSize)
 			assert.Equal(t, int64(tc.size), m.TotalSize)
 			assert.Equal(t, testPin, m.Pin)
+			assert.Equal(t, stateOf(testState), m.State,
+				"the manifest binds the state document the image resumes from")
 			assert.Equal(t, chunkDigests(src, ChunkSize), m.Chunks,
 				"the manifest names each chunk by the SHA-256 of its bytes, in image order")
 
@@ -61,7 +63,7 @@ func TestWriteReadRoundTrip(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, m, stored, "the published manifest is what a reader gets back")
 
-			r, err := Read(ctx, store, stored)
+			r, err := Read(ctx, store, stored, bytes.NewReader(testState))
 			require.NoError(t, err)
 			defer func() { assert.NoError(t, r.Close()) }()
 
@@ -79,10 +81,10 @@ func TestReadAcrossChunkBoundaries(t *testing.T) {
 	store := newTestLocal(t)
 	src := body(ChunkSize+17, 5)
 
-	m, err := Write(ctx, store, "ckpt-boundary", testPin, bytes.NewReader(src))
+	m, err := Write(ctx, store, "ckpt-boundary", testPin, bytes.NewReader(testState), bytes.NewReader(src))
 	require.NoError(t, err)
 
-	r, err := Read(ctx, store, m)
+	r, err := Read(ctx, store, m, bytes.NewReader(testState))
 	require.NoError(t, err)
 	defer func() { assert.NoError(t, r.Close()) }()
 
@@ -109,38 +111,20 @@ func TestReadAcrossChunkBoundaries(t *testing.T) {
 	assert.Equal(t, want[:], sum.Sum(nil))
 }
 
-func TestReadHonoursTheManifestsChunkSize(t *testing.T) {
-	ctx := t.Context()
-	store := newTestLocal(t)
-	src := body(3000, 7)
+func TestReadRefusesAManifestWrittenWithAnotherChunkSize(t *testing.T) {
+	// The chunk size is part of the format, not a hint: a reader that honoured
+	// any size would split another build's image with this build's arithmetic
+	// and hand out bytes that look like an image and are not one.
+	m := validManifest()
+	m.ChunkSize = 1024
+	m.TotalSize = int64(2 * 1024)
+	m.Chunks = chunkDigests(body(2*1024, 7), 1024)
 
-	// A manifest states its own chunk size, so this one was written with 1 KiB
-	// chunks rather than ChunkSize. A reader that assumed the constant would ask
-	// a chunk for more bytes than it holds.
-	for start := 0; start < len(src); start += 1024 {
-		end := start + 1024
-		if end > len(src) {
-			end = len(src)
-		}
-		require.NoError(t, store.PutChunk(ctx, testDigest(src[start:end]), bytes.NewReader(src[start:end])))
-	}
-	m := Manifest{
-		FormatVersion: FormatVersion,
-		ID:            "ckpt-small-chunks",
-		TotalSize:     int64(len(src)),
-		ChunkSize:     1024,
-		Chunks:        chunkDigests(src, 1024),
-		Pin:           testPin,
-	}
-	require.NoError(t, store.PutManifest(ctx, m))
-
-	r, err := Read(ctx, store, m)
-	require.NoError(t, err)
-	defer func() { assert.NoError(t, r.Close()) }()
-
-	got, err := io.ReadAll(r)
-	require.NoError(t, err)
-	assert.Equal(t, src, got)
+	_, err := Read(t.Context(), newTestLocal(t), m, bytes.NewReader(testState))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidManifest)
+	assert.Contains(t, err.Error(), "chunkSize is 1024")
+	assert.Contains(t, err.Error(), "4194304")
 }
 
 func TestWriteRefusesBeforeItWrites(t *testing.T) {
@@ -159,7 +143,7 @@ func TestWriteRefusesBeforeItWrites(t *testing.T) {
 			ctx := t.Context()
 			store := newTestLocal(t)
 
-			_, err := Write(ctx, store, tc.id, tc.pin, bytes.NewReader(body(2*ChunkSize, 1)))
+			_, err := Write(ctx, store, tc.id, tc.pin, bytes.NewReader(testState), bytes.NewReader(body(2*ChunkSize, 1)))
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrInvalidManifest)
 
@@ -176,7 +160,7 @@ func TestWritePublishesNothingWhenTheSourceFails(t *testing.T) {
 	store := newTestLocal(t)
 
 	src := &failingReader{prefix: body(ChunkSize, 9), err: errors.New("the dump stopped")}
-	_, err := Write(ctx, store, "ckpt-failed", testPin, src)
+	_, err := Write(ctx, store, "ckpt-failed", testPin, bytes.NewReader(testState), src)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "the dump stopped")
 
@@ -193,7 +177,7 @@ func TestReadRefusesAnInvalidManifest(t *testing.T) {
 	m := validManifest()
 	m.TotalSize = 5000 // the chunk list no longer matches the size
 
-	_, err := Read(t.Context(), newTestLocal(t), m)
+	_, err := Read(t.Context(), newTestLocal(t), m, bytes.NewReader(testState))
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInvalidManifest)
 }
@@ -211,7 +195,7 @@ func TestWriteStreamsWithoutHoldingTheImage(t *testing.T) {
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 
-	m, err := Write(ctx, store, "ckpt-stream", testPin, src)
+	m, err := Write(ctx, store, "ckpt-stream", testPin, bytes.NewReader(testState), src)
 	require.NoError(t, err)
 
 	runtime.ReadMemStats(&after)
@@ -228,12 +212,12 @@ func TestReadStreamsWithoutHoldingTheImage(t *testing.T) {
 
 	ctx := t.Context()
 	store := newTestLocal(t)
-	_, err := Write(ctx, store, "ckpt-stream", testPin, &countingReader{remaining: int64(imageSize)})
+	_, err := Write(ctx, store, "ckpt-stream", testPin, bytes.NewReader(testState), &countingReader{remaining: int64(imageSize)})
 	require.NoError(t, err)
 	m, err := store.Manifest(ctx, "ckpt-stream")
 	require.NoError(t, err)
 
-	r, err := Read(ctx, store, m)
+	r, err := Read(ctx, store, m, bytes.NewReader(testState))
 	require.NoError(t, err)
 
 	runtime.GC()
@@ -299,15 +283,19 @@ func (r *failingReader) Read(p []byte) (int, error) {
 func TestWriteAndReadRequireTheirArguments(t *testing.T) {
 	ctx := t.Context()
 
-	_, err := Write(ctx, nil, "ckpt-x", testPin, strings.NewReader(""))
+	_, err := Write(ctx, nil, "ckpt-x", testPin, bytes.NewReader(testState), strings.NewReader(""))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "store is required")
 
-	_, err = Write(ctx, newTestLocal(t), "ckpt-x", testPin, nil)
+	_, err = Write(ctx, newTestLocal(t), "ckpt-x", testPin, nil, strings.NewReader(""))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "source is required")
+	assert.Contains(t, err.Error(), "state document is required")
 
-	_, err = Read(ctx, nil, validManifest())
+	_, err = Write(ctx, newTestLocal(t), "ckpt-x", testPin, bytes.NewReader(testState), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "memory image is required")
+
+	_, err = Read(ctx, nil, validManifest(), bytes.NewReader(testState))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "store is required")
 }
@@ -317,8 +305,78 @@ func TestWriteStopsForACancelledCaller(t *testing.T) {
 	cancel()
 
 	store := newTestLocal(t)
-	_, err := Write(ctx, store, "ckpt-x", testPin, &countingReader{remaining: int64(ChunkSize)})
+	_, err := Write(ctx, store, "ckpt-x", testPin, bytes.NewReader(testState), &countingReader{remaining: int64(ChunkSize)})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Zero(t, blobCount(t, store.Root()), "a cancelled capture stores nothing")
+}
+
+func TestReadRejectsAnotherCheckpointsState(t *testing.T) {
+	// A checkpoint is a pair. Reading an image against the wrong state document
+	// is refused here because the alternative is a VM resuming another VM's
+	// devices, addresses and clocks with no error anywhere.
+	ctx := t.Context()
+	store := newTestLocal(t)
+	image := body(ChunkSize+1, 21)
+
+	m, err := Write(ctx, store, "ckpt-a", testPin, bytes.NewReader(testState), bytes.NewReader(image))
+	require.NoError(t, err)
+
+	// Another checkpoint's state, the same size: only the bytes differ, so a
+	// size check alone would let this through.
+	_, err = Read(ctx, store, m, bytes.NewReader(otherState))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrStateMismatch)
+	assert.Contains(t, err.Error(), m.State.SHA256)
+
+	// A state document that changed after the capture: truncated, and extended.
+	_, err = Read(ctx, store, m, bytes.NewReader(testState[:len(testState)-1]))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrStateMismatch)
+
+	longer := append(append([]byte(nil), testState...), 0)
+	_, err = Read(ctx, store, m, bytes.NewReader(longer))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrStateMismatch)
+
+	// The checkpoint's own state opens it.
+	r, err := Read(ctx, store, m, bytes.NewReader(testState))
+	require.NoError(t, err)
+	require.NoError(t, r.Close())
+}
+
+func TestWriteRefusesAStateDocumentItCannotDescribe(t *testing.T) {
+	tests := []struct {
+		name  string
+		state io.Reader
+		want  string
+	}{
+		{name: "an empty document", state: bytes.NewReader(nil), want: "empty"},
+		{name: "a document past the ceiling", state: io.LimitReader(zeros{}, maxStateSize+1), want: "larger than"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newTestLocal(t)
+			_, err := Write(t.Context(), store, "ckpt-bad-state", testPin, tc.state, strings.NewReader(""))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+
+			ids, listErr := store.List(t.Context())
+			require.NoError(t, listErr)
+			assert.Empty(t, ids, "a checkpoint with no state document is not published")
+			assert.Zero(t, blobCount(t, store.Root()))
+		})
+	}
+}
+
+func TestReadReportsAStateDocumentItCannotRead(t *testing.T) {
+	store := newTestLocal(t)
+	m, err := Write(t.Context(), store, "ckpt-a", testPin, bytes.NewReader(testState), bytes.NewReader(body(16, 1)))
+	require.NoError(t, err)
+
+	_, err = Read(t.Context(), store, m, &failingReader{err: errors.New("the disk went away")})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the disk went away")
+	assert.NotErrorIs(t, err, ErrStateMismatch, "a read failure is not a pairing failure")
 }

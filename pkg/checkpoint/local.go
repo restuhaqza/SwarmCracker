@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
@@ -75,9 +76,9 @@ type LocalConfig struct {
 // belongs to whoever stored it: two checkpoints that share a page share a blob,
 // and neither owns it. That is why Delete removes a checkpoint's manifest and
 // leaves the blobs it named — another checkpoint may name them too, and this
-// driver keeps no reference counts. Reclaiming blobs no manifest names is a
-// sweep for the retention work, not something a per-checkpoint delete can
-// decide on its own.
+// driver keeps no reference counts — and why reclaiming space is Prune's job:
+// it removes the blobs no manifest names, once they are older than the pass's
+// minAge.
 //
 // It is safe for concurrent use. Writers create shard directories on demand;
 // two writes of the same content write different temporaries and rename onto the
@@ -86,6 +87,9 @@ type Local struct {
 	root      string
 	manifests string
 }
+
+// Local is a Store.
+var _ Store = (*Local)(nil)
 
 // NewLocal opens — creating when needed — the local store and proves it can be
 // written to. The root, its shards and the manifests directory are 0700 and the
@@ -208,8 +212,10 @@ func (l *Local) Manifest(ctx context.Context, id string) (Manifest, error) {
 }
 
 // PutChunk stores one chunk under the digest of its bytes. Content that is
-// already stored is a no-op — that is the whole of dedup: the address exists, so
-// the bytes exist, and a fork of an identical memory writes no second blob.
+// already stored writes nothing — that is the whole of dedup: the address exists,
+// so the bytes exist, and a fork of an identical memory writes no second blob.
+// The claim still refreshes the blob's age, so a chunk reused by a capture that
+// has not published its manifest yet is not old enough for Prune to remove.
 //
 // A new chunk is streamed into a temporary beside its destination while its
 // digest is computed, so a stream that does not hash to the digest it was given
@@ -231,7 +237,15 @@ func (l *Local) PutChunk(ctx context.Context, digest Digest, r io.Reader) error 
 	_, statErr := os.Stat(path)
 	switch {
 	case statErr == nil:
-		// Dedup: the address exists, so the bytes exist. Nothing is written.
+		// Dedup: the address exists, so the bytes exist. Nothing is written,
+		// but the claim is refreshed: Prune removes unreferenced blobs by age,
+		// and the capture that reused this content has not published the
+		// manifest that names it yet, so an old blob must look newly claimed
+		// until it does.
+		now := time.Now()
+		if err := os.Chtimes(path, now, now); err != nil {
+			return fmt.Errorf("checkpoint chunk %s: refresh the age of %s: %w", digest, path, err)
+		}
 		return nil
 	case !errors.Is(statErr, fs.ErrNotExist):
 		return fmt.Errorf("checkpoint chunk %s: stat %s: %w", digest, path, statErr)
@@ -318,7 +332,8 @@ func (l *Local) Chunk(ctx context.Context, digest Digest) (io.ReadCloser, error)
 // none should fail because the checkpoint is already gone.
 //
 // The blobs the checkpoint named stay: they are addressed by content, and
-// another checkpoint may name the same bytes. See Local.
+// another checkpoint may name the same bytes. Prune is what removes the ones
+// nothing names once they are old enough to be sure of. See Local.
 func (l *Local) Delete(ctx context.Context, id string) error {
 	if err := l.ready(ctx); err != nil {
 		return err
@@ -366,6 +381,133 @@ func (l *Local) List(ctx context.Context) ([]string, error) {
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// Prune removes the chunks no manifest names that have rested for at least
+// minAge, and reports what it removed.
+//
+// It is a mark-and-sweep over the store's own layout. Every manifest is read
+// first, and the sweep runs only when all of them could be read: a manifest that
+// cannot be decoded hides what it references, so the pass fails and removes
+// nothing rather than deleting chunks another checkpoint may need. Blobs are
+// then removed from the shard directories when no manifest names them and their
+// modification time is older than minAge. Anything in a shard directory whose
+// name is not a digest is left alone, and so are the manifests.
+//
+// The age is what makes a concurrent capture safe: a chunk is written (or, on a
+// dedup hit, claimed) during a capture and named by its manifest afterwards, so
+// a blob younger than minAge may belong to a checkpoint that is not in the
+// listing yet. minAge therefore has to outlast the longest capture a caller
+// allows, and PutChunk refreshes the age of content it already held so that a
+// capture reusing an old chunk is protected for the same window.
+func (l *Local) Prune(ctx context.Context, minAge time.Duration) (PruneReport, error) {
+	var report PruneReport
+	if err := l.ready(ctx); err != nil {
+		return report, err
+	}
+	if minAge < 0 {
+		return report, fmt.Errorf("checkpoint store: minAge is %s: want how long a chunk must have rested before it may be removed", minAge)
+	}
+
+	// The mark phase. Nothing is deleted until every manifest has been read: a
+	// sweep that deleted as it scanned could remove a chunk a later manifest
+	// names.
+	ids, err := l.List(ctx)
+	if err != nil {
+		return report, err
+	}
+	referenced := make(map[Digest]struct{})
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return PruneReport{}, err
+		}
+		m, err := l.Manifest(ctx, id)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				// Deleted between the listing and the read; it names nothing.
+				continue
+			}
+			return PruneReport{}, fmt.Errorf("checkpoint store: prune: cannot tell what checkpoint %s references: %w", id, err)
+		}
+		for _, digest := range m.Chunks {
+			referenced[digest] = struct{}{}
+		}
+	}
+
+	cutoff := time.Now().Add(-minAge)
+	shards, err := os.ReadDir(l.root)
+	if err != nil {
+		return report, fmt.Errorf("checkpoint store: read %s: %w", l.root, err)
+	}
+	for _, shard := range shards {
+		if !shard.IsDir() || !isShard(shard.Name()) {
+			continue
+		}
+		removed, err := l.pruneShard(ctx, shard.Name(), referenced, cutoff, &report)
+		if err != nil {
+			return report, err
+		}
+		if removed {
+			syncDir(filepath.Join(l.root, shard.Name()))
+		}
+	}
+	return report, nil
+}
+
+// pruneShard removes the unreferenced, old enough chunks of one shard directory
+// and adds what it removed to report. removed is true when the directory
+// changed, so the caller flushes it once.
+func (l *Local) pruneShard(ctx context.Context, shard string, referenced map[Digest]struct{}, cutoff time.Time, report *PruneReport) (bool, error) {
+	dir := filepath.Join(l.root, shard)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false, fmt.Errorf("checkpoint store: read %s: %w", dir, err)
+	}
+
+	removed := false
+	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		digest := Digest(entry.Name())
+		// Only a blob this store wrote is a candidate: a directory, a
+		// temporary, or a file a human left here is not ours to delete.
+		if entry.IsDir() || !digest.Valid() {
+			continue
+		}
+		if _, ok := referenced[digest]; ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return removed, fmt.Errorf("checkpoint store: stat %s: %w", filepath.Join(dir, entry.Name()), err)
+		}
+		if !info.ModTime().Before(cutoff) {
+			// Younger than minAge: a capture may have stored it and not yet
+			// published the manifest that names it.
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return removed, fmt.Errorf("checkpoint store: remove the unreferenced chunk %s: %w", digest, err)
+		}
+		removed = true
+		report.Blobs++
+		report.Bytes += info.Size()
+	}
+	return removed, nil
+}
+
+// isShard reports whether name is one of the layout's shard directories: two
+// lowercase hex characters, so nothing else under the root is ever swept as if
+// it held chunks.
+func isShard(name string) bool {
+	return len(name) == 2 && isLowerHex(name)
 }
 
 // ready reports whether the store can be used and the caller still wants the

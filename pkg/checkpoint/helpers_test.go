@@ -26,6 +26,19 @@ var otherPin = Pin{
 	Kernel:      hexDigest([]byte("a different kernel image")),
 }
 
+// testState is one checkpoint's vm.state document, and otherState is another of
+// the same size: a state offered for the wrong checkpoint differs only in its
+// bytes, which is the mistake a size check alone would miss.
+var (
+	testState  = body(2048, 42)
+	otherState = body(2048, 43)
+)
+
+// stateOf describes b as the state document a manifest records.
+func stateOf(b []byte) State {
+	return State{Size: int64(len(b)), SHA256: hexDigest(b)}
+}
+
 // body returns size deterministic bytes. It is generated rather than repeated so
 // a size or ordering mistake shows up as different bytes rather than as a prefix
 // that happens to match, and so consecutive chunks of a test image are distinct:

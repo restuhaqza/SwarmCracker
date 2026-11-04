@@ -10,17 +10,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// validManifest is a manifest this package could have written: two full chunks
-// of 1 KiB and a pin. The size is small so a test reads the shape, not the
-// chunk constant.
+// validManifest is a manifest this package could have written: a state
+// document, two full chunks and a pin. The digests need not exist as blobs —
+// Validate checks the description, not the store.
 func validManifest() Manifest {
 	first := testDigest(body(1024, 1))
 	second := testDigest(body(1024, 2))
 	return Manifest{
 		FormatVersion: FormatVersion,
 		ID:            "ckpt-0123456789abcdef",
-		TotalSize:     2048,
-		ChunkSize:     1024,
+		TotalSize:     int64(2 * ChunkSize),
+		State:         stateOf(testState),
+		ChunkSize:     ChunkSize,
 		Chunks:        []Digest{first, second},
 		Pin:           testPin,
 	}
@@ -90,9 +91,9 @@ func TestManifestValidate(t *testing.T) {
 			wantErr: "chunkSize",
 		},
 		{
-			name:    "chunk size past the ceiling",
-			mutate:  func(m *Manifest) { m.ChunkSize = maxChunkSize + 1 },
-			wantErr: "64 MiB",
+			name:    "another build's chunk size",
+			mutate:  func(m *Manifest) { m.ChunkSize = 1024 },
+			wantErr: "this build reads",
 		},
 		{
 			name:    "a chunk missing",
@@ -113,6 +114,21 @@ func TestManifestValidate(t *testing.T) {
 			name:    "a digest that is not a SHA-256",
 			mutate:  func(m *Manifest) { m.Chunks[0] = "abc123" },
 			wantErr: "chunks[0]",
+		},
+		{
+			name:    "no state document described",
+			mutate:  func(m *Manifest) { m.State = State{} },
+			wantErr: "state: size is 0",
+		},
+		{
+			name:    "a state document with no digest",
+			mutate:  func(m *Manifest) { m.State.SHA256 = "" },
+			wantErr: "state: sha256",
+		},
+		{
+			name:    "a state document past the ceiling",
+			mutate:  func(m *Manifest) { m.State.Size = maxStateSize + 1 },
+			wantErr: "64 MiB",
 		},
 		{
 			name:    "no Firecracker pin",
@@ -180,36 +196,60 @@ func TestManifestEncodeDecode(t *testing.T) {
 }
 
 func TestDecodeManifestRejects(t *testing.T) {
+	// A document this package wrote, then bent: the manifest's own checks are
+	// what must catch it, so the fixture starts valid in every other way.
+	document := func(t *testing.T, mutate func(*Manifest)) io.Reader {
+		t.Helper()
+		m := validManifest()
+		mutate(&m)
+		data, err := m.encode()
+		require.NoError(t, err)
+		return bytes.NewReader(data)
+	}
+
 	tests := []struct {
 		name    string
-		body    io.Reader
+		body    func(*testing.T) io.Reader
 		wantErr string
 	}{
 		{
 			name:    "not a document",
-			body:    strings.NewReader("this is not a manifest"),
+			body:    func(*testing.T) io.Reader { return strings.NewReader("this is not a manifest") },
 			wantErr: "does not decode",
 		},
 		{
-			name:    "a document of another version",
-			body:    strings.NewReader(`{"formatVersion": 2, "id": "ckpt-x", "totalSize": 0, "chunkSize": 1024, "chunks": [], "pin": {"firecracker": "v1.15.1", "kernel": "k"}}`),
+			name: "a document of another version",
+			body: func(t *testing.T) io.Reader {
+				return document(t, func(m *Manifest) { m.FormatVersion++ })
+			},
 			wantErr: "formatVersion",
 		},
 		{
-			name:    "a file too large to be a manifest",
-			body:    io.LimitReader(zeros{}, int64(maxManifestBytes)+1),
+			name: "a file too large to be a manifest",
+			body: func(*testing.T) io.Reader {
+				return io.LimitReader(zeros{}, int64(maxManifestBytes)+1)
+			},
 			wantErr: "larger than",
 		},
 		{
-			name:    "an image with no chunks named",
-			body:    strings.NewReader(`{"formatVersion": 1, "id": "ckpt-x", "totalSize": 4096, "chunkSize": 1024, "chunks": [], "pin": {"firecracker": "v1.15.1", "kernel": "k"}}`),
+			name: "an image with no chunks named",
+			body: func(t *testing.T) io.Reader {
+				return document(t, func(m *Manifest) { m.TotalSize, m.Chunks = 4096, []Digest{} })
+			},
 			wantErr: "chunks has 0 entries",
+		},
+		{
+			name: "a manifest from before the state document was recorded",
+			body: func(*testing.T) io.Reader {
+				return strings.NewReader(`{"formatVersion": 1, "id": "ckpt-x", "totalSize": 0, "chunkSize": 4194304, "chunks": [], "pin": {"firecracker": "v1.15.1", "kernel": "k"}}`)
+			},
+			wantErr: "state",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := decodeManifest(tc.body, "test")
+			_, err := decodeManifest(tc.body(t), "test")
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrInvalidManifest)
 			assert.Contains(t, err.Error(), tc.wantErr)

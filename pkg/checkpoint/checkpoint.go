@@ -1,14 +1,20 @@
-// Package checkpoint stores a microVM's memory image as fixed-size,
-// content-addressed chunks, so a checkpoint can be resumed, forked or shipped to
-// another node without ever holding the image in one piece.
+// Package checkpoint stores a microVM checkpoint — the Firecracker state
+// document (vm.state) and the guest memory image (vm.mem) — so it can be
+// resumed, forked or shipped to another node without ever holding the image in
+// one piece: the image is cut into fixed-size, content-addressed chunks, and the
+// state document is described beside them in a manifest.
 //
-// A checkpoint here is two things: a manifest and the chunks of vm.mem it
-// names. The manifest is a small document — its format version, the image's
-// total size, the chunk size, one SHA-256 per chunk in order, and the two pins
-// the image is only valid against — so a caller can decide whether it can use a
-// checkpoint by reading a few kilobytes, before moving a byte of guest memory.
-// It describes the memory image only; anything else a restore needs (the
-// Firecracker state document, the disk) is not part of this format.
+// The manifest is a small index of both — its format version, the state
+// document's size and digest, the image's total size and chunk size, one SHA-256
+// per chunk in order, and the two pins the checkpoint is only valid against — so
+// a caller can decide whether it can use a checkpoint by reading a few kilobytes,
+// before moving a byte of guest memory.
+//
+// The state document is described, not stored: it is kilobytes, and the caller
+// that owns the snapshot owns it. It is in the manifest because a checkpoint is
+// a pair — a memory image loaded with another checkpoint's state resumes the
+// wrong VM without an error — so Read takes the state document and refuses one
+// that does not match (see ErrStateMismatch).
 //
 // # Why chunked and content-addressed
 //
@@ -38,9 +44,9 @@
 // The Store interface is deliberately transport-free: it names manifests,
 // chunks and checkpoint IDs, never a URL, a bucket or a host path. The local
 // driver writes a directory; a later object-store driver serves the same
-// interface, and callers do not change. Encryption, retention and reclaiming
-// the blobs no manifest names are later work: this package defines the format
-// and the local driver that proves it.
+// interface, and callers do not change. The store reclaims what a delete leaves
+// behind by age (Prune), because a blob is shared and has no single owner.
+// Encryption is later work.
 package checkpoint
 
 import (
@@ -81,6 +87,14 @@ var ErrPinMismatch = errors.New("checkpoint pin does not match this node")
 // does not hash to the digest it named.
 var ErrCorrupt = errors.New("checkpoint chunk is corrupt")
 
+// ErrStateMismatch classifies a state document that is not the one the manifest
+// describes: another checkpoint's vm.state, a truncated one, or a state file
+// that changed after the checkpoint was captured. A checkpoint is a pair, so
+// this is refused rather than loaded — a memory image resumed from the wrong
+// state is a running VM whose devices, addresses and clocks are another VM's,
+// with nothing to signal the mistake.
+var ErrStateMismatch = errors.New("checkpoint state document does not match the manifest")
+
 // Digest is a chunk's content address: the lowercase hex SHA-256 of its bytes.
 // The manifest names chunks by digest, the store files them under it, and a
 // reader checks the bytes it loads against it.
@@ -90,11 +104,14 @@ type Digest string
 // hex characters. A digest reaches a path and a manifest, so it is checked
 // before either.
 func (d Digest) Valid() bool {
-	if len(d) != sha256HexLength {
-		return false
-	}
-	for i := 0; i < len(d); i++ {
-		c := d[i]
+	return len(d) == sha256HexLength && isLowerHex(string(d))
+}
+
+// isLowerHex reports whether s is lowercase hexadecimal, the only alphabet this
+// package writes a digest or a shard name in.
+func isLowerHex(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
 		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}

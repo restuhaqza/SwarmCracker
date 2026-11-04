@@ -25,19 +25,19 @@ const (
 	// chunk, not a guess at the largest guest a node runs.
 	maxMemorySize int64 = 256 << 30
 
-	// maxChunkSize is the largest chunk a manifest may declare: 64 MiB. A
-	// manifest states its own chunk size so a reader honours it instead of
-	// assuming ChunkSize, and this is the bound that keeps one chunk a bounded
-	// read.
-	maxChunkSize = 64 << 20
+	// maxStateSize is the largest state document a manifest may describe: 64
+	// MiB. A state document is kilobytes; the ceiling is what keeps a manifest
+	// from making a caller hash gigabytes of it.
+	maxStateSize int64 = 64 << 20
 
 	// maxIDBytes is the longest checkpoint ID. An ID is one path segment and a
 	// name for humans, not a description of the checkpoint.
 	maxIDBytes = 128
 )
 
-// Manifest is one checkpoint's index: the shape of its memory image, the
-// chunks that make it up, and the software it is valid against.
+// Manifest is one checkpoint's index: the state document it resumes from, the
+// shape of its memory image, the chunks that make it up, and the software it is
+// valid against.
 //
 // It is the only thing a caller needs before touching guest memory. It is
 // stored as its own small document, so reading it costs kilobytes however large
@@ -57,9 +57,15 @@ type Manifest struct {
 	// report.
 	TotalSize int64 `json:"totalSize"`
 
-	// ChunkSize is the length of every chunk but the last, in bytes. It is in
-	// the manifest, not assumed from ChunkSize, so a manifest written with
-	// another chunk size is still readable.
+	// State is the vm.state document this checkpoint resumes from: its size and
+	// digest. The document itself is the caller's, not the store's; Read checks
+	// the one it is given against this description.
+	State State `json:"state"`
+
+	// ChunkSize is the length of every chunk but the last, in bytes. It is
+	// written so a reader can say what it expects and refuse a document it
+	// would misread: this build reads ChunkSize, and a manifest written with
+	// another chunk size is a manifest from another build (see Validate).
 	ChunkSize int `json:"chunkSize"`
 
 	// Chunks are the chunks of the image in order, addressed by the SHA-256 of
@@ -70,6 +76,31 @@ type Manifest struct {
 
 	// Pin is the Firecracker version and kernel the image is valid against.
 	Pin Pin `json:"pin"`
+}
+
+// State describes the Firecracker state document a checkpoint resumes from: the
+// vm.state file snapshot/create wrote. It is a description only — the document
+// is stored by whoever owns the snapshot — and it exists so a memory image can
+// never be loaded with another checkpoint's state.
+type State struct {
+	// Size is the document's length in bytes.
+	Size int64 `json:"size"`
+	// SHA256 is the document's content address: 64 lowercase hex characters.
+	SHA256 string `json:"sha256"`
+}
+
+// Validate reports why the description is incomplete, or nil.
+func (s State) Validate() error {
+	switch {
+	case s.Size <= 0:
+		return fmt.Errorf("size is %d: want the length of the vm.state document in bytes", s.Size)
+	case s.Size > maxStateSize:
+		return fmt.Errorf("size is %d: want at most %d bytes (64 MiB), the largest state document a checkpoint describes", s.Size, maxStateSize)
+	}
+	if !Digest(s.SHA256).Valid() {
+		return fmt.Errorf("sha256 %q is not a digest: want 64 lowercase hex characters, the SHA-256 of the document's bytes", s.SHA256)
+	}
+	return nil
 }
 
 // Validate reports whether the manifest describes an image this package could
@@ -89,11 +120,14 @@ func (m Manifest) Validate() error {
 	case m.TotalSize > maxMemorySize:
 		return invalidf("totalSize is %d: want at most %d bytes (256 GiB), the largest image a checkpoint describes", m.TotalSize, maxMemorySize)
 	}
-	switch {
-	case m.ChunkSize <= 0:
-		return invalidf("chunkSize is %d: want the positive length of every chunk but the last", m.ChunkSize)
-	case m.ChunkSize > maxChunkSize:
-		return invalidf("chunkSize is %d: want at most %d bytes (64 MiB), the largest chunk a checkpoint declares", m.ChunkSize, maxChunkSize)
+	// The chunk size is not free-form. A reader that honoured any size would
+	// split an image written by another build with this build's arithmetic and
+	// produce bytes that look like an image but are not one, so the only size a
+	// manifest may name is the one this build chunks with. A future change to
+	// ChunkSize therefore moves FormatVersion and lands as a version this build
+	// refuses, rather than as a silently wrong image.
+	if m.ChunkSize != ChunkSize {
+		return invalidf("chunkSize is %d: this build reads %d-byte chunks, so a manifest written with another chunk size was captured by another build and cannot be read by this one", m.ChunkSize, ChunkSize)
 	}
 
 	// The count is not a separate field: it is what the size and the chunk size
@@ -107,6 +141,9 @@ func (m Manifest) Validate() error {
 		if !d.Valid() {
 			return invalidf("chunks[%d] is %q: want 64 lowercase hex characters, the SHA-256 of the chunk's bytes", i, d)
 		}
+	}
+	if err := m.State.Validate(); err != nil {
+		return invalidf("checkpoint %s: state: %v", m.ID, err)
 	}
 	if err := m.Pin.Validate(); err != nil {
 		return invalidf("checkpoint %s: %v", m.ID, err)

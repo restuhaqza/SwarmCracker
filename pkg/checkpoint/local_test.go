@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,9 +42,9 @@ func TestDedupSharesOneBlobBetweenCheckpoints(t *testing.T) {
 	store := newTestLocal(t)
 	image := body(2*ChunkSize+5, 4)
 
-	first, err := Write(ctx, store, "ckpt-one", testPin, bytes.NewReader(image))
+	first, err := Write(ctx, store, "ckpt-one", testPin, bytes.NewReader(testState), bytes.NewReader(image))
 	require.NoError(t, err)
-	second, err := Write(ctx, store, "ckpt-two", testPin, bytes.NewReader(image))
+	second, err := Write(ctx, store, "ckpt-two", testPin, bytes.NewReader(testState), bytes.NewReader(image))
 	require.NoError(t, err)
 
 	require.Len(t, first.Chunks, 3)
@@ -53,7 +54,7 @@ func TestDedupSharesOneBlobBetweenCheckpoints(t *testing.T) {
 	for _, id := range []string{"ckpt-one", "ckpt-two"} {
 		m, err := store.Manifest(ctx, id)
 		require.NoError(t, err)
-		r, err := Read(ctx, store, m)
+		r, err := Read(ctx, store, m, bytes.NewReader(testState))
 		require.NoError(t, err)
 		got, err := io.ReadAll(r)
 		require.NoError(t, err)
@@ -68,7 +69,7 @@ func TestRepeatedChunksShareOneBlob(t *testing.T) {
 
 	// A zero-filled image is two chunks with one address: one blob, two entries.
 	image := make([]byte, 2*ChunkSize)
-	m, err := Write(ctx, store, "ckpt-zero", testPin, bytes.NewReader(image))
+	m, err := Write(ctx, store, "ckpt-zero", testPin, bytes.NewReader(testState), bytes.NewReader(image))
 	require.NoError(t, err)
 
 	require.Len(t, m.Chunks, 2)
@@ -120,7 +121,7 @@ func TestReadRejectsACorruptChunk(t *testing.T) {
 			store := newTestLocal(t)
 			image := body(ChunkSize+256, 11)
 
-			m, err := Write(ctx, store, "ckpt-corrupt", testPin, bytes.NewReader(image))
+			m, err := Write(ctx, store, "ckpt-corrupt", testPin, bytes.NewReader(testState), bytes.NewReader(image))
 			require.NoError(t, err)
 			require.Len(t, m.Chunks, 2)
 
@@ -130,7 +131,7 @@ func TestReadRejectsACorruptChunk(t *testing.T) {
 			damaged[0] ^= 0xff
 			writeBlob(t, path, damaged)
 
-			r, err := Read(ctx, store, m)
+			r, err := Read(ctx, store, m, bytes.NewReader(testState))
 			require.NoError(t, err)
 			_, err = io.Copy(io.Discard, r)
 			require.NoError(t, r.Close())
@@ -154,14 +155,14 @@ func TestReadRejectsAChunkShorterThanTheManifestSays(t *testing.T) {
 	store := newTestLocal(t)
 	image := body(ChunkSize+256, 12)
 
-	m, err := Write(ctx, store, "ckpt-truncated", testPin, bytes.NewReader(image))
+	m, err := Write(ctx, store, "ckpt-truncated", testPin, bytes.NewReader(testState), bytes.NewReader(image))
 	require.NoError(t, err)
 
 	digest := m.Chunks[1]
 	path := blobPath(store.Root(), digest)
 	require.NoError(t, os.Truncate(path, int64(len(image)-ChunkSize-1)))
 
-	r, err := Read(ctx, store, m)
+	r, err := Read(ctx, store, m, bytes.NewReader(testState))
 	require.NoError(t, err)
 	_, err = io.Copy(io.Discard, r)
 	require.NoError(t, r.Close())
@@ -185,13 +186,14 @@ func TestReadRejectsAChunkLongerThanTheManifestSays(t *testing.T) {
 		FormatVersion: FormatVersion,
 		ID:            "ckpt-wrong-length",
 		TotalSize:     int64(ChunkSize),
+		State:         stateOf(testState),
 		ChunkSize:     ChunkSize,
 		Chunks:        []Digest{digest},
 		Pin:           testPin,
 	}
 	require.NoError(t, store.PutManifest(ctx, m))
 
-	r, err := Read(ctx, store, m)
+	r, err := Read(ctx, store, m, bytes.NewReader(testState))
 	require.NoError(t, err)
 	got, err := io.ReadAll(r)
 	require.NoError(t, r.Close())
@@ -206,12 +208,12 @@ func TestMissingChunkIsReported(t *testing.T) {
 	store := newTestLocal(t)
 	image := body(ChunkSize+256, 14)
 
-	m, err := Write(ctx, store, "ckpt-missing", testPin, bytes.NewReader(image))
+	m, err := Write(ctx, store, "ckpt-missing", testPin, bytes.NewReader(testState), bytes.NewReader(image))
 	require.NoError(t, err)
 	missing := m.Chunks[1]
 	require.NoError(t, os.Remove(blobPath(store.Root(), missing)))
 
-	r, err := Read(ctx, store, m)
+	r, err := Read(ctx, store, m, bytes.NewReader(testState))
 	require.NoError(t, err)
 	_, err = io.Copy(io.Discard, r)
 	require.NoError(t, r.Close())
@@ -228,7 +230,7 @@ func TestManifestIsReadableWithoutChunks(t *testing.T) {
 	store := newTestLocal(t)
 	image := body(ChunkSize+256, 15)
 
-	m, err := Write(ctx, store, "ckpt-index", testPin, bytes.NewReader(image))
+	m, err := Write(ctx, store, "ckpt-index", testPin, bytes.NewReader(testState), bytes.NewReader(image))
 	require.NoError(t, err)
 
 	// Remove every blob and keep the index: a caller deciding whether it wants
@@ -245,7 +247,7 @@ func TestManifestIsReadableWithoutChunks(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, m, stored)
 
-	r, err := Read(ctx, store, stored)
+	r, err := Read(ctx, store, stored, bytes.NewReader(testState))
 	require.NoError(t, err)
 	_, err = io.Copy(io.Discard, r)
 	require.NoError(t, r.Close())
@@ -257,7 +259,7 @@ func TestDeleteAndList(t *testing.T) {
 	store := newTestLocal(t)
 
 	for _, id := range []string{"ckpt-c", "ckpt-a", "ckpt-b"} {
-		_, err := Write(ctx, store, id, testPin, bytes.NewReader(body(64, 1)))
+		_, err := Write(ctx, store, id, testPin, bytes.NewReader(testState), bytes.NewReader(body(64, 1)))
 		require.NoError(t, err)
 	}
 
@@ -314,7 +316,7 @@ func TestPutChunkRejectsAMalformedDigest(t *testing.T) {
 func TestManifestOfAnotherCheckpointIsRefused(t *testing.T) {
 	ctx := t.Context()
 	store := newTestLocal(t)
-	_, err := Write(ctx, store, "ckpt-a", testPin, bytes.NewReader(body(32, 1)))
+	_, err := Write(ctx, store, "ckpt-a", testPin, bytes.NewReader(testState), bytes.NewReader(body(32, 1)))
 	require.NoError(t, err)
 
 	// A file copied or renamed on disk must not answer for an id it does not
@@ -376,6 +378,7 @@ func TestLocalRefusesToBeUsedUnopened(t *testing.T) {
 				"PutChunk":    store.PutChunk(ctx, digest, bytes.NewReader(body(16, 1))),
 				"Delete":      store.Delete(ctx, "ckpt-x"),
 			}
+			_, errs["Prune"] = store.Prune(ctx, time.Hour)
 			_, errs["Manifest"] = store.Manifest(ctx, "ckpt-x")
 			_, errs["Chunk"] = store.Chunk(ctx, digest)
 			_, errs["List"] = store.List(ctx)
@@ -399,6 +402,7 @@ func TestLocalReportsACancelledContext(t *testing.T) {
 		"PutChunk":    store.PutChunk(ctx, digest, bytes.NewReader(body(16, 1))),
 		"Delete":      store.Delete(ctx, "ckpt-x"),
 	}
+	_, errs["Prune"] = store.Prune(ctx, time.Hour)
 	_, errs["Manifest"] = store.Manifest(ctx, "ckpt-x")
 	_, errs["Chunk"] = store.Chunk(ctx, digest)
 	_, errs["List"] = store.List(ctx)
@@ -455,4 +459,140 @@ func TestDir(t *testing.T) {
 	assert.Equal(t, "", Dir(""))
 	assert.Equal(t, "", Dir("   "))
 	assert.Equal(t, filepath.Join("/var/lib/swarmcracker", DirName), Dir("/var/lib/swarmcracker"))
+}
+
+func TestPruneRemovesOnlyOldUnreferencedChunks(t *testing.T) {
+	ctx := t.Context()
+	store := newTestLocal(t)
+
+	m, err := Write(ctx, store, "ckpt-kept", testPin, bytes.NewReader(testState), bytes.NewReader(body(2*ChunkSize, 1)))
+	require.NoError(t, err)
+
+	// A chunk nothing names, and a second unreferenced chunk that is still new.
+	orphan := body(1024, 2)
+	orphanDigest := testDigest(orphan)
+	require.NoError(t, store.PutChunk(ctx, orphanDigest, bytes.NewReader(orphan)))
+	warm := body(1024, 3)
+	warmDigest := testDigest(warm)
+	require.NoError(t, store.PutChunk(ctx, warmDigest, bytes.NewReader(warm)))
+
+	// Everything but the new chunk is two hours old, including the chunks the
+	// checkpoint still names: age alone must not decide.
+	old := time.Now().Add(-2 * time.Hour)
+	for _, digest := range append(append([]Digest{}, m.Chunks...), orphanDigest) {
+		require.NoError(t, os.Chtimes(blobPath(store.Root(), digest), old, old))
+	}
+
+	// A file this store did not write is not a chunk and must be left alone.
+	stray := filepath.Join(store.Root(), string(orphanDigest)[:2], "notes.txt")
+	writeBlob(t, stray, []byte("not a chunk"))
+	require.NoError(t, os.Chtimes(stray, old, old))
+
+	report, err := store.Prune(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Blobs)
+	assert.Equal(t, int64(len(orphan)), report.Bytes)
+
+	_, err = os.Stat(blobPath(store.Root(), orphanDigest))
+	assert.ErrorIs(t, err, fs.ErrNotExist, "an unreferenced chunk older than minAge is removed")
+
+	for _, digest := range m.Chunks {
+		_, statErr := os.Stat(blobPath(store.Root(), digest))
+		assert.NoError(t, statErr, "a chunk a manifest names is kept however old it is")
+	}
+	_, err = os.Stat(blobPath(store.Root(), warmDigest))
+	assert.NoError(t, err, "an unreferenced chunk younger than minAge is kept")
+	_, err = os.Stat(stray)
+	assert.NoError(t, err, "only chunks are pruned")
+
+	ids, err := store.List(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ckpt-kept"}, ids, "a prune removes chunks, never checkpoints")
+
+	again, err := store.Prune(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Zero(t, again.Blobs, "a second pass has nothing left to remove")
+}
+
+func TestPruneKeepsAChunkClaimedByAnUnfinishedCapture(t *testing.T) {
+	// A capture stores its chunks and then publishes the manifest that names
+	// them, so for a while they look unreferenced. Claiming content again
+	// refreshes its age, so a capture that reuses an old blob is protected for
+	// minAge from the claim instead of from the original write.
+	ctx := t.Context()
+	store := newTestLocal(t)
+	content := body(1024, 4)
+	digest := testDigest(content)
+	require.NoError(t, store.PutChunk(ctx, digest, bytes.NewReader(content)))
+
+	path := blobPath(store.Root(), digest)
+	old := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(path, old, old))
+
+	require.NoError(t, store.PutChunk(ctx, digest, bytes.NewReader(content)))
+
+	report, err := store.Prune(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Zero(t, report.Blobs, "a claimed chunk is as fresh as the claim")
+
+	_, err = os.Stat(path)
+	require.NoError(t, err)
+}
+
+func TestPruneRefusesToGuessFromACorruptManifest(t *testing.T) {
+	ctx := t.Context()
+	store := newTestLocal(t)
+
+	orphan := body(1024, 5)
+	digest := testDigest(orphan)
+	require.NoError(t, store.PutChunk(ctx, digest, bytes.NewReader(orphan)))
+	old := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(blobPath(store.Root(), digest), old, old))
+
+	// A manifest that cannot be decoded may name the orphan, so the pass must
+	// remove nothing until every reference is known.
+	writeBlob(t, filepath.Join(store.Root(), manifestsDirName, "ckpt-broken"+manifestSuffix), []byte("not a manifest"))
+
+	report, err := store.Prune(ctx, time.Hour)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot tell what")
+	assert.Zero(t, report.Blobs)
+
+	_, err = os.Stat(blobPath(store.Root(), digest))
+	assert.NoError(t, err, "a sweep that cannot see every reference removes nothing")
+}
+
+func TestPruneRejectsANegativeAge(t *testing.T) {
+	_, err := newTestLocal(t).Prune(t.Context(), -time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "minAge")
+}
+
+func TestPruneReclaimsWhatDeleteLeavesBehind(t *testing.T) {
+	// Delete keeps the blobs because another checkpoint may share them; this is
+	// the pass that gives the space back once nothing names them.
+	ctx := t.Context()
+	store := newTestLocal(t)
+	image := body(ChunkSize, 8)
+
+	m, err := Write(ctx, store, "ckpt-gone", testPin, bytes.NewReader(testState), bytes.NewReader(image))
+	require.NoError(t, err)
+	require.Len(t, m.Chunks, 1)
+
+	old := time.Now().Add(-2 * time.Hour)
+	for _, digest := range m.Chunks {
+		require.NoError(t, os.Chtimes(blobPath(store.Root(), digest), old, old))
+	}
+
+	require.NoError(t, store.Delete(ctx, "ckpt-gone"))
+	_, err = os.Stat(blobPath(store.Root(), m.Chunks[0]))
+	require.NoError(t, err, "a delete does not remove content another checkpoint may name")
+
+	report, err := store.Prune(ctx, time.Hour)
+	require.NoError(t, err)
+	assert.Equal(t, 1, report.Blobs)
+	assert.Equal(t, m.TotalSize, report.Bytes)
+
+	_, err = os.Stat(blobPath(store.Root(), m.Chunks[0]))
+	assert.ErrorIs(t, err, fs.ErrNotExist)
 }

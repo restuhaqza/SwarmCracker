@@ -3,36 +3,45 @@ package checkpoint
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 )
 
-// Write streams src — a vm.mem image — into store as the memory image of
-// checkpoint id, and returns the manifest it published.
+// Write streams one checkpoint into store and returns the manifest it
+// published: state is the Firecracker state document (vm.state) and memory the
+// guest memory image (vm.mem).
 //
-// Nothing holds the image: src is read through one ChunkSize buffer, each full
-// buffer is stored as a chunk, and the manifest is assembled from the digests as
-// they are computed. So a caller needs 4 MiB of headroom to checkpoint a guest
-// with any amount of memory, and the source may be a file, a pipe or a
-// Firecracker memory dump being written.
+// Nothing holds either document. The state document is read once through a hash
+// to record its size and digest, and the image is read through one ChunkSize
+// buffer, each full buffer stored as a chunk, with the manifest assembled from
+// the digests as they are computed. So a caller needs 4 MiB of headroom to
+// checkpoint a guest with any amount of memory, and the memory source may be a
+// file, a pipe or a Firecracker memory dump being written.
 //
 // The checkpoint is published last: chunks are stored first, and the manifest is
-// written only when the whole image was read. A write that fails part-way leaves
-// its chunks in the store, where they are addressed and may be reused, but no
-// manifest names them, so no caller can read the checkpoint as a whole.
+// written only when the state document was read and the whole image was stored.
+// A write that fails part-way leaves its chunks in the store, where they are
+// addressed and may be reused, but no manifest names them, so no caller can read
+// the checkpoint as a whole.
 //
-// The ID and pin are checked before the first chunk is stored, because a
-// checkpoint that could never be published must not cost a gigabyte of writes
-// first. The ID and pin of an existing checkpoint are not compared: writing the
-// same ID again replaces its manifest, which is how a retried capture finishes.
-func Write(ctx context.Context, store Store, id string, pin Pin, src io.Reader) (Manifest, error) {
+// The ID, the pin and the state document are checked before the first chunk is
+// stored, because a checkpoint that could never be published must not cost a
+// gigabyte of writes first. The ID and pin of an existing checkpoint are not
+// compared: writing the same ID again replaces its manifest, which is how a
+// retried capture finishes.
+func Write(ctx context.Context, store Store, id string, pin Pin, state, memory io.Reader) (Manifest, error) {
 	if store == nil {
 		return Manifest{}, fmt.Errorf("checkpoint %s: a store is required: pass the driver to write to", id)
 	}
-	if src == nil {
-		return Manifest{}, fmt.Errorf("checkpoint %s: a source is required: pass the memory image to read", id)
+	if state == nil {
+		return Manifest{}, fmt.Errorf("checkpoint %s: a state document is required: pass the vm.state the memory image resumes from", id)
+	}
+	if memory == nil {
+		return Manifest{}, fmt.Errorf("checkpoint %s: a memory image is required: pass the vm.mem to read", id)
 	}
 	if err := validID(id); err != nil {
 		return Manifest{}, invalidf("id %q is not a checkpoint ID: %v", id, err)
@@ -40,10 +49,15 @@ func Write(ctx context.Context, store Store, id string, pin Pin, src io.Reader) 
 	if err := pin.Validate(); err != nil {
 		return Manifest{}, invalidf("checkpoint %s: %v", id, err)
 	}
+	described, err := describeState(state)
+	if err != nil {
+		return Manifest{}, fmt.Errorf("checkpoint %s: %w", id, err)
+	}
 
 	m := Manifest{
 		FormatVersion: FormatVersion,
 		ID:            id,
+		State:         described,
 		ChunkSize:     ChunkSize,
 		Chunks:        []Digest{},
 		Pin:           pin,
@@ -58,7 +72,7 @@ func Write(ctx context.Context, store Store, id string, pin Pin, src io.Reader) 
 		// ReadFull fills the buffer or ends the image: the last chunk is the
 		// short read before EOF, and an image that is a multiple of ChunkSize
 		// ends on the next call with nothing to store.
-		n, err := io.ReadFull(src, buf)
+		n, err := io.ReadFull(memory, buf)
 		if n > 0 {
 			digest := digestOf(buf[:n])
 			if putErr := store.PutChunk(ctx, digest, bytes.NewReader(buf[:n])); putErr != nil {
@@ -76,7 +90,7 @@ func Write(ctx context.Context, store Store, id string, pin Pin, src io.Reader) 
 			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				break
 			}
-			return Manifest{}, fmt.Errorf("checkpoint %s: read the source at byte %d: %w", id, m.TotalSize, err)
+			return Manifest{}, fmt.Errorf("checkpoint %s: read the memory image at byte %d: %w", id, m.TotalSize, err)
 		}
 	}
 
@@ -89,9 +103,56 @@ func Write(ctx context.Context, store Store, id string, pin Pin, src io.Reader) 
 	return m, nil
 }
 
+// describeState reads the state document and returns its description. The
+// document is streamed through a hash, so its size costs one read buffer and
+// not an allocation of its size, and it is refused past maxStateSize before the
+// caller is made to read more than that.
+func describeState(state io.Reader) (State, error) {
+	sum := sha256.New()
+	n, err := io.Copy(sum, io.LimitReader(state, maxStateSize+1))
+	if err != nil {
+		return State{}, fmt.Errorf("read the state document: %w", err)
+	}
+	switch {
+	case n == 0:
+		return State{}, errors.New("the state document is empty: want the vm.state snapshot/create wrote")
+	case n > maxStateSize:
+		return State{}, fmt.Errorf("the state document is larger than %d bytes (64 MiB): want the vm.state snapshot/create wrote", maxStateSize)
+	}
+	return State{Size: n, SHA256: hex.EncodeToString(sum.Sum(nil))}, nil
+}
+
+// verifyState reads the state document a caller offers and refuses one that is
+// not the document the manifest describes. The size is compared as well as the
+// digest, so a truncated document is reported as the size it is rather than only
+// as a hash that differs.
+func verifyState(m Manifest, state io.Reader) error {
+	if state == nil {
+		return fmt.Errorf("checkpoint %s: a state document is required: pass the vm.state the checkpoint resumes from", m.ID)
+	}
+	sum := sha256.New()
+	n, err := io.Copy(sum, io.LimitReader(state, m.State.Size+1))
+	if err != nil {
+		return fmt.Errorf("checkpoint %s: read the state document: %w", m.ID, err)
+	}
+	got := State{Size: n, SHA256: hex.EncodeToString(sum.Sum(nil))}
+	if got != m.State {
+		return fmt.Errorf("%w: checkpoint %s was captured with a %d-byte state document whose sha256 is %s, and the document offered is %d bytes whose sha256 is %s: a checkpoint is a pair, and another checkpoint's state resumes the wrong VM",
+			ErrStateMismatch, m.ID, m.State.Size, m.State.SHA256, got.Size, got.SHA256)
+	}
+	return nil
+}
+
 // Read returns the memory image the manifest describes, streamed chunk by
 // chunk: one chunk is held by the reader at a time, so consuming an image of any
 // size needs a caller's read buffer and no more.
+//
+// state is the checkpoint's vm.state document, which Read consumes and checks
+// against the manifest before it returns anything; a document from another
+// checkpoint, or one that changed after the capture, is refused with
+// ErrStateMismatch. Pairing is checked here rather than left to the caller
+// because the mistake it prevents — resuming an image on another checkpoint's
+// state — produces a running VM and no error.
 //
 // The manifest is validated first, so a checkpoint that could not have been
 // written is refused before the store is asked for anything. Each chunk is then
@@ -100,11 +161,14 @@ func Write(ctx context.Context, store Store, id string, pin Pin, src io.Reader) 
 // is shorter or longer than the manifest says, or does not hash to its address
 // ends the read with an error. A caller that reached io.EOF read exactly the
 // bytes the manifest describes.
-func Read(ctx context.Context, store Store, m Manifest) (io.ReadCloser, error) {
+func Read(ctx context.Context, store Store, m Manifest, state io.Reader) (io.ReadCloser, error) {
 	if store == nil {
 		return nil, fmt.Errorf("checkpoint %s: a store is required: pass the driver to read from", m.ID)
 	}
 	if err := m.Validate(); err != nil {
+		return nil, err
+	}
+	if err := verifyState(m, state); err != nil {
 		return nil, err
 	}
 	return &imageReader{ctx: ctx, store: store, m: m}, nil
