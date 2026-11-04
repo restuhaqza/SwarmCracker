@@ -44,11 +44,13 @@ const (
 
 // LaunchRequest is everything a launcher needs to start one instance.
 //
-// The paths in it are given in the launcher's own namespace: a host path for a
-// launcher that starts Firecracker directly, a chroot path for one that stages
-// the same files inside a jail (the RFC's /kernel/vmlinux, /drives/rootfs.ext4,
-// /snapshot/vm.state). A caller therefore chooses the launcher and the paths
-// together; a request built for one is not interchangeable with the other.
+// The paths in it are host paths: the files an instance is started from. A
+// launcher that runs Firecracker inside a jail copies them to the chroot paths a
+// checkpoint records (the RFC's /kernel/vmlinux, /drives/rootfs.ext4,
+// /snapshot/vm.state) and reports those back in Launched.StatePath and
+// Launched.MemPath, because those are what /snapshot/load is told. So one request
+// describes one instance to either launcher; where the instance sees its files is
+// the launcher's decision, not the caller's.
 type LaunchRequest struct {
 	// InstanceID names the instance. The launcher derives its per-instance host
 	// paths from it (<...>/<InstanceID>.sock), so it must be one safe path
@@ -82,7 +84,8 @@ type LaunchRequest struct {
 
 	// JailUID and JailGID are the uid and gid the VMM runs as. Zero means no
 	// jailer, which is the direct (dev) path; a jailed launcher refuses a zero uid
-	// because it would run the VMM as root.
+	// because it would run the VMM as root, and reads a zero gid as "the same
+	// number as the uid".
 	JailUID int
 	JailGID int
 
