@@ -199,6 +199,33 @@ const snapshotProbeTimeout = 500 * time.Millisecond
 // never replaces it.
 var taskVMSocketAlive = runtime.IsVMSocketAlive
 
+// restoreSocketPath is where a restore of this task puts its VM: the task's own
+// API socket, <socketDir>/<taskID>.sock.
+//
+// The snapshot belongs to the task, so the VM it starts belongs to the task too —
+// same socket, same vsock muxer, same console log, and `vm exec <task>` reaches
+// it without being told a second name. A restore used to start the VM at
+// <taskID>-restored.sock instead, which made the restored VM a second identity
+// whose muxer no caller could derive.
+func restoreSocketPath(socketDir, taskID string) string {
+	return runtime.SocketPath(socketDir, taskID)
+}
+
+// restoredVMID is the identity a VM restored at socketPath has: the task whose
+// snapshot it loaded, which is also the task whose API socket that path is.
+//
+// --socket can place the task's socket in a directory of the operator's choosing,
+// so the socket's own name is read first and the snapshot's task ID is the
+// fallback for a name that is not a task ID at all. What it never does is invent
+// one: the "-restored" identity a restore used to add is gone, and a restored VM
+// is listed, stopped and executed as the task.
+func restoredVMID(target *snapshot.SnapshotInfo, socketPath string) string {
+	if id := runtime.TaskIDFromSocketPath(socketPath); id != "" {
+		return id
+	}
+	return target.TaskID
+}
+
 func newSnapshotRestoreCommand() *cobra.Command {
 	var (
 		socketPath string
@@ -258,9 +285,21 @@ Example:
 				return fmt.Errorf("snapshot not found: %s", snapshotID)
 			}
 
-			// Resolve socket path
+			// Resolve socket path. A restore puts the task's VM back at the task's
+			// own API socket: the snapshot is the task's own, so the VM it starts
+			// is the task's VM under the task's identity. Minting a second name
+			// beside it (`<task>-restored.sock`) is what left `vm exec <task>`
+			// dialing a muxer nobody bound.
 			if socketPath == "" {
-				socketPath = filepath.Join(cfg.Executor.SocketDir, target.TaskID+"-restored.sock")
+				socketPath = restoreSocketPath(cfg.Executor.SocketDir, target.TaskID)
+			}
+			// A restore given no place to put the socket would start Firecracker
+			// with an empty --api-sock, which fails inside the VMM with nothing
+			// an operator can act on. The node broker answers the same case as
+			// socket_dir_unconfigured.
+			if socketPath == "" {
+				return output.NewError(output.CodeUsage,
+					"no socket directory is configured: pass --socket or set executor.socket_dir in the config file")
 			}
 
 			// A restore writes the snapshot's disk over the task's own rootfs, so a
@@ -269,7 +308,7 @@ Example:
 			// case with 409 restore_task_running, and a second Firecracker (the old
 			// outcome) corrupts both VMs anyway.
 			if cfg.Executor.SocketDir != "" {
-				taskSocket := filepath.Join(cfg.Executor.SocketDir, target.TaskID+".sock")
+				taskSocket := restoreSocketPath(cfg.Executor.SocketDir, target.TaskID)
 				if taskVMSocketAlive(taskSocket, snapshotProbeTimeout) {
 					return output.NewErrorf(output.CodeConflict,
 						"task %q is still running; restoring its snapshot would overwrite the live rootfs", target.TaskID).
@@ -285,11 +324,10 @@ Example:
 			}
 
 			// Register the restored VM so it can be listed, stopped, and have
-			// its logs viewed like any other CLI-managed VM.
-			restoredID := runtime.TaskIDFromSocketPath(socketPath)
-			if restoredID == "" {
-				restoredID = target.TaskID + "-restored"
-			}
+			// its logs viewed like any other CLI-managed VM. Its identity is the
+			// task's: the socket's name is that task's ID, and `--socket` only
+			// decides where that ID's socket lives.
+			restoredID := restoredVMID(target, socketPath)
 			if stateMgr, smErr := runtime.NewStateManager(""); smErr == nil {
 				pid := runtime.FindFirecrackerPID(restoredID)
 				if pid == 0 {
@@ -326,12 +364,9 @@ Example:
 // --- stop-restored ---
 
 // defaultRestoredSocketDir mirrors the daemon's default --socket-dir. A restore
-// writes <socket-dir>/<taskID>-restored.sock, so the same directory is where a
-// local stop looks.
+// starts the task's VM at <socket-dir>/<taskID>.sock, so the same directory is
+// where a local stop looks.
 const defaultRestoredSocketDir = "/var/run/firecracker"
-
-// restoredSocketSuffix names the API socket of a restored VM.
-const restoredSocketSuffix = "-restored.sock"
 
 func newSnapshotStopRestoredCommand() *cobra.Command {
 	var socketDir string
@@ -341,10 +376,12 @@ func newSnapshotStopRestoredCommand() *cobra.Command {
 		Short: "Stop the VM a snapshot restore started",
 		Long: `Stop the restored microVM a snapshot restore started for a task.
 
-A restored VM runs outside SwarmKit's task lifecycle, so "task rm" or a service
-update does not touch it. On the node that restored it, this command sends
-SIGTERM to the Firecracker process behind <task>-restored.sock, waits up to ten
-seconds, then sends SIGKILL, and removes the socket.
+A VM started by a restore runs outside SwarmKit's task lifecycle, so "task rm"
+or a service update does not touch it. On the node that restored it, this command
+sends SIGTERM to the Firecracker process behind the task's own API socket
+(<socket-dir>/<task>.sock), waits up to ten seconds, then sends SIGKILL, and
+removes the socket. A restore puts the task's VM back under the task's identity,
+so that socket is the one "vm exec" and the node broker already resolve.
 
 <task> is a task ID or any unique prefix of one. With -H the manager asks the
 node that holds the restored VM through the API instead, which needs the
@@ -390,7 +427,7 @@ Example:
 	}
 
 	cmd.Flags().StringVar(&socketDir, "socket-dir", defaultRestoredSocketDir,
-		"Directory holding Firecracker API sockets (<socket-dir>/<task>-restored.sock)")
+		"Directory holding Firecracker API sockets (<socket-dir>/<task>.sock)")
 
 	return cmd
 }
@@ -443,10 +480,16 @@ func stopLocalRestoredVM(ref, socketDir string) (string, error) {
 	return taskID, nil
 }
 
-// resolveRestoredSocket maps a task reference to a task ID and its restored
+// resolveRestoredSocket maps a task reference to a task ID and that task's API
 // socket under socketDir. An exact ID wins; otherwise the reference is a unique
 // ID prefix, the same rule `vm attach` and the task reads use. Ambiguity is
 // reported with the candidates so the operator can retype a longer prefix.
+//
+// The socket is the task's own: a restore no longer mints a second identity, so
+// a candidate is any <task>.sock in the directory (a console socket is not an API
+// socket and is skipped by the shared rule). That also means this command can
+// address the VM of a task this node booted itself — which is what it is, now
+// that a restore runs the task's VM rather than a VM beside it.
 func resolveRestoredSocket(socketDir, ref string) (string, string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -466,10 +509,10 @@ func resolveRestoredSocket(socketDir, ref string) (string, string, error) {
 	ids := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, restoredSocketSuffix) {
+		if entry.IsDir() {
 			continue
 		}
-		id := strings.TrimSuffix(name, restoredSocketSuffix)
+		id := runtime.TaskIDFromSocketPath(name)
 		if id == "" {
 			continue
 		}
@@ -498,7 +541,7 @@ func resolveRestoredSocket(socketDir, ref string) (string, string, error) {
 			"%q does not match any restored VM (available: %s)", ref, strings.Join(ids, ", ")).
 			WithDetails(map[string]any{"reason": "no_restored_vm"})
 	case 1:
-		return matches[0], filepath.Join(socketDir, matches[0]+restoredSocketSuffix), nil
+		return matches[0], runtime.SocketPath(socketDir, matches[0]), nil
 	default:
 		return "", "", output.NewErrorf(output.CodeUsage,
 			"%q matches multiple restored VMs: %s", ref, strings.Join(matches, ", ")).

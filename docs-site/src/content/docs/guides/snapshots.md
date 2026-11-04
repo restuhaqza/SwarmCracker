@@ -80,8 +80,13 @@ VM started by hand with `vm create --rootfs`): a file that does not exist is
 never recorded, and the snapshot then behaves as it did before disk copies
 existed — a restore needs the original disk in place.
 
+`restore` starts the task's VM at the task's own API socket,
+`<socket-dir>/<task-id>.sock` — the same socket `vm exec`, `vm logs` and the node
+API resolve. A restored VM is the task's VM, not a second VM beside it: it answers
+on the task's vsock muxer, and it is listed and stopped under the task's ID.
+
 `stop-restored` stops the VM a restore started. On the node it reads
-`<socket-dir>/<task>-restored.sock` (default `/var/run/firecracker`), resolves the
+`<socket-dir>/<task>.sock` (default `/var/run/firecracker`), resolves the
 Firecracker PID from the process table, sends SIGTERM, waits up to ten seconds,
 sends SIGKILL if the process is still there, and removes the socket. `<task>` may
 be a task ID or a unique prefix of one. With `-H` the command asks the manager
@@ -176,7 +181,7 @@ Four behaviours are worth knowing before you script this:
 - **A restored VM is stopped explicitly.** It has no SwarmKit task, so `task rm`
   or a service update leaves it running. `DELETE /v1/tasks/{id}/restored` (and
   `swarmcracker vm snapshot stop-restored <task>`) sends SIGTERM, waits up to ten
-  seconds, sends SIGKILL, and removes the `<task>-restored.sock` socket. A node
+  seconds, sends SIGKILL, and removes the task's `<task>.sock` socket. A node
   that tracks no restored VM answers `404 not_found` with
   `details.reason: "no_restored_vm"`; the stop is audited as
   `task.restored.stop`.
@@ -374,7 +379,7 @@ swarmcracker vm snapshot cleanup --max-age 24h
 
 ```bash
 # Check that the node still tracks the process
-ls -l /var/run/firecracker/<task>-restored.sock
+ls -l /var/run/firecracker/<task>.sock
 
 # Try the explicit stop (ten-second grace, then SIGKILL)
 swarmcracker vm snapshot stop-restored <task>

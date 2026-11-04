@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **A restored VM is the task's VM, not a second identity** — `vm snapshot
+  restore` and the node's restore route now start Firecracker at the task's own
+  API socket, `<socket-dir>/<task-id>.sock`, instead of minting
+  `<task-id>-restored.sock` beside it. The `-restored` suffix was the second
+  identity every caller had to know about: the checkpoint names the task's vsock
+  muxer, so `vm exec <task>` and the API's task-scoped exec dialed
+  `<task-id>-restored.vsock`, which no process ever bound, and the broker could
+  not resolve the restored VM by the task ID the manager asked about. One socket
+  per task ID means the restored VM answers on the task's muxer, its console is
+  the task's log, and `vm list` shows one VM rather than two. A restore also
+  clears the task's stale vsock muxer before starting, which is the `EADDRINUSE`
+  the CLI path hit when a crashed VMM left the file behind. `vm snapshot
+  stop-restored` now resolves the task's `<task>.sock`.
+- **The node broker resolves VMs through the instance registry** — a lookup asks
+  `pkg/vminstance` first and takes the record's API socket, vsock muxer, console
+  and netns, so a VM whose paths are not a function of a task ID can be resolved.
+  A task with no record falls back to the restored-instance record and then to
+  the filename derivation, which stays for one release for VMs started before
+  records existed. Records are written by the executor in the follow-up work
+  (SBX-011); until then every VM resolves through the fallback.
 - **Golden images carry the guest agent** — `image build` installs
   `/sbin/sc-agent` (the v2 agent embedded from `cmd/sc-agent`) and enables it for
   the recipe's init system: a systemd unit wired into
@@ -44,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carry the v2 agent.
 
 ### Breaking
+- **Local `vm snapshot stop-restored` no longer finds a `-restored.sock`** left by
+  a restore from an earlier version. The command now reads the task's own
+  `<task>.sock`; a VM started by the old code is still running and has to be
+  stopped with `kill` (or by task ID once its socket is named after the task).
 - **A v2 host refuses a v1 guest, unconditionally.** The agent is baked into the
   guest image, so a node upgraded ahead of its images loses `exec`, `vm cp`, the
   API exec route and guest health checks for VMs that are already running: the

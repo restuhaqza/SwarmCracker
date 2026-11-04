@@ -9,6 +9,7 @@ import (
 	"time"
 
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -193,4 +194,55 @@ func TestVMExecCommandEndToEndUsesTheRecordedMuxer(t *testing.T) {
 
 	require.NoError(t, cmd.Execute())
 	assert.Equal(t, "cli\n", out.String())
+}
+
+// TestRestoredVMIsTheTaskForExec pins the identity a restore hands back. SBX-001
+// recorded the failure: restore started the VM at <task>-restored.sock, while
+// `vm exec <task>` dialed <task>-restored.vsock — a name no process ever bound —
+// so the command failed on the dial. A restore now uses the task's own socket, so
+// the muxer exec resolves is the muxer the restored VM listens on, and the VM is
+// registered under the task's ID rather than a second one.
+func TestRestoredVMIsTheTaskForExec(t *testing.T) {
+	vm := startFakeVM(t, "restored-task", nil)
+
+	socketPath := restoreSocketPath(vm.SocketDir, "restored-task")
+	require.Equal(t, filepath.Join(vm.SocketDir, "restored-task.sock"), socketPath,
+		"a restore starts the VM at the task's own API socket")
+	require.Equal(t, scruntime.VsockPath(vm.SocketDir, "restored-task"), scruntime.VsockPathFromSocket(socketPath),
+		"that socket maps to the muxer the same task's VM listens on")
+
+	info := &snapshot.SnapshotInfo{ID: "snap-0123456789abcdef", TaskID: "restored-task"}
+	require.Equal(t, "restored-task", restoredVMID(info, socketPath),
+		"the restored VM keeps the task's identity")
+
+	// The local exec path, by task ID, reaches the VM the restore started.
+	var out bytes.Buffer
+	require.NoError(t, execInVM(context.Background(), "restored-task", vmExecOptions{
+		socketDir: vm.SocketDir,
+		command:   []string{"echo", "restored"},
+		stdout:    &out,
+		stderr:    &out,
+		rawFD:     -1,
+	}))
+	assert.Equal(t, "restored\n", out.String())
+
+	// And so does the command itself, so the identity is proven through the flag
+	// plumbing rather than only through the helper.
+	cmd := newVMExecCommand()
+	var cmdOut bytes.Buffer
+	cmd.SetOut(&cmdOut)
+	cmd.SetErr(&cmdOut)
+	cmd.SetArgs([]string{"--socket-dir", vm.SocketDir, "restored-task", "--", "echo", "cli"})
+	require.NoError(t, cmd.Execute())
+	assert.Equal(t, "cli\n", cmdOut.String())
+}
+
+// TestRestoredVMIDFallsBackToTheSnapshotTask pins the --socket case: an operator
+// may place the task's socket in another directory, and the snapshot still says
+// whose VM it is when the socket's name is not a task ID.
+func TestRestoredVMIDFallsBackToTheSnapshotTask(t *testing.T) {
+	info := &snapshot.SnapshotInfo{ID: "snap-0123456789abcdef", TaskID: "task-1"}
+
+	assert.Equal(t, "task-1", restoredVMID(info, restoreSocketPath(t.TempDir(), "task-1")))
+	assert.Equal(t, "task-1", restoredVMID(info, "/var/run/firecracker/not-a-socket"))
 }

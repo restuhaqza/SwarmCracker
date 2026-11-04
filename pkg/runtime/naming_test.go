@@ -113,9 +113,70 @@ func TestVsockPath(t *testing.T) {
 	}
 }
 
+// TestSocketPath pins the API-socket half of the identity rule: a task ID names
+// exactly one socket, and that socket sits beside the muxer VsockPath names.
+func TestSocketPath(t *testing.T) {
+	cases := []struct {
+		name      string
+		socketDir string
+		taskID    string
+		want      string
+	}{
+		{
+			name:      "default socket directory",
+			socketDir: "/var/run/firecracker",
+			taskID:    "task-1",
+			want:      "/var/run/firecracker/task-1.sock",
+		},
+		{
+			name:      "jailer-style nested socket directory",
+			socketDir: "/srv/jail/abc/root/run",
+			taskID:    "abc",
+			want:      "/srv/jail/abc/root/run/abc.sock",
+		},
+		{
+			name:      "no task ID means no socket path",
+			socketDir: "/var/run/firecracker",
+			want:      "",
+		},
+		{
+			name:   "no socket directory means no socket path",
+			taskID: "task-1",
+			want:   "",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, SocketPath(tc.socketDir, tc.taskID))
+		})
+	}
+}
+
+// TestTaskSocketsAreDistinct pins the property the restore path depends on: two
+// task IDs never resolve to the same API socket, so one task's restored VM can
+// never occupy another task's socket. A restore that minted `<id>-restored.sock`
+// broke this for a task whose own ID ended in "-restored".
+func TestTaskSocketsAreDistinct(t *testing.T) {
+	dir := "/var/run/firecracker"
+	ids := []string{"abc", "abc-restored", "5f3a1b2c9d", "5f3a1b2c9d11"}
+
+	seen := make(map[string]string, len(ids))
+	for _, id := range ids {
+		socket := SocketPath(dir, id)
+		if previous, taken := seen[socket]; taken {
+			t.Fatalf("tasks %q and %q share the API socket %s", previous, id, socket)
+		}
+		seen[socket] = id
+		assert.Equal(t, VsockPath(dir, id), VsockPathFromSocket(socket),
+			"a task's socket maps to that same task's muxer")
+	}
+}
+
 // TestVsockPathFromSocket pins the socket-shaped form of the same rule: the
-// vsock muxer sits beside the API socket and differs from it only in the
-// extension.
+// vsock muxer sits beside the API socket, names the same task, and differs from
+// it only in the extension. There is no second identity: the socket a restore
+// opens is the task's own, so the muxer it maps to is the task's own too.
 func TestVsockPathFromSocket(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -133,19 +194,19 @@ func TestVsockPathFromSocket(t *testing.T) {
 			want:       "/srv/jail/abc/root/run/abc.vsock",
 		},
 		{
-			name:       "restored VM socket keeps its own suffix",
-			socketPath: "/var/run/firecracker/task-1-restored.sock",
-			want:       "/var/run/firecracker/task-1-restored.vsock",
-		},
-		{
 			name:       "relative socket path stays relative",
 			socketPath: "task-1.sock",
 			want:       "task-1.vsock",
 		},
 		{
-			name:       "a path without the socket suffix only gains the vsock one",
+			name:       "a path that is not an API socket has no muxer",
 			socketPath: "/var/run/firecracker/task-1",
-			want:       "/var/run/firecracker/task-1.vsock",
+			want:       "",
+		},
+		{
+			name:       "a console socket is not an API socket and has no muxer",
+			socketPath: "/var/run/firecracker/task-1.console.sock",
+			want:       "",
 		},
 		{
 			name:       "no socket path means no vsock path",

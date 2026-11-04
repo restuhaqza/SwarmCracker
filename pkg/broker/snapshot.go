@@ -31,23 +31,26 @@ package broker
 // its rootfs is in use, and restoring a second VM over that file would corrupt
 // both.
 //
-// Every restore for one task reuses <socketDir>/<taskID>-restored.sock, and
-// pkg/snapshot unlinks that path before it starts the new process. Three guards
-// protect the VM that owns the rootfs and socket:
+// Every restore for one task starts the VM at the task's own socket
+// (<socketDir>/<taskID>.sock), which is where the task's VM already answers, and
+// pkg/snapshot unlinks that path and the task's stale vsock muxer before it
+// starts the new process. Three guards protect the VM that owns the rootfs and
+// socket:
 //
 //   - A task that is still running is refused before any store call: 409 conflict
 //     with details.reason "restore_task_running".
 //   - Restores for one task are serialized inside this handler, so two requests
 //     in the same daemon cannot race for the same socket.
-//   - Before restoring, the handler probes the restored socket with
+//   - Before restoring, the handler probes the task's socket with
 //     runtime.IsVMSocketAlive. A live Firecracker API socket means a previous
 //     restore is still running; replacing it would orphan that process, so the
 //     request is 409 conflict with details.reason "restore_already_running". A
 //     stale socket file (process gone) is not alive and still proceeds:
-//     pkg/snapshot removes it. Nothing is probed when neither a handler socket
-//     directory nor the task's own socket directory is known: that restore would
-//     write a CWD-relative socket, so it is 503 unavailable with
-//     details.reason "socket_dir_unconfigured".
+//     pkg/snapshot removes it, along with the task's stale vsock muxer, which a
+//     crashed VMM leaves behind and a new one cannot bind (EADDRINUSE). Nothing is
+//     probed when neither a handler socket directory nor the task's own socket
+//     directory is known: that restore would write a CWD-relative socket, so it is
+//     503 unavailable with details.reason "socket_dir_unconfigured".
 //
 // Residual risk: a process started by a previous daemon lifetime is only caught
 // while its API socket answers. A crash before the socket is created, or a
@@ -75,7 +78,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -555,13 +557,15 @@ func (h *snapshotHandler) serveCreate(ctx context.Context, task Task, w http.Res
 }
 
 // serveRestore restores one of the task's snapshots into a fresh Firecracker
-// process on <SocketDir>/<taskID>-restored.sock. It requires a task whose own VM
-// is gone: a running task's rootfs is still in use, and pkg/snapshot restores the
-// same file, so a second Firecracker on one rootfs.ext4 would corrupt both. An
-// exited task is the normal case — the snapshot's main use is bringing a
-// finished VM back. Restores for one task are serialized, and a restored VM that
-// is still answering on that socket is never replaced: pkg/snapshot would unlink
-// the socket and orphan the process.
+// process at the task's own socket, <SocketDir>/<taskID>.sock. It requires a task
+// whose own VM is gone: a running task's rootfs is still in use, and pkg/snapshot
+// restores the same file, so a second Firecracker on one rootfs.ext4 would corrupt
+// both. An exited task is the normal case — the snapshot's main use is bringing a
+// finished VM back. Because the restored VM keeps the task's identity, the socket
+// a caller then asks the broker about is the same one exec, files, attach and logs
+// already resolve. Restores for one task are serialized, and a VM that is still
+// answering on that socket is never replaced: pkg/snapshot would unlink the socket
+// and orphan the process.
 func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotID string, w http.ResponseWriter) {
 	if task.Running {
 		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
@@ -577,7 +581,7 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 	}
 	defer h.releaseRestore(task.ID)
 
-	socketPath, configured := restoredSocketPath(h.cfg, task)
+	socketPath, configured := restoreSocketPath(h.cfg, task)
 	if !configured {
 		writeTypedError(w, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
 			"this node has no snapshot socket directory to restore task %q", task.ID).
@@ -595,29 +599,13 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 		return
 	}
 
-	// A live API socket belongs to a restored VM that is still running. Reusing
-	// the path would unlink that socket and leave its process untracked, so the
-	// request conflicts instead. A stale file is not alive and still proceeds.
+	// A live API socket belongs to a VM that is still running. Reusing the path
+	// would unlink that socket and leave its process untracked, so the request
+	// conflicts instead. A stale file is not alive and still proceeds.
 	if runtime.IsVMSocketAlive(socketPath, restoreSocketProbeTimeout) {
 		writeTypedError(w, http.StatusConflict, output.NewErrorf(output.CodeConflict,
 			"a restored VM for task %q is already running on this node", task.ID).
 			WithDetails(map[string]any{"reason": "restore_already_running"}))
-		return
-	}
-
-	// The snapshot records the VM's vsock device with its host-side path
-	// beside the API socket (<socketDir>/<taskID>.vsock). A VMM that crashed
-	// leaves that file behind, and the restored Firecracker cannot bind it
-	// again (EADDRINUSE), so clear it first. The task is not running here (the
-	// guard above returned), so no live backend owns the path. The path is the
-	// one runtime.VsockPath derives for the task, not the restored socket's own
-	// name: the identity belongs to the snapshot, whose directory the restored
-	// socket shares.
-	vsockPath := runtime.VsockPath(filepath.Dir(socketPath), task.ID)
-	if err := os.Remove(vsockPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		writeTypedError(w, http.StatusServiceUnavailable, output.NewErrorf(output.CodeUnavailable,
-			"cannot clear the stale vsock path for task %q", task.ID).
-			WithDetails(map[string]any{"reason": "vsock_path_busy"}))
 		return
 	}
 
@@ -629,11 +617,14 @@ func (h *snapshotHandler) serveRestore(ctx context.Context, task Task, snapshotI
 	writeSnapshotDocument(w, http.StatusOK, v1.NewSnapshotDocument(snapshotInfoToV1(info)))
 }
 
-// restoredSocketPath is the restored VM's API socket. The configured directory is
+// restoreSocketPath is where a restore of this task's snapshot starts its VM: the
+// task's own API socket. A restore loads the task's snapshot back into the task's
+// VM, so it is the same VM under the same identity — one socket per task, the one
+// the broker, `vm exec` and `vm logs` already resolve. The configured directory is
 // independent of the task's own socket, so a finished task can still restore. The
 // boolean is false when neither is known: a CWD-relative socket would make the
 // restored VM depend on the daemon's working directory.
-func restoredSocketPath(cfg SnapshotHandlerConfig, task Task) (string, bool) {
+func restoreSocketPath(cfg SnapshotHandlerConfig, task Task) (string, bool) {
 	dir := cfg.SocketDir
 	if dir == "" {
 		if task.SocketPath == "" {
@@ -641,7 +632,7 @@ func restoredSocketPath(cfg SnapshotHandlerConfig, task Task) (string, bool) {
 		}
 		dir = filepath.Dir(task.SocketPath)
 	}
-	return filepath.Join(dir, task.ID+"-restored.sock"), true
+	return runtime.SocketPath(dir, task.ID), true
 }
 
 // acquireRestore reserves the task's restore slot. False means another restore
