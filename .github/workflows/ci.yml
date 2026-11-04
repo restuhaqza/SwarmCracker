@@ -20,8 +20,11 @@ on:
       - '.dockerignore'
       - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
+  # Every pull request runs, whatever its base. A stacked PR targets the branch
+  # below it, not `main`, and a filter here means the middle layers of a stack —
+  # the ones with the most new code and the least review — are never tested.
+  # `push` stays limited to `main`: a branch push is already covered by its PR.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}

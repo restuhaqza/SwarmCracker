@@ -6,8 +6,12 @@ on:
     paths:
       - 'docs-site/**'
       - '.github/workflows/docs.yml'
+  # Every pull request that touches the docs is checked, whatever its base: a
+  # stacked PR targets the branch below it, and a `branches: [main]` filter would
+  # leave the docs it changes unbuilt until the layer lands. The deploy step below
+  # is gated on `github.event_name != 'pull_request'`, so publishing stays a
+  # push-to-main (or manual) action.
   pull_request:
-    branches: [main]
     paths:
       - 'docs-site/**'
   workflow_dispatch:
