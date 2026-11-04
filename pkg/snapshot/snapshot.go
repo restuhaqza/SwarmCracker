@@ -61,6 +61,12 @@ var (
 	// ".", "..", a separator or a Windows-style separator can never address a
 	// directory outside the snapshot root.
 	ErrInvalidSnapshotID = errors.New("invalid snapshot ID")
+	// ErrJailedSnapshot means the snapshot was taken inside a jailer chroot, so the
+	// paths it resolves — its block device above all — are the jail's names
+	// (/drives/rootfs.ext4) rather than host paths. Such a checkpoint loads in a
+	// jail; a VMM started outside one would resolve those names against the host's
+	// own root, so the restore refuses instead of starting a VM it cannot feed.
+	ErrJailedSnapshot = errors.New("snapshot was taken inside a jail")
 	// ErrNoRestoredVM means this manager tracks no restored VM for the task: it
 	// was never restored here, it was already stopped, or the daemon that
 	// restored it is gone. A restored VM starts outside SwarmKit's task
@@ -118,6 +124,14 @@ type SnapshotInfo struct {
 	// RootfsPath is the path to the rootfs image the VM was using.
 	RootfsPath string `json:"rootfs_path"`
 
+	// Jailed records that the checkpoint was taken inside a jailer chroot, so the
+	// paths it resolves — the block device, the kernel, the API socket — are the
+	// jail's names (/drives/rootfs.ext4 and so on) rather than host paths. Such a
+	// checkpoint loads in any jail that stages those names, under any uid and on
+	// any node, and cannot be loaded directly: a VMM outside a chroot would
+	// resolve them against the host's own root.
+	Jailed bool `json:"jailed,omitempty"`
+
 	// DiskPath is the snapshot-owned copy of the task disk, normally
 	// <SnapshotDir>/<id>/rootfs.ext4. A Firecracker snapshot captures memory and
 	// device state only, so without this copy a restore depends on the executor
@@ -168,12 +182,32 @@ func DefaultSnapshotConfig() SnapshotConfig {
 }
 
 type CreateOptions struct {
-	ServiceID  string
-	NodeID     string
-	VCPUCount  int
-	MemoryMB   int
+	ServiceID string
+	NodeID    string
+	VCPUCount int
+	MemoryMB  int
+
+	// RootfsPath is the disk the VM boots or resumes from, as the caller handed
+	// it to the launcher that started the VM. A create copies it into the
+	// snapshot so the snapshot is a restore point on its own. A jailed create
+	// ignores it: the disk the guest has been writing is the copy inside the jail
+	// (see JailRoot).
 	RootfsPath string
-	Metadata   map[string]string
+
+	// JailRoot is the host jail the VM runs in, as JailedLauncher.JailRoot
+	// reports it: the chroot is <JailRoot>/root. Empty means the VM runs directly
+	// on the host, which is what every caller that does not use the jailer does.
+	//
+	// When set, the VM's files are the jail's: /snapshot/vm.state,
+	// /snapshot/vm.mem and /drives/rootfs.ext4 inside its chroot. Firecracker
+	// resolves every path it is given inside the chroot, so the create names those
+	// paths — which is what the checkpoint then records, and what lets it load in
+	// another jail, under another uid, on another node — and copies the disk the
+	// guest actually wrote out of the jail instead of RootfsPath, which is only
+	// the pre-boot file this node staged from.
+	JailRoot string
+
+	Metadata map[string]string
 }
 
 // mkdirTemp, renameDir and removeAll are seams for the failure paths of create
@@ -484,6 +518,13 @@ func (m *Manager) CreateSnapshot(
 		}
 	}()
 
+	// A jailed VM's files are the jail's, not the node's. Resolving them here, before
+	// the VM is paused, is what keeps a wrong jail root from costing a pause/resume.
+	targets, err := resolveCreateTargets(opts, stagingStatePath, stagingMemoryPath)
+	if err != nil {
+		return nil, err
+	}
+
 	log.Info().
 		Str("task_id", taskID).
 		Str("socket", socketPath).
@@ -500,8 +541,14 @@ func (m *Manager) CreateSnapshot(
 	defer vm.resume()
 
 	// Call Firecracker snapshot API
-	if err := putSnapshotCreate(ctx, socketPath, stagingStatePath, stagingMemoryPath); err != nil {
+	if err := putSnapshotCreate(ctx, socketPath, targets.writeState, targets.writeMem); err != nil {
 		return nil, fmt.Errorf("failed to create snapshot via Firecracker API: %w", err)
+	}
+
+	// A jailed checkpoint was written inside the chroot; the snapshot owns a copy of
+	// it from here on.
+	if err := copyCheckpointOutOfJail(ctx, targets, stagingStatePath, stagingMemoryPath); err != nil {
+		return nil, err
 	}
 
 	// A Firecracker snapshot is memory and device state: the block device still
@@ -509,32 +556,14 @@ func (m *Manager) CreateSnapshot(
 	// now, while the VM is still paused, so the snapshot is a restore point on its
 	// own and both images describe the same instant. Failure means the snapshot
 	// would be unusable after cleanup, so no snapshot is kept at all.
-	var diskPath string
-	var diskSize int64
-	if opts.RootfsPath != "" {
-		if err := copyDiskFile(ctx, opts.RootfsPath, stagingDiskPath); err != nil {
-			return nil, fmt.Errorf("failed to copy task disk %s into the snapshot: %w", opts.RootfsPath, err)
-		}
-		diskSize, err = fileSize(stagingDiskPath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to stat snapshot disk copy: %w", err)
-		}
+	diskSize, err := copySnapshotDisk(ctx, targets.disk, stagingDiskPath)
+	if err != nil {
+		return nil, err
 	}
 
-	// Calculate sizes and checksum
-	stateSize, err := fileSize(stagingStatePath)
+	stateSize, memorySize, checksum, err := statCheckpoint(stagingStatePath, stagingMemoryPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to stat state file: %w", err)
-	}
-
-	memorySize, err := fileSize(stagingMemoryPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat memory file: %w", err)
-	}
-
-	checksum, err := sha256File(stagingStatePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to checksum state file: %w", err)
+		return nil, err
 	}
 
 	// Reserve a final directory with a fresh ID. A directory that is already there
@@ -553,7 +582,8 @@ func (m *Manager) CreateSnapshot(
 		}
 	}()
 
-	if opts.RootfsPath != "" {
+	var diskPath string
+	if targets.disk != "" {
 		diskPath = filepath.Join(snapshotDir, diskFileName)
 	}
 
@@ -568,7 +598,8 @@ func (m *Manager) CreateSnapshot(
 		SizeBytes:  stateSize + memorySize + diskSize,
 		VCPUCount:  opts.VCPUCount,
 		MemoryMB:   opts.MemoryMB,
-		RootfsPath: opts.RootfsPath,
+		RootfsPath: targets.rootfs,
+		Jailed:     targets.jailState != "",
 		DiskPath:   diskPath,
 		Checksum:   checksum,
 		Metadata:   opts.Metadata,
@@ -603,6 +634,111 @@ func (m *Manager) CreateSnapshot(
 		Msg("Snapshot created successfully")
 
 	return info, nil
+}
+
+// copySnapshotDisk copies the disk a create owns into the snapshot's staging
+// directory and reports its size. An empty source means the snapshot holds no disk
+// copy, which is what a create that knows no disk path produces.
+func copySnapshotDisk(ctx context.Context, source, dest string) (int64, error) {
+	if source == "" {
+		return 0, nil
+	}
+	if err := copyDiskFile(ctx, source, dest); err != nil {
+		return 0, fmt.Errorf("failed to copy task disk %s into the snapshot: %w", source, err)
+	}
+	size, err := fileSize(dest)
+	if err != nil {
+		return 0, fmt.Errorf("failed to stat snapshot disk copy: %w", err)
+	}
+	return size, nil
+}
+
+// statCheckpoint reports a completed checkpoint's file sizes and the checksum of its
+// state file, which is what the metadata records so a restore can tell a state file
+// was modified after the snapshot was published.
+func statCheckpoint(statePath, memPath string) (stateSize, memorySize int64, checksum string, err error) {
+	if stateSize, err = fileSize(statePath); err != nil {
+		return 0, 0, "", fmt.Errorf("failed to stat state file: %w", err)
+	}
+	if memorySize, err = fileSize(memPath); err != nil {
+		return 0, 0, "", fmt.Errorf("failed to stat memory file: %w", err)
+	}
+	if checksum, err = sha256File(statePath); err != nil {
+		return 0, 0, "", fmt.Errorf("failed to checksum state file: %w", err)
+	}
+	return stateSize, memorySize, checksum, nil
+}
+
+// createTargets is how one create names the files it produces. A VM this node
+// launched directly writes the checkpoint into the snapshot's own staging directory
+// and its disk is the file the caller passed. A VM running in a jail writes the
+// jail's paths — so the checkpoint records names another jail can honour, under
+// another uid and on another node — and its disk is the copy the guest has been
+// writing inside that chroot, not the pre-boot file the caller staged from
+// (SBX-022).
+type createTargets struct {
+	// writeState and writeMem are the paths Firecracker is told to write.
+	writeState, writeMem string
+
+	// jailState and jailMem are the host paths that hold the two files after a
+	// jailed create, and empty when the VM runs directly: then Firecracker wrote
+	// them into the staging directory itself.
+	jailState, jailMem string
+
+	// disk is the host path of the disk the snapshot copies.
+	disk string
+
+	// rootfs is the block-device path the checkpoint records, and the path a
+	// restore has to give the VM.
+	rootfs string
+}
+
+// resolveCreateTargets maps a create's options onto the paths it writes, reads back
+// and copies. The jail root is checked here, before the VM is paused.
+func resolveCreateTargets(opts CreateOptions, stagingState, stagingMem string) (createTargets, error) {
+	if opts.JailRoot == "" {
+		return createTargets{
+			writeState: stagingState,
+			writeMem:   stagingMem,
+			disk:       opts.RootfsPath,
+			rootfs:     opts.RootfsPath,
+		}, nil
+	}
+
+	chroot, err := jailedCreateChroot(opts.JailRoot)
+	if err != nil {
+		return createTargets{}, err
+	}
+	return createTargets{
+		writeState: jailedStatePath,
+		writeMem:   jailedMemPath,
+		jailState:  chrootPath(chroot, jailedStatePath),
+		jailMem:    chrootPath(chroot, jailedMemPath),
+		disk:       chrootPath(chroot, jailedRootfsPath),
+		rootfs:     jailedRootfsPath,
+	}, nil
+}
+
+// copyCheckpointOutOfJail copies a jailed VM's state and memory into the snapshot's
+// own files, while the VM is still paused so both images are the same instant, and
+// then drops the jail's copies: the snapshot owns the checkpoint, and a second
+// memory image per create would otherwise sit in the chroot until the instance
+// stops. It is a no-op for a VM that runs directly, which wrote the staging files
+// itself.
+func copyCheckpointOutOfJail(ctx context.Context, targets createTargets, statePath, memPath string) error {
+	if targets.jailState == "" {
+		return nil
+	}
+	for _, file := range []struct{ src, dst string }{
+		{src: targets.jailState, dst: statePath},
+		{src: targets.jailMem, dst: memPath},
+	} {
+		if err := copyFile(ctx, file.src, file.dst); err != nil {
+			return fmt.Errorf("failed to copy %s out of the jail: %w", file.src, err)
+		}
+		_ = os.Remove(file.src)
+	}
+	return nil
 }
 
 // publishSnapshot makes a fully built staging directory visible as the snapshot
@@ -884,6 +1020,17 @@ func openRestoredConsole(path string) (*os.File, error) {
 // A snapshot with no copy predates disk copies and keeps the old rule: the
 // original disk has to still exist, because there is nothing to restore it from.
 func ensureRestoredDisk(ctx context.Context, info *SnapshotInfo) error {
+	if info.Jailed {
+		// Deliberate: this restore starts a VMM outside a chroot, and the
+		// checkpoint resolves its block device inside one. Materialising the copy
+		// at that name would write it to the host's own root, and Firecracker
+		// would open that path rather than the file this restore wrote. A jailed
+		// checkpoint loads through the jailed launcher, which stages the disk at
+		// the path the checkpoint names inside the instance's own jail.
+		return fmt.Errorf("%w: %s resolves its block device to %s, so restore it with the jailed launcher (JailedLauncher), which stages the disk at that path in the instance's own jail",
+			ErrJailedSnapshot, info.ID, info.RootfsPath)
+	}
+
 	if info.RootfsPath == "" {
 		if info.DiskPath == "" {
 			// Neither recorded: a snapshot of a VM the executor did not own a

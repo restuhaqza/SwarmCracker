@@ -831,6 +831,13 @@ func TestSnapshotHandlerClassifiesStoreErrors(t *testing.T) {
 			wantReason: "vm_socket_missing",
 		},
 		{
+			name:       "snapshot taken inside a jail",
+			storeErr:   fmt.Errorf("%w: snapshot snap-1 was taken inside a jail, so its block device is /drives/rootfs.ext4 inside the jail's chroot", snapshot.ErrJailedSnapshot),
+			wantStatus: http.StatusConflict,
+			wantCode:   output.CodeConflict,
+			wantReason: "snapshot_jailed",
+		},
+		{
 			name:       "snapshot incomplete",
 			storeErr:   fmt.Errorf("%w: state file not found: /var/lib/firecracker/snapshots/snap-1/vm.state", snapshot.ErrSnapshotIncomplete),
 			wantStatus: http.StatusConflict,

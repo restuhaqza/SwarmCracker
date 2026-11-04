@@ -861,6 +861,14 @@ func mapSnapshotStoreError(action string, err error) (int, *output.Error) {
 		return http.StatusConflict, output.NewError(output.CodeConflict,
 			"the task's VM is no longer running on this node").
 			WithDetails(map[string]any{"reason": "vm_socket_missing"})
+	case errors.Is(err, snapshot.ErrJailedSnapshot):
+		// The checkpoint's block device is a name inside the jail it was taken in,
+		// so a VM started outside a chroot cannot open it. The request is
+		// well-formed and the snapshot is intact: this node's restore path is the
+		// wrong one, and the answer says which one is right.
+		return http.StatusConflict, output.NewError(output.CodeConflict,
+			"the snapshot was taken inside a jail and must be restored through the jailed launcher").
+			WithDetails(map[string]any{"reason": "snapshot_jailed"})
 	case errors.Is(err, snapshot.ErrSnapshotIncomplete):
 		return http.StatusConflict, output.NewError(output.CodeConflict,
 			"the snapshot is incomplete on this node").

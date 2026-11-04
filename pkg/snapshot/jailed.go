@@ -22,11 +22,10 @@
 // # Staging is a copy
 //
 // Staging copies the four files into the jail, owned by the jail uid, before the
-// VMM starts. The copy is deliberate and its consequence belongs to the next slice:
-// the guest writes to the copy, so after a jailed VM has run, the disk inside the
-// chroot is newer than the host file the caller passed, and a jail-aware
-// CreateSnapshot must copy *that* disk out (SBX-022). Making the copy cheap is
-// SBX-023's reflink work. What must not happen here is the launcher silently
+// VMM starts. The copy is deliberate: the guest writes to the copy, so after a
+// jailed VM has run, the disk inside the chroot is newer than the host file the
+// caller passed, and a jail-aware CreateSnapshot copies *that* disk out (SBX-022,
+// CreateOptions.JailRoot). What must not happen here is the launcher silently
 // running the guest against a disk it did not stage: a shared backing file would
 // make two instances one instance.
 
@@ -261,6 +260,32 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 // not re-derive it.
 func (l JailedLauncher) JailRoot(instanceID string) string {
 	return filepath.Join(l.ChrootBaseDir, l.execFileName(), instanceID)
+}
+
+// chrootPath maps a path an instance sees, absolute inside its chroot, to the host
+// path that reaches the same file. It is the one place the two namespaces are
+// reconciled: staging writes through it, and a snapshot create reads through it.
+func chrootPath(chroot, inside string) string {
+	return filepath.Join(chroot, strings.TrimPrefix(inside, "/"))
+}
+
+// jailedCreateChroot is the chroot a snapshot create of a jailed VM reads from: the
+// caller names the jail root, and the chroot is <jailRoot>/root. It is checked
+// before the VM is paused, so a caller that names the wrong directory is told so
+// instead of failing after a pause.
+func jailedCreateChroot(jailRoot string) (string, error) {
+	if !filepath.IsAbs(jailRoot) {
+		return "", fmt.Errorf("jail root %q is relative: want the host jail root JailedLauncher.JailRoot reports", jailRoot)
+	}
+	chroot := filepath.Join(jailRoot, "root")
+	info, err := os.Stat(chroot)
+	if err != nil {
+		return "", fmt.Errorf("inspect the jail's chroot %s: %w", chroot, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("the jail's chroot %s is not a directory", chroot)
+	}
+	return chroot, nil
 }
 
 // execFileName is the directory the jailer groups one binary's chroots under: the
@@ -681,7 +706,7 @@ type jailedFile struct {
 
 // place copies one source file to its chroot path and hands it to the jail uid.
 func (j *jailedInstance) place(ctx context.Context, file jailedFile) error {
-	dest := filepath.Join(j.chroot, strings.TrimPrefix(file.dest, "/"))
+	dest := chrootPath(j.chroot, file.dest)
 
 	if err := copyFile(ctx, file.src, dest); err != nil {
 		return fmt.Errorf("stage %s at %s: %w", file.src, file.dest, err)
@@ -702,7 +727,7 @@ func (j *jailedInstance) place(ctx context.Context, file jailedFile) error {
 // directories the staged files live in are this launcher's, and a file the VMM
 // cannot traverse to is a file it cannot open.
 func (j *jailedInstance) mkdir(chrootDir string) error {
-	dir := filepath.Join(j.chroot, strings.TrimPrefix(chrootDir, "/"))
+	dir := chrootPath(j.chroot, chrootDir)
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s in the jail: %w", chrootDir, err)
