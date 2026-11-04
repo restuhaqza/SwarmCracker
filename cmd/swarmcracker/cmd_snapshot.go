@@ -31,7 +31,6 @@ enabling fast restore (faster than cold boot) and future live migration.
 Example:
   swarmcracker vm snapshot create <task-id>
   swarmcracker vm snapshot restore <snapshot-id>
-  swarmcracker vm snapshot stop-restored <task-id>
   swarmcracker vm snapshot list
   swarmcracker vm snapshot delete <snapshot-id>
   swarmcracker vm snapshot cleanup`,
@@ -372,20 +371,25 @@ func newSnapshotStopRestoredCommand() *cobra.Command {
 	var socketDir string
 
 	cmd := &cobra.Command{
-		Use:   "stop-restored <task>",
-		Short: "Stop the VM a snapshot restore started",
-		Long: `Stop the restored microVM a snapshot restore started for a task.
+		Use:        "stop-restored <task>",
+		Short:      "Stop the VM a snapshot restore started (deprecated)",
+		Deprecated: "a restored VM is the task's VM: on the node, use 'swarmcracker vm stop <task>'",
+		Long: `Stop the microVM a snapshot restore started for a task.
 
-A VM started by a restore runs outside SwarmKit's task lifecycle, so "task rm"
-or a service update does not touch it. On the node that restored it, this command
-sends SIGTERM to the Firecracker process behind the task's own API socket
-(<socket-dir>/<task>.sock), waits up to ten seconds, then sends SIGKILL, and
-removes the socket. A restore puts the task's VM back under the task's identity,
-so that socket is the one "vm exec" and the node broker already resolve.
+Deprecated: a restore now starts the VM of the task itself, at the task's own API
+socket (<socket-dir>/<task>.sock), so the restored VM *is* the task's VM and no
+longer has an identity of its own. On the node that restored it, stop it with
+"swarmcracker vm stop <task>", which addresses the same VM.
+
+This command still works, and still sends SIGTERM to the Firecracker process
+behind the task's own socket, waits up to ten seconds, sends SIGKILL, and removes
+the socket. It is kept for scripts written before the identity changed, and
+because with -H it is the only caller of the node's
+DELETE /v1/tasks/{id}/restored route.
 
 <task> is a task ID or any unique prefix of one. With -H the manager asks the
-node that holds the restored VM through the API instead, which needs the
-experimental snapshot capability on that node.
+node that holds the VM through the API instead, which needs the experimental
+snapshot capability on that node.
 
 Example:
   swarmcracker vm snapshot stop-restored 5f3a1b2c9d

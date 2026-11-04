@@ -207,3 +207,24 @@ func TestSnapshotCommandRegistration(t *testing.T) {
 	}
 	assert.True(t, found, "vm snapshot must expose stop-restored")
 }
+
+// TestStopRestoredIsDeprecated pins the name's new contract. Once a restore runs
+// the task's own VM, `stop-restored` no longer stops a separate VM — it stops the
+// task's — so the command must say so before it acts and must name the
+// replacement, while `vm stop <task>` becomes the surface an operator reads.
+func TestStopRestoredIsDeprecated(t *testing.T) {
+	cmd := newSnapshotStopRestoredCommand()
+	require.NotEmpty(t, cmd.Deprecated, "the command must announce its deprecation")
+	assert.Contains(t, cmd.Deprecated, "vm stop")
+	assert.Contains(t, cmd.Long, "Deprecated")
+
+	for _, sub := range newSnapshotCommand().Commands() {
+		if sub.Name() != "stop-restored" {
+			continue
+		}
+		assert.False(t, sub.IsAvailableCommand(),
+			"a deprecated command must not be listed as the group's available surface")
+		return
+	}
+	t.Fatal("vm snapshot no longer exposes stop-restored")
+}

@@ -20,7 +20,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the task's log, and `vm list` shows one VM rather than two. A restore also
   clears the task's stale vsock muxer before starting, which is the `EADDRINUSE`
   the CLI path hit when a crashed VMM left the file behind. `vm snapshot
-  stop-restored` now resolves the task's `<task>.sock`.
+  stop-restored` now resolves the task's `<task>.sock` **and is deprecated**: a
+  restored VM is the task's VM, so `vm stop <task>` is the replacement. The
+  command still works for existing scripts — it prints the deprecation notice
+  before it acts — and stays the only caller of
+  `DELETE /v1/tasks/{id}/restored` from `-H`, but it is no longer listed in
+  `vm snapshot --help`.
 - **The node broker resolves VMs through the instance registry** — a lookup asks
   `pkg/vminstance` first and takes the record's API socket, vsock muxer, console
   and netns, so a VM whose paths are not a function of a task ID can be resolved.
