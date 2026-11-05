@@ -47,6 +47,7 @@ import (
 
 	"github.com/rs/zerolog/log"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/console"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
@@ -185,6 +186,12 @@ type JailedLauncher struct {
 	// field so a test can aim it at a fixture instead of at the host's cgroupfs;
 	// production leaves it empty and takes jailedCgroupBase.
 	cgroupRoot string
+
+	// ReadyTimeout is how long a launch waits for the guest agent's hello before
+	// the launch fails. Zero means DefaultReadyTimeout. A template build — a cold
+	// boot of a full OS image whose init system has to start the agent — is the
+	// launch that may need more.
+	ReadyTimeout time.Duration
 }
 
 // The jailed launcher satisfies the interface, and the assertion is where the build
@@ -196,7 +203,8 @@ var _ Launcher = JailedLauncher{}
 // A restore and a fork differ only in which disk the caller staged: both load the
 // checkpoint and resume the guest. A cold launch boots from the staged kernel and
 // disk, which is how a template is built inside the same fence it will later be
-// restored into. Either way Start returns only once the guest is running, and a
+// restored into. Either way Start returns only once the guest is running — which,
+// since SBX-024, means the guest's own agent answered it (readiness.go) — and a
 // failed start leaves no process, socket, cgroup, jail directory or uid lease
 // behind.
 func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched, error) {
@@ -226,6 +234,17 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		return Launched{}, j.fail(err)
 	}
 
+	// Nothing so far has said anything about the guest: the disk is staged, the
+	// jailer started, the checkpoint loaded and the guest resumed, and every one of
+	// those is a statement about the VMM. The agent's hello is the guest's own
+	// answer (readiness.go), and this launcher dials it at the host path that
+	// reaches the muxer inside the jail.
+	hostVsock := chrootPath(j.chroot, req.VsockPath)
+	hello, err := awaitAgentHello(ctx, hostVsock, req.AgentToken, readyTimeout(l.ReadyTimeout))
+	if err != nil {
+		return Launched{}, j.fail(fmt.Errorf("instance %q: %w", req.InstanceID, err))
+	}
+
 	log.Info().
 		Str("instance_id", req.InstanceID).
 		Str("mode", string(req.Mode)).
@@ -233,17 +252,17 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		Str("jail_root", j.jailRoot).
 		Str("disk_copy", string(diskCopy)).
 		Str("socket", j.hostSocket).
+		Str("agent_version", hello.AgentVersion).
 		Msg("Instance launched in a jail")
 
 	launched := Launched{
 		APISocket: j.hostSocket,
-		// A jailed launch configures no vsock device: a resumed instance keeps the
-		// muxer path recorded in its checkpoint, which lives inside the jail, and a
-		// cold instance has no vsock device at all. Guessing a host path would point
-		// the guest agent at a socket nobody listens on, so the caller that knows the
-		// device configuration supplies it.
-		VsockPath:   "",
+		// The muxer this launch dialled, in the host's namespace: the request's
+		// path as the instance sees it, resolved inside the jail's chroot. A caller
+		// execs, copies files or checks health through it.
+		VsockPath:   hostVsock,
 		ConsolePath: j.consolePath,
+		Hello:       hello,
 		DiskCopy:    diskCopy,
 		Stop:        j.stop,
 	}
@@ -343,6 +362,15 @@ func (l JailedLauncher) check(req LaunchRequest) error {
 		return fmt.Errorf("instance %q: a jailed launch needs the kernel to stage at %s", req.InstanceID, jailedKernelPath)
 	}
 
+	// Readiness is the agent's hello (readiness.go), so a request that names no
+	// muxer has nothing this launcher could ask whether the guest is up. The path is
+	// the one the instance sees in its jail: a cold boot configures the vsock device
+	// with it, and a restore has to be handed the path the checkpoint recorded, or
+	// the launch dials a socket nobody listens on and fails as not ready.
+	if err := vsockProblem(req.VsockPath); err != nil {
+		return fmt.Errorf("instance %q: %w", req.InstanceID, err)
+	}
+
 	if req.Mode == ModeCold {
 		if req.VCPUs <= 0 || req.MemoryMB <= 0 {
 			return fmt.Errorf("instance %q: a cold-booted instance needs a size, got %d vCPUs and %d MiB",
@@ -395,6 +423,12 @@ type jailedInstance struct {
 	// hostSocket.
 	hostSocket string
 	socketPath string
+
+	// vsockPath is the request's guest-agent muxer path as the instance sees it,
+	// inside the jail. A cold boot configures the vsock device with it and the
+	// readiness check dials it (through chrootPath), so it is the one path this
+	// launcher must know before the guest exists.
+	vsockPath string
 
 	consolePath string
 
@@ -500,6 +534,7 @@ func (l JailedLauncher) newJailed(req LaunchRequest) (*jailedInstance, error) {
 		memSource:        req.Mem,
 		hostSocket:       hostSocket,
 		socketPath:       socketPath,
+		vsockPath:        req.VsockPath,
 		consolePath:      consolePath,
 	}, nil
 }
@@ -678,12 +713,14 @@ func (j *jailedInstance) stage(ctx context.Context) (CopyMode, error) {
 		)
 	}
 
-	// The run directory holds the API socket Firecracker creates. The snapshot
+	// The run directory holds the API socket Firecracker creates, and the guest
+	// agent's vsock muxer: a cold boot configures the device at the request's path,
+	// so its directory has to exist in the jail before the VMM starts. The snapshot
 	// directory is made even for a cold boot: a jailed instance is the one a
 	// checkpoint is taken *of*, and Firecracker will not create the directory
 	// /snapshot/create writes the images into.
-	dirs := make([]string, 0, 2+len(files))
-	dirs = append(dirs, jailedRunDir, path.Dir(jailedStatePath))
+	dirs := make([]string, 0, 3+len(files))
+	dirs = append(dirs, jailedRunDir, path.Dir(j.vsockPath), path.Dir(jailedStatePath))
 	for _, file := range files {
 		dirs = append(dirs, path.Dir(file.dest))
 	}
@@ -1037,9 +1074,17 @@ func removeJailedCgroup(dir string) error {
 }
 
 // bootJailedGuest configures and starts a cold guest inside the jail: the kernel and
-// disk it boots from, its size, and InstanceStart. Each file is named by its chroot
-// path, so the checkpoint Firecracker later writes records paths that load in any
-// jail.
+// disk it boots from, its size, the vsock device its agent answers on, and
+// InstanceStart. Each file is named by its chroot path, so the checkpoint Firecracker
+// later writes records paths that load in any jail.
+//
+// The vsock device is configured here and not after the guest starts, because
+// Firecracker refuses /vsock once the VM has started (and the checkpoint load
+// refuses a device configured after it). It is what makes a cold-booted template
+// reachable: without it the guest agent has no host-side socket, and the launch
+// could never prove the guest is up (readiness.go). The device is configured at the
+// path the caller named, which is also the path the checkpoint records — so a
+// restore of this instance is told the same string and dials the same muxer.
 func bootJailedGuest(ctx context.Context, socketPath string, req LaunchRequest) error {
 	calls := []struct {
 		path    string
@@ -1068,6 +1113,16 @@ func bootJailedGuest(ctx context.Context, socketPath string, req LaunchRequest) 
 				"mem_size_mib":      req.MemoryMB,
 				"smt":               false,
 				"track_dirty_pages": false,
+			},
+		},
+		{
+			// agent.GuestCID is the context id every guest agent is reached at; it
+			// needs no host-uniqueness because each instance is its own VMM with its
+			// own muxer.
+			path: "/vsock",
+			payload: map[string]interface{}{
+				"guest_cid": agent.GuestCID,
+				"uds_path":  req.VsockPath,
 			},
 		},
 		{

@@ -14,6 +14,7 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -31,6 +32,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
@@ -49,10 +51,17 @@ type fakeJail struct {
 	resumeErr error
 	bootErr   error
 
+	// hello is what the fake guest agent answers, and dialErr is what it refuses
+	// with instead. A dialErr makes every readiness attempt fail, so a test that
+	// expects a launch to fail spends the launcher's ReadyTimeout doing it.
+	hello   agent.Hello
+	dialErr error
+
 	waited  []string
 	loads   []loadCall
 	resumes []jailedResume
 	boots   []LaunchRequest
+	dials   []readyCall
 
 	// owned records every "give this path to this uid" the launcher asked for, and
 	// ownErr is what that request answers.
@@ -89,12 +98,14 @@ func (f *fakeJail) install(t *testing.T) {
 	previousResume := jailedResumeGuest
 	previousBoot := jailedBootGuest
 	previousOwn := jailOwn
+	previousDial := readyDial
 	t.Cleanup(func() {
 		jailedWaitForAPI = previousWait
 		jailedLoadCheckpoint = previousLoad
 		jailedResumeGuest = previousResume
 		jailedBootGuest = previousBoot
 		jailOwn = previousOwn
+		readyDial = previousDial
 	})
 
 	jailOwn = func(path string, uid, gid int) error {
@@ -123,6 +134,13 @@ func (f *fakeJail) install(t *testing.T) {
 	jailedBootGuest = func(_ context.Context, _ string, req LaunchRequest) error {
 		f.boots = append(f.boots, req)
 		return f.bootErr
+	}
+	readyDial = func(_ context.Context, vsockPath string, port uint32, token string) (readyClient, error) {
+		f.dials = append(f.dials, readyCall{vsock: vsockPath, port: port, token: token})
+		if f.dialErr != nil {
+			return nil, f.dialErr
+		}
+		return fakeReadyClient{hello: f.hello}, nil
 	}
 }
 
@@ -230,6 +248,11 @@ func jailedSources(t *testing.T) (kernel, rootfs, state, mem string) {
 		write("vm.state", "vm-state"), write("vm.mem", "vm-memory")
 }
 
+// jailedTestVsockPath is the guest-agent muxer path these tests launch with: the
+// path the instance sees inside its own jail, which is the path a checkpoint of a
+// jailed instance records and therefore the path a restore of it names.
+const jailedTestVsockPath = "/run/firecracker/agent.vsock"
+
 // needJailedRestoreRequest is a request the jailed launcher serves: an instance
 // resumed from its own checkpoint, staged from host files.
 func needJailedRestoreRequest(t *testing.T, l JailedLauncher) LaunchRequest {
@@ -244,6 +267,7 @@ func needJailedRestoreRequest(t *testing.T, l JailedLauncher) LaunchRequest {
 		State:      state,
 		Mem:        mem,
 		JailUID:    0, // let the allocator choose, which is the production path
+		VsockPath:  jailedTestVsockPath,
 	}
 }
 
@@ -346,6 +370,7 @@ func TestJailedLauncherColdBootsInsideTheJail(t *testing.T) {
 		Rootfs:     rootfs,
 		VCPUs:      2,
 		MemoryMB:   256,
+		VsockPath:  jailedTestVsockPath,
 	}
 	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
 
@@ -543,6 +568,156 @@ func TestJailedLauncherStopReleasesEverythingItHeld(t *testing.T) {
 	require.NoError(t, relaunched.Stop(context.Background()))
 }
 
+// TestJailedLauncherProvesReadinessThroughTheJailsMuxer pins the SBX-024 criterion
+// where it is hardest to get right: the checkpoint loaded and the guest resumed
+// inside the jail, and the launch is still not over. The launcher asks the guest's
+// own agent, at the host path that reaches the muxer inside the jail, presents the
+// token the caller minted, and reports the answer.
+func TestJailedLauncherProvesReadinessThroughTheJailsMuxer(t *testing.T) {
+	requireJailPlatform(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.hello = agent.Hello{
+		Version:      agent.Version,
+		Caps:         []string{agent.CapHello, agent.CapExec},
+		AgentVersion: "2.0.0",
+		BootID:       "boot-jailed",
+	}
+	fake.install(t)
+
+	req := needJailedRestoreRequest(t, launcher)
+	req.AgentToken = "9f2c1a7e4b6d8f0a1c3e5b7d9f1a2c4e"
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = launched.Stop(context.Background()) })
+
+	// The host path that reaches /run/firecracker/agent.vsock inside this instance's
+	// jail: the request names the path the instance sees, and the launcher resolves it
+	// through the chroot it built.
+	wantHostMuxer := filepath.Join(launcher.JailRoot(req.InstanceID), "root", "run", "firecracker", "agent.vsock")
+	require.Len(t, fake.dials, 1)
+	assert.Equal(t, wantHostMuxer, fake.dials[0].vsock,
+		"the request's muxer path is the instance's, so the launcher dials it inside the jail")
+	assert.Equal(t, agent.DefaultPort, fake.dials[0].port)
+	assert.Equal(t, req.AgentToken, fake.dials[0].token, "the guest that requires a token must be given the caller's")
+	assert.Equal(t, wantHostMuxer, launched.VsockPath)
+	assert.Equal(t, fake.hello, launched.Hello)
+}
+
+// TestJailedLauncherColdBootConfiguresTheAgentDevice pins what makes a cold-booted
+// template reachable at all: the vsock device is configured from the request before
+// InstanceStart, its directory exists in the jail, and the readiness check then dials
+// exactly that path.
+func TestJailedLauncherColdBootConfiguresTheAgentDevice(t *testing.T) {
+	requireJailPlatform(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	kernel, rootfs, _, _ := jailedSources(t)
+
+	req := LaunchRequest{
+		InstanceID: "sbx-template",
+		Mode:       ModeCold,
+		Kernel:     kernel,
+		Rootfs:     rootfs,
+		VCPUs:      2,
+		MemoryMB:   256,
+		VsockPath:  jailedTestVsockPath,
+	}
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = launched.Stop(context.Background()) })
+
+	require.Len(t, fake.boots, 1)
+	assert.Equal(t, jailedTestVsockPath, fake.boots[0].VsockPath,
+		"the cold boot is told the muxer path the caller named")
+	assert.DirExists(t, filepath.Join(launcher.JailRoot(req.InstanceID), "root", "run", "firecracker"),
+		"the muxer's directory must exist in the jail before the device is configured")
+
+	require.Len(t, fake.dials, 1)
+	assert.Equal(t, filepath.Join(launcher.JailRoot(req.InstanceID), "root", "run", "firecracker", "agent.vsock"),
+		fake.dials[0].vsock)
+}
+
+// TestJailedLauncherFailsWhenTheGuestNeverAnswers is the criterion with nothing
+// behind it: every step the launcher can take succeeds — the jail is staged, the
+// jailer starts, the checkpoint loads, the guest is resumed — and the launch still
+// fails, because the guest never answered. Everything the launch started is gone,
+// including the uid, and the same id launches cleanly afterwards.
+func TestJailedLauncherFailsWhenTheGuestNeverAnswers(t *testing.T) {
+	requireJailPlatform(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	fake.dialErr = errors.New("dial unix /jail/run/firecracker/agent.vsock: connect: no such file or directory")
+	launcher.ReadyTimeout = 120 * time.Millisecond
+
+	req := needJailedRestoreRequest(t, launcher)
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAgentNotReady, "a guest that never answers is a typed launch failure")
+	assert.Contains(t, err.Error(), "connect: no such file or directory",
+		"the refusal that came last arrives with the failure")
+	assert.Nil(t, launched.Stop, "a failed launch must not hand back a stop for a process it already killed")
+
+	// The load and the resume did happen: that is what makes this the readiness rule
+	// rather than a broken checkpoint.
+	require.Len(t, fake.loads, 1)
+	require.Len(t, fake.resumes, 1)
+
+	pid := pidFromFake(t, fake, req.InstanceID)
+	assert.False(t, processAlive(pid), "the VMM of a failed launch must be gone")
+	assert.NoDirExists(t, launcher.JailRoot(req.InstanceID), "and so must its jail")
+	assert.NoDirExists(t, filepath.Join(launcher.cgroupRoot, "sbxtest", req.InstanceID))
+	assert.False(t, launcher.UIDs.Leased(3000), "a failed launch must give its uid back")
+
+	fake.dialErr = nil
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+	retried, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err, "a launch that failed on readiness must not poison the id")
+	require.NoError(t, retried.Stop(context.Background()))
+}
+
+// TestJailedLauncherRefusesARequestWithNoAgentMuxer pins the other half of the
+// criterion: a request that names no muxer is refused before anything is created,
+// because a launcher has nothing to ask and "the checkpoint loaded" is not an answer.
+func TestJailedLauncherRefusesARequestWithNoAgentMuxer(t *testing.T) {
+	tests := []struct {
+		name  string
+		vsock string
+		want  string
+	}{
+		{name: "empty", vsock: "", want: "vsockPath is empty"},
+		{name: "whitespace", vsock: "  ", want: "vsockPath is empty"},
+		{name: "relative", vsock: "run/agent.vsock", want: "is relative"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			launcher, fake := jailedTestLauncher(t)
+			fake.install(t)
+
+			req := needJailedRestoreRequest(t, launcher)
+			req.VsockPath = tt.vsock
+
+			_, err := launcher.Start(context.Background(), req)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+			assert.False(t, launcher.UIDs.Leased(3000), "a refused launch must not cost a uid")
+			assert.NoDirExists(t, launcher.JailRoot(req.InstanceID), "and must not stage a jail")
+			assert.Empty(t, fake.dials, "and must not dial anything")
+		})
+	}
+}
+
 // TestJailedLauncherFailedStartLeavesNothingBehind pins the contract's hardest
 // clause: Start returns no handle for a launch that failed, so the launcher itself
 // has to end the process, remove the socket, cgroup and jail, and release the uid —
@@ -725,14 +900,16 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 // TestBootJailedGuestSendsTheTemplateConfiguration pins what a cold jailed boot asks
 // Firecracker for. The paths are the checkpoint contract: a guest booted from
 // /kernel/vmlinux and /drives/rootfs.ext4 is a guest whose snapshot restores in any
-// other jail, which is the whole reason the paths are fixed.
+// other jail, which is the whole reason the paths are fixed. The vsock device is the
+// fifth call and the reason the boot can be proven live at all: without it the guest
+// agent has no host-side muxer, and the readiness check would have nothing to dial.
 func TestBootJailedGuestSendsTheTemplateConfiguration(t *testing.T) {
 	api := newFakeAPI(t)
 
 	require.NoError(t, bootJailedGuest(context.Background(), api.socket,
-		LaunchRequest{VCPUs: 2, MemoryMB: 256}))
+		LaunchRequest{VCPUs: 2, MemoryMB: 256, VsockPath: jailedTestVsockPath}))
 
-	require.Len(t, api.calls, 4, "a cold boot is boot source, drive, machine config, then start")
+	require.Len(t, api.calls, 5, "a cold boot is boot source, drive, machine config, vsock, then start")
 	assert.Equal(t, apiCall{method: http.MethodPut, path: "/boot-source", body: map[string]interface{}{
 		"kernel_image_path": "/kernel/vmlinux",
 		"boot_args":         jailedBootArgs,
@@ -749,9 +926,13 @@ func TestBootJailedGuestSendsTheTemplateConfiguration(t *testing.T) {
 		"smt":               false,
 		"track_dirty_pages": false,
 	}}, api.calls[2])
+	assert.Equal(t, apiCall{method: http.MethodPut, path: "/vsock", body: map[string]interface{}{
+		"guest_cid": float64(agent.GuestCID),
+		"uds_path":  jailedTestVsockPath,
+	}}, api.calls[3], "the agent's muxer is configured at the path the caller named, before the guest starts")
 	assert.Equal(t, apiCall{method: http.MethodPut, path: "/actions", body: map[string]interface{}{
 		"action_type": "InstanceStart",
-	}}, api.calls[3])
+	}}, api.calls[4])
 }
 
 // TestLoadJailedCheckpointLeavesTheGuestStopped pins the load: the chroot paths, a
@@ -797,7 +978,7 @@ func TestJailedAPIFailuresAreReported(t *testing.T) {
 	api.status = http.StatusBadRequest
 
 	ctx := context.Background()
-	require.Error(t, bootJailedGuest(ctx, api.socket, LaunchRequest{VCPUs: 1, MemoryMB: 128}))
+	require.Error(t, bootJailedGuest(ctx, api.socket, LaunchRequest{VCPUs: 1, MemoryMB: 128, VsockPath: jailedTestVsockPath}))
 	require.Error(t, loadJailedCheckpoint(ctx, api.socket, jailedStatePath, jailedMemPath))
 	require.Error(t, resumeJailedGuest(ctx, api.socket))
 }
@@ -1044,6 +1225,7 @@ func TestJailedLauncherReportsAFailedColdBoot(t *testing.T) {
 		Rootfs:     rootfs,
 		VCPUs:      1,
 		MemoryMB:   128,
+		VsockPath:  jailedTestVsockPath,
 	}
 	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
 

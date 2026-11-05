@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
 
@@ -29,6 +30,31 @@ type loadCall struct {
 	socket string
 	state  string
 	mem    string
+}
+
+// readyCall is one agent handshake attempt a fake launch made: the muxer it
+// dialled, the port it asked for, and the token it presented.
+type readyCall struct {
+	vsock string
+	port  uint32
+	token string
+}
+
+// fakeReadyClient stands in for a guest agent that answered the handshake,
+// without a socket or a guest behind it. closed, when set, counts the closes of
+// the connection the readiness check opened.
+type fakeReadyClient struct {
+	hello  agent.Hello
+	err    error
+	closed *int
+}
+
+func (c fakeReadyClient) Hello() agent.Hello { return c.hello }
+func (c fakeReadyClient) Close() error {
+	if c.closed != nil {
+		*c.closed++
+	}
+	return c.err
 }
 
 // fakeDirectVMM stands in for the Firecracker binary a direct launch starts: the
@@ -46,12 +72,19 @@ type fakeDirectVMM struct {
 	waitErr     error
 	loadErr     error
 
+	// hello is what the fake guest agent answers, and dialErr is what it refuses
+	// with instead. A dialErr makes every attempt fail, so the launcher's budget
+	// decides how long a test takes: a readiness test sets ReadyTimeout.
+	hello   agent.Hello
+	dialErr error
+
 	starts  int
 	binary  string
 	socket  string
 	console string
 	waited  []string
 	loads   []loadCall
+	dials   []readyCall
 	proc    *os.Process
 }
 
@@ -63,11 +96,13 @@ func (f *fakeDirectVMM) install(t *testing.T) {
 	previousStart := directStartVMM
 	previousWait := directWaitForAPI
 	previousLoad := directLoadSnapshot
+	previousDial := readyDial
 	t.Cleanup(func() {
 		firecrackerLookPath = previousLook
 		directStartVMM = previousStart
 		directWaitForAPI = previousWait
 		directLoadSnapshot = previousLoad
+		readyDial = previousDial
 	})
 
 	firecrackerLookPath = func(string) (string, error) {
@@ -84,6 +119,13 @@ func (f *fakeDirectVMM) install(t *testing.T) {
 	directLoadSnapshot = func(_ context.Context, socketPath, statePath, memPath string) error {
 		f.loads = append(f.loads, loadCall{socket: socketPath, state: statePath, mem: memPath})
 		return f.loadErr
+	}
+	readyDial = func(_ context.Context, vsockPath string, port uint32, token string) (readyClient, error) {
+		f.dials = append(f.dials, readyCall{vsock: vsockPath, port: port, token: token})
+		if f.dialErr != nil {
+			return nil, f.dialErr
+		}
+		return fakeReadyClient{hello: f.hello}, nil
 	}
 }
 
@@ -115,7 +157,9 @@ func (f *fakeDirectVMM) start(t *testing.T) func(string, string, string) (*exec.
 }
 
 // needRestoreRequest is a request the direct launcher serves: an instance being
-// resumed from its own checkpoint.
+// resumed from its own checkpoint. The muxer path is the one the checkpoint
+// recorded, which for a task VM is the path beside its API socket
+// (runtime.VsockPath) — a host path, because a direct launch is not chrooted.
 func needRestoreRequest() LaunchRequest {
 	return LaunchRequest{
 		InstanceID: "sbx-1a2b3c",
@@ -129,6 +173,7 @@ func needRestoreRequest() LaunchRequest {
 		JailUID:    1000,
 		JailGID:    1000,
 		NetNS:      "sbx-1a2b3c",
+		VsockPath:  "/var/run/firecracker/sbx-1a2b3c.vsock",
 	}
 }
 
@@ -174,7 +219,8 @@ func TestDirectLauncherResumesTheCheckpoint(t *testing.T) {
 	for _, mode := range []LaunchMode{ModeRestore, ModeFork} {
 		t.Run(string(mode), func(t *testing.T) {
 			socketDir, logDir := t.TempDir(), t.TempDir()
-			fake := &fakeDirectVMM{createSocket: true}
+			hello := agent.Hello{Version: agent.Version, Caps: []string{agent.CapHello}, AgentVersion: "1.2.3", BootID: "boot-a"}
+			fake := &fakeDirectVMM{createSocket: true, hello: hello}
 			fake.install(t)
 
 			req := needRestoreRequest()
@@ -189,8 +235,11 @@ func TestDirectLauncherResumesTheCheckpoint(t *testing.T) {
 			assert.Equal(t, filepath.Join(logDir, req.InstanceID+".log"), launched.ConsolePath)
 			assert.Equal(t, req.State, launched.StatePath)
 			assert.Equal(t, req.Mem, launched.MemPath)
-			assert.Empty(t, launched.VsockPath,
-				"a direct launch configures no vsock device, so it must not guess the muxer path")
+			assert.Equal(t, req.VsockPath, launched.VsockPath,
+				"the launcher reports the muxer it dialled, which is the one the request named")
+			assert.Equal(t, hello, launched.Hello, "the guest's own answer is what makes the launch a launch")
+			assert.Equal(t, []readyCall{{vsock: req.VsockPath, port: agent.DefaultPort}}, fake.dials,
+				"readiness asks the agent behind the request's muxer, on the agent port, with no token when the request carries none")
 			require.NotNil(t, launched.Stop, "the launcher must return the only handle to the process it started")
 
 			assert.Equal(t, 1, fake.starts)
@@ -279,6 +328,50 @@ func TestDirectLauncherEndsTheProcessWhenTheLoadFails(t *testing.T) {
 	assert.True(t, os.IsNotExist(statErr), "the socket of the abandoned process must be removed")
 }
 
+// TestDirectLauncherEndsTheProcessWhenTheGuestNeverAnswers is the SBX-024 rule for
+// the direct path: the checkpoint loaded and the guest was resumed, which is what
+// "ready" used to mean, and the launch still fails — because the only thing that
+// says a guest is running is the guest's own hello, and this one never comes.
+//
+// The process and its socket are gone afterwards, like every other failed step: the
+// caller is handed no handle, so the launcher is the only thing that can clean up.
+func TestDirectLauncherEndsTheProcessWhenTheGuestNeverAnswers(t *testing.T) {
+	fake := &fakeDirectVMM{createSocket: true, dialErr: errors.New("dial vsock socket: connect: connection refused")}
+	fake.install(t)
+
+	launcher := DirectLauncher{SocketDir: t.TempDir(), ReadyTimeout: 120 * time.Millisecond}
+	launched, err := launcher.Start(context.Background(), needRestoreRequest())
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrAgentNotReady, "a guest that never answers is a typed launch failure")
+	assert.Contains(t, err.Error(), "the guest behind")
+	assert.Contains(t, err.Error(), "connection refused", "the reason arrives with the failure")
+	assert.Contains(t, err.Error(), needRestoreRequest().VsockPath, "and names the muxer it dialled")
+	assert.Nil(t, launched.Stop, "a failed launch hands back no stop for a process it already killed")
+	require.NotNil(t, fake.proc)
+	waitForProcessGone(t, fake.proc.Pid)
+	_, statErr := os.Stat(fake.socket)
+	assert.True(t, os.IsNotExist(statErr), "the socket of the abandoned process must be removed")
+}
+
+// TestDirectLauncherPresentsTheRequestsToken pins that the handshake carries the
+// token the request named: a guest that requires one refuses an unauthenticated
+// hello, so a launch that dropped the token would fail on an instance the caller
+// provisioned.
+func TestDirectLauncherPresentsTheRequestsToken(t *testing.T) {
+	fake := &fakeDirectVMM{createSocket: true}
+	fake.install(t)
+
+	req := needRestoreRequest()
+	req.AgentToken = "0123456789abcdef"
+
+	_, err := (DirectLauncher{SocketDir: t.TempDir()}).Start(context.Background(), req)
+
+	require.NoError(t, err)
+	require.Len(t, fake.dials, 1)
+	assert.Equal(t, req.AgentToken, fake.dials[0].token)
+}
+
 // TestDirectLauncherRefusesAnUnusableRequest pins the requests the launcher declines
 // before it spawns anything. Each refusal is a caller mistake that would otherwise
 // become a VMM started with the wrong paths — or a path outside the socket directory.
@@ -297,6 +390,8 @@ func TestDirectLauncherRefusesAnUnusableRequest(t *testing.T) {
 		{name: "no socket directory", bare: true, want: "no socket directory"},
 		{name: "no state image", mutate: func(r *LaunchRequest) { r.State = "" }, want: "both checkpoint images"},
 		{name: "no memory image", mutate: func(r *LaunchRequest) { r.Mem = "" }, want: "both checkpoint images"},
+		{name: "no agent muxer", mutate: func(r *LaunchRequest) { r.VsockPath = "" }, want: "vsockPath is empty"},
+		{name: "relative agent muxer", mutate: func(r *LaunchRequest) { r.VsockPath = "run/sbx.vsock" }, want: "is relative"},
 	}
 
 	for _, tt := range tests {
@@ -353,14 +448,21 @@ func TestDirectLauncherStartsWithTheSameCommandLineAsTheRestorePath(t *testing.T
 	previousLook := firecrackerLookPath
 	previousWait := directWaitForAPI
 	previousLoad := directLoadSnapshot
+	previousDial := readyDial
 	t.Cleanup(func() {
 		firecrackerLookPath = previousLook
 		directWaitForAPI = previousWait
 		directLoadSnapshot = previousLoad
+		readyDial = previousDial
 	})
 	firecrackerLookPath = func(string) (string, error) { return binary, nil }
 	directWaitForAPI = func(string, time.Duration) error { return nil }
 	directLoadSnapshot = func(context.Context, string, string, string) error { return nil }
+	// The guest console this test reads is the script's own output, so the agent
+	// answers without a socket: what is under test here is the command line.
+	readyDial = func(context.Context, string, uint32, string) (readyClient, error) {
+		return fakeReadyClient{hello: agent.Hello{Version: agent.Version}}, nil
+	}
 
 	socketDir, logDir := t.TempDir(), t.TempDir()
 	launched, err := (DirectLauncher{SocketDir: socketDir, LogDir: logDir}).
