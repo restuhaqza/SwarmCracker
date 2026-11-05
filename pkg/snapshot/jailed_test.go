@@ -35,6 +35,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	scruntime "github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 // jailedResume is one resume a fake launch saw.
@@ -716,6 +717,141 @@ func TestJailedLauncherRefusesARequestWithNoAgentMuxer(t *testing.T) {
 			assert.Empty(t, fake.dials, "and must not dial anything")
 		})
 	}
+}
+
+// TestJailedLauncherPublishesTheRecordsJailIdentity pins SBX-025 where the facts are
+// the launcher's alone: the record describes the instance's socket and muxer as the host
+// reaches them (inside the jail), the uid the jailer runs it as, the console the
+// launcher created, and the namespace the VMM was put in — none of which any reader
+// could derive from the instance's id.
+func TestJailedLauncherPublishesTheRecordsJailIdentity(t *testing.T) {
+	requireJailPlatform(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	registry := newFakeRegistry()
+	launcher.Registry = registry
+
+	req := needJailedRestoreRequest(t, launcher)
+	req.NetNS = "sbx-net"
+	req.Record = vminstance.Instance{
+		Kind:    vminstance.KindSandbox,
+		OwnerID: "user-7",
+		NodeID:  "node-a",
+		TAP:     "tap-sbx1a2b3c",
+		// The caller cannot know these; the launcher must overwrite them.
+		JailUID:   1,
+		APISocket: "/caller/guessed.sock",
+	}
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = launched.Stop(context.Background()) })
+
+	require.Len(t, registry.puts, 2, "one write before the guest is reachable, one once it answered")
+	published, ready := registry.puts[0], registry.puts[1]
+
+	assert.Equal(t, vminstance.KindSandbox, published.Kind)
+	assert.Equal(t, "user-7", published.OwnerID)
+	assert.Equal(t, "node-a", published.NodeID)
+	assert.Equal(t, "tap-sbx1a2b3c", published.TAP)
+	assert.Equal(t, launched.APISocket, published.APISocket, "the record names the socket as the host reaches it")
+	assert.Equal(t, launched.VsockPath, published.VsockPath, "and the agent's muxer the same way")
+	assert.Equal(t, launched.ConsolePath, published.Console)
+	assert.Equal(t, 3000, published.JailUID, "the uid the jailer runs the VMM as")
+	assert.Equal(t, pidFromFake(t, fake, req.InstanceID), published.PID,
+		"the record names the process whose death means the VM is gone")
+	assert.Equal(t, "/var/run/netns/sbx-net", published.NetNS,
+		"a namespace name is recorded as the path a teardown removes")
+	assert.False(t, published.Ready)
+	assert.True(t, ready.Ready)
+	assert.Equal(t, published.Booted, ready.Booted)
+}
+
+// TestJailedLauncherRecordWithoutANamespaceStaysEmpty pins the honest half of the
+// record: an instance started in the node's own namespace has no netns to name, and a
+// launcher must not invent one.
+func TestJailedLauncherRecordWithoutANamespaceStaysEmpty(t *testing.T) {
+	requireJailPlatform(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	registry := newFakeRegistry()
+	launcher.Registry = registry
+
+	req := needJailedRestoreRequest(t, launcher)
+	req.Record = vminstance.Instance{Kind: vminstance.KindSandbox}
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = launched.Stop(context.Background()) })
+
+	require.NotEmpty(t, registry.puts)
+	assert.Empty(t, registry.puts[0].NetNS)
+}
+
+// TestJailedLauncherDeletesTheRecordWhenTheInstanceIsGone pins the record's lifetime:
+// it outlives its VM exactly until the teardown frees what it names, and a launch that
+// failed is cleaned up the same way — a record left behind would be a stale record a
+// reader has to be told to ignore.
+func TestJailedLauncherDeletesTheRecordWhenTheInstanceIsGone(t *testing.T) {
+	requireJailPlatform(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	registry := newFakeRegistry()
+	launcher.Registry = registry
+
+	// A launch that fails after the record was published.
+	fake.loadErr = assert.AnError
+	req := needJailedRestoreRequest(t, launcher)
+	req.Record = vminstance.Instance{Kind: vminstance.KindSandbox}
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	_, err := launcher.Start(context.Background(), req)
+	require.Error(t, err)
+	require.NotEmpty(t, registry.puts, "the record is published before the step that failed")
+	assert.Equal(t, []string{req.InstanceID}, registry.deletes, "and deleted with the instance")
+
+	// A launch that is stopped normally.
+	fake.loadErr = nil
+	registry.deletes = nil
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+	launched, err := launcher.Start(context.Background(), req)
+	require.NoError(t, err)
+
+	require.NoError(t, launched.Stop(context.Background()))
+	assert.Equal(t, []string{req.InstanceID}, registry.deletes)
+	require.NoError(t, launched.Stop(context.Background()), "a retried stop must succeed")
+	assert.Equal(t, []string{req.InstanceID}, registry.deletes, "and must not delete anything twice")
+}
+
+// TestJailedLauncherRefusesARecordThatNamesAnotherInstance pins the one record the
+// launcher will not publish: one whose name is not the instance being launched. The
+// launch fails and takes its jail, cgroup and uid with it.
+func TestJailedLauncherRefusesARecordThatNamesAnotherInstance(t *testing.T) {
+	requireJailPlatform(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+	registry := newFakeRegistry()
+	launcher.Registry = registry
+
+	req := needJailedRestoreRequest(t, launcher)
+	req.Record = vminstance.Instance{ID: "sbx-somebody-else", Kind: vminstance.KindSandbox}
+	launcher.JailerPath = fake.jailerScript(t, launcher, req.InstanceID)
+
+	launched, err := launcher.Start(context.Background(), req)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sbx-somebody-else")
+	assert.Contains(t, err.Error(), req.InstanceID)
+	assert.Nil(t, launched.Stop)
+	assert.Empty(t, registry.puts, "nothing is written under a name the caller did not ask for")
+	assert.NoDirExists(t, launcher.JailRoot(req.InstanceID))
+	assert.False(t, launcher.UIDs.Leased(3000), "a refused launch gives its uid back")
 }
 
 // TestJailedLauncherFailedStartLeavesNothingBehind pins the contract's hardest

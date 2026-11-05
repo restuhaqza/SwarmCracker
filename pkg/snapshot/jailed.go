@@ -51,6 +51,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/console"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 // The chroot paths every jailed instance sees, and the host base of the cgroups the
@@ -192,6 +193,14 @@ type JailedLauncher struct {
 	// boot of a full OS image whose init system has to start the agent — is the
 	// launch that may need more.
 	ReadyTimeout time.Duration
+
+	// Registry is the node's instance registry this launcher publishes to: the
+	// record a launch writes before the instance is reachable, with the jail uid
+	// and the paths only the launcher knows in it, and the one a stop deletes once
+	// the instance's resources are gone (record.go). Nil means this launcher keeps
+	// none — a dev run, a unit test — and then nothing is written and readers fall
+	// back to the derivation every node used before the registry.
+	Registry vminstance.Registry
 }
 
 // The jailed launcher satisfies the interface, and the assertion is where the build
@@ -227,6 +236,25 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 	if err := j.spawn(); err != nil {
 		return Launched{}, j.fail(err)
 	}
+
+	// The VMM exists, so every path in the record is true and the node can resolve
+	// the instance before its guest is reachable — and a launch that fails from
+	// here leaves the record a teardown works from (record.go).
+	record, err := launchRecord(req, launchFacts{
+		pid:       j.proc.Pid,
+		apiSocket: j.hostSocket,
+		vsockPath: chrootPath(j.chroot, req.VsockPath),
+		console:   j.consolePath,
+		jailUID:   j.uid,
+		netns:     j.netns,
+	}, time.Now().UTC())
+	if err != nil {
+		return Launched{}, j.fail(fmt.Errorf("instance %q: %w", req.InstanceID, err))
+	}
+	if err := publishRecord(l.Registry, record); err != nil {
+		return Launched{}, j.fail(fmt.Errorf("refusing to start VM %q: %w", req.InstanceID, err))
+	}
+
 	if err := jailedWaitForAPI(j.hostSocket, directLaunchSocketTimeout); err != nil {
 		return Launched{}, j.fail(fmt.Errorf("firecracker API not ready in the jail: %w", err))
 	}
@@ -244,6 +272,7 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 	if err != nil {
 		return Launched{}, j.fail(fmt.Errorf("instance %q: %w", req.InstanceID, err))
 	}
+	markRecordReady(l.Registry, record)
 
 	log.Info().
 		Str("instance_id", req.InstanceID).
@@ -430,6 +459,11 @@ type jailedInstance struct {
 	// launcher must know before the guest exists.
 	vsockPath string
 
+	// registry is the node's instance registry, kept here because the teardown is
+	// what deletes the instance's record: the record is the handle to the netns,
+	// TAP device and disk a stop frees (record.go).
+	registry vminstance.Registry
+
 	consolePath string
 
 	proc       *os.Process
@@ -535,6 +569,7 @@ func (l JailedLauncher) newJailed(req LaunchRequest) (*jailedInstance, error) {
 		hostSocket:       hostSocket,
 		socketPath:       socketPath,
 		vsockPath:        req.VsockPath,
+		registry:         l.Registry,
 		consolePath:      consolePath,
 	}, nil
 }
@@ -1024,6 +1059,11 @@ func (j *jailedInstance) stop(ctx context.Context) error {
 
 	j.lease.Release()
 	j.proc = nil
+
+	// Last, and only now: the record names the resources a stop frees beyond this
+	// launcher's own handles — the netns, the TAP device, the disk — and the
+	// registry refuses to release a record whose VMM is still running (record.go).
+	releaseRecord(j.registry, j.instanceID)
 
 	return errors.Join(errs...)
 }
