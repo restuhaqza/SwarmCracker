@@ -23,6 +23,7 @@ import (
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 // loadCall is one PUT /snapshot/load a fake launch saw.
@@ -372,6 +373,102 @@ func TestDirectLauncherPresentsTheRequestsToken(t *testing.T) {
 	assert.Equal(t, req.AgentToken, fake.dials[0].token)
 }
 
+// TestDirectLauncherPublishesTheRecordAndMarksItReadyAfterTheHello pins SBX-025 on the
+// direct path: the instance is recorded once the VMM exists and before its guest is
+// reachable, with the launcher's own paths in it, and the record is marked ready only
+// after the guest has answered — which is the same criterion the launch itself is
+// conditional on.
+func TestDirectLauncherPublishesTheRecordAndMarksItReadyAfterTheHello(t *testing.T) {
+	socketDir, logDir := t.TempDir(), t.TempDir()
+	fake := &fakeDirectVMM{createSocket: true, hello: agent.Hello{Version: agent.Version, BootID: "boot-record"}}
+	fake.install(t)
+
+	registry := newFakeRegistry()
+	req := needRestoreRequest()
+	req.Record = vminstance.Instance{
+		Kind:    vminstance.KindSandbox,
+		OwnerID: "user-7",
+		NodeID:  "node-a",
+		TAP:     "tap-sbx1a2b3c",
+		GuestIP: "10.42.0.7",
+		MAC:     "02:00:0a:2a:00:07",
+		// A caller that guessed these must be overruled by the launcher.
+		PID:       1,
+		APISocket: "/caller/guessed.sock",
+	}
+
+	launched, err := (DirectLauncher{SocketDir: socketDir, LogDir: logDir, Registry: registry}).
+		Start(context.Background(), req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = launched.Stop(context.Background()) })
+
+	require.Len(t, registry.puts, 2, "one write before the guest is reachable, one once it answered")
+	published, ready := registry.puts[0], registry.puts[1]
+
+	assert.Equal(t, req.InstanceID, published.ID)
+	assert.Equal(t, fake.proc.Pid, published.PID)
+	assert.Equal(t, launched.APISocket, published.APISocket)
+	assert.Equal(t, req.VsockPath, published.VsockPath)
+	assert.Equal(t, launched.ConsolePath, published.Console)
+	assert.Equal(t, vminstance.KindSandbox, published.Kind, "the caller's kind is recorded as given")
+	assert.Equal(t, "10.42.0.7", published.GuestIP)
+	assert.Equal(t, "02:00:0a:2a:00:07", published.MAC)
+	assert.Zero(t, published.JailUID, "a direct launch is not jailed")
+	assert.False(t, published.Ready, "a record written before the hello is not ready")
+	assert.False(t, published.Booted.IsZero(), "the record says when the instance was booted")
+
+	assert.True(t, ready.Ready, "the guest answered, so the record may say so")
+	assert.Equal(t, published.Booted, ready.Booted, "marking it ready must not move its age")
+	assert.Equal(t, published.PID, ready.PID)
+}
+
+// TestDirectLauncherRefusesToRunAnInstanceItCannotRecord pins the fail-closed half: a
+// node that keeps a registry must not run a VM it cannot resolve, because nothing else
+// knows the socket it chose. The process is ended like every other failed step.
+func TestDirectLauncherRefusesToRunAnInstanceItCannotRecord(t *testing.T) {
+	fake := &fakeDirectVMM{createSocket: true}
+	fake.install(t)
+
+	registry := newFakeRegistry()
+	registry.putErr = errors.New("instance registry /var/lib/swarmcracker/vminstances: no space left on device")
+	req := needRestoreRequest()
+	req.Record = vminstance.Instance{Kind: vminstance.KindSandbox}
+
+	launched, err := (DirectLauncher{SocketDir: t.TempDir(), Registry: registry}).Start(context.Background(), req)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "refusing to start VM")
+	assert.ErrorIs(t, err, registry.putErr)
+	assert.Nil(t, launched.Stop)
+	require.NotNil(t, fake.proc)
+	waitForProcessGone(t, fake.proc.Pid)
+	assert.Empty(t, registry.deletes, "a launch that was refused published nothing to delete")
+}
+
+// TestDirectLauncherSurvivesARecordItCannotMarkReady pins the one metadata write that
+// must not fail a launch: the VM is already up and answering, and a record left at
+// Ready=false costs a reader a second look while a killed VM costs the caller its
+// instance.
+func TestDirectLauncherSurvivesARecordItCannotMarkReady(t *testing.T) {
+	fake := &fakeDirectVMM{createSocket: true}
+	fake.install(t)
+
+	registry := newFakeRegistry()
+	registry.putErr = errors.New("no space left on device")
+	registry.putErrOn = 2
+	req := needRestoreRequest()
+	req.Record = vminstance.Instance{Kind: vminstance.KindSandbox}
+
+	launched, err := (DirectLauncher{SocketDir: t.TempDir(), Registry: registry}).Start(context.Background(), req)
+	require.NoError(t, err, "a launch whose guest answered is not undone by a metadata write")
+	t.Cleanup(func() { _ = launched.Stop(context.Background()) })
+
+	require.Len(t, registry.puts, 1)
+	assert.False(t, registry.puts[0].Ready, "the record stays as it was: still booting")
+	require.NotNil(t, launched.Stop, "and the caller still holds its instance")
+	assert.True(t, processAlive(fake.proc.Pid), "which is running")
+}
+
 // TestDirectLauncherRefusesAnUnusableRequest pins the requests the launcher declines
 // before it spawns anything. Each refusal is a caller mistake that would otherwise
 // become a VMM started with the wrong paths — or a path outside the socket directory.
@@ -484,7 +581,11 @@ func TestDirectLauncherStopEndsTheInstance(t *testing.T) {
 	fake := &fakeDirectVMM{createSocket: true}
 	fake.install(t)
 
-	launched, err := (DirectLauncher{SocketDir: t.TempDir()}).Start(context.Background(), needRestoreRequest())
+	registry := newFakeRegistry()
+	req := needRestoreRequest()
+	req.Record = vminstance.Instance{Kind: vminstance.KindSandbox}
+
+	launched, err := (DirectLauncher{SocketDir: t.TempDir(), Registry: registry}).Start(context.Background(), req)
 	require.NoError(t, err)
 	require.NotNil(t, fake.proc)
 	require.FileExists(t, launched.APISocket)
@@ -492,8 +593,11 @@ func TestDirectLauncherStopEndsTheInstance(t *testing.T) {
 	require.NoError(t, launched.Stop(context.Background()))
 	waitForProcessGone(t, fake.proc.Pid)
 	assert.NoFileExists(t, launched.APISocket, "the socket is the stopped instance's file")
+	assert.Equal(t, []string{req.InstanceID}, registry.deletes,
+		"the record is deleted once the instance's process and socket are gone")
 
 	require.NoError(t, launched.Stop(context.Background()), "a retried stop must succeed")
+	assert.Equal(t, []string{req.InstanceID}, registry.deletes, "and a retried stop deletes nothing twice")
 }
 
 // TestDirectLauncherStopHonoursTheCallersClock pins the bound the stop context

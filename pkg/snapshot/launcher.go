@@ -20,6 +20,7 @@ import (
 	"context"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 // LaunchMode says how a launch asks an instance to enter the world.
@@ -132,6 +133,28 @@ type LaunchRequest struct {
 	// writes the guest's copy into the disk) because the secret is the node's:
 	// the launcher only carries it across the handshake.
 	AgentToken string
+
+	// Record is the identity the node's registry keeps for this instance, as far
+	// as the caller knows it: the kind of VM it is, who owns it, and the network
+	// identity the caller allocated for it — its namespace, the TAP device its
+	// interface is attached to, and the address and MAC it carries. The launcher
+	// completes it with what only the launcher knows and publishes it to the
+	// registry the launcher holds, before the guest is reachable and again, with
+	// Ready set, once the agent has answered (see record.go, SBX-025). A launcher
+	// that holds no registry writes nothing.
+	//
+	// The launcher owns some of the record and overwrites them, so a caller fills
+	// in only what it knows: ID (which must be InstanceID or empty), PID,
+	// APISocket, VsockPath, Console, JailUID, Booted, Ready, and NetNS, which is
+	// the namespace the launcher put the VMM in — empty for a launcher that has
+	// none, whatever the request said. Everything else is recorded as given, and a
+	// field left empty stays empty: a reader reads an empty field as "this
+	// instance has none", and a guessed path or address is worse than none.
+	//
+	// Disk is the caller's to set, and only for a disk the instance owns outright:
+	// a teardown frees it. A jailed launch's own disk lives inside its jail and is
+	// freed with it.
+	Record vminstance.Instance
 }
 
 // Launched is a running instance: the host paths that reach it and the one way
@@ -208,6 +231,10 @@ type Launched struct {
 //     chroot and no netns. The caller has no handle to clean up with, and the
 //     next launch under the same ID must not inherit the failure.
 //   - Stop is the only way an instance ends, and it is idempotent.
+//   - A launcher that holds a registry publishes the instance's record as soon as
+//     the process exists and flips Ready once the agent has answered (record.go);
+//     a launch whose record cannot be written fails, and a stop deletes the record
+//     only after the instance's own resources are gone.
 //   - Start and Stop do not serialize themselves per instance. A caller that can
 //     race a launch and a stop of the same instance (the manager can: a restore
 //     and a stop share one task's socket) holds its own lock.

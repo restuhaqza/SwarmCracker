@@ -13,6 +13,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/restuhaqza/swarmcracker/pkg/runtime"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 // directLaunchSocketTimeout is how long a freshly started Firecracker process
@@ -71,6 +72,13 @@ type DirectLauncher struct {
 	// the launch fails. Zero means DefaultReadyTimeout; a dev box that runs a
 	// guest with a slow init system raises it.
 	ReadyTimeout time.Duration
+
+	// Registry is the node's instance registry this launcher publishes to: the
+	// record a launch writes before the instance is reachable, and the one a stop
+	// deletes once its resources are gone (record.go). Nil means this launcher
+	// keeps none — a dev run, a unit test — and then nothing is written and
+	// readers fall back to the derivation every node used before the registry.
+	Registry vminstance.Registry
 }
 
 // The direct launcher satisfies the interface, and the assertion is where the
@@ -110,8 +118,28 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 	}
 	proc := cmd.Process
 
-	if err := directWaitForAPI(socketPath, directLaunchSocketTimeout); err != nil {
+	// The VMM exists, so the paths are true and the node can resolve the instance
+	// before the guest is reachable — which is what makes a record useful to a
+	// caller waiting on a boot, and what a launch that fails from here still
+	// leaves behind for a teardown (record.go). A direct launch is not jailed, so
+	// it has no uid of its own to record.
+	record, err := launchRecord(req, launchFacts{
+		pid:       proc.Pid,
+		apiSocket: socketPath,
+		vsockPath: req.VsockPath,
+		console:   consolePath,
+	}, time.Now().UTC())
+	if err != nil {
 		discardDirectVMM(proc, socketPath)
+		return Launched{}, fmt.Errorf("instance %q: %w", req.InstanceID, err)
+	}
+	if err := publishRecord(d.Registry, record); err != nil {
+		discardDirectVMM(proc, socketPath)
+		return Launched{}, fmt.Errorf("refusing to start VM %q: %w", req.InstanceID, err)
+	}
+
+	if err := directWaitForAPI(socketPath, directLaunchSocketTimeout); err != nil {
+		d.discard(req.InstanceID, proc, socketPath)
 		return Launched{}, fmt.Errorf("firecracker API not ready after restore: %w", err)
 	}
 
@@ -119,7 +147,7 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 	// merely loaded. This is the call that has to succeed before Start may report
 	// the instance as launched.
 	if err := directLoadSnapshot(ctx, socketPath, req.State, req.Mem); err != nil {
-		discardDirectVMM(proc, socketPath)
+		d.discard(req.InstanceID, proc, socketPath)
 		return Launched{}, fmt.Errorf("failed to load snapshot memory: %w", err)
 	}
 
@@ -129,9 +157,10 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 	// up, is a failed launch rather than a live instance.
 	hello, err := awaitAgentHello(ctx, req.VsockPath, req.AgentToken, readyTimeout(d.ReadyTimeout))
 	if err != nil {
-		discardDirectVMM(proc, socketPath)
+		d.discard(req.InstanceID, proc, socketPath)
 		return Launched{}, fmt.Errorf("instance %q: %w", req.InstanceID, err)
 	}
+	markRecordReady(d.Registry, record)
 
 	log.Info().
 		Str("instance_id", req.InstanceID).
@@ -151,7 +180,14 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		StatePath:   req.State,
 		MemPath:     req.Mem,
 		Stop: func(stopCtx context.Context) error {
-			return stopDirect(stopCtx, proc, socketPath)
+			if err := stopDirect(stopCtx, proc, socketPath); err != nil {
+				// The process may still be alive, so the record stays: it names
+				// the resources of a VM that is still there, and a teardown that
+				// released them would be the opposite of a stop.
+				return err
+			}
+			releaseRecord(d.Registry, req.InstanceID)
+			return nil
 		},
 	}, nil
 }
@@ -206,6 +242,20 @@ func (d DirectLauncher) consolePath(instanceID string) string {
 		return ""
 	}
 	return filepath.Join(d.LogDir, instanceID+".log")
+}
+
+// discard ends a start that failed. Start returns no handle for a failed launch, so
+// this is the only chance to end the process, clear the socket and drop the record;
+// all three steps are best effort, and the failure that got here is the one worth
+// reporting.
+//
+// The record is released through the registry's own teardown, which is what frees the
+// resources it names — the netns, the TAP device, the disk — and deletes it only once
+// they are gone. A record whose VMM is not dead yet is refused there and stays for a
+// retry, which is exactly what a record is for.
+func (d DirectLauncher) discard(instanceID string, proc *os.Process, socketPath string) {
+	discardDirectVMM(proc, socketPath)
+	releaseRecord(d.Registry, instanceID)
 }
 
 // discardDirectVMM ends a start that failed. Start returns no handle for a failed
