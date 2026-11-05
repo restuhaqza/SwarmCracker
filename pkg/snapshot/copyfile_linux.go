@@ -16,15 +16,20 @@ import (
 // share the source's blocks (a reflink costs no data copy), then copies only the
 // data extents so a sparse disk keeps its holes, and finally falls back to a
 // plain byte copy when the filesystem supports neither. Every attempt is subject
-// to ctx, so a cancelled request stops between chunks.
-func copyFileData(ctx context.Context, dst, src *os.File) error {
+// to ctx, so a cancelled request stops between chunks. The mode it reports is the
+// one that produced the destination, which is how a filesystem without reflink
+// becomes visible instead of a copy that silently costs the image's size.
+func copyFileData(ctx context.Context, dst, src *os.File) (CopyMode, error) {
 	if err := cloneExtents(ctx, dst, src); err == nil {
-		return nil
+		return CopyReflink, nil
 	}
 	if err := copyDataExtents(ctx, dst, src); err == nil {
-		return nil
+		return CopySparse, nil
 	}
-	return copyAll(ctx, dst, src)
+	if err := copyAll(ctx, dst, src); err != nil {
+		return CopyNone, err
+	}
+	return CopyFull, nil
 }
 
 // cloneExtents asks the filesystem to share the source's extents (FICLONE).

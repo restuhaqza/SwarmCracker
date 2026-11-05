@@ -67,6 +67,11 @@ var (
 	// jail; a VMM started outside one would resolve those names against the host's
 	// own root, so the restore refuses instead of starting a VM it cannot feed.
 	ErrJailedSnapshot = errors.New("snapshot was taken inside a jail")
+	// ErrSharedDisk means a copy's destination already is the source file — the
+	// same path, or a hard link to it. Writing it would overwrite the disk being
+	// copied, which is the disk a checkpoint recorded or the one another instance
+	// is running on, so the copy is refused instead.
+	ErrSharedDisk = errors.New("the copy's destination is its source")
 	// ErrNoRestoredVM means this manager tracks no restored VM for the task: it
 	// was never restored here, it was already stopped, or the daemon that
 	// restored it is gone. A restored VM starts outside SwarmKit's task
@@ -643,7 +648,9 @@ func copySnapshotDisk(ctx context.Context, source, dest string) (int64, error) {
 	if source == "" {
 		return 0, nil
 	}
-	if err := copyDiskFile(ctx, source, dest); err != nil {
+	// The snapshot keeps the bytes, not how they were copied: what a reflink buys
+	// and a plain copy costs is reported where an instance's own disk is staged.
+	if _, err := copyDiskFile(ctx, source, dest); err != nil {
 		return 0, fmt.Errorf("failed to copy task disk %s into the snapshot: %w", source, err)
 	}
 	size, err := fileSize(dest)
@@ -733,7 +740,7 @@ func copyCheckpointOutOfJail(ctx context.Context, targets createTargets, statePa
 		{src: targets.jailState, dst: statePath},
 		{src: targets.jailMem, dst: memPath},
 	} {
-		if err := copyFile(ctx, file.src, file.dst); err != nil {
+		if _, err := copyFile(ctx, file.src, file.dst); err != nil {
 			return fmt.Errorf("failed to copy %s out of the jail: %w", file.src, err)
 		}
 		_ = os.Remove(file.src)

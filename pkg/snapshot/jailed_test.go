@@ -324,6 +324,7 @@ func TestJailedLauncherStagesTheCheckpointInsideTheJail(t *testing.T) {
 	assert.Equal(t, jailedMemPath, fake.loads[0].mem)
 	assert.Equal(t, jailedStatePath, launched.StatePath)
 	assert.Equal(t, jailedMemPath, launched.MemPath)
+	assert.NotEqual(t, CopyNone, launched.DiskCopy, "a launch reports how the instance got its own disk")
 
 	require.Len(t, fake.resumes, 1, "a loaded checkpoint is resumed explicitly")
 	assert.Empty(t, fake.boots, "a restore configures no boot source")
@@ -875,7 +876,7 @@ func TestJailedInstanceRefusesAChrootItCannotBuild(t *testing.T) {
 	require.NoError(t, os.MkdirAll(j.chroot, 0o700))
 	require.NoError(t, os.WriteFile(filepath.Join(j.chroot, "kernel"), nil, 0o600))
 
-	err = j.stage(context.Background())
+	_, err = j.stage(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create /kernel in the jail")
 }
@@ -1067,7 +1068,8 @@ func TestJailedLauncherKeepsItsHandlesWhileTheVMWillNotDie(t *testing.T) {
 
 	j, err := launcher.newJailed(req)
 	require.NoError(t, err)
-	require.NoError(t, j.prepare(context.Background()))
+	_, err = j.prepare(context.Background())
+	require.NoError(t, err)
 	require.NoError(t, j.spawn())
 	require.NoError(t, jailedWaitForAPI(j.hostSocket, time.Second))
 
@@ -1377,4 +1379,58 @@ func TestJailedLauncherLeavesNothingBehindWhenStagingFails(t *testing.T) {
 			assert.False(t, launcher.UIDs.Leased(3000), "and the uid must be free for the next instance")
 		})
 	}
+}
+
+// TestJailedLauncherGivesEachInstanceItsOwnDisk pins SBX-023's guarantee where an
+// instance's disk is made: two instances staged from one source disk get two files,
+// never one file under two names, and the source is only ever read.
+func TestJailedLauncherGivesEachInstanceItsOwnDisk(t *testing.T) {
+	requireJailPlatform(t)
+
+	launcher, fake := jailedTestLauncher(t)
+	fake.install(t)
+
+	// The same four sources for both requests: one image, two instances.
+	first := needJailedRestoreRequest(t, launcher)
+	second := first
+	second.InstanceID = "sbx-1a2b3d"
+
+	instances := make([]*jailedInstance, 0, 2)
+	modes := make([]CopyMode, 0, 2)
+	for _, req := range []LaunchRequest{first, second} {
+		j, err := launcher.newJailed(req)
+		require.NoError(t, err)
+		t.Cleanup(func() { j.lease.Release() })
+
+		mode, err := j.prepare(context.Background())
+		require.NoError(t, err)
+		instances = append(instances, j)
+		modes = append(modes, mode)
+	}
+
+	disks := make([]os.FileInfo, 0, len(instances))
+	for i, j := range instances {
+		disk := filepath.Join(j.chroot, "drives", "rootfs.ext4")
+		body, err := os.ReadFile(disk)
+		require.NoError(t, err)
+		assert.Equal(t, "disk-image", string(body), "each instance's disk holds the source's bytes")
+		assert.NotEqual(t, CopyNone, modes[i], "staging reports how the disk was copied")
+
+		info, err := os.Stat(disk)
+		require.NoError(t, err)
+		disks = append(disks, info)
+	}
+
+	require.Len(t, disks, 2)
+	assert.False(t, os.SameFile(disks[0], disks[1]),
+		"one image staged twice must be two disks, not one disk under two names")
+
+	source, err := os.Stat(first.Rootfs)
+	require.NoError(t, err)
+	assert.False(t, os.SameFile(disks[0], source), "an instance's disk is never the source file")
+	assert.False(t, os.SameFile(disks[1], source))
+
+	body, err := os.ReadFile(first.Rootfs)
+	require.NoError(t, err)
+	assert.Equal(t, "disk-image", string(body), "the source is a source, never a target")
 }
