@@ -56,6 +56,7 @@ import (
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
+	"github.com/restuhaqza/swarmcracker/pkg/vminstance"
 )
 
 // jailedTestUIDBase is where this test takes jail uids from. It sits in the range the
@@ -999,4 +1000,240 @@ func editGuestImage(t *testing.T, imagePath string, edit func(root string)) {
 
 	edit(mount)
 	require.NoError(t, exec.Command("sync").Run())
+}
+
+// TestIntegration_JailedLauncherInstanceRecord is SBX-025 on a real host: the record a
+// launch publishes, read back from the node's registry, and checked field by field
+// against the host's own answers — /proc for the process and the uid it runs as, `ss`
+// for the two sockets the record names, `ip`/`netns` for the namespace the VMM is in.
+// A record is only worth writing if a reader can act on it, and acting on it means
+// dialling the socket it names, so the comparison is the point.
+//
+// The fields this instance has no answer for are asserted empty rather than filled with
+// a plausible value: a cold boot here configures no NIC, so there is no TAP device, no
+// guest address and no MAC to record, and a guessed one would send an operator to an
+// address nobody answers on.
+func TestIntegration_JailedLauncherInstanceRecord(t *testing.T) {
+	requireJailedHost(t)
+
+	ctx := context.Background()
+	scratch := jailedScratch(t)
+	kernel := testAsset(t, "SWARMCRACKER_TEST_KERNEL", "/usr/share/firecracker/vmlinux")
+	rootfs := testAsset(t, "SWARMCRACKER_TEST_ROOTFS",
+		"/var/lib/firecracker/rootfs/rootfs.ext4", "/tmp/firecracker-rootfs.ext4")
+
+	firecrackerBin := lookPath(t, "firecracker")
+	jailerBin := lookPath(t, "jailer")
+	uids := newTestUIDAllocator(t)
+
+	stateDir := filepath.Join(scratch, "state")
+	store, err := vminstance.NewStore(vminstance.Config{Dir: vminstance.Dir(stateDir)})
+	require.NoError(t, err)
+
+	disk := filepath.Join(scratch, "rootfs.ext4")
+	require.NoError(t, copySparse(rootfs, disk))
+	installGuestAgent(t, disk)
+
+	launcher := snapshot.JailedLauncher{
+		ChrootBaseDir:    filepath.Join(scratch, "jails"),
+		FirecrackerPath:  firecrackerBin,
+		JailerPath:       jailerBin,
+		ParentCgroup:     "swarmcracker-test",
+		MemoryMaxBytes:   1024 << 20,
+		PidsMax:          64,
+		LogDir:           filepath.Join(scratch, "logs"),
+		ConsoleSocketDir: filepath.Join(scratch, "console"),
+		UIDs:             uids,
+		Registry:         store,
+	}
+
+	// The identity the caller knows when it asks for the instance. The launcher fills in
+	// the rest and overwrites what the caller cannot know.
+	identity := vminstance.Instance{
+		Kind:    vminstance.KindSandbox,
+		OwnerID: "user-l2",
+		NodeID:  "the-root",
+	}
+
+	// The namespace is the one host-side fact the launcher itself puts the VMM into, so
+	// it is the one the record has to agree with /proc about.
+	srcNetNS := "sc-l2-src"
+	addNetNS(t, srcNetNS)
+
+	srcID := "rec-src"
+	src, err := launcher.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: srcID,
+		Mode:       snapshot.ModeCold,
+		Kernel:     kernel,
+		Rootfs:     disk,
+		VCPUs:      2,
+		MemoryMB:   512,
+		VsockPath:  jailedAgentMuxer,
+		NetNS:      srcNetNS,
+		Record:     identity,
+	})
+	require.NoError(t, err, "a cold boot with a registry must start")
+	t.Cleanup(func() { _ = src.Stop(context.Background()) })
+	assertRecordMatchesTheHost(t, store, launcher, src, srcID, srcNetNS)
+
+	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{SnapshotDir: filepath.Join(scratch, "snapshots")})
+	require.NoError(t, err)
+	info, err := mgr.CreateSnapshot(ctx, srcID, src.APISocket, snapshot.CreateOptions{
+		ServiceID:  "record",
+		NodeID:     "the-root",
+		VCPUCount:  2,
+		MemoryMB:   512,
+		RootfsPath: disk,
+		JailRoot:   launcher.JailRoot(srcID),
+	})
+	require.NoError(t, err)
+	require.NoError(t, src.Stop(ctx))
+
+	// The record goes with the instance it describes, and so does the namespace it
+	// named: a record is the handle to the resources a stop frees, so a stop that
+	// finished deletes it and a stale record is never left for a reader to trip over.
+	assertNoRecord(t, store, stateDir, srcID)
+	assert.NoDirExists(t, filepath.Join("/var/run/netns", srcNetNS),
+		"the record named the namespace, so the teardown is what removes it")
+
+	// A restored instance is a second instance: its own jail, its own uid, its own
+	// namespace, and its own record — which is what a reader resolves to what it is
+	// actually running.
+	restNetNS := "sc-l2-rest"
+	addNetNS(t, restNetNS)
+	restID := "rec-rest"
+	restored, err := launcher.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: restID,
+		Mode:       snapshot.ModeRestore,
+		Kernel:     kernel,
+		Rootfs:     info.DiskPath,
+		State:      info.StatePath,
+		Mem:        info.MemoryPath,
+		VsockPath:  jailedAgentMuxer,
+		NetNS:      restNetNS,
+		Record:     identity,
+	})
+	require.NoError(t, err, "a restore with a registry must start")
+	assertRecordMatchesTheHost(t, store, launcher, restored, restID, restNetNS)
+
+	require.NoError(t, restored.Stop(ctx))
+	assertNoRecord(t, store, stateDir, restID)
+	assert.NoDirExists(t, filepath.Join("/var/run/netns", restNetNS))
+}
+
+// assertRecordMatchesTheHost reads one instance's record back from the registry and
+// holds every field the launcher claims to the host's own answer for it.
+func assertRecordMatchesTheHost(t *testing.T, store *vminstance.Store, launcher snapshot.JailedLauncher, launched snapshot.Launched, instanceID, netns string) {
+	t.Helper()
+
+	record, found, err := store.Get(instanceID)
+	require.NoError(t, err)
+	require.True(t, found, "a running instance must have a record: %s", instanceID)
+	require.True(t, record.Ready, "the guest answered, so the record says the instance may be used")
+
+	// /proc: the record names the VMM, and the VMM is the process the jailer wrote into
+	// the jail — not the script, not the launcher.
+	pid := jailPID(t, launcher, instanceID)
+	assert.Equal(t, pid, record.PID, "the record names the process whose death means the instance is gone")
+	comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	require.NoError(t, err)
+	assert.Equal(t, "firecracker", strings.TrimSpace(string(comm)), "and that process is the VMM itself")
+
+	// /proc again: the uid the VMM actually runs as, which is the uid the record must
+	// hand to the next teardown so it never frees a live instance's resources.
+	assert.NotZero(t, record.JailUID, "a jailed instance runs as a uid of its own")
+	assert.Equal(t, echoUID(t, pid), record.JailUID)
+
+	// The two sockets, from both sides. On the host, the record names a path a reader
+	// dials, and that path is a socket. Inside the instance's own namespace and chroot,
+	// `ss -xl` reports the same socket at the path the VMM was configured with — the two
+	// differ by the jail root, which is the launcher's own mapping — and it has to be
+	// asked there, because a unix socket belongs to the netns that created it.
+	instanceRoot := filepath.Join(launcher.JailRoot(instanceID), "root")
+	listening := unixSocketsInUse(t, netns)
+	for _, hostPath := range []string{record.APISocket, record.VsockPath} {
+		info, err := os.Stat(hostPath)
+		require.NoError(t, err, "the record names a socket a reader will dial: %s", hostPath)
+		assert.Equal(t, os.ModeSocket, info.Mode()&os.ModeSocket, "%s must be a unix socket", hostPath)
+
+		inside, err := filepath.Rel(instanceRoot, hostPath)
+		require.NoError(t, err, "the record's paths live inside the instance's jail")
+		assert.Contains(t, listening, "/"+inside,
+			"the socket the host reaches at %s is the one the instance has at /%s", hostPath, inside)
+	}
+	assert.Equal(t, launched.VsockPath, record.VsockPath)
+	assert.Equal(t, launched.APISocket, record.APISocket)
+
+	// The console: the file the record names is the one the launcher created.
+	assert.Equal(t, launched.ConsolePath, record.Console)
+	assert.FileExists(t, record.Console)
+
+	// /proc and ip: the namespace the VMM is in is the one the record names. The two are
+	// compared by their namespace inode: /var/run/netns/<name> is a bind mount of the
+	// namespace `ip netns add` created, not a symlink, so the number is what both sides
+	// can be asked for.
+	namedNS, err := os.Stat(filepath.Join("/var/run/netns", netns))
+	require.NoError(t, err, "the test's namespace must exist")
+	fromProc, err := os.Readlink(fmt.Sprintf("/proc/%d/ns/net", pid))
+	require.NoError(t, err)
+	assert.Equal(t, fmt.Sprintf("net:[%d]", inodeOf(namedNS)), fromProc,
+		"the VMM runs in the namespace the record names")
+	assert.Equal(t, filepath.Join("/var/run/netns", netns), record.NetNS)
+
+	// What this instance has no answer for: it boots no NIC, so the record leaves the
+	// network identity empty rather than guessing one.
+	assert.Empty(t, record.TAP)
+	assert.Empty(t, record.GuestIP)
+	assert.Empty(t, record.MAC)
+
+	// And the caller's own half of the identity is recorded as given.
+	assert.Equal(t, vminstance.KindSandbox, record.Kind)
+	assert.Equal(t, "user-l2", record.OwnerID)
+	assert.Equal(t, "the-root", record.NodeID)
+	assert.False(t, record.Booted.IsZero())
+
+	t.Logf("record %s: pid %d (comm %s, uid %d) api %s vsock %s netns %s console %s ready %v",
+		record.ID, record.PID, strings.TrimSpace(string(comm)), record.JailUID,
+		record.APISocket, record.VsockPath, record.NetNS, record.Console, record.Ready)
+}
+
+// assertNoRecord proves the registry has nothing left for an instance: neither through
+// a lookup, nor as a file a later reader could find.
+func assertNoRecord(t *testing.T, store *vminstance.Store, stateDir, instanceID string) {
+	t.Helper()
+
+	_, found, err := store.Get(instanceID)
+	require.NoError(t, err)
+	assert.False(t, found, "a stopped instance must not resolve")
+	_, found, err = store.Peek(instanceID)
+	require.NoError(t, err)
+	assert.False(t, found, "and must not be left behind for a teardown to trip over")
+	assert.NoFileExists(t, filepath.Join(vminstance.Dir(stateDir), instanceID+".json"))
+}
+
+// unixSocketsInUse is what `ss -xl` reports inside one instance's network namespace:
+// every listening unix socket the kernel has there, which is the kernel's own answer
+// about the sockets a record names. The namespace matters because a unix socket belongs
+// to the netns that created it, so the host's own `ss` cannot see the instance's.
+func unixSocketsInUse(t *testing.T, netns string) string {
+	t.Helper()
+
+	argv := []string{"ss", "-xl"}
+	if netns != "" {
+		argv = append([]string{"ip", "netns", "exec", netns}, argv...)
+	}
+	out, err := exec.Command(argv[0], argv[1:]...).Output()
+	require.NoError(t, err, "%s", strings.Join(argv, " "))
+	return string(out)
+}
+
+// addNetNS creates a network namespace for one instance to run in, and removes it
+// after the test unless a teardown already did.
+func addNetNS(t *testing.T, name string) {
+	t.Helper()
+
+	if out, err := exec.Command("ip", "netns", "add", name).CombinedOutput(); err != nil {
+		t.Fatalf("ip netns add %s: %v: %s", name, err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", name).Run() })
 }
