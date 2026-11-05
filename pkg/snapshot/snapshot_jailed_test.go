@@ -240,6 +240,7 @@ func TestAJailedSnapshotRestoresThroughTheJailedLauncher(t *testing.T) {
 			Rootfs:     info.DiskPath,
 			State:      info.StatePath,
 			Mem:        info.MemoryPath,
+			VsockPath:  jailedTestVsockPath,
 		})
 		require.NoError(t, err, "a jail is what a jailed checkpoint needs")
 		t.Cleanup(func() { _ = started.Stop(context.Background()) })

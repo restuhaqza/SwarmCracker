@@ -16,7 +16,11 @@
 // manager, which is also what owns the per-task lock a restore and a stop share.
 package snapshot
 
-import "context"
+import (
+	"context"
+
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
+)
 
 // LaunchMode says how a launch asks an instance to enter the world.
 //
@@ -101,30 +105,68 @@ type LaunchRequest struct {
 	// NetNS is the network namespace to start the VMM in, by name or path. Empty
 	// means the node's own namespace (the shared bridge path).
 	NetNS string
+
+	// VsockPath is the vsock muxer the instance's guest agent answers on, and
+	// with it the only way a launch can tell a running guest from a loaded one
+	// (see readiness.go). A launch that names no muxer is refused: readiness is
+	// the agent's hello, and an instance nobody can reach has not been proven to
+	// run anything.
+	//
+	// The path means whatever the launcher's namespace makes it, like every other
+	// path in this request. A jailed launch is told the path the instance sees
+	// inside its chroot — the same value its vsock device is configured with, and
+	// the value a checkpoint of a jailed instance records, so restoring one passes
+	// the string it was booted with. A direct launch is told a host path, because
+	// its VMM is not chrooted: it must be the path the checkpoint recorded. A
+	// launcher that is handed a path its instance does not answer on reports a
+	// launch that never becomes ready.
+	VsockPath string
+
+	// AgentToken is the per-boot token this launch presents in its agent
+	// handshake. Empty is an unauthenticated dial, which is what a guest booted
+	// without token authentication answers; a guest that requires one refuses the
+	// hello, and the launch fails naming that (pkg/agent's ErrTokenRequired),
+	// rather than being reported ready on a handshake that authenticated nothing.
+	//
+	// The caller mints it (agent.NewToken, or agent.ProvisionForBoot, which also
+	// writes the guest's copy into the disk) because the secret is the node's:
+	// the launcher only carries it across the handshake.
+	AgentToken string
 }
 
 // Launched is a running instance: the host paths that reach it and the one way
 // to end it.
 //
-// It is returned only for an instance that is running — the VMM is up and, for a
-// resume, the checkpoint is loaded and the guest has been resumed — so a caller
-// may dial APISocket as soon as Start returns. Paths the launcher did not choose
-// or does not know are empty rather than guessed: a guessed vsock muxer path
-// would send the guest agent to a socket nobody listens on.
+// It is returned only for an instance that is running, which since SBX-024 means
+// the guest answered its agent's hello: the VMM is up, the checkpoint is loaded
+// (for a restore), and the agent behind the instance's muxer has completed the v2
+// handshake — see readiness.go for why the hello, and not the load, is the
+// criterion. A caller may dial APISocket as soon as Start returns. Paths the
+// launcher did not choose or does not know are empty rather than guessed: a
+// guessed vsock muxer path would send the guest agent to a socket nobody listens
+// on.
 type Launched struct {
 	// APISocket is the Firecracker API socket the instance listens on.
 	APISocket string
 
-	// VsockPath is the vsock muxer the guest agent answers on. A launcher that
-	// configured no vsock device leaves it empty, as does one that resumed a
-	// checkpoint whose recorded muxer path it has no way to read; the caller that
-	// knows the device configuration (or the registry a restore writes) supplies
-	// it.
+	// VsockPath is the host path of the vsock muxer the instance's guest agent
+	// answers on: the path this launch dialled to prove the guest is up, which is
+	// the request's VsockPath resolved in the launcher's own namespace (inside the
+	// jail's chroot for a jailed launch). It is what a caller dials to exec, copy
+	// files or check health, and it is empty only for a launcher that was handed
+	// no muxer — which no launcher accepts.
 	VsockPath string
 
 	// ConsolePath is the serial console file the instance writes to. Empty when
 	// the console is detached.
 	ConsolePath string
+
+	// Hello is what the guest agent answered when it proved the instance ready:
+	// the protocol it speaks, the operations it advertises, and its version,
+	// build and boot identity. It is the evidence the launch is conditional on,
+	// reported so the caller reads it from the launcher instead of asking again —
+	// a caller that needs its own session still dials, and gets a second hello.
+	Hello agent.Hello
 
 	// StatePath and MemPath are the checkpoint images the instance loaded. Both
 	// are empty for a cold boot.
@@ -157,8 +199,11 @@ type Launched struct {
 //
 // Every implementation must keep this contract:
 //
-//   - Start returns a Launched only for an instance that is running. A resume
-//     whose memory backend has not been loaded yet is not running.
+//   - Start returns a Launched only for an instance that is running, and running
+//     means the guest agent answered its hello (readiness.go). A checkpoint whose
+//     load returned 204 is a loaded VMM, not a live guest, and an agent that never
+//     answers — no agent in the image, a guest that panicked, a token it refuses —
+//     fails the launch with ErrAgentNotReady rather than returning.
 //   - A failed Start leaves nothing behind: no process, no socket, no cgroup, no
 //     chroot and no netns. The caller has no handle to clean up with, and the
 //     next launch under the same ID must not inherit the failure.

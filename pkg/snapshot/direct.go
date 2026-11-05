@@ -42,11 +42,12 @@ var (
 // It is the dev path. RFC D3 puts every production restore behind the jailer, and
 // this launcher is what remains reachable for development and for tests that have
 // no KVM. It also reproduces, step for step, what Manager.RestoreFromSnapshotWithLog
-// does today: remove the socket a previous process left at the path, start
+// does today — remove the socket a previous process left at the path, start
 // Firecracker with the instance's console attached, wait for the API socket, then
-// PUT /snapshot/load with resume_vm so the guest is running when Start returns.
-// Keeping that sequence here is what lets the jailed launcher be compared against
-// the behaviour the node has now.
+// PUT /snapshot/load with resume_vm — and then goes one step further than that
+// path does: it holds the guest's own agent to the handshake before it reports the
+// instance launched (readiness.go, SBX-024). Keeping the sequence here is what
+// lets the jailed launcher be compared against the behaviour the node has now.
 //
 // The request's jail fields (JailUID, JailGID, NetNS) and its cold-boot fields
 // (Kernel, Rootfs, VCPUs, MemoryMB) are ignored: a resumed instance takes its
@@ -65,6 +66,11 @@ type DirectLauncher struct {
 	// console, which is what a launcher with nowhere to put logs (a dev run, a
 	// test) wants.
 	LogDir string
+
+	// ReadyTimeout is how long a launch waits for the guest agent's hello before
+	// the launch fails. Zero means DefaultReadyTimeout; a dev box that runs a
+	// guest with a slow init system raises it.
+	ReadyTimeout time.Duration
 }
 
 // The direct launcher satisfies the interface, and the assertion is where the
@@ -117,21 +123,31 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		return Launched{}, fmt.Errorf("failed to load snapshot memory: %w", err)
 	}
 
+	// The load described the VMM. The guest behind it is only proven by its own
+	// answer, so the launch is not over until the agent speaks (readiness.go): a
+	// resume whose memory image is truncated, or whose guest never gets its agent
+	// up, is a failed launch rather than a live instance.
+	hello, err := awaitAgentHello(ctx, req.VsockPath, req.AgentToken, readyTimeout(d.ReadyTimeout))
+	if err != nil {
+		discardDirectVMM(proc, socketPath)
+		return Launched{}, fmt.Errorf("instance %q: %w", req.InstanceID, err)
+	}
+
 	log.Info().
 		Str("instance_id", req.InstanceID).
 		Str("mode", string(req.Mode)).
 		Str("socket", socketPath).
+		Str("agent_version", hello.AgentVersion).
 		Msg("Instance launched directly")
 
 	return Launched{
 		APISocket: socketPath,
-		// A direct launch configures no vsock device: the checkpoint's own device
-		// keeps the muxer path it recorded, which this launcher has no way to read.
-		// Guessing <SocketDir>/<InstanceID>.vsock would point the guest agent at a
-		// socket nobody listens on, so the caller that knows the device
-		// configuration supplies it (see Launched.VsockPath).
-		VsockPath:   "",
+		// The muxer this launch dialled: what the checkpoint recorded, named by
+		// the caller because nothing in a checkpoint's state file is a documented
+		// interface to read it from.
+		VsockPath:   req.VsockPath,
 		ConsolePath: consolePath,
+		Hello:       hello,
 		StatePath:   req.State,
 		MemPath:     req.Mem,
 		Stop: func(stopCtx context.Context) error {
@@ -166,6 +182,12 @@ func (d DirectLauncher) check(req LaunchRequest) error {
 	if req.State == "" || req.Mem == "" {
 		return fmt.Errorf("instance %q: a %q launch needs both checkpoint images, got state %q and memory %q",
 			req.InstanceID, req.Mode, req.State, req.Mem)
+	}
+	// Readiness is the agent's hello, so a request that names no muxer cannot be
+	// served: this launcher would have nothing to ask whether the guest it just
+	// resumed is really running.
+	if err := vsockProblem(req.VsockPath); err != nil {
+		return fmt.Errorf("instance %q: %w", req.InstanceID, err)
 	}
 	return nil
 }

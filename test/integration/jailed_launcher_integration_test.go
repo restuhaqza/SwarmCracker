@@ -13,6 +13,12 @@ package integration
 // socket the launcher creates, so "alive" means a command ran in it and /proc/uptime
 // continued across the restore.
 //
+// The guest has to carry the agent, because since SBX-024 a launch is ready only once
+// that agent answers `hello` (pkg/snapshot/readiness.go). This test installs the
+// node's own agent into its private copy of the image, so the image it is handed only
+// has to boot a systemd guest; a disk without an agent is what the readiness test
+// below uses as its negative case.
+//
 // Prerequisites: Linux, root, /dev/kvm, firecracker and jailer in PATH, and a bootable
 // kernel and rootfs. Point the last two at anything that boots to a root shell on
 // ttyS0:
@@ -46,6 +52,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/jailer"
 	"github.com/restuhaqza/swarmcracker/pkg/snapshot"
 )
@@ -76,6 +84,7 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 	// copy inside its jail, never to the file this test was handed.
 	disk := filepath.Join(scratch, "rootfs.ext4")
 	require.NoError(t, copySparse(rootfs, disk))
+	installGuestAgent(t, disk)
 	diskBefore, err := os.Stat(disk)
 	require.NoError(t, err)
 
@@ -100,10 +109,18 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 		Rootfs:     disk,
 		VCPUs:      2,
 		MemoryMB:   512,
+		VsockPath:  jailedAgentMuxer,
 	})
 	require.NoError(t, err, "a jailed cold boot must start")
 	t.Cleanup(func() { _ = src.Stop(context.Background()) })
 	booted := time.Since(tBoot)
+
+	// The launch is over only because the guest's agent answered: the hello is the
+	// evidence, and the muxer is the host path the launcher dialled to get it.
+	assert.Equal(t, agent.Version, src.Hello.Version, "the launch returns the guest's own handshake")
+	assert.NotEmpty(t, src.Hello.BootID, "and the boot identity that comes with it")
+	assert.Equal(t, filepath.Join(launcher.JailRoot(srcID), "root", "run", "firecracker", "agent.vsock"), src.VsockPath,
+		"the reported muxer is the request's path resolved inside the jail")
 
 	srcGuest := attachGuest(t, src, launcher, srcID)
 	srcGuest.awaitPrompt()
@@ -216,9 +233,13 @@ func TestIntegration_JailedLauncherBootSnapshotRestoreAcrossUIDs(t *testing.T) {
 			State:      info.StatePath,
 			Mem:        info.MemoryPath,
 			JailUID:    run.uid,
+			VsockPath:  jailedAgentMuxer,
 		})
 		require.NoError(t, startErr, "a checkpoint taken in one jail must load in another")
 		t.Cleanup(func() { _ = restored.Stop(context.Background()) })
+
+		assert.Equal(t, agent.Version, restored.Hello.Version,
+			"a restore is ready because the agent it resumed answered inside the new jail")
 
 		assert.Equal(t, "/snapshot/vm.state", restored.StatePath, "the caller is told the path /snapshot/load was given")
 		assert.Equal(t, "/snapshot/vm.mem", restored.MemPath)
@@ -652,4 +673,330 @@ func tail(s string, n int) string {
 		return s
 	}
 	return s[len(s)-n:]
+}
+
+// jailedAgentMuxer is where the guest agent answers inside an instance's jail. A cold
+// boot configures its vsock device at this path, so a checkpoint of that instance
+// records it and a restore of the checkpoint names the same string; the launcher
+// resolves it to the host path <jail root>/root/run/firecracker/agent.vsock, which is
+// what readiness dials.
+const jailedAgentMuxer = "/run/firecracker/agent.vsock"
+
+// TestIntegration_JailedLauncherReadiness holds the SBX-024 criterion to a real guest
+// on a real KVM host, in both directions.
+//
+// The positive half is that a cold boot and a restore are ready because the guest's own
+// agent answered, and that the answer is what the launcher reports — not the 204 the
+// checkpoint load returned.
+//
+// The negative half is the one that matters: a guest whose agent never answers fails
+// the launch with a typed error and leaves nothing behind, even though the jailer
+// started, the disk staged, the checkpoint loaded and the guest resumed. Three guests
+// produce it, because they are three different reasons an agent can be silent: an image
+// with no agent at all, a guest whose agent requires a token this launch did not carry,
+// and a checkpoint taken while the guest's agent was stopped — the last one proving the
+// point exactly, since its checkpoint loads and its guest resumes.
+func TestIntegration_JailedLauncherReadiness(t *testing.T) {
+	requireJailedHost(t)
+
+	ctx := context.Background()
+	scratch := jailedScratch(t)
+	kernel := testAsset(t, "SWARMCRACKER_TEST_KERNEL", "/usr/share/firecracker/vmlinux")
+	rootfs := testAsset(t, "SWARMCRACKER_TEST_ROOTFS",
+		"/var/lib/firecracker/rootfs/rootfs.ext4", "/tmp/firecracker-rootfs.ext4")
+
+	firecrackerBin := lookPath(t, "firecracker")
+	jailerBin := lookPath(t, "jailer")
+	uids := newTestUIDAllocator(t)
+
+	launcher := snapshot.JailedLauncher{
+		ChrootBaseDir:    filepath.Join(scratch, "jails"),
+		FirecrackerPath:  firecrackerBin,
+		JailerPath:       jailerBin,
+		ParentCgroup:     "swarmcracker-test",
+		MemoryMaxBytes:   1024 << 20,
+		PidsMax:          64,
+		LogDir:           filepath.Join(scratch, "logs"),
+		ConsoleSocketDir: filepath.Join(scratch, "console"),
+		UIDs:             uids,
+		ReadyTimeout:     60 * time.Second, // a cold boot of a full OS image is the slow one
+	}
+	// A launch that is going to fail spends its whole window waiting, so the negative
+	// cases use a shorter one: long enough that a guest which is merely slow is not the
+	// reason they fail, short enough to keep the test quick.
+	impatient := launcher
+	impatient.ReadyTimeout = 8 * time.Second
+
+	// Three images from the one the runner provided: with the agent, with the agent and
+	// a token to require, and without an agent at all.
+	withAgent := filepath.Join(scratch, "agent.ext4")
+	require.NoError(t, copySparse(rootfs, withAgent))
+	installGuestAgent(t, withAgent)
+
+	token := "7d4a1c9e2b6f8031a5c7e9b1d3f5a7c9"
+	withToken := filepath.Join(scratch, "token.ext4")
+	require.NoError(t, copySparse(rootfs, withToken))
+	installGuestAgent(t, withToken)
+	editGuestImage(t, withToken, func(root string) {
+		require.NoError(t, os.MkdirAll(filepath.Join(root, "etc/swarmcracker"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(root, agent.TokenPath), []byte(token+"\n"), 0o400))
+	})
+
+	bare := filepath.Join(scratch, "bare.ext4")
+	require.NoError(t, copySparse(rootfs, bare))
+
+	// Positive: the agent answers, and the launch reports what it answered.
+	readyID := "ready"
+	tReady := time.Now()
+	ready, err := launcher.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: readyID,
+		Mode:       snapshot.ModeCold,
+		Kernel:     kernel,
+		Rootfs:     withAgent,
+		VCPUs:      2,
+		MemoryMB:   512,
+		VsockPath:  jailedAgentMuxer,
+	})
+	require.NoError(t, err, "a guest with an agent must launch")
+	readyTook := time.Since(tReady)
+	readyGuest := attachGuest(t, ready, launcher, readyID)
+	readyGuest.awaitPrompt()
+	t.Logf("cold boot ready in %s: guest agent %s protocol %s boot %s, muxer %s",
+		readyTook.Round(time.Millisecond), ready.Hello.AgentVersion, ready.Hello.Version, ready.Hello.BootID, ready.VsockPath)
+	assert.Equal(t, agent.Version, ready.Hello.Version)
+	assert.NotEmpty(t, ready.Hello.BootID)
+	assert.Equal(t, filepath.Join(launcher.JailRoot(readyID), "root", "run", "firecracker", "agent.vsock"), ready.VsockPath)
+	assert.Contains(t, readyGuest.run("echo ready-guest"), "ready-guest", "and the guest behind the hello runs")
+	readyPID := jailPID(t, launcher, readyID)
+	require.NoError(t, ready.Stop(ctx))
+	assertJailGone(t, launcher, readyID, readyPID, ready.APISocket)
+	assert.False(t, uids.Leased(jailedTestUIDBase), "a stopped instance's uid is free again")
+
+	// Positive, with a token: the same guest, this time requiring one. The launch is
+	// handed the token and gets through the handshake; the same image without it is the
+	// next case.
+	tokenID := "token-ok"
+	tokenOK, err := launcher.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: tokenID,
+		Mode:       snapshot.ModeCold,
+		Kernel:     kernel,
+		Rootfs:     withToken,
+		VCPUs:      2,
+		MemoryMB:   512,
+		VsockPath:  jailedAgentMuxer,
+		AgentToken: token,
+	})
+	require.NoError(t, err, "a guest that requires a token must launch when the launch carries it")
+	t.Cleanup(func() { _ = tokenOK.Stop(context.Background()) })
+	assert.Equal(t, agent.Version, tokenOK.Hello.Version, "the authenticated handshake is still the guest's own")
+	require.NoError(t, tokenOK.Stop(ctx))
+	assert.False(t, uids.Leased(jailedTestUIDBase))
+
+	// Negative 1: the guest has no agent. Every VMM-side step succeeds; the launch fails
+	// because nothing answers, and nothing is left behind.
+	before := firecrackerPIDs()
+	_, err = impatient.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: "no-agent",
+		Mode:       snapshot.ModeCold,
+		Kernel:     kernel,
+		Rootfs:     bare,
+		VCPUs:      2,
+		MemoryMB:   512,
+		VsockPath:  jailedAgentMuxer,
+	})
+	require.Error(t, err, "a guest with no agent must not be reported as launched")
+	assert.ErrorIs(t, err, snapshot.ErrAgentNotReady, "and the failure is typed")
+	assertNoInstanceLeft(t, launcher, uids, "no-agent", before)
+	t.Logf("a guest with no agent failed as: %v", err)
+
+	// Negative 2: the guest requires a token and the launch carries a wrong one, so the
+	// agent refuses the handshake. It is the same image as the positive token case,
+	// which is what makes this the token's doing rather than the image's; the refusal is
+	// typed, so a caller can tell a mis-provisioned token from a guest that is simply
+	// not up.
+	before = firecrackerPIDs()
+	_, err = impatient.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: "token-wrong",
+		Mode:       snapshot.ModeCold,
+		Kernel:     kernel,
+		Rootfs:     withToken,
+		VCPUs:      2,
+		MemoryMB:   512,
+		VsockPath:  jailedAgentMuxer,
+		AgentToken: "0000000000000000000000000000000000000000000000000000000000000000",
+	})
+	require.Error(t, err, "a guest that requires a token must not launch without the right one")
+	assert.ErrorIs(t, err, snapshot.ErrAgentNotReady)
+	assert.ErrorIs(t, err, agent.ErrTokenRejected, "and the guest's own refusal is reachable through it")
+	assertNoInstanceLeft(t, launcher, uids, "token-wrong", before)
+	t.Logf("a token-requiring guest with the wrong token failed as: %v", err)
+
+	// Negative 3: the same guest with no token at all. A guest that requires one closes
+	// the connection without a frame (pkg/agent), so this is not distinguishable from a
+	// guest with no agent by the error type — which is what the message says.
+	before = firecrackerPIDs()
+	_, err = impatient.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: "token-missing",
+		Mode:       snapshot.ModeCold,
+		Kernel:     kernel,
+		Rootfs:     withToken,
+		VCPUs:      2,
+		MemoryMB:   512,
+		VsockPath:  jailedAgentMuxer,
+	})
+	require.Error(t, err, "a guest that requires a token must not launch without one")
+	assert.ErrorIs(t, err, snapshot.ErrAgentNotReady)
+	assert.Contains(t, err.Error(), "token", "the failure names the token as the likely reason")
+	assertNoInstanceLeft(t, launcher, uids, "token-missing", before)
+	t.Logf("a token-requiring guest with no token failed as: %v", err)
+
+	// Negative 4: the guest resumed, its agent is not there. The checkpoint is taken
+	// from a guest whose agent was stopped, so loading it back is a load that returns
+	// 204 and a guest that answers nothing: exactly the case the old criterion called
+	// ready.
+	stoppedID := "agent-stopped"
+	stopped, err := launcher.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: stoppedID,
+		Mode:       snapshot.ModeCold,
+		Kernel:     kernel,
+		Rootfs:     withAgent,
+		VCPUs:      2,
+		MemoryMB:   512,
+		VsockPath:  jailedAgentMuxer,
+	})
+	require.NoError(t, err)
+	stoppedGuest := attachGuest(t, stopped, launcher, stoppedID)
+	stoppedGuest.awaitPrompt()
+	stoppedGuest.run("systemctl stop sc-agent")
+	assert.NotEqual(t, "active", stoppedGuest.run("systemctl is-active sc-agent"),
+		"the checkpoint must be taken of a guest whose agent is stopped")
+
+	mgr, err := snapshot.NewManager(snapshot.SnapshotConfig{SnapshotDir: filepath.Join(scratch, "snapshots")})
+	require.NoError(t, err)
+	silent, err := mgr.CreateSnapshot(ctx, stoppedID, stopped.APISocket, snapshot.CreateOptions{
+		ServiceID:  "readiness",
+		NodeID:     "the-root",
+		VCPUCount:  2,
+		MemoryMB:   512,
+		RootfsPath: withAgent,
+		JailRoot:   launcher.JailRoot(stoppedID),
+	})
+	require.NoError(t, err, "a checkpoint of a guest without a running agent is still a checkpoint")
+	require.NoError(t, stopped.Stop(ctx))
+
+	before = firecrackerPIDs()
+	_, err = impatient.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: "silent-restore",
+		Mode:       snapshot.ModeRestore,
+		Kernel:     kernel,
+		Rootfs:     silent.DiskPath,
+		State:      silent.StatePath,
+		Mem:        silent.MemoryPath,
+		VsockPath:  jailedAgentMuxer,
+	})
+	require.Error(t, err, "a checkpoint whose guest agent is stopped must not restore as running")
+	assert.ErrorIs(t, err, snapshot.ErrAgentNotReady)
+	assertNoInstanceLeft(t, launcher, uids, "silent-restore", before)
+	t.Logf("a restored checkpoint whose agent was stopped failed as: %v", err)
+}
+
+// assertNoInstanceLeft proves a failed launch left nothing: no process started under
+// the instance, no jail, no cgroup, and no uid still leased.
+func assertNoInstanceLeft(t *testing.T, launcher snapshot.JailedLauncher, uids *jailer.UIDAllocator, instanceID string, before map[int]bool) {
+	t.Helper()
+
+	// The kill is asynchronous with respect to the call that issued it.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(newFirecrackerPIDs(before)) == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	assert.Empty(t, newFirecrackerPIDs(before), "no VMM of a failed launch may survive it")
+	assert.NoDirExists(t, launcher.JailRoot(instanceID), "and no jail")
+	assert.NoDirExists(t, filepath.Join("/sys/fs/cgroup", launcher.ParentCgroup, instanceID), "and no cgroup")
+	assert.False(t, uids.Leased(jailedTestUIDBase), "and no leased uid")
+}
+
+// firecrackerPIDs is the set of VMM processes on the host right now. The host may be
+// running other people's VMs, so a comparison against this is what answers "did this
+// launch leave one behind", never an absolute count.
+func firecrackerPIDs() map[int]bool {
+	pids := map[int]bool{}
+	out, err := exec.Command("pgrep", "-x", "firecracker").Output()
+	if err != nil && len(out) == 0 {
+		return pids
+	}
+	for _, field := range strings.Fields(string(out)) {
+		if pid, convErr := strconv.Atoi(field); convErr == nil {
+			pids[pid] = true
+		}
+	}
+	return pids
+}
+
+// newFirecrackerPIDs are the VMM processes that were not running before.
+func newFirecrackerPIDs(before map[int]bool) []int {
+	var added []int
+	for pid := range firecrackerPIDs() {
+		if !before[pid] {
+			added = append(added, pid)
+		}
+	}
+	return added
+}
+
+// installGuestAgent gives a copy of the test image the node's own guest agent, enabled
+// at boot under systemd. It is what a template build does for its image (pkg/golden
+// owns the production installer); this test does it here because the readiness check
+// needs a guest that answers, and the image the runner hands over only has to boot.
+func installGuestAgent(t *testing.T, imagePath string) {
+	t.Helper()
+
+	editGuestImage(t, imagePath, func(root string) {
+		if _, err := os.Stat(filepath.Join(root, "etc/systemd/system")); err != nil {
+			t.Fatalf("the test image has no systemd at /etc/systemd/system: this test enables the agent as a systemd unit")
+		}
+		require.NoError(t, os.WriteFile(filepath.Join(root, "sbin/sc-agent"), image.AgentBinary(), 0o755))
+		unit := "[Unit]\n" +
+			"Description=SwarmCracker guest agent\n" +
+			"After=local-fs.target\n" +
+			"Wants=local-fs.target\n\n" +
+			"[Service]\n" +
+			"Type=simple\n" +
+			"ExecStart=/sbin/sc-agent -port 52\n" +
+			"Restart=always\n" +
+			"RestartSec=1\n\n" +
+			"[Install]\n" +
+			"WantedBy=multi-user.target\n"
+		require.NoError(t, os.WriteFile(filepath.Join(root, "etc/systemd/system/sc-agent.service"), []byte(unit), 0o644))
+		wants := filepath.Join(root, "etc/systemd/system/multi-user.target.wants")
+		require.NoError(t, os.MkdirAll(wants, 0o755))
+		_ = os.Remove(filepath.Join(wants, "sc-agent.service"))
+		require.NoError(t, os.Symlink("/etc/systemd/system/sc-agent.service", filepath.Join(wants, "sc-agent.service")))
+	})
+}
+
+// editGuestImage mounts a test image, runs edit with the root of the mounted filesystem,
+// and unmounts it. The image is the test's own copy: a guest's first boot writes state
+// into it, so nothing is ever mounted to write the runner's original.
+func editGuestImage(t *testing.T, imagePath string, edit func(root string)) {
+	t.Helper()
+
+	mount, err := os.MkdirTemp("", "sc-guest-")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(mount) })
+
+	if out, err := exec.Command("mount", "-o", "loop", imagePath, mount).CombinedOutput(); err != nil {
+		t.Fatalf("mount %s: %v: %s", imagePath, err, out)
+	}
+	t.Cleanup(func() {
+		if out, err := exec.Command("umount", mount).CombinedOutput(); err != nil {
+			t.Logf("umount %s: %v: %s", mount, err, out)
+		}
+	})
+
+	edit(mount)
+	require.NoError(t, exec.Command("sync").Run())
 }
