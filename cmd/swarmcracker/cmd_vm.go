@@ -77,7 +77,7 @@ func newVMCreateCommand() *cobra.Command {
 With an image argument, SwarmCracker pulls the container image, converts it to a
 rootfs, and launches it as an isolated microVM using Firecracker.
 
-With --golden, it boots a prebuilt golden image (see 'swarmcracker image build')
+With --golden, it boots a prebuilt golden image (see 'swarmcracker template build')
 with its own init (systemd/OpenRC), so container runtimes such as Docker can run
 inside the microVM.
 

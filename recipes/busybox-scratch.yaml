@@ -9,7 +9,7 @@ metadata:
 
 spec:
   # Assembled by the task-time image preparer (injects busybox + tini), not by
-  # `swarmcracker image build`.
+  # `swarmcracker template build`.
   build: preparer
   arch: [amd64, arm64]
 

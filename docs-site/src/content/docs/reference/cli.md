@@ -769,22 +769,28 @@ The daemon's tracing flags are also `swarmd-firecracker` flags: `--tracing-enabl
 
 `vm list` and `vm status` read the node's **instance registry** first: one record per running VM under `<state-dir>/vminstances/` names the API socket, the PID, the boot time and the runtime-metadata sidecar, so a VM is listed without deriving anything from its task ID — including one that is still booting, whose record exists before its API socket answers. The `SOURCE` column (`source` in `--format json`) says which source answered: `registry` for a VM a record describes, `derived` for a VM found only by a socket file under `<socket-dir>` (a task started before records existed, or a CLI state entry with no record). A `vm status` shows the same distinction in its `Source:` line. `vm list` and `vm status` also cover microVMs started by the daemon for services (discovered from `<socket-dir>/*.sock`; stale sockets are filtered with a liveness probe). For those VMs the guest IP comes from the record's metadata sidecar — the `<task-id>.net.json` file the daemon writes next to the socket, or the path the record names — and is shown by `vm status` and `vm list --format json` (the table has no IP column). The same file carries the daemon's **live healthcheck verdict**: `vm status` prints a `[Health]` section (state, consecutive failures, the check command, the last output, when it was observed) and `vm list` shows it in its `HEALTH` column (and as `health` in `--format json`). The states are `starting`, `healthy`, `failing` (a probe is failing but the retries threshold is not reached — the task is still running) and `unhealthy`. Because the file lives next to the VM socket, this is node-local: run the command on the node hosting the task. A task with no healthcheck, and a VM created directly with `vm create`, show `-`. `vm stop` deliberately refuses to kill a service VM — use `swarmcracker service scale <service> 0` or `swarmcracker service rm <service>` so SwarmKit updates the desired state instead of recreating the task.
 
-#### `swarmcracker image`
+#### `swarmcracker template`
 
-Build and inspect golden VM images from recipes.
+Build, list and inspect sealed, versioned VM templates from recipes.
 
 | Subcommand | Description |
 |------------|-------------|
-| `build <recipe.yaml>` | Build a golden image from a recipe |
-| `list` | List built golden images |
-| `inspect <name@version \| path.json>` | Show metadata for a built golden image |
+| `build <recipe.yaml>` | Build and seal a template from a recipe |
+| `list` | List built templates |
+| `inspect <name@version \| path.json>` | Show a template's manifest and whether this node can use it |
 
-**`image build` flags:** `--output-dir` (default `<rootfs-dir>/golden`, else `/var/lib/firecracker/golden`), `--force` (rebuild even if an up-to-date artifact exists).
-**`image list` / `image inspect` flags:** `--output-dir` (same default).
+**`template build` flags:** `--output-dir` (default `<rootfs-dir>/golden`, else `/var/lib/firecracker/golden`), `--force` (rebuild even if an up-to-date template exists).
+**`template list` / `template inspect` flags:** `--output-dir` (same default).
 
-`image build` reads a recipe (see `recipes/*.yaml`) and writes a sealed, versioned artifact plus `golden-*.json` metadata to the output directory. `image list` reads that metadata; `image inspect` accepts either `<name>@<version>` (resolved under `--output-dir`) or a direct path to a `.json` metadata file.
+`template build` reads a recipe (see `recipes/*.yaml`), extracts the source, provisions it, installs and enables the guest agent for the recipe's init system, applies the recipe's own seal steps and then the standard seal, packs the root filesystem and boots a copy to hold its guest agent to the v2 handshake. It writes the artifact plus a `golden-*.json` manifest. Every check is a build failure rather than a warning: a recipe the builder does not build, an image that still carries a machine identity, SSH host keys, shell history, a log of the build or runtime state, a guest agent that is missing or not enabled, and a recipe whose own `spec.pin` disagrees with this host all fail the build and leave no artifact.
 
-Golden images can be booted with `swarmcracker vm create --golden` or `swarmcracker service create --golden`. See the [Golden Images guide](/guides/golden-images/).
+The manifest records what the build observed: the recipe digest, the digest the source resolved to (`baseImageDigest`), the agent that answered, and the pin — the Firecracker version and the SHA-256 of the kernel image. Two builds of the same recipe produce the same digest on any host; the pin is what says whether a template can be used here. `template inspect` prints the manifest and then this node's verdict on it, re-making the agent-pin and host-pin checks against this host.
+
+`template list` reads the manifests in the output directory. `template inspect` accepts either `<name>@<version>` (resolved under `--output-dir`) or a direct path to a `.json` manifest.
+
+> The older `swarmcracker image build|list|inspect` commands are deprecated aliases for these three; they run the same commands and warn on stderr.
+
+Templates can be booted with `swarmcracker vm create --golden` or `swarmcracker service create --golden`. See the [Golden Images guide](/guides/golden-images/).
 
 #### `swarmcracker network`
 

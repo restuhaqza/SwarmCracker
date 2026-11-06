@@ -273,7 +273,7 @@ The service will be scheduled on available nodes and can be scaled
 and updated as needed.
 
 With --golden, the service boots a prebuilt golden image (see
-'swarmcracker image build') instead of building a rootfs from an OCI image.
+'swarmcracker template build') instead of building a rootfs from an OCI image.
 
 With --autoscale, the service's replica count is kept between the policy's
 bounds by the manager (for example --autoscale min=2,max=10,metric=cpu,target=70).`,

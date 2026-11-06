@@ -104,7 +104,7 @@ If `--name` is omitted, the service name is auto-generated as
 
 A service can boot a prebuilt golden image (a full guest with its own
 systemd/OpenRC init) instead of building a rootfs from an OCI image. Build one
-with `swarmcracker image build`, then reference it by `name[@version]`:
+with `swarmcracker template build`, then reference it by `name[@version]`:
 
 ```bash
 swarmcracker service create --name web --golden ubuntu-24.04-docker@1.0.0 --replicas 2
