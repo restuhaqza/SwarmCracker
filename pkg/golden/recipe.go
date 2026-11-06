@@ -376,8 +376,11 @@ func (r *Recipe) validateDisk(add func(string, ...any)) {
 // is part of the recipe digest so a template built by an older pipeline is
 // never reused as up to date: revision 2 is the first that installs and
 // verifies the guest agent, so every artifact from revision 1 must be rebuilt
-// rather than silently served to a sandbox that cannot reach an agent.
-const BuilderRevision = 2
+// rather than silently served to a sandbox that cannot reach an agent, and
+// revision 3 is the first that seals the image itself, so every artifact from
+// revision 2 must be rebuilt rather than reused with whatever its recipe's own
+// seal steps happened to leave behind.
+const BuilderRevision = 3
 
 // Digest returns a stable content hash of the artifact identity (name, version,
 // build pipeline revision, and build spec). Cosmetic metadata such as the

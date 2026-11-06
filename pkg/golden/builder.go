@@ -312,10 +312,12 @@ func resolveSourceDigest(ctx context.Context, source Source) (string, error) {
 }
 
 // populate runs the recipe's provisioning, installs the guest agent, applies
-// the seal steps, and verifies the agent survived them. The agent goes in after
-// provisioning (which may replace /sbin or the init system's directories) and
-// before sealing, so a seal script sees the finished image; the verification
-// runs last, because a seal step can still remove the unit or its runlevel link.
+// the recipe's own seal steps and then the standard seal, and verifies both the
+// seal and the agent. The agent goes in after provisioning (which may replace
+// /sbin or the init system's directories) and before sealing, so a seal script
+// sees the finished image; both verifications run last, because a seal step can
+// still remove the unit, its runlevel link, or a file the seal is supposed to
+// have cleaned.
 func (b *Builder) populate(ctx context.Context, r *Recipe, rootfsDir string) error {
 	if script := strings.TrimSpace(r.Spec.Provision); script != "" {
 		if err := b.opts.Runner.Run(ctx, rootfsDir, script); err != nil {
@@ -339,6 +341,17 @@ func (b *Builder) populate(ctx context.Context, r *Recipe, rootfsDir string) err
 		if err := b.opts.Runner.Run(ctx, rootfsDir, seal); err != nil {
 			return fmt.Errorf("golden: seal[%d] %s: %w", i, r.Metadata.Name, err)
 		}
+	}
+
+	// The standard seal runs after the recipe's own steps, so a recipe cannot
+	// leave the image half-clean, and its verification runs before anything is
+	// packed, so a template that cannot be sealed is a failed build rather than
+	// an almost-clean artifact.
+	if err := sealTemplate(rootfsDir); err != nil {
+		return fmt.Errorf("golden: seal %s: %w", r.Metadata.Name, err)
+	}
+	if err := verifySealed(rootfsDir); err != nil {
+		return fmt.Errorf("golden: %s: %w", r.Metadata.Name, err)
 	}
 
 	if err := verifyAgentInstalled(rootfsDir, r.Spec.Init.System); err != nil {
