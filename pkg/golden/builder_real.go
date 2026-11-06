@@ -11,8 +11,15 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-// OCIExtractor extracts an OCI image (flattened, no SwarmCracker injection)
-// into a directory. It supports only the "oci" source type.
+// OCIExtractor extracts an OCI image into a directory, flattened and otherwise
+// unmodified: no init/essential-file injection (that belongs to the OCI-run
+// path, not to a template) and no guest agent.
+//
+// The agent is injected after the flatten, once the extracted filesystem is on
+// disk — Builder.populate calls installAgent (see agent_install.go) — so a
+// golden image built through this extractor does carry one.
+//
+// It supports only the "oci" source type.
 type OCIExtractor struct {
 	Auth *image.RegistryAuth
 }
