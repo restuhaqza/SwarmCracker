@@ -21,6 +21,10 @@ type fakeExtractor struct {
 	calls    *[]string
 	err      error
 	markFile bool
+	// plant writes extra entries into the extracted rootfs, so a test can hand
+	// the builder an image that carries something the seal must clean (or
+	// something it must refuse).
+	plant func(dest string) error
 }
 
 func (f *fakeExtractor) Extract(_ context.Context, src Source, dest string) error {
@@ -32,7 +36,12 @@ func (f *fakeExtractor) Extract(_ context.Context, src Source, dest string) erro
 		if err := os.MkdirAll(dest, 0755); err != nil {
 			return err
 		}
-		return os.WriteFile(filepath.Join(dest, "base-marker"), []byte("base"), 0644)
+		if err := os.WriteFile(filepath.Join(dest, "base-marker"), []byte("base"), 0644); err != nil {
+			return err
+		}
+	}
+	if f.plant != nil {
+		return f.plant(dest)
 	}
 	return nil
 }
@@ -52,10 +61,17 @@ func (f *fakeRunner) Run(_ context.Context, _ string, script string) error {
 type fakeExt4 struct {
 	calls *[]string
 	err   error
+	// inspect runs with the directory the packer was handed, before the
+	// "image" is written, so a test can assert what is really about to be
+	// packed.
+	inspect func(sourceDir string)
 }
 
-func (f *fakeExt4) Build(_ context.Context, _ string, outputPath string, _ int64) error {
+func (f *fakeExt4) Build(_ context.Context, sourceDir, outputPath string, _ int64) error {
 	*f.calls = append(*f.calls, "ext4")
+	if f.inspect != nil {
+		f.inspect(sourceDir)
+	}
 	if f.err != nil {
 		return f.err
 	}
