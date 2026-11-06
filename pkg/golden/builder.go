@@ -2,16 +2,13 @@ package golden
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/restuhaqza/swarmcracker/pkg/checkpoint"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/rs/zerolog/log"
@@ -49,7 +46,21 @@ type BuilderOptions struct {
 	// mapping the executor uses to boot a golden task. Nil means the built-in
 	// registry.
 	KernelProfiles map[string]string
-	Now            func() time.Time
+	// FirecrackerBinary is the VMM whose version the template pins. Empty means
+	// DefaultFirecrackerBinary on PATH. It is ignored when HostPin is set.
+	FirecrackerBinary string
+	// HostPin reports the host software (Firecracker version and kernel
+	// identity) this build pins. It is a seam, not configuration: nil reads the
+	// real Firecracker version and hashes the kernel the recipe's profile maps
+	// to, which is what a build on a real host must record.
+	HostPin func(ctx context.Context, kernelPath string) (checkpoint.Pin, error)
+	// ResolveSource reports the digest the recipe's source currently resolves
+	// to, which the manifest records beside the recipe digest. It runs only
+	// when the artifact is really built, so an up-to-date artifact is still
+	// reused without a registry call. Nil resolves an OCI reference through the
+	// registry and records nothing for a source type that has no digest.
+	ResolveSource func(ctx context.Context, source Source) (string, error)
+	Now           func() time.Time
 }
 
 // Builder turns recipes into sealed artifacts.
@@ -83,6 +94,15 @@ func NewBuilder(opts BuilderOptions) (*Builder, error) {
 	if opts.KernelProfiles == nil {
 		opts.KernelProfiles = config.DefaultKernelProfiles()
 	}
+	if opts.HostPin == nil {
+		binary := opts.FirecrackerBinary
+		opts.HostPin = func(ctx context.Context, kernelPath string) (checkpoint.Pin, error) {
+			return hostPin(ctx, binary, kernelPath)
+		}
+	}
+	if opts.ResolveSource == nil {
+		opts.ResolveSource = resolveSourceDigest
+	}
 	return &Builder{opts: opts}, nil
 }
 
@@ -98,28 +118,9 @@ type Result struct {
 	Skipped      bool   `json:"skipped"`
 }
 
-// ArtifactMetadata is the sidecar written next to every artifact.
-type ArtifactMetadata struct {
-	APIVersion       string    `json:"apiVersion"`
-	Kind             string    `json:"kind"`
-	Name             string    `json:"name"`
-	Version          string    `json:"version"`
-	RecipeDigest     string    `json:"recipeDigest"`
-	Arch             []string  `json:"arch"`
-	Source           Source    `json:"source"`
-	Init             Init      `json:"init"`
-	Agent            AgentPin  `json:"agent"`
-	KernelProfile    string    `json:"kernelProfile"`
-	Runtime          Runtime   `json:"runtime"`
-	RootMinSizeBytes int64     `json:"rootMinSizeBytes"`
-	Artifact         string    `json:"artifact"`
-	SizeBytes        int64     `json:"sizeBytes"`
-	SHA256           string    `json:"sha256"`
-	BuiltAt          time.Time `json:"builtAt"`
-}
-
 // Build produces the artifact for r. When an up-to-date artifact already exists
-// and Force is false, it is reused without touching the network or the disk.
+// and Force is false, it is reused: reuse reads this host's pin and the
+// manifest, and needs neither the registry nor the source.
 func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 	if r == nil {
 		return nil, fmt.Errorf("golden: recipe is nil")
@@ -132,6 +133,13 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 			"golden: recipe %q uses build=%q and is assembled by the task-time image preparer, not `image build`",
 			r.Metadata.Name, r.Spec.Build)
 	}
+	// The pin is this host's, and it is read before anything is built: a recipe
+	// that requires other host software must fail here, not after a template
+	// that no node can resume has been packed.
+	kernel, nodePin, err := b.buildPin(ctx, r)
+	if err != nil {
+		return nil, err
+	}
 
 	digest := r.Digest()
 	base := ArtifactBaseName(r.Metadata.Name, r.Metadata.Version)
@@ -142,12 +150,20 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 	metadataPath := filepath.Join(b.opts.OutputDir, base+".json")
 
 	if !b.opts.Force {
-		if res, ok := b.reuse(artifactPath, metadataPath, digest); ok {
+		if res, ok := b.reuse(artifactPath, metadataPath, digest, nodePin); ok {
 			log.Info().
 				Str("artifact", artifactPath).
 				Msg("Golden image is up to date, reusing")
 			return res, nil
 		}
+	}
+
+	// What the source resolved to is an observation of this build, so it is
+	// made only when the artifact is really being built: an up-to-date artifact
+	// is still reused without a registry call.
+	baseDigest, err := b.opts.ResolveSource(ctx, r.Spec.Source)
+	if err != nil {
+		return nil, fmt.Errorf("golden: resolve the digest of source %s: %w", r.Spec.Source.Ref, err)
 	}
 
 	log.Info().
@@ -189,7 +205,7 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 	// init system starts the agent and that it answers with the protocol and
 	// capabilities the template pins. A failed probe leaves no artifact behind,
 	// so a later resolve cannot pick up a template that was never proven.
-	pin, err := b.verifyFirstBoot(ctx, r, artifactPath)
+	agentPin, err := b.verifyFirstBoot(ctx, r, kernel, artifactPath)
 	if err != nil {
 		_ = os.Remove(artifactPath)
 		return nil, err
@@ -212,9 +228,11 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 		RecipeDigest:     digest,
 		Arch:             r.Spec.Arch,
 		Source:           r.Spec.Source,
+		BaseImageDigest:  baseDigest,
 		Init:             r.Spec.Init,
-		Agent:            pin,
+		Agent:            agentPin,
 		KernelProfile:    r.Spec.Kernel.Profile,
+		Pin:              nodePin,
 		Runtime:          r.Spec.Runtime,
 		RootMinSizeBytes: minSize,
 		Artifact:         filepath.Base(artifactPath),
@@ -241,6 +259,56 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 		SizeBytes:    info.Size(),
 		SHA256:       sum,
 	}, nil
+}
+
+// buildPin returns this host's pin and the kernel image the recipe's profile
+// resolved to. A recipe that requires other host software is refused here, with
+// a typed error, because the alternative is packing a template that only the
+// host that built it could use.
+func (b *Builder) buildPin(ctx context.Context, r *Recipe) (string, checkpoint.Pin, error) {
+	kernel, err := b.kernelFor(r)
+	if err != nil {
+		return "", checkpoint.Pin{}, err
+	}
+	pin, err := b.opts.HostPin(ctx, kernel)
+	if err != nil {
+		return "", checkpoint.Pin{}, err
+	}
+	if want := r.Spec.Pin; want != nil {
+		required := checkpoint.Pin{Firecracker: want.Firecracker, Kernel: want.Kernel}
+		if required != pin {
+			return "", checkpoint.Pin{}, &PinMismatchError{
+				Template: r.Metadata.Name + "@" + r.Metadata.Version,
+				Want:     required,
+				Got:      pin,
+			}
+		}
+	}
+	return kernel, pin, nil
+}
+
+// kernelFor returns the kernel image the recipe's kernel profile maps to. A
+// profile with no mapping is refused here rather than later, because nothing
+// downstream can boot or pin the template without it.
+func (b *Builder) kernelFor(r *Recipe) (string, error) {
+	kernel := b.opts.KernelProfiles[r.Spec.Kernel.Profile]
+	if kernel == "" {
+		return "", fmt.Errorf(
+			"golden: kernel profile %q of %s@%s is not mapped to a kernel image, so the first boot cannot be verified",
+			r.Spec.Kernel.Profile, r.Metadata.Name, r.Metadata.Version)
+	}
+	return kernel, nil
+}
+
+// resolveSourceDigest is the default ResolveSource: an OCI reference is
+// resolved through the registry to the digest it currently points at. A source
+// type with no registry digest records none, which is honest — the manifest
+// then says nothing about the base image's bytes rather than something untrue.
+func resolveSourceDigest(ctx context.Context, source Source) (string, error) {
+	if source.Type != SourceOCI {
+		return "", nil
+	}
+	return image.ResolveImageDigest(ctx, source.Ref, nil)
 }
 
 // populate runs the recipe's provisioning, installs the guest agent, applies
@@ -279,14 +347,18 @@ func (b *Builder) populate(ctx context.Context, r *Recipe, rootfsDir string) err
 	return nil
 }
 
-// reuse returns a result when the artifact and metadata already match digest.
-func (b *Builder) reuse(artifactPath, metadataPath, digest string) (*Result, bool) {
+// reuse returns a result when the artifact and manifest already match digest.
+//
+// The pin must match too: a template built on other host software is not this
+// node's template, and handing it back because its recipe is unchanged would
+// record a template the node cannot use. Rebuilding is the answer, not reuse.
+func (b *Builder) reuse(artifactPath, metadataPath, digest string, pin checkpoint.Pin) (*Result, bool) {
 	info, err := os.Stat(artifactPath)
 	if err != nil || info.Size() == 0 {
 		return nil, false
 	}
 	md, err := ReadMetadata(metadataPath)
-	if err != nil || md.RecipeDigest != digest {
+	if err != nil || md.RecipeDigest != digest || md.Pin != pin {
 		return nil, false
 	}
 	return &Result{
@@ -301,55 +373,5 @@ func (b *Builder) reuse(artifactPath, metadataPath, digest string) (*Result, boo
 	}, true
 }
 
-// ReadMetadata loads an artifact metadata sidecar.
-func ReadMetadata(path string) (*ArtifactMetadata, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("golden: read metadata %s: %w", path, err)
-	}
-	var md ArtifactMetadata
-	if err := json.Unmarshal(data, &md); err != nil {
-		return nil, fmt.Errorf("golden: parse metadata %s: %w", path, err)
-	}
-	return &md, nil
-}
-
-// writeMetadataAtomic writes JSON to path via a temp file and rename.
-func writeMetadataAtomic(path string, md ArtifactMetadata) error {
-	data, err := json.MarshalIndent(md, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".golden-md-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
-}
-
-// fileSHA256 returns the hex-encoded SHA-256 of a file.
-func fileSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
-}
+// ReadMetadata, writeMetadataAtomic and fileSHA256 live in manifest.go, with the
+// manifest they read and write.

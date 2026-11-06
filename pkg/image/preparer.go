@@ -654,6 +654,32 @@ func ExtractImageToDir(ctx context.Context, imageRef, destPath string, auth *Reg
 	return ExtractImage(img, destPath)
 }
 
+// ResolveImageDigest returns the digest a reference currently resolves to
+// ("sha256:...") without downloading any layer, so a caller can record the
+// base image's identity beside a built artifact.
+//
+// It is the digest of whatever the tag points at, which for a multi-arch image
+// is the index digest — the same value `docker buildx imagetools inspect` and
+// `crane digest` report. Two templates built from a moving tag can share a
+// recipe and differ here, which is the point of recording it.
+func ResolveImageDigest(ctx context.Context, imageRef string, auth *RegistryAuth) (string, error) {
+	if imageRef == "" {
+		return "", fmt.Errorf("image reference must not be empty")
+	}
+
+	fullRef := NormalizeImageRef(imageRef)
+	ref, err := name.ParseReference(fullRef)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse image reference %q: %w", fullRef, err)
+	}
+
+	desc, err := remote.Head(ref, buildRemoteOptions(ctx, auth)...)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve the digest of %q: %w", fullRef, err)
+	}
+	return desc.Digest.String(), nil
+}
+
 // extractTarStream extracts a tar stream to a directory.
 // Handles regular files, directories, symlinks, and hard links.
 func extractTarStream(r io.Reader, dest string) error {
