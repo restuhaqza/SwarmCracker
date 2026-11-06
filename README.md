@@ -2,7 +2,7 @@
 
 # SwarmCracker
 
-Firecracker MicroVMs with SwarmKit Orchestration
+Firecracker microVMs for SwarmKit orchestration and agent sandboxes
 
 [![Go Report Card](https://goreportcard.com/badge/github.com/restuhaqza/swarmcracker)](https://goreportcard.com/report/github.com/restuhaqza/swarmcracker)
 [![Coverage](https://codecov.io/gh/restuhaqza/swarmcracker/branch/main/graph/badge.svg)](https://codecov.io/gh/restuhaqza/swarmcracker)
@@ -24,7 +24,7 @@ Firecracker MicroVMs with SwarmKit Orchestration
 
 ---
 
-Imagine running containers, but with actual VMs instead. That's SwarmCracker — SwarmKit tasks become Firecracker microVMs, each with its own kernel and hardware-level isolation.
+Imagine running containers, but with actual VMs instead. That's SwarmCracker — SwarmKit tasks become Firecracker microVMs, each with its own kernel and hardware-level isolation, connected across nodes over VXLAN and replaced in place by rolling updates. A second path is taking shape beside it: ephemeral agent sandboxes — microVMs that can be checkpointed and restored, launched under the jailer (chroot, dropped uid, network namespace), each with its own disk and snapshot, and reported ready only once the guest agent actually answers `hello` rather than once the load returns. The sandbox control plane that would drive all that is still being built; what is on `main` today is its foundation.
 
 ## Why You'll Like It
 
