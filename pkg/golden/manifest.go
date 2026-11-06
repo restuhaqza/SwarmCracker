@@ -270,7 +270,7 @@ func fileSHA256(path string) (string, error) {
 // DefaultFirecrackerBinary is the VMM a build pins when no other is named.
 const DefaultFirecrackerBinary = "firecracker"
 
-// hostPin reports the host software a template built here is valid against: the
+// NodePin reports the host software a template built here is valid against: the
 // version of the Firecracker binary that will boot it, and the SHA-256 of the
 // kernel image it will be booted with.
 //
@@ -278,7 +278,7 @@ const DefaultFirecrackerBinary = "firecracker"
 // repeats the recipe would prove nothing. The kernel is hashed rather than
 // named, because its path is this host's and its version string does not
 // separate two builds of the same kernel.
-func hostPin(ctx context.Context, firecrackerBinary, kernelPath string) (checkpoint.Pin, error) {
+func NodePin(ctx context.Context, firecrackerBinary, kernelPath string) (checkpoint.Pin, error) {
 	if strings.TrimSpace(kernelPath) == "" {
 		return checkpoint.Pin{}, errors.New("golden: no kernel image to pin: the recipe's kernel profile must resolve to one")
 	}

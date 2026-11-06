@@ -84,6 +84,7 @@ func newRootCommand() *cobra.Command {
 	rootCmd.AddCommand(newVMCommand())
 	rootCmd.AddCommand(newNetworkCommand())
 	rootCmd.AddCommand(newVolumeCommand())
+	rootCmd.AddCommand(newTemplateCommand())
 	rootCmd.AddCommand(newImageCommand())
 	rootCmd.AddCommand(newAssetCommand())
 	rootCmd.AddCommand(newConfigCommand())
