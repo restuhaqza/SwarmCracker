@@ -32,9 +32,11 @@ package integration
 //	SWARMCRACKER_TEST_KEEP=1 keeps the scratch directory after a failure.
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,14 +68,20 @@ const (
 	prepareCloneBMAC = "06:00:ac:10:00:0b"
 	prepareCloneCMAC = "06:00:ac:10:00:0c"
 
-	prepareSourceAddr = "10.99.0.10/24"
-	prepareCloneBAddr = "10.99.0.11/24"
-	prepareCloneCAddr = "10.99.0.12/24"
+	prepareSourceAddr = "10.97.0.10/24"
+	prepareCloneBAddr = "10.97.0.11/24"
+	prepareCloneCAddr = "10.97.0.12/24"
 
 	// prepareGateway is the host's address on the bridge the instances share, and
 	// the resolver they are told to use. Both are the test's own scaffolding: the
 	// point is that the guest ends up using what the identity says.
-	prepareGateway = "10.99.0.1"
+	prepareGateway = "10.97.0.1"
+
+	// prepareProbeName is answered only by the resolver this test puts on the bridge
+	// address, so a guest that resolves it has done what the identity said: taken the
+	// resolver from the identity, reached it, and taken its answer.
+	prepareProbeName = "probe.sbx083"
+	prepareProbeAddr = "10.97.0.7"
 )
 
 // TestIntegration_Prepare_GivesEachCloneItsOwnIdentity is the whole M-A P1 story on
@@ -131,7 +139,7 @@ func TestIntegration_Prepare_GivesEachCloneItsOwnIdentity(t *testing.T) {
 	assertGuestIdentity(t, "source", sourceFacts, sourceIdentity)
 	assert.Equal(t, sourceToken, sourceFacts["TOK"],
 		"the source keeps the token it was booted with; its identity named none")
-	assertResolvable(t, "source", sourceFacts)
+	assertResolvable(t, "source", sourceFacts, network.resolvable)
 
 	// The checkpoint. It is taken through the manager so the chroot paths and the
 	// live disk are what Firecracker writes and copies (SBX-022), which is what makes
@@ -209,8 +217,8 @@ func TestIntegration_Prepare_GivesEachCloneItsOwnIdentity(t *testing.T) {
 			// The load ignores the boot MAC: a restored NIC keeps the MAC the
 			// checkpoint froze, so the clone comes up wearing the source's and the hook
 			// is what gives it its own.
-			Net:        []snapshot.NetworkInterface{network.tapFor(t, cloneTags[clone.id], prepareSourceMAC)},
-			Identity:   &identity,
+			Net:      []snapshot.NetworkInterface{network.tapFor(t, cloneTags[clone.id], prepareSourceMAC)},
+			Identity: &identity,
 		})
 		require.NoError(t, err, "clone %s must adopt the identity it was given", clone.id)
 		t.Cleanup(func() { _ = restored.Stop(context.Background()) })
@@ -240,7 +248,7 @@ func TestIntegration_Prepare_GivesEachCloneItsOwnIdentity(t *testing.T) {
 		t.Logf("clone %s reports:\n%s", clone.id, formatFacts(cloneFacts))
 
 		assertGuestIdentity(t, clone.id, cloneFacts, identity)
-		assertResolvable(t, clone.id, cloneFacts)
+		assertResolvable(t, clone.id, cloneFacts, network.resolvable)
 		assert.Equal(t, clone.token, cloneFacts["TOK"],
 			"the guest's own token file holds the token the identity carried")
 
@@ -270,7 +278,7 @@ func TestIntegration_Prepare_GivesEachCloneItsOwnIdentity(t *testing.T) {
 		"a clone must not present the SSH host key of the machine its checkpoint came from")
 	assert.NotEqual(t, sourceFacts["SSHKEY"], facts[prepareCloneC]["SSHKEY"])
 	assert.Equal(t, sourceIdentity.MAC, sourceFacts["MAC"])
-	assert.NotContains(t, facts[prepareCloneB]["ADDR"], "10.99.0.10",
+	assert.NotContains(t, facts[prepareCloneB]["ADDR"], "10.97.0.10",
 		"the source's address must be gone from a clone")
 
 	t.Logf("source and clones carried %d identities through one checkpoint",
@@ -402,6 +410,10 @@ var cloneTags = map[string]string{prepareSourceID: "s", prepareCloneB: "b", prep
 type prepareNetwork struct {
 	bridge string
 	taps   map[string]string
+	// resolvable says whether this host could be given a resolver, reached through a
+	// filter that lets the guests' queries out and the answers back. When it could not,
+	// the resolver assertions say so instead of passing quietly.
+	resolvable bool
 }
 
 func newPrepareNetwork(t *testing.T) *prepareNetwork {
@@ -417,7 +429,155 @@ func newPrepareNetwork(t *testing.T) *prepareNetwork {
 	require.NoError(t, runIP("link", "set", bridge, "up"))
 	t.Cleanup(func() { _ = runIP("link", "del", bridge) })
 
+	n.resolvable = startPrepareResolver(t, prepareGateway) && openPrepareBridge(t, bridge)
+	requirePrepareRoute(t, bridge)
+
 	return n
+}
+
+// openPrepareBridge opens the node's filter for this test's own bridge, the way the
+// node opens it for the bridges it manages: a guest's query arrives on the bridge and is
+// addressed to the host, and the answer leaves the host for the bridge, so the path needs
+// the bridge accepted in INPUT, OUTPUT and FORWARD. This node carries a default-deny
+// firewall (ufw) with br_netfilter loaded, which is why both directions of FORWARD matter
+// and why "the resolver answers from the host but not from the guest" is this and not the
+// hook.
+//
+// Every rule names the test's own bridge and is removed when the test ends, so nothing
+// else on the node is affected.
+func openPrepareBridge(t *testing.T, bridge string) bool {
+	t.Helper()
+
+	if _, err := exec.LookPath("iptables"); err != nil {
+		t.Logf("iptables is not installed: the guests' resolution is not asserted on this host")
+		return false
+	}
+
+	rules := [][]string{
+		{"INPUT", "-i", bridge, "-p", "udp", "--dport", "53"},
+		{"INPUT", "-i", bridge, "-p", "tcp", "--dport", "53"},
+		{"OUTPUT", "-o", bridge, "-p", "udp", "--sport", "53"},
+		{"FORWARD", "-i", bridge},
+		{"FORWARD", "-o", bridge},
+	}
+	for _, rule := range rules {
+		args := append([]string{"-I", rule[0], "1"}, rule[1:]...)
+		args = append(args, "-j", "ACCEPT")
+		out, err := exec.Command("iptables", args...).CombinedOutput()
+		require.NoError(t, err, "iptables %v: %s", args, out)
+
+		del := append([]string{"-D", rule[0]}, rule[1:]...)
+		del = append(del, "-j", "ACCEPT")
+		t.Cleanup(func() { _ = exec.Command("iptables", del...).Run() })
+	}
+
+	return true
+}
+
+// requirePrepareRoute proves the bridge this test made is the interface the node reaches
+// the guests through, and names the one that is not when it is not.
+//
+// It is a gate, not a formality. A leftover interface from an earlier run can hold the
+// same /24; the route for every guest address then belongs to that interface, the node
+// answers a guest's query out of a bridge nothing is attached to, and the guest looks like
+// it cannot resolve — a failure with nothing to do with the identity it was given.
+func requirePrepareRoute(t *testing.T, bridge string) {
+	t.Helper()
+
+	probe := strings.SplitN(prepareCloneBAddr, "/", 2)[0]
+	out, err := exec.Command("ip", "route", "get", probe).CombinedOutput()
+	require.NoError(t, err, "ip route get %s: %s", probe, out)
+
+	route := strings.TrimSpace(string(out))
+	require.Contains(t, route, "dev "+bridge,
+		"the guests' network is not this test's bridge: `ip route get %s` says %q — an interface holding %s must be removed before this test can assert that a guest resolves",
+		probe, route, prepareGateway+"/24")
+}
+
+// startPrepareResolver answers one name on the bridge address the identity hands every
+// guest. It is what turns "the guest's resolver is the identity's" from a
+// /etc/resolv.conf check into a query that has to leave the guest and be answered.
+//
+// It is skipped rather than failed when dnsmasq is absent: the identity assertions do
+// not depend on it, and a host without a resolver can still run them.
+func startPrepareResolver(t *testing.T, gateway string) bool {
+	t.Helper()
+
+	dnsmasq, err := exec.LookPath("dnsmasq")
+	if err != nil {
+		t.Logf("dnsmasq is not installed: the guests' resolution is not asserted on this host")
+		return false
+	}
+	cmd := exec.Command(dnsmasq,
+		"--keep-in-foreground",
+		"--conf-file=", "--no-resolv", "--no-hosts", "--user=root",
+		"--bind-interfaces", "--listen-address="+gateway, "--port=53",
+		"--pid-file=", "--log-facility="+filepath.Join(t.TempDir(), "resolver.log"),
+		"--address=/"+prepareProbeName+"/"+prepareProbeAddr,
+	)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	awaitPrepareResolver(t, gateway)
+	return true
+}
+
+// awaitPrepareResolver waits for the resolver to answer the probe name, and says what it
+// saw when it does not: a guest query sent to a resolver that is not listening yet is a
+// dropped packet, and a later "the guest cannot resolve" would just be this race.
+func awaitPrepareResolver(t *testing.T, gateway string) {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var last error
+	for time.Now().Before(deadline) {
+		if last = queryPrepareProbe(gateway); last == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("no resolver answered %s on %s:53: %v", prepareProbeName, gateway, last)
+}
+
+// queryPrepareProbe sends one A query for the probe name and reads the answer. It is a
+// readiness gate, not an assertion: it only has to tell an answer from a refusal.
+func queryPrepareProbe(gateway string) error {
+	conn, err := net.Dial("udp", net.JoinHostPort(gateway, "53"))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+
+	query := []byte{0x08, 0x30, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
+	for _, label := range strings.Split(prepareProbeName, ".") {
+		query = append(query, byte(len(label)))
+		query = append(query, label...)
+	}
+	query = append(query, 0x00, 0x00, 0x01, 0x00, 0x01)
+
+	if _, err := conn.Write(query); err != nil {
+		return err
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	answer := make([]byte, 512)
+	n, err := conn.Read(answer)
+	if err != nil {
+		return err
+	}
+	answer = answer[:n]
+	if len(answer) < 12 {
+		return fmt.Errorf("the answer is %d bytes long", len(answer))
+	}
+	if rcode := answer[3] & 0x0f; rcode != 0 {
+		return fmt.Errorf("the resolver answered rcode %d", rcode)
+	}
+	if want := net.ParseIP(prepareProbeAddr).To4(); !bytes.Contains(answer, want) {
+		return fmt.Errorf("the answer does not carry %s: % x", prepareProbeAddr, answer)
+	}
+	return nil
 }
 
 // tapFor gives one instance its own tap on the shared bridge and returns the
@@ -566,6 +726,11 @@ func guestIdentityFacts(t *testing.T, g *guest) map[string]string {
 		`echo "CLOCK=$(date -u +%s)"`,
 		`echo "SSHKEY=$(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub | cut -d' ' -f2)"`,
 		`echo "MMDS=$(curl -s -m 3 -o /dev/null -w '%{http_code}' 169.254.169.254/identity || echo none)"`,
+		// The resolver the identity named is the only one that answers this name, and
+		// the exit status is read separately: an echo of a failed command would
+		// otherwise be the status that showed up.
+		`getent ahostsv4 ` + prepareProbeName + ` > /tmp/probe.out 2>&1; echo "DNSRC=$?"`,
+		`echo "DNS=$(head -1 /tmp/probe.out)"`,
 	}, "; ")
 
 	// The console output arrives with \n endings: the helper that reads it strips
@@ -588,11 +753,11 @@ func guestIdentityFacts(t *testing.T, g *guest) map[string]string {
 var factKeys = map[string]bool{
 	"MAC": true, "ADDR": true, "ROUTE": true, "RESOLV": true, "SEARCH": true,
 	"HOST": true, "MID": true, "TOK": true, "CLOCK": true, "SSHKEY": true,
-	"MMDS": true,
+	"MMDS": true, "DNS": true, "DNSRC": true,
 }
 
 func formatFacts(facts map[string]string) string {
-	keys := []string{"MAC", "ADDR", "ROUTE", "RESOLV", "SEARCH", "HOST", "MID", "TOK", "CLOCK", "SSHKEY", "MMDS"}
+	keys := []string{"MAC", "ADDR", "ROUTE", "RESOLV", "SEARCH", "HOST", "MID", "TOK", "CLOCK", "SSHKEY", "MMDS", "DNS", "DNSRC"}
 	var b strings.Builder
 	for _, key := range keys {
 		fmt.Fprintf(&b, "  %s=%s\n", key, facts[key])
@@ -630,22 +795,26 @@ func assertGuestIdentity(t *testing.T, who string, facts map[string]string, id a
 		"%s: the metadata service must answer from inside the guest, got %q", who, facts["MMDS"])
 }
 
-// assertResolvable states what the resolver evidence is: the guest consults the
-// resolver the identity named, and it carries a route that reaches it.
-//
-// What this does *not* prove is a name resolving end to end. That needs the guest's
-// packets to reach the node — a per-sandbox bridge, on-link address and firewall —
-// which is the network policy of §5.5 (M3), not the identity channel this change owns.
-// Measured on this lab node, the guest-to-host path on a test bridge is intermittent
-// (the node runs br_netfilter with a default-deny firewall), so asserting a resolved
-// name here would be asserting M3's work, not this one's.
-func assertResolvable(t *testing.T, who string, facts map[string]string) {
+// assertResolvable states what the resolver evidence is: the guest consults the resolver
+// the identity named, carries a route that reaches it, and — the resolver on that address
+// being this test's own, answering one name that exists nowhere else — resolves through
+// it from inside the guest.
+func assertResolvable(t *testing.T, who string, facts map[string]string, resolvable bool) {
 	t.Helper()
 
 	assert.Contains(t, facts["RESOLV"], "nameserver "+prepareGateway,
 		"%s: the resolver is the identity's", who)
 	assert.Contains(t, facts["ROUTE"], "169.254.169.254",
 		"%s: the metadata route survives the identity being applied", who)
+	if !resolvable {
+		t.Logf("%s: resolution is not asserted on this host (no dnsmasq or no iptables)", who)
+		return
+	}
+	assert.Equal(t, "0", facts["DNSRC"],
+		"%s: the guest resolves %s through %s (getent said %q)",
+		who, prepareProbeName, prepareGateway, facts["DNS"])
+	assert.Contains(t, facts["DNS"], prepareProbeAddr,
+		"%s: the answer is the identity's resolver's", who)
 }
 
 // assertPrepared holds the guest's report to the identity the launch published.
