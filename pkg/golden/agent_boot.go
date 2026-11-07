@@ -306,14 +306,11 @@ func dialAgent(ctx context.Context, udsPath string, port uint32) (helloClient, e
 // artifact actually carries: the protocol and agent version the guest reported,
 // which is what a template may claim. A recipe that pins a version explicitly
 // must match, so a pin can never describe an agent the image does not contain.
-func (b *Builder) verifyFirstBoot(ctx context.Context, r *Recipe, artifactPath string) (AgentPin, error) {
+//
+// kernel is the image the recipe's profile resolved to, resolved by the caller
+// so that a build which cannot pin this host fails before it starts.
+func (b *Builder) verifyFirstBoot(ctx context.Context, r *Recipe, kernel, artifactPath string) (AgentPin, error) {
 	ref := r.Metadata.Name + "@" + r.Metadata.Version
-	kernel := b.opts.KernelProfiles[r.Spec.Kernel.Profile]
-	if kernel == "" {
-		return AgentPin{}, fmt.Errorf(
-			"golden: kernel profile %q of %s is not mapped to a kernel image, so the first boot cannot be verified",
-			r.Spec.Kernel.Profile, ref)
-	}
 
 	hello, err := b.opts.Prober.Probe(ctx, BootTarget{
 		ArtifactPath: artifactPath,

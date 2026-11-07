@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/checkpoint"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -102,11 +103,20 @@ type harness struct {
 	prober  *fakeProber
 	outDir  string
 	builder *Builder
+	// hostPin is what this "host" reports. The zero value is not used: a
+	// template is always pinned to something, so a test that cares sets it.
+	hostPin checkpoint.Pin
+	// baseDigest is what the "registry" resolves the recipe's source to.
+	baseDigest string
 }
 
 func newHarness(t *testing.T, force bool) *harness {
 	t.Helper()
-	h := &harness{outDir: t.TempDir()}
+	h := &harness{
+		outDir:     t.TempDir(),
+		hostPin:    checkpoint.Pin{Firecracker: "v1.15.1", Kernel: strings.Repeat("a", 64)},
+		baseDigest: "sha256:" + strings.Repeat("b", 64),
+	}
 	h.extract = &fakeExtractor{calls: &h.calls, markFile: true}
 	h.runner = &fakeRunner{calls: &h.calls, scripts: &h.scripts}
 	h.ext4 = &fakeExt4{calls: &h.calls}
@@ -121,6 +131,11 @@ func newHarness(t *testing.T, force bool) *harness {
 		Prober:    h.prober,
 		KernelProfiles: map[string]string{
 			"guest-runtime-6.1": "/usr/share/firecracker/vmlinux-runtime",
+		},
+		HostPin: func(context.Context, string) (checkpoint.Pin, error) { return h.hostPin, nil },
+		ResolveSource: func(context.Context, Source) (string, error) {
+			h.calls = append(h.calls, "resolve")
+			return h.baseDigest, nil
 		},
 		Now: func() time.Time { return time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC) },
 	})
@@ -154,13 +169,15 @@ func TestBuilder_Build_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, res.SHA256)
 	assert.Greater(t, res.SizeBytes, int64(0))
 
-	// Order: extract, provision, seal, ext4, first-boot probe.
-	require.Len(t, h.calls, 5)
-	assert.Equal(t, "extract:docker.io/library/ubuntu:24.04", h.calls[0])
-	assert.Equal(t, "run", h.calls[1])
+	// Order: resolve the source digest, extract, provision, seal, ext4,
+	// first-boot probe.
+	require.Len(t, h.calls, 6)
+	assert.Equal(t, "resolve", h.calls[0])
+	assert.Equal(t, "extract:docker.io/library/ubuntu:24.04", h.calls[1])
 	assert.Equal(t, "run", h.calls[2])
-	assert.Equal(t, "ext4", h.calls[3])
-	assert.Equal(t, "probe", h.calls[4], "the artifact must be booted before it is recorded")
+	assert.Equal(t, "run", h.calls[3])
+	assert.Equal(t, "ext4", h.calls[4])
+	assert.Equal(t, "probe", h.calls[5], "the artifact must be booted before it is recorded")
 	assert.Contains(t, h.scripts[0], "apt-get update")
 	assert.Contains(t, h.scripts[1], "machine-id")
 
@@ -171,6 +188,10 @@ func TestBuilder_Build_HappyPath(t *testing.T) {
 	assert.Equal(t, res.SHA256, md.SHA256)
 	assert.Equal(t, int64(5*1<<30), md.RootMinSizeBytes)
 	assert.Equal(t, "guest-runtime-6.1", md.KernelProfile)
+	// The template records what the build observed: the base image it resolved,
+	// and the host software it was built and proven on.
+	assert.Equal(t, h.baseDigest, md.BaseImageDigest)
+	assert.Equal(t, h.hostPin, md.Pin)
 	// The template records the agent it carries, so a host can refuse one it
 	// cannot drive instead of guessing from the artifact's age.
 	assert.Equal(t, MinimumAgentProtocol, md.Agent.Protocol)
@@ -211,7 +232,7 @@ func TestBuilder_Build_ExtractError(t *testing.T) {
 	_, err := h.builder.Build(context.Background(), mustRecipe(t, validRecipeYAML))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "extract")
-	assert.Equal(t, []string{"extract:docker.io/library/ubuntu:24.04"}, h.calls)
+	assert.Equal(t, []string{"resolve", "extract:docker.io/library/ubuntu:24.04"}, h.calls)
 }
 
 func TestBuilder_Build_ProvisionError(t *testing.T) {
@@ -222,7 +243,7 @@ func TestBuilder_Build_ProvisionError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "provision")
 	// Should have stopped before creating the image.
-	assert.Equal(t, "extract:docker.io/library/ubuntu:24.04", h.calls[0])
+	assert.Equal(t, []string{"resolve", "extract:docker.io/library/ubuntu:24.04", "run"}, h.calls)
 	assert.NotContains(t, h.calls, "ext4")
 }
 
@@ -235,7 +256,9 @@ func TestBuilder_Build_SkipsWhenUpToDate(t *testing.T) {
 	require.False(t, first.Skipped)
 
 	// A second builder over the same output dir, with fakes that fail if called,
-	// proves the up-to-date artifact is reused without any work.
+	// proves the up-to-date artifact is reused without any work. The pin is
+	// still read — it is what says the artifact is this host's — but nothing
+	// touches the registry, the source or the artifact.
 	var calls []string
 	b2, err := NewBuilder(BuilderOptions{
 		WorkDir:   t.TempDir(),
@@ -244,6 +267,10 @@ func TestBuilder_Build_SkipsWhenUpToDate(t *testing.T) {
 		Runner:    &fakeRunner{calls: &calls, scripts: &[]string{}, err: errors.New("must not be called")},
 		Ext4:      &fakeExt4{calls: &calls, err: errors.New("must not be called")},
 		Prober:    &fakeProber{calls: &calls, err: errors.New("must not be called")},
+		HostPin:   func(context.Context, string) (checkpoint.Pin, error) { return h.hostPin, nil },
+		ResolveSource: func(context.Context, Source) (string, error) {
+			return "", errors.New("must not be called")
+		},
 	})
 	require.NoError(t, err)
 
@@ -268,13 +295,15 @@ func TestBuilder_Build_ForceRebuilds(t *testing.T) {
 
 	// With force, the extractor runs and its error surfaces.
 	fb, err := NewBuilder(BuilderOptions{
-		WorkDir:   t.TempDir(),
-		OutputDir: h.outDir,
-		Force:     true,
-		Extractor: h.extract,
-		Runner:    h.runner,
-		Ext4:      h.ext4,
-		Prober:    h.prober,
+		WorkDir:       t.TempDir(),
+		OutputDir:     h.outDir,
+		Force:         true,
+		Extractor:     h.extract,
+		Runner:        h.runner,
+		Ext4:          h.ext4,
+		Prober:        h.prober,
+		HostPin:       func(context.Context, string) (checkpoint.Pin, error) { return h.hostPin, nil },
+		ResolveSource: func(context.Context, Source) (string, error) { return h.baseDigest, nil },
 	})
 	require.NoError(t, err)
 	_, err = fb.Build(context.Background(), r)
@@ -369,4 +398,9 @@ func TestNewBuilder_DefaultsToARealProbe(t *testing.T) {
 
 	assert.NotNil(t, b.opts.Prober)
 	assert.Contains(t, b.opts.KernelProfiles, "guest-runtime-6.1")
+	// The pin is read from the host a build really runs on, so a caller that
+	// injects nothing still records something true about where the template can
+	// be used.
+	assert.NotNil(t, b.opts.HostPin)
+	assert.NotNil(t, b.opts.ResolveSource)
 }

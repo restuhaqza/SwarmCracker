@@ -87,6 +87,7 @@ type Spec struct {
 	Source    Source        `yaml:"source" json:"source"`
 	Init      Init          `yaml:"init,omitempty" json:"init,omitempty"`
 	Agent     AgentPin      `yaml:"agent,omitempty" json:"agent,omitempty"` // guest agent pin; defaults to this build's agent
+	Pin       *HostPin      `yaml:"pin,omitempty" json:"pin,omitempty"`     // host software this recipe requires; nil means "whatever this host runs"
 	Kernel    Kernel        `yaml:"kernel" json:"kernel"`
 	Runtime   Runtime       `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	Disk      Disk          `yaml:"disk,omitempty" json:"disk,omitempty"`
@@ -211,6 +212,7 @@ func (r *Recipe) Validate() error {
 	r.validateBuild(add)
 	r.validateInit(add)
 	r.validateAgent(add)
+	r.validatePin(add)
 	r.validateRuntime(add)
 	r.validateDisk(add)
 
@@ -325,6 +327,22 @@ func (r *Recipe) validateAgent(add func(string, ...any)) {
 	}
 }
 
+// validatePin refuses a half-declared host pin. A recipe that requires one of
+// the two identities but not the other would be satisfied by any kernel (or any
+// Firecracker), which is the opposite of what declaring a pin is for.
+func (r *Recipe) validatePin(add func(string, ...any)) {
+	pin := r.Spec.Pin
+	if pin == nil {
+		return
+	}
+	if strings.TrimSpace(pin.Firecracker) == "" {
+		add("pin.firecracker is required when pin is set: want the Firecracker version this recipe requires of the build host (e.g. v1.15.1)")
+	}
+	if strings.TrimSpace(pin.Kernel) == "" {
+		add("pin.kernel is required when pin is set: want the SHA-256 of the kernel image this recipe requires of the build host")
+	}
+}
+
 // validateRuntime checks the container runtime is supported and consistent with
 // the chosen init system.
 func (r *Recipe) validateRuntime(add func(string, ...any)) {
@@ -364,6 +382,11 @@ const BuilderRevision = 2
 // Digest returns a stable content hash of the artifact identity (name, version,
 // build pipeline revision, and build spec). Cosmetic metadata such as the
 // description is excluded.
+//
+// It is computed before any build work starts, so it must not depend on
+// anything a build observes: see manifest.go for the full list of what is in
+// the digest and what is deliberately left out, and for the two limits the
+// resulting guarantee has.
 func (r *Recipe) Digest() string {
 	payload := struct {
 		Name    string `json:"name"`
