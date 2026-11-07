@@ -35,22 +35,6 @@ import (
 )
 
 const (
-	// resolvConfPath is the resolver configuration the guest uses.
-	resolvConfPath = "/etc/resolv.conf"
-	// machineIDPath is systemd's machine identity; dbusMachineIDPath is the copy
-	// the D-Bus library keeps, which older images still read.
-	machineIDPath     = "/etc/machine-id"
-	dbusMachineIDPath = "/var/lib/dbus/machine-id"
-	// hostnamePath is the persistent host name; unix.Sethostname sets the one the
-	// running kernel reports.
-	hostnamePath = "/etc/hostname"
-	// hostKeyDir is where OpenSSH keeps the keys that name a host.
-	hostKeyDir = "/etc/ssh"
-	// preparedPath records the identity generation this guest has already
-	// applied, so the parts that can only be minted once per machine — its
-	// machine-id, its SSH host keys, its fresh entropy — are not minted again on
-	// every resume.
-	preparedPath = "/var/lib/swarmcracker/prepared"
 	// sshKeygenCommand generates the host keys a guest is missing.
 	sshKeygenCommand = "ssh-keygen"
 
@@ -69,14 +53,69 @@ const (
 	clockTolerance = 2 * time.Second
 )
 
+// Where the applier keeps the guest's identity, and how it reaches the kernel.
+//
+// These are variables for the same reason the rest of this package's seams are: the
+// applier runs inside a guest as root, and a unit test has no CAP_NET_ADMIN, no
+// CAP_SYS_TIME and no CAP_SYS_ADMIN. A test points the paths at a directory of its own
+// and drives the decisions with fakes, so every privileged call is one line that a test
+// replaces instead of a path it cannot take. Production values are the real ones.
+var (
+	// resolvConfPath is the resolver configuration the guest uses.
+	resolvConfPath = "/etc/resolv.conf"
+	// machineIDPath is systemd's machine identity; dbusMachineIDPath is the copy the
+	// D-Bus library keeps, which older images still read.
+	machineIDPath     = "/etc/machine-id"
+	dbusMachineIDPath = "/var/lib/dbus/machine-id"
+	// hostnamePath is the persistent host name; setHostname sets the one the running
+	// kernel reports.
+	hostnamePath = "/etc/hostname"
+	// hostKeyDir is where OpenSSH keeps the keys that name a host.
+	hostKeyDir = "/etc/ssh"
+	// preparedPath records the identity generation this guest has already applied, so
+	// the parts that can only be minted once per machine — its machine-id, its SSH
+	// host keys, its fresh entropy — are not minted again on every resume.
+	preparedPath = "/var/lib/swarmcracker/prepared"
+	// agentTokenPath is the token file the guest agent reads on every handshake, and
+	// entropyDevice is the character device the kernel mixes entropy through.
+	agentTokenPath = TokenPath
+	entropyDevice  = "/dev/urandom"
+
+	// The kernel, through netlink.
+	linkByName          = netlink.LinkByName
+	linkByIndex         = netlink.LinkByIndex
+	linkSetUp           = netlink.LinkSetUp
+	linkSetHardwareAddr = netlink.LinkSetHardwareAddr
+	parseAddr           = netlink.ParseAddr
+	addrList            = netlink.AddrList
+	addrDel             = netlink.AddrDel
+	addrReplace         = netlink.AddrReplace
+	routeList           = netlink.RouteList
+	routeDel            = netlink.RouteDel
+	routeReplace        = netlink.RouteReplace
+	// setHostname is the host name the running kernel reports.
+	setHostname = unix.Sethostname
+	// clockSettime is the wall clock, clockNow is the clock it has to be compared
+	// against — the guest's own, which a test cannot set — and mixEntropy is the
+	// RNDADDENTROPY ioctl.
+	clockSettime = unix.ClockSettime
+	clockNow     = time.Now
+	mixEntropy   = entropyIoctlOS
+
+	// The host name the running kernel reports, and the one external command the
+	// applier runs, by path rather than by name.
+	hostName = os.Hostname
+	lookPath = exec.LookPath
+)
+
 // reachMetadataServiceOS brings iface up and gives the guest a way to the
 // metadata service, before anything is known about the identity.
 func reachMetadataServiceOS(iface string) error {
-	link, err := netlink.LinkByName(iface)
+	link, err := linkByName(iface)
 	if err != nil {
 		return fmt.Errorf("interface %s: %w", iface, err)
 	}
-	if err := netlink.LinkSetUp(link); err != nil {
+	if err := linkSetUp(link); err != nil {
 		return fmt.Errorf("bring %s up: %w", iface, err)
 	}
 	if err := ensureMetadataRoute(link); err != nil {
@@ -92,12 +131,12 @@ func reachMetadataServiceOS(iface string) error {
 		return err
 	}
 	if len(addrs) == 0 {
-		bootstrap, err := netlink.ParseAddr(identityBootstrapAddress)
+		bootstrap, err := parseAddr(identityBootstrapAddress)
 		if err != nil {
 			return fmt.Errorf("parse the bootstrap address %s: %w", identityBootstrapAddress, err)
 		}
 		bootstrap.Scope = int(netlink.SCOPE_LINK)
-		if err := netlink.AddrReplace(link, bootstrap); err != nil {
+		if err := addrReplace(link, bootstrap); err != nil {
 			return fmt.Errorf("give %s the bootstrap address %s: %w", iface, identityBootstrapAddress, err)
 		}
 	}
@@ -109,11 +148,11 @@ func reachMetadataServiceOS(iface string) error {
 // can hold the guest to the identity it published instead of trusting that the
 // request was carried out.
 func applyIdentityOS(ctx context.Context, id Identity) (PrepareReport, error) {
-	link, err := netlink.LinkByName(id.Interface)
+	link, err := linkByName(id.Interface)
 	if err != nil {
 		return PrepareReport{}, fmt.Errorf("interface %s: %w", id.Interface, err)
 	}
-	if err := netlink.LinkSetUp(link); err != nil {
+	if err := linkSetUp(link); err != nil {
 		return PrepareReport{}, fmt.Errorf("bring %s up: %w", id.Interface, err)
 	}
 
@@ -200,7 +239,7 @@ func applyMAC(link netlink.Link, id Identity, changed *changeSet) error {
 	if bytes.Equal(link.Attrs().HardwareAddr, want) {
 		return nil
 	}
-	if err := netlink.LinkSetHardwareAddr(link, want); err != nil {
+	if err := linkSetHardwareAddr(link, want); err != nil {
 		return fmt.Errorf("give %s the mac %s: %w", id.Interface, id.MAC, err)
 	}
 	changed.mark(PartMAC)
@@ -225,7 +264,7 @@ func applyAddresses(link netlink.Link, id Identity, changed *changeSet) error {
 		if want != nil && sameAddress(addr, *want) {
 			continue
 		}
-		if err := netlink.AddrDel(link, &addr); err != nil {
+		if err := addrDel(link, &addr); err != nil {
 			return fmt.Errorf("remove %s from %s: %w", addr.IPNet, id.Interface, err)
 		}
 		changed.mark(PartAddress)
@@ -234,7 +273,7 @@ func applyAddresses(link netlink.Link, id Identity, changed *changeSet) error {
 		return nil
 	}
 
-	if err := netlink.AddrReplace(link, want); err != nil {
+	if err := addrReplace(link, want); err != nil {
 		return fmt.Errorf("give %s the address %s: %w", id.Interface, want.IPNet, err)
 	}
 	if !anyAddress(have, *want) {
@@ -269,11 +308,11 @@ func applyRoutes(link netlink.Link, id Identity, changed *changeSet) error {
 			if !isDefaultRoute(route) || route.Gw.Equal(gw) {
 				continue
 			}
-			if err := netlink.RouteDel(&route); err != nil {
+			if err := routeDel(&route); err != nil {
 				return fmt.Errorf("remove the default route via %s: %w", route.Gw, err)
 			}
 		}
-		if err := netlink.RouteReplace(want); err != nil {
+		if err := routeReplace(want); err != nil {
 			return fmt.Errorf("set the default route via %s: %w", id.Gateway, err)
 		}
 	}
@@ -294,7 +333,7 @@ func applyRoutes(link netlink.Link, id Identity, changed *changeSet) error {
 		if !anyRoute(have, next) {
 			changed.mark(PartRoutes)
 		}
-		if err := netlink.RouteReplace(next); err != nil {
+		if err := routeReplace(next); err != nil {
 			return fmt.Errorf("apply the route %s: %w", route.Destination, err)
 		}
 	}
@@ -364,14 +403,14 @@ func applyHostname(id Identity, changed *changeSet) error {
 	if id.Hostname == "" {
 		return nil
 	}
-	current, err := os.Hostname()
+	current, err := hostName()
 	if err != nil {
 		return fmt.Errorf("read the host name: %w", err)
 	}
 	if current == id.Hostname {
 		return nil
 	}
-	if err := unix.Sethostname([]byte(id.Hostname)); err != nil {
+	if err := setHostname([]byte(id.Hostname)); err != nil {
 		return fmt.Errorf("set the host name to %q: %w", id.Hostname, err)
 	}
 	if err := writeFileAtomic(hostnamePath, []byte(id.Hostname+"\n"), 0o644); err != nil {
@@ -480,7 +519,7 @@ func regenerateHostKeys(ctx context.Context, id Identity, changed *changeSet) er
 	if err != nil {
 		return fmt.Errorf("list the SSH host keys: %w", err)
 	}
-	keygen, lookErr := exec.LookPath(sshKeygenCommand)
+	keygen, lookErr := lookPath(sshKeygenCommand)
 	if len(existing) == 0 {
 		if id.HostKeys {
 			return fmt.Errorf("the identity asks for new SSH host keys, but this guest has none and no %s to make them", sshKeygenCommand)
@@ -538,10 +577,10 @@ func applyToken(id Identity, changed *changeSet) error {
 		return err
 	}
 	body := []byte(id.Token + "\n")
-	if current, err := os.ReadFile(TokenPath); err == nil && bytes.Equal(current, body) {
+	if current, err := os.ReadFile(agentTokenPath); err == nil && bytes.Equal(current, body) {
 		return nil
 	}
-	if err := writeFileAtomic(TokenPath, body, 0o400); err != nil {
+	if err := writeFileAtomic(agentTokenPath, body, 0o400); err != nil {
 		return err
 	}
 	changed.mark(PartToken)
@@ -559,7 +598,7 @@ func applyClock(id Identity, changed *changeSet) error {
 		return nil
 	}
 	want := time.Unix(0, id.ClockUnixNano)
-	if !clockNeedsSetting(time.Now(), want) {
+	if !clockNeedsSetting(clockNow(), want) {
 		return nil
 	}
 	if err := setClockOS(id.ClockUnixNano); err != nil {
@@ -579,7 +618,7 @@ func clockNeedsSetting(now, want time.Time) bool {
 // setClockOS sets the guest's wall clock.
 func setClockOS(unixNano int64) error {
 	ts := unix.NsecToTimespec(unixNano)
-	if err := unix.ClockSettime(unix.CLOCK_REALTIME, &ts); err != nil {
+	if err := clockSettime(unix.CLOCK_REALTIME, &ts); err != nil {
 		return fmt.Errorf("set the wall clock: %w", err)
 	}
 	return nil
@@ -589,9 +628,9 @@ func setClockOS(unixNano int64) error {
 // guest's pool is a copy of its source's, so without this every clone draws the
 // same "random" stream.
 func addEntropyOS(entropy []byte) error {
-	f, err := os.OpenFile("/dev/urandom", os.O_WRONLY, 0)
+	f, err := os.OpenFile(entropyDevice, os.O_WRONLY, 0)
 	if err != nil {
-		return fmt.Errorf("open /dev/urandom: %w", err)
+		return fmt.Errorf("open %s: %w", entropyDevice, err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -605,11 +644,19 @@ func addEntropyOS(entropy []byte) error {
 	binary.LittleEndian.PutUint32(info[4:], uint32(len(entropy)))
 	copy(info[8:], entropy)
 
+	if err := mixEntropy(f.Fd(), info); err != nil {
+		return fmt.Errorf("mix %d bytes into the entropy pool: %w", len(entropy), err)
+	}
+	return nil
+}
+
+// entropyIoctlOS mixes info — a rand_pool_info: two native ints, the bits credited to
+// the pool and the buffer's size, followed by the buffer — into the kernel's pool.
+func entropyIoctlOS(fd uintptr, info []byte) error {
 	buf := unsafe.Pointer(&info[0]) //nolint:gosec // G103: the ioctl's argument is a pointer to this buffer by definition.
 	//nolint:gosec // G103: as above.
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, f.Fd(), uintptr(unix.RNDADDENTROPY), uintptr(buf))
-	if errno != 0 {
-		return fmt.Errorf("mix %d bytes into the entropy pool: %w", len(entropy), errno)
+	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, fd, uintptr(unix.RNDADDENTROPY), uintptr(buf)); errno != 0 {
+		return errno
 	}
 	return nil
 }
@@ -620,7 +667,7 @@ func observeIdentity(link netlink.Link) (PrepareReport, error) {
 
 	// The link is re-read: the MAC was set through the same handle, but the report
 	// has to be the interface's own answer, not the value this run wrote.
-	current, err := netlink.LinkByName(link.Attrs().Name)
+	current, err := linkByName(link.Attrs().Name)
 	if err != nil {
 		return PrepareReport{}, fmt.Errorf("read back %s: %w", link.Attrs().Name, err)
 	}
@@ -644,7 +691,7 @@ func observeIdentity(link netlink.Link) (PrepareReport, error) {
 		report.Routes = append(report.Routes, formatRoute(route))
 	}
 
-	hostname, err := os.Hostname()
+	hostname, err := hostName()
 	if err != nil {
 		return PrepareReport{}, fmt.Errorf("read the host name: %w", err)
 	}
@@ -655,7 +702,7 @@ func observeIdentity(link netlink.Link) (PrepareReport, error) {
 	if report.DNS, err = readNameservers(); err != nil {
 		return PrepareReport{}, err
 	}
-	report.ClockUnixNano = time.Now().UnixNano()
+	report.ClockUnixNano = clockNow().UnixNano()
 	return report, nil
 }
 
@@ -714,7 +761,7 @@ func writePreparedGeneration(generation string) error {
 
 // ipv4Addresses lists the interface's IPv4 addresses.
 func ipv4Addresses(link netlink.Link) ([]netlink.Addr, error) {
-	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	addrs, err := addrList(link, netlink.FAMILY_V4)
 	if err != nil {
 		return nil, fmt.Errorf("list the addresses of %s: %w", link.Attrs().Name, err)
 	}
@@ -723,7 +770,7 @@ func ipv4Addresses(link netlink.Link) ([]netlink.Addr, error) {
 
 // ipv4Routes lists the interface's IPv4 routes.
 func ipv4Routes(link netlink.Link) ([]netlink.Route, error) {
-	routes, err := netlink.RouteList(link, netlink.FAMILY_V4)
+	routes, err := routeList(link, netlink.FAMILY_V4)
 	if err != nil {
 		return nil, fmt.Errorf("list the routes of %s: %w", link.Attrs().Name, err)
 	}
@@ -737,7 +784,7 @@ func ensureMetadataRoute(link netlink.Link) error {
 		Dst:       &net.IPNet{IP: net.ParseIP(MMDSAddress).To4(), Mask: net.CIDRMask(32, 32)},
 		Scope:     netlink.SCOPE_LINK,
 	}
-	if err := netlink.RouteReplace(route); err != nil {
+	if err := routeReplace(route); err != nil {
 		return fmt.Errorf("route %s to the metadata service through %s: %w", MMDSAddress, link.Attrs().Name, err)
 	}
 	return nil
@@ -749,7 +796,7 @@ func parseOptionalAddress(address string) (*netlink.Addr, error) {
 	if address == "" {
 		return nil, nil
 	}
-	addr, err := netlink.ParseAddr(address)
+	addr, err := parseAddr(address)
 	if err != nil {
 		return nil, fmt.Errorf("identity address %q: %w", address, err)
 	}
@@ -816,8 +863,12 @@ func sameDestination(a, b *net.IPNet) bool {
 
 // formatRoute renders a route the way an operator expects to read it.
 func formatRoute(route netlink.Route) string {
+	// The kernel reports the default route as 0.0.0.0/0 and a caller asks for it with no
+	// destination at all, and a reader expects to see "default" for both: printing the
+	// kernel's spelling would put "0.0.0.0/0" in a report next to "default" for the same
+	// route, depending on which side of a restore it was read.
 	destination := "default"
-	if route.Dst != nil {
+	if !isDefaultRoute(route) {
 		destination = route.Dst.String()
 	}
 
@@ -826,7 +877,7 @@ func formatRoute(route netlink.Route) string {
 		parts = append(parts, "via "+route.Gw.String())
 	}
 	if route.LinkIndex != 0 {
-		if link, err := netlink.LinkByIndex(route.LinkIndex); err == nil {
+		if link, err := linkByIndex(route.LinkIndex); err == nil {
 			parts = append(parts, "dev "+link.Attrs().Name)
 		}
 	}

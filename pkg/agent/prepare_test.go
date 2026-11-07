@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -503,4 +504,268 @@ func TestPrepareGuestReportsWhatTheApplierSaw(t *testing.T) {
 	assert.Contains(t, report.Changed, PartMAC)
 	assert.Contains(t, report.Changed, PartBootID)
 	assert.NotEmpty(t, report.BootID)
+}
+
+// TestIdentityValidateRejectsWhatTheGuestWouldRefuse covers the parts of an identity the
+// applier would find out too late: a route gateway the kernel cannot use, a token the
+// agent would refuse, a machine id of the wrong shape and a host name sethostname would
+// reject. Validation is what makes those a refused launch instead of a guest that
+// half-applied its identity.
+func TestIdentityValidateRejectsWhatTheGuestWouldRefuse(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Identity)
+		wantErr string
+	}{
+		{
+			name:    "a route gateway that is not an address",
+			mutate:  func(i *Identity) { i.Routes = []Route{{Destination: "10.99.0.0/24", Gateway: "the-router"}} },
+			wantErr: "routes[0] gateway",
+		},
+		{
+			name:    "a token the agent would refuse",
+			mutate:  func(i *Identity) { i.Token = "a token with a space" },
+			wantErr: "token:",
+		},
+		{
+			name:    "a machine id that is hex but not lowercase",
+			mutate:  func(i *Identity) { i.MachineID = strings.ToUpper(i.MachineID) },
+			wantErr: "32 hex characters",
+		},
+		{
+			name:    "a host name longer than a kernel accepts",
+			mutate:  func(i *Identity) { i.Hostname = strings.Repeat("a", 254) },
+			wantErr: "is not a host name",
+		},
+		{
+			name:    "a nameserver that is an address but not a resolver",
+			mutate:  func(i *Identity) { i.DNS = []string{"10.97.0.1", "0.0.0.0.0"} },
+			wantErr: "dns[1]",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			id := helloIdentity()
+			tc.mutate(&id)
+
+			err := id.Validate()
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+}
+
+// roundTripFunc is a metadata service that answers without a server: the failures below
+// are the ones a clone's first read after a resume meets most often, and each one has to
+// be an error rather than an empty identity.
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// errBody is a response body that fails while it is read.
+type errBody struct{ err error }
+
+func (b errBody) Read([]byte) (int, error) { return 0, b.err }
+func (b errBody) Close() error             { return nil }
+
+// installMetadataService points the agent at a metadata service of the test's own, and
+// puts the real one back afterwards.
+func installMetadataService(t *testing.T, transport roundTripFunc) {
+	t.Helper()
+
+	previousBase, previousClient := mmdsBaseURL, mmdsHTTPClient
+	t.Cleanup(func() { mmdsBaseURL, mmdsHTTPClient = previousBase, previousClient })
+	mmdsBaseURL = "http://" + MMDSAddress
+	mmdsHTTPClient = &http.Client{Transport: transport}
+}
+
+// TestReadIdentityMMDSReportsWhatTheServiceDid covers the reads that must not be mistaken
+// for "the node published nothing": a service that refuses, one that answers a status, one
+// whose body breaks halfway and one that answers something that is not an identity.
+func TestReadIdentityMMDSReportsWhatTheServiceDid(t *testing.T) {
+	t.Run("a service that cannot be reached is an error", func(t *testing.T) {
+		installMetadataService(t, func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("no route to host")
+		})
+
+		_, err := readIdentityMMDS(context.Background())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "mint a session token")
+	})
+
+	t.Run("a session token the service refuses is an error", func(t *testing.T) {
+		installMetadataService(t, func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Status:     "500 Internal Server Error",
+				Body:       io.NopCloser(strings.NewReader("no tokens today")),
+			}, nil
+		})
+
+		_, err := readIdentityMMDS(context.Background())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "minting a session token answered 500 Internal Server Error: no tokens today")
+	})
+
+	t.Run("an empty session token is an error", func(t *testing.T) {
+		installMetadataService(t, func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("\n"))}, nil
+		})
+
+		_, err := readIdentityMMDS(context.Background())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "empty session token")
+	})
+
+	t.Run("a token body that breaks while it is read is an error", func(t *testing.T) {
+		installMetadataService(t, func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: errBody{errors.New("connection reset")}}, nil
+		})
+
+		_, err := readIdentityMMDS(context.Background())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read the session token: connection reset")
+	})
+
+	t.Run("a service that answers a status for the identity is an error", func(t *testing.T) {
+		installMetadataService(t, func(req *http.Request) (*http.Response, error) {
+			if req.Method == http.MethodPut {
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("session-token"))}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusNotFound,
+				Status:     "404 Not Found",
+				Body:       io.NopCloser(strings.NewReader("no such path")),
+			}, nil
+		})
+
+		_, err := readIdentityMMDS(context.Background())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "/identity answered 404 Not Found: no such path")
+	})
+
+	t.Run("a body that breaks while the identity is read is an error", func(t *testing.T) {
+		installMetadataService(t, func(req *http.Request) (*http.Response, error) {
+			if req.Method == http.MethodPut {
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader("session-token"))}, nil
+			}
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: errBody{errors.New("connection reset")}}, nil
+		})
+
+		_, err := readIdentityMMDS(context.Background())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read /identity: connection reset")
+	})
+
+	t.Run("a document that is not an identity is an error", func(t *testing.T) {
+		installMetadataService(t, func(req *http.Request) (*http.Response, error) {
+			body := "session-token"
+			if req.Method == http.MethodGet {
+				body = "not a document"
+			}
+			return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: io.NopCloser(strings.NewReader(body))}, nil
+		})
+
+		_, err := readIdentityMMDS(context.Background())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "parse the identity published at /identity")
+	})
+
+	t.Run("a base URL that cannot be a request is an error", func(t *testing.T) {
+		installMetadataService(t, func(*http.Request) (*http.Response, error) {
+			t.Fatal("no request can be built from this base URL")
+			return nil, nil
+		})
+		mmdsBaseURL = "http://169.254.169.254/\x7f"
+
+		_, err := readIdentityMMDS(context.Background())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "build the session token request")
+	})
+}
+
+// TestFetchIdentityGivesUpWhenTheRequestIsAlreadyOver covers the budget the host sets: a
+// request that is over before the first attempt is not a read at all, and the guest has to
+// report that rather than spin.
+func TestFetchIdentityGivesUpWhenTheRequestIsAlreadyOver(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := fetchIdentity(ctx)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the request was over before the first read: context canceled")
+	assert.NotContains(t, err.Error(), "%!w", "a failure a caller reads must not carry fmt's placeholder for a missing cause")
+}
+
+// TestPrepareGuestReportsAReadThatFailed proves the hook does not turn "the node published
+// nothing" into "the guest carries nothing": the failure is the caller's, and it names the
+// metadata service.
+func TestPrepareGuestReportsAReadThatFailed(t *testing.T) {
+	installPrepareSeams(t, Identity{}, errors.New("the node published no identity"), nil)
+
+	_, err := prepareGuest(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the node published no identity")
+}
+
+// TestPrepareGuestReportsAnApplierThatFailed proves the whole hook fails closed: an
+// applier that cannot carry the identity out is not reported as a guest that carries it.
+func TestPrepareGuestReportsAnApplierThatFailed(t *testing.T) {
+	installPrepareSeams(t, helloIdentity(), nil, errors.New("no route to the metadata service"))
+
+	_, err := prepareGuest(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no route to the metadata service")
+}
+
+// TestPrepareGuestReportsAChannelItCannotReach covers the first step of the hook: a guest
+// whose interface cannot be brought up and given a way to the metadata service has no
+// identity to read, and the caller is told which step failed rather than that the identity
+// was empty.
+func TestPrepareGuestReportsAChannelItCannotReach(t *testing.T) {
+	previous := reachMetadataService
+	t.Cleanup(func() { reachMetadataService = previous })
+	reachMetadataService = func(string) error { return errors.New("no such device") }
+
+	_, err := prepareGuest(context.Background())
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reach the metadata service on eth0: no such device")
+}
+
+// TestGenerationIDIsTheMachinesIdentity covers what the generation is computed from: a
+// clone that is routed differently is a different machine and has to mint its own machine
+// id and host keys, while the same clone keeps them across resumes.
+func TestGenerationIDIsTheMachinesIdentity(t *testing.T) {
+	base := helloIdentity()
+	routed := base
+	routed.Routes = []Route{{Destination: "10.100.0.0/24", Gateway: "10.97.0.254"}}
+
+	assert.NotEqual(t, base.GenerationID(), routed.GenerationID(),
+		"a clone whose routes differ is a different machine")
+	assert.NotEqual(t, base.GenerationID(),
+		func() string {
+			copied := base
+			copied.Routes = []Route{{Destination: "10.100.0.0/24"}}
+			return copied.GenerationID()
+		}(),
+		"a route with no next hop is not the same route")
+
+	same := base
+	same.Routes = nil
+	assert.Equal(t, base.GenerationID(), same.GenerationID(),
+		"the same machine is the same machine")
 }

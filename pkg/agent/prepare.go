@@ -369,6 +369,11 @@ var fetchIdentity = func(ctx context.Context) (Identity, error) {
 	var lastErr error
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
+			// A request that is over before the first read has no attempt to report, and
+			// there is nothing to wrap: %w on a nil error prints "%!w(<nil>)".
+			if lastErr == nil {
+				return Identity{}, fmt.Errorf("metadata service: the request was over before the first read: %w", err)
+			}
 			return Identity{}, fmt.Errorf("metadata service: gave up after %d attempts: %w: %w", attempt-1, err, lastErr)
 		}
 		id, err := readIdentityMMDS(ctx)

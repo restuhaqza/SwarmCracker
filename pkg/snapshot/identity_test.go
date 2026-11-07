@@ -3,6 +3,7 @@ package snapshot
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -50,6 +51,11 @@ func TestIdentityProblem(t *testing.T) {
 		{
 			name:    "an identity with the interface it is reached over",
 			network: net, id: ptrTo(cloneIdentity()),
+		},
+		{
+			name:    "an identity that names no interface is reached over the default one",
+			network: net,
+			id:      &agent.Identity{MAC: "06:00:ac:10:00:0b", Address: "10.99.0.11/24"},
 		},
 		{
 			name:    "an identity on another interface",
@@ -545,3 +551,132 @@ func mustJSON(t *testing.T, v any) string {
 
 // ptrTo is a pointer to a copy of v, for the table above.
 func ptrTo(v agent.Identity) *agent.Identity { return &v }
+
+// TestRunPrepareMapsAnUnsupportedOperation covers the backstop behind the capability
+// gate: a guest that advertises the operation and then refuses it is the same failure as
+// one that never advertised it, and it has to be ErrPrepareUnsupported either way. A
+// launch that continued here would leave the clone wearing its checkpoint's identity,
+// which is the outcome SBX-042 exists to prevent.
+func TestRunPrepareMapsAnUnsupportedOperation(t *testing.T) {
+	installPrepareDial(t, fakePrepareClient{
+		hello: agent.Hello{Version: agent.Version, Caps: agent.Capabilities()},
+		err:   &agent.Error{Code: agent.CodeUnsupportedOp, Message: "op prepare has no handler"},
+	}, nil)
+
+	_, err := runPrepare(context.Background(), "sbx-clb", "/run/agent.vsock", "", cloneIdentity(), time.Second)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPrepareUnsupported)
+	assert.NotErrorIs(t, err, ErrPrepareFailed)
+	assert.Contains(t, err.Error(), "op prepare has no handler")
+}
+
+// TestMetadataServiceCallsReportAServiceThatRefuses covers the three calls the identity
+// channel makes to the VMM, each of which has to be a failed launch rather than a guest
+// that runs with nothing published: a clone that cannot be told who it is must not start.
+func TestMetadataServiceCallsReportAServiceThatRefuses(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "absent.sock")
+	id := cloneIdentity()
+
+	err := publishIdentity(context.Background(), missing, &id)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish the instance identity to its metadata service")
+
+	err = configureMetadataService(context.Background(), missing, []NetworkInterface{{IfaceID: "eth0", HostTap: "t0"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "configure the metadata service on eth0")
+
+	err = loadJailedCheckpoint(context.Background(), missing, "vm.state", "vm.mem",
+		[]NetworkInterface{{IfaceID: "eth0", HostTap: "t0"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/snapshot/load")
+}
+
+// TestLoadJailedCheckpointNamesTheClonesOwnDevices pins what a restore asks for: the
+// interfaces the clone opens in place of the ones the checkpoint recorded, and a guest
+// left stopped until it has its identity. The host device is the one attribute a load may
+// replace; the guest MAC is not, which is why it is applied from inside the guest.
+func TestLoadJailedCheckpointNamesTheClonesOwnDevices(t *testing.T) {
+	api := newFakeAPI(t)
+
+	require.NoError(t, loadJailedCheckpoint(context.Background(), api.socket, "/jail/vm.state", "/jail/vm.mem",
+		[]NetworkInterface{{IfaceID: "eth0", HostTap: "sbx-tap-b"}, {IfaceID: "eth1", HostTap: "sbx-tap-c"}}))
+
+	require.Len(t, api.calls, 1)
+	call := api.calls[0]
+	assert.Equal(t, http.MethodPut, call.method)
+	assert.Equal(t, "/snapshot/load", call.path)
+	assert.Equal(t, "/jail/vm.state", call.body["snapshot_path"])
+	assert.Equal(t, map[string]interface{}{"backend_path": "/jail/vm.mem", "backend_type": "File"},
+		call.body["mem_backend"], "the backend is named rather than inferred from a path")
+	assert.Equal(t, false, call.body["resume_vm"], "the guest is left stopped until it has its identity")
+	assert.Equal(t, []interface{}{
+		map[string]interface{}{"iface_id": "eth0", "host_dev_name": "sbx-tap-b"},
+		map[string]interface{}{"iface_id": "eth1", "host_dev_name": "sbx-tap-c"},
+	}, call.body["network_overrides"])
+
+	// A load with nothing to override carries no overrides at all.
+	api.calls = nil
+	require.NoError(t, loadJailedCheckpoint(context.Background(), api.socket, "/jail/vm.state", "/jail/vm.mem", nil))
+	require.Len(t, api.calls, 1)
+	assert.NotContains(t, api.calls[0].body, "network_overrides")
+}
+
+// TestWhatTheReportIsComparedAgainst covers the two comparisons the node holds a guest's
+// report to. They are the difference between "the guest said something" and "the guest is
+// wearing the identity the node published".
+func TestWhatTheReportIsComparedAgainst(t *testing.T) {
+	t.Run("an address is the address and its prefix, not the network it masks to", func(t *testing.T) {
+		assert.True(t, addressReported([]string{"10.99.0.11/24"}, "10.99.0.11/24"))
+		assert.False(t, addressReported([]string{"10.99.0.0/24"}, "10.99.0.11/24"),
+			"a guest that came up on the network address has not adopted the identity")
+		assert.False(t, addressReported([]string{"10.99.0.11/16"}, "10.99.0.11/24"))
+		assert.False(t, addressReported([]string{"not an address"}, "10.99.0.11/24"),
+			"an address that cannot be parsed is not the address that was wanted")
+		assert.False(t, addressReported(nil, "10.99.0.11/24"))
+		assert.False(t, addressReported([]string{"10.99.0.11/24"}, "not an address"))
+	})
+
+	t.Run("the gateway is the next hop of a route the guest reports", func(t *testing.T) {
+		assert.True(t, gatewayReported([]string{"default via 10.99.0.1 dev eth0"}, "10.99.0.1"))
+		assert.False(t, gatewayReported([]string{"default via 10.99.0.2 dev eth0"}, "10.99.0.1"))
+		assert.False(t, gatewayReported([]string{"10.99.0.0/24 dev eth0"}, "10.99.0.1"),
+			"an on-link route has no next hop")
+		assert.False(t, gatewayReported([]string{"default via"}, "10.99.0.1"))
+		assert.False(t, gatewayReported([]string{"default via 10.99.0.1 dev eth0"}, "the-router"))
+		assert.False(t, gatewayReported(nil, "10.99.0.1"))
+	})
+}
+
+// TestPrepareTimeoutIsTheLaunchersOrTheDefault pins the budget the hook gets.
+func TestPrepareTimeoutIsTheLaunchersOrTheDefault(t *testing.T) {
+	assert.Equal(t, DefaultPrepareTimeout, prepareTimeout(0))
+	assert.Equal(t, DefaultPrepareTimeout, prepareTimeout(-time.Second),
+		"a negative window is read as the default rather than as no time at all")
+	assert.Equal(t, 5*time.Second, prepareTimeout(5*time.Second))
+}
+
+// TestPrepareDialWithoutAGuest covers the dial the hook goes through when the agent is
+// not there: a launch whose guest cannot be reached is a failed launch, not a resume.
+func TestPrepareDialWithoutAGuest(t *testing.T) {
+	_, err := prepareDial(context.Background(), filepath.Join(t.TempDir(), "absent.vsock"), agent.DefaultPort, "a-token")
+
+	require.Error(t, err)
+}
+
+// TestRunPrepareMapsAFailedHook is the other half of the mapping: a hook that failed for
+// any other reason is ErrPrepareFailed, never the version error, because the two tell a
+// caller different things — rebuild the template, or look at what the guest did.
+func TestRunPrepareMapsAFailedHook(t *testing.T) {
+	installPrepareDial(t, fakePrepareClient{
+		hello: agent.Hello{Version: agent.Version, Caps: agent.Capabilities()},
+		err:   errors.New("prepare: set the default route via 10.97.0.1: network is unreachable"),
+	}, nil)
+
+	_, err := runPrepare(context.Background(), "sbx-clb", "/run/agent.vsock", "", cloneIdentity(), time.Second)
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrPrepareFailed)
+	assert.NotErrorIs(t, err, ErrPrepareUnsupported)
+	assert.Contains(t, err.Error(), "network is unreachable")
+}
