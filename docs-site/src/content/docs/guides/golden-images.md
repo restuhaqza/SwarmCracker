@@ -9,7 +9,7 @@ Related: [Snapshots](/guides/snapshots/), `pkg/image/`, `pkg/translator/`, `pkg/
 The recipe loader/validator (`pkg/golden/recipe.go`), the builder
 (`pkg/golden/builder.go`, `builder_real.go`), the exported `pkg/image` building
 blocks (`PullImage`, `ExtractImageToDir`, `CreateExt4FromDir`, `ParseDiskSize`),
-and the `swarmcracker image build|list|inspect` CLI are implemented. Verified on
+and the `swarmcracker template build|list|inspect` CLI are implemented. Verified on
 a real KVM node (amd64, Firecracker v1.15.1). Each recipe was
 built fresh, the runtime checked inside the ext4 with `debugfs`, then booted
 under Firecracker with a tap NIC and its serial log inspected:
@@ -106,7 +106,7 @@ the guest reported, and a recipe that pins a different version fails the build.
 
 **Templates built before this change have no agent and must be rebuilt.** The
 recipe digest includes a builder revision (`golden.BuilderRevision`), so
-`image build --force` (or a plain `image build` after this change) rebuilds
+`template build --force` (or a plain `template build` after this change) rebuilds
 rather than reusing an old artifact; templates already in a store can only be
 fixed by rebuilding them.
 

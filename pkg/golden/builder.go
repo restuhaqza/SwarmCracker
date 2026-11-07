@@ -97,7 +97,7 @@ func NewBuilder(opts BuilderOptions) (*Builder, error) {
 	if opts.HostPin == nil {
 		binary := opts.FirecrackerBinary
 		opts.HostPin = func(ctx context.Context, kernelPath string) (checkpoint.Pin, error) {
-			return hostPin(ctx, binary, kernelPath)
+			return NodePin(ctx, binary, kernelPath)
 		}
 	}
 	if opts.ResolveSource == nil {
@@ -130,7 +130,7 @@ func (b *Builder) Build(ctx context.Context, r *Recipe) (*Result, error) {
 	}
 	if r.Spec.Build != BuildGolden {
 		return nil, fmt.Errorf(
-			"golden: recipe %q uses build=%q and is assembled by the task-time image preparer, not `image build`",
+			"golden: recipe %q uses build=%q and is assembled by the task-time image preparer, not `template build`",
 			r.Metadata.Name, r.Spec.Build)
 	}
 	// The pin is this host's, and it is read before anything is built: a recipe

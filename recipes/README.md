@@ -65,11 +65,11 @@ valid and no initramfs is needed.
 sudo scripts/build-guest-runtime-kernel.sh
 
 # build a golden image
-sudo swarmcracker image build recipes/ubuntu-24.04-docker.yaml
+sudo swarmcracker template build recipes/ubuntu-24.04-docker.yaml
 
 # list / inspect
-swarmcracker image list
-swarmcracker image inspect ubuntu-24.04-docker@1.0.0
+swarmcracker template list
+swarmcracker template inspect ubuntu-24.04-docker@1.0.0
 
 # use it for a service task
 swarmcracker service create --name web --image nginx:alpine \
@@ -78,7 +78,7 @@ swarmcracker service create --name web --image nginx:alpine \
 
 > `build: preparer` recipes (`busybox-scratch`, `distroless-minimal`) describe
 > the legacy single-workload model and are assembled by the task-time image
-> preparer; `swarmcracker image build` rejects them on purpose rather than
+> preparer; `swarmcracker template build` rejects them on purpose rather than
 > producing a rootfs with no init.
 
 ## Convention

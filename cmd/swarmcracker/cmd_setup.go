@@ -157,7 +157,7 @@ func runSetupCheck() error {
 	}
 
 	// Rootfs: accept any *.ext4 image in the rootfs directory (the daemon and
-	// `swarmcracker image build` name images after the image, not "bionic").
+	// `swarmcracker template build` name images after the image, not "bionic").
 	rootfsDirPath := rootfsDir // global --rootfs-dir override
 	if rootfsDirPath == "" {
 		rootfsDirPath = "/var/lib/firecracker/rootfs"

@@ -129,7 +129,7 @@ func TestHostPin_ReadsTheRunningVMMAndHashesTheKernel(t *testing.T) {
 	kernelBytes := []byte("kernel bytes")
 	require.NoError(t, os.WriteFile(kernel, kernelBytes, 0o644))
 
-	pin, err := hostPin(context.Background(), binary, kernel)
+	pin, err := NodePin(context.Background(), binary, kernel)
 	require.NoError(t, err)
 
 	sum := sha256.Sum256(kernelBytes)
@@ -146,20 +146,20 @@ func TestHostPin_RefusesWhatItCannotRead(t *testing.T) {
 	require.NoError(t, os.WriteFile(notAFirecracker, []byte("#!/bin/sh\necho 'hello'\n"), 0o755))
 
 	t.Run("a version this build cannot read", func(t *testing.T) {
-		pin, err := hostPin(context.Background(), notAFirecracker, kernel)
+		pin, err := NodePin(context.Background(), notAFirecracker, kernel)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "version line")
 		assert.Equal(t, checkpoint.Pin{}, pin)
 	})
 
 	t.Run("a kernel image that is not there", func(t *testing.T) {
-		_, err := hostPin(context.Background(), notAFirecracker, filepath.Join(dir, "absent"))
+		_, err := NodePin(context.Background(), notAFirecracker, filepath.Join(dir, "absent"))
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "hash the kernel image")
 	})
 
 	t.Run("no kernel image at all", func(t *testing.T) {
-		_, err := hostPin(context.Background(), notAFirecracker, "")
+		_, err := NodePin(context.Background(), notAFirecracker, "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no kernel image to pin")
 	})
