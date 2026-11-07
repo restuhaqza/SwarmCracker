@@ -46,10 +46,10 @@ func writeArtifact(t *testing.T, dir, name, version string) string {
 			Version:  "test",
 			Caps:     agent.Capabilities(),
 		},
-		Pin:             checkpoint.Pin{Firecracker: "v1.15.1", Kernel: "cafebabe"},
-		Artifact:        base + ".ext4",
-		SizeBytes:       1024,
-		SHA256:          "deadbeef",
+		Pin:       checkpoint.Pin{Firecracker: "v1.15.1", Kernel: "cafebabe"},
+		Artifact:  base + ".ext4",
+		SizeBytes: 1024,
+		SHA256:    "deadbeef",
 	}
 	data, err := json.MarshalIndent(md, "", "  ")
 	require.NoError(t, err)

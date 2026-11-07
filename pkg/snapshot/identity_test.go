@@ -48,35 +48,35 @@ func TestIdentityProblem(t *testing.T) {
 	}{
 		{name: "a launch with no identity has no rules", network: nil, id: nil},
 		{
-			name: "an identity with the interface it is reached over",
+			name:    "an identity with the interface it is reached over",
 			network: net, id: ptrTo(cloneIdentity()),
 		},
 		{
-			name: "an identity on another interface",
+			name:    "an identity on another interface",
 			network: net,
 			id:      &agent.Identity{MAC: "06:00:ac:10:00:0b", Address: "10.99.0.11/24", Interface: "eth1"},
 			wantErr: `interface "eth1"`,
 		},
 		{
-			name: "an identity with no interface to be reached over",
+			name:    "an identity with no interface to be reached over",
 			network: nil,
 			id:      ptrTo(cloneIdentity()),
 			wantErr: "read through the instance's own interface",
 		},
 		{
-			name: "an identity with no mac",
+			name:    "an identity with no mac",
 			network: net,
 			id:      &agent.Identity{Address: "10.99.0.11/24"},
 			wantErr: "must name the MAC",
 		},
 		{
-			name: "an identity with no address",
+			name:    "an identity with no address",
 			network: net,
 			id:      &agent.Identity{MAC: "06:00:ac:10:00:0b"},
 			wantErr: "must name the address",
 		},
 		{
-			name: "an identity the guest could not apply",
+			name:    "an identity the guest could not apply",
 			network: net,
 			id:      &agent.Identity{MAC: "nonsense", Address: "10.99.0.11/24"},
 			wantErr: "identity:",
@@ -402,7 +402,7 @@ func TestJailedLauncherPublishesTheIdentityWhileTheGuestIsStopped(t *testing.T) 
 	fake.hookReport = agent.PrepareReport{
 		Interface: id.Interface, MAC: id.MAC, Addresses: []string{id.Address},
 		Routes: []string{"default via 10.99.0.1 dev eth0"},
-		DNS: id.DNS, Hostname: id.Hostname, MachineID: id.MachineID,
+		DNS:    id.DNS, Hostname: id.Hostname, MachineID: id.MachineID,
 		TokenRotated: true, BootID: "boot-clone",
 	}
 	fake.install(t)
@@ -492,7 +492,7 @@ func TestDirectLauncherPublishesTheIdentityWhileTheGuestIsStopped(t *testing.T) 
 	installPrepareDial(t, fakePrepareClient{hello: hello, report: agent.PrepareReport{
 		Interface: id.Interface, MAC: id.MAC, Addresses: []string{id.Address},
 		Routes: []string{"default via 10.99.0.1 dev eth0"},
-		DNS: id.DNS, Hostname: id.Hostname, MachineID: id.MachineID, TokenRotated: true,
+		DNS:    id.DNS, Hostname: id.Hostname, MachineID: id.MachineID, TokenRotated: true,
 	}}, nil)
 
 	req := needRestoreRequest()
