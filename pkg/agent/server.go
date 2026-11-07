@@ -197,6 +197,8 @@ func (s *server) dispatch(req *Request) error {
 		return s.handleGet(req)
 	case CapMetrics:
 		return s.handleMetrics()
+	case CapPrepare:
+		return s.handlePrepare()
 	default:
 		// Unreachable through the gate above; kept so an op added to this
 		// switch without being advertised is still refused, not attempted.
@@ -246,6 +248,24 @@ func (s *server) handleMetrics() error {
 		return s.writeError("metrics: %v", err)
 	}
 	return s.write(Message{Type: "metrics", Metrics: &m})
+}
+
+// handlePrepare runs the post-restore hook and replies with what the guest
+// carries afterwards (prepare.go).
+//
+// A failure here is typed and fatal to the caller's launch: an instance wearing
+// the identity of the machine its checkpoint came from is not the instance that
+// was asked for, so "prepare did not work" must not look like "prepare was not
+// needed". The guest keeps serving the connection, so the caller learns what went
+// wrong before it tears the instance down.
+func (s *server) handlePrepare() error {
+	report, err := prepareGuest(s.reqCtx)
+	if err != nil {
+		// The op is not repeated here: the client prefixes it, and "prepare: prepare:
+		// ..." reads like a bug in the thing being reported.
+		return s.writeFailure(CodePrepareFailed, "%v", err)
+	}
+	return s.write(Message{Type: "prepared", Prepared: &report})
 }
 
 // handlePut receives a stream of file frames and writes them to req.Path.

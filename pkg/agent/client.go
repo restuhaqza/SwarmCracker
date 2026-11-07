@@ -610,6 +610,49 @@ func (c *Client) Metrics(ctx context.Context) (GuestMetrics, error) {
 	}
 }
 
+// Prepare runs the post-restore hook: the guest reads the identity its node
+// published to the metadata service and applies it, and the reply is what the
+// guest carries afterwards (pkg/agent's prepare.go).
+//
+// The agent must advertise the operation. An agent that does not is refused here,
+// before a frame is written, with CodeUnsupportedOp — never skipped, which would
+// leave the caller with an instance still wearing its source's identity while
+// believing the hook had run.
+func (c *Client) Prepare(ctx context.Context) (PrepareReport, error) {
+	if c.consumed {
+		return PrepareReport{}, errConsumed
+	}
+	if err := c.requireCap(CapPrepare); err != nil {
+		return PrepareReport{}, err
+	}
+	stop := c.watchContext(ctx)
+	defer stop()
+
+	req := Request{Op: CapPrepare}
+	if err := c.begin(ctx, &req); err != nil {
+		return PrepareReport{}, err
+	}
+	if err := c.write(req); err != nil {
+		return PrepareReport{}, fmt.Errorf("prepare: send request: %w", err)
+	}
+
+	msg, err := c.readReply(req.ID, false)
+	if err != nil {
+		return PrepareReport{}, readError(ctx, "prepare", err)
+	}
+	switch msg.Type {
+	case "prepared":
+		if msg.Prepared == nil {
+			return PrepareReport{}, fmt.Errorf("prepare: reply carried no report")
+		}
+		return *msg.Prepared, nil
+	case "error":
+		return PrepareReport{}, frameError("prepare", msg)
+	default:
+		return PrepareReport{}, fmt.Errorf("prepare: unexpected message type %q", msg.Type)
+	}
+}
+
 // CopyTo streams src to guestPath with the given mode (0644 when mode is 0).
 func (c *Client) CopyTo(ctx context.Context, guestPath string, src io.Reader, mode uint32) error {
 	if c.consumed {

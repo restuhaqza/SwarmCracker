@@ -43,6 +43,19 @@ type jailedResume struct {
 	socket string
 }
 
+// publishedIdentity is one identity a launch published, and the instance socket it
+// published it to.
+type publishedIdentity struct {
+	socket   string
+	identity *agent.Identity
+}
+
+// mmdsConfig is one metadata service configuration a launch asked for.
+type mmdsConfig struct {
+	socket  string
+	network []NetworkInterface
+}
+
 // fakeJail stands in for the jailer a jailed launch starts.
 type fakeJail struct {
 	dir string
@@ -63,6 +76,19 @@ type fakeJail struct {
 	resumes []jailedResume
 	boots   []LaunchRequest
 	dials   []readyCall
+
+	// Identity channel: what a launch published into the instance's metadata
+	// service, and what it configured there, plus the failures its two calls
+	// answer.
+	published     []publishedIdentity
+	mmdsConfigs   []mmdsConfig
+	publishErr    error
+	mmdsConfigErr error
+	hookDials     []readyCall
+	hookHello     agent.Hello
+	hookReport    agent.PrepareReport
+	hookErr       error
+	hookDialErr   error
 
 	// owned records every "give this path to this uid" the launcher asked for, and
 	// ownErr is what that request answers.
@@ -100,6 +126,8 @@ func (f *fakeJail) install(t *testing.T) {
 	previousBoot := jailedBootGuest
 	previousOwn := jailOwn
 	previousDial := readyDial
+	previousPublish := publishInstanceIdentity
+	previousConfig := configureInstanceMMDS
 	t.Cleanup(func() {
 		jailedWaitForAPI = previousWait
 		jailedLoadCheckpoint = previousLoad
@@ -107,7 +135,21 @@ func (f *fakeJail) install(t *testing.T) {
 		jailedBootGuest = previousBoot
 		jailOwn = previousOwn
 		readyDial = previousDial
+		publishInstanceIdentity = previousPublish
+		configureInstanceMMDS = previousConfig
 	})
+
+	// The identity channel talks to the VMM's metadata service, which a unit test
+	// has no Firecracker to answer: the two calls are recorded instead, so a test
+	// can assert what a launch would have published (and what it published it to).
+	publishInstanceIdentity = func(_ context.Context, socketPath string, id *agent.Identity) error {
+		f.published = append(f.published, publishedIdentity{socket: socketPath, identity: id})
+		return f.publishErr
+	}
+	configureInstanceMMDS = func(_ context.Context, socketPath string, network []NetworkInterface) error {
+		f.mmdsConfigs = append(f.mmdsConfigs, mmdsConfig{socket: socketPath, network: network})
+		return f.mmdsConfigErr
+	}
 
 	jailOwn = func(path string, uid, gid int) error {
 		f.owned = append(f.owned, jailOwnership{path: path, uid: uid, gid: gid})
@@ -124,8 +166,8 @@ func (f *fakeJail) install(t *testing.T) {
 		}
 		return f.waitErr
 	}
-	jailedLoadCheckpoint = func(_ context.Context, socketPath, statePath, memPath string) error {
-		f.loads = append(f.loads, loadCall{socket: socketPath, state: statePath, mem: memPath})
+	jailedLoadCheckpoint = func(_ context.Context, socketPath, statePath, memPath string, network []NetworkInterface) error {
+		f.loads = append(f.loads, loadCall{socket: socketPath, state: statePath, mem: memPath, network: network})
 		return f.loadErr
 	}
 	jailedResumeGuest = func(_ context.Context, socketPath string) error {
@@ -142,6 +184,15 @@ func (f *fakeJail) install(t *testing.T) {
 			return nil, f.dialErr
 		}
 		return fakeReadyClient{hello: f.hello}, nil
+	}
+	previousPrepareDial := prepareDial
+	t.Cleanup(func() { prepareDial = previousPrepareDial })
+	prepareDial = func(_ context.Context, vsockPath string, port uint32, token string) (prepareClient, error) {
+		f.hookDials = append(f.hookDials, readyCall{vsock: vsockPath, port: port, token: token})
+		if f.hookDialErr != nil {
+			return nil, f.hookDialErr
+		}
+		return fakePrepareClient{hello: f.hookHello, report: f.hookReport, err: f.hookErr}, nil
 	}
 }
 
@@ -1079,7 +1130,7 @@ func TestLoadJailedCheckpointLeavesTheGuestStopped(t *testing.T) {
 	api := newFakeAPI(t)
 
 	require.NoError(t, loadJailedCheckpoint(context.Background(), api.socket,
-		"/snapshot/vm.state", "/snapshot/vm.mem"))
+		"/snapshot/vm.state", "/snapshot/vm.mem", nil))
 
 	require.Len(t, api.calls, 1)
 	assert.Equal(t, http.MethodPut, api.calls[0].method)
@@ -1094,12 +1145,12 @@ func TestLoadJailedCheckpointLeavesTheGuestStopped(t *testing.T) {
 	}, api.calls[0].body)
 }
 
-// TestResumeJailedGuestPatchesTheVMState pins the call that actually runs a loaded
+// TestResumeLoadedGuestPatchesTheVMState pins the call that actually runs a loaded
 // guest. InstanceStart is not it: Firecracker refuses that after a snapshot is loaded.
-func TestResumeJailedGuestPatchesTheVMState(t *testing.T) {
+func TestResumeLoadedGuestPatchesTheVMState(t *testing.T) {
 	api := newFakeAPI(t)
 
-	require.NoError(t, resumeJailedGuest(context.Background(), api.socket))
+	require.NoError(t, resumeLoadedGuest(context.Background(), api.socket))
 
 	require.Len(t, api.calls, 1)
 	assert.Equal(t, apiCall{method: http.MethodPatch, path: "/vm",
@@ -1115,8 +1166,8 @@ func TestJailedAPIFailuresAreReported(t *testing.T) {
 
 	ctx := context.Background()
 	require.Error(t, bootJailedGuest(ctx, api.socket, LaunchRequest{VCPUs: 1, MemoryMB: 128, VsockPath: jailedTestVsockPath}))
-	require.Error(t, loadJailedCheckpoint(ctx, api.socket, jailedStatePath, jailedMemPath))
-	require.Error(t, resumeJailedGuest(ctx, api.socket))
+	require.Error(t, loadJailedCheckpoint(ctx, api.socket, jailedStatePath, jailedMemPath, nil))
+	require.Error(t, resumeLoadedGuest(ctx, api.socket))
 }
 
 // TestJailedLauncherRefusesToStageAMissingFile pins the first failure a caller can

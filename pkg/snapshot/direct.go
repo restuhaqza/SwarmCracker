@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +34,11 @@ var (
 	directStartVMM      = startRestoredFirecracker
 	directWaitForAPI    = waitForSocket
 	directLoadSnapshot  = callSnapshotLoad
+	// directLoadSnapshotPaused loads a checkpoint without running the guest, so a
+	// launch that carries an identity has the window it needs to publish it
+	// (identity.go). directResumeGuest then runs the guest.
+	directLoadSnapshotPaused = callSnapshotLoadPaused
+	directResumeGuest        = resumeLoadedGuest
 )
 
 // DirectLauncher starts Firecracker directly: the firecracker binary becomes the
@@ -72,6 +78,10 @@ type DirectLauncher struct {
 	// the launch fails. Zero means DefaultReadyTimeout; a dev box that runs a
 	// guest with a slow init system raises it.
 	ReadyTimeout time.Duration
+
+	// PrepareTimeout is how long the post-restore hook gets when a launch carries
+	// an identity (identity.go). Zero means DefaultPrepareTimeout.
+	PrepareTimeout time.Duration
 
 	// Registry is the node's instance registry this launcher publishes to: the
 	// record a launch writes before the instance is reachable, and the one a stop
@@ -145,8 +155,10 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 
 	// resume_vm=true, so a nil error here means the guest is running rather than
 	// merely loaded. This is the call that has to succeed before Start may report
-	// the instance as launched.
-	if err := directLoadSnapshot(ctx, socketPath, req.State, req.Mem); err != nil {
+	// the instance as launched. A launch that carries an identity takes the same
+	// step in two parts instead, so the identity is published while the guest is
+	// still stopped (loadForDirectLaunch).
+	if err := loadForDirectLaunch(ctx, socketPath, req); err != nil {
 		d.discard(req.InstanceID, proc, socketPath)
 		return Launched{}, fmt.Errorf("failed to load snapshot memory: %w", err)
 	}
@@ -160,7 +172,27 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		d.discard(req.InstanceID, proc, socketPath)
 		return Launched{}, fmt.Errorf("instance %q: %w", req.InstanceID, err)
 	}
+
+	// A launch that carries an identity is not over until the guest says it wears
+	// it (identity.go), for the same reason the launch waits for the hello: the
+	// alternative is an instance reported as launched while it still answers to
+	// the identity of the machine its checkpoint came from.
+	prepared, err := prepareInstance(ctx, req, req.VsockPath, prepareTimeout(d.PrepareTimeout))
+	if err != nil {
+		d.discard(req.InstanceID, proc, socketPath)
+		return Launched{}, err
+	}
 	markRecordReady(d.Registry, record)
+
+	if prepared != nil {
+		log.Info().
+			Str("instance_id", req.InstanceID).
+			Str("identity_interface", prepared.Interface).
+			Str("identity_mac", prepared.MAC).
+			Str("identity_addresses", strings.Join(prepared.Addresses, ",")).
+			Str("identity_boot_id", prepared.BootID).
+			Msg("Guest adopted its identity")
+	}
 
 	log.Info().
 		Str("instance_id", req.InstanceID).
@@ -177,6 +209,7 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		VsockPath:   req.VsockPath,
 		ConsolePath: consolePath,
 		Hello:       hello,
+		Prepared:    prepared,
 		StatePath:   req.State,
 		MemPath:     req.Mem,
 		Stop: func(stopCtx context.Context) error {
@@ -190,6 +223,37 @@ func (d DirectLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 			return nil
 		},
 	}, nil
+}
+
+// callSnapshotLoadPaused calls PUT /snapshot/load with resume_vm=false: the guest
+// is loaded but stopped, which is the window a launch uses to publish the
+// instance's identity before the guest can read the metadata service.
+func callSnapshotLoadPaused(ctx context.Context, socketPath, statePath, memoryPath string, network []NetworkInterface) error {
+	payload := map[string]interface{}{
+		"snapshot_path": statePath,
+		"mem_file_path": memoryPath,
+		"resume_vm":     false,
+	}
+	if len(network) > 0 {
+		payload["network_overrides"] = networkOverrides(network)
+	}
+	return putFirecrackerAPI(ctx, socketPath, "/snapshot/load", payload)
+}
+
+// loadForDirectLaunch loads a checkpoint the way this launch needs it: in one call
+// that resumes the guest when there is no identity to publish, and in two steps —
+// load stopped, publish, resume — when there is one.
+func loadForDirectLaunch(ctx context.Context, socketPath string, req LaunchRequest) error {
+	if req.Identity == nil {
+		return directLoadSnapshot(ctx, socketPath, req.State, req.Mem)
+	}
+	if err := directLoadSnapshotPaused(ctx, socketPath, req.State, req.Mem, req.Net); err != nil {
+		return err
+	}
+	if err := publishInstanceIdentity(ctx, socketPath, req.Identity); err != nil {
+		return err
+	}
+	return directResumeGuest(ctx, socketPath)
 }
 
 // check refuses a request this launcher cannot serve. The mode comes first: it is
@@ -223,6 +287,15 @@ func (d DirectLauncher) check(req LaunchRequest) error {
 	// served: this launcher would have nothing to ask whether the guest it just
 	// resumed is really running.
 	if err := vsockProblem(req.VsockPath); err != nil {
+		return fmt.Errorf("instance %q: %w", req.InstanceID, err)
+	}
+	// The interfaces replace the host devices the checkpoint recorded, and the
+	// identity is what the guest applies once it resumes: a launch that could not
+	// be given either is refused here, before a process exists (identity.go).
+	if err := networkProblem(req.Net); err != nil {
+		return fmt.Errorf("instance %q: %w", req.InstanceID, err)
+	}
+	if err := identityProblem(req.Net, req.Identity); err != nil {
 		return fmt.Errorf("instance %q: %w", req.InstanceID, err)
 	}
 	return nil

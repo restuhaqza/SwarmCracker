@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 )
 
 func writeGolden(t *testing.T, dir, name, version string) string {
@@ -26,7 +28,14 @@ func writeGolden(t *testing.T, dir, name, version string) string {
 		SizeBytes:    3,
 		SHA256:       "abc",
 		Init:         Init{System: InitSystemd, BootArgs: []string{"systemd.unified_cgroup_hierarchy=1"}},
-		Agent:        AgentPin{Protocol: MinimumAgentProtocol, Version: "test"},
+		// The pin a node is held to: what the agent in the image actually
+		// advertised when the template was proven. A template with no recorded
+		// capabilities is refused, so the fixture records the real set.
+		Agent: AgentPin{
+			Protocol: MinimumAgentProtocol,
+			Version:  "test",
+			Caps:     agent.Capabilities(),
+		},
 	}
 	require.NoError(t, writeMetadataAtomic(filepath.Join(dir, base+".json"), md))
 	return artifact
