@@ -16,8 +16,9 @@
 // This is also where the post-restore hook lands. SBX-083's prepare op — network,
 // clock, machine-id, host keys, entropy, applied inside the guest — runs after
 // this hello and before the launch returns, so that a caller holding a Launched
-// has an instance that is addressed rather than merely alive. The hook does not
-// exist yet, so what this file gates on today is the hello alone.
+// has an instance that is addressed rather than merely alive. The hook itself is
+// identity.go: it is armed by LaunchRequest.Identity, it refuses an agent that
+// does not advertise the operation, and a hook that fails fails the launch.
 package snapshot
 
 import (

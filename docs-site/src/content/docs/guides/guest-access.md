@@ -52,8 +52,8 @@ on every frame it answers with, so a reply can never be attributed to the wrong
 request, and it honours the budget: when it runs out, a running command is killed
 and the caller sees `deadline_exceeded` rather than a bare exit code. Failures
 carry a stable code (`unsupported_op`, `deadline_exceeded`,
-`agent_protocol_unsupported`, `invalid_request`, `protocol_error`, `internal`);
-the message beside a code is for humans and may change.
+`agent_protocol_unsupported`, `invalid_request`, `protocol_error`, `prepare_failed`,
+`internal`); the message beside a code is for humans and may change.
 
 Frames stay capped at 1 MiB for control traffic. Streaming frames — command
 output and file payloads — have their own, larger bound, so raising a stream
@@ -66,6 +66,54 @@ stranger. The agent can also rotate the identity on demand, which is how a resum
 from a snapshot marks the guest as a new instance — memory survives a restore, so
 only an explicit rotation can distinguish the resumed guest from the one the
 snapshot was taken from.
+
+## `prepare`: the post-restore hook
+
+A checkpoint freezes everything the guest was: its MAC, its addresses, its route
+table, its resolver, its machine id, its SSH host keys, its clock and the entropy
+it had drawn from. Firecracker refuses to rewrite any of that from the host once an
+image is loaded — the NIC, the drives and even the metadata service's *configuration*
+answer `400 not supported after starting the microVM` — so two clones of one
+checkpoint would otherwise come up as one machine.
+
+The one channel that stays writable is the instance's metadata service (MMDS). A
+launch writes the clone's identity there while a restored guest is still paused,
+and `prepare` is the operation that reads it and applies it from the inside:
+
+| Part | What the guest does |
+| --- | --- |
+| MAC | sets the interface's link address |
+| Address, routes | replaces the frozen addresses and default route with the identity's |
+| Resolver | writes the identity's nameservers, keeping the template's search list |
+| Host name | sets it, and `/etc/hostname` with it |
+| Machine id | writes the identity's (or mints one per clone) and the D-Bus copy |
+| SSH host keys | regenerates them, once per clone |
+| Token | installs the per-boot token the node minted for this clone |
+| Entropy | mixes fresh bytes into the kernel's pool, once per clone |
+| Clock | moves it forward to the node's time — never backwards |
+
+The hook is idempotent: a second run with the same identity changes nothing but the
+`bootId`, and its report says which parts it changed. The parts that can only be
+minted once per machine are tied to the identity's generation, so a plain resume of
+the same instance does not churn its machine id or host keys.
+
+Three properties make it safe to depend on:
+
+- **The guest's own report is the evidence.** `prepare` answers with what the guest
+  read back — its MAC, addresses, routes, resolver, machine id and clock — and the
+  node holds the guest to the identity it published. A guest that answered
+  successfully while still wearing its source's identity fails the launch.
+- **A failure fails the launch.** `prepare_failed` is fatal: the instance is torn
+  down rather than handed over with a stale identity.
+- **An agent without the operation is refused, not skipped.** The host requires the
+  capability before it asks, so a template whose agent predates the hook fails with a
+  message naming the protocol and the operations the agent does advertise. Templates
+  record the capabilities their agent answered with, so such a template is refused
+  when it is resolved (`template_incompatible`), before an instance exists.
+
+A guest resumed from a snapshot can lose its first frames — Firecracker documents
+that packet loss is expected for guests resumed in another Firecracker process — so
+the metadata read is retried until it succeeds or the launch's own budget runs out.
 
 ### Upgrading a node
 

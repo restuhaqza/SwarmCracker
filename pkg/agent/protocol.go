@@ -1,6 +1,6 @@
 // Package agent implements the guest-agent wire protocol, the guest-side
-// request handlers (exec, file put, file get) and the host-side client used to
-// drive a microVM over Firecracker's vsock Unix socket.
+// request handlers (exec, file put, file get, prepare) and the host-side client
+// used to drive a microVM over Firecracker's vsock Unix socket.
 //
 // The protocol is a sequence of length-prefixed JSON frames: a 4-byte
 // big-endian uint32 body length followed by that many bytes of JSON. The guest
@@ -61,13 +61,16 @@ const (
 	CapPut     = "put"
 	CapGet     = "get"
 	CapMetrics = "metrics"
+	// CapPrepare is the post-restore hook: the guest reads the identity the node
+	// published to its metadata service and applies it to itself (prepare.go).
+	CapPrepare = "prepare"
 )
 
 // capabilities is the closed set of operations this agent build implements. It
 // must list exactly the ops dispatch serves: an op that is served but not
 // advertised can never be called, and an op that is advertised but not served
 // would fail after the host committed to it.
-var capabilities = []string{CapHello, CapExec, CapPut, CapGet, CapMetrics}
+var capabilities = []string{CapHello, CapExec, CapPut, CapGet, CapMetrics, CapPrepare}
 
 // Capabilities returns the operations this agent build advertises. The result is
 // a copy, so a caller cannot change what the agent serves.
@@ -94,6 +97,11 @@ const (
 	// CodeInternal reports a failure inside the guest while carrying out an
 	// operation it does advertise.
 	CodeInternal ErrorCode = "internal"
+	// CodePrepareFailed reports that the post-restore hook ran and failed: the
+	// guest could not read the identity its node published, or could not apply
+	// it. It is a failed launch, never a warning, because an instance wearing its
+	// source's identity is not the instance the node asked for.
+	CodePrepareFailed ErrorCode = "prepare_failed"
 )
 
 // Error is a typed protocol failure. Code is the part a caller branches on;
@@ -164,7 +172,7 @@ func HelloReply(caps []string) Message {
 
 // Request is a single operation sent from the host to the guest agent.
 type Request struct {
-	Op string `json:"op"` // hello|exec|put|get|metrics
+	Op string `json:"op"` // hello|exec|put|get|metrics|prepare
 	// ID correlates every frame this request produces. The guest echoes it
 	// verbatim, so a host can tell a reply from one belonging to a request it
 	// has already abandoned.
@@ -191,7 +199,7 @@ type Request struct {
 
 // Message is a single frame sent from the guest agent back to the host.
 type Message struct {
-	Type string `json:"type"` // hello|stdout|stderr|exit|file|ok|error|metrics
+	Type string `json:"type"` // hello|stdout|stderr|exit|file|ok|error|metrics|prepared
 	// ID echoes the id of the request this frame answers.
 	ID string `json:"id,omitempty"`
 	// Version is the protocol version the guest speaks, set on a hello reply.
@@ -223,6 +231,9 @@ type Message struct {
 	ErrorCode ErrorCode `json:"errorCode,omitempty"`
 	// Metrics is set on the reply to a metrics request.
 	Metrics *GuestMetrics `json:"metrics,omitempty"`
+	// Prepared is set on the reply to a prepare request: what the guest carries
+	// after it applied the identity its node published.
+	Prepared *PrepareReport `json:"prepared,omitempty"`
 }
 
 // WriteFrame marshals v as JSON and writes it to w prefixed by a 4-byte

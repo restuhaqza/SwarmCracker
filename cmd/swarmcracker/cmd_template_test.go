@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/checkpoint"
 	"github.com/restuhaqza/swarmcracker/pkg/golden"
 	"github.com/stretchr/testify/assert"
@@ -37,7 +38,14 @@ func writeArtifact(t *testing.T, dir, name, version string) string {
 		BaseImageDigest: "sha256:def",
 		KernelProfile:   "guest-runtime-6.1",
 		Runtime:         golden.Runtime{Name: golden.RuntimeDocker},
-		Agent:           golden.AgentPin{Protocol: golden.MinimumAgentProtocol, Version: "test"},
+		// The pin a node is held to: the operations the agent in the image
+		// advertised when the template was proven. A template with none recorded is
+		// refused, so the fixture records the real set.
+		Agent: golden.AgentPin{
+			Protocol: golden.MinimumAgentProtocol,
+			Version:  "test",
+			Caps:     agent.Capabilities(),
+		},
 		Pin:             checkpoint.Pin{Firecracker: "v1.15.1", Kernel: "cafebabe"},
 		Artifact:        base + ".ext4",
 		SizeBytes:       1024,
@@ -69,6 +77,8 @@ func TestCLI_TemplateInspect_ShowsTheManifestAndThisNodesVerdict(t *testing.T) {
 	assert.Contains(t, out, `"kernel": "cafebabe"`)
 	assert.Contains(t, out, `"agentVersion": "test"`, "so is the agent version")
 	assert.Contains(t, out, "agent: protocol "+golden.MinimumAgentProtocol+", version test")
+	assert.Contains(t, out, agent.CapPrepare,
+		"the agent verdict reports the operation this node requires")
 
 	// The pin verdict depends on the host the test runs on (Firecracker and the
 	// kernel may not be installed), but it is always reported: a template whose

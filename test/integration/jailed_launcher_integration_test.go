@@ -979,9 +979,16 @@ func installGuestAgent(t *testing.T, imagePath string) {
 	})
 }
 
-// editGuestImage mounts a test image, runs edit with the root of the mounted filesystem,
-// and unmounts it. The image is the test's own copy: a guest's first boot writes state
-// into it, so nothing is ever mounted to write the runner's original.
+// editGuestImage mounts a test image, runs edit with the root of the mounted
+// filesystem, unmounts it, and returns.
+//
+// The unmount is part of the contract, not a tidy-up at the end of the test: a writer
+// that puts bytes into the image *underneath* this mount — `agent.InjectToken`, which
+// goes through debugfs — writes a state the mounted filesystem's own journal knows
+// nothing about, and the guest that later boots the image replays that journal and
+// undoes it. A caller that stamps an image has to see it flushed before the next
+// writer touches it. The image is the test's own copy: a guest's first boot writes
+// state into it, so nothing is ever mounted to write the runner's original.
 func editGuestImage(t *testing.T, imagePath string, edit func(root string)) {
 	t.Helper()
 
@@ -993,6 +1000,7 @@ func editGuestImage(t *testing.T, imagePath string, edit func(root string)) {
 		t.Fatalf("mount %s: %v: %s", imagePath, err, out)
 	}
 	t.Cleanup(func() {
+		// A no-op on the normal path, where the unmount below already ran.
 		if out, err := exec.Command("umount", mount).CombinedOutput(); err != nil {
 			t.Logf("umount %s: %v: %s", mount, err, out)
 		}
@@ -1000,6 +1008,9 @@ func editGuestImage(t *testing.T, imagePath string, edit func(root string)) {
 
 	edit(mount)
 	require.NoError(t, exec.Command("sync").Run())
+
+	out, err := exec.Command("umount", mount).CombinedOutput()
+	require.NoError(t, err, "umount %s: %s", mount, out)
 }
 
 // TestIntegration_JailedLauncherInstanceRecord is SBX-025 on a real host: the record a

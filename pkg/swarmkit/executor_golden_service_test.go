@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/restuhaqza/swarmcracker/pkg/agent"
 	"github.com/restuhaqza/swarmcracker/pkg/golden"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
@@ -50,7 +51,11 @@ func writeGoldenStore(t *testing.T, name, version, kernelProfile string, bootArg
 		KernelProfile: kernelProfile,
 		Init:          golden.Init{BootArgs: bootArgs},
 		Artifact:      filepath.Base(rootfsPath),
-		Agent:         golden.AgentPin{Protocol: golden.MinimumAgentProtocol, Version: "test"},
+		Agent: golden.AgentPin{
+			Protocol: golden.MinimumAgentProtocol,
+			Version:  "test",
+			Caps:     agent.Capabilities(),
+		},
 	}
 	data, err := json.Marshal(md)
 	require.NoError(t, err)

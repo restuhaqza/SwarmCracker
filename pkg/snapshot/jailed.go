@@ -126,7 +126,7 @@ var (
 	jailOwn              = os.Chown
 	jailedWaitForAPI     = waitForSocket
 	jailedLoadCheckpoint = loadJailedCheckpoint
-	jailedResumeGuest    = resumeJailedGuest
+	jailedResumeGuest    = resumeLoadedGuest
 	jailedBootGuest      = bootJailedGuest
 )
 
@@ -193,6 +193,10 @@ type JailedLauncher struct {
 	// boot of a full OS image whose init system has to start the agent — is the
 	// launch that may need more.
 	ReadyTimeout time.Duration
+
+	// PrepareTimeout is how long the post-restore hook gets when a launch
+	// carries an identity (identity.go). Zero means DefaultPrepareTimeout.
+	PrepareTimeout time.Duration
 
 	// Registry is the node's instance registry this launcher publishes to: the
 	// record a launch writes before the instance is reachable, with the jail uid
@@ -272,7 +276,27 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 	if err != nil {
 		return Launched{}, j.fail(fmt.Errorf("instance %q: %w", req.InstanceID, err))
 	}
+
+	// The identity the node published is applied by the guest itself, and a launch
+	// that carries one is not over until the guest says it wears it (identity.go).
+	// It runs before the record is marked ready: a reader of the registry must
+	// never see an instance as ready while it still answers to its source's
+	// identity.
+	prepared, err := prepareInstance(ctx, req, hostVsock, prepareTimeout(l.PrepareTimeout))
+	if err != nil {
+		return Launched{}, j.fail(err)
+	}
 	markRecordReady(l.Registry, record)
+
+	if prepared != nil {
+		log.Info().
+			Str("instance_id", req.InstanceID).
+			Str("identity_interface", prepared.Interface).
+			Str("identity_mac", prepared.MAC).
+			Str("identity_addresses", strings.Join(prepared.Addresses, ",")).
+			Str("identity_boot_id", prepared.BootID).
+			Msg("Guest adopted its identity")
+	}
 
 	log.Info().
 		Str("instance_id", req.InstanceID).
@@ -292,6 +316,7 @@ func (l JailedLauncher) Start(ctx context.Context, req LaunchRequest) (Launched,
 		VsockPath:   hostVsock,
 		ConsolePath: j.consolePath,
 		Hello:       hello,
+		Prepared:    prepared,
 		DiskCopy:    diskCopy,
 		Stop:        j.stop,
 	}
@@ -397,6 +422,17 @@ func (l JailedLauncher) check(req LaunchRequest) error {
 	// with it, and a restore has to be handed the path the checkpoint recorded, or
 	// the launch dials a socket nobody listens on and fails as not ready.
 	if err := vsockProblem(req.VsockPath); err != nil {
+		return fmt.Errorf("instance %q: %w", req.InstanceID, err)
+	}
+
+	// The interfaces are the devices the VMM attaches, and the way an identity
+	// reaches the guest: both are refused here, before anything is created, so a
+	// launch that could not be given its identity does not exist for a moment
+	// first.
+	if err := networkProblem(req.Net); err != nil {
+		return fmt.Errorf("instance %q: %w", req.InstanceID, err)
+	}
+	if err := identityProblem(req.Net, req.Identity); err != nil {
 		return fmt.Errorf("instance %q: %w", req.InstanceID, err)
 	}
 
@@ -981,8 +1017,15 @@ func (j *jailedInstance) start(ctx context.Context, req LaunchRequest) error {
 	// that has to change something first (a per-instance drive, MMDS) needs that
 	// window. InstanceStart is not it: Firecracker answers 400 there, and
 	// PATCH /vm {"state":"Resumed"} is the call that actually runs the guest.
-	if err := jailedLoadCheckpoint(ctx, j.hostSocket, jailedStatePath, jailedMemPath); err != nil {
+	if err := jailedLoadCheckpoint(ctx, j.hostSocket, jailedStatePath, jailedMemPath, req.Net); err != nil {
 		return fmt.Errorf("load the checkpoint into the jail: %w", err)
+	}
+	// While the guest is still stopped: the identity of the clone this instance is,
+	// which the guest reads as soon as it runs. The metadata document does not
+	// survive a checkpoint — the service comes back empty — so this is what a
+	// restore publishes, every time, for every clone.
+	if err := publishInstanceIdentity(ctx, j.hostSocket, req.Identity); err != nil {
+		return fmt.Errorf("publish the instance identity: %w", err)
 	}
 	if err := jailedResumeGuest(ctx, j.hostSocket); err != nil {
 		return fmt.Errorf("resume the guest: %w", err)
@@ -1126,18 +1169,26 @@ func removeJailedCgroup(dir string) error {
 // path the caller named, which is also the path the checkpoint records — so a
 // restore of this instance is told the same string and dials the same muxer.
 func bootJailedGuest(ctx context.Context, socketPath string, req LaunchRequest) error {
-	calls := []struct {
-		path    string
-		payload map[string]interface{}
-	}{
-		{
+	calls := make([]fcCall, 0, 8)
+	for _, iface := range req.Net {
+		calls = append(calls, fcCall{
+			path: "/network-interfaces/" + iface.IfaceID,
+			payload: map[string]interface{}{
+				"iface_id":      iface.IfaceID,
+				"host_dev_name": iface.HostTap,
+				"guest_mac":     iface.GuestMAC,
+			},
+		})
+	}
+	calls = append(calls,
+		fcCall{
 			path: "/boot-source",
 			payload: map[string]interface{}{
 				"kernel_image_path": jailedKernelPath,
 				"boot_args":         jailedBootArgs,
 			},
 		},
-		{
+		fcCall{
 			path: "/drives/rootfs",
 			payload: map[string]interface{}{
 				"drive_id":       "rootfs",
@@ -1146,7 +1197,7 @@ func bootJailedGuest(ctx context.Context, socketPath string, req LaunchRequest) 
 				"is_read_only":   false,
 			},
 		},
-		{
+		fcCall{
 			path: "/machine-config",
 			payload: map[string]interface{}{
 				"vcpu_count":        req.VCPUs,
@@ -1155,7 +1206,7 @@ func bootJailedGuest(ctx context.Context, socketPath string, req LaunchRequest) 
 				"track_dirty_pages": false,
 			},
 		},
-		{
+		fcCall{
 			// agent.GuestCID is the context id every guest agent is reached at; it
 			// needs no host-uniqueness because each instance is its own VMM with its
 			// own muxer.
@@ -1165,18 +1216,36 @@ func bootJailedGuest(ctx context.Context, socketPath string, req LaunchRequest) 
 				"uds_path":  req.VsockPath,
 			},
 		},
-		{
-			path:    "/actions",
-			payload: map[string]interface{}{"action_type": "InstanceStart"},
-		},
-	}
+	)
 
 	for _, call := range calls {
 		if err := putFirecrackerAPI(ctx, socketPath, call.path, call.payload); err != nil {
 			return fmt.Errorf("configure %s: %w", call.path, err)
 		}
 	}
+
+	// The metadata service is configured, and the clone's identity published into
+	// it, after the devices it answers on exist and before the guest does:
+	// Firecracker freezes the *configuration* once the microVM starts (`400 not
+	// supported after starting the microVM`), and a guest that came up first would
+	// read a service nothing had written to yet.
+	if err := configureInstanceMMDS(ctx, socketPath, req.Net); err != nil {
+		return err
+	}
+	if err := publishInstanceIdentity(ctx, socketPath, req.Identity); err != nil {
+		return err
+	}
+	if err := putFirecrackerAPI(ctx, socketPath, "/actions",
+		map[string]interface{}{"action_type": "InstanceStart"}); err != nil {
+		return fmt.Errorf("configure /actions: %w", err)
+	}
 	return nil
+}
+
+// fcCall is one Firecracker API call a cold boot makes, in order.
+type fcCall struct {
+	path    string
+	payload map[string]interface{}
 }
 
 // loadJailedCheckpoint loads the checkpoint with the guest left stopped, so the
@@ -1185,7 +1254,12 @@ func bootJailedGuest(ctx context.Context, socketPath string, req LaunchRequest) 
 // The memory backend is named explicitly as a File: without it Firecracker has to
 // infer the backend from a path, and a checkpoint written by a newer version may
 // carry a backend a path alone cannot express.
-func loadJailedCheckpoint(ctx context.Context, socketPath, statePath, memPath string) error {
+//
+// network names the interfaces the clone opens in place of the ones the checkpoint
+// recorded, which is how a restore on another node — or a second clone of one
+// checkpoint — reaches the guest without the template node's tap devices existing
+// here.
+func loadJailedCheckpoint(ctx context.Context, socketPath, statePath, memPath string, network []NetworkInterface) error {
 	payload := map[string]interface{}{
 		"snapshot_path": statePath,
 		"mem_backend": map[string]string{
@@ -1194,11 +1268,8 @@ func loadJailedCheckpoint(ctx context.Context, socketPath, statePath, memPath st
 		},
 		"resume_vm": false,
 	}
+	if len(network) > 0 {
+		payload["network_overrides"] = networkOverrides(network)
+	}
 	return putFirecrackerAPI(ctx, socketPath, "/snapshot/load", payload)
-}
-
-// resumeJailedGuest runs a loaded guest. It is a PATCH of the VM state, not
-// InstanceStart: Firecracker refuses InstanceStart once a snapshot is loaded.
-func resumeJailedGuest(ctx context.Context, socketPath string) error {
-	return patchFirecrackerAPI(ctx, socketPath, "/vm", map[string]string{"state": "Resumed"})
 }

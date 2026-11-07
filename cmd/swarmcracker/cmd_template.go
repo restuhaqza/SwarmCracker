@@ -117,7 +117,8 @@ func runTemplateBuild(cmd *cobra.Command, recipePath, outputDir string, force bo
 	}
 	fmt.Printf("  pin:      firecracker %s, kernel %s\n", md.Pin.Firecracker, md.Pin.Kernel)
 	fmt.Printf("  base:     %s\n", orNone(md.BaseImageDigest))
-	fmt.Printf("  agent:    protocol %s, version %s\n", md.Agent.Protocol, md.Agent.Version)
+	fmt.Printf("  agent:    protocol %s, version %s, caps [%s]\n",
+		md.Agent.Protocol, md.Agent.Version, strings.Join(md.Agent.Caps, " "))
 	return nil
 }
 
@@ -229,8 +230,12 @@ func printTemplateVerdict(cmd *cobra.Command, md *golden.ArtifactMetadata) {
 	if err := golden.CheckAgentPin(md.Ref(), md.Agent); err != nil {
 		fmt.Printf("NOT usable here — %v\n", err)
 	} else {
-		fmt.Printf("protocol %s, version %s (this host requires at least %s)\n",
-			md.Agent.Protocol, md.Agent.Version, golden.MinimumAgentProtocol)
+		// The capabilities are reported because they are what this node actually
+		// checks: two templates can both say "protocol 2" and only one of them can
+		// give a restored clone an identity of its own.
+		fmt.Printf("protocol %s, version %s, caps [%s] (this host requires protocol %s or newer and [%s])\n",
+			md.Agent.Protocol, md.Agent.Version, strings.Join(md.Agent.Caps, " "),
+			golden.MinimumAgentProtocol, strings.Join(golden.RequiredAgentCaps, " "))
 	}
 
 	fmt.Printf("pin:   ")
