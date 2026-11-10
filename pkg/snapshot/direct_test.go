@@ -31,6 +31,9 @@ type loadCall struct {
 	socket string
 	state  string
 	mem    string
+	// network is the interface list a load was told to open in place of the
+	// devices the checkpoint recorded; nil when the load was not told anything.
+	network []NetworkInterface
 }
 
 // readyCall is one agent handshake attempt a fake launch made: the muxer it
@@ -56,6 +59,27 @@ func (c fakeReadyClient) Close() error {
 		*c.closed++
 	}
 	return c.err
+}
+
+// fakePrepareClient is the guest side of the post-restore hook a fake launch
+// dials: it answers the hello the test configured — the one place a template's
+// capabilities are described — and then the report or failure the test asked for.
+type fakePrepareClient struct {
+	hello  agent.Hello
+	report agent.PrepareReport
+	err    error
+	closed *int
+}
+
+func (c fakePrepareClient) Hello() agent.Hello { return c.hello }
+func (c fakePrepareClient) Prepare(context.Context) (agent.PrepareReport, error) {
+	return c.report, c.err
+}
+func (c fakePrepareClient) Close() error {
+	if c.closed != nil {
+		*c.closed++
+	}
+	return nil
 }
 
 // fakeDirectVMM stands in for the Firecracker binary a direct launch starts: the
@@ -87,6 +111,13 @@ type fakeDirectVMM struct {
 	loads   []loadCall
 	dials   []readyCall
 	proc    *os.Process
+
+	// Identity channel: what a launch published into the instance's metadata
+	// service, the load that left the guest stopped so it could, and the resume
+	// that ran the guest afterwards.
+	publishes    []*agent.Identity
+	pausedLoads  []loadCall
+	resumesGuest []string
 }
 
 // install replaces the launcher's seams for one test and restores them afterwards.
@@ -98,13 +129,34 @@ func (f *fakeDirectVMM) install(t *testing.T) {
 	previousWait := directWaitForAPI
 	previousLoad := directLoadSnapshot
 	previousDial := readyDial
+	previousPublish := publishInstanceIdentity
+	previousPausedLoad := directLoadSnapshotPaused
+	previousResume := directResumeGuest
 	t.Cleanup(func() {
 		firecrackerLookPath = previousLook
 		directStartVMM = previousStart
 		directWaitForAPI = previousWait
 		directLoadSnapshot = previousLoad
 		readyDial = previousDial
+		publishInstanceIdentity = previousPublish
+		directLoadSnapshotPaused = previousPausedLoad
+		directResumeGuest = previousResume
 	})
+
+	// The identity channel talks to the VMM's metadata service, which a unit test
+	// has no Firecracker to answer, so the three calls are recorded instead.
+	publishInstanceIdentity = func(_ context.Context, _ string, id *agent.Identity) error {
+		f.publishes = append(f.publishes, id)
+		return nil
+	}
+	directLoadSnapshotPaused = func(_ context.Context, socketPath, statePath, memPath string, network []NetworkInterface) error {
+		f.pausedLoads = append(f.pausedLoads, loadCall{socket: socketPath, state: statePath, mem: memPath, network: network})
+		return nil
+	}
+	directResumeGuest = func(_ context.Context, socketPath string) error {
+		f.resumesGuest = append(f.resumesGuest, socketPath)
+		return nil
+	}
 
 	firecrackerLookPath = func(string) (string, error) {
 		if f.lookPathErr != nil {

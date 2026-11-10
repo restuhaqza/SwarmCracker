@@ -303,9 +303,15 @@ func dialAgent(ctx context.Context, udsPath string, port uint32) (helloClient, e
 
 // verifyFirstBoot boots the finished artifact and holds its guest agent to the
 // handshake the host will perform on every task. It returns the pin the
-// artifact actually carries: the protocol and agent version the guest reported,
-// which is what a template may claim. A recipe that pins a version explicitly
-// must match, so a pin can never describe an agent the image does not contain.
+// artifact actually carries: the protocol, the agent version the guest reported
+// and the operations it advertised, which is what a template may claim. A recipe
+// that pins a version explicitly must match, so a pin can never describe an agent
+// the image does not contain.
+//
+// The capabilities are recorded rather than only checked, because they are what a
+// later host holds the template to: protocol 2 covers both an agent that can
+// prepare a clone and one that cannot, so the recorded set is the only thing that
+// tells them apart (CheckAgentPin).
 //
 // kernel is the image the recipe's profile resolved to, resolved by the caller
 // so that a build which cannot pin this host fails before it starts.
@@ -349,7 +355,11 @@ func (b *Builder) verifyFirstBoot(ctx context.Context, r *Recipe, kernel, artifa
 			ref, r.Spec.Agent.Version, hello.AgentVersion)
 	}
 
-	return AgentPin{Protocol: hello.Version, Version: hello.AgentVersion}, nil
+	return AgentPin{
+		Protocol: hello.Version,
+		Version:  hello.AgentVersion,
+		Caps:     append([]string(nil), hello.Caps...),
+	}, nil
 }
 
 // probeBootArgs builds the kernel command line the executor uses for a golden

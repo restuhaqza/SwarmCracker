@@ -108,7 +108,9 @@ func TestBuilder_RefusesAgentMissingCapabilities(t *testing.T) {
 }
 
 // TestBuilder_RecordsAgentVersionFromHello proves the metadata pin describes the
-// build that answered, not one the recipe assumed.
+// build that answered, not one the recipe assumed: the version *and* the
+// operations, because the protocol number alone cannot tell an agent that can
+// prepare a clone from one that cannot.
 func TestBuilder_RecordsAgentVersionFromHello(t *testing.T) {
 	h := newHarness(t, false)
 	hello := healthyHello()
@@ -120,7 +122,7 @@ func TestBuilder_RecordsAgentVersionFromHello(t *testing.T) {
 
 	md, err := ReadMetadata(res.MetadataPath)
 	require.NoError(t, err)
-	assert.Equal(t, AgentPin{Protocol: agent.Version, Version: "v9.9.9"}, md.Agent)
+	assert.Equal(t, AgentPin{Protocol: agent.Version, Version: "v9.9.9", Caps: agent.Capabilities()}, md.Agent)
 }
 
 // TestBuilder_RefusesPinnedVersionThatDiffers proves an explicit recipe pin is

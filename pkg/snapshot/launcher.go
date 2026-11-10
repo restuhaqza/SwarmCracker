@@ -134,6 +134,31 @@ type LaunchRequest struct {
 	// the launcher only carries it across the handshake.
 	AgentToken string
 
+	// Net is the instance's network interfaces: the devices the VMM attaches, and
+	// the interfaces an identity is applied to. A cold boot configures them; a
+	// restore uses them to replace the host devices the checkpoint recorded, so a
+	// clone does not need the template node's tap names to exist. Empty is a
+	// launch with no network at all, which is what a template build boots.
+	//
+	// The caller owns the devices: this package hands their names to the VMM and
+	// nothing else. Creating the tap, the namespace and the bridge around it is the
+	// node's network policy, not a launcher's decision.
+	Net []NetworkInterface
+
+	// Identity is the identity this instance must adopt once it resumes (RFC D10):
+	// the MAC, address, routes, resolver, host name, machine id, token, entropy and
+	// clock that make a clone a different machine from the checkpoint's source.
+	//
+	// It is published to the instance's metadata service before the guest runs and
+	// applied from inside the guest by the agent's `prepare` operation, because
+	// Firecracker refuses to rewrite any of it from the host once the image is
+	// loaded. A launch that carries an identity fails rather than returns when the
+	// guest cannot adopt it: an agent that does not advertise `prepare`
+	// (ErrPrepareUnsupported), and a hook that ran and did not take
+	// (ErrPrepareFailed). Nil is a launch with no identity to apply — the
+	// pre-sandbox path — and it publishes nothing and runs no hook.
+	Identity *agent.Identity
+
 	// Record is the identity the node's registry keeps for this instance, as far
 	// as the caller knows it: the kind of VM it is, who owns it, and the network
 	// identity the caller allocated for it — its namespace, the TAP device its
@@ -190,6 +215,13 @@ type Launched struct {
 	// reported so the caller reads it from the launcher instead of asking again —
 	// a caller that needs its own session still dials, and gets a second hello.
 	Hello agent.Hello
+
+	// Prepared is what the guest reported after it applied the identity the
+	// launch published (pkg/agent's PrepareReport), or nil for a launch that
+	// carried no identity. It is the guest's own answer — the MAC, addresses,
+	// routes, resolver, machine id and clock it carries now — so a caller reads
+	// the instance's identity from the launch instead of dialling for it.
+	Prepared *agent.PrepareReport
 
 	// StatePath and MemPath are the checkpoint images the instance loaded. Both
 	// are empty for a cold boot.

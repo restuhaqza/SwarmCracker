@@ -321,8 +321,12 @@ func (r *Recipe) validateInit(add func(string, ...any)) {
 // validateAgent refuses a recipe that pins a guest agent protocol below this
 // build's minimum: the template would boot an agent that cannot serve the
 // operations the host relies on, and there is no fallback for a missing one.
+//
+// The declared block is a requirement on the *build*, not an observation: the
+// operations the finished image's agent really advertises are proven at first boot
+// and recorded in the manifest, which is what CheckAgentPin holds a node to.
 func (r *Recipe) validateAgent(add func(string, ...any)) {
-	if err := CheckAgentPin(r.Metadata.Name, r.Spec.Agent); err != nil {
+	if err := CheckAgentProtocol(r.Metadata.Name, r.Spec.Agent.Protocol); err != nil {
 		add("%v", err)
 	}
 }
