@@ -82,7 +82,9 @@ func TestArtifactMetadata_VerifyPin_RefusesAnUnpinnedTemplate(t *testing.T) {
 
 	var mismatch *PinMismatchError
 	require.ErrorAs(t, err, &mismatch)
-	assert.Contains(t, err.Error(), "unpinned")
+	assert.Contains(t, err.Error(), "carries no pin")
+	assert.NotContains(t, err.Error(), "pinned to unpinned",
+		"a template with no pin is not pinned to a value called \"unpinned\"")
 	assert.ErrorIs(t, err, checkpoint.ErrPinMismatch)
 }
 
@@ -258,11 +260,11 @@ func TestBuilder_Build_RefusesAMismatchedHostPin(t *testing.T) {
 	var mismatch *PinMismatchError
 	require.ErrorAs(t, err, &mismatch)
 	assert.Equal(t, CodeTemplatePinMismatch, mismatch.Code())
+	assert.Equal(t, h.hostPin, mismatch.Want, "this node's pin is what the message says it runs")
 	assert.Equal(t, checkpoint.Pin{
 		Firecracker: "v1.15.0",
 		Kernel:      strings.Repeat("d", 64),
-	}, mismatch.Want, "the recipe's requirement is what the build reports as wanted")
-	assert.Equal(t, h.hostPin, mismatch.Got)
+	}, mismatch.Got, "the recipe's requirement is what the message says the template is pinned to")
 	assert.ErrorIs(t, err, checkpoint.ErrPinMismatch)
 	assert.Empty(t, h.calls, "a recipe this host cannot satisfy must fail before any build work")
 }

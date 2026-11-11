@@ -185,7 +185,7 @@ func TestResolve_RefusesAnUnpinnedTemplate(t *testing.T) {
 	assert.Nil(t, art)
 	assert.Equal(t, CodeTemplatePinMismatch, codeOf(err))
 	assert.ErrorIs(t, err, checkpoint.ErrPinMismatch)
-	assert.Contains(t, err.Error(), "unpinned")
+	assert.Contains(t, err.Error(), "carries no pin")
 }
 
 // TestResolve_HoldsTheTemplateToTheKernelItsProfileResolvesToHere proves the pin
