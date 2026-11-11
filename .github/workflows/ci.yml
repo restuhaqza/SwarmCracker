@@ -16,6 +16,9 @@ on:
       - 'test/conformance/**'
       - 'tools/sdkgen/**'
       - 'api/openapi.yaml'
+      # The committed guest agent is embedded in every image, so a commit that
+      # changes only it is a change to what ships and gets checked like any other.
+      - 'pkg/image/binaries/**'
       - 'Dockerfile.cli'
       - '.dockerignore'
       - '.github/workflows/ci.yml'
@@ -124,6 +127,31 @@ jobs:
         with:
           name: coverage
           path: coverage.out
+
+  # pkg/image/binaries/sc-agent-amd64 is committed to the repository and embedded
+  # in every image with go:embed, so a stale copy compiles, passes every test and
+  # ships. Nothing else reads it, which is why a drift check is a rebuild and a
+  # byte comparison, and why this job exists.
+  #
+  # The Go patch release is pinned on purpose. Byte-identical output needs the
+  # toolchain the committed agent was built with, and `make check-go-version` only
+  # aligns the major.minor of go.mod, CI, the release workflow and the Dockerfile —
+  # it cannot tell one patch release from another. A rebuild on another patch
+  # release fails the comparison and says so, naming both toolchains, before it
+  # looks like a source change.
+  agent-binary:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.8'
+
+      - name: Committed guest agent matches its sources
+        run: make check-agent-binary
 
   # The generated models, the Python client and the Node client are checked
   # together: a spec change must regenerate both SDKs, and both suites must pass.
