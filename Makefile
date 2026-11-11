@@ -297,6 +297,7 @@ help:
 	@echo "  mocks            Generate mocks"
 	@echo "  lab              Create a multi-node dev lab (nested VMs)"
 	@echo "  lab-down         Destroy the multi-node dev lab"
+	@echo "  check-agent-binary  Fail unless the committed guest agent is the build of these sources"
 	@echo "  help             Show this help message"
 
 # Create and push a release tag
@@ -327,17 +328,89 @@ pkg/image/binaries/busybox-amd64:
 
 # The guest agent is compiled from these sources; declaring them makes rebuilds
 # track the code so the committed artifact cannot drift silently.
-AGENT_SOURCES := $(wildcard cmd/sc-agent/*.go) $(wildcard pkg/agent/*.go) go.mod go.sum
+#
+# Test files are left out on purpose. They are not compiled into the agent, so a
+# test-only edit must not change the agent's identity below: including them would
+# make this target rewrite a 6.9 MB blob — and `make check-agent-binary` demand a
+# new one — for a change that cannot affect a single byte of the binary.
+AGENT_SOURCES := $(filter-out %_test.go,$(wildcard cmd/sc-agent/*.go) $(wildcard pkg/agent/*.go)) go.mod go.sum
 
-pkg/image/binaries/sc-agent-amd64: $(AGENT_SOURCES)
+# The committed guest agent's identity, and the reason this target is reproducible
+# at all.
+#
+# The binary is committed to the repository and embedded in every image, so its
+# bytes must be a function of this tree and the toolchain, and of nothing about
+# the checkout that built it. Two build inputs break that when they come from git:
+# `git describe --dirty` and the short commit both change with every commit and
+# every dirty file, so a binary stamped with them can never be reproduced from the
+# tree it is committed in — and this repository has the receipt, because the blob
+# at pkg/image/binaries/sc-agent-amd64 was built two commits before the tree it
+# landed in, carried a "-dirty" stamp, and nothing noticed across a release.
+#
+# Both stamps are therefore functions of the sources: AGENT_BUILD_ID is the first
+# 16 hex characters of the SHA-256 of the files the binary is compiled from, in
+# file order, and AGENT_VERSION is that same identity, because a release number
+# cannot be read from this tree (the version the rest of the repository reports
+# comes from git tags, which a committed binary cannot depend on).
+AGENT_OUT := pkg/image/binaries/sc-agent-amd64
+# Which SHA-256 tool is available, because the identity must be the same value on
+# every host that builds this: Linux has sha256sum, a BSD or macOS host has shasum.
+# Only the first 16 hex characters are used, so the two tools' output formats
+# never reach the identity.
+AGENT_SHA = $(shell command -v sha256sum >/dev/null 2>&1 && echo sha256sum || echo 'shasum -a 256')
+AGENT_BUILD_ID := $(shell cat $(AGENT_SOURCES) 2>/dev/null | $(AGENT_SHA) | cut -c1-16)
+AGENT_VERSION := src-$(AGENT_BUILD_ID)
+AGENT_CHECK_OUT := $(BUILD_DIR)/sc-agent-amd64.rebuilt
+
+# agent-build is the one recipe for the agent: the check target below must build
+# exactly what the committed target builds, or it would be verifying something
+# else.
+#
+# -trimpath keeps the build directory out of the binary and -buildvcs=false keeps
+# this checkout's VCS state out of it (without it, `go build` stamps the module's
+# pseudo-version — v0.13.1-0.20261110150542-cf787b52e943+dirty — into the binary,
+# so the same sources build differently in a different checkout). With both, a
+# copy of this tree at any path builds the same bytes, which is what makes the
+# comparison below meaningful.
+define agent-build
+@mkdir -p $(dir $(1))
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath -buildvcs=false \
+	-ldflags "-s -w -X github.com/restuhaqza/swarmcracker/pkg/agent.AgentVersion=$(AGENT_VERSION) -X github.com/restuhaqza/swarmcracker/pkg/agent.BuildID=$(AGENT_BUILD_ID)" \
+	-o $(1) ./cmd/sc-agent
+endef
+
+$(AGENT_OUT): $(AGENT_SOURCES)
 	@echo "Building sc-agent-static-amd64..."
-	@mkdir -p pkg/image/binaries
-	# The agent reports its version and build in every hello, so a host can log
-	# which agent it is driving; both are injected here rather than defaulted so
-	# a released image never claims to be a working-tree build.
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 $(GO) build -trimpath \
-		-ldflags "-s -w -X github.com/restuhaqza/swarmcracker/pkg/agent.AgentVersion=$(VERSION) -X github.com/restuhaqza/swarmcracker/pkg/agent.BuildID=$(GIT_COMMIT)" \
-		-o $@ ./cmd/sc-agent
+	$(call agent-build,$@)
+
+# check-agent-binary fails unless the committed guest agent is the build of the
+# sources in this tree.
+#
+# Nothing else in the repository reads that blob: pkg/image embeds it with
+# go:embed, so a stale agent compiles, passes every test, and ships — which is how
+# the drift described above survived. This target is the one place that compares
+# it, and it has to rebuild rather than hash what is committed, because a hash of
+# the blob only says the blob is unchanged.
+#
+# Byte-identical output needs the toolchain the committed agent was built with, so
+# a mismatch reports both toolchains: a runner pinned to another Go patch release
+# would otherwise look like a source drift.
+.PHONY: check-agent-binary
+check-agent-binary:
+	@echo "Rebuilding the committed guest agent to compare it with its sources..."
+	$(call agent-build,$(AGENT_CHECK_OUT))
+	@if cmp -s $(AGENT_OUT) $(AGENT_CHECK_OUT); then \
+		echo "✅ committed guest agent matches these sources (identity $(AGENT_BUILD_ID))"; \
+		rm -f $(AGENT_CHECK_OUT); \
+	else \
+		echo "❌ committed guest agent is NOT the build of these sources"; \
+		echo "   committed: $$(sha256sum $(AGENT_OUT) | cut -c1-32)... $$(wc -c < $(AGENT_OUT)) bytes, built with $$($(GO) version $(AGENT_OUT) 2>/dev/null | awk '{print $$NF}')"; \
+		echo "   rebuilt:   $$(sha256sum $(AGENT_CHECK_OUT) | cut -c1-32)... $$(wc -c < $(AGENT_CHECK_OUT)) bytes, built with $$($(GO) env GOVERSION)"; \
+		echo "   If the agent's sources changed, run 'make binaries' and commit $(AGENT_OUT) with them."; \
+		echo "   If they did not change, the two builds above used different toolchains: byte-identical output needs the one the committed agent was built with."; \
+		echo "   The rebuilt binary is left at $(AGENT_CHECK_OUT) for inspection."; \
+		exit 1; \
+	fi
 
 # Multi-node development lab (creates nested VMs on this KVM host)
 lab:

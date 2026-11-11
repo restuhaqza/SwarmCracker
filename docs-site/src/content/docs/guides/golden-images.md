@@ -72,9 +72,11 @@ Verified on the node: the Ubuntu 24.04 golden VM reached multi-user with
 ## Guest agent and first-boot verification
 
 Every golden image carries the guest agent at `/sbin/sc-agent`, built from
-`cmd/sc-agent` (`make binaries` refreshes the embedded copy). A template without
-it cannot serve `exec`, file copy, health or prepare, so the build refuses to
-produce one.
+`cmd/sc-agent` (`make binaries` refreshes the embedded copy, and
+`make check-agent-binary` fails when the committed copy at
+`pkg/image/binaries/sc-agent-amd64` is not the build of the current sources). A
+template without it cannot serve `exec`, file copy, health or prepare, so the
+build refuses to produce one.
 
 The builder installs the binary after the provision script and enables it for
 the recipe's init system:

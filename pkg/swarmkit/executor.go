@@ -162,6 +162,14 @@ type Config struct {
 	// KernelProfiles maps a golden image kernel profile to a kernel path on the
 	// host, overriding KernelPath for images that declare one.
 	KernelProfiles map[string]string `yaml:"-"`
+	// GoldenHostPin reports the host software this node pins a template against:
+	// the Firecracker version it runs and the kernel it would boot the template's
+	// profile with. It is a seam, not configuration: nil reads the real
+	// Firecracker version and hashes the kernel the profile resolves to, which
+	// is what the check must be made against on a real node, and a test
+	// substitutes a pin so a fixture resolves on a machine whose own Firecracker
+	// and kernel nobody can know.
+	GoldenHostPin golden.PinSource `yaml:"-"`
 
 	// Consul service discovery
 	ConsulEnabled bool   `yaml:"consul_enabled"`
@@ -1055,7 +1063,11 @@ func (c *Controller) Prepare(ctx context.Context) (err error) {
 // task annotations so the translator boots the golden rootfs (and the kernel
 // its recipe pinned) instead of building a container rootfs from an OCI image.
 func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref string) error {
-	art, err := golden.Resolve(c.config.GoldenDir, ref)
+	// The template is held to this node's own software — the VMM this daemon
+	// would boot it with and the kernel the template's profile resolves to here
+	// — so a template built elsewhere fails this task at prepare, before its
+	// rootfs is copied and before any Firecracker process exists.
+	art, err := golden.Resolve(ctx, c.config.GoldenDir, ref, c.goldenHostPin())
 	if err != nil {
 		return err
 	}
@@ -1104,6 +1116,26 @@ func (c *Controller) applyGoldenImage(ctx context.Context, task *types.Task, ref
 		Str("rootfs", rootfs).
 		Msg("Using prebuilt golden rootfs, skipping image preparation")
 	return nil
+}
+
+// goldenHostPin is the host software this node holds a template to: the VMM it
+// would boot the template with, and the kernel the template's profile resolves
+// to on this node.
+//
+// The kernel is resolved through the node's own registry with the node's own
+// default kernel as the fallback, which is the rule the daemon boots a golden
+// task by (taskTranslatorImpl.resolveKernelPath) — so the template is compared
+// with the software it would really run under. c.config.GoldenHostPin, when a
+// test sets it, replaces reading the host: a pin check cannot be tested against
+// the machine running the test.
+func (c *Controller) goldenHostPin() golden.PinSource {
+	if c.config == nil {
+		return golden.NodeHostPin("", "", nil)
+	}
+	if c.config.GoldenHostPin != nil {
+		return c.config.GoldenHostPin
+	}
+	return golden.NodeHostPin(c.config.FirecrackerPath, c.config.KernelPath, c.config.KernelProfiles)
 }
 
 // Start starts the task and, when the task declares a healthcheck, blocks until
