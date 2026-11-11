@@ -1,6 +1,7 @@
 package golden
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"slices"
@@ -115,7 +116,7 @@ func TestResolve_RefusesIncompatibleTemplate(t *testing.T) {
 	md.Agent = AgentPin{Protocol: agent.VersionLegacy, Version: "0.1.0"}
 	require.NoError(t, writeMetadataAtomic(artifactPathFor(dir, "legacy", "1.0.0"), *md))
 
-	_, err = Resolve(dir, "legacy")
+	_, err = Resolve(context.Background(), dir, "legacy", pinnedTo(fixturePin))
 	require.Error(t, err)
 	assert.Equal(t, CodeTemplateIncompatible, codeOf(err))
 }

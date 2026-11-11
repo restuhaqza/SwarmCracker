@@ -52,6 +52,12 @@ func writeRealGoldenStore(t *testing.T, name, version string) (dir, template str
 			Version:  "test",
 			Caps:     agent.Capabilities(),
 		},
+		// The software this template was built on, which is what a node holds it
+		// to when it resolves it: a manifest with no pin says nothing about the
+		// Firecracker version and kernel the image was written by, and is refused
+		// rather than read as a wildcard. fixturePin is the node the controllers
+		// below are told to be (fixturePinSource).
+		Pin: fixturePin,
 	}
 	data, err := json.Marshal(md)
 	require.NoError(t, err)
@@ -75,6 +81,7 @@ func TestControllerPrepare_GoldenService_ProvisionsTokenIntoTheCopy(t *testing.T
 			RootfsDir:         rootfsDir,
 			SocketDir:         socketDir,
 			AgentRequireToken: true,
+			GoldenHostPin:     fixturePinSource(),
 		},
 		imagePrep:  &recordingImagePreparer{},
 		networkMgr: mocks.NewMockNetworkManager(),
@@ -109,9 +116,10 @@ func TestControllerPrepare_GoldenService_WithoutTokenLeavesNoCredential(t *testi
 	ctrl := &Controller{
 		task: task,
 		config: &Config{
-			GoldenDir: goldenDir,
-			RootfsDir: rootfsDir,
-			SocketDir: socketDir,
+			GoldenDir:     goldenDir,
+			RootfsDir:     rootfsDir,
+			SocketDir:     socketDir,
+			GoldenHostPin: fixturePinSource(),
 		},
 		imagePrep:  &recordingImagePreparer{},
 		networkMgr: mocks.NewMockNetworkManager(),
@@ -148,6 +156,7 @@ func TestControllerPrepare_GoldenService_FailsWhenTheTokenCannotBeProvisioned(t 
 			RootfsDir:         rootfsDir,
 			SocketDir:         socketDir,
 			AgentRequireToken: true,
+			GoldenHostPin:     fixturePinSource(),
 		},
 		imagePrep:  &recordingImagePreparer{},
 		networkMgr: mocks.NewMockNetworkManager(),

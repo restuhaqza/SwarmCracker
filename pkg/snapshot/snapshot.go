@@ -813,6 +813,25 @@ func (m *Manager) RestoreFromSnapshot(
 // the restore. A console path that cannot be opened fails the restore before any
 // process exists, because a moved task whose logs answer 404 is the failure this
 // option exists to prevent.
+//
+// # What a restore here cannot check
+//
+// A snapshot carries no pin. SnapshotInfo names the state document, the memory
+// image and the disk the source VM recorded, and says nothing about the
+// Firecracker version or the kernel that wrote them — the state file records
+// them in its own binary form, which is not a pin this package can compare. So
+// this restore cannot refuse a checkpoint taken on other host software, and it
+// does not pretend to: what it verifies is that its own files are present and
+// that the state document still hashes to the checksum the snapshot recorded.
+//
+// The pin is checked where a node decides what to load, and there are two such
+// places, neither of them here: a template is held to the node's software by
+// golden.Resolve, which is the only path to a template, and a checkpoint in the
+// chunked format that carries a pin (pkg/checkpoint.Manifest.VerifyPin) is held
+// to it by whoever reads its manifest before loading it. A caller that hands
+// this method a SnapshotInfo assembled outside those paths has skipped the check
+// itself; the honest fix there is to check the artifact's pin before calling
+// this, not to teach this method a pin that its input does not carry.
 func (m *Manager) RestoreFromSnapshotWithLog(
 	ctx context.Context,
 	info *SnapshotInfo,
