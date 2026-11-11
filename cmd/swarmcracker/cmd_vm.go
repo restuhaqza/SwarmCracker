@@ -139,7 +139,12 @@ Example:
 				if goldenDir == "" {
 					goldenDir = defaultGoldenDir()
 				}
-				art, err := golden.Resolve(goldenDir, goldenRef)
+				// The template is held to this node's own software: the VMM the
+				// CLI would boot it with and the kernel its profile resolves to
+				// here. A template built elsewhere is refused before the task is
+				// assembled, so a pinned template never reaches a VM.
+				art, err := golden.Resolve(cmd.Context(), goldenDir, goldenRef,
+					golden.NodeHostPin("", cfg.Executor.KernelPath, cfg.Executor.KernelProfiles))
 				if err != nil {
 					return err
 				}
