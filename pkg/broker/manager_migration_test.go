@@ -1340,11 +1340,46 @@ func TestManagerMigrationCallsRefuseWhatTheyCannotDo(t *testing.T) {
 // the answer has started: a connection that drops, and a stream that stalls past
 // the deadline. Both are the node's, both name no internal address, and neither is
 // a mismatch of the bytes.
+//
+// The two are told apart by whether the deadline is what ended the stream, so only
+// one of them asserts on a deadline — and each carries its own budget, measured so
+// that neither case is decided by how the machine happened to be scheduled.
+//
+// A dropped connection is a transport failure whenever it is observed, and the
+// manager answers `timeout` — correctly — if a deadline got there first. This case
+// used to share the stall case's fifty-millisecond budget, which made its answer
+// depend on the machine: under the race detector on a loaded runner the deadline
+// expired before the drop was noticed, and the case was reported as a timeout for a
+// connection that had failed. The stall case was miscarried the other way for the
+// same reason — a fifty-millisecond budget could expire before the node's answer
+// had even started, and then its own first write failed and the case failed on the
+// handler's assertion rather than on the classification it exists to pin.
 func TestManagerFileMapsAMidStreamFailure(t *testing.T) {
 	pki := newTestPKI(t)
 	body := migrationTestBody(1<<20, 18)
 	artifact := migrationArtifactFixture(t, []byte("state"), body, nil)
 	entry := migrationTestEntry(t, artifact, "vm.mem")
+
+	// dropBudget and stallBudget are the two cases' budgets, and they differ
+	// because only one case is about a budget running out. Both are far above what
+	// the case needs locally — under eight CPU burners on this four-core box the
+	// answer starts 27-62 ms after the call, and 52-97 ms under sixteen — and both
+	// are bounded, so a case whose premise broke fails rather than sits.
+	//
+	// The drop case has no deadline of its own to reach: a connection that drops
+	// is a transport failure whenever it is observed, and thirty seconds is three
+	// hundred times the worst case measured.
+	//
+	// The stall case's budget is the deadline it asserts on, so it has to arrive
+	// after the answer has started — ten times the worst case measured, where the
+	// fifty milliseconds this test used to share sat inside that range, which is
+	// what made the case a coin flip on a busy box — and before the handler's own
+	// two-second fallback, which would end the response instead of the deadline
+	// ending it.
+	const (
+		dropBudget  = 30 * time.Second
+		stallBudget = time.Second
+	)
 
 	startStream := func(w http.ResponseWriter) bool {
 		w.Header().Set("Content-Length", strconv.FormatInt(entry.Size, 10))
@@ -1358,6 +1393,7 @@ func TestManagerFileMapsAMidStreamFailure(t *testing.T) {
 	cases := []struct {
 		name    string
 		handler func(w http.ResponseWriter, r *http.Request)
+		budget  time.Duration
 		want    output.Code
 	}{
 		{
@@ -1376,7 +1412,8 @@ func TestManagerFileMapsAMidStreamFailure(t *testing.T) {
 				}
 				_ = conn.Close()
 			},
-			want: output.CodeUnavailable,
+			budget: dropBudget,
+			want:   output.CodeUnavailable,
 		},
 		{
 			name: "the stream stalls past the deadline",
@@ -1389,7 +1426,8 @@ func TestManagerFileMapsAMidStreamFailure(t *testing.T) {
 				case <-time.After(2 * time.Second):
 				}
 			},
-			want: output.CodeTimeout,
+			budget: stallBudget,
+			want:   output.CodeTimeout,
 		},
 	}
 
@@ -1401,7 +1439,7 @@ func TestManagerFileMapsAMidStreamFailure(t *testing.T) {
 				},
 			})
 
-			mgr := newMigrationTestManager(t, pki, baseURL, 50*time.Millisecond)
+			mgr := newMigrationTestManager(t, pki, baseURL, tc.budget)
 			_, err := mgr.File(context.Background(), "node-1", v1.Task{ID: migrationTestTask},
 				artifact, "vm.mem", io.Discard)
 

@@ -11,12 +11,23 @@ import (
 )
 
 // AgentVersion is the guest agent's release version, reported in every hello
-// reply. The Makefile overrides it at build time with -X.
+// reply so a host can log which agent it is driving. The Makefile overrides it at
+// build time with -X.
+//
+// The committed agent in pkg/image/binaries is built without a release number,
+// because there is none in this tree to read: the version the rest of the
+// repository reports comes from git tags, and a committed binary must not depend
+// on the state of the checkout that built it — a `git describe --dirty` stamp
+// changes with every commit and every dirty file, which is what makes such a
+// binary unreproducible. So a build that names no release records the identity of
+// the sources it was compiled from, which is also what BuildID carries, and a
+// release build that has a number to name overrides this with -X.
 var AgentVersion = "0.0.0-dev"
 
-// BuildID identifies the exact agent build, normally the git commit, and is
-// reported in every hello reply so a host can tell two builds of the same
-// version apart. The Makefile overrides it at build time with -X.
+// BuildID identifies the exact agent build and is reported in every hello reply
+// so a host can tell two builds apart. The Makefile overrides it at build time
+// with -X; the committed agent in pkg/image/binaries carries the SHA-256 of the
+// sources it was compiled from, which is what makes it reproducible.
 var BuildID = "unknown"
 
 var (

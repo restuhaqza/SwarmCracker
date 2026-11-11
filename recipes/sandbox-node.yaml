@@ -1,0 +1,167 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: sandbox-node
+  version: 1.0.0
+  description: Sandbox reference template — Node.js, npm and a warm npm cache on top of sandbox-base
+
+spec:
+  arch: [amd64]
+
+  source:
+    type: oci
+    # Pin by digest in CI: docker.io/library/alpine@sha256:<digest>
+    ref: docker.io/library/alpine:3.20
+
+  init:
+    system: openrc
+    # OpenRC runs from busybox /sbin/init reading /etc/inittab, which the
+    # provision step writes.
+
+  kernel:
+    profile: guest-runtime-6.1
+
+  # Read from the build host, not declared: see sandbox-base.yaml for what the
+  # two values mean and when to regenerate them.
+  pin:
+    firecracker: v1.15.1
+    kernel: 9a68e546ca0537ac1a0c91ba9da101e214712a6a86636d6c3a52c0e3e2644517
+
+  runtime:
+    name: none
+
+  disk:
+    rootMinSize: 3GiB
+
+  network:
+    guestCIDR: 172.17.0.0/16
+
+  provision: |
+    set -eux
+
+    # A caching install: /etc/apk/cache is the switch that makes apk keep the
+    # packages it downloads (in /var/cache/apk), and `apk update` keeps the
+    # APKINDEX there too. Without it apk deletes both, and a sandbox's first
+    # `apk add` pays a full index fetch and a full download.
+    mkdir -p /var/cache/apk
+    ln -sf /var/cache/apk /etc/apk/cache
+    apk update
+    apk add \
+      bash coreutils findutils grep sed tar gzip xz \
+      git curl ca-certificates openssh-client \
+      openrc util-linux iproute2 iputils procps tzdata \
+      nodejs npm
+
+    # OpenRC starts from busybox /sbin/init reading this file.
+    cat > /etc/inittab <<'EOF'
+    ::sysinit:/sbin/openrc sysinit
+    ::sysinit:/sbin/openrc boot
+    ::wait:/sbin/openrc default
+    ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+    ::ctrlaltdel:/sbin/reboot
+    ::shutdown:/sbin/openrc shutdown
+    EOF
+
+    mkdir -p /etc/network
+    cat > /etc/network/interfaces <<'EOF'
+    auto lo
+    iface lo inet loopback
+
+    auto eth0
+    iface eth0 inet manual
+    EOF
+
+    cat > /etc/init.d/swarmcracker-mounts <<'EOF'
+    #!/sbin/openrc-run
+    name="swarmcracker-mounts"
+    depend() { need localmount; }
+    start() {
+      ebegin "Mounting cgroup2"
+      [ -d /sys/fs/cgroup ] || mkdir -p /sys/fs/cgroup
+      mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup
+      sysctl -w net.ipv4.ip_forward=1
+      eend $?
+    }
+    EOF
+    chmod +x /etc/init.d/swarmcracker-mounts
+
+    cat > /etc/init.d/swarmcracker-network <<'EOF'
+    #!/sbin/openrc-run
+    name="swarmcracker-network"
+    depend() { need localmount; before networking; }
+    start() {
+      ebegin "Configuring network from kernel ip= parameter"
+      ip link set lo up 2>/dev/null || true
+      _arg=$(tr ' ' '\n' < /proc/cmdline 2>/dev/null | grep '^ip=' | head -n1 | cut -d= -f2-)
+      if [ -n "$_arg" ]; then
+        _ip=$(echo "$_arg" | cut -d: -f1)
+        _gw=$(echo "$_arg" | cut -d: -f3)
+        _dev=$(echo "$_arg" | cut -d: -f6)
+        [ -z "$_dev" ] && _dev=eth0
+        if [ -n "$_ip" ]; then
+          ip addr add "$_ip/24" dev "$_dev" 2>/dev/null || true
+          ip link set "$_dev" up 2>/dev/null || true
+          [ -n "$_gw" ] && ip route add default via "$_gw" 2>/dev/null || true
+        fi
+      fi
+      eend 0
+    }
+    EOF
+    chmod +x /etc/init.d/swarmcracker-network
+
+    rc-update add swarmcracker-mounts boot
+    rc-update add swarmcracker-network boot
+    rc-update add networking boot
+
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-swarmcracker.conf
+
+    adduser -D -u 1000 -h /home/sandbox -s /bin/bash sandbox
+    mkdir -p /workspace
+    chown 1000:1000 /workspace
+    chmod 0775 /workspace
+
+    # Warm npm cache: the tarballs of the packages a project usually starts
+    # with are already in the cache directory the sandbox user owns, so
+    # `npm install --offline typescript@5.6.3` — the exact version cached —
+    # resolves without the registry. It is written with HOME pointed at that
+    # user rather than through `su`, so the files need no second owner. A cache
+    # is warm for the versions it holds and no others: an unpinned
+    # `npm install typescript` still asks the registry which version is
+    # current, which is why the versions here are pinned.
+    HOME=/home/sandbox npm config set fund false
+    HOME=/home/sandbox npm config set audit false
+    HOME=/home/sandbox npm cache add typescript@5.6.3
+    HOME=/home/sandbox npm cache add 'esbuild@0.24.0'
+
+    cat > /etc/profile.d/sandbox.sh <<'EOF'
+    export PATH="$HOME/.local/bin:$PATH"
+    cd /workspace 2>/dev/null || true
+    EOF
+    chmod 0644 /etc/profile.d/sandbox.sh
+
+    chown -R sandbox:sandbox /home/sandbox
+
+  seal:
+    # The provision chroot gets the builder's /etc/resolv.conf bind-mounted over
+    # this path, and the mount is gone once provisioning ends. Without this step
+    # the template ships an empty resolver and a sandbox has no DNS until the
+    # node writes one over it.
+    - printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+
+  health:
+    - command: rc-service sc-agent status
+      timeout: 60s
+
+  verify:
+    - name: node-runs
+      guest: node -e 'if (Number(process.versions.node.split(".")[0]) < 20) process.exit(1)'
+    - name: npm-runs
+      guest: npm --version
+    - name: npm-cache-answers-offline
+      guest: su -s /bin/sh sandbox -c 'mkdir -p /tmp/npmcheck && cd /tmp/npmcheck && npm install --offline --no-audit --no-fund typescript@5.6.3 && test -x node_modules/.bin/tsc'
+    - name: apk-cache-is-warm
+      guest: ls /var/cache/apk/*.apk >/dev/null
+    - name: workspace-is-writable-by-the-sandbox-user
+      guest: su -s /bin/sh sandbox -c 'cd /workspace && printf ok > .probe && rm .probe'
+    - name: sandbox-user-is-uid-1000
+      guest: test "$(id -u sandbox)" -eq 1000

@@ -1,0 +1,163 @@
+apiVersion: swarmcracker.io/v1alpha1
+kind: GoldenImage
+metadata:
+  name: sandbox-base
+  version: 1.0.0
+  description: Sandbox reference template — Alpine 3.20, OpenRC, a non-root /workspace user and a warm apk cache
+
+spec:
+  arch: [amd64]
+
+  source:
+    type: oci
+    # Pin by digest in CI: docker.io/library/alpine@sha256:<digest>
+    ref: docker.io/library/alpine:3.20
+
+  init:
+    system: openrc
+    # OpenRC runs from busybox /sbin/init reading /etc/inittab, which the
+    # provision step writes.
+
+  kernel:
+    profile: guest-runtime-6.1
+
+  # The host software this reference template is built and proven on. Both
+  # values were read from the build host rather than declared: the Firecracker
+  # version the artifact will be booted by, and the SHA-256 of the kernel image
+  # the guest-runtime profile resolves to. A build on other software is refused
+  # with template_pin_mismatch instead of recording a template only the host
+  # that built it could use; regenerate both when the host's Firecracker or
+  # kernel moves.
+  pin:
+    firecracker: v1.15.1
+    kernel: 9a68e546ca0537ac1a0c91ba9da101e214712a6a86636d6c3a52c0e3e2644517
+
+  # A sandbox template runs the guest agent's operations, not a container
+  # runtime: nothing inside it needs Docker.
+  runtime:
+    name: none
+
+  disk:
+    rootMinSize: 2GiB
+
+  network:
+    guestCIDR: 172.17.0.0/16
+
+  provision: |
+    set -eux
+
+    # A caching install: /etc/apk/cache is the switch that makes apk keep the
+    # packages it downloads (in /var/cache/apk), and `apk update` keeps the
+    # APKINDEX there too. Without it apk deletes both, and a sandbox's first
+    # `apk add` pays a full index fetch and a full download. No in-recipe seal
+    # step removes this.
+    mkdir -p /var/cache/apk
+    ln -sf /var/cache/apk /etc/apk/cache
+    apk update
+    apk add \
+      bash coreutils findutils grep sed tar gzip xz \
+      git curl ca-certificates openssh-client \
+      openrc util-linux iproute2 iputils procps tzdata
+
+    # OpenRC starts from busybox /sbin/init reading this file.
+    cat > /etc/inittab <<'EOF'
+    ::sysinit:/sbin/openrc sysinit
+    ::sysinit:/sbin/openrc boot
+    ::wait:/sbin/openrc default
+    ttyS0::respawn:/sbin/getty -L 115200 ttyS0 vt100
+    ::ctrlaltdel:/sbin/reboot
+    ::shutdown:/sbin/openrc shutdown
+    EOF
+
+    # OpenRC's networking service needs a parseable interfaces file; keep eth0
+    # "manual" so it does not block on DHCP, and configure it from the kernel
+    # ip= parameter in swarmcracker-network (below), as the single-workload path
+    # does.
+    mkdir -p /etc/network
+    cat > /etc/network/interfaces <<'EOF'
+    auto lo
+    iface lo inet loopback
+
+    auto eth0
+    iface eth0 inet manual
+    EOF
+
+    cat > /etc/init.d/swarmcracker-mounts <<'EOF'
+    #!/sbin/openrc-run
+    name="swarmcracker-mounts"
+    depend() { need localmount; }
+    start() {
+      ebegin "Mounting cgroup2"
+      [ -d /sys/fs/cgroup ] || mkdir -p /sys/fs/cgroup
+      mountpoint -q /sys/fs/cgroup || mount -t cgroup2 none /sys/fs/cgroup
+      sysctl -w net.ipv4.ip_forward=1
+      eend $?
+    }
+    EOF
+    chmod +x /etc/init.d/swarmcracker-mounts
+
+    # Bring eth0 up from the kernel ip=<ip>::<gw>:<mask>::<iface>:off parameter.
+    cat > /etc/init.d/swarmcracker-network <<'EOF'
+    #!/sbin/openrc-run
+    name="swarmcracker-network"
+    depend() { need localmount; before networking; }
+    start() {
+      ebegin "Configuring network from kernel ip= parameter"
+      ip link set lo up 2>/dev/null || true
+      _arg=$(tr ' ' '\n' < /proc/cmdline 2>/dev/null | grep '^ip=' | head -n1 | cut -d= -f2-)
+      if [ -n "$_arg" ]; then
+        _ip=$(echo "$_arg" | cut -d: -f1)
+        _gw=$(echo "$_arg" | cut -d: -f3)
+        _dev=$(echo "$_arg" | cut -d: -f6)
+        [ -z "$_dev" ] && _dev=eth0
+        if [ -n "$_ip" ]; then
+          ip addr add "$_ip/24" dev "$_dev" 2>/dev/null || true
+          ip link set "$_dev" up 2>/dev/null || true
+          [ -n "$_gw" ] && ip route add default via "$_gw" 2>/dev/null || true
+        fi
+      fi
+      eend 0
+    }
+    EOF
+    chmod +x /etc/init.d/swarmcracker-network
+
+    rc-update add swarmcracker-mounts boot
+    rc-update add swarmcracker-network boot
+    rc-update add networking boot
+
+    echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-swarmcracker.conf
+
+    # The user a sandbox command runs as, and the mount point a workload is
+    # handed through. Neither is root: a template that ships only root makes
+    # every sandbox made from it run as root.
+    adduser -D -u 1000 -h /home/sandbox -s /bin/bash sandbox
+    mkdir -p /workspace
+    chown 1000:1000 /workspace
+    chmod 0775 /workspace
+
+    cat > /etc/profile.d/sandbox.sh <<'EOF'
+    export PATH="$HOME/.local/bin:$PATH"
+    cd /workspace 2>/dev/null || true
+    EOF
+    chmod 0644 /etc/profile.d/sandbox.sh
+
+  seal:
+    # The provision chroot gets the builder's /etc/resolv.conf bind-mounted over
+    # this path, and the mount is gone once provisioning ends. Without this step
+    # the template ships an empty resolver and a sandbox has no DNS until the
+    # node writes one over it.
+    - printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' > /etc/resolv.conf
+
+  health:
+    - command: rc-service sc-agent status
+      timeout: 60s
+
+  verify:
+    - name: sandbox-user-is-uid-1000
+      guest: test "$(id -u sandbox)" -eq 1000
+    - name: workspace-exists-and-is-writable
+      guest: su -s /bin/sh sandbox -c 'printf ok > /workspace/.probe && rm /workspace/.probe'
+    - name: apk-cache-is-warm
+      guest: ls /var/cache/apk/*.apk /var/cache/apk/APKINDEX.*.tar.gz
+    - name: toolchain-on-path
+      guest: for t in bash git curl tar gzip; do command -v "$t"; done

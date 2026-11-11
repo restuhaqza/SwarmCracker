@@ -8,6 +8,14 @@
 #   3. boots the artifact under Firecracker with a tap NIC and waits for the
 #      container runtime to start in the guest serial log.
 #
+# A `sandbox-*` recipe is a reference template: a real init with no container
+# runtime, so there is no runtime line in its serial log to wait for and no tap
+# device to give it. Its boot proof is the one `template build` already makes —
+# it boots a copy of what it sealed and holds the guest agent to the v2
+# handshake over vsock — so for those the manifest that build wrote is checked
+# (the agent answered, and with which capabilities) and the sandbox contract is
+# read out of the artifact with debugfs.
+#
 # Env overrides:
 #   RECIPES   space-separated recipe names (without .yaml)
 #   OUT_DIR   artifact directory (default /var/lib/firecracker/golden)
@@ -41,6 +49,14 @@ runtime_marker() {
   esac
 }
 
+# A reference template runs no container runtime: its manifest is its proof.
+is_reference_template() {
+  case "$1" in
+    sandbox-*) return 0 ;;
+    *)         return 1 ;;
+  esac
+}
+
 summary=""
 overall=0
 
@@ -57,7 +73,8 @@ for name in $RECIPES; do
   fi
 
   # --- build ---
-  if ! "$SWARMCRACKER" image build "$recipe" --output-dir "$OUT_DIR" $force_flag \
+  # `template build` is the real command; `image` is its deprecated alias.
+  if ! "$SWARMCRACKER" template build "$recipe" --output-dir "$OUT_DIR" $force_flag \
         >"$build_log" 2>&1; then
     echo "   BUILD FAILED"; tail -15 "$build_log"
     summary+="BUILD-FAIL $name\n"; overall=1; continue
@@ -68,6 +85,37 @@ for name in $RECIPES; do
   fi
   size=$(du -h "$artifact" | cut -f1)
   echo "   built: $artifact ($size)"
+
+  if is_reference_template "$name"; then
+    # --- content check: the sandbox contract, read offline ---
+    content="ok"
+    for path in /sbin/init /sbin/sc-agent /home/sandbox /workspace; do
+      if ! debugfs -R "stat $path" "$artifact" 2>/dev/null | grep -q "Inode:"; then
+        content="missing:$path"
+      fi
+    done
+    if ! debugfs -R "stat /workspace" "$artifact" 2>/dev/null | grep -q "1000"; then
+      content="workspace-not-owned-by-1000"
+    fi
+    echo "   content: $content"
+
+    # --- boot: the agent the build's own first boot met ---
+    manifest=$(ls "$OUT_DIR"/golden-"$name"-*.json 2>/dev/null | head -1)
+    protocol=$(grep -oE '"agentProtocol": "[^"]+"' "$manifest" 2>/dev/null | cut -d'"' -f4)
+    caps=$(tr -d ' \n' <"$manifest" 2>/dev/null | grep -oE '"agentCaps":\[[^]]*\]')
+    digest=$(grep -oE '"recipeDigest": "[^"]+"' "$manifest" 2>/dev/null | cut -d'"' -f4)
+    boot="agent-not-proven"
+    if [ -n "$protocol" ] && printf '%s' "$caps" | grep -q prepare; then
+      boot="agent-answered"
+    fi
+    echo "   boot: $boot  (protocol=$protocol caps=$caps)"
+
+    status="PASS"
+    if [ "$content" != "ok" ] || [ "$boot" != "agent-answered" ]; then status="FAIL"; overall=1; fi
+    summary+="$status $name | content=$content | boot=$boot | protocol=$protocol | $digest\n"
+    printf '   digest: %s\n' "$digest"
+    continue
+  fi
 
   # --- content check ---
   content="ok"
@@ -118,4 +166,4 @@ done
 echo "==================================================================="
 echo -e "$summary"
 echo "artifacts: $OUT_DIR"
-exit $overall
+exit "$overall"
