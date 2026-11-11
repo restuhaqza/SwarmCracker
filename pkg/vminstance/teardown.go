@@ -26,7 +26,9 @@ import (
 // test replaces: the production values are the node's own removers, and a test
 // asserts which names were freed without touching a host device.
 type Leftovers struct {
-	// DeleteTap removes the recorded TAP device. Nil selects
+	// DeleteTap removes the recorded TAP device from the node's own namespace. It
+	// is used for a record that names no namespace; a record that names one has
+	// its TAP inside it, and the namespace's removal frees both. Nil selects
 	// network.RemoveTAPDevice, which treats a device that is already gone as
 	// success.
 	DeleteTap func(name string) error
@@ -43,20 +45,33 @@ type Leftovers struct {
 // record that names nothing frees nothing: the paths are optional by construction,
 // and a VM on the shared bridge with a shared disk names neither.
 //
+// The node's own TAP device and a sandbox's are freed by different steps, and only
+// one of them applies to a record:
+//
+//   - A record that names a namespace is a sandbox, and its TAP is a device *of
+//     that namespace* under the fixed name tap0 (pkg/sandbox/netpolicy). Removing
+//     the namespace frees the device, its addresses, its routes and the nftables
+//     policy beside it in one step, because all of them are state of the
+//     namespace. The node is therefore not asked to delete a device of that name:
+//     a sandbox's tap0 is not a node device, and a node device called tap0 would
+//     be somebody else's, which is not this record's to remove.
+//   - A record with no namespace (the service path) names a device of the node's
+//     own namespace, and that is what is freed.
+//
 // The removers are idempotent, so a retried release is safe; a real failure is
 // returned rather than logged, because the record is kept when one happens and the
 // caller is the one that can decide whether to retry.
 func (l Leftovers) Release(inst Instance) error {
 	var problems []error
 
-	if inst.TAP != "" {
-		if err := l.deleteTap(inst.TAP); err != nil {
-			problems = append(problems, fmt.Errorf("release the TAP device %s of instance %q: %w", inst.TAP, inst.ID, err))
-		}
-	}
-	if inst.NetNS != "" {
+	switch {
+	case inst.NetNS != "":
 		if err := l.deleteNetNS(inst.NetNS); err != nil {
 			problems = append(problems, fmt.Errorf("release the netns %s of instance %q: %w", inst.NetNS, inst.ID, err))
+		}
+	case inst.TAP != "":
+		if err := l.deleteTap(inst.TAP); err != nil {
+			problems = append(problems, fmt.Errorf("release the TAP device %s of instance %q: %w", inst.TAP, inst.ID, err))
 		}
 	}
 	if inst.Disk != "" {

@@ -112,8 +112,9 @@ func TestTeardownFreesTheRecordAndDeletesIt(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, found)
 
-	assert.Equal(t, []string{"tap-" + inst.ID}, recorder.taps)
 	assert.Equal(t, []string{inst.NetNS}, recorder.netns)
+	assert.Empty(t, recorder.taps,
+		"a sandbox's TAP belongs to its namespace, so the namespace's removal frees it and the node is not asked to delete a device of that name")
 	assert.Equal(t, []string{inst.Disk}, recorder.disks)
 	_, statErr := os.Stat(inst.Disk)
 	assert.ErrorIs(t, statErr, os.ErrNotExist, "the disk the record named is freed")
@@ -121,6 +122,17 @@ func TestTeardownFreesTheRecordAndDeletesIt(t *testing.T) {
 	_, stillThere, err := store.Peek(inst.ID)
 	require.NoError(t, err)
 	assert.False(t, stillThere, "the record is deleted once its resources are free")
+}
+
+// TestReleaseFreesTheNodesTAPWhenTheRecordNamesNoNamespace is the service path: a VM
+// on the shared bridge names no namespace, so its device is the node's own and is
+// what gets freed.
+func TestReleaseFreesTheNodesTAPWhenTheRecordNamesNoNamespace(t *testing.T) {
+	recorder := &recordingLeftovers{}
+
+	require.NoError(t, recorder.leftovers().Release(Instance{ID: "task-1", TAP: "tap-1234abcd-0"}))
+	assert.Equal(t, []string{"tap-1234abcd-0"}, recorder.taps)
+	assert.Empty(t, recorder.netns)
 }
 
 // TestTeardownKeepsTheRecordWhenAReleaseFails pins the order: the record is the
