@@ -62,6 +62,15 @@ func (r *execRecorder) ran(fragments ...string) []string {
 	return out
 }
 
+// mark records an event that is not a command — the start or the close of a
+// sandbox's egress endpoints — so a test can hold the whole order to account and
+// not only the commands inside it.
+func (r *execRecorder) mark(label string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, []string{"<" + label + ">"})
+}
+
 // sequence is every command in the order it ran.
 func (r *execRecorder) sequence() []string {
 	r.mu.Lock()
@@ -100,18 +109,33 @@ func testBinaries(t *testing.T) func(string) (string, error) {
 	}
 }
 
-// newTestManager returns a manager whose commands are recorded and whose node
-// already uses nothing, so an allocation is a function of the pool alone.
+// newTestManager returns a manager whose commands are recorded, whose node already
+// uses nothing, and whose egress endpoints are recorded rather than created: a unit
+// test has no namespace to create a socket in and no node to resolve a name
+// against, so both are seams here and the real ones are proved on a KVM host.
 func newTestManager(t *testing.T, recorder *execRecorder) *Manager {
 	t.Helper()
 	m, err := New(Config{
 		Exec:      recorder.exec,
 		LookPath:  testBinaries(t),
 		Occupancy: func(context.Context) ([]netip.Prefix, error) { return nil, nil },
+		Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
+			return nil, fmt.Errorf("a unit test does not resolve %q", host)
+		},
 	})
 	require.NoError(t, err)
+	m.startEgress = func(n Network, plan []Destination) (egress, error) {
+		recorder.mark("egress start " + n.ID)
+		return &recordingEgress{recorder: recorder}, nil
+	}
 	return m
 }
+
+// recordingEgress is one sandbox's endpoints as a unit test sees them: nothing is
+// created, and the close is recorded where the teardown put it.
+type recordingEgress struct{ recorder *execRecorder }
+
+func (e *recordingEgress) close() { e.recorder.mark("egress close") }
 
 // TestAttachConfiguresTheNamespaceThenThePolicy holds the order to account. The
 // policy has to be the last thing an attach does: a sandbox described as
@@ -127,7 +151,7 @@ func TestAttachConfiguresTheNamespaceThenThePolicy(t *testing.T) {
 	}}
 	m := newTestManager(t, recorder)
 
-	n, err := m.Attach(context.Background(), "alpha")
+	n, err := m.Attach(context.Background(), "alpha", nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, "sbx-alpha", n.Name)
@@ -186,7 +210,7 @@ func TestAttachReusesWhatIsAlreadyThere(t *testing.T) {
 	}}
 	m := newTestManager(t, recorder)
 
-	_, err := m.Attach(context.Background(), "alpha")
+	_, err := m.Attach(context.Background(), "alpha", nil)
 	require.NoError(t, err)
 
 	assert.Empty(t, recorder.ran("netns add"), "an existing namespace is the sandbox's own")
@@ -201,7 +225,7 @@ func TestAttachReusesWhatIsAlreadyThere(t *testing.T) {
 func TestAttachKeepsASandboxAddressAndMACStable(t *testing.T) {
 	first := &execRecorder{}
 	m := newTestManager(t, first)
-	before, err := m.Attach(context.Background(), "alpha")
+	before, err := m.Attach(context.Background(), "alpha", nil)
 	require.NoError(t, err)
 
 	// The second attach meets the namespace the first one created, as a retried
@@ -213,7 +237,7 @@ func TestAttachKeepsASandboxAddressAndMACStable(t *testing.T) {
 		return nil, nil
 	}}
 	m.exec = second.exec
-	after, err := m.Attach(context.Background(), "alpha")
+	after, err := m.Attach(context.Background(), "alpha", nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, before.CIDR, after.CIDR)
@@ -236,7 +260,7 @@ func TestAttachLeavesNothingBehindWhenThePolicyFails(t *testing.T) {
 	}}
 	m := newTestManager(t, recorder)
 
-	_, err := m.Attach(context.Background(), "alpha")
+	_, err := m.Attach(context.Background(), "alpha", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "default-deny policy")
 
@@ -261,7 +285,7 @@ func TestAFailedRetryKeepsAnAttachedSandboxsAddress(t *testing.T) {
 		return nil, nil
 	}}
 	m := newTestManager(t, first)
-	before, err := m.Attach(context.Background(), "alpha")
+	before, err := m.Attach(context.Background(), "alpha", nil)
 	require.NoError(t, err)
 	require.Equal(t, "10.63.0.0/30", before.CIDR.String())
 
@@ -279,7 +303,7 @@ func TestAFailedRetryKeepsAnAttachedSandboxsAddress(t *testing.T) {
 	}}
 	m.exec = failing.exec
 
-	after, err := m.Attach(context.Background(), "alpha")
+	after, err := m.Attach(context.Background(), "alpha", nil)
 	require.Error(t, err)
 	assert.False(t, after.CIDR.IsValid(), "a failed attach returns no network")
 	assert.Empty(t, failing.ran("netns delete"), "and removes nothing it did not create")
@@ -312,7 +336,7 @@ func TestAttachLeavesAForeignNamespaceAlone(t *testing.T) {
 	}}
 	m := newTestManager(t, recorder)
 
-	_, err := m.Attach(context.Background(), "alpha")
+	_, err := m.Attach(context.Background(), "alpha", nil)
 	require.Error(t, err)
 	assert.Empty(t, recorder.ran("netns delete"), "a namespace this call did not create is not removed")
 }
@@ -326,7 +350,7 @@ func TestAttachRefusesAnIDThatCannotNameANamespace(t *testing.T) {
 
 	for _, id := range []string{"", "a/b", "a.b", "a b"} {
 		t.Run(fmt.Sprintf("%q", id), func(t *testing.T) {
-			_, err := m.Attach(context.Background(), id)
+			_, err := m.Attach(context.Background(), id, nil)
 			require.Error(t, err)
 		})
 	}
@@ -349,7 +373,7 @@ func TestDetachIsIdempotent(t *testing.T) {
 func TestIdentityIsTheAllocation(t *testing.T) {
 	recorder := &execRecorder{}
 	m := newTestManager(t, recorder)
-	n, err := m.Attach(context.Background(), "clone-1")
+	n, err := m.Attach(context.Background(), "clone-1", nil)
 	require.NoError(t, err)
 
 	id := n.Identity()

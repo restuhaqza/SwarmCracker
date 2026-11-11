@@ -156,12 +156,21 @@ func newNetnsFixture(t *testing.T) *netnsFixture {
 }
 
 // bootSandbox attaches id's network and boots a VM inside it, through the same
-// launcher the node uses, with the identity the allocation describes.
+// launcher the node uses, with the identity the allocation describes. It is the
+// sandbox this package had before an egress allowlist existed: it reaches nothing.
 func (f *netnsFixture) bootSandbox(t *testing.T, id string) *sandbox {
+	t.Helper()
+
+	return f.bootSandboxWith(t, id, nil)
+}
+
+// bootSandboxWith is bootSandbox with an egress allowlist: the same launch, with the
+// destinations this sandbox may reach installed before its policy is applied.
+func (f *netnsFixture) bootSandboxWith(t *testing.T, id string, allow []string) *sandbox {
 	t.Helper()
 	ctx := context.Background()
 
-	allocated, err := f.policy.Attach(ctx, id)
+	allocated, err := f.policy.Attach(ctx, id, allow)
 	require.NoError(t, err, "attaching the sandbox network")
 	t.Cleanup(func() { _ = f.policy.Detach(context.Background(), id) })
 
