@@ -107,21 +107,29 @@ const CodeTemplatePinMismatch = "template_pin_mismatch"
 type PinMismatchError struct {
 	// Template names the template ("name@version"), or the recipe being built.
 	Template string
-	// Want is the pin this node runs, or the pin the recipe requires.
+	// Want is what this node runs: the "this node runs" side of the message, in a
+	// use and in a build alike.
 	Want checkpoint.Pin
-	// Got is the pin the template carries, or the pin this node runs.
+	// Got is what the template is held to: the "is pinned to" side of the message.
+	// It is the pin the template carries, or — at build time, where no template
+	// exists yet — the pin the recipe requires, which is what a template built here
+	// would carry.
 	Got checkpoint.Pin
 }
 
 // Error implements error.
+//
+// The sentence names the two sides of the disagreement in the roles the fields
+// hold: what the template is pinned to, then what this node runs. A template that
+// carries no pin says that, rather than being pinned to a value called "unpinned".
 func (e *PinMismatchError) Error() string {
-	got := "unpinned"
-	if e.Got.Firecracker != "" || e.Got.Kernel != "" {
-		got = fmt.Sprintf("Firecracker %q with kernel %q", e.Got.Firecracker, e.Got.Kernel)
+	pinned := fmt.Sprintf("is pinned to Firecracker %q with kernel %q", e.Got.Firecracker, e.Got.Kernel)
+	if e.Got.Firecracker == "" && e.Got.Kernel == "" {
+		pinned = "carries no pin"
 	}
 	want := fmt.Sprintf("Firecracker %q with kernel %q", e.Want.Firecracker, e.Want.Kernel)
-	return fmt.Sprintf("%s: %s is pinned to %s, this node runs %s: use it only where it was built, or build a new template here",
-		CodeTemplatePinMismatch, templateName(e.Template), got, want)
+	return fmt.Sprintf("%s: %s %s, this node runs %s: use it only where it was built, or build a new template here",
+		CodeTemplatePinMismatch, templateName(e.Template), pinned, want)
 }
 
 // Unwrap exposes checkpoint.ErrPinMismatch, the class a checkpoint reports for

@@ -277,10 +277,15 @@ func (b *Builder) buildPin(ctx context.Context, r *Recipe) (string, checkpoint.P
 	if want := r.Spec.Pin; want != nil {
 		required := checkpoint.Pin{Firecracker: want.Firecracker, Kernel: want.Kernel}
 		if required != pin {
+			// The fields are the two sides of the message, not this call's
+			// arguments in the order they arrived: the recipe's requirement is what
+			// a template built here would be pinned to (Got), and this node's pin is
+			// what would run it (Want). Swapping these makes the message name the
+			// two the wrong way round.
 			return "", checkpoint.Pin{}, &PinMismatchError{
 				Template: r.Metadata.Name + "@" + r.Metadata.Version,
-				Want:     required,
-				Got:      pin,
+				Want:     pin,
+				Got:      required,
 			}
 		}
 	}
