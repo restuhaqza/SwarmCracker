@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/moby/swarmkit/v2/api"
@@ -13,11 +14,24 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/checkpoint"
 	"github.com/restuhaqza/swarmcracker/pkg/golden"
 	"github.com/restuhaqza/swarmcracker/pkg/image"
 	"github.com/restuhaqza/swarmcracker/pkg/types"
 	"github.com/restuhaqza/swarmcracker/test/mocks"
 )
+
+// fixturePin is the host software every golden fixture in this package claims to
+// have been built on, and fixturePinSource is the controller's seam that answers
+// with it. A pin check cannot be tested against the machine the test runs on:
+// what this package proves is that the daemon's use path is gated and that the
+// refusal comes before anything is copied, while pkg/golden proves the check
+// itself against real kernel files and a real pin.
+var fixturePin = checkpoint.Pin{Firecracker: "v1.15.1", Kernel: strings.Repeat("ab", 32)}
+
+func fixturePinSource() golden.PinSource {
+	return func(context.Context, string) (checkpoint.Pin, error) { return fixturePin, nil }
+}
 
 // recordingImagePreparer records whether the OCI image path was taken.
 type recordingImagePreparer struct {
@@ -56,6 +70,7 @@ func writeGoldenStore(t *testing.T, name, version, kernelProfile string, bootArg
 			Version:  "test",
 			Caps:     agent.Capabilities(),
 		},
+		Pin: fixturePin,
 	}
 	data, err := json.Marshal(md)
 	require.NoError(t, err)
@@ -87,7 +102,7 @@ func goldenServiceTask(id, ref string) *api.Task {
 func newGoldenController(task *api.Task, goldenDir, rootfsDir string, imgPrep types.ImagePreparer) *Controller {
 	return &Controller{
 		task:       task,
-		config:     &Config{GoldenDir: goldenDir, RootfsDir: rootfsDir},
+		config:     &Config{GoldenDir: goldenDir, RootfsDir: rootfsDir, GoldenHostPin: fixturePinSource()},
 		imagePrep:  imgPrep,
 		networkMgr: mocks.NewMockNetworkManager(),
 		logger:     log.With().Str("task_id", task.ID).Logger(),
@@ -162,4 +177,36 @@ func TestControllerPrepare_NoGoldenLabelPrepsImage(t *testing.T) {
 
 	require.NoError(t, ctrl.Prepare(context.Background()))
 	assert.True(t, imgPrep.prepared, "a plain OCI service must still prepare an image")
+}
+
+// TestControllerPrepare_GoldenService_RefusesATemplatePinnedElsewhere proves the
+// daemon's use path is gated: a template built on software this node does not run
+// fails the task at prepare, with the code the build path uses, before the
+// template's rootfs is copied into the task's own file and before any Firecracker
+// process exists.
+//
+// The last assertion is the one that matters for M4: there is no copy, so the
+// refusal cannot be a boot that failed afterwards — nothing was loaded.
+func TestControllerPrepare_GoldenService_RefusesATemplatePinnedElsewhere(t *testing.T) {
+	dir, _ := writeGoldenStore(t, "ubuntu-24.04-docker", "1.0.0", "guest-runtime-6.1", nil)
+	rootfsDir := t.TempDir()
+
+	imgPrep := &recordingImagePreparer{}
+	ctrl := newGoldenController(
+		goldenServiceTask("task-golden", "ubuntu-24.04-docker@1.0.0"), dir, rootfsDir, imgPrep,
+	)
+	ctrl.config.GoldenHostPin = func(context.Context, string) (checkpoint.Pin, error) {
+		return checkpoint.Pin{Firecracker: "v1.16.0", Kernel: strings.Repeat("cd", 32)}, nil
+	}
+
+	err := ctrl.Prepare(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), golden.CodeTemplatePinMismatch)
+	assert.ErrorIs(t, err, checkpoint.ErrPinMismatch)
+	assert.False(t, ctrl.prepared, "a refused template must not mark the task prepared")
+	assert.False(t, imgPrep.prepared, "a refused template must not fall back to OCI preparation")
+
+	_, statErr := os.Stat(image.TaskRootfsPath(rootfsDir, "task-golden"))
+	assert.ErrorIs(t, statErr, os.ErrNotExist,
+		"nothing was copied from a template this node does not run")
 }
