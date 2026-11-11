@@ -98,8 +98,8 @@ A build fails, leaving no artifact behind, when:
 2. the init system would not start it (unit or link removed, wrong link target,
    or a Debian sysvinit image whose `.depend.start` does not list `sc-agent`),
 3. the sealed artifact is booted under Firecracker and its agent does not answer
-   the v2 `hello` with the pinned protocol and the `hello`, `exec`, `put`, `get`
-   and `metrics` capabilities.
+   the v2 `hello` with the pinned protocol and every capability the build ships
+   (`hello`, `exec`, `put`, `get`, `metrics`, `prepare`).
 
 The probe boots a scratch copy of the artifact with the recipe's kernel profile
 and boot args, so the sealed file keeps its checksum. Its result is what the
@@ -346,9 +346,56 @@ used. Leaving `spec.agent` out pins the agent the builder ships.
 | `arch-docker` | systemd | Docker | Rolling; reproducible snapshot date required |
 | `distroless-minimal` | tini | none | The *current* single-workload model, as a recipe |
 | `busybox-scratch` | tini | none | Current scratch handling, as a recipe |
+| `sandbox-base` | OpenRC | none | Reference template (SBX-044): non-root user, `/workspace`, warm apk cache |
+| `sandbox-python` | OpenRC | none | Reference template: Python 3 + wheelhouse and compiled stdlib |
+| `sandbox-node` | OpenRC | none | Reference template: Node.js + warm npm cache |
 
 See `recipes/` for the concrete YAML and `recipes/README.md` for the schema
-reference and build instructions.
+reference, the reference-template set and build instructions.
+
+### 4.4 Reference templates and where they can be built (SBX-044)
+
+`recipes/sandbox-*.yaml` are the reference templates a node builds once and
+forks: a runtime-free base with a non-root user, a `/workspace` mount point and
+a warm apk cache, plus one language toolchain on top of it each. All three were
+built and booted on a KVM node (Firecracker v1.15.1, `vmlinux-runtime`), and the
+numbers are in `recipes/README.md`.
+
+They carry a `spec.pin`, which has two consequences worth being explicit about,
+because both limit where a build can run:
+
+1. **A pinned recipe builds only on the host software it names.** The values are
+   read from the build host (`firecracker --version`, and the SHA-256 of the
+   kernel the `guest-runtime-6.1` profile resolves to), not invented. A build on
+   anything else fails with `template_pin_mismatch` before it packs anything,
+   which is the point: a template is only valid where it was proven. Treat the
+   pin like a lockfile and regenerate it with the documented command when that
+   host's Firecracker or kernel moves — a maintainer who would rather the set
+   build anywhere can drop the block; the manifest still records the pin the
+   build actually observed.
+2. **A template build needs KVM, so it cannot run on a GitHub-hosted runner.**
+   `swarmcracker template build` boots the artifact it just sealed under
+   Firecracker and holds its guest agent to the v2 handshake;
+   `ubuntu-latest` runners have no `/dev/kvm` and no nested virtualization.
+   Nothing in this PR installs such a job.
+
+What *is* covered without KVM: `pkg/golden/reference_recipes_test.go` runs inside
+the existing `test` job and holds the reference set to its schema, its kernel
+profile, one complete shared host pin, the sandbox contract its `verify` block
+claims, and the published digest of each `name@version`.
+
+A nightly that can actually do it needs a machine with `/dev/kvm`, and there are
+two shapes for that, neither of which this PR adds:
+
+- **A self-hosted runner** labelled e.g. `kvm`, scheduled like
+  `conformance-lab.yml` (a `schedule:` plus `workflow_dispatch:`, never a push
+  gate, so a lab outage cannot block a merge), running
+  `RECIPES="sandbox-base sandbox-python sandbox-node" test-automation/scripts/golden-matrix-test.sh`.
+- **A dispatch that reaches the lab host over SSH** from a hosted runner, the way
+  the conformance lab reaches a live manager, running the same script there.
+
+Either way the host must be the one the pin names, or the pin has to be
+regenerated on that host first.
 
 ## 5. Building a golden image
 
