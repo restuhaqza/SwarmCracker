@@ -38,7 +38,7 @@ const maxDeadlineMs = int64(24 * time.Hour / time.Millisecond)
 // The caller is responsible for the connection lifetime; ServeConn does not
 // close rw.
 func ServeConn(rw io.ReadWriteCloser) error {
-	return serveConn(rw, Capabilities(), nil)
+	return serveConn(rw, Capabilities(), nil, sharedTracker)
 }
 
 // ServeConnAuth is ServeConn with per-boot token authentication. When auth is
@@ -50,18 +50,20 @@ func ServeConn(rw io.ReadWriteCloser) error {
 // A nil auth serves the connection exactly like ServeConn, which is what a VM
 // booted without token authentication gets.
 func ServeConnAuth(rw io.ReadWriteCloser, auth *TokenAuthenticator) error {
-	return serveConn(rw, Capabilities(), auth)
+	return serveConn(rw, Capabilities(), auth, sharedTracker)
 }
 
 // serveConn serves the protocol advertising caps, and requiring auth when it is
-// non-nil. ServeConn passes the capability set this build implements; tests
-// narrow it to prove that an operation outside the advertised set is refused,
-// and the gates themselves are the same code path either way.
-func serveConn(rw io.ReadWriteCloser, caps []string, auth *TokenAuthenticator) error {
+// non-nil, recording what it serves in trk. ServeConn passes the capability set
+// this build implements and the tracker every connection of this agent shares;
+// tests narrow the caps to prove that an operation outside the advertised set is
+// refused, and pass their own tracker so one test's operations are not another
+// test's activity. The gates themselves are the same code path either way.
+func serveConn(rw io.ReadWriteCloser, caps []string, auth *TokenAuthenticator, trk *tracker) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	s := &server{rw: rw, ctx: ctx, cancel: cancel, caps: caps, auth: auth}
+	s := &server{rw: rw, ctx: ctx, cancel: cancel, caps: caps, auth: auth, tracker: trk}
 	for {
 		var req Request
 		if _, err := ReadFrame(rw, &req); err != nil {
@@ -95,6 +97,9 @@ type server struct {
 
 	// caps is the closed set of operations this connection advertises.
 	caps []string
+	// tracker records what this agent is serving, across every connection it
+	// serves, so `activity` describes the sandbox and not one of its sessions.
+	tracker *tracker
 	// id is the id of the request being served, stamped on every frame it
 	// produces.
 	id string
@@ -177,6 +182,13 @@ func (s *server) dispatch(req *Request) error {
 		return s.writeFailure(CodeDeadlineExceeded, "%s: deadline was already spent when the request arrived", req.Op)
 	}
 
+	// From here on the operation is one this agent will actually carry out, so it
+	// is recorded as in flight for as long as it runs. The activity operation
+	// excludes itself, which is what makes it answerable while the sandbox is
+	// busy without ever making the sandbox look busy.
+	done := s.tracker.begin(req.Op)
+	defer done()
+
 	switch req.Op {
 	case CapHello:
 		return s.handleHello(req)
@@ -199,6 +211,18 @@ func (s *server) dispatch(req *Request) error {
 		return s.handleMetrics()
 	case CapPrepare:
 		return s.handlePrepare()
+	case CapInfo:
+		return s.handleInfo()
+	case CapNet:
+		return s.handleNet()
+	case CapStat:
+		return s.handleStat(req)
+	case CapList:
+		return s.handleList(req)
+	case CapTar:
+		return s.handleTar(req)
+	case CapActivity:
+		return s.handleActivity()
 	default:
 		// Unreachable through the gate above; kept so an op added to this
 		// switch without being advertised is still refused, not attempted.
@@ -365,4 +389,118 @@ func (s *server) handleGet(req *Request) error {
 		}
 	}
 	return s.write(Message{Type: "file"})
+}
+
+// handleInfo replies with what the guest knows about itself (info.go).
+//
+// A read failure is the agent's own trouble and is reported as such: a report
+// with empty fields would read as "this guest has no kernel", which is never
+// true and would mislead the scheduler that asked.
+func (s *server) handleInfo() error {
+	info, err := readGuestInfo()
+	if err != nil {
+		return s.writeFailure(CodeInternal, "info: %v", err)
+	}
+	return s.write(Message{Type: "info", Info: &info})
+}
+
+// handleNet replies with the guest's own view of its network (netinfo.go).
+func (s *server) handleNet() error {
+	view, err := readGuestNet()
+	if err != nil {
+		return s.writeFailure(CodeInternal, "net: %v", err)
+	}
+	return s.write(Message{Type: "net", Net: &view})
+}
+
+// handleStat replies with the entry at the request's path (files.go).
+func (s *server) handleStat(req *Request) error {
+	entry, err := statGuestFile(req.Path)
+	if err != nil {
+		return s.writeFileFailure(err)
+	}
+	return s.write(Message{Type: "stat", Stat: &entry})
+}
+
+// handleList streams the entries of the directory at the request's path.
+//
+// The listing is read in full first and then sent in batches, because a listing
+// is sorted and its bound has to cut it at a name a caller can predict; the bound
+// is what keeps that whole answer small enough to hold in memory on both sides.
+func (s *server) handleList(req *Request) error {
+	listing, err := listGuestDir(req.Path)
+	if err != nil {
+		return s.writeFileFailure(err)
+	}
+	for start := 0; start < len(listing.Entries); {
+		if err := s.reqCtx.Err(); err != nil {
+			return s.writeFailure(CodeDeadlineExceeded, "list: deadline exceeded before the listing finished")
+		}
+		end, size := start, 0
+		for end < len(listing.Entries) && end-start < listBatchEntries {
+			next := entryWireSize(listing.Entries[end])
+			if end > start && size+next > listBatchBytes {
+				break
+			}
+			size += next
+			end++
+		}
+		if err := s.write(Message{Type: "entries", Entries: listing.Entries[start:end]}); err != nil {
+			return err
+		}
+		start = end
+	}
+	// The terminal empty batch ends the listing and carries whether the bound cut
+	// it short, so a caller never has to guess whether the last non-empty frame
+	// was also the last entry.
+	return s.write(Message{Type: "entries", Truncated: listing.Truncated})
+}
+
+const (
+	// listBatchEntries and listBatchBytes bound one batch frame. A batch is an
+	// ordinary control frame, so it must stay well below MaxFrameSize; both
+	// bounds are what makes that true for any name the guest's filesystem can
+	// hold, rather than true for the names this happened to be tested with.
+	listBatchEntries = 512
+	listBatchBytes   = 128 << 10
+)
+
+// entryWireSize is an upper bound on how many bytes of a frame one entry adds:
+// its three variable-length strings, whose lengths are known here, plus more than
+// the fixed fields and their JSON can take.
+func entryWireSize(entry FileEntry) int {
+	return len(entry.Name) + len(entry.Mode) + len(entry.Target) + 128
+}
+
+// handleTar streams the tree at the request's path as a tar archive: data frames
+// carry the archive and the terminal empty frame carries its summary (files.go).
+//
+// A failure mid-archive is reported as an error frame instead of the terminal
+// one, and the archive is left unclosed, so a caller that ignores the error still
+// holds a stream that cannot be mistaken for a complete archive.
+func (s *server) handleTar(req *Request) error {
+	summary, err := streamGuestTar(s.reqCtx, req.Path, func(p []byte) error {
+		return s.write(Message{Type: "file", Data: p})
+	})
+	if err != nil {
+		return s.writeFileFailure(err)
+	}
+	return s.write(Message{Type: "file", Tar: &summary})
+}
+
+// handleActivity replies with what this sandbox is doing right now
+// (activity.go). It is the one operation that reports on the agent itself rather
+// than on the guest's kernel, and the one that must never fail: a scheduler that
+// cannot ask whether a sandbox is idle has to assume it is not.
+func (s *server) handleActivity() error {
+	activity := s.tracker.snapshot(procRoot)
+	return s.write(Message{Type: "activity", Activity: &activity})
+}
+
+// writeFileFailure reports a file operation's failure with the code the failure
+// carries, so a caller can tell a path it may not use (unsafe_path) from one that
+// is not there (not_found) from the guest's own trouble (internal).
+func (s *server) writeFileFailure(err error) error {
+	code, message := failureCode(err)
+	return s.writeFailure(code, "%s", message)
 }

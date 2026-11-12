@@ -33,7 +33,8 @@ type Client struct {
 	conn net.Conn
 	mu   sync.Mutex // serialises frame writes
 
-	// consumed is set once a TTY exec is started. A TTY session ends the
+	// consumed is set once a TTY exec is started, and again when a streaming
+	// operation ends somewhere the client cannot place. A TTY session ends the
 	// connection server-side (raw stdin shares the byte stream with framed
 	// requests, so the framed protocol cannot continue), so every subsequent
 	// operation fails fast instead of reading a closed connection or risking a
@@ -49,8 +50,10 @@ type Client struct {
 	nextID atomic.Uint64
 }
 
-// errConsumed is returned when a Client is used after a TTY exec.
-var errConsumed = errors.New("client consumed by a TTY exec")
+// errConsumed is returned when a Client can no longer carry a request: a TTY exec
+// shares the byte stream with framed requests, and a stream that was not read to
+// its end leaves the connection at a frame boundary the client cannot trust.
+var errConsumed = errors.New("client consumed: the session cannot carry another request")
 
 // ExecOptions controls a single Client.Exec call.
 type ExecOptions struct {
@@ -492,7 +495,7 @@ func (c *Client) Exec(ctx context.Context, cmd []string, opts ExecOptions) (int,
 //
 // A TTY exec always consumes the client: the guest ends the session after it
 // (raw stdin shares the stream with framed requests), so the connection cannot
-// be reused. Any later Exec/ExecStatus/CopyTo/CopyFrom fails with errConsumed.
+// be reused. Any later operation on it fails with errConsumed.
 // A non-TTY exec leaves the client usable.
 func (c *Client) ExecStatus(ctx context.Context, cmd []string, opts ExecOptions) (ExecResult, error) {
 	if c.consumed {
@@ -570,44 +573,70 @@ func exitResult(msg Message) (ExecResult, error) {
 	return ExecResult{ExitCode: *msg.Code}, nil
 }
 
+// start is the prologue every operation shares: it refuses a client a TTY exec
+// already consumed, refuses an operation the guest did not advertise (before a
+// single frame is written), arms the caller's deadline, stamps the request's id
+// and budget, and sends it.
+//
+// It returns the function that disarms the deadline watcher, which the caller must
+// call once no further frame for this request can be read.
+func (c *Client) start(ctx context.Context, req *Request) (func(), error) {
+	if c.consumed {
+		return nil, errConsumed
+	}
+	if err := c.requireCap(req.Op); err != nil {
+		return nil, err
+	}
+	stop := c.watchContext(ctx)
+	if err := c.begin(ctx, req); err != nil {
+		stop()
+		return nil, err
+	}
+	if err := c.write(*req); err != nil {
+		stop()
+		return nil, fmt.Errorf("%s: send request: %w", req.Op, err)
+	}
+	return stop, nil
+}
+
+// callExpect runs one request whose reply is a single frame of type want, and
+// returns that frame. An error frame becomes the typed error it carries, and any
+// other frame type is a protocol failure rather than a reply to be guessed at.
+func (c *Client) callExpect(ctx context.Context, req Request, want string) (Message, error) {
+	stop, err := c.start(ctx, &req)
+	if err != nil {
+		return Message{}, err
+	}
+	defer stop()
+
+	msg, err := c.readReply(req.ID, false)
+	if err != nil {
+		return Message{}, readError(ctx, req.Op, err)
+	}
+	switch msg.Type {
+	case want:
+		return msg, nil
+	case "error":
+		return Message{}, frameError(req.Op, msg)
+	default:
+		return Message{}, fmt.Errorf("%s: unexpected message type %q", req.Op, msg.Type)
+	}
+}
+
 // Metrics samples the guest's resource use through the agent's metrics op.
 //
 // The series it feeds are cumulative, so a single failed sample loses one
 // interval rather than corrupting the value; the caller is expected to retry on
 // the next tick and to treat an error as "no data", not as zeros.
 func (c *Client) Metrics(ctx context.Context) (GuestMetrics, error) {
-	if c.consumed {
-		return GuestMetrics{}, errConsumed
-	}
-	if err := c.requireCap(CapMetrics); err != nil {
-		return GuestMetrics{}, err
-	}
-	stop := c.watchContext(ctx)
-	defer stop()
-
-	req := Request{Op: CapMetrics}
-	if err := c.begin(ctx, &req); err != nil {
-		return GuestMetrics{}, err
-	}
-	if err := c.write(req); err != nil {
-		return GuestMetrics{}, fmt.Errorf("metrics: send request: %w", err)
-	}
-
-	msg, err := c.readReply(req.ID, false)
+	msg, err := c.callExpect(ctx, Request{Op: CapMetrics}, "metrics")
 	if err != nil {
-		return GuestMetrics{}, readError(ctx, "metrics", err)
+		return GuestMetrics{}, err
 	}
-	switch msg.Type {
-	case "metrics":
-		if msg.Metrics == nil {
-			return GuestMetrics{}, fmt.Errorf("metrics: reply carried no sample")
-		}
-		return *msg.Metrics, nil
-	case "error":
-		return GuestMetrics{}, frameError("metrics", msg)
-	default:
-		return GuestMetrics{}, fmt.Errorf("metrics: unexpected message type %q", msg.Type)
+	if msg.Metrics == nil {
+		return GuestMetrics{}, fmt.Errorf("metrics: reply carried no sample")
 	}
+	return *msg.Metrics, nil
 }
 
 // Prepare runs the post-restore hook: the guest reads the identity its node
@@ -619,38 +648,189 @@ func (c *Client) Metrics(ctx context.Context) (GuestMetrics, error) {
 // leave the caller with an instance still wearing its source's identity while
 // believing the hook had run.
 func (c *Client) Prepare(ctx context.Context) (PrepareReport, error) {
-	if c.consumed {
-		return PrepareReport{}, errConsumed
-	}
-	if err := c.requireCap(CapPrepare); err != nil {
+	msg, err := c.callExpect(ctx, Request{Op: CapPrepare}, "prepared")
+	if err != nil {
 		return PrepareReport{}, err
 	}
-	stop := c.watchContext(ctx)
+	if msg.Prepared == nil {
+		return PrepareReport{}, fmt.Errorf("prepare: reply carried no report")
+	}
+	return *msg.Prepared, nil
+}
+
+// Info reports what the guest knows about itself: its identity, kernel,
+// architecture, memory and vCPUs, uptime, and the toolchain its template ships
+// (pkg/agent's info.go).
+//
+// The agent must advertise the operation; an agent that does not is refused here
+// with CodeUnsupportedOp rather than answered with a narrower one, so a caller can
+// never mistake a missing report for a guest that has nothing to say.
+func (c *Client) Info(ctx context.Context) (GuestInfo, error) {
+	msg, err := c.callExpect(ctx, Request{Op: CapInfo}, "info")
+	if err != nil {
+		return GuestInfo{}, err
+	}
+	if msg.Info == nil {
+		return GuestInfo{}, fmt.Errorf("info: reply carried no report")
+	}
+	return *msg.Info, nil
+}
+
+// Net reports the guest's own view of its network: its interfaces and addresses,
+// the routes it would use, and the resolver it consults (pkg/agent's netinfo.go).
+func (c *Client) Net(ctx context.Context) (GuestNet, error) {
+	msg, err := c.callExpect(ctx, Request{Op: CapNet}, "net")
+	if err != nil {
+		return GuestNet{}, err
+	}
+	if msg.Net == nil {
+		return GuestNet{}, fmt.Errorf("net: reply carried no report")
+	}
+	return *msg.Net, nil
+}
+
+// Stat describes the entry at path, which is relative to the guest's file root
+// (/workspace) and may not leave it. A symbolic link is reported as a link, with
+// its target and without its content (pkg/agent's files.go).
+func (c *Client) Stat(ctx context.Context, path string) (FileEntry, error) {
+	msg, err := c.callExpect(ctx, Request{Op: CapStat, Path: path}, "stat")
+	if err != nil {
+		return FileEntry{}, err
+	}
+	if msg.Stat == nil {
+		return FileEntry{}, fmt.Errorf("stat: reply carried no entry")
+	}
+	return *msg.Stat, nil
+}
+
+// List lists the directory at path, which is relative to the guest's file root
+// (/workspace) and may not leave it. Entries are sorted by name, and a directory
+// with more than the operation's bound of them is reported as truncated rather
+// than silently shortened.
+//
+// The listing arrives in batches, which are collected here: a caller reads one
+// answer, and the frame size never depends on how many entries the directory
+// holds.
+func (c *Client) List(ctx context.Context, path string) (Listing, error) {
+	req := Request{Op: CapList, Path: path}
+	stop, err := c.start(ctx, &req)
+	if err != nil {
+		return Listing{}, err
+	}
 	defer stop()
 
-	req := Request{Op: CapPrepare}
-	if err := c.begin(ctx, &req); err != nil {
-		return PrepareReport{}, err
-	}
-	if err := c.write(req); err != nil {
-		return PrepareReport{}, fmt.Errorf("prepare: send request: %w", err)
-	}
-
-	msg, err := c.readReply(req.ID, false)
-	if err != nil {
-		return PrepareReport{}, readError(ctx, "prepare", err)
-	}
-	switch msg.Type {
-	case "prepared":
-		if msg.Prepared == nil {
-			return PrepareReport{}, fmt.Errorf("prepare: reply carried no report")
+	var listing Listing
+	for {
+		msg, err := c.readReply(req.ID, false)
+		if err != nil {
+			return Listing{}, readError(ctx, req.Op, err)
 		}
-		return *msg.Prepared, nil
-	case "error":
-		return PrepareReport{}, frameError("prepare", msg)
-	default:
-		return PrepareReport{}, fmt.Errorf("prepare: unexpected message type %q", msg.Type)
+		switch msg.Type {
+		case "entries":
+			if len(msg.Entries) == 0 {
+				// The terminal batch ends the listing and is the only frame that
+				// carries whether the bound cut it short.
+				listing.Truncated = msg.Truncated
+				return listing, nil
+			}
+			listing.Entries = append(listing.Entries, msg.Entries...)
+		case "error":
+			return Listing{}, frameError(req.Op, msg)
+		default:
+			return Listing{}, fmt.Errorf("%s: unexpected message type %q", req.Op, msg.Type)
+		}
 	}
+}
+
+// Tar streams the tree at path as a POSIX pax tar archive into w, and returns the
+// summary that ended the stream: how many entries it carried, how many bytes, and
+// which entries it could not carry and why.
+//
+// The path is relative to the guest's file root (/workspace) and may not leave
+// it; names inside the archive are relative to the requested path, so extracting
+// it into a directory lands the tree under the name that was asked for.
+//
+// A stream that fails partway returns an error and no summary, and the bytes
+// already written to w are a fragment, never an archive padded into looking
+// complete. The client is left with its stream state unknown, so it refuses every
+// later operation unless it could read the stream to its end: a caller that
+// abandons an archive has to dial again.
+func (c *Client) Tar(ctx context.Context, path string, w io.Writer) (TarSummary, error) {
+	req := Request{Op: CapTar, Path: path}
+	stop, err := c.start(ctx, &req)
+	if err != nil {
+		return TarSummary{}, err
+	}
+	defer stop()
+
+	for {
+		msg, err := c.readReply(req.ID, true)
+		if err != nil {
+			// Frames of this archive may still be in flight, so the id of the
+			// next frame this connection reads cannot be trusted to be the next
+			// request's. The client says so rather than returning a session that
+			// looks usable.
+			c.consumed = true
+			return TarSummary{}, readError(ctx, req.Op, err)
+		}
+		switch msg.Type {
+		case "file":
+			if len(msg.Data) == 0 {
+				if msg.Tar == nil {
+					return TarSummary{}, fmt.Errorf("tar: stream ended without a summary")
+				}
+				return *msg.Tar, nil
+			}
+			if _, err := w.Write(msg.Data); err != nil {
+				return TarSummary{}, c.abandon(req.ID, err)
+			}
+		case "error":
+			return TarSummary{}, frameError(req.Op, msg)
+		default:
+			c.consumed = true
+			return TarSummary{}, fmt.Errorf("%s: unexpected message type %q", req.Op, msg.Type)
+		}
+	}
+}
+
+// abandon ends a tar stream the caller's own writer refused. The guest is still
+// sending, so the rest of the stream is read and dropped: that is what leaves the
+// connection at a frame boundary, and a session a caller can go on using after a
+// full disk is worth the read. When the stream cannot be drained the client is
+// left unusable instead of guessing where the next frame starts.
+func (c *Client) abandon(id string, cause error) error {
+	for {
+		msg, err := c.readReply(id, true)
+		if err != nil {
+			c.consumed = true
+			return fmt.Errorf("tar: write archive: %w (the stream could not be drained: %v)", cause, err)
+		}
+		if msg.Type == "error" {
+			return fmt.Errorf("tar: write archive: %w (the guest stopped the archive: %s)", cause, msg.Error)
+		}
+		if msg.Type != "file" {
+			c.consumed = true
+			return fmt.Errorf("tar: write archive: %w (unexpected message type %q)", cause, msg.Type)
+		}
+		if len(msg.Data) == 0 {
+			return fmt.Errorf("tar: write archive: %w", cause)
+		}
+	}
+}
+
+// Activity reports what the sandbox is doing right now: the operations the agent
+// is serving, how long it has been idle, and how many processes the guest has
+// (pkg/agent's activity.go). It is what an idle reaper asks before it takes a
+// sandbox's resources away.
+func (c *Client) Activity(ctx context.Context) (Activity, error) {
+	msg, err := c.callExpect(ctx, Request{Op: CapActivity}, "activity")
+	if err != nil {
+		return Activity{}, err
+	}
+	if msg.Activity == nil {
+		return Activity{}, fmt.Errorf("activity: reply carried no report")
+	}
+	return *msg.Activity, nil
 }
 
 // CopyTo streams src to guestPath with the given mode (0644 when mode is 0).

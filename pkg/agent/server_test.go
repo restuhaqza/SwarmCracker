@@ -28,7 +28,7 @@ func newCappedPipePair(t *testing.T, caps []string) (net.Conn, <-chan error) {
 	t.Helper()
 	client, server := net.Pipe()
 	done := make(chan error, 1)
-	go func() { done <- serveConn(server, caps, nil) }()
+	go func() { done <- serveConn(server, caps, nil, newTracker()) }()
 	t.Cleanup(func() {
 		_ = client.Close()
 		select {

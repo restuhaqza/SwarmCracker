@@ -53,7 +53,8 @@ request, and it honours the budget: when it runs out, a running command is kille
 and the caller sees `deadline_exceeded` rather than a bare exit code. Failures
 carry a stable code (`unsupported_op`, `deadline_exceeded`,
 `agent_protocol_unsupported`, `invalid_request`, `protocol_error`, `prepare_failed`,
-`internal`); the message beside a code is for humans and may change.
+`unsafe_path`, `not_found`, `not_permitted`, `too_large`, `internal`); the message
+beside a code is for humans and may change.
 
 Frames stay capped at 1 MiB for control traffic. Streaming frames — command
 output and file payloads — have their own, larger bound, so raising a stream
@@ -114,6 +115,82 @@ Three properties make it safe to depend on:
 A guest resumed from a snapshot can lose its first frames — Firecracker documents
 that packet loss is expected for guests resumed in another Firecracker process — so
 the metadata read is retried until it succeeds or the launch's own budget runs out.
+
+## Reading a sandbox: `info`, `net`, `stat`, `list`, `tar`, `activity`
+
+A sandbox's workload is the only thing the node can see from outside; what the guest
+knows about its own kernel, its own network, its own files and its own workload is
+only knowable from inside it. Six operations exist for that, and none of them needs a
+shell — which is what makes them usable in a template that ships neither coreutils
+nor tar, and what lets a directory move in and out without a `tar` binary in the
+guest.
+
+| Operation | Answers with | Needs |
+|---|---|---|
+| `info` | hostname, machine id, kernel release and version, machine, `/etc/os-release` name and id, vCPUs, memory, uptime, the agent's protocol/version/build/boot id, and the template's toolchain | `/proc`, `/etc` |
+| `net` | interfaces with MAC, MTU, flags and addresses; the routes the guest would use; the resolver's nameservers and search domains | the guest's own kernel tables and `/etc/resolv.conf` |
+| `stat` | one entry: type, size, `ls`-style mode, uid, gid, modification time, and a link's target | the file root |
+| `list` | one directory's entries, sorted by name, each as `stat` describes it | the file root |
+| `tar` | the tree at a path, streamed as a POSIX pax archive | the file root |
+| `activity` | what the agent is serving right now, how long it has been idle, and the guest's process count | the agent's own state and `/proc` |
+
+Each is additive to protocol v2 and advertised in `hello`, so a host refuses it on
+an agent that predates it — with `unsupported_op` naming the operation and the
+capabilities the agent does advertise — instead of asking and hoping.
+
+### The file root
+
+`stat`, `list` and `tar` are confined to **`/workspace`**, the workspace mount point
+every sandbox template ships, and nothing outside it is reachable:
+
+- A path is **relative** to the root. An absolute path, or a `..` that leaves the
+  root, is refused with `unsafe_path` before the root is even opened.
+- The resolution is the guest's own, through a root handle: a symbolic link inside
+  the root is followed while it stays inside, and a link that resolves outside is
+  refused (`unsafe_path`) rather than read. A link that points outside can still be
+  *described* — `stat` reports it as a link with its target — because naming a target
+  is not reading it.
+- `tar` never follows a link below the path it was asked for: links are archived as
+  links, so an archive carries the link and never what it points at.
+- A path that cleans to somewhere inside the root is allowed (`a/../b` is `b`), so a
+  caller is not refused for a path the guest can serve.
+
+`put`, `get` and `exec` are **not** confined: the node's own bootstrap writes into
+absolute paths, and `exec` is a shell by design. The file root is the boundary of the
+operations a session-plane caller gets, not a sandbox for the agent itself.
+
+### What `tar` streams
+
+`tar` emits a real POSIX pax archive, so the host extracts it with its own `tar` and
+no code of ours in between. Names are relative to the requested path — an archive of
+`repo` holds `repo/`, `repo/sub/`, `repo/sub/f`, and an archive of the root itself
+holds its children — so extracting one lands the tree under the name that was asked
+for, and extracting the root's fills a directory instead of replacing one.
+
+- Bounds: **10 000 entries per listing** (a longer directory is reported as
+  `truncated`), **1 048 576 entries** and **5 GiB** per archive (a bigger tree fails
+  with `too_large`). A truncated listing is a usable answer to "what is here"; a
+  truncated archive is a corrupt artifact, so it is a failure.
+- A file that has to be skipped — a socket, a FIFO, a device node — is left out and
+  named on the frame that ends the archive, so the caller is told the archive is not
+  the whole tree. Opening one could block the walk for as long as nothing writes to
+  it.
+- A failure mid-archive ends the stream with a typed error and **no** summary, and
+  the archive is never closed, so what the caller holds cannot be mistaken for a
+  complete one. A caller whose own writer fails has the rest of the stream read and
+  dropped, which leaves the session usable.
+- Hard links are archived as separate copies of their content, as `cp -r` copies
+  them: the archive is faithful in content and per-file metadata, not in inode
+  identity.
+
+### `activity` and the idle reaper
+
+`activity` answers "is this sandbox doing anything" with the operations the agent has
+not finished, how long it has been idle, and the guest's process count. It is
+deliberately not CPU-based: a sandbox waiting on a remote API costs almost no CPU
+while being the most important thing on the node not to pause. The request does not
+count itself, so asking twice never turns an idle sandbox busy, and the times are
+monotonic so a restored guest's wrong wall clock cannot confuse them.
 
 ### Upgrading a node
 

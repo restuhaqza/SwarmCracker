@@ -226,7 +226,7 @@ func (p *fakeProxy) handle(conn net.Conn) {
 		p.handler(conn)
 		return
 	}
-	_ = serveConn(conn, p.caps(), nil)
+	_ = serveConn(conn, p.caps(), nil, newTracker())
 }
 
 // withServe bridges the proxy to a custom handler after the handshake.
