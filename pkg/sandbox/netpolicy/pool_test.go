@@ -187,7 +187,7 @@ func TestOccupancyFailsLoudlyWhenItCannotReadTheNode(t *testing.T) {
 	m := newTestManager(t, recorder)
 	m.occupancy = hostOccupancy(recorder.exec, "/usr/bin/ip")
 
-	_, err := m.Attach(context.Background(), "alpha")
+	_, err := m.Attach(context.Background(), "alpha", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already uses")
 	assert.Empty(t, recorder.ran("netns add"), "nothing was created before the node's state was known")
@@ -253,7 +253,7 @@ func TestAttachRefusesACancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	_, err := m.Attach(ctx, "alpha")
+	_, err := m.Attach(ctx, "alpha", nil)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Empty(t, recorder.sequence())
 }
@@ -287,17 +287,17 @@ func TestAttachLeavesNothingBehindWhenAnAllocationFails(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	_, err = m.Attach(context.Background(), "alpha")
+	_, err = m.Attach(context.Background(), "alpha", nil)
 	require.ErrorIs(t, err, errNoPoolSpace)
 	assert.Empty(t, recorder.sequence(), "a sandbox with no address gets no namespace")
 }
 
 // TestPolicyScriptIsDenyByDefault holds the ruleset itself to account: three chains,
-// every one of them a default drop, and the only packets accepted are the
-// namespace's own loopback. A chain that accepted anything else, or that lost its
-// policy, would be an egress path.
+// every one of them a default drop, and — with no allowlist — the only packets
+// accepted are the namespace's own loopback. A chain that accepted anything else,
+// or that lost its policy, would be an egress path.
 func TestPolicyScriptIsDenyByDefault(t *testing.T) {
-	script := policyScript()
+	script := policyScript(netip.MustParseAddr("10.63.0.1"), nil)
 
 	assert.Contains(t, script, "destroy table inet "+policyTable, "the script replaces any table a half-finished attach left")
 	for _, chain := range []string{"input", "forward", "output"} {

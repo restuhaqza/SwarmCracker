@@ -23,27 +23,37 @@
 //	    <gateway>/30              the sandbox's own gateway
 //
 // The guest carries the other half of the /30 and its default route points at this
-// gateway — the addresse that a later slice will host the sandbox's DNS view and
-// egress proxy on. The gateway is the only address the guest has a path to, and in
-// this slice the ruleset below drops even that: a sandbox with no egress has no
-// egress to its own gateway either.
+// gateway — the address this sandbox's DNS view and its egress endpoints answer on.
+// The gateway is the only address the guest has a path to: a sandbox with no
+// allowlist reaches nothing at all, not even its own gateway.
 //
 // # What the policy is
 //
 // Every sandbox gets a table in its own namespace with default-drop input, forward
-// and output chains. Nothing is allowed through it, which is the `egress: none`
-// mode of RFC D5; the allowlist mode adds explicit accepts for the node's DNS view
-// and egress proxy on top of this same table. Because the table lives inside the
-// namespace, it cannot outlive it, cannot leak into another sandbox and cannot be
-// reached from the guest, which has a kernel and a namespace of its own.
+// and output chains. Nothing is allowed through it by default, which is the `egress:
+// none` mode of RFC D5. An allowlist — the destinations a caller permits — adds
+// explicit accepts to that same table for exactly two things: this sandbox's
+// resolver on its own gateway, and the address and port of each allowed
+// destination. Because the table lives inside the namespace, it cannot outlive it,
+// cannot leak into another sandbox and cannot be reached from the guest, which has
+// a kernel and a namespace of its own.
+//
+// # Where an allowlisted destination is reached
+//
+// Not by forwarding and not by NAT. The namespace takes the destination's own
+// address on its loopback and an endpoint the node holds there accepts the guest's
+// connection and dials the real destination from the node's networking, so the
+// guest speaks to the address and port it asked for and nothing on the node is
+// programmed to make that work (egress.go, proxy.go). Names are answered by a view
+// on the gateway, which names exactly what the allowlist carries (dnsview.go).
 //
 // # Scope
 //
-// This is the node-side half of M3's first slice: the namespace, the fixed tap0,
-// the per-sandbox /30 and the default-deny ruleset. The egress allowlist and proxy,
-// the DNS view and the preview proxy are not here. Neither is the sandbox control
-// plane: Attach is what a caller (sandboxd, M5) calls before it launches a VM, and
-// Detach is what it calls after it has stopped one.
+// This is the node-side network policy of M3, through the egress allowlist: the
+// namespace, the fixed tap0, the per-sandbox /30, the default-deny ruleset, the
+// allowlist, the egress proxy and the DNS view are here; the preview proxy and the
+// sandbox control plane (sandboxd, M5) are not. Attach is what a caller calls before
+// it launches a VM, and Detach is what it calls after it has stopped one.
 package netpolicy
 
 import (
@@ -51,6 +61,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"os/exec"
 	"sync"
@@ -112,6 +123,12 @@ type Exec func(ctx context.Context, name string, args ...string) ([]byte, error)
 // component is already using, including one another node-local tool chose.
 type Occupancy func(ctx context.Context) ([]netip.Prefix, error)
 
+// Resolve is how an allowlist name becomes the addresses a sandbox may reach. It
+// is the node's own resolver, and it is a seam for the same reason Exec is: a unit
+// test has no node to resolve against, and the promise that the addresses the guest
+// is told are the addresses the namespace accepts has to be provable without one.
+type Resolve func(ctx context.Context, host string) ([]netip.Addr, error)
+
 // Network is one sandbox's network, as allocated and as created on the node: the
 // identity a caller hands to a launch, and the answer to "where is it".
 //
@@ -142,6 +159,11 @@ type Network struct {
 	// the address, is what makes a frozen MAC harmless; this is what keeps it from
 	// colliding in the first place.
 	MAC string
+	// Egress is what the sandbox may reach, as installed: one entry per allowed
+	// destination with the addresses the node resolved for it, or empty for a
+	// sandbox that reaches nothing. It is what an operator or a test reads to know
+	// which addresses the namespace answers for, without asking the kernel.
+	Egress []Destination
 }
 
 // Identity is the network half of the identity this sandbox's guest adopts: its
@@ -166,13 +188,12 @@ func (n Network) Identity() agent.Identity {
 // DNS is the resolver a guest of this network is configured with: its own
 // gateway.
 //
-// The gateway is the address the node will answer its DNS view on for this
-// sandbox (RFC D5's DNS role), and in this slice it answers nothing: the ruleset
-// drops every packet including those to the gateway itself, so a guest with this
-// resolver resolves no name at all. Naming the sandbox's own gateway as its
-// resolver — rather than a node-wide address shared by every sandbox — is what
-// keeps the resolver inside the /30 the sandbox was allocated and out of every
-// other sandbox's reach.
+// The gateway is where this sandbox's DNS view answers (dnsview.go). Naming the
+// sandbox's own gateway as its resolver — rather than a node-wide address shared by
+// every sandbox — keeps the resolver inside the /30 the sandbox was allocated and
+// out of every other sandbox's reach, and it means a sandbox with no names in its
+// allowlist has a resolver that answers nothing rather than one that answers
+// everything.
 func (n Network) DNS() []string {
 	if !n.Gateway.IsValid() {
 		return nil
@@ -189,7 +210,8 @@ func (n Network) Interface() (ifaceID, hostTap, guestMAC string) {
 }
 
 // Config configures a Manager. The zero value is a working node: the default
-// pool, the real command runner, the node's own answer for what is in use.
+// pool, the real command runner, the node's own answer for what is in use and the
+// node's own resolver.
 type Config struct {
 	// Pool is the supernet sandbox /30s are carved from. Zero selects DefaultPool.
 	Pool netip.Prefix
@@ -199,6 +221,9 @@ type Config struct {
 	// node's own addresses and routes, in its own namespace and in every namespace
 	// that already exists.
 	Occupancy Occupancy
+	// Resolve turns an allowlist name into addresses. Nil uses the node's own
+	// resolver.
+	Resolve Resolve
 	// LookPath resolves the ip and nft binaries. Nil uses exec.LookPath. It is a
 	// seam for the same reason Exec is: a unit test has no privileged binaries to
 	// find, and New must be provable without one.
@@ -212,11 +237,21 @@ type Manager struct {
 	pool      netip.Prefix
 	exec      Exec
 	occupancy Occupancy
+	resolve   Resolve
 	ip        string
 	nft       string
 
+	// startEgress starts one sandbox's egress endpoints inside its namespace. It
+	// is a field because the real one creates sockets inside a namespace, which
+	// needs a kernel and root: a unit test attaches sandboxes without either, and
+	// the integration test proves the real one on a KVM host.
+	startEgress func(n Network, plan []Destination) (egress, error)
+
 	mu     sync.Mutex
 	leases map[string]netip.Prefix
+
+	egressMu sync.Mutex
+	egresses map[string]egress
 }
 
 // New returns a manager for this node, or the reason it could not be built.
@@ -271,15 +306,35 @@ func New(cfg Config) (*Manager, error) {
 	if occupancy == nil {
 		occupancy = hostOccupancy(execFn, ip)
 	}
+	resolve := cfg.Resolve
+	if resolve == nil {
+		resolve = nodeResolver
+	}
 
-	return &Manager{
+	m := &Manager{
 		pool:      pool,
 		exec:      execFn,
 		occupancy: occupancy,
+		resolve:   resolve,
 		ip:        ip,
 		nft:       nft,
 		leases:    make(map[string]netip.Prefix),
-	}, nil
+		egresses:  make(map[string]egress),
+	}
+	m.startEgress = func(n Network, plan []Destination) (egress, error) {
+		return proxyFor(namespaceSockets, n, plan)
+	}
+	return m, nil
+}
+
+// nodeResolver is the production Resolve: the node's own resolver, which is what
+// makes an allowlisted name mean "a name this node can reach".
+func nodeResolver(ctx context.Context, host string) ([]netip.Addr, error) {
+	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+	if err != nil {
+		return nil, err
+	}
+	return addresses, nil
 }
 
 // Pool is the supernet this manager carves sandbox /30s from.
@@ -293,22 +348,32 @@ func Name(id string) string { return NetNSPrefix + id }
 func Path(id string) string { return NetNSDir + "/" + Name(id) }
 
 // Attach gives the sandbox id its network: a namespace, the fixed tap0 in it, the
-// sandbox's own /30, and a default-deny policy. It is idempotent — attaching an
-// already attached sandbox re-applies the same configuration, which is what makes
-// a retried attach safe — and a failure leaves nothing behind: a namespace this
-// call created is removed again, and an address this call took is given back, so
-// the next attach under the same ID starts from the same state this one did.
+// sandbox's own /30, the egress its allowlist describes, and a policy that denies
+// everything the allowlist does not name. It is idempotent — attaching an already
+// attached sandbox re-applies the same configuration, which is what makes a retried
+// attach safe — and a failure leaves nothing behind: a namespace this call created
+// is removed again, an address this call took is given back, and endpoints this call
+// started are closed, so the next attach under the same ID starts from the same
+// state this one did.
+//
+// The allowlist is a list of "host:port" destinations, where the host is a DNS name
+// or an IPv4 literal: an empty or nil list is `egress: none`, and it is *the same
+// ruleset* a sandbox had before the allowlist existed, not a ruleset with zero
+// accepts. Each entry allows that one port on that host and nothing else: not its
+// other ports, not ICMP, not the name's other addresses beyond what the node
+// resolved for it. A name is resolved once, here, so the answers the guest gets and
+// the addresses the namespace accepts are one list.
 //
 // What a failure does *not* do is take away an address the sandbox already had. A
 // retry of an attached sandbox that fails keeps its /30, address and MAC: the guest
 // is wearing them, and an attach that moved them would leave it answering on an
 // address its own network no longer has.
 //
-// The order is the point. The addresses are configured before the policy, so the
-// policy's own counters are the only thing that ever sees a packet, and the policy
-// is applied last, so a sandbox is never described as allocated while it is still
-// open.
-func (m *Manager) Attach(ctx context.Context, id string) (Network, error) {
+// The order is the point. The addresses are configured before the policy, the
+// endpoints are started while the table still denies everything, and the policy is
+// applied last, so a sandbox is never described as allocated while it is still
+// open, and never has a path its own table does not describe.
+func (m *Manager) Attach(ctx context.Context, id string, allow []string) (Network, error) {
 	if err := sandboxIDProblem(id); err != nil {
 		return Network{}, err
 	}
@@ -327,6 +392,15 @@ func (m *Manager) Attach(ctx context.Context, id string) (Network, error) {
 		return Network{}, err
 	}
 
+	// The allowlist is planned before anything on the node is touched: a name the
+	// node cannot resolve, or an address that cannot be an egress destination, is
+	// a refusal that leaves the node as this call found it.
+	plan, err := m.planEgress(ctx, n, allow)
+	if err != nil {
+		m.giveBack(id, took)
+		return Network{}, err
+	}
+
 	created, err := m.ensureNamespace(ctx, name)
 	if err != nil {
 		m.giveBack(id, took)
@@ -336,25 +410,89 @@ func (m *Manager) Attach(ctx context.Context, id string) (Network, error) {
 		m.undo(ctx, id, name, created, took)
 		return Network{}, err
 	}
-	if err := m.applyPolicy(ctx, name); err != nil {
+
+	// A retried attach meets the endpoints the previous one started: they are this
+	// sandbox's, and the ones this call starts replace them.
+	m.stopEgress(id)
+	if err := m.openEgress(ctx, n, plan); err != nil {
 		m.undo(ctx, id, name, created, took)
 		return Network{}, err
 	}
+	if err := m.applyPolicy(ctx, name, n, plan); err != nil {
+		m.stopEgress(id)
+		m.undo(ctx, id, name, created, took)
+		return Network{}, err
+	}
+	n.Egress = plan
 	return n, nil
+}
+
+// openEgress gives the namespace the addresses it answers for and starts the
+// endpoints on them.
+//
+// The addresses go on the namespace's loopback, which is what makes them local to
+// the namespace: a guest's connection to one of them is delivered there instead of
+// being forwarded anywhere, which is the whole mechanism (egress.go). The table is
+// still default-deny at this point, so a listener that starts before the policy is
+// installed accepts nothing until the policy names it.
+func (m *Manager) openEgress(ctx context.Context, n Network, plan []Destination) error {
+	if denyAll(plan) {
+		return nil
+	}
+	for _, addr := range egressAddresses(plan) {
+		if err := m.inNamespace(ctx, n.Name, "addr", "replace", addr.String()+"/32", "dev", "lo"); err != nil {
+			return fmt.Errorf("netpolicy: give %s the egress address %s: %w", n.Name, addr, err)
+		}
+	}
+
+	endpoints, err := m.startEgress(n, plan)
+	if err != nil {
+		return err
+	}
+	m.recordEgress(n.ID, endpoints)
+	return nil
+}
+
+// recordEgress keeps a sandbox's endpoints, so its teardown can close them.
+func (m *Manager) recordEgress(id string, endpoints egress) {
+	m.egressMu.Lock()
+	defer m.egressMu.Unlock()
+	m.egresses[id] = endpoints
+}
+
+// stopEgress closes and forgets a sandbox's endpoints. A sandbox with none is
+// success, which is what makes it safe to call on both paths of a teardown.
+func (m *Manager) stopEgress(id string) {
+	m.egressMu.Lock()
+	endpoints := m.egresses[id]
+	delete(m.egresses, id)
+	m.egressMu.Unlock()
+
+	if endpoints != nil {
+		endpoints.close()
+	}
 }
 
 // Detach removes the sandbox's network. It is idempotent: a sandbox whose
 // namespace is already gone, and one that was never attached, are both success.
 //
-// Removing the namespace is removing the whole network — the TAP device, its
-// addresses, its routes and the ruleset that lives in it — because all of them are
-// state of the namespace. That is why the ruleset needs no separate removal step
-// here, and it is also why the teardown (pkg/vminstance) can free a sandbox's TAP
-// by freeing its namespace: the two are one resource.
+// The endpoints go first. Their sockets belong to the sandbox's namespace, and a
+// socket is a reference to it, so removing the name while a listener is still open
+// would leave the namespace — and the tap0 in it — alive with nothing naming it,
+// which is exactly the leftover a teardown must not leave.
+//
+// Removing the namespace is then removing the whole network — the TAP device, its
+// addresses (including the egress addresses), its routes and the ruleset that lives
+// in it — because all of them are state of the namespace. That is why the ruleset
+// needs no separate removal step here, and it is also why the teardown
+// (pkg/vminstance) can free a sandbox's TAP by freeing its namespace: the two are
+// one resource.
 func (m *Manager) Detach(ctx context.Context, id string) error {
 	if err := sandboxIDProblem(id); err != nil {
 		return err
 	}
+
+	m.stopEgress(id)
 
 	err := network.RemoveNetNS(Path(id))
 	m.forget(id)
