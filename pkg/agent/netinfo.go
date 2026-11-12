@@ -16,6 +16,7 @@ package agent
 
 import (
 	"bufio"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/netip"
@@ -212,17 +213,22 @@ func readIPv4Routes(path string) ([]NetRoute, error) {
 }
 
 // ipv4FromProc converts one 32-bit hex field of /proc/net/route to an address.
+//
+// The field is decoded as the four bytes the kernel wrote rather than as a 32-bit
+// integer, so every step stays inside the width it is read at and no value is ever
+// narrowed. The kernel writes the address in host byte order, which on the
+// little-endian architectures the guest runs on reverses the bytes the digits
+// spell, so the address is assembled from them in reverse. A field that is not
+// exactly eight hex digits is refused instead of being interpreted.
 func ipv4FromProc(field string) (netip.Addr, error) {
-	value, err := strconv.ParseUint(field, 16, 32)
-	if err != nil {
+	if len(field) != 8 {
+		return netip.Addr{}, fmt.Errorf("want 8 hex digits, got %q", field)
+	}
+	var raw [4]byte
+	if _, err := hex.Decode(raw[:], []byte(field)); err != nil {
 		return netip.Addr{}, err
 	}
-	be := [4]byte{
-		byte(value), byte(value >> 8), byte(value >> 16), byte(value >> 24),
-	}
-	// The kernel writes the address in host byte order; on the little-endian
-	// architectures the guest runs on, that reverses the bytes.
-	return netip.AddrFrom4(be), nil
+	return netip.AddrFrom4([4]byte{raw[3], raw[2], raw[1], raw[0]}), nil
 }
 
 // readIPv6Routes parses /proc/net/ipv6_route, whose columns are hex:
@@ -277,18 +283,16 @@ func readIPv6Routes(path string) ([]NetRoute, error) {
 }
 
 // ipv6FromProc converts one 32-hex-digit address field of /proc/net/ipv6_route,
-// which is written in network byte order.
+// which is written in network byte order. It is decoded as the sixteen bytes the
+// digits spell, so the conversion from text to address happens once and nothing
+// is narrowed on the way.
 func ipv6FromProc(field string) (netip.Addr, bool) {
 	if len(field) != 32 {
 		return netip.Addr{}, false
 	}
 	var raw [16]byte
-	for i := range raw {
-		b, err := strconv.ParseUint(field[i*2:i*2+2], 16, 8)
-		if err != nil {
-			return netip.Addr{}, false
-		}
-		raw[i] = byte(b)
+	if _, err := hex.Decode(raw[:], []byte(field)); err != nil {
+		return netip.Addr{}, false
 	}
 	return netip.AddrFrom16(raw), true
 }
