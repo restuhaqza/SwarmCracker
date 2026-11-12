@@ -321,6 +321,118 @@ class RestartPolicy(TypedDict):
     maxAttempts: NotRequired[int]
     windowMs: NotRequired[int]
 
+class Sandbox(TypedDict):
+    """One agent sandbox: a microVM booted from a sealed template, with its own disk, its own network namespace and its own per-boot credential. Host layout — the jail, the disk path, the agent-token path — is deliberately absent: what crosses the API is what a caller acts on."""
+    id: str
+    # created is a sandbox being built (or a create that died), ready is one whose guest agent answered its hello — the only state in which it can run a command — failed is one the node could not make usable or lost (reason says which), and stopped is one the node has ended. A removed sandbox is not listed: its record is deleted once everything it held is freed.
+    state: Literal["created", "ready", "failed", "stopped"]
+    # The resolved template reference, name@version.
+    template: NotRequired[str]
+    owner: NotRequired[str]
+    createdAt: NotRequired[str]
+    updatedAt: NotRequired[str]
+    # When the guest agent answered. Absent until it does.
+    readyAt: NotRequired[str]
+    # When the node last saw the sandbox used; the idle TTL is measured from it.
+    lastActiveAt: NotRequired[str]
+    # How long the sandbox may sit unused before the reaper takes it back. 0 means never.
+    idleTtlSeconds: NotRequired[int]
+    # Why a sandbox is failed. Absent in every other state.
+    reason: NotRequired[str]
+    guestIp: NotRequired[str]
+    mac: NotRequired[str]
+    # The allowlist the sandbox was created with, as requested; empty is egress none.
+    egress: NotRequired[list[str]]
+    # How the sandbox's own disk was materialized from the template.
+    diskCopy: NotRequired[Literal["reflink", "sparse", "full"]]
+    agentVersion: NotRequired[str]
+    bootId: NotRequired[str]
+
+class SandboxCreate(TypedDict):
+    # The sealed template to boot, by name (newest version) or name@version. Resolved and pin-checked on the node before anything is copied.
+    template: str
+    # The sandbox id. Minted when empty; an id that is already a sandbox is 409.
+    id: NotRequired[str]
+    owner: NotRequired[str]
+    # Egress allowlist as "host:port" destinations. Empty or absent means the sandbox reaches nothing, which is the default a sandbox should have.
+    egress: NotRequired[list[str]]
+    # Idle TTL for this sandbox in seconds: 0 means the node's default, -1 means the reaper never takes it, and a positive value is the TTL.
+    idleTtlSeconds: NotRequired[int]
+    vcpus: NotRequired[int]
+    memoryMB: NotRequired[int]
+
+class SandboxDocument(TypedDict):
+    id: str
+    # created is a sandbox being built (or a create that died), ready is one whose guest agent answered its hello — the only state in which it can run a command — failed is one the node could not make usable or lost (reason says which), and stopped is one the node has ended. A removed sandbox is not listed: its record is deleted once everything it held is freed.
+    state: Literal["created", "ready", "failed", "stopped"]
+    # The resolved template reference, name@version.
+    template: NotRequired[str]
+    owner: NotRequired[str]
+    createdAt: NotRequired[str]
+    updatedAt: NotRequired[str]
+    # When the guest agent answered. Absent until it does.
+    readyAt: NotRequired[str]
+    # When the node last saw the sandbox used; the idle TTL is measured from it.
+    lastActiveAt: NotRequired[str]
+    # How long the sandbox may sit unused before the reaper takes it back. 0 means never.
+    idleTtlSeconds: NotRequired[int]
+    # Why a sandbox is failed. Absent in every other state.
+    reason: NotRequired[str]
+    guestIp: NotRequired[str]
+    mac: NotRequired[str]
+    # The allowlist the sandbox was created with, as requested; empty is egress none.
+    egress: NotRequired[list[str]]
+    # How the sandbox's own disk was materialized from the template.
+    diskCopy: NotRequired[Literal["reflink", "sparse", "full"]]
+    agentVersion: NotRequired[str]
+    bootId: NotRequired[str]
+    schemaVersion: Literal[1]
+    kind: Literal["Sandbox"]
+
+class SandboxFreed(TypedDict):
+    """What removing one sandbox took back, resource by resource, so "everything is gone" is a list rather than a promise."""
+    processStopped: NotRequired[bool]
+    socketRemoved: NotRequired[bool]
+    cgroupRemoved: NotRequired[bool]
+    jailRemoved: NotRequired[bool]
+    netnsRemoved: NotRequired[bool]
+    tapRemoved: NotRequired[bool]
+    diskRemoved: NotRequired[bool]
+    agentCredentialRemoved: NotRequired[bool]
+    instanceRecordRemoved: NotRequired[bool]
+    recordRemoved: NotRequired[bool]
+    apiTokensRevoked: NotRequired[int]
+
+class SandboxList(TypedDict):
+    schemaVersion: Literal[1]
+    kind: Literal["SandboxList"]
+    items: list[Sandbox]
+    next: Union[str, None]
+    warnings: NotRequired[list[Warning]]
+
+class SandboxRemoval(TypedDict):
+    schemaVersion: Literal[1]
+    kind: Literal["SandboxRemoval"]
+    sandbox: str
+    freed: SandboxFreed
+
+class SandboxToken(TypedDict):
+    schemaVersion: Literal[1]
+    kind: Literal["SandboxToken"]
+    id: str
+    name: str
+    sandbox: str
+    scopes: list[str]
+    # The bearer secret. It is present in this response and never again.
+    token: str
+    expiresAt: NotRequired[str]
+
+class SandboxTokenRequest(TypedDict):
+    # The token's name. Empty is "sandbox <id>".
+    name: NotRequired[str]
+    # An RFC3339 instant; absent means the token never expires.
+    expiresAt: NotRequired[str]
+
 class Secret(TypedDict):
     id: str
     name: str
@@ -624,7 +736,7 @@ class VersionInfo(TypedDict):
     serverVersion: str
     grpcProtocolVersion: str
     clusterId: NotRequired[str]
-    # Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. migrations is advertised only when the manager has both a node broker and its migration spool, because a migration is relayed and spooled. A capability that is advertised is served; the version document never promises a route that answers 501.
+    # Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. migrations is advertised only when the manager has both a node broker and its migration spool, because a migration is relayed and spooled. sandboxes is advertised only when the node serves a sandbox control plane (sandboxd), because the sandbox routes are that daemon's. A capability that is advertised is served; the version document never promises a route that answers 501.
     capabilities: list[str]
 
 class Warning(TypedDict):
