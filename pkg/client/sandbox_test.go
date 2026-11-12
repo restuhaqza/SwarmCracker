@@ -291,6 +291,8 @@ func TestSandboxClientRefusesBadReferences(t *testing.T) {
 		require.Error(t, err, "id %q", id)
 		_, err = client.ExecSandbox(context.Background(), id, v1.ExecRequest{Command: []string{"true"}}, io.Discard, io.Discard)
 		require.Error(t, err, "id %q", id)
+		_, err = client.CreateSandboxToken(context.Background(), id, v1.SandboxTokenRequest{})
+		require.Error(t, err, "id %q", id)
 	}
 	assert.Len(t, recorder.requests, before, "a refused reference is never sent")
 }
@@ -371,4 +373,95 @@ func TestSandboxClientReportsAResponseItCannotRead(t *testing.T) {
 	_, err := client.GetSandbox(context.Background(), "a")
 	require.Error(t, err)
 	assert.Equal(t, output.CodeInternal, codeOf(t, err).Code)
+}
+
+// TestSandboxClientReportsItsDeadline pins that a request the caller already gave up on is a
+// timeout, not an unreachable daemon: the two make a caller do different things.
+func TestSandboxClientReportsItsDeadline(t *testing.T) {
+	client, err := NewSandboxClient(Config{SandboxSocket: filepath.Join(t.TempDir(), "absent.sock")})
+	require.NoError(t, err)
+	t.Cleanup(client.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err = client.GetSandbox(ctx, "a")
+	require.Error(t, err)
+	assert.Equal(t, output.CodeTimeout, codeOf(t, err).Code)
+}
+
+// TestSandboxClientNamesAnUnreachableEndpoint pins the remote failure: with no socket to
+// name, the error is the transport's own, and it is "unreachable" rather than a timeout.
+func TestSandboxClientNamesAnUnreachableEndpoint(t *testing.T) {
+	// A manager that was there a moment ago: its CA is real, and nothing is listening on
+	// the port any more.
+	server := httptest.NewTLSServer(&sandboxHandler{})
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	require.NoError(t, os.WriteFile(caFile, pemBytes, 0o600))
+	endpoint := server.URL
+	server.Close()
+
+	client, err := NewSandboxClient(Config{Endpoint: endpoint, CAFile: caFile, Token: "sc_test"})
+	require.NoError(t, err)
+	t.Cleanup(client.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	_, err = client.GetSandbox(ctx, "a")
+	require.Error(t, err)
+	assert.Equal(t, output.CodeUnreachable, codeOf(t, err).Code)
+}
+
+// TestSandboxClientReportsADaemonThatHangsUp pins the transport failure a streaming call can
+// meet after the request is sent: the connection ends without a response, and the caller is
+// told the daemon was unreachable rather than given an empty result.
+func TestSandboxClientReportsADaemonThatHangsUp(t *testing.T) {
+	dir, err := os.MkdirTemp("", "sbxcl")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	socket := filepath.Join(dir, "sandboxd.sock")
+
+	listener, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	client, err := NewSandboxClient(Config{SandboxSocket: socket})
+	require.NoError(t, err)
+	t.Cleanup(client.Close)
+
+	_, err = client.ExecSandbox(context.Background(), "a",
+		v1.ExecRequest{Command: []string{"true"}}, io.Discard, io.Discard)
+	require.Error(t, err)
+	assert.Equal(t, output.CodeUnreachable, codeOf(t, err).Code)
+}
+
+// TestSandboxClientReportsAResponseThatStopsMidway pins a body that ends before its length
+// promises: the caller learns the daemon could not be read, rather than receiving a
+// truncated document as if it were complete.
+func TestSandboxClientReportsAResponseThatStopsMidway(t *testing.T) {
+	handler := &sandboxHandler{respond: func(w http.ResponseWriter, r *http.Request) bool {
+		w.Header().Set("Content-Type", sandboxTestMediaType)
+		w.Header().Set("Content-Length", "512")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"schemaVersion":1,`)
+		// Returning now closes the connection with the body unfinished.
+		return true
+	}}
+	client, _ := newUnixSandboxClient(t, handler)
+
+	_, err := client.GetSandbox(context.Background(), "a")
+	require.Error(t, err)
+	assert.Equal(t, output.CodeUnreachable, codeOf(t, err).Code)
 }

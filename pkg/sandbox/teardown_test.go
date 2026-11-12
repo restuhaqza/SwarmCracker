@@ -109,3 +109,56 @@ func TestRemoveStopsAtACredentialItCannotDelete(t *testing.T) {
 	require.NoError(t, getErr)
 	assert.True(t, found)
 }
+
+// TestRemoveNamesWhatItCannotRemove pins the teardown's report of its own step: a socket or
+// a disk that cannot be removed fails the removal rather than being counted as freed, so
+// nothing is claimed that is still there.
+func TestRemoveNamesWhatItCannotRemove(t *testing.T) {
+	t.Run("an API socket that will not go", func(t *testing.T) {
+		f := newFixture(t)
+
+		// A non-empty directory where the socket belongs: removeFile cannot remove it.
+		socket := filepath.Join(t.TempDir(), "sbx-1.sock")
+		require.NoError(t, os.MkdirAll(filepath.Join(socket, "held"), 0o700))
+
+		rec := testRecord("sbx-1")
+		require.NoError(t, f.store.Put(rec))
+		require.NoError(t, f.instances.Put(vminstance.Instance{
+			ID: "sbx-1", Kind: vminstance.KindSandbox, APISocket: socket,
+		}))
+
+		_, err := f.manager.Remove(context.Background(), "sbx-1")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "remove its API socket")
+
+		_, found, getErr := f.store.Get("sbx-1")
+		require.NoError(t, getErr)
+		assert.True(t, found, "a teardown that could not finish leaves its record")
+	})
+
+	t.Run("a disk that will not go", func(t *testing.T) {
+		f := newFixture(t)
+
+		disk := filepath.Join(t.TempDir(), "sbx-1.ext4")
+		require.NoError(t, os.MkdirAll(filepath.Join(disk, "held"), 0o700))
+
+		rec := testRecord("sbx-1")
+		rec.Disk = disk
+		require.NoError(t, f.store.Put(rec))
+
+		freed, err := f.manager.Remove(context.Background(), "sbx-1")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "remove its disk")
+		assert.Empty(t, freed.Disk, "a disk that is still there is not reported as freed")
+	})
+
+	t.Run("a registry that cannot be read", func(t *testing.T) {
+		f := newFixture(t)
+		require.NoError(t, f.store.Put(testRecord("sbx-1")))
+		f.instances.readErr = errors.New("the registry is unreadable")
+
+		_, err := f.manager.Remove(context.Background(), "sbx-1")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read the instance record")
+	})
+}

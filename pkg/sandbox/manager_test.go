@@ -891,3 +891,117 @@ func TestCreateNamesTheDiskDirectoryItCannotCreate(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "create the disk directory")
 }
+
+// TestCreateFailsWhenItCannotPublishTheCredential pins the last step of a create: the host's
+// copy of the sandbox's agent token is written before the record says ready, so a sandbox
+// nobody could connect to is a failed create, not a ready one.
+func TestCreateFailsWhenItCannotPublishTheCredential(t *testing.T) {
+	f := newFixture(t)
+
+	blocked := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(blocked, []byte("x"), 0o600))
+	f.launcher.launched.VsockPath = filepath.Join(blocked, "sbx.vsock")
+
+	rec, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: "sbx-1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "publish the sandbox's agent token")
+	assert.Equal(t, StateFailed, rec.State, "a sandbox without a published credential is not ready")
+
+	_, found, getErr := f.store.Get("sbx-1")
+	require.NoError(t, getErr)
+	require.True(t, found)
+}
+
+// TestCreateFailsWhenTheArtifactOrTheDiskIsUnusable pins the two disk failures a node can
+// meet: a template whose artifact is gone, and one whose artifact is not a filesystem the
+// guest credential can be written into. Both are named, and neither leaves a ready sandbox.
+func TestCreateFailsWhenTheArtifactOrTheDiskIsUnusable(t *testing.T) {
+	t.Run("an artifact that is not a file", func(t *testing.T) {
+		f := newFixture(t)
+		artifact := filepath.Join(f.manager.cfg.GoldenDir, "golden-base-1.0.0.ext4")
+		require.NoError(t, os.Remove(artifact))
+		require.NoError(t, os.MkdirAll(artifact, 0o755))
+
+		rec, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: "sbx-1"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "materialize the disk")
+		assert.Equal(t, StateFailed, rec.State)
+	})
+
+	t.Run("an artifact that is gone", func(t *testing.T) {
+		f := newFixture(t)
+		require.NoError(t, os.Remove(filepath.Join(f.manager.cfg.GoldenDir, "golden-base-1.0.0.ext4")))
+
+		_, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: "sbx-1"})
+		require.Error(t, err, "a template whose artifact is gone cannot be booted")
+	})
+
+	t.Run("an artifact that is not a filesystem", func(t *testing.T) {
+		f := newFixture(t)
+		require.NoError(t, os.WriteFile(filepath.Join(f.manager.cfg.GoldenDir, "golden-base-1.0.0.ext4"),
+			[]byte("not a filesystem"), 0o600))
+
+		rec, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: "sbx-1"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "agent token")
+		assert.Equal(t, StateFailed, rec.State)
+	})
+}
+
+// breakingNetwork is a network policy that breaks the record store when it attaches. It is
+// how a test puts the store's failure at a known point in a create: the network exists, and
+// the record that has to name it can no longer be written.
+type breakingNetwork struct {
+	network  netpolicy.Network
+	breakOne func()
+	broke    bool
+}
+
+func (n *breakingNetwork) Attach(context.Context, string, []string) (netpolicy.Network, error) {
+	if !n.broke {
+		n.broke = true
+		n.breakOne()
+	}
+	return n.network, nil
+}
+
+func (n *breakingNetwork) Detach(context.Context, string) error { return nil }
+
+// TestCreateStopsWhenItCannotRecordWhatItAllocated pins the invariant the order exists for:
+// a resource that exists is recorded before the next one is allocated, so a create whose
+// record cannot be written stops there instead of booting a VM nothing names.
+func TestCreateStopsWhenItCannotRecordWhatItAllocated(t *testing.T) {
+	f := newFixture(t)
+
+	broken := &breakingNetwork{
+		network: f.network.network,
+		breakOne: func() {
+			dir := f.store.Dir()
+			require.NoError(t, os.RemoveAll(dir))
+			require.NoError(t, os.WriteFile(dir, []byte("not a directory"), 0o600))
+		},
+	}
+	f.manager.cfg.Network = broken
+
+	_, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: "sbx-1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox store")
+	assert.Empty(t, f.launcher.requests, "no VM is launched for a sandbox the node cannot record")
+}
+
+// TestManagerReportsAStoreItCannotRead pins the read side: a store that cannot be read is an
+// error for both a single read and a listing, not an empty answer a caller would believe.
+func TestManagerReportsAStoreItCannotRead(t *testing.T) {
+	f := newFixture(t)
+	require.NoError(t, f.store.Put(testRecord("sbx-1")))
+
+	dir := f.store.Dir()
+	require.NoError(t, os.RemoveAll(dir))
+	require.NoError(t, os.WriteFile(dir, []byte("not a directory"), 0o600))
+
+	_, err := f.manager.Get("sbx-1")
+	require.Error(t, err)
+
+	_, _, err = f.manager.List()
+	require.Error(t, err)
+}

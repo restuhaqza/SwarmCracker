@@ -1043,3 +1043,98 @@ func TestSandboxSelectorIsHeldToTheScopesAndTheIDRules(t *testing.T) {
 	assert.NoError(t, identity.AuthorizeSandbox("a"))
 	assert.Error(t, identity.AuthorizeSandbox("b"))
 }
+
+// TestOpenTokenStoreRefusesAnEmptyPath pins the configuration mistake a daemon must hear
+// about at start-up: a store asked to live nowhere cannot serve any token.
+func TestOpenTokenStoreRefusesAnEmptyPath(t *testing.T) {
+	store, err := OpenTokenStore("   ")
+	require.Error(t, err)
+	assert.Nil(t, store)
+	assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+}
+
+// TestTokenStoreNamesAFileItCannotRead pins both ways the file can be unreadable: a path
+// under something that is not a directory, and a directory where the file belongs. A
+// store that cannot read its file is not an empty store — it fails closed.
+func TestTokenStoreNamesAFileItCannotRead(t *testing.T) {
+	t.Run("under a file", func(t *testing.T) {
+		dir := t.TempDir()
+		blocked := filepath.Join(dir, "not-a-directory")
+		require.NoError(t, os.WriteFile(blocked, []byte("x"), 0o600))
+
+		_, err := OpenTokenStore(filepath.Join(blocked, "tokens.json"))
+		require.Error(t, err)
+		assert.Equal(t, output.CodeInternal, requireErrorCode(t, err))
+		assert.Contains(t, err.Error(), "read token store")
+	})
+
+	t.Run("a directory where the file belongs", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "tokens.json")
+		require.NoError(t, os.MkdirAll(path, 0o700))
+
+		_, err := OpenTokenStore(path)
+		require.Error(t, err)
+		assert.Equal(t, output.CodeInternal, requireErrorCode(t, err))
+		assert.Contains(t, err.Error(), "read token store")
+	})
+}
+
+// TestLoadRefusesASandboxSelectorWithoutASandboxScope pins that a file is held to the rule
+// a mint is held to: a token narrowed to a sandbox but holding no sandbox scope authorizes
+// nothing while looking like a restriction, so it fails the load rather than the request
+// that uses it.
+func TestLoadRefusesASandboxSelectorWithoutASandboxScope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	content := `{
+  "schemaVersion": 2,
+  "tokens": [{
+    "id": "tok_handwritten",
+    "name": "written by hand",
+    "role": "runner",
+    "hash": "00",
+    "createdAt": "2026-11-12T10:00:00Z",
+    "scopes": ["tasks:read"],
+    "sandboxSelectors": {"sandboxIds": ["4612fa893603"]}
+  }]
+}
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	_, err := OpenTokenStore(path)
+	require.Error(t, err)
+	assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+	assert.Contains(t, err.Error(), "sandbox selector requires a sandbox scope")
+}
+
+// TestEmptySandboxSelectorSetIsNoRestriction pins the one normalization a caller can reach
+// with a selector that names nothing: an empty set means "no restriction", not "matches
+// nothing", and it is dropped rather than stored.
+func TestEmptySandboxSelectorSetIsNoRestriction(t *testing.T) {
+	store, err := OpenTokenStore(filepath.Join(t.TempDir(), "tokens.json"))
+	require.NoError(t, err)
+
+	_, tok, err := store.CreateWithOptions("all-sandboxes", RoleReader, TokenOptions{
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{}},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, tok.SandboxSelectors)
+}
+
+// TestRevokeReportsAStoreItCannotRead pins that a revoke does not report a success it
+// could not establish: the file is reloaded first, and one that cannot be read fails the
+// revoke instead of removing the token from memory only.
+func TestRevokeReportsAStoreItCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tokens.json")
+	store, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	_, tok, err := store.Create("reader", RoleReader)
+	require.NoError(t, err)
+
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.MkdirAll(path, 0o700))
+
+	err = store.Revoke(tok.ID)
+	require.Error(t, err)
+	assert.Equal(t, output.CodeInternal, requireErrorCode(t, err))
+}

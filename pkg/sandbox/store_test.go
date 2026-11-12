@@ -190,3 +190,58 @@ func TestStoreReportsARecordItCannotDelete(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), path)
 }
+
+// TestStoreNamesARecordPathItCannotWrite pins the failure a caller must not mistake for a
+// successful write: a path that is not a file fails the write and says which store, and a
+// read of it is an error rather than "no such sandbox".
+func TestStoreNamesARecordPathItCannotWrite(t *testing.T) {
+	store := newTestStore(t)
+
+	// A non-empty directory where the record file belongs: the write cannot be published
+	// under that name, whatever the process's privileges.
+	held := filepath.Join(store.Dir(), "wedged"+recordSuffix)
+	require.NoError(t, os.MkdirAll(filepath.Join(held, "held"), 0o700))
+
+	err := store.Put(testRecord("wedged"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sandbox store")
+
+	_, found, err := store.Get("wedged")
+	assert.False(t, found)
+	require.Error(t, err, "a record that cannot be read is not an absent one")
+}
+
+// TestStoreReportsADirectoryItCannotUse pins the two ways the record directory can fail a
+// node: a state directory that is a file, and one that disappeared after the daemon
+// opened it.
+func TestStoreReportsADirectoryItCannotUse(t *testing.T) {
+	blocked := filepath.Join(t.TempDir(), "state")
+	require.NoError(t, os.WriteFile(blocked, []byte("not a directory"), 0o600))
+
+	_, err := NewStore(StoreConfig{Dir: filepath.Join(blocked, DirName)})
+	require.Error(t, err, "a record directory under a file cannot be created")
+
+	store := newTestStore(t)
+	require.NoError(t, os.RemoveAll(store.Dir()))
+
+	err = store.Put(testRecord("a"))
+	require.Error(t, err, "a write into a directory that is gone is an error, not a silent loss")
+	assert.Contains(t, err.Error(), "sandbox store")
+}
+
+// TestStoreRefusesARecordItCouldNotHaveWritten pins that a file a human edited, or one an
+// older build wrote, is refused when it is read rather than handed out as a record this
+// node could have produced.
+func TestStoreRefusesARecordItCouldNotHaveWritten(t *testing.T) {
+	store := newTestStore(t)
+
+	// A record naming a state no build defines: one record file, one sandbox, and a state
+	// nothing would know how to act on.
+	edited := `{"id":"edited","state":"half-ready","template":"base@1","created":"2026-11-12T10:00:00Z","updated":"2026-11-12T10:00:00Z"}`
+	require.NoError(t, os.WriteFile(filepath.Join(store.Dir(), "edited"+recordSuffix), []byte(edited), 0o600))
+
+	_, found, err := store.Get("edited")
+	assert.False(t, found)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "state")
+}
