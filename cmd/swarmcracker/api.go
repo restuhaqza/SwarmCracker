@@ -109,6 +109,15 @@ var remoteCapablePaths = map[string]struct{}{
 	// vm migrate is the first remote-only mutation: the move is one manager call
 	// (POST /v1/migrations), and no local control socket serves it.
 	"swarmcracker vm migrate": {},
+	// The sandbox commands reach a node's sandbox control plane, whose API is a
+	// token-authenticated surface like the manager's: without -H they use the local
+	// control socket, and with it the same routes over TLS.
+	"swarmcracker sandbox create":  {},
+	"swarmcracker sandbox ls":      {},
+	"swarmcracker sandbox inspect": {},
+	"swarmcracker sandbox exec":    {},
+	"swarmcracker sandbox rm":      {},
+	"swarmcracker sandbox token":   {},
 }
 
 // commandAllowsRemote reports whether cmd may run when --host is set. The

@@ -43,6 +43,21 @@ const (
 // relative to the VM's pause/resume pair. Production never replaces it.
 var copyDiskFile = copyFile
 
+// CopyDisk copies the disk image at src to dst, creating dst's parent directories,
+// and reports how the copy was made: a reflink shares the source's blocks, a sparse
+// copy writes only the data extents, and a full copy writes every byte.
+//
+// It is the exported form of the copy a launch stages and a checkpoint makes, for a
+// caller that has to give an instance a disk of its own outside either path: the
+// sandbox control plane materializes a template's artifact per sandbox so it can
+// write that sandbox's own per-boot credential into it before the guest boots
+// (pkg/sandbox). The mode is reported rather than logged because a filesystem
+// without reflink is otherwise invisible — the instances simply get expensive — and
+// the caller that pays for it is the one that can say so.
+func CopyDisk(ctx context.Context, src, dst string) (CopyMode, error) {
+	return copyFile(ctx, src, dst)
+}
+
 // copyFile copies src to dst, creating dst's parent directories and keeping the
 // source's permission bits. The copy is flushed before it returns, and the mode it
 // took is reported: a reflink shares the source's blocks, a sparse copy keeps the
