@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,11 +138,24 @@ type fixture struct {
 
 // testClock is the node's clock as a fixture: a test that needs time to pass advances it
 // instead of sleeping, and one that compares two timestamps has a value to compare with.
-type testClock struct{ t time.Time }
+// It is safe for concurrent use because the reaper's loop reads it from its own
+// goroutine while a test advances it.
+type testClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
 
-func (c *testClock) Now() time.Time { return c.t }
+func (c *testClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
 
-func (c *testClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
+func (c *testClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.t = c.t.Add(d)
+}
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
@@ -787,4 +801,93 @@ func TestListKeepsARecordWhenTheRegistryCannotBeRead(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, records, 1)
 	assert.Equal(t, StateReady, records[0].State, "an unreadable registry is not a dead VM")
+}
+
+// TestCreateTakesTheSizeAndTheIdleTtlTheCallerNamed pins where a create's numbers come
+// from: what the caller asked for reaches the launch, and a TTL is one value with one
+// meaning — zero on disk is "never reap this".
+func TestCreateTakesTheSizeAndTheIdleTtlTheCallerNamed(t *testing.T) {
+	f := newFixture(t)
+
+	rec, err := f.manager.Create(context.Background(),
+		CreateRequest{Template: "base", VCPUs: 2, MemoryMB: 768, TTL: 90 * time.Second})
+	require.NoError(t, err)
+	require.Len(t, f.launcher.requests, 1)
+	assert.Equal(t, 2, f.launcher.requests[0].VCPUs)
+	assert.Equal(t, 768, f.launcher.requests[0].MemoryMB)
+	assert.Equal(t, int64(90), rec.IdleTTLSeconds)
+
+	never, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", TTL: -1})
+	require.NoError(t, err)
+	assert.Zero(t, never.IdleTTLSeconds, "a negative TTL is stored as zero: the record has one value for one meaning")
+
+	// Whitespace around an id the caller named is not part of the identity: " sbx1" is
+	// the sandbox "sbx1", which is the name a later exec and rm resolve too.
+	padded, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: " padded"})
+	require.NoError(t, err)
+	assert.Equal(t, "padded", padded.ID)
+	_, err = f.manager.Get(" padded")
+	assert.NoError(t, err, "the same padded name reaches the sandbox it named")
+}
+
+// TestAFailedCreateKeepsWhatItCouldNotFree pins why a failed record keeps its paths: when
+// the free that follows a failed create cannot finish — a VMM that will not stop — the
+// record is the handle the next teardown uses, and clearing it would leave a disk and a
+// jail nothing names.
+func TestAFailedCreateKeepsWhatItCouldNotFree(t *testing.T) {
+	f := newFixture(t)
+
+	require.NoError(t, f.instances.Put(vminstance.Instance{
+		ID: "sbx-1", Kind: vminstance.KindSandbox, PID: 4242,
+	}))
+	f.instances.alive = func(int) bool { return true }
+	original := stopVMM
+	stopVMM = func(int, time.Duration) error { return fmt.Errorf("process is wedged") }
+	t.Cleanup(func() { stopVMM = original })
+
+	f.launcher.err = fmt.Errorf("the guest agent never answered")
+
+	rec, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: "sbx-1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the guest agent never answered")
+	assert.Contains(t, err.Error(), "process is wedged", "a free that did not finish is reported with the failure")
+
+	assert.Equal(t, StateFailed, rec.State)
+	assert.NotEmpty(t, rec.Disk, "the disk nothing could free is still named by the record")
+	_, statErr := os.Stat(rec.Disk)
+	assert.NoError(t, statErr, "and it is really still there")
+
+	stored, err := f.manager.Get("sbx-1")
+	require.NoError(t, err)
+	assert.Equal(t, StateFailed, stored.State)
+	assert.NotEmpty(t, stored.Disk)
+}
+
+// TestListTrustsAReadySandboxWhenTheNodeKeepsNoRegistry pins the reconciliation's scope: a
+// node that keeps no instance registry has no evidence a sandbox died, so it does not
+// rewrite a readable record.
+func TestListTrustsAReadySandboxWhenTheNodeKeepsNoRegistry(t *testing.T) {
+	f := newFixture(t)
+	f.manager.cfg.Instances = nil
+	require.NoError(t, f.store.Put(testRecord("sbx-1")))
+
+	records, _, err := f.manager.List()
+	require.NoError(t, err)
+	require.Len(t, records, 1)
+	assert.Equal(t, StateReady, records[0].State)
+}
+
+// TestCreateNamesTheDiskDirectoryItCannotCreate pins the failure an operator acts on: a
+// rootfs directory that is not a directory is named, not reported as a VM that would not
+// boot.
+func TestCreateNamesTheDiskDirectoryItCannotCreate(t *testing.T) {
+	f := newFixture(t)
+
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o600))
+	f.manager.cfg.RootfsDir = file
+
+	_, err := f.manager.Create(context.Background(), CreateRequest{Template: "base", ID: "sbx-1"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "create the disk directory")
 }

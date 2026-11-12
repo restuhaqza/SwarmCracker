@@ -248,163 +248,237 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Record, error)
 	m.slots <- struct{}{}
 	defer func() { <-m.slots }()
 
-	ref := strings.TrimSpace(req.Template)
-	if ref == "" {
-		return Record{}, fmt.Errorf("%w: a template is required (try `swarmcracker template ls`)", ErrInvalid)
-	}
-	if req.TTL < 0 {
-		// A negative TTL asks for a sandbox that is never reaped, and a record
-		// carries that as zero. It is one of the two ways to say it, and the one a
-		// caller with a shell finds natural.
-		req.TTL = 0
-	}
-
-	artifact, err := golden.Resolve(ctx, m.cfg.GoldenDir, ref, golden.NodeHostPin(m.cfg.FirecrackerBinary, m.cfg.KernelPath, m.cfg.KernelProfiles))
+	template, err := m.resolveTemplate(ctx, req.Template)
 	if err != nil {
 		return Record{}, err
+	}
+
+	id, err := m.allocateID(req.ID)
+	if err != nil {
+		return Record{}, err
+	}
+
+	rec := m.newRecord(id, req, template)
+	if err := m.cfg.Store.Put(rec); err != nil {
+		return Record{}, err
+	}
+
+	// From here the record exists, so every failure has to leave it saying what
+	// happened rather than vanishing: fail() frees what this call allocated and
+	// records the reason.
+	if err := m.build(ctx, &rec, template, m.size(req.VCPUs, req.MemoryMB), req.Owner); err != nil {
+		return m.fail(ctx, &rec, err)
+	}
+	return rec, nil
+}
+
+// template is a sealed template resolved for this node: the reference it resolved to,
+// the artifact to copy, and the kernel this node boots it with — the same kernel the
+// pin was checked against.
+type template struct {
+	ref      string
+	artifact *golden.Artifact
+	kernel   string
+}
+
+// resolveTemplate turns a caller's reference into something this node can boot. It is
+// where the pin is enforced, because golden.Resolve is the only path to a template: a
+// template built by other host software is refused here, before a disk is copied and
+// before a VMM exists.
+func (m *Manager) resolveTemplate(ctx context.Context, ref string) (template, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return template{}, fmt.Errorf("%w: a template is required (try `swarmcracker template ls`)", ErrInvalid)
+	}
+
+	artifact, err := golden.Resolve(ctx, m.cfg.GoldenDir, ref,
+		golden.NodeHostPin(m.cfg.FirecrackerBinary, m.cfg.KernelPath, m.cfg.KernelProfiles))
+	if err != nil {
+		return template{}, err
 	}
 	kernel, err := m.kernelFor(artifact)
 	if err != nil {
-		return Record{}, err
+		return template{}, err
 	}
+	return template{ref: artifact.Ref, artifact: artifact, kernel: kernel}, nil
+}
 
-	id := strings.TrimSpace(req.ID)
+// allocateID settles the sandbox's identity: the one the caller named, or a minted one.
+// It refuses an id that cannot name a sandbox and one that is already a sandbox, before
+// anything is allocated under it — two sandboxes cannot share a disk, a namespace or a
+// jail.
+func (m *Manager) allocateID(requested string) (string, error) {
+	id := strings.TrimSpace(requested)
 	if id == "" {
-		id, err = m.mintID()
+		minted, err := m.mintID()
 		if err != nil {
-			return Record{}, err
+			return "", err
 		}
+		id = minted
 	}
 	if err := checkID(id); err != nil {
-		return Record{}, fmt.Errorf("%w: %v", ErrInvalid, err)
+		return "", fmt.Errorf("%w: %v", ErrInvalid, err)
 	}
 	if _, taken, err := m.cfg.Store.Get(id); err != nil {
-		return Record{}, err
+		return "", err
 	} else if taken {
-		return Record{}, fmt.Errorf("%w: %s", ErrExists, id)
+		return "", fmt.Errorf("%w: %s", ErrExists, id)
 	}
+	return id, nil
+}
 
+// newRecord is the record a create starts from: state created, the template it will
+// boot, and the idle TTL the reaper will hold it to. A caller that asked for neither a
+// TTL nor an allowlist gets the node's, and a negative TTL — "never reap this" — is a
+// zero on disk, which is what a record carries.
+func (m *Manager) newRecord(id string, req CreateRequest, tmpl template) Record {
 	now := m.now().UTC()
+
 	ttl := req.TTL
+	if ttl < 0 {
+		ttl = 0
+	}
 	if ttl == 0 {
 		ttl = m.cfg.DefaultTTL
 	}
+
 	allow := req.Allow
 	if allow == nil {
 		allow = m.cfg.Allow
 	}
 
-	rec := Record{
+	return Record{
 		ID:             id,
 		State:          StateCreated,
-		Template:       artifact.Ref,
+		Template:       tmpl.ref,
 		Owner:          strings.TrimSpace(req.Owner),
 		Created:        now,
 		Updated:        now,
 		LastActive:     now,
 		IdleTTLSeconds: int64(ttl / time.Second),
 		Egress:         append([]string(nil), allow...),
-		Kernel:         kernel,
+		Kernel:         tmpl.kernel,
 	}
-	if err := m.cfg.Store.Put(rec); err != nil {
-		return Record{}, err
-	}
+}
 
-	// From here the record exists, so every failure has to leave it saying what
-	// happened rather than vanishing. fail() frees what this call allocated and
-	// records the reason.
-	fail := func(cause error) (Record, error) {
-		failed, failErr := m.fail(ctx, &rec, cause)
-		if failErr != nil {
-			// Both failures matter: the cause is what the caller asked about, and
-			// the residual resources are what an operator has to clean up.
-			log.Warn().Err(failErr).Str("sandbox_id", rec.ID).
-				Msg("Could not free everything a failed sandbox create allocated")
-			return failed, errors.Join(cause, failErr)
-		}
-		return failed, cause
-	}
-
-	network, err := m.cfg.Network.Attach(ctx, id, allow)
+// build allocates what the sandbox needs, launches it, and records that it is ready.
+//
+// The order is the pieces' own promise: the network exists before the VM that runs in
+// it, the disk and its credential before the VM that boots from it, and the record says
+// ready only once the guest agent answered — which is what the launcher returns for.
+func (m *Manager) build(ctx context.Context, rec *Record, tmpl template, size sandboxSize, owner string) error {
+	allocated, err := m.prepare(ctx, rec, tmpl.artifact)
 	if err != nil {
-		return fail(err)
+		return err
+	}
+	launched, err := m.launch(ctx, rec, tmpl, size, owner, allocated)
+	if err != nil {
+		return err
+	}
+	return m.markReady(rec, allocated, launched)
+}
+
+// allocated is what a create has reserved on the node before its VM exists: the network
+// it runs in, the disk it boots from, and this boot's agent credential.
+type allocated struct {
+	network netpolicy.Network
+	disk    string
+	token   string
+}
+
+// prepare gives the sandbox its network and its own disk, and mints the credential the
+// guest will require from its first hello.
+//
+// The record is written after each resource exists, so a create that dies from here on
+// — this process killed, the node losing power — leaves a record whose teardown knows
+// what to free; a namespace only a live caller's memory knew would outlive the caller
+// with nothing naming it.
+func (m *Manager) prepare(ctx context.Context, rec *Record, artifact *golden.Artifact) (allocated, error) {
+	network, err := m.cfg.Network.Attach(ctx, rec.ID, rec.Egress)
+	if err != nil {
+		return allocated{}, err
 	}
 	rec.NetNS, rec.TAP = network.NetNS, network.Tap
 	rec.GuestIP, rec.MAC = network.GuestIP.String(), network.MAC
-	// Record what the network allocated as soon as it exists. A create that dies
-	// from here on — this process killed, the node losing power — leaves a record
-	// whose teardown knows which namespace to free; a namespace that only a live
-	// caller's memory knew would outlive the caller with nothing naming it.
-	if err := m.save(&rec); err != nil {
-		return fail(err)
+	if err := m.save(rec); err != nil {
+		return allocated{}, err
 	}
 
-	disk := m.diskPath(id)
+	disk := m.diskPath(rec.ID)
 	copyMode, err := m.materializeDisk(ctx, artifact, disk)
 	if err != nil {
-		return fail(err)
+		return allocated{}, err
 	}
 	rec.Disk, rec.DiskCopy = disk, string(copyMode)
-	if err := m.save(&rec); err != nil {
-		return fail(err)
+	if err := m.save(rec); err != nil {
+		return allocated{}, err
 	}
 
 	token, err := m.provisionToken(ctx, disk)
 	if err != nil {
-		return fail(err)
+		return allocated{}, err
 	}
+	return allocated{network: network, disk: disk, token: token}, nil
+}
 
-	size := m.size(req.VCPUs, req.MemoryMB)
-	launched, err := m.cfg.Launcher.Start(ctx, snapshot.LaunchRequest{
-		InstanceID: id,
+// launch starts the sandbox's VM inside the jailer, in the sandbox's network namespace,
+// with an identity of its own and with the record the launcher publishes for the node's
+// registry. It returns only once the guest agent answered (the launcher's contract).
+func (m *Manager) launch(ctx context.Context, rec *Record, tmpl template, size sandboxSize, owner string, a allocated) (snapshot.Launched, error) {
+	return m.cfg.Launcher.Start(ctx, snapshot.LaunchRequest{
+		InstanceID: rec.ID,
 		Mode:       snapshot.ModeCold,
-		Kernel:     kernel,
-		Rootfs:     disk,
+		Kernel:     tmpl.kernel,
+		Rootfs:     a.disk,
 		VCPUs:      size.vcpus,
 		MemoryMB:   size.memoryMB,
-		NetNS:      network.NetNS,
-		VsockPath:  m.chrootVsockPath(id),
-		AgentToken: token,
+		NetNS:      a.network.NetNS,
+		VsockPath:  m.chrootVsockPath(rec.ID),
+		AgentToken: a.token,
 		Net: []snapshot.NetworkInterface{{
 			IfaceID:  ifaceID,
-			HostTap:  network.Tap,
-			GuestMAC: network.MAC,
+			HostTap:  a.network.Tap,
+			GuestMAC: a.network.MAC,
 		}},
-		Identity: m.identity(id, network, token),
+		Identity: m.identity(rec.ID, a.network, a.token),
 		Record: vminstance.Instance{
-			ID:      id,
+			ID:      rec.ID,
 			Kind:    vminstance.KindSandbox,
-			OwnerID: strings.TrimSpace(req.Owner),
-			Disk:    disk,
-			TAP:     network.Tap,
-			GuestIP: network.GuestIP.String(),
-			MAC:     network.MAC,
+			OwnerID: strings.TrimSpace(owner),
+			Disk:    a.disk,
+			TAP:     a.network.Tap,
+			GuestIP: a.network.GuestIP.String(),
+			MAC:     a.network.MAC,
 		},
 	})
-	if err != nil {
-		return fail(err)
-	}
+}
 
+// markReady completes the record with what the launch knows and what the guest answered,
+// publishes the host's copy of the agent token beside the muxer, and records the sandbox
+// as ready.
+//
+// The host's copy is the credential every later connection presents, so it is written
+// before the record says ready: a reader that can resolve the sandbox can also reach it.
+func (m *Manager) markReady(rec *Record, a allocated, launched snapshot.Launched) error {
 	if rooter, ok := m.cfg.Launcher.(jailRooter); ok {
-		rec.JailRoot = rooter.JailRoot(id)
+		rec.JailRoot = rooter.JailRoot(rec.ID)
 	}
 	rec.VsockPath = launched.VsockPath
-	// The host's copy of the token sits beside the muxer the guest answers on. It
-	// is what the node presents on every later connection, and it is the only
-	// credential a sandbox has: rm deletes it.
+
 	tokenFile := agent.TokenFilePath(launched.VsockPath)
-	if err := agent.WriteTokenFile(tokenFile, token); err != nil {
-		return fail(fmt.Errorf("publish the sandbox's agent token: %w", err))
+	if err := agent.WriteTokenFile(tokenFile, a.token); err != nil {
+		return fmt.Errorf("publish the sandbox's agent token: %w", err)
 	}
 	rec.AgentTokenFile = tokenFile
 	rec.AgentVersion, rec.BootID = launched.Hello.AgentVersion, launched.Hello.BootID
 
 	ready := m.now().UTC()
 	rec.State, rec.ReadyAt, rec.Updated, rec.LastActive = StateReady, ready, ready, ready
-	if err := m.cfg.Store.Put(rec); err != nil {
-		// The guest is up and the record cannot say so, which no reader can act
-		// on; fail() stops the sandbox rather than leaving a VM nothing resolves.
-		return fail(fmt.Errorf("record the sandbox as ready: %w", err))
+	if err := m.cfg.Store.Put(*rec); err != nil {
+		// The guest is up and the record cannot say so, which no reader can act on:
+		// the caller fails the create, and the teardown stops the sandbox rather than
+		// leaving a VM nothing resolves.
+		return fmt.Errorf("record the sandbox as ready: %w", err)
 	}
 
 	log.Info().
@@ -418,7 +492,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Record, error)
 		Dur("ready_in", rec.ReadyAtDuration()).
 		Msg("Sandbox is ready")
 
-	return rec, nil
+	return nil
 }
 
 // save writes the record as it stands, and is what every step of a create calls
@@ -497,18 +571,27 @@ func (m *Manager) running(id string) bool {
 // and MAC stay either way: they are what this sandbox had, and a record that is
 // failed is not claiming to be usable.
 func (m *Manager) fail(ctx context.Context, rec *Record, cause error) (Record, error) {
-	_, err := m.free(ctx, rec)
+	_, freeErr := m.free(ctx, rec)
+	if freeErr != nil {
+		log.Warn().Err(freeErr).Str("sandbox_id", rec.ID).
+			Msg("Could not free everything a failed sandbox create allocated")
+	}
 
 	rec.State = StateFailed
 	rec.Reason = cause.Error()
 	rec.Updated = m.now().UTC()
-	if err == nil {
+	if freeErr == nil {
 		rec.Disk, rec.DiskCopy, rec.JailRoot, rec.VsockPath, rec.AgentTokenFile = "", "", "", "", ""
 	}
+
+	var problems []error
 	if putErr := m.cfg.Store.Put(*rec); putErr != nil {
-		return *rec, errors.Join(putErr, err)
+		problems = append(problems, putErr)
 	}
-	return *rec, err
+	if freeErr != nil {
+		problems = append(problems, freeErr)
+	}
+	return *rec, errors.Join(append([]error{cause}, problems...)...)
 }
 
 // markFailed flips a record to failed and writes it, for a sandbox the node found
@@ -529,9 +612,13 @@ func (m *Manager) markFailed(rec *Record, cause error) (Record, error) {
 	return next, nil
 }
 
-// size resolves the size a sandbox is created with.
-func (m *Manager) size(vcpus, memoryMB int) struct{ vcpus, memoryMB int } {
-	size := struct{ vcpus, memoryMB int }{vcpus: m.cfg.VCPUs, memoryMB: m.cfg.MemoryMB}
+// sandboxSize is the size a sandbox runs with.
+type sandboxSize struct{ vcpus, memoryMB int }
+
+// size resolves the size a sandbox is created with: what the caller asked for, and the
+// node's default where it asked for nothing.
+func (m *Manager) size(vcpus, memoryMB int) sandboxSize {
+	size := sandboxSize{vcpus: m.cfg.VCPUs, memoryMB: m.cfg.MemoryMB}
 	if vcpus > 0 {
 		size.vcpus = vcpus
 	}

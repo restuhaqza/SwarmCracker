@@ -3,9 +3,12 @@ package apihttp
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -29,14 +32,25 @@ type fakeSandboxes struct {
 	execErr   error
 	execCalls []string
 	freed     sandbox.Freed
+	// skipped are the record files a listing could not read, and listErr is a store
+	// that cannot be read at all: the two ways a listing can be incomplete.
+	skipped []string
+	listErr error
+	// execStatus, when set, is a status the exec handler writes itself instead of a
+	// stream: the command never ran, and the route must report it as that.
+	execStatus int
 }
 
 func (f *fakeSandboxes) List() ([]sandbox.Record, []string, error) {
+	if f.listErr != nil {
+		return nil, nil, f.listErr
+	}
 	out := make([]sandbox.Record, 0, len(f.records))
 	for _, rec := range f.records {
 		out = append(out, rec)
 	}
-	return out, nil, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, f.skipped, nil
 }
 
 func (f *fakeSandboxes) Get(id string) (sandbox.Record, error) {
@@ -69,6 +83,12 @@ func (f *fakeSandboxes) Remove(_ context.Context, id string) (sandbox.Freed, err
 func (f *fakeSandboxes) ServeExec(_ context.Context, id string, w http.ResponseWriter, _ *http.Request) error {
 	if f.execErr != nil {
 		return f.execErr
+	}
+	if f.execStatus != 0 {
+		w.Header().Set("Content-Type", MediaType)
+		w.WriteHeader(f.execStatus)
+		_, err := w.Write([]byte(`{"schemaVersion":1,"kind":"Error","error":{"code":"unavailable","message":"the guest went away"}}`))
+		return err
 	}
 	f.execCalls = append(f.execCalls, id)
 	w.Header().Set("Content-Type", v1.NDJSONMediaType)
@@ -327,19 +347,160 @@ func TestSandboxFailuresMapToStatuses(t *testing.T) {
 }
 
 // TestSandboxRoutesAnswerNotImplementedWithoutAManager pins the capability gate: a node
-// that runs no sandboxes says so with a 501 and the capability's name, rather than
-// answering an empty list that would look like "no sandboxes".
+// that runs no sandboxes says so on every sandbox route with a 501 and the capability's
+// name, rather than answering an empty list that would look like "no sandboxes".
 func TestSandboxRoutesAnswerNotImplementedWithoutAManager(t *testing.T) {
 	srv, store := sandboxServer(t, nil)
 	admin, _, err := store.Create("admin", RoleAdmin)
 	require.NoError(t, err)
 
-	for _, path := range []string{"/v1/sandboxes", "/v1/sandboxes/a"} {
-		rec := sandboxRequest(t, srv, admin, http.MethodGet, path, "")
-		require.Equal(t, http.StatusNotImplemented, rec.Code, path)
-		doc := decodeErrorBody(t, rec)
-		assert.Equal(t, "sandboxes", doc.Error.Details["capability"])
+	routes := []struct{ method, path string }{
+		{http.MethodGet, "/v1/sandboxes"},
+		{http.MethodGet, "/v1/sandboxes/a"},
+		{http.MethodPost, "/v1/sandboxes"},
+		{http.MethodDelete, "/v1/sandboxes/a"},
+		{http.MethodPost, "/v1/sandboxes/a/exec"},
+		{http.MethodPost, "/v1/sandboxes/a/tokens"},
 	}
+	for _, route := range routes {
+		rec := sandboxRequest(t, srv, admin, route.method, route.path, bodyFor(route.method))
+		require.Equal(t, http.StatusNotImplemented, rec.Code, route.method+" "+route.path)
+		doc := decodeErrorBody(t, rec)
+		assert.Equal(t, "sandboxes", doc.Error.Details["capability"], route.method+" "+route.path)
+	}
+}
+
+// TestCreateSandboxRefusesABodyItCannotRead pins that a malformed create is the caller's
+// error, answered before the node builds anything.
+func TestCreateSandboxRefusesABodyItCannotRead(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes", `{"template":`)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	assert.Empty(t, boxes.createReq.Template, "an unreadable body never reaches the node")
+}
+
+// TestRemoveSandboxIsScopedToItsSandbox pins the selector on the other operation that
+// reaches inside one sandbox: a credential narrowed to A cannot end B, and the refusal
+// names why.
+func TestRemoveSandboxIsScopedToItsSandbox(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{
+		"a": {ID: "a", State: sandbox.StateReady},
+		"b": {ID: "b", State: sandbox.StateReady},
+	}}
+	srv, store := sandboxServer(t, boxes)
+	// An operator is what holds sandboxes:write, and one narrowed to A is refused on B
+	// by the selector rather than by the scope — the two refusals a caller must tell apart.
+	scoped, _, err := store.CreateWithOptions("a-only", RoleOperator, TokenOptions{
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"a"}},
+	})
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, scoped, http.MethodDelete, "/v1/sandboxes/b", "")
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, "sandbox_selector_mismatch", doc.Error.Details["reason"])
+	assert.Equal(t, "b", doc.Error.Details["sandboxId"])
+}
+
+// TestRemoveSandboxMapsItsFailure pins the status a failed rm answers with, so a caller
+// can tell "already gone" from "the teardown broke".
+func TestRemoveSandboxMapsItsFailure(t *testing.T) {
+	boxes := &fakeSandboxes{removeErr: fmt.Errorf("%w: a", sandbox.ErrNotFound)}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodDelete, "/v1/sandboxes/a", "")
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Equal(t, string(output.CodeNotFound), decodeErrorBody(t, rec).Error.Code)
+}
+
+// TestExecSandboxRequiresTheV1MediaType pins the one header the stream route insists on:
+// a request that is not the v1 media type is answered 415 rather than being read as a
+// stream.
+func TestExecSandboxRequiresTheV1MediaType(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/a/exec", strings.NewReader(`{"command":["true"]}`))
+	req.Header.Set("Authorization", "Bearer "+admin)
+	req.Header.Set("Content-Type", "text/plain")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusUnsupportedMediaType, rec.Code, rec.Body.String())
+	assert.Equal(t, "unsupported_media_type", decodeErrorBody(t, rec).Error.Details["reason"])
+	assert.Empty(t, boxes.execCalls, "a request without the stream's media type never reaches the guest")
+}
+
+// TestExecSandboxReportsAStreamThatNeverStarted pins the route's reading of the handler: a
+// status the handler wrote itself means the command did not run, so the stream is not
+// reported as one.
+func TestExecSandboxReportsAStreamThatNeverStarted(t *testing.T) {
+	boxes := &fakeSandboxes{
+		records:    map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}},
+		execStatus: http.StatusBadGateway,
+	}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/exec", `{"command":["true"]}`)
+	require.Equal(t, http.StatusBadGateway, rec.Code, rec.Body.String())
+}
+
+// TestSandboxTokenIsScopedToItsSandbox pins the selector on the mint route: a credential
+// that may issue tokens still cannot issue one for a sandbox it does not name.
+func TestSandboxTokenIsScopedToItsSandbox(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{
+		"a": {ID: "a", State: sandbox.StateReady},
+		"b": {ID: "b", State: sandbox.StateReady},
+	}}
+	srv, store := sandboxServer(t, boxes)
+	mint, _, err := store.CreateWithOptions("mint-a", RoleAdmin, TokenOptions{
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"a"}},
+	})
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, mint, http.MethodPost, "/v1/sandboxes/b/tokens", `{}`)
+	require.Equal(t, http.StatusForbidden, rec.Code, rec.Body.String())
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, "sandbox_selector_mismatch", doc.Error.Details["reason"])
+	assert.Equal(t, "b", doc.Error.Details["sandboxId"])
+}
+
+// TestCreateSandboxTokenRefusesWhatItCannotMint pins the two body-level refusals: a body
+// that does not decode and an expiry that is not a future instant are the caller's errors,
+// answered before a credential exists.
+func TestCreateSandboxTokenRefusesWhatItCannotMint(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{"a": {ID: "a", State: sandbox.StateReady}}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	for _, body := range []string{`{"name":`, `{"expiresAt":"not a time"}`, `{"expiresAt":"2020-01-01T00:00:00Z"}`} {
+		rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/a/tokens", body)
+		require.Equal(t, http.StatusBadRequest, rec.Code, body)
+	}
+}
+
+// TestTypedErrorsKeepTheirCode pins that an error which already carries a stable code is
+// reported as itself, not flattened into an internal failure.
+func TestTypedErrorsKeepTheirCode(t *testing.T) {
+	boxes := &fakeSandboxes{createErr: output.NewError(output.CodeRateLimited, "slow down")}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes", `{"template":"base"}`)
+	require.Equal(t, http.StatusTooManyRequests, rec.Code, rec.Body.String())
+	assert.Equal(t, string(output.CodeRateLimited), decodeErrorBody(t, rec).Error.Code)
 }
 
 // bodyFor is a minimal body for a method whose body is not the subject of its case.
@@ -348,4 +509,157 @@ func bodyFor(method string) string {
 		return `{"template":"base"}`
 	}
 	return ""
+}
+
+// TestListSandboxesAnswersTheNodesSandboxes pins the read half of the control plane:
+// every sandbox is a document, a record file that cannot be read is a warning rather
+// than a failed listing, and the node's host layout (its disks, its jail) never
+// crosses the API.
+func TestListSandboxesAnswersTheNodesSandboxes(t *testing.T) {
+	created := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	boxes := &fakeSandboxes{
+		records: map[string]sandbox.Record{
+			"a": {
+				ID: "a", State: sandbox.StateReady, Template: "base@1", Owner: "ci",
+				Created: created, Updated: created, LastActive: created,
+				GuestIP: "10.63.0.2", Egress: []string{"example.com:443"},
+				Disk: "/var/lib/firecracker/rootfs/sandboxes/a.ext4",
+			},
+			"b": {ID: "b", State: sandbox.StateFailed, Reason: "the guest never answered"},
+		},
+		skipped: []string{"/var/lib/sandboxd/state/sandboxes/broken.json"},
+	}
+	srv, store := sandboxServer(t, boxes)
+	reader, _, err := store.CreateWithOptions("reader", RoleRunner, TokenOptions{
+		Scopes:        []string{string(ScopeSandboxesRead)},
+		TaskSelectors: &TaskSelectors{TaskIDs: []string{"t1"}},
+	})
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, reader, http.MethodGet, "/v1/sandboxes", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var doc v1.SandboxList
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	assert.Equal(t, v1.KindSandboxList, doc.Kind)
+	require.Len(t, doc.Items, 2, "a failed sandbox is listed, not hidden")
+	assert.Equal(t, "a", doc.Items[0].ID)
+	assert.Equal(t, "ready", doc.Items[0].State)
+	assert.Equal(t, "2026-11-12T10:00:00Z", doc.Items[0].CreatedAt)
+	assert.Empty(t, doc.Items[0].ReadyAt, "a sandbox that never became ready has no ready instant")
+	assert.Equal(t, "failed", doc.Items[1].State)
+	assert.Equal(t, "the guest never answered", doc.Items[1].Reason)
+
+	require.Len(t, doc.Warnings, 1, "an unreadable record is reported, not dropped silently")
+	assert.Equal(t, "sandbox_record_unreadable", doc.Warnings[0].Code)
+	assert.Equal(t, "broken.json", doc.Warnings[0].Details["file"], "a listing names the file, not the node's path")
+	assert.NotContains(t, rec.Body.String(), "/var/lib/firecracker",
+		"where a sandbox's disk lives is the node's business")
+}
+
+// TestListSandboxesReportsAStoreItCannotRead is the other side of that: a node that
+// cannot read its records at all is an error, not an empty list that looks like "no
+// sandboxes here".
+func TestListSandboxesReportsAStoreItCannotRead(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{}, listErr: errors.New("read the record directory: permission denied")}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodGet, "/v1/sandboxes", "")
+	require.Equal(t, http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, string(output.CodeUnreachable), doc.Error.Code)
+	assert.True(t, doc.Error.Retryable, "a store that cannot be read is worth another try, not a caller's bug")
+}
+
+// TestGetSandboxAnswersOneDocument pins the single-resource read: the same document the
+// listing carries, wrapped in the v1 envelope.
+func TestGetSandboxAnswersOneDocument(t *testing.T) {
+	created := time.Date(2026, 11, 12, 10, 0, 0, 0, time.UTC)
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{
+		"a": {ID: "a", State: sandbox.StateReady, Template: "base@1", Created: created,
+			ReadyAt: created.Add(4 * time.Second), IdleTTLSeconds: 60},
+	}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodGet, "/v1/sandboxes/a", "")
+	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
+
+	var doc v1.SandboxDocument
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &doc))
+	assert.Equal(t, v1.KindSandbox, doc.Kind)
+	assert.Equal(t, "a", doc.ID)
+	assert.Equal(t, "2026-11-12T10:00:04Z", doc.ReadyAt)
+	assert.Equal(t, int64(60), doc.IdleTTLSeconds)
+}
+
+// TestCreateSandboxRefusesATtlItCannotRepresent pins the one body rule: zero is the
+// node's default and -1 is "never", so a smaller value is refused rather than silently
+// meaning one of the two.
+func TestCreateSandboxRefusesATtlItCannotRepresent(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes", `{"template":"base","idleTtlSeconds":-2}`)
+	require.Equal(t, http.StatusBadRequest, rec.Code, rec.Body.String())
+	doc := decodeErrorBody(t, rec)
+	assert.Equal(t, "invalid_ttl", doc.Error.Details["reason"])
+	assert.Empty(t, boxes.createReq.Template, "an unrepresentable TTL never reaches the node")
+}
+
+// codedTemplateError is a template refusal as pkg/golden reports it: its own stable
+// code, which the API must keep instead of flattening it into an internal error.
+type codedTemplateError struct{ code string }
+
+func (e codedTemplateError) Error() string {
+	return "template golden-base-1.0.0 was built by other host software"
+}
+func (e codedTemplateError) Code() string { return e.code }
+
+// TestCreateSandboxKeepsTheCodesACallerActsOn pins the create's error mapping: each
+// refusal becomes the status and code a client branches on, and a template's own
+// refusal is a conflict that keeps the template package's code.
+func TestCreateSandboxKeepsTheCodesACallerActsOn(t *testing.T) {
+	cases := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"a bad request", fmt.Errorf("%w: a template is required", sandbox.ErrInvalid), http.StatusBadRequest, string(output.CodeInvalid)},
+		{"a sandbox that exists", fmt.Errorf("%w: a", sandbox.ErrExists), http.StatusConflict, string(output.CodeConflict)},
+		{"a template this host cannot boot", codedTemplateError{code: string(output.CodeTemplatePinMismatch)}, http.StatusConflict, string(output.CodeTemplatePinMismatch)},
+		{"a node that broke", errors.New("no space left on device"), http.StatusServiceUnavailable, string(output.CodeUnreachable)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, store := sandboxServer(t, &fakeSandboxes{createErr: tc.err})
+			admin, _, err := store.Create("admin", RoleAdmin)
+			require.NoError(t, err)
+
+			rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes", `{"template":"base"}`)
+			require.Equal(t, tc.status, rec.Code, rec.Body.String())
+			assert.Equal(t, tc.code, decodeErrorBody(t, rec).Error.Code)
+		})
+	}
+}
+
+// TestCreateSandboxTokenRefusesASandboxThatIsNotThere pins why a token route checks
+// the sandbox: a credential for a sandbox this node does not have would authenticate
+// nothing, and would be inherited by the next sandbox minted with the same ID.
+func TestCreateSandboxTokenRefusesASandboxThatIsNotThere(t *testing.T) {
+	boxes := &fakeSandboxes{records: map[string]sandbox.Record{}}
+	srv, store := sandboxServer(t, boxes)
+	admin, _, err := store.Create("admin", RoleAdmin)
+	require.NoError(t, err)
+
+	rec := sandboxRequest(t, srv, admin, http.MethodPost, "/v1/sandboxes/missing/tokens", `{}`)
+	require.Equal(t, http.StatusNotFound, rec.Code, rec.Body.String())
+	assert.Equal(t, string(output.CodeNotFound), decodeErrorBody(t, rec).Error.Code)
 }

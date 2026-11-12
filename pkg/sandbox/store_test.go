@@ -130,3 +130,63 @@ func TestStoreRefusesAnIDThatCannotNameAFile(t *testing.T) {
 		assert.Error(t, store.Delete(id))
 	}
 }
+
+// TestStoreRefusesToBeUsedBeforeItIsOpened pins the zero value: a daemon that wired no
+// store gets an error it can act on from every operation, not a panic or an empty node.
+func TestStoreRefusesToBeUsedBeforeItIsOpened(t *testing.T) {
+	var unopened Store
+	assert.Empty(t, unopened.Dir())
+
+	assert.Error(t, unopened.Put(testRecord("a")))
+	_, found, err := unopened.Get("a")
+	assert.False(t, found)
+	assert.Error(t, err)
+	_, _, err = unopened.List()
+	assert.Error(t, err)
+	assert.Error(t, unopened.Delete("a"))
+}
+
+// TestNewStoreCreatesTheDirectoryAndRefusesAnEmptyOne pins what a node gets when it
+// starts: the record directory is created under the state directory it names, and a
+// store asked to live nowhere is refused rather than defaulting somewhere.
+func TestNewStoreCreatesTheDirectoryAndRefusesAnEmptyOne(t *testing.T) {
+	assert.Empty(t, Dir(""), "a node with no state directory has no record directory")
+
+	_, err := NewStore(StoreConfig{})
+	assert.Error(t, err, "a store with no directory cannot exist")
+
+	state := t.TempDir()
+	store, err := NewStore(StoreConfig{Dir: Dir(state)})
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(state, DirName), store.Dir())
+
+	info, statErr := os.Stat(store.Dir())
+	require.NoError(t, statErr)
+	assert.True(t, info.IsDir())
+	assert.Equal(t, os.FileMode(dirMode), info.Mode().Perm(), "records are the daemon's alone")
+}
+
+// TestStoreSaysWhenASandboxWasNeverRecorded pins the distinction a caller depends on:
+// an ID this node never recorded is "not found", not an error.
+func TestStoreSaysWhenASandboxWasNeverRecorded(t *testing.T) {
+	store := newTestStore(t)
+	_, found, err := store.Get("never")
+	require.NoError(t, err)
+	assert.False(t, found)
+}
+
+// TestStoreReportsARecordItCannotDelete pins the failure a rm path must not swallow: a
+// record that exists and cannot be removed keeps its sandbox visible on the next pass,
+// so the error names the path rather than reporting a removal that did not happen.
+func TestStoreReportsARecordItCannotDelete(t *testing.T) {
+	store := newTestStore(t)
+
+	// A non-empty directory where the record file belongs: removing it as a file fails,
+	// whatever the process's privileges.
+	path := filepath.Join(store.Dir(), "wedged"+recordSuffix)
+	require.NoError(t, os.MkdirAll(filepath.Join(path, "held"), 0o700))
+
+	err := store.Delete("wedged")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), path)
+}
