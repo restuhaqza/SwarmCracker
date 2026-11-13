@@ -11,6 +11,7 @@ package agent
 
 import (
 	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -296,4 +297,59 @@ func TestAQuiesceWhoseMountTableCannotBeRead(t *testing.T) {
 	cancel()
 	_, err = quiesceGuest(cancelled, QuiesceFreeze)
 	require.ErrorIs(t, err, context.Canceled)
+}
+
+// TestTheFreezeWrapperMapsWhatTheKernelSaid pins the layer every other test replaces: the
+// real ioctlFreeze, which is the function that decides whether a guest's writers were
+// stopped. It is exercised directly because a mapping that read an unrelated errno as
+// success would report a frozen filesystem that is still being written — a checkpoint whose
+// memory and disk disagree, taken with no error anywhere.
+func TestTheFreezeWrapperMapsWhatTheKernelSaid(t *testing.T) {
+	// A mount point that is not there: the failure is the open, and it carries an errno a
+	// caller can act on rather than a message to parse.
+	absent := filepath.Join(t.TempDir(), "absent")
+	already, err := ioctlFreeze(absent, fifreeze, unix.EBUSY)
+	require.Error(t, err)
+	assert.False(t, already)
+	assert.Contains(t, err.Error(), "open mount point")
+	assert.ErrorIs(t, err, fs.ErrNotExist)
+
+	// A path that opens but backs no filesystem to freeze. What the kernel answers here
+	// depends on the privilege the test runs with: an unprivileged process is refused the
+	// capability before the filesystem is consulted (EPERM), and a privileged one reaches
+	// the filesystem's own answer (ENOTTY for a file that backs none). So the test takes the
+	// answer it was given and pins the mapping against that, which is the part this function
+	// owns — not the kernel's choice of errno.
+	file := filepath.Join(t.TempDir(), "a-file")
+	require.NoError(t, os.WriteFile(file, []byte("not a filesystem"), 0o600))
+
+	already, err = ioctlFreeze(file, fifreeze, unix.EBUSY)
+	require.Error(t, err, "an errno the caller did not name is a refusal, never an already")
+	assert.False(t, already, "nothing is reported as frozen by a call that failed")
+	assert.Contains(t, err.Error(), "ioctl 0x", "the refusal names the request it issued")
+	var refused unix.Errno
+	require.ErrorAs(t, err, &refused, "the refusal carries the kernel's errno, not a string")
+	assert.NotEqual(t, unix.EBUSY, refused, "this is the kernel's error, not the one freezeMount tolerates")
+
+	// The same error, named by the caller as "already in that state", is success: that is
+	// what makes a retried freeze, and the thaw of a filesystem that was never frozen, work
+	// rather than fail.
+	already, err = ioctlFreeze(file, fifreeze, refused)
+	require.NoError(t, err)
+	assert.True(t, already, "the error named as already-in-that-state is success")
+
+	// The two directions differ only in the request they issue and the errno they read as
+	// success, and neither invents an "already" for a mount point it cannot open.
+	for _, direction := range []struct {
+		name  string
+		apply func(string) (bool, error)
+	}{
+		{"freeze", freezeMount},
+		{"thaw", thawMount},
+	} {
+		already, err := direction.apply(absent)
+		require.Errorf(t, err, direction.name)
+		assert.False(t, already, direction.name)
+		assert.ErrorIs(t, err, fs.ErrNotExist, direction.name)
+	}
 }
