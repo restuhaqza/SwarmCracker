@@ -17,13 +17,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// installPrepareSeams replaces the three seams `prepare` is built from — reaching
+// installPrepareSeams replaces the seams `prepare` is built from — reaching
 // the metadata service, reading the identity from it, and applying it — so the
 // contract around them can be tested without a guest to reconfigure or a
 // Firecracker metadata service to talk to. It returns what the applier was asked
 // to apply.
+//
+// The hook also releases the freeze a resumed image carries before it applies
+// anything (thawAll), so the quiesce seams are installed too. They exist for the
+// same reason: a unit test cannot freeze the filesystem it is running on. Without
+// them these tests would take the host's own mount table to the real FIFREEZE
+// ioctls, where they need CAP_SYS_ADMIN and fail with EPERM on an unprivileged
+// runner — a statement about the machine, not about the hook.
 func installPrepareSeams(t *testing.T, id Identity, fetchErr, applyErr error) *[]Identity {
 	t.Helper()
+
+	// The same fixture and seams the quiesce tests use: one writable ext4 root on
+	// /dev/vda, which is the shape of a sandbox's guest.
+	withQuiesceSeams(t, ext4Mounts, nil)
 
 	previousReach := reachMetadataService
 	previousFetch := fetchIdentity
