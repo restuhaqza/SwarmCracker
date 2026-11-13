@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog/log"
 
 	"github.com/restuhaqza/swarmcracker/pkg/agent"
+	"github.com/restuhaqza/swarmcracker/pkg/checkpoint"
 	"github.com/restuhaqza/swarmcracker/pkg/config"
 	"github.com/restuhaqza/swarmcracker/pkg/golden"
 	"github.com/restuhaqza/swarmcracker/pkg/sandbox/netpolicy"
@@ -113,6 +114,19 @@ type Config struct {
 	// none: "host:port" destinations, or empty for egress none, which is the
 	// default a sandbox should have.
 	Allow []string
+
+	// Checkpoints is the node's sandbox checkpoints: the records, the state
+	// documents, the disk copies and the guest credentials a fork resumes from.
+	// Nil means this node takes and forks no checkpoints, and both operations
+	// refuse rather than half-doing it.
+	Checkpoints *CheckpointStore
+	// CheckpointBlobs is the D11 chunk store a checkpoint's memory image lives in
+	// (pkg/checkpoint). Nil means checkpoints are unavailable.
+	CheckpointBlobs checkpoint.Store
+	// Snapshots creates the Firecracker images a checkpoint is made of.
+	// *snapshot.Manager is the production value. Nil means checkpoints are
+	// unavailable.
+	Snapshots Snapshotter
 
 	// RevokeTokens deletes the API tokens scoped to one sandbox, and reports how
 	// many it deleted. Nil means this node issues no sandbox-scoped tokens, and then
@@ -258,7 +272,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (Record, error)
 		return Record{}, err
 	}
 
-	rec := m.newRecord(id, req, template)
+	rec := m.newRecord(id, req, template, m.size(req.VCPUs, req.MemoryMB))
 	if err := m.cfg.Store.Put(rec); err != nil {
 		return Record{}, err
 	}
@@ -331,7 +345,7 @@ func (m *Manager) allocateID(requested string) (string, error) {
 // boot, and the idle TTL the reaper will hold it to. A caller that asked for neither a
 // TTL nor an allowlist gets the node's, and a negative TTL — "never reap this" — is a
 // zero on disk, which is what a record carries.
-func (m *Manager) newRecord(id string, req CreateRequest, tmpl template) Record {
+func (m *Manager) newRecord(id string, req CreateRequest, tmpl template, size sandboxSize) Record {
 	now := m.now().UTC()
 
 	ttl := req.TTL
@@ -358,6 +372,8 @@ func (m *Manager) newRecord(id string, req CreateRequest, tmpl template) Record 
 		IdleTTLSeconds: int64(ttl / time.Second),
 		Egress:         append([]string(nil), allow...),
 		Kernel:         tmpl.kernel,
+		VCPUs:          size.vcpus,
+		MemoryMB:       size.memoryMB,
 	}
 }
 
@@ -441,16 +457,25 @@ func (m *Manager) launch(ctx context.Context, rec *Record, tmpl template, size s
 			GuestMAC: a.network.MAC,
 		}},
 		Identity: m.identity(rec.ID, a.network, a.token),
-		Record: vminstance.Instance{
-			ID:      rec.ID,
-			Kind:    vminstance.KindSandbox,
-			OwnerID: strings.TrimSpace(owner),
-			Disk:    a.disk,
-			TAP:     a.network.Tap,
-			GuestIP: a.network.GuestIP.String(),
-			MAC:     a.network.MAC,
-		},
+		Record:   vminstanceRecord(rec, a, owner),
 	})
+}
+
+// vminstanceRecord is the host-side record a launch publishes for the node's registry:
+// what a reader needs to dial the instance, and what a teardown frees.
+func vminstanceRecord(rec *Record, a allocated, owner string) vminstance.Instance {
+	if owner == "" {
+		owner = rec.Owner
+	}
+	return vminstance.Instance{
+		ID:      rec.ID,
+		Kind:    vminstance.KindSandbox,
+		OwnerID: strings.TrimSpace(owner),
+		Disk:    a.disk,
+		TAP:     a.network.Tap,
+		GuestIP: a.network.GuestIP.String(),
+		MAC:     a.network.MAC,
+	}
 }
 
 // markReady completes the record with what the launch knows and what the guest answered,
