@@ -509,6 +509,16 @@ func (m *Manager) buildFork(ctx context.Context, rec *Record, chk CheckpointReco
 	if err != nil {
 		return fmt.Errorf("sandbox %s: resume checkpoint %s: %w", rec.ID, chk.Name, err)
 	}
+
+	// The clone's guest released the freeze its image carried when its post-restore hook
+	// ran, and this is the same release asked for directly: "ready" has to mean the
+	// clone's writers run again, not that they are merely able to. It is idempotent, and
+	// a guest that does not implement quiesce — an older template, which cannot have
+	// been frozen — is not a failure.
+	if _, err := m.quiesce(ctx, *rec, agent.QuiesceThaw); err != nil {
+		log.Warn().Err(err).Str("sandbox_id", rec.ID).
+			Msg("Could not confirm that the clone's writers were released after its resume")
+	}
 	return m.markReady(rec, a, launched)
 }
 

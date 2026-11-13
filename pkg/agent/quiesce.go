@@ -170,6 +170,25 @@ func quiesceGuest(ctx context.Context, action string) (QuiesceReport, error) {
 	return report, nil
 }
 
+// thawAll releases every writable, block-device-backed filesystem, and tolerates a
+// guest that has none.
+//
+// It is what the post-restore hook calls before it writes anything: a resumed guest's
+// image carries the freeze that was taken when it was checkpointed, so the hook's first
+// write would block until something released it. A guest whose filesystems are all
+// read-only or in memory has nothing to release, which is a success with nothing to
+// report rather than a failure.
+func thawAll(ctx context.Context) (QuiesceReport, error) {
+	mounts, err := writableDeviceMounts(guestMounts)
+	if err != nil {
+		return QuiesceReport{}, err
+	}
+	if len(mounts) == 0 {
+		return QuiesceReport{Action: QuiesceThaw, Mode: QuiesceModeFreeze}, nil
+	}
+	return quiesceGuest(ctx, QuiesceThaw)
+}
+
 // writableDeviceMounts reads a mount table and returns the mount points that hold a
 // guest's files: mounted read-write, and backed by a block device. Everything else is
 // outside a checkpoint's concern — the pseudo filesystems are rebuilt on boot, and a

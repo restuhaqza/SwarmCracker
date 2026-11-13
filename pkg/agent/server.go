@@ -324,6 +324,20 @@ func (s *server) handleQuiesce(req *Request) error {
 // needed". The guest keeps serving the connection, so the caller learns what went
 // wrong before it tears the instance down.
 func (s *server) handlePrepare() error {
+	// A resumed guest may still have its filesystems frozen: the freeze lives in the
+	// superblock, so the memory image carries it, and the first writer in a clone is
+	// this hook. Release it before anything writes — including this agent's own log and
+	// the token, machine-id, host keys and clock the hook applies — and fail here,
+	// naming the mount, rather than hanging on an unrelated write a moment later.
+	//
+	// Only a guest that advertises quiesce is asked: one that does not cannot have been
+	// frozen by it, and an older agent must still restore.
+	if slices.Contains(s.caps, CapQuiesce) {
+		if _, err := thawAll(s.reqCtx); err != nil {
+			return s.writeFailure(CodePrepareFailed,
+				"release the freeze this image was captured with: %v", err)
+		}
+	}
 	report, err := prepareGuest(s.reqCtx)
 	if err != nil {
 		// The op is not repeated here: the client prefixes it, and "prepare: prepare:

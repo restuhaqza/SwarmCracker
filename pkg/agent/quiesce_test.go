@@ -225,3 +225,51 @@ func TestQuiesceIsAdvertised(t *testing.T) {
 	assert.Equal(t, CodeUnsupportedOp, CodeOf(err))
 	assert.Contains(t, err.Error(), "is not advertised by this agent")
 }
+
+// TestThawAllReleasesWhatAFrozenImageCarried pins the release the post-restore hook
+// performs: every writable device-backed filesystem is released, a guest with none is
+// not a failure, and a filesystem that refuses is named.
+func TestThawAllReleasesWhatAFrozenImageCarried(t *testing.T) {
+	calls := withQuiesceSeams(t, ext4Mounts, nil)
+	report, err := thawAll(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"thaw /"}, *calls)
+	assert.Equal(t, QuiesceThaw, report.Action)
+
+	// A guest whose filesystems are all read-only has nothing to release: that is a
+	// success, not a failure, or an older template could never restore.
+	withQuiesceSeams(t, "proc /proc proc rw 0 0\ntmpfs /tmp tmpfs rw 0 0\n", nil)
+	report, err = thawAll(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, report.Mounts)
+
+	// A filesystem that refuses the release is an error naming it, so the hook fails
+	// with a cause instead of hanging on the next write.
+	frozen := map[string]error{}
+	calls = withQuiesceSeams(t, ext4Mounts, frozen)
+	original := thawFilesystem
+	thawFilesystem = func(mount string) (bool, error) { return false, unix.EPERM }
+	t.Cleanup(func() { thawFilesystem = original })
+	_, err = thawAll(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "/")
+	assert.Empty(t, *calls, "nothing is recorded as released when the release failed")
+}
+
+// TestPrepareReleasesTheFreezeOnlyWhenQuiesceIsAdvertised pins the contract condition:
+// a resumed image is released by the hook that runs before any write, and an agent that
+// does not advertise quiesce — which cannot have frozen anything — is not asked.
+func TestPrepareReleasesTheFreezeOnlyWhenQuiesceIsAdvertised(t *testing.T) {
+	asked := func(caps []string) []string {
+		calls := withQuiesceSeams(t, ext4Mounts, nil)
+		conn, _ := newCappedPipePair(t, caps)
+		_, _ = testClient(conn).Prepare(context.Background())
+		return *calls
+	}
+
+	withQuiesce := asked([]string{CapHello, CapPrepare, CapQuiesce})
+	assert.Contains(t, withQuiesce, "thaw /", "a guest that advertises quiesce releases the freeze before the hook writes")
+
+	withoutQuiesce := asked([]string{CapHello, CapPrepare})
+	assert.Empty(t, withoutQuiesce, "an older agent cannot have been frozen and is not asked to release anything")
+}
