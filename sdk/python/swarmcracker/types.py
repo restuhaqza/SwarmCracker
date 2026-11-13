@@ -32,6 +32,81 @@ class AuditResource(TypedDict):
     id: NotRequired[str]
     name: NotRequired[str]
 
+class Checkpoint(TypedDict):
+    # The checkpoint's identity, unique on the node.
+    name: str
+    # The sandbox it was taken from, which need not still exist.
+    sandbox: str
+    template: NotRequired[str]
+    kernel: NotRequired[str]
+    createdAt: NotRequired[str]
+    vcpus: NotRequired[int]
+    memoryMB: NotRequired[int]
+    # The allowlist a fork of this checkpoint installs.
+    egress: NotRequired[list[str]]
+    # The mechanism the guest used to stop its writers before the images were taken. Empty means it was checkpointed without one, so its consistency is unknown.
+    quiesceMode: NotRequired[str]
+    # The filesystems the guest froze. Only writable filesystems backed by a block device are covered (a sandbox's root, and a workspace if it is one); tmpfs, /dev/shm and an overlay's upper layer are not.
+    quiesceMounts: NotRequired[list[str]]
+    sizeBytes: NotRequired[int]
+    agentVersion: NotRequired[str]
+    bootId: NotRequired[str]
+
+class CheckpointCreate(TypedDict):
+    # The checkpoint's identity, one safe path element, unique on the node. A checkpoint is named so it can be forked and freed later; an existing name is 409.
+    name: str
+
+class CheckpointDocument(TypedDict):
+    # The checkpoint's identity, unique on the node.
+    name: str
+    # The sandbox it was taken from, which need not still exist.
+    sandbox: str
+    template: NotRequired[str]
+    kernel: NotRequired[str]
+    createdAt: NotRequired[str]
+    vcpus: NotRequired[int]
+    memoryMB: NotRequired[int]
+    # The allowlist a fork of this checkpoint installs.
+    egress: NotRequired[list[str]]
+    # The mechanism the guest used to stop its writers before the images were taken. Empty means it was checkpointed without one, so its consistency is unknown.
+    quiesceMode: NotRequired[str]
+    # The filesystems the guest froze. Only writable filesystems backed by a block device are covered (a sandbox's root, and a workspace if it is one); tmpfs, /dev/shm and an overlay's upper layer are not.
+    quiesceMounts: NotRequired[list[str]]
+    sizeBytes: NotRequired[int]
+    agentVersion: NotRequired[str]
+    bootId: NotRequired[str]
+    schemaVersion: Literal[1]
+    kind: Literal["Checkpoint"]
+
+class CheckpointFreed(TypedDict):
+    # The checkpoint's state document.
+    stateBytes: NotRequired[int]
+    # The checkpoint's own disk copy.
+    diskBytes: NotRequired[int]
+    # The memory-image chunks nothing else referenced.
+    chunkBytes: NotRequired[int]
+    # How many chunks those were.
+    chunks: NotRequired[int]
+    # What the node actually got back.
+    freedBytes: int
+    # The memory image the remaining checkpoints still reference. Shared chunks are counted once per referencing checkpoint, so this is what they reference rather than a deduplicated disk figure.
+    retainedBytes: int
+    # How many checkpoints remain.
+    retained: NotRequired[int]
+
+class CheckpointList(TypedDict):
+    schemaVersion: Literal[1]
+    kind: Literal["CheckpointList"]
+    items: list[Checkpoint]
+    next: Union[str, None]
+    warnings: NotRequired[list[Warning]]
+
+class CheckpointRemoval(TypedDict):
+    schemaVersion: Literal[1]
+    kind: Literal["CheckpointRemoval"]
+    checkpoint: str
+    freed: CheckpointFreed
+
 class Config(TypedDict):
     id: str
     name: str
@@ -389,6 +464,16 @@ class SandboxDocument(TypedDict):
     schemaVersion: Literal[1]
     kind: Literal["Sandbox"]
 
+class SandboxFork(TypedDict):
+    # How many clones to create. Absent means one.
+    count: NotRequired[int]
+    # The clones' owner; empty inherits the checkpoint's.
+    owner: NotRequired[str]
+    # The clones' idle TTL in seconds: zero is the node's default, -1 means never reap them, and any other negative value is 400 "invalid_ttl".
+    idleTtlSeconds: NotRequired[int]
+    # The clones' identities, in order. Empty mints them and the response carries them; a list of a different length than count is 400.
+    ids: NotRequired[list[str]]
+
 class SandboxFreed(TypedDict):
     """What removing one sandbox took back, resource by resource, so "everything is gone" is a list rather than a promise."""
     processStopped: NotRequired[bool]
@@ -409,6 +494,8 @@ class SandboxList(TypedDict):
     items: list[Sandbox]
     next: Union[str, None]
     warnings: NotRequired[list[Warning]]
+    # The checkpoint these sandboxes were forked from. Set by the fork routes, which either take a checkpoint themselves (and mint its name) or are given one: a caller that cannot see the name cannot free the image the fork left behind.
+    checkpoint: NotRequired[str]
 
 class SandboxRemoval(TypedDict):
     schemaVersion: Literal[1]
