@@ -1585,3 +1585,64 @@ func TestManagerRelayRemovesTheSpoolEntryOnASourceMismatch(t *testing.T) {
 	_, err = os.Stat(filepath.Join(store.Root(), artifact.ID))
 	assert.True(t, errors.Is(err, os.ErrNotExist), "a failed fetch leaves no spool entry")
 }
+
+// TestManagerExportReportsTheCallsOwnDeadline pins the failure the CI flake was made of:
+// the node answers with the empty 200 a handler that wrote nothing produces, the call's
+// own deadline passes while that answer is still arriving, and the caller is told the
+// deadline expired — not that the node returned an unreadable document.
+//
+// The message is what makes it deterministic in the sense that matters: the transport
+// classifiers word their failures differently, so a run that never got past the response
+// headers (a slow handshake on a busy runner) fails this test instead of passing it by
+// accident. Whichever of the two orderings happens, and the handler only ends when the
+// deadline ends it, the deadline is in the past by the time the answer is read.
+func TestManagerExportReportsTheCallsOwnDeadline(t *testing.T) {
+	pki := newTestPKI(t)
+
+	answerLate := func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			return
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}
+
+	_, baseURL := startTestBroker(t, pki, &fakeTaskSource{task: Task{ID: migrationTestTask}, found: true},
+		map[string]Handler{
+			MigrationExportOperation: func(_ context.Context, _ Task, w http.ResponseWriter, r *http.Request) {
+				answerLate(w, r)
+			},
+		})
+
+	host, port := brokerTarget(t, baseURL)
+	mgr, err := NewManager(ManagerConfig{
+		Tasks: &stubTaskReader{task: v1.Task{ID: migrationTestTask, NodeID: "node-1", ServiceID: "svc-1"}},
+		Nodes: &migrationNodeReader{nodes: map[string]v1.Node{
+			"node-1": {ID: "node-1", Address: host},
+		}},
+		Port:             port,
+		Client:           pki.httpClient(),
+		MigrationTimeout: 500 * time.Millisecond,
+		// The snapshot deadline is left at its default: a timeout here can only be the
+		// migration one.
+		SnapshotTimeout: time.Minute,
+	})
+	require.NoError(t, err)
+
+	// The caller's own context outlives the test, so the only deadline that can expire is
+	// the call's.
+	caller, cancelCaller := context.WithTimeout(context.Background(), time.Minute)
+	defer cancelCaller()
+
+	_, err = mgr.Export(caller, "node-1", v1.Task{ID: migrationTestTask, NodeID: "node-1"})
+	var typed *output.Error
+	require.ErrorAs(t, err, &typed)
+	assert.Equal(t, output.CodeTimeout, typed.Code)
+	assert.Contains(t, typed.Message, "call's deadline",
+		"the expired deadline is the failure, so it is named rather than the node's document")
+	assert.Equal(t, "node-1", typed.Details["nodeId"])
+	assert.NoError(t, caller.Err(), "the caller is still waiting: this is not its cancellation")
+}
