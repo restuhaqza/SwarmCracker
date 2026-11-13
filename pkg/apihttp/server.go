@@ -125,6 +125,11 @@ type Config struct {
 	// version document; the daemon wires it only when it has both a node broker
 	// (the relay) and a spool (the bytes in transit).
 	Migrations MigrationBroker
+	// Sandboxes is the node's sandbox control plane (pkg/sandbox). A nil one leaves
+	// every /v1/sandboxes route answering 501 with details.capability "sandboxes",
+	// and keeps the capability out of the version document: a node that runs no
+	// sandboxes must not advertise that it does.
+	Sandboxes Sandboxes
 	// Audit is the manager-local audit log. It is optional: a nil store makes
 	// recordAudit a no-op and GET /v1/audit answer 501.
 	Audit *AuditStore
@@ -183,6 +188,7 @@ func New(cfg Config) (*Server, error) {
 	}
 	cfg.Capabilities = withBrokerCapabilities(cfg.Capabilities, cfg.Broker != nil, snapshotsAdvertised)
 	cfg.Capabilities = withOptionalCapability(cfg.Capabilities, migrationCapability, migrationsAvailable(cfg))
+	cfg.Capabilities = withOptionalCapability(cfg.Capabilities, sandboxCapability, cfg.Sandboxes != nil)
 	if cfg.EventHeartbeat <= 0 {
 		cfg.EventHeartbeat = defaultEventHeartbeat
 	}
@@ -354,6 +360,24 @@ func (s *Server) routes() {
 		accepts(write(http.MethodPost, ScopeTasksSnapshots, s.restoreSnapshot), "task"))
 	s.handleRoutes("/v1/snapshots/{id}",
 		accepts(write(http.MethodDelete, ScopeTasksSnapshots, s.deleteSnapshot), "task"))
+
+	// The sandbox control plane. A sandbox is not a task and is not scheduled, so it
+	// has its own resource: one list, one document, a create, a delete, the exec
+	// stream (the same frames as a task's), and the route that mints a credential
+	// scoped to one sandbox. No query parameter is implemented on any of them, so a
+	// typo is a 400 rather than a silently different request.
+	s.handleRoutes("/v1/sandboxes",
+		read(ScopeSandboxesRead, s.listSandboxes),
+		write(http.MethodPost, ScopeSandboxesWrite, s.createSandbox),
+	)
+	s.handleRoutes("/v1/sandboxes/{id}",
+		read(ScopeSandboxesRead, s.getSandbox),
+		write(http.MethodDelete, ScopeSandboxesWrite, s.removeSandbox),
+	)
+	s.handleRoutes("/v1/sandboxes/{id}/exec",
+		streamPost(ScopeSandboxesExec, s.execSandbox))
+	s.handleRoutes("/v1/sandboxes/{id}/tokens",
+		write(http.MethodPost, ScopeSandboxesToken, s.createSandboxToken))
 
 	s.handleRoutes("/v1/nodes",
 		accepts(read(ScopeNodesRead, s.listNodes), "limit", "cursor", "label"),
@@ -713,6 +737,7 @@ func identityForToken(token Token) Identity {
 		Role:      token.Role,
 		Scopes:    scopes,
 		Selectors: token.TaskSelectors,
+		Sandboxes: token.SandboxSelectors,
 	}
 }
 
@@ -897,6 +922,11 @@ func statusForCode(code output.Code) int {
 	case output.CodeForbidden:
 		return http.StatusForbidden
 	case output.CodeConflict:
+		return http.StatusConflict
+	case output.CodeTemplatePinMismatch, output.CodeTemplateIncompatible:
+		// A template this node cannot use is a conflict rather than a bad request:
+		// the request was well formed, and the same request would succeed against
+		// the host the template was built on.
 		return http.StatusConflict
 	case output.CodeRateLimited:
 		return http.StatusTooManyRequests

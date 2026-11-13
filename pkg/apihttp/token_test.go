@@ -923,3 +923,218 @@ func TestLoadValidatesSelectors(t *testing.T) {
 		assert.Equal(t, map[string]string{"team": "payments"}, list[0].TaskSelectors.Labels)
 	})
 }
+
+// TestMintingFromTwoStoresKeepsBothTokens is the regression a sandbox token exposed:
+// the file is shared by the CLI and by the node's daemons, so a mutation must start
+// from what is on disk. A create that began from the set this process happened to
+// load wrote that set back and silently deleted the other process's token.
+func TestMintingFromTwoStoresKeepsBothTokens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+
+	daemon, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	cli, err := OpenTokenStore(path)
+	require.NoError(t, err)
+
+	daemonSecret, daemonToken, err := daemon.Create("daemon", RoleAdmin)
+	require.NoError(t, err)
+	cliSecret, cliToken, err := cli.Create("cli", RoleAdmin)
+	require.NoError(t, err)
+
+	// Both are on disk, whichever process wrote last.
+	fresh, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	ids := map[string]bool{}
+	for _, tok := range fresh.List() {
+		ids[tok.ID] = true
+	}
+	assert.True(t, ids[daemonToken.ID], "the daemon's token must survive a CLI mint")
+	assert.True(t, ids[cliToken.ID], "the CLI's token must survive the daemon's mint")
+
+	// And a revocation from one store must not resurrect a token the other removed.
+	require.NoError(t, cli.Revoke(cliToken.ID))
+	_, ok := daemon.Authenticate(daemonSecret)
+	assert.True(t, ok)
+	_, ok = daemon.Authenticate(cliSecret)
+	assert.False(t, ok, "a revoked token must stay revoked")
+}
+
+// TestRevokeSandboxRemovesEveryTokenThatNamesIt pins what removing a sandbox does to
+// the credentials scoped to it: they are deleted, not merely refused, so the next
+// sandbox minted with the same ID cannot inherit one.
+func TestRevokeSandboxRemovesEveryTokenThatNamesIt(t *testing.T) {
+	store, path := newTestStore(t)
+
+	scoped, _, err := store.CreateWithOptions("sandbox a", RoleRunner, TokenOptions{
+		Scopes:           []string{string(ScopeSandboxesRead), string(ScopeSandboxesExec)},
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"a"}},
+	})
+	require.NoError(t, err)
+	shared, _, err := store.CreateWithOptions("a and b", RoleRunner, TokenOptions{
+		Scopes:           []string{string(ScopeSandboxesRead), string(ScopeSandboxesExec)},
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"a", "b"}},
+	})
+	require.NoError(t, err)
+	other, _, err := store.CreateWithOptions("sandbox b", RoleRunner, TokenOptions{
+		Scopes:           []string{string(ScopeSandboxesRead), string(ScopeSandboxesExec)},
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"b"}},
+	})
+	require.NoError(t, err)
+
+	revoked, err := store.RevokeSandbox("a")
+	require.NoError(t, err)
+	assert.Equal(t, 2, revoked, "the token scoped to a and the one that names it among others")
+
+	_, ok := store.Authenticate(scoped)
+	assert.False(t, ok)
+	_, ok = store.Authenticate(shared)
+	assert.False(t, ok)
+	_, ok = store.Authenticate(other)
+	assert.True(t, ok, "a token for another sandbox is not this sandbox's to revoke")
+
+	// The deletion is persisted, not only in memory.
+	reopened, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	require.Len(t, reopened.List(), 1)
+
+	// Reaping a sandbox nothing was scoped to is a no-op, not an error.
+	revoked, err = store.RevokeSandbox("none")
+	require.NoError(t, err)
+	assert.Zero(t, revoked)
+}
+
+// TestSandboxSelectorIsHeldToTheScopesAndTheIDRules pins the two refusals that keep a
+// sandbox selector meaningful: it needs a sandbox scope to act through, and every ID
+// it names has to be one a sandbox could have.
+func TestSandboxSelectorIsHeldToTheScopesAndTheIDRules(t *testing.T) {
+	store, _ := newTestStore(t)
+
+	// A selector with no sandbox scope would look narrowed while authorizing nothing.
+	_, _, err := store.CreateWithOptions("meaningless", RoleRunner, TokenOptions{
+		Scopes:           []string{string(ScopeTasksExec)},
+		TaskSelectors:    &TaskSelectors{TaskIDs: []string{"t1"}},
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"a"}},
+	})
+	require.Error(t, err)
+	assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+
+	// An ID that cannot name a sandbox cannot name one in a selector either.
+	for _, id := range []string{"a/b", "a.b", " ", ""} {
+		_, _, err := store.CreateWithOptions("bad id", RoleRunner, TokenOptions{
+			Scopes:           []string{string(ScopeSandboxesRead)},
+			SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{id}},
+		})
+		assert.Error(t, err, "selector id %q must be refused", id)
+	}
+
+	// A runner with only a sandbox selector is a valid runner: that is the shape of a
+	// sandbox-scoped credential.
+	secret, tok, err := store.CreateWithOptions("scoped", RoleRunner, TokenOptions{
+		Scopes:           []string{string(ScopeSandboxesRead), string(ScopeSandboxesExec)},
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{"a"}},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, secret)
+	require.NotNil(t, tok.SandboxSelectors)
+	assert.Equal(t, []string{"a"}, tok.SandboxSelectors.SandboxIDs)
+
+	// And it loads from disk as the same credential.
+	identity := identityForToken(tok)
+	assert.NoError(t, identity.AuthorizeSandbox("a"))
+	assert.Error(t, identity.AuthorizeSandbox("b"))
+}
+
+// TestOpenTokenStoreRefusesAnEmptyPath pins the configuration mistake a daemon must hear
+// about at start-up: a store asked to live nowhere cannot serve any token.
+func TestOpenTokenStoreRefusesAnEmptyPath(t *testing.T) {
+	store, err := OpenTokenStore("   ")
+	require.Error(t, err)
+	assert.Nil(t, store)
+	assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+}
+
+// TestTokenStoreNamesAFileItCannotRead pins both ways the file can be unreadable: a path
+// under something that is not a directory, and a directory where the file belongs. A
+// store that cannot read its file is not an empty store — it fails closed.
+func TestTokenStoreNamesAFileItCannotRead(t *testing.T) {
+	t.Run("under a file", func(t *testing.T) {
+		dir := t.TempDir()
+		blocked := filepath.Join(dir, "not-a-directory")
+		require.NoError(t, os.WriteFile(blocked, []byte("x"), 0o600))
+
+		_, err := OpenTokenStore(filepath.Join(blocked, "tokens.json"))
+		require.Error(t, err)
+		assert.Equal(t, output.CodeInternal, requireErrorCode(t, err))
+		assert.Contains(t, err.Error(), "read token store")
+	})
+
+	t.Run("a directory where the file belongs", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "tokens.json")
+		require.NoError(t, os.MkdirAll(path, 0o700))
+
+		_, err := OpenTokenStore(path)
+		require.Error(t, err)
+		assert.Equal(t, output.CodeInternal, requireErrorCode(t, err))
+		assert.Contains(t, err.Error(), "read token store")
+	})
+}
+
+// TestLoadRefusesASandboxSelectorWithoutASandboxScope pins that a file is held to the rule
+// a mint is held to: a token narrowed to a sandbox but holding no sandbox scope authorizes
+// nothing while looking like a restriction, so it fails the load rather than the request
+// that uses it.
+func TestLoadRefusesASandboxSelectorWithoutASandboxScope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tokens.json")
+	content := `{
+  "schemaVersion": 2,
+  "tokens": [{
+    "id": "tok_handwritten",
+    "name": "written by hand",
+    "role": "runner",
+    "hash": "00",
+    "createdAt": "2026-11-12T10:00:00Z",
+    "scopes": ["tasks:read"],
+    "sandboxSelectors": {"sandboxIds": ["4612fa893603"]}
+  }]
+}
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	_, err := OpenTokenStore(path)
+	require.Error(t, err)
+	assert.Equal(t, output.CodeInvalid, requireErrorCode(t, err))
+	assert.Contains(t, err.Error(), "sandbox selector requires a sandbox scope")
+}
+
+// TestEmptySandboxSelectorSetIsNoRestriction pins the one normalization a caller can reach
+// with a selector that names nothing: an empty set means "no restriction", not "matches
+// nothing", and it is dropped rather than stored.
+func TestEmptySandboxSelectorSetIsNoRestriction(t *testing.T) {
+	store, err := OpenTokenStore(filepath.Join(t.TempDir(), "tokens.json"))
+	require.NoError(t, err)
+
+	_, tok, err := store.CreateWithOptions("all-sandboxes", RoleReader, TokenOptions{
+		SandboxSelectors: &SandboxSelectors{SandboxIDs: []string{}},
+	})
+	require.NoError(t, err)
+	assert.Nil(t, tok.SandboxSelectors)
+}
+
+// TestRevokeReportsAStoreItCannotRead pins that a revoke does not report a success it
+// could not establish: the file is reloaded first, and one that cannot be read fails the
+// revoke instead of removing the token from memory only.
+func TestRevokeReportsAStoreItCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tokens.json")
+	store, err := OpenTokenStore(path)
+	require.NoError(t, err)
+	_, tok, err := store.Create("reader", RoleReader)
+	require.NoError(t, err)
+
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.MkdirAll(path, 0o700))
+
+	err = store.Revoke(tok.ID)
+	require.Error(t, err)
+	assert.Equal(t, output.CodeInternal, requireErrorCode(t, err))
+}

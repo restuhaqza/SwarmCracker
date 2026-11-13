@@ -752,6 +752,7 @@ func TestAPITokenListShowsNarrowedScopesAndExpiry(t *testing.T) {
 		Scopes: []string{
 			"cluster:read", "events:read", "secrets:read", "configs:read",
 			"networks:read", "nodes:read", "tasks:logs", "tasks:read", "services:read",
+			"sandboxes:read",
 		},
 	})
 	require.NoError(t, err)

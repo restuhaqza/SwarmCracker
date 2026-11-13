@@ -33,6 +33,14 @@ const (
 	KindAuditList    = "AuditList"
 	KindVersionInfo  = "VersionInfo"
 	KindError        = "Error"
+
+	// The sandbox control plane's documents. They are served by the node's
+	// sandboxd (pkg/sandbox) on the same API as the cluster's, so a caller reads a
+	// sandbox with the token and envelope it already has.
+	KindSandbox        = "Sandbox"
+	KindSandboxList    = "SandboxList"
+	KindSandboxRemoval = "SandboxRemoval"
+	KindSandboxToken   = "SandboxToken"
 )
 
 // Warning is a non-fatal notice carried in a document's warnings array. It is

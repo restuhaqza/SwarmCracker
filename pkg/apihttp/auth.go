@@ -55,6 +55,20 @@ const (
 	ScopeClusterRead       Scope = "cluster:read"
 	ScopeTokensAdmin       Scope = "tokens:admin"
 	ScopeAuditRead         Scope = "audit:read"
+
+	// The sandbox control plane's scopes. A sandbox is not a task: it is created by
+	// the caller rather than scheduled, and it is reached by its own ID rather than
+	// through a service. So it has its own three permissions — read one or all, write
+	// them (create and remove), and exec inside one — and a fourth that is how a
+	// sandbox-scoped token comes to exist at all.
+	ScopeSandboxesRead  Scope = "sandboxes:read"
+	ScopeSandboxesWrite Scope = "sandboxes:write"
+	ScopeSandboxesExec  Scope = "sandboxes:exec"
+	// ScopeSandboxesToken may mint a token scoped to one sandbox. It is admin-only
+	// because issuing a credential is administrative work: a sandbox-scoped token
+	// carries read and exec for its sandbox and nothing else, and a holder of one
+	// must not be able to mint another.
+	ScopeSandboxesToken Scope = "sandboxes:token"
 )
 
 // readerScopes is the base of every role. Order is the documentation order: it
@@ -69,17 +83,20 @@ var readerScopes = []Scope{
 	ScopeSecretsRead,
 	ScopeEventsRead,
 	ScopeClusterRead,
+	ScopeSandboxesRead,
 }
 
 var runnerScopes = concatScopes(readerScopes,
-	ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots)
+	ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots,
+	ScopeSandboxesExec)
 
 var operatorScopes = concatScopes(runnerScopes,
 	ScopeServicesWrite, ScopeNetworksWrite, ScopeConfigsWrite,
-	ScopeConfigsReadValues, ScopeSecretsWrite)
+	ScopeConfigsReadValues, ScopeSecretsWrite,
+	ScopeSandboxesWrite)
 
 var adminScopes = concatScopes(operatorScopes,
-	ScopeNodesWrite, ScopeTokensAdmin, ScopeAuditRead,
+	ScopeNodesWrite, ScopeTokensAdmin, ScopeAuditRead, ScopeSandboxesToken,
 	// A migration replaces a service's task and moves a guest's memory image
 	// between hosts, so it outranks a deploy: admin only.
 	ScopeMigrationsWrite)
@@ -174,6 +191,36 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
+// SandboxSelectors narrows a token to specific sandboxes. It is the sandbox half of
+// the task-selector idea, and it exists for the same reason: sandbox exec is a shell
+// inside a guest, so a token that can exec in one sandbox must not be able to exec in
+// another, and a role alone cannot say which.
+//
+// A nil *SandboxSelectors means "no restriction" for an operator or admin; a runner
+// must carry at least one sandbox ID to exec in any. Selectors gate the sandbox
+// operations that touch one sandbox — exec, and removal — not the read routes: a
+// reader still lists every sandbox its sandboxes:read covers, exactly as a reader
+// lists every task.
+type SandboxSelectors struct {
+	SandboxIDs []string `json:"sandboxIds,omitempty"`
+}
+
+// Empty reports whether the selector set restricts nothing.
+func (s *SandboxSelectors) Empty() bool {
+	return s == nil || len(s.SandboxIDs) == 0
+}
+
+// Matches reports whether sandboxID is one the selector names. An empty selector
+// matches nothing rather than everything: the caller decides what "no restriction"
+// means, and the two callers that may have one (an operator, an admin) ask Empty
+// first.
+func (s *SandboxSelectors) Matches(sandboxID string) bool {
+	if s == nil {
+		return false
+	}
+	return containsString(s.SandboxIDs, sandboxID)
+}
+
 // Identity is the authenticated caller of one request.
 type Identity struct {
 	// Type is "token" (TCP, bearer authenticated) or "local" (Unix socket,
@@ -188,6 +235,10 @@ type Identity struct {
 	Scopes []Scope
 	// Selectors restricts which tasks a runner may touch. Nil means "all".
 	Selectors *TaskSelectors
+	// Sandboxes restricts which sandboxes a runner may touch. Nil means "all" for
+	// an operator or admin, and nothing for a runner: sandbox exec is a shell, and a
+	// role alone cannot say which sandbox it is meant for.
+	Sandboxes *SandboxSelectors
 }
 
 // HasScope is the single authorization check handlers perform.
@@ -224,6 +275,31 @@ func (i Identity) AuthorizeTask(serviceID, taskID string, serviceLabels map[stri
 		WithDetails(map[string]any{"reason": "selector_mismatch"})
 }
 
+// AuthorizeSandbox decides whether this identity may act on one sandbox. It is the
+// sandbox half of AuthorizeTask and follows the same rule: a runner without a sandbox
+// selector fails closed, because sandboxes:exec alone would be a shell inside every
+// sandbox on the node, and an operator or admin without one means all of them.
+//
+// A refusal names the reason in details.reason so the caller can tell the two
+// failures apart: "sandbox_selector_required" is a token that can never exec in a
+// sandbox, and "sandbox_selector_mismatch" is a token meant for another one. Both are
+// 403s, and neither is silent: the sandbox the caller asked about is in the details.
+func (i Identity) AuthorizeSandbox(sandboxID string) error {
+	if i.Sandboxes.Empty() {
+		if i.Role == RoleRunner {
+			return sandboxSelectorRequired()
+		}
+		return nil
+	}
+	if i.Sandboxes.Matches(sandboxID) {
+		return nil
+	}
+
+	return output.NewError(output.CodeForbidden,
+		"token sandbox selectors do not match this sandbox").
+		WithDetails(map[string]any{"reason": "sandbox_selector_mismatch", "sandboxId": sandboxID})
+}
+
 // LocalIdentity is the identity of a request over the trusted Unix socket: the
 // socket's file mode is the credential, so it is a local administrator.
 func LocalIdentity() Identity {
@@ -248,11 +324,15 @@ func IdentityFrom(ctx context.Context) (Identity, bool) {
 	return identity, ok
 }
 
-// forbiddenScope is the 403 for a token that lacks scope.
+// forbiddenScope is the 403 for a token that lacks scope. details.reason is what
+// says so in a stable way: every scope refusal carries "scope_missing" and the scope
+// the route required, so a client can tell "this token may not do that" from a
+// refusal that depends on which resource was named (a selector mismatch, for
+// example) without parsing the message.
 func forbiddenScope(scope Scope) error {
 	return output.NewError(output.CodeForbidden,
 		"token lacks the scope required by this route").
-		WithDetails(map[string]any{"requiredScope": string(scope)})
+		WithDetails(map[string]any{"reason": "scope_missing", "requiredScope": string(scope)})
 }
 
 // selectorRequired is the 403 for a runner token that carries no selector.
@@ -260,4 +340,11 @@ func selectorRequired() error {
 	return output.NewError(output.CodeForbidden,
 		"runner tokens must carry a task selector").
 		WithDetails(map[string]any{"reason": "selector_required"})
+}
+
+// sandboxSelectorRequired is the 403 for a runner token that names no sandbox.
+func sandboxSelectorRequired() error {
+	return output.NewError(output.CodeForbidden,
+		"runner tokens must carry a sandbox selector to exec in a sandbox").
+		WithDetails(map[string]any{"reason": "sandbox_selector_required"})
 }

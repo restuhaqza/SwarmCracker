@@ -124,6 +124,26 @@ func (t Task) guestAvailable() bool {
 	return t.Running && t.VsockPath() != ""
 }
 
+// SandboxTask describes one sandbox's running guest as the exec, files and health
+// handlers need it: the instance ID and the host path of the vsock muxer its agent
+// answers on.
+//
+// A sandbox is not resolved by SocketDirSource: that resolver reads the node's
+// instance registry, and a sandbox's ID also names a control-plane record whose
+// owner (pkg/sandbox) already holds the muxer path. So the owner states the two facts
+// the handler needs instead of the handler deriving them, which is the same rule the
+// resolver applies to a VM whose paths a task ID cannot derive — and it is why the
+// task is marked as recorded: a sandbox's identity is what its record says, not what
+// its ID could be made to spell.
+func SandboxTask(id, vsockPath string) Task {
+	return Task{
+		ID:                id,
+		Running:           true,
+		recordedVsockPath: vsockPath,
+		recordedIdentity:  true,
+	}
+}
+
 // consoleAvailable reports whether the task has a console to attach to. Only a
 // running task keeps one: a stopped task's console socket is removed when the
 // console server closes, so the attach handler answers not_found like exec does.

@@ -52,12 +52,24 @@ type PinSource func(ctx context.Context, kernelProfile string) (checkpoint.Pin, 
 // pin, and refusing says so rather than guessing.
 func NodeHostPin(firecrackerBinary, kernelPath string, profiles map[string]string) PinSource {
 	return func(ctx context.Context, kernelProfile string) (checkpoint.Pin, error) {
-		kernel := strings.TrimSpace(profiles[strings.TrimSpace(kernelProfile)])
-		if kernel == "" {
-			kernel = kernelPath
-		}
-		return NodePin(ctx, firecrackerBinary, kernel)
+		return NodePin(ctx, firecrackerBinary, KernelFor(kernelProfile, kernelPath, profiles))
 	}
+}
+
+// KernelFor is the kernel image a template with kernelProfile boots on a node whose
+// default kernel is fallback and whose profiles map profile to path: the mapped
+// image when there is one, the default otherwise.
+//
+// It is exported because two questions depend on the same answer and must not drift:
+// the pin check (NodeHostPin, which holds a template to the kernel this node would
+// boot it with) and the boot itself (a caller that launches the template). A caller
+// that resolved the kernel its own way could boot a kernel the pin never approved.
+func KernelFor(kernelProfile, fallback string, profiles map[string]string) string {
+	kernel := strings.TrimSpace(profiles[strings.TrimSpace(kernelProfile)])
+	if kernel == "" {
+		kernel = fallback
+	}
+	return kernel
 }
 
 // Resolve finds a built artifact in storeDir by "name" (newest version) or

@@ -35,7 +35,7 @@ The main CLI for cluster management, service deployment, and VM operations.
 `service ls|inspect|ps` (with `-o json`, or `-o name` on the list forms; a remote
 table exists only for `service ls`), `task ls`, `node ls`, `config ls`,
 `secret ls`, `network ls`, `service logs`, `vm logs`, `vm exec`, `vm attach`,
-`vm migrate` and `vm snapshot stop-restored`. Every other command refuses `-H`
+`vm migrate`, `vm snapshot stop-restored` and the `sandbox` group. Every other command refuses `-H`
 with a `usage` error (exit `2`) rather than silently reading the local cluster.
 That includes the other `inspect` forms (`task`, `node`, `config`, `secret`,
 `network`), which reject the flag inside the command, and the other
@@ -791,6 +791,47 @@ The manifest records what the build observed: the recipe digest, the digest the 
 > The older `swarmcracker image build|list|inspect` commands are deprecated aliases for these three; they run the same commands and warn on stderr.
 
 Templates can be booted with `swarmcracker vm create --golden` or `swarmcracker service create --golden`. See the [Golden Images guide](/guides/golden-images/).
+
+#### `swarmcracker sandbox`
+
+Agent sandboxes: microVMs booted from a sealed template, with their own disk, their
+own network namespace and their own per-boot credential. Every command is a client of
+the node's sandbox control plane (`sandboxd`); the commands do not touch a VM
+directly, because a sandbox outlives the command that asked for it.
+
+| Subcommand | Description |
+|------------|-------------|
+| `create <template>` | Boot a sandbox, returning once its guest agent has answered |
+| `ls` (alias `list`) | List the node's sandboxes |
+| `inspect <id>` | Show one sandbox as a v1 `Sandbox` document |
+| `exec <id> -- <cmd...>` | Run a command in a ready sandbox, streaming stdout and stderr |
+| `rm <id>` (alias `remove`) | Remove a sandbox and everything it holds |
+| `token <id>` | Mint an API token scoped to one sandbox (needs `sandboxes:token`) |
+
+**`sandbox create` flags:** `--id`, `--owner`, `--egress <host:port>` (repeatable;
+default reaches nothing), `--ttl <duration>` (idle TTL; `0` uses the node's default,
+negative means never), `--vcpus`, `--memory`.
+**`sandbox exec` flags:** `-e`/`--env` (repeatable `K=V`), `-w`/`--workdir`.
+**`sandbox token` flags:** `--name`, `--expires-at`.
+**Persistent flag:** `--sandbox-socket <path>` (default `$SWARM_SANDBOX_SOCKET`, else
+`/var/run/swarmcracker/sandboxd.sock`).
+
+`sandbox create` resolves the template through the node's sealed-template store, where
+the template's pin is checked against the software the node actually runs: a template
+built on another Firecracker version or another kernel is refused with
+`template_pin_mismatch` before a disk is copied. The command returns only once the
+guest agent answered its hello, and it reports the node's own ready window (record
+created to the guest's answer) as well as this command's wall clock. `sandbox exec`
+streams the command's output and exits with the guest's own status, so a failing
+command is a failing command. `sandbox rm` stops the VMM first (and frees nothing if it
+cannot), then frees the socket, cgroup, jail, namespace (with the TAP device and the
+policy in it), disk, the host's copy of the agent token, the instance record and every
+API token scoped to the sandbox, and prints what it freed field by field. The guest's
+console log is kept, as a task's log outlives its task.
+
+These commands accept `-H` / `--host` like the other API paths: without it they use the
+local control socket (whose file mode is the credential), and with it the same routes
+over TLS with a bearer token. See the [Sandboxes guide](/guides/sandboxes/).
 
 #### `swarmcracker network`
 

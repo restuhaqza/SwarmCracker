@@ -50,6 +50,10 @@ type Config struct {
 	Token string
 	// ServerName overrides the TLS server name used to verify Endpoint.
 	ServerName string
+	// SandboxSocket is the sandbox daemon's control socket (sandboxd), used by the
+	// sandbox client when Endpoint is empty. Empty resolves
+	// $SWARM_SANDBOX_SOCKET, then DefaultSandboxSocket.
+	SandboxSocket string
 }
 
 // DefaultConfig reads the same environment variables as the legacy CLI.

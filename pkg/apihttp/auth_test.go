@@ -21,17 +21,18 @@ func TestRoleScopes(t *testing.T) {
 		ScopeSecretsRead, ScopeSecretsWrite,
 		ScopeEventsRead, ScopeClusterRead,
 		ScopeTokensAdmin, ScopeAuditRead,
+		ScopeSandboxesRead, ScopeSandboxesWrite, ScopeSandboxesExec, ScopeSandboxesToken,
 	}
 
 	reader := []Scope{
 		ScopeServicesRead, ScopeTasksRead, ScopeNodesRead, ScopeNetworksRead,
 		ScopeConfigsRead, ScopeSecretsRead, ScopeEventsRead, ScopeTasksLogs,
-		ScopeClusterRead,
+		ScopeClusterRead, ScopeSandboxesRead,
 	}
-	runner := append(append([]Scope{}, reader...), ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots)
+	runner := append(append([]Scope{}, reader...), ScopeTasksExec, ScopeTasksFiles, ScopeTasksSnapshots, ScopeSandboxesExec)
 	operator := append(append([]Scope{}, runner...),
 		ScopeServicesWrite, ScopeNetworksWrite, ScopeConfigsWrite,
-		ScopeConfigsReadValues, ScopeSecretsWrite)
+		ScopeConfigsReadValues, ScopeSecretsWrite, ScopeSandboxesWrite)
 
 	cases := []struct {
 		role string
@@ -86,6 +87,7 @@ func TestAdminHoldsEveryScope(t *testing.T) {
 		ScopeNodesWrite, ScopeNetworksRead, ScopeNetworksWrite, ScopeConfigsRead,
 		ScopeConfigsReadValues, ScopeConfigsWrite, ScopeSecretsRead, ScopeSecretsWrite,
 		ScopeEventsRead, ScopeClusterRead, ScopeTokensAdmin, ScopeAuditRead,
+		ScopeSandboxesRead, ScopeSandboxesWrite, ScopeSandboxesExec, ScopeSandboxesToken,
 	} {
 		assert.Contains(t, scopes, scope)
 	}
@@ -97,7 +99,7 @@ func TestKnownScope(t *testing.T) {
 		"tasks:logs", "tasks:snapshots", "nodes:read", "nodes:write", "networks:read",
 		"networks:write", "configs:read", "configs:read-values", "configs:write",
 		"secrets:read", "secrets:write", "events:read", "cluster:read", "tokens:admin",
-		"audit:read",
+		"audit:read", "sandboxes:read", "sandboxes:write", "sandboxes:exec", "sandboxes:token",
 	} {
 		assert.True(t, KnownScope(scope), scope)
 	}

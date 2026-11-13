@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/restuhaqza/swarmcracker/pkg/output"
+	"github.com/restuhaqza/swarmcracker/pkg/runtime"
 )
 
 const (
@@ -47,30 +48,33 @@ const (
 //
 // Scopes is the effective authorization set: the role expansion, narrowed by
 // TokenOptions.Scopes at mint time. TaskSelectors restricts which tasks a runner
-// may touch. ExpiresAt is RFC3339 UTC; empty means never.
+// may touch, and SandboxSelectors which sandboxes. ExpiresAt is RFC3339 UTC; empty
+// means never.
 type Token struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Role          string         `json:"role"`
-	CreatedAt     string         `json:"createdAt"`
-	Scopes        []string       `json:"scopes,omitempty"`
-	TaskSelectors *TaskSelectors `json:"taskSelectors,omitempty"`
-	ExpiresAt     string         `json:"expiresAt,omitempty"`
-	LastUsedAt    string         `json:"lastUsedAt,omitempty"`
-	Hash          string         `json:"-"` // never serialized or printed
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Role             string            `json:"role"`
+	CreatedAt        string            `json:"createdAt"`
+	Scopes           []string          `json:"scopes,omitempty"`
+	TaskSelectors    *TaskSelectors    `json:"taskSelectors,omitempty"`
+	SandboxSelectors *SandboxSelectors `json:"sandboxSelectors,omitempty"`
+	ExpiresAt        string            `json:"expiresAt,omitempty"`
+	LastUsedAt       string            `json:"lastUsedAt,omitempty"`
+	Hash             string            `json:"-"` // never serialized or printed
 }
 
 // diskToken is the on-disk representation and the only place the hash lives.
 type diskToken struct {
-	ID            string         `json:"id"`
-	Name          string         `json:"name"`
-	Role          string         `json:"role"`
-	Hash          string         `json:"hash"`
-	CreatedAt     string         `json:"createdAt"`
-	Scopes        []string       `json:"scopes,omitempty"`
-	TaskSelectors *TaskSelectors `json:"taskSelectors,omitempty"`
-	ExpiresAt     string         `json:"expiresAt,omitempty"`
-	LastUsedAt    string         `json:"lastUsedAt,omitempty"`
+	ID               string            `json:"id"`
+	Name             string            `json:"name"`
+	Role             string            `json:"role"`
+	Hash             string            `json:"hash"`
+	CreatedAt        string            `json:"createdAt"`
+	Scopes           []string          `json:"scopes,omitempty"`
+	TaskSelectors    *TaskSelectors    `json:"taskSelectors,omitempty"`
+	SandboxSelectors *SandboxSelectors `json:"sandboxSelectors,omitempty"`
+	ExpiresAt        string            `json:"expiresAt,omitempty"`
+	LastUsedAt       string            `json:"lastUsedAt,omitempty"`
 }
 
 // tokenFile is the schema of the token file.
@@ -228,6 +232,21 @@ func parseTokenFile(data []byte, path string) ([]Token, error) {
 		}
 		tok.TaskSelectors = selectors
 
+		// The sandbox selector goes through the same normalization, and it is held
+		// to the rule a minted one is: a token narrowed to sandboxes must carry a
+		// scope that reaches them, or it would authorize nothing while looking like
+		// a restriction.
+		sandboxes, err := normalizeSandboxSelectors(dt.SandboxSelectors)
+		if err != nil {
+			return nil, output.NewErrorf(output.CodeInvalid,
+				"token store %s: token %q: %v", path, tok.ID, err)
+		}
+		if err := checkSandboxSelectorScopes(tok.Scopes, sandboxes); err != nil {
+			return nil, output.NewErrorf(output.CodeInvalid,
+				"token store %s: token %q: %v", path, tok.ID, err)
+		}
+		tok.SandboxSelectors = sandboxes
+
 		tokens = append(tokens, tok)
 	}
 	return tokens, nil
@@ -260,7 +279,95 @@ func cloneToken(tok Token) Token {
 		}
 		out.TaskSelectors = &selectors
 	}
+	if tok.SandboxSelectors != nil {
+		selectors := *tok.SandboxSelectors
+		selectors.SandboxIDs = append([]string(nil), tok.SandboxSelectors.SandboxIDs...)
+		out.SandboxSelectors = &selectors
+	}
 	return out
+}
+
+// normalizeSandboxSelectors validates and copies a sandbox selector set. An empty or
+// all-empty input becomes nil, which means "no restriction"; every stored entry is
+// trimmed and non-empty, so a selector never matches by accident, and every entry is
+// held to the node's own rule for what can name a sandbox (runtime.CheckTaskID) so a
+// selector cannot name something that could never be one.
+func normalizeSandboxSelectors(in *SandboxSelectors) (*SandboxSelectors, error) {
+	if in == nil {
+		return nil, nil
+	}
+
+	out := &SandboxSelectors{}
+	for _, id := range in.SandboxIDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, output.NewError(output.CodeInvalid, "sandbox selector id must not be empty")
+		}
+		if err := runtime.CheckTaskID(id); err != nil {
+			return nil, output.NewErrorf(output.CodeInvalid, "sandbox selector id %q cannot name a sandbox: %v", id, err)
+		}
+		out.SandboxIDs = append(out.SandboxIDs, id)
+	}
+
+	if out.Empty() {
+		return nil, nil
+	}
+	return out, nil
+}
+
+// checkSandboxSelectorScopes refuses a sandbox selector on a token that holds no
+// sandbox scope. Such a token would look narrowed while authorizing nothing, and the
+// operator who wrote it would learn that from a 403 at use time rather than from the
+// refusal that names the mistake.
+func checkSandboxSelectorScopes(scopes []string, selectors *SandboxSelectors) error {
+	if selectors.Empty() {
+		return nil
+	}
+	for _, scope := range scopes {
+		switch Scope(scope) {
+		case ScopeSandboxesRead, ScopeSandboxesExec, ScopeSandboxesWrite, ScopeSandboxesToken:
+			return nil
+		}
+	}
+	return output.NewError(output.CodeInvalid,
+		"a sandbox selector requires a sandbox scope (sandboxes:read, sandboxes:exec, sandboxes:write or sandboxes:token)")
+}
+
+// RevokeSandbox deletes every token whose sandbox selector names sandboxID, and
+// reports how many it deleted. It is what removing a sandbox runs: a credential that
+// outlived the sandbox it was scoped to would be a live key to a guest that no longer
+// exists, and the next sandbox minted with the same ID would inherit it.
+//
+// A token that names several sandboxes is deleted too: it is a credential for a set,
+// and the set no longer exists as it was.
+func (s *TokenStore) RevokeSandbox(sandboxID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.reloadLocked(); err != nil {
+		return 0, err
+	}
+
+	kept := make([]Token, 0, len(s.tokens))
+	revoked := 0
+	for _, tok := range s.tokens {
+		if tok.SandboxSelectors.Matches(sandboxID) {
+			revoked++
+			continue
+		}
+		kept = append(kept, tok)
+	}
+	if revoked == 0 {
+		return 0, nil
+	}
+
+	previous := s.tokens
+	s.tokens = kept
+	if err := s.persistLocked(); err != nil {
+		s.tokens = previous
+		return 0, err
+	}
+	return revoked, nil
 }
 
 // TokenOptions narrows what a role grants. The zero value means "the full role
@@ -270,8 +377,12 @@ type TokenOptions struct {
 	// empty keeps the whole role set.
 	Scopes []string
 	// TaskSelectors restricts which tasks a runner may reach. A runner token
-	// without one is rejected.
+	// without any selector is rejected.
 	TaskSelectors *TaskSelectors
+	// SandboxSelectors restricts which sandboxes a runner may reach. It is how a
+	// sandbox-scoped token is expressed: narrow the scopes to sandboxes:read and
+	// sandboxes:exec and name the one sandbox.
+	SandboxSelectors *SandboxSelectors
 	// ExpiresAt is an RFC3339 instant; empty means never expires.
 	ExpiresAt string
 }
@@ -303,9 +414,16 @@ func (s *TokenStore) CreateWithOptions(name, role string, opts TokenOptions) (st
 	if err != nil {
 		return "", Token{}, err
 	}
-	if role == RoleRunner && (selectors == nil || selectors.Empty()) {
+	sandboxes, err := normalizeSandboxSelectors(opts.SandboxSelectors)
+	if err != nil {
+		return "", Token{}, err
+	}
+	if err := checkSandboxSelectorScopes(scopeStrings(scopes), sandboxes); err != nil {
+		return "", Token{}, err
+	}
+	if role == RoleRunner && (selectors == nil || selectors.Empty()) && sandboxes.Empty() {
 		return "", Token{}, output.NewError(output.CodeInvalid,
-			"runner tokens require at least one task selector (--service-id, --task-id or --selector-label)")
+			"runner tokens require at least one selector (--service-id, --task-id, --selector-label or --sandbox-id)")
 	}
 
 	expiresAt := strings.TrimSpace(opts.ExpiresAt)
@@ -331,18 +449,28 @@ func (s *TokenStore) CreateWithOptions(name, role string, opts TokenOptions) (st
 	}
 
 	tok := Token{
-		ID:            id,
-		Name:          name,
-		Role:          role,
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		Scopes:        scopeStrings(scopes),
-		TaskSelectors: selectors,
-		ExpiresAt:     expiresAt,
-		Hash:          hashSecret(secret),
+		ID:               id,
+		Name:             name,
+		Role:             role,
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+		Scopes:           scopeStrings(scopes),
+		TaskSelectors:    selectors,
+		SandboxSelectors: sandboxes,
+		ExpiresAt:        expiresAt,
+		Hash:             hashSecret(secret),
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	// Start the mutation from what is on disk rather than from the last set this
+	// process loaded. The file is shared with the CLI and with the node's daemons, so
+	// a persist that did not reload first would write this process's set and drop
+	// every token another process minted since — a credential that silently stopped
+	// working because a sandbox was created. Authenticate reloads for the same reason.
+	if err := s.reloadLocked(); err != nil {
+		return "", Token{}, err
+	}
 
 	s.tokens = append(s.tokens, tok)
 	if err := s.persistLocked(); err != nil {
@@ -503,6 +631,12 @@ func (s *TokenStore) Revoke(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Start from the file's set: see CreateWithOptions. A revoke that began from a
+	// stale set would persist it and resurrect tokens another process removed.
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
+
 	for i, tok := range s.tokens {
 		if tok.ID != id {
 			continue
@@ -535,15 +669,16 @@ func (s *TokenStore) persistLocked() error {
 	}
 	for _, tok := range s.tokens {
 		file.Tokens = append(file.Tokens, diskToken{
-			ID:            tok.ID,
-			Name:          tok.Name,
-			Role:          tok.Role,
-			Hash:          tok.Hash,
-			CreatedAt:     tok.CreatedAt,
-			Scopes:        tok.Scopes,
-			TaskSelectors: tok.TaskSelectors,
-			ExpiresAt:     tok.ExpiresAt,
-			LastUsedAt:    tok.LastUsedAt,
+			ID:               tok.ID,
+			Name:             tok.Name,
+			Role:             tok.Role,
+			Hash:             tok.Hash,
+			CreatedAt:        tok.CreatedAt,
+			Scopes:           tok.Scopes,
+			TaskSelectors:    tok.TaskSelectors,
+			SandboxSelectors: tok.SandboxSelectors,
+			ExpiresAt:        tok.ExpiresAt,
+			LastUsedAt:       tok.LastUsedAt,
 		})
 	}
 

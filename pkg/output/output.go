@@ -53,6 +53,14 @@ const (
 	CodeInternal           Code = "internal"
 	CodeUsage              Code = "usage"
 	CodeUnreachable        Code = "unreachable"
+
+	// Codes a sealed template's own refusals carry (pkg/golden). They are part of the
+	// contract a caller sees — a template built by other host software is refused by
+	// name, not as an internal error — so the taxonomy states them and the HTTP
+	// mapping answers 409 for both: what the caller asked for cannot be used as it
+	// is, and retrying the same request will not change that.
+	CodeTemplatePinMismatch  Code = "template_pin_mismatch"
+	CodeTemplateIncompatible Code = "template_incompatible"
 )
 
 // Error is a typed CLI/API failure. It implements error and carries the stable

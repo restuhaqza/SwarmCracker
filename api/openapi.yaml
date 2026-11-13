@@ -2379,6 +2379,324 @@ paths:
           content:
             application/vnd.swarmcracker.v1+json:
               schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes:
+    get:
+      operationId: listSandboxes
+      summary: List the sandboxes on this node
+      description: >
+        Requires sandboxes:read. A sandbox is not a task: it is created by the
+        caller instead of scheduled, it has no SwarmKit identity, and it is
+        reached by its own id. The list is the node's own, and a node that runs no
+        sandbox control plane answers 501 not_implemented with
+        details.capability "sandboxes" rather than an empty list. A record file
+        the node cannot read is reported in warnings[] (code
+        "sandbox_record_unreadable") and does not fail the listing. sandboxes:read
+        is not narrowed by sandbox selectors — selectors gate the operations that
+        reach inside one sandbox, exactly as task selectors gate exec.
+      responses:
+        "200":
+          description: Every sandbox this node has a record of
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxList" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    post:
+      operationId: createSandbox
+      summary: Create a sandbox from a sealed template
+      description: >
+        Requires sandboxes:write. The body is a SandboxCreate. The template is
+        resolved through the node's sealed-template store, where its pin is
+        checked against the software this node actually runs: a template built on
+        another Firecracker version or another kernel is 409 conflict with code
+        "template_pin_mismatch", before a disk is copied and before any VMM
+        exists. A template whose guest agent cannot run the operations this host
+        needs is 409 "template_incompatible". The response is the sandbox in state
+        "ready", which means its guest agent answered its hello — not that a VMM
+        started; the call returns only once that happened, so it can take as long
+        as a boot. An id that is already a sandbox is 409 conflict; the node does
+        not replace one. The attempt is audited as sandbox.create.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/SandboxCreate" }
+      responses:
+        "201":
+          description: The sandbox, ready
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxDocument" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}:
+    get:
+      operationId: getSandbox
+      summary: Read one sandbox
+      description: >
+        Requires sandboxes:read. A sandbox this node does not have is 404
+        not_found. What the document does not carry is host layout: the sandbox's
+        jail, disk and agent-token path stay on the node.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+      responses:
+        "200":
+          description: The sandbox
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            ETag: { $ref: "#/components/headers/ETag" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxDocument" }
+        "304":
+          $ref: "#/components/responses/NotModified"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+    delete:
+      operationId: removeSandbox
+      summary: Remove a sandbox and everything it holds
+      description: >
+        Requires sandboxes:write, and the caller's sandbox selectors must name
+        this sandbox (403 details.reason "sandbox_selector_mismatch" otherwise;
+        a runner token with no sandbox selector is 403
+        "sandbox_selector_required"). The teardown stops the VMM first: if it
+        cannot be stopped, nothing else is freed and the refusal says so, because
+        freeing a live VM's namespace and disk is not a removal. Then the socket,
+        cgroup, jail, network namespace (with the TAP device and the policy in
+        it), disk, the host's copy of the agent token, the node's instance record
+        and every API token scoped to the sandbox are freed, and the record is
+        deleted last. The response reports each of those, so "everything is gone"
+        is a list rather than a promise. The VMM's console log is kept, as a
+        task's log outlives its task.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+      responses:
+        "200":
+          description: The sandbox and what removing it freed
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxRemoval" }
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}/exec:
+    post:
+      operationId: execSandbox
+      summary: Run a command in a sandbox and stream its output
+      description: >
+        Requires sandboxes:exec, and the caller's sandbox selectors must name this
+        sandbox: a token minted for one sandbox gets 403 with details.reason
+        "sandbox_selector_mismatch" for another, and names the sandbox it was
+        asked about in details.sandboxId. A runner token with no sandbox selector
+        is 403 "sandbox_selector_required". The body is the task route's
+        ExecRequest and the response is the same `application/x-ndjson` stream of
+        ExecFrame objects, produced by the same handler: a caller that can follow
+        a task's exec stream does not learn a second one. The command runs over the
+        sandbox's guest agent, which is the only way into its guest. A sandbox
+        that is not ready (state created, failed or stopped) is 409 conflict and
+        its reason is in the message; interactive exec is 501
+        details.reason "tty_not_supported", as on the task route. The attempt is
+        audited as sandbox.exec.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox id.
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/ExecRequest" }
+      responses:
+        "200":
+          description: >
+            The exec output stream: one ExecFrame JSON object per line, ending
+            with exactly one `exit` frame. A non-zero guest exit is a successful
+            call and arrives as `exit` with `exitCode` (plus `signal` and
+            `exitCode` 128+N when the guest was killed by signal N).
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/x-ndjson:
+              schema: { $ref: "#/components/schemas/ExecFrame" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
+  /v1/sandboxes/{id}/tokens:
+    post:
+      operationId: createSandboxToken
+      summary: Mint an API token scoped to one sandbox
+      description: >
+        Requires sandboxes:token, which only an admin token (or the trusted Unix
+        socket) holds: issuing a credential is administrative work. The token the
+        response carries holds exactly sandboxes:read and sandboxes:exec, narrowed
+        by a sandbox selector that names this sandbox, so it can run commands in
+        this sandbox and read it, and cannot exec in another sandbox (403
+        "sandbox_selector_mismatch"), create or remove one (403
+        "scope_missing" with details.requiredScope "sandboxes:write") or mint
+        another (403 "scope_missing" with "sandboxes:token"). The secret is in
+        this response and never again; removing the sandbox deletes the token.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The sandbox the token is scoped to. It must exist on this node.
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/vnd.swarmcracker.v1+json:
+            schema: { $ref: "#/components/schemas/SandboxTokenRequest" }
+      responses:
+        "201":
+          description: The minted token, with its secret
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+            Idempotency-Replayed: { $ref: "#/components/headers/Idempotency-Replayed" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/SandboxToken" }
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthenticated"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "415":
+          $ref: "#/components/responses/UnsupportedMediaType"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "501":
+          $ref: "#/components/responses/NotImplemented"
+        "4XX":
+          description: Typed failure
+          headers:
+            X-SwarmCracker-Api-Version: { $ref: "#/components/headers/X-SwarmCracker-Api-Version" }
+            X-Request-Id: { $ref: "#/components/headers/X-Request-Id" }
+          content:
+            application/vnd.swarmcracker.v1+json:
+              schema: { $ref: "#/components/schemas/ErrorDocument" }
   /v1/nodes:
     get:
       operationId: listNodes
@@ -3993,7 +4311,9 @@ components:
             runs the task. snapshots is advertised only when the experimental
             snapshot surface is enabled. migrations is advertised only when the
             manager has both a node broker and its migration spool, because a
-            migration is relayed and spooled. A capability that is advertised is
+            migration is relayed and spooled. sandboxes is advertised only when the
+            node serves a sandbox control plane (sandboxd), because the sandbox
+            routes are that daemon's. A capability that is advertised is
             served; the version document never promises a route that answers 501.
 
     AuditActor:
@@ -4081,3 +4401,160 @@ components:
           items: { $ref: "#/components/schemas/AuditRecord" }
         next:
           type: [string, "null"]
+
+    Sandbox:
+      type: object
+      required: [id, state]
+      description: >
+        One agent sandbox: a microVM booted from a sealed template, with its own
+        disk, its own network namespace and its own per-boot credential. Host
+        layout — the jail, the disk path, the agent-token path — is deliberately
+        absent: what crosses the API is what a caller acts on.
+      properties:
+        id: { type: string }
+        state:
+          type: string
+          enum: [created, ready, failed, stopped]
+          description: >
+            created is a sandbox being built (or a create that died), ready is one
+            whose guest agent answered its hello — the only state in which it can
+            run a command — failed is one the node could not make usable or lost
+            (reason says which), and stopped is one the node has ended. A removed
+            sandbox is not listed: its record is deleted once everything it held is
+            freed.
+        template: { type: string, description: "The resolved template reference, name@version." }
+        owner: { type: string }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        readyAt:
+          type: string
+          format: date-time
+          description: When the guest agent answered. Absent until it does.
+        lastActiveAt:
+          type: string
+          format: date-time
+          description: When the node last saw the sandbox used; the idle TTL is measured from it.
+        idleTtlSeconds:
+          type: integer
+          minimum: 0
+          description: How long the sandbox may sit unused before the reaper takes it back. 0 means never.
+        reason: { type: string, description: Why a sandbox is failed. Absent in every other state. }
+        guestIp: { type: string }
+        mac: { type: string }
+        egress:
+          type: array
+          items: { type: string }
+          description: The allowlist the sandbox was created with, as requested; empty is egress none.
+        diskCopy:
+          type: string
+          enum: [reflink, sparse, full]
+          description: How the sandbox's own disk was materialized from the template.
+        agentVersion: { type: string }
+        bootId: { type: string }
+
+    SandboxList:
+      type: object
+      required: [schemaVersion, kind, items, next]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [SandboxList] }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/Sandbox" }
+        next:
+          type: [string, "null"]
+        warnings:
+          type: array
+          items: { $ref: "#/components/schemas/Warning" }
+
+    SandboxDocument:
+      allOf:
+        - $ref: "#/components/schemas/Sandbox"
+        - type: object
+          required: [schemaVersion, kind]
+          properties:
+            schemaVersion: { type: integer, enum: [1] }
+            kind: { type: string, enum: [Sandbox] }
+
+    SandboxCreate:
+      type: object
+      required: [template]
+      properties:
+        template:
+          type: string
+          description: >
+            The sealed template to boot, by name (newest version) or name@version.
+            Resolved and pin-checked on the node before anything is copied.
+        id:
+          type: string
+          description: The sandbox id. Minted when empty; an id that is already a sandbox is 409.
+        owner: { type: string }
+        egress:
+          type: array
+          items: { type: string }
+          description: >
+            Egress allowlist as "host:port" destinations. Empty or absent means the
+            sandbox reaches nothing, which is the default a sandbox should have.
+        idleTtlSeconds:
+          type: integer
+          minimum: -1
+          description: >
+            Idle TTL for this sandbox in seconds: 0 means the node's default, -1
+            means the reaper never takes it, and a positive value is the TTL.
+        vcpus: { type: integer, minimum: 0 }
+        memoryMB: { type: integer, minimum: 0 }
+
+    SandboxFreed:
+      type: object
+      description: >
+        What removing one sandbox took back, resource by resource, so "everything
+        is gone" is a list rather than a promise.
+      properties:
+        processStopped: { type: boolean }
+        socketRemoved: { type: boolean }
+        cgroupRemoved: { type: boolean }
+        jailRemoved: { type: boolean }
+        netnsRemoved: { type: boolean }
+        tapRemoved: { type: boolean }
+        diskRemoved: { type: boolean }
+        agentCredentialRemoved: { type: boolean }
+        instanceRecordRemoved: { type: boolean }
+        recordRemoved: { type: boolean }
+        apiTokensRevoked: { type: integer, minimum: 0 }
+
+    SandboxRemoval:
+      type: object
+      required: [schemaVersion, kind, sandbox, freed]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [SandboxRemoval] }
+        sandbox: { type: string }
+        freed: { $ref: "#/components/schemas/SandboxFreed" }
+
+    SandboxTokenRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The token's name. Empty is "sandbox <id>".
+        expiresAt:
+          type: string
+          format: date-time
+          description: An RFC3339 instant; absent means the token never expires.
+
+    SandboxToken:
+      type: object
+      required: [schemaVersion, kind, id, name, sandbox, scopes, token]
+      properties:
+        schemaVersion: { type: integer, enum: [1] }
+        kind: { type: string, enum: [SandboxToken] }
+        id: { type: string }
+        name: { type: string }
+        sandbox: { type: string }
+        scopes:
+          type: array
+          items: { type: string }
+        token:
+          type: string
+          description: The bearer secret. It is present in this response and never again.
+        expiresAt: { type: string, format: date-time }

@@ -357,6 +357,126 @@ export interface RestartPolicy {
   windowMs?: number;
 }
 
+/** One agent sandbox: a microVM booted from a sealed template, with its own disk, its own network namespace and its own per-boot credential. Host layout — the jail, the disk path, the agent-token path — is deliberately absent: what crosses the API is what a caller acts on. */
+export interface Sandbox {
+  id: string;
+  /** created is a sandbox being built (or a create that died), ready is one whose guest agent answered its hello — the only state in which it can run a command — failed is one the node could not make usable or lost (reason says which), and stopped is one the node has ended. A removed sandbox is not listed: its record is deleted once everything it held is freed. */
+  state: "created" | "ready" | "failed" | "stopped";
+  /** The resolved template reference, name@version. */
+  template?: string;
+  owner?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  /** When the guest agent answered. Absent until it does. */
+  readyAt?: string;
+  /** When the node last saw the sandbox used; the idle TTL is measured from it. */
+  lastActiveAt?: string;
+  /** How long the sandbox may sit unused before the reaper takes it back. 0 means never. */
+  idleTtlSeconds?: number;
+  /** Why a sandbox is failed. Absent in every other state. */
+  reason?: string;
+  guestIp?: string;
+  mac?: string;
+  /** The allowlist the sandbox was created with, as requested; empty is egress none. */
+  egress?: string[];
+  /** How the sandbox's own disk was materialized from the template. */
+  diskCopy?: "reflink" | "sparse" | "full";
+  agentVersion?: string;
+  bootId?: string;
+}
+
+export interface SandboxCreate {
+  /** The sealed template to boot, by name (newest version) or name@version. Resolved and pin-checked on the node before anything is copied. */
+  template: string;
+  /** The sandbox id. Minted when empty; an id that is already a sandbox is 409. */
+  id?: string;
+  owner?: string;
+  /** Egress allowlist as "host:port" destinations. Empty or absent means the sandbox reaches nothing, which is the default a sandbox should have. */
+  egress?: string[];
+  /** Idle TTL for this sandbox in seconds: 0 means the node's default, -1 means the reaper never takes it, and a positive value is the TTL. */
+  idleTtlSeconds?: number;
+  vcpus?: number;
+  memoryMB?: number;
+}
+
+export interface SandboxDocument {
+  id: string;
+  /** created is a sandbox being built (or a create that died), ready is one whose guest agent answered its hello — the only state in which it can run a command — failed is one the node could not make usable or lost (reason says which), and stopped is one the node has ended. A removed sandbox is not listed: its record is deleted once everything it held is freed. */
+  state: "created" | "ready" | "failed" | "stopped";
+  /** The resolved template reference, name@version. */
+  template?: string;
+  owner?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  /** When the guest agent answered. Absent until it does. */
+  readyAt?: string;
+  /** When the node last saw the sandbox used; the idle TTL is measured from it. */
+  lastActiveAt?: string;
+  /** How long the sandbox may sit unused before the reaper takes it back. 0 means never. */
+  idleTtlSeconds?: number;
+  /** Why a sandbox is failed. Absent in every other state. */
+  reason?: string;
+  guestIp?: string;
+  mac?: string;
+  /** The allowlist the sandbox was created with, as requested; empty is egress none. */
+  egress?: string[];
+  /** How the sandbox's own disk was materialized from the template. */
+  diskCopy?: "reflink" | "sparse" | "full";
+  agentVersion?: string;
+  bootId?: string;
+  schemaVersion: 1;
+  kind: "Sandbox";
+}
+
+/** What removing one sandbox took back, resource by resource, so "everything is gone" is a list rather than a promise. */
+export interface SandboxFreed {
+  processStopped?: boolean;
+  socketRemoved?: boolean;
+  cgroupRemoved?: boolean;
+  jailRemoved?: boolean;
+  netnsRemoved?: boolean;
+  tapRemoved?: boolean;
+  diskRemoved?: boolean;
+  agentCredentialRemoved?: boolean;
+  instanceRecordRemoved?: boolean;
+  recordRemoved?: boolean;
+  apiTokensRevoked?: number;
+}
+
+export interface SandboxList {
+  schemaVersion: 1;
+  kind: "SandboxList";
+  items: Sandbox[];
+  next: string | null;
+  warnings?: Warning[];
+}
+
+export interface SandboxRemoval {
+  schemaVersion: 1;
+  kind: "SandboxRemoval";
+  sandbox: string;
+  freed: SandboxFreed;
+}
+
+export interface SandboxToken {
+  schemaVersion: 1;
+  kind: "SandboxToken";
+  id: string;
+  name: string;
+  sandbox: string;
+  scopes: string[];
+  /** The bearer secret. It is present in this response and never again. */
+  token: string;
+  expiresAt?: string;
+}
+
+export interface SandboxTokenRequest {
+  /** The token's name. Empty is "sandbox <id>". */
+  name?: string;
+  /** An RFC3339 instant; absent means the token never expires. */
+  expiresAt?: string;
+}
+
 export interface Secret {
   id: string;
   name: string;
@@ -687,7 +807,7 @@ export interface VersionInfo {
   serverVersion: string;
   grpcProtocolVersion: string;
   clusterId?: string;
-  /** Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. migrations is advertised only when the manager has both a node broker and its migration spool, because a migration is relayed and spooled. A capability that is advertised is served; the version document never promises a route that answers 501. */
+  /** Feature detection. read, write and events are always served. exec, logs, files, health and attach are advertised only when the manager has a node broker wired, because they are relayed to the node that runs the task. snapshots is advertised only when the experimental snapshot surface is enabled. migrations is advertised only when the manager has both a node broker and its migration spool, because a migration is relayed and spooled. sandboxes is advertised only when the node serves a sandbox control plane (sandboxd), because the sandbox routes are that daemon's. A capability that is advertised is served; the version document never promises a route that answers 501. */
   capabilities: string[];
 }
 
