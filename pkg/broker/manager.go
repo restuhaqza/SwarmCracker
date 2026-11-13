@@ -441,6 +441,9 @@ func (m *Manager) Health(ctx context.Context, task v1.Task) (*v1.TaskHealth, err
 	if err != nil {
 		return nil, transportError(ctx, route.Node.ID, "health", err)
 	}
+	// The body carries this call's deadline: a health document that stops arriving when
+	// it expires is the deadline's failure, not a node that broke the wire contract.
+	resp.Body = callBody(resp.Body, callCtx, cancel)
 	defer func() { _ = resp.Body.Close() }()
 
 	switch resp.StatusCode {
@@ -475,6 +478,12 @@ func decodeNodeDocument[T any](body io.Reader, nodeID, noun string, complete fun
 	decoder := json.NewDecoder(io.LimitReader(body, maxRelayedErrorBytes))
 	if err := decoder.Decode(&doc); err != nil || isNilDocument(doc) || !complete(doc) {
 		var zero T
+		// A document that stopped arriving because this call's own deadline expired was
+		// not a document the node sent badly: it was a document this call stopped
+		// waiting for. The deadline is the failure, and it is reported as one.
+		if callDeadlineExpired(body) {
+			return zero, callDeadlineError(nodeID, noun)
+		}
 		return zero, output.NewErrorf(output.CodeInternal,
 			"node %q returned an unreadable %s document", nodeID, noun).
 			WithDetails(map[string]any{"nodeId": nodeID})
@@ -514,6 +523,11 @@ func decodeNodeError(body io.Reader, status int, nodeID, noun string) error {
 			typed.Details = doc.Error.Details
 			return typed
 		}
+	}
+	// A body this call stopped waiting for is not evidence about the node, and the
+	// fallback below would blame it. The call's own deadline is what cut the answer off.
+	if callDeadlineExpired(body) {
+		return callDeadlineError(nodeID, noun)
 	}
 	return output.NewErrorf(codeUnavailable, "node %q %s unavailable (status %d)",
 		nodeID, noun, status)
@@ -567,6 +581,7 @@ func (m *Manager) Metrics(ctx context.Context, task v1.Task) (v1.TaskMetrics, er
 	if err != nil {
 		return v1.TaskMetrics{}, transportError(ctx, route.Node.ID, "metrics", err)
 	}
+	resp.Body = callBody(resp.Body, callCtx, cancel)
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
@@ -783,21 +798,63 @@ func (m *Manager) doNodeRequest(
 		cancel()
 		return nil, snapshotTransportError(ctx, route.Node.ID, err)
 	}
-	resp.Body = &snapshotResponseBody{ReadCloser: resp.Body, cancel: cancel}
+	resp.Body = callBody(resp.Body, callCtx, cancel)
 	return resp, nil
 }
 
-// snapshotResponseBody releases the per-request deadline when the body closes.
-type snapshotResponseBody struct {
+// callResponseBody is the response body of a call that has a deadline of its own:
+// closing it releases that deadline, and it can be asked whether the deadline passed
+// while its answer was being read.
+//
+// It exists because the deadline is the only thing that knows why a document stopped
+// arriving. A body read that ends after this call's deadline was cut off by this
+// package's own budget — not by the caller cancelling and not by the node sending
+// garbage — and a decision that cannot tell those apart blames the wrong party.
+type callResponseBody struct {
 	io.ReadCloser
 	cancel context.CancelFunc
+	// call is the per-call context the deadline belongs to. It is nil only for a body
+	// built by a test that has no call behind it.
+	call context.Context
 }
 
-// Close closes the body and then releases the request deadline.
-func (b *snapshotResponseBody) Close() error {
+// Close closes the body and then releases the call's deadline.
+func (b *callResponseBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.cancel()
 	return err
+}
+
+// expired reports whether the deadline of the call this body belongs to has passed.
+func (b *callResponseBody) expired() bool {
+	return b.call != nil && errors.Is(b.call.Err(), context.DeadlineExceeded)
+}
+
+// callBody wraps a response body in the deadline of the call that produced it.
+func callBody(body io.ReadCloser, call context.Context, cancel context.CancelFunc) *callResponseBody {
+	return &callResponseBody{ReadCloser: body, cancel: cancel, call: call}
+}
+
+// callDeadlineExpired reports whether the deadline of the call this body belongs to has
+// passed. A reader that is not a call's body — a test's reader, a caller's own — has no
+// call deadline and reports false, so a decode that cannot ask the question behaves
+// exactly as it did before.
+func callDeadlineExpired(body io.Reader) bool {
+	call, ok := body.(*callResponseBody)
+	return ok && call.expired()
+}
+
+// callDeadlineError is the failure of a call that ran out of its own time: its answer
+// did not finish arriving before the deadline doNodeRequest set for that call.
+//
+// It is deliberately not the caller's timeout: the caller is still waiting, and its own
+// context is untouched. It is also not the node's fault: a node that answered a moment
+// later may have been perfectly correct, and the answer this call kept was a fragment
+// of one. The message says which deadline expired so a reader is not left guessing.
+func callDeadlineError(nodeID, noun string) *output.Error {
+	return output.NewErrorf(output.CodeTimeout,
+		"node %q %s did not answer within this call's deadline", nodeID, noun).
+		WithDetails(map[string]any{"nodeId": nodeID})
 }
 
 // snapshotTransportError maps a failed dial or a deadline to a stable failure.

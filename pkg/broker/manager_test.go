@@ -1055,3 +1055,99 @@ func TestManagerSnapshotTimeoutExplicit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 90*time.Second, mgr.snapshotTimeout)
 }
+
+// expiredCall is a call context whose deadline has certainly passed, so a test can
+// decide the ordering instead of racing for it.
+func expiredCall(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// liveCall is a call context whose deadline has not passed.
+func liveCall(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// expiredBody is a response body whose call deadline has passed and whose answer is
+// whatever the test put in it.
+func expiredBody(t *testing.T, answer string) io.Reader {
+	t.Helper()
+	return callBody(io.NopCloser(strings.NewReader(answer)), expiredCall(t), func() {})
+}
+
+// TestDecodeNodeDocumentPrefersAnExpiredCallDeadline pins the rule: an answer that stopped
+// arriving because this call's own deadline expired is a timeout, whatever the node sent —
+// and the deadline never overrides an answer that did arrive, or a body with no call behind
+// it.
+func TestDecodeNodeDocumentPrefersAnExpiredCallDeadline(t *testing.T) {
+	complete := func(doc v1.TaskMetrics) bool { return doc.TaskID != "" }
+	valid := `{"taskId":"task-1","cpuPercent":12.5}`
+
+	t.Run("an empty answer after the deadline is a timeout", func(t *testing.T) {
+		_, err := decodeNodeDocument(expiredBody(t, ""), "node-1", "metrics", complete)
+		var typed *output.Error
+		require.ErrorAs(t, err, &typed)
+		require.Equal(t, output.CodeTimeout, typed.Code)
+		// The message has to say which deadline expired: the caller is still waiting, so
+		// "timeout" alone would read as its own context being cancelled.
+		require.Contains(t, typed.Message, "call's deadline")
+		require.Equal(t, "node-1", typed.Details["nodeId"])
+	})
+
+	t.Run("an empty answer before the deadline is still internal", func(t *testing.T) {
+		body := callBody(io.NopCloser(strings.NewReader("")), liveCall(t), func() {})
+		_, err := decodeNodeDocument(body, "node-1", "metrics", complete)
+		var typed *output.Error
+		require.ErrorAs(t, err, &typed)
+		require.Equal(t, output.CodeInternal, typed.Code, "nothing expired, so the node's answer is the failure")
+		require.Contains(t, typed.Message, "unreadable")
+	})
+
+	t.Run("an answer that did arrive is used even after the deadline", func(t *testing.T) {
+		doc, err := decodeNodeDocument(expiredBody(t, valid), "node-1", "metrics", complete)
+		require.NoError(t, err)
+		require.Equal(t, "task-1", doc.TaskID)
+	})
+
+	t.Run("a reader with no call behind it is unaffected", func(t *testing.T) {
+		_, err := decodeNodeDocument(strings.NewReader(""), "node-1", "metrics", complete)
+		var typed *output.Error
+		require.ErrorAs(t, err, &typed)
+		require.Equal(t, output.CodeInternal, typed.Code)
+	})
+}
+
+// TestDecodeNodeErrorPrefersAnExpiredCallDeadline pins the other half: the node's own error
+// document is relayed whenever it is readable, and only the unreadable fallback consults
+// the deadline.
+func TestDecodeNodeErrorPrefersAnExpiredCallDeadline(t *testing.T) {
+	t.Run("an unreadable answer after the deadline is a timeout", func(t *testing.T) {
+		err := decodeNodeError(expiredBody(t, "not a document"), http.StatusServiceUnavailable, "node-1", "health")
+		var typed *output.Error
+		require.ErrorAs(t, err, &typed)
+		require.Equal(t, output.CodeTimeout, typed.Code)
+		require.Contains(t, typed.Message, "call's deadline")
+	})
+
+	t.Run("the node's error document wins over the expired deadline", func(t *testing.T) {
+		answer := `{"schemaVersion":1,"kind":"Error","error":{"code":"not_found","message":"no such task","retryable":false}}`
+		err := decodeNodeError(expiredBody(t, answer), http.StatusNotFound, "node-1", "health")
+		var typed *output.Error
+		require.ErrorAs(t, err, &typed)
+		require.Equal(t, output.CodeNotFound, typed.Code, "a readable document is evidence, and the deadline is not")
+		require.Equal(t, "no such task", typed.Message)
+	})
+
+	t.Run("an unreadable answer before the deadline is unavailable", func(t *testing.T) {
+		body := callBody(io.NopCloser(strings.NewReader("not a document")), liveCall(t), func() {})
+		err := decodeNodeError(body, http.StatusServiceUnavailable, "node-1", "health")
+		var typed *output.Error
+		require.ErrorAs(t, err, &typed)
+		require.Equal(t, codeUnavailable, typed.Code)
+	})
+}
