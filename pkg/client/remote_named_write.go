@@ -35,7 +35,7 @@ func (r *remoteClient) postJSON(ctx context.Context, segments []string, value an
 	if err != nil {
 		return err
 	}
-	return decodeJSON(strings.Join(segments, "/"), resp.body, out)
+	return decodeJSON(ctx, strings.Join(segments, "/"), resp.body, out)
 }
 
 // patchJSON sends a raw merge patch and decodes the response.
@@ -55,7 +55,7 @@ func (r *remoteClient) patchJSON(ctx context.Context, segments []string, patch [
 	if err != nil {
 		return err
 	}
-	return decodeJSON(strings.Join(segments, "/"), resp.body, out)
+	return decodeJSON(ctx, strings.Join(segments, "/"), resp.body, out)
 }
 
 // deleteRequest sends DELETE with the forwarded preconditions and returns

@@ -216,6 +216,29 @@ func transportError(op string, err error) *output.Error {
 	return output.NewErrorf(code, "%s: %v", op, err)
 }
 
+// callerEnded returns the failure the caller's own context caused, or cause itself while
+// that context is still live.
+//
+// The caller's deadline outranks whatever the server did with the request. A call that fails
+// after the deadline has passed is a timeout whether the server answered with nothing, with
+// an empty body, with a body that does not decode, or with an error document of its own:
+// those are different failures with one cause, and reporting the server's half of it sends
+// whoever is diagnosing the call after the wrong system. Cancellation is the caller's other
+// ending and is named as itself — the two are not one class, and the message says which
+// happened. The failure being classified stays in the message, so an internal failure that
+// landed after a deadline is still visible to the reader.
+func callerEnded(ctx context.Context, cause error) error {
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		return cause
+	}
+	reason := "deadline exceeded"
+	if errors.Is(ctxErr, context.Canceled) {
+		reason = "canceled"
+	}
+	return output.NewErrorf(output.CodeTimeout, "%s: %v", reason, cause)
+}
+
 // remoteRequest is one call to the manager's API. Building it here keeps the
 // method, content type and preconditions in one place for reads and writes.
 type remoteRequest struct {
@@ -289,11 +312,12 @@ func (r *remoteClient) do(ctx context.Context, call remoteRequest) (*remoteRespo
 		return nil, transportError("read response for "+path, err)
 	}
 	if len(responseBody) > maxResponseBytes {
-		return nil, output.NewErrorf(output.CodeInternal,
-			"%s %s: response exceeds %d bytes", call.method, path, maxResponseBytes)
+		return nil, callerEnded(ctx, output.NewErrorf(output.CodeInternal,
+			"%s %s: response exceeds %d bytes", call.method, path, maxResponseBytes))
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, decodeErrorDocument(call.method, path, resp.StatusCode, resp.Status, responseBody)
+		return nil, callerEnded(ctx,
+			decodeErrorDocument(call.method, path, resp.StatusCode, resp.Status, responseBody))
 	}
 
 	return &remoteResponse{status: resp.StatusCode, header: resp.Header, body: responseBody}, nil
@@ -373,10 +397,12 @@ func codeForStatus(status int) output.Code {
 }
 
 // decodeJSON decodes one document. A malformed body is a server bug, not a
-// transport failure, so it is internal.
-func decodeJSON(path string, body []byte, out any) error {
+// transport failure, so it is internal — unless the caller's deadline passed while the
+// request was in flight, in which case the empty or half-written body is the deadline's
+// doing and the caller is told that instead.
+func decodeJSON(ctx context.Context, path string, body []byte, out any) error {
 	if err := json.Unmarshal(body, out); err != nil {
-		return output.NewErrorf(output.CodeInternal, "decode %s response: %v", path, err)
+		return callerEnded(ctx, output.NewErrorf(output.CodeInternal, "decode %s response: %v", path, err))
 	}
 	return nil
 }
@@ -387,7 +413,7 @@ func (r *remoteClient) getDocument(ctx context.Context, segments []string, out a
 	if err != nil {
 		return err
 	}
-	return decodeJSON(strings.Join(segments, "/"), body, out)
+	return decodeJSON(ctx, strings.Join(segments, "/"), body, out)
 }
 
 // paginate follows next cursors until one is absent, accumulating every page's
@@ -415,7 +441,7 @@ func paginate[T any, D any](r *remoteClient, ctx context.Context, segments []str
 		}
 
 		var doc D
-		if err := decodeJSON(path, body, &doc); err != nil {
+		if err := decodeJSON(ctx, path, body, &doc); err != nil {
 			return nil, err
 		}
 		pageItems, next := extract(&doc)
@@ -484,7 +510,7 @@ func (r *remoteClient) listTasksHealth(ctx context.Context) (v1.TaskList, bool, 
 		}
 
 		var pageDoc v1.TaskList
-		if err := decodeJSON("v1/tasks", resp.body, &pageDoc); err != nil {
+		if err := decodeJSON(ctx, "v1/tasks", resp.body, &pageDoc); err != nil {
 			return v1.TaskList{}, false, err
 		}
 		if resp.status == http.StatusMultiStatus {
@@ -659,7 +685,7 @@ func (r *remoteClient) createService(ctx context.Context, write v1.ServiceWrite,
 	}
 
 	var doc v1.ServiceDocument
-	if err := decodeJSON("v1/services", resp.body, &doc); err != nil {
+	if err := decodeJSON(ctx, "v1/services", resp.body, &doc); err != nil {
 		return v1.Service{}, err
 	}
 	return doc.Service, nil
@@ -685,7 +711,7 @@ func (r *remoteClient) updateService(ctx context.Context, ref string, patch []by
 	}
 
 	var doc v1.ServiceDocument
-	if err := decodeJSON("v1/services/"+ref, resp.body, &doc); err != nil {
+	if err := decodeJSON(ctx, "v1/services/"+ref, resp.body, &doc); err != nil {
 		return v1.Service{}, err
 	}
 	return doc.Service, nil
@@ -749,7 +775,7 @@ func (r *remoteClient) rollbackService(ctx context.Context, ref string, opts v1.
 	}
 
 	var doc v1.ServiceDocument
-	if err := decodeJSON("v1/services/"+ref+"/rollback", resp.body, &doc); err != nil {
+	if err := decodeJSON(ctx, "v1/services/"+ref+"/rollback", resp.body, &doc); err != nil {
 		return v1.Service{}, err
 	}
 	return doc.Service, nil

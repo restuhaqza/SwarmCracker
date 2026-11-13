@@ -703,6 +703,12 @@ func TestRemoteCanceledContextIsTimeout(t *testing.T) {
 	assert.Equal(t, output.CodeTimeout, codeOf(t, err).Code)
 }
 
+// TestRemoteDeadlineExceededIsTimeout is the integration shape: a handler that answers
+// nothing and waits for the request to end, and a caller whose deadline passes while it
+// waits. Which of the two orderings the scheduler picks — the transport reporting the
+// deadline, or the server's empty body arriving first — used to decide the code the caller
+// saw; callerEnded makes both of them a timeout, so this is deterministic and the mapping
+// itself is pinned separately in TestACallersDeadlineOutranksTheServersFailure.
 func TestRemoteDeadlineExceededIsTimeout(t *testing.T) {
 	c := newTestRemote(t, Config{}, func(_ http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
@@ -761,4 +767,59 @@ func TestRemoteClientTimeoutIsTimeout(t *testing.T) {
 	_, err := c.ListNodes(context.Background())
 	require.Error(t, err)
 	assert.Equal(t, output.CodeTimeout, codeOf(t, err).Code)
+}
+
+// TestACallersDeadlineOutranksTheServersFailure pins the mapping on its own, with the two
+// inputs TestRemoteDeadlineExceededIsTimeout mixes together: a body that did not decode,
+// and a caller's context that did or did not end while the request was in flight.
+//
+// A call that fails after the caller's deadline is a timeout whatever the server did,
+// because the deadline is the cause of the failure and the cause is what gets reported —
+// otherwise a busy runner turns a deadline into "the server sent us nothing", and a real
+// deadline becomes a bug hunt on the wrong side of the wire. A live context leaves the
+// server's failure as it was, cancellation is named as itself rather than as an expiry, and
+// in both endings the failure being classified stays in the message.
+func TestACallersDeadlineOutranksTheServersFailure(t *testing.T) {
+	server := output.NewErrorf(output.CodeInternal,
+		"decode v1/nodes response: unexpected end of JSON input")
+
+	expired, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	<-expired.Done()
+
+	got := callerEnded(expired, server)
+	require.NotSame(t, server, got, "the deadline replaces the server's classification")
+	var typed *output.Error
+	require.ErrorAs(t, got, &typed)
+	assert.Equal(t, output.CodeTimeout, typed.Code)
+	assert.Contains(t, typed.Message, "deadline exceeded")
+	assert.Contains(t, typed.Message, "unexpected end of JSON input",
+		"the failure being classified is still there to diagnose")
+
+	// The same failure with the caller still waiting: nothing to overwrite.
+	assert.Same(t, server, callerEnded(context.Background(), server))
+
+	// Cancellation is the caller's other ending, and it is not a deadline.
+	cancelled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	got = callerEnded(cancelled, server)
+	require.NotSame(t, server, got)
+	require.ErrorAs(t, got, &typed)
+	assert.Equal(t, output.CodeTimeout, typed.Code)
+	assert.Contains(t, typed.Message, "canceled")
+	assert.NotContains(t, typed.Message, "deadline exceeded", "the two endings are not one class")
+
+	// And the same pair at the seam this flake came through: a body that does not decode.
+	// It is the server's bug while the caller is still waiting, and the caller's deadline
+	// when its expiry is what emptied the body.
+	var doc struct{}
+	liveErr := decodeJSON(context.Background(), "v1/nodes", []byte("{"), &doc)
+	require.ErrorAs(t, liveErr, &typed)
+	assert.Equal(t, output.CodeInternal, typed.Code, "with the caller still waiting, a malformed body is the server's")
+	assert.Contains(t, typed.Message, "decode v1/nodes response")
+
+	expiredErr := decodeJSON(expired, "v1/nodes", []byte("{"), &doc)
+	require.ErrorAs(t, expiredErr, &typed)
+	assert.Equal(t, output.CodeTimeout, typed.Code, "during the caller's deadline, the body it cut off is the deadline")
+	assert.Contains(t, typed.Message, "decode v1/nodes response")
 }
