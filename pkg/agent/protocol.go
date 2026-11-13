@@ -1,6 +1,7 @@
 // Package agent implements the guest-agent wire protocol, the guest-side
-// request handlers (exec, file put, file get, prepare) and the host-side client
-// used to drive a microVM over Firecracker's vsock Unix socket.
+// request handlers (exec, file put, file get, the post-restore hook, and the
+// machine and session reads: info, net, stat, list, tar, activity) and the
+// host-side client used to drive a microVM over Firecracker's vsock Unix socket.
 //
 // The protocol is a sequence of length-prefixed JSON frames: a 4-byte
 // big-endian uint32 body length followed by that many bytes of JSON. The guest
@@ -64,13 +65,33 @@ const (
 	// CapPrepare is the post-restore hook: the guest reads the identity the node
 	// published to its metadata service and applies it to itself (prepare.go).
 	CapPrepare = "prepare"
+	// CapInfo is what the guest knows about itself: its identity, its kernel,
+	// its memory and vCPUs, and the toolchain its template ships (info.go).
+	CapInfo = "info"
+	// CapNet is the guest's own view of its network: interfaces, addresses,
+	// routes and the resolver it consults (netinfo.go).
+	CapNet = "net"
+	// CapStat and CapList describe the guest's file tree, and CapTar streams a
+	// part of it as a tar archive. All three are confined to a file root and
+	// need no shell, which is what makes them usable in a template that ships
+	// neither coreutils nor tar (files.go).
+	CapStat = "stat"
+	CapList = "list"
+	CapTar  = "tar"
+	// CapActivity is what the guest is doing right now, so a scheduler can pause
+	// an idle sandbox without interrupting one that is waiting on a remote API
+	// at almost no CPU (activity.go).
+	CapActivity = "activity"
 )
 
 // capabilities is the closed set of operations this agent build implements. It
 // must list exactly the ops dispatch serves: an op that is served but not
 // advertised can never be called, and an op that is advertised but not served
 // would fail after the host committed to it.
-var capabilities = []string{CapHello, CapExec, CapPut, CapGet, CapMetrics, CapPrepare}
+var capabilities = []string{
+	CapHello, CapExec, CapPut, CapGet, CapMetrics, CapPrepare,
+	CapInfo, CapNet, CapStat, CapList, CapTar, CapActivity,
+}
 
 // Capabilities returns the operations this agent build advertises. The result is
 // a copy, so a caller cannot change what the agent serves.
@@ -102,6 +123,22 @@ const (
 	// it. It is a failed launch, never a warning, because an instance wearing its
 	// source's identity is not the instance the node asked for.
 	CodePrepareFailed ErrorCode = "prepare_failed"
+	// CodeUnsafePath reports a file operation whose path is not inside the
+	// guest's file root: an absolute path, a ".." component that leaves the
+	// root, or a symbolic link that resolves outside it. It is separate from
+	// CodeNotPermitted because it is the one file failure a caller can be sure
+	// was refused by policy rather than by the guest's own kernel.
+	CodeUnsafePath ErrorCode = "unsafe_path"
+	// CodeNotFound reports a file operation on a path that does not exist.
+	CodeNotFound ErrorCode = "not_found"
+	// CodeNotPermitted reports a file operation the guest's kernel refused with
+	// a permission error.
+	CodeNotPermitted ErrorCode = "not_permitted"
+	// CodeTooLarge reports a stream that reached the bound its operation
+	// declares (a listing's entry count, an archive's size or entry count). The
+	// operation stops there and says so; it never returns a partial result that
+	// looks complete.
+	CodeTooLarge ErrorCode = "too_large"
 )
 
 // Error is a typed protocol failure. Code is the part a caller branches on;
@@ -234,6 +271,23 @@ type Message struct {
 	// Prepared is set on the reply to a prepare request: what the guest carries
 	// after it applied the identity its node published.
 	Prepared *PrepareReport `json:"prepared,omitempty"`
+	// Info, Net, Stat, Entries, Tar and Activity are the payloads of the machine
+	// and session operations added with SBX-084. Each is set on the reply to its
+	// own operation and nowhere else, so a frame names the operation it answers
+	// even before its body is read.
+	//
+	// Entries carries one batch of a listing (a "entries" frame), and Truncated
+	// is set on the terminal empty batch when the listing stopped at its bound.
+	// Tar carries the summary on the terminal empty "file" frame of an archive;
+	// the archive itself rides in Data frames, exactly like a get or a put, so a
+	// tar stream needs no framing of its own.
+	Info      *GuestInfo  `json:"info,omitempty"`
+	Net       *GuestNet   `json:"net,omitempty"`
+	Stat      *FileEntry  `json:"stat,omitempty"`
+	Entries   []FileEntry `json:"entries,omitempty"`
+	Truncated bool        `json:"truncated,omitempty"`
+	Tar       *TarSummary `json:"tar,omitempty"`
+	Activity  *Activity   `json:"activity,omitempty"`
 }
 
 // WriteFrame marshals v as JSON and writes it to w prefixed by a 4-byte

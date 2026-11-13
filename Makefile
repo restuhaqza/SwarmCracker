@@ -333,7 +333,17 @@ pkg/image/binaries/busybox-amd64:
 # test-only edit must not change the agent's identity below: including them would
 # make this target rewrite a 6.9 MB blob — and `make check-agent-binary` demand a
 # new one — for a change that cannot affect a single byte of the binary.
-AGENT_SOURCES := $(filter-out %_test.go,$(wildcard cmd/sc-agent/*.go) $(wildcard pkg/agent/*.go)) go.mod go.sum
+#
+# The list is sorted because the identity must be a function of the sources and of
+# nothing else. $(wildcard) hands back the names its glob produced, and glibc's
+# glob sorts them by the *locale's* collation rather than by bytes: under
+# en_US.UTF-8 "files.go" comes before "file_uid_other.go", under the C locale it
+# comes after. A CI runner runs in the C locale and a developer's shell usually
+# does not, so without this $(sort) — which compares bytes — one tree computed two
+# identities and `make check-agent-binary` failed on a blob that was a faithful
+# build of its sources (#197: 16e016f4c09bf839 here, 9e358e9fae5096e7 on the
+# runner, for the same 27 files).
+AGENT_SOURCES := $(sort $(filter-out %_test.go,$(wildcard cmd/sc-agent/*.go) $(wildcard pkg/agent/*.go))) go.mod go.sum
 
 # The committed guest agent's identity, and the reason this target is reproducible
 # at all.
