@@ -497,7 +497,9 @@ func forkParent(t *testing.T, node *sliceNode, id, checkpointName string) (sandb
 		chk.Name, time.Since(start).Round(time.Millisecond), chk.SizeBytes,
 		chk.Mem.TotalSize, len(chk.Mem.Chunks), fileSize(t, chk.Disk))
 	t.Cleanup(func() {
-		if _, err := node.manager.DeleteCheckpoint(context.Background(), checkpointName); err != nil {
+		// A run that deleted the checkpoint itself — the residue audit — finds it gone,
+		// which is the state it wanted.
+		if _, err := node.manager.DeleteCheckpoint(context.Background(), checkpointName); err != nil && !errors.Is(err, sandboxpkg.ErrNotFound) {
 			t.Logf("deleting checkpoint %s after the run: %v", checkpointName, err)
 		}
 	})
@@ -573,7 +575,8 @@ func forkTwins(t *testing.T, node *sliceNode, chk sandboxpkg.CheckpointRecord, i
 	for _, clone := range forks {
 		clone := clone
 		t.Cleanup(func() {
-			if _, err := node.manager.Remove(context.Background(), clone.ID); err != nil {
+			// A run that removed the clone itself — the residue audit — finds it gone.
+			if _, err := node.manager.Remove(context.Background(), clone.ID); err != nil && !errors.Is(err, sandboxpkg.ErrNotFound) {
 				t.Logf("removing the clone %s after the run: %v", clone.ID, err)
 			}
 		})

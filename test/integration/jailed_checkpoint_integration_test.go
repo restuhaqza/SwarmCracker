@@ -253,6 +253,11 @@ type sliceNode struct {
 	logDir    string
 	jailBase  string
 	kernel    string
+	// blobRoot is the chunk store the memory image lives in, and scratch is the
+	// directory everything above lives under. The residue audit needs both: it counts
+	// files in the one and removes the other.
+	blobRoot string
+	scratch  string
 }
 
 // newSliceNode builds the node with everything under one scratch directory of its
@@ -322,6 +327,8 @@ func newSliceNode(t *testing.T) *sliceNode {
 		logDir:       logDir,
 		jailBase:     jailBase,
 		kernel:       kernelPath,
+		blobRoot:     filepath.Join(stateDir, "blobs"),
+		scratch:      scratch,
 	}
 }
 
