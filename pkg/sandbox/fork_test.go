@@ -786,3 +786,33 @@ func TestTheThawAfterAForkDialsWithTheClonesCredential(t *testing.T) {
 	assert.Equal(t, forks[0].VsockPath, thaw.vsockPath, "and it is the clone's own muxer")
 	assert.NotEqual(t, "/run/firecracker/parent.vsock", thaw.vsockPath, "not the path the image recorded for the parent's chroot")
 }
+
+// TestAForkWhoseReleaseFailsIsNotReady pins why the release is no longer a warning: a clone
+// whose writers are still blocked is not a usable sandbox, so a thaw that fails fails the
+// fork and frees it — and a fork that answers ready therefore proves its release ran.
+func TestAForkWhoseReleaseFailsIsNotReady(t *testing.T) {
+	c := newCheckpointFixture(t)
+	stubQuiesce(t, nil)
+	c.readySandbox(t, "parent")
+	_, err := c.manager.Checkpoint(context.Background(), "parent", "c1")
+	require.NoError(t, err)
+
+	original := askGuestToQuiesce
+	askGuestToQuiesce = func(_ context.Context, _ Record, action string) (agent.QuiesceReport, error) {
+		if action == agent.QuiesceThaw {
+			return agent.QuiesceReport{}, &agent.Error{Code: agent.CodeInternal, Message: "the guest refused the release"}
+		}
+		return agent.QuiesceReport{Action: action, Mode: agent.QuiesceModeFreeze, Mounts: []string{"/"}}, nil
+	}
+	t.Cleanup(func() { askGuestToQuiesce = original })
+
+	forks, err := c.manager.Fork(context.Background(), ForkRequest{Checkpoint: "c1", IDs: []string{"clone-1"}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "release the writers")
+	assert.Empty(t, forks)
+
+	rec, getErr := c.manager.Get("clone-1")
+	require.NoError(t, getErr)
+	assert.Equal(t, StateFailed, rec.State)
+	assert.Contains(t, rec.Reason, "release the writers")
+}
